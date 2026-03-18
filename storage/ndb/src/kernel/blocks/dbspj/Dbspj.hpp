@@ -91,6 +91,7 @@ class Dbspj : public SimulatedBlock {
   void execSCAN_HBREP(Signal *signal);
   void execTRANSID_AI(Signal *signal);
   void execJOIN_AGG_NULL_ROW_CONF(Signal *signal);
+  void execJOIN_AGG_NULL_ROW_REF(Signal *signal);
 
   /**
    * General signals

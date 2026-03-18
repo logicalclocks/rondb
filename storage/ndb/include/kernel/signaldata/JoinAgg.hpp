@@ -163,6 +163,17 @@ struct JoinAggNullRowConf {
   Uint32 treeNodePtrI;
 };
 
+// DblqhProxy → DBSPJ: null-extended row processing failed
+struct JoinAggNullRowRef {
+  static constexpr Uint32 SignalLength = 6;
+  Uint32 senderRef;
+  Uint32 aggStateKey;
+  Uint32 requestPtrI;
+  Uint32 treeNodePtrI;
+  Uint32 errorCode;
+  Uint32 errorLine;
+};
+
 #undef JAM_FILE_ID
 
 #endif

@@ -18362,15 +18362,45 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   const Uint32 requestPtrI = req->requestPtrI;
   const Uint32 treeNodePtrI = req->treeNodePtrI;
 
+  SectionHandle handle(this, signal);
+
   JoinAggregationState *state = getJoinAggState(aggStateKey);
-  ndbrequire(state != nullptr);
+  if (unlikely(state == nullptr)) {
+    jam();
+    releaseSections(handle);
+    JoinAggNullRowRef *ref =
+      (JoinAggNullRowRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->aggStateKey = aggStateKey;
+    ref->requestPtrI = requestPtrI;
+    ref->treeNodePtrI = treeNodePtrI;
+    ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+    ref->errorLine = __LINE__;
+    sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_REF,
+               signal, JoinAggNullRowRef::SignalLength, JBB);
+    return;
+  }
+
   DEB_MATCH(("(%u) NULL_ROW_REQ: aggStateKey=%u requestPtrI=%u "
              "treeNodePtrI=%u",
              instance(), aggStateKey, requestPtrI, treeNodePtrI));
 
   /* Read linked attribute data from long section 0 (if present) */
-  SectionHandle handle(this, signal);
-  ndbrequire(handle.m_cnt <= 1);
+  if (unlikely(handle.m_cnt > 1)) {
+    jam();
+    releaseSections(handle);
+    JoinAggNullRowRef *ref =
+      (JoinAggNullRowRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->aggStateKey = aggStateKey;
+    ref->requestPtrI = requestPtrI;
+    ref->treeNodePtrI = treeNodePtrI;
+    ref->errorCode = ZJOIN_AGG_INVALID_SECTION_COUNT;
+    ref->errorLine = __LINE__;
+    sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_REF,
+               signal, JoinAggNullRowRef::SignalLength, JBB);
+    return;
+  }
 
   Uint32 linked_len = 0;
   if (handle.m_cnt == 1) {

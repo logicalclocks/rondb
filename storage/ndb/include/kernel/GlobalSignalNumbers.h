@@ -1299,5 +1299,6 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_JOIN_AGG_NODE_FAIL_REP      961
 #define GSN_JOIN_AGG_NULL_ROW_REQ       962
 #define GSN_JOIN_AGG_NULL_ROW_CONF      963
-/* 964, 965 unused — formerly GSN_JOIN_AGG_MATCH_REQ/CONF */
+#define GSN_JOIN_AGG_NULL_ROW_REF       964
+/* 965 unused — formerly GSN_JOIN_AGG_MATCH_CONF */
 #endif

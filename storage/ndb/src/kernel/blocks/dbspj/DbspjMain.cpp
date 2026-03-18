@@ -6324,6 +6324,24 @@ void Dbspj::execJOIN_AGG_NULL_ROW_CONF(Signal *signal) {
   checkBatchComplete(signal, requestPtr);
 }
 
+/*
+ * execJOIN_AGG_NULL_ROW_REF
+ *
+ * DBLQH failed to process the null-extended row (e.g. aggregate state
+ * not found or invalid signal format). Abort the request.
+ */
+void Dbspj::execJOIN_AGG_NULL_ROW_REF(Signal *signal) {
+  jamEntry();
+  const JoinAggNullRowRef *ref =
+      (const JoinAggNullRowRef *)signal->getDataPtr();
+
+  Ptr<Request> requestPtr;
+  requestPtr.i = ref->requestPtrI;
+  m_request_pool.getPtr(requestPtr);
+
+  abort(signal, requestPtr, ref->errorCode);
+}
+
 Uint32 Dbspj::lookup_execNODE_FAILREP(Signal *signal, Ptr<Request> requestPtr,
                                       Ptr<TreeNode> treeNodePtr,
                                       const NdbNodeBitmask mask) {

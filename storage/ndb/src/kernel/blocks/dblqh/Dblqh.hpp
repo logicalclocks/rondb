@@ -481,6 +481,7 @@ class FsReadWriteReq;
 #define ZJOIN_AGG_ALREADY_FINALIZED        1258
 #define ZJOIN_AGG_MUTEX_ERROR              1259
 #define ZJOIN_AGG_MATCH_RANGE_OVERFLOW     1260
+#define ZJOIN_AGG_INVALID_SECTION_COUNT    1261
 
 /**
  * @class dblqh
