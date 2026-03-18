@@ -6052,6 +6052,149 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
 }
 
 /**
+ * mergeAggMatchBitmask
+ *
+ * OR the per-fragment matched bitmask (from SCAN_FRAGCONF section) into
+ * the combined bitmask on the tree node. Allocates the combined bitmask
+ * on first call.
+ *
+ * @return 0 on success, DbspjErr::OutOfQueryMemory on allocation failure
+ */
+Uint32 Dbspj::mergeAggMatchBitmask(Ptr<TreeNode> treeNodePtr,
+                                    ScanFragData &data,
+                                    SegmentedSectionPtr &secPtr) {
+  jam();
+  Uint32 words = secPtr.sz;
+  /* Max 4096 concurrent scans since 12 bits for correlation id */
+  Uint32 buf[512];
+  ndbrequire(words <= 512);
+  copy(buf, secPtr);
+
+  if (treeNodePtr.p->m_agg_match_bitmask == nullptr) {
+    /* Allocate combined bitmask on first section arrival */
+    Uint32 bitmask_words = (data.m_agg_range_cnt + 31) / 32;
+    treeNodePtr.p->m_agg_match_bitmask =
+        (Uint32 *)lc_ndbd_pool_malloc(bitmask_words * sizeof(Uint32),
+                                      RG_QUERY_MEMORY,
+                                      getThreadId(), true);
+    if (unlikely(treeNodePtr.p->m_agg_match_bitmask == nullptr)) {
+      jam();
+      return DbspjErr::OutOfQueryMemory;
+    }
+    memcpy(treeNodePtr.p->m_agg_match_bitmask, buf,
+           bitmask_words * sizeof(Uint32));
+    treeNodePtr.p->m_agg_num_ranges = data.m_agg_range_cnt;
+  } else {
+    Uint32 bitmask_words = (treeNodePtr.p->m_agg_num_ranges + 31) / 32;
+    Uint32 or_words = (words < bitmask_words) ? words : bitmask_words;
+    for (Uint32 i = 0; i < or_words; i++) {
+      treeNodePtr.p->m_agg_match_bitmask[i] |= buf[i];
+    }
+  }
+  DEB_MATCH(("DBSPJ mergeAggMatchBitmask: words=%u num_ranges=%u "
+             "frags_complete=%u/%u",
+             words, treeNodePtr.p->m_agg_num_ranges,
+             data.m_frags_complete, data.m_fragCount));
+  return 0;
+}
+
+/**
+ * handleAggLeafScanComplete()
+ *
+ * Called when an outer join aggregation leaf scan is fully complete
+ * (all fragments done). Uses the combined per-fragment match bitmask
+ * (OR'd from SCAN_FRAGCONF sections) to determine which parent rows
+ * had no child match and inject null rows for them. Then re-runs
+ * handleAggAncestorComplete for any deferred intermediate ancestors.
+ *
+ * @return 0 on success, error code on failure
+ */
+Uint32 Dbspj::handleAggLeafScanComplete(Signal *signal,
+                                         Ptr<Request> requestPtr,
+                                         Ptr<TreeNode> treeNodePtr) {
+  jam();
+
+  Ptr<TreeNode> scanAncestorPtr;
+  ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
+                                    treeNodePtr.p->m_scanAncestorPtrI));
+  Uint32 bitmask_words =
+      (treeNodePtr.p->m_agg_num_ranges + 31) / 32;
+  DEB_MATCH(("DBSPJ: match complete: num_ranges=%u bitmask_words=%u",
+             treeNodePtr.p->m_agg_num_ranges, bitmask_words));
+
+  Uint32 range_no = 0;
+  Uint32 null_rows_sent = 0;
+  RowIterator iter;
+  for (first(scanAncestorPtr.p->m_rows, iter);
+       !iter.isNull(); next(iter)) {
+    RowPtr parentRow;
+    parentRow.m_src_node_ptrI = scanAncestorPtr.i;
+    setupRowPtr(scanAncestorPtr, parentRow, iter.m_base.m_row_ptr);
+    getCorrelationData(parentRow.m_row_data,
+                       parentRow.m_row_data.m_header->m_len - 1,
+                       parentRow.m_src_correlation);
+
+    Uint32 word = range_no / 32;
+    Uint32 bit = 1u << (range_no % 32);
+    bool matched = (treeNodePtr.p->m_agg_match_bitmask != nullptr &&
+                    word < bitmask_words &&
+                    (treeNodePtr.p->m_agg_match_bitmask[word] & bit));
+    DEB_MATCH(("DBSPJ: range_no=%u matched=%u corr=0x%x",
+               range_no, (Uint32)matched,
+               parentRow.m_src_correlation));
+    if (!matched) {
+      jam();
+      null_rows_sent++;
+      Uint32 err = sendJoinAggNullRow(signal, requestPtr,
+                                      treeNodePtr, parentRow);
+      if (unlikely(err != 0)) {
+        return err;
+      }
+    }
+    range_no++;
+  }
+  DEB_MATCH(("DBSPJ: total parent rows=%u null_rows_sent=%u",
+             range_no, null_rows_sent));
+
+  // Free bitmask
+  if (treeNodePtr.p->m_agg_match_bitmask != nullptr) {
+    lc_ndbd_pool_free(treeNodePtr.p->m_agg_match_bitmask);
+    treeNodePtr.p->m_agg_match_bitmask = nullptr;
+  }
+
+  /**
+   * Handle deferred null rows from intermediate outer join ancestors.
+   * When an intermediate ancestor completed before this scan leaf,
+   * propagateNullToAggLeaf deferred the null row injection (returned
+   * 0 because this leaf's scan wasn't done yet). Now that the scan
+   * is complete, re-run handleAggAncestorComplete for those ancestors
+   * so their unmatched parent rows get null rows injected into the
+   * aggregation engine.
+   */
+  Ptr<TreeNode> walkPtr;
+  Uint32 ptrI = treeNodePtr.p->m_parentPtrI;
+  while (ptrI != RNIL) {
+    jam();
+    ndbrequire(m_treenode_pool.getPtr(walkPtr, ptrI));
+    if ((walkPtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
+        !(walkPtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
+        walkPtr.p->m_scanAncestorPtrI != RNIL &&
+        requestPtr.p->m_completed_tree_nodes.get(
+            walkPtr.p->m_node_no)) {
+      jam();
+      Uint32 err = handleAggAncestorComplete(
+          signal, requestPtr, walkPtr);
+      if (unlikely(err != 0)) {
+        return err;
+      }
+    }
+    ptrI = walkPtr.p->m_parentPtrI;
+  }
+
+  return 0;
+}
+
+/**
  * handleAggAncestorComplete()
  *
  * Called when all lookups for an intermediate outer join aggregate ancestor
@@ -8957,47 +9100,19 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
      * (attached as a section in SCAN_FRAGCONF) into the combined bitmask.
      */
     SectionHandle handle(this, signal);
-    if (handle.m_cnt > 0 &&
-        (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
-        !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
+    if (handle.m_cnt > 0) {
       jam();
+      ndbrequire((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+                 !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN));
       SegmentedSectionPtr secPtr;
       ndbrequire(handle.getSection(secPtr, 0));
-      Uint32 words = secPtr.sz;
-      Uint32 buf[128];
-      ndbrequire(words <= 128);
-      copy(buf, secPtr);
-
-      // Allocate combined bitmask on first section arrival
-      if (treeNodePtr.p->m_agg_match_bitmask == nullptr) {
-        Uint32 bitmask_words = (data.m_agg_range_cnt + 31) / 32;
-        treeNodePtr.p->m_agg_match_bitmask =
-            (Uint32 *)lc_ndbd_pool_malloc(bitmask_words * sizeof(Uint32),
-                                          RG_QUERY_MEMORY,
-                                          getThreadId(), true);
-        if (unlikely(treeNodePtr.p->m_agg_match_bitmask == nullptr)) {
-          jam();
-          releaseSections(handle);
-          abort(signal, requestPtr, DbspjErr::OutOfQueryMemory);
-          return;
-        }
-        memset(treeNodePtr.p->m_agg_match_bitmask, 0,
-               bitmask_words * sizeof(Uint32));
-        treeNodePtr.p->m_agg_num_ranges = data.m_agg_range_cnt;
+      Uint32 err = mergeAggMatchBitmask(treeNodePtr, data, secPtr);
+      if (unlikely(err != 0)) {
+        jam();
+        releaseSections(handle);
+        abort(signal, requestPtr, err);
+        return;
       }
-
-      Uint32 bitmask_words =
-          (treeNodePtr.p->m_agg_num_ranges + 31) / 32;
-      Uint32 or_words = (words < bitmask_words) ? words : bitmask_words;
-      for (Uint32 i = 0; i < or_words; i++) {
-        treeNodePtr.p->m_agg_match_bitmask[i] |= buf[i];
-      }
-      DEB_MATCH(("DBSPJ SCAN_FRAGCONF: OR'd bitmask from frag, "
-                 "words=%u num_ranges=%u frags_complete=%u/%u",
-                 words, treeNodePtr.p->m_agg_num_ranges,
-                 data.m_frags_complete, data.m_fragCount));
-      releaseSections(handle);
-    } else {
       releaseSections(handle);
     }
 
@@ -9136,95 +9251,19 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
 
     /**
      * Outer join aggregation: when child scan is fully complete,
-     * use the combined per-fragment bitmask (OR'd from SCAN_FRAGCONF
-     * sections) to determine which parent rows had no child match
-     * and inject null rows for them.
+     * inject null rows for unmatched parent rows and handle deferred
+     * intermediate ancestors.
      */
     if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
         !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
         treeNodePtr.p->m_scanAncestorPtrI != RNIL &&
         data.m_frags_complete == data.m_fragCount) {
       jam();
-
-      Ptr<TreeNode> scanAncestorPtr;
-      ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
-                                        treeNodePtr.p->m_scanAncestorPtrI));
-      Uint32 bitmask_words =
-          (treeNodePtr.p->m_agg_num_ranges + 31) / 32;
-      DEB_MATCH(("DBSPJ: match complete: num_ranges=%u bitmask_words=%u",
-                 treeNodePtr.p->m_agg_num_ranges, bitmask_words));
-
-      Uint32 range_no = 0;
-      Uint32 null_rows_sent = 0;
-      RowIterator iter;
-      for (first(scanAncestorPtr.p->m_rows, iter);
-           !iter.isNull(); next(iter)) {
-        RowPtr parentRow;
-        parentRow.m_src_node_ptrI = scanAncestorPtr.i;
-        setupRowPtr(scanAncestorPtr, parentRow, iter.m_base.m_row_ptr);
-        getCorrelationData(parentRow.m_row_data,
-                           parentRow.m_row_data.m_header->m_len - 1,
-                           parentRow.m_src_correlation);
-
-        Uint32 word = range_no / 32;
-        Uint32 bit = 1u << (range_no % 32);
-        bool matched = (treeNodePtr.p->m_agg_match_bitmask != nullptr &&
-                        word < bitmask_words &&
-                        (treeNodePtr.p->m_agg_match_bitmask[word] & bit));
-        DEB_MATCH(("DBSPJ: range_no=%u matched=%u corr=0x%x",
-                   range_no, (Uint32)matched,
-                   parentRow.m_src_correlation));
-        if (!matched) {
-          jam();
-          null_rows_sent++;
-          Uint32 err = sendJoinAggNullRow(signal, requestPtr,
-                                          treeNodePtr, parentRow);
-          if (unlikely(err != 0)) {
-            abort(signal, requestPtr, err);
-            return;
-          }
-        }
-        range_no++;
-      }
-      DEB_MATCH(("DBSPJ: total parent rows=%u null_rows_sent=%u",
-                 range_no, null_rows_sent));
-
-      // Free bitmask
-      if (treeNodePtr.p->m_agg_match_bitmask != nullptr) {
-        lc_ndbd_pool_free(treeNodePtr.p->m_agg_match_bitmask);
-        treeNodePtr.p->m_agg_match_bitmask = nullptr;
-      }
-
-      /**
-       * Handle deferred null rows from intermediate outer join ancestors.
-       * When an intermediate ancestor completed before this scan leaf,
-       * propagateNullToAggLeaf deferred the null row injection (returned
-       * 0 because this leaf's scan wasn't done yet). Now that the scan
-       * is complete, re-run handleAggAncestorComplete for those ancestors
-       * so their unmatched parent rows get null rows injected into the
-       * aggregation engine.
-       */
-      {
-        Ptr<TreeNode> walkPtr;
-        Uint32 ptrI = treeNodePtr.p->m_parentPtrI;
-        while (ptrI != RNIL) {
-          jam();
-          ndbrequire(m_treenode_pool.getPtr(walkPtr, ptrI));
-          if ((walkPtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
-              !(walkPtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
-              walkPtr.p->m_scanAncestorPtrI != RNIL &&
-              requestPtr.p->m_completed_tree_nodes.get(
-                  walkPtr.p->m_node_no)) {
-            jam();
-            Uint32 err = handleAggAncestorComplete(
-                signal, requestPtr, walkPtr);
-            if (unlikely(err != 0)) {
-              abort(signal, requestPtr, err);
-              return;
-            }
-          }
-          ptrI = walkPtr.p->m_parentPtrI;
-        }
+      Uint32 err = handleAggLeafScanComplete(signal, requestPtr,
+                                              treeNodePtr);
+      if (unlikely(err != 0)) {
+        abort(signal, requestPtr, err);
+        return;
       }
     }
 
@@ -10147,6 +10186,60 @@ Uint32 Dbspj::appendPkColToSection(Uint32 &dst, const RowPtr::Row &row,
              : DbspjErr::OutOfSectionMemory;
 }
 
+/**
+ * emitNullAttrinfo
+ *
+ * Emit a NULL attribute for a given attrId: optional dummy table metadata
+ * (2 zero words) followed by an AttributeHeader with length 0.
+ */
+Uint32 Dbspj::emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
+                                bool &hasNull, bool addTableMeta) {
+  jam();
+  if (addTableMeta) {
+    Uint32 meta[2] = {0, 0};
+    if (unlikely(!appendToSection(dst, meta, 2)))
+      return DbspjErr::OutOfSectionMemory;
+  }
+  AttributeHeader ah(attrId, 0);
+  if (unlikely(!appendToSection(dst, &ah.m_value, 1)))
+    return DbspjErr::OutOfSectionMemory;
+  hasNull = true;
+  return 0;
+}
+
+/**
+ * emitNullFromParent
+ *
+ * The referenced parent node is an unmatched or unreachable intermediate
+ * in a chained outer join. Consumes the trailing P_COL/P_ATTRINFO token
+ * from the pattern and emits a NULL attribute (with dummy table metadata
+ * if addTableMeta is set).
+ */
+Uint32 Dbspj::emitNullFromParent(
+    Uint32 &dst, Local_pattern_store &pattern,
+    Local_pattern_store::ConstDataBufferIterator &it,
+    bool &hasNull, bool addTableMeta) {
+  jam();
+  if (unlikely(it.isNull())) {
+    DEBUG_CRASH();
+    return DbspjErr::InvalidPattern;
+  }
+  Uint32 info = *it.data;
+  Uint32 subType = QueryPattern::getType(info);
+  Uint32 subVal = QueryPattern::getLength(info);
+  pattern.next(it);
+
+  if (subType == QueryPattern::P_ATTRINFO) {
+    return emitNullAttrinfo(dst, subVal, hasNull, addTableMeta);
+  }
+  if (subType == QueryPattern::P_COL) {
+    hasNull = true;
+    return 0;
+  }
+  DEBUG_CRASH();
+  return DbspjErr::InvalidPattern;
+}
+
 Uint32 Dbspj::appendFromParent(Uint32 &dst, Local_pattern_store &pattern,
                                Local_pattern_store::ConstDataBufferIterator &it,
                                Uint32 levels, const RowPtr &rowptr,
@@ -10168,41 +10261,10 @@ Uint32 Dbspj::appendFromParent(Uint32 &dst, Local_pattern_store &pattern,
    *
    * If levels < parentLevelAdjust, the referenced node is between the
    * rowRef source and the leaf's parent — in the null zone. The column
-   * should be NULL. We handle this below by emitting a NULL attribute.
+   * should be NULL.
    */
   if (unlikely(nullNodes != 0 && levels < parentLevelAdjust)) {
-    jam();
-    /**
-     * The referenced node is an unmatched or unreachable intermediate.
-     * Skip the trailing P_COL/P_ATTRINFO token and emit NULL.
-     */
-    if (unlikely(it.isNull())) {
-      DEBUG_CRASH();
-      return DbspjErr::InvalidPattern;
-    }
-    Uint32 info = *it.data;
-    Uint32 subType = QueryPattern::getType(info);
-    Uint32 subVal = QueryPattern::getLength(info);
-    pattern.next(it);
-
-    if (subType == QueryPattern::P_ATTRINFO && addTableMeta) {
-      Uint32 meta[2] = {0, 0};
-      if (unlikely(!appendToSection(dst, meta, 2)))
-        return DbspjErr::OutOfSectionMemory;
-    }
-    if (subType == QueryPattern::P_ATTRINFO) {
-      AttributeHeader ah(subVal, 0);
-      if (unlikely(!appendToSection(dst, &ah.m_value, 1)))
-        return DbspjErr::OutOfSectionMemory;
-      hasNull = true;
-      return 0;
-    }
-    if (subType == QueryPattern::P_COL) {
-      hasNull = true;
-      return 0;
-    }
-    DEBUG_CRASH();
-    return DbspjErr::InvalidPattern;
+    return emitNullFromParent(dst, pattern, it, hasNull, addTableMeta);
   }
   ndbassert(levels >= parentLevelAdjust);
   levels -= parentLevelAdjust;
@@ -10402,25 +10464,9 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
            * Null propagation path: direct P_ATTRINFO references the leaf's
            * parent, but rowRef is from the scan ancestor. The leaf's parent
            * is an unmatched or unreachable intermediate whose columns
-           * should be NULL. Emit NULL attrinfo with dummy table metadata.
-           * The aggregation engine reads linked attrs by position, not by
-           * tableId, so dummy metadata is safe for NULL columns.
+           * should be NULL.
            */
-          jam();
-          if (addTableMeta) {
-            Uint32 meta[2] = {0, 0};
-            if (unlikely(!appendToSection(dst, meta, 2))) {
-              err = DbspjErr::OutOfSectionMemory;
-              break;
-            }
-          }
-          AttributeHeader ah(val, 0);
-          if (unlikely(!appendToSection(dst, &ah.m_value, 1))) {
-            err = DbspjErr::OutOfSectionMemory;
-          } else {
-            hasNull = true;
-            err = 0;
-          }
+          err = emitNullAttrinfo(dst, val, hasNull, addTableMeta);
         } else if (addTableMeta) {
           Ptr<TreeNode> srcNode;
           ndbrequire(m_treenode_pool.getPtr(srcNode, row.m_src_node_ptrI));

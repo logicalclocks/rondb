@@ -1610,6 +1610,11 @@ class Dbspj : public SimulatedBlock {
                           bool addTableMeta = false,
                           Uint32 parentLevelAdjust = 0,
                           Uint64 nullNodes = 0);
+  Uint32 emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
+                          bool &hasNull, bool addTableMeta);
+  Uint32 emitNullFromParent(Uint32 &dst, Local_pattern_store &,
+                             Local_pattern_store::ConstDataBufferIterator &,
+                             bool &hasNull, bool addTableMeta);
   Uint32 expand(Uint32 &ptrI, Local_pattern_store &p, const RowPtr &r,
                 bool &hasNull, bool addTableMeta = false,
                 Uint32 parentLevelAdjust = 0,
@@ -1657,6 +1662,9 @@ class Dbspj : public SimulatedBlock {
   Uint32 propagateNullToAggLeaf(Signal *, Ptr<Request>, Ptr<TreeNode>,
                                 const RowPtr &);
   Uint32 handleAggAncestorComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  Uint32 mergeAggMatchBitmask(Ptr<TreeNode>, ScanFragData &,
+                               SegmentedSectionPtr &);
+  Uint32 handleAggLeafScanComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void lookup_cleanup(Ptr<Request>, Ptr<TreeNode>);
 
   Uint32 handle_special_hash(Uint32 tableId, Uint32 dstHash[4],
