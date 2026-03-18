@@ -586,7 +586,7 @@ pink::ReadStatus MysqlConn::GetRequest() {
       return pink::kReadClose;
     }
     if (n < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      if (errno == EAGAIN || (EWOULDBLOCK != EAGAIN && errno == EWOULDBLOCK)) {
         return pink::kReadHalf;
       }
       return pink::kReadError;
@@ -748,7 +748,7 @@ pink::WriteStatus MysqlConn::SendReply() {
     n = write(fd(), response_buf_.data() + write_pos_,
               response_buf_.size() - write_pos_);
     if (n < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      if (errno == EAGAIN || (EWOULDBLOCK != EAGAIN && errno == EWOULDBLOCK)) {
         return pink::kWriteHalf;
       }
       return pink::kWriteError;
