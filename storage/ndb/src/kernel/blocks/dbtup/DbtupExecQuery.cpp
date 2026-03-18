@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -5115,10 +5115,11 @@ retry:
       this, req_struct, linked_data, linked_len);
   if (ret == AGG_EVICT_NEEDED) {
     jamDebug();
-    Uint32 evict_buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
+    Uint32 *evict_buf = &c_lqh->cattrInfoBuffer[0];
     Uint32 words_written = 0;
     Int32 evict_ret = interp->evictOneGroup(
-        evict_buf, MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32),
+        evict_buf,
+	sizeof(c_lqh->cattrInfoBuffer) / sizeof(Uint32),
         &words_written);
     ndbrequire(evict_ret == 0);
 

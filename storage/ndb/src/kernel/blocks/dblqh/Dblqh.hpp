@@ -5458,6 +5458,8 @@ private:
 #if defined(USE_INIT_GLOBAL_VARIABLES)
   void checkInitGlobalVariables() override;
 #endif
+  Uint32 cattrInfoBuffer[ZATTR_BUFFER_SIZE + 16];
+  Uint32 cevictBuffer[ZATTR_BUFFER_SIZE + 16];
 };
 
 inline bool Dblqh::check_expand_shrink_ongoing(Uint32 tableId, Uint32 fragId) {

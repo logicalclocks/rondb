@@ -15042,8 +15042,7 @@ void Dblqh::continueACCKEYREF(Signal *signal, TcConnectionrecPtr tcConnectptr,
    * Process a null-extended row (parent columns real, child columns NULL)
    * and send LQHKEYCONF instead of LQHKEYREF.
    */
-  if (errorCode == 626 &&
-      tcPtr->m_join_agg_state_key != RNIL &&
+  if (errorCode == ZNO_TUPLE_FOUND &&
       tcPtr->m_outer_join_agg) {
     jam();
     handleOuterJoinAggKeyNotFound(signal, tcConnectptr);
@@ -15074,7 +15073,8 @@ void Dblqh::continueACCKEYREF(Signal *signal, TcConnectionrecPtr tcConnectptr,
 /*
  * handleOuterJoinAggKeyNotFound
  *
- * Called when a join-agg outer-join child lookup gets key-not-found (626).
+ * Called when a join-agg outer-join child lookup gets key-not-found
+ * (ZNO_TUPLE_FOUND).
  * Extracts linked attribute data from ATTRINFO, feeds a null-extended row
  * to the AggInterpreter (local columns return NULL), then sends LQHKEYCONF.
  */
@@ -15108,19 +15108,17 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
    */
   const Uint32 *linked_data = nullptr;
   Uint32 linked_len = 0;
-  Uint32 attrInfoBuf[256];
   Uint32 attrInfoLen = regTcPtr->currReclenAi;
 
   if (attrInfoLen > 0 && regTcPtr->attrInfoIVal != RNIL) {
-    ndbrequire(attrInfoLen <= 256);
-    copy(attrInfoBuf, regTcPtr->attrInfoIVal);
+    copy(cattrInfoBuffer, regTcPtr->attrInfoIVal);
 
-    Uint32 RsubLen = attrInfoBuf[4];
+    Uint32 RsubLen = cattrInfoBuffer[4];
     if (RsubLen > 0) {
-      Uint32 sub_offset = 5 + attrInfoBuf[0] + attrInfoBuf[1] +
-                          attrInfoBuf[2] + attrInfoBuf[3];
+      Uint32 sub_offset = 5 + cattrInfoBuffer[0] + cattrInfoBuffer[1] +
+                          cattrInfoBuffer[2] + cattrInfoBuffer[3];
       ndbrequire(sub_offset + RsubLen <= attrInfoLen);
-      linked_data = &attrInfoBuf[sub_offset + 1];
+      linked_data = &cattrInfoBuffer[sub_offset + 1];
       linked_len = RsubLen - 1;
     }
   }
@@ -15144,17 +15142,16 @@ retry:
   Int32 ret = interp->processNullExtendedRow(linked_data, linked_len);
   if (ret == AGG_EVICT_NEEDED) {
     jamDebug();
-    Uint32 evict_buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
     Uint32 words_written = 0;
     Int32 evict_ret = interp->evictOneGroup(
-        evict_buf, MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32),
+        cevictBuffer, ZATTR_BUFFER_SIZE,
         &words_written);
     ndbrequire(evict_ret == 0);
 
     TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
     {
-      Uint32 key_len = evict_buf[3] >> 16;
-      const char *key_data = reinterpret_cast<const char*>(&evict_buf[4]);
+      Uint32 key_len = cevictBuffer[3] >> 16;
+      const char *key_data = reinterpret_cast<const char*>(&cevictBuffer[4]);
       transIdAI->connectPtr =
           state->selectReceiverData(key_data, key_len);
     }
@@ -15162,7 +15159,7 @@ retry:
     transIdAI->transId[1] = state->m_transid[1];
 
     LinearSectionPtr ptr[3];
-    ptr[0].p = evict_buf;
+    ptr[0].p = cevictBuffer;
     ptr[0].sz = words_written;
     sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
                TransIdAI::HeaderLength, JBB, ptr, 1);
@@ -18328,15 +18325,14 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   SectionHandle handle(this, signal);
   ndbrequire(handle.m_cnt <= 1);
 
-  Uint32 linked_buf[256];
   Uint32 linked_len = 0;
   if (handle.m_cnt == 1) {
     jam();
     SegmentedSectionPtr sec_ptr;
     ndbrequire(handle.getSection(sec_ptr, 0));
     linked_len = sec_ptr.sz;
-    ndbrequire(linked_len <= 256);
-    copy(linked_buf, sec_ptr.i);
+    ndbrequire(linked_len <= sizeof(cattrInfoBuffer) / sizeof(Uint32));
+    copy(cattrInfoBuffer, sec_ptr.i);
   }
   releaseSections(handle);
 
@@ -18353,14 +18349,13 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   ndbrequire(interp != nullptr);
 
 retry:
-  Int32 ret = interp->processNullExtendedRow(linked_buf, linked_len);
+  Int32 ret = interp->processNullExtendedRow(cattrInfoBuffer, linked_len);
   if (ret == AGG_EVICT_NEEDED) {
     jamDebug();
-    Uint32 evict_buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
     Uint32 words_written = 0;
+    Uint32 *evict_buf = &cevictBuffer[0];
     Int32 evict_ret = interp->evictOneGroup(
-        evict_buf, MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32),
-        &words_written);
+      evict_buf, sizeof(cevictBuffer) / sizeof(Uint32), &words_written);
     ndbrequire(evict_ret == 0);
 
     TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
@@ -18490,9 +18485,8 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     const Uint32 n_agg_results = interp->n_agg_results();
     const Uint32 agg_bytes = n_agg_results * sizeof(AggResItem);
     const Uint32 agg_words = agg_bytes >> 2;
-    Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
-    ndbrequire(4 + agg_words <=
-               MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32));
+    Uint32 *buf = &cevictBuffer[0];
+    ndbrequire(4 + agg_words <= sizeof(cevictBuffer) / sizeof(Uint32));
     Uint32 pos = 0;
     buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
     buf[pos++] = 0 << 16 | n_agg_results;
@@ -18577,9 +18571,8 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       jam();
       const Uint32 key_len = iter.keyLen();
       const Uint32 data_words = (key_len + v_len) >> 2;
-      Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
-      ndbrequire(4 + data_words <=
-                 MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32));
+      Uint32 *buf = &cevictBuffer[0];
+      ndbrequire(4 + data_words <= sizeof(cevictBuffer) / sizeof(Uint32));
       Uint32 pos = 0;
       buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
       buf[pos++] = n_gb_cols << 16 | n_agg_results;
@@ -22975,12 +22968,12 @@ void Dblqh::copyTupkeyRefLab(Signal *signal,
   } else {
     jam();
     /**
-     * Any readCommitted scan, can get 626 if it finds a candidate record
-     *   that is not visible to the scan (i.e uncommitted inserts)
+     * Any readCommitted scan, can get ZNO_TUPLE_FOUND if it finds a candidate
+     * record that is not visible to the scan (i.e uncommitted inserts)
      *   if scanning with locks (shared/exclusive) this is not visible
      *   to LQH as lock is taken earlier
      */
-    ndbrequire(errorCode == 626);
+    ndbrequire(errorCode == ZNO_TUPLE_FOUND);
   }
 
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_TUPKEY_COPY);
