@@ -6228,15 +6228,6 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
                                     treeNodePtr.p->m_scanAncestorPtrI));
 
   /**
-   * If the scan ancestor has T_BUFFER_MATCH, match tracking is handled
-   * by the normal outer join path — no need for null injection here.
-   */
-  if (scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_MATCH) {
-    jam();
-    return 0;
-  }
-
-  /**
    * For deeper intermediates (not direct children of the scan ancestor),
    * we must check that the parent node matched before injecting a null
    * row. If our parent didn't match, the parent's handler (or a
