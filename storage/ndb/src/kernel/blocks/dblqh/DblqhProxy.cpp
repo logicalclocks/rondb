@@ -28,6 +28,7 @@
 #include "JoinAggregationState.hpp"
 #include "dbtup/JoinAggInterpreter.hpp"
 
+#include <signaldata/DbspjErr.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/ExecFragReq.hpp>
 #include <signaldata/NodeRecoveryStatusRep.hpp>
@@ -2253,6 +2254,54 @@ DblqhProxy::execQUOTA_OVERLOAD_REP(Signal *signal)
 // ---- JOIN_AGG_SETUP_REQ ----
 
 void
+DblqhProxy::sendJoinAggSetupRef(Signal *signal,
+                                 Uint32 senderRef,
+                                 Uint32 senderData,
+                                 Uint32 requestId,
+                                 Uint32 errorCode,
+                                 Uint32 errorLine,
+                                 Uint32 aggStateKey) {
+  jam();
+  // Clean up partially allocated state
+  if (aggStateKey != RNIL) {
+    JoinAggregationState *state = getJoinAggState(aggStateKey);
+    if (state != nullptr) {
+      if (state->m_agg_program != nullptr) {
+        lc_ndbd_pool_free(state->m_agg_program);
+      }
+      if (state->m_receiverIds != nullptr) {
+        lc_ndbd_pool_free(state->m_receiverIds);
+      }
+      if (state->m_agg_interpreter != nullptr) {
+        state->m_agg_interpreter->freeAllChunks();
+        state->m_agg_interpreter->~JoinAggInterpreter();
+        lc_ndbd_pool_free(state->m_agg_interpreter);
+      }
+      if (state->m_per_thread_interpreters != nullptr) {
+        for (Uint32 i = 0; i < state->m_num_threads; i++) {
+          if (state->m_per_thread_interpreters[i] != nullptr) {
+            state->m_per_thread_interpreters[i]->freeAllChunks();
+            state->m_per_thread_interpreters[i]->~JoinAggInterpreter();
+            lc_ndbd_pool_free(state->m_per_thread_interpreters[i]);
+          }
+        }
+        lc_ndbd_pool_free(state->m_per_thread_interpreters);
+      }
+      releaseJoinAggState(aggStateKey);
+    }
+  }
+  JoinAggSetupRef *ref =
+    (JoinAggSetupRef *)signal->getDataPtrSend();
+  ref->senderRef = reference();
+  ref->senderData = senderData;
+  ref->requestId = requestId;
+  ref->errorCode = errorCode;
+  ref->errorLine = errorLine;
+  sendSignal(senderRef, GSN_JOIN_AGG_SETUP_REF,
+             signal, JoinAggSetupRef::SignalLength, JBB);
+}
+
+void
 DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   jamEntry();
   const JoinAggSetupReq *req =
@@ -2270,15 +2319,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     CLEAR_ERROR_INSERT_VALUE;
     SectionHandle handle(this, signal);
     releaseSections(handle);
-    JoinAggSetupRef *ref =
-      (JoinAggSetupRef *)signal->getDataPtrSend();
-    ref->senderRef = reference();
-    ref->senderData = senderData;
-    ref->requestId = requestId;
-    ref->errorCode = ZJOIN_AGG_STATE_ALLOC_FAILED;
-    ref->errorLine = __LINE__;
-    sendSignal(senderRef, GSN_JOIN_AGG_SETUP_REF,
-               signal, JoinAggSetupRef::SignalLength, JBB);
+    sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                        DbspjErr::OutOfQueryMemory, __LINE__, RNIL);
     return;
   }
 #endif
@@ -2289,15 +2331,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     jam();
     SectionHandle handle(this, signal);
     releaseSections(handle);
-    JoinAggSetupRef *ref =
-      (JoinAggSetupRef *)signal->getDataPtrSend();
-    ref->senderRef = reference();
-    ref->senderData = senderData;
-    ref->requestId = requestId;
-    ref->errorCode = ZJOIN_AGG_STATE_ALLOC_FAILED;
-    ref->errorLine = __LINE__;
-    sendSignal(senderRef, GSN_JOIN_AGG_SETUP_REF,
-               signal, JoinAggSetupRef::SignalLength, JBB);
+    sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                        DbspjErr::OutOfQueryMemory, __LINE__, RNIL);
     return;
   }
 
@@ -2350,7 +2385,14 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_receiverIds = nullptr;
   state->m_numReceiverIds = 0;
   {
-    ndbrequire(signal->getNoOfSections() == 2);
+    if (unlikely(signal->getNoOfSections() != 2)) {
+      jam();
+      SectionHandle handle(this, signal);
+      releaseSections(handle);
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          DbspjErr::InvalidRequest, __LINE__, key);
+      return;
+    }
     SectionHandle handle(this, signal);
 
     SegmentedSectionPtr ptr;
@@ -2360,7 +2402,13 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     Uint32 *progBuf =
       (Uint32 *)lc_ndbd_pool_malloc(progLen * sizeof(Uint32),
                                      RG_QUERY_MEMORY, getThreadId(), false);
-    ndbrequire(progBuf != nullptr);
+    if (unlikely(progBuf == nullptr)) {
+      jam();
+      releaseSections(handle);
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          DbspjErr::OutOfQueryMemory, __LINE__, key);
+      return;
+    }
     copy(progBuf, ptr);
     state->m_agg_program = progBuf;
     state->m_agg_program_len = progLen;
@@ -2369,11 +2417,16 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     ndbrequire(handle.getSection(rcvPtr,
                                  JoinAggSetupReq::ReceiverIdsSectionNum));
     Uint32 numIds = rcvPtr.sz;
-    ndbrequire(numIds > 0);
     Uint32 *idsBuf =
       (Uint32 *)lc_ndbd_pool_malloc(numIds * sizeof(Uint32),
                                      RG_QUERY_MEMORY, getThreadId(), false);
-    ndbrequire(idsBuf != nullptr);
+    if (unlikely(idsBuf == nullptr)) {
+      jam();
+      releaseSections(handle);
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          DbspjErr::OutOfQueryMemory, __LINE__, key);
+      return;
+    }
     copy(idsBuf, rcvPtr);
     state->m_receiverIds = idsBuf;
     state->m_numReceiverIds = numIds;
@@ -2403,7 +2456,12 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     jam();
     void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
                                      getThreadId(), false);
-    ndbrequire(page != nullptr);
+    if (unlikely(page == nullptr)) {
+      jam();
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          DbspjErr::OutOfQueryMemory, __LINE__, key);
+      return;
+    }
     JoinAggInterpreter *interp =
       new (page) JoinAggInterpreter(state->m_agg_program_len,
                                     req->tableId,
@@ -2419,7 +2477,16 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     JoinAggInterpreter **arr = (JoinAggInterpreter **)lc_ndbd_pool_malloc(
         num_threads * sizeof(JoinAggInterpreter *),
         RG_QUERY_MEMORY, getThreadId(), false);
-    ndbrequire(arr != nullptr);
+    if (unlikely(arr == nullptr)) {
+      jam();
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          DbspjErr::OutOfQueryMemory, __LINE__, key);
+      return;
+    }
+    for (Uint32 i = 0; i < num_threads; i++) {
+      arr[i] = nullptr;
+    }
+    state->m_per_thread_interpreters = arr;
     Uint32 per_thread_budget = budget_pages / num_threads;
     if (per_thread_budget < 4) {
       per_thread_budget = 4;
@@ -2427,7 +2494,12 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     for (Uint32 i = 0; i < num_threads; i++) {
       void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
                                        getThreadId(), false);
-      ndbrequire(page != nullptr);
+      if (unlikely(page == nullptr)) {
+        jam();
+        sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                            DbspjErr::OutOfQueryMemory, __LINE__, key);
+        return;
+      }
       JoinAggInterpreter *interp =
         new (page) JoinAggInterpreter(state->m_agg_program_len,
                                       req->tableId,
@@ -2438,7 +2510,6 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                    available_pages);
       arr[i] = interp;
     }
-    state->m_per_thread_interpreters = arr;
   }
 
   state->m_state.store(JoinAggregationState::SETUP_COMPLETE);
