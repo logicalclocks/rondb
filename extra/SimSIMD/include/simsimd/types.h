@@ -363,9 +363,7 @@ typedef __bfloat16 simsimd_bf16_t;
 #undef SIMSIMD_NATIVE_BF16
 #define SIMSIMD_NATIVE_BF16 1
 #else                                       // Unknown compiler or architecture
-#if defined(__GNUC__) || defined(__clang__) // Some compilers don't support warning pragmas
-#warning "Unknown compiler or architecture for bfloat16."
-#endif
+/* No native bfloat16 support — falls back to unsigned short below. */
 #undef SIMSIMD_NATIVE_BF16
 #define SIMSIMD_NATIVE_BF16 0
 #endif // Unknown compiler or architecture

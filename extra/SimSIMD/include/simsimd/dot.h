@@ -431,7 +431,6 @@ SIMSIMD_PUBLIC void simsimd_dot_f16_neon(simsimd_f16_t const *a_scalars, simsimd
                                          simsimd_size_t count_scalars, simsimd_distance_t *result) {
     float32x4_t a_vec, b_vec;
     float32x4_t ab_vec = vdupq_n_f32(0);
-    simsimd_size_t i = 0;
 
 simsimd_dot_f16_neon_cycle:
     if (count_scalars < 4) {

@@ -238,7 +238,6 @@ SIMSIMD_PUBLIC void simsimd_bilinear_f32_neon(simsimd_f32_t const *a, simsimd_f3
     simsimd_size_t const tail_start = n - tail_length;
     if (tail_length) {
         for (simsimd_size_t i = 0; i != n; ++i) {
-            simsimd_f32_t a_i = a[i];
             simsimd_f32_t cb_j = 0;
             for (simsimd_size_t j = tail_start; j != n; ++j) cb_j += b[j] * c[i * n + j];
             sum += a[i] * cb_j;
