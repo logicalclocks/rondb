@@ -3593,12 +3593,13 @@ private:
   bool getFragmentrec(Uint32 fragId);
   void handlePendingAbort(Signal*, TcConnectionrec*);
   void handleOuterJoinAggKeyNotFound(Signal*, TcConnectionrecPtr);
+public:
   void sendEvictedAggGroup(Signal*,
                            JoinAggInterpreter*,
                            JoinAggregationState*);
   JoinAggInterpreter* getJoinAggInterpreter(JoinAggregationState*);
   JoinAggInterpreter* getJoinAggResultInterpreter(JoinAggregationState*);
-public:
+
   void getIndexTupFragPtrI(Uint32 tableId,
                            Uint32 fragId,
                            Uint64 & tupIndexFragPtrI,

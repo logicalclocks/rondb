@@ -1499,10 +1499,8 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_sum_waiting = 0;
   requestP->m_save_time = NdbTick_getCurrentTicks();
 #endif
-  Uint32 var_offset = 0;
   if (ScanFragReq::getUserIdFlag(req->requestInfo)) {
     requestP->m_user_id = req->variableData[0];
-    var_offset++;
   } else {
     requestP->m_user_id = RNIL;
   }
@@ -3485,10 +3483,7 @@ void Dbspj::cleanup_common(Ptr<Request> requestPtr, Ptr<TreeNode> treeNodePtr) {
 
   if (treeNodePtr.p->m_agg_match_bitmask != nullptr) {
     jam();
-    Uint32 bitmask_words =
-      (treeNodePtr.p->m_agg_num_ranges + 31) / 32;
-    ndbd_free(treeNodePtr.p->m_agg_match_bitmask,
-              bitmask_words * sizeof(Uint32));
+    lc_ndbd_pool_free(treeNodePtr.p->m_agg_match_bitmask);
     treeNodePtr.p->m_agg_match_bitmask = nullptr;
   }
 
@@ -5925,7 +5920,7 @@ void Dbspj::lookup_abort(Signal *signal, Ptr<Request> requestPtr,
  *
  * Called when keyIsNull for an outer-join aggregation leaf.
  * Expands the attrParamPattern to get linked parent data, then sends
- * JOIN_AGG_NULL_ROW_REQ to DBLQH instance 1 on the local node.
+ * JOIN_AGG_NULL_ROW_REQ to one of the DBLQH/DBQLQH instances on the local node.
  */
 /**
  * propagateNullToAggLeaf()
@@ -6089,10 +6084,7 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
   ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
                                     treeNodePtr.p->m_scanAncestorPtrI));
 
-  if (!(scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_MATCH)) {
-    jam();
-    return 0;  // No match tracking configured
-  }
+  ndbrequire(!(scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_MATCH));
 
   /**
    * For deeper intermediates (not direct children of the scan ancestor),
@@ -6230,7 +6222,12 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
     handle.m_cnt = 0;
   }
 
-  Uint32 ref = numberToRef(DBLQH, 1, nodeId);
+  m_round_robin_instance++;
+  if (m_round_robin_instance > globalData.ndbMtLqhWorkers) {
+    m_round_robin_instance = 1;
+  }
+  Uint32 ref = get_lqhkeyreq_ref(&c_tc->m_distribution_handle,
+                                 m_round_robin_instance);
   sendSignal(ref, GSN_JOIN_AGG_NULL_ROW_REQ, signal,
              JoinAggNullRowReq::SignalLength, JBB, &handle);
 

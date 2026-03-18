@@ -1758,6 +1758,9 @@ class Dbspj : public SimulatedBlock {
 
   Dbtc *c_tc;
 
+  /* Initialisation on first use */
+  Uint32 m_round_robin_instance;
+
   Uint32 m_location_domain_id[ABS_MAX_NODES];
   Uint32 m_load_balancer_location;
   /**

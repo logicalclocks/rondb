@@ -9330,7 +9330,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
      * for freeing them when appropriate
      */
     handle.clear();
-    if (totalAttrinfoLen > ZATTR_BUFFER_SIZE) {
+    if (totalAttrInfoLen > ZATTR_BUFFER_SIZE) {
       earlyKeyReqAbort(signal, lqhKeyReq, ZATTRINFO_TOO_LARGE, tcConnectptr);
       return;
     }
