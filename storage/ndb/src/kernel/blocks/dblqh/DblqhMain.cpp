@@ -15071,6 +15071,46 @@ void Dblqh::continueACCKEYREF(Signal *signal, TcConnectionrecPtr tcConnectptr,
 }  // Dblqh::execACCKEYREF()
 
 /*
+ * getJoinAggInterpreter
+ *
+ * Returns the JoinAggInterpreter for the current LDM thread.
+ * MUTEX_FREE: per-thread interpreter indexed by instance() - 1.
+ * MUTEX_BASED: shared interpreter.
+ */
+JoinAggInterpreter*
+Dblqh::getJoinAggInterpreter(JoinAggregationState *state) {
+  JoinAggInterpreter *interp;
+  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+    Uint32 thr_idx = getThreadId();
+    ndbrequire(thr_idx < state->m_num_threads);
+    interp = state->m_per_thread_interpreters[thr_idx];
+  } else {
+    interp = state->m_agg_interpreter;
+  }
+  ndbrequire(interp != nullptr);
+  return interp;
+}
+
+/*
+ * getJoinAggResultInterpreter
+ *
+ * Returns the result interpreter (post-merge or shared).
+ * MUTEX_FREE: interpreter[0] which holds merged results.
+ * MUTEX_BASED: shared interpreter.
+ */
+JoinAggInterpreter*
+Dblqh::getJoinAggResultInterpreter(JoinAggregationState *state) {
+  JoinAggInterpreter *interp;
+  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+    interp = state->m_per_thread_interpreters[0];
+  } else {
+    interp = state->m_agg_interpreter;
+  }
+  ndbrequire(interp != nullptr);
+  return interp;
+}
+
+/*
  * sendEvictedAggGroup
  *
  * Evicts one group from the AggInterpreter's group map and sends it
@@ -15169,16 +15209,7 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
   JoinAggregationState *state =
       getJoinAggState(regTcPtr->m_join_agg_state_key);
   ndbrequire(state != nullptr);
-
-  JoinAggInterpreter *interp;
-  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
-    Uint32 thr_idx = instance() - 1;
-    ndbrequire(thr_idx < state->m_num_threads);
-    interp = state->m_per_thread_interpreters[thr_idx];
-  } else {
-    interp = state->m_agg_interpreter;
-  }
-  ndbrequire(interp != nullptr);
+  JoinAggInterpreter *interp = getJoinAggInterpreter(state);
 
 retry:
   Int32 ret = interp->processNullExtendedRow(linked_data, linked_len);
@@ -18251,10 +18282,7 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     return;
   }
   {
-    JoinAggInterpreter *interp = (state->m_strategy ==
-        JoinAggregationState::MUTEX_FREE)
-        ? state->m_per_thread_interpreters[0]
-        : state->m_agg_interpreter;
+    JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
     Uint32 gbSize = 0;
     if (interp != nullptr && interp->gb_map_mutable() != nullptr)
       gbSize = interp->gb_map_mutable()->size();
@@ -18357,15 +18385,7 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
 
   /* Select interpreter based on strategy.
    * Use instance 1 (thread 0) since this signal is routed to instance 1. */
-  JoinAggInterpreter *interp;
-  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
-    Uint32 thr_idx = instance() - 1;
-    ndbrequire(thr_idx < state->m_num_threads);
-    interp = state->m_per_thread_interpreters[thr_idx];
-  } else {
-    interp = state->m_agg_interpreter;
-  }
-  ndbrequire(interp != nullptr);
+  JoinAggInterpreter *interp = getJoinAggInterpreter(state);
 
 retry:
   Int32 ret = interp->processNullExtendedRow(cattrInfoBuffer, linked_len);
@@ -18443,13 +18463,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
    * Merge complete (or MUTEX_BASED — no merge needed).
    * Select the result interpreter, finalize, and start sending.
    */
-  JoinAggInterpreter *interp;
-  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
-    interp = state->m_per_thread_interpreters[0];
-  } else {
-    interp = state->m_agg_interpreter;
-  }
-  ndbrequire(interp != nullptr);
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   interp->finalizeResults();
 
   state->m_state.store(JoinAggregationState::SENDING_RESULTS);
@@ -18546,14 +18560,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
-
-  JoinAggInterpreter *interp;
-  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
-    interp = state->m_per_thread_interpreters[0];
-  } else {
-    interp = state->m_agg_interpreter;
-  }
-  ndbrequire(interp != nullptr);
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
 
   const Uint32 n_gb_cols = interp->n_gb_cols();
   const Uint32 n_agg_results = interp->n_agg_results();

@@ -3594,6 +3594,8 @@ private:
   void sendEvictedAggGroup(Signal*,
                            JoinAggInterpreter*,
                            JoinAggregationState*);
+  JoinAggInterpreter* getJoinAggInterpreter(JoinAggregationState*);
+  JoinAggInterpreter* getJoinAggResultInterpreter(JoinAggregationState*);
 public:
   void getIndexTupFragPtrI(Uint32 tableId,
                            Uint32 fragId,

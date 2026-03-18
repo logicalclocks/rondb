@@ -5098,15 +5098,7 @@ int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
   JoinAggregationState *state =
       getJoinAggState(req_struct->m_join_agg_state_key);
   ndbrequire(state != nullptr);
-  JoinAggInterpreter *interp;
-  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
-    Uint32 thr_idx = instance() - 1;
-    ndbrequire(thr_idx < state->m_num_threads);
-    interp = state->m_per_thread_interpreters[thr_idx];
-  } else {
-    interp = state->m_agg_interpreter;
-  }
-  ndbrequire(interp != nullptr);
+  JoinAggInterpreter *interp = c_lqh->getJoinAggInterpreter(state);
 
   Uint32 evict_count = 0;
 
