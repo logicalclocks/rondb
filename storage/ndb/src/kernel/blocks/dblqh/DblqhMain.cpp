@@ -15071,6 +15071,48 @@ void Dblqh::continueACCKEYREF(Signal *signal, TcConnectionrecPtr tcConnectptr,
 }  // Dblqh::execACCKEYREF()
 
 /*
+ * sendEvictedAggGroup
+ *
+ * Evicts one group from the AggInterpreter's group map and sends it
+ * as a TRANSID_AI result to the coordinator. Uses the pre-allocated
+ * cevictBuffer to avoid stack allocation of large buffers.
+ *
+ * Called from:
+ * - handleOuterJoinAggKeyNotFound (null-extended row eviction)
+ * - execJOIN_AGG_NULL_ROW (explicit null row injection)
+ * - Dbtup::handleJoinAggRow (scan-time eviction)
+ */
+void Dblqh::sendEvictedAggGroup(Signal *signal,
+                                 JoinAggInterpreter *interp,
+                                 JoinAggregationState *state) {
+  jamDebug();
+  Uint32 words_written = 0;
+  Int32 evict_ret = interp->evictOneGroup(
+      cevictBuffer,
+      sizeof(cevictBuffer) / sizeof(Uint32),
+      &words_written);
+  ndbrequire(evict_ret == 0);
+
+  TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+  {
+    Uint32 key_len = cevictBuffer[3] >> 16;
+    const char *key_data = reinterpret_cast<const char*>(&cevictBuffer[4]);
+    transIdAI->connectPtr =
+        state->selectReceiverData(key_data, key_len);
+  }
+  transIdAI->transId[0] = state->m_transid[0];
+  transIdAI->transId[1] = state->m_transid[1];
+
+  LinearSectionPtr ptr[3];
+  ptr[0].p = cevictBuffer;
+  ptr[0].sz = words_written;
+  sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
+             TransIdAI::HeaderLength, JBB, ptr, 1);
+
+  state->m_rows_sent++;
+}
+
+/*
  * handleOuterJoinAggKeyNotFound
  *
  * Called when a join-agg outer-join child lookup gets key-not-found
@@ -15141,30 +15183,7 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
 retry:
   Int32 ret = interp->processNullExtendedRow(linked_data, linked_len);
   if (ret == AGG_EVICT_NEEDED) {
-    jamDebug();
-    Uint32 words_written = 0;
-    Int32 evict_ret = interp->evictOneGroup(
-        cevictBuffer, ZATTR_BUFFER_SIZE,
-        &words_written);
-    ndbrequire(evict_ret == 0);
-
-    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-    {
-      Uint32 key_len = cevictBuffer[3] >> 16;
-      const char *key_data = reinterpret_cast<const char*>(&cevictBuffer[4]);
-      transIdAI->connectPtr =
-          state->selectReceiverData(key_data, key_len);
-    }
-    transIdAI->transId[0] = state->m_transid[0];
-    transIdAI->transId[1] = state->m_transid[1];
-
-    LinearSectionPtr ptr[3];
-    ptr[0].p = cevictBuffer;
-    ptr[0].sz = words_written;
-    sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
-               TransIdAI::HeaderLength, JBB, ptr, 1);
-
-    state->m_rows_sent++;
+    sendEvictedAggGroup(signal, interp, state);
     goto retry;
   }
   ndbrequire(ret == 0);
@@ -18351,30 +18370,7 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
 retry:
   Int32 ret = interp->processNullExtendedRow(cattrInfoBuffer, linked_len);
   if (ret == AGG_EVICT_NEEDED) {
-    jamDebug();
-    Uint32 words_written = 0;
-    Uint32 *evict_buf = &cevictBuffer[0];
-    Int32 evict_ret = interp->evictOneGroup(
-      evict_buf, sizeof(cevictBuffer) / sizeof(Uint32), &words_written);
-    ndbrequire(evict_ret == 0);
-
-    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-    {
-      Uint32 key_len = evict_buf[3] >> 16;
-      const char *key_data = reinterpret_cast<const char*>(&evict_buf[4]);
-      transIdAI->connectPtr =
-          state->selectReceiverData(key_data, key_len);
-    }
-    transIdAI->transId[0] = state->m_transid[0];
-    transIdAI->transId[1] = state->m_transid[1];
-
-    LinearSectionPtr ptr[3];
-    ptr[0].p = evict_buf;
-    ptr[0].sz = words_written;
-    sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
-               TransIdAI::HeaderLength, JBB, ptr, 1);
-
-    state->m_rows_sent++;
+    sendEvictedAggGroup(signal, interp, state);
     goto retry;
   }
   ndbrequire(ret == 0);

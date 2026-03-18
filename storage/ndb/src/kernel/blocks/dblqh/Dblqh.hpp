@@ -559,6 +559,7 @@ class FsReadWriteReq;
  */
 
 class AggInterpreter;
+class JoinAggInterpreter;
 class Dblqh : public SimulatedBlock {
   friend class DblqhProxy;
   friend class Backup;
@@ -3590,6 +3591,9 @@ private:
   bool getFragmentrec(Uint32 fragId);
   void handlePendingAbort(Signal*, TcConnectionrec*);
   void handleOuterJoinAggKeyNotFound(Signal*, TcConnectionrecPtr);
+  void sendEvictedAggGroup(Signal*,
+                           JoinAggInterpreter*,
+                           JoinAggregationState*);
 public:
   void getIndexTupFragPtrI(Uint32 tableId,
                            Uint32 fragId,
