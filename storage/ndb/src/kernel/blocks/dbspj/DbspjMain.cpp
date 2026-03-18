@@ -6227,6 +6227,30 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
                                     treeNodePtr.p->m_scanAncestorPtrI));
 
   /**
+   * For lookup nodes whose scan ancestor hasn't fully completed its scan,
+   * defer null injection. The scan ancestor's rows are still accumulating
+   * across fragment stages (parallelism < fragCount). If we iterate now,
+   * we'd inject nulls for currently-unmatched rows that may get matched
+   * by later fragments, or re-inject nulls in a subsequent call when
+   * more rows arrive. The scan ancestor's own SCAN_FRAGCONF handler
+   * (line ~9272) will re-run handleAggAncestorComplete for completed
+   * lookup descendants after all fragments finish.
+   */
+  if (treeNodePtr.p->isLookup() && scanAncestorPtr.p->isScan()) {
+    jam();
+    const ScanFragData &sfData = scanAncestorPtr.p->m_scanFrag_data;
+    if (sfData.m_frags_complete < sfData.m_fragCount) {
+      jam();
+      DEB_MATCH(("DBSPJ handleAggAncestorComplete: node=%u deferred, "
+                 "scan ancestor node=%u frags %u/%u",
+                 treeNodePtr.p->m_node_no,
+                 scanAncestorPtr.p->m_node_no,
+                 sfData.m_frags_complete, sfData.m_fragCount));
+      return 0;
+    }
+  }
+
+  /**
    * For deeper intermediates (not direct children of the scan ancestor),
    * we must check that the parent node matched before injecting a null
    * row. If our parent didn't match, the parent's handler (or a
@@ -9277,6 +9301,33 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
       if (unlikely(err != 0)) {
         abort(signal, requestPtr, err);
         return;
+      }
+
+      /**
+       * Now that this scan ancestor is fully complete, run deferred
+       * handleAggAncestorComplete for lookup descendants that were
+       * deferred because this scan wasn't done yet. Walk down
+       * through child nodes looking for completed lookup ancestors.
+       */
+      {
+        Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+        Ptr<TreeNode> walkPtr;
+        for (list.first(walkPtr); !walkPtr.isNull(); list.next(walkPtr)) {
+          if (walkPtr.p->isLookup() &&
+              (walkPtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
+              !(walkPtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
+              walkPtr.p->m_scanAncestorPtrI == treeNodePtr.i &&
+              requestPtr.p->m_completed_tree_nodes.get(
+                  walkPtr.p->m_node_no)) {
+            jam();
+            Uint32 err2 = handleAggAncestorComplete(
+                signal, requestPtr, walkPtr);
+            if (unlikely(err2 != 0)) {
+              abort(signal, requestPtr, err2);
+              return;
+            }
+          }
+        }
       }
     }
 
