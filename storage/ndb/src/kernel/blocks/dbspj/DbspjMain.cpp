@@ -6194,6 +6194,55 @@ Uint32 Dbspj::handleAggLeafScanComplete(Signal *signal,
 }
 
 /**
+ * handleScanAggAncestorComplete()
+ *
+ * Called when an intermediate outer join scan ancestor is fully complete
+ * (all fragments done). Injects null rows for parent rows that this scan
+ * never matched, then runs deferred handleAggAncestorComplete for lookup
+ * descendants that were waiting for this scan to finish.
+ *
+ * @return 0 on success, error code on failure
+ */
+Uint32 Dbspj::handleScanAggAncestorComplete(Signal *signal,
+                                             Ptr<Request> requestPtr,
+                                             Ptr<TreeNode> treeNodePtr,
+                                             ScanFragData &data) {
+  jam();
+  jamDataDebug(treeNodePtr.p->m_node_no);
+  Uint32 err = handleAggAncestorComplete(signal, requestPtr, treeNodePtr);
+  if (unlikely(err != 0)) {
+    return err;
+  }
+
+  /**
+   * Now that this scan ancestor is fully complete, run deferred
+   * handleAggAncestorComplete for lookup descendants that were
+   * deferred because this scan wasn't done yet. Walk down
+   * through child nodes looking for completed lookup ancestors.
+   */
+  {
+    Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+    Ptr<TreeNode> walkPtr;
+    for (list.first(walkPtr); !walkPtr.isNull(); list.next(walkPtr)) {
+      if (walkPtr.p->isLookup() &&
+          (walkPtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
+          !(walkPtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
+          walkPtr.p->m_scanAncestorPtrI == treeNodePtr.i &&
+          requestPtr.p->m_completed_tree_nodes.get(
+              walkPtr.p->m_node_no)) {
+        jam();
+        Uint32 err2 = handleAggAncestorComplete(
+            signal, requestPtr, walkPtr);
+        if (unlikely(err2 != 0)) {
+          return err2;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+/**
  * handleAggAncestorComplete()
  *
  * Called when all lookups for an intermediate outer join aggregate ancestor
@@ -9290,44 +9339,16 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
 
     /**
      * Intermediate outer join scan ancestor: when fully complete,
-     * inject null rows for parent rows that this scan never matched.
-     * Uses inline match tracking (m_matched bits set by TRANSID_AI).
+     * inject null rows for parent rows that this scan never matched,
+     * then run deferred handleAggAncestorComplete for lookup descendants.
      */
     if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
         data.m_frags_complete == data.m_fragCount) {
-      jam();
-      jamDataDebug(treeNodePtr.p->m_node_no);
-      Uint32 err = handleAggAncestorComplete(signal, requestPtr, treeNodePtr);
+      Uint32 err = handleScanAggAncestorComplete(signal, requestPtr,
+                                                  treeNodePtr, data);
       if (unlikely(err != 0)) {
         abort(signal, requestPtr, err);
         return;
-      }
-
-      /**
-       * Now that this scan ancestor is fully complete, run deferred
-       * handleAggAncestorComplete for lookup descendants that were
-       * deferred because this scan wasn't done yet. Walk down
-       * through child nodes looking for completed lookup ancestors.
-       */
-      {
-        Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
-        Ptr<TreeNode> walkPtr;
-        for (list.first(walkPtr); !walkPtr.isNull(); list.next(walkPtr)) {
-          if (walkPtr.p->isLookup() &&
-              (walkPtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
-              !(walkPtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
-              walkPtr.p->m_scanAncestorPtrI == treeNodePtr.i &&
-              requestPtr.p->m_completed_tree_nodes.get(
-                  walkPtr.p->m_node_no)) {
-            jam();
-            Uint32 err2 = handleAggAncestorComplete(
-                signal, requestPtr, walkPtr);
-            if (unlikely(err2 != 0)) {
-              abort(signal, requestPtr, err2);
-              return;
-            }
-          }
-        }
       }
     }
 

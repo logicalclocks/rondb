@@ -1662,6 +1662,8 @@ class Dbspj : public SimulatedBlock {
   Uint32 propagateNullToAggLeaf(Signal *, Ptr<Request>, Ptr<TreeNode>,
                                 const RowPtr &);
   Uint32 handleAggAncestorComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  Uint32 handleScanAggAncestorComplete(Signal *, Ptr<Request>,
+                                       Ptr<TreeNode>, ScanFragData &);
   Uint32 mergeAggMatchBitmask(Ptr<TreeNode>, ScanFragData &,
                                SegmentedSectionPtr &);
   Uint32 handleAggLeafScanComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
