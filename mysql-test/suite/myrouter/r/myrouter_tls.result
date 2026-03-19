@@ -1,0 +1,13 @@
+SELECT 'tls connection works' AS result;
+result
+tls connection works
+CREATE DATABASE IF NOT EXISTS myrouter_tls_test;
+USE myrouter_tls_test;
+CREATE TABLE t1 (id INT PRIMARY KEY, val VARCHAR(100)) ENGINE=NDB;
+INSERT INTO t1 VALUES (1, 'hello'), (2, 'world');
+SELECT * FROM t1 ORDER BY id;
+id	val
+1	hello
+2	world
+DROP TABLE t1;
+DROP DATABASE myrouter_tls_test;

@@ -1,0 +1,122 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+
+#
+# Test MySQL protocol router (RONDB-1039)
+# Exercises both the proxy path (non-SELECT) and RonSQL SELECT routing.
+#
+
+--echo #
+--echo # Test 1: Basic connectivity through the router
+--echo #
+
+--let $MYSQL_ROUTER= $MYSQL --host=$MYROUTER_HOST --port=$MYROUTER_PORT --user=root --protocol=tcp --ssl-mode=DISABLED
+--exec $MYSQL_ROUTER -e "SELECT 1 AS result"
+
+--echo #
+--echo # Test 2: Proxy path - CREATE TABLE via router
+--echo #
+
+--exec $MYSQL_ROUTER -e "CREATE DATABASE IF NOT EXISTS myrouter_test"
+--exec $MYSQL_ROUTER -e "CREATE TABLE IF NOT EXISTS myrouter_test.t1 (id INT PRIMARY KEY, name VARCHAR(50), val INT) ENGINE=NDB"
+
+--echo #
+--echo # Test 3: Proxy path - INSERT via router
+--echo #
+
+--exec $MYSQL_ROUTER -e "INSERT INTO myrouter_test.t1 VALUES (1, 'Alice', 100)"
+--exec $MYSQL_ROUTER -e "INSERT INTO myrouter_test.t1 VALUES (2, 'Bob', 200)"
+--exec $MYSQL_ROUTER -e "INSERT INTO myrouter_test.t1 VALUES (3, 'Charlie', 300)"
+
+--echo #
+--echo # Test 4: Proxy path - SELECT via router (proxied to mysqld)
+--echo #
+
+--exec $MYSQL_ROUTER -e "SELECT * FROM myrouter_test.t1 ORDER BY id"
+
+--echo #
+--echo # Test 5: Proxy path - USE database and SELECT
+--echo #
+
+--exec $MYSQL_ROUTER -e "USE myrouter_test; SELECT id, name FROM t1 WHERE id = 2"
+
+--echo #
+--echo # Test 6: Proxy path - SHOW commands via router
+--echo #
+
+--exec $MYSQL_ROUTER -e "SHOW DATABASES" 2>&1 | grep -c myrouter_test
+
+--echo #
+--echo # Test 7: Proxy path - UPDATE via router
+--echo #
+
+--exec $MYSQL_ROUTER -e "UPDATE myrouter_test.t1 SET val = 999 WHERE id = 1"
+--exec $MYSQL_ROUTER -e "SELECT id, val FROM myrouter_test.t1 WHERE id = 1"
+
+--echo #
+--echo # Test 8: Proxy path - DELETE via router
+--echo #
+
+--exec $MYSQL_ROUTER -e "DELETE FROM myrouter_test.t1 WHERE id = 3"
+--exec $MYSQL_ROUTER -e "SELECT COUNT(*) AS cnt FROM myrouter_test.t1"
+
+--echo #
+--echo # Test 9: Proxy path - SET variables via router
+--echo #
+
+--exec $MYSQL_ROUTER -e "SET @myvar = 42; SELECT @myvar AS myvar"
+
+--echo #
+--echo # Test 10: Proxy path - Multiple statements in one connection
+--echo #
+
+--exec $MYSQL_ROUTER myrouter_test -e "SELECT id FROM t1 ORDER BY id; SELECT name FROM t1 ORDER BY id"
+
+--echo #
+--echo # Test 11: Verify data is visible directly on mysqld (not through router)
+--echo #
+
+SELECT * FROM myrouter_test.t1 ORDER BY id;
+
+--echo #
+--echo # Test 12: Proxy path - Transactions via router
+--echo #
+
+--exec $MYSQL_ROUTER -e "BEGIN; INSERT INTO myrouter_test.t1 VALUES (4, 'Dave', 400); COMMIT"
+--exec $MYSQL_ROUTER -e "SELECT id, name FROM myrouter_test.t1 WHERE id = 4"
+
+--echo #
+--echo # Test 13: Proxy path - Rollback via router
+--echo #
+
+--exec $MYSQL_ROUTER -e "BEGIN; INSERT INTO myrouter_test.t1 VALUES (5, 'Eve', 500); ROLLBACK"
+--exec $MYSQL_ROUTER -e "SELECT COUNT(*) AS cnt FROM myrouter_test.t1"
+
+--echo #
+--echo # Test 14: Transaction awareness - SELECT inside BEGIN sees uncommitted data
+--echo #
+--echo # A SELECT inside an explicit transaction must be proxied to mysqld
+--echo # (not routed to RonSQL) so it can see uncommitted writes.
+
+--exec $MYSQL_ROUTER -e "BEGIN; INSERT INTO myrouter_test.t1 VALUES (10, 'TxnTest', 1000); SELECT name FROM myrouter_test.t1 WHERE id = 10; ROLLBACK"
+
+--echo #
+--echo # Test 15: After COMMIT, SELECT routing returns to normal
+--echo #
+
+--exec $MYSQL_ROUTER -e "BEGIN; INSERT INTO myrouter_test.t1 VALUES (11, 'CommitTest', 1100); COMMIT"
+--exec $MYSQL_ROUTER -e "SELECT name FROM myrouter_test.t1 WHERE id = 11"
+--exec $MYSQL_ROUTER -e "DELETE FROM myrouter_test.t1 WHERE id = 11"
+
+--echo #
+--echo # Test 16: SET autocommit=0 routes SELECTs to mysqld
+--echo #
+
+--exec $MYSQL_ROUTER -e "SET autocommit=0; INSERT INTO myrouter_test.t1 VALUES (12, 'AutocommitTest', 1200); SELECT name FROM myrouter_test.t1 WHERE id = 12; ROLLBACK; SET autocommit=1"
+
+--echo #
+--echo # Cleanup
+--echo #
+
+--exec $MYSQL_ROUTER -e "DROP TABLE IF EXISTS myrouter_test.t1"
+--exec $MYSQL_ROUTER -e "DROP DATABASE IF EXISTS myrouter_test"

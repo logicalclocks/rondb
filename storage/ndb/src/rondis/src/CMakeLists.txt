@@ -33,6 +33,8 @@ ADD_CONVENIENCE_LIBRARY(rondis
   db_operations.cc
   dispatch_thread.cc
   interpreted_code.cc
+  mysql_conn.cc
+  mysql_protocol.cc
   pink_conn.cc
   pink_epoll.cc
   pink_thread.cc
@@ -47,6 +49,7 @@ ADD_CONVENIENCE_LIBRARY(rondis
   worker_thread.cc
   LINK_LIBRARIES mysqlclient
 )
+TARGET_COMPILE_DEFINITIONS(rondis PRIVATE __ENABLE_SSL)
 
 NDB_ADD_EXECUTABLE(rondisd rondis.cc)
 TARGET_LINK_LIBRARIES(rondisd rondis)

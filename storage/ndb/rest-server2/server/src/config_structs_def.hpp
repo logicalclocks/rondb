@@ -112,8 +112,7 @@ CLASS
     "Set to true to use single transaction for entire batch.")
  CM(bool, userRateLimits, UserRateLimits, false,
     "Set to true to enable rate limits per user")
- PROBLEM(!enable, "REST must be enabled")
- PROBLEM(serverIP.empty(), "REST server IP cannot be empty")
+ PROBLEM(enable && serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
  PROBLEM(numThreads < RDRS_MIN_NUM_THREADS,
          "Number of REST threads cannot be less than "
@@ -432,6 +431,24 @@ CLASS
 )
 
 CLASS
+(MySQLRouterConfig,
+ CM(bool, enable, Enable, false, "Whether to enable the MySQL protocol router.")
+ CM(std::string, serverIP, ServerIP, "0.0.0.0", "The IP address to listen on.")
+ CM(Uint16, serverPort, ServerPort, 3307, "TCP port to listen on for MySQL protocol.")
+ CM(unsigned, numThreads, NumThreads, 4, "Number of MySQL router worker threads.")
+ CM(std::string, backendHost, BackendHost, "127.0.0.1", "Backend mysqld host.")
+ CM(Uint16, backendPort, BackendPort, 3306, "Backend mysqld port.")
+ CM(bool, debugLogging, DebugLogging, false,
+    "Log each SQL statement with its routing decision (PROXY, RONSQL, FALLBACK).")
+ PROBLEM(serverIP.empty(), "MySQL router server IP cannot be empty")
+ PROBLEM(serverPort == 0, "MySQL router server port cannot be zero.")
+ PROBLEM(numThreads == 0, "Number of MySQL router threads cannot be zero.")
+ PROBLEM(numThreads > 128, "Number of MySQL router threads too high")
+ PROBLEM(backendHost.empty(), "MySQL router backend host cannot be empty")
+ PROBLEM(backendPort == 0, "MySQL router backend port cannot be zero.")
+)
+
+CLASS
 (AllConfigs,
  CM(Internal, internal, Internal, Internal(), "")
  CM(std::string, pidfile, PIDFile, "",
@@ -455,6 +472,8 @@ CLASS
  CM(Testing, testing, Testing, Testing(),
     "Connetivity necessary for testing. rdrs2 will validate but not use these"
     " settings.")
+ CM(MySQLRouterConfig, mysqlRouter, MySQLRouter, MySQLRouterConfig(),
+    "An object describing configuration for the MySQL protocol router")
  PROBLEM(security.insecureAllowAll && rest.healthRequiresAuth,
          "Combining .Security.InsecureAllowAll and"
          " .REST.HealthRequiresAuth is not allowed")

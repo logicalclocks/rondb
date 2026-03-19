@@ -111,6 +111,15 @@ sub fix_rondis_port {
   return $self->{HOSTS}->{$hostname}++;
 }
 
+sub fix_myrouter_port {
+  my ($self, $config, $group_name, $group) = @_;
+  if (($group->if_exist('enable-myrouter') // '') ne 'true') {
+    return ''
+  }
+  my $hostname = $group->value('#host');
+  return $self->{HOSTS}->{$hostname}++;
+}
+
 sub fix_admin_port {
   my ($self, $config, $group_name, $group) = @_;
   my $hostname = $group->value('#host');
@@ -393,6 +402,7 @@ my @rdrs_rules = (
   { 'bind-address'  => \&fix_bind_address_rdrs },
   { 'port'          => \&fix_port },
   { 'rondisport'    => \&fix_rondis_port },
+  { 'myrouterport'  => \&fix_myrouter_port },
   { 'std-data'      => \&fix_std_data },
 );
 
@@ -543,6 +553,37 @@ sub post_check_client_groups {
   }
 }
 
+# If an RDRS has myrouter-as-default=true, override the [client] port
+# to the router port so mysqltest connects through the MySQL router
+# instead of directly to mysqld.
+sub post_check_myrouter_client_redirect {
+  my ($self, $config) = @_;
+
+  foreach my $rdrs ($config->like('rdrs\.')) {
+    my $as_default = $rdrs->if_exist('myrouter-as-default') // '';
+    next unless $as_default eq 'true';
+
+    my $router_port = $rdrs->if_exist('myrouterport');
+    next unless defined $router_port && $router_port ne '';
+
+    # Override [client] to connect through the router.
+    # Set host/port and protocol=tcp to force TCP connection.
+    $config->insert('client', 'port', $router_port);
+    $config->insert('client', 'host', '127.0.0.1');
+    $config->insert('client', 'protocol', 'tcp');
+
+    # Ensure [client.N.N] sections (used by check-testcase) keep using
+    # socket connections to their respective mysqld instances, overriding
+    # the protocol=tcp inherited from [client].
+    foreach my $client ($config->like('client\.')) {
+      if (!defined $client->if_exist('protocol')) {
+        $config->insert($client->name(), 'protocol', 'socket');
+      }
+    }
+    last;
+  }
+}
+
 sub resolve_at_variable {
   my ($self, $config, $group, $option) = @_;
 
@@ -637,6 +678,7 @@ sub post_fix_mysql_cluster_section {
 
 # Rules to run last of all
 my @post_rules = (\&post_check_client_groups,
+                  \&post_check_myrouter_client_redirect,
                   \&post_fix_mysql_cluster_section,
                   \&post_fix_resolve_at_variables,);
 

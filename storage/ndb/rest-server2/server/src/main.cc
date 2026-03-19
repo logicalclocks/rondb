@@ -46,12 +46,17 @@ constexpr const char* const usageHelp =
 #include <NdbMutex.h>
 
 #include "rondis_thread.h"
+#include "mysql_conn.h"
+#include "mysql_protocol.h"
 #include "rondb.h"
 #include "rdrs_rondb_connection_pool.hpp"
 #include "metrics.hpp"
+#include "rdrs_dal.hpp"
+#include "storage/ndb/src/ronsql/RonSQLCommon.hpp"
 
 #include <cstdio>
 #include <iostream>
+#include <sstream>
 #include <sys/errno.h>
 #include <unistd.h>
 #include <csignal>
@@ -74,6 +79,10 @@ static RondisHandle* g_rondis_handle = nullptr;
 static ServerThread* g_rondis_thread = nullptr;
 static Uint32 *g_database_index = nullptr;
 static bool g_rondis_running = false;
+static ConnFactory* g_mysql_router_conn_factory = nullptr;
+static MysqlHandle* g_mysql_router_handle = nullptr;
+static ServerThread* g_mysql_router_thread = nullptr;
+static bool g_mysql_router_running = false;
 static int g_exit_code = 0;
 TTLPurger* g_ttl_purger = nullptr;
 NdbMutex *globalConfigsMutex = nullptr;
@@ -88,6 +97,22 @@ static void do_exit() {
   if (jsonParsers != nullptr) {
     delete[] jsonParsers;
     jsonParsers = nullptr;
+  }
+  if (g_mysql_router_running) {
+    g_mysql_router_thread->StopThread();
+    g_mysql_router_running = false;
+  }
+  if (g_mysql_router_thread) {
+    delete g_mysql_router_thread;
+    g_mysql_router_thread = nullptr;
+  }
+  if (g_mysql_router_handle) {
+    delete g_mysql_router_handle;
+    g_mysql_router_handle = nullptr;
+  }
+  if (g_mysql_router_conn_factory) {
+    delete g_mysql_router_conn_factory;
+    g_mysql_router_conn_factory = nullptr;
   }
   if (g_rondis_running) {
     g_rondis_thread->StopThread();
@@ -151,6 +176,55 @@ static void rondis_end_cmd(void *metrics_ptr) {
   delete metricsUpdater;
 }
 
+// RonSQL handler for MySQL router — called from MysqlConn::try_ronsql()
+static bool mysql_router_ronsql_handler(
+    const char* query, size_t query_len,
+    const char* database, int thread_index,
+    std::string& result_out,
+    std::string& error_out) {
+
+  ArenaMalloc amalloc(RonSQLExecParams::ARENA_MALLOC_PAGE_SIZE);
+  RonSQLExecParams params;
+
+  params.sql_len = query_len;
+  params.sql_buffer = amalloc.alloc<char>(query_len + 2);
+  if (params.sql_buffer == nullptr) {
+    error_out = "Out of memory";
+    return false;
+  }
+  memcpy(params.sql_buffer, query, query_len);
+  params.sql_buffer[params.sql_len++] = '\0';
+  params.sql_buffer[params.sql_len++] = '\0';
+
+  params.amalloc = &amalloc;
+  params.explain_mode = RonSQLExecParams::ExplainMode::ALLOW;
+  params.output_format = RonSQLExecParams::OutputFormat::TEXT;
+
+  std::ostringstream out_stream;
+  std::ostringstream err_stream;
+  params.out_stream = &out_stream;
+  params.err_stream = &err_stream;
+
+  bool do_explain = false;
+  params.do_explain = &do_explain;
+
+  // Use the RDRS thread index offset for MySQL router threads.
+  // The MySQL router threads come after REST + Rondis + purge threads.
+  RS_Status status = ronsql_dal(database, &params,
+                                (unsigned int)thread_index);
+
+  if (status.http_code != SUCCESS) {
+    error_out = err_stream.str();
+    if (error_out.empty()) {
+      error_out = status.message;
+    }
+    return false;
+  }
+
+  result_out = out_stream.str();
+  return true;
+}
+
 static void handle_signal(int signal) {
   switch (signal) {
     case SIGHUP:
@@ -189,11 +263,9 @@ int main(int argc, char *argv[]) {
   ndb_init();
   g_did_ndb_init = true;
   globalConfigsMutex = NdbMutex_Create();
-  APIKeyCache *apiKeyCachePtr = start_api_key_cache();
-  g_did_start_api_key_cache = true;
-
-  start_fs_cache();
-  g_did_start_fs_cache = true;
+  // API key cache and FS cache initialization is deferred until after
+  // config is parsed, so we can skip them when REST is disabled.
+  APIKeyCache *apiKeyCachePtr = nullptr;
 
   /*
     Config is fetched from:
@@ -292,39 +364,56 @@ int main(int argc, char *argv[]) {
     printf("Wrote PID=%d to %s\n", pid, g_pidfile);
   }
 
-  // Initialize Prometheus Metrics
-  rdrs_metrics::initMetrics();
+  // Initialize REST-dependent subsystems only when REST is enabled
+  if (globalConfigs.rest.enable) {
+    apiKeyCachePtr = start_api_key_cache();
+    g_did_start_api_key_cache = true;
 
-  // Initialize Scan Metrics buffer
-  initScanMetrics();
+    start_fs_cache();
+    g_did_start_fs_cache = true;
 
-  // Initialize JSON parsers
-  assert(jsonParsers == nullptr);
-  jsonParsers = new JSONParser[globalConfigs.rest.numThreads];
-  if (jsonParsers == nullptr) {
-    std::cerr << "Failed to allocate memory for JSON parsers.\n";
-    g_exit_code = 1;
-    do_exit();
+    // Initialize Prometheus Metrics
+    rdrs_metrics::initMetrics();
+
+    // Initialize Scan Metrics buffer
+    initScanMetrics();
+
+    // Initialize JSON parsers
+    assert(jsonParsers == nullptr);
+    jsonParsers = new JSONParser[globalConfigs.rest.numThreads];
+    if (jsonParsers == nullptr) {
+      std::cerr << "Failed to allocate memory for JSON parsers.\n";
+      g_exit_code = 1;
+      do_exit();
+    }
   }
 
   Uint32 num_rondis_threads = 0;
   if (globalConfigs.rondis.enable) {
     num_rondis_threads = globalConfigs.rondis.numThreads;
   }
-  Uint32 num_rdrs_threads = globalConfigs.rest.numThreads;
-  Uint32 num_purge_threads = RDRSRonDBConnectionPool::kNoTTLPurgeThreads;
+  Uint32 num_mysql_router_threads = 0;
+  if (globalConfigs.mysqlRouter.enable) {
+    num_mysql_router_threads = globalConfigs.mysqlRouter.numThreads;
+  }
+  Uint32 num_rdrs_threads = globalConfigs.rest.enable ?
+      globalConfigs.rest.numThreads : 0;
+  Uint32 num_purge_threads = globalConfigs.rest.enable ?
+      RDRSRonDBConnectionPool::kNoTTLPurgeThreads : 0;
   Uint32 tot_num_threads =
-    num_rdrs_threads + num_rondis_threads + num_purge_threads;
+    num_rdrs_threads + num_rondis_threads +
+    num_mysql_router_threads + num_purge_threads;
   /**
-   * The RDRS server, the Rondis server and the TTL purge threads
-   * all share the same cluster connections. The RDRS server can also
-   * use the metadata connection to connect to another cluster.
+   * The RDRS server, the Rondis server, the MySQL router and the
+   * TTL purge threads all share the same cluster connections. The
+   * RDRS server can also use the metadata connection to connect to
+   * another cluster.
    *
    * The threads maintained in g_rondbConnection are using thread
    * ranges to map threads to Ndb objects. The first set of Ndb
    * objects are used by the RDRS server, the next set of Ndb objects
-   * are used by the Rondis server and the last Ndb objects are used
-   * by the TTL purge object.
+   * are used by the Rondis server, then the MySQL router threads,
+   * and the last Ndb objects are used by the TTL purge object.
    */
   // connect to rondb for all services
   g_rondbConnection = new RonDBConnection(globalConfigs.ronDB,
@@ -336,20 +425,20 @@ int main(int argc, char *argv[]) {
     do_exit();
   }
 
-  // Start TTL purger
-  g_ttl_purger = TTLPurger::CreateTTLPurger();
-  g_ttl_purger->Run();
+  // Start TTL purger, API key cache, and FS cache only when REST is enabled
+  if (globalConfigs.rest.enable) {
+    g_ttl_purger = TTLPurger::CreateTTLPurger();
+    g_ttl_purger->Run();
 
-  // Preload API key cache and start background threads
-  if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
-    apiKeyCachePtr->preload_all_keys();
-    apiKeyCachePtr->start_background_threads();
-  }
+    if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
+      apiKeyCachePtr->preload_all_keys();
+      apiKeyCachePtr->start_background_threads();
+    }
 
-  // Preload feature view metadata cache and start event watcher
-  if (g_fs_metadata_cache != nullptr) {
-    g_fs_metadata_cache->preload_all_feature_views();
-    g_fs_metadata_cache->start_event_watcher();
+    if (g_fs_metadata_cache != nullptr) {
+      g_fs_metadata_cache->preload_all_feature_views();
+      g_fs_metadata_cache->start_event_watcher();
+    }
   }
 
   // Start rondis
@@ -415,44 +504,135 @@ int main(int argc, char *argv[]) {
       globalConfigs.rondis.numDatabases);
   }
 
-  if (globalConfigs.security.tls.enableTLS) {
-    status = GenerateTLSConfig(
-      globalConfigs.security.tls.requireClientCert,
-      globalConfigs.security.tls.rootCACertFile,
-      globalConfigs.security.tls.certificateFile,
-      globalConfigs.security.tls.privateKeyFile);
-    if (status.http_code !=
-        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-      std::cerr << "Error while generating TLS configuration.\n"
-                << "HTTP code " << status.http_code << '\n'
-                << status.message << '\n';
+  // Start MySQL protocol router
+  if (globalConfigs.mysqlRouter.enable) {
+    // Set up RonSQL handler for SELECT routing.
+    // MySQL router worker_ids are offset by the number of RDRS + Rondis
+    // threads so they map to distinct NDB objects in the connection pool.
+    g_mysql_ronsql_handler = mysql_router_ronsql_handler;
+
+    // MySQL router threads come after REST + Rondis threads in the
+    // NDB connection pool thread index space.
+    int mysql_router_thread_offset =
+        (int)(num_rdrs_threads + num_rondis_threads);
+    const char* tls_cert = globalConfigs.security.tls.enableTLS
+        ? globalConfigs.security.tls.certificateFile.c_str() : "";
+    const char* tls_key = globalConfigs.security.tls.enableTLS
+        ? globalConfigs.security.tls.privateKeyFile.c_str() : "";
+    g_mysql_router_conn_factory = new MysqlConnFactory(
+        globalConfigs.mysqlRouter.backendHost.c_str(),
+        globalConfigs.mysqlRouter.backendPort,
+        mysql_router_thread_offset,
+        globalConfigs.mysqlRouter.debugLogging,
+        tls_cert, tls_key);
+    g_mysql_router_handle = new MysqlHandle();
+
+    printf("Starting MySQL Router on %s:%u with %u threads "
+           "(backend %s:%u)\n",
+        globalConfigs.mysqlRouter.serverIP.c_str(),
+        globalConfigs.mysqlRouter.serverPort,
+        globalConfigs.mysqlRouter.numThreads,
+        globalConfigs.mysqlRouter.backendHost.c_str(),
+        globalConfigs.mysqlRouter.backendPort);
+
+    // Wait for backend mysqld to be reachable before accepting client
+    // connections. During cluster startup, RDRS may start before mysqld
+    // is ready. Without this check, early client connections would fail.
+    {
+      printf("Waiting for backend mysqld at %s:%u...\n",
+          globalConfigs.mysqlRouter.backendHost.c_str(),
+          globalConfigs.mysqlRouter.backendPort);
+      int backend_fd = -1;
+      for (int attempt = 0; attempt < 120; attempt++) {
+        backend_fd = mysql_protocol::connect_to_backend(
+            globalConfigs.mysqlRouter.backendHost.c_str(),
+            globalConfigs.mysqlRouter.backendPort);
+        if (backend_fd >= 0) {
+          close(backend_fd);
+          break;
+        }
+        usleep(500 * 1000);  // 500ms between retries, up to 60 seconds
+      }
+      if (backend_fd < 0) {
+        printf("Error: backend mysqld at %s:%u not reachable after 60s\n",
+            globalConfigs.mysqlRouter.backendHost.c_str(),
+            globalConfigs.mysqlRouter.backendPort);
+        g_exit_code = 1;
+        do_exit();
+      }
+      printf("Backend mysqld at %s:%u is reachable\n",
+          globalConfigs.mysqlRouter.backendHost.c_str(),
+          globalConfigs.mysqlRouter.backendPort);
+    }
+
+    g_mysql_router_thread = NewDispatchThread(
+        globalConfigs.mysqlRouter.serverIP,
+        globalConfigs.mysqlRouter.serverPort,
+        globalConfigs.mysqlRouter.numThreads,
+        g_mysql_router_conn_factory,
+        1000,
+        1000,
+        g_mysql_router_handle);
+
+    if (g_mysql_router_thread->StartThread() != 0) {
+      printf("Error starting MySQL router thread\n");
       g_exit_code = 1;
       do_exit();
     }
+    g_mysql_router_running = true;
+    printf("MySQL Router running on %s:%u\n",
+        globalConfigs.mysqlRouter.serverIP.c_str(),
+        globalConfigs.mysqlRouter.serverPort);
   }
 
-  drogon::app().addListener(globalConfigs.rest.serverIP,
-                            globalConfigs.rest.serverPort,
-                            globalConfigs.security.tls.enableTLS,
-                            globalConfigs.security.tls.certificateFile,
-                            globalConfigs.security.tls.privateKeyFile);
-  drogon::app().setThreadNum(globalConfigs.rest.numThreads);
-  drogon::app().setThreadStackSize(8 * 1024 * 1024);
-  drogon::app().disableSession();
-  drogon::app().registerBeginningAdvice([]() {
-    auto addresses = drogon::app().getListeners();
-    for (auto &address : addresses) {
-      printf("RDRS Server running on %s\n", address.toIpPort().c_str());
+  if (globalConfigs.rest.enable) {
+    if (globalConfigs.security.tls.enableTLS) {
+      status = GenerateTLSConfig(
+        globalConfigs.security.tls.requireClientCert,
+        globalConfigs.security.tls.rootCACertFile,
+        globalConfigs.security.tls.certificateFile,
+        globalConfigs.security.tls.privateKeyFile);
+      if (status.http_code !=
+          static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+        std::cerr << "Error while generating TLS configuration.\n"
+                  << "HTTP code " << status.http_code << '\n'
+                  << status.message << '\n';
+        g_exit_code = 1;
+        do_exit();
+      }
     }
-  });
-  drogon::app().setIntSignalHandler([]() {
-    handle_signal(SIGINT);
-  });
-  drogon::app().setTermSignalHandler([]() {
-    handle_signal(SIGTERM);
-  });
-  g_drogon_running = true;
-  drogon::app().run();
-  g_drogon_running = false;
+
+    drogon::app().addListener(globalConfigs.rest.serverIP,
+                              globalConfigs.rest.serverPort,
+                              globalConfigs.security.tls.enableTLS,
+                              globalConfigs.security.tls.certificateFile,
+                              globalConfigs.security.tls.privateKeyFile);
+    drogon::app().setThreadNum(globalConfigs.rest.numThreads);
+    drogon::app().setThreadStackSize(8 * 1024 * 1024);
+    drogon::app().disableSession();
+    drogon::app().registerBeginningAdvice([]() {
+      auto addresses = drogon::app().getListeners();
+      for (auto &address : addresses) {
+        printf("RDRS Server running on %s\n", address.toIpPort().c_str());
+      }
+    });
+    drogon::app().setIntSignalHandler([]() {
+      handle_signal(SIGINT);
+    });
+    drogon::app().setTermSignalHandler([]() {
+      handle_signal(SIGTERM);
+    });
+    g_drogon_running = true;
+    drogon::app().run();
+    g_drogon_running = false;
+  } else {
+    // REST is disabled — block until signal received.
+    // MySQL router and/or Rondis are running in their own threads.
+    // The signal() handlers call do_exit() → exit(), terminating the process.
+    printf("REST server disabled, running.\n");
+    for (;;) {
+      sleep(1);
+    }
+  }
   do_exit();
 }

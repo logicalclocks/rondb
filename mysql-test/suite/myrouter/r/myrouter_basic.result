@@ -1,0 +1,88 @@
+#
+# Test 1: Basic connectivity through the router
+#
+result
+1
+#
+# Test 2: Proxy path - CREATE TABLE via router
+#
+#
+# Test 3: Proxy path - INSERT via router
+#
+#
+# Test 4: Proxy path - SELECT via router (proxied to mysqld)
+#
+id	name	val
+1	Alice	100
+2	Bob	200
+3	Charlie	300
+#
+# Test 5: Proxy path - USE database and SELECT
+#
+id	name
+2	Bob
+#
+# Test 6: Proxy path - SHOW commands via router
+#
+1
+#
+# Test 7: Proxy path - UPDATE via router
+#
+id	val
+1	999
+#
+# Test 8: Proxy path - DELETE via router
+#
+cnt
+2
+#
+# Test 9: Proxy path - SET variables via router
+#
+myvar
+42
+#
+# Test 10: Proxy path - Multiple statements in one connection
+#
+id
+1
+2
+name
+Alice
+Bob
+#
+# Test 11: Verify data is visible directly on mysqld (not through router)
+#
+SELECT * FROM myrouter_test.t1 ORDER BY id;
+id	name	val
+1	Alice	999
+2	Bob	200
+#
+# Test 12: Proxy path - Transactions via router
+#
+id	name
+4	Dave
+#
+# Test 13: Proxy path - Rollback via router
+#
+cnt
+3
+#
+# Test 14: Transaction awareness - SELECT inside BEGIN sees uncommitted data
+#
+# A SELECT inside an explicit transaction must be proxied to mysqld
+# (not routed to RonSQL) so it can see uncommitted writes.
+name
+TxnTest
+#
+# Test 15: After COMMIT, SELECT routing returns to normal
+#
+name
+CommitTest
+#
+# Test 16: SET autocommit=0 routes SELECTs to mysqld
+#
+name
+AutocommitTest
+#
+# Cleanup
+#

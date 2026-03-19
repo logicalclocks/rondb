@@ -29,6 +29,7 @@
 */
 
 #include "server_thread.h"
+#include "mysql_protocol.h"
 
 #include <arpa/inet.h>
 #include <sys/time.h>
@@ -306,89 +307,19 @@ void *ServerThread::ThreadMain() {
 }
 
 #ifdef __ENABLE_SSL
-static std::vector<std::unique_ptr<std::mutex>> ssl_mutex_;
-
-static void SSLLockingCallback(int mode, int type, const char* file, int line) {
-  if (mode & CRYPTO_LOCK) {
-    ssl_mutex_[type]->Lock();
-  } else {
-    ssl_mutex_[type]->Unlock();
-  }
-}
-
-static unsigned long SSLIdCallback() {
-  return (unsigned long)pthread_self();
-}
-
 int ServerThread::EnableSecurity(const std::string& cert_file,
                                  const std::string& key_file) {
   if (cert_file.empty() || key_file.empty()) {
     log_warn("cert_file and key_file can not be empty!");
+    return -1;
   }
-  // Init Security Env
-  // 1. Create multithread mutex used by openssl
-  ssl_mutex_.resize(CRYPTO_num_locks());
-  for (auto& sm : ssl_mutex_) {
-    sm.reset(new std::mutex());
-  }
-  CRYPTO_set_locking_callback(SSLLockingCallback);
-  CRYPTO_set_id_callback(SSLIdCallback);
 
-  // 2. Use default configuration
-  OPENSSL_config(NULL);
-
-  // 3. Init library, load all algorithms
-  SSL_library_init();
-  SSL_load_error_strings();
-  OpenSSL_add_all_algorithms();
-
-  // 4. Create ssl context
-  ssl_ctx_ = SSL_CTX_new(SSLv23_server_method());
+  // Use the shared SSL_CTX creation from mysql_protocol
+  ssl_ctx_ = mysql_protocol::create_server_ssl_ctx(cert_file.c_str(),
+                                                    key_file.c_str());
   if (!ssl_ctx_) {
-    log_warn("Unable to create SSL context");
     return -1;
   }
-
-  // 5. Set cert file and key file, then check key file
-  if (SSL_CTX_use_certificate_file(
-          ssl_ctx_, cert_file.c_str(), SSL_FILETYPE_PEM) != 1) {
-    log_warn("SSL_CTX_use_certificate_file(%s) failed", cert_file.c_str());
-    return -1;
-  }
-
-  if (SSL_CTX_use_PrivateKey_file(
-          ssl_ctx_, key_file.c_str(), SSL_FILETYPE_PEM) != 1) {
-    log_warn("SSL_CTX_use_PrivateKey_file(%s)", key_file.c_str());
-    return -1;
-  }
-
-  if (SSL_CTX_check_private_key(ssl_ctx_) != 1) {
-    log_warn("SSL_CTX_check_private_key(%s)", key_file.c_str());
-    return -1;
-  }
-
-  // https://wiki.openssl.org/index.php/Manual:SSL_CTX_set_read_ahead(3)
-  // read data as more as possible
-  SSL_CTX_set_read_ahead(ssl_ctx_, true);
-
-  // Force using TLS 1.2
-  SSL_CTX_set_options(ssl_ctx_, SSL_OP_NO_SSLv2);
-  SSL_CTX_set_options(ssl_ctx_, SSL_OP_NO_SSLv3);
-  SSL_CTX_set_options(ssl_ctx_, SSL_OP_NO_TLSv1);
-
-  // Enable ECDH
-  // https://en.wikipedia.org/wiki/Elliptic_curve_Diffie%E2%80%93Hellman
-  // https://wiki.openssl.org/index.php/Diffie_Hellman
-  // https://wiki.openssl.org/index.php/Diffie-Hellman_parameters
-  EC_KEY *ecdh = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
-  if (!ecdh) {
-    log_warn("EC_KEY_new_by_curve_name(%d)", NID_X9_62_prime256v1);
-    return -1;
-  }
-
-  SSL_CTX_set_options(ssl_ctx_, SSL_OP_SINGLE_ECDH_USE);
-  SSL_CTX_set_tmp_ecdh(ssl_ctx_, ecdh);
-  EC_KEY_free(ecdh);
 
   security_ = true;
   return 0;

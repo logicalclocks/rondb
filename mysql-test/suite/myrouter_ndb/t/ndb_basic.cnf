@@ -1,0 +1,38 @@
+!include suite/ndb/my_2rpl.cnf
+
+# Mark all mysqld pool node IDs as Dedicated so RDRS (which uses
+# node_id=0 / auto-assign) cannot steal them during startup.
+# Without this, RDRS can race mysqld for non-dedicated nodes like 448,
+# causing mysqld connection pool failures and shutdown crashes.
+[cluster_config.mysqld.1.1]
+Dedicated=1
+
+[cluster_config.mysqld.2.1]
+Dedicated=1
+
+[cluster_config.ndbapi.1.1]
+Dedicated=1
+
+[cluster_config.ndbapi.2.1]
+Dedicated=1
+
+[cluster_config.ndbapi.3.1]
+Dedicated=1
+
+[cluster_config.ndbapi.4.1]
+Dedicated=1
+
+# MySQL router host and port (available in tests)
+[ENV]
+MYROUTER_HOST=                 @rdrs.1.1.bind-address
+MYROUTER_PORT=                 @rdrs.1.1.myrouterport
+MYSQLD_PORT=                   @mysqld.1.1.port
+
+# RDRS configuration — MySQL router as default connection
+[rdrs.1.1]
+config-json-template=suite/myrouter_ndb/myrouter_ndb_config_template.json
+EnableTLS=false
+enable-rest=false
+enable-rondis=false
+enable-myrouter=true
+myrouter-as-default=true
