@@ -20,6 +20,7 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `ndbapi_integration_implementation.md` — NDB API integration implementation details
 - `mysql_join_agg.md` — MySQL handler integration architecture (Phase 9)
 - `mysql_handler_implementation.md` — MySQL handler implementation plan (Phases 1-12)
+- `chained_outer_join_plan.md` — Chained outer join aggregation fix plan (Phases 1-6)
 
 ### Key Source Files
 - `DblqhMain.cpp` — Signal handlers for JOIN_AGG_SETUP/COMPLETE/RELEASE, scan processing, sendScanFragConf
@@ -52,6 +53,8 @@ All tests in `storage/ndb/block_unit_test/`. Build from debug_build, run with
 | testJoinAgg | Direct DBLQH | All agg types, GROUP BY, eviction, mutex-free, flow control |
 | testJoinAggSpj | DBTC→DBSPJ→DBLQH | Full QueryTree path, empty/single row, large dataset |
 | testJoinAggNdbApi | NdbQueryBuilder API | 4 tests: SUM/GROUP BY, COUNT+SUM, multi-agg, 3-way join |
+| testOuterJoinAggNdbApi | NdbQueryBuilder API | 2-way outer join: scan-lookup, scan-scan, COUNT(*), multi-batch |
+| testMultiOuterJoinAggNdbApi | NdbQueryBuilder API | Chained outer join: 3-way LEFT, 4-way mixed LEFT+INNER |
 | testCaseAgg | Direct DBLQH | CASE expression in aggregation |
 | benchJoinAgg | Direct DBLQH | Performance: pipelined lookups with linked attrs |
 | bench_q12_tpch | Direct DBLQH | TPC-H Q12 with CASE, CHAR comparison, date filters |

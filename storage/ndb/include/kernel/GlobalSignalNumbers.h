@@ -37,7 +37,7 @@
  * version there signal may be sent. The signal number must remain reserved and
  * handled by receiver until that version is no longer supported.
  */
-const GlobalSignalNumber MAX_GSN = 961;
+const GlobalSignalNumber MAX_GSN = 965;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -1297,4 +1297,8 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_JOIN_AGG_SEND_REQ           959
 #define GSN_JOIN_AGG_SEND_CONF          960
 #define GSN_JOIN_AGG_NODE_FAIL_REP      961
+#define GSN_JOIN_AGG_NULL_ROW_REQ       962
+#define GSN_JOIN_AGG_NULL_ROW_CONF      963
+#define GSN_JOIN_AGG_NULL_ROW_REF       964
+/* 965 unused — formerly GSN_JOIN_AGG_MATCH_CONF */
 #endif

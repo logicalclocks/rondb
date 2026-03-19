@@ -149,7 +149,7 @@
 //#define DEBUG_SCAN_MANY 1
 //#define DEBUG_RATE_OVERFLOW 1
 //#define DEBUG_CONT_SCAN 1
-#define DEBUG_JOIN_AGG_TRACE 1
+//#define DEBUG_JOIN_AGG_TRACE 1
 #endif
 
 #ifdef DEBUG_JOIN_AGG_TRACE
@@ -18610,12 +18610,11 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
       ScanFragReq::setUserIdFlag(req->requestInfo, 1);
     }
   }
-
   // set ttl_purge_window_size if needed;
   if (ScanFragReq::getTTLOnlyExpiredFragFlag(requestInfo)) {
     /*
      * Based on the ndbassert below, it seems that getCorrFactorFlag
-     * won’t be set in this context. That means variableData[0] and
+     * won't be set in this context. That means variableData[0] and
      * variableData[1] are not used, so we can safely use variableData[0] here.
      */
     req->variableData[0] = scanP->m_ttl_purge_window_size;

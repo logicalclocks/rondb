@@ -261,6 +261,7 @@ testBasicSumGroupBy(Ndb *ndb, MYSQL *conn)
   NdbQueryIndexBound bound(childBound);
 
   NdbQueryOptions empOpts;
+  empOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   empOpts.setAggregation(agg);
   const NdbLinkedOperand *deptNameLink = qb->linkedValue(deptOp, "dept_name");
   empOpts.addLinkedProjection(deptNameLink);
@@ -458,6 +459,7 @@ testGlobalCountSum(Ndb *ndb, MYSQL *conn)
   NdbQueryIndexBound bound(childBound);
 
   NdbQueryOptions empOpts;
+  empOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   empOpts.setAggregation(agg);
 
   const NdbQueryIndexScanOperationDef *empOp =
@@ -628,6 +630,7 @@ testFilteredRoot(Ndb *ndb, MYSQL *conn)
   NdbQueryIndexBound bound(childBound);
 
   NdbQueryOptions empOpts;
+  empOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   empOpts.setAggregation(agg);
   const NdbLinkedOperand *deptNameLink = qb->linkedValue(deptOp, "dept_name");
   empOpts.addLinkedProjection(deptNameLink);
@@ -800,6 +803,7 @@ testAllFourAggTypes(Ndb *ndb, MYSQL *conn)
   NdbQueryIndexBound bound(childBound);
 
   NdbQueryOptions empOpts;
+  empOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   empOpts.setAggregation(agg);
   const NdbLinkedOperand *deptNameLink = qb->linkedValue(deptOp, "dept_name");
   empOpts.addLinkedProjection(deptNameLink);
@@ -1054,6 +1058,7 @@ testNullValues(Ndb *ndb, MYSQL *conn)
   NdbQueryIndexBound bound(childBound);
 
   NdbQueryOptions empOpts;
+  empOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   empOpts.setAggregation(agg);
   const NdbLinkedOperand *deptNameLink = qb->linkedValue(deptOp, "dept_name");
   empOpts.addLinkedProjection(deptNameLink);
@@ -1359,8 +1364,10 @@ testThreeWayScanScanLookup(Ndb *ndb, MYSQL *conn)
   };
   NdbQueryIndexBound deptIdxBound(deptBound);
 
+  NdbQueryOptions deptOpts;
+  deptOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   const NdbQueryIndexScanOperationDef *deptOp =
-      qb->scanIndex(deptIdx, deptTab, &deptIdxBound);
+      qb->scanIndex(deptIdx, deptTab, &deptIdxBound, &deptOpts);
   if (deptOp == nullptr) {
     printf("FAILED (scanIndex dept: %s)\n", qb->getNdbError().message);
     qb->destroy();
@@ -1373,6 +1380,7 @@ testThreeWayScanScanLookup(Ndb *ndb, MYSQL *conn)
   };
 
   NdbQueryOptions statOpts;
+  statOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   statOpts.setAggregation(agg);
   const NdbLinkedOperand *regionNameLink =
       qb->linkedValue(regionOp, "region_name");
@@ -1585,6 +1593,7 @@ testDualScanIndex(Ndb *ndb, MYSQL *conn)
   NdbQueryIndexBound empBound(childBound);
 
   NdbQueryOptions empOpts;
+  empOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   empOpts.setAggregation(agg);
   const NdbLinkedOperand *deptNameLink = qb->linkedValue(deptOp, "dept_name");
   empOpts.addLinkedProjection(deptNameLink);
@@ -1820,6 +1829,7 @@ testCompositeIndexBounds(Ndb *ndb, MYSQL *conn)
   NdbQueryIndexBound bound(childBound);
 
   NdbQueryOptions taskOpts;
+  taskOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   taskOpts.setAggregation(agg);
   const NdbLinkedOperand *yearLink = qb->linkedValue(projOp, "proj_year");
   taskOpts.addLinkedProjection(yearLink);
@@ -2087,6 +2097,7 @@ testEvictionScanScan(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   NdbQueryIndexBound bound(childBound);
 
   NdbQueryOptions saleOpts;
+  saleOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   saleOpts.setAggregation(agg);
   const NdbLinkedOperand *regionLink = qb->linkedValue(storeOp, "region");
   saleOpts.addLinkedProjection(regionLink);

@@ -1058,10 +1058,10 @@ DROP TABLE noindex_child;
 
 --echo
 --echo
---echo === Test 53: Error — unimplemented keyword (LEFT JOIN) ===
+--echo === Test 53: Error — unimplemented keyword (RIGHT JOIN) ===
 --echo Expected error: Unimplemented keyword
 --error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o LEFT JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey;' 2>&1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o RIGHT JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey;' 2>&1
 
 --echo
 --echo === Cleanup ===

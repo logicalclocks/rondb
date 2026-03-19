@@ -1,0 +1,221 @@
+--source include/have_ndb.inc
+
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for LEFT JOIN tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE parent (
+  p_id INT NOT NULL,
+  p_name VARCHAR(20) NOT NULL,
+  p_region INT NOT NULL,
+  PRIMARY KEY USING HASH (p_id)
+) ENGINE=NDB;
+
+CREATE TABLE child (
+  c_id INT NOT NULL,
+  c_parent_id INT NOT NULL,
+  c_value INT NOT NULL,
+  PRIMARY KEY USING HASH (c_id),
+  INDEX idx_parent_id (c_parent_id)
+) ENGINE=NDB;
+
+CREATE TABLE grandchild (
+  g_id INT NOT NULL,
+  g_child_id INT NOT NULL,
+  g_qty INT NOT NULL,
+  PRIMARY KEY USING HASH (g_id),
+  INDEX idx_child_id (g_child_id)
+) ENGINE=NDB;
+
+# Parent rows: p_id 4 and 5 have NO matching child rows
+INSERT INTO parent VALUES
+  (1, 'Alice', 1),
+  (2, 'Bob', 1),
+  (3, 'Charlie', 2),
+  (4, 'Diana', 2),
+  (5, 'Eve', 3);
+
+# Child rows: only for parent 1, 2, 3
+INSERT INTO child VALUES
+  (10, 1, 100),
+  (11, 1, 200),
+  (12, 2, 300),
+  (13, 3, 400),
+  (14, 3, 500);
+
+# Grandchild rows: only for child 10, 12, 13
+INSERT INTO grandchild VALUES
+  (100, 10, 5),
+  (101, 10, 10),
+  (102, 12, 15),
+  (103, 13, 20);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: Basic LEFT JOIN with SUM ===
+
+let $QUERY=
+SELECT p.p_name, SUM(c.c_value)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT p.p_name, SUM(c.c_value)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name|
+
+--echo
+--echo
+--echo === Test 2: LEFT OUTER JOIN syntax (synonym) ===
+
+let $QUERY=
+SELECT p.p_name, SUM(c.c_value)
+FROM parent AS p
+LEFT OUTER JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT p.p_name, SUM(c.c_value)
+FROM parent AS p
+LEFT OUTER JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name|
+
+--echo
+--echo
+--echo === Test 3: LEFT JOIN + COUNT(*) ===
+
+let $QUERY=
+SELECT p.p_name, COUNT(*)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT p.p_name, COUNT(*)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name|
+
+--echo
+--echo
+--echo === Test 4: LEFT JOIN + COUNT(child_col) skips NULLs ===
+
+let $QUERY=
+SELECT p.p_name, COUNT(c.c_value)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT p.p_name, COUNT(c.c_value)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name|
+
+--echo
+--echo
+--echo === Test 5: LEFT JOIN + GROUP BY parent region ===
+
+let $QUERY=
+SELECT p.p_region, SUM(c.c_value), COUNT(c.c_id)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT p.p_region, SUM(c.c_value), COUNT(c.c_id)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_region|
+
+--echo
+--echo
+--echo === Test 6: Mixed INNER + LEFT JOIN ===
+
+let $QUERY=
+SELECT p.p_name, SUM(g.g_qty)
+FROM parent AS p
+JOIN child AS c ON c.c_parent_id = p.p_id
+LEFT JOIN grandchild AS g ON g.g_child_id = c.c_id
+GROUP BY p.p_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT p.p_name, SUM(g.g_qty)
+FROM parent AS p
+JOIN child AS c ON c.c_parent_id = p.p_id
+LEFT JOIN grandchild AS g ON g.g_child_id = c.c_id
+GROUP BY p.p_name|
+
+--echo
+--echo
+--echo === Test 7: Multiple LEFT JOINs ===
+
+let $QUERY=
+SELECT p.p_name, SUM(c.c_value), SUM(g.g_qty)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+LEFT JOIN grandchild AS g ON g.g_child_id = c.c_id
+GROUP BY p.p_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT p.p_name, SUM(c.c_value), SUM(g.g_qty)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+LEFT JOIN grandchild AS g ON g.g_child_id = c.c_id
+GROUP BY p.p_name|
+
+--echo
+--echo
+--echo === Test 8: LEFT JOIN + MIN/MAX ===
+
+let $QUERY=
+SELECT p.p_name, MIN(c.c_value), MAX(c.c_value)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT p.p_name, MIN(c.c_value), MAX(c.c_value)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+DROP TABLE grandchild;
+DROP TABLE child;
+DROP TABLE parent;

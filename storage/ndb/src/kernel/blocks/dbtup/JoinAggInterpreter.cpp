@@ -935,18 +935,27 @@ bool JoinAggInterpreter::OptimizeProgram() {
  */
 Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Dbtup::KeyReqStruct* req_struct) {
-  if (!m_inited || req_struct->read_length != 0) {
-    g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR at entry: "
-            "inited=%d, read_length=%u",
-            m_inited, req_struct->read_length);
+  if (!m_inited) {
+    g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: not inited");
     return ZAGG_OTHER_ERROR;
+  }
+  if (!m_null_local_columns) {
+    if (req_struct->read_length != 0) {
+      g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR at entry: "
+              "read_length=%u", req_struct->read_length);
+      return ZAGG_OTHER_ERROR;
+    }
   }
 
   AggResItem* agg_res_ptr = nullptr;
   if (m_n_gb_cols) {
     if (!m_gb_types_inited) {
-      Int32 err = initGBTypes(block_tup, req_struct);
-      if (unlikely(err != 0)) return err;
+      if (m_null_local_columns) {
+        initGBTypesForNullLocal(block_tup);
+      } else {
+        Int32 err = initGBTypes(block_tup, req_struct);
+        if (unlikely(err != 0)) return err;
+      }
     }
     char* agg_rec = nullptr;
 
@@ -977,14 +986,22 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
         m_attr_read_pos += words;
       } else {
-        int ret = block_tup->readAttributes(req_struct, &(m_gb_cols[i]), 1,
-                      m_attr_read_buf + m_attr_read_pos, g_attr_read_buf_len_ - m_attr_read_pos);
-        if (ret < 0) {
-          DEB_AGG(("read group by column error: %d", ret));
-          return -ret;
+        if (m_null_local_columns) {
+          AttributeHeader null_ah(attr_id, 0);
+          m_attr_read_buf[m_attr_read_pos] = null_ah.m_value;
+          header = reinterpret_cast<AttributeHeader*>(
+              m_attr_read_buf + m_attr_read_pos);
+          m_attr_read_pos += 1;
+        } else {
+          int ret = block_tup->readAttributes(req_struct, &(m_gb_cols[i]), 1,
+                        m_attr_read_buf + m_attr_read_pos, g_attr_read_buf_len_ - m_attr_read_pos);
+          if (ret < 0) {
+            DEB_AGG(("read group by column error: %d", ret));
+            return -ret;
+          }
+          header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
+          m_attr_read_pos += (1 + header->getDataSize());
         }
-        header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
-        m_attr_read_pos += (1 + header->getDataSize());
       }
     }
 
@@ -997,8 +1014,10 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
       if (m_max_groups > 0 && m_n_groups >= m_max_groups) {
         return AGG_EVICT_NEEDED;
       }
-      req_struct->read_length = (len_in_char +
-                       m_n_agg_results * sizeof(AggResItem)) / sizeof(Int32);
+      if (req_struct != nullptr) {
+        req_struct->read_length = (len_in_char +
+                         m_n_agg_results * sizeof(AggResItem)) / sizeof(Int32);
+      }
 
       m_result_size += len_in_char +
                        m_n_agg_results * sizeof(AggResItem);
@@ -1184,18 +1203,26 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
             header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
             attrDescriptor = nullptr;
           } else {
-            col_index = col_id_raw << 16;
-            ret = block_tup->readAttributes(req_struct, &(col_index), 1,
-                      m_attr_read_buf + m_attr_read_pos, g_attr_read_buf_len_ - m_attr_read_pos);
-            if (ret < 0) {
-              DEB_AGG(("read column error: %d", ret));
-              return -ret;
+            if (m_null_local_columns) {
+              AttributeHeader null_ah(col_id_raw, 0);
+              m_attr_read_buf[m_attr_read_pos] = null_ah.m_value;
+              header = reinterpret_cast<AttributeHeader*>(
+                  m_attr_read_buf + m_attr_read_pos);
+              attrDescriptor = nullptr;
+            } else {
+              col_index = col_id_raw << 16;
+              ret = block_tup->readAttributes(req_struct, &(col_index), 1,
+                        m_attr_read_buf + m_attr_read_pos, g_attr_read_buf_len_ - m_attr_read_pos);
+              if (ret < 0) {
+                DEB_AGG(("read column error: %d", ret));
+                return -ret;
+              }
+              header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
+              attrDescriptor = req_struct->tablePtrP->tabDescriptor +
+                  (((col_index) >> 16) * ZAD_SIZE);
+              assert(header->getAttributeId() == (col_index >> 16));
+              assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
             }
-            header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
-            attrDescriptor = req_struct->tablePtrP->tabDescriptor +
-                (((col_index) >> 16) * ZAD_SIZE);
-            assert(header->getAttributeId() == (col_index >> 16));
-            assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
           }
         }
         if (!TypeSupported(type)) {
@@ -1431,6 +1458,17 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
       {
         Uint32 emb_len = value & 0xFFFF;
         if (exec_pos + emb_len > m_prog_len) return ZAGG_OTHER_ERROR;
+
+        if (m_null_local_columns) {
+          /*
+           * Null-extended row: can't run embedded interpreter without
+           * req_struct. Skip the embedded program (take THEN path).
+           * All local column reads return NULL, so THEN-path aggregations
+           * will correctly handle NULL inputs (SUM/MIN/MAX skip NULLs).
+           */
+          exec_pos += emb_len;
+          break;
+        }
 
         Uint32 saved_instr_count = req_struct->no_exec_instructions;
         req_struct->no_exec_instructions = 0;
@@ -1857,6 +1895,82 @@ Int32 JoinAggInterpreter::initGBTypes(Dbtup* block_tup,
   m_gb_types_inited = true;
   m_gb_map->setTypeMeta(m_gb_types, m_n_gb_cols, m_xfrm_buf, m_xfrm_buf_len);
   return 0;
+}
+
+void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup) {
+  /*
+   * Called when the first row is a null-extended row (m_null_local_columns).
+   * Linked columns: resolve type from DBTUP tablerec (same as initGBTypes).
+   * Local columns: use NDB_TYPE_UNSIGNED as placeholder — all values will
+   * be NULL (data size 0), so the actual type doesn't affect comparison.
+   * If a matched row arrives later, types are already initialized.
+   */
+  for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+    Uint32 attr_id = m_gb_cols[i] >> 16;
+    GBColTypeInfo &info = m_gb_types[i];
+
+    if ((attr_id & 0x8000) != 0 && m_linked_attr_data != nullptr) {
+      Uint32 position = attr_id & 0x7FFF;
+      const Uint32* p = m_linked_attr_data;
+      const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
+      Uint32 pos_count = 0;
+      while (p < p_end && pos_count < position) {
+        p += 2;
+        p += 1 + AttributeHeader::getDataSize(*p);
+        pos_count++;
+      }
+      if (p + 2 < p_end && block_tup != nullptr) {
+        Uint32 tableId = p[0];
+        if (tableId < block_tup->cnoOfTablerec) {
+          Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
+          Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+          const Uint32* attrDesc = tab->tabDescriptor +
+              linkedAttrId * ZAD_SIZE;
+          info.typeId = AttributeDescriptor::getType(attrDesc[0]);
+          info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
+          info.cs = nullptr;
+          if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+            Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
+            info.cs = tab->charsetArray[csPos];
+          }
+        } else {
+          info.typeId = NDB_TYPE_UNSIGNED;
+          info.maxBytes = 4;
+          info.cs = nullptr;
+        }
+      } else {
+        info.typeId = NDB_TYPE_UNSIGNED;
+        info.maxBytes = 4;
+        info.cs = nullptr;
+      }
+    } else {
+      info.typeId = NDB_TYPE_UNSIGNED;
+      info.maxBytes = 4;
+      info.cs = nullptr;
+    }
+    const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
+    info.cmpFn = sqlType.m_cmp;
+  }
+  m_gb_types_inited = true;
+  m_gb_map->setTypeMeta(m_gb_types, m_n_gb_cols, m_xfrm_buf, m_xfrm_buf_len);
+}
+
+Int32 JoinAggInterpreter::processNullExtendedRow(
+    const Uint32* linked_attr_data,
+    Uint32 linked_attr_len) {
+  std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
+  if (m_use_mutex) lock.lock();
+
+  m_linked_attr_data = linked_attr_data;
+  m_linked_attr_len = linked_attr_len;
+  m_null_local_columns = true;
+
+  Int32 ret = ProcessRec(nullptr, nullptr);
+
+  m_null_local_columns = false;
+  m_linked_attr_data = nullptr;
+  m_linked_attr_len = 0;
+  return ret;
 }
 
 void JoinAggInterpreter::initChunkAllocator(Uint32 thread_id,

@@ -639,59 +639,256 @@ and emit the appropriate interpreter instructions.
 
 ---
 
-## Implementation Order
+## Step 45: Non-Aggregate (Projection-Only) Query Execution
 
-### Foundation (can start immediately)
-1. **Step 36** — Parser/AST infrastructure (all subsequent steps need this)
-2. **Step 37** — Multi-phase execution orchestrator
-3. **Step 44** — Cross-column comparison (independent, needed for Q4)
+### Problem
+RonSQL currently rejects any query without aggregate functions with
+`"Not an aggregate query."` (RonSQLPreparer.cpp line ~404). Subquery
+inner queries often return raw column values without aggregation, e.g.,
+`WHERE col IN (SELECT x FROM t2 WHERE y > 5)` — the inner SELECT
+returns plain `x` values, not `SUM(x)` or `COUNT(*)`.
 
-### Uncorrelated subqueries (multi-phase path)
-4. **Step 38** — Uncorrelated scalar subqueries
-5. **Step 39** — Uncorrelated IN (SELECT ...) subqueries
+Beyond subqueries, projection-only execution is also useful for
+standalone queries (`SELECT col1, col2 FROM t WHERE ...`) and derived
+tables (Phase 19).
 
-### Correlated subqueries (decorrelation path)
-6. **Step 40** — Semi-join/anti-join in QueryPlanner (infrastructure)
-7. **Step 41** — Correlated EXISTS → semi-join
-8. **Step 42** — Correlated NOT EXISTS → anti-join
-9. **Step 43** — Correlated scalar subquery with aggregation (Q2)
+### Approach
+Add an execution path that bypasses the AggregationAPICompiler and
+NdbAggregator, returning raw scan/lookup rows directly. The key
+changes:
 
-Steps 36-37 and 44 are independent and can proceed in parallel.
-Steps 38-39 depend on 36-37.
-Steps 41-42 depend on 36 and 40.
-Step 43 depends on 36, 37, and 40.
+1. **Remove the aggregate-only gate**: in `load()`, allow queries
+   with no aggregate outputs to proceed instead of throwing an error.
+
+2. **Non-aggregate scan execution**: execute a plain `NdbScanOperation`
+   (or `NdbIndexScanOperation`) without calling `setAggregationCode()`
+   or `DoAggregation()`. Iterate results with `nextResult()` and
+   output each row directly.
+
+3. **Non-aggregate join execution**: execute via `NdbQueryBuilder` /
+   `NdbQuery` without setting aggregation options on the leaf
+   operation. Iterate `NdbQuery::nextResult()` and read column values
+   from the leaf (or all) operations via `getValue()`.
+
+4. **Result output**: reuse the existing output formatting (TEXT/JSON)
+   but emit one row per scan result instead of one row per aggregate
+   group.
+
+### Sub-steps
+
+- **45a.** Remove the `"Not an aggregate query"` rejection in
+  `load()`. Instead, set a flag (`m_is_aggregate = false`) and skip
+  `AggregationAPICompiler` initialization for non-aggregate queries.
+
+- **45b.** Add `execute_projection()` for single-table non-aggregate
+  scans: open scan, iterate `nextResult()`, output each row. Handle
+  WHERE filter pushdown (existing `setInterpretedCode` path works
+  unchanged).
+
+- **45c.** Add non-aggregate path in `execute_join()`: build the
+  NdbQuery tree without aggregation options. For each `nextResult()`,
+  read column values from the appropriate query operations and output.
+
+- **45d.** Support ORDER BY and LIMIT for non-aggregate queries
+  (client-side sort + row count limit, reusing existing logic).
+
+- **45e.** MTR tests:
+  - `SELECT col1, col2 FROM t WHERE col1 > 5` — single-table projection
+  - `SELECT o.o_id, l.l_quantity FROM orders o JOIN lineitem l
+    ON l.l_orderkey = o.o_id WHERE o.o_custkey = 100` — join projection
+  - `SELECT x FROM t ORDER BY x LIMIT 10` — with ORDER BY + LIMIT
+  - Verify aggregate queries still work unchanged
+
+### Files to modify
+- `storage/ndb/src/ronsql/RonSQLPreparer.cpp`
+- `storage/ndb/src/ronsql/RonSQLPreparer.hpp` (if new methods/flags needed)
+- `mysql-test/suite/ronsql/t/ronsql_subquery.test` (or new test file)
+
+### Design considerations
+
+For subquery inner queries specifically, Step 39 could work around the
+lack of projection-only execution by wrapping the inner query as
+`SELECT col FROM t GROUP BY col` (effectively a DISTINCT). This
+produces the same value set via the existing aggregate path. However,
+this workaround has overhead (hash table, group tracking) and doesn't
+generalize. Step 45 provides the clean solution.
+
+The non-aggregate path also enables standalone projection queries as a
+first-class RonSQL feature, which is valuable independently of
+subqueries.
+
+GROUP BY without aggregation (`SELECT col FROM t GROUP BY col`) is a
+distinct feature (DISTINCT semantics) that can continue to use the
+aggregate path. Step 45 is specifically for queries with NO GROUP BY
+and NO aggregate functions.
+
+---
+
+## Implementation Status
+
+### Completed Steps
+
+| Step | Description | Commit | Status |
+|------|-------------|--------|--------|
+| 36 | Parser/AST infrastructure | 067d705289c (partial) | DONE |
+| 37 | Multi-phase execution orchestrator | 72f558ff153 | DONE |
+| 38 | Uncorrelated scalar subqueries | d84a94c8660 | DONE |
+| 39 | Uncorrelated IN subqueries | 067d705289c | DONE |
+| 40 | Semi-join/anti-join in QueryPlanner | 5f8b975a14e | DONE (dead code — see note) |
+| 41 | Correlated EXISTS → IN transformation | 753d6140ee6 | DONE |
+| 44 | Cross-column comparison | 067d705289c | DONE |
+
+**Note on Step 40**: The MatchFirst/MatchNullOnly semi-join infrastructure
+was added to QueryPlanner but is currently dead code. Step 41 discovered
+that MatchFirst doesn't work with aggregation pushdown because
+`handleJoinAggRow` in DbtupExecQuery.cpp bypasses `sendReadAttrinfo`
+where FirstMatch is checked. EXISTS subqueries use IN-subquery
+transformation instead. The semi-join infrastructure may be useful for
+non-aggregate queries in the future.
+
+### Remaining Steps (in implementation order)
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 42 | NOT EXISTS → NOT IN transformation | NOT STARTED |
+| 43 | Correlated scalar subquery with aggregation | NOT STARTED |
+| 45 | Non-aggregate (projection-only) query execution | NOT STARTED |
+
+Steps 42 and 43 continue using the MIN()/GROUP BY workaround for the
+aggregate-only restriction. Step 45 removes that restriction afterwards,
+enabling standalone projection queries and cleaner subquery inner queries.
+Once Step 45 is done, Steps 41/42's EXISTS/NOT EXISTS transformations could
+optionally be simplified to drop the MIN() wrapper.
+
+---
+
+## Step 42: NOT EXISTS → NOT IN Transformation (Revised)
+
+### Original Plan
+Decorrelate NOT EXISTS to anti-join with MatchNullOnly.
+
+### Revised Approach
+Same as Step 41's revised approach: transform NOT EXISTS into NOT IN
+using the multi-phase execution infrastructure.
+
+`WHERE NOT EXISTS (SELECT ... FROM inner WHERE inner.col = outer.col AND filter)`
+becomes:
+`WHERE outer.col NOT IN (SELECT MIN(inner.col) FROM inner WHERE filter GROUP BY inner.col)`
+
+### Challenges
+
+**NULL semantics**: NOT IN has three-valued logic. If the subquery result
+set contains NULL, `x NOT IN (NULL, 1, 2)` is UNKNOWN (not TRUE) for all
+x values. This is standard SQL but tricky to implement correctly.
+
+For RonSQL's current use case (integer primary/foreign keys that are NOT
+NULL), this is not a practical concern. Two options:
+
+1. **Simple**: Require NOT NULL on the correlation columns. Reject with
+   error if nullability detected.
+2. **Full**: Implement three-valued NOT IN logic: if any inner value is
+   NULL, the entire NOT IN evaluates to FALSE for all outer rows.
+
+Option 1 is recommended for initial implementation.
+
+### Implementation
+1. In `decorrelate_exists()`: detect NOT EXISTS (T_NOT → T_EXISTS)
+2. Synthesize inner SQL same as EXISTS case
+3. Create `I_NOT_IN_SUBQUERY` CE node (new node type, or use I_IN_SUBQUERY
+   with a negation flag)
+4. In `substitute_subquery_results_ce()`: for NOT IN, build AND-chain of
+   inequalities instead of OR-chain of equalities. Or equivalently, wrap
+   the OR-chain in T_NOT.
+
+### Files to modify
+- `storage/ndb/src/ronsql/RonSQLCommon.hpp` — new node type or flag
+- `storage/ndb/src/ronsql/RonSQLPreparer.cpp` — decorrelate_exists(), substitute
+- `mysql-test/suite/ronsql/t/ronsql_subquery.test` — NOT EXISTS tests
+- `mysql-test/suite/ronsql/r/ronsql_subquery.result` — re-record
+
+---
+
+## Step 43: Correlated Scalar Subquery with Aggregation (Revised)
+
+### Original Plan
+Decorrelate into a derived-table join or flatten into a single join with
+aggregation on a sub-tree.
+
+### Revised Approach
+Use multi-phase execution with decorrelation into an uncorrelated
+aggregate query, similar to Steps 41-42's approach.
+
+`WHERE col = (SELECT MIN(x) FROM t2 WHERE t2.fk = t1.pk AND ...)`
+becomes:
+1. Run inner as uncorrelated: `SELECT pk, MIN(x) FROM t2 WHERE ... GROUP BY pk`
+   → produces (correlation_key, scalar_result) pairs
+2. Materialize into a hash map: `correlation_key → scalar_result`
+3. In the outer query, substitute as a client-side filter: for each outer
+   row, look up `t1.pk` in the hash map and compare `col` against the result
+
+### Challenges
+
+1. **Hash map storage**: Must define memory limits. Reject if result exceeds
+   N entries (e.g., 10000).
+2. **Client-side filter**: The comparison cannot be pushed into NdbScanFilter
+   because it depends on materialized data. Must filter after scan results
+   arrive but before aggregation. This requires a new execution path.
+3. **Multi-table inner query**: TPC-H Q2's inner is a 4-table join. The
+   inner query must be decorrelated (remove correlation predicate, add
+   correlation column to GROUP BY) and then run as a standalone join query
+   through RonSQL's existing join execution path.
+
+### Alternative: Simple EXISTS-like Transformation
+For equality comparisons (`col = (SELECT MIN(x) ...)`), an alternative is:
+`WHERE (col, pk) IN (SELECT MIN(x), pk FROM t2 ... GROUP BY pk)`
+This reuses the existing IN-subquery infrastructure but requires tuple-IN
+support (comparing multiple columns). Tuple-IN is simpler than client-side
+hash map filtering but requires parser/AST changes for tuple comparison.
+
+### Files to modify
+- `storage/ndb/src/ronsql/RonSQLPreparer.cpp`
+- `storage/ndb/src/ronsql/RonSQLPreparer.hpp`
+- `mysql-test/suite/ronsql/t/ronsql_subquery.test`
+
+### Target query: TPC-H Q2 (simplified)
+```sql
+SELECT s_name, p_partkey, ps_supplycost
+FROM part
+JOIN partsupp ON ps_partkey = p_partkey
+JOIN supplier ON s_suppkey = ps_suppkey
+WHERE ps_supplycost = (
+    SELECT MIN(ps_supplycost)
+    FROM partsupp ps2
+    JOIN supplier s2 ON s2.s_suppkey = ps2.ps_suppkey
+    WHERE ps2.ps_partkey = p_partkey)
+ORDER BY p_partkey;
+```
+
+---
 
 ## Open Questions
 
-1. **Aggregation placement with semi-join**: Can aggregation attach to
-   the root (scan) when the leaf is a semi-join filter table? Or does
-   SPJ require aggregation on the deepest node? This determines whether
-   Q4-style queries (aggregate on outer, semi-join on inner) can be a
-   single NdbQuery. See Step 40 design considerations.
+1. **NOT IN NULL semantics**: Reject nullable columns or implement full
+   three-valued logic? See Step 42 discussion.
 
-2. **Projection-only inner queries**: IN-subqueries return raw column
-   values, not aggregates. RonSQL currently requires aggregation on
-   every query. Relaxing this for subqueries (Step 39) has implications
-   for the broader "projection-only queries" work (Step 22, deferred).
-   Decide whether to solve this narrowly (wrap IN-subquery as
-   `GROUP BY col` to get distinct values) or broadly (enable non-aggregate
-   execution).
+2. **Materialization memory limits**: Step 43 materializes inner query
+   results into a hash map. Define limits and error behavior.
 
-3. **Materialization storage**: Step 43 materializes the inner query
-   result into a hash map. For large result sets, this could use
-   significant memory. Define limits and error behavior (reject if
-   result exceeds N rows? stream and filter?).
+3. **Nested subqueries**: Grammar allows recursive nesting. Single-level
+   is sufficient for all TPC-H queries. Continue rejecting nested.
 
-4. **Nested subqueries**: The grammar in Step 36 allows recursive
-   nesting. Should the analyzer/executor support this, or reject with
-   a depth limit? Single-level is sufficient for all TPC-H queries.
+4. **Semi-join revival**: If a non-aggregate RonSQL execution path is
+   added (plain SELECT without GROUP BY/aggregation), the MatchFirst
+   semi-join approach from Step 40 could work. The incompatibility is
+   specifically with aggregation pushdown (handleJoinAggRow bypasses
+   FirstMatch check).
 
 ## Verification
 
 After each step:
 ```bash
 cd debug_build && make -j$(sysctl -n hw.ncpu) ronsql_cli rdrs2
-cd mysql-test && perl ./mtr --suite=ronsql ronsql_join ronsql_join_agg ronsql_subquery
+cd mysql-test && perl ./mtr --suite=ronsql ronsql_join ronsql_join_agg ronsql_subquery ronsql_basic
 ```
 
 ## Future Extensions (Beyond Phase 7)
@@ -708,3 +905,8 @@ cd mysql-test && perl ./mtr --suite=ronsql ronsql_join ronsql_join_agg ronsql_su
   FROM t2 WHERE t2.fk = t1.pk) AS cnt FROM t1` — correlated scalar
   subquery in the output. Requires per-row execution or decorrelation
   to a left-join with aggregation.
+
+- **Multiple correlation predicates**: Step 41's EXISTS→IN transformation
+  currently supports a single correlation predicate. Extending to multiple
+  predicates (e.g., `WHERE inner.a = outer.a AND inner.b = outer.b`)
+  requires tuple-IN support or a different transformation strategy.

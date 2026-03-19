@@ -112,6 +112,8 @@ class LqhKeyReq {
   static void setReorgFlag(UintR &scanData, Uint32 val);
   static Uint8 getJoinAggFlag(const UintR &scanData);
   static void setJoinAggFlag(UintR &scanData, UintR val);
+  static Uint8 getOuterJoinAggFlag(const UintR &scanData);
+  static void setOuterJoinAggFlag(UintR &scanData, UintR val);
 
   static UintR getTableId(const UintR &tableSchemaVersion);
   static UintR getSchemaVersion(const UintR &tableSchemaVersion);
@@ -287,6 +289,7 @@ class LqhKeyReq {
     SI_REORG_SHIFT = 26,
     SI_REORG_MASK = 3,
     SI_JOIN_AGG_SHIFT = 28,
+    SI_OUTER_JOIN_AGG_SHIFT = 29,
   };
 };
 
@@ -475,6 +478,15 @@ inline Uint8 LqhKeyReq::getJoinAggFlag(const UintR &scanData) {
 inline void LqhKeyReq::setJoinAggFlag(UintR &scanData, UintR val) {
   ASSERT_BOOL(val, "LqhKeyReq::setJoinAggFlag");
   scanData |= (val << SI_JOIN_AGG_SHIFT);
+}
+
+inline Uint8 LqhKeyReq::getOuterJoinAggFlag(const UintR &scanData) {
+  return (Uint8)((scanData >> SI_OUTER_JOIN_AGG_SHIFT) & 1);
+}
+
+inline void LqhKeyReq::setOuterJoinAggFlag(UintR &scanData, UintR val) {
+  ASSERT_BOOL(val, "LqhKeyReq::setOuterJoinAggFlag");
+  scanData |= (val << SI_OUTER_JOIN_AGG_SHIFT);
 }
 
 #if 0

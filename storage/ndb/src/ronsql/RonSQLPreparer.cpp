@@ -32,6 +32,12 @@
 #include "RonSQLLexer.l.hpp"
 #include "RonSQLPreparer.hpp"
 #include <iostream>
+#include <sstream>
+#include <cstdlib>
+#include <cerrno>
+#include <climits>
+#include <vector>
+#include <string>
 #include "define_formatter.hpp"
 #include "my_time.h"
 #include "mysql_time.h"
@@ -87,7 +93,6 @@ using std::endl;
   throw RonSQLPermanentError("RonSQL feature not implemented: " description)
 
 static const char* interval_type_name(TokenKind interval_type);
-static bool has_subquery(const ConditionalExpression* ce);
 
 DEFINE_FORMATTER(quoted_identifier, LexString, {
   os.put('`');
@@ -126,14 +131,17 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_context(*this),
   m_columns(conf.amalloc),
   m_column_qualifiers(conf.amalloc),
+  m_col_is_inner(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
-  m_scan_config_candidates(conf.amalloc)
+  m_scan_config_candidates(conf.amalloc),
+  m_subquery_infos(conf.amalloc)
 {
   ndbrequire(m_status == Status::BEGIN);
   try {
     configure();
     parse();
+    analyze_subqueries();
     load();
     if (m_context.ast_root.joins == NULL)
       plan_index_and_filter();
@@ -238,6 +246,10 @@ classify_ce_table(struct ConditionalExpression* ce, Uint32* col_table_idx)
     return classify_ce_table(ce->interval.arg, col_table_idx);
   case T_EXTRACT:
     return classify_ce_table(ce->extract.arg, col_table_idx);
+  case T_EXISTS:
+  case I_IN_SUBQUERY:
+  case I_SUBQUERY:
+    return -1;  // Subqueries are treated as constants
   default:
     // Constants, strings, etc. — no column reference
     return -1;
@@ -627,38 +639,6 @@ RonSQLPreparer::has_width(size_t pos)
   return true;
 }
 
-static bool
-has_subquery(const ConditionalExpression* ce)
-{
-  if (ce == NULL) return false;
-  if (ce->op == T_EXISTS || ce->op == I_IN_SUBQUERY || ce->op == I_SUBQUERY)
-    return true;
-  // Recurse into binary/unary operator children
-  switch (ce->op)
-  {
-    case T_IS:
-      return has_subquery(ce->is.arg);
-    case T_INTERVAL:
-      return has_subquery(ce->interval.arg);
-    case T_EXTRACT:
-      return has_subquery(ce->extract.arg);
-    case T_IDENTIFIER:
-    case T_INT:
-    case T_FLOAT:
-    case T_STRING:
-    case I_MYSQL_TIME:
-    case T_SUM:
-    case T_MIN:
-    case T_MAX:
-    case T_COUNT:
-    case T_AVG:
-      return false;
-    default:
-      // Binary/unary operators: check both sides
-      return has_subquery(ce->args.left) || has_subquery(ce->args.right);
-  }
-}
-
 void
 RonSQLPreparer::load()
 {
@@ -682,14 +662,16 @@ RonSQLPreparer::load()
   Ndb* ndb = m_conf.ndb;
   if (ndb == NULL) return;
 
-  if (has_subquery(m_context.ast_root.where_expression) ||
-      has_subquery(m_context.ast_root.having_expression))
-    feature_not_implemented("subqueries");
-
-  bool is_join = (m_context.ast_root.joins != NULL);
-
   // Populate m_dict
   m_dict = ndb->getDictionary();
+
+  // Transform EXISTS subqueries into IN subqueries (may set m_has_subqueries)
+  decorrelate_exists();
+
+  // Transform correlated scalar subqueries (may set m_has_subqueries)
+  decorrelate_scalar();
+
+  bool is_join = (m_context.ast_root.joins != NULL);
 
   if (is_join) {
     load_join();
@@ -769,6 +751,11 @@ RonSQLPreparer::load_single_table()
   const NdbDictionary::Column** col_map =
       m_amalloc->alloc_exc<const NdbDictionary::Column*>(m_columns.size());
   for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
+    if (m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx]) {
+      col_id_map[col_idx] = -1;
+      col_map[col_idx] = NULL;
+      continue;
+    }
     const char* col_name = DBG(m_columns[DBG(col_idx)].c_str());
     const NdbDictionary::Column* col = m_table->getColumn(col_name);
     if (col == NULL) {
@@ -811,6 +798,12 @@ RonSQLPreparer::load_join()
 
   for (Uint32 col_idx = 0; col_idx < num_cols; col_idx++)
   {
+    if (m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx]) {
+      col_id_map[col_idx] = -1;
+      col_map[col_idx] = NULL;
+      col_table_idx[col_idx] = 0;
+      continue;
+    }
     const char* col_name = m_columns[col_idx].c_str();
     const char* qualifier = m_column_qualifiers[col_idx].c_str();
 
@@ -1155,6 +1148,1013 @@ RonSQLPreparer::generate_scan_config_candidates()
   }
 }
 
+/*
+ * Walk a CE tree and throw if T_EXISTS is found.
+ * Used after decorrelation to catch EXISTS inside OR (unsupported).
+ */
+static void
+check_no_nested_exists(struct ConditionalExpression* ce)
+{
+  if (ce == NULL) return;
+  if (ce->op == T_EXISTS)
+    throw RonSQLPermanentError(
+        "EXISTS subquery inside OR is not supported. "
+        "EXISTS must be a top-level AND conjunct in WHERE.");
+  switch (ce->op)
+  {
+  case T_IS:
+    check_no_nested_exists(ce->is.arg);
+    return;
+  case T_INTERVAL:
+    check_no_nested_exists(ce->interval.arg);
+    return;
+  case T_EXTRACT:
+    check_no_nested_exists(ce->extract.arg);
+    return;
+  case T_IDENTIFIER:
+  case T_INT:
+  case T_FLOAT:
+  case T_STRING:
+  case I_MYSQL_TIME:
+  case T_NULL:
+  case I_SUBQUERY:
+  case I_IN_SUBQUERY:
+  case I_CORR_SCALAR:
+    return;
+  default:
+    check_no_nested_exists(ce->args.left);
+    check_no_nested_exists(ce->args.right);
+    return;
+  }
+}
+
+void
+RonSQLPreparer::decorrelate_exists()
+{
+  ConditionalExpression* where_ce = m_context.ast_root.where_expression;
+  if (where_ce == NULL) return;
+
+  // Flatten outer WHERE into AND conjuncts
+  ConditionalExpression* conjuncts[MAX_WHERE_CONJUNCTS];
+  Uint32 num_conjuncts = 0;
+  flatten_and_conjuncts(where_ce, conjuncts, &num_conjuncts);
+
+  // Check if any conjunct is T_EXISTS or NOT EXISTS (T_NOT/T_EXCLAMATION wrapping T_EXISTS)
+  bool has_exists = false;
+  for (Uint32 i = 0; i < num_conjuncts; i++)
+  {
+    if (conjuncts[i]->op == T_EXISTS)
+    {
+      has_exists = true;
+      break;
+    }
+    if ((conjuncts[i]->op == T_NOT || conjuncts[i]->op == T_EXCLAMATION) &&
+        conjuncts[i]->args.left != NULL &&
+        conjuncts[i]->args.left->op == T_EXISTS)
+    {
+      has_exists = true;
+      break;
+    }
+  }
+  if (!has_exists) return;
+
+  SelectStatement& ast = m_context.ast_root;
+
+  // Kept conjuncts (non-EXISTS, plus IN-subquery nodes generated below)
+  ConditionalExpression* kept[MAX_WHERE_CONJUNCTS];
+  Uint32 num_kept = 0;
+
+  for (Uint32 i = 0; i < num_conjuncts; i++)
+  {
+    // Extract EXISTS node (possibly wrapped in T_NOT/T_EXCLAMATION)
+    bool is_not_exists = false;
+    ConditionalExpression* exists_node = NULL;
+
+    if (conjuncts[i]->op == T_EXISTS)
+    {
+      exists_node = conjuncts[i];
+    }
+    else if ((conjuncts[i]->op == T_NOT || conjuncts[i]->op == T_EXCLAMATION) &&
+             conjuncts[i]->args.left != NULL &&
+             conjuncts[i]->args.left->op == T_EXISTS)
+    {
+      exists_node = conjuncts[i]->args.left;
+      is_not_exists = true;
+    }
+    else
+    {
+      require_prm(num_kept < MAX_WHERE_CONJUNCTS,
+                  "Too many WHERE conjuncts after decorrelation.");
+      kept[num_kept++] = conjuncts[i];
+      continue;
+    }
+
+    // Process EXISTS/NOT EXISTS conjunct — transform into IN subquery
+    SelectStatement* inner_stmt = exists_node->subquery.stmt;
+    require_prm(inner_stmt != NULL,
+                "EXISTS subquery has no inner statement.");
+    require_prm(inner_stmt->joins == NULL,
+                "EXISTS subquery with inner joins not supported.");
+    require_prm(inner_stmt->table.c_str() != NULL,
+                "EXISTS subquery has no inner table.");
+
+    // Look up inner table in dictionary
+    const NdbDictionary::Table* inner_table =
+        m_dict->getTable(inner_stmt->table.c_str());
+    require_prm(inner_table != NULL,
+                "EXISTS subquery references unknown table.");
+
+    // Flatten inner WHERE
+    ConditionalExpression* inner_conjuncts[MAX_WHERE_CONJUNCTS];
+    Uint32 num_inner = 0;
+    flatten_and_conjuncts(inner_stmt->where_expression,
+                          inner_conjuncts, &num_inner);
+
+    require_prm(num_inner > 0,
+                "EXISTS subquery must have a WHERE clause with "
+                "correlation predicates.");
+
+    // Classify inner conjuncts: find correlation predicate and
+    // collect non-correlation predicates
+    Uint32 outer_col_idx = UINT32_MAX;
+    const char* inner_col_name = NULL;
+    Uint32 num_correlation = 0;
+    Uint32 num_non_corr = 0;
+
+    for (Uint32 j = 0; j < num_inner; j++)
+    {
+      ConditionalExpression* ic = inner_conjuncts[j];
+
+      // Check for correlation predicate: T_EQUALS between two T_IDENTIFIERs
+      if (ic->op == T_EQUALS &&
+          ic->args.left != NULL && ic->args.left->op == T_IDENTIFIER &&
+          ic->args.right != NULL && ic->args.right->op == T_IDENTIFIER)
+      {
+        Uint32 left_idx = ic->args.left->col_idx;
+        Uint32 right_idx = ic->args.right->col_idx;
+        const char* left_name = m_columns[left_idx].c_str();
+        const char* right_name = m_columns[right_idx].c_str();
+
+        // Check qualifier first, then dictionary to determine inner/outer
+        LexCString left_qual = m_column_qualifiers[left_idx];
+        LexCString right_qual = m_column_qualifiers[right_idx];
+
+        bool left_is_inner;
+        bool right_is_inner;
+
+        LexCString inner_alias = inner_stmt->root_table != NULL
+            ? inner_stmt->root_table->alias
+            : inner_stmt->table;
+
+        if (left_qual.c_str() != NULL)
+          left_is_inner = (left_qual == inner_alias);
+        else
+          left_is_inner = (inner_table->getColumn(left_name) != NULL);
+
+        if (right_qual.c_str() != NULL)
+          right_is_inner = (right_qual == inner_alias);
+        else
+          right_is_inner = (inner_table->getColumn(right_name) != NULL);
+
+        if (left_is_inner != right_is_inner)
+        {
+          // Correlation predicate: one inner, one outer
+          require_prm(num_correlation == 0,
+                      "EXISTS subquery with multiple correlation "
+                      "predicates not supported (use single-column "
+                      "correlation).");
+          outer_col_idx = left_is_inner ? right_idx : left_idx;
+          inner_col_name = left_is_inner ? left_name : right_name;
+          num_correlation++;
+          continue;
+        }
+      }
+
+      // Non-correlation predicate
+      require_prm(num_non_corr < MAX_WHERE_CONJUNCTS,
+                  "Too many non-correlation predicates in EXISTS.");
+      num_non_corr++;
+    }
+
+    require_prm(num_correlation == 1,
+                "EXISTS subquery must have exactly one correlation "
+                "predicate (inner.col = outer.col).");
+
+    // Build the inner SQL string for the IN subquery.
+    // Format: SELECT <inner_col> FROM <table> [WHERE ...] GROUP BY <inner_col>
+    //
+    // For the WHERE clause, we extract the original text of each
+    // non-correlation predicate from the source buffer. Since individual
+    // CE nodes don't carry position info, we extract text spans from the
+    // original inner query and remove the correlation predicate.
+    //
+    // Simplified approach: extract the whole inner WHERE text from
+    // sql_begin..sql_end and use it minus the correlation predicate.
+    // For robustness, we build the SQL using the inner table name and
+    // inner column name, then splice in non-correlation predicate text.
+
+    const char* inner_table_name = inner_stmt->table.c_str();
+    LexCString inner_alias = inner_stmt->root_table != NULL
+        ? inner_stmt->root_table->alias
+        : inner_stmt->table;
+    bool has_alias = (inner_stmt->root_table != NULL &&
+                      !(inner_alias == inner_stmt->table));
+
+    // Build inner SQL string
+    std::ostringstream sql;
+    sql << "SELECT MIN(" << inner_col_name << ")"
+        << " FROM " << inner_table_name;
+    if (has_alias)
+      sql << " AS " << inner_alias.c_str();
+
+    if (num_non_corr > 0)
+    {
+      // We need to serialize non-correlation predicates back to SQL.
+      // Extract the original inner SQL text and remove the correlation part.
+      // Strategy: use the original SQL between sql_begin and sql_end,
+      // which is the complete inner SELECT. We need just the WHERE part
+      // without the correlation predicate.
+      //
+      // Alternative: serialize simple predicates (col op const).
+      // For now, extract the original WHERE clause text and strip the
+      // correlation predicate textually. This is fragile but works for
+      // simple cases like "l_orderkey = o_id AND l_quantity > 20".
+      //
+      // More robust: find WHERE keyword in inner SQL, then for each AND
+      // conjunct, check if it contains both the inner and outer column
+      // names of the correlation. Skip that one, keep the rest.
+
+      ndbrequire(inner_stmt->sql_begin != NULL &&
+                 inner_stmt->sql_end != NULL);
+      std::string inner_sql(inner_stmt->sql_begin,
+                            inner_stmt->sql_end - inner_stmt->sql_begin);
+
+      // Find WHERE keyword (case-insensitive)
+      size_t where_pos = std::string::npos;
+      for (size_t p = 0; p + 5 <= inner_sql.size(); p++)
+      {
+        if ((inner_sql[p] == 'W' || inner_sql[p] == 'w') &&
+            (inner_sql[p+1] == 'H' || inner_sql[p+1] == 'h') &&
+            (inner_sql[p+2] == 'E' || inner_sql[p+2] == 'e') &&
+            (inner_sql[p+3] == 'R' || inner_sql[p+3] == 'r') &&
+            (inner_sql[p+4] == 'E' || inner_sql[p+4] == 'e') &&
+            (p + 5 == inner_sql.size() || inner_sql[p+5] == ' '))
+        {
+          where_pos = p;
+          break;
+        }
+      }
+
+      if (where_pos != std::string::npos)
+      {
+        // Extract the WHERE clause text (everything after "WHERE ")
+        std::string where_text = inner_sql.substr(where_pos + 6);
+
+        // Strip GROUP BY / ORDER BY / LIMIT if present
+        for (const char* kw : {"GROUP BY", "ORDER BY", "LIMIT",
+                                "group by", "order by", "limit"})
+        {
+          size_t kw_pos = where_text.find(kw);
+          if (kw_pos != std::string::npos)
+            where_text = where_text.substr(0, kw_pos);
+        }
+
+        // Trim trailing whitespace
+        while (!where_text.empty() &&
+               (where_text.back() == ' ' || where_text.back() == '\n' ||
+                where_text.back() == '\r' || where_text.back() == '\t'))
+          where_text.pop_back();
+
+        // Now split by AND and remove the correlation predicate.
+        // The correlation predicate contains both the outer column name
+        // and the inner column name connected by '='.
+        const char* outer_col_name = m_columns[outer_col_idx].c_str();
+        std::vector<std::string> and_parts;
+        size_t pos = 0;
+        while (pos < where_text.size())
+        {
+          // Find next AND (case-insensitive)
+          size_t and_pos = std::string::npos;
+          for (size_t p = pos; p + 3 <= where_text.size(); p++)
+          {
+            if ((where_text[p] == 'A' || where_text[p] == 'a') &&
+                (where_text[p+1] == 'N' || where_text[p+1] == 'n') &&
+                (where_text[p+2] == 'D' || where_text[p+2] == 'd') &&
+                (p == 0 || where_text[p-1] == ' ') &&
+                (p + 3 >= where_text.size() || where_text[p+3] == ' '))
+            {
+              and_pos = p;
+              break;
+            }
+          }
+          std::string part;
+          if (and_pos == std::string::npos)
+          {
+            part = where_text.substr(pos);
+            pos = where_text.size();
+          }
+          else
+          {
+            part = where_text.substr(pos, and_pos - pos);
+            pos = and_pos + 3; // skip "AND"
+          }
+          // Trim
+          while (!part.empty() && part.front() == ' ') part.erase(0, 1);
+          while (!part.empty() && part.back() == ' ') part.pop_back();
+          if (part.empty()) continue;
+
+          // Check if this part is the correlation predicate
+          bool is_correlation = false;
+          if (part.find(outer_col_name) != std::string::npos &&
+              part.find(inner_col_name) != std::string::npos &&
+              part.find('=') != std::string::npos)
+          {
+            is_correlation = true;
+          }
+          if (!is_correlation)
+            and_parts.push_back(part);
+        }
+
+        if (!and_parts.empty())
+        {
+          sql << " WHERE ";
+          for (size_t p = 0; p < and_parts.size(); p++)
+          {
+            if (p > 0) sql << " AND ";
+            sql << and_parts[p];
+          }
+        }
+      }
+    }
+
+    sql << " GROUP BY " << inner_col_name;
+
+    std::string sql_str = sql.str();
+    size_t sql_len = sql_str.size();
+    char* sql_buf = m_amalloc->alloc_exc<char>(sql_len + 1);
+    memcpy(sql_buf, sql_str.c_str(), sql_len);
+    sql_buf[sql_len] = '\0';
+
+    // Create a new inner SelectStatement for the IN subquery
+    SelectStatement* new_inner = m_amalloc->alloc_exc<SelectStatement>(1);
+    new (new_inner) SelectStatement();
+    new_inner->table = inner_stmt->table;
+    new_inner->root_table = inner_stmt->root_table;
+    new_inner->sql_begin = sql_buf;
+    new_inner->sql_end = sql_buf + sql_len;
+
+    // Build the outer column reference CE node (LHS of IN)
+    // The outer column was marked as inner during subquery parsing
+    // (m_subquery_depth > 0 at parse time). Clear the flag since it's
+    // actually an outer reference used in the WHERE clause.
+    if (outer_col_idx < m_col_is_inner.size())
+      m_col_is_inner[outer_col_idx] = false;
+
+    ConditionalExpression* outer_ref =
+        m_amalloc->alloc_exc<ConditionalExpression>(1);
+    outer_ref->op = T_IDENTIFIER;
+    outer_ref->col_idx = outer_col_idx;
+
+    // Transform the T_EXISTS CE node into I_IN_SUBQUERY in-place
+    exists_node->op = I_IN_SUBQUERY;
+    exists_node->in_subquery.expr = outer_ref;
+    exists_node->in_subquery.stmt = new_inner;
+
+    // Register in m_subquery_infos (since analyze_subqueries already ran)
+    SubqueryInfo info;
+    info.ce_node = exists_node;
+    info.inner_stmt = new_inner;
+    info.is_in_subquery = true;
+    info.in_expr = outer_ref;
+    info.in_values = new (m_amalloc->alloc_exc<DynamicArray<SubqueryResult>>(1))
+      DynamicArray<SubqueryResult>(m_amalloc);
+    m_subquery_infos.push(info);
+    m_has_subqueries = true;
+
+    // Keep the transformed node in the WHERE:
+    // - EXISTS: keep exists_node (now I_IN_SUBQUERY)
+    // - NOT EXISTS: keep conjuncts[i] (T_NOT wrapper, child is now I_IN_SUBQUERY)
+    require_prm(num_kept < MAX_WHERE_CONJUNCTS,
+                "Too many WHERE conjuncts after decorrelation.");
+    kept[num_kept++] = is_not_exists ? conjuncts[i] : exists_node;
+  }
+
+  // Rebuild outer WHERE from kept conjuncts
+  ConditionalExpression* rebuilt = NULL;
+  for (Uint32 i = 0; i < num_kept; i++)
+  {
+    if (rebuilt == NULL)
+    {
+      rebuilt = kept[i];
+    }
+    else
+    {
+      ConditionalExpression* combined =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+      combined->op = T_AND;
+      combined->args.left = rebuilt;
+      combined->args.right = kept[i];
+      rebuilt = combined;
+    }
+  }
+  ast.where_expression = rebuilt;
+
+  // Check no nested EXISTS remain (e.g., inside OR)
+  check_no_nested_exists(ast.where_expression);
+}
+
+static TokenKind
+flip_cmp_op(TokenKind op)
+{
+  switch (op)
+  {
+  case T_GT: return T_LT;
+  case T_LT: return T_GT;
+  case T_GE: return T_LE;
+  case T_LE: return T_GE;
+  default: return op;  // T_EQUALS, T_NOT_EQUALS are symmetric
+  }
+}
+
+static bool
+is_comparison_op(TokenKind op)
+{
+  return op == T_EQUALS || op == T_NOT_EQUALS ||
+         op == T_GT || op == T_GE || op == T_LT || op == T_LE;
+}
+
+static void
+parse_subquery_value(const std::string& str, SubqueryResult& val)
+{
+  if (str == "NULL")
+  {
+    val.is_null = true;
+    return;
+  }
+  char* endptr = NULL;
+  errno = 0;
+  long long ll = strtoll(str.c_str(), &endptr, 10);
+  if (endptr != NULL && *endptr == '\0' && errno == 0)
+  {
+    val.is_null = false;
+    val.is_float = false;
+    val.int_val = (Int64)ll;
+    return;
+  }
+  errno = 0;
+  double dbl = strtod(str.c_str(), &endptr);
+  if (endptr != NULL && *endptr == '\0' && errno == 0)
+  {
+    val.is_null = false;
+    val.is_float = true;
+    val.float_val = dbl;
+    return;
+  }
+  throw RonSQLPermanentError(
+      "Correlated scalar subquery returned a non-numeric value.");
+}
+
+void
+RonSQLPreparer::decorrelate_scalar()
+{
+  ConditionalExpression* where_ce = m_context.ast_root.where_expression;
+  if (where_ce == NULL) return;
+
+  // Flatten outer WHERE into AND conjuncts
+  ConditionalExpression* conjuncts[MAX_WHERE_CONJUNCTS];
+  Uint32 num_conjuncts = 0;
+  flatten_and_conjuncts(where_ce, conjuncts, &num_conjuncts);
+
+  // Check if any conjunct is a comparison with I_SUBQUERY on one side
+  bool has_corr_scalar = false;
+  for (Uint32 i = 0; i < num_conjuncts; i++)
+  {
+    if (!is_comparison_op(conjuncts[i]->op)) continue;
+    ConditionalExpression* left = conjuncts[i]->args.left;
+    ConditionalExpression* right = conjuncts[i]->args.right;
+    if ((left != NULL && left->op == I_SUBQUERY) ||
+        (right != NULL && right->op == I_SUBQUERY))
+    {
+      // Check if the inner query has a correlated WHERE
+      SelectStatement* inner_stmt = (left != NULL && left->op == I_SUBQUERY)
+          ? left->subquery.stmt : right->subquery.stmt;
+      if (inner_stmt == NULL || inner_stmt->joins != NULL) continue;
+      if (inner_stmt->table.c_str() == NULL) continue;
+      if (inner_stmt->where_expression == NULL) continue;
+
+      const NdbDictionary::Table* inner_table =
+          m_dict->getTable(inner_stmt->table.c_str());
+      if (inner_table == NULL) continue;
+
+      // Flatten inner WHERE
+      ConditionalExpression* inner_conjuncts[MAX_WHERE_CONJUNCTS];
+      Uint32 num_inner = 0;
+      flatten_and_conjuncts(inner_stmt->where_expression,
+                            inner_conjuncts, &num_inner);
+
+      // Look for a correlation predicate
+      bool found_correlation = false;
+      for (Uint32 j = 0; j < num_inner; j++)
+      {
+        ConditionalExpression* ic = inner_conjuncts[j];
+        if (ic->op == T_EQUALS &&
+            ic->args.left != NULL && ic->args.left->op == T_IDENTIFIER &&
+            ic->args.right != NULL && ic->args.right->op == T_IDENTIFIER)
+        {
+          Uint32 left_idx = ic->args.left->col_idx;
+          Uint32 right_idx = ic->args.right->col_idx;
+          const char* left_name = m_columns[left_idx].c_str();
+          const char* right_name = m_columns[right_idx].c_str();
+
+          LexCString left_qual = m_column_qualifiers[left_idx];
+          LexCString right_qual = m_column_qualifiers[right_idx];
+
+          LexCString inner_alias = inner_stmt->root_table != NULL
+              ? inner_stmt->root_table->alias
+              : inner_stmt->table;
+
+          bool left_is_inner;
+          bool right_is_inner;
+
+          if (left_qual.c_str() != NULL)
+            left_is_inner = (left_qual == inner_alias);
+          else
+            left_is_inner = (inner_table->getColumn(left_name) != NULL);
+
+          if (right_qual.c_str() != NULL)
+            right_is_inner = (right_qual == inner_alias);
+          else
+            right_is_inner = (inner_table->getColumn(right_name) != NULL);
+
+          if (left_is_inner != right_is_inner)
+          {
+            found_correlation = true;
+            break;
+          }
+        }
+      }
+      if (found_correlation)
+      {
+        has_corr_scalar = true;
+        break;
+      }
+    }
+  }
+  if (!has_corr_scalar) return;
+
+  SelectStatement& ast = m_context.ast_root;
+
+  ConditionalExpression* kept[MAX_WHERE_CONJUNCTS];
+  Uint32 num_kept = 0;
+
+  for (Uint32 i = 0; i < num_conjuncts; i++)
+  {
+    if (!is_comparison_op(conjuncts[i]->op))
+    {
+      require_prm(num_kept < MAX_WHERE_CONJUNCTS,
+                  "Too many WHERE conjuncts after decorrelation.");
+      kept[num_kept++] = conjuncts[i];
+      continue;
+    }
+
+    ConditionalExpression* left = conjuncts[i]->args.left;
+    ConditionalExpression* right = conjuncts[i]->args.right;
+
+    // Determine which side is the subquery
+    bool subq_on_left = (left != NULL && left->op == I_SUBQUERY);
+    bool subq_on_right = (right != NULL && right->op == I_SUBQUERY);
+
+    if (!subq_on_left && !subq_on_right)
+    {
+      require_prm(num_kept < MAX_WHERE_CONJUNCTS,
+                  "Too many WHERE conjuncts after decorrelation.");
+      kept[num_kept++] = conjuncts[i];
+      continue;
+    }
+
+    ConditionalExpression* subq_child = subq_on_left ? left : right;
+    ConditionalExpression* cmp_expr = subq_on_left ? right : left;
+    TokenKind cmp_op = conjuncts[i]->op;
+    // If subquery is on the left, flip: (SELECT ...) < col  means col > (SELECT ...)
+    if (subq_on_left)
+      cmp_op = flip_cmp_op(cmp_op);
+
+    SelectStatement* inner_stmt = subq_child->subquery.stmt;
+    if (inner_stmt == NULL || inner_stmt->joins != NULL ||
+        inner_stmt->table.c_str() == NULL ||
+        inner_stmt->where_expression == NULL)
+    {
+      // Not decorrelatable, keep as-is
+      require_prm(num_kept < MAX_WHERE_CONJUNCTS,
+                  "Too many WHERE conjuncts after decorrelation.");
+      kept[num_kept++] = conjuncts[i];
+      continue;
+    }
+
+    const NdbDictionary::Table* inner_table =
+        m_dict->getTable(inner_stmt->table.c_str());
+    if (inner_table == NULL)
+    {
+      require_prm(num_kept < MAX_WHERE_CONJUNCTS,
+                  "Too many WHERE conjuncts after decorrelation.");
+      kept[num_kept++] = conjuncts[i];
+      continue;
+    }
+
+    // Flatten inner WHERE
+    ConditionalExpression* inner_conjuncts[MAX_WHERE_CONJUNCTS];
+    Uint32 num_inner = 0;
+    flatten_and_conjuncts(inner_stmt->where_expression,
+                          inner_conjuncts, &num_inner);
+
+    // Classify inner conjuncts: find correlation predicate
+    Uint32 outer_col_idx = UINT32_MAX;
+    const char* inner_col_name = NULL;
+    Uint32 num_correlation = 0;
+    Uint32 num_non_corr = 0;
+
+    for (Uint32 j = 0; j < num_inner; j++)
+    {
+      ConditionalExpression* ic = inner_conjuncts[j];
+
+      if (ic->op == T_EQUALS &&
+          ic->args.left != NULL && ic->args.left->op == T_IDENTIFIER &&
+          ic->args.right != NULL && ic->args.right->op == T_IDENTIFIER)
+      {
+        Uint32 l_idx = ic->args.left->col_idx;
+        Uint32 r_idx = ic->args.right->col_idx;
+        const char* l_name = m_columns[l_idx].c_str();
+        const char* r_name = m_columns[r_idx].c_str();
+
+        LexCString l_qual = m_column_qualifiers[l_idx];
+        LexCString r_qual = m_column_qualifiers[r_idx];
+
+        LexCString inner_alias = inner_stmt->root_table != NULL
+            ? inner_stmt->root_table->alias
+            : inner_stmt->table;
+
+        bool l_is_inner;
+        bool r_is_inner;
+
+        if (l_qual.c_str() != NULL)
+          l_is_inner = (l_qual == inner_alias);
+        else
+          l_is_inner = (inner_table->getColumn(l_name) != NULL);
+
+        if (r_qual.c_str() != NULL)
+          r_is_inner = (r_qual == inner_alias);
+        else
+          r_is_inner = (inner_table->getColumn(r_name) != NULL);
+
+        if (l_is_inner != r_is_inner)
+        {
+          require_prm(num_correlation == 0,
+                      "Correlated scalar subquery with multiple "
+                      "correlation predicates not supported.");
+          outer_col_idx = l_is_inner ? r_idx : l_idx;
+          inner_col_name = l_is_inner ? l_name : r_name;
+          num_correlation++;
+          continue;
+        }
+      }
+
+      require_prm(num_non_corr < MAX_WHERE_CONJUNCTS,
+                  "Too many non-correlation predicates.");
+      num_non_corr++;
+    }
+
+    if (num_correlation != 1)
+    {
+      // No correlation found — leave as uncorrelated I_SUBQUERY
+      require_prm(num_kept < MAX_WHERE_CONJUNCTS,
+                  "Too many WHERE conjuncts after decorrelation.");
+      kept[num_kept++] = conjuncts[i];
+      continue;
+    }
+
+    // Extract aggregate expression from original inner SQL
+    ndbrequire(inner_stmt->sql_begin != NULL &&
+               inner_stmt->sql_end != NULL);
+    std::string inner_sql(inner_stmt->sql_begin,
+                          inner_stmt->sql_end - inner_stmt->sql_begin);
+
+    // Find the text between "SELECT " and " FROM"
+    size_t select_pos = std::string::npos;
+    for (size_t p = 0; p + 6 <= inner_sql.size(); p++)
+    {
+      if ((inner_sql[p] == 'S' || inner_sql[p] == 's') &&
+          (inner_sql[p+1] == 'E' || inner_sql[p+1] == 'e') &&
+          (inner_sql[p+2] == 'L' || inner_sql[p+2] == 'l') &&
+          (inner_sql[p+3] == 'E' || inner_sql[p+3] == 'e') &&
+          (inner_sql[p+4] == 'C' || inner_sql[p+4] == 'c') &&
+          (inner_sql[p+5] == 'T' || inner_sql[p+5] == 't') &&
+          (p + 6 == inner_sql.size() || inner_sql[p+6] == ' '))
+      {
+        select_pos = p;
+        break;
+      }
+    }
+    require_prm(select_pos != std::string::npos,
+                "Could not find SELECT in inner subquery.");
+
+    size_t from_pos = std::string::npos;
+    for (size_t p = select_pos + 7; p + 4 <= inner_sql.size(); p++)
+    {
+      if ((inner_sql[p] == 'F' || inner_sql[p] == 'f') &&
+          (inner_sql[p+1] == 'R' || inner_sql[p+1] == 'r') &&
+          (inner_sql[p+2] == 'O' || inner_sql[p+2] == 'o') &&
+          (inner_sql[p+3] == 'M' || inner_sql[p+3] == 'm') &&
+          (p == 0 || inner_sql[p-1] == ' ') &&
+          (p + 4 == inner_sql.size() || inner_sql[p+4] == ' '))
+      {
+        from_pos = p;
+        break;
+      }
+    }
+    require_prm(from_pos != std::string::npos,
+                "Could not find FROM in inner subquery.");
+
+    std::string agg_expr = inner_sql.substr(select_pos + 7,
+                                             from_pos - select_pos - 7);
+    // Trim
+    while (!agg_expr.empty() && agg_expr.front() == ' ')
+      agg_expr.erase(0, 1);
+    while (!agg_expr.empty() && agg_expr.back() == ' ')
+      agg_expr.pop_back();
+
+    const char* inner_table_name = inner_stmt->table.c_str();
+    LexCString inner_alias = inner_stmt->root_table != NULL
+        ? inner_stmt->root_table->alias
+        : inner_stmt->table;
+    bool has_alias = (inner_stmt->root_table != NULL &&
+                      !(inner_alias == inner_stmt->table));
+
+    // Build rewritten inner SQL
+    std::ostringstream sql;
+    sql << "SELECT " << inner_col_name << ", " << agg_expr
+        << " FROM " << inner_table_name;
+    if (has_alias)
+      sql << " AS " << inner_alias.c_str();
+
+    // Handle non-correlation WHERE predicates
+    if (num_non_corr > 0)
+    {
+      // Extract original WHERE text and strip correlation predicate
+      size_t where_pos = std::string::npos;
+      for (size_t p = 0; p + 5 <= inner_sql.size(); p++)
+      {
+        if ((inner_sql[p] == 'W' || inner_sql[p] == 'w') &&
+            (inner_sql[p+1] == 'H' || inner_sql[p+1] == 'h') &&
+            (inner_sql[p+2] == 'E' || inner_sql[p+2] == 'e') &&
+            (inner_sql[p+3] == 'R' || inner_sql[p+3] == 'r') &&
+            (inner_sql[p+4] == 'E' || inner_sql[p+4] == 'e') &&
+            (p + 5 == inner_sql.size() || inner_sql[p+5] == ' '))
+        {
+          where_pos = p;
+          break;
+        }
+      }
+
+      if (where_pos != std::string::npos)
+      {
+        std::string where_text = inner_sql.substr(where_pos + 6);
+
+        // Strip GROUP BY / ORDER BY / LIMIT
+        for (const char* kw : {"GROUP BY", "ORDER BY", "LIMIT",
+                                "group by", "order by", "limit"})
+        {
+          size_t kw_pos = where_text.find(kw);
+          if (kw_pos != std::string::npos)
+            where_text = where_text.substr(0, kw_pos);
+        }
+
+        while (!where_text.empty() &&
+               (where_text.back() == ' ' || where_text.back() == '\n' ||
+                where_text.back() == '\r' || where_text.back() == '\t'))
+          where_text.pop_back();
+
+        const char* outer_col_name = m_columns[outer_col_idx].c_str();
+        std::vector<std::string> and_parts;
+        size_t pos = 0;
+        while (pos < where_text.size())
+        {
+          size_t and_pos = std::string::npos;
+          for (size_t p = pos; p + 3 <= where_text.size(); p++)
+          {
+            if ((where_text[p] == 'A' || where_text[p] == 'a') &&
+                (where_text[p+1] == 'N' || where_text[p+1] == 'n') &&
+                (where_text[p+2] == 'D' || where_text[p+2] == 'd') &&
+                (p == 0 || where_text[p-1] == ' ') &&
+                (p + 3 >= where_text.size() || where_text[p+3] == ' '))
+            {
+              and_pos = p;
+              break;
+            }
+          }
+          std::string part;
+          if (and_pos == std::string::npos)
+          {
+            part = where_text.substr(pos);
+            pos = where_text.size();
+          }
+          else
+          {
+            part = where_text.substr(pos, and_pos - pos);
+            pos = and_pos + 3;
+          }
+          while (!part.empty() && part.front() == ' ') part.erase(0, 1);
+          while (!part.empty() && part.back() == ' ') part.pop_back();
+          if (part.empty()) continue;
+
+          bool is_correlation = false;
+          if (part.find(outer_col_name) != std::string::npos &&
+              part.find(inner_col_name) != std::string::npos &&
+              part.find('=') != std::string::npos)
+          {
+            is_correlation = true;
+          }
+          if (!is_correlation)
+            and_parts.push_back(part);
+        }
+
+        if (!and_parts.empty())
+        {
+          sql << " WHERE ";
+          for (size_t p = 0; p < and_parts.size(); p++)
+          {
+            if (p > 0) sql << " AND ";
+            sql << and_parts[p];
+          }
+        }
+      }
+    }
+
+    sql << " GROUP BY " << inner_col_name;
+
+    std::string sql_str = sql.str();
+    size_t sql_len = sql_str.size();
+    char* sql_buf = m_amalloc->alloc_exc<char>(sql_len + 1);
+    memcpy(sql_buf, sql_str.c_str(), sql_len);
+    sql_buf[sql_len] = '\0';
+
+    // Create new inner SelectStatement
+    SelectStatement* new_inner = m_amalloc->alloc_exc<SelectStatement>(1);
+    new (new_inner) SelectStatement();
+    new_inner->table = inner_stmt->table;
+    new_inner->root_table = inner_stmt->root_table;
+    new_inner->sql_begin = sql_buf;
+    new_inner->sql_end = sql_buf + sql_len;
+
+    // Clear m_col_is_inner for the outer column
+    if (outer_col_idx < m_col_is_inner.size())
+      m_col_is_inner[outer_col_idx] = false;
+
+    // Build the outer correlation key reference
+    ConditionalExpression* key_expr =
+        m_amalloc->alloc_exc<ConditionalExpression>(1);
+    key_expr->op = T_IDENTIFIER;
+    key_expr->col_idx = outer_col_idx;
+
+    // Find and update existing SubqueryInfo for this I_SUBQUERY node
+    bool found_info = false;
+    for (Uint32 si = 0; si < m_subquery_infos.size(); si++)
+    {
+      if (m_subquery_infos[si].ce_node == subq_child)
+      {
+        m_subquery_infos[si].ce_node = conjuncts[i];
+        m_subquery_infos[si].inner_stmt = new_inner;
+        m_subquery_infos[si].is_corr_scalar = true;
+        m_subquery_infos[si].corr_values =
+          new (m_amalloc->alloc_exc<DynamicArray<CorrelatedPair>>(1))
+            DynamicArray<CorrelatedPair>(m_amalloc);
+        found_info = true;
+        break;
+      }
+    }
+
+    if (!found_info)
+    {
+      // Register new SubqueryInfo
+      SubqueryInfo info;
+      info.ce_node = conjuncts[i];
+      info.inner_stmt = new_inner;
+      info.is_corr_scalar = true;
+      info.corr_values =
+        new (m_amalloc->alloc_exc<DynamicArray<CorrelatedPair>>(1))
+          DynamicArray<CorrelatedPair>(m_amalloc);
+      m_subquery_infos.push(info);
+      m_has_subqueries = true;
+    }
+
+    // Transform comparison node in-place to I_CORR_SCALAR
+    conjuncts[i]->op = I_CORR_SCALAR;
+    conjuncts[i]->corr_scalar.cmp_op = cmp_op;
+    conjuncts[i]->corr_scalar.cmp_expr = cmp_expr;
+    conjuncts[i]->corr_scalar.key_expr = key_expr;
+    conjuncts[i]->corr_scalar.stmt = new_inner;
+
+    require_prm(num_kept < MAX_WHERE_CONJUNCTS,
+                "Too many WHERE conjuncts after decorrelation.");
+    kept[num_kept++] = conjuncts[i];
+  }
+
+  // Rebuild outer WHERE from kept conjuncts
+  ConditionalExpression* rebuilt = NULL;
+  for (Uint32 i = 0; i < num_kept; i++)
+  {
+    if (rebuilt == NULL)
+    {
+      rebuilt = kept[i];
+    }
+    else
+    {
+      ConditionalExpression* combined =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+      combined->op = T_AND;
+      combined->args.left = rebuilt;
+      combined->args.right = kept[i];
+      rebuilt = combined;
+    }
+  }
+  ast.where_expression = rebuilt;
+}
+
+void
+RonSQLPreparer::analyze_subqueries()
+{
+  analyze_subqueries_ce(m_context.ast_root.where_expression);
+  analyze_subqueries_ce(m_context.ast_root.having_expression);
+}
+
+void
+RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
+{
+  if (ce == NULL) return;
+  switch (ce->op)
+  {
+  case I_SUBQUERY:
+  {
+    SubqueryInfo info;
+    info.ce_node = ce;
+    info.inner_stmt = ce->subquery.stmt;
+    m_subquery_infos.push(info);
+    m_has_subqueries = true;
+    return;
+  }
+  case T_EXISTS:
+    // Transformed into I_IN_SUBQUERY in decorrelate_exists() during load().
+    // SubqueryInfo is registered there, not here.
+    return;
+  case T_NOT:
+  case T_EXCLAMATION:
+    // NOT EXISTS handled in decorrelate_exists() — T_NOT wraps I_IN_SUBQUERY.
+    analyze_subqueries_ce(ce->args.left);
+    return;
+  case I_IN_SUBQUERY:
+  {
+    SubqueryInfo info;
+    info.ce_node = ce;
+    info.inner_stmt = ce->in_subquery.stmt;
+    info.is_in_subquery = true;
+    info.in_expr = ce->in_subquery.expr;
+    info.in_values = new (m_amalloc->alloc_exc<DynamicArray<SubqueryResult>>(1))
+      DynamicArray<SubqueryResult>(m_amalloc);
+    m_subquery_infos.push(info);
+    m_has_subqueries = true;
+    return;
+  }
+  case I_CORR_SCALAR:
+    // Registered in decorrelate_scalar(). No further action.
+    return;
+  case T_IS:
+    analyze_subqueries_ce(ce->is.arg);
+    return;
+  case T_INTERVAL:
+    analyze_subqueries_ce(ce->interval.arg);
+    return;
+  case T_EXTRACT:
+    analyze_subqueries_ce(ce->extract.arg);
+    return;
+  case T_IDENTIFIER:
+  case T_INT:
+  case T_FLOAT:
+  case T_STRING:
+  case I_MYSQL_TIME:
+  case T_SUM:
+  case T_MIN:
+  case T_MAX:
+  case T_COUNT:
+  case T_AVG:
+  case T_NULL:
+    return;
+  default:
+    // Binary/unary operators: recurse into both sides
+    analyze_subqueries_ce(ce->args.left);
+    analyze_subqueries_ce(ce->args.right);
+    return;
+  }
+}
+
 void
 RonSQLPreparer::compile()
 {
@@ -1213,6 +2213,455 @@ RonSQLPreparer::determine_explain()
 }
 
 void
+RonSQLPreparer::execute_subqueries()
+{
+  for (Uint32 i = 0; i < m_subquery_infos.size(); i++)
+  {
+    SubqueryInfo& info = m_subquery_infos[i];
+    SelectStatement* inner = info.inner_stmt;
+    ndbrequire(inner->sql_begin != NULL && inner->sql_end != NULL);
+    ndbrequire(inner->sql_end > inner->sql_begin);
+
+    // Extract inner SQL from the original buffer
+    size_t inner_len = inner->sql_end - inner->sql_begin;
+
+    // Build a standalone SQL buffer with semicolon and two NUL terminators
+    // (flex requirement)
+    size_t buf_len = inner_len + 1 /* ; */ + 2 /* NUL NUL */;
+    char* buf = new char[buf_len];
+    memcpy(buf, inner->sql_begin, inner_len);
+    buf[inner_len] = ';';
+    buf[inner_len + 1] = '\0';
+    buf[inner_len + 2] = '\0';
+
+    std::ostringstream oss;
+    std::ostringstream ess;
+
+    try
+    {
+      // Create arena allocator for inner preparer
+      ArenaMalloc inner_amalloc(RonSQLExecParams::ARENA_MALLOC_PAGE_SIZE);
+
+      // Set up inner execution parameters
+      RonSQLExecParams inner_params;
+      inner_params.sql_buffer = buf;
+      inner_params.sql_len = buf_len;
+      inner_params.amalloc = &inner_amalloc;
+      inner_params.ndb = m_conf.ndb;
+      inner_params.output_format = RonSQLExecParams::OutputFormat::TEXT_NOHEADER;
+      inner_params.out_stream = &oss;
+      inner_params.err_stream = &ess;
+      inner_params.explain_mode = RonSQLExecParams::ExplainMode::FORBID;
+
+      // Create and execute inner preparer
+      {
+        RonSQLPreparer inner_preparer(inner_params);
+        inner_preparer.execute();
+      }
+
+      // Parse the TEXT_NOHEADER output
+      std::string result_str = oss.str();
+      // Trim trailing newline
+      while (!result_str.empty() &&
+             (result_str.back() == '\n' || result_str.back() == '\r'))
+        result_str.pop_back();
+
+      if (info.is_corr_scalar)
+      {
+        // Correlated scalar: parse multi-line output with two tab-separated columns
+        std::istringstream iss(result_str);
+        std::string line;
+        while (std::getline(iss, line))
+        {
+          while (!line.empty() && line.back() == '\r') line.pop_back();
+          if (line.empty()) continue;
+          size_t tab_pos = line.find('\t');
+          require_prm(tab_pos != std::string::npos,
+                      "Correlated scalar subquery did not return two columns.");
+          std::string key_str = line.substr(0, tab_pos);
+          std::string val_str = line.substr(tab_pos + 1);
+          CorrelatedPair pair;
+          parse_subquery_value(key_str, pair.key);
+          parse_subquery_value(val_str, pair.val);
+          info.corr_values->push(pair);
+        }
+        if (info.corr_values->size() > 1000)
+          throw RonSQLPermanentError(
+              "Correlated scalar subquery returned more than 1000 rows.");
+      }
+      else if (info.is_in_subquery)
+      {
+        // IN-subquery: parse multi-line output, one value per line
+        std::istringstream iss(result_str);
+        std::string line;
+        while (std::getline(iss, line))
+        {
+          while (!line.empty() && line.back() == '\r') line.pop_back();
+          if (line.empty()) continue;
+          SubqueryResult val;
+          if (line == "NULL")
+          {
+            val.is_null = true;
+          }
+          else
+          {
+            char* endptr = NULL;
+            errno = 0;
+            long long ll = strtoll(line.c_str(), &endptr, 10);
+            if (endptr != NULL && *endptr == '\0' && errno == 0)
+            {
+              val.is_null = false;
+              val.is_float = false;
+              val.int_val = (Int64)ll;
+            }
+            else
+            {
+              errno = 0;
+              double dbl = strtod(line.c_str(), &endptr);
+              if (endptr != NULL && *endptr == '\0' && errno == 0)
+              {
+                val.is_null = false;
+                val.is_float = true;
+                val.float_val = dbl;
+              }
+              else
+              {
+                throw RonSQLPermanentError(
+                    "IN-subquery returned a non-numeric result.");
+              }
+            }
+          }
+          info.in_values->push(val);
+        }
+        if (info.in_values->size() > 1000)
+        {
+          throw RonSQLPermanentError(
+              "IN-subquery returned more than 1000 values.");
+        }
+      }
+      else if (result_str == "NULL" || result_str.empty())
+      {
+        info.result.is_null = true;
+      }
+      else
+      {
+        // Scalar subquery: single-value parsing
+        char* endptr = NULL;
+        errno = 0;
+        long long ll = strtoll(result_str.c_str(), &endptr, 10);
+        if (endptr != NULL && *endptr == '\0' && errno == 0)
+        {
+          info.result.is_null = false;
+          info.result.is_float = false;
+          info.result.int_val = (Int64)ll;
+        }
+        else
+        {
+          // Try float
+          errno = 0;
+          double dbl = strtod(result_str.c_str(), &endptr);
+          if (endptr != NULL && *endptr == '\0' && errno == 0)
+          {
+            info.result.is_null = false;
+            info.result.is_float = true;
+            info.result.float_val = dbl;
+          }
+          else
+          {
+            throw RonSQLPermanentError(
+                "Subquery returned a non-numeric result.");
+          }
+        }
+      }
+    }
+    catch (const RonSQLPermanentError&)
+    {
+      delete[] buf;
+      throw;
+    }
+    catch (const RonSQLRetryableError&)
+    {
+      delete[] buf;
+      throw;
+    }
+    catch (const std::exception& e)
+    {
+      delete[] buf;
+      std::string msg = "Subquery execution failed: ";
+      msg += e.what();
+      throw RonSQLPermanentError(msg);
+    }
+    catch (...)
+    {
+      delete[] buf;
+      throw;
+    }
+    delete[] buf;
+  }
+}
+
+void
+RonSQLPreparer::substitute_subquery_results()
+{
+  substitute_subquery_results_ce(&m_context.ast_root.where_expression);
+  substitute_subquery_results_ce(&m_context.ast_root.having_expression);
+}
+
+void
+RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
+{
+  ConditionalExpression* ce = *ce_ptr;
+  if (ce == NULL) return;
+
+  if (ce->op == I_CORR_SCALAR)
+  {
+    for (Uint32 i = 0; i < m_subquery_infos.size(); i++)
+    {
+      if (m_subquery_infos[i].ce_node != ce) continue;
+      SubqueryInfo& info = m_subquery_infos[i];
+      TokenKind cmp_op = ce->corr_scalar.cmp_op;
+      ConditionalExpression* cmp_expr = ce->corr_scalar.cmp_expr;
+      ConditionalExpression* key_expr = ce->corr_scalar.key_expr;
+
+      if (info.corr_values->size() == 0)
+      {
+        // Empty: always false
+        ce->op = T_NOT_EQUALS;
+        ce->args.left = cmp_expr;
+        ce->args.right = cmp_expr;
+        return;
+      }
+
+      // Build OR-chain: (key=k1 AND col OP v1) OR (key=k2 AND col OP v2) ...
+      ConditionalExpression* result = NULL;
+      for (Uint32 j = 0; j < info.corr_values->size(); j++)
+      {
+        CorrelatedPair& pair = (*info.corr_values)[j];
+        if (pair.key.is_null || pair.val.is_null) continue;
+
+        // Build: key_expr = key_const
+        ConditionalExpression* key_const =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+        if (pair.key.is_float)
+        {
+          key_const->op = T_FLOAT;
+          key_const->constant_float.dbl = pair.key.float_val;
+          key_const->constant_float.ls = LexString{NULL, 0};
+        }
+        else
+        {
+          key_const->op = T_INT;
+          key_const->constant_integer = pair.key.int_val;
+        }
+
+        ConditionalExpression* key_eq =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+        key_eq->op = T_EQUALS;
+        key_eq->args.left = key_expr;
+        key_eq->args.right = key_const;
+
+        // Build: cmp_expr <cmp_op> val_const
+        ConditionalExpression* val_const =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+        if (pair.val.is_float)
+        {
+          val_const->op = T_FLOAT;
+          val_const->constant_float.dbl = pair.val.float_val;
+          val_const->constant_float.ls = LexString{NULL, 0};
+        }
+        else
+        {
+          val_const->op = T_INT;
+          val_const->constant_integer = pair.val.int_val;
+        }
+
+        ConditionalExpression* cmp_node =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+        cmp_node->op = cmp_op;
+        cmp_node->args.left = cmp_expr;
+        cmp_node->args.right = val_const;
+
+        // Build: key_eq AND cmp_node
+        ConditionalExpression* and_node =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+        and_node->op = T_AND;
+        and_node->args.left = key_eq;
+        and_node->args.right = cmp_node;
+
+        // Accumulate into OR-chain
+        if (result == NULL)
+        {
+          result = and_node;
+        }
+        else
+        {
+          ConditionalExpression* or_node =
+            m_amalloc->alloc_exc<ConditionalExpression>(1);
+          or_node->op = T_OR;
+          or_node->args.left = result;
+          or_node->args.right = and_node;
+          result = or_node;
+        }
+      }
+
+      if (result == NULL)
+      {
+        // All null: always false
+        ce->op = T_NOT_EQUALS;
+        ce->args.left = cmp_expr;
+        ce->args.right = cmp_expr;
+      }
+      else
+      {
+        *ce = *result;
+      }
+      return;
+    }
+    ndbrequire(false);
+    return;
+  }
+
+  if (ce->op == I_IN_SUBQUERY)
+  {
+    for (Uint32 i = 0; i < m_subquery_infos.size(); i++)
+    {
+      if (m_subquery_infos[i].ce_node == ce)
+      {
+        DynamicArray<SubqueryResult>* values = m_subquery_infos[i].in_values;
+        ConditionalExpression* in_expr = m_subquery_infos[i].in_expr;
+
+        if (values->size() == 0)
+        {
+          // Empty result set: always false via col != col
+          ce->op = T_NOT_EQUALS;
+          ce->args.left = in_expr;
+          ce->args.right = in_expr;
+          return;
+        }
+
+        // Build OR-chain: expr = v1 OR expr = v2 OR ...
+        ConditionalExpression* result = NULL;
+        for (Uint32 j = 0; j < values->size(); j++)
+        {
+          SubqueryResult& val = (*values)[j];
+          if (val.is_null) continue;  // NULL = x is never true
+
+          ConditionalExpression* const_node =
+            m_amalloc->alloc_exc<ConditionalExpression>(1);
+          if (val.is_float)
+          {
+            const_node->op = T_FLOAT;
+            const_node->constant_float.dbl = val.float_val;
+            const_node->constant_float.ls = LexString{NULL, 0};
+          }
+          else
+          {
+            const_node->op = T_INT;
+            const_node->constant_integer = val.int_val;
+          }
+
+          ConditionalExpression* eq =
+            m_amalloc->alloc_exc<ConditionalExpression>(1);
+          eq->op = T_EQUALS;
+          eq->args.left = in_expr;
+          eq->args.right = const_node;
+
+          if (result == NULL)
+          {
+            result = eq;
+          }
+          else
+          {
+            ConditionalExpression* or_node =
+              m_amalloc->alloc_exc<ConditionalExpression>(1);
+            or_node->op = T_OR;
+            or_node->args.left = result;
+            or_node->args.right = eq;
+            result = or_node;
+          }
+        }
+
+        if (result == NULL)
+        {
+          // All values were NULL: always false via col != col
+          ce->op = T_NOT_EQUALS;
+          ce->args.left = in_expr;
+          ce->args.right = in_expr;
+        }
+        else
+        {
+          *ce = *result;
+        }
+        return;
+      }
+    }
+    ndbrequire(false);
+    return;
+  }
+
+  if (ce->op == I_SUBQUERY)
+  {
+    // Find matching SubqueryInfo
+    for (Uint32 i = 0; i < m_subquery_infos.size(); i++)
+    {
+      if (m_subquery_infos[i].ce_node == ce)
+      {
+        SubqueryResult& result = m_subquery_infos[i].result;
+        if (result.is_null)
+        {
+          ce->op = T_NULL;
+        }
+        else if (result.is_float)
+        {
+          ce->op = T_FLOAT;
+          ce->constant_float.dbl = result.float_val;
+          ce->constant_float.ls = LexString{NULL, 0};
+        }
+        else
+        {
+          ce->op = T_INT;
+          ce->constant_integer = result.int_val;
+        }
+        return;
+      }
+    }
+    // Should not happen — every I_SUBQUERY node should have a SubqueryInfo
+    ndbrequire(false);
+    return;
+  }
+
+  switch (ce->op)
+  {
+  case T_IS:
+    substitute_subquery_results_ce(&ce->is.arg);
+    return;
+  case T_INTERVAL:
+    substitute_subquery_results_ce(&ce->interval.arg);
+    return;
+  case T_EXTRACT:
+    substitute_subquery_results_ce(&ce->extract.arg);
+    return;
+  case T_IDENTIFIER:
+  case T_INT:
+  case T_FLOAT:
+  case T_STRING:
+  case I_MYSQL_TIME:
+  case T_SUM:
+  case T_MIN:
+  case T_MAX:
+  case T_COUNT:
+  case T_AVG:
+  case T_NULL:
+    return;
+  default:
+    // Binary/unary operators: recurse into both sides
+    substitute_subquery_results_ce(&ce->args.left);
+    substitute_subquery_results_ce(&ce->args.right);
+    return;
+  }
+}
+
+void
 RonSQLPreparer::execute()
 {
   DEB_TRACE();
@@ -1248,6 +2697,11 @@ RonSQLPreparer::execute()
     }
     DEB_TRACE();
     require_prm(ndb != NULL, "Cannot query without ndb object.");
+
+    if (m_has_subqueries) {
+      execute_subqueries();
+      substitute_subquery_results();
+    }
 
     if (m_context.ast_root.joins != NULL) {
       execute_join();
@@ -1574,7 +3028,22 @@ RonSQLPreparer::execute_join()
   for (Uint32 i = 1; i < plan.num_ops; i++) {
     JoinOp& op = plan.ops[i];
     NdbQueryOptions opts;
-    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    switch (op.match_type) {
+    case JoinOp::SEMI_JOIN:
+      opts.setMatchType(NdbQueryOptions::MatchNonNull);
+      opts.setMatchType(NdbQueryOptions::MatchFirst);
+      break;
+    case JoinOp::ANTI_JOIN:
+      opts.setMatchType(NdbQueryOptions::MatchNullOnly);
+      break;
+    case JoinOp::LEFT_OUTER:
+      // MatchAll is the default (outer join) — no setMatchType needed
+      break;
+    case JoinOp::INNER:
+    default:
+      opts.setMatchType(NdbQueryOptions::MatchNonNull);
+      break;
+    }
 
     // Build linked key from parent
     const NdbQueryOperand* keys[MAX_JOIN_KEY_COLS + 1];
@@ -3355,6 +4824,8 @@ RonSQLPreparer::Context::column_name_to_idx(LexCString col_name)
 {
   DynamicArray<LexCString>& columns = m_parser.m_columns;
   DynamicArray<LexCString>& qualifiers = m_parser.m_column_qualifiers;
+  DynamicArray<bool>& is_inner = m_parser.m_col_is_inner;
+  bool in_subquery = (m_subquery_depth > 0);
   Uint32 sz = columns.size();
   for (Uint32 i=0; i < sz; i++)
   {
@@ -3365,6 +4836,7 @@ RonSQLPreparer::Context::column_name_to_idx(LexCString col_name)
   }
   columns.push(col_name);
   qualifiers.push(LexCString{NULL, 0});
+  is_inner.push(in_subquery);
   return sz;
 }
 
@@ -3374,6 +4846,8 @@ RonSQLPreparer::Context::qualified_column_name_to_idx(
 {
   DynamicArray<LexCString>& columns = m_parser.m_columns;
   DynamicArray<LexCString>& qualifiers = m_parser.m_column_qualifiers;
+  DynamicArray<bool>& is_inner = m_parser.m_col_is_inner;
+  bool in_subquery = (m_subquery_depth > 0);
   Uint32 sz = columns.size();
   for (Uint32 i = 0; i < sz; i++)
   {
@@ -3384,6 +4858,7 @@ RonSQLPreparer::Context::qualified_column_name_to_idx(
   }
   columns.push(col_name);
   qualifiers.push(table_qualifier);
+  is_inner.push(in_subquery);
   return sz;
 }
 
@@ -3427,6 +4902,24 @@ RonSQLPreparer::Context::set_err_state(ErrState state,
 AggregationAPICompiler*
 RonSQLPreparer::Context::get_agg()
 {
+  if (m_subquery_depth > 0)
+  {
+    if (m_inner_agg == NULL)
+    {
+      RonSQLPreparer* _this = &m_parser;
+      std::function<const char*(uint)> column_idx_to_name =
+        [_this](Uint32 idx) -> const char*
+        {
+          return _this->column_idx_to_name(idx).c_str();
+        };
+      m_inner_agg = new (get_allocator()->alloc_exc<AggregationAPICompiler>(1))
+        AggregationAPICompiler(column_idx_to_name,
+                               *m_parser.m_conf.out_stream,
+                               *m_parser.m_conf.err_stream,
+                               m_parser.m_amalloc);
+    }
+    return m_inner_agg;
+  }
   if (m_parser.m_agg)
   {
     return m_parser.m_agg;
@@ -3450,6 +4943,21 @@ RonSQLPreparer::Context::get_agg()
                            *m_parser.m_conf.err_stream,
                            m_parser.m_amalloc);
   return m_parser.m_agg;
+}
+
+void
+RonSQLPreparer::Context::enter_subquery()
+{
+  m_subquery_depth++;
+  m_inner_agg = NULL;
+}
+
+void
+RonSQLPreparer::Context::leave_subquery()
+{
+  ndbrequire(m_subquery_depth > 0);
+  m_subquery_depth--;
+  m_inner_agg = NULL;
 }
 
 ArenaMalloc*

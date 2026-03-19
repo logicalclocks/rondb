@@ -1,0 +1,1196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multi-Leaf Aggregation &amp; Continuation Queries in RonDB</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --accent2: #53d8fb;
+    --text: #eee;
+    --text-dim: #aab;
+    --green: #4ec9b0;
+    --yellow: #dcdcaa;
+    --blue: #569cd6;
+    --orange: #ce9178;
+    --purple: #c586c0;
+    --red: #f44747;
+    --border: #334;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 2.2rem;
+    color: var(--accent2);
+    border-bottom: 3px solid var(--accent);
+    padding-bottom: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.1rem;
+    margin-bottom: 2rem;
+  }
+  h2 {
+    font-size: 1.6rem;
+    color: var(--accent2);
+    margin-top: 3rem;
+    margin-bottom: 1rem;
+    padding-left: 0.5rem;
+    border-left: 4px solid var(--accent);
+  }
+  h3 {
+    font-size: 1.2rem;
+    color: var(--green);
+    margin-top: 2rem;
+    margin-bottom: 0.5rem;
+  }
+  h4 {
+    font-size: 1.05rem;
+    color: var(--yellow);
+    margin-top: 1.5rem;
+    margin-bottom: 0.4rem;
+  }
+  p { margin-bottom: 1rem; }
+  a { color: var(--accent2); }
+  ul, ol { margin: 0.5rem 0 1rem 1.5rem; }
+  li { margin-bottom: 0.3rem; }
+
+  code {
+    font-family: 'Cascadia Code', 'Fira Code', 'Menlo', monospace;
+    background: var(--surface);
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.88rem;
+  }
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.2rem 1.5rem;
+    margin: 1rem 0 1.5rem;
+    font-family: 'Cascadia Code', 'Fira Code', 'Menlo', monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  .diagram-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+  }
+  .diagram-box .caption {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    text-align: center;
+    margin-top: 0.5rem;
+    font-style: italic;
+  }
+
+  .query-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+    border-left: 4px solid var(--accent2);
+  }
+  .query-card.usecase { border-left-color: var(--green); }
+  .query-card.signal  { border-left-color: var(--orange); }
+  .query-card.design  { border-left-color: var(--purple); }
+
+  .tag {
+    display: inline-block;
+    background: var(--surface2);
+    padding: 0.15rem 0.5rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: bold;
+    margin-right: 0.3rem;
+  }
+  .tag.sql    { color: var(--accent2); }
+  .tag.tree   { color: var(--green); }
+  .tag.signal { color: var(--orange); }
+  .tag.future { color: var(--purple); }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1rem 0 1.5rem;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 0.6rem 1rem;
+    text-align: left;
+  }
+  th {
+    background: var(--surface2);
+    color: var(--accent2);
+    font-weight: 600;
+  }
+  td { background: var(--surface); }
+
+  .highlight { color: var(--accent); font-weight: bold; }
+  .kw { color: var(--blue); }
+  .fn { color: var(--yellow); }
+  .cm { color: var(--text-dim); }
+  .st { color: var(--orange); }
+  .vs { color: var(--green); }
+</style>
+</head>
+<body>
+
+<h1>Multi-Leaf Aggregation &amp; Continuation Queries</h1>
+<p class="subtitle">Exploring the next evolution of pushdown join aggregation in RonDB</p>
+
+<!-- ================================================================ -->
+<h2>1. Current Architecture: Single Aggregate Leaf</h2>
+
+<p>Today, RonDB pushdown join aggregation uses a <strong>linear chain</strong>
+query tree with exactly <strong>one aggregate leaf</strong>. The scan root
+produces rows, intermediate lookup/scan nodes join related tables, and the
+leaf node runs the AggInterpreter to compute GROUP BY, COUNT, SUM, etc.</p>
+
+<div class="diagram-box">
+<pre>
+<span class="cm">Current: Single aggregate leaf — linear chain</span>
+
+  ┌─────────────┐     ┌─────────────┐     ┌─────────────────────┐
+  │ <span class="kw">dept</span> (scan)  │────▶│ <span class="kw">emp</span> (lookup)│────▶│ <span class="fn">task</span> (lookup)       │
+  │ root        │     │ LEFT JOIN   │     │ LEFT JOIN           │
+  │             │     │             │     │ <span class="highlight">T_AGGREGATE_LEAF</span>    │
+  │             │     │             │     │ AggInterpreter:     │
+  │             │     │             │     │  GROUP BY dept.name │
+  │             │     │             │     │  COUNT(*), SUM(hrs) │
+  └─────────────┘     └─────────────┘     └─────────────────────┘
+
+  Signal flow:
+  SCAN_FRAGREQ ──▶ LQHKEYREQ ──▶ LQHKEYREQ ──▶ AggInterpreter
+                                                       │
+  JOIN_AGG_COMPLETE_REQ ◀──────────────────────────────┘
+       │
+       ▼
+  TRANSID_AI (aggregated results) ──▶ NDB API ──▶ Application
+</pre>
+<div class="caption">Figure 1: Single-leaf aggregation — all results flow through one AggInterpreter</div>
+</div>
+
+<p>The <code>JOIN_AGG_COMPLETE_REQ</code> signal triggers DblqhProxy to merge
+per-thread results, finalize (compute AVG from SUM/COUNT, etc.), and send
+aggregated rows via TRANSID_AI back to the DBTC/DBSPJ coordinator, which
+forwards them to the NDB API.</p>
+
+<!-- ================================================================ -->
+<h2>2. Query 1: Sibling Aggregations (Independent Tables)</h2>
+
+<div class="query-card">
+<p><span class="tag sql">SQL</span> <strong>E-commerce: Revenue and Shipping Cost per Store</strong></p>
+<pre>
+<span class="kw">SELECT</span> s.store_name,
+       <span class="fn">SUM</span>(o.revenue)   <span class="kw">AS</span> total_revenue,     <span class="cm">-- aggregate over orders</span>
+       <span class="fn">SUM</span>(sh.cost)     <span class="kw">AS</span> shipping_cost       <span class="cm">-- aggregate over shipments</span>
+<span class="kw">FROM</span> store s
+<span class="kw">LEFT JOIN</span> orders o    <span class="kw">ON</span> o.store_id = s.id
+<span class="kw">LEFT JOIN</span> shipment sh <span class="kw">ON</span> sh.store_id = s.id
+<span class="kw">GROUP BY</span> s.store_name
+</pre>
+</div>
+
+<h3>Why This Needs Multiple Leaves</h3>
+
+<p>Orders and shipments are <strong>independent siblings</strong> — a store's
+shipments are not children of its orders. With a single aggregate leaf, you'd
+have to pick one table as the leaf and somehow fold the other table's
+aggregation into it. This creates a <strong>cross-product problem</strong>:
+if a store has 10 orders and 5 shipments, a naive join produces 50 rows,
+inflating both SUM(revenue) and SUM(cost) by the other table's fan-out.</p>
+
+<div class="diagram-box">
+<pre>
+<span class="cm">Multi-leaf: two independent aggregations on sibling branches</span>
+
+                   ┌──────────────────────────┐
+                   │ <span class="kw">store</span> (scan, root)       │
+                   │                          │
+                   └────────┬─────────────────┘
+                      ┌─────┴──────┐
+                      ▼            ▼
+         ┌──────────────────┐  ┌──────────────────┐
+         │ <span class="fn">orders</span> (lookup)   │  │ <span class="fn">shipment</span> (lookup) │
+         │ LEFT JOIN        │  │ LEFT JOIN         │
+         │ <span class="highlight">AGG LEAF 1</span>       │  │ <span class="highlight">AGG LEAF 2</span>        │
+         │ SUM(revenue)     │  │ SUM(cost)         │
+         └──────────────────┘  └──────────────────┘
+</pre>
+<div class="caption">Figure 2: Sibling aggregate leaves — each independently aggregates against the root</div>
+</div>
+
+<h3>Real-World Value</h3>
+
+<div class="query-card usecase">
+<p>This pattern is <strong>extremely common</strong> in reporting and analytics:</p>
+<ul>
+  <li><strong>Financial dashboards</strong>: Revenue vs. expenses per department (different source tables)</li>
+  <li><strong>Inventory systems</strong>: Units received vs. units shipped per warehouse</li>
+  <li><strong>SaaS metrics</strong>: Active users vs. support tickets per account</li>
+  <li><strong>IoT/monitoring</strong>: Sensor readings vs. alert counts per device</li>
+</ul>
+<p>Today these require <strong>two separate queries</strong> or a
+<code>UNION ALL</code> with post-processing. With multi-leaf aggregation,
+the data nodes compute both sums in a <strong>single scan pass</strong> over
+the root table.</p>
+</div>
+
+
+<!-- ================================================================ -->
+<h2>3. Query 2: Multi-Level Aggregation (Different Granularity)</h2>
+
+<div class="query-card">
+<p><span class="tag sql">SQL</span> <strong>HR Report: Headcount and Total Task Hours per Department</strong></p>
+<pre>
+<span class="kw">SELECT</span> d.dept_name,
+       <span class="fn">COUNT</span>(<span class="kw">DISTINCT</span> e.id)  <span class="kw">AS</span> headcount,      <span class="cm">-- aggregate at emp level</span>
+       <span class="fn">SUM</span>(t.hours)           <span class="kw">AS</span> total_hours     <span class="cm">-- aggregate at task level</span>
+<span class="kw">FROM</span> department d
+<span class="kw">LEFT JOIN</span> employee e <span class="kw">ON</span> e.dept_id = d.id
+<span class="kw">LEFT JOIN</span> task t     <span class="kw">ON</span> t.emp_id = e.id
+<span class="kw">GROUP BY</span> d.dept_name
+</pre>
+</div>
+
+<h3>The Fan-Out Problem</h3>
+
+<p>With the current single leaf at the task level, each employee appears
+<strong>once per task</strong>. An employee with 5 tasks is counted 5 times in
+COUNT(e.id). <code>COUNT(DISTINCT)</code> solves this in SQL, but the
+AggInterpreter doesn't currently support DISTINCT — it would need to maintain
+a per-group set of seen values, which is expensive.</p>
+
+<div class="diagram-box">
+<pre>
+<span class="cm">Multi-level: aggregation at two different depths in the join chain</span>
+
+  ┌─────────────────┐     ┌─────────────────────┐     ┌──────────────────┐
+  │ <span class="kw">department</span>      │────▶│ <span class="fn">employee</span>            │────▶│ <span class="fn">task</span>             │
+  │ (scan, root)    │     │ (lookup, LEFT JOIN)  │     │ (lookup, LEFT)   │
+  │                 │     │ <span class="highlight">AGG LEAF 1</span>           │     │ <span class="highlight">AGG LEAF 2</span>       │
+  │                 │     │ COUNT(e.id)          │     │ SUM(t.hours)     │
+  └─────────────────┘     └─────────────────────┘     └──────────────────┘
+
+  Leaf 1 aggregates at the employee level (no fan-out from tasks).
+  Leaf 2 aggregates at the task level (full fan-out, but only SUM).
+  Results are <span class="vs">combined per GROUP BY key</span> at finalization.
+</pre>
+<div class="caption">Figure 3: Multi-level aggregation — COUNT at employee level, SUM at task level</div>
+</div>
+
+<h3>Real-World Value</h3>
+
+<div class="query-card usecase">
+<p>Multi-level aggregation at different granularity is a fundamental SQL pattern:</p>
+<ul>
+  <li><strong>Order analytics</strong>: COUNT(DISTINCT customers) + SUM(line_item_total) — customer count at order level, revenue at line-item level</li>
+  <li><strong>Content platforms</strong>: COUNT(DISTINCT authors) + SUM(view_count) — author count at article level, views at page-view level</li>
+  <li><strong>Supply chain</strong>: COUNT(DISTINCT suppliers) + SUM(part_quantity) — supplier count at purchase-order level, quantities at line-item level</li>
+</ul>
+<p>By aggregating at the <strong>natural level of each metric</strong>,
+the data node avoids the cross-product inflation entirely — no DISTINCT
+tracking needed.</p>
+</div>
+
+
+<!-- ================================================================ -->
+<h2>4. Query 3: Correlated Subqueries with Independent Aggregation</h2>
+
+<div class="query-card">
+<p><span class="tag sql">SQL</span> <strong>Product Catalog: Rating and Sales Summary</strong></p>
+<pre>
+<span class="kw">SELECT</span> p.product_name,
+       (<span class="kw">SELECT</span> <span class="fn">AVG</span>(r.score) <span class="kw">FROM</span> review r <span class="kw">WHERE</span> r.product_id = p.id)   <span class="kw">AS</span> avg_rating,
+       (<span class="kw">SELECT</span> <span class="fn">SUM</span>(s.qty)   <span class="kw">FROM</span> sale s   <span class="kw">WHERE</span> s.product_id = p.id)   <span class="kw">AS</span> total_sold,
+       (<span class="kw">SELECT</span> <span class="fn">COUNT</span>(*)     <span class="kw">FROM</span> returns t <span class="kw">WHERE</span> t.product_id = p.id)  <span class="kw">AS</span> return_count
+<span class="kw">FROM</span> product p
+<span class="kw">WHERE</span> p.category = 'Electronics'
+</pre>
+</div>
+
+<h3>Decorrelation into Multi-Leaf</h3>
+
+<p>RonSQL currently decorrelates correlated subqueries into separate pushdown
+queries. Each subquery runs independently, and the results are joined
+client-side. With multi-leaf aggregation, all three subqueries could be
+decorrelated into <strong>sibling branches of a single query tree</strong>:</p>
+
+<div class="diagram-box">
+<pre>
+<span class="cm">Three correlated subqueries → three aggregate leaves in one tree</span>
+
+                        ┌───────────────────────┐
+                        │ <span class="kw">product</span> (scan, root)  │
+                        │ WHERE category =      │
+                        │   'Electronics'        │
+                        └────────┬──────────────┘
+                   ┌─────────────┼─────────────┐
+                   ▼             ▼             ▼
+         ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+         │ <span class="fn">review</span>       │ │ <span class="fn">sale</span>         │ │ <span class="fn">returns</span>      │
+         │ LEFT JOIN    │ │ LEFT JOIN    │ │ LEFT JOIN    │
+         │ <span class="highlight">AGG LEAF 1</span>   │ │ <span class="highlight">AGG LEAF 2</span>   │ │ <span class="highlight">AGG LEAF 3</span>   │
+         │ AVG(score)   │ │ SUM(qty)     │ │ COUNT(*)     │
+         └──────────────┘ └──────────────┘ └──────────────┘
+</pre>
+<div class="caption">Figure 4: Three correlated subqueries as sibling aggregate leaves</div>
+</div>
+
+<h3>Real-World Value</h3>
+
+<div class="query-card usecase">
+<p>Correlated scalar subqueries with aggregation are pervasive in
+application queries:</p>
+<ul>
+  <li><strong>Product pages</strong>: Average rating + review count + sales count in one query</li>
+  <li><strong>User profiles</strong>: Post count + follower count + total likes</li>
+  <li><strong>Account summaries</strong>: Balance + transaction count + pending transfer sum</li>
+</ul>
+<p>Today each subquery is a separate round-trip. Multi-leaf aggregation
+reduces this to <strong>one scan pass</strong> over the driving table, with
+sibling lookups fanning out to each related table independently.</p>
+</div>
+
+
+<!-- ================================================================ -->
+<h2>5. Continuation Queries: Feeding Results Back Into the Data Nodes</h2>
+
+<p>A more ambitious idea: instead of sending aggregated results back to the
+NDB API for consumption or further processing, <strong>feed the results
+directly into another query stage within the data nodes</strong>. This is
+the concept of a <strong>continuation query</strong>.</p>
+
+<h3>The Problem with Current Result Flow</h3>
+
+<div class="diagram-box">
+<pre>
+<span class="cm">Current: results always exit to the NDB API</span>
+
+  ┌─────────┐   JOIN_AGG_COMPLETE_REQ   ┌──────────┐
+  │  DBSPJ  │ ─────────────────────────▶│ DblqhProxy│
+  │         │                           │ (merge)  │
+  └─────────┘                           └────┬─────┘
+                                              │ TRANSID_AI
+                                              ▼
+  ┌─────────┐   TRANSID_AI              ┌──────────┐
+  │ NDB API │ ◀─────────────────────────│  DBTC    │
+  │ (client)│                           │          │
+  └────┬────┘                           └──────────┘
+       │
+       ▼   <span class="highlight">Round-trip to API</span>
+  Application processes results
+  (possibly sends another query)
+</pre>
+<div class="caption">Figure 5: Current flow — results always leave the data nodes</div>
+</div>
+
+<p>For multi-stage analytics (e.g., "aggregate, then join with another table,
+then aggregate again"), this means:</p>
+<ol>
+  <li>First aggregation runs inside data nodes</li>
+  <li>Results travel to the API over the network</li>
+  <li>API sends a new query with the results as input</li>
+  <li>Second aggregation runs inside data nodes</li>
+  <li>Results travel back to the API again</li>
+</ol>
+<p>Each round-trip adds latency and network overhead. For analytical workloads
+with chained aggregations, this can dominate execution time.</p>
+
+<h3>The Continuation Query Concept</h3>
+
+<p>Instead of sending TRANSID_AI results to the API, the
+<code>JOIN_AGG_COMPLETE_REQ</code> handler could <strong>redirect results
+into a new query stage</strong> that runs within the same data node:</p>
+
+<div class="diagram-box">
+<pre>
+<span class="cm">Continuation: results feed into the next query stage</span>
+
+  ┌─────────┐  JOIN_AGG_COMPLETE_REQ  ┌──────────────┐
+  │  DBSPJ  │ ──────────────────────▶ │  DblqhProxy  │
+  │ (stage 1│                         │  (merge)     │
+  │  query) │                         └──────┬───────┘
+  └─────────┘                                │
+                                             │  <span class="vs">Instead of TRANSID_AI to API:</span>
+                                             │  <span class="vs">Feed rows into stage 2</span>
+                                             ▼
+                                    ┌──────────────────┐
+                                    │ <span class="highlight">Continuation</span>      │
+                                    │ Stage 2 query:   │
+                                    │ JOIN / SCAN /    │
+                                    │ AGGREGATE        │
+                                    └────────┬─────────┘
+                                             │
+                                             ▼
+                                    Results to API (or stage 3...)
+</pre>
+<div class="caption">Figure 6: Continuation query — results stay inside the data nodes</div>
+</div>
+
+<h3>Concrete Example: TPC-H Q11 Pattern</h3>
+
+<div class="query-card">
+<p><span class="tag sql">SQL</span> <strong>Aggregate, then filter by aggregate threshold</strong></p>
+<pre>
+<span class="cm">-- TPC-H Q11 pattern: "important stock identification"</span>
+<span class="kw">SELECT</span> ps.partkey, <span class="fn">SUM</span>(ps.supplycost * ps.availqty) <span class="kw">AS</span> value
+<span class="kw">FROM</span> partsupp ps
+<span class="kw">JOIN</span> supplier s <span class="kw">ON</span> s.suppkey = ps.suppkey
+<span class="kw">JOIN</span> nation n   <span class="kw">ON</span> n.nationkey = s.nationkey
+<span class="kw">WHERE</span> n.name = 'GERMANY'
+<span class="kw">GROUP BY</span> ps.partkey
+<span class="kw">HAVING</span> <span class="fn">SUM</span>(ps.supplycost * ps.availqty) &gt;
+       (<span class="kw">SELECT</span> <span class="fn">SUM</span>(ps2.supplycost * ps2.availqty) * 0.0001
+        <span class="kw">FROM</span> partsupp ps2
+        <span class="kw">JOIN</span> supplier s2 <span class="kw">ON</span> s2.suppkey = ps2.suppkey
+        <span class="kw">JOIN</span> nation n2   <span class="kw">ON</span> n2.nationkey = s2.nationkey
+        <span class="kw">WHERE</span> n2.name = 'GERMANY')
+<span class="kw">ORDER BY</span> value <span class="kw">DESC</span>
+</pre>
+</div>
+
+<p>This query has two stages:</p>
+<ol>
+  <li><strong>Stage 1</strong>: Aggregate SUM(supplycost * availqty) grouped by partkey</li>
+  <li><strong>Stage 2</strong>: Filter results where value exceeds the threshold (which is itself an aggregate)</li>
+</ol>
+
+<div class="diagram-box">
+<pre>
+<span class="cm">TPC-H Q11: Two-stage query with HAVING threshold from a second aggregation</span>
+
+<span class="cm">Stage 1a — Per-part value aggregation:</span>
+
+  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+  │ <span class="kw">partsupp</span>        │────▶│ <span class="kw">supplier</span>        │────▶│ <span class="kw">nation</span>          │
+  │ (scan, root)    │     │ (lookup, INNER)  │     │ (lookup, INNER) │
+  │                 │     │                  │     │ WHERE name =    │
+  │                 │     │                  │     │   'GERMANY'     │
+  │                 │     │                  │     │ <span class="highlight">AGG LEAF</span>        │
+  │                 │     │                  │     │ GROUP BY partkey│
+  │                 │     │                  │     │ SUM(cost*qty)   │
+  └─────────────────┘     └─────────────────┘     └─────────────────┘
+
+  <span class="vs">Results: {partkey, value}</span>
+        │
+        │  <span class="highlight">Continuation (no API round-trip)</span>
+        ▼
+
+<span class="cm">Stage 1b — Total value (for threshold computation):</span>
+
+  Same tree structure, but GROUP BY is empty (scalar aggregate):
+  SUM(supplycost * availqty) → single row: {total_value}
+
+<span class="cm">Stage 2 — Filter + sort:</span>
+
+  "virtual scan" over Stage 1a results
+    WHERE value > total_value * 0.0001
+    ORDER BY value DESC
+
+  <span class="vs">Final results → API</span>
+</pre>
+<div class="caption">Figure 5b: TPC-H Q11 — two aggregation stages feeding into a filter</div>
+</div>
+
+<p>With continuation queries, stage 1's aggregated results could feed directly
+into a stage 2 filter/scan <strong>without leaving the data nodes</strong>.</p>
+
+<!-- ================================================================ -->
+<h2>6. Implementation Architecture for Continuation Queries</h2>
+
+<h3>Option A: TRANSID_AI Redirect</h3>
+
+<div class="query-card signal">
+<p><span class="tag signal">SIGNAL FLOW</span> <strong>Redirect TRANSID_AI to another DBSPJ query</strong></p>
+<p>The simplest approach: modify <code>continueJoinAggSend()</code> in
+DblqhMain.cpp to send TRANSID_AI to a <strong>continuation DBSPJ instance</strong>
+instead of the original DBTC coordinator.</p>
+<pre>
+<span class="cm">// Current: send to DBTC/API</span>
+sendSignal(state-&gt;m_resultRef, GSN_TRANSID_AI, ...);
+
+<span class="cm">// Continuation: send to a pre-registered stage 2 DBSPJ</span>
+<span class="kw">if</span> (state-&gt;m_continuationRef != RNIL) {
+    sendSignal(state-&gt;m_continuationRef, GSN_TRANSID_AI, ...);
+} <span class="kw">else</span> {
+    sendSignal(state-&gt;m_resultRef, GSN_TRANSID_AI, ...);
+}
+</pre>
+<p><strong>Pros:</strong> Minimal protocol changes. Reuses existing TRANSID_AI handling.<br>
+<strong>Cons:</strong> Stage 2 DBSPJ must be set up before stage 1 completes.
+Requires careful transaction coordination.</p>
+
+<h4>Detailed Signal Flow (Option A)</h4>
+<pre>
+<span class="cm">1. DBTC sets up both stages:</span>
+   JOIN_AGG_SETUP_REQ (stage 1, aggStateKey=1)
+   JOIN_AGG_SETUP_REQ (stage 2, aggStateKey=2)
+
+<span class="cm">2. DBSPJ executes stage 1 query tree:</span>
+   SCAN_FRAGREQ → LQHKEYREQ chain → AggInterpreter (key=1)
+
+<span class="cm">3. Stage 1 completes:</span>
+   JOIN_AGG_COMPLETE_REQ (aggStateKey=1, <span class="highlight">continuationRef=stage2_spj</span>)
+     → DblqhProxy merges per-thread results
+     → continueJoinAggSend() sends TRANSID_AI to stage 2 DBSPJ
+       (instead of DBTC/API)
+
+<span class="cm">4. Stage 2 DBSPJ receives TRANSID_AI as "scan rows":</span>
+   Treats incoming rows as if they came from a scan root
+     → triggers child lookups for each row
+     → feeds results to stage 2 AggInterpreter (key=2)
+
+<span class="cm">5. Stage 2 completes normally:</span>
+   JOIN_AGG_COMPLETE_REQ (aggStateKey=2, continuationRef=RNIL)
+     → Results sent to API via normal path
+</pre>
+</div>
+
+<h3>Option B: Materialized Intermediate Table</h3>
+
+<div class="query-card signal">
+<p><span class="tag signal">SIGNAL FLOW</span> <strong>Write results to a transient NDB table, then scan it</strong></p>
+<p>After JOIN_AGG_COMPLETE, write aggregated rows into a temporary NDB table
+within the data node. Stage 2 then scans this table as its root.</p>
+<pre>
+<span class="cm">Stage 1 completes:</span>
+  JOIN_AGG_COMPLETE_REQ → merge → finalize
+    → <span class="highlight">INSERT rows into temp_agg_results table</span>
+    → JOIN_AGG_COMPLETE_CONF (with temp table reference)
+
+<span class="cm">Stage 2 begins:</span>
+  SCAN_TABREQ on temp_agg_results
+    → JOIN with other tables
+    → AGGREGATE (optional)
+    → Results to API
+
+<span class="cm">Cleanup:</span>
+  DROP temp_agg_results (or auto-expire after transaction)
+</pre>
+<p><strong>Pros:</strong> Clean separation between stages. Stage 2 is a normal
+query — no special coordination. Temp table can be scanned by multiple
+stage 2 queries.<br>
+<strong>Cons:</strong> Write amplification (results written to disk/memory,
+then re-read). Temporary table management overhead. Data distribution —
+aggregated results from different data nodes need to be accessible.</p>
+
+<h4>Detailed Signal Flow (Option B)</h4>
+<pre>
+<span class="cm">1. DBTC sets up stage 1 + temp table metadata:</span>
+   JOIN_AGG_SETUP_REQ (stage 1, aggStateKey=1)
+   CREATE temp_agg_t1 (PK = GROUP BY cols, VALUE = agg results)
+
+<span class="cm">2. Stage 1 executes and completes:</span>
+   JOIN_AGG_COMPLETE_REQ (aggStateKey=1)
+     → DblqhProxy merges → finalize
+     → <span class="highlight">INSERT each group into temp_agg_t1</span>
+       (N inserts for N groups — uses LQHKEYREQ internally)
+
+<span class="cm">3. Stage 2 is a completely standard SPJ query:</span>
+   SCAN_TABREQ on temp_agg_t1 (or another table with temp as child)
+     → SCAN_FRAGREQ → LQHKEYREQ chain → AggInterpreter
+     → No awareness that data came from a previous aggregation
+
+<span class="cm">4. Cleanup:</span>
+   DROP temp_agg_t1 (or auto-expire with transaction)
+</pre>
+</div>
+
+<h3>Option C: In-Memory Pipeline (Zero-Copy)</h3>
+
+<div class="query-card design">
+<p><span class="tag future">DESIGN</span> <strong>Direct memory handoff between query stages</strong></p>
+<p>The most efficient but most complex approach: the AggInterpreter's
+finalized result buffer is passed <strong>directly</strong> as the input
+row source for a stage 2 scan/lookup operation, without serializing to
+TRANSID_AI or writing to a table.</p>
+<pre>
+<span class="cm">Stage 1 AggInterpreter completes:</span>
+  gb_map contains: {group_key → [agg_result_1, agg_result_2, ...]}
+
+<span class="cm">Stage 2 receives a "virtual scan" over the gb_map:</span>
+  for each (key, value) in gb_map:
+      construct RowPtr from key + value columns
+      → feed to stage 2 lookup_parent_row / scanFrag_parent_row
+      → stage 2 join + aggregate as normal
+
+<span class="cm">Result: zero network hops, zero serialization between stages</span>
+</pre>
+<p><strong>Pros:</strong> Maximum performance — no serialization, no network,
+no temporary storage. Results stay in L1/L2 cache.<br>
+<strong>Cons:</strong> Requires new "virtual scan" abstraction in DBSPJ.
+Tightly couples the AggInterpreter's output format with DBSPJ's input
+format. Complex lifecycle management (stage 1 state must be kept alive
+until stage 2 completes).</p>
+
+<h4>Detailed Signal Flow (Option C)</h4>
+<pre>
+<span class="cm">1. DBTC sets up both stages as a pipeline:</span>
+   JOIN_AGG_PIPELINE_SETUP_REQ:
+     stage 1: aggStateKey=1, query tree = [partsupp→supplier→nation]
+     stage 2: aggStateKey=2, query tree = [virtual_scan→part lookup]
+     pipeline: stage1.output → stage2.root_input
+
+<span class="cm">2. Stage 1 executes and completes:</span>
+   JOIN_AGG_COMPLETE_REQ (aggStateKey=1, <span class="highlight">pipeline_mode=true</span>)
+     → DblqhProxy merges → finalize
+     → gb_map is NOT deallocated — kept alive for stage 2
+
+<span class="cm">3. Stage 2 begins — "virtual scan" over gb_map:</span>
+   <span class="kw">for each</span> (key, value) in stage1.gb_map:
+     construct RowPtr {partkey, total_value}
+       → feed to stage 2 DBSPJ as if from SCAN_FRAGREQ
+       → stage 2 child lookups execute normally
+       → results → stage 2 AggInterpreter (key=2)
+
+<span class="cm">4. Stage 2 completes:</span>
+   JOIN_AGG_COMPLETE_REQ (aggStateKey=2)
+     → Results to API
+     → <span class="highlight">Release stage 1 gb_map memory</span>
+</pre>
+</div>
+
+
+<!-- ================================================================ -->
+<h2>7. Signal Protocol for Continuation</h2>
+
+<p>Regardless of which implementation option is chosen, the signal protocol
+needs extension to express "this query's output feeds into another query."</p>
+
+<h3>New Signals</h3>
+
+<table>
+<tr>
+  <th>Signal</th>
+  <th>Direction</th>
+  <th>Purpose</th>
+</tr>
+<tr>
+  <td><code>JOIN_AGG_CONTINUE_REQ</code></td>
+  <td>DBSPJ → DblqhProxy</td>
+  <td>After COMPLETE, instead of sending results to API, feed them into a continuation query identified by a stage 2 aggStateKey or query reference</td>
+</tr>
+<tr>
+  <td><code>JOIN_AGG_CONTINUE_CONF</code></td>
+  <td>DblqhProxy → DBSPJ</td>
+  <td>Stage 2 has received all rows from stage 1 and has begun execution</td>
+</tr>
+<tr>
+  <td><code>JOIN_AGG_PIPELINE_SETUP_REQ</code></td>
+  <td>DBTC → DblqhProxy</td>
+  <td>Set up a multi-stage pipeline: allocate all stages' AggInterpreters and wire their output→input connections</td>
+</tr>
+</table>
+
+<h3>Modified JOIN_AGG_COMPLETE_REQ</h3>
+
+<p>The existing <code>JOIN_AGG_COMPLETE_REQ</code> could be extended with a
+<code>continuationRef</code> field:</p>
+
+<pre>
+<span class="cm">// JoinAggCompleteReq — extended for continuation</span>
+<span class="kw">struct</span> JoinAggCompleteReq {
+    Uint32 senderRef;
+    Uint32 senderData;
+    Uint32 requestId;
+    Uint32 aggStateKey;
+    Uint32 maxBatchRows;
+    <span class="highlight">Uint32 continuationRef;    // RNIL = send to API (current behavior)</span>
+    <span class="highlight">Uint32 continuationData;   // stage 2 query identifier</span>
+};
+</pre>
+
+<p>When <code>continuationRef != RNIL</code>, <code>continueJoinAggSend()</code>
+sends TRANSID_AI to the continuation target instead of the original result
+receiver. The continuation target (a DBSPJ instance or a direct DBLQH scan)
+processes the rows as if they came from a normal scan.</p>
+
+
+<!-- ================================================================ -->
+<h2>8. Comparison of Approaches</h2>
+
+<table>
+<tr>
+  <th>Aspect</th>
+  <th>Option A: Redirect</th>
+  <th>Option B: Temp Table</th>
+  <th>Option C: Pipeline</th>
+</tr>
+<tr>
+  <td>Complexity</td>
+  <td><span class="vs">Low</span></td>
+  <td><span class="fn">Medium</span></td>
+  <td><span class="highlight">High</span></td>
+</tr>
+<tr>
+  <td>Network hops</td>
+  <td>0 (same node)</td>
+  <td>0 (same node)</td>
+  <td>0 (same node)</td>
+</tr>
+<tr>
+  <td>Serialization</td>
+  <td>TRANSID_AI format</td>
+  <td>NDB row format (write+read)</td>
+  <td>None (zero-copy)</td>
+</tr>
+<tr>
+  <td>Storage overhead</td>
+  <td>None</td>
+  <td>Temp table on disk/memory</td>
+  <td>None</td>
+</tr>
+<tr>
+  <td>Multi-stage (3+)</td>
+  <td>Chain redirects</td>
+  <td>Chain temp tables</td>
+  <td>Chain pipelines</td>
+</tr>
+<tr>
+  <td>Cross-node results</td>
+  <td>Needs routing</td>
+  <td>Table handles distribution</td>
+  <td>Node-local only</td>
+</tr>
+<tr>
+  <td>Error handling</td>
+  <td>Abort stage 2</td>
+  <td>Drop temp table</td>
+  <td>Complex lifecycle</td>
+</tr>
+<tr>
+  <td>Reuse of results</td>
+  <td>Single consumer</td>
+  <td>Multiple consumers</td>
+  <td>Single consumer</td>
+</tr>
+</table>
+
+<h3>Recommendation</h3>
+
+<p><strong>Option A (TRANSID_AI redirect)</strong> is the pragmatic first step.
+It reuses the existing signal infrastructure, requires minimal protocol changes,
+and delivers the core benefit (no API round-trip). Option C is the long-term
+ideal but requires significant new abstractions. Option B is useful when
+the intermediate results need to be accessed by multiple subsequent queries
+(e.g., self-join on aggregated data).</p>
+
+<p>A reasonable evolution path:</p>
+<ol>
+  <li>Implement <strong>Option A</strong> for single-consumer continuations</li>
+  <li>Add <strong>Option B</strong> for multi-consumer scenarios (temp tables already partially supported in NDB)</li>
+  <li>Investigate <strong>Option C</strong> for performance-critical analytical pipelines</li>
+</ol>
+
+
+<!-- ================================================================ -->
+<h2>9. Putting It Together: Multi-Stage Analytical Query</h2>
+
+<p>Combining multi-leaf aggregation with continuation queries enables
+complex analytical patterns in a single data-node execution:</p>
+
+<div class="diagram-box">
+<pre>
+<span class="cm">Example: "Top departments by profit margin, with headcount"</span>
+
+<span class="cm">Stage 1 — Multi-leaf aggregation:</span>
+
+  department (scan)
+    ├── employee (LEFT, <span class="highlight">leaf 1</span>: COUNT → headcount)
+    └── transaction (LEFT, <span class="highlight">leaf 2</span>: SUM(revenue) - SUM(cost) → profit)
+
+  <span class="vs">Results: {dept_id, headcount, profit}</span>
+        │
+        │  <span class="highlight">Continuation (no API round-trip)</span>
+        ▼
+
+<span class="cm">Stage 2 — Filter + sort:</span>
+
+  "virtual scan" over stage 1 results
+    WHERE profit > 0
+    ORDER BY profit / headcount DESC
+    LIMIT 10
+
+  <span class="vs">Final results → API: top 10 departments by profit-per-employee</span>
+</pre>
+<div class="caption">Figure 7: Multi-stage pipeline — two aggregate leaves feeding into a continuation filter</div>
+</div>
+
+<div class="diagram-box">
+<pre>
+<span class="cm">Detailed query tree for the multi-stage example:</span>
+
+<span class="cm">Stage 1 — Multi-leaf aggregation (two leaves, one scan root):</span>
+
+                   ┌──────────────────────────┐
+                   │ <span class="kw">department</span> (scan, root)  │
+                   │ T_AGGREGATE_ANCESTOR     │
+                   └────────┬─────────────────┘
+                      ┌─────┴──────┐
+                      ▼            ▼
+         ┌──────────────────┐  ┌──────────────────────┐
+         │ <span class="fn">employee</span> (lookup) │  │ <span class="fn">transaction</span> (lookup)  │
+         │ LEFT JOIN        │  │ LEFT JOIN             │
+         │ <span class="highlight">AGG LEAF 1</span>       │  │ <span class="highlight">AGG LEAF 2</span>            │
+         │ GROUP BY dept_id │  │ GROUP BY dept_id      │
+         │ COUNT(e.id)      │  │ SUM(revenue)          │
+         │  → headcount     │  │ SUM(cost) → profit    │
+         └──────────────────┘  └──────────────────────┘
+
+  <span class="vs">Merged results: {dept_id, headcount, profit}</span>
+         │
+         │  <span class="highlight">Continuation → Stage 2</span>
+         ▼
+
+<span class="cm">Stage 2 — Filter, compute, sort (no table access needed):</span>
+
+  ┌──────────────────────────────────────────────┐
+  │ "virtual scan" over Stage 1 merged results   │
+  │                                              │
+  │  WHERE profit > 0                            │
+  │  Compute: profit_per_head = profit/headcount │
+  │  ORDER BY profit_per_head DESC               │
+  │  LIMIT 10                                    │
+  └──────────────────────────────────────────────┘
+
+  <span class="vs">Final: top 10 depts by profit-per-employee → API</span>
+</pre>
+<div class="caption">Figure 8: Detailed query tree — multi-leaf stage 1 feeds into continuation stage 2</div>
+</div>
+
+<p>Without these features, this query requires:</p>
+<ol>
+  <li>Query 1: COUNT employees per department → API</li>
+  <li>Query 2: SUM revenue and cost per department → API</li>
+  <li>Client-side join of results</li>
+  <li>Client-side computation of profit margin</li>
+  <li>Client-side sort and LIMIT</li>
+</ol>
+
+<p>With multi-leaf + continuation: <strong>one query, zero round-trips,
+all computation inside the data nodes.</strong></p>
+
+
+<!-- ================================================================ -->
+<h2>10. Non-Root Continuation: Aggregated Results as a Child Node</h2>
+
+<p>The examples so far assume stage 1 results become the <strong>scan root</strong>
+of stage 2. But a more powerful (and common) pattern is when the aggregated
+results feed into stage 2 as a <strong>child lookup node</strong> — the root
+of stage 2 is a different table.</p>
+
+<h3>Motivating Query: Supplier Cost Analysis with Part Details</h3>
+
+<div class="query-card">
+<p><span class="tag sql">SQL</span> <strong>Enrich aggregated results by joining with a master table</strong></p>
+<pre>
+<span class="cm">-- Stage 1: Aggregate supplier costs per part (for German suppliers)</span>
+<span class="kw">SELECT</span> ps.partkey, <span class="fn">SUM</span>(ps.supplycost * ps.availqty) <span class="kw">AS</span> total_value
+<span class="kw">FROM</span> partsupp ps
+<span class="kw">JOIN</span> supplier s <span class="kw">ON</span> s.suppkey = ps.suppkey
+<span class="kw">JOIN</span> nation n   <span class="kw">ON</span> n.nationkey = s.nationkey
+<span class="kw">WHERE</span> n.name = 'GERMANY'
+<span class="kw">GROUP BY</span> ps.partkey
+
+<span class="cm">-- Stage 2: Join with part master table for enrichment + second aggregation</span>
+<span class="kw">SELECT</span> p.type,
+       <span class="fn">COUNT</span>(*)              <span class="kw">AS</span> part_count,
+       <span class="fn">SUM</span>(agg.total_value)  <span class="kw">AS</span> type_total_value,
+       <span class="fn">AVG</span>(p.retailprice)    <span class="kw">AS</span> avg_retail
+<span class="kw">FROM</span> part p
+<span class="kw">JOIN</span> [stage1_results] agg <span class="kw">ON</span> agg.partkey = p.partkey
+<span class="kw">GROUP BY</span> p.type
+<span class="kw">ORDER BY</span> type_total_value <span class="kw">DESC</span>
+</pre>
+</div>
+
+<p>Stage 2 scans the <code>part</code> table as its root and joins with stage 1's
+aggregated results as a <strong>child lookup node</strong>. This is fundamentally
+different from the root-continuation case: stage 2's root drives the iteration,
+and stage 1 results are <em>looked up</em> on demand.</p>
+
+<div class="diagram-box">
+<pre>
+<span class="cm">Stage 1 — Aggregation query:</span>
+
+  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+  │ <span class="kw">partsupp</span>        │────▶│ <span class="kw">supplier</span>        │────▶│ <span class="kw">nation</span>          │
+  │ (scan, root)    │     │ (lookup, INNER)  │     │ (lookup, INNER) │
+  │                 │     │                  │     │ WHERE name =    │
+  │                 │     │                  │     │   'GERMANY'     │
+  │                 │     │                  │     │ <span class="highlight">AGG LEAF</span>        │
+  │                 │     │                  │     │ GROUP BY partkey│
+  │                 │     │                  │     │ SUM(cost*qty)   │
+  └─────────────────┘     └─────────────────┘     └─────────────────┘
+
+  <span class="vs">Results: {partkey, total_value}</span>  ──────────────────────┐
+                                                        │
+                                                        │ <span class="highlight">Continuation</span>
+                                                        │ <span class="highlight">(non-root child)</span>
+                                                        ▼
+<span class="cm">Stage 2 — Enrichment + re-aggregation:</span>
+
+  ┌──────────────────┐     ┌──────────────────────────┐
+  │ <span class="kw">part</span> (scan, root) │────▶│ <span class="fn">[stage1 results]</span>        │
+  │ T_AGG_ANCESTOR   │     │ (lookup by partkey)      │
+  │                  │     │ INNER JOIN               │
+  │                  │     │ <span class="highlight">AGG LEAF</span>                 │
+  │                  │     │ GROUP BY p.type           │
+  │                  │     │ COUNT(*), SUM(total_value)│
+  │                  │     │ AVG(p.retailprice)        │
+  └──────────────────┘     └──────────────────────────┘
+
+  <span class="vs">Final: {type, part_count, type_total_value, avg_retail} → API</span>
+</pre>
+<div class="caption">Figure 9: Non-root continuation — stage 1 results used as a child lookup in stage 2</div>
+</div>
+
+<h3>Why Non-Root Position Is Harder</h3>
+
+<p>When stage 1 results feed in at the root, stage 2 simply iterates them
+sequentially (like a scan). When they feed in as a <strong>child</strong>,
+stage 2's root performs a scan of a real table, and for each root row,
+stage 2 needs to <strong>look up</strong> a matching row in the stage 1
+results by key. This is a fundamentally different access pattern.</p>
+
+<ul>
+  <li><strong>Root position</strong>: sequential iteration over results (scan-like)</li>
+  <li><strong>Child position</strong>: random-access lookup by key into results (hash-like)</li>
+</ul>
+
+<h3>How Each Option Handles Non-Root Continuation</h3>
+
+<h4>Option A: TRANSID_AI Redirect — Challenging at Non-Root</h4>
+
+<div class="query-card signal">
+<p><span class="tag signal">SIGNAL FLOW</span> <strong>Redirect doesn't naturally support child-position access</strong></p>
+
+<p>TRANSID_AI redirect works well when stage 2's root consumes the stream
+sequentially. But when stage 1 results are a child node, stage 2 needs to
+<strong>look up specific keys</strong> in stage 1's output as each root row
+arrives. TRANSID_AI is a push-based stream — there's no way for stage 2 to
+"pull" a specific row by key.</p>
+
+<p><strong>Possible workaround</strong>: Buffer all stage 1 TRANSID_AI rows into a
+hash map indexed by partkey on the receiving side. When stage 2's root row arrives,
+look up the hash map. This effectively becomes a materialized hash join:</p>
+
+<pre>
+<span class="cm">// Stage 2's DBSPJ receives stage 1 results via TRANSID_AI redirect</span>
+<span class="cm">// Buffer into hash map keyed by partkey</span>
+HashMap&lt;Uint32, AggRow&gt; stage1_results;
+
+<span class="cm">// Stage 2 root (part scan) drives iteration</span>
+<span class="kw">for each</span> part_row from SCAN_FRAGREQ:
+    lookup key = part_row.partkey
+    <span class="kw">if</span> (stage1_results.contains(key)):
+        <span class="cm">// Join and feed to stage 2's AggInterpreter</span>
+        combined = merge(part_row, stage1_results[key])
+        handleJoinAggRow(combined)
+</pre>
+
+<p><strong>Pros:</strong> Reuses TRANSID_AI infrastructure.<br>
+<strong>Cons:</strong> Stage 1 must complete <em>before</em> stage 2's scan begins
+(blocking). Requires allocating a hash map in DBSPJ for buffering, which may be
+large. Essentially reimplements hash join inside DBSPJ.</p>
+</div>
+
+<h4>Option B: Materialized Temp Table — Natural Fit</h4>
+
+<div class="query-card signal">
+<p><span class="tag signal">SIGNAL FLOW</span> <strong>Temp table makes child-position access trivial</strong></p>
+
+<p>This is where temp tables shine. Stage 1 results are written to a temporary
+NDB table with partkey as the primary key. Stage 2's child node simply does
+a normal <code>LQHKEYREQ</code> lookup into this table — no special handling
+needed at all.</p>
+
+<pre>
+<span class="cm">Stage 1 completes:</span>
+  JOIN_AGG_COMPLETE_REQ → merge → finalize
+    → INSERT INTO temp_stage1(partkey, total_value) VALUES (...)
+    → temp table has <span class="highlight">partkey as primary key</span>
+
+<span class="cm">Stage 2 query tree (normal SPJ query):</span>
+  Node 0: SCAN part (root)
+  Node 1: LOOKUP temp_stage1 ON partkey = part.partkey  ← <span class="vs">normal lookup!</span>
+           (INNER JOIN, AGG LEAF)
+
+<span class="cm">→ No special DBSPJ changes for the child node — it's just a table lookup</span>
+</pre>
+
+<p><strong>Pros:</strong> Stage 2 is a <em>completely standard</em> SPJ query. No new
+abstractions needed. Works with any tree topology — the temp table can appear
+at any position (root, child, grandchild). NDB's existing distribution handles
+multi-node cases.<br>
+<strong>Cons:</strong> Write amplification. Temp table DDL overhead. Need to ensure
+the temp table is on the same data node for locality.</p>
+</div>
+
+<h4>Option C: In-Memory Pipeline — Virtual Lookup</h4>
+
+<div class="query-card design">
+<p><span class="tag future">DESIGN</span> <strong>Direct lookup into the AggInterpreter's group-by hash map</strong></p>
+
+<p>The most elegant solution: stage 2's child node performs a <strong>virtual
+lookup</strong> directly into stage 1's <code>gb_map</code>. The gb_map is
+already a hash map keyed by GROUP BY columns — the lookup is essentially free.</p>
+
+<pre>
+<span class="cm">Stage 1 AggInterpreter's internal state after finalization:</span>
+  gb_map = {
+    partkey=17  → {total_value: 45230},
+    partkey=42  → {total_value: 89100},
+    partkey=99  → {total_value: 12500},
+    ...
+  }
+
+<span class="cm">Stage 2 child node "virtual lookup":</span>
+<span class="kw">for each</span> part_row from root scan:
+    key = part_row.partkey
+    result = <span class="highlight">gb_map.lookup(key)</span>     <span class="cm">// O(1) hash lookup</span>
+    <span class="kw">if</span> (result != nullptr):
+        <span class="cm">// INNER JOIN: combine and continue</span>
+        combined = merge(part_row, result)
+        handleJoinAggRow(combined)  <span class="cm">// → Stage 2 AggInterpreter</span>
+    <span class="kw">else</span>:
+        <span class="cm">// No match — INNER JOIN filters this row out</span>
+        <span class="cm">// (or inject null for LEFT JOIN)</span>
+</pre>
+
+<p><strong>Pros:</strong> Zero-copy, zero-serialization. The gb_map is <em>already
+a hash table</em> — no new data structure needed. Cache-friendly: both stage 1
+results and the lookup are in the same L1/L2 cache context. O(1) per lookup.<br>
+<strong>Cons:</strong> Requires a "virtual lookup" abstraction in DBSPJ that
+replaces LQHKEYREQ with an in-memory hash probe. Stage 1's gb_map lifetime must
+extend until stage 2 completes. Only works when stage 1 and stage 2 run on the
+same LDM thread (node-local only).</p>
+</div>
+
+<h3>Non-Root Continuation: Comparison</h3>
+
+<table>
+<tr>
+  <th>Aspect</th>
+  <th>Option A: Redirect</th>
+  <th>Option B: Temp Table</th>
+  <th>Option C: Pipeline</th>
+</tr>
+<tr>
+  <td>Child-position access</td>
+  <td><span class="highlight">Requires hash buffer</span></td>
+  <td><span class="vs">Normal LQHKEYREQ</span></td>
+  <td><span class="vs">gb_map.lookup()</span></td>
+</tr>
+<tr>
+  <td>Stage ordering</td>
+  <td>Stage 1 must finish first</td>
+  <td>Stage 1 must finish first</td>
+  <td><span class="vs">Can overlap</span> (probe on demand)</td>
+</tr>
+<tr>
+  <td>Memory overhead</td>
+  <td>Hash buffer in DBSPJ</td>
+  <td>Temp table storage</td>
+  <td><span class="vs">None (reuse gb_map)</span></td>
+</tr>
+<tr>
+  <td>Multi-node support</td>
+  <td><span class="highlight">Complex routing</span></td>
+  <td><span class="vs">NDB distribution</span></td>
+  <td><span class="highlight">Node-local only</span></td>
+</tr>
+<tr>
+  <td>Code complexity</td>
+  <td>Medium (hash buffer)</td>
+  <td><span class="vs">Low (standard query)</span></td>
+  <td><span class="highlight">High (virtual lookup)</span></td>
+</tr>
+</table>
+
+<p><strong>Key insight for non-root continuation:</strong> Option B (temp table) is
+the strongest choice because the child node becomes a <em>standard table lookup</em>
+requiring zero changes to DBSPJ's query execution. Option C is optimal for
+single-node deployments where the gb_map is already in cache. Option A is the
+weakest fit because it must buffer and index the entire stage 1 result set
+before stage 2 can begin — effectively recreating what Option B does with
+less infrastructure support.</p>
+
+<h3>Real-World Queries at Non-Root Position</h3>
+
+<div class="query-card usecase">
+<p>Non-root continuation is actually the <strong>more common</strong> pattern in
+practice, because most analytical queries aggregate first and then enrich:</p>
+<ul>
+  <li><strong>Sales dashboard</strong>: Aggregate daily sales per product → JOIN with product catalog for names, categories, images</li>
+  <li><strong>User analytics</strong>: Aggregate events per user → JOIN with user profile for demographics, region, tier</li>
+  <li><strong>Financial reporting</strong>: Aggregate transactions per account → JOIN with account master for account type, branch, manager</li>
+  <li><strong>Log analysis</strong>: Aggregate error counts per service → JOIN with service registry for team owner, SLA tier</li>
+</ul>
+<p>In all these cases, the aggregation produces a <strong>smaller result set</strong>
+(grouped keys) that then gets enriched by joining with a master/dimension table.
+The aggregated results naturally appear as a <strong>child lookup</strong> in the
+enrichment query, not as the scan root.</p>
+</div>
+
+
+<!-- ================================================================ -->
+<h2>11. Summary</h2>
+
+<table>
+<tr>
+  <th>Feature</th>
+  <th>Current State</th>
+  <th>Value</th>
+</tr>
+<tr>
+  <td>Single aggregate leaf</td>
+  <td><span class="vs">Implemented</span></td>
+  <td>Pushdown GROUP BY + aggregation for linear join chains</td>
+</tr>
+<tr>
+  <td>Multi-leaf aggregation</td>
+  <td><span class="fn">Future</span></td>
+  <td>Eliminate cross-product inflation; single-pass sibling aggregation</td>
+</tr>
+<tr>
+  <td>Continuation queries</td>
+  <td><span class="fn">Future</span></td>
+  <td>Eliminate API round-trips for multi-stage analytics</td>
+</tr>
+<tr>
+  <td>In-memory pipeline</td>
+  <td><span class="highlight">Research</span></td>
+  <td>Zero-copy result handoff for maximum throughput</td>
+</tr>
+</table>
+
+<p style="margin-top: 2rem; color: var(--text-dim); font-size: 0.9rem;">
+RONDB-733 &mdash; Pushdown Join Aggregation &mdash; Multi-Leaf &amp; Continuation Query Design
+</p>
+
+</body>
+</html>

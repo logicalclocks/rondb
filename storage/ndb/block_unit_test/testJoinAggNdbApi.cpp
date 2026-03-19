@@ -517,6 +517,7 @@ testSumGroupBy(Ndb *ndb, MYSQL *conn,
 
   /* Child options: attach aggregation + linked projection for grp */
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
 
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
@@ -691,6 +692,7 @@ testCountSum(Ndb *ndb, MYSQL *conn, Int64 expectedCount, Int64 expectedSum)
   };
 
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
 
   const NdbQueryLookupOperationDef *childOp =
@@ -840,6 +842,7 @@ testMultiAggGroupBy(Ndb *ndb, MYSQL *conn,
   };
 
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
   opts.addLinkedProjection(grpLink);
@@ -976,8 +979,9 @@ testMultiAggGroupBy(Ndb *ndb, MYSQL *conn,
 /*                                                                     */
 /* Node 1: QN_LookupNode (child PK lookup on t4_order):                */
 /*   [7]  0x000b0001  type=QN_LOOKUP(1), nodeLength=11                 */
-/*   [8]  0x00002093  requestInfo: NI_HAS_PARENT | NI_KEY_LINKED |     */
-/*                      NI_LINKED_ATTR | NI_ATTR_LINKED | NI_AGGREGATE */
+/*   [8]  0x00002493  requestInfo: NI_HAS_PARENT | NI_KEY_LINKED |     */
+/*                      NI_LINKED_ATTR | NI_ATTR_LINKED |              */
+/*                      NI_INNER_JOIN | NI_AGGREGATE                   */
 /*   [9]  tableId     (t4_order)                                       */
 /*   [10] tableVersion                                                 */
 /*   Part1 (NI_HAS_PARENT):                                            */
@@ -996,8 +1000,9 @@ testMultiAggGroupBy(Ndb *ndb, MYSQL *conn,
 /*                                                                     */
 /* Node 2: QN_LookupNode (grandchild PK lookup on t4_line, agg leaf): */
 /*   [18] 0x000b0001  type=QN_LOOKUP(1), nodeLength=11                 */
-/*   [19] 0x00006083  requestInfo: NI_HAS_PARENT | NI_KEY_LINKED |     */
-/*                      NI_ATTR_LINKED | NI_AGGREGATE | NI_AGG_LEAF    */
+/*   [19] 0x00006483  requestInfo: NI_HAS_PARENT | NI_KEY_LINKED |     */
+/*                      NI_ATTR_LINKED | NI_INNER_JOIN |               */
+/*                      NI_AGGREGATE | NI_AGG_LEAF                     */
 /*   [20] tableId     (t4_line)                                        */
 /*   [21] tableVersion                                                 */
 /*   Part1 (NI_HAS_PARENT):                                            */
@@ -1270,6 +1275,7 @@ testThreeWayJoin(Ndb *ndb, MYSQL *conn)
   };
 
   NdbQueryOptions orderOpts;
+  orderOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   const NdbQueryOperand *filterParams[] = {
     qb->linkedValue(regionOp, "area"),
     nullptr
@@ -1292,6 +1298,7 @@ testThreeWayJoin(Ndb *ndb, MYSQL *conn)
   };
 
   NdbQueryOptions lineOpts;
+  lineOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   lineOpts.setAggregation(agg);
 
   const NdbLinkedOperand *areaLink = qb->linkedValue(regionOp, "area");
@@ -1400,8 +1407,6 @@ testThreeWayJoin(Ndb *ndb, MYSQL *conn)
     Int64 cntVal = cntRes.data_int64();
 
     actual[areaVal] = {discVal, sumVal, cntVal};
-    V("  area=%d disc=%lld SUM=%lld COUNT=%lld\n",
-      areaVal, (long long)discVal, (long long)sumVal, (long long)cntVal);
   }
 
   query->close();
@@ -1556,6 +1561,7 @@ testMinMaxWithNull(Ndb *ndb, MYSQL *conn)
   };
 
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *deptNameLink = qb->linkedValue(deptOp, "dept_name");
   opts.addLinkedProjection(deptNameLink);
@@ -1882,6 +1888,7 @@ testCharGroupByWithIndex(Ndb *ndb, MYSQL *conn)
     };
 
     NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
     opts.setAggregation(agg);
     const NdbLinkedOperand *catNameLink = qb->linkedValue(catOp, "cat_name");
     opts.addLinkedProjection(catNameLink);
@@ -2171,8 +2178,10 @@ testFourWayCompositeKey(Ndb *ndb, MYSQL *conn)
   const NdbQueryOperand *cityJoinKey[] = {
     qb->linkedValue(countryOp, "id"), nullptr
   };
+  NdbQueryOptions cityOpts;
+  cityOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   const NdbQueryLookupOperationDef *cityOp =
-      qb->readTuple(cityTab, cityJoinKey);
+      qb->readTuple(cityTab, cityJoinKey, &cityOpts);
   if (cityOp == nullptr) {
     printf("FAILED (readTuple city: %s)\n", qb->getNdbError().message);
     qb->destroy();
@@ -2183,8 +2192,10 @@ testFourWayCompositeKey(Ndb *ndb, MYSQL *conn)
   const NdbQueryOperand *storeJoinKey[] = {
     qb->linkedValue(cityOp, "country_id"), nullptr
   };
+  NdbQueryOptions storeOpts;
+  storeOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   const NdbQueryLookupOperationDef *storeOp =
-      qb->readTuple(storeTab, storeJoinKey);
+      qb->readTuple(storeTab, storeJoinKey, &storeOpts);
   if (storeOp == nullptr) {
     printf("FAILED (readTuple store: %s)\n", qb->getNdbError().message);
     qb->destroy();
@@ -2200,6 +2211,7 @@ testFourWayCompositeKey(Ndb *ndb, MYSQL *conn)
   };
 
   NdbQueryOptions saleOpts;
+  saleOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   saleOpts.setAggregation(agg);
 
   const NdbLinkedOperand *nameLink = qb->linkedValue(countryOp, "name");
@@ -2468,6 +2480,7 @@ testArithmeticExpression(Ndb *ndb, MYSQL *conn)
   };
 
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(orderOp, "grp");
   const NdbLinkedOperand *priceLink = qb->linkedValue(orderOp, "unit_price");
@@ -2630,6 +2643,7 @@ testEmptyResult(Ndb *ndb, MYSQL *conn)
   };
 
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   opts.setInterpretedCode(rejectAll);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
@@ -2820,6 +2834,7 @@ testHighCardinalityGroupBy(Ndb *ndb, MYSQL *conn)
   };
 
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
   opts.addLinkedProjection(grpLink);
@@ -3031,6 +3046,7 @@ testGlobalAggThreeWay(Ndb *ndb, MYSQL *conn)
     qb->linkedValue(regionOp, "id"), nullptr
   };
   NdbQueryOptions orderOpts;
+  orderOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   const NdbQueryOperand *filterParams[] = {
     qb->linkedValue(regionOp, "area"), nullptr
   };
@@ -3050,6 +3066,7 @@ testGlobalAggThreeWay(Ndb *ndb, MYSQL *conn)
     qb->linkedValue(orderOp, "region_id"), nullptr
   };
   NdbQueryOptions lineOpts;
+  lineOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   lineOpts.setAggregation(agg);
 
   const NdbQueryLookupOperationDef *lineOp =
@@ -3253,6 +3270,7 @@ testAllNullAggColumn(Ndb *ndb, MYSQL *conn)
   };
 
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
   opts.addLinkedProjection(grpLink);
@@ -3556,6 +3574,7 @@ testEvictionGroupBy(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   };
 
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
   opts.addLinkedProjection(grpLink);
@@ -3809,6 +3828,7 @@ testEviction5116GroupBy(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   };
 
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
   opts.addLinkedProjection(grpLink);
@@ -4008,6 +4028,7 @@ testEviction5116AllAggs(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   };
 
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
   opts.addLinkedProjection(grpLink);
@@ -4315,8 +4336,10 @@ testEviction5116ThreeWay(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   const NdbQueryOperand *orderJoinKey[] = {
     qb->linkedValue(regionOp, "id"), nullptr
   };
+  NdbQueryOptions orderOpts;
+  orderOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   const NdbQueryLookupOperationDef *orderOp =
-      qb->readTuple(orderTab, orderJoinKey);
+      qb->readTuple(orderTab, orderJoinKey, &orderOpts);
   if (orderOp == nullptr) {
     printf("FAILED (readTuple order: %s)\n", qb->getNdbError().message);
     qb->destroy();
@@ -4330,6 +4353,7 @@ testEviction5116ThreeWay(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   };
 
   NdbQueryOptions lineOpts;
+  lineOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   lineOpts.setAggregation(agg);
   const NdbLinkedOperand *areaLink = qb->linkedValue(regionOp, "area");
   if (areaLink == nullptr) {
@@ -4539,6 +4563,7 @@ testEviction5116And4040(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   };
 
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
   opts.addLinkedProjection(grpLink);
@@ -4801,6 +4826,7 @@ testMultiFragment(Ndb *ndb, MYSQL *conn)
   };
 
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
   opts.addLinkedProjection(grpLink);
@@ -4997,6 +5023,7 @@ testMultiFragmentEviction(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   };
 
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
   opts.addLinkedProjection(grpLink);
@@ -5174,6 +5201,7 @@ runAndVerifyT14Query(Ndb *ndb, MYSQL *conn, const char *label)
     qb->linkedValue(parentOp, "id"), nullptr
   };
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
   opts.addLinkedProjection(grpLink);
@@ -5339,6 +5367,7 @@ testSetupRef(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
     qb->linkedValue(parentOp, "id"), nullptr
   };
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
   opts.addLinkedProjection(grpLink);
@@ -5445,6 +5474,7 @@ testEarlyClose(Ndb *ndb, MYSQL *conn)
     qb->linkedValue(parentOp, "id"), nullptr
   };
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
   opts.addLinkedProjection(grpLink);
@@ -5539,6 +5569,7 @@ testCompleteRef(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
     qb->linkedValue(parentOp, "id"), nullptr
   };
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
   const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
   opts.addLinkedProjection(grpLink);

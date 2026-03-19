@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -480,6 +480,9 @@ class FsReadWriteReq;
 #define ZJOIN_AGG_TIMEOUT                  1257
 #define ZJOIN_AGG_ALREADY_FINALIZED        1258
 #define ZJOIN_AGG_MUTEX_ERROR              1259
+#define ZJOIN_AGG_MATCH_RANGE_OVERFLOW     1260
+#define ZJOIN_AGG_INVALID_SECTION_COUNT    1261
+#define ZATTRINFO_TOO_LARGE                1262
 
 /**
  * @class dblqh
@@ -558,6 +561,7 @@ class FsReadWriteReq;
  */
 
 class AggInterpreter;
+class JoinAggInterpreter;
 class Dblqh : public SimulatedBlock {
   friend class DblqhProxy;
   friend class Backup;
@@ -697,6 +701,9 @@ class Dblqh : public SimulatedBlock {
       m_join_agg_state_key(RNIL),
       m_join_agg_evict_rows(0),
       m_rows_examined(0),
+      m_outer_join_agg_scan(0),
+      m_local_matched_ranges(nullptr),
+      m_local_matched_words(0),
       m_ttl_purge_window_size(0)
     {
     }
@@ -844,6 +851,10 @@ class Dblqh : public SimulatedBlock {
     Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
     Uint32 m_join_agg_evict_rows;   // Evicted group rows sent to API during this scan batch
     Uint32 m_rows_examined;          // Total rows examined in this scan batch
+    Uint8 m_outer_join_agg_scan;     // Set from OuterJoinAggFlag in SCAN_FRAGREQ
+    Uint32 *m_local_matched_ranges;  // Per-ScanRecord local bitmask (allocated per scan)
+    Uint32 m_local_matched_words;    // Size of the local bitmask in words
+    Uint32 m_local_matched_range_count; // Number of ranges to track
     // TTL
     Uint8 m_ttl_ignore;         // ignore set by API
     Uint8 m_ttl_ignore_for_ral; // ignore set by Read after lock
@@ -3023,6 +3034,7 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_use_rowid;
     Uint8 m_query_thread;
     Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
+    Uint8 m_outer_join_agg;         // Outer join aggregation flag (handle key-not-found)
     enum dealloc_states {
       /*
        * Example set of dealloc ops:
@@ -3315,6 +3327,7 @@ private:
   void execMEMCHECKREQ(Signal* signal);
   void execSCAN_FRAGREQ(Signal* signal);
   void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
+  void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
                               Uint32 senderRef);
@@ -3579,7 +3592,14 @@ private:
   bool remove_from_prepare_log_queue(Signal *signal, TcConnectionrecPtr tcPtr);
   bool getFragmentrec(Uint32 fragId);
   void handlePendingAbort(Signal*, TcConnectionrec*);
+  void handleOuterJoinAggKeyNotFound(Signal*, TcConnectionrecPtr);
 public:
+  void sendEvictedAggGroup(Signal*,
+                           JoinAggInterpreter*,
+                           JoinAggregationState*);
+  JoinAggInterpreter* getJoinAggInterpreter(JoinAggregationState*);
+  JoinAggInterpreter* getJoinAggResultInterpreter(JoinAggregationState*);
+
   void getIndexTupFragPtrI(Uint32 tableId,
                            Uint32 fragId,
                            Uint64 & tupIndexFragPtrI,
@@ -5447,6 +5467,8 @@ private:
 #if defined(USE_INIT_GLOBAL_VARIABLES)
   void checkInitGlobalVariables() override;
 #endif
+  Uint32 cattrInfoBuffer[ZATTR_BUFFER_SIZE + 16];
+  Uint32 cevictBuffer[ZATTR_BUFFER_SIZE + 16];
 };
 
 inline bool Dblqh::check_expand_shrink_ongoing(Uint32 tableId, Uint32 fragId) {

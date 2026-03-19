@@ -450,8 +450,10 @@ SIMSIMD_PUBLIC simsimd_capability_t _simsimd_capabilities_x86(void) {
  *  Suppressing assembler errors is very complicated, so when dealing with older ARM CPUs it's simpler to compile this
  *  function targeting newer ones.
  */
+#ifndef __clang__
 #pragma GCC push_options
 #pragma GCC target("arch=armv8.5-a+sve")
+#endif
 #pragma clang attribute push(__attribute__((target("arch=armv8.5-a+sve"))), apply_to = function)
 
 /**
@@ -567,7 +569,9 @@ SIMSIMD_PUBLIC simsimd_capability_t _simsimd_capabilities_arm(void) {
 }
 
 #pragma clang attribute pop
+#ifndef __clang__
 #pragma GCC pop_options
+#endif
 
 #endif
 

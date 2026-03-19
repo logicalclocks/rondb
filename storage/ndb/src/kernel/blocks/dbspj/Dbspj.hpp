@@ -90,6 +90,8 @@ class Dbspj : public SimulatedBlock {
   void execSCAN_FRAGCONF(Signal *signal);
   void execSCAN_HBREP(Signal *signal);
   void execTRANSID_AI(Signal *signal);
+  void execJOIN_AGG_NULL_ROW_CONF(Signal *signal);
+  void execJOIN_AGG_NULL_ROW_REF(Signal *signal);
 
   /**
    * General signals
@@ -720,6 +722,14 @@ class Dbspj : public SimulatedBlock {
      * will eventually do so.
      */
     Uint16 m_frags_not_started;
+    /**
+     * Number of outstanding JOIN_AGG_NULL_ROW_REQ operations for this scan
+     * node. Used to defer scanFrag_parent_batch_complete until all CONFs
+     * have been received, preventing premature restart of the scan while
+     * null row operations are in flight.
+     */
+    Uint16 m_null_row_outstanding;
+    Uint16 m_agg_range_cnt;  // Sequential range counter for bitmask exchange leaf scans
     Uint32 m_rows_received;   // #execTRANSID_AI
     Uint32 m_rows_expecting;  // Sum(ScanFragConf)
     Uint32 m_batch_chunks;    // #SCAN_FRAGREQ + #SCAN_NEXTREQ to retrieve batch
@@ -790,6 +800,8 @@ class Dbspj : public SimulatedBlock {
         : m_frags_complete(0),
           m_frags_outstanding(0),
           m_frags_not_started(0),
+          m_null_row_outstanding(0),
+          m_agg_range_cnt(0),
           m_rows_received(0),
           m_rows_expecting(0),
           m_batch_chunks(0),
@@ -847,7 +859,9 @@ class Dbspj : public SimulatedBlock {
           m_predecessors(),
           m_dependencies(),
           m_resumeEvents(0),
-          m_scanAncestorPtrI(RNIL)
+          m_scanAncestorPtrI(RNIL),
+          m_agg_match_bitmask(nullptr),
+          m_agg_num_ranges(0)
 #ifdef SPJ_TRACE_TIME
           ,m_scan_fragconf_count(0)
           ,m_scan_fragconf_len(0)
@@ -869,6 +883,8 @@ class Dbspj : public SimulatedBlock {
           m_dependencies(),
           m_resumeEvents(0),
           m_scanAncestorPtrI(RNIL),
+          m_agg_match_bitmask(nullptr),
+          m_agg_num_ranges(0),
           nextList(RNIL),
           prevList(RNIL),
           nextCursor(RNIL)
@@ -1067,6 +1083,22 @@ class Dbspj : public SimulatedBlock {
        */
       T_AGGREGATE_LEAF = 0x1000000,
 
+      /**
+       * Set on every TreeNode that is a proper ancestor of the
+       * T_AGGREGATE_LEAF node. Used to detect intermediate outer join
+       * nodes that need null row propagation for chained outer joins.
+       */
+      T_AGGREGATE_ANCESTOR = 0x4000000,
+
+      /**
+       * Set on a scan T_AGGREGATE_LEAF node when
+       * scanFrag_parent_batch_complete is deferred because there are
+       * outstanding JOIN_AGG_NULL_ROW_REQ operations. The restart is
+       * triggered from execJOIN_AGG_NULL_ROW_CONF when
+       * m_null_row_outstanding reaches 0.
+       */
+      T_NULL_ROW_DEFERRED_RESTART = 0x8000000,
+
       // End marker...
       T_END = 0
     };
@@ -1175,6 +1207,9 @@ class Dbspj : public SimulatedBlock {
      */
     Uint32 m_scanAncestorPtrI;
 
+    Uint32 *m_agg_match_bitmask;     // Combined match bitmask (ndbd_malloc'd)
+    Uint32 m_agg_num_ranges;         // Number of parent rows (= scan ranges)
+
     union {
       LookupData m_lookup_data;
       ScanFragData m_scanFrag_data;
@@ -1238,6 +1273,8 @@ class Dbspj : public SimulatedBlock {
       RT_REPEAT_SCAN_RESULT = 0x40  // Repeat bushy scan result when required
       ,
       RT_AGGREGATE = 0x80  // Request contains aggregation (only leaf sends to API)
+      ,
+      RT_AGG_ANCESTOR_MATCH = 0x100  // Match tracking for intermediate agg ancestors
     };
 
     enum RequestState {
@@ -1570,9 +1607,18 @@ class Dbspj : public SimulatedBlock {
   Uint32 appendFromParent(Uint32 &ptrI, Local_pattern_store &,
                           Local_pattern_store::ConstDataBufferIterator &,
                           Uint32 level, const RowPtr &, bool &hasNull,
-                          bool addTableMeta = false);
+                          bool addTableMeta = false,
+                          Uint32 parentLevelAdjust = 0,
+                          Uint64 nullNodes = 0);
+  Uint32 emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
+                          bool &hasNull, bool addTableMeta);
+  Uint32 emitNullFromParent(Uint32 &dst, Local_pattern_store &,
+                             Local_pattern_store::ConstDataBufferIterator &,
+                             bool &hasNull, bool addTableMeta);
   Uint32 expand(Uint32 &ptrI, Local_pattern_store &p, const RowPtr &r,
-                bool &hasNull, bool addTableMeta = false);
+                bool &hasNull, bool addTableMeta = false,
+                Uint32 parentLevelAdjust = 0,
+                Uint64 nullNodes = 0);
   Uint32 expand(Uint32 &ptrI, DABuffer &pattern, Uint32 len, DABuffer &param,
                 Uint32 cnt, bool &hasNull);
   Uint32 expand(Local_pattern_store &dst, Ptr<TreeNode> treeNodePtr,
@@ -1609,6 +1655,18 @@ class Dbspj : public SimulatedBlock {
                                  NdbNodeBitmask);
 
   void lookup_sendLeafCONF(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 node);
+  Uint32 sendJoinAggNullRow(Signal *, Ptr<Request>, Ptr<TreeNode>,
+                            const RowPtr &,
+                            Uint32 parentLevelAdjust = 0,
+                            Uint64 nullNodes = 0);
+  Uint32 propagateNullToAggLeaf(Signal *, Ptr<Request>, Ptr<TreeNode>,
+                                const RowPtr &);
+  Uint32 handleAggAncestorComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  Uint32 handleScanAggAncestorComplete(Signal *, Ptr<Request>,
+                                       Ptr<TreeNode>, ScanFragData &);
+  Uint32 mergeAggMatchBitmask(Ptr<TreeNode>, ScanFragData &,
+                               SegmentedSectionPtr &);
+  Uint32 handleAggLeafScanComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void lookup_cleanup(Ptr<Request>, Ptr<TreeNode>);
 
   Uint32 handle_special_hash(Uint32 tableId, Uint32 dstHash[4],
@@ -1709,6 +1767,9 @@ class Dbspj : public SimulatedBlock {
 #endif
 
   Dbtc *c_tc;
+
+  /* Initialisation on first use */
+  Uint32 m_round_robin_instance;
 
   Uint32 m_location_domain_id[ABS_MAX_NODES];
   Uint32 m_load_balancer_location;

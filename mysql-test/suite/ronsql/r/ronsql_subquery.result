@@ -4,23 +4,475 @@ call mtr.add_suppression("Participant timeout");
 === Create tables for subquery tests ===
 
 
-=== Test 1: Error — EXISTS subquery (not yet supported) ===
-Expected error: subqueries not implemented
-Error handling: RPE
-ronsql_cli caught exception: RonSQL feature not implemented: subqueries
+=== Test 1: EXISTS subquery — basic semi-join ===
+All orders have lineitems, so all orders match
+== Query ==
+SELECT o_custkey, SUM(o_total)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
 
 
-=== Test 2: Error — IN subquery (not yet supported) ===
-Expected error: subqueries not implemented
-Error handling: RPE
-ronsql_cli caught exception: RonSQL feature not implemented: subqueries
 
 
-=== Test 3: Error — scalar subquery (not yet supported) ===
-Expected error: subqueries not implemented
-Error handling: RPE
-ronsql_cli caught exception: RonSQL feature not implemented: subqueries
+=== Test 2: IN subquery — scalar inner result ===
+o_custkey IN (SELECT MAX(l_orderkey) FROM lineitem)
+MAX(l_orderkey) = 5, so rows with o_custkey = 5 are included (but no such row)
+== Query ==
+SELECT o_custkey, SUM(o_total)
+FROM orders
+WHERE o_custkey IN (SELECT MAX(l_orderkey) FROM lineitem)
+GROUP BY o_custkey;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+
+=== Test 3: Scalar subquery in WHERE — single table ===
+l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+MIN(l_quantity) = 5, so rows with l_quantity > 5 are included
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), COUNT(*)
+FROM lineitem
+WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 4: Scalar subquery with inner WHERE ===
+l_quantity > (SELECT MIN(l_quantity) FROM lineitem WHERE l_price > 100)
+MIN where price > 100 = 12, so rows with l_quantity > 12 are included
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), COUNT(*)
+FROM lineitem
+WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem WHERE l_price > 100)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+=== Test 5: Scalar subquery — MAX in WHERE ===
+l_price < (SELECT MAX(l_price) FROM lineitem)
+MAX(l_price) = 400, so rows with l_price < 400 are included
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_price < (SELECT MAX(l_price) FROM lineitem)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 6: Scalar subquery — SUM in WHERE with equality ===
+o_total = (SELECT MIN(o_total) FROM orders)
+MIN(o_total) = 200
+== Query ==
+SELECT o_custkey, COUNT(*), SUM(o_total)
+FROM orders
+WHERE o_total = (SELECT MIN(o_total) FROM orders)
+GROUP BY o_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 7: Scalar subquery — COUNT as scalar ===
+l_quantity > (SELECT COUNT(*) FROM lineitem) means l_quantity > 10
+== Query ==
+SELECT l_orderkey, SUM(l_price)
+FROM lineitem
+WHERE l_quantity > (SELECT COUNT(*) FROM lineitem)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 8: Multiple scalar subqueries in WHERE ===
+l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+AND l_price < (SELECT MAX(l_price) FROM lineitem)
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+AND l_price < (SELECT MAX(l_price) FROM lineitem)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 9: IN subquery — multiple values from GROUP BY ===
+l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem GROUP BY l_orderkey)
+All l_orderkey values (1-5), so all rows match
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), COUNT(*)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem GROUP BY l_orderkey)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 10: IN subquery — selective inner WHERE ===
+l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 20 GROUP BY l_orderkey)
+Inner returns l_orderkey 3 and 5 (rows with quantity > 20)
+== Query ==
+SELECT l_orderkey, SUM(l_price)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 20 GROUP BY l_orderkey)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== Test 11: IN subquery — inner WHERE filters to empty ===
+l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 999 GROUP BY l_orderkey)
+Inner returns no rows, so no outer rows match
+== Query ==
+SELECT l_orderkey, SUM(l_quantity)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 999 GROUP BY l_orderkey)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== Test 12: IN subquery with AND condition ===
+l_orderkey IN (...) AND l_quantity > 10
+== Query ==
+SELECT l_orderkey, SUM(l_price)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem GROUP BY l_orderkey)
+AND l_quantity > 10
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 13: Cross-column comparison — less than ===
+WHERE l_quantity < l_price (column vs column)
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_quantity < l_price
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 14: Cross-column comparison combined with constant ===
+WHERE l_quantity < l_price AND l_price > 100
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_quantity < l_price AND l_price > 100
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 15: EXISTS with filter on inner ===
+Only orders with lineitem quantity > 20
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== Test 16: EXISTS with no match ===
+l_quantity > 999 matches nothing
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 999)
+GROUP BY o_id;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== Test 17: EXISTS with COUNT(*) aggregation ===
+Count orders per custkey that have lineitems
+== Query ==
+SELECT o_custkey, COUNT(*)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== Test 18: EXISTS with outer WHERE filter ===
+Orders with custkey = 200 that have lineitems
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_custkey = 200
+AND EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== Test 19: NOT EXISTS — no matching lineitems ===
+No lineitem has l_quantity > 999, so NOT EXISTS is true for all orders
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 999)
+GROUP BY o_id;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 20: EXISTS with qualified column names ===
+Using table aliases in correlation predicate
+== Query ==
+SELECT o.o_custkey, SUM(o.o_total)
+FROM orders AS o
+WHERE EXISTS (SELECT l.l_id FROM lineitem AS l WHERE l.l_orderkey = o.o_id)
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== Test 21: NOT EXISTS — all orders have lineitems ===
+NOT EXISTS returns empty (every order has at least one lineitem)
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== Test 22: NOT EXISTS — partial match ===
+Orders 1,2,4 have no lineitems with l_quantity > 20
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== Test 23: NOT EXISTS with outer filter ===
+custkey = 200 AND no high-qty lineitems: only order 4
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_custkey = 200
+AND NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 24: Correlated scalar subquery — less than ===
+o_total < (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+SUM per orderkey: (1,300),(2,200),(3,550),(4,200),(5,750)
+Only order 5 qualifies (400 < 750)
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total < (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 25: Correlated scalar subquery — equality ===
+o_total = (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+Only order 4 qualifies (200 = 200)
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total = (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 26: Correlated scalar subquery — greater than ===
+o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+Orders 1,2,3 qualify: (500>300, 300>200, 700>550)
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== Test 27: Correlated scalar subquery with outer filter ===
+o_custkey = 200 AND o_total > SUM(l_price): only order 3 (700>550)
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_custkey = 200
+AND o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 28: Correlated scalar subquery with inner filter ===
+o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+Inner SUM where qty>20: (3,550),(5,750). Only order 3 qualifies (700>550)
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
 
 === Cleanup ===
+DROP TABLE empty_table;
 DROP TABLE lineitem;
 DROP TABLE orders;

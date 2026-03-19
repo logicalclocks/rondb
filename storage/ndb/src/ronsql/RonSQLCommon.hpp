@@ -167,6 +167,13 @@ struct ConditionalExpression
       struct ConditionalExpression *expr;
       SelectStatement *stmt;  // op == I_IN_SUBQUERY
     } in_subquery;
+    struct
+    {
+      TokenKind cmp_op;                        // Original comparison operator
+      struct ConditionalExpression* cmp_expr;   // Outer column being compared
+      struct ConditionalExpression* key_expr;   // Outer correlation key column
+      SelectStatement* stmt;                    // Rewritten inner query
+    } corr_scalar;
   };
 };
 
@@ -201,6 +208,8 @@ struct JoinCondition
 
 struct JoinClause
 {
+  enum JoinType { INNER_JOIN, LEFT_OUTER_JOIN };
+  JoinType join_type;
   TableRef table;
   JoinCondition *conditions;  /* linked list of ON conditions */
   struct JoinClause *next;
@@ -218,6 +227,20 @@ struct SelectStatement
   struct ConditionalExpression* having_expression = NULL;
   struct OrderbyColumns* orderby_columns = NULL;
   Int64 limit = -1; // -1 means no limit
+  char* sql_begin = NULL;  // Start of inner query SQL (points into original buffer)
+  char* sql_end = NULL;    // End of inner query SQL
+};
+
+struct SubqueryResult {
+  bool is_null = true;
+  Int64 int_val = 0;
+  double float_val = 0.0;
+  bool is_float = false;
+};
+
+struct CorrelatedPair {
+  SubqueryResult key;
+  SubqueryResult val;
 };
 
 /* RonSQL uses 4 types of exceptions:

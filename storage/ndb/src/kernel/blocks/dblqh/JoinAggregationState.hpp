@@ -161,6 +161,13 @@ struct JoinAggregationState {
   }
 
   //------------------------------------------------------------------
+  // Outer join scan aggregation flag.
+  // Match tracking is now done per-ScanRecord in DBLQH (local bitmask
+  // attached to SCAN_FRAGCONF on close). No shared state needed.
+  //------------------------------------------------------------------
+  bool m_outer_join_agg_scan;
+
+  //------------------------------------------------------------------
   // State Machine (atomic — checked by any thread, set single-threaded)
   //------------------------------------------------------------------
   std::atomic<State> m_state;
@@ -203,6 +210,7 @@ struct JoinAggregationState {
     m_routeRef(0),
     m_receiverIds(nullptr),
     m_numReceiverIds(0),
+    m_outer_join_agg_scan(false),
     m_state(IDLE),
     m_error_code(0),
     m_key(RNIL),

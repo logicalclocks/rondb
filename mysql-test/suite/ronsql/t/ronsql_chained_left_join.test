@@ -1,0 +1,303 @@
+--source include/have_ndb.inc
+
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo ============================================================
+--echo = Chained LEFT JOIN aggregation tests for RonSQL
+--echo = These mirror the NDB API tests in testMultiOuterJoinAggNdbApi
+--echo ============================================================
+--echo
+
+--disable_query_log
+--disable_warnings
+
+# === Schema: 3-way outer join (Tests 1-3) ===
+# dept → emp → task, all LEFT JOINs
+
+CREATE TABLE dept3 (
+  id INT NOT NULL,
+  dname INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE emp3 (
+  dept_id INT NOT NULL,
+  salary BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (dept_id)
+) ENGINE=NDB;
+
+CREATE TABLE task3 (
+  emp_id INT NOT NULL,
+  hours BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (emp_id)
+) ENGINE=NDB;
+
+# 5 depts, 3 emps (dept 1,2,3), 2 tasks (emp 1,2)
+# Depts 4,5 have no emp. Emp 3 has no task.
+INSERT INTO dept3 VALUES (1,10),(2,20),(3,30),(4,40),(5,50);
+INSERT INTO emp3 VALUES (1,1000),(2,2000),(3,3000);
+INSERT INTO task3 VALUES (1,8),(2,12);
+
+# === Schema: 4-way mixed join (Tests 4) ===
+# region → store(LEFT) → product(INNER) → review(LEFT)
+
+CREATE TABLE region4 (
+  id INT NOT NULL,
+  area INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE store4 (
+  region_id INT NOT NULL,
+  capacity INT NOT NULL,
+  PRIMARY KEY USING HASH (region_id)
+) ENGINE=NDB;
+
+CREATE TABLE product4 (
+  store_id INT NOT NULL,
+  price BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (store_id)
+) ENGINE=NDB;
+
+CREATE TABLE review4 (
+  product_id INT NOT NULL,
+  rating BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (product_id)
+) ENGINE=NDB;
+
+# 5 regions, 4 stores (region 1-4), 3 products (store 1-3), 2 reviews (product 1,2)
+INSERT INTO region4 VALUES (1,100),(2,200),(3,300),(4,400),(5,500);
+INSERT INTO store4 VALUES (1,50),(2,100),(3,150),(4,200);
+INSERT INTO product4 VALUES (1,1000),(2,2000),(3,3000);
+INSERT INTO review4 VALUES (1,5),(2,3);
+
+# === Schema: 5-way deep chain (Tests 5-6) ===
+# root → a → b → c → d, all LEFT JOINs
+
+CREATE TABLE root5 (
+  id INT NOT NULL,
+  grp INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE a5 (
+  root_id INT NOT NULL,
+  val_a BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (root_id)
+) ENGINE=NDB;
+
+CREATE TABLE b5 (
+  a_id INT NOT NULL,
+  val_b BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (a_id)
+) ENGINE=NDB;
+
+CREATE TABLE c5 (
+  b_id INT NOT NULL,
+  val_c BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (b_id)
+) ENGINE=NDB;
+
+CREATE TABLE d5 (
+  c_id INT NOT NULL,
+  hours BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+# 6 roots, 4 a's, 3 b's, 2 c's, 1 d
+INSERT INTO root5 VALUES (1,10),(2,20),(3,30),(4,40),(5,50),(6,60);
+INSERT INTO a5 VALUES (1,100),(2,200),(3,300),(4,400);
+INSERT INTO b5 VALUES (1,10),(2,20),(3,30);
+INSERT INTO c5 VALUES (1,1),(2,2);
+INSERT INTO d5 VALUES (1,100);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+# ============================================================
+# Test 1: 3-way LEFT JOIN with COUNT(*) and SUM
+# dept → emp → task, all LEFT JOINs
+# Depts 4,5 (no emp) should appear with COUNT=1, SUM=NULL
+# Dept 3 (emp but no task) should appear with COUNT=1, SUM=NULL
+# ============================================================
+
+--echo
+--echo
+--echo === Test 1: 3-way LEFT JOIN with COUNT and SUM ===
+
+let $QUERY=
+SELECT d.dname, COUNT(*), SUM(t.hours)
+FROM dept3 AS d
+LEFT JOIN emp3 AS e ON e.dept_id = d.id
+LEFT JOIN task3 AS t ON t.emp_id = e.dept_id
+GROUP BY d.dname;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT d.dname, COUNT(*), SUM(t.hours)
+FROM dept3 AS d
+LEFT JOIN emp3 AS e ON e.dept_id = d.id
+LEFT JOIN task3 AS t ON t.emp_id = e.dept_id
+GROUP BY d.dname|
+
+# ============================================================
+# Test 2: 3-way LEFT JOIN — SUM on intermediate column
+# SUM(salary) — tests that intermediate column values are
+# properly propagated even when leaf has no match
+# ============================================================
+
+--echo
+--echo
+--echo === Test 2: 3-way LEFT JOIN with SUM on intermediate column ===
+
+let $QUERY=
+SELECT d.dname, COUNT(*), SUM(e.salary)
+FROM dept3 AS d
+LEFT JOIN emp3 AS e ON e.dept_id = d.id
+LEFT JOIN task3 AS t ON t.emp_id = e.dept_id
+GROUP BY d.dname;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT d.dname, COUNT(*), SUM(e.salary)
+FROM dept3 AS d
+LEFT JOIN emp3 AS e ON e.dept_id = d.id
+LEFT JOIN task3 AS t ON t.emp_id = e.dept_id
+GROUP BY d.dname|
+
+# ============================================================
+# Test 3: 3-way LEFT JOIN — multiple aggregates
+# ============================================================
+
+--echo
+--echo
+--echo === Test 3: 3-way LEFT JOIN with multiple aggregates ===
+
+let $QUERY=
+SELECT d.dname, COUNT(*), SUM(t.hours), MIN(t.hours), MAX(t.hours)
+FROM dept3 AS d
+LEFT JOIN emp3 AS e ON e.dept_id = d.id
+LEFT JOIN task3 AS t ON t.emp_id = e.dept_id
+GROUP BY d.dname;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT d.dname, COUNT(*), SUM(t.hours), MIN(t.hours), MAX(t.hours)
+FROM dept3 AS d
+LEFT JOIN emp3 AS e ON e.dept_id = d.id
+LEFT JOIN task3 AS t ON t.emp_id = e.dept_id
+GROUP BY d.dname|
+
+# ============================================================
+# Test 4: 4-way mixed join (LEFT + INNER + LEFT)
+# region → store(LEFT) → product(INNER) → review(LEFT)
+# Region 5 has no store → LEFT gives NULL
+# But INNER on product filters out NULL stores
+# ============================================================
+
+--echo
+--echo
+--echo === Test 4: 4-way mixed LEFT+INNER+LEFT join ===
+
+let $QUERY=
+SELECT r.area, COUNT(*), SUM(v.rating)
+FROM region4 AS r
+LEFT JOIN store4 AS s ON s.region_id = r.id
+JOIN product4 AS p ON p.store_id = s.region_id
+LEFT JOIN review4 AS v ON v.product_id = p.store_id
+GROUP BY r.area;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT r.area, COUNT(*), SUM(v.rating)
+FROM region4 AS r
+LEFT JOIN store4 AS s ON s.region_id = r.id
+JOIN product4 AS p ON p.store_id = s.region_id
+LEFT JOIN review4 AS v ON v.product_id = p.store_id
+GROUP BY r.area|
+
+# ============================================================
+# Test 5: 5-way deep LEFT JOIN chain
+# root → a → b → c → d, all LEFT JOINs
+# Tests deep chain with progressively fewer matches
+# ============================================================
+
+--echo
+--echo
+--echo === Test 5: 5-way deep LEFT JOIN chain ===
+
+let $QUERY=
+SELECT r.grp, COUNT(*), SUM(d.hours)
+FROM root5 AS r
+LEFT JOIN a5 AS a ON a.root_id = r.id
+LEFT JOIN b5 AS b ON b.a_id = a.root_id
+LEFT JOIN c5 AS c ON c.b_id = b.a_id
+LEFT JOIN d5 AS d ON d.c_id = c.b_id
+GROUP BY r.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT r.grp, COUNT(*), SUM(d.hours)
+FROM root5 AS r
+LEFT JOIN a5 AS a ON a.root_id = r.id
+LEFT JOIN b5 AS b ON b.a_id = a.root_id
+LEFT JOIN c5 AS c ON c.b_id = b.a_id
+LEFT JOIN d5 AS d ON d.c_id = c.b_id
+GROUP BY r.grp|
+
+# ============================================================
+# Test 6: 5-way deep LEFT JOIN — multiple aggregates
+# ============================================================
+
+--echo
+--echo
+--echo === Test 6: 5-way deep LEFT JOIN with multiple aggregates ===
+
+let $QUERY=
+SELECT r.grp, COUNT(*), SUM(d.hours), MIN(d.hours), MAX(d.hours)
+FROM root5 AS r
+LEFT JOIN a5 AS a ON a.root_id = r.id
+LEFT JOIN b5 AS b ON b.a_id = a.root_id
+LEFT JOIN c5 AS c ON c.b_id = b.a_id
+LEFT JOIN d5 AS d ON d.c_id = c.b_id
+GROUP BY r.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT r.grp, COUNT(*), SUM(d.hours), MIN(d.hours), MAX(d.hours)
+FROM root5 AS r
+LEFT JOIN a5 AS a ON a.root_id = r.id
+LEFT JOIN b5 AS b ON b.a_id = a.root_id
+LEFT JOIN c5 AS c ON c.b_id = b.a_id
+LEFT JOIN d5 AS d ON d.c_id = c.b_id
+GROUP BY r.grp|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+DROP TABLE d5;
+DROP TABLE c5;
+DROP TABLE b5;
+DROP TABLE a5;
+DROP TABLE root5;
+DROP TABLE review4;
+DROP TABLE product4;
+DROP TABLE store4;
+DROP TABLE region4;
+DROP TABLE task3;
+DROP TABLE emp3;
+DROP TABLE dept3;

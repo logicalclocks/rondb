@@ -45,6 +45,7 @@
 #include <signaldata/EventReport.hpp>
 #include <signaldata/ExecFragReq.hpp>
 #include <signaldata/GCP.hpp>
+#include <signaldata/DbspjErr.hpp>
 #include <signaldata/JoinAgg.hpp>
 #include "JoinAggregationState.hpp"
 #include <signaldata/LqhFrag.hpp>
@@ -164,12 +165,19 @@
 //#define DEBUG_CONT_SCAN 1
 //#define DEBUG_INDEX_BUILD 1
 //#define DEBUG_JOIN_AGG 1
+//#define DEBUG_MATCH 1
 #endif
 
 #ifdef DEBUG_JOIN_AGG
 #define DEB_JOIN_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_JOIN_AGG(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_MATCH
+#define DEB_MATCH(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_MATCH(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_CONT_SCAN 
@@ -9176,6 +9184,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->m_dealloc_state = TcConnectionrec::DA_IDLE;
   regTcPtr->m_query_thread = 0;
   regTcPtr->m_join_agg_state_key = RNIL;
+  regTcPtr->m_outer_join_agg = 0;
   regTcPtr->m_dealloc_data.m_dealloc_ref_count = RNIL;
   {
     regTcPtr->operation = (Operation_t)op == ZREAD_EX ? ZREAD : (Operation_t)op;
@@ -9321,6 +9330,10 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
      * for freeing them when appropriate
      */
     handle.clear();
+    if (totalAttrInfoLen > ZATTR_BUFFER_SIZE) {
+      earlyKeyReqAbort(signal, lqhKeyReq, ZATTRINFO_TOO_LARGE, tcConnectptr);
+      return;
+    }
   } else {
     /**
      * Only node restart copy allowed to send no KeyInfo.
@@ -9378,6 +9391,8 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
                         ZNODEFAIL_BEFORE_COMMIT, tcConnectptr);
       return;
     }
+    regTcPtr->m_outer_join_agg =
+        LqhKeyReq::getOuterJoinAggFlag(attrLenFlags);
   }
 
   if (LqhKeyReq::getRowidFlag(Treqinfo)) {
@@ -15026,6 +15041,18 @@ void Dblqh::continueACCKEYREF(Signal *signal, TcConnectionrecPtr tcConnectptr,
   ndbrequire(tcPtr->activeCreat == Fragrecord::AC_NORMAL);
   ndbrequire(!LqhKeyReq::getNrCopyFlag(tcPtr->reqinfo));
 
+  /*
+   * Outer join aggregation: key-not-found means the child has no match.
+   * Process a null-extended row (parent columns real, child columns NULL)
+   * and send LQHKEYCONF instead of LQHKEYREF.
+   */
+  if (errorCode == ZNO_TUPLE_FOUND &&
+      tcPtr->m_outer_join_agg) {
+    jam();
+    handleOuterJoinAggKeyNotFound(signal, tcConnectptr);
+    return;
+  }
+
   /**
    * Not only primary replica can get ZTUPLE_ALREADY_EXIST || ZNO_TUPLE_FOUND
    *
@@ -15046,6 +15073,165 @@ void Dblqh::continueACCKEYREF(Signal *signal, TcConnectionrecPtr tcConnectptr,
   tcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH;
   abortCommonLab(signal, tcConnectptr);
 }  // Dblqh::execACCKEYREF()
+
+/*
+ * getJoinAggInterpreter
+ *
+ * Returns the JoinAggInterpreter for the current LDM thread.
+ * MUTEX_FREE: per-thread interpreter indexed by instance() - 1.
+ * MUTEX_BASED: shared interpreter.
+ */
+JoinAggInterpreter*
+Dblqh::getJoinAggInterpreter(JoinAggregationState *state) {
+  JoinAggInterpreter *interp;
+  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+    Uint32 thr_idx = getThreadId();
+    ndbrequire(thr_idx < state->m_num_threads);
+    interp = state->m_per_thread_interpreters[thr_idx];
+  } else {
+    interp = state->m_agg_interpreter;
+  }
+  ndbrequire(interp != nullptr);
+  return interp;
+}
+
+/*
+ * getJoinAggResultInterpreter
+ *
+ * Returns the result interpreter (post-merge or shared).
+ * MUTEX_FREE: interpreter[0] which holds merged results.
+ * MUTEX_BASED: shared interpreter.
+ */
+JoinAggInterpreter*
+Dblqh::getJoinAggResultInterpreter(JoinAggregationState *state) {
+  JoinAggInterpreter *interp;
+  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+    interp = state->m_per_thread_interpreters[0];
+  } else {
+    interp = state->m_agg_interpreter;
+  }
+  ndbrequire(interp != nullptr);
+  return interp;
+}
+
+/*
+ * sendEvictedAggGroup
+ *
+ * Evicts one group from the AggInterpreter's group map and sends it
+ * as a TRANSID_AI result to the coordinator. Uses the pre-allocated
+ * cevictBuffer to avoid stack allocation of large buffers.
+ *
+ * Called from:
+ * - handleOuterJoinAggKeyNotFound (null-extended row eviction)
+ * - execJOIN_AGG_NULL_ROW (explicit null row injection)
+ * - Dbtup::handleJoinAggRow (scan-time eviction)
+ */
+void Dblqh::sendEvictedAggGroup(Signal *signal,
+                                 JoinAggInterpreter *interp,
+                                 JoinAggregationState *state) {
+  jamDebug();
+  Uint32 words_written = 0;
+  Int32 evict_ret = interp->evictOneGroup(
+      cevictBuffer,
+      sizeof(cevictBuffer) / sizeof(Uint32),
+      &words_written);
+  ndbrequire(evict_ret == 0);
+
+  TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+  {
+    Uint32 key_len = cevictBuffer[3] >> 16;
+    const char *key_data = reinterpret_cast<const char*>(&cevictBuffer[4]);
+    transIdAI->connectPtr =
+        state->selectReceiverData(key_data, key_len);
+  }
+  transIdAI->transId[0] = state->m_transid[0];
+  transIdAI->transId[1] = state->m_transid[1];
+
+  LinearSectionPtr ptr[3];
+  ptr[0].p = cevictBuffer;
+  ptr[0].sz = words_written;
+  sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
+             TransIdAI::HeaderLength, JBB, ptr, 1);
+
+  state->m_rows_sent++;
+}
+
+/*
+ * handleOuterJoinAggKeyNotFound
+ *
+ * Called when a join-agg outer-join child lookup gets key-not-found
+ * (ZNO_TUPLE_FOUND).
+ * Extracts linked attribute data from ATTRINFO, feeds a null-extended row
+ * to the AggInterpreter (local columns return NULL), then sends LQHKEYCONF.
+ */
+void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
+                                           TcConnectionrecPtr tcConnectptr) {
+  TcConnectionrec *const regTcPtr = tcConnectptr.p;
+  DEB_MATCH(("(%u) handleOuterJoinAggKeyNotFound: aggKey=%u",
+             instance(), regTcPtr->m_join_agg_state_key));
+
+  /* 1. Abort ACC — the key lookup started but key was not found.
+   *    canBlock=0: safe because we arrived from ACCKEYREF (not pending). */
+  regTcPtr->transactionState = TcConnectionrec::WAIT_ACC_ABORT;
+  c_acc->execACC_ABORTREQ(signal,
+                           regTcPtr->accConnectrec,
+                           regTcPtr->accConnectPtrP,
+                           0);
+  ndbrequire(signal->theData[1] == 0);
+
+  /* 2. Abort TUP — prepareTUPKEYREQ was called before ACC, so clean up. */
+  signal->theData[0] = regTcPtr->tupConnectrec;
+  c_tup->do_tup_abortreq(signal, 0);
+
+  /* 3. Extract linked attribute data from ATTRINFO section.
+   *
+   * Layout: [5-word header] [interpreter program...] [subroutine section]
+   *   header[0] = initReadLen, [1] = interpretLen, [2] = finalUpdateLen,
+   *   [3] = finalReadLen, [4] = subRoutineLen (= RsubLen)
+   *   Subroutine section starts at word (5 + header[0..3])
+   *   First word of subroutine section is paramLen.
+   *   linked_data = subroutine + 1, linked_len = RsubLen - 1
+   */
+  const Uint32 *linked_data = nullptr;
+  Uint32 linked_len = 0;
+  Uint32 attrInfoLen = regTcPtr->currReclenAi;
+
+  if (attrInfoLen > 0 && regTcPtr->attrInfoIVal != RNIL) {
+    copy(cattrInfoBuffer, regTcPtr->attrInfoIVal);
+
+    Uint32 RsubLen = cattrInfoBuffer[4];
+    if (RsubLen > 0) {
+      Uint32 sub_offset = 5 + cattrInfoBuffer[0] + cattrInfoBuffer[1] +
+                          cattrInfoBuffer[2] + cattrInfoBuffer[3];
+      ndbrequire(sub_offset + RsubLen <= attrInfoLen);
+      linked_data = &cattrInfoBuffer[sub_offset + 1];
+      linked_len = RsubLen - 1;
+    }
+  }
+
+  /* 4. Feed null-extended row to AggInterpreter */
+  JoinAggregationState *state =
+      getJoinAggState(regTcPtr->m_join_agg_state_key);
+  ndbrequire(state != nullptr);
+  JoinAggInterpreter *interp = getJoinAggInterpreter(state);
+
+retry:
+  Int32 ret = interp->processNullExtendedRow(linked_data, linked_len);
+  if (ret == AGG_EVICT_NEEDED) {
+    sendEvictedAggGroup(signal, interp, state);
+    goto retry;
+  }
+  ndbrequire(ret == 0);
+  state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+
+  /* 5. Send LQHKEYCONF (no data, readlenAi = 0) */
+  regTcPtr->readlenAi = 0;
+  regTcPtr->numFiredTriggers = 0;
+  sendLqhkeyconfTc(signal, regTcPtr->tcBlockref, tcConnectptr);
+
+  /* 6. Clean up operation */
+  cleanUp(signal, tcConnectptr);
+}
 
 void Dblqh::abortStateHandlerLab(Signal *signal,
                                  const TcConnectionrecPtr tcConnectptr) {
@@ -18100,10 +18286,7 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     return;
   }
   {
-    JoinAggInterpreter *interp = (state->m_strategy ==
-        JoinAggregationState::MUTEX_FREE)
-        ? state->m_per_thread_interpreters[0]
-        : state->m_agg_interpreter;
+    JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
     Uint32 gbSize = 0;
     if (interp != nullptr && interp->gb_map_mutable() != nullptr)
       gbSize = interp->gb_map_mutable()->size();
@@ -18165,6 +18348,99 @@ bool Dblqh::checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
   return false;
 }
 
+/*
+ * execJOIN_AGG_NULL_ROW_REQ
+ *
+ * Handles the edge case where DBSPJ skips LQHKEYREQ because the lookup
+ * key is NULL (outer join, no key to look up). DBSPJ sends the linked
+ * attribute data directly so we can feed a null-extended row to the
+ * AggInterpreter.
+ */
+void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
+  jamEntry();
+  const JoinAggNullRowReq *req =
+    (const JoinAggNullRowReq *)signal->getDataPtr();
+
+  const Uint32 senderRef = req->senderRef;
+  const Uint32 aggStateKey = req->aggStateKey;
+  const Uint32 requestPtrI = req->requestPtrI;
+  const Uint32 treeNodePtrI = req->treeNodePtrI;
+
+  SectionHandle handle(this, signal);
+
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (unlikely(state == nullptr)) {
+    jam();
+    releaseSections(handle);
+    JoinAggNullRowRef *ref =
+      (JoinAggNullRowRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->aggStateKey = aggStateKey;
+    ref->requestPtrI = requestPtrI;
+    ref->treeNodePtrI = treeNodePtrI;
+    ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+    ref->errorLine = __LINE__;
+    sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_REF,
+               signal, JoinAggNullRowRef::SignalLength, JBB);
+    return;
+  }
+
+  DEB_MATCH(("(%u) NULL_ROW_REQ: aggStateKey=%u requestPtrI=%u "
+             "treeNodePtrI=%u",
+             instance(), aggStateKey, requestPtrI, treeNodePtrI));
+
+  /* Read linked attribute data from long section 0 (if present) */
+  if (unlikely(handle.m_cnt > 1)) {
+    jam();
+    releaseSections(handle);
+    JoinAggNullRowRef *ref =
+      (JoinAggNullRowRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->aggStateKey = aggStateKey;
+    ref->requestPtrI = requestPtrI;
+    ref->treeNodePtrI = treeNodePtrI;
+    ref->errorCode = ZJOIN_AGG_INVALID_SECTION_COUNT;
+    ref->errorLine = __LINE__;
+    sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_REF,
+               signal, JoinAggNullRowRef::SignalLength, JBB);
+    return;
+  }
+
+  Uint32 linked_len = 0;
+  if (handle.m_cnt == 1) {
+    jam();
+    SegmentedSectionPtr sec_ptr;
+    ndbrequire(handle.getSection(sec_ptr, 0));
+    linked_len = sec_ptr.sz;
+    ndbrequire(linked_len <= sizeof(cattrInfoBuffer) / sizeof(Uint32));
+    copy(cattrInfoBuffer, sec_ptr.i);
+  }
+  releaseSections(handle);
+
+  /* Select interpreter based on strategy.
+   * Use instance 1 (thread 0) since this signal is routed to instance 1. */
+  JoinAggInterpreter *interp = getJoinAggInterpreter(state);
+
+retry:
+  Int32 ret = interp->processNullExtendedRow(cattrInfoBuffer, linked_len);
+  if (ret == AGG_EVICT_NEEDED) {
+    sendEvictedAggGroup(signal, interp, state);
+    goto retry;
+  }
+  ndbrequire(ret == 0);
+  state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+
+  /* Send CONF back to DBSPJ */
+  JoinAggNullRowConf *conf =
+    (JoinAggNullRowConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->aggStateKey = aggStateKey;
+  conf->requestPtrI = requestPtrI;
+  conf->treeNodePtrI = treeNodePtrI;
+  sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_CONF,
+             signal, JoinAggNullRowConf::SignalLength, JBB);
+}
+
 void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
                                  Uint32 merge_idx,
                                  Uint32 senderRef, Uint32 senderData,
@@ -18221,13 +18497,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
    * Merge complete (or MUTEX_BASED — no merge needed).
    * Select the result interpreter, finalize, and start sending.
    */
-  JoinAggInterpreter *interp;
-  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
-    interp = state->m_per_thread_interpreters[0];
-  } else {
-    interp = state->m_agg_interpreter;
-  }
-  ndbrequire(interp != nullptr);
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   interp->finalizeResults();
 
   state->m_state.store(JoinAggregationState::SENDING_RESULTS);
@@ -18259,9 +18529,8 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     const Uint32 n_agg_results = interp->n_agg_results();
     const Uint32 agg_bytes = n_agg_results * sizeof(AggResItem);
     const Uint32 agg_words = agg_bytes >> 2;
-    Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
-    ndbrequire(4 + agg_words <=
-               MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32));
+    Uint32 *buf = &cevictBuffer[0];
+    ndbrequire(4 + agg_words <= sizeof(cevictBuffer) / sizeof(Uint32));
     Uint32 pos = 0;
     buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
     buf[pos++] = 0 << 16 | n_agg_results;
@@ -18325,14 +18594,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
-
-  JoinAggInterpreter *interp;
-  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
-    interp = state->m_per_thread_interpreters[0];
-  } else {
-    interp = state->m_agg_interpreter;
-  }
-  ndbrequire(interp != nullptr);
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
 
   const Uint32 n_gb_cols = interp->n_gb_cols();
   const Uint32 n_agg_results = interp->n_agg_results();
@@ -18346,9 +18608,8 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       jam();
       const Uint32 key_len = iter.keyLen();
       const Uint32 data_words = (key_len + v_len) >> 2;
-      Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
-      ndbrequire(4 + data_words <=
-                 MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32));
+      Uint32 *buf = &cevictBuffer[0];
+      ndbrequire(4 + data_words <= sizeof(cevictBuffer) / sizeof(Uint32));
       Uint32 pos = 0;
       buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
       buf[pos++] = n_gb_cols << 16 | n_agg_results;
@@ -19575,6 +19836,7 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
      *       REQUEST IS RECEIVED. IF WE DO NOT HAVE ANY NEED FOR
      *       LOCKS WE CAN CLOSE THE SCAN IMMEDIATELY.
      * --------------------------------------------------------------------- */
+
     /*************************************************************
      *       STOP THE SCAN PROCESS IF THIS HAS BEEN REQUESTED.
      ************************************************************ */
@@ -19991,6 +20253,27 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     jam();
     if (read_len > 0) {
       scanPtr->m_join_agg_evict_rows++;
+    }
+    if (scanPtr->m_outer_join_agg_scan) {
+      jam();
+      Uint32 range_no = regTcPtr->m_scan_curr_range_no;
+      DEB_MATCH(("(%u) setLocalMatchedRange: range_no=%u read_len=%u",
+                 instance(), range_no, read_len));
+      Uint32 word = range_no / 32;
+      if (unlikely(word >= scanPtr->m_local_matched_words)) {
+        jam();
+        ndbassert(false);
+        g_eventLogger->info("setLocalMatchedRange overflow: range_no=%u "
+                            "capacity=%u",
+                            range_no,
+                            scanPtr->m_local_matched_words * 32);
+        regTcPtr->errorCode = ZJOIN_AGG_MATCH_RANGE_OVERFLOW;
+        scanPtr->scanErrorCounter++;
+        scanPtr->scanCompletedStatus = ZTRUE;
+      } else {
+        jamDebug();
+        scanPtr->m_local_matched_ranges[word] |= (1u << (range_no % 32));
+      }
     }
   } else {
     scanPtr->m_exec_direct_batch_size_words += read_len;
@@ -20526,6 +20809,9 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   // They gate different code paths in DbtupExecQuery — do not set both.
   scanPtr->m_has_pushdown = aggregation;
   scanPtr->m_join_agg_state_key = RNIL;
+  scanPtr->m_local_matched_ranges = nullptr;
+  scanPtr->m_local_matched_words = 0;
+  scanPtr->m_local_matched_range_count = 0;
   scanPtr->m_ttl_ignore = ttl_ignore;
   scanPtr->m_ttl_ignore_for_ral = false;
   scanPtr->m_ttl_only_expired = ttl_only_expired;
@@ -20654,6 +20940,32 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
       jam();
       return ZNODEFAIL_BEFORE_COMMIT;
     }
+  }
+  if (ScanFragReq::getOuterJoinAggFlag(reqinfo)) {
+    jam();
+    scanPtr->m_outer_join_agg_scan = 1;
+    Uint32 rangeCount = scanFragReq->variableData[extra_len_index];
+    extra_len_index++;
+    ndbrequire(rangeCount > 0);
+    scanPtr->m_local_matched_range_count = rangeCount;
+    Uint32 bitmask_words = (rangeCount + 31) / 32;
+    scanPtr->m_local_matched_words = bitmask_words;
+    scanPtr->m_local_matched_ranges =
+        (Uint32 *)lc_ndbd_pool_malloc(bitmask_words * sizeof(Uint32),
+                                      RG_QUERY_MEMORY,
+                                      getThreadId(), true);
+    if (unlikely(scanPtr->m_local_matched_ranges == nullptr)) {
+      jam();
+      return DbspjErr::OutOfQueryMemory;
+    }
+    memset(scanPtr->m_local_matched_ranges, 0,
+           bitmask_words * sizeof(Uint32));
+    DEB_MATCH(("(%u) SCAN_FRAGREQ: OuterJoinAggFlag=1 aggKey=%u "
+               "rangeCount=%u bitmask_words=%u",
+               instance(), scanPtr->m_join_agg_state_key,
+               rangeCount, bitmask_words));
+  } else {
+    scanPtr->m_outer_join_agg_scan = 0;
   }
   ndbassert(sig_len == extra_len_index + ScanFragReq::SignalLength);
   (void)sig_len;
@@ -21850,7 +22162,29 @@ void Dblqh::sendScanFragConf(Signal *signal,
     conf->rowsExamined = rows_examined;
     sig_len = ScanFragConf::SignalLength_v2;
   }
-  sendSignal(blockRef, GSN_SCAN_FRAGCONF, signal, sig_len, prio_level);
+  if (scanCompleted == ZSCAN_FRAG_CLOSED &&
+      scanPtr->m_outer_join_agg_scan) {
+    jam();
+    ndbrequire(scanPtr->m_local_matched_ranges != nullptr);
+    /**
+     * Attach local matched-ranges bitmask as a signal section.
+     * DBSPJ will OR all per-fragment bitmasks to determine which
+     * parent rows had matching children.
+     */
+    LinearSectionPtr lsptr[1];
+    lsptr[0].p = scanPtr->m_local_matched_ranges;
+    lsptr[0].sz = scanPtr->m_local_matched_words;
+    DEB_MATCH(("(%u) SCAN_FRAGCONF(close): sending matched bitmask "
+               "words=%u to ref=0x%x",
+               instance(), scanPtr->m_local_matched_words, blockRef));
+    sendSignal(blockRef, GSN_SCAN_FRAGCONF, signal, sig_len,
+               prio_level, lsptr, 1);
+    lc_ndbd_pool_free(scanPtr->m_local_matched_ranges);
+    scanPtr->m_local_matched_ranges = nullptr;
+    scanPtr->m_local_matched_words = 0;
+  } else {
+    sendSignal(blockRef, GSN_SCAN_FRAGCONF, signal, sig_len, prio_level);
+  }
   if (scanPtr->m_par_ordered_scan_flag && !scanCompleted) {
     jam();
     Uint32 new_index = scanPtr->scanApiOpPtr_index + 1;
@@ -22672,12 +23006,12 @@ void Dblqh::copyTupkeyRefLab(Signal *signal,
   } else {
     jam();
     /**
-     * Any readCommitted scan, can get 626 if it finds a candidate record
-     *   that is not visible to the scan (i.e uncommitted inserts)
+     * Any readCommitted scan, can get ZNO_TUPLE_FOUND if it finds a candidate
+     * record that is not visible to the scan (i.e uncommitted inserts)
      *   if scanning with locks (shared/exclusive) this is not visible
      *   to LQH as lock is taken earlier
      */
-    ndbrequire(errorCode == 626);
+    ndbrequire(errorCode == ZNO_TUPLE_FOUND);
   }
 
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_TUPKEY_COPY);
@@ -38804,6 +39138,10 @@ Dblqh::ScanRecord::~ScanRecord() {
   if (m_vs_interpreter != nullptr) {
     PushdownInterpreter::Destruct(m_vs_interpreter);
     m_vs_interpreter = nullptr;
+  }
+  if (m_local_matched_ranges != nullptr) {
+    lc_ndbd_pool_free(m_local_matched_ranges);
+    m_local_matched_ranges = nullptr;
   }
 }
 

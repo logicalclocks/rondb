@@ -306,7 +306,6 @@ class NdbQueryOptionsImpl {
   const Vector<const NdbLinkedOperandImpl *> &getLinkedProjection() const {
     return m_linkedProjection;
   }
-
  private:
   NdbQueryOptions::MatchType m_matchType;
   NdbQueryOptions::ScanOrdering m_scanOrder;

@@ -13,7 +13,7 @@ call mtr.add_suppression("Participant timeout");
 CREATE TABLE orders (
   o_id INT NOT NULL,
   o_custkey INT NOT NULL,
-  o_status VARCHAR(10) NOT NULL,
+  o_total INT NOT NULL,
   PRIMARY KEY USING HASH (o_id)
 ) ENGINE=NDB;
 
@@ -26,15 +26,21 @@ CREATE TABLE lineitem (
   INDEX idx_orderkey (l_orderkey)
 ) ENGINE=NDB;
 
+CREATE TABLE empty_table (
+  e_id INT NOT NULL,
+  e_val INT NOT NULL,
+  PRIMARY KEY USING HASH (e_id)
+) ENGINE=NDB;
+
 CREATE INDEX idx_custkey ON orders (o_custkey);
 CREATE INDEX idx_oid ON orders (o_id);
 
 INSERT INTO orders VALUES
-  (1, 100, 'open'),
-  (2, 100, 'closed'),
-  (3, 200, 'open'),
-  (4, 200, 'open'),
-  (5, 300, 'closed');
+  (1, 100, 500),
+  (2, 100, 300),
+  (3, 200, 700),
+  (4, 200, 200),
+  (5, 300, 400);
 
 INSERT INTO lineitem VALUES
   (1, 1, 10, 100),
@@ -52,27 +58,338 @@ INSERT INTO lineitem VALUES
 --enable_query_log
 
 --echo
---echo === Test 1: Error — EXISTS subquery (not yet supported) ===
---echo Expected error: subqueries not implemented
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, COUNT(*) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE EXISTS (SELECT l2.l_quantity FROM lineitem AS l2 WHERE l2.l_orderkey = o.o_id GROUP BY l2.l_quantity) GROUP BY o.o_custkey;' 2>&1
+--echo === Test 1: EXISTS subquery — basic semi-join ===
+--echo All orders have lineitems, so all orders match
+
+DELIMITER |;
+let $QUERY=
+SELECT o_custkey, SUM(o_total)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 2: IN subquery — scalar inner result ===
+--echo o_custkey IN (SELECT MAX(l_orderkey) FROM lineitem)
+--echo MAX(l_orderkey) = 5, so rows with o_custkey = 5 are included (but no such row)
+
+let $QUERY=
+SELECT o_custkey, SUM(o_total)
+FROM orders
+WHERE o_custkey IN (SELECT MAX(l_orderkey) FROM lineitem)
+GROUP BY o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
 --echo
---echo === Test 2: Error — IN subquery (not yet supported) ===
---echo Expected error: subqueries not implemented
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE o.o_custkey IN (SELECT o2.o_custkey FROM orders AS o2 WHERE o2.o_custkey >= 200 GROUP BY o2.o_custkey) GROUP BY o.o_custkey;' 2>&1
+--echo === Test 3: Scalar subquery in WHERE — single table ===
+--echo l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+--echo MIN(l_quantity) = 5, so rows with l_quantity > 5 are included
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), COUNT(*)
+FROM lineitem
+WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
+--echo === Test 4: Scalar subquery with inner WHERE ===
+--echo l_quantity > (SELECT MIN(l_quantity) FROM lineitem WHERE l_price > 100)
+--echo MIN where price > 100 = 12, so rows with l_quantity > 12 are included
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), COUNT(*)
+FROM lineitem
+WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem WHERE l_price > 100)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
 --echo
---echo === Test 3: Error — scalar subquery (not yet supported) ===
---echo Expected error: subqueries not implemented
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > (SELECT MIN(l2.l_quantity) FROM lineitem AS l2 GROUP BY l2.l_quantity) GROUP BY o.o_custkey;' 2>&1
+--echo === Test 5: Scalar subquery — MAX in WHERE ===
+--echo l_price < (SELECT MAX(l_price) FROM lineitem)
+--echo MAX(l_price) = 400, so rows with l_price < 400 are included
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_price < (SELECT MAX(l_price) FROM lineitem)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 6: Scalar subquery — SUM in WHERE with equality ===
+--echo o_total = (SELECT MIN(o_total) FROM orders)
+--echo MIN(o_total) = 200
+
+let $QUERY=
+SELECT o_custkey, COUNT(*), SUM(o_total)
+FROM orders
+WHERE o_total = (SELECT MIN(o_total) FROM orders)
+GROUP BY o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 7: Scalar subquery — COUNT as scalar ===
+--echo l_quantity > (SELECT COUNT(*) FROM lineitem) means l_quantity > 10
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_price)
+FROM lineitem
+WHERE l_quantity > (SELECT COUNT(*) FROM lineitem)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 8: Multiple scalar subqueries in WHERE ===
+--echo l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+--echo AND l_price < (SELECT MAX(l_price) FROM lineitem)
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+  AND l_price < (SELECT MAX(l_price) FROM lineitem)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 9: IN subquery — multiple values from GROUP BY ===
+--echo l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem GROUP BY l_orderkey)
+--echo All l_orderkey values (1-5), so all rows match
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), COUNT(*)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem GROUP BY l_orderkey)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 10: IN subquery — selective inner WHERE ===
+--echo l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 20 GROUP BY l_orderkey)
+--echo Inner returns l_orderkey 3 and 5 (rows with quantity > 20)
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_price)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 20 GROUP BY l_orderkey)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 11: IN subquery — inner WHERE filters to empty ===
+--echo l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 999 GROUP BY l_orderkey)
+--echo Inner returns no rows, so no outer rows match
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 999 GROUP BY l_orderkey)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 12: IN subquery with AND condition ===
+--echo l_orderkey IN (...) AND l_quantity > 10
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_price)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem GROUP BY l_orderkey)
+  AND l_quantity > 10
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 13: Cross-column comparison — less than ===
+--echo WHERE l_quantity < l_price (column vs column)
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_quantity < l_price
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 14: Cross-column comparison combined with constant ===
+--echo WHERE l_quantity < l_price AND l_price > 100
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_quantity < l_price AND l_price > 100
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 15: EXISTS with filter on inner ===
+--echo Only orders with lineitem quantity > 20
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 16: EXISTS with no match ===
+--echo l_quantity > 999 matches nothing
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 999)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 17: EXISTS with COUNT(*) aggregation ===
+--echo Count orders per custkey that have lineitems
+
+let $QUERY=
+SELECT o_custkey, COUNT(*)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 18: EXISTS with outer WHERE filter ===
+--echo Orders with custkey = 200 that have lineitems
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_custkey = 200
+  AND EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 19: NOT EXISTS — no matching lineitems ===
+--echo No lineitem has l_quantity > 999, so NOT EXISTS is true for all orders
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 999)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 20: EXISTS with qualified column names ===
+--echo Using table aliases in correlation predicate
+
+let $QUERY=
+SELECT o.o_custkey, SUM(o.o_total)
+FROM orders AS o
+WHERE EXISTS (SELECT l.l_id FROM lineitem AS l WHERE l.l_orderkey = o.o_id)
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 21: NOT EXISTS — all orders have lineitems ===
+--echo NOT EXISTS returns empty (every order has at least one lineitem)
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 22: NOT EXISTS — partial match ===
+--echo Orders 1,2,4 have no lineitems with l_quantity > 20
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 23: NOT EXISTS with outer filter ===
+--echo custkey = 200 AND no high-qty lineitems: only order 4
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_custkey = 200
+  AND NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 24: Correlated scalar subquery — less than ===
+--echo o_total < (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+--echo SUM per orderkey: (1,300),(2,200),(3,550),(4,200),(5,750)
+--echo Only order 5 qualifies (400 < 750)
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total < (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 25: Correlated scalar subquery — equality ===
+--echo o_total = (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+--echo Only order 4 qualifies (200 = 200)
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total = (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 26: Correlated scalar subquery — greater than ===
+--echo o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+--echo Orders 1,2,3 qualify: (500>300, 300>200, 700>550)
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 27: Correlated scalar subquery with outer filter ===
+--echo o_custkey = 200 AND o_total > SUM(l_price): only order 3 (700>550)
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_custkey = 200
+  AND o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 28: Correlated scalar subquery with inner filter ===
+--echo o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+--echo Inner SUM where qty>20: (3,550),(5,750). Only order 3 qualifies (700>550)
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
 --echo === Cleanup ===
 
+DELIMITER ;|
+DROP TABLE empty_table;
 DROP TABLE lineitem;
 DROP TABLE orders;

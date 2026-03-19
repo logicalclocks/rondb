@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -5098,15 +5098,7 @@ int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
   JoinAggregationState *state =
       getJoinAggState(req_struct->m_join_agg_state_key);
   ndbrequire(state != nullptr);
-  JoinAggInterpreter *interp;
-  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
-    Uint32 thr_idx = instance() - 1;
-    ndbrequire(thr_idx < state->m_num_threads);
-    interp = state->m_per_thread_interpreters[thr_idx];
-  } else {
-    interp = state->m_agg_interpreter;
-  }
-  ndbrequire(interp != nullptr);
+  JoinAggInterpreter *interp = c_lqh->getJoinAggInterpreter(state);
 
   Uint32 evict_count = 0;
 
@@ -5114,32 +5106,7 @@ retry:
   Int32 ret = interp->processRecWithLinkedAttrs(
       this, req_struct, linked_data, linked_len);
   if (ret == AGG_EVICT_NEEDED) {
-    jamDebug();
-    Uint32 evict_buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
-    Uint32 words_written = 0;
-    Int32 evict_ret = interp->evictOneGroup(
-        evict_buf, MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32),
-        &words_written);
-    ndbrequire(evict_ret == 0);
-
-    Signal *signal = req_struct->signal;
-    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-    {
-      Uint32 key_len = evict_buf[3] >> 16;
-      const char *key_data = reinterpret_cast<const char*>(&evict_buf[4]);
-      transIdAI->connectPtr =
-          state->selectReceiverData(key_data, key_len);
-    }
-    transIdAI->transId[0] = state->m_transid[0];
-    transIdAI->transId[1] = state->m_transid[1];
-
-    LinearSectionPtr ptr[3];
-    ptr[0].p = evict_buf;
-    ptr[0].sz = words_written;
-    sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
-               TransIdAI::HeaderLength, JBB, ptr, 1);
-
-    state->m_rows_sent++;
+    c_lqh->sendEvictedAggGroup(req_struct->signal, interp, state);
     evict_count++;
     goto retry;
   }
@@ -5153,32 +5120,7 @@ retry:
       interp->gb_map_mutable() != nullptr &&
       interp->gb_map_mutable()->size() > 2 &&
       (state->m_completed_ops.load(std::memory_order_relaxed) % 7) == 0) {
-    jamDebug();
-    Uint32 evict_buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
-    Uint32 words_written = 0;
-    Int32 evict_ret = interp->evictOneGroup(
-        evict_buf, MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32),
-        &words_written);
-    ndbrequire(evict_ret == 0);
-
-    Signal *signal = req_struct->signal;
-    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-    {
-      Uint32 key_len = evict_buf[3] >> 16;
-      const char *key_data = reinterpret_cast<const char*>(&evict_buf[4]);
-      transIdAI->connectPtr =
-          state->selectReceiverData(key_data, key_len);
-    }
-    transIdAI->transId[0] = state->m_transid[0];
-    transIdAI->transId[1] = state->m_transid[1];
-
-    LinearSectionPtr ptr[3];
-    ptr[0].p = evict_buf;
-    ptr[0].sz = words_written;
-    sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
-               TransIdAI::HeaderLength, JBB, ptr, 1);
-
-    state->m_rows_sent++;
+    c_lqh->sendEvictedAggGroup(req_struct->signal, interp, state);
     evict_count++;
   }
 #endif
