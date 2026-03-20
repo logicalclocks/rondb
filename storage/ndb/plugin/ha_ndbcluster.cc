@@ -3866,7 +3866,9 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
     }
     if (THDVAR(current_thd, ring_buffer_show_meta) ||
-        m_ring_buffer_delete_allowed) {
+        m_ring_buffer_delete_allowed ||
+        (thd_sql_command(current_thd) == SQLCOM_ALTER_TABLE &&
+         m_table->isRingBuffer())) {
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
     }
 
@@ -3993,7 +3995,9 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
     options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
   }
   if (THDVAR(current_thd, ring_buffer_show_meta) ||
-      m_ring_buffer_delete_allowed) {
+      m_ring_buffer_delete_allowed ||
+      (thd_sql_command(current_thd) == SQLCOM_ALTER_TABLE &&
+       m_table->isRingBuffer())) {
     options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
   }
 
@@ -5271,6 +5275,14 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
         } else {
           meta.unpack((const uchar *)meta_str.ptr());
           ring_full = (meta.count >= ring_buffer_size);
+          /*
+           * Grow adjustment: after ALTER TABLE increases ring_size,
+           * next_pos may point to an occupied slot (it wrapped at
+           * the old smaller size). Redirect to first empty slot.
+           */
+          if (!ring_full && meta.next_pos <= meta.count) {
+            meta.next_pos = meta.count + 1;
+          }
           data_slot = meta.next_pos;
           meta.advance(ring_buffer_size);
         }
@@ -5477,7 +5489,8 @@ int ha_ndbcluster::ndb_write_row(uchar *record, bool primary_key_update,
    * before peek_indexed_rows() which would find the meta row and
    * trigger the IODKU update path.
    */
-  if (m_table->isRingBuffer() && !thd_ndb->get_applier()) {
+  if (m_table->isRingBuffer() && !thd_ndb->get_applier() &&
+      thd_sql_command(thd) != SQLCOM_ALTER_TABLE) {
     return ndb_ring_buffer_write_row(record);
   }
 
@@ -5608,6 +5621,13 @@ int ha_ndbcluster::ndb_write_row(uchar *record, bool primary_key_update,
   if (thd_ndb->get_applier()) {
     options.optionsPresent |=
         NdbOperation::OperationOptions::OO_REPLICA_APPLIER;
+  }
+
+  /* Copying ALTER on ring-buffer table: kernel write guard needs this flag */
+  if (m_table->isRingBuffer() &&
+      thd_sql_command(thd) == SQLCOM_ALTER_TABLE) {
+    options.optionsPresent |=
+        NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
   }
 
   if (thd_test_options(thd, OPTION_NO_FOREIGN_KEY_CHECKS)) {
@@ -10653,6 +10673,19 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
     /* Check for "off" */
     if (!my_strcasecmp(system_charset_info,
                        mod_ring_buffer->m_val_str.str, "off")) {
+      /* Block disable on ring buffer table during ALTER */
+      if (thd_sql_command(thd) == SQLCOM_ALTER_TABLE) {
+        const char *orig_db =
+            thd->lex->query_block->get_table_list()->db;
+        const char *orig_name =
+            thd->lex->query_block->get_table_list()->table_name;
+        Ndb_table_guard old_tab_g(ndb, orig_db, orig_name);
+        const NDBTAB *old_tab = old_tab_g.get_table();
+        if (old_tab && old_tab->isRingBuffer()) {
+          return create.failed_illegal_create_option(
+              "Cannot disable ring buffer via ALTER");
+        }
+      }
       ndb_log_info("[API] RING_BUFFER = OFF");
     } else {
       /* Parse: size@ring_idx_column@ring_meta_column */
@@ -10761,6 +10794,21 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
       }
 
       found_ring_buffer = true;
+
+      /* Block shrink during ALTER TABLE */
+      if (thd_sql_command(thd) == SQLCOM_ALTER_TABLE) {
+        const char *orig_db =
+            thd->lex->query_block->get_table_list()->db;
+        const char *orig_name =
+            thd->lex->query_block->get_table_list()->table_name;
+        Ndb_table_guard old_tab_g(ndb, orig_db, orig_name);
+        const NDBTAB *old_tab = old_tab_g.get_table();
+        if (old_tab && old_tab->isRingBuffer() &&
+            ring_buffer_size < old_tab->getRingBufferSize()) {
+          return create.failed_illegal_create_option(
+              "Cannot shrink ring buffer size");
+        }
+      }
     }
   }
 
@@ -15049,7 +15097,9 @@ int ha_ndbcluster::multi_range_start_retrievals(uint starting_range) {
           options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
         }
         if (THDVAR(current_thd, ring_buffer_show_meta) ||
-            m_ring_buffer_delete_allowed) {
+            m_ring_buffer_delete_allowed ||
+            (thd_sql_command(current_thd) == SQLCOM_ALTER_TABLE &&
+             m_table->isRingBuffer())) {
           options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
         }
 
@@ -17492,6 +17542,90 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
           new_tab->setTTLSec(new_ttl_sec);
           new_tab->setTTLColumnNo(new_ttl_column_no);
     }
+  }
+
+  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("RING_BUFFER");
+  if (mod_ring_buffer->m_found) {
+    std::string rb_comment(mod_ring_buffer->m_val_str.str,
+                           mod_ring_buffer->m_val_str.len);
+
+    if (!my_strcasecmp(system_charset_info,
+                       mod_ring_buffer->m_val_str.str, "off")) {
+      if (old_tab->isRingBuffer()) {
+        *reason = "Cannot disable ring buffer via ALTER";
+        return true;
+      }
+      /* off on non-ring-buffer table — no-op, ignore */
+    } else {
+      /* Parse: size@ring_idx_column@ring_meta_column */
+      std::size_t pos1 = rb_comment.find('@');
+      if (pos1 == std::string::npos || pos1 == 0) {
+        *reason = "RING_BUFFER format: SIZE@idx_col@meta_col";
+        return true;
+      }
+      std::size_t pos2 = rb_comment.find('@', pos1 + 1);
+      if (pos2 == std::string::npos || pos2 == pos1 + 1) {
+        *reason = "RING_BUFFER format: SIZE@idx_col@meta_col";
+        return true;
+      }
+      if (rb_comment.find('@', pos2 + 1) != std::string::npos) {
+        *reason = "RING_BUFFER format: SIZE@idx_col@meta_col";
+        return true;
+      }
+
+      std::string size_str = rb_comment.substr(0, pos1);
+      for (std::size_t i = 0; i < size_str.length(); i++) {
+        if (size_str.at(i) < '0' || size_str.at(i) > '9') {
+          *reason = "RING_BUFFER size must be a positive integer";
+          return true;
+        }
+      }
+      if (size_str.length() > 10) {
+        *reason = "Ring buffer size must be >= 1 and <= 2147483647";
+        return true;
+      }
+      int64_t size_raw = std::stoll(size_str);
+      if (size_raw < 1 || size_raw > 0x7FFFFFFF) {
+        *reason = "Ring buffer size must be >= 1 and <= 2147483647";
+        return true;
+      }
+      uint32_t new_ring_buffer_size = static_cast<uint32_t>(size_raw);
+
+      /* Block shrink */
+      if (old_tab->isRingBuffer() &&
+          new_ring_buffer_size < old_tab->getRingBufferSize()) {
+        *reason = "Cannot shrink ring buffer size";
+        return true;
+      }
+
+      /* Look up column numbers */
+      std::string ring_idx_col_name =
+          rb_comment.substr(pos1 + 1, pos2 - pos1 - 1);
+      std::string ring_meta_col_name = rb_comment.substr(pos2 + 1);
+      if (ring_meta_col_name.empty()) {
+        *reason = "RING_BUFFER format: SIZE@idx_col@meta_col";
+        return true;
+      }
+
+      NdbDictionary::Column *idx_col =
+          new_tab->getColumn(ring_idx_col_name.c_str());
+      NdbDictionary::Column *meta_col =
+          new_tab->getColumn(ring_meta_col_name.c_str());
+      if (idx_col == nullptr || meta_col == nullptr) {
+        *reason = "Ring buffer column not found in table";
+        return true;
+      }
+
+      new_tab->setRingBufferSize(new_ring_buffer_size);
+      new_tab->setRingIdxColumnNo(idx_col->getColumnNo());
+      new_tab->setRingMetaColumnNo(meta_col->getColumnNo());
+    }
+  }
+
+  /* Mutual exclusion: TTL and RING_BUFFER */
+  if (new_tab->isTTLEnabled() && new_tab->isRingBuffer()) {
+    *reason = "A table cannot be both TTL and RING_BUFFER";
+    return true;
   }
 
   NdbDictionary::Object::PartitionBalance part_bal =
