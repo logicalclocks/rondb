@@ -56,6 +56,7 @@ class JoinAggInterpreter : public PushdownInterpreter {
     m_agg_results(nullptr), m_agg_prog_start_pos(0),
     m_gb_map(nullptr), m_n_groups(0),
     m_attr_read_buf(nullptr), m_attr_read_pos(0),
+    m_acc_offset(0),
     m_processed_rows(0),
     m_result_size(0),
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
@@ -121,6 +122,23 @@ class JoinAggInterpreter : public PushdownInterpreter {
   void setUseMutex(bool v) { m_use_mutex = v; }
   void setMaxGroups(Uint32 v) { m_max_groups = v; }
   Uint32 maxGroups() const { return m_max_groups; }
+
+  /**
+   * Multi-leaf aggregation support.
+   *
+   * setTotalAggResults() overrides m_n_agg_results to the combined count
+   * across all leaves. Must be called after Init() but before any rows
+   * are processed. This ensures hash map entries are sized for the full
+   * combined accumulator layout.
+   *
+   * switchProgram() swaps the active aggregation program. The hash map and
+   * group rows are unchanged — only the program pointer, instruction start
+   * position, and accumulator offset change. Called before each ProcessRec
+   * to select the correct leaf's program.
+   */
+  void setTotalAggResults(Uint32 total);
+  void switchProgram(const Uint32* prog, Uint32 prog_len,
+                     Uint32 agg_prog_start_pos, Uint32 acc_offset);
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,
                       Uint32* words_written);
   void initChunkAllocator(Uint32 thread_id, Uint32 budget_pages,
@@ -147,6 +165,11 @@ class JoinAggInterpreter : public PushdownInterpreter {
   Uint32 m_n_groups;
   Uint32* m_attr_read_buf;
   Uint32 m_attr_read_pos;
+
+  // Multi-leaf: accumulator offset applied after group lookup/creation.
+  // agg_res_ptr is shifted by m_acc_offset so the leaf's 0-based program
+  // indices map to the correct physical slots in the combined row.
+  Uint32 m_acc_offset;
   static Uint32 g_attr_read_buf_len_;
   Uint64 m_processed_rows;
   Uint32 m_result_size;

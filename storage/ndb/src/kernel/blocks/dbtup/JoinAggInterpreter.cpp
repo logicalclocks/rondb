@@ -751,6 +751,59 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
   return true;
 }
 
+/**
+ * setTotalAggResults — override m_n_agg_results for multi-leaf.
+ *
+ * Must be called after Init() but before any rows are processed.
+ * Sets the total accumulator count across all leaves so hash map entries
+ * and the non-GROUP-BY accumulator array are sized for the full combined
+ * layout. Also re-initializes the non-GROUP-BY accumulator slots.
+ */
+void JoinAggInterpreter::setTotalAggResults(Uint32 total) {
+  require(m_inited);
+  require(m_processed_rows == 0);
+  require(total <= MAX_AGG_N_RESULTS);
+  m_n_agg_results = total;
+
+  // Re-initialize the non-GROUP-BY accumulator array for the new total
+  m_agg_results = m_agg_results_buf;
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    m_agg_results[i].type = NDB_TYPE_UNDEFINED;
+    m_agg_results[i].value.val_int64 = 0;
+    m_agg_results[i].is_unsigned = false;
+    m_agg_results[i].is_null = true;
+  }
+}
+
+/**
+ * switchProgram — swap the active aggregation program for multi-leaf.
+ *
+ * Points to a different leaf's program and sets the accumulator offset.
+ * The hash map, group rows, and all other interpreter state are unchanged.
+ * Called before each processRecWithLinkedAttrs() to select the correct
+ * leaf's program.
+ *
+ * @param prog             Pointer to the leaf's program words (must remain
+ *                         valid for the lifetime of the interpreter)
+ * @param prog_len         Program length in words
+ * @param agg_prog_start   Instruction start offset within the program
+ * @param acc_offset       Accumulator offset for this leaf (0 for leaf 0)
+ */
+void JoinAggInterpreter::switchProgram(const Uint32* prog, Uint32 prog_len,
+                                       Uint32 agg_prog_start,
+                                       Uint32 acc_offset) {
+  require(m_inited);
+  require(prog != nullptr);
+  require(prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
+
+  // Copy program to internal buffer and point m_prog at it
+  memcpy(m_prog_buf, prog, prog_len * sizeof(Uint32));
+  m_prog = m_prog_buf;
+  m_prog_len = prog_len;
+  m_agg_prog_start_pos = agg_prog_start;
+  m_acc_offset = acc_offset;
+}
+
 bool JoinAggInterpreter::OptimizeProgram() {
   if (!m_inited) {
     return false;
@@ -1010,6 +1063,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     if (found != nullptr) {
       header = reinterpret_cast<AttributeHeader*>(found);
       agg_res_ptr = reinterpret_cast<AggResItem*>(found + len_in_char);
+      agg_res_ptr += m_acc_offset;
     } else {
       if (m_max_groups > 0 && m_n_groups >= m_max_groups) {
         return AGG_EVICT_NEEDED;
@@ -1042,9 +1096,10 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         agg_res_ptr[i].is_unsigned = false;
         agg_res_ptr[i].is_null = true;
       }
+      agg_res_ptr += m_acc_offset;
     }
   } else {
-    agg_res_ptr = m_agg_results;
+    agg_res_ptr = m_agg_results + m_acc_offset;
   }
 
   Uint32 col_index;

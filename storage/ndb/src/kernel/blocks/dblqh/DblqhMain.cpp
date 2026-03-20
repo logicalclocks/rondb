@@ -9383,7 +9383,9 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     regTcPtr->m_join_agg_state_key = lqhKeyReq->variableData[nextPos];
     nextPos++;
     JoinAggregationState *aggState =
-        getJoinAggState(regTcPtr->m_join_agg_state_key);
+        getJoinAggState(
+            JoinAggregationState::decodeBaseKey(
+                regTcPtr->m_join_agg_state_key));
     if (aggState != nullptr &&
         !getNodeInfo(refToNode(aggState->m_senderRef)).m_connected) {
       jam();
@@ -15210,10 +15212,20 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
   }
 
   /* 4. Feed null-extended row to AggInterpreter */
-  JoinAggregationState *state =
-      getJoinAggState(regTcPtr->m_join_agg_state_key);
+  Uint32 outerEncodedKey = regTcPtr->m_join_agg_state_key;
+  Uint32 outerBaseKey = JoinAggregationState::decodeBaseKey(outerEncodedKey);
+  Uint32 outerLeafIndex = JoinAggregationState::decodeLeafIndex(outerEncodedKey);
+  JoinAggregationState *state = getJoinAggState(outerBaseKey);
   ndbrequire(state != nullptr);
+  ndbrequire(outerLeafIndex < state->m_num_leaves);
   JoinAggInterpreter *interp = getJoinAggInterpreter(state);
+
+  // Switch interpreter to this leaf's program for null row processing
+  if (state->m_num_leaves > 1) {
+    const LeafProgram &leaf = state->m_leaf_programs[outerLeafIndex];
+    interp->switchProgram(leaf.m_agg_program, leaf.m_agg_program_len,
+                          leaf.m_agg_prog_start_pos, leaf.m_acc_offset);
+  }
 
 retry:
   Int32 ret = interp->processNullExtendedRow(linked_data, linked_len);
@@ -15980,7 +15992,9 @@ Dblqh::handle_tc_failed_scans(Signal *signal,
            * since the DBTC coordinator is gone.
            */
           JoinAggregationState *aggState =
-              getJoinAggState(scanPtr.p->m_join_agg_state_key);
+              getJoinAggState(
+                  JoinAggregationState::decodeBaseKey(
+                      scanPtr.p->m_join_agg_state_key));
           if (aggState != nullptr &&
               refToNode(aggState->m_senderRef) == nodeId) {
             shouldAbort = true;
@@ -20934,7 +20948,9 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
       scanFragReq->variableData[extra_len_index];
     extra_len_index++;
     JoinAggregationState *aggState =
-        getJoinAggState(scanPtr->m_join_agg_state_key);
+        getJoinAggState(
+            JoinAggregationState::decodeBaseKey(
+                scanPtr->m_join_agg_state_key));
     if (aggState != nullptr &&
         !getNodeInfo(refToNode(aggState->m_senderRef)).m_connected) {
       jam();

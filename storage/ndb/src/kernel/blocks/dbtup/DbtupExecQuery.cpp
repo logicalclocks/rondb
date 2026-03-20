@@ -5095,10 +5095,21 @@ int Dbtup::prepareAndHandleJoinAggRow(KeyReqStruct *req_struct,
 int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
                             const Uint32 *linked_data,
                             Uint32 linked_len) {
-  JoinAggregationState *state =
-      getJoinAggState(req_struct->m_join_agg_state_key);
+  Uint32 encodedKey = req_struct->m_join_agg_state_key;
+  Uint32 baseKey = JoinAggregationState::decodeBaseKey(encodedKey);
+  Uint32 leafIndex = JoinAggregationState::decodeLeafIndex(encodedKey);
+
+  JoinAggregationState *state = getJoinAggState(baseKey);
   ndbrequire(state != nullptr);
+  ndbrequire(leafIndex < state->m_num_leaves);
   JoinAggInterpreter *interp = c_lqh->getJoinAggInterpreter(state);
+
+  // Switch interpreter to this leaf's program and accumulator offset
+  if (state->m_num_leaves > 1) {
+    const LeafProgram &leaf = state->m_leaf_programs[leafIndex];
+    interp->switchProgram(leaf.m_agg_program, leaf.m_agg_program_len,
+                          leaf.m_agg_prog_start_pos, leaf.m_acc_offset);
+  }
 
   Uint32 evict_count = 0;
 
