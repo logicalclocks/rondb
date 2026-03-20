@@ -1,0 +1,345 @@
+#
+# Setup: Create ring-buffer table with ring_size=3
+#
+CREATE TABLE test.rb_alter (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_alter (id, data) VALUES (1, 'a');
+INSERT INTO test.rb_alter (id, data) VALUES (1, 'b');
+INSERT INTO test.rb_alter (id, data) VALUES (1, 'c');
+SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
+id	ring_idx	data
+1	1	a
+1	2	b
+1	3	c
+#
+# Case 1: Grow ring_size 3 → 6 — allowed
+#
+ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=RING_BUFFER=6@ring_idx@ring_meta";
+SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
+id	ring_idx	data
+1	1	a
+1	2	b
+1	3	c
+#
+# Case 2: After grow, inserts fill empty slots first (no overwrite)
+#
+INSERT INTO test.rb_alter (id, data) VALUES (1, 'd');
+SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
+id	ring_idx	data
+1	1	a
+1	2	b
+1	3	c
+1	4	d
+INSERT INTO test.rb_alter (id, data) VALUES (1, 'e');
+INSERT INTO test.rb_alter (id, data) VALUES (1, 'f');
+SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
+id	ring_idx	data
+1	1	a
+1	2	b
+1	3	c
+1	4	d
+1	5	e
+1	6	f
+#
+# Case 3: Ring wraps at new size (7th insert overwrites slot 1)
+#
+INSERT INTO test.rb_alter (id, data) VALUES (1, 'g');
+SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
+id	ring_idx	data
+1	1	g
+1	2	b
+1	3	c
+1	4	d
+1	5	e
+1	6	f
+#
+# Case 4: Shrink blocked — 6 → 3
+#
+ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Cannot shrink ring buffer size'
+#
+# Case 5: Shrink blocked — 6 → 1
+#
+ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Cannot shrink ring buffer size'
+#
+# Case 6: Disable blocked — RING_BUFFER=off
+#
+ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=RING_BUFFER=off";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Cannot disable ring buffer via ALTER'
+#
+# Case 7: Same size — no-op, no error
+#
+ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=RING_BUFFER=6@ring_idx@ring_meta";
+SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
+id	ring_idx	data
+1	1	g
+1	2	b
+1	3	c
+1	4	d
+1	5	e
+1	6	f
+#
+# Case 8: Grow further — 6 → 10
+#
+ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=RING_BUFFER=10@ring_idx@ring_meta";
+INSERT INTO test.rb_alter (id, data) VALUES (1, 'h');
+SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
+id	ring_idx	data
+1	1	g
+1	2	b
+1	3	c
+1	4	d
+1	5	e
+1	6	f
+1	7	h
+DROP TABLE test.rb_alter;
+#
+# Case 9: Preserve ring buffer on unrelated ALTER (ADD COLUMN)
+#
+CREATE TABLE test.rb_preserve (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+INSERT INTO test.rb_preserve (id, val) VALUES (1, 'before_alter');
+INSERT INTO test.rb_preserve (id, val) VALUES (1, 'before_alter2');
+ALTER TABLE test.rb_preserve ADD COLUMN extra INT DEFAULT 0;
+INSERT INTO test.rb_preserve (id, val) VALUES (1, 'after_alter');
+SELECT id, ring_idx, val, extra FROM test.rb_preserve
+WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	val	extra
+1	1	before_alter	0
+1	2	before_alter2	0
+1	3	after_alter	0
+DROP TABLE test.rb_preserve;
+#
+# Case 10: Multiple PK prefixes — grow preserves all rings
+#
+CREATE TABLE test.rb_multi (
+region INT NOT NULL,
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(50),
+PRIMARY KEY (region, client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=2@ring_idx@ring_meta";
+INSERT INTO test.rb_multi (region, client_id, data) VALUES (1, 100, 'r1c100_a');
+INSERT INTO test.rb_multi (region, client_id, data) VALUES (1, 100, 'r1c100_b');
+INSERT INTO test.rb_multi (region, client_id, data) VALUES (2, 200, 'r2c200_a');
+ALTER TABLE test.rb_multi COMMENT="NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta";
+SELECT region, client_id, ring_idx, data FROM test.rb_multi
+ORDER BY region, client_id, ring_idx;
+region	client_id	ring_idx	data
+1	100	1	r1c100_a
+1	100	2	r1c100_b
+2	200	1	r2c200_a
+INSERT INTO test.rb_multi (region, client_id, data) VALUES (1, 100, 'r1c100_c');
+SELECT region, client_id, ring_idx, data FROM test.rb_multi
+WHERE region = 1 AND client_id = 100 ORDER BY ring_idx;
+region	client_id	ring_idx	data
+1	100	1	r1c100_a
+1	100	2	r1c100_b
+1	100	3	r1c100_c
+DROP TABLE test.rb_multi;
+#
+# Case 11: Grow on not-full ring (perfect — no caveat)
+#
+CREATE TABLE test.rb_notfull (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+INSERT INTO test.rb_notfull (id, data) VALUES (1, 'x');
+INSERT INTO test.rb_notfull (id, data) VALUES (1, 'y');
+ALTER TABLE test.rb_notfull COMMENT="NDB_TABLE=RING_BUFFER=8@ring_idx@ring_meta";
+INSERT INTO test.rb_notfull (id, data) VALUES (1, 'z');
+SELECT id, ring_idx, data FROM test.rb_notfull ORDER BY ring_idx;
+id	ring_idx	data
+1	1	x
+1	2	y
+1	3	z
+DROP TABLE test.rb_notfull;
+#
+# Case 12: Grow on heavily wrapped ring (next_pos in middle)
+# ring_size=3, 8 inserts → wraps multiple times
+# After 8 inserts: slots hold values 7(1), 8(2), 6(3)
+# Meta: next_pos=3, count=3 (oldest is slot 3 = value 6)
+#
+CREATE TABLE test.rb_wrap (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v1');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v2');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v3');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v4');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v5');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v6');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v7');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v8');
+SELECT id, ring_idx, data FROM test.rb_wrap ORDER BY ring_idx;
+id	ring_idx	data
+1	1	v7
+1	2	v8
+1	3	v6
+ALTER TABLE test.rb_wrap COMMENT="NDB_TABLE=RING_BUFFER=6@ring_idx@ring_meta";
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v9');
+SELECT id, ring_idx, data FROM test.rb_wrap ORDER BY ring_idx;
+id	ring_idx	data
+1	1	v7
+1	2	v8
+1	3	v6
+1	4	v9
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v10');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v11');
+SELECT id, ring_idx, data FROM test.rb_wrap ORDER BY ring_idx;
+id	ring_idx	data
+1	1	v7
+1	2	v8
+1	3	v6
+1	4	v9
+1	5	v10
+1	6	v11
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v12');
+SELECT id, ring_idx, data FROM test.rb_wrap ORDER BY ring_idx;
+id	ring_idx	data
+1	1	v12
+1	2	v8
+1	3	v6
+1	4	v9
+1	5	v10
+1	6	v11
+DROP TABLE test.rb_wrap;
+#
+# Case 13: Sequential grows — 2 → 4 → 8
+#
+CREATE TABLE test.rb_seq (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=2@ring_idx@ring_meta";
+INSERT INTO test.rb_seq (id, data) VALUES (1, 'a');
+INSERT INTO test.rb_seq (id, data) VALUES (1, 'b');
+SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
+id	ring_idx	data
+1	1	a
+1	2	b
+ALTER TABLE test.rb_seq COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+INSERT INTO test.rb_seq (id, data) VALUES (1, 'c');
+INSERT INTO test.rb_seq (id, data) VALUES (1, 'd');
+SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
+id	ring_idx	data
+1	1	a
+1	2	b
+1	3	c
+1	4	d
+ALTER TABLE test.rb_seq COMMENT="NDB_TABLE=RING_BUFFER=8@ring_idx@ring_meta";
+INSERT INTO test.rb_seq (id, data) VALUES (1, 'e');
+INSERT INTO test.rb_seq (id, data) VALUES (1, 'f');
+INSERT INTO test.rb_seq (id, data) VALUES (1, 'g');
+INSERT INTO test.rb_seq (id, data) VALUES (1, 'h');
+SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
+id	ring_idx	data
+1	1	a
+1	2	b
+1	3	c
+1	4	d
+1	5	e
+1	6	f
+1	7	g
+1	8	h
+INSERT INTO test.rb_seq (id, data) VALUES (1, 'i');
+SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
+id	ring_idx	data
+1	1	i
+1	2	b
+1	3	c
+1	4	d
+1	5	e
+1	6	f
+1	7	g
+1	8	h
+DROP TABLE test.rb_seq;
+#
+# Case 14: Grow on ring_size=1 (edge case)
+#
+CREATE TABLE test.rb_one (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
+INSERT INTO test.rb_one (id, data) VALUES (1, 'only');
+SELECT id, ring_idx, data FROM test.rb_one ORDER BY ring_idx;
+id	ring_idx	data
+1	1	only
+ALTER TABLE test.rb_one COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_one (id, data) VALUES (1, 'second');
+SELECT id, ring_idx, data FROM test.rb_one ORDER BY ring_idx;
+id	ring_idx	data
+1	1	only
+1	2	second
+INSERT INTO test.rb_one (id, data) VALUES (1, 'third');
+SELECT id, ring_idx, data FROM test.rb_one ORDER BY ring_idx;
+id	ring_idx	data
+1	1	only
+1	2	second
+1	3	third
+INSERT INTO test.rb_one (id, data) VALUES (1, 'fourth');
+SELECT id, ring_idx, data FROM test.rb_one ORDER BY ring_idx;
+id	ring_idx	data
+1	1	fourth
+1	2	second
+1	3	third
+DROP TABLE test.rb_one;
+#
+# Case 15: Bulk insert after grow — batch path uses empty slots
+#
+CREATE TABLE test.rb_bulk (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'x'), (1, 'y'), (1, 'z');
+SELECT id, ring_idx, data FROM test.rb_bulk ORDER BY ring_idx;
+id	ring_idx	data
+1	1	x
+1	2	y
+1	3	z
+ALTER TABLE test.rb_bulk COMMENT="NDB_TABLE=RING_BUFFER=6@ring_idx@ring_meta";
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b1'), (1, 'b2'), (1, 'b3');
+SELECT id, ring_idx, data FROM test.rb_bulk ORDER BY ring_idx;
+id	ring_idx	data
+1	1	x
+1	2	y
+1	3	z
+1	4	b1
+1	5	b2
+1	6	b3
+DROP TABLE test.rb_bulk;
