@@ -2266,8 +2266,11 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
   if (aggStateKey != RNIL) {
     JoinAggregationState *state = getJoinAggState(aggStateKey);
     if (state != nullptr) {
-      if (state->m_agg_program != nullptr) {
-        lc_ndbd_pool_free(state->m_agg_program);
+      if (state->m_all_programs_buf != nullptr) {
+        lc_ndbd_pool_free(state->m_all_programs_buf);
+      }
+      if (state->m_leaf_programs != nullptr) {
+        lc_ndbd_pool_free(state->m_leaf_programs);
       }
       if (state->m_receiverIds != nullptr) {
         lc_ndbd_pool_free(state->m_receiverIds);
@@ -2351,8 +2354,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_error_code = 0;
   state->m_agg_interpreter = nullptr;
   state->m_per_thread_interpreters = nullptr;
-  state->m_agg_program = nullptr;
-  state->m_agg_program_len = 0;
+  state->m_num_leaves = 0;
+  state->m_leaf_programs = nullptr;
+  state->m_total_agg_results = 0;
+  state->m_all_programs_buf = nullptr;
   state->m_outer_join_agg_scan = false;
 
   // Populate immutable identification fields
