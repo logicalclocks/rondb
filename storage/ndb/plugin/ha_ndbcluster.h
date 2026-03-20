@@ -757,6 +757,14 @@ class ha_ndbcluster : public handler, public Partition_handler {
   Uint32 m_rb_batch_next_pos{0};
   Uint32 m_rb_batch_count{0};
   Uint64 m_rb_batch_total_inserts{0};
+
+  /*
+   * Ring buffer DELETE permission flag.
+   * Set true by ndbcluster_push_to_engine() when DELETE WHERE clause
+   * covers all PK-prefix columns with equalities. Default false (deny).
+   * Reset at start of each statement.
+   */
+  bool m_ring_buffer_delete_allowed{false};
 };
 
 bool is_cluster_failure_code(int error);

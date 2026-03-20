@@ -3837,7 +3837,8 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
     if (m_ttl_ignore) {
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
     }
-    if (THDVAR(current_thd, ring_buffer_show_meta)) {
+    if (THDVAR(current_thd, ring_buffer_show_meta) ||
+        m_ring_buffer_delete_allowed) {
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
     }
 
@@ -3963,7 +3964,8 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
   if (m_ttl_ignore) {
     options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
   }
-  if (THDVAR(current_thd, ring_buffer_show_meta)) {
+  if (THDVAR(current_thd, ring_buffer_show_meta) ||
+      m_ring_buffer_delete_allowed) {
     options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
   }
 
@@ -6166,6 +6168,54 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
 
   DBUG_TRACE;
 
+  /*
+   * Ring buffer UPDATE restrictions:
+   * - Block updates to ring_idx or ring_meta columns (system-managed)
+   * - Block updates to the meta row (ring_idx=0)
+   * - Allow user-column-only updates on data rows
+   */
+  if (m_table->getRingBufferSize() > 0 && !thd_ndb->get_applier()) {
+    const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
+    const Uint32 ring_meta_col_no = m_table->getRingMetaColumnNo();
+    Field *ring_idx_field = table->field[ring_idx_col_no];
+    Field *ring_meta_field = table->field[ring_meta_col_no];
+
+    if (bitmap_is_set(table->write_set, ring_idx_field->field_index())) {
+      my_error(ER_ILLEGAL_HA, MYF(0),
+               "Cannot update ring_idx on ring-buffer table");
+      return HA_ERR_UNSUPPORTED;
+    }
+    if (bitmap_is_set(table->write_set, ring_meta_field->field_index())) {
+      my_error(ER_ILLEGAL_HA, MYF(0),
+               "Cannot update ring_meta on ring-buffer table");
+      return HA_ERR_UNSUPPORTED;
+    }
+
+    /*
+     * Block updates to meta row (ring_idx=0).
+     *
+     * We only check when ring_idx is in the read_set, meaning it was
+     * actually fetched from NDB into the record buffer. When ring_idx
+     * is NOT in the read_set, the record buffer contains the column's
+     * DEFAULT value (0), which would be a false positive.
+     *
+     * This is safe because the kernel-level meta-row filter (Commit 3,
+     * handleReadReq in DbtupExecQuery.cpp) hides all ring_idx=0 rows
+     * from scans unless ring_buffer_show_meta is ON. When show_meta
+     * is ON, ring_idx is in the read_set (the user explicitly asked to
+     * see meta rows), so this check will fire. When show_meta is OFF,
+     * the kernel guarantees no meta row reaches update_row().
+     */
+    if (bitmap_is_set(table->read_set, ring_idx_field->field_index())) {
+      long long old_ring_idx = ring_idx_field->val_int();
+      if (old_ring_idx == 0) {
+        my_error(ER_ILLEGAL_HA, MYF(0),
+                 "Cannot update meta row on ring-buffer table");
+        return HA_ERR_UNSUPPORTED;
+      }
+    }
+  }
+
   /* Start a transaction now if none available
    * (Manual Binlog application...)
    */
@@ -6310,6 +6360,11 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
   }
 
+  if (m_table->getRingBufferSize() > 0) {
+    options.optionsPresent |=
+        NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
+  }
+
   if (cursor) {
     /*
       We are scanning records and want to update the record
@@ -6423,6 +6478,76 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
   return 0;
 }
 
+/**
+ * Check if a condition Item only references PK-prefix columns
+ * (all PK columns except ring_idx). Recursively walks the Item tree.
+ *
+ * This validates that a DELETE WHERE clause on a ring-buffer table
+ * will only delete complete rings. Any field reference to ring_idx
+ * or a non-PK column causes rejection. Accepts any operator (=, IN,
+ * >, <, >=, <=, BETWEEN, etc.) — the constraint is on which columns
+ * are referenced, not which operators are used.
+ */
+static bool check_ring_buffer_delete_condition(const TABLE *table,
+                                               uint ring_idx_field_index,
+                                               const KEY *pk_info,
+                                               const Item *item) {
+  switch (item->type()) {
+    case Item::FIELD_ITEM: {
+      const Item_field *f = down_cast<const Item_field *>(item);
+      if (f->field->table != table) return false;
+      if (f->field->field_index() == ring_idx_field_index) return false;
+      for (uint i = 0; i < pk_info->user_defined_key_parts; i++) {
+        if (pk_info->key_part[i].field->field_index() ==
+            f->field->field_index())
+          return true;
+      }
+      return false; /* non-PK column */
+    }
+    case Item::FUNC_ITEM: {
+      const Item_func *func = down_cast<const Item_func *>(item);
+      for (uint i = 0; i < func->argument_count(); i++) {
+        const Item *arg = func->arguments()[i];
+        if (arg->type() == Item::FIELD_ITEM) {
+          if (!check_ring_buffer_delete_condition(table, ring_idx_field_index,
+                                                  pk_info, arg))
+            return false;
+        }
+      }
+      return true;
+    }
+    case Item::COND_ITEM: {
+      const Item_cond *cond = down_cast<const Item_cond *>(item);
+      List<Item> *args = const_cast<Item_cond *>(cond)->argument_list();
+      List_iterator<Item> it(*args);
+      Item *arg;
+      while ((arg = it++)) {
+        if (!check_ring_buffer_delete_condition(table, ring_idx_field_index,
+                                                pk_info, arg))
+          return false;
+      }
+      return true;
+    }
+    default:
+      if (item->const_item()) return true;
+      return false;
+  }
+}
+
+/**
+ * Check if a DELETE on a ring-buffer table is allowed.
+ * Requires a WHERE clause where every field reference is a PK-prefix
+ * column (not ring_idx, not non-PK columns).
+ */
+static bool is_ring_buffer_delete_allowed(const TABLE *table,
+                                          uint ring_idx_field_index,
+                                          const Item *cond) {
+  if (cond == nullptr) return true; /* bare DELETE: clears entire table, safe */
+  const KEY *pk_info = table->key_info + table->s->primary_key;
+  return check_ring_buffer_delete_condition(table, ring_idx_field_index,
+                                            pk_info, cond);
+}
+
 /*
   handler delete interface
 */
@@ -6434,6 +6559,31 @@ int ha_ndbcluster::delete_row(const uchar *record) {
 bool ha_ndbcluster::start_bulk_delete() {
   DBUG_TRACE;
   m_is_bulk_delete = true;
+
+  /*
+   * Ring buffer: validate DELETE WHERE clause early, before the scan
+   * is set up. This allows the scan to include meta rows (ring_idx=0)
+   * so they get deleted along with data rows.
+   *
+   * Must reject here (not only in delete_row) because if the WHERE
+   * matches 0 rows, delete_row is never called and the invalid DELETE
+   * would silently succeed.
+   */
+  if (m_table->getRingBufferSize() > 0 && !m_ring_buffer_delete_allowed) {
+    THD *thd = table->in_use;
+    const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
+    const uint ring_idx_fi = table->field[ring_idx_col_no]->field_index();
+    const Item *where = thd->lex->query_block->where_cond();
+    if (is_ring_buffer_delete_allowed(table, ring_idx_fi, where)) {
+      m_ring_buffer_delete_allowed = true;
+    } else if (!m_thd_ndb->get_applier()) {
+      my_error(ER_ILLEGAL_HA, MYF(0),
+               "DELETE requires full PK prefix WHERE on ring-buffer table");
+      m_is_bulk_delete = false;
+      return 1;
+    }
+  }
+
   return 0;  // Bulk delete used by handler
 }
 
@@ -6532,6 +6682,42 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
 
   DBUG_TRACE;
 
+  /*
+   * Ring buffer DELETE restriction:
+   * Only allow DELETE when m_ring_buffer_delete_allowed is set (validated
+   * in ndbcluster_push_to_engine as PK-prefix-only WHERE clause).
+   * Replica applier is always allowed.
+   */
+  /*
+   * Ring buffer DELETE restriction:
+   * Only allow DELETE with a WHERE clause covering all PK-prefix columns
+   * (all PK columns except ring_idx) with equalities.
+   * Replica applier is always allowed.
+   *
+   * We validate lazily on first call per statement: check the WHERE
+   * condition from thd->lex and cache the result in
+   * m_ring_buffer_delete_allowed (reset in ha_ndbcluster::reset()).
+   * push_to_engine() is not called for DELETE, so we cannot validate
+   * there.
+   */
+  if (m_table->getRingBufferSize() > 0 &&
+      !m_ring_buffer_delete_allowed &&
+      !m_thd_ndb->get_applier()) {
+    const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
+    const uint ring_idx_fi = table->field[ring_idx_col_no]->field_index();
+    const Item *where = thd->lex->query_block->where_cond();
+    if (is_ring_buffer_delete_allowed(table, ring_idx_fi, where)) {
+      m_ring_buffer_delete_allowed = true;
+    }
+  }
+  if (m_table->getRingBufferSize() > 0 &&
+      !m_ring_buffer_delete_allowed &&
+      !m_thd_ndb->get_applier()) {
+    my_error(ER_ILLEGAL_HA, MYF(0),
+             "DELETE requires full PK prefix WHERE on ring-buffer table");
+    return HA_ERR_UNSUPPORTED;
+  }
+
   /* Start a transaction now if none available
    * (Manual Binlog application...)
    */
@@ -6598,6 +6784,11 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
     TTL_HANDLER_TRACE(m_share->table_name, "ha_ndbcluster::ndb_delete_row(), "
                       "set TTL_IGNORE flag");
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
+  }
+
+  if (m_table->getRingBufferSize() > 0) {
+    options.optionsPresent |=
+        NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
   }
 
   if (cursor) {
@@ -7806,6 +7997,7 @@ int ha_ndbcluster::reset() {
   m_ttl_ignore = false;
 
   m_rb_batch_active = false;
+  m_ring_buffer_delete_allowed = false;
 
   return 0;
 }
@@ -14774,7 +14966,8 @@ int ha_ndbcluster::multi_range_start_retrievals(uint starting_range) {
         if (m_ttl_ignore) {
           options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
         }
-        if (THDVAR(current_thd, ring_buffer_show_meta)) {
+        if (THDVAR(current_thd, ring_buffer_show_meta) ||
+            m_ring_buffer_delete_allowed) {
           options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
         }
 
@@ -15515,6 +15708,11 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
   DBUG_TRACE;
   ndb_pushed_builder_ctx pushed_builder(thd, root_path, join);
 
+  /**
+   * Ring-buffer DELETE validation: check if the WHERE clause covers
+   * all PK-prefix columns with equalities. Must run regardless of
+   * optimizer switches (join_pushdown, engine_condition_pushdown).
+   */
   /**
    * Investigate what could be pushed down as entire joins first.
    * Note that we also handle condition pushdowns for the tables which
