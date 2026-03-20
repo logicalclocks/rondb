@@ -1,0 +1,135 @@
+# ndb_ring_buffer_select.test
+#
+# Tests for ring-buffer meta row filtering on read operations:
+# scans, PK lookups, COUNT(*), and the ndb_ring_buffer_show_meta session variable.
+
+--source include/have_ndb.inc
+
+--echo #
+--echo # Setup: Create a ring-buffer table with size=4 and insert data
+--echo #
+
+CREATE TABLE test.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    event_data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+
+# Insert data for client_id=1 (4 rows + wrap)
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_C');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_D');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_E');
+
+# Insert data for client_id=2 (2 rows)
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'client2_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'client2_B');
+
+--echo #
+--echo # Case 1: SELECT * hides ring_idx=0 meta rows (scan filter)
+--echo #
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1
+    ORDER BY ring_idx;
+
+--echo #
+--echo # Case 2: SELECT WHERE ring_idx=0 returns empty (PK lookup filter)
+--echo #
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 AND ring_idx = 0;
+
+--echo #
+--echo # Case 3: SELECT COUNT(*) returns data row count only
+--echo #
+
+SELECT COUNT(*) FROM test.rb WHERE client_id = 1;
+
+--echo #
+--echo # Case 4: SET ndb_ring_buffer_show_meta = ON — scan shows meta rows
+--echo #
+
+SET ndb_ring_buffer_show_meta = ON;
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1
+    ORDER BY ring_idx;
+
+--echo #
+--echo # Case 5: SET ndb_ring_buffer_show_meta = ON — PK lookup on ring_idx=0 works
+--echo #
+
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
+    WHERE client_id = 1 AND ring_idx = 0;
+
+--echo #
+--echo # Case 6: SET ndb_ring_buffer_show_meta = OFF — meta hidden again
+--echo #
+
+SET ndb_ring_buffer_show_meta = OFF;
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1
+    ORDER BY ring_idx;
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 AND ring_idx = 0;
+
+--echo #
+--echo # Case 7: Multiple PK prefixes — all meta hidden
+--echo #
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    ORDER BY client_id, ring_idx;
+
+--echo #
+--echo # Case 8: Ring after wrap — meta still hidden, all data visible
+--echo # Insert one more to trigger another wrap
+--echo #
+
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_F');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1
+    ORDER BY ring_idx;
+
+--echo #
+--echo # Case 9: Handler INSERT still works (ring_buffer_op=1 bypasses filter)
+--echo # This verifies the filter does not break the INSERT path
+--echo #
+
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'new_client');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 3
+    ORDER BY ring_idx;
+
+--echo #
+--echo # Case 10: Verify meta row content visible via show_meta
+--echo #
+
+SET ndb_ring_buffer_show_meta = ON;
+
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
+    WHERE client_id = 1 AND ring_idx = 0;
+
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
+    WHERE client_id = 2 AND ring_idx = 0;
+
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
+    WHERE client_id = 3 AND ring_idx = 0;
+
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP TABLE test.rb;
+
+--echo # Done.
