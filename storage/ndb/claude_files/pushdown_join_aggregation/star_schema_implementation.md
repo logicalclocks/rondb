@@ -606,6 +606,7 @@ Step 12:    NdbQueryOperation multi-program section
 Step 13:    testStarJoinAggNdbApi — NdbQueryBuilder API tests
 Step 14:    RonSQL planner extensions
 Step 15:    RonSQL integration tests
+Step 16:    Comprehensive test suite — all code paths + rejection tests
 ```
 
 ---
@@ -1120,6 +1121,9 @@ DROP TABLE star_events, star_measurements, star_entity;
 | `mysql-test/suite/ndb_push_agg/r/testStarJoinAggNdbApi.result` | Expected output | 13 |
 | `mysql-test/suite/ronsql/t/ronsql_star_join.test` | RonSQL integration | 15 |
 | `mysql-test/suite/ronsql/r/ronsql_star_join.result` | Expected output | 15 |
+| `block_unit_test/testStarJoinAggComprehensive.cpp` | Full path coverage + rejection | 16 |
+| `mysql-test/suite/ndb_push_agg/t/testStarJoinAggComprehensive.test` | MTR wrapper | 16 |
+| `mysql-test/suite/ndb_push_agg/r/testStarJoinAggComprehensive.result` | Expected output | 16 |
 
 ---
 
@@ -1162,3 +1166,161 @@ merge correctly handles this because:
 
 **Mitigation**: Test eviction with forced small hash map (ERROR_INSERT
 5090) where some groups have contributions from only one leaf.
+
+---
+
+## Step 16: Comprehensive Star Schema Test Suite
+
+**Goal**: Exercise all code paths for multi-leaf aggregation and verify
+that invalid QueryTree constructions are properly rejected.
+
+**New file**: `storage/ndb/block_unit_test/testStarJoinAggComprehensive.cpp`
+**CMake target**: `testStarJoinAggComprehensive`
+**MTR test**: `mysql-test/suite/ndb_push_agg/t/testStarJoinAggComprehensive.test`
+
+This test combines DBLQH-level (SignalSender), DBTC/DBSPJ-level
+(SignalSender), and NDB API-level tests in a single binary, covering
+all code paths and error cases.
+
+### Part A: Code Path Coverage Tests
+
+These tests verify that every code path touched by multi-leaf
+aggregation is exercised and produces correct results.
+
+#### A1: Concurrency Strategies
+
+| Test | Path | Description |
+|------|------|-------------|
+| test_mutex_based_2leaf | DblqhProxy MUTEX_BASED | 2 leaves with shared interpreter, verify program switching under mutex |
+| test_mutex_free_2leaf | DblqhProxy MUTEX_FREE | 2 leaves with per-thread interpreters, verify per-thread merge with combined agg_ops |
+| test_mutex_free_3leaf | DblqhProxy MUTEX_FREE | 3 leaves, verify mergeFrom combines all 3 leaves' accumulators correctly |
+
+#### A2: Aggregation Types
+
+| Test | Path | Description |
+|------|------|-------------|
+| test_sum_count | ProcessRec kOpSum + kOpCount | Leaf 0: SUM, Leaf 1: COUNT, verify combined |
+| test_max_min | ProcessRec kOpMax + kOpMin | Leaf 0: MAX, Leaf 1: MIN, verify combined |
+| test_all_aggs | ProcessRec all ops | Leaf 0: SUM+MAX, Leaf 1: COUNT+MIN, 4 accumulators total |
+| test_sum_bigint_double | ProcessRec type variants | Leaf 0: SumBigint, Leaf 1: SumDouble, verify type-specific accumulation |
+
+#### A3: GROUP BY Variants
+
+| Test | Path | Description |
+|------|------|-------------|
+| test_groupby_local | ProcessRec m_n_gb_cols>0 | GROUP BY on local (non-linked) column, both leaves |
+| test_groupby_linked | ProcessRec + initGBTypes | GROUP BY on linked column (0x8000), via DBSPJ with NI_ATTR_LINKED |
+| test_no_groupby | ProcessRec m_n_gb_cols==0 | No GROUP BY, single global result row |
+| test_multicolumn_groupby | ProcessRec multi-GB | GROUP BY on 2 columns (e.g., entity_id + category) |
+
+#### A4: Eviction and Flow Control
+
+| Test | Path | Description |
+|------|------|-------------|
+| test_eviction_combined | evictOneGroup | ERROR_INSERT 5090 (maxGroups=3), 5+ groups, verify evicted rows have combined accumulators |
+| test_eviction_partial | evictOneGroup | Groups with data from only one leaf are evicted, verify API merge handles null slots |
+| test_flow_control | JOIN_AGG_SEND_REQ | Large result set triggers flow control, verify SEND_REQ/SEND_CONF handshake works with combined rows |
+
+#### A5: Outer Join Paths
+
+| Test | Path | Description |
+|------|------|-------------|
+| test_outer_join_2leaf | handleOuterJoinAggKeyNotFound | 2 LEFT JOIN leaves, some entities missing in one table, verify null propagation updates correct leaf's accumulators |
+| test_outer_null_both | processNullExtendedRow | Entity exists in neither child table, verify both leaves get null row |
+| test_inner_outer_mix | T_INNER_JOIN flag | Leaf 0: INNER JOIN, Leaf 1: LEFT JOIN, verify mixed join semantics |
+
+#### A6: Encoded Key Paths
+
+| Test | Path | Description |
+|------|------|-------------|
+| test_encoded_key_lqhkeyreq | DblqhMain LQHKEYREQ | Verify decodeBaseKey/decodeLeafIndex at LQHKEYREQ entry |
+| test_encoded_key_scanfragreq | DblqhMain SCAN_FRAGREQ | Verify decoding at SCAN_FRAGREQ entry |
+| test_encoded_key_node_fail | DblqhMain node fail check | Verify decoding in node failure abort path |
+
+#### A7: DBSPJ Fan-Out Paths
+
+| Test | Path | Description |
+|------|------|-------------|
+| test_spj_lookup_2leaf | lookup_send | Root scan → 2 lookup leaves, verify both get encoded aggStateKey |
+| test_spj_scan_2leaf | scanFrag_send | Root scan → 2 scan leaves (ordered index), verify encoded key in SCAN_FRAGREQ |
+| test_spj_mixed_2leaf | lookup_send + scanFrag_send | Root scan → 1 lookup leaf + 1 scan leaf |
+| test_spj_ancestor_marking | validateAggregateFlags | 3-level tree: root → intermediate → 2 leaves, verify T_AGGREGATE_ANCESTOR on all ancestors |
+
+#### A8: Multi-Node Cluster
+
+| Test | Path | Description |
+|------|------|-------------|
+| test_multi_node_merge | JOIN_AGG_COMPLETE | 2+ data nodes, verify per-node SETUP with same program, independent hash maps, API merges cross-node results |
+| test_multi_node_eviction | eviction + merge | Multi-node with eviction on different nodes, verify combined merge |
+
+#### A9: Edge Cases
+
+| Test | Path | Description |
+|------|------|-------------|
+| test_empty_table | ProcessRec 0 rows | No rows in any child table, verify empty result |
+| test_single_row | ProcessRec 1 row | Single row in each child, verify single group with combined accumulators |
+| test_single_leaf_compat | all paths | numLeaves=1, verify all code paths degrade to single-leaf behavior |
+| test_max_leaves | validateAggregateFlags | 8 aggregate leaves (max reasonable), verify setup and combined accumulators |
+| test_large_dataset | ProcessRec + merge | 10000 rows × 2 leaves, verify correctness and no memory issues |
+
+### Part B: Invalid QueryTree Rejection Tests
+
+These tests verify that DBSPJ and NDB API properly reject invalid
+multi-leaf query constructions with appropriate error codes.
+
+#### B1: DBSPJ Validation (via SignalSender)
+
+| Test | Expected Error | Description |
+|------|---------------|-------------|
+| test_reject_different_parents | InvalidAggregateFlags | 2 aggregate leaves with different parents (not fan-out from single node) |
+| test_reject_leaf_on_nonleaf | InvalidAggregateFlags | NI_AGGREGATE_LEAF set on a non-leaf node (has children) |
+| test_reject_no_aggregate_leaf | InvalidAggregateFlags | NI_AGGREGATE set on all nodes but no NI_AGGREGATE_LEAF |
+| test_reject_aggregate_without_ni | InvalidAggregateFlags | NI_AGGREGATE_LEAF set but NI_AGGREGATE not set on some nodes |
+
+Validation is in `Dbspj::validateAggregateFlags()`.
+
+#### B2: NDB API Validation (via NdbQueryBuilder)
+
+| Test | Expected Error | Description |
+|------|---------------|-------------|
+| test_reject_groupby_mismatch | QRY_WRONG_OPERATION_TYPE | 2 leaves with different GROUP BY columns |
+| test_reject_leaf_not_child | QRY_WRONG_OPERATION_TYPE | Aggregate leaf that is not a leaf node (has children in query tree) |
+| test_reject_too_many_leaves | QRY_WRONG_OPERATION_TYPE | More than MAX_AGG_LEAVES aggregate leaves |
+
+Validation is in `NdbQueryDefImpl` constructor and `NdbQueryBuilder::prepare()`.
+
+#### B3: Wire Format Validation (via SignalSender)
+
+| Test | Expected Error | Description |
+|------|---------------|-------------|
+| test_reject_bad_numleaves | SETUP_REF | Section 0 with numLeaves=0 and no program data |
+| test_reject_truncated_section | SETUP_REF | Section 0 too short for declared numLeaves |
+| test_reject_bad_program_magic | SETUP_REF | Valid numLeaves but corrupt program header (wrong magic) |
+
+Validation is in `DblqhProxy::execJOIN_AGG_SETUP_REQ`.
+
+### Implementation Notes
+
+The test binary uses SignalSender for DBLQH and DBSPJ-level tests,
+and NdbQueryBuilder for API-level tests, in a single binary. This
+follows the pattern of testMultiOuterJoinAggNdbApi which combines
+multiple test levels.
+
+Each test function:
+1. Creates a fresh table and inserts test data
+2. Runs the multi-leaf aggregation via the appropriate path
+3. Verifies results against expected values
+4. For rejection tests: verifies the expected error code is returned
+5. Cleans up (releases TC, drops table)
+
+All tests print PASS/FAIL per test case. The MTR wrapper runs the
+binary and expects "PASSED" as the final line.
+
+### Files
+
+| File | Type | Step |
+|------|------|------|
+| `block_unit_test/testStarJoinAggComprehensive.cpp` | Combined test | 16 |
+| `block_unit_test/CMakeLists.txt` | Build target | 16 |
+| `mysql-test/suite/ndb_push_agg/t/testStarJoinAggComprehensive.test` | MTR wrapper | 16 |
+| `mysql-test/suite/ndb_push_agg/r/testStarJoinAggComprehensive.result` | Expected output | 16 |
