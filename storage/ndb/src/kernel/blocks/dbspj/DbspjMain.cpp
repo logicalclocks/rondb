@@ -64,9 +64,10 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
-//#define DEBUG_AGGREGATION 1
+#define DEBUG_AGGREGATION 1
+#define DEBUG_STAR_AGG 1
 //#define DEBUG_TRANSID_AI 1
-//#define DEBUG_JOIN_AGG_TRACE 1
+#define DEBUG_JOIN_AGG_TRACE 1
 //#define DEBUG_MATCH 1
 #endif
 
@@ -86,6 +87,12 @@
 #define DEB_AGGREGATION(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_AGGREGATION(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_STAR_AGG
+#define DEB_STAR_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_STAR_AGG(arglist) do { } while (0)
 #endif
 
 /**
@@ -1808,6 +1815,9 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
       if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
         jam();
         treeNodePtr.p->m_agg_leaf_index = aggregate_leaf_count;
+        DEB_STAR_AGG(("(%u) STAR_AGG: node %u is agg leaf index %u, isLeaf=%d",
+                      instance(), treeNodePtr.p->m_node_no,
+                      aggregate_leaf_count, treeNodePtr.p->isLeaf()));
         aggregate_leaf_count++;
         if (!treeNodePtr.p->isLeaf()) {
           aggregate_leaf_all_are_leaves = false;
@@ -1835,6 +1845,37 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
           "DBSPJ %u: T_AGGREGATE_LEAF is set on a non-leaf node",
           instance());
       return DbspjErr::InvalidAggregateFlags;
+    }
+
+    /**
+     * Validate multi-leaf consistency: all aggregate leaf nodes must
+     * share the same parent (fan-out from a single node). Different
+     * parents would require separate aggregation states which is not
+     * supported.
+     */
+    if (aggregate_leaf_count > 1) {
+      jam();
+      Uint32 commonParent = RNIL;
+      for (list.first(treeNodePtr); !treeNodePtr.isNull();
+           list.next(treeNodePtr)) {
+        if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+          jam();
+          if (commonParent == RNIL) {
+            commonParent = treeNodePtr.p->m_parentPtrI;
+          } else if (treeNodePtr.p->m_parentPtrI != commonParent) {
+            jam();
+            g_eventLogger->debug(
+                "DBSPJ %u: Multi-leaf aggregate nodes have different "
+                "parents (node %u parent %u vs expected %u)",
+                instance(), treeNodePtr.p->m_node_no,
+                treeNodePtr.p->m_parentPtrI, commonParent);
+            return DbspjErr::InvalidAggregateFlags;
+          }
+        }
+      }
+      DEB_STAR_AGG(("(%u) STAR_AGG: %u aggregate leaves, "
+                    "commonParent=%u — validated",
+                    instance(), aggregate_leaf_count, commonParent));
     }
 
     /**
@@ -5146,8 +5187,13 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
     }
     Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
     Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
-    req->variableData[var_index + 4] =
+    Uint32 encodedKey =
         JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+    req->variableData[var_index + 4] = encodedKey;
+    DEB_STAR_AGG(("(%u) STAR_AGG lookup_send: node=%u leafIdx=%u "
+                  "baseKey=%u encodedKey=0x%08x nodeId=%u",
+                  instance(), treeNodePtr.p->m_node_no, leafIdx,
+                  baseKey, encodedKey, nodeId));
     agg_extra = 1;
   }
 
@@ -8666,8 +8712,13 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
         ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
         Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
         Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
-        req->variableData[var_index + 2] =
+        Uint32 scanEncodedKey =
             JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+        req->variableData[var_index + 2] = scanEncodedKey;
+        DEB_STAR_AGG(("(%u) STAR_AGG scanFrag_send: node=%u leafIdx=%u "
+                      "baseKey=%u encodedKey=0x%08x nodeId=%u",
+                      instance(), treeNodePtr.p->m_node_no, leafIdx,
+                      baseKey, scanEncodedKey, nodeId));
         if (agg_extra > 1) {
           jam();
           req->variableData[var_index + 3] = data.m_agg_range_cnt;
@@ -10972,7 +11023,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       Uint32 *sectionptrs = nullptr;
 
       const bool interpreted =
-          (treeBits & DABits::NI_ATTR_INTERPRET) ||
+          (treeBits & (DABits::NI_ATTR_INTERPRET |
+                       DABits::NI_ATTR_LINKED)) ||
           (paramBits & DABits::PI_ATTR_INTERPRET) ||
           (treeNodePtr.p->m_bits & TreeNode::T_ATTR_INTERPRETED);
 

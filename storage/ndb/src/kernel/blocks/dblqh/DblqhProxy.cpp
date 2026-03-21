@@ -38,6 +38,13 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 // #define DEBUG_EXEC_SR 1
+#define DEBUG_STAR_AGG 1
+#endif
+
+#ifdef DEBUG_STAR_AGG
+#define DEB_STAR_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_STAR_AGG(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_EXEC_SR
@@ -2449,6 +2456,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       return;
     }
     state->m_num_leaves = numLeaves;
+    DEB_STAR_AGG(("STAR_AGG SETUP: key=%u numLeaves=%u totalWords=%u",
+                  key, numLeaves, totalWords));
 
     // Fill each LeafProgram — pointers into allProgsBuf, no extra copies
     Uint32 accOffset = 0;
@@ -2467,6 +2476,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       state->m_leaf_programs[i].m_acc_offset = accOffset;
       state->m_leaf_programs[i].m_n_agg_results = leafNAggResults;
       state->m_leaf_programs[i].m_agg_prog_start_pos = 8 + leafNGBCols;
+      DEB_STAR_AGG(("STAR_AGG SETUP: leaf[%u] progLen=%u n_gb=%u "
+                    "n_agg=%u acc_off=%u prog_start=%u",
+                    i, progLen, leafNGBCols, leafNAggResults,
+                    accOffset, 8 + leafNGBCols));
       accOffset += leafNAggResults;
     }
     state->m_total_agg_results = accOffset;

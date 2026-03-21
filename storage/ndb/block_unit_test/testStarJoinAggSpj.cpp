@@ -206,18 +206,38 @@ buildAggProgram_CountSum(Uint32 sumColId)
  *
  * Both children join to node 0 (fan-out pattern).
  */
+/*
+ * Build a 3-node QueryTree for star schema fan-out:
+ *   Node 0: QN_SCAN_FRAG (root), passes PK to children
+ *   Node 1: QN_LOOKUP (leaf 0), self-join on PK, NI_AGGREGATE_LEAF
+ *   Node 2: QN_LOOKUP (leaf 1), self-join on PK, NI_AGGREGATE_LEAF
+ *
+ * If withLinkedProjection is true, child nodes include NI_ATTR_LINKED
+ * with a P_ATTRINFO pattern that projects parent column 0 (PK) into
+ * the child's linked attribute section. This is required when the
+ * aggregation program uses linked GROUP BY columns (0x8000 flag).
+ *
+ * QueryTree node optional part order (must match parseDA expectations):
+ *   Part1: NI_HAS_PARENT
+ *   Part2: NI_KEY_LINKED
+ *   Part3: NI_ATTR_LINKED   (when withLinkedProjection)
+ *   Part4: NI_LINKED_ATTR   (only on root)
+ */
 static std::vector<Uint32>
 buildStarQueryTree(Uint32 tableId, Uint32 tableVersion,
-                   Uint32 pkAttrId, Uint32 receiverId)
+                   Uint32 pkAttrId, Uint32 receiverId,
+                   bool withLinkedProjection = false)
 {
   std::vector<Uint32> ai;
 
   /* ---- Tree section ---- */
 
   const Uint32 node0_len = 5;  /* 4 fixed + 1 NI_LINKED_ATTR */
-  const Uint32 node1_len = 7;  /* 4 fixed + 1 parent + 2 key pattern */
-  const Uint32 node2_len = 7;  /* 4 fixed + 1 parent + 2 key pattern */
-  const Uint32 tree_len = 1 + node0_len + node1_len + node2_len;  /* 20 words */
+  /* Child node: 4 fixed + 1 parent + 2 key pattern [+ 2 linked proj] */
+  const Uint32 linked_extra = withLinkedProjection ? 2 : 0;
+  const Uint32 node1_len = 7 + linked_extra;
+  const Uint32 node2_len = 7 + linked_extra;
+  const Uint32 tree_len = 1 + node0_len + node1_len + node2_len;
 
   /* Word 0: QueryTree cnt_len */
   Uint32 cnt_len = 0;
@@ -228,41 +248,49 @@ buildStarQueryTree(Uint32 tableId, Uint32 tableVersion,
   Uint32 n0_len = 0;
   QueryNode::setOpLen(n0_len, QueryNode::QN_SCAN_FRAG, node0_len);
   ai.push_back(n0_len);
-  ai.push_back(DABits::NI_AGGREGATE | DABits::NI_LINKED_ATTR);  /* requestInfo */
+  ai.push_back(DABits::NI_AGGREGATE | DABits::NI_LINKED_ATTR);
   ai.push_back(tableId);
   ai.push_back(tableVersion);
   /* NI_LINKED_ATTR: packed list with 1 attribute (pkAttrId) */
   ai.push_back((pkAttrId << 16) | 1);
 
   /* Node 1: QN_LOOKUP (aggregate leaf 0) */
+  Uint32 n1_ri = DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
+                 DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF;
+  if (withLinkedProjection) n1_ri |= DABits::NI_ATTR_LINKED;
   Uint32 n1_len = 0;
   QueryNode::setOpLen(n1_len, QueryNode::QN_LOOKUP, node1_len);
   ai.push_back(n1_len);
-  ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
-               DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF);
+  ai.push_back(n1_ri);
   ai.push_back(tableId);
   ai.push_back(tableVersion);
-  /* NI_HAS_PARENT: packed list with 1 parent (node 0) */
-  ai.push_back((0 << 16) | 1);
-  /* NI_KEY_LINKED: (param_cnt << 16) | pattern_len = (0 << 16) | 1 */
-  ai.push_back((0 << 16) | 1);
-  /* Key pattern: QueryPattern::col(0) = get column 0 from parent */
-  ai.push_back(QueryPattern::col(0));
+  ai.push_back((0 << 16) | 1);   /* NI_HAS_PARENT: parent = node 0 */
+  ai.push_back((0 << 16) | 1);   /* NI_KEY_LINKED: patternLen=1 */
+  ai.push_back(QueryPattern::col(0));  /* key = parent col 0 */
+  if (withLinkedProjection) {
+    /* NI_ATTR_LINKED: (len_pattern << 16) | len_prg */
+    ai.push_back((1 << 16) | 0); /* patternLen=1, progLen=0 */
+    /* Pattern: project parent column 0 with AttributeHeader */
+    ai.push_back(QueryPattern::attrInfo(0));
+  }
 
   /* Node 2: QN_LOOKUP (aggregate leaf 1) */
+  Uint32 n2_ri = DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
+                 DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF;
+  if (withLinkedProjection) n2_ri |= DABits::NI_ATTR_LINKED;
   Uint32 n2_len = 0;
   QueryNode::setOpLen(n2_len, QueryNode::QN_LOOKUP, node2_len);
   ai.push_back(n2_len);
-  ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
-               DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF);
+  ai.push_back(n2_ri);
   ai.push_back(tableId);
   ai.push_back(tableVersion);
-  /* NI_HAS_PARENT: packed list with 1 parent (node 0) */
-  ai.push_back((0 << 16) | 1);
-  /* NI_KEY_LINKED: (param_cnt << 16) | pattern_len = (0 << 16) | 1 */
-  ai.push_back((0 << 16) | 1);
-  /* Key pattern: QueryPattern::col(0) = get column 0 from parent */
-  ai.push_back(QueryPattern::col(0));
+  ai.push_back((0 << 16) | 1);   /* NI_HAS_PARENT: parent = node 0 */
+  ai.push_back((0 << 16) | 1);   /* NI_KEY_LINKED: patternLen=1 */
+  ai.push_back(QueryPattern::col(0));  /* key = parent col 0 */
+  if (withLinkedProjection) {
+    ai.push_back((1 << 16) | 0); /* NI_ATTR_LINKED: patternLen=1 */
+    ai.push_back(QueryPattern::attrInfo(0));
+  }
 
   /* ---- Parameter section ---- */
 
@@ -271,7 +299,7 @@ buildStarQueryTree(Uint32 tableId, Uint32 tableVersion,
   QueryNodeParameters::setOpLen(p0_len, QueryNodeParameters::QN_SCAN_FRAG,
                                 QN_ScanFragParameters::NodeSize);
   ai.push_back(p0_len);
-  ai.push_back(0);             /* requestInfo: no special bits */
+  ai.push_back(0);             /* requestInfo */
   ai.push_back(receiverId);    /* resultData */
   ai.push_back(256);           /* batch_size_rows */
   ai.push_back(65536);         /* batch_size_bytes */
@@ -284,16 +312,16 @@ buildStarQueryTree(Uint32 tableId, Uint32 tableVersion,
   QueryNodeParameters::setOpLen(p1_len, QueryNodeParameters::QN_LOOKUP,
                                 QN_LookupParameters::NodeSize);
   ai.push_back(p1_len);
-  ai.push_back(0);             /* requestInfo: no special bits */
-  ai.push_back(receiverId);    /* resultData */
+  ai.push_back(0);             /* requestInfo */
+  ai.push_back(receiverId);
 
   /* Param 2: QN_LookupParameters (NodeSize=3) */
   Uint32 p2_len = 0;
   QueryNodeParameters::setOpLen(p2_len, QueryNodeParameters::QN_LOOKUP,
                                 QN_LookupParameters::NodeSize);
   ai.push_back(p2_len);
-  ai.push_back(0);             /* requestInfo: no special bits */
-  ai.push_back(receiverId);    /* resultData */
+  ai.push_back(0);             /* requestInfo */
+  ai.push_back(receiverId);
 
   return ai;
 }
@@ -1055,10 +1083,10 @@ testStarCountSum(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
         totalSum += val;
       }
     } else if (r.n_agg_results == 2) {
-      /* Combined COUNT+SUM result */
+      /* Combined result: leaf 0 (SUM) at acc[0], leaf 1 (COUNT) at acc[1] */
       for (const auto &g : r.groups) {
-        totalCount += extractCountBigint(g.second, 0);
-        totalSum += extractSumBigint(g.second, 1);
+        totalSum += extractSumBigint(g.second, 0);
+        totalCount += extractCountBigint(g.second, 1);
       }
     }
   }
@@ -1144,9 +1172,16 @@ testStarSumCountGroupBy(Ndb *ndb, SignalSender &ss, Uint32 nodeId,
   }
 
   Uint32 receiverId = 43;
+  /*
+   * Build QueryTree with linked projection: NI_ATTR_LINKED on both
+   * children so parent column 0 (PK) is forwarded as linked attribute
+   * data into the child's LQHKEYREQ. Required for GROUP BY on a
+   * linked column.
+   */
   std::vector<Uint32> queryTree =
     buildStarQueryTree(meta.tableId, meta.schemaVersion,
-                       meta.attrIdA, receiverId);
+                       meta.attrIdA, receiverId,
+                       true /* withLinkedProjection */);
 
   /*
    * GROUP BY the linked column (PK from parent, position 0).

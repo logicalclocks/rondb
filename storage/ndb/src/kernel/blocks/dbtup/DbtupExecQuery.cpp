@@ -65,13 +65,14 @@
 //#define DEBUG_LCP 1
 //#define DEBUG_REORG 1
 //#define DEBUG_DELETE 1
+#define DEBUG_STAR_AGG 1
 //#define DEBUG_DELETE_NR 1
 //#define DEBUG_LCP_LGMAN 1
 //#define DEBUG_LCP_SKIP_DELETE 1
 //#define DEBUG_DISK 1
 //#define DEBUG_ELEM_COUNT 1
 //#define DEBUG_COPY_TUPLE 1
-//#define DEBUG_JOIN_AGG_TRACE 1
+#define DEBUG_JOIN_AGG_TRACE 1
 //#define DEBUG_VARPART_EXPAND 1
 #endif
 
@@ -91,6 +92,12 @@
 #define DEB_ELEM_COUNT(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_ELEM_COUNT(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_STAR_AGG
+#define DEB_STAR_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_STAR_AGG(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_DISK
@@ -5104,9 +5111,19 @@ int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
   ndbrequire(leafIndex < state->m_num_leaves);
   JoinAggInterpreter *interp = c_lqh->getJoinAggInterpreter(state);
 
+  DEB_STAR_AGG(("STAR_AGG handleJoinAggRow: encodedKey=0x%08x baseKey=%u "
+                "leafIndex=%u num_leaves=%u n_gb_cols=%u linked_len=%u",
+                encodedKey, baseKey, leafIndex, state->m_num_leaves,
+                interp->n_gb_cols(), linked_len));
+
   // Switch interpreter to this leaf's program and accumulator offset
   if (state->m_num_leaves > 1) {
     const LeafProgram &leaf = state->m_leaf_programs[leafIndex];
+    DEB_STAR_AGG(("STAR_AGG switchProgram: leaf=%u progLen=%u "
+                  "prog_start=%u acc_offset=%u n_agg=%u",
+                  leafIndex, leaf.m_agg_program_len,
+                  leaf.m_agg_prog_start_pos, leaf.m_acc_offset,
+                  leaf.m_n_agg_results));
     interp->switchProgram(leaf.m_agg_program, leaf.m_agg_program_len,
                           leaf.m_agg_prog_start_pos, leaf.m_acc_offset);
   }
