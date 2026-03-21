@@ -43,6 +43,7 @@
 #include <signaldata/DihScanTab.hpp>
 #include <signaldata/DropTab.hpp>
 #include <signaldata/JoinAgg.hpp>
+#include "../dblqh/JoinAggregationState.hpp"
 #include <signaldata/LqhKey.hpp>
 #include <signaldata/PrepDropTab.hpp>
 #include <signaldata/QueryTree.hpp>
@@ -1789,15 +1790,16 @@ error:
 /**
  * Validate aggregate flag consistency before execution.
  * The NDB API sets NI_AGGREGATE on every node and NI_AGGREGATE_LEAF
- * on exactly one leaf node. Verify this to catch malformed queries
- * early rather than crashing later in DBTC/DBLQH.
+ * on one or more leaf nodes. For multi-leaf star schema queries,
+ * multiple leaves may have NI_AGGREGATE_LEAF. Verify this to catch
+ * malformed queries early rather than crashing later in DBTC/DBLQH.
  */
 Uint32
 Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
   if (requestPtr.p->m_bits & Request::RT_AGGREGATE) {
     jam();
     Uint32 aggregate_leaf_count = 0;
-    bool aggregate_leaf_is_leaf = false;
+    bool aggregate_leaf_all_are_leaves = true;
 
     Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
     Ptr<TreeNode> treeNodePtr;
@@ -1805,8 +1807,11 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
          list.next(treeNodePtr)) {
       if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
         jam();
+        treeNodePtr.p->m_agg_leaf_index = aggregate_leaf_count;
         aggregate_leaf_count++;
-        aggregate_leaf_is_leaf = treeNodePtr.p->isLeaf();
+        if (!treeNodePtr.p->isLeaf()) {
+          aggregate_leaf_all_are_leaves = false;
+        }
       }
     }
 
@@ -1817,14 +1822,14 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
           instance(), ctx.m_aggregate_node_count, ctx.m_cnt);
       return DbspjErr::InvalidAggregateFlags;
     }
-    if (unlikely(aggregate_leaf_count != 1)) {
+    if (unlikely(aggregate_leaf_count < 1)) {
       jam();
       g_eventLogger->debug(
-          "DBSPJ %u: Found %u T_AGGREGATE_LEAF nodes, expected exactly 1",
-          instance(), aggregate_leaf_count);
+          "DBSPJ %u: Found 0 T_AGGREGATE_LEAF nodes, expected >= 1",
+          instance());
       return DbspjErr::InvalidAggregateFlags;
     }
-    if (unlikely(!aggregate_leaf_is_leaf)) {
+    if (unlikely(!aggregate_leaf_all_are_leaves)) {
       jam();
       g_eventLogger->debug(
           "DBSPJ %u: T_AGGREGATE_LEAF is set on a non-leaf node",
@@ -1833,10 +1838,11 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
     }
 
     /**
-     * Mark all ancestors of the aggregate leaf with T_AGGREGATE_ANCESTOR.
-     * This enables intermediate outer join nodes to detect that they need
-     * to propagate null rows down to the aggregate leaf when they get no
-     * match (chained outer join support).
+     * Mark all ancestors of aggregate leaf nodes with T_AGGREGATE_ANCESTOR.
+     * For multi-leaf star schema queries, walk up from EACH aggregate leaf.
+     * The union of all ancestor paths gets marked, which is correct because
+     * any node that is an ancestor of ANY leaf must participate in the
+     * aggregation flow.
      */
     for (list.first(treeNodePtr); !treeNodePtr.isNull();
          list.next(treeNodePtr)) {
@@ -1850,7 +1856,6 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
           ancestorPtr.p->m_bits |= TreeNode::T_AGGREGATE_ANCESTOR;
           parentPtrI = ancestorPtr.p->m_parentPtrI;
         }
-        break;  // Only one aggregate leaf
       }
     }
 
@@ -5139,7 +5144,10 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
       jam();
       LqhKeyReq::setOuterJoinAggFlag(req->attrLen, 1);
     }
-    req->variableData[var_index + 4] = requestPtr.p->m_aggStateKeys[nodeId];
+    Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
+    Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
+    req->variableData[var_index + 4] =
+        JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
     agg_extra = 1;
   }
 
@@ -8656,8 +8664,10 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
       if (agg_extra) {
         jam();
         ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
+        Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
+        Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
         req->variableData[var_index + 2] =
-            requestPtr.p->m_aggStateKeys[nodeId];
+            JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
         if (agg_extra > 1) {
           jam();
           req->variableData[var_index + 3] = data.m_agg_range_cnt;

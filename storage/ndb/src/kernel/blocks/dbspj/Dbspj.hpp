@@ -876,6 +876,7 @@ class Dbspj : public SimulatedBlock {
           m_bits(T_LEAF),
           m_state(TN_BUILDING),
           m_parentPtrI(RNIL),
+          m_agg_leaf_index(0),
           m_requestPtrI(request),
           m_ancestors(),
           m_coverage(),
@@ -1124,6 +1125,7 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_node_no;
     Uint32 m_batch_size;
     Uint32 m_parentPtrI;
+    Uint32 m_agg_leaf_index;   // Multi-leaf: 0..255, encoded in aggStateKey
     const Uint32 m_requestPtrI;
 
     /**
