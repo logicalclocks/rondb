@@ -34,6 +34,7 @@
 #include "decimal.h"
 #include "Dbtup.hpp"
 #include "../dblqh/Dblqh.hpp"
+#include "../dblqh/JoinAggregationState.hpp"
 #include <NdbSqlUtil.hpp>
 #include <Interpreter.hpp>
 
@@ -802,6 +803,66 @@ void JoinAggInterpreter::switchProgram(const Uint32* prog, Uint32 prog_len,
   m_prog_len = prog_len;
   m_agg_prog_start_pos = agg_prog_start;
   m_acc_offset = acc_offset;
+}
+
+/**
+ * cacheMultiLeafAggOps — pre-build combined agg_ops for multi-leaf merge.
+ *
+ * For MUTEX_FREE merge, mergeFrom() needs to know the aggregation opcode
+ * for each accumulator slot. With multi-leaf, different slots belong to
+ * different leaf programs. This method extracts ops from ALL leaf programs
+ * into the combined m_cached_agg_ops array, with each leaf's ops placed
+ * at its acc_offset.
+ *
+ * Must be called after Init() + setTotalAggResults(), before any merge.
+ */
+void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
+                                               Uint32 num_leaves) {
+  require(m_inited);
+  require(m_cached_agg_ops != nullptr);
+  memset(m_cached_agg_ops, 0, m_n_agg_results);
+
+  for (Uint32 leaf = 0; leaf < num_leaves; leaf++) {
+    // Extract ops from this leaf's program, writing at leaf's offset
+    Uint32 exec_pos = leaves[leaf].m_agg_prog_start_pos;
+    const Uint32* prog = leaves[leaf].m_agg_program;
+    Uint32 prog_len = leaves[leaf].m_agg_program_len;
+    Uint32 acc_offset = leaves[leaf].m_acc_offset;
+
+    while (exec_pos < prog_len) {
+      Uint32 value = prog[exec_pos++];
+      Uint8 op = (value & 0xFC000000) >> 26;
+      Uint32 agg_index;
+      switch (op) {
+        case kOpSum: case kOpSumBigint: case kOpSumDouble:
+        case kOpMax: case kOpMaxBigint: case kOpMaxDouble:
+        case kOpMin: case kOpMinBigint: case kOpMinDouble:
+        case kOpCount:
+          agg_index = (value & 0x0000FFFF) + acc_offset;
+          if (agg_index < m_n_agg_results) m_cached_agg_ops[agg_index] = op;
+          break;
+        case kOpLoadCol: {
+          Uint32 type = (value & 0x03E00000) >> 21;
+          if (type == NDB_TYPE_DECIMAL || type == NDB_TYPE_DECIMALUNSIGNED)
+            exec_pos++;
+          break;
+        }
+        case kOpLoadConst:
+          exec_pos += 2;
+          break;
+        case kOpEmbeddedInterp: {
+          Uint32 emb_len = value & 0xFFFF;
+          exec_pos += emb_len;
+          break;
+        }
+        case kOpSkip:
+          break;
+        default:
+          break;
+      }
+    }
+  }
+  m_agg_ops_cached = true;
 }
 
 bool JoinAggInterpreter::OptimizeProgram() {

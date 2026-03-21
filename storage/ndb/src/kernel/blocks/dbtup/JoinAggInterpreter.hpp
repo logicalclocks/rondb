@@ -139,6 +139,8 @@ class JoinAggInterpreter : public PushdownInterpreter {
   void setTotalAggResults(Uint32 total);
   void switchProgram(const Uint32* prog, Uint32 prog_len,
                      Uint32 agg_prog_start_pos, Uint32 acc_offset);
+  void cacheMultiLeafAggOps(const struct LeafProgram* leaves,
+                            Uint32 num_leaves);
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,
                       Uint32* words_written);
   void initChunkAllocator(Uint32 thread_id, Uint32 budget_pages,

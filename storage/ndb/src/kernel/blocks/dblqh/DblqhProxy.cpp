@@ -2531,6 +2531,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     interp->Init(leaf0.m_agg_program);
     if (state->m_num_leaves > 1) {
       interp->setTotalAggResults(state->m_total_agg_results);
+      interp->cacheMultiLeafAggOps(state->m_leaf_programs,
+                                    state->m_num_leaves);
     }
     interp->setUseMutex(true);
     interp->initChunkAllocator(getThreadId(), budget_pages, available_pages);
@@ -2572,6 +2574,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       interp->Init(leaf0.m_agg_program);
       if (state->m_num_leaves > 1) {
         interp->setTotalAggResults(state->m_total_agg_results);
+        interp->cacheMultiLeafAggOps(state->m_leaf_programs,
+                                      state->m_num_leaves);
       }
       interp->initChunkAllocator(getThreadId(), per_thread_budget,
                                    available_pages);
