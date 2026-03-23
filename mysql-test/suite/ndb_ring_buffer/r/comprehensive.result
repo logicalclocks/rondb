@@ -1,0 +1,590 @@
+#
+# Setup
+#
+CREATE TABLE test.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+CREATE TABLE test.clients (
+client_id INT NOT NULL PRIMARY KEY,
+name VARCHAR(50)
+) ENGINE = NDB;
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_D');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'ev_X');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'ev_Y');
+INSERT INTO test.clients VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie');
+#
+# Case 1: INNER JOIN with regular table — meta rows hidden
+#
+SELECT c.name, r.client_id, r.ring_idx, r.event_data
+FROM test.rb r
+INNER JOIN test.clients c ON r.client_id = c.client_id
+ORDER BY r.client_id, r.ring_idx;
+name	client_id	ring_idx	event_data
+Alice	1	1	ev_A
+Alice	1	2	ev_B
+Alice	1	3	ev_C
+Alice	1	4	ev_D
+Bob	2	1	ev_X
+Bob	2	2	ev_Y
+#
+# Case 2: LEFT JOIN — clients without ring data appear, no meta rows
+#
+SELECT c.name, r.client_id, r.ring_idx, r.event_data
+FROM test.clients c
+LEFT JOIN test.rb r ON c.client_id = r.client_id
+ORDER BY c.client_id, r.ring_idx;
+name	client_id	ring_idx	event_data
+Alice	1	1	ev_A
+Alice	1	2	ev_B
+Alice	1	3	ev_C
+Alice	1	4	ev_D
+Bob	2	1	ev_X
+Bob	2	2	ev_Y
+Charlie	NULL	NULL	NULL
+#
+# Case 3: Self-join on ring-buffer table — meta rows hidden
+#
+SELECT a.client_id, a.ring_idx AS idx_a, a.event_data AS data_a,
+b.ring_idx AS idx_b, b.event_data AS data_b
+FROM test.rb a
+INNER JOIN test.rb b
+ON a.client_id = b.client_id AND a.ring_idx < b.ring_idx
+WHERE a.client_id = 1
+ORDER BY a.ring_idx, b.ring_idx;
+client_id	idx_a	data_a	idx_b	data_b
+1	1	ev_A	2	ev_B
+1	1	ev_A	3	ev_C
+1	1	ev_A	4	ev_D
+1	2	ev_B	3	ev_C
+1	2	ev_B	4	ev_D
+1	3	ev_C	4	ev_D
+#
+# Case 4: Subquery with IN — meta rows hidden from inner query
+#
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id IN (
+SELECT client_id FROM test.rb WHERE event_data LIKE 'ev_A%'
+    )
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_A
+1	2	ev_B
+1	3	ev_C
+1	4	ev_D
+#
+# Case 5: EXISTS subquery — only clients with data rows
+#
+SELECT c.name FROM test.clients c
+WHERE EXISTS (
+SELECT 1 FROM test.rb r WHERE r.client_id = c.client_id
+)
+ORDER BY c.name;
+name
+Alice
+Bob
+#
+# Case 6: Derived table (subquery in FROM)
+#
+SELECT d.client_id, d.cnt
+FROM (
+SELECT client_id, COUNT(*) AS cnt
+FROM test.rb
+GROUP BY client_id
+) d
+ORDER BY d.client_id;
+client_id	cnt
+1	4
+2	2
+#
+# Case 7: UNION ALL — meta rows hidden in both branches
+#
+(SELECT client_id, event_data FROM test.rb WHERE client_id = 1)
+UNION ALL
+(SELECT client_id, event_data FROM test.rb WHERE client_id = 2)
+ORDER BY client_id, event_data;
+client_id	event_data
+1	ev_A
+1	ev_B
+1	ev_C
+1	ev_D
+2	ev_X
+2	ev_Y
+#
+# Case 8: GROUP BY with COUNT — per-prefix data row count
+#
+SELECT client_id, COUNT(*) AS cnt FROM test.rb
+GROUP BY client_id
+ORDER BY client_id;
+client_id	cnt
+1	4
+2	2
+#
+# Case 9: SUM, MIN, MAX on ring_idx (data rows only)
+#
+SELECT client_id,
+SUM(ring_idx) AS s, MIN(ring_idx) AS mn, MAX(ring_idx) AS mx
+FROM test.rb
+GROUP BY client_id
+ORDER BY client_id;
+client_id	s	mn	mx
+1	10	1	4
+2	3	1	2
+#
+# Case 10: HAVING clause filters on aggregate
+#
+SELECT client_id, COUNT(*) AS cnt FROM test.rb
+GROUP BY client_id
+HAVING cnt > 3
+ORDER BY client_id;
+client_id	cnt
+1	4
+#
+# Case 11: SUM(1) as alternative to bare COUNT(*) — correct count
+#
+SELECT client_id, SUM(1) AS cnt FROM test.rb
+WHERE client_id = 1;
+client_id	cnt
+1	4
+#
+# Case 12: TRUNCATE clears all data + meta rows
+#
+TRUNCATE TABLE test.rb;
+SELECT COUNT(*) AS data_rows FROM test.rb WHERE 1=1;
+data_rows
+0
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) AS all_rows FROM test.rb WHERE 1=1;
+all_rows
+0
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 13: Re-INSERT after TRUNCATE — fresh rings, wrapping works
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'post_trunc_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'post_trunc_B');
+SELECT client_id, ring_idx, event_data FROM test.rb
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	post_trunc_A
+1	2	post_trunc_B
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'post_trunc_C');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'post_trunc_D');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'post_trunc_E');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	post_trunc_E
+1	2	post_trunc_B
+1	3	post_trunc_C
+1	4	post_trunc_D
+DROP TABLE test.rb;
+DROP TABLE test.clients;
+#
+# Case 14: DATETIME, DECIMAL, TEXT user columns
+#
+CREATE TABLE test.rb_types (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts DATETIME,
+amount DECIMAL(10,2),
+note TEXT,
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_types (id, ts, amount, note)
+VALUES (1, '2025-01-15 10:30:00', 99.99, 'first entry');
+INSERT INTO test.rb_types (id, ts, amount, note)
+VALUES (1, '2025-02-20 14:00:00', 150.50, 'second entry');
+INSERT INTO test.rb_types (id, ts, amount, note)
+VALUES (1, '2025-03-25 08:15:00', 200.00, 'third entry');
+SELECT id, ring_idx, ts, amount, note FROM test.rb_types
+ORDER BY ring_idx;
+id	ring_idx	ts	amount	note
+1	1	2025-01-15 10:30:00	99.99	first entry
+1	2	2025-02-20 14:00:00	150.50	second entry
+1	3	2025-03-25 08:15:00	200.00	third entry
+INSERT INTO test.rb_types (id, ts, amount, note)
+VALUES (1, '2025-04-01 12:00:00', 300.75, 'fourth (wraps)');
+SELECT id, ring_idx, ts, amount, note FROM test.rb_types
+ORDER BY ring_idx;
+id	ring_idx	ts	amount	note
+1	1	2025-04-01 12:00:00	300.75	fourth (wraps)
+1	2	2025-02-20 14:00:00	150.50	second entry
+1	3	2025-03-25 08:15:00	200.00	third entry
+DROP TABLE test.rb_types;
+#
+# Case 15: BEGIN + INSERT + COMMIT — data persists
+#
+CREATE TABLE test.rb_tx (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+BEGIN;
+INSERT INTO test.rb_tx (id, val) VALUES (1, 'tx_A');
+INSERT INTO test.rb_tx (id, val) VALUES (1, 'tx_B');
+COMMIT;
+SELECT id, ring_idx, val FROM test.rb_tx ORDER BY ring_idx;
+id	ring_idx	val
+1	1	tx_A
+1	2	tx_B
+#
+# Case 16: BEGIN + INSERT + ROLLBACK — data reverted, meta reverted
+#
+BEGIN;
+INSERT INTO test.rb_tx (id, val) VALUES (1, 'tx_C');
+INSERT INTO test.rb_tx (id, val) VALUES (1, 'tx_D');
+ROLLBACK;
+SELECT id, ring_idx, val FROM test.rb_tx ORDER BY ring_idx;
+id	ring_idx	val
+1	1	tx_A
+1	2	tx_B
+SET ndb_ring_buffer_show_meta = ON;
+SELECT id, ring_idx, HEX(ring_meta) FROM test.rb_tx
+WHERE id = 1 AND ring_idx = 0;
+id	ring_idx	HEX(ring_meta)
+1	0	0100000003000000020000000000000002000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 17: INSERT after ROLLBACK continues from correct position
+#
+INSERT INTO test.rb_tx (id, val) VALUES (1, 'after_rb');
+SELECT id, ring_idx, val FROM test.rb_tx ORDER BY ring_idx;
+id	ring_idx	val
+1	1	tx_A
+1	2	tx_B
+1	3	after_rb
+DROP TABLE test.rb_tx;
+#
+# Setup for SELECT pattern tests
+#
+CREATE TABLE test.rb_sel (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+num INT,
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta";
+INSERT INTO test.rb_sel (id, val, num) VALUES (1, 'apple', 10);
+INSERT INTO test.rb_sel (id, val, num) VALUES (1, 'banana', 20);
+INSERT INTO test.rb_sel (id, val, num) VALUES (1, 'cherry', 30);
+INSERT INTO test.rb_sel (id, val, num) VALUES (1, 'date', 40);
+INSERT INTO test.rb_sel (id, val, num) VALUES (1, 'elderberry', 50);
+#
+# Case 18: ORDER BY + LIMIT — top 3 by num descending
+#
+SELECT id, ring_idx, val, num FROM test.rb_sel
+WHERE id = 1
+ORDER BY num DESC
+LIMIT 3;
+id	ring_idx	val	num
+1	5	elderberry	50
+1	4	date	40
+1	3	cherry	30
+#
+# Case 19: ORDER BY + LIMIT + OFFSET — pagination
+#
+SELECT id, ring_idx, val, num FROM test.rb_sel
+WHERE id = 1
+ORDER BY num ASC
+LIMIT 2 OFFSET 2;
+id	ring_idx	val	num
+1	3	cherry	30
+1	4	date	40
+#
+# Case 20: SELECT DISTINCT on user column after wrap
+#
+INSERT INTO test.rb_sel (id, val, num) VALUES (1, 'apple', 60);
+SELECT DISTINCT val FROM test.rb_sel
+WHERE id = 1
+ORDER BY val;
+val
+apple
+banana
+cherry
+date
+elderberry
+#
+# Case 21: CASE expression in SELECT
+#
+SELECT id, ring_idx, val,
+CASE WHEN num >= 40 THEN 'high' ELSE 'low' END AS category
+FROM test.rb_sel
+WHERE id = 1
+ORDER BY ring_idx;
+id	ring_idx	val	category
+1	1	apple	high
+1	2	banana	low
+1	3	cherry	low
+1	4	date	high
+1	5	elderberry	high
+DROP TABLE test.rb_sel;
+#
+# Case 22: Insert → grow → bulk insert → update → delete → re-insert
+#
+CREATE TABLE test.rb_seq (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_seq (id, data) VALUES (1, 's1'), (1, 's2'), (1, 's3');
+SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
+id	ring_idx	data
+1	1	s1
+1	2	s2
+1	3	s3
+ALTER TABLE test.rb_seq COMMENT="NDB_TABLE=RING_BUFFER=6@ring_idx@ring_meta";
+INSERT INTO test.rb_seq (id, data) VALUES (1, 's4'), (1, 's5'), (1, 's6');
+SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
+id	ring_idx	data
+1	1	s1
+1	2	s2
+1	3	s3
+1	4	s4
+1	5	s5
+1	6	s6
+UPDATE test.rb_seq SET data = 'updated_s3' WHERE id = 1 AND ring_idx = 3;
+SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
+id	ring_idx	data
+1	1	s1
+1	2	s2
+1	3	updated_s3
+1	4	s4
+1	5	s5
+1	6	s6
+DELETE FROM test.rb_seq WHERE id = 1;
+SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
+id	ring_idx	data
+INSERT INTO test.rb_seq (id, data) VALUES (1, 'new1'), (1, 'new2');
+SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
+id	ring_idx	data
+1	1	new1
+1	2	new2
+DROP TABLE test.rb_seq;
+#
+# Case 23: Insert → TRUNCATE → re-insert → wrap → verify
+#
+CREATE TABLE test.rb_trunc (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_trunc (id, data) VALUES (1, 'before_A'), (1, 'before_B');
+TRUNCATE TABLE test.rb_trunc;
+INSERT INTO test.rb_trunc (id, data)
+VALUES (1, 'after_A'), (1, 'after_B'), (1, 'after_C');
+INSERT INTO test.rb_trunc (id, data) VALUES (1, 'wrap_D');
+SELECT id, ring_idx, data FROM test.rb_trunc ORDER BY ring_idx;
+id	ring_idx	data
+1	1	wrap_D
+1	2	after_B
+1	3	after_C
+DROP TABLE test.rb_trunc;
+#
+# Case 24: Bulk INSERT → DELETE prefix → bulk INSERT fresh
+#
+CREATE TABLE test.rb_bd (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+INSERT INTO test.rb_bd (id, val)
+VALUES (1, 'b1'), (1, 'b2'), (1, 'b3'), (1, 'b4');
+DELETE FROM test.rb_bd WHERE id = 1;
+INSERT INTO test.rb_bd (id, val) VALUES (1, 'fresh1'), (1, 'fresh2');
+SELECT id, ring_idx, val FROM test.rb_bd ORDER BY ring_idx;
+id	ring_idx	val
+1	1	fresh1
+1	2	fresh2
+SET ndb_ring_buffer_show_meta = ON;
+SELECT id, ring_idx, HEX(ring_meta) FROM test.rb_bd
+WHERE id = 1 AND ring_idx = 0;
+id	ring_idx	HEX(ring_meta)
+1	0	0100000003000000020000000000000002000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_bd;
+#
+# Case 25: NULL in user columns
+#
+CREATE TABLE test.rb_null (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+num INT,
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_null (id, val, num) VALUES (1, NULL, NULL);
+INSERT INTO test.rb_null (id, val, num) VALUES (1, 'not_null', 42);
+INSERT INTO test.rb_null (id, val, num) VALUES (1, NULL, NULL);
+SELECT id, ring_idx, val, num FROM test.rb_null ORDER BY ring_idx;
+id	ring_idx	val	num
+1	1	NULL	NULL
+1	2	not_null	42
+1	3	NULL	NULL
+SELECT COUNT(*) AS total, COUNT(val) AS non_null_val, SUM(num) AS sum_num
+FROM test.rb_null WHERE id = 1;
+total	non_null_val	sum_num
+3	1	42
+DROP TABLE test.rb_null;
+#
+# Case 26: Empty string in VARCHAR
+#
+CREATE TABLE test.rb_empty (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_empty (id, val) VALUES (1, '');
+INSERT INTO test.rb_empty (id, val) VALUES (1, 'notempty');
+INSERT INTO test.rb_empty (id, val) VALUES (1, '');
+SELECT id, ring_idx, val, LENGTH(val) AS len FROM test.rb_empty ORDER BY ring_idx;
+id	ring_idx	val	len
+1	1		0
+1	2	notempty	8
+1	3		0
+DROP TABLE test.rb_empty;
+#
+# Case 27: Boundary PK prefix values (MAX INT, MIN INT, zero)
+#
+CREATE TABLE test.rb_boundary (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_boundary (id, val) VALUES (2147483647, 'max_int');
+INSERT INTO test.rb_boundary (id, val) VALUES (-2147483648, 'min_int');
+INSERT INTO test.rb_boundary (id, val) VALUES (0, 'zero');
+SELECT id, ring_idx, val FROM test.rb_boundary ORDER BY id;
+id	ring_idx	val
+-2147483648	1	min_int
+0	1	zero
+2147483647	1	max_int
+INSERT INTO test.rb_boundary (id, val) VALUES (2147483647, 'max_int_2');
+INSERT INTO test.rb_boundary (id, val) VALUES (-2147483648, 'min_int_2');
+INSERT INTO test.rb_boundary (id, val) VALUES (0, 'zero_2');
+SELECT id, ring_idx, val FROM test.rb_boundary ORDER BY id, ring_idx;
+id	ring_idx	val
+-2147483648	1	min_int
+-2147483648	2	min_int_2
+0	1	zero
+0	2	zero_2
+2147483647	1	max_int
+2147483647	2	max_int_2
+DROP TABLE test.rb_boundary;
+#
+# Case 28: show_meta ON in one session does not affect another
+#
+CREATE TABLE test.rb_sess (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_sess (id, val) VALUES (1, 'a');
+INSERT INTO test.rb_sess (id, val) VALUES (1, 'b');
+SET ndb_ring_buffer_show_meta = ON;
+SELECT id, ring_idx, val FROM test.rb_sess WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	val
+1	1	a
+1	2	b
+SELECT COUNT(*) AS cnt FROM test.rb_sess WHERE id = 1;
+cnt
+2
+SELECT COUNT(*) AS cnt_with_meta FROM test.rb_sess WHERE id = 1;
+cnt_with_meta
+3
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 29: INSERT from second session on same prefix — ring consistent
+#
+INSERT INTO test.rb_sess (id, val) VALUES (1, 'from_con2');
+SELECT id, ring_idx, val FROM test.rb_sess WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	val
+1	1	a
+1	2	b
+1	3	from_con2
+INSERT INTO test.rb_sess (id, val) VALUES (1, 'wrap_default');
+SELECT id, ring_idx, val FROM test.rb_sess WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	val
+1	1	wrap_default
+1	2	b
+1	3	from_con2
+DROP TABLE test.rb_sess;
+#
+# Case 30: SHOW CREATE TABLE preserves RING_BUFFER after DML operations
+#
+CREATE TABLE test.rb_show (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+INSERT INTO test.rb_show (id, val) VALUES (1, 'a'), (1, 'b');
+UPDATE test.rb_show SET val = 'updated' WHERE id = 1 AND ring_idx = 1;
+DELETE FROM test.rb_show WHERE id = 1;
+INSERT INTO test.rb_show (id, val) VALUES (1, 'fresh');
+SHOW CREATE TABLE test.rb_show;
+Table	Create Table
+rb_show	CREATE TABLE `rb_show` (
+  `id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `val` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta'
+#
+# Case 31: CREATE VIEW on ring-buffer table — meta rows hidden
+#
+INSERT INTO test.rb_show (id, val) VALUES (1, 'view_b');
+INSERT INTO test.rb_show (id, val) VALUES (1, 'view_c');
+CREATE VIEW test.v_rb AS
+SELECT id, ring_idx, val FROM test.rb_show WHERE id = 1;
+SELECT * FROM test.v_rb ORDER BY ring_idx;
+id	ring_idx	val
+1	1	fresh
+1	2	view_b
+1	3	view_c
+SELECT COUNT(*) AS view_cnt FROM test.v_rb;
+view_cnt
+3
+DROP VIEW test.v_rb;
+DROP TABLE test.rb_show;
+#
+# Done.
+#

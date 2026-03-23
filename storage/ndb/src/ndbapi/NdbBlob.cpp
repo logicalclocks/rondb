@@ -3102,6 +3102,10 @@ NdbBlob::BlobAction NdbBlob::handleBlobTask(
             DBUG_RETURN(BA_ERROR);
           }
           setHeadPartitionId(tOp);
+          /* Propagate ring buffer flag from parent op */
+          if (theNdbOp->m_flags & NdbOperation::OF_RING_BUFFER_OP) {
+            tOp->m_flags |= NdbOperation::OF_RING_BUFFER_OP;
+          }
         }
 #endif
 
@@ -3270,6 +3274,10 @@ NdbBlob::BlobAction NdbBlob::handleBlobTask(
             DBUG_RETURN(BA_ERROR);
           }
           setHeadPartitionId(tOp);
+          /* Propagate ring buffer flag from parent op */
+          if (theNdbOp->m_flags & NdbOperation::OF_RING_BUFFER_OP) {
+            tOp->m_flags |= NdbOperation::OF_RING_BUFFER_OP;
+          }
         }
 #endif
 
@@ -3369,6 +3377,10 @@ NdbBlob::BlobAction NdbBlob::postExecute(NdbTransaction::ExecType anExecType) {
       DBUG_RETURN(BA_ERROR);
     }
     setHeadPartitionId(tOp);
+    /* Propagate ring buffer flag from parent op */
+    if (theNdbOp->m_flags & NdbOperation::OF_RING_BUFFER_OP) {
+      tOp->m_flags |= NdbOperation::OF_RING_BUFFER_OP;
+    }
 
     tOp->m_abortOption = NdbOperation::AbortOnError;
     DBUG_PRINT("info", ("added op to update head+inline"));
@@ -3406,6 +3418,10 @@ int NdbBlob::preCommit() {
         DBUG_RETURN(-1);
       }
       setHeadPartitionId(tOp);
+      /* Propagate ring buffer flag from parent op */
+      if (theNdbOp->m_flags & NdbOperation::OF_RING_BUFFER_OP) {
+        tOp->m_flags |= NdbOperation::OF_RING_BUFFER_OP;
+      }
 
       tOp->m_abortOption = NdbOperation::AbortOnError;
       DBUG_PRINT("info", ("added op to update head+inline"));

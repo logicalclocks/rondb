@@ -5076,6 +5076,9 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
   Field *ring_idx_field = table->field[ring_idx_col_no];
   Field *ring_meta_field = table->field[ring_meta_col_no];
 
+  /* Check if table has BLOB/TEXT columns that need special handling */
+  const bool uses_blobs = uses_blob_value(table->write_set);
+
   /*
    * Block REPLACE and INSERT ON DUPLICATE KEY UPDATE.
    * These don't make sense for ring-buffer tables because
@@ -5184,6 +5187,21 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
       if (!data_op) {
         ret = ndb_err(trans);
         goto cleanup;
+      }
+
+      /* Set BLOB/TEXT column values if present */
+      if (uses_blobs) {
+        my_bitmap_map *old_map =
+            dbug_tmp_use_all_columns(table, table->read_set);
+        uint blob_count = 0;
+        int blob_res = set_blob_values(data_op, record - table->record[0],
+                                       table->write_set, &blob_count, true);
+        dbug_tmp_restore_column_map(table->read_set, old_map);
+        if (blob_res != 0) {
+          ret = blob_res;
+          goto cleanup;
+        }
+        thd_ndb->m_unsent_blob_ops = true;
       }
 
       ha_statistic_increment(&System_status_var::ha_write_count);
@@ -5342,6 +5360,21 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
         goto cleanup;
       }
 
+      /* Set BLOB/TEXT column values if present */
+      if (uses_blobs) {
+        my_bitmap_map *old_map =
+            dbug_tmp_use_all_columns(table, table->read_set);
+        uint blob_count = 0;
+        int blob_res = set_blob_values(data_op, record - table->record[0],
+                                       table->write_set, &blob_count, true);
+        dbug_tmp_restore_column_map(table->read_set, old_map);
+        if (blob_res != 0) {
+          ret = blob_res;
+          goto cleanup;
+        }
+        thd_ndb->m_unsent_blob_ops = true;
+      }
+
       /* Ensure record[1] has ring_idx=0 for meta write at flush */
       ptrdiff_t rec1_offset = table->record[1] - table->record[0];
       ring_idx_field->move_field_offset(rec1_offset);
@@ -5384,6 +5417,20 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
       if (!data_op) {
         ret = ndb_err(trans);
         goto cleanup;
+      }
+
+      /* Set BLOB/TEXT column values if present */
+      if (uses_blobs) {
+        my_bitmap_map *old_map =
+            dbug_tmp_use_all_columns(table, table->read_set);
+        uint blob_count = 0;
+        int blob_res = set_blob_values(data_op, record - table->record[0],
+                                       table->write_set, &blob_count, false);
+        dbug_tmp_restore_column_map(table->read_set, old_map);
+        if (blob_res != 0) {
+          ret = blob_res;
+          goto cleanup;
+        }
       }
 
       /*
