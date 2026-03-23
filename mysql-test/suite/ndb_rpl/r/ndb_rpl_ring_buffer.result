@@ -1,0 +1,172 @@
+include/rpl/init_source_replica.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+[connection master]
+#
+# Case 1: CREATE TABLE DDL replicates with RING_BUFFER comment
+#
+CREATE TABLE test.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+SHOW CREATE TABLE test.rb;
+Table	Create Table
+rb	CREATE TABLE `rb` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `event_data` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta'
+#
+# Case 2: Basic INSERT replicates to slave
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_A
+1	2	ev_B
+1	3	ev_C
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_A
+1	2	ev_B
+1	3	ev_C
+#
+# Case 3: Ring wrapping replicates correctly
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_D');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_E');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_F');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_E
+1	2	ev_F
+1	3	ev_C
+1	4	ev_D
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_E
+1	2	ev_F
+1	3	ev_C
+1	4	ev_D
+#
+# Case 4: Multiple PK prefixes replicate independently
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'c2_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'c2_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'c3_A');
+SELECT client_id, ring_idx, event_data FROM test.rb
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_E
+1	2	ev_F
+1	3	ev_C
+1	4	ev_D
+2	1	c2_A
+2	2	c2_B
+3	1	c3_A
+SELECT client_id, ring_idx, event_data FROM test.rb
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_E
+1	2	ev_F
+1	3	ev_C
+1	4	ev_D
+2	1	c2_A
+2	2	c2_B
+3	1	c3_A
+#
+# Case 5: Bulk INSERT replicates correctly
+#
+CREATE TABLE test.rb_bulk (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta";
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b1');
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b2');
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b3');
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b4');
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b5');
+SELECT id, ring_idx, data FROM test.rb_bulk WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	data
+1	1	b1
+1	2	b2
+1	3	b3
+1	4	b4
+1	5	b5
+SELECT id, ring_idx, data FROM test.rb_bulk WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	data
+1	1	b1
+1	2	b2
+1	3	b3
+1	4	b4
+1	5	b5
+#
+# Case 6: UPDATE replicates to slave
+#
+UPDATE test.rb SET event_data = 'UPDATED' WHERE client_id = 2 AND ring_idx = 1;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 2 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+2	1	UPDATED
+2	2	c2_B
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 2 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+2	1	UPDATED
+2	2	c2_B
+#
+# Case 7: DELETE replicates to slave
+#
+DELETE FROM test.rb WHERE client_id = 3;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 3 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 3 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+#
+# Case 8: Meta rows replicated and visible on slave with show_meta
+#
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx
+1	0
+1	1
+1	2
+1	3
+1	4
+SET ndb_ring_buffer_show_meta = OFF;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx
+1	0
+1	1
+1	2
+1	3
+1	4
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Cleanup
+#
+DROP TABLE test.rb;
+DROP TABLE test.rb_bulk;
+include/rpl/deinit.inc

@@ -1,0 +1,229 @@
+# ndb_rpl_ring_buffer.test
+#
+# Tests for replication of ring-buffer tables.
+# Verifies DDL replication, INSERT/UPDATE/DELETE propagation,
+# ring wrapping, bulk inserts, and meta row handling on slave.
+#
+# Key implementation detail: ha_ndbcluster.cc checks
+# !thd_ndb->get_applier() before entering ring buffer write path,
+# so the replica applies replicated rows directly via normal NDB
+# write path — this is correct behavior.
+
+--source include/have_ndb.inc
+--source include/have_binlog_format_mixed_or_row.inc
+--source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
+
+###############################################################################
+# Case 1: CREATE TABLE DDL replicates — SHOW CREATE TABLE on slave
+###############################################################################
+
+--echo #
+--echo # Case 1: CREATE TABLE DDL replicates with RING_BUFFER comment
+--echo #
+
+--connection master
+
+CREATE TABLE test.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    event_data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should have the table with RING_BUFFER comment
+SHOW CREATE TABLE test.rb;
+
+###############################################################################
+# Case 2: Basic INSERT replicates — data visible, meta rows hidden
+###############################################################################
+
+--echo #
+--echo # Case 2: Basic INSERT replicates to slave
+--echo #
+
+--connection master
+
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should have the same data rows, meta rows hidden
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+###############################################################################
+# Case 3: Ring wrapping replicates correctly
+###############################################################################
+
+--echo #
+--echo # Case 3: Ring wrapping replicates correctly
+--echo #
+
+--connection master
+
+# Fill remaining slot and wrap (ring_size=4, already have 3 rows)
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_D');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_E');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_F');
+
+# Master state after wrapping
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should match master's wrapped state
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+###############################################################################
+# Case 4: Multiple PK prefixes replicate independently
+###############################################################################
+
+--echo #
+--echo # Case 4: Multiple PK prefixes replicate independently
+--echo #
+
+--connection master
+
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'c2_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'c2_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'c3_A');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    ORDER BY client_id, ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    ORDER BY client_id, ring_idx;
+
+###############################################################################
+# Case 5: Bulk INSERT replicates correctly
+###############################################################################
+
+--echo #
+--echo # Case 5: Bulk INSERT replicates correctly
+--echo #
+
+--connection master
+
+CREATE TABLE test.rb_bulk (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta";
+
+# Multi-row INSERT (bulk path)
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b1');
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b2');
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b3');
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b4');
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b5');
+
+SELECT id, ring_idx, data FROM test.rb_bulk WHERE id = 1 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+SELECT id, ring_idx, data FROM test.rb_bulk WHERE id = 1 ORDER BY ring_idx;
+
+###############################################################################
+# Case 6: UPDATE on user columns replicates
+###############################################################################
+
+--echo #
+--echo # Case 6: UPDATE replicates to slave
+--echo #
+
+--connection master
+
+UPDATE test.rb SET event_data = 'UPDATED' WHERE client_id = 2 AND ring_idx = 1;
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 2 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 2 ORDER BY ring_idx;
+
+###############################################################################
+# Case 7: DELETE replicates — ring cleared on slave
+###############################################################################
+
+--echo #
+--echo # Case 7: DELETE replicates to slave
+--echo #
+
+--connection master
+
+DELETE FROM test.rb WHERE client_id = 3;
+
+# client_id=3 should be gone
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 3 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should also show no rows for client_id=3
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 3 ORDER BY ring_idx;
+
+###############################################################################
+# Case 8: Meta rows on slave — visible with ndb_ring_buffer_show_meta
+###############################################################################
+
+--echo #
+--echo # Case 8: Meta rows replicated and visible on slave with show_meta
+--echo #
+
+--connection master
+
+# Check meta rows on master
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--sync_slave_with_master
+--connection slave
+
+# Meta rows should also be present on slave
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+--echo #
+--echo # Cleanup
+--echo #
+
+--connection master
+DROP TABLE test.rb;
+DROP TABLE test.rb_bulk;
+--sync_slave_with_master
+
+--source include/rpl/deinit.inc

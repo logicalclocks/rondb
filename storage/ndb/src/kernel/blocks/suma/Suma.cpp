@@ -3220,6 +3220,12 @@ void Suma::SyncRecord::nextScan(Signal *signal) {
    * Ignore TTL in suma scan
    */
   ScanFragReq::setTTLIgnoreFragFlag(req->requestInfo, 1);
+  /*
+   * Ring buffer related
+   * Show meta rows in suma scan so meta rows are visible to event
+   * subscriptions (used by NDB replication binlog injector).
+   */
+  ScanFragReq::setRingBufferShowMetaFragFlag(req->requestInfo, 1);
 
   req->fragmentNoKeyLen = fd.m_fragDesc.m_fragmentNo;
   req->schemaVersion = tabPtr.p->m_schemaVersion;

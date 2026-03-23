@@ -1198,6 +1198,7 @@ class NdbOperation {
 #ifndef DOXYGEN_SHOULD_SKIP_INTERNAL
   // XXX until NdbRecord is used in ndb_restore
   void set_disable_fk() { m_flags |= OF_DISABLE_FK; }
+  void set_ring_buffer_op() { m_flags |= OF_RING_BUFFER_OP; }
 
   /* Set nowait option on locking read */
   int setNoWait();

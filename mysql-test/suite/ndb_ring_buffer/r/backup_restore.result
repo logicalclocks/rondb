@@ -1,0 +1,238 @@
+#
+# Case 1: Basic backup/restore — data rows preserved
+#
+CREATE TABLE test.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_A
+1	2	ev_B
+1	3	ev_C
+DROP TABLE test.rb;
+SET GLOBAL ndb_metadata_sync = true;
+SET GLOBAL ndb_metadata_sync = true;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_A
+1	2	ev_B
+1	3	ev_C
+DROP TABLE test.rb;
+#
+# Case 2: Wrapped ring backup/restore — wrapped state preserved
+#
+CREATE TABLE test.rb_wrap (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'a');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'b');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'c');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'd');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'e');
+SELECT id, ring_idx, data FROM test.rb_wrap WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	data
+1	1	d
+1	2	e
+1	3	c
+DROP TABLE test.rb_wrap;
+SET GLOBAL ndb_metadata_sync = true;
+SET GLOBAL ndb_metadata_sync = true;
+SELECT id, ring_idx, data FROM test.rb_wrap WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	data
+1	1	d
+1	2	e
+1	3	c
+DROP TABLE test.rb_wrap;
+#
+# Case 3: SHOW CREATE TABLE preserves RING_BUFFER comment after restore
+#
+CREATE TABLE test.rb_meta (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta";
+INSERT INTO test.rb_meta (id, val) VALUES (1, 'test');
+DROP TABLE test.rb_meta;
+SET GLOBAL ndb_metadata_sync = true;
+SET GLOBAL ndb_metadata_sync = true;
+SHOW CREATE TABLE test.rb_meta;
+Table	Create Table
+rb_meta	CREATE TABLE `rb_meta` (
+  `id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `val` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta'
+DROP TABLE test.rb_meta;
+#
+# Case 4: INSERT after restore continues ring from correct position
+#
+CREATE TABLE test.rb_cont (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+INSERT INTO test.rb_cont (id, data) VALUES (1, 'before_A');
+INSERT INTO test.rb_cont (id, data) VALUES (1, 'before_B');
+DROP TABLE test.rb_cont;
+SET GLOBAL ndb_metadata_sync = true;
+SET GLOBAL ndb_metadata_sync = true;
+SELECT id, ring_idx, data FROM test.rb_cont WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	data
+1	1	before_A
+1	2	before_B
+INSERT INTO test.rb_cont (id, data) VALUES (1, 'after_C');
+INSERT INTO test.rb_cont (id, data) VALUES (1, 'after_D');
+SELECT id, ring_idx, data FROM test.rb_cont WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	data
+1	1	before_A
+1	2	before_B
+1	3	after_C
+1	4	after_D
+INSERT INTO test.rb_cont (id, data) VALUES (1, 'after_E');
+SELECT id, ring_idx, data FROM test.rb_cont WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	data
+1	1	after_E
+1	2	before_B
+1	3	after_C
+1	4	after_D
+DROP TABLE test.rb_cont;
+#
+# Case 5: BLOB/TEXT columns survive backup/restore
+#
+CREATE TABLE test.rb_blob (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+description TEXT,
+payload BLOB,
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_blob (id, description, payload)
+VALUES (1, REPEAT('hello ', 100), REPEAT(x'DEADBEEF', 50));
+INSERT INTO test.rb_blob (id, description, payload)
+VALUES (1, REPEAT('world ', 100), REPEAT(x'CAFEBABE', 50));
+SELECT id, ring_idx, LENGTH(description), SHA1(description),
+LENGTH(payload), SHA1(payload)
+FROM test.rb_blob WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	LENGTH(description)	SHA1(description)	LENGTH(payload)	SHA1(payload)
+1	1	600	8c08ea7342ff6468a2b59b6833de3e59b7e092c1	200	42d8b042a2a514cbfd7db9727c3dbeb54c9d1ecf
+1	2	600	a622758618b83299d3a4fa8ca3c7fbaf728ebe23	200	81e63522e71c0df73efe3ed6ec18cb07164ab35a
+DROP TABLE test.rb_blob;
+SET GLOBAL ndb_metadata_sync = true;
+SET GLOBAL ndb_metadata_sync = true;
+SELECT id, ring_idx, LENGTH(description), SHA1(description),
+LENGTH(payload), SHA1(payload)
+FROM test.rb_blob WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	LENGTH(description)	SHA1(description)	LENGTH(payload)	SHA1(payload)
+1	1	600	8c08ea7342ff6468a2b59b6833de3e59b7e092c1	200	42d8b042a2a514cbfd7db9727c3dbeb54c9d1ecf
+1	2	600	a622758618b83299d3a4fa8ca3c7fbaf728ebe23	200	81e63522e71c0df73efe3ed6ec18cb07164ab35a
+DROP TABLE test.rb_blob;
+#
+# Case 6: Multiple PK prefixes preserved through backup/restore
+#
+CREATE TABLE test.rb_multi (
+region INT NOT NULL,
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event VARCHAR(100),
+PRIMARY KEY (region, client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_multi (region, client_id, event) VALUES (1, 100, 'r1c100_A');
+INSERT INTO test.rb_multi (region, client_id, event) VALUES (1, 100, 'r1c100_B');
+INSERT INTO test.rb_multi (region, client_id, event) VALUES (1, 200, 'r1c200_A');
+INSERT INTO test.rb_multi (region, client_id, event) VALUES (2, 100, 'r2c100_A');
+INSERT INTO test.rb_multi (region, client_id, event) VALUES (2, 100, 'r2c100_B');
+INSERT INTO test.rb_multi (region, client_id, event) VALUES (2, 100, 'r2c100_C');
+SELECT region, client_id, ring_idx, event FROM test.rb_multi
+ORDER BY region, client_id, ring_idx;
+region	client_id	ring_idx	event
+1	100	1	r1c100_A
+1	100	2	r1c100_B
+1	200	1	r1c200_A
+2	100	1	r2c100_A
+2	100	2	r2c100_B
+2	100	3	r2c100_C
+DROP TABLE test.rb_multi;
+SET GLOBAL ndb_metadata_sync = true;
+SET GLOBAL ndb_metadata_sync = true;
+SELECT region, client_id, ring_idx, event FROM test.rb_multi
+ORDER BY region, client_id, ring_idx;
+region	client_id	ring_idx	event
+1	100	1	r1c100_A
+1	100	2	r1c100_B
+1	200	1	r1c200_A
+2	100	1	r2c100_A
+2	100	2	r2c100_B
+2	100	3	r2c100_C
+DROP TABLE test.rb_multi;
+#
+# Case 7: Meta rows restored and visible with ndb_ring_buffer_show_meta
+#
+CREATE TABLE test.rb_show (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+INSERT INTO test.rb_show (id, val) VALUES (1, 'x');
+INSERT INTO test.rb_show (id, val) VALUES (1, 'y');
+INSERT INTO test.rb_show (id, val) VALUES (2, 'z');
+SET ndb_ring_buffer_show_meta = ON;
+SELECT id, ring_idx FROM test.rb_show ORDER BY id, ring_idx;
+id	ring_idx
+1	0
+1	1
+1	2
+2	0
+2	1
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_show;
+SET GLOBAL ndb_metadata_sync = true;
+SET GLOBAL ndb_metadata_sync = true;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT id, ring_idx FROM test.rb_show ORDER BY id, ring_idx;
+id	ring_idx
+1	0
+1	1
+1	2
+2	0
+2	1
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT id, ring_idx, val FROM test.rb_show ORDER BY id, ring_idx;
+id	ring_idx	val
+1	1	x
+1	2	y
+2	1	z
+DROP TABLE test.rb_show;
+#
+# Cleanup
+#
+# Done.
