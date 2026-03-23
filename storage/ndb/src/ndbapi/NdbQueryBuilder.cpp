@@ -1195,28 +1195,23 @@ NdbQueryDefImpl::NdbQueryDefImpl(
       m_operations(0),
       m_operands(0),
       m_hasAggregation(false),
-      m_aggregateLeafOpNo(0) {
+      m_aggregateLeafOpNos(0) {
   if (m_operations.assign(operations) || m_operands.assign(operands)) {
     // Failed to allocate memory in Vector::assign().
     error = Err_MemoryAlloc;
     return;
   }
 
-  // Scan operations to find aggregate leaf and validate constraints
+  // Scan operations to find aggregate leaves and validate constraints
   for (Uint32 i = 0; i < m_operations.size(); i++) {
     if (m_operations[i]->isAggregateLeaf()) {
-      if (m_hasAggregation) {
-        // Multiple aggregate leaves not allowed
-        error = QRY_WRONG_OPERATION_TYPE;
-        return;
-      }
       if (i == 0) {
         // Aggregate leaf must not be the root operation
         error = QRY_WRONG_OPERATION_TYPE;
         return;
       }
       m_hasAggregation = true;
-      m_aggregateLeafOpNo = i;
+      m_aggregateLeafOpNos.push_back(i);
     }
   }
 

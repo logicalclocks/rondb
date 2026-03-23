@@ -2436,10 +2436,40 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     copy(allProgsBuf, ptr);
     state->m_all_programs_buf = allProgsBuf;
 
-    // Parse multi-program header
+    // Section 0 format:
+    //   New: Word 0 = (0x0722 << 16) | numLeaves, then per leaf [progLen, prog...]
+    //   Old: Flat single program starting with (0x0721 << 16) | progLen
     Uint32 pos = 0;
-    Uint32 numLeaves = allProgsBuf[pos++];
-    if (numLeaves == 0) numLeaves = 1;
+    Uint32 word0 = allProgsBuf[0];
+    Uint32 numLeaves;
+    if ((word0 >> 16) == 0x0722) {
+      jam();
+      // New section header format
+      numLeaves = word0 & 0xFFFF;
+      if (unlikely(numLeaves == 0 || numLeaves > 255)) {
+        jam();
+        lc_ndbd_pool_free(allProgsBuf);
+        state->m_all_programs_buf = nullptr;
+        releaseSections(handle);
+        sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                            DbspjErr::InvalidRequest, __LINE__, key);
+        return;
+      }
+      pos = 1;
+    } else if ((word0 >> 16) == 0x0721) {
+      jam();
+      // Old flat format — entire section is one program, no wrapper
+      numLeaves = 1;
+    } else {
+      jam();
+      // Unrecognized format
+      lc_ndbd_pool_free(allProgsBuf);
+      state->m_all_programs_buf = nullptr;
+      releaseSections(handle);
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          DbspjErr::InvalidRequest, __LINE__, key);
+      return;
+    }
 
     // Allocate LeafProgram descriptor array
     state->m_leaf_programs =
@@ -2462,9 +2492,18 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     // Fill each LeafProgram — pointers into allProgsBuf, no extra copies
     Uint32 accOffset = 0;
     for (Uint32 i = 0; i < numLeaves; i++) {
-      Uint32 progLen = allProgsBuf[pos++];
-      Uint32 *progStart = &allProgsBuf[pos];
-      pos += progLen;
+      Uint32 progLen;
+      Uint32 *progStart;
+      if (pos == 0 && numLeaves == 1) {
+        // Old flat format: entire section is the program
+        progLen = totalWords;
+        progStart = allProgsBuf;
+        pos = totalWords;
+      } else {
+        progLen = allProgsBuf[pos++];
+        progStart = &allProgsBuf[pos];
+        pos += progLen;
+      }
 
       // Read n_agg_results and n_gb_cols from program header word 1
       Uint32 headerWord1 = progStart[1];

@@ -395,7 +395,7 @@ buildQueryTree(Uint32 tableId, Uint32 tableVersion,
 
 /*
  * Build section 2 content for multi-leaf aggregation:
- *   [boundsLen=0, receiverId, numLeaves, progLen0, prog0..., progLen1, prog1...]
+ *   [boundsLen=0, receiverId, (0x0722<<16)|numLeaves, progLen0, prog0..., ...]
  */
 static std::vector<Uint32>
 buildMultiLeafAggSection(const std::vector<std::vector<Uint32>> &programs,
@@ -404,7 +404,7 @@ buildMultiLeafAggSection(const std::vector<std::vector<Uint32>> &programs,
   std::vector<Uint32> section;
   section.push_back(0);           /* boundsLen = 0 (no bounds) */
   section.push_back(receiverId);  /* aggregate receiver ID */
-  section.push_back((Uint32)programs.size());  /* numLeaves */
+  section.push_back((0x0722 << 16) | (Uint32)programs.size());  /* section header */
 
   for (const auto &prog : programs) {
     section.push_back((Uint32)prog.size());  /* progLen for this leaf */
@@ -1330,7 +1330,7 @@ testStarSingleLeafCompat(Ndb *ndb, SignalSender &ss, Uint32 nodeId,
   /* Single leaf program: COUNT+SUM(b) */
   std::vector<Uint32> prog = buildAggProgram_CountSum(meta.attrIdB);
 
-  /* Multi-leaf section with numLeaves=1 */
+  /* Section header with numLeaves=1 */
   std::vector<std::vector<Uint32>> programs = {prog};
   std::vector<Uint32> aggSection = buildMultiLeafAggSection(programs,
                                                              receiverId);

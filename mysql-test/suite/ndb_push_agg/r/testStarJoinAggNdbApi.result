@@ -1,0 +1,17 @@
+Running testStarJoinAggNdbApi
+=== testStarJoinAggNdbApi ===
+Connect string: #
+MySQL port: #
+
+Test 1: 2-leaf SUM(val_a) + SUM(val_b) GROUP BY grp ... OK (3 groups)
+Test 2: 2-leaf SUM(val_a) + SUM(val_b) no GROUP BY ... OK
+Test 3: 3-leaf SUM + COUNT + MAX GROUP BY grp ... OK (3 groups)
+Test 4: 2-leaf COUNT(*) + SUM(val_b) GROUP BY grp ... OK (3 groups)
+Test 5: 2-leaf MIN(val_a) + MAX(val_b) GROUP BY grp ... OK (3 groups)
+Test 6: TS scan-scan 2-leaf SUM(val) + COUNT(event_type) GROUP BY grp ... OK (2 groups)
+Test 7: TS scan-scan 2-leaf SUM(val) + COUNT(event_type) no GROUP BY ... OK
+Test 8: TS scan-scan 2-leaf SUM(val) + MAX(event_type) GROUP BY grp ... OK (2 groups)
+
+All tests PASSED
+PASSED
+DROP DATABASE IF EXISTS test_db;

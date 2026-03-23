@@ -214,7 +214,7 @@ buildMultiLeafSection(const std::vector<std::vector<Uint32>> &programs)
   }
 
   std::vector<Uint32> section(totalSize);
-  section[0] = numLeaves;
+  section[0] = (0x0722 << 16) | numLeaves;
 
   Uint32 pos = 1;
   for (const auto &prog : programs) {

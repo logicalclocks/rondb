@@ -2060,8 +2060,25 @@ Uint32 Dbspj::buildExecPlan(Ptr<Request> requestPtr) {
   setupAncestors(requestPtr, treeRootPtr, RNIL);
 
   if (requestPtr.p->isScan()) {
-    const Uint32 err =
-        planSequentialExec(requestPtr, treeRootPtr, NullTreeNodePtr);
+    // Multi-leaf aggregation (star join) requires parallel execution of
+    // sibling aggregate leaves — each leaf must fire independently for
+    // every parent row.  planSequentialExec chains INNER-join lookups
+    // sequentially (leaf B waits for leaf A), which prevents leaf B from
+    // ever executing when the execution plan treats them as dependent.
+    // Use planParallelExec for these queries instead.
+    bool multiLeafAgg = false;
+    if (requestPtr.p->m_bits & Request::RT_AGGREGATE) {
+      Uint32 leafCount = 0;
+      Ptr<TreeNode> tn;
+      for (list.first(tn); !tn.isNull(); list.next(tn)) {
+        if (tn.p->m_bits & TreeNode::T_AGGREGATE_LEAF)
+          leafCount++;
+      }
+      multiLeafAgg = (leafCount > 1);
+    }
+    const Uint32 err = multiLeafAgg
+        ? planParallelExec(requestPtr, treeRootPtr)
+        : planSequentialExec(requestPtr, treeRootPtr, NullTreeNodePtr);
     if (unlikely(err)) return err;
   } else {
     const Uint32 err = planParallelExec(requestPtr, treeRootPtr);
