@@ -1,0 +1,118 @@
+#
+# Setup
+#
+CREATE TABLE test.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'ev_X');
+#
+# Case 1: Single node restart — data survives
+#
+SELECT client_id, ring_idx, event_data FROM test.rb
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_A
+1	2	ev_B
+1	3	ev_C
+2	1	ev_X
+SELECT client_id, ring_idx, event_data FROM test.rb
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_A
+1	2	ev_B
+1	3	ev_C
+2	1	ev_X
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx FROM test.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx
+1	0
+1	1
+1	2
+1	3
+2	0
+2	1
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 2: System restart — data survives
+#
+SELECT client_id, ring_idx, event_data FROM test.rb
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_A
+1	2	ev_B
+1	3	ev_C
+2	1	ev_X
+SELECT client_id, ring_idx, event_data FROM test.rb
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_A
+1	2	ev_B
+1	3	ev_C
+2	1	ev_X
+#
+# Case 3: INSERT after restart continues ring from correct position
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_D');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_A
+1	2	ev_B
+1	3	ev_C
+1	4	ev_D
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_E');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_E
+1	2	ev_B
+1	3	ev_C
+1	4	ev_D
+#
+# Case 4: Wrapped ring survives system restart
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_F');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_E
+1	2	ev_F
+1	3	ev_C
+1	4	ev_D
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_E
+1	2	ev_F
+1	3	ev_C
+1	4	ev_D
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_G');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_E
+1	2	ev_F
+1	3	ev_G
+1	4	ev_D
+SHOW CREATE TABLE test.rb;
+Table	Create Table
+rb	CREATE TABLE `rb` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `event_data` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta'
+#
+# Cleanup
+#
+DROP TABLE test.rb;
+# Done.

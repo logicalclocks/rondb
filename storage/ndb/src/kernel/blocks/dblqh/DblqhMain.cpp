@@ -4606,6 +4606,12 @@ bool Dblqh::is_ttl_table(Uint32 table_id) {
             t_tabptr.p->m_ttl_col_no != RNIL);
   }
 }
+bool Dblqh::is_ring_buffer_table(Uint32 table_id) {
+  TablerecPtr t_tabptr;
+  t_tabptr.i = table_id;
+  ptrCheckGuard(t_tabptr, ctabrecFileSize, tablerec);
+  return (t_tabptr.p->m_ring_buffer_size != RNIL);
+}
 void
 Dblqh::release_frag_array(Tablerec *tabPtrP)
 {
@@ -6901,6 +6907,8 @@ void Dblqh::seizeTcrec(TcConnectionrecPtr& tcConnectptr,
   locTcConnectptr.p->original_operation = 0xFF;
   locTcConnectptr.p->ttl_ignore = 0;
   locTcConnectptr.p->ttl_only_expired = 0;
+  locTcConnectptr.p->ring_buffer_op = 0;
+  locTcConnectptr.p->ring_buffer_show_meta = 0;
 
   tcConnectptr = locTcConnectptr;
   ndbrequire(Magic::check_ptr(locTcConnectptr.p->tupConnectPtrP));
@@ -21221,6 +21229,16 @@ void Dblqh::execCOPY_FRAGREQ(Signal *signal) {
     scanPtr->m_ttl_ignore = 1;
     scanPtr->m_ttl_ignore_for_ral = 0;
     scanPtr->m_ttl_only_expired = 0;
+    /*
+     * Ring buffer related
+     * Show meta rows during copy scan so meta rows (ring_idx=0) are
+     * copied to the restarting node. Set ring_buffer_op on the TC
+     * record so writes to the target pass the kernel write guard.
+     */
+    scanPtr->m_ring_buffer_show_meta = 1;
+    if (is_ring_buffer_table(tabptr.i)) {
+      tcConnectptr.p->ring_buffer_op = 1;
+    }
     scanPtr->m_curr_batch_size_rows = 0;
     scanPtr->m_curr_batch_size_bytes = 0;
     scanPtr->m_exec_direct_batch_size_words = 0;
@@ -33685,6 +33703,13 @@ void Dblqh::initReqinfoExecSr(Signal *signal,
   regTcPtr->m_dealloc_data.m_unused = RNIL;
   regTcPtr->indTakeOver = ZFALSE;
   regTcPtr->m_flags = 0;
+  regTcPtr->ring_buffer_show_meta = 0;
+  /*
+   * Ring buffer tables: redo replay needs ring_buffer_op flag to pass
+   * the kernel write guard in DBTUP.
+   */
+  regTcPtr->ring_buffer_op =
+      is_ring_buffer_table(regTcPtr->tableref) ? 1 : 0;
 }  // Dblqh::initReqinfoExecSr()
 
 Uint32

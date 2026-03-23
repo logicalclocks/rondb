@@ -5642,9 +5642,13 @@ int ha_ndbcluster::ndb_write_row(uchar *record, bool primary_key_update,
         NdbOperation::OperationOptions::OO_REPLICA_APPLIER;
   }
 
-  /* Copying ALTER on ring-buffer table: kernel write guard needs this flag */
+  /*
+   * Ring buffer table: kernel write guard needs OO_RING_BUFFER_OP for
+   * ALTER TABLE copies and replica applier writes.
+   */
   if (m_table->isRingBuffer() &&
-      thd_sql_command(thd) == SQLCOM_ALTER_TABLE) {
+      (thd_sql_command(thd) == SQLCOM_ALTER_TABLE ||
+       thd_ndb->get_applier())) {
     options.optionsPresent |=
         NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
   }
@@ -6241,7 +6245,7 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
    * - Block updates to the meta row (ring_idx=0)
    * - Allow user-column-only updates on data rows
    */
-  if (m_table->getRingBufferSize() > 0 && !thd_ndb->get_applier()) {
+  if (m_table->isRingBuffer() && !thd_ndb->get_applier()) {
     const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
     const Uint32 ring_meta_col_no = m_table->getRingMetaColumnNo();
     Field *ring_idx_field = table->field[ring_idx_col_no];
@@ -6427,7 +6431,7 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
   }
 
-  if (m_table->getRingBufferSize() > 0) {
+  if (m_table->isRingBuffer()) {
     options.optionsPresent |=
         NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
   }
@@ -6636,7 +6640,7 @@ bool ha_ndbcluster::start_bulk_delete() {
    * matches 0 rows, delete_row is never called and the invalid DELETE
    * would silently succeed.
    */
-  if (m_table->getRingBufferSize() > 0 && !m_ring_buffer_delete_allowed) {
+  if (m_table->isRingBuffer() && !m_ring_buffer_delete_allowed) {
     THD *thd = table->in_use;
     const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
     const uint ring_idx_fi = table->field[ring_idx_col_no]->field_index();
@@ -6767,7 +6771,7 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
    * push_to_engine() is not called for DELETE, so we cannot validate
    * there.
    */
-  if (m_table->getRingBufferSize() > 0 &&
+  if (m_table->isRingBuffer() &&
       !m_ring_buffer_delete_allowed &&
       !m_thd_ndb->get_applier()) {
     const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
@@ -6777,7 +6781,7 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
       m_ring_buffer_delete_allowed = true;
     }
   }
-  if (m_table->getRingBufferSize() > 0 &&
+  if (m_table->isRingBuffer() &&
       !m_ring_buffer_delete_allowed &&
       !m_thd_ndb->get_applier()) {
     my_error(ER_ILLEGAL_HA, MYF(0),
@@ -6853,7 +6857,7 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
   }
 
-  if (m_table->getRingBufferSize() > 0) {
+  if (m_table->isRingBuffer()) {
     options.optionsPresent |=
         NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
   }
