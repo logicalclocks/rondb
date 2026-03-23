@@ -325,6 +325,13 @@ nonaliased_output:
                                           $$->output_name = LexString{(@$).begin, size_t((@$).end - (@$).begin)};
                                           $$->next = NULL;
                                         }
+| T_LEFT subquery T_RIGHT              { initptr($$);
+                                          $$->type = Outputs::Type::SUBQUERY_AGG;
+                                          $$->subquery_agg.stmt = $2;
+                                          $$->subquery_agg.agg_index = 0;
+                                          $$->output_name = LexString{(@$).begin, size_t((@$).end - (@$).begin)};
+                                          $$->next = NULL;
+                                        }
 
 /* T_COUNT not included here, in order to implement COUNT(*) */
 aggfun:

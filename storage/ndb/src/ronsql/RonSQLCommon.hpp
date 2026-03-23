@@ -92,6 +92,7 @@ struct Outputs
     COLUMN,
     AGGREGATE,
     AVG,
+    SUBQUERY_AGG,
   };
   Type type;
   LexString output_name;
@@ -113,6 +114,11 @@ struct Outputs
       Uint32 agg_index_sum;
       Uint32 agg_index_count;
     } avg;
+    struct
+    {
+      struct SelectStatement* stmt;  // parsed inner SELECT
+      Uint32 agg_index;             // assigned during compilation
+    } subquery_agg;
   };
   struct Outputs* next;
 };

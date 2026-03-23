@@ -36,6 +36,7 @@ QueryPlanner::plan(
     JoinPlan &out)
 {
   out.num_ops = 0;
+  out.num_agg_leaves = 0;
   out.num_linked_projs = 0;
 
   /*

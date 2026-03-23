@@ -1,0 +1,162 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for subquery aggregation tests ===
+
+
+=== Test 1: Single subquery SUM per entity ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val
+FROM sq_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val
+FROM sq_entity AS e|
+id	sum_val
+1	60
+2	150
+3	240
+4	330
+
+
+=== Test 2: Two subqueries SUM + COUNT per entity ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+id	sum_val	cnt_evt
+1	60	2
+2	150	2
+3	240	2
+4	330	2
+
+
+=== Test 3: Three subqueries SUM + COUNT + MAX per entity ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt,
+(SELECT MAX(ev2.event_type) FROM sq_events AS ev2 WHERE ev2.entity_id = e.id) AS max_evt
+FROM sq_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt,
+(SELECT MAX(ev2.event_type) FROM sq_events AS ev2 WHERE ev2.entity_id = e.id) AS max_evt
+FROM sq_entity AS e|
+id	sum_val	cnt_evt	max_evt
+1	60	2	2
+2	150	2	4
+3	240	2	6
+4	330	2	8
+
+
+=== Test 4: Same-table merge SUM + MIN per entity ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS min_val
+FROM sq_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS min_val
+FROM sq_entity AS e|
+id	sum_val	min_val
+1	60	10
+2	150	40
+3	240	70
+4	330	100
+
+
+=== Test 5: Mix — merged + separate leaf per entity ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS max_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS max_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+id	sum_val	max_val	cnt_evt
+1	60	30	2
+2	150	60	2
+3	240	90	2
+4	330	120	2
+
+
+=== Test 6: Entity columns + subquery ===
+== Query ==
+SELECT e.id, e.grp,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val
+FROM sq_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id, e.grp,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val
+FROM sq_entity AS e|
+id	grp	sum_val
+1	1	60
+2	1	150
+3	2	240
+4	2	330
+
+=== Cleanup ===

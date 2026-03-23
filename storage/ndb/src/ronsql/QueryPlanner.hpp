@@ -53,7 +53,11 @@ struct JoinPlan
 {
   JoinOp ops[MAX_JOIN_TABLES];
   Uint32 num_ops;
-  Uint32 agg_leaf_idx;
+  Uint32 agg_leaf_idx;           // single-leaf mode (num_agg_leaves == 0)
+
+  // Multi-leaf aggregation (for SELECT-list subquery pushdown)
+  Uint32 agg_leaf_indices[MAX_JOIN_TABLES];
+  Uint32 num_agg_leaves;         // 0 = single-leaf mode
 
   struct LinkedProj {
     Uint32 source_op_idx;

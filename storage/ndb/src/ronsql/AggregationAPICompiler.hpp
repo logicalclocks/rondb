@@ -72,6 +72,9 @@ class AggregationAPICompiler_Expr
 #undef ARITHMETIC_ENUM
   using Expr = AggregationAPICompiler_Expr;
   friend class AggregationAPICompiler;
+public:
+  bool isLoad() const { return op == ExprOp::Load; }
+  Uint32 getLoadIdx() const { return idx; }
 private:
   ExprOp op; // Binary operation or Load
   Expr* left = NULL; // Left argument to binary operation

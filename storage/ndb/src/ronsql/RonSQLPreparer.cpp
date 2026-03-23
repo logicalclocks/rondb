@@ -135,6 +135,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
   m_scan_config_candidates(conf.amalloc),
+  m_select_subquery_leaves(conf.amalloc),
+  m_merged_leaves(conf.amalloc),
   m_subquery_infos(conf.amalloc)
 {
   ndbrequire(m_status == Status::BEGIN);
@@ -142,6 +144,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     configure();
     parse();
     analyze_subqueries();
+    analyze_select_subqueries();
     load();
     if (m_context.ast_root.joins == NULL)
       plan_index_and_filter();
@@ -357,6 +360,7 @@ RonSQLPreparer::parse()
      */
     Outputs* outputs = m_context.ast_root.outputs;
     bool has_aggregate_outputs = false;
+    bool has_subquery_agg_outputs = false;
     while (outputs != NULL)
     {
       switch (outputs->type)
@@ -393,6 +397,11 @@ RonSQLPreparer::parse()
         outputs->avg.agg_index_sum = m_agg->Sum(outputs->avg.arg);
         outputs->avg.agg_index_count = m_agg->Count(outputs->avg.arg);
         break;
+      case Outputs::Type::SUBQUERY_AGG:
+        // Handled later in analyze_select_subqueries() and compile().
+        // Don't set has_aggregate_outputs (avoids m_agg != NULL assert).
+        has_subquery_agg_outputs = true;
+        break;
       default:
         abort();
       }
@@ -409,7 +418,8 @@ RonSQLPreparer::parse()
       ndbrequire(has_aggregate_outputs || has_having_aggregates);
       ndbrequire(m_agg->getStatus() == AggregationAPICompiler::Status::PROGRAMMING);
     }
-    if (!has_aggregate_outputs && !has_having_aggregates)
+    if (!has_aggregate_outputs && !has_having_aggregates &&
+        !has_subquery_agg_outputs)
     {
       ndbrequire(m_conf.err_stream != NULL);
       std::basic_ostream<char>& err = *m_conf.err_stream;
@@ -785,6 +795,21 @@ RonSQLPreparer::load_join()
       err,
       m_join_plan);
 
+  // For multi-leaf subquery pushdown, map merged leaves to plan op indices.
+  // Each merged leaf corresponds to a JoinClause that was appended to the
+  // join list, and QueryPlanner assigned it an operation index.
+  if (m_has_select_subqueries) {
+    // The injected joins were appended after any pre-existing joins.
+    // With no pre-existing joins (outer query is single-table + subqueries),
+    // the first injected join is op index 1, second is 2, etc.
+    Uint32 first_injected_op = m_join_plan.num_ops - m_merged_leaves.size();
+    for (Uint32 i = 0; i < m_merged_leaves.size(); i++) {
+      m_merged_leaves[i].plan_op_idx = first_injected_op + i;
+      m_join_plan.agg_leaf_indices[i] = first_injected_op + i;
+    }
+    m_join_plan.num_agg_leaves = m_merged_leaves.size();
+  }
+
   // Set m_table to root table (used by existing code paths)
   m_table = m_join_plan.ops[0].table;
 
@@ -970,6 +995,30 @@ find_or_add_linked_proj(JoinPlan& plan, Uint32 op_idx, const char* col_name)
 void
 RonSQLPreparer::build_agg_linked_projections()
 {
+  if (m_has_select_subqueries && m_join_plan.num_agg_leaves > 0) {
+    // Multi-leaf: build linked projections for GROUP BY columns from root.
+    // All leaves share the same GROUP BY columns via linked projection.
+    struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
+    while (groupby != NULL) {
+      Uint32 col_idx = groupby->col_idx;
+      // GROUP BY column is from the root — needs linked projection to leaves
+      bool is_on_any_leaf = false;
+      for (Uint32 ml = 0; ml < m_merged_leaves.size(); ml++) {
+        if (m_column_table_idx[col_idx] == m_merged_leaves[ml].plan_op_idx) {
+          is_on_any_leaf = true;
+          break;
+        }
+      }
+      if (!is_on_any_leaf) {
+        find_or_add_linked_proj(m_join_plan,
+                                m_column_table_idx[col_idx],
+                                m_columns[col_idx].c_str());
+      }
+      groupby = groupby->next;
+    }
+    return;
+  }
+
   if (m_agg == NULL)
     return;
   Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
@@ -2155,9 +2204,348 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
   }
 }
 
+/*
+ * analyze_select_subqueries()
+ *
+ * Walk the SELECT output list looking for SUBQUERY_AGG entries (correlated
+ * scalar subqueries with aggregation).  Validate each inner query is a
+ * single-table aggregate with a simple equi-join correlation to the outer
+ * table.  If all valid and the outer query has GROUP BY or is implicit
+ * aggregation, set m_has_select_subqueries = true and populate the leaf
+ * descriptors.  Then merge same-table subqueries and rewrite into joins.
+ */
+void
+RonSQLPreparer::analyze_select_subqueries()
+{
+  SelectStatement &ast = m_context.ast_root;
+  Uint32 output_idx = 0;
+  bool has_any = false;
+
+  for (Outputs *out = ast.outputs; out != NULL; out = out->next, output_idx++) {
+    if (out->type == Outputs::Type::SUBQUERY_AGG) {
+      has_any = true;
+    }
+  }
+
+  if (!has_any) return;
+
+  // For now, reject if the outer query already has GROUP BY — the
+  // semantics of GROUP BY + correlated subquery are ambiguous (the
+  // subquery references a column not in GROUP BY).
+  // Supported: no GROUP BY → per-row correlated subquery results,
+  // pushed as join with auto-injected GROUP BY on correlation key.
+  require_prm(ast.groupby_columns == NULL,
+              "SELECT-list subqueries with GROUP BY are not yet supported. "
+              "Use the query without GROUP BY for per-row results.");
+
+  // Validate each subquery
+  output_idx = 0;
+  for (Outputs *out = ast.outputs; out != NULL; out = out->next, output_idx++) {
+    if (out->type != Outputs::Type::SUBQUERY_AGG) continue;
+
+    SelectStatement *inner = out->subquery_agg.stmt;
+    require_prm(inner != NULL,
+                "SELECT-list subquery has NULL inner statement.");
+
+    // Must be single-table (no joins)
+    require_prm(inner->joins == NULL,
+                "SELECT-list subquery with JOIN is not supported for pushdown.");
+
+    // Must have no GROUP BY or HAVING in inner query
+    require_prm(inner->groupby_columns == NULL,
+                "SELECT-list subquery must not have GROUP BY.");
+    require_prm(inner->having_expression == NULL,
+                "SELECT-list subquery must not have HAVING.");
+
+    // Inner SELECT must have exactly one aggregate output
+    Outputs *inner_out = inner->outputs;
+    require_prm(inner_out != NULL,
+                "SELECT-list subquery has empty output list.");
+    require_prm(inner_out->next == NULL,
+                "SELECT-list subquery must have exactly one output.");
+    require_prm(inner_out->type == Outputs::Type::AGGREGATE,
+                "SELECT-list subquery output must be an aggregate function.");
+
+    TokenKind agg_fun = inner_out->aggregate.fun;
+    require_prm(agg_fun == T_SUM || agg_fun == T_COUNT ||
+                agg_fun == T_MIN || agg_fun == T_MAX,
+                "SELECT-list subquery aggregate must be SUM, COUNT, MIN, or MAX.");
+
+    // Inner WHERE must contain exactly one equi-join correlation predicate
+    // of the form: inner_table.col = outer_table.col
+    ConditionalExpression *inner_where = inner->where_expression;
+    require_prm(inner_where != NULL,
+                "SELECT-list subquery must have a WHERE clause with correlation.");
+    require_prm(inner_where->op == T_EQUALS,
+                "SELECT-list subquery WHERE must be a simple equality "
+                "(correlation predicate).");
+
+    // Both sides must be column references (T_IDENTIFIER with col_idx)
+    ConditionalExpression *lhs = inner_where->args.left;
+    ConditionalExpression *rhs = inner_where->args.right;
+    require_prm(lhs != NULL && rhs != NULL,
+                "Correlation predicate must have two sides.");
+    require_prm(lhs->op == T_IDENTIFIER && rhs->op == T_IDENTIFIER,
+                "Correlation predicate must compare two columns.");
+
+    // Determine which side is inner vs outer by matching table qualifier
+    // against the inner table name
+    LexCString inner_table = inner->root_table->alias;
+    Uint32 lhs_col_idx = lhs->col_idx;
+    Uint32 rhs_col_idx = rhs->col_idx;
+    LexCString lhs_qualifier = m_column_qualifiers[lhs_col_idx];
+    LexCString rhs_qualifier = m_column_qualifiers[rhs_col_idx];
+
+    bool lhs_is_inner =
+        (lhs_qualifier.str != NULL && inner_table.str != NULL &&
+         lhs_qualifier.len == inner_table.len &&
+         strncmp(lhs_qualifier.str, inner_table.str, inner_table.len) == 0);
+    bool rhs_is_inner =
+        (rhs_qualifier.str != NULL && inner_table.str != NULL &&
+         rhs_qualifier.len == inner_table.len &&
+         strncmp(rhs_qualifier.str, inner_table.str, inner_table.len) == 0);
+
+    require_prm(lhs_is_inner != rhs_is_inner,
+                "Correlation predicate must reference one inner and one "
+                "outer column.");
+
+    LexCString inner_col, outer_col, outer_table;
+    if (lhs_is_inner) {
+      inner_col = m_columns[lhs_col_idx];
+      outer_col = m_columns[rhs_col_idx];
+      outer_table = rhs_qualifier;
+    } else {
+      inner_col = m_columns[rhs_col_idx];
+      outer_col = m_columns[lhs_col_idx];
+      outer_table = lhs_qualifier;
+    }
+
+    // Extract the inner aggregate column's col_idx from the expression tree.
+    // For simple SUM(col), the arg is a Load expression with idx = col_idx.
+    AggregationAPICompiler_Expr *agg_arg = inner_out->aggregate.arg;
+    require_prm(agg_arg != NULL && agg_arg->isLoad(),
+                "SELECT-list subquery aggregate argument must be a simple "
+                "column reference.");
+    Uint32 inner_agg_col_idx = agg_arg->getLoadIdx();
+
+    SelectSubqueryLeaf leaf;
+    leaf.inner_stmt = inner;
+    leaf.output_node = out;
+    leaf.output_idx = output_idx;
+    leaf.inner_table_name = inner->root_table->name;
+    leaf.inner_table_alias = inner_table;
+    leaf.inner_join_col = inner_col;
+    leaf.outer_join_col = outer_col;
+    leaf.outer_join_table = outer_table;
+    leaf.agg_fun = agg_fun;
+    leaf.inner_agg_col = m_columns[inner_agg_col_idx];
+    leaf.inner_agg_col_idx = inner_agg_col_idx;
+    leaf.combined_agg_slot = 0;
+    leaf.merged_leaf_idx = 0;
+    leaf.use_inner_join = true;
+
+    m_select_subquery_leaves.push(leaf);
+  }
+
+  if (m_select_subquery_leaves.size() == 0) return;
+
+  m_has_select_subqueries = true;
+
+  // Merge subqueries on same table+join into single leaves
+  merge_same_table_subqueries();
+
+  // Inject join clauses for each merged leaf
+  rewrite_select_subqueries_as_joins();
+}
+
+/*
+ * merge_same_table_subqueries()
+ *
+ * Group SelectSubqueryLeaf entries by (inner_table_name, inner_join_col,
+ * outer_join_col).  Subqueries in the same group share a single leaf node
+ * with a combined aggregation program.
+ */
+void
+RonSQLPreparer::merge_same_table_subqueries()
+{
+  Uint32 n = m_select_subquery_leaves.size();
+  bool assigned[MAX_JOIN_TABLES] = {};
+  require_prm(n <= MAX_JOIN_TABLES, "Too many SELECT-list subqueries.");
+
+  Uint32 agg_slot = 0;
+  for (Uint32 i = 0; i < n; i++) {
+    if (assigned[i]) continue;
+    SelectSubqueryLeaf &base = m_select_subquery_leaves[i];
+
+    MergedLeaf ml;
+    ml.first_subquery_idx = i;
+    ml.num_aggs = 1;
+    ml.plan_op_idx = 0;
+    Uint32 ml_idx = m_merged_leaves.size();
+
+    base.merged_leaf_idx = ml_idx;
+    base.combined_agg_slot = agg_slot++;
+    assigned[i] = true;
+
+    for (Uint32 j = i + 1; j < n; j++) {
+      if (assigned[j]) continue;
+      SelectSubqueryLeaf &other = m_select_subquery_leaves[j];
+      if (base.inner_table_name.len == other.inner_table_name.len &&
+          strncmp(base.inner_table_name.str, other.inner_table_name.str,
+                  base.inner_table_name.len) == 0 &&
+          base.inner_join_col.len == other.inner_join_col.len &&
+          strncmp(base.inner_join_col.str, other.inner_join_col.str,
+                  base.inner_join_col.len) == 0 &&
+          base.outer_join_col.len == other.outer_join_col.len &&
+          strncmp(base.outer_join_col.str, other.outer_join_col.str,
+                  base.outer_join_col.len) == 0) {
+        other.merged_leaf_idx = ml_idx;
+        other.combined_agg_slot = agg_slot++;
+        ml.num_aggs++;
+        assigned[j] = true;
+
+        // Remap column qualifiers from other's alias to base's alias
+        // so that load_join() resolves them against the single joined table.
+        LexCString other_alias = other.inner_table_alias;
+        LexCString base_alias = base.inner_table_alias;
+        for (Uint32 c = 0; c < m_column_qualifiers.size(); c++) {
+          if (m_column_qualifiers[c].str != NULL &&
+              m_column_qualifiers[c].len == other_alias.len &&
+              strncmp(m_column_qualifiers[c].str, other_alias.str,
+                      other_alias.len) == 0) {
+            m_column_qualifiers[c] = base_alias;
+          }
+        }
+      }
+    }
+
+    m_merged_leaves.push(ml);
+  }
+}
+
+/*
+ * rewrite_select_subqueries_as_joins()
+ *
+ * For each merged leaf, inject a JoinClause into the outer query's join list.
+ * This makes the inner table visible to load() and QueryPlanner::plan().
+ */
+void
+RonSQLPreparer::rewrite_select_subqueries_as_joins()
+{
+  SelectStatement &ast = m_context.ast_root;
+
+  for (Uint32 i = 0; i < m_merged_leaves.size(); i++) {
+    MergedLeaf &ml = m_merged_leaves[i];
+    SelectSubqueryLeaf &base = m_select_subquery_leaves[ml.first_subquery_idx];
+
+    JoinCondition *cond = m_amalloc->alloc_exc<JoinCondition>(1);
+    cond->child_table = base.inner_table_alias;
+    cond->child_column = base.inner_join_col;
+    cond->parent_table = base.outer_join_table;
+    cond->parent_column = base.outer_join_col;
+    cond->next = NULL;
+
+    JoinClause *jc = m_amalloc->alloc_exc<JoinClause>(1);
+    jc->join_type = base.use_inner_join
+        ? JoinClause::INNER_JOIN : JoinClause::LEFT_OUTER_JOIN;
+    jc->table = *base.inner_stmt->root_table;
+    jc->conditions = cond;
+    jc->next = NULL;
+
+    // Append to end of join list
+    if (ast.joins == NULL) {
+      ast.joins = jc;
+    } else {
+      JoinClause *last = ast.joins;
+      while (last->next != NULL) last = last->next;
+      last->next = jc;
+    }
+  }
+
+  // Auto-inject GROUP BY on the outer correlation key if there's no
+  // explicit GROUP BY.  This gives per-parent-row aggregation semantics.
+  if (ast.groupby_columns == NULL) {
+    // Use the outer correlation key from the first subquery leaf.
+    // All leaves correlate to the outer table — use the first one's key.
+    SelectSubqueryLeaf &first = m_select_subquery_leaves[0];
+
+    // Find col_idx for the outer correlation column.
+    // It's already in m_columns from the subquery parsing.
+    Uint32 outer_col_idx = UINT32_MAX;
+    for (Uint32 c = 0; c < m_columns.size(); c++) {
+      if (m_column_qualifiers[c].str != NULL &&
+          m_column_qualifiers[c].len == first.outer_join_table.len &&
+          strncmp(m_column_qualifiers[c].str, first.outer_join_table.str,
+                  first.outer_join_table.len) == 0 &&
+          m_columns[c].len == first.outer_join_col.len &&
+          strncmp(m_columns[c].str, first.outer_join_col.str,
+                  first.outer_join_col.len) == 0) {
+        outer_col_idx = c;
+        break;
+      }
+    }
+    require_prm(outer_col_idx != UINT32_MAX,
+                "Could not find outer correlation column for GROUP BY injection.");
+
+    GroupbyColumns *gb = m_amalloc->alloc_exc<GroupbyColumns>(1);
+    gb->col_idx = outer_col_idx;
+    gb->next = NULL;
+    ast.groupby_columns = gb;
+
+    // Also add all other COLUMN outputs to GROUP BY so the ResultPrinter
+    // doesn't reject them as ungrouped.  Since we GROUP BY the correlation
+    // key (typically PK), other outer columns are functionally dependent.
+    for (Outputs *out = ast.outputs; out != NULL; out = out->next) {
+      if (out->type == Outputs::Type::COLUMN &&
+          out->column.col_idx != outer_col_idx) {
+        GroupbyColumns *extra = m_amalloc->alloc_exc<GroupbyColumns>(1);
+        extra->col_idx = out->column.col_idx;
+        extra->next = NULL;
+        // Append to end of GROUP BY list
+        GroupbyColumns *last = ast.groupby_columns;
+        while (last->next != NULL) last = last->next;
+        last->next = extra;
+      }
+    }
+  }
+
+  // Clear m_col_is_inner for columns from the rewritten subquery tables.
+  // These columns were registered as "inner" during subquery parsing but
+  // are now part of the join and need to be resolved by load_join().
+  for (Uint32 i = 0; i < m_select_subquery_leaves.size(); i++) {
+    SelectSubqueryLeaf &leaf = m_select_subquery_leaves[i];
+    LexCString inner_alias = leaf.inner_table_alias;
+    for (Uint32 c = 0; c < m_columns.size(); c++) {
+      if (c < m_col_is_inner.size() && m_col_is_inner[c] &&
+          c < m_column_qualifiers.size() &&
+          m_column_qualifiers[c].str != NULL &&
+          m_column_qualifiers[c].len == inner_alias.len &&
+          strncmp(m_column_qualifiers[c].str, inner_alias.str,
+                  inner_alias.len) == 0) {
+        m_col_is_inner[c] = false;
+      }
+    }
+  }
+}
+
 void
 RonSQLPreparer::compile()
 {
+  // For multi-leaf subquery pushdown: rewrite SUBQUERY_AGG outputs to
+  // AGGREGATE outputs with the correct combined_agg_slot.  This makes
+  // the ResultPrinter treat them as regular aggregate results.
+  if (m_has_select_subqueries) {
+    for (Uint32 i = 0; i < m_select_subquery_leaves.size(); i++) {
+      SelectSubqueryLeaf &sl = m_select_subquery_leaves[i];
+      Outputs *out = sl.output_node;
+      ndbrequire(out->type == Outputs::Type::SUBQUERY_AGG);
+      out->type = Outputs::Type::AGGREGATE;
+      out->aggregate.fun = sl.agg_fun;
+      out->aggregate.arg = NULL;  // not used for result fetching
+      out->aggregate.agg_index = sl.combined_agg_slot;
+    }
+  }
+
   // Compile aggregation program if applicable
   if (m_agg != NULL) {
     if (m_agg->compile()) {
@@ -2896,12 +3284,82 @@ RonSQLPreparer::execute_join()
 
   JoinPlan& plan = m_join_plan;
 
-  // Build aggregator on the leaf table
-  const NdbDictionary::Table* leaf_table =
-      plan.ops[plan.agg_leaf_idx].table;
-  NdbAggregator aggregator(leaf_table);
-  programAggregator_join(&aggregator);
-  require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
+  // Build aggregator(s).
+  // Multi-leaf: one NdbAggregator per merged leaf, each with its own program.
+  // Single-leaf: one NdbAggregator on plan.agg_leaf_idx (existing path).
+  NdbAggregator* leafAggs[MAX_JOIN_TABLES] = {};
+  NdbAggregator singleAgg(plan.ops[plan.agg_leaf_idx].table);
+
+  if (m_has_select_subqueries && plan.num_agg_leaves > 0) {
+    // Build per-leaf aggregators for subquery pushdown
+    for (Uint32 ml = 0; ml < m_merged_leaves.size(); ml++) {
+      MergedLeaf &merged = m_merged_leaves[ml];
+      Uint32 op_idx = merged.plan_op_idx;
+      const NdbDictionary::Table* leaf_table = plan.ops[op_idx].table;
+      NdbAggregator* agg = new NdbAggregator(leaf_table);
+
+      // Program GROUP BY columns (all from root → GroupByLinked)
+      Uint32 linked_proj_pos = 0;
+      struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
+      while (groupby != NULL) {
+        Uint32 col_idx = groupby->col_idx;
+        if (m_column_table_idx[col_idx] == op_idx) {
+          require_prm(agg->GroupBy(m_column_attrId_map[col_idx]),
+                      "Failed to program GroupBy on leaf.");
+        } else {
+          require_prm(agg->GroupByLinked(linked_proj_pos,
+                                         m_column_map[col_idx]),
+                      "Failed to program GroupByLinked on leaf.");
+          linked_proj_pos++;
+        }
+        groupby = groupby->next;
+      }
+
+      // Program aggregate functions for all subqueries merged into this leaf.
+      // Slot indices are leaf-local (0-based); the kernel applies acc_offset.
+      Uint32 leaf_local_slot = 0;
+      for (Uint32 si = 0; si < m_select_subquery_leaves.size(); si++) {
+        SelectSubqueryLeaf &sl = m_select_subquery_leaves[si];
+        if (sl.merged_leaf_idx != ml) continue;
+
+        Uint32 col_idx = sl.inner_agg_col_idx;
+        NdbAttrId attr_id = m_column_attrId_map[col_idx];
+        Uint32 reg = 0;  // use register 0 for loads
+        Uint32 agg_slot = leaf_local_slot++;
+
+        require_prm(agg->LoadColumn(attr_id, reg),
+                    "Failed to load column for subquery aggregate.");
+
+        switch (sl.agg_fun) {
+        case T_SUM:
+          require_prm(agg->Sum(agg_slot, reg),
+                      "Failed to program SUM.");
+          break;
+        case T_COUNT:
+          require_prm(agg->Count(agg_slot, reg),
+                      "Failed to program COUNT.");
+          break;
+        case T_MIN:
+          require_prm(agg->Min(agg_slot, reg),
+                      "Failed to program MIN.");
+          break;
+        case T_MAX:
+          require_prm(agg->Max(agg_slot, reg),
+                      "Failed to program MAX.");
+          break;
+        default:
+          require_prm(false, "Unsupported aggregate function in subquery.");
+        }
+      }
+
+      require_prm(agg->Finalize(), "Failed to finalize leaf aggregator.");
+      leafAggs[op_idx] = agg;
+    }
+  } else {
+    // Single-leaf path (existing)
+    programAggregator_join(&singleAgg);
+    require_prm(singleAgg.Finalize(), "Failed to finalize aggregator.");
+  }
 
   // Build NdbQueryBuilder tree
   NdbQueryBuilder* qb = NdbQueryBuilder::create();
@@ -3068,11 +3526,24 @@ RonSQLPreparer::execute_join()
       opts.setInterpretedCode(child_code);
     }
 
-    // Attach aggregation to leaf
-    if (i == plan.agg_leaf_idx) {
-      require_run(opts.setAggregation(aggregator) == 0,
+    // Attach aggregation to leaf(s)
+    if (m_has_select_subqueries && plan.num_agg_leaves > 0 &&
+        leafAggs[i] != NULL) {
+      // Multi-leaf: attach this leaf's aggregator
+      require_run(opts.setAggregation(*leafAggs[i]) == 0,
+                  "Failed to set aggregation on leaf.");
+      for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
+        NdbLinkedOperand* lv = qb->linkedValue(
+            opDefs[plan.linked_projs[j].source_op_idx],
+            plan.linked_projs[j].column_name);
+        require_run(lv != NULL, "Failed to create linked projection.");
+        require_run(opts.addLinkedProjection(lv) == 0,
+                    "Failed to add linked projection.");
+      }
+    } else if (i == plan.agg_leaf_idx && plan.num_agg_leaves == 0) {
+      // Single-leaf: existing path
+      require_run(opts.setAggregation(singleAgg) == 0,
                   "Failed to set aggregation.");
-      // Add linked projections for GROUP BY on parent columns
       for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
         NdbLinkedOperand* lv = qb->linkedValue(
             opDefs[plan.linked_projs[j].source_op_idx],
@@ -3136,6 +3607,14 @@ RonSQLPreparer::execute_join()
   query->close();
   queryDef->destroy();
   qb->destroy();
+
+  // Free per-leaf aggregators
+  for (Uint32 i = 0; i < MAX_JOIN_TABLES; i++) {
+    if (leafAggs[i] != NULL) {
+      delete leafAggs[i];
+      leafAggs[i] = NULL;
+    }
+  }
 }
 
 std::ostream& operator<<(std::ostream& os, const NdbError& err) {

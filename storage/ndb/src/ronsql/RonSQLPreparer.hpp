@@ -175,6 +175,32 @@ private:
 
   AggregationAPICompiler* m_agg = NULL;
 
+  // SELECT-list subquery aggregation (multi-leaf pushdown)
+  struct SelectSubqueryLeaf {
+    SelectStatement* inner_stmt;       // parsed inner SELECT
+    Outputs* output_node;              // the SUBQUERY_AGG output
+    Uint32 output_idx;                 // position in output list
+    LexCString inner_table_name;       // inner table name
+    LexCString inner_table_alias;      // inner table alias
+    LexCString inner_join_col;         // inner side of correlation
+    LexCString outer_join_col;         // outer correlation column name
+    LexCString outer_join_table;       // outer correlation table qualifier
+    TokenKind agg_fun;                 // T_SUM, T_COUNT, T_MIN, T_MAX
+    LexCString inner_agg_col;          // aggregated column name
+    Uint32 inner_agg_col_idx;          // col_idx of aggregated column (in m_columns)
+    Uint32 combined_agg_slot;          // slot in combined result
+    Uint32 merged_leaf_idx;            // index into m_merged_leaves
+    bool use_inner_join;               // true=INNER, false=LEFT OUTER
+  };
+  struct MergedLeaf {
+    Uint32 first_subquery_idx;         // first SelectSubqueryLeaf in this group
+    Uint32 num_aggs;                   // number of aggregates in this leaf
+    Uint32 plan_op_idx;                // index in JoinPlan::ops after rewriting
+  };
+  DynamicArray<SelectSubqueryLeaf> m_select_subquery_leaves;
+  DynamicArray<MergedLeaf> m_merged_leaves;
+  bool m_has_select_subqueries = false;
+
   // Subquery orchestration
   struct SubqueryInfo {
     ConditionalExpression* ce_node;  // The SubqueryExpr node in outer AST
@@ -209,6 +235,9 @@ private:
   void generate_scan_config_candidates();
   void analyze_subqueries();
   void analyze_subqueries_ce(ConditionalExpression* ce);
+  void analyze_select_subqueries();
+  void merge_same_table_subqueries();
+  void rewrite_select_subqueries_as_joins();
   void decorrelate_exists();
   void decorrelate_scalar();
   void compile();
