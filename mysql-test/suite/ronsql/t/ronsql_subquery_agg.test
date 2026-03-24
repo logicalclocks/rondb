@@ -280,6 +280,65 @@ FROM sq_entity AS e|
 # scanFrag_parent_batch_complete, and high group cardinality
 # =========================================================================
 
+# =========================================================================
+# Test 12: HAVING filter — cnt_evt > 0 filters entity with no events
+# Entity 5 has measures but no events → cnt_evt = 0 → filtered out
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 12: HAVING cnt_evt > 0 filters unmatched entities ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING cnt_evt > 0;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING cnt_evt > 0|
+
+# =========================================================================
+# Test 13: HAVING IS NOT NULL filters entity with no measures
+# Add entity 6 with events but no measures → sum_val = NULL → filtered
+# =========================================================================
+
+DELIMITER ;|
+--disable_query_log
+INSERT INTO sq_entity VALUES (6, 3);
+INSERT INTO sq_events VALUES (6,1,9),(6,2,10);
+--enable_query_log
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 13: HAVING sum_val IS NOT NULL ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val IS NOT NULL;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val IS NOT NULL|
+
+# =========================================================================
+
 DELIMITER ;|
 
 --echo

@@ -37,6 +37,10 @@
 #include <cerrno>
 #include <climits>
 #include <vector>
+#include <map>
+#include <set>
+#include <string>
+#include <functional>
 #include <string>
 #include "define_formatter.hpp"
 #include "my_time.h"
@@ -2351,6 +2355,31 @@ RonSQLPreparer::analyze_select_subqueries()
 
   m_has_select_subqueries = true;
 
+  // Mark HAVING identifier columns that match output aliases as "inner"
+  // so load_join() skips them.  They'll be resolved in compile().
+  if (ast.having_expression != NULL) {
+    // Collect output alias names from SUBQUERY_AGG outputs
+    std::set<std::string> alias_names;
+    for (Outputs *out = ast.outputs; out != NULL; out = out->next) {
+      if (out->type == Outputs::Type::SUBQUERY_AGG &&
+          out->output_name.str != NULL && out->output_name.len > 0) {
+        alias_names.insert(std::string(out->output_name.str,
+                                       out->output_name.len));
+      }
+    }
+    // Walk columns and mark any that match an alias name
+    for (Uint32 c = 0; c < m_columns.size(); c++) {
+      if (m_column_qualifiers[c].str == NULL &&  // unqualified
+          alias_names.count(std::string(m_columns[c].str,
+                                        m_columns[c].len)) > 0) {
+        // Ensure m_col_is_inner is large enough
+        while (m_col_is_inner.size() <= c)
+          m_col_is_inner.push(false);
+        m_col_is_inner[c] = true;
+      }
+    }
+  }
+
   // Merge subqueries on same table+join into single leaves
   merge_same_table_subqueries();
 
@@ -2544,6 +2573,52 @@ RonSQLPreparer::compile()
       out->aggregate.arg = NULL;  // not used for result fetching
       out->aggregate.agg_index = sl.combined_agg_slot;
     }
+  }
+
+  // Resolve output aliases in HAVING expression for subquery aggregation.
+  // Walk the HAVING tree and map identifier nodes to their agg_index
+  // based on output alias names.
+  if (m_has_select_subqueries &&
+      m_context.ast_root.having_expression != NULL) {
+    // Build alias → agg_index map from rewritten outputs
+    std::map<std::string, Uint32> alias_map;
+    for (Outputs *out = m_context.ast_root.outputs; out; out = out->next) {
+      if (out->type == Outputs::Type::AGGREGATE &&
+          out->output_name.str != NULL && out->output_name.len > 0) {
+        std::string name(out->output_name.str, out->output_name.len);
+        alias_map[name] = out->aggregate.agg_index;
+      }
+    }
+    // Walk HAVING expression and resolve identifiers
+    std::function<void(ConditionalExpression*)> resolve_having_aliases =
+        [&](ConditionalExpression* ce) {
+      if (ce == NULL) return;
+      if (ce->op == T_IDENTIFIER) {
+        Uint32 col_idx = ce->col_idx;
+        if (col_idx < m_columns.size()) {
+          std::string name(m_columns[col_idx].str, m_columns[col_idx].len);
+          auto it = alias_map.find(name);
+          if (it != alias_map.end()) {
+            ce->having_agg.agg_index = it->second;
+            // Keep op as T_IDENTIFIER — evaluate_having_value handles it
+          }
+        }
+      }
+      if (ce->op == T_IS) {
+        resolve_having_aliases(ce->is.arg);
+      } else if (ce->op == T_AND || ce->op == T_OR ||
+                 ce->op == T_EQUALS || ce->op == T_NOT_EQUALS ||
+                 ce->op == T_GT || ce->op == T_GE ||
+                 ce->op == T_LT || ce->op == T_LE ||
+                 ce->op == T_PLUS || ce->op == T_MINUS ||
+                 ce->op == T_MULTIPLY || ce->op == T_SLASH) {
+        resolve_having_aliases(ce->args.left);
+        resolve_having_aliases(ce->args.right);
+      } else if (ce->op == T_NOT || ce->op == T_EXCLAMATION) {
+        resolve_having_aliases(ce->args.left);
+      }
+    };
+    resolve_having_aliases(m_context.ast_root.having_expression);
   }
 
   // Compile aggregation program if applicable

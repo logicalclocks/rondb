@@ -1646,6 +1646,13 @@ ResultPrinter::scan_having_max_agg(const ConditionalExpression* expr,
   case T_EXCLAMATION:
     scan_having_max_agg(expr->args.left, max_idx);
     break;
+  case T_IS:
+    scan_having_max_agg(expr->is.arg, max_idx);
+    break;
+  case T_IDENTIFIER:
+    // Output alias mapped to agg_index during compile()
+    max_idx = max(max_idx, expr->having_agg.agg_index + 1);
+    break;
   default:
     break;
   }
@@ -1673,6 +1680,9 @@ ResultPrinter::evaluate_having_value(const ConditionalExpression* expr)
     return static_cast<double>(expr->constant_integer);
   case T_FLOAT:
     return expr->constant_float.dbl;
+  case T_IDENTIFIER:
+    // Output alias mapped to agg_index — same as aggregate result
+    return convert_result_to_double(m_regs_a[expr->having_agg.agg_index]);
   case T_PLUS:
     return evaluate_having_value(expr->args.left) +
            evaluate_having_value(expr->args.right);
@@ -1707,6 +1717,26 @@ ResultPrinter::evaluate_having(const ConditionalExpression* expr)
   case T_NOT:
   case T_EXCLAMATION:
     return !evaluate_having(expr->args.left);
+  case T_IS:
+  {
+    // IS NULL / IS NOT NULL on aggregate result
+    bool is_null_check = expr->is.null;  // true = IS NULL, false = IS NOT NULL
+    const ConditionalExpression* arg = expr->is.arg;
+    // The argument should be an aggregate (T_SUM, T_COUNT, etc.)
+    if (arg->op == T_SUM || arg->op == T_MIN || arg->op == T_MAX ||
+        arg->op == T_COUNT || arg->op == T_AVG) {
+      bool result_is_null = m_regs_a[arg->having_agg.agg_index].is_null();
+      return is_null_check ? result_is_null : !result_is_null;
+    }
+    // For identifiers (output aliases), look up in stored registers
+    if (arg->op == T_IDENTIFIER) {
+      Uint32 agg_idx = arg->having_agg.agg_index;
+      bool result_is_null = m_regs_a[agg_idx].is_null();
+      return is_null_check ? result_is_null : !result_is_null;
+    }
+    throw RonSQLPermanentError(
+        "Unsupported expression in HAVING IS [NOT] NULL.");
+  }
   case T_GT:
     return evaluate_having_value(expr->args.left) >
            evaluate_having_value(expr->args.right);
