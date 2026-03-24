@@ -193,6 +193,33 @@ SELECT e.id, e.grp,
 FROM sq_entity AS e|
 
 # =========================================================================
+# Test 7: Same-table triple merge SUM + MIN + MAX
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 7: Same-table triple merge SUM + MIN + MAX ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS min_val,
+  (SELECT MAX(m3.val) FROM sq_measures AS m3 WHERE m3.entity_id = e.id) AS max_val
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS min_val,
+  (SELECT MAX(m3.val) FROM sq_measures AS m3 WHERE m3.entity_id = e.id) AS max_val
+FROM sq_entity AS e|
+
+# Note: Test for entities with no matching inner rows (NULL/0 results) is
+# pending Phase 10 — multi-leaf outer join support in DBSPJ for fan-out.
+
+# =========================================================================
 
 DELIMITER ;|
 
