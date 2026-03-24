@@ -214,4 +214,95 @@ id	sum_val	cnt_evt
 4	330	2
 5	NULL	0
 
+
+=== Test 9: Partial match — entity 5 has measures but no events ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+id	sum_val	cnt_evt
+1	60	2
+2	150	2
+3	240	2
+4	330	2
+5	1800	0
+
+=== Create large tables for DBSPJ path tests ===
+Warnings:
+Note	1051	Unknown table 'test.lg_events'
+Warnings:
+Note	1051	Unknown table 'test.lg_measures'
+Warnings:
+Note	1051	Unknown table 'test.lg_entity'
+
+
+=== Test 10: Large dataset multi-batch (200 entities, 50 groups) ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e;
+
+Number of output lines, including header: 201
+
+== Diff ==
+==========
+
+
+
+== Expected result (first 5 rows) ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e
+LIMIT 5|
+id	sum_val	cnt_evt
+10	515	3
+48	2415	3
+51	2565	3
+77	3865	3
+9	465	3
+
+
+=== Test 11: Asymmetric fan-out (5 measures vs 3 events/entity) ===
+== Query ==
+SELECT e.id, e.grp,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e;
+
+Number of output lines, including header: 201
+
+== Diff ==
+==========
+
+
+
+== Expected result (first 5 rows) ==
+SELECT e.id, e.grp,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e
+LIMIT 5|
+id	grp	sum_val	max_evt
+28	28	1415	28
+55	5	2765	5
+60	10	3015	10
+67	17	3365	17
+76	26	3815	26
+
 === Cleanup ===

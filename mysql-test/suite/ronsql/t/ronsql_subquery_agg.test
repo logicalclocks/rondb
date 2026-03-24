@@ -246,6 +246,158 @@ SELECT e.id,
 FROM sq_entity AS e|
 
 # =========================================================================
+# Test 9: Partial outer join — entity 5 matches measures but not events
+# (exercises handleAggLeafScanComplete NULL row injection per-leaf)
+# =========================================================================
+
+DELIMITER ;|
+--disable_query_log
+# Entity 5 already inserted (Test 8). Add measures for it but no events.
+INSERT INTO sq_measures VALUES (5,1,500),(5,2,600),(5,3,700);
+--enable_query_log
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 9: Partial match — entity 5 has measures but no events ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+
+# =========================================================================
+# DBSPJ stress tests: large dataset exercising multi-batch SCAN_NEXTREQ,
+# scanFrag_parent_batch_complete, and high group cardinality
+# =========================================================================
+
+DELIMITER ;|
+
+--echo
+--echo === Create large tables for DBSPJ path tests ===
+
+--disable_query_log
+DROP TABLE IF EXISTS lg_events;
+DROP TABLE IF EXISTS lg_measures;
+DROP TABLE IF EXISTS lg_entity;
+
+CREATE TABLE lg_entity (
+  id INT NOT NULL,
+  grp INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB
+COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2';
+
+CREATE TABLE lg_measures (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (entity_id, ts),
+  INDEX idx_lg_meas_eid (entity_id)
+) ENGINE=NDB
+COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2';
+
+CREATE TABLE lg_events (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  event_type INT NOT NULL,
+  PRIMARY KEY USING HASH (entity_id, ts),
+  INDEX idx_lg_evt_eid (entity_id)
+) ENGINE=NDB
+COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2';
+
+# 200 entities, 50 groups (grp = (id-1) % 50 + 1, 4 entities/group)
+# 5 measures per entity (1000 total), 3 events per entity (600 total)
+
+--delimiter $
+CREATE PROCEDURE populate_lg()
+BEGIN
+  DECLARE i INT DEFAULT 1;
+  DECLARE g INT;
+  DECLARE j INT;
+  WHILE i <= 200 DO
+    SET g = ((i - 1) % 50) + 1;
+    INSERT INTO lg_entity VALUES (i, g);
+    SET j = 1;
+    WHILE j <= 5 DO
+      INSERT INTO lg_measures VALUES (i, j, i * 10 + j);
+      SET j = j + 1;
+    END WHILE;
+    SET j = 1;
+    WHILE j <= 3 DO
+      INSERT INTO lg_events VALUES (i, j, g);
+      SET j = j + 1;
+    END WHILE;
+    SET i = i + 1;
+  END WHILE;
+END$
+--delimiter ;
+CALL populate_lg();
+DROP PROCEDURE populate_lg;
+--enable_query_log
+
+DELIMITER |;
+
+# =========================================================================
+# Test 10: Large dataset — multi-batch SCAN_NEXTREQ with 2 scan leaves
+# 200 entities × 5 measures + 200 × 3 events, 50 groups
+# Forces multiple root scan batches → both leaves restart per batch
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 10: Large dataset multi-batch (200 entities, 50 groups) ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result (first 5 rows) ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e
+LIMIT 5|
+
+# =========================================================================
+# Test 11: High group cardinality — GROUP BY entity id (200 groups)
+# with asymmetric fan-out (5 measures vs 3 events per entity)
+# Exercises scanFrag_parent_batch_complete with many outstanding scans
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 11: Asymmetric fan-out (5 measures vs 3 events/entity) ===
+
+let $QUERY=
+SELECT e.id, e.grp,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result (first 5 rows) ==
+--sorted_result
+SELECT e.id, e.grp,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e
+LIMIT 5|
+
+# =========================================================================
 
 DELIMITER ;|
 
@@ -253,6 +405,9 @@ DELIMITER ;|
 --echo === Cleanup ===
 
 --disable_query_log
+DROP TABLE IF EXISTS lg_events;
+DROP TABLE IF EXISTS lg_measures;
+DROP TABLE IF EXISTS lg_entity;
 DROP TABLE IF EXISTS sq_events;
 DROP TABLE IF EXISTS sq_measures;
 DROP TABLE IF EXISTS sq_entity;
