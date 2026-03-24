@@ -243,4 +243,152 @@ id	sum_val	cnt_evt
 3	240	2
 4	330	2
 
+
+=== B1: Inner WHERE filter (m.ts > 1) reduces child rows ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_val
+FROM sq_entity AS e;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_val
+FROM sq_entity AS e|
+id	sum_val
+1	50
+2	110
+3	170
+4	230
+5	1300
+6	NULL
+
+
+=== B2: Two subqueries with different inner filters ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id AND ev.event_type > 3) AS cnt_high
+FROM sq_entity AS e;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id AND ev.event_type > 3) AS cnt_high
+FROM sq_entity AS e|
+id	sum_early	cnt_high
+1	30	0
+2	90	1
+3	150	2
+4	210	2
+5	1100	0
+6	NULL	2
+
+
+=== B3: Inner filter eliminates all rows for some entities ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.val > 500) AS sum_big
+FROM sq_entity AS e;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.val > 500) AS sum_big
+FROM sq_entity AS e|
+id	sum_big
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	1300
+6	NULL
+
+=== Create large tables for stress tests ===
+Warnings:
+Note	1051	Unknown table 'test.lg_events'
+Warnings:
+Note	1051	Unknown table 'test.lg_measures'
+Warnings:
+Note	1051	Unknown table 'test.lg_entity'
+
+
+=== E1: Large dataset with WHERE filter on root ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e
+WHERE e.grp <= 3;
+
+Number of output lines, including header: 13
+
+== Diff ==
+==========
+
+
+
+== Expected result (first 5) ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e
+WHERE e.grp <= 3
+LIMIT 5|
+id	sum_val	cnt_evt
+102	5115	3
+103	5165	3
+151	7565	3
+51	2565	3
+53	2665	3
+
+
+=== E2: Large dataset with inner filter + WHERE ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+(SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e
+WHERE e.id <= 50;
+
+Number of output lines, including header: 51
+
+== Diff ==
+==========
+
+
+
+== Expected result (first 5) ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+(SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e
+WHERE e.id <= 50
+LIMIT 5|
+id	sum_early	max_evt
+10	203	10
+4	83	4
+48	963	48
+7	143	7
+9	183	9
+
 === Cleanup ===

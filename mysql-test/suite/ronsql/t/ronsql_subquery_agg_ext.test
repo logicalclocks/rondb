@@ -262,12 +262,186 @@ HAVING sum_val > 200|
 
 # =========================================================================
 
+# =========================================================================
+# Category B: WHERE filters on inner subquery tables
+# =========================================================================
+
+--echo
+--echo
+--echo === B1: Inner WHERE filter (m.ts > 1) reduces child rows ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_val
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_val
+FROM sq_entity AS e|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === B2: Two subqueries with different inner filters ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id AND ev.event_type > 3) AS cnt_high
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id AND ev.event_type > 3) AS cnt_high
+FROM sq_entity AS e|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === B3: Inner filter eliminates all rows for some entities ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.val > 500) AS sum_big
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.val > 500) AS sum_big
+FROM sq_entity AS e|
+
+# =========================================================================
+# Category E: Large dataset stress with filters
+# =========================================================================
+
+DELIMITER ;|
+--echo
+--echo === Create large tables for stress tests ===
+
+--disable_query_log
+DROP TABLE IF EXISTS lg_events;
+DROP TABLE IF EXISTS lg_measures;
+DROP TABLE IF EXISTS lg_entity;
+
+CREATE TABLE lg_entity (
+  id INT NOT NULL,
+  grp INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB
+COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2';
+
+CREATE TABLE lg_measures (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (entity_id, ts),
+  INDEX idx_lg_meas_eid (entity_id)
+) ENGINE=NDB
+COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2';
+
+CREATE TABLE lg_events (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  event_type INT NOT NULL,
+  PRIMARY KEY USING HASH (entity_id, ts),
+  INDEX idx_lg_evt_eid (entity_id)
+) ENGINE=NDB
+COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2';
+
+--delimiter $
+CREATE PROCEDURE populate_lg()
+BEGIN
+  DECLARE i INT DEFAULT 1;
+  DECLARE g INT;
+  DECLARE j INT;
+  WHILE i <= 200 DO
+    SET g = ((i - 1) % 50) + 1;
+    INSERT INTO lg_entity VALUES (i, g);
+    SET j = 1;
+    WHILE j <= 5 DO
+      INSERT INTO lg_measures VALUES (i, j, i * 10 + j);
+      SET j = j + 1;
+    END WHILE;
+    SET j = 1;
+    WHILE j <= 3 DO
+      INSERT INTO lg_events VALUES (i, j, g);
+      SET j = j + 1;
+    END WHILE;
+    SET i = i + 1;
+  END WHILE;
+END$
+--delimiter ;
+CALL populate_lg();
+DROP PROCEDURE populate_lg;
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === E1: Large dataset with WHERE filter on root ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e
+WHERE e.grp <= 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result (first 5) ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e
+WHERE e.grp <= 3
+LIMIT 5|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === E2: Large dataset with inner filter + WHERE ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+  (SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e
+WHERE e.id <= 50;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result (first 5) ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+  (SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e
+WHERE e.id <= 50
+LIMIT 5|
+
+# =========================================================================
+
 DELIMITER ;|
 
 --echo
 --echo === Cleanup ===
 
 --disable_query_log
+DROP TABLE IF EXISTS lg_events;
+DROP TABLE IF EXISTS lg_measures;
+DROP TABLE IF EXISTS lg_entity;
 DROP TABLE IF EXISTS sq_events;
 DROP TABLE IF EXISTS sq_measures;
 DROP TABLE IF EXISTS sq_entity;

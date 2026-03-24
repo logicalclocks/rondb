@@ -910,6 +910,27 @@ RonSQLPreparer::load_join()
   // Classify WHERE conditions by table for per-table filter pushdown
   classify_where_by_table();
 
+  // Apply inner subquery filters to the corresponding leaf operations
+  if (m_has_select_subqueries) {
+    for (Uint32 i = 0; i < m_merged_leaves.size(); i++) {
+      MergedLeaf &ml = m_merged_leaves[i];
+      SelectSubqueryLeaf &base = m_select_subquery_leaves[ml.first_subquery_idx];
+      if (base.inner_filter != NULL) {
+        Uint32 op_idx = ml.plan_op_idx;
+        if (m_join_where_ce[op_idx] == NULL) {
+          m_join_where_ce[op_idx] = base.inner_filter;
+        } else {
+          ConditionalExpression* combined =
+              m_amalloc->alloc_exc<ConditionalExpression>(1);
+          combined->op = T_AND;
+          combined->args.left = m_join_where_ce[op_idx];
+          combined->args.right = base.inner_filter;
+          m_join_where_ce[op_idx] = combined;
+        }
+      }
+    }
+  }
+
   // Build linked projections for GROUP BY columns on non-leaf tables
   Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
   struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
@@ -2280,13 +2301,77 @@ RonSQLPreparer::analyze_select_subqueries()
     ConditionalExpression *inner_where = inner->where_expression;
     require_prm(inner_where != NULL,
                 "SELECT-list subquery must have a WHERE clause with correlation.");
-    require_prm(inner_where->op == T_EQUALS,
-                "SELECT-list subquery WHERE must be a simple equality "
-                "(correlation predicate).");
+
+    // Extract the correlation predicate from the inner WHERE.
+    // The WHERE can be a single equality (correlation only) or
+    // T_AND(correlation, additional_filter).
+    // Flatten AND conjuncts and find the one equality with one inner
+    // and one outer column reference.
+    ConditionalExpression *correlation_eq = NULL;
+    ConditionalExpression *inner_filter = NULL;
+
+    if (inner_where->op == T_EQUALS) {
+      // Simple case: single correlation predicate, no additional filter
+      correlation_eq = inner_where;
+    } else if (inner_where->op == T_AND) {
+      // Flatten AND and find correlation predicate
+      // We support: correlation AND filter (any nesting depth)
+      ConditionalExpression *conjuncts[32];
+      Uint32 num_conjuncts = 0;
+      std::function<void(ConditionalExpression*)> flatten =
+          [&](ConditionalExpression* ce) {
+        if (ce->op == T_AND) {
+          flatten(ce->args.left);
+          flatten(ce->args.right);
+        } else if (num_conjuncts < 32) {
+          conjuncts[num_conjuncts++] = ce;
+        }
+      };
+      flatten(inner_where);
+
+      // Find the correlation predicate (equality between inner and outer col)
+      LexCString inner_table_name = inner->root_table->alias;
+      for (Uint32 ci = 0; ci < num_conjuncts; ci++) {
+        if (conjuncts[ci]->op != T_EQUALS) continue;
+        ConditionalExpression *l = conjuncts[ci]->args.left;
+        ConditionalExpression *r = conjuncts[ci]->args.right;
+        if (l == NULL || r == NULL) continue;
+        if (l->op != T_IDENTIFIER || r->op != T_IDENTIFIER) continue;
+        // Check if one side is inner table, other is outer
+        LexCString lq = m_column_qualifiers[l->col_idx];
+        LexCString rq = m_column_qualifiers[r->col_idx];
+        bool l_inner = (lq.str != NULL && lq.len == inner_table_name.len &&
+                        strncmp(lq.str, inner_table_name.str, lq.len) == 0);
+        bool r_inner = (rq.str != NULL && rq.len == inner_table_name.len &&
+                        strncmp(rq.str, inner_table_name.str, rq.len) == 0);
+        if (l_inner != r_inner) {
+          correlation_eq = conjuncts[ci];
+          // Build remaining filter from other conjuncts
+          for (Uint32 fi = 0; fi < num_conjuncts; fi++) {
+            if (fi == ci) continue;
+            if (inner_filter == NULL) {
+              inner_filter = conjuncts[fi];
+            } else {
+              ConditionalExpression *combined =
+                  m_amalloc->alloc_exc<ConditionalExpression>(1);
+              combined->op = T_AND;
+              combined->args.left = inner_filter;
+              combined->args.right = conjuncts[fi];
+              inner_filter = combined;
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    require_prm(correlation_eq != NULL,
+                "SELECT-list subquery WHERE must contain a correlation "
+                "predicate (inner.col = outer.col).");
 
     // Both sides must be column references (T_IDENTIFIER with col_idx)
-    ConditionalExpression *lhs = inner_where->args.left;
-    ConditionalExpression *rhs = inner_where->args.right;
+    ConditionalExpression *lhs = correlation_eq->args.left;
+    ConditionalExpression *rhs = correlation_eq->args.right;
     require_prm(lhs != NULL && rhs != NULL,
                 "Correlation predicate must have two sides.");
     require_prm(lhs->op == T_IDENTIFIER && rhs->op == T_IDENTIFIER,
@@ -2347,6 +2432,7 @@ RonSQLPreparer::analyze_select_subqueries()
     leaf.combined_agg_slot = 0;
     leaf.merged_leaf_idx = 0;
     leaf.use_inner_join = false;  // LEFT OUTER: unmatched entities get NULL
+    leaf.inner_filter = inner_filter;
 
     m_select_subquery_leaves.push(leaf);
   }
