@@ -1971,6 +1971,23 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
               TreeNode::T_BUFFER_ROW | TreeNode::T_BUFFER_MAP |
               TreeNode::T_BUFFER_MATCH;
           requestPtr.p->m_bits |= Request::RT_AGG_ANCESTOR_MATCH;
+
+          /**
+           * If the leaf's direct parent is a lookup (not the scan ancestor),
+           * enable row buffering on the parent so handleAggLeafScanComplete
+           * can iterate parent rows for per-row match tracking.
+           * The scan bitmask range_no is assigned per-parent-row, so we
+           * need the parent's buffered rows to correlate range_no to rows.
+           */
+          Ptr<TreeNode> leafParentPtr;
+          ndbrequire(m_treenode_pool.getPtr(leafParentPtr,
+                                            treeNodePtr.p->m_parentPtrI));
+          if (!leafParentPtr.p->isScan() &&
+              leafParentPtr.i != scanAncestorPtr.i) {
+            jam();
+            leafParentPtr.p->m_bits |=
+                TreeNode::T_BUFFER_ROW | TreeNode::T_BUFFER_MAP;
+          }
         }
       }
     }
@@ -6224,17 +6241,34 @@ Uint32 Dbspj::handleAggLeafScanComplete(Signal *signal,
                                     treeNodePtr.p->m_scanAncestorPtrI));
   Uint32 bitmask_words =
       (treeNodePtr.p->m_agg_num_ranges + 31) / 32;
-  DEB_MATCH(("DBSPJ: match complete: num_ranges=%u bitmask_words=%u",
-             treeNodePtr.p->m_agg_num_ranges, bitmask_words));
+
+  /**
+   * Determine which node's buffered rows to iterate.
+   * If the leaf's parent is an intermediate lookup (not the scan ancestor),
+   * the match bitmask range_no corresponds to parent lookup rows, not
+   * scan ancestor rows.  Iterate the parent's buffered rows instead.
+   */
+  Ptr<TreeNode> iterateNodePtr;
+  if (treeNodePtr.p->m_parentPtrI == scanAncestorPtr.i) {
+    iterateNodePtr = scanAncestorPtr;
+  } else {
+    ndbrequire(m_treenode_pool.getPtr(iterateNodePtr,
+                                      treeNodePtr.p->m_parentPtrI));
+  }
+  DEB_MATCH(("DBSPJ: match complete: num_ranges=%u bitmask_words=%u "
+             "iterateNode=%u (scanAnc=%u parent=%u)",
+             treeNodePtr.p->m_agg_num_ranges, bitmask_words,
+             iterateNodePtr.p->m_node_no, scanAncestorPtr.p->m_node_no,
+             iterateNodePtr.p->m_node_no));
 
   Uint32 range_no = 0;
   Uint32 null_rows_sent = 0;
   RowIterator iter;
-  for (first(scanAncestorPtr.p->m_rows, iter);
+  for (first(iterateNodePtr.p->m_rows, iter);
        !iter.isNull(); next(iter)) {
     RowPtr parentRow;
-    parentRow.m_src_node_ptrI = scanAncestorPtr.i;
-    setupRowPtr(scanAncestorPtr, parentRow, iter.m_base.m_row_ptr);
+    parentRow.m_src_node_ptrI = iterateNodePtr.i;
+    setupRowPtr(iterateNodePtr, parentRow, iter.m_base.m_row_ptr);
     getCorrelationData(parentRow.m_row_data,
                        parentRow.m_row_data.m_header->m_len - 1,
                        parentRow.m_src_correlation);
