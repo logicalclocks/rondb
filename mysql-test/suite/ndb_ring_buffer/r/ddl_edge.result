@@ -1,0 +1,373 @@
+#
+# Case 1: CREATE TABLE ... LIKE preserves RING_BUFFER metadata
+#
+CREATE TABLE test.rb_orig (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta";
+CREATE TABLE test.rb_copy LIKE test.rb_orig;
+SHOW CREATE TABLE test.rb_copy;
+Table	Create Table
+rb_copy	CREATE TABLE `rb_copy` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `event_data` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta'
+INSERT INTO test.rb_copy (client_id, event_data) VALUES (1, 'like_A');
+INSERT INTO test.rb_copy (client_id, event_data) VALUES (1, 'like_B');
+SELECT client_id, ring_idx, event_data FROM test.rb_copy
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	like_A
+1	2	like_B
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx FROM test.rb_copy
+WHERE client_id = 1 AND ring_idx = 0;
+client_id	ring_idx
+1	0
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_copy;
+DROP TABLE test.rb_orig;
+#
+# Case 2: CREATE TABLE ... AS SELECT from ring-buffer table
+#
+CREATE TABLE test.rb_src (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_src (id, val) VALUES (1, 'src_A');
+INSERT INTO test.rb_src (id, val) VALUES (1, 'src_B');
+CREATE TABLE test.rb_as_sel ENGINE=NDB AS
+SELECT id, ring_idx, val FROM test.rb_src WHERE id = 1;
+SHOW CREATE TABLE test.rb_as_sel;
+Table	Create Table
+rb_as_sel	CREATE TABLE `rb_as_sel` (
+  `id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `val` varchar(50) DEFAULT NULL
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+SELECT id, ring_idx, val FROM test.rb_as_sel ORDER BY ring_idx;
+id	ring_idx	val
+1	1	src_A
+1	2	src_B
+DROP TABLE test.rb_as_sel;
+DROP TABLE test.rb_src;
+#
+# Case 3: RENAME TABLE preserves ring-buffer properties
+#
+CREATE TABLE test.rb_before (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+INSERT INTO test.rb_before (id, val) VALUES (1, 'rename_A');
+INSERT INTO test.rb_before (id, val) VALUES (1, 'rename_B');
+INSERT INTO test.rb_before (id, val) VALUES (1, 'rename_C');
+RENAME TABLE test.rb_before TO test.rb_after;
+SHOW CREATE TABLE test.rb_after;
+Table	Create Table
+rb_after	CREATE TABLE `rb_after` (
+  `id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `val` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta'
+SELECT id, ring_idx, val FROM test.rb_after ORDER BY ring_idx;
+id	ring_idx	val
+1	1	rename_A
+1	2	rename_B
+1	3	rename_C
+INSERT INTO test.rb_after (id, val) VALUES (1, 'rename_D');
+INSERT INTO test.rb_after (id, val) VALUES (1, 'rename_E');
+SELECT id, ring_idx, val FROM test.rb_after ORDER BY ring_idx;
+id	ring_idx	val
+1	1	rename_E
+1	2	rename_B
+1	3	rename_C
+1	4	rename_D
+DROP TABLE test.rb_after;
+#
+# Case 4: VARCHAR PK prefix columns
+#
+CREATE TABLE test.rb_varchar (
+name VARCHAR(50) NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (name, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_1');
+INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_2');
+INSERT INTO test.rb_varchar (name, event_data) VALUES ('Bob', 'bob_1');
+SELECT name, ring_idx, event_data FROM test.rb_varchar
+ORDER BY name, ring_idx;
+name	ring_idx	event_data
+Alice	1	alice_1
+Alice	2	alice_2
+Bob	1	bob_1
+INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_3');
+INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_4');
+SELECT name, ring_idx, event_data FROM test.rb_varchar
+WHERE name = 'Alice' ORDER BY ring_idx;
+name	ring_idx	event_data
+Alice	1	alice_4
+Alice	2	alice_2
+Alice	3	alice_3
+SELECT name, ring_idx, event_data FROM test.rb_varchar
+WHERE name = 'Bob' ORDER BY ring_idx;
+name	ring_idx	event_data
+Bob	1	bob_1
+DELETE FROM test.rb_varchar WHERE name = 'Alice';
+SELECT name, ring_idx, event_data FROM test.rb_varchar
+ORDER BY name, ring_idx;
+name	ring_idx	event_data
+Bob	1	bob_1
+INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_fresh');
+SELECT name, ring_idx, event_data FROM test.rb_varchar
+ORDER BY name, ring_idx;
+name	ring_idx	event_data
+Alice	1	alice_fresh
+Bob	1	bob_1
+DROP TABLE test.rb_varchar;
+#
+# Case 5: CHAR PK prefix — fixed-length string
+#
+CREATE TABLE test.rb_char (
+code CHAR(10) NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (code, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_char (code, val) VALUES ('ABC', 'char_A');
+INSERT INTO test.rb_char (code, val) VALUES ('ABC', 'char_B');
+INSERT INTO test.rb_char (code, val) VALUES ('XYZ', 'char_X');
+SELECT code, ring_idx, val FROM test.rb_char ORDER BY code, ring_idx;
+code	ring_idx	val
+ABC	1	char_A
+ABC	2	char_B
+XYZ	1	char_X
+INSERT INTO test.rb_char (code, val) VALUES ('ABC', 'char_C');
+INSERT INTO test.rb_char (code, val) VALUES ('ABC', 'char_D');
+SELECT code, ring_idx, val FROM test.rb_char
+WHERE code = 'ABC' ORDER BY ring_idx;
+code	ring_idx	val
+ABC	1	char_D
+ABC	2	char_B
+ABC	3	char_C
+DROP TABLE test.rb_char;
+#
+# Case 6: Multi-column VARCHAR + INT PK prefix
+#
+CREATE TABLE test.rb_mixed_pk (
+region VARCHAR(20) NOT NULL,
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (region, client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r1');
+INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r2');
+INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-West', 1, 'r3');
+INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 2, 'r4');
+SELECT region, client_id, ring_idx, data FROM test.rb_mixed_pk
+ORDER BY region, client_id, ring_idx;
+region	client_id	ring_idx	data
+US-East	1	1	r1
+US-East	1	2	r2
+US-East	2	1	r4
+US-West	1	1	r3
+INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r5');
+INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r6');
+SELECT region, client_id, ring_idx, data FROM test.rb_mixed_pk
+WHERE region = 'US-East' AND client_id = 1 ORDER BY ring_idx;
+region	client_id	ring_idx	data
+US-East	1	1	r6
+US-East	1	2	r2
+US-East	1	3	r5
+DELETE FROM test.rb_mixed_pk WHERE region = 'US-East';
+SELECT region, client_id, ring_idx, data FROM test.rb_mixed_pk
+ORDER BY region, client_id, ring_idx;
+region	client_id	ring_idx	data
+US-West	1	1	r3
+DROP TABLE test.rb_mixed_pk;
+#
+# Case 7: 4-column composite PK — 3 prefix columns + ring_idx
+#
+CREATE TABLE test.rb_4pk (
+region INT NOT NULL,
+dept INT NOT NULL,
+user_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event VARCHAR(100),
+PRIMARY KEY (region, dept, user_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 100, 'ev_A');
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 100, 'ev_B');
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 200, 'ev_C');
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 20, 100, 'ev_D');
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (2, 10, 100, 'ev_E');
+SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
+ORDER BY region, dept, user_id, ring_idx;
+region	dept	user_id	ring_idx	event
+1	10	100	1	ev_A
+1	10	100	2	ev_B
+1	10	200	1	ev_C
+1	20	100	1	ev_D
+2	10	100	1	ev_E
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 100, 'ev_F');
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 100, 'ev_G');
+SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
+WHERE region = 1 AND dept = 10 AND user_id = 100
+ORDER BY ring_idx;
+region	dept	user_id	ring_idx	event
+1	10	100	1	ev_G
+1	10	100	2	ev_B
+1	10	100	3	ev_F
+DELETE FROM test.rb_4pk WHERE region = 1 AND dept = 10 AND user_id = 100;
+SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
+ORDER BY region, dept, user_id, ring_idx;
+region	dept	user_id	ring_idx	event
+1	10	200	1	ev_C
+1	20	100	1	ev_D
+2	10	100	1	ev_E
+DELETE FROM test.rb_4pk WHERE region = 1;
+SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
+ORDER BY region, dept, user_id, ring_idx;
+region	dept	user_id	ring_idx	event
+2	10	100	1	ev_E
+DROP TABLE test.rb_4pk;
+#
+# Case 8: SHOW TABLE STATUS reports meaningful row info
+#
+CREATE TABLE test.rb_status (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+INSERT INTO test.rb_status (id, val) VALUES (1, 'a');
+INSERT INTO test.rb_status (id, val) VALUES (1, 'b');
+INSERT INTO test.rb_status (id, val) VALUES (2, 'c');
+SHOW TABLE STATUS FROM test LIKE 'rb_status';
+Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
+rb_status	#	#	#	#	#	#	#	#	#	#	#	#	#	#	#	#	#
+SELECT COUNT(*) AS visible_rows FROM test.rb_status;
+visible_rows
+4
+DROP TABLE test.rb_status;
+#
+# Case 9: INFORMATION_SCHEMA.TABLES for ring-buffer table
+#
+CREATE TABLE test.rb_is (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_is (id, val) VALUES (1, 'x');
+INSERT INTO test.rb_is (id, val) VALUES (1, 'y');
+SELECT TABLE_NAME, ENGINE, TABLE_COMMENT
+FROM INFORMATION_SCHEMA.TABLES
+WHERE TABLE_SCHEMA = 'test' AND TABLE_NAME = 'rb_is';
+TABLE_NAME	ENGINE	TABLE_COMMENT
+rb_is	ndbcluster	NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta
+SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = 'test' AND TABLE_NAME = 'rb_is'
+    ORDER BY ORDINAL_POSITION;
+COLUMN_NAME	DATA_TYPE	IS_NULLABLE	COLUMN_DEFAULT
+id	int	NO	NULL
+ring_idx	int	NO	0
+ring_meta	varbinary	YES	NULL
+val	varchar	YES	NULL
+DROP TABLE test.rb_is;
+#
+# Case 10: ALTER TABLE DROP ring_idx/ring_meta columns — blocked
+#
+CREATE TABLE test.rb_drop_col (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+ALTER TABLE test.rb_drop_col DROP COLUMN ring_idx;
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring index column not found in table'
+ALTER TABLE test.rb_drop_col DROP COLUMN ring_meta;
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column not found in table'
+DROP TABLE test.rb_drop_col;
+#
+# Case 11: AFTER INSERT trigger on ring-buffer table
+#
+CREATE TABLE test.rb_trigger (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+CREATE TABLE test.trigger_log (
+log_id INT AUTO_INCREMENT PRIMARY KEY,
+logged_id INT,
+logged_val VARCHAR(50)
+) ENGINE = NDB;
+CREATE TRIGGER test.rb_after_ins AFTER INSERT ON test.rb_trigger
+FOR EACH ROW
+BEGIN
+INSERT INTO test.trigger_log (logged_id, logged_val)
+VALUES (NEW.id, NEW.val);
+END//
+INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_A');
+INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_B');
+SELECT id, ring_idx, val FROM test.rb_trigger ORDER BY ring_idx;
+id	ring_idx	val
+1	1	trig_A
+1	2	trig_B
+SELECT log_id, logged_id, logged_val FROM test.trigger_log ORDER BY log_id;
+log_id	logged_id	logged_val
+1	1	trig_A
+2	1	trig_B
+INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_C');
+INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_D');
+SELECT id, ring_idx, val FROM test.rb_trigger ORDER BY ring_idx;
+id	ring_idx	val
+1	1	trig_D
+1	2	trig_B
+1	3	trig_C
+SELECT log_id, logged_id, logged_val FROM test.trigger_log ORDER BY log_id;
+log_id	logged_id	logged_val
+1	1	trig_A
+2	1	trig_B
+3	1	trig_C
+4	1	trig_D
+DROP TRIGGER test.rb_after_ins;
+DROP TABLE test.trigger_log;
+DROP TABLE test.rb_trigger;
+# Done.

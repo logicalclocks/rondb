@@ -1,0 +1,287 @@
+#
+# Case 1: PREPARE/EXECUTE INSERT — ring buffer path works
+#
+CREATE TABLE test.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+PREPARE stmt_ins FROM
+'INSERT INTO test.rb (client_id, event_data) VALUES (?, ?)';
+SET @cid = 1, @ev = 'prep_A';
+EXECUTE stmt_ins USING @cid, @ev;
+SET @ev = 'prep_B';
+EXECUTE stmt_ins USING @cid, @ev;
+SET @ev = 'prep_C';
+EXECUTE stmt_ins USING @cid, @ev;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	prep_A
+1	2	prep_B
+1	3	prep_C
+#
+# Case 2: Prepared INSERT wraps the ring
+#
+SET @ev = 'prep_D';
+EXECUTE stmt_ins USING @cid, @ev;
+SET @ev = 'prep_E';
+EXECUTE stmt_ins USING @cid, @ev;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	prep_E
+1	2	prep_B
+1	3	prep_C
+1	4	prep_D
+DEALLOCATE PREPARE stmt_ins;
+#
+# Case 3: Prepared SELECT — meta rows hidden
+#
+PREPARE stmt_sel FROM
+'SELECT client_id, ring_idx, event_data FROM test.rb WHERE client_id = ? ORDER BY ring_idx';
+SET @cid = 1;
+EXECUTE stmt_sel USING @cid;
+client_id	ring_idx	event_data
+1	1	prep_E
+1	2	prep_B
+1	3	prep_C
+1	4	prep_D
+PREPARE stmt_cnt FROM 'SELECT COUNT(*) AS cnt FROM test.rb WHERE client_id = ?';
+EXECUTE stmt_cnt USING @cid;
+cnt
+4
+DEALLOCATE PREPARE stmt_sel;
+DEALLOCATE PREPARE stmt_cnt;
+#
+# Case 4: Prepared UPDATE — user column update allowed
+#
+PREPARE stmt_upd FROM
+'UPDATE test.rb SET event_data = ? WHERE client_id = ? AND ring_idx = ?';
+SET @ev = 'prep_updated', @cid = 1, @idx = 2;
+EXECUTE stmt_upd USING @ev, @cid, @idx;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	prep_E
+1	2	prep_updated
+1	3	prep_C
+1	4	prep_D
+DEALLOCATE PREPARE stmt_upd;
+#
+# Case 5: Prepared UPDATE on ring_idx — blocked
+#
+PREPARE stmt_upd_bad FROM
+'UPDATE test.rb SET ring_idx = ? WHERE client_id = ? AND ring_idx = ?';
+SET @new_idx = 99, @cid = 1, @old_idx = 2;
+EXECUTE stmt_upd_bad USING @new_idx, @cid, @old_idx;
+ERROR HY000: Table storage engine for 'Cannot update ring_idx on ring-buffer table' doesn't have this option
+DEALLOCATE PREPARE stmt_upd_bad;
+#
+# Case 6: Prepared DELETE with full PK prefix — allowed
+#
+PREPARE stmt_del FROM 'DELETE FROM test.rb WHERE client_id = ?';
+SET @cid = 1;
+EXECUTE stmt_del USING @cid;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'after_del');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	after_del
+DEALLOCATE PREPARE stmt_del;
+#
+# Case 7: Prepared INSERT with ring_idx specified — blocked
+#
+PREPARE stmt_bad FROM
+'INSERT INTO test.rb (client_id, ring_idx, event_data) VALUES (?, ?, ?)';
+SET @cid = 99, @idx = 5, @ev = 'bad';
+EXECUTE stmt_bad USING @cid, @idx, @ev;
+ERROR HY000: Table storage engine for 'Cannot specify ring_idx column in INSERT on ring-buffer table' doesn't have this option
+DEALLOCATE PREPARE stmt_bad;
+DROP TABLE test.rb;
+#
+# Case 8: LOAD DATA INFILE — ring buffer write path intercepted
+#
+CREATE TABLE test.rb_load (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+LOAD DATA LOCAL INFILE 'MYSQLTEST_VARDIR/tmp/rb_load.csv'
+    INTO TABLE test.rb_load (id, val);
+SELECT id, ring_idx, val FROM test.rb_load
+ORDER BY id, ring_idx;
+id	ring_idx	val
+1	1	load_A
+1	2	load_B
+1	3	load_C
+2	1	load_X
+2	2	load_Y
+SET ndb_ring_buffer_show_meta = ON;
+SELECT id, ring_idx FROM test.rb_load WHERE ring_idx = 0 ORDER BY id;
+id	ring_idx
+1	0
+2	0
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 9: LOAD DATA wraps the ring
+#
+LOAD DATA LOCAL INFILE 'MYSQLTEST_VARDIR/tmp/rb_load2.csv'
+    INTO TABLE test.rb_load (id, val);
+SELECT id, ring_idx, val FROM test.rb_load
+WHERE id = 1
+ORDER BY ring_idx;
+id	ring_idx	val
+1	1	load_E
+1	2	load_F
+1	3	load_C
+1	4	load_D
+SELECT id, ring_idx, val FROM test.rb_load
+WHERE id = 2
+ORDER BY ring_idx;
+id	ring_idx	val
+2	1	load_X
+2	2	load_Y
+DROP TABLE test.rb_load;
+#
+# Case 10: INSERT IGNORE on ring-buffer table
+# INSERT IGNORE should work the same as regular INSERT since
+# ring_idx is system-assigned and there are no user-controlled
+# duplicate key conflicts.
+#
+CREATE TABLE test.rb_ignore (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT IGNORE INTO test.rb_ignore (id, val) VALUES (1, 'ignore_A');
+INSERT IGNORE INTO test.rb_ignore (id, val) VALUES (1, 'ignore_B');
+INSERT IGNORE INTO test.rb_ignore (id, val) VALUES (1, 'ignore_C');
+SELECT id, ring_idx, val FROM test.rb_ignore
+WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	val
+1	1	ignore_A
+1	2	ignore_B
+1	3	ignore_C
+INSERT IGNORE INTO test.rb_ignore (id, val) VALUES (1, 'ignore_D');
+SELECT id, ring_idx, val FROM test.rb_ignore
+WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	val
+1	1	ignore_D
+1	2	ignore_B
+1	3	ignore_C
+#
+# Case 11: Multi-row INSERT IGNORE
+#
+INSERT IGNORE INTO test.rb_ignore (id, val)
+VALUES (2, 'multi_A'), (2, 'multi_B'), (2, 'multi_C');
+SELECT id, ring_idx, val FROM test.rb_ignore
+WHERE id = 2 ORDER BY ring_idx;
+id	ring_idx	val
+2	1	multi_A
+2	2	multi_B
+2	3	multi_C
+DROP TABLE test.rb_ignore;
+#
+# Case 12: INT UNSIGNED ring_idx — inserts and wrapping
+#
+CREATE TABLE test.rb_unsigned (
+client_id INT NOT NULL,
+ring_idx INT UNSIGNED NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_unsigned (client_id, data) VALUES (1, 'unsigned_A');
+INSERT INTO test.rb_unsigned (client_id, data) VALUES (1, 'unsigned_B');
+INSERT INTO test.rb_unsigned (client_id, data) VALUES (1, 'unsigned_C');
+SELECT client_id, ring_idx, data FROM test.rb_unsigned
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	data
+1	1	unsigned_A
+1	2	unsigned_B
+1	3	unsigned_C
+INSERT INTO test.rb_unsigned (client_id, data) VALUES (1, 'unsigned_D');
+SELECT client_id, ring_idx, data FROM test.rb_unsigned
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	data
+1	1	unsigned_D
+1	2	unsigned_B
+1	3	unsigned_C
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb_unsigned
+WHERE client_id = 1 AND ring_idx = 0;
+client_id	ring_idx	HEX(ring_meta)
+1	0	0100000002000000030000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 13: INT UNSIGNED ring_idx — meta row filtering works
+#
+SELECT COUNT(*) AS cnt FROM test.rb_unsigned WHERE client_id = 1;
+cnt
+3
+SELECT client_id, ring_idx, data FROM test.rb_unsigned
+WHERE client_id = 1 AND ring_idx = 0;
+client_id	ring_idx	data
+#
+# Case 14: INT UNSIGNED ring_idx — bulk insert + wrap
+#
+INSERT INTO test.rb_unsigned (client_id, data)
+VALUES (2, 'bulk_U1'), (2, 'bulk_U2'), (2, 'bulk_U3'), (2, 'bulk_U4');
+SELECT client_id, ring_idx, data FROM test.rb_unsigned
+WHERE client_id = 2 ORDER BY ring_idx;
+client_id	ring_idx	data
+2	1	bulk_U4
+2	2	bulk_U2
+2	3	bulk_U3
+DROP TABLE test.rb_unsigned;
+#
+# Case 15: INSERT via stored procedure
+#
+CREATE TABLE test.rb_proc (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+CREATE PROCEDURE test.fill_ring(IN p_id INT, IN p_count INT)
+BEGIN
+DECLARE i INT DEFAULT 0;
+WHILE i < p_count DO
+INSERT INTO test.rb_proc (id, val) VALUES (p_id, CONCAT('proc_', i));
+SET i = i + 1;
+END WHILE;
+END//
+CALL test.fill_ring(1, 6);
+SELECT id, ring_idx, val FROM test.rb_proc
+WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	val
+1	1	proc_4
+1	2	proc_5
+1	3	proc_2
+1	4	proc_3
+CALL test.fill_ring(2, 3);
+SELECT id, ring_idx, val FROM test.rb_proc
+WHERE id = 2 ORDER BY ring_idx;
+id	ring_idx	val
+2	1	proc_0
+2	2	proc_1
+2	3	proc_2
+DROP PROCEDURE test.fill_ring;
+DROP TABLE test.rb_proc;
+# Done.

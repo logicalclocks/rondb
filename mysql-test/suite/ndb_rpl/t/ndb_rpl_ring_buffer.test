@@ -214,6 +214,139 @@ SELECT client_id, ring_idx FROM test.rb
 SET ndb_ring_buffer_show_meta = OFF;
 
 ###############################################################################
+# Case 9: TRUNCATE TABLE replicates — slave also cleared
+###############################################################################
+
+--echo #
+--echo # Case 9: TRUNCATE TABLE replicates to slave
+--echo #
+
+--connection master
+
+# Verify data exists before truncate
+SELECT client_id, ring_idx, event_data FROM test.rb
+    ORDER BY client_id, ring_idx;
+
+TRUNCATE TABLE test.rb;
+
+# Master should be empty
+SELECT COUNT(*) AS master_cnt FROM test.rb;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should also be empty
+SELECT COUNT(*) AS slave_cnt FROM test.rb;
+
+# Verify meta rows also gone on slave
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) AS slave_all_cnt FROM test.rb;
+SET ndb_ring_buffer_show_meta = OFF;
+
+###############################################################################
+# Case 10: Re-INSERT after TRUNCATE replicates correctly
+###############################################################################
+
+--echo #
+--echo # Case 10: Re-INSERT after TRUNCATE replicates correctly
+--echo #
+
+--connection master
+
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'post_trunc_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'post_trunc_B');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+###############################################################################
+# Case 11: ALTER TABLE grow replicates
+###############################################################################
+
+--echo #
+--echo # Case 11: ALTER TABLE grow replicates to slave
+--echo #
+
+--connection master
+
+# Current ring_size=4, grow to 8
+# Need NOLOGGING=1 in replication setup to match table's current setting
+ALTER TABLE test.rb COMMENT="NDB_TABLE=NOLOGGING=1,RING_BUFFER=8@ring_idx@ring_meta";
+
+SHOW CREATE TABLE test.rb;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should have the grown ring_size
+SHOW CREATE TABLE test.rb;
+
+###############################################################################
+# Case 12: INSERT after grow uses new ring size on both master and slave
+###############################################################################
+
+--echo #
+--echo # Case 12: INSERT after grow uses new ring size
+--echo #
+
+--connection master
+
+# Currently has 2 rows (post_trunc_A, post_trunc_B). Ring size is now 8.
+# Add 6 more to fill ring at new size
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_C');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_D');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_E');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_F');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_G');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_H');
+
+# Ring full at size 8, all 8 slots occupied
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+# Wrap at new size
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'wrap_I');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should match master
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+###############################################################################
+# Case 13: DELETE + re-INSERT cycle replicates
+###############################################################################
+
+--echo #
+--echo # Case 13: DELETE + re-INSERT cycle replicates
+--echo #
+
+--connection master
+
+DELETE FROM test.rb WHERE client_id = 1;
+
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'cycle_A');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+###############################################################################
 # Cleanup
 ###############################################################################
 

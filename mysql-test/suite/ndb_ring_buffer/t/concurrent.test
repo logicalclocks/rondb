@@ -1,0 +1,264 @@
+# ndb_ring_buffer_concurrent.test
+#
+# Tests for concurrent multi-session operations on ring-buffer tables.
+# Verifies ring metadata integrity under concurrent writers,
+# cross-session visibility, and transaction isolation.
+
+--source include/have_ndb.inc
+
+###############################################################################
+# Setup
+###############################################################################
+
+--echo #
+--echo # Setup
+--echo #
+
+CREATE TABLE test.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    event_data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=8@ring_idx@ring_meta";
+
+###############################################################################
+# Case 1: Two sessions inserting to DIFFERENT PK prefixes — no conflict
+###############################################################################
+
+--echo #
+--echo # Case 1: Two sessions inserting to different PK prefixes — no conflict
+--echo #
+
+connect(con1, localhost, root,,test);
+connect(con2, localhost, root,,test);
+
+--connection con1
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'con1_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'con1_B');
+
+--connection con2
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'con2_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'con2_B');
+
+--connection con1
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'con1_C');
+
+--connection con2
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'con2_C');
+
+--connection default
+
+# Both rings should be independent and consistent
+SELECT client_id, ring_idx, event_data FROM test.rb
+    ORDER BY client_id, ring_idx;
+
+###############################################################################
+# Case 2: Two sessions inserting to SAME PK prefix sequentially
+###############################################################################
+
+--echo #
+--echo # Case 2: Two sessions inserting to same PK prefix — sequential
+--echo #
+
+--connection con1
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'con1_X');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'con1_Y');
+
+--connection con2
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'con2_Z');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'con2_W');
+
+--connection default
+
+# Ring for client_id=3 should have 4 entries, all sequential
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 3
+    ORDER BY ring_idx;
+
+###############################################################################
+# Case 3: Concurrent sessions wrap the ring
+###############################################################################
+
+--echo #
+--echo # Case 3: Concurrent sessions fill and wrap the ring
+--echo #
+
+# client_id=3 already has 4 rows, ring_size=8
+# Each session adds 2 more → 8 total (ring full)
+--connection con1
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'fill_5');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'fill_6');
+
+--connection con2
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'fill_7');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'fill_8');
+
+--connection default
+
+# Ring should be full with 8 entries
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 3
+    ORDER BY ring_idx;
+
+# Now wrap — each session adds 1 more
+--connection con1
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'wrap_9');
+
+--connection con2
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'wrap_10');
+
+--connection default
+
+# Should have 8 entries, 2 oldest overwritten
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 3
+    ORDER BY ring_idx;
+
+# Verify meta consistency: count should be 8, next_pos should be 3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
+    WHERE client_id = 3 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+###############################################################################
+# Case 4: One session inserts while another reads — no meta leak
+###############################################################################
+
+--echo #
+--echo # Case 4: One session inserts, another reads — meta rows never visible
+--echo #
+
+--connection con1
+INSERT INTO test.rb (client_id, event_data) VALUES (4, 'read_test_A');
+
+--connection con2
+# Reader should see data rows only, no meta row
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 4
+    ORDER BY ring_idx;
+
+SELECT COUNT(*) AS cnt FROM test.rb WHERE client_id = 4;
+
+--connection con1
+INSERT INTO test.rb (client_id, event_data) VALUES (4, 'read_test_B');
+
+--connection con2
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 4
+    ORDER BY ring_idx;
+
+SELECT COUNT(*) AS cnt FROM test.rb WHERE client_id = 4;
+
+###############################################################################
+# Case 5: Transaction: INSERT + COMMIT in one session, read in another
+###############################################################################
+
+--echo #
+--echo # Case 5: Transaction isolation — committed data visible to other session
+--echo #
+
+--connection con1
+BEGIN;
+INSERT INTO test.rb (client_id, event_data) VALUES (5, 'tx_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (5, 'tx_B');
+COMMIT;
+
+--connection con2
+# After commit, data should be visible
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 5
+    ORDER BY ring_idx;
+
+###############################################################################
+# Case 6: Transaction: INSERT + ROLLBACK — other session sees nothing
+###############################################################################
+
+--echo #
+--echo # Case 6: Transaction isolation — rolled back data not visible
+--echo #
+
+--connection con1
+BEGIN;
+INSERT INTO test.rb (client_id, event_data) VALUES (6, 'rollback_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (6, 'rollback_B');
+ROLLBACK;
+
+--connection con2
+# Should see no rows for client_id=6
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 6
+    ORDER BY ring_idx;
+
+# Verify: insert after rollback starts fresh
+--connection con1
+INSERT INTO test.rb (client_id, event_data) VALUES (6, 'after_rb');
+
+--connection con2
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 6
+    ORDER BY ring_idx;
+
+###############################################################################
+# Case 7: One session DELETEs, another re-INSERTs
+###############################################################################
+
+--echo #
+--echo # Case 7: DELETE in one session, re-INSERT in another
+--echo #
+
+--connection con1
+DELETE FROM test.rb WHERE client_id = 1;
+
+--connection con2
+# Verify deletion visible
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1
+    ORDER BY ring_idx;
+
+# Re-insert from different session — fresh ring
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'reborn_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'reborn_B');
+
+--connection default
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1
+    ORDER BY ring_idx;
+
+###############################################################################
+# Case 8: UPDATE from one session, INSERT from another on same prefix
+###############################################################################
+
+--echo #
+--echo # Case 8: UPDATE from con1, INSERT from con2 on same prefix
+--echo #
+
+--connection con1
+UPDATE test.rb SET event_data = 'UPDATED' WHERE client_id = 1 AND ring_idx = 1;
+
+--connection con2
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'after_update');
+
+--connection default
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1
+    ORDER BY ring_idx;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+--echo #
+--echo # Cleanup
+--echo #
+
+--connection default
+--disconnect con1
+--disconnect con2
+
+DROP TABLE test.rb;
+
+--echo # Done.
