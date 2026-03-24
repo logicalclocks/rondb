@@ -355,11 +355,11 @@ FROM lg_entity AS e
 WHERE e.grp <= 3
 LIMIT 5|
 id	sum_val	cnt_evt
+102	5115	3
+103	5165	3
 151	7565	3
-152	7615	3
-153	7665	3
-3	165	3
 51	2565	3
+53	2665	3
 
 
 === E2: Large dataset with inner filter + WHERE ===
@@ -385,11 +385,11 @@ FROM lg_entity AS e
 WHERE e.id <= 50
 LIMIT 5|
 id	sum_early	max_evt
-10	203	10
+17	343	17
 28	563	28
-48	963	48
+44	883	44
+49	983	49
 50	1003	50
-9	183	9
 
 
 === H1: Inner subquery with JOIN (unsupported) ===
@@ -411,5 +411,131 @@ output must be an aggregate function
 === H5: Outer query with GROUP BY + subqueries (unsupported) ===
 H5 response:
 GROUP BY are not yet supported
+
+=== Create tables for join + subquery tests ===
+Warnings:
+Note	1051	Unknown table 'test.j_lineitem'
+Warnings:
+Note	1051	Unknown table 'test.j_order_notes'
+Warnings:
+Note	1051	Unknown table 'test.j_orders'
+Warnings:
+Note	1051	Unknown table 'test.j_customer'
+
+
+=== J1: Join + single subquery (orders.id correlation) ===
+== Query ==
+SELECT o.id AS order_id, o.cust_id,
+(SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.cust_id,
+(SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id|
+order_id	cust_id	total_qty
+10	1	8
+11	1	10
+20	2	14
+21	2	6
+30	3	18
+31	3	3
+
+
+=== J2: Join + two subqueries on different tables ===
+== Query ==
+SELECT o.id AS order_id, o.cust_id,
+(SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+(SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.cust_id,
+(SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+(SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id|
+order_id	cust_id	total_qty	note_count
+10	1	8	2
+11	1	10	1
+20	2	14	1
+21	2	6	0
+30	3	18	3
+31	3	3	0
+
+
+=== J3: Join + subquery + HAVING on subquery result ===
+== Query ==
+SELECT o.id AS order_id, o.cust_id,
+(SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+(SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id
+HAVING total_qty > 5 AND note_count > 0;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.cust_id,
+(SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+(SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id
+HAVING total_qty > 5 AND note_count > 0|
+order_id	cust_id	total_qty	note_count
+10	1	8	2
+11	1	10	1
+20	2	14	1
+30	3	18	3
+
+
+=== J4: Join + subquery with inner filter ===
+== Query ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty >= 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty >= 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id|
+order_id	big_total
+10	80
+11	70
+20	140
+21	60
+30	170
+31	30
 
 === Cleanup ===

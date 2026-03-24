@@ -483,16 +483,187 @@ DELIMITER ;|
 
 # =========================================================================
 
+# =========================================================================
+# Category J: Subqueries joined with a multi-table outer query
+# Outer query has a JOIN, subqueries correlate to non-root table
+# =========================================================================
+
+--echo
+--echo === Create tables for join + subquery tests ===
+
+--disable_query_log
+DROP TABLE IF EXISTS j_lineitem;
+DROP TABLE IF EXISTS j_order_notes;
+DROP TABLE IF EXISTS j_orders;
+DROP TABLE IF EXISTS j_customer;
+
+CREATE TABLE j_customer (
+  id INT NOT NULL,
+  name VARCHAR(20) NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE j_orders (
+  id INT NOT NULL,
+  cust_id INT NOT NULL,
+  status INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_orders_cust (cust_id)
+) ENGINE=NDB;
+
+CREATE TABLE j_lineitem (
+  id INT NOT NULL,
+  order_id INT NOT NULL,
+  qty INT NOT NULL,
+  price INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_li_order (order_id)
+) ENGINE=NDB;
+
+CREATE TABLE j_order_notes (
+  id INT NOT NULL,
+  order_id INT NOT NULL,
+  note_val INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_notes_order (order_id)
+) ENGINE=NDB;
+
+# Customer: 3 customers
+INSERT INTO j_customer VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie');
+
+# Orders: 2 orders per customer
+INSERT INTO j_orders VALUES
+  (10, 1, 1), (11, 1, 2),
+  (20, 2, 1), (21, 2, 2),
+  (30, 3, 1), (31, 3, 2);
+
+# Lineitems: 2-3 items per order
+INSERT INTO j_lineitem VALUES
+  (100, 10, 5, 50), (101, 10, 3, 30),
+  (102, 11, 7, 70), (103, 11, 2, 20), (104, 11, 1, 10),
+  (105, 20, 10, 100), (106, 20, 4, 40),
+  (107, 21, 6, 60),
+  (108, 30, 8, 80), (109, 30, 9, 90), (110, 30, 1, 10),
+  (111, 31, 3, 30);
+
+# Notes: 1-2 notes per order (some orders have none)
+INSERT INTO j_order_notes VALUES
+  (200, 10, 5), (201, 10, 10),
+  (202, 11, 3),
+  (203, 20, 7),
+  (204, 30, 1), (205, 30, 2), (206, 30, 4);
+# Orders 21, 31 have no notes
+
+--enable_query_log
+
+DELIMITER |;
+
+# =========================================================================
+
+--echo
+--echo
+--echo === J1: Join + single subquery (orders.id correlation) ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.cust_id,
+  (SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.cust_id,
+  (SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === J2: Join + two subqueries on different tables ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.cust_id,
+  (SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+  (SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.cust_id,
+  (SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+  (SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === J3: Join + subquery + HAVING on subquery result ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.cust_id,
+  (SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+  (SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id
+HAVING total_qty > 5 AND note_count > 0;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.cust_id,
+  (SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+  (SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id
+HAVING total_qty > 5 AND note_count > 0|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === J4: Join + subquery with inner filter ===
+
+let $QUERY=
+SELECT o.id AS order_id,
+  (SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty >= 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id,
+  (SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty >= 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+DELIMITER ;|
+
 --echo
 --echo === Cleanup ===
 
 --disable_query_log
+DROP TABLE IF EXISTS j_lineitem;
+DROP TABLE IF EXISTS j_order_notes;
+DROP TABLE IF EXISTS j_orders;
+DROP TABLE IF EXISTS j_customer;
 DROP TABLE IF EXISTS lg_events;
 DROP TABLE IF EXISTS lg_measures;
 DROP TABLE IF EXISTS lg_entity;
 DROP TABLE IF EXISTS sq_events;
 DROP TABLE IF EXISTS sq_measures;
 DROP TABLE IF EXISTS sq_entity;
+--error 0,1
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
+--error 0,1
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
 --enable_query_log
