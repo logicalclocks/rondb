@@ -355,11 +355,11 @@ FROM lg_entity AS e
 WHERE e.grp <= 3
 LIMIT 5|
 id	sum_val	cnt_evt
-101	5065	3
-102	5115	3
-103	5165	3
+151	7565	3
+152	7615	3
+153	7665	3
+3	165	3
 51	2565	3
-53	2665	3
 
 
 === E2: Large dataset with inner filter + WHERE ===
@@ -385,11 +385,11 @@ FROM lg_entity AS e
 WHERE e.id <= 50
 LIMIT 5|
 id	sum_early	max_evt
+10	203	10
 28	563	28
 31	623	31
-34	683	34
-4	83	4
-47	943	47
+48	963	48
+9	183	9
 
 
 === H1: Inner subquery with JOIN (unsupported) ===
@@ -511,10 +511,10 @@ order_id	cust_id	total_qty	note_count
 30	3	18	3
 
 
-=== J4: Join + subquery with inner filter ===
+=== J4: Join + subquery with inner filter (some orders get NULL) ===
 == Query ==
 SELECT o.id AS order_id,
-(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty >= 3) AS big_total
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
 FROM j_customer AS c
 JOIN j_orders AS o ON o.cust_id = c.id;
 
@@ -527,16 +527,16 @@ Number of output lines, including header: 7
 
 == Expected result ==
 SELECT o.id AS order_id,
-(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty >= 3) AS big_total
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
 FROM j_customer AS c
 JOIN j_orders AS o ON o.cust_id = c.id|
 order_id	big_total
-10	80
+10	50
 11	70
 20	140
 21	60
 30	170
-31	30
+31	NULL
 
 === Create tables for 3-way join + subquery tests ===
 Warnings:

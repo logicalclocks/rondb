@@ -69,6 +69,7 @@
 //#define DEBUG_TRANSID_AI 1
 #define DEBUG_JOIN_AGG_TRACE 1
 //#define DEBUG_MATCH 1
+//#define DEBUG_SCAN_PARENT_ROW 1
 #endif
 
 #ifdef DEBUG_TRANSID_AI
@@ -87,6 +88,12 @@
 #define DEB_AGGREGATION(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_AGGREGATION(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_SCAN_PARENT_ROW
+#define DEB_SCAN_PR(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_SCAN_PR(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_STAR_AGG
@@ -7848,6 +7855,12 @@ void Dbspj::scanFrag_parent_row(Signal *signal, Ptr<Request> requestPtr,
   ndbassert(treeNodePtr.p->m_parentPtrI != RNIL);
   DEBUG("::scanFrag_parent_row"
         << ", node: " << treeNodePtr.p->m_node_no);
+  DEB_SCAN_PR(("(%u) scanFrag_parent_row ENTER node=%u corr=0x%x "
+               "state=%u agg_leaf=%u",
+               instance(), treeNodePtr.p->m_node_no,
+               rowRef.m_src_correlation,
+               treeNodePtr.p->m_state,
+               !!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)));
 
   Uint32 err;
   ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
@@ -7890,6 +7903,11 @@ void Dbspj::scanFrag_parent_row(Signal *signal, Ptr<Request> requestPtr,
       if (unlikely(hasNull)) {
         jam();
         DEBUG("T_PRUNE_PATTERN-key contain NULL values");
+        DEB_SCAN_PR(("(%u) scanFrag_parent_row node=%u "
+                     "PRUNE NULL key SKIP corr=0x%x agg_leaf=%u",
+                     instance(), treeNodePtr.p->m_node_no,
+                     rowRef.m_src_correlation,
+                     !!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)));
 
         // Ignore this request as 'NULL == <column>' will never give a match
         releaseSection(pruneKeyPtrI);
@@ -8754,6 +8772,14 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
           sectionptrs[4] = paramLen;
         }  // ATTRINFO_CONSTRUCTED
 
+        DEB_SCAN_PR(("(%u) scanFrag_send FRAGREQ node=%u frag=%u "
+                     "rangeCnt=%u ref=0x%x nodeId=%u agg_leaf=%u",
+                     instance(), treeNodePtr.p->m_node_no,
+                     fragPtr.p->m_fragId,
+                     fragWithRangePtr.p->m_rangeCnt,
+                     fragPtr.p->m_ref, refToNode(fragPtr.p->m_ref),
+                     !!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)));
+
         if (releaseAtSend) {
           jam();
           /** Reflect the release of the keyInfo 'range' set above */
@@ -9234,6 +9260,15 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
   Uint32 state = fragPtr.p->m_state;
   ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
 
+  DEB_SCAN_PR(("(%u) scanFrag_CONF node=%u frag=%u rows=%u done=%u "
+               "frags_complete=%u/%u state=%u agg_leaf=%u totalRows=%u",
+               instance(), treeNodePtr.p->m_node_no,
+               fragPtr.p->m_fragId, rows, done,
+               data.m_frags_complete, data.m_fragCount,
+               state,
+               !!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF),
+               data.m_totalRows));
+
   if (state == ScanFragHandle::SFH_WAIT_CLOSE && done == 0) {
     jam();
     /**
@@ -9338,6 +9373,7 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
          data.m_fragCount ==
              (data.m_frags_complete + data.m_frags_not_started))) {
       jam();
+
       ndbrequire(requestPtr.p->m_cnt_active);
       requestPtr.p->m_cnt_active--;
       treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;

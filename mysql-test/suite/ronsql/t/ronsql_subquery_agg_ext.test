@@ -629,9 +629,11 @@ HAVING total_qty > 5 AND note_count > 0|
 --echo
 --echo
 --echo === J4: Join + subquery with inner filter ===
-# Note: Using qty >= 3 so all orders have matching lineitems.
-# The qty > 3 variant (where order 31 gets NULL) exposes a timing-dependent
-# issue in Phase 10b match tracking with multi-fragment intermediate parents.
+# Using qty >= 3 so all orders have matching lineitems.
+# Known issue: qty > 3 (where order 31 gets NULL) fails in 3-level
+# scan-scan-scan chains due to m_agg_range_cnt reset between parent
+# batches causing range_no collisions in the match bitmask.
+# See j4_execution_flow.html for detailed analysis.
 
 let $QUERY=
 SELECT o.id AS order_id,
