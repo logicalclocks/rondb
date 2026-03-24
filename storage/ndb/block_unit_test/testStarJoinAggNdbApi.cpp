@@ -2066,6 +2066,593 @@ testTsSumMaxGroupBy(Ndb *ndb, MYSQL *conn,
   return 0;
 }
 
+/* ================================================================== */
+/* Multi-fragment tests (Test 9)                                       */
+/* Tables with PARTITION_BALANCE=FOR_RP_BY_LDM_X_2 for many fragments  */
+/* ================================================================== */
+
+static const char *MF_ROOT   = "mf_root";
+static const char *MF_LEAF_A = "mf_leaf_a";
+static const char *MF_LEAF_B = "mf_leaf_b";
+
+static int
+createMfTables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS mf_leaf_b");
+  sqlExec(conn, "DROP TABLE IF EXISTS mf_leaf_a");
+  sqlExec(conn, "DROP TABLE IF EXISTS mf_root");
+
+  if (sqlExec(conn,
+        "CREATE TABLE mf_root ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  grp INT NOT NULL"
+        ") ENGINE=NDB "
+        "COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2'") != 0)
+    return -1;
+
+  if (sqlExec(conn,
+        "CREATE TABLE mf_leaf_a ("
+        "  root_id INT NOT NULL PRIMARY KEY,"
+        "  val_a BIGINT NOT NULL"
+        ") ENGINE=NDB "
+        "COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2'") != 0)
+    return -1;
+
+  if (sqlExec(conn,
+        "CREATE TABLE mf_leaf_b ("
+        "  root_id INT NOT NULL PRIMARY KEY,"
+        "  val_b BIGINT NOT NULL"
+        ") ENGINE=NDB "
+        "COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2'") != 0)
+    return -1;
+
+  V("Created mf_root, mf_leaf_a, mf_leaf_b (FOR_RP_BY_LDM_X_2)\n");
+  return 0;
+}
+
+static int
+insertMfData(MYSQL *conn)
+{
+  /*
+   * 500 roots: id=1..500, grp = ((id-1) % 10) + 1  (10 groups, 50 each)
+   * 500 leaf_a: root_id=id, val_a = id * 10
+   * 500 leaf_b: root_id=id, val_b = id
+   *
+   * Group g: ids g, g+10, g+20, ..., g+490  (50 rows)
+   * SUM(val_a) = 10 * (50*g + 10*(0+1+...+49)) = 500*g + 122500
+   * SUM(val_b) = 50*g + 10*(0+1+...+49) = 50*g + 12250
+   */
+  char buf[65536];
+  int pos = snprintf(buf, sizeof(buf), "INSERT INTO mf_root VALUES ");
+  for (int i = 1; i <= 500; i++) {
+    if (i > 1) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+    int grp = ((i - 1) % 10) + 1;
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "(%d,%d)", i, grp);
+  }
+  if (sqlExec(conn, buf) != 0) return -1;
+
+  pos = snprintf(buf, sizeof(buf), "INSERT INTO mf_leaf_a VALUES ");
+  for (int i = 1; i <= 500; i++) {
+    if (i > 1) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "(%d,%d)", i, i * 10);
+  }
+  if (sqlExec(conn, buf) != 0) return -1;
+
+  pos = snprintf(buf, sizeof(buf), "INSERT INTO mf_leaf_b VALUES ");
+  for (int i = 1; i <= 500; i++) {
+    if (i > 1) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "(%d,%d)", i, i);
+  }
+  if (sqlExec(conn, buf) != 0) return -1;
+
+  V("Inserted 500 mf_root + 500 mf_leaf_a + 500 mf_leaf_b rows\n");
+  return 0;
+}
+
+static int
+dropMfTables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS mf_leaf_b");
+  sqlExec(conn, "DROP TABLE IF EXISTS mf_leaf_a");
+  sqlExec(conn, "DROP TABLE IF EXISTS mf_root");
+  return 0;
+}
+
+static int
+testMultiFragStar(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 9: Multi-fragment 2-leaf SUM(val_a) + SUM(val_b) "
+         "GROUP BY grp (500 rows, 10 groups) ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(MF_ROOT);
+  dict->invalidateTable(MF_LEAF_A);
+  dict->invalidateTable(MF_LEAF_B);
+  const NdbDictionary::Table *rootTab = dict->getTable(MF_ROOT);
+  const NdbDictionary::Table *leafATab = dict->getTable(MF_LEAF_A);
+  const NdbDictionary::Table *leafBTab = dict->getTable(MF_LEAF_B);
+  if (rootTab == nullptr || leafATab == nullptr || leafBTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  NdbAggregator aggA(leafATab);
+  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+      !aggA.LoadColumn("val_a", 0) || !aggA.Sum(0, 0) ||
+      !aggA.Finalize()) {
+    printf("FAILED (aggA)\n"); return -1;
+  }
+
+  NdbAggregator aggB(leafBTab);
+  if (!aggB.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+      !aggB.LoadColumn("val_b", 0) || !aggB.Sum(0, 0) ||
+      !aggB.Finalize()) {
+    printf("FAILED (aggB)\n"); return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *rootOp = qb->scanTable(rootTab);
+
+  const NdbQueryOperand *keyA[] = {qb->linkedValue(rootOp, "id"), nullptr};
+  NdbQueryOptions optsA;
+  optsA.setMatchType(NdbQueryOptions::MatchNonNull);
+  optsA.setAggregation(aggA);
+  optsA.addLinkedProjection(qb->linkedValue(rootOp, "grp"));
+  qb->readTuple(leafATab, keyA, &optsA);
+
+  const NdbQueryOperand *keyB[] = {qb->linkedValue(rootOp, "id"), nullptr};
+  NdbQueryOptions optsB;
+  optsB.setMatchType(NdbQueryOptions::MatchNonNull);
+  optsB.setAggregation(aggB);
+  optsB.addLinkedProjection(qb->linkedValue(rootOp, "grp"));
+  qb->readTuple(leafBTab, keyB, &optsB);
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy(); return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close(); queryDef->destroy(); return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    query->close(); trans->close(); queryDef->destroy(); return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator null)\n");
+    query->close(); trans->close(); queryDef->destroy(); return -1;
+  }
+
+  std::map<Int32, std::pair<Int64, Int64>> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+    NdbAggregator::Column grpCol = rec.FetchGroupbyColumn();
+    NdbAggregator::Result resA = rec.FetchAggregationResult();
+    NdbAggregator::Result resB = rec.FetchAggregationResult();
+    actual[grpCol.data_int32()] = {resA.data_int64(), resB.data_int64()};
+  }
+
+  query->close(); trans->close(); queryDef->destroy();
+
+  /* Verify: 10 groups, each with expected SUM values */
+  if (actual.size() != 10) {
+    printf("FAILED (expected 10 groups, got %zu)\n", actual.size());
+    return -1;
+  }
+  for (int g = 1; g <= 10; g++) {
+    Int64 exp_a = 500LL * g + 122500LL;
+    Int64 exp_b = 50LL * g + 12250LL;
+    auto it = actual.find(g);
+    if (it == actual.end()) {
+      printf("FAILED (missing group %d)\n", g); return -1;
+    }
+    if (it->second.first != exp_a || it->second.second != exp_b) {
+      printf("FAILED (group %d: expected (%lld,%lld), got (%lld,%lld))\n",
+             g, (long long)exp_a, (long long)exp_b,
+             (long long)it->second.first, (long long)it->second.second);
+      return -1;
+    }
+  }
+
+  printf("OK (10 groups, multi-fragment verified)\n");
+  return 0;
+}
+
+/* ================================================================== */
+/* Edge case tests (Tests 10-11)                                       */
+/* ================================================================== */
+
+static int
+testEmptyLeafTable(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 10: Empty leaf table (root has rows, leaf_b empty) ... ");
+  fflush(stdout);
+
+  /* Use the basic tables but truncate leaf_b */
+  sqlExec(conn, "TRUNCATE TABLE star_leaf_b");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(ROOT_TABLE);
+  dict->invalidateTable(LEAF_A_TABLE);
+  dict->invalidateTable(LEAF_B_TABLE);
+  const NdbDictionary::Table *rootTab = dict->getTable(ROOT_TABLE);
+  const NdbDictionary::Table *leafATab = dict->getTable(LEAF_A_TABLE);
+  const NdbDictionary::Table *leafBTab = dict->getTable(LEAF_B_TABLE);
+  if (rootTab == nullptr || leafATab == nullptr || leafBTab == nullptr) {
+    printf("FAILED (table lookup)\n"); return -1;
+  }
+
+  NdbAggregator aggA(leafATab);
+  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+      !aggA.LoadColumn("val_a", 0) || !aggA.Sum(0, 0) ||
+      !aggA.Finalize()) {
+    printf("FAILED (aggA)\n"); return -1;
+  }
+
+  NdbAggregator aggB(leafBTab);
+  if (!aggB.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+      !aggB.LoadColumn("val_b", 0) || !aggB.Sum(0, 0) ||
+      !aggB.Finalize()) {
+    printf("FAILED (aggB)\n"); return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *rootOp = qb->scanTable(rootTab);
+
+  const NdbQueryOperand *keyA[] = {qb->linkedValue(rootOp, "id"), nullptr};
+  NdbQueryOptions optsA;
+  optsA.setMatchType(NdbQueryOptions::MatchNonNull);
+  optsA.setAggregation(aggA);
+  optsA.addLinkedProjection(qb->linkedValue(rootOp, "grp"));
+  qb->readTuple(leafATab, keyA, &optsA);
+
+  const NdbQueryOperand *keyB[] = {qb->linkedValue(rootOp, "id"), nullptr};
+  NdbQueryOptions optsB;
+  optsB.setMatchType(NdbQueryOptions::MatchNonNull);
+  optsB.setAggregation(aggB);
+  optsB.addLinkedProjection(qb->linkedValue(rootOp, "grp"));
+  qb->readTuple(leafBTab, keyB, &optsB);
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy(); return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close(); queryDef->destroy(); return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    query->close(); trans->close(); queryDef->destroy(); return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator null)\n");
+    query->close(); trans->close(); queryDef->destroy(); return -1;
+  }
+
+  /* Multi-leaf fan-out: leaves are independent.  Leaf A matches all root
+   * rows, leaf B matches none.  Groups are created by leaf A; leaf B's
+   * accumulator slots stay at initial state (NULL for SUM).
+   * Expected: 3 groups with leaf A's SUM and leaf B's SUM = NULL (0).
+   */
+  std::map<Int32, std::pair<Int64, Int64>> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+    NdbAggregator::Column grpCol = rec.FetchGroupbyColumn();
+    NdbAggregator::Result resA = rec.FetchAggregationResult();
+    NdbAggregator::Result resB = rec.FetchAggregationResult();
+    Int64 valB = resB.is_null() ? 0 : resB.data_int64();
+    actual[grpCol.data_int32()] = {resA.data_int64(), valB};
+  }
+
+  query->close(); trans->close(); queryDef->destroy();
+
+  /* leaf_a SUM per group from original data: grp1=300, grp2=700, grp3=1100
+   * leaf_b SUM = 0 (empty table, no contributions) */
+  std::map<Int32, std::pair<Int64, Int64>> expected = {
+    {1, {300, 0}}, {2, {700, 0}}, {3, {1100, 0}}
+  };
+  if (actual.size() != expected.size()) {
+    printf("FAILED (expected %zu groups, got %zu)\n",
+           expected.size(), actual.size());
+    return -1;
+  }
+  for (auto &e : expected) {
+    auto it = actual.find(e.first);
+    if (it == actual.end() || it->second != e.second) {
+      printf("FAILED (group %d mismatch)\n", e.first);
+      return -1;
+    }
+  }
+
+  printf("OK (3 groups, empty leaf_b produces NULL/0)\n");
+  return 0;
+}
+
+static int
+testSingleRowResult(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 11: Single root row, single group ... ");
+  fflush(stdout);
+
+  sqlExec(conn, "DROP TABLE IF EXISTS sr_leaf_b");
+  sqlExec(conn, "DROP TABLE IF EXISTS sr_leaf_a");
+  sqlExec(conn, "DROP TABLE IF EXISTS sr_root");
+  sqlExec(conn, "CREATE TABLE sr_root (id INT PRIMARY KEY, grp INT) ENGINE=NDB");
+  sqlExec(conn, "CREATE TABLE sr_leaf_a (root_id INT PRIMARY KEY, val_a BIGINT) ENGINE=NDB");
+  sqlExec(conn, "CREATE TABLE sr_leaf_b (root_id INT PRIMARY KEY, val_b BIGINT) ENGINE=NDB");
+  sqlExec(conn, "INSERT INTO sr_root VALUES (1, 1)");
+  sqlExec(conn, "INSERT INTO sr_leaf_a VALUES (1, 42)");
+  sqlExec(conn, "INSERT INTO sr_leaf_b VALUES (1, 99)");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("sr_root");
+  dict->invalidateTable("sr_leaf_a");
+  dict->invalidateTable("sr_leaf_b");
+  const NdbDictionary::Table *rootTab = dict->getTable("sr_root");
+  const NdbDictionary::Table *leafATab = dict->getTable("sr_leaf_a");
+  const NdbDictionary::Table *leafBTab = dict->getTable("sr_leaf_b");
+  if (rootTab == nullptr || leafATab == nullptr || leafBTab == nullptr) {
+    printf("FAILED (table lookup)\n"); return -1;
+  }
+
+  NdbAggregator aggA(leafATab);
+  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+      !aggA.LoadColumn("val_a", 0) || !aggA.Sum(0, 0) ||
+      !aggA.Finalize()) {
+    printf("FAILED (aggA)\n"); return -1;
+  }
+
+  NdbAggregator aggB(leafBTab);
+  if (!aggB.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+      !aggB.LoadColumn("val_b", 0) || !aggB.Sum(0, 0) ||
+      !aggB.Finalize()) {
+    printf("FAILED (aggB)\n"); return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *rootOp = qb->scanTable(rootTab);
+
+  const NdbQueryOperand *keyA[] = {qb->linkedValue(rootOp, "id"), nullptr};
+  NdbQueryOptions optsA;
+  optsA.setMatchType(NdbQueryOptions::MatchNonNull);
+  optsA.setAggregation(aggA);
+  optsA.addLinkedProjection(qb->linkedValue(rootOp, "grp"));
+  qb->readTuple(leafATab, keyA, &optsA);
+
+  const NdbQueryOperand *keyB[] = {qb->linkedValue(rootOp, "id"), nullptr};
+  NdbQueryOptions optsB;
+  optsB.setMatchType(NdbQueryOptions::MatchNonNull);
+  optsB.setAggregation(aggB);
+  optsB.addLinkedProjection(qb->linkedValue(rootOp, "grp"));
+  qb->readTuple(leafBTab, keyB, &optsB);
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy(); return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close(); queryDef->destroy(); return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    query->close(); trans->close(); queryDef->destroy(); return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result)\n");
+    query->close(); trans->close(); queryDef->destroy(); return -1;
+  }
+
+  NdbAggregator::Column grpCol = rec.FetchGroupbyColumn();
+  NdbAggregator::Result resA = rec.FetchAggregationResult();
+  NdbAggregator::Result resB = rec.FetchAggregationResult();
+  Int32 grp = grpCol.data_int32();
+  Int64 valA = resA.data_int64();
+  Int64 valB = resB.data_int64();
+
+  query->close(); trans->close(); queryDef->destroy();
+  sqlExec(conn, "DROP TABLE IF EXISTS sr_leaf_b");
+  sqlExec(conn, "DROP TABLE IF EXISTS sr_leaf_a");
+  sqlExec(conn, "DROP TABLE IF EXISTS sr_root");
+
+  if (grp != 1 || valA != 42 || valB != 99) {
+    printf("FAILED (expected grp=1 sum_a=42 sum_b=99, "
+           "got grp=%d sum_a=%lld sum_b=%lld)\n",
+           grp, (long long)valA, (long long)valB);
+    return -1;
+  }
+
+  printf("OK (1 group, single row)\n");
+  return 0;
+}
+
+/* ================================================================== */
+/* Mixed topology test (Test 12): one PK lookup + one index scan       */
+/* ================================================================== */
+
+static int
+testMixedTopology(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 12: Mixed topology — PK lookup leaf + index scan leaf ... ");
+  fflush(stdout);
+
+  /* star_root + star_leaf_a (PK lookup) + star_ts_measures (index scan) */
+  /* Root ids 1-4 overlap between both leaf table sets */
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(ROOT_TABLE);
+  dict->invalidateTable(LEAF_A_TABLE);
+  dict->invalidateTable(TS_MEASURES);
+  const NdbDictionary::Table *rootTab = dict->getTable(ROOT_TABLE);
+  const NdbDictionary::Table *leafATab = dict->getTable(LEAF_A_TABLE);
+  const NdbDictionary::Table *measTab = dict->getTable(TS_MEASURES);
+  if (rootTab == nullptr || leafATab == nullptr || measTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Index *measIdx =
+      dict->getIndex("idx_measures_eid", TS_MEASURES);
+  if (measIdx == nullptr) {
+    printf("FAILED (index lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  /* Leaf A (PK lookup): SUM(val_a) GROUP BY grp */
+  NdbAggregator aggA(leafATab);
+  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+      !aggA.LoadColumn("val_a", 0) || !aggA.Sum(0, 0) ||
+      !aggA.Finalize()) {
+    printf("FAILED (aggA)\n"); return -1;
+  }
+
+  /* Leaf M (index scan): COUNT(val) GROUP BY grp */
+  NdbAggregator aggM(measTab);
+  if (!aggM.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+      !aggM.LoadColumn("val", 0) || !aggM.Count(0, 0) ||
+      !aggM.Finalize()) {
+    printf("FAILED (aggM)\n"); return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *rootOp = qb->scanTable(rootTab);
+
+  /* Leaf A: PK lookup */
+  const NdbQueryOperand *keyA[] = {qb->linkedValue(rootOp, "id"), nullptr};
+  NdbQueryOptions optsA;
+  optsA.setMatchType(NdbQueryOptions::MatchNonNull);
+  optsA.setAggregation(aggA);
+  optsA.addLinkedProjection(qb->linkedValue(rootOp, "grp"));
+  qb->readTuple(leafATab, keyA, &optsA);
+
+  /* Leaf M: index scan */
+  const NdbQueryOperand *measBound[] = {
+    qb->linkedValue(rootOp, "id"), nullptr
+  };
+  NdbQueryIndexBound measIxBound(measBound);
+  NdbQueryOptions optsM;
+  optsM.setMatchType(NdbQueryOptions::MatchNonNull);
+  optsM.setAggregation(aggM);
+  optsM.addLinkedProjection(qb->linkedValue(rootOp, "grp"));
+  qb->scanIndex(measIdx, measTab, &measIxBound, &optsM);
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy(); return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close(); queryDef->destroy(); return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    query->close(); trans->close(); queryDef->destroy(); return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator null)\n");
+    query->close(); trans->close(); queryDef->destroy(); return -1;
+  }
+
+  /*
+   * star_root has ids 1-6 with grp 1,1,2,2,3,3
+   * star_leaf_a has val_a: 100,200,300,400,500,600 — matches all 6
+   * star_ts_measures has entity_id 1-4 only (3 rows each)
+   *
+   * Multi-leaf fan-out: leaves independent.  All 6 root rows produce
+   * leaf_a results.  Only ids 1-4 produce measures results.
+   *
+   *   grp=1 (ids 1,2): SUM(val_a)=300, COUNT(measures)=6 (3+3)
+   *   grp=2 (ids 3,4): SUM(val_a)=700, COUNT(measures)=6 (3+3)
+   *   grp=3 (ids 5,6): SUM(val_a)=1100, COUNT(measures)=0 (no matches)
+   */
+  std::map<Int32, std::pair<Int64, Int64>> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+    NdbAggregator::Column grpCol = rec.FetchGroupbyColumn();
+    NdbAggregator::Result resA = rec.FetchAggregationResult();
+    NdbAggregator::Result resM = rec.FetchAggregationResult();
+    Int64 valM = resM.is_null() ? 0 : resM.data_int64();
+    actual[grpCol.data_int32()] = {resA.data_int64(), valM};
+  }
+
+  query->close(); trans->close(); queryDef->destroy();
+
+  if (actual.size() != 3) {
+    printf("FAILED (expected 3 groups, got %zu)\n", actual.size());
+    for (auto &p : actual)
+      V("  grp=%d sum_a=%lld cnt_m=%lld\n", p.first,
+        (long long)p.second.first, (long long)p.second.second);
+    return -1;
+  }
+
+  std::map<Int32, std::pair<Int64, Int64>> expected = {
+    {1, {300, 6}}, {2, {700, 6}}, {3, {1100, 0}}
+  };
+  for (auto &e : expected) {
+    auto it = actual.find(e.first);
+    if (it == actual.end() || it->second != e.second) {
+      printf("FAILED (group %d: expected (%lld,%lld) got (%lld,%lld))\n",
+             e.first, (long long)e.second.first, (long long)e.second.second,
+             (long long)it->second.first, (long long)it->second.second);
+      return -1;
+    }
+  }
+
+  printf("OK (3 groups, mixed PK-lookup + index-scan)\n");
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
@@ -2285,6 +2872,44 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropTsTables(conn);
+        }
+
+        /* Test 9: Multi-fragment 2-leaf */
+        if (shouldRun(9)) {
+          if (createMfTables(conn) == 0 && insertMfData(conn) == 0) {
+            if (testMultiFragStar(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropMfTables(conn);
+        }
+
+        /* Test 10: Empty leaf table */
+        if (shouldRun(10)) {
+          if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
+            if (testEmptyLeafTable(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTestTables(conn);
+        }
+
+        /* Test 11: Single row result */
+        if (shouldRun(11)) {
+          if (testSingleRowResult(&ndb, conn) != 0) exitCode = 1;
+        }
+
+        /* Test 12: Mixed topology (PK lookup + index scan) */
+        if (shouldRun(12)) {
+          /* Needs both star_root/leaf_a tables and ts_measures */
+          if (createTestTables(conn) == 0 && insertTestData(conn) == 0 &&
+              createTsTables(conn) == 0 && insertTsData(conn) == 0) {
+            if (testMixedTopology(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTsTables(conn);
+          dropTestTables(conn);
         }
 
         mysql_close(conn);
