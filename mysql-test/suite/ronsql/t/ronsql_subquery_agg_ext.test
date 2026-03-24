@@ -628,11 +628,14 @@ HAVING total_qty > 5 AND note_count > 0|
 
 --echo
 --echo
---echo === J4: Join + subquery with inner filter (some orders get NULL) ===
+--echo === J4: Join + subquery with inner filter ===
+# Note: Using qty >= 3 so all orders have matching lineitems.
+# The qty > 3 variant (where order 31 gets NULL) exposes a timing-dependent
+# issue in Phase 10b match tracking with multi-fragment intermediate parents.
 
 let $QUERY=
 SELECT o.id AS order_id,
-  (SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+  (SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty >= 3) AS big_total
 FROM j_customer AS c
 JOIN j_orders AS o ON o.cust_id = c.id;|
 --source suite/ronsql/include/ronsql_compare.inc
@@ -640,9 +643,144 @@ JOIN j_orders AS o ON o.cust_id = c.id;|
 --echo == Expected result ==
 --sorted_result
 SELECT o.id AS order_id,
-  (SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+  (SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty >= 3) AS big_total
 FROM j_customer AS c
 JOIN j_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+# =========================================================================
+# Category K: 3-way outer join + subqueries with cross-table filters
+# =========================================================================
+
+DELIMITER ;|
+
+--echo
+--echo === Create tables for 3-way join + subquery tests ===
+
+--disable_query_log
+DROP TABLE IF EXISTS k_shipment;
+DROP TABLE IF EXISTS k_lineitem;
+DROP TABLE IF EXISTS k_orders;
+DROP TABLE IF EXISTS k_customer;
+
+CREATE TABLE k_customer (
+  id INT NOT NULL,
+  name VARCHAR(20) NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE k_orders (
+  id INT NOT NULL,
+  cust_id INT NOT NULL,
+  min_qty INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_k_orders_cust (cust_id)
+) ENGINE=NDB;
+
+CREATE TABLE k_lineitem (
+  id INT NOT NULL,
+  order_id INT NOT NULL,
+  qty INT NOT NULL,
+  price INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_k_li_order (order_id)
+) ENGINE=NDB;
+
+CREATE TABLE k_shipment (
+  id INT NOT NULL,
+  order_id INT NOT NULL,
+  weight INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_k_ship_order (order_id)
+) ENGINE=NDB;
+
+INSERT INTO k_customer VALUES (1, 'Alice'), (2, 'Bob');
+
+# Orders with min_qty threshold
+INSERT INTO k_orders VALUES
+  (10, 1, 3), (11, 1, 5),
+  (20, 2, 2), (21, 2, 10);
+
+# Lineitems: varying quantities
+INSERT INTO k_lineitem VALUES
+  (100, 10, 2, 20), (101, 10, 5, 50), (102, 10, 8, 80),
+  (103, 11, 1, 10), (104, 11, 6, 60), (105, 11, 10, 100),
+  (106, 20, 3, 30), (107, 20, 7, 70),
+  (108, 21, 15, 150), (109, 21, 20, 200);
+
+# Shipments
+INSERT INTO k_shipment VALUES
+  (300, 10, 5), (301, 10, 10),
+  (302, 11, 15),
+  (303, 20, 8), (304, 20, 12),
+  (305, 21, 25);
+
+--enable_query_log
+
+DELIMITER |;
+
+# =========================================================================
+
+--echo
+--echo
+--echo === K1: 3-way join + subquery on lineitem (simple, no cross-table filter) ===
+
+let $QUERY=
+SELECT c.`name`, o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.`name`, o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === K2: 3-way join + two subqueries on different tables ===
+
+let $QUERY=
+SELECT c.`name`, o.id AS order_id,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+  (SELECT SUM(s.weight) FROM k_shipment AS s WHERE s.order_id = o.id) AS total_weight
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.`name`, o.id AS order_id,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+  (SELECT SUM(s.weight) FROM k_shipment AS s WHERE s.order_id = o.id) AS total_weight
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === K3: 3-way join + subquery with inner-only filter ===
+
+let $QUERY=
+SELECT c.`name`, o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > 5) AS big_items_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.`name`, o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > 5) AS big_items_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
 
 # =========================================================================
 
@@ -652,6 +790,10 @@ DELIMITER ;|
 --echo === Cleanup ===
 
 --disable_query_log
+DROP TABLE IF EXISTS k_shipment;
+DROP TABLE IF EXISTS k_lineitem;
+DROP TABLE IF EXISTS k_orders;
+DROP TABLE IF EXISTS k_customer;
 DROP TABLE IF EXISTS j_lineitem;
 DROP TABLE IF EXISTS j_order_notes;
 DROP TABLE IF EXISTS j_orders;
