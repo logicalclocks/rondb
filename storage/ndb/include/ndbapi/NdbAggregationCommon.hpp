@@ -101,6 +101,14 @@ enum InterpreterOp {
   kOpEmbeddedInterp,  // Invoke embedded old-interpreter code block
   kOpSkip,            // Unconditional forward skip in aggregation program
 
+  // Register-to-register comparison with conditional skip
+  // Encoding: (op << 26) | (reg_a << 20) | (reg_b << 16) | skip_count
+  // Skips skip_count instructions if condition is TRUE
+  kOpBranchRegLt,     // Skip if reg_a < reg_b
+  kOpBranchRegLe,     // Skip if reg_a <= reg_b
+  kOpBranchRegGt,     // Skip if reg_a > reg_b
+  kOpBranchRegGe,     // Skip if reg_a >= reg_b
+
   kOpTotal
 };
 

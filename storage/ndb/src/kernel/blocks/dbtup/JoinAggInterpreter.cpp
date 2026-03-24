@@ -856,6 +856,10 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
           break;
         }
         case kOpSkip:
+        case kOpBranchRegLt:
+        case kOpBranchRegLe:
+        case kOpBranchRegGt:
+        case kOpBranchRegGe:
           break;
         default:
           break;
@@ -1033,6 +1037,10 @@ bool JoinAggInterpreter::OptimizeProgram() {
       }
 
       case kOpSkip:
+      case kOpBranchRegLt:
+      case kOpBranchRegLe:
+      case kOpBranchRegGt:
+      case kOpBranchRegGe:
         break;
 
       default:
@@ -1570,6 +1578,47 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         break;
       }
 
+      case kOpBranchRegLt:
+      case kOpBranchRegLe:
+      case kOpBranchRegGt:
+      case kOpBranchRegGe:
+      {
+        Uint32 ra = (value >> 20) & 0x0F;
+        Uint32 rb = (value >> 16) & 0x0F;
+        Uint32 skip_count = value & 0xFFFF;
+        // Compare registers as doubles for type-agnostic comparison
+        double va = 0, vb = 0;
+        if (m_registers[ra].type == NDB_TYPE_BIGINT) {
+          va = m_registers[ra].is_unsigned
+              ? (double)m_registers[ra].value.val_uint64
+              : (double)m_registers[ra].value.val_int64;
+        } else if (m_registers[ra].type == NDB_TYPE_DOUBLE) {
+          va = m_registers[ra].value.val_double;
+        }
+        if (m_registers[rb].type == NDB_TYPE_BIGINT) {
+          vb = m_registers[rb].is_unsigned
+              ? (double)m_registers[rb].value.val_uint64
+              : (double)m_registers[rb].value.val_int64;
+        } else if (m_registers[rb].type == NDB_TYPE_DOUBLE) {
+          vb = m_registers[rb].value.val_double;
+        }
+        // If either register is NULL, skip (NULL comparison → no match)
+        bool do_skip = false;
+        if (m_registers[ra].is_null || m_registers[rb].is_null) {
+          do_skip = true;
+        } else {
+          switch (op) {
+          case kOpBranchRegLt: do_skip = (va < vb); break;
+          case kOpBranchRegLe: do_skip = (va <= vb); break;
+          case kOpBranchRegGt: do_skip = (va > vb); break;
+          case kOpBranchRegGe: do_skip = (va >= vb); break;
+          default: break;
+          }
+        }
+        if (do_skip) exec_pos += skip_count;
+        break;
+      }
+
       case kOpEmbeddedInterp:
       {
         Uint32 emb_len = value & 0xFFFF;
@@ -1831,6 +1880,10 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
         break;
       }
       case kOpSkip:
+      case kOpBranchRegLt:
+      case kOpBranchRegLe:
+      case kOpBranchRegGt:
+      case kOpBranchRegGe:
         break;
       default:
         break;

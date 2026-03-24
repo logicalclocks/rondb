@@ -585,6 +585,10 @@ bool AggInterpreter::OptimizeProgram() {
       }
 
       case kOpSkip:
+      case kOpBranchRegLt:
+      case kOpBranchRegLe:
+      case kOpBranchRegGt:
+      case kOpBranchRegGe:
         break;  /* 1-word instruction, exec_pos++ below handles it */
 
       default:
@@ -2020,6 +2024,45 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       {
         Uint32 skip_count = value & 0xFFFF;
         exec_pos += skip_count;
+        break;
+      }
+
+      case kOpBranchRegLt:
+      case kOpBranchRegLe:
+      case kOpBranchRegGt:
+      case kOpBranchRegGe:
+      {
+        Uint32 ra = (value >> 20) & 0x0F;
+        Uint32 rb = (value >> 16) & 0x0F;
+        Uint32 skip_count = value & 0xFFFF;
+        double va = 0, vb = 0;
+        if (m_registers[ra].type == NDB_TYPE_BIGINT) {
+          va = m_registers[ra].is_unsigned
+              ? (double)m_registers[ra].value.val_uint64
+              : (double)m_registers[ra].value.val_int64;
+        } else if (m_registers[ra].type == NDB_TYPE_DOUBLE) {
+          va = m_registers[ra].value.val_double;
+        }
+        if (m_registers[rb].type == NDB_TYPE_BIGINT) {
+          vb = m_registers[rb].is_unsigned
+              ? (double)m_registers[rb].value.val_uint64
+              : (double)m_registers[rb].value.val_int64;
+        } else if (m_registers[rb].type == NDB_TYPE_DOUBLE) {
+          vb = m_registers[rb].value.val_double;
+        }
+        bool do_skip = false;
+        if (m_registers[ra].is_null || m_registers[rb].is_null) {
+          do_skip = true;
+        } else {
+          switch (op) {
+          case kOpBranchRegLt: do_skip = (va < vb); break;
+          case kOpBranchRegLe: do_skip = (va <= vb); break;
+          case kOpBranchRegGt: do_skip = (va > vb); break;
+          case kOpBranchRegGe: do_skip = (va >= vb); break;
+          default: break;
+          }
+        }
+        if (do_skip) exec_pos += skip_count;
         break;
       }
 

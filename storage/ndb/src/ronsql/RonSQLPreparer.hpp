@@ -191,7 +191,8 @@ private:
     Uint32 combined_agg_slot;          // slot in combined result
     Uint32 merged_leaf_idx;            // index into m_merged_leaves
     bool use_inner_join;               // true=INNER, false=LEFT OUTER
-    ConditionalExpression *inner_filter; // additional WHERE filter (beyond correlation)
+    ConditionalExpression *inner_filter;       // inner-only WHERE filter
+    ConditionalExpression *cross_table_filter; // filter referencing outer columns
   };
   struct MergedLeaf {
     Uint32 first_subquery_idx;         // first SelectSubqueryLeaf in this group

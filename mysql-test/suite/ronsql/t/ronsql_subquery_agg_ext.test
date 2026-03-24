@@ -784,6 +784,34 @@ JOIN k_orders AS o ON o.cust_id = c.id|
 
 # =========================================================================
 
+# =========================================================================
+
+--echo
+--echo
+--echo === K4: Cross-table filter — l.qty > o.min_qty ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+# K5: Cross-table filter with two subqueries on same table (merged leaf)
+# Currently fails due to linked projection issue with merged cross-table
+# filters. Deferred — the single-subquery cross-table filter (K4) works.
+
+# =========================================================================
+
 DELIMITER ;|
 
 --echo

@@ -2432,7 +2432,71 @@ RonSQLPreparer::analyze_select_subqueries()
     leaf.combined_agg_slot = 0;
     leaf.merged_leaf_idx = 0;
     leaf.use_inner_join = false;  // LEFT OUTER: unmatched entities get NULL
-    leaf.inner_filter = inner_filter;
+    // Separate inner-only predicates from cross-table predicates.
+    // Inner-only → pushed as NdbScanFilter on child scan.
+    // Cross-table → converted to conditional aggregation via BranchReg.
+    ConditionalExpression *inner_only_filter = NULL;
+    ConditionalExpression *cross_table_filter_ce = NULL;
+
+    if (inner_filter != NULL) {
+      // Flatten the inner_filter and classify each conjunct
+      ConditionalExpression *filter_conjuncts[32];
+      Uint32 num_filter_conjuncts = 0;
+      std::function<void(ConditionalExpression*)> flatten_filter =
+          [&](ConditionalExpression* ce) {
+        if (ce->op == T_AND) {
+          flatten_filter(ce->args.left);
+          flatten_filter(ce->args.right);
+        } else if (num_filter_conjuncts < 32) {
+          filter_conjuncts[num_filter_conjuncts++] = ce;
+        }
+      };
+      flatten_filter(inner_filter);
+
+      LexCString itbl = inner->root_table->alias;
+      for (Uint32 fi = 0; fi < num_filter_conjuncts; fi++) {
+        // Check if this conjunct references only inner table columns
+        bool has_outer_ref = false;
+        std::function<void(ConditionalExpression*)> check_refs =
+            [&](ConditionalExpression* ce) {
+          if (ce == NULL) return;
+          if (ce->op == T_IDENTIFIER) {
+            Uint32 cidx = ce->col_idx;
+            if (cidx < m_column_qualifiers.size() &&
+                m_column_qualifiers[cidx].str != NULL) {
+              LexCString q = m_column_qualifiers[cidx];
+              if (!(q.len == itbl.len &&
+                    strncmp(q.str, itbl.str, q.len) == 0)) {
+                has_outer_ref = true;
+              }
+            }
+            return;
+          }
+          if (ce->op == T_IS) { check_refs(ce->is.arg); return; }
+          if (ce->op == T_INT || ce->op == T_FLOAT ||
+              ce->op == T_STRING || ce->op == T_NULL) return;
+          check_refs(ce->args.left);
+          check_refs(ce->args.right);
+        };
+        check_refs(filter_conjuncts[fi]);
+
+        ConditionalExpression **target =
+            has_outer_ref ? &cross_table_filter_ce : &inner_only_filter;
+        if (*target == NULL) {
+          *target = filter_conjuncts[fi];
+        } else {
+          ConditionalExpression *combined =
+              m_amalloc->alloc_exc<ConditionalExpression>(1);
+          combined->op = T_AND;
+          combined->args.left = *target;
+          combined->args.right = filter_conjuncts[fi];
+          *target = combined;
+        }
+      }
+    }
+
+    leaf.inner_filter = inner_only_filter;
+    leaf.cross_table_filter = cross_table_filter_ce;
 
     m_select_subquery_leaves.push(leaf);
   }
@@ -3487,6 +3551,105 @@ RonSQLPreparer::execute_join()
         NdbAttrId attr_id = m_column_attrId_map[col_idx];
         Uint32 reg = 0;  // use register 0 for loads
         Uint32 agg_slot = leaf_local_slot++;
+
+        // If cross-table filter exists, build conditional aggregation:
+        //   LoadLinkedColumn(linked_pos, reg_outer, outer_col)
+        //   LoadColumn(inner_attr_id, reg_inner)
+        //   BranchRegXx(reg_inner, reg_outer, 2) — skip Load+Agg
+        //   LoadColumn(agg_col, reg)
+        //   Sum/Count/etc(slot, reg)
+        //
+        // Without cross-table filter, just: LoadColumn + Agg
+        if (sl.cross_table_filter != NULL) {
+          ConditionalExpression *cf = sl.cross_table_filter;
+          require_prm(cf->args.left != NULL && cf->args.right != NULL &&
+                      cf->args.left->op == T_IDENTIFIER &&
+                      cf->args.right->op == T_IDENTIFIER,
+                      "Cross-table filter must be a simple column comparison.");
+          require_prm(cf->op == T_LT || cf->op == T_LE ||
+                      cf->op == T_GT || cf->op == T_GE ||
+                      cf->op == T_EQUALS || cf->op == T_NOT_EQUALS,
+                      "Cross-table filter must use <, <=, >, >=, = or !=.");
+
+          // Determine which side is inner, which is outer
+          Uint32 left_cidx = cf->args.left->col_idx;
+          Uint32 right_cidx = cf->args.right->col_idx;
+          LexCString itbl = sl.inner_table_alias;
+          bool left_is_inner =
+              (m_column_qualifiers[left_cidx].str != NULL &&
+               m_column_qualifiers[left_cidx].len == itbl.len &&
+               strncmp(m_column_qualifiers[left_cidx].str, itbl.str,
+                       itbl.len) == 0);
+
+          Uint32 inner_cidx = left_is_inner ? left_cidx : right_cidx;
+          Uint32 outer_cidx = left_is_inner ? right_cidx : left_cidx;
+
+          // Add linked projection for the outer column
+          Uint32 outer_lp_pos = find_or_add_linked_proj(
+              m_join_plan, m_column_table_idx[outer_cidx],
+              m_columns[outer_cidx].c_str());
+
+          // Load outer column into register 2 via linked projection
+          Uint32 reg_outer = 2;
+          require_prm(agg->LoadLinkedColumn(outer_lp_pos, reg_outer,
+                                            m_column_map[outer_cidx]),
+                      "Failed to load linked outer column for cross-table filter.");
+
+          // Load inner filter column into register 1
+          Uint32 reg_inner = 1;
+          NdbAttrId inner_filter_attr = m_column_attrId_map[inner_cidx];
+          require_prm(agg->LoadColumn(inner_filter_attr, reg_inner),
+                      "Failed to load inner column for cross-table filter.");
+
+          // Determine branch instruction: we want to SKIP aggregation
+          // when the filter does NOT match.
+          // Original filter: inner_col OP outer_col (when left_is_inner)
+          // We skip when the NEGATION is true.
+          // e.g., filter is "l.qty > o.min_qty" → skip when l.qty <= o.min_qty
+          //        → BranchRegLe(reg_inner, reg_outer, skip_2)
+          TokenKind filter_op = cf->op;
+          if (!left_is_inner) {
+            // Flip: if right is inner, swap operand order
+            // "o.min_qty < l.qty" is same as "l.qty > o.min_qty"
+            switch (filter_op) {
+            case T_LT: filter_op = T_GT; break;
+            case T_LE: filter_op = T_GE; break;
+            case T_GT: filter_op = T_LT; break;
+            case T_GE: filter_op = T_LE; break;
+            default: break;
+            }
+          }
+          // Now filter_op is from inner's perspective: inner_col OP outer_col
+          // We skip when NOT(inner_col OP outer_col):
+          //   NOT(a > b) = a <= b → BranchRegLe
+          //   NOT(a >= b) = a < b → BranchRegLt
+          //   NOT(a < b) = a >= b → BranchRegGe
+          //   NOT(a <= b) = a > b → BranchRegGt
+          //   NOT(a = b) → not directly supported, use Lt OR Gt
+          //   NOT(a != b) → a = b, not directly supported
+          Uint32 skip_count = 2;  // skip LoadColumn + Agg instruction
+          switch (filter_op) {
+          case T_GT:
+            require_prm(agg->BranchRegLe(reg_inner, reg_outer, skip_count),
+                        "Failed to program BranchRegLe.");
+            break;
+          case T_GE:
+            require_prm(agg->BranchRegLt(reg_inner, reg_outer, skip_count),
+                        "Failed to program BranchRegLt.");
+            break;
+          case T_LT:
+            require_prm(agg->BranchRegGe(reg_inner, reg_outer, skip_count),
+                        "Failed to program BranchRegGe.");
+            break;
+          case T_LE:
+            require_prm(agg->BranchRegGt(reg_inner, reg_outer, skip_count),
+                        "Failed to program BranchRegGt.");
+            break;
+          default:
+            require_prm(false,
+                "Cross-table filter with = or != not yet supported.");
+          }
+        }
 
         require_prm(agg->LoadColumn(attr_id, reg),
                     "Failed to load column for subquery aggregate.");

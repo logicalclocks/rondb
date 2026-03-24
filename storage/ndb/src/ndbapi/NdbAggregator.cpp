@@ -984,6 +984,34 @@ bool NdbAggregator::Skip(Uint32 skip_count) {
   return true;
 }
 
+bool NdbAggregator::BranchRegLt(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count) {
+  buffer_[curr_prog_pos_++] =
+      (kOpBranchRegLt << 26) | ((reg_a & 0x0F) << 20) |
+      ((reg_b & 0x0F) << 16) | (skip_count & 0xFFFF);
+  return true;
+}
+
+bool NdbAggregator::BranchRegLe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count) {
+  buffer_[curr_prog_pos_++] =
+      (kOpBranchRegLe << 26) | ((reg_a & 0x0F) << 20) |
+      ((reg_b & 0x0F) << 16) | (skip_count & 0xFFFF);
+  return true;
+}
+
+bool NdbAggregator::BranchRegGt(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count) {
+  buffer_[curr_prog_pos_++] =
+      (kOpBranchRegGt << 26) | ((reg_a & 0x0F) << 20) |
+      ((reg_b & 0x0F) << 16) | (skip_count & 0xFFFF);
+  return true;
+}
+
+bool NdbAggregator::BranchRegGe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count) {
+  buffer_[curr_prog_pos_++] =
+      (kOpBranchRegGe << 26) | ((reg_a & 0x0F) << 20) |
+      ((reg_b & 0x0F) << 16) | (skip_count & 0xFFFF);
+  return true;
+}
+
 bool NdbAggregator::RepeatAgg(Uint32 agg_id, Uint32 reg_id) {
   if (agg_id >= MAX_AGGREGATION_OP_SIZE) {
     SetError(kErrInvalidAggNo);
