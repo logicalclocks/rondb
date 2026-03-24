@@ -2653,6 +2653,206 @@ testMixedTopology(Ndb *ndb, MYSQL * /*conn*/)
   return 0;
 }
 
+/* ================================================================== */
+/* Rejection test (Test 13): aggregate leaf on root must fail          */
+/* ================================================================== */
+
+static int
+testRejectAggOnRoot(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 13: Reject aggregate leaf on root operation ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Table *rootTab = dict->getTable(ROOT_TABLE);
+  if (rootTab == nullptr) {
+    printf("FAILED (table lookup)\n"); return -1;
+  }
+
+  NdbAggregator agg(rootTab);
+  if (!agg.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+      !agg.LoadColumn("grp", 0) || !agg.Sum(0, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program)\n"); return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  NdbQueryOptions opts;
+  opts.setAggregation(agg);
+
+  /* Root scan WITH aggregation — this should fail at prepare() because
+   * the aggregate leaf is the root (operation 0). */
+  const NdbQueryTableScanOperationDef *rootOp =
+      qb->scanTable(rootTab, &opts);
+  if (rootOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy(); return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef != nullptr) {
+    printf("FAILED (prepare should have rejected aggregate on root)\n");
+    queryDef->destroy();
+    qb->destroy();
+    return -1;
+  }
+
+  /* Expected: prepare fails with QRY_WRONG_OPERATION_TYPE */
+  V("\n  prepare() correctly rejected: %s\n", qb->getNdbError().message);
+  qb->destroy();
+
+  printf("OK (rejected as expected)\n");
+  return 0;
+}
+
+/* ================================================================== */
+/* Eviction test (Test 14): ERROR_INSERT 5116 with multi-leaf          */
+/* Forces maxGroups=3 on AggInterpreter, triggering eviction when a    */
+/* 4th distinct group arrives. Tests combined accumulator eviction.    */
+/* ================================================================== */
+
+static int
+testEvictionMultiLeaf(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+{
+  printf("Test 14: Eviction (ERROR_INSERT 5116) with 2-leaf star ... ");
+  fflush(stdout);
+
+  /* Use star_root (6 rows, 3 groups) + star_leaf_a + star_leaf_b.
+   * ERROR_INSERT 5116 forces maxGroups=3, so with 3 groups no eviction
+   * should be needed. But the combined accumulators (2 per group) still
+   * exercise the multi-leaf hash map layout during eviction merge. */
+
+  /* First insert more data to get >3 groups */
+  sqlExec(conn, "INSERT INTO star_root VALUES (7,4),(8,4),(9,5),(10,5)");
+  sqlExec(conn, "INSERT INTO star_leaf_a VALUES (7,700),(8,800),(9,900),(10,1000)");
+  sqlExec(conn, "INSERT INTO star_leaf_b VALUES (7,70),(8,80),(9,90),(10,100)");
+  /* Now: 5 groups (1-5), 2 rows each. 5116 forces maxGroups=3 → eviction. */
+
+  if (restarter.insertErrorInAllNodes(5116) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5116))\n");
+    return -1;
+  }
+  V("\n  ERROR_INSERT 5116 set (maxGroups=3)\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(ROOT_TABLE);
+  dict->invalidateTable(LEAF_A_TABLE);
+  dict->invalidateTable(LEAF_B_TABLE);
+  const NdbDictionary::Table *rootTab = dict->getTable(ROOT_TABLE);
+  const NdbDictionary::Table *leafATab = dict->getTable(LEAF_A_TABLE);
+  const NdbDictionary::Table *leafBTab = dict->getTable(LEAF_B_TABLE);
+  if (rootTab == nullptr || leafATab == nullptr || leafBTab == nullptr) {
+    printf("FAILED (table lookup)\n");
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbAggregator aggA(leafATab);
+  if (!aggA.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+      !aggA.LoadColumn("val_a", 0) || !aggA.Sum(0, 0) ||
+      !aggA.Finalize()) {
+    printf("FAILED (aggA)\n");
+    restarter.insertErrorInAllNodes(0); return -1;
+  }
+
+  NdbAggregator aggB(leafBTab);
+  if (!aggB.GroupBy(0 | AGG_LINKED_COL_FLAG) ||
+      !aggB.LoadColumn("val_b", 0) || !aggB.Sum(0, 0) ||
+      !aggB.Finalize()) {
+    printf("FAILED (aggB)\n");
+    restarter.insertErrorInAllNodes(0); return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *rootOp = qb->scanTable(rootTab);
+
+  const NdbQueryOperand *keyA[] = {qb->linkedValue(rootOp, "id"), nullptr};
+  NdbQueryOptions optsA;
+  optsA.setMatchType(NdbQueryOptions::MatchNonNull);
+  optsA.setAggregation(aggA);
+  optsA.addLinkedProjection(qb->linkedValue(rootOp, "grp"));
+  qb->readTuple(leafATab, keyA, &optsA);
+
+  const NdbQueryOperand *keyB[] = {qb->linkedValue(rootOp, "id"), nullptr};
+  NdbQueryOptions optsB;
+  optsB.setMatchType(NdbQueryOptions::MatchNonNull);
+  optsB.setAggregation(aggB);
+  optsB.addLinkedProjection(qb->linkedValue(rootOp, "grp"));
+  qb->readTuple(leafBTab, keyB, &optsB);
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0); return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close(); queryDef->destroy();
+    restarter.insertErrorInAllNodes(0); return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    query->close(); trans->close(); queryDef->destroy();
+    restarter.insertErrorInAllNodes(0); return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator null)\n");
+    query->close(); trans->close(); queryDef->destroy();
+    restarter.insertErrorInAllNodes(0); return -1;
+  }
+
+  std::map<Int32, std::pair<Int64, Int64>> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+    NdbAggregator::Column grpCol = rec.FetchGroupbyColumn();
+    NdbAggregator::Result resA = rec.FetchAggregationResult();
+    NdbAggregator::Result resB = rec.FetchAggregationResult();
+    actual[grpCol.data_int32()] = {resA.data_int64(), resB.data_int64()};
+  }
+
+  query->close(); trans->close(); queryDef->destroy();
+  restarter.insertErrorInAllNodes(0);
+
+  /* Clean up extra rows */
+  sqlExec(conn, "DELETE FROM star_leaf_b WHERE root_id > 6");
+  sqlExec(conn, "DELETE FROM star_leaf_a WHERE root_id > 6");
+  sqlExec(conn, "DELETE FROM star_root WHERE id > 6");
+
+  /* Expected: 5 groups with correct merged SUM values */
+  std::map<Int32, std::pair<Int64, Int64>> expected = {
+    {1, {300, 30}}, {2, {700, 70}}, {3, {1100, 110}},
+    {4, {1500, 150}}, {5, {1900, 190}}
+  };
+
+  if (actual.size() != expected.size()) {
+    printf("FAILED (expected %zu groups, got %zu)\n",
+           expected.size(), actual.size());
+    return -1;
+  }
+  for (auto &e : expected) {
+    auto it = actual.find(e.first);
+    if (it == actual.end() || it->second != e.second) {
+      printf("FAILED (group %d mismatch)\n", e.first);
+      return -1;
+    }
+  }
+
+  printf("OK (5 groups, eviction merge verified)\n");
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
@@ -2909,6 +3109,28 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropTsTables(conn);
+          dropTestTables(conn);
+        }
+
+        /* Test 13: Rejection — aggregate on root */
+        if (shouldRun(13)) {
+          if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
+            if (testRejectAggOnRoot(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTestTables(conn);
+        }
+
+        /* Test 14: Eviction with multi-leaf (ERROR_INSERT 5116) */
+        if (shouldRun(14)) {
+          NdbRestarter restarter(connectString);
+          if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
+            if (testEvictionMultiLeaf(&ndb, conn, restarter) != 0)
+              exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
           dropTestTables(conn);
         }
 

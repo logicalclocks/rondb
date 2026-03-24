@@ -15,6 +15,8 @@ Test 9: Multi-fragment 2-leaf SUM(val_a) + SUM(val_b) GROUP BY grp (500 rows, 10
 Test 10: Empty leaf table (root has rows, leaf_b empty) ... OK (3 groups, empty leaf_b produces NULL/0)
 Test 11: Single root row, single group ... OK (1 group, single row)
 Test 12: Mixed topology — PK lookup leaf + index scan leaf ... OK (3 groups, mixed PK-lookup + index-scan)
+Test 13: Reject aggregate leaf on root operation ... OK (rejected as expected)
+Test 14: Eviction (ERROR_INSERT 5116) with 2-leaf star ... OK (5 groups, eviction merge verified)
 
 All tests PASSED
 PASSED
