@@ -187,4 +187,31 @@ id	sum_val	min_val	max_val
 3	240	70	90
 4	330	100	120
 
+
+=== Test 8: Entity with no matching rows (NULL result) ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+id	sum_val	cnt_evt
+1	60	2
+2	150	2
+3	240	2
+4	330	2
+5	NULL	0
+
 === Cleanup ===

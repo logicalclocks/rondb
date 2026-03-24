@@ -2342,10 +2342,7 @@ RonSQLPreparer::analyze_select_subqueries()
     leaf.inner_agg_col_idx = inner_agg_col_idx;
     leaf.combined_agg_slot = 0;
     leaf.merged_leaf_idx = 0;
-    // TODO(Phase 10): Change to false (LEFT OUTER) once DBSPJ supports
-    // NULL-extended rows for multi-leaf fan-out aggregate leaves.
-    // Currently INNER JOIN — entities with no child matches are dropped.
-    leaf.use_inner_join = true;
+    leaf.use_inner_join = false;  // LEFT OUTER: unmatched entities get NULL
 
     m_select_subquery_leaves.push(leaf);
   }

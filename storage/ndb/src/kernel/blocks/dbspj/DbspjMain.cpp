@@ -1939,6 +1939,41 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
         requestPtr.p->m_bits |= Request::RT_AGG_ANCESTOR_MATCH;
       }
     }
+
+    /**
+     * Also enable match tracking for outer-joined aggregate LEAF scans.
+     * In fan-out (star) topology, leaves are direct scan children of the
+     * root with no intermediate ancestors.  Without T_BUFFER_MATCH on the
+     * scan ancestor, handleAggLeafScanComplete() can't detect unmatched
+     * parent rows and inject NULL aggregate rows.
+     */
+    for (list.first(treeNodePtr); !treeNodePtr.isNull();
+         list.next(treeNodePtr)) {
+      if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+          !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
+          treeNodePtr.p->isScan()) {
+        jam();
+        Ptr<TreeNode> scanAncestorPtr;
+        Uint32 parentPtrI = treeNodePtr.p->m_parentPtrI;
+        bool found = false;
+        while (parentPtrI != RNIL) {
+          jam();
+          ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr, parentPtrI));
+          if (scanAncestorPtr.p->isScan()) {
+            found = true;
+            break;
+          }
+          parentPtrI = scanAncestorPtr.p->m_parentPtrI;
+        }
+        if (found) {
+          jam();
+          scanAncestorPtr.p->m_bits |=
+              TreeNode::T_BUFFER_ROW | TreeNode::T_BUFFER_MAP |
+              TreeNode::T_BUFFER_MATCH;
+          requestPtr.p->m_bits |= Request::RT_AGG_ANCESTOR_MATCH;
+        }
+      }
+    }
   } else {
     if (unlikely(ctx.m_aggregate_node_count != 0)) {
       jam();
