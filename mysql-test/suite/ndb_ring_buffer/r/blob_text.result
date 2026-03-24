@@ -1,0 +1,197 @@
+#
+# Case 1: Basic INSERT and SELECT with TEXT column
+#
+CREATE TABLE test.rb_text (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+description TEXT,
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_text (id, description) VALUES (1, 'Short text');
+INSERT INTO test.rb_text (id, description) VALUES (1, REPEAT('Hello World! ', 100));
+INSERT INTO test.rb_text (id, description) VALUES (1, 'Another short text');
+SELECT id, ring_idx, LENGTH(description) AS len, LEFT(description, 30) AS preview
+FROM test.rb_text WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	len	preview
+1	1	10	Short text
+1	2	1300	Hello World! Hello World! Hell
+1	3	18	Another short text
+#
+# Case 2: Ring wrapping with TEXT — large data overwritten correctly
+#
+INSERT INTO test.rb_text (id, description)
+VALUES (1, REPEAT('Wrapped data ', 200));
+SELECT id, ring_idx, LENGTH(description) AS len, LEFT(description, 30) AS preview
+FROM test.rb_text WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	len	preview
+1	1	2600	Wrapped data Wrapped data Wrap
+1	2	1300	Hello World! Hello World! Hell
+1	3	18	Another short text
+INSERT INTO test.rb_text (id, description) VALUES (1, 'Small after large');
+SELECT id, ring_idx, LENGTH(description) AS len, LEFT(description, 30) AS preview
+FROM test.rb_text WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	len	preview
+1	1	2600	Wrapped data Wrapped data Wrap
+1	2	17	Small after large
+1	3	18	Another short text
+#
+# Case 3: BLOB column — binary data integrity through wrapping
+#
+CREATE TABLE test.rb_blob (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+payload BLOB,
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_blob (id, payload) VALUES (1, REPEAT(x'DEADBEEF', 100));
+INSERT INTO test.rb_blob (id, payload) VALUES (1, REPEAT(x'CAFEBABE', 100));
+INSERT INTO test.rb_blob (id, payload) VALUES (1, REPEAT(x'01020304', 100));
+SELECT id, ring_idx, LENGTH(payload) AS len, SHA1(payload) AS checksum
+FROM test.rb_blob WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	len	checksum
+1	1	400	5e1402294993ba45ed75b7f6a0be99f6b73eb425
+1	2	400	cdfdedab2a989f50cbcde31c164034a05c1339c5
+1	3	400	5a7d9a773b4ff758abd4f100858c256037b91128
+INSERT INTO test.rb_blob (id, payload) VALUES (1, REPEAT(x'FF00FF00', 50));
+SELECT id, ring_idx, LENGTH(payload) AS len, SHA1(payload) AS checksum
+FROM test.rb_blob WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	len	checksum
+1	1	200	ae61aaa95d09ee049a3a3e68b22f81bae0d3fa0f
+1	2	400	cdfdedab2a989f50cbcde31c164034a05c1339c5
+1	3	400	5a7d9a773b4ff758abd4f100858c256037b91128
+#
+# Case 4: Mixed TEXT + BLOB + VARCHAR in same table
+#
+CREATE TABLE test.rb_mixed (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+label VARCHAR(100),
+notes TEXT,
+attachment BLOB,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_mixed (client_id, label, notes, attachment)
+VALUES (1, 'Entry 1', REPEAT('Note content ', 50), REPEAT(x'AB', 200));
+INSERT INTO test.rb_mixed (client_id, label, notes, attachment)
+VALUES (1, 'Entry 2', 'Short note', x'CD');
+INSERT INTO test.rb_mixed (client_id, label, notes, attachment)
+VALUES (1, 'Entry 3', NULL, NULL);
+SELECT client_id, ring_idx, label, LENGTH(notes) AS note_len,
+LENGTH(attachment) AS attach_len
+FROM test.rb_mixed WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	label	note_len	attach_len
+1	1	Entry 1	650	200
+1	2	Entry 2	10	1
+1	3	Entry 3	NULL	NULL
+INSERT INTO test.rb_mixed (client_id, label, notes, attachment)
+VALUES (1, 'Entry 4', REPEAT('Wrapped note ', 80), REPEAT(x'EF', 300));
+SELECT client_id, ring_idx, label, LENGTH(notes) AS note_len,
+LENGTH(attachment) AS attach_len
+FROM test.rb_mixed WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	label	note_len	attach_len
+1	1	Entry 4	1040	300
+1	2	Entry 2	10	1
+1	3	Entry 3	NULL	NULL
+#
+# Case 5: UPDATE TEXT/BLOB user columns — allowed
+#
+UPDATE test.rb_mixed SET notes = 'Updated note', attachment = x'AABB'
+    WHERE client_id = 1 AND ring_idx = 2;
+SELECT client_id, ring_idx, label, notes, HEX(attachment) AS attach_hex
+FROM test.rb_mixed WHERE client_id = 1 AND ring_idx = 2;
+client_id	ring_idx	label	notes	attach_hex
+1	2	Entry 2	Updated note	AABB
+UPDATE test.rb_mixed SET notes = CONCAT(COALESCE(notes, ''), ' [modified]')
+WHERE client_id = 1 AND label = 'Entry 3';
+SELECT client_id, ring_idx, label, notes
+FROM test.rb_mixed WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	label	notes
+1	1	Entry 4	Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note Wrapped note 
+1	2	Entry 2	Updated note
+1	3	Entry 3	 [modified]
+#
+# Case 6: DELETE and re-INSERT with TEXT/BLOB
+#
+DELETE FROM test.rb_mixed WHERE client_id = 1;
+SELECT client_id, ring_idx FROM test.rb_mixed WHERE client_id = 1;
+client_id	ring_idx
+1	2
+1	3
+1	1
+INSERT INTO test.rb_mixed (client_id, label, notes, attachment)
+VALUES (1, 'Fresh 1', REPEAT('After delete ', 100), REPEAT(x'CC', 150));
+SELECT client_id, ring_idx, label, LENGTH(notes) AS note_len,
+LENGTH(attachment) AS attach_len
+FROM test.rb_mixed WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	label	note_len	attach_len
+1	1	Fresh 1	1300	150
+1	2	Entry 2	12	2
+1	3	Entry 3	11	NULL
+#
+# Case 7: Bulk INSERT with TEXT/BLOB columns
+#
+DELETE FROM test.rb_mixed;
+INSERT INTO test.rb_mixed (client_id, label, notes, attachment)
+VALUES (1, 'Bulk A', REPEAT('bulk_a_note ', 50), REPEAT(x'AA', 100)),
+(1, 'Bulk B', REPEAT('bulk_b_note ', 50), REPEAT(x'BB', 100)),
+(1, 'Bulk C', REPEAT('bulk_c_note ', 50), REPEAT(x'CC', 100));
+SELECT client_id, ring_idx, label, LENGTH(notes) AS note_len,
+SHA1(attachment) AS attach_hash
+FROM test.rb_mixed WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	label	note_len	attach_hash
+1	1	Bulk A	600	7a86b804961d5d32c3413afa060bfcdb6b20ddcc
+1	2	Bulk B	600	8d435a1837849fcc570844baaa1b580096e829c8
+1	3	Bulk C	600	9105fda2461858ba10c2f81c74cb6c392dd7414d
+INSERT INTO test.rb_mixed (client_id, label, notes, attachment)
+VALUES (1, 'Bulk D', 'short_d', x'DD'),
+(1, 'Bulk E', 'short_e', x'EE');
+SELECT client_id, ring_idx, label, notes
+FROM test.rb_mixed WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	label	notes
+1	1	Bulk D	short_d
+1	2	Bulk E	short_e
+1	3	Bulk C	bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note bulk_c_note 
+#
+# Case 8: NULL BLOB/TEXT values through wrapping
+#
+DROP TABLE test.rb_text;
+CREATE TABLE test.rb_nullblob (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data TEXT,
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=2@ring_idx@ring_meta";
+INSERT INTO test.rb_nullblob (id, data) VALUES (1, NULL);
+INSERT INTO test.rb_nullblob (id, data) VALUES (1, REPEAT('X', 500));
+SELECT id, ring_idx, data IS NULL AS is_null, LENGTH(data) AS len
+FROM test.rb_nullblob WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	is_null	len
+1	1	1	NULL
+1	2	0	500
+INSERT INTO test.rb_nullblob (id, data) VALUES (1, NULL);
+SELECT id, ring_idx, data IS NULL AS is_null, LENGTH(data) AS len
+FROM test.rb_nullblob WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	is_null	len
+1	1	1	NULL
+1	2	0	500
+INSERT INTO test.rb_nullblob (id, data) VALUES (1, REPEAT('Y', 1000));
+SELECT id, ring_idx, data IS NULL AS is_null, LENGTH(data) AS len
+FROM test.rb_nullblob WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	is_null	len
+1	1	1	NULL
+1	2	0	1000
+DROP TABLE test.rb_nullblob;
+#
+# Cleanup
+#
+DROP TABLE test.rb_blob;
+DROP TABLE test.rb_mixed;
+# Done.

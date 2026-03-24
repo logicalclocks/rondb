@@ -165,6 +165,123 @@ client_id	ring_idx
 1	4
 SET ndb_ring_buffer_show_meta = OFF;
 #
+# Case 9: TRUNCATE TABLE replicates to slave
+#
+SELECT client_id, ring_idx, event_data FROM test.rb
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_E
+1	2	ev_F
+1	3	ev_C
+1	4	ev_D
+2	1	UPDATED
+2	2	c2_B
+TRUNCATE TABLE test.rb;
+SELECT COUNT(*) AS master_cnt FROM test.rb;
+master_cnt
+0
+SELECT COUNT(*) AS slave_cnt FROM test.rb;
+slave_cnt
+0
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) AS slave_all_cnt FROM test.rb;
+slave_all_cnt
+0
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 10: Re-INSERT after TRUNCATE replicates correctly
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'post_trunc_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'post_trunc_B');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	post_trunc_A
+1	2	post_trunc_B
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	post_trunc_A
+1	2	post_trunc_B
+#
+# Case 11: ALTER TABLE grow replicates to slave
+#
+ALTER TABLE test.rb COMMENT="NDB_TABLE=NOLOGGING=1,RING_BUFFER=8@ring_idx@ring_meta";
+SHOW CREATE TABLE test.rb;
+Table	Create Table
+rb	CREATE TABLE `rb` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `event_data` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=NOLOGGING=1,RING_BUFFER=8@ring_idx@ring_meta'
+SHOW CREATE TABLE test.rb;
+Table	Create Table
+rb	CREATE TABLE `rb` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `event_data` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=NOLOGGING=1,RING_BUFFER=8@ring_idx@ring_meta'
+#
+# Case 12: INSERT after grow uses new ring size
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_C');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_D');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_E');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_F');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_G');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_H');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	post_trunc_A
+1	2	post_trunc_B
+1	3	grow_C
+1	4	grow_D
+1	5	grow_E
+1	6	grow_F
+1	7	grow_G
+1	8	grow_H
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'wrap_I');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	wrap_I
+1	2	post_trunc_B
+1	3	grow_C
+1	4	grow_D
+1	5	grow_E
+1	6	grow_F
+1	7	grow_G
+1	8	grow_H
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	wrap_I
+1	2	post_trunc_B
+1	3	grow_C
+1	4	grow_D
+1	5	grow_E
+1	6	grow_F
+1	7	grow_G
+1	8	grow_H
+#
+# Case 13: DELETE + re-INSERT cycle replicates
+#
+DELETE FROM test.rb WHERE client_id = 1;
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'cycle_A');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	cycle_A
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	cycle_A
+#
 # Cleanup
 #
 DROP TABLE test.rb;

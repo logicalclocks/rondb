@@ -1114,6 +1114,16 @@ void NdbBlob::getHeadFromRecAttr() {
   DBUG_ENTER("NdbBlob::getHeadFromRecAttr");
   assert(theHeadInlineRecAttr != nullptr);
   theNullFlag = theHeadInlineRecAttr->isNULL();
+  /*
+   * theNullFlag == -1 means the column was not present in this row
+   * (e.g., ring-buffer meta rows are inserted without BLOB columns).
+   * Treat absent BLOB columns as NULL rather than asserting.
+   */
+  if (theNullFlag == -1 && theEventBlobVersion < 0) {
+    theNullFlag = 1;
+    theLength = 0;
+    DBUG_VOID_RETURN;
+  }
   assert(theEventBlobVersion >= 0 || theNullFlag != -1);
   if (theNullFlag == 0) {
     unpackBlobHead();
