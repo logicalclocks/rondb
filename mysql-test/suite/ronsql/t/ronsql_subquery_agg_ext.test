@@ -433,7 +433,55 @@ LIMIT 5|
 
 # =========================================================================
 
+# =========================================================================
+# Category H: Rejection tests — verify error messages for unsupported patterns
+# Send query via RDRS and check for expected error text in response.
+# =========================================================================
+
 DELIMITER ;|
+
+--echo
+--echo
+--echo === H1: Inner subquery with JOIN (unsupported) ===
+
+--exec printf '{"query":"SELECT e.id, (SELECT SUM(m.val) FROM sq_measures AS m JOIN sq_events AS ev ON ev.entity_id = m.entity_id WHERE m.entity_id = e.id) AS sv FROM sq_entity AS e;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--echo H1 response:
+--exec grep -o 'subquery with JOIN is not supported' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected rejection for inner JOIN"
+
+--echo
+--echo === H2: Inner subquery without correlation (unsupported) ===
+
+--exec printf '{"query":"SELECT e.id, (SELECT SUM(m.val) FROM sq_measures AS m) AS sv FROM sq_entity AS e;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--echo H2 response:
+--exec grep -o 'must have a WHERE clause with correlation' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected rejection for missing correlation"
+
+--echo
+--echo === H3: Inner subquery with GROUP BY (unsupported) ===
+
+--exec printf '{"query":"SELECT e.id, (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id GROUP BY m.ts) AS sv FROM sq_entity AS e;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--echo H3 response:
+--exec grep -o 'must not have GROUP BY' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected rejection for inner GROUP BY"
+
+--echo
+--echo === H4: Inner subquery with non-aggregate output (unsupported) ===
+
+--exec printf '{"query":"SELECT e.id, (SELECT m.val FROM sq_measures AS m WHERE m.entity_id = e.id) AS sv FROM sq_entity AS e;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--echo H4 response:
+--exec grep -o 'output must be an aggregate function' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected rejection for non-aggregate output"
+
+--echo
+--echo === H5: Outer query with GROUP BY + subqueries (unsupported) ===
+
+--exec printf '{"query":"SELECT e.grp, (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sv FROM sq_entity AS e GROUP BY e.grp;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--echo H5 response:
+--exec grep -o 'GROUP BY are not yet supported' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected rejection for outer GROUP BY"
+
+# =========================================================================
 
 --echo
 --echo === Cleanup ===
@@ -445,4 +493,6 @@ DROP TABLE IF EXISTS lg_entity;
 DROP TABLE IF EXISTS sq_events;
 DROP TABLE IF EXISTS sq_measures;
 DROP TABLE IF EXISTS sq_entity;
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
 --enable_query_log
