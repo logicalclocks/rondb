@@ -23,6 +23,8 @@
 */
 
 #include <algorithm>
+#include <limits>
+#include <cmath>
 #include <iomanip>
 #include "m_string.h"
 #include "ResultPrinter.hpp"
@@ -1596,6 +1598,8 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value)
 inline static double
 convert_result_to_double(NdbAggregator::Result result)
 {
+  if (result.is_null())
+    return std::numeric_limits<double>::quiet_NaN();
   switch (result.type())
   {
   case NdbDictionary::Column::Type::Bigint:
