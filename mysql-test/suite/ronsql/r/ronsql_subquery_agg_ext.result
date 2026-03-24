@@ -355,10 +355,10 @@ FROM lg_entity AS e
 WHERE e.grp <= 3
 LIMIT 5|
 id	sum_val	cnt_evt
-1	65	3
 101	5065	3
+102	5115	3
 103	5165	3
-52	2615	3
+51	2565	3
 53	2665	3
 
 
@@ -385,11 +385,11 @@ FROM lg_entity AS e
 WHERE e.id <= 50
 LIMIT 5|
 id	sum_early	max_evt
-10	203	10
+28	563	28
+31	623	31
+34	683	34
 4	83	4
-48	963	48
-7	143	7
-9	183	9
+47	943	47
 
 
 === H1: Inner subquery with JOIN (unsupported) ===
@@ -627,5 +627,59 @@ Alice	10	3	80
 Alice	11	5	160
 Bob	20	2	70
 Bob	21	10	350
+
+
+=== K4: Cross-table filter — l.qty > o.min_qty ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+order_id	min_qty	filtered_qty
+10	3	13
+11	5	16
+20	2	10
+21	10	35
+
+
+=== K5: Cross-table filter with two subqueries (merged) ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty,
+(SELECT COUNT(l2.id) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS small_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty,
+(SELECT COUNT(l2.id) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS small_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+order_id	min_qty	filtered_qty	small_count
+10	3	13	1
+11	5	16	1
+20	2	10	0
+21	10	35	0
 
 === Cleanup ===

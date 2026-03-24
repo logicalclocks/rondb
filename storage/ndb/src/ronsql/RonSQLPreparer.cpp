@@ -2585,8 +2585,11 @@ RonSQLPreparer::merge_same_table_subqueries()
 
         // Remap column qualifiers from other's alias to base's alias
         // so that load_join() resolves them against the single joined table.
+        // Also update inner_table_alias so cross-table filter classification
+        // in execute_join() matches the remapped qualifiers.
         LexCString other_alias = other.inner_table_alias;
         LexCString base_alias = base.inner_table_alias;
+        other.inner_table_alias = base_alias;
         for (Uint32 c = 0; c < m_column_qualifiers.size(); c++) {
           if (m_column_qualifiers[c].str != NULL &&
               m_column_qualifiers[c].len == other_alias.len &&
