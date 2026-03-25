@@ -65,15 +65,15 @@
 //#define DEBUG_LCP 1
 //#define DEBUG_REORG 1
 //#define DEBUG_DELETE 1
-#define DEBUG_STAR_AGG 1
 //#define DEBUG_DELETE_NR 1
 //#define DEBUG_LCP_LGMAN 1
 //#define DEBUG_LCP_SKIP_DELETE 1
 //#define DEBUG_DISK 1
 //#define DEBUG_ELEM_COUNT 1
 //#define DEBUG_COPY_TUPLE 1
-#define DEBUG_JOIN_AGG_TRACE 1
 //#define DEBUG_VARPART_EXPAND 1
+//#define DEBUG_JOIN_AGG_TRACE 1
+//#define DEBUG_STAR_AGG 1
 #endif
 
 #ifdef DEBUG_COPY_TUPLE
@@ -5057,12 +5057,17 @@ int Dbtup::prepareAndHandleJoinAggRow(KeyReqStruct *req_struct,
     linked_len = RsubLen - 1;
   }
 #ifdef DEBUG_JOIN_AGG_TRACE
-  DEB_JOIN_AGG(("DBTUP prepareAndHandleJoinAggRow: "
+  DEB_JOIN_AGG(("(%u)DBTUP prepareAndHandleJoinAggRow: "
                  "cinBuffer header: initRead=%u interp=%u "
                  "finalUpd=%u finalRead=%u subLen=%u  "
                  "linked_len=%u",
-                 cinBuffer[0], cinBuffer[1], cinBuffer[2],
-                 cinBuffer[3], cinBuffer[4], linked_len));
+                 instance(),
+                 cinBuffer[0],
+                 cinBuffer[1],
+                 cinBuffer[2],
+                 cinBuffer[3],
+                 cinBuffer[4],
+                 linked_len));
   if (linked_data && linked_len > 0) {
     const Uint32 *p = linked_data;
     const Uint32 *p_end = linked_data + linked_len;
@@ -5071,14 +5076,15 @@ int Dbtup::prepareAndHandleJoinAggRow(KeyReqStruct *req_struct,
       Uint32 hdr = *p;
       Uint32 attrId = AttributeHeader::getAttributeId(hdr);
       Uint32 dSz = AttributeHeader::getDataSize(hdr);
-      DEB_JOIN_AGG(("  linked[%u]: AttrHeader=0x%08x "
+      DEB_JOIN_AGG(("(%u)DBTUP  linked[%u]: AttrHeader=0x%08x "
                      "(attrId=%u dataSize=%u)",
-                     idx, hdr, attrId, dSz));
+                     instance(), idx, hdr, attrId, dSz));
       p += 1 + dSz;
       idx++;
     }
   } else {
-    DEB_JOIN_AGG(("  linked data: EMPTY (RsubLen=%u)", RsubLen));
+    DEB_JOIN_AGG(("(%u)DBTUP linked data: EMPTY (RsubLen=%u)",
+      instance(), RsubLen));
   }
 #endif
   // Reset read_length: the final-read projection (FLUSH_AI) may have
@@ -5111,18 +5117,27 @@ int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
   ndbrequire(leafIndex < state->m_num_leaves);
   JoinAggInterpreter *interp = c_lqh->getJoinAggInterpreter(state);
 
-  DEB_STAR_AGG(("STAR_AGG handleJoinAggRow: encodedKey=0x%08x baseKey=%u "
-                "leafIndex=%u num_leaves=%u n_gb_cols=%u linked_len=%u",
-                encodedKey, baseKey, leafIndex, state->m_num_leaves,
-                interp->n_gb_cols(), linked_len));
+  DEB_STAR_AGG(("(%u)DBTUP STAR_AGG handleJoinAggRow: encodedKey=0x%08x"
+                " baseKey=%u leafIndex=%u num_leaves=%u n_gb_cols=%u"
+                " linked_len=%u",
+                instance(),
+                encodedKey,
+                baseKey,
+                leafIndex,
+                state->m_num_leaves,
+                interp->n_gb_cols(),
+                linked_len));
 
   // Switch interpreter to this leaf's program and accumulator offset
   if (state->m_num_leaves > 1) {
     const LeafProgram &leaf = state->m_leaf_programs[leafIndex];
-    DEB_STAR_AGG(("STAR_AGG switchProgram: leaf=%u progLen=%u "
+    DEB_STAR_AGG(("(%u)DBTUP STAR_AGG switchProgram: leaf=%u progLen=%u "
                   "prog_start=%u acc_offset=%u n_agg=%u",
-                  leafIndex, leaf.m_agg_program_len,
-                  leaf.m_agg_prog_start_pos, leaf.m_acc_offset,
+                  instance(),
+                  leafIndex,
+                  leaf.m_agg_program_len,
+                  leaf.m_agg_prog_start_pos,
+                  leaf.m_acc_offset,
                   leaf.m_n_agg_results));
     interp->switchProgram(leaf.m_agg_program, leaf.m_agg_program_len,
                           leaf.m_agg_prog_start_pos, leaf.m_acc_offset);

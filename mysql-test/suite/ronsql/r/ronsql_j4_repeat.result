@@ -1,0 +1,143 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+=== Run 1 ===
+== Query ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+=== Run 2 ===
+== Query ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+=== Run 3 ===
+== Query ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+=== Run 4 ===
+== Query ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+=== Run 5 ===
+== Query ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+=== Run 6 ===
+== Query ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+=== Run 7 ===
+== Query ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+=== Run 8 ===
+== Query ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+=== Run 9 ===
+== Query ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+=== Run 10 ===
+== Query ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+=== Cleanup ===
