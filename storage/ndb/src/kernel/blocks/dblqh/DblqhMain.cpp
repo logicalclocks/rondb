@@ -165,7 +165,7 @@
 //#define DEBUG_CONT_SCAN 1
 //#define DEBUG_INDEX_BUILD 1
 //#define DEBUG_JOIN_AGG 1
-//#define DEBUG_MATCH 1
+#define DEBUG_MATCH 1
 #endif
 
 #ifdef DEBUG_JOIN_AGG
@@ -15169,8 +15169,8 @@ void Dblqh::sendEvictedAggGroup(Signal *signal,
 void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
                                            TcConnectionrecPtr tcConnectptr) {
   TcConnectionrec *const regTcPtr = tcConnectptr.p;
-  DEB_MATCH(("(%u) handleOuterJoinAggKeyNotFound: aggKey=%u",
-             instance(), regTcPtr->m_join_agg_state_key));
+  DEB_MATCH(("(%u)DBLQH handleOuterJoinAggKeyNotFound: aggKey=%u",
+             getThreadId(), regTcPtr->m_join_agg_state_key));
 
   /* 1. Abort ACC — the key lookup started but key was not found.
    *    canBlock=0: safe because we arrived from ACCKEYREF (not pending). */
@@ -18285,9 +18285,9 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (state == nullptr) {
     jam();
-    DEB_JOIN_AGG(("DBLQH execJOIN_AGG_COMPLETE_REQ:"
+    DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ:"
                   " aggStateKey=%u state=nullptr (NOT FOUND)",
-                  aggStateKey));
+                  getThreadId(), aggStateKey));
     JoinAggCompleteRef *ref =
       (JoinAggCompleteRef *)signal->getDataPtrSend();
     ref->senderRef = reference();
@@ -18304,10 +18304,10 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     Uint32 gbSize = 0;
     if (interp != nullptr && interp->gb_map_mutable() != nullptr)
       gbSize = interp->gb_map_mutable()->size();
-    DEB_JOIN_AGG(("DBLQH execJOIN_AGG_COMPLETE_REQ:"
+    DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ:"
                   " aggStateKey=%u strategy=%u num_threads=%u"
                   " gb_map_size=%u completed_ops=%u",
-                  aggStateKey, state->m_strategy,
+                  getThreadId(), aggStateKey, state->m_strategy,
                   state->m_num_threads, gbSize,
                   state->m_completed_ops.load()));
   }
@@ -18399,9 +18399,9 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
     return;
   }
 
-  DEB_MATCH(("(%u) NULL_ROW_REQ: aggStateKey=%u requestPtrI=%u "
+  DEB_MATCH(("(%u)DBLQH NULL_ROW_REQ: aggStateKey=%u requestPtrI=%u "
              "treeNodePtrI=%u",
-             instance(), aggStateKey, requestPtrI, treeNodePtrI));
+             getThreadId(), aggStateKey, requestPtrI, treeNodePtrI));
 
   /* Read linked attribute data from long section 0 (if present) */
   if (unlikely(handle.m_cnt > 1)) {
@@ -18562,8 +18562,9 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     ptr[0].p = buf;
     ptr[0].sz = pos;
  
-    DEB_JOIN_AGG(("(%u) 1:Sending TRANSID_AI to 0x%x, receiverId: %u, size: %u",
-      instance(),
+    DEB_JOIN_AGG(("(%u)DBLQH 1:Sending TRANSID_AI to 0x%x, receiverId:"
+                  " %u, size: %u",
+      getThreadId(),
       state->m_resultRef,
       transIdAI->connectPtr,
       pos));
@@ -18645,8 +18646,9 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       ptr[0].p = buf;
       ptr[0].sz = pos;
 
-      DEB_JOIN_AGG(("(%u) 2:Sending TRANSID_AI to 0x%x, receiverId: %u, size: %u",
-        instance(),
+      DEB_JOIN_AGG(("(%u)DBLQH 2:Sending TRANSID_AI to 0x%x, receiverId: %u,"
+                    " size: %u",
+        getThreadId(),
         state->m_resultRef,
         transIdAI->connectPtr,
         pos));
@@ -20271,8 +20273,8 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     if (scanPtr->m_outer_join_agg_scan) {
       jam();
       Uint32 range_no = regTcPtr->m_scan_curr_range_no;
-      DEB_MATCH(("(%u) setLocalMatchedRange: range_no=%u read_len=%u",
-                 instance(), range_no, read_len));
+      DEB_MATCH(("(%u)DBLQH setLocalMatchedRange: range_no=%u read_len=%u",
+                 getThreadId(), range_no, read_len));
       Uint32 word = range_no / 32;
       if (unlikely(word >= scanPtr->m_local_matched_words)) {
         jam();
@@ -20976,10 +20978,12 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
     }
     memset(scanPtr->m_local_matched_ranges, 0,
            bitmask_words * sizeof(Uint32));
-    DEB_MATCH(("(%u) SCAN_FRAGREQ: OuterJoinAggFlag=1 aggKey=%u "
+    DEB_MATCH(("(%u)DBLQH SCAN_FRAGREQ: OuterJoinAggFlag=1 aggKey=%u "
                "rangeCount=%u bitmask_words=%u",
-               instance(), scanPtr->m_join_agg_state_key,
-               rangeCount, bitmask_words));
+               getThreadId(),
+               scanPtr->m_join_agg_state_key,
+               rangeCount,
+               bitmask_words));
   } else {
     scanPtr->m_outer_join_agg_scan = 0;
   }
@@ -22190,9 +22194,13 @@ void Dblqh::sendScanFragConf(Signal *signal,
     LinearSectionPtr lsptr[1];
     lsptr[0].p = scanPtr->m_local_matched_ranges;
     lsptr[0].sz = scanPtr->m_local_matched_words;
-    DEB_MATCH(("(%u) SCAN_FRAGCONF(close): sending matched bitmask "
-               "words=%u to ref=0x%x",
-               instance(), scanPtr->m_local_matched_words, blockRef));
+    DEB_MATCH(("(%u)DBLQH SCAN_FRAGCONF(close): sending matched bitmask "
+               "words=%u mask: 0x%x to ref=0x%x, senderData: %u",
+               getThreadId(),
+               scanPtr->m_local_matched_words,
+               scanPtr->m_local_matched_ranges[0],
+               blockRef,
+               senderData));
     sendSignal(blockRef, GSN_SCAN_FRAGCONF, signal, sig_len,
                prio_level, lsptr, 1);
     lc_ndbd_pool_free(scanPtr->m_local_matched_ranges);
