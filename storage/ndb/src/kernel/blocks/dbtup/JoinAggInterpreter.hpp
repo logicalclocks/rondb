@@ -96,11 +96,13 @@ class JoinAggInterpreter : public PushdownInterpreter {
       Dbtup* block_tup,
       Dbtup::KeyReqStruct* req_struct,
       const Uint32* linked_attr_data,
-      Uint32 linked_attr_len);
+      Uint32 linked_attr_len,
+      const struct LeafProgram* leaf = nullptr);
   Int32 finalizeResults();
   Int32 processNullExtendedRow(
       const Uint32* linked_attr_data,
-      Uint32 linked_attr_len);
+      Uint32 linked_attr_len,
+      const struct LeafProgram* leaf = nullptr);
 
   Int32 getResultData(Uint32* buffer, Uint32 buffer_size,
                       Uint32* bytes_written);
@@ -131,14 +133,11 @@ class JoinAggInterpreter : public PushdownInterpreter {
    * are processed. This ensures hash map entries are sized for the full
    * combined accumulator layout.
    *
-   * switchProgram() swaps the active aggregation program. The hash map and
-   * group rows are unchanged — only the program pointer, instruction start
-   * position, and accumulator offset change. Called before each ProcessRec
-   * to select the correct leaf's program.
+   * Leaf program switching is done inside processRecWithLinkedAttrs()
+   * and processNullExtendedRow() under mutex protection (MUTEX_BASED).
+   * Pass a non-null LeafProgram* to switch before processing.
    */
   void setTotalAggResults(Uint32 total);
-  void switchProgram(const Uint32* prog, Uint32 prog_len,
-                     Uint32 agg_prog_start_pos, Uint32 acc_offset);
   void cacheMultiLeafAggOps(const struct LeafProgram* leaves,
                             Uint32 num_leaves);
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,

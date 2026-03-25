@@ -5128,26 +5128,26 @@ int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
                 interp->n_gb_cols(),
                 linked_len));
 
-  // Switch interpreter to this leaf's program and accumulator offset
+  // For multi-leaf, pass leaf program to processRecWithLinkedAttrs
+  // which switches under mutex protection for MUTEX_BASED.
+  const LeafProgram *leaf = nullptr;
   if (state->m_num_leaves > 1) {
-    const LeafProgram &leaf = state->m_leaf_programs[leafIndex];
-    DEB_STAR_AGG(("(%u)DBTUP STAR_AGG switchProgram: leaf=%u progLen=%u "
+    leaf = &state->m_leaf_programs[leafIndex];
+    DEB_STAR_AGG(("(%u)DBTUP STAR_AGG leaf=%u progLen=%u "
                   "prog_start=%u acc_offset=%u n_agg=%u",
                   instance(),
                   leafIndex,
-                  leaf.m_agg_program_len,
-                  leaf.m_agg_prog_start_pos,
-                  leaf.m_acc_offset,
-                  leaf.m_n_agg_results));
-    interp->switchProgram(leaf.m_agg_program, leaf.m_agg_program_len,
-                          leaf.m_agg_prog_start_pos, leaf.m_acc_offset);
+                  leaf->m_agg_program_len,
+                  leaf->m_agg_prog_start_pos,
+                  leaf->m_acc_offset,
+                  leaf->m_n_agg_results));
   }
 
   Uint32 evict_count = 0;
 
 retry:
   Int32 ret = interp->processRecWithLinkedAttrs(
-      this, req_struct, linked_data, linked_len);
+      this, req_struct, linked_data, linked_len, leaf);
   if (ret == AGG_EVICT_NEEDED) {
     c_lqh->sendEvictedAggGroup(req_struct->signal, interp, state);
     evict_count++;

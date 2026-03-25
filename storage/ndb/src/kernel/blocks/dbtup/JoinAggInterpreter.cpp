@@ -790,20 +790,8 @@ void JoinAggInterpreter::setTotalAggResults(Uint32 total) {
  * @param agg_prog_start   Instruction start offset within the program
  * @param acc_offset       Accumulator offset for this leaf (0 for leaf 0)
  */
-void JoinAggInterpreter::switchProgram(const Uint32* prog, Uint32 prog_len,
-                                       Uint32 agg_prog_start,
-                                       Uint32 acc_offset) {
-  require(m_inited);
-  require(prog != nullptr);
-  require(prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
-
-  // Copy program to internal buffer and point m_prog at it
-  memcpy(m_prog_buf, prog, prog_len * sizeof(Uint32));
-  m_prog = m_prog_buf;
-  m_prog_len = prog_len;
-  m_agg_prog_start_pos = agg_prog_start;
-  m_acc_offset = acc_offset;
-}
+// switchProgram removed — leaf program switching is now done inside
+// processRecWithLinkedAttrs / processNullExtendedRow under mutex.
 
 /**
  * cacheMultiLeafAggOps — pre-build combined agg_ops for multi-leaf merge.
@@ -1666,9 +1654,19 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
     Dbtup* block_tup,
     Dbtup::KeyReqStruct* req_struct,
     const Uint32* linked_attr_data,
-    Uint32 linked_attr_len) {
+    Uint32 linked_attr_len,
+    const LeafProgram* leaf) {
   std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
   if (m_use_mutex) lock.lock();
+
+  // Switch to leaf program under mutex protection.
+  // For single-leaf queries, leaf is nullptr — no switch needed.
+  if (leaf != nullptr) {
+    m_prog = const_cast<Uint32*>(leaf->m_agg_program);
+    m_prog_len = leaf->m_agg_program_len;
+    m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
+    m_acc_offset = leaf->m_acc_offset;
+  }
 
   m_linked_attr_data = linked_attr_data;
   m_linked_attr_len = linked_attr_len;
@@ -2126,9 +2124,17 @@ void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup) {
 
 Int32 JoinAggInterpreter::processNullExtendedRow(
     const Uint32* linked_attr_data,
-    Uint32 linked_attr_len) {
+    Uint32 linked_attr_len,
+    const LeafProgram* leaf) {
   std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
   if (m_use_mutex) lock.lock();
+
+  if (leaf != nullptr) {
+    m_prog = const_cast<Uint32*>(leaf->m_agg_program);
+    m_prog_len = leaf->m_agg_program_len;
+    m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
+    m_acc_offset = leaf->m_acc_offset;
+  }
 
   m_linked_attr_data = linked_attr_data;
   m_linked_attr_len = linked_attr_len;

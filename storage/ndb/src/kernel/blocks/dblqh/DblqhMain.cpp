@@ -15220,15 +15220,14 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
   ndbrequire(outerLeafIndex < state->m_num_leaves);
   JoinAggInterpreter *interp = getJoinAggInterpreter(state);
 
-  // Switch interpreter to this leaf's program for null row processing
+  const LeafProgram *leaf = nullptr;
   if (state->m_num_leaves > 1) {
-    const LeafProgram &leaf = state->m_leaf_programs[outerLeafIndex];
-    interp->switchProgram(leaf.m_agg_program, leaf.m_agg_program_len,
-                          leaf.m_agg_prog_start_pos, leaf.m_acc_offset);
+    leaf = &state->m_leaf_programs[outerLeafIndex];
   }
 
 retry:
-  Int32 ret = interp->processNullExtendedRow(linked_data, linked_len);
+  Int32 ret = interp->processNullExtendedRow(linked_data, linked_len,
+                                              leaf);
   if (ret == AGG_EVICT_NEEDED) {
     sendEvictedAggGroup(signal, interp, state);
     goto retry;
