@@ -119,11 +119,12 @@ client_id	ring_idx	label	notes
 # Case 6: DELETE and re-INSERT with TEXT/BLOB
 #
 DELETE FROM test.rb_mixed WHERE client_id = 1;
-SELECT client_id, ring_idx FROM test.rb_mixed WHERE client_id = 1;
+SELECT client_id, ring_idx FROM test.rb_mixed WHERE client_id = 1
+ORDER BY ring_idx;
 client_id	ring_idx
+1	1
 1	2
 1	3
-1	1
 INSERT INTO test.rb_mixed (client_id, label, notes, attachment)
 VALUES (1, 'Fresh 1', REPEAT('After delete ', 100), REPEAT(x'CC', 150));
 SELECT client_id, ring_idx, label, LENGTH(notes) AS note_len,

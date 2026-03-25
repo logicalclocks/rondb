@@ -233,6 +233,86 @@ id	ring_idx	val
 2	1	z
 DROP TABLE test.rb_show;
 #
+# Case 8: NOT NULL + unique index survives backup/restore
+#
+CREATE TABLE test.rb_nn_uniq (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+code INT NOT NULL,
+PRIMARY KEY (id, ring_idx),
+UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 100);
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (2, 200);
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 300);
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 400);
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+id	ring_idx	code
+1	1	100
+1	2	300
+1	3	400
+2	1	200
+DROP TABLE test.rb_nn_uniq;
+SET GLOBAL ndb_metadata_sync = true;
+SET GLOBAL ndb_metadata_sync = true;
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+id	ring_idx	code
+1	1	100
+1	2	300
+1	3	400
+2	1	200
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (3, 200);
+ERROR 23000: Duplicate entry '200' for key 'rb_nn_uniq.idx_code'
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (3, 500);
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+id	ring_idx	code
+1	1	100
+1	2	300
+1	3	400
+2	1	200
+3	1	500
+DROP TABLE test.rb_nn_uniq;
+#
+# Case 9: NOT NULL + unique index — 4-step restore with rebuild-indexes
+#
+CREATE TABLE test.rb_nn_rebuild (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+code INT NOT NULL,
+PRIMARY KEY (id, ring_idx),
+UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (1, 100);
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (2, 200);
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (1, 300);
+SELECT id, ring_idx, code FROM test.rb_nn_rebuild ORDER BY id, ring_idx;
+id	ring_idx	code
+1	1	100
+1	2	300
+2	1	200
+DROP TABLE test.rb_nn_rebuild;
+SET GLOBAL ndb_metadata_sync = true;
+SET GLOBAL ndb_metadata_sync = true;
+SELECT id, ring_idx, code FROM test.rb_nn_rebuild ORDER BY id, ring_idx;
+id	ring_idx	code
+1	1	100
+1	2	300
+2	1	200
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (3, 200);
+ERROR 23000: Duplicate entry '200' for key 'rb_nn_rebuild.idx_code'
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (3, 500);
+SELECT id, ring_idx, code FROM test.rb_nn_rebuild ORDER BY id, ring_idx;
+id	ring_idx	code
+1	1	100
+1	2	300
+2	1	200
+3	1	500
+DROP TABLE test.rb_nn_rebuild;
+#
 # Cleanup
 #
 # Done.

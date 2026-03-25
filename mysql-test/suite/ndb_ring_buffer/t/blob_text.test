@@ -151,7 +151,8 @@ SELECT client_id, ring_idx, label, notes
 
 DELETE FROM test.rb_mixed WHERE client_id = 1;
 
-SELECT client_id, ring_idx FROM test.rb_mixed WHERE client_id = 1;
+SELECT client_id, ring_idx FROM test.rb_mixed WHERE client_id = 1
+    ORDER BY ring_idx;
 
 INSERT INTO test.rb_mixed (client_id, label, notes, attachment)
     VALUES (1, 'Fresh 1', REPEAT('After delete ', 100), REPEAT(x'CC', 150));

@@ -490,6 +490,168 @@ SELECT id, ring_idx, val FROM test.rb_show ORDER BY id, ring_idx;
 
 DROP TABLE test.rb_show;
 
+###############################################################################
+# Case 8: NOT NULL + unique index — backup/restore
+# Meta rows (code=0) must not collide with the unique index during restore.
+###############################################################################
+
+--echo #
+--echo # Case 8: NOT NULL + unique index survives backup/restore
+--echo #
+
+CREATE TABLE test.rb_nn_uniq (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    code INT NOT NULL,
+    PRIMARY KEY (id, ring_idx),
+    UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 100);
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (2, 200);
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 300);
+# Wrap id=1: slot 1 (100) overwritten with 400
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 400);
+
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+--source include/ndb_backup.inc
+
+DROP TABLE test.rb_nn_uniq;
+
+# Restore with --allow-unique-indexes: row-by-row insertion with index active.
+# DbtupTrigger fix skips index triggers for meta rows (ring_idx=0), so
+# multiple meta rows with code=0 don't cause duplicate key errors.
+--exec $NDB_RESTORE -p 8 -b $the_backup_id -n 1 -m -r --allow-unique-indexes --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -p 8 -b $the_backup_id -n 2 -r --allow-unique-indexes --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+
+--connection server2
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+--connection server1
+
+# Data should be restored
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+# Unique constraint should work after restore
+--error ER_DUP_ENTRY
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (3, 200);
+
+# Ring should continue operating
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (3, 500);
+
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+DROP TABLE test.rb_nn_uniq;
+
+###############################################################################
+# Case 9: NOT NULL + unique index — 4-step restore with rebuild-indexes
+# Uses --disable-indexes + --rebuild-indexes which rebuilds the unique index
+# via TRIX/SUMA after data is loaded. Exercises the SUMA fix that hides
+# meta rows for SingleTableScan index build scans.
+###############################################################################
+
+--echo #
+--echo # Case 9: NOT NULL + unique index — 4-step restore with rebuild-indexes
+--echo #
+
+CREATE TABLE test.rb_nn_rebuild (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    code INT NOT NULL,
+    PRIMARY KEY (id, ring_idx),
+    UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (1, 100);
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (2, 200);
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (1, 300);
+
+SELECT id, ring_idx, code FROM test.rb_nn_rebuild ORDER BY id, ring_idx;
+
+--source include/ndb_backup.inc
+
+DROP TABLE test.rb_nn_rebuild;
+
+# 4-step restore: disable indexes, load data, rebuild via TRIX
+--exec $NDB_RESTORE -p 8 -b $the_backup_id -n 1 -m --disable-indexes --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -p 8 -b $the_backup_id -n 1 -r --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -p 8 -b $the_backup_id -n 2 -r --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -p 8 -b $the_backup_id -n 1 --rebuild-indexes --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+
+--connection server2
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+--connection server1
+
+# Data should be restored, unique index rebuilt via TRIX
+SELECT id, ring_idx, code FROM test.rb_nn_rebuild ORDER BY id, ring_idx;
+
+# Unique constraint works after rebuild
+--error ER_DUP_ENTRY
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (3, 200);
+
+# Ring continues operating
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (3, 500);
+
+SELECT id, ring_idx, code FROM test.rb_nn_rebuild ORDER BY id, ring_idx;
+
+DROP TABLE test.rb_nn_rebuild;
+
 --echo #
 --echo # Cleanup
 --echo #

@@ -5001,7 +5001,7 @@ int ha_ndbcluster::flush_ring_buffer_batch() {
                          &my_charset_bin);
   ring_meta_field->move_field_offset(-row_offset);
 
-  /* Build meta column mask: PK columns + ring_meta */
+  /* Build meta column mask: PK columns + ring_meta + NOT NULL user columns */
   const Uint32 bitmapSz = (NDB_MAX_ATTRIBUTES_IN_TABLE + 31) / 32;
   uint32 metaMaskSpace[bitmapSz];
   MY_BITMAP metaMask;
@@ -5012,6 +5012,27 @@ int ha_ndbcluster::flush_ring_buffer_batch() {
     bitmap_set_bit(&metaMask, pk_info->key_part[i].field->field_index());
   }
   bitmap_set_bit(&metaMask, ring_meta_field->field_index());
+
+  /*
+   * Include NOT NULL user columns with zero-defaults so that
+   * DBTUP's checkNullAttributes() does not reject the meta row.
+   * Skip BLOB/TEXT columns (handled by NdbBlob separately).
+   */
+  ptrdiff_t nn_offset = meta_rec - table->record[0];
+  for (uint i = 0; i < table->s->fields; i++) {
+    Field *f = table->field[i];
+    if (!bitmap_is_set(&metaMask, i) && !f->is_nullable()) {
+      enum_field_types ft = f->real_type();
+      if (ft == MYSQL_TYPE_BLOB || ft == MYSQL_TYPE_TINY_BLOB ||
+          ft == MYSQL_TYPE_MEDIUM_BLOB || ft == MYSQL_TYPE_LONG_BLOB) {
+        continue;
+      }
+      f->move_field_offset(nn_offset);
+      f->reset();
+      f->move_field_offset(-nn_offset);
+      bitmap_set_bit(&metaMask, i);
+    }
+  }
 
   uchar *meta_mask = m_table_map->get_column_mask(&metaMask);
 
@@ -5435,16 +5456,27 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
 
       /*
        * Insert or update meta row.
+       * Use record[1] as a separate buffer so we don't corrupt user
+       * column values in record[0] (which the data_op still references).
        */
       uchar meta_packed[RING_META_SIZE];
       meta.pack(meta_packed);
 
+      uchar *meta_rec = table->record[1];
+      memcpy(meta_rec, record, table->s->reclength);
+      ptrdiff_t row_offset = meta_rec - table->record[0];
+
+      ring_idx_field->move_field_offset(row_offset);
       ring_idx_field->store(0, true);
+      ring_idx_field->move_field_offset(-row_offset);
+
+      ring_meta_field->move_field_offset(row_offset);
       ring_meta_field->set_notnull();
       ring_meta_field->store((const char *)meta_packed, RING_META_SIZE,
                              &my_charset_bin);
+      ring_meta_field->move_field_offset(-row_offset);
 
-      /* Meta mask: PK columns + ring_meta */
+      /* Meta mask: PK columns + ring_meta + NOT NULL user columns */
       const Uint32 bitmapSz = (NDB_MAX_ATTRIBUTES_IN_TABLE + 31) / 32;
       uint32 metaMaskSpace[bitmapSz];
       MY_BITMAP metaMask;
@@ -5456,6 +5488,26 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
       }
       bitmap_set_bit(&metaMask, ring_meta_field->field_index());
 
+      /*
+       * Include NOT NULL user columns with zero-defaults so that
+       * DBTUP's checkNullAttributes() does not reject the meta row.
+       * Skip BLOB/TEXT columns (handled by NdbBlob separately).
+       */
+      for (uint i = 0; i < table->s->fields; i++) {
+        Field *f = table->field[i];
+        if (!bitmap_is_set(&metaMask, i) && !f->is_nullable()) {
+          enum_field_types ft = f->real_type();
+          if (ft == MYSQL_TYPE_BLOB || ft == MYSQL_TYPE_TINY_BLOB ||
+              ft == MYSQL_TYPE_MEDIUM_BLOB || ft == MYSQL_TYPE_LONG_BLOB) {
+            continue;
+          }
+          f->move_field_offset(row_offset);
+          f->reset();
+          f->move_field_offset(-row_offset);
+          bitmap_set_bit(&metaMask, i);
+        }
+      }
+
       uchar *meta_mask = m_table_map->get_column_mask(&metaMask);
 
       NdbOperation::OperationOptions meta_opts;
@@ -5466,13 +5518,13 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
       const NdbOperation *meta_op;
       if (meta_not_found) {
         meta_op =
-            trans->insertTuple(key_rec, (const char *)record, m_ndb_record,
-                               (char *)record, meta_mask, &meta_opts,
+            trans->insertTuple(key_rec, (const char *)meta_rec, m_ndb_record,
+                               (char *)meta_rec, meta_mask, &meta_opts,
                                sizeof(NdbOperation::OperationOptions));
       } else {
         meta_op =
-            trans->updateTuple(key_rec, (const char *)record, m_ndb_record,
-                               (char *)record, meta_mask, &meta_opts,
+            trans->updateTuple(key_rec, (const char *)meta_rec, m_ndb_record,
+                               (char *)meta_rec, meta_mask, &meta_opts,
                                sizeof(NdbOperation::OperationOptions));
       }
 
@@ -10842,6 +10894,26 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
       if (!found_meta) {
         return create.failed_illegal_create_option(
             "Ring meta column not found in table");
+      }
+
+      /* Reject NOT NULL BLOB/TEXT user columns: meta rows cannot set a
+         zero-default for BLOB types, causing NDB error 839. */
+      for (uint i = 0; i < table->s->fields; i++) {
+        Field *const field = table->field[i];
+        if (!my_strcasecmp(system_charset_info, field->field_name,
+                           ring_idx_col_name.c_str()) ||
+            !my_strcasecmp(system_charset_info, field->field_name,
+                           ring_meta_col_name.c_str())) {
+          continue;
+        }
+        if (!field->is_nullable()) {
+          enum_field_types ft = field->real_type();
+          if (ft == MYSQL_TYPE_BLOB || ft == MYSQL_TYPE_TINY_BLOB ||
+              ft == MYSQL_TYPE_MEDIUM_BLOB || ft == MYSQL_TYPE_LONG_BLOB) {
+            return create.failed_illegal_create_option(
+                "Ring buffer tables cannot have NOT NULL BLOB/TEXT columns");
+          }
+        }
       }
 
       found_ring_buffer = true;

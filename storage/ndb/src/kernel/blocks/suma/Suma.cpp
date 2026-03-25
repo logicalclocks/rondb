@@ -3222,10 +3222,18 @@ void Suma::SyncRecord::nextScan(Signal *signal) {
   ScanFragReq::setTTLIgnoreFragFlag(req->requestInfo, 1);
   /*
    * Ring buffer related
-   * Show meta rows in suma scan so meta rows are visible to event
-   * subscriptions (used by NDB replication binlog injector).
+   * For event subscriptions (replication), show meta rows so they are
+   * captured by the binlog injector.
+   * For index build scans (SingleTableScan), hide meta rows so they
+   * don't pollute the new index with zero-default values.
    */
-  ScanFragReq::setRingBufferShowMetaFragFlag(req->requestInfo, 1);
+  {
+    Uint32 subType = subPtr.p->m_subscriptionType;
+    ndbassert(subType == SubCreateReq::SingleTableScan ||
+              subType == SubCreateReq::TableEvent);
+    Uint32 show_meta = (subType == SubCreateReq::TableEvent) ? 1 : 0;
+    ScanFragReq::setRingBufferShowMetaFragFlag(req->requestInfo, show_meta);
+  }
 
   req->fragmentNoKeyLen = fd.m_fragDesc.m_fragmentNo;
   req->schemaVersion = tabPtr.p->m_schemaVersion;

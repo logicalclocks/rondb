@@ -274,6 +274,79 @@ CREATE TABLE test.t19 (
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
 
+###############################################################################
+# Case 20: FOREIGN KEY on ring buffer table — blocked
+###############################################################################
+
+--echo #
+--echo # Case 20: FOREIGN KEY on ring buffer table — blocked
+--echo #
+
+CREATE TABLE test.fk_parent (
+    id INT NOT NULL PRIMARY KEY
+) ENGINE = NDB;
+
+# Ring buffer as FK child — blocked
+--error ER_CANNOT_ADD_FOREIGN
+CREATE TABLE test.rb_fk_child (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    parent_id INT NOT NULL,
+    PRIMARY KEY (id, ring_idx),
+    FOREIGN KEY (parent_id) REFERENCES test.fk_parent(id)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+
+# Ring buffer as FK parent — blocked
+CREATE TABLE test.rb_fk_parent (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    code INT NOT NULL,
+    PRIMARY KEY (id, ring_idx),
+    UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+
+--error ER_CANNOT_ADD_FOREIGN
+CREATE TABLE test.fk_child_of_rb (
+    id INT NOT NULL PRIMARY KEY,
+    code INT NOT NULL,
+    FOREIGN KEY (code) REFERENCES test.rb_fk_parent(code)
+) ENGINE = NDB;
+
+DROP TABLE test.rb_fk_parent;
+DROP TABLE test.fk_parent;
+
+###############################################################################
+# Case 21: NOT NULL BLOB/TEXT on ring buffer table — blocked
+###############################################################################
+
+--echo #
+--echo # Case 21: NOT NULL BLOB/TEXT on ring buffer table — blocked
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_nn_blob (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    content TEXT NOT NULL,
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_nn_blob2 (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    payload BLOB NOT NULL,
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+
 --echo #
 --echo # Done
 --echo #
