@@ -3364,7 +3364,8 @@ public:
 
   void fireImmediateTriggers(KeyReqStruct *req_struct,
                              TupTriggerData_list &triggerList,
-                             Operationrec *regOperPtr, bool disk);
+                             Operationrec *regOperPtr, bool disk,
+                             bool skip_index_fk = false);
 
   void checkDeferredTriggersDuringPrepare(KeyReqStruct *req_struct,
                                           TupTriggerData_list &triggerList,
@@ -3372,11 +3373,13 @@ public:
                                           bool disk);
   void fireDeferredTriggers(KeyReqStruct *req_struct,
                             TupTriggerData_list &triggerList,
-                            Operationrec *const regOperPtr, bool disk);
+                            Operationrec *const regOperPtr, bool disk,
+                            bool skip_index_fk = false);
 
   void fireDeferredConstraints(KeyReqStruct *req_struct,
                                TupTriggerData_list &triggerList,
-                               Operationrec *const regOperPtr, bool disk);
+                               Operationrec *const regOperPtr, bool disk,
+                               bool skip_index_fk = false);
 
   void fireDetachedTriggers(KeyReqStruct *req_struct,
                             TupTriggerData_list &triggerList,
@@ -4494,6 +4497,19 @@ public:
     tablePtr.i = table_id;
     ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
     return is_ring_buffer_table(tablePtr.p);
+  }
+
+  /**
+   * Check if a tuple is a ring buffer meta row (ring_idx == 0).
+   * Reads ring_idx directly from the tuple via the attribute descriptor.
+   * Caller must ensure is_ring_buffer_table(regTabPtr) is true.
+   */
+  bool isRingBufferMetaRow(Tablerec *regTabPtr, const Tuple_header *tuple_ptr) {
+    ndbassert(is_ring_buffer_table(regTabPtr));
+    Uint32 col_no = regTabPtr->m_ring_idx_col_no;
+    Uint32 attrDes2 = regTabPtr->tabDescriptor[col_no * ZAD_SIZE + 1];
+    Uint32 readOffset = AttributeOffset::getOffset(attrDes2);
+    return (tuple_ptr->m_data[readOffset] == 0);
   }
 
 public:

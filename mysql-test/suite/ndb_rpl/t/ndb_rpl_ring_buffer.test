@@ -347,6 +347,56 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 1 ORDER BY ring_idx;
 
 ###############################################################################
+# Case 14: NOT NULL + unique index replicates correctly
+# Meta rows (code=0) must not appear in unique index on slave.
+###############################################################################
+
+--echo #
+--echo # Case 14: NOT NULL + unique index replicates correctly
+--echo #
+
+--connection master
+
+CREATE TABLE test.rb_nn_uniq (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    code INT NOT NULL,
+    PRIMARY KEY (id, ring_idx),
+    UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 100);
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (2, 200);
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 300);
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 400);
+
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave has same data, unique index intact
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+--connection master
+
+# Wrap on master: ring full for id=1, slot 1 (100) overwritten with 500
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 500);
+
+# Freed value 100 can be reused by different prefix
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (2, 100);
+
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave matches master after wrapping
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+###############################################################################
 # Cleanup
 ###############################################################################
 
@@ -357,6 +407,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 --connection master
 DROP TABLE test.rb;
 DROP TABLE test.rb_bulk;
+DROP TABLE test.rb_nn_uniq;
 --sync_slave_with_master
 
 --source include/rpl/deinit.inc

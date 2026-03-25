@@ -1389,6 +1389,14 @@ int ha_ndbcluster::create_fks(THD *thd, Ndb *ndb, const char *dbname,
       return err_default;
     }
 
+    if (parent_tab.get_table()->isRingBuffer() ||
+        child_tab.get_table()->isRingBuffer()) {
+      push_warning_printf(thd, Sql_condition::SL_WARNING,
+                          ER_CANNOT_ADD_FOREIGN,
+                          "Can not use foreign key on ring buffer table");
+      return err_default;
+    }
+
     const NDBCOL *parentcols[NDB_MAX_ATTRIBUTES_IN_INDEX + 1];
     {
       unsigned pos = 0;
