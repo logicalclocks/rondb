@@ -589,6 +589,8 @@ bool AggInterpreter::OptimizeProgram() {
       case kOpBranchRegLe:
       case kOpBranchRegGt:
       case kOpBranchRegGe:
+      case kOpBranchRegEq:
+      case kOpBranchRegNe:
         break;  /* 1-word instruction, exec_pos++ below handles it */
 
       default:
@@ -2031,6 +2033,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpBranchRegLe:
       case kOpBranchRegGt:
       case kOpBranchRegGe:
+      case kOpBranchRegEq:
+      case kOpBranchRegNe:
       {
         Uint32 ra = (value >> 20) & 0x0F;
         Uint32 rb = (value >> 16) & 0x0F;
@@ -2059,6 +2063,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           case kOpBranchRegLe: do_skip = (va <= vb); break;
           case kOpBranchRegGt: do_skip = (va > vb); break;
           case kOpBranchRegGe: do_skip = (va >= vb); break;
+          case kOpBranchRegEq: do_skip = (va == vb); break;
+          case kOpBranchRegNe: do_skip = (va != vb); break;
           default: break;
           }
         }

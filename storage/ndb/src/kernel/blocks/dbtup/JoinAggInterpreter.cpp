@@ -848,6 +848,8 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
         case kOpBranchRegLe:
         case kOpBranchRegGt:
         case kOpBranchRegGe:
+        case kOpBranchRegEq:
+        case kOpBranchRegNe:
           break;
         default:
           break;
@@ -1029,6 +1031,8 @@ bool JoinAggInterpreter::OptimizeProgram() {
       case kOpBranchRegLe:
       case kOpBranchRegGt:
       case kOpBranchRegGe:
+      case kOpBranchRegEq:
+      case kOpBranchRegNe:
         break;
 
       default:
@@ -1570,6 +1574,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpBranchRegLe:
       case kOpBranchRegGt:
       case kOpBranchRegGe:
+      case kOpBranchRegEq:
+      case kOpBranchRegNe:
       {
         Uint32 ra = (value >> 20) & 0x0F;
         Uint32 rb = (value >> 16) & 0x0F;
@@ -1600,6 +1606,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
           case kOpBranchRegLe: do_skip = (va <= vb); break;
           case kOpBranchRegGt: do_skip = (va > vb); break;
           case kOpBranchRegGe: do_skip = (va >= vb); break;
+          case kOpBranchRegEq: do_skip = (va == vb); break;
+          case kOpBranchRegNe: do_skip = (va != vb); break;
           default: break;
           }
         }
@@ -1882,6 +1890,8 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
       case kOpBranchRegLe:
       case kOpBranchRegGt:
       case kOpBranchRegGe:
+      case kOpBranchRegEq:
+      case kOpBranchRegNe:
         break;
       default:
         break;

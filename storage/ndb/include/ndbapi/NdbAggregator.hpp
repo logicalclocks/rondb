@@ -309,6 +309,8 @@ class NdbAggregator {
   bool BranchRegLe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
   bool BranchRegGt(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
   bool BranchRegGe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
+  bool BranchRegEq(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
+  bool BranchRegNe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
 
   bool Finalize();
 

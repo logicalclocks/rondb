@@ -3628,8 +3628,8 @@ RonSQLPreparer::execute_join()
           //   NOT(a >= b) = a < b → BranchRegLt
           //   NOT(a < b) = a >= b → BranchRegGe
           //   NOT(a <= b) = a > b → BranchRegGt
-          //   NOT(a = b) → not directly supported, use Lt OR Gt
-          //   NOT(a != b) → a = b, not directly supported
+          //   NOT(a = b) = a != b → BranchRegNe
+          //   NOT(a != b) = a = b → BranchRegEq
           Uint32 skip_count = 2;  // skip LoadColumn + Agg instruction
           switch (filter_op) {
           case T_GT:
@@ -3648,9 +3648,17 @@ RonSQLPreparer::execute_join()
             require_prm(agg->BranchRegGt(reg_inner, reg_outer, skip_count),
                         "Failed to program BranchRegGt.");
             break;
+          case T_EQUALS:
+            require_prm(agg->BranchRegNe(reg_inner, reg_outer, skip_count),
+                        "Failed to program BranchRegNe.");
+            break;
+          case T_NOT_EQUALS:
+            require_prm(agg->BranchRegEq(reg_inner, reg_outer, skip_count),
+                        "Failed to program BranchRegEq.");
+            break;
           default:
             require_prm(false,
-                "Cross-table filter with = or != not yet supported.");
+                "Unsupported cross-table filter operator.");
           }
         }
 

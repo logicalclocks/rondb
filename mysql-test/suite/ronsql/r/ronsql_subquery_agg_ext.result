@@ -684,4 +684,173 @@ order_id	min_qty	filtered_qty	small_count
 20	2	10	0
 21	10	35	0
 
+
+=== L1: Cross-table EQ filter — l.qty = o.min_qty ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_match_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_match_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+order_id	min_qty	exact_match_price
+10	3	33
+11	5	55
+20	2	22
+21	10	NULL
+
+
+=== L2: Cross-table NE filter — l.qty != o.min_qty ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+order_id	min_qty	ne_total_qty
+10	3	15
+11	5	17
+20	2	10
+21	10	35
+
+
+=== L3: Cross-table EQ with COUNT — count rows where qty = min_qty ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+order_id	min_qty	exact_count
+10	3	1
+11	5	1
+20	2	1
+21	10	0
+
+
+=== L4: Mixed EQ and GT cross-table filters (merged subqueries) ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_price,
+(SELECT SUM(l2.price) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty > o.min_qty) AS above_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_price,
+(SELECT SUM(l2.price) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty > o.min_qty) AS above_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+order_id	min_qty	exact_price	above_price
+10	3	33	130
+11	5	55	160
+20	2	22	100
+21	10	NULL	350
+
+
+=== L5: Mixed NE and LE cross-table filters (merged subqueries) ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_count,
+(SELECT SUM(l2.qty) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS le_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_count,
+(SELECT SUM(l2.qty) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS le_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+order_id	min_qty	ne_count	le_total
+10	3	3	5
+11	5	3	6
+20	2	2	2
+21	10	2	NULL
+
+
+=== L6: EQ where no rows match (order 21 min_qty=10, no lineitem has qty=10) ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS eq_sum
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+WHERE o.id = 21;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS eq_sum
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+WHERE o.id = 21|
+order_id	min_qty	eq_sum
+21	10	NULL
+
 === Cleanup ===

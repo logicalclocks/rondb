@@ -108,6 +108,8 @@ enum InterpreterOp {
   kOpBranchRegLe,     // Skip if reg_a <= reg_b
   kOpBranchRegGt,     // Skip if reg_a > reg_b
   kOpBranchRegGe,     // Skip if reg_a >= reg_b
+  kOpBranchRegEq,     // Skip if reg_a == reg_b
+  kOpBranchRegNe,     // Skip if reg_a != reg_b
 
   kOpTotal
 };

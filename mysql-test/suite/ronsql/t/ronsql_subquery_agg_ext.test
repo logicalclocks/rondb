@@ -824,6 +824,144 @@ FROM k_customer AS c
 JOIN k_orders AS o ON o.cust_id = c.id|
 
 # =========================================================================
+# Category L: Cross-table EQ and NE filters
+# =========================================================================
+
+# Add rows where qty matches min_qty for equality tests
+DELIMITER ;|
+--disable_query_log
+INSERT INTO k_lineitem VALUES
+  (110, 10, 3, 33),
+  (111, 11, 5, 55),
+  (112, 20, 2, 22);
+--enable_query_log
+DELIMITER |;
+
+--echo
+--echo
+--echo === L1: Cross-table EQ filter — l.qty = o.min_qty ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_match_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_match_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === L2: Cross-table NE filter — l.qty != o.min_qty ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === L3: Cross-table EQ with COUNT — count rows where qty = min_qty ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === L4: Mixed EQ and GT cross-table filters (merged subqueries) ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_price,
+  (SELECT SUM(l2.price) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty > o.min_qty) AS above_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_price,
+  (SELECT SUM(l2.price) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty > o.min_qty) AS above_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === L5: Mixed NE and LE cross-table filters (merged subqueries) ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_count,
+  (SELECT SUM(l2.qty) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS le_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_count,
+  (SELECT SUM(l2.qty) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS le_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === L6: EQ where no rows match (order 21 min_qty=10, no lineitem has qty=10) ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS eq_sum
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+WHERE o.id = 21;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS eq_sum
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+WHERE o.id = 21|
+
+# =========================================================================
 
 DELIMITER ;|
 
