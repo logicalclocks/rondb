@@ -242,7 +242,13 @@ void DblqhProxy::callREAD_CONFIG_REQ(Signal *signal) {
   Uint32 i;
   for (i = 0; i < c_tableRecSize; i++) c_tableRec[i] = 0;
 
-  initJoinAggStatePool(64);
+  // Max concurrent aggregation states per data node.
+  // Each pushed aggregation query uses one state.
+  // Configurable via JoinAggStatePoolSize (default 256).
+  Uint32 joinAggPoolSize = 256;
+  ndb_mgm_get_int_parameter(p, CFG_DB_JOIN_AGG_STATE_POOL_SIZE,
+                            &joinAggPoolSize);
+  initJoinAggStatePool(joinAggPoolSize);
 
   backREAD_CONFIG_REQ(signal);
 }
