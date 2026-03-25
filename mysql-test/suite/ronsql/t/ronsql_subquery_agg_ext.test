@@ -400,12 +400,12 @@ WHERE e.grp <= 3;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result (first 5) ==
---sorted_result
 SELECT e.id,
   (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
   (SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
 FROM lg_entity AS e
 WHERE e.grp <= 3
+ORDER BY e.id
 LIMIT 5|
 
 # =========================================================================
@@ -423,12 +423,12 @@ WHERE e.id <= 50;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result (first 5) ==
---sorted_result
 SELECT e.id,
   (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
   (SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
 FROM lg_entity AS e
 WHERE e.id <= 50
+ORDER BY e.id
 LIMIT 5|
 
 # =========================================================================

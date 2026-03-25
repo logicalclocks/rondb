@@ -353,13 +353,14 @@ SELECT e.id,
 (SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
 FROM lg_entity AS e
 WHERE e.grp <= 3
+ORDER BY e.id
 LIMIT 5|
 id	sum_val	cnt_evt
-151	7565	3
-152	7615	3
-153	7665	3
+1	65	3
+2	115	3
 3	165	3
 51	2565	3
+52	2615	3
 
 
 === E2: Large dataset with inner filter + WHERE ===
@@ -383,13 +384,14 @@ SELECT e.id,
 (SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
 FROM lg_entity AS e
 WHERE e.id <= 50
+ORDER BY e.id
 LIMIT 5|
 id	sum_early	max_evt
-10	203	10
-28	563	28
-31	623	31
-48	963	48
-9	183	9
+1	23	1
+2	43	2
+3	63	3
+4	83	4
+5	103	5
 
 
 === H1: Inner subquery with JOIN (unsupported) ===

@@ -326,13 +326,14 @@ SELECT e.id,
 (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
 (SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
 FROM lg_entity AS e
+ORDER BY e.id
 LIMIT 5|
 id	sum_val	cnt_evt
-28	1415	3
-55	2765	3
-60	3015	3
-67	3365	3
-76	3815	3
+1	65	3
+2	115	3
+3	165	3
+4	215	3
+5	265	3
 
 
 === Test 11: Asymmetric fan-out (5 measures vs 3 events/entity) ===
@@ -354,12 +355,13 @@ SELECT e.id, e.grp,
 (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
 (SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
 FROM lg_entity AS e
+ORDER BY e.id
 LIMIT 5|
 id	grp	sum_val	max_evt
-10	10	515	10
-48	48	2415	48
-51	1	2565	1
-77	27	3865	27
-9	9	465	9
+1	1	65	1
+2	2	115	2
+3	3	165	3
+4	4	215	4
+5	5	265	5
 
 === Cleanup ===
