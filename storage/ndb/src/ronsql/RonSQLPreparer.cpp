@@ -954,7 +954,7 @@ RonSQLPreparer::load_join()
 void
 RonSQLPreparer::classify_where_by_table()
 {
-  for (Uint32 t = 0; t < MAX_JOIN_TABLES; t++)
+  for (Uint32 t = 0; t < MAX_SPJ_TREE_NODES; t++)
     m_join_where_ce[t] = NULL;
 
   ConditionalExpression* where_ce = m_context.ast_root.where_expression;
@@ -2548,8 +2548,8 @@ void
 RonSQLPreparer::merge_same_table_subqueries()
 {
   Uint32 n = m_select_subquery_leaves.size();
-  bool assigned[MAX_JOIN_TABLES] = {};
-  require_prm(n <= MAX_JOIN_TABLES, "Too many SELECT-list subqueries.");
+  bool assigned[MAX_SQL_SUBQUERIES] = {};
+  require_prm(n <= MAX_SQL_SUBQUERIES, "Too many SELECT-list subqueries.");
 
   Uint32 agg_slot = 0;
   for (Uint32 i = 0; i < n; i++) {
@@ -3515,7 +3515,7 @@ RonSQLPreparer::execute_join()
   // Build aggregator(s).
   // Multi-leaf: one NdbAggregator per merged leaf, each with its own program.
   // Single-leaf: one NdbAggregator on plan.agg_leaf_idx (existing path).
-  NdbAggregator* leafAggs[MAX_JOIN_TABLES] = {};
+  NdbAggregator* leafAggs[MAX_SPJ_TREE_NODES] = {};
   NdbAggregator singleAgg(plan.ops[plan.agg_leaf_idx].table);
 
   if (m_has_select_subqueries && plan.num_agg_leaves > 0) {
@@ -3692,7 +3692,7 @@ RonSQLPreparer::execute_join()
   NdbQueryBuilder* qb = NdbQueryBuilder::create();
   ndbrequire(qb != NULL);
 
-  const NdbQueryOperationDef* opDefs[MAX_JOIN_TABLES];
+  const NdbQueryOperationDef* opDefs[MAX_SPJ_TREE_NODES];
 
   // Root operation: PK lookup if WHERE fully covers PK, else TABLE_SCAN.
   // When children have scan ops, NDB doesn't support lookup root, so use
@@ -3936,7 +3936,7 @@ RonSQLPreparer::execute_join()
   qb->destroy();
 
   // Free per-leaf aggregators
-  for (Uint32 i = 0; i < MAX_JOIN_TABLES; i++) {
+  for (Uint32 i = 0; i < MAX_SPJ_TREE_NODES; i++) {
     if (leafAggs[i] != NULL) {
       delete leafAggs[i];
       leafAggs[i] = NULL;

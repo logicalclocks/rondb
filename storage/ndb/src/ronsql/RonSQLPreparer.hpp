@@ -149,7 +149,7 @@ private:
   const NdbDictionary::Dictionary* m_dict = NULL;
   const NdbDictionary::Table* m_table = NULL;
   JoinPlan m_join_plan;
-  ConditionalExpression* m_join_where_ce[MAX_JOIN_TABLES];
+  ConditionalExpression* m_join_where_ce[MAX_SPJ_TREE_NODES];
   DynamicArray<const NdbDictionary::Index*> m_indexes;
   NdbTransaction* m_trans = NULL;
   yyscan_t m_scanner;

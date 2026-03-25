@@ -67,9 +67,9 @@ QueryPlanner::plan(
    */
   for (const JoinClause *jc = joins; jc != NULL; jc = jc->next)
   {
-    if (out.num_ops >= MAX_JOIN_TABLES)
+    if (out.num_ops >= MAX_SPJ_TREE_NODES)
     {
-      err << "Too many joined tables (max " << MAX_JOIN_TABLES << ")."
+      err << "Too many joined tables (max " << MAX_SPJ_TREE_NODES << ")."
           << std::endl;
       throw RonSQLPermanentError("Too many joined tables.");
     }

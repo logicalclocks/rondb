@@ -29,7 +29,11 @@
 #include "RonSQLCommon.hpp"
 #include "LexString.hpp"
 
-static const Uint32 MAX_JOIN_TABLES = 16;
+// Max tree nodes in pushed SPJ query (matches NDB_SPJ_MAX_TREE_NODES).
+// After subquery merge, each distinct table = 1 tree node.
+static const Uint32 MAX_SPJ_TREE_NODES = 32;
+// Max subqueries before merge (SQL-level limit, can be >> tree nodes).
+static const Uint32 MAX_SQL_SUBQUERIES = 128;
 static const Uint32 MAX_JOIN_KEY_COLS = 8;
 static const Uint32 MAX_LINKED_PROJS = 16;
 
@@ -51,12 +55,12 @@ struct JoinOp
 
 struct JoinPlan
 {
-  JoinOp ops[MAX_JOIN_TABLES];
+  JoinOp ops[MAX_SPJ_TREE_NODES];
   Uint32 num_ops;
   Uint32 agg_leaf_idx;           // single-leaf mode (num_agg_leaves == 0)
 
   // Multi-leaf aggregation (for SELECT-list subquery pushdown)
-  Uint32 agg_leaf_indices[MAX_JOIN_TABLES];
+  Uint32 agg_leaf_indices[MAX_SPJ_TREE_NODES];
   Uint32 num_agg_leaves;         // 0 = single-leaf mode
 
   struct LinkedProj {
