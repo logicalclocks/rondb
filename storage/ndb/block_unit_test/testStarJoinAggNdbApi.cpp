@@ -2853,6 +2853,75 @@ testEvictionMultiLeaf(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   return 0;
 }
 
+/* ================================================================== */
+/* Rejection test (Test 15): too many tree nodes (>32) must fail       */
+/* ================================================================== */
+
+static int
+testRejectTooManyNodes(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 15: Reject query with 33 tree nodes (> NDB_SPJ_MAX) ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Table *rootTab = dict->getTable(ROOT_TABLE);
+  const NdbDictionary::Table *leafTab = dict->getTable(LEAF_A_TABLE);
+  if (rootTab == nullptr || leafTab == nullptr) {
+    printf("FAILED (table lookup)\n"); return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+
+  /* Root scan (operation 0) */
+  const NdbQueryTableScanOperationDef *rootOp = qb->scanTable(rootTab);
+  if (rootOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy(); return -1;
+  }
+
+  /* Try to add 32 child lookups (operations 1-32).
+   * NDB_SPJ_MAX_TREE_NODES=32, so operation 32 (the 33rd node, index 32)
+   * should be rejected with QRY_DEFINITION_TOO_LARGE. */
+  const NdbDictionary::Column *pkCol = leafTab->getColumn("root_id");
+  if (pkCol == nullptr) {
+    printf("FAILED (column lookup)\n");
+    qb->destroy(); return -1;
+  }
+
+  bool rejected = false;
+  for (int i = 0; i < 32; i++) {
+    NdbQueryOptions opts;
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(rootOp, "id"), nullptr
+    };
+    const NdbQueryLookupOperationDef *childOp =
+        qb->readTuple(leafTab, key, &opts);
+    if (childOp == nullptr) {
+      /* Expected: the 33rd node (i=31, opNo=32) should fail */
+      V("\n  readTuple rejected at child %d: %s\n",
+        i, qb->getNdbError().message);
+      rejected = true;
+      break;
+    }
+  }
+
+  if (!rejected) {
+    /* If all 32 children were added, try prepare — should also fail */
+    const NdbQueryDef *queryDef = qb->prepare(ndb);
+    if (queryDef != nullptr) {
+      printf("FAILED (33 nodes should have been rejected)\n");
+      queryDef->destroy();
+      qb->destroy();
+      return -1;
+    }
+    V("\n  prepare() rejected: %s\n", qb->getNdbError().message);
+  }
+
+  qb->destroy();
+  printf("OK (rejected as expected)\n");
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
@@ -3128,6 +3197,16 @@ int main(int argc, char **argv)
           if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
             if (testEvictionMultiLeaf(&ndb, conn, restarter) != 0)
               exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTestTables(conn);
+        }
+
+        /* Test 15: Reject too many tree nodes (33 > NDB_SPJ_MAX_TREE_NODES) */
+        if (shouldRun(15)) {
+          if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
+            if (testRejectTooManyNodes(&ndb, conn) != 0) exitCode = 1;
           } else {
             exitCode = 1;
           }

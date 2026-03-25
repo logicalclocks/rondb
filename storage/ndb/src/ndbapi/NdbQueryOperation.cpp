@@ -3229,6 +3229,10 @@ int NdbQueryImpl::prepareAggregation() {
   assert(getQueryDef().isScanQuery());
   const Uint32 numLeaves = getQueryDef().getNumAggregateLeaves();
   assert(numLeaves >= 1);
+  if (unlikely(numLeaves > NDB_SPJ_MAX_TREE_NODES)) {
+    setErrorCode(QRY_WRONG_OPERATION_TYPE);
+    return -1;
+  }
 
   // Use first leaf for GROUP BY column info and table reference
   const Uint32 firstLeafOpNo = getQueryDef().getAggregateLeafOpNo(0);
@@ -3307,8 +3311,8 @@ int NdbQueryImpl::prepareAggregation() {
       Uint32 len;
       Uint32 nResults;
     };
-    LeafInstr leafInstrs[256];  // max 256 leaves
-    assert(numLeaves <= 256);
+    LeafInstr leafInstrs[NDB_SPJ_MAX_TREE_NODES];
+    assert(numLeaves <= NDB_SPJ_MAX_TREE_NODES);
 
     for (Uint32 leaf = 0; leaf < numLeaves; leaf++) {
       const Uint32 leafOpNo = getQueryDef().getAggregateLeafOpNo(leaf);

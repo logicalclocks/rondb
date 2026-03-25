@@ -2452,7 +2452,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       jam();
       // New section header format
       numLeaves = word0 & 0xFFFF;
-      if (unlikely(numLeaves == 0 || numLeaves > 255)) {
+      if (unlikely(numLeaves == 0 || numLeaves > NDB_SPJ_MAX_TREE_NODES)) {
         jam();
         lc_ndbd_pool_free(allProgsBuf);
         state->m_all_programs_buf = nullptr;
