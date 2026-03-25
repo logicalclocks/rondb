@@ -6337,7 +6337,34 @@ Uint32 Dbspj::handleAggLeafScanComplete(Signal *signal,
 
   ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
   const Uint32 num_ranges = treeNodePtr.p->m_agg_num_ranges;
+
+  // Fast path: if all ranges matched, no NULL injection needed.
   Uint32 null_rows_sent = 0;
+  if (treeNodePtr.p->m_agg_match_bitmask != nullptr && num_ranges > 0) {
+    bool all_matched = true;
+    Uint32 full_words = num_ranges / 32;
+    Uint32 tail_bits = num_ranges % 32;
+    for (Uint32 i = 0; i < full_words; i++) {
+      if (treeNodePtr.p->m_agg_match_bitmask[i] != 0xFFFFFFFF) {
+        all_matched = false;
+        break;
+      }
+    }
+    if (all_matched && tail_bits > 0) {
+      Uint32 tail_mask = (1u << tail_bits) - 1;
+      if ((treeNodePtr.p->m_agg_match_bitmask[full_words] & tail_mask)
+          != tail_mask) {
+        all_matched = false;
+      }
+    }
+    if (all_matched) {
+      jam();
+      DEB_MATCH(("(%u)DBSPJ: all %u ranges matched, skip NULL injection",
+                 instance(), num_ranges));
+      goto skip_null_row_injection;
+    }
+  }
+
 
   if (data.m_agg_range_corrs != nullptr &&
       iterateNodePtr.p->m_rows.m_type == RowCollection::COLLECTION_MAP) {
@@ -6438,6 +6465,7 @@ Uint32 Dbspj::handleAggLeafScanComplete(Signal *signal,
   DEB_MATCH(("(%u)DBSPJ: total ranges=%u null_rows_sent=%u",
              instance(), num_ranges, null_rows_sent));
 
+skip_null_row_injection:
   // Reset for next batch. Both bitmask and range_corrs are kept allocated
   // for reuse across batch cycles — freed when TreeNode is released.
   // Setting m_agg_num_ranges = 0 signals mergeAggMatchBitmask to memcpy

@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DBSPJ Scan Chain Parallelism &amp; Outer Join Match Tracking</title>
+<style>
+  body { font-family: 'Segoe UI', Tahoma, sans-serif; max-width: 1100px; margin: 40px auto; line-height: 1.6; color: #333; }
+  h1 { color: #1a5276; border-bottom: 3px solid #2980b9; padding-bottom: 10px; }
+  h2 { color: #2980b9; margin-top: 40px; }
+  h3 { color: #1a6e4e; }
+  pre { background: #f4f6f9; border: 1px solid #d5dbdb; border-radius: 6px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+  code { background: #eaf2f8; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+  .signal-diagram { background: #fdfefe; border: 2px solid #aed6f1; border-radius: 8px; padding: 20px; margin: 20px 0; font-family: 'Courier New', monospace; font-size: 12px; white-space: pre; overflow-x: auto; }
+  .problem { background: #fadbd8; padding: 10px; border-left: 4px solid #e74c3c; margin: 15px 0; }
+  .success { background: #d5f5e3; padding: 10px; border-left: 4px solid #27ae60; margin: 15px 0; }
+  .note { background: #eaf2f8; padding: 10px; border-left: 4px solid #3498db; margin: 15px 0; }
+  table { border-collapse: collapse; margin: 15px 0; }
+  th, td { border: 1px solid #bdc3c7; padding: 8px 12px; text-align: left; }
+  th { background: #2980b9; color: white; }
+  tr:nth-child(even) { background: #f2f3f4; }
+  .highlight { background: #fcf3cf; padding: 2px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<h1>DBSPJ Scan Chain Parallelism &amp; Outer Join Match Tracking</h1>
+
+<h2>1. DBSPJ Pipelined Execution Model</h2>
+
+<p>DBSPJ processes scan chains using a <strong>pipelined execution model</strong>.
+Each DBSPJ instance handles root scan fragments one at a time
+(<code>m_fragCount=1</code> per instance). When a root fragment completes,
+it immediately triggers child scans without waiting for other root fragments.</p>
+
+<div class="note">
+This pipelining is <strong>by design</strong> for non-aggregation joins — it maximizes
+throughput by overlapping scan I/O across tree levels.
+</div>
+
+<h3>Observed Behavior</h3>
+
+<p>In a 3-level scan chain <code>customer → orders → lineitem</code>:</p>
+
+<pre>
+scanFrag_CONF node=0 frag=0 rows=1 done=2 frags_complete=0/1  ← customer frag 0 done
+scanFrag_send FRAGREQ node=1 rangeCnt=1                        ← orders starts IMMEDIATELY
+...8 order SCAN_FRAGREQs sent...
+
+scanFrag_CONF node=0 frag=6 rows=1 done=2 frags_complete=0/1  ← customer frag 6 done
+scanFrag_send FRAGREQ node=1 rangeCnt=1                        ← orders starts AGAIN
+...8 more order SCAN_FRAGREQs sent...
+</pre>
+
+<p>Each customer fragment triggers a full cycle: <code>customer frag N →
+orders scan (all 8 frags) → lineitem scan (all 8 frags) → complete →
+SCAN_NEXTREQ → customer frag N+1</code>.</p>
+
+<h2>2. The Two Bugs Found</h2>
+
+<h3>Bug A: range_no Collision Across Batches</h3>
+
+<div class="problem">
+<code>m_agg_range_cnt</code> resets between customer fragment cycles.
+Orders from different customer fragments get the same range_no.
+The match bitmask can't distinguish them.
+</div>
+
+<p>This was the <strong>initial hypothesis</strong>. However, debugging revealed
+that the actual bug was different — see Bug B.</p>
+
+<h3>Bug B: COLLECTION_MAP Iteration Order Mismatch</h3>
+
+<div class="problem">
+<code>handleAggLeafScanComplete</code> iterated the parent node's row buffer
+(<code>COLLECTION_MAP</code>) in <strong>hash order</strong>, but the match bitmask
+range_no was assigned in <strong>TRANSID_AI arrival order</strong> during
+<code>scanFrag_parent_row</code>. These orders differ, causing NULL rows to
+be sent to the wrong parent row.
+</div>
+
+<p>Concrete example from logs:</p>
+
+<table>
+<tr><th>Event</th><th>Order</th><th>Correlation</th><th>fixupCorr (range_no)</th></tr>
+<tr><td>TRANSID_AI arrives first</td><td>30</td><td>0xd8</td><td>0</td></tr>
+<tr><td>TRANSID_AI arrives second</td><td>31</td><td>0x36</td><td>1</td></tr>
+</table>
+
+<p>DBLQH correctly sets match bitmask bit 0 (range_no=0 = order 30 matched).
+But <code>handleAggLeafScanComplete</code> iterates the MAP in hash order:</p>
+
+<table>
+<tr><th>Map position</th><th>Correlation</th><th>Order</th><th>Assumed range_no</th></tr>
+<tr><td>0</td><td>0x36</td><td class="highlight">31 (WRONG — should be 30)</td><td>0</td></tr>
+<tr><td>1</td><td>0xd8</td><td class="highlight">30 (WRONG — should be 31)</td><td>1</td></tr>
+</table>
+
+<p>Result: bit 0 is set (matched) but maps to order 31 instead of order 30.
+Order 30 appears unmatched → NULL row sent to order 30 instead of 31.</p>
+
+<h2>3. The Fix</h2>
+
+<h3>Recording Correlations in Range Order</h3>
+
+<p>In <code>scanFrag_parent_row</code>, when assigning <code>fixupCorr</code>,
+record the parent correlation in a <code>m_agg_range_corrs[]</code> array
+indexed by range_no:</p>
+
+<pre>
+Uint32 range_idx = data.m_agg_range_cnt++;
+fixupCorr = range_idx;
+data.m_agg_range_corrs[range_idx] = rowRef.m_src_correlation;
+</pre>
+
+<h3>Correlation-Based Row Lookup</h3>
+
+<p>In <code>handleAggLeafScanComplete</code>, when the parent uses
+<code>COLLECTION_MAP</code>:</p>
+
+<ol>
+<li>Build a <code>corr→row_ptr</code> lookup by iterating the map once</li>
+<li>For each range_no, look up <code>m_agg_range_corrs[range_no]</code> to get
+the target correlation</li>
+<li>Find the matching row_ptr in the lookup</li>
+<li>If unmatched, send NULL row using the correct parent row</li>
+</ol>
+
+<pre>
+struct CorrRow { Uint32 corr; const Uint32 *row_ptr; };
+CorrRow corr_rows[MaxCorrelationId];  // 4096 entries, ~48KB on stack
+
+// Build lookup from map (hash order)
+for (map iteration) {
+  corr_rows[n++] = { correlation, row_ptr };
+}
+
+// Iterate in range_no order using m_agg_range_corrs
+for (range_no = 0; range_no &lt; num_ranges; range_no++) {
+  target_corr = data.m_agg_range_corrs[range_no];
+  if (!matched(range_no)) {
+    row = find_by_corr(corr_rows, target_corr);
+    sendJoinAggNullRow(row);
+  }
+}
+</pre>
+
+<h3>Fast Path: All Ranges Matched</h3>
+
+<p>Common case optimization: if all bitmask bits are set, skip the
+entire NULL injection loop (no CorrRow building, no iteration).</p>
+
+<h3>Memory Management</h3>
+
+<table>
+<tr><th>Resource</th><th>Allocated</th><th>Reused</th><th>Freed</th></tr>
+<tr><td><code>m_agg_match_bitmask</code></td>
+    <td>Once in <code>mergeAggMatchBitmask</code> (MaxCorrelationId capacity)</td>
+    <td>Per batch: first fragment memcpy, others OR merge.<br>
+        <code>m_agg_num_ranges=0</code> reset signals new batch.</td>
+    <td>TreeNode release</td></tr>
+<tr><td><code>m_agg_range_corrs</code></td>
+    <td>Once in <code>scanFrag_parent_row</code> (MaxCorrelationId capacity)</td>
+    <td>Overwritten each batch as new parent rows arrive</td>
+    <td>TreeNode release</td></tr>
+</table>
+
+<h2>4. Signal Flow Diagrams</h2>
+
+<h3>Pipelined Execution (By Design)</h3>
+
+<div class="signal-diagram">
+DBTC              DBSPJ(2)           DBLQH (orders)       DBLQH (lineitem)
+  │                  │                    │                     │
+  │─SCAN_FRAGREQ────▶│ customer frag 0    │                     │
+  │                  │←TRANSID_AI─────── │ cust_id=3            │
+  │                  │←SCAN_FRAGCONF──── │ done                 │
+  │                  │                    │                     │
+  │                  │ m_fragCount=1      │                     │
+  │                  │ 1==1 → INACTIVE    │                     │
+  │                  │                    │                     │
+  │                  │ parent_batch_complete(orders)             │
+  │                  │─SCAN_FRAGREQ×8───▶│ bound: cust_id=3     │
+  │                  │                    │                     │
+  │                  │←TRANSID_AI─────── │ order 30 (corr=0xd8) │
+  │                  │  storeRow(orders)  │                     │
+  │                  │  scanFrag_parent_row(lineitem)            │
+  │                  │  range_corrs[0]=0xd8                     │
+  │                  │                    │                     │
+  │                  │←TRANSID_AI─────── │ order 31 (corr=0x36) │
+  │                  │  storeRow(orders)  │                     │
+  │                  │  scanFrag_parent_row(lineitem)            │
+  │                  │  range_corrs[1]=0x36                     │
+  │                  │                    │                     │
+  │                  │←SCAN_FRAGCONF──── │ orders done          │
+  │                  │                    │                     │
+  │                  │ parent_batch_complete(lineitem)           │
+  │                  │─SCAN_FRAGREQ×8────│───────────────────── ▶│
+  │                  │                    │  rangeCnt=2          │
+  │                  │                    │  JoinAgg flag        │
+  │                  │                    │                     │
+  │                  │                    │  DBLQH scans:        │
+  │                  │                    │  range 0 → order 30  │
+  │                  │                    │    lineitems found   │
+  │                  │                    │    bitmask bit 0 = 1 │
+  │                  │                    │  range 1 → order 31  │
+  │                  │                    │    1 lineitem found  │
+  │                  │                    │    <span class="highlight">BranchReg skips</span>  │
+  │                  │                    │    <span class="highlight">bitmask bit 1 = 1</span>│
+  │                  │                    │    (scan DID return  │
+  │                  │                    │     row, agg skipped)│
+  │                  │                    │                     │
+  │                  │←SCAN_FRAGCONF×8───│──────────────────────│
+  │                  │                    │                     │
+  │                  │ handleAggLeafScanComplete:                │
+  │                  │   bitmask = 0x3 (both matched)           │
+  │                  │   <span class="success">fast path: all matched, skip</span>         │
+  │                  │                    │                     │
+  │─SCAN_NEXTREQ───▶│ customer frag 6    │                     │
+  │                  │ ... next cycle ... │                     │
+</div>
+
+<h3>Bug Scenario (Before Fix)</h3>
+
+<div class="signal-diagram">
+  handleAggLeafScanComplete:
+    bitmask = 0x1  (only range_no=0 matched — order 30 had lineitems with qty&gt;3)
+
+    <span class="problem">Iterating COLLECTION_MAP in hash order:</span>
+    position 0: corr=0x36 (order 31) — range_no=0 → matched=1 ✓
+    position 1: corr=0xd8 (order 30) — range_no=1 → matched=0 ✗
+                → sendJoinAggNullRow for order <span class="problem">30</span> (WRONG! should be 31)
+
+    <span class="problem">Result: order 30 gets NULL, order 31 gets aggregated value</span>
+    <span class="problem">Expected: order 30 gets aggregated value, order 31 gets NULL</span>
+</div>
+
+<h3>Fixed Scenario</h3>
+
+<div class="signal-diagram">
+  handleAggLeafScanComplete:
+    bitmask = 0x1  (only range_no=0 matched)
+
+    <span class="success">Using m_agg_range_corrs[] for correlation-based lookup:</span>
+    range_no=0: target_corr = range_corrs[0] = 0xd8 (order 30) → matched=1 ✓
+    range_no=1: target_corr = range_corrs[1] = 0x36 (order 31) → matched=0 ✗
+                → find row with corr=0x36 in map → sendJoinAggNullRow for order <span class="success">31</span> ✓
+</div>
+
+<h2>5. Key Code Locations</h2>
+
+<table>
+<tr><th>Function</th><th>File</th><th>Purpose</th></tr>
+<tr><td><code>scanFrag_parent_row</code></td><td>DbspjMain.cpp</td>
+    <td>Assigns fixupCorr, records m_agg_range_corrs[]</td></tr>
+<tr><td><code>handleAggLeafScanComplete</code></td><td>DbspjMain.cpp</td>
+    <td>Iterates ranges, injects NULL rows for unmatched</td></tr>
+<tr><td><code>mergeAggMatchBitmask</code></td><td>DbspjMain.cpp</td>
+    <td>Merges per-fragment bitmasks into combined bitmask</td></tr>
+<tr><td><code>scanFrag_parent_batch_complete</code></td><td>DbspjMain.cpp</td>
+    <td>Restarts child scan for next parent batch</td></tr>
+<tr><td><code>scanFrag_fixupBound</code></td><td>DbspjMain.cpp</td>
+    <td>Encodes range_no (fixupCorr) into scan bound</td></tr>
+<tr><td><code>setLocalMatchedRange</code></td><td>DblqhMain.cpp</td>
+    <td>DBLQH sets match bit for range_no in local bitmask</td></tr>
+</table>
+
+<h2>6. Debug Infrastructure</h2>
+
+<p>Enable these flags in <code>DbspjMain.cpp</code> (guarded by <code>VM_TRACE</code>):</p>
+
+<table>
+<tr><th>Flag</th><th>Macro</th><th>What It Traces</th></tr>
+<tr><td><code>DEBUG_SCAN_PARENT_ROW</code></td><td><code>DEB_SCAN_PR</code></td>
+    <td>Each parent row entering scanFrag_parent_row, SCAN_FRAGREQ sends, NULL key skips</td></tr>
+<tr><td><code>DEBUG_MATCH</code></td><td><code>DEB_MATCH</code></td>
+    <td>Match bitmask completion, per-row matched status, NULL row injection</td></tr>
+<tr><td><code>DEBUG_JOIN_AGG_TRACE</code></td><td>(inline)</td>
+    <td>QueryTree hex dumps received by DBSPJ</td></tr>
+</table>
+
+<p>Test with <code>ronsql_j4_repeat.test</code> (runs the query 10 times).
+Logs in <code>ndbd.log</code> with instance-tagged entries like
+<code>(2)DBSPJ scanFrag_parent_row</code>.</p>
+
+</body>
+</html>
