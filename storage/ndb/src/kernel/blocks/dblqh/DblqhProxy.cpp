@@ -2568,6 +2568,18 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   }
   state->m_memory_budget_pages = budget_pages;
 
+  // Optimize all leaf programs in-place: replace generic opcodes (kOpSum,
+  // kOpPlus, etc.) with type-specific variants (kOpSumBigint, kOpSumDouble,
+  // etc.).  Done once here in JoinAggregationState before interpreter
+  // creation so all interpreters (MUTEX_BASED shared or MUTEX_FREE
+  // per-thread) and all leaf program switches see optimized programs.
+  for (Uint32 i = 0; i < state->m_num_leaves; i++) {
+    jam();
+    LeafProgram &lp = state->m_leaf_programs[i];
+    PushdownInterpreter::OptimizeProgramBuffer(
+        lp.m_agg_program, lp.m_agg_program_len, lp.m_agg_prog_start_pos);
+  }
+
   // Allocate JoinAggInterpreter(s) based on strategy.
   // Init with leaf 0's program; for multi-leaf, override accumulator count.
   const LeafProgram &leaf0 = state->m_leaf_programs[0];
