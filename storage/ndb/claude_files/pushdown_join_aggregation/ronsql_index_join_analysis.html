@@ -196,11 +196,207 @@ that list sequentially.
 </div>
 
 <h3>3.1&nbsp;&nbsp;Root Operation</h3>
-<p>The root is always created as <code>TABLE_SCAN</code> in the planner.
-At execution time (<code>execute_join()</code>), if all primary key columns
-have equality filters, the root is converted to a PK lookup.  Otherwise it
-stays a table scan (possibly with an index via <code>plan_index_and_filter()</code>
-for single-table queries — but for joins, the root is always a table scan).</p>
+<p>The root is always created as <code>TABLE_SCAN</code> in the planner
+(<code>QueryPlanner.cpp:54</code>).  No index selection happens at plan time
+for the root in join queries — the decision is deferred to execution.</p>
+
+<h4>Execution-Time Root Access Selection</h4>
+<p>At execution time, <code>execute_join()</code>
+(<code>RonSQLPreparer.cpp:3705–3817</code>) determines the root access
+method in two steps:</p>
+
+<ol>
+  <li><strong>PK equality coverage check</strong> —
+      <code>collect_pk_equalities()</code> (<code>:3464</code>) walks the WHERE
+      clause recursively, extracts all <code>pk_col = constant</code> equalities,
+      and sets <code>pk_covered = true</code> only if <em>every</em> primary key
+      column has a matching equality constant.  Only <code>=</code> is accepted
+      (not ranges), and only column-vs-constant (not column-vs-column).</li>
+  <li><strong>Child operation type check</strong> — if PK is covered, scans
+      <code>ops[1..n]</code> to see whether any child is a
+      <code>TABLE_SCAN</code> or <code>INDEX_SCAN</code>
+      (<code>has_scan_child</code>).</li>
+</ol>
+
+<p>These two flags select one of three execution paths:</p>
+
+<svg viewBox="0 0 740 300" style="max-width:740px">
+  <rect x="210" y="10" width="300" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="360" y="33" text-anchor="middle" font-size="13" font-weight="600">pk_covered?</text>
+
+  <line x1="510" y1="28" x2="610" y2="28" stroke="#cf222e" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="558" y="22" font-size="11" fill="#cf222e" font-weight="600">No</text>
+  <rect x="612" y="12" width="120" height="32" rx="6" fill="#ffebe9" stroke="#cf222e"/>
+  <text x="672" y="33" text-anchor="middle" font-size="12" font-weight="700" fill="#cf222e">TABLE_SCAN</text>
+  <text x="672" y="60" text-anchor="middle" font-size="10" fill="#666">Path C: scanTable()</text>
+  <text x="672" y="73" text-anchor="middle" font-size="10" fill="#666">+ NdbScanFilter</text>
+
+  <line x1="360" y1="46" x2="360" y2="100" stroke="#0969da" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="372" y="72" font-size="11" fill="#1a7f37" font-weight="600">Yes</text>
+
+  <rect x="210" y="102" width="300" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="360" y="125" text-anchor="middle" font-size="13" font-weight="600">has_scan_child?</text>
+
+  <line x1="210" y1="120" x2="100" y2="160" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="140" y="142" font-size="11" fill="#1a7f37" font-weight="600">No</text>
+  <rect x="10" y="162" width="180" height="32" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="100" y="183" text-anchor="middle" font-size="12" font-weight="700" fill="#1a7f37">PK LOOKUP</text>
+  <text x="100" y="210" text-anchor="middle" font-size="10" fill="#666">Path A: readTuple()</text>
+  <text x="100" y="223" text-anchor="middle" font-size="10" fill="#666">all children are lookups</text>
+
+  <line x1="510" y1="120" x2="580" y2="160" stroke="#9a6700" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="558" y="142" font-size="11" fill="#9a6700" font-weight="600">Yes</text>
+
+  <rect x="510" y="162" width="220" height="32" rx="6" fill="#fff8c5" stroke="#d4a72c"/>
+  <text x="620" y="183" text-anchor="middle" font-size="12" font-weight="700" fill="#9a6700">PK INDEX SCAN</text>
+  <text x="620" y="210" text-anchor="middle" font-size="10" fill="#666">Path B: scanIndex() on</text>
+  <text x="620" y="223" text-anchor="middle" font-size="10" fill="#666">ordered PK index + EQ bounds</text>
+
+  <line x1="620" y1="223" x2="620" y2="254" stroke="#cf222e" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+  <rect x="540" y="256" width="200" height="28" rx="4" fill="#ffebe9" stroke="#cf222e"/>
+  <text x="640" y="275" text-anchor="middle" font-size="10" fill="#cf222e">no ordered PK index → Path C</text>
+</svg>
+
+<table>
+<thead>
+<tr><th>Path</th><th>Conditions</th><th>NDB API Call</th><th>Access</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><span class="tag tag-good">A</span></td>
+  <td><code>pk_covered</code> AND all children are lookups</td>
+  <td><code>qb-&gt;readTuple(root_table, pk_keys, &amp;opts)</code></td>
+  <td>Primary key lookup — single-row access, no scan</td>
+</tr>
+<tr>
+  <td><span class="tag tag-warn">B</span></td>
+  <td><code>pk_covered</code> AND at least one child is a scan</td>
+  <td><code>qb-&gt;scanIndex(pk_ordered_idx, root_table, &amp;bound, &amp;opts)</code></td>
+  <td>Ordered index scan on PK with equality bounds (effectively single-row, but as a scan
+      — required because the NDB API does not support a lookup root with scan children)</td>
+</tr>
+<tr>
+  <td><span class="tag tag-bad">C</span></td>
+  <td>PK not covered, or Path B with no ordered PK index</td>
+  <td><code>qb-&gt;scanTable(root_table, &amp;opts)</code></td>
+  <td>Full table scan with <code>NdbScanFilter</code> for WHERE conditions</td>
+</tr>
+</tbody>
+</table>
+
+<div class="box">
+<div class="box-title">Why Path B exists: NDB API lookup+scan constraint</div>
+<p>The NDB API's <code>NdbQueryBuilder</code> requires that if any child operation
+is a scan (<code>INDEX_SCAN</code>), the root must also be a scan operation
+(<code>scanTable</code> or <code>scanIndex</code>).  A <code>readTuple</code>
+root cannot have scan children in the SPJ tree.  Path B works around this by
+using an ordered index scan on the primary key with equality bounds — logically
+equivalent to a PK lookup but expressed as a scan.</p>
+</div>
+
+<h4>Path B Partition Pruning</h4>
+
+<p>NDB tables are hash-partitioned by their distribution key (which defaults to
+the primary key).  A full table scan touches all fragments on all data nodes.
+Path B avoids this: the NDB API <strong>automatically prunes</strong> the scan to
+a single fragment when the index bounds cover all distribution key columns with
+equality constraints.</p>
+
+<p>The pruning chain works as follows:</p>
+
+<div class="flow">
+  <div class="flow-step">1. RonSQL creates <code>NdbQueryIndexBound(pk_keys)</code> — sets both low and high bounds
+      to the same equality values for all PK columns</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">2. At query execution, <code>NdbQueryOperationImpl::isPrunable()</code>
+      (<code>NdbQueryOperation.cpp:4106</code>) calls
+      <code>checkPrunable()</code></div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">3. <code>NdbQueryIndexScanOperationDefImpl::checkPrunable()</code>
+      (<code>NdbQueryBuilder.cpp:1622</code>) verifies three conditions:</div>
+</div>
+
+<table>
+<thead>
+<tr><th>#</th><th>Check</th><th>Path B Status</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>1</td>
+  <td><strong>Distribution key coverage</strong> — the index must contain all
+      distribution key fields</td>
+  <td><span class="tag tag-good">Pass</span> — the PK ordered index covers all
+      distribution key columns by definition</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td><strong>Equality bounds on all distribution keys</strong> — each distribution
+      key column must have <code>BoundEQ</code> (not a range)</td>
+  <td><span class="tag tag-good">Pass</span> — <code>NdbQueryIndexBound(pk_keys)</code>
+      sets identical low/high bounds (= equality) for every PK column</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td><strong>Single hash value</strong> — all bound pairs must hash to the same
+      fragment via <code>Ndb::computeHash()</code></td>
+  <td><span class="tag tag-good">Pass</span> — all columns have constant equality
+      values, producing a single deterministic hash</td>
+</tr>
+</tbody>
+</table>
+
+<p>When all three checks pass (<code>prunable = true</code>), the scan is reduced
+to a single fragment (<code>NdbQueryOperation.cpp:3022–3034</code>):</p>
+
+<pre><code>bool pruned = false;
+const int error = isPrunable(pruned);
+if (pruned) {
+  rootFragments = 1;      // scan hits one fragment, not all
+  m_fragsPerWorker = 1;
+}</code></pre>
+
+<div class="box">
+<div class="box-title">Path B performance summary</div>
+<p>Thanks to automatic partition pruning, Path B is effectively equivalent to
+Path A (PK lookup) in terms of data access — it reads a single row from a single
+fragment on a single data node.  The only overhead compared to a true
+<code>readTuple()</code> is the scan machinery setup, which is negligible.
+RonSQL does <strong>not</strong> need to call <code>setPartitionId()</code> or any
+other explicit pruning API — the NDB API detects the prunable bounds
+automatically.</p>
+</div>
+
+<div class="box warn-box">
+<div class="box-title">Limitations of Root Index Selection in Joins</div>
+<ul>
+  <li>The root in join queries <strong>never</strong> uses
+      <code>plan_index_and_filter()</code> (the goodness-scoring index selector).
+      That function is single-table only.</li>
+  <li>The root can only use an <strong>ordered index on the PK columns</strong>
+      (Path B).  Non-PK ordered indexes are never considered.</li>
+  <li>Range conditions on PK columns (e.g., <code>pk &gt; 5</code>) do not
+      trigger any index use — only full PK equality coverage qualifies.</li>
+  <li>WHERE filters on root columns that are not PK equalities are applied as
+      <code>NdbScanFilter</code> (pushed to data nodes), regardless of available
+      indexes.</li>
+</ul>
+</div>
+
+<h4><code>collect_pk_equalities()</code> Details</h4>
+<p>Location: <code>RonSQLPreparer.cpp:3464</code>.  Walks the WHERE AST
+recursively:</p>
+<ul>
+  <li>Descends into <code>T_AND</code> nodes.</li>
+  <li>Extracts <code>T_EQUALS</code> conditions where one side is a column in
+      the root table's PK and the other is a constant.</li>
+  <li>Stores each matched constant into <code>pk_const[k]</code> indexed by PK
+      column position.</li>
+  <li>After traversal, <code>pk_covered</code> is <code>true</code> only if
+      every slot in <code>pk_const[]</code> has been filled.</li>
+  <li>Conditions with non-equality operators, column-vs-column comparisons, and
+      <code>OR</code> sub-trees are all ignored — they never contribute to PK
+      coverage.</li>
+</ul>
 
 <h3>3.2&nbsp;&nbsp;Child Operations</h3>
 
@@ -261,6 +457,79 @@ and selects the child access method in strict priority order:</p>
 </tr>
 </tbody>
 </table>
+
+<h4>Child Partition Pruning</h4>
+
+<p>NDB tables are hash-partitioned across data node fragments.  Whether a child
+operation touches one fragment or all of them depends on its access type:</p>
+
+<table>
+<thead>
+<tr><th>Access Type</th><th>Pruning</th><th>Mechanism</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><span class="tag tag-good">PK_LOOKUP</span></td>
+  <td><span class="tag tag-good">Single fragment</span></td>
+  <td>DBSPJ hashes the full PK (constructed from linked parent values) via
+      <code>computeHash()</code>, then asks DBDIH for the owning fragment
+      (<code>DIGETNODESREQ</code>).  The <code>LQHKEYREQ</code> is sent to
+      that one fragment only.</td>
+</tr>
+<tr>
+  <td><span class="tag tag-good">UNIQUE_LOOKUP</span></td>
+  <td><span class="tag tag-good">Single fragment</span></td>
+  <td>Implemented as two lookups internally: first a PK lookup on the unique
+      index table (hashed to one fragment), then a PK lookup on the main table
+      using the returned PK (hashed to one fragment).  Both are single-fragment.</td>
+</tr>
+<tr>
+  <td><span class="tag tag-warn">INDEX_SCAN</span></td>
+  <td><span class="tag tag-warn">Depends on index</span></td>
+  <td>Pruned to a single fragment <strong>only if</strong> the index bounds
+      (linked from parent) cover the entire distribution key with equality
+      constraints.  Otherwise scans <strong>all</strong> fragments.</td>
+</tr>
+</tbody>
+</table>
+
+<h4>INDEX_SCAN Pruning Details</h4>
+
+<p>At query definition time, <code>NdbQueryIndexScanOperationDefImpl::appendPrunePattern()</code>
+(<code>NdbQueryBuilder.cpp:2148</code>) checks whether the child scan's index
+bounds cover the full distribution key.  If so, it serializes a
+<code>SF_PRUNE_PATTERN</code> into the QueryTree definition.</p>
+
+<p>At execution time in DBSPJ, when a parent row arrives for a prunable child
+scan (<code>scanFrag_parent_row()</code>, <code>DbspjMain.cpp:8059</code>):</p>
+
+<div class="flow">
+  <div class="flow-step">1. Expand the prune key from linked parent column values</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">2. <code>computePartitionHash()</code> — hash the distribution key</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">3. <code>getNodes()</code> — ask DIH which fragment owns that hash value</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">4. Append range to <strong>only that fragment's</strong> scan buffer</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">5. <code>scanFrag_send()</code> sends SCAN_FRAGREQ to the single matching fragment</div>
+</div>
+
+<p>Without <code>SF_PRUNE_PATTERN</code>, the range is broadcast to all fragments.</p>
+
+<div class="box">
+<div class="box-title">When is an INDEX_SCAN child prunable?</div>
+<p>Pruning requires that the <strong>ordered index prefix used as bounds</strong>
+covers all distribution key columns with equality constraints.  For tables using
+the default distribution (hash of PK), this means the index must have the full PK
+as a prefix and the ON clause must provide equality on all PK columns — at which
+point a <code>PK_LOOKUP</code> would have been selected instead.</p>
+<p>In practice, INDEX_SCAN children are <strong>rarely pruned</strong>.  The
+common case is a foreign-key join (<code>ON child.fk = parent.pk</code>) where
+<code>fk</code> is not the child's distribution key — the scan must touch all
+fragments.  Pruning only occurs with custom distribution keys or when the index
+happens to cover the full distribution key as a prefix.</p>
+</div>
 
 <h3>3.3&nbsp;&nbsp;Index Matching Details</h3>
 
@@ -766,12 +1035,13 @@ DblqhProxy parses both formats with backward compatibility.</p>
 </tr>
 <tr>
   <td>3</td>
-  <td><strong>No root index selection for joins.</strong>
-      The root is always <code>TABLE_SCAN</code> in the join path (index
-      selection via <code>plan_index_and_filter()</code> is only for
-      single-table queries).</td>
-  <td>Join queries cannot benefit from ordered index scans on the root table.
-      Root PK lookup is possible only if all PK columns have equality filters.</td>
+  <td><strong>Limited root index selection for joins.</strong>
+      The root in join queries never uses <code>plan_index_and_filter()</code>
+      (goodness scoring).  It can only use PK lookup (Path A) or ordered PK index
+      scan with equality bounds (Path B) — see §3.1.</td>
+  <td>Non-PK ordered indexes on the root table are never used.  Range conditions
+      on PK columns do not trigger index use.  Only full PK equality coverage
+      activates an optimized root access path.</td>
 </tr>
 <tr>
   <td>4</td>
@@ -820,6 +1090,9 @@ DblqhProxy parses both formats with backward compatibility.</p>
 <tr><td>Filter classification</td>
     <td><code>RonSQLPreparer.cpp</code></td>
     <td><code>classify_where_by_table()</code> :955, <code>classify_ce_table()</code> :209</td></tr>
+<tr><td>Root access selection</td>
+    <td><code>RonSQLPreparer.cpp</code></td>
+    <td><code>execute_join()</code> :3705–3817, <code>collect_pk_equalities()</code> :3464</td></tr>
 <tr><td>Filter application</td>
     <td><code>RonSQLPreparer.cpp</code></td>
     <td><code>apply_filter_top_level()</code> :4187, <code>execute_join()</code> :3506</td></tr>
