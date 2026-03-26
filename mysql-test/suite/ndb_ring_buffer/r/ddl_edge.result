@@ -370,4 +370,79 @@ log_id	logged_id	logged_val
 DROP TRIGGER test.rb_after_ins;
 DROP TABLE test.trigger_log;
 DROP TABLE test.rb_trigger;
+#
+# Case 12: CREATE TABLE with index on ring_idx — blocked
+#
+CREATE TABLE test.rb_idx_on_internal (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx),
+INDEX idx_ring_idx (ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+ERROR HY000: Can't create table 'rb_idx_on_internal' (use SHOW WARNINGS for more info).
+#
+# Case 13: CREATE TABLE with index on ring_meta — blocked
+#
+CREATE TABLE test.rb_idx_on_meta (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx),
+INDEX idx_ring_meta (ring_meta)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+ERROR HY000: Can't create table 'rb_idx_on_meta' (use SHOW WARNINGS for more info).
+#
+# Case 14: CREATE TABLE with UNIQUE index on ring_idx — blocked
+#
+CREATE TABLE test.rb_uniq_on_internal (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx),
+UNIQUE INDEX idx_ring_idx_uniq (ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+ERROR HY000: Can't create table 'rb_uniq_on_internal' (use SHOW WARNINGS for more info).
+#
+# Case 15: CREATE TABLE with composite index including ring_idx — blocked
+#
+CREATE TABLE test.rb_composite_idx (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx),
+INDEX idx_val_ring (val, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+ERROR HY000: Can't create table 'rb_composite_idx' (use SHOW WARNINGS for more info).
+#
+# Case 16: ALTER TABLE ADD INDEX on ring_idx — blocked
+#
+CREATE TABLE test.rb_alter_idx (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+ALTER TABLE test.rb_alter_idx ADD INDEX idx_ring_idx (ring_idx);
+ERROR HY000: Cannot create index on ring buffer internal column 'ring_idx'
+ALTER TABLE test.rb_alter_idx ADD INDEX idx_ring_meta (ring_meta);
+ERROR HY000: Cannot create index on ring buffer internal column 'ring_meta'
+ALTER TABLE test.rb_alter_idx ADD INDEX idx_val (val);
+INSERT INTO test.rb_alter_idx (id, val) VALUES (1, 'test_A');
+INSERT INTO test.rb_alter_idx (id, val) VALUES (1, 'test_B');
+SELECT id, ring_idx, val FROM test.rb_alter_idx ORDER BY ring_idx;
+id	ring_idx	val
+1	1	test_A
+1	2	test_B
+DROP TABLE test.rb_alter_idx;
 # Done.

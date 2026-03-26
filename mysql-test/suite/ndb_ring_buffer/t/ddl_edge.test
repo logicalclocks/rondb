@@ -426,4 +426,102 @@ DROP TRIGGER test.rb_after_ins;
 DROP TABLE test.trigger_log;
 DROP TABLE test.rb_trigger;
 
+###############################################################################
+# Case 12: CREATE TABLE with index on ring buffer internal columns — blocked
+###############################################################################
+
+--echo #
+--echo # Case 12: CREATE TABLE with index on ring_idx — blocked
+--echo #
+
+--error ER_CANT_CREATE_TABLE
+CREATE TABLE test.rb_idx_on_internal (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx),
+    INDEX idx_ring_idx (ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 13: CREATE TABLE with index on ring_meta — blocked
+--echo #
+
+--error ER_CANT_CREATE_TABLE
+CREATE TABLE test.rb_idx_on_meta (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx),
+    INDEX idx_ring_meta (ring_meta)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 14: CREATE TABLE with UNIQUE index on ring_idx — blocked
+--echo #
+
+--error ER_CANT_CREATE_TABLE
+CREATE TABLE test.rb_uniq_on_internal (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx),
+    UNIQUE INDEX idx_ring_idx_uniq (ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 15: CREATE TABLE with composite index including ring_idx — blocked
+--echo #
+
+--error ER_CANT_CREATE_TABLE
+CREATE TABLE test.rb_composite_idx (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx),
+    INDEX idx_val_ring (val, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+
+###############################################################################
+# Case 16: ALTER TABLE ADD INDEX on ring buffer internal columns — blocked
+###############################################################################
+
+--echo #
+--echo # Case 16: ALTER TABLE ADD INDEX on ring_idx — blocked
+--echo #
+
+CREATE TABLE test.rb_alter_idx (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_alter_idx ADD INDEX idx_ring_idx (ring_idx);
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_alter_idx ADD INDEX idx_ring_meta (ring_meta);
+
+# Index on user column should still work
+ALTER TABLE test.rb_alter_idx ADD INDEX idx_val (val);
+
+# Verify the table still works normally
+INSERT INTO test.rb_alter_idx (id, val) VALUES (1, 'test_A');
+INSERT INTO test.rb_alter_idx (id, val) VALUES (1, 'test_B');
+
+SELECT id, ring_idx, val FROM test.rb_alter_idx ORDER BY ring_idx;
+
+DROP TABLE test.rb_alter_idx;
+
 --echo # Done.
