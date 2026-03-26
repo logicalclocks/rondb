@@ -52,7 +52,7 @@ RONSQL SELECT n.n_name,
               (SELECT COUNT(*)
                FROM tpch_customer AS c
                WHERE c.c_nationkey = n.n_nationkey) AS num_customers
-       FROM tpch_nation AS n;
+       FROM tpch_nation AS n ORDER BY n.n_name;
 
 
 # --- Demo 4: Subquery Merge — same table merged (slide 8) ---
@@ -69,7 +69,7 @@ RONSQL SELECT n.n_name,
               (SELECT COUNT(*)
                FROM tpch_customer AS c
                WHERE c.c_nationkey = n.n_nationkey) AS num_cust
-       FROM tpch_nation AS n;
+       FROM tpch_nation AS n ORDER BY n.n_name;
 
 
 # --- Demo 5: CASE + cross-table WHERE filter (slide 9) ---

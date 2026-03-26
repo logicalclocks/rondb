@@ -156,7 +156,13 @@ func RunWithConfig(cfg Config) error {
 	fmt.Println()
 	fmt.Println(ui.Welcome())
 	fmt.Println()
-	fmt.Println(ui.Connected("25.10"))
+	version := "unknown"
+	if s.mysqlClient != nil {
+		if v, err := s.mysqlClient.Version(); err == nil {
+			version = v
+		}
+	}
+	fmt.Println(ui.Connected(version))
 	fmt.Println()
 
 	return s.loop()

@@ -92,6 +92,27 @@ func NewMySQLClientWithOptions(opts MySQLOptions) (*MySQLClient, error) {
 	return &MySQLClient{db: db}, nil
 }
 
+// Version queries the server for the NDB/RonDB version string.
+// Returns a string like "rondb-26.04.0" or falls back to the MySQL version.
+func (c *MySQLClient) Version() (string, error) {
+	var version string
+	err := c.db.QueryRow("SELECT @@ndb_version_string").Scan(&version)
+	if err == nil {
+		// @@ndb_version_string looks like "ndb-8.0.31-rondb-26.04.0"
+		// Extract the "rondb-XX.YY.Z" part if present
+		if idx := strings.Index(version, "rondb-"); idx >= 0 {
+			return version[idx+len("rondb-"):], nil
+		}
+		return version, nil
+	}
+	// Fallback: plain MySQL version (non-NDB server)
+	err = c.db.QueryRow("SELECT VERSION()").Scan(&version)
+	if err != nil {
+		return "", fmt.Errorf("failed to query version: %w", err)
+	}
+	return version, nil
+}
+
 // Query executes a SELECT query and returns columns, rows, and duration
 func (c *MySQLClient) Query(sql string) (columns []string, rows [][]interface{}, duration time.Duration, err error) {
 	start := time.Now()

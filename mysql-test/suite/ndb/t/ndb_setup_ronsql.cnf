@@ -3,9 +3,9 @@
 # --- Data node config (same as ndb_setup_large) ---
 [cluster_config.1]
 NumCPUs=8
-DataMemory=2G
 DiskPageBufferMemory=400M
-TotalMemoryConfig=6G
+TotalMemoryConfig=16G
+DataMemory=12G
 SchemaMemory=200M
 MaxNoOfTables=2000
 MaxNoOfOrderedIndexes=2000
@@ -17,6 +17,7 @@ BatchSize=990
 BatchByteSize=1M
 MaxScanBatchSize=4M
 PartitionsPerNode=8
+FragmentLogFileSize=1G
 
 # Set data node 1 to node ID 144 so that LQH's host record array
 # can accommodate API node IDs used by block unit tests.

@@ -43,7 +43,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
+#include <thread>
 #include <vector>
 
 static bool verbose = false;
@@ -714,21 +716,24 @@ loadOrders(Ndb *ndb, Uint32 count, Uint32 numCustomers)
 }
 
 static int
-loadLineitem(Ndb *ndb, Uint32 numOrders, Uint32 linesPerOrder,
-             Uint32 numParts, Uint32 numSuppliers)
+loadLineitemRange(Ndb *ndb, Uint32 startOrder, Uint32 endOrder,
+                  Uint32 linesPerOrder,
+                  Uint32 numParts, Uint32 numSuppliers,
+                  int threadIdx)
 {
   const NdbDictionary::Table *tab =
     ndb->getDictionary()->getTable("tpch_lineitem");
   if (tab == nullptr) return -1;
 
-  Uint32 totalRows = numOrders * linesPerOrder;
+  Uint32 rangeOrders = endOrder - startOrder;
+  Uint32 rangeRows = rangeOrders * linesPerOrder;
   const Uint32 BATCH = 500;
   Uint32 loaded = 0;
 
-  for (Uint32 o = 0; o < numOrders; ) {
+  for (Uint32 o = startOrder; o < endOrder; ) {
     NdbTransaction *tx = ndb->startTransaction();
     if (tx == nullptr) return -1;
-    Uint32 batchEnd = std::min(o + BATCH / linesPerOrder, numOrders);
+    Uint32 batchEnd = std::min(o + BATCH / linesPerOrder, endOrder);
     if (batchEnd == o) batchEnd = o + 1;
     for (; o < batchEnd; o++) {
       Uint32 orderkey = o + 1;
@@ -807,16 +812,18 @@ loadLineitem(Ndb *ndb, Uint32 numOrders, Uint32 linesPerOrder,
       }
     }
     if (tx->execute(NdbTransaction::Commit) != 0) {
-      fprintf(stderr, "insert lineitem: %s (loaded=%u)\n",
-              tx->getNdbError().message, loaded);
+      fprintf(stderr, "insert lineitem[%d]: %s (loaded=%u)\n",
+              threadIdx, tx->getNdbError().message, loaded);
       tx->close();
       return -1;
     }
     tx->close();
-    if (verbose && (loaded % 100000 < BATCH * linesPerOrder || o >= numOrders))
-      printf("  LINEITEM: %u / %u\n", loaded, totalRows);
+    if (verbose && (loaded % 100000 < BATCH * linesPerOrder || o >= endOrder))
+      printf("  LINEITEM[%d]: %u / %u\n", threadIdx, loaded, rangeRows);
   }
-  if (!verbose) printf("  LINEITEM: %u rows\n", totalRows);
+  if (!verbose)
+    printf("  LINEITEM[%d]: %u rows (orders %u..%u)\n",
+           threadIdx, rangeRows, startOrder + 1, endOrder);
   return 0;
 }
 
@@ -916,30 +923,100 @@ int main(int argc, char **argv)
       mysql_close(conn); result = 1; break;
     }
 
-    printf("Loading data...\n");
+    printf("Loading data (parallel)...\n");
     auto tLoad = Clock::now();
 
-    if (loadRegion(&ndb) != 0) { mysql_close(conn); result = 1; break; }
-    if (loadNation(&ndb) != 0) { mysql_close(conn); result = 1; break; }
-    if (loadSupplier(&ndb, sp.numSuppliers) != 0) {
-      mysql_close(conn); result = 1; break;
+    /*
+     * Parallel loading strategy:
+     *   Data generation is purely deterministic (no cross-table reads),
+     *   and NDB has no enforced FK constraints, so all tables can be
+     *   loaded concurrently.  Each thread gets its own Ndb object from
+     *   the shared Ndb_cluster_connection.
+     *
+     *   Group 1: region, nation, supplier, part, customer (independent)
+     *   Group 2: partsupp, orders, lineitem (independent of each other)
+     *
+     *   We load all 8 in one wave for maximum parallelism.
+     */
+
+    struct ThreadResult {
+      const char *table;
+      int rc;
+    };
+
+    auto makeNdb = [&con]() -> Ndb * {
+      Ndb *n = new Ndb(&con, "test");
+      if (n->init() != 0) {
+        fprintf(stderr, "Ndb::init: %s\n", n->getNdbError().message);
+        delete n;
+        return nullptr;
+      }
+      return n;
+    };
+
+    const int NUM_THREADS = 10;  /* 7 tables + 3 lineitem shards */
+    ThreadResult results[NUM_THREADS] = {};
+
+    auto runLoad = [&](int idx, const char *name,
+                       std::function<int(Ndb *)> fn) {
+      results[idx].table = name;
+      Ndb *n = makeNdb();
+      if (n == nullptr) {
+        results[idx].rc = -1;
+        return;
+      }
+      results[idx].rc = fn(n);
+      delete n;
+    };
+
+    std::thread threads[NUM_THREADS];
+
+    threads[0] = std::thread(runLoad, 0, "REGION",
+      [](Ndb *n) { return loadRegion(n); });
+    threads[1] = std::thread(runLoad, 1, "NATION",
+      [](Ndb *n) { return loadNation(n); });
+    threads[2] = std::thread(runLoad, 2, "SUPPLIER",
+      [&sp](Ndb *n) { return loadSupplier(n, sp.numSuppliers); });
+    threads[3] = std::thread(runLoad, 3, "PART",
+      [&sp](Ndb *n) { return loadPart(n, sp.numParts); });
+    threads[4] = std::thread(runLoad, 4, "CUSTOMER",
+      [&sp](Ndb *n) { return loadCustomer(n, sp.numCustomers); });
+    threads[5] = std::thread(runLoad, 5, "PARTSUPP",
+      [&sp](Ndb *n) {
+        return loadPartSupp(n, sp.numParts, sp.numSuppliers);
+      });
+    threads[6] = std::thread(runLoad, 6, "ORDERS",
+      [&sp](Ndb *n) {
+        return loadOrders(n, sp.numOrders, sp.numCustomers);
+      });
+
+    /* Split lineitem across 3 threads by order-key range */
+    static const char *LI_NAMES[] = {
+      "LINEITEM[0]", "LINEITEM[1]", "LINEITEM[2]"
+    };
+    const int LI_THREADS = 3;
+    Uint32 ordersPerShard = sp.numOrders / LI_THREADS;
+    for (int t = 0; t < LI_THREADS; t++) {
+      Uint32 start = t * ordersPerShard;
+      Uint32 end = (t == LI_THREADS - 1) ? sp.numOrders
+                                          : (t + 1) * ordersPerShard;
+      threads[7 + t] = std::thread(runLoad, 7 + t, LI_NAMES[t],
+        [&sp, start, end, t](Ndb *n) {
+          return loadLineitemRange(n, start, end, sp.linesPerOrder,
+                                   sp.numParts, sp.numSuppliers, t);
+        });
     }
-    if (loadPart(&ndb, sp.numParts) != 0) {
-      mysql_close(conn); result = 1; break;
+
+    for (int i = 0; i < NUM_THREADS; i++)
+      threads[i].join();
+
+    for (int i = 0; i < NUM_THREADS; i++) {
+      if (results[i].rc != 0) {
+        fprintf(stderr, "Failed to load %s\n", results[i].table);
+        result = 1;
+      }
     }
-    if (loadPartSupp(&ndb, sp.numParts, sp.numSuppliers) != 0) {
-      mysql_close(conn); result = 1; break;
-    }
-    if (loadCustomer(&ndb, sp.numCustomers) != 0) {
-      mysql_close(conn); result = 1; break;
-    }
-    if (loadOrders(&ndb, sp.numOrders, sp.numCustomers) != 0) {
-      mysql_close(conn); result = 1; break;
-    }
-    if (loadLineitem(&ndb, sp.numOrders, sp.linesPerOrder,
-                     sp.numParts, sp.numSuppliers) != 0) {
-      mysql_close(conn); result = 1; break;
-    }
+    if (result != 0) { mysql_close(conn); break; }
 
     double loadMs = elapsedMs(tLoad, Clock::now());
     printf("\nAll data loaded in %.1f ms (%.1f s)\n", loadMs, loadMs / 1000.0);
