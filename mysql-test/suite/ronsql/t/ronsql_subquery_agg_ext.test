@@ -1096,6 +1096,65 @@ ORDER BY o.id|
 
 --echo
 --echo
+--echo === M10: Arithmetic in cross-table filter — l.qty > o.min_qty + 1 ===
+# Cross-table filter with constant arithmetic on one side.
+# Order 10 (min_qty=3): lineitems qty [2,5,8] → qty > 4: [5,8], sum=13
+# Order 11 (min_qty=5): lineitems qty [1,6,10] → qty > 6: [10], sum=10
+# Order 20 (min_qty=2): lineitems qty [3,7] → qty > 3: [7], sum=7
+# Order 21 (min_qty=10): lineitems qty [15,20] → qty > 11: [15,20], sum=35
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.qty) AS filtered_qty
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.qty) AS filtered_qty
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M11: Multiplication in cross-table filter — l.price > o.min_qty * 10 ===
+# Order 10 (min_qty=3, thresh=30): prices [20,50,80] → >30: [50,80], count=2
+# Order 11 (min_qty=5, thresh=50): prices [10,60,100] → >50: [60,100], count=2
+# Order 20 (min_qty=2, thresh=20): prices [30,70] → >20: [30,70], count=2
+# Order 21 (min_qty=10, thresh=100): prices [150,200] → >100: [150,200], count=2
+
+let $QUERY=
+SELECT o.id AS order_id,
+  COUNT(l.id) AS big_count,
+  SUM(l.price) AS big_total
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.price > o.min_qty * 10
+GROUP BY o.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id,
+  COUNT(l.id) AS big_count,
+  SUM(l.price) AS big_total
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.price > o.min_qty * 10
+GROUP BY o.id
+ORDER BY o.id|
+
+--echo
+--echo
 --echo === M8: Ancestor-to-ancestor cross-table filter — c.id > o.min_qty ===
 # Filter between two ancestor tables (customer and orders), neither is the
 # leaf (lineitem). Both sides loaded via LoadLinkedColumn.

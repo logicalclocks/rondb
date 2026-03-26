@@ -981,15 +981,23 @@ RonSQLPreparer::classify_where_by_table()
       // in the aggregation program.  Complex cross-table expressions
       // (OR branches, arithmetic involving multiple tables) are rejected.
       ConditionalExpression* ce = conjuncts[i];
-      bool is_simple_cmp =
+      // Accept comparison operators where each side references at most
+      // one table (columns + constants + arithmetic).  This covers simple
+      // col OP col as well as expressions like col + 1 > other_col * 2.
+      bool is_comparison =
           (ce->op == T_EQUALS || ce->op == T_NOT_EQUALS ||
            ce->op == T_LT || ce->op == T_LE ||
            ce->op == T_GT || ce->op == T_GE) &&
-          ce->args.left != NULL && ce->args.right != NULL &&
-          ce->args.left->op == T_IDENTIFIER &&
-          ce->args.right->op == T_IDENTIFIER;
+          ce->args.left != NULL && ce->args.right != NULL;
+      Int32 left_t_s = is_comparison ?
+          classify_ce_table(ce->args.left, m_column_table_idx) : -2;
+      Int32 right_t_s = is_comparison ?
+          classify_ce_table(ce->args.right, m_column_table_idx) : -2;
 
-      if (!is_simple_cmp)
+      // Each side must reference at most one table, and the two sides
+      // must reference different tables (otherwise it's single-table).
+      if (!is_comparison || left_t_s == -2 || right_t_s == -2 ||
+          left_t_s == right_t_s)
       {
         throw RonSQLPermanentError(
             "WHERE condition references columns from multiple tables in a "
@@ -997,8 +1005,22 @@ RonSQLPreparer::classify_where_by_table()
             "conditions, each referencing only one table.");
       }
 
-      Uint32 left_t = m_column_table_idx[ce->args.left->col_idx];
-      Uint32 right_t = m_column_table_idx[ce->args.right->col_idx];
+      // Handle constant-only sides: treat as belonging to the other side's
+      // table for classification, but the filter still gates aggregation.
+      Uint32 left_t, right_t;
+      if (left_t_s == -1 && right_t_s == -1) {
+        // Both constant — not a cross-table filter (shouldn't reach here)
+        continue;
+      } else if (left_t_s == -1) {
+        left_t = (Uint32)right_t_s;  // constant side adopts other's table
+        right_t = (Uint32)right_t_s;
+      } else if (right_t_s == -1) {
+        left_t = (Uint32)left_t_s;
+        right_t = (Uint32)left_t_s;
+      } else {
+        left_t = (Uint32)left_t_s;
+        right_t = (Uint32)right_t_s;
+      }
       // Child = higher table index (deeper in join tree)
       Uint32 child_t = (left_t > right_t) ? left_t : right_t;
       Uint32 parent_t = (left_t > right_t) ? right_t : left_t;
@@ -1205,25 +1227,34 @@ RonSQLPreparer::build_agg_linked_projections()
   }
 
   // Add linked projections for cross-table WHERE filter columns that are
-  // not on the leaf table (only for filters not consumed as index bounds).
-  // For ancestor-to-ancestor filters, both sides need linked projections.
+  // not on the leaf table.  Walk expression trees to find all column refs
+  // (supports arithmetic expressions like col + 1 > other_col * 2).
+  std::function<void(ConditionalExpression*)> register_linked_projs =
+      [&](ConditionalExpression* ce) {
+    if (ce == NULL) return;
+    if (ce->op == T_IDENTIFIER) {
+      Uint32 cidx = ce->col_idx;
+      if (m_column_table_idx[cidx] != leaf_idx) {
+        find_or_add_linked_proj(m_join_plan,
+                                m_column_table_idx[cidx],
+                                m_columns[cidx].c_str());
+      }
+      return;
+    }
+    // Constants use different union members — don't access args
+    if (ce->op == T_INT || ce->op == T_FLOAT ||
+        ce->op == T_STRING || ce->op == T_NULL)
+      return;
+    // Binary ops (T_PLUS, T_MINUS, T_MULTIPLY, comparisons, etc.)
+    if (ce->args.left != NULL) register_linked_projs(ce->args.left);
+    if (ce->args.right != NULL) register_linked_projs(ce->args.right);
+  };
   for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
   {
     CrossTableFilter& ctf = m_cross_table_where_filters[f];
     if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
-    ConditionalExpression* cf = ctf.ce;
-    Uint32 left_cidx = cf->args.left->col_idx;
-    Uint32 right_cidx = cf->args.right->col_idx;
-    if (m_column_table_idx[left_cidx] != leaf_idx) {
-      find_or_add_linked_proj(m_join_plan,
-                              m_column_table_idx[left_cidx],
-                              m_columns[left_cidx].c_str());
-    }
-    if (m_column_table_idx[right_cidx] != leaf_idx) {
-      find_or_add_linked_proj(m_join_plan,
-                              m_column_table_idx[right_cidx],
-                              m_columns[right_cidx].c_str());
-    }
+    register_linked_projs(ctf.ce->args.left);
+    register_linked_projs(ctf.ce->args.right);
   }
 }
 
@@ -5233,6 +5264,104 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
   }
 }
 
+/*
+ * Count the number of NdbAggregator program words needed to compile
+ * a filter expression (single-table or constant-only subtree) into
+ * a register.  Supports: identifiers, integer/float constants,
+ * and +, -, * arithmetic.
+ */
+Uint32
+RonSQLPreparer::filter_expr_word_count(ConditionalExpression* ce)
+{
+  switch (ce->op) {
+  case T_IDENTIFIER:
+    return 1;  // LoadColumn or LoadLinkedColumn
+  case T_INT:
+    return 3;  // LoadInt64
+  case T_FLOAT:
+    return 3;  // LoadUint64 (double via reinterpret)
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+    return filter_expr_word_count(ce->args.left) +
+           filter_expr_word_count(ce->args.right) + 1;  // +1 for arith op
+  default:
+    require_prm(false,
+        "Unsupported expression in cross-table WHERE filter. "
+        "Only columns, integer constants, and +/-/* are supported.");
+    return 0;
+  }
+}
+
+/*
+ * Emit NdbAggregator instructions to evaluate a single-table expression
+ * into `reg`.  Uses `tmp_reg` as scratch for binary operations.
+ * `leaf_idx` determines whether to use LoadColumn (leaf) or
+ * LoadLinkedColumn (ancestor).
+ */
+void
+RonSQLPreparer::emit_filter_expr(NdbAggregator* agg,
+                                  ConditionalExpression* ce,
+                                  Uint32 leaf_idx, Uint32 reg,
+                                  Uint32 tmp_reg)
+{
+  switch (ce->op) {
+  case T_IDENTIFIER:
+  {
+    Uint32 cidx = ce->col_idx;
+    if (m_column_table_idx[cidx] == leaf_idx) {
+      programAggregator_do_or_fail(
+          agg->LoadColumn(m_column_attrId_map[cidx], reg));
+    } else {
+      Uint32 lp = find_or_add_linked_proj(
+          m_join_plan, m_column_table_idx[cidx],
+          m_columns[cidx].c_str());
+      programAggregator_do_or_fail(
+          agg->LoadLinkedColumn(lp, reg, m_column_map[cidx]));
+    }
+    break;
+  }
+  case T_INT:
+    programAggregator_do_or_fail(
+        agg->LoadInt64(ce->constant_integer, reg));
+    break;
+  case T_FLOAT:
+  {
+    // Load double as uint64 via reinterpret
+    Uint64 bits;
+    double d = ce->constant_float.dbl;
+    memcpy(&bits, &d, sizeof(bits));
+    programAggregator_do_or_fail(agg->LoadUint64(bits, reg));
+    break;
+  }
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+  {
+    // Evaluate left into reg, right into tmp_reg, then operate
+    emit_filter_expr(agg, ce->args.left, leaf_idx, reg, tmp_reg);
+    emit_filter_expr(agg, ce->args.right, leaf_idx, tmp_reg, reg);
+    switch (ce->op) {
+    case T_PLUS:
+      programAggregator_do_or_fail(agg->Add(reg, tmp_reg));
+      break;
+    case T_MINUS:
+      programAggregator_do_or_fail(agg->Minus(reg, tmp_reg));
+      break;
+    case T_MULTIPLY:
+      programAggregator_do_or_fail(agg->Mul(reg, tmp_reg));
+      break;
+    default:
+      break;
+    }
+    break;
+  }
+  default:
+    require_prm(false,
+        "Unsupported expression in cross-table WHERE filter.");
+  }
+}
+
 void
 RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
 {
@@ -5283,54 +5412,28 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
       CrossTableFilter& ctf = m_cross_table_where_filters[f];
       if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
       ConditionalExpression* cf = ctf.ce;
-      Uint32 left_cidx = cf->args.left->col_idx;
-      Uint32 right_cidx = cf->args.right->col_idx;
-      bool left_is_leaf = (m_column_table_idx[left_cidx] == leaf_idx);
-      bool right_is_leaf = (m_column_table_idx[right_cidx] == leaf_idx);
 
-      // Load both sides into registers.
-      // Leaf columns use LoadColumn; ancestor columns use LoadLinkedColumn.
-      // For ancestor-to-ancestor filters, both use LoadLinkedColumn.
-      Uint32 reg_left = 1, reg_right = 2;
-
-      if (left_is_leaf) {
-        programAggregator_do_or_fail
-          (aggregator->LoadColumn(m_column_attrId_map[left_cidx], reg_left));
-      } else {
-        Uint32 lp = find_or_add_linked_proj(
-            m_join_plan, m_column_table_idx[left_cidx],
-            m_columns[left_cidx].c_str());
-        programAggregator_do_or_fail
-          (aggregator->LoadLinkedColumn(lp, reg_left,
-                                        m_column_map[left_cidx]));
-      }
-
-      if (right_is_leaf) {
-        programAggregator_do_or_fail
-          (aggregator->LoadColumn(m_column_attrId_map[right_cidx], reg_right));
-      } else {
-        Uint32 lp = find_or_add_linked_proj(
-            m_join_plan, m_column_table_idx[right_cidx],
-            m_columns[right_cidx].c_str());
-        programAggregator_do_or_fail
-          (aggregator->LoadLinkedColumn(lp, reg_right,
-                                        m_column_map[right_cidx]));
-      }
+      // Compile each side of the comparison into a register.
+      // Supports expressions (col + const, col * const, etc.)
+      Uint32 reg_left = 1, reg_right = 2, tmp_reg = 3;
+      emit_filter_expr(aggregator, cf->args.left, leaf_idx, reg_left, tmp_reg);
+      emit_filter_expr(aggregator, cf->args.right, leaf_idx, reg_right, tmp_reg);
 
       // Operator is from the original SQL: left OP right.
       // We skip when NOT(left OP right).
       TokenKind filter_op = cf->op;
 
       // Skip all remaining agg instructions when filter does NOT match.
-      // Each subsequent filter emits 3 words (Load + Load + BranchReg).
-      Uint32 remaining_filters = 0;
+      // Each subsequent filter's word count depends on its expressions.
+      Uint32 remaining_words = 0;
       for (Uint32 f2 = f + 1; f2 < m_cross_table_where_filters.size(); f2++)
       {
         CrossTableFilter& ctf2 = m_cross_table_where_filters[f2];
         if (ctf2.ce == NULL) continue;  // Consumed
-        remaining_filters++;
+        remaining_words += filter_expr_word_count(ctf2.ce->args.left) +
+                           filter_expr_word_count(ctf2.ce->args.right) + 1;
       }
-      Uint32 skip_count = agg_word_count + remaining_filters * 3;
+      Uint32 skip_count = agg_word_count + remaining_words;
 
       switch (filter_op) {
       case T_GT:

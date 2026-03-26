@@ -1016,6 +1016,72 @@ order_id	min_qty	exact_count	exact_price
 20	2	1	22
 
 
+=== M10: Arithmetic in cross-table filter — l.qty > o.min_qty + 1 ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.qty) AS filtered_qty
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.qty) AS filtered_qty
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+order_id	min_qty	filtered_qty
+10	3	13
+11	5	10
+20	2	7
+21	10	35
+
+
+=== M11: Multiplication in cross-table filter — l.price > o.min_qty * 10 ===
+== Query ==
+SELECT o.id AS order_id,
+COUNT(l.id) AS big_count,
+SUM(l.price) AS big_total
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.price > o.min_qty * 10
+GROUP BY o.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id,
+COUNT(l.id) AS big_count,
+SUM(l.price) AS big_total
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.price > o.min_qty * 10
+GROUP BY o.id
+ORDER BY o.id|
+order_id	big_count	big_total
+10	3	163
+11	3	215
+20	3	122
+21	2	350
+
+
 === M8: Ancestor-to-ancestor cross-table filter — c.id > o.min_qty ===
 == Query ==
 SELECT c.`name`, o.id AS order_id,

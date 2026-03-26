@@ -290,6 +290,10 @@ private:
                                             int maxdepth);
   void programAggregator(NdbAggregator* aggregator);
   void programAggregator_join(NdbAggregator* aggregator);
+  Uint32 filter_expr_word_count(struct ConditionalExpression* ce);
+  void emit_filter_expr(NdbAggregator* agg,
+                        struct ConditionalExpression* ce,
+                        Uint32 leaf_idx, Uint32 reg, Uint32 tmp_reg);
   void generate_embedded_condition(NdbAggregator* aggregator,
                                    struct ConditionalExpression* ce,
                                    Uint32 then_arm_raw_size);
