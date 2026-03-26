@@ -103,7 +103,7 @@ func RunWithConfig(cfg Config) error {
 		debug:          cfg.Verbose >= 2,
 		quiet:          cfg.Quiet,
 		ronsqlDatabase: "test",
-		ronsqlFormat:   "JSON",
+		ronsqlFormat:   "TEXT",
 		ronsqlExplain:  "ALLOW",
 	}
 
