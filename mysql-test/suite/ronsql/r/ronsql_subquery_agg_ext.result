@@ -853,4 +853,133 @@ WHERE o.id = 21|
 order_id	min_qty	eq_sum
 21	10	NULL
 
+
+=== M1: Cross-table WHERE filter on explicit join — l.qty > o.min_qty ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.qty) AS filtered_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.qty) AS filtered_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+order_id	min_qty	filtered_sum
+10	3	13
+11	5	16
+20	2	10
+21	10	35
+
+
+=== M2: Cross-table WHERE with EQ — l.qty = o.min_qty ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+COUNT(l.id) AS exact_count,
+SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty AND o.id != 21
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+COUNT(l.id) AS exact_count,
+SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty AND o.id != 21
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+order_id	min_qty	exact_count	exact_price
+10	3	1	33
+11	5	1	55
+20	2	1	22
+
+
+=== M3: Cross-table WHERE with NE — l.qty != o.min_qty ===
+== Query ==
+SELECT o.id AS order_id,
+SUM(l.qty) AS ne_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty != o.min_qty
+GROUP BY o.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id,
+SUM(l.qty) AS ne_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty != o.min_qty
+GROUP BY o.id
+ORDER BY o.id|
+order_id	ne_sum
+10	15
+11	17
+20	10
+21	35
+
+
+=== M4: Cross-table WHERE + inner-only WHERE combined ===
+== Query ==
+SELECT o.id AS order_id,
+SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty AND l.price > 30
+GROUP BY o.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id,
+SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty AND l.price > 30
+GROUP BY o.id
+ORDER BY o.id|
+order_id	filtered_price
+10	130
+11	160
+20	70
+21	350
+
 === Cleanup ===

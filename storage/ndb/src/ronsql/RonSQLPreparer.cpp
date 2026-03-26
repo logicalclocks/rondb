@@ -136,6 +136,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_columns(conf.amalloc),
   m_column_qualifiers(conf.amalloc),
   m_col_is_inner(conf.amalloc),
+  m_cross_table_where_filters(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
   m_scan_config_candidates(conf.amalloc),
@@ -972,10 +973,38 @@ RonSQLPreparer::classify_where_by_table()
 
     if (table_idx == -2)
     {
-      throw RonSQLPermanentError(
-          "WHERE condition references columns from multiple tables in a "
-          "single comparison or OR branch. Split into separate AND "
-          "conditions, each referencing only one table.");
+      // Cross-table condition.  For simple comparisons (col OP col) between
+      // two tables, collect as a cross-table filter for BranchReg handling
+      // in the aggregation program.  Complex cross-table expressions
+      // (OR branches, arithmetic involving multiple tables) are rejected.
+      ConditionalExpression* ce = conjuncts[i];
+      bool is_simple_cmp =
+          (ce->op == T_EQUALS || ce->op == T_NOT_EQUALS ||
+           ce->op == T_LT || ce->op == T_LE ||
+           ce->op == T_GT || ce->op == T_GE) &&
+          ce->args.left != NULL && ce->args.right != NULL &&
+          ce->args.left->op == T_IDENTIFIER &&
+          ce->args.right->op == T_IDENTIFIER;
+
+      if (!is_simple_cmp)
+      {
+        throw RonSQLPermanentError(
+            "WHERE condition references columns from multiple tables in a "
+            "single comparison or OR branch. Split into separate AND "
+            "conditions, each referencing only one table.");
+      }
+
+      Uint32 left_t = m_column_table_idx[ce->args.left->col_idx];
+      Uint32 right_t = m_column_table_idx[ce->args.right->col_idx];
+      // Child = higher table index (deeper in join tree)
+      Uint32 child_t = (left_t > right_t) ? left_t : right_t;
+      Uint32 parent_t = (left_t > right_t) ? right_t : left_t;
+      CrossTableFilter ctf;
+      ctf.ce = ce;
+      ctf.child_table_idx = child_t;
+      ctf.parent_table_idx = parent_t;
+      m_cross_table_where_filters.push(ctf);
+      continue;
     }
 
     // Constant-only conditions: assign to root table
@@ -1060,6 +1089,21 @@ RonSQLPreparer::build_agg_linked_projections()
                                 m_columns[col_idx].c_str());
       }
     }
+  }
+
+  // Add linked projections for cross-table WHERE filter parent columns
+  for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
+  {
+    CrossTableFilter& ctf = m_cross_table_where_filters[f];
+    ConditionalExpression* cf = ctf.ce;
+    Uint32 left_cidx = cf->args.left->col_idx;
+    Uint32 right_cidx = cf->args.right->col_idx;
+    // The parent column (not on the leaf) needs a linked projection
+    bool left_on_leaf = (m_column_table_idx[left_cidx] == leaf_idx);
+    Uint32 parent_cidx = left_on_leaf ? right_cidx : left_cidx;
+    find_or_add_linked_proj(m_join_plan,
+                            m_column_table_idx[parent_cidx],
+                            m_columns[parent_cidx].c_str());
   }
 }
 
@@ -2783,6 +2827,34 @@ RonSQLPreparer::compile()
       throw RonSQLPermanentError("Failed to compile aggregation program.");
     }
   }
+
+  // Cross-table WHERE filters require aggregation (BranchReg is in the
+  // aggregation program).  Non-aggregate queries with cross-table WHERE
+  // are not yet supported.
+  if (m_cross_table_where_filters.size() > 0) {
+    if (m_agg == NULL) {
+      throw RonSQLPermanentError(
+          "Cross-table WHERE conditions (e.g., a.x > b.y) are only "
+          "supported in queries with aggregation (GROUP BY / aggregate "
+          "functions).  Split into separate conditions per table, or "
+          "add aggregation.");
+    }
+    // Verify all cross-table filters involve the aggregation leaf.
+    // BranchReg runs in the leaf's aggregation program, so at least
+    // one side must be on a leaf table.
+    Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+    for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++) {
+      CrossTableFilter& ctf = m_cross_table_where_filters[f];
+      if (ctf.child_table_idx != leaf_idx &&
+          ctf.parent_table_idx != leaf_idx) {
+        throw RonSQLPermanentError(
+            "Cross-table WHERE condition must involve the aggregation "
+            "leaf table.  Conditions between two ancestor tables are "
+            "not yet supported.");
+      }
+    }
+  }
+
   // Compile post-processing/printer program
   m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
     ResultPrinter(m_amalloc,
@@ -4981,6 +5053,102 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
       linked_proj_pos++;
     }
     groupby = groupby->next;
+  }
+
+  // Emit cross-table WHERE filters as BranchReg conditional aggregation.
+  // Each filter skips ALL aggregation instructions if not satisfied.
+  if (m_cross_table_where_filters.size() > 0)
+  {
+    Uint32 agg_word_count = m_agg->raw_word_size(0, m_agg->m_program.size());
+    for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
+    {
+      CrossTableFilter& ctf = m_cross_table_where_filters[f];
+      // Only apply filters relevant to this leaf
+      if (ctf.child_table_idx != leaf_idx &&
+          ctf.parent_table_idx != leaf_idx)
+        continue;
+
+      ConditionalExpression* cf = ctf.ce;
+      Uint32 left_cidx = cf->args.left->col_idx;
+      Uint32 right_cidx = cf->args.right->col_idx;
+
+      // Determine which side is on the leaf table
+      bool left_is_leaf =
+          (m_column_table_idx[left_cidx] == leaf_idx);
+      Uint32 leaf_cidx = left_is_leaf ? left_cidx : right_cidx;
+      Uint32 parent_cidx = left_is_leaf ? right_cidx : left_cidx;
+
+      // Add linked projection for parent column
+      Uint32 parent_lp_pos = find_or_add_linked_proj(
+          m_join_plan, m_column_table_idx[parent_cidx],
+          m_columns[parent_cidx].c_str());
+
+      // Load parent column into register 2 via linked projection
+      Uint32 reg_parent = 2;
+      programAggregator_do_or_fail
+        (aggregator->LoadLinkedColumn(parent_lp_pos, reg_parent,
+                                      m_column_map[parent_cidx]));
+
+      // Load leaf column into register 1
+      Uint32 reg_leaf = 1;
+      NdbAttrId leaf_attr = m_column_attrId_map[leaf_cidx];
+      programAggregator_do_or_fail
+        (aggregator->LoadColumn(leaf_attr, reg_leaf));
+
+      // Determine the operator from the leaf's perspective
+      TokenKind filter_op = cf->op;
+      if (!left_is_leaf) {
+        // Flip: parent OP leaf → leaf FLIPPED_OP parent
+        switch (filter_op) {
+        case T_LT: filter_op = T_GT; break;
+        case T_LE: filter_op = T_GE; break;
+        case T_GT: filter_op = T_LT; break;
+        case T_GE: filter_op = T_LE; break;
+        default: break;
+        }
+      }
+      // Skip all remaining agg instructions when NOT(leaf_col OP parent_col)
+      // Also account for any subsequent cross-table filter instructions:
+      // each filter emits 3 instructions (LoadLinked + LoadCol + BranchReg)
+      Uint32 remaining_filters = 0;
+      for (Uint32 f2 = f + 1; f2 < m_cross_table_where_filters.size(); f2++)
+      {
+        CrossTableFilter& ctf2 = m_cross_table_where_filters[f2];
+        if (ctf2.child_table_idx == leaf_idx ||
+            ctf2.parent_table_idx == leaf_idx)
+          remaining_filters++;
+      }
+      Uint32 skip_count = agg_word_count + remaining_filters * 3;
+
+      switch (filter_op) {
+      case T_GT:
+        programAggregator_do_or_fail
+          (aggregator->BranchRegLe(reg_leaf, reg_parent, skip_count));
+        break;
+      case T_GE:
+        programAggregator_do_or_fail
+          (aggregator->BranchRegLt(reg_leaf, reg_parent, skip_count));
+        break;
+      case T_LT:
+        programAggregator_do_or_fail
+          (aggregator->BranchRegGe(reg_leaf, reg_parent, skip_count));
+        break;
+      case T_LE:
+        programAggregator_do_or_fail
+          (aggregator->BranchRegGt(reg_leaf, reg_parent, skip_count));
+        break;
+      case T_EQUALS:
+        programAggregator_do_or_fail
+          (aggregator->BranchRegNe(reg_leaf, reg_parent, skip_count));
+        break;
+      case T_NOT_EQUALS:
+        programAggregator_do_or_fail
+          (aggregator->BranchRegEq(reg_leaf, reg_parent, skip_count));
+        break;
+      default:
+        require_prm(false, "Unsupported cross-table WHERE operator.");
+      }
+    }
   }
 
   // Program aggregations — same as single-table path

@@ -150,6 +150,18 @@ private:
   const NdbDictionary::Table* m_table = NULL;
   JoinPlan m_join_plan;
   ConditionalExpression* m_join_where_ce[MAX_SPJ_TREE_NODES];
+
+  // Cross-table WHERE filters (e.g., WHERE l.price > o.min_price).
+  // These reference columns from two different tables and cannot be
+  // pushed as scan filters.  For aggregation queries, they are compiled
+  // into BranchReg conditional aggregation instructions.
+  struct CrossTableFilter {
+    ConditionalExpression* ce;
+    Uint32 child_table_idx;   // table index of the "inner" side
+    Uint32 parent_table_idx;  // table index of the "outer" side
+  };
+  DynamicArray<CrossTableFilter> m_cross_table_where_filters;
+
   DynamicArray<const NdbDictionary::Index*> m_indexes;
   NdbTransaction* m_trans = NULL;
   yyscan_t m_scanner;

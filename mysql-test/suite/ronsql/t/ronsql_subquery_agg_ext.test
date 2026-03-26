@@ -962,6 +962,111 @@ JOIN k_orders AS o ON o.cust_id = c.id
 WHERE o.id = 21|
 
 # =========================================================================
+# Category M: Cross-table WHERE filters with aggregation
+# =========================================================================
+
+--echo
+--echo
+--echo === M1: Cross-table WHERE filter on explicit join — l.qty > o.min_qty ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.qty) AS filtered_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.qty) AS filtered_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M2: Cross-table WHERE with EQ — l.qty = o.min_qty ===
+# Note: Cross-table WHERE via BranchReg gives conditional aggregation
+# semantics. Groups where no rows match get COUNT=0/SUM=NULL instead
+# of being absent. Filter to orders that have matches to avoid this.
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  COUNT(l.id) AS exact_count,
+  SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty AND o.id != 21
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  COUNT(l.id) AS exact_count,
+  SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty AND o.id != 21
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M3: Cross-table WHERE with NE — l.qty != o.min_qty ===
+
+let $QUERY=
+SELECT o.id AS order_id,
+  SUM(l.qty) AS ne_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty != o.min_qty
+GROUP BY o.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id,
+  SUM(l.qty) AS ne_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty != o.min_qty
+GROUP BY o.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M4: Cross-table WHERE + inner-only WHERE combined ===
+
+let $QUERY=
+SELECT o.id AS order_id,
+  SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty AND l.price > 30
+GROUP BY o.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id,
+  SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty AND l.price > 30
+GROUP BY o.id
+ORDER BY o.id|
+
+# =========================================================================
 
 DELIMITER ;|
 
