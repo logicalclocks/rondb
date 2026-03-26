@@ -1277,6 +1277,41 @@ RonSQLPreparer::build_agg_linked_projections()
     register_linked_projs(ctf.ce->args.left);
     register_linked_projs(ctf.ce->args.right);
   }
+
+  // Add linked projections for CASE condition columns on parent tables.
+  // Walk the aggregation program looking for CASE instructions whose
+  // condition column is not on the leaf table.
+  if (m_agg != NULL) {
+    for (Uint32 c = 0; c < m_agg->m_cases.size(); c++) {
+      auto& ci = m_agg->m_cases[c];
+      if (ci.condition == NULL) continue;
+      // Flatten AND/OR to find all atom conditions
+      DynamicArray<ConditionalExpression*> atoms(m_amalloc);
+      ConditionalExpression* ce = ci.condition;
+      if (ce->op == T_AND || ce->op == T_OR) {
+        TokenKind flatten_op = ce->op;
+        while (ce->op == flatten_op) {
+          atoms.push(ce->args.right);
+          ce = ce->args.left;
+        }
+        atoms.push(ce);
+      } else {
+        atoms.push(ce);
+      }
+      for (Uint32 a = 0; a < atoms.size(); a++) {
+        ConditionalExpression* atom = atoms[a];
+        if (atom->args.left != NULL && atom->args.left->op == T_IDENTIFIER) {
+          Uint32 col_idx = atom->args.left->col_idx;
+          if (m_column_table_idx != NULL &&
+              m_column_table_idx[col_idx] != leaf_idx) {
+            find_or_add_linked_proj(m_join_plan,
+                                    m_column_table_idx[col_idx],
+                                    m_columns[col_idx].c_str());
+          }
+        }
+      }
+    }
+  }
 }
 
 void
@@ -5758,11 +5793,14 @@ RonSQLPreparer::generate_embedded_condition(
     atoms.push(ce);
   }
 
-  // Compute embedded word sizes.
-  // The embedded interpreter runs interpreterNextLab() which reads columns via
-  // readAttributes() from the local tuple. For join queries, only columns on
-  // the aggregation leaf table are accessible — columns from parent tables
-  // arrive as linked attributes in the signal buffer, not readable by attrId.
+  // Compute embedded word sizes and detect parent-table columns.
+  // Parent columns need READ_LINKED_TO_MEM + BRANCH_MEM_OP_ARG instead of
+  // BRANCH_ATTR_OP_ARG. All atoms in a CASE must reference the same column
+  // (enforced by the parser), so we check the first atom.
+  Uint32 leaf_idx = (m_column_table_idx != NULL) ? m_join_plan.agg_leaf_idx : 0;
+  bool has_linked_col = false;
+  Uint32 linked_position = 0;
+
   Uint32 total_branch_words = 0;
   for (Uint32 a = 0; a < atoms.size(); a++)
   {
@@ -5770,20 +5808,22 @@ RonSQLPreparer::generate_embedded_condition(
     ndbrequire(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS);
     ConditionalExpression* col_side = atom->args.left;
     ndbrequire(col_side->op == T_IDENTIFIER);
-    if (m_column_table_idx != NULL)
-    {
-      Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
-      require_prm(m_column_table_idx[col_side->col_idx] == leaf_idx,
-                  "CASE condition column must be on the aggregation leaf table. "
-                  "Columns from parent tables in CASE conditions are not yet "
-                  "supported.");
+    if (m_column_table_idx != NULL &&
+        m_column_table_idx[col_side->col_idx] != leaf_idx) {
+      has_linked_col = true;
+      linked_position = find_or_add_linked_proj(
+          m_join_plan, m_column_table_idx[col_side->col_idx],
+          m_columns[col_side->col_idx].c_str());
     }
     const NdbDictionary::Column* col = m_column_map[col_side->col_idx];
     Uint32 byte_len = col->getLength();
     Uint32 data_words = (byte_len + 3) / 4;
-    total_branch_words += 2 + data_words;
+    // BRANCH_MEM_OP_ARG: 4 words (opcode, attrId|len, tableId, schemaVer) + data
+    // BRANCH_ATTR_OP_ARG: 2 words (opcode, attrId|len) + data
+    total_branch_words += (has_linked_col ? 4 : 2) + data_words;
   }
-  Uint32 emb_len = total_branch_words + 6;
+  // If linked column: add 1 word for READ_LINKED_TO_MEM before the branches
+  Uint32 emb_len = total_branch_words + 6 + (has_linked_col ? 1 : 0);
 
   // For OR:  branches → second_exit (THEN), fall-through → first_exit (ELSE)
   // For AND: branches → second_exit (ELSE), fall-through → first_exit (THEN)
@@ -5795,7 +5835,14 @@ RonSQLPreparer::generate_embedded_condition(
 
   programAggregator_do_or_fail(aggregator->EmbeddedInterp(emb_len));
 
-  Uint32 pos = 0;
+  // If linked column, emit READ_LINKED_TO_MEM first to load the parent
+  // column value into cheapMemory[0] for BRANCH_MEM_OP_ARG to read.
+  if (has_linked_col) {
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::READ_LINKED_TO_MEM | (linked_position << 16)));
+  }
+
+  Uint32 pos = has_linked_col ? 1 : 0;
   for (Uint32 a = 0; a < atoms.size(); a++)
   {
     ConditionalExpression* atom = atoms[a];
@@ -5822,11 +5869,28 @@ RonSQLPreparer::generate_embedded_condition(
       cond = (atom->op == T_EQUALS) ? Interpreter::EQ : Interpreter::NE;
     }
 
-    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-        Interpreter::BranchCol(cond, Interpreter::NULL_CMP_EQUAL) |
-        (branch_offset << 16)));
-    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-        Interpreter::BranchCol_2(attr_id, byte_len)));
+    if (has_linked_col) {
+      // Parent-table column: use BRANCH_MEM_OP_ARG (reads from cheapMemory[0])
+      // Get parent table's tableId and schemaVersion for type lookup
+      Uint32 parent_op = m_column_table_idx[col_side->col_idx];
+      const NdbDictionary::Table* parentTable = m_join_plan.ops[parent_op].table;
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::BranchMem(cond, Interpreter::NULL_CMP_EQUAL) |
+          (branch_offset << 16)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::BranchMem_2(attr_id, byte_len)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          parentTable->getTableId()));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          parentTable->getObjectVersion()));
+    } else {
+      // Leaf-table column: use BRANCH_ATTR_OP_ARG (reads via readAttributes)
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::BranchCol(cond, Interpreter::NULL_CMP_EQUAL) |
+          (branch_offset << 16)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::BranchCol_2(attr_id, byte_len)));
+    }
 
     raw_value rv = encode_constant(val_side, col);
     Uint32 padded_len = data_words * 4;

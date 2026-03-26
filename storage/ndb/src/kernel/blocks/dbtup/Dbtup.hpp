@@ -2011,6 +2011,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_tuple_ptr = NULL;
       ttl_purge_window_size = 0;
       m_use_corr_factor = 0;
+      m_linked_attr_data = nullptr;
+      m_linked_attr_len = 0;
     }
 
     KeyReqStruct(EmulatedJamBuffer *_jamBuffer) : changeMask(false) {
@@ -2023,6 +2025,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_disable_fk_checks = false;
       ttl_purge_window_size = 0;
       m_use_corr_factor = 0;
+      m_linked_attr_data = nullptr;
+      m_linked_attr_len = 0;
     }
 
     KeyReqStruct(Dbtup *tup) : changeMask(false) {
@@ -2036,6 +2040,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_dbtup_ptr = tup;
       ttl_purge_window_size = 0;
       m_use_corr_factor = 0;
+      m_linked_attr_data = nullptr;
+      m_linked_attr_len = 0;
     }
 
     KeyReqStruct(Dbtup *tup, When when) : changeMask() {
@@ -2050,6 +2056,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_dbtup_ptr = tup;
       ttl_purge_window_size = 0;
       m_use_corr_factor = 0;
+      m_linked_attr_data = nullptr;
+      m_linked_attr_len = 0;
     }
 
     /**
@@ -2199,6 +2207,15 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint32 agg_n_res_recs;
     Uint32 m_join_agg_state_key;  // Pool index for join agg state (RNIL if none)
     Uint32 ttl_purge_window_size;
+
+    /**
+     * Linked attribute data from a pushed-join parent row.
+     * Set by the AggInterpreter before calling interpreterNextLab() for
+     * embedded interpreter sections that need READ_LINKED_TO_MEM.
+     * Format: sequence of [tableId, schemaVersion, AttrHeader, data...] entries.
+     */
+    const Uint32* m_linked_attr_data;
+    Uint32 m_linked_attr_len;
   };
 
   friend struct Undo_buffer;

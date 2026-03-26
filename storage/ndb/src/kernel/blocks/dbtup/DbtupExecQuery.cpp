@@ -6288,6 +6288,53 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           break;
         }
+
+        case Interpreter::READ_LINKED_TO_MEM:
+        {
+          /**
+           * Read a linked (parent-table) column from
+           * req_struct->m_linked_attr_data into cheapMemory[0].
+           * The linked buffer format is:
+           *   [tableId, schemaVersion, AttrHeader, data...] per entry.
+           * Position (bits 16..23) selects the Nth entry.
+           */
+          RnoOfInstructions += 3;
+          Uint32 position = (theInstruction >> 16) & 0xFF;
+
+          const Uint32* linked = req_struct->m_linked_attr_data;
+          Uint32 linked_len = req_struct->m_linked_attr_len;
+          Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[0];
+
+          if (unlikely(linked == nullptr)) {
+            // No linked data — write NULL AttributeHeader
+            AttributeHeader null_ah(0, 0);
+            memory_ptr[0] = null_ah.m_value;
+            break;
+          }
+
+          // Walk to the Nth entry: [tableId, schemaVersion, AttrHeader, data..]
+          const Uint32* p = linked;
+          const Uint32* p_end = linked + linked_len;
+          Uint32 pos_count = 0;
+          while (p < p_end) {
+            if (pos_count == position) break;
+            p += 2;  // skip tableId, schemaVersion
+            p += 1 + AttributeHeader::getDataSize(*p);
+            pos_count++;
+          }
+          if (unlikely(p >= p_end)) {
+            AttributeHeader null_ah(0, 0);
+            memory_ptr[0] = null_ah.m_value;
+            break;
+          }
+
+          // Skip tableId and schemaVersion, copy AttrHeader + data
+          p += 2;
+          Uint32 words = 1 + AttributeHeader::getDataSize(*p);
+          memcpy(memory_ptr, p, words * sizeof(Uint32));
+          break;
+        }
+
         case Interpreter::READ_INTERPRETER_INPUT:
         {
           /**
@@ -7678,6 +7725,118 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           break;
         }
+
+        case Interpreter::BRANCH_MEM_OP_ARG:
+        {
+          /**
+           * Like BRANCH_ATTR_OP_ARG but reads column data from
+           * cheapMemory[0] (placed there by READ_LINKED_TO_MEM) instead
+           * of calling readAttributes(). Uses tableId + schemaVersion
+           * from words 2-3 to look up the correct (parent) table
+           * descriptor for type/charset info.
+           *
+           * Layout: [opcode+cond, attrId|argLen, tableId, schemaVer, data...]
+           */
+          jamDebug();
+          const Uint32 ins2 = TcurrentProgram[TprogramCounter];
+          Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2);
+          Uint32 argLen = Interpreter::getBranchCol_Len(ins2);
+          Uint32 tableId = TcurrentProgram[TprogramCounter + 1];
+          Uint32 schemaVersion = TcurrentProgram[TprogramCounter + 2];
+
+          // Look up the parent table by tableId for type/charset info.
+          // Validate table exists, is DEFINED, and schemaVersion matches
+          // (via DBLQH's table record which tracks schema versions).
+          if (unlikely(tableId >= cnoOfTablerec)) {
+            jam();
+            return TUPKEY_abort(req_struct, 40);
+          }
+          Tablerec* parentTablePtrP = &tablerec[tableId];
+          if (unlikely(parentTablePtrP->tableStatus != DEFINED)) {
+            jam();
+            return TUPKEY_abort(req_struct, 40);
+          }
+          if (unlikely(tableId >= c_lqh->ctabrecFileSize ||
+                       c_lqh->tablerec[tableId].schemaVersion !=
+                           schemaVersion)) {
+            jam();
+            return TUPKEY_abort(req_struct, 40);
+          }
+
+          // Read column data from cheapMemory[0] (written by READ_LINKED_TO_MEM)
+          const Uint32* memData = (const Uint32*)&TheapMemoryChar[0];
+          const AttributeHeader ah(memData[0]);
+
+          // Get type info from the parent table's descriptor
+          const Uint32* attrDescriptor = parentTablePtrP->tabDescriptor +
+              (attrId * ZAD_SIZE);
+          const Uint32 TattrDesc1 = attrDescriptor[0];
+          const Uint32 TattrDesc2 = attrDescriptor[1];
+          const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
+          const CHARSET_INFO* cs = nullptr;
+          if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
+            const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+            cs = parentTablePtrP->charsetArray[pos];
+          }
+          const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(typeId);
+
+          Uint32 attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
+          const char* s1 = (const char*)&memData[1];
+          // Inline constant starts after word 0 (ins2) + word 1 (tableId) +
+          // word 2 (schemaVersion)
+          const char* s2 = (const char*)&TcurrentProgram[TprogramCounter + 3];
+          const Uint32 step = argLen;
+
+          const bool r1_null = ah.isNULL();
+          const bool r2_null = (argLen == 0);
+
+          if (r1_null || r2_null) {
+            const Uint32 nullSemantics =
+                Interpreter::getNullSemantics(theInstruction);
+            if (nullSemantics == Interpreter::IF_NULL_BREAK_OUT) {
+              TprogramCounter = brancher(theInstruction, TprogramCounter);
+              break;
+            }
+            if (nullSemantics == Interpreter::IF_NULL_CONTINUE) {
+              // Skip: 1(ins2) + 2(tableId,schemaVer) + data words
+              const Uint32 tmp = ((step + 3) >> 2) + 3;
+              TprogramCounter += tmp;
+              break;
+            }
+          }
+
+          const Uint32 cond = Interpreter::getBinaryCondition(theInstruction);
+          int res1;
+          if (r1_null || r2_null) {
+            res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
+          } else {
+            if (unlikely(sqlType.m_cmp == 0)) {
+              return TUPKEY_abort(req_struct, 40);
+            }
+            res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+          }
+
+          bool res = false;
+          switch (cond) {
+          case Interpreter::EQ: res = (res1 == 0); break;
+          case Interpreter::NE: res = (res1 != 0); break;
+          case Interpreter::LT: res = (res1 > 0); break;  // inverted
+          case Interpreter::LE: res = (res1 >= 0); break;
+          case Interpreter::GT: res = (res1 < 0); break;
+          case Interpreter::GE: res = (res1 <= 0); break;
+          default: break;
+          }
+
+          if (res) {
+            TprogramCounter = brancher(theInstruction, TprogramCounter);
+          } else {
+            // Skip: 1(ins2) + 2(tableId,schemaVer) + data words
+            Uint32 tmp = ((step + 3) >> 2) + 3;
+            TprogramCounter += tmp;
+          }
+          break;
+        }
+
         case Interpreter::BRANCH_ATTR_EQ_NULL: {
           Uint32 ins2 = TcurrentProgram[TprogramCounter];
           Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;

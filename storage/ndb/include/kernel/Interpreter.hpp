@@ -165,7 +165,38 @@ class Interpreter {
   static constexpr Uint32 INT64_TO_STR =
                           STR_TO_INT64 + OVERFLOW_OPCODE;
 
-  /* 38-46 free, both of them */
+  /**
+   * BRANCH_MEM_OP_ARG: Like BRANCH_ATTR_OP_ARG but reads the column value
+   * from interpreter heap memory (cheapMemory) instead of calling
+   * readAttributes(). Used by the aggregation embedded interpreter when
+   * the CASE condition column is a linked (parent-table) column whose value
+   * was pre-loaded into memory by kOpLoadLinkedToMem.
+   *
+   * Word layout identical to BRANCH_ATTR_OP_ARG:
+   *   Word 0: opcode | cond | null_semantics | branch_offset
+   *   Word 1: (attrId << 16) | arg_byte_len
+   *            attrId is used ONLY for type/charset lookup in the table
+   *            descriptor — data is read from cheapMemory[0] instead.
+   *   Words 2..N: inline constant data
+   */
+  static constexpr Uint32 BRANCH_MEM_OP_ARG = 38;
+  /* Overflow constant 38 free */
+
+  /**
+   * READ_LINKED_TO_MEM: Read a linked (parent-table) column value from
+   * req_struct->m_linked_attr_data into cheapMemory[0].
+   * The linked buffer contains [tableId, schemaVersion, AttrHeader, data...]
+   * entries; position selects the Nth entry.
+   *
+   * Encoding: READ_LINKED_TO_MEM | (position << 16)
+   *   position: index in the linked attribute buffer
+   *   Data (AttrHeader + payload) is written to cheapMemory[0].
+   *   Single-word instruction (no register operands).
+   */
+  static constexpr Uint32 READ_LINKED_TO_MEM = 39;
+  /* Overflow constant 39 free */
+
+  /* 40-46 free, both of them */
   static constexpr Uint32 READ_PARTIAL_ATTR_TO_MEM = 47;
   /* Overflow constant 47 free */
   static constexpr Uint32 READ_ATTR_TO_MEM = 48;
@@ -459,6 +490,16 @@ class Interpreter {
   // Compare two Attr from same table
   static Uint32 BranchColAttrId(BinaryCondition cond, NullSemantics nulls);
   static Uint32 BranchColAttrId_2(Uint32 AttrId1, Uint32 AttrId2);
+
+  // Compare memory (pre-loaded linked column) with literal.
+  // Data is read from cheapMemory[0] instead of readAttributes().
+  // Word 0: opcode | cond | null_semantics | (branch_offset << 16)
+  // Word 1: (attrId << 16) | arg_byte_len
+  // Word 2: tableId (for type/charset lookup in the correct table descriptor)
+  // Word 3: schemaVersion (validated against the table)
+  // Words 4..N: inline constant data
+  static Uint32 BranchMem(BinaryCondition cond, NullSemantics nulls);
+  static Uint32 BranchMem_2(Uint32 AttrId, Uint32 Len);
 
   static Uint32 getNullSemantics(Uint32 op);
   static Uint32 getBinaryCondition(Uint32 op1);
@@ -1136,6 +1177,15 @@ inline Uint32 Interpreter::BranchCol_2(Uint32 AttrId, Uint32 Len) {
 
 inline Uint32 Interpreter::BranchCol_2(Uint32 AttrId) { return (AttrId << 16); }
 
+inline Uint32 Interpreter::BranchMem(BinaryCondition cond,
+                                     NullSemantics nulls) {
+  return BRANCH_MEM_OP_ARG + (nulls << 6) + (cond << 12);
+}
+
+inline Uint32 Interpreter::BranchMem_2(Uint32 AttrId, Uint32 Len) {
+  return (AttrId << 16) + Len;
+}
+
 inline Uint32 Interpreter::getNullSemantics(Uint32 op) {
   return ((op >> 6) & 0x3);
 }
@@ -1244,6 +1294,7 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
 
     case READ_PARTIAL_ATTR_TO_MEM:
     case READ_ATTR_TO_MEM:
+    case READ_LINKED_TO_MEM:
 
     case BINARY_SEARCH_64:
     case BINARY_SEARCH_32:
@@ -1308,6 +1359,16 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
       Uint32 byteLength = getBranchCol_Len(*(op + 1));
       Uint32 wordLength = (byteLength + 3) >> 2;
       return op + 2 + wordLength;
+    }
+    case BRANCH_MEM_OP_ARG:
+    {
+      /* Same as BRANCH_ATTR_OP_ARG but with 2 extra words for
+       * tableId and schemaVersion before the inline constant data.
+       */
+      processing = LABEL_ADDRESS_REPLACEMENT;
+      Uint32 byteLength = getBranchCol_Len(*(op + 1));
+      Uint32 wordLength = (byteLength + 3) >> 2;
+      return op + 4 + wordLength;  // +4: opcode, attrId/len, tableId, schemaVer
     }
     case BRANCH_ATTR_OP_PARAM:
     case BRANCH_ATTR_OP_ATTR:

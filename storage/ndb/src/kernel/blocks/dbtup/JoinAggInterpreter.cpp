@@ -554,8 +554,10 @@ bool JoinAggInterpreter::validateEmbeddedProgram(
       case Interpreter::BRANCH_GE_REG_REG:
       case Interpreter::EXIT_OK:
       case Interpreter::BRANCH_ATTR_OP_ARG:
+      case Interpreter::BRANCH_MEM_OP_ARG:
       case Interpreter::BRANCH_ATTR_EQ_NULL:
       case Interpreter::BRANCH_ATTR_NE_NULL:
+      case Interpreter::READ_LINKED_TO_MEM:
       case Interpreter::WRITE_INTERPRETER_OUTPUT:
         break;
       default:
@@ -577,6 +579,7 @@ bool JoinAggInterpreter::validateEmbeddedProgram(
       case Interpreter::BRANCH_GT_REG_REG:
       case Interpreter::BRANCH_GE_REG_REG:
       case Interpreter::BRANCH_ATTR_OP_ARG:
+      case Interpreter::BRANCH_MEM_OP_ARG:
       case Interpreter::BRANCH_ATTR_EQ_NULL:
       case Interpreter::BRANCH_ATTR_NE_NULL:
         is_branch = true;
@@ -1457,6 +1460,11 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Uint32 saved_instr_count = req_struct->no_exec_instructions;
         req_struct->no_exec_instructions = 0;
 
+        // Make linked attr data available to the NDB interpreter for
+        // READ_LINKED_TO_MEM / BRANCH_MEM_OP_ARG instructions.
+        req_struct->m_linked_attr_data = m_linked_attr_data;
+        req_struct->m_linked_attr_len = m_linked_attr_len;
+
         Uint32 local_tmpArea[16];
         int rc = block_tup->interpreterNextLab(
             req_struct->signal, req_struct,
@@ -1465,6 +1473,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
             local_tmpArea, 16);
 
         req_struct->no_exec_instructions = saved_instr_count;
+        req_struct->m_linked_attr_data = nullptr;
+        req_struct->m_linked_attr_len = 0;
 
         if (rc < 0) return ZAGG_EMBEDDED_INTERP_ERROR;
 
