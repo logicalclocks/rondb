@@ -319,6 +319,20 @@ createTables(MYSQL *conn)
     "  PRIMARY KEY (l_orderkey, l_linenumber)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
+  // Indexes on foreign-key columns for pushdown join aggregation
+  if (sqlExec(conn,
+    "CREATE INDEX idx_supplier_nationkey ON tpch_supplier (s_nationkey)"
+    ) != 0) return -1;
+  if (sqlExec(conn,
+    "CREATE INDEX idx_customer_nationkey ON tpch_customer (c_nationkey)"
+    ) != 0) return -1;
+  if (sqlExec(conn,
+    "CREATE INDEX idx_orders_custkey ON tpch_orders (o_custkey)"
+    ) != 0) return -1;
+  if (sqlExec(conn,
+    "CREATE INDEX idx_lineitem_suppkey ON tpch_lineitem (l_suppkey)"
+    ) != 0) return -1;
+
   return 0;
 }
 
@@ -839,6 +853,9 @@ int main(int argc, char **argv)
       scaleFactor = atof(argv[++i]);
     } else if (strcmp(argv[i], "--drop-only") == 0) {
       dropOnly = true;
+    } else {
+      fprintf(stderr, "Unknown option: %s\n", argv[i]);
+      return 1;
     }
   }
 
