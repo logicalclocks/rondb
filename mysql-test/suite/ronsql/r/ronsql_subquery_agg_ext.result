@@ -1143,6 +1143,68 @@ name	order_id	total_qty
 Bob	20	12
 
 
+=== M12: Cross-table OR — l.qty = o.min_qty OR l.qty = o.min_qty + 1 ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.qty) AS or_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty OR l.qty = o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.qty) AS or_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty OR l.qty = o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+order_id	min_qty	or_sum
+10	3	3
+11	5	11
+20	2	5
+
+
+=== M13: Cross-table OR with different operators ===
+== Query ==
+SELECT o.id AS order_id,
+COUNT(l.id) AS match_count
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty * 2 OR l.price > 100
+GROUP BY o.id
+ORDER BY o.id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id,
+COUNT(l.id) AS match_count
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty * 2 OR l.price > 100
+GROUP BY o.id
+ORDER BY o.id|
+order_id	match_count
+10	1
+20	1
+21	2
+
+
 === M5: Cross-table WHERE with composite index (order_id, qty) ===
 == Query ==
 SELECT o.id AS order_id, o.min_qty,

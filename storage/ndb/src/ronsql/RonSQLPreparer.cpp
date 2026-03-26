@@ -264,6 +264,7 @@ classify_ce_table(struct ConditionalExpression* ce, Uint32* col_table_idx)
   }
 }
 
+static Uint32 filter_expr_reg_depth(ConditionalExpression* ce);
 static const Uint32 MAX_WHERE_CONJUNCTS = 64;
 
 /*
@@ -981,60 +982,69 @@ RonSQLPreparer::classify_where_by_table()
       // in the aggregation program.  Complex cross-table expressions
       // (OR branches, arithmetic involving multiple tables) are rejected.
       ConditionalExpression* ce = conjuncts[i];
-      // Accept comparison operators where each side references at most
-      // one table (columns + constants + arithmetic).  This covers simple
-      // col OP col as well as expressions like col + 1 > other_col * 2.
-      bool is_comparison =
-          (ce->op == T_EQUALS || ce->op == T_NOT_EQUALS ||
-           ce->op == T_LT || ce->op == T_LE ||
-           ce->op == T_GT || ce->op == T_GE) &&
-          ce->args.left != NULL && ce->args.right != NULL;
-      Int32 left_t_s = is_comparison ?
-          classify_ce_table(ce->args.left, m_column_table_idx) : -2;
-      Int32 right_t_s = is_comparison ?
-          classify_ce_table(ce->args.right, m_column_table_idx) : -2;
 
-      // Each side must reference at most one table, and the two sides
-      // must reference different tables (otherwise it's single-table).
-      if (!is_comparison || left_t_s == -2 || right_t_s == -2 ||
-          left_t_s == right_t_s)
-      {
+      // Flatten OR into atoms (single comparison = 1 atom).
+      ConditionalExpression* or_atoms[32];
+      Uint32 num_atoms = 0;
+      std::function<void(ConditionalExpression*)> flatten_or =
+          [&](ConditionalExpression* node) {
+        if (node->op == T_OR) {
+          flatten_or(node->args.left);
+          flatten_or(node->args.right);
+        } else if (num_atoms < 32) {
+          or_atoms[num_atoms++] = node;
+        }
+      };
+      flatten_or(ce);
+
+      // Validate each atom: must be a comparison where each side
+      // references at most one table, expression depth within limits,
+      // and the union of all referenced tables is at most 2 distinct tables.
+      Int32 tables_seen[2] = {-1, -1};
+      Uint32 num_tables = 0;
+      bool valid = true;
+      for (Uint32 a = 0; a < num_atoms && valid; a++) {
+        ConditionalExpression* atom = or_atoms[a];
+        bool is_cmp =
+            (atom->op == T_EQUALS || atom->op == T_NOT_EQUALS ||
+             atom->op == T_LT || atom->op == T_LE ||
+             atom->op == T_GT || atom->op == T_GE) &&
+            atom->args.left != NULL && atom->args.right != NULL;
+        if (!is_cmp) { valid = false; break; }
+
+        Int32 lt = classify_ce_table(atom->args.left, m_column_table_idx);
+        Int32 rt = classify_ce_table(atom->args.right, m_column_table_idx);
+        if (lt == -2 || rt == -2) { valid = false; break; }
+        if (filter_expr_reg_depth(atom->args.left) > 2 ||
+            filter_expr_reg_depth(atom->args.right) > 2) { valid = false; break; }
+
+        // Track distinct tables across all atoms
+        Int32 sides[2] = {lt, rt};
+        for (int s = 0; s < 2; s++) {
+          if (sides[s] == -1) continue;  // constant
+          bool found = false;
+          for (Uint32 t = 0; t < num_tables; t++) {
+            if (tables_seen[t] == sides[s]) { found = true; break; }
+          }
+          if (!found) {
+            if (num_tables >= 2) { valid = false; break; }
+            tables_seen[num_tables++] = sides[s];
+          }
+        }
+      }
+
+      // Must involve exactly 2 distinct tables overall
+      if (!valid || num_tables < 2) {
         throw RonSQLPermanentError(
             "WHERE condition references columns from multiple tables in a "
-            "single comparison or OR branch. Split into separate AND "
-            "conditions, each referencing only one table.");
+            "single comparison or OR branch. Each OR branch must be a simple "
+            "comparison between the same two tables.");
       }
 
-      // Reject expressions too complex for the 2-register evaluation scheme.
-      // Each side gets reg + tmp_reg; depth > 2 would overwrite intermediate
-      // results (e.g., (a+b)*(c+d) needs 3 registers).
-      if (filter_expr_reg_depth(ce->args.left) > 2 ||
-          filter_expr_reg_depth(ce->args.right) > 2) {
-        throw RonSQLPermanentError(
-            "Cross-table WHERE expression is too complex. "
-            "Each side of the comparison may have at most one level "
-            "of arithmetic (e.g., col + 1, col * 2).");
-      }
-
-      // Handle constant-only sides: treat as belonging to the other side's
-      // table for classification, but the filter still gates aggregation.
-      Uint32 left_t, right_t;
-      if (left_t_s == -1 && right_t_s == -1) {
-        // Both constant — not a cross-table filter (shouldn't reach here)
-        continue;
-      } else if (left_t_s == -1) {
-        left_t = (Uint32)right_t_s;  // constant side adopts other's table
-        right_t = (Uint32)right_t_s;
-      } else if (right_t_s == -1) {
-        left_t = (Uint32)left_t_s;
-        right_t = (Uint32)left_t_s;
-      } else {
-        left_t = (Uint32)left_t_s;
-        right_t = (Uint32)right_t_s;
-      }
-      // Child = higher table index (deeper in join tree)
-      Uint32 child_t = (left_t > right_t) ? left_t : right_t;
-      Uint32 parent_t = (left_t > right_t) ? right_t : left_t;
+      Uint32 child_t = ((Uint32)tables_seen[0] > (Uint32)tables_seen[1]) ?
+                        (Uint32)tables_seen[0] : (Uint32)tables_seen[1];
+      Uint32 parent_t = ((Uint32)tables_seen[0] > (Uint32)tables_seen[1]) ?
+                         (Uint32)tables_seen[1] : (Uint32)tables_seen[0];
       CrossTableFilter ctf;
       ctf.ce = ce;
       ctf.child_table_idx = child_t;
@@ -5309,8 +5319,8 @@ filter_expr_reg_depth(ConditionalExpression* ce)
  * a register.  Supports: identifiers, integer/float constants,
  * and +, -, * arithmetic.
  */
-Uint32
-RonSQLPreparer::filter_expr_word_count(ConditionalExpression* ce)
+static Uint32
+filter_expr_word_count_impl(ConditionalExpression* ce)
 {
   switch (ce->op) {
   case T_IDENTIFIER:
@@ -5322,14 +5332,57 @@ RonSQLPreparer::filter_expr_word_count(ConditionalExpression* ce)
   case T_PLUS:
   case T_MINUS:
   case T_MULTIPLY:
-    return filter_expr_word_count(ce->args.left) +
-           filter_expr_word_count(ce->args.right) + 1;  // +1 for arith op
+    return filter_expr_word_count_impl(ce->args.left) +
+           filter_expr_word_count_impl(ce->args.right) + 1;  // +1 for arith op
   default:
     require_prm(false,
         "Unsupported expression in cross-table WHERE filter. "
         "Only columns, integer constants, and +/-/* are supported.");
     return 0;
   }
+}
+
+Uint32
+RonSQLPreparer::filter_expr_word_count(ConditionalExpression* ce)
+{
+  return filter_expr_word_count_impl(ce);
+}
+
+/*
+ * Compute total program words for a CrossTableFilter (comparison or OR).
+ * For a simple comparison: left_words + right_words + 1 (BranchReg).
+ * For OR with K atoms: sum of per-atom words + K-1 Skip instructions.
+ *   Non-last atom: left_words + right_words + 1 (BranchReg) + 1 (Skip)
+ *   Last atom:     left_words + right_words + 1 (BranchReg)
+ */
+static Uint32
+cross_table_filter_word_count(ConditionalExpression* ce,
+    Uint32 (*expr_wc)(ConditionalExpression*))
+{
+  if (ce->op != T_OR) {
+    // Simple comparison
+    return expr_wc(ce->args.left) + expr_wc(ce->args.right) + 1;
+  }
+  // OR: flatten and sum
+  ConditionalExpression* atoms[32];
+  Uint32 n = 0;
+  std::function<void(ConditionalExpression*)> flatten =
+      [&](ConditionalExpression* node) {
+    if (node->op == T_OR) {
+      flatten(node->args.left);
+      flatten(node->args.right);
+    } else if (n < 32) {
+      atoms[n++] = node;
+    }
+  };
+  flatten(ce);
+  Uint32 total = 0;
+  for (Uint32 i = 0; i < n; i++) {
+    total += expr_wc(atoms[i]->args.left) +
+             expr_wc(atoms[i]->args.right) + 1;  // loads + BranchReg
+    if (i < n - 1) total += 1;  // Skip instruction for non-last
+  }
+  return total;
 }
 
 /*
@@ -5446,61 +5499,105 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     // Add 4 words for sentinel (LoadUint64=3 + Count=1) that follows agg ops
     if (has_branchreg_filter)
       agg_word_count += 4;
+    // Helper: emit negated BranchReg for a comparison atom
+    auto emit_negated_branch = [&](ConditionalExpression* atom,
+                                   Uint32 skip_count) {
+      Uint32 reg_left = 1, reg_right = 2, tmp_reg = 3;
+      emit_filter_expr(aggregator, atom->args.left, leaf_idx,
+                        reg_left, tmp_reg);
+      emit_filter_expr(aggregator, atom->args.right, leaf_idx,
+                        reg_right, tmp_reg);
+      switch (atom->op) {
+      case T_GT:
+        programAggregator_do_or_fail(
+            aggregator->BranchRegLe(reg_left, reg_right, skip_count));
+        break;
+      case T_GE:
+        programAggregator_do_or_fail(
+            aggregator->BranchRegLt(reg_left, reg_right, skip_count));
+        break;
+      case T_LT:
+        programAggregator_do_or_fail(
+            aggregator->BranchRegGe(reg_left, reg_right, skip_count));
+        break;
+      case T_LE:
+        programAggregator_do_or_fail(
+            aggregator->BranchRegGt(reg_left, reg_right, skip_count));
+        break;
+      case T_EQUALS:
+        programAggregator_do_or_fail(
+            aggregator->BranchRegNe(reg_left, reg_right, skip_count));
+        break;
+      case T_NOT_EQUALS:
+        programAggregator_do_or_fail(
+            aggregator->BranchRegEq(reg_left, reg_right, skip_count));
+        break;
+      default:
+        require_prm(false, "Unsupported cross-table WHERE operator.");
+      }
+    };
+
     for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
     {
       CrossTableFilter& ctf = m_cross_table_where_filters[f];
       if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
-      ConditionalExpression* cf = ctf.ce;
 
-      // Compile each side of the comparison into a register.
-      // Supports expressions (col + const, col * const, etc.)
-      Uint32 reg_left = 1, reg_right = 2, tmp_reg = 3;
-      emit_filter_expr(aggregator, cf->args.left, leaf_idx, reg_left, tmp_reg);
-      emit_filter_expr(aggregator, cf->args.right, leaf_idx, reg_right, tmp_reg);
-
-      // Operator is from the original SQL: left OP right.
-      // We skip when NOT(left OP right).
-      TokenKind filter_op = cf->op;
-
-      // Skip all remaining agg instructions when filter does NOT match.
-      // Each subsequent filter's word count depends on its expressions.
+      // Compute remaining filter words for skip count
       Uint32 remaining_words = 0;
       for (Uint32 f2 = f + 1; f2 < m_cross_table_where_filters.size(); f2++)
       {
         CrossTableFilter& ctf2 = m_cross_table_where_filters[f2];
-        if (ctf2.ce == NULL) continue;  // Consumed
-        remaining_words += filter_expr_word_count(ctf2.ce->args.left) +
-                           filter_expr_word_count(ctf2.ce->args.right) + 1;
+        if (ctf2.ce == NULL) continue;
+        remaining_words += cross_table_filter_word_count(
+            ctf2.ce, filter_expr_word_count_impl);
       }
-      Uint32 skip_count = agg_word_count + remaining_words;
 
-      switch (filter_op) {
-      case T_GT:
-        programAggregator_do_or_fail
-          (aggregator->BranchRegLe(reg_left, reg_right, skip_count));
-        break;
-      case T_GE:
-        programAggregator_do_or_fail
-          (aggregator->BranchRegLt(reg_left, reg_right, skip_count));
-        break;
-      case T_LT:
-        programAggregator_do_or_fail
-          (aggregator->BranchRegGe(reg_left, reg_right, skip_count));
-        break;
-      case T_LE:
-        programAggregator_do_or_fail
-          (aggregator->BranchRegGt(reg_left, reg_right, skip_count));
-        break;
-      case T_EQUALS:
-        programAggregator_do_or_fail
-          (aggregator->BranchRegNe(reg_left, reg_right, skip_count));
-        break;
-      case T_NOT_EQUALS:
-        programAggregator_do_or_fail
-          (aggregator->BranchRegEq(reg_left, reg_right, skip_count));
-        break;
-      default:
-        require_prm(false, "Unsupported cross-table WHERE operator.");
+      if (ctf.ce->op != T_OR) {
+        // Simple comparison: emit single negated BranchReg
+        Uint32 skip_count = agg_word_count + remaining_words;
+        emit_negated_branch(ctf.ce, skip_count);
+      } else {
+        // OR filter: chained BranchReg + Skip pattern.
+        // Non-last atoms: BranchReg_neg(1) + Skip(N) → match jumps to agg
+        // Last atom: BranchReg_neg(agg_words) → no match skips agg
+        ConditionalExpression* atoms[32];
+        Uint32 num_atoms = 0;
+        std::function<void(ConditionalExpression*)> flatten_or =
+            [&](ConditionalExpression* node) {
+          if (node->op == T_OR) {
+            flatten_or(node->args.left);
+            flatten_or(node->args.right);
+          } else if (num_atoms < 32) {
+            atoms[num_atoms++] = node;
+          }
+        };
+        flatten_or(ctf.ce);
+
+        // Compute per-atom word counts for skip offset calculation
+        Uint32 atom_words[32];
+        for (Uint32 a = 0; a < num_atoms; a++) {
+          atom_words[a] = filter_expr_word_count_impl(atoms[a]->args.left) +
+                          filter_expr_word_count_impl(atoms[a]->args.right) + 1;
+        }
+
+        for (Uint32 a = 0; a < num_atoms; a++) {
+          bool is_last = (a == num_atoms - 1);
+          if (!is_last) {
+            // Non-match → skip BranchReg(1) skips the Skip instruction
+            emit_negated_branch(atoms[a], 1);
+            // Match → Skip past remaining OR branches to agg ops
+            Uint32 skip_to_agg = 0;
+            for (Uint32 a2 = a + 1; a2 < num_atoms; a2++) {
+              skip_to_agg += atom_words[a2];
+              if (a2 < num_atoms - 1) skip_to_agg += 1;  // Skip instr
+            }
+            programAggregator_do_or_fail(aggregator->Skip(skip_to_agg));
+          } else {
+            // Last atom: non-match skips all agg ops + remaining filters
+            Uint32 skip_count = agg_word_count + remaining_words;
+            emit_negated_branch(atoms[a], skip_count);
+          }
+        }
       }
     }
   }

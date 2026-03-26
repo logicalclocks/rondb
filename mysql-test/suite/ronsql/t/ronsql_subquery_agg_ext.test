@@ -1220,6 +1220,69 @@ ORDER BY o.id|
 
 --echo
 --echo
+--echo === M12: Cross-table OR — l.qty = o.min_qty OR l.qty = o.min_qty + 1 ===
+# OR with two branches, same table pair.
+# Order 10 (min_qty=3): qty [2,5,8] → qty=3(yes) or qty=4(no) → [2], sum=2.. wait
+# Actually: qty=3 matches item (qty=2? no, qty=5? no, qty=8? no)...
+# Lineitems for order 10: id=100 qty=2, id=101 qty=5, id=102 qty=8
+# min_qty=3: match qty=3 or qty=4 → none match → empty (suppressed)
+# Order 11 (min_qty=5): qty [1,6,10] → qty=5 or qty=6 → [6], sum=6
+# Order 20 (min_qty=2): qty [3,7] → qty=2 or qty=3 → [3], sum=3
+# Order 21 (min_qty=10): qty [15,20] → qty=10 or qty=11 → none → suppressed
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.qty) AS or_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty OR l.qty = o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.qty) AS or_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty OR l.qty = o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M13: Cross-table OR with different operators ===
+# l.qty > o.min_qty * 2 OR l.price > 100
+# Order 10 (min_qty=3): qty>6: [8], price>100: none → [8], count=1
+# Order 11 (min_qty=5): qty>10: [10? no], price>100: [100? no] → none → suppressed
+# Actually price is 100 which is NOT > 100. Let me check...
+# Order 11: items (1,10), (6,60), (10,100). qty>10: none. price>100: none → suppressed
+# Order 20 (min_qty=2): qty>4: [7], price>100: none → [7], count=1
+# Order 21 (min_qty=10): qty>20: [20? no], price>100: [150,200] → count=2
+
+let $QUERY=
+SELECT o.id AS order_id,
+  COUNT(l.id) AS match_count
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty * 2 OR l.price > 100
+GROUP BY o.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id,
+  COUNT(l.id) AS match_count
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty * 2 OR l.price > 100
+GROUP BY o.id
+ORDER BY o.id|
+
+--echo
+--echo
 --echo === M5: Cross-table WHERE with composite index (order_id, qty) ===
 # Replace single-column index with composite so cross-table filter
 # becomes an index range bound instead of BranchReg.
