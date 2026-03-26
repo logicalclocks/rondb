@@ -1099,6 +1099,36 @@ WHERE l.qty > o.min_qty
 GROUP BY o.id, o.min_qty
 ORDER BY o.id|
 
+--echo
+--echo
+--echo === M6: EQ on composite index — empty groups eliminated ===
+# With composite index (order_id, qty), l.qty = o.min_qty becomes an
+# equality bound on the second index column.  Order 21 (min_qty=10,
+# no lineitem with qty=10) correctly produces no scan rows → absent
+# from result (unlike BranchReg fallback which gives COUNT=0).
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  COUNT(l.id) AS exact_count,
+  SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  COUNT(l.id) AS exact_count,
+  SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+
 # =========================================================================
 
 DELIMITER ;|

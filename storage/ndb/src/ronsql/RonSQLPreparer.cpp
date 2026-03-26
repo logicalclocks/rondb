@@ -1035,105 +1035,110 @@ RonSQLPreparer::classify_where_by_table()
 void
 RonSQLPreparer::assign_cross_table_index_bounds()
 {
-  // For each cross-table WHERE filter, check if the child-side column is
-  // on the child's ordered index, immediately after the join key prefix.
-  // If so, convert it to an index range bound instead of BranchReg.
-  for (Uint32 f = 0; f < m_cross_table_where_filters.size(); /* no incr */)
+  // For each child operation that is an INDEX_SCAN, iterate the index
+  // columns after the join key prefix and try to match cross-table
+  // filters to consecutive columns.  Matching filters become index
+  // range bounds; unmatched filters stay as BranchReg fallbacks.
+  //
+  // Index bounds must follow prefix order: once a column has a
+  // non-equality bound, later columns cannot be bounded.
+  for (Uint32 op_idx = 1; op_idx < m_join_plan.num_ops; op_idx++)
   {
-    CrossTableFilter& ctf = m_cross_table_where_filters[f];
-    ConditionalExpression* cf = ctf.ce;
-
-    Uint32 left_cidx = cf->args.left->col_idx;
-    Uint32 right_cidx = cf->args.right->col_idx;
-    Uint32 left_t = m_column_table_idx[left_cidx];
-    Uint32 right_t = m_column_table_idx[right_cidx];
-
-    // Determine child (deeper in join tree) and parent
-    bool left_is_child = (left_t == ctf.child_table_idx);
-    Uint32 child_cidx = left_is_child ? left_cidx : right_cidx;
-    Uint32 parent_cidx = left_is_child ? right_cidx : left_cidx;
-
-    JoinOp& op = m_join_plan.ops[ctf.child_table_idx];
-
-    // Only INDEX_SCAN children can have range bounds
+    JoinOp& op = m_join_plan.ops[op_idx];
     if (op.type != JoinOp::INDEX_SCAN || op.index == NULL)
-    {
-      f++;
       continue;
-    }
 
-    // Check if the child column is the next index column after the join keys
     const NdbDictionary::Index* idx = op.index;
-    Uint32 next_col_pos = op.num_key_cols;
-    if (next_col_pos >= (Uint32)idx->getNoOfColumns())
-    {
-      f++;
-      continue;
-    }
-    const char* child_col_name = m_columns[child_cidx].c_str();
-    const NdbDictionary::Column* idx_col = idx->getColumn(next_col_pos);
-    if (idx_col == NULL || strcmp(idx_col->getName(), child_col_name) != 0)
-    {
-      f++;
-      continue;
-    }
+    Uint32 num_idx_cols = (Uint32)idx->getNoOfColumns();
+    bool later_blocked = false;
 
-    // Match found. Determine bound direction from the operator.
-    // Normalize to child_col OP parent_col form.
-    TokenKind filter_op = cf->op;
-    if (!left_is_child)
+    // Walk index columns starting after the join key prefix
+    for (Uint32 col_pos = op.num_key_cols;
+         col_pos < num_idx_cols && !later_blocked;
+         col_pos++)
     {
-      // parent OP child → child FLIPPED_OP parent
-      switch (filter_op) {
-      case T_LT: filter_op = T_GT; break;
-      case T_LE: filter_op = T_GE; break;
-      case T_GT: filter_op = T_LT; break;
-      case T_GE: filter_op = T_LE; break;
-      default: break;
-      }
-    }
+      const NdbDictionary::Column* idx_col = idx->getColumn(col_pos);
+      if (idx_col == NULL) break;
+      const char* idx_col_name = idx_col->getName();
 
-    // child_col > parent_col → lower bound on child (exclusive)
-    // child_col >= parent_col → lower bound on child (inclusive)
-    // child_col < parent_col → upper bound on child (exclusive)
-    // child_col <= parent_col → upper bound on child (inclusive)
-    // child_col = parent_col → both (equality on next index col)
-    bool assigned = false;
-    const char* parent_col_name = m_columns[parent_cidx].c_str();
-    Uint32 parent_op = m_column_table_idx[parent_cidx];
-
-    if (filter_op == T_GT || filter_op == T_GE || filter_op == T_EQUALS)
-    {
-      if (op.num_low_bounds < MAX_JOIN_KEY_COLS)
+      // Find a cross-table filter matching this index column + operation
+      bool matched = false;
+      for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
       {
-        JoinOp::RangeBound& lb = op.low_bounds[op.num_low_bounds++];
-        lb.child_col_name = child_col_name;
-        lb.parent_col_name = parent_col_name;
-        lb.parent_op_idx = parent_op;
-        lb.inclusive = (filter_op == T_GE || filter_op == T_EQUALS);
-        assigned = true;
-      }
-    }
-    if (filter_op == T_LT || filter_op == T_LE || filter_op == T_EQUALS)
-    {
-      if (op.num_high_bounds < MAX_JOIN_KEY_COLS)
-      {
-        JoinOp::RangeBound& hb = op.high_bounds[op.num_high_bounds++];
-        hb.child_col_name = child_col_name;
-        hb.parent_col_name = parent_col_name;
-        hb.parent_op_idx = parent_op;
-        hb.inclusive = (filter_op == T_LE || filter_op == T_EQUALS);
-        assigned = true;
-      }
-    }
+        CrossTableFilter& ctf = m_cross_table_where_filters[f];
+        if (ctf.ce == NULL) continue;  // Already consumed
+        if (ctf.child_table_idx != op_idx && ctf.parent_table_idx != op_idx)
+          continue;  // Not for this operation
 
-    if (assigned)
-    {
-      // Mark as consumed by setting ce to NULL.
-      // The BranchReg code in programAggregator_join checks for NULL.
-      ctf.ce = NULL;
+        ConditionalExpression* cf = ctf.ce;
+        Uint32 left_cidx = cf->args.left->col_idx;
+        Uint32 right_cidx = cf->args.right->col_idx;
+
+        bool left_is_child = (m_column_table_idx[left_cidx] == op_idx);
+        Uint32 child_cidx = left_is_child ? left_cidx : right_cidx;
+        const char* child_col_name = m_columns[child_cidx].c_str();
+
+        if (strcmp(idx_col_name, child_col_name) != 0)
+          continue;  // Not this index column
+
+        // Match found. Normalize operator to child_col OP parent_col.
+        Uint32 parent_cidx = left_is_child ? right_cidx : left_cidx;
+        TokenKind filter_op = cf->op;
+        if (!left_is_child)
+        {
+          switch (filter_op) {
+          case T_LT: filter_op = T_GT; break;
+          case T_LE: filter_op = T_GE; break;
+          case T_GT: filter_op = T_LT; break;
+          case T_GE: filter_op = T_LE; break;
+          default: break;
+          }
+        }
+
+        const char* parent_col_name = m_columns[parent_cidx].c_str();
+        Uint32 parent_op = m_column_table_idx[parent_cidx];
+        bool assigned = false;
+
+        if (filter_op == T_GT || filter_op == T_GE || filter_op == T_EQUALS)
+        {
+          if (op.num_low_bounds < MAX_JOIN_KEY_COLS)
+          {
+            JoinOp::RangeBound& lb = op.low_bounds[op.num_low_bounds++];
+            lb.child_col_name = child_col_name;
+            lb.parent_col_name = parent_col_name;
+            lb.parent_op_idx = parent_op;
+            lb.inclusive = (filter_op == T_GE || filter_op == T_EQUALS);
+            assigned = true;
+          }
+        }
+        if (filter_op == T_LT || filter_op == T_LE || filter_op == T_EQUALS)
+        {
+          if (op.num_high_bounds < MAX_JOIN_KEY_COLS)
+          {
+            JoinOp::RangeBound& hb = op.high_bounds[op.num_high_bounds++];
+            hb.child_col_name = child_col_name;
+            hb.parent_col_name = parent_col_name;
+            hb.parent_op_idx = parent_op;
+            hb.inclusive = (filter_op == T_LE || filter_op == T_EQUALS);
+            assigned = true;
+          }
+        }
+
+        if (assigned)
+        {
+          ctf.ce = NULL;  // Consumed
+          matched = true;
+          // Non-equality blocks later columns
+          if (filter_op != T_EQUALS)
+            later_blocked = true;
+          break;  // One filter per index column
+        }
+      }
+
+      // If no filter matched this column, stop — prefix must be contiguous
+      if (!matched)
+        break;
     }
-    f++;
   }
 }
 
