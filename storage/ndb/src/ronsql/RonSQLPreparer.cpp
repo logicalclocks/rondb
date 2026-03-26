@@ -5567,6 +5567,82 @@ RonSQLPreparer::print()
 {
   std::basic_ostream<char>& out = *m_conf.out_stream;
 
+  // Print join plan at the top for multi-table queries
+  if (m_conf.ndb != NULL && m_scan_config == NULL && m_join_plan.num_ops > 1) {
+    const JoinPlan& jp = m_join_plan;
+    out << "Join plan (" << jp.num_ops << " operations):\n";
+    for (Uint32 i = 0; i < jp.num_ops; i++) {
+      const JoinOp& op = jp.ops[i];
+      bool is_last = (i + 1 == jp.num_ops);
+      out << (is_last ? "╰─ " : "├─ ") << i << ": ";
+      if (op.is_root) {
+        out << "[ROOT] ";
+      } else {
+        switch (op.match_type) {
+        case JoinOp::INNER:      out << "[INNER] ";      break;
+        case JoinOp::LEFT_OUTER: out << "[LEFT JOIN] ";   break;
+        case JoinOp::SEMI_JOIN:  out << "[SEMI] ";        break;
+        case JoinOp::ANTI_JOIN:  out << "[ANTI] ";        break;
+        }
+      }
+      switch (op.type) {
+      case JoinOp::TABLE_SCAN:     out << "TABLE_SCAN ";    break;
+      case JoinOp::INDEX_SCAN:     out << "INDEX_SCAN ";    break;
+      case JoinOp::PK_LOOKUP:      out << "PK_LOOKUP ";     break;
+      case JoinOp::UNIQUE_LOOKUP:  out << "UNIQUE_LOOKUP "; break;
+      }
+      out << op.table->getName();
+      if (op.alias.len > 0) out << " AS " << op.alias.c_str();
+      out << '\n';
+      const char *indent = is_last ? "   " : "│  ";
+      if (op.index != NULL) {
+        out << indent << "  Index: " << op.index->getName() << "(";
+        for (Uint32 c = 0; c < op.index->getNoOfColumns(); c++) {
+          if (c > 0) out << ", ";
+          out << op.index->getColumn(c)->getName();
+        }
+        out << ")\n";
+      }
+      if (!op.is_root && op.num_key_cols > 0) {
+        out << indent << "  Key: ";
+        for (Uint32 k = 0; k < op.num_key_cols; k++) {
+          if (k > 0) out << ", ";
+          out << op.child_key_col_names[k] << " = "
+              << jp.ops[op.parent_op_idx].alias.c_str()
+              << "." << op.parent_key_col_names[k];
+        }
+        out << '\n';
+      }
+      if (op.num_low_bounds > 0 || op.num_high_bounds > 0) {
+        out << indent << "  Bounds:";
+        for (Uint32 b = 0; b < op.num_low_bounds; b++) {
+          out << " " << op.low_bounds[b].child_col_name
+              << (op.low_bounds[b].inclusive ? " >= " : " > ")
+              << jp.ops[op.low_bounds[b].parent_op_idx].alias.c_str()
+              << "." << op.low_bounds[b].parent_col_name;
+        }
+        for (Uint32 b = 0; b < op.num_high_bounds; b++) {
+          out << " " << op.high_bounds[b].child_col_name
+              << (op.high_bounds[b].inclusive ? " <= " : " < ")
+              << jp.ops[op.high_bounds[b].parent_op_idx].alias.c_str()
+              << "." << op.high_bounds[b].parent_col_name;
+        }
+        out << '\n';
+      }
+      if (jp.num_agg_leaves > 0) {
+        for (Uint32 a = 0; a < jp.num_agg_leaves; a++) {
+          if (jp.agg_leaf_indices[a] == i) {
+            out << indent << "  ** Aggregation leaf **\n";
+            break;
+          }
+        }
+      } else if (jp.agg_leaf_idx == i && !op.is_root) {
+        out << indent << "  ** Aggregation leaf **\n";
+      }
+    }
+    out << '\n';
+  }
+
   // Print query parse tree
   SelectStatement& ast_root = m_context.ast_root;
   out << "Query parse tree:\n"
@@ -5688,6 +5764,8 @@ RonSQLPreparer::print()
   // Print scan information
   if (m_conf.ndb == NULL) {
     out << "No NDB connection, so no index scan analysis.\n";
+  } else if (m_scan_config == NULL) {
+    // Join plan already printed at the top
   } else {
     ScanConfig& sc = *m_scan_config;
     if (sc.index == NULL) {
