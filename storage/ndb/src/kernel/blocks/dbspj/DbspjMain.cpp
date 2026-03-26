@@ -1994,6 +1994,29 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
           requestPtr.p->m_bits |= Request::RT_AGG_ANCESTOR_MATCH;
 
           /**
+           * Cap the scan ancestor's batch_size_rows so that the total
+           * parent rows across all its fragments stays within
+           * MaxCorrelationId.  The outer-join aggregate leaf uses
+           * m_agg_range_cnt to track parent rows for the match bitmask,
+           * and this counter accumulates across ALL scan ancestor
+           * fragments in a single batch.
+           */
+          {
+            ScanFragReq *ancestorReq = reinterpret_cast<ScanFragReq *>(
+                scanAncestorPtr.p->m_scanFrag_data.m_scanFragReq);
+            const Uint32 fragCount =
+                scanAncestorPtr.p->m_scanFrag_data.m_fragCount;
+            if (fragCount > 1) {
+              jam();
+              const Uint32 maxPerFrag = MaxCorrelationId / fragCount;
+              if (ancestorReq->batch_size_rows > maxPerFrag) {
+                jam();
+                ancestorReq->batch_size_rows = maxPerFrag;
+              }
+            }
+          }
+
+          /**
            * If the leaf's direct parent is a lookup (not the scan ancestor),
            * enable row buffering on the parent so handleAggLeafScanComplete
            * can iterate parent rows for per-row match tracking.
@@ -10248,11 +10271,16 @@ void Dbspj::scanFrag_parent_batch_cleanup(Ptr<Request> requestPtr,
                                           Ptr<TreeNode> treeNodePtr,
                                           bool done) {
   DEBUG("scanFrag_parent_batch_cleanup");
+  ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
   scanFrag_release_rangekeys(requestPtr, treeNodePtr);
+
+  // The outer-join agg match bitmask is consumed when the leaf scan
+  // completes each sub-batch.  Reset unconditionally so it starts
+  // fresh for the next round of parent rows.
+  data.m_agg_range_cnt = 0;
 
   if (done) {
     // Reset client batch state counters
-    ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
     data.m_corrIdStart = 0;
     data.m_totalRows = 0;
     data.m_totalBytes = 0;
