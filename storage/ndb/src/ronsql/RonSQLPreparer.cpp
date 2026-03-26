@@ -1204,8 +1204,9 @@ RonSQLPreparer::build_agg_linked_projections()
     }
   }
 
-  // Add linked projections for cross-table WHERE filter parent columns
-  // (only for filters not consumed as index bounds)
+  // Add linked projections for cross-table WHERE filter columns that are
+  // not on the leaf table (only for filters not consumed as index bounds).
+  // For ancestor-to-ancestor filters, both sides need linked projections.
   for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
   {
     CrossTableFilter& ctf = m_cross_table_where_filters[f];
@@ -1213,12 +1214,16 @@ RonSQLPreparer::build_agg_linked_projections()
     ConditionalExpression* cf = ctf.ce;
     Uint32 left_cidx = cf->args.left->col_idx;
     Uint32 right_cidx = cf->args.right->col_idx;
-    // The parent column (not on the leaf) needs a linked projection
-    bool left_on_leaf = (m_column_table_idx[left_cidx] == leaf_idx);
-    Uint32 parent_cidx = left_on_leaf ? right_cidx : left_cidx;
-    find_or_add_linked_proj(m_join_plan,
-                            m_column_table_idx[parent_cidx],
-                            m_columns[parent_cidx].c_str());
+    if (m_column_table_idx[left_cidx] != leaf_idx) {
+      find_or_add_linked_proj(m_join_plan,
+                              m_column_table_idx[left_cidx],
+                              m_columns[left_cidx].c_str());
+    }
+    if (m_column_table_idx[right_cidx] != leaf_idx) {
+      find_or_add_linked_proj(m_join_plan,
+                              m_column_table_idx[right_cidx],
+                              m_columns[right_cidx].c_str());
+    }
   }
 }
 
@@ -2963,18 +2968,6 @@ RonSQLPreparer::compile()
             "supported in queries with aggregation (GROUP BY / aggregate "
             "functions).  Split into separate conditions per table, or "
             "add aggregation.");
-      }
-      Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
-      for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++) {
-        CrossTableFilter& ctf = m_cross_table_where_filters[f];
-        if (ctf.ce == NULL) continue;  // Consumed (index bound)
-        if (ctf.child_table_idx != leaf_idx &&
-            ctf.parent_table_idx != leaf_idx) {
-          throw RonSQLPermanentError(
-              "Cross-table WHERE condition must involve the aggregation "
-              "leaf table.  Conditions between two ancestor tables are "
-              "not yet supported.");
-        }
       }
       // Pre-compute sentinel slot for ResultPrinter (set before construction).
       // The actual sentinel instructions are emitted later in execute_join().
@@ -5260,9 +5253,7 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     // Check if any remaining (non-consumed) cross-table filters exist
     for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++) {
       CrossTableFilter& ctf = m_cross_table_where_filters[f];
-      if (ctf.ce != NULL &&
-          (ctf.child_table_idx == leaf_idx ||
-           ctf.parent_table_idx == leaf_idx))
+      if (ctf.ce != NULL)
         has_branchreg_filter = true;
     }
     Uint32 agg_word_count = m_agg->raw_word_size(0, m_agg->m_program.size());
@@ -5273,88 +5264,80 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     {
       CrossTableFilter& ctf = m_cross_table_where_filters[f];
       if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
-      // Only apply filters relevant to this leaf
-      if (ctf.child_table_idx != leaf_idx &&
-          ctf.parent_table_idx != leaf_idx)
-        continue;
-
       ConditionalExpression* cf = ctf.ce;
       Uint32 left_cidx = cf->args.left->col_idx;
       Uint32 right_cidx = cf->args.right->col_idx;
+      bool left_is_leaf = (m_column_table_idx[left_cidx] == leaf_idx);
+      bool right_is_leaf = (m_column_table_idx[right_cidx] == leaf_idx);
 
-      // Determine which side is on the leaf table
-      bool left_is_leaf =
-          (m_column_table_idx[left_cidx] == leaf_idx);
-      Uint32 leaf_cidx = left_is_leaf ? left_cidx : right_cidx;
-      Uint32 parent_cidx = left_is_leaf ? right_cidx : left_cidx;
+      // Load both sides into registers.
+      // Leaf columns use LoadColumn; ancestor columns use LoadLinkedColumn.
+      // For ancestor-to-ancestor filters, both use LoadLinkedColumn.
+      Uint32 reg_left = 1, reg_right = 2;
 
-      // Add linked projection for parent column
-      Uint32 parent_lp_pos = find_or_add_linked_proj(
-          m_join_plan, m_column_table_idx[parent_cidx],
-          m_columns[parent_cidx].c_str());
-
-      // Load parent column into register 2 via linked projection
-      Uint32 reg_parent = 2;
-      programAggregator_do_or_fail
-        (aggregator->LoadLinkedColumn(parent_lp_pos, reg_parent,
-                                      m_column_map[parent_cidx]));
-
-      // Load leaf column into register 1
-      Uint32 reg_leaf = 1;
-      NdbAttrId leaf_attr = m_column_attrId_map[leaf_cidx];
-      programAggregator_do_or_fail
-        (aggregator->LoadColumn(leaf_attr, reg_leaf));
-
-      // Determine the operator from the leaf's perspective
-      TokenKind filter_op = cf->op;
-      if (!left_is_leaf) {
-        // Flip: parent OP leaf → leaf FLIPPED_OP parent
-        switch (filter_op) {
-        case T_LT: filter_op = T_GT; break;
-        case T_LE: filter_op = T_GE; break;
-        case T_GT: filter_op = T_LT; break;
-        case T_GE: filter_op = T_LE; break;
-        default: break;
-        }
+      if (left_is_leaf) {
+        programAggregator_do_or_fail
+          (aggregator->LoadColumn(m_column_attrId_map[left_cidx], reg_left));
+      } else {
+        Uint32 lp = find_or_add_linked_proj(
+            m_join_plan, m_column_table_idx[left_cidx],
+            m_columns[left_cidx].c_str());
+        programAggregator_do_or_fail
+          (aggregator->LoadLinkedColumn(lp, reg_left,
+                                        m_column_map[left_cidx]));
       }
-      // Skip all remaining agg instructions when NOT(leaf_col OP parent_col)
-      // Also account for any subsequent cross-table filter instructions:
-      // each filter emits 3 instructions (LoadLinked + LoadCol + BranchReg)
+
+      if (right_is_leaf) {
+        programAggregator_do_or_fail
+          (aggregator->LoadColumn(m_column_attrId_map[right_cidx], reg_right));
+      } else {
+        Uint32 lp = find_or_add_linked_proj(
+            m_join_plan, m_column_table_idx[right_cidx],
+            m_columns[right_cidx].c_str());
+        programAggregator_do_or_fail
+          (aggregator->LoadLinkedColumn(lp, reg_right,
+                                        m_column_map[right_cidx]));
+      }
+
+      // Operator is from the original SQL: left OP right.
+      // We skip when NOT(left OP right).
+      TokenKind filter_op = cf->op;
+
+      // Skip all remaining agg instructions when filter does NOT match.
+      // Each subsequent filter emits 3 words (Load + Load + BranchReg).
       Uint32 remaining_filters = 0;
       for (Uint32 f2 = f + 1; f2 < m_cross_table_where_filters.size(); f2++)
       {
         CrossTableFilter& ctf2 = m_cross_table_where_filters[f2];
         if (ctf2.ce == NULL) continue;  // Consumed
-        if (ctf2.child_table_idx == leaf_idx ||
-            ctf2.parent_table_idx == leaf_idx)
-          remaining_filters++;
+        remaining_filters++;
       }
       Uint32 skip_count = agg_word_count + remaining_filters * 3;
 
       switch (filter_op) {
       case T_GT:
         programAggregator_do_or_fail
-          (aggregator->BranchRegLe(reg_leaf, reg_parent, skip_count));
+          (aggregator->BranchRegLe(reg_left, reg_right, skip_count));
         break;
       case T_GE:
         programAggregator_do_or_fail
-          (aggregator->BranchRegLt(reg_leaf, reg_parent, skip_count));
+          (aggregator->BranchRegLt(reg_left, reg_right, skip_count));
         break;
       case T_LT:
         programAggregator_do_or_fail
-          (aggregator->BranchRegGe(reg_leaf, reg_parent, skip_count));
+          (aggregator->BranchRegGe(reg_left, reg_right, skip_count));
         break;
       case T_LE:
         programAggregator_do_or_fail
-          (aggregator->BranchRegGt(reg_leaf, reg_parent, skip_count));
+          (aggregator->BranchRegGt(reg_left, reg_right, skip_count));
         break;
       case T_EQUALS:
         programAggregator_do_or_fail
-          (aggregator->BranchRegNe(reg_leaf, reg_parent, skip_count));
+          (aggregator->BranchRegNe(reg_left, reg_right, skip_count));
         break;
       case T_NOT_EQUALS:
         programAggregator_do_or_fail
-          (aggregator->BranchRegEq(reg_leaf, reg_parent, skip_count));
+          (aggregator->BranchRegEq(reg_left, reg_right, skip_count));
         break;
       default:
         require_prm(false, "Unsupported cross-table WHERE operator.");

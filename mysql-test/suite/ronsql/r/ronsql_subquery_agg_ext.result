@@ -1016,6 +1016,67 @@ order_id	min_qty	exact_count	exact_price
 20	2	1	22
 
 
+=== M8: Ancestor-to-ancestor cross-table filter — c.id > o.min_qty ===
+== Query ==
+SELECT c.`name`, o.id AS order_id,
+SUM(l.qty) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE c.id > o.min_qty
+GROUP BY c.`name`, o.id
+ORDER BY o.id;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.`name`, o.id AS order_id,
+SUM(l.qty) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE c.id > o.min_qty
+GROUP BY c.`name`, o.id
+ORDER BY o.id|
+name	order_id	total_qty
+
+
+=== M9: Ancestor-to-ancestor with matches — o.min_qty < c.id * 3 ===
+== Query ==
+SELECT c.`name`, o.id AS order_id,
+SUM(l.qty) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE c.id >= o.min_qty
+GROUP BY c.`name`, o.id
+ORDER BY o.id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.`name`, o.id AS order_id,
+SUM(l.qty) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE c.id >= o.min_qty
+GROUP BY c.`name`, o.id
+ORDER BY o.id|
+name	order_id	total_qty
+Bob	20	12
+
+
 === M5: Cross-table WHERE with composite index (order_id, qty) ===
 == Query ==
 SELECT o.id AS order_id, o.min_qty,
