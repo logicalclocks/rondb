@@ -93,6 +93,8 @@ inline T dbg_print(int line, const char* expr, T val) {
 
 using std::endl;
 
+#include "RonSQLPerf.hpp"
+
 #define feature_not_implemented(description) \
   throw RonSQLPermanentError("RonSQL feature not implemented: " description)
 
@@ -146,17 +148,28 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
 {
   ndbrequire(m_status == Status::BEGIN);
   try {
+    PERF_TS(t_prep_start);
     configure();
+    PERF_TS(t_parse_start);
     parse();
+    PERF_TS(t_parse_end);
+    PERF_LOG("  parse", t_parse_start, t_parse_end);
     analyze_subqueries();
     analyze_select_subqueries();
+    PERF_TS(t_load_start);
     load();
+    PERF_TS(t_load_end);
+    PERF_LOG("  load (dict)", t_load_start, t_load_end);
     if (m_context.ast_root.joins == NULL)
       plan_index_and_filter();
+    PERF_TS(t_compile_start);
     compile();
     if (m_context.ast_root.joins != NULL)
       build_agg_linked_projections();
+    PERF_TS(t_compile_end);
+    PERF_LOG("  compile", t_compile_start, t_compile_end);
     determine_explain();
+    PERF_LOG("  prepare total", t_prep_start, t_compile_end);
     m_status = Status::PREPARED;
   }
   catch (...) {
@@ -4274,18 +4287,26 @@ RonSQLPreparer::execute_join()
   }
 
   // Prepare and execute
+  PERF_TS(t_qb_prepare);
   const NdbQueryDef* queryDef = qb->prepare(ndb);
   require_run(queryDef != NULL, "Failed to prepare query.");
+  PERF_TS(t_qb_prepared);
+  PERF_LOG("  qb->prepare", t_qb_prepare, t_qb_prepared);
 
   NdbQuery* query = m_trans->createQuery(queryDef);
   require_run(query != NULL, "Failed to create query.");
 
+  PERF_TS(t_exec_start);
   require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
               "Failed to execute transaction.");
+  PERF_TS(t_exec_sent);
+  PERF_LOG("  trans->execute", t_exec_start, t_exec_sent);
 
   // Consume all rows
   NdbQuery::NextResultOutcome rc;
   while ((rc = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  PERF_TS(t_drain_done);
+  PERF_LOG("  drain results", t_exec_sent, t_drain_done);
   if (rc == NdbQuery::NextResult_error)
   {
     const NdbError& err = query->getNdbError();
@@ -4299,9 +4320,13 @@ RonSQLPreparer::execute_join()
   }
 
   // Collect and print aggregation results
+  PERF_TS(t_result_start);
   NdbAggregator* resultAgg = query->getAggregator();
   ndbrequire(resultAgg != NULL);
   m_resultprinter->print_result(resultAgg, m_conf.out_stream);
+  PERF_TS(t_result_done);
+  PERF_LOG("  print results", t_result_start, t_result_done);
+  PERF_LOG("  execute total", t_qb_prepare, t_result_done);
 
   // Cleanup
   query->close();
