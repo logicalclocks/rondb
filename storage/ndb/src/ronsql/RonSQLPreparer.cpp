@@ -2563,23 +2563,34 @@ RonSQLPreparer::analyze_select_subqueries()
                 "outer column.");
 
     LexCString inner_col, outer_col, outer_table;
+    Uint32 outer_col_idx;
     if (lhs_is_inner) {
       inner_col = m_columns[lhs_col_idx];
       outer_col = m_columns[rhs_col_idx];
       outer_table = rhs_qualifier;
+      outer_col_idx = rhs_col_idx;
     } else {
       inner_col = m_columns[rhs_col_idx];
       outer_col = m_columns[lhs_col_idx];
       outer_table = lhs_qualifier;
+      outer_col_idx = lhs_col_idx;
     }
+    // Clear m_col_is_inner for the outer correlation column — it was
+    // registered as "inner" because parsing occurred inside a subquery,
+    // but it references the outer table and must be resolved by load_join().
+    if (outer_col_idx < m_col_is_inner.size())
+      m_col_is_inner[outer_col_idx] = false;
 
     // Extract the inner aggregate column's col_idx from the expression tree.
     // For simple SUM(col), the arg is a Load expression with idx = col_idx.
+    // For COUNT(*), the arg is a LoadImmediate(1) — no column reference needed.
     AggregationAPICompiler_Expr *agg_arg = inner_out->aggregate.arg;
-    require_prm(agg_arg != NULL && agg_arg->isLoad(),
+    bool is_count_star = (agg_fun == T_COUNT && agg_arg != NULL &&
+                          !agg_arg->isLoad());
+    require_prm(agg_arg != NULL && (agg_arg->isLoad() || is_count_star),
                 "SELECT-list subquery aggregate argument must be a simple "
-                "column reference.");
-    Uint32 inner_agg_col_idx = agg_arg->getLoadIdx();
+                "column reference (or COUNT(*)).");
+    Uint32 inner_agg_col_idx = is_count_star ? 0 : agg_arg->getLoadIdx();
 
     SelectSubqueryLeaf leaf;
     leaf.inner_stmt = inner;
@@ -2591,11 +2602,13 @@ RonSQLPreparer::analyze_select_subqueries()
     leaf.outer_join_col = outer_col;
     leaf.outer_join_table = outer_table;
     leaf.agg_fun = agg_fun;
-    leaf.inner_agg_col = m_columns[inner_agg_col_idx];
+    leaf.inner_agg_col = is_count_star ? LexCString{"*", 1}
+                                       : m_columns[inner_agg_col_idx];
     leaf.inner_agg_col_idx = inner_agg_col_idx;
     leaf.combined_agg_slot = 0;
     leaf.merged_leaf_idx = 0;
     leaf.use_inner_join = false;  // LEFT OUTER: unmatched entities get NULL
+    leaf.is_count_star = is_count_star;
     // Separate inner-only predicates from cross-table predicates.
     // Inner-only → pushed as NdbScanFilter on child scan.
     // Cross-table → converted to conditional aggregation via BranchReg.
@@ -3869,8 +3882,13 @@ RonSQLPreparer::execute_join()
           }
         }
 
-        require_prm(agg->LoadColumn(attr_id, reg),
-                    "Failed to load column for subquery aggregate.");
+        if (sl.is_count_star) {
+          require_prm(agg->LoadUint64(1, reg),
+                      "Failed to load immediate for COUNT(*).");
+        } else {
+          require_prm(agg->LoadColumn(attr_id, reg),
+                      "Failed to load column for subquery aggregate.");
+        }
 
         switch (sl.agg_fun) {
         case T_SUM:
