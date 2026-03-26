@@ -233,6 +233,9 @@ struct SelectStatement
   struct ConditionalExpression* having_expression = NULL;
   struct OrderbyColumns* orderby_columns = NULL;
   Int64 limit = -1; // -1 means no limit
+  Int32 sentinel_agg_slot = -1; // Hidden COUNT slot for cross-table filter
+                                // semantics: groups where this is 0 had no
+                                // rows pass the filter and must be suppressed.
   char* sql_begin = NULL;  // Start of inner query SQL (points into original buffer)
   char* sql_end = NULL;    // End of inner query SQL
 };

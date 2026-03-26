@@ -1035,10 +1035,7 @@ Bob	30	5
 Charlie	10	2
 
 
-=== Test 48: Error — cross-table comparison ===
-Expected error: WHERE condition references columns from multiple tables
-Error handling: RPE
-ronsql_cli caught exception: WHERE condition references columns from multiple tables in a single comparison or OR branch. Split into separate AND conditions, each referencing only one table.
+=== Test 48: Cross-table WHERE filter — l.l_quantity > o.o_custkey ===
 
 
 === Test 49: Error — no suitable index for join column ===

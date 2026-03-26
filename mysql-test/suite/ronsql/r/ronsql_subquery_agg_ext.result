@@ -983,6 +983,39 @@ order_id	filtered_price
 21	350
 
 
+=== M7: Cross-table EQ — BranchReg empty group suppression ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+COUNT(l.id) AS exact_count,
+SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+COUNT(l.id) AS exact_count,
+SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+order_id	min_qty	exact_count	exact_price
+10	3	1	33
+11	5	1	55
+20	2	1	22
+
+
 === M5: Cross-table WHERE with composite index (order_id, qty) ===
 == Query ==
 SELECT o.id AS order_id, o.min_qty,

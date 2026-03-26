@@ -1006,10 +1006,8 @@ DELIMITER ;|
 
 --echo
 --echo
---echo === Test 48: Error — cross-table comparison ===
---echo Expected error: WHERE condition references columns from multiple tables
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > o.o_custkey GROUP BY o.o_custkey;' 2>&1
+--echo === Test 48: Cross-table WHERE filter — l.l_quantity > o.o_custkey ===
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > o.o_custkey GROUP BY o.o_custkey ORDER BY o.o_custkey;' 2>&1
 
 --echo
 --echo

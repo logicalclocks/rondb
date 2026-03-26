@@ -2976,6 +2976,24 @@ RonSQLPreparer::compile()
               "not yet supported.");
         }
       }
+      // Pre-compute sentinel slot for ResultPrinter (set before construction).
+      // The actual sentinel instructions are emitted later in execute_join().
+      if (m_agg != NULL && !m_has_select_subqueries) {
+        Uint32 sentinel_slot = 0;
+        DynamicArray<AggregationAPICompiler::Instr>& prog = m_agg->m_program;
+        for (Uint32 pi = 0; pi < prog.size(); pi++) {
+          auto t = prog[pi].type;
+          if (t == AggregationAPICompiler::SVMInstrType::Sum ||
+              t == AggregationAPICompiler::SVMInstrType::Count ||
+              t == AggregationAPICompiler::SVMInstrType::Min ||
+              t == AggregationAPICompiler::SVMInstrType::Max ||
+              t == AggregationAPICompiler::SVMInstrType::AggRepeat) {
+            if (prog[pi].dest >= sentinel_slot)
+              sentinel_slot = prog[pi].dest + 1;
+          }
+        }
+        m_context.ast_root.sentinel_agg_slot = (Int32)sentinel_slot;
+      }
     }
   }
 
@@ -3882,6 +3900,11 @@ RonSQLPreparer::execute_join()
           require_prm(false, "Unsupported aggregate function in subquery.");
         }
       }
+
+      // No sentinel for multi-leaf subquery path — subquery results are
+      // consumed per-row by the subquery handler, not through ResultPrinter.
+      // Sentinel filtering only applies to explicit JOIN + GROUP BY queries
+      // (handled in programAggregator_join).
 
       require_prm(agg->Finalize(), "Failed to finalize leaf aggregator.");
       leafAggs[op_idx] = agg;
@@ -5229,9 +5252,23 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
 
   // Emit cross-table WHERE filters as BranchReg conditional aggregation.
   // Each filter skips ALL aggregation instructions if not satisfied.
+  // A hidden sentinel COUNT accumulator is appended so that groups where
+  // no rows passed the filter can be suppressed at result time.
+  bool has_branchreg_filter = false;
   if (m_cross_table_where_filters.size() > 0)
   {
+    // Check if any remaining (non-consumed) cross-table filters exist
+    for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++) {
+      CrossTableFilter& ctf = m_cross_table_where_filters[f];
+      if (ctf.ce != NULL &&
+          (ctf.child_table_idx == leaf_idx ||
+           ctf.parent_table_idx == leaf_idx))
+        has_branchreg_filter = true;
+    }
     Uint32 agg_word_count = m_agg->raw_word_size(0, m_agg->m_program.size());
+    // Add 4 words for sentinel (LoadUint64=3 + Count=1) that follows agg ops
+    if (has_branchreg_filter)
+      agg_word_count += 4;
     for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
     {
       CrossTableFilter& ctf = m_cross_table_where_filters[f];
@@ -5425,6 +5462,28 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     default:
       abort();
     }
+  }
+
+  // Emit hidden sentinel COUNT: counts rows that passed cross-table filters.
+  // Groups where sentinel is 0 are suppressed at result time.
+  if (has_branchreg_filter) {
+    // Sentinel slot = next slot after all user-visible aggregate slots
+    Uint32 sentinel_slot = 0;
+    for (Uint32 i = 0; i < program.size(); i++) {
+      auto t = program[i].type;
+      if (t == AggregationAPICompiler::SVMInstrType::Sum ||
+          t == AggregationAPICompiler::SVMInstrType::Count ||
+          t == AggregationAPICompiler::SVMInstrType::Min ||
+          t == AggregationAPICompiler::SVMInstrType::Max ||
+          t == AggregationAPICompiler::SVMInstrType::AggRepeat) {
+        if (program[i].dest >= sentinel_slot)
+          sentinel_slot = program[i].dest + 1;
+      }
+    }
+    Uint32 reg = 0;
+    programAggregator_do_or_fail(aggregator->LoadUint64(1, reg));
+    programAggregator_do_or_fail(aggregator->Count(sentinel_slot, reg));
+    // sentinel_agg_slot already set in compile() before ResultPrinter creation
   }
 }
 

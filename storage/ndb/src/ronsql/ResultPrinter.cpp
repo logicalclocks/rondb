@@ -248,6 +248,11 @@ ResultPrinter::compile()
     scan_having_max_agg(m_query->having_expression, number_of_aggregates);
   }
   m_num_groupby_cols = m_groupby_cols.size();
+  // Include hidden sentinel slot (if present) so it gets fetched from results
+  if (m_query->sentinel_agg_slot >= 0 &&
+      (Uint32)m_query->sentinel_agg_slot >= number_of_aggregates) {
+    number_of_aggregates = (Uint32)m_query->sentinel_agg_slot + 1;
+  }
   m_num_aggregates = number_of_aggregates;
   validate_orderby_columns();
   // Allocate registers. Even if some of them won't be used in an optimized
@@ -847,6 +852,13 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
   {
     DEB_TRACE();
     StoredRow row = store_record(record);
+    // Cross-table filter semantics: suppress groups where no rows passed
+    // the filter (sentinel COUNT == 0).
+    if (m_query->sentinel_agg_slot >= 0) {
+      NdbAggregator::Result sentinel =
+          row.results[m_query->sentinel_agg_slot];
+      if (sentinel.data_int64() == 0) continue;
+    }
     if (m_query->having_expression != NULL &&
         !evaluate_having(m_query->having_expression))
     {
@@ -926,7 +938,9 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
 {
   DEB_TRACE();
   assert(out_stream != NULL);
-  if (m_has_orderby)
+  // Force buffered path when sentinel filtering is needed (cross-table
+  // BranchReg filters) because streaming can't skip already-started records.
+  if (m_has_orderby || m_query->sentinel_agg_slot >= 0)
   {
     print_result_ordered(aggregator, out_stream);
     return;
