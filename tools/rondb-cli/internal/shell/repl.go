@@ -357,8 +357,12 @@ func (s *Shell) readFullCommand(firstLine string) (string, error) {
 		return firstLine, nil
 	}
 
-	// RONSQL commands are handled by executeRonSQL - return as-is
-	if lower == "ronsql" || strings.HasPrefix(lower, "ronsql ") {
+	// RONSQL SET commands are single-line config commands - return as-is.
+	// RONSQL queries (SELECT, EXPLAIN, etc.) fall through to multi-line handling.
+	if strings.HasPrefix(lower, "ronsql set ") {
+		return firstLine, nil
+	}
+	if lower == "ronsql" {
 		return firstLine, nil
 	}
 
@@ -941,27 +945,72 @@ func (s *Shell) executeRonSQL(line string) error {
 		OutputFormat: s.ronsqlFormat,
 	}
 
-	// Print JSON request
-	reqJSON, _ := json.MarshalIndent(req, "", "  ")
-	fmt.Println(ui.Info("Request:"))
-	fmt.Println(string(reqJSON))
-	fmt.Println()
+	// Print JSON request in verbose mode
+	if s.verbose >= 1 {
+		reqJSON, _ := json.MarshalIndent(req, "", "  ")
+		fmt.Println(ui.Info("Request:"))
+		fmt.Println(string(reqJSON))
+		fmt.Println()
+	}
 
 	// Send request
 	endpoint := "/" + APIVersion + "/ronsql"
 	data, duration, err := s.restClient.Post(endpoint, req)
 
-	// Print JSON response (even on error, as it may contain useful info)
-	fmt.Println(ui.Info("Response:"))
-	if len(data) > 0 {
+	if err != nil {
+		// Print raw response on error for diagnostics
+		fmt.Println(ui.Info("Response:"))
+		if len(data) > 0 {
+			fmt.Println(client.PrettyJSON(data))
+		}
+		fmt.Println(ui.Timing(duration))
+		return fmt.Errorf("RonSQL error: %w", err)
+	}
+
+	// For TEXT/TEXT_NOHEADER formats, render as a table like MySQL output
+	if len(data) > 0 && (s.ronsqlFormat == "TEXT" || s.ronsqlFormat == "TEXT_NOHEADER") {
+		fmt.Println(formatTSVAsTable(string(data), s.ronsqlFormat == "TEXT"))
+	} else if len(data) > 0 {
 		fmt.Println(client.PrettyJSON(data))
 	}
 	fmt.Println(ui.Timing(duration))
 
-	if err != nil {
-		return fmt.Errorf("RonSQL error: %w", err)
-	}
 	return nil
+}
+
+// formatTSVAsTable converts tab-separated RDRS response to a box-drawing table
+func formatTSVAsTable(tsv string, hasHeader bool) string {
+	lines := strings.Split(strings.TrimSpace(tsv), "\n")
+	if len(lines) == 0 {
+		return tsv
+	}
+
+	var headers []string
+	var dataLines []string
+
+	if hasHeader && len(lines) > 0 {
+		headers = strings.Split(lines[0], "\t")
+		dataLines = lines[1:]
+	} else {
+		// No header: generate column numbers
+		if len(lines) > 0 {
+			cols := len(strings.Split(lines[0], "\t"))
+			for i := 0; i < cols; i++ {
+				headers = append(headers, fmt.Sprintf("col%d", i+1))
+			}
+		}
+		dataLines = lines
+	}
+
+	var rows [][]string
+	for _, line := range dataLines {
+		if line == "" {
+			continue
+		}
+		rows = append(rows, strings.Split(line, "\t"))
+	}
+
+	return ui.RenderTable(headers, rows)
 }
 
 // executeREAD handles single READ commands via REST API

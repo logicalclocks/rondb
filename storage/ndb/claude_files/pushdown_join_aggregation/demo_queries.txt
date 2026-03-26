@@ -22,29 +22,65 @@
 # --- Demo 1: Inner Join Aggregation (slide 5) ---
 # Revenue by nation: nation → supplier → lineitem (3-table chain)
 
-RONSQL SELECT n.n_name, SUM(l.l_extendedprice) AS revenue, COUNT(*) AS num_items FROM tpch_nation AS n JOIN tpch_supplier AS s ON s.s_nationkey = n.n_nationkey JOIN tpch_lineitem AS l ON l.l_suppkey = s.s_suppkey GROUP BY n.n_name;
+RONSQL SELECT n.n_name,
+              SUM(l.l_extendedprice) AS revenue,
+              COUNT(*) AS num_items
+       FROM tpch_nation AS n
+       JOIN tpch_supplier AS s ON s.s_nationkey = n.n_nationkey
+       JOIN tpch_lineitem AS l ON l.l_suppkey = s.s_suppkey
+       GROUP BY n.n_name;
 
 
 # --- Demo 2: LEFT JOIN Aggregation (slide 6) ---
 # Spend by market segment, including customers with no orders
 
-RONSQL SELECT c.c_mktsegment, COUNT(*) AS num_orders, SUM(o.o_totalprice) AS total_spend FROM tpch_customer AS c LEFT JOIN tpch_orders AS o ON o.o_custkey = c.c_custkey GROUP BY c.c_mktsegment;
+RONSQL SELECT c.c_mktsegment,
+              COUNT(*) AS num_orders,
+              SUM(o.o_totalprice) AS total_spend
+       FROM tpch_customer AS c
+       LEFT JOIN tpch_orders AS o ON o.o_custkey = c.c_custkey
+       GROUP BY c.c_mktsegment;
 
 
 # --- Demo 3: Star Schema — two independent leaves (slide 7) ---
 # Per nation: total supplier balance + customer count (no merge)
 
-RONSQL SELECT n.n_name, (SELECT SUM(s.s_acctbal) FROM tpch_supplier AS s WHERE s.s_nationkey = n.n_nationkey) AS supplier_bal, (SELECT COUNT(*) FROM tpch_customer AS c WHERE c.c_nationkey = n.n_nationkey) AS num_customers FROM tpch_nation AS n;
+RONSQL SELECT n.n_name,
+              (SELECT SUM(s.s_acctbal)
+               FROM tpch_supplier AS s
+               WHERE s.s_nationkey = n.n_nationkey) AS supplier_bal,
+              (SELECT COUNT(*)
+               FROM tpch_customer AS c
+               WHERE c.c_nationkey = n.n_nationkey) AS num_customers
+       FROM tpch_nation AS n;
 
 
 # --- Demo 4: Subquery Merge — same table merged (slide 8) ---
 # Two aggregates on supplier (SUM + MAX) merged into one leaf scan
 # Plus one separate leaf on customer
 
-RONSQL SELECT n.n_name, (SELECT SUM(s.s_acctbal) FROM tpch_supplier AS s WHERE s.s_nationkey = n.n_nationkey) AS total_bal, (SELECT MAX(s2.s_acctbal) FROM tpch_supplier AS s2 WHERE s2.s_nationkey = n.n_nationkey) AS max_bal, (SELECT COUNT(*) FROM tpch_customer AS c WHERE c.c_nationkey = n.n_nationkey) AS num_cust FROM tpch_nation AS n;
+RONSQL SELECT n.n_name,
+              (SELECT SUM(s.s_acctbal)
+               FROM tpch_supplier AS s
+               WHERE s.s_nationkey = n.n_nationkey) AS total_bal,
+              (SELECT MAX(s2.s_acctbal)
+               FROM tpch_supplier AS s2
+               WHERE s2.s_nationkey = n.n_nationkey) AS max_bal,
+              (SELECT COUNT(*)
+               FROM tpch_customer AS c
+               WHERE c.c_nationkey = n.n_nationkey) AS num_cust
+       FROM tpch_nation AS n;
 
 
 # --- Demo 5: CASE + cross-table WHERE filter (slide 9) ---
 # TPC-H Q12 style: urgent vs non-urgent by ship mode
 
-RONSQL SELECT l.l_shipmode, SUM(CASE WHEN o.o_orderpriority = '1-URGENT' THEN 1 ELSE 0 END) AS urgent, SUM(CASE WHEN o.o_orderpriority <> '1-URGENT' THEN 1 ELSE 0 END) AS not_urgent FROM tpch_orders AS o JOIN tpch_lineitem AS l ON l.l_orderkey = o.o_orderkey WHERE o.o_orderyear >= 1995 GROUP BY l.l_shipmode;
+RONSQL SELECT l.l_shipmode,
+              SUM(CASE WHEN o.o_orderpriority = '1-URGENT'
+                       THEN 1 ELSE 0 END) AS urgent,
+              SUM(CASE WHEN o.o_orderpriority <> '1-URGENT'
+                       THEN 1 ELSE 0 END) AS not_urgent
+       FROM tpch_orders AS o
+       JOIN tpch_lineitem AS l ON l.l_orderkey = o.o_orderkey
+       WHERE o.o_orderyear >= 1995
+       GROUP BY l.l_shipmode;
