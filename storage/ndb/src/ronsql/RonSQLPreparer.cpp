@@ -1005,6 +1005,17 @@ RonSQLPreparer::classify_where_by_table()
             "conditions, each referencing only one table.");
       }
 
+      // Reject expressions too complex for the 2-register evaluation scheme.
+      // Each side gets reg + tmp_reg; depth > 2 would overwrite intermediate
+      // results (e.g., (a+b)*(c+d) needs 3 registers).
+      if (filter_expr_reg_depth(ce->args.left) > 2 ||
+          filter_expr_reg_depth(ce->args.right) > 2) {
+        throw RonSQLPermanentError(
+            "Cross-table WHERE expression is too complex. "
+            "Each side of the comparison may have at most one level "
+            "of arithmetic (e.g., col + 1, col * 2).");
+      }
+
       // Handle constant-only sides: treat as belonging to the other side's
       // table for classification, but the filter still gates aggregation.
       Uint32 left_t, right_t;
@@ -5261,6 +5272,34 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
       // Unknown instruction
       abort();
     }
+  }
+}
+
+/*
+ * Compute the minimum number of registers needed to evaluate a filter
+ * expression.  Used to reject expressions too complex for the 2-register
+ * per-side scheme (reg + tmp_reg).
+ *   Leaf (column/constant): 1
+ *   Binary op: max(left, right) if different, left+1 if equal
+ */
+static Uint32
+filter_expr_reg_depth(ConditionalExpression* ce)
+{
+  switch (ce->op) {
+  case T_IDENTIFIER:
+  case T_INT:
+  case T_FLOAT:
+    return 1;
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+  {
+    Uint32 ld = filter_expr_reg_depth(ce->args.left);
+    Uint32 rd = filter_expr_reg_depth(ce->args.right);
+    return (ld == rd) ? ld + 1 : (ld > rd ? ld : rd);
+  }
+  default:
+    return 99;  // unsupported → will be caught later
   }
 }
 
