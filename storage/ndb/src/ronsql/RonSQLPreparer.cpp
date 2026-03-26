@@ -911,6 +911,9 @@ RonSQLPreparer::load_join()
   // Classify WHERE conditions by table for per-table filter pushdown
   classify_where_by_table();
 
+  // Convert cross-table WHERE filters to index range bounds where possible
+  assign_cross_table_index_bounds();
+
   // Apply inner subquery filters to the corresponding leaf operations
   if (m_has_select_subqueries) {
     for (Uint32 i = 0; i < m_merged_leaves.size(); i++) {
@@ -1029,6 +1032,111 @@ RonSQLPreparer::classify_where_by_table()
   }
 }
 
+void
+RonSQLPreparer::assign_cross_table_index_bounds()
+{
+  // For each cross-table WHERE filter, check if the child-side column is
+  // on the child's ordered index, immediately after the join key prefix.
+  // If so, convert it to an index range bound instead of BranchReg.
+  for (Uint32 f = 0; f < m_cross_table_where_filters.size(); /* no incr */)
+  {
+    CrossTableFilter& ctf = m_cross_table_where_filters[f];
+    ConditionalExpression* cf = ctf.ce;
+
+    Uint32 left_cidx = cf->args.left->col_idx;
+    Uint32 right_cidx = cf->args.right->col_idx;
+    Uint32 left_t = m_column_table_idx[left_cidx];
+    Uint32 right_t = m_column_table_idx[right_cidx];
+
+    // Determine child (deeper in join tree) and parent
+    bool left_is_child = (left_t == ctf.child_table_idx);
+    Uint32 child_cidx = left_is_child ? left_cidx : right_cidx;
+    Uint32 parent_cidx = left_is_child ? right_cidx : left_cidx;
+
+    JoinOp& op = m_join_plan.ops[ctf.child_table_idx];
+
+    // Only INDEX_SCAN children can have range bounds
+    if (op.type != JoinOp::INDEX_SCAN || op.index == NULL)
+    {
+      f++;
+      continue;
+    }
+
+    // Check if the child column is the next index column after the join keys
+    const NdbDictionary::Index* idx = op.index;
+    Uint32 next_col_pos = op.num_key_cols;
+    if (next_col_pos >= (Uint32)idx->getNoOfColumns())
+    {
+      f++;
+      continue;
+    }
+    const char* child_col_name = m_columns[child_cidx].c_str();
+    const NdbDictionary::Column* idx_col = idx->getColumn(next_col_pos);
+    if (idx_col == NULL || strcmp(idx_col->getName(), child_col_name) != 0)
+    {
+      f++;
+      continue;
+    }
+
+    // Match found. Determine bound direction from the operator.
+    // Normalize to child_col OP parent_col form.
+    TokenKind filter_op = cf->op;
+    if (!left_is_child)
+    {
+      // parent OP child → child FLIPPED_OP parent
+      switch (filter_op) {
+      case T_LT: filter_op = T_GT; break;
+      case T_LE: filter_op = T_GE; break;
+      case T_GT: filter_op = T_LT; break;
+      case T_GE: filter_op = T_LE; break;
+      default: break;
+      }
+    }
+
+    // child_col > parent_col → lower bound on child (exclusive)
+    // child_col >= parent_col → lower bound on child (inclusive)
+    // child_col < parent_col → upper bound on child (exclusive)
+    // child_col <= parent_col → upper bound on child (inclusive)
+    // child_col = parent_col → both (equality on next index col)
+    bool assigned = false;
+    const char* parent_col_name = m_columns[parent_cidx].c_str();
+    Uint32 parent_op = m_column_table_idx[parent_cidx];
+
+    if (filter_op == T_GT || filter_op == T_GE || filter_op == T_EQUALS)
+    {
+      if (op.num_low_bounds < MAX_JOIN_KEY_COLS)
+      {
+        JoinOp::RangeBound& lb = op.low_bounds[op.num_low_bounds++];
+        lb.child_col_name = child_col_name;
+        lb.parent_col_name = parent_col_name;
+        lb.parent_op_idx = parent_op;
+        lb.inclusive = (filter_op == T_GE || filter_op == T_EQUALS);
+        assigned = true;
+      }
+    }
+    if (filter_op == T_LT || filter_op == T_LE || filter_op == T_EQUALS)
+    {
+      if (op.num_high_bounds < MAX_JOIN_KEY_COLS)
+      {
+        JoinOp::RangeBound& hb = op.high_bounds[op.num_high_bounds++];
+        hb.child_col_name = child_col_name;
+        hb.parent_col_name = parent_col_name;
+        hb.parent_op_idx = parent_op;
+        hb.inclusive = (filter_op == T_LE || filter_op == T_EQUALS);
+        assigned = true;
+      }
+    }
+
+    if (assigned)
+    {
+      // Mark as consumed by setting ce to NULL.
+      // The BranchReg code in programAggregator_join checks for NULL.
+      ctf.ce = NULL;
+    }
+    f++;
+  }
+}
+
 static Uint32
 find_or_add_linked_proj(JoinPlan& plan, Uint32 op_idx, const char* col_name)
 {
@@ -1092,9 +1200,11 @@ RonSQLPreparer::build_agg_linked_projections()
   }
 
   // Add linked projections for cross-table WHERE filter parent columns
+  // (only for filters not consumed as index bounds)
   for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
   {
     CrossTableFilter& ctf = m_cross_table_where_filters[f];
+    if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
     ConditionalExpression* cf = ctf.ce;
     Uint32 left_cidx = cf->args.left->col_idx;
     Uint32 right_cidx = cf->args.right->col_idx;
@@ -2831,26 +2941,35 @@ RonSQLPreparer::compile()
   // Cross-table WHERE filters require aggregation (BranchReg is in the
   // aggregation program).  Non-aggregate queries with cross-table WHERE
   // are not yet supported.
-  if (m_cross_table_where_filters.size() > 0) {
-    if (m_agg == NULL) {
-      throw RonSQLPermanentError(
-          "Cross-table WHERE conditions (e.g., a.x > b.y) are only "
-          "supported in queries with aggregation (GROUP BY / aggregate "
-          "functions).  Split into separate conditions per table, or "
-          "add aggregation.");
-    }
-    // Verify all cross-table filters involve the aggregation leaf.
-    // BranchReg runs in the leaf's aggregation program, so at least
-    // one side must be on a leaf table.
-    Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+  {
+    // Check for remaining (non-consumed) cross-table WHERE filters.
+    // Consumed filters (ce == NULL) were converted to index bounds.
+    bool has_remaining = false;
     for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++) {
-      CrossTableFilter& ctf = m_cross_table_where_filters[f];
-      if (ctf.child_table_idx != leaf_idx &&
-          ctf.parent_table_idx != leaf_idx) {
+      if (m_cross_table_where_filters[f].ce != NULL) {
+        has_remaining = true;
+        break;
+      }
+    }
+    if (has_remaining) {
+      if (m_agg == NULL) {
         throw RonSQLPermanentError(
-            "Cross-table WHERE condition must involve the aggregation "
-            "leaf table.  Conditions between two ancestor tables are "
-            "not yet supported.");
+            "Cross-table WHERE conditions (e.g., a.x > b.y) are only "
+            "supported in queries with aggregation (GROUP BY / aggregate "
+            "functions).  Split into separate conditions per table, or "
+            "add aggregation.");
+      }
+      Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+      for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++) {
+        CrossTableFilter& ctf = m_cross_table_where_filters[f];
+        if (ctf.ce == NULL) continue;  // Consumed (index bound)
+        if (ctf.child_table_idx != leaf_idx &&
+            ctf.parent_table_idx != leaf_idx) {
+          throw RonSQLPermanentError(
+              "Cross-table WHERE condition must involve the aggregation "
+              "leaf table.  Conditions between two ancestor tables are "
+              "not yet supported.");
+        }
       }
     }
   }
@@ -3970,8 +4089,56 @@ RonSQLPreparer::execute_join()
       break;
     case JoinOp::INDEX_SCAN:
     {
-      NdbQueryIndexBound bound(keys);
-      opDefs[i] = qb->scanIndex(op.index, op.table, &bound, &opts);
+      if (op.num_low_bounds == 0 && op.num_high_bounds == 0)
+      {
+        // Simple equality bounds (join keys only)
+        NdbQueryIndexBound bound(keys);
+        opDefs[i] = qb->scanIndex(op.index, op.table, &bound, &opts);
+      }
+      else
+      {
+        // Range bounds: equality join keys + cross-table WHERE range
+        const NdbQueryOperand* lowKeys[MAX_JOIN_KEY_COLS * 2 + 1];
+        const NdbQueryOperand* highKeys[MAX_JOIN_KEY_COLS * 2 + 1];
+
+        // Copy equality join keys to both low and high
+        for (Uint32 k = 0; k < op.num_key_cols; k++) {
+          lowKeys[k] = highKeys[k] = qb->linkedValue(
+              opDefs[op.parent_op_idx], op.parent_key_col_names[k]);
+          require_run(lowKeys[k] != NULL, "Failed to create linked value.");
+        }
+
+        // Append lower range bounds after equality prefix
+        bool lowIncl = true;
+        Uint32 lowIdx = op.num_key_cols;
+        for (Uint32 b = 0; b < op.num_low_bounds; b++) {
+          lowKeys[lowIdx] = qb->linkedValue(
+              opDefs[op.low_bounds[b].parent_op_idx],
+              op.low_bounds[b].parent_col_name);
+          require_run(lowKeys[lowIdx] != NULL,
+                      "Failed to create linked lower bound.");
+          lowIncl = op.low_bounds[b].inclusive;
+          lowIdx++;
+        }
+        lowKeys[lowIdx] = nullptr;
+
+        // Append upper range bounds after equality prefix
+        bool highIncl = true;
+        Uint32 highIdx = op.num_key_cols;
+        for (Uint32 b = 0; b < op.num_high_bounds; b++) {
+          highKeys[highIdx] = qb->linkedValue(
+              opDefs[op.high_bounds[b].parent_op_idx],
+              op.high_bounds[b].parent_col_name);
+          require_run(highKeys[highIdx] != NULL,
+                      "Failed to create linked upper bound.");
+          highIncl = op.high_bounds[b].inclusive;
+          highIdx++;
+        }
+        highKeys[highIdx] = nullptr;
+
+        NdbQueryIndexBound bound(lowKeys, lowIncl, highKeys, highIncl);
+        opDefs[i] = qb->scanIndex(op.index, op.table, &bound, &opts);
+      }
       break;
     }
     default:
@@ -5063,6 +5230,7 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
     {
       CrossTableFilter& ctf = m_cross_table_where_filters[f];
+      if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
       // Only apply filters relevant to this leaf
       if (ctf.child_table_idx != leaf_idx &&
           ctf.parent_table_idx != leaf_idx)
@@ -5114,6 +5282,7 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
       for (Uint32 f2 = f + 1; f2 < m_cross_table_where_filters.size(); f2++)
       {
         CrossTableFilter& ctf2 = m_cross_table_where_filters[f2];
+        if (ctf2.ce == NULL) continue;  // Consumed
         if (ctf2.child_table_idx == leaf_idx ||
             ctf2.parent_table_idx == leaf_idx)
           remaining_filters++;

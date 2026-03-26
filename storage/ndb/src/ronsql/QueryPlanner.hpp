@@ -51,6 +51,19 @@ struct JoinOp
   const char *child_key_col_names[MAX_JOIN_KEY_COLS];
   const char *parent_key_col_names[MAX_JOIN_KEY_COLS];
   Uint32 num_key_cols;
+
+  // Range bounds from cross-table WHERE on index columns (after join keys).
+  // These extend the index scan bounds beyond the equality join keys.
+  struct RangeBound {
+    const char *child_col_name;    // child index column
+    const char *parent_col_name;   // parent column providing the bound value
+    Uint32 parent_op_idx;          // parent operation index
+    bool inclusive;                 // true = <=/>= , false = </>
+  };
+  RangeBound low_bounds[MAX_JOIN_KEY_COLS];
+  Uint32 num_low_bounds;
+  RangeBound high_bounds[MAX_JOIN_KEY_COLS];
+  Uint32 num_high_bounds;
 };
 
 struct JoinPlan

@@ -886,7 +886,7 @@ order_id	min_qty	filtered_sum
 21	10	35
 
 
-=== M2: Cross-table WHERE with EQ — l.qty = o.min_qty ===
+=== M2: Cross-table WHERE with EQ — l.qty = o.min_qty (BranchReg) ===
 == Query ==
 SELECT o.id AS order_id, o.min_qty,
 COUNT(l.id) AS exact_count,
@@ -951,7 +951,7 @@ order_id	ne_sum
 21	35
 
 
-=== M4: Cross-table WHERE + inner-only WHERE combined ===
+=== M4: Cross-table WHERE + inner-only WHERE combined (BranchReg fallback) ===
 == Query ==
 SELECT o.id AS order_id,
 SUM(l.price) AS filtered_price
@@ -981,5 +981,37 @@ order_id	filtered_price
 11	160
 20	70
 21	350
+
+
+=== M5: Cross-table WHERE with composite index (order_id, qty) ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+order_id	min_qty	filtered_price
+10	3	130
+11	5	160
+20	2	100
+21	10	350
 
 === Cleanup ===

@@ -8316,20 +8316,39 @@ void Dbspj::scanFrag_fixupBound(Uint32 ptrI, Uint32 corrVal) {
   ndbassert((corrVal & 0xFFFF) < MaxCorrelationId);
   tmp |= (boundsz << 16) | ((corrVal & 0xFFF) << 4);
   ndbrequire(r0.updateWord(tmp));
+  // Renumber attribute ids in bound entries.
+  // Each entry is: BoundType(1) + AttributeHeader(1) + Data(len32).
+  // For EQ bounds (BoundEQ=4), one entry per column → id advances.
+  // For range bounds, lower (BoundLE=0/BoundLT=1) advances id,
+  // upper (BoundGE=2/BoundGT=3) reuses the same id as the preceding lower.
+  Uint32 boundType;
+  ndbrequire(r0.peekWord(&boundType));
   ndbrequire(r0.step(1));  // Skip first BoundType
 
-  // Note: Renumbering below assume there are only EQ-bounds !!
   Uint32 id = 0;
   Uint32 len32;
   do {
+    // Assign id: upper bounds (GE=2,GT=3) reuse previous id
+    Uint32 thisId = id;
+    // BoundLE=0, BoundLT=1 (lower), BoundGE=2, BoundGT=3 (upper), BoundEQ=4
+    bool isUpperBound = (boundType == 2 || boundType == 3);
+    if (isUpperBound && id > 0) {
+      thisId = id - 1;  // Reuse previous column's id
+    } else {
+      thisId = id++;    // Advance to next column
+    }
+
     ndbrequire(r0.peekWord(&tmp));
     AttributeHeader ah(tmp);
     const Uint32 len = ah.getByteSize();
-    AttributeHeader::init(&tmp, id++, len);
+    AttributeHeader::init(&tmp, thisId, len);
     ndbrequire(r0.updateWord(tmp));
     len32 = (len + 3) >> 2;
-  } while (r0.step(2 + len32));  // Skip AttributeHeader(1) + Attribute(len32) +
-                                 // next BoundType(1)
+    // Step past data to next BoundType, and read it
+    if (!r0.step(1 + len32)) break;  // Past AttributeHeader + data
+    ndbrequire(r0.peekWord(&boundType));
+    // Step past the BoundType word
+  } while (r0.step(1));
 }
 
 void Dbspj::scanFrag_parent_batch_complete(Signal *signal,

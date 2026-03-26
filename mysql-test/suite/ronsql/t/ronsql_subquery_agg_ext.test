@@ -991,10 +991,9 @@ ORDER BY o.id|
 
 --echo
 --echo
---echo === M2: Cross-table WHERE with EQ — l.qty = o.min_qty ===
-# Note: Cross-table WHERE via BranchReg gives conditional aggregation
-# semantics. Groups where no rows match get COUNT=0/SUM=NULL instead
-# of being absent. Filter to orders that have matches to avoid this.
+--echo === M2: Cross-table WHERE with EQ — l.qty = o.min_qty (BranchReg) ===
+# Without composite index on (order_id, qty), uses BranchReg fallback.
+# Filter to orders where at least one lineitem matches min_qty.
 
 let $QUERY=
 SELECT o.id AS order_id, o.min_qty,
@@ -1044,7 +1043,7 @@ ORDER BY o.id|
 
 --echo
 --echo
---echo === M4: Cross-table WHERE + inner-only WHERE combined ===
+--echo === M4: Cross-table WHERE + inner-only WHERE combined (BranchReg fallback) ===
 
 let $QUERY=
 SELECT o.id AS order_id,
@@ -1064,6 +1063,40 @@ FROM k_orders AS o
 JOIN k_lineitem AS l ON l.order_id = o.id
 WHERE l.qty > o.min_qty AND l.price > 30
 GROUP BY o.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M5: Cross-table WHERE with composite index (order_id, qty) ===
+# Replace single-column index with composite so cross-table filter
+# becomes an index range bound instead of BranchReg.
+# Placed last to avoid stale dictionary cache affecting later tests.
+
+DELIMITER ;|
+--disable_query_log
+DROP INDEX idx_k_li_order ON k_lineitem;
+CREATE INDEX idx_k_li_order_qty ON k_lineitem (order_id, qty);
+--enable_query_log
+DELIMITER |;
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
 ORDER BY o.id|
 
 # =========================================================================

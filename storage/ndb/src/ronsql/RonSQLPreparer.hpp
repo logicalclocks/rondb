@@ -244,6 +244,7 @@ private:
   void load_single_table();
   void load_join();
   void classify_where_by_table();
+  void assign_cross_table_index_bounds();
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();

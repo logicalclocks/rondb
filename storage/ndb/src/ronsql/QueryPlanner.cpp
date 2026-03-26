@@ -60,6 +60,8 @@ QueryPlanner::plan(
   rootOp.is_root = true;
   rootOp.match_type = JoinOp::INNER;
   rootOp.num_key_cols = 0;
+  rootOp.num_low_bounds = 0;
+  rootOp.num_high_bounds = 0;
   out.num_ops = 1;
 
   /*
@@ -91,6 +93,8 @@ QueryPlanner::plan(
     childOp.is_root = false;
     childOp.match_type = (jc->join_type == JoinClause::LEFT_OUTER_JOIN)
         ? JoinOp::LEFT_OUTER : JoinOp::INNER;
+    childOp.num_low_bounds = 0;
+    childOp.num_high_bounds = 0;
 
     Uint32 num_keys = 0;
     Uint32 parent_idx = 0;
