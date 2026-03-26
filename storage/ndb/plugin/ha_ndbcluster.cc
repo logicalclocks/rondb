@@ -11632,6 +11632,41 @@ int ha_ndbcluster::create_index(THD *thd, const char *name, const KEY *key_info,
     DBUG_PRINT("info", ("unique_name: '%s'", unique_name));
   }
 
+  /* Block creating index on ring buffer internal columns */
+  if (ndbtab->isRingBuffer() &&
+      idx_type != PRIMARY_KEY_INDEX &&
+      idx_type != PRIMARY_KEY_ORDERED_INDEX) {
+    const NdbDictionary::Column *ring_idx_col =
+        ndbtab->getColumn(ndbtab->getRingIdxColumnNo());
+    const NdbDictionary::Column *ring_meta_col =
+        ndbtab->getColumn(ndbtab->getRingMetaColumnNo());
+    const KEY_PART_INFO *key_part = key_info->key_part;
+    const KEY_PART_INFO *end = key_part + key_info->user_defined_key_parts;
+    for (; key_part != end; key_part++) {
+      const char *col_name = key_part->field->field_name;
+      if ((ring_idx_col && strcmp(col_name, ring_idx_col->getName()) == 0) ||
+          (ring_meta_col && strcmp(col_name, ring_meta_col->getName()) == 0)) {
+        if (thd_sql_command(thd) == SQLCOM_ALTER_TABLE ||
+            thd_sql_command(thd) == SQLCOM_CREATE_INDEX) {
+          /* Inplace ALTER: set error directly, HA_ERR_GENERIC tells
+             print_error() to skip (error already reported). */
+          my_printf_error(ER_ILLEGAL_HA_CREATE_OPTION,
+                          "Cannot create index on ring buffer internal "
+                          "column '%s'",
+                          MYF(0), col_name);
+          return HA_ERR_GENERIC;
+        }
+        /* CREATE TABLE: push warning for create helper, which wraps it
+           with ER_CANT_CREATE_TABLE. */
+        push_warning_printf(
+            thd, Sql_condition::SL_WARNING, ER_ILLEGAL_HA_CREATE_OPTION,
+            "Cannot create index on ring buffer internal column '%s'",
+            col_name);
+        return HA_ERR_UNSUPPORTED;
+      }
+    }
+  }
+
   switch (idx_type) {
     case PRIMARY_KEY_INDEX:
       // Do nothing, already created
