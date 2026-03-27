@@ -2,7 +2,7 @@
 #UseShm= 1
 MaxNoOfSavedMessages=          1000
 MaxNoOfConcurrentTransactions= 2048
-MaxNoOfConcurrentOperations=   10000
+MaxNoOfConcurrentOperations=   20000
 MaxNoOfConcurrentScans=        64
 BatchSizePerLocalScan=         64
 DataMemory=                    30M

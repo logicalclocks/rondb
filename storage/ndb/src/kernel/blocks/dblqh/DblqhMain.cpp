@@ -11742,7 +11742,7 @@ Dblqh::acckeyconf_tupkeyreq(Signal* signal, TcConnectionrec* regTcPtr,
   jamDataDebug(totReclenAi);
   if (totReclenAi > 0) {
     ndbassert(attrInfoIVal != RNIL);
-    const Uint32 copyError = c_tup->copyAttrinfo(totReclenAi, attrInfoIVal);
+    const Uint32 copyError = c_tup->keyCopyAttrinfo(totReclenAi, attrInfoIVal);
     if (unlikely(copyError != 0)) {
       jam();
       TupKeyRef *ref = (TupKeyRef *)signal->getDataPtr();
@@ -16781,7 +16781,7 @@ void Dblqh::setup_key_pointers(Uint32 tcIndex, bool acquire_lock) {
  * prepare_tabptr
  *   The pointer and i-value of the table record used by the scan.
  *
- * TUP variable setup by copyAttrinfo:
+ * TUP variable setup by scanCopyAttrinfo/keyCopyAttrinfo:
  * ...................................
  * The Attrinfo that contains the scan stored procedure is an Attrinfo program.
  * It is stored in signal segments while being executed. When TUP executes the
@@ -16872,9 +16872,9 @@ void Dblqh::setup_scan_pointers_from_tc_con(TcConnectionrecPtr tcConnectptr,
   if (likely(loc_scanptr.p->scanStoredProcId != RNIL)) {
     jamDebug();
     Uint32 storedProcLen =
-      c_tup->copyAttrinfo(loc_scanptr.p->scanStoredProcId,
-                          bool(tcConnectptr.p->opExec),
-                          loc_scanptr.p);
+      c_tup->scanCopyAttrinfo(loc_scanptr.p->scanStoredProcId,
+                              bool(tcConnectptr.p->opExec),
+                              loc_scanptr.p);
     (void)storedProcLen;
     ndbassert(loc_scanptr.p->scanAiLength == storedProcLen);
   }
@@ -16938,9 +16938,9 @@ void Dblqh::setup_scan_pointers(Uint32 scanPtrI, Uint32 line) {
   {
     jamDebug();
     Uint32 storedProcLen =
-      c_tup->copyAttrinfo(loc_scanptr.p->scanStoredProcId,
-                          bool(loc_tcConnectptr.p->opExec),
-                          loc_scanptr.p);
+      c_tup->scanCopyAttrinfo(loc_scanptr.p->scanStoredProcId,
+                              bool(loc_tcConnectptr.p->opExec),
+                              loc_scanptr.p);
     (void)storedProcLen;
     ndbassert(loc_scanptr.p->scanAiLength == storedProcLen);
   }
@@ -19246,8 +19246,9 @@ void Dblqh::accScanConfScanLab(Signal *signal,
       jamEntryDebug();
       Uint32 storedProcId = signal->theData[1];
       scanPtr->scanStoredProcId = storedProcId;
-      c_tup->copyAttrinfo(storedProcId, bool(regTcPtr->opExec),
-                          scanPtr);
+      c_tup->scanCopyAttrinfo(storedProcId,
+                              bool(regTcPtr->opExec),
+                              scanPtr);
       storedProcConfScanLab(signal, tcConnectptr);
       return;
     } else {
@@ -19270,8 +19271,9 @@ void Dblqh::accScanConfScanLab(Signal *signal,
       // Advance to next parameter in the attrInfo
       c_tup->nextAttrInfoParam(scanPtr->scanStoredProcId);
     }
-    c_tup->copyAttrinfo(scanPtr->scanStoredProcId, bool(regTcPtr->opExec),
-                        scanPtr);
+    c_tup->scanCopyAttrinfo(scanPtr->scanStoredProcId,
+                            bool(regTcPtr->opExec),
+                            scanPtr);
     storedProcConfScanLab(signal, tcConnectptr);
     return;
   }
@@ -22757,7 +22759,7 @@ void Dblqh::accScanConfCopyLab(Signal *signal) {
   ndbrequire(signal->theData[0] == 0);
   scanPtr->scanStoredProcId = signal->theData[1];
   scanPtr->scanAiLength = signal->theData[2];
-  c_tup->copyAttrinfo(scanPtr->scanStoredProcId, bool(regTcPtr->opExec));
+  c_tup->scanCopyAttrinfo(scanPtr->scanStoredProcId, false);
 
   if (scanPtr->scanCompletedStatus == ZTRUE) {
     jam();

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1625,6 +1625,20 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     static constexpr Uint32 TYPE_ID = RT_DBTUP_STORED_PROCEDURE;
     Uint32 m_magic;
 
+    /**
+     * The constructor or destructor is more or less empty by design.
+     * We need cacheLinearAttrInfo, cachedLinearLen, storedProcIVal
+     * lastSegment, copyOverwrite, copyOverwriteLen, storedCode to
+     * survive a deallocation, allocation without changes. These values
+     * should not change then. In particular the cacheLinearAttrInfo keep
+     * the buffer for Attrinfo for Copy Fragment operations.
+     * These buffers are not reallocated on each COPY FRAGMENT, they
+     * are reused.
+     *
+     * For Copy fragment the only variables that change are the copyOverwrite
+     * variables that are used to restore the memory array to its initial
+     * state.
+     */
     storedProc() : m_magic(Magic::make(TYPE_ID)) {}
 
     ~storedProc() {}
@@ -1637,7 +1651,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint16 storedCode;
     Uint8 copyOverwrite;
     Uint8 copyOverwriteLen;
-    bool   copyAttrinfoCalled;    // Set true after first copyAttrinfo call
+    bool  copyAttrinfoCalled;    // Set true after first copyAttrinfo call
     union {
       Uint32 nextPool;
       Uint32 nextList;
@@ -3305,10 +3319,10 @@ private:
   void flush_read_buffer(KeyReqStruct *, const Uint32 *outBuf, Uint32 resultRef,
                          Uint32 resultData, Uint32 routeRef);
 public:
-  Uint32 copyAttrinfo(Uint32 storedProcId,
-                      bool interpretedFlag,
-                      void* scan_rec = nullptr);
-  Uint32 copyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal);
+  Uint32 scanCopyAttrinfo(Uint32 storedProcId,
+                          bool interpretedFlag,
+                          void* scan_rec = nullptr);
+  Uint32 keyCopyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal);
 
   void nextAttrInfoParam(Uint32 storedProcId);
   void cacheFromCinBuffer(storedProc* sp, Uint32 len);
@@ -3718,9 +3732,6 @@ private:
   void deleteScanProcedure(Signal *signal, Operationrec *regOperPtr);
   void allocCopyProcedure();
   void freeCopyProcedure();
-  void prepareCopyProcedure(Uint32 numAttrs,
-                            Uint16 tableBits,
-                            StoredProcPtr & storedPtr);
   void releaseCopyProcedure(StoredProcPtr storedPtr);
   void copyProcedure(Signal* signal,
                      TablerecPtr regTabPtr,
@@ -4027,6 +4038,8 @@ public:
   // MAX_ATTRIBUTES_IN_TABLE (22096) words. Includes headroom for copy
   // algorithm overwrites.
 #define ZATTR_BUFFER_SIZE 32768
+  Uint32
+    cCopyStoredProcedure[ZMAX_PARALLEL_COPY_FRAGMENT_OPS][MAX_ATTRIBUTES_IN_TABLE + EXTRA_COPY_PROC_WORDS];
   Uint32 clogMemBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 coutBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 cinBuffer[ZATTR_BUFFER_SIZE + 16];
