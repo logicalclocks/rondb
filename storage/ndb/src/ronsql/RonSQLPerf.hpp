@@ -32,7 +32,7 @@
  *   PERF_LOG("label", t0, t1);  // log elapsed time in ms
  */
 
-#define RONSQL_PERF_TIMING 1
+//#define RONSQL_PERF_TIMING 1
 
 #ifdef RONSQL_PERF_TIMING
 
