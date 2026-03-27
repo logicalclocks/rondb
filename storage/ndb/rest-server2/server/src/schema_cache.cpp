@@ -17,7 +17,7 @@
  * USA.
  */
 
-#include "storage/ndb/src/ronsql/RdrsSchemaCache.hpp"
+#include "RdrsSchemaCache.hpp"
 
 RdrsSchemaCache* g_schema_cache = nullptr;
 
@@ -81,7 +81,7 @@ RdrsSchemaCache::getIndexes(
     CachedIndex ci;
     ci.name = elem.name;
     ci.type = (NdbDictionary::Object::Type)elem.type;
-    ci.state = (NdbDictionary::Object::Status)elem.state;
+    ci.state = elem.state;
     entry.indexes.push_back(std::move(ci));
   }
 

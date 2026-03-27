@@ -46,7 +46,7 @@ class RdrsSchemaCache {
   struct CachedIndex {
     std::string name;
     NdbDictionary::Object::Type type;     // OrderedIndex or UniqueHashIndex
-    NdbDictionary::Object::Status state;
+    NdbDictionary::Object::State state;
   };
 
   struct CachedTable {

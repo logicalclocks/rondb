@@ -117,6 +117,7 @@ TARGET_INCLUDE_DIRECTORIES(${PROJECT_NAME} PRIVATE
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/rondis/include
+  ${CMAKE_SOURCE_DIR}/storage/ndb/src/ronsql
   ${CMAKE_SOURCE_DIR}/storage/ndb/include/util
   ${CMAKE_SOURCE_DIR}/include
   )
@@ -153,6 +154,7 @@ target_include_directories(rdrs2_lib PUBLIC
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/rondis/include
+  ${CMAKE_SOURCE_DIR}/storage/ndb/src/ronsql
   ${CMAKE_SOURCE_DIR}/storage/ndb/include/util
   ${CMAKE_SOURCE_DIR}/include
   )

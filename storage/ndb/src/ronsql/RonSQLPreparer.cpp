@@ -742,7 +742,7 @@ RonSQLPreparer::load_single_table()
   for (Uint32 i = 0; i < idx_count; i++) {
     const char* idx_name;
     NdbDictionary::Object::Type idx_type;
-    NdbDictionary::Object::Status idx_state;
+    NdbDictionary::Object::State idx_state;
     if (cached_indexes) {
       const auto& ci = (*cached_indexes)[i];
       idx_name = ci.name.c_str();
@@ -752,7 +752,7 @@ RonSQLPreparer::load_single_table()
       NdbDictionary::Dictionary::List::Element& elem = index_list.elements[i];
       idx_name = elem.name;
       idx_type = (NdbDictionary::Object::Type)elem.type;
-      idx_state = (NdbDictionary::Object::Status)elem.state;
+      idx_state = elem.state;
     }
     if (idx_state != NdbDictionary::Object::StateOnline) {
       DEB_TRACE();
