@@ -84,10 +84,10 @@ void Dbtup::execSTORED_PROCREQ(Signal *signal) {
   case ZCOPY_PROCEDURE: {
     jamDebug();
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-      storedProcCountNonAPI(apiBlockref, +1);
+    storedProcCountNonAPI(apiBlockref, +1);
 #endif
-      copyProcedure(signal, regTabPtr, regOperPtr.p);
-      break;
+    copyProcedure(signal, regTabPtr, regOperPtr.p);
+    break;
   }
   case ZSTORED_PROCEDURE_DELETE: {
     jamDebug();
@@ -225,6 +225,7 @@ void Dbtup::allocCopyProcedure() {
     storedPtr.p->copyOverwriteLen = 0;
     storedPtr.p->storedParamNo = 0;
     storedPtr.p->copyAttrinfoCalled = true;
+    storedPtr.p->storedCode = ZCOPY_PROCEDURE;
     m_reserved_stored_proc_copy_frag.addFirst(storedPtr);
   }
 }
@@ -253,6 +254,8 @@ void Dbtup::releaseCopyProcedure(StoredProcPtr storedPtr)
     storedPtr.p->copyOverwriteLen = 0;
     storedPtr.p->copyOverwrite = 0;
   }
+  storedPtr.p->cachedLinearLen =
+    MAX_ATTRIBUTES_IN_TABLE + EXTRA_COPY_PROC_WORDS;
   m_reserved_stored_proc_copy_frag.addFirst(storedPtr);
 }
 
@@ -309,6 +312,7 @@ void Dbtup::copyProcedure(Signal *signal,
            &extraAttrIds[0],
            sizeof(Uint32) * extraReads);
   }
+  storedPtr.p->cachedLinearLen = newSize;
   signal->theData[0] = 0;
   signal->theData[1] = storedPtr.i;
   signal->theData[2] = newSize;

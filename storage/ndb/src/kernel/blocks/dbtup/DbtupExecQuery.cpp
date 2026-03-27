@@ -974,14 +974,17 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
    * Either memcpy from cached linear buffer or read via SectionReader.
    */
   if (useCache) {
+    jamDebug();
     totalLen = storedPtr.p->cachedLinearLen;
     memcpy(&cinBuffer[0],
            storedPtr.p->cachedLinearAttrInfo,
            totalLen * sizeof(Uint32));
     if (unlikely(storedPtr.p->storedCode == ZCOPY_PROCEDURE)) {
+      jamDebug();
       return totalLen;
     }
   } else {
+    jamDebug();
     SectionReader reader(storedPtr.p->storedProcIVal,
                          getSectionSegmentPool());
     totalLen = reader.getSize();
