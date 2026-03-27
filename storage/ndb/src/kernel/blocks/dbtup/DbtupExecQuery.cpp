@@ -968,7 +968,10 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
   ndbrequire(((storedPtr.p->storedCode == ZSCAN_PROCEDURE) ||
         (storedPtr.p->storedCode == ZCOPY_PROCEDURE)));
 
-  const bool useCache = (storedPtr.p->copyAttrinfoCalled &&
+  /* Only cache for scan procedures, not copy procedures (which are reused) */
+  const bool canCache = (storedPtr.p->storedCode == ZSCAN_PROCEDURE);
+  const bool useCache = (canCache &&
+                         storedPtr.p->copyAttrinfoCalled &&
                          storedPtr.p->cachedLinearAttrInfo != nullptr);
   Uint32 totalLen;
 
@@ -1041,8 +1044,8 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
     ndbassert(storedPtr.p->storedParamNo == 0);
   }
 
-  /* Cache the full linearized section on first call */
-  if (!storedPtr.p->copyAttrinfoCalled) {
+  /* Cache the full linearized section on first call (scan procedures only) */
+  if (canCache && !storedPtr.p->copyAttrinfoCalled) {
     storedPtr.p->copyAttrinfoCalled = true;
     cacheFromCinBuffer(storedPtr.p, totalLen);
   }
@@ -1067,7 +1070,7 @@ void Dbtup::cacheFromCinBuffer(storedProc* sp, Uint32 len) {
   sp->cachedLinearLen = len;
   sp->cachedLinearAttrInfo = static_cast<Uint32*>(
       lc_ndbd_pool_malloc(len * sizeof(Uint32),
-                           RG_TRANSACTION_MEMORY,
+                           RG_QUERY_MEMORY,
                            getThreadId(),
                            false));
   if (sp->cachedLinearAttrInfo == nullptr) {
