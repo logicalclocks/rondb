@@ -155,6 +155,7 @@ class NdbTransaction {
   friend class NdbBlob;
   friend class NdbQueryImpl;
   friend class NdbQueryOperationImpl;
+  friend class NdbRingBufferWriter;
 #endif
 
  public:
