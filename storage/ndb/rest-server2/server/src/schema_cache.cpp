@@ -18,6 +18,7 @@
  */
 
 #include "RdrsSchemaCache.hpp"
+#include <mutex>
 
 RdrsSchemaCache* g_schema_cache = nullptr;
 
