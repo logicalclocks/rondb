@@ -836,6 +836,9 @@ inline Int32 RegMinusBigint(const Register& a, const Register& b, Register* res)
         if (res_val >= 0) {
           return -1;
         }
+        // res_unsigned stays false — result is negative, will be
+        // caught by check_integer_overflow below.
+      } else {
         res_unsigned = true;
       }
     } else {
@@ -856,9 +859,13 @@ inline Int32 RegMinusBigint(const Register& a, const Register& b, Register* res)
           static_cast<Uint64>(val1)) {
         return -1;
       }
+    } else {
+      // Both signed: !a.is_unsigned && !b.is_unsigned
       if (val0 >= 0 && val1 < 0) {
+        // Positive minus negative is always positive → unsigned result
         res_unsigned = true;
       } else if (val0 < 0 && val1 > 0 && res_val >= 0) {
+        // Negative minus positive wrapped to non-negative → overflow
         return -1;
       }
     }
