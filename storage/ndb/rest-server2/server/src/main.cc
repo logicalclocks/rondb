@@ -40,6 +40,7 @@ constexpr const char* const usageHelp =
 #include "scan_metrics.hpp"
 #include "src/api_key.hpp"
 #include "src/fs_cache.hpp"
+#include "storage/ndb/src/ronsql/RdrsSchemaCache.hpp"
 #include "tls_util.hpp"
 #include "src/ttl_purge.hpp"
 #include <ndb_opts.h>
@@ -138,6 +139,7 @@ static void do_exit() {
     stop_api_key_cache();
   if (g_did_start_fs_cache)
     stop_fs_cache();
+  stop_schema_cache();
   cleanupScanMetrics();
   if (g_rondbConnection != nullptr) {
     delete g_rondbConnection;
@@ -371,6 +373,8 @@ int main(int argc, char *argv[]) {
 
     start_fs_cache();
     g_did_start_fs_cache = true;
+
+    start_schema_cache();
 
     // Initialize Prometheus Metrics
     rdrs_metrics::initMetrics();

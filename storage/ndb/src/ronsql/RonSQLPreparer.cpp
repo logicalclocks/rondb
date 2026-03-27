@@ -94,6 +94,7 @@ inline T dbg_print(int line, const char* expr, T val) {
 using std::endl;
 
 #include "RonSQLPerf.hpp"
+#include "RdrsSchemaCache.hpp"
 
 #define feature_not_implemented(description) \
   throw RonSQLPermanentError("RonSQL feature not implemented: " description)
@@ -718,30 +719,52 @@ RonSQLPreparer::load_single_table()
   require_prm(m_table != NULL,
               "Failed to get table. Note that RonSQL only supports tables"
               " with ENGINE=NDB.");
-  // Populate m_indexes
-  NdbDictionary::Dictionary::List index_list;
+  // Populate m_indexes — use schema cache if available to skip listIndexes()
   ndbrequire(m_dict != NULL);
   ndbrequire(m_table != NULL);
-  require_sch(m_dict->listIndexes(index_list, *m_table) == 0,
-              "Failed to list indexes.");
+  const char* db = m_conf.ndb ? m_conf.ndb->getDatabaseName() : nullptr;
+  const auto* cached_indexes = (m_conf.schema_cache && db)
+      ? m_conf.schema_cache->getIndexes(m_dict, m_table, db,
+                                         m_table->getName())
+      : nullptr;
+
+  NdbDictionary::Dictionary::List index_list;
+  if (cached_indexes == nullptr) {
+    require_sch(m_dict->listIndexes(index_list, *m_table) == 0,
+                "Failed to list indexes.");
+  }
+
+  // Iterate: either cached index names or the raw list
+  Uint32 idx_count = cached_indexes ? cached_indexes->size() : index_list.count;
   bool err_failed_to_get_index = false;
   bool err_object_status_not_retrieved = false;
   bool err_table_verid_mismatch = false;
-  for(Uint32 i = 0; i < index_list.count; i++) {
-    NdbDictionary::Dictionary::List::Element& list_element =
-      index_list.elements[i];
-    if (list_element.state != NdbDictionary::Object::StateOnline) {
+  for (Uint32 i = 0; i < idx_count; i++) {
+    const char* idx_name;
+    NdbDictionary::Object::Type idx_type;
+    NdbDictionary::Object::Status idx_state;
+    if (cached_indexes) {
+      const auto& ci = (*cached_indexes)[i];
+      idx_name = ci.name.c_str();
+      idx_type = ci.type;
+      idx_state = ci.state;
+    } else {
+      NdbDictionary::Dictionary::List::Element& elem = index_list.elements[i];
+      idx_name = elem.name;
+      idx_type = (NdbDictionary::Object::Type)elem.type;
+      idx_state = (NdbDictionary::Object::Status)elem.state;
+    }
+    if (idx_state != NdbDictionary::Object::StateOnline) {
       DEB_TRACE();
       continue;
     }
-    if (list_element.type == NdbDictionary::Object::UniqueHashIndex) {
+    if (idx_type == NdbDictionary::Object::UniqueHashIndex) {
       DEB_TRACE();
       continue;
     }
-    require_bug(list_element.type == NdbDictionary::Object::OrderedIndex,
+    require_bug(idx_type == NdbDictionary::Object::OrderedIndex,
                 "Unexpected index type.");
-    const NdbDictionary::Index* index = m_dict->getIndex(list_element.name,
-                                                         *m_table);
+    const NdbDictionary::Index* index = m_dict->getIndex(idx_name, *m_table);
     if (index == NULL) {
       err_failed_to_get_index = true;
       DEB_TRACE();
@@ -807,12 +830,15 @@ RonSQLPreparer::load_join()
   std::basic_ostream<char>& err = *m_conf.err_stream;
 
   // Build the join plan via QueryPlanner
+  const char* db = m_conf.ndb ? m_conf.ndb->getDatabaseName() : nullptr;
   QueryPlanner::plan(
       m_context.ast_root.root_table,
       m_context.ast_root.joins,
       m_dict,
       err,
-      m_join_plan);
+      m_join_plan,
+      m_conf.schema_cache,
+      db);
 
   // For multi-leaf subquery pushdown, map merged leaves to plan op indices.
   // Each merged leaf corresponds to a JoinClause that was appended to the

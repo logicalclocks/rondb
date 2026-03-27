@@ -26,6 +26,7 @@
 #define STORAGE_NDB_SRC_RONSQL_QUERYPLANNER_HPP 1
 
 #include <NdbApi.hpp>
+#include <vector>
 #include "RonSQLCommon.hpp"
 #include "LexString.hpp"
 
@@ -92,12 +93,16 @@ public:
       const JoinClause *joins,
       const NdbDictionary::Dictionary *dict,
       std::basic_ostream<char> &err,
-      JoinPlan &plan);
+      JoinPlan &plan,
+      RdrsSchemaCache *cache = nullptr,
+      const char *database = nullptr);
 
   static const NdbDictionary::Index *
   findOrderedIndex(const NdbDictionary::Dictionary *dict,
                    const NdbDictionary::Table *table,
-                   const char *col_names[], Uint32 num_cols);
+                   const char *col_names[], Uint32 num_cols,
+                   RdrsSchemaCache *cache = nullptr,
+                   const char *database = nullptr);
 
 private:
   static bool isPrimaryKey(const NdbDictionary::Table *table,
@@ -106,7 +111,9 @@ private:
   static const NdbDictionary::Index *
   findUniqueIndex(const NdbDictionary::Dictionary *dict,
                   const NdbDictionary::Table *table,
-                  const char *col_names[], Uint32 num_cols);
+                  const char *col_names[], Uint32 num_cols,
+                  RdrsSchemaCache *cache = nullptr,
+                  const char *database = nullptr);
 };
 
 #endif

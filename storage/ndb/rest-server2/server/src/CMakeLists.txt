@@ -48,6 +48,7 @@ file(GLOB_RECURSE SRC
         mystring.cpp
         ndb_api_helper.cpp
         operations_feature_store.cpp
+        schema_cache.cpp
         ping_ctrl.cpp
         pk_data_structs.cpp
         pk_read_ctrl.cpp

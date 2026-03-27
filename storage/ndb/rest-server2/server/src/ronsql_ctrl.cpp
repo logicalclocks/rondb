@@ -26,6 +26,7 @@
 #include "api_key.hpp"
 #include <metrics.hpp>
 #include "logger.hpp"
+#include "storage/ndb/src/ronsql/RdrsSchemaCache.hpp"
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_SQL_CTRL 1
@@ -97,6 +98,7 @@ void RonSQLCtrl::ronsql(
 
   ArenaMalloc amalloc(RonSQLExecParams::ARENA_MALLOC_PAGE_SIZE);
   RonSQLExecParams params;
+  params.schema_cache = g_schema_cache;
 
   std::string& database = reqStruct.database;
   status = ronsql_validate_database_name(database);

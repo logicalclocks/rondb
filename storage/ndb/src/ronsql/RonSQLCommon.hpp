@@ -40,6 +40,8 @@ typedef Int32 TokenKind; /* The type of the T_* values used to indicate token
                           * type. These values are also used in the parse tree.
                           */
 
+class RdrsSchemaCache;  // Forward declaration — optional, for index list caching
+
 struct RonSQLExecParams
 {
   char* sql_buffer = NULL;
@@ -77,6 +79,7 @@ struct RonSQLExecParams
   bool* do_explain = NULL; // If not NULL, use this to inform the caller whether
                            // we EXPLAIN. This is needed by RDRS to determine
                            // content type.
+  RdrsSchemaCache* schema_cache = nullptr;  // Optional: avoids dict->listIndexes()
   static const Uint32 ARENA_MALLOC_PAGE_SIZE = 2048;
 };
 
