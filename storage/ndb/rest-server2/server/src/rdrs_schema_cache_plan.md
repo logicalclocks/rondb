@@ -29,26 +29,40 @@ threads. Located in `storage/ndb/rest-server2/server/src/schema_cache.hpp/cpp`.
 
 ### What to cache
 
+The primary cost is `dict->listIndexes()` (~400µs per call). The NDB API
+already caches Table and Index objects internally — `dict->getTable()` and
+`dict->getIndex()` are fast on cache hit. The missing piece is knowing
+*which indexes exist* for a given table without calling `listIndexes()`.
+
+The cache therefore stores only **names and version identifiers**, not
+NdbDictionary objects. This keeps it lightweight and avoids lifetime
+management issues with NDB API objects.
+
 Per fully-qualified table (database + table name):
 
 ```cpp
 struct CachedTable {
-  const NdbDictionary::Table* table;     // from dict->getTable()
+  std::string database;
+  std::string table_name;
   Uint32 tableId;                        // table->getTableId()
   Uint32 schemaVersion;                  // table->getObjectVersion()
 
-  // Index list (from dict->listIndexes())
+  // Index name list (from dict->listIndexes())
   struct CachedIndex {
     std::string name;
     NdbDictionary::Object::Type type;    // OrderedIndex or UniqueHashIndex
     NdbDictionary::Object::Status state;
-    const NdbDictionary::Index* index;   // from dict->getIndex()
     Uint32 indexId;
     Uint32 indexVersion;
   };
   std::vector<CachedIndex> indexes;
 };
 ```
+
+Callers use the cached index names to call `dict->getIndex(name, table)`
+which hits the NDB API's internal cache and is fast. The cached tableId
+and schemaVersion allow quick validation that the cache is still current
+by comparing against the Table object returned by `dict->getTable()`.
 
 ### Cache key
 
@@ -69,26 +83,24 @@ hit the cache, contention is minimal.
 ### Lookup flow
 
 ```
-getTable(dict, db, table_name):
+getIndexNames(dict, db, table_name) -> vector<CachedIndex>&:
   key = db + "/" + table_name
+  table = dict->getTable(table_name)    // fast: NDB API internal cache
   shared_lock:
     if cache[key] exists:
-      // Validate: check that dict->getTable() returns same tableId/version
-      // Actually, skip validation on the hot path — validate lazily on error
-      return cache[key].table
+      if cache[key].tableId == table->getTableId() &&
+         cache[key].schemaVersion == table->getObjectVersion():
+        return cache[key].indexes       // cache hit — skip listIndexes()
   exclusive_lock:
-    // Double-check after upgrading lock
-    result = dict->getTable(table_name)
-    populate cache[key] with result, indexes
-    return result
-
-getIndexList(db, table_name):
-  key = db + "/" + table_name
-  shared_lock:
-    if cache[key] exists and indexes populated:
-      return cache[key].indexes
-  // Otherwise, populate via dict->listIndexes() + dict->getIndex()
+    // Cache miss or stale — refresh
+    dict->listIndexes(index_list, *table)
+    populate cache[key] with table metadata + index names/versions
+    return cache[key].indexes
 ```
+
+Callers then use the returned index names with `dict->getIndex(name, table)`
+which is fast (NDB API internal cache). The expensive `listIndexes()` is
+only called on first access or after schema changes.
 
 ### Schema change handling (invalidation)
 
@@ -137,23 +149,18 @@ Lazy validation is correct because:
 
 ### Integration points
 
-1. **RonSQLPreparer** (`load()`, `load_join()`):
-   - Replace `dict->getTable()` with `g_schema_cache->getTable()`
-   - Replace `dict->listIndexes()` + `dict->getIndex()` with `g_schema_cache->getIndexes()`
+The cache replaces `dict->listIndexes()` calls only. `dict->getTable()` and
+`dict->getIndex()` are kept as-is (they use the NDB API's internal cache).
 
-2. **QueryPlanner** (`plan()`):
-   - Same replacements for `dict->getTable()`, `findUniqueIndex()`, `findOrderedIndex()`
-   - Pass cache reference instead of raw `dict`
+1. **QueryPlanner** (`findUniqueIndex()`, `findOrderedIndex()`):
+   - Replace `dict->listIndexes()` with `g_schema_cache->getIndexNames()`
+   - Keep `dict->getIndex(name, table)` for the actual Index object
 
-3. **rdrs_dal.cpp** (line 1835, 1966):
-   - `dict->getTable()` → `g_schema_cache->getTable()`
-   - `dict->getIndex()` → `g_schema_cache->getIndex()`
+2. **RonSQLPreparer** (`load_single_table()` line 725):
+   - Replace `dict->listIndexes()` with `g_schema_cache->getIndexNames()`
 
-4. **ndb_api_helper.cpp** (`select_table()`, `get_index_scan_op()`):
-   - Same replacements
-
-5. **pk_batch_base_operation.cpp** (line 99):
-   - `dict->getTable()` → `g_schema_cache->getTable()`
+3. **Any other RDRS2 code** that calls `dict->listIndexes()`:
+   - Same replacement pattern
 
 ### Initialization and lifecycle
 
@@ -193,6 +200,7 @@ This halves the dictionary cost for join queries with no caching complexity.
 
 ## Expected impact
 
-- RonSQL query preparation: ~800µs → ~100µs (cache hit)
-- PK read/write operations: ~200µs saved per table lookup
-- Schema change handling: transparent via retry (existing mechanism)
+- RonSQL query preparation: ~800µs → ~200µs (skip listIndexes, keep getTable/getIndex)
+- Join queries: additional ~400µs saved per child table (was calling listIndexes twice)
+- Schema change handling: transparent via lazy invalidation + retry (existing mechanism)
+- Minimal memory overhead: only index names and version IDs, no NDB API object copies
