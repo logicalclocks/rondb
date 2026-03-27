@@ -133,7 +133,13 @@ void Dbtup::deleteScanProcedure(Signal *signal, Operationrec *regOperPtr) {
     else
     {
       /* ZSCAN_PROCEDURE */
-      releaseSection(storedPtr.p->storedProcIVal);
+      if (storedPtr.p->cachedLinearAttrInfo != nullptr) {
+        lc_ndbd_pool_free(storedPtr.p->cachedLinearAttrInfo);
+        storedPtr.p->cachedLinearAttrInfo = nullptr;
+      }
+      if (storedPtr.p->storedProcIVal != RNIL) {
+        releaseSection(storedPtr.p->storedProcIVal);
+      }
       storedPtr.p->storedCode = ZSTORED_PROCEDURE_FREE;
       storedPtr.p->storedProcIVal = RNIL;
       c_storedProcPool.release(storedPtr);
@@ -176,6 +182,9 @@ void Dbtup::scanProcedure(Signal* signal,
   storedPtr.p->storedCode = (isCopy) ? ZCOPY_PROCEDURE : ZSCAN_PROCEDURE;
   storedPtr.p->storedProcIVal= handle->m_ptr[0].i;
   storedPtr.p->storedParamNo = 0;
+  storedPtr.p->cachedLinearAttrInfo = nullptr;
+  storedPtr.p->cachedLinearLen = 0;
+  storedPtr.p->copyAttrinfoCalled = false;
 
   set_trans_state(regOperPtr, TRANS_IDLE);
 

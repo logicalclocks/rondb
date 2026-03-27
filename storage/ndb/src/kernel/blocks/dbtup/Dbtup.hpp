@@ -1632,9 +1632,12 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint32 storedProcIVal;
     Uint32 storedParamNo; // Current attrInfo param being used
     Uint32 lastSegment;
+    Uint32* cachedLinearAttrInfo;  // Linearized copy of section, or nullptr
+    Uint32  cachedLinearLen;       // Length in words
     Uint16 storedCode;
     Uint8 copyOverwrite;
     Uint8 copyOverwriteLen;
+    bool   copyAttrinfoCalled;    // Set true after first copyAttrinfo call
     union {
       Uint32 nextPool;
       Uint32 nextList;
@@ -3308,6 +3311,7 @@ public:
   Uint32 copyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal);
 
   void nextAttrInfoParam(Uint32 storedProcId);
+  void cacheFromCinBuffer(storedProc* sp, Uint32 len);
 
   bool SendAggResToAPI(Signal*, const void* lqhTcConnectrec, void* lqhScanRecord);
   /**

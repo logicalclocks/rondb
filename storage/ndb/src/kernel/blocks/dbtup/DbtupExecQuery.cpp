@@ -968,73 +968,64 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
   ndbrequire(((storedPtr.p->storedCode == ZSCAN_PROCEDURE) ||
         (storedPtr.p->storedCode == ZCOPY_PROCEDURE)));
 
-  const Uint32 attrinfoIVal = storedPtr.p->storedProcIVal;
-  SectionReader reader(attrinfoIVal, getSectionSegmentPool());
-  const Uint32 readerLen = reader.getSize();
+  const bool useCache = (storedPtr.p->copyAttrinfoCalled &&
+                         storedPtr.p->cachedLinearAttrInfo != nullptr);
+  Uint32 totalLen;
 
+  /*
+   * Fill cinBuffer with the full linearized section.
+   * Either memcpy from cached linear buffer or read via SectionReader.
+   */
+  if (useCache) {
+    totalLen = storedPtr.p->cachedLinearLen;
+    memcpy(&cinBuffer[0], storedPtr.p->cachedLinearAttrInfo,
+           totalLen * sizeof(Uint32));
+  } else {
+    SectionReader reader(storedPtr.p->storedProcIVal,
+                         getSectionSegmentPool());
+    totalLen = reader.getSize();
+    reader.getWords(&cinBuffer[0], totalLen);
+  }
+
+  /*
+   * Setup cinBuffer for interpreted programs: select the right parameter
+   * and initialize pushdown interpreter if present.
+   */
   if (interpretedFlag) {
     jam();
-
-    // Read sectionPtr's
-    reader.getWords(&cinBuffer[0], 5);
-
-    // Read interpreted sections 0..3, up to the parameter section
     const Uint32 readLen = cinBuffer[0] + cinBuffer[1] +
       cinBuffer[2] + cinBuffer[3];
-    Uint32 *pos = &cinBuffer[5];
-    reader.getWords(pos, readLen);
-    pos += readLen;
 
-    Uint32 paramOffs = 0;
     Uint32 paramLen = 0;
     if (cinBuffer[4] == 0) {
       // No parameters supplied in this attrInfo
     } else if (storedPtr.p->storedParamNo == 0) {
-      // A single parameter, or the first of many, copy it out
+      // First parameter — already in position
       paramLen = cinBuffer[4];
-      ndbrequire(reader.getWords(pos, paramLen));
-      pos += paramLen;
-      ndbassert(intmax_t{readerLen} == (pos - cinBuffer));
     } else {
-      // A set of parameters, skip up to the one specified by 'ParamNo'
+      // Walk to the storedParamNo-th parameter and move it into position
+      Uint32* paramBase = &cinBuffer[5 + readLen];
       for (uint i = 0; i < storedPtr.p->storedParamNo; i++) {
-        reader.getWord(pos);
-        paramLen = *pos;
-        reader.step(paramLen - 1);
-        paramOffs += paramLen;
+        Uint32 pLen = *paramBase;
+        paramBase += pLen;
       }
-      // Copy out the parameter specified
-      reader.getWord(pos);
-      paramLen = *pos;
-      reader.getWords(pos + 1, paramLen - 1);
-      pos += paramLen;
+      paramLen = *paramBase;
+      memmove(&cinBuffer[5 + readLen], paramBase,
+              paramLen * sizeof(Uint32));
     }
     cinBuffer[4] = paramLen;
+
     // Moz
     if (scan_rec != nullptr) {
-      // TODO doublecheck prepare_fragptr.p->fragTableId and
-      // prepare_fragptr.p->fragmentId with ScanRecord
       Dblqh::ScanRecord* scan_rec_ptr =
                         reinterpret_cast<Dblqh::ScanRecord*>(scan_rec);
       if (scan_rec_ptr->m_has_pushdown &&
           scan_rec_ptr->m_agg_interpreter == nullptr &&
           scan_rec_ptr->m_vs_interpreter == nullptr) {
-        /*
-         * Initialize pushdown interpreter resources
-         * 1. get 1st program word to verify Magic number
-         */
-        ndbrequire(reader.getWord(pos));
-        ndbrequire((*(pos) >> 16) == 0x0721);
-        Uint32 proc_len = *(pos) & 0xFFFF;
-        ndbrequire(intmax_t{readerLen - proc_len} == (pos - cinBuffer));
-        Uint32 proc_start = (pos - cinBuffer);
-        pos++;
-
-        // 2. get remaining program words
-        ndbrequire(reader.getWords(pos, proc_len - 1));
+        Uint32 proc_start = 5 + readLen + paramLen;
         ndbrequire((cinBuffer[proc_start] >> 16) == 0x0721);
+        Uint32 proc_len = cinBuffer[proc_start] & 0xFFFF;
 
-        // 3. construct the appropriate interpreter via factory
         auto result = PushdownInterpreterFactory::Create(
             &cinBuffer[proc_start], proc_len,
             prepare_fragptr.p->fragTableId,
@@ -1048,14 +1039,15 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
   } else {
     jam();
     ndbassert(storedPtr.p->storedParamNo == 0);
-
-    /* Copy attrInfo data into linear buffer */
-    reader.getWords(&cinBuffer[0], readerLen);
   }
 
-  // By convention we return total length of storedProc, not just what we
-  // copied.
-  return readerLen;
+  /* Cache the full linearized section on first call */
+  if (!storedPtr.p->copyAttrinfoCalled) {
+    storedPtr.p->copyAttrinfoCalled = true;
+    cacheFromCinBuffer(storedPtr.p, totalLen);
+  }
+
+  return totalLen;
 }
 
 void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
@@ -1069,6 +1061,25 @@ void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
         (storedPtr.p->storedCode == ZCOPY_PROCEDURE)));
 
   storedPtr.p->storedParamNo++;
+}
+
+void Dbtup::cacheFromCinBuffer(storedProc* sp, Uint32 len) {
+  sp->cachedLinearLen = len;
+  sp->cachedLinearAttrInfo = static_cast<Uint32*>(
+      lc_ndbd_pool_malloc(len * sizeof(Uint32),
+                           RG_TRANSACTION_MEMORY,
+                           getThreadId(),
+                           false));
+  if (sp->cachedLinearAttrInfo == nullptr) {
+    /* Allocation failed — degrade gracefully, keep using SectionReader */
+    sp->copyAttrinfoCalled = false;
+    return;
+  }
+  memcpy(sp->cachedLinearAttrInfo, &cinBuffer[0], len * sizeof(Uint32));
+
+  /* Release the segmented section — no longer needed */
+  releaseSection(sp->storedProcIVal);
+  sp->storedProcIVal = RNIL;
 }
 
 void Dbtup::setInvalidChecksum(Tuple_header *tuple_ptr,
