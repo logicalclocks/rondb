@@ -901,28 +901,36 @@ int main(int argc, char **argv)
   int result = 0;
 
   do {
+    printf("Connecting to management server..."); fflush(stdout);
     Ndb_cluster_connection con(connectString);
     if (con.connect(12, 5, 1) != 0) {
-      fprintf(stderr, "Failed to connect to management server\n");
+      fprintf(stderr, "\nFailed to connect to management server\n");
       result = 1; break;
     }
-    if (con.wait_until_ready(30, 0) < 0) {
-      fprintf(stderr, "Cluster not ready\n");
-      result = 1; break;
-    }
-    V("Connected to cluster\n");
+    printf(" ok\n"); fflush(stdout);
 
+    printf("Waiting for cluster to be ready..."); fflush(stdout);
+    if (con.wait_until_ready(30, 0) < 0) {
+      fprintf(stderr, "\nCluster not ready\n");
+      result = 1; break;
+    }
+    printf(" ok\n"); fflush(stdout);
+
+    printf("Initializing NDB object..."); fflush(stdout);
     Ndb ndb(&con, "test");
     if (ndb.init() != 0) {
-      fprintf(stderr, "Ndb::init: %s\n", ndb.getNdbError().message);
+      fprintf(stderr, "\nNdb::init: %s\n", ndb.getNdbError().message);
       result = 1; break;
     }
+    printf(" ok\n"); fflush(stdout);
 
+    printf("Connecting to MySQL on port %d...", mysqlPort); fflush(stdout);
     MYSQL *conn = connectMysql(mysqlPort);
     if (conn == nullptr) {
-      fprintf(stderr, "Cannot connect to MySQL on port %d\n", mysqlPort);
+      fprintf(stderr, "\nCannot connect to MySQL on port %d\n", mysqlPort);
       result = 1; break;
     }
+    printf(" ok\n"); fflush(stdout);
 
     if (dropOnly) {
       printf("Dropping tables...\n");
