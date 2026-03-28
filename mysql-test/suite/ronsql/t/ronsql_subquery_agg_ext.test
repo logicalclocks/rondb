@@ -1292,6 +1292,8 @@ DELIMITER ;|
 --disable_query_log
 DROP INDEX idx_k_li_order ON k_lineitem;
 CREATE INDEX idx_k_li_order_qty ON k_lineitem (order_id, qty);
+# Allow NDB dictionary cache on REST server to refresh after schema change
+--sleep 3
 --enable_query_log
 DELIMITER |;
 
