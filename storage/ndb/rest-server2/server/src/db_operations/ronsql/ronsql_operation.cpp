@@ -39,7 +39,8 @@
 
 RS_Status ronsql_op(RonSQLExecParams& params) {
   std::basic_ostream<char>& err = *params.err_stream;
-  static int max_attempts = 3;
+  static int max_attempts = 10;
+  int retry_sleep_ms = 10;
   for (int attempt = 0; attempt < max_attempts; attempt++) {
     bool is_last_attempt = attempt == max_attempts - 1;
     try {
@@ -66,7 +67,8 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
             std::string(rdrsErrorMessage(ERROR_RONSQL_TEMPORARY)) +
             " Detail: " + e.what());
       }
-      ndb_retry_sleep(50);
+      ndb_retry_sleep(retry_sleep_ms);
+      retry_sleep_ms = std::min(retry_sleep_ms * 2, 1000);
     }
     catch (RonSQLPermanentError& e) {
       err << "Caught exception: " << e.what() << "\n";
