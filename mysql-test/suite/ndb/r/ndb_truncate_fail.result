@@ -62,11 +62,10 @@ SELECT COUNT(*) FROM t20;
 COUNT(*)
 1
 # Cleanup
-DROP PROCEDURE truncate_list;
-SET GLOBAL ndb_metadata_sync = OFF;
 SET GLOBAL debug = @saved_debug;
 CALL drop_tables(20);
 DROP PROCEDURE create_tables;
 DROP PROCEDURE drop_tables;
 DROP PROCEDURE insert_row;
+DROP PROCEDURE truncate_list;
 DROP PROCEDURE truncate_list;

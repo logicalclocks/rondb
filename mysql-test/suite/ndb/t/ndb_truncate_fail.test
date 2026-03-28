@@ -138,15 +138,20 @@ SELECT COUNT(*) FROM t1;
 SELECT COUNT(*) FROM t20;
 
 --echo # Cleanup
---connection server2
-DROP PROCEDURE truncate_list;
 --connection default
-SET GLOBAL ndb_metadata_sync = OFF;
+
+# Wait for metadata sync to complete (it auto-resets to OFF)
+let $wait_condition = SELECT @@ndb_metadata_sync = 0;
+--source include/wait_condition.inc
+
 SET GLOBAL debug = @saved_debug;
 CALL drop_tables(20);
 DROP PROCEDURE create_tables;
 DROP PROCEDURE drop_tables;
 DROP PROCEDURE insert_row;
 DROP PROCEDURE truncate_list;
+--connection server2
+DROP PROCEDURE truncate_list;
+--connection default
 --disconnect server1
 --disconnect server2
