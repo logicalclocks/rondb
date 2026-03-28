@@ -87,12 +87,15 @@ NodeId=41
 # my_1rpl.cnf causes 6 schema-distribution participants which can
 # hang DDL when used with --start-and-exit (pool connections may not
 # have their NDB binlog/schema thread fully ready before load_tpch runs).
-[mysqld.1.1]
+# Must override in [mysqld] (global), not per-instance, because the
+# base config sets pool=3 globally.
+[mysqld]
 ndb-cluster-connection-pool=1
+
+[mysqld.1.1]
 ndb-cluster-connection-pool-nodeids=50
 
 [mysqld.2.1]
-ndb-cluster-connection-pool=1
 ndb-cluster-connection-pool-nodeids=53
 
 [ENV]
