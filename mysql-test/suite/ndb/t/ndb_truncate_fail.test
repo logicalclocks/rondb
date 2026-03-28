@@ -141,6 +141,7 @@ SELECT COUNT(*) FROM t20;
 --connection server2
 DROP PROCEDURE truncate_list;
 --connection default
+SET GLOBAL ndb_metadata_sync = OFF;
 SET GLOBAL debug = @saved_debug;
 CALL drop_tables(20);
 DROP PROCEDURE create_tables;
