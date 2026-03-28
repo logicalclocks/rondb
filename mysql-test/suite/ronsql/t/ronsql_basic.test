@@ -286,4 +286,6 @@ LIMIT 1000;|
 
 --echo Cleanup
 DELIMITER ;|
+--disable_warnings
 DROP TABLE api_scan;
+--enable_warnings
