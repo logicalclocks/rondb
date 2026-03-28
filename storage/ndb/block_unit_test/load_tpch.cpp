@@ -214,25 +214,39 @@ computeScale(double sf)
 /* ------------------------------------------------------------------ */
 
 static int
+sqlExecTimed(MYSQL *conn, const char *label, const char *query)
+{
+  auto t0 = Clock::now();
+  printf("  [DDL] %s ...", label); fflush(stdout);
+  int rc = sqlExec(conn, query);
+  double ms = elapsedMs(t0, Clock::now());
+  printf(" %.0f ms%s\n", ms, rc != 0 ? " FAILED" : "");
+  fflush(stdout);
+  return rc;
+}
+
+static int
 createTables(MYSQL *conn)
 {
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_lineitem");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_orders");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_partsupp");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_customer");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_supplier");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_part");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_nation");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_region");
+  printf("  Dropping old tables...\n"); fflush(stdout);
+  sqlExecTimed(conn, "DROP tpch_lineitem", "DROP TABLE IF EXISTS tpch_lineitem");
+  sqlExecTimed(conn, "DROP tpch_orders",   "DROP TABLE IF EXISTS tpch_orders");
+  sqlExecTimed(conn, "DROP tpch_partsupp", "DROP TABLE IF EXISTS tpch_partsupp");
+  sqlExecTimed(conn, "DROP tpch_customer", "DROP TABLE IF EXISTS tpch_customer");
+  sqlExecTimed(conn, "DROP tpch_supplier", "DROP TABLE IF EXISTS tpch_supplier");
+  sqlExecTimed(conn, "DROP tpch_part",     "DROP TABLE IF EXISTS tpch_part");
+  sqlExecTimed(conn, "DROP tpch_nation",   "DROP TABLE IF EXISTS tpch_nation");
+  sqlExecTimed(conn, "DROP tpch_region",   "DROP TABLE IF EXISTS tpch_region");
+  printf("  Creating tables...\n"); fflush(stdout);
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_region",
     "CREATE TABLE tpch_region ("
     "  r_regionkey INT NOT NULL PRIMARY KEY,"
     "  r_name CHAR(25) NOT NULL,"
     "  r_comment VARCHAR(152)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_nation",
     "CREATE TABLE tpch_nation ("
     "  n_nationkey INT NOT NULL PRIMARY KEY,"
     "  n_name CHAR(25) NOT NULL,"
@@ -240,7 +254,7 @@ createTables(MYSQL *conn)
     "  n_comment VARCHAR(152)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_supplier",
     "CREATE TABLE tpch_supplier ("
     "  s_suppkey INT NOT NULL PRIMARY KEY,"
     "  s_name CHAR(25) NOT NULL,"
@@ -251,7 +265,7 @@ createTables(MYSQL *conn)
     "  s_comment VARCHAR(101)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_part",
     "CREATE TABLE tpch_part ("
     "  p_partkey INT NOT NULL PRIMARY KEY,"
     "  p_name VARCHAR(55) NOT NULL,"
@@ -264,7 +278,7 @@ createTables(MYSQL *conn)
     "  p_comment VARCHAR(23)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_partsupp",
     "CREATE TABLE tpch_partsupp ("
     "  ps_partkey INT NOT NULL,"
     "  ps_suppkey INT NOT NULL,"
@@ -274,7 +288,7 @@ createTables(MYSQL *conn)
     "  PRIMARY KEY (ps_partkey, ps_suppkey)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_customer",
     "CREATE TABLE tpch_customer ("
     "  c_custkey INT NOT NULL PRIMARY KEY,"
     "  c_name VARCHAR(25) NOT NULL,"
@@ -286,7 +300,7 @@ createTables(MYSQL *conn)
     "  c_comment VARCHAR(117)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_orders",
     "CREATE TABLE tpch_orders ("
     "  o_orderkey INT NOT NULL PRIMARY KEY,"
     "  o_custkey INT NOT NULL,"
@@ -300,7 +314,7 @@ createTables(MYSQL *conn)
     "  o_comment VARCHAR(79)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_lineitem",
     "CREATE TABLE tpch_lineitem ("
     "  l_orderkey INT NOT NULL,"
     "  l_linenumber INT NOT NULL,"
@@ -322,16 +336,16 @@ createTables(MYSQL *conn)
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
   // Indexes on foreign-key columns for pushdown join aggregation
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE INDEX supplier_nationkey",
     "CREATE INDEX idx_supplier_nationkey ON tpch_supplier (s_nationkey)"
     ) != 0) return -1;
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE INDEX customer_nationkey",
     "CREATE INDEX idx_customer_nationkey ON tpch_customer (c_nationkey)"
     ) != 0) return -1;
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE INDEX orders_custkey",
     "CREATE INDEX idx_orders_custkey ON tpch_orders (o_custkey)"
     ) != 0) return -1;
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE INDEX lineitem_suppkey",
     "CREATE INDEX idx_lineitem_suppkey ON tpch_lineitem (l_suppkey)"
     ) != 0) return -1;
 
