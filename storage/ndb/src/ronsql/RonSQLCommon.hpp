@@ -229,9 +229,12 @@ struct JoinClause
   struct JoinClause *next;
 };
 
+struct CteDefinition;
+
 struct SelectStatement
 {
   bool do_explain = false;
+  CteDefinition* cte_list = NULL;  // Linked list of CTE definitions (WITH clause)
   Outputs* outputs = NULL;
   LexCString table = LexCString{NULL, 0};
   TableRef *root_table = NULL;
@@ -246,6 +249,13 @@ struct SelectStatement
                                 // rows pass the filter and must be suppressed.
   char* sql_begin = NULL;  // Start of inner query SQL (points into original buffer)
   char* sql_end = NULL;    // End of inner query SQL
+};
+
+struct CteDefinition
+{
+  LexCString name;              // CTE alias (e.g., "purchase_agg")
+  SelectStatement* stmt;        // The CTE's SELECT statement
+  struct CteDefinition* next;   // Linked list
 };
 
 struct SubqueryResult {

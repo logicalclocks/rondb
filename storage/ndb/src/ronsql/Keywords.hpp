@@ -88,6 +88,7 @@ static const struct { const char* text; const TokenKind value; } keywords_implem
   kwdef(WEEK),
   kwdef(WHEN),
   kwdef(WHERE),
+  kwdef(WITH),
   kwdef(XOR),
   kwdef(YEAR),
   kwdef(YEAR_MONTH),

@@ -148,6 +148,11 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
     JoinClause* tail;
   } join_list;
   struct SelectStatement* subquery_stmt;
+  struct CteDefinition* cte_def;
+  struct {
+    CteDefinition* head;
+    CteDefinition* tail;
+  } cte_list;
 }
 
 %token<bival> T_INT
@@ -158,6 +163,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %token T_OR T_XOR T_AND T_NOT T_EQUALS T_GE T_GT T_LE T_LT T_NOT_EQUALS T_IS T_NULL T_LIKE T_IN T_BITWISE_OR T_BITWISE_AND T_BITSHIFT_LEFT T_BITSHIFT_RIGHT T_PLUS T_MINUS T_MULTIPLY T_SLASH T_DIV T_MODULO T_BITWISE_XOR T_EXCLAMATION T_DOT
 %token T_INTERVAL T_DATE_ADD T_DATE_SUB T_EXTRACT T_MICROSECOND T_SECOND T_MINUTE T_HOUR T_DAY T_WEEK T_MONTH T_QUARTER T_YEAR T_SECOND_MICROSECOND T_MINUTE_MICROSECOND T_MINUTE_SECOND T_HOUR_MICROSECOND T_HOUR_SECOND T_HOUR_MINUTE T_DAY_MICROSECOND T_DAY_SECOND T_DAY_MINUTE T_DAY_HOUR T_YEAR_MONTH
 %token T_CASE T_WHEN T_THEN T_ELSE T_END
+%token T_WITH
 %token T_KW_LEFT T_KW_OUTER
 
 // RonSQLPreparer.cpp needs some values that are inequal to all tokens. They
@@ -224,26 +230,29 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %type<join_condition> join_condition join_condition_list
 %type<join_list> join_list
 %type<subquery_stmt> subquery
+%type<cte_def> cte_def
+%type<cte_list> cte_list cte_opt
 
 %start selectstatement
 
 %%
 
 selectstatement:
-  explain_opt T_SELECT outputlist T_FROM table_ref join_list where_opt groupby_opt having_opt orderby_opt limit_opt T_SEMICOLON
+  explain_opt cte_opt T_SELECT outputlist T_FROM table_ref join_list where_opt groupby_opt having_opt orderby_opt limit_opt T_SEMICOLON
   {
     context->ast_root.do_explain = $1;
-    context->ast_root.outputs = $3.head;
-    context->ast_root.root_table = $5;
-    context->ast_root.table = $5->name;
-    if ($6.head != NULL) {
-      context->ast_root.joins = $6.head;
+    context->ast_root.cte_list = $2.head;
+    context->ast_root.outputs = $4.head;
+    context->ast_root.root_table = $6;
+    context->ast_root.table = $6->name;
+    if ($7.head != NULL) {
+      context->ast_root.joins = $7.head;
     }
-    context->ast_root.where_expression = $7;
-    context->ast_root.groupby_columns = $8;
-    context->ast_root.having_expression = $9;
-    context->ast_root.orderby_columns = $10;
-    context->ast_root.limit = $11;
+    context->ast_root.where_expression = $8;
+    context->ast_root.groupby_columns = $9;
+    context->ast_root.having_expression = $10;
+    context->ast_root.orderby_columns = $11;
+    context->ast_root.limit = $12;
     /*
      * These asserts make sure the definition of TokenKind matches both the
      * yychar variable in RonSQLzparser.y.cpp:rsqlp_parse() and the underlying
@@ -260,6 +269,41 @@ selectstatement:
   // Suppress a compiler warning about unused yynerrs. It is unused, but we
   // can't easily remove it since it's declared in generated code.
   (void)yynerrs;
+  }
+
+cte_opt:
+  %empty                                { $$.head = NULL; $$.tail = NULL; }
+| T_WITH cte_list                       { $$ = $2; }
+
+cte_list:
+  cte_def                               { $$.head = $1; $$.tail = $1; }
+| cte_list T_COMMA cte_def             { $$.head = $1.head; $$.tail = $3; $1.tail->next = $3; }
+
+cte_def:
+  identifier_c T_AS T_LEFT
+  { context->enter_subquery(); }
+  T_SELECT outputlist T_FROM table_ref join_list where_opt
+  groupby_opt having_opt orderby_opt limit_opt
+  T_RIGHT
+  {
+    context->leave_subquery();
+    initptr($$);
+    $$->name = $1;
+    $$->stmt = context->get_allocator()->alloc_exc<SelectStatement>(1);
+    $$->stmt->do_explain = false;
+    $$->stmt->cte_list = NULL;
+    $$->stmt->outputs = $6.head;
+    $$->stmt->root_table = $8;
+    $$->stmt->table = $8->name;
+    $$->stmt->joins = $9.head;
+    $$->stmt->where_expression = $10;
+    $$->stmt->groupby_columns = $11;
+    $$->stmt->having_expression = $12;
+    $$->stmt->orderby_columns = $13;
+    $$->stmt->limit = $14;
+    $$->stmt->sql_begin = (@5).begin;
+    $$->stmt->sql_end = (@14).end;
+    $$->next = NULL;
   }
 
 explain_opt:
