@@ -143,6 +143,7 @@ private:
   DynamicArray<LexCString> m_columns;
   DynamicArray<LexCString> m_column_qualifiers; /* table qualifier per col_idx */
   DynamicArray<bool> m_col_is_inner; /* true for columns from inner subqueries */
+  DynamicArray<bool> m_col_is_alias; /* true for ORDER BY alias references */
   NdbAttrId* m_column_attrId_map = NULL;
   const NdbDictionary::Column** m_column_map = NULL;
   Uint32* m_column_table_idx = NULL;
@@ -240,6 +241,7 @@ public:
 private:
   void configure();
   void parse();
+  void resolve_orderby_aliases();
   bool has_width(size_t pos);
   void load();
   void load_single_table();

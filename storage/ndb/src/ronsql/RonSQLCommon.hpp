@@ -194,7 +194,12 @@ struct GroupbyColumns
 
 struct OrderbyColumns
 {
-  Uint32 col_idx;
+  enum class Kind { TABLE_COLUMN, OUTPUT_REF };
+  Kind kind;
+  union {
+    Uint32 col_idx;      // TABLE_COLUMN: index into m_columns
+    Uint32 output_idx;   // OUTPUT_REF: index into SELECT outputs list
+  };
   bool ascending;
   struct OrderbyColumns* next;
 };

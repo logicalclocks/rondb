@@ -139,6 +139,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_columns(conf.amalloc),
   m_column_qualifiers(conf.amalloc),
   m_col_is_inner(conf.amalloc),
+  m_col_is_alias(conf.amalloc),
   m_cross_table_where_filters(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
@@ -153,6 +154,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     configure();
     PERF_TS(t_parse_start);
     parse();
+    resolve_orderby_aliases();
     PERF_TS(t_parse_end);
     PERF_LOG("  parse", t_parse_start, t_parse_end);
     analyze_subqueries();
@@ -642,6 +644,50 @@ RonSQLPreparer::parse()
   throw RonSQLPermanentError("Syntax error.");
 }
 
+void
+RonSQLPreparer::resolve_orderby_aliases()
+{
+  OrderbyColumns* ob = m_context.ast_root.orderby_columns;
+  while (ob != NULL)
+  {
+    if (ob->kind == OrderbyColumns::Kind::TABLE_COLUMN)
+    {
+      Uint32 col_idx = ob->col_idx;
+      // Only unqualified names can be aliases
+      if (m_column_qualifiers.size() > col_idx &&
+          m_column_qualifiers[col_idx].c_str() != NULL)
+      {
+        ob = ob->next;
+        continue;
+      }
+      const char* name = m_columns[col_idx].c_str();
+      // Walk SELECT outputs looking for a matching alias
+      Uint32 output_pos = 0;
+      Outputs* out = m_context.ast_root.outputs;
+      while (out != NULL)
+      {
+        if (out->output_name.len > 0 && out->output_name.str != NULL &&
+            strlen(name) == out->output_name.len &&
+            strncmp(name, out->output_name.str,
+                    out->output_name.len) == 0)
+        {
+          // Match found — convert to OUTPUT_REF
+          ob->kind = OrderbyColumns::Kind::OUTPUT_REF;
+          ob->output_idx = output_pos;
+          // Mark this col_idx so load_join/load_single_table skips it
+          while (m_col_is_alias.size() <= col_idx)
+            m_col_is_alias.push(false);
+          m_col_is_alias[col_idx] = true;
+          break;
+        }
+        out = out->next;
+        output_pos++;
+      }
+    }
+    ob = ob->next;
+  }
+}
+
 /*
  * Return false if the position is a UTF-8 continuation byte and part of a
  * prefix of a correct UTF-8 multi-byte sequence, otherwise true.
@@ -808,6 +854,11 @@ RonSQLPreparer::load_single_table()
       col_map[col_idx] = NULL;
       continue;
     }
+    if (m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]) {
+      col_id_map[col_idx] = -1;
+      col_map[col_idx] = NULL;
+      continue;
+    }
     const char* col_name = DBG(m_columns[DBG(col_idx)].c_str());
     const NdbDictionary::Column* col = m_table->getColumn(col_name);
     if (col == NULL) {
@@ -874,6 +925,12 @@ RonSQLPreparer::load_join()
       col_table_idx[col_idx] = 0;
       continue;
     }
+    if (m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]) {
+      col_id_map[col_idx] = -1;
+      col_map[col_idx] = NULL;
+      col_table_idx[col_idx] = 0;
+      continue;
+    }
     const char* col_name = m_columns[col_idx].c_str();
     const char* qualifier = m_column_qualifiers[col_idx].c_str();
 
@@ -929,7 +986,7 @@ RonSQLPreparer::load_join()
       {
         err << "Column '" << col_name << "' not found in any joined table."
             << endl;
-        throw RonSQLMaybeStaleSchema("Column not found.");
+        throw RonSQLPermanentError("Column not found.");
       }
       if (match_count > 1)
       {

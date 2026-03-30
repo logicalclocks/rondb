@@ -134,39 +134,100 @@ ResultPrinter::validate_orderby_columns()
   struct OrderbyColumns* ob = m_query->orderby_columns;
   while (ob != NULL)
   {
-    Uint32 col_idx = ob->col_idx;
-    bool found = false;
-    for (Uint32 i = 0; i < m_groupby_cols.size(); i++)
+    if (ob->kind == OrderbyColumns::Kind::OUTPUT_REF)
     {
-      if (m_groupby_cols[i] == col_idx)
+      // Alias reference — find the output and determine its type
+      Uint32 output_idx = ob->output_idx;
+      Outputs* out = m_query->outputs;
+      for (Uint32 i = 0; i < output_idx && out != NULL; i++)
+        out = out->next;
+      assert(out != NULL);
+
+      if (out->type == Outputs::Type::COLUMN)
       {
-        // Ensure m_col_idx_groupby_map covers this col_idx
-        while (m_col_idx_groupby_map.size() < col_idx + 1)
+        // Column alias — resolve to GROUP BY index like a regular column
+        Uint32 col_idx = out->column.col_idx;
+        bool found = false;
+        for (Uint32 i = 0; i < m_groupby_cols.size(); i++)
         {
-          m_col_idx_groupby_map.push(0);
+          if (m_groupby_cols[i] == col_idx)
+          {
+            while (m_col_idx_groupby_map.size() < col_idx + 1)
+              m_col_idx_groupby_map.push(0);
+            m_col_idx_groupby_map[col_idx] = i;
+            CHARSET_INFO* charset = NULL;
+            if (m_column_map != NULL)
+              charset = m_column_map[col_idx]->getCharset();
+            OrderbySpec spec;
+            spec.kind = OrderbySpec::Kind::GROUPBY_COL;
+            spec.groupby_idx = i;
+            spec.ascending = ob->ascending;
+            spec.charset = charset;
+            m_orderby_specs.push(spec);
+            found = true;
+            break;
+          }
         }
-        m_col_idx_groupby_map[col_idx] = i;
-        CHARSET_INFO* charset = NULL;
-        if (m_column_map != NULL)
+        if (!found)
         {
-          charset = m_column_map[col_idx]->getCharset();
+          err << "Syntax error: ORDER BY alias refers to column "
+              << quoted_identifier(column_names[out->column.col_idx])
+              << " which is not in the GROUP BY clause." << endl;
+          throw RonSQLPermanentError(
+              "ORDER BY column not in GROUP BY clause.");
         }
+      }
+      else if (out->type == Outputs::Type::AGGREGATE ||
+               out->type == Outputs::Type::AVG ||
+               out->type == Outputs::Type::SUBQUERY_AGG)
+      {
+        // Aggregate alias — sort by aggregate result
+        Uint32 agg_idx = (out->type == Outputs::Type::AVG)
+                             ? out->avg.agg_index_sum
+                             : (out->type == Outputs::Type::SUBQUERY_AGG)
+                                   ? out->subquery_agg.agg_index
+                                   : out->aggregate.agg_index;
         OrderbySpec spec;
-        spec.groupby_idx = i;
+        spec.kind = OrderbySpec::Kind::AGGREGATE;
+        spec.agg_result_idx = agg_idx;
         spec.ascending = ob->ascending;
-        spec.charset = charset;
+        spec.charset = NULL;
         m_orderby_specs.push(spec);
-        found = true;
-        break;
       }
     }
-    if (!found)
+    else
     {
-      assert(m_column_names->size() > col_idx);
-      err << "Syntax error: ORDER BY refers to column "
-          << quoted_identifier(column_names[col_idx])
-          << " which is not in the GROUP BY clause." << endl;
-      throw RonSQLPermanentError("ORDER BY column not in GROUP BY clause.");
+      // TABLE_COLUMN — existing logic
+      Uint32 col_idx = ob->col_idx;
+      bool found = false;
+      for (Uint32 i = 0; i < m_groupby_cols.size(); i++)
+      {
+        if (m_groupby_cols[i] == col_idx)
+        {
+          while (m_col_idx_groupby_map.size() < col_idx + 1)
+            m_col_idx_groupby_map.push(0);
+          m_col_idx_groupby_map[col_idx] = i;
+          CHARSET_INFO* charset = NULL;
+          if (m_column_map != NULL)
+            charset = m_column_map[col_idx]->getCharset();
+          OrderbySpec spec;
+          spec.kind = OrderbySpec::Kind::GROUPBY_COL;
+          spec.groupby_idx = i;
+          spec.ascending = ob->ascending;
+          spec.charset = charset;
+          m_orderby_specs.push(spec);
+          found = true;
+          break;
+        }
+      }
+      if (!found)
+      {
+        assert(m_column_names->size() > col_idx);
+        err << "Syntax error: ORDER BY refers to column "
+            << quoted_identifier(column_names[col_idx])
+            << " which is not in the GROUP BY clause." << endl;
+        throw RonSQLPermanentError("ORDER BY column not in GROUP BY clause.");
+      }
     }
     ob = ob->next;
   }
@@ -818,20 +879,55 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
   for (Uint32 i = 0; i < m_orderby_specs.size(); i++)
   {
     OrderbySpec& spec = m_orderby_specs[i];
-    NdbAggregator::Column& col_a = a.cols[spec.groupby_idx];
-    NdbAggregator::Column& col_b = b.cols[spec.groupby_idx];
-    // NULL handling: NULLs sort first (smallest) in ASC, matching MySQL
-    if (col_a.is_null() && col_b.is_null()) continue;
-    if (col_a.is_null()) return spec.ascending ? -1 : 1;
-    if (col_b.is_null()) return spec.ascending ? 1 : -1;
-    const NdbSqlUtil::Type& sqlType =
-        NdbSqlUtil::getType(static_cast<Uint32>(col_a.type()));
-    int cmp = (*sqlType.m_cmp)(spec.charset,
-                               col_a.data(), col_a.byte_size(),
-                               col_b.data(), col_b.byte_size());
-    if (cmp != 0)
+    if (spec.kind == OrderbySpec::Kind::AGGREGATE)
     {
-      return spec.ascending ? cmp : -cmp;
+      NdbAggregator::Result& res_a = a.results[spec.agg_result_idx];
+      NdbAggregator::Result& res_b = b.results[spec.agg_result_idx];
+      // NULL handling
+      if (res_a.is_null() && res_b.is_null()) continue;
+      if (res_a.is_null()) return spec.ascending ? -1 : 1;
+      if (res_b.is_null()) return spec.ascending ? 1 : -1;
+      int cmp = 0;
+      switch (res_a.type())
+      {
+      case NdbDictionary::Column::Bigint:
+        cmp = (res_a.data_int64() < res_b.data_int64()) ? -1 :
+              (res_a.data_int64() > res_b.data_int64()) ? 1 : 0;
+        break;
+      case NdbDictionary::Column::Bigunsigned:
+        cmp = (res_a.data_uint64() < res_b.data_uint64()) ? -1 :
+              (res_a.data_uint64() > res_b.data_uint64()) ? 1 : 0;
+        break;
+      case NdbDictionary::Column::Double:
+        cmp = (res_a.data_double() < res_b.data_double()) ? -1 :
+              (res_a.data_double() > res_b.data_double()) ? 1 : 0;
+        break;
+      default:
+        // Fallback: compare as int64
+        cmp = (res_a.data_int64() < res_b.data_int64()) ? -1 :
+              (res_a.data_int64() > res_b.data_int64()) ? 1 : 0;
+        break;
+      }
+      if (cmp != 0)
+        return spec.ascending ? cmp : -cmp;
+    }
+    else
+    {
+      NdbAggregator::Column& col_a = a.cols[spec.groupby_idx];
+      NdbAggregator::Column& col_b = b.cols[spec.groupby_idx];
+      // NULL handling: NULLs sort first (smallest) in ASC, matching MySQL
+      if (col_a.is_null() && col_b.is_null()) continue;
+      if (col_a.is_null()) return spec.ascending ? -1 : 1;
+      if (col_b.is_null()) return spec.ascending ? 1 : -1;
+      const NdbSqlUtil::Type& sqlType =
+          NdbSqlUtil::getType(static_cast<Uint32>(col_a.type()));
+      int cmp = (*sqlType.m_cmp)(spec.charset,
+                                 col_a.data(), col_a.byte_size(),
+                                 col_b.data(), col_b.byte_size());
+      if (cmp != 0)
+      {
+        return spec.ascending ? cmp : -cmp;
+      }
     }
   }
   return 0;

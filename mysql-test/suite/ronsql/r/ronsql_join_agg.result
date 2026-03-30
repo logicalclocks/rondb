@@ -1075,6 +1075,168 @@ Syntax error in SQL statement: Unimplemented keyword. If this was intended as an
 Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 
+
+=== Test 54: ORDER BY aggregate alias ASC ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY total_qty;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY total_qty|
+o_custkey	total_qty
+100	50
+200	75
+300	75
+
+
+=== Test 55: ORDER BY aggregate alias DESC ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY total_qty DESC;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY total_qty DESC|
+o_custkey	total_qty
+100	50
+200	75
+300	75
+
+
+=== Test 56: ORDER BY aggregate alias with LIMIT ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY total_qty DESC
+LIMIT 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY total_qty DESC
+LIMIT 2|
+o_custkey	total_qty
+200	75
+300	75
+
+
+=== Test 57: ORDER BY column alias (non-aggregate) ===
+== Query ==
+SELECT o.o_custkey AS cust, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY cust;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey AS cust, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY cust|
+cust	SUM(l.l_quantity)
+100	50
+200	75
+300	75
+
+
+=== Test 58: ORDER BY expression alias — SUM with arithmetic ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_price * l.l_quantity) AS revenue
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY revenue DESC;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_price * l.l_quantity) AS revenue
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY revenue DESC|
+o_custkey	revenue
+100	7500
+200	17330
+300	28250
+
+
+=== Test 59: ORDER BY aggregate alias — 3-table join ===
+== Query ==
+SELECT c.c_name, SUM(l.l_quantity) AS total
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+ORDER BY total DESC;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_name, SUM(l.l_quantity) AS total
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+ORDER BY total DESC|
+c_name	total
+Alice	50
+Bob	75
+Charlie	75
+
+
+=== Test 60: Error — ORDER BY unknown alias (not retryable) ===
+Expected error: Column not found
+Column 'nonexistent' not found in any joined table.
+Error handling: RPE
+ronsql_cli caught exception: Column not found.
+
 === Cleanup ===
 DROP TABLE line_details;
 DROP TABLE big_lineitem;

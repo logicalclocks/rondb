@@ -1062,6 +1062,131 @@ DROP TABLE noindex_child;
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o RIGHT JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey;' 2>&1
 
 --echo
+--echo
+--echo === Test 54: ORDER BY aggregate alias ASC ===
+
+DELIMITER |;
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY total_qty;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY total_qty|
+
+--echo
+--echo
+--echo === Test 55: ORDER BY aggregate alias DESC ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY total_qty DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY total_qty DESC|
+
+--echo
+--echo
+--echo === Test 56: ORDER BY aggregate alias with LIMIT ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY total_qty DESC
+LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY total_qty DESC
+LIMIT 2|
+
+--echo
+--echo
+--echo === Test 57: ORDER BY column alias (non-aggregate) ===
+
+let $QUERY=
+SELECT o.o_custkey AS cust, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY cust;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey AS cust, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY cust|
+
+--echo
+--echo
+--echo === Test 58: ORDER BY expression alias — SUM with arithmetic ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_price * l.l_quantity) AS revenue
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY revenue DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_price * l.l_quantity) AS revenue
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY revenue DESC|
+
+--echo
+--echo
+--echo === Test 59: ORDER BY aggregate alias — 3-table join ===
+
+let $QUERY=
+SELECT c.c_name, SUM(l.l_quantity) AS total
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+ORDER BY total DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_name, SUM(l.l_quantity) AS total
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+ORDER BY total DESC|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 60: Error — ORDER BY unknown alias (not retryable) ===
+--echo Expected error: Column not found
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) AS total FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey ORDER BY nonexistent;' 2>&1
+
+--echo
 --echo === Cleanup ===
 
 DROP TABLE line_details;
