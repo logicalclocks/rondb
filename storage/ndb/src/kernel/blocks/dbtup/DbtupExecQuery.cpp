@@ -1021,8 +1021,13 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
       Uint32* paramBase = &cinBuffer[paramOffset];
       paramLen = *paramBase;
       ndbassert(paramOffset + paramLen <= totalLen);
-      memmove(&cinBuffer[paramAreaStart], paramBase,
-              paramLen * sizeof(Uint32));
+      if (paramAreaStart + paramLen <= paramOffset) {
+        memcpy(&cinBuffer[paramAreaStart], paramBase,
+                paramLen * sizeof(Uint32));
+      } else {
+        memmove(&cinBuffer[paramAreaStart], paramBase,
+                paramLen * sizeof(Uint32));
+      }
       cinBuffer[4] = paramLen;
     }
 
