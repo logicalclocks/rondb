@@ -1,5 +1,6 @@
 --echo Create test table api_scan with $NUM_ROWS rows
 --disable_query_log
+--disable_warnings
 CREATE TABLE api_scan (
   sint8 TINYINT NULL,
   uint8 TINYINT UNSIGNED NULL,
@@ -19,6 +20,7 @@ CREATE INDEX
   index_sint24
   ON api_scan
   (sint24);
+--enable_warnings
 
 # In ../../../mysql-test-run.dox, it says:
 #
