@@ -462,6 +462,7 @@ class FsReadWriteReq;
 /*       ERROR CODES FROM DBTC                                               */
 /* ------------------------------------------------------------------------- */
 #define ZMEMORY_QUOTA_OVERFLOW_ERROR 239
+#define ZMEM_NOMEM_ERROR 827
 #define ZTIME_OUT_ERROR 266
 #define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
 #endif

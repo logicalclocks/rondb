@@ -959,6 +959,7 @@ Uint32 Dbtup::keyCopyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal) {
 
 Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
                                bool interpretedFlag,
+                               bool first_call,
                                void* scan_rec)
 {
   /* Get stored procedure */
@@ -973,12 +974,16 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
    * Fill cinBuffer with the full linearized section.
    * Either memcpy from cached linear buffer or read via SectionReader.
    */
+  Uint32 paramAreaStart;
   if (useCache) {
     jamDebug();
     totalLen = storedPtr.p->cachedLinearLen;
-    memcpy(&cinBuffer[0],
-           storedPtr.p->cachedLinearAttrInfo,
-           totalLen * sizeof(Uint32));
+    paramAreaStart = storedPtr.p->storedParamAreaStart;
+    if (first_call) {
+      memcpy(&cinBuffer[0],
+             storedPtr.p->cachedLinearAttrInfo,
+             totalLen * sizeof(Uint32));
+    }
     if (unlikely(storedPtr.p->storedCode == ZCOPY_PROCEDURE)) {
       jamDebug();
       return totalLen;
@@ -989,6 +994,17 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
                          getSectionSegmentPool());
     totalLen = reader.getSize();
     reader.getWords(&cinBuffer[0], totalLen);
+    /* Cache the full linearized section on first call (scan procedures only) */
+    jamDebug();
+    ndbassert(storedPtr.p->storedCode == ZSCAN_PROCEDURE);
+    if (unlikely(!cacheFromCinBuffer(storedPtr.p, totalLen))) {
+      jam();
+      return 0;
+    }
+    const Uint32 readLen = cinBuffer[0] + cinBuffer[1] +
+      cinBuffer[2] + cinBuffer[3];
+    paramAreaStart = 5 + readLen;
+    storedPtr.p->storedParamAreaStart = paramAreaStart;
   }
   ndbrequire(storedPtr.p->storedCode == ZSCAN_PROCEDURE);
 
@@ -998,10 +1014,6 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
    */
   if (interpretedFlag) {
     jam();
-    const Uint32 readLen = cinBuffer[0] + cinBuffer[1] +
-      cinBuffer[2] + cinBuffer[3];
-
-    const Uint32 paramAreaStart = 5 + readLen;
     jamDataDebug(paramAreaStart);
     Uint32 paramLen = 0;
     if (cinBuffer[4] == 0) {
@@ -1039,7 +1051,7 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
           scan_rec_ptr->m_agg_interpreter == nullptr &&
           scan_rec_ptr->m_vs_interpreter == nullptr) {
         jam();
-        Uint32 proc_start = 5 + readLen + paramLen;
+        Uint32 proc_start = paramAreaStart + paramLen;
         ndbrequire((cinBuffer[proc_start] >> 16) == 0x0721);
         Uint32 proc_len = cinBuffer[proc_start] & 0xFFFF;
 
@@ -1055,17 +1067,9 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
     }
   } else {
     jamDebug();
-    ndbassert(storedPtr.p->storedParamNo == 0);
     ndbassert(storedPtr.p->storedParamOffset == 0);
   }
 
-  /* Cache the full linearized section on first call (scan procedures only) */
-  if (!storedPtr.p->copyAttrinfoCalled) {
-    jamDebug();
-    ndbassert(storedPtr.p->storedCode == ZSCAN_PROCEDURE);
-    storedPtr.p->copyAttrinfoCalled = true;
-    cacheFromCinBuffer(storedPtr.p, totalLen);
-  }
   return totalLen;
 }
 
@@ -1086,20 +1090,19 @@ void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
    * without parameters, nextAttrInfoParam is still called (opExec
    * is set) but there is nothing to skip. */
   Uint32* buf = storedPtr.p->cachedLinearAttrInfo;
-  if (buf != nullptr && buf[4] > 0) {
+  ndbassert(buf != nullptr);
+  if (buf[4] > 0) {
     jamDebug();
-    const Uint32 readLen = buf[0] + buf[1] + buf[2] + buf[3];
-    const Uint32 paramAreaStart = 5 + readLen;
+    const Uint32 paramAreaStart = storedPtr.p->storedParamAreaStart;
     ndbassert(paramAreaStart + storedPtr.p->storedParamOffset <
               storedPtr.p->cachedLinearLen);
     const Uint32 paramBlockLen =
       buf[paramAreaStart + storedPtr.p->storedParamOffset];
     storedPtr.p->storedParamOffset += paramBlockLen;
   }
-  storedPtr.p->storedParamNo++;
 }
 
-void Dbtup::cacheFromCinBuffer(storedProc* sp, Uint32 len) {
+bool Dbtup::cacheFromCinBuffer(storedProc* sp, Uint32 len) {
   sp->cachedLinearLen = len;
   sp->cachedLinearAttrInfo = static_cast<Uint32*>(
       lc_ndbd_pool_malloc(len * sizeof(Uint32),
@@ -1107,10 +1110,10 @@ void Dbtup::cacheFromCinBuffer(storedProc* sp, Uint32 len) {
                            getThreadId(),
                            false));
   if (sp->cachedLinearAttrInfo == nullptr) {
-    /* Allocation failed — degrade gracefully, keep using SectionReader */
-    sp->copyAttrinfoCalled = false;
-    return;
+    jam();
+    return false;
   }
+  sp->copyAttrinfoCalled = true;
   memcpy(sp->cachedLinearAttrInfo,
          &cinBuffer[0],
          len * sizeof(Uint32));
@@ -1118,6 +1121,7 @@ void Dbtup::cacheFromCinBuffer(storedProc* sp, Uint32 len) {
   /* Release the segmented section — no longer needed */
   releaseSection(sp->storedProcIVal);
   sp->storedProcIVal = RNIL;
+  return true;
 }
 
 void Dbtup::setInvalidChecksum(Tuple_header *tuple_ptr,

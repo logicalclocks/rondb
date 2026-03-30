@@ -1644,7 +1644,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     ~storedProc() {}
 
     Uint32 storedProcIVal;
-    Uint32 storedParamNo; // Current attrInfo param being used
+    Uint32 storedParamAreaStart;
     Uint32 storedParamOffset; // Cumulative word offset to current param
     Uint32 lastSegment;
     Uint32* cachedLinearAttrInfo;  // Linearized copy of section, or nullptr
@@ -3322,11 +3322,12 @@ private:
 public:
   Uint32 scanCopyAttrinfo(Uint32 storedProcId,
                           bool interpretedFlag,
+                          bool first_call,
                           void* scan_rec = nullptr);
   Uint32 keyCopyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal);
 
   void nextAttrInfoParam(Uint32 storedProcId);
-  void cacheFromCinBuffer(storedProc* sp, Uint32 len);
+  bool cacheFromCinBuffer(storedProc* sp, Uint32 len);
 
   bool SendAggResToAPI(Signal*, const void* lqhTcConnectrec, void* lqhScanRecord);
   /**

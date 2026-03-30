@@ -16874,6 +16874,7 @@ void Dblqh::setup_scan_pointers_from_tc_con(TcConnectionrecPtr tcConnectptr,
     Uint32 storedProcLen =
       c_tup->scanCopyAttrinfo(loc_scanptr.p->scanStoredProcId,
                               bool(tcConnectptr.p->opExec),
+                              true,
                               loc_scanptr.p);
     (void)storedProcLen;
     ndbassert(loc_scanptr.p->scanAiLength == storedProcLen);
@@ -16940,6 +16941,7 @@ void Dblqh::setup_scan_pointers(Uint32 scanPtrI, Uint32 line) {
     Uint32 storedProcLen =
       c_tup->scanCopyAttrinfo(loc_scanptr.p->scanStoredProcId,
                               bool(loc_tcConnectptr.p->opExec),
+                              true,
                               loc_scanptr.p);
     (void)storedProcLen;
     ndbassert(loc_scanptr.p->scanAiLength == storedProcLen);
@@ -19246,9 +19248,16 @@ void Dblqh::accScanConfScanLab(Signal *signal,
       jamEntryDebug();
       Uint32 storedProcId = signal->theData[1];
       scanPtr->scanStoredProcId = storedProcId;
-      c_tup->scanCopyAttrinfo(storedProcId,
-                              bool(regTcPtr->opExec),
-                              scanPtr);
+      if (unlikely(c_tup->scanCopyAttrinfo(storedProcId,
+                                           bool(regTcPtr->opExec),
+                                           true,
+                                           scanPtr) == 0)) {
+        jam();
+        scanPtr->scanCompletedStatus = ZTRUE;
+        tcConnectptr.p->errorCode = ZMEM_NOMEM_ERROR;
+        closeScanLab(signal, tcConnectptr.p);
+        return;
+      }
       storedProcConfScanLab(signal, tcConnectptr);
       return;
     } else {
@@ -19271,9 +19280,10 @@ void Dblqh::accScanConfScanLab(Signal *signal,
       // Advance to next parameter in the attrInfo
       c_tup->nextAttrInfoParam(scanPtr->scanStoredProcId);
     }
-    c_tup->scanCopyAttrinfo(scanPtr->scanStoredProcId,
-                            bool(regTcPtr->opExec),
-                            scanPtr);
+    (void) c_tup->scanCopyAttrinfo(scanPtr->scanStoredProcId,
+                                   bool(regTcPtr->opExec),
+                                   false,
+                                   scanPtr);
     storedProcConfScanLab(signal, tcConnectptr);
     return;
   }
@@ -22759,7 +22769,7 @@ void Dblqh::accScanConfCopyLab(Signal *signal) {
   ndbrequire(signal->theData[0] == 0);
   scanPtr->scanStoredProcId = signal->theData[1];
   scanPtr->scanAiLength = signal->theData[2];
-  c_tup->scanCopyAttrinfo(scanPtr->scanStoredProcId, false);
+  (void) c_tup->scanCopyAttrinfo(scanPtr->scanStoredProcId, false, true);
 
   if (scanPtr->scanCompletedStatus == ZTRUE) {
     jam();

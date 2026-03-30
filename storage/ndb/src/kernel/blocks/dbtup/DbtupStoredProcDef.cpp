@@ -176,7 +176,7 @@ void Dbtup::scanProcedure(Signal* signal,
   handle->clear();
   storedPtr.p->storedCode = ZSCAN_PROCEDURE;
   storedPtr.p->storedProcIVal = handle->m_ptr[0].i;
-  storedPtr.p->storedParamNo = 0;
+  storedPtr.p->storedParamAreaStart = 0;
   storedPtr.p->storedParamOffset = 0;
   storedPtr.p->cachedLinearAttrInfo = nullptr;
   storedPtr.p->cachedLinearLen = 0;
@@ -224,7 +224,7 @@ void Dbtup::allocCopyProcedure() {
       MAX_ATTRIBUTES_IN_TABLE + EXTRA_COPY_PROC_WORDS;
     storedPtr.p->copyOverwrite = 0;
     storedPtr.p->copyOverwriteLen = 0;
-    storedPtr.p->storedParamNo = 0;
+    storedPtr.p->storedParamAreaStart = 0;
     storedPtr.p->storedParamOffset = 0;
     storedPtr.p->copyAttrinfoCalled = true;
     storedPtr.p->storedCode = ZCOPY_PROCEDURE;
