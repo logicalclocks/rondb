@@ -143,13 +143,26 @@ private:
   DynamicArray<LexCString> m_columns;
   DynamicArray<LexCString> m_column_qualifiers; /* table qualifier per col_idx */
   DynamicArray<bool> m_col_is_inner; /* true for columns from inner subqueries */
+  DynamicArray<bool> m_col_is_alias; /* true for ORDER BY alias references */
   NdbAttrId* m_column_attrId_map = NULL;
   const NdbDictionary::Column** m_column_map = NULL;
   Uint32* m_column_table_idx = NULL;
   const NdbDictionary::Dictionary* m_dict = NULL;
   const NdbDictionary::Table* m_table = NULL;
   JoinPlan m_join_plan;
-  ConditionalExpression* m_join_where_ce[MAX_JOIN_TABLES];
+  ConditionalExpression* m_join_where_ce[MAX_SPJ_TREE_NODES];
+
+  // Cross-table WHERE filters (e.g., WHERE l.price > o.min_price).
+  // These reference columns from two different tables and cannot be
+  // pushed as scan filters.  For aggregation queries, they are compiled
+  // into BranchReg conditional aggregation instructions.
+  struct CrossTableFilter {
+    ConditionalExpression* ce;
+    Uint32 child_table_idx;   // table index of the "inner" side
+    Uint32 parent_table_idx;  // table index of the "outer" side
+  };
+  DynamicArray<CrossTableFilter> m_cross_table_where_filters;
+
   DynamicArray<const NdbDictionary::Index*> m_indexes;
   NdbTransaction* m_trans = NULL;
   yyscan_t m_scanner;
@@ -175,6 +188,35 @@ private:
 
   AggregationAPICompiler* m_agg = NULL;
 
+  // SELECT-list subquery aggregation (multi-leaf pushdown)
+  struct SelectSubqueryLeaf {
+    SelectStatement* inner_stmt;       // parsed inner SELECT
+    Outputs* output_node;              // the SUBQUERY_AGG output
+    Uint32 output_idx;                 // position in output list
+    LexCString inner_table_name;       // inner table name
+    LexCString inner_table_alias;      // inner table alias
+    LexCString inner_join_col;         // inner side of correlation
+    LexCString outer_join_col;         // outer correlation column name
+    LexCString outer_join_table;       // outer correlation table qualifier
+    TokenKind agg_fun;                 // T_SUM, T_COUNT, T_MIN, T_MAX
+    LexCString inner_agg_col;          // aggregated column name
+    Uint32 inner_agg_col_idx;          // col_idx of aggregated column (in m_columns)
+    Uint32 combined_agg_slot;          // slot in combined result
+    Uint32 merged_leaf_idx;            // index into m_merged_leaves
+    bool use_inner_join;               // true=INNER, false=LEFT OUTER
+    bool is_count_star;                // COUNT(*) — no inner column needed
+    ConditionalExpression *inner_filter;       // inner-only WHERE filter
+    ConditionalExpression *cross_table_filter; // filter referencing outer columns
+  };
+  struct MergedLeaf {
+    Uint32 first_subquery_idx;         // first SelectSubqueryLeaf in this group
+    Uint32 num_aggs;                   // number of aggregates in this leaf
+    Uint32 plan_op_idx;                // index in JoinPlan::ops after rewriting
+  };
+  DynamicArray<SelectSubqueryLeaf> m_select_subquery_leaves;
+  DynamicArray<MergedLeaf> m_merged_leaves;
+  bool m_has_select_subqueries = false;
+
   // Subquery orchestration
   struct SubqueryInfo {
     ConditionalExpression* ce_node;  // The SubqueryExpr node in outer AST
@@ -199,16 +241,21 @@ public:
 private:
   void configure();
   void parse();
+  void resolve_orderby_aliases();
   bool has_width(size_t pos);
   void load();
   void load_single_table();
   void load_join();
   void classify_where_by_table();
+  void assign_cross_table_index_bounds();
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();
   void analyze_subqueries();
   void analyze_subqueries_ce(ConditionalExpression* ce);
+  void analyze_select_subqueries();
+  void merge_same_table_subqueries();
+  void rewrite_select_subqueries_as_joins();
   void decorrelate_exists();
   void decorrelate_scalar();
   void compile();
@@ -245,6 +292,10 @@ private:
                                             int maxdepth);
   void programAggregator(NdbAggregator* aggregator);
   void programAggregator_join(NdbAggregator* aggregator);
+  Uint32 filter_expr_word_count(struct ConditionalExpression* ce);
+  void emit_filter_expr(NdbAggregator* agg,
+                        struct ConditionalExpression* ce,
+                        Uint32 leaf_idx, Uint32 reg, Uint32 tmp_reg);
   void generate_embedded_condition(NdbAggregator* aggregator,
                                    struct ConditionalExpression* ce,
                                    Uint32 then_arm_raw_size);

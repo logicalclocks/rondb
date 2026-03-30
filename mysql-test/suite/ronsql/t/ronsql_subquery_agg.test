@@ -1,0 +1,473 @@
+--source include/have_ndb.inc
+
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for subquery aggregation tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE sq_entity (
+  id INT NOT NULL,
+  grp INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE sq_measures (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (entity_id, ts),
+  INDEX idx_measures_eid (entity_id)
+) ENGINE=NDB;
+
+CREATE TABLE sq_events (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  event_type INT NOT NULL,
+  PRIMARY KEY USING HASH (entity_id, ts),
+  INDEX idx_events_eid (entity_id)
+) ENGINE=NDB;
+
+INSERT INTO sq_entity VALUES
+  (1, 1), (2, 1), (3, 2), (4, 2);
+
+INSERT INTO sq_measures VALUES
+  (1,1,10),(1,2,20),(1,3,30),
+  (2,1,40),(2,2,50),(2,3,60),
+  (3,1,70),(3,2,80),(3,3,90),
+  (4,1,100),(4,2,110),(4,3,120);
+
+INSERT INTO sq_events VALUES
+  (1,1,1),(1,2,2),
+  (2,1,3),(2,2,4),
+  (3,1,5),(3,2,6),
+  (4,1,7),(4,2,8);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+# =========================================================================
+# Test 1: Single subquery SUM, no GROUP BY (per-row result)
+# Each entity gets its own SUM of measures:
+#   id=1: SUM=60, id=2: SUM=150, id=3: SUM=240, id=4: SUM=330
+# =========================================================================
+
+--echo
+--echo === Test 1: Single subquery SUM per entity ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val
+FROM sq_entity AS e|
+
+# =========================================================================
+# Test 2: Two subqueries from different tables, no GROUP BY
+# Each entity: SUM(measures) + COUNT(events)
+#   id=1: sum=60, count=2
+#   id=2: sum=150, count=2
+#   id=3: sum=240, count=2
+#   id=4: sum=330, count=2
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 2: Two subqueries SUM + COUNT per entity ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+
+# =========================================================================
+# Test 3: Three subqueries SUM + COUNT + MAX, no GROUP BY
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 3: Three subqueries SUM + COUNT + MAX per entity ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt,
+  (SELECT MAX(ev2.event_type) FROM sq_events AS ev2 WHERE ev2.entity_id = e.id) AS max_evt
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt,
+  (SELECT MAX(ev2.event_type) FROM sq_events AS ev2 WHERE ev2.entity_id = e.id) AS max_evt
+FROM sq_entity AS e|
+
+# =========================================================================
+# Test 4: Same-table merge — two subqueries on sq_measures
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 4: Same-table merge SUM + MIN per entity ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS min_val
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS min_val
+FROM sq_entity AS e|
+
+# =========================================================================
+# Test 5: Mix — two on measures (merged) + one on events (separate leaf)
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 5: Mix — merged + separate leaf per entity ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS max_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS max_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+
+# =========================================================================
+# Test 6: Entity columns + subquery (non-aggregate + aggregate mix)
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 6: Entity columns + subquery ===
+
+let $QUERY=
+SELECT e.id, e.grp,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id, e.grp,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val
+FROM sq_entity AS e|
+
+# =========================================================================
+# Test 7: Same-table triple merge SUM + MIN + MAX
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 7: Same-table triple merge SUM + MIN + MAX ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS min_val,
+  (SELECT MAX(m3.val) FROM sq_measures AS m3 WHERE m3.entity_id = e.id) AS max_val
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS min_val,
+  (SELECT MAX(m3.val) FROM sq_measures AS m3 WHERE m3.entity_id = e.id) AS max_val
+FROM sq_entity AS e|
+
+# =========================================================================
+# Test 8: Entity with no matching inner rows (NULL result)
+# Add entity 5 with no measures or events
+# =========================================================================
+
+DELIMITER ;|
+--disable_query_log
+INSERT INTO sq_entity VALUES (5, 3);
+--enable_query_log
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 8: Entity with no matching rows (NULL result) ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+
+# =========================================================================
+# Test 9: Partial outer join — entity 5 matches measures but not events
+# (exercises handleAggLeafScanComplete NULL row injection per-leaf)
+# =========================================================================
+
+DELIMITER ;|
+--disable_query_log
+# Entity 5 already inserted (Test 8). Add measures for it but no events.
+INSERT INTO sq_measures VALUES (5,1,500),(5,2,600),(5,3,700);
+--enable_query_log
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 9: Partial match — entity 5 has measures but no events ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+
+# =========================================================================
+# DBSPJ stress tests: large dataset exercising multi-batch SCAN_NEXTREQ,
+# scanFrag_parent_batch_complete, and high group cardinality
+# =========================================================================
+
+# =========================================================================
+# Test 12: HAVING filter — cnt_evt > 0 filters entity with no events
+# Entity 5 has measures but no events → cnt_evt = 0 → filtered out
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 12: HAVING cnt_evt > 0 filters unmatched entities ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING cnt_evt > 0;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING cnt_evt > 0|
+
+# =========================================================================
+# Test 13: HAVING IS NOT NULL filters entity with no measures
+# Add entity 6 with events but no measures → sum_val = NULL → filtered
+# =========================================================================
+
+DELIMITER ;|
+--disable_query_log
+INSERT INTO sq_entity VALUES (6, 3);
+INSERT INTO sq_events VALUES (6,1,9),(6,2,10);
+--enable_query_log
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 13: HAVING sum_val IS NOT NULL ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val IS NOT NULL;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val IS NOT NULL|
+
+# =========================================================================
+
+DELIMITER ;|
+
+--echo
+--echo === Create large tables for DBSPJ path tests ===
+
+--disable_query_log
+DROP TABLE IF EXISTS lg_events;
+DROP TABLE IF EXISTS lg_measures;
+DROP TABLE IF EXISTS lg_entity;
+
+CREATE TABLE lg_entity (
+  id INT NOT NULL,
+  grp INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB
+COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2';
+
+CREATE TABLE lg_measures (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (entity_id, ts),
+  INDEX idx_lg_meas_eid (entity_id)
+) ENGINE=NDB
+COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2';
+
+CREATE TABLE lg_events (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  event_type INT NOT NULL,
+  PRIMARY KEY USING HASH (entity_id, ts),
+  INDEX idx_lg_evt_eid (entity_id)
+) ENGINE=NDB
+COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2';
+
+# 200 entities, 50 groups (grp = (id-1) % 50 + 1, 4 entities/group)
+# 5 measures per entity (1000 total), 3 events per entity (600 total)
+
+--delimiter $
+CREATE PROCEDURE populate_lg()
+BEGIN
+  DECLARE i INT DEFAULT 1;
+  DECLARE g INT;
+  DECLARE j INT;
+  WHILE i <= 200 DO
+    SET g = ((i - 1) % 50) + 1;
+    INSERT INTO lg_entity VALUES (i, g);
+    SET j = 1;
+    WHILE j <= 5 DO
+      INSERT INTO lg_measures VALUES (i, j, i * 10 + j);
+      SET j = j + 1;
+    END WHILE;
+    SET j = 1;
+    WHILE j <= 3 DO
+      INSERT INTO lg_events VALUES (i, j, g);
+      SET j = j + 1;
+    END WHILE;
+    SET i = i + 1;
+  END WHILE;
+END$
+--delimiter ;
+CALL populate_lg();
+DROP PROCEDURE populate_lg;
+--enable_query_log
+
+DELIMITER |;
+
+# =========================================================================
+# Test 10: Large dataset — multi-batch SCAN_NEXTREQ with 2 scan leaves
+# 200 entities × 5 measures + 200 × 3 events, 50 groups
+# Forces multiple root scan batches → both leaves restart per batch
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 10: Large dataset multi-batch (200 entities, 50 groups) ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result (first 5 rows) ==
+SELECT e.id,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e
+ORDER BY e.id
+LIMIT 5|
+
+# =========================================================================
+# Test 11: High group cardinality — GROUP BY entity id (200 groups)
+# with asymmetric fan-out (5 measures vs 3 events per entity)
+# Exercises scanFrag_parent_batch_complete with many outstanding scans
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 11: Asymmetric fan-out (5 measures vs 3 events/entity) ===
+
+let $QUERY=
+SELECT e.id, e.grp,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result (first 5 rows) ==
+SELECT e.id, e.grp,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e
+ORDER BY e.id
+LIMIT 5|
+
+# =========================================================================
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+--disable_query_log
+DROP TABLE IF EXISTS lg_events;
+DROP TABLE IF EXISTS lg_measures;
+DROP TABLE IF EXISTS lg_entity;
+DROP TABLE IF EXISTS sq_events;
+DROP TABLE IF EXISTS sq_measures;
+DROP TABLE IF EXISTS sq_entity;
+--enable_query_log

@@ -1,0 +1,102 @@
+!include suite/ndb/my_1rpl.cnf
+
+# --- Data node config (same as ndb_setup_large) ---
+# Base config has ndbapi=,,,,,,,,,,,  (12 slots).
+# RDRS needs 2 extra ndbapi slots (13+14), so extend to 14.
+[cluster_config.1]
+ndbapi=,,,,,,,,,,,,,
+NumCPUs=8
+DiskPageBufferMemory=400M
+TotalMemoryConfig=16G
+DataMemory=12G
+SchemaMemory=200M
+MaxNoOfTables=2000
+MaxNoOfOrderedIndexes=2000
+MaxNoOfUniqueHashIndexes=2000
+TransactionMemory=200M
+RedoBuffer=100M
+SharedGlobalMemory=450M
+BatchSize=990
+BatchByteSize=1M
+MaxScanBatchSize=4M
+PartitionsPerNode=8
+FragmentLogFileSize=1G
+
+# Set data node 1 to node ID 144 so that LQH's host record array
+# can accommodate API node IDs used by block unit tests.
+[cluster_config.ndbd.1.1]
+NodeId=144
+
+# --- RDRS server (insecure, no API keys) ---
+[rdrs.1.1]
+config-json-template=suite/ronsql/rdrs_config_template.json
+UseHopsworksAPIKeys=false
+InsecureAllowAll=true
+
+# --- Override all API node IDs to be < 144 ---
+
+# MySQL servers
+[cluster_config.mysqld.1.1]
+NodeId=50
+
+[cluster_config.mysqld.2.1]
+NodeId=53
+
+# General-purpose ndbapi slots (for block unit tests, load_tpch, etc.)
+[cluster_config.ndbapi.1.1]
+NodeId=54
+
+[cluster_config.ndbapi.2.1]
+NodeId=55
+
+[cluster_config.ndbapi.3.1]
+NodeId=51
+
+[cluster_config.ndbapi.4.1]
+NodeId=52
+
+[cluster_config.ndbapi.5.1]
+NodeId=56
+
+[cluster_config.ndbapi.6.1]
+NodeId=57
+
+[cluster_config.ndbapi.7.1]
+NodeId=58
+
+[cluster_config.ndbapi.8.1]
+NodeId=59
+
+[cluster_config.ndbapi.9.1]
+NodeId=60
+
+[cluster_config.ndbapi.10.1]
+NodeId=61
+
+[cluster_config.ndbapi.11.1]
+NodeId=62
+
+[cluster_config.ndbapi.12.1]
+NodeId=63
+
+# RDRS needs 2 ndbapi connections (data + metadata)
+[cluster_config.ndbapi.13.1]
+NodeId=40
+
+[cluster_config.ndbapi.14.1]
+NodeId=41
+
+# MySQL connection pools (same as ndb_setup_large)
+[mysqld.1.1]
+ndb-cluster-connection-pool-nodeids=50,51,52
+
+[mysqld.2.1]
+ndb-cluster-connection-pool-nodeids=53,54,55
+
+[ENV]
+NDB_CONNECTSTRING=             @mysql_cluster.1.ndb_connectstring
+MASTER_MYSOCK=                 @mysqld.1.1.socket
+MASTER_MYPORT=                 @mysqld.1.1.port
+MASTER_MYPORT1=                @mysqld.2.1.port
+RDRS_HOST=                     @rdrs.1.1.#host
+RDRS_PORT=                     @rdrs.1.1.port

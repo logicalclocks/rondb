@@ -40,6 +40,8 @@ typedef Int32 TokenKind; /* The type of the T_* values used to indicate token
                           * type. These values are also used in the parse tree.
                           */
 
+class RdrsSchemaCache;  // Forward declaration — optional, for index list caching
+
 struct RonSQLExecParams
 {
   char* sql_buffer = NULL;
@@ -77,6 +79,7 @@ struct RonSQLExecParams
   bool* do_explain = NULL; // If not NULL, use this to inform the caller whether
                            // we EXPLAIN. This is needed by RDRS to determine
                            // content type.
+  RdrsSchemaCache* schema_cache = nullptr;  // Optional: avoids dict->listIndexes()
   static const Uint32 ARENA_MALLOC_PAGE_SIZE = 2048;
 };
 
@@ -92,6 +95,7 @@ struct Outputs
     COLUMN,
     AGGREGATE,
     AVG,
+    SUBQUERY_AGG,
   };
   Type type;
   LexString output_name;
@@ -113,6 +117,11 @@ struct Outputs
       Uint32 agg_index_sum;
       Uint32 agg_index_count;
     } avg;
+    struct
+    {
+      struct SelectStatement* stmt;  // parsed inner SELECT
+      Uint32 agg_index;             // assigned during compilation
+    } subquery_agg;
   };
   struct Outputs* next;
 };
@@ -185,7 +194,12 @@ struct GroupbyColumns
 
 struct OrderbyColumns
 {
-  Uint32 col_idx;
+  enum class Kind { TABLE_COLUMN, OUTPUT_REF };
+  Kind kind;
+  union {
+    Uint32 col_idx;      // TABLE_COLUMN: index into m_columns
+    Uint32 output_idx;   // OUTPUT_REF: index into SELECT outputs list
+  };
   bool ascending;
   struct OrderbyColumns* next;
 };
@@ -227,6 +241,9 @@ struct SelectStatement
   struct ConditionalExpression* having_expression = NULL;
   struct OrderbyColumns* orderby_columns = NULL;
   Int64 limit = -1; // -1 means no limit
+  Int32 sentinel_agg_slot = -1; // Hidden COUNT slot for cross-table filter
+                                // semantics: groups where this is 0 had no
+                                // rows pass the filter and must be suppressed.
   char* sql_begin = NULL;  // Start of inner query SQL (points into original buffer)
   char* sql_end = NULL;    // End of inner query SQL
 };

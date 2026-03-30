@@ -55,6 +55,7 @@ ADD_CONVENIENCE_LIBRARY(ronsql
   QueryPlanner.cpp
   ResultPrinter.cpp
   RonSQLPreparer.cpp
+  ${CMAKE_SOURCE_DIR}/storage/ndb/rest-server2/server/src/schema_cache.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/RonSQLParser.y.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/RonSQLLexer.l.cpp
   LINK_LIBRARIES ndbgeneral

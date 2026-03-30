@@ -1677,6 +1677,82 @@ testForcedEviction(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn,
 }
 
 /* ------------------------------------------------------------------ */
+/* Test: Reject too many leaves in multi-leaf agg program (> 32)       */
+/* ------------------------------------------------------------------ */
+
+static int
+testRejectTooManyLeaves(Ndb *ndb, SignalSender &ss, Uint32 nodeId,
+                        MYSQL *conn)
+{
+  printf("Test 9: Reject multi-leaf agg with 33 leaves (> NDB_SPJ_MAX) ... ");
+  fflush(stdout);
+
+  TableMeta meta;
+  ss.unlock();
+  int setupRc = createTestTable(conn, ndb, meta);
+  ss.lock();
+  if (setupRc != 0) {
+    printf("FAIL (table setup)\n"); return -1;
+  }
+
+  Uint32 apiConnectPtr, tcRef;
+  if (seizeTcConnect(ss, (Uint32)nodeId, apiConnectPtr, tcRef) != 0) {
+    printf("FAIL (TC seize)\n");
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  Uint32 receiverId = 0xBEEF;
+  std::vector<Uint32> queryTree =
+    buildQueryTree(meta.tableId, meta.schemaVersion,
+                   meta.attrIdA, receiverId);
+
+  /*
+   * Build a fake multi-leaf agg program with 33 leaves using the 0x0722
+   * wire format.  DblqhProxy should reject this because
+   * numLeaves (33) > NDB_SPJ_MAX_TREE_NODES (32).
+   *
+   * Format: (0x0722 << 16) | numLeaves, then per leaf: [progLen, prog...]
+   * We use a minimal valid program for each leaf.
+   */
+  std::vector<Uint32> aggProgram;
+  const Uint32 numFakeLeaves = 33;
+  aggProgram.push_back((0x0722 << 16) | numFakeLeaves);
+
+  /* Build a minimal single-leaf program to replicate for each fake leaf */
+  std::vector<Uint32> oneProg = buildAggProgram_CountSum(meta.attrIdB);
+  for (Uint32 i = 0; i < numFakeLeaves; i++) {
+    aggProgram.push_back((Uint32)oneProg.size());
+    aggProgram.insert(aggProgram.end(), oneProg.begin(), oneProg.end());
+  }
+
+  int rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
+                           meta, queryTree, aggProgram, receiverId);
+  if (rc != 0) {
+    printf("FAIL (send)\n");
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  /* Expect SCAN_TABREF (error) since DblqhProxy rejects 33 leaves */
+  std::vector<AggResult> results;
+  rc = collectResults(ss, results, apiConnectPtr, tcRef, nodeId);
+  if (rc == 0) {
+    printf("FAIL (should have been rejected, but got results)\n");
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  V("\n  Correctly rejected with error (SCAN_TABREF)\n");
+  releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+  ss.unlock(); dropTestTable(conn); ss.lock();
+  printf("PASS\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1780,6 +1856,8 @@ int main(int argc, char *argv[])
       if (testManyGroups(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
       if (testForcedEviction(&ndb, ss, (Uint32)nodeId, conn,
                              restarter) != 0) result = 1;
+      if (testRejectTooManyLeaves(&ndb, ss, (Uint32)nodeId, conn) != 0)
+        result = 1;
 
       ss.unlock();
     }

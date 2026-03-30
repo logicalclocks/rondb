@@ -35,15 +35,26 @@
 #define DEB_TRACE() do { } while (0)
 #endif
 
+#include "storage/ndb/src/ronsql/RonSQLPerf.hpp"
+
 RS_Status ronsql_op(RonSQLExecParams& params) {
   std::basic_ostream<char>& err = *params.err_stream;
-  static int max_attempts = 3;
+  static int max_attempts = 10;
+  int retry_sleep_ms = 10;
   for (int attempt = 0; attempt < max_attempts; attempt++) {
     bool is_last_attempt = attempt == max_attempts - 1;
     try {
+      PERF_TS(t_total);
       RonSQLPreparer executor(params);
+      PERF_TS(t_prepare_end);
+      PERF_LOG("prepare (constructor)", t_total, t_prepare_end);
+
       DEB_TRACE();
       executor.execute();
+      PERF_TS(t_exec_end);
+      PERF_LOG("execute", t_prepare_end, t_exec_end);
+      PERF_LOG("total (ronsql_op)", t_total, t_exec_end);
+
       DEB_TRACE();
       return RS_OK;
     }
@@ -56,7 +67,8 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
             std::string(rdrsErrorMessage(ERROR_RONSQL_TEMPORARY)) +
             " Detail: " + e.what());
       }
-      ndb_retry_sleep(50);
+      ndb_retry_sleep(retry_sleep_ms);
+      retry_sleep_ms = std::min(retry_sleep_ms * 2, 1000);
     }
     catch (RonSQLPermanentError& e) {
       err << "Caught exception: " << e.what() << "\n";

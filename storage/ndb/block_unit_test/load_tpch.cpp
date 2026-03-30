@@ -43,7 +43,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
+#include <thread>
 #include <vector>
 
 static bool verbose = false;
@@ -174,9 +176,15 @@ connectMysql(int mysqlPort)
     fprintf(stderr, "mysql_init failed\n");
     return nullptr;
   }
+  /* Set connect timeout so we don't hang forever if mysqld is stuck
+     during NDB setup (ndb-wait-setup can take up to 120s) */
+  unsigned int timeout = 150;
+  mysql_options(conn, MYSQL_OPT_CONNECT_TIMEOUT, &timeout);
   if (mysql_real_connect(conn, "127.0.0.1", "root", "",
                          "test", mysqlPort, nullptr, 0) == nullptr) {
-    fprintf(stderr, "mysql_real_connect failed: %s\n", mysql_error(conn));
+    fprintf(stderr, "mysql_real_connect failed: %s\n"
+            "  Hint: mysqld may still be in NDB setup — check the "
+            "mysqld error log\n", mysql_error(conn));
     mysql_close(conn);
     return nullptr;
   }
@@ -212,25 +220,39 @@ computeScale(double sf)
 /* ------------------------------------------------------------------ */
 
 static int
+sqlExecTimed(MYSQL *conn, const char *label, const char *query)
+{
+  auto t0 = Clock::now();
+  printf("  [DDL] %s ...", label); fflush(stdout);
+  int rc = sqlExec(conn, query);
+  double ms = elapsedMs(t0, Clock::now());
+  printf(" %.0f ms%s\n", ms, rc != 0 ? " FAILED" : "");
+  fflush(stdout);
+  return rc;
+}
+
+static int
 createTables(MYSQL *conn)
 {
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_lineitem");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_orders");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_partsupp");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_customer");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_supplier");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_part");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_nation");
-  sqlExec(conn, "DROP TABLE IF EXISTS tpch_region");
+  printf("  Dropping old tables...\n"); fflush(stdout);
+  sqlExecTimed(conn, "DROP tpch_lineitem", "DROP TABLE IF EXISTS tpch_lineitem");
+  sqlExecTimed(conn, "DROP tpch_orders",   "DROP TABLE IF EXISTS tpch_orders");
+  sqlExecTimed(conn, "DROP tpch_partsupp", "DROP TABLE IF EXISTS tpch_partsupp");
+  sqlExecTimed(conn, "DROP tpch_customer", "DROP TABLE IF EXISTS tpch_customer");
+  sqlExecTimed(conn, "DROP tpch_supplier", "DROP TABLE IF EXISTS tpch_supplier");
+  sqlExecTimed(conn, "DROP tpch_part",     "DROP TABLE IF EXISTS tpch_part");
+  sqlExecTimed(conn, "DROP tpch_nation",   "DROP TABLE IF EXISTS tpch_nation");
+  sqlExecTimed(conn, "DROP tpch_region",   "DROP TABLE IF EXISTS tpch_region");
+  printf("  Creating tables...\n"); fflush(stdout);
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_region",
     "CREATE TABLE tpch_region ("
     "  r_regionkey INT NOT NULL PRIMARY KEY,"
     "  r_name CHAR(25) NOT NULL,"
     "  r_comment VARCHAR(152)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_nation",
     "CREATE TABLE tpch_nation ("
     "  n_nationkey INT NOT NULL PRIMARY KEY,"
     "  n_name CHAR(25) NOT NULL,"
@@ -238,7 +260,7 @@ createTables(MYSQL *conn)
     "  n_comment VARCHAR(152)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_supplier",
     "CREATE TABLE tpch_supplier ("
     "  s_suppkey INT NOT NULL PRIMARY KEY,"
     "  s_name CHAR(25) NOT NULL,"
@@ -249,7 +271,7 @@ createTables(MYSQL *conn)
     "  s_comment VARCHAR(101)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_part",
     "CREATE TABLE tpch_part ("
     "  p_partkey INT NOT NULL PRIMARY KEY,"
     "  p_name VARCHAR(55) NOT NULL,"
@@ -262,7 +284,7 @@ createTables(MYSQL *conn)
     "  p_comment VARCHAR(23)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_partsupp",
     "CREATE TABLE tpch_partsupp ("
     "  ps_partkey INT NOT NULL,"
     "  ps_suppkey INT NOT NULL,"
@@ -272,7 +294,7 @@ createTables(MYSQL *conn)
     "  PRIMARY KEY (ps_partkey, ps_suppkey)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_customer",
     "CREATE TABLE tpch_customer ("
     "  c_custkey INT NOT NULL PRIMARY KEY,"
     "  c_name VARCHAR(25) NOT NULL,"
@@ -284,7 +306,7 @@ createTables(MYSQL *conn)
     "  c_comment VARCHAR(117)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_orders",
     "CREATE TABLE tpch_orders ("
     "  o_orderkey INT NOT NULL PRIMARY KEY,"
     "  o_custkey INT NOT NULL,"
@@ -298,7 +320,7 @@ createTables(MYSQL *conn)
     "  o_comment VARCHAR(79)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
-  if (sqlExec(conn,
+  if (sqlExecTimed(conn, "CREATE tpch_lineitem",
     "CREATE TABLE tpch_lineitem ("
     "  l_orderkey INT NOT NULL,"
     "  l_linenumber INT NOT NULL,"
@@ -318,6 +340,20 @@ createTables(MYSQL *conn)
     "  l_comment VARCHAR(44),"
     "  PRIMARY KEY (l_orderkey, l_linenumber)"
     ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
+
+  // Indexes on foreign-key columns for pushdown join aggregation
+  if (sqlExecTimed(conn, "CREATE INDEX supplier_nationkey",
+    "CREATE INDEX idx_supplier_nationkey ON tpch_supplier (s_nationkey)"
+    ) != 0) return -1;
+  if (sqlExecTimed(conn, "CREATE INDEX customer_nationkey",
+    "CREATE INDEX idx_customer_nationkey ON tpch_customer (c_nationkey)"
+    ) != 0) return -1;
+  if (sqlExecTimed(conn, "CREATE INDEX orders_custkey",
+    "CREATE INDEX idx_orders_custkey ON tpch_orders (o_custkey)"
+    ) != 0) return -1;
+  if (sqlExecTimed(conn, "CREATE INDEX lineitem_suppkey",
+    "CREATE INDEX idx_lineitem_suppkey ON tpch_lineitem (l_suppkey)"
+    ) != 0) return -1;
 
   return 0;
 }
@@ -700,21 +736,24 @@ loadOrders(Ndb *ndb, Uint32 count, Uint32 numCustomers)
 }
 
 static int
-loadLineitem(Ndb *ndb, Uint32 numOrders, Uint32 linesPerOrder,
-             Uint32 numParts, Uint32 numSuppliers)
+loadLineitemRange(Ndb *ndb, Uint32 startOrder, Uint32 endOrder,
+                  Uint32 linesPerOrder,
+                  Uint32 numParts, Uint32 numSuppliers,
+                  int threadIdx)
 {
   const NdbDictionary::Table *tab =
     ndb->getDictionary()->getTable("tpch_lineitem");
   if (tab == nullptr) return -1;
 
-  Uint32 totalRows = numOrders * linesPerOrder;
+  Uint32 rangeOrders = endOrder - startOrder;
+  Uint32 rangeRows = rangeOrders * linesPerOrder;
   const Uint32 BATCH = 500;
   Uint32 loaded = 0;
 
-  for (Uint32 o = 0; o < numOrders; ) {
+  for (Uint32 o = startOrder; o < endOrder; ) {
     NdbTransaction *tx = ndb->startTransaction();
     if (tx == nullptr) return -1;
-    Uint32 batchEnd = std::min(o + BATCH / linesPerOrder, numOrders);
+    Uint32 batchEnd = std::min(o + BATCH / linesPerOrder, endOrder);
     if (batchEnd == o) batchEnd = o + 1;
     for (; o < batchEnd; o++) {
       Uint32 orderkey = o + 1;
@@ -793,16 +832,18 @@ loadLineitem(Ndb *ndb, Uint32 numOrders, Uint32 linesPerOrder,
       }
     }
     if (tx->execute(NdbTransaction::Commit) != 0) {
-      fprintf(stderr, "insert lineitem: %s (loaded=%u)\n",
-              tx->getNdbError().message, loaded);
+      fprintf(stderr, "insert lineitem[%d]: %s (loaded=%u)\n",
+              threadIdx, tx->getNdbError().message, loaded);
       tx->close();
       return -1;
     }
     tx->close();
-    if (verbose && (loaded % 100000 < BATCH * linesPerOrder || o >= numOrders))
-      printf("  LINEITEM: %u / %u\n", loaded, totalRows);
+    if (verbose && (loaded % 100000 < BATCH * linesPerOrder || o >= endOrder))
+      printf("  LINEITEM[%d]: %u / %u\n", threadIdx, loaded, rangeRows);
   }
-  if (!verbose) printf("  LINEITEM: %u rows\n", totalRows);
+  if (!verbose)
+    printf("  LINEITEM[%d]: %u rows (orders %u..%u)\n",
+           threadIdx, rangeRows, startOrder + 1, endOrder);
   return 0;
 }
 
@@ -839,6 +880,9 @@ int main(int argc, char **argv)
       scaleFactor = atof(argv[++i]);
     } else if (strcmp(argv[i], "--drop-only") == 0) {
       dropOnly = true;
+    } else {
+      fprintf(stderr, "Unknown option: %s\n", argv[i]);
+      return 1;
     }
   }
 
@@ -863,28 +907,36 @@ int main(int argc, char **argv)
   int result = 0;
 
   do {
+    printf("Connecting to management server..."); fflush(stdout);
     Ndb_cluster_connection con(connectString);
     if (con.connect(12, 5, 1) != 0) {
-      fprintf(stderr, "Failed to connect to management server\n");
+      fprintf(stderr, "\nFailed to connect to management server\n");
       result = 1; break;
     }
-    if (con.wait_until_ready(30, 0) < 0) {
-      fprintf(stderr, "Cluster not ready\n");
-      result = 1; break;
-    }
-    V("Connected to cluster\n");
+    printf(" ok\n"); fflush(stdout);
 
+    printf("Waiting for cluster to be ready..."); fflush(stdout);
+    if (con.wait_until_ready(30, 0) < 0) {
+      fprintf(stderr, "\nCluster not ready\n");
+      result = 1; break;
+    }
+    printf(" ok\n"); fflush(stdout);
+
+    printf("Initializing NDB object..."); fflush(stdout);
     Ndb ndb(&con, "test");
     if (ndb.init() != 0) {
-      fprintf(stderr, "Ndb::init: %s\n", ndb.getNdbError().message);
+      fprintf(stderr, "\nNdb::init: %s\n", ndb.getNdbError().message);
       result = 1; break;
     }
+    printf(" ok\n"); fflush(stdout);
 
+    printf("Connecting to MySQL on port %d...", mysqlPort); fflush(stdout);
     MYSQL *conn = connectMysql(mysqlPort);
     if (conn == nullptr) {
-      fprintf(stderr, "Cannot connect to MySQL on port %d\n", mysqlPort);
+      fprintf(stderr, "\nCannot connect to MySQL on port %d\n", mysqlPort);
       result = 1; break;
     }
+    printf(" ok\n"); fflush(stdout);
 
     if (dropOnly) {
       printf("Dropping tables...\n");
@@ -899,30 +951,100 @@ int main(int argc, char **argv)
       mysql_close(conn); result = 1; break;
     }
 
-    printf("Loading data...\n");
+    printf("Loading data (parallel)...\n");
     auto tLoad = Clock::now();
 
-    if (loadRegion(&ndb) != 0) { mysql_close(conn); result = 1; break; }
-    if (loadNation(&ndb) != 0) { mysql_close(conn); result = 1; break; }
-    if (loadSupplier(&ndb, sp.numSuppliers) != 0) {
-      mysql_close(conn); result = 1; break;
+    /*
+     * Parallel loading strategy:
+     *   Data generation is purely deterministic (no cross-table reads),
+     *   and NDB has no enforced FK constraints, so all tables can be
+     *   loaded concurrently.  Each thread gets its own Ndb object from
+     *   the shared Ndb_cluster_connection.
+     *
+     *   Group 1: region, nation, supplier, part, customer (independent)
+     *   Group 2: partsupp, orders, lineitem (independent of each other)
+     *
+     *   We load all 8 in one wave for maximum parallelism.
+     */
+
+    struct ThreadResult {
+      const char *table;
+      int rc;
+    };
+
+    auto makeNdb = [&con]() -> Ndb * {
+      Ndb *n = new Ndb(&con, "test");
+      if (n->init() != 0) {
+        fprintf(stderr, "Ndb::init: %s\n", n->getNdbError().message);
+        delete n;
+        return nullptr;
+      }
+      return n;
+    };
+
+    const int NUM_THREADS = 10;  /* 7 tables + 3 lineitem shards */
+    ThreadResult results[NUM_THREADS] = {};
+
+    auto runLoad = [&](int idx, const char *name,
+                       std::function<int(Ndb *)> fn) {
+      results[idx].table = name;
+      Ndb *n = makeNdb();
+      if (n == nullptr) {
+        results[idx].rc = -1;
+        return;
+      }
+      results[idx].rc = fn(n);
+      delete n;
+    };
+
+    std::thread threads[NUM_THREADS];
+
+    threads[0] = std::thread(runLoad, 0, "REGION",
+      [](Ndb *n) { return loadRegion(n); });
+    threads[1] = std::thread(runLoad, 1, "NATION",
+      [](Ndb *n) { return loadNation(n); });
+    threads[2] = std::thread(runLoad, 2, "SUPPLIER",
+      [&sp](Ndb *n) { return loadSupplier(n, sp.numSuppliers); });
+    threads[3] = std::thread(runLoad, 3, "PART",
+      [&sp](Ndb *n) { return loadPart(n, sp.numParts); });
+    threads[4] = std::thread(runLoad, 4, "CUSTOMER",
+      [&sp](Ndb *n) { return loadCustomer(n, sp.numCustomers); });
+    threads[5] = std::thread(runLoad, 5, "PARTSUPP",
+      [&sp](Ndb *n) {
+        return loadPartSupp(n, sp.numParts, sp.numSuppliers);
+      });
+    threads[6] = std::thread(runLoad, 6, "ORDERS",
+      [&sp](Ndb *n) {
+        return loadOrders(n, sp.numOrders, sp.numCustomers);
+      });
+
+    /* Split lineitem across 3 threads by order-key range */
+    static const char *LI_NAMES[] = {
+      "LINEITEM[0]", "LINEITEM[1]", "LINEITEM[2]"
+    };
+    const int LI_THREADS = 3;
+    Uint32 ordersPerShard = sp.numOrders / LI_THREADS;
+    for (int t = 0; t < LI_THREADS; t++) {
+      Uint32 start = t * ordersPerShard;
+      Uint32 end = (t == LI_THREADS - 1) ? sp.numOrders
+                                          : (t + 1) * ordersPerShard;
+      threads[7 + t] = std::thread(runLoad, 7 + t, LI_NAMES[t],
+        [&sp, start, end, t](Ndb *n) {
+          return loadLineitemRange(n, start, end, sp.linesPerOrder,
+                                   sp.numParts, sp.numSuppliers, t);
+        });
     }
-    if (loadPart(&ndb, sp.numParts) != 0) {
-      mysql_close(conn); result = 1; break;
+
+    for (int i = 0; i < NUM_THREADS; i++)
+      threads[i].join();
+
+    for (int i = 0; i < NUM_THREADS; i++) {
+      if (results[i].rc != 0) {
+        fprintf(stderr, "Failed to load %s\n", results[i].table);
+        result = 1;
+      }
     }
-    if (loadPartSupp(&ndb, sp.numParts, sp.numSuppliers) != 0) {
-      mysql_close(conn); result = 1; break;
-    }
-    if (loadCustomer(&ndb, sp.numCustomers) != 0) {
-      mysql_close(conn); result = 1; break;
-    }
-    if (loadOrders(&ndb, sp.numOrders, sp.numCustomers) != 0) {
-      mysql_close(conn); result = 1; break;
-    }
-    if (loadLineitem(&ndb, sp.numOrders, sp.linesPerOrder,
-                     sp.numParts, sp.numSuppliers) != 0) {
-      mysql_close(conn); result = 1; break;
-    }
+    if (result != 0) { mysql_close(conn); break; }
 
     double loadMs = elapsedMs(tLoad, Clock::now());
     printf("\nAll data loaded in %.1f ms (%.1f s)\n", loadMs, loadMs / 1000.0);

@@ -1,0 +1,1272 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for extended subquery aggregation tests ===
+
+
+=== A1: WHERE e.grp = 1 (equality filter on root) ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.grp = 1;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.grp = 1|
+id	sum_val	cnt_evt
+1	60	2
+2	150	2
+
+
+=== A2: WHERE e.id > 3 (range filter) ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.id > 3;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.id > 3|
+id	sum_val	cnt_evt
+4	330	2
+5	1800	0
+6	NULL	2
+
+
+=== A3: WHERE e.id = 1 (single root row) ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.id = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.id = 1|
+id	sum_val	cnt_evt
+1	60	2
+
+
+=== C1: Regular columns interleaved with subquery outputs ===
+== Query ==
+SELECT e.id, e.grp,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id, e.grp,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+id	grp	sum_val	cnt_evt
+1	1	60	2
+2	1	150	2
+3	2	240	2
+4	2	330	2
+5	3	1800	0
+6	3	NULL	2
+
+
+=== C2: Subquery output between regular columns ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+e.grp
+FROM sq_entity AS e;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+e.grp
+FROM sq_entity AS e|
+id	sum_val	grp
+1	60	1
+2	150	1
+3	240	2
+4	330	2
+5	1800	3
+6	NULL	3
+
+
+=== D1: HAVING compound AND ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val > 100 AND cnt_evt > 0;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val > 100 AND cnt_evt > 0|
+id	sum_val	cnt_evt
+2	150	2
+3	240	2
+4	330	2
+
+
+=== D2: HAVING IS NULL (select only entities with no measures) ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val IS NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val IS NULL|
+id	sum_val	cnt_evt
+6	NULL	2
+
+
+=== D3: HAVING multiple conditions ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING cnt_evt >= 2 AND sum_val < 200;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING cnt_evt >= 2 AND sum_val < 200|
+id	sum_val	cnt_evt
+1	60	2
+2	150	2
+
+
+=== D4: WHERE + HAVING combined ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.grp = 2
+HAVING sum_val > 200;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.grp = 2
+HAVING sum_val > 200|
+id	sum_val	cnt_evt
+3	240	2
+4	330	2
+
+
+=== B1: Inner WHERE filter (m.ts > 1) reduces child rows ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_val
+FROM sq_entity AS e;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_val
+FROM sq_entity AS e|
+id	sum_val
+1	50
+2	110
+3	170
+4	230
+5	1300
+6	NULL
+
+
+=== B2: Two subqueries with different inner filters ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id AND ev.event_type > 3) AS cnt_high
+FROM sq_entity AS e;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id AND ev.event_type > 3) AS cnt_high
+FROM sq_entity AS e|
+id	sum_early	cnt_high
+1	30	0
+2	90	1
+3	150	2
+4	210	2
+5	1100	0
+6	NULL	2
+
+
+=== B3: Inner filter eliminates all rows for some entities ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.val > 500) AS sum_big
+FROM sq_entity AS e;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.val > 500) AS sum_big
+FROM sq_entity AS e|
+id	sum_big
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	1300
+6	NULL
+
+=== Create large tables for stress tests ===
+Warnings:
+Note	1051	Unknown table 'test.lg_events'
+Warnings:
+Note	1051	Unknown table 'test.lg_measures'
+Warnings:
+Note	1051	Unknown table 'test.lg_entity'
+
+
+=== E1: Large dataset with WHERE filter on root ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e
+WHERE e.grp <= 3;
+
+Number of output lines, including header: 13
+
+== Diff ==
+==========
+
+
+
+== Expected result (first 5) ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e
+WHERE e.grp <= 3
+ORDER BY e.id
+LIMIT 5|
+id	sum_val	cnt_evt
+1	65	3
+2	115	3
+3	165	3
+51	2565	3
+52	2615	3
+
+
+=== E2: Large dataset with inner filter + WHERE ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+(SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e
+WHERE e.id <= 50;
+
+Number of output lines, including header: 51
+
+== Diff ==
+==========
+
+
+
+== Expected result (first 5) ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+(SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e
+WHERE e.id <= 50
+ORDER BY e.id
+LIMIT 5|
+id	sum_early	max_evt
+1	23	1
+2	43	2
+3	63	3
+4	83	4
+5	103	5
+
+
+=== H1: Inner subquery with JOIN (unsupported) ===
+H1 response:
+subquery with JOIN is not supported
+
+=== H2: Inner subquery without correlation (unsupported) ===
+H2 response:
+must have a WHERE clause with correlation
+
+=== H3: Inner subquery with GROUP BY (unsupported) ===
+H3 response:
+must not have GROUP BY
+
+=== H4: Inner subquery with non-aggregate output (unsupported) ===
+H4 response:
+output must be an aggregate function
+
+=== H5: Outer query with GROUP BY + subqueries (unsupported) ===
+H5 response:
+GROUP BY are not yet supported
+
+=== Create tables for join + subquery tests ===
+Warnings:
+Note	1051	Unknown table 'test.j_lineitem'
+Warnings:
+Note	1051	Unknown table 'test.j_order_notes'
+Warnings:
+Note	1051	Unknown table 'test.j_orders'
+Warnings:
+Note	1051	Unknown table 'test.j_customer'
+
+
+=== J1: Join + single subquery (orders.id correlation) ===
+== Query ==
+SELECT o.id AS order_id, o.cust_id,
+(SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.cust_id,
+(SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id|
+order_id	cust_id	total_qty
+10	1	8
+11	1	10
+20	2	14
+21	2	6
+30	3	18
+31	3	3
+
+
+=== J2: Join + two subqueries on different tables ===
+== Query ==
+SELECT o.id AS order_id, o.cust_id,
+(SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+(SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.cust_id,
+(SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+(SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id|
+order_id	cust_id	total_qty	note_count
+10	1	8	2
+11	1	10	1
+20	2	14	1
+21	2	6	0
+30	3	18	3
+31	3	3	0
+
+
+=== J3: Join + subquery + HAVING on subquery result ===
+== Query ==
+SELECT o.id AS order_id, o.cust_id,
+(SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+(SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id
+HAVING total_qty > 5 AND note_count > 0;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.cust_id,
+(SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+(SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id
+HAVING total_qty > 5 AND note_count > 0|
+order_id	cust_id	total_qty	note_count
+10	1	8	2
+11	1	10	1
+20	2	14	1
+30	3	18	3
+
+
+=== J4: Join + subquery with inner filter (some orders get NULL) ===
+== Query ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id,
+(SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id|
+order_id	big_total
+10	50
+11	70
+20	140
+21	60
+30	170
+31	NULL
+
+=== Create tables for 3-way join + subquery tests ===
+Warnings:
+Note	1051	Unknown table 'test.k_shipment'
+Warnings:
+Note	1051	Unknown table 'test.k_lineitem'
+Warnings:
+Note	1051	Unknown table 'test.k_orders'
+Warnings:
+Note	1051	Unknown table 'test.k_customer'
+
+
+=== K1: 3-way join + subquery on lineitem (simple, no cross-table filter) ===
+== Query ==
+SELECT c.`name`, o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.`name`, o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+name	order_id	min_qty	total_qty
+Alice	10	3	15
+Alice	11	5	17
+Bob	20	2	10
+Bob	21	10	35
+
+
+=== K2: 3-way join + two subqueries on different tables ===
+== Query ==
+SELECT c.`name`, o.id AS order_id,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+(SELECT SUM(s.weight) FROM k_shipment AS s WHERE s.order_id = o.id) AS total_weight
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.`name`, o.id AS order_id,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+(SELECT SUM(s.weight) FROM k_shipment AS s WHERE s.order_id = o.id) AS total_weight
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+name	order_id	total_qty	total_weight
+Alice	10	15	15
+Alice	11	17	15
+Bob	20	10	20
+Bob	21	35	25
+
+
+=== K3: 3-way join + subquery with inner-only filter ===
+== Query ==
+SELECT c.`name`, o.id AS order_id, o.min_qty,
+(SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > 5) AS big_items_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.`name`, o.id AS order_id, o.min_qty,
+(SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > 5) AS big_items_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+name	order_id	min_qty	big_items_total
+Alice	10	3	80
+Alice	11	5	160
+Bob	20	2	70
+Bob	21	10	350
+
+
+=== K4: Cross-table filter — l.qty > o.min_qty ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+order_id	min_qty	filtered_qty
+10	3	13
+11	5	16
+20	2	10
+21	10	35
+
+
+=== K5: Cross-table filter with two subqueries (merged) ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty,
+(SELECT COUNT(l2.id) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS small_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty,
+(SELECT COUNT(l2.id) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS small_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+order_id	min_qty	filtered_qty	small_count
+10	3	13	1
+11	5	16	1
+20	2	10	0
+21	10	35	0
+
+
+=== L1: Cross-table EQ filter — l.qty = o.min_qty ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_match_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_match_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+order_id	min_qty	exact_match_price
+10	3	33
+11	5	55
+20	2	22
+21	10	NULL
+
+
+=== L2: Cross-table NE filter — l.qty != o.min_qty ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+order_id	min_qty	ne_total_qty
+10	3	15
+11	5	17
+20	2	10
+21	10	35
+
+
+=== L3: Cross-table EQ with COUNT — count rows where qty = min_qty ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+order_id	min_qty	exact_count
+10	3	1
+11	5	1
+20	2	1
+21	10	0
+
+
+=== L4: Mixed EQ and GT cross-table filters (merged subqueries) ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_price,
+(SELECT SUM(l2.price) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty > o.min_qty) AS above_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_price,
+(SELECT SUM(l2.price) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty > o.min_qty) AS above_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+order_id	min_qty	exact_price	above_price
+10	3	33	130
+11	5	55	160
+20	2	22	100
+21	10	NULL	350
+
+
+=== L5: Mixed NE and LE cross-table filters (merged subqueries) ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_count,
+(SELECT SUM(l2.qty) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS le_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_count,
+(SELECT SUM(l2.qty) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS le_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+order_id	min_qty	ne_count	le_total
+10	3	3	5
+11	5	3	6
+20	2	2	2
+21	10	2	NULL
+
+
+=== L6: EQ where no rows match (order 21 min_qty=10, no lineitem has qty=10) ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS eq_sum
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+WHERE o.id = 21;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+(SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS eq_sum
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+WHERE o.id = 21|
+order_id	min_qty	eq_sum
+21	10	NULL
+
+
+=== M1: Cross-table WHERE filter on explicit join — l.qty > o.min_qty ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.qty) AS filtered_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.qty) AS filtered_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+order_id	min_qty	filtered_sum
+10	3	13
+11	5	16
+20	2	10
+21	10	35
+
+
+=== M2: Cross-table WHERE with EQ — l.qty = o.min_qty (BranchReg) ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+COUNT(l.id) AS exact_count,
+SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty AND o.id != 21
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+COUNT(l.id) AS exact_count,
+SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty AND o.id != 21
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+order_id	min_qty	exact_count	exact_price
+10	3	1	33
+11	5	1	55
+20	2	1	22
+
+
+=== M3: Cross-table WHERE with NE — l.qty != o.min_qty ===
+== Query ==
+SELECT o.id AS order_id,
+SUM(l.qty) AS ne_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty != o.min_qty
+GROUP BY o.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id,
+SUM(l.qty) AS ne_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty != o.min_qty
+GROUP BY o.id
+ORDER BY o.id|
+order_id	ne_sum
+10	15
+11	17
+20	10
+21	35
+
+
+=== M4: Cross-table WHERE + inner-only WHERE combined (BranchReg fallback) ===
+== Query ==
+SELECT o.id AS order_id,
+SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty AND l.price > 30
+GROUP BY o.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id,
+SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty AND l.price > 30
+GROUP BY o.id
+ORDER BY o.id|
+order_id	filtered_price
+10	130
+11	160
+20	70
+21	350
+
+
+=== M7: Cross-table EQ — BranchReg empty group suppression ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+COUNT(l.id) AS exact_count,
+SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+COUNT(l.id) AS exact_count,
+SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+order_id	min_qty	exact_count	exact_price
+10	3	1	33
+11	5	1	55
+20	2	1	22
+
+
+=== M10: Arithmetic in cross-table filter — l.qty > o.min_qty + 1 ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.qty) AS filtered_qty
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.qty) AS filtered_qty
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+order_id	min_qty	filtered_qty
+10	3	13
+11	5	10
+20	2	7
+21	10	35
+
+
+=== M11: Multiplication in cross-table filter — l.price > o.min_qty * 10 ===
+== Query ==
+SELECT o.id AS order_id,
+COUNT(l.id) AS big_count,
+SUM(l.price) AS big_total
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.price > o.min_qty * 10
+GROUP BY o.id
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id,
+COUNT(l.id) AS big_count,
+SUM(l.price) AS big_total
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.price > o.min_qty * 10
+GROUP BY o.id
+ORDER BY o.id|
+order_id	big_count	big_total
+10	3	163
+11	3	215
+20	3	122
+21	2	350
+
+
+=== M8: Ancestor-to-ancestor cross-table filter — c.id > o.min_qty ===
+== Query ==
+SELECT c.`name`, o.id AS order_id,
+SUM(l.qty) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE c.id > o.min_qty
+GROUP BY c.`name`, o.id
+ORDER BY o.id;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.`name`, o.id AS order_id,
+SUM(l.qty) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE c.id > o.min_qty
+GROUP BY c.`name`, o.id
+ORDER BY o.id|
+name	order_id	total_qty
+
+
+=== M9: Ancestor-to-ancestor with matches — o.min_qty < c.id * 3 ===
+== Query ==
+SELECT c.`name`, o.id AS order_id,
+SUM(l.qty) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE c.id >= o.min_qty
+GROUP BY c.`name`, o.id
+ORDER BY o.id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.`name`, o.id AS order_id,
+SUM(l.qty) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE c.id >= o.min_qty
+GROUP BY c.`name`, o.id
+ORDER BY o.id|
+name	order_id	total_qty
+Bob	20	12
+
+
+=== M12: Cross-table OR — l.qty = o.min_qty OR l.qty = o.min_qty + 1 ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.qty) AS or_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty OR l.qty = o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.qty) AS or_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty OR l.qty = o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+order_id	min_qty	or_sum
+10	3	3
+11	5	11
+20	2	5
+
+
+=== M13: Cross-table OR with different operators ===
+== Query ==
+SELECT o.id AS order_id,
+COUNT(l.id) AS match_count
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty * 2 OR l.price > 100
+GROUP BY o.id
+ORDER BY o.id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id,
+COUNT(l.id) AS match_count
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty * 2 OR l.price > 100
+GROUP BY o.id
+ORDER BY o.id|
+order_id	match_count
+10	1
+20	1
+21	2
+
+
+=== M5: Cross-table WHERE with composite index (order_id, qty) ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+order_id	min_qty	filtered_price
+10	3	130
+11	5	160
+20	2	100
+21	10	350
+
+
+=== M6: EQ on composite index — empty groups eliminated ===
+== Query ==
+SELECT o.id AS order_id, o.min_qty,
+COUNT(l.id) AS exact_count,
+SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS order_id, o.min_qty,
+COUNT(l.id) AS exact_count,
+SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+order_id	min_qty	exact_count	exact_price
+10	3	1	33
+11	5	1	55
+20	2	1	22
+
+=== Cleanup ===

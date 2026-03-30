@@ -1,0 +1,9 @@
+-- source include/have_ndb.inc
+
+# Start cluster with RDRS for RonSQL demo:
+#   cd mysql-test
+#   ./mtr --suite=ndb --start-and-exit ndb_setup_ronsql
+#
+# Then load TPC-H data and connect rondb-cli to the RDRS port shown in output.
+
+SELECT 1;

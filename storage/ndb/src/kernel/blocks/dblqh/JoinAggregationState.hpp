@@ -35,10 +35,41 @@
 class JoinAggInterpreter;
 
 /**
+ * LeafProgram
+ *
+ * Per-leaf aggregation program descriptor for multi-leaf star schema
+ * aggregation. Each leaf in a fan-out query tree has its own aggregation
+ * program that writes to its own accumulator slots within the shared
+ * group rows. Allocated via lc_ndbd_pool_malloc as a dynamic array.
+ */
+/**
+ * LeafProgram
+ *
+ * Per-leaf aggregation program descriptor for multi-leaf star schema
+ * aggregation. Each leaf in a fan-out query tree has its own aggregation
+ * program that writes to its own accumulator slots within the shared
+ * group rows.
+ *
+ * m_agg_program points into the shared m_all_programs_buf allocation
+ * in JoinAggregationState — it is NOT individually freed.
+ */
+struct LeafProgram {
+  Uint32* m_agg_program;        // Points into m_all_programs_buf (NOT owned)
+  Uint32  m_agg_program_len;    // Program length in words
+  Uint32  m_acc_offset;         // First accumulator index for this leaf
+  Uint32  m_n_agg_results;      // Number of accumulators for this leaf
+  Uint32  m_agg_prog_start_pos; // Instruction start offset within program
+};
+
+/**
  * JoinAggregationState
  *
  * Holds aggregation state shared across multiple LQHKEYREQ/SCAN_FRAGREQ
  * operations that belong to the same SPJ join aggregation request.
+ *
+ * For multi-leaf star schema queries, all leaves share a single hash map
+ * with combined accumulator layout. Each leaf has its own aggregation
+ * program stored in the m_leaf_programs array.
  *
  * Lifecycle:
  *   - Created by DblqhProxy on JOIN_AGG_SETUP_REQ (single-threaded)
@@ -54,6 +85,10 @@ class JoinAggInterpreter;
  *
  * Managed by a static ArrayPool in SimulatedBlock. The nextPool field
  * is required by ArrayPool for free-list management.
+ *
+ * aggStateKey encoding (multi-leaf):
+ *   Bits 31..24: leaf index (0..255)
+ *   Bits 23..0:  base state key (pool index)
  */
 struct JoinAggregationState {
   //------------------------------------------------------------------
@@ -94,11 +129,21 @@ struct JoinAggregationState {
   BlockReference m_apiRef;       // API block reference for results
 
   //------------------------------------------------------------------
-  // Aggregation Program (immutable after creation)
-  // Allocated via ndbd_malloc, freed at release time.
+  // Aggregation Programs (immutable after creation)
+  //
+  // Multi-leaf: m_leaf_programs is a dynamically allocated array of
+  // LeafProgram structs, one per aggregate leaf. Each leaf has its own
+  // program and accumulator offset. All leaves share the same GROUP BY.
+  //
+  // Single-leaf: m_num_leaves == 1, m_leaf_programs[0] holds the program.
+  //
+  // Allocated via lc_ndbd_pool_malloc, freed at release time.
   //------------------------------------------------------------------
-  Uint32* m_agg_program;         // Copy of aggregation program
-  Uint32 m_agg_program_len;      // Program length in words
+  Uint32       m_num_leaves;        // Number of aggregate leaves (1 for single)
+  LeafProgram* m_leaf_programs;     // Array of per-leaf descriptors [m_num_leaves]
+  Uint32       m_total_agg_results; // Sum of all leaf m_n_agg_results
+  Uint32*      m_all_programs_buf;  // Single allocation holding all leaf programs
+                                    // LeafProgram::m_agg_program points into this
 
   //------------------------------------------------------------------
   // Concurrency Strategy (immutable after creation)
@@ -190,8 +235,10 @@ struct JoinAggregationState {
     m_requestId(0),
     m_senderRef(0),
     m_apiRef(0),
-    m_agg_program(nullptr),
-    m_agg_program_len(0),
+    m_num_leaves(0),
+    m_leaf_programs(nullptr),
+    m_total_agg_results(0),
+    m_all_programs_buf(nullptr),
     m_strategy(MUTEX_BASED),
     m_num_threads(0),
     m_agg_interpreter(nullptr),
@@ -222,6 +269,20 @@ struct JoinAggregationState {
   }
 
   ~JoinAggregationState() {}
+
+  //------------------------------------------------------------------
+  // aggStateKey encoding: upper 8 bits = leaf index, lower 24 bits = base key.
+  // A join can have at most 64 tables, so 256 leaf indexes is sufficient.
+  //------------------------------------------------------------------
+  static Uint32 encodeAggStateKey(Uint32 baseKey, Uint32 leafIndex) {
+    return (leafIndex << 24) | (baseKey & 0x00FFFFFF);
+  }
+  static Uint32 decodeBaseKey(Uint32 aggStateKey) {
+    return aggStateKey & 0x00FFFFFF;
+  }
+  static Uint32 decodeLeafIndex(Uint32 aggStateKey) {
+    return aggStateKey >> 24;
+  }
 };
 
 #undef JAM_FILE_ID

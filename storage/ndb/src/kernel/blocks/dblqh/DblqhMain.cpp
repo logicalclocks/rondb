@@ -165,7 +165,7 @@
 //#define DEBUG_CONT_SCAN 1
 //#define DEBUG_INDEX_BUILD 1
 //#define DEBUG_JOIN_AGG 1
-//#define DEBUG_MATCH 1
+#define DEBUG_MATCH 1
 #endif
 
 #ifdef DEBUG_JOIN_AGG
@@ -9383,7 +9383,9 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     regTcPtr->m_join_agg_state_key = lqhKeyReq->variableData[nextPos];
     nextPos++;
     JoinAggregationState *aggState =
-        getJoinAggState(regTcPtr->m_join_agg_state_key);
+        getJoinAggState(
+            JoinAggregationState::decodeBaseKey(
+                regTcPtr->m_join_agg_state_key));
     if (aggState != nullptr &&
         !getNodeInfo(refToNode(aggState->m_senderRef)).m_connected) {
       jam();
@@ -11740,7 +11742,7 @@ Dblqh::acckeyconf_tupkeyreq(Signal* signal, TcConnectionrec* regTcPtr,
   jamDataDebug(totReclenAi);
   if (totReclenAi > 0) {
     ndbassert(attrInfoIVal != RNIL);
-    const Uint32 copyError = c_tup->copyAttrinfo(totReclenAi, attrInfoIVal);
+    const Uint32 copyError = c_tup->keyCopyAttrinfo(totReclenAi, attrInfoIVal);
     if (unlikely(copyError != 0)) {
       jam();
       TupKeyRef *ref = (TupKeyRef *)signal->getDataPtr();
@@ -15167,8 +15169,8 @@ void Dblqh::sendEvictedAggGroup(Signal *signal,
 void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
                                            TcConnectionrecPtr tcConnectptr) {
   TcConnectionrec *const regTcPtr = tcConnectptr.p;
-  DEB_MATCH(("(%u) handleOuterJoinAggKeyNotFound: aggKey=%u",
-             instance(), regTcPtr->m_join_agg_state_key));
+  DEB_MATCH(("(%u)DBLQH handleOuterJoinAggKeyNotFound: aggKey=%u",
+             getThreadId(), regTcPtr->m_join_agg_state_key));
 
   /* 1. Abort ACC — the key lookup started but key was not found.
    *    canBlock=0: safe because we arrived from ACCKEYREF (not pending). */
@@ -15210,13 +15212,22 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
   }
 
   /* 4. Feed null-extended row to AggInterpreter */
-  JoinAggregationState *state =
-      getJoinAggState(regTcPtr->m_join_agg_state_key);
+  Uint32 outerEncodedKey = regTcPtr->m_join_agg_state_key;
+  Uint32 outerBaseKey = JoinAggregationState::decodeBaseKey(outerEncodedKey);
+  Uint32 outerLeafIndex = JoinAggregationState::decodeLeafIndex(outerEncodedKey);
+  JoinAggregationState *state = getJoinAggState(outerBaseKey);
   ndbrequire(state != nullptr);
+  ndbrequire(outerLeafIndex < state->m_num_leaves);
   JoinAggInterpreter *interp = getJoinAggInterpreter(state);
 
+  const LeafProgram *leaf = nullptr;
+  if (state->m_num_leaves > 1) {
+    leaf = &state->m_leaf_programs[outerLeafIndex];
+  }
+
 retry:
-  Int32 ret = interp->processNullExtendedRow(linked_data, linked_len);
+  Int32 ret = interp->processNullExtendedRow(linked_data, linked_len,
+                                              leaf);
   if (ret == AGG_EVICT_NEEDED) {
     sendEvictedAggGroup(signal, interp, state);
     goto retry;
@@ -15980,7 +15991,9 @@ Dblqh::handle_tc_failed_scans(Signal *signal,
            * since the DBTC coordinator is gone.
            */
           JoinAggregationState *aggState =
-              getJoinAggState(scanPtr.p->m_join_agg_state_key);
+              getJoinAggState(
+                  JoinAggregationState::decodeBaseKey(
+                      scanPtr.p->m_join_agg_state_key));
           if (aggState != nullptr &&
               refToNode(aggState->m_senderRef) == nodeId) {
             shouldAbort = true;
@@ -16768,7 +16781,7 @@ void Dblqh::setup_key_pointers(Uint32 tcIndex, bool acquire_lock) {
  * prepare_tabptr
  *   The pointer and i-value of the table record used by the scan.
  *
- * TUP variable setup by copyAttrinfo:
+ * TUP variable setup by scanCopyAttrinfo/keyCopyAttrinfo:
  * ...................................
  * The Attrinfo that contains the scan stored procedure is an Attrinfo program.
  * It is stored in signal segments while being executed. When TUP executes the
@@ -16859,9 +16872,10 @@ void Dblqh::setup_scan_pointers_from_tc_con(TcConnectionrecPtr tcConnectptr,
   if (likely(loc_scanptr.p->scanStoredProcId != RNIL)) {
     jamDebug();
     Uint32 storedProcLen =
-      c_tup->copyAttrinfo(loc_scanptr.p->scanStoredProcId,
-                          bool(tcConnectptr.p->opExec),
-                          loc_scanptr.p);
+      c_tup->scanCopyAttrinfo(loc_scanptr.p->scanStoredProcId,
+                              bool(tcConnectptr.p->opExec),
+                              true,
+                              loc_scanptr.p);
     (void)storedProcLen;
     ndbassert(loc_scanptr.p->scanAiLength == storedProcLen);
   }
@@ -16925,9 +16939,10 @@ void Dblqh::setup_scan_pointers(Uint32 scanPtrI, Uint32 line) {
   {
     jamDebug();
     Uint32 storedProcLen =
-      c_tup->copyAttrinfo(loc_scanptr.p->scanStoredProcId,
-                          bool(loc_tcConnectptr.p->opExec),
-                          loc_scanptr.p);
+      c_tup->scanCopyAttrinfo(loc_scanptr.p->scanStoredProcId,
+                              bool(loc_tcConnectptr.p->opExec),
+                              true,
+                              loc_scanptr.p);
     (void)storedProcLen;
     ndbassert(loc_scanptr.p->scanAiLength == storedProcLen);
   }
@@ -18271,9 +18286,9 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (state == nullptr) {
     jam();
-    DEB_JOIN_AGG(("DBLQH execJOIN_AGG_COMPLETE_REQ:"
+    DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ:"
                   " aggStateKey=%u state=nullptr (NOT FOUND)",
-                  aggStateKey));
+                  getThreadId(), aggStateKey));
     JoinAggCompleteRef *ref =
       (JoinAggCompleteRef *)signal->getDataPtrSend();
     ref->senderRef = reference();
@@ -18290,10 +18305,10 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     Uint32 gbSize = 0;
     if (interp != nullptr && interp->gb_map_mutable() != nullptr)
       gbSize = interp->gb_map_mutable()->size();
-    DEB_JOIN_AGG(("DBLQH execJOIN_AGG_COMPLETE_REQ:"
+    DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ:"
                   " aggStateKey=%u strategy=%u num_threads=%u"
                   " gb_map_size=%u completed_ops=%u",
-                  aggStateKey, state->m_strategy,
+                  getThreadId(), aggStateKey, state->m_strategy,
                   state->m_num_threads, gbSize,
                   state->m_completed_ops.load()));
   }
@@ -18385,9 +18400,9 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
     return;
   }
 
-  DEB_MATCH(("(%u) NULL_ROW_REQ: aggStateKey=%u requestPtrI=%u "
+  DEB_MATCH(("(%u)DBLQH NULL_ROW_REQ: aggStateKey=%u requestPtrI=%u "
              "treeNodePtrI=%u",
-             instance(), aggStateKey, requestPtrI, treeNodePtrI));
+             getThreadId(), aggStateKey, requestPtrI, treeNodePtrI));
 
   /* Read linked attribute data from long section 0 (if present) */
   if (unlikely(handle.m_cnt > 1)) {
@@ -18548,8 +18563,9 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     ptr[0].p = buf;
     ptr[0].sz = pos;
  
-    DEB_JOIN_AGG(("(%u) 1:Sending TRANSID_AI to 0x%x, receiverId: %u, size: %u",
-      instance(),
+    DEB_JOIN_AGG(("(%u)DBLQH 1:Sending TRANSID_AI to 0x%x, receiverId:"
+                  " %u, size: %u",
+      getThreadId(),
       state->m_resultRef,
       transIdAI->connectPtr,
       pos));
@@ -18631,8 +18647,9 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       ptr[0].p = buf;
       ptr[0].sz = pos;
 
-      DEB_JOIN_AGG(("(%u) 2:Sending TRANSID_AI to 0x%x, receiverId: %u, size: %u",
-        instance(),
+      DEB_JOIN_AGG(("(%u)DBLQH 2:Sending TRANSID_AI to 0x%x, receiverId: %u,"
+                    " size: %u",
+        getThreadId(),
         state->m_resultRef,
         transIdAI->connectPtr,
         pos));
@@ -19231,8 +19248,16 @@ void Dblqh::accScanConfScanLab(Signal *signal,
       jamEntryDebug();
       Uint32 storedProcId = signal->theData[1];
       scanPtr->scanStoredProcId = storedProcId;
-      c_tup->copyAttrinfo(storedProcId, bool(regTcPtr->opExec),
-                          scanPtr);
+      if (unlikely(c_tup->scanCopyAttrinfo(storedProcId,
+                                           bool(regTcPtr->opExec),
+                                           true,
+                                           scanPtr) == 0)) {
+        jam();
+        scanPtr->scanCompletedStatus = ZTRUE;
+        tcConnectptr.p->errorCode = ZMEM_NOMEM_ERROR;
+        closeScanLab(signal, tcConnectptr.p);
+        return;
+      }
       storedProcConfScanLab(signal, tcConnectptr);
       return;
     } else {
@@ -19255,8 +19280,10 @@ void Dblqh::accScanConfScanLab(Signal *signal,
       // Advance to next parameter in the attrInfo
       c_tup->nextAttrInfoParam(scanPtr->scanStoredProcId);
     }
-    c_tup->copyAttrinfo(scanPtr->scanStoredProcId, bool(regTcPtr->opExec),
-                        scanPtr);
+    (void) c_tup->scanCopyAttrinfo(scanPtr->scanStoredProcId,
+                                   bool(regTcPtr->opExec),
+                                   false,
+                                   scanPtr);
     storedProcConfScanLab(signal, tcConnectptr);
     return;
   }
@@ -20257,8 +20284,8 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     if (scanPtr->m_outer_join_agg_scan) {
       jam();
       Uint32 range_no = regTcPtr->m_scan_curr_range_no;
-      DEB_MATCH(("(%u) setLocalMatchedRange: range_no=%u read_len=%u",
-                 instance(), range_no, read_len));
+      DEB_MATCH(("(%u)DBLQH setLocalMatchedRange: range_no=%u read_len=%u",
+                 getThreadId(), range_no, read_len));
       Uint32 word = range_no / 32;
       if (unlikely(word >= scanPtr->m_local_matched_words)) {
         jam();
@@ -20934,7 +20961,9 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
       scanFragReq->variableData[extra_len_index];
     extra_len_index++;
     JoinAggregationState *aggState =
-        getJoinAggState(scanPtr->m_join_agg_state_key);
+        getJoinAggState(
+            JoinAggregationState::decodeBaseKey(
+                scanPtr->m_join_agg_state_key));
     if (aggState != nullptr &&
         !getNodeInfo(refToNode(aggState->m_senderRef)).m_connected) {
       jam();
@@ -20960,10 +20989,12 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
     }
     memset(scanPtr->m_local_matched_ranges, 0,
            bitmask_words * sizeof(Uint32));
-    DEB_MATCH(("(%u) SCAN_FRAGREQ: OuterJoinAggFlag=1 aggKey=%u "
+    DEB_MATCH(("(%u)DBLQH SCAN_FRAGREQ: OuterJoinAggFlag=1 aggKey=%u "
                "rangeCount=%u bitmask_words=%u",
-               instance(), scanPtr->m_join_agg_state_key,
-               rangeCount, bitmask_words));
+               getThreadId(),
+               scanPtr->m_join_agg_state_key,
+               rangeCount,
+               bitmask_words));
   } else {
     scanPtr->m_outer_join_agg_scan = 0;
   }
@@ -22174,9 +22205,13 @@ void Dblqh::sendScanFragConf(Signal *signal,
     LinearSectionPtr lsptr[1];
     lsptr[0].p = scanPtr->m_local_matched_ranges;
     lsptr[0].sz = scanPtr->m_local_matched_words;
-    DEB_MATCH(("(%u) SCAN_FRAGCONF(close): sending matched bitmask "
-               "words=%u to ref=0x%x",
-               instance(), scanPtr->m_local_matched_words, blockRef));
+    DEB_MATCH(("(%u)DBLQH SCAN_FRAGCONF(close): sending matched bitmask "
+               "words=%u mask: 0x%x to ref=0x%x, senderData: %u",
+               getThreadId(),
+               scanPtr->m_local_matched_words,
+               scanPtr->m_local_matched_ranges[0],
+               blockRef,
+               senderData));
     sendSignal(blockRef, GSN_SCAN_FRAGCONF, signal, sig_len,
                prio_level, lsptr, 1);
     lc_ndbd_pool_free(scanPtr->m_local_matched_ranges);
@@ -22734,7 +22769,7 @@ void Dblqh::accScanConfCopyLab(Signal *signal) {
   ndbrequire(signal->theData[0] == 0);
   scanPtr->scanStoredProcId = signal->theData[1];
   scanPtr->scanAiLength = signal->theData[2];
-  c_tup->copyAttrinfo(scanPtr->scanStoredProcId, bool(regTcPtr->opExec));
+  (void) c_tup->scanCopyAttrinfo(scanPtr->scanStoredProcId, false, true);
 
   if (scanPtr->scanCompletedStatus == ZTRUE) {
     jam();

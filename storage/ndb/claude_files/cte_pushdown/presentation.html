@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RonDB CTE Pushdown: Real-Time Feature Serving with SQL</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #0a0a1a;
+    color: #e0e0e0;
+  }
+
+  /* Slide system */
+  .slide {
+    width: 100vw;
+    height: 100vh;
+    padding: 5vh 6vw;
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    position: absolute;
+    top: 0; left: 0;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+  }
+  .slide.active { display: flex; opacity: 1; }
+
+  /* Typography - scales with viewport for 5K */
+  h1 { font-size: clamp(2.5em, 4vw, 5em); color: #60a5fa; margin-bottom: 0.4em; font-weight: 700; letter-spacing: -0.02em; }
+  h2 { font-size: clamp(2em, 3.2vw, 4em); color: #818cf8; margin-bottom: 0.6em; font-weight: 600; letter-spacing: -0.01em; }
+  h3 { font-size: clamp(1.2em, 1.8vw, 2.2em); color: #a78bfa; margin-bottom: 0.4em; font-weight: 600; }
+  p { font-size: clamp(1em, 1.4vw, 1.8em); line-height: 1.7; margin-bottom: 0.5em; color: #c0c0d0; }
+
+  .subtitle { font-size: clamp(1.2em, 1.8vw, 2em); color: #94a3b8; margin-bottom: 1.5em; }
+
+  .tag {
+    display: inline-block;
+    background: #1e3a5f;
+    color: #60a5fa;
+    padding: 0.3em 1em;
+    border-radius: 2em;
+    font-size: clamp(0.8em, 1.1vw, 1.3em);
+    margin: 0.2em;
+  }
+  .tag.green { background: #1a3a2a; color: #4ade80; }
+  .tag.purple { background: #2d1a4a; color: #c084fc; }
+  .tag.orange { background: #3a2a1a; color: #fb923c; }
+
+  pre {
+    background: #12122a;
+    border: 1px solid #2a2a4a;
+    border-radius: 1em;
+    padding: 1.5em 2em;
+    font-size: clamp(0.85em, 1.15vw, 1.5em);
+    line-height: 1.55;
+    overflow-x: auto;
+    margin: 0.8em 0 1em 0;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+  }
+  .keyword { color: #c084fc; font-weight: bold; }
+  .function { color: #60a5fa; }
+  .string { color: #4ade80; }
+  .comment { color: #6b7280; font-style: italic; }
+  .number { color: #fb923c; }
+  .table-name { color: #fbbf24; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5vw; margin: 1em 0; }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2vw; margin: 1em 0; }
+
+  .card {
+    background: linear-gradient(135deg, #151530 0%, #1a1a3a 100%);
+    border: 1px solid #2a2a4a;
+    border-radius: 1em;
+    padding: clamp(1em, 1.5vw, 2em);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .card:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(79,70,229,0.15); }
+  .card.highlight { border-color: #4f46e5; background: linear-gradient(135deg, #1a1a3a 0%, #1e1e4a 100%); }
+  .card.success { border-color: #16a34a; background: linear-gradient(135deg, #0a2a1a 0%, #0d3020 100%); }
+  .card.warning { border-color: #d97706; background: linear-gradient(135deg, #2a1a0a 0%, #302010 100%); }
+
+  .diagram {
+    background: #0d0d25;
+    border: 1px solid #2a2a5a;
+    border-radius: 1em;
+    padding: clamp(1.5em, 2vw, 3em);
+    margin: 1em 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: clamp(0.75em, 1.05vw, 1.35em);
+    line-height: 1.5;
+    white-space: pre;
+    overflow-x: auto;
+    box-shadow: inset 0 2px 12px rgba(0,0,0,0.3);
+  }
+
+  ul { margin: 0.5em 0 1em 1.5em; }
+  li {
+    font-size: clamp(1em, 1.3vw, 1.6em);
+    line-height: 1.7;
+    color: #c0c0d0;
+    margin-bottom: 0.3em;
+  }
+  li strong { color: #e0e0f0; }
+
+  .badge {
+    display: inline-block;
+    padding: 0.3em 0.8em;
+    border-radius: 0.5em;
+    font-size: clamp(0.7em, 0.9vw, 1.1em);
+    font-weight: 600;
+    margin-right: 0.5em;
+  }
+  .badge.implemented { background: #16a34a; color: white; }
+  .badge.planned { background: #4f46e5; color: white; }
+
+  .number-big {
+    font-size: clamp(3em, 5vw, 7em);
+    font-weight: 800;
+    color: #60a5fa;
+    line-height: 1;
+    background: linear-gradient(135deg, #60a5fa, #818cf8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .number-unit { font-size: clamp(1em, 1.3vw, 1.6em); color: #94a3b8; }
+
+  /* Navigation */
+  .nav {
+    position: fixed;
+    bottom: 2vh;
+    right: 3vw;
+    display: flex;
+    align-items: center;
+    gap: 1em;
+    z-index: 100;
+  }
+  .nav-btn {
+    width: clamp(2.5em, 3vw, 4em);
+    height: clamp(2.5em, 3vw, 4em);
+    border-radius: 50%;
+    border: 2px solid #4f46e5;
+    background: rgba(15, 15, 40, 0.8);
+    color: #818cf8;
+    font-size: clamp(1em, 1.3vw, 1.6em);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    backdrop-filter: blur(8px);
+  }
+  .nav-btn:hover { background: #4f46e5; color: white; transform: scale(1.1); }
+  .nav-counter {
+    color: #4a4a6a;
+    font-size: clamp(0.9em, 1.1vw, 1.4em);
+    min-width: 4em;
+    text-align: center;
+  }
+
+  /* Progress bar */
+  .progress {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, #4f46e5, #818cf8, #60a5fa);
+    transition: width 0.4s ease;
+    z-index: 100;
+    box-shadow: 0 0 12px rgba(79, 70, 229, 0.5);
+  }
+
+  .schema-box {
+    background: #151530;
+    border-left: 4px solid;
+    padding: 0.6em 1em;
+    margin: 0.5em 0;
+    border-radius: 0 0.5em 0.5em 0;
+    font-size: clamp(0.85em, 1.1vw, 1.3em);
+  }
+  .schema-box.feature { border-color: #4ade80; }
+  .schema-box.event { border-color: #fb923c; }
+  .schema-box.cte { border-color: #818cf8; }
+
+  .check { color: #4ade80; }
+
+  .flow-step {
+    display: flex;
+    align-items: center;
+    margin: 0.6em 0;
+  }
+  .flow-step .step-num {
+    width: clamp(2em, 2.5vw, 3.5em);
+    height: clamp(2em, 2.5vw, 3.5em);
+    border-radius: 50%;
+    background: linear-gradient(135deg, #4f46e5, #6366f1);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: clamp(0.9em, 1.2vw, 1.5em);
+    margin-right: 1em;
+    flex-shrink: 0;
+    box-shadow: 0 2px 12px rgba(79, 70, 229, 0.3);
+  }
+  .flow-step .step-text {
+    font-size: clamp(1em, 1.3vw, 1.6em);
+    color: #c0c0d0;
+  }
+  .flow-step .step-text strong { color: #e0e0f0; }
+
+  /* SVG diagrams */
+  svg text { font-family: 'Segoe UI', system-ui, sans-serif; }
+  svg .node-rect { rx: 12; ry: 12; }
+  svg .connector { stroke-width: 2; fill: none; }
+
+  /* Animated glow for key elements */
+  @keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 20px rgba(79, 70, 229, 0.2); }
+    50% { box-shadow: 0 0 40px rgba(79, 70, 229, 0.4); }
+  }
+  .glow { animation: pulse-glow 3s ease-in-out infinite; }
+
+  /* Branding bar */
+  .branding {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: clamp(56px, 6vh, 80px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: clamp(16px, 2.5vw, 40px);
+    background: rgba(10, 10, 26, 0.9);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid #1a1a3a;
+    z-index: 200;
+    padding: 0 3vw;
+  }
+  .branding img {
+    height: clamp(30px, 4vh, 52px);
+    object-fit: contain;
+  }
+  .branding img.rondb-logo {
+    height: clamp(38px, 5vh, 64px);
+  }
+  .branding .powering {
+    font-size: clamp(1em, 1.6vw, 1.8em);
+    color: #818cf8;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* Adjust slides to not overlap branding */
+  .slide {
+    padding-top: clamp(66px, 7.5vh, 100px);
+  }
+</style>
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<div class="branding">
+  <img class="rondb-logo" src="https://cdn.prod.website-files.com/6013cab68382f702f5481fa8/621f2f69a834b6df8d52cf75_Logo%20-%20Yellow%2C%20on%20black%20BG%404x.png" alt="RonDB">
+  <span class="powering">Powering</span>
+  <img src="https://www.hopsworks.ai/images/hopsworks-logo-2022.svg" alt="Hopsworks" style="filter: brightness(1.3);">
+</div>
+
+<!-- Slide 1: Title -->
+<div class="slide active" id="s1">
+  <div style="flex: 1; display: flex; flex-direction: column; justify-content: center;">
+    <h1>RonDB CTE Pushdown</h1>
+    <p class="subtitle">Real-Time Feature Serving with Pushed SQL Aggregation</p>
+    <div style="margin-top: 1.5em;">
+      <span class="tag">RonDB 26.04</span>
+      <span class="tag green">NDB Pushdown</span>
+      <span class="tag purple">Feature Store</span>
+      <span class="tag orange">CTE</span>
+    </div>
+    <p style="margin-top: 2em; color: #6b7280; font-size: clamp(1em, 1.3vw, 1.5em);">
+      Combining precomputed features with real-time aggregates in a single pushed query
+    </p>
+  </div>
+</div>
+
+<!-- Slide 2: The Feature Store Challenge -->
+<div class="slide" id="s2">
+  <h2>The Feature Store Challenge</h2>
+  <div class="two-col">
+    <div>
+      <h3>Feature Groups (Precomputed)</h3>
+      <div class="schema-box feature"><strong>user_profile</strong> &mdash; 50 columns<br><code>user_id (PK), age, gender, country, ...</code></div>
+      <div class="schema-box feature"><strong>user_embeddings</strong> &mdash; 128 columns<br><code>user_id (PK), bert_enc_0..63, item2vec_0..31, interest_0..31</code></div>
+      <div class="schema-box feature"><strong>user_history</strong> &mdash; 80 columns<br><code>user_id (PK), total_orders, avg_spend, ...</code></div>
+      <p style="margin-top: 0.8em;"><strong>1 row per user, hundreds of columns</strong></p>
+      <p>All joined by PK &mdash; fast lookups</p>
+    </div>
+    <div>
+      <h3>Feature Groups (Real-Time Events)</h3>
+      <div class="schema-box event"><strong>purchases</strong> &mdash; millions of rows<br><code>purchase_id, user_id, amount, ts, category</code></div>
+      <div class="schema-box event"><strong>page_views</strong> &mdash; millions of rows<br><code>view_id, user_id, page, duration, ts</code></div>
+      <div class="schema-box event"><strong>clicks</strong> &mdash; millions of rows<br><code>click_id, user_id, item_id, converted, ts</code></div>
+      <p style="margin-top: 0.8em;"><strong>Many rows per user, need aggregation</strong></p>
+      <p>COUNT, SUM, AVG over recent events per user</p>
+    </div>
+  </div>
+  <p style="margin-top: 1em; font-size: clamp(1.2em, 1.6vw, 2em); color: #f87171;">
+    <strong>Goal:</strong> One query returns ALL features &mdash; precomputed + real-time &mdash; in &lt; 10ms
+  </p>
+</div>
+
+<!-- Slide 3: The Fan-Out Problem -->
+<div class="slide" id="s3">
+  <h2>Why Naive JOINs Don't Work</h2>
+  <div class="two-col">
+    <div class="card warning">
+      <h3 style="color: #fb923c;">Problem 1: Cross Product</h3>
+      <pre><span class="keyword">SELECT</span> f.*, <span class="function">COUNT</span>(p.id), <span class="function">COUNT</span>(v.id)
+<span class="keyword">FROM</span> <span class="table-name">user_profile</span> f
+<span class="keyword">JOIN</span> <span class="table-name">purchases</span> p <span class="keyword">ON</span> p.user_id = f.user_id
+<span class="keyword">JOIN</span> <span class="table-name">page_views</span> v <span class="keyword">ON</span> v.user_id = f.user_id
+<span class="keyword">GROUP BY</span> f.user_id</pre>
+      <p>10 purchases &times; 20 views = <strong style="color: #f87171;">200 rows per user</strong></p>
+      <p>Aggregates are <strong style="color: #f87171;">inflated and wrong</strong></p>
+    </div>
+    <div class="card warning">
+      <h3 style="color: #fb923c;">Problem 2: Massive GROUP BY</h3>
+      <pre><span class="keyword">SELECT</span> f.*, d.*, h.*, <span class="function">COUNT</span>(p.id)
+<span class="keyword">FROM</span> <span class="table-name">user_profile</span> f
+<span class="keyword">JOIN</span> <span class="table-name">user_embeddings</span> d <span class="keyword">ON</span> ...
+<span class="keyword">JOIN</span> <span class="table-name">user_history</span> h <span class="keyword">ON</span> ...
+<span class="keyword">JOIN</span> <span class="table-name">purchases</span> p <span class="keyword">ON</span> ...
+<span class="keyword">GROUP BY</span> f.user_id, f.age, f.gender,
+  f.country, ... <span class="comment">-- 258 columns!</span></pre>
+      <p><strong style="color: #f87171;">Impractical and slow</strong></p>
+    </div>
+  </div>
+</div>
+
+<!-- Slide 4: The Solution - CTEs -->
+<div class="slide" id="s4">
+  <h2 style="margin-bottom: 0.3em;">The Solution: SQL CTEs</h2>
+  <div class="two-col" style="gap: 2vw; align-items: start;">
+    <pre style="font-size: clamp(0.7em, 0.95vw, 1.2em); padding: 1em 1.2em; margin: 0;"><span class="keyword">WITH</span>
+  <span class="table-name">purchase_agg</span> <span class="keyword">AS</span> (
+    <span class="keyword">SELECT</span> user_id,
+           <span class="function">COUNT</span>(*) <span class="keyword">AS</span> n_purchases,
+           <span class="function">SUM</span>(amount) <span class="keyword">AS</span> total_spend
+    <span class="keyword">FROM</span> <span class="table-name">purchases</span>
+    <span class="keyword">WHERE</span> ts > <span class="string">'2026-01-01'</span>
+    <span class="keyword">GROUP BY</span> user_id
+  ),
+  <span class="table-name">view_agg</span> <span class="keyword">AS</span> (
+    <span class="keyword">SELECT</span> user_id,
+           <span class="function">COUNT</span>(*) <span class="keyword">AS</span> n_views,
+           <span class="function">SUM</span>(duration) <span class="keyword">AS</span> total_time
+    <span class="keyword">FROM</span> <span class="table-name">page_views</span>
+    <span class="keyword">WHERE</span> ts > <span class="string">'2026-01-01'</span>
+    <span class="keyword">GROUP BY</span> user_id
+  )</pre>
+    <pre style="font-size: clamp(0.7em, 0.95vw, 1.2em); padding: 1em 1.2em; margin: 0;"><span class="comment">-- Main query: no GROUP BY needed</span>
+<span class="keyword">SELECT</span>
+  f.*, e.*, h.*,              <span class="comment">-- 258 features</span>
+  p.n_purchases,              <span class="comment">-- real-time</span>
+  p.total_spend,
+  v.n_views, v.total_time
+<span class="keyword">FROM</span> <span class="table-name">user_profile</span> f
+<span class="keyword">JOIN</span> <span class="table-name">user_embeddings</span> e
+  <span class="keyword">ON</span> e.user_id = f.user_id     <span class="comment">-- PK-PK</span>
+<span class="keyword">JOIN</span> <span class="table-name">user_history</span> h
+  <span class="keyword">ON</span> h.user_id = f.user_id     <span class="comment">-- PK-PK</span>
+<span class="keyword">LEFT JOIN</span> <span class="table-name">purchase_agg</span> p
+  <span class="keyword">ON</span> p.user_id = f.user_id     <span class="comment">-- 1:1</span>
+<span class="keyword">LEFT JOIN</span> <span class="table-name">view_agg</span> v
+  <span class="keyword">ON</span> v.user_id = f.user_id     <span class="comment">-- 1:1</span>
+<span class="keyword">WHERE</span> f.user_id <span class="keyword">IN</span> (<span class="number">1001</span>, <span class="number">1002</span>)</pre>
+  </div>
+  <div class="two-col" style="margin-top: 0.8em;">
+    <div class="card success" style="padding: 0.8em 1.2em;">
+      <h3 style="color: #4ade80; margin-bottom: 0.2em;"><span class="check">&#10003;</span> No GROUP BY on 258 columns</h3>
+      <p style="margin: 0;">Functional dependency: user_id is PK of all feature tables. No GROUP BY needed in the main query.</p>
+    </div>
+    <div class="card success" style="padding: 0.8em 1.2em;">
+      <h3 style="color: #4ade80; margin-bottom: 0.2em;"><span class="check">&#10003;</span> No cross product</h3>
+      <p style="margin: 0;">Each CTE aggregates independently. Main query joins only 1:1 results. Correct aggregates guaranteed.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Slide 5: Feature View Examples -->
+<div class="slide" id="s5">
+  <h2>Feature Views in Practice</h2>
+  <p>A Feature View combines Feature Groups into a single CTE query:</p>
+  <div class="three-col">
+    <div class="card">
+      <h3>Fraud Detection</h3>
+      <div class="schema-box feature">user_profile (50 cols)</div>
+      <div class="schema-box feature">user_history (80 cols)</div>
+      <div class="schema-box event">purchase_agg: COUNT, SUM, MAX 24h</div>
+      <div class="schema-box event">login_agg: COUNT, DISTINCT ip 1h</div>
+      <p style="margin-top: 0.6em;"><strong>132 features</strong></p>
+    </div>
+    <div class="card">
+      <h3>Recommendation</h3>
+      <div class="schema-box feature">user_embeddings (128 cols)</div>
+      <div class="schema-box feature">user_preferences (40 cols)</div>
+      <div class="schema-box event">view_agg: COUNT, SUM(dur) 7d</div>
+      <div class="schema-box event">click_agg: COUNT, cvr 7d</div>
+      <div class="schema-box event">cart_agg: COUNT, SUM(val) 24h</div>
+      <p style="margin-top: 0.6em;"><strong>174 features</strong></p>
+    </div>
+    <div class="card">
+      <h3>Credit Scoring</h3>
+      <div class="schema-box feature">user_profile (50 cols)</div>
+      <div class="schema-box feature">credit_history (60 cols)</div>
+      <div class="schema-box feature">employment (30 cols)</div>
+      <div class="schema-box event">payment_agg: COUNT, SUM 90d</div>
+      <p style="margin-top: 0.6em;"><strong>143 features</strong></p>
+    </div>
+  </div>
+</div>
+
+<!-- Slide 6: What's Already Implemented -->
+<div class="slide" id="s6">
+  <h2 style="margin-bottom: 0.3em;">Already Implemented in RonDB</h2>
+  <div class="two-col" style="gap: 2vw;">
+    <div>
+      <div class="card highlight" style="margin-bottom: 0.7em; padding: 0.8em 1.1em;">
+        <h3 style="margin-bottom: 0.15em;"><span class="badge implemented">IMPLEMENTED</span> Pushdown Join Aggregation</h3>
+        <p style="margin: 0;">DBSPJ pushes joins with GROUP BY to data nodes. Aggregation runs inside NDB.</p>
+        <pre style="font-size: clamp(0.65em, 0.85vw, 1.05em); padding: 0.5em 0.8em; margin: 0.4em 0 0 0;"><span class="keyword">SELECT</span> c.segment, <span class="function">COUNT</span>(*), <span class="function">SUM</span>(o.total)
+<span class="keyword">FROM</span> <span class="table-name">customers</span> c <span class="keyword">JOIN</span> <span class="table-name">orders</span> o <span class="keyword">ON</span> o.cust_id = c.cust_id
+<span class="keyword">GROUP BY</span> c.segment</pre>
+      </div>
+      <div class="card highlight" style="margin-bottom: 0.7em; padding: 0.8em 1.1em;">
+        <h3 style="margin-bottom: 0.15em;"><span class="badge implemented">IMPLEMENTED</span> Hash Table Aggregation</h3>
+        <p style="margin: 0;">JoinAggInterpreter: 1024-bucket hash table per LDM thread. 32KB chunk allocation.</p>
+      </div>
+      <div class="card highlight" style="padding: 0.7em 1em;">
+        <h3 style="margin-bottom: 0.15em;"><span class="badge implemented">IMPLEMENTED</span> RonSQL Engine</h3>
+        <p style="margin: 0;">Parser, planner, pushed join compilation. Subquery decorrelation. Aggregation API compiler.</p>
+      </div>
+    </div>
+    <div>
+      <div class="card" style="margin-bottom: 0.7em; padding: 0.8em 1.1em; border-color: #4f46e5;">
+        <h3 style="margin-bottom: 0.15em;"><span class="badge planned">PLANNED</span> CTE Parsing &amp; Planning</h3>
+        <p style="margin: 0;">WITH ... AS syntax. CTE references in join tree. Compound query tree generation.</p>
+      </div>
+      <div class="card" style="margin-bottom: 0.7em; padding: 0.8em 1.1em; border-color: #4f46e5;">
+        <h3 style="margin-bottom: 0.15em;"><span class="badge planned">PLANNED</span> CTE Materialization</h3>
+        <p style="margin: 0;">Each CTE builds a distributed hash table. Aggregate results keyed by GROUP BY columns.</p>
+      </div>
+      <div class="card" style="margin-bottom: 0.7em; padding: 0.8em 1.1em; border-color: #4f46e5;">
+        <h3 style="margin-bottom: 0.15em;"><span class="badge planned">PLANNED</span> CTE_LOOKUP Signal</h3>
+        <p style="margin: 0;">Hash table lookups bypass DBDIH. Simple hash distribution. Faster than LQHKEYREQ.</p>
+      </div>
+      <div class="card glow" style="padding: 0.8em 1.1em; border-color: #4f46e5;">
+        <h3 style="margin-bottom: 0.15em;"><span class="badge planned">PLANNED</span> Parallel Execution</h3>
+        <p style="margin: 0;">CTE scans and PK lookups run simultaneously. Block only when CTE result is needed.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Slide 7: Current Support - Subquery Aggregation -->
+<div class="slide" id="s7">
+  <h2 style="margin-bottom: 0.3em;">Today: Subquery Aggregation (Implemented)</h2>
+  <div class="two-col" style="gap: 2vw; align-items: start;">
+    <pre style="font-size: clamp(0.68em, 0.92vw, 1.15em); padding: 1em 1.2em; margin: 0;"><span class="keyword">RONSQL</span>
+<span class="keyword">SELECT</span>
+  f.user_id, f.age, f.country,
+  e.bert_enc_0, e.item2vec_0,
+  h.total_orders, h.churn_score,
+
+  <span class="comment">-- Real-time aggregates (subqueries):</span>
+  (<span class="keyword">SELECT</span> <span class="function">COUNT</span>(*)
+   <span class="keyword">FROM</span> <span class="table-name">purchases</span> p
+   <span class="keyword">WHERE</span> p.user_id = f.user_id
+     <span class="keyword">AND</span> p.ts > <span class="string">'2026-03-01'</span>
+  ) <span class="keyword">AS</span> n_purchases_30d,
+
+  (<span class="keyword">SELECT</span> <span class="function">SUM</span>(p.amount)
+   <span class="keyword">FROM</span> <span class="table-name">purchases</span> p
+   <span class="keyword">WHERE</span> p.user_id = f.user_id
+     <span class="keyword">AND</span> p.ts > <span class="string">'2026-03-01'</span>
+  ) <span class="keyword">AS</span> total_spend_30d,
+
+  (<span class="keyword">SELECT</span> <span class="function">COUNT</span>(*)
+   <span class="keyword">FROM</span> <span class="table-name">page_views</span> v
+   <span class="keyword">WHERE</span> v.user_id = f.user_id
+     <span class="keyword">AND</span> v.ts > <span class="string">'2026-03-01'</span>
+  ) <span class="keyword">AS</span> n_views_30d
+
+<span class="keyword">FROM</span> <span class="table-name">user_profile</span> f
+<span class="keyword">JOIN</span> <span class="table-name">user_embeddings</span> e
+  <span class="keyword">ON</span> e.user_id = f.user_id
+<span class="keyword">JOIN</span> <span class="table-name">user_history</span> h
+  <span class="keyword">ON</span> h.user_id = f.user_id
+<span class="keyword">WHERE</span> f.user_id = <span class="number">1001</span>;</pre>
+    <div>
+      <div class="card success" style="padding: 0.8em 1.2em; margin-bottom: 0.8em;">
+        <h3 style="color: #4ade80; margin-bottom: 0.2em;"><span class="check">&#10003;</span> Fully pushed to NDB today</h3>
+        <p style="margin: 0;">RonSQL decorrelates each subquery into a LEFT OUTER JOIN with multi-leaf pushdown aggregation. All 3 subqueries execute as separate aggregate leaves in one pushed query tree.</p>
+      </div>
+      <div class="card success" style="padding: 0.8em 1.2em; margin-bottom: 0.8em;">
+        <h3 style="color: #4ade80; margin-bottom: 0.2em;"><span class="check">&#10003;</span> Subquery merging</h3>
+        <p style="margin: 0;">The two <code>purchases</code> subqueries (COUNT, SUM) are merged into a single table scan with multiple aggregate accumulators &mdash; one scan, two results.</p>
+      </div>
+      <div class="card" style="padding: 0.8em 1.2em; border-color: #d97706;">
+        <h3 style="color: #fb923c; margin-bottom: 0.2em;">Limitations</h3>
+        <p style="margin: 0;"><strong>Hidden GROUP BY:</strong> all non-aggregate SELECT columns (f.*, e.*, h.*) are implicitly part of the GROUP BY. With 258 feature columns, this forces grouping on all of them internally.</p>
+        <p style="margin: 0.3em 0 0 0;"><strong>Single-table only:</strong> each subquery scans one table. CTEs will enable <strong>joins inside aggregation</strong> and explicit GROUP BY with multiple output columns.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Slide 8: Architecture -->
+<div class="slide" id="s8">
+  <h2>Compound Query Tree Architecture</h2>
+  <p>One query tree sent to DBSPJ &mdash; CTEs and main query together:</p>
+  <svg viewBox="0 0 1200 500" style="width: 100%; max-height: 62vh; margin: 0.5em 0;">
+    <!-- API -->
+    <rect x="480" y="10" width="240" height="50" rx="12" fill="#1e3a5f" stroke="#60a5fa" stroke-width="2"/>
+    <text x="600" y="42" text-anchor="middle" fill="#60a5fa" font-size="20" font-weight="600">API (RonSQL)</text>
+    <line x1="600" y1="60" x2="600" y2="100" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <!-- DBSPJ -->
+    <rect x="400" y="100" width="400" height="50" rx="12" fill="#1a1a3a" stroke="#818cf8" stroke-width="2"/>
+    <text x="600" y="132" text-anchor="middle" fill="#818cf8" font-size="20" font-weight="600">DBSPJ Coordinator</text>
+
+    <!-- Fan out lines -->
+    <line x1="500" y1="150" x2="180" y2="200" stroke="#fb923c" stroke-width="2"/>
+    <line x1="600" y1="150" x2="600" y2="200" stroke="#fb923c" stroke-width="2"/>
+    <line x1="700" y1="150" x2="1020" y2="200" stroke="#4ade80" stroke-width="2"/>
+
+    <!-- CTE[0] -->
+    <rect x="50" y="200" width="260" height="45" rx="10" fill="#2a1a0a" stroke="#fb923c" stroke-width="2"/>
+    <text x="180" y="228" text-anchor="middle" fill="#fb923c" font-size="16" font-weight="600">CTE[0]: SCAN purchases</text>
+    <rect x="80" y="260" width="200" height="35" rx="8" fill="#151530" stroke="#fb923c" stroke-width="1"/>
+    <text x="180" y="283" text-anchor="middle" fill="#c0c0d0" font-size="14">+ aggregate + GROUP BY</text>
+    <line x1="180" y1="295" x2="180" y2="330" stroke="#fb923c" stroke-width="2" marker-end="url(#arrow)"/>
+    <rect x="90" y="330" width="180" height="40" rx="10" fill="#1a1a3a" stroke="#818cf8" stroke-width="2" stroke-dasharray="6,3"/>
+    <text x="180" y="356" text-anchor="middle" fill="#818cf8" font-size="15" font-weight="600">Hash Table [0]</text>
+
+    <!-- CTE[1] -->
+    <rect x="470" y="200" width="260" height="45" rx="10" fill="#2a1a0a" stroke="#fb923c" stroke-width="2"/>
+    <text x="600" y="228" text-anchor="middle" fill="#fb923c" font-size="16" font-weight="600">CTE[1]: SCAN page_views</text>
+    <rect x="500" y="260" width="200" height="35" rx="8" fill="#151530" stroke="#fb923c" stroke-width="1"/>
+    <text x="600" y="283" text-anchor="middle" fill="#c0c0d0" font-size="14">+ aggregate + GROUP BY</text>
+    <line x1="600" y1="295" x2="600" y2="330" stroke="#fb923c" stroke-width="2" marker-end="url(#arrow)"/>
+    <rect x="510" y="330" width="180" height="40" rx="10" fill="#1a1a3a" stroke="#818cf8" stroke-width="2" stroke-dasharray="6,3"/>
+    <text x="600" y="356" text-anchor="middle" fill="#818cf8" font-size="15" font-weight="600">Hash Table [1]</text>
+
+    <!-- Main query tree -->
+    <rect x="870" y="200" width="280" height="45" rx="10" fill="#0a2a1a" stroke="#4ade80" stroke-width="2"/>
+    <text x="1010" y="228" text-anchor="middle" fill="#4ade80" font-size="16" font-weight="600">SCAN user_profile (root)</text>
+
+    <!-- Children -->
+    <line x1="940" y1="245" x2="880" y2="280" stroke="#4ade80" stroke-width="1.5"/>
+    <line x1="1010" y1="245" x2="1010" y2="280" stroke="#4ade80" stroke-width="1.5"/>
+    <line x1="1080" y1="245" x2="1080" y2="340" stroke="#818cf8" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <line x1="940" y1="245" x2="940" y2="340" stroke="#818cf8" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+    <rect x="800" y="280" width="170" height="35" rx="8" fill="#151530" stroke="#4ade80" stroke-width="1.5"/>
+    <text x="885" y="303" text-anchor="middle" fill="#4ade80" font-size="13">PK user_embeddings</text>
+    <rect x="930" y="280" width="170" height="35" rx="8" fill="#151530" stroke="#4ade80" stroke-width="1.5"/>
+    <text x="1015" y="303" text-anchor="middle" fill="#4ade80" font-size="13">PK user_history</text>
+
+    <rect x="855" y="340" width="170" height="35" rx="8" fill="#1a1a3a" stroke="#818cf8" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <text x="940" y="363" text-anchor="middle" fill="#818cf8" font-size="13">CTE_LOOKUP [0]</text>
+    <rect x="995" y="340" width="170" height="35" rx="8" fill="#1a1a3a" stroke="#818cf8" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <text x="1080" y="363" text-anchor="middle" fill="#818cf8" font-size="13">CTE_LOOKUP [1]</text>
+
+    <!-- Dashed lines from CTE lookups to hash tables -->
+    <line x1="855" y1="358" x2="270" y2="350" stroke="#818cf8" stroke-width="1" stroke-dasharray="4,4" opacity="0.5"/>
+    <line x1="995" y1="358" x2="690" y2="350" stroke="#818cf8" stroke-width="1" stroke-dasharray="4,4" opacity="0.5"/>
+
+    <!-- PARALLEL label -->
+    <rect x="350" y="430" width="500" height="40" rx="20" fill="none" stroke="#4f46e5" stroke-width="2" stroke-dasharray="6,3"/>
+    <text x="600" y="456" text-anchor="middle" fill="#4f46e5" font-size="17" font-weight="600">All three branches execute in PARALLEL</text>
+
+    <defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#4f46e5"/>
+      </marker>
+    </defs>
+  </svg>
+</div>
+
+<!-- Slide 9: Execution Timeline -->
+<div class="slide" id="s9">
+  <h2>Parallel Execution Timeline</h2>
+  <p>Batch lookup of 3 users with 2 CTEs:</p>
+  <svg viewBox="0 0 1200 420" style="width: 100%; max-height: 55vh; margin: 1em 0;">
+    <!-- Time axis -->
+    <line x1="180" y1="50" x2="1100" y2="50" stroke="#4a4a6a" stroke-width="1"/>
+    <text x="180" y="40" fill="#94a3b8" font-size="14">0ms</text>
+    <text x="310" y="40" fill="#94a3b8" font-size="14">1ms</text>
+    <text x="440" y="40" fill="#94a3b8" font-size="14">2ms</text>
+    <text x="570" y="40" fill="#94a3b8" font-size="14">3ms</text>
+    <text x="700" y="40" fill="#94a3b8" font-size="14">4ms</text>
+    <text x="830" y="40" fill="#94a3b8" font-size="14">5ms</text>
+    <text x="960" y="40" fill="#94a3b8" font-size="14">6ms</text>
+    <text x="1060" y="40" fill="#94a3b8" font-size="14">7ms</text>
+    <!-- Grid lines -->
+    <line x1="310" y1="45" x2="310" y2="340" stroke="#1a1a3a" stroke-width="1"/>
+    <line x1="440" y1="45" x2="440" y2="340" stroke="#1a1a3a" stroke-width="1"/>
+    <line x1="570" y1="45" x2="570" y2="340" stroke="#1a1a3a" stroke-width="1"/>
+    <line x1="700" y1="45" x2="700" y2="340" stroke="#1a1a3a" stroke-width="1"/>
+    <line x1="830" y1="45" x2="830" y2="340" stroke="#1a1a3a" stroke-width="1"/>
+    <line x1="960" y1="45" x2="960" y2="340" stroke="#1a1a3a" stroke-width="1"/>
+
+    <!-- Labels -->
+    <text x="20" y="90" fill="#fb923c" font-size="16" font-weight="600">CTE[0]</text>
+    <text x="20" y="140" fill="#fb923c" font-size="16" font-weight="600">CTE[1]</text>
+    <text x="20" y="200" fill="#4ade80" font-size="16" font-weight="600">PK Lookups</text>
+    <text x="20" y="280" fill="#818cf8" font-size="16" font-weight="600">CTE Lookups</text>
+    <text x="20" y="335" fill="#60a5fa" font-size="16" font-weight="600">Result</text>
+
+    <!-- CTE bars -->
+    <rect x="180" y="72" width="620" height="28" rx="6" fill="#3a2a1a" stroke="#fb923c" stroke-width="1.5"/>
+    <text x="490" y="92" text-anchor="middle" fill="#fb923c" font-size="13">scan purchases + build hash table</text>
+    <rect x="800" y="72" width="30" height="28" rx="6" fill="#16a34a"/>
+    <text x="815" y="92" text-anchor="middle" fill="white" font-size="11">&#10003;</text>
+
+    <rect x="180" y="122" width="700" height="28" rx="6" fill="#3a2a1a" stroke="#fb923c" stroke-width="1.5"/>
+    <text x="530" y="142" text-anchor="middle" fill="#fb923c" font-size="13">scan page_views + build hash table</text>
+    <rect x="880" y="122" width="30" height="28" rx="6" fill="#16a34a"/>
+    <text x="895" y="142" text-anchor="middle" fill="white" font-size="11">&#10003;</text>
+
+    <!-- PK lookup bars -->
+    <rect x="180" y="182" width="200" height="24" rx="6" fill="#0a2a1a" stroke="#4ade80" stroke-width="1.5"/>
+    <text x="280" y="199" text-anchor="middle" fill="#4ade80" font-size="12">user_profile</text>
+    <rect x="400" y="182" width="180" height="24" rx="6" fill="#0a2a1a" stroke="#4ade80" stroke-width="1.5"/>
+    <text x="490" y="199" text-anchor="middle" fill="#4ade80" font-size="12">user_embeddings</text>
+    <rect x="400" y="212" width="200" height="24" rx="6" fill="#0a2a1a" stroke="#4ade80" stroke-width="1.5"/>
+    <text x="500" y="229" text-anchor="middle" fill="#4ade80" font-size="12">user_history</text>
+
+    <!-- CTE lookup bars -->
+    <rect x="910" y="262" width="130" height="28" rx="6" fill="#1a1a3a" stroke="#818cf8" stroke-width="1.5"/>
+    <text x="975" y="282" text-anchor="middle" fill="#818cf8" font-size="12">hash lookups</text>
+
+    <!-- Result -->
+    <rect x="1050" y="318" width="80" height="28" rx="6" fill="#1e3a5f" stroke="#60a5fa" stroke-width="2"/>
+    <text x="1090" y="338" text-anchor="middle" fill="#60a5fa" font-size="13" font-weight="600">done</text>
+
+    <!-- Comparison boxes -->
+    <rect x="200" y="370" width="400" height="45" rx="10" fill="#151530" stroke="#6b7280" stroke-width="1"/>
+    <text x="250" y="398" fill="#6b7280" font-size="16">Serial: ~12ms</text>
+    <text x="450" y="398" fill="#6b7280" font-size="14">(CTEs first, then query)</text>
+
+    <rect x="650" y="370" width="400" height="45" rx="10" fill="#0a2a1a" stroke="#4ade80" stroke-width="2"/>
+    <text x="700" y="398" fill="#4ade80" font-size="16" font-weight="600">Parallel: ~7ms</text>
+    <text x="900" y="398" fill="#4ade80" font-size="14">42% faster</text>
+  </svg>
+</div>
+
+<!-- Slide 9: CTE with Internal Joins -->
+<div class="slide" id="s10">
+  <h2 style="margin-bottom: 0.3em;">Full Feature Store Query: CTE with Joins</h2>
+  <p style="margin-bottom: 0.4em;">Fraud detection: enrich purchases with merchant risk scores before aggregation:</p>
+  <div class="two-col" style="gap: 2vw; align-items: start;">
+    <pre style="font-size: clamp(0.65em, 0.88vw, 1.1em); padding: 0.8em 1em; margin: 0;"><span class="keyword">WITH</span>
+  <span class="table-name">risky_purchases</span> <span class="keyword">AS</span> (
+    <span class="keyword">SELECT</span> t.user_id,
+      <span class="function">COUNT</span>(*) <span class="keyword">AS</span> n_risky_txns,
+      <span class="function">SUM</span>(t.amount) <span class="keyword">AS</span> risky_spend,
+      <span class="function">MAX</span>(m.risk_score * t.amount)
+        <span class="keyword">AS</span> max_risk_exposure
+    <span class="keyword">FROM</span> <span class="table-name">transactions</span> t
+    <span class="keyword">JOIN</span> <span class="table-name">merchants</span> m              <span class="comment">-- join in CTE</span>
+      <span class="keyword">ON</span> m.merchant_id = t.merchant_id
+    <span class="keyword">WHERE</span> t.ts > <span class="string">'2026-03-27'</span>
+      <span class="keyword">AND</span> m.risk_score > <span class="number">0.7</span>
+    <span class="keyword">GROUP BY</span> t.user_id
+  ),
+  <span class="table-name">login_patterns</span> <span class="keyword">AS</span> (
+    <span class="keyword">SELECT</span> user_id,
+      <span class="function">COUNT</span>(*) <span class="keyword">AS</span> n_logins_1h,
+      <span class="function">COUNT</span>(<span class="keyword">DISTINCT</span> ip_address)
+        <span class="keyword">AS</span> n_distinct_ips
+    <span class="keyword">FROM</span> <span class="table-name">login_events</span>
+    <span class="keyword">WHERE</span> ts > <span class="string">'2026-03-28 12:00'</span>
+    <span class="keyword">GROUP BY</span> user_id
+  )</pre>
+    <pre style="font-size: clamp(0.65em, 0.88vw, 1.1em); padding: 0.8em 1em; margin: 0;"><span class="comment">-- Main query: Feature View</span>
+<span class="keyword">SELECT</span>
+  f.age, f.country,           <span class="comment">-- profile</span>
+  f.account_age_days,
+  e.bert_enc_0, e.bert_enc_1, <span class="comment">-- embeddings</span>
+  e.item2vec_0,
+  h.total_orders,             <span class="comment">-- history</span>
+  h.avg_spend, h.churn_score,
+  r.n_risky_txns,             <span class="comment">-- CTE agg</span>
+  r.risky_spend,
+  r.max_risk_exposure,
+  l.n_logins_1h,              <span class="comment">-- CTE agg</span>
+  l.n_distinct_ips
+<span class="keyword">FROM</span> <span class="table-name">user_profile</span> f
+<span class="keyword">JOIN</span> <span class="table-name">user_embeddings</span> e
+  <span class="keyword">ON</span> e.user_id = f.user_id    <span class="comment">-- PK</span>
+<span class="keyword">JOIN</span> <span class="table-name">user_history</span> h
+  <span class="keyword">ON</span> h.user_id = f.user_id    <span class="comment">-- PK</span>
+<span class="keyword">LEFT JOIN</span> <span class="table-name">risky_purchases</span> r
+  <span class="keyword">ON</span> r.user_id = f.user_id    <span class="comment">-- 1:1</span>
+<span class="keyword">LEFT JOIN</span> <span class="table-name">login_patterns</span> l
+  <span class="keyword">ON</span> l.user_id = f.user_id    <span class="comment">-- 1:1</span>
+<span class="keyword">WHERE</span> f.user_id <span class="keyword">IN</span> (<span class="number">5001</span>, <span class="number">5002</span>)</pre>
+  </div>
+</div>
+
+<!-- Slide 11: CTE Join Pushdown Diagram -->
+<div class="slide" id="s11">
+
+  <h2>How the CTE Join Gets Pushed</h2>
+  <div class="two-col">
+    <div>
+      <div class="diagram" style="font-size: clamp(0.72em, 1vw, 1.25em);">
+<span style="color: #fb923c; font-weight: bold;">CTE "risky_purchases" Sub-Tree:</span>
+<span style="color: #fb923c;">(own Request, reuses full join+agg infra)</span>
+
+  SCAN <span style="color: #fbbf24;">transactions</span>
+  <span style="color: #6b7280;">WHERE ts > '2026-03-27'</span>
+    |
+    +-- PK LOOKUP <span style="color: #fbbf24;">merchants</span>
+        <span style="color: #6b7280;">filter: risk_score > 0.7</span>
+        |
+        +-- <span style="color: #c084fc;">JoinAggInterpreter</span>
+            GROUP BY user_id
+            COUNT(*), SUM(amount),
+            MAX(risk_score * amount)
+            |
+            v
+        <span style="color: #818cf8; font-weight: bold;">[Hash Table]</span>
+        key: user_id
+        vals: n_risky_txns, risky_spend,
+              max_risk_exposure
+      </div>
+    </div>
+    <div>
+      <div class="diagram" style="font-size: clamp(0.72em, 1vw, 1.25em);">
+<span style="color: #4ade80; font-weight: bold;">Main Query Tree:</span>
+
+  SCAN <span style="color: #fbbf24;">user_profile</span>
+  <span style="color: #6b7280;">WHERE user_id IN (5001, 5002, 5003)</span>
+    |
+    +-- PK LOOKUP <span style="color: #fbbf24;">user_embeddings</span>
+    |
+    +-- PK LOOKUP <span style="color: #fbbf24;">user_history</span>
+    |
+    +-- <span style="color: #818cf8;">CTE_LOOKUP risky_purchases</span>
+    |   <span style="color: #6b7280;">hash table lookup by user_id</span>
+    |
+    +-- <span style="color: #818cf8;">CTE_LOOKUP login_patterns</span>
+        <span style="color: #6b7280;">hash table lookup by user_id</span>
+      </div>
+      <div class="card success" style="margin-top: 0.8em;">
+        <p>The CTE join (<code>transactions JOIN merchants</code>) reuses <strong>100% of existing pushed join infrastructure</strong>. Only the result routing changes: hash table instead of API.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Slide 10: Implementation Roadmap -->
+<div class="slide" id="s12">
+  <h2>Implementation Roadmap</h2>
+  <div class="two-col">
+    <div>
+      <div class="flow-step"><div class="step-num">1</div><div class="step-text"><strong>CTE Parsing</strong> &mdash; WITH keyword, grammar, AST</div></div>
+      <div class="flow-step"><div class="step-num">2</div><div class="step-text"><strong>CTE Planning</strong> &mdash; Table resolution, compound tree</div></div>
+      <div class="flow-step"><div class="step-num">3</div><div class="step-text"><strong>NDB API</strong> &mdash; QN_CTE_SUBTREE + QN_CTE_LOOKUP</div></div>
+      <div class="flow-step"><div class="step-num">4</div><div class="step-text"><strong>DBSPJ Build</strong> &mdash; CteContext with embedded Request</div></div>
+      <div class="flow-step"><div class="step-num">5</div><div class="step-text"><strong>Parallel Exec</strong> &mdash; CTE scans + PK lookups overlap</div></div>
+    </div>
+    <div>
+      <div class="flow-step"><div class="step-num">6</div><div class="step-text"><strong>CTE_LOOKUP</strong> &mdash; Hash table signal + handler</div></div>
+      <div class="flow-step"><div class="step-num">7</div><div class="step-text"><strong>CTE Joins</strong> &mdash; Full join trees inside CTEs</div></div>
+      <div class="flow-step"><div class="step-num">8</div><div class="step-text"><strong>Multi-CTE</strong> &mdash; Feature store pattern end-to-end</div></div>
+      <div class="flow-step"><div class="step-num">9</div><div class="step-text"><strong>Optimize</strong> &mdash; Batched lookups, memory limits</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Slide 13: Key Numbers -->
+<div class="slide" id="s13">
+  <h2>Why This Matters</h2>
+  <div class="three-col" style="margin-top: 1em;">
+    <div class="card highlight glow" style="text-align: center; padding: 2em;">
+      <p class="number-big">258</p>
+      <p class="number-unit">feature columns</p>
+      <p style="margin-top: 0.5em;">Combined from 3 Feature Groups via PK-PK joins</p>
+    </div>
+    <div class="card highlight glow" style="text-align: center; padding: 2em;">
+      <p class="number-big">&lt;10ms</p>
+      <p class="number-unit">end-to-end latency</p>
+      <p style="margin-top: 0.5em;">Parallel CTE scans + PK lookups on same data node</p>
+    </div>
+    <div class="card highlight glow" style="text-align: center; padding: 2em;">
+      <p class="number-big">1</p>
+      <p class="number-unit">query, one round-trip</p>
+      <p style="margin-top: 0.5em;">Precomputed + real-time features in a single pushed query</p>
+    </div>
+  </div>
+  <p style="margin-top: 2em; font-size: clamp(1.1em, 1.5vw, 1.8em); text-align: center;">
+    The compound query tree gives DBSPJ full visibility &mdash; it overlaps CTE materialization
+    with feature lookups, minimizing latency for ML inference.
+  </p>
+</div>
+
+<!-- Navigation -->
+<div class="nav">
+  <button class="nav-btn" onclick="prev()" title="Previous (Left Arrow)">&#9664;</button>
+  <span class="nav-counter" id="counter">1 / 13</span>
+  <button class="nav-btn" onclick="next()" title="Next (Right Arrow)">&#9654;</button>
+</div>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  const total = slides.length;
+  let current = 0;
+
+  function show(n) {
+    slides[current].classList.remove('active');
+    current = Math.max(0, Math.min(n, total - 1));
+    slides[current].classList.add('active');
+    document.getElementById('counter').textContent = (current + 1) + ' / ' + total;
+    document.getElementById('progress').style.width = ((current + 1) / total * 100) + '%';
+  }
+
+  function next() { show(current + 1); }
+  function prev() { show(current - 1); }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') { e.preventDefault(); next(); }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); prev(); }
+    if (e.key === 'Home') { e.preventDefault(); show(0); }
+    if (e.key === 'End') { e.preventDefault(); show(total - 1); }
+  });
+
+  // Touch/swipe support
+  let touchStartX = 0;
+  document.addEventListener('touchstart', (e) => { touchStartX = e.touches[0].clientX; });
+  document.addEventListener('touchend', (e) => {
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    if (Math.abs(dx) > 50) { dx < 0 ? next() : prev(); }
+  });
+
+  show(0);
+</script>
+</body>
+</html>

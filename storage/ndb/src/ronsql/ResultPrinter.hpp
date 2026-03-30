@@ -116,7 +116,12 @@ private:
 
   // ORDER BY support
   struct OrderbySpec {
-    Uint32 groupby_idx;    // index into m_regs_g
+    enum class Kind { GROUPBY_COL, AGGREGATE };
+    Kind kind;
+    union {
+      Uint32 groupby_idx;    // GROUPBY_COL: index into StoredRow.cols
+      Uint32 agg_result_idx; // AGGREGATE: index into StoredRow.results
+    };
     bool ascending;
     CHARSET_INFO* charset; // for string types, NULL otherwise
   };

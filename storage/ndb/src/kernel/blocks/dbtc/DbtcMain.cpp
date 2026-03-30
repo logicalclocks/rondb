@@ -18871,9 +18871,10 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
     if (scanPtr.p->m_joinAgg && !scanPtr.p->m_joinAggNodes->m_aggNodes.isclear()) {
       jam();
 #ifdef DEBUG_JOIN_AGG_TRACE
-      DEB_JOIN_AGG(("DBTC sendScanTabConf EndOfData check:"
+      DEB_JOIN_AGG(("(%u)DBTC sendScanTabConf EndOfData check:"
                      " m_joinAgg=%u m_aggNodes.isclear=%u scanState=%u"
                      " scanPtr.i=%u",
+                     instance(),
                      scanPtr.p->m_joinAgg,
                      scanPtr.p->m_joinAggNodes->m_aggNodes.isclear(),
                      scanPtr.p->scanState,
@@ -28447,17 +28448,21 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
   handle.m_ptr[ScanTabReq::KeyInfoSectionNum].sz = 0;
 
 #ifdef DEBUG_JOIN_AGG_TRACE
-  DEB_JOIN_AGG(("DBTC parseJoinAggKeyInfo: boundsLen=%u"
+  DEB_JOIN_AGG(("(%u)DBTC parseJoinAggKeyInfo: boundsLen=%u"
                  " aggReceiverId=0x%x aggProgramPtrI=0x%x"
                  " total_keyLen=%u",
-                 boundsLen, scanptr.p->m_aggReceiverId,
-                 scanptr.p->m_aggProgramPtrI, keyLen));
+                 instance(),
+                 boundsLen,
+                 scanptr.p->m_aggReceiverId,
+                 scanptr.p->m_aggProgramPtrI,
+                 keyLen));
   /* Dump aggProgram contents */
   if (scanptr.p->m_aggProgramPtrI != RNIL) {
     SegmentedSectionPtr aggPtr;
     getSection(aggPtr, scanptr.p->m_aggProgramPtrI);
     Uint32 aggSz = aggPtr.sz;
-    DEB_JOIN_AGG(("  aggProgram (%u words):", aggSz));
+    DEB_JOIN_AGG(("(%u)DBTC  aggProgram (%u words):",
+      instance(), aggSz));
     SectionReader aggRdr(scanptr.p->m_aggProgramPtrI,
                          getSectionSegmentPool());
     Uint32 tmpBuf[16];
@@ -28468,7 +28473,8 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
       for (Uint32 j = 0; j < chunk; j++)
         ndbrequire(aggRdr.getWord(&tmpBuf[j]));
       for (Uint32 j = 0; j < chunk; j++)
-        DEB_JOIN_AGG(("    [%u] 0x%08x", offset + j, tmpBuf[j]));
+        DEB_JOIN_AGG(("(%u)DBTC    [%u] 0x%08x",
+          instance(), offset + j, tmpBuf[j]));
       offset += chunk;
       remaining -= chunk;
     }
@@ -28635,10 +28641,13 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
     handle.m_cnt = 2;
 
 #ifdef DEBUG_JOIN_AGG_TRACE
-    DEB_JOIN_AGG(("DBTC sendJoinAggSetupReq → node %u: "
+    DEB_JOIN_AGG(("(%u)DBTC sendJoinAggSetupReq → node %u: "
                    "resultRef=0x%x resultData=0x%x "
                    "aggProgLen=%u aggReceiverId=0x%x",
-                   nodeId, req->resultRef, req->resultData,
+                   instance(),
+                   nodeId,
+                   req->resultRef,
+                   req->resultData,
                    handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum].sz,
                    scanptr.p->m_aggReceiverId));
 #endif
@@ -28884,8 +28893,8 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
   c_apiConnectRecordPool.getPtr(apiPtr);
 
 #ifdef DEBUG_JOIN_AGG_TRACE
-  DEB_JOIN_AGG(("DBTC sendJoinAggCompleteReqs: scanPtr.i=%u",
-                 scanptr.i));
+  DEB_JOIN_AGG(("(%u)DBTC sendJoinAggCompleteReqs: scanPtr.i=%u",
+                 instance(), scanptr.i));
 #endif
   NdbNodeBitmask nodes = scanptr.p->m_joinAggNodes->m_aggNodes;
   for (Uint32 nodeId = nodes.find_first();

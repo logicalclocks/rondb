@@ -716,7 +716,9 @@ class NdbQueryDefImpl {
   const Uint32Buffer &getSerialized() const { return m_serializedDef; }
 
   bool hasAggregation() const { return m_hasAggregation; }
-  Uint32 getAggregateLeafOpNo() const { return m_aggregateLeafOpNo; }
+  Uint32 getAggregateLeafOpNo() const { return m_aggregateLeafOpNos[0]; }
+  Uint32 getNumAggregateLeaves() const { return m_aggregateLeafOpNos.size(); }
+  Uint32 getAggregateLeafOpNo(Uint32 i) const { return m_aggregateLeafOpNos[i]; }
 
  private:
   NdbQueryDef m_interface;
@@ -726,7 +728,7 @@ class NdbQueryDefImpl {
   Uint32Buffer m_serializedDef;
 
   bool m_hasAggregation;
-  Uint32 m_aggregateLeafOpNo;
+  Vector<Uint32> m_aggregateLeafOpNos;
 };  // class NdbQueryDefImpl
 
 class NdbQueryBuilderImpl {

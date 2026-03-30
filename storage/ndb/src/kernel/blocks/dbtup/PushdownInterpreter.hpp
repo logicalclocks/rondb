@@ -55,6 +55,20 @@ class PushdownInterpreter {
 
   static void Destruct(PushdownInterpreter* ptr);
 
+  /**
+   * OptimizeProgramBuffer — static type analysis on an aggregation program.
+   *
+   * Replaces generic opcodes (kOpSum, kOpPlus, etc.) with type-specific
+   * variants (kOpSumBigint, kOpSumDouble, etc.) based on a single-pass
+   * analysis of register types.  Modifies the program buffer in-place.
+   *
+   * Can be called on any writable program buffer — does not require an
+   * interpreter instance.  Used by DblqhProxy to optimize leaf programs
+   * in JoinAggregationState before creating interpreters.
+   */
+  static void OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
+                                    Uint32 start_pos);
+
  protected:
   PushdownType m_type;
   Uint32 m_prog_len;

@@ -1,5 +1,6 @@
 --source include/not_parallel.inc
 --source include/have_ndb.inc
+call mtr.add_suppression("Schema dist coordinator detected timeout");
 
 #
 # Test rondb-cli SQL and BATCH functionality

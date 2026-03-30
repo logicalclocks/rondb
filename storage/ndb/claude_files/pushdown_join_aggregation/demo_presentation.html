@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RonDB Pushdown Join Aggregation Demo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0a0a1a; color: #e8e8f0; overflow: hidden; }
+
+  .slide { display: none; width: 100vw; height: 100vh; padding: 6vh 8vw;
+           flex-direction: column; justify-content: center; }
+  .slide.active { display: flex; }
+
+  h1 { font-size: 4.5vw; margin-bottom: 0.3em; color: #7eb8ff; line-height: 1.1; }
+  h2 { font-size: 3.5vw; margin-bottom: 0.6em; color: #7eb8ff; }
+  p  { font-size: 2vw; line-height: 1.5; }
+  .subtitle { font-size: 2.5vw; color: #a0a0c0; }
+  .highlight { color: #ffcc57; }
+  .green { color: #6fdd8b; }
+  .red { color: #ff7b7b; }
+
+  .diagram { background: #0e0e22; border: 2px solid #2a2a50; border-radius: 12px;
+             padding: 2.5vw 3vw; margin: 2vw 0; font-family: 'JetBrains Mono', monospace;
+             font-size: 1.8vw; line-height: 1.8; white-space: pre; }
+
+  .nav { position: fixed; bottom: 20px; right: 30px; font-size: 0.9em; color: #404060; }
+</style>
+</head>
+<body>
+
+<!-- Slide 1: Title -->
+<div class="slide active">
+  <h1>Pushdown Join<br>Aggregation</h1>
+  <p class="subtitle" style="margin-top:0.5em;">Moving the work to where the data lives</p>
+</div>
+
+<!-- Slide 2: The Problem -->
+<div class="slide">
+  <h2>Before</h2>
+  <div class="diagram"><span style="color:#ff7b7b">         millions of rows cross the network</span>
+
+   API Node                         Data Node
+  ┌────────────┐                   ┌────────────┐
+  │            │  ◄── all rows ──  │  Scan A    │
+  │   JOIN     │  ◄── all rows ──  │  Scan B    │
+  │   GROUP BY │                   │            │
+  │   SUM      │                   │            │
+  └────────────┘                   └────────────┘
+
+<span style="color:#ff7b7b">  Join + aggregate here               Just scan here</span></div>
+</div>
+
+<!-- Slide 3: The Solution -->
+<div class="slide">
+  <h2>After</h2>
+  <div class="diagram"><span style="color:#6fdd8b">         only grouped results cross the network</span>
+
+   API Node                         Data Node
+  ┌────────────┐                   ┌────────────┐
+  │            │                   │  Scan      │
+  │  Receive   │  ◄── few rows ── │  Join      │
+  │  results   │                   │  GROUP BY  │
+  │            │                   │  SUM/COUNT │
+  └────────────┘                   └────────────┘
+
+<span style="color:#6fdd8b">  Just receive here             All the work here</span></div>
+</div>
+
+<!-- Slide 4: Demo 1 intro - Inner Join Chain -->
+<div class="slide">
+  <h2>Demo 1: Inner Join Chain</h2>
+  <div class="diagram">
+  <span style="color:#7eb8ff">nation</span> ──→ <span style="color:#6fdd8b">supplier</span> ──→ <span style="color:#ffcc57">lineitem</span>
+    │              │               │
+  GROUP BY     join key        SUM + COUNT
+  (n_name)    (nationkey)    (extendedprice)</div>
+  <p style="margin-top:40px;">Three tables chained together<br>
+  Millions of lineitems reduced to <span class="highlight">25 rows</span> (one per nation)</p>
+</div>
+
+<!-- Slide 5: Demo 2 intro - Outer Join -->
+<div class="slide">
+  <h2>Demo 2: LEFT JOIN</h2>
+  <div class="diagram">
+  <span style="color:#7eb8ff">customer</span> ──LEFT JOIN──→ <span style="color:#6fdd8b">orders</span>
+      │                        │
+   GROUP BY                SUM + COUNT
+  (mktsegment)            (totalprice)
+
+  Customer with no orders?
+      <span style="color:#ffcc57">Still counted</span> ── NULL propagated on data node</div>
+  <p style="margin-top:40px;">Outer join semantics handled entirely inside the data node</p>
+</div>
+
+<!-- Slide 6: Demo 3 intro - Star Schema -->
+<div class="slide">
+  <h2>Demo 3: Star Schema</h2>
+  <div class="diagram">
+                  <span style="color:#7eb8ff">nation</span>
+                 ╱      ╲
+  <span style="color:#6fdd8b">SUM(supplier.balance)</span>    <span style="color:#ffcc57">COUNT(customer)</span>
+
+         Leaf 1               Leaf 2
+      independent           independent</div>
+  <p style="margin-top:40px;">Two correlated subqueries on <span class="highlight">different tables</span><br>
+  Each becomes its own leaf scan &mdash; no merge needed</p>
+</div>
+
+<!-- Slide 7: Demo 4 intro - Merge -->
+<div class="slide">
+  <h2>Demo 4: Subquery Merge</h2>
+  <div class="diagram">
+                    <span style="color:#7eb8ff">nation</span>
+                 ╱     |      ╲
+  <span style="color:#6fdd8b">SUM(s.bal)</span>  <span style="color:#6fdd8b">MAX(s.bal)</span>  <span style="color:#ffcc57">COUNT(cust)</span>
+       ╲          ╱              │
+     <span style="color:#6fdd8b">MERGED ── 1 scan</span>        separate leaf</div>
+  <p style="margin-top:40px;">Two aggregates on <span class="green">same table</span> &rarr; merged into a single leaf scan<br>
+  Third subquery on a different table stays separate</p>
+</div>
+
+<!-- Slide 8: Demo 5 intro - CASE + Filters -->
+<div class="slide">
+  <h2>Demo 5: CASE + Filters</h2>
+  <div class="diagram">
+  <span style="color:#7eb8ff">orders</span> ──→ <span style="color:#6fdd8b">lineitem</span>
+     │             │
+  WHERE year    GROUP BY shipmode
+     │
+  CASE priority
+    URGENT  →  <span style="color:#ffcc57">count in bucket 1</span>
+    OTHER   →  <span style="color:#ffcc57">count in bucket 2</span></div>
+  <p style="margin-top:40px;">Cross-table WHERE + CASE expressions<br>
+  All evaluated on the data node, only 7 ship modes returned</p>
+</div>
+
+<!-- Slide 9: Summary -->
+<div class="slide">
+  <h1>What we pushed down</h1>
+  <div class="diagram" style="font-size:2.2vw; line-height:2.2;">
+  <span style="color:#6fdd8b">&#10003;</span>  Inner join chains
+  <span style="color:#6fdd8b">&#10003;</span>  LEFT JOIN with NULLs
+  <span style="color:#6fdd8b">&#10003;</span>  Star schema fan-out
+  <span style="color:#6fdd8b">&#10003;</span>  Subquery merge
+  <span style="color:#6fdd8b">&#10003;</span>  CASE + cross-table WHERE</div>
+</div>
+
+<div class="nav">&#8592; &#8594; to navigate &bull; <span id="counter">1/9</span></div>
+
+<script>
+const slides = document.querySelectorAll('.slide');
+let cur = 0;
+function show(n) {
+  slides[cur].classList.remove('active');
+  cur = Math.max(0, Math.min(n, slides.length - 1));
+  slides[cur].classList.add('active');
+  document.getElementById('counter').textContent = (cur+1) + '/' + slides.length;
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === ' ') show(cur + 1);
+  else if (e.key === 'ArrowLeft') show(cur - 1);
+  else if (e.key === 'Home') show(0);
+  else if (e.key === 'End') show(slides.length - 1);
+});
+</script>
+</body>
+</html>

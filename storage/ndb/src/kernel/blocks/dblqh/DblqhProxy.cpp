@@ -38,6 +38,13 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 // #define DEBUG_EXEC_SR 1
+#define DEBUG_STAR_AGG 1
+#endif
+
+#ifdef DEBUG_STAR_AGG
+#define DEB_STAR_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_STAR_AGG(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_EXEC_SR
@@ -235,7 +242,13 @@ void DblqhProxy::callREAD_CONFIG_REQ(Signal *signal) {
   Uint32 i;
   for (i = 0; i < c_tableRecSize; i++) c_tableRec[i] = 0;
 
-  initJoinAggStatePool(64);
+  // Max concurrent aggregation states per data node.
+  // Each pushed aggregation query uses one state.
+  // Configurable via JoinAggStatePoolSize (default 256).
+  Uint32 joinAggPoolSize = 256;
+  ndb_mgm_get_int_parameter(p, CFG_DB_JOIN_AGG_STATE_POOL_SIZE,
+                            &joinAggPoolSize);
+  initJoinAggStatePool(joinAggPoolSize);
 
   backREAD_CONFIG_REQ(signal);
 }
@@ -2266,8 +2279,11 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
   if (aggStateKey != RNIL) {
     JoinAggregationState *state = getJoinAggState(aggStateKey);
     if (state != nullptr) {
-      if (state->m_agg_program != nullptr) {
-        lc_ndbd_pool_free(state->m_agg_program);
+      if (state->m_all_programs_buf != nullptr) {
+        lc_ndbd_pool_free(state->m_all_programs_buf);
+      }
+      if (state->m_leaf_programs != nullptr) {
+        lc_ndbd_pool_free(state->m_leaf_programs);
       }
       if (state->m_receiverIds != nullptr) {
         lc_ndbd_pool_free(state->m_receiverIds);
@@ -2351,8 +2367,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_error_code = 0;
   state->m_agg_interpreter = nullptr;
   state->m_per_thread_interpreters = nullptr;
-  state->m_agg_program = nullptr;
-  state->m_agg_program_len = 0;
+  state->m_num_leaves = 0;
+  state->m_leaf_programs = nullptr;
+  state->m_total_agg_results = 0;
+  state->m_all_programs_buf = nullptr;
   state->m_outer_join_agg_scan = false;
 
   // Populate immutable identification fields
@@ -2379,9 +2397,20 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   // Expected operations
   state->m_total_ops_expected = req->expectedOpCount;
 
-  // Copy aggregation program (section 0) and receiver IDs (section 1)
-  state->m_agg_program = nullptr;
-  state->m_agg_program_len = 0;
+  // Copy aggregation program(s) (section 0) and receiver IDs (section 1).
+  //
+  // Section 0 multi-leaf format:
+  //   Word 0: numLeaves
+  //   For each leaf: [progLen, program words...]
+  //
+  // A single allocation (m_all_programs_buf) holds the entire section.
+  // Each LeafProgram::m_agg_program points into this buffer.
+  // The LeafProgram array itself is a second allocation.
+  //
+  state->m_num_leaves = 0;
+  state->m_leaf_programs = nullptr;
+  state->m_total_agg_results = 0;
+  state->m_all_programs_buf = nullptr;
   state->m_receiverIds = nullptr;
   state->m_numReceiverIds = 0;
   {
@@ -2395,24 +2424,112 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     }
     SectionHandle handle(this, signal);
 
+    // Copy entire section 0 into a single buffer
     SegmentedSectionPtr ptr;
     ndbrequire(handle.getSection(ptr,
                                  JoinAggSetupReq::AggProgramSectionNum));
-    Uint32 progLen = ptr.sz;
-    Uint32 *progBuf =
-      (Uint32 *)lc_ndbd_pool_malloc(progLen * sizeof(Uint32),
+    Uint32 totalWords = ptr.sz;
+    Uint32 *allProgsBuf =
+      (Uint32 *)lc_ndbd_pool_malloc(totalWords * sizeof(Uint32),
                                      RG_QUERY_MEMORY, getThreadId(), false);
-    if (unlikely(progBuf == nullptr)) {
+    if (unlikely(allProgsBuf == nullptr)) {
       jam();
       releaseSections(handle);
       sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
                           DbspjErr::OutOfQueryMemory, __LINE__, key);
       return;
     }
-    copy(progBuf, ptr);
-    state->m_agg_program = progBuf;
-    state->m_agg_program_len = progLen;
+    copy(allProgsBuf, ptr);
+    state->m_all_programs_buf = allProgsBuf;
 
+    // Section 0 format:
+    //   New: Word 0 = (0x0722 << 16) | numLeaves, then per leaf [progLen, prog...]
+    //   Old: Flat single program starting with (0x0721 << 16) | progLen
+    Uint32 pos = 0;
+    Uint32 word0 = allProgsBuf[0];
+    Uint32 numLeaves;
+    if ((word0 >> 16) == 0x0722) {
+      jam();
+      // New section header format
+      numLeaves = word0 & 0xFFFF;
+      if (unlikely(numLeaves == 0 || numLeaves > NDB_SPJ_MAX_TREE_NODES)) {
+        jam();
+        lc_ndbd_pool_free(allProgsBuf);
+        state->m_all_programs_buf = nullptr;
+        releaseSections(handle);
+        sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                            DbspjErr::InvalidRequest, __LINE__, key);
+        return;
+      }
+      pos = 1;
+    } else if ((word0 >> 16) == 0x0721) {
+      jam();
+      // Old flat format — entire section is one program, no wrapper
+      numLeaves = 1;
+    } else {
+      jam();
+      // Unrecognized format
+      lc_ndbd_pool_free(allProgsBuf);
+      state->m_all_programs_buf = nullptr;
+      releaseSections(handle);
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          DbspjErr::InvalidRequest, __LINE__, key);
+      return;
+    }
+
+    // Allocate LeafProgram descriptor array
+    state->m_leaf_programs =
+      (LeafProgram *)lc_ndbd_pool_malloc(numLeaves * sizeof(LeafProgram),
+                                          RG_QUERY_MEMORY, getThreadId(),
+                                          false);
+    if (unlikely(state->m_leaf_programs == nullptr)) {
+      jam();
+      lc_ndbd_pool_free(allProgsBuf);
+      state->m_all_programs_buf = nullptr;
+      releaseSections(handle);
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          DbspjErr::OutOfQueryMemory, __LINE__, key);
+      return;
+    }
+    state->m_num_leaves = numLeaves;
+    DEB_STAR_AGG(("STAR_AGG SETUP: key=%u numLeaves=%u totalWords=%u",
+                  key, numLeaves, totalWords));
+
+    // Fill each LeafProgram — pointers into allProgsBuf, no extra copies
+    Uint32 accOffset = 0;
+    for (Uint32 i = 0; i < numLeaves; i++) {
+      Uint32 progLen;
+      Uint32 *progStart;
+      if (pos == 0 && numLeaves == 1) {
+        // Old flat format: entire section is the program
+        progLen = totalWords;
+        progStart = allProgsBuf;
+        pos = totalWords;
+      } else {
+        progLen = allProgsBuf[pos++];
+        progStart = &allProgsBuf[pos];
+        pos += progLen;
+      }
+
+      // Read n_agg_results and n_gb_cols from program header word 1
+      Uint32 headerWord1 = progStart[1];
+      Uint32 leafNAggResults = headerWord1 & 0xFFFF;
+      Uint32 leafNGBCols = (headerWord1 >> 16) & 0xFFFF;
+
+      state->m_leaf_programs[i].m_agg_program = progStart;
+      state->m_leaf_programs[i].m_agg_program_len = progLen;
+      state->m_leaf_programs[i].m_acc_offset = accOffset;
+      state->m_leaf_programs[i].m_n_agg_results = leafNAggResults;
+      state->m_leaf_programs[i].m_agg_prog_start_pos = 8 + leafNGBCols;
+      DEB_STAR_AGG(("STAR_AGG SETUP: leaf[%u] progLen=%u n_gb=%u "
+                    "n_agg=%u acc_off=%u prog_start=%u",
+                    i, progLen, leafNGBCols, leafNAggResults,
+                    accOffset, 8 + leafNGBCols));
+      accOffset += leafNAggResults;
+    }
+    state->m_total_agg_results = accOffset;
+
+    // Copy receiver IDs (section 1 — unchanged)
     SegmentedSectionPtr rcvPtr;
     ndbrequire(handle.getSection(rcvPtr,
                                  JoinAggSetupReq::ReceiverIdsSectionNum));
@@ -2451,7 +2568,21 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   }
   state->m_memory_budget_pages = budget_pages;
 
+  // Optimize all leaf programs in-place: replace generic opcodes (kOpSum,
+  // kOpPlus, etc.) with type-specific variants (kOpSumBigint, kOpSumDouble,
+  // etc.).  Done once here in JoinAggregationState before interpreter
+  // creation so all interpreters (MUTEX_BASED shared or MUTEX_FREE
+  // per-thread) and all leaf program switches see optimized programs.
+  for (Uint32 i = 0; i < state->m_num_leaves; i++) {
+    jam();
+    LeafProgram &lp = state->m_leaf_programs[i];
+    PushdownInterpreter::OptimizeProgramBuffer(
+        lp.m_agg_program, lp.m_agg_program_len, lp.m_agg_prog_start_pos);
+  }
+
   // Allocate JoinAggInterpreter(s) based on strategy.
+  // Init with leaf 0's program; for multi-leaf, override accumulator count.
+  const LeafProgram &leaf0 = state->m_leaf_programs[0];
   if (state->m_strategy == JoinAggregationState::MUTEX_BASED) {
     jam();
     void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
@@ -2463,11 +2594,16 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       return;
     }
     JoinAggInterpreter *interp =
-      new (page) JoinAggInterpreter(state->m_agg_program_len,
+      new (page) JoinAggInterpreter(leaf0.m_agg_program_len,
                                     req->tableId,
                                     0,
                                     getThreadId());
-    interp->Init(state->m_agg_program);
+    interp->Init(leaf0.m_agg_program);
+    if (state->m_num_leaves > 1) {
+      interp->setTotalAggResults(state->m_total_agg_results);
+      interp->cacheMultiLeafAggOps(state->m_leaf_programs,
+                                    state->m_num_leaves);
+    }
     interp->setUseMutex(true);
     interp->initChunkAllocator(getThreadId(), budget_pages, available_pages);
     state->m_agg_interpreter = interp;
@@ -2501,11 +2637,16 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         return;
       }
       JoinAggInterpreter *interp =
-        new (page) JoinAggInterpreter(state->m_agg_program_len,
+        new (page) JoinAggInterpreter(leaf0.m_agg_program_len,
                                       req->tableId,
                                       0,
                                       getThreadId());
-      interp->Init(state->m_agg_program);
+      interp->Init(leaf0.m_agg_program);
+      if (state->m_num_leaves > 1) {
+        interp->setTotalAggResults(state->m_total_agg_results);
+        interp->cacheMultiLeafAggOps(state->m_leaf_programs,
+                                      state->m_num_leaves);
+      }
       interp->initChunkAllocator(getThreadId(), per_thread_budget,
                                    available_pages);
       arr[i] = interp;
@@ -2559,11 +2700,15 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (state != nullptr) {
     jam();
-    // Free aggregation program buffer
-    if (state->m_agg_program != nullptr) {
-      lc_ndbd_pool_free(state->m_agg_program);
-      state->m_agg_program = nullptr;
-      state->m_agg_program_len = 0;
+    // Free aggregation program buffer(s)
+    if (state->m_all_programs_buf != nullptr) {
+      lc_ndbd_pool_free(state->m_all_programs_buf);
+      state->m_all_programs_buf = nullptr;
+    }
+    if (state->m_leaf_programs != nullptr) {
+      lc_ndbd_pool_free(state->m_leaf_programs);
+      state->m_leaf_programs = nullptr;
+      state->m_num_leaves = 0;
     }
     // Free receiver IDs array
     if (state->m_receiverIds != nullptr) {

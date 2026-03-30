@@ -1,0 +1,9 @@
+--source include/have_ndb.inc
+
+--echo Running testStarJoinAggNdbApi
+--replace_regex /Connect string: .*/Connect string: #/ /MySQL port: .*/MySQL port: #/ /Connecting to management server at [^\n]*\n//
+--exec $NDB_PUSH_AGG_DIR/testStarJoinAggNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT 2>&1
+--echo PASSED
+
+# Clean up database created by test program
+DROP DATABASE IF EXISTS test_db;

@@ -860,6 +860,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     0,
     0, 0 },
 
+  {
+    CFG_DB_JOIN_AGG_STATE_POOL_SIZE,
+    "JoinAggStatePoolSize",
+    DB_TOKEN,
+    "Max concurrent pushdown aggregation states per data node",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    "256",
+    "1",
+    "4096" },
+
     /* End RonDB additions */
 
     {CFG_DB_TRANSACTION_MEM, "TransactionMemory", DB_TOKEN,

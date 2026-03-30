@@ -300,6 +300,18 @@ class NdbAggregator {
   bool Skip(Uint32 skip_count);
   bool RepeatAgg(Uint32 agg_id, Uint32 reg_id);
 
+  // Register-to-register comparison with conditional skip.
+  // Skips skip_count instructions if the condition is true.
+  // Used for cross-table inner filters: load outer column into reg_a
+  // via LoadLinkedColumn, inner column into reg_b via LoadColumn,
+  // then BranchRegXx to skip aggregation when filter doesn't match.
+  bool BranchRegLt(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
+  bool BranchRegLe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
+  bool BranchRegGt(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
+  bool BranchRegGe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
+  bool BranchRegEq(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
+  bool BranchRegNe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
+
   bool Finalize();
 
   void PrepareResults();

@@ -1,0 +1,1376 @@
+--source include/have_ndb.inc
+
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for extended subquery aggregation tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE sq_entity (
+  id INT NOT NULL,
+  grp INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE sq_measures (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (entity_id, ts),
+  INDEX idx_measures_eid (entity_id)
+) ENGINE=NDB;
+
+CREATE TABLE sq_events (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  event_type INT NOT NULL,
+  PRIMARY KEY USING HASH (entity_id, ts),
+  INDEX idx_events_eid (entity_id)
+) ENGINE=NDB;
+
+# 6 entities: ids 1-4 have both measures and events,
+# id 5 has measures only, id 6 has events only
+INSERT INTO sq_entity VALUES
+  (1, 1), (2, 1), (3, 2), (4, 2), (5, 3), (6, 3);
+
+INSERT INTO sq_measures VALUES
+  (1,1,10),(1,2,20),(1,3,30),
+  (2,1,40),(2,2,50),(2,3,60),
+  (3,1,70),(3,2,80),(3,3,90),
+  (4,1,100),(4,2,110),(4,3,120),
+  (5,1,500),(5,2,600),(5,3,700);
+
+INSERT INTO sq_events VALUES
+  (1,1,1),(1,2,2),
+  (2,1,3),(2,2,4),
+  (3,1,5),(3,2,6),
+  (4,1,7),(4,2,8),
+  (6,1,9),(6,2,10);
+
+--enable_warnings
+--enable_query_log
+
+--let $MYSQL= $MYSQL --init-command-add='SET sql_mode=""'
+
+DELIMITER |;
+
+# =========================================================================
+# Category A: WHERE filters on outer table
+# =========================================================================
+
+--echo
+--echo === A1: WHERE e.grp = 1 (equality filter on root) ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.grp = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.grp = 1|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === A2: WHERE e.id > 3 (range filter) ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.id > 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.id > 3|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === A3: WHERE e.id = 1 (single root row) ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.id = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.id = 1|
+
+# =========================================================================
+# Category C: Mixed output column types
+# =========================================================================
+
+--echo
+--echo
+--echo === C1: Regular columns interleaved with subquery outputs ===
+
+let $QUERY=
+SELECT e.id, e.grp,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id, e.grp,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === C2: Subquery output between regular columns ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  e.grp
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  e.grp
+FROM sq_entity AS e|
+
+# =========================================================================
+# Category D: Extended HAVING
+# =========================================================================
+
+--echo
+--echo
+--echo === D1: HAVING compound AND ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val > 100 AND cnt_evt > 0;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val > 100 AND cnt_evt > 0|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === D2: HAVING IS NULL (select only entities with no measures) ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val IS NULL;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val IS NULL|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === D3: HAVING multiple conditions ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING cnt_evt >= 2 AND sum_val < 200;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING cnt_evt >= 2 AND sum_val < 200|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === D4: WHERE + HAVING combined ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.grp = 2
+HAVING sum_val > 200;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+WHERE e.grp = 2
+HAVING sum_val > 200|
+
+# =========================================================================
+
+# =========================================================================
+# Category B: WHERE filters on inner subquery tables
+# =========================================================================
+
+--echo
+--echo
+--echo === B1: Inner WHERE filter (m.ts > 1) reduces child rows ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_val
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_val
+FROM sq_entity AS e|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === B2: Two subqueries with different inner filters ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id AND ev.event_type > 3) AS cnt_high
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+  (SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id AND ev.event_type > 3) AS cnt_high
+FROM sq_entity AS e|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === B3: Inner filter eliminates all rows for some entities ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.val > 500) AS sum_big
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.val > 500) AS sum_big
+FROM sq_entity AS e|
+
+# =========================================================================
+# Category E: Large dataset stress with filters
+# =========================================================================
+
+DELIMITER ;|
+--echo
+--echo === Create large tables for stress tests ===
+
+--disable_query_log
+DROP TABLE IF EXISTS lg_events;
+DROP TABLE IF EXISTS lg_measures;
+DROP TABLE IF EXISTS lg_entity;
+
+CREATE TABLE lg_entity (
+  id INT NOT NULL,
+  grp INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB
+COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2';
+
+CREATE TABLE lg_measures (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (entity_id, ts),
+  INDEX idx_lg_meas_eid (entity_id)
+) ENGINE=NDB
+COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2';
+
+CREATE TABLE lg_events (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  event_type INT NOT NULL,
+  PRIMARY KEY USING HASH (entity_id, ts),
+  INDEX idx_lg_evt_eid (entity_id)
+) ENGINE=NDB
+COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2';
+
+--delimiter $
+CREATE PROCEDURE populate_lg()
+BEGIN
+  DECLARE i INT DEFAULT 1;
+  DECLARE g INT;
+  DECLARE j INT;
+  WHILE i <= 200 DO
+    SET g = ((i - 1) % 50) + 1;
+    INSERT INTO lg_entity VALUES (i, g);
+    SET j = 1;
+    WHILE j <= 5 DO
+      INSERT INTO lg_measures VALUES (i, j, i * 10 + j);
+      SET j = j + 1;
+    END WHILE;
+    SET j = 1;
+    WHILE j <= 3 DO
+      INSERT INTO lg_events VALUES (i, j, g);
+      SET j = j + 1;
+    END WHILE;
+    SET i = i + 1;
+  END WHILE;
+END$
+--delimiter ;
+CALL populate_lg();
+DROP PROCEDURE populate_lg;
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === E1: Large dataset with WHERE filter on root ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e
+WHERE e.grp <= 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result (first 5) ==
+SELECT e.id,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+  (SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e
+WHERE e.grp <= 3
+ORDER BY e.id
+LIMIT 5|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === E2: Large dataset with inner filter + WHERE ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+  (SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e
+WHERE e.id <= 50;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result (first 5) ==
+SELECT e.id,
+  (SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id AND m.ts <= 2) AS sum_early,
+  (SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e
+WHERE e.id <= 50
+ORDER BY e.id
+LIMIT 5|
+
+# =========================================================================
+
+# =========================================================================
+# Category H: Rejection tests — verify error messages for unsupported patterns
+# Send query via RDRS and check for expected error text in response.
+# =========================================================================
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === H1: Inner subquery with JOIN (unsupported) ===
+
+--exec printf '{"query":"SELECT e.id, (SELECT SUM(m.val) FROM sq_measures AS m JOIN sq_events AS ev ON ev.entity_id = m.entity_id WHERE m.entity_id = e.id) AS sv FROM sq_entity AS e;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--echo H1 response:
+--exec grep -o 'subquery with JOIN is not supported' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected rejection for inner JOIN"
+
+--echo
+--echo === H2: Inner subquery without correlation (unsupported) ===
+
+--exec printf '{"query":"SELECT e.id, (SELECT SUM(m.val) FROM sq_measures AS m) AS sv FROM sq_entity AS e;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--echo H2 response:
+--exec grep -o 'must have a WHERE clause with correlation' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected rejection for missing correlation"
+
+--echo
+--echo === H3: Inner subquery with GROUP BY (unsupported) ===
+
+--exec printf '{"query":"SELECT e.id, (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id GROUP BY m.ts) AS sv FROM sq_entity AS e;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--echo H3 response:
+--exec grep -o 'must not have GROUP BY' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected rejection for inner GROUP BY"
+
+--echo
+--echo === H4: Inner subquery with non-aggregate output (unsupported) ===
+
+--exec printf '{"query":"SELECT e.id, (SELECT m.val FROM sq_measures AS m WHERE m.entity_id = e.id) AS sv FROM sq_entity AS e;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--echo H4 response:
+--exec grep -o 'output must be an aggregate function' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected rejection for non-aggregate output"
+
+--echo
+--echo === H5: Outer query with GROUP BY + subqueries (unsupported) ===
+
+--exec printf '{"query":"SELECT e.grp, (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sv FROM sq_entity AS e GROUP BY e.grp;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--echo H5 response:
+--exec grep -o 'GROUP BY are not yet supported' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected rejection for outer GROUP BY"
+
+# =========================================================================
+
+# =========================================================================
+# Category J: Subqueries joined with a multi-table outer query
+# Outer query has a JOIN, subqueries correlate to non-root table
+# =========================================================================
+
+--echo
+--echo === Create tables for join + subquery tests ===
+
+--disable_query_log
+DROP TABLE IF EXISTS j_lineitem;
+DROP TABLE IF EXISTS j_order_notes;
+DROP TABLE IF EXISTS j_orders;
+DROP TABLE IF EXISTS j_customer;
+
+CREATE TABLE j_customer (
+  id INT NOT NULL,
+  name VARCHAR(20) NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE j_orders (
+  id INT NOT NULL,
+  cust_id INT NOT NULL,
+  status INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_orders_cust (cust_id)
+) ENGINE=NDB;
+
+CREATE TABLE j_lineitem (
+  id INT NOT NULL,
+  order_id INT NOT NULL,
+  qty INT NOT NULL,
+  price INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_li_order (order_id)
+) ENGINE=NDB;
+
+CREATE TABLE j_order_notes (
+  id INT NOT NULL,
+  order_id INT NOT NULL,
+  note_val INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_notes_order (order_id)
+) ENGINE=NDB;
+
+# Customer: 3 customers
+INSERT INTO j_customer VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie');
+
+# Orders: 2 orders per customer
+INSERT INTO j_orders VALUES
+  (10, 1, 1), (11, 1, 2),
+  (20, 2, 1), (21, 2, 2),
+  (30, 3, 1), (31, 3, 2);
+
+# Lineitems: 2-3 items per order
+INSERT INTO j_lineitem VALUES
+  (100, 10, 5, 50), (101, 10, 3, 30),
+  (102, 11, 7, 70), (103, 11, 2, 20), (104, 11, 1, 10),
+  (105, 20, 10, 100), (106, 20, 4, 40),
+  (107, 21, 6, 60),
+  (108, 30, 8, 80), (109, 30, 9, 90), (110, 30, 1, 10),
+  (111, 31, 3, 30);
+
+# Notes: 1-2 notes per order (some orders have none)
+INSERT INTO j_order_notes VALUES
+  (200, 10, 5), (201, 10, 10),
+  (202, 11, 3),
+  (203, 20, 7),
+  (204, 30, 1), (205, 30, 2), (206, 30, 4);
+# Orders 21, 31 have no notes
+
+--enable_query_log
+
+DELIMITER |;
+
+# =========================================================================
+
+--echo
+--echo
+--echo === J1: Join + single subquery (orders.id correlation) ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.cust_id,
+  (SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.cust_id,
+  (SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === J2: Join + two subqueries on different tables ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.cust_id,
+  (SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+  (SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.cust_id,
+  (SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+  (SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === J3: Join + subquery + HAVING on subquery result ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.cust_id,
+  (SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+  (SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id
+HAVING total_qty > 5 AND note_count > 0;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.cust_id,
+  (SELECT SUM(l.qty) FROM j_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+  (SELECT COUNT(n.id) FROM j_order_notes AS n WHERE n.order_id = o.id) AS note_count
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id
+HAVING total_qty > 5 AND note_count > 0|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === J4: Join + subquery with inner filter (some orders get NULL) ===
+
+let $QUERY=
+SELECT o.id AS order_id,
+  (SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id,
+  (SELECT SUM(l.price) FROM j_lineitem AS l WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+# =========================================================================
+# Category K: 3-way outer join + subqueries with cross-table filters
+# =========================================================================
+
+DELIMITER ;|
+
+--echo
+--echo === Create tables for 3-way join + subquery tests ===
+
+--disable_query_log
+DROP TABLE IF EXISTS k_shipment;
+DROP TABLE IF EXISTS k_lineitem;
+DROP TABLE IF EXISTS k_orders;
+DROP TABLE IF EXISTS k_customer;
+
+CREATE TABLE k_customer (
+  id INT NOT NULL,
+  name VARCHAR(20) NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE k_orders (
+  id INT NOT NULL,
+  cust_id INT NOT NULL,
+  min_qty INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_k_orders_cust (cust_id)
+) ENGINE=NDB;
+
+CREATE TABLE k_lineitem (
+  id INT NOT NULL,
+  order_id INT NOT NULL,
+  qty INT NOT NULL,
+  price INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_k_li_order (order_id)
+) ENGINE=NDB;
+
+CREATE TABLE k_shipment (
+  id INT NOT NULL,
+  order_id INT NOT NULL,
+  weight INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_k_ship_order (order_id)
+) ENGINE=NDB;
+
+INSERT INTO k_customer VALUES (1, 'Alice'), (2, 'Bob');
+
+# Orders with min_qty threshold
+INSERT INTO k_orders VALUES
+  (10, 1, 3), (11, 1, 5),
+  (20, 2, 2), (21, 2, 10);
+
+# Lineitems: varying quantities
+INSERT INTO k_lineitem VALUES
+  (100, 10, 2, 20), (101, 10, 5, 50), (102, 10, 8, 80),
+  (103, 11, 1, 10), (104, 11, 6, 60), (105, 11, 10, 100),
+  (106, 20, 3, 30), (107, 20, 7, 70),
+  (108, 21, 15, 150), (109, 21, 20, 200);
+
+# Shipments
+INSERT INTO k_shipment VALUES
+  (300, 10, 5), (301, 10, 10),
+  (302, 11, 15),
+  (303, 20, 8), (304, 20, 12),
+  (305, 21, 25);
+
+--enable_query_log
+
+DELIMITER |;
+
+# =========================================================================
+
+--echo
+--echo
+--echo === K1: 3-way join + subquery on lineitem (simple, no cross-table filter) ===
+
+let $QUERY=
+SELECT c.`name`, o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.`name`, o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === K2: 3-way join + two subqueries on different tables ===
+
+let $QUERY=
+SELECT c.`name`, o.id AS order_id,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+  (SELECT SUM(s.weight) FROM k_shipment AS s WHERE s.order_id = o.id) AS total_weight
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.`name`, o.id AS order_id,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id) AS total_qty,
+  (SELECT SUM(s.weight) FROM k_shipment AS s WHERE s.order_id = o.id) AS total_weight
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === K3: 3-way join + subquery with inner-only filter ===
+
+let $QUERY=
+SELECT c.`name`, o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > 5) AS big_items_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.`name`, o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > 5) AS big_items_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+# =========================================================================
+
+--echo
+--echo
+--echo === K4: Cross-table filter — l.qty > o.min_qty ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+
+--echo
+--echo
+--echo === K5: Cross-table filter with two subqueries (merged) ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty,
+  (SELECT COUNT(l2.id) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS small_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty > o.min_qty) AS filtered_qty,
+  (SELECT COUNT(l2.id) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS small_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id|
+
+# =========================================================================
+# Category L: Cross-table EQ and NE filters
+# =========================================================================
+
+# Add rows where qty matches min_qty for equality tests
+DELIMITER ;|
+--disable_query_log
+INSERT INTO k_lineitem VALUES
+  (110, 10, 3, 33),
+  (111, 11, 5, 55),
+  (112, 20, 2, 22);
+--enable_query_log
+DELIMITER |;
+
+--echo
+--echo
+--echo === L1: Cross-table EQ filter — l.qty = o.min_qty ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_match_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_match_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === L2: Cross-table NE filter — l.qty != o.min_qty ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === L3: Cross-table EQ with COUNT — count rows where qty = min_qty ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_count
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === L4: Mixed EQ and GT cross-table filters (merged subqueries) ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_price,
+  (SELECT SUM(l2.price) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty > o.min_qty) AS above_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.price) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS exact_price,
+  (SELECT SUM(l2.price) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty > o.min_qty) AS above_price
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === L5: Mixed NE and LE cross-table filters (merged subqueries) ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_count,
+  (SELECT SUM(l2.qty) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS le_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT COUNT(l.id) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty != o.min_qty) AS ne_count,
+  (SELECT SUM(l2.qty) FROM k_lineitem AS l2 WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS le_total
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === L6: EQ where no rows match (order 21 min_qty=10, no lineitem has qty=10) ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS eq_sum
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+WHERE o.id = 21;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  (SELECT SUM(l.qty) FROM k_lineitem AS l WHERE l.order_id = o.id AND l.qty = o.min_qty) AS eq_sum
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+WHERE o.id = 21|
+
+# =========================================================================
+# Category M: Cross-table WHERE filters with aggregation
+# =========================================================================
+
+--echo
+--echo
+--echo === M1: Cross-table WHERE filter on explicit join — l.qty > o.min_qty ===
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.qty) AS filtered_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.qty) AS filtered_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M2: Cross-table WHERE with EQ — l.qty = o.min_qty (BranchReg) ===
+# Without composite index on (order_id, qty), uses BranchReg fallback.
+# Filter to orders where at least one lineitem matches min_qty.
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  COUNT(l.id) AS exact_count,
+  SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty AND o.id != 21
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  COUNT(l.id) AS exact_count,
+  SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty AND o.id != 21
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M3: Cross-table WHERE with NE — l.qty != o.min_qty ===
+
+let $QUERY=
+SELECT o.id AS order_id,
+  SUM(l.qty) AS ne_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty != o.min_qty
+GROUP BY o.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id,
+  SUM(l.qty) AS ne_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty != o.min_qty
+GROUP BY o.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M4: Cross-table WHERE + inner-only WHERE combined (BranchReg fallback) ===
+
+let $QUERY=
+SELECT o.id AS order_id,
+  SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty AND l.price > 30
+GROUP BY o.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id,
+  SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty AND l.price > 30
+GROUP BY o.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M7: Cross-table EQ — BranchReg empty group suppression ===
+# Same query as M6 but using single-column index (BranchReg path).
+# Order 21 has no lineitem with qty = min_qty (10), so it must be absent.
+# Verifies that sentinel COUNT suppresses groups with zero matching rows.
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  COUNT(l.id) AS exact_count,
+  SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  COUNT(l.id) AS exact_count,
+  SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M10: Arithmetic in cross-table filter — l.qty > o.min_qty + 1 ===
+# Cross-table filter with constant arithmetic on one side.
+# Order 10 (min_qty=3): lineitems qty [2,5,8] → qty > 4: [5,8], sum=13
+# Order 11 (min_qty=5): lineitems qty [1,6,10] → qty > 6: [10], sum=10
+# Order 20 (min_qty=2): lineitems qty [3,7] → qty > 3: [7], sum=7
+# Order 21 (min_qty=10): lineitems qty [15,20] → qty > 11: [15,20], sum=35
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.qty) AS filtered_qty
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.qty) AS filtered_qty
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M11: Multiplication in cross-table filter — l.price > o.min_qty * 10 ===
+# Order 10 (min_qty=3, thresh=30): prices [20,50,80] → >30: [50,80], count=2
+# Order 11 (min_qty=5, thresh=50): prices [10,60,100] → >50: [60,100], count=2
+# Order 20 (min_qty=2, thresh=20): prices [30,70] → >20: [30,70], count=2
+# Order 21 (min_qty=10, thresh=100): prices [150,200] → >100: [150,200], count=2
+
+let $QUERY=
+SELECT o.id AS order_id,
+  COUNT(l.id) AS big_count,
+  SUM(l.price) AS big_total
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.price > o.min_qty * 10
+GROUP BY o.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id,
+  COUNT(l.id) AS big_count,
+  SUM(l.price) AS big_total
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.price > o.min_qty * 10
+GROUP BY o.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M8: Ancestor-to-ancestor cross-table filter — c.id > o.min_qty ===
+# Filter between two ancestor tables (customer and orders), neither is the
+# leaf (lineitem). Both sides loaded via LoadLinkedColumn.
+# Customer 1 (id=1): orders 10 (min_qty=3), 11 (min_qty=5) → 1>3? no, 1>5? no
+# Customer 2 (id=2): orders 20 (min_qty=2), 21 (min_qty=10) → 2>2? no, 2>10? no
+# No groups match → empty result.
+
+let $QUERY=
+SELECT c.`name`, o.id AS order_id,
+  SUM(l.qty) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE c.id > o.min_qty
+GROUP BY c.`name`, o.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.`name`, o.id AS order_id,
+  SUM(l.qty) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE c.id > o.min_qty
+GROUP BY c.`name`, o.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M9: Ancestor-to-ancestor with matches — o.min_qty < c.id * 3 ===
+# Customer 1 (id=1, id*3=3): orders 10 (min_qty=3 < 3? no), 11 (5<3? no)
+# Customer 2 (id=2, id*3=6): orders 20 (min_qty=2 < 6? yes), 21 (10<6? no)
+# Only order 20 matches.
+# Note: c.id * 3 is not a simple column comparison, so this tests the
+# simpler case: o.min_qty < c.id (Customer 2, order 20: min_qty=2 < id=2? no)
+# Actually use: c.id >= o.min_qty
+# Customer 1 (id=1): order 10 (1>=3? no), order 11 (1>=5? no)
+# Customer 2 (id=2): order 20 (2>=2? yes → sum=10), order 21 (2>=10? no)
+
+let $QUERY=
+SELECT c.`name`, o.id AS order_id,
+  SUM(l.qty) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE c.id >= o.min_qty
+GROUP BY c.`name`, o.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.`name`, o.id AS order_id,
+  SUM(l.qty) AS total_qty
+FROM k_customer AS c
+JOIN k_orders AS o ON o.cust_id = c.id
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE c.id >= o.min_qty
+GROUP BY c.`name`, o.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M12: Cross-table OR — l.qty = o.min_qty OR l.qty = o.min_qty + 1 ===
+# OR with two branches, same table pair.
+# Order 10 (min_qty=3): qty [2,5,8] → qty=3(yes) or qty=4(no) → [2], sum=2.. wait
+# Actually: qty=3 matches item (qty=2? no, qty=5? no, qty=8? no)...
+# Lineitems for order 10: id=100 qty=2, id=101 qty=5, id=102 qty=8
+# min_qty=3: match qty=3 or qty=4 → none match → empty (suppressed)
+# Order 11 (min_qty=5): qty [1,6,10] → qty=5 or qty=6 → [6], sum=6
+# Order 20 (min_qty=2): qty [3,7] → qty=2 or qty=3 → [3], sum=3
+# Order 21 (min_qty=10): qty [15,20] → qty=10 or qty=11 → none → suppressed
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.qty) AS or_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty OR l.qty = o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.qty) AS or_sum
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty OR l.qty = o.min_qty + 1
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M13: Cross-table OR with different operators ===
+# l.qty > o.min_qty * 2 OR l.price > 100
+# Order 10 (min_qty=3): qty>6: [8], price>100: none → [8], count=1
+# Order 11 (min_qty=5): qty>10: [10? no], price>100: [100? no] → none → suppressed
+# Actually price is 100 which is NOT > 100. Let me check...
+# Order 11: items (1,10), (6,60), (10,100). qty>10: none. price>100: none → suppressed
+# Order 20 (min_qty=2): qty>4: [7], price>100: none → [7], count=1
+# Order 21 (min_qty=10): qty>20: [20? no], price>100: [150,200] → count=2
+
+let $QUERY=
+SELECT o.id AS order_id,
+  COUNT(l.id) AS match_count
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty * 2 OR l.price > 100
+GROUP BY o.id
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id,
+  COUNT(l.id) AS match_count
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty * 2 OR l.price > 100
+GROUP BY o.id
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M5: Cross-table WHERE with composite index (order_id, qty) ===
+# Replace single-column index with composite so cross-table filter
+# becomes an index range bound instead of BranchReg.
+# Placed last to avoid stale dictionary cache affecting later tests.
+
+DELIMITER ;|
+--disable_query_log
+DROP INDEX idx_k_li_order ON k_lineitem;
+CREATE INDEX idx_k_li_order_qty ON k_lineitem (order_id, qty);
+# Allow NDB dictionary cache on REST server to refresh after schema change
+--sleep 3
+--enable_query_log
+DELIMITER |;
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  SUM(l.price) AS filtered_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty > o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+
+--echo
+--echo
+--echo === M6: EQ on composite index — empty groups eliminated ===
+# With composite index (order_id, qty), l.qty = o.min_qty becomes an
+# equality bound on the second index column.  Order 21 (min_qty=10,
+# no lineitem with qty=10) correctly produces no scan rows → absent
+# from result (unlike BranchReg fallback which gives COUNT=0).
+
+let $QUERY=
+SELECT o.id AS order_id, o.min_qty,
+  COUNT(l.id) AS exact_count,
+  SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS order_id, o.min_qty,
+  COUNT(l.id) AS exact_count,
+  SUM(l.price) AS exact_price
+FROM k_orders AS o
+JOIN k_lineitem AS l ON l.order_id = o.id
+WHERE l.qty = o.min_qty
+GROUP BY o.id, o.min_qty
+ORDER BY o.id|
+
+# =========================================================================
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+--disable_query_log
+DROP TABLE IF EXISTS k_shipment;
+DROP TABLE IF EXISTS k_lineitem;
+DROP TABLE IF EXISTS k_orders;
+DROP TABLE IF EXISTS k_customer;
+DROP TABLE IF EXISTS j_lineitem;
+DROP TABLE IF EXISTS j_order_notes;
+DROP TABLE IF EXISTS j_orders;
+DROP TABLE IF EXISTS j_customer;
+DROP TABLE IF EXISTS lg_events;
+DROP TABLE IF EXISTS lg_measures;
+DROP TABLE IF EXISTS lg_entity;
+DROP TABLE IF EXISTS sq_events;
+DROP TABLE IF EXISTS sq_measures;
+DROP TABLE IF EXISTS sq_entity;
+--error 0,1
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
+--error 0,1
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
+--enable_query_log

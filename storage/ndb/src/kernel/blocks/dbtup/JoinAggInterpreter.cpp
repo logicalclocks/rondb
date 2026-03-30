@@ -34,6 +34,7 @@
 #include "decimal.h"
 #include "Dbtup.hpp"
 #include "../dblqh/Dblqh.hpp"
+#include "../dblqh/JoinAggregationState.hpp"
 #include <NdbSqlUtil.hpp>
 #include <Interpreter.hpp>
 
@@ -553,8 +554,10 @@ bool JoinAggInterpreter::validateEmbeddedProgram(
       case Interpreter::BRANCH_GE_REG_REG:
       case Interpreter::EXIT_OK:
       case Interpreter::BRANCH_ATTR_OP_ARG:
+      case Interpreter::BRANCH_MEM_OP_ARG:
       case Interpreter::BRANCH_ATTR_EQ_NULL:
       case Interpreter::BRANCH_ATTR_NE_NULL:
+      case Interpreter::READ_LINKED_TO_MEM:
       case Interpreter::WRITE_INTERPRETER_OUTPUT:
         break;
       default:
@@ -576,6 +579,7 @@ bool JoinAggInterpreter::validateEmbeddedProgram(
       case Interpreter::BRANCH_GT_REG_REG:
       case Interpreter::BRANCH_GE_REG_REG:
       case Interpreter::BRANCH_ATTR_OP_ARG:
+      case Interpreter::BRANCH_MEM_OP_ARG:
       case Interpreter::BRANCH_ATTR_EQ_NULL:
       case Interpreter::BRANCH_ATTR_NE_NULL:
         is_branch = true;
@@ -751,182 +755,118 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
   return true;
 }
 
+/**
+ * setTotalAggResults — override m_n_agg_results for multi-leaf.
+ *
+ * Must be called after Init() but before any rows are processed.
+ * Sets the total accumulator count across all leaves so hash map entries
+ * and the non-GROUP-BY accumulator array are sized for the full combined
+ * layout. Also re-initializes the non-GROUP-BY accumulator slots.
+ */
+void JoinAggInterpreter::setTotalAggResults(Uint32 total) {
+  require(m_inited);
+  require(m_processed_rows == 0);
+  require(total <= MAX_AGG_N_RESULTS);
+  m_n_agg_results = total;
+
+  // Re-initialize the non-GROUP-BY accumulator array for the new total
+  m_agg_results = m_agg_results_buf;
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    m_agg_results[i].type = NDB_TYPE_UNDEFINED;
+    m_agg_results[i].value.val_int64 = 0;
+    m_agg_results[i].is_unsigned = false;
+    m_agg_results[i].is_null = true;
+  }
+}
+
+/**
+ * switchProgram — swap the active aggregation program for multi-leaf.
+ *
+ * Points to a different leaf's program and sets the accumulator offset.
+ * The hash map, group rows, and all other interpreter state are unchanged.
+ * Called before each processRecWithLinkedAttrs() to select the correct
+ * leaf's program.
+ *
+ * @param prog             Pointer to the leaf's program words (must remain
+ *                         valid for the lifetime of the interpreter)
+ * @param prog_len         Program length in words
+ * @param agg_prog_start   Instruction start offset within the program
+ * @param acc_offset       Accumulator offset for this leaf (0 for leaf 0)
+ */
+// switchProgram removed — leaf program switching is now done inside
+// processRecWithLinkedAttrs / processNullExtendedRow under mutex.
+
+/**
+ * cacheMultiLeafAggOps — pre-build combined agg_ops for multi-leaf merge.
+ *
+ * For MUTEX_FREE merge, mergeFrom() needs to know the aggregation opcode
+ * for each accumulator slot. With multi-leaf, different slots belong to
+ * different leaf programs. This method extracts ops from ALL leaf programs
+ * into the combined m_cached_agg_ops array, with each leaf's ops placed
+ * at its acc_offset.
+ *
+ * Must be called after Init() + setTotalAggResults(), before any merge.
+ */
+void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
+                                               Uint32 num_leaves) {
+  require(m_inited);
+  require(m_cached_agg_ops != nullptr);
+  memset(m_cached_agg_ops, 0, m_n_agg_results);
+
+  for (Uint32 leaf = 0; leaf < num_leaves; leaf++) {
+    // Extract ops from this leaf's program, writing at leaf's offset
+    Uint32 exec_pos = leaves[leaf].m_agg_prog_start_pos;
+    const Uint32* prog = leaves[leaf].m_agg_program;
+    Uint32 prog_len = leaves[leaf].m_agg_program_len;
+    Uint32 acc_offset = leaves[leaf].m_acc_offset;
+
+    while (exec_pos < prog_len) {
+      Uint32 value = prog[exec_pos++];
+      Uint8 op = (value & 0xFC000000) >> 26;
+      Uint32 agg_index;
+      switch (op) {
+        case kOpSum: case kOpSumBigint: case kOpSumDouble:
+        case kOpMax: case kOpMaxBigint: case kOpMaxDouble:
+        case kOpMin: case kOpMinBigint: case kOpMinDouble:
+        case kOpCount:
+          agg_index = (value & 0x0000FFFF) + acc_offset;
+          if (agg_index < m_n_agg_results) m_cached_agg_ops[agg_index] = op;
+          break;
+        case kOpLoadCol: {
+          Uint32 type = (value & 0x03E00000) >> 21;
+          if (type == NDB_TYPE_DECIMAL || type == NDB_TYPE_DECIMALUNSIGNED)
+            exec_pos++;
+          break;
+        }
+        case kOpLoadConst:
+          exec_pos += 2;
+          break;
+        case kOpEmbeddedInterp: {
+          Uint32 emb_len = value & 0xFFFF;
+          exec_pos += emb_len;
+          break;
+        }
+        case kOpSkip:
+        case kOpBranchRegLt:
+        case kOpBranchRegLe:
+        case kOpBranchRegGt:
+        case kOpBranchRegGe:
+        case kOpBranchRegEq:
+        case kOpBranchRegNe:
+          break;
+        default:
+          break;
+      }
+    }
+  }
+  m_agg_ops_cached = true;
+}
+
 bool JoinAggInterpreter::OptimizeProgram() {
   if (!m_inited) {
     return false;
   }
-
-  DataType reg_types[kRegTotal];
-  for (Uint32 i = 0; i < kRegTotal; i++) {
-    reg_types[i] = NDB_TYPE_UNDEFINED;
-  }
-
-  Uint32 exec_pos = m_agg_prog_start_pos;
-
-  while (exec_pos < m_prog_len) {
-    Uint32 value = m_prog[exec_pos];
-    Uint8 op = (value & 0xFC000000) >> 26;
-    Uint32 reg_index, reg_index2;
-    DataType type;
-    Uint8 new_op = op;
-
-    switch (op) {
-      case kOpLoadCol:
-        type = (value & 0x03E00000) >> 21;
-        reg_index = (value & 0x000F0000) >> 16;
-        if (type == NDB_TYPE_FLOAT || type == NDB_TYPE_DOUBLE) {
-          reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        } else if (type == NDB_TYPE_DECIMAL || type == NDB_TYPE_DECIMALUNSIGNED) {
-          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
-          exec_pos++;
-        } else {
-          reg_types[reg_index] = NDB_TYPE_BIGINT;
-        }
-        break;
-
-      case kOpLoadConst:
-        type = (value & 0x03E00000) >> 21;
-        reg_index = (value & 0x000F0000) >> 16;
-        if (type == NDB_TYPE_DOUBLE) {
-          reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        } else {
-          reg_types[reg_index] = NDB_TYPE_BIGINT;
-        }
-        exec_pos += 2;
-        break;
-
-      case kOpMov:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        reg_types[reg_index] = reg_types[reg_index2];
-        break;
-
-      case kOpPlus:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
-            reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
-          new_op = kOpPlusDouble;
-          reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        } else if (reg_types[reg_index] != NDB_TYPE_UNDEFINED &&
-                   reg_types[reg_index2] != NDB_TYPE_UNDEFINED) {
-          new_op = kOpPlusBigint;
-          reg_types[reg_index] = NDB_TYPE_BIGINT;
-        } else {
-          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
-        }
-        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        break;
-
-      case kOpMinus:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
-            reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
-          new_op = kOpMinusDouble;
-          reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        } else if (reg_types[reg_index] != NDB_TYPE_UNDEFINED &&
-                   reg_types[reg_index2] != NDB_TYPE_UNDEFINED) {
-          new_op = kOpMinusBigint;
-          reg_types[reg_index] = NDB_TYPE_BIGINT;
-        } else {
-          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
-        }
-        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        break;
-
-      case kOpMul:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
-            reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
-          new_op = kOpMulDouble;
-          reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        } else if (reg_types[reg_index] != NDB_TYPE_UNDEFINED &&
-                   reg_types[reg_index2] != NDB_TYPE_UNDEFINED) {
-          new_op = kOpMulBigint;
-          reg_types[reg_index] = NDB_TYPE_BIGINT;
-        } else {
-          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
-        }
-        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        break;
-
-      case kOpDiv:
-        reg_index = (value >> 12) & 0x0F;
-        new_op = kOpDivDouble;
-        reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        break;
-
-      case kOpDivInt:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        if (reg_types[reg_index] != NDB_TYPE_UNDEFINED &&
-            reg_types[reg_index2] != NDB_TYPE_UNDEFINED) {
-          new_op = kOpDivIntBigint;
-        }
-        reg_types[reg_index] = NDB_TYPE_BIGINT;
-        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        break;
-
-      case kOpMod:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
-            reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
-          reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        } else if (reg_types[reg_index] == NDB_TYPE_UNDEFINED ||
-                   reg_types[reg_index2] == NDB_TYPE_UNDEFINED) {
-          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
-        } else {
-          reg_types[reg_index] = NDB_TYPE_BIGINT;
-        }
-        break;
-
-      case kOpSum:
-        reg_index = (value & 0x000F0000) >> 16;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE) new_op = kOpSumDouble;
-        else if (reg_types[reg_index] == NDB_TYPE_BIGINT) new_op = kOpSumBigint;
-        if (new_op != op)
-          m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        break;
-
-      case kOpMax:
-        reg_index = (value & 0x000F0000) >> 16;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE) new_op = kOpMaxDouble;
-        else if (reg_types[reg_index] == NDB_TYPE_BIGINT) new_op = kOpMaxBigint;
-        if (new_op != op)
-          m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        break;
-
-      case kOpMin:
-        reg_index = (value & 0x000F0000) >> 16;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE) new_op = kOpMinDouble;
-        else if (reg_types[reg_index] == NDB_TYPE_BIGINT) new_op = kOpMinBigint;
-        if (new_op != op)
-          m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        break;
-
-      case kOpCount:
-        break;
-
-      case kOpEmbeddedInterp:
-      {
-        Uint32 emb_len = value & 0xFFFF;
-        exec_pos += emb_len;
-        break;
-      }
-
-      case kOpSkip:
-        break;
-
-      default:
-        break;
-    }
-    exec_pos++;
-  }
-
+  OptimizeProgramBuffer(m_prog, m_prog_len, m_agg_prog_start_pos);
   return true;
 }
 
@@ -1010,6 +950,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     if (found != nullptr) {
       header = reinterpret_cast<AttributeHeader*>(found);
       agg_res_ptr = reinterpret_cast<AggResItem*>(found + len_in_char);
+      agg_res_ptr += m_acc_offset;
     } else {
       if (m_max_groups > 0 && m_n_groups >= m_max_groups) {
         return AGG_EVICT_NEEDED;
@@ -1042,9 +983,10 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         agg_res_ptr[i].is_unsigned = false;
         agg_res_ptr[i].is_null = true;
       }
+      agg_res_ptr += m_acc_offset;
     }
   } else {
-    agg_res_ptr = m_agg_results;
+    agg_res_ptr = m_agg_results + m_acc_offset;
   }
 
   Uint32 col_index;
@@ -1454,6 +1396,51 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         break;
       }
 
+      case kOpBranchRegLt:
+      case kOpBranchRegLe:
+      case kOpBranchRegGt:
+      case kOpBranchRegGe:
+      case kOpBranchRegEq:
+      case kOpBranchRegNe:
+      {
+        Uint32 ra = (value >> 20) & 0x0F;
+        Uint32 rb = (value >> 16) & 0x0F;
+        Uint32 skip_count = value & 0xFFFF;
+        // Compare registers as doubles for type-agnostic comparison
+        double va = 0, vb = 0;
+        if (m_registers[ra].type == NDB_TYPE_BIGINT) {
+          va = m_registers[ra].is_unsigned
+              ? (double)m_registers[ra].value.val_uint64
+              : (double)m_registers[ra].value.val_int64;
+        } else if (m_registers[ra].type == NDB_TYPE_DOUBLE) {
+          va = m_registers[ra].value.val_double;
+        }
+        if (m_registers[rb].type == NDB_TYPE_BIGINT) {
+          vb = m_registers[rb].is_unsigned
+              ? (double)m_registers[rb].value.val_uint64
+              : (double)m_registers[rb].value.val_int64;
+        } else if (m_registers[rb].type == NDB_TYPE_DOUBLE) {
+          vb = m_registers[rb].value.val_double;
+        }
+        // If either register is NULL, skip (NULL comparison → no match)
+        bool do_skip = false;
+        if (m_registers[ra].is_null || m_registers[rb].is_null) {
+          do_skip = true;
+        } else {
+          switch (op) {
+          case kOpBranchRegLt: do_skip = (va < vb); break;
+          case kOpBranchRegLe: do_skip = (va <= vb); break;
+          case kOpBranchRegGt: do_skip = (va > vb); break;
+          case kOpBranchRegGe: do_skip = (va >= vb); break;
+          case kOpBranchRegEq: do_skip = (va == vb); break;
+          case kOpBranchRegNe: do_skip = (va != vb); break;
+          default: break;
+          }
+        }
+        if (do_skip) exec_pos += skip_count;
+        break;
+      }
+
       case kOpEmbeddedInterp:
       {
         Uint32 emb_len = value & 0xFFFF;
@@ -1473,6 +1460,11 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Uint32 saved_instr_count = req_struct->no_exec_instructions;
         req_struct->no_exec_instructions = 0;
 
+        // Make linked attr data available to the NDB interpreter for
+        // READ_LINKED_TO_MEM / BRANCH_MEM_OP_ARG instructions.
+        req_struct->m_linked_attr_data = m_linked_attr_data;
+        req_struct->m_linked_attr_len = m_linked_attr_len;
+
         Uint32 local_tmpArea[16];
         int rc = block_tup->interpreterNextLab(
             req_struct->signal, req_struct,
@@ -1481,6 +1473,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
             local_tmpArea, 16);
 
         req_struct->no_exec_instructions = saved_instr_count;
+        req_struct->m_linked_attr_data = nullptr;
+        req_struct->m_linked_attr_len = 0;
 
         if (rc < 0) return ZAGG_EMBEDDED_INTERP_ERROR;
 
@@ -1501,9 +1495,19 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
     Dbtup* block_tup,
     Dbtup::KeyReqStruct* req_struct,
     const Uint32* linked_attr_data,
-    Uint32 linked_attr_len) {
+    Uint32 linked_attr_len,
+    const LeafProgram* leaf) {
   std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
   if (m_use_mutex) lock.lock();
+
+  // Switch to leaf program under mutex protection.
+  // For single-leaf queries, leaf is nullptr — no switch needed.
+  if (leaf != nullptr) {
+    m_prog = const_cast<Uint32*>(leaf->m_agg_program);
+    m_prog_len = leaf->m_agg_program_len;
+    m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
+    m_acc_offset = leaf->m_acc_offset;
+  }
 
   m_linked_attr_data = linked_attr_data;
   m_linked_attr_len = linked_attr_len;
@@ -1715,6 +1719,12 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
         break;
       }
       case kOpSkip:
+      case kOpBranchRegLt:
+      case kOpBranchRegLe:
+      case kOpBranchRegGt:
+      case kOpBranchRegGe:
+      case kOpBranchRegEq:
+      case kOpBranchRegNe:
         break;
       default:
         break;
@@ -1957,9 +1967,17 @@ void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup) {
 
 Int32 JoinAggInterpreter::processNullExtendedRow(
     const Uint32* linked_attr_data,
-    Uint32 linked_attr_len) {
+    Uint32 linked_attr_len,
+    const LeafProgram* leaf) {
   std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
   if (m_use_mutex) lock.lock();
+
+  if (leaf != nullptr) {
+    m_prog = const_cast<Uint32*>(leaf->m_agg_program);
+    m_prog_len = leaf->m_agg_program_len;
+    m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
+    m_acc_offset = leaf->m_acc_offset;
+  }
 
   m_linked_attr_data = linked_attr_data;
   m_linked_attr_len = linked_attr_len;

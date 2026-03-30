@@ -71,8 +71,9 @@
 //#define DEBUG_DISK 1
 //#define DEBUG_ELEM_COUNT 1
 //#define DEBUG_COPY_TUPLE 1
-//#define DEBUG_JOIN_AGG_TRACE 1
 //#define DEBUG_VARPART_EXPAND 1
+//#define DEBUG_JOIN_AGG_TRACE 1
+//#define DEBUG_STAR_AGG 1
 #endif
 
 #ifdef DEBUG_COPY_TUPLE
@@ -91,6 +92,12 @@
 #define DEB_ELEM_COUNT(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_ELEM_COUNT(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_STAR_AGG
+#define DEB_STAR_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_STAR_AGG(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_DISK
@@ -923,7 +930,7 @@ zero32(Uint8* dstPtr, const Uint32 len)
   }
 } 
 
-Uint32 Dbtup::copyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal) {
+Uint32 Dbtup::keyCopyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal) {
   ndbassert(expectedLen > 0 || attrInfoIVal == RNIL);
 
   if (expectedLen > 0) {
@@ -950,84 +957,104 @@ Uint32 Dbtup::copyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal) {
   return 0;
 }
 
-Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
-                           bool interpretedFlag,
-                           void* scan_rec)
+Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
+                               bool interpretedFlag,
+                               bool first_call,
+                               void* scan_rec)
 {
   /* Get stored procedure */
   StoredProcPtr storedPtr;
   storedPtr.i = storedProcId;
   ndbrequire(c_storedProcPool.getValidPtr(storedPtr));
-  ndbrequire(((storedPtr.p->storedCode == ZSCAN_PROCEDURE) ||
-        (storedPtr.p->storedCode == ZCOPY_PROCEDURE)));
 
-  const Uint32 attrinfoIVal = storedPtr.p->storedProcIVal;
-  SectionReader reader(attrinfoIVal, getSectionSegmentPool());
-  const Uint32 readerLen = reader.getSize();
-
-  if (interpretedFlag) {
-    jam();
-
-    // Read sectionPtr's
-    reader.getWords(&cinBuffer[0], 5);
-
-    // Read interpreted sections 0..3, up to the parameter section
+  const bool useCache = (storedPtr.p->copyAttrinfoCalled &&
+                         storedPtr.p->cachedLinearAttrInfo != nullptr);
+  Uint32 totalLen;
+  /*
+   * Fill cinBuffer with the full linearized section.
+   * Either memcpy from cached linear buffer or read via SectionReader.
+   */
+  Uint32 paramAreaStart;
+  if (useCache) {
+    jamDebug();
+    totalLen = storedPtr.p->cachedLinearLen;
+    paramAreaStart = storedPtr.p->storedParamAreaStart;
+    if (first_call) {
+      memcpy(&cinBuffer[0],
+             storedPtr.p->cachedLinearAttrInfo,
+             totalLen * sizeof(Uint32));
+    }
+    if (unlikely(storedPtr.p->storedCode == ZCOPY_PROCEDURE)) {
+      jamDebug();
+      return totalLen;
+    }
+  } else {
+    jamDebug();
+    SectionReader reader(storedPtr.p->storedProcIVal,
+                         getSectionSegmentPool());
+    totalLen = reader.getSize();
+    reader.getWords(&cinBuffer[0], totalLen);
+    /* Cache the full linearized section on first call (scan procedures only) */
+    jamDebug();
+    ndbassert(storedPtr.p->storedCode == ZSCAN_PROCEDURE);
+    if (unlikely(!cacheFromCinBuffer(storedPtr.p, totalLen))) {
+      jam();
+      return 0;
+    }
     const Uint32 readLen = cinBuffer[0] + cinBuffer[1] +
       cinBuffer[2] + cinBuffer[3];
-    Uint32 *pos = &cinBuffer[5];
-    reader.getWords(pos, readLen);
-    pos += readLen;
+    paramAreaStart = 5 + readLen;
+    storedPtr.p->storedParamAreaStart = paramAreaStart;
+  }
+  ndbrequire(storedPtr.p->storedCode == ZSCAN_PROCEDURE);
 
-    Uint32 paramOffs = 0;
+  /*
+   * Setup cinBuffer for interpreted programs: select the right parameter
+   * and initialize pushdown interpreter if present.
+   */
+  if (interpretedFlag) {
+    jam();
+    jamDataDebug(paramAreaStart);
     Uint32 paramLen = 0;
     if (cinBuffer[4] == 0) {
+      jamDebug();
       // No parameters supplied in this attrInfo
-    } else if (storedPtr.p->storedParamNo == 0) {
-      // A single parameter, or the first of many, copy it out
+    } else if (storedPtr.p->storedParamOffset == 0) {
+      jamDebug();
+      // First parameter — already in position
       paramLen = cinBuffer[4];
-      ndbrequire(reader.getWords(pos, paramLen));
-      pos += paramLen;
-      ndbassert(intmax_t{readerLen} == (pos - cinBuffer));
+      ndbassert(paramAreaStart + paramLen <= totalLen);
     } else {
-      // A set of parameters, skip up to the one specified by 'ParamNo'
-      for (uint i = 0; i < storedPtr.p->storedParamNo; i++) {
-        reader.getWord(pos);
-        paramLen = *pos;
-        reader.step(paramLen - 1);
-        paramOffs += paramLen;
+      jamDebug();
+      // Jump directly to current parameter using cached offset
+      const Uint32 paramOffset =
+        paramAreaStart + storedPtr.p->storedParamOffset;
+      ndbassert(paramOffset < totalLen);
+      Uint32* paramBase = &cinBuffer[paramOffset];
+      paramLen = *paramBase;
+      ndbassert(paramOffset + paramLen <= totalLen);
+      if (paramAreaStart + paramLen <= paramOffset) {
+        memcpy(&cinBuffer[paramAreaStart], paramBase,
+                paramLen * sizeof(Uint32));
+      } else {
+        memmove(&cinBuffer[paramAreaStart], paramBase,
+                paramLen * sizeof(Uint32));
       }
-      // Copy out the parameter specified
-      reader.getWord(pos);
-      paramLen = *pos;
-      reader.getWords(pos + 1, paramLen - 1);
-      pos += paramLen;
+      cinBuffer[4] = paramLen;
     }
-    cinBuffer[4] = paramLen;
+
     // Moz
     if (scan_rec != nullptr) {
-      // TODO doublecheck prepare_fragptr.p->fragTableId and
-      // prepare_fragptr.p->fragmentId with ScanRecord
       Dblqh::ScanRecord* scan_rec_ptr =
                         reinterpret_cast<Dblqh::ScanRecord*>(scan_rec);
       if (scan_rec_ptr->m_has_pushdown &&
           scan_rec_ptr->m_agg_interpreter == nullptr &&
           scan_rec_ptr->m_vs_interpreter == nullptr) {
-        /*
-         * Initialize pushdown interpreter resources
-         * 1. get 1st program word to verify Magic number
-         */
-        ndbrequire(reader.getWord(pos));
-        ndbrequire((*(pos) >> 16) == 0x0721);
-        Uint32 proc_len = *(pos) & 0xFFFF;
-        ndbrequire(intmax_t{readerLen - proc_len} == (pos - cinBuffer));
-        Uint32 proc_start = (pos - cinBuffer);
-        pos++;
-
-        // 2. get remaining program words
-        ndbrequire(reader.getWords(pos, proc_len - 1));
+        jam();
+        Uint32 proc_start = paramAreaStart + paramLen;
         ndbrequire((cinBuffer[proc_start] >> 16) == 0x0721);
+        Uint32 proc_len = cinBuffer[proc_start] & 0xFFFF;
 
-        // 3. construct the appropriate interpreter via factory
         auto result = PushdownInterpreterFactory::Create(
             &cinBuffer[proc_start], proc_len,
             prepare_fragptr.p->fragTableId,
@@ -1039,16 +1066,11 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
       }
     }
   } else {
-    jam();
-    ndbassert(storedPtr.p->storedParamNo == 0);
-
-    /* Copy attrInfo data into linear buffer */
-    reader.getWords(&cinBuffer[0], readerLen);
+    jamDebug();
+    ndbassert(storedPtr.p->storedParamOffset == 0);
   }
 
-  // By convention we return total length of storedProc, not just what we
-  // copied.
-  return readerLen;
+  return totalLen;
 }
 
 void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
@@ -1061,7 +1083,45 @@ void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
   ndbrequire(((storedPtr.p->storedCode == ZSCAN_PROCEDURE) ||
         (storedPtr.p->storedCode == ZCOPY_PROCEDURE)));
 
-  storedPtr.p->storedParamNo++;
+  /* Advance storedParamOffset past current param block.
+   * Read block length from cached linear buffer, not cinBuffer,
+   * since cinBuffer may have been overwritten by a real-time break.
+   * Only advance when parameters exist (buf[4] > 0). For scans
+   * without parameters, nextAttrInfoParam is still called (opExec
+   * is set) but there is nothing to skip. */
+  Uint32* buf = storedPtr.p->cachedLinearAttrInfo;
+  ndbassert(buf != nullptr);
+  if (buf[4] > 0) {
+    jamDebug();
+    const Uint32 paramAreaStart = storedPtr.p->storedParamAreaStart;
+    ndbassert(paramAreaStart + storedPtr.p->storedParamOffset <
+              storedPtr.p->cachedLinearLen);
+    const Uint32 paramBlockLen =
+      buf[paramAreaStart + storedPtr.p->storedParamOffset];
+    storedPtr.p->storedParamOffset += paramBlockLen;
+  }
+}
+
+bool Dbtup::cacheFromCinBuffer(storedProc* sp, Uint32 len) {
+  sp->cachedLinearLen = len;
+  sp->cachedLinearAttrInfo = static_cast<Uint32*>(
+      lc_ndbd_pool_malloc(len * sizeof(Uint32),
+                           RG_TRANSACTION_MEMORY,
+                           getThreadId(),
+                           false));
+  if (sp->cachedLinearAttrInfo == nullptr) {
+    jam();
+    return false;
+  }
+  sp->copyAttrinfoCalled = true;
+  memcpy(sp->cachedLinearAttrInfo,
+         &cinBuffer[0],
+         len * sizeof(Uint32));
+
+  /* Release the segmented section — no longer needed */
+  releaseSection(sp->storedProcIVal);
+  sp->storedProcIVal = RNIL;
+  return true;
 }
 
 void Dbtup::setInvalidChecksum(Tuple_header *tuple_ptr,
@@ -5050,12 +5110,17 @@ int Dbtup::prepareAndHandleJoinAggRow(KeyReqStruct *req_struct,
     linked_len = RsubLen - 1;
   }
 #ifdef DEBUG_JOIN_AGG_TRACE
-  DEB_JOIN_AGG(("DBTUP prepareAndHandleJoinAggRow: "
+  DEB_JOIN_AGG(("(%u)DBTUP prepareAndHandleJoinAggRow: "
                  "cinBuffer header: initRead=%u interp=%u "
                  "finalUpd=%u finalRead=%u subLen=%u  "
                  "linked_len=%u",
-                 cinBuffer[0], cinBuffer[1], cinBuffer[2],
-                 cinBuffer[3], cinBuffer[4], linked_len));
+                 instance(),
+                 cinBuffer[0],
+                 cinBuffer[1],
+                 cinBuffer[2],
+                 cinBuffer[3],
+                 cinBuffer[4],
+                 linked_len));
   if (linked_data && linked_len > 0) {
     const Uint32 *p = linked_data;
     const Uint32 *p_end = linked_data + linked_len;
@@ -5064,14 +5129,15 @@ int Dbtup::prepareAndHandleJoinAggRow(KeyReqStruct *req_struct,
       Uint32 hdr = *p;
       Uint32 attrId = AttributeHeader::getAttributeId(hdr);
       Uint32 dSz = AttributeHeader::getDataSize(hdr);
-      DEB_JOIN_AGG(("  linked[%u]: AttrHeader=0x%08x "
+      DEB_JOIN_AGG(("(%u)DBTUP  linked[%u]: AttrHeader=0x%08x "
                      "(attrId=%u dataSize=%u)",
-                     idx, hdr, attrId, dSz));
+                     instance(), idx, hdr, attrId, dSz));
       p += 1 + dSz;
       idx++;
     }
   } else {
-    DEB_JOIN_AGG(("  linked data: EMPTY (RsubLen=%u)", RsubLen));
+    DEB_JOIN_AGG(("(%u)DBTUP linked data: EMPTY (RsubLen=%u)",
+      instance(), RsubLen));
   }
 #endif
   // Reset read_length: the final-read projection (FLUSH_AI) may have
@@ -5095,16 +5161,46 @@ int Dbtup::prepareAndHandleJoinAggRow(KeyReqStruct *req_struct,
 int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
                             const Uint32 *linked_data,
                             Uint32 linked_len) {
-  JoinAggregationState *state =
-      getJoinAggState(req_struct->m_join_agg_state_key);
+  Uint32 encodedKey = req_struct->m_join_agg_state_key;
+  Uint32 baseKey = JoinAggregationState::decodeBaseKey(encodedKey);
+  Uint32 leafIndex = JoinAggregationState::decodeLeafIndex(encodedKey);
+
+  JoinAggregationState *state = getJoinAggState(baseKey);
   ndbrequire(state != nullptr);
+  ndbrequire(leafIndex < state->m_num_leaves);
   JoinAggInterpreter *interp = c_lqh->getJoinAggInterpreter(state);
+
+  DEB_STAR_AGG(("(%u)DBTUP STAR_AGG handleJoinAggRow: encodedKey=0x%08x"
+                " baseKey=%u leafIndex=%u num_leaves=%u n_gb_cols=%u"
+                " linked_len=%u",
+                instance(),
+                encodedKey,
+                baseKey,
+                leafIndex,
+                state->m_num_leaves,
+                interp->n_gb_cols(),
+                linked_len));
+
+  // For multi-leaf, pass leaf program to processRecWithLinkedAttrs
+  // which switches under mutex protection for MUTEX_BASED.
+  const LeafProgram *leaf = nullptr;
+  if (state->m_num_leaves > 1) {
+    leaf = &state->m_leaf_programs[leafIndex];
+    DEB_STAR_AGG(("(%u)DBTUP STAR_AGG leaf=%u progLen=%u "
+                  "prog_start=%u acc_offset=%u n_agg=%u",
+                  instance(),
+                  leafIndex,
+                  leaf->m_agg_program_len,
+                  leaf->m_agg_prog_start_pos,
+                  leaf->m_acc_offset,
+                  leaf->m_n_agg_results));
+  }
 
   Uint32 evict_count = 0;
 
 retry:
   Int32 ret = interp->processRecWithLinkedAttrs(
-      this, req_struct, linked_data, linked_len);
+      this, req_struct, linked_data, linked_len, leaf);
   if (ret == AGG_EVICT_NEEDED) {
     c_lqh->sendEvictedAggGroup(req_struct->signal, interp, state);
     evict_count++;
@@ -6245,6 +6341,53 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           break;
         }
+
+        case Interpreter::READ_LINKED_TO_MEM:
+        {
+          /**
+           * Read a linked (parent-table) column from
+           * req_struct->m_linked_attr_data into cheapMemory[0].
+           * The linked buffer format is:
+           *   [tableId, schemaVersion, AttrHeader, data...] per entry.
+           * Position (bits 16..23) selects the Nth entry.
+           */
+          RnoOfInstructions += 3;
+          Uint32 position = (theInstruction >> 16) & 0xFF;
+
+          const Uint32* linked = req_struct->m_linked_attr_data;
+          Uint32 linked_len = req_struct->m_linked_attr_len;
+          Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[0];
+
+          if (unlikely(linked == nullptr)) {
+            // No linked data — write NULL AttributeHeader
+            AttributeHeader null_ah(0, 0);
+            memory_ptr[0] = null_ah.m_value;
+            break;
+          }
+
+          // Walk to the Nth entry: [tableId, schemaVersion, AttrHeader, data..]
+          const Uint32* p = linked;
+          const Uint32* p_end = linked + linked_len;
+          Uint32 pos_count = 0;
+          while (p < p_end) {
+            if (pos_count == position) break;
+            p += 2;  // skip tableId, schemaVersion
+            p += 1 + AttributeHeader::getDataSize(*p);
+            pos_count++;
+          }
+          if (unlikely(p >= p_end)) {
+            AttributeHeader null_ah(0, 0);
+            memory_ptr[0] = null_ah.m_value;
+            break;
+          }
+
+          // Skip tableId and schemaVersion, copy AttrHeader + data
+          p += 2;
+          Uint32 words = 1 + AttributeHeader::getDataSize(*p);
+          memcpy(memory_ptr, p, words * sizeof(Uint32));
+          break;
+        }
+
         case Interpreter::READ_INTERPRETER_INPUT:
         {
           /**
@@ -7635,6 +7778,118 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           break;
         }
+
+        case Interpreter::BRANCH_MEM_OP_ARG:
+        {
+          /**
+           * Like BRANCH_ATTR_OP_ARG but reads column data from
+           * cheapMemory[0] (placed there by READ_LINKED_TO_MEM) instead
+           * of calling readAttributes(). Uses tableId + schemaVersion
+           * from words 2-3 to look up the correct (parent) table
+           * descriptor for type/charset info.
+           *
+           * Layout: [opcode+cond, attrId|argLen, tableId, schemaVer, data...]
+           */
+          jamDebug();
+          const Uint32 ins2 = TcurrentProgram[TprogramCounter];
+          Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2);
+          Uint32 argLen = Interpreter::getBranchCol_Len(ins2);
+          Uint32 tableId = TcurrentProgram[TprogramCounter + 1];
+          Uint32 schemaVersion = TcurrentProgram[TprogramCounter + 2];
+
+          // Look up the parent table by tableId for type/charset info.
+          // Validate table exists, is DEFINED, and schemaVersion matches
+          // (via DBLQH's table record which tracks schema versions).
+          if (unlikely(tableId >= cnoOfTablerec)) {
+            jam();
+            return TUPKEY_abort(req_struct, 40);
+          }
+          Tablerec* parentTablePtrP = &tablerec[tableId];
+          if (unlikely(parentTablePtrP->tableStatus != DEFINED)) {
+            jam();
+            return TUPKEY_abort(req_struct, 40);
+          }
+          if (unlikely(tableId >= c_lqh->ctabrecFileSize ||
+                       c_lqh->tablerec[tableId].schemaVersion !=
+                           schemaVersion)) {
+            jam();
+            return TUPKEY_abort(req_struct, 40);
+          }
+
+          // Read column data from cheapMemory[0] (written by READ_LINKED_TO_MEM)
+          const Uint32* memData = (const Uint32*)&TheapMemoryChar[0];
+          const AttributeHeader ah(memData[0]);
+
+          // Get type info from the parent table's descriptor
+          const Uint32* attrDescriptor = parentTablePtrP->tabDescriptor +
+              (attrId * ZAD_SIZE);
+          const Uint32 TattrDesc1 = attrDescriptor[0];
+          const Uint32 TattrDesc2 = attrDescriptor[1];
+          const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
+          const CHARSET_INFO* cs = nullptr;
+          if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
+            const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+            cs = parentTablePtrP->charsetArray[pos];
+          }
+          const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(typeId);
+
+          Uint32 attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
+          const char* s1 = (const char*)&memData[1];
+          // Inline constant starts after word 0 (ins2) + word 1 (tableId) +
+          // word 2 (schemaVersion)
+          const char* s2 = (const char*)&TcurrentProgram[TprogramCounter + 3];
+          const Uint32 step = argLen;
+
+          const bool r1_null = ah.isNULL();
+          const bool r2_null = (argLen == 0);
+
+          if (r1_null || r2_null) {
+            const Uint32 nullSemantics =
+                Interpreter::getNullSemantics(theInstruction);
+            if (nullSemantics == Interpreter::IF_NULL_BREAK_OUT) {
+              TprogramCounter = brancher(theInstruction, TprogramCounter);
+              break;
+            }
+            if (nullSemantics == Interpreter::IF_NULL_CONTINUE) {
+              // Skip: 1(ins2) + 2(tableId,schemaVer) + data words
+              const Uint32 tmp = ((step + 3) >> 2) + 3;
+              TprogramCounter += tmp;
+              break;
+            }
+          }
+
+          const Uint32 cond = Interpreter::getBinaryCondition(theInstruction);
+          int res1;
+          if (r1_null || r2_null) {
+            res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
+          } else {
+            if (unlikely(sqlType.m_cmp == 0)) {
+              return TUPKEY_abort(req_struct, 40);
+            }
+            res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+          }
+
+          bool res = false;
+          switch (cond) {
+          case Interpreter::EQ: res = (res1 == 0); break;
+          case Interpreter::NE: res = (res1 != 0); break;
+          case Interpreter::LT: res = (res1 > 0); break;  // inverted
+          case Interpreter::LE: res = (res1 >= 0); break;
+          case Interpreter::GT: res = (res1 < 0); break;
+          case Interpreter::GE: res = (res1 <= 0); break;
+          default: break;
+          }
+
+          if (res) {
+            TprogramCounter = brancher(theInstruction, TprogramCounter);
+          } else {
+            // Skip: 1(ins2) + 2(tableId,schemaVer) + data words
+            Uint32 tmp = ((step + 3) >> 2) + 3;
+            TprogramCounter += tmp;
+          }
+          break;
+        }
+
         case Interpreter::BRANCH_ATTR_EQ_NULL: {
           Uint32 ins2 = TcurrentProgram[TprogramCounter];
           Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;

@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>J4 Query Execution Flow — Order 31 NULL Result Analysis</title>
+<style>
+  body { font-family: 'Segoe UI', Tahoma, sans-serif; max-width: 1100px; margin: 40px auto; line-height: 1.6; color: #333; }
+  h1 { color: #1a5276; border-bottom: 3px solid #2980b9; padding-bottom: 10px; }
+  h2 { color: #2980b9; margin-top: 40px; }
+  h3 { color: #1a6e4e; }
+  pre { background: #f4f6f9; border: 1px solid #d5dbdb; border-radius: 6px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+  code { background: #eaf2f8; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+  .signal-diagram { background: #fdfefe; border: 2px solid #aed6f1; border-radius: 8px; padding: 20px; margin: 20px 0; font-family: 'Courier New', monospace; font-size: 12px; white-space: pre; overflow-x: auto; }
+  .highlight { background: #fcf3cf; padding: 2px 4px; border-radius: 3px; }
+  .problem { background: #fadbd8; padding: 10px; border-left: 4px solid #e74c3c; margin: 15px 0; }
+  .success { background: #d5f5e3; padding: 10px; border-left: 4px solid #27ae60; margin: 15px 0; }
+  table { border-collapse: collapse; margin: 15px 0; }
+  th, td { border: 1px solid #bdc3c7; padding: 8px 12px; text-align: left; }
+  th { background: #2980b9; color: white; }
+  tr:nth-child(even) { background: #f2f3f4; }
+  .note { background: #eaf2f8; padding: 10px; border-left: 4px solid #3498db; margin: 15px 0; }
+</style>
+</head>
+<body>
+
+<h1>J4 Query Execution Flow</h1>
+<h2>Order 31 NULL Result Analysis</h2>
+
+<h3>The Query</h3>
+<pre>
+SELECT o.id AS order_id,
+  (SELECT SUM(l.price) FROM j_lineitem AS l
+   WHERE l.order_id = o.id AND l.qty > 3) AS big_total
+FROM j_customer AS c
+JOIN j_orders AS o ON o.cust_id = c.id;
+</pre>
+
+<h3>Pushed Query Tree</h3>
+<pre>
+  customer (root table scan)
+      │
+      ▼
+  orders (index scan on idx_orders_cust, bound = c.id)
+      │
+      ▼
+  lineitem (index scan on idx_li_order, bound = o.id, AGGREGATE LEAF)
+      Aggregation: GROUP BY o.id
+                   LoadLinkedColumn(o.min_qty, reg2)
+                   LoadColumn(l.qty, reg1)
+                   BranchRegLe(reg1, reg2, skip=2)  ← skip if l.qty ≤ o.min_qty
+                   LoadColumn(l.price, reg0)
+                   Sum(slot0, reg0)
+</pre>
+
+<h3>Test Data</h3>
+<table>
+<tr><th>Table</th><th>Rows</th></tr>
+<tr><td>j_customer</td><td>(1,'Alice'), (2,'Bob'), (3,'Charlie')</td></tr>
+<tr><td>j_orders</td><td>(10,1,1), (11,1,2), (20,2,1), (21,2,2), (30,3,1), <span class="highlight">(31,3,2)</span></td></tr>
+<tr><td>j_lineitem</td><td>
+  (100,10,5,50), (101,10,3,30),<br>
+  (102,11,7,70), (103,11,2,20), (104,11,1,10),<br>
+  (105,20,10,100), (106,20,4,40),<br>
+  (107,21,6,60),<br>
+  (108,30,8,80), (109,30,9,90), (110,30,1,10),<br>
+  <span class="highlight">(111,31,3,30)</span> ← qty=3, does NOT satisfy qty&gt;3
+</td></tr>
+</table>
+
+<h3>Expected Result</h3>
+<table>
+<tr><th>order_id</th><th>big_total</th><th>Explanation</th></tr>
+<tr><td>10</td><td>50</td><td>qty=5 passes (price=50), qty=3 skipped</td></tr>
+<tr><td>11</td><td>70</td><td>qty=7 passes (price=70), qty=2,1 skipped</td></tr>
+<tr><td>20</td><td>140</td><td>qty=10 (100) + qty=4 (40) = 140</td></tr>
+<tr><td>21</td><td>60</td><td>qty=6 passes (price=60)</td></tr>
+<tr><td>30</td><td>170</td><td>qty=8 (80) + qty=9 (90) = 170, qty=1 skipped</td></tr>
+<tr><td class="highlight">31</td><td class="highlight">NULL</td><td class="highlight">qty=3 does NOT pass qty&gt;3 → BranchReg skips aggregation → accumulator stays UNDEFINED → NULL</td></tr>
+</table>
+
+<hr>
+
+<h2>Part 1: Single Data Node Execution</h2>
+
+<p>With 1 data node, all data is local. One DBSPJ instance handles the entire query.
+All fragments are on the same node.</p>
+
+<h3>Signal Flow</h3>
+
+<div class="signal-diagram">
+  API                    DBTC              DBSPJ              DBLQH/DBTUP
+   │                      │                 │                    │
+   │──SCAN_TABREQ────────▶│                 │                    │
+   │  (QueryTree +        │──SCAN_FRAGREQ──▶│                    │
+   │   AggProgram)        │  (root scan)    │                    │
+   │                      │                 │                    │
+   │                      │                 │──SCAN_FRAGREQ─────▶│ customer scan
+   │                      │                 │  (all fragments)   │ frag 0..N
+   │                      │                 │                    │
+   │                      │                 │◀─TRANSID_AI───────│ customer row: id=3
+   │                      │                 │                    │
+   │                      │                 │  startNextNodes()  │
+   │                      │                 │  → orders scan     │
+   │                      │                 │                    │
+   │                      │                 │──SCAN_FRAGREQ─────▶│ orders index scan
+   │                      │                 │  bound: cust_id=3  │ idx_orders_cust
+   │                      │                 │                    │
+   │                      │                 │◀─TRANSID_AI───────│ order row: id=30
+   │                      │                 │◀─TRANSID_AI───────│ order row: id=31
+   │                      │                 │◀─SCAN_FRAGCONF────│ (orders done)
+   │                      │                 │                    │
+   │                      │                 │  For EACH order:   │
+   │                      │                 │  scanFrag_parent_row(lineitem, order)
+   │                      │                 │                    │
+   │                      │                 │  scanFrag_fixupBound(order_id=30)
+   │                      │                 │  scanFrag_fixupBound(order_id=31) ← BOTH added
+   │                      │                 │                    │
+   │                      │                 │  scanFrag_parent_batch_complete()
+   │                      │                 │  → scanFrag_send()
+   │                      │                 │                    │
+   │                      │                 │──SCAN_FRAGREQ─────▶│ lineitem index scan
+   │                      │                 │  bounds: [30, 31]  │ idx_li_order
+   │                      │                 │  + JoinAgg flag    │ ALL fragments
+   │                      │                 │                    │
+   │                      │                 │                    │ Fragment with id=108..110:
+   │                      │                 │                    │   order_id=30 → 3 rows
+   │                      │                 │                    │   handleJoinAggRow × 3
+   │                      │                 │                    │     GROUP BY key = "30"
+   │                      │                 │                    │     BranchReg: qty&gt;3?
+   │                      │                 │                    │     108: qty=8 → SUM(80)
+   │                      │                 │                    │     109: qty=9 → SUM(170)
+   │                      │                 │                    │     110: qty=1 → SKIP
+   │                      │                 │                    │
+   │                      │                 │                    │ Fragment with id=111:
+   │                      │                 │                    │   order_id=31 → 1 row
+   │                      │                 │                    │   <span class="highlight">handleJoinAggRow × 1</span>
+   │                      │                 │                    │     GROUP BY key = "31"
+   │                      │                 │                    │     BranchReg: qty=3, NOT &gt;3
+   │                      │                 │                    │     → SKIP LoadColumn+Sum
+   │                      │                 │                    │     Group "31" created but
+   │                      │                 │                    │     accumulator stays UNDEFINED
+   │                      │                 │                    │
+   │                      │                 │◀─SCAN_FRAGCONF────│ all frags done
+   │                      │                 │                    │
+   │                      │                 │  JOIN_AGG_COMPLETE │
+   │                      │                 │  → merge + finalize│
+   │                      │                 │                    │
+   │◀─TRANSID_AI(agg)────│◀────────────────│  Group "30": SUM=170
+   │◀─TRANSID_AI(agg)────│◀────────────────│  Group "31": NULL (UNDEFINED)
+   │                      │                 │                    │
+   │◀─SCAN_TABCONF───────│                 │                    │
+</div>
+
+<div class="success">
+<strong>Single node: Works correctly.</strong> Both orders 30 and 31 are processed in the
+same DBSPJ instance. The lineitem scan receives bounds for BOTH orders in one batch.
+The scan returns rows for both. Order 31's lineitem (qty=3) reaches handleJoinAggRow,
+creates the group, but BranchReg skips the aggregation → UNDEFINED accumulator → NULL result.
+</div>
+
+<hr>
+
+<h2>Part 2: Two Data Nodes Execution</h2>
+
+<p>With 2 data nodes, tables are partitioned across nodes. Each node has its own
+DBSPJ instances. The NDB API sends SCAN_TABREQ to DBTC which distributes
+work across multiple DBSPJ instances (one per TC thread per node).</p>
+
+<h3>Data Distribution (hash partitioned)</h3>
+
+<div class="note">
+With hash partitioning, rows are distributed based on primary key hash.
+The exact distribution depends on the hash function. Example distribution:
+</div>
+
+<table>
+<tr><th>Table</th><th>Node 1</th><th>Node 2</th></tr>
+<tr><td>j_customer</td><td>id=1, id=3</td><td>id=2</td></tr>
+<tr><td>j_orders</td><td>id=11, id=20, id=31</td><td>id=10, id=21, id=30</td></tr>
+<tr><td>j_lineitem</td><td>id=100,103,105,108,111</td><td>id=101,102,104,106,107,109,110</td></tr>
+</table>
+
+<h3>DBSPJ Instance Assignment</h3>
+
+<p>With <code>scanParallelism=8</code>, DBTC assigns root scan fragments to DBSPJ instances
+round-robin across TC threads. Each DBSPJ instance handles a subset of customer fragments.</p>
+
+<table>
+<tr><th>DBSPJ Instance</th><th>Node</th><th>Customer Fragments</th></tr>
+<tr><td>Instance (1) on Node 2</td><td>2</td><td>Fragment containing customer 1</td></tr>
+<tr><td>Instance (2) on Node 2</td><td>2</td><td>Fragments containing customers 2, 3</td></tr>
+</table>
+
+<h3>Signal Flow — Instance (2) handling Customer 3</h3>
+
+<div class="signal-diagram">
+  DBSPJ(2)@Node2          DBLQH@Node1           DBLQH@Node2
+       │                      │                      │
+       │  customer scan       │                      │
+       │  returns id=3        │                      │
+       │                      │                      │
+       │  startNextNodes()    │                      │
+       │  → orders scan       │                      │
+       │  bound: cust_id=3    │                      │
+       │                      │                      │
+       │──SCAN_FRAGREQ───────▶│ orders frag on N1    │
+       │──SCAN_FRAGREQ────────│─────────────────────▶│ orders frag on N2
+       │                      │                      │
+       │◀─TRANSID_AI─────────│ order id=31 (on N1)  │
+       │◀─TRANSID_AI─────────│──────────────────────│ order id=30 (on N2)
+       │◀─SCAN_FRAGCONF──────│ frag done            │
+       │◀─SCAN_FRAGCONF──────│──────────────────────│ frag done
+       │                      │                      │
+       │  Both orders received│                      │
+       │  scanFrag_parent_row │                      │
+       │  for lineitem:       │                      │
+       │    order 30 → bound  │                      │
+       │    order 31 → bound  │                      │
+       │                      │                      │
+       │  <span class="highlight">CRITICAL QUESTION:</span>  │                      │
+       │  Are BOTH orders     │                      │
+       │  received BEFORE     │                      │
+       │  lineitem scan       │                      │
+       │  starts?             │                      │
+       │                      │                      │
+</div>
+
+<h3>The Batch Timing Problem</h3>
+
+<div class="problem">
+<strong>The problem occurs when the orders scan returns results in MULTIPLE batches.</strong>
+<br><br>
+The orders index scan on <code>cust_id=3</code> sends SCAN_FRAGREQs to all fragments
+across both nodes. If the batch size is small or the fragment distribution causes
+order 30 to arrive in batch 1 and order 31 in batch 2, the following happens:
+</div>
+
+<div class="signal-diagram">
+  DBSPJ(2)@Node2          DBLQH@Node1           DBLQH@Node2
+       │                      │                      │
+       │  Orders scan batch 1:│                      │
+       │◀─TRANSID_AI─────────│──────────────────────│ order id=30
+       │◀─SCAN_FRAGCONF──────│──────────────────────│ batch done (not final)
+       │                      │                      │
+       │  <span class="highlight">Orders TRANSID_AI for id=30 triggers:</span>
+       │  startNextNodes() → lineitem
+       │  scanFrag_parent_row(lineitem, order=30)
+       │  → bound for order_id=30 added
+       │                      │                      │
+       │  <span class="highlight">But order 31 hasn't arrived yet!</span>
+       │  Orders scan needs SCAN_NEXTREQ for batch 2.
+       │                      │                      │
+       │  Meanwhile, lineitem scan:
+       │  scanFrag_parent_batch_complete()
+       │  called when orders batch 1 results
+       │  have all been forwarded to children
+       │                      │                      │
+       │  Lineitem scan starts│                      │
+       │  with bound=[30] only│                      │
+       │──SCAN_FRAGREQ───────▶│ lineitem frag N1     │
+       │──SCAN_FRAGREQ────────│─────────────────────▶│ lineitem frag N2
+       │                      │                      │
+       │  Lineitem processes  │                      │
+       │  order_id=30 rows    │                      │
+       │  (3 rows → groups)   │                      │
+       │◀─SCAN_FRAGCONF──────│ lineitem frags done  │
+       │◀─SCAN_FRAGCONF──────│──────────────────────│
+       │                      │                      │
+       │  <span class="highlight">Lineitem becomes TN_INACTIVE</span>
+       │  (all its fragments completed)
+       │                      │                      │
+       │  Now orders batch 2: │                      │
+       │──SCAN_NEXTREQ───────▶│ orders scan continue │
+       │◀─TRANSID_AI─────────│ order id=31          │
+       │◀─SCAN_FRAGCONF──────│ orders final          │
+       │                      │                      │
+       │  startNextNodes() → lineitem
+       │  scanFrag_parent_row(lineitem, order=31)
+       │  → bound for order_id=31 added
+       │                      │                      │
+       │  <span class="highlight">BUT: lineitem is TN_INACTIVE!</span>
+       │  scanFrag_parent_batch_complete() is called
+       │  It RESETS lineitem frags and RESTARTS scan
+       │  with bound=[31]
+       │                      │                      │
+       │  <span class="highlight">HOWEVER: The restart mechanism requires</span>
+       │  <span class="highlight">the node to be TN_INACTIVE first</span>
+       │  <span class="highlight">(assert at line 8163)</span>
+       │                      │                      │
+       │  If the restart works:│                      │
+       │──SCAN_FRAGREQ───────▶│ lineitem scan restart │
+       │  bounds: [31]        │                      │
+       │  → finds id=111      │                      │
+       │  → handleJoinAggRow  │                      │
+       │  → group "31" with   │                      │
+       │    NULL accumulator   │                      │
+       │                      │                      │
+       │  If restart FAILS:   │                      │
+       │  Order 31 is LOST    │                      │
+       │  → only 5 groups     │                      │
+</div>
+
+<h3>Why the Restart Sometimes Fails</h3>
+
+<div class="problem">
+<strong>Root cause hypothesis:</strong> The <code>scanFrag_parent_batch_complete()</code>
+mechanism relies on a specific state machine transition:
+<br><br>
+<code>TN_ACTIVE → TN_INACTIVE (all frags done) → parent_batch_complete → TN_ACTIVE (restart)</code>
+<br><br>
+The problem occurs when:
+<ol>
+<li>The lineitem scan completes (TN_INACTIVE) while orders is still fetching batch 2</li>
+<li>Orders batch 2 arrives → order 31 triggers <code>scanFrag_parent_row(lineitem)</code></li>
+<li><code>scanFrag_parent_batch_complete()</code> is called to restart lineitem</li>
+<li>The restart resets fragment counters and sends new SCAN_FRAGREQs</li>
+</ol>
+
+<strong>But</strong>: if the timing differs (e.g., orders scan completes fully BEFORE
+lineitem processes all its results), the state machine may be in a different
+state when the restart is attempted.
+<br><br>
+<strong>Alternative hypothesis:</strong> The lineitem scan's <code>reportAncestorsComplete()</code>
+may trigger completion of the orders node prematurely, or the orders scan
+may not call <code>scanFrag_parent_batch_complete()</code> for the lineitem node
+if the lineitem was started with a different batch coordination path.
+<br><br>
+<strong>Key debugging questions:</strong>
+<ol>
+<li>Does <code>scanFrag_parent_batch_complete()</code> get called for the lineitem
+    node after order 31 arrives?</li>
+<li>What is the lineitem node's state when order 31's
+    <code>scanFrag_parent_row()</code> is called?</li>
+<li>Does the lineitem scan actually restart with the new bound for order_id=31?</li>
+<li>Is the SCAN_FRAGREQ for the restarted lineitem scan actually sent to DBLQH?</li>
+</ol>
+</div>
+
+<h3>The Correct Flow (What Should Happen)</h3>
+
+<div class="success">
+For order 31 to produce a NULL result, this must happen:
+<ol>
+<li>Customer 3 row → orders index scan → returns orders 30 AND 31</li>
+<li>Both orders trigger <code>scanFrag_parent_row(lineitem)</code></li>
+<li>Both bounds (order_id=30, order_id=31) are sent to lineitem scan</li>
+<li>Lineitem scan processes ALL fragments:
+  <ul>
+    <li>Fragment with id=108,109,110: order_id=30 → 3 rows → handleJoinAggRow × 3</li>
+    <li>Fragment with id=111: order_id=31 → 1 row → handleJoinAggRow × 1</li>
+  </ul>
+</li>
+<li>For order 31's row (qty=3): BranchRegLe skips Sum → accumulator UNDEFINED</li>
+<li>GROUP BY creates group "31" with UNDEFINED accumulator → NULL in result</li>
+</ol>
+The key is that <strong>steps 2-3 must complete before the lineitem scan starts</strong>.
+If orders returns results in multiple batches, lineitem must be restarted
+for each batch to process all order bounds.
+</div>
+
+<hr>
+
+<h2>Summary</h2>
+
+<table>
+<tr><th>Scenario</th><th>Orders batching</th><th>Order 31 in result?</th></tr>
+<tr><td>1 node, 1 batch</td><td>Both orders in 1 batch</td><td class="success">✓ Always</td></tr>
+<tr><td>2 nodes, 1 batch</td><td>Both orders arrive before lineitem starts</td><td class="success">✓ Works</td></tr>
+<tr><td>2 nodes, 2 batches</td><td>Order 30 in batch 1, order 31 in batch 2</td><td class="problem">✗ Order 31 lost if restart fails</td></tr>
+</table>
+
+<p>The fix needs to ensure that the lineitem scan is correctly restarted when the
+orders scan produces additional batches, even after the lineitem scan has already
+completed processing the first batch's results.</p>
+
+</body>
+</html>

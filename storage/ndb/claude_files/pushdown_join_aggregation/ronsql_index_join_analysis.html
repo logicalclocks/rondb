@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RonSQL Index Selection &amp; Join Order — Analysis</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1f2328; --accent: #0969da;
+    --border: #d0d7de; --code-bg: #f6f8fa; --table-stripe: #f6f8fa;
+    --good: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+    --box-bg: #ddf4ff; --box-border: #54aeff;
+  }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         max-width: 1100px; margin: 0 auto; padding: 24px 32px; color: var(--fg);
+         line-height: 1.6; }
+  h1 { border-bottom: 2px solid var(--accent); padding-bottom: 8px; }
+  h2 { margin-top: 40px; border-bottom: 1px solid var(--border); padding-bottom: 6px; color: var(--accent); }
+  h3 { margin-top: 28px; }
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; font-size: 0.92em; }
+  pre { background: var(--code-bg); padding: 14px 18px; border-radius: 6px;
+        overflow-x: auto; font-size: 0.88em; line-height: 1.45; border: 1px solid var(--border); }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+  th { background: var(--code-bg); font-weight: 600; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .box { background: var(--box-bg); border: 1px solid var(--box-border);
+         border-radius: 6px; padding: 14px 18px; margin: 16px 0; }
+  .box-title { font-weight: 700; margin-bottom: 6px; }
+  .warn-box { background: #fff8c5; border-color: #d4a72c; }
+  .flow { display: flex; flex-direction: column; gap: 4px; font-family: monospace; font-size: 0.9em; margin: 12px 0; }
+  .flow-step { background: var(--code-bg); padding: 6px 12px; border-left: 3px solid var(--accent); }
+  .flow-arrow { padding-left: 20px; color: #888; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 12px; font-size: 0.82em; font-weight: 600; }
+  .tag-good { background: #dafbe1; color: var(--good); }
+  .tag-warn { background: #fff8c5; color: var(--warn); }
+  .tag-bad  { background: #ffebe9; color: var(--bad); }
+  svg text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+</style>
+</head>
+<body>
+
+<h1>RonSQL Index Selection &amp; Join Order</h1>
+<p><em>Analysis of the current (March 2026) implementation in
+<code>RonSQLPreparer.cpp</code>, <code>QueryPlanner.cpp</code>,
+and related files.</em></p>
+
+<!-- ================================================================ -->
+<h2>1&nbsp;&nbsp;Overview</h2>
+
+<p>RonSQL processes a query in these phases:</p>
+
+<svg viewBox="0 0 820 90" style="max-width:820px">
+  <defs>
+    <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#0969da"/>
+    </marker>
+  </defs>
+  <rect x="2" y="20" width="110" height="40" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="57" y="45" text-anchor="middle" font-size="13" font-weight="600">parse()</text>
+  <line x1="114" y1="40" x2="145" y2="40" stroke="#0969da" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <rect x="147" y="20" width="110" height="40" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="202" y="45" text-anchor="middle" font-size="13" font-weight="600">load()</text>
+  <line x1="259" y1="40" x2="290" y2="40" stroke="#0969da" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <rect x="292" y="20" width="150" height="40" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="367" y="45" text-anchor="middle" font-size="13" font-weight="600">plan / classify</text>
+  <line x1="444" y1="40" x2="475" y2="40" stroke="#0969da" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <rect x="477" y="20" width="110" height="40" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="532" y="45" text-anchor="middle" font-size="13" font-weight="600">compile()</text>
+  <line x1="589" y1="40" x2="620" y2="40" stroke="#0969da" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <rect x="622" y="20" width="120" height="40" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="682" y="45" text-anchor="middle" font-size="13" font-weight="600">execute()</text>
+
+  <text x="57"  y="78" text-anchor="middle" font-size="10" fill="#666">SQL → AST</text>
+  <text x="202" y="78" text-anchor="middle" font-size="10" fill="#666">schema lookup</text>
+  <text x="367" y="78" text-anchor="middle" font-size="10" fill="#666">index + filter</text>
+  <text x="532" y="78" text-anchor="middle" font-size="10" fill="#666">aggregation</text>
+  <text x="682" y="78" text-anchor="middle" font-size="10" fill="#666">NDB API</text>
+</svg>
+
+<p>Index selection and join planning happen in the <strong>plan / classify</strong>
+phase.  The approach differs between single-table queries and join queries.</p>
+
+<!-- ================================================================ -->
+<h2>2&nbsp;&nbsp;Single-Table Index Selection</h2>
+
+<p>Entry point: <code>plan_index_and_filter()</code>
+(<code>RonSQLPreparer.cpp:1067</code>).  Called only when there is no
+<code>JOIN</code> clause.</p>
+
+<h3>2.1&nbsp;&nbsp;Pipeline</h3>
+
+<div class="flow">
+  <div class="flow-step">1. <code>simplify_ce()</code> — normalize conditions to <em>column OP constant</em></div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">2. <code>collect_toplevel_conditions()</code> — flatten <code>AND</code> tree into array of conjuncts</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">3. <code>generate_scan_config_candidates()</code> — score every ordered index + table-scan baseline</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">4. Pick candidate with highest <em>goodness</em> score</div>
+</div>
+
+<h3>2.2&nbsp;&nbsp;Expression Normalization</h3>
+<p><code>simplify_ce()</code> (<code>RonSQLPreparer.cpp:4593</code>) ensures that
+every comparison has the <strong>column on the left</strong> and the
+<strong>constant on the right</strong>.  If the constant is on the left, it swaps
+the operands and flips the operator (e.g.,
+<code>5 &gt; x</code> → <code>x &lt; 5</code>).  This invariant simplifies
+downstream index matching.</p>
+
+<h3>2.3&nbsp;&nbsp;Top-Level Condition Collection</h3>
+<p><code>collect_toplevel_conditions()</code>
+(<code>RonSQLPreparer.cpp:1109</code>) recursively flattens nested
+<code>AND</code> nodes into a flat array
+<code>m_toplevel_conditions[]</code>.  <code>OR</code> sub-trees are kept
+intact as single entries.  Limit: 64 conjuncts.</p>
+
+<h3>2.4&nbsp;&nbsp;Candidate Generation and Scoring</h3>
+
+<p><code>generate_scan_config_candidates()</code>
+(<code>RonSQLPreparer.cpp:1123</code>) iterates every ordered index on the
+table, evaluates which conditions can serve as index bounds, and computes
+a <em>goodness</em> score.</p>
+
+<h4>Algorithm per index</h4>
+<ol>
+  <li>Walk index columns in <strong>prefix order</strong> (column 0, 1, 2, …).</li>
+  <li>For each index column, scan <code>m_toplevel_conditions[]</code> for a
+      matching comparison (<code>=</code>, <code>&gt;</code>, <code>&gt;=</code>,
+      <code>&lt;</code>, <code>&lt;=</code>).</li>
+  <li>A match sets <code>lbound</code> and/or <code>ubound</code>:
+      <ul>
+        <li><code>=</code> sets both.</li>
+        <li><code>&gt;=</code>, <code>&gt;</code> set lower bound.</li>
+        <li><code>&lt;=</code>, <code>&lt;</code> set upper bound.</li>
+      </ul></li>
+  <li>A <strong>non-equality</strong> condition on a column <em>blocks</em> all
+      later columns from being used as bounds.</li>
+  <li>An <strong>unmatched</strong> column also blocks later columns.</li>
+  <li>Matched conditions get <code>condition_handling_map[i] = col_idx</code>;
+      unmatched ones stay at <code>-1</code> (= apply as scan filter).</li>
+</ol>
+
+<h4>Goodness Scoring</h4>
+<p>Each matched condition contributes points that are accumulated:</p>
+
+<table>
+<thead>
+<tr><th>Factor</th><th>Multiplier</th><th>When</th></tr>
+</thead>
+<tbody>
+<tr><td>Base</td><td>100</td><td>Always per matched condition</td></tr>
+<tr><td>Non-VARCHAR bonus</td><td>+10</td><td>Column is not VARCHAR/LONGVARCHAR</td></tr>
+<tr><td>Double-bounded</td><td>×10</td><td>Both lower and upper bound set (or equality)</td></tr>
+<tr><td>No block</td><td>×100</td><td>Later index columns are still usable</td></tr>
+<tr><td>PRIMARY index</td><td>+1</td><td>Index name is "PRIMARY" (tie-breaker)</td></tr>
+</tbody>
+</table>
+
+<div class="box">
+<div class="box-title">Example</div>
+<code>WHERE a = 1 AND b &gt;= 2</code> on index <code>(a, b, c)</code>
+<ul>
+  <li>Column <code>a</code>: equality → double-bounded, no block yet → 110 × 10 × 100 = <strong>110,000</strong></li>
+  <li>Column <code>b</code>: range → single-bounded, blocks later cols → <strong>110</strong></li>
+  <li>Column <code>c</code>: blocked → skipped</li>
+  <li>Total goodness: <strong>110,110</strong></li>
+</ul>
+Table scan goodness: <strong>0</strong>.  Index wins.
+</div>
+
+<h4>Condition Handling Map</h4>
+<p>After selection, every entry in <code>m_toplevel_conditions[]</code> is either:</p>
+<table>
+<tr><th><code>condition_handling_map[i]</code></th><th>Meaning</th></tr>
+<tr><td><code>-1</code></td><td>Apply as <code>NdbScanFilter</code> (pushed to data node)</td></tr>
+<tr><td><code>&gt;= 0</code></td><td>Apply as index bound on that index column number</td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2>3&nbsp;&nbsp;Join Order</h2>
+
+<p>Entry point: <code>QueryPlanner::plan()</code>
+(<code>QueryPlanner.cpp:30</code>).</p>
+
+<div class="box warn-box">
+<div class="box-title">Key Limitation: Fixed Left-to-Right Order</div>
+RonSQL does <strong>not</strong> reorder joins.  The join order is exactly as
+written in the SQL statement.  The parser produces a linked list of
+<code>JoinClause</code> nodes in textual order, and the planner iterates
+that list sequentially.
+</div>
+
+<h3>3.1&nbsp;&nbsp;Root Operation</h3>
+<p>The root is always created as <code>TABLE_SCAN</code> in the planner
+(<code>QueryPlanner.cpp:54</code>).  No index selection happens at plan time
+for the root in join queries — the decision is deferred to execution.</p>
+
+<h4>Execution-Time Root Access Selection</h4>
+<p>At execution time, <code>execute_join()</code>
+(<code>RonSQLPreparer.cpp:3705–3817</code>) determines the root access
+method in two steps:</p>
+
+<ol>
+  <li><strong>PK equality coverage check</strong> —
+      <code>collect_pk_equalities()</code> (<code>:3464</code>) walks the WHERE
+      clause recursively, extracts all <code>pk_col = constant</code> equalities,
+      and sets <code>pk_covered = true</code> only if <em>every</em> primary key
+      column has a matching equality constant.  Only <code>=</code> is accepted
+      (not ranges), and only column-vs-constant (not column-vs-column).</li>
+  <li><strong>Child operation type check</strong> — if PK is covered, scans
+      <code>ops[1..n]</code> to see whether any child is a
+      <code>TABLE_SCAN</code> or <code>INDEX_SCAN</code>
+      (<code>has_scan_child</code>).</li>
+</ol>
+
+<p>These two flags select one of three execution paths:</p>
+
+<svg viewBox="0 0 740 300" style="max-width:740px">
+  <rect x="210" y="10" width="300" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="360" y="33" text-anchor="middle" font-size="13" font-weight="600">pk_covered?</text>
+
+  <line x1="510" y1="28" x2="610" y2="28" stroke="#cf222e" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="558" y="22" font-size="11" fill="#cf222e" font-weight="600">No</text>
+  <rect x="612" y="12" width="120" height="32" rx="6" fill="#ffebe9" stroke="#cf222e"/>
+  <text x="672" y="33" text-anchor="middle" font-size="12" font-weight="700" fill="#cf222e">TABLE_SCAN</text>
+  <text x="672" y="60" text-anchor="middle" font-size="10" fill="#666">Path C: scanTable()</text>
+  <text x="672" y="73" text-anchor="middle" font-size="10" fill="#666">+ NdbScanFilter</text>
+
+  <line x1="360" y1="46" x2="360" y2="100" stroke="#0969da" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="372" y="72" font-size="11" fill="#1a7f37" font-weight="600">Yes</text>
+
+  <rect x="210" y="102" width="300" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="360" y="125" text-anchor="middle" font-size="13" font-weight="600">has_scan_child?</text>
+
+  <line x1="210" y1="120" x2="100" y2="160" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="140" y="142" font-size="11" fill="#1a7f37" font-weight="600">No</text>
+  <rect x="10" y="162" width="180" height="32" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="100" y="183" text-anchor="middle" font-size="12" font-weight="700" fill="#1a7f37">PK LOOKUP</text>
+  <text x="100" y="210" text-anchor="middle" font-size="10" fill="#666">Path A: readTuple()</text>
+  <text x="100" y="223" text-anchor="middle" font-size="10" fill="#666">all children are lookups</text>
+
+  <line x1="510" y1="120" x2="580" y2="160" stroke="#9a6700" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="558" y="142" font-size="11" fill="#9a6700" font-weight="600">Yes</text>
+
+  <rect x="510" y="162" width="220" height="32" rx="6" fill="#fff8c5" stroke="#d4a72c"/>
+  <text x="620" y="183" text-anchor="middle" font-size="12" font-weight="700" fill="#9a6700">PK INDEX SCAN</text>
+  <text x="620" y="210" text-anchor="middle" font-size="10" fill="#666">Path B: scanIndex() on</text>
+  <text x="620" y="223" text-anchor="middle" font-size="10" fill="#666">ordered PK index + EQ bounds</text>
+
+  <line x1="620" y1="223" x2="620" y2="254" stroke="#cf222e" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+  <rect x="540" y="256" width="200" height="28" rx="4" fill="#ffebe9" stroke="#cf222e"/>
+  <text x="640" y="275" text-anchor="middle" font-size="10" fill="#cf222e">no ordered PK index → Path C</text>
+</svg>
+
+<table>
+<thead>
+<tr><th>Path</th><th>Conditions</th><th>NDB API Call</th><th>Access</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><span class="tag tag-good">A</span></td>
+  <td><code>pk_covered</code> AND all children are lookups</td>
+  <td><code>qb-&gt;readTuple(root_table, pk_keys, &amp;opts)</code></td>
+  <td>Primary key lookup — single-row access, no scan</td>
+</tr>
+<tr>
+  <td><span class="tag tag-warn">B</span></td>
+  <td><code>pk_covered</code> AND at least one child is a scan</td>
+  <td><code>qb-&gt;scanIndex(pk_ordered_idx, root_table, &amp;bound, &amp;opts)</code></td>
+  <td>Ordered index scan on PK with equality bounds (effectively single-row, but as a scan
+      — required because the NDB API does not support a lookup root with scan children)</td>
+</tr>
+<tr>
+  <td><span class="tag tag-bad">C</span></td>
+  <td>PK not covered, or Path B with no ordered PK index</td>
+  <td><code>qb-&gt;scanTable(root_table, &amp;opts)</code></td>
+  <td>Full table scan with <code>NdbScanFilter</code> for WHERE conditions</td>
+</tr>
+</tbody>
+</table>
+
+<div class="box">
+<div class="box-title">Why Path B exists: NDB API lookup+scan constraint</div>
+<p>The NDB API's <code>NdbQueryBuilder</code> requires that if any child operation
+is a scan (<code>INDEX_SCAN</code>), the root must also be a scan operation
+(<code>scanTable</code> or <code>scanIndex</code>).  A <code>readTuple</code>
+root cannot have scan children in the SPJ tree.  Path B works around this by
+using an ordered index scan on the primary key with equality bounds — logically
+equivalent to a PK lookup but expressed as a scan.</p>
+</div>
+
+<h4>Path B Partition Pruning</h4>
+
+<p>NDB tables are hash-partitioned by their distribution key (which defaults to
+the primary key).  A full table scan touches all fragments on all data nodes.
+Path B avoids this: the NDB API <strong>automatically prunes</strong> the scan to
+a single fragment when the index bounds cover all distribution key columns with
+equality constraints.</p>
+
+<p>The pruning chain works as follows:</p>
+
+<div class="flow">
+  <div class="flow-step">1. RonSQL creates <code>NdbQueryIndexBound(pk_keys)</code> — sets both low and high bounds
+      to the same equality values for all PK columns</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">2. At query execution, <code>NdbQueryOperationImpl::isPrunable()</code>
+      (<code>NdbQueryOperation.cpp:4106</code>) calls
+      <code>checkPrunable()</code></div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">3. <code>NdbQueryIndexScanOperationDefImpl::checkPrunable()</code>
+      (<code>NdbQueryBuilder.cpp:1622</code>) verifies three conditions:</div>
+</div>
+
+<table>
+<thead>
+<tr><th>#</th><th>Check</th><th>Path B Status</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>1</td>
+  <td><strong>Distribution key coverage</strong> — the index must contain all
+      distribution key fields</td>
+  <td><span class="tag tag-good">Pass</span> — the PK ordered index covers all
+      distribution key columns by definition</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td><strong>Equality bounds on all distribution keys</strong> — each distribution
+      key column must have <code>BoundEQ</code> (not a range)</td>
+  <td><span class="tag tag-good">Pass</span> — <code>NdbQueryIndexBound(pk_keys)</code>
+      sets identical low/high bounds (= equality) for every PK column</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td><strong>Single hash value</strong> — all bound pairs must hash to the same
+      fragment via <code>Ndb::computeHash()</code></td>
+  <td><span class="tag tag-good">Pass</span> — all columns have constant equality
+      values, producing a single deterministic hash</td>
+</tr>
+</tbody>
+</table>
+
+<p>When all three checks pass (<code>prunable = true</code>), the scan is reduced
+to a single fragment (<code>NdbQueryOperation.cpp:3022–3034</code>):</p>
+
+<pre><code>bool pruned = false;
+const int error = isPrunable(pruned);
+if (pruned) {
+  rootFragments = 1;      // scan hits one fragment, not all
+  m_fragsPerWorker = 1;
+}</code></pre>
+
+<div class="box">
+<div class="box-title">Path B performance summary</div>
+<p>Thanks to automatic partition pruning, Path B is effectively equivalent to
+Path A (PK lookup) in terms of data access — it reads a single row from a single
+fragment on a single data node.  The only overhead compared to a true
+<code>readTuple()</code> is the scan machinery setup, which is negligible.
+RonSQL does <strong>not</strong> need to call <code>setPartitionId()</code> or any
+other explicit pruning API — the NDB API detects the prunable bounds
+automatically.</p>
+</div>
+
+<div class="box warn-box">
+<div class="box-title">Limitations of Root Index Selection in Joins</div>
+<ul>
+  <li>The root in join queries <strong>never</strong> uses
+      <code>plan_index_and_filter()</code> (the goodness-scoring index selector).
+      That function is single-table only.</li>
+  <li>The root can only use an <strong>ordered index on the PK columns</strong>
+      (Path B).  Non-PK ordered indexes are never considered.</li>
+  <li>Range conditions on PK columns (e.g., <code>pk &gt; 5</code>) do not
+      trigger any index use — only full PK equality coverage qualifies.</li>
+  <li>WHERE filters on root columns that are not PK equalities are applied as
+      <code>NdbScanFilter</code> (pushed to data nodes), regardless of available
+      indexes.</li>
+</ul>
+</div>
+
+<h4><code>collect_pk_equalities()</code> Details</h4>
+<p>Location: <code>RonSQLPreparer.cpp:3464</code>.  Walks the WHERE AST
+recursively:</p>
+<ul>
+  <li>Descends into <code>T_AND</code> nodes.</li>
+  <li>Extracts <code>T_EQUALS</code> conditions where one side is a column in
+      the root table's PK and the other is a constant.</li>
+  <li>Stores each matched constant into <code>pk_const[k]</code> indexed by PK
+      column position.</li>
+  <li>After traversal, <code>pk_covered</code> is <code>true</code> only if
+      every slot in <code>pk_const[]</code> has been filled.</li>
+  <li>Conditions with non-equality operators, column-vs-column comparisons, and
+      <code>OR</code> sub-trees are all ignored — they never contribute to PK
+      coverage.</li>
+</ul>
+
+<h3>3.2&nbsp;&nbsp;Child Operations</h3>
+
+<p>For each <code>JoinClause</code>, the planner resolves the parent reference
+and selects the child access method in strict priority order:</p>
+
+<svg viewBox="0 0 680 230" style="max-width:680px">
+  <rect x="180" y="10" width="300" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="330" y="33" text-anchor="middle" font-size="13" font-weight="600">ON columns = PK columns?</text>
+
+  <line x1="240" y1="46" x2="140" y2="70" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="175" y="62" font-size="11" fill="#1a7f37" font-weight="600">Yes</text>
+  <rect x="50" y="72" width="180" height="32" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="140" y="93" text-anchor="middle" font-size="13" font-weight="700" fill="#1a7f37">PK_LOOKUP</text>
+
+  <line x1="400" y1="46" x2="400" y2="120" stroke="#cf222e" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="412" y="62" font-size="11" fill="#cf222e" font-weight="600">No</text>
+
+  <rect x="260" y="122" width="300" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="410" y="145" text-anchor="middle" font-size="13" font-weight="600">Unique hash index match?</text>
+
+  <line x1="310" y1="158" x2="200" y2="182" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="240" y="174" font-size="11" fill="#1a7f37" font-weight="600">Yes</text>
+  <rect x="100" y="184" width="200" height="32" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="200" y="205" text-anchor="middle" font-size="13" font-weight="700" fill="#1a7f37">UNIQUE_LOOKUP</text>
+
+  <line x1="500" y1="158" x2="580" y2="182" stroke="#9a6700" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="548" y="174" font-size="11" fill="#9a6700" font-weight="600">No</text>
+  <rect x="500" y="184" width="170" height="32" rx="6" fill="#fff8c5" stroke="#d4a72c"/>
+  <text x="585" y="205" text-anchor="middle" font-size="13" font-weight="700" fill="#9a6700">INDEX_SCAN</text>
+  <text x="585" y="230" text-anchor="middle" font-size="10" fill="#666">(or error if no ordered index)</text>
+</svg>
+
+<table>
+<thead>
+<tr><th>Access Type</th><th>Condition</th><th>Index Used</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><span class="tag tag-good">PK_LOOKUP</span></td>
+  <td>ON columns exactly match all PK columns (set match, any order)</td>
+  <td>None (uses primary key directly)</td>
+</tr>
+<tr>
+  <td><span class="tag tag-good">UNIQUE_LOOKUP</span></td>
+  <td>ON columns exactly match all columns of a <code>UniqueHashIndex</code></td>
+  <td>First matching unique index</td>
+</tr>
+<tr>
+  <td><span class="tag tag-warn">INDEX_SCAN</span></td>
+  <td>ON columns appear as a <strong>prefix</strong> of an <code>OrderedIndex</code></td>
+  <td>First matching ordered index</td>
+</tr>
+<tr>
+  <td><span class="tag tag-bad">ERROR</span></td>
+  <td>No suitable index found</td>
+  <td>Throws <code>RonSQLPermanentError</code></td>
+</tr>
+</tbody>
+</table>
+
+<h4>Child Partition Pruning</h4>
+
+<p>NDB tables are hash-partitioned across data node fragments.  Whether a child
+operation touches one fragment or all of them depends on its access type:</p>
+
+<table>
+<thead>
+<tr><th>Access Type</th><th>Pruning</th><th>Mechanism</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><span class="tag tag-good">PK_LOOKUP</span></td>
+  <td><span class="tag tag-good">Single fragment</span></td>
+  <td>DBSPJ hashes the full PK (constructed from linked parent values) via
+      <code>computeHash()</code>, then asks DBDIH for the owning fragment
+      (<code>DIGETNODESREQ</code>).  The <code>LQHKEYREQ</code> is sent to
+      that one fragment only.</td>
+</tr>
+<tr>
+  <td><span class="tag tag-good">UNIQUE_LOOKUP</span></td>
+  <td><span class="tag tag-good">Single fragment</span></td>
+  <td>Implemented as two lookups internally: first a PK lookup on the unique
+      index table (hashed to one fragment), then a PK lookup on the main table
+      using the returned PK (hashed to one fragment).  Both are single-fragment.</td>
+</tr>
+<tr>
+  <td><span class="tag tag-warn">INDEX_SCAN</span></td>
+  <td><span class="tag tag-warn">Depends on index</span></td>
+  <td>Pruned to a single fragment <strong>only if</strong> the index bounds
+      (linked from parent) cover the entire distribution key with equality
+      constraints.  Otherwise scans <strong>all</strong> fragments.</td>
+</tr>
+</tbody>
+</table>
+
+<h4>INDEX_SCAN Pruning Details</h4>
+
+<p>At query definition time, <code>NdbQueryIndexScanOperationDefImpl::appendPrunePattern()</code>
+(<code>NdbQueryBuilder.cpp:2148</code>) checks whether the child scan's index
+bounds cover the full distribution key.  If so, it serializes a
+<code>SF_PRUNE_PATTERN</code> into the QueryTree definition.</p>
+
+<p>At execution time in DBSPJ, when a parent row arrives for a prunable child
+scan (<code>scanFrag_parent_row()</code>, <code>DbspjMain.cpp:8059</code>):</p>
+
+<div class="flow">
+  <div class="flow-step">1. Expand the prune key from linked parent column values</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">2. <code>computePartitionHash()</code> — hash the distribution key</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">3. <code>getNodes()</code> — ask DIH which fragment owns that hash value</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">4. Append range to <strong>only that fragment's</strong> scan buffer</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">5. <code>scanFrag_send()</code> sends SCAN_FRAGREQ to the single matching fragment</div>
+</div>
+
+<p>Without <code>SF_PRUNE_PATTERN</code>, the range is broadcast to all fragments.</p>
+
+<div class="box">
+<div class="box-title">When is an INDEX_SCAN child prunable?</div>
+<p>Pruning requires that the <strong>ordered index prefix used as bounds</strong>
+covers all distribution key columns with equality constraints.  For tables using
+the default distribution (hash of PK), this means the index must have the full PK
+as a prefix and the ON clause must provide equality on all PK columns — at which
+point a <code>PK_LOOKUP</code> would have been selected instead.</p>
+<p>In practice, INDEX_SCAN children are <strong>rarely pruned</strong>.  The
+common case is a foreign-key join (<code>ON child.fk = parent.pk</code>) where
+<code>fk</code> is not the child's distribution key — the scan must touch all
+fragments.  Pruning only occurs with custom distribution keys or when the index
+happens to cover the full distribution key as a prefix.</p>
+</div>
+
+<h3>3.3&nbsp;&nbsp;Index Matching Details</h3>
+
+<h4><code>isPrimaryKey()</code></h4>
+<ul>
+  <li>Requires <strong>exact set match</strong>: number of ON columns must equal
+      number of PK columns, and every ON column must appear in the PK.</li>
+  <li>Column order in the ON clause does not matter.</li>
+  <li>Partial PK matches are <strong>not</strong> accepted.</li>
+</ul>
+
+<h4><code>findUniqueIndex()</code></h4>
+<ul>
+  <li>Scans all <code>UniqueHashIndex</code> entries on the table.</li>
+  <li>Requires <strong>exact set match</strong>: index column count = ON column count,
+      all match.</li>
+  <li>Returns <strong>first</strong> matching index (no scoring).</li>
+</ul>
+
+<h4><code>findOrderedIndex()</code></h4>
+<ul>
+  <li>Scans all <code>OrderedIndex</code> entries on the table.</li>
+  <li>Allows <strong>prefix match</strong>: the index may have more columns than
+      the ON clause requires.</li>
+  <li>ON columns must appear within the first <em>N</em> columns of the index
+      (where <em>N</em> = number of ON columns).</li>
+  <li>Returns <strong>first</strong> matching index (no scoring).</li>
+</ul>
+
+<h3>3.4&nbsp;&nbsp;Parent Resolution</h3>
+<p>Each child operation must reference <strong>exactly one</strong> parent.
+The parent is identified by the table alias in the ON condition.
+All ON conditions in a single JOIN must reference the same parent
+table.</p>
+
+<p>The parent must be a <strong>previously defined</strong> operation (lower
+index in <code>JoinPlan::ops[]</code>).  Forward references are rejected.</p>
+
+<!-- ================================================================ -->
+<h2>4&nbsp;&nbsp;WHERE Filter Classification for Joins</h2>
+
+<p>Entry point: <code>classify_where_by_table()</code>
+(<code>RonSQLPreparer.cpp:955</code>).</p>
+
+<h3>4.1&nbsp;&nbsp;Algorithm</h3>
+<ol>
+  <li>Flatten top-level <code>AND</code> into conjuncts (same as single-table).</li>
+  <li>For each conjunct, recursively determine which table's columns it
+      references (<code>classify_ce_table()</code>).</li>
+  <li>Assign the conjunct to that table's filter:
+      <code>m_join_where_ce[table_idx]</code>.</li>
+  <li>Constant-only conditions are assigned to the root (table 0).</li>
+</ol>
+
+<h3>4.2&nbsp;&nbsp;Cross-Table Conditions</h3>
+<p>If a single conjunct references columns from <strong>two or more
+tables</strong> (e.g., <code>a.x = b.y</code> outside of ON), it is
+classified as cross-table (<code>-2</code>) and <strong>rejected with an
+error</strong>.</p>
+
+<div class="box warn-box">
+<div class="box-title">Exception: Subquery Cross-Table Filters</div>
+For correlated scalar subqueries rewritten as joins, cross-table filters
+(e.g., <code>l.qty &gt; o.min_qty</code>) are handled specially: they are
+compiled into <code>BranchReg</code> conditional aggregation instructions
+instead of scan filters.  This bypasses the cross-table restriction.
+</div>
+
+<h3>4.3&nbsp;&nbsp;Filter Application at Execution</h3>
+<p>During <code>execute_join()</code>, each child operation gets its per-table
+filter attached as <code>NdbInterpretedCode</code> via
+<code>NdbScanFilter</code>:</p>
+
+<pre><code>// For each child operation i:
+if (m_join_where_ce[i] != NULL) {
+    NdbScanFilter filter(&amp;interpreted_code);
+    filter.begin(NdbScanFilter::AND);
+    apply_filter(&amp;filter, m_join_where_ce[i]);
+    filter.end();
+    opts.setInterpretedCode(interpreted_code);
+}</code></pre>
+
+<p>Filters are pushed to data nodes and evaluated during the scan,
+reducing network traffic.</p>
+
+<!-- ================================================================ -->
+<h2>5&nbsp;&nbsp;Subquery Rewriting &amp; Outer Join Handling</h2>
+
+<p>SELECT-list correlated scalar subqueries are rewritten into explicit
+JOIN clauses for multi-leaf pushdown aggregation.  All injected joins use
+<strong>LEFT OUTER JOIN</strong> so that unmatched parent rows produce
+NULL aggregates instead of disappearing from the result.</p>
+
+<h3>5.1&nbsp;&nbsp;Transformation Example</h3>
+
+<table>
+<tr><th>Before (user SQL)</th><th>After (internal AST)</th></tr>
+<tr>
+<td><pre><code>SELECT o.id,
+  (SELECT SUM(l.qty)
+   FROM lineitem l
+   WHERE l.order_id = o.id) AS total,
+  (SELECT COUNT(s.id)
+   FROM shipment s
+   WHERE s.order_id = o.id) AS ships
+FROM orders o</code></pre></td>
+<td><pre><code>SELECT o.id,
+       SUM(l.qty)  AS total,
+       COUNT(s.id) AS ships
+FROM orders o
+  LEFT JOIN lineitem l
+    ON l.order_id = o.id
+  LEFT JOIN shipment s
+    ON s.order_id = o.id
+GROUP BY o.id</code></pre></td>
+</tr>
+</table>
+
+<h3>5.2&nbsp;&nbsp;Pipeline Overview</h3>
+
+<svg viewBox="0 0 820 110" style="max-width:820px">
+  <rect x="2" y="20" width="170" height="40" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="87" y="45" text-anchor="middle" font-size="12" font-weight="600">analyze_select_</text>
+  <text x="87" y="56" text-anchor="middle" font-size="12" font-weight="600">subqueries()</text>
+
+  <line x1="174" y1="40" x2="205" y2="40" stroke="#0969da" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <rect x="207" y="20" width="170" height="40" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="292" y="45" text-anchor="middle" font-size="12" font-weight="600">merge_same_table_</text>
+  <text x="292" y="56" text-anchor="middle" font-size="12" font-weight="600">subqueries()</text>
+
+  <line x1="379" y1="40" x2="410" y2="40" stroke="#0969da" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <rect x="412" y="20" width="170" height="40" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="497" y="45" text-anchor="middle" font-size="12" font-weight="600">rewrite_as_joins()</text>
+
+  <line x1="584" y1="40" x2="615" y2="40" stroke="#0969da" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <rect x="617" y="20" width="170" height="40" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="702" y="45" text-anchor="middle" font-size="12" font-weight="600">QueryPlanner::</text>
+  <text x="702" y="56" text-anchor="middle" font-size="12" font-weight="600">plan()</text>
+
+  <text x="87"  y="85" text-anchor="middle" font-size="10" fill="#666">validate &amp; extract</text>
+  <text x="292" y="85" text-anchor="middle" font-size="10" fill="#666">group by (table, key)</text>
+  <text x="497" y="85" text-anchor="middle" font-size="10" fill="#666">inject JoinClause</text>
+  <text x="702" y="85" text-anchor="middle" font-size="10" fill="#666">index selection</text>
+</svg>
+
+<h3>5.3&nbsp;&nbsp;Step 1: Analyze (<code>analyze_select_subqueries</code>)</h3>
+
+<p>Location: <code>RonSQLPreparer.cpp:2243</code>.  Walks the outer SELECT
+output list for <code>SUBQUERY_AGG</code> entries and validates each inner query.</p>
+
+<h4>Validation Requirements</h4>
+<table>
+<tr><th>Rule</th><th>Reason</th></tr>
+<tr><td>Inner query has no JOINs</td><td>Single-table subquery only</td></tr>
+<tr><td>Inner query has no GROUP BY / HAVING</td><td>Aggregation is auto-injected</td></tr>
+<tr><td>Exactly one output, type = AGGREGATE</td><td>Must be a scalar aggregate</td></tr>
+<tr><td>Aggregate function is SUM, COUNT, MIN, or MAX</td><td>Supported functions</td></tr>
+<tr><td>Outer query has no GROUP BY (will be auto-injected)</td><td>Avoids conflict</td></tr>
+</table>
+
+<h4>Correlation Predicate Extraction</h4>
+<p>The inner WHERE is flattened into AND conjuncts.  Exactly one conjunct
+must be an equality (<code>inner_col = outer_col</code>) where one side
+references the inner table and the other references an outer table.
+This becomes the join condition.</p>
+
+<h4>Filter Classification</h4>
+<p>Remaining WHERE conjuncts (after removing the correlation predicate)
+are classified into two categories:</p>
+
+<table>
+<tr><th>Type</th><th>Example</th><th>Handling</th></tr>
+<tr>
+  <td><span class="tag tag-good">Inner-only</span></td>
+  <td><code>l.qty &gt; 5</code></td>
+  <td>Pushed as <code>NdbScanFilter</code> on the child scan operation</td>
+</tr>
+<tr>
+  <td><span class="tag tag-warn">Cross-table</span></td>
+  <td><code>l.qty &gt; o.min_qty</code></td>
+  <td>Compiled to <code>BranchReg</code> conditional aggregation in the
+      leaf's aggregation program (via linked projections)</td>
+</tr>
+</table>
+
+<h4>SelectSubqueryLeaf Fields</h4>
+<p>Each valid subquery produces a <code>SelectSubqueryLeaf</code>
+descriptor (<code>RonSQLPreparer.hpp:179</code>):</p>
+
+<table>
+<tr><th>Field</th><th>Purpose</th></tr>
+<tr><td><code>inner_table_name</code> / <code>inner_table_alias</code></td>
+    <td>Physical table name and alias for the subquery's FROM table</td></tr>
+<tr><td><code>inner_join_col</code> / <code>outer_join_col</code></td>
+    <td>Columns forming the equi-join correlation predicate</td></tr>
+<tr><td><code>outer_join_table</code></td>
+    <td>Table qualifier of the outer correlation column</td></tr>
+<tr><td><code>agg_fun</code></td>
+    <td><code>T_SUM</code>, <code>T_COUNT</code>, <code>T_MIN</code>, or <code>T_MAX</code></td></tr>
+<tr><td><code>inner_agg_col</code> / <code>inner_agg_col_idx</code></td>
+    <td>Column being aggregated and its index in <code>m_columns</code></td></tr>
+<tr><td><code>combined_agg_slot</code></td>
+    <td>Leaf-local accumulator slot (assigned during merge)</td></tr>
+<tr><td><code>merged_leaf_idx</code></td>
+    <td>Index into <code>m_merged_leaves</code> (assigned during merge)</td></tr>
+<tr><td><code>use_inner_join</code></td>
+    <td>Always <code>false</code> → LEFT OUTER JOIN</td></tr>
+<tr><td><code>inner_filter</code></td>
+    <td>Inner-only WHERE filter (or NULL)</td></tr>
+<tr><td><code>cross_table_filter</code></td>
+    <td>Cross-table WHERE filter (or NULL)</td></tr>
+</table>
+
+<h3>5.4&nbsp;&nbsp;Step 2: Merge (<code>merge_same_table_subqueries</code>)</h3>
+
+<p>Location: <code>RonSQLPreparer.cpp:2547</code>.  Groups subqueries that
+share the same <strong>(table, inner_join_col, outer_join_col)</strong>
+triple into a single leaf operation with a combined aggregation program.</p>
+
+<svg viewBox="0 0 700 140" style="max-width:700px">
+  <text x="10" y="20" font-size="12" font-weight="600">Before merge: 4 subqueries</text>
+  <rect x="10"  y="30" width="150" height="28" rx="4" fill="#fff8c5" stroke="#d4a72c"/>
+  <text x="85"  y="49" text-anchor="middle" font-size="10">SUM(l.qty) on lineitem</text>
+  <rect x="170" y="30" width="150" height="28" rx="4" fill="#fff8c5" stroke="#d4a72c"/>
+  <text x="245" y="49" text-anchor="middle" font-size="10">COUNT(l.id) on lineitem</text>
+  <rect x="330" y="30" width="150" height="28" rx="4" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="405" y="49" text-anchor="middle" font-size="10">SUM(s.weight) on shipment</text>
+  <rect x="490" y="30" width="150" height="28" rx="4" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="565" y="49" text-anchor="middle" font-size="10">MAX(s.weight) on shipment</text>
+
+  <text x="10" y="85" font-size="12" font-weight="600">After merge: 2 merged leaves</text>
+  <rect x="10"  y="95" width="310" height="32" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="165" y="116" text-anchor="middle" font-size="11" font-weight="600">MergedLeaf 0: lineitem (slots 0,1)</text>
+  <rect x="330" y="95" width="310" height="32" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="485" y="116" text-anchor="middle" font-size="11" font-weight="600">MergedLeaf 1: shipment (slots 0,1)</text>
+</svg>
+
+<p>Merging criteria (all three must match):</p>
+<ul>
+  <li><code>inner_table_name</code> — same physical table</li>
+  <li><code>inner_join_col</code> — same inner join column</li>
+  <li><code>outer_join_col</code> — same outer join column</li>
+</ul>
+
+<p>When merging, column qualifiers referencing different aliases of the
+same table are remapped to the base alias, so <code>load_join()</code>
+resolves them against a single joined table.</p>
+
+<h3>5.5&nbsp;&nbsp;Step 3: Rewrite (<code>rewrite_select_subqueries_as_joins</code>)</h3>
+
+<p>Location: <code>RonSQLPreparer.cpp:2614</code>.  For each
+<code>MergedLeaf</code>:</p>
+
+<ol>
+  <li><strong>Create a <code>JoinClause</code></strong> with:
+    <ul>
+      <li><code>join_type = LEFT_OUTER_JOIN</code> (always — <code>use_inner_join</code> is always false)</li>
+      <li><code>table</code> = inner table reference</li>
+      <li><code>conditions</code> = single equi-join ON condition from the correlation predicate</li>
+    </ul>
+  </li>
+  <li><strong>Append</strong> the <code>JoinClause</code> to the end of the
+      outer query's join list.</li>
+  <li><strong>Auto-inject GROUP BY</strong> on the outer correlation key column.
+      Also adds all other non-aggregate COLUMN outputs to GROUP BY
+      (functionally dependent on the correlation key).</li>
+  <li><strong>Clear <code>m_col_is_inner</code> flags</strong> so that
+      subquery table columns participate in normal column loading.</li>
+</ol>
+
+<div class="box">
+<div class="box-title">Why LEFT OUTER JOIN?</div>
+<p>A correlated scalar subquery returns NULL when no inner rows match the
+outer row.  To preserve this semantic after rewriting to a join, the
+join must be LEFT OUTER.  An INNER JOIN would eliminate outer rows with
+no matching inner rows, changing the result set.</p>
+<p>Example: if order 21 has no lineitems, <code>(SELECT SUM(l.qty) …)</code>
+returns NULL.  With LEFT OUTER JOIN, order 21 stays in the result with
+<code>SUM = NULL</code>.  With INNER JOIN, order 21 would disappear.</p>
+</div>
+
+<h3>5.6&nbsp;&nbsp;Outer Join Match Tracking in DBSPJ</h3>
+
+<p>After rewriting, the injected LEFT OUTER JOINs are processed by the
+normal SPJ push-down engine.  DBSPJ handles NULL injection for
+unmatched parent rows:</p>
+
+<ol>
+  <li>Each parent row fires a child scan on the leaf table.</li>
+  <li>If the child scan returns rows, they pass through the aggregation
+      interpreter normally.</li>
+  <li>If the child scan returns <strong>no rows</strong> (no match),
+      DBSPJ's <code>handleAggLeafScanComplete()</code> detects unmatched
+      parent rows via a bitmask (<code>m_agg_match_bitmask</code>) and
+      injects NULL-extended pseudo-rows into the aggregation.</li>
+  <li>The aggregation interpreter handles NULLs per SQL semantics:
+      <ul>
+        <li><code>COUNT(*)</code> — increments (counts the NULL row)</li>
+        <li><code>COUNT(col)</code> — does NOT increment (NULL skipped)</li>
+        <li><code>SUM</code> / <code>MIN</code> / <code>MAX</code> — skip NULL values</li>
+      </ul>
+  </li>
+</ol>
+
+<h4>Match Tracking Flags</h4>
+<p>In <code>DbspjMain.cpp</code>, during <code>validateAggregateFlags()</code>,
+DBSPJ enables match tracking on relevant tree nodes:</p>
+<table>
+<tr><th>Flag</th><th>Set On</th><th>Purpose</th></tr>
+<tr><td><code>T_BUFFER_MATCH</code></td>
+    <td>Scan ancestor of outer-joined aggregate leaf</td>
+    <td>Track which parent rows got at least one child match</td></tr>
+<tr><td><code>T_BUFFER_ROW</code></td>
+    <td>Intermediate lookup parents</td>
+    <td>Buffer parent row data for NULL row construction</td></tr>
+</table>
+
+<h3>5.7&nbsp;&nbsp;Cross-Table Filter Execution</h3>
+
+<p>Cross-table filters (e.g., <code>l.qty &gt; o.min_qty</code>) cannot
+be pushed as regular scan filters because they reference columns from
+a parent table.  Instead, they are compiled into <strong>conditional
+aggregation</strong> using <code>BranchReg</code> opcodes:</p>
+
+<div class="flow">
+  <div class="flow-step">1. <code>LoadLinkedColumn(outer_proj_pos, reg_outer)</code> — load parent column via linked projection</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">2. <code>LoadColumn(inner_attr_id, reg_inner)</code> — load inner column from current row</div>
+  <div class="flow-arrow">↓</div>
+  <div class="flow-step">3. <code>BranchRegXx(reg_inner, reg_outer, skip_count=2)</code> — skip if NOT(condition)</div>
+  <div class="flow-arrow">↓ (not skipped)</div>
+  <div class="flow-step">4. <code>LoadColumn(agg_col, reg)</code> + <code>Sum/Count/Min/Max(slot, reg)</code></div>
+</div>
+
+<p>The branch instruction is <strong>inverted</strong>: it skips the
+aggregation when the filter does NOT match.  Mapping:</p>
+<table>
+<tr><th>SQL Filter</th><th>Skip When NOT Match</th><th>Opcode</th></tr>
+<tr><td><code>inner &gt; outer</code></td><td><code>inner &lt;= outer</code></td><td><code>BranchRegLe</code></td></tr>
+<tr><td><code>inner &gt;= outer</code></td><td><code>inner &lt; outer</code></td><td><code>BranchRegLt</code></td></tr>
+<tr><td><code>inner &lt; outer</code></td><td><code>inner &gt;= outer</code></td><td><code>BranchRegGe</code></td></tr>
+<tr><td><code>inner &lt;= outer</code></td><td><code>inner &gt; outer</code></td><td><code>BranchRegGt</code></td></tr>
+<tr><td><code>inner = outer</code></td><td><code>inner != outer</code></td><td><code>BranchRegNe</code></td></tr>
+<tr><td><code>inner != outer</code></td><td><code>inner = outer</code></td><td><code>BranchRegEq</code></td></tr>
+</table>
+
+<p>If either register is NULL, the branch always skips (NULL comparison
+= no match).</p>
+
+<h3>5.8&nbsp;&nbsp;Multi-Leaf Aggregation Program Construction</h3>
+
+<p>During <code>execute_join()</code>, one <code>NdbAggregator</code> is
+created per <code>MergedLeaf</code>.  Each aggregator programs:</p>
+<ol>
+  <li><strong>GROUP BY columns</strong> — from the outer query.  Parent-table
+      GROUP BY columns use <code>GroupByLinked()</code> with linked
+      projections.</li>
+  <li><strong>Per-subquery aggregates</strong> — iterates all
+      <code>SelectSubqueryLeaf</code> entries in the merged group, emitting
+      <code>LoadColumn</code> + aggregate instruction for each.
+      Cross-table filters insert <code>BranchReg</code> before the
+      load/aggregate pair.</li>
+  <li><strong>Finalize</strong> — the aggregator is attached to the
+      corresponding leaf operation via <code>opts.setAggregation()</code>.</li>
+</ol>
+
+<p>The wire format uses a <code>0x0722</code> header distinguishing
+multi-leaf sections from the old <code>0x0721</code> single-leaf format.
+DblqhProxy parses both formats with backward compatibility.</p>
+
+<!-- ================================================================ -->
+<h2>6&nbsp;&nbsp;End-to-End Flow Diagrams</h2>
+
+<h3>6.1&nbsp;&nbsp;Single-Table Query</h3>
+
+<svg viewBox="0 0 780 360" style="max-width:780px">
+  <defs>
+    <marker id="a2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#0969da"/>
+    </marker>
+  </defs>
+
+  <!-- Step boxes -->
+  <rect x="20" y="10" width="200" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="120" y="33" text-anchor="middle" font-size="12" font-weight="600">WHERE clause (AST)</text>
+
+  <line x1="120" y1="46" x2="120" y2="62" stroke="#0969da" stroke-width="1.5" marker-end="url(#a2)"/>
+
+  <rect x="20" y="64" width="200" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="120" y="87" text-anchor="middle" font-size="12">simplify_ce()</text>
+
+  <line x1="120" y1="100" x2="120" y2="116" stroke="#0969da" stroke-width="1.5" marker-end="url(#a2)"/>
+
+  <rect x="20" y="118" width="200" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="120" y="141" text-anchor="middle" font-size="12">collect_toplevel_conditions()</text>
+
+  <line x1="120" y1="154" x2="120" y2="170" stroke="#0969da" stroke-width="1.5" marker-end="url(#a2)"/>
+
+  <rect x="20" y="172" width="200" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="120" y="195" text-anchor="middle" font-size="12">generate_scan_config_candidates()</text>
+
+  <!-- Branches from generate -->
+  <line x1="220" y1="190" x2="320" y2="160" stroke="#0969da" stroke-width="1.2" marker-end="url(#a2)"/>
+  <line x1="220" y1="190" x2="320" y2="220" stroke="#0969da" stroke-width="1.2" marker-end="url(#a2)"/>
+  <line x1="220" y1="190" x2="320" y2="280" stroke="#0969da" stroke-width="1.2" marker-end="url(#a2)"/>
+
+  <rect x="322" y="142" width="200" height="32" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="422" y="163" text-anchor="middle" font-size="11">Table scan (goodness=0)</text>
+
+  <rect x="322" y="204" width="200" height="32" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="422" y="225" text-anchor="middle" font-size="11">Index A (goodness=110,110)</text>
+
+  <rect x="322" y="264" width="200" height="32" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="422" y="285" text-anchor="middle" font-size="11">Index B (goodness=1,100)</text>
+
+  <!-- Winner -->
+  <line x1="522" y1="220" x2="580" y2="220" stroke="#1a7f37" stroke-width="2" marker-end="url(#a2)"/>
+  <rect x="582" y="204" width="170" height="32" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="667" y="225" text-anchor="middle" font-size="12" font-weight="700" fill="#1a7f37">Best: Index A</text>
+
+  <!-- Execute -->
+  <line x1="667" y1="236" x2="667" y2="260" stroke="#0969da" stroke-width="1.5" marker-end="url(#a2)"/>
+  <rect x="582" y="262" width="170" height="50" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="667" y="282" text-anchor="middle" font-size="11">map[i]≥0 → index bound</text>
+  <text x="667" y="300" text-anchor="middle" font-size="11">map[i]=-1 → scan filter</text>
+</svg>
+
+<h3>6.2&nbsp;&nbsp;Join Query</h3>
+
+<svg viewBox="0 0 780 340" style="max-width:780px">
+  <rect x="10" y="10" width="220" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="120" y="33" text-anchor="middle" font-size="12" font-weight="600">SQL: FROM root JOIN t1 JOIN t2</text>
+
+  <line x1="120" y1="46" x2="120" y2="62" stroke="#0969da" stroke-width="1.5" marker-end="url(#a2)"/>
+
+  <rect x="10" y="64" width="220" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="120" y="87" text-anchor="middle" font-size="12">QueryPlanner::plan()</text>
+
+  <!-- Root -->
+  <line x1="230" y1="82" x2="310" y2="50" stroke="#0969da" stroke-width="1.2" marker-end="url(#a2)"/>
+  <rect x="312" y="32" width="180" height="32" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="402" y="53" text-anchor="middle" font-size="11">ops[0]: root TABLE_SCAN</text>
+
+  <!-- t1 -->
+  <line x1="230" y1="82" x2="310" y2="90" stroke="#0969da" stroke-width="1.2" marker-end="url(#a2)"/>
+  <rect x="312" y="72" width="180" height="32" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="402" y="93" text-anchor="middle" font-size="11">ops[1]: t1 PK_LOOKUP</text>
+
+  <!-- t2 -->
+  <line x1="230" y1="82" x2="310" y2="130" stroke="#0969da" stroke-width="1.2" marker-end="url(#a2)"/>
+  <rect x="312" y="112" width="180" height="32" rx="6" fill="#fff8c5" stroke="#d4a72c"/>
+  <text x="402" y="133" text-anchor="middle" font-size="11">ops[2]: t2 INDEX_SCAN</text>
+
+  <!-- WHERE classification -->
+  <line x1="120" y1="100" x2="120" y2="170" stroke="#0969da" stroke-width="1.5" marker-end="url(#a2)"/>
+
+  <rect x="10" y="172" width="220" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="120" y="195" text-anchor="middle" font-size="12">classify_where_by_table()</text>
+
+  <line x1="230" y1="190" x2="310" y2="190" stroke="#0969da" stroke-width="1.2" marker-end="url(#a2)"/>
+
+  <rect x="312" y="168" width="200" height="28" rx="4" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="412" y="187" text-anchor="middle" font-size="11">m_join_where_ce[0]: root filter</text>
+  <rect x="312" y="200" width="200" height="28" rx="4" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="412" y="219" text-anchor="middle" font-size="11">m_join_where_ce[1]: t1 filter</text>
+  <rect x="312" y="232" width="200" height="28" rx="4" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="412" y="251" text-anchor="middle" font-size="11">m_join_where_ce[2]: t2 filter</text>
+
+  <!-- Execute -->
+  <line x1="120" y1="208" x2="120" y2="280" stroke="#0969da" stroke-width="1.5" marker-end="url(#a2)"/>
+  <rect x="10" y="282" width="220" height="36" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="120" y="305" text-anchor="middle" font-size="12">execute_join()</text>
+
+  <line x1="230" y1="300" x2="310" y2="300" stroke="#0969da" stroke-width="1.2" marker-end="url(#a2)"/>
+  <rect x="312" y="282" width="260" height="36" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="442" y="305" text-anchor="middle" font-size="11">Per-table NdbScanFilter + SPJ tree</text>
+</svg>
+
+<!-- ================================================================ -->
+<h2>7&nbsp;&nbsp;Current Limitations</h2>
+
+<table>
+<thead>
+<tr><th>#</th><th>Limitation</th><th>Impact</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>1</td>
+  <td><strong>No join reordering.</strong> Order is always SQL left-to-right.</td>
+  <td>Suboptimal plans when the user writes tables in a poor order.
+      A small dimension table scanned first would be better as a lookup child.</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td><strong>No index scoring for joins.</strong>
+      <code>findUniqueIndex()</code> and <code>findOrderedIndex()</code> return
+      the first match, not the best.</td>
+  <td>If multiple indexes cover the join columns, the choice is arbitrary
+      (depends on NDB dictionary iteration order).</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td><strong>Limited root index selection for joins.</strong>
+      The root in join queries never uses <code>plan_index_and_filter()</code>
+      (goodness scoring).  It can only use PK lookup (Path A) or ordered PK index
+      scan with equality bounds (Path B) — see §3.1.</td>
+  <td>Non-PK ordered indexes on the root table are never used.  Range conditions
+      on PK columns do not trigger index use.  Only full PK equality coverage
+      activates an optimized root access path.</td>
+</tr>
+<tr>
+  <td>4</td>
+  <td><strong>Cross-table WHERE conditions rejected.</strong> Conditions like
+      <code>a.x &gt; b.y</code> outside ON clauses cause an error.</td>
+  <td>Users must restructure queries.  (Exception: subquery cross-table
+      filters are handled via BranchReg opcodes.)</td>
+</tr>
+<tr>
+  <td>5</td>
+  <td><strong>OR conditions cannot be split across index bounds.</strong>
+      An <code>OR</code> stays as a single filter conjunct.</td>
+  <td>Queries like <code>WHERE a = 1 OR a = 2</code> use scan filter instead
+      of two index bounds.</td>
+</tr>
+<tr>
+  <td>6</td>
+  <td><strong>No cost-based optimization.</strong> Scoring uses static heuristics,
+      not table statistics or cardinality estimates.</td>
+  <td>The best index may not be selected when conditions have very different
+      selectivities.</td>
+</tr>
+</tbody>
+</table>
+
+<!-- ================================================================ -->
+<h2>8&nbsp;&nbsp;Source File Reference</h2>
+
+<table>
+<thead>
+<tr><th>Component</th><th>File</th><th>Key Lines</th></tr>
+</thead>
+<tbody>
+<tr><td>Index scoring &amp; selection</td>
+    <td><code>RonSQLPreparer.cpp</code></td>
+    <td><code>plan_index_and_filter()</code> :1067, <code>generate_scan_config_candidates()</code> :1123</td></tr>
+<tr><td>Condition flattening</td>
+    <td><code>RonSQLPreparer.cpp</code></td>
+    <td><code>collect_toplevel_conditions()</code> :1109</td></tr>
+<tr><td>Expression normalization</td>
+    <td><code>RonSQLPreparer.cpp</code></td>
+    <td><code>simplify_ce()</code> :4593</td></tr>
+<tr><td>Join planning</td>
+    <td><code>QueryPlanner.cpp</code></td>
+    <td><code>plan()</code> :30, <code>isPrimaryKey()</code> :195, <code>findUniqueIndex()</code> :218, <code>findOrderedIndex()</code> :257</td></tr>
+<tr><td>Filter classification</td>
+    <td><code>RonSQLPreparer.cpp</code></td>
+    <td><code>classify_where_by_table()</code> :955, <code>classify_ce_table()</code> :209</td></tr>
+<tr><td>Root access selection</td>
+    <td><code>RonSQLPreparer.cpp</code></td>
+    <td><code>execute_join()</code> :3705–3817, <code>collect_pk_equalities()</code> :3464</td></tr>
+<tr><td>Filter application</td>
+    <td><code>RonSQLPreparer.cpp</code></td>
+    <td><code>apply_filter_top_level()</code> :4187, <code>execute_join()</code> :3506</td></tr>
+<tr><td>Subquery rewriting</td>
+    <td><code>RonSQLPreparer.cpp</code></td>
+    <td><code>rewrite_select_subqueries_as_joins()</code> :2615</td></tr>
+<tr><td>Data structures</td>
+    <td><code>QueryPlanner.hpp</code></td>
+    <td><code>JoinOp</code> :40, <code>JoinPlan</code> :56</td></tr>
+<tr><td>ScanConfig</td>
+    <td><code>RonSQLPreparer.hpp</code></td>
+    <td><code>ScanConfig</code> :160</td></tr>
+</tbody>
+</table>
+
+</body>
+</html>

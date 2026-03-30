@@ -43,6 +43,7 @@
 #include <signaldata/DihScanTab.hpp>
 #include <signaldata/DropTab.hpp>
 #include <signaldata/JoinAgg.hpp>
+#include "../dblqh/JoinAggregationState.hpp"
 #include <signaldata/LqhKey.hpp>
 #include <signaldata/PrepDropTab.hpp>
 #include <signaldata/QueryTree.hpp>
@@ -63,10 +64,12 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
-//#define DEBUG_AGGREGATION 1
 //#define DEBUG_TRANSID_AI 1
+#define DEBUG_AGGREGATION 1
+#define DEBUG_STAR_AGG 1
 //#define DEBUG_JOIN_AGG_TRACE 1
 //#define DEBUG_MATCH 1
+//#define DEBUG_SCAN_PARENT_ROW 1
 #endif
 
 #ifdef DEBUG_TRANSID_AI
@@ -87,6 +90,18 @@
 #define DEB_AGGREGATION(arglist) do { } while (0)
 #endif
 
+#ifdef DEBUG_SCAN_PARENT_ROW
+#define DEB_SCAN_PR(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_SCAN_PR(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_STAR_AGG
+#define DEB_STAR_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_STAR_AGG(arglist) do { } while (0)
+#endif
+
 /**
  * DEBUG_JOIN_AGG_TRACE: Hex dump of QueryTree nodes as received by DBSPJ,
  * showing tree/param bits, NI_ATTR_LINKED pattern, and PI_ATTR_INTERPRET
@@ -94,10 +109,13 @@
  */
 #ifdef DEBUG_JOIN_AGG_TRACE
 #define DEB_JOIN_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
-static void dumpWordsToLog(const char *label, const Uint32 *buf, Uint32 len) {
+static void dumpWordsToLog(Uint32 instance_no,
+                           const char *label,
+                           const Uint32 *buf,
+                           Uint32 len) {
   char line[256];
   int pos = 0;
-  g_eventLogger->info("DBSPJ %s (%u words):", label, len);
+  g_eventLogger->info("(%u)DBSPJ %s (%u words):", instance_no, label, len);
   for (Uint32 i = 0; i < len; i++) {
     pos += snprintf(line + pos, sizeof(line) - pos, " 0x%08x", buf[i]);
     if ((i % 6) == 5 || i == len - 1) {
@@ -1610,19 +1628,27 @@ Dbspj::build(Build_context& ctx,
                      "treeBits=0x%08x paramBits=0x%08x",
                      ctx.m_cnt, node_op, node_len, treeBits, paramBits));
       /* Decode key flags */
-      const char *agg = (treeBits & DABits::NI_AGGREGATE) ? " NI_AGGREGATE" : "";
-      const char *aggLeaf = (treeBits & DABits::NI_AGGREGATE_LEAF) ? " NI_AGGREGATE_LEAF" : "";
-      const char *linked = (treeBits & DABits::NI_LINKED_ATTR) ? " NI_LINKED_ATTR" : "";
-      const char *keyLnk = (treeBits & DABits::NI_KEY_LINKED) ? " NI_KEY_LINKED" : "";
-      const char *attrInt = (treeBits & DABits::NI_ATTR_INTERPRET) ? " NI_ATTR_INTERPRET" : "";
-      const char *attrLnk = (treeBits & DABits::NI_ATTR_LINKED) ? " NI_ATTR_LINKED" : "";
-      const char *piInt = (paramBits & DABits::PI_ATTR_INTERPRET) ? " PI_ATTR_INTERPRET" : "";
-      const char *piList = (paramBits & DABits::PI_ATTR_LIST) ? " PI_ATTR_LIST" : "";
+      const char *agg = (treeBits & DABits::NI_AGGREGATE) ?
+        " NI_AGGREGATE" : "";
+      const char *aggLeaf = (treeBits & DABits::NI_AGGREGATE_LEAF) ?
+        " NI_AGGREGATE_LEAF" : "";
+      const char *linked = (treeBits & DABits::NI_LINKED_ATTR) ?
+        " NI_LINKED_ATTR" : "";
+      const char *keyLnk = (treeBits & DABits::NI_KEY_LINKED) ?
+        " NI_KEY_LINKED" : "";
+      const char *attrInt = (treeBits & DABits::NI_ATTR_INTERPRET) ?
+        " NI_ATTR_INTERPRET" : "";
+      const char *attrLnk = (treeBits & DABits::NI_ATTR_LINKED) ?
+        " NI_ATTR_LINKED" : "";
+      const char *piInt = (paramBits & DABits::PI_ATTR_INTERPRET) ?
+        " PI_ATTR_INTERPRET" : "";
+      const char *piList = (paramBits & DABits::PI_ATTR_LIST) ?
+        " PI_ATTR_LIST" : "";
       DEB_JOIN_AGG(("  flags:%s%s%s%s%s%s%s%s",
                      agg, aggLeaf, linked, keyLnk, attrInt, attrLnk,
                      piInt, piList));
-      dumpWordsToLog("  tree node", m_buffer0, node_len);
-      dumpWordsToLog("  param node", m_buffer1, param_len);
+      dumpWordsToLog(instance(), "  tree node", m_buffer0, node_len);
+      dumpWordsToLog(instance(), "  param node", m_buffer1, param_len);
     }
 #endif
 
@@ -1789,15 +1815,16 @@ error:
 /**
  * Validate aggregate flag consistency before execution.
  * The NDB API sets NI_AGGREGATE on every node and NI_AGGREGATE_LEAF
- * on exactly one leaf node. Verify this to catch malformed queries
- * early rather than crashing later in DBTC/DBLQH.
+ * on one or more leaf nodes. For multi-leaf star schema queries,
+ * multiple leaves may have NI_AGGREGATE_LEAF. Verify this to catch
+ * malformed queries early rather than crashing later in DBTC/DBLQH.
  */
 Uint32
 Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
   if (requestPtr.p->m_bits & Request::RT_AGGREGATE) {
     jam();
     Uint32 aggregate_leaf_count = 0;
-    bool aggregate_leaf_is_leaf = false;
+    bool aggregate_leaf_all_are_leaves = true;
 
     Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
     Ptr<TreeNode> treeNodePtr;
@@ -1805,8 +1832,17 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
          list.next(treeNodePtr)) {
       if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
         jam();
+        treeNodePtr.p->m_agg_leaf_index = aggregate_leaf_count;
+        DEB_STAR_AGG(("(%u)DBSPJ STAR_AGG: node %u is agg leaf index %u,"
+                      " isLeaf=%d",
+                      instance(),
+                      treeNodePtr.p->m_node_no,
+                      aggregate_leaf_count,
+                      treeNodePtr.p->isLeaf()));
         aggregate_leaf_count++;
-        aggregate_leaf_is_leaf = treeNodePtr.p->isLeaf();
+        if (!treeNodePtr.p->isLeaf()) {
+          aggregate_leaf_all_are_leaves = false;
+        }
       }
     }
 
@@ -1817,14 +1853,14 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
           instance(), ctx.m_aggregate_node_count, ctx.m_cnt);
       return DbspjErr::InvalidAggregateFlags;
     }
-    if (unlikely(aggregate_leaf_count != 1)) {
+    if (unlikely(aggregate_leaf_count < 1)) {
       jam();
       g_eventLogger->debug(
-          "DBSPJ %u: Found %u T_AGGREGATE_LEAF nodes, expected exactly 1",
-          instance(), aggregate_leaf_count);
+          "DBSPJ %u: Found 0 T_AGGREGATE_LEAF nodes, expected >= 1",
+          instance());
       return DbspjErr::InvalidAggregateFlags;
     }
-    if (unlikely(!aggregate_leaf_is_leaf)) {
+    if (unlikely(!aggregate_leaf_all_are_leaves)) {
       jam();
       g_eventLogger->debug(
           "DBSPJ %u: T_AGGREGATE_LEAF is set on a non-leaf node",
@@ -1833,10 +1869,42 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
     }
 
     /**
-     * Mark all ancestors of the aggregate leaf with T_AGGREGATE_ANCESTOR.
-     * This enables intermediate outer join nodes to detect that they need
-     * to propagate null rows down to the aggregate leaf when they get no
-     * match (chained outer join support).
+     * Validate multi-leaf consistency: all aggregate leaf nodes must
+     * share the same parent (fan-out from a single node). Different
+     * parents would require separate aggregation states which is not
+     * supported.
+     */
+    if (aggregate_leaf_count > 1) {
+      jam();
+      Uint32 commonParent = RNIL;
+      for (list.first(treeNodePtr); !treeNodePtr.isNull();
+           list.next(treeNodePtr)) {
+        if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+          jam();
+          if (commonParent == RNIL) {
+            commonParent = treeNodePtr.p->m_parentPtrI;
+          } else if (treeNodePtr.p->m_parentPtrI != commonParent) {
+            jam();
+            g_eventLogger->debug(
+                "DBSPJ %u: Multi-leaf aggregate nodes have different "
+                "parents (node %u parent %u vs expected %u)",
+                instance(), treeNodePtr.p->m_node_no,
+                treeNodePtr.p->m_parentPtrI, commonParent);
+            return DbspjErr::InvalidAggregateFlags;
+          }
+        }
+      }
+      DEB_STAR_AGG(("(%u)DBSPJ STAR_AGG: %u aggregate leaves, "
+                    "commonParent=%u — validated",
+                    instance(), aggregate_leaf_count, commonParent));
+    }
+
+    /**
+     * Mark all ancestors of aggregate leaf nodes with T_AGGREGATE_ANCESTOR.
+     * For multi-leaf star schema queries, walk up from EACH aggregate leaf.
+     * The union of all ancestor paths gets marked, which is correct because
+     * any node that is an ancestor of ANY leaf must participate in the
+     * aggregation flow.
      */
     for (list.first(treeNodePtr); !treeNodePtr.isNull();
          list.next(treeNodePtr)) {
@@ -1850,7 +1918,6 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
           ancestorPtr.p->m_bits |= TreeNode::T_AGGREGATE_ANCESTOR;
           parentPtrI = ancestorPtr.p->m_parentPtrI;
         }
-        break;  // Only one aggregate leaf
       }
     }
 
@@ -1891,6 +1958,81 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
             TreeNode::T_BUFFER_ROW | TreeNode::T_BUFFER_MAP |
             TreeNode::T_BUFFER_MATCH;
         requestPtr.p->m_bits |= Request::RT_AGG_ANCESTOR_MATCH;
+      }
+    }
+
+    /**
+     * Also enable match tracking for outer-joined aggregate LEAF scans.
+     * In fan-out (star) topology, leaves are direct scan children of the
+     * root with no intermediate ancestors.  Without T_BUFFER_MATCH on the
+     * scan ancestor, handleAggLeafScanComplete() can't detect unmatched
+     * parent rows and inject NULL aggregate rows.
+     */
+    for (list.first(treeNodePtr); !treeNodePtr.isNull();
+         list.next(treeNodePtr)) {
+      if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+          !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
+          treeNodePtr.p->isScan()) {
+        jam();
+        Ptr<TreeNode> scanAncestorPtr;
+        Uint32 parentPtrI = treeNodePtr.p->m_parentPtrI;
+        bool found = false;
+        while (parentPtrI != RNIL) {
+          jam();
+          ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr, parentPtrI));
+          if (scanAncestorPtr.p->isScan()) {
+            found = true;
+            break;
+          }
+          parentPtrI = scanAncestorPtr.p->m_parentPtrI;
+        }
+        if (found) {
+          jam();
+          scanAncestorPtr.p->m_bits |=
+              TreeNode::T_BUFFER_ROW | TreeNode::T_BUFFER_MAP |
+              TreeNode::T_BUFFER_MATCH;
+          requestPtr.p->m_bits |= Request::RT_AGG_ANCESTOR_MATCH;
+
+          /**
+           * Cap the scan ancestor's batch_size_rows so that the total
+           * parent rows across all its fragments stays within
+           * MaxCorrelationId.  The outer-join aggregate leaf uses
+           * m_agg_range_cnt to track parent rows for the match bitmask,
+           * and this counter accumulates across ALL scan ancestor
+           * fragments in a single batch.
+           */
+          {
+            ScanFragReq *ancestorReq = reinterpret_cast<ScanFragReq *>(
+                scanAncestorPtr.p->m_scanFrag_data.m_scanFragReq);
+            const Uint32 fragCount =
+                scanAncestorPtr.p->m_scanFrag_data.m_fragCount;
+            if (fragCount > 1) {
+              jam();
+              const Uint32 maxPerFrag = MaxCorrelationId / fragCount;
+              if (ancestorReq->batch_size_rows > maxPerFrag) {
+                jam();
+                ancestorReq->batch_size_rows = maxPerFrag;
+              }
+            }
+          }
+
+          /**
+           * If the leaf's direct parent is a lookup (not the scan ancestor),
+           * enable row buffering on the parent so handleAggLeafScanComplete
+           * can iterate parent rows for per-row match tracking.
+           * The scan bitmask range_no is assigned per-parent-row, so we
+           * need the parent's buffered rows to correlate range_no to rows.
+           */
+          Ptr<TreeNode> leafParentPtr;
+          ndbrequire(m_treenode_pool.getPtr(leafParentPtr,
+                                            treeNodePtr.p->m_parentPtrI));
+          if (!leafParentPtr.p->isScan() &&
+              leafParentPtr.i != scanAncestorPtr.i) {
+            jam();
+            leafParentPtr.p->m_bits |=
+                TreeNode::T_BUFFER_ROW | TreeNode::T_BUFFER_MAP;
+          }
+        }
       }
     }
   } else {
@@ -2014,8 +2156,25 @@ Uint32 Dbspj::buildExecPlan(Ptr<Request> requestPtr) {
   setupAncestors(requestPtr, treeRootPtr, RNIL);
 
   if (requestPtr.p->isScan()) {
-    const Uint32 err =
-        planSequentialExec(requestPtr, treeRootPtr, NullTreeNodePtr);
+    // Multi-leaf aggregation (star join) requires parallel execution of
+    // sibling aggregate leaves — each leaf must fire independently for
+    // every parent row.  planSequentialExec chains INNER-join lookups
+    // sequentially (leaf B waits for leaf A), which prevents leaf B from
+    // ever executing when the execution plan treats them as dependent.
+    // Use planParallelExec for these queries instead.
+    bool multiLeafAgg = false;
+    if (requestPtr.p->m_bits & Request::RT_AGGREGATE) {
+      Uint32 leafCount = 0;
+      Ptr<TreeNode> tn;
+      for (list.first(tn); !tn.isNull(); list.next(tn)) {
+        if (tn.p->m_bits & TreeNode::T_AGGREGATE_LEAF)
+          leafCount++;
+      }
+      multiLeafAgg = (leafCount > 1);
+    }
+    const Uint32 err = multiLeafAgg
+        ? planParallelExec(requestPtr, treeRootPtr)
+        : planSequentialExec(requestPtr, treeRootPtr, NullTreeNodePtr);
     if (unlikely(err)) return err;
   } else {
     const Uint32 err = planParallelExec(requestPtr, treeRootPtr);
@@ -3486,6 +3645,14 @@ void Dbspj::cleanup_common(Ptr<Request> requestPtr, Ptr<TreeNode> treeNodePtr) {
     treeNodePtr.p->m_agg_match_bitmask = nullptr;
   }
 
+  if (treeNodePtr.p->isScan()) {
+    ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
+    if (data.m_agg_range_corrs != nullptr) {
+      lc_ndbd_pool_free(data.m_agg_range_corrs);
+      data.m_agg_range_corrs = nullptr;
+    }
+  }
+
   releasePages(treeNodePtr.p->m_rowBuffer);
 }
 
@@ -3718,6 +3885,9 @@ void Dbspj::execSCAN_FRAGCONF(Signal *signal) {
   ndbrequire(m_request_pool.getPtr(requestPtr, treeNodePtr.p->m_requestPtrI));
 
   ndbassert(checkRequest(requestPtr));
+
+  DEB_MATCH(("(%u)DBSPJ execSCAN_FRAGCONF: senderData: %u, blockRef: 0x%x",
+    instance(), conf->senderData, reference()));
 
   ndbassert(
       !requestPtr.p->m_completed_tree_nodes.get(treeNodePtr.p->m_node_no) ||
@@ -3969,9 +4139,19 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
   jamDebug();
   jamDataDebug(cnt);
   getCorrelationData(row.m_row_data, cnt - 1, row.m_src_correlation);
-  DEB_MATCH(("DBSPJ execTRANSID_AI: node=%u corr=0x%x isScan=%u",
-             treeNodePtr.p->m_node_no, row.m_src_correlation,
-             treeNodePtr.p->isScan()));
+  DEB_MATCH(("(%u)DBSPJ execTRANSID_AI: reqPtrI: %u, node=%u corr=0x%x"
+             ",isScan=%u, data: len: %u, [0x%x,0x%x,0x%x,0x%x,0x%x]",
+             instance(),
+             requestPtr.i,
+             treeNodePtr.p->m_node_no,
+             row.m_src_correlation,
+             treeNodePtr.p->isScan(),
+             linearPtr.sz,
+             m_buffer1[0],
+             m_buffer1[1],
+             m_buffer1[2],
+             m_buffer1[3],
+             m_buffer1[4]));
 
   do  // Dummy loop to allow 'break' into error handling
   {
@@ -3995,8 +4175,9 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
           break;
         }
 
-        DEB_MATCH(("DBSPJ execTRANSID_AI: set matched bit on "
+        DEB_MATCH(("(%u)DBSPJ execTRANSID_AI: set matched bit on "
                    "scanAncestor node=%u rowId=%u for node=%u",
+                   instance(),
                    scanAncestorPtr.p->m_node_no,
                    (scanAncestorRow.m_src_correlation >> 16),
                    treeNodePtr.p->m_node_no));
@@ -5139,7 +5320,19 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
       jam();
       LqhKeyReq::setOuterJoinAggFlag(req->attrLen, 1);
     }
-    req->variableData[var_index + 4] = requestPtr.p->m_aggStateKeys[nodeId];
+    Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
+    Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
+    Uint32 encodedKey =
+        JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+    req->variableData[var_index + 4] = encodedKey;
+    DEB_STAR_AGG(("(%u)DBPSJ STAR_AGG lookup_send: node=%u leafIdx=%u "
+                  "baseKey=%u encodedKey=0x%08x nodeId=%u",
+                  instance(),
+                  treeNodePtr.p->m_node_no,
+                  leafIdx,
+                  baseKey,
+                  encodedKey,
+                  nodeId));
     agg_extra = 1;
   }
 
@@ -5834,9 +6027,12 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
       writeToSection(tmp, org_size, &paramLen, 1);
 
 #ifdef DEBUG_JOIN_AGG_TRACE
-      DEB_JOIN_AGG(("T_ATTRINFO_CONSTRUCTED expand: org_size=%u "
+      DEB_JOIN_AGG(("((%u)DBSPJ T_ATTRINFO_CONSTRUCTED expand: org_size=%u "
                      "new_size=%u paramLen=%u (linked data = %u words)",
-                     org_size, new_size, paramLen,
+                     instance(),
+                     org_size,
+                     new_size,
+                     paramLen,
                      paramLen > 1 ? paramLen - 1 : 0));
       /* Dump the expanded attrInfo to see 5-word header + interp + linked */
       {
@@ -5847,12 +6043,16 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
           ndbrequire(rdr.getWord(&dump_buf[di]));
         }
         if (dump_len >= 5) {
-          DEB_JOIN_AGG(("  cinBuffer: initRead=%u interp=%u finalUpd=%u "
-                         "finalRead=%u subLen=%u",
-                         dump_buf[0], dump_buf[1], dump_buf[2],
-                         dump_buf[3], dump_buf[4]));
+          DEB_JOIN_AGG(("(%u)DBSPJ  cinBuffer: initRead=%u interp=%u"
+                         " finalUpd=%u finalRead=%u subLen=%u",
+                         instance(),
+                         dump_buf[0],
+                         dump_buf[1],
+                         dump_buf[2],
+                         dump_buf[3],
+                         dump_buf[4]));
         }
-        dumpWordsToLog("  expanded attrInfo", dump_buf, dump_len);
+        dumpWordsToLog(instance(), "  expanded attrInfo", dump_buf, dump_len);
       }
 #endif
 
@@ -5941,8 +6141,10 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
                                       Ptr<TreeNode> treeNodePtr,
                                       const RowPtr &rowRef) {
   jam();
-  DEB_MATCH(("DBSPJ propagateNullToAggLeaf: from node=%u corr=0x%x",
-             treeNodePtr.p->m_node_no, rowRef.m_src_correlation));
+  DEB_MATCH(("(%u)DBSPJ propagateNullToAggLeaf: from node=%u corr=0x%x",
+             instance(),
+             treeNodePtr.p->m_node_no,
+             rowRef.m_src_correlation));
 
   /**
    * Walk from this node down toward the aggregate leaf via m_child_nodes.
@@ -6002,10 +6204,12 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
           jamDataDebug(sfData.m_fragCount);
           if (sfData.m_frags_complete < sfData.m_fragCount) {
             jam();
-            DEB_MATCH(("DBSPJ propagateNullToAggLeaf: scan leaf node=%u "
+            DEB_MATCH(("(%u)DBSPJ propagateNullToAggLeaf: scan leaf node=%u "
                        "not yet complete (frags %u/%u), deferring",
+                       instance(),
                        childPtr.p->m_node_no,
-                       sfData.m_frags_complete, sfData.m_fragCount));
+                       sfData.m_frags_complete,
+                       sfData.m_fragCount));
             return 0;  // Defer — leaf scan completion will handle this
           }
         }
@@ -6023,8 +6227,9 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
           ndbrequire(m_treenode_pool.getPtr(walkPtr,
                                              walkPtr.p->m_parentPtrI));
         }
-        DEB_MATCH(("DBSPJ propagateNullToAggLeaf: reached leaf node=%u "
+        DEB_MATCH(("(%u)DBSPJ propagateNullToAggLeaf: reached leaf node=%u "
                    "levelAdjust=%u nullNodes=0x%llx",
+                   instance(),
                    childPtr.p->m_node_no, levelAdjust,
                    (unsigned long long)nullNodes));
         return sendJoinAggNullRow(signal, requestPtr, childPtr,
@@ -6035,8 +6240,9 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
         jam();
         if (childPtr.p->m_bits & TreeNode::T_INNER_JOIN) {
           jam();
-          DEB_MATCH(("DBSPJ propagateNullToAggLeaf: blocked by INNER JOIN "
-                     "at node=%u", childPtr.p->m_node_no));
+          DEB_MATCH(("(%u)DBSPJ propagateNullToAggLeaf: blocked by INNER JOIN "
+                     "at node=%u",
+                     instance(), childPtr.p->m_node_no));
           return 0;
         }
         current = childPtr;
@@ -6070,30 +6276,44 @@ Uint32 Dbspj::mergeAggMatchBitmask(Ptr<TreeNode> treeNodePtr,
   copy(buf, secPtr);
 
   if (treeNodePtr.p->m_agg_match_bitmask == nullptr) {
-    /* Allocate combined bitmask on first section arrival */
-    Uint32 bitmask_words = (data.m_agg_range_cnt + 31) / 32;
+    /* Allocate once with max capacity, reused across batches.
+     * No memset needed — first fragment per batch does memcpy. */
+    Uint32 max_words = (MaxCorrelationId + 31) / 32;
     treeNodePtr.p->m_agg_match_bitmask =
-        (Uint32 *)lc_ndbd_pool_malloc(bitmask_words * sizeof(Uint32),
+        (Uint32 *)lc_ndbd_pool_malloc(max_words * sizeof(Uint32),
                                       RG_QUERY_MEMORY,
-                                      getThreadId(), true);
+                                      getThreadId(), false);
     if (unlikely(treeNodePtr.p->m_agg_match_bitmask == nullptr)) {
       jam();
       return DbspjErr::OutOfQueryMemory;
     }
+  }
+  if (treeNodePtr.p->m_agg_num_ranges == 0) {
+    /* First fragment for this batch: copy bitmask */
+    Uint32 bitmask_words = (data.m_agg_range_cnt + 31) / 32;
+    Uint32 copy_words = (words < bitmask_words) ? words : bitmask_words;
     memcpy(treeNodePtr.p->m_agg_match_bitmask, buf,
-           bitmask_words * sizeof(Uint32));
+           copy_words * sizeof(Uint32));
     treeNodePtr.p->m_agg_num_ranges = data.m_agg_range_cnt;
   } else {
+    /* Subsequent fragments: OR merge */
     Uint32 bitmask_words = (treeNodePtr.p->m_agg_num_ranges + 31) / 32;
     Uint32 or_words = (words < bitmask_words) ? words : bitmask_words;
     for (Uint32 i = 0; i < or_words; i++) {
       treeNodePtr.p->m_agg_match_bitmask[i] |= buf[i];
     }
   }
-  DEB_MATCH(("DBSPJ mergeAggMatchBitmask: words=%u num_ranges=%u "
-             "frags_complete=%u/%u",
-             words, treeNodePtr.p->m_agg_num_ranges,
-             data.m_frags_complete, data.m_fragCount));
+  DEB_MATCH(("(%u)DBSPJ mergeAggMatchBitmask: reqPtrI: %u, words=%u"
+             ",num_ranges=%u frags_complete=%u/%u,"
+             " recmask: 0x%x, agg_bitmask[0x%x]",
+             instance(),
+             treeNodePtr.p->m_requestPtrI,
+             words,
+             treeNodePtr.p->m_agg_num_ranges,
+             data.m_frags_complete,
+             data.m_fragCount,
+             buf[0],
+             treeNodePtr.p->m_agg_match_bitmask[0]));
   return 0;
 }
 
@@ -6118,48 +6338,162 @@ Uint32 Dbspj::handleAggLeafScanComplete(Signal *signal,
                                     treeNodePtr.p->m_scanAncestorPtrI));
   Uint32 bitmask_words =
       (treeNodePtr.p->m_agg_num_ranges + 31) / 32;
-  DEB_MATCH(("DBSPJ: match complete: num_ranges=%u bitmask_words=%u",
-             treeNodePtr.p->m_agg_num_ranges, bitmask_words));
 
-  Uint32 range_no = 0;
+  /**
+   * Determine which node's buffered rows to iterate.
+   * If the leaf's parent is an intermediate lookup (not the scan ancestor),
+   * the match bitmask range_no corresponds to parent lookup rows, not
+   * scan ancestor rows.  Iterate the parent's buffered rows instead.
+   */
+  Ptr<TreeNode> iterateNodePtr;
+  if (treeNodePtr.p->m_parentPtrI == scanAncestorPtr.i) {
+    iterateNodePtr = scanAncestorPtr;
+  } else {
+    ndbrequire(m_treenode_pool.getPtr(iterateNodePtr,
+                                      treeNodePtr.p->m_parentPtrI));
+  }
+  DEB_MATCH(("(%u)DBSPJ: match complete: num_ranges=%u bitmask_words=%u "
+             "iterateNode=%u (scanAnc=%u parent=%u)",
+             instance(), treeNodePtr.p->m_agg_num_ranges, bitmask_words,
+             iterateNodePtr.p->m_node_no, scanAncestorPtr.p->m_node_no,
+             iterateNodePtr.p->m_node_no));
+
+  ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
+  const Uint32 num_ranges = treeNodePtr.p->m_agg_num_ranges;
+
+  // Fast path: if all ranges matched, no NULL injection needed.
   Uint32 null_rows_sent = 0;
-  RowIterator iter;
-  for (first(scanAncestorPtr.p->m_rows, iter);
-       !iter.isNull(); next(iter)) {
-    RowPtr parentRow;
-    parentRow.m_src_node_ptrI = scanAncestorPtr.i;
-    setupRowPtr(scanAncestorPtr, parentRow, iter.m_base.m_row_ptr);
-    getCorrelationData(parentRow.m_row_data,
-                       parentRow.m_row_data.m_header->m_len - 1,
-                       parentRow.m_src_correlation);
-
-    Uint32 word = range_no / 32;
-    Uint32 bit = 1u << (range_no % 32);
-    bool matched = (treeNodePtr.p->m_agg_match_bitmask != nullptr &&
-                    word < bitmask_words &&
-                    (treeNodePtr.p->m_agg_match_bitmask[word] & bit));
-    DEB_MATCH(("DBSPJ: range_no=%u matched=%u corr=0x%x",
-               range_no, (Uint32)matched,
-               parentRow.m_src_correlation));
-    if (!matched) {
-      jam();
-      null_rows_sent++;
-      Uint32 err = sendJoinAggNullRow(signal, requestPtr,
-                                      treeNodePtr, parentRow);
-      if (unlikely(err != 0)) {
-        return err;
+  if (treeNodePtr.p->m_agg_match_bitmask != nullptr && num_ranges > 0) {
+    bool all_matched = true;
+    Uint32 full_words = num_ranges / 32;
+    Uint32 tail_bits = num_ranges % 32;
+    for (Uint32 i = 0; i < full_words; i++) {
+      if (treeNodePtr.p->m_agg_match_bitmask[i] != 0xFFFFFFFF) {
+        all_matched = false;
+        break;
       }
     }
-    range_no++;
+    if (all_matched && tail_bits > 0) {
+      Uint32 tail_mask = (1u << tail_bits) - 1;
+      if ((treeNodePtr.p->m_agg_match_bitmask[full_words] & tail_mask)
+          != tail_mask) {
+        all_matched = false;
+      }
+    }
+    if (all_matched) {
+      jam();
+      DEB_MATCH(("(%u)DBSPJ: all %u ranges matched, skip NULL injection",
+                 instance(), num_ranges));
+      goto skip_null_row_injection;
+    }
   }
-  DEB_MATCH(("DBSPJ: total parent rows=%u null_rows_sent=%u",
-             range_no, null_rows_sent));
 
-  // Free bitmask
-  if (treeNodePtr.p->m_agg_match_bitmask != nullptr) {
-    lc_ndbd_pool_free(treeNodePtr.p->m_agg_match_bitmask);
-    treeNodePtr.p->m_agg_match_bitmask = nullptr;
+
+  if (data.m_agg_range_corrs != nullptr &&
+      iterateNodePtr.p->m_rows.m_type == RowCollection::COLLECTION_MAP) {
+    /**
+     * Parent rows stored in COLLECTION_MAP iterate in hash order, not
+     * insertion order.  Use m_agg_range_corrs[] (recorded in range_no
+     * order during scanFrag_parent_row) to look up parent rows by
+     * correlation matching.
+     */
+    {
+      // Build a corr→row_ptr lookup by iterating the map once.
+      // Scoped block to limit the stack-allocated array lifetime.
+      struct CorrRow { Uint32 corr; const Uint32 *row_ptr; };
+      CorrRow corr_rows[MaxCorrelationId];
+      Uint32 n_corr_rows = 0;
+      RowIterator map_iter;
+      for (first(iterateNodePtr.p->m_rows, map_iter);
+           !map_iter.isNull(); next(map_iter)) {
+        ndbrequire(n_corr_rows < MaxCorrelationId);
+        RowPtr tmp;
+        tmp.m_src_node_ptrI = iterateNodePtr.i;
+        setupRowPtr(iterateNodePtr, tmp, map_iter.m_base.m_row_ptr);
+        getCorrelationData(tmp.m_row_data,
+                           tmp.m_row_data.m_header->m_len - 1,
+                           tmp.m_src_correlation);
+        corr_rows[n_corr_rows].corr = tmp.m_src_correlation;
+        corr_rows[n_corr_rows].row_ptr = map_iter.m_base.m_row_ptr;
+        n_corr_rows++;
+      }
+
+      for (Uint32 range_no = 0; range_no < num_ranges; range_no++) {
+        Uint32 target_corr = data.m_agg_range_corrs[range_no];
+        Uint32 word = range_no / 32;
+        Uint32 bit = 1u << (range_no % 32);
+        bool matched = (treeNodePtr.p->m_agg_match_bitmask != nullptr &&
+                        word < bitmask_words &&
+                        (treeNodePtr.p->m_agg_match_bitmask[word] & bit));
+        DEB_MATCH(("(%u)DBSPJ: range_no=%u matched=%u corr=0x%x"
+                   " (via corrs[])",
+                   instance(), range_no, (Uint32)matched, target_corr));
+        if (!matched) {
+          jam();
+          for (Uint32 ci = 0; ci < n_corr_rows; ci++) {
+            if (corr_rows[ci].corr == target_corr) {
+              RowPtr parentRow;
+              parentRow.m_src_node_ptrI = iterateNodePtr.i;
+              setupRowPtr(iterateNodePtr, parentRow,
+                          corr_rows[ci].row_ptr);
+              parentRow.m_src_correlation = target_corr;
+              null_rows_sent++;
+              Uint32 err = sendJoinAggNullRow(signal, requestPtr,
+                                              treeNodePtr, parentRow);
+              if (unlikely(err != 0)) {
+                return err;
+              }
+              break;
+            }
+          }
+        }
+      }
+    } // end scoped block for CorrRow stack array
+  } else {
+    /**
+     * Parent rows in COLLECTION_LIST — iterate in insertion order.
+     * range_no matches iteration position directly.
+     */
+    Uint32 range_no = 0;
+    RowIterator iter;
+    for (first(iterateNodePtr.p->m_rows, iter);
+         !iter.isNull(); next(iter)) {
+      RowPtr parentRow;
+      parentRow.m_src_node_ptrI = iterateNodePtr.i;
+      setupRowPtr(iterateNodePtr, parentRow, iter.m_base.m_row_ptr);
+      getCorrelationData(parentRow.m_row_data,
+                         parentRow.m_row_data.m_header->m_len - 1,
+                         parentRow.m_src_correlation);
+
+      Uint32 word = range_no / 32;
+      Uint32 bit = 1u << (range_no % 32);
+      bool matched = (treeNodePtr.p->m_agg_match_bitmask != nullptr &&
+                      word < bitmask_words &&
+                      (treeNodePtr.p->m_agg_match_bitmask[word] & bit));
+      DEB_MATCH(("(%u)DBSPJ: range_no=%u matched=%u corr=0x%x",
+                 instance(), range_no, (Uint32)matched,
+                 parentRow.m_src_correlation));
+      if (!matched) {
+        jam();
+        null_rows_sent++;
+        Uint32 err = sendJoinAggNullRow(signal, requestPtr,
+                                        treeNodePtr, parentRow);
+        if (unlikely(err != 0)) {
+          return err;
+        }
+      }
+      range_no++;
+    }
   }
+  DEB_MATCH(("(%u)DBSPJ: total ranges=%u null_rows_sent=%u",
+             instance(), num_ranges, null_rows_sent));
+
+skip_null_row_injection:
+  // Reset for next batch. Both bitmask and range_corrs are kept allocated
+  // for reuse across batch cycles — freed when TreeNode is released.
+  // Setting m_agg_num_ranges = 0 signals mergeAggMatchBitmask to memcpy
+  // (not OR) on the first fragment of the next batch.
+  treeNodePtr.p->m_agg_num_ranges = 0;
 
   /**
    * Handle deferred null rows from intermediate outer join ancestors.
@@ -6268,8 +6602,8 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
     return 0;
   }
 
-  DEB_MATCH(("DBSPJ handleAggAncestorComplete: node=%u",
-             treeNodePtr.p->m_node_no));
+  DEB_MATCH(("(%u)DBSPJ handleAggAncestorComplete: node=%u",
+             instance(), treeNodePtr.p->m_node_no));
 
   Ptr<TreeNode> scanAncestorPtr;
   ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
@@ -6290,11 +6624,13 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
     const ScanFragData &sfData = scanAncestorPtr.p->m_scanFrag_data;
     if (sfData.m_frags_complete < sfData.m_fragCount) {
       jam();
-      DEB_MATCH(("DBSPJ handleAggAncestorComplete: node=%u deferred, "
+      DEB_MATCH(("(%u)DBSPJ handleAggAncestorComplete: node=%u deferred, "
                  "scan ancestor node=%u frags %u/%u",
+                 instance(),
                  treeNodePtr.p->m_node_no,
                  scanAncestorPtr.p->m_node_no,
-                 sfData.m_frags_complete, sfData.m_fragCount));
+                 sfData.m_frags_complete,
+                 sfData.m_fragCount));
       return 0;
     }
   }
@@ -6337,8 +6673,9 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
                        parentRow.m_row_data.m_header->m_len - 1,
                        parentRow.m_src_correlation);
 
-    DEB_MATCH(("DBSPJ handleAggAncestorComplete: node=%u "
+    DEB_MATCH(("(%u)DBSPJ handleAggAncestorComplete: node=%u "
                "checking parent corr=0x%x matched=%u",
+               instance(),
                treeNodePtr.p->m_node_no,
                parentRow.m_src_correlation,
                (parentRow.m_matched != nullptr &&
@@ -6357,16 +6694,18 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
           (parentRow.m_matched == nullptr ||
            !parentRow.m_matched->get(parentNodeNo))) {
         jam();
-        DEB_MATCH(("DBSPJ handleAggAncestorComplete: "
+        DEB_MATCH(("(%u)DBSPJ handleAggAncestorComplete: "
                    "skip corr=0x%x, parent node=%u not matched",
-                   parentRow.m_src_correlation, parentNodeNo));
+                   instance(),
+                   parentRow.m_src_correlation,
+                   parentNodeNo));
         continue;  // Parent didn't match - skip, parent handles it
       }
 
       null_rows_sent++;
-      DEB_MATCH(("DBSPJ handleAggAncestorComplete: "
+      DEB_MATCH(("(%u)DBSPJ handleAggAncestorComplete: "
                  "unmatched parent corr=0x%x -> propagate null",
-                 parentRow.m_src_correlation));
+                 instance(), parentRow.m_src_correlation));
 
       Uint32 err = propagateNullToAggLeaf(signal, requestPtr,
                                            treeNodePtr, parentRow);
@@ -6376,8 +6715,9 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
       }
     }
   }
-  DEB_MATCH(("DBSPJ handleAggAncestorComplete: "
-             "null_rows_sent=%u", null_rows_sent));
+  DEB_MATCH(("(%u)DBSPJ handleAggAncestorComplete: "
+             "null_rows_sent=%u",
+             instance(), null_rows_sent));
   return 0;
 }
 
@@ -6389,9 +6729,11 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
   jam();
   Uint32 nodeId = getOwnNodeId();
   ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
-  DEB_MATCH(("DBSPJ sendJoinAggNullRow: treeNode=%u nodeId=%u "
+  DEB_MATCH(("(%u)DBSPJ sendJoinAggNullRow: treeNode=%u nodeId=%u "
              "corr=0x%x",
-             treeNodePtr.p->m_node_no, nodeId,
+             instance(),
+             treeNodePtr.p->m_node_no,
+             nodeId,
              rowRef.m_src_correlation));
 
   /* Expand attrParamPattern to get linked attribute data */
@@ -7708,6 +8050,14 @@ void Dbspj::scanFrag_parent_row(Signal *signal, Ptr<Request> requestPtr,
   ndbassert(treeNodePtr.p->m_parentPtrI != RNIL);
   DEBUG("::scanFrag_parent_row"
         << ", node: " << treeNodePtr.p->m_node_no);
+  DEB_SCAN_PR(("(%u)DBSPJ scanFrag_parent_row ENTER reqPtrI: %u, node=%u"
+               " corr=0x%x state=%u agg_leaf=%u",
+               instance(),
+               requestPtr.i,
+               treeNodePtr.p->m_node_no,
+               rowRef.m_src_correlation,
+               treeNodePtr.p->m_state,
+               !!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)));
 
   Uint32 err;
   ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
@@ -7750,6 +8100,13 @@ void Dbspj::scanFrag_parent_row(Signal *signal, Ptr<Request> requestPtr,
       if (unlikely(hasNull)) {
         jam();
         DEBUG("T_PRUNE_PATTERN-key contain NULL values");
+        DEB_SCAN_PR(("(%u)DBSPJ scanFrag_parent_row reqPtrI: %u, node=%u "
+                     "PRUNE NULL key SKIP corr=0x%x agg_leaf=%u",
+                     instance(),
+                     requestPtr.i,
+                     treeNodePtr.p->m_node_no,
+                     rowRef.m_src_correlation,
+                     !!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)));
 
         // Ignore this request as 'NULL == <column>' will never give a match
         releaseSection(pruneKeyPtrI);
@@ -7831,9 +8188,12 @@ void Dbspj::scanFrag_parent_row(Signal *signal, Ptr<Request> requestPtr,
       if (hasNull) {
         jam();
         DEBUG("Key contain NULL values, ignoring it");
-        DEB_MATCH(("DBSPJ scanFrag_parent_row: hasNull key for "
-                   "treeNode=%u corr=0x%x AGG_LEAF=%u INNER=%u",
-                   treeNodePtr.p->m_node_no, rowRef.m_src_correlation,
+        DEB_MATCH(("(%u)DBSPJ scanFrag_parent_row: hasNull key for "
+                   "reqPtrI: %u, treeNode=%u corr=0x%x AGG_LEAF=%u INNER=%u",
+                   instance(),
+                   requestPtr.i,
+                   treeNodePtr.p->m_node_no,
+                   rowRef.m_src_correlation,
                    !!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF),
                    !!(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)));
         ndbassert((treeNodePtr.p->m_bits & TreeNode::T_ONE_SHOT) == 0);
@@ -7864,12 +8224,34 @@ void Dbspj::scanFrag_parent_row(Signal *signal, Ptr<Request> requestPtr,
           !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
         jam();
         ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
-        fixupCorr = data.m_agg_range_cnt++;
+        Uint32 range_idx = data.m_agg_range_cnt++;
+        fixupCorr = range_idx;
+
+        // Record parent correlation in range_no order for NULL injection.
+        // handleAggLeafScanComplete needs to iterate parent rows in the
+        // same order as range_no assignment, but the parent's row buffer
+        // (COLLECTION_MAP) iterates in hash order, not insertion order.
+        if (data.m_agg_range_corrs == nullptr) {
+          data.m_agg_range_corrs = (Uint32 *)lc_ndbd_pool_malloc(
+              MaxCorrelationId * sizeof(Uint32),
+              RG_QUERY_MEMORY, getThreadId(), false);
+          if (unlikely(data.m_agg_range_corrs == nullptr)) {
+            jam();
+            err = DbspjErr::OutOfQueryMemory;
+            break;
+          }
+        }
+        ndbrequire(range_idx < MaxCorrelationId);
+        data.m_agg_range_corrs[range_idx] = rowRef.m_src_correlation;
       }
-      DEB_MATCH(("DBSPJ scanFrag_parent_row: node=%u corrVal=0x%x "
-                 "fixupCorr=0x%x rangeCnt=%u",
-                 treeNodePtr.p->m_node_no, rowRef.m_src_correlation,
-                 fixupCorr, fragPtr.p->m_rangeCnt));
+      DEB_MATCH(("(%u)DBSPJ scanFrag_parent_row: reqPtrI: %u, node=%u"
+                 " corrVal=0x%x fixupCorr=0x%x rangeCnt=%u",
+                 instance(),
+                 requestPtr.i,
+                 treeNodePtr.p->m_node_no,
+                 rowRef.m_src_correlation,
+                 fixupCorr,
+                 fragPtr.p->m_rangeCnt));
       scanFrag_fixupBound(keyPtrI, fixupCorr);
 
       SectionReader key(keyPtrI, getSectionSegmentPool());
@@ -7957,20 +8339,39 @@ void Dbspj::scanFrag_fixupBound(Uint32 ptrI, Uint32 corrVal) {
   ndbassert((corrVal & 0xFFFF) < MaxCorrelationId);
   tmp |= (boundsz << 16) | ((corrVal & 0xFFF) << 4);
   ndbrequire(r0.updateWord(tmp));
+  // Renumber attribute ids in bound entries.
+  // Each entry is: BoundType(1) + AttributeHeader(1) + Data(len32).
+  // For EQ bounds (BoundEQ=4), one entry per column → id advances.
+  // For range bounds, lower (BoundLE=0/BoundLT=1) advances id,
+  // upper (BoundGE=2/BoundGT=3) reuses the same id as the preceding lower.
+  Uint32 boundType;
+  ndbrequire(r0.peekWord(&boundType));
   ndbrequire(r0.step(1));  // Skip first BoundType
 
-  // Note: Renumbering below assume there are only EQ-bounds !!
   Uint32 id = 0;
   Uint32 len32;
   do {
+    // Assign id: upper bounds (GE=2,GT=3) reuse previous id
+    Uint32 thisId = id;
+    // BoundLE=0, BoundLT=1 (lower), BoundGE=2, BoundGT=3 (upper), BoundEQ=4
+    bool isUpperBound = (boundType == 2 || boundType == 3);
+    if (isUpperBound && id > 0) {
+      thisId = id - 1;  // Reuse previous column's id
+    } else {
+      thisId = id++;    // Advance to next column
+    }
+
     ndbrequire(r0.peekWord(&tmp));
     AttributeHeader ah(tmp);
     const Uint32 len = ah.getByteSize();
-    AttributeHeader::init(&tmp, id++, len);
+    AttributeHeader::init(&tmp, thisId, len);
     ndbrequire(r0.updateWord(tmp));
     len32 = (len + 3) >> 2;
-  } while (r0.step(2 + len32));  // Skip AttributeHeader(1) + Attribute(len32) +
-                                 // next BoundType(1)
+    // Step past data to next BoundType, and read it
+    if (!r0.step(1 + len32)) break;  // Past AttributeHeader + data
+    ndbrequire(r0.peekWord(&boundType));
+    // Step past the BoundType word
+  } while (r0.step(1));
 }
 
 void Dbspj::scanFrag_parent_batch_complete(Signal *signal,
@@ -7996,9 +8397,11 @@ void Dbspj::scanFrag_parent_batch_complete(Signal *signal,
     jam();
     jamDataDebug(data.m_null_row_outstanding);
     treeNodePtr.p->m_bits |= TreeNode::T_NULL_ROW_DEFERRED_RESTART;
-    DEB_MATCH(("DBSPJ scanFrag_parent_batch_complete: node=%u "
+    DEB_MATCH(("(%u)DBSPJ scanFrag_parent_batch_complete: node=%u "
                "deferred restart, %u null rows outstanding",
-               treeNodePtr.p->m_node_no, data.m_null_row_outstanding));
+               instance(),
+               treeNodePtr.p->m_node_no,
+               data.m_null_row_outstanding));
     return;
   }
 
@@ -8404,9 +8807,12 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
       jam();
       ScanFragReq::setOuterJoinAggFlag(req->requestInfo, 1);
       agg_extra = 2;  // aggStateKey + rangeCount
-      DEB_MATCH(("DBSPJ scanFrag_send: OuterJoinAggFlag=1 "
-                 "treeNode=%u rangeCount=%u",
-                 treeNodePtr.i, data.m_agg_range_cnt));
+      DEB_MATCH(("(%u)DBSPJ scanFrag_send: OuterJoinAggFlag=1 "
+                 "reqPtrI: %u, treeNode=%u rangeCount=%u",
+                 instance(),
+                 requestPtr.i,
+                 treeNodePtr.p->m_node_no,
+                 data.m_agg_range_cnt));
     }
   }
   // req->variableData[0] // set below
@@ -8614,6 +9020,16 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
           sectionptrs[4] = paramLen;
         }  // ATTRINFO_CONSTRUCTED
 
+        DEB_SCAN_PR(("(%u)DBPSJ scanFrag_send FRAGREQ reqPtrI: %u, node=%u"
+                     " frag=%u rangeCnt=%u ref=0x%x nodeId=%u agg_leaf=%u",
+                     instance(),
+                     requestPtr.i,
+                     treeNodePtr.p->m_node_no,
+                     fragPtr.p->m_fragId,
+                     fragWithRangePtr.p->m_rangeCnt,
+                     fragPtr.p->m_ref, refToNode(fragPtr.p->m_ref),
+                     !!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)));
+
         if (releaseAtSend) {
           jam();
           /** Reflect the release of the keyInfo 'range' set above */
@@ -8656,8 +9072,20 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
       if (agg_extra) {
         jam();
         ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
-        req->variableData[var_index + 2] =
-            requestPtr.p->m_aggStateKeys[nodeId];
+        Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
+        Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
+        Uint32 scanEncodedKey =
+            JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+        req->variableData[var_index + 2] = scanEncodedKey;
+        DEB_STAR_AGG(("(%u)DBSPJ STAR_AGG scanFrag_send: reqPtrI: %u, node=%u"
+                      " leafIdx=%u baseKey=%u encodedKey=0x%08x nodeId=%u",
+                      instance(),
+                      requestPtr.i,
+                      treeNodePtr.p->m_node_no,
+                      leafIdx,
+                      baseKey,
+                      scanEncodedKey,
+                      nodeId));
         if (agg_extra > 1) {
           jam();
           req->variableData[var_index + 3] = data.m_agg_range_cnt;
@@ -9087,6 +9515,19 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
   Uint32 state = fragPtr.p->m_state;
   ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
 
+  DEB_SCAN_PR(("(%u)DBSPJ scanFrag_CONF reqPtrI: %u, node=%u frag=%u rows=%u,"
+               "done=%u frags_complete=%u/%u state=%u agg_leaf=%u totalRows=%u",
+               instance(),
+               requestPtr.i,
+               treeNodePtr.p->m_node_no,
+               fragPtr.p->m_fragId,
+               rows,
+               done,
+               data.m_frags_complete, data.m_fragCount,
+               state,
+               !!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF),
+               data.m_totalRows));
+
   if (state == ScanFragHandle::SFH_WAIT_CLOSE && done == 0) {
     jam();
     /**
@@ -9191,6 +9632,7 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
          data.m_fragCount ==
              (data.m_frags_complete + data.m_frags_not_started))) {
       jam();
+
       ndbrequire(requestPtr.p->m_cnt_active);
       requestPtr.p->m_cnt_active--;
       treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
@@ -9829,11 +10271,16 @@ void Dbspj::scanFrag_parent_batch_cleanup(Ptr<Request> requestPtr,
                                           Ptr<TreeNode> treeNodePtr,
                                           bool done) {
   DEBUG("scanFrag_parent_batch_cleanup");
+  ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
   scanFrag_release_rangekeys(requestPtr, treeNodePtr);
+
+  // The outer-join agg match bitmask is consumed when the leaf scan
+  // completes each sub-batch.  Reset unconditionally so it starts
+  // fresh for the next round of parent rows.
+  data.m_agg_range_cnt = 0;
 
   if (done) {
     // Reset client batch state counters
-    ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
     data.m_corrIdStart = 0;
     data.m_totalRows = 0;
     data.m_totalBytes = 0;
@@ -10797,14 +11244,14 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
 
     if (treeBits & DABits::NI_AGGREGATE) {
       jam();
-      DEB_AGGREGATION(("(%u) AGGREGATE: request contains aggregation",
+      DEB_AGGREGATION(("(%u)DBSPJ AGGREGATE: request contains aggregation",
                        instance()));
       requestPtr.p->m_bits |= Request::RT_AGGREGATE;
       ctx.m_aggregate_node_count++;
 
       if (treeBits & DABits::NI_AGGREGATE_LEAF) {
         jam();
-        DEB_AGGREGATION(("(%u) AGGREGATE_LEAF: this node sends aggregated "
+        DEB_AGGREGATION(("(%u)DBSPJ AGGREGATE_LEAF: this node sends aggregated "
                          "results to API",
                          instance()));
         treeNodePtr.p->m_bits |= TreeNode::T_AGGREGATE_LEAF;
@@ -10962,7 +11409,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       Uint32 *sectionptrs = nullptr;
 
       const bool interpreted =
-          (treeBits & DABits::NI_ATTR_INTERPRET) ||
+          (treeBits & (DABits::NI_ATTR_INTERPRET |
+                       DABits::NI_ATTR_LINKED)) ||
           (paramBits & DABits::PI_ATTR_INTERPRET) ||
           (treeNodePtr.p->m_bits & TreeNode::T_ATTR_INTERPRETED);
 
@@ -11032,9 +11480,13 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
             DEBUG("NI_ATTR_LINKED"
                   << ", len_pattern:" << len_pattern);
 #ifdef DEBUG_JOIN_AGG_TRACE
-            DEB_JOIN_AGG(("parseDA NI_ATTR_LINKED: len_prg=%u len_pattern=%u",
-                           len_prg, len_pattern));
-            dumpWordsToLog("  linked pattern", tree.ptr, len_pattern);
+            DEB_JOIN_AGG(("(%u)DBSPJ parseDA NI_ATTR_LINKED: len_prg=%u"
+                          " len_pattern=%u",
+                         instance(), len_prg, len_pattern));
+            dumpWordsToLog(instance(),
+                           "  linked pattern",
+                           tree.ptr,
+                           len_pattern);
 #endif
             /**
              * Expand pattern into a new pattern (with linked values)
@@ -11089,10 +11541,13 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           const Uint32 program_len = len2 & 0xFFFF;
           const Uint32 subroutine_len = len2 >> 16;
 #ifdef DEBUG_JOIN_AGG_TRACE
-          DEB_JOIN_AGG(("parseDA PI_ATTR_INTERPRET: program_len=%u "
+          DEB_JOIN_AGG(("(%u)DBSPJ parseDA PI_ATTR_INTERPRET: program_len=%u "
                          "subroutine_len=%u",
-                         program_len, subroutine_len));
-          dumpWordsToLog("  interp program", param.ptr, program_len);
+                         instance(), program_len, subroutine_len));
+          dumpWordsToLog(instance(),
+                         "  interp program",
+                         param.ptr,
+                         program_len);
 #endif
           err = DbspjErr::OutOfSectionMemory;
           if (unlikely(
@@ -11184,7 +11639,7 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           }
           sum_read += len;
         } else {
-          DEB_AGGREGATION(("(%u) Suppressing user projection for "
+          DEB_AGGREGATION(("(%u)DBPSJ Suppressing user projection for "
                            "intermediate aggregate node",
                            instance()));
         }

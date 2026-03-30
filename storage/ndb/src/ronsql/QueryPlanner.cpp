@@ -23,9 +23,30 @@
 */
 
 #include "QueryPlanner.hpp"
+#include "RdrsSchemaCache.hpp"
 #include <cstring>
 #include <iostream>
 #include <sstream>
+
+/**
+ * Helper: get the index list for a table, using the schema cache if available.
+ * Returns the cached index vector, or populates fallback_list via dict->listIndexes()
+ * and returns nullptr (caller must use fallback_list).
+ */
+static const std::vector<RdrsSchemaCache::CachedIndex>*
+getIndexList(const NdbDictionary::Dictionary *dict,
+             const NdbDictionary::Table *table,
+             RdrsSchemaCache *cache,
+             const char *database,
+             NdbDictionary::Dictionary::List &fallback_list) {
+  if (cache != nullptr && database != nullptr) {
+    return cache->getIndexes(dict, table, database, table->getName());
+  }
+  if (dict->listIndexes(fallback_list, *table) != 0) {
+    return nullptr;  // error
+  }
+  return nullptr;  // signal: use fallback_list
+}
 
 void
 QueryPlanner::plan(
@@ -33,9 +54,12 @@ QueryPlanner::plan(
     const JoinClause *joins,
     const NdbDictionary::Dictionary *dict,
     std::basic_ostream<char> &err,
-    JoinPlan &out)
+    JoinPlan &out,
+    RdrsSchemaCache *cache,
+    const char *database)
 {
   out.num_ops = 0;
+  out.num_agg_leaves = 0;
   out.num_linked_projs = 0;
 
   /*
@@ -59,6 +83,8 @@ QueryPlanner::plan(
   rootOp.is_root = true;
   rootOp.match_type = JoinOp::INNER;
   rootOp.num_key_cols = 0;
+  rootOp.num_low_bounds = 0;
+  rootOp.num_high_bounds = 0;
   out.num_ops = 1;
 
   /*
@@ -66,9 +92,9 @@ QueryPlanner::plan(
    */
   for (const JoinClause *jc = joins; jc != NULL; jc = jc->next)
   {
-    if (out.num_ops >= MAX_JOIN_TABLES)
+    if (out.num_ops >= MAX_SPJ_TREE_NODES)
     {
-      err << "Too many joined tables (max " << MAX_JOIN_TABLES << ")."
+      err << "Too many joined tables (max " << MAX_SPJ_TREE_NODES << ")."
           << std::endl;
       throw RonSQLPermanentError("Too many joined tables.");
     }
@@ -90,6 +116,8 @@ QueryPlanner::plan(
     childOp.is_root = false;
     childOp.match_type = (jc->join_type == JoinClause::LEFT_OUTER_JOIN)
         ? JoinOp::LEFT_OUTER : JoinOp::INNER;
+    childOp.num_low_bounds = 0;
+    childOp.num_high_bounds = 0;
 
     Uint32 num_keys = 0;
     Uint32 parent_idx = 0;
@@ -156,7 +184,8 @@ QueryPlanner::plan(
     {
       const NdbDictionary::Index *unique_idx =
           findUniqueIndex(dict, child_ndb_table,
-                          childOp.child_key_col_names, num_keys);
+                          childOp.child_key_col_names, num_keys,
+                          cache, database);
       if (unique_idx != NULL)
       {
         childOp.type = JoinOp::UNIQUE_LOOKUP;
@@ -166,7 +195,8 @@ QueryPlanner::plan(
       {
         const NdbDictionary::Index *ordered_idx =
             findOrderedIndex(dict, child_ndb_table,
-                             childOp.child_key_col_names, num_keys);
+                             childOp.child_key_col_names, num_keys,
+                             cache, database);
         if (ordered_idx != NULL)
         {
           childOp.type = JoinOp::INDEX_SCAN;
@@ -217,14 +247,42 @@ QueryPlanner::isPrimaryKey(const NdbDictionary::Table *table,
 const NdbDictionary::Index *
 QueryPlanner::findUniqueIndex(const NdbDictionary::Dictionary *dict,
                               const NdbDictionary::Table *table,
-                              const char *col_names[], Uint32 num_cols)
+                              const char *col_names[], Uint32 num_cols,
+                              RdrsSchemaCache *cache,
+                              const char *database)
 {
-  NdbDictionary::Dictionary::List index_list;
-  if (dict->listIndexes(index_list, *table) != 0) return NULL;
+  NdbDictionary::Dictionary::List fallback_list;
+  const auto* cached = getIndexList(dict, table, cache, database, fallback_list);
 
-  for (Uint32 i = 0; i < index_list.count; i++)
+  if (cached != nullptr) {
+    // Use cached index names
+    for (const auto& ci : *cached) {
+      if (ci.type != NdbDictionary::Object::UniqueHashIndex) continue;
+      if (ci.state != NdbDictionary::Object::StateOnline) continue;
+      const NdbDictionary::Index *idx = dict->getIndex(ci.name.c_str(), *table);
+      if (idx == NULL) continue;
+      if ((Uint32)idx->getNoOfColumns() != num_cols) continue;
+      bool all_match = true;
+      for (Uint32 c = 0; c < num_cols; c++) {
+        bool found = false;
+        for (Uint32 j = 0; j < (Uint32)idx->getNoOfColumns(); j++) {
+          const NdbDictionary::Column *idx_col = idx->getColumn(j);
+          if (idx_col != NULL && strcmp(idx_col->getName(), col_names[c]) == 0) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) { all_match = false; break; }
+      }
+      if (all_match) return idx;
+    }
+    return NULL;
+  }
+
+  // Fallback: use dict->listIndexes() result
+  for (Uint32 i = 0; i < fallback_list.count; i++)
   {
-    NdbDictionary::Dictionary::List::Element &elem = index_list.elements[i];
+    NdbDictionary::Dictionary::List::Element &elem = fallback_list.elements[i];
     if (elem.type != NdbDictionary::Object::UniqueHashIndex) continue;
     if (elem.state != NdbDictionary::Object::StateOnline) continue;
 
@@ -256,39 +314,49 @@ QueryPlanner::findUniqueIndex(const NdbDictionary::Dictionary *dict,
 const NdbDictionary::Index *
 QueryPlanner::findOrderedIndex(const NdbDictionary::Dictionary *dict,
                                const NdbDictionary::Table *table,
-                               const char *col_names[], Uint32 num_cols)
+                               const char *col_names[], Uint32 num_cols,
+                               RdrsSchemaCache *cache,
+                               const char *database)
 {
-  NdbDictionary::Dictionary::List index_list;
-  if (dict->listIndexes(index_list, *table) != 0) return NULL;
+  NdbDictionary::Dictionary::List fallback_list;
+  const auto* cached = getIndexList(dict, table, cache, database, fallback_list);
 
-  for (Uint32 i = 0; i < index_list.count; i++)
-  {
-    NdbDictionary::Dictionary::List::Element &elem = index_list.elements[i];
-    if (elem.type != NdbDictionary::Object::OrderedIndex) continue;
-    if (elem.state != NdbDictionary::Object::StateOnline) continue;
-
-    const NdbDictionary::Index *idx = dict->getIndex(elem.name, *table);
-    if (idx == NULL) continue;
-    if ((Uint32)idx->getNoOfColumns() < num_cols) continue;
-
-    /* Check that all join columns appear as a prefix of the index */
-    bool all_match = true;
-    for (Uint32 c = 0; c < num_cols; c++)
-    {
+  // Lambda to check one index by name
+  auto checkIndex = [&](const char* idx_name) -> const NdbDictionary::Index* {
+    const NdbDictionary::Index *idx = dict->getIndex(idx_name, *table);
+    if (idx == NULL) return NULL;
+    if ((Uint32)idx->getNoOfColumns() < num_cols) return NULL;
+    for (Uint32 c = 0; c < num_cols; c++) {
       bool found = false;
-      for (Uint32 j = 0; j < num_cols && j < (Uint32)idx->getNoOfColumns(); j++)
-      {
+      for (Uint32 j = 0; j < num_cols && j < (Uint32)idx->getNoOfColumns(); j++) {
         const NdbDictionary::Column *idx_col = idx->getColumn(j);
-        if (idx_col != NULL &&
-            strcmp(idx_col->getName(), col_names[c]) == 0)
-        {
+        if (idx_col != NULL && strcmp(idx_col->getName(), col_names[c]) == 0) {
           found = true;
           break;
         }
       }
-      if (!found) { all_match = false; break; }
+      if (!found) return NULL;
     }
-    if (all_match) return idx;
+    return idx;
+  };
+
+  if (cached != nullptr) {
+    for (const auto& ci : *cached) {
+      if (ci.type != NdbDictionary::Object::OrderedIndex) continue;
+      if (ci.state != NdbDictionary::Object::StateOnline) continue;
+      const NdbDictionary::Index *idx = checkIndex(ci.name.c_str());
+      if (idx != NULL) return idx;
+    }
+    return NULL;
+  }
+
+  // Fallback
+  for (Uint32 i = 0; i < fallback_list.count; i++) {
+    NdbDictionary::Dictionary::List::Element &elem = fallback_list.elements[i];
+    if (elem.type != NdbDictionary::Object::OrderedIndex) continue;
+    if (elem.state != NdbDictionary::Object::StateOnline) continue;
+    const NdbDictionary::Index *idx = checkIndex(elem.name);
+    if (idx != NULL) return idx;
   }
   return NULL;
 }

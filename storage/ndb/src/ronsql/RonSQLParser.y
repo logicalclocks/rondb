@@ -325,6 +325,13 @@ nonaliased_output:
                                           $$->output_name = LexString{(@$).begin, size_t((@$).end - (@$).begin)};
                                           $$->next = NULL;
                                         }
+| T_LEFT subquery T_RIGHT              { initptr($$);
+                                          $$->type = Outputs::Type::SUBQUERY_AGG;
+                                          $$->subquery_agg.stmt = $2;
+                                          $$->subquery_agg.agg_index = 0;
+                                          $$->output_name = LexString{(@$).begin, size_t((@$).end - (@$).begin)};
+                                          $$->next = NULL;
+                                        }
 
 /* T_COUNT not included here, in order to implement COUNT(*) */
 aggfun:
@@ -621,12 +628,12 @@ orderby_cols:
 | orderby_col T_COMMA orderby_cols      { $$ = $1; $$->next = $3; }
 
 orderby_col:
-  identifier_c                          { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->ascending = true; $$->next = NULL; }
-| identifier_c T_ASC                    { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->ascending = true; $$->next = NULL; }
-| identifier_c T_DESC                   { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->ascending = false; $$->next = NULL; }
-| identifier_c T_DOT identifier_c      { initptr($$); $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->ascending = true; $$->next = NULL; }
-| identifier_c T_DOT identifier_c T_ASC  { initptr($$); $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->ascending = true; $$->next = NULL; }
-| identifier_c T_DOT identifier_c T_DESC { initptr($$); $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->ascending = false; $$->next = NULL; }
+  identifier_c                          { initptr($$); $$->kind = OrderbyColumns::Kind::TABLE_COLUMN; $$->col_idx = context->column_name_to_idx($1); $$->ascending = true; $$->next = NULL; }
+| identifier_c T_ASC                    { initptr($$); $$->kind = OrderbyColumns::Kind::TABLE_COLUMN; $$->col_idx = context->column_name_to_idx($1); $$->ascending = true; $$->next = NULL; }
+| identifier_c T_DESC                   { initptr($$); $$->kind = OrderbyColumns::Kind::TABLE_COLUMN; $$->col_idx = context->column_name_to_idx($1); $$->ascending = false; $$->next = NULL; }
+| identifier_c T_DOT identifier_c      { initptr($$); $$->kind = OrderbyColumns::Kind::TABLE_COLUMN; $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->ascending = true; $$->next = NULL; }
+| identifier_c T_DOT identifier_c T_ASC  { initptr($$); $$->kind = OrderbyColumns::Kind::TABLE_COLUMN; $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->ascending = true; $$->next = NULL; }
+| identifier_c T_DOT identifier_c T_DESC { initptr($$); $$->kind = OrderbyColumns::Kind::TABLE_COLUMN; $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->ascending = false; $$->next = NULL; }
 
 limit_opt:
   %empty                                { $$ = -1; }

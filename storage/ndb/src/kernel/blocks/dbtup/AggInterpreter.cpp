@@ -403,196 +403,7 @@ bool AggInterpreter::OptimizeProgram() {
   if (!m_inited) {
     return false;
   }
-
-  // Track the type of each register: NDB_TYPE_BIGINT, NDB_TYPE_DOUBLE, or NDB_TYPE_UNDEFINED
-  DataType reg_types[kRegTotal];
-  for (Uint32 i = 0; i < kRegTotal; i++) {
-    reg_types[i] = NDB_TYPE_UNDEFINED;
-  }
-
-  // Single pass: analyze and rewrite the program
-  Uint32 exec_pos = m_agg_prog_start_pos;
-
-  while (exec_pos < m_prog_len) {
-    Uint32 value = m_prog[exec_pos];
-    Uint8 op = (value & 0xFC000000) >> 26;
-    Uint32 reg_index, reg_index2;
-    DataType type;
-    Uint8 new_op = op;
-
-    switch (op) {
-      case kOpLoadCol:
-        type = (value & 0x03E00000) >> 21;
-        reg_index = (value & 0x000F0000) >> 16;
-        if (type == NDB_TYPE_FLOAT || type == NDB_TYPE_DOUBLE) {
-          reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        } else if (type == NDB_TYPE_DECIMAL || type == NDB_TYPE_DECIMALUNSIGNED) {
-          // Decimal could be either depending on scale - keep generic
-          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
-          exec_pos++;  // Skip decimal info word
-        } else {
-          reg_types[reg_index] = NDB_TYPE_BIGINT;
-        }
-        break;
-
-      case kOpLoadConst:
-        type = (value & 0x03E00000) >> 21;
-        reg_index = (value & 0x000F0000) >> 16;
-        if (type == NDB_TYPE_DOUBLE) {
-          reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        } else {
-          reg_types[reg_index] = NDB_TYPE_BIGINT;
-        }
-        exec_pos += 2;  // Skip constant value words
-        break;
-
-      case kOpMov:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        reg_types[reg_index] = reg_types[reg_index2];
-        break;
-
-      case kOpPlus:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
-            reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
-          new_op = kOpPlusDouble;
-          reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        } else if (reg_types[reg_index] != NDB_TYPE_UNDEFINED &&
-                   reg_types[reg_index2] != NDB_TYPE_UNDEFINED) {
-          new_op = kOpPlusBigint;
-          reg_types[reg_index] = NDB_TYPE_BIGINT;
-        } else {
-          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
-        }
-        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        break;
-
-      case kOpMinus:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
-            reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
-          new_op = kOpMinusDouble;
-          reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        } else if (reg_types[reg_index] != NDB_TYPE_UNDEFINED &&
-                   reg_types[reg_index2] != NDB_TYPE_UNDEFINED) {
-          new_op = kOpMinusBigint;
-          reg_types[reg_index] = NDB_TYPE_BIGINT;
-        } else {
-          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
-        }
-        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        break;
-
-      case kOpMul:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
-            reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
-          new_op = kOpMulDouble;
-          reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        } else if (reg_types[reg_index] != NDB_TYPE_UNDEFINED &&
-                   reg_types[reg_index2] != NDB_TYPE_UNDEFINED) {
-          new_op = kOpMulBigint;
-          reg_types[reg_index] = NDB_TYPE_BIGINT;
-        } else {
-          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
-        }
-        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        break;
-
-      case kOpDiv:
-        reg_index = (value >> 12) & 0x0F;
-        // Division always produces double
-        new_op = kOpDivDouble;
-        reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        break;
-
-      case kOpDivInt:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        if (reg_types[reg_index] != NDB_TYPE_UNDEFINED &&
-            reg_types[reg_index2] != NDB_TYPE_UNDEFINED) {
-          new_op = kOpDivIntBigint;
-        }
-        reg_types[reg_index] = NDB_TYPE_BIGINT;
-        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        break;
-
-      case kOpMod:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        // No type-specific version for Mod - just track types
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
-            reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
-          reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        } else if (reg_types[reg_index] == NDB_TYPE_UNDEFINED ||
-                   reg_types[reg_index2] == NDB_TYPE_UNDEFINED) {
-          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
-        } else {
-          reg_types[reg_index] = NDB_TYPE_BIGINT;
-        }
-        break;
-
-      case kOpSum:
-        reg_index = (value & 0x000F0000) >> 16;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE) {
-          new_op = kOpSumDouble;
-        } else if (reg_types[reg_index] == NDB_TYPE_BIGINT) {
-          new_op = kOpSumBigint;
-        }
-        if (new_op != op) {
-          m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        }
-        break;
-
-      case kOpMax:
-        reg_index = (value & 0x000F0000) >> 16;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE) {
-          new_op = kOpMaxDouble;
-        } else if (reg_types[reg_index] == NDB_TYPE_BIGINT) {
-          new_op = kOpMaxBigint;
-        }
-        if (new_op != op) {
-          m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        }
-        break;
-
-      case kOpMin:
-        reg_index = (value & 0x000F0000) >> 16;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE) {
-          new_op = kOpMinDouble;
-        } else if (reg_types[reg_index] == NDB_TYPE_BIGINT) {
-          new_op = kOpMinBigint;
-        }
-        if (new_op != op) {
-          m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
-        }
-        break;
-
-      case kOpCount:
-        // Count always produces BIGINT - no optimization needed
-        break;
-
-      case kOpEmbeddedInterp:
-      {
-        Uint32 emb_len = value & 0xFFFF;
-        exec_pos += emb_len;  /* skip embedded words; exec_pos++ below adds 1 */
-        break;
-      }
-
-      case kOpSkip:
-        break;  /* 1-word instruction, exec_pos++ below handles it */
-
-      default:
-        break;
-    }
-    exec_pos++;
-  }
-
+  OptimizeProgramBuffer(m_prog, m_prog_len, m_agg_prog_start_pos);
   return true;
 }
 
@@ -2020,6 +1831,49 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       {
         Uint32 skip_count = value & 0xFFFF;
         exec_pos += skip_count;
+        break;
+      }
+
+      case kOpBranchRegLt:
+      case kOpBranchRegLe:
+      case kOpBranchRegGt:
+      case kOpBranchRegGe:
+      case kOpBranchRegEq:
+      case kOpBranchRegNe:
+      {
+        Uint32 ra = (value >> 20) & 0x0F;
+        Uint32 rb = (value >> 16) & 0x0F;
+        Uint32 skip_count = value & 0xFFFF;
+        double va = 0, vb = 0;
+        if (m_registers[ra].type == NDB_TYPE_BIGINT) {
+          va = m_registers[ra].is_unsigned
+              ? (double)m_registers[ra].value.val_uint64
+              : (double)m_registers[ra].value.val_int64;
+        } else if (m_registers[ra].type == NDB_TYPE_DOUBLE) {
+          va = m_registers[ra].value.val_double;
+        }
+        if (m_registers[rb].type == NDB_TYPE_BIGINT) {
+          vb = m_registers[rb].is_unsigned
+              ? (double)m_registers[rb].value.val_uint64
+              : (double)m_registers[rb].value.val_int64;
+        } else if (m_registers[rb].type == NDB_TYPE_DOUBLE) {
+          vb = m_registers[rb].value.val_double;
+        }
+        bool do_skip = false;
+        if (m_registers[ra].is_null || m_registers[rb].is_null) {
+          do_skip = true;
+        } else {
+          switch (op) {
+          case kOpBranchRegLt: do_skip = (va < vb); break;
+          case kOpBranchRegLe: do_skip = (va <= vb); break;
+          case kOpBranchRegGt: do_skip = (va > vb); break;
+          case kOpBranchRegGe: do_skip = (va >= vb); break;
+          case kOpBranchRegEq: do_skip = (va == vb); break;
+          case kOpBranchRegNe: do_skip = (va != vb); break;
+          default: break;
+          }
+        }
+        if (do_skip) exec_pos += skip_count;
         break;
       }
 

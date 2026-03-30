@@ -3227,17 +3227,35 @@ int NdbQueryImpl::prepareSend() {
  */
 int NdbQueryImpl::prepareAggregation() {
   assert(getQueryDef().isScanQuery());
-  const Uint32 aggLeafOpNo = getQueryDef().getAggregateLeafOpNo();
-  const NdbQueryOperationDefImpl &aggLeafDef =
-      getQueryDef().getQueryOperation(aggLeafOpNo);
-  const NdbQueryOptionsImpl &aggOpts = aggLeafDef.getOptions();
+  const Uint32 numLeaves = getQueryDef().getNumAggregateLeaves();
+  assert(numLeaves >= 1);
+  if (unlikely(numLeaves > NDB_SPJ_MAX_TREE_NODES)) {
+    setErrorCode(QRY_WRONG_OPERATION_TYPE);
+    return -1;
+  }
 
-  // Copy agg program buffer for later use in doSend() Section 2
-  const Uint32 *progBuf = aggOpts.getAggProgramBuffer();
-  const Uint32 progLen = aggOpts.getAggProgramLen();
-  assert(progBuf != nullptr && progLen > 0);
-  for (Uint32 i = 0; i < progLen; i++) {
-    m_aggProgram.append(progBuf[i]);
+  // Use first leaf for GROUP BY column info and table reference
+  const Uint32 firstLeafOpNo = getQueryDef().getAggregateLeafOpNo(0);
+  const NdbQueryOperationDefImpl &firstLeafDef =
+      getQueryDef().getQueryOperation(firstLeafOpNo);
+  const NdbQueryOptionsImpl &firstOpts = firstLeafDef.getOptions();
+
+  // Section header: (0x0722 << 16) | numLeaves
+  // Then per leaf: [progLen, program words...]
+  // 0x0722 distinguishes from old flat format (0x0721 magic).
+  m_aggProgram.append((0x0722 << 16) | numLeaves);
+  for (Uint32 leaf = 0; leaf < numLeaves; leaf++) {
+    const Uint32 leafOpNo = getQueryDef().getAggregateLeafOpNo(leaf);
+    const NdbQueryOperationDefImpl &leafDef =
+        getQueryDef().getQueryOperation(leafOpNo);
+    const NdbQueryOptionsImpl &leafOpts = leafDef.getOptions();
+    const Uint32 *progBuf = leafOpts.getAggProgramBuffer();
+    const Uint32 progLen = leafOpts.getAggProgramLen();
+    assert(progBuf != nullptr && progLen > 0);
+    m_aggProgram.append(progLen);
+    for (Uint32 i = 0; i < progLen; i++) {
+      m_aggProgram.append(progBuf[i]);
+    }
   }
   if (unlikely(m_aggProgram.isMemoryExhausted())) {
     setErrorCode(Err_MemoryAlloc);
@@ -3265,17 +3283,92 @@ int NdbQueryImpl::prepareAggregation() {
   }
 
   // Create NdbAggregator for result collection.
-  // Use the table from the aggregate leaf operation.
-  const NdbTableImpl *aggTable = aggOpts.getAggTable();
+  // Use the table from the first aggregate leaf operation.
+  const NdbTableImpl *aggTable = firstOpts.getAggTable();
   assert(aggTable != nullptr);
   m_aggregator = new NdbAggregator(aggTable->m_facade);
-  // Initialize aggregator from program header so ProcessRes knows
-  // n_gb_cols, n_agg_results, and agg_ops for result parsing.
-  // Pass GROUP BY column definitions for correct type info in
-  // FetchGroupbyColumn() (especially for linked parent columns).
-  m_aggregator->initForResults(progBuf, progLen,
-                               aggOpts.getAggGbColumns(),
-                               aggOpts.getAggNGroupByCols());
+
+  if (numLeaves == 1) {
+    // Single-leaf: initialize directly from program
+    const Uint32 *progBuf = firstOpts.getAggProgramBuffer();
+    const Uint32 progLen = firstOpts.getAggProgramLen();
+    m_aggregator->initForResults(progBuf, progLen,
+                                 firstOpts.getAggGbColumns(),
+                                 firstOpts.getAggNGroupByCols());
+  } else {
+    // Multi-leaf: build combined result program with total n_agg_results
+    // and all agg instructions from all leaves (with adjusted slot indices).
+    // Program format: [header(8), gb_cols..., instructions...]
+    // Header word 1: (n_gb_cols << 16) | n_agg_results_total
+    const Uint32 HEADER_SIZE = 8;
+    const Uint32 *firstProg = firstOpts.getAggProgramBuffer();
+    const Uint32 nGbCols = firstProg[1] >> 16;
+
+    // Calculate total n_agg_results and collect all instructions
+    Uint32 totalAggResults = 0;
+    struct LeafInstr {
+      const Uint32 *buf;
+      Uint32 len;
+      Uint32 nResults;
+    };
+    LeafInstr leafInstrs[NDB_SPJ_MAX_TREE_NODES];
+    assert(numLeaves <= NDB_SPJ_MAX_TREE_NODES);
+
+    for (Uint32 leaf = 0; leaf < numLeaves; leaf++) {
+      const Uint32 leafOpNo = getQueryDef().getAggregateLeafOpNo(leaf);
+      const NdbQueryOperationDefImpl &leafDef =
+          getQueryDef().getQueryOperation(leafOpNo);
+      const NdbQueryOptionsImpl &leafOpts = leafDef.getOptions();
+      const Uint32 *prog = leafOpts.getAggProgramBuffer();
+      const Uint32 progLen = leafOpts.getAggProgramLen();
+      const Uint32 leafNResults = prog[1] & 0xFFFF;
+      const Uint32 instrStart = HEADER_SIZE + nGbCols;
+      leafInstrs[leaf].buf = prog + instrStart;
+      leafInstrs[leaf].len = progLen - instrStart;
+      leafInstrs[leaf].nResults = leafNResults;
+      totalAggResults += leafNResults;
+    }
+
+    // Build combined program: header + GB cols from first leaf + all instrs
+    Uint32 combinedLen = HEADER_SIZE + nGbCols;
+    for (Uint32 leaf = 0; leaf < numLeaves; leaf++) {
+      combinedLen += leafInstrs[leaf].len;
+    }
+
+    Uint32 *combinedProg = new Uint32[combinedLen];
+    // Copy header from first leaf, override totalLen and n_agg_results
+    memcpy(combinedProg, firstProg, HEADER_SIZE * sizeof(Uint32));
+    combinedProg[0] = (combinedProg[0] & 0xFFFF0000) | combinedLen;
+    combinedProg[1] = (nGbCols << 16) | totalAggResults;
+
+    // Copy GROUP BY column descriptors from first leaf
+    memcpy(combinedProg + HEADER_SIZE, firstProg + HEADER_SIZE,
+           nGbCols * sizeof(Uint32));
+
+    // Copy instructions from all leaves, adjusting agg slot indices
+    Uint32 pos = HEADER_SIZE + nGbCols;
+    Uint32 accOffset = 0;
+    for (Uint32 leaf = 0; leaf < numLeaves; leaf++) {
+      for (Uint32 j = 0; j < leafInstrs[leaf].len; j++) {
+        Uint32 word = leafInstrs[leaf].buf[j];
+        Uint32 op = (word >> 26) & 0x3F;
+        // Agg ops (Sum, Count, Min, Max and their typed variants) have
+        // the agg slot index in bits 0-15. Adjust by accOffset.
+        if (op >= kOpSum && op <= kOpMinDouble) {
+          Uint32 slot = word & 0xFFFF;
+          word = (word & 0xFFFF0000) | (slot + accOffset);
+        }
+        combinedProg[pos++] = word;
+      }
+      accOffset += leafInstrs[leaf].nResults;
+    }
+    assert(pos == combinedLen);
+
+    m_aggregator->initForResults(combinedProg, combinedLen,
+                                 firstOpts.getAggGbColumns(),
+                                 firstOpts.getAggNGroupByCols());
+    delete[] combinedProg;
+  }
   return 0;
 }  // NdbQueryImpl::prepareAggregation
 

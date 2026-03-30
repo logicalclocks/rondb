@@ -37,6 +37,10 @@
 #include <cerrno>
 #include <climits>
 #include <vector>
+#include <map>
+#include <set>
+#include <string>
+#include <functional>
 #include <string>
 #include "define_formatter.hpp"
 #include "my_time.h"
@@ -89,6 +93,9 @@ inline T dbg_print(int line, const char* expr, T val) {
 
 using std::endl;
 
+#include "RonSQLPerf.hpp"
+#include "RdrsSchemaCache.hpp"
+
 #define feature_not_implemented(description) \
   throw RonSQLPermanentError("RonSQL feature not implemented: " description)
 
@@ -132,23 +139,40 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_columns(conf.amalloc),
   m_column_qualifiers(conf.amalloc),
   m_col_is_inner(conf.amalloc),
+  m_col_is_alias(conf.amalloc),
+  m_cross_table_where_filters(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
   m_scan_config_candidates(conf.amalloc),
+  m_select_subquery_leaves(conf.amalloc),
+  m_merged_leaves(conf.amalloc),
   m_subquery_infos(conf.amalloc)
 {
   ndbrequire(m_status == Status::BEGIN);
   try {
+    PERF_TS(t_prep_start);
     configure();
+    PERF_TS(t_parse_start);
     parse();
+    resolve_orderby_aliases();
+    PERF_TS(t_parse_end);
+    PERF_LOG("  parse", t_parse_start, t_parse_end);
     analyze_subqueries();
+    analyze_select_subqueries();
+    PERF_TS(t_load_start);
     load();
+    PERF_TS(t_load_end);
+    PERF_LOG("  load (dict)", t_load_start, t_load_end);
     if (m_context.ast_root.joins == NULL)
       plan_index_and_filter();
+    PERF_TS(t_compile_start);
     compile();
     if (m_context.ast_root.joins != NULL)
       build_agg_linked_projections();
+    PERF_TS(t_compile_end);
+    PERF_LOG("  compile", t_compile_start, t_compile_end);
     determine_explain();
+    PERF_LOG("  prepare total", t_prep_start, t_compile_end);
     m_status = Status::PREPARED;
   }
   catch (...) {
@@ -256,6 +280,7 @@ classify_ce_table(struct ConditionalExpression* ce, Uint32* col_table_idx)
   }
 }
 
+static Uint32 filter_expr_reg_depth(ConditionalExpression* ce);
 static const Uint32 MAX_WHERE_CONJUNCTS = 64;
 
 /*
@@ -357,6 +382,7 @@ RonSQLPreparer::parse()
      */
     Outputs* outputs = m_context.ast_root.outputs;
     bool has_aggregate_outputs = false;
+    bool has_subquery_agg_outputs = false;
     while (outputs != NULL)
     {
       switch (outputs->type)
@@ -393,6 +419,11 @@ RonSQLPreparer::parse()
         outputs->avg.agg_index_sum = m_agg->Sum(outputs->avg.arg);
         outputs->avg.agg_index_count = m_agg->Count(outputs->avg.arg);
         break;
+      case Outputs::Type::SUBQUERY_AGG:
+        // Handled later in analyze_select_subqueries() and compile().
+        // Don't set has_aggregate_outputs (avoids m_agg != NULL assert).
+        has_subquery_agg_outputs = true;
+        break;
       default:
         abort();
       }
@@ -409,7 +440,8 @@ RonSQLPreparer::parse()
       ndbrequire(has_aggregate_outputs || has_having_aggregates);
       ndbrequire(m_agg->getStatus() == AggregationAPICompiler::Status::PROGRAMMING);
     }
-    if (!has_aggregate_outputs && !has_having_aggregates)
+    if (!has_aggregate_outputs && !has_having_aggregates &&
+        !has_subquery_agg_outputs)
     {
       ndbrequire(m_conf.err_stream != NULL);
       std::basic_ostream<char>& err = *m_conf.err_stream;
@@ -612,6 +644,50 @@ RonSQLPreparer::parse()
   throw RonSQLPermanentError("Syntax error.");
 }
 
+void
+RonSQLPreparer::resolve_orderby_aliases()
+{
+  OrderbyColumns* ob = m_context.ast_root.orderby_columns;
+  while (ob != NULL)
+  {
+    if (ob->kind == OrderbyColumns::Kind::TABLE_COLUMN)
+    {
+      Uint32 col_idx = ob->col_idx;
+      // Only unqualified names can be aliases
+      if (m_column_qualifiers.size() > col_idx &&
+          m_column_qualifiers[col_idx].c_str() != NULL)
+      {
+        ob = ob->next;
+        continue;
+      }
+      const char* name = m_columns[col_idx].c_str();
+      // Walk SELECT outputs looking for a matching alias
+      Uint32 output_pos = 0;
+      Outputs* out = m_context.ast_root.outputs;
+      while (out != NULL)
+      {
+        if (out->output_name.len > 0 && out->output_name.str != NULL &&
+            strlen(name) == out->output_name.len &&
+            strncmp(name, out->output_name.str,
+                    out->output_name.len) == 0)
+        {
+          // Match found — convert to OUTPUT_REF
+          ob->kind = OrderbyColumns::Kind::OUTPUT_REF;
+          ob->output_idx = output_pos;
+          // Mark this col_idx so load_join/load_single_table skips it
+          while (m_col_is_alias.size() <= col_idx)
+            m_col_is_alias.push(false);
+          m_col_is_alias[col_idx] = true;
+          break;
+        }
+        out = out->next;
+        output_pos++;
+      }
+    }
+    ob = ob->next;
+  }
+}
+
 /*
  * Return false if the position is a UTF-8 continuation byte and part of a
  * prefix of a correct UTF-8 multi-byte sequence, otherwise true.
@@ -689,30 +765,52 @@ RonSQLPreparer::load_single_table()
   require_prm(m_table != NULL,
               "Failed to get table. Note that RonSQL only supports tables"
               " with ENGINE=NDB.");
-  // Populate m_indexes
-  NdbDictionary::Dictionary::List index_list;
+  // Populate m_indexes — use schema cache if available to skip listIndexes()
   ndbrequire(m_dict != NULL);
   ndbrequire(m_table != NULL);
-  require_sch(m_dict->listIndexes(index_list, *m_table) == 0,
-              "Failed to list indexes.");
+  const char* db = m_conf.ndb ? m_conf.ndb->getDatabaseName() : nullptr;
+  const auto* cached_indexes = (m_conf.schema_cache && db)
+      ? m_conf.schema_cache->getIndexes(m_dict, m_table, db,
+                                         m_table->getName())
+      : nullptr;
+
+  NdbDictionary::Dictionary::List index_list;
+  if (cached_indexes == nullptr) {
+    require_sch(m_dict->listIndexes(index_list, *m_table) == 0,
+                "Failed to list indexes.");
+  }
+
+  // Iterate: either cached index names or the raw list
+  Uint32 idx_count = cached_indexes ? cached_indexes->size() : index_list.count;
   bool err_failed_to_get_index = false;
   bool err_object_status_not_retrieved = false;
   bool err_table_verid_mismatch = false;
-  for(Uint32 i = 0; i < index_list.count; i++) {
-    NdbDictionary::Dictionary::List::Element& list_element =
-      index_list.elements[i];
-    if (list_element.state != NdbDictionary::Object::StateOnline) {
+  for (Uint32 i = 0; i < idx_count; i++) {
+    const char* idx_name;
+    NdbDictionary::Object::Type idx_type;
+    NdbDictionary::Object::State idx_state;
+    if (cached_indexes) {
+      const auto& ci = (*cached_indexes)[i];
+      idx_name = ci.name.c_str();
+      idx_type = ci.type;
+      idx_state = ci.state;
+    } else {
+      NdbDictionary::Dictionary::List::Element& elem = index_list.elements[i];
+      idx_name = elem.name;
+      idx_type = (NdbDictionary::Object::Type)elem.type;
+      idx_state = elem.state;
+    }
+    if (idx_state != NdbDictionary::Object::StateOnline) {
       DEB_TRACE();
       continue;
     }
-    if (list_element.type == NdbDictionary::Object::UniqueHashIndex) {
+    if (idx_type == NdbDictionary::Object::UniqueHashIndex) {
       DEB_TRACE();
       continue;
     }
-    require_bug(list_element.type == NdbDictionary::Object::OrderedIndex,
+    require_bug(idx_type == NdbDictionary::Object::OrderedIndex,
                 "Unexpected index type.");
-    const NdbDictionary::Index* index = m_dict->getIndex(list_element.name,
-                                                         *m_table);
+    const NdbDictionary::Index* index = m_dict->getIndex(idx_name, *m_table);
     if (index == NULL) {
       err_failed_to_get_index = true;
       DEB_TRACE();
@@ -756,6 +854,11 @@ RonSQLPreparer::load_single_table()
       col_map[col_idx] = NULL;
       continue;
     }
+    if (m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]) {
+      col_id_map[col_idx] = -1;
+      col_map[col_idx] = NULL;
+      continue;
+    }
     const char* col_name = DBG(m_columns[DBG(col_idx)].c_str());
     const NdbDictionary::Column* col = m_table->getColumn(col_name);
     if (col == NULL) {
@@ -778,12 +881,30 @@ RonSQLPreparer::load_join()
   std::basic_ostream<char>& err = *m_conf.err_stream;
 
   // Build the join plan via QueryPlanner
+  const char* db = m_conf.ndb ? m_conf.ndb->getDatabaseName() : nullptr;
   QueryPlanner::plan(
       m_context.ast_root.root_table,
       m_context.ast_root.joins,
       m_dict,
       err,
-      m_join_plan);
+      m_join_plan,
+      m_conf.schema_cache,
+      db);
+
+  // For multi-leaf subquery pushdown, map merged leaves to plan op indices.
+  // Each merged leaf corresponds to a JoinClause that was appended to the
+  // join list, and QueryPlanner assigned it an operation index.
+  if (m_has_select_subqueries) {
+    // The injected joins were appended after any pre-existing joins.
+    // With no pre-existing joins (outer query is single-table + subqueries),
+    // the first injected join is op index 1, second is 2, etc.
+    Uint32 first_injected_op = m_join_plan.num_ops - m_merged_leaves.size();
+    for (Uint32 i = 0; i < m_merged_leaves.size(); i++) {
+      m_merged_leaves[i].plan_op_idx = first_injected_op + i;
+      m_join_plan.agg_leaf_indices[i] = first_injected_op + i;
+    }
+    m_join_plan.num_agg_leaves = m_merged_leaves.size();
+  }
 
   // Set m_table to root table (used by existing code paths)
   m_table = m_join_plan.ops[0].table;
@@ -799,6 +920,12 @@ RonSQLPreparer::load_join()
   for (Uint32 col_idx = 0; col_idx < num_cols; col_idx++)
   {
     if (m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx]) {
+      col_id_map[col_idx] = -1;
+      col_map[col_idx] = NULL;
+      col_table_idx[col_idx] = 0;
+      continue;
+    }
+    if (m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]) {
       col_id_map[col_idx] = -1;
       col_map[col_idx] = NULL;
       col_table_idx[col_idx] = 0;
@@ -859,7 +986,7 @@ RonSQLPreparer::load_join()
       {
         err << "Column '" << col_name << "' not found in any joined table."
             << endl;
-        throw RonSQLMaybeStaleSchema("Column not found.");
+        throw RonSQLPermanentError("Column not found.");
       }
       if (match_count > 1)
       {
@@ -880,6 +1007,30 @@ RonSQLPreparer::load_join()
 
   // Classify WHERE conditions by table for per-table filter pushdown
   classify_where_by_table();
+
+  // Convert cross-table WHERE filters to index range bounds where possible
+  assign_cross_table_index_bounds();
+
+  // Apply inner subquery filters to the corresponding leaf operations
+  if (m_has_select_subqueries) {
+    for (Uint32 i = 0; i < m_merged_leaves.size(); i++) {
+      MergedLeaf &ml = m_merged_leaves[i];
+      SelectSubqueryLeaf &base = m_select_subquery_leaves[ml.first_subquery_idx];
+      if (base.inner_filter != NULL) {
+        Uint32 op_idx = ml.plan_op_idx;
+        if (m_join_where_ce[op_idx] == NULL) {
+          m_join_where_ce[op_idx] = base.inner_filter;
+        } else {
+          ConditionalExpression* combined =
+              m_amalloc->alloc_exc<ConditionalExpression>(1);
+          combined->op = T_AND;
+          combined->args.left = m_join_where_ce[op_idx];
+          combined->args.right = base.inner_filter;
+          m_join_where_ce[op_idx] = combined;
+        }
+      }
+    }
+  }
 
   // Build linked projections for GROUP BY columns on non-leaf tables
   Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
@@ -904,7 +1055,7 @@ RonSQLPreparer::load_join()
 void
 RonSQLPreparer::classify_where_by_table()
 {
-  for (Uint32 t = 0; t < MAX_JOIN_TABLES; t++)
+  for (Uint32 t = 0; t < MAX_SPJ_TREE_NODES; t++)
     m_join_where_ce[t] = NULL;
 
   ConditionalExpression* where_ce = m_context.ast_root.where_expression;
@@ -922,10 +1073,80 @@ RonSQLPreparer::classify_where_by_table()
 
     if (table_idx == -2)
     {
-      throw RonSQLPermanentError(
-          "WHERE condition references columns from multiple tables in a "
-          "single comparison or OR branch. Split into separate AND "
-          "conditions, each referencing only one table.");
+      // Cross-table condition.  For simple comparisons (col OP col) between
+      // two tables, collect as a cross-table filter for BranchReg handling
+      // in the aggregation program.  Complex cross-table expressions
+      // (OR branches, arithmetic involving multiple tables) are rejected.
+      ConditionalExpression* ce = conjuncts[i];
+
+      // Flatten OR into atoms (single comparison = 1 atom).
+      ConditionalExpression* or_atoms[32];
+      Uint32 num_atoms = 0;
+      std::function<void(ConditionalExpression*)> flatten_or =
+          [&](ConditionalExpression* node) {
+        if (node->op == T_OR) {
+          flatten_or(node->args.left);
+          flatten_or(node->args.right);
+        } else if (num_atoms < 32) {
+          or_atoms[num_atoms++] = node;
+        }
+      };
+      flatten_or(ce);
+
+      // Validate each atom: must be a comparison where each side
+      // references at most one table, expression depth within limits,
+      // and the union of all referenced tables is at most 2 distinct tables.
+      Int32 tables_seen[2] = {-1, -1};
+      Uint32 num_tables = 0;
+      bool valid = true;
+      for (Uint32 a = 0; a < num_atoms && valid; a++) {
+        ConditionalExpression* atom = or_atoms[a];
+        bool is_cmp =
+            (atom->op == T_EQUALS || atom->op == T_NOT_EQUALS ||
+             atom->op == T_LT || atom->op == T_LE ||
+             atom->op == T_GT || atom->op == T_GE) &&
+            atom->args.left != NULL && atom->args.right != NULL;
+        if (!is_cmp) { valid = false; break; }
+
+        Int32 lt = classify_ce_table(atom->args.left, m_column_table_idx);
+        Int32 rt = classify_ce_table(atom->args.right, m_column_table_idx);
+        if (lt == -2 || rt == -2) { valid = false; break; }
+        if (filter_expr_reg_depth(atom->args.left) > 2 ||
+            filter_expr_reg_depth(atom->args.right) > 2) { valid = false; break; }
+
+        // Track distinct tables across all atoms
+        Int32 sides[2] = {lt, rt};
+        for (int s = 0; s < 2; s++) {
+          if (sides[s] == -1) continue;  // constant
+          bool found = false;
+          for (Uint32 t = 0; t < num_tables; t++) {
+            if (tables_seen[t] == sides[s]) { found = true; break; }
+          }
+          if (!found) {
+            if (num_tables >= 2) { valid = false; break; }
+            tables_seen[num_tables++] = sides[s];
+          }
+        }
+      }
+
+      // Must involve exactly 2 distinct tables overall
+      if (!valid || num_tables < 2) {
+        throw RonSQLPermanentError(
+            "WHERE condition references columns from multiple tables in a "
+            "single comparison or OR branch. Each OR branch must be a simple "
+            "comparison between the same two tables.");
+      }
+
+      Uint32 child_t = ((Uint32)tables_seen[0] > (Uint32)tables_seen[1]) ?
+                        (Uint32)tables_seen[0] : (Uint32)tables_seen[1];
+      Uint32 parent_t = ((Uint32)tables_seen[0] > (Uint32)tables_seen[1]) ?
+                         (Uint32)tables_seen[1] : (Uint32)tables_seen[0];
+      CrossTableFilter ctf;
+      ctf.ce = ce;
+      ctf.child_table_idx = child_t;
+      ctf.parent_table_idx = parent_t;
+      m_cross_table_where_filters.push(ctf);
+      continue;
     }
 
     // Constant-only conditions: assign to root table
@@ -950,6 +1171,116 @@ RonSQLPreparer::classify_where_by_table()
   }
 }
 
+void
+RonSQLPreparer::assign_cross_table_index_bounds()
+{
+  // For each child operation that is an INDEX_SCAN, iterate the index
+  // columns after the join key prefix and try to match cross-table
+  // filters to consecutive columns.  Matching filters become index
+  // range bounds; unmatched filters stay as BranchReg fallbacks.
+  //
+  // Index bounds must follow prefix order: once a column has a
+  // non-equality bound, later columns cannot be bounded.
+  for (Uint32 op_idx = 1; op_idx < m_join_plan.num_ops; op_idx++)
+  {
+    JoinOp& op = m_join_plan.ops[op_idx];
+    if (op.type != JoinOp::INDEX_SCAN || op.index == NULL)
+      continue;
+
+    const NdbDictionary::Index* idx = op.index;
+    Uint32 num_idx_cols = (Uint32)idx->getNoOfColumns();
+    bool later_blocked = false;
+
+    // Walk index columns starting after the join key prefix
+    for (Uint32 col_pos = op.num_key_cols;
+         col_pos < num_idx_cols && !later_blocked;
+         col_pos++)
+    {
+      const NdbDictionary::Column* idx_col = idx->getColumn(col_pos);
+      if (idx_col == NULL) break;
+      const char* idx_col_name = idx_col->getName();
+
+      // Find a cross-table filter matching this index column + operation
+      bool matched = false;
+      for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
+      {
+        CrossTableFilter& ctf = m_cross_table_where_filters[f];
+        if (ctf.ce == NULL) continue;  // Already consumed
+        if (ctf.child_table_idx != op_idx && ctf.parent_table_idx != op_idx)
+          continue;  // Not for this operation
+
+        ConditionalExpression* cf = ctf.ce;
+        Uint32 left_cidx = cf->args.left->col_idx;
+        Uint32 right_cidx = cf->args.right->col_idx;
+
+        bool left_is_child = (m_column_table_idx[left_cidx] == op_idx);
+        Uint32 child_cidx = left_is_child ? left_cidx : right_cidx;
+        const char* child_col_name = m_columns[child_cidx].c_str();
+
+        if (strcmp(idx_col_name, child_col_name) != 0)
+          continue;  // Not this index column
+
+        // Match found. Normalize operator to child_col OP parent_col.
+        Uint32 parent_cidx = left_is_child ? right_cidx : left_cidx;
+        TokenKind filter_op = cf->op;
+        if (!left_is_child)
+        {
+          switch (filter_op) {
+          case T_LT: filter_op = T_GT; break;
+          case T_LE: filter_op = T_GE; break;
+          case T_GT: filter_op = T_LT; break;
+          case T_GE: filter_op = T_LE; break;
+          default: break;
+          }
+        }
+
+        const char* parent_col_name = m_columns[parent_cidx].c_str();
+        Uint32 parent_op = m_column_table_idx[parent_cidx];
+        bool assigned = false;
+
+        if (filter_op == T_GT || filter_op == T_GE || filter_op == T_EQUALS)
+        {
+          if (op.num_low_bounds < MAX_JOIN_KEY_COLS)
+          {
+            JoinOp::RangeBound& lb = op.low_bounds[op.num_low_bounds++];
+            lb.child_col_name = child_col_name;
+            lb.parent_col_name = parent_col_name;
+            lb.parent_op_idx = parent_op;
+            lb.inclusive = (filter_op == T_GE || filter_op == T_EQUALS);
+            assigned = true;
+          }
+        }
+        if (filter_op == T_LT || filter_op == T_LE || filter_op == T_EQUALS)
+        {
+          if (op.num_high_bounds < MAX_JOIN_KEY_COLS)
+          {
+            JoinOp::RangeBound& hb = op.high_bounds[op.num_high_bounds++];
+            hb.child_col_name = child_col_name;
+            hb.parent_col_name = parent_col_name;
+            hb.parent_op_idx = parent_op;
+            hb.inclusive = (filter_op == T_LE || filter_op == T_EQUALS);
+            assigned = true;
+          }
+        }
+
+        if (assigned)
+        {
+          ctf.ce = NULL;  // Consumed
+          matched = true;
+          // Non-equality blocks later columns
+          if (filter_op != T_EQUALS)
+            later_blocked = true;
+          break;  // One filter per index column
+        }
+      }
+
+      // If no filter matched this column, stop — prefix must be contiguous
+      if (!matched)
+        break;
+    }
+  }
+}
+
 static Uint32
 find_or_add_linked_proj(JoinPlan& plan, Uint32 op_idx, const char* col_name)
 {
@@ -970,6 +1301,30 @@ find_or_add_linked_proj(JoinPlan& plan, Uint32 op_idx, const char* col_name)
 void
 RonSQLPreparer::build_agg_linked_projections()
 {
+  if (m_has_select_subqueries && m_join_plan.num_agg_leaves > 0) {
+    // Multi-leaf: build linked projections for GROUP BY columns from root.
+    // All leaves share the same GROUP BY columns via linked projection.
+    struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
+    while (groupby != NULL) {
+      Uint32 col_idx = groupby->col_idx;
+      // GROUP BY column is from the root — needs linked projection to leaves
+      bool is_on_any_leaf = false;
+      for (Uint32 ml = 0; ml < m_merged_leaves.size(); ml++) {
+        if (m_column_table_idx[col_idx] == m_merged_leaves[ml].plan_op_idx) {
+          is_on_any_leaf = true;
+          break;
+        }
+      }
+      if (!is_on_any_leaf) {
+        find_or_add_linked_proj(m_join_plan,
+                                m_column_table_idx[col_idx],
+                                m_columns[col_idx].c_str());
+      }
+      groupby = groupby->next;
+    }
+    return;
+  }
+
   if (m_agg == NULL)
     return;
   Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
@@ -984,6 +1339,72 @@ RonSQLPreparer::build_agg_linked_projections()
         find_or_add_linked_proj(m_join_plan,
                                 m_column_table_idx[col_idx],
                                 m_columns[col_idx].c_str());
+      }
+    }
+  }
+
+  // Add linked projections for cross-table WHERE filter columns that are
+  // not on the leaf table.  Walk expression trees to find all column refs
+  // (supports arithmetic expressions like col + 1 > other_col * 2).
+  std::function<void(ConditionalExpression*)> register_linked_projs =
+      [&](ConditionalExpression* ce) {
+    if (ce == NULL) return;
+    if (ce->op == T_IDENTIFIER) {
+      Uint32 cidx = ce->col_idx;
+      if (m_column_table_idx[cidx] != leaf_idx) {
+        find_or_add_linked_proj(m_join_plan,
+                                m_column_table_idx[cidx],
+                                m_columns[cidx].c_str());
+      }
+      return;
+    }
+    // Constants use different union members — don't access args
+    if (ce->op == T_INT || ce->op == T_FLOAT ||
+        ce->op == T_STRING || ce->op == T_NULL)
+      return;
+    // Binary ops (T_PLUS, T_MINUS, T_MULTIPLY, comparisons, etc.)
+    if (ce->args.left != NULL) register_linked_projs(ce->args.left);
+    if (ce->args.right != NULL) register_linked_projs(ce->args.right);
+  };
+  for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
+  {
+    CrossTableFilter& ctf = m_cross_table_where_filters[f];
+    if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
+    register_linked_projs(ctf.ce->args.left);
+    register_linked_projs(ctf.ce->args.right);
+  }
+
+  // Add linked projections for CASE condition columns on parent tables.
+  // Walk the aggregation program looking for CASE instructions whose
+  // condition column is not on the leaf table.
+  if (m_agg != NULL) {
+    for (Uint32 c = 0; c < m_agg->m_cases.size(); c++) {
+      auto& ci = m_agg->m_cases[c];
+      if (ci.condition == NULL) continue;
+      // Flatten AND/OR to find all atom conditions
+      DynamicArray<ConditionalExpression*> atoms(m_amalloc);
+      ConditionalExpression* ce = ci.condition;
+      if (ce->op == T_AND || ce->op == T_OR) {
+        TokenKind flatten_op = ce->op;
+        while (ce->op == flatten_op) {
+          atoms.push(ce->args.right);
+          ce = ce->args.left;
+        }
+        atoms.push(ce);
+      } else {
+        atoms.push(ce);
+      }
+      for (Uint32 a = 0; a < atoms.size(); a++) {
+        ConditionalExpression* atom = atoms[a];
+        if (atom->args.left != NULL && atom->args.left->op == T_IDENTIFIER) {
+          Uint32 col_idx = atom->args.left->col_idx;
+          if (m_column_table_idx != NULL &&
+              m_column_table_idx[col_idx] != leaf_idx) {
+            find_or_add_linked_proj(m_join_plan,
+                                    m_column_table_idx[col_idx],
+                                    m_columns[col_idx].c_str());
+          }
+        }
       }
     }
   }
@@ -2155,9 +2576,564 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
   }
 }
 
+/*
+ * analyze_select_subqueries()
+ *
+ * Walk the SELECT output list looking for SUBQUERY_AGG entries (correlated
+ * scalar subqueries with aggregation).  Validate each inner query is a
+ * single-table aggregate with a simple equi-join correlation to the outer
+ * table.  If all valid and the outer query has GROUP BY or is implicit
+ * aggregation, set m_has_select_subqueries = true and populate the leaf
+ * descriptors.  Then merge same-table subqueries and rewrite into joins.
+ */
+void
+RonSQLPreparer::analyze_select_subqueries()
+{
+  SelectStatement &ast = m_context.ast_root;
+  Uint32 output_idx = 0;
+  bool has_any = false;
+
+  for (Outputs *out = ast.outputs; out != NULL; out = out->next, output_idx++) {
+    if (out->type == Outputs::Type::SUBQUERY_AGG) {
+      has_any = true;
+    }
+  }
+
+  if (!has_any) return;
+
+  // For now, reject if the outer query already has GROUP BY — the
+  // semantics of GROUP BY + correlated subquery are ambiguous (the
+  // subquery references a column not in GROUP BY).
+  // Supported: no GROUP BY → per-row correlated subquery results,
+  // pushed as join with auto-injected GROUP BY on correlation key.
+  require_prm(ast.groupby_columns == NULL,
+              "SELECT-list subqueries with GROUP BY are not yet supported. "
+              "Use the query without GROUP BY for per-row results.");
+
+  // Validate each subquery
+  output_idx = 0;
+  for (Outputs *out = ast.outputs; out != NULL; out = out->next, output_idx++) {
+    if (out->type != Outputs::Type::SUBQUERY_AGG) continue;
+
+    SelectStatement *inner = out->subquery_agg.stmt;
+    require_prm(inner != NULL,
+                "SELECT-list subquery has NULL inner statement.");
+
+    // Must be single-table (no joins)
+    require_prm(inner->joins == NULL,
+                "SELECT-list subquery with JOIN is not supported for pushdown.");
+
+    // Must have no GROUP BY or HAVING in inner query
+    require_prm(inner->groupby_columns == NULL,
+                "SELECT-list subquery must not have GROUP BY.");
+    require_prm(inner->having_expression == NULL,
+                "SELECT-list subquery must not have HAVING.");
+
+    // Inner SELECT must have exactly one aggregate output
+    Outputs *inner_out = inner->outputs;
+    require_prm(inner_out != NULL,
+                "SELECT-list subquery has empty output list.");
+    require_prm(inner_out->next == NULL,
+                "SELECT-list subquery must have exactly one output.");
+    require_prm(inner_out->type == Outputs::Type::AGGREGATE,
+                "SELECT-list subquery output must be an aggregate function.");
+
+    TokenKind agg_fun = inner_out->aggregate.fun;
+    require_prm(agg_fun == T_SUM || agg_fun == T_COUNT ||
+                agg_fun == T_MIN || agg_fun == T_MAX,
+                "SELECT-list subquery aggregate must be SUM, COUNT, MIN, or MAX.");
+
+    // Inner WHERE must contain exactly one equi-join correlation predicate
+    // of the form: inner_table.col = outer_table.col
+    ConditionalExpression *inner_where = inner->where_expression;
+    require_prm(inner_where != NULL,
+                "SELECT-list subquery must have a WHERE clause with correlation.");
+
+    // Extract the correlation predicate from the inner WHERE.
+    // The WHERE can be a single equality (correlation only) or
+    // T_AND(correlation, additional_filter).
+    // Flatten AND conjuncts and find the one equality with one inner
+    // and one outer column reference.
+    ConditionalExpression *correlation_eq = NULL;
+    ConditionalExpression *inner_filter = NULL;
+
+    if (inner_where->op == T_EQUALS) {
+      // Simple case: single correlation predicate, no additional filter
+      correlation_eq = inner_where;
+    } else if (inner_where->op == T_AND) {
+      // Flatten AND and find correlation predicate
+      // We support: correlation AND filter (any nesting depth)
+      ConditionalExpression *conjuncts[32];
+      Uint32 num_conjuncts = 0;
+      std::function<void(ConditionalExpression*)> flatten =
+          [&](ConditionalExpression* ce) {
+        if (ce->op == T_AND) {
+          flatten(ce->args.left);
+          flatten(ce->args.right);
+        } else if (num_conjuncts < 32) {
+          conjuncts[num_conjuncts++] = ce;
+        }
+      };
+      flatten(inner_where);
+
+      // Find the correlation predicate (equality between inner and outer col)
+      LexCString inner_table_name = inner->root_table->alias;
+      for (Uint32 ci = 0; ci < num_conjuncts; ci++) {
+        if (conjuncts[ci]->op != T_EQUALS) continue;
+        ConditionalExpression *l = conjuncts[ci]->args.left;
+        ConditionalExpression *r = conjuncts[ci]->args.right;
+        if (l == NULL || r == NULL) continue;
+        if (l->op != T_IDENTIFIER || r->op != T_IDENTIFIER) continue;
+        // Check if one side is inner table, other is outer
+        LexCString lq = m_column_qualifiers[l->col_idx];
+        LexCString rq = m_column_qualifiers[r->col_idx];
+        bool l_inner = (lq.str != NULL && lq.len == inner_table_name.len &&
+                        strncmp(lq.str, inner_table_name.str, lq.len) == 0);
+        bool r_inner = (rq.str != NULL && rq.len == inner_table_name.len &&
+                        strncmp(rq.str, inner_table_name.str, rq.len) == 0);
+        if (l_inner != r_inner) {
+          correlation_eq = conjuncts[ci];
+          // Build remaining filter from other conjuncts
+          for (Uint32 fi = 0; fi < num_conjuncts; fi++) {
+            if (fi == ci) continue;
+            if (inner_filter == NULL) {
+              inner_filter = conjuncts[fi];
+            } else {
+              ConditionalExpression *combined =
+                  m_amalloc->alloc_exc<ConditionalExpression>(1);
+              combined->op = T_AND;
+              combined->args.left = inner_filter;
+              combined->args.right = conjuncts[fi];
+              inner_filter = combined;
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    require_prm(correlation_eq != NULL,
+                "SELECT-list subquery WHERE must contain a correlation "
+                "predicate (inner.col = outer.col).");
+
+    // Both sides must be column references (T_IDENTIFIER with col_idx)
+    ConditionalExpression *lhs = correlation_eq->args.left;
+    ConditionalExpression *rhs = correlation_eq->args.right;
+    require_prm(lhs != NULL && rhs != NULL,
+                "Correlation predicate must have two sides.");
+    require_prm(lhs->op == T_IDENTIFIER && rhs->op == T_IDENTIFIER,
+                "Correlation predicate must compare two columns.");
+
+    // Determine which side is inner vs outer by matching table qualifier
+    // against the inner table name
+    LexCString inner_table = inner->root_table->alias;
+    Uint32 lhs_col_idx = lhs->col_idx;
+    Uint32 rhs_col_idx = rhs->col_idx;
+    LexCString lhs_qualifier = m_column_qualifiers[lhs_col_idx];
+    LexCString rhs_qualifier = m_column_qualifiers[rhs_col_idx];
+
+    bool lhs_is_inner =
+        (lhs_qualifier.str != NULL && inner_table.str != NULL &&
+         lhs_qualifier.len == inner_table.len &&
+         strncmp(lhs_qualifier.str, inner_table.str, inner_table.len) == 0);
+    bool rhs_is_inner =
+        (rhs_qualifier.str != NULL && inner_table.str != NULL &&
+         rhs_qualifier.len == inner_table.len &&
+         strncmp(rhs_qualifier.str, inner_table.str, inner_table.len) == 0);
+
+    require_prm(lhs_is_inner != rhs_is_inner,
+                "Correlation predicate must reference one inner and one "
+                "outer column.");
+
+    LexCString inner_col, outer_col, outer_table;
+    Uint32 outer_col_idx;
+    if (lhs_is_inner) {
+      inner_col = m_columns[lhs_col_idx];
+      outer_col = m_columns[rhs_col_idx];
+      outer_table = rhs_qualifier;
+      outer_col_idx = rhs_col_idx;
+    } else {
+      inner_col = m_columns[rhs_col_idx];
+      outer_col = m_columns[lhs_col_idx];
+      outer_table = lhs_qualifier;
+      outer_col_idx = lhs_col_idx;
+    }
+    // Clear m_col_is_inner for the outer correlation column — it was
+    // registered as "inner" because parsing occurred inside a subquery,
+    // but it references the outer table and must be resolved by load_join().
+    if (outer_col_idx < m_col_is_inner.size())
+      m_col_is_inner[outer_col_idx] = false;
+
+    // Extract the inner aggregate column's col_idx from the expression tree.
+    // For simple SUM(col), the arg is a Load expression with idx = col_idx.
+    // For COUNT(*), the arg is a LoadImmediate(1) — no column reference needed.
+    AggregationAPICompiler_Expr *agg_arg = inner_out->aggregate.arg;
+    bool is_count_star = (agg_fun == T_COUNT && agg_arg != NULL &&
+                          !agg_arg->isLoad());
+    require_prm(agg_arg != NULL && (agg_arg->isLoad() || is_count_star),
+                "SELECT-list subquery aggregate argument must be a simple "
+                "column reference (or COUNT(*)).");
+    Uint32 inner_agg_col_idx = is_count_star ? 0 : agg_arg->getLoadIdx();
+
+    SelectSubqueryLeaf leaf;
+    leaf.inner_stmt = inner;
+    leaf.output_node = out;
+    leaf.output_idx = output_idx;
+    leaf.inner_table_name = inner->root_table->name;
+    leaf.inner_table_alias = inner_table;
+    leaf.inner_join_col = inner_col;
+    leaf.outer_join_col = outer_col;
+    leaf.outer_join_table = outer_table;
+    leaf.agg_fun = agg_fun;
+    leaf.inner_agg_col = is_count_star ? LexCString{"*", 1}
+                                       : m_columns[inner_agg_col_idx];
+    leaf.inner_agg_col_idx = inner_agg_col_idx;
+    leaf.combined_agg_slot = 0;
+    leaf.merged_leaf_idx = 0;
+    leaf.use_inner_join = false;  // LEFT OUTER: unmatched entities get NULL
+    leaf.is_count_star = is_count_star;
+    // Separate inner-only predicates from cross-table predicates.
+    // Inner-only → pushed as NdbScanFilter on child scan.
+    // Cross-table → converted to conditional aggregation via BranchReg.
+    ConditionalExpression *inner_only_filter = NULL;
+    ConditionalExpression *cross_table_filter_ce = NULL;
+
+    if (inner_filter != NULL) {
+      // Flatten the inner_filter and classify each conjunct
+      ConditionalExpression *filter_conjuncts[32];
+      Uint32 num_filter_conjuncts = 0;
+      std::function<void(ConditionalExpression*)> flatten_filter =
+          [&](ConditionalExpression* ce) {
+        if (ce->op == T_AND) {
+          flatten_filter(ce->args.left);
+          flatten_filter(ce->args.right);
+        } else if (num_filter_conjuncts < 32) {
+          filter_conjuncts[num_filter_conjuncts++] = ce;
+        }
+      };
+      flatten_filter(inner_filter);
+
+      LexCString itbl = inner->root_table->alias;
+      for (Uint32 fi = 0; fi < num_filter_conjuncts; fi++) {
+        // Check if this conjunct references only inner table columns
+        bool has_outer_ref = false;
+        std::function<void(ConditionalExpression*)> check_refs =
+            [&](ConditionalExpression* ce) {
+          if (ce == NULL) return;
+          if (ce->op == T_IDENTIFIER) {
+            Uint32 cidx = ce->col_idx;
+            if (cidx < m_column_qualifiers.size() &&
+                m_column_qualifiers[cidx].str != NULL) {
+              LexCString q = m_column_qualifiers[cidx];
+              if (!(q.len == itbl.len &&
+                    strncmp(q.str, itbl.str, q.len) == 0)) {
+                has_outer_ref = true;
+              }
+            }
+            return;
+          }
+          if (ce->op == T_IS) { check_refs(ce->is.arg); return; }
+          if (ce->op == T_INT || ce->op == T_FLOAT ||
+              ce->op == T_STRING || ce->op == T_NULL) return;
+          check_refs(ce->args.left);
+          check_refs(ce->args.right);
+        };
+        check_refs(filter_conjuncts[fi]);
+
+        ConditionalExpression **target =
+            has_outer_ref ? &cross_table_filter_ce : &inner_only_filter;
+        if (*target == NULL) {
+          *target = filter_conjuncts[fi];
+        } else {
+          ConditionalExpression *combined =
+              m_amalloc->alloc_exc<ConditionalExpression>(1);
+          combined->op = T_AND;
+          combined->args.left = *target;
+          combined->args.right = filter_conjuncts[fi];
+          *target = combined;
+        }
+      }
+    }
+
+    leaf.inner_filter = inner_only_filter;
+    leaf.cross_table_filter = cross_table_filter_ce;
+
+    m_select_subquery_leaves.push(leaf);
+  }
+
+  if (m_select_subquery_leaves.size() == 0) return;
+
+  m_has_select_subqueries = true;
+
+  // Mark HAVING identifier columns that match output aliases as "inner"
+  // so load_join() skips them.  They'll be resolved in compile().
+  if (ast.having_expression != NULL) {
+    // Collect output alias names from SUBQUERY_AGG outputs
+    std::set<std::string> alias_names;
+    for (Outputs *out = ast.outputs; out != NULL; out = out->next) {
+      if (out->type == Outputs::Type::SUBQUERY_AGG &&
+          out->output_name.str != NULL && out->output_name.len > 0) {
+        alias_names.insert(std::string(out->output_name.str,
+                                       out->output_name.len));
+      }
+    }
+    // Walk columns and mark any that match an alias name
+    for (Uint32 c = 0; c < m_columns.size(); c++) {
+      if (m_column_qualifiers[c].str == NULL &&  // unqualified
+          alias_names.count(std::string(m_columns[c].str,
+                                        m_columns[c].len)) > 0) {
+        // Ensure m_col_is_inner is large enough
+        while (m_col_is_inner.size() <= c)
+          m_col_is_inner.push(false);
+        m_col_is_inner[c] = true;
+      }
+    }
+  }
+
+  // Merge subqueries on same table+join into single leaves
+  merge_same_table_subqueries();
+
+  // Inject join clauses for each merged leaf
+  rewrite_select_subqueries_as_joins();
+}
+
+/*
+ * merge_same_table_subqueries()
+ *
+ * Group SelectSubqueryLeaf entries by (inner_table_name, inner_join_col,
+ * outer_join_col).  Subqueries in the same group share a single leaf node
+ * with a combined aggregation program.
+ */
+void
+RonSQLPreparer::merge_same_table_subqueries()
+{
+  Uint32 n = m_select_subquery_leaves.size();
+  bool assigned[MAX_SQL_SUBQUERIES] = {};
+  require_prm(n <= MAX_SQL_SUBQUERIES, "Too many SELECT-list subqueries.");
+
+  Uint32 agg_slot = 0;
+  for (Uint32 i = 0; i < n; i++) {
+    if (assigned[i]) continue;
+    SelectSubqueryLeaf &base = m_select_subquery_leaves[i];
+
+    MergedLeaf ml;
+    ml.first_subquery_idx = i;
+    ml.num_aggs = 1;
+    ml.plan_op_idx = 0;
+    Uint32 ml_idx = m_merged_leaves.size();
+
+    base.merged_leaf_idx = ml_idx;
+    base.combined_agg_slot = agg_slot++;
+    assigned[i] = true;
+
+    for (Uint32 j = i + 1; j < n; j++) {
+      if (assigned[j]) continue;
+      SelectSubqueryLeaf &other = m_select_subquery_leaves[j];
+      if (base.inner_table_name.len == other.inner_table_name.len &&
+          strncmp(base.inner_table_name.str, other.inner_table_name.str,
+                  base.inner_table_name.len) == 0 &&
+          base.inner_join_col.len == other.inner_join_col.len &&
+          strncmp(base.inner_join_col.str, other.inner_join_col.str,
+                  base.inner_join_col.len) == 0 &&
+          base.outer_join_col.len == other.outer_join_col.len &&
+          strncmp(base.outer_join_col.str, other.outer_join_col.str,
+                  base.outer_join_col.len) == 0) {
+        other.merged_leaf_idx = ml_idx;
+        other.combined_agg_slot = agg_slot++;
+        ml.num_aggs++;
+        assigned[j] = true;
+
+        // Remap column qualifiers from other's alias to base's alias
+        // so that load_join() resolves them against the single joined table.
+        // Also update inner_table_alias so cross-table filter classification
+        // in execute_join() matches the remapped qualifiers.
+        LexCString other_alias = other.inner_table_alias;
+        LexCString base_alias = base.inner_table_alias;
+        other.inner_table_alias = base_alias;
+        for (Uint32 c = 0; c < m_column_qualifiers.size(); c++) {
+          if (m_column_qualifiers[c].str != NULL &&
+              m_column_qualifiers[c].len == other_alias.len &&
+              strncmp(m_column_qualifiers[c].str, other_alias.str,
+                      other_alias.len) == 0) {
+            m_column_qualifiers[c] = base_alias;
+          }
+        }
+      }
+    }
+
+    m_merged_leaves.push(ml);
+  }
+}
+
+/*
+ * rewrite_select_subqueries_as_joins()
+ *
+ * For each merged leaf, inject a JoinClause into the outer query's join list.
+ * This makes the inner table visible to load() and QueryPlanner::plan().
+ */
+void
+RonSQLPreparer::rewrite_select_subqueries_as_joins()
+{
+  SelectStatement &ast = m_context.ast_root;
+
+  for (Uint32 i = 0; i < m_merged_leaves.size(); i++) {
+    MergedLeaf &ml = m_merged_leaves[i];
+    SelectSubqueryLeaf &base = m_select_subquery_leaves[ml.first_subquery_idx];
+
+    JoinCondition *cond = m_amalloc->alloc_exc<JoinCondition>(1);
+    cond->child_table = base.inner_table_alias;
+    cond->child_column = base.inner_join_col;
+    cond->parent_table = base.outer_join_table;
+    cond->parent_column = base.outer_join_col;
+    cond->next = NULL;
+
+    JoinClause *jc = m_amalloc->alloc_exc<JoinClause>(1);
+    jc->join_type = base.use_inner_join
+        ? JoinClause::INNER_JOIN : JoinClause::LEFT_OUTER_JOIN;
+    jc->table = *base.inner_stmt->root_table;
+    jc->conditions = cond;
+    jc->next = NULL;
+
+    // Append to end of join list
+    if (ast.joins == NULL) {
+      ast.joins = jc;
+    } else {
+      JoinClause *last = ast.joins;
+      while (last->next != NULL) last = last->next;
+      last->next = jc;
+    }
+  }
+
+  // Auto-inject GROUP BY on the outer correlation key if there's no
+  // explicit GROUP BY.  This gives per-parent-row aggregation semantics.
+  if (ast.groupby_columns == NULL) {
+    // Use the outer correlation key from the first subquery leaf.
+    // All leaves correlate to the outer table — use the first one's key.
+    SelectSubqueryLeaf &first = m_select_subquery_leaves[0];
+
+    // Find col_idx for the outer correlation column.
+    // It's already in m_columns from the subquery parsing.
+    Uint32 outer_col_idx = UINT32_MAX;
+    for (Uint32 c = 0; c < m_columns.size(); c++) {
+      if (m_column_qualifiers[c].str != NULL &&
+          m_column_qualifiers[c].len == first.outer_join_table.len &&
+          strncmp(m_column_qualifiers[c].str, first.outer_join_table.str,
+                  first.outer_join_table.len) == 0 &&
+          m_columns[c].len == first.outer_join_col.len &&
+          strncmp(m_columns[c].str, first.outer_join_col.str,
+                  first.outer_join_col.len) == 0) {
+        outer_col_idx = c;
+        break;
+      }
+    }
+    require_prm(outer_col_idx != UINT32_MAX,
+                "Could not find outer correlation column for GROUP BY injection.");
+
+    GroupbyColumns *gb = m_amalloc->alloc_exc<GroupbyColumns>(1);
+    gb->col_idx = outer_col_idx;
+    gb->next = NULL;
+    ast.groupby_columns = gb;
+
+    // Also add all other COLUMN outputs to GROUP BY so the ResultPrinter
+    // doesn't reject them as ungrouped.  Since we GROUP BY the correlation
+    // key (typically PK), other outer columns are functionally dependent.
+    for (Outputs *out = ast.outputs; out != NULL; out = out->next) {
+      if (out->type == Outputs::Type::COLUMN &&
+          out->column.col_idx != outer_col_idx) {
+        GroupbyColumns *extra = m_amalloc->alloc_exc<GroupbyColumns>(1);
+        extra->col_idx = out->column.col_idx;
+        extra->next = NULL;
+        // Append to end of GROUP BY list
+        GroupbyColumns *last = ast.groupby_columns;
+        while (last->next != NULL) last = last->next;
+        last->next = extra;
+      }
+    }
+  }
+
+  // Clear m_col_is_inner for columns from the rewritten subquery tables.
+  // These columns were registered as "inner" during subquery parsing but
+  // are now part of the join and need to be resolved by load_join().
+  for (Uint32 i = 0; i < m_select_subquery_leaves.size(); i++) {
+    SelectSubqueryLeaf &leaf = m_select_subquery_leaves[i];
+    LexCString inner_alias = leaf.inner_table_alias;
+    for (Uint32 c = 0; c < m_columns.size(); c++) {
+      if (c < m_col_is_inner.size() && m_col_is_inner[c] &&
+          c < m_column_qualifiers.size() &&
+          m_column_qualifiers[c].str != NULL &&
+          m_column_qualifiers[c].len == inner_alias.len &&
+          strncmp(m_column_qualifiers[c].str, inner_alias.str,
+                  inner_alias.len) == 0) {
+        m_col_is_inner[c] = false;
+      }
+    }
+  }
+}
+
 void
 RonSQLPreparer::compile()
 {
+  // For multi-leaf subquery pushdown: rewrite SUBQUERY_AGG outputs to
+  // AGGREGATE outputs with the correct combined_agg_slot.  This makes
+  // the ResultPrinter treat them as regular aggregate results.
+  if (m_has_select_subqueries) {
+    for (Uint32 i = 0; i < m_select_subquery_leaves.size(); i++) {
+      SelectSubqueryLeaf &sl = m_select_subquery_leaves[i];
+      Outputs *out = sl.output_node;
+      ndbrequire(out->type == Outputs::Type::SUBQUERY_AGG);
+      out->type = Outputs::Type::AGGREGATE;
+      out->aggregate.fun = sl.agg_fun;
+      out->aggregate.arg = NULL;  // not used for result fetching
+      out->aggregate.agg_index = sl.combined_agg_slot;
+    }
+  }
+
+  // Resolve output aliases in HAVING expression for subquery aggregation.
+  // Walk the HAVING tree and map identifier nodes to their agg_index
+  // based on output alias names.
+  if (m_has_select_subqueries &&
+      m_context.ast_root.having_expression != NULL) {
+    // Build alias → agg_index map from rewritten outputs
+    std::map<std::string, Uint32> alias_map;
+    for (Outputs *out = m_context.ast_root.outputs; out; out = out->next) {
+      if (out->type == Outputs::Type::AGGREGATE &&
+          out->output_name.str != NULL && out->output_name.len > 0) {
+        std::string name(out->output_name.str, out->output_name.len);
+        alias_map[name] = out->aggregate.agg_index;
+      }
+    }
+    // Walk HAVING expression and resolve identifiers
+    std::function<void(ConditionalExpression*)> resolve_having_aliases =
+        [&](ConditionalExpression* ce) {
+      if (ce == NULL) return;
+      if (ce->op == T_IDENTIFIER) {
+        Uint32 col_idx = ce->col_idx;
+        if (col_idx < m_columns.size()) {
+          std::string name(m_columns[col_idx].str, m_columns[col_idx].len);
+          auto it = alias_map.find(name);
+          if (it != alias_map.end()) {
+            ce->having_agg.agg_index = it->second;
+            // Keep op as T_IDENTIFIER — evaluate_having_value handles it
+          }
+        }
+      }
+      if (ce->op == T_IS) {
+        resolve_having_aliases(ce->is.arg);
+      } else if (ce->op == T_AND || ce->op == T_OR ||
+                 ce->op == T_EQUALS || ce->op == T_NOT_EQUALS ||
+                 ce->op == T_GT || ce->op == T_GE ||
+                 ce->op == T_LT || ce->op == T_LE ||
+                 ce->op == T_PLUS || ce->op == T_MINUS ||
+                 ce->op == T_MULTIPLY || ce->op == T_SLASH) {
+        resolve_having_aliases(ce->args.left);
+        resolve_having_aliases(ce->args.right);
+      } else if (ce->op == T_NOT || ce->op == T_EXCLAMATION) {
+        resolve_having_aliases(ce->args.left);
+      }
+    };
+    resolve_having_aliases(m_context.ast_root.having_expression);
+  }
+
   // Compile aggregation program if applicable
   if (m_agg != NULL) {
     if (m_agg->compile()) {
@@ -2167,6 +3143,49 @@ RonSQLPreparer::compile()
       throw RonSQLPermanentError("Failed to compile aggregation program.");
     }
   }
+
+  // Cross-table WHERE filters require aggregation (BranchReg is in the
+  // aggregation program).  Non-aggregate queries with cross-table WHERE
+  // are not yet supported.
+  {
+    // Check for remaining (non-consumed) cross-table WHERE filters.
+    // Consumed filters (ce == NULL) were converted to index bounds.
+    bool has_remaining = false;
+    for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++) {
+      if (m_cross_table_where_filters[f].ce != NULL) {
+        has_remaining = true;
+        break;
+      }
+    }
+    if (has_remaining) {
+      if (m_agg == NULL) {
+        throw RonSQLPermanentError(
+            "Cross-table WHERE conditions (e.g., a.x > b.y) are only "
+            "supported in queries with aggregation (GROUP BY / aggregate "
+            "functions).  Split into separate conditions per table, or "
+            "add aggregation.");
+      }
+      // Pre-compute sentinel slot for ResultPrinter (set before construction).
+      // The actual sentinel instructions are emitted later in execute_join().
+      if (m_agg != NULL && !m_has_select_subqueries) {
+        Uint32 sentinel_slot = 0;
+        DynamicArray<AggregationAPICompiler::Instr>& prog = m_agg->m_program;
+        for (Uint32 pi = 0; pi < prog.size(); pi++) {
+          auto t = prog[pi].type;
+          if (t == AggregationAPICompiler::SVMInstrType::Sum ||
+              t == AggregationAPICompiler::SVMInstrType::Count ||
+              t == AggregationAPICompiler::SVMInstrType::Min ||
+              t == AggregationAPICompiler::SVMInstrType::Max ||
+              t == AggregationAPICompiler::SVMInstrType::AggRepeat) {
+            if (prog[pi].dest >= sentinel_slot)
+              sentinel_slot = prog[pi].dest + 1;
+          }
+        }
+        m_context.ast_root.sentinel_agg_slot = (Int32)sentinel_slot;
+      }
+    }
+  }
+
   // Compile post-processing/printer program
   m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
     ResultPrinter(m_amalloc,
@@ -2896,18 +3915,205 @@ RonSQLPreparer::execute_join()
 
   JoinPlan& plan = m_join_plan;
 
-  // Build aggregator on the leaf table
-  const NdbDictionary::Table* leaf_table =
-      plan.ops[plan.agg_leaf_idx].table;
-  NdbAggregator aggregator(leaf_table);
-  programAggregator_join(&aggregator);
-  require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
+  // Build aggregator(s).
+  // Multi-leaf: one NdbAggregator per merged leaf, each with its own program.
+  // Single-leaf: one NdbAggregator on plan.agg_leaf_idx (existing path).
+  NdbAggregator* leafAggs[MAX_SPJ_TREE_NODES] = {};
+  NdbAggregator singleAgg(plan.ops[plan.agg_leaf_idx].table);
+
+  if (m_has_select_subqueries && plan.num_agg_leaves > 0) {
+    // Build per-leaf aggregators for subquery pushdown
+    for (Uint32 ml = 0; ml < m_merged_leaves.size(); ml++) {
+      MergedLeaf &merged = m_merged_leaves[ml];
+      Uint32 op_idx = merged.plan_op_idx;
+      const NdbDictionary::Table* leaf_table = plan.ops[op_idx].table;
+      NdbAggregator* agg = new NdbAggregator(leaf_table);
+
+      // Program GROUP BY columns (all from root → GroupByLinked)
+      Uint32 linked_proj_pos = 0;
+      struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
+      while (groupby != NULL) {
+        Uint32 col_idx = groupby->col_idx;
+        if (m_column_table_idx[col_idx] == op_idx) {
+          require_prm(agg->GroupBy(m_column_attrId_map[col_idx]),
+                      "Failed to program GroupBy on leaf.");
+        } else {
+          require_prm(agg->GroupByLinked(linked_proj_pos,
+                                         m_column_map[col_idx]),
+                      "Failed to program GroupByLinked on leaf.");
+          linked_proj_pos++;
+        }
+        groupby = groupby->next;
+      }
+
+      // Program aggregate functions for all subqueries merged into this leaf.
+      // Slot indices are leaf-local (0-based); the kernel applies acc_offset.
+      Uint32 leaf_local_slot = 0;
+      for (Uint32 si = 0; si < m_select_subquery_leaves.size(); si++) {
+        SelectSubqueryLeaf &sl = m_select_subquery_leaves[si];
+        if (sl.merged_leaf_idx != ml) continue;
+
+        Uint32 col_idx = sl.inner_agg_col_idx;
+        NdbAttrId attr_id = m_column_attrId_map[col_idx];
+        Uint32 reg = 0;  // use register 0 for loads
+        Uint32 agg_slot = leaf_local_slot++;
+
+        // If cross-table filter exists, build conditional aggregation:
+        //   LoadLinkedColumn(linked_pos, reg_outer, outer_col)
+        //   LoadColumn(inner_attr_id, reg_inner)
+        //   BranchRegXx(reg_inner, reg_outer, 2) — skip Load+Agg
+        //   LoadColumn(agg_col, reg)
+        //   Sum/Count/etc(slot, reg)
+        //
+        // Without cross-table filter, just: LoadColumn + Agg
+        if (sl.cross_table_filter != NULL) {
+          ConditionalExpression *cf = sl.cross_table_filter;
+          require_prm(cf->args.left != NULL && cf->args.right != NULL &&
+                      cf->args.left->op == T_IDENTIFIER &&
+                      cf->args.right->op == T_IDENTIFIER,
+                      "Cross-table filter must be a simple column comparison.");
+          require_prm(cf->op == T_LT || cf->op == T_LE ||
+                      cf->op == T_GT || cf->op == T_GE ||
+                      cf->op == T_EQUALS || cf->op == T_NOT_EQUALS,
+                      "Cross-table filter must use <, <=, >, >=, = or !=.");
+
+          // Determine which side is inner, which is outer
+          Uint32 left_cidx = cf->args.left->col_idx;
+          Uint32 right_cidx = cf->args.right->col_idx;
+          LexCString itbl = sl.inner_table_alias;
+          bool left_is_inner =
+              (m_column_qualifiers[left_cidx].str != NULL &&
+               m_column_qualifiers[left_cidx].len == itbl.len &&
+               strncmp(m_column_qualifiers[left_cidx].str, itbl.str,
+                       itbl.len) == 0);
+
+          Uint32 inner_cidx = left_is_inner ? left_cidx : right_cidx;
+          Uint32 outer_cidx = left_is_inner ? right_cidx : left_cidx;
+
+          // Add linked projection for the outer column
+          Uint32 outer_lp_pos = find_or_add_linked_proj(
+              m_join_plan, m_column_table_idx[outer_cidx],
+              m_columns[outer_cidx].c_str());
+
+          // Load outer column into register 2 via linked projection
+          Uint32 reg_outer = 2;
+          require_prm(agg->LoadLinkedColumn(outer_lp_pos, reg_outer,
+                                            m_column_map[outer_cidx]),
+                      "Failed to load linked outer column for cross-table filter.");
+
+          // Load inner filter column into register 1
+          Uint32 reg_inner = 1;
+          NdbAttrId inner_filter_attr = m_column_attrId_map[inner_cidx];
+          require_prm(agg->LoadColumn(inner_filter_attr, reg_inner),
+                      "Failed to load inner column for cross-table filter.");
+
+          // Determine branch instruction: we want to SKIP aggregation
+          // when the filter does NOT match.
+          // Original filter: inner_col OP outer_col (when left_is_inner)
+          // We skip when the NEGATION is true.
+          // e.g., filter is "l.qty > o.min_qty" → skip when l.qty <= o.min_qty
+          //        → BranchRegLe(reg_inner, reg_outer, skip_2)
+          TokenKind filter_op = cf->op;
+          if (!left_is_inner) {
+            // Flip: if right is inner, swap operand order
+            // "o.min_qty < l.qty" is same as "l.qty > o.min_qty"
+            switch (filter_op) {
+            case T_LT: filter_op = T_GT; break;
+            case T_LE: filter_op = T_GE; break;
+            case T_GT: filter_op = T_LT; break;
+            case T_GE: filter_op = T_LE; break;
+            default: break;
+            }
+          }
+          // Now filter_op is from inner's perspective: inner_col OP outer_col
+          // We skip when NOT(inner_col OP outer_col):
+          //   NOT(a > b) = a <= b → BranchRegLe
+          //   NOT(a >= b) = a < b → BranchRegLt
+          //   NOT(a < b) = a >= b → BranchRegGe
+          //   NOT(a <= b) = a > b → BranchRegGt
+          //   NOT(a = b) = a != b → BranchRegNe
+          //   NOT(a != b) = a = b → BranchRegEq
+          Uint32 skip_count = 2;  // skip LoadColumn + Agg instruction
+          switch (filter_op) {
+          case T_GT:
+            require_prm(agg->BranchRegLe(reg_inner, reg_outer, skip_count),
+                        "Failed to program BranchRegLe.");
+            break;
+          case T_GE:
+            require_prm(agg->BranchRegLt(reg_inner, reg_outer, skip_count),
+                        "Failed to program BranchRegLt.");
+            break;
+          case T_LT:
+            require_prm(agg->BranchRegGe(reg_inner, reg_outer, skip_count),
+                        "Failed to program BranchRegGe.");
+            break;
+          case T_LE:
+            require_prm(agg->BranchRegGt(reg_inner, reg_outer, skip_count),
+                        "Failed to program BranchRegGt.");
+            break;
+          case T_EQUALS:
+            require_prm(agg->BranchRegNe(reg_inner, reg_outer, skip_count),
+                        "Failed to program BranchRegNe.");
+            break;
+          case T_NOT_EQUALS:
+            require_prm(agg->BranchRegEq(reg_inner, reg_outer, skip_count),
+                        "Failed to program BranchRegEq.");
+            break;
+          default:
+            require_prm(false,
+                "Unsupported cross-table filter operator.");
+          }
+        }
+
+        if (sl.is_count_star) {
+          require_prm(agg->LoadUint64(1, reg),
+                      "Failed to load immediate for COUNT(*).");
+        } else {
+          require_prm(agg->LoadColumn(attr_id, reg),
+                      "Failed to load column for subquery aggregate.");
+        }
+
+        switch (sl.agg_fun) {
+        case T_SUM:
+          require_prm(agg->Sum(agg_slot, reg),
+                      "Failed to program SUM.");
+          break;
+        case T_COUNT:
+          require_prm(agg->Count(agg_slot, reg),
+                      "Failed to program COUNT.");
+          break;
+        case T_MIN:
+          require_prm(agg->Min(agg_slot, reg),
+                      "Failed to program MIN.");
+          break;
+        case T_MAX:
+          require_prm(agg->Max(agg_slot, reg),
+                      "Failed to program MAX.");
+          break;
+        default:
+          require_prm(false, "Unsupported aggregate function in subquery.");
+        }
+      }
+
+      // No sentinel for multi-leaf subquery path — subquery results are
+      // consumed per-row by the subquery handler, not through ResultPrinter.
+      // Sentinel filtering only applies to explicit JOIN + GROUP BY queries
+      // (handled in programAggregator_join).
+
+      require_prm(agg->Finalize(), "Failed to finalize leaf aggregator.");
+      leafAggs[op_idx] = agg;
+    }
+  } else {
+    // Single-leaf path (existing)
+    programAggregator_join(&singleAgg);
+    require_prm(singleAgg.Finalize(), "Failed to finalize aggregator.");
+  }
 
   // Build NdbQueryBuilder tree
   NdbQueryBuilder* qb = NdbQueryBuilder::create();
   ndbrequire(qb != NULL);
 
-  const NdbQueryOperationDef* opDefs[MAX_JOIN_TABLES];
+  const NdbQueryOperationDef* opDefs[MAX_SPJ_TREE_NODES];
 
   // Root operation: PK lookup if WHERE fully covers PK, else TABLE_SCAN.
   // When children have scan ops, NDB doesn't support lookup root, so use
@@ -3068,11 +4274,24 @@ RonSQLPreparer::execute_join()
       opts.setInterpretedCode(child_code);
     }
 
-    // Attach aggregation to leaf
-    if (i == plan.agg_leaf_idx) {
-      require_run(opts.setAggregation(aggregator) == 0,
+    // Attach aggregation to leaf(s)
+    if (m_has_select_subqueries && plan.num_agg_leaves > 0 &&
+        leafAggs[i] != NULL) {
+      // Multi-leaf: attach this leaf's aggregator
+      require_run(opts.setAggregation(*leafAggs[i]) == 0,
+                  "Failed to set aggregation on leaf.");
+      for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
+        NdbLinkedOperand* lv = qb->linkedValue(
+            opDefs[plan.linked_projs[j].source_op_idx],
+            plan.linked_projs[j].column_name);
+        require_run(lv != NULL, "Failed to create linked projection.");
+        require_run(opts.addLinkedProjection(lv) == 0,
+                    "Failed to add linked projection.");
+      }
+    } else if (i == plan.agg_leaf_idx && plan.num_agg_leaves == 0) {
+      // Single-leaf: existing path
+      require_run(opts.setAggregation(singleAgg) == 0,
                   "Failed to set aggregation.");
-      // Add linked projections for GROUP BY on parent columns
       for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
         NdbLinkedOperand* lv = qb->linkedValue(
             opDefs[plan.linked_projs[j].source_op_idx],
@@ -3092,8 +4311,56 @@ RonSQLPreparer::execute_join()
       break;
     case JoinOp::INDEX_SCAN:
     {
-      NdbQueryIndexBound bound(keys);
-      opDefs[i] = qb->scanIndex(op.index, op.table, &bound, &opts);
+      if (op.num_low_bounds == 0 && op.num_high_bounds == 0)
+      {
+        // Simple equality bounds (join keys only)
+        NdbQueryIndexBound bound(keys);
+        opDefs[i] = qb->scanIndex(op.index, op.table, &bound, &opts);
+      }
+      else
+      {
+        // Range bounds: equality join keys + cross-table WHERE range
+        const NdbQueryOperand* lowKeys[MAX_JOIN_KEY_COLS * 2 + 1];
+        const NdbQueryOperand* highKeys[MAX_JOIN_KEY_COLS * 2 + 1];
+
+        // Copy equality join keys to both low and high
+        for (Uint32 k = 0; k < op.num_key_cols; k++) {
+          lowKeys[k] = highKeys[k] = qb->linkedValue(
+              opDefs[op.parent_op_idx], op.parent_key_col_names[k]);
+          require_run(lowKeys[k] != NULL, "Failed to create linked value.");
+        }
+
+        // Append lower range bounds after equality prefix
+        bool lowIncl = true;
+        Uint32 lowIdx = op.num_key_cols;
+        for (Uint32 b = 0; b < op.num_low_bounds; b++) {
+          lowKeys[lowIdx] = qb->linkedValue(
+              opDefs[op.low_bounds[b].parent_op_idx],
+              op.low_bounds[b].parent_col_name);
+          require_run(lowKeys[lowIdx] != NULL,
+                      "Failed to create linked lower bound.");
+          lowIncl = op.low_bounds[b].inclusive;
+          lowIdx++;
+        }
+        lowKeys[lowIdx] = nullptr;
+
+        // Append upper range bounds after equality prefix
+        bool highIncl = true;
+        Uint32 highIdx = op.num_key_cols;
+        for (Uint32 b = 0; b < op.num_high_bounds; b++) {
+          highKeys[highIdx] = qb->linkedValue(
+              opDefs[op.high_bounds[b].parent_op_idx],
+              op.high_bounds[b].parent_col_name);
+          require_run(highKeys[highIdx] != NULL,
+                      "Failed to create linked upper bound.");
+          highIncl = op.high_bounds[b].inclusive;
+          highIdx++;
+        }
+        highKeys[highIdx] = nullptr;
+
+        NdbQueryIndexBound bound(lowKeys, lowIncl, highKeys, highIncl);
+        opDefs[i] = qb->scanIndex(op.index, op.table, &bound, &opts);
+      }
       break;
     }
     default:
@@ -3103,18 +4370,26 @@ RonSQLPreparer::execute_join()
   }
 
   // Prepare and execute
+  PERF_TS(t_qb_prepare);
   const NdbQueryDef* queryDef = qb->prepare(ndb);
   require_run(queryDef != NULL, "Failed to prepare query.");
+  PERF_TS(t_qb_prepared);
+  PERF_LOG("  qb->prepare", t_qb_prepare, t_qb_prepared);
 
   NdbQuery* query = m_trans->createQuery(queryDef);
   require_run(query != NULL, "Failed to create query.");
 
+  PERF_TS(t_exec_start);
   require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
               "Failed to execute transaction.");
+  PERF_TS(t_exec_sent);
+  PERF_LOG("  trans->execute", t_exec_start, t_exec_sent);
 
   // Consume all rows
   NdbQuery::NextResultOutcome rc;
   while ((rc = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  PERF_TS(t_drain_done);
+  PERF_LOG("  drain results", t_exec_sent, t_drain_done);
   if (rc == NdbQuery::NextResult_error)
   {
     const NdbError& err = query->getNdbError();
@@ -3128,14 +4403,26 @@ RonSQLPreparer::execute_join()
   }
 
   // Collect and print aggregation results
+  PERF_TS(t_result_start);
   NdbAggregator* resultAgg = query->getAggregator();
   ndbrequire(resultAgg != NULL);
   m_resultprinter->print_result(resultAgg, m_conf.out_stream);
+  PERF_TS(t_result_done);
+  PERF_LOG("  print results", t_result_start, t_result_done);
+  PERF_LOG("  execute total", t_qb_prepare, t_result_done);
 
   // Cleanup
   query->close();
   queryDef->destroy();
   qb->destroy();
+
+  // Free per-leaf aggregators
+  for (Uint32 i = 0; i < MAX_SPJ_TREE_NODES; i++) {
+    if (leafAggs[i] != NULL) {
+      delete leafAggs[i];
+      leafAggs[i] = NULL;
+    }
+  }
 }
 
 std::ostream& operator<<(std::ostream& os, const NdbError& err) {
@@ -4141,6 +5428,175 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
   }
 }
 
+/*
+ * Compute the minimum number of registers needed to evaluate a filter
+ * expression.  Used to reject expressions too complex for the 2-register
+ * per-side scheme (reg + tmp_reg).
+ *   Leaf (column/constant): 1
+ *   Binary op: max(left, right) if different, left+1 if equal
+ */
+static Uint32
+filter_expr_reg_depth(ConditionalExpression* ce)
+{
+  switch (ce->op) {
+  case T_IDENTIFIER:
+  case T_INT:
+  case T_FLOAT:
+    return 1;
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+  {
+    Uint32 ld = filter_expr_reg_depth(ce->args.left);
+    Uint32 rd = filter_expr_reg_depth(ce->args.right);
+    return (ld == rd) ? ld + 1 : (ld > rd ? ld : rd);
+  }
+  default:
+    return 99;  // unsupported → will be caught later
+  }
+}
+
+/*
+ * Count the number of NdbAggregator program words needed to compile
+ * a filter expression (single-table or constant-only subtree) into
+ * a register.  Supports: identifiers, integer/float constants,
+ * and +, -, * arithmetic.
+ */
+static Uint32
+filter_expr_word_count_impl(ConditionalExpression* ce)
+{
+  switch (ce->op) {
+  case T_IDENTIFIER:
+    return 1;  // LoadColumn or LoadLinkedColumn
+  case T_INT:
+    return 3;  // LoadInt64
+  case T_FLOAT:
+    return 3;  // LoadUint64 (double via reinterpret)
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+    return filter_expr_word_count_impl(ce->args.left) +
+           filter_expr_word_count_impl(ce->args.right) + 1;  // +1 for arith op
+  default:
+    require_prm(false,
+        "Unsupported expression in cross-table WHERE filter. "
+        "Only columns, integer constants, and +/-/* are supported.");
+    return 0;
+  }
+}
+
+Uint32
+RonSQLPreparer::filter_expr_word_count(ConditionalExpression* ce)
+{
+  return filter_expr_word_count_impl(ce);
+}
+
+/*
+ * Compute total program words for a CrossTableFilter (comparison or OR).
+ * For a simple comparison: left_words + right_words + 1 (BranchReg).
+ * For OR with K atoms: sum of per-atom words + K-1 Skip instructions.
+ *   Non-last atom: left_words + right_words + 1 (BranchReg) + 1 (Skip)
+ *   Last atom:     left_words + right_words + 1 (BranchReg)
+ */
+static Uint32
+cross_table_filter_word_count(ConditionalExpression* ce,
+    Uint32 (*expr_wc)(ConditionalExpression*))
+{
+  if (ce->op != T_OR) {
+    // Simple comparison
+    return expr_wc(ce->args.left) + expr_wc(ce->args.right) + 1;
+  }
+  // OR: flatten and sum
+  ConditionalExpression* atoms[32];
+  Uint32 n = 0;
+  std::function<void(ConditionalExpression*)> flatten =
+      [&](ConditionalExpression* node) {
+    if (node->op == T_OR) {
+      flatten(node->args.left);
+      flatten(node->args.right);
+    } else if (n < 32) {
+      atoms[n++] = node;
+    }
+  };
+  flatten(ce);
+  Uint32 total = 0;
+  for (Uint32 i = 0; i < n; i++) {
+    total += expr_wc(atoms[i]->args.left) +
+             expr_wc(atoms[i]->args.right) + 1;  // loads + BranchReg
+    if (i < n - 1) total += 1;  // Skip instruction for non-last
+  }
+  return total;
+}
+
+/*
+ * Emit NdbAggregator instructions to evaluate a single-table expression
+ * into `reg`.  Uses `tmp_reg` as scratch for binary operations.
+ * `leaf_idx` determines whether to use LoadColumn (leaf) or
+ * LoadLinkedColumn (ancestor).
+ */
+void
+RonSQLPreparer::emit_filter_expr(NdbAggregator* agg,
+                                  ConditionalExpression* ce,
+                                  Uint32 leaf_idx, Uint32 reg,
+                                  Uint32 tmp_reg)
+{
+  switch (ce->op) {
+  case T_IDENTIFIER:
+  {
+    Uint32 cidx = ce->col_idx;
+    if (m_column_table_idx[cidx] == leaf_idx) {
+      programAggregator_do_or_fail(
+          agg->LoadColumn(m_column_attrId_map[cidx], reg));
+    } else {
+      Uint32 lp = find_or_add_linked_proj(
+          m_join_plan, m_column_table_idx[cidx],
+          m_columns[cidx].c_str());
+      programAggregator_do_or_fail(
+          agg->LoadLinkedColumn(lp, reg, m_column_map[cidx]));
+    }
+    break;
+  }
+  case T_INT:
+    programAggregator_do_or_fail(
+        agg->LoadInt64(ce->constant_integer, reg));
+    break;
+  case T_FLOAT:
+  {
+    // Load double as uint64 via reinterpret
+    Uint64 bits;
+    double d = ce->constant_float.dbl;
+    memcpy(&bits, &d, sizeof(bits));
+    programAggregator_do_or_fail(agg->LoadUint64(bits, reg));
+    break;
+  }
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+  {
+    // Evaluate left into reg, right into tmp_reg, then operate
+    emit_filter_expr(agg, ce->args.left, leaf_idx, reg, tmp_reg);
+    emit_filter_expr(agg, ce->args.right, leaf_idx, tmp_reg, reg);
+    switch (ce->op) {
+    case T_PLUS:
+      programAggregator_do_or_fail(agg->Add(reg, tmp_reg));
+      break;
+    case T_MINUS:
+      programAggregator_do_or_fail(agg->Minus(reg, tmp_reg));
+      break;
+    case T_MULTIPLY:
+      programAggregator_do_or_fail(agg->Mul(reg, tmp_reg));
+      break;
+    default:
+      break;
+    }
+    break;
+  }
+  default:
+    require_prm(false,
+        "Unsupported expression in cross-table WHERE filter.");
+  }
+}
+
 void
 RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
 {
@@ -4167,6 +5623,126 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
       linked_proj_pos++;
     }
     groupby = groupby->next;
+  }
+
+  // Emit cross-table WHERE filters as BranchReg conditional aggregation.
+  // Each filter skips ALL aggregation instructions if not satisfied.
+  // A hidden sentinel COUNT accumulator is appended so that groups where
+  // no rows passed the filter can be suppressed at result time.
+  bool has_branchreg_filter = false;
+  if (m_cross_table_where_filters.size() > 0)
+  {
+    // Check if any remaining (non-consumed) cross-table filters exist
+    for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++) {
+      CrossTableFilter& ctf = m_cross_table_where_filters[f];
+      if (ctf.ce != NULL)
+        has_branchreg_filter = true;
+    }
+    Uint32 agg_word_count = m_agg->raw_word_size(0, m_agg->m_program.size());
+    // Add 4 words for sentinel (LoadUint64=3 + Count=1) that follows agg ops
+    if (has_branchreg_filter)
+      agg_word_count += 4;
+    // Helper: emit negated BranchReg for a comparison atom
+    auto emit_negated_branch = [&](ConditionalExpression* atom,
+                                   Uint32 skip_count) {
+      Uint32 reg_left = 1, reg_right = 2, tmp_reg = 3;
+      emit_filter_expr(aggregator, atom->args.left, leaf_idx,
+                        reg_left, tmp_reg);
+      emit_filter_expr(aggregator, atom->args.right, leaf_idx,
+                        reg_right, tmp_reg);
+      switch (atom->op) {
+      case T_GT:
+        programAggregator_do_or_fail(
+            aggregator->BranchRegLe(reg_left, reg_right, skip_count));
+        break;
+      case T_GE:
+        programAggregator_do_or_fail(
+            aggregator->BranchRegLt(reg_left, reg_right, skip_count));
+        break;
+      case T_LT:
+        programAggregator_do_or_fail(
+            aggregator->BranchRegGe(reg_left, reg_right, skip_count));
+        break;
+      case T_LE:
+        programAggregator_do_or_fail(
+            aggregator->BranchRegGt(reg_left, reg_right, skip_count));
+        break;
+      case T_EQUALS:
+        programAggregator_do_or_fail(
+            aggregator->BranchRegNe(reg_left, reg_right, skip_count));
+        break;
+      case T_NOT_EQUALS:
+        programAggregator_do_or_fail(
+            aggregator->BranchRegEq(reg_left, reg_right, skip_count));
+        break;
+      default:
+        require_prm(false, "Unsupported cross-table WHERE operator.");
+      }
+    };
+
+    for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
+    {
+      CrossTableFilter& ctf = m_cross_table_where_filters[f];
+      if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
+
+      // Compute remaining filter words for skip count
+      Uint32 remaining_words = 0;
+      for (Uint32 f2 = f + 1; f2 < m_cross_table_where_filters.size(); f2++)
+      {
+        CrossTableFilter& ctf2 = m_cross_table_where_filters[f2];
+        if (ctf2.ce == NULL) continue;
+        remaining_words += cross_table_filter_word_count(
+            ctf2.ce, filter_expr_word_count_impl);
+      }
+
+      if (ctf.ce->op != T_OR) {
+        // Simple comparison: emit single negated BranchReg
+        Uint32 skip_count = agg_word_count + remaining_words;
+        emit_negated_branch(ctf.ce, skip_count);
+      } else {
+        // OR filter: chained BranchReg + Skip pattern.
+        // Non-last atoms: BranchReg_neg(1) + Skip(N) → match jumps to agg
+        // Last atom: BranchReg_neg(agg_words) → no match skips agg
+        ConditionalExpression* atoms[32];
+        Uint32 num_atoms = 0;
+        std::function<void(ConditionalExpression*)> flatten_or =
+            [&](ConditionalExpression* node) {
+          if (node->op == T_OR) {
+            flatten_or(node->args.left);
+            flatten_or(node->args.right);
+          } else if (num_atoms < 32) {
+            atoms[num_atoms++] = node;
+          }
+        };
+        flatten_or(ctf.ce);
+
+        // Compute per-atom word counts for skip offset calculation
+        Uint32 atom_words[32];
+        for (Uint32 a = 0; a < num_atoms; a++) {
+          atom_words[a] = filter_expr_word_count_impl(atoms[a]->args.left) +
+                          filter_expr_word_count_impl(atoms[a]->args.right) + 1;
+        }
+
+        for (Uint32 a = 0; a < num_atoms; a++) {
+          bool is_last = (a == num_atoms - 1);
+          if (!is_last) {
+            // Non-match → skip BranchReg(1) skips the Skip instruction
+            emit_negated_branch(atoms[a], 1);
+            // Match → Skip past remaining OR branches to agg ops
+            Uint32 skip_to_agg = 0;
+            for (Uint32 a2 = a + 1; a2 < num_atoms; a2++) {
+              skip_to_agg += atom_words[a2];
+              if (a2 < num_atoms - 1) skip_to_agg += 1;  // Skip instr
+            }
+            programAggregator_do_or_fail(aggregator->Skip(skip_to_agg));
+          } else {
+            // Last atom: non-match skips all agg ops + remaining filters
+            Uint32 skip_count = agg_word_count + remaining_words;
+            emit_negated_branch(atoms[a], skip_count);
+          }
+        }
+      }
+    }
   }
 
   // Program aggregations — same as single-table path
@@ -4270,6 +5846,28 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
       abort();
     }
   }
+
+  // Emit hidden sentinel COUNT: counts rows that passed cross-table filters.
+  // Groups where sentinel is 0 are suppressed at result time.
+  if (has_branchreg_filter) {
+    // Sentinel slot = next slot after all user-visible aggregate slots
+    Uint32 sentinel_slot = 0;
+    for (Uint32 i = 0; i < program.size(); i++) {
+      auto t = program[i].type;
+      if (t == AggregationAPICompiler::SVMInstrType::Sum ||
+          t == AggregationAPICompiler::SVMInstrType::Count ||
+          t == AggregationAPICompiler::SVMInstrType::Min ||
+          t == AggregationAPICompiler::SVMInstrType::Max ||
+          t == AggregationAPICompiler::SVMInstrType::AggRepeat) {
+        if (program[i].dest >= sentinel_slot)
+          sentinel_slot = program[i].dest + 1;
+      }
+    }
+    Uint32 reg = 0;
+    programAggregator_do_or_fail(aggregator->LoadUint64(1, reg));
+    programAggregator_do_or_fail(aggregator->Count(sentinel_slot, reg));
+    // sentinel_agg_slot already set in compile() before ResultPrinter creation
+  }
 }
 
 void
@@ -4303,11 +5901,14 @@ RonSQLPreparer::generate_embedded_condition(
     atoms.push(ce);
   }
 
-  // Compute embedded word sizes.
-  // The embedded interpreter runs interpreterNextLab() which reads columns via
-  // readAttributes() from the local tuple. For join queries, only columns on
-  // the aggregation leaf table are accessible — columns from parent tables
-  // arrive as linked attributes in the signal buffer, not readable by attrId.
+  // Compute embedded word sizes and detect parent-table columns.
+  // Parent columns need READ_LINKED_TO_MEM + BRANCH_MEM_OP_ARG instead of
+  // BRANCH_ATTR_OP_ARG. All atoms in a CASE must reference the same column
+  // (enforced by the parser), so we check the first atom.
+  Uint32 leaf_idx = (m_column_table_idx != NULL) ? m_join_plan.agg_leaf_idx : 0;
+  bool has_linked_col = false;
+  Uint32 linked_position = 0;
+
   Uint32 total_branch_words = 0;
   for (Uint32 a = 0; a < atoms.size(); a++)
   {
@@ -4315,20 +5916,22 @@ RonSQLPreparer::generate_embedded_condition(
     ndbrequire(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS);
     ConditionalExpression* col_side = atom->args.left;
     ndbrequire(col_side->op == T_IDENTIFIER);
-    if (m_column_table_idx != NULL)
-    {
-      Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
-      require_prm(m_column_table_idx[col_side->col_idx] == leaf_idx,
-                  "CASE condition column must be on the aggregation leaf table. "
-                  "Columns from parent tables in CASE conditions are not yet "
-                  "supported.");
+    if (m_column_table_idx != NULL &&
+        m_column_table_idx[col_side->col_idx] != leaf_idx) {
+      has_linked_col = true;
+      linked_position = find_or_add_linked_proj(
+          m_join_plan, m_column_table_idx[col_side->col_idx],
+          m_columns[col_side->col_idx].c_str());
     }
     const NdbDictionary::Column* col = m_column_map[col_side->col_idx];
     Uint32 byte_len = col->getLength();
     Uint32 data_words = (byte_len + 3) / 4;
-    total_branch_words += 2 + data_words;
+    // BRANCH_MEM_OP_ARG: 4 words (opcode, attrId|len, tableId, schemaVer) + data
+    // BRANCH_ATTR_OP_ARG: 2 words (opcode, attrId|len) + data
+    total_branch_words += (has_linked_col ? 4 : 2) + data_words;
   }
-  Uint32 emb_len = total_branch_words + 6;
+  // If linked column: add 1 word for READ_LINKED_TO_MEM before the branches
+  Uint32 emb_len = total_branch_words + 6 + (has_linked_col ? 1 : 0);
 
   // For OR:  branches → second_exit (THEN), fall-through → first_exit (ELSE)
   // For AND: branches → second_exit (ELSE), fall-through → first_exit (THEN)
@@ -4340,7 +5943,14 @@ RonSQLPreparer::generate_embedded_condition(
 
   programAggregator_do_or_fail(aggregator->EmbeddedInterp(emb_len));
 
-  Uint32 pos = 0;
+  // If linked column, emit READ_LINKED_TO_MEM first to load the parent
+  // column value into cheapMemory[0] for BRANCH_MEM_OP_ARG to read.
+  if (has_linked_col) {
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::READ_LINKED_TO_MEM | (linked_position << 16)));
+  }
+
+  Uint32 pos = has_linked_col ? 1 : 0;
   for (Uint32 a = 0; a < atoms.size(); a++)
   {
     ConditionalExpression* atom = atoms[a];
@@ -4367,11 +5977,28 @@ RonSQLPreparer::generate_embedded_condition(
       cond = (atom->op == T_EQUALS) ? Interpreter::EQ : Interpreter::NE;
     }
 
-    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-        Interpreter::BranchCol(cond, Interpreter::NULL_CMP_EQUAL) |
-        (branch_offset << 16)));
-    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-        Interpreter::BranchCol_2(attr_id, byte_len)));
+    if (has_linked_col) {
+      // Parent-table column: use BRANCH_MEM_OP_ARG (reads from cheapMemory[0])
+      // Get parent table's tableId and schemaVersion for type lookup
+      Uint32 parent_op = m_column_table_idx[col_side->col_idx];
+      const NdbDictionary::Table* parentTable = m_join_plan.ops[parent_op].table;
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::BranchMem(cond, Interpreter::NULL_CMP_EQUAL) |
+          (branch_offset << 16)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::BranchMem_2(attr_id, byte_len)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          parentTable->getTableId()));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          parentTable->getObjectVersion()));
+    } else {
+      // Leaf-table column: use BRANCH_ATTR_OP_ARG (reads via readAttributes)
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::BranchCol(cond, Interpreter::NULL_CMP_EQUAL) |
+          (branch_offset << 16)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::BranchCol_2(attr_id, byte_len)));
+    }
 
     raw_value rv = encode_constant(val_side, col);
     Uint32 padded_len = data_words * 4;
@@ -4410,6 +6037,82 @@ void
 RonSQLPreparer::print()
 {
   std::basic_ostream<char>& out = *m_conf.out_stream;
+
+  // Print join plan at the top for multi-table queries
+  if (m_conf.ndb != NULL && m_scan_config == NULL && m_join_plan.num_ops > 1) {
+    const JoinPlan& jp = m_join_plan;
+    out << "Join plan (" << jp.num_ops << " operations):\n";
+    for (Uint32 i = 0; i < jp.num_ops; i++) {
+      const JoinOp& op = jp.ops[i];
+      bool is_last = (i + 1 == jp.num_ops);
+      out << (is_last ? "╰─ " : "├─ ") << i << ": ";
+      if (op.is_root) {
+        out << "[ROOT] ";
+      } else {
+        switch (op.match_type) {
+        case JoinOp::INNER:      out << "[INNER] ";      break;
+        case JoinOp::LEFT_OUTER: out << "[LEFT JOIN] ";   break;
+        case JoinOp::SEMI_JOIN:  out << "[SEMI] ";        break;
+        case JoinOp::ANTI_JOIN:  out << "[ANTI] ";        break;
+        }
+      }
+      switch (op.type) {
+      case JoinOp::TABLE_SCAN:     out << "TABLE_SCAN ";    break;
+      case JoinOp::INDEX_SCAN:     out << "INDEX_SCAN ";    break;
+      case JoinOp::PK_LOOKUP:      out << "PK_LOOKUP ";     break;
+      case JoinOp::UNIQUE_LOOKUP:  out << "UNIQUE_LOOKUP "; break;
+      }
+      out << op.table->getName();
+      if (op.alias.len > 0) out << " AS " << op.alias.c_str();
+      out << '\n';
+      const char *indent = is_last ? "   " : "│  ";
+      if (op.index != NULL) {
+        out << indent << "  Index: " << op.index->getName() << "(";
+        for (Uint32 c = 0; c < op.index->getNoOfColumns(); c++) {
+          if (c > 0) out << ", ";
+          out << op.index->getColumn(c)->getName();
+        }
+        out << ")\n";
+      }
+      if (!op.is_root && op.num_key_cols > 0) {
+        out << indent << "  Key: ";
+        for (Uint32 k = 0; k < op.num_key_cols; k++) {
+          if (k > 0) out << ", ";
+          out << op.child_key_col_names[k] << " = "
+              << jp.ops[op.parent_op_idx].alias.c_str()
+              << "." << op.parent_key_col_names[k];
+        }
+        out << '\n';
+      }
+      if (op.num_low_bounds > 0 || op.num_high_bounds > 0) {
+        out << indent << "  Bounds:";
+        for (Uint32 b = 0; b < op.num_low_bounds; b++) {
+          out << " " << op.low_bounds[b].child_col_name
+              << (op.low_bounds[b].inclusive ? " >= " : " > ")
+              << jp.ops[op.low_bounds[b].parent_op_idx].alias.c_str()
+              << "." << op.low_bounds[b].parent_col_name;
+        }
+        for (Uint32 b = 0; b < op.num_high_bounds; b++) {
+          out << " " << op.high_bounds[b].child_col_name
+              << (op.high_bounds[b].inclusive ? " <= " : " < ")
+              << jp.ops[op.high_bounds[b].parent_op_idx].alias.c_str()
+              << "." << op.high_bounds[b].parent_col_name;
+        }
+        out << '\n';
+      }
+      if (jp.num_agg_leaves > 0) {
+        for (Uint32 a = 0; a < jp.num_agg_leaves; a++) {
+          if (jp.agg_leaf_indices[a] == i) {
+            out << indent << "  ** Aggregation leaf **\n";
+            break;
+          }
+        }
+      } else if (jp.agg_leaf_idx == i && !op.is_root) {
+        out << indent << "  ** Aggregation leaf **\n";
+      }
+    }
+    out << '\n';
+  }
 
   // Print query parse tree
   SelectStatement& ast_root = m_context.ast_root;
@@ -4532,6 +6235,8 @@ RonSQLPreparer::print()
   // Print scan information
   if (m_conf.ndb == NULL) {
     out << "No NDB connection, so no index scan analysis.\n";
+  } else if (m_scan_config == NULL) {
+    // Join plan already printed at the top
   } else {
     ScanConfig& sc = *m_scan_config;
     if (sc.index == NULL) {

@@ -159,9 +159,11 @@ struct DABits {
     NI_AGGREGATE = 0x2000,
 
     /**
-     * This node is the aggregation leaf - it executes the aggregation
+     * This node is an aggregation leaf - it executes the aggregation
      * program (in DBLQH) and sends aggregated results to the API.
-     * Must be set together with NI_AGGREGATE on exactly one leaf node.
+     * Must be set together with NI_AGGREGATE on one or more leaf nodes.
+     * For multi-leaf star schema queries, multiple leaves share a single
+     * aggregation state with combined accumulators.
      */
     NI_AGGREGATE_LEAF = 0x4000,
 
