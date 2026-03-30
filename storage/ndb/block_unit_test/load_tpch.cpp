@@ -176,9 +176,15 @@ connectMysql(int mysqlPort)
     fprintf(stderr, "mysql_init failed\n");
     return nullptr;
   }
+  /* Set connect timeout so we don't hang forever if mysqld is stuck
+     during NDB setup (ndb-wait-setup can take up to 120s) */
+  unsigned int timeout = 150;
+  mysql_options(conn, MYSQL_OPT_CONNECT_TIMEOUT, &timeout);
   if (mysql_real_connect(conn, "127.0.0.1", "root", "",
                          "test", mysqlPort, nullptr, 0) == nullptr) {
-    fprintf(stderr, "mysql_real_connect failed: %s\n", mysql_error(conn));
+    fprintf(stderr, "mysql_real_connect failed: %s\n"
+            "  Hint: mysqld may still be in NDB setup — check the "
+            "mysqld error log\n", mysql_error(conn));
     mysql_close(conn);
     return nullptr;
   }
