@@ -1001,27 +1001,30 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
     const Uint32 readLen = cinBuffer[0] + cinBuffer[1] +
       cinBuffer[2] + cinBuffer[3];
 
+    const Uint32 paramAreaStart = 5 + readLen;
+    jamDataDebug(paramAreaStart);
     Uint32 paramLen = 0;
     if (cinBuffer[4] == 0) {
       jamDebug();
       // No parameters supplied in this attrInfo
-    } else if (storedPtr.p->storedParamNo == 0) {
+    } else if (storedPtr.p->storedParamOffset == 0) {
       jamDebug();
       // First parameter — already in position
       paramLen = cinBuffer[4];
+      ndbassert(paramAreaStart + paramLen <= totalLen);
     } else {
       jamDebug();
-      // Walk to the storedParamNo-th parameter and move it into position
-      Uint32* paramBase = &cinBuffer[5 + readLen];
-      for (uint i = 0; i < storedPtr.p->storedParamNo; i++) {
-        Uint32 pLen = *paramBase;
-        paramBase += pLen;
-      }
+      // Jump directly to current parameter using cached offset
+      const Uint32 paramOffset =
+        paramAreaStart + storedPtr.p->storedParamOffset;
+      ndbassert(paramOffset < totalLen);
+      Uint32* paramBase = &cinBuffer[paramOffset];
       paramLen = *paramBase;
-      memmove(&cinBuffer[5 + readLen], paramBase,
+      ndbassert(paramOffset + paramLen <= totalLen);
+      memmove(&cinBuffer[paramAreaStart], paramBase,
               paramLen * sizeof(Uint32));
+      cinBuffer[4] = paramLen;
     }
-    cinBuffer[4] = paramLen;
 
     // Moz
     if (scan_rec != nullptr) {
@@ -1048,6 +1051,7 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
   } else {
     jamDebug();
     ndbassert(storedPtr.p->storedParamNo == 0);
+    ndbassert(storedPtr.p->storedParamOffset == 0);
   }
 
   /* Cache the full linearized section on first call (scan procedures only) */
@@ -1070,6 +1074,23 @@ void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
   ndbrequire(((storedPtr.p->storedCode == ZSCAN_PROCEDURE) ||
         (storedPtr.p->storedCode == ZCOPY_PROCEDURE)));
 
+  /* Advance storedParamOffset past current param block.
+   * Read block length from cached linear buffer, not cinBuffer,
+   * since cinBuffer may have been overwritten by a real-time break.
+   * Only advance when parameters exist (buf[4] > 0). For scans
+   * without parameters, nextAttrInfoParam is still called (opExec
+   * is set) but there is nothing to skip. */
+  Uint32* buf = storedPtr.p->cachedLinearAttrInfo;
+  if (buf != nullptr && buf[4] > 0) {
+    jamDebug();
+    const Uint32 readLen = buf[0] + buf[1] + buf[2] + buf[3];
+    const Uint32 paramAreaStart = 5 + readLen;
+    ndbassert(paramAreaStart + storedPtr.p->storedParamOffset <
+              storedPtr.p->cachedLinearLen);
+    const Uint32 paramBlockLen =
+      buf[paramAreaStart + storedPtr.p->storedParamOffset];
+    storedPtr.p->storedParamOffset += paramBlockLen;
+  }
   storedPtr.p->storedParamNo++;
 }
 

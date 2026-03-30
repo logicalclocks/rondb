@@ -1645,6 +1645,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
 
     Uint32 storedProcIVal;
     Uint32 storedParamNo; // Current attrInfo param being used
+    Uint32 storedParamOffset; // Cumulative word offset to current param
     Uint32 lastSegment;
     Uint32* cachedLinearAttrInfo;  // Linearized copy of section, or nullptr
     Uint32  cachedLinearLen;       // Length in words

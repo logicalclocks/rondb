@@ -83,14 +83,41 @@ s.threadId: 5, ..., s.bn: 248/1 "DBSPJ", s.proc: 1, ..., length: 14, trace: 0, #
 
 Fields:
 - `r.bn: 247/3 "DBLQH"` — Receiver block number / instance "BlockName"
+- `r.sigId: 12345` — Receiver's signal ID (unique per thread, monotonically increasing)
 - `gsn: 353 "SCAN_FRAGREQ"` — Signal type (GlobalSignalNumber)
 - `s.bn: 248/1 "DBSPJ"` — Sender block / instance
+- `s.sigId: 6789` — Sender's signal ID (the signal that caused this one to be sent)
 - `s.threadId` — Sender thread (only for local signals)
 - `prio` — JBA (high priority) or JBB (normal priority)
 - `length` — Number of Uint32 words in signal payload
 - `#sec` — Number of long signal sections
 - `fragInf` — Signal fragmentation (0=not fragmented, 1=first, 2=middle)
 - `H'xxxxxxxx` lines — Signal data words in hex
+
+### Signal Connections (r.sigId / s.sigId)
+
+Signals on the same thread form chains via `r.sigId` and `s.sigId`:
+- `r.sigId` is the signal's own ID on the receiving thread
+- `s.sigId` is the ID of the signal that **caused** this signal to be sent
+
+For continuation signals (e.g., ACC_CHECK_SCAN sent by DBLQH to itself during
+scan processing), `s.sigId` points back to the **previous continuation** or the
+**original triggering signal** in the chain. This lets you trace a scan's full
+processing history across multiple continuations.
+
+**Example**: A scan started by SCAN_FRAGREQ (sigId 43172) produces a chain of
+ACC_CHECK_SCAN continuations. The latest ACC_CHECK_SCAN has `r.sigId: 43179`
+and `s.sigId: 43172`, linking it back to the originating SCAN_FRAGREQ. Other
+unrelated signals (e.g., a different SCAN_FRAGREQ with sigId 43177) may appear
+between them in the trace — those are interleaved signals on the same thread,
+not part of this scan's chain.
+
+**Important**: Since the trace is printed NEWEST first, the crashing signal
+appears at the top. Its jam content (OLDEST first within the signal) spans the
+entire execution from initial setup through all continuations and real-time
+breaks up to the crash. Interleaved signals from other operations appear
+between continuation signals in the trace listing but are NOT part of the
+crashing signal's jam content.
 
 ### Jam Content Format
 

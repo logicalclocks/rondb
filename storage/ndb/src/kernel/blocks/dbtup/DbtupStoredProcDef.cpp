@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -177,6 +177,7 @@ void Dbtup::scanProcedure(Signal* signal,
   storedPtr.p->storedCode = ZSCAN_PROCEDURE;
   storedPtr.p->storedProcIVal = handle->m_ptr[0].i;
   storedPtr.p->storedParamNo = 0;
+  storedPtr.p->storedParamOffset = 0;
   storedPtr.p->cachedLinearAttrInfo = nullptr;
   storedPtr.p->cachedLinearLen = 0;
   storedPtr.p->copyAttrinfoCalled = false;
@@ -224,6 +225,7 @@ void Dbtup::allocCopyProcedure() {
     storedPtr.p->copyOverwrite = 0;
     storedPtr.p->copyOverwriteLen = 0;
     storedPtr.p->storedParamNo = 0;
+    storedPtr.p->storedParamOffset = 0;
     storedPtr.p->copyAttrinfoCalled = true;
     storedPtr.p->storedCode = ZCOPY_PROCEDURE;
     m_reserved_stored_proc_copy_frag.addFirst(storedPtr);
