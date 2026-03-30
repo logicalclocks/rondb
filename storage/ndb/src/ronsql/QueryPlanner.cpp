@@ -48,6 +48,20 @@ getIndexList(const NdbDictionary::Dictionary *dict,
   return nullptr;  // signal: use fallback_list
 }
 
+/**
+ * Find a CTE definition by table name. Returns NULL if not a CTE.
+ */
+static const CteDefinition*
+findCte(const CteDefinition *cte_list, const char *name)
+{
+  for (const CteDefinition *cte = cte_list; cte != NULL; cte = cte->next)
+  {
+    if (strcmp(cte->name.c_str(), name) == 0)
+      return cte;
+  }
+  return NULL;
+}
+
 void
 QueryPlanner::plan(
     const TableRef *root_table,
@@ -56,7 +70,8 @@ QueryPlanner::plan(
     std::basic_ostream<char> &err,
     JoinPlan &out,
     RdrsSchemaCache *cache,
-    const char *database)
+    const char *database,
+    const CteDefinition *cte_list)
 {
   out.num_ops = 0;
   out.num_agg_leaves = 0;
@@ -85,6 +100,7 @@ QueryPlanner::plan(
   rootOp.num_key_cols = 0;
   rootOp.num_low_bounds = 0;
   rootOp.num_high_bounds = 0;
+  rootOp.cte_def = NULL;
   out.num_ops = 1;
 
   /*
@@ -99,25 +115,38 @@ QueryPlanner::plan(
       throw RonSQLPermanentError("Too many joined tables.");
     }
 
-    /* Look up child table */
+    /* Look up child table — check CTEs first, then NDB dictionary */
     const char *child_table_name = jc->table.name.c_str();
-    const NdbDictionary::Table *child_ndb_table =
-        dict->getTable(child_table_name);
-    if (child_ndb_table == NULL)
-    {
-      err << "Table '" << child_table_name << "' not found." << std::endl;
-      throw RonSQLPermanentError("Table not found.");
-    }
+    const CteDefinition *cte_match = findCte(cte_list, child_table_name);
 
-    /* Collect all key columns from the ON condition list */
     JoinOp &childOp = out.ops[out.num_ops];
-    childOp.table = child_ndb_table;
     childOp.alias = jc->table.alias;
     childOp.is_root = false;
     childOp.match_type = (jc->join_type == JoinClause::LEFT_OUTER_JOIN)
         ? JoinOp::LEFT_OUTER : JoinOp::INNER;
     childOp.num_low_bounds = 0;
     childOp.num_high_bounds = 0;
+    childOp.cte_def = NULL;
+
+    if (cte_match != NULL)
+    {
+      /* CTE reference — no NDB table, use virtual schema */
+      childOp.type = JoinOp::CTE_LOOKUP;
+      childOp.table = NULL;
+      childOp.index = NULL;
+      childOp.cte_def = const_cast<CteDefinition*>(cte_match);
+    }
+    else
+    {
+      const NdbDictionary::Table *child_ndb_table =
+          dict->getTable(child_table_name);
+      if (child_ndb_table == NULL)
+      {
+        err << "Table '" << child_table_name << "' not found." << std::endl;
+        throw RonSQLPermanentError("Table not found.");
+      }
+      childOp.table = child_ndb_table;
+    }
 
     Uint32 num_keys = 0;
     Uint32 parent_idx = 0;
@@ -174,8 +203,12 @@ QueryPlanner::plan(
     childOp.parent_op_idx = parent_idx;
     childOp.num_key_cols = num_keys;
 
-    /* Determine join type for the child */
-    if (isPrimaryKey(child_ndb_table, childOp.child_key_col_names, num_keys))
+    /* CTE_LOOKUP type and index are already set — skip index determination */
+    if (childOp.type == JoinOp::CTE_LOOKUP)
+    {
+      /* CTE lookups use hash table, no NDB index needed */
+    }
+    else if (isPrimaryKey(childOp.table, childOp.child_key_col_names, num_keys))
     {
       childOp.type = JoinOp::PK_LOOKUP;
       childOp.index = NULL;
@@ -183,7 +216,7 @@ QueryPlanner::plan(
     else
     {
       const NdbDictionary::Index *unique_idx =
-          findUniqueIndex(dict, child_ndb_table,
+          findUniqueIndex(dict, childOp.table,
                           childOp.child_key_col_names, num_keys,
                           cache, database);
       if (unique_idx != NULL)
@@ -194,7 +227,7 @@ QueryPlanner::plan(
       else
       {
         const NdbDictionary::Index *ordered_idx =
-            findOrderedIndex(dict, child_ndb_table,
+            findOrderedIndex(dict, childOp.table,
                              childOp.child_key_col_names, num_keys,
                              cache, database);
         if (ordered_idx != NULL)

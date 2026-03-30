@@ -157,6 +157,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     resolve_orderby_aliases();
     PERF_TS(t_parse_end);
     PERF_LOG("  parse", t_parse_start, t_parse_end);
+    analyze_ctes();
     analyze_subqueries();
     analyze_select_subqueries();
     PERF_TS(t_load_start);
@@ -889,7 +890,8 @@ RonSQLPreparer::load_join()
       err,
       m_join_plan,
       m_conf.schema_cache,
-      db);
+      db,
+      m_context.ast_root.cte_list);
 
   // For multi-leaf subquery pushdown, map merged leaves to plan op indices.
   // Each merged leaf corresponds to a JoinClause that was appended to the
@@ -942,20 +944,52 @@ RonSQLPreparer::load_join()
       {
         if (strcmp(m_join_plan.ops[t].alias.c_str(), qualifier) == 0)
         {
-          const NdbDictionary::Column* col =
-              m_join_plan.ops[t].table->getColumn(col_name);
-          if (col == NULL)
+          if (m_join_plan.ops[t].type == JoinOp::CTE_LOOKUP)
           {
-            err << "Column '" << qualifier << "." << col_name
-                << "' not found in table '"
-                << m_join_plan.ops[t].table->getName() << "'." << endl;
-            throw RonSQLMaybeStaleSchema("Column not found.");
+            // CTE column: look up in CTE output list
+            const CteDefinition* cte = m_join_plan.ops[t].cte_def;
+            Uint32 cte_col_idx = 0;
+            bool cte_found = false;
+            for (const Outputs* o = cte->stmt->outputs; o; o = o->next, cte_col_idx++)
+            {
+              if (o->output_name.len == strlen(col_name) &&
+                  strncmp(o->output_name.str, col_name, o->output_name.len) == 0)
+              {
+                cte_found = true;
+                break;
+              }
+            }
+            if (!cte_found)
+            {
+              err << "Column '" << qualifier << "." << col_name
+                  << "' not found in CTE '" << cte->name.c_str() << "'."
+                  << endl;
+              throw RonSQLPermanentError("Column not found in CTE.");
+            }
+            // CTE columns have no NDB attrId or Column — use virtual placeholders
+            col_id_map[col_idx] = (NdbAttrId)cte_col_idx;
+            col_map[col_idx] = NULL;
+            col_table_idx[col_idx] = t;
+            found = true;
+            break;
           }
-          col_id_map[col_idx] = col->getAttrId();
-          col_map[col_idx] = col;
-          col_table_idx[col_idx] = t;
-          found = true;
-          break;
+          else
+          {
+            const NdbDictionary::Column* col =
+                m_join_plan.ops[t].table->getColumn(col_name);
+            if (col == NULL)
+            {
+              err << "Column '" << qualifier << "." << col_name
+                  << "' not found in table '"
+                  << m_join_plan.ops[t].table->getName() << "'." << endl;
+              throw RonSQLMaybeStaleSchema("Column not found.");
+            }
+            col_id_map[col_idx] = col->getAttrId();
+            col_map[col_idx] = col;
+            col_table_idx[col_idx] = t;
+            found = true;
+            break;
+          }
         }
       }
       if (!found)
@@ -971,15 +1005,38 @@ RonSQLPreparer::load_join()
       Uint32 match_count = 0;
       Uint32 match_table = 0;
       const NdbDictionary::Column* match_col = NULL;
+      NdbAttrId match_attr_id = -1;
       for (Uint32 t = 0; t < m_join_plan.num_ops; t++)
       {
-        const NdbDictionary::Column* col =
-            m_join_plan.ops[t].table->getColumn(col_name);
-        if (col != NULL)
+        if (m_join_plan.ops[t].type == JoinOp::CTE_LOOKUP)
         {
-          match_count++;
-          match_table = t;
-          match_col = col;
+          // Search CTE output list
+          const CteDefinition* cte = m_join_plan.ops[t].cte_def;
+          Uint32 cte_col_idx = 0;
+          for (const Outputs* o = cte->stmt->outputs; o; o = o->next, cte_col_idx++)
+          {
+            if (o->output_name.len == strlen(col_name) &&
+                strncmp(o->output_name.str, col_name, o->output_name.len) == 0)
+            {
+              match_count++;
+              match_table = t;
+              match_col = NULL;
+              match_attr_id = (NdbAttrId)cte_col_idx;
+              break;
+            }
+          }
+        }
+        else
+        {
+          const NdbDictionary::Column* col =
+              m_join_plan.ops[t].table->getColumn(col_name);
+          if (col != NULL)
+          {
+            match_count++;
+            match_table = t;
+            match_col = col;
+            match_attr_id = col->getAttrId();
+          }
         }
       }
       if (match_count == 0)
@@ -995,7 +1052,7 @@ RonSQLPreparer::load_join()
             << endl;
         throw RonSQLPermanentError("Ambiguous column.");
       }
-      col_id_map[col_idx] = match_col->getAttrId();
+      col_id_map[col_idx] = match_attr_id;
       col_map[col_idx] = match_col;
       col_table_idx[col_idx] = match_table;
     }
@@ -2501,6 +2558,62 @@ RonSQLPreparer::decorrelate_scalar()
 }
 
 void
+RonSQLPreparer::analyze_ctes()
+{
+  CteDefinition* cte = m_context.ast_root.cte_list;
+  if (cte == NULL)
+    return;
+
+  m_has_ctes = true;
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+
+  for (; cte != NULL; cte = cte->next)
+  {
+    /* Validate: CTE must have GROUP BY */
+    if (cte->stmt->groupby_columns == NULL)
+    {
+      err << "CTE '" << cte->name.c_str()
+          << "' must contain GROUP BY." << std::endl;
+      throw RonSQLPermanentError("CTE without GROUP BY.");
+    }
+
+    /* Validate: CTE must have at least one aggregate output */
+    bool has_agg = false;
+    for (const Outputs* o = cte->stmt->outputs; o != NULL; o = o->next)
+    {
+      if (o->type == Outputs::Type::AGGREGATE ||
+          o->type == Outputs::Type::AVG)
+      {
+        has_agg = true;
+        break;
+      }
+    }
+    if (!has_agg)
+    {
+      err << "CTE '" << cte->name.c_str()
+          << "' must contain at least one aggregate function." << std::endl;
+      throw RonSQLPermanentError("CTE without aggregate function.");
+    }
+
+    /* Validate: CTE must also have a FROM clause (enforced by parser) */
+    require_prm(cte->stmt->root_table != NULL,
+                "CTE has no FROM clause.");
+
+    /* Validate: CTE name does not conflict with another CTE */
+    for (const CteDefinition* other = m_context.ast_root.cte_list;
+         other != cte; other = other->next)
+    {
+      if (strcmp(other->name.c_str(), cte->name.c_str()) == 0)
+      {
+        err << "Duplicate CTE name '" << cte->name.c_str() << "'."
+            << std::endl;
+        throw RonSQLPermanentError("Duplicate CTE name.");
+      }
+    }
+  }
+}
+
+void
 RonSQLPreparer::analyze_subqueries()
 {
   analyze_subqueries_ce(m_context.ast_root.where_expression);
@@ -3186,14 +3299,19 @@ RonSQLPreparer::compile()
     }
   }
 
-  // Compile post-processing/printer program
-  m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
-    ResultPrinter(m_amalloc,
-                  &m_context.ast_root,
-                  &m_columns,
-                  m_column_map,
-                  m_conf.output_format,
-                  m_conf.err_stream);
+  // Compile post-processing/printer program.
+  // Skip for CTE queries — the main SELECT has no GROUP BY (aggregation is
+  // inside the CTEs), so ResultPrinter validation would reject COLUMN outputs.
+  // CTE execution is not yet implemented; only EXPLAIN is supported.
+  if (!m_has_ctes) {
+    m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
+      ResultPrinter(m_amalloc,
+                    &m_context.ast_root,
+                    &m_columns,
+                    m_column_map,
+                    m_conf.output_format,
+                    m_conf.err_stream);
+  }
 }
 
 void
@@ -3908,6 +4026,13 @@ RonSQLPreparer::collect_pk_equalities(
 void
 RonSQLPreparer::execute_join()
 {
+  // CTE execution is not yet implemented — only EXPLAIN is supported
+  if (m_has_ctes)
+  {
+    throw RonSQLPermanentError(
+        "CTE execution is not yet implemented. Use EXPLAIN to see the plan.");
+  }
+
   Ndb* ndb = m_conf.ndb;
   ndbrequire(m_trans == NULL);
   m_trans = ndb->startTransaction();
@@ -6038,6 +6163,34 @@ RonSQLPreparer::print()
 {
   std::basic_ostream<char>& out = *m_conf.out_stream;
 
+  // Print CTE definitions
+  if (m_has_ctes) {
+    out << "CTE definitions:\n";
+    Uint32 cte_idx = 0;
+    for (const CteDefinition* cte = m_context.ast_root.cte_list;
+         cte != NULL; cte = cte->next, cte_idx++)
+    {
+      out << "  CTE[" << cte_idx << "] " << cte->name.c_str()
+          << " — source: " << cte->stmt->table.c_str();
+      if (cte->stmt->joins != NULL)
+        out << " (with joins)";
+      out << "\n    Outputs: ";
+      Uint32 oc = 0;
+      for (const Outputs *o = cte->stmt->outputs; o; o = o->next, oc++) {
+        if (oc > 0) out << ", ";
+        out << std::string(o->output_name.str, o->output_name.len);
+      }
+      out << "\n    GROUP BY: ";
+      Uint32 gc = 0;
+      for (const GroupbyColumns *g = cte->stmt->groupby_columns; g; g = g->next, gc++) {
+        if (gc > 0) out << ", ";
+        out << "col_" << g->col_idx;
+      }
+      out << '\n';
+    }
+    out << '\n';
+  }
+
   // Print join plan at the top for multi-table queries
   if (m_conf.ndb != NULL && m_scan_config == NULL && m_join_plan.num_ops > 1) {
     const JoinPlan& jp = m_join_plan;
@@ -6061,11 +6214,26 @@ RonSQLPreparer::print()
       case JoinOp::INDEX_SCAN:     out << "INDEX_SCAN ";    break;
       case JoinOp::PK_LOOKUP:      out << "PK_LOOKUP ";     break;
       case JoinOp::UNIQUE_LOOKUP:  out << "UNIQUE_LOOKUP "; break;
+      case JoinOp::CTE_LOOKUP:     out << "CTE_LOOKUP ";    break;
       }
-      out << op.table->getName();
+      if (op.type == JoinOp::CTE_LOOKUP) {
+        out << "CTE:" << op.cte_def->name.c_str();
+      } else {
+        out << op.table->getName();
+      }
       if (op.alias.len > 0) out << " AS " << op.alias.c_str();
       out << '\n';
       const char *indent = is_last ? "   " : "│  ";
+      if (op.type == JoinOp::CTE_LOOKUP && op.cte_def != NULL) {
+        out << indent << "  CTE outputs: ";
+        Uint32 oc = 0;
+        for (const Outputs *o = op.cte_def->stmt->outputs; o; o = o->next) {
+          if (oc > 0) out << ", ";
+          out << std::string(o->output_name.str, o->output_name.len);
+          oc++;
+        }
+        out << '\n';
+      }
       if (op.index != NULL) {
         out << indent << "  Index: " << op.index->getName() << "(";
         for (Uint32 c = 0; c < op.index->getNoOfColumns(); c++) {

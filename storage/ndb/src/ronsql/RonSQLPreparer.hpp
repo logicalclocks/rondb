@@ -230,6 +230,7 @@ private:
   };
   DynamicArray<SubqueryInfo> m_subquery_infos;
   bool m_has_subqueries = false;
+  bool m_has_ctes = false;
 
   ResultPrinter* m_resultprinter = NULL;
   LexCString column_idx_to_name(uint);
@@ -251,6 +252,7 @@ private:
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();
+  void analyze_ctes();
   void analyze_subqueries();
   void analyze_subqueries_ce(ConditionalExpression* ce);
   void analyze_select_subqueries();

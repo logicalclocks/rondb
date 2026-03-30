@@ -40,11 +40,11 @@ static const Uint32 MAX_LINKED_PROJS = 16;
 
 struct JoinOp
 {
-  enum Type { TABLE_SCAN, INDEX_SCAN, PK_LOOKUP, UNIQUE_LOOKUP };
+  enum Type { TABLE_SCAN, INDEX_SCAN, PK_LOOKUP, UNIQUE_LOOKUP, CTE_LOOKUP };
   enum MatchType { INNER, LEFT_OUTER, SEMI_JOIN, ANTI_JOIN };
   Type type;
   MatchType match_type;
-  const NdbDictionary::Table *table;
+  const NdbDictionary::Table *table;  // NULL for CTE_LOOKUP
   const NdbDictionary::Index *index;
   LexCString alias;
   Uint32 parent_op_idx;
@@ -65,6 +65,9 @@ struct JoinOp
   Uint32 num_low_bounds;
   RangeBound high_bounds[MAX_JOIN_KEY_COLS];
   Uint32 num_high_bounds;
+
+  // CTE-specific fields (valid when type == CTE_LOOKUP)
+  CteDefinition *cte_def;  // Pointer to CTE definition AST node
 };
 
 struct JoinPlan
@@ -95,7 +98,8 @@ public:
       std::basic_ostream<char> &err,
       JoinPlan &plan,
       RdrsSchemaCache *cache = nullptr,
-      const char *database = nullptr);
+      const char *database = nullptr,
+      const CteDefinition *cte_list = nullptr);
 
   static const NdbDictionary::Index *
   findOrderedIndex(const NdbDictionary::Dictionary *dict,
