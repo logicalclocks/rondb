@@ -8,11 +8,11 @@
 --source include/have_ndb.inc
 
 ###############################################################################
-# Case 1: CREATE TABLE ... LIKE — preserves RING_BUFFER
+# Case 1: CREATE TABLE ... LIKE — preserves MAX_ROWS_PER_PK
 ###############################################################################
 
 --echo #
---echo # Case 1: CREATE TABLE ... LIKE preserves RING_BUFFER metadata
+--echo # Case 1: CREATE TABLE ... LIKE preserves MAX_ROWS_PER_PK metadata
 --echo #
 
 CREATE TABLE test.rb_orig (
@@ -22,11 +22,11 @@ CREATE TABLE test.rb_orig (
     event_data VARCHAR(100),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
 
 CREATE TABLE test.rb_copy LIKE test.rb_orig;
 
-# SHOW CREATE TABLE should preserve RING_BUFFER comment
+# SHOW CREATE TABLE should preserve MAX_ROWS_PER_PK comment
 SHOW CREATE TABLE test.rb_copy;
 
 # Ring buffer operations should work on the copied table
@@ -60,7 +60,7 @@ CREATE TABLE test.rb_src (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_src (id, val) VALUES (1, 'src_A');
 INSERT INTO test.rb_src (id, val) VALUES (1, 'src_B');
@@ -70,7 +70,7 @@ INSERT INTO test.rb_src (id, val) VALUES (1, 'src_B');
 CREATE TABLE test.rb_as_sel ENGINE=NDB AS
     SELECT id, ring_idx, val FROM test.rb_src WHERE id = 1;
 
-# The new table is a regular NDB table — no RING_BUFFER in SHOW CREATE
+# The new table is a regular NDB table — no MAX_ROWS_PER_PK in SHOW CREATE
 SHOW CREATE TABLE test.rb_as_sel;
 
 # Should contain the selected rows
@@ -94,7 +94,7 @@ CREATE TABLE test.rb_before (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 INSERT INTO test.rb_before (id, val) VALUES (1, 'rename_A');
 INSERT INTO test.rb_before (id, val) VALUES (1, 'rename_B');
@@ -102,7 +102,7 @@ INSERT INTO test.rb_before (id, val) VALUES (1, 'rename_C');
 
 RENAME TABLE test.rb_before TO test.rb_after;
 
-# SHOW CREATE should still have RING_BUFFER comment
+# SHOW CREATE should still have MAX_ROWS_PER_PK comment
 SHOW CREATE TABLE test.rb_after;
 
 # Data should be preserved
@@ -132,7 +132,7 @@ CREATE TABLE test.rb_varchar (
     event_data VARCHAR(100),
     PRIMARY KEY (name, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_1');
 INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_2');
@@ -181,7 +181,7 @@ CREATE TABLE test.rb_char (
     val VARCHAR(50),
     PRIMARY KEY (code, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_char (code, val) VALUES ('ABC', 'char_A');
 INSERT INTO test.rb_char (code, val) VALUES ('ABC', 'char_B');
@@ -214,7 +214,7 @@ CREATE TABLE test.rb_mixed_pk (
     data VARCHAR(100),
     PRIMARY KEY (region, client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r1');
 INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r2');
@@ -256,7 +256,7 @@ CREATE TABLE test.rb_4pk (
     event VARCHAR(100),
     PRIMARY KEY (region, dept, user_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 100, 'ev_A');
 INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 100, 'ev_B');
@@ -304,7 +304,7 @@ CREATE TABLE test.rb_status (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 INSERT INTO test.rb_status (id, val) VALUES (1, 'a');
 INSERT INTO test.rb_status (id, val) VALUES (1, 'b');
@@ -336,7 +336,7 @@ CREATE TABLE test.rb_is (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_is (id, val) VALUES (1, 'x');
 INSERT INTO test.rb_is (id, val) VALUES (1, 'y');
@@ -367,7 +367,7 @@ CREATE TABLE test.rb_drop_col (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
 ALTER TABLE test.rb_drop_col DROP COLUMN ring_idx;
@@ -392,7 +392,7 @@ CREATE TABLE test.rb_trigger (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 CREATE TABLE test.trigger_log (
     log_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -443,7 +443,7 @@ CREATE TABLE test.rb_idx_on_internal (
     PRIMARY KEY (id, ring_idx),
     INDEX idx_ring_idx (ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 13: CREATE TABLE with index on ring_meta — blocked
@@ -458,7 +458,7 @@ CREATE TABLE test.rb_idx_on_meta (
     PRIMARY KEY (id, ring_idx),
     INDEX idx_ring_meta (ring_meta)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 14: CREATE TABLE with UNIQUE index on ring_idx — blocked
@@ -473,7 +473,7 @@ CREATE TABLE test.rb_uniq_on_internal (
     PRIMARY KEY (id, ring_idx),
     UNIQUE INDEX idx_ring_idx_uniq (ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 15: CREATE TABLE with composite index including ring_idx — blocked
@@ -488,7 +488,7 @@ CREATE TABLE test.rb_composite_idx (
     PRIMARY KEY (id, ring_idx),
     INDEX idx_val_ring (val, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 ###############################################################################
 # Case 16: ALTER TABLE ADD INDEX on ring buffer internal columns — blocked
@@ -505,7 +505,7 @@ CREATE TABLE test.rb_alter_idx (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
 ALTER TABLE test.rb_alter_idx ADD INDEX idx_ring_idx (ring_idx);

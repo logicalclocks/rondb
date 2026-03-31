@@ -1,0 +1,38 @@
+#
+# Running NdbRingBufferWriter NDB API test suite
+#
+CREATE DATABASE IF NOT EXISTS test;
+=== NdbRingBufferWriter Test Suite ===
+[Test 1] Single row insert
+  PASS: Single row insert
+[Test 2] Fill ring + wraparound
+  PASS: Fill ring + wraparound
+[Test 3] Multiple PK prefixes
+  PASS: Multiple PK prefixes
+[Test 4] Batch insert (same PK prefix)
+  PASS: Batch insert (same PK prefix)
+[Test 5] NOT NULL user column
+  PASS: NOT NULL user column
+[Test 6] Ring size = 1
+  PASS: Ring size = 1
+[Test 7] Error: non-ring-buffer table
+  PASS: Error: non-ring-buffer table
+[Test 8] Multiple transactions
+  PASS: Multiple transactions
+[Test 9] BLOB/TEXT columns
+  PASS: BLOB/TEXT columns
+[Test 10] Delete + re-INSERT cycle
+  PASS: Delete + re-INSERT cycle
+[Test 11] Rollback
+  PASS: Rollback
+[Test 12] Multiple wraps in single batch
+  PASS: Multiple wraps in single batch
+[Test 13] Multi-column PK prefix
+  PASS: Multi-column PK prefix
+
+=== Results ===
+Passed: 13
+Failed: 0
+#
+# Done
+#

@@ -23,7 +23,7 @@ CREATE TABLE test.rb (
     event_data VARCHAR(100),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 CREATE TABLE test.clients (
     client_id INT NOT NULL PRIMARY KEY,
@@ -214,7 +214,7 @@ CREATE TABLE test.rb_types (
     note TEXT,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_types (id, ts, amount, note)
     VALUES (1, '2025-01-15 10:30:00', 99.99, 'first entry');
@@ -250,7 +250,7 @@ CREATE TABLE test.rb_tx (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 BEGIN;
 INSERT INTO test.rb_tx (id, val) VALUES (1, 'tx_A');
@@ -304,7 +304,7 @@ CREATE TABLE test.rb_sel (
     num INT,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
 
 INSERT INTO test.rb_sel (id, val, num) VALUES (1, 'apple', 10);
 INSERT INTO test.rb_sel (id, val, num) VALUES (1, 'banana', 20);
@@ -368,14 +368,14 @@ CREATE TABLE test.rb_seq (
     data VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 # Step 1: Fill ring (3 rows)
 INSERT INTO test.rb_seq (id, data) VALUES (1, 's1'), (1, 's2'), (1, 's3');
 SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
 
 # Step 2: Grow 3 → 6
-ALTER TABLE test.rb_seq COMMENT="NDB_TABLE=RING_BUFFER=6@ring_idx@ring_meta";
+ALTER TABLE test.rb_seq COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=6@ring_idx@ring_meta";
 
 # Step 3: Bulk insert into expanded ring (fills slots 4-6)
 INSERT INTO test.rb_seq (id, data) VALUES (1, 's4'), (1, 's5'), (1, 's6');
@@ -406,7 +406,7 @@ CREATE TABLE test.rb_trunc (
     data VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_trunc (id, data) VALUES (1, 'before_A'), (1, 'before_B');
 
@@ -434,7 +434,7 @@ CREATE TABLE test.rb_bd (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 INSERT INTO test.rb_bd (id, val)
     VALUES (1, 'b1'), (1, 'b2'), (1, 'b3'), (1, 'b4');
@@ -470,7 +470,7 @@ CREATE TABLE test.rb_null (
     num INT,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_null (id, val, num) VALUES (1, NULL, NULL);
 INSERT INTO test.rb_null (id, val, num) VALUES (1, 'not_null', 42);
@@ -495,7 +495,7 @@ CREATE TABLE test.rb_empty (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_empty (id, val) VALUES (1, '');
 INSERT INTO test.rb_empty (id, val) VALUES (1, 'notempty');
@@ -516,7 +516,7 @@ CREATE TABLE test.rb_boundary (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_boundary (id, val) VALUES (2147483647, 'max_int');
 INSERT INTO test.rb_boundary (id, val) VALUES (-2147483648, 'min_int');
@@ -548,7 +548,7 @@ CREATE TABLE test.rb_sess (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_sess (id, val) VALUES (1, 'a');
 INSERT INTO test.rb_sess (id, val) VALUES (1, 'b');
@@ -599,7 +599,7 @@ DROP TABLE test.rb_sess;
 ###############################################################################
 
 --echo #
---echo # Case 30: SHOW CREATE TABLE preserves RING_BUFFER after DML operations
+--echo # Case 30: SHOW CREATE TABLE preserves MAX_ROWS_PER_PK after DML operations
 --echo #
 
 CREATE TABLE test.rb_show (
@@ -609,7 +609,7 @@ CREATE TABLE test.rb_show (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 INSERT INTO test.rb_show (id, val) VALUES (1, 'a'), (1, 'b');
 UPDATE test.rb_show SET val = 'updated' WHERE id = 1 AND ring_idx = 1;

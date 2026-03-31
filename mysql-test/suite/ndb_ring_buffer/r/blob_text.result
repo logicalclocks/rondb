@@ -8,7 +8,7 @@ ring_meta VARBINARY(64),
 description TEXT,
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_text (id, description) VALUES (1, 'Short text');
 INSERT INTO test.rb_text (id, description) VALUES (1, REPEAT('Hello World! ', 100));
 INSERT INTO test.rb_text (id, description) VALUES (1, 'Another short text');
@@ -46,7 +46,7 @@ ring_meta VARBINARY(64),
 payload BLOB,
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_blob (id, payload) VALUES (1, REPEAT(x'DEADBEEF', 100));
 INSERT INTO test.rb_blob (id, payload) VALUES (1, REPEAT(x'CAFEBABE', 100));
 INSERT INTO test.rb_blob (id, payload) VALUES (1, REPEAT(x'01020304', 100));
@@ -75,7 +75,7 @@ notes TEXT,
 attachment BLOB,
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_mixed (client_id, label, notes, attachment)
 VALUES (1, 'Entry 1', REPEAT('Note content ', 50), REPEAT(x'AB', 200));
 INSERT INTO test.rb_mixed (client_id, label, notes, attachment)
@@ -169,7 +169,7 @@ ring_meta VARBINARY(64),
 data TEXT,
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=2@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2@ring_idx@ring_meta";
 INSERT INTO test.rb_nullblob (id, data) VALUES (1, NULL);
 INSERT INTO test.rb_nullblob (id, data) VALUES (1, REPEAT('X', 500));
 SELECT id, ring_idx, data IS NULL AS is_null, LENGTH(data) AS len

@@ -27,7 +27,7 @@ CREATE TABLE test.rb_nn_bare (
     status INT NOT NULL,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_nn_bare (id, status) VALUES (1, 42);
 INSERT INTO test.rb_nn_bare (id, status) VALUES (2, 99);
@@ -51,7 +51,7 @@ CREATE TABLE test.rb_nn_varchar (
     name VARCHAR(100) NOT NULL,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_nn_varchar (id, name) VALUES (1, 'Alice');
 INSERT INTO test.rb_nn_varchar (id, name) VALUES (2, 'Bob');
@@ -77,7 +77,7 @@ CREATE TABLE test.rb_nn_multi (
     label VARCHAR(50) NOT NULL,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_nn_multi (id, cat, sub, label) VALUES (1, 10, 20, 'hello');
 INSERT INTO test.rb_nn_multi (id, cat, sub, label) VALUES (2, 30, 40, 'world');
@@ -102,7 +102,7 @@ CREATE TABLE test.rb_uniq_int (
     PRIMARY KEY (client_id, ring_idx),
     UNIQUE INDEX idx_status (status)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_uniq_int (client_id, status) VALUES (1, 42);
 INSERT INTO test.rb_uniq_int (client_id, status) VALUES (2, 99);
@@ -132,7 +132,7 @@ CREATE TABLE test.rb_uniq_vc (
     PRIMARY KEY (id, ring_idx),
     UNIQUE INDEX idx_name (name)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_uniq_vc (id, name) VALUES (1, 'Alice');
 INSERT INTO test.rb_uniq_vc (id, name) VALUES (2, 'Bob');
@@ -159,7 +159,7 @@ CREATE TABLE test.rb_uniq_comp (
     PRIMARY KEY (id, ring_idx),
     UNIQUE INDEX idx_cat_sub (cat, sub)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_uniq_comp (id, cat, sub) VALUES (1, 10, 20);
 INSERT INTO test.rb_uniq_comp (id, cat, sub) VALUES (2, 30, 40);
@@ -184,7 +184,7 @@ CREATE TABLE test.rb_nonuniq (
     PRIMARY KEY (id, ring_idx),
     INDEX idx_priority (priority)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_nonuniq (id, priority) VALUES (1, 5);
 INSERT INTO test.rb_nonuniq (id, priority) VALUES (1, 10);
@@ -217,7 +217,7 @@ CREATE TABLE test.rb_wrap_uniq (
     PRIMARY KEY (id, ring_idx),
     UNIQUE INDEX idx_code (code)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 # Fill ring (size=3)
 INSERT INTO test.rb_wrap_uniq (id, code) VALUES (1, 100);
@@ -257,7 +257,7 @@ CREATE TABLE test.rb_alter_uniq (
     code INT NOT NULL,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_alter_uniq (id, code) VALUES (1, 100);
 INSERT INTO test.rb_alter_uniq (id, code) VALUES (2, 200);
@@ -294,7 +294,7 @@ CREATE TABLE test.rb_uniq_null (
     PRIMARY KEY (id, ring_idx),
     UNIQUE INDEX idx_tag (tag)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_uniq_null (id, tag) VALUES (1, 'first');
 INSERT INTO test.rb_uniq_null (id, tag) VALUES (2, 'second');
@@ -320,7 +320,7 @@ CREATE TABLE test.rb_show_meta (
     label VARCHAR(50) NOT NULL,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_show_meta (id, val, label) VALUES (1, 42, 'hello');
 
@@ -348,7 +348,7 @@ CREATE TABLE test.rb_bulk_nn_uniq (
     PRIMARY KEY (id, ring_idx),
     UNIQUE INDEX idx_code (code)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 # Multi-row INSERT: each prefix gets a meta row with code=0, hidden from index
 INSERT INTO test.rb_bulk_nn_uniq (id, code) VALUES (1, 100), (2, 200), (3, 300);
@@ -379,7 +379,7 @@ CREATE TABLE test.rb_nn_default (
     PRIMARY KEY (id, ring_idx),
     UNIQUE INDEX idx_code (code)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_nn_default (id, code) VALUES (1, 100);
 INSERT INTO test.rb_nn_default (id, code) VALUES (2, 200);
@@ -421,7 +421,7 @@ CREATE TABLE test.rb_wrap_add_uniq (
     code INT NOT NULL,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_wrap_add_uniq (id, code) VALUES (1, 100);
 INSERT INTO test.rb_wrap_add_uniq (id, code) VALUES (1, 200);
@@ -462,7 +462,7 @@ CREATE TABLE test.rb_cross_uniq (
     PRIMARY KEY (id, ring_idx),
     UNIQUE INDEX idx_code (code)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=2@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2@ring_idx@ring_meta";
 
 # Fill rings for two prefixes
 INSERT INTO test.rb_cross_uniq (id, code) VALUES (1, 10);
@@ -500,14 +500,14 @@ CREATE TABLE test.rb_grow_nn (
     PRIMARY KEY (id, ring_idx),
     UNIQUE INDEX idx_code (code)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 100);
 INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 200);
 INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 300);
 
 # Grow ring from 3 to 5
-ALTER TABLE test.rb_grow_nn COMMENT="NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta";
+ALTER TABLE test.rb_grow_nn COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
 
 # Insert into expanded slots
 INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 400);
@@ -545,7 +545,7 @@ CREATE TABLE test.rb_nn_types (
     UNIQUE INDEX idx_name (name),
     INDEX idx_score (score)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_nn_types (id, name, score) VALUES (1, 'Alice', 90);
 INSERT INTO test.rb_nn_types (id, name, score) VALUES (2, 'Bob', 85);
@@ -586,7 +586,7 @@ CREATE TABLE test.rb_nn_text (
     content TEXT NOT NULL,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 # BLOB NOT NULL → rejected
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -597,7 +597,7 @@ CREATE TABLE test.rb_nn_blob (
     payload BLOB NOT NULL,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 # Nullable TEXT works fine (control case)
 CREATE TABLE test.rb_null_text (
@@ -607,7 +607,7 @@ CREATE TABLE test.rb_null_text (
     content TEXT,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_null_text (id, content) VALUES (1, 'Hello World');
 INSERT INTO test.rb_null_text (id, content) VALUES (2, REPEAT('x', 1000));

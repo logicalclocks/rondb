@@ -245,7 +245,7 @@ static const char *CREATE_BASIC =
     "  event_data VARCHAR(100),"
     "  PRIMARY KEY (client_id, ring_idx)"
     ") ENGINE=NDB,"
-    "  COMMENT='NDB_TABLE=RING_BUFFER=%d@ring_idx@ring_meta'";
+    "  COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=%d@ring_idx@ring_meta'";
 
 // ---------------------------------------------------------------
 // Test cases
@@ -531,7 +531,7 @@ static bool test_notnull_column(Ndb *ndb, MYSQL *mysql) {
              "  score INT NOT NULL,"
              "  PRIMARY KEY (client_id, ring_idx)"
              ") ENGINE=NDB,"
-             "  COMMENT='NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta'");
+             "  COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta'");
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable("rb_t5");
@@ -790,6 +790,533 @@ static bool test_multi_transaction(Ndb *ndb, MYSQL *mysql) {
   return true;
 }
 
+/*
+ * Test 9: BLOB/TEXT columns — insert via NdbRingBufferWriter + NdbBlob.
+ * Verifies that large TEXT data survives ring wrapping.
+ */
+static bool test_blob_text(Ndb *ndb, MYSQL *mysql) {
+  std::cout << "[Test 9] BLOB/TEXT columns" << std::endl;
+
+  mysql_exec(mysql, "DROP TABLE IF EXISTS test.rb_t9");
+  mysql_exec(mysql,
+             "CREATE TABLE test.rb_t9 ("
+             "  client_id INT NOT NULL,"
+             "  ring_idx INT NOT NULL DEFAULT 0,"
+             "  ring_meta VARBINARY(64),"
+             "  content TEXT,"
+             "  PRIMARY KEY (client_id, ring_idx)"
+             ") ENGINE=NDB,"
+             "  COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta'");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("rb_t9");
+  const NdbDictionary::Table *table = dict->getTable("rb_t9");
+  TEST_ASSERT(table != nullptr, "getTable");
+  TEST_ASSERT(table->isRingBuffer(), "should be ring buffer");
+
+  const NdbRecord *record = table->getDefaultRecord();
+  TEST_ASSERT(record != nullptr, "getDefaultRecord");
+
+  const NdbRecord::Attr *cid_attr = findAttr(record, table, "client_id");
+  const NdbRecord::Attr *rmeta_attr = findAttr(record, table, "ring_meta");
+  TEST_ASSERT(cid_attr && rmeta_attr, "find attrs");
+
+  Uint32 row_size = record->m_row_size;
+  char *rowbuf = new char[row_size];
+
+  // Build mask for user columns: client_id, content
+  Uint32 max_attr = 0;
+  for (Uint32 i = 0; i < record->noOfColumns; i++)
+    if (record->columns[i].attrId > max_attr)
+      max_attr = record->columns[i].attrId;
+  Uint32 mask_size = (max_attr / 8) + 1;
+  unsigned char *mask = new unsigned char[mask_size];
+  const char *cols[] = {"client_id", "content"};
+  buildMask(table, mask, mask_size, cols, 2);
+
+  // Insert 5 rows into ring_size=3 — only last 3 should survive
+  const char *texts[] = {"alpha_text", "bravo_text", "charlie_text",
+                         "delta_text", "echo_text"};
+
+  NdbTransaction *trans = ndb->startTransaction(table);
+  TEST_ASSERT(trans != nullptr, "startTransaction");
+
+  {
+    NdbRingBufferWriter writer(table, record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0,
+                std::string("writer init: ") + writer.getErrorMessage());
+
+    for (int i = 0; i < 5; i++) {
+      memset(rowbuf, 0, row_size);
+      setInt32(rowbuf, cid_attr, 1);
+      setNull(rowbuf, rmeta_attr);
+
+      const NdbOperation *op = writer.addRow(rowbuf, mask);
+      TEST_ASSERT(op != nullptr,
+                  std::string("addRow ") + std::to_string(i) + ": " +
+                      writer.getErrorMessage());
+
+      // Set TEXT via blob handle
+      NdbBlob *blob = op->getBlobHandle("content");
+      TEST_ASSERT(blob != nullptr, "getBlobHandle");
+      TEST_ASSERT(blob->setValue(texts[i], strlen(texts[i])) == 0,
+                  "blob setValue");
+    }
+    TEST_ASSERT(writer.flush() == 0,
+                std::string("flush: ") + writer.getErrorMessage());
+  }
+
+  TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0, "commit");
+  ndb->closeTransaction(trans);
+
+  delete[] rowbuf;
+  delete[] mask;
+
+  // Verify: only charlie, delta, echo should survive
+  mysql_exec(mysql,
+             "SELECT content FROM test.rb_t9 "
+             "WHERE client_id=1 AND ring_idx>0 ORDER BY ring_idx");
+  MYSQL_RES *res = mysql_store_result(mysql);
+  int nrows = (int)mysql_num_rows(res);
+  TEST_ASSERT(nrows == 3, "expected 3 rows, got " + std::to_string(nrows));
+
+  bool found_charlie = false, found_delta = false, found_echo = false;
+  bool found_alpha = false;
+  MYSQL_ROW r;
+  while ((r = mysql_fetch_row(res))) {
+    std::string val = r[0] ? r[0] : "";
+    if (val == "charlie_text") found_charlie = true;
+    if (val == "delta_text") found_delta = true;
+    if (val == "echo_text") found_echo = true;
+    if (val == "alpha_text") found_alpha = true;
+  }
+  mysql_free_result(res);
+
+  TEST_ASSERT(found_charlie, "charlie_text should survive");
+  TEST_ASSERT(found_delta, "delta_text should survive");
+  TEST_ASSERT(found_echo, "echo_text should survive");
+  TEST_ASSERT(!found_alpha, "alpha_text should be overwritten");
+
+  mysql_exec(mysql, "DROP TABLE test.rb_t9");
+  TEST_PASS("BLOB/TEXT columns");
+  return true;
+}
+
+/*
+ * Test 10: Delete + re-INSERT cycle.
+ * Delete all rows for a PK prefix via SQL, then insert fresh via NDB API.
+ * Verifies meta row is cleaned up and a fresh ring starts.
+ */
+static bool test_delete_reinsert(Ndb *ndb, MYSQL *mysql) {
+  std::cout << "[Test 10] Delete + re-INSERT cycle" << std::endl;
+
+  mysql_exec(mysql, "DROP TABLE IF EXISTS test.rb_t10");
+  char ddl[1024];
+  snprintf(ddl, sizeof(ddl), CREATE_BASIC, "rb_t10", 5);
+  mysql_exec(mysql, ddl);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("rb_t10");
+  const NdbDictionary::Table *table = dict->getTable("rb_t10");
+  TEST_ASSERT(table != nullptr, "getTable");
+
+  BasicRecordHelper h;
+  TEST_ASSERT(h.init(table), "init record helper");
+  char *rowbuf = h.newRow();
+  unsigned char *mask = h.newUserMask(table);
+
+  // Phase 1: Insert 4 rows via NdbRingBufferWriter
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction phase1");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init phase1");
+    for (int i = 0; i < 4; i++) {
+      char buf[32];
+      snprintf(buf, sizeof(buf), "orig_%d", i);
+      h.fillRow(rowbuf, 1, buf);
+      TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow phase1");
+    }
+    TEST_ASSERT(writer.flush() == 0, "flush phase1");
+    TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0, "commit phase1");
+    ndb->closeTransaction(trans);
+  }
+
+  auto rows1 = readDataRows(mysql, "rb_t10", 1);
+  TEST_ASSERT(rows1.size() == 4,
+              "phase1: expected 4, got " + std::to_string(rows1.size()));
+
+  // Phase 2: Delete all rows for client_id=1 via SQL
+  mysql_exec(mysql, "DELETE FROM test.rb_t10 WHERE client_id=1");
+
+  auto rows2 = readDataRows(mysql, "rb_t10", 1);
+  TEST_ASSERT(rows2.size() == 0,
+              "after delete: expected 0, got " + std::to_string(rows2.size()));
+
+  // Verify meta row is also gone
+  int total_after_delete = countAllRows(mysql, "rb_t10", 1);
+  TEST_ASSERT(total_after_delete == 0,
+              "after delete: expected 0 total, got " +
+                  std::to_string(total_after_delete));
+
+  // Phase 3: Re-insert 2 rows — should start fresh ring
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction phase3");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init phase3");
+    for (int i = 0; i < 2; i++) {
+      char buf[32];
+      snprintf(buf, sizeof(buf), "fresh_%d", i);
+      h.fillRow(rowbuf, 1, buf);
+      TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow phase3");
+    }
+    TEST_ASSERT(writer.flush() == 0, "flush phase3");
+    TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0, "commit phase3");
+    ndb->closeTransaction(trans);
+  }
+
+  auto rows3 = readDataRows(mysql, "rb_t10", 1);
+  TEST_ASSERT(rows3.size() == 2,
+              "phase3: expected 2, got " + std::to_string(rows3.size()));
+
+  // Fresh ring should start at ring_idx=1 again
+  TEST_ASSERT(rows3[0].ring_idx == 1, "first fresh row at ring_idx=1");
+  TEST_ASSERT(rows3[1].ring_idx == 2, "second fresh row at ring_idx=2");
+  TEST_ASSERT(rows3[0].data == "fresh_0", "data should be fresh_0");
+  TEST_ASSERT(rows3[1].data == "fresh_1", "data should be fresh_1");
+
+  // Total should be 3 (meta + 2 data)
+  int total = countAllRows(mysql, "rb_t10", 1);
+  TEST_ASSERT(total == 3,
+              "phase3: expected 3 total, got " + std::to_string(total));
+
+  delete[] rowbuf;
+  delete[] mask;
+
+  mysql_exec(mysql, "DROP TABLE test.rb_t10");
+  TEST_PASS("Delete + re-INSERT cycle");
+  return true;
+}
+
+/*
+ * Test 11: Rollback — verify meta row is reverted.
+ * Insert 2 rows + commit, then insert 3 more + rollback.
+ * Verify only first 2 rows survive.
+ * Then insert 1 more + commit — should continue from ring_idx=3.
+ */
+static bool test_rollback(Ndb *ndb, MYSQL *mysql) {
+  std::cout << "[Test 11] Rollback" << std::endl;
+
+  mysql_exec(mysql, "DROP TABLE IF EXISTS test.rb_t11");
+  char ddl[1024];
+  snprintf(ddl, sizeof(ddl), CREATE_BASIC, "rb_t11", 5);
+  mysql_exec(mysql, ddl);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("rb_t11");
+  const NdbDictionary::Table *table = dict->getTable("rb_t11");
+  TEST_ASSERT(table != nullptr, "getTable");
+
+  BasicRecordHelper h;
+  TEST_ASSERT(h.init(table), "init record helper");
+  char *rowbuf = h.newRow();
+  unsigned char *mask = h.newUserMask(table);
+
+  // Transaction 1: Insert 2 rows, commit
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction tx1");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    for (int i = 0; i < 2; i++) {
+      char buf[32];
+      snprintf(buf, sizeof(buf), "committed_%d", i);
+      h.fillRow(rowbuf, 1, buf);
+      TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow tx1");
+    }
+    TEST_ASSERT(writer.flush() == 0, "flush tx1");
+    TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0, "commit tx1");
+    ndb->closeTransaction(trans);
+  }
+
+  auto rows1 = readDataRows(mysql, "rb_t11", 1);
+  TEST_ASSERT(rows1.size() == 2,
+              "after tx1: expected 2, got " + std::to_string(rows1.size()));
+
+  // Transaction 2: Insert 3 rows, ROLLBACK
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction tx2");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    for (int i = 0; i < 3; i++) {
+      char buf[32];
+      snprintf(buf, sizeof(buf), "rolled_back_%d", i);
+      h.fillRow(rowbuf, 1, buf);
+      TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow tx2");
+    }
+    TEST_ASSERT(writer.flush() == 0, "flush tx2");
+    // Rollback instead of commit
+    trans->execute(NdbTransaction::Rollback);
+    ndb->closeTransaction(trans);
+  }
+
+  // Verify: only the 2 committed rows should exist
+  auto rows2 = readDataRows(mysql, "rb_t11", 1);
+  TEST_ASSERT(rows2.size() == 2,
+              "after rollback: expected 2, got " +
+                  std::to_string(rows2.size()));
+
+  bool found_rolled_back = false;
+  for (const auto &r : rows2) {
+    if (r.data.find("rolled_back") != std::string::npos)
+      found_rolled_back = true;
+  }
+  TEST_ASSERT(!found_rolled_back, "rolled-back data should not exist");
+
+  // Transaction 3: Insert 1 more row, commit — should go to ring_idx=3
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction tx3");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    h.fillRow(rowbuf, 1, "after_rollback");
+    TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow tx3");
+    TEST_ASSERT(writer.flush() == 0, "flush tx3");
+    TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0, "commit tx3");
+    ndb->closeTransaction(trans);
+  }
+
+  auto rows3 = readDataRows(mysql, "rb_t11", 1);
+  TEST_ASSERT(rows3.size() == 3,
+              "after tx3: expected 3, got " + std::to_string(rows3.size()));
+
+  // The new row should be at ring_idx=3 (continuing from the committed state)
+  bool found_after = false;
+  for (const auto &r : rows3) {
+    if (r.data == "after_rollback") {
+      TEST_ASSERT(r.ring_idx == 3,
+                  "after_rollback should be at ring_idx=3, got " +
+                      std::to_string(r.ring_idx));
+      found_after = true;
+    }
+  }
+  TEST_ASSERT(found_after, "after_rollback row should exist");
+
+  delete[] rowbuf;
+  delete[] mask;
+
+  mysql_exec(mysql, "DROP TABLE test.rb_t11");
+  TEST_PASS("Rollback");
+  return true;
+}
+
+/*
+ * Test 12: Multiple wraps in a single batch.
+ * 10 rows into ring_size=3 in one transaction — tests aggressive wrapping.
+ * Only last 3 rows should survive.
+ */
+static bool test_multi_wrap_batch(Ndb *ndb, MYSQL *mysql) {
+  std::cout << "[Test 12] Multiple wraps in single batch" << std::endl;
+
+  mysql_exec(mysql, "DROP TABLE IF EXISTS test.rb_t12");
+  char ddl[1024];
+  snprintf(ddl, sizeof(ddl), CREATE_BASIC, "rb_t12", 3);
+  mysql_exec(mysql, ddl);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("rb_t12");
+  const NdbDictionary::Table *table = dict->getTable("rb_t12");
+  TEST_ASSERT(table != nullptr, "getTable");
+
+  BasicRecordHelper h;
+  TEST_ASSERT(h.init(table), "init record helper");
+  char *rowbuf = h.newRow();
+  unsigned char *mask = h.newUserMask(table);
+
+  NdbTransaction *trans = ndb->startTransaction(table);
+  TEST_ASSERT(trans != nullptr, "startTransaction");
+
+  {
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init");
+
+    for (int i = 0; i < 10; i++) {
+      char buf[32];
+      snprintf(buf, sizeof(buf), "wrap_%d", i);
+      h.fillRow(rowbuf, 1, buf);
+      TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr,
+                  std::string("addRow ") + buf);
+    }
+    TEST_ASSERT(writer.flush() == 0, "flush");
+  }
+
+  TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0, "commit");
+  ndb->closeTransaction(trans);
+
+  delete[] rowbuf;
+  delete[] mask;
+
+  auto rows = readDataRows(mysql, "rb_t12", 1);
+  TEST_ASSERT(rows.size() == 3,
+              "expected 3, got " + std::to_string(rows.size()));
+
+  // 10 inserts into size 3: wraps at 3, 6, 9.
+  // Slots: wrap_7→idx1, wrap_8→idx2, wrap_9→idx3
+  bool found_7 = false, found_8 = false, found_9 = false;
+  bool found_0 = false;
+  for (const auto &r : rows) {
+    if (r.data == "wrap_7") found_7 = true;
+    if (r.data == "wrap_8") found_8 = true;
+    if (r.data == "wrap_9") found_9 = true;
+    if (r.data == "wrap_0") found_0 = true;
+  }
+  TEST_ASSERT(found_7, "wrap_7 should survive");
+  TEST_ASSERT(found_8, "wrap_8 should survive");
+  TEST_ASSERT(found_9, "wrap_9 should survive");
+  TEST_ASSERT(!found_0, "wrap_0 should be overwritten");
+
+  int total = countAllRows(mysql, "rb_t12", 1);
+  TEST_ASSERT(total == 4, "expected 4 total (meta+3 data)");
+
+  mysql_exec(mysql, "DROP TABLE test.rb_t12");
+  TEST_PASS("Multiple wraps in single batch");
+  return true;
+}
+
+/*
+ * Test 13: Multi-column PK prefix.
+ * Table: (region INT, client_id INT, ring_idx INT, ...)
+ * Verifies that prefix change detection works with >1 prefix column
+ * and each (region, client_id) combo has an independent ring.
+ */
+static bool test_multi_col_pk_prefix(Ndb *ndb, MYSQL *mysql) {
+  std::cout << "[Test 13] Multi-column PK prefix" << std::endl;
+
+  mysql_exec(mysql, "DROP TABLE IF EXISTS test.rb_t13");
+  mysql_exec(mysql,
+             "CREATE TABLE test.rb_t13 ("
+             "  region INT NOT NULL,"
+             "  client_id INT NOT NULL,"
+             "  ring_idx INT NOT NULL DEFAULT 0,"
+             "  ring_meta VARBINARY(64),"
+             "  event_data VARCHAR(100),"
+             "  PRIMARY KEY (region, client_id, ring_idx)"
+             ") ENGINE=NDB,"
+             "  COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta'");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("rb_t13");
+  const NdbDictionary::Table *table = dict->getTable("rb_t13");
+  TEST_ASSERT(table != nullptr, "getTable");
+  TEST_ASSERT(table->isRingBuffer(), "should be ring buffer");
+  TEST_ASSERT(table->getRingBufferSize() == 3, "ring_size=3");
+
+  const NdbRecord *record = table->getDefaultRecord();
+  TEST_ASSERT(record != nullptr, "getDefaultRecord");
+
+  const NdbRecord::Attr *region_attr = findAttr(record, table, "region");
+  const NdbRecord::Attr *cid_attr = findAttr(record, table, "client_id");
+  const NdbRecord::Attr *data_attr = findAttr(record, table, "event_data");
+  const NdbRecord::Attr *rmeta_attr = findAttr(record, table, "ring_meta");
+  TEST_ASSERT(region_attr && cid_attr && data_attr && rmeta_attr, "find attrs");
+
+  Uint32 row_size = record->m_row_size;
+  char *rowbuf = new char[row_size];
+
+  Uint32 max_attr = 0;
+  for (Uint32 i = 0; i < record->noOfColumns; i++)
+    if (record->columns[i].attrId > max_attr)
+      max_attr = record->columns[i].attrId;
+  Uint32 mask_size = (max_attr / 8) + 1;
+  unsigned char *mask = new unsigned char[mask_size];
+  const char *cols[] = {"region", "client_id", "event_data"};
+  buildMask(table, mask, mask_size, cols, 3);
+
+  // Insert interleaved rows for different (region, client_id) combos.
+  // (1,100) x4, (1,200) x2, (2,100) x2
+  // (1,100) should wrap (4 > ring_size=3), others should not.
+  struct Ins {
+    int region;
+    int cid;
+    const char *data;
+  };
+  Ins inserts[] = {
+      {1, 100, "r1c100_A"}, {1, 100, "r1c100_B"}, {1, 100, "r1c100_C"},
+      {1, 100, "r1c100_D"},  // 4th → wraps, overwrites A
+      {1, 200, "r1c200_A"}, {1, 200, "r1c200_B"},
+      {2, 100, "r2c100_A"}, {2, 100, "r2c100_B"},
+  };
+
+  NdbTransaction *trans = ndb->startTransaction(table);
+  TEST_ASSERT(trans != nullptr, "startTransaction");
+
+  {
+    NdbRingBufferWriter writer(table, record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init");
+
+    for (const auto &ins : inserts) {
+      memset(rowbuf, 0, row_size);
+      setInt32(rowbuf, region_attr, ins.region);
+      setInt32(rowbuf, cid_attr, ins.cid);
+      setNull(rowbuf, rmeta_attr);
+      clearNull(rowbuf, data_attr);
+      setVarchar(rowbuf, data_attr, ins.data);
+
+      const NdbOperation *op = writer.addRow(rowbuf, mask);
+      TEST_ASSERT(op != nullptr,
+                  std::string("addRow ") + ins.data + ": " +
+                      writer.getErrorMessage());
+    }
+    TEST_ASSERT(writer.flush() == 0,
+                std::string("flush: ") + writer.getErrorMessage());
+  }
+
+  TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0, "commit");
+  ndb->closeTransaction(trans);
+
+  delete[] rowbuf;
+  delete[] mask;
+
+  // Verify (1,100): 4 inserts into size 3 → 3 survive, A overwritten
+  mysql_exec(mysql,
+             "SELECT event_data FROM test.rb_t13 "
+             "WHERE region=1 AND client_id=100 AND ring_idx>0 "
+             "ORDER BY ring_idx");
+  MYSQL_RES *res = mysql_store_result(mysql);
+  TEST_ASSERT(mysql_num_rows(res) == 3, "(1,100): expected 3 rows");
+  bool found_A = false, found_D = false;
+  MYSQL_ROW r;
+  while ((r = mysql_fetch_row(res))) {
+    std::string val = r[0] ? r[0] : "";
+    if (val == "r1c100_A") found_A = true;
+    if (val == "r1c100_D") found_D = true;
+  }
+  mysql_free_result(res);
+  TEST_ASSERT(!found_A, "(1,100): A should be overwritten");
+  TEST_ASSERT(found_D, "(1,100): D should survive");
+
+  // Verify (1,200): 2 inserts → 2 rows
+  mysql_exec(mysql,
+             "SELECT event_data FROM test.rb_t13 "
+             "WHERE region=1 AND client_id=200 AND ring_idx>0 "
+             "ORDER BY ring_idx");
+  res = mysql_store_result(mysql);
+  TEST_ASSERT(mysql_num_rows(res) == 2, "(1,200): expected 2 rows");
+  mysql_free_result(res);
+
+  // Verify (2,100): 2 inserts → 2 rows
+  mysql_exec(mysql,
+             "SELECT event_data FROM test.rb_t13 "
+             "WHERE region=2 AND client_id=100 AND ring_idx>0 "
+             "ORDER BY ring_idx");
+  res = mysql_store_result(mysql);
+  TEST_ASSERT(mysql_num_rows(res) == 2, "(2,100): expected 2 rows");
+  mysql_free_result(res);
+
+  mysql_exec(mysql, "DROP TABLE test.rb_t13");
+  TEST_PASS("Multi-column PK prefix");
+  return true;
+}
+
 // ---------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------
@@ -822,38 +1349,48 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  Ndb_cluster_connection cluster_connection(connectstring);
-  if (cluster_connection.connect(5, 3, 1)) {
-    std::cerr << "Cannot connect to cluster management server" << std::endl;
-    return EXIT_FAILURE;
+  // Scope the cluster connection and Ndb so they are destroyed before ndb_end()
+  {
+    Ndb_cluster_connection cluster_connection(connectstring);
+    if (cluster_connection.connect(5, 3, 1)) {
+      std::cerr << "Cannot connect to cluster management server" << std::endl;
+      return EXIT_FAILURE;
+    }
+    if (cluster_connection.wait_until_ready(30, 0)) {
+      std::cerr << "Cluster was not ready within 30 secs" << std::endl;
+      return EXIT_FAILURE;
+    }
+
+    Ndb ndb(&cluster_connection, "test");
+    if (ndb.init() != 0) {
+      std::cerr << "Ndb init failed: " << ndb.getNdbError().message
+                << std::endl;
+      return EXIT_FAILURE;
+    }
+
+    std::cout << "=== NdbRingBufferWriter Test Suite ===" << std::endl;
+
+    test_single_insert(&ndb, &mysql);
+    test_fill_ring(&ndb, &mysql);
+    test_multiple_prefixes(&ndb, &mysql);
+    test_batch_insert(&ndb, &mysql);
+    test_notnull_column(&ndb, &mysql);
+    test_ring_size_1(&ndb, &mysql);
+    test_error_non_ring_table(&ndb, &mysql);
+    test_multi_transaction(&ndb, &mysql);
+    test_blob_text(&ndb, &mysql);
+    test_delete_reinsert(&ndb, &mysql);
+    test_rollback(&ndb, &mysql);
+    test_multi_wrap_batch(&ndb, &mysql);
+    test_multi_col_pk_prefix(&ndb, &mysql);
+
+    std::cout << "\n=== Results ===" << std::endl;
+    std::cout << "Passed: " << g_tests_passed << std::endl;
+    std::cout << "Failed: " << g_tests_failed << std::endl;
   }
-  if (cluster_connection.wait_until_ready(30, 0)) {
-    std::cerr << "Cluster was not ready within 30 secs" << std::endl;
-    return EXIT_FAILURE;
-  }
-
-  Ndb ndb(&cluster_connection, "test");
-  if (ndb.init() != 0) {
-    std::cerr << "Ndb init failed: " << ndb.getNdbError().message << std::endl;
-    return EXIT_FAILURE;
-  }
-
-  std::cout << "=== NdbRingBufferWriter Test Suite ===" << std::endl;
-
-  test_single_insert(&ndb, &mysql);
-  test_fill_ring(&ndb, &mysql);
-  test_multiple_prefixes(&ndb, &mysql);
-  test_batch_insert(&ndb, &mysql);
-  test_notnull_column(&ndb, &mysql);
-  test_ring_size_1(&ndb, &mysql);
-  test_error_non_ring_table(&ndb, &mysql);
-  test_multi_transaction(&ndb, &mysql);
-
-  std::cout << "\n=== Results ===" << std::endl;
-  std::cout << "Passed: " << g_tests_passed << std::endl;
-  std::cout << "Failed: " << g_tests_failed << std::endl;
 
   mysql_close(&mysql);
+  mysql_library_end();
   ndb_end(0);
 
   return g_tests_failed > 0 ? EXIT_FAILURE : EXIT_SUCCESS;

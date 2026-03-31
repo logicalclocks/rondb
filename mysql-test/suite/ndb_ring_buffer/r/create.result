@@ -1,5 +1,5 @@
 #
-# Case 1: Basic CREATE TABLE with RING_BUFFER — success
+# Case 1: Basic CREATE TABLE with MAX_ROWS_PER_PK — success
 #
 CREATE TABLE test.t1 (
 client_id INT NOT NULL,
@@ -8,7 +8,7 @@ ring_meta VARBINARY(64),
 data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 SHOW CREATE TABLE test.t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -17,10 +17,10 @@ t1	CREATE TABLE `t1` (
   `ring_meta` varbinary(64) DEFAULT NULL,
   `data` varchar(100) DEFAULT NULL,
   PRIMARY KEY (`client_id`,`ring_idx`)
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta'
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta'
 DROP TABLE test.t1;
 #
-# Case 2: RING_BUFFER with INT UNSIGNED ring_idx — success
+# Case 2: MAX_ROWS_PER_PK with INT UNSIGNED ring_idx — success
 #
 CREATE TABLE test.t2 (
 client_id INT NOT NULL,
@@ -28,7 +28,7 @@ ring_idx INT UNSIGNED NOT NULL DEFAULT 0,
 ring_meta VARBINARY(16),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=100@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=100@ring_idx@ring_meta";
 SHOW CREATE TABLE test.t2;
 Table	Create Table
 t2	CREATE TABLE `t2` (
@@ -36,10 +36,10 @@ t2	CREATE TABLE `t2` (
   `ring_idx` int unsigned NOT NULL DEFAULT '0',
   `ring_meta` varbinary(16) DEFAULT NULL,
   PRIMARY KEY (`client_id`,`ring_idx`)
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=100@ring_idx@ring_meta'
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=100@ring_idx@ring_meta'
 DROP TABLE test.t2;
 #
-# Case 3: RING_BUFFER with size = 1 (minimum) — success
+# Case 3: MAX_ROWS_PER_PK with size = 1 (minimum) — success
 #
 CREATE TABLE test.t3 (
 pk INT NOT NULL,
@@ -47,7 +47,7 @@ ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(16),
 PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta";
 SHOW CREATE TABLE test.t3;
 Table	Create Table
 t3	CREATE TABLE `t3` (
@@ -55,10 +55,10 @@ t3	CREATE TABLE `t3` (
   `ring_idx` int NOT NULL DEFAULT '0',
   `ring_meta` varbinary(16) DEFAULT NULL,
   PRIMARY KEY (`pk`,`ring_idx`)
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta'
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta'
 DROP TABLE test.t3;
 #
-# Case 4: RING_BUFFER with large size (2147483647) — success
+# Case 4: MAX_ROWS_PER_PK with large size (2147483647) — success
 #
 CREATE TABLE test.t4 (
 pk INT NOT NULL,
@@ -66,7 +66,7 @@ ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(16),
 PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=2147483647@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2147483647@ring_idx@ring_meta";
 SHOW CREATE TABLE test.t4;
 Table	Create Table
 t4	CREATE TABLE `t4` (
@@ -74,10 +74,10 @@ t4	CREATE TABLE `t4` (
   `ring_idx` int NOT NULL DEFAULT '0',
   `ring_meta` varbinary(16) DEFAULT NULL,
   PRIMARY KEY (`pk`,`ring_idx`)
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=2147483647@ring_idx@ring_meta'
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=2147483647@ring_idx@ring_meta'
 DROP TABLE test.t4;
 #
-# Case 5: RING_BUFFER = OFF — success (no ring buffer set)
+# Case 5: MAX_ROWS_PER_PK = OFF — success (no ring buffer set)
 #
 CREATE TABLE test.t5 (
 pk INT NOT NULL,
@@ -85,7 +85,7 @@ ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(16),
 PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=off";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=off";
 SHOW CREATE TABLE test.t5;
 Table	Create Table
 t5	CREATE TABLE `t5` (
@@ -93,7 +93,7 @@ t5	CREATE TABLE `t5` (
   `ring_idx` int NOT NULL DEFAULT '0',
   `ring_meta` varbinary(16) DEFAULT NULL,
   PRIMARY KEY (`pk`,`ring_idx`)
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=off'
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=off'
 DROP TABLE test.t5;
 #
 # Case 6: Combined COMMENT with PARTITION_BALANCE — success
@@ -105,7 +105,7 @@ ring_meta VARBINARY(64),
 data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM,RING_BUFFER=200@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM,MAX_ROWS_PER_PK=200@ring_idx@ring_meta";
 SHOW CREATE TABLE test.t6;
 Table	Create Table
 t6	CREATE TABLE `t6` (
@@ -114,7 +114,7 @@ t6	CREATE TABLE `t6` (
   `ring_meta` varbinary(64) DEFAULT NULL,
   `data` varchar(100) DEFAULT NULL,
   PRIMARY KEY (`client_id`,`ring_idx`)
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM,RING_BUFFER=200@ring_idx@ring_meta'
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM,MAX_ROWS_PER_PK=200@ring_idx@ring_meta'
 DROP TABLE test.t6;
 #
 # Case 7: Error — ring_idx column is not INT type (BIGINT)
@@ -125,7 +125,7 @@ ring_idx BIGINT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring index column must be INT type'
 #
 # Case 8: Error — ring_idx column is not the last PK column
@@ -136,7 +136,7 @@ client_id INT NOT NULL,
 ring_meta VARBINARY(64),
 PRIMARY KEY (ring_idx, client_id)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring index column must be the last column of the PRIMARY KEY'
 #
 # Case 9: Error — ring_meta column is not VARBINARY (VARCHAR used)
@@ -147,7 +147,7 @@ ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARCHAR(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column must be VARBINARY type'
 #
 # Case 10: Error — ring_meta column VARBINARY too small (< 16)
@@ -158,7 +158,7 @@ ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(8),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column must be VARBINARY with length >= 16'
 #
 # Case 11: Error — ring_meta column is NOT NULL (must be nullable)
@@ -169,7 +169,7 @@ ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64) NOT NULL,
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column must be nullable'
 #
 # Case 12: Error — size = 0 (below minimum)
@@ -180,8 +180,8 @@ ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=0@ring_idx@ring_meta";
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer size must be >= 1 and <= 2147483647'
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=0@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647'
 #
 # Case 13: Error — size exceeds maximum (2147483648)
 #
@@ -191,8 +191,8 @@ ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=2147483648@ring_idx@ring_meta";
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer size must be >= 1 and <= 2147483647'
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2147483648@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647'
 #
 # Case 14: Error — malformed format (missing second @)
 #
@@ -202,8 +202,8 @@ ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx";
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'RING_BUFFER format: 'SIZE@idx_col@meta_col''
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'MAX_ROWS_PER_PK format: 'SIZE' or 'SIZE@idx_col@meta_col''
 #
 # Case 15: Error — ring_idx column not found in table
 #
@@ -213,7 +213,7 @@ idx INT NOT NULL,
 ring_meta VARBINARY(64),
 PRIMARY KEY (client_id, idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=400@nonexistent@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@nonexistent@ring_meta";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring index column not found in table'
 #
 # Case 16: Error — ring_meta column not found in table
@@ -224,10 +224,10 @@ ring_idx INT NOT NULL DEFAULT 0,
 meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@nonexistent";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@nonexistent";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column not found in table'
 #
-# Case 17: Error — TTL and RING_BUFFER mutual exclusion
+# Case 17: Error — TTL and MAX_ROWS_PER_PK mutual exclusion
 #
 CREATE TABLE test.t17 (
 client_id INT NOT NULL,
@@ -236,8 +236,8 @@ ring_meta VARBINARY(64),
 ts TIMESTAMP,
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=TTL=60@ts,RING_BUFFER=400@ring_idx@ring_meta";
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'A table cannot be both TTL and RING_BUFFER'
+COMMENT="NDB_TABLE=TTL=60@ts,MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'A table cannot be both TTL and MAX_ROWS_PER_PK'
 #
 # Case 18: Error — size is not a number
 #
@@ -247,8 +247,8 @@ ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=abc@ring_idx@ring_meta";
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Invalid RING_BUFFER format, size must be a positive integer'
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=abc@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Invalid MAX_ROWS_PER_PK format, size must be a positive integer'
 #
 # Case 19: Error — ring_idx column has no DEFAULT value
 #
@@ -258,7 +258,7 @@ ring_idx INT NOT NULL,
 ring_meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring index column must have DEFAULT (e.g. 0)'
 #
 # Case 20: FOREIGN KEY on ring buffer table — blocked
@@ -274,7 +274,7 @@ parent_id INT NOT NULL,
 PRIMARY KEY (id, ring_idx),
 FOREIGN KEY (parent_id) REFERENCES test.fk_parent(id)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Cannot add foreign key constraint
 CREATE TABLE test.rb_fk_parent (
 id INT NOT NULL,
@@ -284,7 +284,7 @@ code INT NOT NULL,
 PRIMARY KEY (id, ring_idx),
 UNIQUE INDEX idx_code (code)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 CREATE TABLE test.fk_child_of_rb (
 id INT NOT NULL PRIMARY KEY,
 code INT NOT NULL,
@@ -303,7 +303,7 @@ ring_meta VARBINARY(64),
 content TEXT NOT NULL,
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer tables cannot have NOT NULL BLOB/TEXT columns'
 CREATE TABLE test.rb_nn_blob2 (
 id INT NOT NULL,
@@ -312,8 +312,70 @@ ring_meta VARBINARY(64),
 payload BLOB NOT NULL,
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer tables cannot have NOT NULL BLOB/TEXT columns'
+#
+# Case 22: Size only — default column names (ring_idx, ring_meta)
+#
+CREATE TABLE test.t22 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3";
+SHOW CREATE TABLE test.t22;
+Table	Create Table
+t22	CREATE TABLE `t22` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `data` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=3'
+INSERT INTO test.t22 (client_id, data) VALUES (1, 'a');
+INSERT INTO test.t22 (client_id, data) VALUES (1, 'b');
+INSERT INTO test.t22 (client_id, data) VALUES (1, 'c');
+INSERT INTO test.t22 (client_id, data) VALUES (1, 'd');
+INSERT INTO test.t22 (client_id, data) VALUES (1, 'e');
+SELECT client_id, ring_idx, data FROM test.t22 ORDER BY ring_idx;
+client_id	ring_idx	data
+1	1	d
+1	2	e
+1	3	c
+DROP TABLE test.t22;
+#
+# Case 23: Custom internal column names via @col@col
+#
+CREATE TABLE test.t23 (
+client_id INT NOT NULL,
+row_seq INT NOT NULL DEFAULT 0,
+row_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, row_seq)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@row_seq@row_meta";
+SHOW CREATE TABLE test.t23;
+Table	Create Table
+t23	CREATE TABLE `t23` (
+  `client_id` int NOT NULL,
+  `row_seq` int NOT NULL DEFAULT '0',
+  `row_meta` varbinary(64) DEFAULT NULL,
+  `data` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`row_seq`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=3@row_seq@row_meta'
+INSERT INTO test.t23 (client_id, data) VALUES (1, 'a');
+INSERT INTO test.t23 (client_id, data) VALUES (1, 'b');
+INSERT INTO test.t23 (client_id, data) VALUES (1, 'c');
+INSERT INTO test.t23 (client_id, data) VALUES (1, 'd');
+INSERT INTO test.t23 (client_id, data) VALUES (1, 'e');
+SELECT client_id, row_seq, data FROM test.t23 ORDER BY row_seq;
+client_id	row_seq	data
+1	1	d
+1	2	e
+1	3	c
+DROP TABLE test.t23;
 #
 # Done
 #

@@ -9083,7 +9083,7 @@ static const struct NDB_Modifier ndb_table_modifiers[] = {
     {NDB_Modifier::M_BOOL, STRING_WITH_LEN("FULLY_REPLICATED"), 0, {0}},
     {NDB_Modifier::M_STRING, STRING_WITH_LEN("PARTITION_BALANCE"), 0, {0}},
     {NDB_Modifier::M_STRING, STRING_WITH_LEN("TTL"), 0, {0}},
-    {NDB_Modifier::M_STRING, STRING_WITH_LEN("RING_BUFFER"), 0, {0}},
+    {NDB_Modifier::M_STRING, STRING_WITH_LEN("MAX_ROWS_PER_PK"), 0, {0}},
     {NDB_Modifier::M_BOOL, nullptr, 0, 0, {0}}};
 
 static const char *ndb_column_modifier_prefix = "NDB_COLUMN=";
@@ -9916,7 +9916,7 @@ int ha_ndbcluster::get_old_table_comment_items(THD *thd,
       table_modifiers.get("FULLY_REPLICATED");
   const NDB_Modifier *mod_frags = table_modifiers.get("PARTITION_BALANCE");
   const NDB_Modifier *mod_ttl = table_modifiers.get("TTL");
-  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("RING_BUFFER");
+  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("MAX_ROWS_PER_PK");
 
   if (mod_nologging->m_found) comment_items_shown[NOLOGGING] = true;
   if (mod_read_backup->m_found) comment_items_shown[READ_BACKUP] = true;
@@ -9983,7 +9983,7 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
       table_modifiers.get("FULLY_REPLICATED");
   const NDB_Modifier *mod_frags = table_modifiers.get("PARTITION_BALANCE");
   const NDB_Modifier * mod_ttl = table_modifiers.get("TTL");
-  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("RING_BUFFER");
+  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("MAX_ROWS_PER_PK");
 
   // Get the comment items from the old Ndb table
   bool old_nologging = !ndbtab->getLogging();
@@ -10176,10 +10176,10 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
 
       char old_rb_str[256] = {0};
       strncpy(old_rb_str,
-             old_table_modifiers.get("RING_BUFFER")->m_val_str.str,
-             old_table_modifiers.get("RING_BUFFER")->m_val_str.len);
+             old_table_modifiers.get("MAX_ROWS_PER_PK")->m_val_str.str,
+             old_table_modifiers.get("MAX_ROWS_PER_PK")->m_val_str.len);
 
-      table_modifiers.set("RING_BUFFER", old_rb_str);
+      table_modifiers.set("MAX_ROWS_PER_PK", old_rb_str);
     }
   }
 
@@ -10728,7 +10728,7 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
   }
 
   /* Ring Buffer parsing */
-  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("RING_BUFFER");
+  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("MAX_ROWS_PER_PK");
   bool found_ring_buffer = false;
   uint32_t ring_buffer_size = RNIL;
   std::string ring_idx_col_name;
@@ -10756,49 +10756,59 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
               "Cannot disable ring buffer via ALTER");
         }
       }
-      ndb_log_info("[API] RING_BUFFER = OFF");
+      ndb_log_info("[API] MAX_ROWS_PER_PK = OFF");
     } else {
-      /* Parse: size@ring_idx_column@ring_meta_column */
+      /*
+       * Parse: SIZE or SIZE@idx_col@meta_col
+       * When @col@col is omitted, default to ring_idx / ring_meta.
+       */
+      std::string size_str;
       std::size_t pos1 = rb_comment.find('@');
-      if (pos1 == std::string::npos || pos1 == 0) {
-        return create.failed_illegal_create_option(
-            "RING_BUFFER format: 'SIZE@idx_col@meta_col'");
-      }
-      std::size_t pos2 = rb_comment.find('@', pos1 + 1);
-      if (pos2 == std::string::npos || pos2 == pos1 + 1) {
-        return create.failed_illegal_create_option(
-            "RING_BUFFER format: 'SIZE@idx_col@meta_col'");
-      }
-      if (rb_comment.find('@', pos2 + 1) != std::string::npos) {
-        return create.failed_illegal_create_option(
-            "RING_BUFFER format: 'SIZE@idx_col@meta_col'");
+      if (pos1 == std::string::npos) {
+        /* No '@' — size only, use default column names */
+        size_str = rb_comment;
+        ring_idx_col_name = "ring_idx";
+        ring_meta_col_name = "ring_meta";
+      } else {
+        if (pos1 == 0) {
+          return create.failed_illegal_create_option(
+              "MAX_ROWS_PER_PK format: 'SIZE' or 'SIZE@idx_col@meta_col'");
+        }
+        std::size_t pos2 = rb_comment.find('@', pos1 + 1);
+        if (pos2 == std::string::npos || pos2 == pos1 + 1) {
+          return create.failed_illegal_create_option(
+              "MAX_ROWS_PER_PK format: 'SIZE' or 'SIZE@idx_col@meta_col'");
+        }
+        if (rb_comment.find('@', pos2 + 1) != std::string::npos) {
+          return create.failed_illegal_create_option(
+              "MAX_ROWS_PER_PK format: 'SIZE' or 'SIZE@idx_col@meta_col'");
+        }
+        size_str = rb_comment.substr(0, pos1);
+        ring_idx_col_name = rb_comment.substr(pos1 + 1, pos2 - pos1 - 1);
+        ring_meta_col_name = rb_comment.substr(pos2 + 1);
+        if (ring_meta_col_name.empty()) {
+          return create.failed_illegal_create_option(
+              "MAX_ROWS_PER_PK format: 'SIZE' or 'SIZE@idx_col@meta_col'");
+        }
       }
 
       /* Validate size */
-      std::string size_str = rb_comment.substr(0, pos1);
       for (std::size_t i = 0; i < size_str.length(); i++) {
         if (size_str.at(i) < '0' || size_str.at(i) > '9') {
           return create.failed_illegal_create_option(
-              "Invalid RING_BUFFER format, size must be a positive integer");
+              "Invalid MAX_ROWS_PER_PK format, size must be a positive integer");
         }
       }
       if (size_str.length() > 10) {
         return create.failed_illegal_create_option(
-            "Ring buffer size must be >= 1 and <= 2147483647");
+            "MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647");
       }
       int64_t size_raw = std::stoll(size_str);
       if (size_raw < 1 || size_raw > 0x7FFFFFFF) {
         return create.failed_illegal_create_option(
-            "Ring buffer size must be >= 1 and <= 2147483647");
+            "MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647");
       }
       ring_buffer_size = static_cast<uint32_t>(size_raw);
-
-      ring_idx_col_name = rb_comment.substr(pos1 + 1, pos2 - pos1 - 1);
-      ring_meta_col_name = rb_comment.substr(pos2 + 1);
-      if (ring_meta_col_name.empty()) {
-        return create.failed_illegal_create_option(
-            "Invalid RING_BUFFER format, ring meta column name is empty");
-      }
 
       /* Validate ring_idx column */
       bool found_idx = false;
@@ -10902,10 +10912,10 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
     }
   }
 
-  /* Mutual exclusion: TTL and RING_BUFFER */
+  /* Mutual exclusion: TTL and MAX_ROWS_PER_PK */
   if (found_ttl && found_ring_buffer) {
     return create.failed_illegal_create_option(
-        "A table cannot be both TTL and RING_BUFFER");
+        "A table cannot be both TTL and MAX_ROWS_PER_PK");
   }
 
   NdbDictionary::Object::PartitionBalance part_bal =
@@ -17618,7 +17628,7 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
     }
   }
 
-  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("RING_BUFFER");
+  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("MAX_ROWS_PER_PK");
   if (mod_ring_buffer->m_found) {
     std::string rb_comment(mod_ring_buffer->m_val_str.str,
                            mod_ring_buffer->m_val_str.len);
@@ -17631,36 +17641,56 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
       }
       /* off on non-ring-buffer table — no-op, ignore */
     } else {
-      /* Parse: size@ring_idx_column@ring_meta_column */
+      /*
+       * Parse: SIZE or SIZE@idx_col@meta_col
+       * When @col@col is omitted, default to ring_idx / ring_meta.
+       */
+      std::string size_str;
+      std::string ring_idx_col_name;
+      std::string ring_meta_col_name;
+
       std::size_t pos1 = rb_comment.find('@');
-      if (pos1 == std::string::npos || pos1 == 0) {
-        *reason = "RING_BUFFER format: SIZE@idx_col@meta_col";
-        return true;
-      }
-      std::size_t pos2 = rb_comment.find('@', pos1 + 1);
-      if (pos2 == std::string::npos || pos2 == pos1 + 1) {
-        *reason = "RING_BUFFER format: SIZE@idx_col@meta_col";
-        return true;
-      }
-      if (rb_comment.find('@', pos2 + 1) != std::string::npos) {
-        *reason = "RING_BUFFER format: SIZE@idx_col@meta_col";
-        return true;
+      if (pos1 == std::string::npos) {
+        /* No '@' — size only, use default column names */
+        size_str = rb_comment;
+        ring_idx_col_name = "ring_idx";
+        ring_meta_col_name = "ring_meta";
+      } else {
+        if (pos1 == 0) {
+          *reason = "MAX_ROWS_PER_PK format: SIZE or SIZE@idx_col@meta_col";
+          return true;
+        }
+        std::size_t pos2 = rb_comment.find('@', pos1 + 1);
+        if (pos2 == std::string::npos || pos2 == pos1 + 1) {
+          *reason = "MAX_ROWS_PER_PK format: SIZE or SIZE@idx_col@meta_col";
+          return true;
+        }
+        if (rb_comment.find('@', pos2 + 1) != std::string::npos) {
+          *reason = "MAX_ROWS_PER_PK format: SIZE or SIZE@idx_col@meta_col";
+          return true;
+        }
+        size_str = rb_comment.substr(0, pos1);
+        ring_idx_col_name = rb_comment.substr(pos1 + 1, pos2 - pos1 - 1);
+        ring_meta_col_name = rb_comment.substr(pos2 + 1);
+        if (ring_meta_col_name.empty()) {
+          *reason = "MAX_ROWS_PER_PK format: SIZE or SIZE@idx_col@meta_col";
+          return true;
+        }
       }
 
-      std::string size_str = rb_comment.substr(0, pos1);
       for (std::size_t i = 0; i < size_str.length(); i++) {
         if (size_str.at(i) < '0' || size_str.at(i) > '9') {
-          *reason = "RING_BUFFER size must be a positive integer";
+          *reason = "MAX_ROWS_PER_PK size must be a positive integer";
           return true;
         }
       }
       if (size_str.length() > 10) {
-        *reason = "Ring buffer size must be >= 1 and <= 2147483647";
+        *reason = "MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647";
         return true;
       }
       int64_t size_raw = std::stoll(size_str);
       if (size_raw < 1 || size_raw > 0x7FFFFFFF) {
-        *reason = "Ring buffer size must be >= 1 and <= 2147483647";
+        *reason = "MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647";
         return true;
       }
       uint32_t new_ring_buffer_size = static_cast<uint32_t>(size_raw);
@@ -17673,14 +17703,6 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
       }
 
       /* Look up column numbers */
-      std::string ring_idx_col_name =
-          rb_comment.substr(pos1 + 1, pos2 - pos1 - 1);
-      std::string ring_meta_col_name = rb_comment.substr(pos2 + 1);
-      if (ring_meta_col_name.empty()) {
-        *reason = "RING_BUFFER format: SIZE@idx_col@meta_col";
-        return true;
-      }
-
       NdbDictionary::Column *idx_col =
           new_tab->getColumn(ring_idx_col_name.c_str());
       NdbDictionary::Column *meta_col =
@@ -17696,9 +17718,9 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
     }
   }
 
-  /* Mutual exclusion: TTL and RING_BUFFER */
+  /* Mutual exclusion: TTL and MAX_ROWS_PER_PK */
   if (new_tab->isTTLEnabled() && new_tab->isRingBuffer()) {
-    *reason = "A table cannot be both TTL and RING_BUFFER";
+    *reason = "A table cannot be both TTL and MAX_ROWS_PER_PK";
     return true;
   }
 

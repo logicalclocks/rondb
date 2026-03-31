@@ -8,7 +8,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 #
 # Case 1: Single-row insert — first insert for PK prefix
 # Expected: ring_idx=1 assigned, meta row created
@@ -119,7 +119,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta";
 INSERT INTO test.rb1 (pk, val) VALUES (1, 'first');
 SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx > 0 ORDER BY ring_idx;
 pk	ring_idx	val
@@ -144,7 +144,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (region, client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_multi (region, client_id, event_data)
 VALUES (1, 100, 'r1c100_A');
 INSERT INTO test.rb_multi (region, client_id, event_data)

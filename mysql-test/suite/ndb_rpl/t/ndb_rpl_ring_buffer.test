@@ -18,7 +18,7 @@
 ###############################################################################
 
 --echo #
---echo # Case 1: CREATE TABLE DDL replicates with RING_BUFFER comment
+--echo # Case 1: CREATE TABLE DDL replicates with MAX_ROWS_PER_PK comment
 --echo #
 
 --connection master
@@ -30,12 +30,12 @@ CREATE TABLE test.rb (
     event_data VARCHAR(100),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 --sync_slave_with_master
 --connection slave
 
-# Slave should have the table with RING_BUFFER comment
+# Slave should have the table with MAX_ROWS_PER_PK comment
 SHOW CREATE TABLE test.rb;
 
 ###############################################################################
@@ -128,7 +128,7 @@ CREATE TABLE test.rb_bulk (
     data VARCHAR(100),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
 
 # Multi-row INSERT (bulk path)
 INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b1');
@@ -277,7 +277,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 
 # Current ring_size=4, grow to 8
 # Need NOLOGGING=1 in replication setup to match table's current setting
-ALTER TABLE test.rb COMMENT="NDB_TABLE=NOLOGGING=1,RING_BUFFER=8@ring_idx@ring_meta";
+ALTER TABLE test.rb COMMENT="NDB_TABLE=NOLOGGING=1,MAX_ROWS_PER_PK=8@ring_idx@ring_meta";
 
 SHOW CREATE TABLE test.rb;
 
@@ -365,7 +365,7 @@ CREATE TABLE test.rb_nn_uniq (
     PRIMARY KEY (id, ring_idx),
     UNIQUE INDEX idx_code (code)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 100);
 INSERT INTO test.rb_nn_uniq (id, code) VALUES (2, 200);

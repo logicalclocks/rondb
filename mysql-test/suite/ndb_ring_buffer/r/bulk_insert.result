@@ -8,7 +8,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 #
 # Case 1: Multi-row INSERT, same PK prefix — fills 3 of 4 slots
 # Path B (first row) + Path A (rows 2-3), single meta write at end
@@ -237,7 +237,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta";
 INSERT INTO test.rb1 (pk, val) VALUES (1, 'first'), (1, 'second'), (1, 'third');
 SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 ORDER BY ring_idx;
 pk	ring_idx	val
@@ -266,7 +266,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (region, client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_multi (region, client_id, event_data)
 VALUES (1, 100, 'a'), (1, 100, 'b'), (1, 100, 'c');
 SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
@@ -297,7 +297,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 CREATE TABLE test.src (
 client_id INT NOT NULL,
 event_data VARCHAR(100),
@@ -330,7 +330,7 @@ ring_meta VARBINARY(64),
 val INT,
 PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 CREATE TABLE test.seq (n INT NOT NULL PRIMARY KEY) ENGINE = NDB;
 INSERT INTO test.seq VALUES (1);
 INSERT INTO test.seq VALUES (2);
