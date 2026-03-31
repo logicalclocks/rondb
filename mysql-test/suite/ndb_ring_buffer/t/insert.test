@@ -1,6 +1,6 @@
 # ndb_ring_buffer_insert.test
 #
-# Tests for RING_BUFFER INSERT operations: kernel write guard,
+# Tests for MAX_ROWS_PER_PK INSERT operations: kernel write guard,
 # ring-buffer write path, and disallowed operations.
 
 --source include/have_ndb.inc
@@ -16,7 +16,7 @@ CREATE TABLE test.rb (
     event_data VARCHAR(100),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 1: Single-row insert — first insert for PK prefix
@@ -133,7 +133,7 @@ CREATE TABLE test.rb1 (
     val VARCHAR(50),
     PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta";
 
 INSERT INTO test.rb1 (pk, val) VALUES (1, 'first');
 # Show ALL data rows (ring_idx > 0) to verify only 1 slot is used
@@ -161,7 +161,7 @@ CREATE TABLE test.rb_multi (
     event_data VARCHAR(100),
     PRIMARY KEY (region, client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_multi (region, client_id, event_data)
     VALUES (1, 100, 'r1c100_A');

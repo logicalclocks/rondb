@@ -8,7 +8,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=8@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=8@ring_idx@ring_meta";
 #
 # Case 1: Two sessions inserting to different PK prefixes — no conflict
 #

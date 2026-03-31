@@ -4,7 +4,7 @@ Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
 Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
 [connection master]
 #
-# Case 1: CREATE TABLE DDL replicates with RING_BUFFER comment
+# Case 1: CREATE TABLE DDL replicates with MAX_ROWS_PER_PK comment
 #
 CREATE TABLE test.rb (
 client_id INT NOT NULL,
@@ -13,7 +13,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 SHOW CREATE TABLE test.rb;
 Table	Create Table
 rb	CREATE TABLE `rb` (
@@ -22,7 +22,7 @@ rb	CREATE TABLE `rb` (
   `ring_meta` varbinary(64) DEFAULT NULL,
   `event_data` varchar(100) DEFAULT NULL,
   PRIMARY KEY (`client_id`,`ring_idx`)
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta'
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta'
 #
 # Case 2: Basic INSERT replicates to slave
 #
@@ -97,7 +97,7 @@ ring_meta VARBINARY(64),
 data VARCHAR(100),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
 INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b1');
 INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b2');
 INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b3');
@@ -206,7 +206,7 @@ client_id	ring_idx	event_data
 #
 # Case 11: ALTER TABLE grow replicates to slave
 #
-ALTER TABLE test.rb COMMENT="NDB_TABLE=NOLOGGING=1,RING_BUFFER=8@ring_idx@ring_meta";
+ALTER TABLE test.rb COMMENT="NDB_TABLE=NOLOGGING=1,MAX_ROWS_PER_PK=8@ring_idx@ring_meta";
 SHOW CREATE TABLE test.rb;
 Table	Create Table
 rb	CREATE TABLE `rb` (
@@ -215,7 +215,7 @@ rb	CREATE TABLE `rb` (
   `ring_meta` varbinary(64) DEFAULT NULL,
   `event_data` varchar(100) DEFAULT NULL,
   PRIMARY KEY (`client_id`,`ring_idx`)
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=NOLOGGING=1,RING_BUFFER=8@ring_idx@ring_meta'
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=NOLOGGING=1,MAX_ROWS_PER_PK=8@ring_idx@ring_meta'
 SHOW CREATE TABLE test.rb;
 Table	Create Table
 rb	CREATE TABLE `rb` (
@@ -224,7 +224,7 @@ rb	CREATE TABLE `rb` (
   `ring_meta` varbinary(64) DEFAULT NULL,
   `event_data` varchar(100) DEFAULT NULL,
   PRIMARY KEY (`client_id`,`ring_idx`)
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=NOLOGGING=1,RING_BUFFER=8@ring_idx@ring_meta'
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=NOLOGGING=1,MAX_ROWS_PER_PK=8@ring_idx@ring_meta'
 #
 # Case 12: INSERT after grow uses new ring size
 #
@@ -292,7 +292,7 @@ code INT NOT NULL,
 PRIMARY KEY (id, ring_idx),
 UNIQUE INDEX idx_code (code)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 100);
 INSERT INTO test.rb_nn_uniq (id, code) VALUES (2, 200);
 INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 300);

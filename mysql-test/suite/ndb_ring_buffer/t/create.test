@@ -1,13 +1,13 @@
 # ndb_ring_buffer_create.test
 #
-# Tests for RING_BUFFER CREATE TABLE DDL parsing and metadata plumbing.
+# Tests for MAX_ROWS_PER_PK CREATE TABLE DDL parsing and metadata plumbing.
 # Validates COMMENT syntax, column constraints, SHOW CREATE TABLE round-trip,
 # mutual exclusion with TTL, and DROP TABLE.
 
 --source include/have_ndb.inc
 
 --echo #
---echo # Case 1: Basic CREATE TABLE with RING_BUFFER — success
+--echo # Case 1: Basic CREATE TABLE with MAX_ROWS_PER_PK — success
 --echo #
 
 CREATE TABLE test.t1 (
@@ -17,14 +17,14 @@ CREATE TABLE test.t1 (
     data VARCHAR(100),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 SHOW CREATE TABLE test.t1;
 
 DROP TABLE test.t1;
 
 --echo #
---echo # Case 2: RING_BUFFER with INT UNSIGNED ring_idx — success
+--echo # Case 2: MAX_ROWS_PER_PK with INT UNSIGNED ring_idx — success
 --echo #
 
 CREATE TABLE test.t2 (
@@ -33,14 +33,14 @@ CREATE TABLE test.t2 (
     ring_meta VARBINARY(16),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=100@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=100@ring_idx@ring_meta";
 
 SHOW CREATE TABLE test.t2;
 
 DROP TABLE test.t2;
 
 --echo #
---echo # Case 3: RING_BUFFER with size = 1 (minimum) — success
+--echo # Case 3: MAX_ROWS_PER_PK with size = 1 (minimum) — success
 --echo #
 
 CREATE TABLE test.t3 (
@@ -49,14 +49,14 @@ CREATE TABLE test.t3 (
     ring_meta VARBINARY(16),
     PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta";
 
 SHOW CREATE TABLE test.t3;
 
 DROP TABLE test.t3;
 
 --echo #
---echo # Case 4: RING_BUFFER with large size (2147483647) — success
+--echo # Case 4: MAX_ROWS_PER_PK with large size (2147483647) — success
 --echo #
 
 CREATE TABLE test.t4 (
@@ -65,14 +65,14 @@ CREATE TABLE test.t4 (
     ring_meta VARBINARY(16),
     PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=2147483647@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2147483647@ring_idx@ring_meta";
 
 SHOW CREATE TABLE test.t4;
 
 DROP TABLE test.t4;
 
 --echo #
---echo # Case 5: RING_BUFFER = OFF — success (no ring buffer set)
+--echo # Case 5: MAX_ROWS_PER_PK = OFF — success (no ring buffer set)
 --echo #
 
 CREATE TABLE test.t5 (
@@ -81,7 +81,7 @@ CREATE TABLE test.t5 (
     ring_meta VARBINARY(16),
     PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=off";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=off";
 
 SHOW CREATE TABLE test.t5;
 
@@ -98,7 +98,7 @@ CREATE TABLE test.t6 (
     data VARCHAR(100),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM,RING_BUFFER=200@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM,MAX_ROWS_PER_PK=200@ring_idx@ring_meta";
 
 SHOW CREATE TABLE test.t6;
 
@@ -115,7 +115,7 @@ CREATE TABLE test.t7 (
     ring_meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 8: Error — ring_idx column is not the last PK column
@@ -128,7 +128,7 @@ CREATE TABLE test.t8 (
     ring_meta VARBINARY(64),
     PRIMARY KEY (ring_idx, client_id)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 9: Error — ring_meta column is not VARBINARY (VARCHAR used)
@@ -141,7 +141,7 @@ CREATE TABLE test.t9 (
     ring_meta VARCHAR(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 10: Error — ring_meta column VARBINARY too small (< 16)
@@ -154,7 +154,7 @@ CREATE TABLE test.t10 (
     ring_meta VARBINARY(8),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 11: Error — ring_meta column is NOT NULL (must be nullable)
@@ -167,7 +167,7 @@ CREATE TABLE test.t11 (
     ring_meta VARBINARY(64) NOT NULL,
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 12: Error — size = 0 (below minimum)
@@ -180,7 +180,7 @@ CREATE TABLE test.t12 (
     ring_meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=0@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=0@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 13: Error — size exceeds maximum (2147483648)
@@ -193,7 +193,7 @@ CREATE TABLE test.t13 (
     ring_meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=2147483648@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2147483648@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 14: Error — malformed format (missing second @)
@@ -206,7 +206,7 @@ CREATE TABLE test.t14 (
     ring_meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx";
 
 --echo #
 --echo # Case 15: Error — ring_idx column not found in table
@@ -219,7 +219,7 @@ CREATE TABLE test.t15 (
     ring_meta VARBINARY(64),
     PRIMARY KEY (client_id, idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=400@nonexistent@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@nonexistent@ring_meta";
 
 --echo #
 --echo # Case 16: Error — ring_meta column not found in table
@@ -232,10 +232,10 @@ CREATE TABLE test.t16 (
     meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@nonexistent";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@nonexistent";
 
 --echo #
---echo # Case 17: Error — TTL and RING_BUFFER mutual exclusion
+--echo # Case 17: Error — TTL and MAX_ROWS_PER_PK mutual exclusion
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
@@ -246,7 +246,7 @@ CREATE TABLE test.t17 (
     ts TIMESTAMP,
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=TTL=60@ts,RING_BUFFER=400@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=TTL=60@ts,MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 18: Error — size is not a number
@@ -259,7 +259,7 @@ CREATE TABLE test.t18 (
     ring_meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=abc@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=abc@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 19: Error — ring_idx column has no DEFAULT value
@@ -272,7 +272,7 @@ CREATE TABLE test.t19 (
     ring_meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
 
 ###############################################################################
 # Case 20: FOREIGN KEY on ring buffer table — blocked
@@ -296,7 +296,7 @@ CREATE TABLE test.rb_fk_child (
     PRIMARY KEY (id, ring_idx),
     FOREIGN KEY (parent_id) REFERENCES test.fk_parent(id)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 # Ring buffer as FK parent — blocked
 CREATE TABLE test.rb_fk_parent (
@@ -307,7 +307,7 @@ CREATE TABLE test.rb_fk_parent (
     PRIMARY KEY (id, ring_idx),
     UNIQUE INDEX idx_code (code)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --error ER_CANNOT_ADD_FOREIGN
 CREATE TABLE test.fk_child_of_rb (
@@ -335,7 +335,7 @@ CREATE TABLE test.rb_nn_blob (
     content TEXT NOT NULL,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.rb_nn_blob2 (
@@ -345,7 +345,69 @@ CREATE TABLE test.rb_nn_blob2 (
     payload BLOB NOT NULL,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+###############################################################################
+# Case 22: Size only — default column names (ring_idx, ring_meta)
+###############################################################################
+
+--echo #
+--echo # Case 22: Size only — default column names (ring_idx, ring_meta)
+--echo #
+
+CREATE TABLE test.t22 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3";
+
+SHOW CREATE TABLE test.t22;
+
+# Verify ring buffer works — insert 5 rows, only last 3 should remain
+INSERT INTO test.t22 (client_id, data) VALUES (1, 'a');
+INSERT INTO test.t22 (client_id, data) VALUES (1, 'b');
+INSERT INTO test.t22 (client_id, data) VALUES (1, 'c');
+INSERT INTO test.t22 (client_id, data) VALUES (1, 'd');
+INSERT INTO test.t22 (client_id, data) VALUES (1, 'e');
+
+--sorted_result
+SELECT client_id, ring_idx, data FROM test.t22 ORDER BY ring_idx;
+
+DROP TABLE test.t22;
+
+###############################################################################
+# Case 23: Custom internal column names via @col@col
+###############################################################################
+
+--echo #
+--echo # Case 23: Custom internal column names via @col@col
+--echo #
+
+CREATE TABLE test.t23 (
+    client_id INT NOT NULL,
+    row_seq INT NOT NULL DEFAULT 0,
+    row_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, row_seq)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@row_seq@row_meta";
+
+SHOW CREATE TABLE test.t23;
+
+# Verify ring buffer works — insert 5 rows, only last 3 should remain
+INSERT INTO test.t23 (client_id, data) VALUES (1, 'a');
+INSERT INTO test.t23 (client_id, data) VALUES (1, 'b');
+INSERT INTO test.t23 (client_id, data) VALUES (1, 'c');
+INSERT INTO test.t23 (client_id, data) VALUES (1, 'd');
+INSERT INTO test.t23 (client_id, data) VALUES (1, 'e');
+
+--sorted_result
+SELECT client_id, row_seq, data FROM test.t23 ORDER BY row_seq;
+
+DROP TABLE test.t23;
 
 --echo #
 --echo # Done

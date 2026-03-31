@@ -1,5 +1,5 @@
 #
-# Case 1: CREATE TABLE ... LIKE preserves RING_BUFFER metadata
+# Case 1: CREATE TABLE ... LIKE preserves MAX_ROWS_PER_PK metadata
 #
 CREATE TABLE test.rb_orig (
 client_id INT NOT NULL,
@@ -8,7 +8,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
 CREATE TABLE test.rb_copy LIKE test.rb_orig;
 SHOW CREATE TABLE test.rb_copy;
 Table	Create Table
@@ -18,7 +18,7 @@ rb_copy	CREATE TABLE `rb_copy` (
   `ring_meta` varbinary(64) DEFAULT NULL,
   `event_data` varchar(100) DEFAULT NULL,
   PRIMARY KEY (`client_id`,`ring_idx`)
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta'
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta'
 INSERT INTO test.rb_copy (client_id, event_data) VALUES (1, 'like_A');
 INSERT INTO test.rb_copy (client_id, event_data) VALUES (1, 'like_B');
 SELECT client_id, ring_idx, event_data FROM test.rb_copy
@@ -44,7 +44,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_src (id, val) VALUES (1, 'src_A');
 INSERT INTO test.rb_src (id, val) VALUES (1, 'src_B');
 CREATE TABLE test.rb_as_sel ENGINE=NDB AS
@@ -72,7 +72,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 INSERT INTO test.rb_before (id, val) VALUES (1, 'rename_A');
 INSERT INTO test.rb_before (id, val) VALUES (1, 'rename_B');
 INSERT INTO test.rb_before (id, val) VALUES (1, 'rename_C');
@@ -85,7 +85,7 @@ rb_after	CREATE TABLE `rb_after` (
   `ring_meta` varbinary(64) DEFAULT NULL,
   `val` varchar(50) DEFAULT NULL,
   PRIMARY KEY (`id`,`ring_idx`)
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta'
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta'
 SELECT id, ring_idx, val FROM test.rb_after ORDER BY ring_idx;
 id	ring_idx	val
 1	1	rename_A
@@ -110,7 +110,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (name, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_1');
 INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_2');
 INSERT INTO test.rb_varchar (name, event_data) VALUES ('Bob', 'bob_1');
@@ -154,7 +154,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (code, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_char (code, val) VALUES ('ABC', 'char_A');
 INSERT INTO test.rb_char (code, val) VALUES ('ABC', 'char_B');
 INSERT INTO test.rb_char (code, val) VALUES ('XYZ', 'char_X');
@@ -183,7 +183,7 @@ ring_meta VARBINARY(64),
 data VARCHAR(100),
 PRIMARY KEY (region, client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r1');
 INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r2');
 INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-West', 1, 'r3');
@@ -221,7 +221,7 @@ ring_meta VARBINARY(64),
 event VARCHAR(100),
 PRIMARY KEY (region, dept, user_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 100, 'ev_A');
 INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 100, 'ev_B');
 INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 200, 'ev_C');
@@ -267,7 +267,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 INSERT INTO test.rb_status (id, val) VALUES (1, 'a');
 INSERT INTO test.rb_status (id, val) VALUES (1, 'b');
 INSERT INTO test.rb_status (id, val) VALUES (2, 'c');
@@ -288,14 +288,14 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_is (id, val) VALUES (1, 'x');
 INSERT INTO test.rb_is (id, val) VALUES (1, 'y');
 SELECT TABLE_NAME, ENGINE, TABLE_COMMENT
 FROM INFORMATION_SCHEMA.TABLES
 WHERE TABLE_SCHEMA = 'test' AND TABLE_NAME = 'rb_is';
 TABLE_NAME	ENGINE	TABLE_COMMENT
-rb_is	ndbcluster	NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta
+rb_is	ndbcluster	NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta
 SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
 FROM INFORMATION_SCHEMA.COLUMNS
 WHERE TABLE_SCHEMA = 'test' AND TABLE_NAME = 'rb_is'
@@ -316,7 +316,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ALTER TABLE test.rb_drop_col DROP COLUMN ring_idx;
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring index column not found in table'
 ALTER TABLE test.rb_drop_col DROP COLUMN ring_meta;
@@ -332,7 +332,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 CREATE TABLE test.trigger_log (
 log_id INT AUTO_INCREMENT PRIMARY KEY,
 logged_id INT,
@@ -381,7 +381,7 @@ val VARCHAR(50),
 PRIMARY KEY (id, ring_idx),
 INDEX idx_ring_idx (ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Can't create table 'rb_idx_on_internal' (use SHOW WARNINGS for more info).
 #
 # Case 13: CREATE TABLE with index on ring_meta — blocked
@@ -394,7 +394,7 @@ val VARCHAR(50),
 PRIMARY KEY (id, ring_idx),
 INDEX idx_ring_meta (ring_meta)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Can't create table 'rb_idx_on_meta' (use SHOW WARNINGS for more info).
 #
 # Case 14: CREATE TABLE with UNIQUE index on ring_idx — blocked
@@ -407,7 +407,7 @@ val VARCHAR(50),
 PRIMARY KEY (id, ring_idx),
 UNIQUE INDEX idx_ring_idx_uniq (ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Can't create table 'rb_uniq_on_internal' (use SHOW WARNINGS for more info).
 #
 # Case 15: CREATE TABLE with composite index including ring_idx — blocked
@@ -420,7 +420,7 @@ val VARCHAR(50),
 PRIMARY KEY (id, ring_idx),
 INDEX idx_val_ring (val, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Can't create table 'rb_composite_idx' (use SHOW WARNINGS for more info).
 #
 # Case 16: ALTER TABLE ADD INDEX on ring_idx — blocked
@@ -432,7 +432,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ALTER TABLE test.rb_alter_idx ADD INDEX idx_ring_idx (ring_idx);
 ERROR HY000: Cannot create index on ring buffer internal column 'ring_idx'
 ALTER TABLE test.rb_alter_idx ADD INDEX idx_ring_meta (ring_meta);

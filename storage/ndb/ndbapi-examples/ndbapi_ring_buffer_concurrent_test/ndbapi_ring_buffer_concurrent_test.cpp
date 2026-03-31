@@ -385,7 +385,7 @@ static bool test_mysql_concurrent(MYSQL *admin_conn, const char *host,
              "  event_data VARCHAR(100),"
              "  PRIMARY KEY (client_id, ring_idx)"
              ") ENGINE=NDB,"
-             "  COMMENT='NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta'");
+             "  COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta'");
 
   Barrier barrier(2);
   MysqlThreadResult result_a, result_b;
@@ -525,7 +525,7 @@ int main(int argc, char **argv) {
                "  event_data VARCHAR(100),"
                "  PRIMARY KEY (client_id, ring_idx)"
                ") ENGINE=NDB,"
-               "  COMMENT='NDB_TABLE=RING_BUFFER=5@ring_idx@ring_meta'");
+               "  COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta'");
 
     std::cout << "=== Ring Buffer Concurrent Insert Test ===" << std::endl;
     std::cout << std::endl;
@@ -656,6 +656,7 @@ int main(int argc, char **argv) {
   bool mysql_pass = test_mysql_concurrent(&mysql, mysql_host, mysql_port);
 
   mysql_close(&mysql);
+  mysql_library_end();
   ndb_end(0);
 
   bool ndb_pass = (pass && flush_success == 1);

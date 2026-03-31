@@ -8,7 +8,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_A');
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_B');
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
@@ -171,7 +171,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (region, client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (1, 100, 'a');
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (1, 100, 'b');
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (1, 200, 'c');
@@ -256,7 +256,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta";
 INSERT INTO test.rb1 (pk, val) VALUES (1, 'only_slot');
 SELECT pk, ring_idx, val FROM test.rb1 ORDER BY pk, ring_idx;
 pk	ring_idx	val
@@ -283,7 +283,7 @@ ring_meta VARBINARY(64),
 data VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_full (id, data) VALUES (1, 'a');
 INSERT INTO test.rb_full (id, data) VALUES (1, 'b');
 INSERT INTO test.rb_full (id, data) VALUES (1, 'c');
@@ -312,7 +312,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 INSERT INTO test.rb_upd (client_id, event_data) VALUES (1, 'a1');
 INSERT INTO test.rb_upd (client_id, event_data) VALUES (1, 'a2');
 INSERT INTO test.rb_upd (client_id, event_data) VALUES (1, 'a3');
@@ -378,7 +378,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_del (id, val) VALUES (1, 'a');
 INSERT INTO test.rb_del (id, val) VALUES (2, 'b');
 INSERT INTO test.rb_del (id, val) VALUES (3, 'c');
@@ -425,7 +425,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (region, client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_multi2 (region, client_id, val) VALUES (1, 10, 'a');
 INSERT INTO test.rb_multi2 (region, client_id, val) VALUES (1, 20, 'b');
 INSERT INTO test.rb_multi2 (region, client_id, val) VALUES (2, 30, 'c');
@@ -453,7 +453,7 @@ ring_meta VARBINARY(64),
 data VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_cycle (id, data) VALUES (1, 'a');
 INSERT INTO test.rb_cycle (id, data) VALUES (1, 'b');
 INSERT INTO test.rb_cycle (id, data) VALUES (1, 'c');
@@ -484,7 +484,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_limit (id, val) VALUES (1, 'x');
 INSERT INTO test.rb_limit (id, val) VALUES (1, 'y');
 INSERT INTO test.rb_limit (id, val) VALUES (2, 'z');

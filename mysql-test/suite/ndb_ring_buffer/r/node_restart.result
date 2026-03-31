@@ -8,7 +8,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_A');
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_B');
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
@@ -110,7 +110,7 @@ rb	CREATE TABLE `rb` (
   `ring_meta` varbinary(64) DEFAULT NULL,
   `event_data` varchar(100) DEFAULT NULL,
   PRIMARY KEY (`client_id`,`ring_idx`)
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta'
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta'
 #
 # Cleanup
 #

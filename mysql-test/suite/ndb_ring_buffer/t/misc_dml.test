@@ -21,7 +21,7 @@ CREATE TABLE test.rb (
     event_data VARCHAR(100),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 PREPARE stmt_ins FROM
     'INSERT INTO test.rb (client_id, event_data) VALUES (?, ?)';
@@ -148,7 +148,7 @@ CREATE TABLE test.rb_load (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 # Create a CSV file for loading — only user columns (id, val)
 --write_file $MYSQLTEST_VARDIR/tmp/rb_load.csv
@@ -220,7 +220,7 @@ CREATE TABLE test.rb_ignore (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT IGNORE INTO test.rb_ignore (id, val) VALUES (1, 'ignore_A');
 INSERT IGNORE INTO test.rb_ignore (id, val) VALUES (1, 'ignore_B');
@@ -262,7 +262,7 @@ CREATE TABLE test.rb_unsigned (
     data VARCHAR(100),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 INSERT INTO test.rb_unsigned (client_id, data) VALUES (1, 'unsigned_A');
 INSERT INTO test.rb_unsigned (client_id, data) VALUES (1, 'unsigned_B');
@@ -320,7 +320,7 @@ CREATE TABLE test.rb_proc (
     val VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 DELIMITER //;
 CREATE PROCEDURE test.fill_ring(IN p_id INT, IN p_count INT)

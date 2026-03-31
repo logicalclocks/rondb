@@ -17,7 +17,7 @@ CREATE TABLE test.rb (
     event_data VARCHAR(100),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 --echo #
 --echo # Case 1: Multi-row INSERT, same PK prefix — fills 3 of 4 slots
@@ -227,7 +227,7 @@ CREATE TABLE test.rb1 (
     val VARCHAR(50),
     PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta";
 
 INSERT INTO test.rb1 (pk, val) VALUES (1, 'first'), (1, 'second'), (1, 'third');
 
@@ -260,7 +260,7 @@ CREATE TABLE test.rb_multi (
     event_data VARCHAR(100),
     PRIMARY KEY (region, client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 # Same prefix (1,100) — batch hit on all 3 rows
 INSERT INTO test.rb_multi (region, client_id, event_data)
@@ -291,7 +291,7 @@ CREATE TABLE test.rb2 (
     event_data VARCHAR(100),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 # Source table with data to insert
 CREATE TABLE test.src (
@@ -327,7 +327,7 @@ CREATE TABLE test.rb_large (
     val INT,
     PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 # Generate 50 rows via a helper table
 CREATE TABLE test.seq (n INT NOT NULL PRIMARY KEY) ENGINE = NDB;

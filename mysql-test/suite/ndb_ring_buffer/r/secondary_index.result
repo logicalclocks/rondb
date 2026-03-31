@@ -11,7 +11,7 @@ PRIMARY KEY (client_id, ring_idx),
 INDEX idx_event_type (event_type),
 INDEX idx_amount (amount)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 INSERT INTO test.rb_idx (client_id, event_type, amount) VALUES (1, 'login', 10);
 INSERT INTO test.rb_idx (client_id, event_type, amount) VALUES (1, 'purchase', 50);
 INSERT INTO test.rb_idx (client_id, event_type, amount) VALUES (1, 'login', 20);
@@ -130,7 +130,7 @@ val INT,
 PRIMARY KEY (id, ring_idx),
 UNIQUE INDEX idx_code (code)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_uniq (id, code, val) VALUES (1, 'AAA', 10);
 INSERT INTO test.rb_uniq (id, code, val) VALUES (1, 'BBB', 20);
 INSERT INTO test.rb_uniq (id, code, val) VALUES (1, 'CCC', 30);
@@ -156,7 +156,7 @@ ring_meta VARBINARY(64),
 category VARCHAR(30),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_add_idx (id, category) VALUES (1, 'alpha');
 INSERT INTO test.rb_add_idx (id, category) VALUES (1, 'beta');
 INSERT INTO test.rb_add_idx (id, category) VALUES (2, 'alpha');

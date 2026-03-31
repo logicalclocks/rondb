@@ -8,7 +8,7 @@ ring_meta VARBINARY(64),
 event_data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 PREPARE stmt_ins FROM
 'INSERT INTO test.rb (client_id, event_data) VALUES (?, ?)';
 SET @cid = 1, @ev = 'prep_A';
@@ -115,7 +115,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 LOAD DATA LOCAL INFILE 'MYSQLTEST_VARDIR/tmp/rb_load.csv'
     INTO TABLE test.rb_load (id, val);
 SELECT id, ring_idx, val FROM test.rb_load
@@ -165,7 +165,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT IGNORE INTO test.rb_ignore (id, val) VALUES (1, 'ignore_A');
 INSERT IGNORE INTO test.rb_ignore (id, val) VALUES (1, 'ignore_B');
 INSERT IGNORE INTO test.rb_ignore (id, val) VALUES (1, 'ignore_C');
@@ -204,7 +204,7 @@ ring_meta VARBINARY(64),
 data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 INSERT INTO test.rb_unsigned (client_id, data) VALUES (1, 'unsigned_A');
 INSERT INTO test.rb_unsigned (client_id, data) VALUES (1, 'unsigned_B');
 INSERT INTO test.rb_unsigned (client_id, data) VALUES (1, 'unsigned_C');
@@ -258,7 +258,7 @@ ring_meta VARBINARY(64),
 val VARCHAR(50),
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 CREATE PROCEDURE test.fill_ring(IN p_id INT, IN p_count INT)
 BEGIN
 DECLARE i INT DEFAULT 0;
