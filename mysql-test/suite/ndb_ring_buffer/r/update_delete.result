@@ -91,6 +91,9 @@ client_id	ring_idx	event_data
 #
 UPDATE test.rb SET event_data = 'ghost'
     WHERE client_id = 999 AND ring_idx = 1;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
 #
 # Case 9: UPDATE ring_idx + user column together — blocked
 # (ring_idx in write_set triggers block even if user col also present)
@@ -236,6 +239,9 @@ ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on r
 # Case 22: DELETE non-existent prefix — allowed (0 rows, no error)
 #
 DELETE FROM test.rb_multi WHERE region = 99 AND client_id = 99;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
 #
 # Case 23: DELETE + re-INSERT + DELETE cycle
 #

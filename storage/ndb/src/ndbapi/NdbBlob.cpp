@@ -2593,6 +2593,16 @@ NdbBlob::BlobAction NdbBlob::preExecute(NdbTransaction::ExecType anExecType) {
       }
       setHeadPartitionId(tOp);
 
+      /*
+       * Ring buffer: inherit ring_buffer flags from the main operation
+       * so the blob head read is not rejected by the kernel's meta row
+       * filter (ring_idx=0 rows are hidden unless these flags are set).
+       */
+      if (theNdbOp->m_flags & NdbOperation::OF_RING_BUFFER_OP)
+        tOp->m_flags |= NdbOperation::OF_RING_BUFFER_OP;
+      if (theNdbOp->m_flags & NdbOperation::OF_RING_BUFFER_SHOW_META)
+        tOp->m_flags |= NdbOperation::OF_RING_BUFFER_SHOW_META;
+
       if (isWriteOp()) {
         /* There may be no data currently, so ignore tuple not found etc. */
         tOp->m_abortOption = NdbOperation::AO_IgnoreError;

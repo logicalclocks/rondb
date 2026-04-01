@@ -122,9 +122,6 @@ DELETE FROM test.rb_mixed WHERE client_id = 1;
 SELECT client_id, ring_idx FROM test.rb_mixed WHERE client_id = 1
 ORDER BY ring_idx;
 client_id	ring_idx
-1	1
-1	2
-1	3
 INSERT INTO test.rb_mixed (client_id, label, notes, attachment)
 VALUES (1, 'Fresh 1', REPEAT('After delete ', 100), REPEAT(x'CC', 150));
 SELECT client_id, ring_idx, label, LENGTH(notes) AS note_len,
@@ -132,8 +129,6 @@ LENGTH(attachment) AS attach_len
 FROM test.rb_mixed WHERE client_id = 1 ORDER BY ring_idx;
 client_id	ring_idx	label	note_len	attach_len
 1	1	Fresh 1	1300	150
-1	2	Entry 2	12	2
-1	3	Entry 3	11	NULL
 #
 # Case 7: Bulk INSERT with TEXT/BLOB columns
 #
@@ -177,17 +172,17 @@ FROM test.rb_nullblob WHERE id = 1 ORDER BY ring_idx;
 id	ring_idx	is_null	len
 1	1	1	NULL
 1	2	0	500
-INSERT INTO test.rb_nullblob (id, data) VALUES (1, NULL);
+INSERT INTO test.rb_nullblob (id, data) VALUES (1, REPEAT('Z', 200));
 SELECT id, ring_idx, data IS NULL AS is_null, LENGTH(data) AS len
 FROM test.rb_nullblob WHERE id = 1 ORDER BY ring_idx;
 id	ring_idx	is_null	len
-1	1	1	NULL
+1	1	0	200
 1	2	0	500
 INSERT INTO test.rb_nullblob (id, data) VALUES (1, REPEAT('Y', 1000));
 SELECT id, ring_idx, data IS NULL AS is_null, LENGTH(data) AS len
 FROM test.rb_nullblob WHERE id = 1 ORDER BY ring_idx;
 id	ring_idx	is_null	len
-1	1	1	NULL
+1	1	0	200
 1	2	0	1000
 DROP TABLE test.rb_nullblob;
 #

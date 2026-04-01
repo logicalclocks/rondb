@@ -512,7 +512,7 @@ CREATE TABLE test.rb_nn_uniq (
 INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 100);
 INSERT INTO test.rb_nn_uniq (id, code) VALUES (2, 200);
 INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 300);
-# Wrap id=1: slot 1 (100) overwritten with 400
+# 3rd insert for id=1: fills slot 3 (ring full, no wrap yet)
 INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 400);
 
 SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
