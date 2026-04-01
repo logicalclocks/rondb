@@ -1300,5 +1300,10 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_JOIN_AGG_NULL_ROW_REQ       962
 #define GSN_JOIN_AGG_NULL_ROW_CONF      963
 #define GSN_JOIN_AGG_NULL_ROW_REF       964
-/* 965 unused — formerly GSN_JOIN_AGG_MATCH_CONF */
+/* CTE hash table lookup and redistribution signals */
+#define GSN_CTE_LOOKUP_REQ              965
+#define GSN_CTE_LOOKUP_CONF             966
+#define GSN_CTE_LOOKUP_REF              967
+#define GSN_JOIN_AGG_REDISTRIBUTE_ORD   968
+#define GSN_JOIN_AGG_FINAL_REP          969
 #endif

@@ -28,6 +28,7 @@
 #include <atomic>
 #include <ndb_types.h>
 #include <kernel_types.h>
+#include <kernel/NodeBitmask.hpp>
 #include <util/rondb_hash.hpp>
 
 #define JAM_FILE_ID 447
@@ -109,14 +110,16 @@ struct JoinAggregationState {
   //------------------------------------------------------------------
   enum State : Uint32 {
     IDLE = 0,
-    SETUP_COMPLETE = 1,    // Ready to receive operations
-    FINALIZING = 3,        // All ops done, preparing results
-    SENDING_RESULTS = 4,   // Sending results to API
-    COMPLETED = 5,         // All results sent
+    SETUP_COMPLETE = 1,      // Ready to receive operations
+    FINALIZING = 3,          // All ops done, preparing results
+    SENDING_RESULTS = 4,     // Sending results to API
+    COMPLETED = 5,           // All results sent
     ERROR = 6,
     ABORTING = 7,
-    WAITING_SEND_CONF = 8,  // Paused at batch limit, waiting for SEND_CONF
-    NODE_FAIL_ABORT = 9     // DBTC node failed, scans closed, awaiting release
+    WAITING_SEND_CONF = 8,   // Paused at batch limit, waiting for SEND_CONF
+    NODE_FAIL_ABORT = 9,     // DBTC node failed, scans closed, awaiting release
+    CTE_REDISTRIBUTING = 10, // Sending groups to hash-owner nodes
+    CTE_READY = 11           // Distributed hash table ready for CTE lookups
   };
 
   //------------------------------------------------------------------
@@ -213,6 +216,17 @@ struct JoinAggregationState {
   bool m_outer_join_agg_scan;
 
   //------------------------------------------------------------------
+  // CTE Materialization Mode
+  // When m_cte_mode is true, COMPLETE skips the send-and-erase phase.
+  // Instead, the hash table stays alive for point lookups via
+  // CTE_LOOKUP_REQ, and group rows are redistributed across nodes
+  // so each group lives on exactly one node (its hash-partition owner).
+  //------------------------------------------------------------------
+  bool m_cte_mode;                          // True if this is a CTE materialization
+  NdbNodeBitmask m_cte_nodes_finalized;     // Bitmask of nodes that sent FINAL_REP
+                                            // (prevents duplicate FINAL from same node)
+
+  //------------------------------------------------------------------
   // State Machine (atomic — checked by any thread, set single-threaded)
   //------------------------------------------------------------------
   std::atomic<State> m_state;
@@ -258,6 +272,7 @@ struct JoinAggregationState {
     m_receiverIds(nullptr),
     m_numReceiverIds(0),
     m_outer_join_agg_scan(false),
+    m_cte_mode(false),
     m_state(IDLE),
     m_error_code(0),
     m_key(RNIL),

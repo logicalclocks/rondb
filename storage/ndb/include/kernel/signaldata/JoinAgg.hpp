@@ -174,6 +174,36 @@ struct JoinAggNullRowRef {
   Uint32 errorLine;
 };
 
+/**
+ * JOIN_AGG_REDISTRIBUTE_ORD — fire-and-forget order to send a group row
+ * to its hash-owner node during CTE materialization.
+ * The receiving node merges the incoming accumulators with its local state
+ * (or inserts a new group if the key doesn't exist locally).
+ *
+ * Long section 0: key_data (GROUP BY key, AttributeHeader-encoded)
+ * Long section 1: accumulator_data (AggResItem array)
+ */
+struct JoinAggRedistributeOrd {
+  static constexpr Uint32 SignalLength = 3;
+  Uint32 aggStateKey;     // Destination JoinAggregationState on receiving node
+  Uint32 keyLen;          // Group key length in bytes
+  Uint32 valueLen;        // Accumulator data length in bytes
+
+  enum { KeySectionNum = 0, ValueSectionNum = 1 };
+};
+
+/**
+ * JOIN_AGG_FINAL_REP — fire-and-forget report that a node has finished
+ * sending all its REDISTRIBUTE_ORD messages for a CTE materialization.
+ * When all participating nodes have sent FINAL_REP, the CTE transitions
+ * to CTE_READY and can serve CTE_LOOKUP_REQ.
+ */
+struct JoinAggFinalRep {
+  static constexpr Uint32 SignalLength = 2;
+  Uint32 aggStateKey;     // JoinAggregationState pool index
+  Uint32 senderNodeId;    // Which node finished redistribution
+};
+
 #undef JAM_FILE_ID
 
 #endif
