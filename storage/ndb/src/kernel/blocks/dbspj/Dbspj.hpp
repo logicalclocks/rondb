@@ -638,6 +638,27 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_cteId;           // CTE identifier (matches CteSubtreeNode::cteId)
     Uint32 m_numResultCols;   // Number of result columns from CTE aggregation
     Uint32 m_outstanding;     // Outstanding lookup requests
+    Uint32 m_pendingCount;    // Parent rows queued while CTE is materializing
+  };
+
+  /**
+   * CTE materialization state tracked per CTE sub-tree in a compound query.
+   * Each CTE progresses: NOT_STARTED → MATERIALIZING → READY (or FAILED).
+   * CTE_LOOKUP nodes check this state to decide whether to send a lookup
+   * request immediately or queue it for later.
+   */
+  static constexpr Uint32 MAX_CTE_SUBTREES = 4;
+
+  struct CteContext {
+    enum State {
+      CTE_NOT_STARTED = 0,    // CTE scan not yet triggered
+      CTE_MATERIALIZING = 1,  // CTE scan in progress, hash table building
+      CTE_READY = 2,          // Hash table complete, lookups can proceed
+      CTE_FAILED = 3          // CTE scan failed
+    };
+    Uint32 m_cteId;           // CTE identifier (0-based)
+    Uint32 m_state;           // CteContext::State
+    Uint32 m_numResultCols;   // Number of aggregate result columns
   };
 
   struct ScanFragHandle {
@@ -1337,6 +1358,12 @@ class Dbspj : public SimulatedBlock {
     Uint32 *m_aggStateKeys;      // Dynamically allocated [MAX_NDB_NODES]
     NdbNodeBitmask m_aggNodes;
     NDB_TICKS m_lastHbrepTicks;  // Last time SCAN_HBREP was sent during JoinAgg bypass
+
+    // CTE tracking — compound queries with CTE sub-trees
+    CteContext m_cteContexts[MAX_CTE_SUBTREES];
+    Uint32 m_numCtes;       // Number of CTE contexts registered (0 if no CTEs)
+    Uint32 m_ctesReady;     // Count of CTEs that reached CTE_READY state
+
     ArenaHead m_arena;
 
 #ifdef SPJ_TRACE_TIME

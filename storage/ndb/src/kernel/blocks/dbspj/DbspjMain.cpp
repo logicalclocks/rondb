@@ -1144,6 +1144,8 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_node_cnt = 0;
   requestP->m_cnt_active = 0;
   requestP->m_rows = 0;
+  requestP->m_numCtes = 0;
+  requestP->m_ctesReady = 0;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
   requestP->m_suspended_tree_nodes.clear();
@@ -1485,6 +1487,8 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_node_cnt = 0;
   requestP->m_cnt_active = 0;
   requestP->m_rows = 0;
+  requestP->m_numCtes = 0;
+  requestP->m_ctesReady = 0;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
   requestP->m_suspended_tree_nodes.clear();
@@ -5093,6 +5097,27 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_cteLookup_data.m_cteId = node->cteId;
     treeNodePtr.p->m_cteLookup_data.m_numResultCols = node->numResultCols;
     treeNodePtr.p->m_cteLookup_data.m_outstanding = 0;
+    treeNodePtr.p->m_cteLookup_data.m_pendingCount = 0;
+
+    // Register CteContext for this cteId (if not already registered)
+    {
+      const Uint32 cteId = node->cteId;
+      bool found = false;
+      for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+        if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
+          found = true;
+          break;
+        }
+      }
+      if (!found && requestPtr.p->m_numCtes < MAX_CTE_SUBTREES) {
+        CteContext &cctx =
+            requestPtr.p->m_cteContexts[requestPtr.p->m_numCtes];
+        cctx.m_cteId = cteId;
+        cctx.m_state = CteContext::CTE_NOT_STARTED;
+        cctx.m_numResultCols = node->numResultCols;
+        requestPtr.p->m_numCtes++;
+      }
+    }
 
     Uint32 treeBits = node->requestInfo;
     Uint32 paramBits = param->requestInfo;
@@ -5130,20 +5155,48 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
 void Dbspj::cte_start(Signal *signal, Ptr<Request> requestPtr,
                        Ptr<TreeNode> treeNodePtr) {
   jam();
-  // Stub: CTE execution not yet implemented (Step 5-6)
-  // When implemented, this will check if the CTE is materialized
-  // and either start lookups or wait for materialization to complete.
+  // CTE lookups don't "start" in the traditional sense — they are
+  // driven by cte_parent_row() when the parent provides keys.
+  // CTE materialization is triggered separately (Step 6+).
+  // Nothing to do here until the materialization infrastructure is in place.
 }
 
 void Dbspj::cte_parent_row(Signal *signal, Ptr<Request> requestPtr,
                             Ptr<TreeNode> treeNodePtr,
                             const RowPtr &rowRef) {
   jam();
-  // Stub: CTE execution not yet implemented (Step 5-6)
-  // When implemented, this will:
-  // 1. Construct the lookup key from the parent row using the key pattern
-  // 2. If CTE is READY: send CTE_LOOKUP_REQ to the appropriate LDM thread
-  // 3. If CTE is MATERIALIZING: queue the lookup for later
+  const Uint32 cteId = treeNodePtr.p->m_cteLookup_data.m_cteId;
+
+  // Find CteContext for this cteId
+  CteContext *cteCtx = nullptr;
+  for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+    if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
+      cteCtx = &requestPtr.p->m_cteContexts[i];
+      break;
+    }
+  }
+  ndbrequire(cteCtx != nullptr);
+
+  switch (cteCtx->m_state) {
+  case CteContext::CTE_READY:
+    jam();
+    // CTE materialized — send CTE_LOOKUP_REQ (Step 6)
+    // For now, this path is not reached since CTE queries are blocked.
+    break;
+
+  case CteContext::CTE_MATERIALIZING:
+  case CteContext::CTE_NOT_STARTED:
+    jam();
+    // CTE not ready — queue this lookup for later.
+    // When the CTE transitions to READY, all pending lookups will be flushed.
+    treeNodePtr.p->m_cteLookup_data.m_pendingCount++;
+    break;
+
+  case CteContext::CTE_FAILED:
+    jam();
+    // CTE materialization failed — propagate error
+    break;
+  }
 }
 
 void Dbspj::cte_cleanup(Ptr<Request> requestPtr,
