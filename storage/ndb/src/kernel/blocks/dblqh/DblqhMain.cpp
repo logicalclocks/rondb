@@ -18794,9 +18794,14 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   const Uint32 aggStateKey = req->aggStateKey;
   const Uint32 keyLen = req->keyLen;
 
+  /* Release incoming signal sections early so all error paths are safe.
+   * We copy the section data into local buffers before releasing. */
+  SectionHandle handle(this, signal);
+
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (unlikely(state == nullptr)) {
     jam();
+    releaseSections(handle);
     CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
     ref->senderRef = reference();
     ref->senderData = senderData;
@@ -18808,6 +18813,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
 
   if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
     jam();
+    releaseSections(handle);
     CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
     ref->senderRef = reference();
     ref->senderData = senderData;
@@ -18816,9 +18822,6 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
                signal, CteLookupRef::SignalLength, JBB);
     return;
   }
-
-  /* Read signal sections */
-  SectionHandle handle(this, signal);
 
   /* Section 0: lookup key */
   SegmentedSectionPtr keySection;

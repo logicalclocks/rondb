@@ -36,6 +36,7 @@ struct JoinAggSetupReq {
   static constexpr Uint32 ReceiverIdsSectionNum = 1;
   static constexpr Uint32 STRATEGY_MUTEX_BASED = 0;
   static constexpr Uint32 STRATEGY_MUTEX_FREE = 1;
+  static constexpr Uint32 CTE_MODE_FLAG = 0x80000000;  // OR into concurrencyStrategy
 
   Uint32 senderRef;
   Uint32 senderData;

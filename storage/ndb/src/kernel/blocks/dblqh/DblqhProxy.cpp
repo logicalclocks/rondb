@@ -2385,8 +2385,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_resultData = req->resultData;
   state->m_routeRef = req->routeRef;
 
-  // Concurrency strategy
-  if (req->concurrencyStrategy ==
+  // Concurrency strategy (CTE_MODE_FLAG in upper bit)
+  const Uint32 strategy = req->concurrencyStrategy;
+  state->m_cte_mode =
+      (strategy & JoinAggSetupReq::CTE_MODE_FLAG) != 0;
+  if ((strategy & ~JoinAggSetupReq::CTE_MODE_FLAG) ==
       JoinAggSetupReq::STRATEGY_MUTEX_FREE) {
     state->m_strategy = JoinAggregationState::MUTEX_FREE;
   } else {
