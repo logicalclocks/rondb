@@ -1,4 +1,6 @@
 --source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
 
 --echo Running testJoinAgg
 --exec $NDB_PUSH_AGG_DIR/testJoinAgg -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT
