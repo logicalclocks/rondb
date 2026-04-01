@@ -5030,6 +5030,141 @@ const Dbspj::OpInfo Dbspj::g_LookupOpInfo = {
     &Dbspj::lookup_checkNode,
     &Dbspj::lookup_dumpNode};
 
+/**
+ * CTE Lookup OpInfo — looks up rows in a materialized CTE hash table.
+ * Build phase parses the QN_CTE_LOOKUP node and key pattern.
+ * Execution handlers are stubs until Step 5-6 implement CTE materialization
+ * and the CTE_LOOKUP_REQ signal.
+ */
+const Dbspj::OpInfo Dbspj::g_CteLookupOpInfo = {
+    &Dbspj::cte_build,
+    0,                          // prepare
+    &Dbspj::cte_start,
+    0,                          // countSignal
+    0,                          // execLQHKEYREF — not used for CTE lookups
+    0,                          // execLQHKEYCONF — not used for CTE lookups
+    0,                          // execSCAN_FRAGREF
+    0,                          // execSCAN_FRAGCONF
+    &Dbspj::cte_parent_row,
+    0,                          // parent_batch_complete
+    0,                          // parent_batch_repeat
+    0,                          // parent_batch_cleanup
+    0,                          // execSCAN_NEXTREQ
+    0,                          // complete
+    0,                          // abort
+    0,                          // execNODE_FAILREP
+    &Dbspj::cte_cleanup,
+    &Dbspj::cte_checkNode,
+    &Dbspj::cte_dumpNode};
+
+Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
+                         const QueryNode *qn, const QueryNodeParameters *qp) {
+  Uint32 err = 0;
+  Ptr<TreeNode> treeNodePtr;
+  const QN_CteLookupNode *node = (const QN_CteLookupNode *)qn;
+  const QN_CteLookupParameters *param = (const QN_CteLookupParameters *)qp;
+
+  do {
+    jam();
+    err = DbspjErr::InvalidTreeNodeSpecification;
+    if (unlikely(node->len < QN_CteLookupNode::NodeSize)) {
+      jam();
+      break;
+    }
+
+    err = DbspjErr::InvalidTreeParametersSpecification;
+    if (unlikely(param->len < QN_CteLookupParameters::NodeSize)) {
+      jam();
+      break;
+    }
+
+    err = createNode(ctx, requestPtr, treeNodePtr);
+    if (unlikely(err != 0)) {
+      jam();
+      break;
+    }
+
+    treeNodePtr.p->m_tableOrIndexId = 0;  // No NDB table for CTE lookups
+    treeNodePtr.p->m_primaryTableId = 0;
+    treeNodePtr.p->m_schemaVersion = 0;
+    treeNodePtr.p->m_info = &g_CteLookupOpInfo;
+
+    // Store CTE-specific data
+    treeNodePtr.p->m_cteLookup_data.m_cteId = node->cteId;
+    treeNodePtr.p->m_cteLookup_data.m_numResultCols = node->numResultCols;
+    treeNodePtr.p->m_cteLookup_data.m_outstanding = 0;
+
+    Uint32 treeBits = node->requestInfo;
+    Uint32 paramBits = param->requestInfo;
+
+    // Parse optional data (parent list, key pattern, etc.)
+    struct DABuffer nodeDA, paramDA;
+    nodeDA.ptr = node->optional;
+    nodeDA.end = nodeDA.ptr + (node->len - QN_CteLookupNode::NodeSize);
+    paramDA.ptr = param->optional;
+    paramDA.end = paramDA.ptr + (param->len - QN_CteLookupParameters::NodeSize);
+
+    err = parseDA(ctx, requestPtr, treeNodePtr,
+                  nodeDA, treeBits, paramDA, paramBits);
+    if (unlikely(err != 0)) {
+      jam();
+      break;
+    }
+
+    // Inherit batch_size from parent (same as lookup)
+    if (treeNodePtr.p->m_parentPtrI != RNIL) {
+      jam();
+      Ptr<TreeNode> parentPtr;
+      ndbrequire(m_treenode_pool.getPtr(parentPtr, treeNodePtr.p->m_parentPtrI));
+      treeNodePtr.p->m_batch_size = parentPtr.p->m_batch_size;
+    } else {
+      treeNodePtr.p->m_batch_size = 1;
+    }
+
+    return 0;
+  } while (0);
+
+  return err;
+}  // Dbspj::cte_build
+
+void Dbspj::cte_start(Signal *signal, Ptr<Request> requestPtr,
+                       Ptr<TreeNode> treeNodePtr) {
+  jam();
+  // Stub: CTE execution not yet implemented (Step 5-6)
+  // When implemented, this will check if the CTE is materialized
+  // and either start lookups or wait for materialization to complete.
+}
+
+void Dbspj::cte_parent_row(Signal *signal, Ptr<Request> requestPtr,
+                            Ptr<TreeNode> treeNodePtr,
+                            const RowPtr &rowRef) {
+  jam();
+  // Stub: CTE execution not yet implemented (Step 5-6)
+  // When implemented, this will:
+  // 1. Construct the lookup key from the parent row using the key pattern
+  // 2. If CTE is READY: send CTE_LOOKUP_REQ to the appropriate LDM thread
+  // 3. If CTE is MATERIALIZING: queue the lookup for later
+}
+
+void Dbspj::cte_cleanup(Ptr<Request> requestPtr,
+                         Ptr<TreeNode> treeNodePtr) {
+  jam();
+  // Release any key/attr sections that were constructed during build
+  cleanup_common(requestPtr, treeNodePtr);
+}
+
+bool Dbspj::cte_checkNode(const Ptr<Request> requestPtr,
+                           const Ptr<TreeNode> treeNodePtr) {
+  return true;
+}
+
+void Dbspj::cte_dumpNode(const Ptr<Request> requestPtr,
+                          const Ptr<TreeNode> treeNodePtr) {
+  g_eventLogger->info("CTE_LOOKUP: cteId=%u numResultCols=%u",
+                      treeNodePtr.p->m_cteLookup_data.m_cteId,
+                      treeNodePtr.p->m_cteLookup_data.m_numResultCols);
+}
+
 Uint32 Dbspj::lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
                            const QueryNode *qn, const QueryNodeParameters *qp) {
   Uint32 err = 0;
@@ -10446,6 +10581,8 @@ const Dbspj::OpInfo *Dbspj::getOpInfo(Uint32 op) {
       return NULL;  // Deprecated, converted into QN_SCAN_FRAG
     case QueryNode::QN_SCAN_FRAG:
       return &Dbspj::g_ScanFragOpInfo;
+    case QueryNode::QN_CTE_LOOKUP:
+      return &Dbspj::g_CteLookupOpInfo;
     default:
       return 0;
   }

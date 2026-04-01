@@ -630,6 +630,16 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_lqhKeyReq[LqhKeyReq::FixedSignalLength + 4];
   };
 
+  /**
+   * Data stored per CTE lookup TreeNode.
+   * CTE lookups query a materialized CTE hash table instead of LQH.
+   */
+  struct CteLookupData {
+    Uint32 m_cteId;           // CTE identifier (matches CteSubtreeNode::cteId)
+    Uint32 m_numResultCols;   // Number of result columns from CTE aggregation
+    Uint32 m_outstanding;     // Outstanding lookup requests
+  };
+
   struct ScanFragHandle {
     enum SFH_State {
       SFH_NOT_STARTED = 0,
@@ -905,8 +915,11 @@ class Dbspj : public SimulatedBlock {
     }
 
     // TreeNode represent either a 'lookup' or 'scan' operation
-    bool isLookup() const { return (m_info == &g_LookupOpInfo); }
-    bool isScan() const { return (m_info != &g_LookupOpInfo); }
+    bool isLookup() const {
+      return (m_info == &g_LookupOpInfo ||
+              m_info == &g_CteLookupOpInfo);
+    }
+    bool isScan() const { return !isLookup(); }
 
     const Uint32 m_magic;
     const struct OpInfo *m_info;
@@ -1217,6 +1230,7 @@ class Dbspj : public SimulatedBlock {
     union {
       LookupData m_lookup_data;
       ScanFragData m_scanFrag_data;
+      CteLookupData m_cteLookup_data;
     };
 
     struct {
@@ -1685,6 +1699,18 @@ class Dbspj : public SimulatedBlock {
                         const Ptr<TreeNode> treeNodePtr);
   void lookup_dumpNode(const Ptr<Request> requestPtr,
                        const Ptr<TreeNode> treeNodePtr);
+
+  /**
+   * CTE Lookup — looks up rows in a materialized CTE hash table
+   */
+  static const OpInfo g_CteLookupOpInfo;
+  Uint32 cte_build(Build_context &, Ptr<Request>, const QueryNode *,
+                   const QueryNodeParameters *);
+  void cte_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  void cte_parent_row(Signal *, Ptr<Request>, Ptr<TreeNode>, const RowPtr &);
+  void cte_cleanup(Ptr<Request>, Ptr<TreeNode>);
+  bool cte_checkNode(const Ptr<Request>, const Ptr<TreeNode>);
+  void cte_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
 
   /**
    * ScanFrag
