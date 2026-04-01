@@ -50,15 +50,21 @@ getIndexList(const NdbDictionary::Dictionary *dict,
 
 /**
  * Find a CTE definition by table name. Returns NULL if not a CTE.
+ * If found, sets out_idx to the 0-based index of the CTE in the list.
  */
 static const CteDefinition*
-findCte(const CteDefinition *cte_list, const char *name)
+findCte(const CteDefinition *cte_list, const char *name, Uint32 &out_idx)
 {
-  for (const CteDefinition *cte = cte_list; cte != NULL; cte = cte->next)
+  Uint32 idx = 0;
+  for (const CteDefinition *cte = cte_list; cte != NULL; cte = cte->next, idx++)
   {
     if (strcmp(cte->name.c_str(), name) == 0)
+    {
+      out_idx = idx;
       return cte;
+    }
   }
+  out_idx = 0;
   return NULL;
 }
 
@@ -101,6 +107,7 @@ QueryPlanner::plan(
   rootOp.num_low_bounds = 0;
   rootOp.num_high_bounds = 0;
   rootOp.cte_def = NULL;
+  rootOp.cte_def_idx = 0;
   out.num_ops = 1;
 
   /*
@@ -117,7 +124,9 @@ QueryPlanner::plan(
 
     /* Look up child table — check CTEs first, then NDB dictionary */
     const char *child_table_name = jc->table.name.c_str();
-    const CteDefinition *cte_match = findCte(cte_list, child_table_name);
+    Uint32 cte_idx = 0;
+    const CteDefinition *cte_match = findCte(cte_list, child_table_name,
+                                             cte_idx);
 
     JoinOp &childOp = out.ops[out.num_ops];
     childOp.alias = jc->table.alias;
@@ -127,6 +136,7 @@ QueryPlanner::plan(
     childOp.num_low_bounds = 0;
     childOp.num_high_bounds = 0;
     childOp.cte_def = NULL;
+    childOp.cte_def_idx = 0;
 
     if (cte_match != NULL)
     {
@@ -135,6 +145,7 @@ QueryPlanner::plan(
       childOp.table = NULL;
       childOp.index = NULL;
       childOp.cte_def = const_cast<CteDefinition*>(cte_match);
+      childOp.cte_def_idx = cte_idx;
     }
     else
     {

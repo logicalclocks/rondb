@@ -4355,6 +4355,42 @@ RonSQLPreparer::execute_join()
     }
   }
 
+  // Build virtual tables for CTE lookups (key columns matching parent types).
+  // These are in-memory NdbDictionary::Table objects used only for key binding.
+  NdbDictionary::Table* cteVirtualTables[MAX_SPJ_TREE_NODES] = {};
+  if (m_has_ctes) {
+    for (Uint32 i = 1; i < plan.num_ops; i++) {
+      JoinOp& op = plan.ops[i];
+      if (op.type != JoinOp::CTE_LOOKUP) continue;
+
+      // Create virtual table with PK columns matching the parent key types
+      const NdbDictionary::Table* parentTable =
+          plan.ops[op.parent_op_idx].table;
+      require_run(parentTable != NULL,
+                  "CTE lookup parent has no NDB table.");
+
+      char vtname[64];
+      snprintf(vtname, sizeof(vtname), "__cte_%u", op.cte_def_idx);
+      NdbDictionary::Table* vt = new NdbDictionary::Table(vtname);
+
+      for (Uint32 k = 0; k < op.num_key_cols; k++) {
+        const NdbDictionary::Column* parentCol =
+            parentTable->getColumn(op.parent_key_col_names[k]);
+        require_run(parentCol != NULL,
+                    "CTE lookup parent key column not found.");
+
+        NdbDictionary::Column vcol;
+        vcol.setName(op.parent_key_col_names[k]);
+        vcol.setType(parentCol->getType());
+        vcol.setLength(parentCol->getLength());
+        vcol.setPrimaryKey(true);
+        vcol.setNullable(false);
+        vt->addColumn(vcol);
+      }
+      cteVirtualTables[i] = vt;
+    }
+  }
+
   // Child operations
   for (Uint32 i = 1; i < plan.num_ops; i++) {
     JoinOp& op = plan.ops[i];
@@ -4385,45 +4421,48 @@ RonSQLPreparer::execute_join()
     }
     keys[op.num_key_cols] = nullptr;
 
-    // Attach WHERE filter for this child table (if any)
-    NdbInterpretedCode child_code(op.table);
-    if (m_join_where_ce[i] != NULL)
+    // Attach WHERE filter for this child table (if any).
+    // CTE lookups have no physical table — skip filter and aggregation.
+    NdbInterpretedCode child_code_storage(op.table);
+    if (op.type != JoinOp::CTE_LOOKUP && m_join_where_ce[i] != NULL)
     {
       ConditionalExpression* child_ce = simplify_ce(m_join_where_ce[i], -1);
-      NdbScanFilter filter(&child_code);
+      NdbScanFilter filter(&child_code_storage);
       filter.setSqlCmpSemantics();
       filter.begin(NdbScanFilter::AND);
       apply_filter(&filter, child_ce);
       filter.end();
-      child_code.finalise();
-      opts.setInterpretedCode(child_code);
+      child_code_storage.finalise();
+      opts.setInterpretedCode(child_code_storage);
     }
 
-    // Attach aggregation to leaf(s)
-    if (m_has_select_subqueries && plan.num_agg_leaves > 0 &&
-        leafAggs[i] != NULL) {
-      // Multi-leaf: attach this leaf's aggregator
-      require_run(opts.setAggregation(*leafAggs[i]) == 0,
-                  "Failed to set aggregation on leaf.");
-      for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
-        NdbLinkedOperand* lv = qb->linkedValue(
-            opDefs[plan.linked_projs[j].source_op_idx],
-            plan.linked_projs[j].column_name);
-        require_run(lv != NULL, "Failed to create linked projection.");
-        require_run(opts.addLinkedProjection(lv) == 0,
-                    "Failed to add linked projection.");
-      }
-    } else if (i == plan.agg_leaf_idx && plan.num_agg_leaves == 0) {
-      // Single-leaf: existing path
-      require_run(opts.setAggregation(singleAgg) == 0,
-                  "Failed to set aggregation.");
-      for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
-        NdbLinkedOperand* lv = qb->linkedValue(
-            opDefs[plan.linked_projs[j].source_op_idx],
-            plan.linked_projs[j].column_name);
-        require_run(lv != NULL, "Failed to create linked projection.");
-        require_run(opts.addLinkedProjection(lv) == 0,
-                    "Failed to add linked projection.");
+    // Attach aggregation to leaf(s) — not applicable for CTE lookups
+    if (op.type != JoinOp::CTE_LOOKUP) {
+      if (m_has_select_subqueries && plan.num_agg_leaves > 0 &&
+          leafAggs[i] != NULL) {
+        // Multi-leaf: attach this leaf's aggregator
+        require_run(opts.setAggregation(*leafAggs[i]) == 0,
+                    "Failed to set aggregation on leaf.");
+        for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
+          NdbLinkedOperand* lv = qb->linkedValue(
+              opDefs[plan.linked_projs[j].source_op_idx],
+              plan.linked_projs[j].column_name);
+          require_run(lv != NULL, "Failed to create linked projection.");
+          require_run(opts.addLinkedProjection(lv) == 0,
+                      "Failed to add linked projection.");
+        }
+      } else if (i == plan.agg_leaf_idx && plan.num_agg_leaves == 0) {
+        // Single-leaf: existing path
+        require_run(opts.setAggregation(singleAgg) == 0,
+                    "Failed to set aggregation.");
+        for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
+          NdbLinkedOperand* lv = qb->linkedValue(
+              opDefs[plan.linked_projs[j].source_op_idx],
+              plan.linked_projs[j].column_name);
+          require_run(lv != NULL, "Failed to create linked projection.");
+          require_run(opts.addLinkedProjection(lv) == 0,
+                      "Failed to add linked projection.");
+        }
       }
     }
 
@@ -4488,10 +4527,26 @@ RonSQLPreparer::execute_join()
       }
       break;
     }
+    case JoinOp::CTE_LOOKUP:
+    {
+      Uint32 numResultCols = 0;
+      for (const Outputs* o = op.cte_def->stmt->outputs; o; o = o->next)
+        numResultCols++;
+      opDefs[i] = qb->lookupCte(
+          op.cte_def_idx, numResultCols,
+          cteVirtualTables[i],
+          keys, &opts);
+      break;
+    }
     default:
       abort();
     }
     require_run(opDefs[i] != NULL, "Failed to create child operation.");
+  }
+
+  // Free virtual tables
+  for (Uint32 i = 0; i < MAX_SPJ_TREE_NODES; i++) {
+    delete cteVirtualTables[i];
   }
 
   // Prepare and execute

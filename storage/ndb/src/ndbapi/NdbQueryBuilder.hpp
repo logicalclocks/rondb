@@ -280,7 +280,8 @@ class NdbQueryOperationDef  // Base class for all operation definitions
     PrimaryKeyAccess,   ///< Read using pk
     UniqueIndexAccess,  ///< Read using unique index
     TableScan,          ///< Full table scan
-    OrderedIndexScan    ///< Ordered index scan, optionally w/ bounds
+    OrderedIndexScan,   ///< Ordered index scan, optionally w/ bounds
+    CteLookup           ///< Lookup into materialized CTE hash table
   };
 
   static const char *getTypeName(Type type);
@@ -326,11 +327,12 @@ class NdbQueryOperationDef  // Base class for all operation definitions
 
 class NdbQueryLookupOperationDef : public NdbQueryOperationDef {
  public:
- private:
-  // Enforce object creation through NdbQueryBuilder factory
-  friend class NdbQueryLookupOperationDefImpl;
+ protected:
+  // Protected to allow subclassing (e.g., NdbQueryCteLookupOperationDef)
   explicit NdbQueryLookupOperationDef(NdbQueryOperationDefImpl &impl);
   ~NdbQueryLookupOperationDef();
+ private:
+  friend class NdbQueryLookupOperationDefImpl;
 };  // class NdbQueryLookupOperationDef
 
 class NdbQueryScanOperationDef
@@ -358,6 +360,15 @@ class NdbQueryIndexScanOperationDef : public NdbQueryScanOperationDef {
   explicit NdbQueryIndexScanOperationDef(NdbQueryOperationDefImpl &impl);
   ~NdbQueryIndexScanOperationDef();
 };  // class NdbQueryIndexScanOperationDef
+
+class NdbQueryCteLookupOperationDef : public NdbQueryLookupOperationDef {
+ private:
+  // Enforce object creation through NdbQueryBuilder factory
+  friend class NdbQueryCteLookupOperationDefImpl;
+  explicit NdbQueryCteLookupOperationDef(NdbQueryOperationDefImpl &impl)
+      : NdbQueryLookupOperationDef(impl) {}
+  ~NdbQueryCteLookupOperationDef() {}
+};  // class NdbQueryCteLookupOperationDef
 
 /**
  * class NdbQueryIndexBound is an argument container for defining
@@ -521,6 +532,23 @@ class NdbQueryBuilder {
   const NdbQueryIndexScanOperationDef *scanIndex(
       const NdbDictionary::Index *, const NdbDictionary::Table *,
       const NdbQueryIndexBound *bound = nullptr,
+      const NdbQueryOptions *options = nullptr, const char *ident = nullptr);
+
+  /**
+   * Create a CTE lookup operation that looks up a key in a materialized
+   * CTE hash table. The virtualTable parameter is a dummy NDB table whose
+   * PK columns match the CTE's GROUP BY key column types.
+   * @param cteId         CTE identifier (0-based index into CTE list)
+   * @param numResultCols Number of result columns from the CTE aggregation
+   * @param virtualTable  Dummy table whose PK matches CTE GROUP BY key types
+   * @param keys          Linked key values from parent operation
+   * @param options       Optional query options (match type, etc.)
+   * @param ident         Optional name for this operation
+   */
+  const NdbQueryCteLookupOperationDef *lookupCte(
+      Uint32 cteId, Uint32 numResultCols,
+      const NdbDictionary::Table *virtualTable,
+      const NdbQueryOperand *const keys[],
       const NdbQueryOptions *options = nullptr, const char *ident = nullptr);
 
   /**

@@ -68,6 +68,7 @@ struct JoinOp
 
   // CTE-specific fields (valid when type == CTE_LOOKUP)
   CteDefinition *cte_def;  // Pointer to CTE definition AST node
+  Uint32 cte_def_idx;      // Index of CTE in cte_list (0-based)
 };
 
 struct JoinPlan

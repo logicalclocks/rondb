@@ -43,6 +43,8 @@ struct QueryNode  // Effectively used as a base class for QN_xxxNode
     QN_SCAN_FRAG_v1 = 0x2,   // deprecated
     QN_SCAN_INDEX_v1 = 0x3,  // deprecated
     QN_SCAN_FRAG = 0x4,      // Replaces both SCAN_*_v1's above
+    QN_CTE_SUBTREE = 0x6,    // Container for CTE materialization sub-tree
+    QN_CTE_LOOKUP = 0x7,     // Lookup into materialized CTE hash table
     QN_END = 0
   };
 
@@ -74,6 +76,8 @@ struct QueryNodeParameters  // Effectively used as a base class for
     QN_SCAN_FRAG_v1 = 0x2,   // deprecated
     QN_SCAN_INDEX_v1 = 0x3,  // deprecated
     QN_SCAN_FRAG = 0x4,      // Replaces both SCAN_*_v1's above
+    QN_CTE_SUBTREE = 0x6,    // Container for CTE materialization sub-tree
+    QN_CTE_LOOKUP = 0x7,     // Lookup into materialized CTE hash table
     QN_END = 0
   };
 
@@ -441,6 +445,66 @@ struct QN_ScanFragParameters {
   /**
    * See DABits::ParamInfoBits
    */
+  Uint32 optional[1];
+};
+
+/**
+ * Container node wrapping an embedded CTE materialization sub-tree.
+ * Contains standard QN_SCAN_FRAG / QN_LOOKUP nodes that form the CTE's
+ * own scan+aggregate tree. Results are materialized into a hash table
+ * keyed by GROUP BY columns. (Used by DBSPJ in Step 4+)
+ */
+struct QN_CteSubtreeNode  // Is a QueryNode subclass
+{
+  Uint32 len;           // (totalLength << 16) | QN_CTE_SUBTREE
+  Uint32 requestInfo;   // Reserved (0)
+  Uint32 cteId;         // Unique CTE identifier (0-based index)
+  Uint32 numNodes;      // Number of embedded standard nodes following
+  static constexpr Uint32 NodeSize = 4;
+
+  Uint32 optional[1];   // Embedded QueryNode structures follow
+};
+
+/**
+ * Parameters for QN_CteSubtreeNode (placeholder for future use).
+ */
+struct QN_CteSubtreeParameters  // Is a QueryNodeParameters subclass
+{
+  Uint32 len;
+  Uint32 requestInfo;
+  Uint32 resultData;  // Unused for CTE subtrees
+  static constexpr Uint32 NodeSize = 3;
+
+  Uint32 optional[1];
+};
+
+/**
+ * Lookup node for querying a materialized CTE hash table.
+ * Same layout as QN_LookupNode but uses cteId instead of tableId
+ * and numResultCols instead of tableVersion.
+ * The optional part follows the same format: parent list, key pattern.
+ */
+struct QN_CteLookupNode  // Is a QueryNode subclass
+{
+  Uint32 len;           // (length << 16) | QN_CTE_LOOKUP
+  Uint32 requestInfo;   // DABits::NodeInfoBits flags
+  Uint32 cteId;         // Which CTE to look up (matches CteSubtreeNode::cteId)
+  Uint32 numResultCols; // Number of result columns from CTE aggregation
+  static constexpr Uint32 NodeSize = 4;
+
+  Uint32 optional[1];   // Parent list, key pattern (same format as QN_LookupNode)
+};
+
+/**
+ * Parameters for QN_CteLookupNode.
+ */
+struct QN_CteLookupParameters  // Is a QueryNodeParameters subclass
+{
+  Uint32 len;
+  Uint32 requestInfo;
+  Uint32 resultData;  // Api connect ptr
+  static constexpr Uint32 NodeSize = 3;
+
   Uint32 optional[1];
 };
 

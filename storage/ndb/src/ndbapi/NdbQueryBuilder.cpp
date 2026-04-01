@@ -213,6 +213,40 @@ class NdbQueryPKLookupOperationDefImpl : public NdbQueryLookupOperationDefImpl {
 
 };  // class NdbQueryPKLookupOperationDefImpl
 
+class NdbQueryCteLookupOperationDefImpl : public NdbQueryLookupOperationDefImpl {
+  friend class NdbQueryBuilder;  // Allow privat access from builder interface
+
+ public:
+  int serializeOperation(const Ndb *ndb, Uint32Buffer &serializedDef) override;
+
+  NdbQueryOperationDef::Type getType() const override {
+    return NdbQueryOperationDef::CteLookup;
+  }
+
+  const NdbQueryLookupOperationDef &getInterface() const override {
+    return m_cteInterface;
+  }
+
+ private:
+  explicit NdbQueryCteLookupOperationDefImpl(
+      const NdbTableImpl &virtualTable,
+      const NdbQueryOperand *const keys[],
+      Uint32 cteId, Uint32 numResultCols,
+      const NdbQueryOptionsImpl &options,
+      const char *ident, Uint32 opNo,
+      Uint32 internalOpNo, int &error)
+      : NdbQueryLookupOperationDefImpl(virtualTable, keys, options, ident,
+                                       opNo, internalOpNo, error),
+        m_cteId(cteId),
+        m_numResultCols(numResultCols),
+        m_cteInterface(*this) {}
+
+  const Uint32 m_cteId;
+  const Uint32 m_numResultCols;
+  NdbQueryCteLookupOperationDef m_cteInterface;
+
+};  // class NdbQueryCteLookupOperationDefImpl
+
 class NdbQueryIndexOperationDefImpl : public NdbQueryLookupOperationDefImpl {
   friend class NdbQueryBuilder;  // Allow privat access from builder interface
 
@@ -685,6 +719,8 @@ const char *NdbQueryOperationDef::getTypeName(Type type) {
       return "TableScan";
     case OrderedIndexScan:
       return "OrderedIndexScan";
+    case CteLookup:
+      return "CteLookup";
     default:
       return "<Invalid NdbQueryOperationDef::Type value>";
   }
@@ -929,6 +965,56 @@ const NdbQueryLookupOperationDef *NdbQueryBuilder::readTuple(
   }
 
   return &op->m_interface;
+}
+
+const NdbQueryCteLookupOperationDef *NdbQueryBuilder::lookupCte(
+    Uint32 cteId, Uint32 numResultCols,
+    const NdbDictionary::Table *virtualTable,
+    const NdbQueryOperand *const keys[],
+    const NdbQueryOptions *options, const char *ident) {
+  if (m_impl.hasError()) return nullptr;
+
+  returnErrIf(virtualTable == nullptr || keys == nullptr, QRY_REQ_ARG_IS_NULL);
+  // CTE lookup must not be the first (root) operation
+  returnErrIf(m_impl.m_operations.size() == 0, QRY_UNKNOWN_PARENT);
+  // Must depend on some other operation via linked operands
+  returnErrIf(!hasLinkedOperand(keys), QRY_UNKNOWN_PARENT);
+
+  const NdbTableImpl &tableImpl = NdbTableImpl::getImpl(*virtualTable);
+
+  // Check: keys[] are specified for all PK fields of the virtual table
+  int keyfields = virtualTable->getNoOfPrimaryKeys();
+  for (int i = 0; i < keyfields; ++i) {
+    returnErrIf(keys[i] == nullptr, QRY_TOO_FEW_KEY_VALUES);
+  }
+  returnErrIf(keys[keyfields] != nullptr, QRY_TOO_MANY_KEY_VALUES);
+
+  int error = 0;
+  NdbQueryCteLookupOperationDefImpl *op =
+      new NdbQueryCteLookupOperationDefImpl(
+          tableImpl, keys, cteId, numResultCols,
+          options ? options->getImpl() : defaultOptions,
+          ident, m_impl.m_operations.size(),
+          m_impl.getNextInternalOpNo(), error);
+
+  returnErrIf(m_impl.takeOwnership(op) != 0, Err_MemoryAlloc);
+  returnErrIf(error != 0, error);
+
+  // Bind key operands to the virtual table's PK columns
+  Uint32 keyindex = 0;
+  int colcount = virtualTable->getNoOfColumns();
+  for (int i = 0; i < colcount; ++i) {
+    const NdbColumnImpl *col = tableImpl.getColumn(i);
+    if (col->getPrimaryKey()) {
+      assert(keyindex == col->m_keyInfoPos);
+      error = op->m_keys[col->m_keyInfoPos]->bindOperand(*col, *op);
+      returnErrIf(error != 0, error);
+      keyindex++;
+      if (keyindex >= static_cast<Uint32>(keyfields)) break;
+    }
+  }
+
+  return &op->m_cteInterface;
 }
 
 const NdbQueryTableScanOperationDef *NdbQueryBuilder::scanTable(
@@ -2532,6 +2618,68 @@ int NdbQueryPKLookupOperationDefImpl ::serializeOperation(
 
   return 0;
 }  // NdbQueryPKLookupOperationDefImpl::serializeOperation
+
+int NdbQueryCteLookupOperationDefImpl::serializeOperation(
+    const Ndb * /*ndb*/, Uint32Buffer &serializedDef) {
+  assert(m_keys[0] != nullptr);
+  assert(!m_isPrepared);
+  m_isPrepared = true;
+
+  // Reserve memory for CteLookupNode header
+  Uint32 startPos = serializedDef.getSize();
+  serializedDef.alloc(QN_CteLookupNode::NodeSize);
+  Uint32 requestInfo = 0;
+
+  if (getMatchType() & NdbQueryOptions::MatchNonNull) {
+    requestInfo |= DABits::NI_INNER_JOIN;
+  }
+  if (getMatchType() & NdbQueryOptions::MatchFirst || hasFirstMatchAncestor()) {
+    requestInfo |= DABits::NI_FIRST_MATCH;
+  }
+  if (getMatchType() & NdbQueryOptions::MatchNullOnly) {
+    requestInfo |= DABits::NI_ANTI_JOIN;
+  }
+
+  // Part1: Parent list
+  requestInfo |= appendParentList(serializedDef);
+
+  // Part2: Key pattern (linked values from parent for CTE GROUP BY key match)
+  requestInfo |= appendKeyPattern(serializedDef);
+
+  // Part3: Param constructor
+  requestInfo |= appendParamConstructor(serializedDef);
+
+  // Part4: Child projection (CTE lookups are typically leaves, but support it)
+  requestInfo |= appendChildProjection(serializedDef);
+
+  // Fill in CteLookupNode header
+  QN_CteLookupNode *node =
+      reinterpret_cast<QN_CteLookupNode *>(serializedDef.addr(startPos));
+  if (unlikely(node == nullptr)) {
+    return Err_MemoryAlloc;
+  }
+  node->cteId = m_cteId;
+  node->numResultCols = m_numResultCols;
+  node->requestInfo = requestInfo;
+  const Uint32 length = serializedDef.getSize() - startPos;
+  if (unlikely(length > 0xFFFF)) {
+    return QRY_DEFINITION_TOO_LARGE;
+  } else {
+    QueryNode::setOpLen(node->len, QueryNode::QN_CTE_LOOKUP, length);
+  }
+
+#ifdef __TRACE_SERIALIZATION
+  ndbout << "Serialized CTE lookup node " << getInternalOpNo() << " : ";
+  for (Uint32 i = startPos; i < serializedDef.getSize(); i++) {
+    char buf[12];
+    sprintf(buf, "%.8x", serializedDef.get(i));
+    ndbout << buf << " ";
+  }
+  ndbout << endl;
+#endif
+
+  return 0;
+}  // NdbQueryCteLookupOperationDefImpl::serializeOperation
 
 int NdbQueryIndexOperationDefImpl ::serializeOperation(
     const Ndb * /*ndb*/, Uint32Buffer &serializedDef) {
