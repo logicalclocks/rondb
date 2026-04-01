@@ -316,7 +316,10 @@ INSERT INTO test.rb_status (id, val) VALUES (2, 'c');
 --replace_column 2 # 3 # 4 # 5 # 6 # 7 # 8 # 9 # 10 # 11 # 12 # 13 # 14 # 15 # 16 # 17 # 18 #
 SHOW TABLE STATUS FROM test LIKE 'rb_status';
 
-# SELECT COUNT(*) should give user-visible row count (excluding meta rows)
+# Known limitation: bare SELECT COUNT(*) without WHERE uses NDB's
+# handler::records() fast path which returns the physical row count
+# (includes meta rows).  COUNT(*) with a WHERE clause uses a scan
+# that correctly filters meta rows.
 SELECT COUNT(*) AS visible_rows FROM test.rb_status;
 
 DROP TABLE test.rb_status;

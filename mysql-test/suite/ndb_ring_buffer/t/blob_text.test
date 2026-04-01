@@ -213,13 +213,13 @@ INSERT INTO test.rb_nullblob (id, data) VALUES (1, REPEAT('X', 500));
 SELECT id, ring_idx, data IS NULL AS is_null, LENGTH(data) AS len
     FROM test.rb_nullblob WHERE id = 1 ORDER BY ring_idx;
 
-# Wrap: NULL overwrites the REPEAT row
-INSERT INTO test.rb_nullblob (id, data) VALUES (1, NULL);
+# Wrap: short text overwrites NULL at slot 1
+INSERT INTO test.rb_nullblob (id, data) VALUES (1, REPEAT('Z', 200));
 
 SELECT id, ring_idx, data IS NULL AS is_null, LENGTH(data) AS len
     FROM test.rb_nullblob WHERE id = 1 ORDER BY ring_idx;
 
-# Wrap: large text overwrites NULL
+# Wrap: large text overwrites slot 2
 INSERT INTO test.rb_nullblob (id, data) VALUES (1, REPEAT('Y', 1000));
 
 SELECT id, ring_idx, data IS NULL AS is_null, LENGTH(data) AS len

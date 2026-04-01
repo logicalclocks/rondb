@@ -102,6 +102,8 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 UPDATE test.rb SET event_data = 'ghost'
     WHERE client_id = 999 AND ring_idx = 1;
 
+SELECT ROW_COUNT();
+
 --echo #
 --echo # Case 9: UPDATE ring_idx + user column together — blocked
 --echo # (ring_idx in write_set triggers block even if user col also present)
@@ -274,6 +276,8 @@ DELETE FROM test.rb_multi WHERE region = 3 AND client_id = 100 AND ring_idx = 1;
 --echo #
 
 DELETE FROM test.rb_multi WHERE region = 99 AND client_id = 99;
+
+SELECT ROW_COUNT();
 
 --echo #
 --echo # Case 23: DELETE + re-INSERT + DELETE cycle
