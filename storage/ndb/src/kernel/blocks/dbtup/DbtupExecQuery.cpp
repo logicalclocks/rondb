@@ -3256,7 +3256,11 @@ int Dbtup::handleReadReq(
     Uint32 rb_attr_id = AttributeHeader(regTabPtr->m_ring_idx_col_no, 0).m_value;
     Uint32 rb_buf[2] = {0, 1};
     int rb_ret = readAttributes(req_struct, &rb_attr_id, 1, rb_buf, 2);
-    /* rb_ret < 0: attribute read failed, fall through and show the row */
+    if (unlikely(rb_ret < 0)) {
+      jam();
+      g_eventLogger->warning("Ring buffer meta row filter: readAttributes "
+                             "failed (ret=%d), showing row", rb_ret);
+    }
     if (rb_ret >= 0 && rb_buf[1] == 0) {
       /* ring_idx == 0: this is a meta row, hide it */
       jam();

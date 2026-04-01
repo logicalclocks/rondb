@@ -30,7 +30,7 @@ DROP TABLE test.t1;
 CREATE TABLE test.t2 (
     client_id INT NOT NULL,
     ring_idx INT UNSIGNED NOT NULL DEFAULT 0,
-    ring_meta VARBINARY(16),
+    ring_meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=100@ring_idx@ring_meta";
@@ -46,7 +46,7 @@ DROP TABLE test.t2;
 CREATE TABLE test.t3 (
     pk INT NOT NULL,
     ring_idx INT NOT NULL DEFAULT 0,
-    ring_meta VARBINARY(16),
+    ring_meta VARBINARY(64),
     PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta";
@@ -62,7 +62,7 @@ DROP TABLE test.t3;
 CREATE TABLE test.t4 (
     pk INT NOT NULL,
     ring_idx INT NOT NULL DEFAULT 0,
-    ring_meta VARBINARY(16),
+    ring_meta VARBINARY(64),
     PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2147483647@ring_idx@ring_meta";

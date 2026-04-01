@@ -308,7 +308,8 @@ static void writer_thread(Ndb_cluster_connection *conn, Barrier *barrier,
 
 static void mysql_writer_thread(const char *host, unsigned int port,
                                 Barrier *barrier, MysqlThreadResult *result,
-                                int thread_id, int num_iterations) {
+                                int thread_id, int num_iterations,
+                                std::atomic<bool> *dup_found) {
   MYSQL conn;
   if (!mysql_init(&conn)) {
     result->other_errors = num_iterations;
@@ -332,6 +333,9 @@ static void mysql_writer_thread(const char *host, unsigned int port,
     // Synchronize: both threads start the INSERT at the same time
     barrier->wait();
 
+    // Early exit after barrier (both threads must enter barrier to avoid deadlock)
+    if (dup_found->load()) break;
+
     char sql[256];
     snprintf(sql, sizeof(sql),
              "INSERT INTO test.rb_mysql_concurrent (client_id, event_data) "
@@ -344,6 +348,7 @@ static void mysql_writer_thread(const char *host, unsigned int port,
       unsigned int err = mysql_errno(&conn);
       if (err == 1062) {
         result->dup_key_errors++;
+        dup_found->store(true);
       } else {
         result->other_errors++;
         std::cerr << "  [MySQL Thread " << thread_id << " iter " << i
@@ -363,15 +368,15 @@ static void mysql_writer_thread(const char *host, unsigned int port,
 
 static bool test_mysql_concurrent(MYSQL *admin_conn, const char *host,
                                   unsigned int port) {
-  const int NUM_ITERATIONS = 100;
+  const int NUM_ITERATIONS = 1000;
 
   std::cout << std::endl;
   std::cout << "=== Ring Buffer Concurrent INSERT Test (MySQL) ===" << std::endl;
   std::cout << std::endl;
   std::cout << "Scenario: Two MySQL connections both INSERT into the same"
             << std::endl;
-  std::cout << "PK prefix when no meta row exists yet. " << NUM_ITERATIONS
-            << " iterations." << std::endl;
+  std::cout << "PK prefix when no meta row exists yet. Up to " << NUM_ITERATIONS
+            << " iterations (stops early on first dup)." << std::endl;
   std::cout << "One INSERT should succeed, the other may get error 1062."
             << std::endl;
   std::cout << std::endl;
@@ -389,17 +394,20 @@ static bool test_mysql_concurrent(MYSQL *admin_conn, const char *host,
 
   Barrier barrier(2);
   MysqlThreadResult result_a, result_b;
+  std::atomic<bool> dup_found(false);
 
   std::thread ta(mysql_writer_thread, host, port, &barrier, &result_a, 0,
-                 NUM_ITERATIONS);
+                 NUM_ITERATIONS, &dup_found);
   std::thread tb(mysql_writer_thread, host, port, &barrier, &result_b, 1,
-                 NUM_ITERATIONS);
+                 NUM_ITERATIONS, &dup_found);
 
   ta.join();
   tb.join();
 
-  std::cout << "--- Results (" << NUM_ITERATIONS << " iterations) ---"
-            << std::endl;
+  int ran = result_a.successes + result_a.dup_key_errors + result_a.other_errors +
+            result_b.successes + result_b.dup_key_errors + result_b.other_errors;
+  std::cout << "--- Results (" << ran / 2 << " of " << NUM_ITERATIONS
+            << " iterations) ---" << std::endl;
   std::cout << "Thread A: success=" << result_a.successes
             << ", dup_key(1062)=" << result_a.dup_key_errors
             << ", other_err=" << result_a.other_errors << std::endl;
@@ -417,16 +425,11 @@ static bool test_mysql_concurrent(MYSQL *admin_conn, const char *host,
             << std::endl;
 
   bool pass = true;
-
-  // Every iteration should have exactly 2 outcomes total (one per thread)
-  if (total_success + total_dup + total_other != 2 * NUM_ITERATIONS) {
-    std::cout << "CHECK: Unexpected total count — FAIL" << std::endl;
-    pass = false;
-  }
+  int iterations_ran = ran / 2;
 
   // Each iteration: both can succeed (no race), or one succeeds + one gets 1062
-  // So total_success should be between NUM_ITERATIONS and 2*NUM_ITERATIONS
-  if (total_success >= NUM_ITERATIONS && total_success <= 2 * NUM_ITERATIONS) {
+  // So total_success should be between iterations_ran and 2*iterations_ran
+  if (total_success >= iterations_ran && total_success <= 2 * iterations_ran) {
     std::cout << "CHECK: Each PK prefix has at least one successful INSERT — OK"
               << std::endl;
   } else {

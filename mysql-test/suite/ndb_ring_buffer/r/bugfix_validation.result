@@ -1,0 +1,106 @@
+#
+# Bug 1: Empty MAX_ROWS_PER_PK value crashes server (std::stoll(""))
+#
+CREATE TABLE test.rb_empty (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647'
+CREATE TABLE test.rb_zero (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=0";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647'
+#
+# Bug 1b: Empty MAX_ROWS_PER_PK in ALTER TABLE — should not crash
+#
+CREATE TABLE test.rb_alter_empty (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5";
+ALTER TABLE test.rb_alter_empty COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647'
+DROP TABLE test.rb_alter_empty;
+#
+# Bug 2: ring_meta column size validation too lenient (allows < 32 bytes)
+#
+CREATE TABLE test.rb_small_meta (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(16),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column must be VARBINARY with length >= 32'
+CREATE TABLE test.rb_small_meta2 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(31),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column must be VARBINARY with length >= 32'
+CREATE TABLE test.rb_exact_meta (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(32),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+INSERT INTO test.rb_exact_meta (client_id, data) VALUES (1, 'hello');
+SELECT client_id, ring_idx, data FROM test.rb_exact_meta ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	1	hello
+DROP TABLE test.rb_exact_meta;
+#
+# Bug 3: DELETE condition check bypass via nested function arguments
+#
+CREATE TABLE test.rb_del_bypass (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+INSERT INTO test.rb_del_bypass (client_id, event_data) VALUES (1, 'a');
+INSERT INTO test.rb_del_bypass (client_id, event_data) VALUES (1, 'b');
+INSERT INTO test.rb_del_bypass (client_id, event_data) VALUES (2, 'c');
+DELETE FROM test.rb_del_bypass WHERE event_data = 'a';
+ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+DELETE FROM test.rb_del_bypass WHERE client_id = LENGTH(event_data);
+ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+DELETE FROM test.rb_del_bypass WHERE client_id = COALESCE(event_data, 0);
+ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+DELETE FROM test.rb_del_bypass WHERE client_id = IFNULL(event_data, 0);
+ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+DELETE FROM test.rb_del_bypass WHERE client_id = ring_idx + 1;
+ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+DELETE FROM test.rb_del_bypass WHERE client_id = 1;
+SELECT client_id, ring_idx, event_data FROM test.rb_del_bypass ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+2	1	c
+INSERT INTO test.rb_del_bypass (client_id, event_data) VALUES (3, 'x');
+DELETE FROM test.rb_del_bypass WHERE client_id = ABS(3);
+SELECT client_id, ring_idx, event_data FROM test.rb_del_bypass ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+2	1	c
+DROP TABLE test.rb_del_bypass;
+#
+# Done — all bug regression tests passed
+#

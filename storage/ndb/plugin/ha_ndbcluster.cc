@@ -6631,11 +6631,9 @@ static bool check_ring_buffer_delete_condition(const TABLE *table,
       const Item_func *func = down_cast<const Item_func *>(item);
       for (uint i = 0; i < func->argument_count(); i++) {
         const Item *arg = func->arguments()[i];
-        if (arg->type() == Item::FIELD_ITEM) {
-          if (!check_ring_buffer_delete_condition(table, ring_idx_field_index,
-                                                  pk_info, arg))
-            return false;
-        }
+        if (!check_ring_buffer_delete_condition(table, ring_idx_field_index,
+                                                pk_info, arg))
+          return false;
       }
       return true;
     }
@@ -6652,7 +6650,7 @@ static bool check_ring_buffer_delete_condition(const TABLE *table,
       return true;
     }
     default:
-      if (item->const_item()) return true;
+      if (item->const_item() || item->type() == Item::PARAM_ITEM) return true;
       return false;
   }
 }
@@ -10175,9 +10173,11 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
       }
 
       char old_rb_str[256] = {0};
+      size_t rb_len = old_table_modifiers.get("MAX_ROWS_PER_PK")->m_val_str.len;
+      if (rb_len >= sizeof(old_rb_str)) rb_len = sizeof(old_rb_str) - 1;
       strncpy(old_rb_str,
              old_table_modifiers.get("MAX_ROWS_PER_PK")->m_val_str.str,
-             old_table_modifiers.get("MAX_ROWS_PER_PK")->m_val_str.len);
+             rb_len);
 
       table_modifiers.set("MAX_ROWS_PER_PK", old_rb_str);
     }
@@ -10793,6 +10793,10 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
       }
 
       /* Validate size */
+      if (size_str.empty()) {
+        return create.failed_illegal_create_option(
+            "MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647");
+      }
       for (std::size_t i = 0; i < size_str.length(); i++) {
         if (size_str.at(i) < '0' || size_str.at(i) > '9') {
           return create.failed_illegal_create_option(
@@ -10856,9 +10860,9 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
             return create.failed_illegal_create_option(
                 "Ring meta column must be VARBINARY type");
           }
-          if (field->field_length < 16) {
+          if (field->field_length < RING_META_SIZE) {
             return create.failed_illegal_create_option(
-                "Ring meta column must be VARBINARY with length >= 16");
+                "Ring meta column must be VARBINARY with length >= 32");
           }
           if (!field->is_nullable()) {
             return create.failed_illegal_create_option(
@@ -17678,6 +17682,10 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
         }
       }
 
+      if (size_str.empty()) {
+        *reason = "MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647";
+        return true;
+      }
       for (std::size_t i = 0; i < size_str.length(); i++) {
         if (size_str.at(i) < '0' || size_str.at(i) > '9') {
           *reason = "MAX_ROWS_PER_PK size must be a positive integer";
