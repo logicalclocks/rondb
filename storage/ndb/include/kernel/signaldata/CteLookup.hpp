@@ -43,7 +43,7 @@ struct CteLookupReq {
   Uint32 keyLen;          // Key length in bytes
 
   static constexpr Uint32 SignalLength = 4;
-  enum { KeySectionNum = 0 };
+  enum { KeySectionNum = 0, AttrInfoSectionNum = 1 };
 };
 
 /**
@@ -66,11 +66,8 @@ struct CteLookupRef {
 
   static constexpr Uint32 SignalLength = 3;
 
-  enum ErrorCode {
-    GroupNotFound = 0,          // Key not in hash table (LEFT JOIN → NULL)
-    StateNotFound = 1,          // aggStateKey invalid
-    StateNotReady = 2           // CTE not yet materialized
-  };
+  // Error codes are defined in Dblqh.hpp (ZCTE_LOOKUP_*) and ndberror.cpp.
+  // Key not found is indicated by ZCTE_LOOKUP_GROUP_NOT_FOUND.
 };
 
 #endif  // NDB_CTE_LOOKUP_HPP

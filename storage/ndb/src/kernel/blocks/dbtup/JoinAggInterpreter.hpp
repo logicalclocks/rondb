@@ -121,6 +121,16 @@ class JoinAggInterpreter : public PushdownInterpreter {
   Uint32 n_agg_results() const { return m_n_agg_results; }
   const AggResItem* agg_results() const { return m_agg_results; }
   Uint64 processed_rows() const { return m_processed_rows; }
+
+  /**
+   * Look up a single group by key in the hash table.
+   * Returns pointer to group data (key + accumulators) or nullptr if not found.
+   * The returned pointer points past the 24-byte group link header.
+   * Layout: [key_data (keyLen bytes)] [accumulator_data (val_len() bytes)]
+   */
+  const char* lookupGroup(const char* key, Uint32 keyLen) const {
+    return m_gb_map ? m_gb_map->find(key, keyLen) : nullptr;
+  }
   void setUseMutex(bool v) { m_use_mutex = v; }
   void setMaxGroups(Uint32 v) { m_max_groups = v; }
   Uint32 maxGroups() const { return m_max_groups; }

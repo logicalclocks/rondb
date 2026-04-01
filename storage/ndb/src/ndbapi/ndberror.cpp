@@ -471,6 +471,10 @@ ErrorBundle ErrorCodes[] = {
   { 1260, DMEC, IE, "Join aggregation match range overflow" },
   { 1261, DMEC, IE, "Join aggregation section count error" },
   { 1262, DMEC, IE, "Attrinfo too large" },
+  { 1263, DMEC, IE, "CTE lookup group not found" },
+  { 1264, DMEC, IE, "CTE lookup state not ready" },
+  { 1265, DMEC, IE, "CTE lookup attrinfo malformed" },
+  { 1266, DMEC, IE, "CTE lookup output buffer overflow" },
 
   /**
    * Application error

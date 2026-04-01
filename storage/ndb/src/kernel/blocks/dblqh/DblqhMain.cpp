@@ -47,6 +47,7 @@
 #include <signaldata/GCP.hpp>
 #include <signaldata/DbspjErr.hpp>
 #include <signaldata/JoinAgg.hpp>
+#include <signaldata/CteLookup.hpp>
 #include "JoinAggregationState.hpp"
 #include <signaldata/LqhFrag.hpp>
 #include <signaldata/LqhKey.hpp>
@@ -18517,6 +18518,27 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
 
   state->m_state.store(JoinAggregationState::SENDING_RESULTS);
 
+  if (state->m_cte_mode) {
+    /*
+     * CTE mode: skip send-and-erase. The hash table stays alive for
+     * point lookups via CTE_LOOKUP_REQ. Transition directly to CTE_READY
+     * and notify DBSPJ that materialization is complete.
+     */
+    jam();
+    state->m_state.store(JoinAggregationState::CTE_READY);
+
+    JoinAggCompleteConf *conf =
+      (JoinAggCompleteConf *)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = senderData;
+    conf->requestId = requestId;
+    conf->numResultRows = 0;
+    conf->resultBytes = 0;
+    sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
+               signal, JoinAggCompleteConf::SignalLength, JBB);
+    return;
+  }
+
   const Uint32 n_gb_cols = interp->n_gb_cols();
 
   if (n_gb_cols == 0) {
@@ -18743,6 +18765,306 @@ void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
   continueJoinAggSend(signal, aggStateKey,
                       state->m_rows_sent, 0,
                       senderRef, senderData, requestId);
+}
+
+/**
+ * CTE_LOOKUP_REQ — look up a single group in a materialized CTE hash table.
+ *
+ * Signal sections:
+ *   Section 0 (KeySectionNum): Lookup key (AttributeHeader-encoded GROUP BY cols)
+ *   Section 1 (AttrInfoSectionNum): AttrInfo with 5-word interpreter header,
+ *             column reads, FLUSH_AI, CORR_FACTOR — same protocol as LQHKEYREQ.
+ *
+ * Virtual column mapping (IDs 0..N-1):
+ *   0..K-1   = GROUP BY key columns (AttributeHeader-encoded in hash table key)
+ *   K..N-1   = Aggregate result columns (AggResItem in hash table value)
+ *
+ * Uses c_tup->cinBuffer for AttrInfo input, c_tup->coutBuffer for output.
+ */
+void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
+  jamEntry();
+  if (unlikely(!assembleFragments(signal))) {
+    jam();
+    return;
+  }
+
+  const CteLookupReq *req = (const CteLookupReq *)signal->getDataPtr();
+  const Uint32 senderRef = req->senderRef;
+  const Uint32 senderData = req->senderData;
+  const Uint32 aggStateKey = req->aggStateKey;
+  const Uint32 keyLen = req->keyLen;
+
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (unlikely(state == nullptr)) {
+    jam();
+    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
+               signal, CteLookupRef::SignalLength, JBB);
+    return;
+  }
+
+  if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
+    jam();
+    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->errorCode = ZCTE_LOOKUP_STATE_NOT_READY;
+    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
+               signal, CteLookupRef::SignalLength, JBB);
+    return;
+  }
+
+  /* Read signal sections */
+  SectionHandle handle(this, signal);
+
+  /* Section 0: lookup key */
+  SegmentedSectionPtr keySection;
+  ndbrequire(handle.getSection(keySection, CteLookupReq::KeySectionNum));
+  Uint32 keyBuf[MAX_KEY_SIZE_IN_WORDS + 1];
+  if (unlikely(keySection.sz > MAX_KEY_SIZE_IN_WORDS)) {
+    jam();
+    releaseSections(handle);
+    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->errorCode = ZATTRINFO_TOO_LARGE;
+    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
+               signal, CteLookupRef::SignalLength, JBB);
+    return;
+  }
+  copy(keyBuf, keySection);
+
+  /* Section 1: AttrInfo → copy into cattrInfoBuffer */
+  Uint32 *cinBuf = cattrInfoBuffer;
+  Uint32 attrInfoLen = 0;
+  SegmentedSectionPtr attrInfoSection;
+  if (handle.getSection(attrInfoSection, CteLookupReq::AttrInfoSectionNum)) {
+    if (unlikely(attrInfoSection.sz > ZATTR_BUFFER_SIZE)) {
+      jam();
+      releaseSections(handle);
+      CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->senderData = senderData;
+      ref->errorCode = ZATTRINFO_TOO_LARGE;
+      sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
+                 signal, CteLookupRef::SignalLength, JBB);
+      return;
+    }
+    copy(cinBuf, attrInfoSection);
+    attrInfoLen = attrInfoSection.sz;
+  }
+
+  releaseSections(handle);
+
+  /* Validate minimum AttrInfo: 5 header + 1 ExitOK + 1 column + 1 pseudo = 8 */
+  if (unlikely(attrInfoLen < 8)) {
+    jam();
+    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->errorCode = ZCTE_LOOKUP_ATTRINFO_MALFORMED;
+    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
+               signal, CteLookupRef::SignalLength, JBB);
+    return;
+  }
+
+  /* Hash table lookup */
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  ndbrequire(interp != nullptr);
+
+  const char *groupData = interp->lookupGroup(
+      reinterpret_cast<const char *>(keyBuf), keyLen);
+
+  if (groupData == nullptr) {
+    jam();
+    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->errorCode = ZCTE_LOOKUP_GROUP_NOT_FOUND;
+    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
+               signal, CteLookupRef::SignalLength, JBB);
+    return;
+  }
+
+  /*
+   * Group found — process AttrInfo final-read section to produce normal
+   * TRANSID_AI output (AttributeHeader + data per column).
+   */
+  jam();
+  const Uint32 n_gb_cols = interp->n_gb_cols();
+  const Uint32 n_agg_results = interp->n_agg_results();
+  const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
+      groupData + keyLen);
+
+  Uint32 *outBuf = cevictBuffer;
+  Uint32 outPos = 0;
+
+  /* Parse 5-word AttrInfo header and skip to final-read section */
+  const Uint32 initReadLen = cinBuf[0];
+  const Uint32 execRegionLen = cinBuf[1];
+  const Uint32 finalUpdateLen = cinBuf[2];
+  const Uint32 finalRLen = cinBuf[3];
+
+  const Uint32 finalRStart = 5 + initReadLen + execRegionLen + finalUpdateLen;
+  if (unlikely(finalRStart + finalRLen > attrInfoLen || finalRLen < 2)) {
+    jam();
+    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->errorCode = ZCTE_LOOKUP_ATTRINFO_MALFORMED;
+    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
+               signal, CteLookupRef::SignalLength, JBB);
+    return;
+  }
+
+  const Uint32 *finalR = &cinBuf[finalRStart];
+  Uint32 pos = 0;
+  while (pos < finalRLen) {
+    const Uint32 word = finalR[pos];
+    const Uint32 attrId = AttributeHeader::getAttributeId(word);
+
+    if (attrId == AttributeHeader::FLUSH_AI) {
+      /* FLUSH_AI: send accumulated output as TRANSID_AI */
+      jam();
+      if (unlikely(pos + 3 >= finalRLen)) break;
+      const Uint32 resultRef = finalR[pos + 1];
+      const Uint32 resultData = finalR[pos + 2];
+
+      if (outPos > 0) {
+        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+        transIdAI->connectPtr = resultData;
+        transIdAI->transId[0] = state->m_transid[0];
+        transIdAI->transId[1] = state->m_transid[1];
+
+        LinearSectionPtr lsp[3];
+        lsp[0].p = outBuf;
+        lsp[0].sz = outPos;
+        sendSignal(resultRef, GSN_TRANSID_AI, signal,
+                   TransIdAI::HeaderLength, JBB, lsp, 1);
+        outPos = 0;
+      }
+      pos += 4;
+      continue;
+    }
+
+    if (attrId == AttributeHeader::CORR_FACTOR32 ||
+        attrId == AttributeHeader::CORR_FACTOR64) {
+      /* CORR_FACTOR: write correlation value from senderData */
+      jam();
+      if (unlikely(outPos + 2 > ZATTR_BUFFER_SIZE)) {
+        jam();
+        goto output_overflow;
+      }
+      AttributeHeader::init(&outBuf[outPos], attrId, 4);
+      outBuf[outPos + 1] = senderData;
+      outPos += 2;
+      pos += 1;
+      continue;
+    }
+
+    /* Regular virtual column read */
+    if (attrId < n_gb_cols) {
+      /* GROUP BY key column — walk key data to the N-th entry */
+      jam();
+      const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
+      const Uint32 keyWords = keyLen >> 2;
+      Uint32 kp = 0;
+      Uint32 colIdx = 0;
+      while (kp < keyWords && colIdx < attrId) {
+        Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+        kp += 1 + dataSize;
+        colIdx++;
+      }
+      if (kp < keyWords) {
+        Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+        Uint32 words = 1 + dataSize;
+        if (unlikely(outPos + words > ZATTR_BUFFER_SIZE)) {
+          jam();
+          goto output_overflow;
+        }
+        AttributeHeader::init(&outBuf[outPos], attrId, dataSize * 4);
+        memcpy(&outBuf[outPos + 1], &keyData[kp + 1],
+               dataSize * sizeof(Uint32));
+        outPos += words;
+      } else {
+        if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) {
+          jam();
+          goto output_overflow;
+        }
+        AttributeHeader::init(&outBuf[outPos], attrId, 0);
+        outPos += 1;
+      }
+    } else if (attrId < n_gb_cols + n_agg_results) {
+      /* Aggregate result — convert AggResItem to column data (8 bytes) */
+      jam();
+      const Uint32 aggIdx = attrId - n_gb_cols;
+      const AggResItem &item = accumulators[aggIdx];
+
+      if (item.is_null) {
+        if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) {
+          jam();
+          goto output_overflow;
+        }
+        AttributeHeader::init(&outBuf[outPos], attrId, 0);
+        outPos += 1;
+      } else {
+        if (unlikely(outPos + 3 > ZATTR_BUFFER_SIZE)) {
+          jam();
+          goto output_overflow;
+        }
+        AttributeHeader::init(&outBuf[outPos], attrId, 8);
+        memcpy(&outBuf[outPos + 1], &item.value, 8);
+        outPos += 3;
+      }
+    } else {
+      /* Unknown attribute ID — write NULL */
+      jam();
+      if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) {
+        jam();
+        goto output_overflow;
+      }
+      AttributeHeader::init(&outBuf[outPos], attrId, 0);
+      outPos += 1;
+    }
+    pos += 1;
+  }
+
+  /* Send any remaining output as TRANSID_AI to the original sender */
+  if (outPos > 0) {
+    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+    transIdAI->connectPtr = senderData;
+    transIdAI->transId[0] = state->m_transid[0];
+    transIdAI->transId[1] = state->m_transid[1];
+
+    LinearSectionPtr lsp[3];
+    lsp[0].p = outBuf;
+    lsp[0].sz = outPos;
+    sendSignal(senderRef, GSN_TRANSID_AI, signal,
+               TransIdAI::HeaderLength, JBB, lsp, 1);
+  }
+
+  /* CTE_LOOKUP_CONF acknowledges the lookup */
+  {
+    CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = senderData;
+    sendSignal(senderRef, GSN_CTE_LOOKUP_CONF,
+               signal, CteLookupConf::SignalLength, JBB);
+  }
+  return;
+
+output_overflow:
+  {
+    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
+               signal, CteLookupRef::SignalLength, JBB);
+  }
 }
 
 void Dblqh::execSCAN_FRAGREQ(Signal *signal) {

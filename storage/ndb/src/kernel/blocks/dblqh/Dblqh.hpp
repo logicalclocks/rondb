@@ -484,6 +484,10 @@ class FsReadWriteReq;
 #define ZJOIN_AGG_MATCH_RANGE_OVERFLOW     1260
 #define ZJOIN_AGG_INVALID_SECTION_COUNT    1261
 #define ZATTRINFO_TOO_LARGE                1262
+#define ZCTE_LOOKUP_GROUP_NOT_FOUND        1263
+#define ZCTE_LOOKUP_STATE_NOT_READY        1264
+#define ZCTE_LOOKUP_ATTRINFO_MALFORMED     1265
+#define ZCTE_LOOKUP_OUTPUT_OVERFLOW        1266
 
 /**
  * @class dblqh
@@ -3330,6 +3334,7 @@ private:
   void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
   void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
+  void execCTE_LOOKUP_REQ(Signal* signal);
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
                               Uint32 senderRef);
   void continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
