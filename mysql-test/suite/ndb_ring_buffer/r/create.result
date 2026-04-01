@@ -25,7 +25,7 @@ DROP TABLE test.t1;
 CREATE TABLE test.t2 (
 client_id INT NOT NULL,
 ring_idx INT UNSIGNED NOT NULL DEFAULT 0,
-ring_meta VARBINARY(16),
+ring_meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=100@ring_idx@ring_meta";
@@ -34,7 +34,7 @@ Table	Create Table
 t2	CREATE TABLE `t2` (
   `client_id` int NOT NULL,
   `ring_idx` int unsigned NOT NULL DEFAULT '0',
-  `ring_meta` varbinary(16) DEFAULT NULL,
+  `ring_meta` varbinary(64) DEFAULT NULL,
   PRIMARY KEY (`client_id`,`ring_idx`)
 ) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=100@ring_idx@ring_meta'
 DROP TABLE test.t2;
@@ -44,7 +44,7 @@ DROP TABLE test.t2;
 CREATE TABLE test.t3 (
 pk INT NOT NULL,
 ring_idx INT NOT NULL DEFAULT 0,
-ring_meta VARBINARY(16),
+ring_meta VARBINARY(64),
 PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta";
@@ -53,7 +53,7 @@ Table	Create Table
 t3	CREATE TABLE `t3` (
   `pk` int NOT NULL,
   `ring_idx` int NOT NULL DEFAULT '0',
-  `ring_meta` varbinary(16) DEFAULT NULL,
+  `ring_meta` varbinary(64) DEFAULT NULL,
   PRIMARY KEY (`pk`,`ring_idx`)
 ) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta'
 DROP TABLE test.t3;
@@ -63,7 +63,7 @@ DROP TABLE test.t3;
 CREATE TABLE test.t4 (
 pk INT NOT NULL,
 ring_idx INT NOT NULL DEFAULT 0,
-ring_meta VARBINARY(16),
+ring_meta VARBINARY(64),
 PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2147483647@ring_idx@ring_meta";
@@ -72,7 +72,7 @@ Table	Create Table
 t4	CREATE TABLE `t4` (
   `pk` int NOT NULL,
   `ring_idx` int NOT NULL DEFAULT '0',
-  `ring_meta` varbinary(16) DEFAULT NULL,
+  `ring_meta` varbinary(64) DEFAULT NULL,
   PRIMARY KEY (`pk`,`ring_idx`)
 ) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=2147483647@ring_idx@ring_meta'
 DROP TABLE test.t4;
@@ -159,7 +159,7 @@ ring_meta VARBINARY(8),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column must be VARBINARY with length >= 16'
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column must be VARBINARY with length >= 32'
 #
 # Case 11: Error — ring_meta column is NOT NULL (must be nullable)
 #
