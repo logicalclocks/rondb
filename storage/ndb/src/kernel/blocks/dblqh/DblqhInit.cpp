@@ -678,7 +678,9 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
 
     addRecSignal(GSN_JOIN_AGG_SEND_CONF, &Dblqh::execJOIN_AGG_SEND_CONF);
     addRecSignal(GSN_CTE_LOOKUP_REQ, &Dblqh::execCTE_LOOKUP_REQ);
-    addRecSignal(GSN_JOIN_AGG_REDISTRIBUTE_ORD, &Dblqh::execJOIN_AGG_REDISTRIBUTE_ORD);
+    addRecSignal(GSN_JOIN_AGG_REDISTRIBUTE_REQ, &Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ);
+    addRecSignal(GSN_JOIN_AGG_REDISTRIBUTE_CONF, &Dblqh::execJOIN_AGG_REDISTRIBUTE_CONF);
+    addRecSignal(GSN_JOIN_AGG_REDISTRIBUTE_REF, &Dblqh::execJOIN_AGG_REDISTRIBUTE_REF);
     addRecSignal(GSN_JOIN_AGG_FINAL_REP, &Dblqh::execJOIN_AGG_FINAL_REP);
     addRecSignal(GSN_SCAN_NEXTREQ, &Dblqh::execSCAN_NEXTREQ);
     addRecSignal(GSN_NEXT_SCANCONF, &Dblqh::execNEXT_SCANCONF);
@@ -838,7 +840,9 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
 
     addRecSignal(GSN_JOIN_AGG_SEND_CONF, &Dblqh::execJOIN_AGG_SEND_CONF);
     addRecSignal(GSN_CTE_LOOKUP_REQ, &Dblqh::execCTE_LOOKUP_REQ);
-    addRecSignal(GSN_JOIN_AGG_REDISTRIBUTE_ORD, &Dblqh::execJOIN_AGG_REDISTRIBUTE_ORD);
+    addRecSignal(GSN_JOIN_AGG_REDISTRIBUTE_REQ, &Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ);
+    addRecSignal(GSN_JOIN_AGG_REDISTRIBUTE_CONF, &Dblqh::execJOIN_AGG_REDISTRIBUTE_CONF);
+    addRecSignal(GSN_JOIN_AGG_REDISTRIBUTE_REF, &Dblqh::execJOIN_AGG_REDISTRIBUTE_REF);
     addRecSignal(GSN_JOIN_AGG_FINAL_REP, &Dblqh::execJOIN_AGG_FINAL_REP);
     addRecSignal(GSN_SCAN_NEXTREQ, &Dblqh::execSCAN_NEXTREQ);
     addRecSignal(GSN_NEXT_SCANCONF, &Dblqh::execNEXT_SCANCONF);

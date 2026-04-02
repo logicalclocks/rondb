@@ -176,26 +176,52 @@ struct JoinAggNullRowRef {
 };
 
 /**
- * JOIN_AGG_REDISTRIBUTE_ORD — fire-and-forget order to send a group row
- * to its hash-owner node during CTE materialization.
+ * JOIN_AGG_REDISTRIBUTE_REQ — send a group row to its hash-owner node
+ * during CTE materialization with flow control.
  * The receiving node merges the incoming accumulators with its local state
  * (or inserts a new group if the key doesn't exist locally).
+ * If RI_NEED_CONF is set, receiver sends REDISTRIBUTE_CONF when processed.
  *
  * Long section 0: key_data (GROUP BY key, AttributeHeader-encoded)
  * Long section 1: accumulator_data (AggResItem array)
  */
-struct JoinAggRedistributeOrd {
-  static constexpr Uint32 SignalLength = 3;
+struct JoinAggRedistributeReq {
+  static constexpr Uint32 SignalLength = 4;
   Uint32 aggStateKey;     // Destination JoinAggregationState on receiving node
   Uint32 keyLen;          // Group key length in bytes
   Uint32 valueLen;        // Accumulator data length in bytes
+  Uint32 requestInfo;     // Flags (RI_NEED_CONF)
 
   enum { KeySectionNum = 0, ValueSectionNum = 1 };
+  enum RequestInfoBits { RI_NEED_CONF = 0x1 };
+};
+
+/**
+ * JOIN_AGG_REDISTRIBUTE_CONF — receiver acknowledges a batch of
+ * redistributed groups. Sent when RI_NEED_CONF was set in the last
+ * REDISTRIBUTE_REQ of the batch, providing flow control.
+ */
+struct JoinAggRedistributeConf {
+  static constexpr Uint32 SignalLength = 2;
+  Uint32 aggStateKey;
+  Uint32 senderNodeId;    // Node that processed the group(s)
+};
+
+/**
+ * JOIN_AGG_REDISTRIBUTE_REF — receiver failed to process a group
+ * (e.g., memory allocation failure). Tells the sender to abort
+ * redistribution and send COMPLETE_REF.
+ */
+struct JoinAggRedistributeRef {
+  static constexpr Uint32 SignalLength = 3;
+  Uint32 aggStateKey;
+  Uint32 senderNodeId;
+  Uint32 errorCode;
 };
 
 /**
  * JOIN_AGG_FINAL_REP — fire-and-forget report that a node has finished
- * sending all its REDISTRIBUTE_ORD messages for a CTE materialization.
+ * sending all its REDISTRIBUTE_REQ messages for a CTE materialization.
  * When all participating nodes have sent FINAL_REP, the CTE transitions
  * to CTE_READY and can serve CTE_LOOKUP_REQ.
  */

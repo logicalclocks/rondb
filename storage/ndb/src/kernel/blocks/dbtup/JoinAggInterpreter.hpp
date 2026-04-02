@@ -131,6 +131,16 @@ class JoinAggInterpreter : public PushdownInterpreter {
   const char* lookupGroup(const char* key, Uint32 keyLen) const {
     return m_gb_map ? m_gb_map->find(key, keyLen) : nullptr;
   }
+
+  /**
+   * Merge a single incoming group into the hash table.
+   * If the key exists locally, merges accumulators using cached agg ops.
+   * If the key is new, inserts a new group with the incoming data.
+   * Returns 0 on success, negative on error (e.g., memory allocation failure).
+   */
+  Int32 mergeOneGroup(const char* key, Uint32 keyLen,
+                      const char* accumulators, Uint32 accLen);
+
   void setUseMutex(bool v) { m_use_mutex = v; }
   void setMaxGroups(Uint32 v) { m_max_groups = v; }
   Uint32 maxGroups() const { return m_max_groups; }

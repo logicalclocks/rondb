@@ -1811,6 +1811,45 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
   return 0;
 }
 
+Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
+                                         const char* accumulators,
+                                         Uint32 accLen) {
+  if (m_gb_map == nullptr) return -1;
+
+  if (!m_agg_ops_cached) {
+    extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
+                  m_cached_agg_ops, m_n_agg_results);
+    m_agg_ops_cached = true;
+  }
+
+  const Uint32 v_len = val_len();
+  (void)accLen;  /* accLen should equal v_len */
+
+  /* Look up key in local hash table */
+  char* found = m_gb_map->find(key, keyLen);
+
+  if (found != nullptr) {
+    /* Key exists — merge accumulators */
+    AggResItem *my_items =
+      reinterpret_cast<AggResItem *>(found + keyLen);
+    const AggResItem *src_items =
+      reinterpret_cast<const AggResItem *>(accumulators);
+    mergeAccumulators(my_items, src_items, m_n_agg_results, m_cached_agg_ops);
+  } else {
+    /* New key — allocate and insert */
+    char *new_group = allocGroupData(keyLen + v_len, keyLen);
+    if (new_group == nullptr) return -1;  /* Memory allocation failure */
+
+    memcpy(new_group, key, keyLen);
+    memcpy(new_group + keyLen, accumulators, v_len);
+
+    m_gb_map->insert(new_group, keyLen);
+    m_n_groups = m_gb_map->size();
+    m_result_size += keyLen + v_len;
+  }
+  return 0;
+}
+
 Int32 JoinAggInterpreter::initGBTypes(Dbtup* block_tup,
                                        Dbtup::KeyReqStruct* req_struct) {
   for (Uint32 i = 0; i < m_n_gb_cols; i++) {

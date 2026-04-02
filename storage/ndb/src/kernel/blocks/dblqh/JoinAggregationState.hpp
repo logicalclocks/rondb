@@ -231,6 +231,8 @@ struct JoinAggregationState {
   Uint32 m_cte_node_list[MAX_DATA_NODE_ID]; // Live data node IDs at setup time
   Uint32 m_cte_num_nodes;                   // Number of live data nodes
   bool m_cte_redistribution_done;           // This node finished sending
+  bool m_cte_waiting_conf;                  // Paused waiting for REDISTRIBUTE_CONF
+  Uint32 m_cte_redist_batch_bytes;          // Bytes sent in current batch (flow control)
   Uint32 m_cte_node_fail_count;             // Snapshot of s_node_fail_count at SETUP
 
   // Global node failure counter — incremented by execNODE_FAILREP.
@@ -243,9 +245,11 @@ struct JoinAggregationState {
   // lc_ndbd_pool_malloc. Processed after local merge/finalize completes.
   struct RedistQueueEntry {
     RedistQueueEntry *next;
-    Uint32 keyLen;      // Key length in bytes
-    Uint32 valueLen;    // Accumulator data length in bytes
-    Uint32 data[1];     // Variable: [key_data (keyLen bytes)] [value_data (valueLen bytes)]
+    Uint32 senderNodeId;  // For sending CONF back
+    Uint32 keyLen;        // Key length in bytes
+    Uint32 valueLen;      // Accumulator data length in bytes
+    bool needConf;        // RI_NEED_CONF was set — send CONF after processing
+    Uint32 data[1];       // Variable: [key_data (keyLen bytes)] [value_data (valueLen bytes)]
   };
   RedistQueueEntry *m_redist_queue_head;
   RedistQueueEntry *m_redist_queue_tail;
@@ -305,6 +309,8 @@ struct JoinAggregationState {
     m_cte_mode(false),
     m_cte_num_nodes(0),
     m_cte_redistribution_done(false),
+    m_cte_waiting_conf(false),
+    m_cte_redist_batch_bytes(0),
     m_cte_node_fail_count(0),
     m_redist_queue_head(nullptr),
     m_redist_queue_tail(nullptr),
