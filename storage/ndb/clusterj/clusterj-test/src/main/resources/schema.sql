@@ -1142,3 +1142,15 @@ CREATE TABLE timestamppk6 (
 ) ENGINE=ndbcluster;
 
 use test;
+
+drop table if exists ring_buffer_sensor;
+CREATE TABLE ring_buffer_sensor (
+    sensor_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    timestamp_val BIGINT,
+    sensor_value DOUBLE,
+    PRIMARY KEY (sensor_id, ring_idx)
+) ENGINE=ndbcluster COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta';
+
+use test;
