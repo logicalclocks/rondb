@@ -29,6 +29,7 @@
 #include <ndb_types.h>
 #include <kernel_types.h>
 #include <kernel/NodeBitmask.hpp>
+#include <kernel/ndb_limits.h>
 #include <util/rondb_hash.hpp>
 
 #define JAM_FILE_ID 447
@@ -226,6 +227,29 @@ struct JoinAggregationState {
   NdbNodeBitmask m_cte_nodes_finalized;     // Bitmask of nodes that sent FINAL_REP
                                             // (prevents duplicate FINAL from same node)
 
+  // CTE node distribution (set at SETUP, immutable after)
+  Uint32 m_cte_node_list[MAX_DATA_NODE_ID]; // Live data node IDs at setup time
+  Uint32 m_cte_num_nodes;                   // Number of live data nodes
+  bool m_cte_redistribution_done;           // This node finished sending groups
+
+  // Queue for REDISTRIBUTE_ORD groups arriving before local finalization.
+  // Stored as a singly-linked list of variable-size entries allocated via
+  // lc_ndbd_pool_malloc. Processed after local merge/finalize completes.
+  struct RedistQueueEntry {
+    RedistQueueEntry *next;
+    Uint32 keyLen;      // Key length in bytes
+    Uint32 valueLen;    // Accumulator data length in bytes
+    Uint32 data[1];     // Variable: [key_data (keyLen bytes)] [value_data (valueLen bytes)]
+  };
+  RedistQueueEntry *m_redist_queue_head;
+  RedistQueueEntry *m_redist_queue_tail;
+  Uint32 m_redist_queue_count;
+
+  // Sender info saved from COMPLETE_REQ for sending COMPLETE_CONF after redistribution
+  Uint32 m_cte_complete_senderRef;
+  Uint32 m_cte_complete_senderData;
+  Uint32 m_cte_complete_requestId;
+
   //------------------------------------------------------------------
   // State Machine (atomic — checked by any thread, set single-threaded)
   //------------------------------------------------------------------
@@ -273,6 +297,14 @@ struct JoinAggregationState {
     m_numReceiverIds(0),
     m_outer_join_agg_scan(false),
     m_cte_mode(false),
+    m_cte_num_nodes(0),
+    m_cte_redistribution_done(false),
+    m_redist_queue_head(nullptr),
+    m_redist_queue_tail(nullptr),
+    m_redist_queue_count(0),
+    m_cte_complete_senderRef(0),
+    m_cte_complete_senderData(0),
+    m_cte_complete_requestId(0),
     m_state(IDLE),
     m_error_code(0),
     m_key(RNIL),
