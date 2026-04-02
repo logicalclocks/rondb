@@ -28,6 +28,9 @@
 #include "JoinAggregationState.hpp"
 #include "dbtup/JoinAggInterpreter.hpp"
 
+// Static definition for node failure counter
+std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
+
 #include <signaldata/DbspjErr.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/ExecFragReq.hpp>
@@ -2396,6 +2399,25 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     state->m_strategy = JoinAggregationState::MUTEX_BASED;
   }
   state->m_num_threads = globalData.ndbMtQueryWorkers;
+
+  // CTE mode: build live data node list for hash redistribution
+  if (state->m_cte_mode) {
+    state->m_cte_num_nodes = 0;
+    for (Uint32 i = 1; i <= MAX_DATA_NODE_ID; i++) {
+      if (getNodeInfo(i).m_connected &&
+          getNodeInfo(i).m_type == NodeInfo::DB) {
+        state->m_cte_node_list[state->m_cte_num_nodes] = i;
+        state->m_cte_num_nodes++;
+      }
+    }
+    state->m_cte_redistribution_done = false;
+    state->m_cte_node_fail_count =
+        JoinAggregationState::s_node_fail_count.load();
+    state->m_cte_nodes_finalized.clear();
+    state->m_redist_queue_head = nullptr;
+    state->m_redist_queue_tail = nullptr;
+    state->m_redist_queue_count = 0;
+  }
 
   // Expected operations
   state->m_total_ops_expected = req->expectedOpCount;

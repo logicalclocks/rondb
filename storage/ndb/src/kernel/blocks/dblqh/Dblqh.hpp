@@ -357,6 +357,7 @@ class FsReadWriteReq;
 #define ZUPDATE_CPU_USAGE 44
 #define ZCONTINUE_JOIN_AGG_SEND 45
 #define ZCONTINUE_JOIN_AGG_MERGE 46
+#define ZCONTINUE_JOIN_AGG_REDISTRIBUTE 47
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -3335,6 +3336,11 @@ private:
   void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
   void execCTE_LOOKUP_REQ(Signal* signal);
+  void execJOIN_AGG_REDISTRIBUTE_ORD(Signal* signal);
+  void execJOIN_AGG_FINAL_REP(Signal* signal);
+  void continueJoinAggRedistribute(Signal* signal, Uint32 aggStateKey);
+  void processRedistQueue(JoinAggregationState* state);
+  void checkCteReady(Signal* signal, JoinAggregationState* state);
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
                               Uint32 senderRef);
   void continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,

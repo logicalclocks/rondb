@@ -1086,6 +1086,12 @@ void Dblqh::execCONTINUEB(Signal *signal) {
                         signal->theData[6]);
     return;
   }
+  case ZCONTINUE_JOIN_AGG_REDISTRIBUTE:
+  {
+    jam();
+    continueJoinAggRedistribute(signal, data0);
+    return;
+  }
   case ZRESUME_BLOCKED_COPY_FRAGMENT:
   {
     jam();
@@ -15850,6 +15856,10 @@ void Dblqh::sendTCKEYREF(Signal *signal, Uint32 ref, Uint32 routeRef,
  *  LQH has completed failure handling.
  * ************************************************************************>> */
 void Dblqh::execNODE_FAILREP(Signal *signal) {
+  /* Increment global node failure counter for CTE redistribution abort checks */
+  JoinAggregationState::s_node_fail_count.fetch_add(1,
+      std::memory_order_relaxed);
+
   UintR TfoundNodes = 0;
   UintR TnoOfNodes;
   UintR Tdata[ABS_MAX_NDB_NODES];
@@ -19068,6 +19078,38 @@ output_overflow:
     sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
                signal, CteLookupRef::SignalLength, JBB);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* CTE hash redistribution stubs — full implementation in next commit  */
+/* ------------------------------------------------------------------ */
+
+void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
+  jam();
+  // Stub: full redistribution logic coming in Phase 6C implementation
+  (void)aggStateKey;
+}
+
+void Dblqh::execJOIN_AGG_REDISTRIBUTE_ORD(Signal *signal) {
+  jamEntry();
+  SectionHandle handle(this, signal);
+  releaseSections(handle);
+  // Stub: full receive/merge logic coming in Phase 6C implementation
+}
+
+void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
+  jamEntry();
+  // Stub: full finalization tracking coming in Phase 6C implementation
+}
+
+void Dblqh::processRedistQueue(JoinAggregationState *state) {
+  (void)state;
+  // Stub: queue drain coming in Phase 6C implementation
+}
+
+void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
+  (void)state;
+  // Stub: ready check coming in Phase 6C implementation
 }
 
 void Dblqh::execSCAN_FRAGREQ(Signal *signal) {

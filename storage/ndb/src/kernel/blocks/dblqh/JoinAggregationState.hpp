@@ -230,7 +230,13 @@ struct JoinAggregationState {
   // CTE node distribution (set at SETUP, immutable after)
   Uint32 m_cte_node_list[MAX_DATA_NODE_ID]; // Live data node IDs at setup time
   Uint32 m_cte_num_nodes;                   // Number of live data nodes
-  bool m_cte_redistribution_done;           // This node finished sending groups
+  bool m_cte_redistribution_done;           // This node finished sending
+  Uint32 m_cte_node_fail_count;             // Snapshot of s_node_fail_count at SETUP
+
+  // Global node failure counter — incremented by execNODE_FAILREP.
+  // Each CTE state snapshots this at SETUP and checks it hasn't changed
+  // before and during redistribution. If changed, the query is aborted.
+  static std::atomic<Uint32> s_node_fail_count;
 
   // Queue for REDISTRIBUTE_ORD groups arriving before local finalization.
   // Stored as a singly-linked list of variable-size entries allocated via
@@ -299,6 +305,7 @@ struct JoinAggregationState {
     m_cte_mode(false),
     m_cte_num_nodes(0),
     m_cte_redistribution_done(false),
+    m_cte_node_fail_count(0),
     m_redist_queue_head(nullptr),
     m_redist_queue_tail(nullptr),
     m_redist_queue_count(0),
