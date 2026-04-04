@@ -19352,6 +19352,18 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   copy(valBuf, valueSection);
   releaseSections(handle);
 
+  /* Send CONF immediately if requested — before taking the mutex so
+   * the sender can resume without waiting for our merge to complete. */
+  if (needConf) {
+    jam();
+    JoinAggRedistributeConf *conf =
+      (JoinAggRedistributeConf *)signal->getDataPtrSend();
+    conf->aggStateKey = aggStateKey;
+    conf->senderNodeId = getOwnNodeId();
+    sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_CONF,
+               signal, JoinAggRedistributeConf::SignalLength, JBB);
+  }
+
   NdbMutex_Lock(&state->m_redist_mutex);
 
   JoinAggregationState::State curState = state->m_state.load();
@@ -19397,10 +19409,8 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
       return;
     }
     entry->next = nullptr;
-    entry->senderNodeId = refToNode(signal->getSendersBlockRef());
     entry->keyLen = keyLen;
     entry->valueLen = valueLen;
-    entry->needConf = needConf;
     memcpy(entry->data, keyBuf, keySection.sz);
     memcpy(entry->data + keyWords, valBuf, valueSection.sz);
     if (state->m_redist_queue_tail != nullptr)
@@ -19431,16 +19441,6 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_REF,
                signal, JoinAggRedistributeRef::SignalLength, JBB);
     return;
-  }
-  /* Send CONF if requested */
-  if (needConf) {
-    jam();
-    JoinAggRedistributeConf *conf =
-      (JoinAggRedistributeConf *)signal->getDataPtrSend();
-    conf->aggStateKey = aggStateKey;
-    conf->senderNodeId = getOwnNodeId();
-    sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_CONF,
-               signal, JoinAggRedistributeConf::SignalLength, JBB);
   }
 }
 
@@ -19487,6 +19487,9 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REF(Signal *signal) {
  * Queue entries are page-allocated, so individual frees are not needed;
  * all pages are freed in bulk when the queue is fully drained.
  *
+ * CONF was already sent by execJOIN_AGG_REDISTRIBUTE_REQ before queueing,
+ * so no CONF handling is needed here.
+ *
  * We hold m_redist_mutex while accessing the queue and merging, since
  * concurrent REDISTRIBUTE_REQ signals may still be adding entries.
  * Once all nodes have sent FINAL_REP no more concurrent activity
@@ -19516,26 +19519,8 @@ void Dblqh::processRedistQueue(Signal *signal,
       return;
     }
 
-    /* Save CONF info before advancing — entry lives in page memory */
-    bool sendConf = entry->needConf;
-    Uint32 senderNodeId = entry->senderNodeId;
-
     entry = entry->next;
     count++;
-
-    if (sendConf) {
-      jam();
-      NdbMutex_Unlock(&state->m_redist_mutex);
-      JoinAggRedistributeConf *conf =
-        (JoinAggRedistributeConf *)signal->getDataPtrSend();
-      conf->aggStateKey = aggStateKey;
-      conf->senderNodeId = getOwnNodeId();
-      BlockReference senderRef =
-          numberToRef(DBLQH, 1, senderNodeId);
-      sendSignal(senderRef, GSN_JOIN_AGG_REDISTRIBUTE_CONF,
-                 signal, JoinAggRedistributeConf::SignalLength, JBB);
-      NdbMutex_Lock(&state->m_redist_mutex);
-    }
 
     if (count >= REDIST_GROUPS_PER_BATCH) {
       /* Yield — update head and schedule continuation */

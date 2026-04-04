@@ -265,10 +265,8 @@ struct JoinAggregationState {
   // the page allocator above. Processed after local merge/finalize completes.
   struct RedistQueueEntry {
     RedistQueueEntry *next;
-    Uint32 senderNodeId;  // For sending CONF back
     Uint32 keyLen;        // Key length in bytes
     Uint32 valueLen;      // Accumulator data length in bytes
-    bool needConf;        // RI_NEED_CONF was set — send CONF after processing
     Uint32 data[1];       // Variable: [key_data (keyLen bytes)] [value_data (valueLen bytes)]
   };
   RedistQueueEntry *m_redist_queue_head;
