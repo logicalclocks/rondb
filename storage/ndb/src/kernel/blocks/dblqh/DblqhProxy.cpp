@@ -2306,6 +2306,15 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
         }
         lc_ndbd_pool_free(state->m_per_thread_interpreters);
       }
+      // Free any redistribution queue pages
+      {
+        auto *page = state->m_redist_page_head;
+        while (page != nullptr) {
+          auto *next = page->next;
+          lc_ndbd_pool_free(page);
+          page = next;
+        }
+      }
       releaseJoinAggState(aggStateKey);
     }
   }
@@ -2414,6 +2423,9 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     state->m_cte_node_fail_count =
         JoinAggregationState::s_node_fail_count.load();
     state->m_cte_nodes_finalized.clear();
+    state->m_redist_page_head = nullptr;
+    state->m_redist_page_ptr = nullptr;
+    state->m_redist_page_remaining = 0;
     state->m_redist_queue_head = nullptr;
     state->m_redist_queue_tail = nullptr;
     state->m_redist_queue_count = 0;
@@ -2762,6 +2774,20 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
       }
       lc_ndbd_pool_free(state->m_per_thread_interpreters);
       state->m_per_thread_interpreters = nullptr;
+    }
+
+    // Free any remaining redistribution queue pages
+    {
+      auto *page = state->m_redist_page_head;
+      while (page != nullptr) {
+        auto *next = page->next;
+        lc_ndbd_pool_free(page);
+        page = next;
+      }
+      state->m_redist_page_head = nullptr;
+      state->m_redist_queue_head = nullptr;
+      state->m_redist_queue_tail = nullptr;
+      state->m_redist_queue_count = 0;
     }
 
     // Release the pool record

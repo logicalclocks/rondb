@@ -31,6 +31,7 @@
 #include <kernel/NodeBitmask.hpp>
 #include <kernel/ndb_limits.h>
 #include <util/rondb_hash.hpp>
+#include <NdbMutex.h>
 
 #define JAM_FILE_ID 447
 
@@ -240,9 +241,30 @@ struct JoinAggregationState {
   // before and during redistribution. If changed, the query is aborted.
   static std::atomic<Uint32> s_node_fail_count;
 
-  // Queue for REDISTRIBUTE_ORD groups arriving before local finalization.
-  // Stored as a singly-linked list of variable-size entries allocated via
-  // lc_ndbd_pool_malloc. Processed after local merge/finalize completes.
+  //------------------------------------------------------------------
+  // Mutex for protecting aggregation state during redistribution.
+  // Multiple DBLQH instances may receive REDISTRIBUTE_REQ concurrently
+  // from different nodes, so we serialize access to the shared state.
+  //------------------------------------------------------------------
+  NdbMutex m_redist_mutex;
+
+  //------------------------------------------------------------------
+  // Page-based allocator for redistribution queue entries.
+  // Allocates 32KB pages and bump-allocates entries within them,
+  // avoiding per-entry malloc overhead. Pages are freed in bulk
+  // when the queue is drained or the state is released.
+  //------------------------------------------------------------------
+  static constexpr Uint32 REDIST_PAGE_SIZE = 32768;
+  struct RedistPage {
+    RedistPage *next;    // Linked list of allocated pages
+  };
+  RedistPage *m_redist_page_head;   // First allocated page
+  char *m_redist_page_ptr;          // Current allocation pointer within page
+  Uint32 m_redist_page_remaining;   // Bytes remaining in current page
+
+  // Queue for REDISTRIBUTE_REQ groups arriving before local finalization.
+  // Stored as a singly-linked list of variable-size entries allocated from
+  // the page allocator above. Processed after local merge/finalize completes.
   struct RedistQueueEntry {
     RedistQueueEntry *next;
     Uint32 senderNodeId;  // For sending CONF back
@@ -312,6 +334,9 @@ struct JoinAggregationState {
     m_cte_waiting_conf(false),
     m_cte_redist_batch_bytes(0),
     m_cte_node_fail_count(0),
+    m_redist_page_head(nullptr),
+    m_redist_page_ptr(nullptr),
+    m_redist_page_remaining(0),
     m_redist_queue_head(nullptr),
     m_redist_queue_tail(nullptr),
     m_redist_queue_count(0),
@@ -326,9 +351,12 @@ struct JoinAggregationState {
   {
     m_transid[0] = 0;
     m_transid[1] = 0;
+    NdbMutex_Init(&m_redist_mutex);
   }
 
-  ~JoinAggregationState() {}
+  ~JoinAggregationState() {
+    NdbMutex_Deinit(&m_redist_mutex);
+  }
 
   //------------------------------------------------------------------
   // aggStateKey encoding: upper 8 bits = leaf index, lower 24 bits = base key.

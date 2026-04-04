@@ -18567,6 +18567,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
       /* Drain queued groups that arrived during finalization */
       processRedistQueue(signal, state, aggStateKey);
       if (state->m_state.load() == JoinAggregationState::ERROR) {
+        jam();
         return;  /* processRedistQueue hit an error */
       }
 
@@ -19116,6 +19117,55 @@ static const Uint32 REDIST_GROUPS_PER_BATCH = 256;
 static const Uint32 REDIST_MAX_BATCH_BYTES = 64 * 1024;
 
 /**
+ * redistAlloc — bump-allocate from the state's page-based allocator.
+ * Allocates 32KB pages and sub-allocates entries within them.
+ * Returns nullptr on allocation failure.
+ */
+static void *
+redistAlloc(JoinAggregationState *state, Uint32 bytes, Uint32 threadId) {
+  /* Align to 8 bytes for safe struct access */
+  bytes = (bytes + 7) & ~7u;
+  if (bytes > state->m_redist_page_remaining) {
+    Uint32 pageBytes = JoinAggregationState::REDIST_PAGE_SIZE;
+    if (bytes + sizeof(JoinAggregationState::RedistPage) > pageBytes) {
+      /* Oversized entry — allocate exact page */
+      pageBytes = bytes + sizeof(JoinAggregationState::RedistPage);
+    }
+    auto *page = (JoinAggregationState::RedistPage *)lc_ndbd_pool_malloc(
+        pageBytes, RG_QUERY_MEMORY, threadId, false);
+    if (page == nullptr) return nullptr;
+    page->next = state->m_redist_page_head;
+    state->m_redist_page_head = page;
+    state->m_redist_page_ptr =
+        reinterpret_cast<char *>(page) +
+        sizeof(JoinAggregationState::RedistPage);
+    state->m_redist_page_remaining =
+        pageBytes - sizeof(JoinAggregationState::RedistPage);
+  }
+  void *ptr = state->m_redist_page_ptr;
+  state->m_redist_page_ptr += bytes;
+  state->m_redist_page_remaining -= bytes;
+  return ptr;
+}
+
+/**
+ * freeRedistPages — free all pages from the state's page allocator.
+ * Called when the queue is fully drained or at state release time.
+ */
+static void
+freeRedistPages(JoinAggregationState *state) {
+  auto *page = state->m_redist_page_head;
+  while (page != nullptr) {
+    auto *next = page->next;
+    lc_ndbd_pool_free(page);
+    page = next;
+  }
+  state->m_redist_page_head = nullptr;
+  state->m_redist_page_ptr = nullptr;
+  state->m_redist_page_remaining = 0;
+}
+
+/**
  * Abort CTE redistribution — send COMPLETE_REF and set ERROR state.
  */
 void Dblqh::abortCteRedistribution(Signal *signal,
@@ -19256,6 +19306,10 @@ redistribution_done:
 /**
  * execJOIN_AGG_REDISTRIBUTE_REQ — receive a group row from another node.
  * Merge into local hash table or queue if still finalizing.
+ *
+ * Multiple DBLQH instances may receive this signal concurrently from
+ * different nodes, so we hold m_redist_mutex to serialize access to
+ * the shared aggregation state.
  */
 void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   jamEntry();
@@ -19288,13 +19342,23 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   ndbrequire(handle.getSection(valueSection,
                                JoinAggRedistributeReq::ValueSectionNum));
 
+  Uint32 keyBuf[MAX_KEY_SIZE_IN_WORDS + 1];
+  Uint32 *valBuf = cattrInfoBuffer;
+  ndbrequire(keySection.sz <= MAX_KEY_SIZE_IN_WORDS);
+  ndbrequire(valueSection.sz <= ZATTR_BUFFER_SIZE);
+  copy(keyBuf, keySection);
+  copy(valBuf, valueSection);
+  releaseSections(handle);
+
+  NdbMutex_Lock(&state->m_redist_mutex);
+
   JoinAggregationState::State curState = state->m_state.load();
 
   /* If in ERROR state, send REF */
   if (curState == JoinAggregationState::ERROR ||
       curState == JoinAggregationState::NODE_FAIL_ABORT) {
     jam();
-    releaseSections(handle);
+    NdbMutex_Unlock(&state->m_redist_mutex);
     JoinAggRedistributeRef *ref =
       (JoinAggRedistributeRef *)signal->getDataPtrSend();
     ref->aggStateKey = aggStateKey;
@@ -19305,7 +19369,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     return;
   }
 
-  /* If still finalizing, queue for later */
+  /* If still finalizing, queue for later using page-based allocator */
   if (curState == JoinAggregationState::FINALIZING ||
       curState == JoinAggregationState::SENDING_RESULTS) {
     jam();
@@ -19315,11 +19379,10 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
                         sizeof(Uint32) +  /* subtract data[1] placeholder */
                         (keyWords + valWords) * sizeof(Uint32);
     auto *entry = (JoinAggregationState::RedistQueueEntry *)
-        lc_ndbd_pool_malloc(allocBytes, RG_QUERY_MEMORY,
-                            getThreadId(), false);
+        redistAlloc(state, allocBytes, getThreadId());
     if (unlikely(entry == nullptr)) {
       jam();
-      releaseSections(handle);
+      NdbMutex_Unlock(&state->m_redist_mutex);
       abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
       /* Send REF to sender so it aborts too */
       JoinAggRedistributeRef *ref =
@@ -19336,33 +19399,25 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     entry->keyLen = keyLen;
     entry->valueLen = valueLen;
     entry->needConf = needConf;
-    copy(entry->data, keySection);
-    copy(entry->data + keyWords, valueSection);
+    memcpy(entry->data, keyBuf, keySection.sz);
+    memcpy(entry->data + keyWords, valBuf, valueSection.sz);
     if (state->m_redist_queue_tail != nullptr)
       state->m_redist_queue_tail->next = entry;
     else
       state->m_redist_queue_head = entry;
     state->m_redist_queue_tail = entry;
     state->m_redist_queue_count++;
-    releaseSections(handle);
+    NdbMutex_Unlock(&state->m_redist_mutex);
     return;
   }
-
   /* Process immediately: merge into local hash table */
-  Uint32 keyBuf[MAX_KEY_SIZE_IN_WORDS + 1];
-  Uint32 valBuf[512];
-  ndbrequire(keySection.sz <= MAX_KEY_SIZE_IN_WORDS);
-  ndbrequire(valueSection.sz <= 512);
-  copy(keyBuf, keySection);
-  copy(valBuf, valueSection);
-  releaseSections(handle);
-
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
 
   Int32 ret = interp->mergeOneGroup(
       reinterpret_cast<const char *>(keyBuf), keyLen,
       reinterpret_cast<const char *>(valBuf), valueLen);
+  NdbMutex_Unlock(&state->m_redist_mutex);
   if (unlikely(ret != 0)) {
     jam();
     abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
@@ -19375,7 +19430,6 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
                signal, JoinAggRedistributeRef::SignalLength, JBB);
     return;
   }
-
   /* Send CONF if requested */
   if (needConf) {
     jam();
@@ -19428,12 +19482,21 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REF(Signal *signal) {
 /**
  * processRedistQueue — drain queued REDISTRIBUTE_REQ groups.
  * Uses CONTINUEB to yield after 256 entries.
+ * Queue entries are page-allocated, so individual frees are not needed;
+ * all pages are freed in bulk when the queue is fully drained.
+ *
+ * We hold m_redist_mutex while accessing the queue and merging, since
+ * concurrent REDISTRIBUTE_REQ signals may still be adding entries.
+ * Once all nodes have sent FINAL_REP no more concurrent activity
+ * occurs, but the queue drain happens before that point.
  */
 void Dblqh::processRedistQueue(Signal *signal,
                                 JoinAggregationState *state,
                                 Uint32 aggStateKey) {
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
+
+  NdbMutex_Lock(&state->m_redist_mutex);
 
   Uint32 count = 0;
   auto *entry = state->m_redist_queue_head;
@@ -19446,27 +19509,31 @@ void Dblqh::processRedistQueue(Signal *signal,
         entry->valueLen);
     if (unlikely(ret != 0)) {
       jam();
+      NdbMutex_Unlock(&state->m_redist_mutex);
       abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
       return;
     }
 
-    /* Send CONF if the original sender requested it */
-    if (entry->needConf) {
+    /* Save CONF info before advancing — entry lives in page memory */
+    bool sendConf = entry->needConf;
+    Uint32 senderNodeId = entry->senderNodeId;
+
+    entry = entry->next;
+    count++;
+
+    if (sendConf) {
       jam();
+      NdbMutex_Unlock(&state->m_redist_mutex);
       JoinAggRedistributeConf *conf =
         (JoinAggRedistributeConf *)signal->getDataPtrSend();
       conf->aggStateKey = aggStateKey;
       conf->senderNodeId = getOwnNodeId();
       BlockReference senderRef =
-          numberToRef(DBLQH, 1, entry->senderNodeId);
+          numberToRef(DBLQH, 1, senderNodeId);
       sendSignal(senderRef, GSN_JOIN_AGG_REDISTRIBUTE_CONF,
                  signal, JoinAggRedistributeConf::SignalLength, JBB);
+      NdbMutex_Lock(&state->m_redist_mutex);
     }
-
-    auto *next = entry->next;
-    lc_ndbd_pool_free(entry);
-    entry = next;
-    count++;
 
     if (count >= REDIST_GROUPS_PER_BATCH) {
       /* Yield — update head and schedule continuation */
@@ -19474,6 +19541,7 @@ void Dblqh::processRedistQueue(Signal *signal,
       state->m_redist_queue_head = entry;
       if (entry == nullptr) state->m_redist_queue_tail = nullptr;
       state->m_redist_queue_count -= count;
+      NdbMutex_Unlock(&state->m_redist_mutex);
       signal->theData[0] = ZCONTINUE_CTE_REDIST_DRAIN;
       signal->theData[1] = aggStateKey;
       sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
@@ -19481,10 +19549,12 @@ void Dblqh::processRedistQueue(Signal *signal,
     }
   }
 
-  /* Queue fully drained */
+  /* Queue fully drained — free all pages in bulk */
   state->m_redist_queue_head = nullptr;
   state->m_redist_queue_tail = nullptr;
   state->m_redist_queue_count = 0;
+  freeRedistPages(state);
+  NdbMutex_Unlock(&state->m_redist_mutex);
 }
 
 /**
