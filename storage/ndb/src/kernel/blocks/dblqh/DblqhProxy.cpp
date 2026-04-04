@@ -200,6 +200,8 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
                &DblqhProxy::execJOIN_AGG_RELEASE_REQ);
   addRecSignal(GSN_JOIN_AGG_NODE_FAIL_REP,
                &DblqhProxy::execJOIN_AGG_NODE_FAIL_REP);
+  addRecSignal(GSN_CONTINUEB,
+               &DblqhProxy::execCONTINUEB);
 }
 
 DblqhProxy::~DblqhProxy() {}
@@ -2776,24 +2778,13 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
       state->m_per_thread_interpreters = nullptr;
     }
 
-    // Free any remaining redistribution queue pages
-    {
-      auto *page = state->m_redist_page_head;
-      while (page != nullptr) {
-        auto *next = page->next;
-        lc_ndbd_pool_free(page);
-        page = next;
-      }
-      state->m_redist_page_head = nullptr;
-      state->m_redist_queue_head = nullptr;
-      state->m_redist_queue_tail = nullptr;
-      state->m_redist_queue_count = 0;
-    }
-
-    // Release the pool record
-    releaseJoinAggState(aggStateKey);
+    // Clear queue pointers — entries live in pages being freed below
+    state->m_redist_queue_head = nullptr;
+    state->m_redist_queue_tail = nullptr;
+    state->m_redist_queue_count = 0;
   }
 
+  // Send CONF before page cleanup — caller need not wait
   if (!noReply) {
     jam();
     JoinAggReleaseConf *conf =
@@ -2803,6 +2794,17 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
     conf->requestId = requestId;
     sendSignal(senderRef, GSN_JOIN_AGG_RELEASE_CONF,
                signal, JoinAggReleaseConf::SignalLength, JBB);
+  }
+
+  // Free redistribution pages in batches, then release pool record.
+  // State must stay alive until all pages are freed.
+  if (state != nullptr && state->m_redist_page_head != nullptr) {
+    jam();
+    signal->theData[0] = ZCONTINUE_FREE_REDIST_PAGES;
+    signal->theData[1] = aggStateKey;
+    continueFreeRedistPages(signal, aggStateKey);
+  } else if (state != nullptr) {
+    releaseJoinAggState(aggStateKey);
   }
 }
 
@@ -2843,6 +2845,63 @@ DblqhProxy::execJOIN_AGG_NODE_FAIL_REP(Signal *signal) {
                  JoinAggReleaseReq::SignalLength, JBB);
     }
   }
+}
+
+static const Uint32 REDIST_PAGES_PER_FREE_BATCH = 256;
+
+void
+DblqhProxy::execCONTINUEB(Signal *signal) {
+  jamEntry();
+  switch (signal->theData[0]) {
+    case ZCONTINUE_FREE_REDIST_PAGES:
+      jam();
+      continueFreeRedistPages(signal, signal->theData[1]);
+      break;
+    default:
+      ndbabort();
+  }
+}
+
+/**
+ * continueFreeRedistPages — free redistribution pages in batches.
+ * Frees up to REDIST_PAGES_PER_FREE_BATCH pages per invocation.
+ * If more pages remain, schedules a CONTINUEB to continue later.
+ * When all pages are freed, releases the pool record.
+ *
+ * CONTINUEB signal format:
+ *   theData[0] = ZCONTINUE_FREE_REDIST_PAGES
+ *   theData[1] = aggStateKey
+ */
+void
+DblqhProxy::continueFreeRedistPages(Signal *signal, Uint32 aggStateKey) {
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (state == nullptr) {
+    jam();
+    return;
+  }
+
+  auto *page = state->m_redist_page_head;
+  Uint32 count = 0;
+  while (page != nullptr && count < REDIST_PAGES_PER_FREE_BATCH) {
+    jam();
+    auto *next = page->next;
+    lc_ndbd_pool_free(page);
+    page = next;
+    count++;
+  }
+  state->m_redist_page_head = page;
+
+  if (page != nullptr) {
+    /* More pages remain — schedule continuation */
+    jam();
+    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+    return;
+  }
+
+  /* All pages freed — release pool record */
+  state->m_redist_page_ptr = nullptr;
+  state->m_redist_page_remaining = 0;
+  releaseJoinAggState(aggStateKey);
 }
 
 BLOCK_FUNCTIONS(DblqhProxy)

@@ -359,6 +359,7 @@ class FsReadWriteReq;
 #define ZCONTINUE_JOIN_AGG_MERGE 46
 #define ZCONTINUE_JOIN_AGG_REDISTRIBUTE 47
 #define ZCONTINUE_CTE_REDIST_DRAIN 48
+#define ZCONTINUE_FREE_REDIST_PAGES 49
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */

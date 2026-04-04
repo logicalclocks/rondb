@@ -19148,21 +19148,32 @@ redistAlloc(JoinAggregationState *state, Uint32 bytes, Uint32 threadId) {
   return ptr;
 }
 
+static const Uint32 REDIST_PAGES_PER_FREE_BATCH = 256;
+
 /**
- * freeRedistPages — free all pages from the state's page allocator.
- * Called when the queue is fully drained or at state release time.
+ * freeRedistPagesBatch — free up to REDIST_PAGES_PER_FREE_BATCH pages.
+ * Returns true if all pages have been freed, false if more remain.
+ * Caller is responsible for scheduling CONTINUEB to the proxy block
+ * if more pages remain.
  */
-static void
-freeRedistPages(JoinAggregationState *state) {
+static bool
+freeRedistPagesBatch(JoinAggregationState *state) {
   auto *page = state->m_redist_page_head;
-  while (page != nullptr) {
+  Uint32 count = 0;
+  while (page != nullptr && count < REDIST_PAGES_PER_FREE_BATCH) {
     auto *next = page->next;
     lc_ndbd_pool_free(page);
     page = next;
+    count++;
   }
-  state->m_redist_page_head = nullptr;
-  state->m_redist_page_ptr = nullptr;
-  state->m_redist_page_remaining = 0;
+  state->m_redist_page_head = page;
+
+  if (page == nullptr) {
+    state->m_redist_page_ptr = nullptr;
+    state->m_redist_page_remaining = 0;
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -19536,12 +19547,18 @@ void Dblqh::processRedistQueue(Signal *signal,
     }
   }
 
-  /* Queue fully drained — free all pages in bulk */
+  /* Queue fully drained — free pages in batches */
   state->m_redist_queue_head = nullptr;
   state->m_redist_queue_tail = nullptr;
   state->m_redist_queue_count = 0;
-  freeRedistPages(state);
   NdbMutex_Unlock(&state->m_redist_mutex);
+  if (!freeRedistPagesBatch(state)) {
+    /* More pages remain — delegate to proxy block */
+    jam();
+    signal->theData[0] = ZCONTINUE_FREE_REDIST_PAGES;
+    signal->theData[1] = aggStateKey;
+    sendSignal(DBLQH_REF, GSN_CONTINUEB, signal, 2, JBB);
+  }
 }
 
 /**
