@@ -19252,8 +19252,10 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       lsp[1].sz = (valLen + 3) >> 2;
 
       BlockReference remoteRef = numberToRef(DBLQH, 1, ownerNode);
-      sendSignal(remoteRef, GSN_JOIN_AGG_REDISTRIBUTE_REQ, signal,
-                 JoinAggRedistributeReq::SignalLength, JBB, lsp, 2);
+      sendBatchedFragmentedSignal(remoteRef,
+                                  GSN_JOIN_AGG_REDISTRIBUTE_REQ, signal,
+                                  JoinAggRedistributeReq::SignalLength,
+                                  JBB, lsp, 2);
 
       gb_map->eraseAndNext(iter);
       batch_count++;
