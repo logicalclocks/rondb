@@ -117,6 +117,16 @@ class JoinAggInterpreter : public PushdownInterpreter {
   Uint32 val_len() const {
     return m_n_agg_results * sizeof(AggResItem);
   }
+  /**
+   * Compute the full Uint64 distribution hash for a GROUP BY key.
+   * Handles complex character sets by normalizing each column before
+   * hashing. Use this for node distribution and receiver routing
+   * instead of hashing raw key bytes directly.
+   */
+  Uint64 hashGroupKey(const char* key, Uint32 keyLen) const {
+    return m_gb_map ? m_gb_map->hashKeyFull(key, keyLen)
+                    : rondb_xxhash_std(key, keyLen);
+  }
   Uint32 n_gb_cols() const { return m_n_gb_cols; }
   Uint32 n_agg_results() const { return m_n_agg_results; }
   const AggResItem* agg_results() const { return m_agg_results; }

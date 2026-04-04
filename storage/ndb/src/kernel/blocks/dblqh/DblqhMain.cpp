@@ -15157,7 +15157,7 @@ void Dblqh::sendEvictedAggGroup(Signal *signal,
     Uint32 key_len = cevictBuffer[3] >> 16;
     const char *key_data = reinterpret_cast<const char*>(&cevictBuffer[4]);
     transIdAI->connectPtr =
-        state->selectReceiverData(key_data, key_len);
+        state->selectReceiverData(interp->hashGroupKey(key_data, key_len));
   }
   transIdAI->transId[0] = state->m_transid[0];
   transIdAI->transId[1] = state->m_transid[1];
@@ -18699,7 +18699,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       {
         const char *key_data = reinterpret_cast<const char*>(iter.data());
         transIdAI->connectPtr =
-            state->selectReceiverData(key_data, key_len);
+            state->selectReceiverData(interp->hashGroupKey(key_data, key_len));
       }
       transIdAI->transId[0] = state->m_transid[0];
       transIdAI->transId[1] = state->m_transid[1];
@@ -19221,8 +19221,8 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       const Uint32 keyLen = iter.keyLen();
       const Uint32 valLen = interp->val_len();
 
-      /* Determine hash owner */
-      Uint64 h = rondb_xxhash_std(data, keyLen);
+      /* Determine hash owner (type-aware for complex character sets) */
+      Uint64 h = interp->hashGroupKey(data, keyLen);
       Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
       Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
 

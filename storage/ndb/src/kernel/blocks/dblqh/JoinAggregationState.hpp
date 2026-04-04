@@ -30,7 +30,6 @@
 #include <kernel_types.h>
 #include <kernel/NodeBitmask.hpp>
 #include <kernel/ndb_limits.h>
-#include <util/rondb_hash.hpp>
 #include <NdbMutex.h>
 
 #define JAM_FILE_ID 447
@@ -204,10 +203,9 @@ struct JoinAggregationState {
   Uint32 *m_receiverIds;         // Receiver IDs array (ndbd_malloc'd)
   Uint32 m_numReceiverIds;       // Count of receiver IDs
 
-  Uint32 selectReceiverData(const char *key, Uint32 key_len) const {
+  Uint32 selectReceiverData(Uint64 hash) const {
     if (m_numReceiverIds <= 1) return m_receiverIds[0];
-    Uint64 h = rondb_xxhash_std(key, key_len);
-    return m_receiverIds[static_cast<Uint32>(h) % m_numReceiverIds];
+    return m_receiverIds[static_cast<Uint32>(hash) % m_numReceiverIds];
   }
 
   //------------------------------------------------------------------

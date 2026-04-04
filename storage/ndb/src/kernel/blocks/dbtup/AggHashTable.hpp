@@ -228,6 +228,7 @@ class GBHashTable {
     m_xfrm_buf_len = xfrm_buf_len;
   }
 
+  Uint64 hashKeyFull(const char* key, Uint32 len) const;
   Uint32 hashKey(const char* key, Uint32 len) const;
   char* findInBucket(Uint32 b, const char* key, Uint32 key_len) const;
 
@@ -257,11 +258,19 @@ using JoinGBHashTable = GBHashTable<JOIN_AGG_HASH_BUCKET_COUNT>;
  * Template definitions for hashKey and findInBucket.
  * Must be in the header since the class is a template.
  */
+/**
+ * hashKeyFull — compute the full Uint64 hash of a GROUP BY key.
+ *
+ * For keys with complex character sets, normalizes each column via
+ * strnxfrm_hash before hashing. For binary/simple types, hashes raw bytes.
+ * This full hash is used for distribution (node selection, receiver routing)
+ * where the bucket mask must not be applied.
+ */
 template<Uint32 BUCKET_COUNT>
-Uint32 GBHashTable<BUCKET_COUNT>::hashKey(const char* key, Uint32 len) const {
+Uint64 GBHashTable<BUCKET_COUNT>::hashKeyFull(const char* key,
+                                              Uint32 len) const {
   if (m_col_types == nullptr) {
-    Uint64 h = rondb_xxhash_std(key, len);
-    return static_cast<Uint32>(h) & m_bucket_mask;
+    return rondb_xxhash_std(key, len);
   }
 
   // Type-aware path: hash column-by-column
@@ -298,7 +307,12 @@ Uint32 GBHashTable<BUCKET_COUNT>::hashKey(const char* key, Uint32 len) const {
     }
     p += 1 + dataSize;
   }
-  return static_cast<Uint32>(hash) & m_bucket_mask;
+  return hash;
+}
+
+template<Uint32 BUCKET_COUNT>
+Uint32 GBHashTable<BUCKET_COUNT>::hashKey(const char* key, Uint32 len) const {
+  return static_cast<Uint32>(hashKeyFull(key, len)) & m_bucket_mask;
 }
 
 template<Uint32 BUCKET_COUNT>
