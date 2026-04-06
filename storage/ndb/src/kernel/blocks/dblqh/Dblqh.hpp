@@ -359,7 +359,6 @@ class FsReadWriteReq;
 #define ZCONTINUE_JOIN_AGG_MERGE 46
 #define ZCONTINUE_JOIN_AGG_REDISTRIBUTE 47
 #define ZCONTINUE_CTE_REDIST_DRAIN 48
-#define ZCONTINUE_FREE_REDIST_PAGES 49
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -472,6 +471,9 @@ class FsReadWriteReq;
 
 /* Node failure error code — same value as DBTC's ZNODEFAIL_BEFORE_COMMIT */
 #define ZNODEFAIL_BEFORE_COMMIT 286
+
+/* CONTINUEB code used by DblqhProxy (outside DBLQH_C) */
+#define ZCONTINUE_FREE_REDIST_PAGES 49
 
 /* Join aggregation error codes (outside DBLQH_C for DblqhProxy) */
 #define ZJOIN_AGG_STATE_ALLOC_FAILED       1250

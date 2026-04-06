@@ -2386,6 +2386,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_total_agg_results = 0;
   state->m_all_programs_buf = nullptr;
   state->m_outer_join_agg_scan = false;
+  state->m_redist_page_head = nullptr;
 
   // Populate immutable identification fields
   state->m_transid[0] = req->transid[0];
@@ -2425,7 +2426,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     state->m_cte_node_fail_count =
         JoinAggregationState::s_node_fail_count.load();
     state->m_cte_nodes_finalized.clear();
-    state->m_redist_page_head = nullptr;
+    NdbMutex_Init(&state->m_redist_mutex);
     state->m_redist_page_ptr = nullptr;
     state->m_redist_page_remaining = 0;
     state->m_redist_queue_head = nullptr;
@@ -2782,6 +2783,11 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
     state->m_redist_queue_head = nullptr;
     state->m_redist_queue_tail = nullptr;
     state->m_redist_queue_count = 0;
+
+    // Destroy redistribution mutex (initialized during SETUP for CTE mode)
+    if (state->m_cte_mode) {
+      NdbMutex_Deinit(&state->m_redist_mutex);
+    }
   }
 
   // Send CONF before page cleanup — caller need not wait
