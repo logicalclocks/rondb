@@ -1149,6 +1149,8 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_numCtes = 0;
   requestP->m_ctesReady = 0;
   requestP->m_cteScansComplete = 0;
+  requestP->m_cteCurrentPhase = 0;
+  requestP->m_ctePhaseCount = 0;
   requestP->m_cteAggStateKeys = nullptr;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
@@ -1449,9 +1451,23 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         requestPtr.p->m_cteAggStateKeys = static_cast<Uint32 *>(mem);
 
         for (Uint32 c = 0; c < numCtes; c++) {
-          Uint32 cteId, cteNodeCount;
+          Uint32 cteId, depMask, phase, cteNodeCount;
           ndbrequire(reader.getWord(&cteId));
+          ndbrequire(reader.getWord(&depMask));
+          ndbrequire(reader.getWord(&phase));
           ndbrequire(reader.getWord(&cteNodeCount));
+
+          /* Store depMask and phase in the matching CteContext.
+           * The CteContext was created during cte_build() in the tree
+           * parsing phase (before aggKeys parsing). Match by cteId. */
+          for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+            if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
+              requestPtr.p->m_cteContexts[i].m_depMask = depMask;
+              requestPtr.p->m_cteContexts[i].m_phase = phase;
+              break;
+            }
+          }
+
           for (Uint32 n = 0; n < cteNodeCount; n++) {
             Uint32 nodeId, cteAggKey;
             ndbrequire(reader.getWord(&nodeId));
@@ -1460,6 +1476,14 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
             requestPtr.p->m_cteAggStateKeys[c * max_nodes + nodeId] = cteAggKey;
           }
         }
+
+        /* Store phase count — max phase + 1 */
+        Uint32 maxPhase = 0;
+        for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+          if (requestPtr.p->m_cteContexts[i].m_phase > maxPhase)
+            maxPhase = requestPtr.p->m_cteContexts[i].m_phase;
+        }
+        requestPtr.p->m_ctePhaseCount = maxPhase + 1;
       }
     }
 
@@ -1541,6 +1565,8 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_numCtes = 0;
   requestP->m_ctesReady = 0;
   requestP->m_cteScansComplete = 0;
+  requestP->m_cteCurrentPhase = 0;
+  requestP->m_ctePhaseCount = 0;
   requestP->m_cteAggStateKeys = nullptr;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
@@ -5232,6 +5258,8 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
         cctx.m_cteId = cteId;
         cctx.m_state = CteContext::CTE_NOT_STARTED;
         cctx.m_numResultCols = node->numResultCols;
+        cctx.m_depMask = 0;  // Filled in later from aggKeys section
+        cctx.m_phase = 0;    // Filled in later from aggKeys section
         requestPtr.p->m_numCtes++;
       }
     }

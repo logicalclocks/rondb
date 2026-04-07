@@ -675,6 +675,8 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_state;           // CteContext::State
     Uint32 m_numResultCols;   // Number of aggregate result columns
     Uint32 m_scanTreeNodeNo;  // Tree node number of the CTE's scan node
+    Uint32 m_depMask;         // Bitmask: bit c set = depends on cteId c
+    Uint32 m_phase;           // Execution phase (0 = no deps)
   };
 
   struct ScanFragHandle {
@@ -1393,6 +1395,8 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_numCtes;       // Number of CTE contexts registered (0 if no CTEs)
     Uint32 m_ctesReady;     // Count of CTEs that reached CTE_READY state
     Uint32 m_cteScansComplete; // Count of CTE scans fully completed
+    Uint32 m_cteCurrentPhase;  // CTE phase being executed (0 = first)
+    Uint32 m_ctePhaseCount;    // Total CTE execution phases
     /**
      * Per-CTE per-node aggStateKeys.  Flat array indexed as
      * [cteIndex * MAX_NDB_NODES + nodeId].  Dynamically allocated

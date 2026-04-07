@@ -16307,12 +16307,15 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_aggNodesOutstanding = 0;
   scanptr.p->m_joinAggNodes = nullptr;
   scanptr.p->m_numCtes = 0;
+  scanptr.p->m_ctePhaseCount = 0;
   scanptr.p->m_cteSetupOutstanding = 0;
   scanptr.p->m_cteScanReportsExpected = 0;
   scanptr.p->m_cteScanReportsReceived = 0;
   scanptr.p->m_cteCompleteOutstanding = 0;
   for (Uint32 i = 0; i < ScanRecord::MAX_CTES; i++) {
     scanptr.p->m_cteInfos[i].aggProgramPtrI = RNIL;
+    scanptr.p->m_cteInfos[i].depMask = 0;
+    scanptr.p->m_cteInfos[i].phase = 0;
     scanptr.p->m_cteAggNodeState[i] = nullptr;
   }
 
@@ -28484,9 +28487,10 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
     for (Uint32 c = 0; c < numCtes; c++) {
       ndbrequire(reader.getWord(&scanptr.p->m_cteInfos[c].tableId));
       ndbrequire(reader.getWord(&scanptr.p->m_cteInfos[c].schemaVersion));
+      ndbrequire(reader.getWord(&scanptr.p->m_cteInfos[c].depMask));
       Uint32 cteProgLen;
       ndbrequire(reader.getWord(&cteProgLen));
-      consumed += 3;
+      consumed += 4;
 
       scanptr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
       if (cteProgLen > 0) {
@@ -28502,6 +28506,29 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
         consumed += cteProgLen;
       }
     }
+
+    /* Compute execution phases from dependency masks.
+     * phase[c] = 0 if depMask[c] == 0
+     * phase[c] = 1 + max(phase[d] for each bit d set in depMask[c])
+     */
+    Uint32 maxPhase = 0;
+    for (Uint32 c = 0; c < numCtes; c++) {
+      Uint32 depMask = scanptr.p->m_cteInfos[c].depMask;
+      Uint32 phase = 0;
+      if (depMask != 0) {
+        for (Uint32 d = 0; d < numCtes; d++) {
+          if (depMask & (1u << d)) {
+            Uint32 depPhase = scanptr.p->m_cteInfos[d].phase;
+            if (depPhase + 1 > phase) {
+              phase = depPhase + 1;
+            }
+          }
+        }
+      }
+      scanptr.p->m_cteInfos[c].phase = phase;
+      if (phase > maxPhase) maxPhase = phase;
+    }
+    scanptr.p->m_ctePhaseCount = maxPhase + 1;
   }
 
   /* Release original combined section */
@@ -28907,7 +28934,7 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
     /* Pack main aggStateKeys: [nodeId, aggStateKey] pairs */
     static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
     Uint32 keyData[ABS_MAX_NDB_NODES * 2 + 2 +
-                    ScanRecord::MAX_CTES * (2 + ABS_MAX_NDB_NODES * 2)];
+                    ScanRecord::MAX_CTES * (4 + ABS_MAX_NDB_NODES * 2)];
     Uint32 idx = 0;
     NdbNodeBitmask nodes = scanptr.p->m_joinAggNodes->m_aggNodes;
     for (Uint32 nid = nodes.find_first();
@@ -28926,6 +28953,8 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
         auto *cteNodes = scanptr.p->m_cteAggNodeState[c];
         ndbrequire(cteNodes != nullptr);
         keyData[idx++] = c;  /* cteId */
+        keyData[idx++] = scanptr.p->m_cteInfos[c].depMask;
+        keyData[idx++] = scanptr.p->m_cteInfos[c].phase;
         /* Count nodes for this CTE */
         Uint32 cteNodeCount = 0;
         NdbNodeBitmask cNodes = cteNodes->m_aggNodes;

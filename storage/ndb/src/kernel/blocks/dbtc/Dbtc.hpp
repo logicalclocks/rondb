@@ -2031,9 +2031,12 @@ class Dbtc : public SimulatedBlock {
       Uint32 tableId;
       Uint32 schemaVersion;
       Uint32 aggProgramPtrI;    // Section ptr to this CTE's agg program
+      Uint32 depMask;           // Bitmask: bit c set = depends on cteId c
+      Uint32 phase;             // Execution phase (0 = no deps, computed)
     };
 
     Uint32 m_numCtes;               // Number of CTE definitions (0 if no CTEs)
+    Uint32 m_ctePhaseCount;         // Total CTE execution phases
     CteInfo m_cteInfos[MAX_CTES];
     // Per-CTE per-node aggStateKeys, allocated alongside m_joinAggNodes.
     // m_cteAggNodeState[cteIdx] points into the same allocation block.

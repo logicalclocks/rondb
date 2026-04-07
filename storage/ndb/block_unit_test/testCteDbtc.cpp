@@ -582,8 +582,8 @@ Uint32 buildScanTabReqInfo()
  *   [aggReceiverId]
  *   [mainAggProgram...]        (self-describing: word[0] = (magic<<16)|len)
  *   [numCtes=2]
- *   [cte0_tableId] [cte0_schemaVersion] [cte0_progLen] [cte0_prog...]
- *   [cte1_tableId] [cte1_schemaVersion] [cte1_progLen] [cte1_prog...]
+ *   [cte0_tableId] [cte0_schemaVersion] [cte0_depMask] [cte0_progLen] [cte0_prog...]
+ *   [cte1_tableId] [cte1_schemaVersion] [cte1_depMask] [cte1_progLen] [cte1_prog...]
  */
 static int
 sendScanTabReqWithCtes(SignalSender &ss, Uint32 nodeId,
@@ -626,15 +626,17 @@ sendScanTabReqWithCtes(SignalSender &ss, Uint32 nodeId,
 
   /* CTE definitions */
   aggSection.push_back(2);            /* numCtes */
-  /* CTE 0 */
+  /* CTE 0: no dependencies (depMask=0) */
   aggSection.push_back(meta.tableId);
   aggSection.push_back(meta.schemaVersion);
+  aggSection.push_back(0);            /* depMask = 0 (no deps) */
   aggSection.push_back((Uint32)cte0AggProgram.size());
   aggSection.insert(aggSection.end(),
                     cte0AggProgram.begin(), cte0AggProgram.end());
-  /* CTE 1 */
+  /* CTE 1: no dependencies (depMask=0) */
   aggSection.push_back(meta.tableId);
   aggSection.push_back(meta.schemaVersion);
+  aggSection.push_back(0);            /* depMask = 0 (no deps) */
   aggSection.push_back((Uint32)cte1AggProgram.size());
   aggSection.insert(aggSection.end(),
                     cte1AggProgram.begin(), cte1AggProgram.end());
