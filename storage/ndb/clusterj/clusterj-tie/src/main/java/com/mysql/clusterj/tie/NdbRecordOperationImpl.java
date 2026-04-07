@@ -263,6 +263,12 @@ public class NdbRecordOperationImpl implements Operation {
         // position the buffer at the beginning for ndbjtie
         valueBuffer.limit(valueBufferSize);
         valueBuffer.position(0);
+        // Ring buffer tables: delegate to RingBufferWriter
+        if (storeTable.isRingBuffer()) {
+            RingBufferWriter writer = clusterTransactionImpl.getRingBufferWriter(storeTable);
+            writer.addRow(valueBuffer, mask);
+            return null;
+        }
         ndbOperation = clusterTransactionImpl.insertTuple(ndbRecordValues.getNdbRecord(), valueBuffer, mask, null);
         clusterTransactionImpl.addOperationToCheck(this);
         // for each blob column set, get the blob handle and write the values

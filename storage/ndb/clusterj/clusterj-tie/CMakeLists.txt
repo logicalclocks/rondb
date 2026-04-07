@@ -44,6 +44,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TIE_PREFIX}/NdbRecordImpl.java
   ${CLUSTERJ_TIE_PREFIX}/NdbRecordIndexScanOperationImpl.java
   ${CLUSTERJ_TIE_PREFIX}/NdbRecordInsertOperationImpl.java
+  ${CLUSTERJ_TIE_PREFIX}/NdbRecordRingBufferInsertOperationImpl.java
   ${CLUSTERJ_TIE_PREFIX}/NdbRecordKeyOperationImpl.java
   ${CLUSTERJ_TIE_PREFIX}/NdbRecordOperationImpl.java
   ${CLUSTERJ_TIE_PREFIX}/NdbRecordResultDataImpl.java
@@ -55,6 +56,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TIE_PREFIX}/NdbRecordUniqueKeyOperationImpl.java
   ${CLUSTERJ_TIE_PREFIX}/OperationImpl.java
   ${CLUSTERJ_TIE_PREFIX}/PartitionKeyImpl.java
+  ${CLUSTERJ_TIE_PREFIX}/RingBufferWriter.java
   ${CLUSTERJ_TIE_PREFIX}/ResultDataImpl.java
   ${CLUSTERJ_TIE_PREFIX}/ScanFilterImpl.java
   ${CLUSTERJ_TIE_PREFIX}/ScanOperationImpl.java
