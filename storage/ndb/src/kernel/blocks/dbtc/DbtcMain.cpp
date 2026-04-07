@@ -16305,6 +16305,12 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_aggErrorCode = 0;
   scanptr.p->m_aggNodesOutstanding = 0;
   scanptr.p->m_joinAggNodes = nullptr;
+  scanptr.p->m_numCtes = 0;
+  scanptr.p->m_cteSetupOutstanding = 0;
+  for (Uint32 i = 0; i < ScanRecord::MAX_CTES; i++) {
+    scanptr.p->m_cteInfos[i].aggProgramPtrI = RNIL;
+    scanptr.p->m_cteAggNodeState[i] = nullptr;
+  }
 
   DEB_SCAN_MANY(("(%u) SCAN_TABREQ, batch_size: %u",
     instance(), scanptr.p->batch_size_rows));
@@ -28428,17 +28434,63 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
   /* Extract aggReceiverId */
   ndbrequire(reader.getWord(&scanptr.p->m_aggReceiverId));
 
-  /* Remaining words = aggregation program */
-  const Uint32 aggLen = keyLen - 2 - boundsLen;
-  if (aggLen > 0) {
-    Uint32 remaining = aggLen;
-    while (remaining > 0) {
-      const Uint32 *readPtr;
-      Uint32 actualLen;
-      ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
-      ndbrequire(appendToSection(scanptr.p->m_aggProgramPtrI,
-                                   readPtr, actualLen));
-      remaining -= actualLen;
+  /* Remaining words = aggregation program + optional CTE definitions.
+   * The main agg program is self-describing: word[0] = (magic << 16) | progLen.
+   * After the main agg program, optional CTE definitions follow:
+   *   [numCtes]
+   *   For each CTE: [tableId] [schemaVersion] [cteAggProgramLen] [cteAggProg...]
+   */
+  const Uint32 totalRemaining = keyLen - 2 - boundsLen;
+  Uint32 consumed = 0;
+
+  /* Read main aggregation program (may be empty if no main agg) */
+  if (totalRemaining > 0) {
+    /* Peek at first word to get program length */
+    Uint32 firstWord;
+    ndbrequire(reader.peekWord(&firstWord));
+    Uint32 mainAggLen = firstWord & 0xFFFF;
+    if (mainAggLen > 0 && mainAggLen <= totalRemaining) {
+      Uint32 remaining = mainAggLen;
+      while (remaining > 0) {
+        const Uint32 *readPtr;
+        Uint32 actualLen;
+        ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
+        ndbrequire(appendToSection(scanptr.p->m_aggProgramPtrI,
+                                     readPtr, actualLen));
+        remaining -= actualLen;
+      }
+      consumed = mainAggLen;
+    }
+  }
+
+  /* Parse CTE definitions if more data remains */
+  if (consumed < totalRemaining) {
+    Uint32 numCtes;
+    ndbrequire(reader.getWord(&numCtes));
+    consumed++;
+    ndbrequire(numCtes <= ScanRecord::MAX_CTES);
+    scanptr.p->m_numCtes = numCtes;
+
+    for (Uint32 c = 0; c < numCtes; c++) {
+      ndbrequire(reader.getWord(&scanptr.p->m_cteInfos[c].tableId));
+      ndbrequire(reader.getWord(&scanptr.p->m_cteInfos[c].schemaVersion));
+      Uint32 cteProgLen;
+      ndbrequire(reader.getWord(&cteProgLen));
+      consumed += 3;
+
+      scanptr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
+      if (cteProgLen > 0) {
+        Uint32 remaining = cteProgLen;
+        while (remaining > 0) {
+          const Uint32 *readPtr;
+          Uint32 actualLen;
+          ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
+          ndbrequire(appendToSection(scanptr.p->m_cteInfos[c].aggProgramPtrI,
+                                       readPtr, actualLen));
+          remaining -= actualLen;
+        }
+        consumed += cteProgLen;
+      }
     }
   }
 
@@ -28531,6 +28583,45 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
     lc_ndbd_pool_free(aggNodes);
     scanPtr.p->m_joinAggNodes = nullptr;
   }
+
+  /* Release CTE resources */
+  for (Uint32 c = 0; c < scanPtr.p->m_numCtes; c++) {
+    if (scanPtr.p->m_cteInfos[c].aggProgramPtrI != RNIL) {
+      releaseSection(scanPtr.p->m_cteInfos[c].aggProgramPtrI);
+      scanPtr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
+    }
+    if (scanPtr.p->m_cteAggNodeState[c] != nullptr) {
+      auto *cteNodes = scanPtr.p->m_cteAggNodeState[c];
+      /* Send fire-and-forget RELEASE_REQ for CTE agg states */
+      if (!cteNodes->m_aggNodes.isclear()) {
+        ApiConnectRecordPtr apiPtr;
+        apiPtr.i = scanPtr.p->scanApiRec;
+        c_apiConnectRecordPool.getPtr(apiPtr);
+        NdbNodeBitmask nodes = cteNodes->m_aggNodes;
+        cteNodes->m_aggNodes.clear();
+        for (Uint32 nodeId = nodes.find_first();
+             nodeId != NdbNodeBitmask::NotFound;
+             nodeId = nodes.find_next(nodeId + 1)) {
+          if (!getNodeInfo(nodeId).m_connected) continue;
+          JoinAggReleaseReq *req =
+              (JoinAggReleaseReq *)signal->getDataPtrSend();
+          req->senderRef = reference();
+          req->senderData = scanPtr.i;
+          req->requestId = scanPtr.p->scanApiRec;
+          req->transid[0] = apiPtr.p->transid[0];
+          req->transid[1] = apiPtr.p->transid[1];
+          req->aggStateKey = cteNodes->m_aggStateKeys[nodeId];
+          req->noReply = 1;
+          Uint32 ref = numberToRef(DBLQH, nodeId);
+          sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
+                     JoinAggReleaseReq::SignalLength, JBB);
+        }
+      }
+      lc_ndbd_pool_free(cteNodes);
+      scanPtr.p->m_cteAggNodeState[c] = nullptr;
+    }
+  }
+  scanPtr.p->m_numCtes = 0;
 }
 
 /**
@@ -28627,6 +28718,7 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
     req->resultRef = apiConnectptr.p->ndbapiBlockref;
     req->resultData = scanptr.p->m_aggReceiverId;
     req->routeRef = reference();
+    req->cteIndex = RNIL;  // Main aggregation, not a CTE
 
     SectionHandle handle(this);
     Uint32 aggPtrI = RNIL;
@@ -28659,7 +28751,69 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
     scanptr.p->m_aggNodesOutstanding++;
   }
 
-  if (scanptr.p->m_aggNodesOutstanding == 0) {
+  /* Send CTE SETUP requests (CTE_MODE_FLAG) for each CTE to each node */
+  if (scanptr.p->m_numCtes > 0) {
+    jam();
+    const Uint32 maxNodes = MAX_NDB_NODES;
+    for (Uint32 c = 0; c < scanptr.p->m_numCtes; c++) {
+      /* Allocate per-CTE JoinAggNodeState */
+      const size_t allocSize = sizeof(ScanRecord::JoinAggNodeState) +
+                               maxNodes * sizeof(Uint32);
+      auto *cteNodes = (ScanRecord::JoinAggNodeState *)
+          lc_ndbd_pool_malloc(allocSize, RG_TRANSACTION_MEMORY,
+                              getThreadId(), true);
+      ndbrequire(cteNodes != nullptr);
+      cteNodes->m_aggNodes.clear();
+      cteNodes->m_aggNodesPending.clear();
+      memset(cteNodes->m_aggStateKeys, 0, maxNodes * sizeof(Uint32));
+      scanptr.p->m_cteAggNodeState[c] = cteNodes;
+
+      for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
+        if (!getNodeInfo(nodeId).m_connected) continue;
+        if (getNodeInfo(nodeId).m_type != NodeInfo::DB) continue;
+
+        JoinAggSetupReq *req = (JoinAggSetupReq *)signal->getDataPtrSend();
+        req->senderRef = reference();
+        req->senderData = scanptr.i;
+        req->requestId = scanptr.p->scanApiRec;
+        req->transid[0] = apiConnectptr.p->transid[0];
+        req->transid[1] = apiConnectptr.p->transid[1];
+        req->tableId = scanptr.p->m_cteInfos[c].tableId;
+        req->expectedOpCount = 0;
+        req->concurrencyStrategy =
+            JoinAggSetupReq::STRATEGY_MUTEX_BASED |
+            JoinAggSetupReq::CTE_MODE_FLAG;
+        req->resultRef = apiConnectptr.p->ndbapiBlockref;
+        req->resultData = scanptr.p->m_aggReceiverId;
+        req->routeRef = reference();
+        req->cteIndex = c;  // CTE index so CONF handler can route response
+
+        SectionHandle handle(this);
+        Uint32 aggPtrI = RNIL;
+        ndbrequire(dupSection(aggPtrI,
+                              scanptr.p->m_cteInfos[c].aggProgramPtrI));
+        getSection(handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum],
+                   aggPtrI);
+
+        Uint32 rcvPtrI = RNIL;
+        Uint32 rcvId = scanptr.p->m_aggReceiverId;
+        ndbrequire(appendToSection(rcvPtrI, &rcvId, 1));
+        getSection(handle.m_ptr[JoinAggSetupReq::ReceiverIdsSectionNum],
+                   rcvPtrI);
+        handle.m_cnt = 2;
+
+        Uint32 ref = numberToRef(DBLQH, nodeId);
+        sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,
+                   JoinAggSetupReq::SignalLength, JBB, &handle);
+        cteNodes->m_aggNodes.set(nodeId);
+        cteNodes->m_aggNodesPending.set(nodeId);
+        scanptr.p->m_cteSetupOutstanding++;
+      }
+    }
+  }
+
+  if (scanptr.p->m_aggNodesOutstanding == 0 &&
+      scanptr.p->m_cteSetupOutstanding == 0) {
     jam();
     abortScanLab(signal, scanptr, ZGET_DATAREC_ERROR, true, apiConnectptr);
   }
@@ -28676,22 +28830,46 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
 
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_SETUP);
 
-  Uint32 nodeId = refToNode(conf->senderRef);
-  scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId] = conf->aggStateKey;
-  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
-  scanptr.p->m_aggNodesOutstanding--;
+  const Uint32 nodeId = refToNode(conf->senderRef);
+  const Uint32 cteIndex = conf->cteIndex;
 
-  /**
-   * The agg program has been sent to all data nodes and is no longer
-   * needed in DBTC. Release the section memory early rather than
-   * keeping it until releaseScanResources().
-   */
-  if (scanptr.p->m_aggProgramPtrI != RNIL) {
-    releaseSection(scanptr.p->m_aggProgramPtrI);
-    scanptr.p->m_aggProgramPtrI = RNIL;
+  if (cteIndex != RNIL) {
+    /* CTE SETUP_CONF — store aggStateKey in per-CTE node state */
+    jam();
+    ndbrequire(cteIndex < scanptr.p->m_numCtes);
+    auto *cteNodes = scanptr.p->m_cteAggNodeState[cteIndex];
+    ndbrequire(cteNodes != nullptr);
+    cteNodes->m_aggStateKeys[nodeId] = conf->aggStateKey;
+    cteNodes->m_aggNodesPending.clear(nodeId);
+    scanptr.p->m_cteSetupOutstanding--;
+
+    /* Release CTE agg program section once all nodes received it */
+    if (scanptr.p->m_cteInfos[cteIndex].aggProgramPtrI != RNIL &&
+        cteNodes->m_aggNodesPending.isclear()) {
+      releaseSection(scanptr.p->m_cteInfos[cteIndex].aggProgramPtrI);
+      scanptr.p->m_cteInfos[cteIndex].aggProgramPtrI = RNIL;
+    }
+  } else {
+    /* Main aggregation SETUP_CONF */
+    jam();
+    scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId] = conf->aggStateKey;
+    scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
+    scanptr.p->m_aggNodesOutstanding--;
+
+    /**
+     * The agg program has been sent to all data nodes and is no longer
+     * needed in DBTC. Release the section memory early rather than
+     * keeping it until releaseScanResources().
+     */
+    if (scanptr.p->m_aggProgramPtrI != RNIL) {
+      releaseSection(scanptr.p->m_aggProgramPtrI);
+      scanptr.p->m_aggProgramPtrI = RNIL;
+    }
   }
 
-  if (scanptr.p->m_aggNodesOutstanding == 0) {
+  /* Check if ALL setup responses received (main + all CTEs) */
+  if (scanptr.p->m_aggNodesOutstanding == 0 &&
+      scanptr.p->m_cteSetupOutstanding == 0) {
     jam();
 
     if (scanptr.p->m_aggPhaseFailed) {
@@ -28716,7 +28894,10 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
       return;
     }
 
-    Uint32 keyData[ABS_MAX_NDB_NODES * 2];
+    /* Pack main aggStateKeys: [nodeId, aggStateKey] pairs */
+    static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
+    Uint32 keyData[ABS_MAX_NDB_NODES * 2 + 2 +
+                    ScanRecord::MAX_CTES * (2 + ABS_MAX_NDB_NODES * 2)];
     Uint32 idx = 0;
     NdbNodeBitmask nodes = scanptr.p->m_joinAggNodes->m_aggNodes;
     for (Uint32 nid = nodes.find_first();
@@ -28725,6 +28906,34 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
       keyData[idx++] = nid;
       keyData[idx++] = scanptr.p->m_joinAggNodes->m_aggStateKeys[nid];
     }
+
+    /* Append CTE aggStateKeys if any CTEs were set up */
+    if (scanptr.p->m_numCtes > 0) {
+      jam();
+      keyData[idx++] = CTE_KEYS_MARKER;
+      keyData[idx++] = scanptr.p->m_numCtes;
+      for (Uint32 c = 0; c < scanptr.p->m_numCtes; c++) {
+        auto *cteNodes = scanptr.p->m_cteAggNodeState[c];
+        ndbrequire(cteNodes != nullptr);
+        keyData[idx++] = c;  /* cteId */
+        /* Count nodes for this CTE */
+        Uint32 cteNodeCount = 0;
+        NdbNodeBitmask cNodes = cteNodes->m_aggNodes;
+        for (Uint32 nid = cNodes.find_first();
+             nid != NdbNodeBitmask::NotFound;
+             nid = cNodes.find_next(nid + 1)) {
+          cteNodeCount++;
+        }
+        keyData[idx++] = cteNodeCount;
+        for (Uint32 nid = cNodes.find_first();
+             nid != NdbNodeBitmask::NotFound;
+             nid = cNodes.find_next(nid + 1)) {
+          keyData[idx++] = nid;
+          keyData[idx++] = cteNodes->m_aggStateKeys[nid];
+        }
+      }
+    }
+
     scanptr.p->m_aggKeysSectionPtrI = RNIL;
     ndbrequire(appendToSection(
         scanptr.p->m_aggKeysSectionPtrI, keyData, idx));

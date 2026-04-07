@@ -510,6 +510,7 @@ sendMultiLeafSetupReq(SignalSender &ss, Uint32 nodeId,
   req->resultRef = ss.getOwnRef();
   req->resultData = FAKE_SENDER_DATA;
   req->routeRef = ss.getOwnRef();
+  req->cteIndex = RNIL;
 
   ssig.set(ss, 0, DBLQH, GSN_JOIN_AGG_SETUP_REQ,
            JoinAggSetupReq::SignalLength);

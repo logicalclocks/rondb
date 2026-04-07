@@ -2327,6 +2327,7 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
   ref->requestId = requestId;
   ref->errorCode = errorCode;
   ref->errorLine = errorLine;
+  ref->cteIndex = RNIL;
   sendSignal(senderRef, GSN_JOIN_AGG_SETUP_REF,
              signal, JoinAggSetupRef::SignalLength, JBB);
 }
@@ -2404,6 +2405,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   const Uint32 strategy = req->concurrencyStrategy;
   state->m_cte_mode =
       (strategy & JoinAggSetupReq::CTE_MODE_FLAG) != 0;
+  state->m_cte_index = req->cteIndex;
   if ((strategy & ~JoinAggSetupReq::CTE_MODE_FLAG) ==
       JoinAggSetupReq::STRATEGY_MUTEX_FREE) {
     state->m_strategy = JoinAggregationState::MUTEX_FREE;
@@ -2717,6 +2719,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   conf->senderData = senderData;
   conf->requestId = requestId;
   conf->aggStateKey = key;
+  conf->cteIndex = state->m_cte_index;
   sendSignal(senderRef, GSN_JOIN_AGG_SETUP_CONF,
              signal, JoinAggSetupConf::SignalLength, JBB);
 }

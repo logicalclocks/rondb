@@ -223,6 +223,7 @@ struct JoinAggregationState {
   // so each group lives on exactly one node (its hash-partition owner).
   //------------------------------------------------------------------
   bool m_cte_mode;                          // True if this is a CTE materialization
+  Uint32 m_cte_index;                       // CTE index from SETUP_REQ (RNIL for main agg)
   NdbNodeBitmask m_cte_nodes_finalized;     // Bitmask of nodes that sent FINAL_REP
                                             // (prevents duplicate FINAL from same node)
 

@@ -1919,7 +1919,8 @@ class Dbtc : public SimulatedBlock {
       CLOSING_SCAN = 5,
       WAIT_JOIN_AGG_SETUP = 6,
       WAIT_JOIN_AGG_COMPLETE = 7,
-      WAIT_JOIN_AGG_RELEASE = 8
+      WAIT_JOIN_AGG_RELEASE = 8,
+      WAIT_CTE_COMPLETE = 9
     };
 
     // State of this scan
@@ -2022,6 +2023,22 @@ class Dbtc : public SimulatedBlock {
       Uint32 m_aggStateKeys[];  // Flexible array member, sized at allocation
     };
     JoinAggNodeState *m_joinAggNodes;  // nullptr when not JoinAgg
+
+    // CTE materialization state
+    static constexpr Uint32 MAX_CTES = 4;
+
+    struct CteInfo {
+      Uint32 tableId;
+      Uint32 schemaVersion;
+      Uint32 aggProgramPtrI;    // Section ptr to this CTE's agg program
+    };
+
+    Uint32 m_numCtes;               // Number of CTE definitions (0 if no CTEs)
+    CteInfo m_cteInfos[MAX_CTES];
+    // Per-CTE per-node aggStateKeys, allocated alongside m_joinAggNodes.
+    // m_cteAggNodeState[cteIdx] points into the same allocation block.
+    JoinAggNodeState *m_cteAggNodeState[MAX_CTES];
+    Uint32 m_cteSetupOutstanding;    // SETUP_CONFs still pending for CTEs
   };
   typedef Ptr<ScanRecord> ScanRecordPtr;
   typedef TransientPool<ScanRecord> ScanRecord_pool;

@@ -31,7 +31,7 @@
 #define JAM_FILE_ID 564
 
 struct JoinAggSetupReq {
-  static constexpr Uint32 SignalLength = 11;
+  static constexpr Uint32 SignalLength = 12;
   static constexpr Uint32 AggProgramSectionNum = 0;
   static constexpr Uint32 ReceiverIdsSectionNum = 1;
   static constexpr Uint32 STRATEGY_MUTEX_BASED = 0;
@@ -48,25 +48,29 @@ struct JoinAggSetupReq {
   Uint32 resultRef;
   Uint32 resultData;
   Uint32 routeRef;
+  Uint32 cteIndex;  // CTE index (0..MAX_CTES-1) or RNIL for main aggregation.
+                     // Echoed back in SETUP_CONF/REF so DBTC can route the response.
   // Long section 0: Aggregation program
   // Long section 1: Receiver IDs for hash-partitioned aggregation results
 };
 
 struct JoinAggSetupConf {
-  static constexpr Uint32 SignalLength = 4;
+  static constexpr Uint32 SignalLength = 5;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
   Uint32 aggStateKey;     // Pool index for O(1) lookup
+  Uint32 cteIndex;        // Echoed from SETUP_REQ
 };
 
 struct JoinAggSetupRef {
-  static constexpr Uint32 SignalLength = 5;
+  static constexpr Uint32 SignalLength = 6;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
   Uint32 errorCode;
   Uint32 errorLine;
+  Uint32 cteIndex;        // Echoed from SETUP_REQ
 };
 
 struct JoinAggCompleteReq {
