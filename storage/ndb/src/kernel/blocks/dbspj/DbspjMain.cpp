@@ -2892,23 +2892,32 @@ void Dbspj::checkPrepareComplete(Signal *signal, Ptr<Request> requestPtr) {
     if (requestPtr.p->m_numCtes > 0) {
       jam();
       /**
-       * Compound CTE query: start CTE materialization scans first.
-       * The main query root is NOT started yet — it waits for
-       * CTE_START_MAIN_REQ from DBTC after redistribution.
+       * Compound CTE query: start CTE materialization scans for Phase 0
+       * (CTEs with no dependencies).  Later phases are started by
+       * execCTE_PHASE_START_REQ after earlier phases redistribute.
+       * The main query root waits for CTE_START_MAIN_REQ from DBTC.
        */
       requestPtr.p->m_bits |= Request::RT_CTE_PHASE;
+      requestPtr.p->m_cteCurrentPhase = 0;
 
-      // Start each CTE scan node (marked T_CTE_SCAN during build)
+      // Start only Phase 0 CTE scan nodes
       Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
       Ptr<TreeNode> treeNodePtr;
       for (list.first(treeNodePtr); !treeNodePtr.isNull();
            list.next(treeNodePtr)) {
-        if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
-          jam();
-          ndbrequire(treeNodePtr.p->m_info != 0 &&
-                     treeNodePtr.p->m_info->m_start != 0);
-          (this->*(treeNodePtr.p->m_info->m_start))(
-              signal, requestPtr, treeNodePtr);
+        if (!(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) continue;
+        jam();
+        // Find this node's CTE context and check phase
+        for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+          if (requestPtr.p->m_cteContexts[i].m_cteId ==
+                  treeNodePtr.p->m_cteId &&
+              requestPtr.p->m_cteContexts[i].m_phase == 0) {
+            ndbrequire(treeNodePtr.p->m_info != 0 &&
+                       treeNodePtr.p->m_info->m_start != 0);
+            (this->*(treeNodePtr.p->m_info->m_start))(
+                signal, requestPtr, treeNodePtr);
+            break;
+          }
         }
       }
     } else {
@@ -2949,13 +2958,13 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
              0);  // "definition" of batchComplete
 
   /**
-   * CTE phase: CTE materialization scans completed on this DBSPJ instance.
-   * Report to DBTC and wait for CTE_START_MAIN_REQ.
+   * CTE phase: current phase's CTE scans completed on this DBSPJ instance.
+   * Report to DBTC and wait for CTE_PHASE_START_REQ or CTE_START_MAIN_REQ.
    * Do NOT proceed with normal batch completion.
    */
   if (requestPtr.p->m_bits & Request::RT_CTE_PHASE) {
     jam();
-    handleCteScansComplete(signal, requestPtr);
+    handleCtePhaseComplete(signal, requestPtr);
     return;
   }
 
@@ -5646,24 +5655,79 @@ void Dbspj::cte_subtree_dumpNode(const Ptr<Request> requestPtr,
 /**
  * CTE scan completion and main query start.
  *
- * handleCteScansComplete() is called from batchComplete() when all CTE
- * scans on this DBSPJ instance have finished.  It sends
- * CTE_SCAN_COMPLETE_REP to DBTC.
+ * handleCtePhaseComplete() is called from batchComplete() when all CTE
+ * scans for the current phase have finished on this DBSPJ instance.
+ * It sends CTE_PHASE_COMPLETE_REP to DBTC with the phase number.
  *
- * execCTE_START_MAIN_REQ() is called when DBTC signals that all CTE
- * hash tables are READY (redistribution done).  It transitions the CTE
- * contexts to CTE_READY and starts the main query root node.
+ * execCTE_PHASE_START_REQ() is called when DBTC signals that a phase's
+ * CTE hash tables are redistributed and READY.  It transitions those
+ * CTEs to CTE_READY and starts the next phase's CTE scans.
+ *
+ * execCTE_START_MAIN_REQ() is called for the final transition: all CTEs
+ * are READY, start the main query root node.
  */
-void Dbspj::handleCteScansComplete(Signal *signal, Ptr<Request> requestPtr) {
+void Dbspj::handleCtePhaseComplete(Signal *signal, Ptr<Request> requestPtr) {
   jam();
 
-  // Send CTE_SCAN_COMPLETE_REP to DBTC
-  CteScanCompleteRep *rep =
-      reinterpret_cast<CteScanCompleteRep *>(signal->getDataPtrSend());
+  // Send CTE_PHASE_COMPLETE_REP to DBTC
+  CtePhaseCompleteRep *rep =
+      reinterpret_cast<CtePhaseCompleteRep *>(signal->getDataPtrSend());
   rep->senderRef = reference();
   rep->senderData = requestPtr.p->m_senderData;
-  sendSignal(requestPtr.p->m_senderRef, GSN_CTE_SCAN_COMPLETE_REP,
-             signal, CteScanCompleteRep::SignalLength, JBB);
+  rep->phase = requestPtr.p->m_cteCurrentPhase;
+  sendSignal(requestPtr.p->m_senderRef, GSN_CTE_PHASE_COMPLETE_REP,
+             signal, CtePhaseCompleteRep::SignalLength, JBB);
+}
+
+void Dbspj::execCTE_PHASE_START_REQ(Signal *signal) {
+  jamEntry();
+  const CtePhaseStartReq *req =
+      reinterpret_cast<const CtePhaseStartReq *>(signal->getDataPtr());
+
+  Request key;
+  key.m_senderData = req->senderData;
+  key.m_transId[0] = req->transId1;
+  key.m_transId[1] = req->transId2;
+
+  Ptr<Request> requestPtr;
+  ndbrequire(m_scan_request_hash.find(requestPtr, key));
+
+  Uint32 phase = req->phase;
+
+  // Transition previous phases' CTEs to CTE_READY
+  for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+    CteContext &ctx = requestPtr.p->m_cteContexts[i];
+    if (ctx.m_phase < phase &&
+        ctx.m_state == CteContext::CTE_MATERIALIZING) {
+      jam();
+      ctx.m_state = CteContext::CTE_READY;
+      requestPtr.p->m_ctesReady++;
+    }
+  }
+
+  // Start this phase's CTE scan nodes
+  requestPtr.p->m_cteCurrentPhase = phase;
+
+  Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+  Ptr<TreeNode> treeNodePtr;
+  for (list.first(treeNodePtr); !treeNodePtr.isNull();
+       list.next(treeNodePtr)) {
+    if (!(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) continue;
+    jam();
+    for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+      if (requestPtr.p->m_cteContexts[i].m_cteId ==
+              treeNodePtr.p->m_cteId &&
+          requestPtr.p->m_cteContexts[i].m_phase == phase) {
+        ndbrequire(treeNodePtr.p->m_info != 0 &&
+                   treeNodePtr.p->m_info->m_start != 0);
+        (this->*(treeNodePtr.p->m_info->m_start))(
+            signal, requestPtr, treeNodePtr);
+        break;
+      }
+    }
+  }
+
+  checkBatchComplete(signal, requestPtr);
 }
 
 void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {

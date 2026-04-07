@@ -1798,7 +1798,8 @@ class Dbspj : public SimulatedBlock {
    * CTE orchestration signals
    */
   void execCTE_START_MAIN_REQ(Signal *);
-  void handleCteScansComplete(Signal *, Ptr<Request>);
+  void execCTE_PHASE_START_REQ(Signal *);
+  void handleCtePhaseComplete(Signal *, Ptr<Request>);
 
   /**
    * ScanFrag

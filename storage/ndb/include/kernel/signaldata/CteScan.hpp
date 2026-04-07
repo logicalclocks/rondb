@@ -61,4 +61,37 @@ struct CteStartMainReq {
   static constexpr Uint32 SignalLength = 4;
 };
 
+/**
+ * CTE_PHASE_COMPLETE_REP — DBSPJ → DBTC
+ *
+ * Sent when all CTE scans for a specific execution phase have completed
+ * on this DBSPJ instance.  DBTC tracks these per phase; when all
+ * instances report for a phase, DBTC redistributes that phase's CTEs
+ * and either advances to the next phase or starts the main query.
+ */
+struct CtePhaseCompleteRep {
+  Uint32 senderRef;     // DBSPJ block reference
+  Uint32 senderData;    // ScanFragRec.i in DBTC (echoed from SCAN_FRAGREQ)
+  Uint32 phase;         // Which CTE phase completed
+
+  static constexpr Uint32 SignalLength = 3;
+};
+
+/**
+ * CTE_PHASE_START_REQ — DBTC → DBSPJ
+ *
+ * Sent after a CTE phase's hash tables are redistributed and READY.
+ * Tells DBSPJ to transition that phase's CTEs to CTE_READY and start
+ * the next phase's CTE scans.
+ */
+struct CtePhaseStartReq {
+  Uint32 senderRef;     // DBTC block reference
+  Uint32 senderData;    // ScanFragRec.i (for DBSPJ hash lookup)
+  Uint32 transId1;
+  Uint32 transId2;
+  Uint32 phase;         // Which CTE phase to start
+
+  static constexpr Uint32 SignalLength = 5;
+};
+
 #endif  // NDB_CTE_SCAN_HPP

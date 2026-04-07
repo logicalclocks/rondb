@@ -96,6 +96,7 @@ Dbspj::Dbspj(Block_context &ctx, Uint32 instanceNumber)
    * CTE signals
    */
   addRecSignal(GSN_CTE_START_MAIN_REQ, &Dbspj::execCTE_START_MAIN_REQ);
+  addRecSignal(GSN_CTE_PHASE_START_REQ, &Dbspj::execCTE_PHASE_START_REQ);
   addRecSignal(GSN_CTE_LOOKUP_CONF, &Dbspj::execCTE_LOOKUP_CONF);
   addRecSignal(GSN_CTE_LOOKUP_REF, &Dbspj::execCTE_LOOKUP_REF);
 

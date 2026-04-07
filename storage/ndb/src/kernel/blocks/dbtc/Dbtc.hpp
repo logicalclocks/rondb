@@ -2037,6 +2037,7 @@ class Dbtc : public SimulatedBlock {
 
     Uint32 m_numCtes;               // Number of CTE definitions (0 if no CTEs)
     Uint32 m_ctePhaseCount;         // Total CTE execution phases
+    Uint32 m_cteCurrentPhase;       // Phase being waited on
     CteInfo m_cteInfos[MAX_CTES];
     // Per-CTE per-node aggStateKeys, allocated alongside m_joinAggNodes.
     // m_cteAggNodeState[cteIdx] points into the same allocation block.
@@ -2164,7 +2165,12 @@ class Dbtc : public SimulatedBlock {
   void execJOIN_AGG_RELEASE_CONF(Signal *signal);
   void execJOIN_AGG_SEND_REQ(Signal *signal);
   void execCTE_SCAN_COMPLETE_REP(Signal *signal);
-  void sendCteCompleteReqs(Signal *signal, ScanRecordPtr scanptr);
+  void execCTE_PHASE_COMPLETE_REP(Signal *signal);
+  void sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
+                                    Uint32 phase);
+  void cteAdvancePhase(Signal *signal, ScanRecordPtr scanptr);
+  void sendCtePhaseStartReqs(Signal *signal, ScanRecordPtr scanptr,
+                              Uint32 phase);
   void sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr);
   void execREAD_CONFIG_REQ(Signal *signal);
   void execLQH_TRANSCONF(Signal *signal);

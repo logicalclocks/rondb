@@ -623,6 +623,7 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
   addRecSignal(GSN_JOIN_AGG_RELEASE_CONF, &Dbtc::execJOIN_AGG_RELEASE_CONF);
   addRecSignal(GSN_JOIN_AGG_SEND_REQ, &Dbtc::execJOIN_AGG_SEND_REQ);
   addRecSignal(GSN_CTE_SCAN_COMPLETE_REP, &Dbtc::execCTE_SCAN_COMPLETE_REP);
+  addRecSignal(GSN_CTE_PHASE_COMPLETE_REP, &Dbtc::execCTE_PHASE_COMPLETE_REP);
 
   hostRecord = 0;
   tableRecord = 0;
