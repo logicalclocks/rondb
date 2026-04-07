@@ -450,6 +450,11 @@ class Dbspj : public SimulatedBlock {
 
     TreeNodeBitMask m_scans;  // TreeNodes doing scans
 
+    // CTE subtree context: set by cte_subtree_build(), consumed by build loop.
+    // When m_cteSubtreeRemaining > 0, the next N nodes belong to this CTE.
+    Uint32 m_cteSubtreeRemaining;  // Embedded nodes remaining in current CTE
+    Uint32 m_cteSubtreeCteId;      // CTE identifier for current subtree
+
     // Used for resolving dependencies
     Ptr<TreeNode> m_node_list[NDB_SPJ_MAX_TREE_NODES];
   };
@@ -642,6 +647,16 @@ class Dbspj : public SimulatedBlock {
   };
 
   /**
+   * Data stored per CTE subtree container TreeNode.
+   * The CTE subtree is a lightweight container that marks the boundary
+   * of an embedded CTE scan sub-tree in the compound query.
+   */
+  struct CteSubtreeData {
+    Uint32 m_cteId;           // CTE identifier (0-based)
+    Uint32 m_numNodes;        // Number of embedded standard nodes
+  };
+
+  /**
    * CTE materialization state tracked per CTE sub-tree in a compound query.
    * Each CTE progresses: NOT_STARTED → MATERIALIZING → READY (or FAILED).
    * CTE_LOOKUP nodes check this state to decide whether to send a lookup
@@ -659,6 +674,7 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_cteId;           // CTE identifier (0-based)
     Uint32 m_state;           // CteContext::State
     Uint32 m_numResultCols;   // Number of aggregate result columns
+    Uint32 m_scanTreeNodeNo;  // Tree node number of the CTE's scan node
   };
 
   struct ScanFragHandle {
@@ -910,6 +926,7 @@ class Dbspj : public SimulatedBlock {
           m_state(TN_BUILDING),
           m_parentPtrI(RNIL),
           m_agg_leaf_index(0),
+          m_cteId(RNIL),
           m_requestPtrI(request),
           m_ancestors(),
           m_coverage(),
@@ -935,10 +952,12 @@ class Dbspj : public SimulatedBlock {
       m_send.m_attrInfoPtrI = RNIL;
     }
 
-    // TreeNode represent either a 'lookup' or 'scan' operation
+    // TreeNode represent either a 'lookup' or 'scan' operation.
+    // CTE subtree containers are lightweight and treated as lookups.
     bool isLookup() const {
       return (m_info == &g_LookupOpInfo ||
-              m_info == &g_CteLookupOpInfo);
+              m_info == &g_CteLookupOpInfo ||
+              m_info == &g_CteSubtreeOpInfo);
     }
     bool isScan() const { return !isLookup(); }
 
@@ -1136,6 +1155,13 @@ class Dbspj : public SimulatedBlock {
        */
       T_NULL_ROW_DEFERRED_RESTART = 0x8000000,
 
+      /**
+       * This scan node belongs to a CTE materialization sub-tree.
+       * scanFrag_send() uses CTE aggStateKey instead of the main one.
+       * When all fragments complete, CTE completion is reported to DBTC.
+       */
+      T_CTE_SCAN = 0x10000000,
+
       // End marker...
       T_END = 0
     };
@@ -1162,6 +1188,7 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_batch_size;
     Uint32 m_parentPtrI;
     Uint32 m_agg_leaf_index;   // Multi-leaf: 0..255, encoded in aggStateKey
+    Uint32 m_cteId;            // CTE identifier when T_CTE_SCAN, else RNIL
     const Uint32 m_requestPtrI;
 
     /**
@@ -1252,6 +1279,7 @@ class Dbspj : public SimulatedBlock {
       LookupData m_lookup_data;
       ScanFragData m_scanFrag_data;
       CteLookupData m_cteLookup_data;
+      CteSubtreeData m_cteSubtree_data;
     };
 
     struct {
@@ -1313,7 +1341,8 @@ class Dbspj : public SimulatedBlock {
       ,
       RT_AGGREGATE = 0x80  // Request contains aggregation (only leaf sends to API)
       ,
-      RT_AGG_ANCESTOR_MATCH = 0x100  // Match tracking for intermediate agg ancestors
+      RT_AGG_ANCESTOR_MATCH = 0x100,  // Match tracking for intermediate agg ancestors
+      RT_CTE_PHASE = 0x200    // CTE materialization scans in progress
     };
 
     enum RequestState {
@@ -1363,6 +1392,13 @@ class Dbspj : public SimulatedBlock {
     CteContext m_cteContexts[MAX_CTE_SUBTREES];
     Uint32 m_numCtes;       // Number of CTE contexts registered (0 if no CTEs)
     Uint32 m_ctesReady;     // Count of CTEs that reached CTE_READY state
+    Uint32 m_cteScansComplete; // Count of CTE scans fully completed
+    /**
+     * Per-CTE per-node aggStateKeys.  Flat array indexed as
+     * [cteIndex * MAX_NDB_NODES + nodeId].  Dynamically allocated
+     * when CTE keys are parsed from the aggKeys section.
+     */
+    Uint32 *m_cteAggStateKeys;
 
     ArenaHead m_arena;
 
@@ -1738,6 +1774,23 @@ class Dbspj : public SimulatedBlock {
   void cte_cleanup(Ptr<Request>, Ptr<TreeNode>);
   bool cte_checkNode(const Ptr<Request>, const Ptr<TreeNode>);
   void cte_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
+
+  /**
+   * CTE Subtree — container for CTE materialization scan sub-tree
+   */
+  static const OpInfo g_CteSubtreeOpInfo;
+  Uint32 cte_subtree_build(Build_context &, Ptr<Request>, const QueryNode *,
+                           const QueryNodeParameters *);
+  void cte_subtree_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  void cte_subtree_cleanup(Ptr<Request>, Ptr<TreeNode>);
+  bool cte_subtree_checkNode(const Ptr<Request>, const Ptr<TreeNode>);
+  void cte_subtree_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
+
+  /**
+   * CTE orchestration signals
+   */
+  void execCTE_START_MAIN_REQ(Signal *);
+  void handleCteScansComplete(Signal *, Ptr<Request>);
 
   /**
    * ScanFrag

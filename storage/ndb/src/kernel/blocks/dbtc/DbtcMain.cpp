@@ -29093,6 +29093,21 @@ void Dbtc::execJOIN_AGG_SEND_REQ(Signal *signal) {
              JoinAggSendConf::SignalLength, JBB);
 }
 
+/**
+ * CTE_SCAN_COMPLETE_REP — DBSPJ reports that all CTE materialization
+ * scans on that DBSPJ instance have completed.
+ *
+ * Step 3 will add full orchestration: track completions from all DBSPJ
+ * instances, then proceed to JOIN_AGG_COMPLETE phase (redistribution),
+ * and finally send CTE_START_MAIN_REQ back to DBSPJ.
+ */
+void Dbtc::execCTE_SCAN_COMPLETE_REP(Signal *signal) {
+  jamEntry();
+  // Stub — full implementation in Step 3 (DBTC CTE COMPLETE coordination).
+  // For now, just acknowledge receipt so DBSPJ doesn't hang.
+  (void)signal;
+}
+
 void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
   scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
   scanptr.p->m_aggNodesOutstanding = 0;

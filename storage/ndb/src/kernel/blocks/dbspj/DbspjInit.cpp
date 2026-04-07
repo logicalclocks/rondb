@@ -92,6 +92,11 @@ Dbspj::Dbspj(Block_context &ctx, Uint32 instanceNumber)
   addRecSignal(GSN_JOIN_AGG_NULL_ROW_REF,
                &Dbspj::execJOIN_AGG_NULL_ROW_REF);
 
+  /**
+   * CTE orchestration signals from DBTC
+   */
+  addRecSignal(GSN_CTE_START_MAIN_REQ, &Dbspj::execCTE_START_MAIN_REQ);
+
 }  // Dbspj::Dbspj()
 
 Dbspj::~Dbspj() {

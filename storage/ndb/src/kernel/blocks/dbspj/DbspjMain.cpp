@@ -42,6 +42,7 @@
 #include <signaldata/DiGetNodes.hpp>
 #include <signaldata/DihScanTab.hpp>
 #include <signaldata/DropTab.hpp>
+#include <signaldata/CteScan.hpp>
 #include <signaldata/JoinAgg.hpp>
 #include "../dblqh/JoinAggregationState.hpp"
 #include <signaldata/LqhKey.hpp>
@@ -1146,6 +1147,8 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_rows = 0;
   requestP->m_numCtes = 0;
   requestP->m_ctesReady = 0;
+  requestP->m_cteScansComplete = 0;
+  requestP->m_cteAggStateKeys = nullptr;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
   requestP->m_suspended_tree_nodes.clear();
@@ -1403,14 +1406,59 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
       sectionCnt--;
       aggKeysPtrI = handle.m_ptr[sectionCnt].i;
       SectionReader reader(aggKeysPtrI, getSectionSegmentPool());
-      Uint32 numPairs = reader.getSize() / 2;
-      for (Uint32 i = 0; i < numPairs; i++) {
+
+      /**
+       * Read main aggregation [nodeId, aggStateKey] pairs until we hit
+       * CTE_KEYS_MARKER or exhaust the section.
+       */
+      static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
+      const Uint32 totalWords = reader.getSize();
+      Uint32 wordsRead = 0;
+      while (wordsRead + 2 <= totalWords) {
+        Uint32 word0;
+        ndbrequire(reader.peekWord(&word0));
+        if (word0 == CTE_KEYS_MARKER) break;  // CTE section follows
         Uint32 nodeId, aggKey;
         ndbrequire(reader.getWord(&nodeId));
         ndbrequire(reader.getWord(&aggKey));
         ndbrequire(nodeId < MAX_NDB_NODES);
         requestPtr.p->m_aggStateKeys[nodeId] = aggKey;
         requestPtr.p->m_aggNodes.set(nodeId);
+        wordsRead += 2;
+      }
+
+      /**
+       * Parse CTE aggStateKeys if CTE_KEYS_MARKER is present.
+       * Format: MARKER | numCtes | { cteId, numNodes, [nodeId, key]... }...
+       */
+      Uint32 peekWord;
+      if (wordsRead < totalWords &&
+          reader.peekWord(&peekWord) && peekWord == CTE_KEYS_MARKER) {
+        jam();
+        reader.step(1);  // skip marker
+        Uint32 numCtes;
+        ndbrequire(reader.getWord(&numCtes));
+        ndbrequire(numCtes <= MAX_CTE_SUBTREES);
+
+        const Uint32 max_nodes = MAX_NDB_NODES;
+        const size_t alloc_size = numCtes * max_nodes * sizeof(Uint32);
+        void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
+                                        getThreadId(), true);
+        ndbrequire(mem != nullptr);
+        requestPtr.p->m_cteAggStateKeys = static_cast<Uint32 *>(mem);
+
+        for (Uint32 c = 0; c < numCtes; c++) {
+          Uint32 cteId, cteNodeCount;
+          ndbrequire(reader.getWord(&cteId));
+          ndbrequire(reader.getWord(&cteNodeCount));
+          for (Uint32 n = 0; n < cteNodeCount; n++) {
+            Uint32 nodeId, cteAggKey;
+            ndbrequire(reader.getWord(&nodeId));
+            ndbrequire(reader.getWord(&cteAggKey));
+            ndbrequire(nodeId < max_nodes);
+            requestPtr.p->m_cteAggStateKeys[c * max_nodes + nodeId] = cteAggKey;
+          }
+        }
       }
     }
 
@@ -1425,6 +1473,8 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
       ctx.m_savepointId = req->savePointId;
       ctx.m_start_signal = signal;
       ctx.m_senderRef = signal->getSendersBlockRef();
+      ctx.m_cteSubtreeRemaining = 0;
+      ctx.m_cteSubtreeCteId = RNIL;
 
       err = build(ctx, requestPtr, treeReader, paramReader);
       if (unlikely(err != 0)) break;
@@ -1489,6 +1539,8 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_rows = 0;
   requestP->m_numCtes = 0;
   requestP->m_ctesReady = 0;
+  requestP->m_cteScansComplete = 0;
+  requestP->m_cteAggStateKeys = nullptr;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
   requestP->m_suspended_tree_nodes.clear();
@@ -1776,6 +1828,29 @@ Dbspj::build(Build_context& ctx,
     if (unlikely(err != 0)) {
       jam();
       goto error;
+    }
+
+    /**
+     * Mark embedded nodes that belong to a CTE subtree.
+     * cte_subtree_build() sets m_cteSubtreeRemaining = numNodes;
+     * the subsequent numNodes are the embedded scan nodes.
+     */
+    if (ctx.m_cteSubtreeRemaining > 0 &&
+        node_op != QueryNode::QN_CTE_SUBTREE) {
+      jam();
+      Ptr<TreeNode> nodePtr = ctx.m_node_list[ctx.m_cnt];
+      nodePtr.p->m_bits |= TreeNode::T_CTE_SCAN;
+      nodePtr.p->m_cteId = ctx.m_cteSubtreeCteId;
+
+      // Record the scan tree node in the CteContext
+      for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+        if (requestPtr.p->m_cteContexts[i].m_cteId == ctx.m_cteSubtreeCteId) {
+          requestPtr.p->m_cteContexts[i].m_scanTreeNodeNo =
+              nodePtr.p->m_node_no;
+          break;
+        }
+      }
+      ctx.m_cteSubtreeRemaining--;
     }
 
     /**
@@ -2786,8 +2861,34 @@ void Dbspj::checkPrepareComplete(Signal *signal, Ptr<Request> requestPtr) {
     }
 
     requestPtr.p->m_state = Request::RS_RUNNING;
-    ndbrequire(nodePtr.p->m_info != 0 && nodePtr.p->m_info->m_start != 0);
-    (this->*(nodePtr.p->m_info->m_start))(signal, requestPtr, nodePtr);
+
+    if (requestPtr.p->m_numCtes > 0) {
+      jam();
+      /**
+       * Compound CTE query: start CTE materialization scans first.
+       * The main query root is NOT started yet — it waits for
+       * CTE_START_MAIN_REQ from DBTC after redistribution.
+       */
+      requestPtr.p->m_bits |= Request::RT_CTE_PHASE;
+
+      // Start each CTE scan node (marked T_CTE_SCAN during build)
+      Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+      Ptr<TreeNode> treeNodePtr;
+      for (list.first(treeNodePtr); !treeNodePtr.isNull();
+           list.next(treeNodePtr)) {
+        if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
+          jam();
+          ndbrequire(treeNodePtr.p->m_info != 0 &&
+                     treeNodePtr.p->m_info->m_start != 0);
+          (this->*(treeNodePtr.p->m_info->m_start))(
+              signal, requestPtr, treeNodePtr);
+        }
+      }
+    } else {
+      jam();
+      ndbrequire(nodePtr.p->m_info != 0 && nodePtr.p->m_info->m_start != 0);
+      (this->*(nodePtr.p->m_info->m_start))(signal, requestPtr, nodePtr);
+    }
   } while (0);
 
   // Possibly completed (or failed) entire request.
@@ -2819,6 +2920,17 @@ void Dbspj::checkBatchComplete(Signal *signal, Ptr<Request> requestPtr) {
 void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
   ndbrequire(requestPtr.p->m_outstanding ==
              0);  // "definition" of batchComplete
+
+  /**
+   * CTE phase: CTE materialization scans completed on this DBSPJ instance.
+   * Report to DBTC and wait for CTE_START_MAIN_REQ.
+   * Do NOT proceed with normal batch completion.
+   */
+  if (requestPtr.p->m_bits & Request::RT_CTE_PHASE) {
+    jam();
+    handleCteScansComplete(signal, requestPtr);
+    return;
+  }
 
   bool is_complete = requestPtr.p->m_cnt_active == 0;
   bool need_complete_phase = requestPtr.p->m_bits & Request::RT_NEED_COMPLETE;
@@ -3601,6 +3713,10 @@ void Dbspj::cleanup(Ptr<Request> requestPtr, bool in_hash) {
     lc_ndbd_pool_free(requestPtr.p->m_aggStateKeys);
     requestPtr.p->m_aggStateKeys = nullptr;
     requestPtr.p->m_lookup_node_data = nullptr;
+  }
+  if (requestPtr.p->m_cteAggStateKeys != nullptr) {
+    lc_ndbd_pool_free(requestPtr.p->m_cteAggStateKeys);
+    requestPtr.p->m_cteAggStateKeys = nullptr;
   }
   ArenaHead ah = requestPtr.p->m_arena;
   m_request_pool.release(requestPtr);
@@ -5216,6 +5332,160 @@ void Dbspj::cte_dumpNode(const Ptr<Request> requestPtr,
   g_eventLogger->info("CTE_LOOKUP: cteId=%u numResultCols=%u",
                       treeNodePtr.p->m_cteLookup_data.m_cteId,
                       treeNodePtr.p->m_cteLookup_data.m_numResultCols);
+}
+
+/**
+ * CTE Subtree OpInfo — lightweight container for CTE materialization sub-tree.
+ * The container itself does no scanning; it records the CTE identity and
+ * tells the build loop that the next numNodes tree nodes belong to this CTE.
+ * The actual scan work is done by the embedded QN_SCAN_FRAG node(s) which
+ * are marked with T_CTE_SCAN by the build loop.
+ */
+const Dbspj::OpInfo Dbspj::g_CteSubtreeOpInfo = {
+    &Dbspj::cte_subtree_build,
+    0,                              // prepare
+    &Dbspj::cte_subtree_start,
+    0,                              // countSignal
+    0,                              // execLQHKEYREF
+    0,                              // execLQHKEYCONF
+    0,                              // execSCAN_FRAGREF
+    0,                              // execSCAN_FRAGCONF
+    0,                              // parent_row
+    0,                              // parent_batch_complete
+    0,                              // parent_batch_repeat
+    0,                              // parent_batch_cleanup
+    0,                              // execSCAN_NEXTREQ
+    0,                              // complete
+    0,                              // abort
+    0,                              // execNODE_FAILREP
+    &Dbspj::cte_subtree_cleanup,
+    &Dbspj::cte_subtree_checkNode,
+    &Dbspj::cte_subtree_dumpNode};
+
+Uint32 Dbspj::cte_subtree_build(Build_context &ctx, Ptr<Request> requestPtr,
+                                 const QueryNode *qn,
+                                 const QueryNodeParameters *qp) {
+  Uint32 err = 0;
+  Ptr<TreeNode> treeNodePtr;
+  const QN_CteSubtreeNode *node = (const QN_CteSubtreeNode *)qn;
+
+  do {
+    jam();
+    err = DbspjErr::InvalidTreeNodeSpecification;
+    if (unlikely(node->len < QN_CteSubtreeNode::NodeSize)) {
+      jam();
+      break;
+    }
+
+    err = createNode(ctx, requestPtr, treeNodePtr);
+    if (unlikely(err != 0)) {
+      jam();
+      break;
+    }
+
+    treeNodePtr.p->m_tableOrIndexId = 0;
+    treeNodePtr.p->m_primaryTableId = 0;
+    treeNodePtr.p->m_schemaVersion = 0;
+    treeNodePtr.p->m_info = &g_CteSubtreeOpInfo;
+
+    // Store CTE subtree data
+    treeNodePtr.p->m_cteSubtree_data.m_cteId = node->cteId;
+    treeNodePtr.p->m_cteSubtree_data.m_numNodes = node->numNodes;
+    treeNodePtr.p->m_cteId = node->cteId;
+
+    // Tell the build loop that the next numNodes nodes belong to this CTE.
+    ctx.m_cteSubtreeRemaining = node->numNodes;
+    ctx.m_cteSubtreeCteId = node->cteId;
+
+    return 0;
+  } while (0);
+
+  return err;
+}  // Dbspj::cte_subtree_build
+
+void Dbspj::cte_subtree_start(Signal *signal, Ptr<Request> requestPtr,
+                               Ptr<TreeNode> treeNodePtr) {
+  jam();
+  // The CTE subtree container itself does not start any scans.
+  // The embedded CTE scan nodes (T_CTE_SCAN) are started by
+  // checkPrepareComplete() → startCteScans path.
+  // Mark the container as inactive immediately.
+  treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+}
+
+void Dbspj::cte_subtree_cleanup(Ptr<Request> requestPtr,
+                                 Ptr<TreeNode> treeNodePtr) {
+  jam();
+  cleanup_common(requestPtr, treeNodePtr);
+}
+
+bool Dbspj::cte_subtree_checkNode(const Ptr<Request> requestPtr,
+                                   const Ptr<TreeNode> treeNodePtr) {
+  return true;
+}
+
+void Dbspj::cte_subtree_dumpNode(const Ptr<Request> requestPtr,
+                                  const Ptr<TreeNode> treeNodePtr) {
+  g_eventLogger->info("CTE_SUBTREE: cteId=%u numNodes=%u",
+                      treeNodePtr.p->m_cteSubtree_data.m_cteId,
+                      treeNodePtr.p->m_cteSubtree_data.m_numNodes);
+}
+
+/**
+ * CTE scan completion and main query start.
+ *
+ * handleCteScansComplete() is called from batchComplete() when all CTE
+ * scans on this DBSPJ instance have finished.  It sends
+ * CTE_SCAN_COMPLETE_REP to DBTC.
+ *
+ * execCTE_START_MAIN_REQ() is called when DBTC signals that all CTE
+ * hash tables are READY (redistribution done).  It transitions the CTE
+ * contexts to CTE_READY and starts the main query root node.
+ */
+void Dbspj::handleCteScansComplete(Signal *signal, Ptr<Request> requestPtr) {
+  jam();
+
+  // Send CTE_SCAN_COMPLETE_REP to DBTC
+  CteScanCompleteRep *rep =
+      reinterpret_cast<CteScanCompleteRep *>(signal->getDataPtrSend());
+  rep->senderRef = reference();
+  rep->senderData = requestPtr.p->m_senderData;
+  sendSignal(requestPtr.p->m_senderRef, GSN_CTE_SCAN_COMPLETE_REP,
+             signal, CteScanCompleteRep::SignalLength, JBB);
+}
+
+void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
+  jamEntry();
+  const CteStartMainReq *req =
+      reinterpret_cast<const CteStartMainReq *>(signal->getDataPtr());
+
+  Request key;
+  key.m_senderData = req->senderData;
+  key.m_transId[0] = req->transId1;
+  key.m_transId[1] = req->transId2;
+
+  Ptr<Request> requestPtr;
+  ndbrequire(m_scan_request_hash.find(requestPtr, key));
+
+  // Transition all CTE contexts to READY
+  for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+    requestPtr.p->m_cteContexts[i].m_state = CteContext::CTE_READY;
+  }
+  requestPtr.p->m_ctesReady = requestPtr.p->m_numCtes;
+
+  // Clear CTE phase flag
+  requestPtr.p->m_bits &= ~Request::RT_CTE_PHASE;
+
+  // Start the main query root node (first node in the tree node list)
+  Ptr<TreeNode> rootNodePtr;
+  {
+    Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+    ndbrequire(list.first(rootNodePtr));
+  }
+  ndbrequire(rootNodePtr.p->m_info != 0 && rootNodePtr.p->m_info->m_start != 0);
+  (this->*(rootNodePtr.p->m_info->m_start))(signal, requestPtr, rootNodePtr);
+
+  checkBatchComplete(signal, requestPtr);
 }
 
 Uint32 Dbspj::lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
@@ -8987,7 +9257,16 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
   ScanFragReq::setJoinAggFlag(req->requestInfo, 0);
   ScanFragReq::setOuterJoinAggFlag(req->requestInfo, 0);
   Uint32 agg_extra = 0;
-  if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+  if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
+    jam();
+    /**
+     * CTE materialization scan: set JoinAggFlag so DBLQH routes rows
+     * through the aggregation engine into the CTE hash table.
+     * The CTE aggStateKey is set per-fragment below (where nodeId is known).
+     */
+    ScanFragReq::setJoinAggFlag(req->requestInfo, 1);
+    agg_extra = 1;
+  } else if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
     jam();
     ScanFragReq::setJoinAggFlag(req->requestInfo, 1);
     agg_extra = 1;
@@ -9259,24 +9538,47 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
       Uint32 nodeId = refToNode(ref);
       if (agg_extra) {
         jam();
-        ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
-        Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
-        Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
-        Uint32 scanEncodedKey =
-            JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
-        req->variableData[var_index + 2] = scanEncodedKey;
-        DEB_STAR_AGG(("(%u)DBSPJ STAR_AGG scanFrag_send: reqPtrI: %u, node=%u"
-                      " leafIdx=%u baseKey=%u encodedKey=0x%08x nodeId=%u",
-                      instance(),
-                      requestPtr.i,
-                      treeNodePtr.p->m_node_no,
-                      leafIdx,
-                      baseKey,
-                      scanEncodedKey,
-                      nodeId));
-        if (agg_extra > 1) {
+        if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
           jam();
-          req->variableData[var_index + 3] = data.m_agg_range_cnt;
+          /**
+           * CTE materialization scan: look up the CTE aggStateKey for
+           * this node from the per-CTE key array.
+           */
+          const Uint32 cteId = treeNodePtr.p->m_cteId;
+          const Uint32 max_nodes = MAX_NDB_NODES;
+          Uint32 cteIdx = RNIL;
+          for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+            if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
+              cteIdx = i;
+              break;
+            }
+          }
+          ndbrequire(cteIdx != RNIL);
+          ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
+          Uint32 cteAggKey =
+              requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
+          req->variableData[var_index + 2] = cteAggKey;
+        } else {
+          jam();
+          ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
+          Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
+          Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
+          Uint32 scanEncodedKey =
+              JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+          req->variableData[var_index + 2] = scanEncodedKey;
+          DEB_STAR_AGG(("(%u)DBSPJ STAR_AGG scanFrag_send: reqPtrI: %u, node=%u"
+                        " leafIdx=%u baseKey=%u encodedKey=0x%08x nodeId=%u",
+                        instance(),
+                        requestPtr.i,
+                        treeNodePtr.p->m_node_no,
+                        leafIdx,
+                        baseKey,
+                        scanEncodedKey,
+                        nodeId));
+          if (agg_extra > 1) {
+            jam();
+            req->variableData[var_index + 3] = data.m_agg_range_cnt;
+          }
         }
       }
       if (!ScanFragReq::getRangeScanFlag(req->requestInfo)) {
@@ -9824,6 +10126,12 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
       ndbrequire(requestPtr.p->m_cnt_active);
       requestPtr.p->m_cnt_active--;
       treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+
+      // Track CTE scan completion for compound queries
+      if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
+        jam();
+        requestPtr.p->m_cteScansComplete++;
+      }
     }
   }
 
@@ -10636,6 +10944,8 @@ const Dbspj::OpInfo *Dbspj::getOpInfo(Uint32 op) {
       return &Dbspj::g_ScanFragOpInfo;
     case QueryNode::QN_CTE_LOOKUP:
       return &Dbspj::g_CteLookupOpInfo;
+    case QueryNode::QN_CTE_SUBTREE:
+      return &Dbspj::g_CteSubtreeOpInfo;
     default:
       return 0;
   }

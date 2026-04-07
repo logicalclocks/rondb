@@ -37,7 +37,7 @@
  * version there signal may be sent. The signal number must remain reserved and
  * handled by receiver until that version is no longer supported.
  */
-const GlobalSignalNumber MAX_GSN = 971;
+const GlobalSignalNumber MAX_GSN = 973;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -1308,4 +1308,7 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_JOIN_AGG_FINAL_REP          969
 #define GSN_JOIN_AGG_REDISTRIBUTE_CONF  970
 #define GSN_JOIN_AGG_REDISTRIBUTE_REF   971
+/* CTE scan orchestration signals (DBSPJ ↔ DBTC) */
+#define GSN_CTE_SCAN_COMPLETE_REP       972
+#define GSN_CTE_START_MAIN_REQ          973
 #endif

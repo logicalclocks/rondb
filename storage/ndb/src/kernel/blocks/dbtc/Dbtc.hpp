@@ -2155,6 +2155,7 @@ class Dbtc : public SimulatedBlock {
   void execJOIN_AGG_COMPLETE_REF(Signal *signal);
   void execJOIN_AGG_RELEASE_CONF(Signal *signal);
   void execJOIN_AGG_SEND_REQ(Signal *signal);
+  void execCTE_SCAN_COMPLETE_REP(Signal *signal);
   void execREAD_CONFIG_REQ(Signal *signal);
   void execLQH_TRANSCONF(Signal *signal);
   void execCOMPLETECONF(Signal *signal);
