@@ -280,6 +280,16 @@ struct JoinAggregationState {
   Uint32 m_cte_complete_requestId;
 
   //------------------------------------------------------------------
+  // CTE Scan State (for CTE_SCAN_REQ iteration)
+  // Tracks scan position so DBLQH can resume between batches.
+  // Set on first CTE_SCAN_REQ, updated after each batch.
+  //------------------------------------------------------------------
+  Uint32 m_cteScan_senderRef;         // DBSPJ reference for TRANSID_AI/CONF
+  Uint32 m_cteScan_senderData;        // TreeNode pointer (echoed in TRANSID_AI)
+  Uint32 m_cteScan_transId[2];        // Transaction ID for TRANSID_AI
+  Uint32 m_cteScan_groupsSent;        // Groups sent so far (resume position)
+
+  //------------------------------------------------------------------
   // State Machine (atomic — checked by any thread, set single-threaded)
   //------------------------------------------------------------------
   std::atomic<State> m_state;
@@ -340,6 +350,9 @@ struct JoinAggregationState {
     m_cte_complete_senderRef(0),
     m_cte_complete_senderData(0),
     m_cte_complete_requestId(0),
+    m_cteScan_senderRef(0),
+    m_cteScan_senderData(0),
+    m_cteScan_groupsSent(0),
     m_state(IDLE),
     m_error_code(0),
     m_key(RNIL),

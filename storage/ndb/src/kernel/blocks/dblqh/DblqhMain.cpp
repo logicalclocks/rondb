@@ -19109,6 +19109,157 @@ output_overflow:
   }
 }
 
+/**
+ * CTE_SCAN_REQ — scan groups from a materialized CTE hash table.
+ *
+ * Iterates JoinAggregationState's hash table, skipping past groups
+ * already sent (m_cteScan_groupsSent), and sends up to batchSize
+ * groups as TRANSID_AI.  Sends CTE_SCAN_CONF with EndOfData when
+ * all groups have been sent.
+ *
+ * Iteration state is stored in JoinAggregationState so it persists
+ * across batches.  Each CTE_SCAN_REQ either starts a new scan
+ * (groupsSent == 0) or continues from the saved position.
+ */
+void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
+  jamEntry();
+
+  const CteScanReq *req = (const CteScanReq *)signal->getDataPtr();
+  const Uint32 senderRef = req->senderRef;
+  const Uint32 senderData = req->senderData;
+  const Uint32 aggStateKey = req->aggStateKey;
+  const Uint32 batchSize = req->batchSize;
+
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (unlikely(state == nullptr)) {
+    jam();
+    CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+    sendSignal(senderRef, GSN_CTE_SCAN_REF,
+               signal, CteScanRef::SignalLength, JBB);
+    return;
+  }
+
+  if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
+    jam();
+    CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->errorCode = ZCTE_LOOKUP_STATE_NOT_READY;
+    sendSignal(senderRef, GSN_CTE_SCAN_REF,
+               signal, CteScanRef::SignalLength, JBB);
+    return;
+  }
+
+  /* Save sender info for this scan (first or continuation) */
+  state->m_cteScan_senderRef = senderRef;
+  state->m_cteScan_senderData = senderData;
+  state->m_cteScan_transId[0] = req->transId1;
+  state->m_cteScan_transId[1] = req->transId2;
+
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  ndbrequire(interp != nullptr);
+
+  auto *gb_map = interp->gb_map_mutable();
+  Uint32 numRowsSent = 0;
+  bool endOfData = true;
+
+  if (gb_map != nullptr && !gb_map->empty()) {
+    jam();
+    const Uint32 n_gb_cols = interp->n_gb_cols();
+    const Uint32 n_agg_results = interp->n_agg_results();
+    const Uint32 skipCount = state->m_cteScan_groupsSent;
+
+    Uint32 groupIdx = 0;
+    for (auto iter = gb_map->begin(); iter.valid(); gb_map->next(iter)) {
+      /* Skip past groups already sent in previous batches */
+      if (groupIdx < skipCount) {
+        groupIdx++;
+        continue;
+      }
+
+      /* Batch limit reached — pause for next CTE_SCAN_REQ */
+      if (numRowsSent >= batchSize) {
+        jam();
+        endOfData = false;
+        break;
+      }
+
+      jam();
+      const char *groupData = reinterpret_cast<const char *>(iter.data());
+      const Uint32 keyLen = iter.keyLen();
+      const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
+          groupData + keyLen);
+
+      /* Build TRANSID_AI: key columns + aggregate columns + CORR_FACTOR */
+      Uint32 *outBuf = cevictBuffer;
+      Uint32 outPos = 0;
+
+      /* Copy GROUP BY key columns (already AttributeHeader-encoded) */
+      const Uint32 keyWords = keyLen >> 2;
+      if (unlikely(outPos + keyWords > ZATTR_BUFFER_SIZE)) {
+        jam();
+        groupIdx++;
+        continue;  /* Skip oversized groups */
+      }
+      memcpy(&outBuf[outPos], groupData, keyLen);
+      outPos += keyWords;
+
+      /* Convert aggregate results to AttributeHeader-encoded columns */
+      for (Uint32 a = 0; a < n_agg_results; a++) {
+        const AggResItem &item = accumulators[a];
+        if (item.is_null) {
+          if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) break;
+          AttributeHeader::init(&outBuf[outPos], n_gb_cols + a, 0);
+          outPos += 1;
+        } else {
+          if (unlikely(outPos + 3 > ZATTR_BUFFER_SIZE)) break;
+          AttributeHeader::init(&outBuf[outPos], n_gb_cols + a, 8);
+          memcpy(&outBuf[outPos + 1], &item.value, 8);
+          outPos += 3;
+        }
+      }
+
+      /* Append CORR_FACTOR32 for parent-child correlation in DBSPJ */
+      if (likely(outPos + 2 <= ZATTR_BUFFER_SIZE)) {
+        AttributeHeader::init(&outBuf[outPos],
+                              AttributeHeader::CORR_FACTOR32, 4);
+        outBuf[outPos + 1] = groupIdx;  /* Sequential correlation ID */
+        outPos += 2;
+      }
+
+      /* Send TRANSID_AI with this group's data */
+      TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+      transIdAI->connectPtr = senderData;
+      transIdAI->transId[0] = req->transId1;
+      transIdAI->transId[1] = req->transId2;
+
+      LinearSectionPtr lsp[3];
+      lsp[0].p = outBuf;
+      lsp[0].sz = outPos;
+      sendSignal(senderRef, GSN_TRANSID_AI, signal,
+                 TransIdAI::HeaderLength, JBB, lsp, 1);
+
+      numRowsSent++;
+      groupIdx++;
+    }
+  }
+
+  /* Update resume position */
+  state->m_cteScan_groupsSent += numRowsSent;
+
+  /* Send CTE_SCAN_CONF */
+  CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = senderData;
+  conf->numRows = numRowsSent;
+  conf->flags = endOfData ? CteScanConf::EndOfData : 0;
+  sendSignal(senderRef, GSN_CTE_SCAN_CONF,
+             signal, CteScanConf::SignalLength, JBB);
+}
+
 /* ------------------------------------------------------------------ */
 /* CTE hash redistribution — multi-node                                */
 /* ------------------------------------------------------------------ */

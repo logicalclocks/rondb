@@ -1314,4 +1314,8 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 /* CTE multi-phase orchestration (for CTE-to-CTE dependencies) */
 #define GSN_CTE_PHASE_COMPLETE_REP      974
 #define GSN_CTE_PHASE_START_REQ         975
+/* CTE hash table scan (DBSPJ → DBLQH, scan all groups from materialized CTE) */
+#define GSN_CTE_SCAN_REQ                976
+#define GSN_CTE_SCAN_CONF               977
+#define GSN_CTE_SCAN_REF                978
 #endif

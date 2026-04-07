@@ -94,4 +94,46 @@ struct CtePhaseStartReq {
   static constexpr Uint32 SignalLength = 5;
 };
 
+/**
+ * CTE_SCAN_REQ — DBSPJ → DBLQH
+ *
+ * Scan groups from a materialized CTE hash table.  On the first call,
+ * DBLQH initializes iteration state in JoinAggregationState and sends
+ * up to batchSize groups as TRANSID_AI (AttributeHeader-encoded GROUP BY
+ * keys + aggregate results + CORR_FACTOR), followed by CTE_SCAN_CONF.
+ *
+ * On subsequent calls (when m_cteScan_groupsSent > 0 in the state),
+ * DBLQH resumes from the saved position and sends the next batch.
+ *
+ * Used by QN_CTE_SCAN nodes when a CTE reads from an earlier CTE.
+ */
+struct CteScanReq {
+  Uint32 senderRef;       // DBSPJ block reference
+  Uint32 senderData;      // TreeNode pointer (echoed in TRANSID_AI connectPtr)
+  Uint32 aggStateKey;     // CTE hash table to scan (JoinAggregationState key)
+  Uint32 transId1;
+  Uint32 transId2;
+  Uint32 batchSize;       // Max groups to send in this batch
+
+  static constexpr Uint32 SignalLength = 6;
+};
+
+struct CteScanConf {
+  Uint32 senderRef;       // DBLQH block reference
+  Uint32 senderData;      // TreeNode pointer (echoed from REQ)
+  Uint32 numRows;         // Number of groups sent as TRANSID_AI in this batch
+  Uint32 flags;           // Flags (EndOfData)
+
+  static constexpr Uint32 SignalLength = 4;
+  enum { EndOfData = 0x1 };
+};
+
+struct CteScanRef {
+  Uint32 senderRef;
+  Uint32 senderData;
+  Uint32 errorCode;
+
+  static constexpr Uint32 SignalLength = 3;
+};
+
 #endif  // NDB_CTE_SCAN_HPP

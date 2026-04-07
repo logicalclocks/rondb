@@ -5652,6 +5652,283 @@ void Dbspj::cte_subtree_dumpNode(const Ptr<Request> requestPtr,
                       treeNodePtr.p->m_cteSubtree_data.m_numNodes);
 }
 
+/* ------------------------------------------------------------------ */
+/* QN_CTE_SCAN — scan all groups from a materialized CTE hash table   */
+/* ------------------------------------------------------------------ */
+
+const Dbspj::OpInfo Dbspj::g_CteScanOpInfo = {
+    &Dbspj::cte_scan_build,
+    0,                              // prepare
+    &Dbspj::cte_scan_start,
+    &Dbspj::cte_scan_countSignal,
+    0,                              // execLQHKEYREF
+    0,                              // execLQHKEYCONF
+    0,                              // execSCAN_FRAGREF
+    0,                              // execSCAN_FRAGCONF
+    0,                              // parent_row (root scan, no parent)
+    0,                              // parent_batch_complete
+    0,                              // parent_batch_repeat
+    0,                              // parent_batch_cleanup
+    0,                              // execSCAN_NEXTREQ
+    0,                              // complete
+    0,                              // abort
+    0,                              // execNODE_FAILREP
+    &Dbspj::cte_scan_cleanup,
+    &Dbspj::cte_scan_checkNode,
+    &Dbspj::cte_scan_dumpNode};
+
+Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
+                              const QueryNode *qn,
+                              const QueryNodeParameters *qp) {
+  Uint32 err = 0;
+  Ptr<TreeNode> treeNodePtr;
+  const QN_CteScanNode *node = (const QN_CteScanNode *)qn;
+  const QN_CteScanParameters *param = (const QN_CteScanParameters *)qp;
+
+  do {
+    jam();
+    err = DbspjErr::InvalidTreeNodeSpecification;
+    if (unlikely(node->len < QN_CteScanNode::NodeSize)) {
+      jam();
+      break;
+    }
+
+    err = DbspjErr::InvalidTreeParametersSpecification;
+    if (unlikely(param->len < QN_CteScanParameters::NodeSize)) {
+      jam();
+      break;
+    }
+
+    err = createNode(ctx, requestPtr, treeNodePtr);
+    if (unlikely(err != 0)) {
+      jam();
+      break;
+    }
+
+    treeNodePtr.p->m_tableOrIndexId = 0;
+    treeNodePtr.p->m_primaryTableId = 0;
+    treeNodePtr.p->m_schemaVersion = 0;
+    treeNodePtr.p->m_info = &g_CteScanOpInfo;
+    treeNodePtr.p->m_bits |= TreeNode::T_ATTR_INTERPRETED;
+    treeNodePtr.p->m_bits |= TreeNode::T_ONE_SHOT;
+
+    ctx.m_resultData = param->resultData;
+    ctx.m_scan_cnt++;
+    ctx.m_scans.set(treeNodePtr.p->m_node_no);
+
+    /* Initialize CTE scan data */
+    CteScanData &data = treeNodePtr.p->m_cteScan_data;
+    data.m_cteId = node->cteId;
+    data.m_numResultCols = node->numResultCols;
+    data.m_aggStateKey = RNIL;  /* Resolved at start from m_cteAggStateKeys */
+    data.m_outstanding = 0;
+    data.m_rowsReceived = 0;
+    data.m_rowsExpecting = 0;
+    data.m_batchSize = 256;
+    data.m_endOfData = false;
+
+    treeNodePtr.p->m_batch_size = data.m_batchSize;
+
+    /* Parse optional DA (NI_LINKED_ATTR etc.) */
+    Uint32 treeBits = node->requestInfo;
+    Uint32 paramBits = param->requestInfo;
+    struct DABuffer nodeDA, paramDA;
+    nodeDA.ptr = node->optional;
+    nodeDA.end = nodeDA.ptr + (node->len - QN_CteScanNode::NodeSize);
+    paramDA.ptr = param->optional;
+    paramDA.end = paramDA.ptr + (param->len - QN_CteScanParameters::NodeSize);
+
+    err = parseDA(ctx, requestPtr, treeNodePtr,
+                  nodeDA, treeBits, paramDA, paramBits);
+    if (unlikely(err != 0)) {
+      jam();
+      break;
+    }
+
+    return 0;
+  } while (0);
+
+  return err;
+}
+
+void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
+                            Ptr<TreeNode> treeNodePtr) {
+  jam();
+  CteScanData &data = treeNodePtr.p->m_cteScan_data;
+
+  /* Resolve aggStateKey for this CTE from the Request's CTE key table */
+  const Uint32 cteId = data.m_cteId;
+  const Uint32 max_nodes = MAX_NDB_NODES;
+  Uint32 targetNodeId = getOwnNodeId();
+
+  /* Find CTE index by cteId */
+  Uint32 cteIdx = RNIL;
+  for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+    if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
+      cteIdx = i;
+      break;
+    }
+  }
+  ndbrequire(cteIdx != RNIL);
+  ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
+  data.m_aggStateKey =
+      requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
+
+  /* Reset scan state */
+  data.m_outstanding = 0;
+  data.m_rowsReceived = 0;
+  data.m_rowsExpecting = 0;
+  data.m_endOfData = false;
+
+  treeNodePtr.p->m_state = TreeNode::TN_ACTIVE;
+  requestPtr.p->m_cnt_active++;
+  requestPtr.p->m_active_tree_nodes.set(treeNodePtr.p->m_node_no);
+
+  /* Send first CTE_SCAN_REQ */
+  CteScanReq *req =
+      reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
+  req->senderRef = reference();
+  req->senderData = treeNodePtr.i;
+  req->aggStateKey = data.m_aggStateKey;
+  req->transId1 = requestPtr.p->m_transId[0];
+  req->transId2 = requestPtr.p->m_transId[1];
+  req->batchSize = data.m_batchSize;
+
+  Uint32 ref = numberToRef(DBLQH, instance(), targetNodeId);
+  sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
+             CteScanReq::SignalLength, JBB);
+
+  data.m_outstanding = 1;
+  requestPtr.p->m_outstanding++;
+  requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
+}
+
+/**
+ * Count TRANSID_AI signals for CTE scan.
+ * Each TRANSID_AI decrements request outstanding by cnt (normally 1).
+ */
+void Dbspj::cte_scan_countSignal(Signal *signal, Ptr<Request> requestPtr,
+                                  Ptr<TreeNode> treeNodePtr, Uint32 cnt) {
+  jam();
+  CteScanData &data = treeNodePtr.p->m_cteScan_data;
+  data.m_rowsReceived += cnt;
+
+  ndbrequire(requestPtr.p->m_outstanding >= cnt);
+  requestPtr.p->m_outstanding -= cnt;
+}
+
+void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
+  jamEntry();
+  const CteScanConf *conf =
+      reinterpret_cast<const CteScanConf *>(signal->getDataPtr());
+
+  Ptr<TreeNode> treeNodePtr;
+  ndbrequire(m_treenode_pool.getPtr(treeNodePtr, conf->senderData));
+
+  Ptr<Request> requestPtr;
+  ndbrequire(m_request_pool.getPtr(requestPtr, treeNodePtr.p->m_requestPtrI));
+
+  CteScanData &data = treeNodePtr.p->m_cteScan_data;
+  ndbrequire(data.m_outstanding > 0);
+  data.m_outstanding--;
+  data.m_rowsExpecting += conf->numRows;
+
+  bool endOfData = (conf->flags & CteScanConf::EndOfData) != 0;
+  data.m_endOfData = endOfData;
+
+  if (endOfData) {
+    jam();
+    /* All groups sent. Mark scan complete. */
+    treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+    requestPtr.p->m_cnt_active--;
+    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+
+    /* Track CTE materialization completion */
+    if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
+      requestPtr.p->m_cteScansComplete++;
+    }
+  }
+
+  /* The m_outstanding for CTE_SCAN_CONF itself was already counted
+   * in cte_scan_start (incremented once for the REQ). The TRANSID_AI
+   * signals also decrement m_outstanding via cte_scan_countSignal.
+   * We need to reconcile: m_outstanding was incremented by 1 for the REQ.
+   * TRANSID_AI decremented it by numRows. Net effect: add numRows - 1
+   * back if numRows > 0 (since CONF doesn't carry its own decrement).
+   * Actually, re-count: start incremented m_outstanding by 1.
+   * Each TRANSID_AI decremented by 1 (total: numRows decrements).
+   * So after all TRANSID_AI: m_outstanding decreased by numRows - 1.
+   * CONF itself should not change m_outstanding further.
+   * If numRows == 0 and endOfData: need to decrement the original 1.
+   */
+  if (conf->numRows == 0) {
+    /* No TRANSID_AI to decrement — do it here */
+    ndbrequire(requestPtr.p->m_outstanding > 0);
+    requestPtr.p->m_outstanding--;
+  }
+
+  if (!endOfData) {
+    jam();
+    /* More groups remain — send next CTE_SCAN_REQ batch */
+    CteScanReq *req =
+        reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
+    req->senderRef = reference();
+    req->senderData = treeNodePtr.i;
+    req->aggStateKey = data.m_aggStateKey;
+    req->transId1 = requestPtr.p->m_transId[0];
+    req->transId2 = requestPtr.p->m_transId[1];
+    req->batchSize = data.m_batchSize;
+
+    Uint32 ref = numberToRef(DBLQH, instance(), getOwnNodeId());
+    sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
+               CteScanReq::SignalLength, JBB);
+
+    data.m_outstanding = 1;
+    requestPtr.p->m_outstanding++;
+  }
+
+  checkBatchComplete(signal, requestPtr);
+}
+
+void Dbspj::execCTE_SCAN_REF(Signal *signal) {
+  jamEntry();
+  const CteScanRef *ref =
+      reinterpret_cast<const CteScanRef *>(signal->getDataPtr());
+
+  Ptr<TreeNode> treeNodePtr;
+  ndbrequire(m_treenode_pool.getPtr(treeNodePtr, ref->senderData));
+
+  Ptr<Request> requestPtr;
+  ndbrequire(m_request_pool.getPtr(requestPtr, treeNodePtr.p->m_requestPtrI));
+
+  CteScanData &data = treeNodePtr.p->m_cteScan_data;
+  ndbrequire(data.m_outstanding > 0);
+  data.m_outstanding--;
+
+  ndbrequire(requestPtr.p->m_outstanding > 0);
+  requestPtr.p->m_outstanding--;
+
+  abort(signal, requestPtr, ref->errorCode);
+}
+
+void Dbspj::cte_scan_cleanup(Ptr<Request> requestPtr,
+                              Ptr<TreeNode> treeNodePtr) {
+  jam();
+  cleanup_common(requestPtr, treeNodePtr);
+}
+
+bool Dbspj::cte_scan_checkNode(const Ptr<Request> requestPtr,
+                                const Ptr<TreeNode> treeNodePtr) {
+  return true;
+}
+
+void Dbspj::cte_scan_dumpNode(const Ptr<Request> requestPtr,
+                               const Ptr<TreeNode> treeNodePtr) {
+  g_eventLogger->info("CTE_SCAN: cteId=%u numResultCols=%u",
+                      treeNodePtr.p->m_cteScan_data.m_cteId,
+                      treeNodePtr.p->m_cteScan_data.m_numResultCols);
+}
+
 /**
  * CTE scan completion and main query start.
  *
@@ -11294,6 +11571,8 @@ const Dbspj::OpInfo *Dbspj::getOpInfo(Uint32 op) {
       return &Dbspj::g_CteLookupOpInfo;
     case QueryNode::QN_CTE_SUBTREE:
       return &Dbspj::g_CteSubtreeOpInfo;
+    case QueryNode::QN_CTE_SCAN:
+      return &Dbspj::g_CteScanOpInfo;
     default:
       return 0;
   }

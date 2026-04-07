@@ -657,6 +657,21 @@ class Dbspj : public SimulatedBlock {
   };
 
   /**
+   * Data stored per QN_CTE_SCAN TreeNode — scans all groups from an
+   * earlier CTE's materialized hash table.
+   */
+  struct CteScanData {
+    Uint32 m_cteId;           // Source CTE to scan
+    Uint32 m_numResultCols;   // GROUP BY + aggregate result columns
+    Uint32 m_aggStateKey;     // DBLQH aggStateKey for the source CTE
+    Uint32 m_outstanding;     // Outstanding CTE_SCAN_REQ (0 or 1)
+    Uint32 m_rowsReceived;    // TRANSID_AI signals received so far
+    Uint32 m_rowsExpecting;   // Rows from CTE_SCAN_CONF numRows
+    Uint32 m_batchSize;       // Max groups per batch
+    bool m_endOfData;         // All groups sent by DBLQH
+  };
+
+  /**
    * CTE materialization state tracked per CTE sub-tree in a compound query.
    * Each CTE progresses: NOT_STARTED → MATERIALIZING → READY (or FAILED).
    * CTE_LOOKUP nodes check this state to decide whether to send a lookup
@@ -959,7 +974,8 @@ class Dbspj : public SimulatedBlock {
     bool isLookup() const {
       return (m_info == &g_LookupOpInfo ||
               m_info == &g_CteLookupOpInfo ||
-              m_info == &g_CteSubtreeOpInfo);
+              m_info == &g_CteSubtreeOpInfo) &&
+             m_info != &g_CteScanOpInfo;
     }
     bool isScan() const { return !isLookup(); }
 
@@ -1282,6 +1298,7 @@ class Dbspj : public SimulatedBlock {
       ScanFragData m_scanFrag_data;
       CteLookupData m_cteLookup_data;
       CteSubtreeData m_cteSubtree_data;
+      CteScanData m_cteScan_data;
     };
 
     struct {
@@ -1793,6 +1810,20 @@ class Dbspj : public SimulatedBlock {
   void cte_subtree_cleanup(Ptr<Request>, Ptr<TreeNode>);
   bool cte_subtree_checkNode(const Ptr<Request>, const Ptr<TreeNode>);
   void cte_subtree_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
+
+  /**
+   * CTE Scan — scan all groups from a materialized CTE hash table
+   */
+  static const OpInfo g_CteScanOpInfo;
+  Uint32 cte_scan_build(Build_context &, Ptr<Request>, const QueryNode *,
+                        const QueryNodeParameters *);
+  void cte_scan_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  void cte_scan_countSignal(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 cnt);
+  void execCTE_SCAN_CONF(Signal *);
+  void execCTE_SCAN_REF(Signal *);
+  void cte_scan_cleanup(Ptr<Request>, Ptr<TreeNode>);
+  bool cte_scan_checkNode(const Ptr<Request>, const Ptr<TreeNode>);
+  void cte_scan_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
 
   /**
    * CTE orchestration signals

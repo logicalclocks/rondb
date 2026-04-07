@@ -45,6 +45,7 @@ struct QueryNode  // Effectively used as a base class for QN_xxxNode
     QN_SCAN_FRAG = 0x4,      // Replaces both SCAN_*_v1's above
     QN_CTE_SUBTREE = 0x6,    // Container for CTE materialization sub-tree
     QN_CTE_LOOKUP = 0x7,     // Lookup into materialized CTE hash table
+    QN_CTE_SCAN = 0x8,       // Scan all groups from materialized CTE hash table
     QN_END = 0
   };
 
@@ -78,6 +79,7 @@ struct QueryNodeParameters  // Effectively used as a base class for
     QN_SCAN_FRAG = 0x4,      // Replaces both SCAN_*_v1's above
     QN_CTE_SUBTREE = 0x6,    // Container for CTE materialization sub-tree
     QN_CTE_LOOKUP = 0x7,     // Lookup into materialized CTE hash table
+    QN_CTE_SCAN = 0x8,       // Scan all groups from materialized CTE hash table
     QN_END = 0
   };
 
@@ -503,6 +505,36 @@ struct QN_CteLookupParameters  // Is a QueryNodeParameters subclass
   Uint32 len;
   Uint32 requestInfo;
   Uint32 resultData;  // Api connect ptr
+  static constexpr Uint32 NodeSize = 3;
+
+  Uint32 optional[1];
+};
+
+/**
+ * Scan node for iterating all groups from a materialized CTE hash table.
+ * Used when a CTE reads from an earlier CTE (CTE-to-CTE dependency).
+ * Each group becomes a row with GROUP BY columns + aggregate results.
+ * cteId references the source CTE whose hash table is scanned.
+ */
+struct QN_CteScanNode  // Is a QueryNode subclass
+{
+  Uint32 len;           // (length << 16) | QN_CTE_SCAN
+  Uint32 requestInfo;   // DABits::NodeInfoBits flags
+  Uint32 cteId;         // Which CTE's hash table to scan
+  Uint32 numResultCols; // GROUP BY cols + aggregate result cols
+  static constexpr Uint32 NodeSize = 4;
+
+  Uint32 optional[1];   // NI_LINKED_ATTR etc. (same format as scan nodes)
+};
+
+/**
+ * Parameters for QN_CteScanNode.
+ */
+struct QN_CteScanParameters  // Is a QueryNodeParameters subclass
+{
+  Uint32 len;
+  Uint32 requestInfo;
+  Uint32 resultData;      // Api connect ptr
   static constexpr Uint32 NodeSize = 3;
 
   Uint32 optional[1];
