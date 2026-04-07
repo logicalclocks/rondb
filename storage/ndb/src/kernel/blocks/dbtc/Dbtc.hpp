@@ -2039,6 +2039,11 @@ class Dbtc : public SimulatedBlock {
     // m_cteAggNodeState[cteIdx] points into the same allocation block.
     JoinAggNodeState *m_cteAggNodeState[MAX_CTES];
     Uint32 m_cteSetupOutstanding;    // SETUP_CONFs still pending for CTEs
+
+    // CTE COMPLETE coordination (Step 3)
+    Uint32 m_cteScanReportsExpected;  // DBSPJ instances that will report
+    Uint32 m_cteScanReportsReceived;  // CTE_SCAN_COMPLETE_REPs received
+    Uint32 m_cteCompleteOutstanding;  // Pending JOIN_AGG_COMPLETE_CONFs for CTEs
   };
   typedef Ptr<ScanRecord> ScanRecordPtr;
   typedef TransientPool<ScanRecord> ScanRecord_pool;
@@ -2156,6 +2161,8 @@ class Dbtc : public SimulatedBlock {
   void execJOIN_AGG_RELEASE_CONF(Signal *signal);
   void execJOIN_AGG_SEND_REQ(Signal *signal);
   void execCTE_SCAN_COMPLETE_REP(Signal *signal);
+  void sendCteCompleteReqs(Signal *signal, ScanRecordPtr scanptr);
+  void sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr);
   void execREAD_CONFIG_REQ(Signal *signal);
   void execLQH_TRANSCONF(Signal *signal);
   void execCOMPLETECONF(Signal *signal);

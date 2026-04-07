@@ -76,6 +76,7 @@
 #include <signaldata/TransIdAI.hpp>
 #include <signaldata/TrigAttrInfo.hpp>
 #include <signaldata/SetDomainId.hpp>
+#include <signaldata/CteScan.hpp>
 #include <signaldata/JoinAgg.hpp>
 
 #include <AttributeDescriptor.hpp>
@@ -16307,6 +16308,9 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_joinAggNodes = nullptr;
   scanptr.p->m_numCtes = 0;
   scanptr.p->m_cteSetupOutstanding = 0;
+  scanptr.p->m_cteScanReportsExpected = 0;
+  scanptr.p->m_cteScanReportsReceived = 0;
+  scanptr.p->m_cteCompleteOutstanding = 0;
   for (Uint32 i = 0; i < ScanRecord::MAX_CTES; i++) {
     scanptr.p->m_cteInfos[i].aggProgramPtrI = RNIL;
     scanptr.p->m_cteAggNodeState[i] = nullptr;
@@ -18749,6 +18753,12 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
   scanFragP.p->startFragTimer(ctcTimer);
   scanFragP.p->m_start_ticks = getHighResTimer();
   updateBuddyTimer(apiConnectptr);
+
+  // Track how many DBSPJ instances will send CTE_SCAN_COMPLETE_REP
+  if (scanP->m_numCtes > 0) {
+    jamDebug();
+    scanP->m_cteScanReportsExpected++;
+  }
   return true;
 }  // Dbtc::sendScanFragReq()
 
@@ -29003,6 +29013,28 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
   scanptr.i = conf->senderData;
   scanRecordPool.getPtr(scanptr);
 
+  if (scanptr.p->scanState == ScanRecord::WAIT_CTE_COMPLETE) {
+    jam();
+    /**
+     * CTE COMPLETE phase — redistribution for CTE hash tables.
+     * When all CTE COMPLETE_CONFs received, send CTE_START_MAIN_REQ
+     * to DBSPJ instances to begin the main query.
+     */
+    ndbrequire(scanptr.p->m_cteCompleteOutstanding > 0);
+    scanptr.p->m_cteCompleteOutstanding--;
+
+    if (scanptr.p->m_cteCompleteOutstanding == 0) {
+      jam();
+      if (scanptr.p->m_aggPhaseFailed) {
+        jam();
+        scanptr.p->m_aggPhaseFailed = false;
+        // TODO: propagate CTE error to API
+      }
+      sendCteStartMainReqs(signal, scanptr);
+    }
+    return;
+  }
+
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_COMPLETE);
 
   Uint32 nodeId = refToNode(conf->senderRef);
@@ -29028,6 +29060,24 @@ void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
   ScanRecordPtr scanptr;
   scanptr.i = ref->senderData;
   scanRecordPool.getPtr(scanptr);
+
+  if (scanptr.p->scanState == ScanRecord::WAIT_CTE_COMPLETE) {
+    jam();
+    // CTE COMPLETE_REF — redistribution failed for a CTE.
+    ndbrequire(scanptr.p->m_cteCompleteOutstanding > 0);
+    scanptr.p->m_cteCompleteOutstanding--;
+    if (!scanptr.p->m_aggPhaseFailed) {
+      scanptr.p->m_aggPhaseFailed = true;
+      scanptr.p->m_aggErrorCode = ref->errorCode;
+    }
+    if (scanptr.p->m_cteCompleteOutstanding == 0) {
+      jam();
+      // Even on failure, start main query so it can report error
+      scanptr.p->m_aggPhaseFailed = false;
+      sendCteStartMainReqs(signal, scanptr);
+    }
+    return;
+  }
 
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_COMPLETE);
 
@@ -29097,15 +29147,175 @@ void Dbtc::execJOIN_AGG_SEND_REQ(Signal *signal) {
  * CTE_SCAN_COMPLETE_REP — DBSPJ reports that all CTE materialization
  * scans on that DBSPJ instance have completed.
  *
- * Step 3 will add full orchestration: track completions from all DBSPJ
- * instances, then proceed to JOIN_AGG_COMPLETE phase (redistribution),
- * and finally send CTE_START_MAIN_REQ back to DBSPJ.
+ * DBTC tracks these from all DBSPJ instances.  When all report,
+ * DBTC enters WAIT_CTE_COMPLETE and sends JOIN_AGG_COMPLETE_REQ
+ * for each CTE to trigger hash table redistribution.
  */
 void Dbtc::execCTE_SCAN_COMPLETE_REP(Signal *signal) {
   jamEntry();
-  // Stub — full implementation in Step 3 (DBTC CTE COMPLETE coordination).
-  // For now, just acknowledge receipt so DBSPJ doesn't hang.
-  (void)signal;
+  const CteScanCompleteRep *rep =
+      reinterpret_cast<const CteScanCompleteRep *>(signal->getDataPtr());
+
+  ScanFragRecPtr scanFragPtr;
+  scanFragPtr.i = rep->senderData;
+  if (unlikely(!c_scan_frag_pool.getValidPtr(scanFragPtr))) {
+    jam();
+    return;
+  }
+
+  ScanRecordPtr scanptr;
+  scanptr.i = scanFragPtr.p->scanRec;
+  scanRecordPool.getPtr(scanptr);
+
+  ndbrequire(scanptr.p->scanState == ScanRecord::RUNNING);
+  ndbrequire(scanptr.p->m_numCtes > 0);
+
+  scanptr.p->m_cteScanReportsReceived++;
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+  DEB_JOIN_AGG(("(%u)DBTC execCTE_SCAN_COMPLETE_REP: scanPtr.i=%u "
+                "received=%u expected=%u",
+                instance(), scanptr.i,
+                scanptr.p->m_cteScanReportsReceived,
+                scanptr.p->m_cteScanReportsExpected));
+#endif
+
+  if (scanptr.p->m_cteScanReportsReceived ==
+      scanptr.p->m_cteScanReportsExpected) {
+    jam();
+    /**
+     * All DBSPJ instances have completed CTE materialization scans.
+     * Proceed to CTE COMPLETE phase (redistribution).
+     */
+    scanptr.p->scanState = ScanRecord::WAIT_CTE_COMPLETE;
+    scanptr.p->m_aggPhaseFailed = false;
+    scanptr.p->m_aggErrorCode = 0;
+    sendCteCompleteReqs(signal, scanptr);
+  }
+}
+
+/**
+ * Send JOIN_AGG_COMPLETE_REQ for each CTE to all DBLQH nodes.
+ * This triggers hash table redistribution on multi-node clusters.
+ */
+void Dbtc::sendCteCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
+  scanptr.p->m_cteCompleteOutstanding = 0;
+
+  ApiConnectRecordPtr apiPtr;
+  apiPtr.i = scanptr.p->scanApiRec;
+  c_apiConnectRecordPool.getPtr(apiPtr);
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+  DEB_JOIN_AGG(("(%u)DBTC sendCteCompleteReqs: scanPtr.i=%u numCtes=%u",
+                 instance(), scanptr.i, scanptr.p->m_numCtes));
+#endif
+
+  for (Uint32 c = 0; c < scanptr.p->m_numCtes; c++) {
+    auto *cteNodes = scanptr.p->m_cteAggNodeState[c];
+    if (cteNodes == nullptr) continue;
+
+    NdbNodeBitmask nodes = cteNodes->m_aggNodes;
+    cteNodes->m_aggNodesPending.clear();
+
+    for (Uint32 nodeId = nodes.find_first();
+         nodeId != NdbNodeBitmask::NotFound;
+         nodeId = nodes.find_next(nodeId + 1)) {
+      if (!getNodeInfo(nodeId).m_connected) {
+        jam();
+        cteNodes->m_aggNodes.clear(nodeId);
+        if (!scanptr.p->m_aggPhaseFailed) {
+          scanptr.p->m_aggPhaseFailed = true;
+          scanptr.p->m_aggErrorCode = ZNODEFAIL_BEFORE_COMMIT;
+        }
+        continue;
+      }
+      JoinAggCompleteReq *req =
+          (JoinAggCompleteReq *)signal->getDataPtrSend();
+      req->senderRef = reference();
+      req->senderData = scanptr.i;
+      req->requestId = scanptr.p->scanApiRec;
+      req->transid[0] = apiPtr.p->transid[0];
+      req->transid[1] = apiPtr.p->transid[1];
+      req->aggStateKey = cteNodes->m_aggStateKeys[nodeId];
+      req->maxBatchRows = 256;
+
+      Uint32 ref = numberToRef(V_QUERY, 1, nodeId);
+      if (nodeId == getOwnNodeId()) {
+        HostRecordPtr Thostptr;
+        Thostptr.i = nodeId;
+        ptrCheckGuard(Thostptr, MAX_NDB_NODES, hostRecord);
+        Uint32 inst = Thostptr.p->m_round_robin_instance++;
+        if (inst >= getNodeInfo(nodeId).m_lqh_workers) {
+          Thostptr.p->m_round_robin_instance = 1;
+        }
+        ref = get_scan_fragreq_ref(&m_distribution_handle, inst);
+      }
+      sendSignal(ref, GSN_JOIN_AGG_COMPLETE_REQ, signal,
+                 JoinAggCompleteReq::SignalLength, JBB);
+      cteNodes->m_aggNodesPending.set(nodeId);
+      scanptr.p->m_cteCompleteOutstanding++;
+    }
+  }
+
+  if (scanptr.p->m_cteCompleteOutstanding == 0) {
+    jam();
+    /**
+     * No nodes to complete (all dead or no CTE state).
+     * Skip straight to starting the main query.
+     */
+    sendCteStartMainReqs(signal, scanptr);
+  }
+}
+
+/**
+ * Send CTE_START_MAIN_REQ to all DBSPJ instances that received
+ * SCAN_FRAGREQ for this compound query.  DBSPJ transitions CTEs
+ * to READY and starts the main query root node.
+ */
+void Dbtc::sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr) {
+  ApiConnectRecordPtr apiPtr;
+  apiPtr.i = scanptr.p->scanApiRec;
+  c_apiConnectRecordPool.getPtr(apiPtr);
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+  DEB_JOIN_AGG(("(%u)DBTC sendCteStartMainReqs: scanPtr.i=%u",
+                 instance(), scanptr.i));
+#endif
+
+  /**
+   * Iterate through all ScanFragRecs (running + queued + delivered)
+   * and send CTE_START_MAIN_REQ to each DBSPJ instance.
+   * The senderData carries the ScanFragRec.i which DBSPJ stored
+   * as its Request.m_senderData for hash lookup.
+   */
+  CteStartMainReq *req =
+      reinterpret_cast<CteStartMainReq *>(signal->getDataPtrSend());
+  req->senderRef = reference();
+  req->transId1 = apiPtr.p->transid[0];
+  req->transId2 = apiPtr.p->transid[1];
+
+  Local_ScanFragRec_dllist running(c_scan_frag_pool,
+                                   scanptr.p->m_running_scan_frags);
+  ScanFragRecPtr fragPtr;
+  for (running.first(fragPtr); !fragPtr.isNull(); running.next(fragPtr)) {
+    jam();
+    req->senderData = fragPtr.i;
+    sendSignal(fragPtr.p->lqhBlockref, GSN_CTE_START_MAIN_REQ,
+               signal, CteStartMainReq::SignalLength, JBB);
+  }
+
+  // Also check queued list (fragments not yet started)
+  Local_ScanFragRec_dllist queued(c_scan_frag_pool,
+                                  scanptr.p->m_queued_scan_frags);
+  for (queued.first(fragPtr); !fragPtr.isNull(); queued.next(fragPtr)) {
+    jam();
+    req->senderData = fragPtr.i;
+    sendSignal(fragPtr.p->lqhBlockref, GSN_CTE_START_MAIN_REQ,
+               signal, CteStartMainReq::SignalLength, JBB);
+  }
+
+  // Transition back to RUNNING — main query will now execute
+  scanptr.p->scanState = ScanRecord::RUNNING;
 }
 
 void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
