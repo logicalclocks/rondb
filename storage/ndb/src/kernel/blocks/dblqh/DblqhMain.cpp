@@ -19153,7 +19153,28 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
     return;
   }
 
+  /* Guard against duplicate scans from multiple DBSPJ instances on the
+   * same node.  The first CTE_SCAN_REQ to arrive claims the scan;
+   * subsequent ones get an immediate empty CONF.  This is correct
+   * because each node has one CTE hash table partition and only one
+   * DBSPJ instance needs to scan it. */
+  if (state->m_cteScan_active &&
+      state->m_cteScan_groupsSent == 0 &&
+      senderRef != state->m_cteScan_senderRef) {
+    /* Different sender, scan not yet started — duplicate first request */
+    jam();
+    CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = senderData;
+    conf->numRows = 0;
+    conf->flags = CteScanConf::EndOfData;
+    sendSignal(senderRef, GSN_CTE_SCAN_CONF,
+               signal, CteScanConf::SignalLength, JBB);
+    return;
+  }
+
   /* Save sender info for this scan (first or continuation) */
+  state->m_cteScan_active = true;
   state->m_cteScan_senderRef = senderRef;
   state->m_cteScan_senderData = senderData;
   state->m_cteScan_transId[0] = req->transId1;
