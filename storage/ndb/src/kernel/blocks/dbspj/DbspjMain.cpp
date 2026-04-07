@@ -42,6 +42,7 @@
 #include <signaldata/DiGetNodes.hpp>
 #include <signaldata/DihScanTab.hpp>
 #include <signaldata/DropTab.hpp>
+#include <signaldata/CteLookup.hpp>
 #include <signaldata/CteScan.hpp>
 #include <signaldata/JoinAgg.hpp>
 #include "../dblqh/JoinAggregationState.hpp"
@@ -5296,8 +5297,7 @@ void Dbspj::cte_parent_row(Signal *signal, Ptr<Request> requestPtr,
   switch (cteCtx->m_state) {
   case CteContext::CTE_READY:
     jam();
-    // CTE materialized — send CTE_LOOKUP_REQ (Step 6)
-    // For now, this path is not reached since CTE queries are blocked.
+    cte_lookup_send(signal, requestPtr, treeNodePtr, rowRef);
     break;
 
   case CteContext::CTE_MATERIALIZING:
@@ -5310,9 +5310,193 @@ void Dbspj::cte_parent_row(Signal *signal, Ptr<Request> requestPtr,
 
   case CteContext::CTE_FAILED:
     jam();
-    // CTE materialization failed — propagate error
+    abort(signal, requestPtr, DbspjErr::InvalidRequest);
     break;
   }
+}
+
+/**
+ * Build and send CTE_LOOKUP_REQ to DBLQH.
+ *
+ * Expands the key pattern from the parent row, finds the target node's
+ * CTE aggStateKey, duplicates the pre-built AttrInfo section, and
+ * sends the request.  DBLQH performs the hash table lookup and sends
+ * result rows via TRANSID_AI (FLUSH_AI) followed by CTE_LOOKUP_CONF.
+ */
+void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
+                             Ptr<TreeNode> treeNodePtr,
+                             const RowPtr &rowRef) {
+  jam();
+  Uint32 err = 0;
+  Uint32 keyInfoPtrI = RNIL;
+
+  do {
+    const Uint32 cteId = treeNodePtr.p->m_cteLookup_data.m_cteId;
+    const Uint32 max_nodes = MAX_NDB_NODES;
+
+    // Find CTE index
+    Uint32 cteIdx = RNIL;
+    for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+      if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
+        cteIdx = i;
+        break;
+      }
+    }
+    ndbrequire(cteIdx != RNIL);
+
+    // Expand key from parent row using key pattern
+    if (treeNodePtr.p->m_bits & TreeNode::T_KEYINFO_CONSTRUCTED) {
+      jam();
+      LocalArenaPool<DataBufferSegment<14>> pool(requestPtr.p->m_arena,
+                                                 m_dependency_map_pool);
+      Local_pattern_store pattern(pool, treeNodePtr.p->m_keyPattern);
+
+      bool keyIsNull;
+      err = expand(keyInfoPtrI, pattern, rowRef, keyIsNull);
+      if (unlikely(err != 0)) {
+        jam();
+        break;
+      }
+      if (keyIsNull) {
+        jam();
+        // NULL key: no match possible in CTE hash table.
+        // For scan parents this is simply ignored (no row returned).
+        releaseSection(keyInfoPtrI);
+        return;
+      }
+    } else {
+      jam();
+      // Pre-built key — duplicate for sending
+      Uint32 tmp = RNIL;
+      if (!dupSection(tmp, treeNodePtr.p->m_send.m_keyInfoPtrI)) {
+        jam();
+        err = DbspjErr::OutOfSectionMemory;
+        break;
+      }
+      keyInfoPtrI = tmp;
+    }
+
+    // Find target node — route to local node (single-node),
+    // or first available CTE node (multi-node TODO: hash-based routing).
+    ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
+    Uint32 targetNodeId = getOwnNodeId();
+    Uint32 targetAggKey =
+        requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
+
+    // Compute key length in bytes
+    SegmentedSectionPtr keyPtr;
+    getSection(keyPtr, keyInfoPtrI);
+    const Uint32 keyLenBytes = keyPtr.sz * sizeof(Uint32);
+
+    // Duplicate AttrInfo section (reused across lookups)
+    Uint32 attrInfoPtrI = RNIL;
+    if (treeNodePtr.p->m_send.m_attrInfoPtrI != RNIL) {
+      jam();
+      if (!dupSection(attrInfoPtrI, treeNodePtr.p->m_send.m_attrInfoPtrI)) {
+        jam();
+        err = DbspjErr::OutOfSectionMemory;
+        break;
+      }
+    }
+
+    // Build and send CTE_LOOKUP_REQ
+    CteLookupReq *req =
+        reinterpret_cast<CteLookupReq *>(signal->getDataPtrSend());
+    req->senderRef = reference();
+    req->senderData = treeNodePtr.i;
+    req->aggStateKey = targetAggKey;
+    req->keyLen = keyLenBytes;
+
+    SectionHandle handle(this);
+    getSection(handle.m_ptr[CteLookupReq::KeySectionNum], keyInfoPtrI);
+    handle.m_cnt = 1;
+    if (attrInfoPtrI != RNIL) {
+      jam();
+      getSection(handle.m_ptr[CteLookupReq::AttrInfoSectionNum], attrInfoPtrI);
+      handle.m_cnt = 2;
+    }
+
+    Uint32 ref = numberToRef(DBLQH, instance(), targetNodeId);
+    sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
+               CteLookupReq::SignalLength, JBB, &handle);
+
+    // Track outstanding: expect CONF or REF
+    requestPtr.p->m_outstanding++;
+    treeNodePtr.p->m_cteLookup_data.m_outstanding++;
+    return;
+  } while (0);
+
+  // Error handling
+  if (keyInfoPtrI != RNIL) {
+    releaseSection(keyInfoPtrI);
+  }
+  if (err != 0) {
+    jam();
+    abort(signal, requestPtr, err);
+  }
+}
+
+/**
+ * CTE_LOOKUP_CONF — DBLQH found the group in the CTE hash table.
+ * Result row was already sent to API via TRANSID_AI (FLUSH_AI).
+ * Just decrement outstanding and check batch complete.
+ */
+void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
+  jamEntry();
+  const CteLookupConf *conf =
+      reinterpret_cast<const CteLookupConf *>(signal->getDataPtr());
+
+  Ptr<TreeNode> treeNodePtr;
+  ndbrequire(m_treenode_pool.getPtr(treeNodePtr, conf->senderData));
+
+  Ptr<Request> requestPtr;
+  ndbrequire(m_request_pool.getPtr(requestPtr, treeNodePtr.p->m_requestPtrI));
+
+  ndbrequire(treeNodePtr.p->m_cteLookup_data.m_outstanding > 0);
+  treeNodePtr.p->m_cteLookup_data.m_outstanding--;
+
+  ndbrequire(requestPtr.p->m_outstanding > 0);
+  requestPtr.p->m_outstanding--;
+
+  checkBatchComplete(signal, requestPtr);
+}
+
+/**
+ * CTE_LOOKUP_REF — lookup failed.
+ *
+ * GROUP_NOT_FOUND is expected for inner joins (parent row has no match).
+ * For left outer joins, we would send a NULL row to API (not yet
+ * implemented — CTE lookups are currently inner join only).
+ * Other errors abort the request.
+ */
+void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
+  jamEntry();
+  const CteLookupRef *ref =
+      reinterpret_cast<const CteLookupRef *>(signal->getDataPtr());
+
+  Ptr<TreeNode> treeNodePtr;
+  ndbrequire(m_treenode_pool.getPtr(treeNodePtr, ref->senderData));
+
+  Ptr<Request> requestPtr;
+  ndbrequire(m_request_pool.getPtr(requestPtr, treeNodePtr.p->m_requestPtrI));
+
+  ndbrequire(treeNodePtr.p->m_cteLookup_data.m_outstanding > 0);
+  treeNodePtr.p->m_cteLookup_data.m_outstanding--;
+
+  ndbrequire(requestPtr.p->m_outstanding > 0);
+  requestPtr.p->m_outstanding--;
+
+  if (ref->errorCode != CteLookupRef::GROUP_NOT_FOUND) {
+    jam();
+    // Internal error — abort the request
+    abort(signal, requestPtr, ref->errorCode);
+    return;
+  }
+
+  // GROUP_NOT_FOUND: inner join — parent row has no match, just skip.
+  // (Left outer join NULL row propagation is a future extension.)
+
+  checkBatchComplete(signal, requestPtr);
 }
 
 void Dbspj::cte_cleanup(Ptr<Request> requestPtr,

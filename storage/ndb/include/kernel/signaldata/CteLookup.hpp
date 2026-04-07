@@ -66,8 +66,9 @@ struct CteLookupRef {
 
   static constexpr Uint32 SignalLength = 3;
 
-  // Error codes are defined in Dblqh.hpp (ZCTE_LOOKUP_*) and ndberror.cpp.
-  // Key not found is indicated by ZCTE_LOOKUP_GROUP_NOT_FOUND.
+  // Error codes (mirrors ZCTE_LOOKUP_* in Dblqh.hpp / ndberror.cpp)
+  static constexpr Uint32 GROUP_NOT_FOUND = 1263;
+  static constexpr Uint32 STATE_NOT_READY = 1264;
 };
 
 #endif  // NDB_CTE_LOOKUP_HPP

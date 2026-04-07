@@ -1771,6 +1771,10 @@ class Dbspj : public SimulatedBlock {
                    const QueryNodeParameters *);
   void cte_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void cte_parent_row(Signal *, Ptr<Request>, Ptr<TreeNode>, const RowPtr &);
+  void cte_lookup_send(Signal *, Ptr<Request>, Ptr<TreeNode>,
+                       const RowPtr &);
+  void execCTE_LOOKUP_CONF(Signal *);
+  void execCTE_LOOKUP_REF(Signal *);
   void cte_cleanup(Ptr<Request>, Ptr<TreeNode>);
   bool cte_checkNode(const Ptr<Request>, const Ptr<TreeNode>);
   void cte_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
