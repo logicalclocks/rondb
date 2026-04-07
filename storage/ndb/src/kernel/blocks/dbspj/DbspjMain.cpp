@@ -8107,6 +8107,78 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
       } else {
         c_Counters.incr_counter(CI_TABLE_SCANS_RECEIVED, 1);
       }
+    } else if (ctx.m_cteSubtreeRemaining > 0 &&
+               !(treeBits & DABits::NI_HAS_PARENT)) {
+      /**
+       * CTE root scan — scan exactly the same single fragment as the main
+       * query root scan.  Without this, each DBSPJ instance would ask DIH
+       * for ALL fragments of the CTE source table, producing duplicate
+       * aggregation into the same DBLQH hash table and wrong results.
+       *
+       * A CTE executes the same way as a normal aggregate query: DBTC
+       * distributes fragments across DBSPJ instances via SCAN_FRAGREQ,
+       * each instance scans one fragment.  The CTE root scan reuses the
+       * fragment that DBTC assigned to this instance (m_rootFragId).
+       *
+       * Only the CTE root scan (no parent) is affected.  Child scans
+       * within the CTE subtree (NI_HAS_PARENT set) still need the
+       * normal DIH all-fragments path to find matching rows.
+       */
+      jam();
+      treeNodePtr.p->m_bits |= TreeNode::T_ONE_SHOT;
+
+      const Uint32 rootFragId = requestPtr.p->m_rootFragId;
+
+      TableRecordPtr tablePtr;
+      tablePtr.i = treeNodePtr.p->m_tableOrIndexId;
+      ptrCheckGuard(tablePtr, c_tabrecFilesize, m_tableRecord);
+      const bool readBackup =
+          (tablePtr.p->m_flags & TableRecord::TR_READ_BACKUP) != 0;
+
+      data.m_fragCount = 0;
+      data.m_null_row_outstanding = 0;
+      data.m_agg_range_cnt = 0;
+
+      {
+        Local_ScanFragHandle_list list(m_scanfraghandle_pool, data.m_fragments);
+        Ptr<ScanFragHandle> fragPtr;
+        data.m_fragCount = 1;
+
+        const Uint32 ref = numberToRef(
+            get_query_block_no(getOwnNodeId()),
+            getInstance(node->tableId, rootFragId), getOwnNodeId());
+
+        if (!ERROR_INSERTED_CLEAR(17004) &&
+            likely(m_scanfraghandle_pool.seize(requestPtr.p->m_arena,
+                                               fragPtr))) {
+          jam();
+          fragPtr.p->init(rootFragId, readBackup);
+          fragPtr.p->m_treeNodePtrI = treeNodePtr.i;
+          fragPtr.p->m_ref = ref;
+          fragPtr.p->m_next_ref = ref;
+          list.addLast(fragPtr);
+          insertGuardedPtr(requestPtr, fragPtr);
+        } else {
+          jam();
+          err = DbspjErr::OutOfQueryMemory;
+          return err;
+        }
+      }
+
+      dst->tableId = node->tableId;
+      dst->schemaVersion = node->tableVersion;
+      dst->fragmentNoKeyLen = rootFragId;
+      dst->savePointId = ctx.m_savepointId;
+      dst->transId1 = requestPtr.p->m_transId[0];
+      dst->transId2 = requestPtr.p->m_transId[1];
+
+      Uint32 requestInfo = 0;
+      ScanFragReq::setReadCommittedFlag(requestInfo, 1);
+      ScanFragReq::setScanPrio(requestInfo, ctx.m_scanPrio);
+      ScanFragReq::setNoDiskFlag(requestInfo,
+                                 (treeBits & DABits::NI_LINKED_DISK) == 0 &&
+                                     (paramBits & DABits::PI_DISK_ATTR) == 0);
+      dst->requestInfo = requestInfo;
     } else {
       requestPtr.p->m_bits |= Request::RT_NEED_PREPARE;
       requestPtr.p->m_bits |= Request::RT_NEED_COMPLETE;
