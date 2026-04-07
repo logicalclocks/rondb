@@ -1414,6 +1414,7 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_cteScansComplete; // Count of CTE scans fully completed
     Uint32 m_cteCurrentPhase;  // CTE phase being executed (0 = first)
     Uint32 m_ctePhaseCount;    // Total CTE execution phases
+    bool m_cteScanAllNodes;    // CTE_SCAN must send to all nodes (instances < nodes)
     /**
      * Per-CTE per-node aggStateKeys.  Flat array indexed as
      * [cteIndex * MAX_NDB_NODES + nodeId].  Dynamically allocated

@@ -28934,7 +28934,7 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
 
     /* Pack main aggStateKeys: [nodeId, aggStateKey] pairs */
     static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
-    Uint32 keyData[ABS_MAX_NDB_NODES * 2 + 2 +
+    Uint32 keyData[ABS_MAX_NDB_NODES * 2 + 3 +
                     ScanRecord::MAX_CTES * (4 + ABS_MAX_NDB_NODES * 2)];
     Uint32 idx = 0;
     NdbNodeBitmask nodes = scanptr.p->m_joinAggNodes->m_aggNodes;
@@ -28950,6 +28950,28 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
       jam();
       keyData[idx++] = CTE_KEYS_MARKER;
       keyData[idx++] = scanptr.p->m_numCtes;
+
+      /* Compute CTE scan coverage flag: if DBSPJ instances (scanNoFrag)
+       * cover all CTE nodes, local-only CTE_SCAN is sufficient.
+       * Otherwise DBSPJ must send CTE_SCAN_REQ to all CTE nodes. */
+      {
+        Uint32 cteNodeCount = 0;
+        auto *firstCteNodes = scanptr.p->m_cteAggNodeState[0];
+        if (firstCteNodes != nullptr) {
+          NdbNodeBitmask cNodes = firstCteNodes->m_aggNodes;
+          for (Uint32 nid = cNodes.find_first();
+               nid != NdbNodeBitmask::NotFound;
+               nid = cNodes.find_next(nid + 1)) {
+            cteNodeCount++;
+          }
+        }
+        Uint32 cteFlags = 0;
+        if (scanptr.p->scanNoFrag < cteNodeCount) {
+          cteFlags |= 0x1;  /* CTE_SCAN_ALL_NODES */
+        }
+        keyData[idx++] = cteFlags;
+      }
+
       for (Uint32 c = 0; c < scanptr.p->m_numCtes; c++) {
         auto *cteNodes = scanptr.p->m_cteAggNodeState[c];
         ndbrequire(cteNodes != nullptr);

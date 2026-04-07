@@ -1151,6 +1151,7 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_cteScansComplete = 0;
   requestP->m_cteCurrentPhase = 0;
   requestP->m_ctePhaseCount = 0;
+  requestP->m_cteScanAllNodes = false;
   requestP->m_cteAggStateKeys = nullptr;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
@@ -1443,6 +1444,10 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         ndbrequire(reader.getWord(&numCtes));
         ndbrequire(numCtes <= MAX_CTE_SUBTREES);
 
+        Uint32 cteFlags;
+        ndbrequire(reader.getWord(&cteFlags));
+        requestPtr.p->m_cteScanAllNodes = (cteFlags & 0x1) != 0;
+
         const Uint32 max_nodes = MAX_NDB_NODES;
         const size_t alloc_size = numCtes * max_nodes * sizeof(Uint32);
         void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
@@ -1567,6 +1572,7 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_cteScansComplete = 0;
   requestP->m_cteCurrentPhase = 0;
   requestP->m_ctePhaseCount = 0;
+  requestP->m_cteScanAllNodes = false;
   requestP->m_cteAggStateKeys = nullptr;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
@@ -5771,8 +5777,6 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
   }
   ndbrequire(cteIdx != RNIL);
   ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
-  data.m_aggStateKey =
-      requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
 
   /* Reset scan state */
   data.m_outstanding = 0;
@@ -5783,24 +5787,57 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
   treeNodePtr.p->m_state = TreeNode::TN_ACTIVE;
   requestPtr.p->m_cnt_active++;
   requestPtr.p->m_active_tree_nodes.set(treeNodePtr.p->m_node_no);
-
-  /* Send first CTE_SCAN_REQ */
-  CteScanReq *req =
-      reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
-  req->senderRef = reference();
-  req->senderData = treeNodePtr.i;
-  req->aggStateKey = data.m_aggStateKey;
-  req->transId1 = requestPtr.p->m_transId[0];
-  req->transId2 = requestPtr.p->m_transId[1];
-  req->batchSize = data.m_batchSize;
-
-  Uint32 ref = numberToRef(DBLQH, instance(), targetNodeId);
-  sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
-             CteScanReq::SignalLength, JBB);
-
-  data.m_outstanding = 1;
-  requestPtr.p->m_outstanding++;
   requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
+
+  if (!requestPtr.p->m_cteScanAllNodes) {
+    jam();
+    /* Common case: local-only scan (instances >= nodes).
+     * Send CTE_SCAN_REQ to local DBLQH only. */
+    data.m_aggStateKey =
+        requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
+
+    CteScanReq *req =
+        reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
+    req->senderRef = reference();
+    req->senderData = treeNodePtr.i;
+    req->aggStateKey = data.m_aggStateKey;
+    req->transId1 = requestPtr.p->m_transId[0];
+    req->transId2 = requestPtr.p->m_transId[1];
+    req->batchSize = data.m_batchSize;
+
+    Uint32 ref = numberToRef(DBLQH, instance(), targetNodeId);
+    sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
+               CteScanReq::SignalLength, JBB);
+
+    data.m_outstanding = 1;
+    requestPtr.p->m_outstanding++;
+  } else {
+    jam();
+    /* Uncommon case: instances < nodes.  Send CTE_SCAN_REQ to ALL
+     * nodes that have CTE state.  The m_cteScan_active guard in DBLQH
+     * ensures each node's partition is scanned at most once. */
+    for (Uint32 nodeId = 1; nodeId < max_nodes; nodeId++) {
+      Uint32 aggKey =
+          requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
+      if (aggKey == 0) continue;  /* No CTE state on this node */
+
+      CteScanReq *req =
+          reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
+      req->senderRef = reference();
+      req->senderData = treeNodePtr.i;
+      req->aggStateKey = aggKey;
+      req->transId1 = requestPtr.p->m_transId[0];
+      req->transId2 = requestPtr.p->m_transId[1];
+      req->batchSize = data.m_batchSize;
+
+      Uint32 ref = numberToRef(DBLQH, instance(), nodeId);
+      sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
+                 CteScanReq::SignalLength, JBB);
+
+      data.m_outstanding++;
+      requestPtr.p->m_outstanding++;
+    }
+  }
 }
 
 /**
@@ -5836,55 +5873,54 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
   bool endOfData = (conf->flags & CteScanConf::EndOfData) != 0;
   data.m_endOfData = endOfData;
 
-  if (endOfData) {
-    jam();
-    /* All groups sent. Mark scan complete. */
-    treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
-    requestPtr.p->m_cnt_active--;
-    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
-
-    /* Track CTE materialization completion */
-    if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
-      requestPtr.p->m_cteScansComplete++;
-    }
-  }
-
-  /* The m_outstanding for CTE_SCAN_CONF itself was already counted
-   * in cte_scan_start (incremented once for the REQ). The TRANSID_AI
-   * signals also decrement m_outstanding via cte_scan_countSignal.
-   * We need to reconcile: m_outstanding was incremented by 1 for the REQ.
-   * TRANSID_AI decremented it by numRows. Net effect: add numRows - 1
-   * back if numRows > 0 (since CONF doesn't carry its own decrement).
-   * Actually, re-count: start incremented m_outstanding by 1.
-   * Each TRANSID_AI decremented by 1 (total: numRows decrements).
-   * So after all TRANSID_AI: m_outstanding decreased by numRows - 1.
-   * CONF itself should not change m_outstanding further.
-   * If numRows == 0 and endOfData: need to decrement the original 1.
-   */
+  /* m_outstanding accounting:
+   * Start incremented m_outstanding by 1 per node.
+   * Each TRANSID_AI decremented by 1 (total: numRows per node).
+   * If numRows == 0: no TRANSID_AI to balance — decrement here. */
   if (conf->numRows == 0) {
-    /* No TRANSID_AI to decrement — do it here */
     ndbrequire(requestPtr.p->m_outstanding > 0);
     requestPtr.p->m_outstanding--;
   }
 
   if (!endOfData) {
     jam();
-    /* More groups remain — send next CTE_SCAN_REQ batch */
+    /* More groups on this node — send continuation CTE_SCAN_REQ.
+     * Use conf->senderRef to route back to the same DBLQH node. */
+    const Uint32 sourceNodeId = refToNode(conf->senderRef);
+    const Uint32 sourceAggKey =
+        requestPtr.p->m_cteAggStateKeys[
+            data.m_cteId * (Uint32)MAX_NDB_NODES + sourceNodeId];
+
     CteScanReq *req =
         reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
     req->senderRef = reference();
     req->senderData = treeNodePtr.i;
-    req->aggStateKey = data.m_aggStateKey;
+    req->aggStateKey = sourceAggKey;
     req->transId1 = requestPtr.p->m_transId[0];
     req->transId2 = requestPtr.p->m_transId[1];
     req->batchSize = data.m_batchSize;
 
-    Uint32 ref = numberToRef(DBLQH, instance(), getOwnNodeId());
+    Uint32 ref = numberToRef(DBLQH, instance(), sourceNodeId);
     sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
                CteScanReq::SignalLength, JBB);
 
-    data.m_outstanding = 1;
+    data.m_outstanding++;
     requestPtr.p->m_outstanding++;
+  }
+
+  /* Scan complete when all nodes have sent EndOfData (m_outstanding == 0
+   * means no more pending REQs or TRANSID_AI). Check if this node was
+   * the last one. */
+  if (endOfData && data.m_outstanding == 0) {
+    jam();
+    /* All nodes done. Mark scan complete. */
+    treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+    requestPtr.p->m_cnt_active--;
+    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+
+    if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
+      requestPtr.p->m_cteScansComplete++;
+    }
   }
 
   checkBatchComplete(signal, requestPtr);
