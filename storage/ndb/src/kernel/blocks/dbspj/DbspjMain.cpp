@@ -1966,6 +1966,12 @@ error:
  * on one or more leaf nodes. For multi-leaf star schema queries,
  * multiple leaves may have NI_AGGREGATE_LEAF. Verify this to catch
  * malformed queries early rather than crashing later in DBTC/DBLQH.
+ *
+ * NI_AGGREGATE on CTE subtree nodes (T_CTE_SCAN) does not set
+ * RT_AGGREGATE or count toward m_aggregate_node_count. CTE
+ * aggregation uses the T_CTE_SCAN/JoinAggFlag path independently.
+ * This allows the main SELECT to be a normal SPJ query while CTEs
+ * aggregate their materialization data.
  */
 Uint32
 Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
@@ -12530,8 +12536,15 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       jam();
       DEB_AGGREGATION(("(%u)DBSPJ AGGREGATE: request contains aggregation",
                        instance()));
-      requestPtr.p->m_bits |= Request::RT_AGGREGATE;
-      ctx.m_aggregate_node_count++;
+      /* CTE subtree nodes (T_CTE_SCAN) use the CTE materialization
+       * path (JoinAggFlag, aggStateKey, hash table) for aggregation.
+       * Only main query nodes set RT_AGGREGATE and count toward
+       * m_aggregate_node_count. This allows the main SELECT to be
+       * a normal SPJ query while CTEs aggregate independently. */
+      if (!(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) {
+        requestPtr.p->m_bits |= Request::RT_AGGREGATE;
+        ctx.m_aggregate_node_count++;
+      }
 
       if (treeBits & DABits::NI_AGGREGATE_LEAF) {
         jam();
