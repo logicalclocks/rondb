@@ -1984,7 +1984,10 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
     Ptr<TreeNode> treeNodePtr;
     for (list.first(treeNodePtr); !treeNodePtr.isNull();
          list.next(treeNodePtr)) {
-      if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+      /* Count only main query aggregate leaves (exclude CTE subtree
+       * nodes which use T_CTE_SCAN for their own aggregation path). */
+      if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+          !(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) {
         jam();
         treeNodePtr.p->m_agg_leaf_index = aggregate_leaf_count;
         DEB_STAR_AGG(("(%u)DBSPJ STAR_AGG: node %u is agg leaf index %u,"
@@ -2038,7 +2041,8 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
       Uint32 commonParent = RNIL;
       for (list.first(treeNodePtr); !treeNodePtr.isNull();
            list.next(treeNodePtr)) {
-        if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+        if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+            !(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) {
           jam();
           if (commonParent == RNIL) {
             commonParent = treeNodePtr.p->m_parentPtrI;
@@ -2067,7 +2071,8 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
      */
     for (list.first(treeNodePtr); !treeNodePtr.isNull();
          list.next(treeNodePtr)) {
-      if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+      if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+          !(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) {
         jam();
         Uint32 parentPtrI = treeNodePtr.p->m_parentPtrI;
         while (parentPtrI != RNIL) {
