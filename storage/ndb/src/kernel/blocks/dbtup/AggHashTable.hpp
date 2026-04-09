@@ -87,6 +87,8 @@ class GBHashTable {
     Uint32 keyLen() const {
       return *reinterpret_cast<Uint32*>(m_raw + KEY_LEN_OFFSET);
     }
+    Uint32 bucket() const { return m_bucket; }
+    char* raw() const { return m_raw; }
   };
 
   GBHashTable()
@@ -154,6 +156,16 @@ class GBHashTable {
       }
     }
     return Iterator(self, m_bucket_count, nullptr, nullptr);
+  }
+
+  /**
+   * Construct an iterator at a saved position (bucket + raw pointer).
+   * Used for CTE scan resume — the hash table must be immutable between
+   * the save and restore. Does not support eraseAndNext() since
+   * m_prev_link is not reconstructed.
+   */
+  Iterator iteratorAt(Uint32 bucket, char* raw) {
+    return Iterator(this, bucket, nullptr, raw);
   }
 
   void next(Iterator& it) const {

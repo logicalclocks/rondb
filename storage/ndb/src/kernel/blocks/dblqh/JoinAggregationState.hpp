@@ -287,7 +287,9 @@ struct JoinAggregationState {
   Uint32 m_cteScan_senderRef;         // DBSPJ reference for TRANSID_AI/CONF
   Uint32 m_cteScan_senderData;        // TreeNode pointer (echoed in TRANSID_AI)
   Uint32 m_cteScan_transId[2];        // Transaction ID for TRANSID_AI
-  Uint32 m_cteScan_groupsSent;        // Groups sent so far (resume position)
+  Uint32 m_cteScan_groupsSent;        // Groups sent so far (for CORR_FACTOR ID)
+  Uint32 m_cteScan_iterBucket;        // Saved iterator: bucket index
+  char  *m_cteScan_iterRaw;           // Saved iterator: raw entry pointer
   bool m_cteScan_active;              // True if a scan is in progress/done
                                       // (first CTE_SCAN_REQ wins, others get
                                       // empty CONF — avoids duplicate scans
@@ -358,6 +360,8 @@ struct JoinAggregationState {
     m_cteScan_senderRef(0),
     m_cteScan_senderData(0),
     m_cteScan_groupsSent(0),
+    m_cteScan_iterBucket(0),
+    m_cteScan_iterRaw(nullptr),
     m_cteScan_active(false),
     m_state(IDLE),
     m_error_code(0),

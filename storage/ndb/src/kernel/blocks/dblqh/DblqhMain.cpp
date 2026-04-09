@@ -19112,10 +19112,10 @@ output_overflow:
 /**
  * CTE_SCAN_REQ — scan groups from a materialized CTE hash table.
  *
- * Iterates JoinAggregationState's hash table, skipping past groups
- * already sent (m_cteScan_groupsSent), and sends up to batchSize
- * groups as TRANSID_AI.  Sends CTE_SCAN_CONF with EndOfData when
- * all groups have been sent.
+ * Iterates JoinAggregationState's hash table, resuming from a saved
+ * iterator position (m_cteScan_iterBucket/iterRaw) for O(1) resume.
+ * Sends up to batchSize groups as TRANSID_AI.  Sends CTE_SCAN_CONF
+ * with EndOfData when all groups have been sent.
  *
  * Iteration state is stored in JoinAggregationState so it persists
  * across batches.  Each CTE_SCAN_REQ either starts a new scan
@@ -19191,16 +19191,16 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
     jam();
     const Uint32 n_gb_cols = interp->n_gb_cols();
     const Uint32 n_agg_results = interp->n_agg_results();
-    const Uint32 skipCount = state->m_cteScan_groupsSent;
 
-    Uint32 groupIdx = 0;
-    for (auto iter = gb_map->begin(); iter.valid(); gb_map->next(iter)) {
-      /* Skip past groups already sent in previous batches */
-      if (groupIdx < skipCount) {
-        groupIdx++;
-        continue;
-      }
+    /* Resume from saved iterator position (O(1)) instead of
+     * skipping from begin() (which would be O(N) per batch). */
+    Uint32 groupIdx = state->m_cteScan_groupsSent;
+    auto iter = (groupIdx == 0)
+        ? gb_map->begin()
+        : gb_map->iteratorAt(state->m_cteScan_iterBucket,
+                             state->m_cteScan_iterRaw);
 
+    for (; iter.valid(); gb_map->next(iter)) {
       /* Batch limit reached — pause for next CTE_SCAN_REQ */
       if (numRowsSent >= batchSize) {
         jam();
@@ -19266,10 +19266,14 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
       numRowsSent++;
       groupIdx++;
     }
-  }
 
-  /* Update resume position */
-  state->m_cteScan_groupsSent += numRowsSent;
+    /* Update resume position — save iterator state for O(1) resume */
+    state->m_cteScan_groupsSent = groupIdx;
+    if (!endOfData && iter.valid()) {
+      state->m_cteScan_iterBucket = iter.bucket();
+      state->m_cteScan_iterRaw = iter.raw();
+    }
+  }
 
   /* Send CTE_SCAN_CONF */
   CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
