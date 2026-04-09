@@ -12583,6 +12583,17 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       if (ctx.m_cteSubtreeRemaining == 0) {
         requestPtr.p->m_bits |= Request::RT_AGGREGATE;
         ctx.m_aggregate_node_count++;
+        g_eventLogger->info(
+            "DBSPJ %u: NI_AGGREGATE on main query node %u "
+            "(cteRemaining=0, aggCount=%u)",
+            instance(), treeNodePtr.p->m_node_no,
+            ctx.m_aggregate_node_count);
+      } else {
+        g_eventLogger->info(
+            "DBSPJ %u: NI_AGGREGATE on CTE subtree node %u "
+            "(cteRemaining=%u, SKIP RT_AGGREGATE)",
+            instance(), treeNodePtr.p->m_node_no,
+            ctx.m_cteSubtreeRemaining);
       }
 
       if (treeBits & DABits::NI_AGGREGATE_LEAF) {
