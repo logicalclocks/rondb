@@ -1944,16 +1944,15 @@ Dbspj::build(Build_context& ctx,
     }
 
     /**
-     * Only first real scan/lookup root gets access to signal.
-     * CTE_SUBTREE containers don't use m_start_signal — preserve
-     * it for the main query root scan that follows the CTE
-     * subtrees. CTE embedded scans also don't consume it (they
-     * use the CTE root scan path in scanFrag_build instead).
+     * m_start_signal is consumed inside parseScanFrag() and
+     * lookup_build() when they detect the main query root
+     * (ctx.m_start_signal != NULL && cteSubtreeRemaining == 0).
+     * They set ctx.m_start_signal = NULL after use.
+     *
+     * For CTE compound queries, the signal is preserved through
+     * CTE subtree nodes until the main query root is built.
+     * For non-CTE queries, the first node (root) consumes it.
      */
-    if (ctx.m_cteSubtreeRemaining == 0 &&
-        node_op != QueryNode::QN_CTE_SUBTREE) {
-      ctx.m_start_signal = NULL;
-    }
 
     ndbrequire(ctx.m_cnt < NDB_ARRAY_SIZE(ctx.m_node_list));
     ctx.m_cnt++;
@@ -6584,6 +6583,7 @@ Uint32 Dbspj::lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
       dst->hashValue = hashValue;
       dst->fragmentData = fragId;
       dst->attrLen = attrLen;  // fragdist is in here
+      ctx.m_start_signal = NULL;  // Consumed by main query root
 
       treeNodePtr.p->m_bits |= TreeNode::T_ONE_SHOT;
     }
@@ -8862,6 +8862,10 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
         }
         requestPtr.p->m_rootFragCnt = data.m_fragCount;
       }
+      DEB_CTE(("(%u) m_start_signal = NULL by node: %u",
+        instance(), treeNodePtr.p->m_node_no));
+
+      ctx.m_start_signal = NULL;  // Consumed by main query root
 
       if (ScanFragReq::getRangeScanFlag(req->requestInfo)) {
         c_Counters.incr_counter(CI_RANGE_SCANS_RECEIVED, 1);
@@ -9337,7 +9341,8 @@ void Dbspj::execDIH_SCAN_TAB_CONF(Signal *signal) {
     data.m_null_row_outstanding = 0;
     data.m_agg_range_cnt = 0;
 
-    DEB_CTE(("(%u) frags_complete: %u", instance(), data.m_frags_complete));
+    DEB_CTE(("(%u) frags_complete: %u in node: %u",
+      instance(), data.m_frags_complete, treeNodePtr.p->m_node_no));
 
     if (!pruned) {
       /** Start requesting node info from DIH */
@@ -9870,7 +9875,9 @@ void Dbspj::scanFrag_parent_batch_complete(Signal *signal,
   jam();
   ndbassert(treeNodePtr.p->m_parentPtrI != RNIL);
 
-  DEB_CTE(("(%u) scanFrag_parent_batch_complete", instance()));
+  DEB_CTE(("(%u) scanFrag_parent_batch_complete node: %u",
+    instance(), treeNodePtr.p->m_node_no));
+
   ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
 
   /**
