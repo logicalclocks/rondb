@@ -48,6 +48,7 @@
 #include <signaldata/DbspjErr.hpp>
 #include <signaldata/JoinAgg.hpp>
 #include <signaldata/CteLookup.hpp>
+#include <signaldata/CteScan.hpp>
 #include "JoinAggregationState.hpp"
 #include <signaldata/LqhFrag.hpp>
 #include <signaldata/LqhKey.hpp>
