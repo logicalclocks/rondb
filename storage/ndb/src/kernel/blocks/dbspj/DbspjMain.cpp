@@ -12536,12 +12536,14 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       jam();
       DEB_AGGREGATION(("(%u)DBSPJ AGGREGATE: request contains aggregation",
                        instance()));
-      /* CTE subtree nodes (T_CTE_SCAN) use the CTE materialization
-       * path (JoinAggFlag, aggStateKey, hash table) for aggregation.
+      /* CTE subtree nodes use the CTE materialization path
+       * (JoinAggFlag, aggStateKey, hash table) for aggregation.
        * Only main query nodes set RT_AGGREGATE and count toward
        * m_aggregate_node_count. This allows the main SELECT to be
-       * a normal SPJ query while CTEs aggregate independently. */
-      if (!(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) {
+       * a normal SPJ query while CTEs aggregate independently.
+       * Note: T_CTE_SCAN is set AFTER build, so we check the
+       * build context's m_cteSubtreeRemaining instead. */
+      if (ctx.m_cteSubtreeRemaining == 0) {
         requestPtr.p->m_bits |= Request::RT_AGGREGATE;
         ctx.m_aggregate_node_count++;
       }
