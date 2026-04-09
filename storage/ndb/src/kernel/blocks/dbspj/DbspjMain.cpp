@@ -2945,9 +2945,12 @@ void Dbspj::prepare(Signal *signal, Ptr<Request> requestPtr) {
 
     /**
      * preferably RT_NEED_PREPARE should only be set if blocking
-     * calls are used, in which case m_outstanding should have been increased
+     * calls are used, in which case m_outstanding should have been increased.
+     * Exception: CTE compound queries defer main query node prepare
+     * to execCTE_START_MAIN_REQ, so m_outstanding may be 0 here.
      */
-    ndbassert(err || requestPtr.p->m_outstanding);
+    ndbassert(err || requestPtr.p->m_outstanding ||
+              requestPtr.p->m_numCtes > 0);
   }
   if (unlikely(err)) {
     jam();
