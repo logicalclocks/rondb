@@ -1443,11 +1443,10 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         reader.step(1);  // skip marker
         Uint32 numCtes;
         ndbrequire(reader.getWord(&numCtes));
-        if (unlikely(numCtes > 64 ||
-                     numCtes != requestPtr.p->m_numCtes)) {
+        if (unlikely(numCtes > 64)) {
           jam();
-          abort(signal, requestPtr, DbspjErr::InvalidTreeNodeSpecification);
-          return;
+          err = DbspjErr::InvalidTreeNodeSpecification;
+          break;
         }
 
         Uint32 cteFlags;
@@ -1460,8 +1459,8 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
                                         getThreadId(), true);
         if (unlikely(mem == nullptr)) {
           jam();
-          abort(signal, requestPtr, DbspjErr::OutOfQueryMemory);
-          return;
+          err = DbspjErr::OutOfQueryMemory;
+          break;
         }
         requestPtr.p->m_cteAggStateKeys = static_cast<Uint32 *>(mem);
 
