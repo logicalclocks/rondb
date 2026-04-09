@@ -2003,17 +2003,36 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
       }
     }
 
-    /* When CTEs are present, only main query nodes contribute to
-     * m_aggregate_node_count (CTE subtree nodes are excluded).
-     * Skip the all-or-nothing check for compound CTE queries since
-     * the aggregate and non-aggregate node sets are disjoint. */
-    if (requestPtr.p->m_numCtes == 0 &&
-        unlikely(ctx.m_aggregate_node_count != ctx.m_cnt)) {
-      jam();
-      g_eventLogger->debug(
-          "DBSPJ %u: NI_AGGREGATE set on %u of %u nodes, expected all",
-          instance(), ctx.m_aggregate_node_count, ctx.m_cnt);
-      return DbspjErr::InvalidAggregateFlags;
+    /* When CTE subtree nodes exist, only main query nodes contribute
+     * to m_aggregate_node_count (CTE subtree nodes are excluded via
+     * ctx.m_cteSubtreeRemaining during build). Count nodes with
+     * T_CTE_SCAN to determine how many nodes are CTE subtree nodes.
+     * The all-or-nothing check only applies to the remaining
+     * (non-CTE) nodes. */
+    {
+      Uint32 cteNodeCount = 0;
+      for (list.first(treeNodePtr); !treeNodePtr.isNull();
+           list.next(treeNodePtr)) {
+        if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)
+          cteNodeCount++;
+      }
+      /* Also count QN_CTE_SUBTREE containers (m_info ==
+       * g_CteSubtreeOpInfo) which don't have T_CTE_SCAN */
+      for (list.first(treeNodePtr); !treeNodePtr.isNull();
+           list.next(treeNodePtr)) {
+        if (treeNodePtr.p->m_info == &g_CteSubtreeOpInfo)
+          cteNodeCount++;
+      }
+      if (unlikely(ctx.m_aggregate_node_count + cteNodeCount !=
+                   ctx.m_cnt)) {
+        jam();
+        g_eventLogger->info(
+            "DBSPJ %u: NI_AGGREGATE set on %u of %u nodes "
+            "(cteNodes=%u), expected all non-CTE",
+            instance(), ctx.m_aggregate_node_count,
+            ctx.m_cnt, cteNodeCount);
+        return DbspjErr::InvalidAggregateFlags;
+      }
     }
     g_eventLogger->info(
         "DBSPJ %u: validateAgg: aggLeafCount=%u "
