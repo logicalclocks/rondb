@@ -16639,6 +16639,17 @@ void Dbtc::execDIH_SCAN_TAB_CONF(Signal *signal, ScanRecordPtr scanptr,
   }
   ndbassert(scanptr.p->scanNextFragId == 0);
 
+  /* CTE compound queries require one DBSPJ instance per fragment.
+   * Check the original scanParallel (from API) against the actual
+   * fragment count before overriding. */
+  if (unlikely(scanptr.p->m_numCtes > 0 &&
+               scanptr.p->scanParallel < tfragCount)) {
+    jam();
+    abortScanLab(signal, scanptr, ZINVALID_KEY, true,
+                 apiConnectptr);
+    return;
+  }
+
   scanptr.p->scanParallel = tfragCount;
   scanptr.p->scanNoFrag = tfragCount;
   scanptr.p->scanState = ScanRecord::RUNNING;
