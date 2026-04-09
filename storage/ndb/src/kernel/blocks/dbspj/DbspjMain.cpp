@@ -5298,6 +5298,7 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_primaryTableId = 0;
     treeNodePtr.p->m_schemaVersion = 0;
     treeNodePtr.p->m_info = &g_CteLookupOpInfo;
+    treeNodePtr.p->m_bits |= TreeNode::T_EXPECT_TRANSID_AI;
 
     // Store CTE-specific data
     treeNodePtr.p->m_cteLookup_data.m_cteId = node->cteId;

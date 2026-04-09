@@ -190,6 +190,7 @@
     <li><a href="#main-query">Phase 5: Main Query Execution</a></li>
     <li><a href="#cte-to-cte">CTE-to-CTE Dependencies</a></li>
     <li><a href="#scan-resume">O(1) CTE Scan Resume</a></li>
+    <li><a href="#single-row">Single-Row CTE Optimization</a></li>
     <li><a href="#signals">Signal Reference</a></li>
     <li><a href="#state-machines">State Machines</a></li>
   </ol>
@@ -217,6 +218,7 @@ the main SELECT.</p>
   <li><strong>CTE_LOOKUP</strong> &mdash; point lookups into the distributed hash table by GROUP BY key (used in both the main query and inside CTE subtrees for CTE-to-CTE joins)</li>
   <li><strong>CTE_SCAN</strong> &mdash; full iteration of a CTE hash table (for CTE-to-CTE dependencies that need all rows)</li>
   <li><strong>O(1) scan resume</strong> &mdash; hash table iterator state is saved between batches, avoiding O(N) skip on continuation</li>
+  <li><strong>Single-row CTE optimization</strong> &mdash; CTEs with no GROUP BY (scalar subqueries) materialize on one node, skip redistribution, and cache the result in DBSPJ for signal-free serving</li>
   <li><strong>Graceful error handling</strong> &mdash; allocation failures and invalid input abort the query, never crash the node</li>
 </ul>
 
@@ -391,7 +393,7 @@ node types alongside the existing <code>QN_SCAN_FRAG</code> and <code>QN_LOOKUP<
   <td><code>QN_CTE_SUBTREE</code></td>
   <td>0x6</td>
   <td><code>cteId</code>, <code>numNodes</code>, <code>requestInfo</code></td>
-  <td>Container wrapping an embedded CTE materialization sub-tree. Followed by <code>numNodes</code> nodes. <code>requestInfo</code> may carry <code>CTE_SINGLE_ROW</code> flag (planned).</td>
+  <td>Container wrapping an embedded CTE materialization sub-tree. Followed by <code>numNodes</code> nodes. <code>requestInfo</code> bit 0 = <code>CTE_SINGLE_ROW</code> (no GROUP BY, single result row).</td>
   <td>N/A</td>
 </tr>
 <tr>
@@ -453,7 +455,7 @@ node types alongside the existing <code>QN_SCAN_FRAG</code> and <code>QN_LOOKUP<
   <text x="35" y="390" fill="#f0c040" font-size="10">WAIT_JOIN_AGG_SETUP = 6 | WAIT_CTE_COMPLETE = 9</text>
 
   <!-- CteInfo box -->
-  <rect x="460" y="40" width="380" height="150" rx="8" fill="#0d1117" stroke="#f4845f" stroke-width="2"/>
+  <rect x="460" y="40" width="380" height="170" rx="8" fill="#0d1117" stroke="#f4845f" stroke-width="2"/>
   <rect x="460" y="40" width="380" height="30" rx="8" fill="#3d2b1f"/>
   <text x="650" y="61" text-anchor="middle" fill="#f4845f" font-size="13" font-weight="700">CteInfo (sorted by size)</text>
 
@@ -462,6 +464,7 @@ node types alongside the existing <code>QN_SCAN_FRAG</code> and <code>QN_LOOKUP<
   <text x="475" y="135" fill="#eee" font-size="11"><tspan fill="#f4845f">schemaVersion</tspan> : Uint32</text>
   <text x="475" y="155" fill="#eee" font-size="11"><tspan fill="#f4845f">aggProgramPtrI</tspan> : Uint32</text>
   <text x="475" y="175" fill="#eee" font-size="11"><tspan fill="#f4845f">phase</tspan> : Uint32</text>
+  <text x="475" y="195" fill="#eee" font-size="11"><tspan fill="#4ecca3">m_flags</tspan> : Uint32 <tspan fill="#f0c040">(bit 0 = CTE_SINGLE_ROW)</tspan></text>
 
   <!-- Arrow from ScanRecord to CteInfo -->
   <line x1="400" y1="175" x2="460" y2="110" stroke="#f4845f" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
@@ -513,7 +516,7 @@ node types alongside the existing <code>QN_SCAN_FRAG</code> and <code>QN_LOOKUP<
   <text x="35" y="332" fill="#f0c040" font-size="10">m_cteContexts: grows by 1 per CTE in cte_build()</text>
 
   <!-- CteContext box -->
-  <rect x="430" y="40" width="350" height="210" rx="8" fill="#0d1117" stroke="#f48fb1" stroke-width="2"/>
+  <rect x="430" y="40" width="350" height="290" rx="8" fill="#0d1117" stroke="#f48fb1" stroke-width="2"/>
   <rect x="430" y="40" width="350" height="30" rx="8" fill="#3b1929"/>
   <text x="605" y="61" text-anchor="middle" fill="#f48fb1" font-size="13" font-weight="700">CteContext (sorted by size)</text>
 
@@ -523,7 +526,12 @@ node types alongside the existing <code>QN_SCAN_FRAG</code> and <code>QN_LOOKUP<
   <text x="445" y="155" fill="#eee" font-size="11"><tspan fill="#f48fb1">m_numResultCols</tspan> : Uint32</text>
   <text x="445" y="175" fill="#eee" font-size="11"><tspan fill="#f48fb1">m_scanTreeNodeNo</tspan> : Uint32</text>
   <text x="445" y="195" fill="#eee" font-size="11"><tspan fill="#f48fb1">m_phase</tspan> : Uint32</text>
-  <text x="445" y="230" fill="#f0c040" font-size="10">NOT_STARTED=0 | MATERIALIZING=1 | READY=2 | FAILED=3</text>
+  <text x="445" y="220" fill="#aaa" font-size="10">&mdash;&mdash; Single-row CTE caching &mdash;&mdash;</text>
+  <text x="445" y="240" fill="#eee" font-size="11"><tspan fill="#4ecca3">m_flags</tspan> : Uint32 <tspan fill="#f0c040">(bit 0 = CTE_SINGLE_ROW)</tspan></text>
+  <text x="445" y="260" fill="#eee" font-size="11"><tspan fill="#4ecca3">m_cachedRowPtrI</tspan> : Uint32 (RNIL or section)</text>
+  <text x="445" y="280" fill="#eee" font-size="11"><tspan fill="#4ecca3">m_cachedRowLen</tspan> : Uint32</text>
+  <text x="445" y="300" fill="#eee" font-size="11"><tspan fill="#4ecca3">m_singleNodeId</tspan> : Uint32</text>
+  <text x="445" y="320" fill="#f0c040" font-size="10">NOT_STARTED=0 | MATERIALIZING=1 | READY=2 | FAILED=3</text>
 
   <!-- Arrow -->
   <line x1="370" y1="95" x2="430" y2="95" stroke="#f48fb1" stroke-width="1.5" marker-end="url(#arrow-pink)"/>
@@ -849,10 +857,124 @@ The <code>m_prev_link</code> field is set to nullptr (erase not supported on res
 </section>
 
 <!-- ============================================================ -->
-<!-- 12. SIGNAL REFERENCE -->
+<!-- 12. SINGLE-ROW CTE OPTIMIZATION -->
+<!-- ============================================================ -->
+<section id="single-row">
+<h2>12. Single-Row CTE Optimization</h2>
+
+<p>When a CTE produces exactly one row (aggregate without GROUP BY &mdash; e.g., a
+scalar subquery rewritten as a CTE), the <code>CTE_SINGLE_ROW</code> flag in
+<code>QN_CteSubtreeNode::requestInfo</code> enables three optimizations:</p>
+
+<div class="diagram-box">
+<svg width="880" height="380" viewBox="0 0 880 380">
+  <text x="440" y="22" text-anchor="middle" fill="#eee" font-size="14" class="svg-title">Single-Row CTE &mdash; Three Optimizations</text>
+
+  <!-- Optimization 1: Single-node materialization -->
+  <rect x="20" y="50" width="270" height="140" rx="8" fill="#0d1117" stroke="#4ecca3" stroke-width="2"/>
+  <rect x="20" y="50" width="270" height="28" rx="8" fill="#1b4332"/>
+  <text x="155" y="69" text-anchor="middle" fill="#4ecca3" font-size="11" font-weight="700">1. Single-Node Materialization</text>
+
+  <text x="35" y="100" fill="#eee" font-size="10">DBTC sends JOIN_AGG_SETUP_REQ</text>
+  <text x="35" y="117" fill="#eee" font-size="10">to <tspan fill="#f0c040">one</tspan> data node (first connected)</text>
+  <text x="35" y="134" fill="#eee" font-size="10">instead of all nodes.</text>
+  <text x="35" y="158" fill="#aaa" font-size="10">Saves N-1 hash table allocations</text>
+  <text x="35" y="175" fill="#aaa" font-size="10">and N-1 setup round-trips.</text>
+
+  <!-- Optimization 2: Skip redistribution -->
+  <rect x="305" y="50" width="270" height="140" rx="8" fill="#0d1117" stroke="#f4845f" stroke-width="2"/>
+  <rect x="305" y="50" width="270" height="28" rx="8" fill="#3d2b1f"/>
+  <text x="440" y="69" text-anchor="middle" fill="#f4845f" font-size="11" font-weight="700">2. Skip Redistribution</text>
+
+  <text x="320" y="100" fill="#eee" font-size="10">sendCteCompleteReqsForPhase()</text>
+  <text x="320" y="117" fill="#eee" font-size="10">skips JOIN_AGG_COMPLETE_REQ</text>
+  <text x="320" y="134" fill="#eee" font-size="10">for single-row CTEs.</text>
+  <text x="320" y="158" fill="#aaa" font-size="10">No REDISTRIBUTE_REQ signals.</text>
+  <text x="320" y="175" fill="#aaa" font-size="10">cteAdvancePhase() called directly.</text>
+
+  <!-- Optimization 3: DBSPJ caching -->
+  <rect x="590" y="50" width="270" height="140" rx="8" fill="#0d1117" stroke="#b388ff" stroke-width="2"/>
+  <rect x="590" y="50" width="270" height="28" rx="8" fill="#312244"/>
+  <text x="725" y="69" text-anchor="middle" fill="#b388ff" font-size="11" font-weight="700">3. DBSPJ Result Caching</text>
+
+  <text x="605" y="100" fill="#eee" font-size="10">cte_serve_cached_row() serves</text>
+  <text x="605" y="117" fill="#eee" font-size="10">cached result via TRANSID_AI</text>
+  <text x="605" y="134" fill="#eee" font-size="10">to self &mdash; no CTE_LOOKUP_REQ.</text>
+  <text x="605" y="158" fill="#aaa" font-size="10">Cached in m_cachedRowPtrI as</text>
+  <text x="605" y="175" fill="#aaa" font-size="10">SegmentedSection (word array).</text>
+
+  <!-- Flow diagram below -->
+  <text x="440" y="220" text-anchor="middle" fill="#eee" font-size="12" font-weight="700">Signal Flow: Single-Row CTE vs Normal CTE</text>
+
+  <!-- Normal CTE path -->
+  <rect x="30" y="240" width="380" height="120" rx="6" fill="rgba(244,132,95,0.06)" stroke="#f4845f" stroke-width="1"/>
+  <text x="220" y="258" text-anchor="middle" fill="#f4845f" font-size="11" font-weight="600">Normal CTE (multi-node)</text>
+  <text x="45" y="280" fill="#eee" font-size="10">SETUP_REQ &rarr; N nodes</text>
+  <text x="45" y="297" fill="#eee" font-size="10">Materialize &rarr; N hash tables</text>
+  <text x="45" y="314" fill="#eee" font-size="10">COMPLETE_REQ &rarr; REDISTRIBUTE_REQ</text>
+  <text x="45" y="331" fill="#eee" font-size="10">FINAL_REP &rarr; CTE_READY</text>
+  <text x="45" y="348" fill="#eee" font-size="10">CTE_LOOKUP_REQ per parent row</text>
+
+  <!-- Single-row CTE path -->
+  <rect x="440" y="240" width="420" height="120" rx="6" fill="rgba(78,204,163,0.06)" stroke="#4ecca3" stroke-width="1"/>
+  <text x="650" y="258" text-anchor="middle" fill="#4ecca3" font-size="11" font-weight="600">Single-Row CTE (CTE_SINGLE_ROW)</text>
+  <text x="455" y="280" fill="#eee" font-size="10">SETUP_REQ &rarr; 1 node</text>
+  <text x="455" y="297" fill="#eee" font-size="10">Materialize &rarr; 1 hash table (1 group)</text>
+  <text x="455" y="314" fill="#eee" font-size="10"><tspan fill="#f0c040">skip</tspan> COMPLETE_REQ &rarr; cteAdvancePhase()</text>
+  <text x="455" y="331" fill="#eee" font-size="10">Cache row in DBSPJ (m_cachedRowPtrI)</text>
+  <text x="455" y="348" fill="#eee" font-size="10"><tspan fill="#f0c040">cte_serve_cached_row()</tspan> &mdash; no signal to DBLQH</text>
+</svg>
+<div class="diagram-caption">Figure 7: Single-row CTE optimization: single node, no redistribution, cached serving</div>
+</div>
+
+<h4>Wire Format: Per-CTE Flags</h4>
+<p>A per-CTE <code>flags</code> word is added to both the CTE definition section (SCAN_TABINFO)
+and the aggKeys section (SCAN_FRAGREQ):</p>
+
+<pre><code>// CTE definition section (DBTC parsing):
+[tableId] [schemaVersion] [depMask_lo] [depMask_hi] [flags] [progLen] [prog...]
+
+// aggKeys section (DBSPJ parsing):
+[cteId] [depMask_lo] [depMask_hi] [flags] [phase] [nodeCount] [nodeId, aggKey]...</code></pre>
+
+<p><code>flags</code> bit 0 = <code>CTE_SINGLE_ROW</code> (0x1). Remaining bits reserved for future use.</p>
+
+<h4>Key Code Paths</h4>
+<table>
+<tr><th>Component</th><th>Function</th><th>Single-Row Behavior</th></tr>
+<tr>
+  <td><span class="tag tag-dbtc">DBTC</span></td>
+  <td><code>sendJoinAggSetupReqs()</code></td>
+  <td>Break after first connected node (single-node setup)</td>
+</tr>
+<tr>
+  <td><span class="tag tag-dbtc">DBTC</span></td>
+  <td><code>sendCteCompleteReqsForPhase()</code></td>
+  <td>Skip COMPLETE_REQ entirely; cteAdvancePhase() called directly</td>
+</tr>
+<tr>
+  <td><span class="tag tag-dbspj">DBSPJ</span></td>
+  <td><code>cte_parent_row()</code></td>
+  <td>If <code>m_cachedRowPtrI != RNIL</code>: call <code>cte_serve_cached_row()</code></td>
+</tr>
+<tr>
+  <td><span class="tag tag-dbspj">DBSPJ</span></td>
+  <td><code>cte_serve_cached_row()</code></td>
+  <td>Build TRANSID_AI from cached section, send to self</td>
+</tr>
+<tr>
+  <td><span class="tag tag-dbspj">DBSPJ</span></td>
+  <td><code>cleanup()</code></td>
+  <td>Release cached sections via <code>releaseSection()</code></td>
+</tr>
+</table>
+</section>
+
+<!-- ============================================================ -->
+<!-- 13. SIGNAL REFERENCE -->
 <!-- ============================================================ -->
 <section id="signals">
-<h2>12. Signal Reference</h2>
+<h2>13. Signal Reference</h2>
 
 <h3>CTE Signals</h3>
 <table>
@@ -919,7 +1041,7 @@ The <code>m_prev_link</code> field is set to nullptr (erase not supported on res
 <!-- 13. STATE MACHINES -->
 <!-- ============================================================ -->
 <section id="state-machines">
-<h2>13. State Machines</h2>
+<h2>14. State Machines</h2>
 
 <div class="diagram-box">
 <svg width="880" height="280" viewBox="0 0 880 280">
