@@ -582,8 +582,8 @@ Uint32 buildScanTabReqInfo()
  *   [aggReceiverId]
  *   [mainAggProgram...]        (self-describing: word[0] = (magic<<16)|len)
  *   [numCtes=2]
- *   [cte0_tableId] [cte0_schemaVersion] [cte0_depMask_lo] [cte0_depMask_hi] [cte0_progLen] [cte0_prog...]
- *   [cte1_tableId] [cte1_schemaVersion] [cte1_depMask_lo] [cte1_depMask_hi] [cte1_progLen] [cte1_prog...]
+ *   [cte0_tableId] [cte0_schemaVersion] [cte0_depMask_lo] [cte0_depMask_hi] [cte0_flags] [cte0_progLen] [cte0_prog...]
+ *   [cte1_tableId] [cte1_schemaVersion] [cte1_depMask_lo] [cte1_depMask_hi] [cte1_flags] [cte1_progLen] [cte1_prog...]
  */
 static int
 sendScanTabReqWithCtes(SignalSender &ss, Uint32 nodeId,
@@ -631,6 +631,7 @@ sendScanTabReqWithCtes(SignalSender &ss, Uint32 nodeId,
   aggSection.push_back(meta.schemaVersion);
   aggSection.push_back(0);            /* depMask lo = 0 (no deps) */
   aggSection.push_back(0);            /* depMask hi = 0 */
+  aggSection.push_back(0);            /* flags = 0 */
   aggSection.push_back((Uint32)cte0AggProgram.size());
   aggSection.insert(aggSection.end(),
                     cte0AggProgram.begin(), cte0AggProgram.end());
@@ -639,6 +640,7 @@ sendScanTabReqWithCtes(SignalSender &ss, Uint32 nodeId,
   aggSection.push_back(meta.schemaVersion);
   aggSection.push_back(0);            /* depMask lo = 0 (no deps) */
   aggSection.push_back(0);            /* depMask hi = 0 */
+  aggSection.push_back(0);            /* flags = 0 */
   aggSection.push_back((Uint32)cte1AggProgram.size());
   aggSection.insert(aggSection.end(),
                     cte1AggProgram.begin(), cte1AggProgram.end());

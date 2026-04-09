@@ -1466,21 +1466,23 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         requestPtr.p->m_cteAggStateKeys = static_cast<Uint32 *>(mem);
 
         for (Uint32 c = 0; c < numCtes; c++) {
-          Uint32 cteId, phase, cteNodeCount;
+          Uint32 cteId, perCteFlags, phase, cteNodeCount;
           Uint32 depLo, depHi;
           ndbrequire(reader.getWord(&cteId));
           ndbrequire(reader.getWord(&depLo));
           ndbrequire(reader.getWord(&depHi));
+          ndbrequire(reader.getWord(&perCteFlags));
           ndbrequire(reader.getWord(&phase));
           ndbrequire(reader.getWord(&cteNodeCount));
           Uint64 depMask = (Uint64(depHi) << 32) | depLo;
 
-          /* Store depMask and phase in the matching CteContext.
-           * The CteContext was created during cte_build() in the tree
-           * parsing phase (before aggKeys parsing). Match by cteId. */
+          /* Store depMask, flags and phase in the matching
+           * CteContext. Created during cte_build() before
+           * aggKeys parsing. Match by cteId. */
           for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
             if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
               requestPtr.p->m_cteContexts[i].m_depMask = depMask;
+              requestPtr.p->m_cteContexts[i].m_flags = perCteFlags;
               requestPtr.p->m_cteContexts[i].m_phase = phase;
               break;
             }
@@ -1492,6 +1494,17 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
             ndbrequire(reader.getWord(&cteAggKey));
             ndbrequire(nodeId < max_nodes);
             requestPtr.p->m_cteAggStateKeys[c * max_nodes + nodeId] = cteAggKey;
+            /* Track single-row CTE's node */
+            if ((perCteFlags &
+                 QN_CteSubtreeNode::CTE_SINGLE_ROW) &&
+                cteAggKey != 0) {
+              for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+                if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
+                  requestPtr.p->m_cteContexts[i].m_singleNodeId = nodeId;
+                  break;
+                }
+              }
+            }
           }
         }
 
@@ -3785,6 +3798,13 @@ void Dbspj::cleanup(Ptr<Request> requestPtr, bool in_hash) {
     requestPtr.p->m_cteAggStateKeys = nullptr;
   }
   if (requestPtr.p->m_cteContexts != nullptr) {
+    /* Release any cached single-row CTE sections */
+    for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+      if (requestPtr.p->m_cteContexts[i].m_cachedRowPtrI != RNIL) {
+        releaseSection(requestPtr.p->m_cteContexts[i].m_cachedRowPtrI);
+        requestPtr.p->m_cteContexts[i].m_cachedRowPtrI = RNIL;
+      }
+    }
     lc_ndbd_pool_free(requestPtr.p->m_cteContexts);
     requestPtr.p->m_cteContexts = nullptr;
   }
@@ -5330,6 +5350,10 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
         cctx.m_numResultCols = node->numResultCols;
         cctx.m_depMask = 0;  // Filled in later from aggKeys section
         cctx.m_phase = 0;    // Filled in later from aggKeys section
+        cctx.m_flags = 0;
+        cctx.m_cachedRowPtrI = RNIL;
+        cctx.m_cachedRowLen = 0;
+        cctx.m_singleNodeId = 0;
         requestPtr.p->m_numCtes++;
       }
     }
@@ -5395,7 +5419,15 @@ void Dbspj::cte_parent_row(Signal *signal, Ptr<Request> requestPtr,
   switch (cteCtx->m_state) {
   case CteContext::CTE_READY:
     jam();
-    cte_lookup_send(signal, requestPtr, treeNodePtr, rowRef);
+    if (cteCtx->m_cachedRowPtrI != RNIL) {
+      /* Single-row CTE: serve cached result directly */
+      jam();
+      cte_serve_cached_row(signal, requestPtr,
+                           treeNodePtr, *cteCtx);
+    } else {
+      cte_lookup_send(signal, requestPtr,
+                      treeNodePtr, rowRef);
+    }
     break;
 
   case CteContext::CTE_MATERIALIZING:
@@ -5411,6 +5443,40 @@ void Dbspj::cte_parent_row(Signal *signal, Ptr<Request> requestPtr,
     abort(signal, requestPtr, DbspjErr::InvalidRequest);
     break;
   }
+}
+
+/**
+ * Serve a cached single-row CTE result directly from DBSPJ
+ * memory, avoiding the CTE_LOOKUP_REQ round-trip to DBLQH.
+ * Constructs a TRANSID_AI signal from the cached section
+ * and delivers it to the tree node's row processing pipeline.
+ */
+void Dbspj::cte_serve_cached_row(Signal *signal,
+                                  Ptr<Request> requestPtr,
+                                  Ptr<TreeNode> treeNodePtr,
+                                  const CteContext &cteCtx) {
+  jam();
+  ndbrequire(cteCtx.m_cachedRowPtrI != RNIL);
+  ndbrequire(cteCtx.m_cachedRowLen > 0);
+
+  /* Build TRANSID_AI from cached section */
+  SegmentedSectionPtr cachedPtr;
+  getSection(cachedPtr, cteCtx.m_cachedRowPtrI);
+
+  /* Copy to linear buffer for row processing */
+  copy(m_buffer1, cachedPtr);
+
+  TransIdAI *transIdAI =
+      (TransIdAI *)signal->getDataPtrSend();
+  transIdAI->connectPtr = treeNodePtr.i;
+  transIdAI->transId[0] = requestPtr.p->m_transId[0];
+  transIdAI->transId[1] = requestPtr.p->m_transId[1];
+
+  LinearSectionPtr lsp[3];
+  lsp[0].p = m_buffer1;
+  lsp[0].sz = cteCtx.m_cachedRowLen;
+  sendSignal(reference(), GSN_TRANSID_AI, signal,
+             TransIdAI::HeaderLength, JBB, lsp, 1);
 }
 
 /**

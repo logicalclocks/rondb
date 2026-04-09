@@ -459,10 +459,14 @@ struct QN_ScanFragParameters {
 struct QN_CteSubtreeNode  // Is a QueryNode subclass
 {
   Uint32 len;           // (totalLength << 16) | QN_CTE_SUBTREE
-  Uint32 requestInfo;   // Reserved (0)
+  Uint32 requestInfo;   // RequestInfoBits flags
   Uint32 cteId;         // Unique CTE identifier (0-based index)
   Uint32 numNodes;      // Number of embedded standard nodes following
   static constexpr Uint32 NodeSize = 4;
+
+  enum RequestInfoBits {
+    CTE_SINGLE_ROW = 0x1  // CTE produces exactly one row (no GROUP BY)
+  };
 
   Uint32 optional[1];   // Embedded QueryNode structures follow
 };

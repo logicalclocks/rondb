@@ -2035,6 +2035,7 @@ class Dbtc : public SimulatedBlock {
       Uint32 schemaVersion;
       Uint32 aggProgramPtrI;    // Section ptr to this CTE's agg program
       Uint32 phase;             // Execution phase (0 = no deps, computed)
+      Uint32 m_flags;           // Bit 0 = CTE_SINGLE_ROW (no GROUP BY)
     };
 
     Uint32 m_numCtes;               // Number of CTE definitions (0 if no CTEs)

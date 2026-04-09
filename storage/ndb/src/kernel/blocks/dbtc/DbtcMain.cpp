@@ -28510,6 +28510,7 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
         scanptr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
         scanptr.p->m_cteInfos[c].depMask = 0;
         scanptr.p->m_cteInfos[c].phase = 0;
+        scanptr.p->m_cteInfos[c].m_flags = 0;
         scanptr.p->m_cteAggNodeState[c] = nullptr;
       }
     }
@@ -28523,9 +28524,10 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
         ndbrequire(reader.getWord(&hi));
         scanptr.p->m_cteInfos[c].depMask = (Uint64(hi) << 32) | lo;
       }
+      ndbrequire(reader.getWord(&scanptr.p->m_cteInfos[c].m_flags));
       Uint32 cteProgLen;
       ndbrequire(reader.getWord(&cteProgLen));
-      consumed += 5;
+      consumed += 6;
 
       scanptr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
       if (cteProgLen > 0) {
@@ -28845,9 +28847,20 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
       memset(cteNodes->m_aggStateKeys, 0, maxNodes * sizeof(Uint32));
       scanptr.p->m_cteAggNodeState[c] = cteNodes;
 
+      /* For single-row CTEs: send SETUP to one node only (round-robin).
+       * For normal CTEs: send to all connected DB nodes. */
+      const bool singleRow =
+          (scanptr.p->m_cteInfos[c].m_flags &
+           QN_CteSubtreeNode::CTE_SINGLE_ROW) != 0;
+
       for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
         if (!getNodeInfo(nodeId).m_connected) continue;
         if (getNodeInfo(nodeId).m_type != NodeInfo::DB) continue;
+
+        if (singleRow && !cteNodes->m_aggNodes.isclear()) {
+          /* Single-row CTE: already sent to one node, skip the rest */
+          break;
+        }
 
         JoinAggSetupReq *req = (JoinAggSetupReq *)signal->getDataPtrSend();
         req->senderRef = reference();
@@ -28975,9 +28988,10 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
     static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
     const Uint32 maxNodes = MAX_NDB_NODES;
     const Uint32 numCtes = scanptr.p->m_numCtes;
-    /* Per CTE: cteId(1) + depMask(2) + phase(1) + nodeCount(1) + nodes(maxNodes*2) */
+    /* Per CTE: cteId(1) + depMask(2) + flags(1) + phase(1)
+     *           + nodeCount(1) + nodes(maxNodes*2) */
     const Uint32 keyDataSize = maxNodes * 2 + 3 +
-        numCtes * (5 + maxNodes * 2);
+        numCtes * (6 + maxNodes * 2);
     Uint32 *keyData = (Uint32 *)lc_ndbd_pool_malloc(
         keyDataSize * sizeof(Uint32), RG_QUERY_MEMORY,
         getThreadId(), true);
@@ -29034,6 +29048,7 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
           keyData[idx++] = (Uint32)(depMask & 0xFFFFFFFF);
           keyData[idx++] = (Uint32)(depMask >> 32);
         }
+        keyData[idx++] = scanptr.p->m_cteInfos[c].m_flags;
         keyData[idx++] = scanptr.p->m_cteInfos[c].phase;
         /* Count nodes for this CTE */
         Uint32 cteNodeCount = 0;
@@ -29357,6 +29372,13 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
   for (Uint32 c = 0; c < scanptr.p->m_numCtes; c++) {
     /* Only redistribute CTEs belonging to this phase */
     if (scanptr.p->m_cteInfos[c].phase != phase) continue;
+
+    /* Single-row CTEs: skip redistribution — only one node has data */
+    if (scanptr.p->m_cteInfos[c].m_flags &
+        QN_CteSubtreeNode::CTE_SINGLE_ROW) {
+      jam();
+      continue;
+    }
 
     auto *cteNodes = scanptr.p->m_cteAggNodeState[c];
     if (cteNodes == nullptr) continue;

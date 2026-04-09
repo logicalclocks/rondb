@@ -690,6 +690,10 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_numResultCols;   // Number of aggregate result columns
     Uint32 m_scanTreeNodeNo;  // Tree node number of the CTE's scan node
     Uint32 m_phase;           // Execution phase (0 = no deps)
+    Uint32 m_flags;           // Bit 0 = CTE_SINGLE_ROW
+    Uint32 m_cachedRowPtrI;   // RNIL or section with cached row
+    Uint32 m_cachedRowLen;    // Word count of cached row
+    Uint32 m_singleNodeId;    // Node where single-row CTE lives
   };
 
   struct ScanFragHandle {
@@ -1792,6 +1796,8 @@ class Dbspj : public SimulatedBlock {
                    const QueryNodeParameters *);
   void cte_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void cte_parent_row(Signal *, Ptr<Request>, Ptr<TreeNode>, const RowPtr &);
+  void cte_serve_cached_row(Signal *, Ptr<Request>,
+                            Ptr<TreeNode>, const CteContext &);
   void cte_lookup_send(Signal *, Ptr<Request>, Ptr<TreeNode>,
                        const RowPtr &);
   void execCTE_LOOKUP_CONF(Signal *);
