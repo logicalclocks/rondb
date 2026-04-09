@@ -2912,16 +2912,9 @@ void Dbspj::prepare(Signal *signal, Ptr<Request> requestPtr) {
     Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
     for (list.first(nodePtr); !nodePtr.isNull(); list.next(nodePtr)) {
       jam();
-      /**
-       * During CTE phase (RT_CTE_PHASE set), defer main query
-       * nodes to execCTE_START_MAIN_REQ which re-enters prepare()
-       * after clearing RT_CTE_PHASE.
-       */
-      if ((requestPtr.p->m_bits & Request::RT_CTE_PHASE) &&
-          !(nodePtr.p->m_bits & TreeNode::T_CTE_SCAN) &&
-          nodePtr.p->m_info != &g_CteSubtreeOpInfo) {
-        continue;
-      }
+      /* No skip needed — all nodes are prepared in the
+       * initial prepare pass. CTE and main query nodes all
+       * get their DIH fragment resolution done up front. */
       /**
        * Verify existence of all involved tables.
        * CTE nodes (subtree, lookup, scan) have m_tableOrIndexId=0
@@ -2944,12 +2937,9 @@ void Dbspj::prepare(Signal *signal, Ptr<Request> requestPtr) {
 
     /**
      * preferably RT_NEED_PREPARE should only be set if blocking
-     * calls are used, in which case m_outstanding should have been increased.
-     * Exception: CTE compound queries defer main query node prepare
-     * to execCTE_START_MAIN_REQ, so m_outstanding may be 0 here.
+     * calls are used, in which case m_outstanding should have been increased
      */
-    ndbassert(err || requestPtr.p->m_outstanding ||
-              requestPtr.p->m_numCtes > 0);
+    ndbassert(err || requestPtr.p->m_outstanding);
   }
   if (unlikely(err)) {
     jam();
@@ -6379,17 +6369,16 @@ void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
            instance(), rootNodePtr.p->m_node_no,
            requestPtr.p->m_numCtes));
 
-  /* Trigger the deferred prepare phase for main query nodes.
-   * Re-enter the prepare() → checkPrepareComplete() flow which
-   * will process the T_NEED_PREPARE nodes that were skipped
-   * during the CTE phase. The CTE skip guard in prepare() checks
-   * m_numCtes, but RT_CTE_PHASE is now cleared, so
-   * checkPrepareComplete() will take the non-CTE path and start
-   * the main query root when DIH responses arrive. */
-  requestPtr.p->m_state = Request::RS_PREPARING;
-  requestPtr.p->m_outstanding = 0;
-  prepare(signal, requestPtr);
-  checkPrepareComplete(signal, requestPtr);
+  /* Main query nodes were already prepared during the initial
+   * prepare pass (DIH fragment resolution done). Just start the
+   * main root via checkPrepareComplete() which will find the
+   * non-CTE root and call scanFrag_start(). */
+  ndbrequire(rootNodePtr.p->m_info != 0 &&
+             rootNodePtr.p->m_info->m_start != 0);
+  (this->*(rootNodePtr.p->m_info->m_start))(
+      signal, requestPtr, rootNodePtr);
+
+  checkBatchComplete(signal, requestPtr);
 }
 
 Uint32 Dbspj::lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
