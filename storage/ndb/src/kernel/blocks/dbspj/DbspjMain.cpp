@@ -2875,11 +2875,15 @@ void Dbspj::prepare(Signal *signal, Ptr<Request> requestPtr) {
       jam();
       /**
        * Verify existence of all involved tables.
+       * CTE nodes (subtree, lookup, scan) have m_tableOrIndexId=0
+       * since they don't reference real NDB tables — skip them.
        */
-      err = checkTableError(nodePtr);
-      if (unlikely(err)) {
-        jam();
-        break;
+      if (nodePtr.p->m_tableOrIndexId != 0) {
+        err = checkTableError(nodePtr);
+        if (unlikely(err)) {
+          jam();
+          break;
+        }
       }
       if (nodePtr.p->m_bits & TreeNode::T_NEED_PREPARE) {
         jam();
