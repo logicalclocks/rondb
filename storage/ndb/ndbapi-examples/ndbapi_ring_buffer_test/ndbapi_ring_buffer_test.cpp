@@ -39,6 +39,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <thread>
+#include <atomic>
 
 // ---------------------------------------------------------------
 // Test infrastructure
@@ -1317,6 +1319,560 @@ static bool test_multi_col_pk_prefix(Ndb *ndb, MYSQL *mysql) {
   return true;
 }
 
+/*
+ * Helper struct for unique-index test schema:
+ *   (id INT, ring_idx INT, ring_meta VARBINARY(64),
+ *    code VARCHAR(20), val INT, PK(id,ring_idx), UNIQUE(code))
+ */
+struct UniqueRecordHelper {
+  const NdbRecord *record;
+  Uint32 row_size;
+  const NdbRecord::Attr *id_attr;
+  const NdbRecord::Attr *code_attr;
+  const NdbRecord::Attr *val_attr;
+  const NdbRecord::Attr *rmeta_attr;
+  Uint32 mask_size;
+
+  bool init(const NdbDictionary::Table *table) {
+    record = table->getDefaultRecord();
+    if (!record) return false;
+    row_size = record->m_row_size;
+    id_attr = findAttr(record, table, "id");
+    code_attr = findAttr(record, table, "code");
+    val_attr = findAttr(record, table, "val");
+    rmeta_attr = findAttr(record, table, "ring_meta");
+    Uint32 max_attr = 0;
+    for (Uint32 i = 0; i < record->noOfColumns; i++)
+      if (record->columns[i].attrId > max_attr)
+        max_attr = record->columns[i].attrId;
+    mask_size = (max_attr / 8) + 1;
+    return id_attr && code_attr && val_attr && rmeta_attr;
+  }
+
+  char *newRow() const {
+    char *buf = new char[row_size];
+    memset(buf, 0, row_size);
+    return buf;
+  }
+
+  void fillRow(char *buf, Int32 id, const char *code, Int32 val) const {
+    memset(buf, 0, row_size);
+    setInt32(buf, id_attr, id);
+    setNull(buf, rmeta_attr);
+    clearNull(buf, code_attr);
+    setVarchar(buf, code_attr, code);
+    clearNull(buf, val_attr);
+    int4store(reinterpret_cast<unsigned char *>(buf + val_attr->offset), val);
+  }
+
+  unsigned char *newUserMask(const NdbDictionary::Table *table) const {
+    unsigned char *mask = new unsigned char[mask_size];
+    const char *cols[] = {"id", "code", "val"};
+    buildMask(table, mask, mask_size, cols, 3);
+    return mask;
+  }
+};
+
+static const char *CREATE_UNIQUE =
+    "CREATE TABLE test.%s ("
+    "  id INT NOT NULL,"
+    "  ring_idx INT NOT NULL DEFAULT 0,"
+    "  ring_meta VARBINARY(64),"
+    "  code VARCHAR(20),"
+    "  val INT,"
+    "  PRIMARY KEY (id, ring_idx),"
+    "  UNIQUE INDEX idx_code (code)"
+    ") ENGINE=NDB,"
+    "  COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=%d@ring_idx@ring_meta'";
+
+/*
+ * SQL helper: read data rows from unique-index test tables.
+ */
+struct UniqueDataRow {
+  int id;
+  int ring_idx;
+  std::string code;
+  int val;
+};
+
+static std::vector<UniqueDataRow> readUniqueRows(MYSQL *mysql, const char *tbl,
+                                                  int id = -1) {
+  std::vector<UniqueDataRow> rows;
+  char sql[512];
+  if (id >= 0)
+    snprintf(sql, sizeof(sql),
+             "SELECT id, ring_idx, code, val FROM test.%s "
+             "WHERE id=%d ORDER BY ring_idx",
+             tbl, id);
+  else
+    snprintf(sql, sizeof(sql),
+             "SELECT id, ring_idx, code, val FROM test.%s "
+             "ORDER BY id, ring_idx",
+             tbl);
+  mysql_exec(mysql, sql);
+  MYSQL_RES *res = mysql_store_result(mysql);
+  if (!res) return rows;
+  MYSQL_ROW r;
+  while ((r = mysql_fetch_row(res))) {
+    UniqueDataRow dr;
+    dr.id = atoi(r[0]);
+    dr.ring_idx = atoi(r[1]);
+    dr.code = r[2] ? r[2] : "";
+    dr.val = r[3] ? atoi(r[3]) : 0;
+    rows.push_back(dr);
+  }
+  mysql_free_result(res);
+  return rows;
+}
+
+/*
+ * Test 14: Duplicate unique value within same PK prefix.
+ * Two inserts for the same PK prefix carry the same unique value.
+ * The commit must fail with ER_DUP_ENTRY (NDB error 893).
+ */
+static bool test_unique_dup_same_prefix(Ndb *ndb, MYSQL *mysql) {
+  std::cout << "[Test 14] Unique dup — same PK prefix" << std::endl;
+
+  mysql_exec(mysql, "DROP TABLE IF EXISTS test.rb_t14");
+  char ddl[1024];
+  snprintf(ddl, sizeof(ddl), CREATE_UNIQUE, "rb_t14", 3);
+  mysql_exec(mysql, ddl);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("rb_t14");
+  const NdbDictionary::Table *table = dict->getTable("rb_t14");
+  TEST_ASSERT(table != nullptr, "getTable");
+
+  UniqueRecordHelper h;
+  TEST_ASSERT(h.init(table), "init record helper");
+  char *rowbuf = h.newRow();
+  unsigned char *mask = h.newUserMask(table);
+
+  // Insert two rows: AAA then BBB — should succeed
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction tx1");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init tx1");
+
+    h.fillRow(rowbuf, 1, "AAA", 10);
+    TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow AAA");
+    h.fillRow(rowbuf, 1, "BBB", 20);
+    TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow BBB");
+    TEST_ASSERT(writer.flush() == 0, "flush tx1");
+    TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0, "commit tx1");
+    ndb->closeTransaction(trans);
+  }
+
+  auto rows1 = readUniqueRows(mysql, "rb_t14", 1);
+  TEST_ASSERT(rows1.size() == 2, "after tx1: expected 2 rows");
+
+  // Insert duplicate 'AAA' for same PK prefix — must fail
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction tx2");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init tx2");
+
+    h.fillRow(rowbuf, 1, "AAA", 30);
+    const NdbOperation *op = writer.addRow(rowbuf, mask);
+    // addRow may succeed (ops just queued), failure at flush/commit
+    if (op != nullptr) {
+      int flush_rc = writer.flush();
+      if (flush_rc == 0) {
+        // Flush succeeded, error should come at commit
+        int exec_rc = trans->execute(NdbTransaction::Commit);
+        TEST_ASSERT(exec_rc != 0, "commit should fail with dup key");
+      }
+      // Else flush failed — also acceptable
+    }
+    ndb->closeTransaction(trans);
+  }
+
+  // Also test cross-prefix duplicate: id=2 with code='BBB'
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction tx3");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init tx3");
+
+    h.fillRow(rowbuf, 2, "BBB", 40);
+    const NdbOperation *op = writer.addRow(rowbuf, mask);
+    if (op != nullptr) {
+      int flush_rc = writer.flush();
+      if (flush_rc == 0) {
+        int exec_rc = trans->execute(NdbTransaction::Commit);
+        TEST_ASSERT(exec_rc != 0, "cross-prefix dup should fail");
+      }
+    }
+    ndb->closeTransaction(trans);
+  }
+
+  // Verify original rows are intact
+  auto rows2 = readUniqueRows(mysql, "rb_t14", 1);
+  TEST_ASSERT(rows2.size() == 2, "original rows intact");
+  TEST_ASSERT(rows2[0].code == "AAA" && rows2[1].code == "BBB",
+              "original data intact");
+
+  delete[] rowbuf;
+  delete[] mask;
+  mysql_exec(mysql, "DROP TABLE test.rb_t14");
+  TEST_PASS("Unique dup — same PK prefix");
+  return true;
+}
+
+/*
+ * Test 15: Wrap-time collision with active slot's unique value.
+ * Fill the ring, wrap once (OK), then try wrapping with a value
+ * that collides with a still-active slot.  Verify the error, then
+ * retry with a non-duplicate value.
+ */
+static bool test_unique_wrap_collision(Ndb *ndb, MYSQL *mysql) {
+  std::cout << "[Test 15] Unique wrap collision" << std::endl;
+
+  mysql_exec(mysql, "DROP TABLE IF EXISTS test.rb_t15");
+  char ddl[1024];
+  snprintf(ddl, sizeof(ddl), CREATE_UNIQUE, "rb_t15", 3);
+  mysql_exec(mysql, ddl);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("rb_t15");
+  const NdbDictionary::Table *table = dict->getTable("rb_t15");
+  TEST_ASSERT(table != nullptr, "getTable");
+
+  UniqueRecordHelper h;
+  TEST_ASSERT(h.init(table), "init record helper");
+  char *rowbuf = h.newRow();
+  unsigned char *mask = h.newUserMask(table);
+
+  // Fill ring (size=3): slot1=AAA, slot2=BBB, slot3=CCC
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction fill");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init fill");
+
+    h.fillRow(rowbuf, 1, "AAA", 10);
+    TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow AAA");
+    h.fillRow(rowbuf, 1, "BBB", 20);
+    TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow BBB");
+    h.fillRow(rowbuf, 1, "CCC", 30);
+    TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow CCC");
+    TEST_ASSERT(writer.flush() == 0, "flush fill");
+    TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0, "commit fill");
+    ndb->closeTransaction(trans);
+  }
+
+  auto rows1 = readUniqueRows(mysql, "rb_t15", 1);
+  TEST_ASSERT(rows1.size() == 3, "after fill: expected 3 rows");
+
+  // 4th insert wraps to slot 1: AAA freed, DDD takes its place — should succeed
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction wrap1");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init wrap1");
+
+    h.fillRow(rowbuf, 1, "DDD", 40);
+    TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow DDD");
+    TEST_ASSERT(writer.flush() == 0, "flush wrap1");
+    TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0, "commit wrap1");
+    ndb->closeTransaction(trans);
+  }
+
+  // Verify: slot1=DDD, slot2=BBB, slot3=CCC
+  auto rows2 = readUniqueRows(mysql, "rb_t15", 1);
+  TEST_ASSERT(rows2.size() == 3, "after wrap1: expected 3 rows");
+  TEST_ASSERT(rows2[0].code == "DDD", "slot1 should be DDD");
+  TEST_ASSERT(rows2[1].code == "BBB", "slot2 should be BBB");
+  TEST_ASSERT(rows2[2].code == "CCC", "slot3 should be CCC");
+
+  // 5th insert wraps to slot 2: BBB would be freed, but 'CCC' collides
+  // with active slot 3 — must fail
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction wrap2");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init wrap2");
+
+    h.fillRow(rowbuf, 1, "CCC", 50);
+    const NdbOperation *op = writer.addRow(rowbuf, mask);
+    if (op != nullptr) {
+      int flush_rc = writer.flush();
+      if (flush_rc == 0) {
+        int exec_rc = trans->execute(NdbTransaction::Commit);
+        TEST_ASSERT(exec_rc != 0, "wrap collision should fail");
+      }
+    }
+    ndb->closeTransaction(trans);
+  }
+
+  // Verify state unchanged after failed insert
+  auto rows3 = readUniqueRows(mysql, "rb_t15", 1);
+  TEST_ASSERT(rows3.size() == 3, "after failed wrap: expected 3 rows");
+  TEST_ASSERT(rows3[0].code == "DDD", "slot1 still DDD");
+  TEST_ASSERT(rows3[1].code == "BBB", "slot2 still BBB");
+  TEST_ASSERT(rows3[2].code == "CCC", "slot3 still CCC");
+
+  // Retry with non-duplicate value — should succeed at slot 2
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction retry");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init retry");
+
+    h.fillRow(rowbuf, 1, "EEE", 50);
+    TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow EEE");
+    TEST_ASSERT(writer.flush() == 0, "flush retry");
+    TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0, "commit retry");
+    ndb->closeTransaction(trans);
+  }
+
+  // Verify: slot1=DDD, slot2=EEE, slot3=CCC
+  auto rows4 = readUniqueRows(mysql, "rb_t15", 1);
+  TEST_ASSERT(rows4.size() == 3, "after retry: expected 3 rows");
+  TEST_ASSERT(rows4[0].code == "DDD", "slot1 DDD after retry");
+  TEST_ASSERT(rows4[1].code == "EEE", "slot2 EEE after retry");
+  TEST_ASSERT(rows4[2].code == "CCC", "slot3 CCC after retry");
+
+  delete[] rowbuf;
+  delete[] mask;
+  mysql_exec(mysql, "DROP TABLE test.rb_t15");
+  TEST_PASS("Unique wrap collision");
+  return true;
+}
+
+/*
+ * Test 16: Freed unique value reusable after wrap.
+ * After wrapping overwrites a slot, the old unique value is freed.
+ * A subsequent insert (different PK prefix) can reuse it.
+ */
+static bool test_unique_freed_reuse(Ndb *ndb, MYSQL *mysql) {
+  std::cout << "[Test 16] Freed unique value reuse" << std::endl;
+
+  mysql_exec(mysql, "DROP TABLE IF EXISTS test.rb_t16");
+  char ddl[1024];
+  snprintf(ddl, sizeof(ddl), CREATE_UNIQUE, "rb_t16", 3);
+  mysql_exec(mysql, ddl);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("rb_t16");
+  const NdbDictionary::Table *table = dict->getTable("rb_t16");
+  TEST_ASSERT(table != nullptr, "getTable");
+
+  UniqueRecordHelper h;
+  TEST_ASSERT(h.init(table), "init record helper");
+  char *rowbuf = h.newRow();
+  unsigned char *mask = h.newUserMask(table);
+
+  // Fill ring for id=1: slot1=AAA, slot2=BBB, slot3=CCC
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction fill");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init fill");
+
+    h.fillRow(rowbuf, 1, "AAA", 10);
+    TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow AAA");
+    h.fillRow(rowbuf, 1, "BBB", 20);
+    TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow BBB");
+    h.fillRow(rowbuf, 1, "CCC", 30);
+    TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow CCC");
+    TEST_ASSERT(writer.flush() == 0, "flush fill");
+    TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0, "commit fill");
+    ndb->closeTransaction(trans);
+  }
+
+  // Wrap id=1: slot 1 overwritten, AAA freed, DDD takes its place
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction wrap");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init wrap");
+
+    h.fillRow(rowbuf, 1, "DDD", 40);
+    TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow DDD");
+    TEST_ASSERT(writer.flush() == 0, "flush wrap");
+    TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0, "commit wrap");
+    ndb->closeTransaction(trans);
+  }
+
+  // AAA was freed — id=2 can now use it
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction reuse");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init reuse");
+
+    h.fillRow(rowbuf, 2, "AAA", 50);
+    TEST_ASSERT(writer.addRow(rowbuf, mask) != nullptr, "addRow AAA reuse");
+    TEST_ASSERT(writer.flush() == 0, "flush reuse");
+    TEST_ASSERT(trans->execute(NdbTransaction::Commit) == 0,
+                "commit reuse — AAA should be free");
+    ndb->closeTransaction(trans);
+  }
+
+  // Verify: id=1 has DDD/BBB/CCC, id=2 has AAA
+  auto rows = readUniqueRows(mysql, "rb_t16");
+  TEST_ASSERT(rows.size() == 4, "expected 4 rows total");
+
+  bool found_id2_AAA = false;
+  for (const auto &r : rows) {
+    if (r.id == 2 && r.code == "AAA") found_id2_AAA = true;
+  }
+  TEST_ASSERT(found_id2_AAA, "id=2 should have AAA");
+
+  // BBB is still active in id=1 slot 2 — cannot reuse
+  {
+    NdbTransaction *trans = ndb->startTransaction(table);
+    TEST_ASSERT(trans != nullptr, "startTransaction dup_BBB");
+    NdbRingBufferWriter writer(table, h.record, trans);
+    TEST_ASSERT(writer.getErrorCode() == 0, "writer init dup_BBB");
+
+    h.fillRow(rowbuf, 2, "BBB", 60);
+    const NdbOperation *op = writer.addRow(rowbuf, mask);
+    if (op != nullptr) {
+      int flush_rc = writer.flush();
+      if (flush_rc == 0) {
+        int exec_rc = trans->execute(NdbTransaction::Commit);
+        TEST_ASSERT(exec_rc != 0, "BBB still active — should fail");
+      }
+    }
+    ndb->closeTransaction(trans);
+  }
+
+  delete[] rowbuf;
+  delete[] mask;
+  mysql_exec(mysql, "DROP TABLE test.rb_t16");
+  TEST_PASS("Freed unique value reuse");
+  return true;
+}
+
+/*
+ * Test 17: Concurrent same-prefix inserts from multiple Ndb connections.
+ * 4 threads each insert 10 rows for the same client_id.
+ * Verifies meta row survives after all concurrent commits.
+ */
+static bool test_concurrent_same_prefix(Ndb_cluster_connection *conn,
+                                        MYSQL *mysql) {
+  std::cout << "[Test 17] Concurrent same-prefix inserts" << std::endl;
+
+  mysql_exec(mysql, "DROP TABLE IF EXISTS test.rb_t17");
+  char ddl[1024];
+  snprintf(ddl, sizeof(ddl), CREATE_BASIC, "rb_t17", 5);
+  mysql_exec(mysql, ddl);
+
+  const int NUM_THREADS = 4;
+  const int INSERTS_PER_THREAD = 10;
+  const int CLIENT_ID = 99;
+  std::atomic<int> errors{0};
+  std::atomic<int> ready_count{0};
+  std::atomic<bool> go{false};
+
+  auto thread_fn = [&](int thread_id) {
+    Ndb ndb(conn, "test");
+    if (ndb.init() != 0) {
+      std::cerr << "  Thread " << thread_id << " Ndb init failed" << std::endl;
+      errors++;
+      return;
+    }
+
+    NdbDictionary::Dictionary *dict = ndb.getDictionary();
+    dict->invalidateTable("rb_t17");
+    const NdbDictionary::Table *table = dict->getTable("rb_t17");
+    if (!table) {
+      std::cerr << "  Thread " << thread_id << " getTable failed" << std::endl;
+      errors++;
+      return;
+    }
+
+    BasicRecordHelper h;
+    if (!h.init(table)) {
+      errors++;
+      return;
+    }
+
+    char *rowbuf = h.newRow();
+    unsigned char *mask = h.newUserMask(table);
+
+    // Signal ready, wait for go
+    ready_count++;
+    while (!go.load()) {}
+
+    for (int i = 0; i < INSERTS_PER_THREAD; i++) {
+      bool ok = false;
+      for (int attempt = 0; attempt < 5 && !ok; attempt++) {
+        char data[64];
+        snprintf(data, sizeof(data), "t%d_i%d", thread_id, i);
+        h.fillRow(rowbuf, CLIENT_ID, data);
+
+        NdbTransaction *trans = ndb.startTransaction(table);
+        if (!trans) {
+          continue;
+        }
+
+        NdbRingBufferWriter writer(table, h.record, trans);
+        if (writer.getErrorCode() != 0) {
+          ndb.closeTransaction(trans);
+          continue;
+        }
+
+        const NdbOperation *op = writer.addRow(rowbuf, mask);
+        if (!op) {
+          ndb.closeTransaction(trans);
+          continue;
+        }
+
+        if (writer.flush() != 0) {
+          ndb.closeTransaction(trans);
+          continue;
+        }
+
+        if (trans->execute(NdbTransaction::Commit) == 0) {
+          ok = true;
+        }
+        ndb.closeTransaction(trans);
+      }
+      if (!ok) {
+        std::cerr << "  Thread " << thread_id << " insert " << i
+                  << " failed after retries" << std::endl;
+        errors++;
+      }
+    }
+
+    delete[] rowbuf;
+    delete[] mask;
+  };
+
+  // Spawn threads
+  std::vector<std::thread> threads;
+  for (int t = 0; t < NUM_THREADS; t++) {
+    threads.emplace_back(thread_fn, t);
+  }
+
+  // Wait for all threads ready, then release
+  while (ready_count.load() < NUM_THREADS) {}
+  go.store(true);
+
+  for (auto &t : threads) t.join();
+
+  TEST_ASSERT(errors.load() == 0, "no thread errors");
+
+  // Verify: 5 data rows should exist
+  auto rows = readDataRows(mysql, "rb_t17", CLIENT_ID);
+  std::cout << "  Data rows: " << rows.size() << std::endl;
+  TEST_ASSERT((int)rows.size() == 5, "expected 5 data rows");
+
+  // Verify: meta row should exist (total = data + meta = 6)
+  int total = countAllRows(mysql, "rb_t17", CLIENT_ID);
+  std::cout << "  Total rows (with meta): " << total << std::endl;
+  TEST_ASSERT(total == 6, "expected 6 total (5 data + 1 meta)");
+
+  mysql_exec(mysql, "DROP TABLE test.rb_t17");
+  TEST_PASS("Concurrent same-prefix inserts");
+  return true;
+}
+
 // ---------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------
@@ -1383,6 +1939,11 @@ int main(int argc, char **argv) {
     test_rollback(&ndb, &mysql);
     test_multi_wrap_batch(&ndb, &mysql);
     test_multi_col_pk_prefix(&ndb, &mysql);
+    test_unique_dup_same_prefix(&ndb, &mysql);
+    test_unique_wrap_collision(&ndb, &mysql);
+    test_unique_freed_reuse(&ndb, &mysql);
+
+    test_concurrent_same_prefix(&cluster_connection, &mysql);
 
     std::cout << "\n=== Results ===" << std::endl;
     std::cout << "Passed: " << g_tests_passed << std::endl;

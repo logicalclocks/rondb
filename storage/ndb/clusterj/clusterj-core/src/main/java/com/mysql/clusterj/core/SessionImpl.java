@@ -1696,6 +1696,12 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
         }
     }
 
+    public boolean isRingBufferTable(Class<?> cls) {
+        assertNotClosed();
+        DomainTypeHandler<?> domainTypeHandler = getDomainTypeHandler(cls);
+        return domainTypeHandler.getStoreTable().isRingBuffer();
+    }
+
     /** Unload the schema associated with the domain class. This allows schema changes to work.
      * @param cls the class for which to unload the schema
      */

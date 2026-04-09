@@ -29,9 +29,19 @@ CREATE DATABASE IF NOT EXISTS test;
   PASS: Multiple wraps in single batch
 [Test 13] Multi-column PK prefix
   PASS: Multi-column PK prefix
+[Test 14] Unique dup — same PK prefix
+  PASS: Unique dup — same PK prefix
+[Test 15] Unique wrap collision
+  PASS: Unique wrap collision
+[Test 16] Freed unique value reuse
+  PASS: Freed unique value reuse
+[Test 17] Concurrent same-prefix inserts
+  Data rows: 5
+  Total rows (with meta): 6
+  PASS: Concurrent same-prefix inserts
 
 === Results ===
-Passed: 13
+Passed: 17
 Failed: 0
 #
 # Done

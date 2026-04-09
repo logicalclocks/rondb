@@ -10020,7 +10020,7 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
 
   // Merge any previous comment changes from the old table from share
   // into the current changes specified in create_info
-  bool old_table_comment[5] = {false, false, false, false, false};
+  bool old_table_comment[6] = {false, false, false, false, false, false};
   if (get_old_table_comment_items(thd, old_table_comment, table->s->comment.str,
                                   table->s->comment.length)) {
     return;

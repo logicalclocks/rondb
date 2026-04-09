@@ -183,5 +183,99 @@ id	ring_idx	category
 2	1	alpha
 DROP TABLE test.rb_add_idx;
 #
+# Case 11: Duplicate unique value in same PK prefix — ER_DUP_ENTRY
+#
+CREATE TABLE test.rb_uniq_dup_same (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+code VARCHAR(20),
+val INT,
+PRIMARY KEY (id, ring_idx),
+UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_uniq_dup_same (id, code, val) VALUES (1, 'AAA', 10);
+INSERT INTO test.rb_uniq_dup_same (id, code, val) VALUES (1, 'BBB', 20);
+INSERT INTO test.rb_uniq_dup_same (id, code, val) VALUES (1, 'AAA', 30);
+ERROR 23000: Duplicate entry 'AAA' for key 'rb_uniq_dup_same.idx_code'
+SELECT id, ring_idx, code, val FROM test.rb_uniq_dup_same
+ORDER BY ring_idx;
+id	ring_idx	code	val
+1	1	AAA	10
+1	2	BBB	20
+INSERT INTO test.rb_uniq_dup_same (id, code, val) VALUES (2, 'BBB', 40);
+ERROR 23000: Duplicate entry 'BBB' for key 'rb_uniq_dup_same.idx_code'
+DROP TABLE test.rb_uniq_dup_same;
+#
+# Case 12: Wrap-time collision with active slot — ER_DUP_ENTRY
+#
+CREATE TABLE test.rb_uniq_wrap_dup (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+code VARCHAR(20),
+val INT,
+PRIMARY KEY (id, ring_idx),
+UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_uniq_wrap_dup (id, code, val) VALUES (1, 'AAA', 10);
+INSERT INTO test.rb_uniq_wrap_dup (id, code, val) VALUES (1, 'BBB', 20);
+INSERT INTO test.rb_uniq_wrap_dup (id, code, val) VALUES (1, 'CCC', 30);
+SELECT id, ring_idx, code, val FROM test.rb_uniq_wrap_dup ORDER BY ring_idx;
+id	ring_idx	code	val
+1	1	AAA	10
+1	2	BBB	20
+1	3	CCC	30
+INSERT INTO test.rb_uniq_wrap_dup (id, code, val) VALUES (1, 'DDD', 40);
+SELECT id, ring_idx, code, val FROM test.rb_uniq_wrap_dup ORDER BY ring_idx;
+id	ring_idx	code	val
+1	1	DDD	40
+1	2	BBB	20
+1	3	CCC	30
+INSERT INTO test.rb_uniq_wrap_dup (id, code, val) VALUES (1, 'CCC', 50);
+ERROR 23000: Duplicate entry 'CCC' for key 'rb_uniq_wrap_dup.idx_code'
+SELECT id, ring_idx, code, val FROM test.rb_uniq_wrap_dup ORDER BY ring_idx;
+id	ring_idx	code	val
+1	1	DDD	40
+1	2	BBB	20
+1	3	CCC	30
+INSERT INTO test.rb_uniq_wrap_dup (id, code, val) VALUES (1, 'EEE', 50);
+SELECT id, ring_idx, code, val FROM test.rb_uniq_wrap_dup ORDER BY ring_idx;
+id	ring_idx	code	val
+1	1	DDD	40
+1	2	EEE	50
+1	3	CCC	30
+DROP TABLE test.rb_uniq_wrap_dup;
+#
+# Case 13: Freed unique value reusable after wrap
+#
+CREATE TABLE test.rb_uniq_reuse (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+code VARCHAR(20),
+val INT,
+PRIMARY KEY (id, ring_idx),
+UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_uniq_reuse (id, code, val) VALUES (1, 'AAA', 10);
+INSERT INTO test.rb_uniq_reuse (id, code, val) VALUES (1, 'BBB', 20);
+INSERT INTO test.rb_uniq_reuse (id, code, val) VALUES (1, 'CCC', 30);
+INSERT INTO test.rb_uniq_reuse (id, code, val) VALUES (1, 'DDD', 40);
+INSERT INTO test.rb_uniq_reuse (id, code, val) VALUES (2, 'AAA', 50);
+SELECT id, ring_idx, code, val FROM test.rb_uniq_reuse
+ORDER BY id, ring_idx;
+id	ring_idx	code	val
+1	1	DDD	40
+1	2	BBB	20
+1	3	CCC	30
+2	1	AAA	50
+INSERT INTO test.rb_uniq_reuse (id, code, val) VALUES (2, 'BBB', 60);
+ERROR 23000: Duplicate entry 'BBB' for key 'rb_uniq_reuse.idx_code'
+DROP TABLE test.rb_uniq_reuse;
+#
 # Done.
 #
