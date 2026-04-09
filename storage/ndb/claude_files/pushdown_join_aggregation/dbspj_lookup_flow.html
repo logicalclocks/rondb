@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DBSPJ Lookup KeyInfo/AttrInfo Flow Analysis</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --text: #eee;
+    --dim: #aaa;
+    --green: #4ecca3;
+    --yellow: #f0c040;
+    --blue: #4ea8de;
+    --orange: #f4845f;
+    --purple: #b388ff;
+    --pink: #f48fb1;
+    --cyan: #80deea;
+    --red: #e94560;
+    --border: #334;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; padding: 2rem; max-width: 1200px; margin: 0 auto; }
+  h1 { color: var(--green); font-size: 1.8rem; margin-bottom: 1rem; border-bottom: 2px solid var(--green); padding-bottom: 0.4rem; }
+  h2 { color: var(--yellow); font-size: 1.3rem; margin: 2rem 0 0.8rem; }
+  h3 { color: var(--cyan); font-size: 1.1rem; margin: 1.2rem 0 0.5rem; }
+  p { margin-bottom: 0.6rem; }
+  code { font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 0.88em; background: rgba(255,255,255,0.08); padding: 0.1em 0.35em; border-radius: 3px; color: var(--cyan); }
+  pre { background: #0d1117; border: 1px solid var(--border); border-radius: 6px; padding: 1rem; overflow-x: auto; font-size: 0.82rem; line-height: 1.5; margin: 0.8rem 0; }
+  pre code { background: none; padding: 0; color: var(--text); }
+  .box { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem; margin: 1rem 0; }
+  .note { border-left: 4px solid var(--yellow); background: rgba(240,192,64,0.08); padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .note strong { color: var(--yellow); }
+  .warn { border-left: 4px solid var(--red); background: rgba(233,69,96,0.08); padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .warn strong { color: var(--red); }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.88rem; }
+  th { background: var(--surface2); color: var(--green); text-align: left; padding: 0.5rem 0.7rem; border: 1px solid var(--border); }
+  td { padding: 0.5rem 0.7rem; border: 1px solid var(--border); vertical-align: top; }
+  tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+  .tag { display: inline-block; padding: 0.1em 0.4em; border-radius: 3px; font-size: 0.78rem; font-weight: 600; }
+  .tag-build { background: #1b4332; color: #95d5b2; }
+  .tag-run { background: #312244; color: #d0b4f1; }
+  .tag-flag { background: #3d2b1f; color: #f4a261; }
+  .line { color: var(--dim); font-size: 0.8rem; }
+</style>
+</head>
+<body>
+
+<h1>DBSPJ Lookup Node: KeyInfo &amp; AttrInfo Flow</h1>
+
+<p>This document traces the lifecycle of <code>m_send.m_keyInfoPtrI</code> and
+<code>m_send.m_attrInfoPtrI</code> section pointers for lookup nodes in DBSPJ,
+comparing testJoinAggSpj (2-node query) and testCteDbtc (8-node CTE query).</p>
+
+<p>Both tests use a self-join pattern on the same table to push aggregation
+down to data nodes. The key difference: testCteDbtc wraps two copies of the
+aggregation inside CTE subtrees, adds a separate main query with its own
+aggregation, and tests that the CTE materialization pipeline doesn't
+interfere with normal SPJ execution.</p>
+
+<div class="box">
+<pre><code>-- Common table used by both tests:
+CREATE TABLE src (
+  pk  BIGINT PRIMARY KEY,
+  grp BIGINT,
+  val BIGINT
+) ENGINE=NDB;
+
+-- Test data (5 rows):
+INSERT INTO src VALUES (1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50);</code></pre>
+</div>
+
+<h2>1. TreeNode::m_send Initialization</h2>
+
+<div class="box">
+<pre><code>// Dbspj.hpp — TreeNode constructor (line 968-971)
+m_send.m_correlation = 0;
+m_send.m_keyInfoPtrI = RNIL;   // No key section yet
+m_send.m_attrInfoPtrI = RNIL;  // No attrInfo section yet</code></pre>
+<p>Every TreeNode starts with RNIL section pointers. They must be populated
+during the build phase before <code>lookup_send()</code> uses them.</p>
+</div>
+
+<h2>2. Build Phase: How Sections Are Created</h2>
+
+<h3>2.1 lookup_build() <span class="line">(DbspjMain.cpp:6275-6474)</span></h3>
+
+<p>For QN_LOOKUP nodes, <code>lookup_build()</code> is the <code>m_build</code> function.
+It creates the base <code>LqhKeyReq</code> template and calls <code>parseDA()</code>
+to process the node's tree bits and parameter data.</p>
+
+<pre><code>// lookup_build(), line 6386
+err = parseDA(ctx, requestPtr, treeNodePtr,
+              nodeDA, treeBits, paramDA, paramBits);
+
+// After parseDA:
+//   m_send.m_keyInfoPtrI = set by key parsing (or pattern stored)
+//   m_send.m_attrInfoPtrI = set by attrInfo parsing (or RNIL fallback)
+//   T_KEYINFO_CONSTRUCTED = set if key built at runtime from parent row
+//   T_ATTRINFO_CONSTRUCTED = set if attrInfo expanded with linked data</code></pre>
+
+<h3>2.2 parseDA() Key Section <span class="line">(DbspjMain.cpp:12710-12778)</span></h3>
+
+<table>
+<tr><th>Tree Bits</th><th>Action</th><th>Result</th></tr>
+<tr>
+  <td><code>NI_KEY_LINKED</code></td>
+  <td>Store key pattern in <code>m_keyPattern</code>, set <span class="tag tag-flag">T_KEYINFO_CONSTRUCTED</span></td>
+  <td><code>m_send.m_keyInfoPtrI</code> stays RNIL (key built at runtime)</td>
+</tr>
+<tr>
+  <td><code>NI_KEY_PARAMS</code> / <code>NI_KEY_CONSTS</code></td>
+  <td>Expand pattern directly into fixed key section</td>
+  <td><code>m_send.m_keyInfoPtrI</code> = fixed key (non-RNIL)</td>
+</tr>
+<tr>
+  <td>Neither</td>
+  <td>Skip key processing</td>
+  <td><code>m_send.m_keyInfoPtrI</code> stays RNIL</td>
+</tr>
+</table>
+
+<h3>2.3 parseDA() AttrInfo Section <span class="line">(DbspjMain.cpp:12784-13197)</span></h3>
+
+<p>The attrInfo block is entered when:</p>
+<pre><code>// Line 12784
+const Uint32 mask = NI_LINKED_ATTR | NI_ATTR_INTERPRET | NI_ATTR_LINKED;
+if (((treeBits &amp; mask) |
+     (paramBits &amp; (PI_ATTR_LIST | PI_ATTR_INTERPRET))) != 0) {
+  // ENTER attrInfo processing (lines 12786-13175)
+  // ... builds attrInfo section from tree/param data ...
+  // ... may set T_ATTRINFO_CONSTRUCTED ...
+  treeNodePtr.p->m_send.m_attrInfoPtrI = attrInfoPtrI; // line 13173
+}</code></pre>
+
+<div class="note">
+<strong>RNIL Fallback (line 13178):</strong> OUTSIDE the attrInfo block above,
+<code>parseDA()</code> checks if <code>m_send.m_attrInfoPtrI</code> is still RNIL and
+creates a minimal 6-word interpreted program (header + ExitOK). This
+ensures <strong>every lookup node gets a valid attrInfo</strong> after <code>parseDA()</code>.
+<pre><code>// Line 13178 — ALWAYS reached (outside the if block)
+if (treeNodePtr.p->m_send.m_attrInfoPtrI == RNIL) {
+  Uint32 tmp[6] = {0, 1, 0, 0, 0, Interpreter::ExitOK()};
+  appendToSection(treeNodePtr.p->m_send.m_attrInfoPtrI, tmp, 6);
+}</code></pre>
+</div>
+
+<h3>2.4 T_ONE_SHOT <span class="line">(DbspjMain.cpp:6410-6469)</span></h3>
+
+<pre><code>// lookup_build(), line 6410
+if (ctx.m_start_signal) {  // Only true for FIRST node (root)
+  // Copy hash/frag/attrLen from root signal
+  treeNodePtr.p->m_bits |= TreeNode::T_ONE_SHOT; // line 6469
+}
+// ctx.m_start_signal = NULL after first node (line 1928)</code></pre>
+
+<p><span class="tag tag-flag">T_ONE_SHOT</span> means: "sections are used once and consumed
+by sendSignal." Set only on the root node. Child lookup nodes do NOT get T_ONE_SHOT.</p>
+
+<h2>3. Execution Phase: How Sections Flow Through lookup_send()</h2>
+
+<h3>3.1 lookup_parent_row() <span class="line">(DbspjMain.cpp:7055-7382)</span></h3>
+
+<p>Called when the parent scan produces a row. For each parent row:</p>
+
+<pre><code>// 1. Construct key from parent row (line 7097-7183)
+if (T_KEYINFO_CONSTRUCTED) {
+  expand(ptrI, m_keyPattern, rowRef);  // key from parent
+  m_send.m_keyInfoPtrI = ptrI;        // store constructed key
+}
+
+// 2. Handle attrInfo (line 7194-7336)
+Uint32 attrInfoPtrI = m_send.m_attrInfoPtrI; // SAVE base value
+if (T_ATTRINFO_CONSTRUCTED) {
+  tmp = dupSection(attrInfoPtrI);     // duplicate base
+  expand(tmp, m_attrParamPattern, rowRef); // append linked data
+  m_send.m_attrInfoPtrI = tmp;        // use constructed version
+}
+
+// 3. Compute hash + target node (line 7188-7192)
+computeHash(m_send.m_keyInfoPtrI);
+getNodes() -> receiverRef
+
+// 4. Send (line 7367)
+lookup_send(signal, requestPtr, treeNodePtr);
+
+// 5. Restore base attrInfo for next parent row (line 7369-7372)
+if (T_ATTRINFO_CONSTRUCTED) {
+  m_send.m_attrInfoPtrI = attrInfoPtrI; // restore SAVED base
+}</code></pre>
+
+<h3>3.2 lookup_send() <span class="line">(DbspjMain.cpp:6482-6800)</span></h3>
+
+<pre><code>// Read current section pointers (lines 6540-6541)
+Uint32 keyInfoPtrI = m_send.m_keyInfoPtrI;
+Uint32 attrInfoPtrI = m_send.m_attrInfoPtrI;
+
+// === AGGREGATION ROUTING (lines 6544-6609) ===
+if (T_CTE_SCAN) {
+  // CTE path: use m_cteAggStateKeys[cteIdx * MAX_NDB_NODES + nodeId]
+  JoinAggFlag = 1;
+  variableData[4] = cteAggKey;
+} else if (T_AGGREGATE_LEAF) {
+  // Main query path: use m_aggStateKeys[nodeId] + leafIdx encoding
+  JoinAggFlag = 1;
+  variableData[4] = encodeAggStateKey(baseKey, leafIdx);
+}
+
+// === SECTION HANDLING (lines 6614-6674) ===
+if (T_ONE_SHOT) {
+  // Pass sections directly, consume them (set to RNIL)
+  m_send.m_attrInfoPtrI = RNIL;
+  m_send.m_keyInfoPtrI = RNIL;
+} else {
+  // DUPLICATE sections for multi-use
+
+  if (!T_KEYINFO_CONSTRUCTED) {
+    keyInfoPtrI = dupSection(keyInfoPtrI);   // dup BASE key
+  } else {
+    m_send.m_keyInfoPtrI = RNIL;  // consume constructed key
+  }
+
+  if (!T_ATTRINFO_CONSTRUCTED) {
+    attrInfoPtrI = dupSection(attrInfoPtrI); // dup BASE attrInfo
+    // ^^^ CRASH if attrInfoPtrI is RNIL ^^^
+  } else {
+    m_send.m_attrInfoPtrI = RNIL;  // consume constructed attrInfo
+  }
+}
+
+// Attach sections and send LQHKEYREQ (lines 6677-6783)
+handle.m_ptr[0] = keyInfoPtrI;
+handle.m_ptr[1] = attrInfoPtrI;
+sendSignal(ref, GSN_LQHKEYREQ, signal, ..., &amp;handle);</code></pre>
+
+<h2>4. testJoinAggSpj: 2-Node Query</h2>
+
+<h3>SQL Equivalent</h3>
+<div class="box">
+<pre><code>-- Table: src (pk BIGINT PRIMARY KEY, grp BIGINT, val BIGINT) ENGINE=NDB
+-- 5 rows: (1,1,10), (2,1,20), (3,2,30), (4,2,40), (5,3,50)
+
+-- The query is a self-join with aggregation:
+SELECT COUNT(*), SUM(t2.val)
+FROM src t1
+JOIN src t2 ON t1.pk = t2.pk;
+
+-- Result: COUNT=5, SUM=150
+-- The self-join by PK produces one row per PK (same as src),
+-- then the aggregation engine computes COUNT(*) and SUM(val)
+-- across all matched rows.</code></pre>
+</div>
+
+<h3>Query Tree</h3>
+<div class="box">
+<pre><code>Query Tree:
+  Node 0: QN_SCAN_FRAG (root scan on src — produces t1 rows)
+    treeBits: NI_AGGREGATE | NI_LINKED_ATTR
+    Linked attr: pk (passed to child for join key)
+
+  Node 1: QN_LOOKUP (agg leaf — looks up t2 by pk from t1)
+    treeBits: NI_HAS_PARENT | NI_KEY_LINKED | NI_AGGREGATE | NI_AGGREGATE_LEAF
+    paramBits: 0 (no PI_ATTR_LIST, no PI_ATTR_INTERPRET)
+    Key pattern: col(0) = parent's linked pk</code></pre>
+<p>Node 0 scans src, passes each row's <code>pk</code> as a linked attribute.
+Node 1 looks up src by that pk (self-join). Because Node 1 has
+<code>NI_AGGREGATE_LEAF</code>, its results feed into the JoinAgg engine
+(not the API). The engine accumulates COUNT and SUM across all rows,
+then sends the final aggregated result to the API.</p>
+</div>
+
+<h3>4.1 Build Phase for Node 1 (QN_LOOKUP)</h3>
+
+<table>
+<tr><th>Step</th><th>Action</th><th>Result</th></tr>
+<tr>
+  <td><span class="tag tag-build">Build</span> lookup_build()</td>
+  <td>Create base LqhKeyReq template</td>
+  <td>m_lookup_data.m_lqhKeyReq populated</td>
+</tr>
+<tr>
+  <td><span class="tag tag-build">Build</span> parseDA() key</td>
+  <td>NI_KEY_LINKED: store pattern in m_keyPattern</td>
+  <td><span class="tag tag-flag">T_KEYINFO_CONSTRUCTED</span> set, m_send.m_keyInfoPtrI = RNIL</td>
+</tr>
+<tr>
+  <td><span class="tag tag-build">Build</span> parseDA() attrInfo</td>
+  <td>No NI_ATTR_* bits, no PI_ATTR bits &rarr; attrInfo block SKIPPED</td>
+  <td>m_send.m_attrInfoPtrI still RNIL</td>
+</tr>
+<tr>
+  <td><span class="tag tag-build">Build</span> parseDA() RNIL fallback</td>
+  <td>Line 13178: creates 6-word ExitOK program</td>
+  <td style="color: var(--green);">m_send.m_attrInfoPtrI = valid section (6 words)</td>
+</tr>
+<tr>
+  <td><span class="tag tag-build">Build</span> T_ONE_SHOT</td>
+  <td>ctx.m_start_signal == NULL (node 1 is not root)</td>
+  <td>T_ONE_SHOT NOT set</td>
+</tr>
+</table>
+
+<h3>4.2 Execution Flow for Node 1</h3>
+
+<pre><code>// For each parent scan row:
+1. lookup_parent_row():
+   - T_KEYINFO_CONSTRUCTED: expand key from parent row
+   - T_ATTRINFO_CONSTRUCTED: NOT set, so attrInfo = base (6-word ExitOK)
+   - Call lookup_send()
+
+2. lookup_send():
+   - T_AGGREGATE_LEAF: set JoinAggFlag, encode aggStateKey
+   - NOT T_ONE_SHOT: enter duplication path
+   - NOT T_KEYINFO_CONSTRUCTED... wait, it IS T_KEYINFO_CONSTRUCTED
+     so: m_send.m_keyInfoPtrI = RNIL (consume constructed key)
+   - NOT T_ATTRINFO_CONSTRUCTED:
+     dupSection(attrInfoPtrI) where attrInfoPtrI = 6-word ExitOK
+     SUCCESS: creates copy for this send
+   - Send LQHKEYREQ with key + attrInfo sections</code></pre>
+
+<div class="note">
+<strong>Why it works:</strong> The RNIL fallback in <code>parseDA()</code> at line 13178 ensures
+<code>m_send.m_attrInfoPtrI</code> is ALWAYS non-RNIL after build. Each <code>lookup_send()</code> call
+duplicates this base section (6-word ExitOK). The base is never consumed (only the
+duplicate is consumed by sendSignal). So it works for multiple parent rows.
+</div>
+
+<h2>5. testCteDbtc: 8-Node CTE Query</h2>
+
+<h3>SQL Equivalent</h3>
+<div class="box">
+<pre><code>-- Table: src (pk BIGINT PRIMARY KEY, grp BIGINT, val BIGINT) ENGINE=NDB
+-- 5 rows: (1,1,10), (2,1,20), (3,2,30), (4,2,40), (5,3,50)
+
+-- Two CTEs materialize aggregation results into hash tables,
+-- then the main query runs a self-join with its own aggregation:
+WITH
+  cte0 AS (
+    -- CTE 0: accumulates COUNT(*) and SUM(val) into a hash table
+    -- Internally: scan src (node 1) + lookup src by pk (node 2)
+    -- The self-join pattern is used to push aggregation to data nodes
+    SELECT COUNT(*), SUM(val) FROM src t1 JOIN src t2 ON t1.pk = t2.pk
+  ),
+  cte1 AS (
+    -- CTE 1: accumulates COUNT(*) into a hash table (same pattern)
+    SELECT COUNT(*) FROM src t1 JOIN src t2 ON t1.pk = t2.pk
+  )
+-- Main query: independent self-join with aggregation
+-- Verifies that CTE materialization doesn't break the main query
+SELECT COUNT(*), SUM(t2.val)
+FROM src t1 JOIN src t2 ON t1.pk = t2.pk;
+
+-- Expected: COUNT=5, SUM=150 (same as testJoinAggSpj)
+-- The CTEs are materialized but their results are not used by the
+-- main SELECT in this test — the test verifies the CTE pipeline
+-- doesn't interfere with main query execution.</code></pre>
+</div>
+
+<h3>Query Tree</h3>
+<div class="box">
+<pre><code>Query Tree:
+  Node 0: QN_CTE_SUBTREE (cteId=0, numNodes=2)
+    Container for CTE 0 materialization. Not a real scan/lookup.
+
+  Node 1:   QN_SCAN_FRAG (CTE 0 scan on src — produces t1 rows)
+              treeBits: NI_AGGREGATE | NI_LINKED_ATTR
+              Linked attr: pk (passed to child lookup)
+
+  Node 2:   QN_LOOKUP (CTE 0 agg leaf — looks up t2 by pk)
+              treeBits: NI_HAS_PARENT | NI_KEY_LINKED |
+                        NI_AGGREGATE | NI_AGGREGATE_LEAF
+              Key pattern: col(0) = parent's linked pk
+              Rows feed into CTE 0's JoinAgg hash table
+
+  Node 3: QN_CTE_SUBTREE (cteId=1, numNodes=2)
+  Node 4:   QN_SCAN_FRAG (CTE 1 scan — same pattern)
+  Node 5:   QN_LOOKUP (CTE 1 agg leaf — same pattern)
+
+  Node 6: QN_SCAN_FRAG (main scan on src — produces t1 rows)
+              treeBits: NI_AGGREGATE | NI_LINKED_ATTR
+
+  Node 7: QN_LOOKUP (main agg leaf — looks up t2 by pk)
+              treeBits: NI_HAS_PARENT | NI_KEY_LINKED |
+                        NI_AGGREGATE | NI_AGGREGATE_LEAF</code></pre>
+<p>Nodes 1-2 and 4-5 have <code>T_CTE_SCAN</code> flag (set post-build).
+Their aggregation results go to CTE hash tables via
+<code>m_cteAggStateKeys</code>. Nodes 6-7 have <code>RT_AGGREGATE</code> on the
+Request and use <code>m_aggStateKeys</code> for the main query aggregation.</p>
+</div>
+
+<h3>5.1 Build Phase for Node 2 (CTE 0 QN_LOOKUP)</h3>
+
+<table>
+<tr><th>Step</th><th>Action</th><th>Result</th></tr>
+<tr>
+  <td><span class="tag tag-build">Build</span> lookup_build()</td>
+  <td>Create base LqhKeyReq template</td>
+  <td>m_lookup_data.m_lqhKeyReq populated</td>
+</tr>
+<tr>
+  <td><span class="tag tag-build">Build</span> parseDA() key</td>
+  <td>NI_KEY_LINKED: store pattern in m_keyPattern</td>
+  <td><span class="tag tag-flag">T_KEYINFO_CONSTRUCTED</span> set, m_send.m_keyInfoPtrI = RNIL</td>
+</tr>
+<tr>
+  <td><span class="tag tag-build">Build</span> parseDA() attrInfo</td>
+  <td>No NI_ATTR_* bits, no PI_ATTR bits &rarr; attrInfo block SKIPPED</td>
+  <td>m_send.m_attrInfoPtrI still RNIL</td>
+</tr>
+<tr>
+  <td><span class="tag tag-build">Build</span> parseDA() RNIL fallback</td>
+  <td>Line 13178: creates 6-word ExitOK program</td>
+  <td style="color: var(--green);">m_send.m_attrInfoPtrI = valid section (6 words)</td>
+</tr>
+<tr>
+  <td><span class="tag tag-build">Build</span> Post-build loop</td>
+  <td>ctx.m_cteSubtreeRemaining > 0, node_op = QN_LOOKUP</td>
+  <td><span class="tag tag-flag">T_CTE_SCAN</span> set, m_cteId = 0</td>
+</tr>
+<tr>
+  <td><span class="tag tag-build">Build</span> parseDA() NI_AGGREGATE</td>
+  <td>ctx.m_cteSubtreeRemaining > 0 &rarr; skip RT_AGGREGATE</td>
+  <td><span class="tag tag-flag">T_AGGREGATE_LEAF</span> still set (from NI_AGGREGATE_LEAF)</td>
+</tr>
+</table>
+
+<p>After build, Node 2 has: <code>T_CTE_SCAN | T_AGGREGATE_LEAF | T_KEYINFO_CONSTRUCTED |
+T_ATTR_INTERPRETED</code>. The <code>m_send.m_attrInfoPtrI</code> is a valid 6-word ExitOK section.</p>
+
+<h3>5.2 Expected Execution Flow for Node 2</h3>
+
+<pre><code>// CTE phase starts: checkPrepareComplete() starts CTE scan (node 1)
+// Node 1 scan produces rows, triggering lookup_parent_row() on node 2
+
+1. lookup_parent_row():
+   - T_KEYINFO_CONSTRUCTED: expand key from parent row (node 1's linked pk)
+   - T_ATTRINFO_CONSTRUCTED: NOT set (no NI_ATTR_LINKED)
+   - attrInfoPtrI = m_send.m_attrInfoPtrI = 6-word ExitOK (valid)
+   - computeHash() + getNodes() to find target LQH
+   - Call lookup_send()
+
+2. lookup_send():
+   - T_CTE_SCAN: set JoinAggFlag, use m_cteAggStateKeys for aggStateKey
+   - NOT T_ONE_SHOT: enter duplication path
+   - T_KEYINFO_CONSTRUCTED: consume key, set m_send.m_keyInfoPtrI = RNIL
+   - NOT T_ATTRINFO_CONSTRUCTED:
+     dupSection(attrInfoPtrI) where attrInfoPtrI = 6-word ExitOK
+     SHOULD SUCCEED (same as testJoinAggSpj)
+   - Send LQHKEYREQ with key + attrInfo sections</code></pre>
+
+<div class="warn">
+<strong>THE CRASH:</strong> ArrayPool::getPtr at line 6662 in <code>dupSection(tmp, attrInfoPtrI)</code>.
+This means <code>attrInfoPtrI</code> is invalid (RNIL or corrupt). But based on the build analysis
+above, it should be a valid 6-word section. <strong>Where does it become invalid?</strong>
+
+<p style="margin-top: 0.5rem;">Possible causes to investigate:</p>
+<ol>
+<li><code>m_send.m_attrInfoPtrI</code> was released somewhere between build and execution
+(during CTE phase setup, section cleanup, or batch reset)</li>
+<li>The section was consumed by a prior call (but <code>T_ATTRINFO_CONSTRUCTED</code> is not set,
+so the duplication path shouldn't consume the base)</li>
+<li>The <code>checkTableError()</code> ndbassert at line 6488 fires for CTE nodes with
+<code>m_tableOrIndexId=0</code> in debug builds, but this returns 0 for system table 0
+so it shouldn't crash (would need verification)</li>
+<li>A different node's section operation corrupts this node's section pool entry</li>
+</ol>
+</div>
+
+<h2>6. Flags Summary</h2>
+
+<table>
+<tr><th>Flag</th><th>Set When</th><th>Effect in lookup_send()</th></tr>
+<tr>
+  <td><code>T_ONE_SHOT</code></td>
+  <td>ctx.m_start_signal != NULL (root node only)</td>
+  <td>Pass sections directly, consume (set to RNIL). No duplication.</td>
+</tr>
+<tr>
+  <td><code>T_KEYINFO_CONSTRUCTED</code></td>
+  <td>NI_KEY_LINKED in tree bits</td>
+  <td>Key was built by lookup_parent_row(). Consume it (set to RNIL).</td>
+</tr>
+<tr>
+  <td><code>T_ATTRINFO_CONSTRUCTED</code></td>
+  <td>NI_ATTR_LINKED in tree bits</td>
+  <td>AttrInfo was expanded with linked parent data. Consume it.</td>
+</tr>
+<tr>
+  <td><code>T_CTE_SCAN</code></td>
+  <td>Node inside CTE subtree (post-build marking)</td>
+  <td>Use <code>m_cteAggStateKeys</code> for aggStateKey routing.</td>
+</tr>
+<tr>
+  <td><code>T_AGGREGATE_LEAF</code></td>
+  <td>NI_AGGREGATE_LEAF in tree bits</td>
+  <td>Use <code>m_aggStateKeys</code> for aggStateKey routing (main query only).</td>
+</tr>
+<tr>
+  <td><code>T_ATTR_INTERPRETED</code></td>
+  <td>Always set for lookup nodes (lookup_build line 6393)</td>
+  <td>DBLQH processes attrInfo as interpreted program.</td>
+</tr>
+</table>
+
+<h2>7. Section Lifecycle: Build &rarr; Execution</h2>
+
+<pre><code>BUILD PHASE:
+  TreeNode constructor     m_send.m_attrInfoPtrI = RNIL
+       |
+  parseDA() attrInfo      [if NI_ATTR_* bits: build section]
+       |                  [else: skip]
+       |
+  parseDA() RNIL fallback  if still RNIL: create 6-word ExitOK
+       |
+  Build complete           m_send.m_attrInfoPtrI = valid section
+       |
+  --- time passes ---
+  CTE SETUP (DBTC creates hash tables)
+  CTE scan starts (checkPrepareComplete)
+       |
+EXECUTION PHASE:
+  Parent scan row arrives
+       |
+  lookup_parent_row()     save base attrInfoPtrI
+       |                  [if T_ATTRINFO_CONSTRUCTED: dup + expand]
+       |                  [else: use base directly]
+       |
+  lookup_send()           read m_send.m_attrInfoPtrI
+       |                  [if T_ONE_SHOT: consume directly]
+       |                  [elif !T_ATTRINFO_CONSTRUCTED: dupSection(base)]
+       |                  [elif T_ATTRINFO_CONSTRUCTED: consume constructed]
+       |
+  sendSignal(LQHKEYREQ)  sections consumed by signal transport
+       |
+  lookup_parent_row()     [if T_ATTRINFO_CONSTRUCTED: restore base]
+       |
+  Next parent row...      base attrInfoPtrI still valid (not consumed)</code></pre>
+
+<div class="note">
+<strong>Key invariant:</strong> For non-<code>T_ATTRINFO_CONSTRUCTED</code> nodes, the base
+<code>m_send.m_attrInfoPtrI</code> is NEVER consumed. Only duplicates are consumed by
+sendSignal. The base persists across all parent rows. This is why testJoinAggSpj works
+for multiple parent rows.
+</div>
+
+</body>
+</html>
