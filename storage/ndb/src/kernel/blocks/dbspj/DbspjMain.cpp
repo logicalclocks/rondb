@@ -6331,11 +6331,19 @@ void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
   // Clear CTE phase flag
   requestPtr.p->m_bits &= ~Request::RT_CTE_PHASE;
 
-  // Start the main query root node (first node in the tree node list)
+  // Start the main query root node — first node NOT inside
+  // a CTE subtree (no T_CTE_SCAN, not a CTE_SUBTREE container).
   Ptr<TreeNode> rootNodePtr;
   {
     Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
-    ndbrequire(list.first(rootNodePtr));
+    for (list.first(rootNodePtr); !rootNodePtr.isNull();
+         list.next(rootNodePtr)) {
+      if (!(rootNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) &&
+          rootNodePtr.p->m_info != &g_CteSubtreeOpInfo) {
+        break;
+      }
+    }
+    ndbrequire(!rootNodePtr.isNull());
   }
   DEB_CTE(("(%u) execCTE_START_MAIN_REQ: start root "
            "node %u (all %u CTEs READY)",
@@ -10144,12 +10152,21 @@ void Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
   // No batch buffer left
   if (unlikely(batchRows == 0)) {
     jam();
+    DEB_CTE(("(%u) scanFrag_send: node=%u "
+             "batchRows=0 — SKIP",
+             instance(), treeNodePtr.p->m_node_no));
     return;
   }
   data.m_parallelism = scanFrag_parallelism(requestPtr, treeNodePtr, batchRows);
 
   if (unlikely(data.m_parallelism == 0)) {
     jam();
+    DEB_CTE(("(%u) scanFrag_send: node=%u "
+             "parallelism=0 batchRows=%u "
+             "frags_not_started=%u — SKIP",
+             instance(), treeNodePtr.p->m_node_no,
+             batchRows,
+             data.m_frags_not_started));
     return;
   }
 
