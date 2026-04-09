@@ -450,7 +450,7 @@ class ClusterTransactionImpl implements ClusterTransaction {
             ByteBuffer buffer, byte[] mask, OperationOptionsConst options) {
         enlist();
         int sizeOfOptions = (options != null) ? NdbOperation.OperationOptions.size() : 0;
-        NdbOperationConst operation = ndbTransaction.insertTuple(ndbRecord, buffer, mask, options, sizeOfOptions);
+        NdbOperationConst operation = ndbTransaction.insertTuple(ndbRecord, buffer, ndbRecord, buffer, mask, options, sizeOfOptions);
         handleError(operation, ndbTransaction);
         return operation;
     }

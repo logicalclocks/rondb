@@ -1,0 +1,144 @@
+Found Connector/J JAR in MTR_CLASSPATH
+Looking for a suitable Java...
+Found Java
+Found clusterj.jar
+Found clusterj_test jar
+Found ndbclient library
+WARNING in native method: JNI call made without checking exceptions when required to from CallStaticObjectMethod
+WARNING in native method: JNI call made without checking exceptions when required to from CallStaticObjectMethod
+WARNING in native method: JNI call made without checking exceptions when required to from CallStaticObjectMethod
+Java 1.8.0_442
+Running named tests in '/home/zhao/workspace/kernelmaker/rondb-bin/storage/ndb/clusterj/clusterj-test/clusterj-test-25.10.5.jar'
+Found 2 test classes.
+1: testsuite.clusterj.ClearSmokeTest.test running...testsuite.clusterj.ClearSmokeTest
+Test schema failed (normal) select id from t_basic where id = 9999
+Successfully initialized schema.
+
+2: testsuite.clusterj.RingBufferTest.test running...testsuite.clusterj.RingBufferTest
+[META-CHECK] sensor_id=100 ring_idx=0 ts=0
+[META-CHECK] sensor_id=100 ring_idx=1 ts=1000
+[META-CHECK] totalRows=2 metaFound=true
+[CONCURRENT-META] ClusterJ find(ring_idx=0) = NOT FOUND (expected)
+[CONCURRENT-META] RingBufferWriter probe: meta row EXISTS (insert at next slot succeeded)
+[DIAG] Flushing tables before show_meta check...
+[DEBUG] ndb_ring_buffer_show_meta = 1
+[DEBUG] EXPLAIN: type=ref key=PRIMARY rows=3 Extra=null
+[DEBUG] row: sensor_id=3100 ring_idx=0 ts=0 val=0.0
+[DEBUG] row: sensor_id=3100 ring_idx=1 ts=90000 val=0.0
+[DEBUG] row: sensor_id=3100 ring_idx=2 ts=90001 val=1.0
+[DEBUG] row: sensor_id=3100 ring_idx=3 ts=90002 val=2.0
+[DEBUG] row: sensor_id=3100 ring_idx=4 ts=90003 val=3.0
+[DEBUG] row: sensor_id=3100 ring_idx=5 ts=90004 val=4.0
+[DEBUG] totalRows=6 metaRowFound=true
+[DEBUG] PK lookup meta row FOUND: sensor_id=3100 ring_idx=0 ts=0
+[DEBUG] sensorId=1000 meta row: NOT FOUND
+[DIAG] Checking meta row from second mysqld: jdbc:mysql://localhost:13023/test
+[DIAG-MYSQLD2] row: sensor_id=3100 ring_idx=0 ts=0 val=0.0
+[DIAG-MYSQLD2] row: sensor_id=3100 ring_idx=1 ts=90000 val=0.0
+[DIAG-MYSQLD2] row: sensor_id=3100 ring_idx=2 ts=90001 val=1.0
+[DIAG-MYSQLD2] row: sensor_id=3100 ring_idx=3 ts=90002 val=2.0
+[DIAG-MYSQLD2] row: sensor_id=3100 ring_idx=4 ts=90003 val=3.0
+[DIAG-MYSQLD2] row: sensor_id=3100 ring_idx=5 ts=90004 val=4.0
+[DIAG-MYSQLD2] totalRows=6 metaRowFound=true
+
+All tests succeeded.
+Finished running tests in '/home/zhao/workspace/kernelmaker/rondb-bin/storage/ndb/clusterj/clusterj-test/clusterj-test-25.10.5.jar'
+# DIAG: Full table scan with show_meta
+SET ndb_ring_buffer_show_meta = ON;
+SELECT sensor_id, ring_idx, HEX(ring_meta) FROM ring_buffer_sensor
+ORDER BY sensor_id, ring_idx;
+sensor_id	ring_idx	HEX(ring_meta)
+3100	0	0100000001000000050000000000000005000000000000000000000000000000
+3100	1	NULL
+3100	2	NULL
+3100	3	NULL
+3100	4	NULL
+3100	5	NULL
+# DIAG: Filtered scan for sensor_id=3100 with show_meta
+SELECT sensor_id, ring_idx, HEX(ring_meta) FROM ring_buffer_sensor
+WHERE sensor_id = 3100 ORDER BY ring_idx;
+sensor_id	ring_idx	HEX(ring_meta)
+3100	0	0100000001000000050000000000000005000000000000000000000000000000
+3100	1	NULL
+3100	2	NULL
+3100	3	NULL
+3100	4	NULL
+3100	5	NULL
+# DIAG: PK lookup for meta row (3100, 0) with show_meta
+SELECT sensor_id, ring_idx, HEX(ring_meta) FROM ring_buffer_sensor
+WHERE sensor_id = 3100 AND ring_idx = 0;
+sensor_id	ring_idx	HEX(ring_meta)
+3100	0	0100000001000000050000000000000005000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE IF EXISTS ring_buffer_sensor;
+DROP TABLE IF EXISTS a;
+DROP TABLE IF EXISTS allprimitives;
+DROP TABLE IF EXISTS autopkint;
+DROP TABLE IF EXISTS autopkbigint;
+DROP TABLE IF EXISTS autopkmediumint;
+DROP TABLE IF EXISTS autopksmallint;
+DROP TABLE IF EXISTS autopktinyint;
+DROP TABLE IF EXISTS b0;
+DROP TABLE IF EXISTS bigintegertypes;
+DROP TABLE IF EXISTS binarypk;
+DROP TABLE IF EXISTS binarytypes;
+DROP TABLE IF EXISTS bittypes;
+DROP TABLE IF EXISTS blobtypes;
+DROP TABLE IF EXISTS bytepk;
+DROP TABLE IF EXISTS bytestype;
+DROP TABLE IF EXISTS cassandra_byte_array;
+DROP TABLE IF EXISTS cassandra_string;
+DROP TABLE IF EXISTS charsetbig5;
+DROP TABLE IF EXISTS charsetlatin1;
+DROP TABLE IF EXISTS charsetsjis;
+DROP TABLE IF EXISTS charsetswedishutf8;
+DROP TABLE IF EXISTS charsetutf8;
+DROP TABLE IF EXISTS conversation_summary;
+DROP TABLE IF EXISTS datetimetypes;
+DROP TABLE IF EXISTS datetypes;
+DROP TABLE IF EXISTS datetypes_pk;
+DROP TABLE IF EXISTS decimaltypes;
+DROP TABLE IF EXISTS dn2id;
+DROP TABLE IF EXISTS doubletypes;
+DROP TABLE IF EXISTS floattypes;
+DROP TABLE IF EXISTS hashpk;
+DROP TABLE IF EXISTS hope;
+DROP TABLE IF EXISTS longintstringfk;
+DROP TABLE IF EXISTS longintstringix;
+DROP TABLE IF EXISTS longintstringpk;
+DROP TABLE IF EXISTS longlongstringfk;
+DROP TABLE IF EXISTS longlongstringpk;
+DROP TABLE IF EXISTS longvarbinarypk;
+DROP TABLE IF EXISTS longvarcharpk;
+DROP TABLE IF EXISTS mediumintegertypes;
+DROP TABLE IF EXISTS mediumunsignedtypes;
+DROP TABLE IF EXISTS nullvalues;
+DROP TABLE IF EXISTS shortpk;
+DROP TABLE IF EXISTS stress;
+DROP TABLE IF EXISTS stringtype;
+DROP TABLE IF EXISTS t_basic;
+DROP TABLE IF EXISTS timestamptypes;
+DROP TABLE IF EXISTS timestamp2types;
+DROP TABLE IF EXISTS timetypes;
+DROP TABLE IF EXISTS twopk;
+DROP TABLE IF EXISTS yeartypes;
+DROP TABLE IF EXISTS localetypes;
+DROP TABLE IF EXISTS stringtypes;
+DROP TABLE IF EXISTS subscriber;
+DROP TABLE IF EXISTS hashonlylongintstringpk;
+DROP TABLE IF EXISTS varcharpk;
+DROP TABLE IF EXISTS varbinarypk;
+DROP TABLE IF EXISTS varbinarytypes;
+DROP TABLE IF EXISTS dynamicstringpks;
+DROP TABLE IF EXISTS fgtest;
+DROP TABLE IF EXISTS notnulltable;
+DROP TABLE IF EXISTS same_table;
+DROP TABLE IF EXISTS test2.t_basic2;
+DROP DATABASE IF EXISTS test2;
+DROP TABLE IF EXISTS test3.t_basic3;
+DROP TABLE IF EXISTS test3.same_table;
+DROP TABLE IF EXISTS test3.timestamppk;
+DROP TABLE IF EXISTS test3.timestamppk3;
+DROP TABLE IF EXISTS test3.timestamppk6;
+DROP TABLE IF EXISTS test3.conversation_summary;
+DROP DATABASE IF EXISTS test3;

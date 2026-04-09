@@ -378,7 +378,14 @@ class RingBufferWriter {
                 batchMeta.nextPos = batchMeta.count + 1;
             }
         } else if (errorCode == ROW_NOT_FOUND) {
-            // Meta row doesn't exist yet -- fresh ring
+            // Meta row doesn't exist yet -- fresh ring.
+            // The 626 propagates to the NdbTransaction error/commit state.
+            // Reset it so subsequent write operations are not rejected.
+            // C++ NdbRingBufferWriter does: theCommitStatus=Started,
+            // theError.code=0, releaseCompletedOpsAndQueries().
+            // We achieve a similar reset by executing NoCommit with no
+            // pending ops — this clears the transaction error state.
+            trans.executeNoCommitDirect(AbortOption.AO_IgnoreError);
             batchMeta.initFirstInsert();
             batchMetaExisted = false;
         } else {
@@ -434,9 +441,8 @@ class RingBufferWriter {
         for (Column col : pkPrefixColumns) {
             int columnId = col.getColumnId();
             int offset = ndbRecordImpl.offsets[columnId];
-            int length = ndbRecordImpl.lengths[columnId];
             int prefixLength = col.getPrefixLength();
-            int totalLength = prefixLength + length;
+            int totalLength = prefixLength + col.getSize();
 
             for (int i = 0; i < totalLength; i++) {
                 if (rowBuffer.get(offset + i) != pkPrefixBuffer.get(offset + i)) {
@@ -455,9 +461,11 @@ class RingBufferWriter {
         for (Column col : pkPrefixColumns) {
             int columnId = col.getColumnId();
             int offset = ndbRecordImpl.offsets[columnId];
-            int length = ndbRecordImpl.lengths[columnId];
             int prefixLength = col.getPrefixLength();
-            int totalLength = prefixLength + length;
+            // Use getSize() for the byte size of the column data (e.g. 4 for INT).
+            // ndbRecordImpl.lengths[] stores Column.getLength() which is the
+            // element count (1 for scalar INT), NOT the byte count.
+            int totalLength = prefixLength + col.getSize();
 
             for (int i = 0; i < totalLength; i++) {
                 dst.put(offset + i, src.get(offset + i));
