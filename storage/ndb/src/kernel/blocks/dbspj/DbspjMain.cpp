@@ -2913,6 +2913,17 @@ void Dbspj::prepare(Signal *signal, Ptr<Request> requestPtr) {
     for (list.first(nodePtr); !nodePtr.isNull(); list.next(nodePtr)) {
       jam();
       /**
+       * In CTE compound queries, defer main query nodes (not
+       * T_CTE_SCAN, not CTE_SUBTREE containers) to
+       * execCTE_START_MAIN_REQ. Only prepare CTE subtree nodes
+       * and their containers now.
+       */
+      if (requestPtr.p->m_numCtes > 0 &&
+          !(nodePtr.p->m_bits & TreeNode::T_CTE_SCAN) &&
+          nodePtr.p->m_info != &g_CteSubtreeOpInfo) {
+        continue;
+      }
+      /**
        * Verify existence of all involved tables.
        * CTE nodes (subtree, lookup, scan) have m_tableOrIndexId=0
        * since they don't reference real NDB tables — skip them.
@@ -6349,8 +6360,58 @@ void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
            "node %u (all %u CTEs READY)",
            instance(), rootNodePtr.p->m_node_no,
            requestPtr.p->m_numCtes));
-  ndbrequire(rootNodePtr.p->m_info != 0 && rootNodePtr.p->m_info->m_start != 0);
-  (this->*(rootNodePtr.p->m_info->m_start))(signal, requestPtr, rootNodePtr);
+
+  /* Prepare main query nodes (deferred from CTE phase).
+   * These have T_NEED_PREPARE set during build but were
+   * skipped in prepare() to avoid starting before CTEs
+   * are ready. */
+  {
+    Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+    Ptr<TreeNode> nodePtr;
+    for (list.first(nodePtr); !nodePtr.isNull();
+         list.next(nodePtr)) {
+      if (!(nodePtr.p->m_bits & TreeNode::T_CTE_SCAN) &&
+          nodePtr.p->m_info != &g_CteSubtreeOpInfo &&
+          nodePtr.p->m_tableOrIndexId != 0) {
+        Uint32 err = checkTableError(nodePtr);
+        if (unlikely(err != 0)) {
+          jam();
+          abort(signal, requestPtr, err);
+          return;
+        }
+      }
+      if ((nodePtr.p->m_bits & TreeNode::T_NEED_PREPARE) &&
+          !(nodePtr.p->m_bits & TreeNode::T_CTE_SCAN) &&
+          nodePtr.p->m_info != &g_CteSubtreeOpInfo) {
+        jam();
+        DEB_CTE(("(%u) execCTE_START_MAIN_REQ: "
+                 "prepare deferred node %u",
+                 instance(), nodePtr.p->m_node_no));
+        ndbrequire(nodePtr.p->m_info->m_prepare != 0);
+        (this->*(nodePtr.p->m_info->m_prepare))(
+            signal, requestPtr, nodePtr);
+      }
+    }
+  }
+
+  /* If prepare sent async requests (DIH), we need to
+   * wait. Otherwise start the root directly. */
+  if (requestPtr.p->m_outstanding > 0) {
+    jam();
+    DEB_CTE(("(%u) execCTE_START_MAIN_REQ: "
+             "waiting for %u outstanding prepares",
+             instance(), requestPtr.p->m_outstanding));
+    /* checkPrepareComplete will call scanFrag_start
+     * when outstanding reaches 0 — but we're NOT in
+     * RT_CTE_PHASE anymore, so it will take the normal
+     * non-CTE path and start the root node. */
+  } else {
+    jam();
+    ndbrequire(rootNodePtr.p->m_info != 0 &&
+               rootNodePtr.p->m_info->m_start != 0);
+    (this->*(rootNodePtr.p->m_info->m_start))(
+        signal, requestPtr, rootNodePtr);
+  }
 
   checkBatchComplete(signal, requestPtr);
 }
@@ -8889,6 +8950,13 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
           err = DbspjErr::OutOfQueryMemory;
           return err;
         }
+      }
+
+      /* Set m_rootFragCnt for CTE compound queries. Only set
+       * once (first CTE root scan). CTE scans use single fragment
+       * per DBSPJ instance, so m_rootFragCnt = 1. */
+      if (requestPtr.p->m_rootFragCnt == 0) {
+        requestPtr.p->m_rootFragCnt = 1;
       }
 
       dst->tableId = node->tableId;
