@@ -2024,24 +2024,24 @@ class Dbtc : public SimulatedBlock {
     };
     JoinAggNodeState *m_joinAggNodes;  // nullptr when not JoinAgg
 
-    // CTE materialization state
-    static constexpr Uint32 MAX_CTES = 4;
+    // CTE materialization state — dynamically allocated when m_numCtes > 0.
+    // m_cteInfos and m_cteAggNodeState are a single contiguous allocation:
+    //   [CteInfo * numCtes] [JoinAggNodeState* * numCtes]
+    // Freed via lc_ndbd_pool_free(m_cteInfos).
 
     struct CteInfo {
+      Uint64 depMask;           // Bitmask: bit c set = depends on cteId c
       Uint32 tableId;
       Uint32 schemaVersion;
       Uint32 aggProgramPtrI;    // Section ptr to this CTE's agg program
-      Uint32 depMask;           // Bitmask: bit c set = depends on cteId c
       Uint32 phase;             // Execution phase (0 = no deps, computed)
     };
 
     Uint32 m_numCtes;               // Number of CTE definitions (0 if no CTEs)
     Uint32 m_ctePhaseCount;         // Total CTE execution phases
     Uint32 m_cteCurrentPhase;       // Phase being waited on
-    CteInfo m_cteInfos[MAX_CTES];
-    // Per-CTE per-node aggStateKeys, allocated alongside m_joinAggNodes.
-    // m_cteAggNodeState[cteIdx] points into the same allocation block.
-    JoinAggNodeState *m_cteAggNodeState[MAX_CTES];
+    CteInfo *m_cteInfos;            // nullptr when m_numCtes == 0
+    JoinAggNodeState **m_cteAggNodeState;  // nullptr when m_numCtes == 0
     Uint32 m_cteSetupOutstanding;    // SETUP_CONFs still pending for CTEs
 
     // CTE COMPLETE coordination (Step 3)

@@ -16313,12 +16313,8 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_cteScanReportsExpected = 0;
   scanptr.p->m_cteScanReportsReceived = 0;
   scanptr.p->m_cteCompleteOutstanding = 0;
-  for (Uint32 i = 0; i < ScanRecord::MAX_CTES; i++) {
-    scanptr.p->m_cteInfos[i].aggProgramPtrI = RNIL;
-    scanptr.p->m_cteInfos[i].depMask = 0;
-    scanptr.p->m_cteInfos[i].phase = 0;
-    scanptr.p->m_cteAggNodeState[i] = nullptr;
-  }
+  scanptr.p->m_cteInfos = nullptr;
+  scanptr.p->m_cteAggNodeState = nullptr;
 
   DEB_SCAN_MANY(("(%u) SCAN_TABREQ, batch_size: %u",
     instance(), scanptr.p->batch_size_rows));
@@ -28482,16 +28478,54 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
     Uint32 numCtes;
     ndbrequire(reader.getWord(&numCtes));
     consumed++;
-    ndbrequire(numCtes <= ScanRecord::MAX_CTES);
+    if (unlikely(numCtes > 64)) {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = scanptr.p->scanApiRec;
+      c_apiConnectRecordPool.getPtr(apiConnectptr);
+      abortScanLab(signal, scanptr, ZINVALID_KEY, true, apiConnectptr);
+      return;
+    }
     scanptr.p->m_numCtes = numCtes;
+
+    /* Allocate CteInfo + pointer array as single block */
+    {
+      const size_t infoSize = numCtes * sizeof(ScanRecord::CteInfo);
+      const size_t ptrSize = numCtes * sizeof(ScanRecord::JoinAggNodeState *);
+      char *mem = (char *)lc_ndbd_pool_malloc(
+          infoSize + ptrSize, RG_QUERY_MEMORY, getThreadId(), true);
+      if (unlikely(mem == nullptr)) {
+        jam();
+        scanptr.p->m_numCtes = 0;
+        ApiConnectRecordPtr apiConnectptr;
+        apiConnectptr.i = scanptr.p->scanApiRec;
+        c_apiConnectRecordPool.getPtr(apiConnectptr);
+        abortScanLab(signal, scanptr, ZGET_ATTRBUF_ERROR, true, apiConnectptr);
+        return;
+      }
+      scanptr.p->m_cteInfos = (ScanRecord::CteInfo *)mem;
+      scanptr.p->m_cteAggNodeState =
+          (ScanRecord::JoinAggNodeState **)(mem + infoSize);
+      for (Uint32 c = 0; c < numCtes; c++) {
+        scanptr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
+        scanptr.p->m_cteInfos[c].depMask = 0;
+        scanptr.p->m_cteInfos[c].phase = 0;
+        scanptr.p->m_cteAggNodeState[c] = nullptr;
+      }
+    }
 
     for (Uint32 c = 0; c < numCtes; c++) {
       ndbrequire(reader.getWord(&scanptr.p->m_cteInfos[c].tableId));
       ndbrequire(reader.getWord(&scanptr.p->m_cteInfos[c].schemaVersion));
-      ndbrequire(reader.getWord(&scanptr.p->m_cteInfos[c].depMask));
+      {
+        Uint32 lo, hi;
+        ndbrequire(reader.getWord(&lo));
+        ndbrequire(reader.getWord(&hi));
+        scanptr.p->m_cteInfos[c].depMask = (Uint64(hi) << 32) | lo;
+      }
       Uint32 cteProgLen;
       ndbrequire(reader.getWord(&cteProgLen));
-      consumed += 4;
+      consumed += 5;
 
       scanptr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
       if (cteProgLen > 0) {
@@ -28514,11 +28548,11 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
      */
     Uint32 maxPhase = 0;
     for (Uint32 c = 0; c < numCtes; c++) {
-      Uint32 depMask = scanptr.p->m_cteInfos[c].depMask;
+      Uint64 depMask = scanptr.p->m_cteInfos[c].depMask;
       Uint32 phase = 0;
       if (depMask != 0) {
         for (Uint32 d = 0; d < numCtes; d++) {
-          if (depMask & (1u << d)) {
+          if (depMask & (Uint64(1) << d)) {
             Uint32 depPhase = scanptr.p->m_cteInfos[d].phase;
             if (depPhase + 1 > phase) {
               phase = depPhase + 1;
@@ -28658,6 +28692,11 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
       lc_ndbd_pool_free(cteNodes);
       scanPtr.p->m_cteAggNodeState[c] = nullptr;
     }
+  }
+  if (scanPtr.p->m_cteInfos != nullptr) {
+    lc_ndbd_pool_free(scanPtr.p->m_cteInfos);
+    scanPtr.p->m_cteInfos = nullptr;
+    scanPtr.p->m_cteAggNodeState = nullptr;  // same allocation block
   }
   scanPtr.p->m_numCtes = 0;
 }
@@ -28934,8 +28973,22 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
 
     /* Pack main aggStateKeys: [nodeId, aggStateKey] pairs */
     static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
-    Uint32 keyData[ABS_MAX_NDB_NODES * 2 + 3 +
-                    ScanRecord::MAX_CTES * (4 + ABS_MAX_NDB_NODES * 2)];
+    const Uint32 maxNodes = MAX_NDB_NODES;
+    const Uint32 numCtes = scanptr.p->m_numCtes;
+    /* Per CTE: cteId(1) + depMask(2) + phase(1) + nodeCount(1) + nodes(maxNodes*2) */
+    const Uint32 keyDataSize = maxNodes * 2 + 3 +
+        numCtes * (5 + maxNodes * 2);
+    Uint32 *keyData = (Uint32 *)lc_ndbd_pool_malloc(
+        keyDataSize * sizeof(Uint32), RG_QUERY_MEMORY,
+        getThreadId(), true);
+    if (unlikely(keyData == nullptr)) {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = scanptr.p->scanApiRec;
+      c_apiConnectRecordPool.getPtr(apiConnectptr);
+      abortScanLab(signal, scanptr, ZGET_ATTRBUF_ERROR, true, apiConnectptr);
+      return;
+    }
     Uint32 idx = 0;
     NdbNodeBitmask nodes = scanptr.p->m_joinAggNodes->m_aggNodes;
     for (Uint32 nid = nodes.find_first();
@@ -28976,7 +29029,11 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
         auto *cteNodes = scanptr.p->m_cteAggNodeState[c];
         ndbrequire(cteNodes != nullptr);
         keyData[idx++] = c;  /* cteId */
-        keyData[idx++] = scanptr.p->m_cteInfos[c].depMask;
+        {
+          Uint64 depMask = scanptr.p->m_cteInfos[c].depMask;
+          keyData[idx++] = (Uint32)(depMask & 0xFFFFFFFF);
+          keyData[idx++] = (Uint32)(depMask >> 32);
+        }
         keyData[idx++] = scanptr.p->m_cteInfos[c].phase;
         /* Count nodes for this CTE */
         Uint32 cteNodeCount = 0;
@@ -28999,6 +29056,7 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
     scanptr.p->m_aggKeysSectionPtrI = RNIL;
     ndbrequire(appendToSection(
         scanptr.p->m_aggKeysSectionPtrI, keyData, idx));
+    lc_ndbd_pool_free(keyData);
 
     scanptr.p->scanState = ScanRecord::RUNNING;
     ApiConnectRecordPtr apiConnectptr;

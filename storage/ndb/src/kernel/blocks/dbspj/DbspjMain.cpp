@@ -1152,6 +1152,7 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_cteCurrentPhase = 0;
   requestP->m_ctePhaseCount = 0;
   requestP->m_cteScanAllNodes = false;
+  requestP->m_cteContexts = nullptr;
   requestP->m_cteAggStateKeys = nullptr;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
@@ -1442,7 +1443,12 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         reader.step(1);  // skip marker
         Uint32 numCtes;
         ndbrequire(reader.getWord(&numCtes));
-        ndbrequire(numCtes <= MAX_CTE_SUBTREES);
+        if (unlikely(numCtes > 64 ||
+                     numCtes != requestPtr.p->m_numCtes)) {
+          jam();
+          abort(signal, requestPtr, DbspjErr::InvalidTreeNodeSpecification);
+          return;
+        }
 
         Uint32 cteFlags;
         ndbrequire(reader.getWord(&cteFlags));
@@ -1452,15 +1458,22 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         const size_t alloc_size = numCtes * max_nodes * sizeof(Uint32);
         void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
                                         getThreadId(), true);
-        ndbrequire(mem != nullptr);
+        if (unlikely(mem == nullptr)) {
+          jam();
+          abort(signal, requestPtr, DbspjErr::OutOfQueryMemory);
+          return;
+        }
         requestPtr.p->m_cteAggStateKeys = static_cast<Uint32 *>(mem);
 
         for (Uint32 c = 0; c < numCtes; c++) {
-          Uint32 cteId, depMask, phase, cteNodeCount;
+          Uint32 cteId, phase, cteNodeCount;
+          Uint32 depLo, depHi;
           ndbrequire(reader.getWord(&cteId));
-          ndbrequire(reader.getWord(&depMask));
+          ndbrequire(reader.getWord(&depLo));
+          ndbrequire(reader.getWord(&depHi));
           ndbrequire(reader.getWord(&phase));
           ndbrequire(reader.getWord(&cteNodeCount));
+          Uint64 depMask = (Uint64(depHi) << 32) | depLo;
 
           /* Store depMask and phase in the matching CteContext.
            * The CteContext was created during cte_build() in the tree
@@ -1573,6 +1586,7 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_cteCurrentPhase = 0;
   requestP->m_ctePhaseCount = 0;
   requestP->m_cteScanAllNodes = false;
+  requestP->m_cteContexts = nullptr;
   requestP->m_cteAggStateKeys = nullptr;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
@@ -3760,6 +3774,10 @@ void Dbspj::cleanup(Ptr<Request> requestPtr, bool in_hash) {
     lc_ndbd_pool_free(requestPtr.p->m_cteAggStateKeys);
     requestPtr.p->m_cteAggStateKeys = nullptr;
   }
+  if (requestPtr.p->m_cteContexts != nullptr) {
+    lc_ndbd_pool_free(requestPtr.p->m_cteContexts);
+    requestPtr.p->m_cteContexts = nullptr;
+  }
   ArenaHead ah = requestPtr.p->m_arena;
   m_request_pool.release(requestPtr);
   m_arenaAllocator.release(ah);
@@ -5267,7 +5285,34 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
           break;
         }
       }
-      if (!found && requestPtr.p->m_numCtes < MAX_CTE_SUBTREES) {
+      if (!found) {
+        if (unlikely(cteId != requestPtr.p->m_numCtes)) {
+          jam();
+          err = DbspjErr::InvalidTreeNodeSpecification;
+          break;
+        }
+        if (unlikely(cteId >= 64)) {
+          jam();
+          err = DbspjErr::InvalidTreeNodeSpecification;
+          break;
+        }
+        /* Grow CteContext array by one (N is small, realloc cost negligible) */
+        const Uint32 newCount = requestPtr.p->m_numCtes + 1;
+        CteContext *newArr = static_cast<CteContext *>(
+            lc_ndbd_pool_malloc(newCount * sizeof(CteContext),
+                                RG_QUERY_MEMORY, getThreadId(), true));
+        if (unlikely(newArr == nullptr)) {
+          jam();
+          err = DbspjErr::OutOfQueryMemory;
+          break;
+        }
+        if (requestPtr.p->m_cteContexts != nullptr) {
+          memcpy(newArr, requestPtr.p->m_cteContexts,
+                 requestPtr.p->m_numCtes * sizeof(CteContext));
+          lc_ndbd_pool_free(requestPtr.p->m_cteContexts);
+        }
+        requestPtr.p->m_cteContexts = newArr;
+
         CteContext &cctx =
             requestPtr.p->m_cteContexts[requestPtr.p->m_numCtes];
         cctx.m_cteId = cteId;

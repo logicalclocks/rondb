@@ -677,8 +677,6 @@ class Dbspj : public SimulatedBlock {
    * CTE_LOOKUP nodes check this state to decide whether to send a lookup
    * request immediately or queue it for later.
    */
-  static constexpr Uint32 MAX_CTE_SUBTREES = 4;
-
   struct CteContext {
     enum State {
       CTE_NOT_STARTED = 0,    // CTE scan not yet triggered
@@ -686,11 +684,11 @@ class Dbspj : public SimulatedBlock {
       CTE_READY = 2,          // Hash table complete, lookups can proceed
       CTE_FAILED = 3          // CTE scan failed
     };
+    Uint64 m_depMask;         // Bitmask: bit c set = depends on cteId c
     Uint32 m_cteId;           // CTE identifier (0-based)
     Uint32 m_state;           // CteContext::State
     Uint32 m_numResultCols;   // Number of aggregate result columns
     Uint32 m_scanTreeNodeNo;  // Tree node number of the CTE's scan node
-    Uint32 m_depMask;         // Bitmask: bit c set = depends on cteId c
     Uint32 m_phase;           // Execution phase (0 = no deps)
   };
 
@@ -1407,8 +1405,9 @@ class Dbspj : public SimulatedBlock {
     NdbNodeBitmask m_aggNodes;
     NDB_TICKS m_lastHbrepTicks;  // Last time SCAN_HBREP was sent during JoinAgg bypass
 
-    // CTE tracking — compound queries with CTE sub-trees
-    CteContext m_cteContexts[MAX_CTE_SUBTREES];
+    // CTE tracking — compound queries with CTE sub-trees.
+    // Dynamically allocated via lc_ndbd_pool_malloc on first CTE registration.
+    CteContext *m_cteContexts;
     Uint32 m_numCtes;       // Number of CTE contexts registered (0 if no CTEs)
     Uint32 m_ctesReady;     // Count of CTEs that reached CTE_READY state
     Uint32 m_cteScansComplete; // Count of CTE scans fully completed
