@@ -17819,9 +17819,9 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
     if (scanptr.p->m_numCtes > 0 &&
         scanptr.p->m_cteCurrentPhase < scanptr.p->m_ctePhaseCount) {
       jam();
-      DEB_CTE(("(%u) execSCAN_FRAGCONF: suppress "
-               "SCAN_TABCONF during CTE phase",
-               instance()));
+      DEB_JOIN_AGG(("(%u) execSCAN_FRAGCONF: suppress "
+                    "SCAN_TABCONF during CTE phase",
+                    instance()));
     } else {
       sendScanTabConf(signal, scanptr, apiConnectptr);
     }
