@@ -2026,33 +2026,15 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
       if (unlikely(ctx.m_aggregate_node_count + cteNodeCount !=
                    ctx.m_cnt)) {
         jam();
-        g_eventLogger->info(
-            "DBSPJ %u: NI_AGGREGATE set on %u of %u nodes "
-            "(cteNodes=%u), expected all non-CTE",
-            instance(), ctx.m_aggregate_node_count,
-            ctx.m_cnt, cteNodeCount);
         return DbspjErr::InvalidAggregateFlags;
       }
     }
-    g_eventLogger->info(
-        "DBSPJ %u: validateAgg: aggLeafCount=%u "
-        "allAreLeaves=%d numCtes=%u aggNodeCount=%u cnt=%u",
-        instance(), aggregate_leaf_count,
-        aggregate_leaf_all_are_leaves,
-        requestPtr.p->m_numCtes,
-        ctx.m_aggregate_node_count, ctx.m_cnt);
     if (unlikely(aggregate_leaf_count < 1)) {
       jam();
-      g_eventLogger->info(
-          "DBSPJ %u: FAIL: Found 0 T_AGGREGATE_LEAF nodes",
-          instance());
       return DbspjErr::InvalidAggregateFlags;
     }
     if (unlikely(!aggregate_leaf_all_are_leaves)) {
       jam();
-      g_eventLogger->info(
-          "DBSPJ %u: FAIL: T_AGGREGATE_LEAF on non-leaf node",
-          instance());
       return DbspjErr::InvalidAggregateFlags;
     }
 
@@ -2918,18 +2900,8 @@ void Dbspj::prepare(Signal *signal, Ptr<Request> requestPtr) {
         err = checkTableError(nodePtr);
         if (unlikely(err)) {
           jam();
-          g_eventLogger->info(
-              "DBSPJ %u: checkTableError FAILED node %u "
-              "tableId=%u err=%u",
-              instance(), nodePtr.p->m_node_no,
-              nodePtr.p->m_tableOrIndexId, err);
           break;
         }
-      } else {
-        g_eventLogger->info(
-            "DBSPJ %u: checkTableError SKIP node %u "
-            "(tableId=0, CTE virtual node)",
-            instance(), nodePtr.p->m_node_no);
       }
       if (nodePtr.p->m_bits & TreeNode::T_NEED_PREPARE) {
         jam();
@@ -2981,19 +2953,9 @@ void Dbspj::checkPrepareComplete(Signal *signal, Ptr<Request> requestPtr) {
     Uint32 err = 0;
     if (nodePtr.p->m_tableOrIndexId != 0) {
       err = checkTableError(nodePtr);
-    } else {
-      g_eventLogger->info(
-          "DBSPJ %u: checkPrepareComplete SKIP root "
-          "checkTableError (tableId=0, CTE virtual node)",
-          instance());
     }
     if (unlikely(err != 0)) {
       jam();
-      g_eventLogger->info(
-          "DBSPJ %u: checkPrepareComplete root "
-          "checkTableError FAILED node %u tableId=%u err=%u",
-          instance(), nodePtr.p->m_node_no,
-          nodePtr.p->m_tableOrIndexId, err);
       abort(signal, requestPtr, err);
       break;
     }
@@ -6579,14 +6541,44 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
   Uint32 attrInfoPtrI = treeNodePtr.p->m_send.m_attrInfoPtrI;
 
   Uint32 agg_extra = 0;
-  if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+  if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
     jam();
     /**
+     * CTE materialization lookup: route rows through the CTE's
+     * JoinAgg engine using the CTE-specific aggStateKey.
+     * Check T_CTE_SCAN before T_AGGREGATE_LEAF since CTE subtree
+     * leaf nodes have both flags set.
+     */
+    ndbassert(LqhKeyReq::getSameClientAndTcFlag(req->requestInfo) == 0);
+    ndbassert(LqhKeyReq::getReturnedReadLenAIFlag(req->requestInfo) == 0);
+    ndbassert(LqhKeyReq::getRowidFlag(req->requestInfo) == 0);
+    ndbassert(LqhKeyReq::getGCIFlag(req->requestInfo) == 0);
+
+    Uint32 nodeId = refToNode(ref);
+    LqhKeyReq::setJoinAggFlag(req->attrLen, 1);
+    const Uint32 cteId = treeNodePtr.p->m_cteId;
+    const Uint32 max_nodes = MAX_NDB_NODES;
+    Uint32 cteIdx = RNIL;
+    for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+      if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
+        cteIdx = i;
+        break;
+      }
+    }
+    ndbrequire(cteIdx != RNIL);
+    ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
+    Uint32 cteAggKey =
+        requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
+    req->variableData[var_index + 4] = cteAggKey;
+    agg_extra = 1;
+  } else if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+    jam();
+    /**
+     * Main query aggregate leaf: aggStateKey from m_aggStateKeys
+     * with multi-leaf star-schema encoding.
      * aggStateKey is placed at var_index + 4, which assumes DBLQH's
      * nextPos walk over variableData arrives here after:
      *   ApplicationAddressFlag=1 (2 words) + CorrFactorFlag=1 (2 words).
-     * This requires that SameClientAndTcFlag, ReturnedReadLenAIFlag,
-     * RowidFlag and GCIFlag are all 0, as set in lookup_build().
      */
     ndbassert(LqhKeyReq::getSameClientAndTcFlag(req->requestInfo) == 0);
     ndbassert(LqhKeyReq::getReturnedReadLenAIFlag(req->requestInfo) == 0);
@@ -12652,17 +12644,6 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       if (ctx.m_cteSubtreeRemaining == 0) {
         requestPtr.p->m_bits |= Request::RT_AGGREGATE;
         ctx.m_aggregate_node_count++;
-        g_eventLogger->info(
-            "DBSPJ %u: NI_AGGREGATE on main query node %u "
-            "(cteRemaining=0, aggCount=%u)",
-            instance(), treeNodePtr.p->m_node_no,
-            ctx.m_aggregate_node_count);
-      } else {
-        g_eventLogger->info(
-            "DBSPJ %u: NI_AGGREGATE on CTE subtree node %u "
-            "(cteRemaining=%u, SKIP RT_AGGREGATE)",
-            instance(), treeNodePtr.p->m_node_no,
-            ctx.m_cteSubtreeRemaining);
       }
 
       if (treeBits & DABits::NI_AGGREGATE_LEAF) {
