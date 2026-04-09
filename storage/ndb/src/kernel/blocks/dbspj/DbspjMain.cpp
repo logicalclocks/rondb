@@ -2882,8 +2882,18 @@ void Dbspj::prepare(Signal *signal, Ptr<Request> requestPtr) {
         err = checkTableError(nodePtr);
         if (unlikely(err)) {
           jam();
+          g_eventLogger->info(
+              "DBSPJ %u: checkTableError FAILED node %u "
+              "tableId=%u err=%u",
+              instance(), nodePtr.p->m_node_no,
+              nodePtr.p->m_tableOrIndexId, err);
           break;
         }
+      } else {
+        g_eventLogger->info(
+            "DBSPJ %u: checkTableError SKIP node %u "
+            "(tableId=0, CTE virtual node)",
+            instance(), nodePtr.p->m_node_no);
       }
       if (nodePtr.p->m_bits & TreeNode::T_NEED_PREPARE) {
         jam();
@@ -2932,9 +2942,22 @@ void Dbspj::checkPrepareComplete(Signal *signal, Ptr<Request> requestPtr) {
       Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
       ndbrequire(list.first(nodePtr));
     }
-    Uint32 err = checkTableError(nodePtr);
+    Uint32 err = 0;
+    if (nodePtr.p->m_tableOrIndexId != 0) {
+      err = checkTableError(nodePtr);
+    } else {
+      g_eventLogger->info(
+          "DBSPJ %u: checkPrepareComplete SKIP root "
+          "checkTableError (tableId=0, CTE virtual node)",
+          instance());
+    }
     if (unlikely(err != 0)) {
       jam();
+      g_eventLogger->info(
+          "DBSPJ %u: checkPrepareComplete root "
+          "checkTableError FAILED node %u tableId=%u err=%u",
+          instance(), nodePtr.p->m_node_no,
+          nodePtr.p->m_tableOrIndexId, err);
       abort(signal, requestPtr, err);
       break;
     }
