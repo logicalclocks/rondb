@@ -646,9 +646,11 @@ sendScanTabReqWithCtes(SignalSender &ss, Uint32 nodeId,
                     cte1AggProgram.begin(), cte1AggProgram.end());
 
   ssig.header.m_noOfSections = 3;
-  Uint32 dummyReceiverId = 0;
-  ssig.ptr[0].p = &dummyReceiverId;
-  ssig.ptr[0].sz = 1;
+  /* Provide fragCount receiver IDs (unused for JoinAgg, but DBTC's
+   * ScanFragRec allocation loop reads them). */
+  std::vector<Uint32> dummyReceiverIds(meta.fragCount, 0);
+  ssig.ptr[0].p = dummyReceiverIds.data();
+  ssig.ptr[0].sz = meta.fragCount;
   ssig.ptr[1].p = queryTree.data();
   ssig.ptr[1].sz = (Uint32)queryTree.size();
   ssig.ptr[2].p = aggSection.data();
