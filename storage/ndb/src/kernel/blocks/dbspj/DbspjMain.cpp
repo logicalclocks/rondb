@@ -2015,17 +2015,24 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
           instance(), ctx.m_aggregate_node_count, ctx.m_cnt);
       return DbspjErr::InvalidAggregateFlags;
     }
+    g_eventLogger->info(
+        "DBSPJ %u: validateAgg: aggLeafCount=%u "
+        "allAreLeaves=%d numCtes=%u aggNodeCount=%u cnt=%u",
+        instance(), aggregate_leaf_count,
+        aggregate_leaf_all_are_leaves,
+        requestPtr.p->m_numCtes,
+        ctx.m_aggregate_node_count, ctx.m_cnt);
     if (unlikely(aggregate_leaf_count < 1)) {
       jam();
-      g_eventLogger->debug(
-          "DBSPJ %u: Found 0 T_AGGREGATE_LEAF nodes, expected >= 1",
+      g_eventLogger->info(
+          "DBSPJ %u: FAIL: Found 0 T_AGGREGATE_LEAF nodes",
           instance());
       return DbspjErr::InvalidAggregateFlags;
     }
     if (unlikely(!aggregate_leaf_all_are_leaves)) {
       jam();
-      g_eventLogger->debug(
-          "DBSPJ %u: T_AGGREGATE_LEAF is set on a non-leaf node",
+      g_eventLogger->info(
+          "DBSPJ %u: FAIL: T_AGGREGATE_LEAF on non-leaf node",
           instance());
       return DbspjErr::InvalidAggregateFlags;
     }
