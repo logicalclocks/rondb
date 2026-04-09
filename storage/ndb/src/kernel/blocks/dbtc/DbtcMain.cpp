@@ -17813,7 +17813,18 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
                  status));
   if (scanptr.p->m_queued_count > /** Min */ 0) {
     jamDebug();
-    sendScanTabConf(signal, scanptr, apiConnectptr);
+    /* During CTE phase, suppress SCAN_TABCONF to API.
+     * CTE scans produce SCAN_FRAGCONFs but the API should
+     * only see results from the main query. */
+    if (scanptr.p->m_numCtes > 0 &&
+        scanptr.p->m_cteCurrentPhase < scanptr.p->m_ctePhaseCount) {
+      jam();
+      DEB_CTE(("(%u) execSCAN_FRAGCONF: suppress "
+               "SCAN_TABCONF during CTE phase",
+               instance()));
+    } else {
+      sendScanTabConf(signal, scanptr, apiConnectptr);
+    }
   }
 }  // Dbtc::execSCAN_FRAGCONF()
 
@@ -29559,7 +29570,10 @@ void Dbtc::sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr) {
                signal, CteStartMainReq::SignalLength, JBB);
   }
 
-  // Transition back to RUNNING — main query will now execute
+  // Mark CTE phase as complete and transition to RUNNING for
+  // the main query. m_cteCurrentPhase = m_ctePhaseCount signals
+  // that SCAN_TABCONFs should now go to the API.
+  scanptr.p->m_cteCurrentPhase = scanptr.p->m_ctePhaseCount;
   scanptr.p->scanState = ScanRecord::RUNNING;
 }
 
