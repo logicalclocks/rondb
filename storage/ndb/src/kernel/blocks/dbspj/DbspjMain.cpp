@@ -2993,6 +2993,9 @@ void Dbspj::checkPrepareComplete(Signal *signal, Ptr<Request> requestPtr) {
        */
       requestPtr.p->m_bits |= Request::RT_CTE_PHASE;
       requestPtr.p->m_cteCurrentPhase = 0;
+      DEB_CTE(("(%u) checkPrepareComplete: CTE phase 0, "
+               "numCtes=%u",
+               instance(), requestPtr.p->m_numCtes));
 
       // Start only Phase 0 CTE root nodes (no parent).
       // Child nodes (lookups) are started by parent_row()
@@ -3002,13 +3005,24 @@ void Dbspj::checkPrepareComplete(Signal *signal, Ptr<Request> requestPtr) {
       for (list.first(treeNodePtr); !treeNodePtr.isNull();
            list.next(treeNodePtr)) {
         if (!(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) continue;
-        if (treeNodePtr.p->m_parentPtrI != RNIL) continue;
+        if (treeNodePtr.p->m_parentPtrI != RNIL) {
+          DEB_CTE(("(%u) checkPrepareComplete: skip "
+                   "child node %u (has parent)",
+                   instance(), treeNodePtr.p->m_node_no));
+          continue;
+        }
         jam();
         // Find this node's CTE context and check phase
         for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
           if (requestPtr.p->m_cteContexts[i].m_cteId ==
                   treeNodePtr.p->m_cteId &&
               requestPtr.p->m_cteContexts[i].m_phase == 0) {
+            DEB_CTE(("(%u) checkPrepareComplete: "
+                     "START CTE root node %u "
+                     "(cteId=%u, phase=0)",
+                     instance(),
+                     treeNodePtr.p->m_node_no,
+                     treeNodePtr.p->m_cteId));
             ndbrequire(treeNodePtr.p->m_info != 0 &&
                        treeNodePtr.p->m_info->m_start != 0);
             (this->*(treeNodePtr.p->m_info->m_start))(
@@ -3037,6 +3051,11 @@ void Dbspj::checkPrepareComplete(Signal *signal, Ptr<Request> requestPtr) {
 void Dbspj::checkBatchComplete(Signal *signal, Ptr<Request> requestPtr) {
   if (unlikely(requestPtr.p->m_outstanding == 0)) {
     jam();
+    DEB_CTE(("(%u) checkBatchComplete: outstanding=0, "
+             "cnt_active=%u CTE_PHASE=%d",
+             instance(),
+             requestPtr.p->m_cnt_active,
+             !!(requestPtr.p->m_bits & Request::RT_CTE_PHASE)));
     batchComplete(signal, requestPtr);
   }
 }
@@ -3061,6 +3080,12 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
    */
   if (requestPtr.p->m_bits & Request::RT_CTE_PHASE) {
     jam();
+    DEB_CTE(("(%u) batchComplete: RT_CTE_PHASE set, "
+             "outstanding=%u cnt_active=%u rows=%u",
+             instance(),
+             requestPtr.p->m_outstanding,
+             requestPtr.p->m_cnt_active,
+             requestPtr.p->m_rows));
     handleCtePhaseComplete(signal, requestPtr);
     return;
   }
@@ -4157,6 +4182,12 @@ void Dbspj::execSCAN_FRAGCONF(Signal *signal) {
       !requestPtr.p->m_completed_tree_nodes.get(treeNodePtr.p->m_node_no) ||
       requestPtr.p->m_state & Request::RS_ABORTING);
 
+  DEB_CTE(("(%u) execSCAN_FRAGCONF: node=%u "
+           "T_CTE_SCAN=%d completedRows=%u outstanding=%u",
+           instance(), treeNodePtr.p->m_node_no,
+           !!(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN),
+           conf->total_len,
+           requestPtr.p->m_outstanding));
   DEBUG("execSCAN_FRAGCONF"
         << ", node: " << treeNodePtr.p->m_node_no
         << ", request: " << requestPtr.i);
@@ -6209,6 +6240,12 @@ void Dbspj::cte_scan_dumpNode(const Ptr<Request> requestPtr,
  */
 void Dbspj::handleCtePhaseComplete(Signal *signal, Ptr<Request> requestPtr) {
   jam();
+  DEB_CTE(("(%u) handleCtePhaseComplete: phase=%u "
+           "outstanding=%u cnt_active=%u",
+           instance(),
+           requestPtr.p->m_cteCurrentPhase,
+           requestPtr.p->m_outstanding,
+           requestPtr.p->m_cnt_active));
 
   // Send CTE_PHASE_COMPLETE_REP to DBTC
   CtePhaseCompleteRep *rep =
@@ -6300,6 +6337,10 @@ void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
     Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
     ndbrequire(list.first(rootNodePtr));
   }
+  DEB_CTE(("(%u) execCTE_START_MAIN_REQ: start root "
+           "node %u (all %u CTEs READY)",
+           instance(), rootNodePtr.p->m_node_no,
+           requestPtr.p->m_numCtes));
   ndbrequire(rootNodePtr.p->m_info != 0 && rootNodePtr.p->m_info->m_start != 0);
   (this->*(rootNodePtr.p->m_info->m_start))(signal, requestPtr, rootNodePtr);
 
@@ -9406,6 +9447,11 @@ Uint32 Dbspj::scanFrag_sendDihGetNodesReq(Signal *signal,
 void Dbspj::scanFrag_start(Signal *signal, Ptr<Request> requestPtr,
                            Ptr<TreeNode> treeNodePtr) {
   jam();
+  DEB_CTE(("(%u) scanFrag_start: node=%u T_CTE_SCAN=%d "
+           "fragCount=%u",
+           instance(), treeNodePtr.p->m_node_no,
+           !!(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN),
+           treeNodePtr.p->m_scanFrag_data.m_fragCount));
   ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
 
   ndbassert(data.m_fragCount > 0);
