@@ -5810,6 +5810,49 @@ Uint32 Dbspj::cte_subtree_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_cteSubtree_data.m_numNodes = node->numNodes;
     treeNodePtr.p->m_cteId = node->cteId;
 
+    // Register CteContext for this cteId
+    {
+      if (unlikely(node->cteId != requestPtr.p->m_numCtes)) {
+        jam();
+        err = DbspjErr::InvalidTreeNodeSpecification;
+        break;
+      }
+      if (unlikely(node->cteId >= 64)) {
+        jam();
+        err = DbspjErr::InvalidTreeNodeSpecification;
+        break;
+      }
+      const Uint32 newCount = requestPtr.p->m_numCtes + 1;
+      CteContext *newArr = static_cast<CteContext *>(
+          lc_ndbd_pool_malloc(newCount * sizeof(CteContext),
+                              RG_QUERY_MEMORY, getThreadId(), true));
+      if (unlikely(newArr == nullptr)) {
+        jam();
+        err = DbspjErr::OutOfQueryMemory;
+        break;
+      }
+      if (requestPtr.p->m_cteContexts != nullptr) {
+        memcpy(newArr, requestPtr.p->m_cteContexts,
+               requestPtr.p->m_numCtes * sizeof(CteContext));
+        lc_ndbd_pool_free(requestPtr.p->m_cteContexts);
+      }
+      requestPtr.p->m_cteContexts = newArr;
+
+      CteContext &cctx =
+          requestPtr.p->m_cteContexts[requestPtr.p->m_numCtes];
+      cctx.m_cteId = node->cteId;
+      cctx.m_state = CteContext::CTE_NOT_STARTED;
+      cctx.m_numResultCols = 0;
+      cctx.m_scanTreeNodeNo = RNIL;
+      cctx.m_depMask = 0;
+      cctx.m_phase = 0;
+      cctx.m_flags = 0;
+      cctx.m_cachedRowPtrI = RNIL;
+      cctx.m_cachedRowLen = 0;
+      cctx.m_singleNodeId = 0;
+      requestPtr.p->m_numCtes++;
+    }
+
     // Tell the build loop that the next numNodes nodes belong to this CTE.
     ctx.m_cteSubtreeRemaining = node->numNodes;
     ctx.m_cteSubtreeCteId = node->cteId;
