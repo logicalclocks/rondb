@@ -11158,8 +11158,11 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
     ndbrequire(data.m_frags_complete < data.m_fragCount);
     data.m_frags_complete++;
 
-    // Statistics pr fragments added to total 'data' when fragment completes
-    ndbassert(treeNodePtr.p->m_node_no == 0 || fragPtr.p->m_keysSent > 0);
+    // Statistics pr fragments added to total 'data' when fragment completes.
+    // CTE root scans (T_CTE_SCAN without parent) are also root-level scans.
+    ndbassert(treeNodePtr.p->m_node_no == 0 ||
+              (treeNodePtr.p->m_parentPtrI == RNIL) ||
+              fragPtr.p->m_keysSent > 0);
     data.m_completedKeys += fragPtr.p->m_keysSent;
     data.m_completedRows += fragPtr.p->m_totalRows;
     fragPtr.p->m_keysSent = 0;
