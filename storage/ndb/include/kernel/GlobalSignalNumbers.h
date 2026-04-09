@@ -37,7 +37,7 @@
  * version there signal may be sent. The signal number must remain reserved and
  * handled by receiver until that version is no longer supported.
  */
-const GlobalSignalNumber MAX_GSN = 973;
+const GlobalSignalNumber MAX_GSN = 978;
 
 struct GsnName {
   GlobalSignalNumber gsn;
