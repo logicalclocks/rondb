@@ -1880,24 +1880,34 @@ Dbspj::build(Build_context& ctx,
     /**
      * Mark embedded nodes that belong to a CTE subtree.
      * cte_subtree_build() sets m_cteSubtreeRemaining = numNodes;
-     * the subsequent numNodes are the embedded scan nodes.
+     * the subsequent numNodes are the embedded materialization nodes.
+     *
+     * QN_CTE_LOOKUP and QN_CTE_SCAN nodes inside a subtree read from
+     * OTHER CTEs — they are not materialization nodes and must NOT be
+     * marked T_CTE_SCAN (which drives JoinAgg routing, aggStateKey
+     * assignment, and phase startup).
      */
     if (ctx.m_cteSubtreeRemaining > 0 &&
         node_op != QueryNode::QN_CTE_SUBTREE) {
-      jam();
-      Ptr<TreeNode> nodePtr = ctx.m_node_list[ctx.m_cnt];
-      nodePtr.p->m_bits |= TreeNode::T_CTE_SCAN;
-      nodePtr.p->m_cteId = ctx.m_cteSubtreeCteId;
+      ctx.m_cteSubtreeRemaining--;
 
-      // Record the scan tree node in the CteContext
-      for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
-        if (requestPtr.p->m_cteContexts[i].m_cteId == ctx.m_cteSubtreeCteId) {
-          requestPtr.p->m_cteContexts[i].m_scanTreeNodeNo =
-              nodePtr.p->m_node_no;
-          break;
+      if (node_op != QueryNode::QN_CTE_LOOKUP &&
+          node_op != QueryNode::QN_CTE_SCAN) {
+        jam();
+        Ptr<TreeNode> nodePtr = ctx.m_node_list[ctx.m_cnt];
+        nodePtr.p->m_bits |= TreeNode::T_CTE_SCAN;
+        nodePtr.p->m_cteId = ctx.m_cteSubtreeCteId;
+
+        // Record the scan tree node in the CteContext
+        for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+          if (requestPtr.p->m_cteContexts[i].m_cteId ==
+              ctx.m_cteSubtreeCteId) {
+            requestPtr.p->m_cteContexts[i].m_scanTreeNodeNo =
+                nodePtr.p->m_node_no;
+            break;
+          }
         }
       }
-      ctx.m_cteSubtreeRemaining--;
     }
 
     /**
