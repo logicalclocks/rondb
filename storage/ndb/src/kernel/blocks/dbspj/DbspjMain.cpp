@@ -66,12 +66,19 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
-//#define DEBUG_TRANSID_AI 1
+#define DEBUG_TRANSID_AI 1
 #define DEBUG_AGGREGATION 1
 #define DEBUG_STAR_AGG 1
-//#define DEBUG_JOIN_AGG_TRACE 1
-//#define DEBUG_MATCH 1
-//#define DEBUG_SCAN_PARENT_ROW 1
+#define DEBUG_JOIN_AGG_TRACE 1
+#define DEBUG_MATCH 1
+#define DEBUG_SCAN_PARENT_ROW 1
+#define DEBUG_CTE 1
+#endif
+
+#ifdef DEBUG_CTE
+#define DEB_CTE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CTE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_TRANSID_AI
@@ -1739,9 +1746,14 @@ Dbspj::build(Build_context& ctx,
       /* Decode tree node header and flags */
       Uint32 treeBits = (node_len > 1) ? m_buffer0[1] : 0;
       Uint32 paramBits = (param_len > 1) ? m_buffer1[1] : 0;
-      DEB_JOIN_AGG(("DBSPJ build() node[%u]: op=%u len=%u  "
+      DEB_JOIN_AGG(("(%u) DBSPJ build() node[%u]: op=%u len=%u  "
                      "treeBits=0x%08x paramBits=0x%08x",
-                     ctx.m_cnt, node_op, node_len, treeBits, paramBits));
+                     instance(),
+                     ctx.m_cnt,
+                     node_op,
+                     node_len,
+                     treeBits,
+                     paramBits));
       /* Decode key flags */
       const char *agg = (treeBits & DABits::NI_AGGREGATE) ?
         " NI_AGGREGATE" : "";
@@ -1759,9 +1771,16 @@ Dbspj::build(Build_context& ctx,
         " PI_ATTR_INTERPRET" : "";
       const char *piList = (paramBits & DABits::PI_ATTR_LIST) ?
         " PI_ATTR_LIST" : "";
-      DEB_JOIN_AGG(("  flags:%s%s%s%s%s%s%s%s",
-                     agg, aggLeaf, linked, keyLnk, attrInt, attrLnk,
-                     piInt, piList));
+      DEB_JOIN_AGG(("(%u)  flags:%s%s%s%s%s%s%s%s",
+                     instance(),
+                     agg,
+                     aggLeaf,
+                     linked,
+                     keyLnk,
+                     attrInt,
+                     attrLnk,
+                     piInt,
+                     piList));
       dumpWordsToLog(instance(), "  tree node", m_buffer0, node_len);
       dumpWordsToLog(instance(), "  param node", m_buffer1, param_len);
     }
@@ -1902,6 +1921,8 @@ Dbspj::build(Build_context& ctx,
     if (ctx.m_cteSubtreeRemaining > 0 &&
         node_op != QueryNode::QN_CTE_SUBTREE) {
       ctx.m_cteSubtreeRemaining--;
+      DEB_CTE(("(%u) SubtreeRemaining: %u",
+        instance(), ctx.m_cteSubtreeRemaining));
 
       if (node_op != QueryNode::QN_CTE_LOOKUP &&
           node_op != QueryNode::QN_CTE_SCAN) {
@@ -2973,12 +2994,15 @@ void Dbspj::checkPrepareComplete(Signal *signal, Ptr<Request> requestPtr) {
       requestPtr.p->m_bits |= Request::RT_CTE_PHASE;
       requestPtr.p->m_cteCurrentPhase = 0;
 
-      // Start only Phase 0 CTE scan nodes
+      // Start only Phase 0 CTE root nodes (no parent).
+      // Child nodes (lookups) are started by parent_row()
+      // when the root scan produces rows.
       Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
       Ptr<TreeNode> treeNodePtr;
       for (list.first(treeNodePtr); !treeNodePtr.isNull();
            list.next(treeNodePtr)) {
         if (!(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) continue;
+        if (treeNodePtr.p->m_parentPtrI != RNIL) continue;
         jam();
         // Find this node's CTE context and check phase
         for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
@@ -4314,6 +4338,8 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
     return;
   }
 
+  DEB_TRANSID_AI(("(%u) execTRANSID_AI node: %u, requestPtrI: %u",
+    instance(), treeNodePtr.p->m_node_no, requestPtr.i));
   DEBUG("execTRANSID_AI"
         << ", node: " << treeNodePtr.p->m_node_no
         << ", request: " << requestPtr.i);
@@ -5304,6 +5330,7 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
   const QN_CteLookupNode *node = (const QN_CteLookupNode *)qn;
   const QN_CteLookupParameters *param = (const QN_CteLookupParameters *)qp;
 
+  DEB_CTE(("(%u) cte_build", instance()));
   do {
     jam();
     err = DbspjErr::InvalidTreeNodeSpecification;
@@ -5386,6 +5413,8 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
         cctx.m_cachedRowLen = 0;
         cctx.m_singleNodeId = 0;
         requestPtr.p->m_numCtes++;
+        DEB_CTE(("(%u) numCtes: %u, newCount: %u",
+          instance(), requestPtr.p->m_numCtes, newCount));
       }
     }
 
@@ -5748,6 +5777,7 @@ Uint32 Dbspj::cte_subtree_build(Build_context &ctx, Ptr<Request> requestPtr,
   Ptr<TreeNode> treeNodePtr;
   const QN_CteSubtreeNode *node = (const QN_CteSubtreeNode *)qn;
 
+  DEB_CTE(("(%u) cte_subtree_build", instance()));
   do {
     jam();
     err = DbspjErr::InvalidTreeNodeSpecification;
@@ -5813,6 +5843,8 @@ Uint32 Dbspj::cte_subtree_build(Build_context &ctx, Ptr<Request> requestPtr,
       cctx.m_cachedRowLen = 0;
       cctx.m_singleNodeId = 0;
       requestPtr.p->m_numCtes++;
+      DEB_CTE(("(%u) numCtes: %u, newCount: %u",
+        instance(), requestPtr.p->m_numCtes, newCount));
     }
 
     // Tell the build loop that the next numNodes nodes belong to this CTE.
@@ -5886,6 +5918,7 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
   const QN_CteScanNode *node = (const QN_CteScanNode *)qn;
   const QN_CteScanParameters *param = (const QN_CteScanParameters *)qp;
 
+  DEB_CTE(("(%u) cte_scan_build", instance()));
   do {
     jam();
     err = DbspjErr::InvalidTreeNodeSpecification;
@@ -6221,6 +6254,7 @@ void Dbspj::execCTE_PHASE_START_REQ(Signal *signal) {
   for (list.first(treeNodePtr); !treeNodePtr.isNull();
        list.next(treeNodePtr)) {
     if (!(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) continue;
+    if (treeNodePtr.p->m_parentPtrI != RNIL) continue;
     jam();
     for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
       if (requestPtr.p->m_cteContexts[i].m_cteId ==
@@ -6278,6 +6312,8 @@ Uint32 Dbspj::lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
   Ptr<TreeNode> treeNodePtr;
   const QN_LookupNode *node = (const QN_LookupNode *)qn;
   const QN_LookupParameters *param = (const QN_LookupParameters *)qp;
+
+  DEB_CTE(("(%u) lookup_build", instance()));
   do {
     jam();
     err = DbspjErr::InvalidTreeNodeSpecification;
@@ -6543,6 +6579,8 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
   Uint32 agg_extra = 0;
   if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
     jam();
+    DEB_CTE(("(%u) Send LQHKEYREQ from node: %u for T_CTE_SCAN",
+      instance(), treeNodePtr.p->m_node_no));
     /**
      * CTE materialization lookup: route rows through the CTE's
      * JoinAgg engine using the CTE-specific aggStateKey.
@@ -6573,6 +6611,8 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
     agg_extra = 1;
   } else if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
     jam();
+    DEB_CTE(("(%u) Send LQHKEYREQ from node: %u for T_AGGREGATE_LEAF",
+      instance(), treeNodePtr.p->m_node_no));
     /**
      * Main query aggregate leaf: aggStateKey from m_aggStateKeys
      * with multi-leaf star-schema encoding.
@@ -6618,9 +6658,13 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
        */
       treeNodePtr.p->m_send.m_attrInfoPtrI = RNIL;
       treeNodePtr.p->m_send.m_keyInfoPtrI = RNIL;
+      DEB_CTE(("(%u) Send LQHKEYREQ from node: %u for T_ONE_SHOT",
+      instance(), treeNodePtr.p->m_node_no));
     } else {
       if ((treeNodePtr.p->m_bits & TreeNode::T_KEYINFO_CONSTRUCTED) == 0) {
         jam();
+        DEB_CTE(("(%u) Send LQHKEYREQ from node: %u for !T_KEYINFO_CONSTRUCTED",
+          instance(), treeNodePtr.p->m_node_no));
         Uint32 tmp = RNIL;
         if (!dupSection(tmp, keyInfoPtrI)) {
           jam();
@@ -6638,6 +6682,8 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
       if ((treeNodePtr.p->m_bits & TreeNode::T_ATTRINFO_CONSTRUCTED) == 0) {
         jam();
         Uint32 tmp = RNIL;
+        DEB_CTE(("(%u) Send LQHKEYREQ from node: %u for !T_ATTRINFO_CONSTRUCTED",
+          instance(), treeNodePtr.p->m_node_no));
 
         /**
          * Test execution terminated due to 'OutOfSectionMemory' which
@@ -8536,6 +8582,7 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
   const QN_ScanFragNode *node = (const QN_ScanFragNode *)qn;
   const QN_ScanFragParameters *param = (const QN_ScanFragParameters *)qp;
 
+  DEB_CTE(("(%u) scanFrag_build", instance()));
   // Only scan requests can have scan-TreeNodes
   ndbassert(requestPtr.p->isScan());
 
@@ -10444,6 +10491,8 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
           Uint32 cteAggKey =
               requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
           req->variableData[var_index + 2] = cteAggKey;
+          DEB_CTE(("(%u) Send SCAN_FRAGREQ from node: %u with T_CTE_SCAN",
+            instance(), treeNodePtr.p->m_node_no));
         } else {
           jam();
           ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
@@ -12648,8 +12697,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
 
       if (treeBits & DABits::NI_AGGREGATE_LEAF) {
         jam();
-        DEB_AGGREGATION(("(%u)DBSPJ AGGREGATE_LEAF: this node sends aggregated "
-                         "results to API",
+        DEB_AGGREGATION(("(%u)DBSPJ AGGREGATE_LEAF: this node creates aggregated "
+                         "results to API or as CTE",
                          instance()));
         treeNodePtr.p->m_bits |= TreeNode::T_AGGREGATE_LEAF;
       }
