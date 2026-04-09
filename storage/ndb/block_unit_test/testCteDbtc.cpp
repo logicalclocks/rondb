@@ -613,7 +613,7 @@ sendScanTabReqWithCtes(SignalSender &ss, Uint32 nodeId,
   data[8] = apiConnectPtr;        /* buddyConPtr = self */
   data[9] = 65536;                /* batch_byte_size */
   data[10] = 256;                 /* first_batch_size */
-  data[15] = 1;                   /* scanParallelism */
+  data[15] = meta.fragCount;      /* scanParallelism = all fragments */
 
   ssig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
 
