@@ -271,20 +271,21 @@ buildQueryTreeWithCtes(Uint32 tableId, Uint32 tableVersion,
 
   /* ---- Main query ---- */
 
-  /* Node 6: QN_SCAN_FRAG (main scan — normal SPJ, no aggregation) */
+  /* Node 6: QN_SCAN_FRAG (main scan with aggregation) */
   Uint32 n6_len = 0;
   QueryNode::setOpLen(n6_len, QueryNode::QN_SCAN_FRAG, main_scan_len);
   ai.push_back(n6_len);
-  ai.push_back(DABits::NI_LINKED_ATTR);
+  ai.push_back(DABits::NI_AGGREGATE | DABits::NI_LINKED_ATTR);
   ai.push_back(tableId);
   ai.push_back(tableVersion);
   ai.push_back((pkAttrId << 16) | 1);
 
-  /* Node 7: QN_LOOKUP (main self-join by pk — normal SPJ, no aggregation) */
+  /* Node 7: QN_LOOKUP (main agg leaf, self-join by pk) */
   Uint32 n7_len = 0;
   QueryNode::setOpLen(n7_len, QueryNode::QN_LOOKUP, main_leaf_len);
   ai.push_back(n7_len);
-  ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED);
+  ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
+               DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF);
   ai.push_back(tableId);
   ai.push_back(tableVersion);
   ai.push_back((6 << 16) | 1);           /* parent: node 6 */

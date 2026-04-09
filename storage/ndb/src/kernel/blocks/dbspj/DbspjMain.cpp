@@ -2000,7 +2000,12 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
       }
     }
 
-    if (unlikely(ctx.m_aggregate_node_count != ctx.m_cnt)) {
+    /* When CTEs are present, only main query nodes contribute to
+     * m_aggregate_node_count (CTE subtree nodes are excluded).
+     * Skip the all-or-nothing check for compound CTE queries since
+     * the aggregate and non-aggregate node sets are disjoint. */
+    if (requestPtr.p->m_numCtes == 0 &&
+        unlikely(ctx.m_aggregate_node_count != ctx.m_cnt)) {
       jam();
       g_eventLogger->debug(
           "DBSPJ %u: NI_AGGREGATE set on %u of %u nodes, expected all",
