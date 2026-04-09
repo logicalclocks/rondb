@@ -781,13 +781,19 @@ collectResults(SignalSender &ss,
       Uint32 ri = d[1];
       bool endOfData = (ri & ScanTabConf::EndOfData) != 0;
       Uint32 ops = ri & 0xFF;
-      V("  SCAN_TABCONF: ops=%u endOfData=%d\n", ops, (int)endOfData);
+      printf("  SCAN_TABCONF: ops=%u endOfData=%d ri=0x%x "
+             "sigLen=%u\n",
+             ops, (int)endOfData, ri,
+             resp->header.theLength);
 
       if (endOfData) {
         done = true;
       } else {
         Uint32 sigLen = resp->header.theLength;
         Uint32 words_per_op = ops > 0 ? (sigLen - 4) / ops : 4;
+
+        printf("  -> sending SCAN_NEXTREQ: ops=%u "
+               "words_per_op=%u\n", ops, words_per_op);
 
         SimpleSignal nextSig;
         Uint32 *ndata = nextSig.getDataPtrSend();
@@ -820,7 +826,7 @@ collectResults(SignalSender &ss,
       return -1;
     }
     else {
-      V("  Ignoring GSN %d\n", gsn);
+      printf("  Ignoring GSN %d\n", gsn);
     }
   }
   return 0;
