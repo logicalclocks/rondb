@@ -191,6 +191,7 @@
     <li><a href="#cte-to-cte">CTE-to-CTE Dependencies</a></li>
     <li><a href="#scan-resume">O(1) CTE Scan Resume</a></li>
     <li><a href="#single-row">Single-Row CTE Optimization</a></li>
+    <li><a href="#compound-exec">Compound Query Execution</a></li>
     <li><a href="#signals">Signal Reference</a></li>
     <li><a href="#state-machines">State Machines</a></li>
   </ol>
@@ -971,10 +972,161 @@ and the aggKeys section (SCAN_FRAGREQ):</p>
 </section>
 
 <!-- ============================================================ -->
-<!-- 13. SIGNAL REFERENCE -->
+<!-- 13. COMPOUND QUERY EXECUTION -->
+<!-- ============================================================ -->
+<section id="compound-exec">
+<h2>13. Compound Query Execution Architecture</h2>
+
+<p>A CTE compound query tree has multiple root-level nodes
+(<code>parentPtrI == RNIL</code>): CTE subtree containers, CTE root scans,
+and the main query root. This required changes across DBTC and DBSPJ
+to handle the multi-root structure correctly.</p>
+
+<h3>13.1 DBTC: KeyInfo Parsing</h3>
+
+<p>The KeyInfo section (SCAN_TABREQ section 2) carries both the main
+aggregation program and optional CTE definitions:</p>
+
+<pre><code>KeyInfo layout:
+  [boundsLen] [bounds...] [aggReceiverId]
+  [aggProgram...]          // 0x0721 flat or 0x0722 multi-leaf
+  [CTE_DEFS_MARKER]        // 0xCDE00000 (only if CTEs present)
+  [numCtes]
+  [per-CTE: tableId, schemaVersion, depMask_lo, depMask_hi,
+            flags, progLen, prog...]</code></pre>
+
+<p>The data is linearized into a stack buffer (8192 words) for
+format-independent parsing. The agg program format is detected by
+magic: <code>0x0721</code> (old flat, <code>word[0] &amp; 0xFFFF = progLen</code>)
+or <code>0x0722</code> (multi-leaf wrapper, walk per-leaf entries for total length).
+<code>CTE_DEFS_MARKER</code> prevents misinterpreting non-CTE leftover data.</p>
+
+<h4>DBTC CTE Signal Flow</h4>
+<table>
+<tr><th>Step</th><th>Action</th><th>Key Detail</th></tr>
+<tr>
+  <td>1. Parse</td>
+  <td><code>parseJoinAggKeyInfo()</code></td>
+  <td>Linearize KeyInfo, detect 0x0721/0x0722, parse CTE defs after CTE_DEFS_MARKER</td>
+</tr>
+<tr>
+  <td>2. Validate</td>
+  <td><code>execDIH_SCAN_TAB_CONF()</code></td>
+  <td>Enforce <code>scanParallelism &ge; fragCount</code> for CTE queries (one DBSPJ instance per fragment)</td>
+</tr>
+<tr>
+  <td>3. Setup</td>
+  <td><code>sendJoinAggSetupReqs()</code></td>
+  <td>Main agg + per-CTE SETUP with <code>CTE_MODE_FLAG</code>; single-row CTEs to one node only</td>
+</tr>
+<tr>
+  <td>4. Suppress</td>
+  <td><code>sendScanTabConf()</code></td>
+  <td>Suppress intermediate SCAN_TABCONF for CTE JoinAgg (<code>m_joinAgg &amp;&amp; !release &amp;&amp; m_numCtes &gt; 0</code>)</td>
+</tr>
+</table>
+
+<h3>13.2 DBSPJ: Build Phase</h3>
+
+<table>
+<tr><th>Component</th><th>Change</th><th>Reason</th></tr>
+<tr>
+  <td><code>cte_subtree_build()</code></td>
+  <td>Registers CteContext (grows array by 1)</td>
+  <td>Previously only <code>cte_build()</code> (QN_CTE_LOOKUP) registered; CTE subtrees need contexts too</td>
+</tr>
+<tr>
+  <td><code>ctx.m_start_signal</code></td>
+  <td>Consumed inside <code>parseScanFrag()</code> / <code>lookup_build()</code>, not in build loop</td>
+  <td>Preserved through CTE subtree nodes so main query root gets root-scan treatment</td>
+</tr>
+<tr>
+  <td><code>buildExecPlan()</code></td>
+  <td>Iterates ALL root-level nodes (<code>parentPtrI == RNIL</code>)</td>
+  <td>Each disjoint subtree needs its own <code>m_next_nodes</code> execution chains</td>
+</tr>
+<tr>
+  <td><code>validateAggregateFlags()</code></td>
+  <td>Excludes T_CTE_SCAN nodes from leaf count, parent check, ancestor marking</td>
+  <td>CTE aggregation uses T_CTE_SCAN path, not RT_AGGREGATE</td>
+</tr>
+<tr>
+  <td><code>initRowBuffers()</code></td>
+  <td>Skips CTE_SUBTREE containers (<code>m_batch_size == 0</code>)</td>
+  <td>Containers are not real scan/lookup nodes</td>
+</tr>
+<tr>
+  <td><code>checkTableError()</code></td>
+  <td>Skips nodes with <code>m_tableOrIndexId == 0</code></td>
+  <td>CTE virtual nodes have no real NDB table</td>
+</tr>
+</table>
+
+<h3>13.3 DBSPJ: Execution Phase</h3>
+
+<table>
+<tr><th>Component</th><th>Change</th><th>Reason</th></tr>
+<tr>
+  <td><code>checkPrepareComplete()</code></td>
+  <td>Only starts CTE root nodes (<code>parentPtrI == RNIL</code>)</td>
+  <td>Child lookups are started by <code>parent_row()</code> when scan produces rows</td>
+</tr>
+<tr>
+  <td><code>execCTE_START_MAIN_REQ()</code></td>
+  <td>Finds main query root (first non-CTE, non-container node) and calls <code>scanFrag_start()</code></td>
+  <td>Node 0 is CTE_SUBTREE container; main scan is at a later index</td>
+</tr>
+<tr>
+  <td><code>lookup_send()</code></td>
+  <td>T_CTE_SCAN branch before T_AGGREGATE_LEAF — uses <code>m_cteAggStateKeys</code></td>
+  <td>CTE subtree lookups need CTE-specific aggStateKeys, not main query keys</td>
+</tr>
+<tr>
+  <td><code>parseScanFrag()</code></td>
+  <td><code>ctx.m_start_signal &amp;&amp; cteSubtreeRemaining == 0</code> for root scan detection</td>
+  <td>CTE embedded scans use CTE root path (single fragment), not the SCAN_FRAGREQ root path</td>
+</tr>
+<tr>
+  <td>CTE root scan build</td>
+  <td>Sets <code>m_rootFragCnt = 1</code></td>
+  <td>Parallelism calculation needs non-zero <code>m_rootFragCnt</code></td>
+</tr>
+</table>
+
+<h3>13.4 Key Design Decisions</h3>
+
+<div class="note">
+<strong>One DBSPJ instance per fragment:</strong> CTE queries require
+<code>scanParallelism = fragCount</code> so each fragment gets its own DBSPJ
+instance. Each CTE root scan processes exactly one fragment
+(<code>m_rootFragId</code>). DBTC enforces this and rejects requests with
+insufficient parallelism.
+</div>
+
+<div class="note">
+<strong>No intermediate SCAN_TABCONF for CTE JoinAgg:</strong> With all
+fragments running in parallel (no SCAN_NEXTREQ cycling), intermediate
+SCAN_TABCONFs are suppressed inside <code>sendScanTabConf()</code> when
+<code>m_joinAgg &amp;&amp; !release &amp;&amp; m_numCtes &gt; 0</code>. Fragment
+list management still runs; only the signal to the API is skipped.
+The EndOfData path triggers JOIN_AGG_COMPLETE which finalizes
+aggregation before the final SCAN_TABCONF.
+</div>
+
+<div class="note">
+<strong>RT_AGGREGATE scope:</strong> Only main query nodes set
+<code>RT_AGGREGATE</code> (checked via <code>ctx.m_cteSubtreeRemaining == 0</code>
+during build). CTE subtree nodes use the <code>T_CTE_SCAN</code> /
+JoinAggFlag path independently. This allows the main SELECT to be
+either an aggregate or a normal SPJ query.
+</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 14. SIGNAL REFERENCE -->
 <!-- ============================================================ -->
 <section id="signals">
-<h2>13. Signal Reference</h2>
+<h2>14. Signal Reference</h2>
 
 <h3>CTE Signals</h3>
 <table>
@@ -1041,7 +1193,7 @@ and the aggKeys section (SCAN_FRAGREQ):</p>
 <!-- 13. STATE MACHINES -->
 <!-- ============================================================ -->
 <section id="state-machines">
-<h2>14. State Machines</h2>
+<h2>15. State Machines</h2>
 
 <div class="diagram-box">
 <svg width="880" height="280" viewBox="0 0 880 280">
