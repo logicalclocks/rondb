@@ -263,7 +263,9 @@ public class NdbRecordOperationImpl implements Operation {
         // position the buffer at the beginning for ndbjtie
         valueBuffer.limit(valueBufferSize);
         valueBuffer.position(0);
-        // Ring buffer tables: delegate to RingBufferWriter
+        // Ring buffer tables: delegate to RingBufferWriter.
+        // This path is reached by the SmartValueHandler / DTO cache flow
+        // which calls insert() directly, bypassing NdbRecordRingBufferInsertOperationImpl.
         if (storeTable.isRingBuffer()) {
             RingBufferWriter writer = clusterTransactionImpl.getRingBufferWriter(storeTable);
             writer.addRow(valueBuffer, mask);

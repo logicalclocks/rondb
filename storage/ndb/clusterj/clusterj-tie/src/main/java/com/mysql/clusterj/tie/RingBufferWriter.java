@@ -256,6 +256,10 @@ class RingBufferWriter {
         readMetaRow(userRowBuffer);
         writeDataRow(userRowBuffer, userMask);
         batchMeta.advance(ringBufferSize);
+
+        // Mark batch active AFTER writeDataRow succeeds (matches C++ ordering).
+        // If writeDataRow throws, batchActive stays false so flush() is a no-op.
+        batchActive = true;
     }
 
     /**
@@ -400,8 +404,6 @@ class RingBufferWriter {
         }
         ndbRecordImpl.initializeBuffer(pkPrefixBuffer);
         copyPkPrefix(userRowBuffer, pkPrefixBuffer);
-
-        batchActive = true;
     }
 
     // ---------------------------------------------------------------
@@ -500,10 +502,13 @@ class RingBufferWriter {
     private void zeroColumn(ByteBuffer buffer, Column col) {
         int columnId = col.getColumnId();
         int offset = ndbRecordImpl.offsets[columnId];
-        int length = ndbRecordImpl.lengths[columnId];
         int prefixLength = col.getPrefixLength();
+        // Use col.getSize() for the byte size (e.g. 4 for INT, 8 for BIGINT).
+        // ndbRecordImpl.lengths[] stores Column.getLength() which is the
+        // element count (1 for scalar INT), NOT the byte count.
+        int byteSize = col.getSize();
         // Zero out the column's storage area
-        for (int i = 0; i < prefixLength + length; i++) {
+        for (int i = 0; i < prefixLength + byteSize; i++) {
             buffer.put(offset + i, (byte) 0);
         }
         // For NOT NULL columns, null bit doesn't exist, so no need to clear

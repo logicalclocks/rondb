@@ -44,6 +44,7 @@ import com.mysql.clusterj.query.QueryDomainType;
 import com.mysql.clusterj.query.Predicate;
 import com.mysql.clusterj.query.PredicateOperand;
 
+import testsuite.clusterj.model.RingBufferNotNull;
 import testsuite.clusterj.model.RingBufferSensor;
 
 /**
@@ -101,6 +102,16 @@ public class RingBufferTest extends AbstractClusterJTest {
                     + "PRIMARY KEY (sensor_id, ring_idx)"
                     + ") ENGINE=ndbcluster"
                     + " COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta'");
+            stmt.execute("DROP TABLE IF EXISTS ring_buffer_notnull");
+            stmt.execute("CREATE TABLE ring_buffer_notnull ("
+                    + "client_id INT NOT NULL,"
+                    + "ring_idx INT NOT NULL DEFAULT 0,"
+                    + "ring_meta VARBINARY(64),"
+                    + "name VARCHAR(50) NOT NULL,"
+                    + "score INT NOT NULL,"
+                    + "PRIMARY KEY (client_id, ring_idx)"
+                    + ") ENGINE=ndbcluster"
+                    + " COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta'");
             stmt.close();
         } catch (Exception ex) {
             throw new RuntimeException("Failed to create ring_buffer_sensor table", ex);
@@ -138,6 +149,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         testExactRingFill();
         testMultipleWrapCycles();
         testNullUserColumns();
+        testNotNullColumns();
         testFindNonExistentSlot();
         testMetaRowVisibility();
         testQueryScan();
@@ -918,6 +930,104 @@ public class RingBufferTest extends AbstractClusterJTest {
         errorIfNotEqual("Null columns: row 2 timestamp", 23000L, r2.getTimestampVal());
         errorIfNotEqual("Null columns: row 2 sensor_value should be 0.0", 0.0,
                 r2.getSensorValue());
+        tx.commit();
+    }
+
+    /**
+     * Test ring buffer table with NOT NULL user columns (VARCHAR NOT NULL, INT NOT NULL).
+     * Exercises the zeroColumn() path in RingBufferWriter which must correctly
+     * zero fixed-length columns (e.g. INT = 4 bytes) in the meta row.
+     * Uses ring_buffer_notnull table with MAX_ROWS_PER_PK=3.
+     */
+    private void testNotNullColumns() {
+        // Clean up the notnull table via SQL
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            stmt.execute("DELETE FROM ring_buffer_notnull");
+            stmt.close();
+        } catch (Throwable t) {
+            // ignore - table might be empty
+        }
+
+        // Insert a single row
+        tx.begin();
+        RingBufferNotNull row1 = session.newInstance(RingBufferNotNull.class);
+        row1.setClientId(1);
+        row1.setName("alice");
+        row1.setScore(99);
+        session.makePersistent(row1);
+        tx.commit();
+
+        // Verify via SQL that data row has correct values
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT name, score FROM ring_buffer_notnull"
+                    + " WHERE client_id = 1 AND ring_idx > 0");
+            boolean found = false;
+            while (rs.next()) {
+                found = true;
+                errorIfNotEqual("NOT NULL: name", "alice", rs.getString("name"));
+                errorIfNotEqual("NOT NULL: score", 99, rs.getInt("score"));
+            }
+            rs.close();
+            errorIfNotEqual("NOT NULL: data row found", true, found);
+
+            // Verify meta row has zeroed NOT NULL columns (score=0, name='')
+            stmt.execute("SET ndb_ring_buffer_show_meta = 1");
+            rs = stmt.executeQuery(
+                    "SELECT ring_idx, name, score FROM ring_buffer_notnull"
+                    + " WHERE client_id = 1 AND ring_idx = 0");
+            if (rs.next()) {
+                errorIfNotEqual("NOT NULL meta: score should be 0", 0, rs.getInt("score"));
+                errorIfNotEqual("NOT NULL meta: name should be empty", "", rs.getString("name"));
+            } else {
+                error("NOT NULL: meta row not found");
+            }
+            rs.close();
+            stmt.execute("SET ndb_ring_buffer_show_meta = 0");
+            stmt.close();
+        } catch (Exception ex) {
+            error("NOT NULL SQL check failed: " + ex.getMessage());
+        }
+
+        // Fill the ring (3 slots) and verify wrap-around
+        tx.begin();
+        RingBufferNotNull row2 = session.newInstance(RingBufferNotNull.class);
+        row2.setClientId(1);
+        row2.setName("bob");
+        row2.setScore(88);
+        session.makePersistent(row2);
+        RingBufferNotNull row3 = session.newInstance(RingBufferNotNull.class);
+        row3.setClientId(1);
+        row3.setName("charlie");
+        row3.setScore(77);
+        session.makePersistent(row3);
+        tx.commit();
+
+        // Insert one more to trigger wrap-around (overwrites slot 1)
+        tx.begin();
+        RingBufferNotNull row4 = session.newInstance(RingBufferNotNull.class);
+        row4.setClientId(1);
+        row4.setName("diana");
+        row4.setScore(66);
+        session.makePersistent(row4);
+        tx.commit();
+
+        // Verify: ring should now contain bob(88), charlie(77), diana(66)
+        // slot 1=diana(66), slot 2=bob(88), slot 3=charlie(77)
+        tx.begin();
+        RingBufferNotNull s1 = session.find(RingBufferNotNull.class, new Object[]{1, 1});
+        RingBufferNotNull s2 = session.find(RingBufferNotNull.class, new Object[]{1, 2});
+        RingBufferNotNull s3 = session.find(RingBufferNotNull.class, new Object[]{1, 3});
+        errorIfNotEqual("NOT NULL wrap: slot 1 name", "diana", s1.getName());
+        errorIfNotEqual("NOT NULL wrap: slot 1 score", 66, s1.getScore());
+        errorIfNotEqual("NOT NULL wrap: slot 2 name", "bob", s2.getName());
+        errorIfNotEqual("NOT NULL wrap: slot 2 score", 88, s2.getScore());
+        errorIfNotEqual("NOT NULL wrap: slot 3 name", "charlie", s3.getName());
+        errorIfNotEqual("NOT NULL wrap: slot 3 score", 77, s3.getScore());
         tx.commit();
     }
 
