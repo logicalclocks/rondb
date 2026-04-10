@@ -151,7 +151,7 @@
 //#define DEBUG_SCAN_MANY 1
 //#define DEBUG_RATE_OVERFLOW 1
 //#define DEBUG_CONT_SCAN 1
-//#define DEBUG_JOIN_AGG_TRACE 1
+#define DEBUG_JOIN_AGG_TRACE 1
 #endif
 
 #ifdef DEBUG_JOIN_AGG_TRACE
@@ -17823,6 +17823,11 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
                     "SCAN_TABCONF during CTE phase",
                     instance()));
     } else {
+      DEB_JOIN_AGG(("(%u) send SCAN_TABCONF numCtes: %u, phase: %u, ph_cnt: %u",
+                    instance(),
+                    scanptr.p->m_numCtes,
+                    scanptr.p->m_cteCurrentPhase,
+                    scanptr.p->m_ctePhaseCount));
       sendScanTabConf(signal, scanptr, apiConnectptr);
     }
   }
@@ -28798,6 +28803,10 @@ bool Dbtc::handleJoinAggNodeFailure(Signal *signal, ScanRecordPtr scanptr,
 
 void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
                                 ApiConnectRecordPtr apiConnectptr) {
+  DEB_JOIN_AGG(("(%u)DBTC sendJoinAggSetupReqs: scanPtr.i=%u "
+                "numCtes=%u",
+                instance(), scanptr.i,
+                scanptr.p->m_numCtes));
   scanptr.p->m_joinAggNodes->m_aggNodes.clear();
   scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
@@ -28940,6 +28949,13 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
   ScanRecordPtr scanptr;
   scanptr.i = conf->senderData;
   scanRecordPool.getPtr(scanptr);
+
+  DEB_JOIN_AGG(("(%u)DBTC execJOIN_AGG_SETUP_CONF: "
+                "scanPtr.i=%u cteIndex=%u aggStateKey=%u "
+                "nodeId=%u",
+                instance(), scanptr.i,
+                conf->cteIndex, conf->aggStateKey,
+                refToNode(signal->getSendersBlockRef())));
 
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_SETUP);
 
@@ -29161,6 +29177,12 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
   scanptr.i = conf->senderData;
   scanRecordPool.getPtr(scanptr);
 
+  DEB_JOIN_AGG(("(%u)DBTC execJOIN_AGG_COMPLETE_CONF: "
+                "scanPtr.i=%u scanState=%u nodeId=%u",
+                instance(), scanptr.i,
+                scanptr.p->scanState,
+                refToNode(conf->senderRef)));
+
   if (scanptr.p->scanState == ScanRecord::WAIT_CTE_COMPLETE) {
     jam();
     /**
@@ -29260,6 +29282,12 @@ void Dbtc::execJOIN_AGG_RELEASE_CONF(Signal *signal) {
   ScanRecordPtr scanptr;
   scanptr.i = conf->senderData;
   scanRecordPool.getPtr(scanptr);
+
+  DEB_JOIN_AGG(("(%u)DBTC execJOIN_AGG_RELEASE_CONF: "
+                "scanPtr.i=%u nodeId=%u outstanding=%u",
+                instance(), scanptr.i,
+                refToNode(conf->senderRef),
+                scanptr.p->m_aggNodesOutstanding));
 
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_RELEASE);
 
@@ -29615,6 +29643,10 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
     req->transid[1] = apiPtr.p->transid[1];
     req->aggStateKey = scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId];
     req->maxBatchRows = 256;
+    DEB_JOIN_AGG(("(%u)DBTC sendJoinAggCompleteReq: "
+                  "nodeId=%u aggStateKey=%u scanPtr.i=%u",
+                  instance(), nodeId,
+                  req->aggStateKey, scanptr.i));
 
     HostRecordPtr Thostptr;
     Thostptr.i = nodeId;
@@ -29645,6 +29677,9 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
 }
 
 void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
+  DEB_JOIN_AGG(("(%u)DBTC sendJoinAggReleaseReqs: "
+                "scanPtr.i=%u",
+                instance(), scanptr.i));
   scanptr.p->scanState = ScanRecord::WAIT_JOIN_AGG_RELEASE;
   scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
