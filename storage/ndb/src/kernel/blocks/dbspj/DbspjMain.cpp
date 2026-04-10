@@ -2352,42 +2352,45 @@ void Dbspj::setupAncestors(Ptr<Request> requestPtr, Ptr<TreeNode> treeNodePtr,
  *   execution plan.
  */
 Uint32 Dbspj::buildExecPlan(Ptr<Request> requestPtr) {
-  Ptr<TreeNode> treeRootPtr;
   Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
-  list.first(treeRootPtr);
 
-  setupAncestors(requestPtr, treeRootPtr, RNIL);
-
-  if (requestPtr.p->isScan()) {
-    // Multi-leaf aggregation (star join) requires parallel execution of
-    // sibling aggregate leaves — each leaf must fire independently for
-    // every parent row.  planSequentialExec chains INNER-join lookups
-    // sequentially (leaf B waits for leaf A), which prevents leaf B from
-    // ever executing when the execution plan treats them as dependent.
-    // Use planParallelExec for these queries instead.
-    bool multiLeafAgg = false;
-    if (requestPtr.p->m_bits & Request::RT_AGGREGATE) {
-      Uint32 leafCount = 0;
-      Ptr<TreeNode> tn;
-      for (list.first(tn); !tn.isNull(); list.next(tn)) {
-        if (tn.p->m_bits & TreeNode::T_AGGREGATE_LEAF)
-          leafCount++;
-      }
-      multiLeafAgg = (leafCount > 1);
+  /**
+   * In CTE compound queries, multiple root-level nodes exist:
+   * CTE subtree containers, CTE root scans, and the main query
+   * root all have parentPtrI == RNIL. Build execution plans for
+   * ALL root-level nodes so each subtree gets its m_next_nodes
+   * chains populated. Each root's subtree is disjoint.
+   */
+  bool multiLeafAgg = false;
+  if (requestPtr.p->isScan() &&
+      (requestPtr.p->m_bits & Request::RT_AGGREGATE)) {
+    Uint32 leafCount = 0;
+    Ptr<TreeNode> tn;
+    for (list.first(tn); !tn.isNull(); list.next(tn)) {
+      if (tn.p->m_bits & TreeNode::T_AGGREGATE_LEAF)
+        leafCount++;
     }
-    const Uint32 err = multiLeafAgg
-        ? planParallelExec(requestPtr, treeRootPtr)
-        : planSequentialExec(requestPtr, treeRootPtr, NullTreeNodePtr);
-    if (unlikely(err)) return err;
-  } else {
-    const Uint32 err = planParallelExec(requestPtr, treeRootPtr);
-    if (unlikely(err)) return err;
+    multiLeafAgg = (leafCount > 1);
   }
 
-#ifdef VM_TRACE
-  DEBUG("Execution plan, TreeNode execution order:");
-  dumpExecPlan(requestPtr, treeRootPtr);
-#endif
+  Ptr<TreeNode> nodePtr;
+  for (list.first(nodePtr); !nodePtr.isNull();
+       list.next(nodePtr)) {
+    if (nodePtr.p->m_parentPtrI != RNIL) continue;
+
+    setupAncestors(requestPtr, nodePtr, RNIL);
+
+    Uint32 err;
+    if (requestPtr.p->isScan()) {
+      err = multiLeafAgg
+          ? planParallelExec(requestPtr, nodePtr)
+          : planSequentialExec(requestPtr, nodePtr,
+                               NullTreeNodePtr);
+    } else {
+      err = planParallelExec(requestPtr, nodePtr);
+    }
+    if (unlikely(err)) return err;
+  }
 
   return 0;
 }  // buildExecPlan()
