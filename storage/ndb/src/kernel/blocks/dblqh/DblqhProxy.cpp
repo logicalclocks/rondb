@@ -2416,10 +2416,15 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 
   // CTE mode: build live data node list for hash redistribution
   if (state->m_cte_mode) {
+    jam();
     state->m_cte_num_nodes = 0;
-    for (Uint32 i = 1; i <= MAX_DATA_NODE_ID; i++) {
+    for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
+      jamDebug();
+      jamDataDebug(i);
       if (getNodeInfo(i).m_connected &&
           getNodeInfo(i).m_type == NodeInfo::DB) {
+        jamDebug();
+        jamDataDebug(i);
         state->m_cte_node_list[state->m_cte_num_nodes] = i;
         state->m_cte_num_nodes++;
       }
@@ -2618,6 +2623,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   for (Uint32 i = 0; i < state->m_num_leaves; i++) {
     jam();
     LeafProgram &lp = state->m_leaf_programs[i];
+    jamDataDebug(lp.m_agg_program_len);
+    jamDataDebug(lp.m_agg_prog_start_pos);
     PushdownInterpreter::OptimizeProgramBuffer(
         lp.m_agg_program, lp.m_agg_program_len, lp.m_agg_prog_start_pos);
   }
