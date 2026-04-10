@@ -1974,31 +1974,7 @@ Dbspj::build(Build_context& ctx,
   buildExecPlan(requestPtr);
 
 #ifdef DEBUG_CTE
-  {
-    Local_TreeNode_list dbgList(m_treenode_pool,
-                                requestPtr.p->m_nodes);
-    Ptr<TreeNode> dbgPtr;
-    for (dbgList.first(dbgPtr); !dbgPtr.isNull();
-         dbgList.next(dbgPtr)) {
-      LocalArenaPool<DataBufferSegment<14>> pool(
-          requestPtr.p->m_arena, m_dependency_map_pool);
-      Local_dependency_map nextExec(pool,
-                                    dbgPtr.p->m_next_nodes);
-      Local_dependency_map children(pool,
-                                    dbgPtr.p->m_child_nodes);
-      g_eventLogger->info(
-          "(%u) ExecPlan node %u: "
-          "parentPtrI=0x%x children=%u next=%u "
-          "T_CTE_SCAN=%d isScan=%d",
-          instance(),
-          dbgPtr.p->m_node_no,
-          dbgPtr.p->m_parentPtrI,
-          children.getSize(),
-          nextExec.getSize(),
-          !!(dbgPtr.p->m_bits & TreeNode::T_CTE_SCAN),
-          dbgPtr.p->isScan());
-    }
-  }
+  dumpRequest("after buildExecPlan", requestPtr);
 #endif
 
   // Construct RowBuffers where required
