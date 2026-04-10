@@ -28533,8 +28533,18 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
     }
   }
 
-  /* Parse CTE definitions if more data remains */
+  /* Parse CTE definitions if more data remains and starts with
+   * the CTE marker. Without the marker, leftover data is not
+   * CTE definitions (could be scan bounds or other data). */
+  static constexpr Uint32 CTE_DEFS_MARKER = 0xCDE00000;
   if (consumed < totalRemaining) {
+    Uint32 peekWord;
+    ndbrequire(reader.peekWord(&peekWord));
+    if (peekWord != CTE_DEFS_MARKER) {
+      goto done_cte_parsing;
+    }
+    reader.step(1);
+    consumed++;
     Uint32 numCtes;
     ndbrequire(reader.getWord(&numCtes));
     consumed++;
@@ -28629,6 +28639,7 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
     }
     scanptr.p->m_ctePhaseCount = maxPhase + 1;
   }
+done_cte_parsing:
 
   /* Release original combined section */
   releaseSection(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i);

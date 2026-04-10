@@ -624,7 +624,8 @@ sendScanTabReqWithCtes(SignalSender &ss, Uint32 nodeId,
   aggSection.insert(aggSection.end(),
                     mainAggProgram.begin(), mainAggProgram.end());
 
-  /* CTE definitions */
+  /* CTE definitions — marker + count */
+  aggSection.push_back(0xCDE00000);   /* CTE_DEFS_MARKER */
   aggSection.push_back(2);            /* numCtes */
   /* CTE 0: no dependencies (depMask=0) */
   aggSection.push_back(meta.tableId);
