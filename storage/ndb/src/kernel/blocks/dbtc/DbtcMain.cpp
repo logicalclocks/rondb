@@ -28649,12 +28649,16 @@ done_cte_parsing:
 #ifdef DEBUG_JOIN_AGG_TRACE
   DEB_JOIN_AGG(("(%u)DBTC parseJoinAggKeyInfo: boundsLen=%u"
                  " aggReceiverId=0x%x aggProgramPtrI=0x%x"
-                 " total_keyLen=%u",
+                 " total_keyLen=%u totalRemaining=%u consumed=%u"
+                 " numCtes=%u",
                  instance(),
                  boundsLen,
                  scanptr.p->m_aggReceiverId,
                  scanptr.p->m_aggProgramPtrI,
-                 keyLen));
+                 keyLen,
+                 totalRemaining,
+                 consumed,
+                 scanptr.p->m_numCtes));
   /* Dump aggProgram contents */
   if (scanptr.p->m_aggProgramPtrI != RNIL) {
     SegmentedSectionPtr aggPtr;
