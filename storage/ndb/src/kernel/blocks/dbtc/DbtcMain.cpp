@@ -17813,27 +17813,18 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
                  status));
   if (scanptr.p->m_queued_count > /** Min */ 0) {
     jamDebug();
-    /* Suppress intermediate SCAN_TABCONF for:
-     * 1. CTE phase — CTE scans should not produce API results
-     * 2. JoinAgg queries — aggregation results are sent only
-     *    after JOIN_AGG_COMPLETE finalizes all fragments */
+    /* During CTE phase, suppress SCAN_TABCONF entirely — CTE scans
+     * don't participate in the fragment delivery lifecycle. */
     if (scanptr.p->m_numCtes > 0 &&
         scanptr.p->m_cteCurrentPhase < scanptr.p->m_ctePhaseCount) {
       jam();
       DEB_JOIN_AGG(("(%u) execSCAN_FRAGCONF: suppress "
                     "SCAN_TABCONF during CTE phase",
                     instance()));
-    } else if (scanptr.p->m_joinAgg) {
-      jam();
-      DEB_JOIN_AGG(("(%u) execSCAN_FRAGCONF: suppress "
-                    "SCAN_TABCONF for JoinAgg (wait for COMPLETE)",
-                    instance()));
     } else {
-      DEB_JOIN_AGG(("(%u) send SCAN_TABCONF numCtes: %u, phase: %u, ph_cnt: %u",
-                    instance(),
-                    scanptr.p->m_numCtes,
-                    scanptr.p->m_cteCurrentPhase,
-                    scanptr.p->m_ctePhaseCount));
+      /* For JoinAgg queries, sendScanTabConf does fragment list
+       * management but suppresses the actual signal to API
+       * until all fragments are done (EndOfData path). */
       sendScanTabConf(signal, scanptr, apiConnectptr);
     }
   }
@@ -18957,6 +18948,20 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
       jam();
     }
   }
+  /* For JoinAgg queries, suppress intermediate SCAN_TABCONFs to
+   * the API. Fragment list management above is done, but the
+   * signal is skipped until the EndOfData path (release=true)
+   * triggers JOIN_AGG_COMPLETE which finalizes the aggregation
+   * and sends the result. */
+  if (scanPtr.p->m_joinAgg && !release) {
+    jam();
+    DEB_JOIN_AGG(("(%u) sendScanTabConf: suppress "
+                  "intermediate SCAN_TABCONF for JoinAgg",
+                  instance()));
+    scanPtr.p->m_queued_count = 0;
+    return;
+  }
+
   if (refToNode(ref) != getOwnNodeId())
   {
     signal->m_send_wakeups++;
