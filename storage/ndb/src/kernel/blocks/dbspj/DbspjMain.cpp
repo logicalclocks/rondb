@@ -1973,6 +1973,34 @@ Dbspj::build(Build_context& ctx,
   // Set up the order of execution plan
   buildExecPlan(requestPtr);
 
+#ifdef DEBUG_CTE
+  {
+    Local_TreeNode_list dbgList(m_treenode_pool,
+                                requestPtr.p->m_nodes);
+    Ptr<TreeNode> dbgPtr;
+    for (dbgList.first(dbgPtr); !dbgPtr.isNull();
+         dbgList.next(dbgPtr)) {
+      LocalArenaPool<DataBufferSegment<14>> pool(
+          requestPtr.p->m_arena, m_dependency_map_pool);
+      Local_dependency_map nextExec(pool,
+                                    dbgPtr.p->m_next_nodes);
+      Local_dependency_map children(pool,
+                                    dbgPtr.p->m_child_nodes);
+      g_eventLogger->info(
+          "(%u) ExecPlan node %u: "
+          "parentPtrI=0x%x children=%u next=%u "
+          "T_CTE_SCAN=%d isScan=%d",
+          instance(),
+          dbgPtr.p->m_node_no,
+          dbgPtr.p->m_parentPtrI,
+          children.getSize(),
+          nextExec.getSize(),
+          !!(dbgPtr.p->m_bits & TreeNode::T_CTE_SCAN),
+          dbgPtr.p->isScan());
+    }
+  }
+#endif
+
   // Construct RowBuffers where required
   err = initRowBuffers(requestPtr);
   if (unlikely(err != 0)) {
@@ -5283,6 +5311,12 @@ void Dbspj::startNextNodes(Signal *signal, Ptr<Request> requestPtr,
   Local_dependency_map nextExec(pool, treeNodePtr.p->m_next_nodes);
   Dependency_map::ConstDataBufferIterator it;
 
+  DEB_CTE(("(%u) startNextNodes: node %u, "
+           "nextCount=%u",
+           instance(),
+           treeNodePtr.p->m_node_no,
+           nextExec.getSize()));
+
   /**
    * Activate 'next' operations to be executed, based on 'rowRef'.
    */
@@ -6760,6 +6794,8 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
       } else {
         jam();
         treeNodePtr.p->m_send.m_keyInfoPtrI = RNIL;
+        DEB_CTE(("(%u) Send LQHKEYREQ from node: %u for T_KEYINFO_CONSTRUCTED",
+          instance(), treeNodePtr.p->m_node_no));
       }
 
       if ((treeNodePtr.p->m_bits & TreeNode::T_ATTRINFO_CONSTRUCTED) == 0) {
@@ -6800,6 +6836,8 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
       } else {
         jam();
         treeNodePtr.p->m_send.m_attrInfoPtrI = RNIL;
+        DEB_CTE(("(%u) Send LQHKEYREQ from node: %u for T_ATTRINFO_CONSTRUCTED",
+          instance(), treeNodePtr.p->m_node_no));
       }
     }
 
