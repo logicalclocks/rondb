@@ -16091,7 +16091,14 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     scanptr.p->scanAttrInfoPtr = handle.m_ptr[ScanTabReq::AttrInfoSectionNum].i;
     if (ScanTabReq::getJoinAggFlag(ri) && keyLen) {
       jam();
+      /* parseJoinAggKeyInfo may call abortScanLab on error,
+       * which requires scanState != RUNNING. Temporarily set
+       * WAIT_JOIN_AGG_SETUP so error handling works. */
+      scanptr.p->scanState = ScanRecord::WAIT_JOIN_AGG_SETUP;
       parseJoinAggKeyInfo(signal, scanptr, handle, keyLen);
+      if (scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_SETUP) {
+        scanptr.p->scanState = ScanRecord::RUNNING;
+      }
     } else if (keyLen) {
       jamDebug();
       scanptr.p->scanKeyInfoPtr = handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i;
@@ -28461,9 +28468,17 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
   const size_t allocSize = sizeof(ScanRecord::JoinAggNodeState) +
                            maxNodes * sizeof(Uint32);
   auto *aggNodes = (ScanRecord::JoinAggNodeState *)
-      lc_ndbd_pool_malloc(allocSize, RG_TRANSACTION_MEMORY,
+      lc_ndbd_pool_malloc(allocSize, RG_QUERY_MEMORY,
                           getThreadId(), true);
-  ndbrequire(aggNodes != nullptr);
+  if (unlikely(aggNodes == nullptr)) {
+    jam();
+    ApiConnectRecordPtr apiConnectptr;
+    apiConnectptr.i = scanptr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiConnectptr);
+    abortScanLab(signal, scanptr, ZGET_ATTRBUF_ERROR, true,
+                 apiConnectptr);
+    return;
+  }
   scanptr.p->m_joinAggNodes = aggNodes;
 
   SectionReader reader(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i,
@@ -28473,6 +28488,7 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
   ndbrequire(2 + boundsLen <= keyLen);  // +2 for boundsLen word + receiverId
 
   if (boundsLen > 0) {
+    jam();
     /* Extract bounds into scanKeyInfoPtr */
     Uint32 remaining = boundsLen;
     while (remaining > 0) {
@@ -28532,8 +28548,10 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
     }
     scanptr.p->m_numCtes = numCtes;
 
-    /* Allocate CteInfo + pointer array as single block */
-    {
+    /* Allocate CteInfo + pointer array as single block.
+     * Skip allocation when numCtes == 0 (no CTEs defined) —
+     * lc_ndbd_pool_malloc(0) returns nullptr. */
+    if (numCtes > 0) {
       const size_t infoSize = numCtes * sizeof(ScanRecord::CteInfo);
       const size_t ptrSize = numCtes * sizeof(ScanRecord::JoinAggNodeState *);
       char *mem = (char *)lc_ndbd_pool_malloc(
@@ -28557,7 +28575,7 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
         scanptr.p->m_cteInfos[c].m_flags = 0;
         scanptr.p->m_cteAggNodeState[c] = nullptr;
       }
-    }
+    } // if (numCtes > 0)
 
     for (Uint32 c = 0; c < numCtes; c++) {
       ndbrequire(reader.getWord(&scanptr.p->m_cteInfos[c].tableId));
@@ -28887,9 +28905,14 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
       const size_t allocSize = sizeof(ScanRecord::JoinAggNodeState) +
                                maxNodes * sizeof(Uint32);
       auto *cteNodes = (ScanRecord::JoinAggNodeState *)
-          lc_ndbd_pool_malloc(allocSize, RG_TRANSACTION_MEMORY,
+          lc_ndbd_pool_malloc(allocSize, RG_QUERY_MEMORY,
                               getThreadId(), true);
-      ndbrequire(cteNodes != nullptr);
+      if (unlikely(cteNodes == nullptr)) {
+        jam();
+        scanptr.p->m_aggPhaseFailed = true;
+        scanptr.p->m_aggErrorCode = ZGET_ATTRBUF_ERROR;
+        break;
+      }
       cteNodes->m_aggNodes.clear();
       cteNodes->m_aggNodesPending.clear();
       memset(cteNodes->m_aggStateKeys, 0, maxNodes * sizeof(Uint32));
