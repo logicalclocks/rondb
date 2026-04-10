@@ -156,7 +156,8 @@ ResultPrinter::validate_orderby_columns()
               m_col_idx_groupby_map.push(0);
             m_col_idx_groupby_map[col_idx] = i;
             CHARSET_INFO* charset = NULL;
-            if (m_column_map != NULL)
+            if (m_column_map != NULL &&
+                m_column_map[col_idx] != NULL)
               charset = m_column_map[col_idx]->getCharset();
             OrderbySpec spec;
             spec.kind = OrderbySpec::Kind::GROUPBY_COL;
@@ -208,7 +209,8 @@ ResultPrinter::validate_orderby_columns()
             m_col_idx_groupby_map.push(0);
           m_col_idx_groupby_map[col_idx] = i;
           CHARSET_INFO* charset = NULL;
-          if (m_column_map != NULL)
+          if (m_column_map != NULL &&
+              m_column_map[col_idx] != NULL)
             charset = m_column_map[col_idx]->getCharset();
           OrderbySpec spec;
           spec.kind = OrderbySpec::Kind::GROUPBY_COL;
@@ -432,7 +434,8 @@ ResultPrinter::compile()
         CHARSET_INFO* charset;
         int precision;
         int scale;
-        if (m_column_map != NULL) {
+        if (m_column_map != NULL &&
+            m_column_map[o->column.col_idx] != NULL) {
           const NdbDictionary::Column* col = m_column_map[o->column.col_idx];
           charset = col->getCharset();
           precision = col->getPrecision();
