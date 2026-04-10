@@ -148,9 +148,9 @@
 //#define DEBUG_RATE_QUEUE_DROP 1
 //#define DEBUG_QUOTA_ABORT 1
 //#define DEBUG_TRACK_EXEC_FLAG 1
-//#define DEBUG_SCAN_MANY 1
+#define DEBUG_SCAN_MANY 1
 //#define DEBUG_RATE_OVERFLOW 1
-//#define DEBUG_CONT_SCAN 1
+#define DEBUG_CONT_SCAN 1
 #define DEBUG_JOIN_AGG_TRACE 1
 #endif
 
@@ -17813,14 +17813,20 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
                  status));
   if (scanptr.p->m_queued_count > /** Min */ 0) {
     jamDebug();
-    /* During CTE phase, suppress SCAN_TABCONF to API.
-     * CTE scans produce SCAN_FRAGCONFs but the API should
-     * only see results from the main query. */
+    /* Suppress intermediate SCAN_TABCONF for:
+     * 1. CTE phase — CTE scans should not produce API results
+     * 2. JoinAgg queries — aggregation results are sent only
+     *    after JOIN_AGG_COMPLETE finalizes all fragments */
     if (scanptr.p->m_numCtes > 0 &&
         scanptr.p->m_cteCurrentPhase < scanptr.p->m_ctePhaseCount) {
       jam();
       DEB_JOIN_AGG(("(%u) execSCAN_FRAGCONF: suppress "
                     "SCAN_TABCONF during CTE phase",
+                    instance()));
+    } else if (scanptr.p->m_joinAgg) {
+      jam();
+      DEB_JOIN_AGG(("(%u) execSCAN_FRAGCONF: suppress "
+                    "SCAN_TABCONF for JoinAgg (wait for COMPLETE)",
                     instance()));
     } else {
       DEB_JOIN_AGG(("(%u) send SCAN_TABCONF numCtes: %u, phase: %u, ph_cnt: %u",
@@ -17859,6 +17865,9 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
     warningHandlerLab(signal, __LINE__);
     return;
   }  // if
+
+  DEB_JOIN_AGG(("(%u) ApiRecPtr: %u, stopScan: %u",
+    instance(), apiConnectptr.i, stopScan));
 
   /**
    * Check transid
@@ -29217,6 +29226,7 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
     if (scanptr.p->m_aggPhaseFailed) {
       jam();
       scanptr.p->m_aggPhaseFailed = false;
+    } else {
     }
     sendJoinAggReleaseReqs(signal, scanptr);
   }
@@ -29458,6 +29468,8 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
       req->transid[1] = apiPtr.p->transid[1];
       req->aggStateKey = cteNodes->m_aggStateKeys[nodeId];
       req->maxBatchRows = 256;
+      DEB_JOIN_AGG(("(%u) send JOIN_AGG_COMPLETE_REQ aggKey: %u to node: %u",
+        instance(), cteNodes->m_aggStateKeys[nodeId], nodeId));
 
       Uint32 ref = numberToRef(V_QUERY, 1, nodeId);
       if (nodeId == getOwnNodeId()) {
@@ -29643,7 +29655,7 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
     req->transid[1] = apiPtr.p->transid[1];
     req->aggStateKey = scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId];
     req->maxBatchRows = 256;
-    DEB_JOIN_AGG(("(%u)DBTC sendJoinAggCompleteReq: "
+    DEB_JOIN_AGG(("(%u)DBTC send JOIN_AGG_COMPLETE_REQ: "
                   "nodeId=%u aggStateKey=%u scanPtr.i=%u",
                   instance(), nodeId,
                   req->aggStateKey, scanptr.i));
