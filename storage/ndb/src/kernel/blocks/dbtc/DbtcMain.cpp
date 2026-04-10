@@ -28563,23 +28563,16 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
                                  linBuf, mainAggLen));
       consumed = mainAggLen;
     }
-  }
 
-  /* Parse CTE definitions if more data remains and starts with
-   * the CTE marker. Without the marker, leftover data is not
-   * CTE definitions (could be scan bounds or other data). */
-  static constexpr Uint32 CTE_DEFS_MARKER = 0xCDE00000;
-  if (consumed < totalRemaining) {
-    Uint32 peekWord;
-    ndbrequire(reader.peekWord(&peekWord));
-    if (peekWord != CTE_DEFS_MARKER) {
-      goto done_cte_parsing;
-    }
-    reader.step(1);
-    consumed++;
-    Uint32 numCtes;
-    ndbrequire(reader.getWord(&numCtes));
-    consumed++;
+    /* Parse CTE definitions from the linearized buffer if more
+     * data remains after the agg program and starts with the
+     * CTE marker. */
+    static constexpr Uint32 CTE_DEFS_MARKER = 0xCDE00000;
+    if (consumed < totalRemaining &&
+        linBuf[consumed] == CTE_DEFS_MARKER) {
+      consumed++; // skip marker
+      Uint32 numCtes = linBuf[consumed];
+      consumed++;
     if (unlikely(numCtes > 64)) {
       jam();
       ApiConnectRecordPtr apiConnectptr;
@@ -28620,30 +28613,23 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
     } // if (numCtes > 0)
 
     for (Uint32 c = 0; c < numCtes; c++) {
-      ndbrequire(reader.getWord(&scanptr.p->m_cteInfos[c].tableId));
-      ndbrequire(reader.getWord(&scanptr.p->m_cteInfos[c].schemaVersion));
+      ndbrequire(consumed + 6 <= totalRemaining);
+      scanptr.p->m_cteInfos[c].tableId = linBuf[consumed++];
+      scanptr.p->m_cteInfos[c].schemaVersion = linBuf[consumed++];
       {
-        Uint32 lo, hi;
-        ndbrequire(reader.getWord(&lo));
-        ndbrequire(reader.getWord(&hi));
+        Uint32 lo = linBuf[consumed++];
+        Uint32 hi = linBuf[consumed++];
         scanptr.p->m_cteInfos[c].depMask = (Uint64(hi) << 32) | lo;
       }
-      ndbrequire(reader.getWord(&scanptr.p->m_cteInfos[c].m_flags));
-      Uint32 cteProgLen;
-      ndbrequire(reader.getWord(&cteProgLen));
-      consumed += 6;
+      scanptr.p->m_cteInfos[c].m_flags = linBuf[consumed++];
+      Uint32 cteProgLen = linBuf[consumed++];
 
       scanptr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
       if (cteProgLen > 0) {
-        Uint32 remaining = cteProgLen;
-        while (remaining > 0) {
-          const Uint32 *readPtr;
-          Uint32 actualLen;
-          ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
-          ndbrequire(appendToSection(scanptr.p->m_cteInfos[c].aggProgramPtrI,
-                                       readPtr, actualLen));
-          remaining -= actualLen;
-        }
+        ndbrequire(consumed + cteProgLen <= totalRemaining);
+        ndbrequire(appendToSection(
+            scanptr.p->m_cteInfos[c].aggProgramPtrI,
+            linBuf + consumed, cteProgLen));
         consumed += cteProgLen;
       }
     }
@@ -28670,8 +28656,8 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
       if (phase > maxPhase) maxPhase = phase;
     }
     scanptr.p->m_ctePhaseCount = maxPhase + 1;
-  }
-done_cte_parsing:
+    } // if (CTE_DEFS_MARKER)
+  } // if (totalRemaining > 0)
 
   /* Release original combined section */
   releaseSection(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i);
