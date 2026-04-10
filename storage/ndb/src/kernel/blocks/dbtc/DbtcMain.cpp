@@ -28513,22 +28513,54 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
   const Uint32 totalRemaining = keyLen - 2 - boundsLen;
   Uint32 consumed = 0;
 
-  /* Read main aggregation program (may be empty if no main agg) */
+  /* Linearize remaining KeyInfo data into a stack buffer for
+   * easier parsing of agg program + optional CTE definitions. */
+  static constexpr Uint32 MAX_AGG_SECTION_WORDS = 8192;
   if (totalRemaining > 0) {
-    /* Peek at first word to get program length */
-    Uint32 firstWord;
-    ndbrequire(reader.peekWord(&firstWord));
-    Uint32 mainAggLen = firstWord & 0xFFFF;
-    if (mainAggLen > 0 && mainAggLen <= totalRemaining) {
-      Uint32 remaining = mainAggLen;
+    if (unlikely(totalRemaining > MAX_AGG_SECTION_WORDS)) {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = scanptr.p->scanApiRec;
+      c_apiConnectRecordPool.getPtr(apiConnectptr);
+      abortScanLab(signal, scanptr, ZINVALID_KEY, true,
+                   apiConnectptr);
+      return;
+    }
+    Uint32 linBuf[MAX_AGG_SECTION_WORDS];
+    {
+      Uint32 remaining = totalRemaining;
+      Uint32 pos = 0;
       while (remaining > 0) {
         const Uint32 *readPtr;
         Uint32 actualLen;
         ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
-        ndbrequire(appendToSection(scanptr.p->m_aggProgramPtrI,
-                                     readPtr, actualLen));
+        memcpy(linBuf + pos, readPtr, actualLen * sizeof(Uint32));
+        pos += actualLen;
         remaining -= actualLen;
       }
+    }
+
+    /* Determine agg program length from format:
+     *   0x0721: old flat — word[0] & 0xFFFF = progLen
+     *   0x0722: multi-leaf — walk per-leaf entries
+     *   Other: treat word[0] & 0xFFFF as progLen
+     */
+    Uint32 magic = linBuf[0] >> 16;
+    Uint32 mainAggLen;
+    if (magic == 0x0722) {
+      Uint32 numLeaves = linBuf[0] & 0xFFFF;
+      mainAggLen = 1; // wrapper word
+      for (Uint32 i = 0; i < numLeaves; i++) {
+        if (unlikely(mainAggLen >= totalRemaining)) break;
+        Uint32 leafLen = linBuf[mainAggLen];
+        mainAggLen += 1 + leafLen;
+      }
+    } else {
+      mainAggLen = linBuf[0] & 0xFFFF;
+    }
+    if (mainAggLen > 0 && mainAggLen <= totalRemaining) {
+      ndbrequire(appendToSection(scanptr.p->m_aggProgramPtrI,
+                                 linBuf, mainAggLen));
       consumed = mainAggLen;
     }
   }
