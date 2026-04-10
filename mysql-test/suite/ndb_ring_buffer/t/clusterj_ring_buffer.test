@@ -47,6 +47,7 @@ SET ndb_ring_buffer_show_meta = OFF;
 # Clean up tables created by RingBufferTest and ClearSmokeTest (schema.sql)
 --disable_warnings
 DROP TABLE IF EXISTS ring_buffer_sensor;
+DROP TABLE IF EXISTS ring_buffer_notnull;
 DROP TABLE IF EXISTS a;
 DROP TABLE IF EXISTS allprimitives;
 DROP TABLE IF EXISTS autopkint;

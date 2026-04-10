@@ -32,7 +32,7 @@ Successfully initialized schema.
 [DEBUG] totalRows=6 metaRowFound=true
 [DEBUG] PK lookup meta row FOUND: sensor_id=3100 ring_idx=0 ts=0
 [DEBUG] sensorId=1000 meta row: NOT FOUND
-[DIAG] Checking meta row from second mysqld: jdbc:mysql://localhost:13023/test
+[DIAG] Checking meta row from second mysqld: jdbc:mysql://localhost:13003/test
 [DIAG-MYSQLD2] row: sensor_id=3100 ring_idx=0 ts=0 val=0.0
 [DIAG-MYSQLD2] row: sensor_id=3100 ring_idx=1 ts=90000 val=0.0
 [DIAG-MYSQLD2] row: sensor_id=3100 ring_idx=2 ts=90001 val=1.0
@@ -71,6 +71,7 @@ sensor_id	ring_idx	HEX(ring_meta)
 3100	0	0100000001000000050000000000000005000000000000000000000000000000
 SET ndb_ring_buffer_show_meta = OFF;
 DROP TABLE IF EXISTS ring_buffer_sensor;
+DROP TABLE IF EXISTS ring_buffer_notnull;
 DROP TABLE IF EXISTS a;
 DROP TABLE IF EXISTS allprimitives;
 DROP TABLE IF EXISTS autopkint;
