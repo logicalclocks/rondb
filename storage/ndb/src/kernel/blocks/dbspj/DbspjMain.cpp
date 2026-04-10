@@ -2261,6 +2261,7 @@ Uint32 Dbspj::initRowBuffers(Ptr<Request> requestPtr) {
   Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
   Ptr<TreeNode> treeNodePtr;
   for (list.first(treeNodePtr); !treeNodePtr.isNull(); list.next(treeNodePtr)) {
+    if (treeNodePtr.p->m_info == &g_CteSubtreeOpInfo) continue;
     ndbassert(treeNodePtr.p->m_batch_size > 0);
     /**
      * Construct the local treeNode RowBuffer allocator.
