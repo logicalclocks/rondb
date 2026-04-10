@@ -18948,15 +18948,17 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
       jam();
     }
   }
-  /* For JoinAgg queries, suppress intermediate SCAN_TABCONFs to
-   * the API. Fragment list management above is done, but the
-   * signal is skipped until the EndOfData path (release=true)
-   * triggers JOIN_AGG_COMPLETE which finalizes the aggregation
-   * and sends the result. */
-  if (scanPtr.p->m_joinAgg && !release) {
+  /* For CTE compound JoinAgg queries, suppress intermediate
+   * SCAN_TABCONFs. Normal (non-CTE) JoinAgg queries need
+   * intermediate SCAN_TABCONFs so the API can send SCAN_NEXTREQ
+   * to cycle through fragments. CTE queries use scanParallelism
+   * = fragCount so all fragments run in parallel without
+   * SCAN_NEXTREQ cycling. */
+  if (scanPtr.p->m_joinAgg && !release &&
+      scanPtr.p->m_numCtes > 0) {
     jam();
     DEB_JOIN_AGG(("(%u) sendScanTabConf: suppress "
-                  "intermediate SCAN_TABCONF for JoinAgg",
+                  "intermediate SCAN_TABCONF for CTE JoinAgg",
                   instance()));
     scanPtr.p->m_queued_count = 0;
     return;
