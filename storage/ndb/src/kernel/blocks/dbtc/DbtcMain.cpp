@@ -2897,9 +2897,26 @@ void Dbtc::execKEYINFO(Signal *signal) {
   tmaxData = 20;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
-    warningHandlerLab(signal, __LINE__);
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    disconnectMaliciousNode(signal, senderNodeId,
+        "invalid apiConnectPtr in KEYINFO", __LINE__);
     return;
   }  // if
+
+  /* Verify signal sender owns this API connect record */
+  {
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    if (unlikely(senderNodeId != getOwnNodeId())) {
+      NodeId ownerNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
+      if (unlikely(senderNodeId != ownerNodeId)) {
+        jam();
+        disconnectMaliciousNode(signal, senderNodeId,
+            "KEYINFO apiConnectPtr not owned by sender", __LINE__);
+        return;
+      }
+    }
+  }
+
   ttransid_ptr = 1;
   if (unlikely(compare_transid(apiConnectptr.p->transid, signal->theData + 1) ==
                false)) {
@@ -2984,6 +3001,16 @@ void Dbtc::tckeyreq020Lab(Signal *signal, CacheRecordPtr const cachePtr,
   ndbassert(!regCachePtr->isLongTcKeyReq);
   ndbassert(regCachePtr->keyInfoSectionI != RNIL);
 
+  if (unlikely(signal->getLength() != KeyInfo::HeaderLength + wordsInSignal)) {
+    jam();
+    NodeId senderNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
+    disconnectMaliciousNode(signal, senderNodeId,
+        "KEYINFO signal length mismatch", __LINE__);
+    terrorCode = ZSIGNAL_ERROR;
+    abortErrorLab(signal, apiConnectptr);
+    return;
+  }
+
   /* Add received KeyInfo data to the existing KeyInfo section */
   if (!appendToSection(regCachePtr->keyInfoSectionI,
                        &signal->theData[KeyInfo::HeaderLength],
@@ -3023,12 +3050,27 @@ void Dbtc::execATTRINFO(Signal *signal) {
   ttransid_ptr = 1;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
-    DEBUG("Drop ATTRINFO, wrong apiConnectptr");
-    warningHandlerLab(signal, __LINE__);
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    disconnectMaliciousNode(signal, senderNodeId,
+        "invalid apiConnectPtr in ATTRINFO", __LINE__);
     return;
   }  // if
 
   ApiConnectRecord *const regApiPtr = apiConnectptr.p;
+
+  /* Verify signal sender owns this API connect record */
+  {
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    if (unlikely(senderNodeId != getOwnNodeId())) {
+      NodeId ownerNodeId = refToNode(regApiPtr->ndbapiBlockref);
+      if (unlikely(senderNodeId != ownerNodeId)) {
+        jam();
+        disconnectMaliciousNode(signal, senderNodeId,
+            "ATTRINFO apiConnectPtr not owned by sender", __LINE__);
+        return;
+      }
+    }
+  }
 
   if (regApiPtr->apiConnectstate == CS_RELEASE)
   {
@@ -4436,6 +4478,24 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   if (regCachePtr->isLongTcKeyReq) {
     if (unlikely(signal->getLength() !=
                  TcKeyReq::StaticLength + TkeyIndex)) {
+      jam();
+      terrorCode = ZSIGNAL_ERROR;
+      NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+      disconnectMaliciousNode(signal, senderNodeId,
+          "TCKEYREQ signal length mismatch", __LINE__);
+      releaseAtErrorLab(signal, apiConnectptr);
+      return;
+    }
+  } else {
+    /**
+     * For short TCKEYREQ, key and attr data are embedded in the signal
+     * body after the optional words. Verify exact length to prevent
+     * out-of-bounds reads from the signal buffer.
+     */
+    Uint32 keyInfoInSignal = MIN(TkeyLength, TcKeyReq::MaxKeyInfo);
+    if (unlikely(signal->getLength() !=
+                 TcKeyReq::StaticLength + TkeyIndex +
+                 keyInfoInSignal + titcLenAiInTckeyreq)) {
       jam();
       terrorCode = ZSIGNAL_ERROR;
       NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
