@@ -1458,7 +1458,12 @@ NdbQueryDefImpl::NdbQueryDefImpl(
     }
   }
 
-  // Set query-level aggregation flag on all operations (for serialization)
+  // Set query-level aggregation flag on all operations (for serialization).
+  // Also set m_hasAggregation when CTEs exist (even without main agg leaves)
+  // so that the KeyInfo section includes CTE definitions and JoinAggFlag is set.
+  if (!m_hasAggregation && m_cteDefs.size() > 0) {
+    m_hasAggregation = true;
+  }
   if (m_hasAggregation) {
     for (Uint32 i = 0; i < m_operations.size(); i++) {
       m_operations[i]->m_queryHasAggregation = true;

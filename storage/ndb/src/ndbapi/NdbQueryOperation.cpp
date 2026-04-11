@@ -27,6 +27,7 @@
 #include "NdbQueryOperation.hpp"
 #include <ndb_global.h>
 #include <NdbAggregator.hpp>
+#include <NdbAggregationCommon.hpp>
 #include <NdbDictionary.hpp>
 #include <NdbIndexScanOperation.hpp>
 #include "API.hpp"
@@ -3228,80 +3229,115 @@ int NdbQueryImpl::prepareSend() {
 int NdbQueryImpl::prepareAggregation() {
   assert(getQueryDef().isScanQuery());
   const Uint32 numLeaves = getQueryDef().getNumAggregateLeaves();
-  assert(numLeaves >= 1);
+  const Uint32 numCtes = getQueryDef().getNumCtes();
+
+  // Must have either aggregate leaves or CTEs (or both)
+  if (unlikely(numLeaves == 0 && numCtes == 0)) {
+    setErrorCode(QRY_WRONG_OPERATION_TYPE);
+    return -1;
+  }
   if (unlikely(numLeaves > NDB_SPJ_MAX_TREE_NODES)) {
     setErrorCode(QRY_WRONG_OPERATION_TYPE);
     return -1;
   }
 
-  // Use first leaf for GROUP BY column info and table reference
-  const Uint32 firstLeafOpNo = getQueryDef().getAggregateLeafOpNo(0);
-  const NdbQueryOperationDefImpl &firstLeafDef =
-      getQueryDef().getQueryOperation(firstLeafOpNo);
-  const NdbQueryOptionsImpl &firstOpts = firstLeafDef.getOptions();
+  const NdbQueryOptionsImpl *firstOpts = nullptr;
+  if (numLeaves > 0) {
+    // Use first leaf for GROUP BY column info and table reference
+    const Uint32 firstLeafOpNo = getQueryDef().getAggregateLeafOpNo(0);
+    const NdbQueryOperationDefImpl &firstLeafDef =
+        getQueryDef().getQueryOperation(firstLeafOpNo);
+    firstOpts = &firstLeafDef.getOptions();
 
-  // Section header: (0x0722 << 16) | numLeaves
-  // Then per leaf: [progLen, program words...]
-  // 0x0722 distinguishes from old flat format (0x0721 magic).
-  m_aggProgram.append((0x0722 << 16) | numLeaves);
-  for (Uint32 leaf = 0; leaf < numLeaves; leaf++) {
-    const Uint32 leafOpNo = getQueryDef().getAggregateLeafOpNo(leaf);
-    const NdbQueryOperationDefImpl &leafDef =
-        getQueryDef().getQueryOperation(leafOpNo);
-    const NdbQueryOptionsImpl &leafOpts = leafDef.getOptions();
-    const Uint32 *progBuf = leafOpts.getAggProgramBuffer();
-    const Uint32 progLen = leafOpts.getAggProgramLen();
-    assert(progBuf != nullptr && progLen > 0);
-    m_aggProgram.append(progLen);
-    for (Uint32 i = 0; i < progLen; i++) {
-      m_aggProgram.append(progBuf[i]);
+    // Section header: (0x0722 << 16) | numLeaves
+    // Then per leaf: [progLen, program words...]
+    m_aggProgram.append((0x0722 << 16) | numLeaves);
+    for (Uint32 leaf = 0; leaf < numLeaves; leaf++) {
+      const Uint32 leafOpNo = getQueryDef().getAggregateLeafOpNo(leaf);
+      const NdbQueryOperationDefImpl &leafDef =
+          getQueryDef().getQueryOperation(leafOpNo);
+      const NdbQueryOptionsImpl &leafOpts = leafDef.getOptions();
+      const Uint32 *progBuf = leafOpts.getAggProgramBuffer();
+      const Uint32 progLen = leafOpts.getAggProgramLen();
+      assert(progBuf != nullptr && progLen > 0);
+      m_aggProgram.append(progLen);
+      for (Uint32 i = 0; i < progLen; i++) {
+        m_aggProgram.append(progBuf[i]);
+      }
     }
   }
+  // No main agg program when numLeaves==0 — CTE_DEFS_MARKER
+  // immediately follows aggReceiverId in the KeyInfo section.
+
+  // Append CTE definitions if present
+  if (numCtes > 0) {
+    m_aggProgram.append(CTE_DEFS_MARKER);
+    m_aggProgram.append(numCtes);
+    for (Uint32 c = 0; c < numCtes; c++) {
+      const NdbQueryDefImpl::CteDefInfo &cte = getQueryDef().getCteDef(c);
+      m_aggProgram.append(cte.tableId);
+      m_aggProgram.append(cte.schemaVersion);
+      m_aggProgram.append((Uint32)(cte.depMask & 0xFFFFFFFF));  // lo
+      m_aggProgram.append((Uint32)(cte.depMask >> 32));          // hi
+      m_aggProgram.append(cte.flags);
+      m_aggProgram.append(cte.aggProgram.size());
+      for (Uint32 i = 0; i < cte.aggProgram.size(); i++) {
+        m_aggProgram.append(cte.aggProgram[i]);
+      }
+    }
+  }
+
   if (unlikely(m_aggProgram.isMemoryExhausted())) {
     setErrorCode(Err_MemoryAlloc);
     return -1;
   }
 
-  // Allocate NdbReceiver objects for aggregation results.
-  // Use m_workerCount receivers — one per SPJ worker gives good
-  // hash distribution for group routing.
-  Ndb *const ndb = m_transaction.getNdb();
-  m_numAggReceivers = m_workerCount;
-  m_aggReceivers = new NdbReceiver *[m_numAggReceivers];
-  if (unlikely(m_aggReceivers == nullptr)) {
-    setErrorCode(Err_MemoryAlloc);
-    return -1;
-  }
-  for (Uint32 i = 0; i < m_numAggReceivers; i++) {
-    NdbReceiver *rec = ndb->getNdbScanRec();
-    if (unlikely(rec == nullptr)) {
+  // Allocate NdbReceiver objects and NdbAggregator only when the
+  // main query has aggregate leaves. CTE-only queries (no main agg)
+  // use standard scan receivers for CTE_LOOKUP result rows.
+  if (numLeaves > 0) {
+    // Use m_workerCount receivers — one per SPJ worker gives good
+    // hash distribution for group routing.
+    Ndb *const ndb = m_transaction.getNdb();
+    m_numAggReceivers = m_workerCount;
+    m_aggReceivers = new NdbReceiver *[m_numAggReceivers];
+    if (unlikely(m_aggReceivers == nullptr)) {
       setErrorCode(Err_MemoryAlloc);
       return -1;
     }
-    rec->init(NdbReceiver::NDB_AGG_RECEIVER, this);
-    m_aggReceivers[i] = rec;
+    for (Uint32 i = 0; i < m_numAggReceivers; i++) {
+      NdbReceiver *rec = ndb->getNdbScanRec();
+      if (unlikely(rec == nullptr)) {
+        setErrorCode(Err_MemoryAlloc);
+        return -1;
+      }
+      rec->init(NdbReceiver::NDB_AGG_RECEIVER, this);
+      m_aggReceivers[i] = rec;
+    }
+
+    // Create NdbAggregator for result collection.
+    const NdbTableImpl *aggTable = firstOpts->getAggTable();
+    assert(aggTable != nullptr);
+    m_aggregator = new NdbAggregator(aggTable->m_facade);
   }
 
-  // Create NdbAggregator for result collection.
-  // Use the table from the first aggregate leaf operation.
-  const NdbTableImpl *aggTable = firstOpts.getAggTable();
-  assert(aggTable != nullptr);
-  m_aggregator = new NdbAggregator(aggTable->m_facade);
-
-  if (numLeaves == 1) {
+  if (numLeaves == 0) {
+    // CTE-only query: no main aggregation, no aggregator init needed.
+    // The m_aggProgram contains only CTE definitions.
+  } else if (numLeaves == 1) {
     // Single-leaf: initialize directly from program
-    const Uint32 *progBuf = firstOpts.getAggProgramBuffer();
-    const Uint32 progLen = firstOpts.getAggProgramLen();
+    const Uint32 *progBuf = firstOpts->getAggProgramBuffer();
+    const Uint32 progLen = firstOpts->getAggProgramLen();
     m_aggregator->initForResults(progBuf, progLen,
-                                 firstOpts.getAggGbColumns(),
-                                 firstOpts.getAggNGroupByCols());
+                                 firstOpts->getAggGbColumns(),
+                                 firstOpts->getAggNGroupByCols());
   } else {
     // Multi-leaf: build combined result program with total n_agg_results
     // and all agg instructions from all leaves (with adjusted slot indices).
     // Program format: [header(8), gb_cols..., instructions...]
     // Header word 1: (n_gb_cols << 16) | n_agg_results_total
     const Uint32 HEADER_SIZE = 8;
-    const Uint32 *firstProg = firstOpts.getAggProgramBuffer();
+    const Uint32 *firstProg = firstOpts->getAggProgramBuffer();
     const Uint32 nGbCols = firstProg[1] >> 16;
 
     // Calculate total n_agg_results and collect all instructions
@@ -3365,8 +3401,8 @@ int NdbQueryImpl::prepareAggregation() {
     assert(pos == combinedLen);
 
     m_aggregator->initForResults(combinedProg, combinedLen,
-                                 firstOpts.getAggGbColumns(),
-                                 firstOpts.getAggNGroupByCols());
+                                 firstOpts->getAggGbColumns(),
+                                 firstOpts->getAggNGroupByCols());
     delete[] combinedProg;
   }
   return 0;
@@ -3742,13 +3778,19 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
     Uint32Buffer combinedAggSec2;
     if (m_hasAggregation) {
       assert(m_aggProgram.getSize() > 0);
-      assert(m_numAggReceivers > 0);
       const Uint32 boundsLen = m_keyInfo.getSize();
       combinedAggSec2.append(boundsLen);
       if (boundsLen > 0) {
         combinedAggSec2.append(m_keyInfo);
       }
-      combinedAggSec2.append(m_aggReceivers[0]->getId());
+      // aggReceiverId: use first agg receiver if main query has
+      // aggregation, else use 0 (CTE-only queries — DBTC uses this
+      // for result routing but CTE results go to hash tables, not API).
+      if (m_numAggReceivers > 0) {
+        combinedAggSec2.append(m_aggReceivers[0]->getId());
+      } else {
+        combinedAggSec2.append(Uint32(0));
+      }
       combinedAggSec2.append(m_aggProgram);
       assert(!combinedAggSec2.isMemoryExhausted());
     }
