@@ -3033,8 +3033,19 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
      * First in train
      */
     Ptr<FragmentInfo> fragPtr;
-    if (!c_fragmentInfoHash.seize(fragPtr)) {
-      ndbabort();
+    if (unlikely(!c_fragmentInfoHash.seize(fragPtr))) {
+      jam();
+      /**
+       * Fragment hash full — cannot accommodate more concurrent assemblies.
+       * Release incoming sections and drop the signal. Subsequent fragments
+       * for this signal will hit the "fragment not found" case below.
+       */
+      g_eventLogger->warning(
+          "Block %u: Fragment info hash full, dropping signal from node %u",
+          theNumber, refToNode(senderRef));
+      for (Uint32 i = 0; i < secs; i++) releaseSection(sectionPtr[i]);
+      signal->header.m_fragmentInfo = 0;
+      signal->header.m_noOfSections = 0;
       return false;
     }
 
@@ -3043,7 +3054,23 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
 
     for (Uint32 i = 0; i < secs; i++) {
       Uint32 sectionNo = secNos[i];
-      ndbassert(sectionNo < 3);
+      if (unlikely(sectionNo >= 3)) {
+        jam();
+        /**
+         * Invalid sectionNo — would write out of bounds into
+         * m_sectionPtrI[]. Release everything and mark as dropped.
+         */
+        g_eventLogger->warning(
+            "Block %u: Invalid sectionNo %u in fragment from node %u",
+            theNumber, sectionNo, refToNode(senderRef));
+        for (Uint32 j = 0; j < secs; j++) releaseSection(sectionPtr[j]);
+        fragPtr.p->m_sectionPtrI[0] = RNIL;
+        fragPtr.p->m_sectionPtrI[1] = RNIL;
+        fragPtr.p->m_sectionPtrI[2] = RNIL;
+        signal->header.m_fragmentInfo = 0;
+        signal->header.m_noOfSections = 0;
+        return false;
+      }
       fragPtr.p->m_sectionPtrI[sectionNo] = sectionPtr[i];
     }
 
@@ -3066,12 +3093,49 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
       Uint32 i;
       for (i = 0; i < secs; i++) {
         Uint32 sectionNo = secNos[i];
-        ndbassert(sectionNo < 3);
+        if (unlikely(sectionNo >= 3)) {
+          jam();
+          /**
+           * Invalid sectionNo from subsequent fragment.
+           * Release incoming sections and mark as dropped so remaining
+           * fragments are also discarded.
+           */
+          g_eventLogger->warning(
+              "Block %u: Invalid sectionNo %u in fragment from node %u",
+              theNumber, sectionNo, refToNode(senderRef));
+          for (Uint32 j = 0; j < secs; j++) releaseSection(sectionPtr[j]);
+          for (Uint32 s = 0; s < 3; s++) {
+            if (fragPtr.p->m_sectionPtrI[s] != RNIL) {
+              releaseSection(fragPtr.p->m_sectionPtrI[s]);
+              fragPtr.p->m_sectionPtrI[s] = RNIL;
+            }
+          }
+          signal->header.m_fragmentInfo = 0;
+          signal->header.m_noOfSections = 0;
+          return false;
+        }
         Uint32 sectionPtrI = sectionPtr[i];
-        if (fragPtr.p->m_sectionPtrI[sectionNo] != RNIL) {
+        if (likely(fragPtr.p->m_sectionPtrI[sectionNo] != RNIL)) {
           linkSegments(fragPtr.p->m_sectionPtrI[sectionNo], sectionPtrI);
         } else {
-          fragPtr.p->m_sectionPtrI[sectionNo] = sectionPtrI;
+          /**
+           * New section appearing in subsequent fragment that wasn't
+           * in the first fragment. This is unexpected — reject it.
+           */
+          jam();
+          g_eventLogger->warning(
+              "Block %u: New section %u in later fragment from node %u",
+              theNumber, sectionNo, refToNode(senderRef));
+          for (Uint32 j = i; j < secs; j++) releaseSection(sectionPtr[j]);
+          for (Uint32 s = 0; s < 3; s++) {
+            if (fragPtr.p->m_sectionPtrI[s] != RNIL) {
+              releaseSection(fragPtr.p->m_sectionPtrI[s]);
+              fragPtr.p->m_sectionPtrI[s] = RNIL;
+            }
+          }
+          signal->header.m_fragmentInfo = 0;
+          signal->header.m_noOfSections = 0;
+          return false;
         }
       }
 
@@ -3148,9 +3212,17 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
   }
 
   /**
-   * Unable to find fragment
+   * Unable to find fragment — either the first fragment was dropped,
+   * or this is a spurious fragment from a malicious sender.
+   * Release incoming sections and drop the signal.
    */
-  ndbabort();
+  jam();
+  g_eventLogger->warning(
+      "Block %u: Fragment not found for fragId %u from node %u (fragInfo=%u)",
+      theNumber, fragId, refToNode(senderRef), fragInfo);
+  for (Uint32 i = 0; i < secs; i++) releaseSection(sectionPtr[i]);
+  signal->header.m_fragmentInfo = 0;
+  signal->header.m_noOfSections = 0;
   return false;
 }
 
@@ -3201,8 +3273,13 @@ bool SimulatedBlock::assembleDroppedFragments(Signal *signal) {
      * First in train
      */
     Ptr<FragmentInfo> fragPtr;
-    if (!c_fragmentInfoHash.seize(fragPtr)) {
-      ndbabort();
+    if (unlikely(!c_fragmentInfoHash.seize(fragPtr))) {
+      jam();
+      g_eventLogger->warning(
+          "Block %u: Fragment info hash full (dropped path), "
+          "dropping signal from node %u",
+          theNumber, refToNode(senderRef));
+      signal->header.m_fragmentInfo = 0;
       return false;
     }
 
@@ -3266,9 +3343,16 @@ bool SimulatedBlock::assembleDroppedFragments(Signal *signal) {
   }
 
   /**
-   * Unable to find fragment
+   * Unable to find fragment — first fragment may have been dropped
+   * or this is a spurious fragment. Nothing to release (no sections
+   * in dropped signal path). Just drop it.
    */
-  ndbabort();
+  jam();
+  g_eventLogger->warning(
+      "Block %u: Fragment not found (dropped path) for fragId %u "
+      "from node %u (fragInfo=%u)",
+      theNumber, fragId, refToNode(senderRef), fragInfo);
+  signal->header.m_fragmentInfo = 0;
   return false;
 }
 
