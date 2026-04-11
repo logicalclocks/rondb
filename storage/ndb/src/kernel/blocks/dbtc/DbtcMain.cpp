@@ -3584,6 +3584,22 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   const TcKeyReq *const tcKeyReq = (TcKeyReq *)signal->getDataPtr();
   SectionHandle handle(this, signal);
   jamEntryDebug();
+
+  /**
+   * Verify signal has at least the mandatory header (8 words).
+   * The transport layer only checks length + secCount <= 25, so a
+   * malicious sender can send a too-short signal. Reading beyond the
+   * declared length would access stale data in the signal buffer.
+   */
+  if (unlikely(signal->getLength() < TcKeyReq::StaticLength)) {
+    jam();
+    releaseSections(handle);
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    disconnectMaliciousNode(signal, senderNodeId,
+        "TCKEYREQ signal too short", __LINE__);
+    return;
+  }
+
   /*-------------------------------------------------------------------------
    * Common error routines are used for several signals, they need to know
    * where to find the transaction identifier in the signal.
@@ -3614,6 +3630,27 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   }//if
   ApiConnectRecord *const regApiPtr = apiConnectptr.p;
   Uint32 sendersBlockRef = regApiPtr->ndbapiBlockref;
+
+  /**
+   * Verify that the signal sender actually owns this API connect record.
+   * A malicious node could send a TCKEYREQ with another node's
+   * apiConnectPtr to hijack its transaction.
+   * Internal signals (trigger/index ops) come from our own node — skip check.
+   */
+  {
+    NodeId signalSenderNodeId = refToNode(signal->getSendersBlockRef());
+    if (signalSenderNodeId != getOwnNodeId()) {
+      NodeId ownerNodeId = refToNode(sendersBlockRef);
+      if (unlikely(signalSenderNodeId != ownerNodeId)) {
+        jam();
+        releaseSections(handle);
+        disconnectMaliciousNode(signal, signalSenderNodeId,
+            "TCKEYREQ apiConnectPtr not owned by sender", __LINE__);
+        return;
+      }
+    }
+  }
+
 #ifdef ERROR_INSERT
   if (ERROR_INSERTED(8079)) {
     /* Test that no signals received after API_FAILREQ */
@@ -4391,6 +4428,24 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     TkeyIndex = TDistrKeyIndex + TDistrKeyFlag;
   }
 
+  /**
+   * For long TCKEYREQ, key and attr data are in sections, so the signal
+   * body should contain exactly the static header plus optional words.
+   * Reject signals that are too short (stale data) or too long (extra data).
+   */
+  if (regCachePtr->isLongTcKeyReq) {
+    if (unlikely(signal->getLength() !=
+                 TcKeyReq::StaticLength + TkeyIndex)) {
+      jam();
+      terrorCode = ZSIGNAL_ERROR;
+      NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+      disconnectMaliciousNode(signal, senderNodeId,
+          "TCKEYREQ signal length mismatch", __LINE__);
+      releaseAtErrorLab(signal, apiConnectptr);
+      return;
+    }
+  }
+
   regCachePtr->m_no_hash = false;
 
   if (unlikely(TOperationType == ZUNLOCK)) {
@@ -4432,7 +4487,16 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     SegmentedSectionPtr keyInfoSection, attrInfoSection;
 
     /* Store i value for first long section of KeyInfo
-     * and AttrInfo in Cache Record
+     * and AttrInfo in Cache Record.
+     *
+     * These ndbrequire's are safe internal invariants:
+     * - KeyInfo section (0) was already probed above when setting
+     *   TkeyLength. If it were missing, TkeyLength would be 0 and
+     *   we'd have returned via TCKEY_abort(signal, 4) at the
+     *   TkeyLength==0 check.
+     * - AttrInfo section (1) was probed above when setting TattrLen.
+     *   If missing, TattrLen stays 0, so attrlength==0 and this
+     *   branch is not taken.
      */
     ndbrequire(handle.getSection(keyInfoSection, TcKeyReq::KeyInfoSectionNum));
 
