@@ -2512,6 +2512,31 @@ void Dbtc::handleSignalStateProblem(Signal *signal,
   /* Do nothing more - API disconnection is responsible for cleanup */
 }  // Dbtc::handleSignalStateProblem
 
+void Dbtc::disconnectMaliciousNode(Signal *signal,
+                                   NodeId nodeId,
+                                   const char *reason,
+                                   int line) {
+  jam();
+  g_eventLogger->warning(
+      "TC %u : Malformed signal from node %u (type %u) at line %d: %s. "
+      "Disconnecting.",
+      instance(), nodeId, getNodeInfo(nodeId).getType(), line, reason);
+
+  if (getNodeInfo(nodeId).getType() == NODE_TYPE_API) {
+    jam();
+    /* API node: ask QMGR to disconnect via api_failed() */
+    signal->theData[0] = 900;
+    signal->theData[1] = nodeId;
+    sendSignal(QMGR_REF, GSN_DUMP_STATE_ORD, signal, 2, JBA);
+  } else {
+    jam();
+    /* Data node: close transport, QMGR handles via node_failed() */
+    signal->theData[0] = 939;
+    signal->theData[1] = nodeId;
+    sendSignal(QMGR_REF, GSN_DUMP_STATE_ORD, signal, 2, JBA);
+  }
+}  // Dbtc::disconnectMaliciousNode
+
 void Dbtc::abortBeginErrorLab(Signal *signal,
                               ApiConnectRecordPtr const apiConnectptr) {
   apiConnectptr.p->transid[0] = signal->theData[ttransid_ptr];
@@ -2641,22 +2666,15 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
     ndbabort();  // Not used currently
     return;
   case 2:{
-    printState(signal, 6, apiConnectptr);
-    const TcKeyReq * const tcKeyReq = (TcKeyReq *)&signal->theData[0];
-    const Uint32 t1 = tcKeyReq->transId1;
-    const Uint32 t2 = tcKeyReq->transId2;
-    signal->theData[0] = apiConnectptr.p->ndbapiConnect;
-    signal->theData[1] = t1;
-    signal->theData[2] = t2;
-    signal->theData[3] = ZABORT_ERROR;
-    ndbassert(false);
-    sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKREP, 
-	       signal, 4, JBB);
+    jam();
     /**
-     * Abort already in progress
-     * Receiving a startFlag in this state is a protocol
-     * error. We crash in development builds.
+     * Abort already in progress.
+     * Receiving a startFlag in this state is a protocol error.
+     * Disconnect the offending node.
      */
+    NodeId senderNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
+    disconnectMaliciousNode(signal, senderNodeId,
+        "start flag during active abort (protocol error)", __LINE__);
     return;
   }
   case 3:
@@ -3581,9 +3599,17 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   apiConnectptr.i = TapiIndex;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
-    ndbrequire(!passQueueingFlag);
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    if (passQueueingFlag && senderNodeId == getOwnNodeId()) {
+      /**
+       * passQueueingFlag set and sender is ourselves — this is a queued
+       * signal we sent internally. Invalid apiConnectPtr is an internal bug.
+       */
+      ndbrequire(false);
+    }
     releaseSections(handle);
-    warningHandlerLab(signal, __LINE__);
+    disconnectMaliciousNode(signal, senderNodeId,
+        "invalid apiConnectPtr in TCKEYREQ", __LINE__);
     return;
   }//if
   ApiConnectRecord *const regApiPtr = apiConnectptr.p;
@@ -3610,12 +3636,13 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   localTabptr.p = &tableRecord[TtabIndex];
   if (unlikely(TtabIndex > TtabMaxIndex)) {
     jam();
-    ndbrequire(!passQueueingFlag);
-    releaseSections(handle);
-    warningHandlerLab(signal, __LINE__);
-    if (!is_transaction_to_start(regApiPtr, TstartFlag)) {
-      TCKEY_abort(signal, 69, apiConnectptr);
+    NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+    if (passQueueingFlag && senderNodeId == getOwnNodeId()) {
+      ndbrequire(false);
     }
+    releaseSections(handle);
+    disconnectMaliciousNode(signal, senderNodeId,
+        "table index out of bounds in TCKEYREQ", __LINE__);
     return;
   }
   Uint16 Tspecial_op_flags = regApiPtr->m_special_op_flags;
@@ -3634,11 +3661,14 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     } else if (unlikely(databaseRecordPtr.p->m_is_user == false ||
                         databaseRecordPtr.p->m_database_version !=
                           user_id_version)) {
-      databaseRecordPtr.i = localTabptr.p->databaseRecord;
-      databaseRecordPtr.p = nullptr;
-      g_eventLogger->info("(%u) Sending incorrect user id: %u",
-        instance(), user_id);
-      ndbassert(false);
+      jam();
+      releaseSections(handle);
+      terrorCode = ZSTATE_ERROR;
+      if (is_transaction_to_start(regApiPtr, TstartFlag)) {
+        initApiConnectRec(signal, regApiPtr, true);
+      }
+      abortErrorLab(signal, apiConnectptr);
+      return;
     }
   } else {
     databaseRecordPtr.i = localTabptr.p->databaseRecord;
@@ -4315,7 +4345,14 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     else if (TOperationType == ZDELETE)
       regTcPtr->m_special_op_flags |= TcConnectRecord::SOF_REORG_DELETE;
     else {
-      ndbassert(false);
+      jam();
+      terrorCode = ZSIGNAL_ERROR;
+      NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+      disconnectMaliciousNode(signal, senderNodeId,
+          "reorg flag set with invalid operation type in TCKEYREQ",
+          __LINE__);
+      releaseAtErrorLab(signal, apiConnectptr);
+      return;
     }
   }
   /* Not logical to set both of those flags. */
@@ -4360,7 +4397,15 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     /* Unlock op has distribution key containing
      * LQH nodeid and fragid
      */
-    ndbassert(regCachePtr->distributionKeyIndicator);
+    if (unlikely(!regCachePtr->distributionKeyIndicator)) {
+      jam();
+      terrorCode = ZSIGNAL_ERROR;
+      NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+      disconnectMaliciousNode(signal, senderNodeId,
+          "UNLOCK without distribution key in TCKEYREQ", __LINE__);
+      releaseAtErrorLab(signal, apiConnectptr);
+      return;
+    }
     regCachePtr->m_no_hash = 1;
     regCachePtr->unlockNodeId = (regCachePtr->distributionKey >> 16);
     regCachePtr->distributionKey &= 0xffff;
@@ -4611,7 +4656,15 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
    * If CommitFlag is set state accordingly and check for early abort
    *------------------------------------------------------------------------*/
   if (TcKeyReq::getCommitFlag(Treqinfo) == 1) {
-    ndbrequire(TexecFlag);
+    if (unlikely(!TexecFlag)) {
+      jam();
+      terrorCode = ZSIGNAL_ERROR;
+      NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+      disconnectMaliciousNode(signal, senderNodeId,
+          "CommitFlag set without ExecFlag in TCKEYREQ", __LINE__);
+      releaseAtErrorLab(signal, apiConnectptr);
+      return;
+    }
     regApiPtr->apiConnectstate = CS_REC_COMMITTING;
   } else {
     /* ---------------------------------------------------------------------
