@@ -1471,8 +1471,13 @@ NdbQueryDefImpl::NdbQueryDefImpl(
     return;
   }
 
-  // Scan operations to find aggregate leaves and validate constraints
+  // Scan operations to find MAIN query aggregate leaves.
+  // Skip CTE-embedded operations — their aggregation is handled
+  // via the CTE definitions in KeyInfo, not the main agg program.
   for (Uint32 i = 0; i < m_operations.size(); i++) {
+    if (m_operations[i]->isCteEmbedded()) continue;
+    if (m_operations[i]->getType() == NdbQueryOperationDef::CteSubtree)
+      continue;
     if (m_operations[i]->isAggregateLeaf()) {
       if (i == 0) {
         // Aggregate leaf must not be the root operation

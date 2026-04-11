@@ -1766,10 +1766,27 @@ bool NdbWorker::isEmpty() const { return getResultStream(0).isEmpty(); }
  * We provide some convenient accessors for fetching this info
  */
 Uint32 NdbWorker::getReceiverId() const {
+  // For CTE queries, find the main root (first non-CTE op)
+  const NdbQueryDefImpl &qDef = m_query->getQueryDef();
+  for (Uint32 i = 0; i < qDef.getNoOfOperations(); i++) {
+    const NdbQueryOperationDefImpl &def = qDef.getQueryOperation(i);
+    if (def.getType() != NdbQueryOperationDef::CteSubtree &&
+        !def.isCteEmbedded()) {
+      return getResultStream(def.getOpNo()).getReceiver().getId();
+    }
+  }
   return getResultStream(0).getReceiver().getId();
 }
 
 Uint32 NdbWorker::getReceiverTcPtrI() const {
+  const NdbQueryDefImpl &qDef = m_query->getQueryDef();
+  for (Uint32 i = 0; i < qDef.getNoOfOperations(); i++) {
+    const NdbQueryOperationDefImpl &def = qDef.getQueryOperation(i);
+    if (def.getType() != NdbQueryOperationDef::CteSubtree &&
+        !def.isCteEmbedded()) {
+      return getResultStream(def.getOpNo()).getReceiver().m_tcPtrI;
+    }
+  }
   return getResultStream(0).getReceiver().m_tcPtrI;
 }
 
@@ -2597,9 +2614,18 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextResult(bool fetchAllowed,
       return res;
 
     else if (res == NdbQuery::NextResult_scanComplete) {
-      if (m_globalCursor == 0)  // Completed reading all results from root
+      if (m_globalCursor <= getRootOpNo())  // Completed reading all from root
         break;
-      m_globalCursor--;  // Get 'next' from  ancestor
+      m_globalCursor--;  // Get 'next' from ancestor
+      // Skip CTE-embedded operations when walking back
+      while (m_globalCursor > getRootOpNo()) {
+        const NdbQueryOperationDefImpl &d =
+            getQueryOperation(m_globalCursor).getQueryOperationDef();
+        if (d.getType() != NdbQueryOperationDef::CteSubtree &&
+            !d.isCteEmbedded())
+          break;
+        m_globalCursor--;
+      }
     }
 
     else if (res == NdbQuery::NextResult_gotRow) {
@@ -2609,6 +2635,12 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextResult(bool fetchAllowed,
       //
       for (uint child = m_globalCursor + 1; child < getNoOfOperations();
            child++) {
+        // Skip CTE-embedded operations in the result iteration
+        const NdbQueryOperationDefImpl &cDef =
+            getQueryOperation(child).getQueryOperationDef();
+        if (cDef.getType() == NdbQueryOperationDef::CteSubtree ||
+            cDef.isCteEmbedded())
+          continue;
         res = getQueryOperation(child).firstResult();
         if (unlikely(res == NdbQuery::NextResult_error))
           return res;
@@ -3008,6 +3040,18 @@ NdbQueryOperationImpl &NdbQueryImpl::getRoot() const {
   return m_operations[0];
 }
 
+Uint32 NdbQueryImpl::getRootOpNo() const {
+  for (Uint32 i = 0; i < m_countOperations; i++) {
+    const NdbQueryOperationDefImpl &def =
+        m_operations[i].getQueryOperationDef();
+    if (def.getType() != NdbQueryOperationDef::CteSubtree &&
+        !def.isCteEmbedded()) {
+      return def.getOpNo();
+    }
+  }
+  return 0;
+}
+
 int NdbQueryImpl::prepareSend() {
   if (unlikely(m_state != Defined)) {
     assert(m_state >= Initial && m_state < Destructed);
@@ -3243,6 +3287,10 @@ int NdbQueryImpl::prepareSend() {
 
   assert(m_pendingWorkers == 0);
   m_state = Prepared;
+
+  // For CTE queries, set cursor to main root (skip CTE ops)
+  m_globalCursor = getRootOpNo();
+
   return 0;
 }  // NdbQueryImpl::prepareSend
 

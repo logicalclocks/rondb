@@ -650,6 +650,9 @@ class NdbQueryImpl {
    */
   NdbQueryOperationImpl &getRoot() const;
 
+  /** Get the opNo of the main query root (0 for non-CTE queries). */
+  Uint32 getRootOpNo() const;
+
   /** A complete batch has been received for a given SPJ-worker result.
    *  Update whatever required before the appl. is allowed to navigate
    *  the result.
