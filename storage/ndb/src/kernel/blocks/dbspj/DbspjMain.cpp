@@ -5918,6 +5918,10 @@ Uint32 Dbspj::cte_subtree_build(Build_context &ctx, Ptr<Request> requestPtr,
       jam();
       break;
     }
+    if (unlikely(node->numNodes == 0)) {
+      jam();
+      break;
+    }
 
     err = createNode(ctx, requestPtr, treeNodePtr);
     if (unlikely(err != 0)) {

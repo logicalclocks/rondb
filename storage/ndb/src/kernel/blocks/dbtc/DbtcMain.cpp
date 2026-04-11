@@ -16091,14 +16091,18 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     scanptr.p->scanAttrInfoPtr = handle.m_ptr[ScanTabReq::AttrInfoSectionNum].i;
     if (ScanTabReq::getJoinAggFlag(ri) && keyLen) {
       jam();
-      /* parseJoinAggKeyInfo may call abortScanLab on error,
-       * which requires scanState != RUNNING. Temporarily set
-       * WAIT_JOIN_AGG_SETUP so error handling works. */
+      /* parseJoinAggKeyInfo handles errors internally via
+       * abortScanLab (sends SCAN_TABREF and releases the scan).
+       * Returns -1 on error — caller must not access scanptr
+       * after that since the scan record is freed. */
       scanptr.p->scanState = ScanRecord::WAIT_JOIN_AGG_SETUP;
-      parseJoinAggKeyInfo(signal, scanptr, handle, keyLen);
-      if (scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_SETUP) {
-        scanptr.p->scanState = ScanRecord::RUNNING;
+      transP->apiScanRec = scanptr.i;
+      if (parseJoinAggKeyInfo(signal, scanptr, handle, keyLen) != 0) {
+        jam();
+        handle.clear();
+        return;
       }
+      scanptr.p->scanState = ScanRecord::RUNNING;
     } else if (keyLen) {
       jamDebug();
       scanptr.p->scanKeyInfoPtr = handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i;
@@ -28457,8 +28461,8 @@ void Dbtc::debug_db_no_queue(DatabaseRecordPtr databaseRecordPtr,
  *   Remaining words:     aggregation program
  * Splits bounds from agg program into separate scan record fields.
  */
-void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
-                               SectionHandle &handle, Uint32 keyLen) {
+int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
+                              SectionHandle &handle, Uint32 keyLen) {
   scanptr.p->m_joinAgg = true;
   scanptr.p->scanKeyInfoPtr = RNIL;
   scanptr.p->m_aggProgramPtrI = RNIL;
@@ -28477,7 +28481,7 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
     c_apiConnectRecordPool.getPtr(apiConnectptr);
     abortScanLab(signal, scanptr, ZGET_ATTRBUF_ERROR, true,
                  apiConnectptr);
-    return;
+    return -1;
   }
   scanptr.p->m_joinAggNodes = aggNodes;
 
@@ -28524,7 +28528,7 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
       c_apiConnectRecordPool.getPtr(apiConnectptr);
       abortScanLab(signal, scanptr, ZINVALID_KEY, true,
                    apiConnectptr);
-      return;
+      return -1;
     }
     Uint32 linBuf[MAX_AGG_SECTION_WORDS];
     {
@@ -28579,7 +28583,7 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
       apiConnectptr.i = scanptr.p->scanApiRec;
       c_apiConnectRecordPool.getPtr(apiConnectptr);
       abortScanLab(signal, scanptr, ZINVALID_KEY, true, apiConnectptr);
-      return;
+      return -1;
     }
     scanptr.p->m_numCtes = numCtes;
 
@@ -28598,7 +28602,7 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
         apiConnectptr.i = scanptr.p->scanApiRec;
         c_apiConnectRecordPool.getPtr(apiConnectptr);
         abortScanLab(signal, scanptr, ZGET_ATTRBUF_ERROR, true, apiConnectptr);
-        return;
+        return -1;
       }
       scanptr.p->m_cteInfos = (ScanRecord::CteInfo *)mem;
       scanptr.p->m_cteAggNodeState =
@@ -28657,6 +28661,16 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
     }
     scanptr.p->m_ctePhaseCount = maxPhase + 1;
     } // if (CTE_DEFS_MARKER)
+    else if (consumed < totalRemaining) {
+      /* Unconsumed trailing data that is not a CTE_DEFS_MARKER.
+       * Reject — malformed KeyInfo section. */
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = scanptr.p->scanApiRec;
+      c_apiConnectRecordPool.getPtr(apiConnectptr);
+      abortScanLab(signal, scanptr, ZINVALID_KEY, true, apiConnectptr);
+      return -1;
+    }
   } // if (totalRemaining > 0)
 
   /* Release original combined section */
@@ -28701,6 +28715,7 @@ void Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
     }
   }
 #endif
+  return 0;
 }
 
 /**

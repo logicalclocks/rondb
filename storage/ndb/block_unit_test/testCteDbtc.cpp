@@ -70,6 +70,11 @@
  *   Test 2: 2-CTE + main GROUP BY SUM (3 groups)
  *   Test 3: 2-CTE + larger dataset (100 rows, 10 groups)
  *   Test 4: 2-CTE + empty table
+ *   Test 7: Negative — scanParallelism < fragCount
+ *   Test 8: Negative — numCtes > 64
+ *   Test 9: Negative — CTE_SUBTREE with numNodes=0
+ *   Test 10: Negative — CTE_LOOKUP with invalid cteId
+ *   Test 11: Negative — missing CTE_DEFS_MARKER
  *
  * Usage: testCteDbtc -c <connect_string> -m <mysql_port> [-v]
  */
@@ -2018,6 +2023,669 @@ testCteLookupMainSelect(TestCtx &ctx)
 }
 
 /* ------------------------------------------------------------------ */
+/* Negative test helper: expect SCAN_TABREF                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Wait for SCAN_TABREF after sending a malformed SCAN_TABREQ.
+ * Returns the error code on success, -1 on timeout or unexpected signal.
+ */
+static int
+expectScanTabRef(SignalSender &ss)
+{
+  SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "SCAN_TABREF");
+  if (resp == nullptr) return -1;
+  int gsn = getGsn(resp);
+  if (gsn == GSN_SCAN_TABREF) {
+    Uint32 errorCode = resp->getDataPtr()[3];
+    V("  SCAN_TABREF: errorCode=%u\n", errorCode);
+    return (int)errorCode;
+  }
+  if (gsn == GSN_SCAN_TABCONF) {
+    /* Query unexpectedly succeeded — drain remaining signals */
+    fprintf(stderr, "Expected SCAN_TABREF but got SCAN_TABCONF\n");
+    return -1;
+  }
+  fprintf(stderr, "Expected SCAN_TABREF but got GSN %d\n", gsn);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 7: scanParallelism < fragCount for CTE query                   */
+/* ------------------------------------------------------------------ */
+
+static int
+testNegative_ScanParallelism(TestCtx &ctx)
+{
+  printf("Test 7: Negative — scanParallelism < fragCount ... ");
+  fflush(stdout);
+
+  ctx.ss->unlock();
+  TableMeta meta;
+  int rc = createTestTable(ctx.conn, ctx.ndb, meta);
+  ctx.ss->lock();
+  if (rc != 0) return -1;
+
+  /* Only meaningful when fragCount > 1 */
+  if (meta.fragCount <= 1) {
+    printf("SKIP (fragCount=%u, need > 1)\n", meta.fragCount);
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return 0;
+  }
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef) != 0) {
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  Uint32 receiverId = 300;
+  std::vector<Uint32> mainAgg = buildAggProgram_CountSum(meta.attrIdB);
+  std::vector<Uint32> cte0Agg = buildAggProgram_CountSum(meta.attrIdB);
+  std::vector<Uint32> cte1Agg = buildAggProgram_CountOnly(meta.attrIdB);
+  std::vector<Uint32> queryTree =
+    buildQueryTreeWithCtes(meta.tableId, meta.schemaVersion,
+                           meta.attrIdA, receiverId);
+
+  /* Build valid aggSection but set scanParallelism=1 (too small) */
+  SimpleSignal ssig;
+  Uint32 *data = ssig.getDataPtrSend();
+  memset(data, 0, 25 * sizeof(Uint32));
+  data[0] = apiConnectPtr;
+  data[2] = buildScanTabReqInfo();
+  data[3] = meta.tableId;
+  data[4] = meta.schemaVersion;
+  data[5] = 0xFFFF;
+  data[6] = FAKE_TRANS_ID1;
+  data[7] = FAKE_TRANS_ID2;
+  data[8] = apiConnectPtr;
+  data[9] = 65536;
+  data[10] = 256;
+  data[15] = 1;  /* scanParallelism=1 — TOO SMALL for CTE query */
+
+  ssig.set(*ctx.ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
+
+  std::vector<Uint32> aggSection;
+  aggSection.push_back(0);
+  aggSection.push_back(receiverId);
+  aggSection.insert(aggSection.end(), mainAgg.begin(), mainAgg.end());
+  aggSection.push_back(0xCDE00000);
+  aggSection.push_back(2);
+  aggSection.push_back(meta.tableId); aggSection.push_back(meta.schemaVersion);
+  aggSection.push_back(0); aggSection.push_back(0); aggSection.push_back(0);
+  aggSection.push_back((Uint32)cte0Agg.size());
+  aggSection.insert(aggSection.end(), cte0Agg.begin(), cte0Agg.end());
+  aggSection.push_back(meta.tableId); aggSection.push_back(meta.schemaVersion);
+  aggSection.push_back(0); aggSection.push_back(0); aggSection.push_back(0);
+  aggSection.push_back((Uint32)cte1Agg.size());
+  aggSection.insert(aggSection.end(), cte1Agg.begin(), cte1Agg.end());
+
+  ssig.header.m_noOfSections = 3;
+  std::vector<Uint32> dummyReceiverIds(meta.fragCount, 0);
+  ssig.ptr[0].p = dummyReceiverIds.data();
+  ssig.ptr[0].sz = meta.fragCount;
+  ssig.ptr[1].p = queryTree.data();
+  ssig.ptr[1].sz = (Uint32)queryTree.size();
+  ssig.ptr[2].p = aggSection.data();
+  ssig.ptr[2].sz = (Uint32)aggSection.size();
+
+  if (ctx.ss->sendSignal(ctx.nodeId, &ssig) != SEND_OK) {
+    releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  int errCode = expectScanTabRef(*ctx.ss);
+  releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+  ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+
+  if (errCode == 290) {  /* ZINVALID_KEY */
+    printf("PASS (errorCode=%d)\n", errCode);
+    return 0;
+  }
+  printf("FAIL (expected errorCode=290, got %d)\n", errCode);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 8: numCtes > 64                                                */
+/* ------------------------------------------------------------------ */
+
+static int
+testNegative_TooManyCtes(TestCtx &ctx)
+{
+  printf("Test 8: Negative — numCtes > 64 ... ");
+  fflush(stdout);
+
+  ctx.ss->unlock();
+  TableMeta meta;
+  int rc = createTestTable(ctx.conn, ctx.ndb, meta);
+  ctx.ss->lock();
+  if (rc != 0) return -1;
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef) != 0) {
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  Uint32 receiverId = 301;
+  std::vector<Uint32> mainAgg = buildAggProgram_CountSum(meta.attrIdB);
+
+  /* Use a simple 2-node tree (scan+lookup) — the CTEs are only in KeyInfo */
+  std::vector<Uint32> queryTree;
+  {
+    Uint32 cnt_len = 0;
+    QueryTree::setCntLen(cnt_len, 2, 1 + 5 + 7);
+    queryTree.push_back(cnt_len);
+    Uint32 n0_len = 0;
+    QueryNode::setOpLen(n0_len, QueryNode::QN_SCAN_FRAG, 5);
+    queryTree.push_back(n0_len);
+    queryTree.push_back(DABits::NI_AGGREGATE | DABits::NI_LINKED_ATTR);
+    queryTree.push_back(meta.tableId);
+    queryTree.push_back(meta.schemaVersion);
+    queryTree.push_back((meta.attrIdA << 16) | 1);
+    Uint32 n1_len = 0;
+    QueryNode::setOpLen(n1_len, QueryNode::QN_LOOKUP, 7);
+    queryTree.push_back(n1_len);
+    queryTree.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
+                         DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF);
+    queryTree.push_back(meta.tableId);
+    queryTree.push_back(meta.schemaVersion);
+    queryTree.push_back((0 << 16) | 1);
+    queryTree.push_back((0 << 16) | 1);
+    queryTree.push_back(QueryPattern::col(0));
+    /* Parameters */
+    Uint32 p0_len = 0;
+    QueryNodeParameters::setOpLen(p0_len, QueryNodeParameters::QN_SCAN_FRAG,
+                                  QN_ScanFragParameters::NodeSize);
+    queryTree.push_back(p0_len);
+    queryTree.push_back(0); queryTree.push_back(receiverId);
+    queryTree.push_back(256); queryTree.push_back(65536);
+    queryTree.push_back(0); queryTree.push_back(0); queryTree.push_back(0);
+    Uint32 p1_len = 0;
+    QueryNodeParameters::setOpLen(p1_len, QueryNodeParameters::QN_LOOKUP,
+                                  QN_LookupParameters::NodeSize);
+    queryTree.push_back(p1_len);
+    queryTree.push_back(0); queryTree.push_back(receiverId);
+  }
+
+  /* Build aggSection with numCtes=65 (exceeds max 64) */
+  std::vector<Uint32> aggSection;
+  aggSection.push_back(0);
+  aggSection.push_back(receiverId);
+  aggSection.insert(aggSection.end(), mainAgg.begin(), mainAgg.end());
+  aggSection.push_back(0xCDE00000);
+  aggSection.push_back(65);  /* numCtes = 65 — TOO MANY */
+  /* Don't need actual CTE data — DBTC rejects before parsing them */
+
+  SimpleSignal ssig;
+  Uint32 *data = ssig.getDataPtrSend();
+  memset(data, 0, 25 * sizeof(Uint32));
+  data[0] = apiConnectPtr;
+  data[2] = buildScanTabReqInfo();
+  data[3] = meta.tableId;
+  data[4] = meta.schemaVersion;
+  data[5] = 0xFFFF;
+  data[6] = FAKE_TRANS_ID1;
+  data[7] = FAKE_TRANS_ID2;
+  data[8] = apiConnectPtr;
+  data[9] = 65536;
+  data[10] = 256;
+  data[15] = meta.fragCount;
+
+  ssig.set(*ctx.ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
+  ssig.header.m_noOfSections = 3;
+  std::vector<Uint32> dummyReceiverIds(meta.fragCount, 0);
+  ssig.ptr[0].p = dummyReceiverIds.data();
+  ssig.ptr[0].sz = meta.fragCount;
+  ssig.ptr[1].p = queryTree.data();
+  ssig.ptr[1].sz = (Uint32)queryTree.size();
+  ssig.ptr[2].p = aggSection.data();
+  ssig.ptr[2].sz = (Uint32)aggSection.size();
+
+  if (ctx.ss->sendSignal(ctx.nodeId, &ssig) != SEND_OK) {
+    releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  int errCode = expectScanTabRef(*ctx.ss);
+  releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+  ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+
+  if (errCode == 290) {
+    printf("PASS (errorCode=%d)\n", errCode);
+    return 0;
+  }
+  printf("FAIL (expected errorCode=290, got %d)\n", errCode);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 9: QN_CTE_SUBTREE with numNodes=0                              */
+/* ------------------------------------------------------------------ */
+
+static int
+testNegative_EmptySubtree(TestCtx &ctx)
+{
+  printf("Test 9: Negative — CTE_SUBTREE numNodes=0 ... ");
+  fflush(stdout);
+
+  ctx.ss->unlock();
+  TableMeta meta;
+  int rc = createTestTable(ctx.conn, ctx.ndb, meta);
+  ctx.ss->lock();
+  if (rc != 0) return -1;
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef) != 0) {
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  Uint32 receiverId = 302;
+  std::vector<Uint32> mainAgg = buildAggProgram_CountSum(meta.attrIdB);
+
+  /* Build tree: CTE_SUBTREE with numNodes=0, then main scan+lookup */
+  std::vector<Uint32> ai;
+  const Uint32 tree_len = 1 + 4 + 5 + 7;
+  Uint32 cnt_len = 0;
+  QueryTree::setCntLen(cnt_len, 3, tree_len);
+  ai.push_back(cnt_len);
+
+  /* Node 0: QN_CTE_SUBTREE with numNodes=0 (INVALID) */
+  Uint32 n0_len = 0;
+  QueryNode::setOpLen(n0_len, QueryNode::QN_CTE_SUBTREE, 4);
+  ai.push_back(n0_len);
+  ai.push_back(0);  /* requestInfo */
+  ai.push_back(0);  /* cteId = 0 */
+  ai.push_back(0);  /* numNodes = 0 — EMPTY SUBTREE */
+
+  /* Node 1: QN_SCAN_FRAG (main scan) */
+  Uint32 n1_len = 0;
+  QueryNode::setOpLen(n1_len, QueryNode::QN_SCAN_FRAG, 5);
+  ai.push_back(n1_len);
+  ai.push_back(DABits::NI_AGGREGATE | DABits::NI_LINKED_ATTR);
+  ai.push_back(meta.tableId);
+  ai.push_back(meta.schemaVersion);
+  ai.push_back((meta.attrIdA << 16) | 1);
+
+  /* Node 2: QN_LOOKUP (main leaf) */
+  Uint32 n2_len = 0;
+  QueryNode::setOpLen(n2_len, QueryNode::QN_LOOKUP, 7);
+  ai.push_back(n2_len);
+  ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
+               DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF);
+  ai.push_back(meta.tableId);
+  ai.push_back(meta.schemaVersion);
+  ai.push_back((1 << 16) | 1);
+  ai.push_back((0 << 16) | 1);
+  ai.push_back(QueryPattern::col(0));
+
+  /* Parameters */
+  Uint32 p0_len = 0;
+  QueryNodeParameters::setOpLen(p0_len, QueryNodeParameters::QN_CTE_SUBTREE,
+                                QN_CteSubtreeParameters::NodeSize);
+  ai.push_back(p0_len);
+  ai.push_back(0); ai.push_back(receiverId);
+
+  Uint32 p1_len = 0;
+  QueryNodeParameters::setOpLen(p1_len, QueryNodeParameters::QN_SCAN_FRAG,
+                                QN_ScanFragParameters::NodeSize);
+  ai.push_back(p1_len);
+  ai.push_back(0); ai.push_back(receiverId);
+  ai.push_back(256); ai.push_back(65536);
+  ai.push_back(0); ai.push_back(0); ai.push_back(0);
+
+  Uint32 p2_len = 0;
+  QueryNodeParameters::setOpLen(p2_len, QueryNodeParameters::QN_LOOKUP,
+                                QN_LookupParameters::NodeSize);
+  ai.push_back(p2_len);
+  ai.push_back(0); ai.push_back(receiverId);
+
+  /* aggSection with 1 CTE */
+  std::vector<Uint32> aggSection;
+  aggSection.push_back(0);
+  aggSection.push_back(receiverId);
+  aggSection.insert(aggSection.end(), mainAgg.begin(), mainAgg.end());
+  aggSection.push_back(0xCDE00000);
+  aggSection.push_back(1);
+  std::vector<Uint32> cteAgg = buildAggProgram_CountSum(meta.attrIdB);
+  aggSection.push_back(meta.tableId); aggSection.push_back(meta.schemaVersion);
+  aggSection.push_back(0); aggSection.push_back(0); aggSection.push_back(0);
+  aggSection.push_back((Uint32)cteAgg.size());
+  aggSection.insert(aggSection.end(), cteAgg.begin(), cteAgg.end());
+
+  SimpleSignal ssig;
+  Uint32 *data = ssig.getDataPtrSend();
+  memset(data, 0, 25 * sizeof(Uint32));
+  data[0] = apiConnectPtr;
+  data[2] = buildScanTabReqInfo();
+  data[3] = meta.tableId;
+  data[4] = meta.schemaVersion;
+  data[5] = 0xFFFF;
+  data[6] = FAKE_TRANS_ID1;
+  data[7] = FAKE_TRANS_ID2;
+  data[8] = apiConnectPtr;
+  data[9] = 65536;
+  data[10] = 256;
+  data[15] = meta.fragCount;
+
+  ssig.set(*ctx.ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
+  ssig.header.m_noOfSections = 3;
+  std::vector<Uint32> dummyReceiverIds(meta.fragCount, 0);
+  ssig.ptr[0].p = dummyReceiverIds.data();
+  ssig.ptr[0].sz = meta.fragCount;
+  ssig.ptr[1].p = ai.data();
+  ssig.ptr[1].sz = (Uint32)ai.size();
+  ssig.ptr[2].p = aggSection.data();
+  ssig.ptr[2].sz = (Uint32)aggSection.size();
+
+  if (ctx.ss->sendSignal(ctx.nodeId, &ssig) != SEND_OK) {
+    releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  int errCode = expectScanTabRef(*ctx.ss);
+  releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+  ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+
+  if (errCode > 0) {
+    printf("PASS (errorCode=%d)\n", errCode);
+    return 0;
+  }
+  printf("FAIL (expected SCAN_TABREF, got %d)\n", errCode);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 10: CTE_LOOKUP with invalid cteId                              */
+/* ------------------------------------------------------------------ */
+
+static int
+testNegative_InvalidCteId(TestCtx &ctx)
+{
+  printf("Test 10: Negative — CTE_LOOKUP invalid cteId ... ");
+  fflush(stdout);
+
+  ctx.ss->unlock();
+  TableMeta meta;
+  int rc = createTestTable3Col(ctx.conn, ctx.ndb, meta);
+  ctx.ss->lock();
+  if (rc != 0) return -1;
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef) != 0) {
+    ctx.ss->unlock(); dropTestTable3Col(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  Uint32 receiverId = 303;
+  std::vector<Uint32> cte0Agg =
+    buildAggProgram_SumGroupBy(meta.attrIdB, meta.attrIdC);
+
+  /* Build tree like Test 5 but with cteId=99 on the CTE_LOOKUP node */
+  std::vector<Uint32> ai;
+  const Uint32 cte_sub_len = 4, cte_scan_len = 5, cte_leaf_len = 7;
+  const Uint32 main_scan_len = 5, cte_lookup_len = 7;
+  const Uint32 tree_len = 1 + cte_sub_len + cte_scan_len + cte_leaf_len +
+    main_scan_len + cte_lookup_len;
+  Uint32 cnt_len = 0;
+  QueryTree::setCntLen(cnt_len, 5, tree_len);
+  ai.push_back(cnt_len);
+
+  /* Node 0: CTE_SUBTREE cteId=0 */
+  Uint32 n0_len = 0;
+  QueryNode::setOpLen(n0_len, QueryNode::QN_CTE_SUBTREE, cte_sub_len);
+  ai.push_back(n0_len); ai.push_back(0); ai.push_back(0); ai.push_back(2);
+
+  /* Node 1: SCAN_FRAG */
+  Uint32 n1_len = 0;
+  QueryNode::setOpLen(n1_len, QueryNode::QN_SCAN_FRAG, cte_scan_len);
+  ai.push_back(n1_len);
+  ai.push_back(DABits::NI_AGGREGATE | DABits::NI_LINKED_ATTR);
+  ai.push_back(meta.tableId); ai.push_back(meta.schemaVersion);
+  ai.push_back((meta.attrIdA << 16) | 1);
+
+  /* Node 2: LOOKUP */
+  Uint32 n2_len = 0;
+  QueryNode::setOpLen(n2_len, QueryNode::QN_LOOKUP, cte_leaf_len);
+  ai.push_back(n2_len);
+  ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
+               DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF);
+  ai.push_back(meta.tableId); ai.push_back(meta.schemaVersion);
+  ai.push_back((1 << 16) | 1); ai.push_back((0 << 16) | 1);
+  ai.push_back(QueryPattern::col(0));
+
+  /* Node 3: main SCAN_FRAG */
+  Uint32 n3_len = 0;
+  QueryNode::setOpLen(n3_len, QueryNode::QN_SCAN_FRAG, main_scan_len);
+  ai.push_back(n3_len);
+  ai.push_back(DABits::NI_LINKED_ATTR);
+  ai.push_back(meta.tableId); ai.push_back(meta.schemaVersion);
+  ai.push_back((meta.attrIdB << 16) | 1);
+
+  /* Node 4: CTE_LOOKUP with cteId=99 — INVALID */
+  Uint32 n4_len = 0;
+  QueryNode::setOpLen(n4_len, QueryNode::QN_CTE_LOOKUP, cte_lookup_len);
+  ai.push_back(n4_len);
+  ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED);
+  ai.push_back(99);  /* cteId = 99 — NO MATCHING CTE SUBTREE */
+  ai.push_back(2);
+  ai.push_back((3 << 16) | 1); ai.push_back((0 << 16) | 1);
+  ai.push_back(QueryPattern::attrInfo(0));
+
+  /* Parameters */
+  Uint32 p0_len = 0;
+  QueryNodeParameters::setOpLen(p0_len, QueryNodeParameters::QN_CTE_SUBTREE,
+                                QN_CteSubtreeParameters::NodeSize);
+  ai.push_back(p0_len); ai.push_back(0); ai.push_back(receiverId);
+
+  Uint32 p1_len = 0;
+  QueryNodeParameters::setOpLen(p1_len, QueryNodeParameters::QN_SCAN_FRAG,
+                                QN_ScanFragParameters::NodeSize);
+  ai.push_back(p1_len); ai.push_back(0); ai.push_back(receiverId);
+  ai.push_back(256); ai.push_back(65536);
+  ai.push_back(0); ai.push_back(0); ai.push_back(0);
+
+  Uint32 p2_len = 0;
+  QueryNodeParameters::setOpLen(p2_len, QueryNodeParameters::QN_LOOKUP,
+                                QN_LookupParameters::NodeSize);
+  ai.push_back(p2_len); ai.push_back(0); ai.push_back(receiverId);
+
+  Uint32 p3_len = 0;
+  QueryNodeParameters::setOpLen(p3_len, QueryNodeParameters::QN_SCAN_FRAG,
+                                QN_ScanFragParameters::NodeSize);
+  ai.push_back(p3_len); ai.push_back(0); ai.push_back(receiverId);
+  ai.push_back(256); ai.push_back(65536);
+  ai.push_back(0); ai.push_back(0); ai.push_back(0);
+
+  const Uint32 param_total = QN_CteLookupParameters::NodeSize + 5;
+  Uint32 p4_len = 0;
+  QueryNodeParameters::setOpLen(p4_len, QueryNodeParameters::QN_CTE_LOOKUP,
+                                param_total);
+  ai.push_back(p4_len);
+  ai.push_back(DABits::PI_ATTR_INTERPRET | DABits::PI_ATTR_LIST);
+  ai.push_back(receiverId);
+  ai.push_back((0u << 16) | 1u); ai.push_back(INTERPRETER_EXIT_OK);
+  ai.push_back(2); ai.push_back(0u << 16); ai.push_back(1u << 16);
+
+  /* aggSection: 1 CTE, no main agg */
+  std::vector<Uint32> aggSection;
+  aggSection.push_back(0);
+  aggSection.push_back(receiverId);
+  aggSection.push_back(0xCDE00000);
+  aggSection.push_back(1);
+  aggSection.push_back(meta.tableId); aggSection.push_back(meta.schemaVersion);
+  aggSection.push_back(0); aggSection.push_back(0); aggSection.push_back(0);
+  aggSection.push_back((Uint32)cte0Agg.size());
+  aggSection.insert(aggSection.end(), cte0Agg.begin(), cte0Agg.end());
+
+  SimpleSignal ssig;
+  Uint32 *sdata = ssig.getDataPtrSend();
+  memset(sdata, 0, 25 * sizeof(Uint32));
+  sdata[0] = apiConnectPtr;
+  sdata[2] = buildScanTabReqInfo();
+  sdata[3] = meta.tableId;
+  sdata[4] = meta.schemaVersion;
+  sdata[5] = 0xFFFF;
+  sdata[6] = FAKE_TRANS_ID1;
+  sdata[7] = FAKE_TRANS_ID2;
+  sdata[8] = apiConnectPtr;
+  sdata[9] = 65536;
+  sdata[10] = 256;
+  sdata[15] = meta.fragCount;
+
+  ssig.set(*ctx.ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
+  ssig.header.m_noOfSections = 3;
+  std::vector<Uint32> dummyReceiverIds(meta.fragCount, 0);
+  ssig.ptr[0].p = dummyReceiverIds.data();
+  ssig.ptr[0].sz = meta.fragCount;
+  ssig.ptr[1].p = ai.data();
+  ssig.ptr[1].sz = (Uint32)ai.size();
+  ssig.ptr[2].p = aggSection.data();
+  ssig.ptr[2].sz = (Uint32)aggSection.size();
+
+  if (ctx.ss->sendSignal(ctx.nodeId, &ssig) != SEND_OK) {
+    releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+    ctx.ss->unlock(); dropTestTable3Col(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  int errCode = expectScanTabRef(*ctx.ss);
+  releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+  ctx.ss->unlock(); dropTestTable3Col(ctx.conn); ctx.ss->lock();
+
+  if (errCode > 0) {
+    printf("PASS (errorCode=%d)\n", errCode);
+    return 0;
+  }
+  printf("FAIL (expected SCAN_TABREF, got %d)\n", errCode);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 11: Missing CTE_DEFS_MARKER                                    */
+/* ------------------------------------------------------------------ */
+
+static int
+testNegative_MissingMarker(TestCtx &ctx)
+{
+  printf("Test 11: Negative — missing CTE_DEFS_MARKER ... ");
+  fflush(stdout);
+
+  /* Send a normal 2-node JoinAgg query (scan+lookup) with extra
+   * trailing data in KeyInfo without a CTE_DEFS_MARKER.
+   * DBTC should reject the malformed KeyInfo with SCAN_TABREF. */
+
+  ctx.ss->unlock();
+  TableMeta meta;
+  int rc = createTestTable(ctx.conn, ctx.ndb, meta);
+  ctx.ss->lock();
+  if (rc != 0) return -1;
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef) != 0) {
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  Uint32 receiverId = 304;
+  std::vector<Uint32> mainAgg = buildAggProgram_CountSum(meta.attrIdB);
+
+  /* Simple 2-node tree (no CTE nodes) */
+  std::vector<Uint32> queryTree;
+  {
+    Uint32 cnt_len = 0;
+    QueryTree::setCntLen(cnt_len, 2, 1 + 5 + 7);
+    queryTree.push_back(cnt_len);
+    Uint32 n0_len = 0;
+    QueryNode::setOpLen(n0_len, QueryNode::QN_SCAN_FRAG, 5);
+    queryTree.push_back(n0_len);
+    queryTree.push_back(DABits::NI_AGGREGATE | DABits::NI_LINKED_ATTR);
+    queryTree.push_back(meta.tableId);
+    queryTree.push_back(meta.schemaVersion);
+    queryTree.push_back((meta.attrIdA << 16) | 1);
+    Uint32 n1_len = 0;
+    QueryNode::setOpLen(n1_len, QueryNode::QN_LOOKUP, 7);
+    queryTree.push_back(n1_len);
+    queryTree.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
+                         DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF);
+    queryTree.push_back(meta.tableId);
+    queryTree.push_back(meta.schemaVersion);
+    queryTree.push_back((0 << 16) | 1);
+    queryTree.push_back((0 << 16) | 1);
+    queryTree.push_back(QueryPattern::col(0));
+    Uint32 p0_len = 0;
+    QueryNodeParameters::setOpLen(p0_len, QueryNodeParameters::QN_SCAN_FRAG,
+                                  QN_ScanFragParameters::NodeSize);
+    queryTree.push_back(p0_len);
+    queryTree.push_back(0); queryTree.push_back(receiverId);
+    queryTree.push_back(256); queryTree.push_back(65536);
+    queryTree.push_back(0); queryTree.push_back(0); queryTree.push_back(0);
+    Uint32 p1_len = 0;
+    QueryNodeParameters::setOpLen(p1_len, QueryNodeParameters::QN_LOOKUP,
+                                  QN_LookupParameters::NodeSize);
+    queryTree.push_back(p1_len);
+    queryTree.push_back(0); queryTree.push_back(receiverId);
+  }
+
+  /* aggSection: main agg + garbage CTE-like data WITHOUT marker */
+  std::vector<Uint32> aggSection;
+  aggSection.push_back(0);
+  aggSection.push_back(receiverId);
+  aggSection.insert(aggSection.end(), mainAgg.begin(), mainAgg.end());
+  /* No CTE_DEFS_MARKER — just append some extra words that look
+   * like CTE data but won't be parsed as CTEs */
+  aggSection.push_back(2);    /* would be numCtes if marker present */
+  aggSection.push_back(0);    /* garbage */
+
+  SimpleSignal ssig;
+  Uint32 *data = ssig.getDataPtrSend();
+  memset(data, 0, 25 * sizeof(Uint32));
+  data[0] = apiConnectPtr;
+  data[2] = buildScanTabReqInfo();
+  data[3] = meta.tableId;
+  data[4] = meta.schemaVersion;
+  data[5] = 0xFFFF;
+  data[6] = FAKE_TRANS_ID1;
+  data[7] = FAKE_TRANS_ID2;
+  data[8] = apiConnectPtr;
+  data[9] = 65536;
+  data[10] = 256;
+  data[15] = meta.fragCount;
+
+  ssig.set(*ctx.ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
+  ssig.header.m_noOfSections = 3;
+  std::vector<Uint32> dummyReceiverIds(meta.fragCount, 0);
+  ssig.ptr[0].p = dummyReceiverIds.data();
+  ssig.ptr[0].sz = meta.fragCount;
+  ssig.ptr[1].p = queryTree.data();
+  ssig.ptr[1].sz = (Uint32)queryTree.size();
+  ssig.ptr[2].p = aggSection.data();
+  ssig.ptr[2].sz = (Uint32)aggSection.size();
+
+  if (ctx.ss->sendSignal(ctx.nodeId, &ssig) != SEND_OK) {
+    releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  int errCode = expectScanTabRef(*ctx.ss);
+  releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+  ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+
+  if (errCode == 290) {  /* ZINVALID_KEY */
+    printf("PASS (errorCode=%d)\n", errCode);
+    return 0;
+  }
+  printf("FAIL (expected errorCode=290, got %d)\n", errCode);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -2113,6 +2781,12 @@ int main(int argc, char *argv[])
       if (testTwoCtesGroupBy(tctx) != 0) result = 1;
       if (testTwoCtesLargeDataset(tctx) != 0) result = 1;
       if (testTwoCtesEmptyTable(tctx) != 0) result = 1;
+      /* Negative tests */
+      if (testNegative_ScanParallelism(tctx) != 0) result = 1;
+      if (testNegative_TooManyCtes(tctx) != 0) result = 1;
+      if (testNegative_EmptySubtree(tctx) != 0) result = 1;
+      if (testNegative_InvalidCteId(tctx) != 0) result = 1;
+      if (testNegative_MissingMarker(tctx) != 0) result = 1;
 
       ss.unlock();
     }
