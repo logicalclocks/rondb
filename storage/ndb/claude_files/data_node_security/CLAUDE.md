@@ -9,3 +9,4 @@ Hardening RonDB data nodes against malicious NDB protocol messages from both API
 | Document | Description |
 |----------|-------------|
 | `tckeyreq_security.md` | Plan for securing TCKEYREQ signal handling in Dbtc |
+| `fragmented_signal_security.md` | Securing assembleFragments: Phase 1 (done) + Phase 2 (planned) |
