@@ -87,6 +87,7 @@ static bool g_mysql_router_running = false;
 static int g_exit_code = 0;
 TTLPurger* g_ttl_purger = nullptr;
 NdbMutex *globalConfigsMutex = nullptr;
+static volatile sig_atomic_t g_in_exit = 0;
 
 static void do_exit() {
   // todo Set shutdown flag in RDRS2 connection pool
@@ -95,6 +96,14 @@ static void do_exit() {
     drogon::app().quit();
     return;
   }
+  if (g_in_exit) {
+    // Prevent re-entrant calls from signal handlers during cleanup.
+    // TTLPurger::~TTLPurger blocks on NdbThread_WaitFor; if a signal
+    // arrives while blocked, the handler re-enters do_exit and would
+    // double-destroy objects already being torn down.
+    _exit(g_exit_code);
+  }
+  g_in_exit = 1;
   if (jsonParsers != nullptr) {
     delete[] jsonParsers;
     jsonParsers = nullptr;

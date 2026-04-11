@@ -855,14 +855,17 @@ RonSQLPreparer::load_single_table()
       col_map[col_idx] = NULL;
       continue;
     }
-    if (m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]) {
-      col_id_map[col_idx] = -1;
-      col_map[col_idx] = NULL;
-      continue;
-    }
     const char* col_name = DBG(m_columns[DBG(col_idx)].c_str());
     const NdbDictionary::Column* col = m_table->getColumn(col_name);
     if (col == NULL) {
+      // An ORDER BY alias that shares col_idx with a real column would
+      // have been found above.  A pure alias (no matching table column)
+      // is harmless — skip it with a sentinel.
+      if (m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]) {
+        col_id_map[col_idx] = -1;
+        col_map[col_idx] = NULL;
+        continue;
+      }
       err << "Failed to get column " << quoted_identifier(col_name) << "."
           << endl << "Note that column names are case sensitive." << endl;
       DEB_TRACE();
@@ -922,12 +925,6 @@ RonSQLPreparer::load_join()
   for (Uint32 col_idx = 0; col_idx < num_cols; col_idx++)
   {
     if (m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx]) {
-      col_id_map[col_idx] = -1;
-      col_map[col_idx] = NULL;
-      col_table_idx[col_idx] = 0;
-      continue;
-    }
-    if (m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]) {
       col_id_map[col_idx] = -1;
       col_map[col_idx] = NULL;
       col_table_idx[col_idx] = 0;
@@ -1041,6 +1038,12 @@ RonSQLPreparer::load_join()
       }
       if (match_count == 0)
       {
+        if (m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]) {
+          col_id_map[col_idx] = -1;
+          col_map[col_idx] = NULL;
+          col_table_idx[col_idx] = 0;
+          continue;
+        }
         err << "Column '" << col_name << "' not found in any joined table."
             << endl;
         throw RonSQLPermanentError("Column not found.");

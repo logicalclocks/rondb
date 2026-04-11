@@ -920,11 +920,13 @@ bool NdbAggregator::GroupBy(Int32 col_id) {
     SetError(kErrInvalidColumnId);
     return false;
   }
-  NdbDictionary::Column::Type type = col->getType();
-  if (type == NdbDictionary::Column::Blob ||
-      type == NdbDictionary::Column::Text) {
-    SetError(kErrUnSupportedColumn);
-    return false;
+  if (col != nullptr) {
+    NdbDictionary::Column::Type type = col->getType();
+    if (type == NdbDictionary::Column::Blob ||
+        type == NdbDictionary::Column::Text) {
+      SetError(kErrUnSupportedColumn);
+      return false;
+    }
   }
 
   buffer_[curr_prog_pos_++] = col_id << 16;
