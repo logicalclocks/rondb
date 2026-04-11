@@ -64,6 +64,7 @@
  *   Node 7: QN_LOOKUP on src (main agg leaf, self-join)
  *
  * Test variations:
+ *   Test 6: Two CTEs with dependency (multi-phase execution)
  *   Test 5: Main SELECT with CTE_LOOKUP (CTE_LOOKUP_REQ path)
  *   Test 1: Basic 2-CTE + main COUNT/SUM (5 rows)
  *   Test 2: 2-CTE + main GROUP BY SUM (3 groups)
@@ -666,6 +667,95 @@ sendScanTabReqWithCtes(SignalSender &ss, Uint32 nodeId,
 
   V("  Sent: queryTree=%zu words, aggSection=%zu words "
     "(main=%zu, cte0=%zu, cte1=%zu)\n",
+    queryTree.size(), aggSection.size(),
+    mainAggProgram.size(), cte0AggProgram.size(), cte1AggProgram.size());
+  return 0;
+}
+
+/*
+ * Send SCAN_TABREQ with 2 CTE definitions and multi-phase dependency.
+ * CTE 0: depMask=0 (phase 0, no deps)
+ * CTE 1: depMask=1 (phase 1, depends on CTE 0)
+ *
+ * This exercises DBTC phase computation (2 phases), CTE_PHASE_COMPLETE_REP,
+ * JOIN_AGG_COMPLETE_REQ per phase, CTE_PHASE_START_REQ, and the
+ * dependency-driven execution order.
+ */
+static int
+sendScanTabReqWithCtesMultiPhase(SignalSender &ss, Uint32 nodeId,
+                                 Uint32 apiConnectPtr, Uint32 tcRef,
+                                 const TableMeta &meta,
+                                 const std::vector<Uint32> &queryTree,
+                                 const std::vector<Uint32> &mainAggProgram,
+                                 const std::vector<Uint32> &cte0AggProgram,
+                                 const std::vector<Uint32> &cte1AggProgram,
+                                 Uint32 receiverId)
+{
+  V("SCAN_TABREQ -> node %u, table=%u (2 CTEs multi-phase)\n",
+    nodeId, meta.tableId);
+
+  SimpleSignal ssig;
+  Uint32 *data = ssig.getDataPtrSend();
+  memset(data, 0, 25 * sizeof(Uint32));
+
+  data[0] = apiConnectPtr;
+  data[1] = 0;
+  data[2] = buildScanTabReqInfo();
+  data[3] = meta.tableId;
+  data[4] = meta.schemaVersion;
+  data[5] = 0xFFFF;
+  data[6] = FAKE_TRANS_ID1;
+  data[7] = FAKE_TRANS_ID2;
+  data[8] = apiConnectPtr;
+  data[9] = 65536;
+  data[10] = 256;
+  data[15] = meta.fragCount;
+
+  ssig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
+
+  std::vector<Uint32> aggSection;
+  aggSection.push_back(0);            /* boundsLen = 0 */
+  aggSection.push_back(receiverId);   /* aggReceiverId */
+  aggSection.insert(aggSection.end(),
+                    mainAggProgram.begin(), mainAggProgram.end());
+
+  aggSection.push_back(0xCDE00000);   /* CTE_DEFS_MARKER */
+  aggSection.push_back(2);            /* numCtes */
+  /* CTE 0: no dependencies → phase 0 */
+  aggSection.push_back(meta.tableId);
+  aggSection.push_back(meta.schemaVersion);
+  aggSection.push_back(0);            /* depMask lo = 0 */
+  aggSection.push_back(0);            /* depMask hi = 0 */
+  aggSection.push_back(0);            /* flags = 0 */
+  aggSection.push_back((Uint32)cte0AggProgram.size());
+  aggSection.insert(aggSection.end(),
+                    cte0AggProgram.begin(), cte0AggProgram.end());
+  /* CTE 1: depends on CTE 0 → phase 1 */
+  aggSection.push_back(meta.tableId);
+  aggSection.push_back(meta.schemaVersion);
+  aggSection.push_back(1);            /* depMask lo = 1 (bit 0 = CTE 0) */
+  aggSection.push_back(0);            /* depMask hi = 0 */
+  aggSection.push_back(0);            /* flags = 0 */
+  aggSection.push_back((Uint32)cte1AggProgram.size());
+  aggSection.insert(aggSection.end(),
+                    cte1AggProgram.begin(), cte1AggProgram.end());
+
+  ssig.header.m_noOfSections = 3;
+  std::vector<Uint32> dummyReceiverIds(meta.fragCount, 0);
+  ssig.ptr[0].p = dummyReceiverIds.data();
+  ssig.ptr[0].sz = meta.fragCount;
+  ssig.ptr[1].p = queryTree.data();
+  ssig.ptr[1].sz = (Uint32)queryTree.size();
+  ssig.ptr[2].p = aggSection.data();
+  ssig.ptr[2].sz = (Uint32)aggSection.size();
+
+  if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
+    fprintf(stderr, "sendSignal SCAN_TABREQ failed\n");
+    return -1;
+  }
+
+  V("  Sent: queryTree=%zu words, aggSection=%zu words "
+    "(main=%zu, cte0=%zu, cte1=%zu) [CTE1 depMask=1]\n",
     queryTree.size(), aggSection.size(),
     mainAggProgram.size(), cte0AggProgram.size(), cte1AggProgram.size());
   return 0;
@@ -1682,6 +1772,132 @@ testTwoCtesEmptyTable(TestCtx &ctx)
 /* Test 5: Main SELECT with CTE_LOOKUP (CTE_LOOKUP_REQ path)           */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Test 6: Two CTEs with dependency (multi-phase execution)            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * SQL equivalent:
+ *   WITH
+ *     cte0 AS (SELECT grp, SUM(val) FROM src t1 JOIN src t2
+ *              ON t1.pk = t2.pk GROUP BY grp),
+ *     cte1 AS (SELECT COUNT(*) FROM src t1 JOIN src t2
+ *              ON t1.pk = t2.pk)
+ *   SELECT COUNT(*), SUM(t2.val)
+ *   FROM src t1 JOIN src t2 ON t1.pk = t2.pk;
+ *
+ * Same 8-node tree as Tests 1-4, but CTE 1 depends on CTE 0:
+ *   CTE 0: depMask=0 → phase 0
+ *   CTE 1: depMask=1 → phase 1 (starts only after CTE 0 is READY)
+ *
+ * Tests:
+ *   - 2-phase CTE execution (phase 0 then phase 1)
+ *   - depMask parsing and phase computation in DBTC
+ *   - CTE_PHASE_COMPLETE_REP → JOIN_AGG_COMPLETE_REQ → redistribution
+ *   - CTE_PHASE_START_REQ to advance from phase 0 to phase 1
+ *   - CTE 1 only materializes after CTE 0 is CTE_READY
+ *   - Main query starts after both CTEs complete
+ *
+ * Data: 5 rows (1,10),(2,20),(3,30),(4,40),(5,50)
+ * Expected main result: COUNT=5, SUM=150
+ */
+static int
+testTwoCtesMultiPhase(TestCtx &ctx)
+{
+  printf("Test 6: Two CTEs with dependency (multi-phase) ... ");
+  fflush(stdout);
+
+  ctx.ss->unlock();
+  TableMeta meta;
+  int rc = createTestTable(ctx.conn, ctx.ndb, meta);
+  if (rc == 0)
+    rc = sqlExec(ctx.conn,
+                 "INSERT INTO cte_dbtc_test VALUES "
+                 "(1,10),(2,20),(3,30),(4,40),(5,50)");
+  ctx.ss->lock();
+  if (rc != 0) return -1;
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef) != 0) {
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  Uint32 receiverId = 201;
+
+  /* Main agg: COUNT(*), SUM(b) */
+  std::vector<Uint32> mainAgg = buildAggProgram_CountSum(meta.attrIdB);
+
+  /* CTE 0 agg: SUM(b) GROUP BY (none) — just accumulate */
+  std::vector<Uint32> cte0Agg = buildAggProgram_CountSum(meta.attrIdB);
+
+  /* CTE 1 agg: COUNT(*) only — depends on CTE 0 */
+  std::vector<Uint32> cte1Agg = buildAggProgram_CountOnly(meta.attrIdB);
+
+  std::vector<Uint32> queryTree =
+    buildQueryTreeWithCtes(meta.tableId, meta.schemaVersion,
+                           meta.attrIdA, receiverId);
+
+  V("QueryTree: %zu words, mainAgg: %zu, cte0Agg: %zu, cte1Agg: %zu\n",
+    queryTree.size(), mainAgg.size(), cte0Agg.size(), cte1Agg.size());
+
+  rc = sendScanTabReqWithCtesMultiPhase(
+      *ctx.ss, ctx.nodeId, apiConnectPtr, tcRef,
+      meta, queryTree, mainAgg, cte0Agg, cte1Agg, receiverId);
+  if (rc != 0) {
+    releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  std::vector<AggResult> results;
+  rc = collectResults(*ctx.ss, results, apiConnectPtr, tcRef, ctx.nodeId);
+  if (rc != 0) {
+    releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+
+  /* Merge results from all nodes */
+  Uint64 totalCount = 0;
+  Int64 totalSum = 0;
+  for (const auto &r : results) {
+    for (const auto &g : r.groups) {
+      totalCount += extractCountBigint(g.second, 0);
+      totalSum += extractSumBigint(g.second, 1);
+    }
+  }
+
+  V("  Result: COUNT=%llu, SUM=%lld\n",
+    (unsigned long long)totalCount, (long long)totalSum);
+
+  if (totalCount != 5 || totalSum != 150) {
+    printf("FAIL (expected COUNT=5 SUM=150, got COUNT=%llu SUM=%lld)\n",
+           (unsigned long long)totalCount, (long long)totalSum);
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  ctx.ss->unlock();
+  int sqlRc = verifySqlCountSum(ctx.conn, TABLE_NAME, "a", "b", 5, 150);
+  ctx.ss->lock();
+  if (sqlRc != 0) {
+    printf("FAIL (SQL verification)\n");
+    ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  printf("PASS\n");
+  ctx.ss->unlock(); dropTestTable(ctx.conn); ctx.ss->lock();
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 5: Main SELECT with CTE_LOOKUP (CTE_LOOKUP_REQ path)           */
+/* ------------------------------------------------------------------ */
+
 /*
  * SQL equivalent:
  *   WITH cte0 AS (
@@ -1891,6 +2107,7 @@ int main(int argc, char *argv[])
 
       TestCtx tctx = {&ndb, &ss, (Uint32)nodeId, conn};
 
+      if (testTwoCtesMultiPhase(tctx) != 0) result = 1;
       if (testCteLookupMainSelect(tctx) != 0) result = 1;
       if (testBasicTwoCtes(tctx) != 0) result = 1;
       if (testTwoCtesGroupBy(tctx) != 0) result = 1;
