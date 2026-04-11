@@ -63,6 +63,13 @@ struct CHARSET_INFO;
 #define AGG_GB_COL_TYPE_MASK 0xFF
 
 #define PUSHDOWN_AGGREGATION_VERSION 2
+
+/**
+ * CTE definitions marker in the KeyInfo agg section (Section 2).
+ * Separates the main aggregation program from CTE definition data.
+ * DBTC checks for this marker after parsing the main agg program.
+ */
+#define CTE_DEFS_MARKER 0xCDE00000
 enum InterpreterOp {
   kOpUnknown = 0,
   kOpPlus,

@@ -552,6 +552,43 @@ class NdbQueryBuilder {
       const NdbQueryOptions *options = nullptr, const char *ident = nullptr);
 
   /**
+   * @name CTE Subtree Definition
+   * @{
+   */
+
+  /**
+   * Begin a CTE materialization subtree. All operations added after
+   * this call until endCteSubtree() belong to this CTE's
+   * materialization (typically a scan + lookup self-join).
+   *
+   * @param cteId  CTE identifier (0-based, sequential)
+   * @return Operation definition for the subtree container, or nullptr on error
+   */
+  const NdbQueryOperationDef *beginCteSubtree(Uint32 cteId);
+
+  /**
+   * End the current CTE subtree. Sets numNodes on the subtree container.
+   */
+  void endCteSubtree();
+
+  /**
+   * Register a CTE definition with its aggregation program.
+   * The CTE definition is appended to the KeyInfo section as
+   * CTE_DEFS_MARKER + CTE metadata during query execution.
+   *
+   * @param cteId        CTE identifier (must match a beginCteSubtree cteId)
+   * @param sourceTable  Table scanned during CTE materialization
+   * @param aggProgram   Aggregation program (GROUP BY + aggregations)
+   * @param depMask      Dependency bitmask (bit N = depends on CTE N)
+   * @param flags        CTE flags (e.g. CTE_SINGLE_ROW)
+   * @return 0 on success, error code on failure
+   */
+  int defineCte(Uint32 cteId,
+                const NdbDictionary::Table *sourceTable,
+                const NdbAggregator &aggProgram,
+                Uint64 depMask = 0, Uint32 flags = 0);
+
+  /**
    * @name Error Handling
    * @{
    */

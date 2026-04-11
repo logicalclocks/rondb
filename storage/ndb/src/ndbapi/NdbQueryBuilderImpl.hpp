@@ -729,6 +729,21 @@ class NdbQueryDefImpl {
 
   bool m_hasAggregation;
   Vector<Uint32> m_aggregateLeafOpNos;
+
+  /** CTE definition info for the KeyInfo agg section. */
+  struct CteDefInfo {
+    Uint32 cteId;
+    Uint32 tableId;
+    Uint32 schemaVersion;
+    Uint64 depMask;
+    Uint32 flags;
+    Vector<Uint32> aggProgram;
+  };
+  Vector<CteDefInfo> m_cteDefs;
+
+ public:
+  Uint32 getNumCtes() const { return m_cteDefs.size(); }
+  const CteDefInfo &getCteDef(Uint32 i) const { return m_cteDefs[i]; }
 };  // class NdbQueryDefImpl
 
 class NdbQueryBuilderImpl {
@@ -785,6 +800,14 @@ class NdbQueryBuilderImpl {
   Uint32 m_paramCnt;
   /** True if there was an error that prevents further use of this object.*/
   bool m_hasError;
+
+  /** CTE definitions (transferred to NdbQueryDefImpl in prepare()). */
+  Vector<NdbQueryDefImpl::CteDefInfo> m_cteDefs;
+
+  /** CTE subtree tracking for beginCteSubtree()/endCteSubtree(). */
+  bool m_inCteSubtree;
+  Uint32 m_cteSubtreeStartOpIdx;  // Index in m_operations where subtree starts
+  Uint32 m_currentCteId;
 };  // class NdbQueryBuilderImpl
 
 //////////////////////////////////////////////

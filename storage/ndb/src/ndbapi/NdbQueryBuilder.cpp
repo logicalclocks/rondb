@@ -182,7 +182,7 @@ class NdbQueryLookupOperationDefImpl : public NdbQueryOperationDefImpl {
   }
 
   // Append pattern for creating lookup key to serialized code
-  Uint32 appendKeyPattern(Uint32Buffer &serializedDef) const;
+  virtual Uint32 appendKeyPattern(Uint32Buffer &serializedDef) const;
 
   bool isScanOperation() const override { return false; }
 
@@ -218,6 +218,13 @@ class NdbQueryCteLookupOperationDefImpl : public NdbQueryLookupOperationDefImpl 
 
  public:
   int serializeOperation(const Ndb *ndb, Uint32Buffer &serializedDef) override;
+
+  /**
+   * Override key pattern to use P_ATTRINFO instead of P_COL.
+   * CTE hash table keys include AttributeHeaders, so the expanded
+   * key must also include headers for byte-exact matching.
+   */
+  Uint32 appendKeyPattern(Uint32Buffer &serializedDef) const override;
 
   NdbQueryOperationDef::Type getType() const override {
     return NdbQueryOperationDef::CteLookup;
@@ -2230,6 +2237,77 @@ Uint32 NdbQueryLookupOperationDefImpl::appendKeyPattern(
 
   return appendedPattern;
 }  // NdbQueryLookupOperationDefImpl::appendKeyPattern
+
+/**
+ * CTE lookup key pattern override: uses P_ATTRINFO instead of P_COL
+ * so that the expanded key includes the AttributeHeader. CTE hash
+ * table keys are stored with headers; lookupGroup() does byte comparison.
+ */
+Uint32 NdbQueryCteLookupOperationDefImpl::appendKeyPattern(
+    Uint32Buffer &serializedDef) const {
+  Uint32 appendedPattern = 0;
+
+  if (getOpNo() == 0) return 0;
+
+  if (m_keys[0] != nullptr) {
+    Uint32 startPos = serializedDef.getSize();
+    serializedDef.append(0);  // Length field, updated at end
+    int paramCnt = 0;
+    int keyNo = 0;
+    const NdbQueryOperandImpl *key = m_keys[0];
+    do {
+      switch (key->getKind()) {
+        case NdbQueryOperandImpl::Linked: {
+          appendedPattern |= DABits::NI_KEY_LINKED;
+          const NdbLinkedOperandImpl &linkedOp =
+              *static_cast<const NdbLinkedOperandImpl *>(key);
+          const NdbQueryOperationDefImpl *parent = getParentOperation();
+          uint32 levels = 0;
+          while (parent != &linkedOp.getParentOperation()) {
+            if (parent->getType() ==
+                NdbQueryOperationDef::UniqueIndexAccess)
+              levels += 2;
+            else
+              levels += 1;
+            parent = parent->getParentOperation();
+            assert(parent != nullptr);
+          }
+          if (levels > 0) {
+            serializedDef.append(QueryPattern::parent(levels));
+          }
+          // P_ATTRINFO: includes AttributeHeader for CTE hash table match
+          serializedDef.append(
+              QueryPattern::attrInfo(linkedOp.getLinkedColumnIx()));
+          break;
+        }
+        case NdbQueryOperandImpl::Const: {
+          appendedPattern |= DABits::NI_KEY_CONSTS;
+          const NdbConstOperandImpl &constOp =
+              *static_cast<const NdbConstOperandImpl *>(key);
+          const Uint32 wordCount =
+              AttributeHeader::getDataSize(constOp.getSizeInBytes());
+          serializedDef.append(QueryPattern::data(wordCount));
+          serializedDef.appendBytes(constOp.getAddr(),
+                                    constOp.getSizeInBytes());
+          break;
+        }
+        case NdbQueryOperandImpl::Param: {
+          appendedPattern |= DABits::NI_KEY_PARAMS;
+          serializedDef.append(QueryPattern::param(paramCnt++));
+          break;
+        }
+        default:
+          assert(false);
+      }
+      key = m_keys[++keyNo];
+    } while (key != nullptr);
+
+    Uint32 len = serializedDef.getSize() - startPos - 1;
+    serializedDef.put(startPos, (paramCnt << 16) | (len));
+  }
+
+  return appendedPattern;
+}  // NdbQueryCteLookupOperationDefImpl::appendKeyPattern
 
 Uint32 NdbQueryIndexScanOperationDefImpl::appendPrunePattern(
     Uint32Buffer &serializedDef) {

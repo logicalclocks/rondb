@@ -79,6 +79,7 @@
 #include <signaldata/CteScan.hpp>
 #include <signaldata/JoinAgg.hpp>
 #include <signaldata/QueryTree.hpp>
+#include "NdbAggregationCommon.hpp"
 
 #include <AttributeDescriptor.hpp>
 #include <AttributeHeader.hpp>
@@ -28570,8 +28571,7 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
 
     /* Parse CTE definitions from the linearized buffer if more
      * data remains after the agg program and starts with the
-     * CTE marker. */
-    static constexpr Uint32 CTE_DEFS_MARKER = 0xCDE00000;
+     * CTE marker (defined in NdbAggregationCommon.hpp). */
     if (consumed < totalRemaining &&
         linBuf[consumed] == CTE_DEFS_MARKER) {
       consumed++; // skip marker
