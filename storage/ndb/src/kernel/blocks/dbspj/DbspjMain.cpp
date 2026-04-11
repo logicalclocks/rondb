@@ -1095,6 +1095,8 @@ void Dbspj::execLQHKEYREQ(Signal *signal) {
       ctx.m_scanPrio = 1;
       ctx.m_start_signal = signal;
       ctx.m_senderRef = signal->getSendersBlockRef();
+      ctx.m_cteSubtreeRemaining = 0;
+      ctx.m_cteSubtreeCteId = RNIL;
 
       err = build(ctx, requestPtr, treeReader, paramReader);
       if (unlikely(err != 0)) break;
