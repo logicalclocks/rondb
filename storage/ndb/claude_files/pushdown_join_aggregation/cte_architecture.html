@@ -193,6 +193,7 @@
     <li><a href="#single-row">Single-Row CTE Optimization</a></li>
     <li><a href="#compound-exec">Compound Query Execution</a></li>
     <li><a href="#cte-lookup-flow">CTE_LOOKUP Query Flow</a></li>
+    <li><a href="#multi-phase-flow">Multi-Phase CTE Dependency Flow</a></li>
     <li><a href="#signals">Signal Reference</a></li>
     <li><a href="#state-machines">State Machines</a></li>
   </ol>
@@ -1438,10 +1439,366 @@ Virtual columns (from CTE with GROUP BY grp, SUM(val)):
 </section>
 
 <!-- ============================================================ -->
-<!-- 15. SIGNAL REFERENCE -->
+<!-- 15. MULTI-PHASE CTE DEPENDENCY FLOW -->
+<!-- ============================================================ -->
+<section id="multi-phase-flow">
+<h2>15. Multi-Phase CTE Dependency Flow</h2>
+
+<p>This section traces the complete signal flow for Test 6: two CTEs where
+CTE 1 depends on CTE 0 (<code>depMask=0x1</code>), forcing 2-phase execution
+with full <code>JOIN_AGG_SETUP/COMPLETE/RELEASE</code> lifecycle.</p>
+
+<h3>15.1 Example SQL</h3>
+<pre class="code">
+WITH
+  cte0 AS (
+    SELECT grp, SUM(val) FROM src t1 JOIN src t2
+    ON t1.pk = t2.pk GROUP BY grp),
+  cte1 AS (         -- depends on cte0 (depMask=1)
+    SELECT COUNT(*) FROM src t1 JOIN src t2
+    ON t1.pk = t2.pk)
+SELECT COUNT(*), SUM(t2.val)
+FROM src t1 JOIN src t2 ON t1.pk = t2.pk;
+</pre>
+
+<h3>15.2 Phase Computation</h3>
+<div class="diagram-box">
+<pre>
+DBTC parseJoinAggKeyInfo reads CTE definitions:
+
+  CTE 0: depMask = 0x0  →  phase 0  (no dependencies)
+  CTE 1: depMask = 0x1  →  phase 1  (depends on CTE 0)
+
+  Phase count = 2
+  Phase 0 CTEs: { CTE 0 }
+  Phase 1 CTEs: { CTE 1 }
+
+Phase assignment algorithm:
+  for each CTE:
+    phase = 0
+    for each bit set in depMask:
+      phase = max(phase, dep_cte.phase + 1)
+</pre>
+</div>
+
+<h3>15.3 Query Tree (8 Nodes)</h3>
+<div class="diagram-box">
+<pre>
+┌──────────────────────────────────────────────────────────────────┐
+│  Node 0: QN_CTE_SUBTREE (cteId=0, numNodes=2) ─── phase 0      │
+│  ├─ Node 1: QN_SCAN_FRAG (CTE 0 scan, NI_AGGREGATE)            │
+│  └─ Node 2: QN_LOOKUP    (CTE 0 agg leaf, NI_AGGREGATE_LEAF)   │
+│                                                                  │
+│  Node 3: QN_CTE_SUBTREE (cteId=1, numNodes=2) ─── phase 1      │
+│  ├─ Node 4: QN_SCAN_FRAG (CTE 1 scan, NI_AGGREGATE)            │
+│  └─ Node 5: QN_LOOKUP    (CTE 1 agg leaf, NI_AGGREGATE_LEAF)   │
+│                                                                  │
+│  Node 6: QN_SCAN_FRAG (Main scan, NI_AGGREGATE)                 │
+│  └─ Node 7: QN_LOOKUP    (Main agg leaf, NI_AGGREGATE_LEAF)     │
+└──────────────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<h3>15.4 Signal Flow Diagram</h3>
+<div class="diagram-box">
+<pre>
+  API                DBTC               DBSPJ              DBLQH
+   │                  │                  │               (DblqhProxy)
+   │ SCAN_TABREQ      │                  │                  │
+   │ (JoinAggFlag,    │                  │                  │
+   │  2 CTEs,         │                  │                  │
+   │  CTE1 dep=0x1)   │                  │                  │
+   │─────────────────►│                  │                  │
+   │                  │                  │                  │
+   │       ┌──────────┴───────────┐      │                  │
+   │       │ parseJoinAggKeyInfo: │      │                  │
+   │       │ mainAgg, 2 CTE defs │      │                  │
+   │       │ Phase computation:   │      │                  │
+   │       │   CTE0→phase0       │      │                  │
+   │       │   CTE1→phase1       │      │                  │
+   │       │ phaseCount = 2      │      │                  │
+   │       └──────────┬───────────┘      │                  │
+   │                  │                  │                  │
+   │                  │     ═══ SETUP PHASE ═══             │
+   │                  │                  │                  │
+   │       ┌──────────┴───────────┐      │                  │
+   │       │ sendJoinAggSetupReqs │      │                  │
+   │       │ fires ALL 3 REQs in  │      │                  │
+   │       │ one go (no wait)     │      │                  │
+   │       └──────────┬───────────┘      │                  │
+   │                  │─ JOIN_AGG_SETUP_REQ (main, MUTEX_FREE) ─►
+   │                  │─ JOIN_AGG_SETUP_REQ (CTE0, CTE_MODE) ──►
+   │                  │─ JOIN_AGG_SETUP_REQ (CTE1, CTE_MODE) ──►
+   │                  │                  │      ┌───────────┤
+   │                  │                  │      │ Create 3  │
+   │                  │                  │      │ AggInterp │
+   │                  │                  │      │ + hash    │
+   │                  │                  │      │ tables    │
+   │                  │                  │      └───────────┤
+   │                  │◄─ JOIN_AGG_SETUP_CONF (main key) ───┤
+   │                  │◄─ JOIN_AGG_SETUP_CONF (CTE0 key) ───┤
+   │                  │◄─ JOIN_AGG_SETUP_CONF (CTE1 key) ───┤
+   │                  │                  │                  │
+   │       ┌──────────┴───────────┐      │                  │
+   │       │ All SETUP_CONFs rcvd │      │                  │
+   │       │ Pack aggStateKeys    │      │                  │
+   │       │ (main + CTE keys +   │      │                  │
+   │       │  CTE_KEYS_MARKER)   │      │                  │
+   │       └──────────┬───────────┘      │                  │
+   │                  │                  │                  │
+   │                  │ SCAN_FRAGREQ     │                  │
+   │                  │ (QueryTree +     │                  │
+   │                  │  aggStateKeys +  │                  │
+   │                  │  phase/dep info) │                  │
+   │                  │─────────────────►│                  │
+   │                  │                  │                  │
+   │                  │     ═══ PHASE 0: CTE 0 ═══         │
+   │                  │                  │                  │
+   │                  │          ┌───────┴────────┐         │
+   │                  │          │ buildExecPlan  │         │
+   │                  │          │ checkPrepare:  │         │
+   │                  │          │ start phase 0  │         │
+   │                  │          │ → node 1 scan  │         │
+   │                  │          │ (CTE 0 only)   │         │
+   │                  │          └───────┬────────┘         │
+   │                  │                  │                  │
+   │                  │                  │ SCAN_FRAGREQ     │
+   │                  │                  │ (CTE 0 scan)    │
+   │                  │                  │────────────────►│
+   │                  │                  │  TRANSID_AI×N   │
+   │                  │                  │◄────────────────┤
+   │                  │                  │  per row:       │
+   │                  │                  │  node 2 LOOKUP  │
+   │                  │                  │  LQHKEYREQ      │
+   │                  │                  │  (JoinAggFlag,  │
+   │                  │                  │   CTE 0 key)    │
+   │                  │                  │────────────────►│
+   │                  │                  │  handleJoinAgg  │
+   │                  │                  │  Row → CTE 0    │
+   │                  │                  │  AggInterpreter │
+   │                  │                  │                  │
+   │                  │                  │ SCAN_FRAGCONF   │
+   │                  │                  │◄────────────────┤
+   │                  │                  │                  │
+   │                  │          ┌───────┴────────┐         │
+   │                  │          │ CTE 0 scan done│         │
+   │                  │          │ Phase 0 batch  │         │
+   │                  │          │ complete       │         │
+   │                  │          └───────┬────────┘         │
+   │                  │                  │                  │
+   │                  │ CTE_PHASE_       │                  │
+   │                  │ COMPLETE_REP     │                  │
+   │                  │ (phase=0)        │                  │
+   │                  │◄────────────────┤                  │
+   │                  │                  │                  │
+   │       ┌──────────┴───────────┐      │                  │
+   │       │ Phase 0 complete     │      │                  │
+   │       │ on all DBSPJ inst.   │      │                  │
+   │       │ Send COMPLETE for    │      │                  │
+   │       │ phase 0 CTEs         │      │                  │
+   │       └──────────┬───────────┘      │                  │
+   │                  │                  │                  │
+   │                  │ JOIN_AGG_COMPLETE_REQ               │
+   │                  │ (CTE 0 aggStateKey)                 │
+   │                  │─────────────────────────────────────►
+   │                  │                  │      ┌───────────┤
+   │                  │                  │      │ Finalize  │
+   │                  │ JOIN_AGG_        │      │ CTE 0     │
+   │                  │ COMPLETE_CONF    │      │ hash table│
+   │                  │◄────────────────────────│ Redist    │
+   │                  │                  │      │ → state=  │
+   │                  │                  │      │ CTE_READY │
+   │                  │                  │      └───────────┤
+   │                  │                  │                  │
+   │                  │     ═══ PHASE 1: CTE 1 ═══         │
+   │                  │                  │                  │
+   │       ┌──────────┴───────────┐      │                  │
+   │       │ CTE 0 READY          │      │                  │
+   │       │ CTE 1 deps satisfied │      │                  │
+   │       │ (depMask & readyMask │      │                  │
+   │       │  == depMask)         │      │                  │
+   │       │ Start phase 1        │      │                  │
+   │       └──────────┬───────────┘      │                  │
+   │                  │                  │                  │
+   │                  │ CTE_PHASE_       │                  │
+   │                  │ START_REQ        │                  │
+   │                  │ (phase=1)        │                  │
+   │                  │─────────────────►│                  │
+   │                  │                  │                  │
+   │                  │          ┌───────┴────────┐         │
+   │                  │          │ CTE 0 →        │         │
+   │                  │          │   CTE_READY    │         │
+   │                  │          │ Start phase 1  │         │
+   │                  │          │ → node 4 scan  │         │
+   │                  │          │ (CTE 1 only)   │         │
+   │                  │          └───────┬────────┘         │
+   │                  │                  │                  │
+   │                  │                  │ SCAN_FRAGREQ     │
+   │                  │                  │ (CTE 1 scan)    │
+   │                  │                  │────────────────►│
+   │                  │                  │  per row:       │
+   │                  │                  │  node 5 LOOKUP  │
+   │                  │                  │  LQHKEYREQ      │
+   │                  │                  │  (JoinAggFlag,  │
+   │                  │                  │   CTE 1 key)    │
+   │                  │                  │────────────────►│
+   │                  │                  │  → CTE 1       │
+   │                  │                  │  AggInterpreter │
+   │                  │                  │                  │
+   │                  │                  │ SCAN_FRAGCONF   │
+   │                  │                  │◄────────────────┤
+   │                  │                  │                  │
+   │                  │ CTE_PHASE_       │                  │
+   │                  │ COMPLETE_REP     │                  │
+   │                  │ (phase=1)        │                  │
+   │                  │◄────────────────┤                  │
+   │                  │                  │                  │
+   │                  │ JOIN_AGG_COMPLETE_REQ               │
+   │                  │ (CTE 1 aggStateKey)                 │
+   │                  │─────────────────────────────────────►
+   │                  │                  │      ┌───────────┤
+   │                  │ JOIN_AGG_        │      │ Finalize  │
+   │                  │ COMPLETE_CONF    │      │ CTE 1     │
+   │                  │◄────────────────────────│ → state=  │
+   │                  │                  │      │ CTE_READY │
+   │                  │                  │      └───────────┤
+   │                  │                  │                  │
+   │                  │     ═══ MAIN QUERY ═══              │
+   │                  │                  │                  │
+   │       ┌──────────┴───────────┐      │                  │
+   │       │ All CTEs READY       │      │                  │
+   │       │ (phase == phaseCount)│      │                  │
+   │       │ → send MAIN start   │      │                  │
+   │       └──────────┬───────────┘      │                  │
+   │                  │                  │                  │
+   │                  │ CTE_START_MAIN_  │                  │
+   │                  │ REQ              │                  │
+   │                  │─────────────────►│                  │
+   │                  │                  │                  │
+   │                  │          ┌───────┴────────┐         │
+   │                  │          │ All CteCtx →   │         │
+   │                  │          │   CTE_READY    │         │
+   │                  │          │ Start node 6   │         │
+   │                  │          │ (main scan)    │         │
+   │                  │          └───────┬────────┘         │
+   │                  │                  │                  │
+   │                  │                  │ SCAN_FRAGREQ     │
+   │                  │                  │────────────────►│
+   │                  │                  │  per row:       │
+   │                  │                  │  node 7 LOOKUP  │
+   │                  │                  │  LQHKEYREQ      │
+   │                  │                  │  (JoinAggFlag,  │
+   │                  │                  │   main key)     │
+   │                  │                  │────────────────►│
+   │                  │                  │  → main        │
+   │                  │                  │  AggInterpreter │
+   │                  │                  │                  │
+   │                  │                  │ SCAN_FRAGCONF   │
+   │                  │                  │◄────────────────┤
+   │                  │ SCAN_FRAGCONF    │                  │
+   │                  │◄────────────────┤                  │
+   │                  │                  │                  │
+   │       ┌──────────┴───────────┐      │                  │
+   │       │ Main scan done       │      │                  │
+   │       │ m_joinAgg → send     │      │                  │
+   │       │ COMPLETE + collect   │      │                  │
+   │       │ aggregated results   │      │                  │
+   │       └──────────┬───────────┘      │                  │
+   │                  │                  │                  │
+   │                  │ JOIN_AGG_COMPLETE_REQ               │
+   │                  │ (main aggStateKey)                   │
+   │                  │─────────────────────────────────────►
+   │                  │                  │      ┌───────────┤
+   │  TRANSID_AI      │                  │      │ Finalize  │
+   │  (COUNT, SUM)    │ JOIN_AGG_        │      │ main agg  │
+   │◄──────────────────│ COMPLETE_CONF   │      │ → send    │
+   │                  │◄────────────────────────│ TRANSID_AI│
+   │                  │                  │      │ to API    │
+   │                  │                  │      └───────────┤
+   │                  │                  │                  │
+   │                  │     ═══ CLEANUP ═══                 │
+   │                  │                  │                  │
+   │                  │─ JOIN_AGG_RELEASE_REQ (main key) ───►
+   │                  │─ JOIN_AGG_RELEASE_REQ (CTE0 key) ───►
+   │                  │─ JOIN_AGG_RELEASE_REQ (CTE1 key) ───►
+   │                  │                  │      ┌───────────┤
+   │                  │                  │      │ Free 3    │
+   │                  │                  │      │ AggInterp │
+   │                  │                  │      │ + hash    │
+   │                  │                  │      │ tables    │
+   │                  │                  │      └───────────┤
+   │                  │◄─ JOIN_AGG_RELEASE_CONF (main) ─────┤
+   │                  │◄─ JOIN_AGG_RELEASE_CONF (CTE0) ─────┤
+   │                  │◄─ JOIN_AGG_RELEASE_CONF (CTE1) ─────┤
+   │                  │                  │                  │
+   │ SCAN_TABCONF     │                  │                  │
+   │ (EndOfData)      │                  │                  │
+   │◄─────────────────┤                  │                  │
+   │                  │                  │                  │
+</pre>
+</div>
+
+<h3>15.5 Phase State Transitions</h3>
+<div class="diagram-box">
+<pre>
+DBTC per-phase state machine:
+
+  m_cteCurrentPhase = 0
+  m_ctePhaseCount = 2
+
+  ┌─────────────┐    all DBSPJ instances     ┌──────────────────┐
+  │   Phase 0   │ ─── CTE_PHASE_COMPLETE ──► │ sendCteComplete  │
+  │ (CTE 0      │      _REP (phase=0)        │ ReqsForPhase(0)  │
+  │  running)   │                             └────────┬─────────┘
+  └─────────────┘                                      │
+                                              JOIN_AGG_COMPLETE_REQ
+                                              for CTE 0 on all nodes
+                                                       │
+                                              JOIN_AGG_COMPLETE_CONF
+                                                       │
+                                              ┌────────▼─────────┐
+                                              │ CTE 0 → READY    │
+                                              │ readyMask |= 0x1 │
+                                              │                   │
+                                              │ Check phase 1:    │
+                                              │ CTE1.depMask=0x1  │
+                                              │ 0x1 & 0x1 == 0x1  │
+                                              │ → deps satisfied  │
+                                              └────────┬──────────┘
+                                                       │
+  ┌─────────────┐    CTE_PHASE_START_REQ     ┌─────────▼─────────┐
+  │   Phase 1   │ ◄──────────────────────── │ m_cteCurrentPhase  │
+  │ (CTE 1      │         (phase=1)          │ = 1                │
+  │  running)   │                             └───────────────────┘
+  └──────┬──────┘
+         │ all DBSPJ: CTE_PHASE_COMPLETE_REP (phase=1)
+         ▼
+  sendCteCompleteReqsForPhase(1)
+  JOIN_AGG_COMPLETE_REQ for CTE 1
+  JOIN_AGG_COMPLETE_CONF
+         │
+         ▼
+  m_cteCurrentPhase == m_ctePhaseCount
+  → sendCteStartMainReqs()
+  → CTE_START_MAIN_REQ to each DBSPJ instance
+</pre>
+</div>
+
+<div class="note">
+<strong>SETUP is phase-independent:</strong> All three JoinAggSetupReqs (main + CTE 0 +
+CTE 1) are sent at once during the initial SETUP phase. The hash tables
+for all CTEs are created upfront. Only the <em>materialization</em>
+(scan + aggregate) is phased. This means CTE 1's hash table exists
+but is empty until phase 1 populates it.
+</div>
+
+</section>
+
+<!-- ============================================================ -->
+<!-- 16. SIGNAL REFERENCE -->
 <!-- ============================================================ -->
 <section id="signals">
-<h2>15. Signal Reference</h2>
+<h2>16. Signal Reference</h2>
 
 <h3>CTE Signals</h3>
 <table>
@@ -1508,7 +1865,7 @@ Virtual columns (from CTE with GROUP BY grp, SUM(val)):
 <!-- 13. STATE MACHINES -->
 <!-- ============================================================ -->
 <section id="state-machines">
-<h2>16. State Machines</h2>
+<h2>17. State Machines</h2>
 
 <div class="diagram-box">
 <svg width="880" height="280" viewBox="0 0 880 280">
