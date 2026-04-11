@@ -28880,53 +28880,58 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
   scanptr.p->m_aggPhaseFailed = false;
   scanptr.p->m_aggErrorCode = 0;
 
-  for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
-    if (!getNodeInfo(nodeId).m_connected) continue;
-    if (getNodeInfo(nodeId).m_type != NodeInfo::DB) continue;
+  /* Main query aggregation setup — only if a main agg program exists.
+   * CTE-only queries (no main aggregation) skip this loop. */
+  if (scanptr.p->m_aggProgramPtrI != RNIL) {
+    jam();
+    for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
+      if (!getNodeInfo(nodeId).m_connected) continue;
+      if (getNodeInfo(nodeId).m_type != NodeInfo::DB) continue;
 
-    JoinAggSetupReq *req = (JoinAggSetupReq *)signal->getDataPtrSend();
-    req->senderRef = reference();
-    req->senderData = scanptr.i;
-    req->requestId = scanptr.p->scanApiRec;
-    req->transid[0] = apiConnectptr.p->transid[0];
-    req->transid[1] = apiConnectptr.p->transid[1];
-    req->tableId = scanptr.p->scanTableref;
-    req->expectedOpCount = 0;
-    req->concurrencyStrategy = JoinAggSetupReq::STRATEGY_MUTEX_FREE;
-    req->resultRef = apiConnectptr.p->ndbapiBlockref;
-    req->resultData = scanptr.p->m_aggReceiverId;
-    req->routeRef = reference();
-    req->cteIndex = RNIL;  // Main aggregation, not a CTE
+      JoinAggSetupReq *req = (JoinAggSetupReq *)signal->getDataPtrSend();
+      req->senderRef = reference();
+      req->senderData = scanptr.i;
+      req->requestId = scanptr.p->scanApiRec;
+      req->transid[0] = apiConnectptr.p->transid[0];
+      req->transid[1] = apiConnectptr.p->transid[1];
+      req->tableId = scanptr.p->scanTableref;
+      req->expectedOpCount = 0;
+      req->concurrencyStrategy = JoinAggSetupReq::STRATEGY_MUTEX_FREE;
+      req->resultRef = apiConnectptr.p->ndbapiBlockref;
+      req->resultData = scanptr.p->m_aggReceiverId;
+      req->routeRef = reference();
+      req->cteIndex = RNIL;  // Main aggregation, not a CTE
 
-    SectionHandle handle(this);
-    Uint32 aggPtrI = RNIL;
-    ndbrequire(dupSection(aggPtrI, scanptr.p->m_aggProgramPtrI));
-    getSection(handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum], aggPtrI);
+      SectionHandle handle(this);
+      Uint32 aggPtrI = RNIL;
+      ndbrequire(dupSection(aggPtrI, scanptr.p->m_aggProgramPtrI));
+      getSection(handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum], aggPtrI);
 
-    Uint32 rcvPtrI = RNIL;
-    ndbrequire(scanptr.p->m_aggReceiverId != RNIL);
-    Uint32 rcvId = scanptr.p->m_aggReceiverId;
-    ndbrequire(appendToSection(rcvPtrI, &rcvId, 1));
-    getSection(handle.m_ptr[JoinAggSetupReq::ReceiverIdsSectionNum], rcvPtrI);
-    handle.m_cnt = 2;
+      Uint32 rcvPtrI = RNIL;
+      ndbrequire(scanptr.p->m_aggReceiverId != RNIL);
+      Uint32 rcvId = scanptr.p->m_aggReceiverId;
+      ndbrequire(appendToSection(rcvPtrI, &rcvId, 1));
+      getSection(handle.m_ptr[JoinAggSetupReq::ReceiverIdsSectionNum], rcvPtrI);
+      handle.m_cnt = 2;
 
 #ifdef DEBUG_JOIN_AGG_TRACE
-    DEB_JOIN_AGG(("(%u)DBTC sendJoinAggSetupReq → node %u: "
-                   "resultRef=0x%x resultData=0x%x "
-                   "aggProgLen=%u aggReceiverId=0x%x",
-                   instance(),
-                   nodeId,
-                   req->resultRef,
-                   req->resultData,
-                   handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum].sz,
-                   scanptr.p->m_aggReceiverId));
+      DEB_JOIN_AGG(("(%u)DBTC sendJoinAggSetupReq → node %u: "
+                     "resultRef=0x%x resultData=0x%x "
+                     "aggProgLen=%u aggReceiverId=0x%x",
+                     instance(),
+                     nodeId,
+                     req->resultRef,
+                     req->resultData,
+                     handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum].sz,
+                     scanptr.p->m_aggReceiverId));
 #endif
-    Uint32 ref = numberToRef(DBLQH, nodeId);
-    sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,
-               JoinAggSetupReq::SignalLength, JBB, &handle);
-    scanptr.p->m_joinAggNodes->m_aggNodes.set(nodeId);
-    scanptr.p->m_joinAggNodes->m_aggNodesPending.set(nodeId);
-    scanptr.p->m_aggNodesOutstanding++;
+      Uint32 ref = numberToRef(DBLQH, nodeId);
+      sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,
+                 JoinAggSetupReq::SignalLength, JBB, &handle);
+      scanptr.p->m_joinAggNodes->m_aggNodes.set(nodeId);
+      scanptr.p->m_joinAggNodes->m_aggNodesPending.set(nodeId);
+      scanptr.p->m_aggNodesOutstanding++;
+    }
   }
 
   /* Send CTE SETUP requests (CTE_MODE_FLAG) for each CTE to each node */

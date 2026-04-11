@@ -1795,6 +1795,7 @@ class Dbspj : public SimulatedBlock {
   Uint32 cte_build(Build_context &, Ptr<Request>, const QueryNode *,
                    const QueryNodeParameters *);
   void cte_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  void cte_countSignal(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 cnt);
   void cte_parent_row(Signal *, Ptr<Request>, Ptr<TreeNode>, const RowPtr &);
   void cte_serve_cached_row(Signal *, Ptr<Request>,
                             Ptr<TreeNode>, const CteContext &);

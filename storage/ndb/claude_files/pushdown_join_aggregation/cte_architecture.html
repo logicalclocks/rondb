@@ -192,6 +192,7 @@
     <li><a href="#scan-resume">O(1) CTE Scan Resume</a></li>
     <li><a href="#single-row">Single-Row CTE Optimization</a></li>
     <li><a href="#compound-exec">Compound Query Execution</a></li>
+    <li><a href="#cte-lookup-flow">CTE_LOOKUP Query Flow</a></li>
     <li><a href="#signals">Signal Reference</a></li>
     <li><a href="#state-machines">State Machines</a></li>
   </ol>
@@ -1123,10 +1124,324 @@ either an aggregate or a normal SPJ query.
 </section>
 
 <!-- ============================================================ -->
-<!-- 14. SIGNAL REFERENCE -->
+<!-- 14. CTE_LOOKUP QUERY FLOW -->
+<!-- ============================================================ -->
+<section id="cte-lookup-flow">
+<h2>14. CTE_LOOKUP Query Flow</h2>
+
+<p>This section traces the complete signal flow for a query where the main SELECT
+joins with a materialized CTE via <code>CTE_LOOKUP_REQ</code>.</p>
+
+<h3>14.1 Example SQL</h3>
+<pre class="code">
+WITH cte0 AS (
+  SELECT grp, SUM(val) AS total
+  FROM src t1 JOIN src t2 ON t1.pk = t2.pk
+  GROUP BY grp
+)
+SELECT cte0.grp, cte0.total
+FROM src t1
+JOIN cte0 ON t1.grp = cte0.grp;
+</pre>
+
+<h3>14.2 Query Tree (5 Nodes)</h3>
+<div class="diagram-box">
+<pre>
+┌──────────────────────────────────────────────────────────────────┐
+│  Node 0: QN_CTE_SUBTREE (cteId=0, numNodes=2)                   │
+│  ├─ Node 1: QN_SCAN_FRAG (CTE scan, NI_AGGREGATE, linked: pk)   │
+│  └─ Node 2: QN_LOOKUP (CTE agg leaf, NI_AGGREGATE_LEAF)         │
+│                                                                  │
+│  Node 3: QN_SCAN_FRAG (Main scan, NI_LINKED_ATTR, linked: grp)  │
+│  └─ Node 4: QN_CTE_LOOKUP (cteId=0, key=grp via P_ATTRINFO)    │
+└──────────────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<div class="note">
+<strong>No main aggregation:</strong> The main query (nodes 3-4) has no
+<code>NI_AGGREGATE</code> flags. DBTC skips the main JoinAggSetupReq.
+Only the CTE's aggregation goes through the JoinAgg pipeline.
+The <code>aggProgramPtrI</code> is RNIL for the main query.
+</div>
+
+<h3>14.3 DBTC KeyInfo Parsing (No Main Agg Program)</h3>
+<div class="diagram-box">
+<pre>
+KeyInfo Section Layout:
+┌──────────────┐
+│ boundsLen=0  │
+├──────────────┤
+│ aggReceiverId│
+├──────────────┤
+│ CTE_DEFS_    │  ← No main agg program; marker immediately follows
+│ MARKER       │    aggReceiverId. DBTC reads magic=0xCDE0,
+│ (0xCDE00000) │    mainAggLen=0, skips to CTE parsing.
+├──────────────┤
+│ numCtes=1    │
+├──────────────┤
+│ CTE 0 def:  │  tableId, schemaVersion, depMask(lo,hi),
+│              │  flags, progLen, aggProgram[...]
+└──────────────┘
+
+Result: m_aggProgramPtrI = RNIL (no main agg)
+        m_numCtes = 1
+        CTE 0 has GROUP BY grp, SUM(val)
+</pre>
+</div>
+
+<h3>14.4 Signal Flow Diagram</h3>
+<div class="diagram-box">
+<pre>
+  API (test)           DBTC               DBSPJ              DBLQH
+      │                  │                  │                  │
+      │ SCAN_TABREQ      │                  │                  │
+      │ (JoinAggFlag,    │                  │                  │
+      │  KeyInfo w/ CTE) │                  │                  │
+      │─────────────────►│                  │                  │
+      │                  │                  │                  │
+      │          ┌───────┴────────┐         │                  │
+      │          │ parseJoinAgg   │         │                  │
+      │          │ KeyInfo:       │         │                  │
+      │          │ aggProgramPtrI │         │                  │
+      │          │ = RNIL (no     │         │                  │
+      │          │ main agg)     │         │                  │
+      │          │ numCtes = 1   │         │                  │
+      │          └───────┬────────┘         │                  │
+      │                  │                  │                  │
+      │                  │ JoinAggSetupReq  │                  │
+      │                  │ (CTE_MODE_FLAG,  │                  │
+      │                  │  cteIndex=0)     │                  │
+      │                  │─────────────────────────────────────►
+      │                  │                  │                  │
+      │                  │ JoinAggSetupConf │   ┌──────────────┤
+      │                  │ (aggStateKey)    │   │ Create       │
+      │                  │◄─────────────────────│ AggInterp    │
+      │                  │                  │   │ + hash table │
+      │                  │                  │   └──────────────┤
+      │                  │                  │                  │
+      │                  │ SCAN_FRAGREQ     │                  │
+      │                  │ (QueryTree +     │                  │
+      │                  │  aggStateKeys)   │                  │
+      │                  │─────────────────►│                  │
+      │                  │                  │                  │
+      │          ┌───────┴──────┐   ┌───────┴────────┐         │
+      │          │ sendJoinAgg  │   │ buildExecPlan:  │         │
+      │          │ SetupReqs:   │   │ 5 nodes built,  │         │
+      │          │ skip main    │   │ CTE subtree     │         │
+      │          │ (RNIL prog)  │   │ marked T_CTE_   │         │
+      │          │ send CTE 0   │   │ SCAN, CTE_      │         │
+      │          └──────────────┘   │ LOOKUP validated │         │
+      │                  │          │ (P_ATTRINFO key) │         │
+      │                  │          └───────┬────────┘         │
+      │                  │                  │                  │
+      │                  │     ═══ CTE MATERIALIZATION ═══     │
+      │                  │                  │                  │
+      │                  │          ┌───────┴────────┐         │
+      │                  │          │ Start CTE root │         │
+      │                  │          │ node 1 (scan)  │         │
+      │                  │          └───────┬────────┘         │
+      │                  │                  │ SCAN_FRAGREQ     │
+      │                  │                  │────────────────► │
+      │                  │                  │   scan rows      │
+      │                  │                  │◄─── TRANSID_AI   │
+      │                  │                  │   per row:       │
+      │                  │                  │   startNextNodes │
+      │                  │                  │   → node 2       │
+      │                  │                  │   (LQHKEYREQ)    │
+      │                  │                  │────────────────► │
+      │                  │                  │  handleJoinAgg   │
+      │                  │                  │  Row → AggInterp │
+      │                  │                  │  builds hash     │
+      │                  │                  │  table groups    │
+      │                  │                  │                  │
+      │                  │ CTE_PHASE_       │ SCAN_FRAGCONF    │
+      │                  │ COMPLETE_REP     │◄────────────────┤
+      │                  │◄────────────────┤                  │
+      │                  │                  │                  │
+      │                  │ JOIN_AGG_        │                  │
+      │                  │ COMPLETE_REQ     │                  │
+      │                  │─────────────────────────────────────►
+      │                  │                  │  ┌───────────────┤
+      │                  │ JOIN_AGG_        │  │ Finalize +    │
+      │                  │ COMPLETE_CONF    │  │ redistribute  │
+      │                  │◄─────────────────────│ hash table   │
+      │                  │                  │  │→ CTE_READY    │
+      │                  │                  │  └───────────────┤
+      │                  │                  │                  │
+      │                  │    ═══ MAIN QUERY EXECUTION ═══     │
+      │                  │                  │                  │
+      │                  │ CTE_START_MAIN_  │                  │
+      │                  │ REQ              │                  │
+      │                  │────────────────►│                  │
+      │                  │          ┌───────┴────────┐         │
+      │                  │          │ All CteContexts│         │
+      │                  │          │ → CTE_READY    │         │
+      │                  │          │ Start node 3   │         │
+      │                  │          │ (main scan)    │         │
+      │                  │          └───────┬────────┘         │
+      │                  │                  │ SCAN_FRAGREQ     │
+      │                  │                  │────────────────►│
+      │                  │                  │                  │
+      │                  │                  │ TRANSID_AI (×5)  │
+      │                  │                  │◄────────────────┤
+      │                  │                  │                  │
+      │                  │          ┌───────┴────────────┐     │
+      │                  │          │ Per scan row:      │     │
+      │                  │          │ startNextNodes     │     │
+      │                  │          │ → node 4 (CTE_    │     │
+      │                  │          │   LOOKUP)          │     │
+      │                  │          │ cte_parent_row()   │     │
+      │                  │          │ state=CTE_READY    │     │
+      │                  │          │ → cte_lookup_send()│     │
+      │                  │          └───────┬────────────┘     │
+      │                  │                  │                  │
+      │                  │                  │ CTE_LOOKUP_REQ   │
+      │                  │                  │ (aggStateKey,    │
+      │                  │                  │  key=AttrHdr+    │
+      │                  │                  │  grp value,      │
+      │                  │                  │  AttrInfo w/     │
+      │                  │                  │  FLUSH_AI)       │
+      │                  │                  │────────────────►│
+      │                  │                  │                  │
+      │                  │                  │   ┌──────────────┤
+      │                  │                  │   │ lookupGroup  │
+      │  TRANSID_AI      │                  │   │ (hash table) │
+      │  (grp + SUM)     │                  │   │ FLUSH_AI →   │
+      │◄──────────────────────────────────────────│ TRANSID_AI │
+      │                  │                  │   │ to API       │
+      │                  │                  │   └──────────────┤
+      │                  │                  │                  │
+      │                  │                  │ CTE_LOOKUP_CONF  │
+      │                  │                  │◄────────────────┤
+      │                  │          ┌───────┴────────┐         │
+      │                  │          │ outstanding--  │         │
+      │                  │          │ checkBatch     │         │
+      │                  │          │ Complete       │         │
+      │                  │          └───────┬────────┘         │
+      │                  │                  │                  │
+      │                  │                  │ SCAN_FRAGCONF    │
+      │                  │                  │◄────────────────┤
+      │                  │                  │                  │
+      │                  │ SCAN_FRAGCONF    │                  │
+      │                  │◄────────────────┤                  │
+      │                  │                  │                  │
+      │ SCAN_TABCONF     │                  │                  │
+      │ (EndOfData)      │                  │                  │
+      │◄─────────────────┤                  │                  │
+      │                  │                  │                  │
+</pre>
+</div>
+
+<h3>14.5 Key Format: P_ATTRINFO vs P_COL</h3>
+
+<p>The CTE hash table stores GROUP BY keys as AttributeHeader-encoded bytes:
+<code>[AttrHeader(attrId, dataSize)] [column data]</code>. The
+<code>lookupGroup()</code> function matches keys by raw byte comparison.</p>
+
+<div class="diagram-box">
+<pre>
+CTE Hash Table Key (stored during materialization):
+┌─────────────────────┬──────────────────┐
+│ AttributeHeader     │ Column Data      │
+│ (attrId=1, size=8)  │ (BIGINT value)   │
+│ 0x00010008          │ 0x00000001 0x0   │  ← grp=1
+└─────────────────────┴──────────────────┘
+         12 bytes total
+
+CTE_LOOKUP Key (expanded from parent scan row):
+
+  P_ATTRINFO(0) ─── includes header ──→  ✅ MATCH
+  ┌────────────────┬────────────────┐
+  │ 0x00010008     │ 0x00000001 0x0 │  12 bytes → lookupGroup finds it
+  └────────────────┴────────────────┘
+
+  P_COL(0) ─── strips header ──→  ❌ NO MATCH
+  ┌────────────────┐
+  │ 0x00000001 0x0 │  8 bytes → lookupGroup returns nullptr
+  └────────────────┘
+    (GROUP_NOT_FOUND error 1263)
+</pre>
+</div>
+
+<div class="note">
+<strong>Build-time validation:</strong> <code>cte_build()</code> validates the
+key pattern after <code>parseDA()</code>. If any pattern element uses
+<code>P_COL</code> instead of <code>P_ATTRINFO</code>, the build fails with
+<code>InvalidTreeNodeSpecification</code> and a log message, catching the
+error at query setup rather than at runtime with a silent GROUP_NOT_FOUND.
+</div>
+
+<h3>14.6 AttrInfo Construction for CTE_LOOKUP</h3>
+
+<p>The CTE_LOOKUP node's parameters include <code>PI_ATTR_INTERPRET</code>
+(minimal ExitOK interpreter) and <code>PI_ATTR_LIST</code> (virtual column reads).
+DBSPJ's <code>parseDA()</code> constructs the AttrInfo sent with CTE_LOOKUP_REQ:</p>
+
+<div class="diagram-box">
+<pre>
+AttrInfo layout (12 words, built by DBSPJ parseDA):
+┌──────────────────────────────────────────┐
+│ [0] initReadLen    = 0                   │  ← 5-word header
+│ [1] execRegionLen  = 1                   │
+│ [2] finalUpdateLen = 0                   │
+│ [3] finalReadLen   = 6                   │
+│ [4] subRoutineLen  = 0                   │
+├──────────────────────────────────────────┤
+│ [5] Interpreter::ExitOK()               │  ← exec region (1 word)
+├──────────────────────────────────────────┤
+│ [6] AttrHeader(attrId=0, size=0)        │  ← final read: grp key
+│ [7] AttrHeader(attrId=1, size=0)        │  ← final read: SUM(val)
+│ [8] FLUSH_AI header                      │  ← send results to API
+│ [9] resultRef  (API block reference)     │
+│[10] resultData (connect pointer)         │
+│[11] routeRef   (TC block reference)      │
+└──────────────────────────────────────────┘
+
+DBLQH processes the final-read section:
+  attrId 0 → read GROUP BY key from hash table entry
+  attrId 1 → read aggregate result (SUM) from accumulators
+  FLUSH_AI → send grp+SUM as TRANSID_AI directly to API
+
+CTE_LOOKUP_CONF sent to DBSPJ for outstanding tracking.
+TRANSID_AI goes directly to API (bypasses DBSPJ).
+</pre>
+</div>
+
+<h3>14.7 DBLQH Hash Table Lookup</h3>
+
+<p>The <code>execCTE_LOOKUP_REQ</code> handler in DBLQH:</p>
+
+<div class="diagram-box">
+<pre>
+execCTE_LOOKUP_REQ:
+  1. getJoinAggState(aggStateKey) → find CTE hash table
+  2. Verify state == CTE_READY
+  3. Copy key section to local buffer
+  4. Copy AttrInfo to cattrInfoBuffer
+  5. lookupGroup(key, keyLen) → hash table find
+     ├─ Found:  process final-read section
+     │          → read virtual columns → accumulate output
+     │          → FLUSH_AI: send TRANSID_AI to API
+     │          → send CTE_LOOKUP_CONF to DBSPJ
+     └─ Not found: send CTE_LOOKUP_REF (GROUP_NOT_FOUND)
+                    to DBSPJ
+
+Virtual columns (from CTE with GROUP BY grp, SUM(val)):
+  attrId 0 (< n_gb_cols=1): GROUP BY key column
+    → walk key data to Nth entry, output AttrHeader + data
+  attrId 1 (>= n_gb_cols):  aggregate result (SUM)
+    → read AggResItem, output AttrHeader + 8 bytes value
+</pre>
+</div>
+
+</section>
+
+<!-- ============================================================ -->
+<!-- 15. SIGNAL REFERENCE -->
 <!-- ============================================================ -->
 <section id="signals">
-<h2>14. Signal Reference</h2>
+<h2>15. Signal Reference</h2>
 
 <h3>CTE Signals</h3>
 <table>
@@ -1193,7 +1508,7 @@ either an aggregate or a normal SPJ query.
 <!-- 13. STATE MACHINES -->
 <!-- ============================================================ -->
 <section id="state-machines">
-<h2>15. State Machines</h2>
+<h2>16. State Machines</h2>
 
 <div class="diagram-box">
 <svg width="880" height="280" viewBox="0 0 880 280">

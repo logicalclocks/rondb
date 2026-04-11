@@ -5376,7 +5376,7 @@ const Dbspj::OpInfo Dbspj::g_CteLookupOpInfo = {
     &Dbspj::cte_build,
     0,                          // prepare
     &Dbspj::cte_start,
-    0,                          // countSignal
+    &Dbspj::cte_countSignal,    // countSignal
     0,                          // execLQHKEYREF — not used for CTE lookups
     0,                          // execLQHKEYCONF — not used for CTE lookups
     0,                          // execSCAN_FRAGREF
@@ -5505,6 +5505,36 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
       break;
     }
 
+    /**
+     * Validate CTE_LOOKUP key pattern: CTE hash table keys include
+     * AttributeHeaders, so the key pattern must use P_ATTRINFO
+     * (not P_COL which strips the header). Detect at build time
+     * rather than getting silent GROUP_NOT_FOUND at runtime.
+     */
+    if (treeNodePtr.p->m_bits & TreeNode::T_KEYINFO_CONSTRUCTED) {
+      jam();
+      LocalArenaPool<DataBufferSegment<14>> pool(requestPtr.p->m_arena,
+                                                 m_dependency_map_pool);
+      Local_pattern_store pattern(pool, treeNodePtr.p->m_keyPattern);
+      Local_pattern_store::ConstDataBufferIterator it;
+      for (pattern.first(it); !it.isNull(); pattern.next(it)) {
+        Uint32 info = *it.data;
+        Uint32 type = QueryPattern::getType(info);
+        if (unlikely(type == QueryPattern::P_COL)) {
+          jam();
+          g_eventLogger->info("(%u) cte_build: ERROR key pattern uses "
+              "P_COL (must use P_ATTRINFO for CTE lookup keys)",
+              instance());
+          err = DbspjErr::InvalidTreeNodeSpecification;
+          break;
+        }
+      }
+      if (unlikely(err != 0)) {
+        jam();
+        break;
+      }
+    }
+
     // Inherit batch_size from parent (same as lookup)
     if (treeNodePtr.p->m_parentPtrI != RNIL) {
       jam();
@@ -5530,11 +5560,20 @@ void Dbspj::cte_start(Signal *signal, Ptr<Request> requestPtr,
   // Nothing to do here until the materialization infrastructure is in place.
 }
 
+void Dbspj::cte_countSignal(Signal *signal, Ptr<Request> requestPtr,
+                             Ptr<TreeNode> treeNodePtr, Uint32 cnt) {
+  jam();
+  ndbassert(treeNodePtr.p->m_cteLookup_data.m_outstanding >= cnt);
+  treeNodePtr.p->m_cteLookup_data.m_outstanding -= cnt;
+}
+
 void Dbspj::cte_parent_row(Signal *signal, Ptr<Request> requestPtr,
                             Ptr<TreeNode> treeNodePtr,
                             const RowPtr &rowRef) {
   jam();
   const Uint32 cteId = treeNodePtr.p->m_cteLookup_data.m_cteId;
+  DEB_CTE(("(%u) cte_parent_row: node=%u cteId=%u",
+           instance(), treeNodePtr.p->m_node_no, cteId));
 
   // Find CteContext for this cteId
   CteContext *cteCtx = nullptr;
@@ -5545,6 +5584,8 @@ void Dbspj::cte_parent_row(Signal *signal, Ptr<Request> requestPtr,
     }
   }
   ndbrequire(cteCtx != nullptr);
+  DEB_CTE(("(%u) cte_parent_row: cteState=%u cachedRowPtrI=0x%x",
+           instance(), cteCtx->m_state, cteCtx->m_cachedRowPtrI));
 
   switch (cteCtx->m_state) {
   case CteContext::CTE_READY:
@@ -5621,6 +5662,9 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
                              Ptr<TreeNode> treeNodePtr,
                              const RowPtr &rowRef) {
   jam();
+  DEB_CTE(("(%u) cte_lookup_send: node=%u cteId=%u",
+           instance(), treeNodePtr.p->m_node_no,
+           treeNodePtr.p->m_cteLookup_data.m_cteId));
   Uint32 err = 0;
   Uint32 keyInfoPtrI = RNIL;
 
@@ -5655,6 +5699,7 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
         jam();
         // NULL key: no match possible in CTE hash table.
         // For scan parents this is simply ignored (no row returned).
+        DEB_CTE(("(%u) cte_lookup_send: NULL key, skip", instance()));
         releaseSection(keyInfoPtrI);
         return;
       }
@@ -5710,7 +5755,12 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       handle.m_cnt = 2;
     }
 
-    Uint32 ref = numberToRef(DBLQH, instance(), targetNodeId);
+    Uint32 ref = numberToRef(DBLQH, 1, targetNodeId);
+    DEB_CTE(("(%u) cte_lookup_send: SENDING CTE_LOOKUP_REQ to ref=0x%x "
+             "aggStateKey=%u keyLen=%u attrInfoLen=%u outstanding_before=%u",
+             instance(), ref, targetAggKey, keyLenBytes,
+             (attrInfoPtrI != RNIL) ? handle.m_ptr[1].sz : 0,
+             requestPtr.p->m_outstanding));
     sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
                CteLookupReq::SignalLength, JBB, &handle);
 
@@ -5721,6 +5771,7 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
   } while (0);
 
   // Error handling
+  DEB_CTE(("(%u) cte_lookup_send: ERROR err=%u", instance(), err));
   if (keyInfoPtrI != RNIL) {
     releaseSection(keyInfoPtrI);
   }
@@ -5745,6 +5796,11 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
 
   Ptr<Request> requestPtr;
   ndbrequire(m_request_pool.getPtr(requestPtr, treeNodePtr.p->m_requestPtrI));
+
+  DEB_CTE(("(%u) execCTE_LOOKUP_CONF: node=%u outstanding=%u/%u",
+           instance(), treeNodePtr.p->m_node_no,
+           treeNodePtr.p->m_cteLookup_data.m_outstanding,
+           requestPtr.p->m_outstanding));
 
   ndbrequire(treeNodePtr.p->m_cteLookup_data.m_outstanding > 0);
   treeNodePtr.p->m_cteLookup_data.m_outstanding--;
@@ -5773,6 +5829,11 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
 
   Ptr<Request> requestPtr;
   ndbrequire(m_request_pool.getPtr(requestPtr, treeNodePtr.p->m_requestPtrI));
+
+  DEB_CTE(("(%u) execCTE_LOOKUP_REF: node=%u errorCode=%u outstanding=%u/%u",
+           instance(), treeNodePtr.p->m_node_no, ref->errorCode,
+           treeNodePtr.p->m_cteLookup_data.m_outstanding,
+           requestPtr.p->m_outstanding));
 
   ndbrequire(treeNodePtr.p->m_cteLookup_data.m_outstanding > 0);
   treeNodePtr.p->m_cteLookup_data.m_outstanding--;
@@ -6103,7 +6164,7 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     req->transId2 = requestPtr.p->m_transId[1];
     req->batchSize = data.m_batchSize;
 
-    Uint32 ref = numberToRef(DBLQH, instance(), targetNodeId);
+    Uint32 ref = numberToRef(DBLQH, 1, targetNodeId);
     sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
                CteScanReq::SignalLength, JBB);
 
@@ -6128,7 +6189,7 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
       req->transId2 = requestPtr.p->m_transId[1];
       req->batchSize = data.m_batchSize;
 
-      Uint32 ref = numberToRef(DBLQH, instance(), nodeId);
+      Uint32 ref = numberToRef(DBLQH, 1, nodeId);
       sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
                  CteScanReq::SignalLength, JBB);
 
@@ -6162,6 +6223,13 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
 
   Ptr<Request> requestPtr;
   ndbrequire(m_request_pool.getPtr(requestPtr, treeNodePtr.p->m_requestPtrI));
+
+  DEB_CTE(("(%u) execCTE_SCAN_CONF: node=%u numRows=%u flags=0x%x "
+           "outstanding=%u req_outstanding=%u",
+           instance(), treeNodePtr.p->m_node_no,
+           conf->numRows, conf->flags,
+           treeNodePtr.p->m_cteScan_data.m_outstanding,
+           requestPtr.p->m_outstanding));
 
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
   ndbrequire(data.m_outstanding > 0);
@@ -6198,7 +6266,7 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
     req->transId2 = requestPtr.p->m_transId[1];
     req->batchSize = data.m_batchSize;
 
-    Uint32 ref = numberToRef(DBLQH, instance(), sourceNodeId);
+    Uint32 ref = numberToRef(DBLQH, 1, sourceNodeId);
     sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
                CteScanReq::SignalLength, JBB);
 
@@ -6234,6 +6302,12 @@ void Dbspj::execCTE_SCAN_REF(Signal *signal) {
 
   Ptr<Request> requestPtr;
   ndbrequire(m_request_pool.getPtr(requestPtr, treeNodePtr.p->m_requestPtrI));
+
+  DEB_CTE(("(%u) execCTE_SCAN_REF: node=%u errorCode=%u "
+           "outstanding=%u req_outstanding=%u",
+           instance(), treeNodePtr.p->m_node_no, ref->errorCode,
+           treeNodePtr.p->m_cteScan_data.m_outstanding,
+           requestPtr.p->m_outstanding));
 
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
   ndbrequire(data.m_outstanding > 0);

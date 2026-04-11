@@ -64,6 +64,7 @@
  *   Node 7: QN_LOOKUP on src (main agg leaf, self-join)
  *
  * Test variations:
+ *   Test 5: Main SELECT with CTE_LOOKUP (CTE_LOOKUP_REQ path)
  *   Test 1: Basic 2-CTE + main COUNT/SUM (5 rows)
  *   Test 2: 2-CTE + main GROUP BY SUM (3 groups)
  *   Test 3: 2-CTE + larger dataset (100 rows, 10 groups)
@@ -117,6 +118,7 @@ static const Uint32 WAIT_TIMEOUT_MS = 60000;
 static const Uint32 COL_TYPE_BIGINT = 9;
 static const Uint32 AGG_MAGIC = 0x0721;
 static const Uint32 AGG_RESULT_ATTR = 0xFF00;
+static const Uint32 INTERPRETER_EXIT_OK = 18;
 
 /* ------------------------------------------------------------------ */
 /* Aggregation program builders                                        */
@@ -834,6 +836,400 @@ collectResults(SignalSender &ss,
 }
 
 /* ------------------------------------------------------------------ */
+/* QueryTree builder: 1 CTE + main CTE_LOOKUP                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Build a QueryTree with 1 CTE subtree + a 2-node main query using
+ * QN_CTE_LOOKUP.
+ *
+ * 5 nodes total:
+ *   Node 0: QN_CTE_SUBTREE (cteId=0, numNodes=2)
+ *   Node 1:   QN_SCAN_FRAG (CTE 0 scan, linked: pk)
+ *   Node 2:   QN_LOOKUP (CTE 0 agg leaf, self-join by pk)
+ *   Node 3: QN_SCAN_FRAG (main scan, linked: grp, NO aggregation)
+ *   Node 4: QN_CTE_LOOKUP (cteId=0, parent=node 3, key=grp)
+ *
+ * CTE 0 materializes GROUP BY grp, SUM(val) via self-join on pk.
+ * Main query scans src and looks up CTE 0 by grp key.
+ * Main query has NO aggregation — CTE_LOOKUP returns raw CTE rows.
+ *
+ * Node 4 parameters include PI_ATTR_INTERPRET (ExitOK) and
+ * PI_ATTR_LIST (virtual column reads) so DBSPJ builds proper
+ * AttrInfo with FLUSH_AI for direct result delivery to API.
+ */
+static std::vector<Uint32>
+buildQueryTreeWithCteLookup(Uint32 tableId, Uint32 tableVersion,
+                            Uint32 pkAttrId, Uint32 grpAttrId,
+                            Uint32 receiverId)
+{
+  std::vector<Uint32> ai;
+
+  const Uint32 cte_sub_len = 4;
+  const Uint32 cte_scan_len = 5;
+  const Uint32 cte_leaf_len = 7;
+  const Uint32 main_scan_len = 5;
+  const Uint32 cte_lookup_len = 7;  /* same as lookup: 4 fixed + parent + key */
+
+  const Uint32 tree_len = 1 +
+    cte_sub_len + cte_scan_len + cte_leaf_len +
+    main_scan_len + cte_lookup_len;
+
+  /* Tree header */
+  Uint32 cnt_len = 0;
+  QueryTree::setCntLen(cnt_len, 5, tree_len);
+  ai.push_back(cnt_len);
+
+  /* ---- CTE 0 subtree ---- */
+
+  /* Node 0: QN_CTE_SUBTREE (cteId=0) */
+  Uint32 n0_len = 0;
+  QueryNode::setOpLen(n0_len, QueryNode::QN_CTE_SUBTREE, cte_sub_len);
+  ai.push_back(n0_len);
+  ai.push_back(0);          /* requestInfo */
+  ai.push_back(0);          /* cteId = 0 */
+  ai.push_back(2);          /* numNodes = 2 (scan + lookup) */
+
+  /* Node 1: QN_SCAN_FRAG (CTE 0 scan on src, linked: pk) */
+  Uint32 n1_len = 0;
+  QueryNode::setOpLen(n1_len, QueryNode::QN_SCAN_FRAG, cte_scan_len);
+  ai.push_back(n1_len);
+  ai.push_back(DABits::NI_AGGREGATE | DABits::NI_LINKED_ATTR);
+  ai.push_back(tableId);
+  ai.push_back(tableVersion);
+  ai.push_back((pkAttrId << 16) | 1);  /* 1 linked attr: pk */
+
+  /* Node 2: QN_LOOKUP (CTE 0 agg leaf, self-join by pk) */
+  Uint32 n2_len = 0;
+  QueryNode::setOpLen(n2_len, QueryNode::QN_LOOKUP, cte_leaf_len);
+  ai.push_back(n2_len);
+  ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
+               DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF);
+  ai.push_back(tableId);
+  ai.push_back(tableVersion);
+  ai.push_back((1 << 16) | 1);           /* parent: node 1 */
+  ai.push_back((0 << 16) | 1);           /* key: 1 pattern word */
+  ai.push_back(QueryPattern::col(0));     /* pk from parent linked[0] */
+
+  /* ---- Main query (no aggregation) ---- */
+
+  /* Node 3: QN_SCAN_FRAG (main scan, linked: grp) */
+  Uint32 n3_len = 0;
+  QueryNode::setOpLen(n3_len, QueryNode::QN_SCAN_FRAG, main_scan_len);
+  ai.push_back(n3_len);
+  ai.push_back(DABits::NI_LINKED_ATTR);  /* NO NI_AGGREGATE */
+  ai.push_back(tableId);
+  ai.push_back(tableVersion);
+  ai.push_back((grpAttrId << 16) | 1);   /* 1 linked attr: grp */
+
+  /* Node 4: QN_CTE_LOOKUP (cteId=0, parent=node 3, key=grp)
+   * Use P_ATTRINFO (not P_COL) so the expanded key includes the
+   * AttributeHeader — CTE hash table keys are stored with headers. */
+  Uint32 n4_len = 0;
+  QueryNode::setOpLen(n4_len, QueryNode::QN_CTE_LOOKUP, cte_lookup_len);
+  ai.push_back(n4_len);
+  ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED);
+  ai.push_back(0);                       /* cteId = 0 */
+  ai.push_back(2);                       /* numResultCols = 2 (grp + SUM) */
+  ai.push_back((3 << 16) | 1);           /* parent: node 3 */
+  ai.push_back((0 << 16) | 1);           /* key: 1 pattern word */
+  ai.push_back(QueryPattern::attrInfo(0)); /* grp WITH header from parent linked[0] */
+
+  /* ---- Parameter section (5 params) ---- */
+
+  /* Param 0: QN_CteSubtreeParameters (CTE 0 container) */
+  {
+    Uint32 p_len = 0;
+    QueryNodeParameters::setOpLen(p_len, QueryNodeParameters::QN_CTE_SUBTREE,
+                                  QN_CteSubtreeParameters::NodeSize);
+    ai.push_back(p_len);
+    ai.push_back(0);
+    ai.push_back(receiverId);
+  }
+
+  /* Param 1: QN_ScanFragParameters (CTE 0 scan) */
+  {
+    Uint32 p_len = 0;
+    QueryNodeParameters::setOpLen(p_len, QueryNodeParameters::QN_SCAN_FRAG,
+                                  QN_ScanFragParameters::NodeSize);
+    ai.push_back(p_len);
+    ai.push_back(0);
+    ai.push_back(receiverId);
+    ai.push_back(256);
+    ai.push_back(65536);
+    ai.push_back(0);
+    ai.push_back(0);
+    ai.push_back(0);
+  }
+
+  /* Param 2: QN_LookupParameters (CTE 0 leaf) */
+  {
+    Uint32 p_len = 0;
+    QueryNodeParameters::setOpLen(p_len, QueryNodeParameters::QN_LOOKUP,
+                                  QN_LookupParameters::NodeSize);
+    ai.push_back(p_len);
+    ai.push_back(0);
+    ai.push_back(receiverId);
+  }
+
+  /* Param 3: QN_ScanFragParameters (main scan) */
+  {
+    Uint32 p_len = 0;
+    QueryNodeParameters::setOpLen(p_len, QueryNodeParameters::QN_SCAN_FRAG,
+                                  QN_ScanFragParameters::NodeSize);
+    ai.push_back(p_len);
+    ai.push_back(0);
+    ai.push_back(receiverId);
+    ai.push_back(256);
+    ai.push_back(65536);
+    ai.push_back(0);
+    ai.push_back(0);
+    ai.push_back(0);
+  }
+
+  /* Param 4: QN_CteLookupParameters (CTE_LOOKUP with AttrInfo)
+   *
+   * PI_ATTR_INTERPRET: provides ExitOK as minimal interpreter program
+   * PI_ATTR_LIST: provides virtual column reads (attrId 0 = grp key,
+   *               attrId 1 = SUM(val) aggregate result)
+   *
+   * DBSPJ's parseDA will:
+   * 1. Create 5-word AttrInfo header
+   * 2. Add ExitOK to exec region
+   * 3. Add column reads + FLUSH_AI to final-read section
+   */
+  {
+    const Uint32 param_total = QN_CteLookupParameters::NodeSize + 5;
+    Uint32 p_len = 0;
+    QueryNodeParameters::setOpLen(p_len, QueryNodeParameters::QN_CTE_LOOKUP,
+                                  param_total);
+    ai.push_back(p_len);
+    ai.push_back(DABits::PI_ATTR_INTERPRET | DABits::PI_ATTR_LIST);
+    ai.push_back(receiverId);
+    /* PI_ATTR_INTERPRET: (subroutine_len << 16) | program_len */
+    ai.push_back((0u << 16) | 1u);       /* program_len=1, no subroutines */
+    ai.push_back(INTERPRETER_EXIT_OK);    /* ExitOK instruction */
+    /* PI_ATTR_LIST: len followed by attribute headers */
+    ai.push_back(2);                      /* 2 attribute reads */
+    ai.push_back(0u << 16);              /* attrId=0 (grp key), size=0 */
+    ai.push_back(1u << 16);              /* attrId=1 (SUM agg result), size=0 */
+  }
+
+  return ai;
+}
+
+/* ------------------------------------------------------------------ */
+/* SCAN_TABREQ sender with 1 CTE + CTE_LOOKUP                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Send SCAN_TABREQ with 1 CTE definition.  No main aggregation program.
+ *
+ * Section 2 layout (KeyInfo):
+ *   [boundsLen=0]
+ *   [aggReceiverId]
+ *   [CTE_DEFS_MARKER]   (no main agg program — marker immediately follows)
+ *   [numCtes=1]
+ *   [cte0 definition...]
+ */
+static int
+sendScanTabReqWithCteLookup(SignalSender &ss, Uint32 nodeId,
+                            Uint32 apiConnectPtr, Uint32 tcRef,
+                            const TableMeta &meta,
+                            const std::vector<Uint32> &queryTree,
+                            const std::vector<Uint32> &cte0AggProgram,
+                            Uint32 receiverId)
+{
+  V("SCAN_TABREQ -> node %u, table=%u (with 1 CTE + CTE_LOOKUP)\n",
+    nodeId, meta.tableId);
+
+  SimpleSignal ssig;
+  Uint32 *data = ssig.getDataPtrSend();
+  memset(data, 0, 25 * sizeof(Uint32));
+
+  data[0] = apiConnectPtr;
+  data[1] = 0;
+  data[2] = buildScanTabReqInfo();
+  data[3] = meta.tableId;
+  data[4] = meta.schemaVersion;
+  data[5] = 0xFFFF;              /* storedProcId = RNIL */
+  data[6] = FAKE_TRANS_ID1;
+  data[7] = FAKE_TRANS_ID2;
+  data[8] = apiConnectPtr;        /* buddyConPtr */
+  data[9] = 65536;                /* batch_byte_size */
+  data[10] = 256;                 /* first_batch_size */
+  data[15] = meta.fragCount;      /* scanParallelism = all fragments */
+
+  ssig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
+
+  /* Build aggSection: no main agg program, 1 CTE definition */
+  std::vector<Uint32> aggSection;
+  aggSection.push_back(0);            /* boundsLen = 0 */
+  aggSection.push_back(receiverId);   /* aggReceiverId */
+
+  /* No main agg program — CTE_DEFS_MARKER immediately follows.
+   * DBTC will see magic=0xCDE0, mainAggLen=0, skip to CTE parsing. */
+  aggSection.push_back(0xCDE00000);   /* CTE_DEFS_MARKER */
+  aggSection.push_back(1);            /* numCtes = 1 */
+  /* CTE 0: GROUP BY grp, SUM(val), no dependencies */
+  aggSection.push_back(meta.tableId);
+  aggSection.push_back(meta.schemaVersion);
+  aggSection.push_back(0);            /* depMask lo = 0 */
+  aggSection.push_back(0);            /* depMask hi = 0 */
+  aggSection.push_back(0);            /* flags = 0 */
+  aggSection.push_back((Uint32)cte0AggProgram.size());
+  aggSection.insert(aggSection.end(),
+                    cte0AggProgram.begin(), cte0AggProgram.end());
+
+  ssig.header.m_noOfSections = 3;
+  std::vector<Uint32> dummyReceiverIds(meta.fragCount, 0);
+  ssig.ptr[0].p = dummyReceiverIds.data();
+  ssig.ptr[0].sz = meta.fragCount;
+  ssig.ptr[1].p = queryTree.data();
+  ssig.ptr[1].sz = (Uint32)queryTree.size();
+  ssig.ptr[2].p = aggSection.data();
+  ssig.ptr[2].sz = (Uint32)aggSection.size();
+
+  if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
+    fprintf(stderr, "sendSignal SCAN_TABREQ failed\n");
+    return -1;
+  }
+
+  V("  Sent: queryTree=%zu words, aggSection=%zu words (cte0=%zu)\n",
+    queryTree.size(), aggSection.size(), cte0AggProgram.size());
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Raw TRANSID_AI result collection (for non-aggregate CTE_LOOKUP)     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Each TRANSID_AI from CTE_LOOKUP contains AttributeHeader-encoded
+ * virtual columns from the CTE hash table:
+ *   [AttrHeader(attrId=0, size=8)] [grp BIGINT]
+ *   [AttrHeader(attrId=1, size=8)] [SUM(val) BIGINT]
+ */
+struct CteLookupRow {
+  Int64 grpKey;
+  Int64 sumVal;
+};
+
+static int
+parseCteLookupTransIdAI(const SimpleSignal *sig, CteLookupRow &row)
+{
+  const Uint32 *data;
+  Uint32 dataLen;
+  if (sig->header.m_noOfSections > 0) {
+    data = sig->ptr[0].p;
+    dataLen = sig->ptr[0].sz;
+  } else {
+    data = sig->getDataPtr() + TransIdAI::HeaderLength;
+    dataLen = sig->getLength() - TransIdAI::HeaderLength;
+  }
+
+  /* Expect: AttrHeader(0, 8) + 2 words grp + AttrHeader(1, 8) + 2 words sum
+   * = 6 words minimum */
+  if (dataLen < 6) {
+    fprintf(stderr, "CTE_LOOKUP TRANSID_AI too short: %u words\n", dataLen);
+    return -1;
+  }
+
+  /* Parse first column: grp */
+  Uint32 attrId0 = data[0] >> 16;
+  Uint32 size0 = data[0] & 0xFFFF;
+  if (attrId0 != 0 || size0 != 8) {
+    fprintf(stderr, "CTE_LOOKUP col 0: attrId=%u size=%u (expected 0, 8)\n",
+            attrId0, size0);
+    return -1;
+  }
+  memcpy(&row.grpKey, &data[1], sizeof(Int64));
+
+  /* Parse second column: SUM(val) */
+  Uint32 attrId1 = data[3] >> 16;
+  Uint32 size1 = data[3] & 0xFFFF;
+  if (attrId1 != 1 || size1 != 8) {
+    fprintf(stderr, "CTE_LOOKUP col 1: attrId=%u size=%u (expected 1, 8)\n",
+            attrId1, size1);
+    return -1;
+  }
+  memcpy(&row.sumVal, &data[4], sizeof(Int64));
+
+  return 0;
+}
+
+static int
+collectCteLookupResults(SignalSender &ss,
+                        std::vector<CteLookupRow> &rows,
+                        Uint32 apiConnectPtr, Uint32 tcRef, Uint32 nodeId)
+{
+  V("Waiting for CTE_LOOKUP results...\n");
+  bool done = false;
+  while (!done) {
+    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS,
+                                       "TRANSID_AI/SCAN_TABCONF");
+    if (resp == nullptr) return -1;
+    int gsn = getGsn(resp);
+
+    if (gsn == GSN_TRANSID_AI) {
+      CteLookupRow row;
+      if (parseCteLookupTransIdAI(resp, row) != 0) return -1;
+      V("  TRANSID_AI: grp=%lld SUM=%lld\n",
+        (long long)row.grpKey, (long long)row.sumVal);
+      rows.push_back(row);
+    }
+    else if (gsn == GSN_SCAN_TABCONF) {
+      const Uint32 *d = resp->getDataPtr();
+      Uint32 ri = d[1];
+      bool endOfData = (ri & ScanTabConf::EndOfData) != 0;
+      Uint32 ops = ri & 0xFF;
+      V("  SCAN_TABCONF: ops=%u endOfData=%d ri=0x%x\n",
+        ops, (int)endOfData, ri);
+
+      if (endOfData) {
+        done = true;
+      } else {
+        Uint32 sigLen = resp->header.theLength;
+        Uint32 words_per_op = ops > 0 ? (sigLen - 4) / ops : 4;
+
+        SimpleSignal nextSig;
+        Uint32 *ndata = nextSig.getDataPtrSend();
+        ndata[0] = apiConnectPtr;
+        ndata[1] = 0;
+        ndata[2] = FAKE_TRANS_ID1;
+        ndata[3] = FAKE_TRANS_ID2;
+
+        Uint32 ackCount = 0;
+        for (Uint32 i = 0; i < ops; i++) {
+          Uint32 tcPtrI = d[4 + i * words_per_op + 1];
+          if (tcPtrI != RNIL) {
+            ndata[4 + ackCount] = tcPtrI;
+            ackCount++;
+          }
+        }
+
+        nextSig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_NEXTREQ,
+                    4 + ackCount);
+        nextSig.header.m_noOfSections = 0;
+        if (ss.sendSignal(nodeId, &nextSig) != SEND_OK) {
+          fprintf(stderr, "sendSignal SCAN_NEXTREQ failed\n");
+          return -1;
+        }
+      }
+    }
+    else if (gsn == GSN_SCAN_TABREF) {
+      fprintf(stderr, "SCAN_TABREF: errorCode=%u\n",
+              resp->getDataPtr()[3]);
+      return -1;
+    }
+    else {
+      V("  Ignoring GSN %d\n", gsn);
+    }
+  }
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* SQL verification helpers                                            */
 /* ------------------------------------------------------------------ */
 
@@ -1283,6 +1679,129 @@ testTwoCtesEmptyTable(TestCtx &ctx)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 5: Main SELECT with CTE_LOOKUP (CTE_LOOKUP_REQ path)           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * SQL equivalent:
+ *   WITH cte0 AS (
+ *     SELECT grp, SUM(val) AS total
+ *     FROM src t1 JOIN src t2 ON t1.pk = t2.pk
+ *     GROUP BY grp
+ *   )
+ *   SELECT cte0.grp, cte0.total
+ *   FROM src t1
+ *   JOIN cte0 ON t1.grp = cte0.grp;
+ *
+ * Tests:
+ *   - CTE materialization into hash table (nodes 1-2)
+ *   - CTE_LOOKUP_REQ from DBSPJ to DBLQH (node 4)
+ *   - Main query joins CTE results by GROUP BY key
+ *   - The CTE must be in CTE_READY state before lookups execute
+ *
+ * Data: 5 rows in 3 groups:
+ *   (1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)
+ *
+ * CTE 0: GROUP BY grp → group(1)=30, group(2)=70, group(3)=50
+ * Main scan: 5 rows → 5 CTE_LOOKUP results
+ * Expected rows (one per main scan row, matched by grp):
+ *   grp=1,SUM=30 (x2), grp=2,SUM=70 (x2), grp=3,SUM=50 (x1)
+ */
+static int
+testCteLookupMainSelect(TestCtx &ctx)
+{
+  printf("Test 5: Main SELECT with CTE_LOOKUP ... ");
+  fflush(stdout);
+
+  ctx.ss->unlock();
+  TableMeta meta;
+  int rc = createTestTable3Col(ctx.conn, ctx.ndb, meta);
+  if (rc == 0)
+    rc = sqlExec(ctx.conn,
+                 "INSERT INTO cte_dbtc_test3 VALUES "
+                 "(1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)");
+  ctx.ss->lock();
+  if (rc != 0) return -1;
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef) != 0) {
+    ctx.ss->unlock(); dropTestTable3Col(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  Uint32 receiverId = 200;
+
+  /* CTE 0 agg: GROUP BY grp, SUM(val) */
+  std::vector<Uint32> cte0Agg =
+    buildAggProgram_SumGroupBy(meta.attrIdB, meta.attrIdC);
+
+  std::vector<Uint32> queryTree =
+    buildQueryTreeWithCteLookup(meta.tableId, meta.schemaVersion,
+                                meta.attrIdA, meta.attrIdB,
+                                receiverId);
+
+  V("QueryTree: %zu words, cte0Agg: %zu\n",
+    queryTree.size(), cte0Agg.size());
+
+  rc = sendScanTabReqWithCteLookup(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef,
+                                   meta, queryTree, cte0Agg, receiverId);
+  if (rc != 0) {
+    releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+    ctx.ss->unlock(); dropTestTable3Col(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  std::vector<CteLookupRow> rows;
+  rc = collectCteLookupResults(*ctx.ss, rows, apiConnectPtr, tcRef,
+                               ctx.nodeId);
+  if (rc != 0) {
+    releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+    ctx.ss->unlock(); dropTestTable3Col(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  releaseTcConnect(*ctx.ss, ctx.nodeId, apiConnectPtr, tcRef);
+
+  /* Validate: 5 rows total (one per main scan row).
+   * Build map: grp → count of CTE_LOOKUP results */
+  std::map<Int64, Uint32> grpCounts;
+  std::map<Int64, Int64> grpSums;
+  for (const auto &r : rows) {
+    grpCounts[r.grpKey]++;
+    grpSums[r.grpKey] = r.sumVal;  /* Same grp → same SUM */
+  }
+
+  V("  Rows: %zu\n", rows.size());
+  for (auto &kv : grpCounts)
+    V("    grp(%lld): count=%u, SUM=%lld\n",
+      (long long)kv.first, kv.second,
+      (long long)grpSums[kv.first]);
+
+  /* Expected: 5 total rows.
+   * grp=1 → 2 rows (pk=1,2 both have grp=1), SUM=30 (10+20)
+   * grp=2 → 2 rows (pk=3,4 both have grp=2), SUM=70 (30+40)
+   * grp=3 → 1 row  (pk=5 has grp=3),         SUM=50 */
+  bool ok = (rows.size() == 5 &&
+             grpCounts.size() == 3 &&
+             grpCounts[1] == 2 && grpSums[1] == 30 &&
+             grpCounts[2] == 2 && grpSums[2] == 70 &&
+             grpCounts[3] == 1 && grpSums[3] == 50);
+
+  if (!ok) {
+    printf("FAIL (expected 5 rows: grp1=30x2, grp2=70x2, grp3=50x1, "
+           "got %zu rows)\n", rows.size());
+    for (const auto &r : rows)
+      printf("  grp=%lld SUM=%lld\n", (long long)r.grpKey, (long long)r.sumVal);
+    ctx.ss->unlock(); dropTestTable3Col(ctx.conn); ctx.ss->lock();
+    return -1;
+  }
+
+  printf("PASS\n");
+  ctx.ss->unlock(); dropTestTable3Col(ctx.conn); ctx.ss->lock();
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1372,6 +1891,7 @@ int main(int argc, char *argv[])
 
       TestCtx tctx = {&ndb, &ss, (Uint32)nodeId, conn};
 
+      if (testCteLookupMainSelect(tctx) != 0) result = 1;
       if (testBasicTwoCtes(tctx) != 0) result = 1;
       if (testTwoCtesGroupBy(tctx) != 0) result = 1;
       if (testTwoCtesLargeDataset(tctx) != 0) result = 1;
