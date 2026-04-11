@@ -236,6 +236,8 @@ class NdbQueryCteLookupOperationDefImpl : public NdbQueryLookupOperationDefImpl 
  public:
   int serializeOperation(const Ndb *ndb, Uint32Buffer &serializedDef) override;
 
+  Uint32 getNumResultCols() const { return m_numResultCols; }
+
   /**
    * Override key pattern to use P_ATTRINFO instead of P_COL.
    * CTE hash table keys include AttributeHeaders, so the expanded
@@ -1489,15 +1491,25 @@ NdbQueryDefImpl::NdbQueryDefImpl(
     }
   }
 
-  // Set query-level aggregation flag on all operations (for serialization).
+  // Set query-level aggregation flag for serialization.
   // Also set m_hasAggregation when CTEs exist (even without main agg leaves)
   // so that the KeyInfo section includes CTE definitions and JoinAggFlag is set.
   if (!m_hasAggregation && m_cteDefs.size() > 0) {
     m_hasAggregation = true;
   }
   if (m_hasAggregation) {
+    const bool hasMainAggLeaves = (m_aggregateLeafOpNos.size() > 0);
     for (Uint32 i = 0; i < m_operations.size(); i++) {
-      m_operations[i]->m_queryHasAggregation = true;
+      /* NI_AGGREGATE flag: set on CTE-embedded ops always (they have
+       * their own aggregation via the CTE mechanism). Set on main query
+       * ops only if the main query has aggregate leaves. Without this
+       * distinction, DBSPJ's validateAggregateFlags rejects the
+       * all-or-nothing check when main ops lack aggregation. */
+      if (m_operations[i]->isCteEmbedded() ||
+          m_operations[i]->getType() == NdbQueryOperationDef::CteSubtree ||
+          hasMainAggLeaves) {
+        m_operations[i]->m_queryHasAggregation = true;
+      }
     }
   }
 

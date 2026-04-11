@@ -114,9 +114,13 @@ createTestTables(MYSQL *conn)
       "  val BIGINT NOT NULL"
       ") ENGINE=NDB") != 0) return -1;
 
+  /* Virtual table for CTE_LOOKUP key binding.
+   * PK (grp) matches the CTE GROUP BY key column type.
+   * total column matches the CTE SUM aggregate result type. */
   if (sqlExec(conn,
       "CREATE TABLE cte_virtual ("
-      "  grp INT NOT NULL PRIMARY KEY"
+      "  grp INT NOT NULL PRIMARY KEY,"
+      "  total BIGINT NOT NULL"
       ") ENGINE=NDB") != 0) return -1;
 
   return 0;
@@ -351,6 +355,188 @@ testCteWithStandardMain(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 2: Single CTE + main CTE_LOOKUP                                */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   WITH cte0 AS (SELECT grp, SUM(val) AS total                       */
+/*     FROM cte_src t1 JOIN cte_src t2 ON t1.pk = t2.pk GROUP BY grp)  */
+/*   SELECT cte0.grp, cte0.total                                       */
+/*   FROM cte_src t1 JOIN cte0 ON t1.grp = cte0.grp                    */
+/*                                                                     */
+/* CTE materializes GROUP BY grp, SUM(val). Main query scans src and   */
+/* looks up CTE by grp key. No main aggregation — raw CTE rows.        */
+/* Expected: 5 rows: grp=1→30 (x2), grp=2→70 (x2), grp=3→50 (x1)     */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteLookupMain(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 2: CTE + main CTE_LOOKUP ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  dict->invalidateTable(VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  /* CTE 0 aggregation: GROUP BY grp, SUM(val) — direct column refs */
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") ||
+      !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) ||
+      !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg: %s)\n", cteAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Build query */
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+
+  /* CTE 0 subtree */
+  qb->beginCteSubtree(0);
+  const NdbQueryTableScanOperationDef *cteScanOp = qb->scanTable(srcTab);
+  if (cteScanOp == nullptr) {
+    printf("FAILED (CTE scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteJoinKey[] = {
+    qb->linkedValue(cteScanOp, "pk"), nullptr
+  };
+  NdbQueryOptions cteLeafOpts;
+  cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLeafOpts.setAggregation(cteAgg);
+  const NdbQueryLookupOperationDef *cteLeafOp =
+      qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts);
+  if (cteLeafOp == nullptr) {
+    printf("FAILED (CTE leaf: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->endCteSubtree();
+
+  int cteErr = qb->defineCte(0, srcTab, cteAgg);
+  if (cteErr != 0) {
+    printf("FAILED (defineCte: %d)\n", cteErr);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: scan src, CTE_LOOKUP by grp */
+  const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+  if (mainScanOp == nullptr) {
+    printf("FAILED (main scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryOperand *cteKey[] = {
+    qb->linkedValue(mainScanOp, "grp"), nullptr
+  };
+  /* MatchNonNull = inner join: triggers CORR_FACTOR in DBSPJ's
+   * parseDA so the NDB API can correlate CTE_LOOKUP results with
+   * parent scan rows. */
+  NdbQueryOptions cteLookupOpts;
+  cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  const NdbQueryCteLookupOperationDef *cteLookupOp =
+      qb->lookupCte(0, 2, virtTab, cteKey, &cteLookupOpts);
+  if (cteLookupOp == nullptr) {
+    printf("FAILED (lookupCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  V("\n  Query prepared: %u operations\n", queryDef->getNoOfOperations());
+
+  /* Execute */
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Set up result projections — NDB API requires non-empty projection
+   * on each operation that participates in the result. */
+  NdbQueryOperation *mainQueryOp = query->getQueryOperation(3U);
+  NdbQueryOperation *cteLookupQueryOp = query->getQueryOperation(4U);
+  NdbRecAttr *raGrp = nullptr;
+  if (mainQueryOp != nullptr) {
+    raGrp = mainQueryOp->getValue("grp");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Consume scan batches */
+  NdbQuery::NextResultOutcome outcome;
+  Uint32 rowCount = 0;
+
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    if (raGrp != nullptr) {
+      V("  row: grp=%d\n", raGrp->int32_value());
+    }
+  }
+
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  V("  Rows: %u\n", rowCount);
+
+  /* For now, verify row count only. Each main scan row (5 total)
+   * should produce one CTE_LOOKUP result. */
+  if (rowCount == 5) {
+    printf("OK (%u rows)\n", rowCount);
+    return 0;
+  }
+
+  printf("FAILED (expected 5 rows, got %u)\n", rowCount);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -407,6 +593,7 @@ int main(int argc, char **argv)
         }
         else {
           if (testCteWithStandardMain(&ndb, conn) != 0) exitCode = 1;
+          if (testCteLookupMain(&ndb, conn) != 0) exitCode = 1;
         }
 
         dropTestTables(conn);

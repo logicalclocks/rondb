@@ -5287,7 +5287,10 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
     // not through the normal row projection path).
     // has children (intermediate node providing linked attributes).
     if (getNoOfChildOperations() == 0 && !def.isAggregateLeaf() &&
-        !def.isQueryAggregation()) {
+        !def.isQueryAggregation() &&
+        def.getType() != NdbQueryOperationDef::CteSubtree &&
+        def.getType() != NdbQueryOperationDef::CteLookup &&
+        !def.isCteEmbedded()) {
       return QRY_EMPTY_PROJECTION;
     }
   } else {
@@ -5416,8 +5419,35 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
       QN_CteLookupParameters *param =
           reinterpret_cast<QN_CteLookupParameters *>(attrInfo.addr(startPos));
       if (unlikely(param == nullptr)) return Err_MemoryAlloc;
+
+      /* CTE_LOOKUP needs PI_ATTR_INTERPRET (ExitOK) and PI_ATTR_LIST
+       * (virtual column reads) so DBSPJ builds proper AttrInfo with
+       * FLUSH_AI for CTE_LOOKUP_REQ result delivery.
+       * Read numResultCols from the serialized QN_CteLookupNode. */
+      {
+        const QN_CteLookupNode *cteNode =
+            reinterpret_cast<const QN_CteLookupNode *>(queryNode);
+        const Uint32 numCols = cteNode->numResultCols;
+
+        // PI_ATTR_INTERPRET: minimal ExitOK program
+        requestInfo |= DABits::PI_ATTR_INTERPRET;
+        Uint32 interpHeader = (0u << 16) | 1u;  // subroutine_len=0, prog_len=1
+        attrInfo.append(interpHeader);
+        attrInfo.append(Uint32(18));  // Interpreter::ExitOK = 18
+
+        // PI_ATTR_LIST: virtual column reads only.
+        // DBSPJ's parseDA() adds FLUSH_AI (for isScan) and CORR_FACTOR
+        // (when NI_INNER_JOIN is set via MatchNonNull) automatically.
+        requestInfo |= DABits::PI_ATTR_LIST;
+        attrInfo.append(numCols);
+        for (Uint32 c = 0; c < numCols; c++) {
+          attrInfo.append(c << 16);  // AttributeHeader(attrId=c, size=0)
+        }
+      }
+
       param->requestInfo = requestInfo;
       param->resultData = getIdOfReceiver();
+      length = attrInfo.getSize() - startPos;
       QueryNodeParameters::setOpLen(param->len, paramType, length);
       break;
     }
