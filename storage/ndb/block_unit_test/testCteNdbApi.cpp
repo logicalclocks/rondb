@@ -166,8 +166,11 @@ testCteWithStandardMain(Ndb *ndb, MYSQL *conn)
   }
 
   /* CTE 0 aggregation: GROUP BY grp, SUM(val) */
+  /* CTE 0 aggregation: GROUP BY grp (column "grp"), SUM(val).
+   * Use direct column reference (NOT AGG_LINKED_COL_FLAG) since
+   * the CTE scans a real table, not linked parent columns. */
   NdbAggregator cteAgg(srcTab);
-  if (!cteAgg.GroupBy(0 | AGG_LINKED_COL_FLAG) ||  /* linked pos 0 = grp */
+  if (!cteAgg.GroupBy("grp") ||
       !cteAgg.LoadColumn("val", 0) ||
       !cteAgg.Sum(0, 0) ||
       !cteAgg.Finalize()) {
@@ -212,16 +215,10 @@ testCteWithStandardMain(Ndb *ndb, MYSQL *conn)
   };
   NdbQueryOptions cteLeafOpts;
   cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
-  /* CTE leaf gets aggregation via the CTE mechanism, but we need
-   * to mark it as aggregate leaf for NI_AGGREGATE_LEAF flag. */
+  /* CTE leaf aggregation: uses direct GroupBy("grp"), no linked
+   * projection needed (unlike main query where GROUP BY references
+   * parent columns via AGG_LINKED_COL_FLAG). */
   cteLeafOpts.setAggregation(cteAgg);
-  const NdbLinkedOperand *cteGrpLink = qb->linkedValue(cteScanOp, "grp");
-  if (cteGrpLink == nullptr) {
-    printf("FAILED (CTE grpLink: %s)\n", qb->getNdbError().message);
-    qb->destroy();
-    return -1;
-  }
-  cteLeafOpts.addLinkedProjection(cteGrpLink);
 
   const NdbQueryLookupOperationDef *cteLeafOp =
       qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts);
