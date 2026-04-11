@@ -2376,12 +2376,21 @@ Uint32 Dbspj::buildExecPlan(Ptr<Request> requestPtr) {
     multiLeafAgg = (leafCount > 1);
   }
 
+  // First pass: setup ancestors for ALL root-level nodes before
+  // building any execution plans. This ensures m_ancestors is fully
+  // populated for all nodes — needed because planSequentialExec
+  // walks the global node list and checks ancestors across subtrees.
   Ptr<TreeNode> nodePtr;
   for (list.first(nodePtr); !nodePtr.isNull();
        list.next(nodePtr)) {
     if (nodePtr.p->m_parentPtrI != RNIL) continue;
-
     setupAncestors(requestPtr, nodePtr, RNIL);
+  }
+
+  // Second pass: build execution plans.
+  for (list.first(nodePtr); !nodePtr.isNull();
+       list.next(nodePtr)) {
+    if (nodePtr.p->m_parentPtrI != RNIL) continue;
 
     Uint32 err;
     if (requestPtr.p->isScan()) {
@@ -2424,6 +2433,9 @@ Uint32 Dbspj::planParallelExec(Ptr<Request> requestPtr,
   Local_dependency_map child(pool, treeNodePtr.p->m_child_nodes);
   Local_dependency_map execList(pool, treeNodePtr.p->m_next_nodes);
   Dependency_map::ConstDataBufferIterator it;
+
+  DEB_CTE(("(%u) planParallelExec: node=%u childCount=%u",
+           instance(), treeNodePtr.p->m_node_no, child.getSize()));
 
   treeNodePtr.p->m_predecessors = treeNodePtr.p->m_ancestors;
   treeNodePtr.p->m_dependencies = treeNodePtr.p->m_ancestors;
@@ -2512,6 +2524,16 @@ Uint32 Dbspj::planSequentialExec(Ptr<Request> requestPtr,
         << branchPtr.p->m_node_no);
 
   // Append head of branch to be executed after 'prevExecPtr'
+  {
+    LocalArenaPool<DataBufferSegment<14>> pool2(requestPtr.p->m_arena,
+                                                m_dependency_map_pool);
+    Local_dependency_map const clist(pool2, branchPtr.p->m_child_nodes);
+    DEB_CTE(("(%u) planSequentialExec: branch node=%u childCount=%u "
+             "isInner=%d isLookup=%d",
+             instance(), branchPtr.p->m_node_no, clist.getSize(),
+             (int)((branchPtr.p->m_bits & TreeNode::T_INNER_JOIN) != 0),
+             (int)branchPtr.p->isLookup()));
+  }
   const Uint32 err = appendTreeNode(requestPtr, branchPtr, prevExecPtr);
   if (unlikely(err)) return err;
 
@@ -2532,6 +2554,13 @@ Uint32 Dbspj::planSequentialExec(Ptr<Request> requestPtr,
   Ptr<TreeNode> treeNodePtr(branchPtr);
   prevExecPtr = treeNodePtr;
   while (list.next(treeNodePtr)) {
+    DEB_CTE(("(%u) planSeq step1: check node=%u predClear=%d "
+             "ancestorsContained=%d isInner=%d isLookup=%d",
+             instance(), treeNodePtr.p->m_node_no,
+             (int)treeNodePtr.p->m_predecessors.isclear(),
+             (int)predecessors.contains(treeNodePtr.p->m_ancestors),
+             (int)((treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) != 0),
+             (int)treeNodePtr.p->isLookup()));
     if (treeNodePtr.p->m_predecessors.isclear() &&
         predecessors.contains(treeNodePtr.p->m_ancestors) &&
         treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN &&
@@ -5748,11 +5777,13 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       }
     }
 
-    // Count expected replies: only CONF/REF.
-    // Unlike regular lookup_send, CTE_LOOKUP's TRANSID_AI goes directly
-    // to the API via FLUSH_AI — DBSPJ never receives it. So we only
-    // count the CTE_LOOKUP_CONF/REF reply.
-    Uint32 cnt = 1;
+    // Count expected replies — same pattern as lookup_send:
+    // CONF/REF + optional TRANSID_AI (residual CORR_FACTOR to DBSPJ).
+    Uint32 cnt = 0;
+    if (requestPtr.p->isScan() || !treeNodePtr.p->isLeaf())
+      cnt++;
+    if (treeNodePtr.p->m_bits & TreeNode::T_EXPECT_TRANSID_AI)
+      cnt++;
 
     // Build and send CTE_LOOKUP_REQ with correlation + result routing
     CteLookupReq *req =
@@ -5762,7 +5793,7 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     req->aggStateKey = targetAggKey;
     req->keyLen = keyLenBytes;
     req->resultRef = treeNodePtr.p->m_cteLookup_data.m_api_resultRef;
-    req->resultData = treeNodePtr.p->m_cteLookup_data.m_api_resultData;
+    req->resultData = requestPtr.p->m_rootResultData;
     req->routeRef = requestPtr.p->m_senderRef;
     req->correlation = treeNodePtr.p->m_send.m_correlation;
 

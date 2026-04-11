@@ -19014,9 +19014,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
       continue;
     }
 
-    if (attrId == AttributeHeader::CORR_FACTOR32 ||
-        attrId == AttributeHeader::CORR_FACTOR64) {
-      /* CORR_FACTOR: write parent-child correlation value */
+    if (attrId == AttributeHeader::CORR_FACTOR32) {
+      /* CORR_FACTOR32: 1 word — tuple correlation only */
       jam();
       if (unlikely(outPos + 2 > ZATTR_BUFFER_SIZE)) {
         jam();
@@ -19025,6 +19024,21 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
       AttributeHeader::init(&outBuf[outPos], attrId, 4);
       outBuf[outPos + 1] = correlation;
       outPos += 2;
+      pos += 1;
+      continue;
+    }
+    if (attrId == AttributeHeader::CORR_FACTOR64) {
+      /* CORR_FACTOR64: 2 words — root receiver ID + tuple correlation.
+       * The root receiver ID is in resultData (FLUSH_AI connect ptr). */
+      jam();
+      if (unlikely(outPos + 3 > ZATTR_BUFFER_SIZE)) {
+        jam();
+        goto output_overflow;
+      }
+      AttributeHeader::init(&outBuf[outPos], attrId, 8);
+      outBuf[outPos + 1] = resultData;   // root receiver ID
+      outBuf[outPos + 2] = correlation;   // tuple correlation
+      outPos += 3;
       pos += 1;
       continue;
     }
