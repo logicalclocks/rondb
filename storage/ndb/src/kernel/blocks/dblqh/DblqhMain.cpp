@@ -19036,8 +19036,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
         goto output_overflow;
       }
       AttributeHeader::init(&outBuf[outPos], attrId, 8);
-      outBuf[outPos + 1] = resultData;   // root receiver ID
-      outBuf[outPos + 2] = correlation;   // tuple correlation
+      outBuf[outPos + 1] = correlation;   // tuple correlation
+      outBuf[outPos + 2] = resultData;    // root receiver ID
       outPos += 3;
       pos += 1;
       continue;

@@ -2607,8 +2607,12 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextResult(bool fetchAllowed,
 
   while (m_state != EndOfData)  // Or likely:  return when 'gotRow'
   {
+    DEB_CTE_API("nextResult: cursor=%u state=%d rootOpNo=%u\n",
+                m_globalCursor, (int)m_state, getRootOpNo());
     NdbQuery::NextResultOutcome res =
         getQueryOperation(m_globalCursor).nextResult(fetchAllowed, forceSend);
+
+    DEB_CTE_API("nextResult: cursor=%u res=%d\n", m_globalCursor, (int)res);
 
     if (unlikely(res == NdbQuery::NextResult_error))
       return res;
@@ -2682,6 +2686,7 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextRootResult(bool fetchAllowed,
        * complete (under mutex protection), or block until data
        * previously requested arrives.
        */
+      DEB_CTE_API("nextRootResult: awaitMoreResults (blocking)\n");
       const FetchResult fetchResult = awaitMoreResults(forceSend);
       switch (fetchResult) {
         case FetchResult_ok:  // OK - got data wo/ error
@@ -3266,6 +3271,10 @@ int NdbQueryImpl::prepareSend() {
 
   if (getQueryDef().isScanQuery()) {
     NdbWorker::buildReceiverIdMap(m_workers, m_workerCount);
+    for (Uint32 w = 0; w < m_workerCount; w++) {
+      DEB_CTE_API("prepareSend: worker[%u] receiverId=0x%x\n",
+                  w, m_workers[w].getReceiverId());
+    }
   }
 
   // Aggregation setup (RONDB-733)
@@ -5293,7 +5302,10 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
         !def.isCteEmbedded()) {
       return QRY_EMPTY_PROJECTION;
     }
-  } else {
+  } else if (def.getType() != NdbQueryOperationDef::CteLookup) {
+    /* Standard projection: serialize real table column reads.
+     * CTE_LOOKUP uses virtual column IDs (0, 1, ...) already added
+     * in the QN_CTE_LOOKUP case above — skip real column projection. */
     requestInfo |= DABits::PI_ATTR_LIST;
     const int error = serializeProject(attrInfo);
     if (unlikely(error)) {
@@ -5724,9 +5736,19 @@ bool NdbQueryOperationImpl::execTRANSID_AI(const Uint32 *ptr, Uint32 len) {
   TupleCorrelation tupleCorrelation;
   NdbWorker *worker = m_queryImpl.m_workers;
 
+  DEB_CTE_API("execTRANSID_AI: opNo=%u type=%d len=%u "
+              "workerCount=%u\n",
+              m_operationDef.getOpNo(),
+              (int)m_operationDef.getType(),
+              len, m_queryImpl.getWorkerCount());
+
   if (getQueryDef().isScanQuery()) {
     const CorrelationData correlData(ptr, len);
     const Uint32 receiverId = correlData.getRootReceiverId();
+
+    DEB_CTE_API("execTRANSID_AI: corr receiverId=0x%x "
+                "lastWord=0x%x secondLastWord=0x%x\n",
+                receiverId, ptr[len-1], len >= 2 ? ptr[len-2] : 0);
 
     /** receiverId holds the Id of the receiver of the corresponding stream
      * of the root operation. We can thus find the correct worker
@@ -5735,6 +5757,11 @@ bool NdbQueryOperationImpl::execTRANSID_AI(const Uint32 *ptr, Uint32 len) {
     worker = NdbWorker::receiverIdLookup(
         m_queryImpl.m_workers, m_queryImpl.getWorkerCount(), receiverId);
     if (unlikely(worker == nullptr)) {
+      DEB_CTE_API("execTRANSID_AI: FAILED receiverIdLookup! "
+                  "receiverId=0x%x, expected root receiverId=0x%x\n",
+                  receiverId,
+                  m_queryImpl.getWorkerCount() > 0
+                  ? m_queryImpl.m_workers[0].getReceiverId() : 0);
       assert(false);
       return false;
     }

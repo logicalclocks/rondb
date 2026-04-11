@@ -5465,6 +5465,11 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_cteLookup_data.m_pendingCount = 0;
     treeNodePtr.p->m_cteLookup_data.m_api_resultRef = ctx.m_resultRef;
     treeNodePtr.p->m_cteLookup_data.m_api_resultData = ctx.m_resultData;
+    DEB_CTE(("(%u) cte_build: node=%u resultRef=0x%x resultData=0x%x "
+             "rootResultData=0x%x",
+             instance(), treeNodePtr.p->m_node_no,
+             ctx.m_resultRef, ctx.m_resultData,
+             requestPtr.p->m_rootResultData));
 
     // Register CteContext for this cteId (if not already registered)
     {
@@ -5523,6 +5528,10 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
 
     Uint32 treeBits = node->requestInfo;
     Uint32 paramBits = param->requestInfo;
+
+    // Set resultData so parseDA's FLUSH_AI targets THIS operation's
+    // receiver, not the root scan's. Same as lookup_build does.
+    ctx.m_resultData = param->resultData;
 
     // Parse optional data (parent list, key pattern, etc.)
     struct DABuffer nodeDA, paramDA;
@@ -5596,6 +5605,9 @@ void Dbspj::cte_start(Signal *signal, Ptr<Request> requestPtr,
 void Dbspj::cte_countSignal(Signal *signal, Ptr<Request> requestPtr,
                              Ptr<TreeNode> treeNodePtr, Uint32 cnt) {
   jam();
+  ndbassert(requestPtr.p->m_outstanding >= cnt);
+  requestPtr.p->m_outstanding -= cnt;
+
   ndbassert(treeNodePtr.p->m_cteLookup_data.m_outstanding >= cnt);
   treeNodePtr.p->m_cteLookup_data.m_outstanding -= cnt;
 }
@@ -5808,9 +5820,11 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
 
     Uint32 ref = numberToRef(DBLQH, 1, targetNodeId);
     DEB_CTE(("(%u) cte_lookup_send: SENDING CTE_LOOKUP_REQ to ref=0x%x "
-             "aggStateKey=%u keyLen=%u corr=0x%x resultRef=0x%x cnt=%u",
+             "aggStateKey=%u keyLen=%u corr=0x%x resultRef=0x%x "
+             "resultData=0x%x rootResultData=0x%x cnt=%u",
              instance(), ref, targetAggKey, keyLenBytes,
-             req->correlation, req->resultRef, cnt));
+             req->correlation, req->resultRef,
+             req->resultData, requestPtr.p->m_rootResultData, cnt));
     sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
                CteLookupReq::SignalLength, JBB, &handle);
 

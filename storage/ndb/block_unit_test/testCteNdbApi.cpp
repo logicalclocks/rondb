@@ -481,13 +481,21 @@ testCteLookupMain(Ndb *ndb, MYSQL *conn)
     return -1;
   }
 
-  /* Set up result projections — NDB API requires non-empty projection
-   * on each operation that participates in the result. */
+  /* Set up result projections. getValue defines what columns are read
+   * and sizes the receive buffer accordingly. */
   NdbQueryOperation *mainQueryOp = query->getQueryOperation(3U);
   NdbQueryOperation *cteLookupQueryOp = query->getQueryOperation(4U);
   NdbRecAttr *raGrp = nullptr;
   if (mainQueryOp != nullptr) {
     raGrp = mainQueryOp->getValue("grp");
+  }
+  /* CTE_LOOKUP: getValue on the virtual table columns defines the
+   * receive buffer size for the CTE result row. */
+  NdbRecAttr *raCteGrp = nullptr;
+  NdbRecAttr *raCteTotal = nullptr;
+  if (cteLookupQueryOp != nullptr) {
+    raCteGrp = cteLookupQueryOp->getValue("grp");
+    raCteTotal = cteLookupQueryOp->getValue("total");
   }
 
   if (trans->execute(NdbTransaction::NoCommit) != 0) {
