@@ -727,9 +727,7 @@ class NdbQueryDefImpl {
   Vector<NdbQueryOperandImpl *> m_operands;
   Uint32Buffer m_serializedDef;
 
-  bool m_hasAggregation;
-  Vector<Uint32> m_aggregateLeafOpNos;
-
+ public:
   /** CTE definition info for the KeyInfo agg section. */
   struct CteDefInfo {
     Uint32 cteId;
@@ -744,6 +742,10 @@ class NdbQueryDefImpl {
  public:
   Uint32 getNumCtes() const { return m_cteDefs.size(); }
   const CteDefInfo &getCteDef(Uint32 i) const { return m_cteDefs[i]; }
+
+ private:
+  bool m_hasAggregation;
+  Vector<Uint32> m_aggregateLeafOpNos;
 };  // class NdbQueryDefImpl
 
 class NdbQueryBuilderImpl {
@@ -808,6 +810,7 @@ class NdbQueryBuilderImpl {
   bool m_inCteSubtree;
   Uint32 m_cteSubtreeStartOpIdx;  // Index in m_operations where subtree starts
   Uint32 m_currentCteId;
+  Uint32 m_completedCteSubtrees;  // Count of completed CTE subtrees
 };  // class NdbQueryBuilderImpl
 
 //////////////////////////////////////////////

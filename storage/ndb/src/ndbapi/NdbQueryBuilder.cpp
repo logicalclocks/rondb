@@ -65,6 +65,13 @@ static const int Err_MemoryAlloc = 4000;
 static const int Err_UnknownColumn = 4004;
 static const int Err_FinaliseNotCalled = 4519;
 
+/**
+ * Dummy table used as placeholder for CTE subtree container nodes.
+ * These nodes have no real table — the dummy has tableId=0 and no
+ * columns, so any accidental real use will fail immediately.
+ */
+static NdbTableImpl s_cteDummyTable;
+
 static void setErrorCode(NdbQueryBuilderImpl *qb, int aErrorCode) {
   qb->setErrorCode(aErrorCode);
 }
@@ -253,6 +260,48 @@ class NdbQueryCteLookupOperationDefImpl : public NdbQueryLookupOperationDefImpl 
   NdbQueryCteLookupOperationDef m_cteInterface;
 
 };  // class NdbQueryCteLookupOperationDefImpl
+
+/**
+ * CTE subtree container — serializes as QN_CTE_SUBTREE.
+ * Not a real scan or lookup; just a 4-word header that tells DBSPJ
+ * the next numNodes operations belong to this CTE.
+ */
+class NdbQueryCteSubtreeOperationDefImpl : public NdbQueryOperationDefImpl {
+  friend class NdbQueryBuilder;
+  friend class NdbQueryBuilderImpl;
+
+ public:
+  int serializeOperation(const Ndb *ndb, Uint32Buffer &serializedDef) override;
+
+  NdbQueryOperationDef::Type getType() const override {
+    return NdbQueryOperationDef::CteSubtree;
+  }
+
+  bool isScanOperation() const override { return false; }
+
+  const NdbQueryOperationDef &getInterface() const override {
+    return m_interface;
+  }
+
+  void setNumNodes(Uint32 n) { m_numNodes = n; }
+
+ private:
+  explicit NdbQueryCteSubtreeOperationDefImpl(
+      Uint32 cteId, const NdbQueryOptionsImpl &options,
+      const char *ident, Uint32 opNo, Uint32 internalOpNo, int &error)
+      : NdbQueryOperationDefImpl(s_cteDummyTable, options, ident,
+                                 opNo, internalOpNo, error),
+        m_cteId(cteId),
+        m_numNodes(0),
+        m_interface(*this) {}
+
+  ~NdbQueryCteSubtreeOperationDefImpl() override {}
+
+  const Uint32 m_cteId;
+  Uint32 m_numNodes;
+  NdbQueryOperationDef m_interface;
+
+};  // class NdbQueryCteSubtreeOperationDefImpl
 
 class NdbQueryIndexOperationDefImpl : public NdbQueryLookupOperationDefImpl {
   friend class NdbQueryBuilder;  // Allow privat access from builder interface
@@ -1024,6 +1073,88 @@ const NdbQueryCteLookupOperationDef *NdbQueryBuilder::lookupCte(
   return &op->m_cteInterface;
 }
 
+const NdbQueryOperationDef *NdbQueryBuilder::beginCteSubtree(Uint32 cteId) {
+  if (m_impl.hasError()) return nullptr;
+  returnErrIf(m_impl.m_inCteSubtree, QRY_ILLEGAL_STATE);
+  returnErrIf(cteId >= 64, QRY_DEFINITION_TOO_LARGE);
+
+  int error = 0;
+  NdbQueryCteSubtreeOperationDefImpl *op =
+      new NdbQueryCteSubtreeOperationDefImpl(
+          cteId, defaultOptions, nullptr,
+          m_impl.m_operations.size(), m_impl.getNextInternalOpNo(), error);
+
+  returnErrIf(m_impl.takeOwnership(op) != 0, Err_MemoryAlloc);
+  returnErrIf(error != 0, error);
+
+  m_impl.m_inCteSubtree = true;
+  m_impl.m_cteSubtreeStartOpIdx = m_impl.m_operations.size() - 1;
+  m_impl.m_currentCteId = cteId;
+
+  return &op->getInterface();
+}
+
+void NdbQueryBuilder::endCteSubtree() {
+  if (m_impl.hasError()) return;
+  if (!m_impl.m_inCteSubtree) {
+    ::setErrorCode(&m_impl, QRY_ILLEGAL_STATE);
+    return;
+  }
+
+  // Count embedded ops (everything after the subtree container)
+  Uint32 numNodes = m_impl.m_operations.size() - m_impl.m_cteSubtreeStartOpIdx - 1;
+
+  // Patch numNodes on the subtree container
+  NdbQueryCteSubtreeOperationDefImpl *subtreeOp =
+      static_cast<NdbQueryCteSubtreeOperationDefImpl *>(
+          m_impl.m_operations[m_impl.m_cteSubtreeStartOpIdx]);
+  subtreeOp->setNumNodes(numNodes);
+
+  m_impl.m_inCteSubtree = false;
+  m_impl.m_completedCteSubtrees++;
+}
+
+int NdbQueryBuilder::defineCte(Uint32 cteId,
+                               const NdbDictionary::Table *sourceTable,
+                               const NdbAggregator &aggProgram,
+                               Uint64 depMask, Uint32 flags) {
+  if (m_impl.hasError()) return m_impl.getNdbError().code;
+
+  if (sourceTable == nullptr) {
+    ::setErrorCode(&m_impl, QRY_REQ_ARG_IS_NULL);
+    return QRY_REQ_ARG_IS_NULL;
+  }
+  if (cteId >= 64) {
+    ::setErrorCode(&m_impl, QRY_DEFINITION_TOO_LARGE);
+    return QRY_DEFINITION_TOO_LARGE;
+  }
+
+  NdbQueryDefImpl::CteDefInfo cteInfo;
+  cteInfo.cteId = cteId;
+  cteInfo.tableId = sourceTable->getObjectId();
+  cteInfo.schemaVersion = sourceTable->getObjectVersion();
+  cteInfo.depMask = depMask;
+  cteInfo.flags = flags;
+
+  if (!aggProgram.finalized()) {
+    ::setErrorCode(&m_impl, Err_FinaliseNotCalled);
+    return Err_FinaliseNotCalled;
+  }
+
+  // Deep-copy aggregation program
+  const Uint32 *progBuf = aggProgram.buffer();
+  Uint32 progLen = aggProgram.instructions_length();
+  for (Uint32 i = 0; i < progLen; i++) {
+    cteInfo.aggProgram.push_back(progBuf[i]);
+  }
+
+  if (m_impl.m_cteDefs.push_back(cteInfo) != 0) {
+    ::setErrorCode(&m_impl, Err_MemoryAlloc);
+    return Err_MemoryAlloc;
+  }
+  return 0;
+}
+
 const NdbQueryTableScanOperationDef *NdbQueryBuilder::scanTable(
     const NdbDictionary::Table *table, const NdbQueryOptions *options,
     const char *ident) {
@@ -1031,11 +1162,15 @@ const NdbQueryTableScanOperationDef *NdbQueryBuilder::scanTable(
   returnErrIf(table == nullptr,
               QRY_REQ_ARG_IS_NULL);  // Required non-NULL arguments
   /**
-   * A table scan does not depend on other operations, since there cannot be
-   * linked operands in a scan filter. Therefore, it must be the first
-   * operation.
+   * A table scan does not depend on other operations, since there cannot
+   * be linked operands in a scan filter. Therefore, it must be the first
+   * operation — unless we are inside a CTE subtree (embedded CTE scan)
+   * or CTE subtrees were previously defined (main query root after CTEs).
    */
-  returnErrIf(m_impl.m_operations.size() > 0, QRY_UNKNOWN_PARENT);
+  returnErrIf(m_impl.m_operations.size() > 0 &&
+              !m_impl.m_inCteSubtree &&
+              m_impl.m_completedCteSubtrees == 0,
+              QRY_UNKNOWN_PARENT);
 
   int error = 0;
   NdbQueryTableScanOperationDefImpl *op = new NdbQueryTableScanOperationDefImpl(
@@ -1193,7 +1328,12 @@ NdbQueryBuilderImpl::NdbQueryBuilderImpl()
       m_operations(0),
       m_operands(0),
       m_paramCnt(0),
-      m_hasError(false) {}
+      m_hasError(false),
+      m_cteDefs(0),
+      m_inCteSubtree(false),
+      m_cteSubtreeStartOpIdx(0),
+      m_currentCteId(0),
+      m_completedCteSubtrees(0) {}
 
 NdbQueryBuilderImpl::~NdbQueryBuilderImpl() {
   // Delete all operand and operator in Vector's
@@ -1239,6 +1379,16 @@ const NdbQueryDefImpl *NdbQueryBuilderImpl::prepare(const Ndb *ndb) {
     delete def;
     setErrorCode(error);
     return nullptr;
+  }
+
+  // Transfer CTE definitions to the query definition
+  if (m_cteDefs.size() > 0) {
+    if (def->m_cteDefs.assign(m_cteDefs) != 0) {
+      delete def;
+      setErrorCode(Err_MemoryAlloc);
+      return nullptr;
+    }
+    m_cteDefs.clear();
   }
 
   if (doPrintQueryTree) {
@@ -2308,6 +2458,30 @@ Uint32 NdbQueryCteLookupOperationDefImpl::appendKeyPattern(
 
   return appendedPattern;
 }  // NdbQueryCteLookupOperationDefImpl::appendKeyPattern
+
+/**
+ * Serialize QN_CTE_SUBTREE: 4-word header (len, requestInfo, cteId, numNodes).
+ */
+int NdbQueryCteSubtreeOperationDefImpl::serializeOperation(
+    const Ndb * /*ndb*/, Uint32Buffer &serializedDef) {
+  assert(!m_isPrepared);
+  m_isPrepared = true;
+
+  Uint32 startPos = serializedDef.getSize();
+  serializedDef.alloc(QN_CteSubtreeNode::NodeSize);
+
+  QN_CteSubtreeNode *node =
+      reinterpret_cast<QN_CteSubtreeNode *>(serializedDef.addr(startPos));
+  if (unlikely(node == nullptr)) {
+    return Err_MemoryAlloc;
+  }
+  node->requestInfo = 0;
+  node->cteId = m_cteId;
+  node->numNodes = m_numNodes;
+  QueryNode::setOpLen(node->len, QueryNode::QN_CTE_SUBTREE,
+                      QN_CteSubtreeNode::NodeSize);
+  return 0;
+}
 
 Uint32 NdbQueryIndexScanOperationDefImpl::appendPrunePattern(
     Uint32Buffer &serializedDef) {

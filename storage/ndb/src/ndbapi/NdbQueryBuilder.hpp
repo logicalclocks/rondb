@@ -281,7 +281,8 @@ class NdbQueryOperationDef  // Base class for all operation definitions
     UniqueIndexAccess,  ///< Read using unique index
     TableScan,          ///< Full table scan
     OrderedIndexScan,   ///< Ordered index scan, optionally w/ bounds
-    CteLookup           ///< Lookup into materialized CTE hash table
+    CteLookup,          ///< Lookup into materialized CTE hash table
+    CteSubtree          ///< Container for CTE materialization sub-tree
   };
 
   static const char *getTypeName(Type type);
@@ -314,6 +315,7 @@ class NdbQueryOperationDef  // Base class for all operation definitions
 
  protected:
   // Enforce object creation through NdbQueryBuilder factory
+  friend class NdbQueryCteSubtreeOperationDefImpl;  // CTE subtree container
   explicit NdbQueryOperationDef(NdbQueryOperationDefImpl &impl);
   ~NdbQueryOperationDef();
 
