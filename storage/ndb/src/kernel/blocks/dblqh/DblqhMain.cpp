@@ -168,6 +168,13 @@
 //#define DEBUG_INDEX_BUILD 1
 //#define DEBUG_JOIN_AGG 1
 #define DEBUG_MATCH 1
+#define DEBUG_CTE 1
+#endif
+
+#ifdef DEBUG_CTE
+#define DEB_CTE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CTE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_JOIN_AGG
@@ -18838,6 +18845,13 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   const Uint32 routeRef = req->routeRef;
   const Uint32 correlation = req->correlation;
 
+  DEB_CTE(("(%u) execCTE_LOOKUP_REQ: aggStateKey=%u keyLen=%u "
+           "senderRef=0x%x senderData=0x%x resultRef=0x%x "
+           "resultData=0x%x routeRef=0x%x corr=0x%x",
+           instance(), aggStateKey, keyLen,
+           senderRef, senderData, resultRef,
+           resultData, routeRef, correlation));
+
   /* Release incoming signal sections early so all error paths are safe.
    * We copy the section data into local buffers before releasing. */
   SectionHandle handle(this, signal);
@@ -18981,6 +18995,9 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
       const Uint32 resultData = finalR[pos + 2];
 
       if (outPos > 0) {
+        DEB_CTE(("(%u) CTE_LOOKUP FLUSH_AI: outPos=%u "
+                 "resultRef=0x%x resultData=0x%x",
+                 instance(), outPos, resultRef, resultData));
         TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
         transIdAI->connectPtr = resultData;
         transIdAI->transId[0] = state->m_transid[0];
@@ -19079,8 +19096,11 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     pos += 1;
   }
 
-  /* Send any remaining output as TRANSID_AI to the original sender */
+  /* Send any remaining output as TRANSID_AI to the original sender (DBSPJ) */
   if (outPos > 0) {
+    DEB_CTE(("(%u) CTE_LOOKUP residual: outPos=%u → senderRef=0x%x "
+             "connectPtr=0x%x",
+             instance(), outPos, senderRef, senderData));
     TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
     transIdAI->connectPtr = senderData;
     transIdAI->transId[0] = state->m_transid[0];
@@ -19091,8 +19111,13 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     lsp[0].sz = outPos;
     sendSignal(senderRef, GSN_TRANSID_AI, signal,
                TransIdAI::HeaderLength, JBB, lsp, 1);
+  } else {
+    DEB_CTE(("(%u) CTE_LOOKUP: no residual output (all via FLUSH_AI)",
+             instance()));
   }
 
+  DEB_CTE(("(%u) CTE_LOOKUP_CONF → senderRef=0x%x senderData=0x%x",
+           instance(), senderRef, senderData));
   /* CTE_LOOKUP_CONF acknowledges the lookup */
   {
     CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();

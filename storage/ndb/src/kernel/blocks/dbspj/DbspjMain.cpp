@@ -5783,9 +5783,12 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
                CteLookupReq::SignalLength, JBB, &handle);
 
-    // Track outstanding for both CONF and TRANSID_AI
+    // Track outstanding: cnt=1 (CONF only, TRANSID_AI goes to API via FLUSH_AI)
     requestPtr.p->m_outstanding += cnt;
     treeNodePtr.p->m_cteLookup_data.m_outstanding += cnt;
+    DEB_CTE(("(%u) cte_lookup_send: outstanding after: req=%u node=%u",
+             instance(), requestPtr.p->m_outstanding,
+             treeNodePtr.p->m_cteLookup_data.m_outstanding));
     return;
   } while (0);
 
