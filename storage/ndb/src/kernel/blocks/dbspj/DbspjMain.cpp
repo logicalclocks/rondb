@@ -8833,7 +8833,8 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
      *       repeated X-scan and are thus not repeated themself.
      */
     if (requestPtr.p->m_bits & Request::RT_REPEAT_SCAN_RESULT &&
-        !treeNodePtr.p->m_ancestors.contains(ctx.m_scans)) {
+        !treeNodePtr.p->m_ancestors.contains(ctx.m_scans) &&
+        !(treeNodePtr.p->m_bits & TreeNode::T_ONE_SHOT)) {
       treeNodePtr.p->m_bits |= TreeNode::T_SCAN_REPEATABLE;
     }
 
@@ -10541,9 +10542,9 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
       bool releaseAtSend = false;
 
       if (treeNodePtr.p->m_bits & TreeNode::T_ONE_SHOT &&
-          data.m_frags_not_started == 1) {
+          data.m_frags_not_started == 1 &&
+          !repeatable) {
         jam();
-        ndbassert(!repeatable);
         ndbassert(fragPtr.p->m_rangePtrI == RNIL);
         ndbassert(fragPtr.p->m_paramPtrI == RNIL);
         /**
