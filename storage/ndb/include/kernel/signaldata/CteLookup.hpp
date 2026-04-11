@@ -38,11 +38,15 @@
  */
 struct CteLookupReq {
   Uint32 senderRef;       // DBSPJ block reference
-  Uint32 senderData;      // TreeNode pointer (for correlation)
+  Uint32 senderData;      // TreeNode pointer (echoed in CONF/REF)
   Uint32 aggStateKey;     // JoinAggregationState pool index (hash table handle)
   Uint32 keyLen;          // Key length in bytes
+  Uint32 resultRef;       // FLUSH_AI target: API block reference
+  Uint32 resultData;      // FLUSH_AI connect ptr: API receiver ID
+  Uint32 routeRef;        // RouteRef for TRANSID_AI_R routing
+  Uint32 correlation;     // Parent-child correlation (root receiverId + tuple corr)
 
-  static constexpr Uint32 SignalLength = 4;
+  static constexpr Uint32 SignalLength = 8;
   enum { KeySectionNum = 0, AttrInfoSectionNum = 1 };
 };
 

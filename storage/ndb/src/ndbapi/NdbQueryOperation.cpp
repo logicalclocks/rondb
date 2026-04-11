@@ -5435,14 +5435,16 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
         attrInfo.append(interpHeader);
         attrInfo.append(Uint32(18));  // Interpreter::ExitOK = 18
 
-        // PI_ATTR_LIST: virtual column reads only.
-        // DBSPJ's parseDA() adds FLUSH_AI (for isScan) and CORR_FACTOR
-        // (when NI_INNER_JOIN is set via MatchNonNull) automatically.
+        // PI_ATTR_LIST: virtual column reads + CORR_FACTOR64.
+        // CORR_FACTOR must be in the user projection (before FLUSH_AI)
+        // so it's included in the TRANSID_AI sent to the API. DBSPJ's
+        // parseDA adds FLUSH_AI after PI_ATTR_LIST for scan queries.
         requestInfo |= DABits::PI_ATTR_LIST;
-        attrInfo.append(numCols);
+        attrInfo.append(numCols + 1);  // virtual cols + CORR_FACTOR
         for (Uint32 c = 0; c < numCols; c++) {
           attrInfo.append(c << 16);  // AttributeHeader(attrId=c, size=0)
         }
+        attrInfo.append(AttributeHeader::CORR_FACTOR64 << 16);
       }
 
       param->requestInfo = requestInfo;

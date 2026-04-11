@@ -542,6 +542,10 @@ sendCteLookupReq(SignalSender &ss, Uint32 nodeId, Uint32 ldmInst,
   req->senderData = correlationId;
   req->aggStateKey = aggStateKey;
   req->keyLen = keyLenBytes;
+  req->resultRef = ss.getOwnRef();
+  req->resultData = correlationId;
+  req->routeRef = ss.getOwnRef();
+  req->correlation = 0;
 
   Uint16 recBlock = numberToBlock(DBLQH, ldmInst);
   ssig.set(ss, 0, recBlock, GSN_CTE_LOOKUP_REQ, CteLookupReq::SignalLength);

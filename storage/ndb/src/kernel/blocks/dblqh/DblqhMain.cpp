@@ -18833,6 +18833,10 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   const Uint32 senderData = req->senderData;
   const Uint32 aggStateKey = req->aggStateKey;
   const Uint32 keyLen = req->keyLen;
+  const Uint32 resultRef = req->resultRef;
+  const Uint32 resultData = req->resultData;
+  const Uint32 routeRef = req->routeRef;
+  const Uint32 correlation = req->correlation;
 
   /* Release incoming signal sections early so all error paths are safe.
    * We copy the section data into local buffers before releasing. */
@@ -18995,14 +18999,14 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
 
     if (attrId == AttributeHeader::CORR_FACTOR32 ||
         attrId == AttributeHeader::CORR_FACTOR64) {
-      /* CORR_FACTOR: write correlation value from senderData */
+      /* CORR_FACTOR: write parent-child correlation value */
       jam();
       if (unlikely(outPos + 2 > ZATTR_BUFFER_SIZE)) {
         jam();
         goto output_overflow;
       }
       AttributeHeader::init(&outBuf[outPos], attrId, 4);
-      outBuf[outPos + 1] = senderData;
+      outBuf[outPos + 1] = correlation;
       outPos += 2;
       pos += 1;
       continue;

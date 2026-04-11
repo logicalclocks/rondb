@@ -644,6 +644,8 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_numResultCols;   // Number of result columns from CTE aggregation
     Uint32 m_outstanding;     // Outstanding lookup requests
     Uint32 m_pendingCount;    // Parent rows queued while CTE is materializing
+    Uint32 m_api_resultRef;   // FLUSH_AI target: API block reference
+    Uint32 m_api_resultData;  // FLUSH_AI connect ptr: API receiver ID
   };
 
   /**

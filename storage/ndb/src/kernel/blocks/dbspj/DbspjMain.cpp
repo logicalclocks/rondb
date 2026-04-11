@@ -5434,6 +5434,8 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_cteLookup_data.m_numResultCols = node->numResultCols;
     treeNodePtr.p->m_cteLookup_data.m_outstanding = 0;
     treeNodePtr.p->m_cteLookup_data.m_pendingCount = 0;
+    treeNodePtr.p->m_cteLookup_data.m_api_resultRef = ctx.m_resultRef;
+    treeNodePtr.p->m_cteLookup_data.m_api_resultData = ctx.m_resultData;
 
     // Register CteContext for this cteId (if not already registered)
     {
@@ -5598,6 +5600,12 @@ void Dbspj::cte_parent_row(Signal *signal, Ptr<Request> requestPtr,
       cte_serve_cached_row(signal, requestPtr,
                            treeNodePtr, *cteCtx);
     } else {
+      /* Set correlation from parent row — same pattern as
+       * lookup_parent_row sets m_send.m_correlation. */
+      Uint32 corrVal = rowRef.m_src_correlation;
+      treeNodePtr.p->m_send.m_correlation =
+          (corrVal << 16) | (corrVal & 0xFFFF);
+
       cte_lookup_send(signal, requestPtr,
                       treeNodePtr, rowRef);
     }
@@ -5740,13 +5748,23 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       }
     }
 
-    // Build and send CTE_LOOKUP_REQ
+    // Count expected replies: only CONF/REF.
+    // Unlike regular lookup_send, CTE_LOOKUP's TRANSID_AI goes directly
+    // to the API via FLUSH_AI — DBSPJ never receives it. So we only
+    // count the CTE_LOOKUP_CONF/REF reply.
+    Uint32 cnt = 1;
+
+    // Build and send CTE_LOOKUP_REQ with correlation + result routing
     CteLookupReq *req =
         reinterpret_cast<CteLookupReq *>(signal->getDataPtrSend());
     req->senderRef = reference();
     req->senderData = treeNodePtr.i;
     req->aggStateKey = targetAggKey;
     req->keyLen = keyLenBytes;
+    req->resultRef = treeNodePtr.p->m_cteLookup_data.m_api_resultRef;
+    req->resultData = treeNodePtr.p->m_cteLookup_data.m_api_resultData;
+    req->routeRef = requestPtr.p->m_senderRef;
+    req->correlation = treeNodePtr.p->m_send.m_correlation;
 
     SectionHandle handle(this);
     getSection(handle.m_ptr[CteLookupReq::KeySectionNum], keyInfoPtrI);
@@ -5759,16 +5777,15 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
 
     Uint32 ref = numberToRef(DBLQH, 1, targetNodeId);
     DEB_CTE(("(%u) cte_lookup_send: SENDING CTE_LOOKUP_REQ to ref=0x%x "
-             "aggStateKey=%u keyLen=%u attrInfoLen=%u outstanding_before=%u",
+             "aggStateKey=%u keyLen=%u corr=0x%x resultRef=0x%x cnt=%u",
              instance(), ref, targetAggKey, keyLenBytes,
-             (attrInfoPtrI != RNIL) ? handle.m_ptr[1].sz : 0,
-             requestPtr.p->m_outstanding));
+             req->correlation, req->resultRef, cnt));
     sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
                CteLookupReq::SignalLength, JBB, &handle);
 
-    // Track outstanding: expect CONF or REF
-    requestPtr.p->m_outstanding++;
-    treeNodePtr.p->m_cteLookup_data.m_outstanding++;
+    // Track outstanding for both CONF and TRANSID_AI
+    requestPtr.p->m_outstanding += cnt;
+    treeNodePtr.p->m_cteLookup_data.m_outstanding += cnt;
     return;
   } while (0);
 
