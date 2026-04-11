@@ -1610,10 +1610,11 @@ void NdbWorker::init(NdbQueryImpl &query, Uint32 workerNo) {
   for (unsigned opNo = 0; opNo < query.getNoOfOperations(); opNo++) {
     NdbQueryOperationImpl &op = query.getQueryOperation(opNo);
     new (&m_resultStreams[opNo]) NdbResultStream(op, *this);
-    // CTE subtree containers don't receive rows — skip buffer alloc.
-    // CTE-embedded ops (scan/lookup) need buffers for DBSPJ processing.
+    // CTE subtree containers and CTE-embedded ops don't receive
+    // rows via the NDB API — skip receiver buffer allocation.
     const NdbQueryOperationDefImpl &def = op.getQueryOperationDef();
-    if (def.getType() != NdbQueryOperationDef::CteSubtree) {
+    if (def.getType() != NdbQueryOperationDef::CteSubtree &&
+        !def.isCteEmbedded()) {
       m_resultStreams[opNo].prepare();
     }
   }
@@ -5322,9 +5323,17 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
           reinterpret_cast<QN_ScanFragParameters *>(attrInfo.addr(startPos));
       if (unlikely(param == nullptr)) return Err_MemoryAlloc;
 
-      const Uint32 fragsPerWorker = getQuery().m_fragsPerWorker;
-      const Uint32 batchRows = getMaxBatchRows() * fragsPerWorker;
-      const Uint32 batchByteSize = getMaxBatchBytes() * fragsPerWorker;
+      Uint32 batchRows, batchByteSize;
+      if (def.isCteEmbedded()) {
+        // CTE-embedded scans: use fixed defaults since API-side batch
+        // computation doesn't apply (DBSPJ handles the scan internally).
+        batchRows = 256;
+        batchByteSize = 65536;
+      } else {
+        const Uint32 fragsPerWorker = getQuery().m_fragsPerWorker;
+        batchRows = getMaxBatchRows() * fragsPerWorker;
+        batchByteSize = getMaxBatchBytes() * fragsPerWorker;
+      }
       assert(batchRows <= batchByteSize);
       assert(m_parallelism == Parallelism_max ||
              m_parallelism == Parallelism_adaptive);
@@ -6073,11 +6082,11 @@ Uint32 NdbQueryOperationImpl::getRowSize() const {
 }
 
 Uint32 NdbQueryOperationImpl::getMaxBatchBytes() const {
-  // CTE subtree containers have no table/rows — no buffer needed.
-  // CTE-embedded ops (scan/lookup) DO need batch sizes for DBSPJ.
-  if (m_operationDef.getType() == NdbQueryOperationDef::CteSubtree) {
-    DEB_CTE_API("getMaxBatchBytes: skip CteSubtree op %u\n",
-                m_operationDef.getOpNo());
+  // CTE subtree containers and CTE-embedded ops don't need API-side
+  // row buffers. Their batch parameters in prepareAttrInfo use fixed
+  // defaults. DBSPJ handles their buffer allocation internally.
+  if (m_operationDef.getType() == NdbQueryOperationDef::CteSubtree ||
+      m_operationDef.isCteEmbedded()) {
     return 0;
   }
   // Check if batch buffer size has been computed yet.
