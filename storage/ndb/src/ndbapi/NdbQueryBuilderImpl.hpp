@@ -427,6 +427,8 @@ class NdbQueryOperationDefImpl {
 
   bool isQueryAggregation() const { return m_queryHasAggregation; }
 
+  bool isCteEmbedded() const { return m_isCteEmbedded; }
+
   const NdbQueryOptionsImpl &getOptions() const { return m_options; }
 
   const Vector<const NdbQueryOperandImpl *> &getInterpretedParams() const {
@@ -559,8 +561,6 @@ class NdbQueryOperationDefImpl {
 
   /** True if this operation is embedded inside a CTE subtree. */
   bool m_isCteEmbedded;
-
-  bool isCteEmbedded() const { return m_isCteEmbedded; }
 
  private:
   bool isChildOf(const NdbQueryOperationDefImpl *parentOp) const;

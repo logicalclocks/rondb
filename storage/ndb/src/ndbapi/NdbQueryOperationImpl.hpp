@@ -645,7 +645,10 @@ class NdbQueryImpl {
 
   const NdbQuery &getInterface() const { return m_interface; }
 
-  NdbQueryOperationImpl &getRoot() const { return getQueryOperation(0U); }
+  /** Get the main query root operation.
+   *  For CTE queries, skips CTE subtree containers and CTE-embedded ops.
+   */
+  NdbQueryOperationImpl &getRoot() const;
 
   /** A complete batch has been received for a given SPJ-worker result.
    *  Update whatever required before the appl. is allowed to navigate

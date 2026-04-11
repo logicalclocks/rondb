@@ -1610,7 +1610,13 @@ void NdbWorker::init(NdbQueryImpl &query, Uint32 workerNo) {
   for (unsigned opNo = 0; opNo < query.getNoOfOperations(); opNo++) {
     NdbQueryOperationImpl &op = query.getQueryOperation(opNo);
     new (&m_resultStreams[opNo]) NdbResultStream(op, *this);
-    m_resultStreams[opNo].prepare();
+    // CTE subtree containers and CTE-embedded operations don't receive
+    // rows via the NDB API path — skip buffer allocation for them.
+    const NdbQueryOperationDefImpl &def = op.getQueryOperationDef();
+    if (def.getType() != NdbQueryOperationDef::CteSubtree &&
+        !def.isCteEmbedded()) {
+      m_resultStreams[opNo].prepare();
+    }
   }
 }
 
@@ -2990,6 +2996,18 @@ void NdbQueryImpl::execCLOSE_SCAN_REP(int errorCode, bool needClose) {
   setFetchTerminated(errorCode, needClose);
 }
 
+NdbQueryOperationImpl &NdbQueryImpl::getRoot() const {
+  for (Uint32 i = 0; i < m_countOperations; i++) {
+    const NdbQueryOperationDefImpl &def =
+        m_operations[i].getQueryOperationDef();
+    if (def.getType() != NdbQueryOperationDef::CteSubtree &&
+        !def.isCteEmbedded()) {
+      return m_operations[i];
+    }
+  }
+  return m_operations[0];
+}
+
 int NdbQueryImpl::prepareSend() {
   if (unlikely(m_state != Defined)) {
     assert(m_state >= Initial && m_state < Destructed);
@@ -3298,6 +3316,9 @@ int NdbQueryImpl::prepareAggregation() {
       }
     }
   }
+
+  DEB_CTE_API("prepareAggregation: aggProgram built, %u words\n",
+              m_aggProgram.getSize());
 
   if (unlikely(m_aggProgram.isMemoryExhausted())) {
     setErrorCode(Err_MemoryAlloc);

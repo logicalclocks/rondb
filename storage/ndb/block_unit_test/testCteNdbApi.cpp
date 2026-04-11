@@ -292,7 +292,10 @@ testCteWithStandardMain(Ndb *ndb, MYSQL *conn)
   }
 
   if (trans->execute(NdbTransaction::NoCommit) != 0) {
-    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
     trans->close();
     queryDef->destroy();
     return -1;
