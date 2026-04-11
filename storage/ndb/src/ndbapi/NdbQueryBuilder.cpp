@@ -60,6 +60,16 @@
 // For debugging purposes. Enable to print query tree graph to ndbout.
 static const bool doPrintQueryTree = false;
 
+#ifdef VM_TRACE
+#define DEBUG_CTE_API 1
+#endif
+
+#ifdef DEBUG_CTE_API
+#define DEB_CTE_API(...) fprintf(stderr, "[CTE_API] " __VA_ARGS__)
+#else
+#define DEB_CTE_API(...) do {} while(0)
+#endif
+
 /* Various error codes that are not specific to NdbQuery. */
 static const int Err_MemoryAlloc = 4000;
 static const int Err_UnknownColumn = 4004;
@@ -1091,6 +1101,10 @@ const NdbQueryOperationDef *NdbQueryBuilder::beginCteSubtree(Uint32 cteId) {
   m_impl.m_cteSubtreeStartOpIdx = m_impl.m_operations.size() - 1;
   m_impl.m_currentCteId = cteId;
 
+  DEB_CTE_API("beginCteSubtree: cteId=%u opIdx=%u internalOpNo=%u\n",
+              cteId, m_impl.m_cteSubtreeStartOpIdx,
+              op->getInternalOpNo());
+
   return &op->getInterface();
 }
 
@@ -1109,6 +1123,15 @@ void NdbQueryBuilder::endCteSubtree() {
       static_cast<NdbQueryCteSubtreeOperationDefImpl *>(
           m_impl.m_operations[m_impl.m_cteSubtreeStartOpIdx]);
   subtreeOp->setNumNodes(numNodes);
+
+  // Mark embedded operations as CTE-embedded
+  for (Uint32 i = m_impl.m_cteSubtreeStartOpIdx + 1;
+       i < m_impl.m_operations.size(); i++) {
+    m_impl.m_operations[i]->m_isCteEmbedded = true;
+  }
+
+  DEB_CTE_API("endCteSubtree: cteId=%u numNodes=%u\n",
+              m_impl.m_currentCteId, numNodes);
 
   m_impl.m_inCteSubtree = false;
   m_impl.m_completedCteSubtrees++;
@@ -1152,6 +1175,11 @@ int NdbQueryBuilder::defineCte(Uint32 cteId,
     ::setErrorCode(&m_impl, Err_MemoryAlloc);
     return Err_MemoryAlloc;
   }
+
+  DEB_CTE_API("defineCte: cteId=%u tableId=%u schemaVer=%u "
+              "depMask=0x%llx flags=%u progLen=%u\n",
+              cteId, cteInfo.tableId, cteInfo.schemaVersion,
+              (unsigned long long)depMask, flags, progLen);
   return 0;
 }
 
@@ -1167,6 +1195,10 @@ const NdbQueryTableScanOperationDef *NdbQueryBuilder::scanTable(
    * operation — unless we are inside a CTE subtree (embedded CTE scan)
    * or CTE subtrees were previously defined (main query root after CTEs).
    */
+  if (m_impl.m_operations.size() > 0) {
+    DEB_CTE_API("scanTable: non-root scan, inCte=%d completedCtes=%u\n",
+                m_impl.m_inCteSubtree, m_impl.m_completedCteSubtrees);
+  }
   returnErrIf(m_impl.m_operations.size() > 0 &&
               !m_impl.m_inCteSubtree &&
               m_impl.m_completedCteSubtrees == 0,
@@ -1369,9 +1401,10 @@ const NdbQueryDefImpl *NdbQueryBuilderImpl::prepare(const Ndb *ndb) {
 
   int error;
   NdbQueryDefImpl *def =
-      new NdbQueryDefImpl(ndb, m_operations, m_operands, error);
+      new NdbQueryDefImpl(ndb, m_operations, m_operands, m_cteDefs, error);
   m_operations.clear();
   m_operands.clear();
+  m_cteDefs.clear();
   m_paramCnt = 0;
 
   returnErrIf(def == nullptr, Err_MemoryAlloc);
@@ -1379,16 +1412,6 @@ const NdbQueryDefImpl *NdbQueryBuilderImpl::prepare(const Ndb *ndb) {
     delete def;
     setErrorCode(error);
     return nullptr;
-  }
-
-  // Transfer CTE definitions to the query definition
-  if (m_cteDefs.size() > 0) {
-    if (def->m_cteDefs.assign(m_cteDefs) != 0) {
-      delete def;
-      setErrorCode(Err_MemoryAlloc);
-      return nullptr;
-    }
-    m_cteDefs.clear();
   }
 
   if (doPrintQueryTree) {
@@ -1433,13 +1456,16 @@ NdbQueryOperand *NdbQueryBuilderImpl::addOperand(NdbQueryOperandImpl *operand) {
 ///////////////////////////////////
 NdbQueryDefImpl::NdbQueryDefImpl(
     const Ndb *ndb, const Vector<NdbQueryOperationDefImpl *> &operations,
-    const Vector<NdbQueryOperandImpl *> &operands, int &error)
+    const Vector<NdbQueryOperandImpl *> &operands,
+    const Vector<CteDefInfo> &cteDefs,
+    int &error)
     : m_interface(*this),
       m_operations(0),
       m_operands(0),
       m_hasAggregation(false),
       m_aggregateLeafOpNos(0) {
-  if (m_operations.assign(operations) || m_operands.assign(operands)) {
+  if (m_operations.assign(operations) || m_operands.assign(operands) ||
+      m_cteDefs.assign(cteDefs)) {
     // Failed to allocate memory in Vector::assign().
     error = Err_MemoryAlloc;
     return;
@@ -1468,6 +1494,17 @@ NdbQueryDefImpl::NdbQueryDefImpl(
     for (Uint32 i = 0; i < m_operations.size(); i++) {
       m_operations[i]->m_queryHasAggregation = true;
     }
+  }
+
+  DEB_CTE_API("NdbQueryDefImpl: %u ops, hasAgg=%d, numCtes=%u\n",
+              m_operations.size(), (int)m_hasAggregation,
+              (Uint32)m_cteDefs.size());
+  for (Uint32 i = 0; i < m_operations.size(); i++) {
+    DEB_CTE_API("  op[%u]: type=%d internalOpNo=%u isScan=%d isAggLeaf=%d\n",
+                i, (int)m_operations[i]->getType(),
+                m_operations[i]->getInternalOpNo(),
+                (int)m_operations[i]->isScanOperation(),
+                (int)m_operations[i]->isAggregateLeaf());
   }
 
   /* Grab first word, such that serialization of operation 0 will start from
@@ -2052,6 +2089,7 @@ NdbQueryOperationDefImpl::NdbQueryOperationDefImpl(
       m_diskInChildProjection(false),
       m_isAggregateLeaf(options.hasAggregation()),
       m_queryHasAggregation(false),
+      m_isCteEmbedded(false),
       m_table(table),
       m_ident(ident),
       m_opNo(opNo),

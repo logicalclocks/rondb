@@ -57,6 +57,7 @@ NDB_ADD_EXECUTABLE(bench_q9_dbtc bench_q9_dbtc.cpp NDBTEST NDBCLIENT MYSQLCLIENT
 # testJoinAggNdbApi needs NdbQueryBuilder.hpp from src/ndbapi
 INCLUDE_DIRECTORIES(${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi)
 NDB_ADD_EXECUTABLE(testJoinAggNdbApi testJoinAggNdbApi.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
+NDB_ADD_EXECUTABLE(testCteNdbApi testCteNdbApi.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 NDB_ADD_EXECUTABLE(testOuterJoinAggNdbApi testOuterJoinAggNdbApi.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 NDB_ADD_EXECUTABLE(testMultiOuterJoinAggNdbApi testMultiOuterJoinAggNdbApi.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 NDB_ADD_EXECUTABLE(testJoinAggScanScan testJoinAggScanScan.cpp NDBTEST NDBCLIENT MYSQLCLIENT)

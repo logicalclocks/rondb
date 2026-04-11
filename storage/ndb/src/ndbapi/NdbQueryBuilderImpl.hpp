@@ -354,6 +354,8 @@ class NdbQueryOperationDefImpl {
   friend class NdbQueryOperationImpl;
   friend class NdbQueryDefImpl;
   friend class NdbQueryImpl;
+  friend class NdbQueryBuilder;
+  friend class NdbQueryBuilderImpl;
 
  public:
   struct IndexBound {  // Limiting 'bound ' definition for indexScan
@@ -555,6 +557,11 @@ class NdbQueryOperationDefImpl {
   /** True if the enclosing query has aggregation (set before serialization).*/
   bool m_queryHasAggregation;
 
+  /** True if this operation is embedded inside a CTE subtree. */
+  bool m_isCteEmbedded;
+
+  bool isCteEmbedded() const { return m_isCteEmbedded; }
+
  private:
   bool isChildOf(const NdbQueryOperationDefImpl *parentOp) const;
 
@@ -685,15 +692,36 @@ class NdbQueryDefImpl {
   friend class NdbQueryDef;
 
  public:
+  /** CTE definition info for the KeyInfo agg section. */
+  struct CteDefInfo {
+    Uint32 cteId;
+    Uint32 tableId;
+    Uint32 schemaVersion;
+    Uint64 depMask;
+    Uint32 flags;
+    Vector<Uint32> aggProgram;
+  };
+
   explicit NdbQueryDefImpl(const Ndb *ndb,
                            const Vector<NdbQueryOperationDefImpl *> &operations,
                            const Vector<NdbQueryOperandImpl *> &operands,
+                           const Vector<CteDefInfo> &cteDefs,
                            int &error);
   ~NdbQueryDefImpl();
 
-  // Entire query is a scan iff root operation is scan.
-  // May change in the future as we implement more complicated SPJ operations.
-  bool isScanQuery() const { return m_operations[0]->isScanOperation(); }
+  // Entire query is a scan iff the main root operation is a scan.
+  // For CTE queries, skip CTE subtree containers and CTE-embedded
+  // operations to find the main query root.
+  bool isScanQuery() const {
+    for (Uint32 i = 0; i < m_operations.size(); i++) {
+      if (m_operations[i]->getType() == NdbQueryOperationDef::CteSubtree)
+        continue;
+      if (m_operations[i]->isCteEmbedded())
+        continue;
+      return m_operations[i]->isScanOperation();
+    }
+    return m_operations[0]->isScanOperation();
+  }
 
   NdbQueryDef::QueryType getQueryType() const;
 
@@ -727,16 +755,6 @@ class NdbQueryDefImpl {
   Vector<NdbQueryOperandImpl *> m_operands;
   Uint32Buffer m_serializedDef;
 
- public:
-  /** CTE definition info for the KeyInfo agg section. */
-  struct CteDefInfo {
-    Uint32 cteId;
-    Uint32 tableId;
-    Uint32 schemaVersion;
-    Uint64 depMask;
-    Uint32 flags;
-    Vector<Uint32> aggProgram;
-  };
   Vector<CteDefInfo> m_cteDefs;
 
  public:

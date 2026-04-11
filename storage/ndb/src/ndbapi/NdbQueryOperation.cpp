@@ -61,6 +61,13 @@
  */
 #ifdef VM_TRACE
 //#define DEBUG_JOIN_AGG_TRACE 1
+#define DEBUG_CTE_API 1
+#endif
+
+#ifdef DEBUG_CTE_API
+#define DEB_CTE_API(...) fprintf(stderr, "[CTE_API] " __VA_ARGS__)
+#else
+#define DEB_CTE_API(...) do {} while(0)
 #endif
 
 #ifdef DEBUG_JOIN_AGG_TRACE
@@ -3231,6 +3238,11 @@ int NdbQueryImpl::prepareAggregation() {
   const Uint32 numLeaves = getQueryDef().getNumAggregateLeaves();
   const Uint32 numCtes = getQueryDef().getNumCtes();
 
+  DEB_CTE_API("prepareAggregation: numLeaves=%u numCtes=%u "
+              "numOps=%u workerCount=%u\n",
+              numLeaves, numCtes,
+              getQueryDef().getNoOfOperations(), m_workerCount);
+
   // Must have either aggregate leaves or CTEs (or both)
   if (unlikely(numLeaves == 0 && numCtes == 0)) {
     setErrorCode(QRY_WRONG_OPERATION_TYPE);
@@ -5159,6 +5171,12 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
       assert(def.isScanOperation() && def.getOpNo() == 0);
       attrInfo.alloc(QN_ScanFragParameters_v1::NodeSize);
       break;
+    case QueryNodeParameters::QN_CTE_SUBTREE:
+      attrInfo.alloc(QN_CteSubtreeParameters::NodeSize);
+      break;
+    case QueryNodeParameters::QN_CTE_LOOKUP:
+      attrInfo.alloc(QN_CteLookupParameters::NodeSize);
+      break;
     default:
       assert(false);
   }
@@ -5303,6 +5321,24 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
           reinterpret_cast<QN_ScanFragParameters_v1 *>(attrInfo.addr(startPos));
       if (unlikely(param == nullptr)) return Err_MemoryAlloc;
 
+      param->requestInfo = requestInfo;
+      param->resultData = getIdOfReceiver();
+      QueryNodeParameters::setOpLen(param->len, paramType, length);
+      break;
+    }
+    case QueryNodeParameters::QN_CTE_SUBTREE: {
+      QN_CteSubtreeParameters *param =
+          reinterpret_cast<QN_CteSubtreeParameters *>(attrInfo.addr(startPos));
+      if (unlikely(param == nullptr)) return Err_MemoryAlloc;
+      param->requestInfo = 0;
+      param->resultData = getIdOfReceiver();
+      QueryNodeParameters::setOpLen(param->len, paramType, length);
+      break;
+    }
+    case QueryNodeParameters::QN_CTE_LOOKUP: {
+      QN_CteLookupParameters *param =
+          reinterpret_cast<QN_CteLookupParameters *>(attrInfo.addr(startPos));
+      if (unlikely(param == nullptr)) return Err_MemoryAlloc;
       param->requestInfo = requestInfo;
       param->resultData = getIdOfReceiver();
       QueryNodeParameters::setOpLen(param->len, paramType, length);
@@ -5969,6 +6005,16 @@ Uint32 NdbQueryOperationImpl::getRowSize() const {
 }
 
 Uint32 NdbQueryOperationImpl::getMaxBatchBytes() const {
+  // CTE subtree containers and CTE-embedded operations have no
+  // API-side buffers — their data is handled entirely in DBSPJ/DBLQH.
+  if (m_operationDef.getType() == NdbQueryOperationDef::CteSubtree ||
+      m_operationDef.isCteEmbedded()) {
+    DEB_CTE_API("getMaxBatchBytes: skip CTE op %u (type=%d embedded=%d)\n",
+                m_operationDef.getOpNo(),
+                (int)m_operationDef.getType(),
+                (int)m_operationDef.isCteEmbedded());
+    return 0;
+  }
   // Check if batch buffer size has been computed yet.
   if (m_maxBatchBytes == 0) {
     Uint32 batchRows = getMaxBatchRows();
