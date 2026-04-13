@@ -2008,6 +2008,7 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_aggReceiverId;  // API-side NdbReceiver ID for agg results
     Uint32 m_aggNodesOutstanding;
     bool m_joinAgg;
+    bool m_hasMainAggProgram;      // True if main query has an agg program
     bool m_aggPhaseFailed;         // Error received during current agg phase
     Uint32 m_aggErrorCode;         // Error code from first failure
 

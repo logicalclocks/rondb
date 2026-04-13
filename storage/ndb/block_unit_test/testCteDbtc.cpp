@@ -890,9 +890,6 @@ collectResults(SignalSender &ss,
         Uint32 sigLen = resp->header.theLength;
         Uint32 words_per_op = ops > 0 ? (sigLen - 4) / ops : 4;
 
-        printf("  -> sending SCAN_NEXTREQ: ops=%u "
-               "words_per_op=%u\n", ops, words_per_op);
-
         SimpleSignal nextSig;
         Uint32 *ndata = nextSig.getDataPtrSend();
         ndata[0] = apiConnectPtr;
@@ -909,12 +906,16 @@ collectResults(SignalSender &ss,
           }
         }
 
-        nextSig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_NEXTREQ,
-                    4 + ackCount);
-        nextSig.header.m_noOfSections = 0;
-        if (ss.sendSignal(nodeId, &nextSig) != SEND_OK) {
-          fprintf(stderr, "sendSignal SCAN_NEXTREQ failed\n");
-          return -1;
+        if (ackCount > 0) {
+          printf("  -> sending SCAN_NEXTREQ: ops=%u "
+                 "words_per_op=%u\n", ops, words_per_op);
+          nextSig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_NEXTREQ,
+                      4 + ackCount);
+          nextSig.header.m_noOfSections = 0;
+          if (ss.sendSignal(nodeId, &nextSig) != SEND_OK) {
+            fprintf(stderr, "sendSignal SCAN_NEXTREQ failed\n");
+            return -1;
+          }
         }
       }
     }
@@ -1305,12 +1306,18 @@ collectCteLookupResults(SignalSender &ss,
           }
         }
 
-        nextSig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_NEXTREQ,
-                    4 + ackCount);
-        nextSig.header.m_noOfSections = 0;
-        if (ss.sendSignal(nodeId, &nextSig) != SEND_OK) {
-          fprintf(stderr, "sendSignal SCAN_NEXTREQ failed\n");
-          return -1;
+        /* Only send SCAN_NEXTREQ when there are fragments to continue.
+         * If all ops have tcPtrI==RNIL the fragments are already done;
+         * sending SCAN_NEXTREQ after the scan is released (EndOfData)
+         * would hit a stale ApiConnect and disconnect the API node. */
+        if (ackCount > 0) {
+          nextSig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_NEXTREQ,
+                      4 + ackCount);
+          nextSig.header.m_noOfSections = 0;
+          if (ss.sendSignal(nodeId, &nextSig) != SEND_OK) {
+            fprintf(stderr, "sendSignal SCAN_NEXTREQ failed\n");
+            return -1;
+          }
         }
       }
     }

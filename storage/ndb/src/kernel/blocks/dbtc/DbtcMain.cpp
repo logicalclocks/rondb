@@ -16318,6 +16318,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_aggKeysSectionPtrI = RNIL;
   scanptr.p->m_aggReceiverId = RNIL;
   scanptr.p->m_joinAgg = false;
+  scanptr.p->m_hasMainAggProgram = false;
   scanptr.p->m_aggPhaseFailed = false;
   scanptr.p->m_aggErrorCode = 0;
   scanptr.p->m_aggNodesOutstanding = 0;
@@ -18963,21 +18964,17 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
       jam();
     }
   }
-  /* For CTE compound JoinAgg queries where the MAIN query is itself
-   * an aggregation, suppress intermediate SCAN_TABCONFs. Such queries
-   * deliver results via the aggregation engine, so the API does not
-   * need per-fragment row counts to drive SCAN_NEXTREQ cycling.
+  /* For CTE JoinAgg queries with a main aggregation program, suppress
+   * intermediate SCAN_TABCONFs.  Results are delivered via the aggregation
+   * engine (JOIN_AGG_COMPLETE), so the API does not need per-fragment
+   * SCAN_TABCONFs.  m_hasMainAggProgram is used instead of checking
+   * m_aggProgramPtrI because the section is released during SETUP_CONF.
    *
-   * When the main query is non-aggregation (CTE_LOOKUP or plain scan
-   * over CTE results), the API uses standard scan SCAN_TABCONFs to
-   * track outstanding rows per worker. m_aggProgramPtrI == RNIL means
-   * the KeyInfo carried only CTE definitions, no main agg program —
-   * in that case do NOT suppress, otherwise the API never sees the
-   * SCAN_TABCONFs from workers other than the one that triggered the
-   * final send and hangs. */
+   * CTE_LOOKUP queries (no main agg) still need SCAN_TABCONFs for
+   * flow control of the main scan. */
   if (scanPtr.p->m_joinAgg && !release &&
       scanPtr.p->m_numCtes > 0 &&
-      scanPtr.p->m_aggProgramPtrI != RNIL) {
+      scanPtr.p->m_hasMainAggProgram) {
     jam();
     DEB_JOIN_AGG(("(%u) sendScanTabConf: suppress "
                   "intermediate SCAN_TABCONF for CTE JoinAgg",
@@ -28576,6 +28573,7 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
     if (mainAggLen > 0 && mainAggLen <= totalRemaining) {
       ndbrequire(appendToSection(scanptr.p->m_aggProgramPtrI,
                                  linBuf, mainAggLen));
+      scanptr.p->m_hasMainAggProgram = true;
       consumed = mainAggLen;
     }
 
