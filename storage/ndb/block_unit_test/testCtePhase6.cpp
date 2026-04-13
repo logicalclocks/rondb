@@ -543,7 +543,8 @@ static int
 sendCteLookupReq(SignalSender &ss, Uint32 nodeId, Uint32 ldmInst,
                  Uint32 aggStateKey, Uint32 correlationId,
                  const Uint32 *keyBuf, Uint32 keySizeWords, Uint32 keyLenBytes,
-                 const std::vector<Uint32> &attrInfo)
+                 const std::vector<Uint32> &attrInfo,
+                 bool route = true)
 {
   SimpleSignal ssig;
   CteLookupReq *req =
@@ -557,7 +558,7 @@ sendCteLookupReq(SignalSender &ss, Uint32 nodeId, Uint32 ldmInst,
   req->routeRef = ss.getOwnRef();
   req->correlation = 0;
   req->joinAggStateKey = RNIL;
-  req->flags = CteLookupReq::CTE_LOOKUP_ROUTE_FLAG;
+  req->flags = route ? CteLookupReq::CTE_LOOKUP_ROUTE_FLAG : 0;
 
   Uint16 recBlock = numberToBlock(DBLQH, ldmInst);
   ssig.set(ss, 0, recBlock, GSN_CTE_LOOKUP_REQ, CteLookupReq::SignalLength);
@@ -683,7 +684,7 @@ lookupAndParse(SignalSender &ss, Uint32 nodeId, Uint32 ldmInst,
                Uint32 aggStateKey, Uint32 corrId,
                Uint32 gbAttrId, Int64 keyValue,
                Uint32 numGbCols, Uint32 numAggResults,
-               LookupResult &result)
+               LookupResult &result, bool route = true)
 {
   result.found = false;
   result.gbKey = 0;
@@ -697,7 +698,7 @@ lookupAndParse(SignalSender &ss, Uint32 nodeId, Uint32 ldmInst,
   buildBigintKey(keyBuf, keyWords, keyBytes, gbAttrId, keyValue);
 
   if (sendCteLookupReq(ss, nodeId, ldmInst, aggStateKey, corrId,
-                        keyBuf, keyWords, keyBytes, attrInfo) != 0)
+                        keyBuf, keyWords, keyBytes, attrInfo, route) != 0)
     return -1;
 
   /* Wait for first response */
@@ -1330,7 +1331,8 @@ testMultiNodeRedist(SignalSender &ss, const TableMeta &meta)
       LookupResult result;
       Uint32 corrId = 6000 + (Uint32)e.grp * 100 + nodeId;
       if (lookupAndParse(ss, nodeId, 1, aggStateKey, corrId,
-                          meta.attrIds[1], e.grp, 1, 2, result) != 0) {
+                          meta.attrIds[1], e.grp, 1, 2, result,
+                          false /* no routing — test redistribution */) != 0) {
         failures++;
         continue;
       }
