@@ -642,10 +642,15 @@ setupScanComplete(SignalSender &ss, const TableMeta &meta,
     if (waitForScanConf(ss, rows) != 0) return -1;
   }
 
-  /* Complete on all nodes (CTE mode: no TRANSID_AI) */
+  /* Complete on all nodes — send ALL first, then wait for ALL.
+   * Redistribution requires both nodes to complete before either can
+   * send CONF (cross-node FINAL_REP exchange), so sequential
+   * send-wait would deadlock. */
   for (Uint32 nd : uniqueNodes) {
     if (sendCompleteReq(ss, nd, aggStateKeys[nd], aggStateKeys) != 0)
       return -1;
+  }
+  for (Uint32 i = 0; i < uniqueNodes.size(); i++) {
     if (waitForCompleteConf(ss) != 0) return -1;
   }
 
