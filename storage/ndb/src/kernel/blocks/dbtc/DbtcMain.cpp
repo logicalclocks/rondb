@@ -18960,14 +18960,21 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
       jam();
     }
   }
-  /* For CTE compound JoinAgg queries, suppress intermediate
-   * SCAN_TABCONFs. Normal (non-CTE) JoinAgg queries need
-   * intermediate SCAN_TABCONFs so the API can send SCAN_NEXTREQ
-   * to cycle through fragments. CTE queries use scanParallelism
-   * = fragCount so all fragments run in parallel without
-   * SCAN_NEXTREQ cycling. */
+  /* For CTE compound JoinAgg queries where the MAIN query is itself
+   * an aggregation, suppress intermediate SCAN_TABCONFs. Such queries
+   * deliver results via the aggregation engine, so the API does not
+   * need per-fragment row counts to drive SCAN_NEXTREQ cycling.
+   *
+   * When the main query is non-aggregation (CTE_LOOKUP or plain scan
+   * over CTE results), the API uses standard scan SCAN_TABCONFs to
+   * track outstanding rows per worker. m_aggProgramPtrI == RNIL means
+   * the KeyInfo carried only CTE definitions, no main agg program —
+   * in that case do NOT suppress, otherwise the API never sees the
+   * SCAN_TABCONFs from workers other than the one that triggered the
+   * final send and hangs. */
   if (scanPtr.p->m_joinAgg && !release &&
-      scanPtr.p->m_numCtes > 0) {
+      scanPtr.p->m_numCtes > 0 &&
+      scanPtr.p->m_aggProgramPtrI != RNIL) {
     jam();
     DEB_JOIN_AGG(("(%u) sendScanTabConf: suppress "
                   "intermediate SCAN_TABCONF for CTE JoinAgg",

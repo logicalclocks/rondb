@@ -61,7 +61,7 @@
  */
 #ifdef VM_TRACE
 //#define DEBUG_JOIN_AGG_TRACE 1
-//#define DEBUG_CTE_API 1
+#define DEBUG_CTE_API 1
 #endif
 
 #ifdef DEBUG_CTE_API
@@ -5955,6 +5955,10 @@ bool NdbQueryOperationImpl::execSCAN_TABCONF(Uint32 tcPtrI, Uint32 rowCount,
                                              Uint32 moreMask, Uint32 activeMask,
                                              const NdbReceiver *receiver) {
   DBUG_ENTER("NdbQueryOperationImpl::execSCAN_TABCONF");
+  DEB_CTE_API("execSCAN_TABCONF: recvId=0x%x tcPtrI=0x%x rowCount=%u "
+              "moreMask=0x%x activeMask=0x%x workerCount=%u\n",
+              receiver->getId(), tcPtrI, rowCount, moreMask, activeMask,
+              m_queryImpl.getWorkerCount());
   assert((tcPtrI == RNIL && moreMask == 0) ||
          (tcPtrI != RNIL && moreMask != 0));
   assert(checkMagicNumber());
@@ -5965,6 +5969,8 @@ bool NdbQueryOperationImpl::execSCAN_TABCONF(Uint32 tcPtrI, Uint32 rowCount,
   NdbWorker *worker = NdbWorker::receiverIdLookup(
       m_queryImpl.m_workers, m_queryImpl.getWorkerCount(), receiver->getId());
   if (unlikely(worker == nullptr)) {
+    DEB_CTE_API("execSCAN_TABCONF: FAILED receiverIdLookup recvId=0x%x\n",
+                receiver->getId());
     assert(false);
     DBUG_RETURN(false);
   }
@@ -5981,12 +5987,21 @@ bool NdbQueryOperationImpl::execSCAN_TABCONF(Uint32 tcPtrI, Uint32 rowCount,
   worker->setConfReceived(tcPtrI);
   worker->setRemainingSubScans(moreMask, activeMask);
   if (unlikely(!worker->incrOutstandingResults(rowCount))) {
+    DEB_CTE_API("execSCAN_TABCONF: OutstandingResultsMismatch worker=%u "
+                "recvId=0x%x rowCount=%u\n",
+                worker->getWorkerNo(), receiver->getId(), rowCount);
     m_queryImpl.setFetchTerminated(Err_OutstandingResultsMismatch, false);
     DBUG_RETURN(false);
   }
 
+  const bool fragComplete = worker->isFragBatchComplete();
+  DEB_CTE_API("execSCAN_TABCONF: worker=%u recvId=0x%x rowCount=%u "
+              "fragComplete=%d pendingWorkers=%u finalWorkers=%u\n",
+              worker->getWorkerNo(), receiver->getId(), rowCount,
+              (int)fragComplete, m_queryImpl.m_pendingWorkers,
+              m_queryImpl.m_finalWorkers);
   bool ret = false;
-  if (worker->isFragBatchComplete()) {
+  if (fragComplete) {
     /* This fragment is now complete */
     ret = m_queryImpl.handleBatchComplete(*worker);
   }

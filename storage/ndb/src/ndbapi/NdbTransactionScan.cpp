@@ -34,6 +34,18 @@
 #include <NdbOut.hpp>
 #include <NdbQueryOperationImpl.hpp>
 
+#ifdef VM_TRACE
+//#define DEBUG_CTE_API 1
+#endif
+
+#ifdef DEBUG_CTE_API
+#define DEB_CTE_API(...) fprintf(stderr, "[CTE_API] " __VA_ARGS__)
+#else
+#define DEB_CTE_API(...) \
+  do {                   \
+  } while (0)
+#endif
+
 /***************************************************************************
  * int  receiveSCAN_TABREF(NdbApiSignal* aSignal)
  *
@@ -94,12 +106,21 @@ int NdbTransaction::receiveSCAN_TABCONF(const NdbApiSignal *aSignal,
   const ScanTabConf *conf = CAST_CONSTPTR(ScanTabConf, aSignal->getDataPtr());
   DBUG_PRINT("info", ("requestInfo: 0x%x", conf->requestInfo));
 
-  if (checkState_TransId(&conf->transId1)) {
+  const bool transOk = checkState_TransId(&conf->transId1);
+  DEB_CTE_API("receiveSCAN_TABCONF: requestInfo=0x%x len=%u "
+              "transOk=%d isEoD=%d isQuery=%d\n",
+              conf->requestInfo, len, (int)transOk,
+              (int)((conf->requestInfo & ScanTabConf::EndOfData) != 0),
+              (int)(m_scanningQuery != nullptr));
+
+  if (transOk) {
     /**
      * If EndOfData is set, close the scan.
      */
     if (conf->requestInfo == ScanTabConf::EndOfData) {
       DBUG_PRINT("info", ("receive SCAN_TABCONF, close"));
+      DEB_CTE_API("receiveSCAN_TABCONF: pure EndOfData -> "
+                  "execCLOSE_SCAN_REP\n");
       if (theScanningOp) {
         theScanningOp->execCLOSE_SCAN_REP(0, false);
       } else {
@@ -138,6 +159,9 @@ int NdbTransaction::receiveSCAN_TABCONF(const NdbApiSignal *aSignal,
           NdbQueryOperationImpl *queryOp =
               (NdbQueryOperationImpl *)tOp->m_owner;
           assert(&queryOp->getQuery() == m_scanningQuery);
+          DEB_CTE_API("receiveSCAN_TABCONF: query op tcPtrI=0x%x "
+                      "rowCount=%u moreMask=0x%x activeMask=0x%x recvId=0x%x\n",
+                      tcPtrI, rowCount, moreMask, activeMask, tOp->getId());
           if (queryOp->execSCAN_TABCONF(tcPtrI, rowCount, moreMask, activeMask,
                                         tOp))
             retVal = 0;  // We have result data, wakeup receiver

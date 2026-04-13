@@ -61,7 +61,7 @@
 static const bool doPrintQueryTree = false;
 
 #ifdef VM_TRACE
-//#define DEBUG_CTE_API 1
+#define DEBUG_CTE_API 1
 #endif
 
 #ifdef DEBUG_CTE_API
