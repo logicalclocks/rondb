@@ -792,26 +792,22 @@ testCteWithScanFilter(Ndb *ndb, MYSQL * /*conn*/)
   }
   Uint32 grpColNo = grpCol->getColumnNo();
 
-  /* Build scan filter: grp >= 2 */
+  /* Build scan filter: grp >= 2.
+   * NdbScanFilter must go out of scope before finalise(). */
   NdbInterpretedCode filterCode(srcTab);
-  NdbScanFilter filter(&filterCode);
-  int fErr;
-  if ((fErr = filter.begin(NdbScanFilter::AND)) != 0) {
-    printf("FAILED (filter.begin: %d)\n", fErr);
-    return -1;
+  {
+    NdbScanFilter filter(&filterCode);
+    if (filter.begin(NdbScanFilter::AND) != 0 ||
+        filter.ge(grpColNo, (Uint32)2) != 0 ||
+        filter.end() != 0) {
+      printf("FAILED (filter build: err=%d)\n",
+             filterCode.getNdbError().code);
+      return -1;
+    }
   }
-  if ((fErr = filter.ge(grpColNo, (Uint32)2)) != 0) {
-    printf("FAILED (filter.ge col=%u: %d err=%d)\n",
-           grpColNo, fErr, filterCode.getNdbError().code);
-    return -1;
-  }
-  if ((fErr = filter.end()) != 0) {
-    printf("FAILED (filter.end: %d)\n", fErr);
-    return -1;
-  }
-  if ((fErr = filterCode.finalise()) != 0) {
-    printf("FAILED (filter.finalise: %d err=%d)\n",
-           fErr, filterCode.getNdbError().code);
+  if (filterCode.finalise() != 0) {
+    printf("FAILED (filter finalise: err=%d)\n",
+           filterCode.getNdbError().code);
     return -1;
   }
 
