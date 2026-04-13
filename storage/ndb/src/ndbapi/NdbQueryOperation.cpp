@@ -3081,18 +3081,9 @@ int NdbQueryImpl::prepareSend() {
   //
   Uint32 rootFragments;
   if (getQueryDef().isScanQuery()) {
-    NdbQueryOperationImpl &rootOp = getRoot();
+    const NdbQueryOperationImpl &rootOp = getRoot();
     const NdbDictionary::Table &rootTable =
         rootOp.getQueryOperationDef().getTable();
-
-    /* For CTE compound queries, the root scan is not op[0] — CTE subtree
-     * containers precede it. The constructor sets m_parallelism based on
-     * opNo==0, so the actual root scan gets Parallelism_adaptive instead
-     * of Parallelism_max. Fix it here where the real root is known. */
-    if (rootOp.m_parallelism == Parallelism_adaptive &&
-        rootOp.getQueryOperationDef().getOpNo() != 0) {
-      rootOp.m_parallelism = Parallelism_max;
-    }
 
     rootFragments = rootTable.getFragmentCount();
     if (rootFragments == 0) {
@@ -5137,10 +5128,18 @@ Uint32 NdbQueryOperationImpl ::calculateBatchedRows(
      * values to set, or cap, #rows / #bytes in batch for *each fragment*.
      */
     maxBatchRows = myClosestScan->m_maxBatchRows;
+    /* Use rootFragments as parallelism for both Parallelism_max and
+     * Parallelism_adaptive. The latter is the default for scan ops
+     * that are not op[0] (e.g. root scans displaced by CTE subtrees).
+     * Passing the sentinel value directly would divide batch_byte_size
+     * by ~4 billion, producing zero. */
+    const Uint32 rootPar = getRoot().m_parallelism;
+    const Uint32 effectivePar =
+        (rootPar == Parallelism_max || rootPar == Parallelism_adaptive)
+            ? rootFragments
+            : rootPar;
     NdbReceiver::calculate_batch_size(*ndb.theImpl,
-                                      getRoot().m_parallelism == Parallelism_max
-                                          ? rootFragments
-                                          : getRoot().m_parallelism,
+                                      effectivePar,
                                       maxBatchRows,
                                       batchByteSize,
                                       MAX_PARALLEL_OP_PER_SCAN_SPJ);
