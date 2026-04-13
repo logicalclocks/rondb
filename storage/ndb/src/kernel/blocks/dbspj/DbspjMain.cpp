@@ -779,13 +779,14 @@ void Dbspj::sendSTTORRY(Signal *signal) {
   signal->theData[1] = 0; /* BLOCK CATEGORY */
   signal->theData[2] = 0; /* SIGNAL VERSION NUMBER */
   signal->theData[3] = 4;
+  signal->theData[4] = 7; /* Build data node list for CTE routing */
 #ifdef UNIT_TEST_DATABUFFER2
-  signal->theData[4] = 120; /* Start phase end*/
+  signal->theData[5] = 120; /* Start phase end*/
 #else
-  signal->theData[4] = 255;
-#endif
   signal->theData[5] = 255;
-  sendSignal(f_STTOR_REF, GSN_STTORRY, signal, 6, JBB);
+#endif
+  signal->theData[6] = 255;
+  sendSignal(f_STTOR_REF, GSN_STTORRY, signal, 7, JBB);
 }
 
 void Dbspj::execREAD_NODESCONF(Signal *signal) {
