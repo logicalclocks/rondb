@@ -3116,10 +3116,11 @@ void Dbspj::checkBatchComplete(Signal *signal, Ptr<Request> requestPtr) {
   if (unlikely(requestPtr.p->m_outstanding == 0)) {
     jam();
     DEB_CTE(("(%u) checkBatchComplete: outstanding=0, "
-             "cnt_active=%u CTE_PHASE=%d",
+             "cnt_active=%u CTE_PHASE=%d completed_nodes=0x%x",
              instance(),
              requestPtr.p->m_cnt_active,
-             !!(requestPtr.p->m_bits & Request::RT_CTE_PHASE)));
+             !!(requestPtr.p->m_bits & Request::RT_CTE_PHASE),
+             requestPtr.p->m_completed_tree_nodes.rep.data[0]));
     batchComplete(signal, requestPtr);
   }
 }
@@ -4426,6 +4427,8 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
   if (unlikely(
           !(treeNodePtr.p->m_bits & TreeNode::T_EXPECT_TRANSID_AI))) {
     jam();
+    DEB_TRANSID_AI(("(%u) unexpected execTRANSID_AI node: %u, requestPtrI: %u",
+      instance(), treeNodePtr.p->m_node_no, requestPtr.i));
     if (signal->getNoOfSections() > 0) {
       SectionHandle handle(this, signal);
       releaseSections(handle);
@@ -5605,6 +5608,13 @@ void Dbspj::cte_start(Signal *signal, Ptr<Request> requestPtr,
 void Dbspj::cte_countSignal(Signal *signal, Ptr<Request> requestPtr,
                              Ptr<TreeNode> treeNodePtr, Uint32 cnt) {
   jam();
+  DEB_CTE(("(%u) cte_countSignal: node=%u cnt=%u "
+           "req_outstanding_before=%u node_outstanding_before=%u "
+           "completed_nodes=0x%x",
+           instance(), treeNodePtr.p->m_node_no, cnt,
+           requestPtr.p->m_outstanding,
+           treeNodePtr.p->m_cteLookup_data.m_outstanding,
+           requestPtr.p->m_completed_tree_nodes.rep.data[0]));
   ndbassert(requestPtr.p->m_outstanding >= cnt);
   requestPtr.p->m_outstanding -= cnt;
 
@@ -5874,6 +5884,12 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
 
   ndbrequire(requestPtr.p->m_outstanding > 0);
   requestPtr.p->m_outstanding--;
+
+  DEB_CTE(("(%u) execCTE_LOOKUP_CONF: after decrement req_outstanding=%u "
+           "node_outstanding=%u completed_nodes=0x%x",
+           instance(), requestPtr.p->m_outstanding,
+           treeNodePtr.p->m_cteLookup_data.m_outstanding,
+           requestPtr.p->m_completed_tree_nodes.rep.data[0]));
 
   checkBatchComplete(signal, requestPtr);
 }
