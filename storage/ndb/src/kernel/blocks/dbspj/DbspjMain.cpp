@@ -43,6 +43,7 @@
 #include <signaldata/DihScanTab.hpp>
 #include <signaldata/DropTab.hpp>
 #include <signaldata/CteLookup.hpp>
+#include <rondb_hash.hpp>
 #include <signaldata/CteScan.hpp>
 #include <signaldata/JoinAgg.hpp>
 #include "../dblqh/JoinAggregationState.hpp"
@@ -673,6 +674,16 @@ void Dbspj::execREAD_CONFIG_REQ(Signal *signal) {
 
 static Uint32 f_STTOR_REF = 0;
 
+void Dbspj::buildDataNodeList() {
+  m_numDataNodes = 0;
+  for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
+    if (getNodeInfo(i).m_connected &&
+        getNodeInfo(i).m_type == NodeInfo::DB) {
+      m_dataNodeList[m_numDataNodes++] = i;
+    }
+  }
+}
+
 void Dbspj::execSTTOR(Signal *signal) {
   // #define UNIT_TEST_DATABUFFER2
 
@@ -687,6 +698,7 @@ void Dbspj::execSTTOR(Signal *signal) {
     signal->theData[1] = 0;  // 0 -> ... and sample usage statistics
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 1000, 2);
     c_tc = (Dbtc *)globalData.getBlock(DBTC, instance());
+    m_numDataNodes = 0;
   }
 
   if (tphase == 4) {
@@ -695,6 +707,11 @@ void Dbspj::execSTTOR(Signal *signal) {
     signal->theData[0] = reference();
     sendSignal(NDBCNTR_REF, GSN_READ_NODESREQ, signal, 1, JBB);
     return;
+  }
+
+  if (tphase == 7) {
+    jam();
+    buildDataNodeList();
   }
 
   sendSTTORRY(signal);
@@ -886,6 +903,7 @@ void Dbspj::execNODE_FAILREP(Signal *signal) {
   failed.assign(NdbNodeBitmask::Size, rep->theNodes);
 
   c_alive_nodes.bitANDC(failed);
+  buildDataNodeList();
 
   /* Clean up possibly fragmented signals being received or sent */
   for (Uint32 node = 1; node < MAX_NDB_NODES; node++) {
@@ -5795,17 +5813,39 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       keyInfoPtrI = tmp;
     }
 
-    // Find target node — route to local node (single-node),
-    // or first available CTE node (multi-node TODO: hash-based routing).
+    /* Route CTE_LOOKUP to the node that owns this group key after
+     * redistribution. Uses the same hash as DBLQH's
+     * continueJoinAggRedistribute: rondb_xxhash_std on the raw key
+     * bytes, modulo the data node count.
+     * TODO: for collation-aware GROUP BY keys (VARCHAR with non-binary
+     * collation), this needs the per-column normalize+hash path from
+     * GBHashTable::hashKeyFull. Currently correct for binary types. */
     ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
-    Uint32 targetNodeId = getOwnNodeId();
-    Uint32 targetAggKey =
-        requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
 
     // Compute key length in bytes
     SegmentedSectionPtr keyPtr;
     getSection(keyPtr, keyInfoPtrI);
     const Uint32 keyLenBytes = keyPtr.sz * sizeof(Uint32);
+
+    Uint32 targetNodeId;
+    if (m_numDataNodes <= 1) {
+      targetNodeId = getOwnNodeId();
+    } else {
+      Uint32 keyBuf[256];
+      ndbrequire(keyPtr.sz <= 256);
+      copy(keyBuf, keyInfoPtrI);
+      Uint64 h = rondb_xxhash_std(
+          reinterpret_cast<const char *>(keyBuf), keyLenBytes);
+      Uint32 ownerIdx = static_cast<Uint32>(h) % m_numDataNodes;
+      targetNodeId = m_dataNodeList[ownerIdx];
+    }
+    Uint32 targetAggKey =
+        requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
+
+    DEB_CTE(("(%u) cte_lookup_send: targetNodeId=%u numDataNodes=%u "
+             "cteIdx=%u targetAggKey=%u keyLenBytes=%u",
+             instance(), targetNodeId, m_numDataNodes,
+             cteIdx, targetAggKey, keyLenBytes));
 
     // Duplicate AttrInfo section (reused across lookups)
     Uint32 attrInfoPtrI = RNIL;

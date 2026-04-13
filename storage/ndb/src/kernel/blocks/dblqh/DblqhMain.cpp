@@ -18544,9 +18544,22 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
 
   if (state->m_cte_mode) {
     jam();
+#ifdef DEBUG_CTE
+    {
+      Uint32 gbSz = 0;
+      if (interp->gb_map_mutable() != nullptr)
+        gbSz = interp->gb_map_mutable()->size();
+      DEB_CTE(("(%u) CTE COMPLETE: aggStateKey=%u cte_num_nodes=%u "
+               "gb_map_size=%u processed_rows=%llu",
+               instance(), aggStateKey, state->m_cte_num_nodes, gbSz,
+               (unsigned long long)interp->processed_rows()));
+    }
+#endif
     if (state->m_cte_num_nodes <= 1) {
       /* Single node — no redistribution needed */
       jam();
+      DEB_CTE(("(%u) CTE COMPLETE: single node — skip redistribution",
+               instance()));
       state->m_state.store(JoinAggregationState::CTE_READY);
       JoinAggCompleteConf *conf =
         (JoinAggCompleteConf *)signal->getDataPtrSend();
@@ -18560,6 +18573,9 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     } else {
       /* Multi-node — save sender info, drain queue, verify nodes, redistribute */
       jam();
+      DEB_CTE(("(%u) CTE COMPLETE: multi-node redistribution starting, "
+               "aggStateKey=%u cte_num_nodes=%u",
+               instance(), aggStateKey, state->m_cte_num_nodes));
       state->m_cte_complete_senderRef = senderRef;
       state->m_cte_complete_senderData = senderData;
       state->m_cte_complete_requestId = requestId;
@@ -19574,8 +19590,13 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
   JoinGBHashTable *gb_map = interp->gb_map_mutable();
   if (gb_map == nullptr || gb_map->size() == 0) {
     jam();
+    DEB_CTE(("(%u) CTE REDIST: empty gb_map, nothing to redistribute",
+             instance()));
     goto redistribution_done;
   }
+
+  DEB_CTE(("(%u) CTE REDIST: aggStateKey=%u gb_map_size=%u ownNode=%u",
+           instance(), aggStateKey, gb_map->size(), getOwnNodeId()));
 
   {
     const Uint32 ownNodeId = getOwnNodeId();
@@ -19592,6 +19613,12 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       Uint64 h = interp->hashGroupKey(data, keyLen);
       Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
       Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
+
+      DEB_CTE(("(%u) CTE REDIST: hash=0x%llx ownerIdx=%u ownerNode=%u "
+               "keyLen=%u valLen=%u %s",
+               instance(), (unsigned long long)h, ownerIdx, ownerNode,
+               keyLen, valLen,
+               ownerNode == ownNodeId ? "LOCAL" : "REMOTE"));
 
       if (ownerNode == ownNodeId) {
         jam();
@@ -19957,6 +19984,8 @@ void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
  * checkCteReady — transition to CTE_READY if all redistribution is done.
  */
 void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
+  DEB_CTE(("(%u) checkCteReady: redistribution_done=%u",
+           instance(), state->m_cte_redistribution_done));
   if (!state->m_cte_redistribution_done) {
     jam();
     return;
@@ -19967,12 +19996,15 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
     if (state->m_cte_node_list[i] != ownNodeId &&
         !state->m_cte_nodes_finalized.get(state->m_cte_node_list[i])) {
       jam();
+      DEB_CTE(("(%u) checkCteReady: waiting for node %u",
+               instance(), state->m_cte_node_list[i]));
       return;
     }
   }
 
   /* All done — transition to CTE_READY and send COMPLETE_CONF */
   jam();
+  DEB_CTE(("(%u) checkCteReady: all nodes done → CTE_READY", instance()));
   state->m_state.store(JoinAggregationState::CTE_READY);
 
   JoinAggCompleteConf *conf =

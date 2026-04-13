@@ -1583,6 +1583,12 @@ class Dbspj : public SimulatedBlock {
 
   NdbNodeBitmask c_alive_nodes;
 
+  // Sorted list of data node IDs — used for CTE hash-based routing.
+  // Built in execSTTOR phase 4, updated in execNODE_FAILREP.
+  Uint32 m_dataNodeList[ABS_MAX_NDB_NODES];
+  Uint32 m_numDataNodes;
+  void buildDataNodeList();
+
   void do_init(Request *, const LqhKeyReq *, Uint32 senderRef);
   void store_lookup(Ptr<Request>);
   void handle_early_lqhkey_ref(Signal *, const LqhKeyReq *, Uint32 err);
