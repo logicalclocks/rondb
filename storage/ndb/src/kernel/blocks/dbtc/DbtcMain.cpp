@@ -28759,6 +28759,9 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
         req->transid[1] = apiPtr.p->transid[1];
         req->aggStateKey = aggNodes->m_aggStateKeys[nodeId];
         req->noReply = 1;
+        DEB_JOIN_AGG(("(%u)DBTC releaseJoinAgg RELEASE_REQ: "
+                       "nodeId=%u aggStateKey=%u main (fire-and-forget)",
+                       instance(), nodeId, req->aggStateKey));
         Uint32 ref = numberToRef(DBLQH, nodeId);
         sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
                    JoinAggReleaseReq::SignalLength, JBB);
@@ -28796,6 +28799,9 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
           req->transid[1] = apiPtr.p->transid[1];
           req->aggStateKey = cteNodes->m_aggStateKeys[nodeId];
           req->noReply = 1;
+          DEB_JOIN_AGG(("(%u)DBTC releaseJoinAgg RELEASE_REQ: "
+                         "nodeId=%u aggStateKey=%u CTE[%u] (fire-and-forget)",
+                         instance(), nodeId, req->aggStateKey, c));
           Uint32 ref = numberToRef(DBLQH, nodeId);
           sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
                      JoinAggReleaseReq::SignalLength, JBB);
@@ -29806,6 +29812,9 @@ void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
     req->aggStateKey = scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId];
     req->noReply = 0;
 
+    DEB_JOIN_AGG(("(%u)DBTC send JOIN_AGG_RELEASE_REQ: "
+                   "nodeId=%u aggStateKey=%u main scanPtr.i=%u",
+                   instance(), nodeId, req->aggStateKey, scanptr.i));
     Uint32 ref = numberToRef(DBLQH, nodeId);
     sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
                JoinAggReleaseReq::SignalLength, JBB);

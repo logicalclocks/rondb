@@ -1438,6 +1438,8 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         ndbrequire(nodeId < MAX_NDB_NODES);
         requestPtr.p->m_aggStateKeys[nodeId] = aggKey;
         requestPtr.p->m_aggNodes.set(nodeId);
+        DEB_CTE(("(%u) MAIN aggStateKey: node=%u key=%u",
+                 instance(), nodeId, aggKey));
         wordsRead += 2;
       }
 
@@ -1502,6 +1504,8 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
             ndbrequire(reader.getWord(&cteAggKey));
             ndbrequire(nodeId < max_nodes);
             requestPtr.p->m_cteAggStateKeys[c * max_nodes + nodeId] = cteAggKey;
+            DEB_CTE(("(%u) CTE aggStateKey: cte[%u] node=%u key=%u",
+                     instance(), c, nodeId, cteAggKey));
             /* Track single-row CTE's node */
             if ((perCteFlags &
                  QN_CteSubtreeNode::CTE_SINGLE_ROW) &&
@@ -4412,6 +4416,19 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
   ndbrequire(m_request_pool.getPtr(requestPtr, treeNodePtr.p->m_requestPtrI));
 
   ndbassert(checkRequest(requestPtr));
+  if (unlikely(
+          requestPtr.p->m_completed_tree_nodes.get(treeNodePtr.p->m_node_no))) {
+    DEB_CTE(("(%u) execTRANSID_AI: COMPLETED node=%u "
+             "completed_nodes=0x%x outstanding=%u state=%u "
+             "T_CTE_SCAN=%d T_EXPECT_TRANSID_AI=%d senderRef=0x%x",
+             instance(), treeNodePtr.p->m_node_no,
+             requestPtr.p->m_completed_tree_nodes.rep.data[0],
+             requestPtr.p->m_outstanding,
+             requestPtr.p->m_state,
+             !!(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN),
+             !!(treeNodePtr.p->m_bits & TreeNode::T_EXPECT_TRANSID_AI),
+             signal->getSendersBlockRef()));
+  }
   ndbassert(
       !requestPtr.p->m_completed_tree_nodes.get(treeNodePtr.p->m_node_no));
 
@@ -5838,7 +5855,8 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
                CteLookupReq::SignalLength, JBB, &handle);
 
-    // Track outstanding: cnt=1 (CONF only, TRANSID_AI goes to API via FLUSH_AI)
+    // Mark node active and track outstanding (same as lookup_send)
+    requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
     requestPtr.p->m_outstanding += cnt;
     treeNodePtr.p->m_cteLookup_data.m_outstanding += cnt;
     DEB_CTE(("(%u) cte_lookup_send: outstanding after: req=%u node=%u",
