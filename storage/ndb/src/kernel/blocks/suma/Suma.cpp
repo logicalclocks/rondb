@@ -3226,12 +3226,23 @@ void Suma::SyncRecord::nextScan(Signal *signal) {
    * captured by the binlog injector.
    * For index build scans (SingleTableScan), hide meta rows so they
    * don't pollute the new index with zero-default values.
+   * Unknown subscription types default to hidden (safer than leaking
+   * meta rows to an unknown consumer); add explicit cases as needed.
    */
   {
     Uint32 subType = subPtr.p->m_subscriptionType;
-    ndbassert(subType == SubCreateReq::SingleTableScan ||
-              subType == SubCreateReq::TableEvent);
-    Uint32 show_meta = (subType == SubCreateReq::TableEvent) ? 1 : 0;
+    Uint32 show_meta;
+    switch (subType) {
+      case SubCreateReq::TableEvent:
+        show_meta = 1;
+        break;
+      case SubCreateReq::SingleTableScan:
+        show_meta = 0;
+        break;
+      default:
+        show_meta = 0;
+        break;
+    }
     ScanFragReq::setRingBufferShowMetaFragFlag(req->requestInfo, show_meta);
   }
 

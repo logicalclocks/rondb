@@ -1102,11 +1102,17 @@ void NdbBlob::getHeadFromRecAttr() {
   assert(theHeadInlineRecAttr != nullptr);
   theNullFlag = theHeadInlineRecAttr->isNULL();
   /*
-   * theNullFlag == -1 means the column was not present in this row
-   * (e.g., ring-buffer meta rows are inserted without BLOB columns).
-   * Treat absent BLOB columns as NULL rather than asserting.
+   * theNullFlag == -1 means the column was not present in this row.
+   * This is expected for ring-buffer meta rows: meta rows (ring_idx=0)
+   * are inserted without BLOB columns by the ring-buffer writer, so the
+   * blob head is genuinely absent when a scan surfaces a meta row.
+   * Restrict the absent-head relaxation to that case by requiring the
+   * parent op to carry a ring-buffer flag; every other absence of a
+   * blob head remains an assertion as before.
    */
-  if (theNullFlag == -1 && theEventBlobVersion < 0) {
+  if (theNullFlag == -1 && theEventBlobVersion < 0 &&
+      (theNdbOp->m_flags & (NdbOperation::OF_RING_BUFFER_OP |
+                            NdbOperation::OF_RING_BUFFER_SHOW_META))) {
     theNullFlag = 1;
     theLength = 0;
     DBUG_VOID_RETURN;

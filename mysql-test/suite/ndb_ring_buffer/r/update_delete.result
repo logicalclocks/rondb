@@ -134,12 +134,12 @@ client_id	ring_idx	event_data
 # Case 12: DELETE individual row (ring_idx in WHERE) — blocked
 #
 DELETE FROM test.rb WHERE client_id = 1 AND ring_idx = 1;
-ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
 #
 # Case 13: DELETE with non-PK column in WHERE — blocked
 #
 DELETE FROM test.rb WHERE client_id = 1 AND event_data = 'ev_C';
-ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
 #
 # Case 14: DELETE without WHERE (full table) — allowed
 # Clears all data rows + meta rows for all PK prefixes
@@ -229,12 +229,12 @@ region	client_id	ring_idx	event_data
 # Case 20: DELETE with non-PK column in WHERE — blocked
 #
 DELETE FROM test.rb_multi WHERE region = 3 AND event_data = 'r3c100';
-ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
 #
 # Case 21: DELETE with ring_idx in WHERE — blocked
 #
 DELETE FROM test.rb_multi WHERE region = 3 AND client_id = 100 AND ring_idx = 1;
-ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
 #
 # Case 22: DELETE non-existent prefix — allowed (0 rows, no error)
 #
@@ -410,7 +410,7 @@ id	ring_idx	val
 # Case 32: DELETE with mixed PK/non-PK in OR — blocked
 #
 DELETE FROM test.rb_del WHERE id = 5 OR val = 'e';
-ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
 #
 # Case 33: DELETE on empty table — allowed (0 rows)
 #
