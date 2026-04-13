@@ -879,10 +879,10 @@ collectResults(SignalSender &ss,
       Uint32 ri = d[1];
       bool endOfData = (ri & ScanTabConf::EndOfData) != 0;
       Uint32 ops = ri & 0xFF;
-      printf("  SCAN_TABCONF: ops=%u endOfData=%d ri=0x%x "
-             "sigLen=%u\n",
-             ops, (int)endOfData, ri,
-             resp->header.theLength);
+      V("  SCAN_TABCONF: ops=%u endOfData=%d ri=0x%x "
+        "sigLen=%u\n",
+        ops, (int)endOfData, ri,
+        resp->header.theLength);
 
       if (endOfData) {
         done = true;
@@ -907,8 +907,8 @@ collectResults(SignalSender &ss,
         }
 
         if (ackCount > 0) {
-          printf("  -> sending SCAN_NEXTREQ: ops=%u "
-                 "words_per_op=%u\n", ops, words_per_op);
+          V("  -> sending SCAN_NEXTREQ: ops=%u "
+            "words_per_op=%u\n", ops, words_per_op);
           nextSig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_NEXTREQ,
                       4 + ackCount);
           nextSig.header.m_noOfSections = 0;
@@ -925,7 +925,7 @@ collectResults(SignalSender &ss,
       return -1;
     }
     else {
-      printf("  Ignoring GSN %d\n", gsn);
+      V("  Ignoring GSN %d\n", gsn);
     }
   }
   return 0;
@@ -1270,9 +1270,8 @@ collectCteLookupResults(SignalSender &ss,
     if (gsn == GSN_TRANSID_AI) {
       CteLookupRow row;
       if (parseCteLookupTransIdAI(resp, row) != 0) return -1;
-      printf("  TRANSID_AI: grp=%lld SUM=%lld\n",
+      V("  TRANSID_AI: grp=%lld SUM=%lld\n",
         (long long)row.grpKey, (long long)row.sumVal);
-      fflush(stdout);
       rows.push_back(row);
     }
     else if (gsn == GSN_SCAN_TABCONF) {
@@ -1280,9 +1279,8 @@ collectCteLookupResults(SignalSender &ss,
       Uint32 ri = d[1];
       bool endOfData = (ri & ScanTabConf::EndOfData) != 0;
       Uint32 ops = ri & 0xFF;
-      printf("  SCAN_TABCONF: ops=%u endOfData=%d ri=0x%x sigLen=%u\n",
+      V("  SCAN_TABCONF: ops=%u endOfData=%d ri=0x%x sigLen=%u\n",
         ops, (int)endOfData, ri, resp->header.theLength);
-      fflush(stdout);
 
       if (endOfData) {
         done = true;
@@ -1327,9 +1325,8 @@ collectCteLookupResults(SignalSender &ss,
       return -1;
     }
     else {
-      printf("  Ignoring GSN %d (sigLen=%u)\n",
-             gsn, resp->header.theLength);
-      fflush(stdout);
+      V("  Ignoring GSN %d (sigLen=%u)\n",
+        gsn, resp->header.theLength);
     }
   }
   return 0;
