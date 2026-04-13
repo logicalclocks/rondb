@@ -19614,11 +19614,17 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
       Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
 
-      DEB_CTE(("(%u) CTE REDIST: hash=0x%llx ownerIdx=%u ownerNode=%u "
-               "keyLen=%u valLen=%u %s",
-               instance(), (unsigned long long)h, ownerIdx, ownerNode,
-               keyLen, valLen,
-               ownerNode == ownNodeId ? "LOCAL" : "REMOTE"));
+#ifdef DEBUG_CTE
+      {
+        const Uint32 *kw = reinterpret_cast<const Uint32 *>(data);
+        DEB_CTE(("(%u) CTE REDIST: hash=0x%llx ownerIdx=%u ownerNode=%u "
+                 "keyLen=%u valLen=%u %s key[0]=0x%x key[1]=0x%x",
+                 instance(), (unsigned long long)h, ownerIdx, ownerNode,
+                 keyLen, valLen,
+                 ownerNode == ownNodeId ? "LOCAL" : "REMOTE",
+                 kw[0], keyLen > 4 ? kw[1] : 0));
+      }
+#endif
 
       if (ownerNode == ownNodeId) {
         jam();

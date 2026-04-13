@@ -5828,25 +5828,30 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     getSection(keyPtr, keyInfoPtrI);
     const Uint32 keyLenBytes = keyPtr.sz * sizeof(Uint32);
 
+    Uint32 keyBuf[256];
+    ndbrequire(keyPtr.sz <= 256);
+    copy(keyBuf, keyInfoPtrI);
+
     Uint32 targetNodeId;
+    Uint64 routeHash = 0;
     if (m_numDataNodes <= 1) {
       targetNodeId = getOwnNodeId();
     } else {
-      Uint32 keyBuf[256];
-      ndbrequire(keyPtr.sz <= 256);
-      copy(keyBuf, keyInfoPtrI);
-      Uint64 h = rondb_xxhash_std(
+      routeHash = rondb_xxhash_std(
           reinterpret_cast<const char *>(keyBuf), keyLenBytes);
-      Uint32 ownerIdx = static_cast<Uint32>(h) % m_numDataNodes;
+      Uint32 ownerIdx = static_cast<Uint32>(routeHash) % m_numDataNodes;
       targetNodeId = m_dataNodeList[ownerIdx];
     }
     Uint32 targetAggKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
 
     DEB_CTE(("(%u) cte_lookup_send: targetNodeId=%u numDataNodes=%u "
-             "cteIdx=%u targetAggKey=%u keyLenBytes=%u",
+             "cteIdx=%u targetAggKey=%u keyLenBytes=%u "
+             "hash=0x%llx key[0]=0x%x key[1]=0x%x",
              instance(), targetNodeId, m_numDataNodes,
-             cteIdx, targetAggKey, keyLenBytes));
+             cteIdx, targetAggKey, keyLenBytes,
+             (unsigned long long)routeHash,
+             keyBuf[0], keyPtr.sz > 1 ? keyBuf[1] : 0));
 
     // Duplicate AttrInfo section (reused across lookups)
     Uint32 attrInfoPtrI = RNIL;
