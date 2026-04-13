@@ -82,15 +82,15 @@ INSERT INTO test.rb_del_bypass (client_id, event_data) VALUES (1, 'a');
 INSERT INTO test.rb_del_bypass (client_id, event_data) VALUES (1, 'b');
 INSERT INTO test.rb_del_bypass (client_id, event_data) VALUES (2, 'c');
 DELETE FROM test.rb_del_bypass WHERE event_data = 'a';
-ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
 DELETE FROM test.rb_del_bypass WHERE client_id = LENGTH(event_data);
-ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
 DELETE FROM test.rb_del_bypass WHERE client_id = COALESCE(event_data, 0);
-ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
 DELETE FROM test.rb_del_bypass WHERE client_id = IFNULL(event_data, 0);
-ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
 DELETE FROM test.rb_del_bypass WHERE client_id = ring_idx + 1;
-ERROR HY000: Table storage engine for 'DELETE requires full PK prefix WHERE on ring-buffer table' doesn't have this option
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
 DELETE FROM test.rb_del_bypass WHERE client_id = 1;
 SELECT client_id, ring_idx, event_data FROM test.rb_del_bypass ORDER BY client_id, ring_idx;
 client_id	ring_idx	event_data

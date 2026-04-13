@@ -6727,7 +6727,8 @@ bool ha_ndbcluster::start_bulk_delete() {
       m_ring_buffer_delete_allowed = true;
     } else if (!m_thd_ndb->get_applier()) {
       my_error(ER_ILLEGAL_HA, MYF(0),
-               "DELETE requires full PK prefix WHERE on ring-buffer table");
+               "DELETE WHERE on ring-buffer table may only reference "
+               "PK-prefix columns (excluding ring_idx)");
       m_is_bulk_delete = false;
       return 1;
     }
@@ -6833,18 +6834,11 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
 
   /*
    * Ring buffer DELETE restriction:
-   * Only allow DELETE when m_ring_buffer_delete_allowed is set (validated
-   * in ndbcluster_push_to_engine as PK-prefix-only WHERE clause).
-   * Replica applier is always allowed.
-   */
-  /*
-   * Ring buffer DELETE restriction:
    * Only allow DELETE with a WHERE clause covering all PK-prefix columns
-   * (all PK columns except ring_idx) with equalities.
-   * Replica applier is always allowed.
+   * (all PK columns except ring_idx). Replica applier is always allowed.
    *
-   * We validate lazily on first call per statement: check the WHERE
-   * condition from thd->lex and cache the result in
+   * Validation runs in start_bulk_delete() for bulk deletes and again
+   * here as a fallback for the non-bulk path; the result is cached in
    * m_ring_buffer_delete_allowed (reset in ha_ndbcluster::reset()).
    * push_to_engine() is not called for DELETE, so we cannot validate
    * there.
@@ -6863,7 +6857,8 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
       !m_ring_buffer_delete_allowed &&
       !m_thd_ndb->get_applier()) {
     my_error(ER_ILLEGAL_HA, MYF(0),
-             "DELETE requires full PK prefix WHERE on ring-buffer table");
+             "DELETE WHERE on ring-buffer table may only reference "
+             "PK-prefix columns (excluding ring_idx)");
     return HA_ERR_UNSUPPORTED;
   }
 
@@ -16012,11 +16007,6 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
   DBUG_TRACE;
   ndb_pushed_builder_ctx pushed_builder(thd, root_path, join);
 
-  /**
-   * Ring-buffer DELETE validation: check if the WHERE clause covers
-   * all PK-prefix columns with equalities. Must run regardless of
-   * optimizer switches (join_pushdown, engine_condition_pushdown).
-   */
   /**
    * Investigate what could be pushed down as entire joins first.
    * Note that we also handle condition pushdowns for the tables which

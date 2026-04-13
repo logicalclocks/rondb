@@ -3253,15 +3253,13 @@ int Dbtup::handleReadReq(
   if (unlikely(is_ring_buffer_table(regTabPtr)) &&
       _regOperPtr->ring_buffer_show_meta == 0 &&
       _regOperPtr->ring_buffer_op == 0) {
-    Uint32 rb_attr_id = AttributeHeader(regTabPtr->m_ring_idx_col_no, 0).m_value;
-    Uint32 rb_buf[2] = {0, 1};
-    int rb_ret = readAttributes(req_struct, &rb_attr_id, 1, rb_buf, 2);
-    if (unlikely(rb_ret < 0)) {
-      jam();
-      g_eventLogger->warning("Ring buffer meta row filter: readAttributes "
-                             "failed (ret=%d), showing row", rb_ret);
-    }
-    if (rb_ret >= 0 && rb_buf[1] == 0) {
+    /*
+     * Use the direct-offset helper instead of the readAttributes
+     * interpreter to avoid per-row overhead on ring-buffer scans.
+     * ring_idx is a fixed-size INT in the PK, so it is always in
+     * main memory at a compile-time-known offset.
+     */
+    if (isRingBufferMetaRow(regTabPtr, req_struct->m_tuple_ptr)) {
       /* ring_idx == 0: this is a meta row, hide it */
       jam();
       terrorCode = 626;
