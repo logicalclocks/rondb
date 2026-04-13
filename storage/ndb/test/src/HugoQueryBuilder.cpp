@@ -394,6 +394,7 @@ const NdbQueryOperationDef *HugoQueryBuilder::createOp(
         break;
       }
       case NdbQueryOperationDef::CteLookup:
+      case NdbQueryOperationDef::CteSubtree:
         break;  // Not used in HugoQueryBuilder
     }
   } else {
@@ -474,6 +475,7 @@ const NdbQueryOperationDef *HugoQueryBuilder::createOp(
         break;
       }
       case NdbQueryOperationDef::CteLookup:
+      case NdbQueryOperationDef::CteSubtree:
         break;  // Not used in HugoQueryBuilder
     }
   }
