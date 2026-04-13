@@ -2479,10 +2479,13 @@ void Dbtc::handleSignalStateProblem(Signal *signal,
 
     if (acrOwnerNodeId == signalNodeId) {
       jam();
-#ifdef VM_TRACE
-      dump_scan_state(apiConnectptr);
-      ndbassert(false);
-#endif
+      /* API sent a signal for its own connection in wrong state.
+       * Log and return — do not crash the data node for API misbehavior. */
+      g_eventLogger->warning(
+          "TC %u : ACR %u owner node %u sent signal in wrong state %u "
+          "(context %u) — ignoring",
+          instance(), apiConnectptr.i, signalNodeId,
+          apiConnectptr.p->apiConnectstate, context);
       return;
     }
 

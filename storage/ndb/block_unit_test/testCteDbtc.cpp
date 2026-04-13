@@ -1269,8 +1269,9 @@ collectCteLookupResults(SignalSender &ss,
     if (gsn == GSN_TRANSID_AI) {
       CteLookupRow row;
       if (parseCteLookupTransIdAI(resp, row) != 0) return -1;
-      V("  TRANSID_AI: grp=%lld SUM=%lld\n",
+      printf("  TRANSID_AI: grp=%lld SUM=%lld\n",
         (long long)row.grpKey, (long long)row.sumVal);
+      fflush(stdout);
       rows.push_back(row);
     }
     else if (gsn == GSN_SCAN_TABCONF) {
@@ -1278,8 +1279,9 @@ collectCteLookupResults(SignalSender &ss,
       Uint32 ri = d[1];
       bool endOfData = (ri & ScanTabConf::EndOfData) != 0;
       Uint32 ops = ri & 0xFF;
-      V("  SCAN_TABCONF: ops=%u endOfData=%d ri=0x%x\n",
-        ops, (int)endOfData, ri);
+      printf("  SCAN_TABCONF: ops=%u endOfData=%d ri=0x%x sigLen=%u\n",
+        ops, (int)endOfData, ri, resp->header.theLength);
+      fflush(stdout);
 
       if (endOfData) {
         done = true;
@@ -1318,7 +1320,9 @@ collectCteLookupResults(SignalSender &ss,
       return -1;
     }
     else {
-      V("  Ignoring GSN %d\n", gsn);
+      printf("  Ignoring GSN %d (sigLen=%u)\n",
+             gsn, resp->header.theLength);
+      fflush(stdout);
     }
   }
   return 0;
