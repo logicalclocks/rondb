@@ -5944,6 +5944,12 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
   ndbrequire(requestPtr.p->m_outstanding > 0);
   requestPtr.p->m_outstanding--;
 
+  // Mark node complete when all CTE_LOOKUP responses received.
+  // cte_lookup_send cleared the bit; restore it when done.
+  if (treeNodePtr.p->m_cteLookup_data.m_outstanding == 0) {
+    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+  }
+
   // Count FLUSH_AI result sent to API — same as lookup_countSignal does
   // for regular lookups (T_USER_PROJECTION → m_rows++). Without this,
   // SCAN_FRAGCONF::completedOps undercounts and the API asserts on
@@ -5992,6 +5998,10 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
 
   ndbrequire(requestPtr.p->m_outstanding > 0);
   requestPtr.p->m_outstanding--;
+
+  if (treeNodePtr.p->m_cteLookup_data.m_outstanding == 0) {
+    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+  }
 
   if (ref->errorCode != CteLookupRef::GROUP_NOT_FOUND) {
     jam();
