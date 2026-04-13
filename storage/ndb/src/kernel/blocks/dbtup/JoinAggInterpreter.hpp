@@ -119,13 +119,19 @@ class JoinAggInterpreter : public PushdownInterpreter {
   }
   /**
    * Compute the full Uint64 distribution hash for a GROUP BY key.
-   * Handles complex character sets by normalizing each column before
-   * hashing. Use this for node distribution and receiver routing
-   * instead of hashing raw key bytes directly.
+   * When character set columns are present, uses per-column normalization
+   * via hashKeyFull. Otherwise uses rondb_xxhash_std on raw key bytes,
+   * which is consistent with DBSPJ's CTE_LOOKUP routing hash.
    */
   Uint64 hashGroupKey(const char* key, Uint32 keyLen) const {
-    return m_gb_map ? m_gb_map->hashKeyFull(key, keyLen)
-                    : rondb_xxhash_std(key, keyLen);
+    if (m_gb_types_inited) {
+      for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+        if (m_gb_types[i].cs != nullptr) {
+          return m_gb_map->hashKeyFull(key, keyLen);
+        }
+      }
+    }
+    return rondb_xxhash_std(key, keyLen);
   }
   Uint32 n_gb_cols() const { return m_n_gb_cols; }
   Uint32 n_agg_results() const { return m_n_agg_results; }
