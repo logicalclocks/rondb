@@ -795,11 +795,23 @@ testCteWithScanFilter(Ndb *ndb, MYSQL * /*conn*/)
   /* Build scan filter: grp >= 2 */
   NdbInterpretedCode filterCode(srcTab);
   NdbScanFilter filter(&filterCode);
-  if (filter.begin(NdbScanFilter::AND) != 0 ||
-      filter.ge(grpColNo, (Uint32)2) != 0 ||
-      filter.end() != 0 ||
-      filterCode.finalise() != 0) {
-    printf("FAILED (filter build)\n");
+  int fErr;
+  if ((fErr = filter.begin(NdbScanFilter::AND)) != 0) {
+    printf("FAILED (filter.begin: %d)\n", fErr);
+    return -1;
+  }
+  if ((fErr = filter.ge(grpColNo, (Uint32)2)) != 0) {
+    printf("FAILED (filter.ge col=%u: %d err=%d)\n",
+           grpColNo, fErr, filterCode.getNdbError().code);
+    return -1;
+  }
+  if ((fErr = filter.end()) != 0) {
+    printf("FAILED (filter.end: %d)\n", fErr);
+    return -1;
+  }
+  if ((fErr = filterCode.finalise()) != 0) {
+    printf("FAILED (filter.finalise: %d err=%d)\n",
+           fErr, filterCode.getNdbError().code);
     return -1;
   }
 
@@ -1026,8 +1038,8 @@ int main(int argc, char **argv)
           exitCode = 1;
         }
         else {
-          if (testCteWithStandardMain(&ndb, conn) != 0) exitCode = 1;
           if (testCteLookupMain(&ndb, conn) != 0) exitCode = 1;
+          if (testCteWithStandardMain(&ndb, conn) != 0) exitCode = 1;
           if (testCteLookupAggLeaf(&ndb, conn) != 0) exitCode = 1;
           if (testCteWithScanFilter(&ndb, conn) != 0) exitCode = 1;
         }
