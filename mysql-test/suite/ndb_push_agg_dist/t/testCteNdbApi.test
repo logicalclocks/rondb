@@ -1,0 +1,4 @@
+--source include/have_ndb.inc
+
+--echo Running testCteNdbApi (multi-node)
+--exec $NDB_PUSH_AGG_DIR/testCteNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT
