@@ -29546,7 +29546,7 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
 
     /* Build per-node aggStateKey map for CTE_LOOKUP forwarding.
      * Format: [nodeId1, aggKey1, nodeId2, aggKey2, ...] */
-    Uint32 aggKeysBuf[2 * MAX_NDB_NODES];
+    Uint32 aggKeysBuf[2 * ABS_MAX_NDB_NODES];
     Uint32 aggKeysLen = 0;
     for (Uint32 n = nodes.find_first();
          n != NdbNodeBitmask::NotFound;

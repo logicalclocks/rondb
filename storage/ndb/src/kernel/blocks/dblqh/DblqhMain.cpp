@@ -18361,8 +18361,21 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     SegmentedSectionPtr ptr;
     ndbrequire(handle.getSection(ptr,
                                  JoinAggCompleteReq::AggKeysSectionNum));
-    Uint32 pairBuf[2 * MAX_NDB_NODES];
-    ndbrequire(ptr.sz <= 2 * MAX_NDB_NODES);
+    Uint32 pairBuf[2 * ABS_MAX_NDB_NODES];
+    if (unlikely(ptr.sz > 2 * MAX_NDB_NODES)) {
+      jam();
+      releaseSections(handle);
+      JoinAggCompleteRef *ref =
+        (JoinAggCompleteRef *)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->senderData = senderData;
+      ref->requestId = requestId;
+      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+      ref->errorLine = __LINE__;
+      sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+                 signal, JoinAggCompleteRef::SignalLength, JBB);
+      return;
+    }
     copy(pairBuf, ptr);
     memset(state->m_cte_remote_aggKeys, 0,
            sizeof(state->m_cte_remote_aggKeys));
