@@ -484,7 +484,8 @@ waitForScanConf(SignalSender &ss, Uint32 &rowsScanned)
 }
 
 static int
-sendCompleteReq(SignalSender &ss, Uint32 nodeId, Uint32 aggStateKey)
+sendCompleteReq(SignalSender &ss, Uint32 nodeId, Uint32 aggStateKey,
+                const std::map<Uint32, Uint32> &allAggKeys)
 {
   SimpleSignal ssig;
   JoinAggCompleteReq *req =
@@ -497,9 +498,19 @@ sendCompleteReq(SignalSender &ss, Uint32 nodeId, Uint32 aggStateKey)
   req->aggStateKey = aggStateKey;
   req->maxBatchRows = 1000;
 
+  /* Build per-node aggStateKey pairs section */
+  std::vector<Uint32> keyPairs;
+  for (auto &kv : allAggKeys) {
+    keyPairs.push_back(kv.first);
+    keyPairs.push_back(kv.second);
+  }
+
   Uint16 recBlock = numberToBlock(DBLQH, 1);
   ssig.set(ss, 0, recBlock, GSN_JOIN_AGG_COMPLETE_REQ,
            JoinAggCompleteReq::SignalLength);
+  ssig.header.m_noOfSections = 1;
+  ssig.ptr[0].p = keyPairs.data();
+  ssig.ptr[0].sz = (Uint32)keyPairs.size();
 
   if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
     fprintf(stderr, "sendSignal COMPLETE_REQ failed\n");
@@ -633,7 +644,8 @@ setupScanComplete(SignalSender &ss, const TableMeta &meta,
 
   /* Complete on all nodes (CTE mode: no TRANSID_AI) */
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], aggStateKeys) != 0)
+      return -1;
     if (waitForCompleteConf(ss) != 0) return -1;
   }
 
