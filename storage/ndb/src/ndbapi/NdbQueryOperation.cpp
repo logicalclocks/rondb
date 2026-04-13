@@ -61,7 +61,7 @@
  */
 #ifdef VM_TRACE
 //#define DEBUG_JOIN_AGG_TRACE 1
-//#define DEBUG_CTE_API 1
+#define DEBUG_CTE_API 1
 #endif
 
 #ifdef DEBUG_CTE_API
@@ -3086,6 +3086,11 @@ int NdbQueryImpl::prepareSend() {
         rootOp.getQueryOperationDef().getTable();
 
     rootFragments = rootTable.getFragmentCount();
+    DEB_CTE_API("prepareSend: rootOpNo=%u rootFragments=%u parallelism=0x%x "
+                "hasAgg=%d numOps=%u\n",
+                rootOp.getQueryOperationDef().getOpNo(),
+                rootFragments, rootOp.m_parallelism,
+                m_hasAggregation, getNoOfOperations());
     if (rootFragments == 0) {
       // No fragments - should never happen
       setErrorCode(QRY_TABLE_HAVE_NO_FRAGMENTS);
@@ -3195,8 +3200,13 @@ int NdbQueryImpl::prepareSend() {
   }
 
   // Some preparation for later batchsize calculations pr. (sub) scan
+  DEB_CTE_API("prepareSend: before calculateBatchedRows, "
+              "workerCount=%u fragsPerWorker=%u\n",
+              m_workerCount, m_fragsPerWorker);
   getRoot().calculateBatchedRows(nullptr);
   getRoot().setBatchedRows(1);
+  DEB_CTE_API("prepareSend: after calculateBatchedRows, "
+              "rootMaxBatchRows=%u\n", getRoot().getMaxBatchRows());
 
   /**
    * Calculate total amount of row buffer space for all operations and
@@ -3215,6 +3225,10 @@ int NdbQueryImpl::prepareSend() {
     opBuffSize += op.getRowSize();  // Unpacked row from buffers
     totalBuffSize += opBuffSize;
   }
+  DEB_CTE_API("prepareSend: totalBuffSize=%u rootFragments=%u "
+              "allocating=%u\n",
+              totalBuffSize, rootFragments,
+              rootFragments * totalBuffSize);
   m_rowBufferAlloc.init(rootFragments * totalBuffSize);
 
   if (getQueryDef().isScanQuery()) {
