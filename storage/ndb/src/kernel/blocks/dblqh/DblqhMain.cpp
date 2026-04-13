@@ -19034,8 +19034,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
              instance(), targetBaseKey, targetLeafIndex, linkedPos));
 
   retry_agg:
-    Int32 aggRet = targetInterp->processNullExtendedRow(
-        linkedBuf, linkedPos, leaf);
+    Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
+        nullptr, nullptr, linkedBuf, linkedPos, leaf);
     if (aggRet == AGG_EVICT_NEEDED) {
       jam();
       sendEvictedAggGroup(signal, targetInterp, targetState);
