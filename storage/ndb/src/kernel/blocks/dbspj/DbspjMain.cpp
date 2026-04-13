@@ -5826,6 +5826,34 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     if (treeNodePtr.p->m_bits & TreeNode::T_EXPECT_TRANSID_AI)
       cnt++;
 
+    // Determine joinAggStateKey: when CTE_LOOKUP is an aggregate leaf,
+    // the result feeds into a JoinAggInterpreter instead of going to API.
+    Uint32 joinAggStateKey = RNIL;
+    if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+      jam();
+      Uint32 baseKey;
+      if (treeNodePtr.p->m_cteId != RNIL) {
+        // Inside a CTE subtree: feed into enclosing CTE's aggregation
+        Uint32 encCteIdx = RNIL;
+        for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+          if (requestPtr.p->m_cteContexts[i].m_cteId ==
+              treeNodePtr.p->m_cteId) {
+            encCteIdx = i;
+            break;
+          }
+        }
+        ndbrequire(encCteIdx != RNIL);
+        baseKey = requestPtr.p->m_cteAggStateKeys[
+            encCteIdx * MAX_NDB_NODES + targetNodeId];
+      } else {
+        // Main query: feed into main aggregation
+        baseKey = requestPtr.p->m_aggStateKeys[targetNodeId];
+      }
+      Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
+      joinAggStateKey =
+          JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+    }
+
     // Build and send CTE_LOOKUP_REQ with correlation + result routing
     CteLookupReq *req =
         reinterpret_cast<CteLookupReq *>(signal->getDataPtrSend());
@@ -5837,23 +5865,34 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     req->resultData = requestPtr.p->m_rootResultData;
     req->routeRef = requestPtr.p->m_senderRef;
     req->correlation = treeNodePtr.p->m_send.m_correlation;
+    req->joinAggStateKey = joinAggStateKey;
 
     SectionHandle handle(this);
     getSection(handle.m_ptr[CteLookupReq::KeySectionNum], keyInfoPtrI);
     handle.m_cnt = 1;
-    if (attrInfoPtrI != RNIL) {
+    if (joinAggStateKey == RNIL && attrInfoPtrI != RNIL) {
+      // Only send AttrInfo for non-agg path (FLUSH_AI to API)
       jam();
       getSection(handle.m_ptr[CteLookupReq::AttrInfoSectionNum], attrInfoPtrI);
       handle.m_cnt = 2;
+    } else if (attrInfoPtrI != RNIL) {
+      // Agg feed path doesn't need AttrInfo — release it
+      releaseSection(attrInfoPtrI);
+    }
+
+    // Agg feed path: only CONF expected (no TRANSID_AI to DBSPJ)
+    if (joinAggStateKey != RNIL) {
+      cnt = 1;
     }
 
     Uint32 ref = numberToRef(DBLQH, 1, targetNodeId);
     DEB_CTE(("(%u) cte_lookup_send: SENDING CTE_LOOKUP_REQ to ref=0x%x "
              "aggStateKey=%u keyLen=%u corr=0x%x resultRef=0x%x "
-             "resultData=0x%x rootResultData=0x%x cnt=%u",
+             "resultData=0x%x rootResultData=0x%x cnt=%u joinAgg=%u",
              instance(), ref, targetAggKey, keyLenBytes,
              req->correlation, req->resultRef,
-             req->resultData, requestPtr.p->m_rootResultData, cnt));
+             req->resultData, requestPtr.p->m_rootResultData, cnt,
+             joinAggStateKey));
     sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
                CteLookupReq::SignalLength, JBB, &handle);
 
@@ -5909,7 +5948,10 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
   // for regular lookups (T_USER_PROJECTION → m_rows++). Without this,
   // SCAN_FRAGCONF::completedOps undercounts and the API asserts on
   // outstanding results mismatch.
-  requestPtr.p->m_rows++;
+  // Skip for aggregate leaf: no FLUSH_AI sent (result fed to aggregation).
+  if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) {
+    requestPtr.p->m_rows++;
+  }
 
   DEB_CTE(("(%u) execCTE_LOOKUP_CONF: after decrement req_outstanding=%u "
            "node_outstanding=%u completed_nodes=0x%x m_rows=%u",

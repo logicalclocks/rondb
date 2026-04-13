@@ -45,8 +45,11 @@ struct CteLookupReq {
   Uint32 resultData;      // FLUSH_AI connect ptr: API receiver ID
   Uint32 routeRef;        // RouteRef for TRANSID_AI_R routing
   Uint32 correlation;     // Parent-child correlation (root receiverId + tuple corr)
+  Uint32 joinAggStateKey; // RNIL = send to API via FLUSH_AI;
+                          // else = encoded aggStateKey for target JoinAggInterpreter
+                          // (CTE_LOOKUP feeds result into aggregation instead of API)
 
-  static constexpr Uint32 SignalLength = 8;
+  static constexpr Uint32 SignalLength = 9;
   enum { KeySectionNum = 0, AttrInfoSectionNum = 1 };
 };
 
