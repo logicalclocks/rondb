@@ -5128,10 +5128,12 @@ Uint32 NdbQueryOperationImpl ::calculateBatchedRows(
      * values to set, or cap, #rows / #bytes in batch for *each fragment*.
      */
     maxBatchRows = myClosestScan->m_maxBatchRows;
+    const Uint32 rootParallelism = getRoot().m_parallelism;
     NdbReceiver::calculate_batch_size(*ndb.theImpl,
-                                      getRoot().m_parallelism == Parallelism_max
+                                      (rootParallelism == Parallelism_max ||
+                                       rootParallelism == Parallelism_adaptive)
                                           ? rootFragments
-                                          : getRoot().m_parallelism,
+                                          : rootParallelism,
                                       maxBatchRows,
                                       batchByteSize,
                                       MAX_PARALLEL_OP_PER_SCAN_SPJ);
