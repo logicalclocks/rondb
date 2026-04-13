@@ -796,7 +796,8 @@ testCteWithScanFilter(Ndb *ndb, MYSQL * /*conn*/)
    * branch_col_le branches when col >= val (inverted semantics),
    * so branch_col_le(grp, 2, PASS) keeps rows where grp >= 2. */
   Uint32 codeBuf[128];
-  NdbInterpretedCode filterCode(srcTab, codeBuf, sizeof(codeBuf));
+  NdbInterpretedCode filterCode(srcTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
   {
     Uint32 valBuf = 2;
     const Uint32 PASS_LABEL = 0;

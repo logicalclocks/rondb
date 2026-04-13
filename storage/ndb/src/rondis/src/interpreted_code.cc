@@ -133,7 +133,7 @@ int write_hset_key_table(Ndb *ndb,
   const NdbDictionary::Column *redis_key_id_col =
     tab->getColumn(HSET_KEY_TABLE_COL_redis_key_id);
   Uint32 code_buffer[64];
-  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer));
+  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer) / sizeof(code_buffer[0]));
   code.load_op_type(REG1); // Read operation type into register 1
   code.branch_eq_const(REG1, RONDB_INSERT, LABEL0); // Inserts go to label 0
   /* UPDATE */
