@@ -3081,9 +3081,18 @@ int NdbQueryImpl::prepareSend() {
   //
   Uint32 rootFragments;
   if (getQueryDef().isScanQuery()) {
-    const NdbQueryOperationImpl &rootOp = getRoot();
+    NdbQueryOperationImpl &rootOp = getRoot();
     const NdbDictionary::Table &rootTable =
         rootOp.getQueryOperationDef().getTable();
+
+    /* For CTE compound queries, the root scan is not op[0] — CTE subtree
+     * containers precede it. The constructor sets m_parallelism based on
+     * opNo==0, so the actual root scan gets Parallelism_adaptive instead
+     * of Parallelism_max. Fix it here where the real root is known. */
+    if (rootOp.m_parallelism == Parallelism_adaptive &&
+        rootOp.getQueryOperationDef().getOpNo() != 0) {
+      rootOp.m_parallelism = Parallelism_max;
+    }
 
     rootFragments = rootTable.getFragmentCount();
     if (rootFragments == 0) {
@@ -5128,12 +5137,10 @@ Uint32 NdbQueryOperationImpl ::calculateBatchedRows(
      * values to set, or cap, #rows / #bytes in batch for *each fragment*.
      */
     maxBatchRows = myClosestScan->m_maxBatchRows;
-    const Uint32 rootParallelism = getRoot().m_parallelism;
     NdbReceiver::calculate_batch_size(*ndb.theImpl,
-                                      (rootParallelism == Parallelism_max ||
-                                       rootParallelism == Parallelism_adaptive)
+                                      getRoot().m_parallelism == Parallelism_max
                                           ? rootFragments
-                                          : rootParallelism,
+                                          : getRoot().m_parallelism,
                                       maxBatchRows,
                                       batchByteSize,
                                       MAX_PARALLEL_OP_PER_SCAN_SPJ);
