@@ -375,7 +375,9 @@ struct JoinAggregationState {
   }
 
   ~JoinAggregationState() {
-    NdbMutex_Deinit(&m_redist_mutex);
+    if (m_cte_mode) {
+      NdbMutex_Deinit(&m_redist_mutex);
+    }
   }
 
   //------------------------------------------------------------------
