@@ -156,7 +156,7 @@ dropTestTables(MYSQL *conn)
 /* ------------------------------------------------------------------ */
 
 static int
-testCteWithStandardMain(Ndb *ndb, MYSQL *conn)
+testCteWithStandardMain(Ndb *ndb, MYSQL * /*conn*/)
 {
   printf("Test 1: CTE + standard main query ... ");
   fflush(stdout);
@@ -369,7 +369,7 @@ testCteWithStandardMain(Ndb *ndb, MYSQL *conn)
 /* ------------------------------------------------------------------ */
 
 static int
-testCteLookupMain(Ndb *ndb, MYSQL *conn)
+testCteLookupMain(Ndb *ndb, MYSQL * /*conn*/)
 {
   printf("Test 2: CTE + main CTE_LOOKUP ... ");
   fflush(stdout);
@@ -491,11 +491,11 @@ testCteLookupMain(Ndb *ndb, MYSQL *conn)
   }
   /* CTE_LOOKUP: getValue on the virtual table columns defines the
    * receive buffer size for the CTE result row. */
-  NdbRecAttr *raCteGrp = nullptr;
-  NdbRecAttr *raCteTotal = nullptr;
   if (cteLookupQueryOp != nullptr) {
-    raCteGrp = cteLookupQueryOp->getValue("grp");
-    raCteTotal = cteLookupQueryOp->getValue("total");
+    /* getValue defines the receive buffer size for CTE result columns.
+     * The returned NdbRecAttr is not read in this test (row count only). */
+    (void)cteLookupQueryOp->getValue("grp");
+    (void)cteLookupQueryOp->getValue("total");
   }
 
   if (trans->execute(NdbTransaction::NoCommit) != 0) {
@@ -565,7 +565,7 @@ testCteLookupMain(Ndb *ndb, MYSQL *conn)
 /* ------------------------------------------------------------------ */
 
 static int
-testCteLookupAggLeaf(Ndb *ndb, MYSQL *conn)
+testCteLookupAggLeaf(Ndb *ndb, MYSQL * /*conn*/)
 {
   printf("Test 3: CTE_LOOKUP as aggregate leaf ... ");
   fflush(stdout);
