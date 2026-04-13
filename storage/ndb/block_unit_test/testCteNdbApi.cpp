@@ -793,8 +793,10 @@ testCteWithScanFilter(Ndb *ndb, MYSQL * /*conn*/)
   Uint32 grpColNo = grpCol->getColumnNo();
 
   /* Build scan filter: grp >= 2.
-   * NdbScanFilter must go out of scope before finalise(). */
-  NdbInterpretedCode filterCode(srcTab);
+   * Use explicit buffer like Rondis pattern. */
+  Uint32 codeBuf[128];
+  NdbInterpretedCode filterCode(srcTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
   {
     NdbScanFilter filter(&filterCode);
     if (filter.begin(NdbScanFilter::AND) != 0 ||
