@@ -230,6 +230,7 @@ struct JoinAggregationState {
   // CTE node distribution (set at SETUP, immutable after)
   Uint32 m_cte_node_list[MAX_DATA_NODE_ID]; // Live data node IDs at setup time
   Uint32 m_cte_num_nodes;                   // Number of live data nodes
+  Uint32 m_cte_remote_aggKeys[ABS_MAX_NDB_NODES]; // Per-node aggStateKeys (indexed by nodeId)
   bool m_cte_redistribution_done;           // This node finished sending
   bool m_cte_waiting_conf;                  // Paused waiting for REDISTRIBUTE_CONF
   Uint32 m_cte_redist_batch_bytes;          // Bytes sent in current batch (flow control)

@@ -81,6 +81,11 @@ struct JoinAggCompleteReq {
   Uint32 transid[2];
   Uint32 aggStateKey;
   Uint32 maxBatchRows;
+
+  // Optional section: per-node aggStateKeys for CTE lookup forwarding.
+  // Format: [nodeId1, aggKey1, nodeId2, aggKey2, ...] pairs.
+  // Sent only for CTE COMPLETE (cte_mode), not for main agg COMPLETE.
+  enum { AggKeysSectionNum = 0 };
 };
 
 struct JoinAggCompleteConf {

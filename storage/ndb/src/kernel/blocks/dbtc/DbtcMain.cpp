@@ -29544,6 +29544,19 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
     NdbNodeBitmask nodes = cteNodes->m_aggNodes;
     cteNodes->m_aggNodesPending.clear();
 
+    /* Build per-node aggStateKey map for CTE_LOOKUP forwarding.
+     * Format: [nodeId1, aggKey1, nodeId2, aggKey2, ...] */
+    Uint32 aggKeysBuf[2 * MAX_NDB_NODES];
+    Uint32 aggKeysLen = 0;
+    for (Uint32 n = nodes.find_first();
+         n != NdbNodeBitmask::NotFound;
+         n = nodes.find_next(n + 1)) {
+      if (getNodeInfo(n).m_connected) {
+        aggKeysBuf[aggKeysLen++] = n;
+        aggKeysBuf[aggKeysLen++] = cteNodes->m_aggStateKeys[n];
+      }
+    }
+
     for (Uint32 nodeId = nodes.find_first();
          nodeId != NdbNodeBitmask::NotFound;
          nodeId = nodes.find_next(nodeId + 1)) {
@@ -29579,8 +29592,11 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
         }
         ref = get_scan_fragreq_ref(&m_distribution_handle, inst);
       }
+      LinearSectionPtr lsp[1];
+      lsp[0].p = aggKeysBuf;
+      lsp[0].sz = aggKeysLen;
       sendSignal(ref, GSN_JOIN_AGG_COMPLETE_REQ, signal,
-                 JoinAggCompleteReq::SignalLength, JBB);
+                 JoinAggCompleteReq::SignalLength, JBB, lsp, 1);
       cteNodes->m_aggNodesPending.set(nodeId);
       scanptr.p->m_cteCompleteOutstanding++;
     }

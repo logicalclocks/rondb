@@ -43,7 +43,6 @@
 #include <signaldata/DihScanTab.hpp>
 #include <signaldata/DropTab.hpp>
 #include <signaldata/CteLookup.hpp>
-#include <rondb_hash.hpp>
 #include <signaldata/CteScan.hpp>
 #include <signaldata/JoinAgg.hpp>
 #include "../dblqh/JoinAggregationState.hpp"
@@ -5814,13 +5813,11 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       keyInfoPtrI = tmp;
     }
 
-    /* Route CTE_LOOKUP to the node that owns this group key after
-     * redistribution. Uses the same hash as DBLQH's
-     * continueJoinAggRedistribute: rondb_xxhash_std on the raw key
-     * bytes, modulo the data node count.
-     * TODO: for collation-aware GROUP BY keys (VARCHAR with non-binary
-     * collation), this needs the per-column normalize+hash path from
-     * GBHashTable::hashKeyFull. Currently correct for binary types. */
+    /* Always send CTE_LOOKUP_REQ to local DBLQH. For multi-node
+     * clusters, set CTE_LOOKUP_ROUTE_FLAG so DBLQH forwards to the
+     * correct owner node (determined by hashGroupKey) if the group
+     * is not found locally. DBLQH has access to the hash table's
+     * type metadata needed for correct collation-aware hashing. */
     ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
 
     // Compute key length in bytes
@@ -5828,30 +5825,16 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     getSection(keyPtr, keyInfoPtrI);
     const Uint32 keyLenBytes = keyPtr.sz * sizeof(Uint32);
 
-    Uint32 keyBuf[256];
-    ndbrequire(keyPtr.sz <= 256);
-    copy(keyBuf, keyInfoPtrI);
-
-    Uint32 targetNodeId;
-    Uint64 routeHash = 0;
-    if (m_numDataNodes <= 1) {
-      targetNodeId = getOwnNodeId();
-    } else {
-      routeHash = rondb_xxhash_std(
-          reinterpret_cast<const char *>(keyBuf), keyLenBytes);
-      Uint32 ownerIdx = static_cast<Uint32>(routeHash) % m_numDataNodes;
-      targetNodeId = m_dataNodeList[ownerIdx];
-    }
+    Uint32 targetNodeId = getOwnNodeId();
     Uint32 targetAggKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
+    Uint32 lookupFlags =
+        (m_numDataNodes > 1) ? CteLookupReq::CTE_LOOKUP_ROUTE_FLAG : 0;
 
-    DEB_CTE(("(%u) cte_lookup_send: targetNodeId=%u numDataNodes=%u "
-             "cteIdx=%u targetAggKey=%u keyLenBytes=%u "
-             "hash=0x%llx key[0]=0x%x key[1]=0x%x",
-             instance(), targetNodeId, m_numDataNodes,
-             cteIdx, targetAggKey, keyLenBytes,
-             (unsigned long long)routeHash,
-             keyBuf[0], keyPtr.sz > 1 ? keyBuf[1] : 0));
+    DEB_CTE(("(%u) cte_lookup_send: targetNodeId=%u (local) "
+             "cteIdx=%u targetAggKey=%u keyLenBytes=%u flags=0x%x",
+             instance(), targetNodeId,
+             cteIdx, targetAggKey, keyLenBytes, lookupFlags));
 
     // Duplicate AttrInfo section (reused across lookups)
     Uint32 attrInfoPtrI = RNIL;
@@ -5912,6 +5895,7 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     req->routeRef = requestPtr.p->m_senderRef;
     req->correlation = treeNodePtr.p->m_send.m_correlation;
     req->joinAggStateKey = joinAggStateKey;
+    req->flags = lookupFlags;
 
     SectionHandle handle(this);
     getSection(handle.m_ptr[CteLookupReq::KeySectionNum], keyInfoPtrI);

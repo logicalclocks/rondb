@@ -18332,11 +18332,51 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
       gbSize = interp->gb_map_mutable()->size();
     DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ:"
                   " aggStateKey=%u strategy=%u num_threads=%u"
-                  " gb_map_size=%u completed_ops=%u",
+                  " gb_map_size=%u completed_ops=%u cte_mode=%u",
                   getThreadId(), aggStateKey, state->m_strategy,
                   state->m_num_threads, gbSize,
-                  state->m_completed_ops.load()));
+                  state->m_completed_ops.load(),
+                  state->m_cte_mode));
   }
+
+  /* Read per-node aggStateKeys section (required for CTE mode).
+   * Format: [nodeId1, aggKey1, nodeId2, aggKey2, ...] */
+  SectionHandle handle(this, signal);
+  if (state->m_cte_mode) {
+    jam();
+    if (handle.m_cnt == 0) {
+      jam();
+      releaseSections(handle);
+      JoinAggCompleteRef *ref =
+        (JoinAggCompleteRef *)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->senderData = senderData;
+      ref->requestId = requestId;
+      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+      ref->errorLine = __LINE__;
+      sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+                 signal, JoinAggCompleteRef::SignalLength, JBB);
+      return;
+    }
+    SegmentedSectionPtr ptr;
+    ndbrequire(handle.getSection(ptr,
+                                 JoinAggCompleteReq::AggKeysSectionNum));
+    Uint32 pairBuf[2 * MAX_NDB_NODES];
+    ndbrequire(ptr.sz <= 2 * MAX_NDB_NODES);
+    copy(pairBuf, ptr);
+    memset(state->m_cte_remote_aggKeys, 0,
+           sizeof(state->m_cte_remote_aggKeys));
+    for (Uint32 i = 0; i + 1 < ptr.sz; i += 2) {
+      Uint32 nd = pairBuf[i];
+      Uint32 key = pairBuf[i + 1];
+      ndbrequire(nd < ABS_MAX_NDB_NODES);
+      state->m_cte_remote_aggKeys[nd] = key;
+    }
+    DEB_CTE(("(%u) COMPLETE_REQ: stored %u aggKey pairs",
+             instance(), ptr.sz / 2));
+  }
+  releaseSections(handle);
+
   state->m_max_batch_rows = maxBatchRows;
   state->m_state.store(JoinAggregationState::FINALIZING);
 
@@ -18861,13 +18901,14 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   const Uint32 routeRef = req->routeRef;
   const Uint32 correlation = req->correlation;
   const Uint32 joinAggStateKey = req->joinAggStateKey;
+  const Uint32 flags = req->flags;
 
   DEB_CTE(("(%u) execCTE_LOOKUP_REQ: aggStateKey=%u keyLen=%u "
            "senderRef=0x%x senderData=0x%x resultRef=0x%x "
-           "resultData=0x%x routeRef=0x%x corr=0x%x joinAgg=%u",
+           "resultData=0x%x routeRef=0x%x corr=0x%x joinAgg=%u flags=0x%x",
            instance(), aggStateKey, keyLen,
            senderRef, senderData, resultRef,
-           resultData, routeRef, correlation, joinAggStateKey));
+           resultData, routeRef, correlation, joinAggStateKey, flags));
 
   /* Release incoming signal sections early so all error paths are safe.
    * We copy the section data into local buffers before releasing. */
@@ -18970,6 +19011,66 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
            groupData ? "FOUND" : "NOT_FOUND"));
 
   if (groupData == nullptr) {
+    jam();
+    /* If ROUTE_FLAG is set and the key hashes to a remote node,
+     * forward the request there instead of returning NOT_FOUND. */
+    if ((flags & CteLookupReq::CTE_LOOKUP_ROUTE_FLAG) &&
+        state->m_cte_num_nodes > 1) {
+      jam();
+      Uint64 h = interp->hashGroupKey(
+          reinterpret_cast<const char *>(keyBuf), keyLen);
+      Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
+      Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
+      if (ownerNode != getOwnNodeId()) {
+        jam();
+        Uint32 remoteAggKey = state->m_cte_remote_aggKeys[ownerNode];
+        DEB_CTE(("(%u) CTE_LOOKUP: forwarding to node %u aggKey=%u "
+                 "(hash=0x%llx ownerIdx=%u)",
+                 instance(), ownerNode, remoteAggKey,
+                 (unsigned long long)h, ownerIdx));
+
+        CteLookupReq *fwd = (CteLookupReq *)signal->getDataPtrSend();
+        fwd->senderRef = senderRef;
+        fwd->senderData = senderData;
+        fwd->aggStateKey = remoteAggKey;
+        fwd->keyLen = keyLen;
+        fwd->resultRef = resultRef;
+        fwd->resultData = resultData;
+        fwd->routeRef = routeRef;
+        fwd->correlation = correlation;
+        fwd->joinAggStateKey = joinAggStateKey;
+        fwd->flags = 0;  /* Clear ROUTE_FLAG — no further forwarding */
+
+        SectionHandle fwdHandle(this);
+        Uint32 keyPtrI = RNIL;
+        ndbrequire(appendToSection(keyPtrI, keyBuf, keySection.sz));
+        fwdHandle.m_ptr[CteLookupReq::KeySectionNum].i = keyPtrI;
+        {
+          SegmentedSectionPtr p;
+          getSection(p, keyPtrI);
+          fwdHandle.m_ptr[CteLookupReq::KeySectionNum] = p;
+        }
+        fwdHandle.m_cnt = 1;
+
+        if (attrInfoLen > 0) {
+          Uint32 aiPtrI = RNIL;
+          ndbrequire(appendToSection(aiPtrI, cinBuf, attrInfoLen));
+          fwdHandle.m_ptr[CteLookupReq::AttrInfoSectionNum].i = aiPtrI;
+          {
+            SegmentedSectionPtr p;
+            getSection(p, aiPtrI);
+            fwdHandle.m_ptr[CteLookupReq::AttrInfoSectionNum] = p;
+          }
+          fwdHandle.m_cnt = 2;
+        }
+
+        Uint32 ref = numberToRef(DBLQH, 1, ownerNode);
+        sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
+                   CteLookupReq::SignalLength, JBB, &fwdHandle);
+        return;
+      }
+    }
+    /* Genuine not-found (local owner or no ROUTE_FLAG) */
     jam();
     CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
     ref->senderRef = reference();
