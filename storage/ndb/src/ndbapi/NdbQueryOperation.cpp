@@ -127,6 +127,7 @@ static const int Err_DifferentTabForKeyRecAndAttrRec = 4287;
 static const int Err_KeyIsNULL = 4316;
 static const int Err_FinaliseNotCalled = 4519;
 static const int Err_InterpretedCodeWrongTab = 4524;
+static const int Err_OutstandingResultsMismatch = 4117;
 
 /**
  * Set NdbQueryOperationImpl::m_parallelism to this value to indicate that
@@ -247,6 +248,7 @@ class NdbWorker {
   static void clear(NdbWorker *frags, Uint32 noOfWorkers);
 
   Uint32 getWorkerNo() const { return m_workerNo; }
+  Uint32 rootOpNo() const { return m_rootOpNo; }
 
   /**
    * Prepare for receiving another batch of results.
@@ -264,13 +266,22 @@ class NdbWorker {
 
   void setReceivedMore();  // Need mutex lock
 
-  void incrOutstandingResults(Int32 delta) {
+  bool incrOutstandingResults(Int32 delta) {
     if (traceSignals) {
       ndbout << "incrOutstandingResults: " << m_outstandingResults
              << ", with: " << delta << endl;
     }
     m_outstandingResults += delta;
-    assert(!(m_confReceived && m_outstandingResults < 0));
+    if (unlikely(m_confReceived && m_outstandingResults < 0)) {
+      // Data node sent more results than reported in SCAN_TABCONF.
+      // Return error instead of continuing with corrupt state.
+      ndbout << "ERROR: outstanding results mismatch: "
+             << m_outstandingResults << " after delta=" << delta
+             << ", confReceived=true" << endl;
+      assert(false);
+      return false;
+    }
+    return true;
   }
 
   void throwRemainingResults() {
@@ -363,6 +374,9 @@ class NdbWorker {
 
   /** Number of this worker result set as assigned by ::init().*/
   Uint32 m_workerNo;
+
+  /** Root operation number (cached from query, 0 for non-CTE). */
+  Uint32 m_rootOpNo;
 
   /** For processing results originating from worker (Array of).*/
   NdbResultStream *m_resultStreams;
@@ -1582,6 +1596,7 @@ NdbWorker *NdbWorker::receiverIdLookup(NdbWorker *workers, Uint32 noOfWorkers,
 NdbWorker::NdbWorker()
     : m_query(nullptr),
       m_workerNo(voidWorkerNo),
+      m_rootOpNo(0),
       m_resultStreams(nullptr),
       m_pendingRequests(0),
       m_availResultSets(0),
@@ -1602,6 +1617,7 @@ void NdbWorker::init(NdbQueryImpl &query, Uint32 workerNo) {
   assert(m_workerNo == voidWorkerNo);
   m_query = &query;
   m_workerNo = workerNo;
+  m_rootOpNo = query.getRootStreamOpNo();
 
   m_resultStreams = reinterpret_cast<NdbResultStream *>(
       query.getResultStreamAlloc().allocObjMem(query.getNoOfOperations()));
@@ -1733,7 +1749,8 @@ void NdbWorker::grabNextResultSet()  // Need mutex
   assert(m_pendingRequests > 0);
   m_pendingRequests--;
 
-  NdbResultStream &rootStream = getResultStream(0);
+  const Uint32 rootOp = rootOpNo();
+  NdbResultStream &rootStream = getResultStream(rootOp);
   rootStream.prepareResultSet(m_preparedReceiveSet, m_activeScans);
 
   /* Position at the first (sorted?) row available from this worker.
@@ -1746,8 +1763,9 @@ void NdbWorker::setConfReceived(Uint32 tcPtrI) {
      message. For a scan, there should only be one SCAN_TABCONF per
      worker result set.
   */
-  assert(!getResultStream(0).isScanQuery() || !m_confReceived);
-  getResultStream(0).getReceiver().m_tcPtrI = tcPtrI;
+  const Uint32 rootOp = rootOpNo();
+  assert(!getResultStream(rootOp).isScanQuery() || !m_confReceived);
+  getResultStream(rootOp).getReceiver().m_tcPtrI = tcPtrI;
   m_confReceived = true;
 }
 
@@ -1755,7 +1773,9 @@ bool NdbWorker::finalBatchReceived() const {
   return m_confReceived && getReceiverTcPtrI() == RNIL;
 }
 
-bool NdbWorker::isEmpty() const { return getResultStream(0).isEmpty(); }
+bool NdbWorker::isEmpty() const {
+  return getResultStream(rootOpNo()).isEmpty();
+}
 
 /**
  * SPJ requests are identified by the receiver-id of the
@@ -1766,28 +1786,11 @@ bool NdbWorker::isEmpty() const { return getResultStream(0).isEmpty(); }
  * We provide some convenient accessors for fetching this info
  */
 Uint32 NdbWorker::getReceiverId() const {
-  // For CTE queries, find the main root (first non-CTE op)
-  const NdbQueryDefImpl &qDef = m_query->getQueryDef();
-  for (Uint32 i = 0; i < qDef.getNoOfOperations(); i++) {
-    const NdbQueryOperationDefImpl &def = qDef.getQueryOperation(i);
-    if (def.getType() != NdbQueryOperationDef::CteSubtree &&
-        !def.isCteEmbedded()) {
-      return getResultStream(def.getOpNo()).getReceiver().getId();
-    }
-  }
-  return getResultStream(0).getReceiver().getId();
+  return getResultStream(rootOpNo()).getReceiver().getId();
 }
 
 Uint32 NdbWorker::getReceiverTcPtrI() const {
-  const NdbQueryDefImpl &qDef = m_query->getQueryDef();
-  for (Uint32 i = 0; i < qDef.getNoOfOperations(); i++) {
-    const NdbQueryOperationDefImpl &def = qDef.getQueryOperation(i);
-    if (def.getType() != NdbQueryOperationDef::CteSubtree &&
-        !def.isCteEmbedded()) {
-      return getResultStream(def.getOpNo()).getReceiver().m_tcPtrI;
-    }
-  }
-  return getResultStream(0).getReceiver().m_tcPtrI;
+  return getResultStream(rootOpNo()).getReceiver().m_tcPtrI;
 }
 
 ///////////////////////////////////////////
@@ -2225,6 +2228,7 @@ NdbQueryImpl::NdbQueryImpl(NdbTransaction &trans,
       m_operations(nullptr),
       m_countOperations(0),
       m_globalCursor(0),
+      m_rootOpNo(0),
       m_pendingWorkers(0),
       m_workerCount(0),
       m_fragsPerWorker(0),
@@ -2554,7 +2558,7 @@ int NdbQueryImpl::setBound(const NdbRecord *key_record,
 int NdbQueryImpl::getRangeNo() const {
   const NdbWorker *worker = m_applFrags.getCurrent();
   if (worker != nullptr) {
-    const int range_no = worker->getResultStream(0).getCurrentRangeNo();
+    const int range_no = worker->getResultStream(m_rootOpNo).getCurrentRangeNo();
     if (range_no >= 0) return range_no;
     assert(!needRangeNo());
   }
@@ -2723,7 +2727,7 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextRootResult(bool fetchAllowed,
           assert(false);
       }
     } else {
-      worker->getResultStream(0).nextResult();  // Consume current
+      worker->getResultStream(m_rootOpNo).nextResult();  // Consume current
       m_applFrags.reorganize();                 // Calculate new current
       // ::reorganize(). may update 'current' worker.
       worker = m_applFrags.getCurrent();
@@ -2745,7 +2749,8 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextRootResult(bool fetchAllowed,
     }
 
     if (worker != nullptr) {
-      if (unlikely(getRoot().fetchRow(worker->getResultStream(0)) == -1))
+      if (unlikely(getRoot().fetchRow(
+              worker->getResultStream(m_rootOpNo)) == -1))
         return NdbQuery::NextResult_error;
       return NdbQuery::NextResult_gotRow;
     }
@@ -3011,7 +3016,10 @@ bool NdbQueryImpl::execTCKEYCONF() {
 
   // We will get 1 + #leaf-nodes TCKEYCONF for a lookup...
   worker.setConfReceived(RNIL);
-  worker.incrOutstandingResults(-1);
+  if (unlikely(!worker.incrOutstandingResults(-1))) {
+    setFetchTerminated(Err_OutstandingResultsMismatch, false);
+    return false;
+  }
 
   bool ret = false;
   if (worker.isFragBatchComplete()) {
@@ -3021,7 +3029,7 @@ bool NdbQueryImpl::execTCKEYCONF() {
   if (traceSignals) {
     ndbout << "NdbQueryImpl::execTCKEYCONF(): returns:" << ret
            << ", m_pendingWorkers=" << m_pendingWorkers << ", rootStream= {"
-           << worker.getResultStream(0) << "}" << endl;
+           << worker.getResultStream(m_rootOpNo) << "}" << endl;
   }
   return ret;
 }  // NdbQueryImpl::execTCKEYCONF
@@ -3226,6 +3234,9 @@ int NdbQueryImpl::prepareSend() {
    * Will also cause a ResultStream object containing a
    * NdbReceiver to be constructed for each operation in QueryTree
    */
+  // Compute root op number before worker init (workers cache it)
+  m_rootOpNo = getRootOpNo();
+
   m_workers = new NdbWorker[m_workerCount];
   if (m_workers == nullptr) {
     setErrorCode(Err_MemoryAlloc);
@@ -3298,7 +3309,8 @@ int NdbQueryImpl::prepareSend() {
   m_state = Prepared;
 
   // For CTE queries, set cursor to main root (skip CTE ops)
-  m_globalCursor = getRootOpNo();
+  m_rootOpNo = getRootOpNo();
+  m_globalCursor = m_rootOpNo;
 
   return 0;
 }  // NdbQueryImpl::prepareSend
@@ -4504,9 +4516,10 @@ int NdbQueryImpl::OrderedFragSet::compare(const NdbWorker &worker1,
   }
 
   /* Neither stream is empty so we must compare records.*/
+  const Uint32 rootOp = worker1.rootOpNo();
   return compare_ndbrecord(
-      &worker1.getResultStream(0).getReceiver(),
-      &worker2.getResultStream(0).getReceiver(), m_keyRecord, m_resultRecord,
+      &worker1.getResultStream(rootOp).getReceiver(),
+      &worker2.getResultStream(rootOp).getReceiver(), m_keyRecord, m_resultRecord,
       m_resultMask, m_ordering == NdbQueryOptions::ScanOrdering_descending,
       false);
 }
@@ -5781,7 +5794,10 @@ bool NdbQueryOperationImpl::execTRANSID_AI(const Uint32 *ptr, Uint32 len) {
 
   // Process result values.
   worker->getResultStream(*this).execTRANSID_AI(ptr, len, tupleCorrelation);
-  worker->incrOutstandingResults(-1);
+  if (unlikely(!worker->incrOutstandingResults(-1))) {
+    m_queryImpl.setFetchTerminated(Err_OutstandingResultsMismatch, false);
+    return false;
+  }
 
   bool ret = false;
   if (worker->isFragBatchComplete()) {
@@ -5844,7 +5860,10 @@ bool NdbQueryOperationImpl::execTRANSID_AI(const Uint32 *ptr,
   if (!aSignal->isLastFragment()) {
     DBUG_RETURN(false);
   }
-  worker->incrOutstandingResults(-1);
+  if (unlikely(!worker->incrOutstandingResults(-1))) {
+    m_queryImpl.setFetchTerminated(Err_OutstandingResultsMismatch, false);
+    DBUG_RETURN(false);
+  }
 
   bool ret = false;
   if (worker->isFragBatchComplete()) {
@@ -5910,7 +5929,10 @@ bool NdbQueryOperationImpl::execTCKEYREF(const NdbApiSignal *aSignal) {
       if (getNoOfChildOperations() > 0) {
         cnt += getNoOfLeafOperations();
       }
-      worker.incrOutstandingResults(-Int32(cnt));
+      if (unlikely(!worker.incrOutstandingResults(-Int32(cnt)))) {
+        m_queryImpl.setFetchTerminated(Err_OutstandingResultsMismatch, false);
+        return false;
+      }
       break;
     }
     default:                           // 'Hard error':
@@ -5958,7 +5980,10 @@ bool NdbQueryOperationImpl::execSCAN_TABCONF(Uint32 tcPtrI, Uint32 rowCount,
   // Prepare for SCAN_NEXTREQ, tcPtrI==RNIL, moreMask==0 -> EOF
   worker->setConfReceived(tcPtrI);
   worker->setRemainingSubScans(moreMask, activeMask);
-  worker->incrOutstandingResults(rowCount);
+  if (unlikely(!worker->incrOutstandingResults(rowCount))) {
+    m_queryImpl.setFetchTerminated(Err_OutstandingResultsMismatch, false);
+    DBUG_RETURN(false);
+  }
 
   bool ret = false;
   if (worker->isFragBatchComplete()) {

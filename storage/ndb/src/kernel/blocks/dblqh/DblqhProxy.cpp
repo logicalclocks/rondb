@@ -2370,7 +2370,9 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   JoinAggregationState *state = getJoinAggState(key);
   ndbrequire(state != nullptr);
 
-  // Initialize runtime counters (TransientPool::seize doesn't call constructor)
+  // Initialize all fields (ArrayPool::seize doesn't call constructor).
+  // Every field in JoinAggregationState must be set here to avoid
+  // stale values from a previous pool occupant.
   state->m_outstanding_ops.store(0);
   state->m_completed_ops.store(0);
   state->m_failed_ops.store(0);
@@ -2387,7 +2389,35 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_total_agg_results = 0;
   state->m_all_programs_buf = nullptr;
   state->m_outer_join_agg_scan = false;
+  state->m_apiRef = 0;
+  state->m_memory_budget_pages = 0;
+  state->m_creation_time = 0;
+  state->m_last_activity_time = 0;
+
+  // CTE fields — initialize unconditionally to avoid stale pool data
+  state->m_cte_waiting_conf = false;
+  state->m_cte_redist_batch_bytes = 0;
+  state->m_cte_complete_senderRef = 0;
+  state->m_cte_complete_senderData = 0;
+  state->m_cte_complete_requestId = 0;
+  state->m_cteScan_senderRef = 0;
+  state->m_cteScan_senderData = 0;
+  state->m_cteScan_transId[0] = 0;
+  state->m_cteScan_transId[1] = 0;
+  state->m_cteScan_groupsSent = 0;
+  state->m_cteScan_iterBucket = 0;
+  state->m_cteScan_iterRaw = nullptr;
+  state->m_cteScan_active = false;
   state->m_redist_page_head = nullptr;
+  state->m_redist_page_ptr = nullptr;
+  state->m_redist_page_remaining = 0;
+  state->m_redist_queue_head = nullptr;
+  state->m_redist_queue_tail = nullptr;
+  state->m_redist_queue_count = 0;
+  state->m_cte_num_nodes = 0;
+  state->m_cte_redistribution_done = false;
+  state->m_cte_node_fail_count = 0;
+  NdbMutex_Init(&state->m_redist_mutex);
 
   // Populate immutable identification fields
   state->m_transid[0] = req->transid[0];
@@ -2417,7 +2447,6 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   // CTE mode: build live data node list for hash redistribution
   if (state->m_cte_mode) {
     jam();
-    state->m_cte_num_nodes = 0;
     for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
       jamDebug();
       jamDataDebug(i);
@@ -2429,16 +2458,9 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         state->m_cte_num_nodes++;
       }
     }
-    state->m_cte_redistribution_done = false;
     state->m_cte_node_fail_count =
         JoinAggregationState::s_node_fail_count.load();
     state->m_cte_nodes_finalized.clear();
-    NdbMutex_Init(&state->m_redist_mutex);
-    state->m_redist_page_ptr = nullptr;
-    state->m_redist_page_remaining = 0;
-    state->m_redist_queue_head = nullptr;
-    state->m_redist_queue_tail = nullptr;
-    state->m_redist_queue_count = 0;
   }
 
   // Expected operations
@@ -2793,11 +2815,6 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
     state->m_redist_queue_head = nullptr;
     state->m_redist_queue_tail = nullptr;
     state->m_redist_queue_count = 0;
-
-    // Destroy redistribution mutex (initialized during SETUP for CTE mode)
-    if (state->m_cte_mode) {
-      NdbMutex_Deinit(&state->m_redist_mutex);
-    }
   }
 
   // Send CONF before page cleanup — caller need not wait

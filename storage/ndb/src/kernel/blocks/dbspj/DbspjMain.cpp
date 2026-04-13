@@ -5903,11 +5903,18 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
   ndbrequire(requestPtr.p->m_outstanding > 0);
   requestPtr.p->m_outstanding--;
 
+  // Count FLUSH_AI result sent to API — same as lookup_countSignal does
+  // for regular lookups (T_USER_PROJECTION → m_rows++). Without this,
+  // SCAN_FRAGCONF::completedOps undercounts and the API asserts on
+  // outstanding results mismatch.
+  requestPtr.p->m_rows++;
+
   DEB_CTE(("(%u) execCTE_LOOKUP_CONF: after decrement req_outstanding=%u "
-           "node_outstanding=%u completed_nodes=0x%x",
+           "node_outstanding=%u completed_nodes=0x%x m_rows=%u",
            instance(), requestPtr.p->m_outstanding,
            treeNodePtr.p->m_cteLookup_data.m_outstanding,
-           requestPtr.p->m_completed_tree_nodes.rep.data[0]));
+           requestPtr.p->m_completed_tree_nodes.rep.data[0],
+           requestPtr.p->m_rows));
 
   checkBatchComplete(signal, requestPtr);
 }
@@ -7102,6 +7109,9 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
         ref = numberToRef(DBLQH, instance_no, Tnode);
       }
     }
+    DEB_CTE(("(%u) Sending LQHKEYREQ from node: %u",
+      instance(), treeNodePtr.p->m_node_no));
+
     sendSignal(ref, GSN_LQHKEYREQ, signal,
                NDB_ARRAY_SIZE(treeNodePtr.p->m_lookup_data.m_lqhKeyReq) +
                    var_index + agg_extra,

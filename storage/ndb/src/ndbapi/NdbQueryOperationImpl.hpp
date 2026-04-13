@@ -163,6 +163,9 @@ class NdbQueryImpl {
 
   NdbTransaction &getNdbTransaction() const { return m_transaction; }
 
+  /** Root operation number for result stream access (0 for non-CTE). */
+  Uint32 getRootStreamOpNo() const { return m_rootOpNo; }
+
   const NdbError &getNdbError() const;
 
   void setErrorCode(int aErrorCode);
@@ -483,6 +486,12 @@ class NdbQueryImpl {
    *  results.
    */
   Uint32 m_globalCursor;
+
+  /** Operation number of the main query root (0 for non-CTE queries,
+   *  skips CteSubtree/CteEmbedded ops for CTE queries).
+   *  Cached from getRootOpNo() during prepareSend to avoid repeated loops.
+   */
+  Uint32 m_rootOpNo;
 
   /** Number of SPJ workers not yet completed within the current batch.
    *  Only access w/ PollGuard mutex as it is also updated by receiver thread

@@ -53,8 +53,15 @@ static const Uint32 GROUP_LINK_OVERHEAD = 24;
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 #undef DEBUG_PA_INTERP
 #define DEBUG_AGG 1
+#define DEBUG_CTE 1
 #endif
 #define DEBUG_PA_INTERP_PART_ID 0
+
+#ifdef DEBUG_CTE
+#define DEB_CTE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CTE(arglist) do { } while (0)
+#endif
 
 #ifdef DEBUG_AGG
 #define DEB_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
@@ -1488,6 +1495,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     }
   }
   m_processed_rows++;
+  DEB_CTE(("(0x%p)->m_processed_rows = %llu, ProcessRec",
+    this, m_processed_rows));
   return 0;
 }
 
@@ -1749,11 +1758,15 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
                         m_n_agg_results, m_cached_agg_ops);
     }
     m_processed_rows += other->m_processed_rows;
+    DEB_CTE(("(0x%p)->m_processed_rows = %llu, other: 0x%p, cols=0",
+      this, m_processed_rows, other));
     return 0;
   }
 
   if (other->m_gb_map == nullptr || other->m_gb_map->empty()) {
     m_processed_rows += other->m_processed_rows;
+    DEB_CTE(("(0x%p)->m_processed_rows = %llu, other: 0x%p, empty map",
+      this, m_processed_rows, other));
     return 0;
   }
 
@@ -1808,6 +1821,8 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
 
   m_processed_rows += other->m_processed_rows;
   m_n_groups = m_gb_map->size();
+  DEB_CTE(("(0x%p)->m_processed_rows = %llu, other: 0x%p",
+    this, m_processed_rows, other));
   return 0;
 }
 

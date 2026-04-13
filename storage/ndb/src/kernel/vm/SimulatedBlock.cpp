@@ -79,8 +79,15 @@
 
 #define JAM_FILE_ID 252
 
-#ifdef VM_TRACE
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_TRANSID_AI 1
+#define DEBUG_CTE 1
+#endif
+
+#ifdef DEBUG_CTE
+#define DEB_CTE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CTE(arglist) do { } while (0)
 #endif
 
 //
@@ -6099,6 +6106,8 @@ void SimulatedBlock::releaseJoinAggState(Uint32 key) {
   Ptr<JoinAggregationState> ptr;
   ptr.i = key;
   s_joinAggStatePool.getPtr(ptr);
+  DEB_CTE(("releaseJoinAggState(%u, 0x%p)", ptr.i, ptr.p));
+  ptr.p->~JoinAggregationState();
   s_joinAggStatePool.release(ptr);
 }
 
