@@ -18280,6 +18280,10 @@ void Dblqh::send_scan_fragref(Signal *signal, Uint32 transid1, Uint32 transid2,
 
 void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   jamEntry();
+  if (unlikely(!assembleFragments(signal))) {
+    jam();
+    return;
+  }
   const JoinAggCompleteReq *req =
     (const JoinAggCompleteReq *)signal->getDataPtr();
 
