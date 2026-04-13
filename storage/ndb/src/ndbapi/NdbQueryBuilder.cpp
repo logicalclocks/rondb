@@ -2952,6 +2952,13 @@ int NdbQueryCteLookupOperationDefImpl::serializeOperation(
     requestInfo |= DABits::NI_ANTI_JOIN;
   }
 
+  if (m_queryHasAggregation) {
+    requestInfo |= DABits::NI_AGGREGATE;
+    if (m_isAggregateLeaf) {
+      requestInfo |= DABits::NI_AGGREGATE_LEAF;
+    }
+  }
+
   // Part1: Parent list
   requestInfo |= appendParentList(serializedDef);
 
