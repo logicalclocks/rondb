@@ -755,6 +755,222 @@ testCteLookupAggLeaf(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 4: CTE with scan filter (WHERE grp >= 2)                       */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   WITH cte0 AS (SELECT grp, SUM(val) AS total                       */
+/*     FROM cte_src t1 JOIN cte_src t2 ON t1.pk = t2.pk                */
+/*     WHERE t1.grp >= 2 GROUP BY grp)                                 */
+/*   SELECT COUNT(*), SUM(t2.val)                                      */
+/*   FROM cte_src t1 JOIN cte_src t2 ON t1.pk = t2.pk                  */
+/*   WHERE t1.grp >= 2                                                 */
+/*                                                                     */
+/* The WHERE filter is pushed as NdbInterpretedCode on the CTE scan    */
+/* and the main scan. Only rows with grp >= 2 are scanned.             */
+/* Data: (3,2,30),(4,2,40),(5,3,50) pass the filter.                   */
+/* Expected: COUNT=3, SUM=120                                          */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteWithScanFilter(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 4: CTE with scan filter (WHERE grp >= 2) ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  if (srcTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = srcTab->getColumn("grp");
+  if (grpCol == nullptr) {
+    printf("FAILED (column lookup: grp)\n");
+    return -1;
+  }
+  Uint32 grpColNo = grpCol->getColumnNo();
+
+  /* Build scan filter: grp >= 2 */
+  NdbInterpretedCode filterCode(srcTab);
+  NdbScanFilter filter(&filterCode);
+  if (filter.begin(NdbScanFilter::AND) != 0 ||
+      filter.ge(grpColNo, (Uint32)2) != 0 ||
+      filter.end() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (filter build)\n");
+    return -1;
+  }
+
+  /* CTE 0 aggregation: GROUP BY grp, SUM(val) */
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") ||
+      !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) ||
+      !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg: %s)\n", cteAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Main aggregation: COUNT(*), SUM(val) */
+  NdbAggregator mainAgg(srcTab);
+  if (!mainAgg.LoadColumn("val", 0) ||
+      !mainAgg.Count(0, 0) ||
+      !mainAgg.Sum(1, 0) ||
+      !mainAgg.Finalize()) {
+    printf("FAILED (mainAgg: %s)\n", mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Build query */
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+
+  /* CTE 0 subtree: scan (with filter) + lookup self-join */
+  qb->beginCteSubtree(0);
+
+  NdbQueryOptions cteScanOpts;
+  cteScanOpts.setInterpretedCode(filterCode);
+  const NdbQueryTableScanOperationDef *cteScanOp =
+      qb->scanTable(srcTab, &cteScanOpts);
+  if (cteScanOp == nullptr) {
+    printf("FAILED (CTE scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryOperand *cteJoinKey[] = {
+    qb->linkedValue(cteScanOp, "pk"), nullptr
+  };
+  NdbQueryOptions cteLeafOpts;
+  cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLeafOpts.setAggregation(cteAgg);
+  if (qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts) == nullptr) {
+    printf("FAILED (CTE readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  qb->endCteSubtree();
+
+  if (qb->defineCte(0, srcTab, cteAgg) != 0) {
+    printf("FAILED (defineCte)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: scan (with filter) + lookup self-join + aggregation */
+  NdbQueryOptions mainScanOpts;
+  mainScanOpts.setInterpretedCode(filterCode);
+  const NdbQueryTableScanOperationDef *mainScanOp =
+      qb->scanTable(srcTab, &mainScanOpts);
+  if (mainScanOp == nullptr) {
+    printf("FAILED (main scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryOperand *mainJoinKey[] = {
+    qb->linkedValue(mainScanOp, "pk"), nullptr
+  };
+  NdbQueryOptions mainLeafOpts;
+  mainLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  mainLeafOpts.setAggregation(mainAgg);
+  if (qb->readTuple(srcTab, mainJoinKey, &mainLeafOpts) == nullptr) {
+    printf("FAILED (main readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  /* Execute */
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result rows)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::Result countRes = rec.FetchAggregationResult();
+  Int64 count = countRes.data_int64();
+  NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+  Int64 sum = sumRes.data_int64();
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  V("  Result: COUNT=%lld, SUM=%lld\n", (long long)count, (long long)sum);
+
+  if (count == 3 && sum == 120) {
+    printf("OK (COUNT=%lld, SUM=%lld)\n", (long long)count, (long long)sum);
+    return 0;
+  }
+
+  printf("FAILED (expected COUNT=3 SUM=120, got COUNT=%lld SUM=%lld)\n",
+         (long long)count, (long long)sum);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -813,6 +1029,7 @@ int main(int argc, char **argv)
           if (testCteWithStandardMain(&ndb, conn) != 0) exitCode = 1;
           if (testCteLookupMain(&ndb, conn) != 0) exitCode = 1;
           if (testCteLookupAggLeaf(&ndb, conn) != 0) exitCode = 1;
+          if (testCteWithScanFilter(&ndb, conn) != 0) exitCode = 1;
         }
 
         dropTestTables(conn);
