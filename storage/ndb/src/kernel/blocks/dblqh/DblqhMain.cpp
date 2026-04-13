@@ -18997,22 +18997,37 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
      * by accumulator columns, all in AttributeHeader format. */
     const Uint32 n_gb_cols = interp->n_gb_cols();
     const Uint32 n_agg_results = interp->n_agg_results();
-    const Uint32 val_len = interp->val_len();
 
     Uint32 *linkedBuf = cevictBuffer;
     Uint32 linkedPos = 0;
 
-    /* Copy key columns (already AH-encoded in groupData) */
+    /* Build linked_attr_data in standard format:
+     * [tableId][schemaVersion][AH][data...] per column.
+     * The tableId/schemaVersion prefix (2 words per column) is required
+     * by JoinAggInterpreter's linked attribute walker. Use 0/0 since
+     * CTE virtual columns don't map to a real table. */
+
+    /* Key columns from CTE GROUP BY */
     const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
     const Uint32 keyWords = keyLen >> 2;
-    memcpy(&linkedBuf[linkedPos], keyData, keyWords * sizeof(Uint32));
-    linkedPos += keyWords;
+    Uint32 kp = 0;
+    while (kp < keyWords) {
+      linkedBuf[linkedPos++] = 0;  // tableId
+      linkedBuf[linkedPos++] = 0;  // schemaVersion
+      Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+      Uint32 words = 1 + dataSize;
+      memcpy(&linkedBuf[linkedPos], &keyData[kp], words * sizeof(Uint32));
+      linkedPos += words;
+      kp += words;
+    }
 
-    /* Copy accumulator values as AH-encoded columns */
+    /* Accumulator values as linked columns */
     const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
         groupData + keyLen);
     for (Uint32 i = 0; i < n_agg_results; i++) {
       const Uint32 attrId = n_gb_cols + i;
+      linkedBuf[linkedPos++] = 0;  // tableId
+      linkedBuf[linkedPos++] = 0;  // schemaVersion
       if (accumulators[i].is_null) {
         AttributeHeader::init(&linkedBuf[linkedPos], attrId, 0);
         linkedPos += 1;
@@ -19043,6 +19058,14 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     }
     if (unlikely(aggRet != 0)) {
       jam();
+      g_eventLogger->info("(%u) CTE_LOOKUP agg feed FAILED: aggRet=%d "
+          "targetKey=%u leafIdx=%u linkedWords=%u n_gb=%u n_agg=%u "
+          "processed_rows=%llu inited=%d",
+          instance(), aggRet, targetBaseKey, targetLeafIndex,
+          linkedPos, targetInterp->n_gb_cols(),
+          targetInterp->n_agg_results(),
+          (unsigned long long)targetInterp->processed_rows(),
+          targetInterp->inited() ? 1 : 0);
       CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
       ref->senderRef = reference();
       ref->senderData = senderData;

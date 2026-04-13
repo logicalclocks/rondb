@@ -1521,8 +1521,15 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
   m_linked_attr_data = linked_attr_data;
   m_linked_attr_len = linked_attr_len;
 
+  // When called without a table reference (CTE_LOOKUP agg feed),
+  // treat local columns as NULL to avoid nullptr dereference in ProcessRec.
+  if (block_tup == nullptr) {
+    m_null_local_columns = true;
+  }
+
   Int32 ret = ProcessRec(block_tup, req_struct);
 
+  m_null_local_columns = false;
   m_linked_attr_data = nullptr;
   m_linked_attr_len = 0;
   return ret;
