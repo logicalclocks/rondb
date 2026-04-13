@@ -3081,9 +3081,22 @@ int NdbQueryImpl::prepareSend() {
   //
   Uint32 rootFragments;
   if (getQueryDef().isScanQuery()) {
-    const NdbQueryOperationImpl &rootOp = getRoot();
+    NdbQueryOperationImpl &rootOp = getRoot();
     const NdbDictionary::Table &rootTable =
         rootOp.getQueryOperationDef().getTable();
+
+    /* For CTE compound queries the root scan is not op[0] — CTE subtree
+     * containers precede it. The constructor initializes m_parallelism
+     * based on opNo==0, giving the actual root Parallelism_adaptive
+     * instead of Parallelism_max. This must be corrected so that
+     * SFP_PARALLEL is set in the scan parameters, ensuring DBSPJ starts
+     * all fragments immediately rather than using adaptive parallelism
+     * (which would stall waiting for SCAN_NEXTREQ that the API won't
+     * send until all fragments report). */
+    if (rootOp.m_parallelism == Parallelism_adaptive &&
+        rootOp.getQueryOperationDef().getOpNo() != 0) {
+      rootOp.m_parallelism = Parallelism_max;
+    }
 
     rootFragments = rootTable.getFragmentCount();
     DEB_CTE_API("prepareSend: rootOpNo=%u rootFragments=%u parallelism=0x%x "
