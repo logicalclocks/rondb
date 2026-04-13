@@ -18921,8 +18921,10 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
 
   releaseSections(handle);
 
-  /* Validate minimum AttrInfo: 5 header + 1 ExitOK + 1 column + 1 pseudo = 8 */
-  if (unlikely(attrInfoLen < 8)) {
+  /* Validate minimum AttrInfo — only for non-agg path (FLUSH_AI to API).
+   * The agg-feed path (joinAggStateKey != RNIL) doesn't use AttrInfo;
+   * it builds linked_attr_data directly from the CTE hash table. */
+  if (joinAggStateKey == RNIL && unlikely(attrInfoLen < 8)) {
     jam();
     CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
     ref->senderRef = reference();
