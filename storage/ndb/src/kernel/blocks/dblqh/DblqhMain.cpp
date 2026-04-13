@@ -18936,8 +18936,19 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
 
+  DEB_CTE(("(%u) CTE_LOOKUP hash table: aggStateKey=%u state=%u "
+           "n_gb_cols=%u n_agg_results=%u processed_rows=%llu",
+           instance(), aggStateKey,
+           (Uint32)state->m_state.load(),
+           interp->n_gb_cols(), interp->n_agg_results(),
+           (unsigned long long)interp->processed_rows()));
+
   const char *groupData = interp->lookupGroup(
       reinterpret_cast<const char *>(keyBuf), keyLen);
+
+  DEB_CTE(("(%u) CTE_LOOKUP: key[0]=0x%x keyLen=%u → %s",
+           instance(), keyBuf[0], keyLen,
+           groupData ? "FOUND" : "NOT_FOUND"));
 
   if (groupData == nullptr) {
     jam();
