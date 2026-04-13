@@ -792,16 +792,19 @@ testCteWithScanFilter(Ndb *ndb, MYSQL * /*conn*/)
   }
   Uint32 grpColNo = grpCol->getColumnNo();
 
-  /* Build scan filter: grp >= 2.
-   * Use explicit buffer like Rondis pattern. */
+  /* Build scan filter: grp >= 2, using raw NdbInterpretedCode.
+   * branch_col_le branches when col >= val (inverted semantics),
+   * so branch_col_le(grp, 2, PASS) keeps rows where grp >= 2. */
   Uint32 codeBuf[128];
-  NdbInterpretedCode filterCode(srcTab, codeBuf,
-                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  NdbInterpretedCode filterCode(srcTab, codeBuf, sizeof(codeBuf));
   {
-    NdbScanFilter filter(&filterCode);
-    if (filter.begin(NdbScanFilter::AND) != 0 ||
-        filter.ge(grpColNo, (Uint32)2) != 0 ||
-        filter.end() != 0) {
+    Uint32 valBuf = 2;
+    const Uint32 PASS_LABEL = 0;
+    if (filterCode.branch_col_le(&valBuf, sizeof(valBuf),
+                                  grpColNo, PASS_LABEL) != 0 ||
+        filterCode.interpret_exit_nok() != 0 ||
+        filterCode.def_label(PASS_LABEL) != 0 ||
+        filterCode.interpret_exit_ok() != 0) {
       printf("FAILED (filter build: err=%d)\n",
              filterCode.getNdbError().code);
       return -1;
