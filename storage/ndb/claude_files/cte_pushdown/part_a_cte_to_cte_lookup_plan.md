@@ -309,30 +309,111 @@ validateAggregateFlags body never executes for Test 5, and **Bug 3
 as originally stated doesn't manifest with this query
 structure**.
 
-**What the observed symptom reveals:** There's an additional
-**Bug 0** in the DBLQH CTE 1 scan path that precedes Bugs 1-3 in
-the execution order. Hypothesis: something about the CTE 1
-subtree's scan (a base-table scan with a nested `lookupCte`
-child) causes DBLQH to loop or deadlock when processing
-`SCAN_FRAGREQ`. Possibilities:
+**What the observed symptom reveals — crash root cause:**
 
-- CTE 1 scan gets routed via the CTE_LOOKUP path by mistake
-  (because `m_cteId` is set wrong, intersecting with Bug 1)
-- Phase start logic sends the wrong scan parameters for the
-  nested `lookupCte` case
-- The aggregator attached to the nested lookupCte expects a
-  joinAggStateKey that never gets set up by DBTC's phase start
+The ~3s "hang" is not a real deadlock, it's a watchdog catching
+a thread that is about to segfault. The actual backtrace:
 
-Needs investigation before committing a fix. The Test 5 commit
-itself stands: it proves that the CTE-to-CTE lookup path is
-broken, regardless of the exact mechanism.
+```
+JoinAggInterpreter::initGBTypes
+JoinAggInterpreter::ProcessRec
+JoinAggInterpreter::processRecWithLinkedAttrs
+Dbtup::handleJoinAggRow
+Dbtup::prepareAndHandleJoinAggRow
+Dbtup::interpreterStartLab
+Dbtup::handleReadReq
+Dbtup::execTUPKEYREQ
+Dblqh::next_scanconf_tupkeyreq     ← scan path
+...
+Dblqh::execSCAN_FRAGREQ
+```
 
-Verification: rebuild `testCteNdbApi`, run it — Tests 1-4 pass,
-Test 5 causes a data node crash (watchdog-triggered). **The test
-has successfully exposed a bug in the CTE-to-CTE lookup path.**
-Next step is to diagnose which of Bugs 0-3 is actually the
-proximate cause of the hang and adjust the fix order
-accordingly.
+**Root cause — a design conflict in the CTE subtree model:**
+
+`DbspjMain.cpp:10601-10609` sets `JoinAggFlag=1` on the
+SCAN_FRAGREQ of **every** T_CTE_SCAN scan node:
+
+```c++
+if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
+  ScanFragReq::setJoinAggFlag(req->requestInfo, 1);
+  agg_extra = 1;   // ... cteAggKey attached below
+}
+```
+
+This means DBLQH runs the CTE's aggregator interpreter on every
+row the scan produces. For Test 2's CTE 0 this works: `cte0Agg`
+uses `GroupBy("grp")` + `LoadColumn("val", 0)` — direct column
+references that exist in the scan row.
+
+For Test 5's CTE 1, `cte1Agg` uses `GroupByLinked(0, grpCol)` +
+`LoadLinkedColumn(1, 0, totalCol)` because its inputs are
+supposed to come from the CTE_LOOKUP(0) result rows, not from
+the scanned base-table rows. When DBLQH passes a scan row
+through this linked-column program, `initGBTypes` walks a
+non-existent linked-attr buffer (`m_linked_attr_data` points at
+data that does not follow the CTE_LOOKUP linked-attr format),
+reads garbage `tableId`/`linkedAttrId`, then dereferences an
+invalid `tab->tabDescriptor` — segfault at `initGBTypes + 1476`.
+
+**The design gap:**
+
+The existing CTE subtree model assumes *the base scan IS the
+aggregator feed*. Test 2's CTE 0 fits this because its
+aggregator uses direct scan columns. Part A's CTE 1 breaks this
+assumption: the intended feed is **the CTE_LOOKUP result**, not
+the scan row. The base scan should just drive the subtree (one
+CTE_LOOKUP_REQ per scanned row); only the CTE_LOOKUP result
+should flow into the aggregator.
+
+**Revised bug list for Part A:**
+
+- **Bug 0 (new — the blocker):** `scanFrag_send` sets
+  `JoinAggFlag=1` on T_CTE_SCAN scans unconditionally, which
+  routes scan rows through the CTE's aggregator. For CTE 1 the
+  aggregator uses linked columns that scan rows don't carry,
+  causing a segfault. The fix needs to recognize when a subtree
+  feeds its aggregator indirectly (via a nested CTE_LOOKUP with
+  `setAggregation`) and suppress `JoinAggFlag` on the scan in
+  that case. Additionally the scan must not be the
+  aggregation-feeder at all — the nested CTE_LOOKUP's
+  `cte_lookup_send` at `DbspjMain.cpp:5861-5884` already does
+  the right thing via `joinAggStateKey` when `m_cteId` is set
+  (which is Bug 1).
+
+- **Bug 1 (still valid):** `m_cteId` not set on nested
+  CTE_LOOKUP nodes inside a subtree. Even after Bug 0 is fixed,
+  `cte_lookup_send` needs `m_cteId != RNIL` to route the
+  CTE_LOOKUP result into CTE 1's `joinAggStateKey` rather than
+  main's.
+
+- **Bug 2 (still valid but may not fire in Test 5):** Main-root
+  selection picks up CTE_LOOKUP nested in subtree. Need to
+  verify whether Test 5 even gets to main-root selection after
+  Bug 0 + Bug 1 fixes land.
+
+- **Bug 3 (doesn't fire for Test 5):** `validateAggregateFlags`
+  short-circuits because `RT_AGGREGATE` is not set on the
+  Request. Test 5's main query has no aggregate leaves, so
+  `NI_AGGREGATE` on main ops is cleared and RT_AGGREGATE stays
+  off. Bug 3 would only manifest in a query where the main also
+  aggregates *and* references a nested CTE_LOOKUP from a
+  subtree. Keep the fix in the plan but demote its priority.
+
+**Next step:** investigate Bug 0 fix options. The cleanest
+change is at build time: when a CTE subtree contains a nested
+CTE_LOOKUP/CTE_SCAN with `setAggregation` (indirect-feed case),
+mark the subtree's base scan with a new bit (e.g.
+`T_CTE_SCAN_INDIRECT`) or just clear the JoinAggFlag branch
+under a condition. The scan still scans, produces rows to DBSPJ,
+and DBSPJ drives CTE_LOOKUP_REQs via `cte_parent_row` → the
+CTE_LOOKUP result feeds the aggregator via `joinAggStateKey`
+(Bug 1 fix required here).
+
+Verification of Bug 0: rebuild `testCteNdbApi`, run it — Tests
+1-4 pass, Test 5 causes a data node crash. Backtrace confirms
+crash in `JoinAggInterpreter::initGBTypes` via
+`handleJoinAggRow` on the scan path. **The test has
+successfully exposed Bug 0.**
 
 **Commit 1b (fix):** Apply Edit 3 (`validateAggregateFlags` —
 replace `!(m_bits & T_CTE_SCAN)` with `m_cteId == RNIL` at the four
