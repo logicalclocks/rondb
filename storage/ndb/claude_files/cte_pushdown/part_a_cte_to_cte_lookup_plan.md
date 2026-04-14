@@ -208,15 +208,21 @@ accounted for in the "not a main query node" bucket. The
 `m_aggregate_node_count + cteNodeCount == ctx.m_cnt` balance
 restored.
 
-## Test: testCteNdbApi Test 5
+## Test: testCteNdbApi Test 5 — CTE-to-CTE Lookup
 
-Add a new test exercising CTE-to-CTE lookup:
+The three bugs manifest in a **single query structure**. None of
+them can be triggered in isolation because they all fire on the
+same code path (nested CTE_LOOKUP with `setAggregation`). Rather
+than inventing synthetic per-bug test queries, we use one target
+query and let its failure mode progress as each bug is fixed.
+
+### Target query
 
 ```cpp
 // cte0: GROUP BY grp, SUM(val) = {(1,30),(2,70),(3,50)}
 // cte1: scan cte_src, for each row lookupCte(0) by grp,
 //       aggregate via NdbAggregator(virtTab) —
-//       GroupBy(grp)   [scan row]
+//       GroupBy(grp)
 //       LoadLinkedColumn(1, 0, totalCol)  [cte0.total]
 //       Sum(linked_total)
 //     = {(1, 30+30=60), (2, 70+70=140), (3, 50)}
@@ -245,18 +251,110 @@ scanM = qb->scanTable(src);
 qb->lookupCte(1, 2, virt, {linked(scanM,"grp")}, mainOpts);
 ```
 
-Expected: 5 output rows (or main aggregation if we prefer to sum the
-cte1 totals).
+Expected when all three bugs are fixed: 5 output rows, each with
+`(grp, cte1.total)` matching the table above. Stored as an expected
+result map keyed by `grp`.
 
-## Verification Plan
+## Incremental Fix Sequence — One Bug at a Time
 
-1. Build `ndbmtd` + `testCteNdbApi`
-2. Run full testCteNdbApi suite — Tests 1-4 must still pass
-3. Run Test 5 — debug whatever surfaces (build validation failures,
-   phase sequencing, key routing, agg-state corruption)
-4. If it passes: run `testCteDbtc` regression to ensure nothing
-   broke in the signal-level CTE path
-5. Run `ndb_push_agg` MTR suite
+The order below fixes bugs in the order they manifest at runtime,
+which is the reverse of how they appear in the source: build-time
+validation (Bug 3) fails first, then main-root selection (Bug 2)
+fails during phase-start / main-start, then the routing bug (Bug 1)
+fails during row delivery.
+
+Each step is two commits:
+1. Test commit — adds or refines Test 5 so it fails at the next
+   bug. After this commit, `testCteNdbApi` is RED with a specific
+   symptom that proves the bug exists.
+2. Fix commit — applies the Edit for that bug. After this commit,
+   `testCteNdbApi` fails *further along* (or passes on the last
+   step), proving the fix works.
+
+The branch is temporarily red between each pair. This is fine on a
+dev branch but **the full sequence (6 commits) must land together**
+before merging upstream.
+
+### Step 1 — Test 5 skeleton exposes Bug 3
+
+**Commit 1a (test, fails):** Add Test 5 with the full target query
+structure. Wire it into `main()` after Test 4. Expected symptom:
+`qb->prepare(ndb)` fails or the subsequent `trans->execute()` returns
+`InvalidAggregateFlags` (error code from
+`validateAggregateFlags`). Test 5 should:
+- Print the specific error string expected for this bug
+- Return -1 so `testCteNdbApi` binary exits non-zero
+
+Verification: rebuild `testCteNdbApi`, run it — Tests 1-4 pass,
+Test 5 fails with `InvalidAggregateFlags`. **The test has
+successfully exposed Bug 3.**
+
+**Commit 1b (fix):** Apply Edit 3 (`validateAggregateFlags` —
+replace `!(m_bits & T_CTE_SCAN)` with `m_cteId == RNIL` at the four
+main-leaf gating sites plus the `cteNodeCount` loop at 2068-2080).
+
+Verification: rebuild, rerun. Test 5 now fails further along —
+either with wrong results (Bug 2 starts CTE_LOOKUP as main root,
+producing 0 rows or garbage) or with an assertion fire from
+attempting to start a CTE_LOOKUP as a main-root scan. **Bug 3
+verified fixed; Bug 2 now exposed.**
+
+### Step 2 — Test 5 exposes Bug 2 after Bug 3 fix
+
+**Commit 2a (test, refines expectation):** Update Test 5's error
+reporting so the Bug 2 symptom is clearly distinguished from the
+Bug 3 symptom (e.g. "expected <N> rows but got 0, main root is
+not a scan"). If the symptom is an assertion crash, add a note in
+the test comment describing how to recognise it.
+
+No new code behaviour change — this commit just makes the red
+state legible.
+
+**Commit 2b (fix):** Apply Edit 2 (main-root selection at
+`DbspjMain.cpp:3115` and `6650`, replace `!T_CTE_SCAN &&
+!g_CteSubtreeOpInfo` with `m_cteId == RNIL`).
+
+Verification: rebuild, rerun. Test 5 now fails further along.
+Build + main-root works, CTE 0 materializes, CTE 1 begins
+materialization phase, but CTE_LOOKUP results are routed to
+main's aggregator due to Bug 1. Expected symptom: Test 5 receives
+wrong `cte1.total` values (either zero, or main-aggregator
+corruption), or main query produces wrong row count. **Bug 2
+verified fixed; Bug 1 now exposed.**
+
+### Step 3 — Test 5 exposes Bug 1 after Bugs 2 & 3 fixes
+
+**Commit 3a (test, refines expectation):** Update Test 5's
+failure message for the Bug 1 symptom. Can add a
+`DEB_CTE_API`-gated trace dump of the per-`grp` `cte1.total`
+values so the routing corruption is easy to see in the log.
+
+**Commit 3b (fix):** Apply Edit 1 (build loop at
+`DbspjMain.cpp:1945-1968`, lift the `m_cteId` assignment out of
+the T_CTE_SCAN branch).
+
+Verification: rebuild, rerun. Test 5 should **pass**. All three
+bugs verified fixed end-to-end, and the full CTE-to-CTE lookup
+path works.
+
+### Step 4 — Regression
+
+After all three bugs are fixed and Test 5 passes:
+
+1. Full `testCteNdbApi` suite — Tests 1-4 must still pass
+   (sanity check that our fixes didn't break them).
+2. `testCteDbtc` — regression for the signal-level CTE path.
+3. `ndb_push_agg` MTR suite — catches anything that relied on
+   the old `!T_CTE_SCAN` predicate that we replaced with
+   `m_cteId == RNIL`.
+
+If any regression appears, likely suspects are the
+`validateAggregateFlags` edits (`m_cteId == RNIL` might be
+stricter or looser than `!T_CTE_SCAN` for some edge case we
+didn't anticipate — in particular for existing CTE 0 subtrees
+where T_CTE_SCAN is set and m_cteId is also set; both conditions
+should give the same answer, but we must verify for containers
+and for the `m_info == &g_CteSubtreeOpInfo` case).
 
 ## What's Explicitly NOT in Part A
 
