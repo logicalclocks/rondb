@@ -73,12 +73,25 @@
 #define DEBUG_MATCH 1
 #define DEBUG_SCAN_PARENT_ROW 1
 #define DEBUG_CTE 1
+/* DEBUG_CTE_BUILD: per-node flag dump emitted at the end of each
+ * TreeNode build (typed name, m_cteId, m_bits with named flags).
+ * Very verbose — one line per built node per incoming SCAN_FRAGREQ —
+ * so it's split out from DEBUG_CTE and defaulted OFF. Enable only
+ * when debugging a specific CTE build/flag routing issue. */
+//#define DEBUG_CTE_BUILD 1
 #endif
 
 #ifdef DEBUG_CTE
 #define DEB_CTE(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_CTE(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_CTE_BUILD
+#define DEB_CTE_BUILD(arglist) \
+  do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CTE_BUILD(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_TRANSID_AI
@@ -2057,19 +2070,27 @@ Dbspj::build(Build_context& ctx,
      * For non-CTE queries, the first node (root) consumes it.
      */
 
+#ifdef DEBUG_CTE_BUILD
     /* Post-build flag dump: print the final TreeNode state that
      * cte_build / scanFrag_build / lookup_build / etc. have set on
      * this node, PLUS the subtree membership bits applied in the
      * block above. Useful for debugging CTE routing bugs where the
      * TreeNode flags disagree with what later signal handlers
-     * expect. Gated on DEB_CTE which is already used throughout
-     * the CTE code path.
+     * expect.
+     *
+     * Gated on DEBUG_CTE_BUILD (separate from DEBUG_CTE) because
+     * this dump is very verbose — one line per built node per
+     * incoming SCAN_FRAGREQ. Keeping it off by default lets us
+     * enable DEBUG_CTE for state-transition tracing without
+     * drowning the log in build dumps.
      *
      * Prints a human-readable node type via m_info comparison so
      * "op=6" / "op=7" aren't inscrutable, and notes CTE_SUBTREE
      * containers explicitly since their T_LEAF bit is the stale
      * default from TreeNode's ctor (containers aren't leaf ops
-     * and shouldn't be interpreted that way). */
+     * and shouldn't be interpreted that way). The whole block is
+     * #ifdef'd so the locals don't generate unused-variable
+     * warnings when disabled. */
     {
       Ptr<TreeNode> dumpPtr = ctx.m_node_list[ctx.m_cnt];
       Uint32 bits = dumpPtr.p->m_bits;
@@ -2087,7 +2108,7 @@ Dbspj::build(Build_context& ctx,
         typeName = "CTE_SUBTREE";
         isContainer = true;
       }
-      DEB_CTE(("(%u) build node[%u]: %s op=%u m_cteId=%u "
+      DEB_CTE_BUILD(("(%u) build node[%u]: %s op=%u m_cteId=%u "
                "m_parentPtrI=0x%x bits=0x%08x%s%s%s%s%s%s%s%s%s%s%s%s%s",
                instance(),
                ctx.m_cnt,
@@ -2117,6 +2138,7 @@ Dbspj::build(Build_context& ctx,
                    " T_CTE_INDIRECT_FEED" : "",
                ""));
     }
+#endif  // DEBUG_CTE_BUILD
 
     ndbrequire(ctx.m_cnt < NDB_ARRAY_SIZE(ctx.m_node_list));
     ctx.m_cnt++;
