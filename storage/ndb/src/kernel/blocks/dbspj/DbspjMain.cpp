@@ -2179,10 +2179,17 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
     Ptr<TreeNode> treeNodePtr;
     for (list.first(treeNodePtr); !treeNodePtr.isNull();
          list.next(treeNodePtr)) {
-      /* Count only main query aggregate leaves (exclude CTE subtree
-       * nodes which use T_CTE_SCAN for their own aggregation path). */
+      /* Count only main query aggregate leaves. Exclude anything
+       * inside a CTE subtree — those use the CTE materialization
+       * path (either direct scan-agg feed for readTuple-style leaves
+       * or indirect via cte_lookup_send's joinAggStateKey for
+       * nested CTE_LOOKUP leaves). The m_cteId == RNIL predicate
+       * is the canonical "not part of a subtree" check: it covers
+       * subtree containers, T_CTE_SCAN nodes, AND nested
+       * CTE_LOOKUP / CTE_SCAN children (which are not marked
+       * T_CTE_SCAN — see build-loop Part A handling). */
       if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
-          !(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) {
+          treeNodePtr.p->m_cteId == RNIL) {
         jam();
         treeNodePtr.p->m_agg_leaf_index = aggregate_leaf_count;
         DEB_STAR_AGG(("(%u)DBSPJ STAR_AGG: node %u is agg leaf index %u,"
@@ -2200,22 +2207,16 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
 
     /* When CTE subtree nodes exist, only main query nodes contribute
      * to m_aggregate_node_count (CTE subtree nodes are excluded via
-     * ctx.m_cteSubtreeRemaining during build). Count nodes with
-     * T_CTE_SCAN to determine how many nodes are CTE subtree nodes.
-     * The all-or-nothing check only applies to the remaining
-     * (non-CTE) nodes. */
+     * ctx.m_cteSubtreeRemaining during build). Count the CTE-subtree
+     * nodes by m_cteId != RNIL; this uniformly covers containers,
+     * base-table materialization nodes (T_CTE_SCAN) and nested
+     * CTE_LOOKUP / CTE_SCAN children. The all-or-nothing balance
+     * then only applies to the remaining main-query nodes. */
     {
       Uint32 cteNodeCount = 0;
       for (list.first(treeNodePtr); !treeNodePtr.isNull();
            list.next(treeNodePtr)) {
-        if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)
-          cteNodeCount++;
-      }
-      /* Also count QN_CTE_SUBTREE containers (m_info ==
-       * g_CteSubtreeOpInfo) which don't have T_CTE_SCAN */
-      for (list.first(treeNodePtr); !treeNodePtr.isNull();
-           list.next(treeNodePtr)) {
-        if (treeNodePtr.p->m_info == &g_CteSubtreeOpInfo)
+        if (treeNodePtr.p->m_cteId != RNIL)
           cteNodeCount++;
       }
       if (unlikely(ctx.m_aggregate_node_count + cteNodeCount !=
@@ -2245,7 +2246,7 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
       for (list.first(treeNodePtr); !treeNodePtr.isNull();
            list.next(treeNodePtr)) {
         if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
-            !(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) {
+            treeNodePtr.p->m_cteId == RNIL) {
           jam();
           if (commonParent == RNIL) {
             commonParent = treeNodePtr.p->m_parentPtrI;
@@ -2275,7 +2276,7 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
     for (list.first(treeNodePtr); !treeNodePtr.isNull();
          list.next(treeNodePtr)) {
       if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
-          !(treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) {
+          treeNodePtr.p->m_cteId == RNIL) {
         jam();
         Uint32 parentPtrI = treeNodePtr.p->m_parentPtrI;
         while (parentPtrI != RNIL) {

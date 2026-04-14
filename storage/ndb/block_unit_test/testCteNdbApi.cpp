@@ -1264,6 +1264,258 @@ testCteToCteLookup(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 6: CTE-to-CTE lookup + main aggregation                        */
+/*                                                                     */
+/* Same CTE 0 / CTE 1 structure as Test 5, but the main query also     */
+/* aggregates: SELECT COUNT(*), SUM(cte1.total) FROM cte_src s JOIN    */
+/* cte1 ON s.grp = cte1.grp. This is the query structure that forces  */
+/* validateAggregateFlags (Bug 3 from the original Part A plan) to    */
+/* actually run — RT_AGGREGATE is set because the main query has its  */
+/* own aggregate leaf.                                                 */
+/*                                                                     */
+/* Expected:                                                           */
+/*   cte0 = {(1,30),(2,70),(3,50)}                                     */
+/*   cte1 = {(1,60),(2,140),(3,50)}                                    */
+/*   main scan produces 5 rows (1..5), each CTE_LOOKUPs cte1 by grp:  */
+/*     (1,1,*) → cte1(1).total=60                                      */
+/*     (2,1,*) → cte1(1).total=60                                      */
+/*     (3,2,*) → cte1(2).total=140                                     */
+/*     (4,2,*) → cte1(2).total=140                                     */
+/*     (5,3,*) → cte1(3).total=50                                      */
+/*   main aggregator: COUNT=5, SUM=60+60+140+140+50 = 450              */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteToCteLookupWithMainAgg(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 6: CTE-to-CTE lookup + main aggregation ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  dict->invalidateTable(VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = virtTab->getColumn("grp");
+  const NdbDictionary::Column *totalCol = virtTab->getColumn("total");
+  if (grpCol == nullptr || totalCol == nullptr) {
+    printf("FAILED (virt column lookup)\n");
+    return -1;
+  }
+
+  /* CTE 0 aggregation: GROUP BY grp, SUM(val) */
+  NdbAggregator cte0Agg(srcTab);
+  if (!cte0Agg.GroupBy("grp") ||
+      !cte0Agg.LoadColumn("val", 0) ||
+      !cte0Agg.Sum(0, 0) ||
+      !cte0Agg.Finalize()) {
+    printf("FAILED (cte0Agg: %s)\n", cte0Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* CTE 1 aggregation: GROUP BY cte0.grp SUM(cte0.total) — Test 5 pattern */
+  NdbAggregator cte1Agg(virtTab);
+  if (!cte1Agg.GroupByLinked(0, grpCol) ||
+      !cte1Agg.LoadLinkedColumn(1, 0, totalCol) ||
+      !cte1Agg.Sum(0, 0) ||
+      !cte1Agg.Finalize()) {
+    printf("FAILED (cte1Agg: %s)\n", cte1Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Main aggregation: COUNT(*), SUM(cte1.total) — Test 3 pattern.
+   * This is what makes RT_AGGREGATE set in DBSPJ and causes
+   * validateAggregateFlags to actually execute. */
+  NdbAggregator mainAgg(virtTab);
+  if (!mainAgg.LoadLinkedColumn(1, 0, totalCol) ||
+      !mainAgg.Count(0, 0) ||
+      !mainAgg.Sum(1, 0) ||
+      !mainAgg.Finalize()) {
+    printf("FAILED (mainAgg: %s)\n", mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Build query */
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+
+  /* CTE 0 subtree: scan + readTuple self-join with agg */
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      printf("FAILED (CTE 0 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte0Agg);
+    if (qb->readTuple(srcTab, key, &opts) == nullptr) {
+      printf("FAILED (CTE 0 leaf: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+
+  if (qb->defineCte(0, srcTab, cte0Agg, /*depMask=*/0) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* CTE 1 subtree: scan + nested lookupCte(0) with agg (Test 5 pattern) */
+  qb->beginCteSubtree(1);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      printf("FAILED (CTE 1 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *cte0Key[] = {
+      qb->linkedValue(scan, "grp"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte1Agg);
+    if (qb->lookupCte(0, 2, virtTab, cte0Key, &opts) == nullptr) {
+      printf("FAILED (CTE 1 nested lookupCte: %s)\n",
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+
+  if (qb->defineCte(1, virtTab, cte1Agg, /*depMask=*/1) != 0) {
+    printf("FAILED (defineCte 1)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: scan cte_src + lookupCte(1) as aggregate leaf */
+  const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+  if (mainScanOp == nullptr) {
+    printf("FAILED (main scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryOperand *cte1Key[] = {
+    qb->linkedValue(mainScanOp, "grp"), nullptr
+  };
+  NdbQueryOptions mainLookupOpts;
+  mainLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  mainLookupOpts.setAggregation(mainAgg);
+  if (qb->lookupCte(1, 2, virtTab, cte1Key, &mainLookupOpts) == nullptr) {
+    printf("FAILED (main lookupCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  V("\n  Query prepared: %u operations\n", queryDef->getNoOfOperations());
+
+  /* Execute */
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Consume scan batches */
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+
+  if (outcome == NdbQuery::NextResult_error) {
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (nextResult err %d: %s)\n", qErr.code, qErr.message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Get aggregation results */
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result rows)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::Result countRes = rec.FetchAggregationResult();
+  Int64 count = countRes.data_int64();
+  NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+  Int64 sum = sumRes.data_int64();
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  V("  Result: COUNT=%lld, SUM=%lld\n", (long long)count, (long long)sum);
+
+  if (count == 5 && sum == 450) {
+    printf("OK (COUNT=%lld, SUM=%lld)\n", (long long)count, (long long)sum);
+    return 0;
+  }
+
+  printf("FAILED (expected COUNT=5 SUM=450, got COUNT=%lld SUM=%lld)\n",
+         (long long)count, (long long)sum);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1324,6 +1576,8 @@ int main(int argc, char **argv)
           if (testCteLookupAggLeaf(&ndb, conn) != 0) exitCode = 1;
           if (testCteWithScanFilter(&ndb, conn) != 0) exitCode = 1;
           if (testCteToCteLookup(&ndb, conn) != 0) exitCode = 1;
+          if (testCteToCteLookupWithMainAgg(&ndb, conn) != 0)
+            exitCode = 1;
         }
 
         dropTestTables(conn);
