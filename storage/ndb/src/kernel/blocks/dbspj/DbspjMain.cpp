@@ -1432,6 +1432,28 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
       }
     }
 
+    /**
+     * Part A: parseJoinAggKeyInfo runs BEFORE build() — but the
+     * CteContexts it needs to update are only created later when
+     * cte_build() processes each QN_CTE_LOOKUP / QN_CTE_SCAN /
+     * QN_CTE_SUBTREE node. We therefore parse the per-CTE metadata
+     * (depMask / flags / phase / singleNodeId) into a small local
+     * temp array here, and apply it to the CteContexts after build()
+     * returns. Otherwise the phase update loop silently no-ops
+     * (numCtes is 0 at parse time) and all CTEs end up at phase 0,
+     * breaking the dependency sequencing between e.g. CTE 1 and
+     * CTE 0 in a CTE-to-CTE lookup query.
+     */
+    struct ParsedCteMeta {
+      Uint32 cteId;
+      Uint64 depMask;
+      Uint32 flags;
+      Uint32 phase;
+      Uint32 singleNodeId;  // 0 if not a single-row CTE
+    };
+    ParsedCteMeta parsedCteMeta[64];
+    Uint32 parsedCteMetaCount = 0;
+
     Uint32 aggKeysPtrI = RNIL;
     if (ScanFragReq::getJoinAggFlag(req->requestInfo)) {
       jam();
@@ -1504,17 +1526,15 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
           ndbrequire(reader.getWord(&cteNodeCount));
           Uint64 depMask = (Uint64(depHi) << 32) | depLo;
 
-          /* Store depMask, flags and phase in the matching
-           * CteContext. Created during cte_build() before
-           * aggKeys parsing. Match by cteId. */
-          for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
-            if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
-              requestPtr.p->m_cteContexts[i].m_depMask = depMask;
-              requestPtr.p->m_cteContexts[i].m_flags = perCteFlags;
-              requestPtr.p->m_cteContexts[i].m_phase = phase;
-              break;
-            }
-          }
+          /* Stash per-CTE metadata until build() has created the
+           * CteContexts; we apply it in a second pass below. */
+          ndbrequire(parsedCteMetaCount < NDB_ARRAY_SIZE(parsedCteMeta));
+          ParsedCteMeta &m = parsedCteMeta[parsedCteMetaCount++];
+          m.cteId = cteId;
+          m.depMask = depMask;
+          m.flags = perCteFlags;
+          m.phase = phase;
+          m.singleNodeId = 0;
 
           for (Uint32 n = 0; n < cteNodeCount; n++) {
             Uint32 nodeId, cteAggKey;
@@ -1528,23 +1548,10 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
             if ((perCteFlags &
                  QN_CteSubtreeNode::CTE_SINGLE_ROW) &&
                 cteAggKey != 0) {
-              for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
-                if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
-                  requestPtr.p->m_cteContexts[i].m_singleNodeId = nodeId;
-                  break;
-                }
-              }
+              m.singleNodeId = nodeId;
             }
           }
         }
-
-        /* Store phase count — max phase + 1 */
-        Uint32 maxPhase = 0;
-        for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
-          if (requestPtr.p->m_cteContexts[i].m_phase > maxPhase)
-            maxPhase = requestPtr.p->m_cteContexts[i].m_phase;
-        }
-        requestPtr.p->m_ctePhaseCount = maxPhase + 1;
       }
     }
 
@@ -1564,6 +1571,45 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
 
       err = build(ctx, requestPtr, treeReader, paramReader);
       if (unlikely(err != 0)) break;
+
+      /**
+       * Part A: build() has now created CteContexts via cte_build()
+       * for each QN_CTE_LOOKUP / QN_CTE_SCAN / QN_CTE_SUBTREE node.
+       * Apply the metadata we stashed earlier from the aggKeys
+       * section — depMask, flags, phase, singleNodeId — so that
+       * checkPrepareComplete() and the phase-sequencing logic see
+       * the real dependency values rather than the default phase=0.
+       */
+      for (Uint32 c = 0; c < parsedCteMetaCount; c++) {
+        const ParsedCteMeta &m = parsedCteMeta[c];
+        for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+          if (requestPtr.p->m_cteContexts[i].m_cteId == m.cteId) {
+            requestPtr.p->m_cteContexts[i].m_depMask = m.depMask;
+            requestPtr.p->m_cteContexts[i].m_flags = m.flags;
+            requestPtr.p->m_cteContexts[i].m_phase = m.phase;
+            if (m.singleNodeId != 0) {
+              requestPtr.p->m_cteContexts[i].m_singleNodeId =
+                  m.singleNodeId;
+            }
+            DEB_CTE(("(%u) apply CteContext[%u]: cteId=%u "
+                     "depMask=%llx flags=0x%x phase=%u",
+                     instance(), i, m.cteId,
+                     (unsigned long long)m.depMask, m.flags,
+                     m.phase));
+            break;
+          }
+        }
+      }
+      /* Store phase count — max phase + 1. Computed after the
+       * apply pass so it reflects the real parsed phases. */
+      {
+        Uint32 maxPhase = 0;
+        for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+          if (requestPtr.p->m_cteContexts[i].m_phase > maxPhase)
+            maxPhase = requestPtr.p->m_cteContexts[i].m_phase;
+        }
+        requestPtr.p->m_ctePhaseCount = maxPhase + 1;
+      }
 
       /**
        * Root TreeNode in Request takes ownership of keyPtr
@@ -1948,12 +1994,18 @@ Dbspj::build(Build_context& ctx,
       DEB_CTE(("(%u) SubtreeRemaining: %u",
         instance(), ctx.m_cteSubtreeRemaining));
 
+      /* Part A: every node inside a CTE subtree belongs to the
+       * enclosing CTE. Record the cteId on every member so
+       * cte_lookup_send() can route a nested CTE_LOOKUP's result
+       * into the enclosing CTE's joinAggStateKey (otherwise the
+       * RNIL m_cteId falls through to the main aggregator). */
+      Ptr<TreeNode> nodePtr = ctx.m_node_list[ctx.m_cnt];
+      nodePtr.p->m_cteId = ctx.m_cteSubtreeCteId;
+
       if (node_op != QueryNode::QN_CTE_LOOKUP &&
           node_op != QueryNode::QN_CTE_SCAN) {
         jam();
-        Ptr<TreeNode> nodePtr = ctx.m_node_list[ctx.m_cnt];
         nodePtr.p->m_bits |= TreeNode::T_CTE_SCAN;
-        nodePtr.p->m_cteId = ctx.m_cteSubtreeCteId;
 
         // Record the scan tree node in the CteContext
         for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
@@ -1963,6 +2015,33 @@ Dbspj::build(Build_context& ctx,
                 nodePtr.p->m_node_no;
             break;
           }
+        }
+      } else if ((nodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0) {
+        /* Part A: this CTE_LOOKUP / CTE_SCAN nested inside a subtree
+         * is the enclosing CTE's aggregate leaf. The subtree feeds
+         * its aggregator indirectly — via this node's result rows
+         * rather than via the base-table scan's rows. Walk up to
+         * the subtree's scan root and mark it T_CTE_INDIRECT_FEED
+         * so scanFrag_send() does NOT set JoinAggFlag on the scan's
+         * SCAN_FRAGREQ (otherwise DBLQH would pipe the scan rows
+         * through the aggregator, mis-read linked-column metadata
+         * and segfault in JoinAggInterpreter::initGBTypes). */
+        jam();
+        Uint32 ancestorPtrI = nodePtr.p->m_parentPtrI;
+        while (ancestorPtrI != RNIL) {
+          Ptr<TreeNode> ancestorPtr;
+          ndbrequire(m_treenode_pool.getPtr(ancestorPtr, ancestorPtrI));
+          if (ancestorPtr.p->m_parentPtrI == RNIL) {
+            ancestorPtr.p->m_bits |= TreeNode::T_CTE_INDIRECT_FEED;
+            DEB_CTE(("(%u) build: mark T_CTE_INDIRECT_FEED on "
+                     "subtree root node %u (nested agg leaf "
+                     "node %u cteId=%u)",
+                     instance(), ancestorPtr.p->m_node_no,
+                     nodePtr.p->m_node_no,
+                     nodePtr.p->m_cteId));
+            break;
+          }
+          ancestorPtrI = ancestorPtr.p->m_parentPtrI;
         }
       }
     }
@@ -1977,6 +2056,67 @@ Dbspj::build(Build_context& ctx,
      * CTE subtree nodes until the main query root is built.
      * For non-CTE queries, the first node (root) consumes it.
      */
+
+    /* Post-build flag dump: print the final TreeNode state that
+     * cte_build / scanFrag_build / lookup_build / etc. have set on
+     * this node, PLUS the subtree membership bits applied in the
+     * block above. Useful for debugging CTE routing bugs where the
+     * TreeNode flags disagree with what later signal handlers
+     * expect. Gated on DEB_CTE which is already used throughout
+     * the CTE code path.
+     *
+     * Prints a human-readable node type via m_info comparison so
+     * "op=6" / "op=7" aren't inscrutable, and notes CTE_SUBTREE
+     * containers explicitly since their T_LEAF bit is the stale
+     * default from TreeNode's ctor (containers aren't leaf ops
+     * and shouldn't be interpreted that way). */
+    {
+      Ptr<TreeNode> dumpPtr = ctx.m_node_list[ctx.m_cnt];
+      Uint32 bits = dumpPtr.p->m_bits;
+      const char *typeName = "?";
+      bool isContainer = false;
+      if (dumpPtr.p->m_info == &g_LookupOpInfo) {
+        typeName = "LOOKUP";
+      } else if (dumpPtr.p->m_info == &g_ScanFragOpInfo) {
+        typeName = "SCAN";
+      } else if (dumpPtr.p->m_info == &g_CteLookupOpInfo) {
+        typeName = "CTE_LOOKUP";
+      } else if (dumpPtr.p->m_info == &g_CteScanOpInfo) {
+        typeName = "CTE_SCAN";
+      } else if (dumpPtr.p->m_info == &g_CteSubtreeOpInfo) {
+        typeName = "CTE_SUBTREE";
+        isContainer = true;
+      }
+      DEB_CTE(("(%u) build node[%u]: %s op=%u m_cteId=%u "
+               "m_parentPtrI=0x%x bits=0x%08x%s%s%s%s%s%s%s%s%s%s%s%s%s",
+               instance(),
+               ctx.m_cnt,
+               typeName,
+               node_op,
+               dumpPtr.p->m_cteId,
+               dumpPtr.p->m_parentPtrI,
+               bits,
+               isContainer ? " [container — T_LEAF is stale default]" :
+                   ((bits & TreeNode::T_LEAF) ? " T_LEAF" : ""),
+               (bits & TreeNode::T_INNER_JOIN) ? " T_INNER_JOIN" : "",
+               (bits & TreeNode::T_FIRST_MATCH) ? " T_FIRST_MATCH" : "",
+               (bits & TreeNode::T_EXPECT_TRANSID_AI) ?
+                   " T_EXPECT_TRANSID_AI" : "",
+               (bits & TreeNode::T_ATTR_INTERPRETED) ?
+                   " T_ATTR_INTERPRETED" : "",
+               (bits & TreeNode::T_KEYINFO_CONSTRUCTED) ?
+                   " T_KEYINFO_CONSTRUCTED" : "",
+               (bits & TreeNode::T_ATTRINFO_CONSTRUCTED) ?
+                   " T_ATTRINFO_CONSTRUCTED" : "",
+               (bits & TreeNode::T_ONE_SHOT) ? " T_ONE_SHOT" : "",
+               (bits & TreeNode::T_BUFFER_ANY) ? " T_BUFFER_ANY" : "",
+               (bits & TreeNode::T_AGGREGATE_LEAF) ?
+                   " T_AGGREGATE_LEAF" : "",
+               (bits & TreeNode::T_CTE_SCAN) ? " T_CTE_SCAN" : "",
+               (bits & TreeNode::T_CTE_INDIRECT_FEED) ?
+                   " T_CTE_INDIRECT_FEED" : "",
+               ""));
+    }
 
     ndbrequire(ctx.m_cnt < NDB_ARRAY_SIZE(ctx.m_node_list));
     ctx.m_cnt++;
@@ -6581,11 +6721,20 @@ void Dbspj::execCTE_PHASE_START_REQ(Signal *signal) {
 
   Uint32 phase = req->phase;
 
-  // Transition previous phases' CTEs to CTE_READY
+  /* Transition previous phases' CTEs to CTE_READY.
+   * Note: CTE_MATERIALIZING is never set anywhere — all CTEs
+   * start in CTE_NOT_STARTED and transition directly to
+   * CTE_READY either here (for multi-phase queries) or in
+   * execCTE_START_MAIN_REQ (for single-phase queries). The
+   * previous MATERIALIZING check was dead code that caused
+   * multi-phase CTE queries (e.g. CTE-to-CTE lookup) to leave
+   * earlier CTEs in CTE_NOT_STARTED, which then caused
+   * cte_parent_row() to queue lookups that were never flushed. */
   for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
     CteContext &ctx = requestPtr.p->m_cteContexts[i];
     if (ctx.m_phase < phase &&
-        ctx.m_state == CteContext::CTE_MATERIALIZING) {
+        ctx.m_state != CteContext::CTE_READY &&
+        ctx.m_state != CteContext::CTE_FAILED) {
       jam();
       ctx.m_state = CteContext::CTE_READY;
       requestPtr.p->m_ctesReady++;
@@ -6640,16 +6789,19 @@ void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
   // Clear CTE phase flag
   requestPtr.p->m_bits &= ~Request::RT_CTE_PHASE;
 
-  // Start the main query root node — first node NOT inside
-  // a CTE subtree (no T_CTE_SCAN, not a CTE_SUBTREE container).
+  // Start the main query root node — first node NOT inside a
+  // CTE subtree. Use m_cteId == RNIL as the canonical "not part
+  // of a subtree" check: it covers containers, T_CTE_SCAN
+  // materialization nodes, and nested CTE_LOOKUP/CTE_SCAN children
+  // (which are not marked T_CTE_SCAN for Part A but still belong
+  // to their enclosing subtree via m_cteId).
   Ptr<TreeNode> rootNodePtr;
   {
     Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
     for (list.first(rootNodePtr); !rootNodePtr.isNull();
          list.next(rootNodePtr)) {
-      if (!(rootNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) &&
-          rootNodePtr.p->m_info != &g_CteSubtreeOpInfo) {
-        break;
+      if (rootNodePtr.p->m_cteId == RNIL) {
+        break;  // first main-query node
       }
     }
     ndbrequire(!rootNodePtr.isNull());
@@ -10598,12 +10750,17 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
   ScanFragReq::setJoinAggFlag(req->requestInfo, 0);
   ScanFragReq::setOuterJoinAggFlag(req->requestInfo, 0);
   Uint32 agg_extra = 0;
-  if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
+  if ((treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) &&
+      !(treeNodePtr.p->m_bits & TreeNode::T_CTE_INDIRECT_FEED)) {
     jam();
     /**
      * CTE materialization scan: set JoinAggFlag so DBLQH routes rows
      * through the aggregation engine into the CTE hash table.
      * The CTE aggStateKey is set per-fragment below (where nodeId is known).
+     *
+     * Skipped when T_CTE_INDIRECT_FEED is set — those subtrees feed
+     * the aggregator from a nested CTE_LOOKUP's result, not the base
+     * scan's rows.
      */
     ScanFragReq::setJoinAggFlag(req->requestInfo, 1);
     agg_extra = 1;
@@ -11406,8 +11563,16 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
     }
   }
 
-  if (requestPtr.p->m_aggNodes.isclear() ||
-      (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) {
+  /* Part A: T_CTE_INDIRECT_FEED scans return rows to DBSPJ only
+   * to drive CTE_LOOKUP_REQs on a nested CTE_LOOKUP child — those
+   * rows are NOT delivered to the API and must not be counted in
+   * m_rows (which becomes SCAN_FRAGCONF::completedOps and then
+   * the API's per-worker rowCount). Otherwise the API expects
+   * more TRANSID_AI rows than will arrive, never reaches
+   * outstanding==0, and the scan hangs in nextResult. */
+  if ((requestPtr.p->m_aggNodes.isclear() ||
+       (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) &&
+      !(treeNodePtr.p->m_bits & TreeNode::T_CTE_INDIRECT_FEED)) {
     requestPtr.p->m_rows += rows;
   }
   fragPtr.p->m_totalRows += rows;

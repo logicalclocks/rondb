@@ -1184,6 +1184,18 @@ class Dbspj : public SimulatedBlock {
        */
       T_CTE_SCAN = 0x10000000,
 
+      /**
+       * Part A: the enclosing CTE subtree feeds its aggregator
+       * indirectly — via a nested CTE_LOOKUP leaf whose result rows
+       * (not the base scan rows) are what populate the CTE's hash
+       * table. The base scan marked with this bit must NOT set
+       * JoinAggFlag on its SCAN_FRAGREQ; its rows come back to DBSPJ
+       * as plain TRANSID_AI and drive cte_parent_row / cte_lookup_send
+       * for each scanned row. The CTE_LOOKUP leaf carries the real
+       * agg feed via joinAggStateKey.
+       */
+      T_CTE_INDIRECT_FEED = 0x20000000,
+
       // End marker...
       T_END = 0
     };
