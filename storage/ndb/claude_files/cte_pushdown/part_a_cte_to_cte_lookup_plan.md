@@ -415,72 +415,156 @@ crash in `JoinAggInterpreter::initGBTypes` via
 `handleJoinAggRow` on the scan path. **The test has
 successfully exposed Bug 0.**
 
-**Commit 1b (fix):** Apply Edit 3 (`validateAggregateFlags` —
-replace `!(m_bits & T_CTE_SCAN)` with `m_cteId == RNIL` at the four
-main-leaf gating sites plus the `cteNodeCount` loop at 2068-2080).
+## Post-Mortem — What the Six Fixes Actually Were
 
-Verification: rebuild, rerun. Test 5 now fails further along —
-either with wrong results (Bug 2 starts CTE_LOOKUP as main root,
-producing 0 rows or garbage) or with an assertion fire from
-attempting to start a CTE_LOOKUP as a main-root scan. **Bug 3
-verified fixed; Bug 2 now exposed.**
+The original three-bug plan turned out to be incomplete. Working
+through Test 5 surfaced three more bugs underneath the ones the
+plan anticipated. Final tally — all six fixed in commit
+`35eadbe067b`:
 
-### Step 2 — Test 5 exposes Bug 2 after Bug 3 fix
+### Bug 0 — `JoinAggFlag` set on every `T_CTE_SCAN` scan
 
-**Commit 2a (test, refines expectation):** Update Test 5's error
-reporting so the Bug 2 symptom is clearly distinguished from the
-Bug 3 symptom (e.g. "expected <N> rows but got 0, main root is
-not a scan"). If the symptom is an assertion crash, add a note in
-the test comment describing how to recognise it.
+**Symptom:** segfault in `JoinAggInterpreter::initGBTypes` on the
+DBLQH-side scan-row interpreter path, caught by the watchdog
+after ~3s of "scanning". Backtrace:
+`Dblqh::execSCAN_FRAGREQ → ... → Dbtup::handleJoinAggRow →
+processRecWithLinkedAttrs → ProcessRec → initGBTypes`.
 
-No new code behaviour change — this commit just makes the red
-state legible.
+**Root cause:** `scanFrag_send` at `DbspjMain.cpp:10601-10609`
+unconditionally set `JoinAggFlag=1` and attached the CTE
+aggStateKey for every `T_CTE_SCAN` scan, routing scan rows
+through the CTE's aggregator interpreter in DBLQH. For CTE 1 the
+aggregator program uses `GroupByLinked` / `LoadLinkedColumn` —
+its inputs are CTE_LOOKUP result rows, not base scan rows —
+and `initGBTypes` walked an invalid linked-attr buffer.
 
-**Commit 2b (fix):** Apply Edit 2 (main-root selection at
-`DbspjMain.cpp:3115` and `6650`, replace `!T_CTE_SCAN &&
-!g_CteSubtreeOpInfo` with `m_cteId == RNIL`).
+**Fix:** introduce `TreeNode::T_CTE_INDIRECT_FEED`. Set on the
+subtree's base scan when the subtree's aggregate leaf is a
+nested `QN_CTE_LOOKUP` / `QN_CTE_SCAN`. `scanFrag_send` skips
+the JoinAggFlag branch for these scans; rows flow back to DBSPJ
+as plain TRANSID_AI and drive `cte_parent_row` →
+`cte_lookup_send` instead.
 
-Verification: rebuild, rerun. Test 5 now fails further along.
-Build + main-root works, CTE 0 materializes, CTE 1 begins
-materialization phase, but CTE_LOOKUP results are routed to
-main's aggregator due to Bug 1. Expected symptom: Test 5 receives
-wrong `cte1.total` values (either zero, or main-aggregator
-corruption), or main query produces wrong row count. **Bug 2
-verified fixed; Bug 1 now exposed.**
+### Bug 1 — `m_cteId` not set on nested CTE_LOOKUP / CTE_SCAN
 
-### Step 3 — Test 5 exposes Bug 1 after Bugs 2 & 3 fixes
+**Symptom:** `cte_lookup_send` routed the nested CTE_LOOKUP's
+result to the main aggregator's `aggStateKey` instead of the
+enclosing CTE 1's, because `treeNodePtr.p->m_cteId == RNIL`.
 
-**Commit 3a (test, refines expectation):** Update Test 5's
-failure message for the Bug 1 symptom. Can add a
-`DEB_CTE_API`-gated trace dump of the per-`grp` `cte1.total`
-values so the routing corruption is easy to see in the log.
+**Root cause:** the build loop at `DbspjMain.cpp:1945-1968` only
+set `m_cteId` inside the `if (op != QN_CTE_LOOKUP && op !=
+QN_CTE_SCAN)` branch (the same branch that marks `T_CTE_SCAN`).
+Nested CTE_LOOKUP / CTE_SCAN children kept the default RNIL.
 
-**Commit 3b (fix):** Apply Edit 1 (build loop at
-`DbspjMain.cpp:1945-1968`, lift the `m_cteId` assignment out of
-the T_CTE_SCAN branch).
+**Fix:** lift the `m_cteId` assignment out of the branch so
+every node inside a subtree is tagged with the enclosing cteId.
 
-Verification: rebuild, rerun. Test 5 should **pass**. All three
-bugs verified fixed end-to-end, and the full CTE-to-CTE lookup
-path works.
+### Bug 4 — pre-build CteContext metadata update silently no-ops
 
-### Step 4 — Regression
+**Symptom (after Bug 0 fix):** all CTEs ran in parallel at phase
+0 even though CTE 1 had `depMask=1`. CTE 0 wasn't yet
+`CTE_READY` when CTE 1's scan rows arrived → `cte_parent_row`
+queued lookups that never flushed.
 
-After all three bugs are fixed and Test 5 passes:
+**Root cause:** DBSPJ's aggKeys parse block at line 1436 runs
+**before** `build()`. The `for (i=0; i<m_numCtes; i++)` loop
+that updates `m_cteContexts[i].m_phase / m_depMask / m_flags`
+iterates 0 times because `m_numCtes` is 0 at parse time —
+`cte_build()` only creates the contexts later. The phase write
+silently vanishes; contexts get the default `phase=0` and
+`m_ctePhaseCount` is computed as 1.
 
-1. Full `testCteNdbApi` suite — Tests 1-4 must still pass
-   (sanity check that our fixes didn't break them).
-2. `testCteDbtc` — regression for the signal-level CTE path.
-3. `ndb_push_agg` MTR suite — catches anything that relied on
-   the old `!T_CTE_SCAN` predicate that we replaced with
-   `m_cteId == RNIL`.
+**Fix:** save the parsed CTE metadata into a stack-local
+`ParsedCteMeta parsedCteMeta[64]` temp array during the parse
+block. After `build()` returns, walk the temp array and apply
+the metadata to the now-existing `m_cteContexts[i]`. Recompute
+`m_ctePhaseCount` from the real per-context phases.
 
-If any regression appears, likely suspects are the
-`validateAggregateFlags` edits (`m_cteId == RNIL` might be
-stricter or looser than `!T_CTE_SCAN` for some edge case we
-didn't anticipate — in particular for existing CTE 0 subtrees
-where T_CTE_SCAN is set and m_cteId is also set; both conditions
-should give the same answer, but we must verify for containers
-and for the `m_info == &g_CteSubtreeOpInfo` case).
+### Bug 5 — dead `CTE_MATERIALIZING` state check
+
+**Symptom (after Bug 4 fix):** even though CTE 1 now had
+`phase=1` correctly, `execCTE_PHASE_START_REQ(phase=1)` did not
+transition CTE 0 from `CTE_NOT_STARTED` to `CTE_READY`.
+`cte_parent_row` again saw the not-ready state and queued
+lookups forever.
+
+**Root cause:** the transition at `DbspjMain.cpp:6664-6669` was
+gated on `ctx.m_state == CteContext::CTE_MATERIALIZING`, but
+**`CTE_MATERIALIZING` is never assigned anywhere in the
+codebase**. CTE contexts only ever go from `CTE_NOT_STARTED` to
+`CTE_READY` (either via this dead-coded branch, or via
+`execCTE_START_MAIN_REQ` which sets all unconditionally). For
+single-phase queries the latter rescue path masked the bug; for
+multi-phase queries it surfaced.
+
+**Fix:** drop the `CTE_MATERIALIZING` check. Transition any
+earlier-phase CTE that isn't already `CTE_READY` / `CTE_FAILED`.
+
+### Bug 2 — main-root selection picks nested CTE_LOOKUP
+
+**Symptom (after Bug 5 fix):** `execCTE_START_MAIN_REQ` logged
+`start root node 5 (all 2 CTEs READY)` — node 5 is the nested
+`lookupCte(0)` inside CTE 1's subtree, not the main scan
+(which is node 6). Starting the nested CTE_LOOKUP as the "main
+scan" did nothing — outstanding immediately reached 0, the
+query terminated with no rows delivered, and the test never
+saw output.
+
+**Root cause:** the main-root selection iteration at line 6738
+filtered on `!(m_bits & T_CTE_SCAN) && m_info != &g_CteSubtreeOpInfo`.
+With Bug 1 fixed (m_cteId set on nested CTE_LOOKUP) but Bug 0's
+T_CTE_SCAN exclusion still in place, the nested CTE_LOOKUP has
+neither bit and was the first match.
+
+**Fix:** replace the bit-pair filter with `m_cteId == RNIL` —
+the canonical "not part of a subtree" predicate. (The original
+plan called this "Edit 2 — Main-root selection" with two sites,
+but only the `execCTE_START_MAIN_REQ` site fires on this path.)
+
+### Bug 6 — `m_rows` over-counts T_CTE_INDIRECT_FEED scan rows
+
+**Symptom (after Bug 2 fix):** TRANSID_AI rows flowed correctly,
+data node completed the query and sent SCAN_TABCONF with
+`requestInfo=0x80000001` (op_count=1, EndOfData), `rowCount=15`.
+The API processed it but `worker->isFragBatchComplete()` was
+false — outstanding accounting was off by 5. With 1 worker and
+`m_pendingWorkers` stuck at 1, `nextResult` blocked forever.
+
+**Root cause:** `scanFrag_execSCAN_FRAGCONF` at line 11566
+unconditionally accumulated `m_rows += rows` whenever
+`m_aggNodes.isclear()` was true (i.e. no main aggregation). The
+T_CTE_INDIRECT_FEED scan returns 5 rows to DBSPJ to drive
+`cte_parent_row` for the nested CTE_LOOKUP, but those rows are
+**not delivered to the API**. They were nonetheless added to
+`m_rows`, which becomes `SCAN_FRAGCONF::completedOps` and then
+the API's per-worker `rowCount` in SCAN_TABCONF. The API
+expected 15 TRANSID_AI rows but only 10 arrived (5 for main
+scan + 5 for main CTE_LOOKUP); outstanding stayed at 5; hang.
+
+**Fix:** add `&& !(m_bits & T_CTE_INDIRECT_FEED)` to the
+accumulation condition. Indirect-feed scan rows do not
+contribute to the API row count.
+
+### Bug 3 — does not fire for Test 5
+
+The original plan called this `validateAggregateFlags` mis-
+classification. The check is gated on `RT_AGGREGATE` which is
+set only when a node has `NI_AGGREGATE` AND
+`ctx.m_cteSubtreeRemaining == 0`. For Test 5 the main query has
+no aggregate leaves, so no main op gets `NI_AGGREGATE`, so
+`RT_AGGREGATE` stays off, so `validateAggregateFlags` early-
+returns. The bug is real but only manifests on a query where
+the main is **also** an aggregation that references a nested
+CTE_LOOKUP — left for a future test.
+
+## Verification
+
+`testCteNdbApi` Tests 1-5 all pass on the fixed build. Tests 1-4
+unchanged (single-CTE patterns); Test 5 produces the expected 5
+rows with correct `cte1.total` values per `grp`.
+
+Regression suites still to run before merging upstream:
+`testCteDbtc`, `ndb_push_agg` MTR suite, `testJoinAggSpj`.
 
 ## What's Explicitly NOT in Part A
 
