@@ -275,19 +275,64 @@ The branch is temporarily red between each pair. This is fine on a
 dev branch but **the full sequence (6 commits) must land together**
 before merging upstream.
 
-### Step 1 — Test 5 skeleton exposes Bug 3
+### Step 1 — Test 5 skeleton exposes Bug 0 (observed: DBLQH hang)
 
 **Commit 1a (test, fails):** Add Test 5 with the full target query
-structure. Wire it into `main()` after Test 4. Expected symptom:
-`qb->prepare(ndb)` fails or the subsequent `trans->execute()` returns
-`InvalidAggregateFlags` (error code from
-`validateAggregateFlags`). Test 5 should:
-- Print the specific error string expected for this bug
-- Return -1 so `testCteNdbApi` binary exits non-zero
+structure. Wire it into `main()` after Test 4. Run it.
+
+**Originally predicted symptom:** `DbspjErr::InvalidAggregateFlags`
+from `validateAggregateFlags` because the nested `lookupCte(0)`
+with `setAggregation` was expected to be mis-classified as a
+main-query aggregate leaf.
+
+**Actually observed symptom (2026-04-14 run):** Test 5 passes Tests
+1-4, then on Test 5:
+- CTE 0 materializes successfully (trace shows
+  `handleCtePhaseComplete` at `DbspjMain.cpp:6551` reached for
+  phase 0).
+- DBTC sends `CTE_PHASE_START_REQ` for phase 1.
+- DBLQH threads (instances 1 and 2) get stuck processing
+  `SCAN_FRAGREQ` for CTE 1's scan — watchdog fires after ~3
+  seconds reporting `Ndb kernel thread 1/2 is stuck in:
+  JobHandling in block: 247, gsn: 353`. Node is killed and MTR
+  reports a data node crash.
+
+**Why the prediction was wrong:** `validateAggregateFlags` at
+`DbspjMain.cpp:2033` early-returns when `RT_AGGREGATE` is not set
+on the Request. `RT_AGGREGATE` is only set at
+`DbspjMain.cpp:13107-13110` when `ctx.m_cteSubtreeRemaining == 0`
+AND `NI_AGGREGATE` is set on the node. Test 5's main query has no
+aggregate leaves, so main-query nodes don't get `NI_AGGREGATE`,
+and CTE-subtree nodes do set `NI_AGGREGATE` but are inside a
+subtree so `cteSubtreeRemaining > 0`. The net result: the
+validateAggregateFlags body never executes for Test 5, and **Bug 3
+as originally stated doesn't manifest with this query
+structure**.
+
+**What the observed symptom reveals:** There's an additional
+**Bug 0** in the DBLQH CTE 1 scan path that precedes Bugs 1-3 in
+the execution order. Hypothesis: something about the CTE 1
+subtree's scan (a base-table scan with a nested `lookupCte`
+child) causes DBLQH to loop or deadlock when processing
+`SCAN_FRAGREQ`. Possibilities:
+
+- CTE 1 scan gets routed via the CTE_LOOKUP path by mistake
+  (because `m_cteId` is set wrong, intersecting with Bug 1)
+- Phase start logic sends the wrong scan parameters for the
+  nested `lookupCte` case
+- The aggregator attached to the nested lookupCte expects a
+  joinAggStateKey that never gets set up by DBTC's phase start
+
+Needs investigation before committing a fix. The Test 5 commit
+itself stands: it proves that the CTE-to-CTE lookup path is
+broken, regardless of the exact mechanism.
 
 Verification: rebuild `testCteNdbApi`, run it — Tests 1-4 pass,
-Test 5 fails with `InvalidAggregateFlags`. **The test has
-successfully exposed Bug 3.**
+Test 5 causes a data node crash (watchdog-triggered). **The test
+has successfully exposed a bug in the CTE-to-CTE lookup path.**
+Next step is to diagnose which of Bugs 0-3 is actually the
+proximate cause of the hang and adjust the fix order
+accordingly.
 
 **Commit 1b (fix):** Apply Edit 3 (`validateAggregateFlags` —
 replace `!(m_bits & T_CTE_SCAN)` with `m_cteId == RNIL` at the four

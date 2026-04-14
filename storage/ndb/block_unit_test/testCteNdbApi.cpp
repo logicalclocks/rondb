@@ -985,6 +985,285 @@ testCteWithScanFilter(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 5: CTE-to-CTE lookup (Part A)                                 */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   WITH                                                              */
+/*     cte0 AS (SELECT grp, SUM(val) AS total                          */
+/*       FROM cte_src t1 JOIN cte_src t2 ON t1.pk = t2.pk              */
+/*       GROUP BY grp),                                                */
+/*     cte1 AS (SELECT cte0.grp, SUM(cte0.total) AS total              */
+/*       FROM cte_src s JOIN cte0 ON s.grp = cte0.grp                  */
+/*       GROUP BY cte0.grp)                                            */
+/*   SELECT s.grp, cte1.total                                          */
+/*   FROM cte_src s JOIN cte1 ON s.grp = cte1.grp                      */
+/*                                                                     */
+/* CTE 0 materializes via the existing Test 2 pattern.                 */
+/* CTE 1 materializes by scanning cte_src and CTE_LOOKUP cte0 INSIDE   */
+/* its subtree — this is the new Part A pattern under test.          */
+/* Main query scans cte_src and CTE_LOOKUPs cte1.                     */
+/*                                                                     */
+/* Expected cte0 = {(1,30),(2,70),(3,50)}                              */
+/* Expected cte1 per source row:                                       */
+/*   row (1,1,10) → cte0(1).total=30 → grp=1, sum+=30                  */
+/*   row (2,1,20) → cte0(1).total=30 → grp=1, sum+=30 → 60 for grp=1   */
+/*   row (3,2,30) → cte0(2).total=70 → grp=2, sum+=70                  */
+/*   row (4,2,40) → cte0(2).total=70 → grp=2, sum+=70 → 140 for grp=2  */
+/*   row (5,3,50) → cte0(3).total=50 → grp=3, sum+=50 → 50 for grp=3   */
+/* Expected cte1 = {(1,60),(2,140),(3,50)}                             */
+/* Expected main = 5 rows, one per source row, each carries cte1.total */
+/*                                                                     */
+/* This test is expected to FAIL until all three Part A bugs are       */
+/* fixed (see part_a_cte_to_cte_lookup_plan.md). Initial failure       */
+/* symptom is DbspjErr::InvalidAggregateFlags (20022) raised by        */
+/* validateAggregateFlags() because the nested lookupCte(0) with       */
+/* setAggregation() is mis-classified as a main-query aggregate        */
+/* leaf.                                                               */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteToCteLookup(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 5: CTE-to-CTE lookup (lookupCte inside subtree) ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  dict->invalidateTable(VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = virtTab->getColumn("grp");
+  const NdbDictionary::Column *totalCol = virtTab->getColumn("total");
+  if (grpCol == nullptr || totalCol == nullptr) {
+    printf("FAILED (virt column lookup)\n");
+    return -1;
+  }
+
+  /* CTE 0 aggregation: GROUP BY grp, SUM(val) — Test 2 pattern */
+  NdbAggregator cte0Agg(srcTab);
+  if (!cte0Agg.GroupBy("grp") ||
+      !cte0Agg.LoadColumn("val", 0) ||
+      !cte0Agg.Sum(0, 0) ||
+      !cte0Agg.Finalize()) {
+    printf("FAILED (cte0Agg: %s)\n", cte0Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* CTE 1 aggregation: GROUP BY cte0.grp (linked pos 0),
+   * SUM(cte0.total) (linked pos 1). The aggregator runs on the
+   * CTE_LOOKUP result row (virtual table cte_virtual), so its
+   * backing table for column type info is virtTab and both grouping
+   * and value columns come via GroupByLinked / LoadLinkedColumn. */
+  NdbAggregator cte1Agg(virtTab);
+  if (!cte1Agg.GroupByLinked(0, grpCol) ||
+      !cte1Agg.LoadLinkedColumn(1, 0, totalCol) ||
+      !cte1Agg.Sum(0, 0) ||
+      !cte1Agg.Finalize()) {
+    printf("FAILED (cte1Agg: %s)\n", cte1Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Build query */
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+
+  /* CTE 0 subtree: scan + readTuple self-join with agg */
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      printf("FAILED (CTE 0 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte0Agg);
+    if (qb->readTuple(srcTab, key, &opts) == nullptr) {
+      printf("FAILED (CTE 0 leaf: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+
+  if (qb->defineCte(0, srcTab, cte0Agg, /*depMask=*/0) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* CTE 1 subtree: scan cte_src + lookupCte(0) inside the subtree.
+   * The lookupCte carries the aggregation — its result feeds CTE 1's
+   * hash table. This is the new Part A pattern. */
+  qb->beginCteSubtree(1);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      printf("FAILED (CTE 1 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *cte0Key[] = {
+      qb->linkedValue(scan, "grp"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte1Agg);
+    if (qb->lookupCte(0, 2, virtTab, cte0Key, &opts) == nullptr) {
+      printf("FAILED (CTE 1 nested lookupCte: %s)\n",
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+
+  if (qb->defineCte(1, virtTab, cte1Agg, /*depMask=*/1) != 0) {
+    printf("FAILED (defineCte 1)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: scan cte_src + lookupCte(1) */
+  const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+  if (mainScanOp == nullptr) {
+    printf("FAILED (main scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryOperand *cte1Key[] = {
+    qb->linkedValue(mainScanOp, "grp"), nullptr
+  };
+  NdbQueryOptions cte1LookupOpts;
+  cte1LookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  const NdbQueryCteLookupOperationDef *mainCteLookupOp =
+      qb->lookupCte(1, 2, virtTab, cte1Key, &cte1LookupOpts);
+  if (mainCteLookupOp == nullptr) {
+    printf("FAILED (main lookupCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  V("\n  Query prepared: %u operations\n", queryDef->getNoOfOperations());
+
+  /* Execute */
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Wire up result projections on the main scan and the main CTE
+   * lookup so we can verify per-row values. */
+  NdbQueryOperation *mainScanQueryOp = query->getQueryOperation(6U);
+  NdbQueryOperation *mainCteLookupQueryOp = query->getQueryOperation(7U);
+  NdbRecAttr *raMainGrp = nullptr;
+  NdbRecAttr *raCteGrp = nullptr;
+  NdbRecAttr *raCteTotal = nullptr;
+  if (mainScanQueryOp != nullptr) {
+    raMainGrp = mainScanQueryOp->getValue("grp");
+  }
+  if (mainCteLookupQueryOp != nullptr) {
+    raCteGrp = mainCteLookupQueryOp->getValue("grp");
+    raCteTotal = mainCteLookupQueryOp->getValue("total");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Expected total per grp (cte1 values) */
+  std::map<Int32, Int64> expected;
+  expected[1] = 60;
+  expected[2] = 140;
+  expected[3] = 50;
+
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    Int32 mainGrp = raMainGrp ? raMainGrp->int32_value() : -1;
+    Int32 cteGrp = raCteGrp ? raCteGrp->int32_value() : -1;
+    Int64 cteTotal = raCteTotal ? raCteTotal->int64_value() : -1;
+    V("  row: mainGrp=%d cteGrp=%d cteTotal=%lld\n",
+      mainGrp, cteGrp, (long long)cteTotal);
+    auto it = expected.find(mainGrp);
+    if (it == expected.end()) {
+      printf("FAILED (unexpected grp=%d in result)\n", mainGrp);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+    if (cteTotal != it->second) {
+      printf("FAILED (grp=%d expected total=%lld got %lld)\n",
+             mainGrp, (long long)it->second, (long long)cteTotal);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+  }
+
+  if (outcome == NdbQuery::NextResult_error) {
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (nextResult err %d: %s)\n", qErr.code, qErr.message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount != 5) {
+    printf("FAILED (expected 5 rows, got %u)\n", rowCount);
+    return -1;
+  }
+
+  printf("OK (%u rows)\n", rowCount);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1044,6 +1323,7 @@ int main(int argc, char **argv)
           if (testCteWithStandardMain(&ndb, conn) != 0) exitCode = 1;
           if (testCteLookupAggLeaf(&ndb, conn) != 0) exitCode = 1;
           if (testCteWithScanFilter(&ndb, conn) != 0) exitCode = 1;
+          if (testCteToCteLookup(&ndb, conn) != 0) exitCode = 1;
         }
 
         dropTestTables(conn);
