@@ -19469,32 +19469,24 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
     return;
   }
 
-  const CteScanReq *req = (const CteScanReq *)signal->getDataPtr();
-  const Uint32 senderRef = req->senderRef;
-  const Uint32 senderData = req->senderData;
-  const Uint32 aggStateKey = req->aggStateKey;
-  const Uint32 batchSize = req->batchSize;
-  const Uint32 transId1 = req->transId1;
-  const Uint32 transId2 = req->transId2;
-  const Uint32 reqResultRef = req->resultRef;    // per-fragment API ref
-  const Uint32 reqResultData = req->resultData;  // per-fragment receiver id
-  const Uint32 joinAggStateKey = req->joinAggStateKey;
+  const CteScanReq req =
+      *(const CteScanReq *)signal->getDataPtr();
 
   /* Release incoming signal sections early so all error paths are safe.
    * We copy the AttrInfo section into a local buffer before releasing. */
   SectionHandle handle(this, signal);
 
-  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  JoinAggregationState *state = getJoinAggState(req.aggStateKey);
   if (unlikely(state == nullptr)) {
     jam();
-    sendCteScanRef(signal, senderRef, senderData,
+    sendCteScanRef(signal, req.senderRef, req.senderData,
                    ZJOIN_AGG_STATE_NOT_FOUND, &handle);
     return;
   }
 
   if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
     jam();
-    sendCteScanRef(signal, senderRef, senderData,
+    sendCteScanRef(signal, req.senderRef, req.senderData,
                    ZCTE_LOOKUP_STATE_NOT_READY, &handle);
     return;
   }
@@ -19508,7 +19500,7 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
   if (handle.getSection(attrInfoSection, CteScanReq::AttrInfoSectionNum)) {
     if (unlikely(attrInfoSection.sz > ZATTR_BUFFER_SIZE)) {
       jam();
-      sendCteScanRef(signal, senderRef, senderData,
+      sendCteScanRef(signal, req.senderRef, req.senderData,
                      ZATTRINFO_TOO_LARGE, &handle);
       return;
     }
@@ -19528,8 +19520,6 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
    * (worker[0]) receiverId, so its FLUSH_AI words can NOT be trusted —
    * each fragment's request carries its own resultRef/resultData
    * (= per-worker API receiverId) in the signal header instead. */
-  const Uint32 flushRef = reqResultRef;
-  const Uint32 flushData = reqResultData;
   if (attrInfoLen >= 5) {
     const Uint32 initReadLen = cinBuf[0];
     const Uint32 execRegionLen = cinBuf[1];
@@ -19546,8 +19536,8 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
   /* Save transId for this scan (first or continuation) — used when
    * sending TRANSID_AI back to the API and to validate continuation
    * REQs belong to the same transaction. */
-  state->m_cteScan_transId[0] = transId1;
-  state->m_cteScan_transId[1] = transId2;
+  state->m_cteScan_transId[0] = req.transId1;
+  state->m_cteScan_transId[1] = req.transId2;
 
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
@@ -19559,17 +19549,17 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
    * group's [key + accumulators] is converted to linked_attr_data
    * and inserted via processRecWithLinkedAttrs(), bypassing both
    * the API and DBSPJ.  Only a CTE_SCAN_CONF is sent back. */
-  if (joinAggStateKey != RNIL) {
+  if (req.joinAggStateKey != RNIL) {
     jam();
     const Uint32 targetBaseKey =
-        JoinAggregationState::decodeBaseKey(joinAggStateKey);
+        JoinAggregationState::decodeBaseKey(req.joinAggStateKey);
     const Uint32 targetLeafIndex =
-        JoinAggregationState::decodeLeafIndex(joinAggStateKey);
+        JoinAggregationState::decodeLeafIndex(req.joinAggStateKey);
 
     JoinAggregationState *targetState = getJoinAggState(targetBaseKey);
     if (unlikely(targetState == nullptr)) {
       jam();
-      sendCteScanRef(signal, senderRef, senderData,
+      sendCteScanRef(signal, req.senderRef, req.senderData,
                      ZJOIN_AGG_STATE_NOT_FOUND);
       return;
     }
@@ -19598,7 +19588,7 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
                                state->m_cteScan_iterRaw);
 
       for (; iter.valid(); gb_map->next(iter)) {
-        if (numRowsSent >= batchSize) {
+        if (numRowsSent >= req.batchSize) {
           jam();
           endOfData = false;
           break;
@@ -19655,7 +19645,7 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
               "targetKey=%u leafIdx=%u linkedWords=%u",
               instance(), aggRet, targetBaseKey, targetLeafIndex,
               linkedPos);
-          sendCteScanRef(signal, senderRef, senderData,
+          sendCteScanRef(signal, req.senderRef, req.senderData,
                          ZCTE_LOOKUP_OUTPUT_OVERFLOW);
           return;
         }
@@ -19674,10 +19664,10 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
     /* Send CTE_SCAN_CONF — no TRANSID_AI in the agg-feed path. */
     CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
     conf->senderRef = reference();
-    conf->senderData = senderData;
+    conf->senderData = req.senderData;
     conf->numRows = numRowsSent;
     conf->flags = endOfData ? CteScanConf::EndOfData : 0;
-    sendSignal(senderRef, GSN_CTE_SCAN_CONF,
+    sendSignal(req.senderRef, GSN_CTE_SCAN_CONF,
                signal, CteScanConf::SignalLength, JBB);
     return;
   }
@@ -19701,7 +19691,7 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
 
     for (; iter.valid(); gb_map->next(iter)) {
       /* Batch limit reached — pause for next CTE_SCAN_REQ */
-      if (numRowsSent >= batchSize) {
+      if (numRowsSent >= req.batchSize) {
         jam();
         endOfData = false;
         break;
@@ -19718,14 +19708,14 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
       if (haveFinalR) {
         /* AttrInfo-driven path: walk final-read section via shared helper */
         CteOutputParams params;
-        params.transId[0] = transId1;
-        params.transId[1] = transId2;
-        params.flushRef = flushRef;
-        params.flushData = flushData;
-        params.residualRef = senderRef;
-        params.residualData = senderData;
+        params.transId[0] = req.transId1;
+        params.transId[1] = req.transId2;
+        params.flushRef = req.resultRef;
+        params.flushData = req.resultData;
+        params.residualRef = req.senderRef;
+        params.residualData = req.senderData;
         params.correlation = groupIdx;
-        params.corrRootRcvr = flushData;
+        params.corrRootRcvr = req.resultData;
         params.useFlushAiFromFinalR = false;
 
         Int32 outPos = emitCteGroupOutput(signal, params, groupData, keyLen,
@@ -19735,14 +19725,14 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
         /* Residual (e.g. CORR_FACTOR after FLUSH_AI) goes to DBSPJ */
         if (outPos > 0) {
           TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-          transIdAI->connectPtr = senderData;
-          transIdAI->transId[0] = transId1;
-          transIdAI->transId[1] = transId2;
+          transIdAI->connectPtr = req.senderData;
+          transIdAI->transId[0] = req.transId1;
+          transIdAI->transId[1] = req.transId2;
 
           LinearSectionPtr lsp[3];
           lsp[0].p = outBuf;
           lsp[0].sz = (Uint32)outPos;
-          sendSignal(senderRef, GSN_TRANSID_AI, signal,
+          sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
                      TransIdAI::HeaderLength, JBB, lsp, 1);
         }
       } else {
@@ -19781,14 +19771,14 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
         }
 
         TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-        transIdAI->connectPtr = senderData;
-        transIdAI->transId[0] = transId1;
-        transIdAI->transId[1] = transId2;
+        transIdAI->connectPtr = req.senderData;
+        transIdAI->transId[0] = req.transId1;
+        transIdAI->transId[1] = req.transId2;
 
         LinearSectionPtr lsp[3];
         lsp[0].p = outBuf;
         lsp[0].sz = outPos;
-        sendSignal(senderRef, GSN_TRANSID_AI, signal,
+        sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
                    TransIdAI::HeaderLength, JBB, lsp, 1);
       }
 
@@ -19807,10 +19797,10 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
   /* Send CTE_SCAN_CONF */
   CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
   conf->senderRef = reference();
-  conf->senderData = senderData;
+  conf->senderData = req.senderData;
   conf->numRows = numRowsSent;
   conf->flags = endOfData ? CteScanConf::EndOfData : 0;
-  sendSignal(senderRef, GSN_CTE_SCAN_CONF,
+  sendSignal(req.senderRef, GSN_CTE_SCAN_CONF,
              signal, CteScanConf::SignalLength, JBB);
 }
 
