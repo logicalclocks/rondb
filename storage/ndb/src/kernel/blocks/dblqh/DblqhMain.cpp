@@ -18887,6 +18887,176 @@ void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
                       senderRef, senderData, requestId);
 }
 
+/**
+ * cteLookupAggFeed — CTE_LOOKUP result feeds into another JoinAggInterpreter
+ * (CTE-to-CTE dependency or CTE_LOOKUP as main aggregate leaf).
+ * Builds linked_attr_data from the group's key + accumulators and inserts
+ * it via processRecWithLinkedAttrs().  Sends CONF on success, REF on error.
+ */
+void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
+                              const JoinAggInterpreter *interp,
+                              const char *groupData) {
+  const Uint32 targetBaseKey =
+      JoinAggregationState::decodeBaseKey(req.joinAggStateKey);
+  const Uint32 targetLeafIndex =
+      JoinAggregationState::decodeLeafIndex(req.joinAggStateKey);
+
+  JoinAggregationState *targetState = getJoinAggState(targetBaseKey);
+  if (unlikely(targetState == nullptr)) {
+    jam();
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZCTE_LOOKUP_STATE_NOT_READY);
+    return;
+  }
+
+  JoinAggInterpreter *targetInterp = getJoinAggInterpreter(targetState);
+  ndbrequire(targetInterp != nullptr);
+
+  /* Build linked_attr_data from the CTE result: key columns followed
+   * by accumulator columns, all in AttributeHeader format.
+   * Format: [tableId=0][schemaVersion=0][AH][data...] per column. */
+  const Uint32 n_gb_cols = interp->n_gb_cols();
+  const Uint32 n_agg_results = interp->n_agg_results();
+
+  Uint32 *linkedBuf = cevictBuffer;
+  Uint32 linkedPos = 0;
+
+  /* Key columns from CTE GROUP BY */
+  const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
+  const Uint32 keyWords = req.keyLen >> 2;
+  Uint32 kp = 0;
+  while (kp < keyWords) {
+    linkedBuf[linkedPos++] = 0;  // tableId
+    linkedBuf[linkedPos++] = 0;  // schemaVersion
+    Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+    Uint32 words = 1 + dataSize;
+    memcpy(&linkedBuf[linkedPos], &keyData[kp], words * sizeof(Uint32));
+    linkedPos += words;
+    kp += words;
+  }
+
+  /* Accumulator values as linked columns */
+  const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
+      groupData + req.keyLen);
+  for (Uint32 i = 0; i < n_agg_results; i++) {
+    const Uint32 attrId = n_gb_cols + i;
+    linkedBuf[linkedPos++] = 0;  // tableId
+    linkedBuf[linkedPos++] = 0;  // schemaVersion
+    if (accumulators[i].is_null) {
+      AttributeHeader::init(&linkedBuf[linkedPos], attrId, 0);
+      linkedPos += 1;
+    } else {
+      AttributeHeader::init(&linkedBuf[linkedPos], attrId, 8);
+      memcpy(&linkedBuf[linkedPos + 1], &accumulators[i].value, 8);
+      linkedPos += 3;
+    }
+  }
+
+  const LeafProgram *leaf = nullptr;
+  if (targetState->m_num_leaves > 1) {
+    ndbrequire(targetLeafIndex < targetState->m_num_leaves);
+    leaf = &targetState->m_leaf_programs[targetLeafIndex];
+  }
+
+  DEB_CTE(("(%u) CTE_LOOKUP agg feed: targetKey=%u leafIdx=%u "
+           "linkedWords=%u",
+           instance(), targetBaseKey, targetLeafIndex, linkedPos));
+
+retry_agg:
+  Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
+      nullptr, nullptr, linkedBuf, linkedPos, leaf);
+  if (aggRet == AGG_EVICT_NEEDED) {
+    jam();
+    sendEvictedAggGroup(signal, targetInterp, targetState);
+    goto retry_agg;
+  }
+  if (unlikely(aggRet != 0)) {
+    jam();
+    g_eventLogger->info("(%u) CTE_LOOKUP agg feed FAILED: aggRet=%d "
+        "targetKey=%u leafIdx=%u linkedWords=%u n_gb=%u n_agg=%u "
+        "processed_rows=%llu inited=%d",
+        instance(), aggRet, targetBaseKey, targetLeafIndex,
+        linkedPos, targetInterp->n_gb_cols(),
+        targetInterp->n_agg_results(),
+        (unsigned long long)targetInterp->processed_rows(),
+        targetInterp->inited() ? 1 : 0);
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+    return;
+  }
+
+  targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+
+  /* Send CONF only — no TRANSID_AI sent to API or DBSPJ */
+  CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = req.senderData;
+  sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
+             signal, CteLookupConf::SignalLength, JBB);
+}
+
+/**
+ * routeCteLookup — forward CTE_LOOKUP_REQ to the remote node that owns the
+ * hash bucket for this key.  Returns true if forwarded, false if the local
+ * node owns the key (caller should send NOT_FOUND REF).
+ */
+bool Dblqh::routeCteLookup(Signal *signal,
+                            const JoinAggregationState *state,
+                            const JoinAggInterpreter *interp,
+                            const Uint32 *keyBuf, Uint32 keySectionSz,
+                            const Uint32 *cinBuf, Uint32 attrInfoLen,
+                            const CteLookupReq *req) {
+  const Uint32 keyLen = req->keyLen;
+  Uint64 h = interp->hashGroupKey(
+      reinterpret_cast<const char *>(keyBuf), keyLen);
+  Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
+  Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
+  if (ownerNode == getOwnNodeId()) {
+    jam();
+    return false;
+  }
+  jam();
+  Uint32 remoteAggKey = state->m_cte_remote_aggKeys[ownerNode];
+  DEB_CTE(("(%u) CTE_LOOKUP: forwarding to node %u aggKey=%u "
+           "(hash=0x%llx ownerIdx=%u)",
+           instance(), ownerNode, remoteAggKey,
+           (unsigned long long)h, ownerIdx));
+
+  /* Signal data is already populated from the incoming REQ — just
+   * update the two fields that differ for the forwarded request. */
+  CteLookupReq *fwd = (CteLookupReq *)signal->getDataPtrSend();
+  fwd->aggStateKey = remoteAggKey;
+  fwd->flags = 0;  /* Clear ROUTE_FLAG — no further forwarding */
+
+  SectionHandle fwdHandle(this);
+  Uint32 keyPtrI = RNIL;
+  ndbrequire(appendToSection(keyPtrI, keyBuf, keySectionSz));
+  fwdHandle.m_ptr[CteLookupReq::KeySectionNum].i = keyPtrI;
+  {
+    SegmentedSectionPtr p;
+    getSection(p, keyPtrI);
+    fwdHandle.m_ptr[CteLookupReq::KeySectionNum] = p;
+  }
+  fwdHandle.m_cnt = 1;
+
+  if (attrInfoLen > 0) {
+    Uint32 aiPtrI = RNIL;
+    ndbrequire(appendToSection(aiPtrI, cinBuf, attrInfoLen));
+    fwdHandle.m_ptr[CteLookupReq::AttrInfoSectionNum].i = aiPtrI;
+    {
+      SegmentedSectionPtr p;
+      getSection(p, aiPtrI);
+      fwdHandle.m_ptr[CteLookupReq::AttrInfoSectionNum] = p;
+    }
+    fwdHandle.m_cnt = 2;
+  }
+
+  Uint32 ref = numberToRef(DBLQH, 1, ownerNode);
+  sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
+             CteLookupReq::SignalLength, JBB, &fwdHandle);
+  return true;
+}
+
 void Dblqh::sendCteLookupRef(Signal *signal, Uint32 senderRef,
                              Uint32 senderData, Uint32 errorCode,
                              SectionHandle *handle) {
@@ -18940,40 +19110,32 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     return;
   }
 
-  const CteLookupReq *req = (const CteLookupReq *)signal->getDataPtr();
-  const Uint32 senderRef = req->senderRef;
-  const Uint32 senderData = req->senderData;
-  const Uint32 aggStateKey = req->aggStateKey;
-  const Uint32 keyLen = req->keyLen;
-  const Uint32 resultRef = req->resultRef;
-  const Uint32 resultData = req->resultData;
-  const Uint32 routeRef = req->routeRef;
-  const Uint32 correlation = req->correlation;
-  const Uint32 joinAggStateKey = req->joinAggStateKey;
-  const Uint32 flags = req->flags;
+  const CteLookupReq req =
+      *(const CteLookupReq *)signal->getDataPtr();
 
   DEB_CTE(("(%u) execCTE_LOOKUP_REQ: aggStateKey=%u keyLen=%u "
            "senderRef=0x%x senderData=0x%x resultRef=0x%x "
            "resultData=0x%x routeRef=0x%x corr=0x%x joinAgg=%u flags=0x%x",
-           instance(), aggStateKey, keyLen,
-           senderRef, senderData, resultRef,
-           resultData, routeRef, correlation, joinAggStateKey, flags));
+           instance(), req.aggStateKey, req.keyLen,
+           req.senderRef, req.senderData, req.resultRef,
+           req.resultData, req.routeRef, req.correlation,
+           req.joinAggStateKey, req.flags));
 
   /* Release incoming signal sections early so all error paths are safe.
    * We copy the section data into local buffers before releasing. */
   SectionHandle handle(this, signal);
 
-  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  JoinAggregationState *state = getJoinAggState(req.aggStateKey);
   if (unlikely(state == nullptr)) {
     jam();
-    sendCteLookupRef(signal, senderRef, senderData,
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZJOIN_AGG_STATE_NOT_FOUND, &handle);
     return;
   }
 
   if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
     jam();
-    sendCteLookupRef(signal, senderRef, senderData,
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZCTE_LOOKUP_STATE_NOT_READY, &handle);
     return;
   }
@@ -18984,7 +19146,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   Uint32 keyBuf[MAX_KEY_SIZE_IN_WORDS + 1];
   if (unlikely(keySection.sz > MAX_KEY_SIZE_IN_WORDS)) {
     jam();
-    sendCteLookupRef(signal, senderRef, senderData,
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZATTRINFO_TOO_LARGE, &handle);
     return;
   }
@@ -18997,7 +19159,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   if (handle.getSection(attrInfoSection, CteLookupReq::AttrInfoSectionNum)) {
     if (unlikely(attrInfoSection.sz > ZATTR_BUFFER_SIZE)) {
       jam();
-      sendCteLookupRef(signal, senderRef, senderData,
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
                        ZATTRINFO_TOO_LARGE, &handle);
       return;
     }
@@ -19010,9 +19172,9 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   /* Validate minimum AttrInfo — only for non-agg path (FLUSH_AI to API).
    * The agg-feed path (joinAggStateKey != RNIL) doesn't use AttrInfo;
    * it builds linked_attr_data directly from the CTE hash table. */
-  if (joinAggStateKey == RNIL && unlikely(attrInfoLen < 8)) {
+  if (req.joinAggStateKey == RNIL && unlikely(attrInfoLen < 8)) {
     jam();
-    sendCteLookupRef(signal, senderRef, senderData,
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZCTE_LOOKUP_ATTRINFO_MALFORMED);
     return;
   }
@@ -19023,196 +19185,41 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
 
   DEB_CTE(("(%u) CTE_LOOKUP hash table: aggStateKey=%u state=%u "
            "n_gb_cols=%u n_agg_results=%u processed_rows=%llu",
-           instance(), aggStateKey,
+           instance(), req.aggStateKey,
            (Uint32)state->m_state.load(),
            interp->n_gb_cols(), interp->n_agg_results(),
            (unsigned long long)interp->processed_rows()));
 
   const char *groupData = interp->lookupGroup(
-      reinterpret_cast<const char *>(keyBuf), keyLen);
+      reinterpret_cast<const char *>(keyBuf), req.keyLen);
 
   DEB_CTE(("(%u) CTE_LOOKUP: key[0]=0x%x keyLen=%u → %s",
-           instance(), keyBuf[0], keyLen,
+           instance(), keyBuf[0], req.keyLen,
            groupData ? "FOUND" : "NOT_FOUND"));
 
   if (groupData == nullptr) {
     jam();
     /* If ROUTE_FLAG is set and the key hashes to a remote node,
      * forward the request there instead of returning NOT_FOUND. */
-    if ((flags & CteLookupReq::CTE_LOOKUP_ROUTE_FLAG) &&
-        state->m_cte_num_nodes > 1) {
+    if ((req.flags & CteLookupReq::CTE_LOOKUP_ROUTE_FLAG) &&
+        state->m_cte_num_nodes > 1 &&
+        routeCteLookup(signal, state, interp,
+                       keyBuf, keySection.sz,
+                       cinBuf, attrInfoLen, &req)) {
       jam();
-      Uint64 h = interp->hashGroupKey(
-          reinterpret_cast<const char *>(keyBuf), keyLen);
-      Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
-      Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
-      if (ownerNode != getOwnNodeId()) {
-        jam();
-        Uint32 remoteAggKey = state->m_cte_remote_aggKeys[ownerNode];
-        DEB_CTE(("(%u) CTE_LOOKUP: forwarding to node %u aggKey=%u "
-                 "(hash=0x%llx ownerIdx=%u)",
-                 instance(), ownerNode, remoteAggKey,
-                 (unsigned long long)h, ownerIdx));
-
-        CteLookupReq *fwd = (CteLookupReq *)signal->getDataPtrSend();
-        fwd->senderRef = senderRef;
-        fwd->senderData = senderData;
-        fwd->aggStateKey = remoteAggKey;
-        fwd->keyLen = keyLen;
-        fwd->resultRef = resultRef;
-        fwd->resultData = resultData;
-        fwd->routeRef = routeRef;
-        fwd->correlation = correlation;
-        fwd->joinAggStateKey = joinAggStateKey;
-        fwd->flags = 0;  /* Clear ROUTE_FLAG — no further forwarding */
-
-        SectionHandle fwdHandle(this);
-        Uint32 keyPtrI = RNIL;
-        ndbrequire(appendToSection(keyPtrI, keyBuf, keySection.sz));
-        fwdHandle.m_ptr[CteLookupReq::KeySectionNum].i = keyPtrI;
-        {
-          SegmentedSectionPtr p;
-          getSection(p, keyPtrI);
-          fwdHandle.m_ptr[CteLookupReq::KeySectionNum] = p;
-        }
-        fwdHandle.m_cnt = 1;
-
-        if (attrInfoLen > 0) {
-          Uint32 aiPtrI = RNIL;
-          ndbrequire(appendToSection(aiPtrI, cinBuf, attrInfoLen));
-          fwdHandle.m_ptr[CteLookupReq::AttrInfoSectionNum].i = aiPtrI;
-          {
-            SegmentedSectionPtr p;
-            getSection(p, aiPtrI);
-            fwdHandle.m_ptr[CteLookupReq::AttrInfoSectionNum] = p;
-          }
-          fwdHandle.m_cnt = 2;
-        }
-
-        Uint32 ref = numberToRef(DBLQH, 1, ownerNode);
-        sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
-                   CteLookupReq::SignalLength, JBB, &fwdHandle);
-        return;
-      }
+      return;
     }
     /* Genuine not-found (local owner or no ROUTE_FLAG) */
     jam();
-    sendCteLookupRef(signal, senderRef, senderData,
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZCTE_LOOKUP_GROUP_NOT_FOUND);
     return;
   }
 
-  /*
-   * Aggregation feed path: when joinAggStateKey != RNIL, the CTE_LOOKUP
-   * result feeds into another JoinAggInterpreter (CTE-to-CTE dependency
-   * or CTE_LOOKUP as main aggregate leaf) instead of going to the API.
-   * The group data (key + accumulators) is already in AttributeHeader
-   * format — pass it directly as linked attribute data.
-   */
-  if (joinAggStateKey != RNIL) {
+  /* Aggregation feed path: result feeds into another JoinAggInterpreter */
+  if (req.joinAggStateKey != RNIL) {
     jam();
-    const Uint32 targetBaseKey =
-        JoinAggregationState::decodeBaseKey(joinAggStateKey);
-    const Uint32 targetLeafIndex =
-        JoinAggregationState::decodeLeafIndex(joinAggStateKey);
-
-    JoinAggregationState *targetState = getJoinAggState(targetBaseKey);
-    if (unlikely(targetState == nullptr)) {
-      jam();
-      sendCteLookupRef(signal, senderRef, senderData,
-                       ZCTE_LOOKUP_STATE_NOT_READY);
-      return;
-    }
-
-    JoinAggInterpreter *targetInterp = getJoinAggInterpreter(targetState);
-    ndbrequire(targetInterp != nullptr);
-
-    /* Build linked_attr_data from the CTE result: key columns followed
-     * by accumulator columns, all in AttributeHeader format. */
-    const Uint32 n_gb_cols = interp->n_gb_cols();
-    const Uint32 n_agg_results = interp->n_agg_results();
-
-    Uint32 *linkedBuf = cevictBuffer;
-    Uint32 linkedPos = 0;
-
-    /* Build linked_attr_data in standard format:
-     * [tableId][schemaVersion][AH][data...] per column.
-     * The tableId/schemaVersion prefix (2 words per column) is required
-     * by JoinAggInterpreter's linked attribute walker. Use 0/0 since
-     * CTE virtual columns don't map to a real table. */
-
-    /* Key columns from CTE GROUP BY */
-    const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
-    const Uint32 keyWords = keyLen >> 2;
-    Uint32 kp = 0;
-    while (kp < keyWords) {
-      linkedBuf[linkedPos++] = 0;  // tableId
-      linkedBuf[linkedPos++] = 0;  // schemaVersion
-      Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
-      Uint32 words = 1 + dataSize;
-      memcpy(&linkedBuf[linkedPos], &keyData[kp], words * sizeof(Uint32));
-      linkedPos += words;
-      kp += words;
-    }
-
-    /* Accumulator values as linked columns */
-    const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
-        groupData + keyLen);
-    for (Uint32 i = 0; i < n_agg_results; i++) {
-      const Uint32 attrId = n_gb_cols + i;
-      linkedBuf[linkedPos++] = 0;  // tableId
-      linkedBuf[linkedPos++] = 0;  // schemaVersion
-      if (accumulators[i].is_null) {
-        AttributeHeader::init(&linkedBuf[linkedPos], attrId, 0);
-        linkedPos += 1;
-      } else {
-        AttributeHeader::init(&linkedBuf[linkedPos], attrId, 8);
-        memcpy(&linkedBuf[linkedPos + 1], &accumulators[i].value, 8);
-        linkedPos += 3;
-      }
-    }
-
-    const LeafProgram *leaf = nullptr;
-    if (targetState->m_num_leaves > 1) {
-      ndbrequire(targetLeafIndex < targetState->m_num_leaves);
-      leaf = &targetState->m_leaf_programs[targetLeafIndex];
-    }
-
-    DEB_CTE(("(%u) CTE_LOOKUP agg feed: targetKey=%u leafIdx=%u "
-             "linkedWords=%u",
-             instance(), targetBaseKey, targetLeafIndex, linkedPos));
-
-  retry_agg:
-    Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-        nullptr, nullptr, linkedBuf, linkedPos, leaf);
-    if (aggRet == AGG_EVICT_NEEDED) {
-      jam();
-      sendEvictedAggGroup(signal, targetInterp, targetState);
-      goto retry_agg;
-    }
-    if (unlikely(aggRet != 0)) {
-      jam();
-      g_eventLogger->info("(%u) CTE_LOOKUP agg feed FAILED: aggRet=%d "
-          "targetKey=%u leafIdx=%u linkedWords=%u n_gb=%u n_agg=%u "
-          "processed_rows=%llu inited=%d",
-          instance(), aggRet, targetBaseKey, targetLeafIndex,
-          linkedPos, targetInterp->n_gb_cols(),
-          targetInterp->n_agg_results(),
-          (unsigned long long)targetInterp->processed_rows(),
-          targetInterp->inited() ? 1 : 0);
-      sendCteLookupRef(signal, senderRef, senderData,
-                       ZCTE_LOOKUP_OUTPUT_OVERFLOW);
-      return;
-    }
-
-    targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
-
-    /* Send CONF only — no TRANSID_AI sent to API or DBSPJ */
-    CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
-    conf->senderRef = reference();
-    conf->senderData = senderData;
-    sendSignal(senderRef, GSN_CTE_LOOKUP_CONF,
-               signal, CteLookupConf::SignalLength, JBB);
+    cteLookupAggFeed(signal, req, interp, groupData);
     return;
   }
 
@@ -19224,7 +19231,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   const Uint32 n_gb_cols = interp->n_gb_cols();
   const Uint32 n_agg_results = interp->n_agg_results();
   const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
-      groupData + keyLen);
+      groupData + req.keyLen);
 
   Uint32 *outBuf = cevictBuffer;
   Uint32 outPos = 0;
@@ -19238,7 +19245,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   const Uint32 finalRStart = 5 + initReadLen + execRegionLen + finalUpdateLen;
   if (unlikely(finalRStart + finalRLen > attrInfoLen || finalRLen < 2)) {
     jam();
-    sendCteLookupRef(signal, senderRef, senderData,
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZCTE_LOOKUP_ATTRINFO_MALFORMED);
     return;
   }
@@ -19253,22 +19260,22 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
       /* FLUSH_AI: send accumulated output as TRANSID_AI */
       jam();
       if (unlikely(pos + 3 >= finalRLen)) break;
-      const Uint32 resultRef = finalR[pos + 1];
-      const Uint32 resultData = finalR[pos + 2];
+      const Uint32 flushRef = finalR[pos + 1];
+      const Uint32 flushData = finalR[pos + 2];
 
       if (outPos > 0) {
         DEB_CTE(("(%u) CTE_LOOKUP FLUSH_AI: outPos=%u "
                  "resultRef=0x%x resultData=0x%x",
-                 instance(), outPos, resultRef, resultData));
+                 instance(), outPos, flushRef, flushData));
         TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-        transIdAI->connectPtr = resultData;
+        transIdAI->connectPtr = flushData;
         transIdAI->transId[0] = state->m_transid[0];
         transIdAI->transId[1] = state->m_transid[1];
 
         LinearSectionPtr lsp[3];
         lsp[0].p = outBuf;
         lsp[0].sz = outPos;
-        sendSignal(resultRef, GSN_TRANSID_AI, signal,
+        sendSignal(flushRef, GSN_TRANSID_AI, signal,
                    TransIdAI::HeaderLength, JBB, lsp, 1);
         outPos = 0;
       }
@@ -19284,7 +19291,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
         goto output_overflow;
       }
       AttributeHeader::init(&outBuf[outPos], attrId, 4);
-      outBuf[outPos + 1] = correlation;
+      outBuf[outPos + 1] = req.correlation;
       outPos += 2;
       pos += 1;
       continue;
@@ -19298,8 +19305,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
         goto output_overflow;
       }
       AttributeHeader::init(&outBuf[outPos], attrId, 8);
-      outBuf[outPos + 1] = correlation;   // tuple correlation
-      outBuf[outPos + 2] = resultData;    // root receiver ID
+      outBuf[outPos + 1] = req.correlation;   // tuple correlation
+      outBuf[outPos + 2] = req.resultData;    // root receiver ID
       outPos += 3;
       pos += 1;
       continue;
@@ -19310,7 +19317,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
       /* GROUP BY key column — walk key data to the N-th entry */
       jam();
       const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
-      const Uint32 keyWords = keyLen >> 2;
+      const Uint32 keyWords = req.keyLen >> 2;
       Uint32 kp = 0;
       Uint32 colIdx = 0;
       while (kp < keyWords && colIdx < attrId) {
@@ -19376,16 +19383,16 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   if (outPos > 0) {
     DEB_CTE(("(%u) CTE_LOOKUP residual: outPos=%u → senderRef=0x%x "
              "connectPtr=0x%x",
-             instance(), outPos, senderRef, senderData));
+             instance(), outPos, req.senderRef, req.senderData));
     TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-    transIdAI->connectPtr = senderData;
+    transIdAI->connectPtr = req.senderData;
     transIdAI->transId[0] = state->m_transid[0];
     transIdAI->transId[1] = state->m_transid[1];
 
     LinearSectionPtr lsp[3];
     lsp[0].p = outBuf;
     lsp[0].sz = outPos;
-    sendSignal(senderRef, GSN_TRANSID_AI, signal,
+    sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
                TransIdAI::HeaderLength, JBB, lsp, 1);
   } else {
     DEB_CTE(("(%u) CTE_LOOKUP: no residual output (all via FLUSH_AI)",
@@ -19393,19 +19400,19 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   }
 
   DEB_CTE(("(%u) CTE_LOOKUP_CONF → senderRef=0x%x senderData=0x%x",
-           instance(), senderRef, senderData));
+           instance(), req.senderRef, req.senderData));
   /* CTE_LOOKUP_CONF acknowledges the lookup */
   {
     CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
     conf->senderRef = reference();
-    conf->senderData = senderData;
-    sendSignal(senderRef, GSN_CTE_LOOKUP_CONF,
+    conf->senderData = req.senderData;
+    sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
                signal, CteLookupConf::SignalLength, JBB);
   }
   return;
 
 output_overflow:
-  sendCteLookupRef(signal, senderRef, senderData,
+  sendCteLookupRef(signal, req.senderRef, req.senderData,
                    ZCTE_LOOKUP_OUTPUT_OVERFLOW);
 }
 
