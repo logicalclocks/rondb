@@ -2739,6 +2739,272 @@ testLookupCteMainRootWithChild(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 15: scanCte as main query agg leaf                            */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   WITH cte0 AS (SELECT grp, SUM(val) AS total                       */
+/*     FROM cte_src GROUP BY grp)                                      */
+/*   SELECT COUNT(*), SUM(cte0.total)                                  */
+/*   FROM cte0   -- via scanCte(0) with main aggregator                */
+/*                                                                     */
+/* Why this test:                                                      */
+/*   T10 already exercises scanCte with setAggregation, but the agg   */
+/*   target there is the *enclosing CTE 1's* aggregator — it hits the */
+/*   `m_cteAggStateKeys[encCteIdx*MAX_NDB_NODES + targetNodeId]`       */
+/*   branch in cte_scan_start because the scanCte node has            */
+/*   m_cteId != RNIL.                                                  */
+/*                                                                     */
+/*   T15 puts scanCte at the MAIN query root (m_cteId == RNIL) with   */
+/*   setAggregation — this exercises the OTHER branch in              */
+/*   cte_scan_start that uses `m_aggStateKeys[targetNodeId]`           */
+/*   (the main query's per-node aggStateKey) instead.  Without this   */
+/*   test the main-aggregator path was untested.                       */
+/*                                                                     */
+/* Tree shape:                                                         */
+/*                                                                     */
+/*   Node 0: CTE 0 subtree container                                   */
+/*   Node 1: scanTable(cte_src)                T_CTE_SCAN, m_cteId=0  */
+/*   Node 2: readTuple(cte_src,                                       */
+/*           key=linked(node1,"pk"))           T_AGGREGATE_LEAF,      */
+/*                                              T_INNER_JOIN, T_LEAF, */
+/*                                              m_cteId=0             */
+/*   Node 3: scanCte(0) with                   T_AGGREGATE_LEAF,      */
+/*           setAggregation(mainAgg)            T_USER_PROJECTION,     */
+/*                                              T_LEAF, m_cteId=RNIL  */
+/*           data.m_joinAggStateKey points to                         */
+/*           m_aggStateKeys[targetNodeId] (main aggregator,           */
+/*           NOT m_cteAggStateKeys[*]).  This is the code path the    */
+/*           test exercises.                                           */
+/*                                                                     */
+/* Expected execution:                                                 */
+/*                                                                     */
+/* Phase 0 (CTE 0 materialization):                                    */
+/*   - Same as T2 / T11: scanTable + readTuple agg leaf builds        */
+/*     cte0 = {(grp=1,total=30),(grp=2,total=70),(grp=3,total=50)}.   */
+/*                                                                     */
+/* Main query:                                                         */
+/*   - Each DBSPJ instance starts cte_scan_start for its rootFragId.  */
+/*   - Fragment-per-node skip applies (RT_CTE_PHASE clear during      */
+/*     main): only rootFragId < numDataNodes runs the scan.            */
+/*   - The selected DBSPJ instance:                                   */
+/*       1. Detects T_AGGREGATE_LEAF, m_cteId == RNIL.                */
+/*       2. Computes joinAggStateKey =                                */
+/*          encodeAggStateKey(m_aggStateKeys[targetNodeId],           */
+/*                           m_agg_leaf_index).                       */
+/*       3. Sends CTE_SCAN_REQ to local DBLQH with this              */
+/*          joinAggStateKey set.                                       */
+/*   - DBLQH walker enters the agg-feed branch:                       */
+/*       For each of cte0's 3 groups, builds linked_attr_data and    */
+/*       calls targetInterp->processRecWithLinkedAttrs() — feeding    */
+/*       the row into the MAIN aggregator's local hash table.         */
+/*   - CTE_SCAN_CONF returned to DBSPJ with numRows=3, but            */
+/*     execCTE_SCAN_CONF skips m_rows / rowsExpecting because         */
+/*     joinAggStateKey != RNIL (path (a) added in commit 0ccbf93).    */
+/*                                                                     */
+/* Main aggregator finalization:                                       */
+/*   - mainAgg has no GroupBy → produces a single result row.          */
+/*   - COUNT(*) over the 3 cte0 groups = 3                             */
+/*   - SUM(linkedColumn=total) = 30+70+50 = 150                        */
+/*   - The result row goes through DBTC's main-aggregation final      */
+/*     pipeline (same as Test 3) and is fetched via                    */
+/*     query->getAggregator()->FetchResultRecord().                    */
+/*                                                                     */
+/* Expected aggregation result:                                        */
+/*   COUNT = 3                                                         */
+/*   SUM   = 150                                                       */
+/*                                                                     */
+/* Flag bits to verify in the DBSPJ tree dump:                         */
+/*   Node 1 scan:        T_CTE_SCAN | T_INNER_JOIN | T_BUFFER_*       */
+/*   Node 2 readTuple:   T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF     */
+/*   Node 3 scanCte:     T_AGGREGATE_LEAF | T_USER_PROJECTION |       */
+/*                       T_LEAF, m_cteId=RNIL                          */
+/*                       data.m_joinAggStateKey != RNIL                */
+/* ------------------------------------------------------------------ */
+
+static int
+testScanCteMainAggLeaf(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 15: scanCte as main agg leaf ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  dict->invalidateTable(VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+  const NdbDictionary::Column *totalCol = virtTab->getColumn("total");
+  if (totalCol == nullptr) {
+    printf("FAILED (column lookup: total)\n");
+    return -1;
+  }
+
+  /* CTE 0: GROUP BY grp, SUM(val) — Test 2 pattern */
+  NdbAggregator cte0Agg(srcTab);
+  if (!cte0Agg.GroupBy("grp") ||
+      !cte0Agg.LoadColumn("val", 0) ||
+      !cte0Agg.Sum(0, 0) ||
+      !cte0Agg.Finalize()) {
+    printf("FAILED (cte0Agg: %s)\n", cte0Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Main aggregator: COUNT(*), SUM(cte0.total).  No GROUP BY → single
+   * result row.  The "total" column comes via linked_attr_data
+   * position 1 (after the GROUP BY key columns).  CTE 0 has 1 GB
+   * column and 1 agg result, so position 1 = first agg result =
+   * cte0.total.  totalCol gives the type info (BIGINT). */
+  NdbAggregator mainAgg(virtTab);
+  if (!mainAgg.LoadLinkedColumn(1, 0, totalCol) ||
+      !mainAgg.Count(0, 0) ||
+      !mainAgg.Sum(1, 0) ||
+      !mainAgg.Finalize()) {
+    printf("FAILED (mainAgg: %s)\n", mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+
+  /* CTE 0 subtree: scanTable + readTuple agg leaf */
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      printf("FAILED (CTE 0 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte0Agg);
+    if (qb->readTuple(srcTab, key, &opts) == nullptr) {
+      printf("FAILED (CTE 0 leaf: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, cte0Agg, /*depMask=*/0) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: scanCte(0) at the root with the MAIN aggregator
+   * attached.  No MatchNonNull (no parent row to inner-join against).
+   * setAggregation with mainAgg makes the scanCte the main query's
+   * aggregate leaf — its joinAggStateKey is computed from
+   * m_aggStateKeys (NOT m_cteAggStateKeys) because m_cteId == RNIL. */
+  NdbQueryOptions mainScanOpts;
+  mainScanOpts.setAggregation(mainAgg);
+  const NdbQueryCteScanOperationDef *mainScanCteOp =
+      qb->scanCte(0, 2, virtTab, &mainScanOpts);
+  if (mainScanCteOp == nullptr) {
+    printf("FAILED (main scanCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  V("\n  Query prepared: %u operations\n", queryDef->getNoOfOperations());
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Drain any non-aggregation rows (there shouldn't be any — main
+   * is an agg-only query — but the call drives the kernel state
+   * machine to completion). */
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Fetch the main aggregator result (same pattern as Test 3) */
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result rows)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::Result countRes = rec.FetchAggregationResult();
+  Int64 count = countRes.data_int64();
+  NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+  Int64 sum = sumRes.data_int64();
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  V("  Result: COUNT=%lld, SUM=%lld\n", (long long)count, (long long)sum);
+
+  if (count == 3 && sum == 150) {
+    printf("OK (COUNT=%lld, SUM=%lld)\n", (long long)count, (long long)sum);
+    return 0;
+  }
+
+  printf("FAILED (expected COUNT=3 SUM=150, got COUNT=%lld SUM=%lld)\n",
+         (long long)count, (long long)sum);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -2807,6 +3073,7 @@ int main(int argc, char **argv)
           if (testCteScanFeedsAgg(&ndb, conn) != 0) exitCode = 1;
           if (testLookupCteMainRootWithChild(&ndb, conn) != 0)
             exitCode = 1;
+          if (testScanCteMainAggLeaf(&ndb, conn) != 0) exitCode = 1;
         }
 
         dropTestTables(conn);
