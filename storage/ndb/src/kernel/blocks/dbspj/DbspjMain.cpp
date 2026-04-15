@@ -6454,6 +6454,10 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
     data.m_rowsExpecting = 0;
     data.m_batchSize = 256;
     data.m_endOfData = false;
+    /* Save the per-fragment API block ref now — ctx.m_resultRef is set
+     * from the SCAN_FRAGREQ at execSCAN_FRAGREQ time, so each request
+     * for a different fragment captures its own API ref here. */
+    data.m_api_resultRef = ctx.m_resultRef;
 
     treeNodePtr.p->m_batch_size = data.m_batchSize;
 
@@ -6530,6 +6534,36 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
    * REQs have settled and all expected rows have arrived. */
   requestPtr.p->m_outstanding++;
 
+  /* Treat data nodes as fragments for scanCte: with N data nodes,
+   * only rootFragId 0..N-1 are "valid" and actually scan their local
+   * CTE partition.  rootFragId >= N means TC dispatched a virtual-table
+   * fragment that doesn't correspond to any node's CTE state — mark
+   * the tree node complete immediately without sending CTE_SCAN_REQ to
+   * DBLQH.  checkBatchComplete (called by the caller right after this
+   * function returns) then sends SCAN_FRAGCONF(completedOps=0) for the
+   * skipped fragment. */
+  ndbrequire(m_numDataNodes > 0);
+  if (requestPtr.p->m_rootFragId >= m_numDataNodes) {
+    jam();
+    DEB_CTE(("(%u) cte_scan_start: skip non-node fragment rootFragId=%u "
+             "numDataNodes=%u node=%u",
+             instance(), requestPtr.p->m_rootFragId, m_numDataNodes,
+             treeNodePtr.p->m_node_no));
+    /* Force completion: data.m_outstanding == 0 (initialized above),
+     * data.m_endOfData = true, rowsReceived == rowsExpecting (both 0). */
+    data.m_endOfData = true;
+    ndbrequire(requestPtr.p->m_outstanding > 0);
+    requestPtr.p->m_outstanding--;
+    treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+    ndbrequire(requestPtr.p->m_cnt_active > 0);
+    requestPtr.p->m_cnt_active--;
+    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+    if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
+      requestPtr.p->m_cteScansComplete++;
+    }
+    return;
+  }
+
   if (!requestPtr.p->m_cteScanAllNodes) {
     jam();
     /* Common case: local-only scan (instances >= nodes).
@@ -6545,6 +6579,14 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     req->transId1 = requestPtr.p->m_transId[0];
     req->transId2 = requestPtr.p->m_transId[1];
     req->batchSize = data.m_batchSize;
+    /* Per-fragment FLUSH_AI target: parseDA's section was built with
+     * the common worker[0] receiverId (from getIdOfReceiver()), but
+     * each DBSPJ request's m_rootResultData is the per-fragment
+     * receiverId from its SCAN_FRAGREQ.  DBLQH uses these for
+     * CORR_FACTOR64's rootReceiverId so the API routes the row to
+     * the right NdbWorker. */
+    req->resultRef = data.m_api_resultRef;
+    req->resultData = requestPtr.p->m_rootResultData;
 
     /* Attach AttrInfo section (with FLUSH_AI + user projection) when
      * present — this tells DBLQH how to format each group into a
@@ -6589,6 +6631,8 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
       req->transId1 = requestPtr.p->m_transId[0];
       req->transId2 = requestPtr.p->m_transId[1];
       req->batchSize = data.m_batchSize;
+      req->resultRef = data.m_api_resultRef;
+      req->resultData = requestPtr.p->m_rootResultData;
 
       SectionHandle handle(this);
       Uint32 cnt = 0;
@@ -6665,10 +6709,12 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
   Ptr<Request> requestPtr;
   ndbrequire(m_request_pool.getPtr(requestPtr, treeNodePtr.p->m_requestPtrI));
 
-  DEB_CTE(("(%u) execCTE_SCAN_CONF: node=%u numRows=%u flags=0x%x "
-           "outstanding=%u req_outstanding=%u",
+  DEB_CTE(("(%u) execCTE_SCAN_CONF: node=%u rootFragId=%u numRows=%u "
+           "flags=0x%x m_rows_before=%u outstanding=%u req_outstanding=%u",
            instance(), treeNodePtr.p->m_node_no,
+           requestPtr.p->m_rootFragId,
            conf->numRows, conf->flags,
+           requestPtr.p->m_rows,
            treeNodePtr.p->m_cteScan_data.m_outstanding,
            requestPtr.p->m_outstanding));
 
@@ -6718,6 +6764,8 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
     req->transId1 = requestPtr.p->m_transId[0];
     req->transId2 = requestPtr.p->m_transId[1];
     req->batchSize = data.m_batchSize;
+    req->resultRef = data.m_api_resultRef;
+    req->resultData = requestPtr.p->m_rootResultData;
 
     /* Re-attach AttrInfo section for continuation (DBLQH needs it on
      * every CTE_SCAN_REQ, not just the first). */

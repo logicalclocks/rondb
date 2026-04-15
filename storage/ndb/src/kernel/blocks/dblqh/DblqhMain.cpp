@@ -19449,6 +19449,8 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
   const Uint32 batchSize = req->batchSize;
   const Uint32 transId1 = req->transId1;
   const Uint32 transId2 = req->transId2;
+  const Uint32 reqResultRef = req->resultRef;    // per-fragment API ref
+  const Uint32 reqResultData = req->resultData;  // per-fragment receiver id
 
   /* Release incoming signal sections early so all error paths are safe.
    * We copy the AttrInfo section into a local buffer before releasing. */
@@ -19476,27 +19478,6 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
     ref->errorCode = ZCTE_LOOKUP_STATE_NOT_READY;
     sendSignal(senderRef, GSN_CTE_SCAN_REF,
                signal, CteScanRef::SignalLength, JBB);
-    return;
-  }
-
-  /* Guard against duplicate scans from multiple DBSPJ instances on the
-   * same node.  The first CTE_SCAN_REQ to arrive claims the scan;
-   * subsequent ones get an immediate empty CONF.  This is correct
-   * because each node has one CTE hash table partition and only one
-   * DBSPJ instance needs to scan it. */
-  if (state->m_cteScan_active &&
-      state->m_cteScan_groupsSent == 0 &&
-      senderRef != state->m_cteScan_senderRef) {
-    /* Different sender, scan not yet started — duplicate first request */
-    jam();
-    releaseSections(handle);
-    CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
-    conf->senderRef = reference();
-    conf->senderData = senderData;
-    conf->numRows = 0;
-    conf->flags = CteScanConf::EndOfData;
-    sendSignal(senderRef, GSN_CTE_SCAN_CONF,
-               signal, CteScanConf::SignalLength, JBB);
     return;
   }
 
@@ -19529,13 +19510,13 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
   const Uint32 *finalR = nullptr;
   Uint32 finalRLen = 0;
   bool haveFinalR = false;
-  /* Cache the FLUSH_AI target (resultRef/resultData) by pre-scanning
-   * finalR.  CORR_FACTOR64 is emitted BEFORE FLUSH_AI in the program
-   * (it lives inside the user projection), but the API expects
-   * CORR_FACTOR64[word 2] = root receiver id, which is the FLUSH_AI
-   * resultData.  So we must know the FLUSH_AI target before the walk. */
-  Uint32 flushRef = 0;
-  Uint32 flushData = 0;
+  /* Use the per-fragment FLUSH_AI target from the CTE_SCAN_REQ direct
+   * fields.  parseDA's section was built once with the API's common
+   * (worker[0]) receiverId, so its FLUSH_AI words can NOT be trusted —
+   * each fragment's request carries its own resultRef/resultData
+   * (= per-worker API receiverId) in the signal header instead. */
+  const Uint32 flushRef = reqResultRef;
+  const Uint32 flushData = reqResultData;
   if (attrInfoLen >= 5) {
     const Uint32 initReadLen = cinBuf[0];
     const Uint32 execRegionLen = cinBuf[1];
@@ -19546,25 +19527,12 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
       finalR = &cinBuf[finalRStart];
       finalRLen = fr;
       haveFinalR = (fr > 0);
-
-      Uint32 scan = 0;
-      while (scan < finalRLen) {
-        const Uint32 aId = AttributeHeader::getAttributeId(finalR[scan]);
-        if (aId == AttributeHeader::FLUSH_AI) {
-          if (scan + 3 >= finalRLen) break;
-          flushRef = finalR[scan + 1];
-          flushData = finalR[scan + 2];
-          break;
-        }
-        scan += 1;
-      }
     }
   }
 
-  /* Save sender info for this scan (first or continuation) */
-  state->m_cteScan_active = true;
-  state->m_cteScan_senderRef = senderRef;
-  state->m_cteScan_senderData = senderData;
+  /* Save transId for this scan (first or continuation) — used when
+   * sending TRANSID_AI back to the API and to validate continuation
+   * REQs belong to the same transaction. */
   state->m_cteScan_transId[0] = transId1;
   state->m_cteScan_transId[1] = transId2;
 

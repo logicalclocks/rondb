@@ -283,19 +283,14 @@ struct JoinAggregationState {
   //------------------------------------------------------------------
   // CTE Scan State (for CTE_SCAN_REQ iteration)
   // Tracks scan position so DBLQH can resume between batches.
-  // Set on first CTE_SCAN_REQ, updated after each batch.
+  // DBSPJ guarantees only one CTE_SCAN_REQ per DBLQH per query (via
+  // the rootFragId < numDataNodes skip in cte_scan_start), so no
+  // sender-claim guard is needed here.
   //------------------------------------------------------------------
-  Uint32 m_cteScan_senderRef;         // DBSPJ reference for TRANSID_AI/CONF
-  Uint32 m_cteScan_senderData;        // TreeNode pointer (echoed in TRANSID_AI)
   Uint32 m_cteScan_transId[2];        // Transaction ID for TRANSID_AI
   Uint32 m_cteScan_groupsSent;        // Groups sent so far (for CORR_FACTOR ID)
   Uint32 m_cteScan_iterBucket;        // Saved iterator: bucket index
   char  *m_cteScan_iterRaw;           // Saved iterator: raw entry pointer
-  bool m_cteScan_active;              // True if a scan is in progress/done
-                                      // (first CTE_SCAN_REQ wins, others get
-                                      // empty CONF — avoids duplicate scans
-                                      // from multiple DBSPJ instances on
-                                      // the same node)
 
   //------------------------------------------------------------------
   // State Machine (atomic — checked by any thread, set single-threaded)
@@ -358,12 +353,9 @@ struct JoinAggregationState {
     m_cte_complete_senderRef(0),
     m_cte_complete_senderData(0),
     m_cte_complete_requestId(0),
-    m_cteScan_senderRef(0),
-    m_cteScan_senderData(0),
     m_cteScan_groupsSent(0),
     m_cteScan_iterBucket(0),
     m_cteScan_iterRaw(nullptr),
-    m_cteScan_active(false),
     m_state(IDLE),
     m_error_code(0),
     m_key(RNIL),

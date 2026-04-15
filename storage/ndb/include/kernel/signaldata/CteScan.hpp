@@ -122,8 +122,17 @@ struct CteScanReq {
   Uint32 transId1;
   Uint32 transId2;
   Uint32 batchSize;       // Max groups to send in this batch
+  Uint32 resultRef;       // FLUSH_AI target: API block reference (per-fragment)
+  Uint32 resultData;      // FLUSH_AI connect ptr / CORR_FACTOR64 root rcvr id
+                          // — set from requestPtr.m_rootResultData so each
+                          // fragment's worker gets a CORR_FACTOR64 that
+                          // routes to the right NdbWorker on the API side.
+                          // Without this, parseDA's FLUSH_AI carries the
+                          // common (worker[0]) receiverId from the API's
+                          // getIdOfReceiver(), and all fragments would
+                          // route their rows to the same worker.
 
-  static constexpr Uint32 SignalLength = 6;
+  static constexpr Uint32 SignalLength = 8;
   enum { AttrInfoSectionNum = 0 };
 };
 

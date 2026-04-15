@@ -2430,14 +2430,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     state->m_cte_complete_senderRef = 0;
     state->m_cte_complete_senderData = 0;
     state->m_cte_complete_requestId = 0;
-    state->m_cteScan_senderRef = 0;
-    state->m_cteScan_senderData = 0;
     state->m_cteScan_transId[0] = 0;
     state->m_cteScan_transId[1] = 0;
     state->m_cteScan_groupsSent = 0;
     state->m_cteScan_iterBucket = 0;
     state->m_cteScan_iterRaw = nullptr;
-    state->m_cteScan_active = false;
     state->m_redist_page_ptr = nullptr;
     state->m_redist_page_remaining = 0;
     state->m_redist_queue_head = nullptr;

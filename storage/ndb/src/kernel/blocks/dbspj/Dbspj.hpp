@@ -671,6 +671,8 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_rowsExpecting;   // Rows from CTE_SCAN_CONF numRows
     Uint32 m_batchSize;       // Max groups per batch
     bool m_endOfData;         // All groups sent by DBLQH
+    Uint32 m_api_resultRef;   // FLUSH_AI target: API block reference
+                              // (saved at build time from ctx.m_resultRef)
   };
 
   /**
