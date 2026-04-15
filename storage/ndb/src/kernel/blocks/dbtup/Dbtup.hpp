@@ -2885,6 +2885,58 @@ private:
                          Uint32 TsubroutineLen, Uint32 *tmpArea,
                          Uint32 tmpAreaSz);
 
+public:
+  /**
+   * InterpreterContext — nested struct defined in DbtupExecQuery.cpp.
+   *
+   * Holds references to the loop-local state of interpreterNextLab so
+   * that the extracted case handlers (static member functions of this
+   * nested struct) can access interpreter state uniformly. Being a
+   * nested type of Dbtup, the struct's static members can access
+   * Dbtup's private members (brancher, tupkeyErrorLab, TUPKEY_abort, …)
+   * via the ctx.tup pointer — from C++11 onwards, nested classes have
+   * the same access rights as other members of the enclosing class.
+   *
+   * Declared public so that InterpreterHandler function-pointer typedef
+   * and the dispatch tables in DbtupExecQuery.cpp can name the type.
+   */
+  struct InterpreterContext;
+
+  /* INTERPRETER_FILTER_REJECT is returned by interpreterFilterCte when
+   * a CTE row fails the WHERE clause (EXIT_REFUSE in filter mode). It
+   * must NOT collide with any -error_code return from a handler, so we
+   * pick a value far below any 16-bit error code range. */
+  static constexpr int INTERPRETER_FILTER_REJECT = -0x7FFFFFFF;
+
+  /**
+   * interpreterFilterCte — run an interpreter program in CTE filter mode.
+   *
+   * Used by DBLQH to evaluate a WHERE filter against CTE hash-table rows
+   * when serving CTE_LOOKUP_REQ / CTE_SCAN_REQ. The filter program reads
+   * CTE virtual columns via READ_LINKED_TO_MEM from
+   * req_struct->m_linked_attr_data (built by DBLQH from the CTE group).
+   *
+   * Dispatch uses a CTE-specific function table (s_cte_filter_handlers)
+   * that overrides EXIT_REFUSE to return INTERPRETER_FILTER_REJECT (-2)
+   * instead of calling tupkeyErrorLab(), and overrides tuple-dependent
+   * instructions (READ_ATTR_INTO_REG, BRANCH_ATTR_OP_ARG, LOAD_OP_TYPE …)
+   * with a clean error handler — CTE rows have no real tuple / operation.
+   *
+   * Return values:
+   *   >= 0                          — filter ACCEPT (row passes WHERE clause)
+   *   INTERPRETER_FILTER_REJECT(-2) — filter REJECT (normal, not an error)
+   *   -1                            — interpreter error (terrorCode set)
+   *
+   * Caller is responsible for setting up req_struct with m_linked_attr_data,
+   * m_linked_attr_len, no_exec_instructions = 0, log_size = 0 before calling.
+   */
+  int interpreterFilterCte(Signal *signal, KeyReqStruct *req_struct,
+                           Uint32 *mainProgram, Uint32 TmainProgLen,
+                           Uint32 *subroutineProg, Uint32 TsubroutineLen,
+                           Uint32 *tmpArea, Uint32 tmpAreaSz);
+
+private:
+
   const Uint32 *lookupInterpreterParameter(Uint32 paramNo,
                                            const Uint32 *subptr) const;
 
