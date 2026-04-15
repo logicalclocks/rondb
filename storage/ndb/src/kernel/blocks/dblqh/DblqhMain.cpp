@@ -19451,6 +19451,7 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
   const Uint32 transId2 = req->transId2;
   const Uint32 reqResultRef = req->resultRef;    // per-fragment API ref
   const Uint32 reqResultData = req->resultData;  // per-fragment receiver id
+  const Uint32 joinAggStateKey = req->joinAggStateKey;
 
   /* Release incoming signal sections early so all error paths are safe.
    * We copy the AttrInfo section into a local buffer before releasing. */
@@ -19538,6 +19539,144 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
 
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
+
+  /* Aggregation feed path: when joinAggStateKey != RNIL, the scanned
+   * groups feed into another JoinAggInterpreter (typically the
+   * enclosing CTE's local aggregator for a CTE-2-reads-CTE-1
+   * materialization) instead of being shipped to API/DBSPJ.  Each
+   * group's [key + accumulators] is converted to linked_attr_data
+   * and inserted via processRecWithLinkedAttrs(), bypassing both
+   * the API and DBSPJ.  Only a CTE_SCAN_CONF is sent back. */
+  if (joinAggStateKey != RNIL) {
+    jam();
+    const Uint32 targetBaseKey =
+        JoinAggregationState::decodeBaseKey(joinAggStateKey);
+    const Uint32 targetLeafIndex =
+        JoinAggregationState::decodeLeafIndex(joinAggStateKey);
+
+    JoinAggregationState *targetState = getJoinAggState(targetBaseKey);
+    if (unlikely(targetState == nullptr)) {
+      jam();
+      CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->senderData = senderData;
+      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+      sendSignal(senderRef, GSN_CTE_SCAN_REF,
+                 signal, CteScanRef::SignalLength, JBB);
+      return;
+    }
+    JoinAggInterpreter *targetInterp = getJoinAggInterpreter(targetState);
+    ndbrequire(targetInterp != nullptr);
+
+    const LeafProgram *leaf = nullptr;
+    if (targetState->m_num_leaves > 1) {
+      ndbrequire(targetLeafIndex < targetState->m_num_leaves);
+      leaf = &targetState->m_leaf_programs[targetLeafIndex];
+    }
+
+    auto *gb_map = interp->gb_map_mutable();
+    Uint32 numRowsSent = 0;
+    bool endOfData = true;
+    if (gb_map != nullptr && !gb_map->empty()) {
+      jam();
+      const Uint32 src_n_gb_cols = interp->n_gb_cols();
+      const Uint32 src_n_agg_results = interp->n_agg_results();
+
+      /* Resume position — same scheme as the API/DBSPJ path */
+      Uint32 groupIdx = state->m_cteScan_groupsSent;
+      auto iter = (groupIdx == 0)
+          ? gb_map->begin()
+          : gb_map->iteratorAt(state->m_cteScan_iterBucket,
+                               state->m_cteScan_iterRaw);
+
+      for (; iter.valid(); gb_map->next(iter)) {
+        if (numRowsSent >= batchSize) {
+          jam();
+          endOfData = false;
+          break;
+        }
+        jam();
+        const char *groupData = reinterpret_cast<const char *>(iter.data());
+        const Uint32 keyLen = iter.keyLen();
+        const AggResItem *accumulators =
+            reinterpret_cast<const AggResItem *>(groupData + keyLen);
+
+        /* Build linked_attr_data: [tableId=0][schemaVersion=0][AH][data..]
+         * per column.  Mirrors CTE_LOOKUP agg-feed at line ~19130. */
+        Uint32 *linkedBuf = cevictBuffer;
+        Uint32 linkedPos = 0;
+
+        const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
+        const Uint32 keyWords = keyLen >> 2;
+        Uint32 kp = 0;
+        while (kp < keyWords) {
+          linkedBuf[linkedPos++] = 0;  // tableId
+          linkedBuf[linkedPos++] = 0;  // schemaVersion
+          Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+          Uint32 words = 1 + dataSize;
+          memcpy(&linkedBuf[linkedPos], &keyData[kp], words * sizeof(Uint32));
+          linkedPos += words;
+          kp += words;
+        }
+
+        for (Uint32 i = 0; i < src_n_agg_results; i++) {
+          const Uint32 attrId = src_n_gb_cols + i;
+          linkedBuf[linkedPos++] = 0;  // tableId
+          linkedBuf[linkedPos++] = 0;  // schemaVersion
+          if (accumulators[i].is_null) {
+            AttributeHeader::init(&linkedBuf[linkedPos], attrId, 0);
+            linkedPos += 1;
+          } else {
+            AttributeHeader::init(&linkedBuf[linkedPos], attrId, 8);
+            memcpy(&linkedBuf[linkedPos + 1], &accumulators[i].value, 8);
+            linkedPos += 3;
+          }
+        }
+
+      retry_agg_scan:
+        Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
+            nullptr, nullptr, linkedBuf, linkedPos, leaf);
+        if (aggRet == AGG_EVICT_NEEDED) {
+          jam();
+          sendEvictedAggGroup(signal, targetInterp, targetState);
+          goto retry_agg_scan;
+        }
+        if (unlikely(aggRet != 0)) {
+          jam();
+          g_eventLogger->info("(%u) CTE_SCAN agg feed FAILED: aggRet=%d "
+              "targetKey=%u leafIdx=%u linkedWords=%u",
+              instance(), aggRet, targetBaseKey, targetLeafIndex,
+              linkedPos);
+          CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
+          ref->senderRef = reference();
+          ref->senderData = senderData;
+          ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+          sendSignal(senderRef, GSN_CTE_SCAN_REF,
+                     signal, CteScanRef::SignalLength, JBB);
+          return;
+        }
+        targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+        numRowsSent++;
+        groupIdx++;
+      }
+
+      state->m_cteScan_groupsSent = groupIdx;
+      if (!endOfData && iter.valid()) {
+        state->m_cteScan_iterBucket = iter.bucket();
+        state->m_cteScan_iterRaw = iter.raw();
+      }
+    }
+
+    /* Send CTE_SCAN_CONF — no TRANSID_AI in the agg-feed path. */
+    CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = senderData;
+    conf->numRows = numRowsSent;
+    conf->flags = endOfData ? CteScanConf::EndOfData : 0;
+    sendSignal(senderRef, GSN_CTE_SCAN_CONF,
+               signal, CteScanConf::SignalLength, JBB);
+    return;
+  }
 
   auto *gb_map = interp->gb_map_mutable();
   Uint32 numRowsSent = 0;

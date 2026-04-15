@@ -131,8 +131,16 @@ struct CteScanReq {
                           // common (worker[0]) receiverId from the API's
                           // getIdOfReceiver(), and all fragments would
                           // route their rows to the same worker.
+  Uint32 joinAggStateKey; // RNIL = send rows to API/DBSPJ as TRANSID_AI;
+                          // else = encoded [baseKey, leafIndex] for target
+                          // JoinAggInterpreter — DBLQH feeds each scanned
+                          // group into the target's hash table directly via
+                          // processRecWithLinkedAttrs(), bypassing both the
+                          // API and DBSPJ.  Used when scanCte is the root
+                          // of a CTE subtree that aggregates the scanned
+                          // groups (CTE 2 reads from CTE 1).
 
-  static constexpr Uint32 SignalLength = 8;
+  static constexpr Uint32 SignalLength = 9;
   enum { AttrInfoSectionNum = 0 };
 };
 

@@ -673,6 +673,12 @@ class Dbspj : public SimulatedBlock {
     bool m_endOfData;         // All groups sent by DBLQH
     Uint32 m_api_resultRef;   // FLUSH_AI target: API block reference
                               // (saved at build time from ctx.m_resultRef)
+    Uint32 m_joinAggStateKey; // RNIL for non-agg-feed scans (rows go to
+                              // API/DBSPJ via TRANSID_AI); else encoded
+                              // [baseKey,leafIdx] for the target
+                              // JoinAggInterpreter (CTE-2-reads-CTE-1).
+                              // Computed once in cte_scan_start, reused
+                              // by continuation REQs in execCTE_SCAN_CONF.
   };
 
   /**

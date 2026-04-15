@@ -2041,6 +2041,7 @@ Dbspj::build(Build_context& ctx,
          * and segfault in JoinAggInterpreter::initGBTypes). */
         jam();
         Uint32 ancestorPtrI = nodePtr.p->m_parentPtrI;
+        bool foundScanAncestor = false;
         while (ancestorPtrI != RNIL) {
           Ptr<TreeNode> ancestorPtr;
           ndbrequire(m_treenode_pool.getPtr(ancestorPtr, ancestorPtrI));
@@ -2052,9 +2053,37 @@ Dbspj::build(Build_context& ctx,
                      instance(), ancestorPtr.p->m_node_no,
                      nodePtr.p->m_node_no,
                      nodePtr.p->m_cteId));
+            foundScanAncestor = true;
             break;
           }
           ancestorPtrI = ancestorPtr.p->m_parentPtrI;
+        }
+        /* CTE-2-reads-CTE-1 case: the nested CTE_SCAN is itself the
+         * subtree root (no scan ancestor above it).  This scanCte is
+         * BOTH the data source for the enclosing CTE's materialization
+         * AND its aggregate leaf — there's no separate base-table
+         * scan to walk up to.  Mark THIS node as the materialization
+         * scan (T_CTE_SCAN) and record it as the CTE's scan tree
+         * node so checkPrepareComplete / execCTE_PHASE_START_REQ
+         * find it and call cte_scan_start to drive the materialization. */
+        if (!foundScanAncestor &&
+            node_op == QueryNode::QN_CTE_SCAN &&
+            nodePtr.p->m_parentPtrI == RNIL) {
+          jam();
+          nodePtr.p->m_bits |= TreeNode::T_CTE_SCAN;
+          DEB_CTE(("(%u) build: mark T_CTE_SCAN on nested "
+                   "CTE_SCAN root node %u (subtree CTE %u, "
+                   "feeds enclosing aggregator)",
+                   instance(), nodePtr.p->m_node_no,
+                   ctx.m_cteSubtreeCteId));
+          for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+            if (requestPtr.p->m_cteContexts[i].m_cteId ==
+                ctx.m_cteSubtreeCteId) {
+              requestPtr.p->m_cteContexts[i].m_scanTreeNodeNo =
+                  nodePtr.p->m_node_no;
+              break;
+            }
+          }
         }
       }
     }
@@ -6458,6 +6487,7 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
      * from the SCAN_FRAGREQ at execSCAN_FRAGREQ time, so each request
      * for a different fragment captures its own API ref here. */
     data.m_api_resultRef = ctx.m_resultRef;
+    data.m_joinAggStateKey = RNIL;  /* Computed at start when T_AGG_LEAF */
 
     treeNodePtr.p->m_batch_size = data.m_batchSize;
 
@@ -6541,9 +6571,15 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
    * the tree node complete immediately without sending CTE_SCAN_REQ to
    * DBLQH.  checkBatchComplete (called by the caller right after this
    * function returns) then sends SCAN_FRAGCONF(completedOps=0) for the
-   * skipped fragment. */
+   * skipped fragment.
+   *
+   * Only applies to the MAIN query root scanCte.  CTE materialization
+   * scans (cte_scan_start called from execCTE_PHASE_START_REQ during
+   * RT_CTE_PHASE) need to run on EVERY DBSPJ instance because each
+   * instance owns its local CTE state — not skipped here. */
   ndbrequire(m_numDataNodes > 0);
-  if (requestPtr.p->m_rootFragId >= m_numDataNodes) {
+  if (!(requestPtr.p->m_bits & Request::RT_CTE_PHASE) &&
+      requestPtr.p->m_rootFragId >= m_numDataNodes) {
     jam();
     DEB_CTE(("(%u) cte_scan_start: skip non-node fragment rootFragId=%u "
              "numDataNodes=%u node=%u",
@@ -6563,6 +6599,39 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     }
     return;
   }
+
+  /* Determine joinAggStateKey: when scanCte is an aggregate leaf,
+   * the scanned groups feed into a JoinAggInterpreter (typically the
+   * enclosing CTE's aggregator for CTE-2-reads-CTE-1) instead of
+   * going to API/DBSPJ. Cached on data so continuation REQs reuse it. */
+  Uint32 joinAggStateKey = RNIL;
+  if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+    jam();
+    Uint32 baseKey;
+    if (treeNodePtr.p->m_cteId != RNIL) {
+      jam();
+      // Inside a CTE subtree: feed into enclosing CTE's local aggregation.
+      Uint32 encCteIdx = RNIL;
+      for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+        if (requestPtr.p->m_cteContexts[i].m_cteId ==
+            treeNodePtr.p->m_cteId) {
+          encCteIdx = i;
+          break;
+        }
+      }
+      ndbrequire(encCteIdx != RNIL);
+      baseKey = requestPtr.p->m_cteAggStateKeys[
+          encCteIdx * MAX_NDB_NODES + targetNodeId];
+    } else {
+      jam();
+      // Main query aggregate leaf: feed into main aggregation.
+      baseKey = requestPtr.p->m_aggStateKeys[targetNodeId];
+    }
+    Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
+    joinAggStateKey =
+        JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+  }
+  data.m_joinAggStateKey = joinAggStateKey;
 
   if (!requestPtr.p->m_cteScanAllNodes) {
     jam();
@@ -6587,6 +6656,7 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
      * the right NdbWorker. */
     req->resultRef = data.m_api_resultRef;
     req->resultData = requestPtr.p->m_rootResultData;
+    req->joinAggStateKey = joinAggStateKey;
 
     /* Attach AttrInfo section (with FLUSH_AI + user projection) when
      * present — this tells DBLQH how to format each group into a
@@ -6722,20 +6792,28 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
   ndbrequire(data.m_outstanding > 0);
   data.m_outstanding--;
 
-  /* When T_USER_PROJECTION is set, DBLQH flushed rows directly to the API
-   * via FLUSH_AI — these rows are counted in requestPtr.m_rows so
-   * SCAN_TABCONF reports the correct rowCount to the API.
-   *
-   * If the node is NOT a leaf, DBLQH also emits a residual
-   * (linked attrs + CORR_FACTOR32) per row back to DBSPJ after the
-   * FLUSH_AI.  Those residuals drive startNextNodes for the children,
-   * and must be tracked in rowsExpecting so completion waits for them. */
-  if (treeNodePtr.p->m_bits & TreeNode::T_USER_PROJECTION) {
+  /* Three accounting paths:
+   * (a) Agg-feed (joinAggStateKey != RNIL): rows go INTO the target
+   *     JoinAggInterpreter at DBLQH, not to API or DBSPJ.  Don't
+   *     touch m_rows or rowsExpecting.  Used for CTE-2-reads-CTE-1.
+   * (b) T_USER_PROJECTION (FLUSH_AI to API): DBLQH flushed rows to
+   *     the API directly.  Bump m_rows so SCAN_TABCONF reports the
+   *     right count.  If non-leaf, also bump rowsExpecting for the
+   *     residual TRANSID_AI that drives child operations.
+   * (c) Neither (legacy/internal): rows came back to DBSPJ as
+   *     TRANSID_AI.  Bump rowsExpecting only. */
+  if (data.m_joinAggStateKey != RNIL) {
+    jam();
+    /* path (a): nothing to track per row — the agg-feed walker
+     * inserts each group directly into the target hash table */
+  } else if (treeNodePtr.p->m_bits & TreeNode::T_USER_PROJECTION) {
     jam();
     requestPtr.p->m_rows += conf->numRows;
-  }
-  if (!treeNodePtr.p->isLeaf() ||
-      !(treeNodePtr.p->m_bits & TreeNode::T_USER_PROJECTION)) {
+    if (!treeNodePtr.p->isLeaf()) {
+      jam();
+      data.m_rowsExpecting += conf->numRows;
+    }
+  } else {
     jam();
     data.m_rowsExpecting += conf->numRows;
   }
@@ -6766,6 +6844,7 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
     req->batchSize = data.m_batchSize;
     req->resultRef = data.m_api_resultRef;
     req->resultData = requestPtr.p->m_rootResultData;
+    req->joinAggStateKey = data.m_joinAggStateKey;
 
     /* Re-attach AttrInfo section for continuation (DBLQH needs it on
      * every CTE_SCAN_REQ, not just the first). */

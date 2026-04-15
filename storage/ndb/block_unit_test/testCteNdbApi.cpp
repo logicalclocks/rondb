@@ -2244,6 +2244,235 @@ testScanCteWithJoin(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 10: CTE 1 reads from CTE 0 via scanCte (agg-feed path)         */
+/*                                                                     */
+/* WITH cte0 AS (SELECT grp, SUM(val) AS total FROM cte_src GROUP BY  */
+/*               grp),                                                 */
+/*      cte1 AS (SELECT grp, SUM(total) AS doubled FROM cte0          */
+/*               GROUP BY grp)                                         */
+/* SELECT * FROM cte1                                                  */
+/*                                                                     */
+/* CTE 0: standard scanTable + readTuple aggregate leaf (existing).   */
+/* CTE 1: scanCte(0) with setAggregation(cte1Agg) — the scanCte node  */
+/* is itself the aggregate leaf for CTE 1, so each group scanned from */
+/* CTE 0 is fed via processRecWithLinkedAttrs() into cte1's local     */
+/* JoinAggInterpreter.  After phase 1 materialization completes,      */
+/* the main scanCte(1) reads the resulting cte1 hash table and        */
+/* delivers rows to the API — same 3 rows since GROUP BY grp gives a  */
+/* 1:1 mapping with cte0.                                              */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteScanFeedsAgg(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 10: CTE-2-reads-CTE-1 via scanCte agg-feed ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  dict->invalidateTable(VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+  const NdbDictionary::Column *grpCol = virtTab->getColumn("grp");
+  const NdbDictionary::Column *totalCol = virtTab->getColumn("total");
+  if (grpCol == nullptr || totalCol == nullptr) {
+    printf("FAILED (virt column lookup)\n");
+    return -1;
+  }
+
+  /* CTE 0 aggregation: GROUP BY grp, SUM(val) — produces (grp, total) */
+  NdbAggregator cte0Agg(srcTab);
+  if (!cte0Agg.GroupBy("grp") ||
+      !cte0Agg.LoadColumn("val", 0) ||
+      !cte0Agg.Sum(0, 0) ||
+      !cte0Agg.Finalize()) {
+    printf("FAILED (cte0Agg: %s)\n", cte0Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* CTE 1 aggregation: GROUP BY linked-pos 0 (cte0.grp),
+   * SUM(linked-pos 1 = cte0.total).  The aggregator runs on the
+   * scanCte(0) result row — input arrives via linked_attr_data with
+   * key columns at positions 0..n_gb-1 and accumulator columns
+   * starting at position n_gb.  virtTab supplies the type info. */
+  NdbAggregator cte1Agg(virtTab);
+  if (!cte1Agg.GroupByLinked(0, grpCol) ||
+      !cte1Agg.LoadLinkedColumn(1, 0, totalCol) ||
+      !cte1Agg.Sum(0, 0) ||
+      !cte1Agg.Finalize()) {
+    printf("FAILED (cte1Agg: %s)\n", cte1Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+
+  /* CTE 0 subtree: standard scanTable + readTuple agg-leaf */
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      printf("FAILED (CTE 0 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte0Agg);
+    if (qb->readTuple(srcTab, key, &opts) == nullptr) {
+      printf("FAILED (CTE 0 leaf: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, cte0Agg, /*depMask=*/0) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* CTE 1 subtree: scanCte(0) with setAggregation(cte1Agg) — the
+   * scanCte node IS the aggregate leaf, so DBLQH feeds each scanned
+   * cte0 group into cte1's local JoinAggInterpreter directly.  No
+   * MatchNonNull (no parent row to inner-join against — scanCte is
+   * the root of CTE 1's subtree). */
+  qb->beginCteSubtree(1);
+  {
+    NdbQueryOptions opts;
+    opts.setAggregation(cte1Agg);
+    if (qb->scanCte(0, 2, virtTab, &opts) == nullptr) {
+      printf("FAILED (CTE 1 scanCte: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(1, virtTab, cte1Agg, /*depMask=*/(1ULL << 0)) != 0) {
+    printf("FAILED (defineCte 1)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: scanCte(1) — read cte1's hash table and deliver to API */
+  const NdbQueryCteScanOperationDef *mainScan =
+      qb->scanCte(1, 2, virtTab);
+  if (mainScan == nullptr) {
+    printf("FAILED (main scanCte(1): %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  V("\n  Query prepared: %u operations\n", queryDef->getNoOfOperations());
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainOp = query->getQueryOperation(mainOpNo);
+  NdbRecAttr *raGrp = nullptr;
+  NdbRecAttr *raTotal = nullptr;
+  if (mainOp != nullptr) {
+    raGrp = mainOp->getValue("grp");
+    raTotal = mainOp->getValue("total");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* SUM(total) GROUP BY grp on (grp,total) input is the identity:
+   * each grp has exactly one row in cte0, so cte1 has the same 3
+   * rows with the same totals. */
+  std::map<Int32, Int64> expected;
+  expected[1] = 30;
+  expected[2] = 70;
+  expected[3] = 50;
+
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    Int32 grp = raGrp ? raGrp->int32_value() : -1;
+    Int64 total = raTotal ? raTotal->int64_value() : -1;
+    V("  row: grp=%d total=%lld\n", grp, (long long)total);
+    auto it = expected.find(grp);
+    if (it == expected.end()) {
+      printf("FAILED (unexpected grp=%d)\n", grp);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+    if (total != it->second) {
+      printf("FAILED (grp=%d expected total=%lld got %lld)\n",
+             grp, (long long)it->second, (long long)total);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+  }
+
+  if (outcome == NdbQuery::NextResult_error) {
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (nextResult err %d: %s)\n", qErr.code, qErr.message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount != 3) {
+    printf("FAILED (expected 3 rows, got %u)\n", rowCount);
+    return -1;
+  }
+
+  printf("OK (%u rows)\n", rowCount);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -2309,6 +2538,7 @@ int main(int argc, char **argv)
           if (testCteThreeLevelChain(&ndb, conn) != 0) exitCode = 1;
           if (testScanCteMainRoot(&ndb, conn) != 0) exitCode = 1;
           if (testScanCteWithJoin(&ndb, conn) != 0) exitCode = 1;
+          if (testCteScanFeedsAgg(&ndb, conn) != 0) exitCode = 1;
         }
 
         dropTestTables(conn);
