@@ -311,11 +311,23 @@ Uint64 GBHashTable<BUCKET_COUNT>::hashKeyFull(const char* key,
         hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
       }
     } else {
-      // Non-collation or NULL: hash raw [AH + data] bytes
-      Uint32 colWords = 1 + dataSize;
-      Uint64 colHash = rondb_xxhash_std(reinterpret_cast<const char*>(p),
-                                        colWords * sizeof(Uint32));
-      hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+      // Non-collation or NULL: hash the data bytes only (skip AH).
+      // findInBucket also compares only p+1 (the value portion), so
+      // the attrId in the AH must not contribute to the hash — otherwise
+      // a lookup key produced against a different table (e.g. scanCte
+      // feeding a pushdown-joined lookupCte via a virtual table) would
+      // hash to a different bucket than the stored key even though the
+      // value bytes are identical.
+      if (dataSize > 0) {
+        Uint32 byteSize = ah.getByteSize();
+        Uint64 colHash = rondb_xxhash_std(
+            reinterpret_cast<const char*>(p + 1), byteSize);
+        hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+      } else {
+        // NULL column: fold a fixed sentinel to keep NULLs distinguishable.
+        Uint64 colHash = 0xDEADBEEFDEADBEEFULL;
+        hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+      }
     }
     p += 1 + dataSize;
   }

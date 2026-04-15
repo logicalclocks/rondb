@@ -4184,7 +4184,11 @@ void Dbspj::cleanup_common(Ptr<Request> requestPtr, Ptr<TreeNode> treeNodePtr) {
     treeNodePtr.p->m_agg_match_bitmask = nullptr;
   }
 
-  if (treeNodePtr.p->isScan()) {
+  /* m_scanFrag_data and m_cteScan_data share the same union slot.
+   * Only ScanFrag-style scans have the m_agg_range_corrs field;
+   * for CTE scans that memory is interpreted as m_cteScan_data and
+   * must not be freed here. */
+  if (treeNodePtr.p->m_info == &g_ScanFragOpInfo) {
     ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
     if (data.m_agg_range_corrs != nullptr) {
       lc_ndbd_pool_free(data.m_agg_range_corrs);
@@ -6469,6 +6473,16 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
       break;
     }
 
+    /* A CTE scan ALWAYS delivers its rows to DBSPJ via TRANSID_AI:
+     * CteScanReq carries no joinAggStateKey (unlike SCAN_FRAGREQ),
+     * so DBLQH's hash-walk path can only emit TRANSID_AI back to
+     * the requesting DBSPJ, never feed into a remote aggregator.
+     * Set T_EXPECT_TRANSID_AI unconditionally so execTRANSID_AI
+     * does not discard those rows as "unexpected" when the node
+     * has no NI_LINKED_ATTR / T_INNER_JOIN to otherwise set the
+     * flag (e.g. a plain scanCte root with user projection). */
+    treeNodePtr.p->m_bits |= TreeNode::T_EXPECT_TRANSID_AI;
+
     return 0;
   } while (0);
 
@@ -6507,6 +6521,15 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
   requestPtr.p->m_active_tree_nodes.set(treeNodePtr.p->m_node_no);
   requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
 
+  /* requestPtr.m_outstanding is incremented ONCE per cte_scan_start:
+   * the whole CTE scan represents a single "unit of outstanding work"
+   * at the request level. data.m_outstanding tracks individual
+   * CTE_SCAN_REQs in flight at the node level. The completion check
+   * (in cte_scan_countSignal and execCTE_SCAN_CONF) decrements
+   * requestPtr.m_outstanding by 1 exactly once, when ALL per-node
+   * REQs have settled and all expected rows have arrived. */
+  requestPtr.p->m_outstanding++;
+
   if (!requestPtr.p->m_cteScanAllNodes) {
     jam();
     /* Common case: local-only scan (instances >= nodes).
@@ -6523,12 +6546,31 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     req->transId2 = requestPtr.p->m_transId[1];
     req->batchSize = data.m_batchSize;
 
+    /* Attach AttrInfo section (with FLUSH_AI + user projection) when
+     * present — this tells DBLQH how to format each group into a
+     * TRANSID_AI and where to route it (API vs DBSPJ). */
+    SectionHandle handle(this);
+    Uint32 cnt = 0;
+    if (treeNodePtr.p->m_send.m_attrInfoPtrI != RNIL) {
+      jam();
+      Uint32 attrInfoPtrI = RNIL;
+      if (!dupSection(attrInfoPtrI,
+                      treeNodePtr.p->m_send.m_attrInfoPtrI)) {
+        jam();
+        abort(signal, requestPtr, DbspjErr::OutOfSectionMemory);
+        return;
+      }
+      getSection(handle.m_ptr[CteScanReq::AttrInfoSectionNum], attrInfoPtrI);
+      cnt = 1;
+    }
+    handle.m_cnt = cnt;
+
     Uint32 ref = numberToRef(DBLQH, 1, targetNodeId);
     sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
-               CteScanReq::SignalLength, JBB);
+               CteScanReq::SignalLength, JBB,
+               cnt > 0 ? &handle : nullptr);
 
     data.m_outstanding = 1;
-    requestPtr.p->m_outstanding++;
   } else {
     jam();
     /* Uncommon case: instances < nodes.  Send CTE_SCAN_REQ to ALL
@@ -6548,19 +6590,42 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
       req->transId2 = requestPtr.p->m_transId[1];
       req->batchSize = data.m_batchSize;
 
+      SectionHandle handle(this);
+      Uint32 cnt = 0;
+      if (treeNodePtr.p->m_send.m_attrInfoPtrI != RNIL) {
+        jam();
+        Uint32 attrInfoPtrI = RNIL;
+        if (!dupSection(attrInfoPtrI,
+                        treeNodePtr.p->m_send.m_attrInfoPtrI)) {
+          jam();
+          abort(signal, requestPtr, DbspjErr::OutOfSectionMemory);
+          return;
+        }
+        getSection(handle.m_ptr[CteScanReq::AttrInfoSectionNum], attrInfoPtrI);
+        cnt = 1;
+      }
+      handle.m_cnt = cnt;
+
       Uint32 ref = numberToRef(DBLQH, 1, nodeId);
       sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
-                 CteScanReq::SignalLength, JBB);
+                 CteScanReq::SignalLength, JBB,
+                 cnt > 0 ? &handle : nullptr);
 
       data.m_outstanding++;
-      requestPtr.p->m_outstanding++;
     }
   }
 }
 
 /**
  * Count TRANSID_AI signals for CTE scan.
- * Each TRANSID_AI decrements request outstanding by cnt (normally 1).
+ *
+ * Accounting mirrors scanFrag_countSignal: the per-CTE_SCAN_REQ
+ * requestPtr.m_outstanding increment is held until BOTH all
+ * rows for the scan have arrived (rowsReceived == rowsExpecting)
+ * AND the CONF with EndOfData has been processed (m_endOfData
+ * is set and data.m_outstanding == 0). This correctly handles
+ * numRows > 1 per REQ and the case where rows arrive before
+ * CONF vs CONF before rows.
  */
 void Dbspj::cte_scan_countSignal(Signal *signal, Ptr<Request> requestPtr,
                                   Ptr<TreeNode> treeNodePtr, Uint32 cnt) {
@@ -6568,8 +6633,25 @@ void Dbspj::cte_scan_countSignal(Signal *signal, Ptr<Request> requestPtr,
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
   data.m_rowsReceived += cnt;
 
-  ndbrequire(requestPtr.p->m_outstanding >= cnt);
-  requestPtr.p->m_outstanding -= cnt;
+  /* Check if this row completes the scan: all pending CTE_SCAN_REQs
+   * settled (data.m_outstanding == 0), all expected rows received,
+   * and the final CONF with EndOfData flag has arrived. Only then
+   * do we decrement requestPtr.m_outstanding and mark the tree node
+   * complete. */
+  if (data.m_outstanding == 0 &&
+      data.m_endOfData &&
+      data.m_rowsReceived == data.m_rowsExpecting) {
+    jam();
+    ndbrequire(requestPtr.p->m_outstanding > 0);
+    requestPtr.p->m_outstanding--;
+    treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+    ndbrequire(requestPtr.p->m_cnt_active > 0);
+    requestPtr.p->m_cnt_active--;
+    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+    if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
+      requestPtr.p->m_cteScansComplete++;
+    }
+  }
 }
 
 void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
@@ -6593,18 +6675,30 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
   ndbrequire(data.m_outstanding > 0);
   data.m_outstanding--;
-  data.m_rowsExpecting += conf->numRows;
+
+  /* When T_USER_PROJECTION is set, DBLQH flushed rows directly to the API
+   * via FLUSH_AI — these rows are counted in requestPtr.m_rows so
+   * SCAN_TABCONF reports the correct rowCount to the API.
+   *
+   * If the node is NOT a leaf, DBLQH also emits a residual
+   * (linked attrs + CORR_FACTOR32) per row back to DBSPJ after the
+   * FLUSH_AI.  Those residuals drive startNextNodes for the children,
+   * and must be tracked in rowsExpecting so completion waits for them. */
+  if (treeNodePtr.p->m_bits & TreeNode::T_USER_PROJECTION) {
+    jam();
+    requestPtr.p->m_rows += conf->numRows;
+  }
+  if (!treeNodePtr.p->isLeaf() ||
+      !(treeNodePtr.p->m_bits & TreeNode::T_USER_PROJECTION)) {
+    jam();
+    data.m_rowsExpecting += conf->numRows;
+  }
 
   bool endOfData = (conf->flags & CteScanConf::EndOfData) != 0;
-  data.m_endOfData = endOfData;
-
-  /* m_outstanding accounting:
-   * Start incremented m_outstanding by 1 per node.
-   * Each TRANSID_AI decremented by 1 (total: numRows per node).
-   * If numRows == 0: no TRANSID_AI to balance — decrement here. */
-  if (conf->numRows == 0) {
-    ndbrequire(requestPtr.p->m_outstanding > 0);
-    requestPtr.p->m_outstanding--;
+  /* Only set m_endOfData once the FINAL CONF arrives; intermediate
+   * CONFs (for batches where the scan continues) keep it false. */
+  if (endOfData) {
+    data.m_endOfData = true;
   }
 
   if (!endOfData) {
@@ -6625,21 +6719,48 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
     req->transId2 = requestPtr.p->m_transId[1];
     req->batchSize = data.m_batchSize;
 
+    /* Re-attach AttrInfo section for continuation (DBLQH needs it on
+     * every CTE_SCAN_REQ, not just the first). */
+    SectionHandle handle(this);
+    Uint32 cnt = 0;
+    if (treeNodePtr.p->m_send.m_attrInfoPtrI != RNIL) {
+      jam();
+      Uint32 attrInfoPtrI = RNIL;
+      if (!dupSection(attrInfoPtrI,
+                      treeNodePtr.p->m_send.m_attrInfoPtrI)) {
+        jam();
+        abort(signal, requestPtr, DbspjErr::OutOfSectionMemory);
+        return;
+      }
+      getSection(handle.m_ptr[CteScanReq::AttrInfoSectionNum], attrInfoPtrI);
+      cnt = 1;
+    }
+    handle.m_cnt = cnt;
+
     Uint32 ref = numberToRef(DBLQH, 1, sourceNodeId);
     sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
-               CteScanReq::SignalLength, JBB);
+               CteScanReq::SignalLength, JBB,
+               cnt > 0 ? &handle : nullptr);
 
     data.m_outstanding++;
-    requestPtr.p->m_outstanding++;
+    /* requestPtr.m_outstanding is the overall REQ-count for this
+     * CTE scan and must NOT be incremented here — it was set to 1
+     * in cte_scan_start and stays at 1 until the entire scan is
+     * complete (all rows received AND final EndOfData CONF). */
   }
 
-  /* Scan complete when all nodes have sent EndOfData (m_outstanding == 0
-   * means no more pending REQs or TRANSID_AI). Check if this node was
-   * the last one. */
-  if (endOfData && data.m_outstanding == 0) {
+  /* Check completion: final CONF received, no REQs in flight, and
+   * all expected rows have arrived. Mirrors the matching check in
+   * cte_scan_countSignal which may fire instead when a row arrives
+   * AFTER the CONF. */
+  if (data.m_outstanding == 0 &&
+      data.m_endOfData &&
+      data.m_rowsReceived == data.m_rowsExpecting) {
     jam();
-    /* All nodes done. Mark scan complete. */
+    ndbrequire(requestPtr.p->m_outstanding > 0);
+    requestPtr.p->m_outstanding--;
     treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+    ndbrequire(requestPtr.p->m_cnt_active > 0);
     requestPtr.p->m_cnt_active--;
     requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
 

@@ -274,6 +274,55 @@ class NdbQueryCteLookupOperationDefImpl : public NdbQueryLookupOperationDefImpl 
 };  // class NdbQueryCteLookupOperationDefImpl
 
 /**
+ * CTE scan operation — serializes as QN_CTE_SCAN.
+ * Scans all groups from a materialized CTE hash table. The
+ * virtualTable parameter is a dummy NDB table whose columns match
+ * the CTE's result columns (used only for type information during
+ * result projection). No actual table access happens on this
+ * virtual table.
+ *
+ * Analogous to NdbQueryCteLookupOperationDefImpl but for the
+ * full-scan case: used as the root of a main query ("SELECT * FROM
+ * cte0") or the root of a dependent CTE subtree (CTE-to-CTE full
+ * scan).
+ */
+class NdbQueryCteScanOperationDefImpl : public NdbQueryScanOperationDefImpl {
+  friend class NdbQueryBuilder;
+
+ public:
+  int serializeOperation(const Ndb *ndb, Uint32Buffer &serializedDef) override;
+
+  Uint32 getCteId() const { return m_cteId; }
+  Uint32 getNumResultCols() const { return m_numResultCols; }
+
+  NdbQueryOperationDef::Type getType() const override {
+    return NdbQueryOperationDef::CteScan;
+  }
+
+  const NdbQueryScanOperationDef &getInterface() const override {
+    return m_cteInterface;
+  }
+
+ private:
+  explicit NdbQueryCteScanOperationDefImpl(
+      const NdbTableImpl &virtualTable,
+      Uint32 cteId, Uint32 numResultCols,
+      const NdbQueryOptionsImpl &options,
+      const char *ident, Uint32 opNo,
+      Uint32 internalOpNo, int &error)
+      : NdbQueryScanOperationDefImpl(virtualTable, options, ident,
+                                     opNo, internalOpNo, error),
+        m_cteId(cteId),
+        m_numResultCols(numResultCols),
+        m_cteInterface(*this) {}
+
+  const Uint32 m_cteId;
+  const Uint32 m_numResultCols;
+  NdbQueryCteScanOperationDef m_cteInterface;
+
+};  // class NdbQueryCteScanOperationDefImpl
+
+/**
  * CTE subtree container — serializes as QN_CTE_SUBTREE.
  * Not a real scan or lookup; just a 4-word header that tells DBSPJ
  * the next numNodes operations belong to this CTE.
@@ -789,6 +838,10 @@ const char *NdbQueryOperationDef::getTypeName(Type type) {
       return "OrderedIndexScan";
     case CteLookup:
       return "CteLookup";
+    case CteScan:
+      return "CteScan";
+    case CteSubtree:
+      return "CteSubtree";
     default:
       return "<Invalid NdbQueryOperationDef::Type value>";
   }
@@ -1081,6 +1134,43 @@ const NdbQueryCteLookupOperationDef *NdbQueryBuilder::lookupCte(
       if (keyindex >= static_cast<Uint32>(keyfields)) break;
     }
   }
+
+  return &op->m_cteInterface;
+}
+
+const NdbQueryCteScanOperationDef *NdbQueryBuilder::scanCte(
+    Uint32 cteId, Uint32 numResultCols,
+    const NdbDictionary::Table *virtualTable,
+    const NdbQueryOptions *options, const char *ident) {
+  if (m_impl.hasError()) return nullptr;
+
+  returnErrIf(virtualTable == nullptr, QRY_REQ_ARG_IS_NULL);
+
+  /* A scanCte can appear as the root of a main query, as the root
+   * of a CTE subtree, or (with linked-from children) anywhere an
+   * ordinary scan would. It may reference any previously-defined
+   * CTE, including a CTE that hasn't been defineCte()'d yet if
+   * we're still inside a CTE subtree builder — validation of cteId
+   * and existence happens in DBSPJ's cte_scan_build. */
+
+  const NdbTableImpl &tableImpl = NdbTableImpl::getImpl(*virtualTable);
+
+  int error = 0;
+  NdbQueryCteScanOperationDefImpl *op =
+      new NdbQueryCteScanOperationDefImpl(
+          tableImpl, cteId, numResultCols,
+          options ? options->getImpl() : defaultOptions,
+          ident, m_impl.m_operations.size(),
+          m_impl.getNextInternalOpNo(), error);
+
+  returnErrIf(m_impl.takeOwnership(op) != 0, Err_MemoryAlloc);
+  returnErrIf(error != 0, error);
+
+  DEB_CTE_API("scanCte: cteId=%u opIdx=%u internalOpNo=%u inCte=%d\n",
+              cteId,
+              (Uint32)(m_impl.m_operations.size() - 1),
+              op->getInternalOpNo(),
+              (int)m_impl.m_inCteSubtree);
 
   return &op->m_cteInterface;
 }
@@ -2999,6 +3089,72 @@ int NdbQueryCteLookupOperationDefImpl::serializeOperation(
 
   return 0;
 }  // NdbQueryCteLookupOperationDefImpl::serializeOperation
+
+int NdbQueryCteScanOperationDefImpl::serializeOperation(
+    const Ndb * /*ndb*/, Uint32Buffer &serializedDef) {
+  assert(!m_isPrepared);
+  m_isPrepared = true;
+
+  // Reserve memory for CteScanNode header
+  Uint32 startPos = serializedDef.getSize();
+  serializedDef.alloc(QN_CteScanNode::NodeSize);
+  Uint32 requestInfo = 0;
+
+  if (getMatchType() & NdbQueryOptions::MatchNonNull) {
+    requestInfo |= DABits::NI_INNER_JOIN;
+  }
+  if (getMatchType() & NdbQueryOptions::MatchFirst || hasFirstMatchAncestor()) {
+    requestInfo |= DABits::NI_FIRST_MATCH;
+  }
+  if (getMatchType() & NdbQueryOptions::MatchNullOnly) {
+    requestInfo |= DABits::NI_ANTI_JOIN;
+  }
+
+  if (m_queryHasAggregation) {
+    requestInfo |= DABits::NI_AGGREGATE;
+    if (m_isAggregateLeaf) {
+      requestInfo |= DABits::NI_AGGREGATE_LEAF;
+    }
+  }
+
+  // Part1: Parent list (CTE scan is typically a root, but support
+  // NI_HAS_PARENT for the multi-scan case)
+  requestInfo |= appendParentList(serializedDef);
+
+  // Part2: Param constructor (for interpreted code on the result rows)
+  requestInfo |= appendParamConstructor(serializedDef);
+
+  // Part3: Child projection (columns required by children via linked values)
+  requestInfo |= appendChildProjection(serializedDef);
+
+  // Fill in CteScanNode header
+  QN_CteScanNode *node =
+      reinterpret_cast<QN_CteScanNode *>(serializedDef.addr(startPos));
+  if (unlikely(node == nullptr)) {
+    return Err_MemoryAlloc;
+  }
+  node->cteId = m_cteId;
+  node->numResultCols = m_numResultCols;
+  node->requestInfo = requestInfo;
+  const Uint32 length = serializedDef.getSize() - startPos;
+  if (unlikely(length > 0xFFFF)) {
+    return QRY_DEFINITION_TOO_LARGE;
+  } else {
+    QueryNode::setOpLen(node->len, QueryNode::QN_CTE_SCAN, length);
+  }
+
+#ifdef __TRACE_SERIALIZATION
+  ndbout << "Serialized CTE scan node " << getInternalOpNo() << " : ";
+  for (Uint32 i = startPos; i < serializedDef.getSize(); i++) {
+    char buf[12];
+    sprintf(buf, "%.8x", serializedDef.get(i));
+    ndbout << buf << " ";
+  }
+  ndbout << endl;
+#endif
+
+  return 0;
+}  // NdbQueryCteScanOperationDefImpl::serializeOperation
 
 int NdbQueryIndexOperationDefImpl ::serializeOperation(
     const Ndb * /*ndb*/, Uint32Buffer &serializedDef) {

@@ -106,6 +106,14 @@ struct CtePhaseStartReq {
  * DBLQH resumes from the saved position and sends the next batch.
  *
  * Used by QN_CTE_SCAN nodes when a CTE reads from an earlier CTE.
+ *
+ * Long section 0: optional AttrInfo with 5-word header + interpreted
+ * program whose final-read section carries the user projection and an
+ * encoded FLUSH_AI [resultRef, resultData, routeRef].  When present,
+ * DBLQH walks the final-read section per group and routes TRANSID_AI
+ * according to FLUSH_AI (API delivery) instead of back to DBSPJ.
+ * When absent, DBLQH emits the raw key + aggregates + CORR_FACTOR32
+ * tuple to senderRef (legacy DBSPJ-internal feed used by nested CTEs).
  */
 struct CteScanReq {
   Uint32 senderRef;       // DBSPJ block reference
@@ -116,6 +124,7 @@ struct CteScanReq {
   Uint32 batchSize;       // Max groups to send in this batch
 
   static constexpr Uint32 SignalLength = 6;
+  enum { AttrInfoSectionNum = 0 };
 };
 
 struct CteScanConf {

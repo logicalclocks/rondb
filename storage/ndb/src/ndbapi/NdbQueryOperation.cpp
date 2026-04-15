@@ -5303,6 +5303,10 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
     case QueryNodeParameters::QN_CTE_LOOKUP:
       attrInfo.alloc(QN_CteLookupParameters::NodeSize);
       break;
+    case QueryNodeParameters::QN_CTE_SCAN:
+      assert(def.isScanOperation());
+      attrInfo.alloc(QN_CteScanParameters::NodeSize);
+      break;
     default:
       assert(false);
   }
@@ -5350,10 +5354,14 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
         !def.isCteEmbedded()) {
       return QRY_EMPTY_PROJECTION;
     }
-  } else if (def.getType() != NdbQueryOperationDef::CteLookup) {
+  } else if (def.getType() != NdbQueryOperationDef::CteLookup &&
+             def.getType() != NdbQueryOperationDef::CteScan) {
     /* Standard projection: serialize real table column reads.
-     * CTE_LOOKUP uses virtual column IDs (0, 1, ...) already added
-     * in the QN_CTE_LOOKUP case above — skip real column projection. */
+     * CTE_LOOKUP and CTE_SCAN use virtual column IDs (0, 1, ...) added
+     * directly in the QN_CTE_* switch cases below — skip real column
+     * projection so the serialization order
+     * (PI_ATTR_INTERPRET before PI_ATTR_LIST) matches what parseDA
+     * expects. */
     requestInfo |= DABits::PI_ATTR_LIST;
     const int error = serializeProject(attrInfo);
     if (unlikely(error)) {
@@ -5499,6 +5507,41 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
         // CORR_FACTOR must be in the user projection (before FLUSH_AI)
         // so it's included in the TRANSID_AI sent to the API. DBSPJ's
         // parseDA adds FLUSH_AI after PI_ATTR_LIST for scan queries.
+        requestInfo |= DABits::PI_ATTR_LIST;
+        attrInfo.append(numCols + 1);  // virtual cols + CORR_FACTOR
+        for (Uint32 c = 0; c < numCols; c++) {
+          attrInfo.append(c << 16);  // AttributeHeader(attrId=c, size=0)
+        }
+        attrInfo.append(AttributeHeader::CORR_FACTOR64 << 16);
+      }
+
+      param->requestInfo = requestInfo;
+      param->resultData = getIdOfReceiver();
+      length = attrInfo.getSize() - startPos;
+      QueryNodeParameters::setOpLen(param->len, paramType, length);
+      break;
+    }
+    case QueryNodeParameters::QN_CTE_SCAN: {
+      QN_CteScanParameters *param =
+          reinterpret_cast<QN_CteScanParameters *>(attrInfo.addr(startPos));
+      if (unlikely(param == nullptr)) return Err_MemoryAlloc;
+
+      /* CTE_SCAN needs the same PI_ATTR_INTERPRET (ExitOK) + PI_ATTR_LIST
+       * (virtual column reads) setup as CTE_LOOKUP so DBSPJ builds the
+       * proper AttrInfo for delivering scanned CTE rows. Read
+       * numResultCols from the serialized QN_CteScanNode. */
+      {
+        const QN_CteScanNode *cteNode =
+            reinterpret_cast<const QN_CteScanNode *>(queryNode);
+        const Uint32 numCols = cteNode->numResultCols;
+
+        // PI_ATTR_INTERPRET: minimal ExitOK program
+        requestInfo |= DABits::PI_ATTR_INTERPRET;
+        Uint32 interpHeader = (0u << 16) | 1u;  // subroutine_len=0, prog_len=1
+        attrInfo.append(interpHeader);
+        attrInfo.append(Uint32(18));  // Interpreter::ExitOK = 18
+
+        // PI_ATTR_LIST: virtual column reads + CORR_FACTOR64.
         requestInfo |= DABits::PI_ATTR_LIST;
         attrInfo.append(numCols + 1);  // virtual cols + CORR_FACTOR
         for (Uint32 c = 0; c < numCols; c++) {

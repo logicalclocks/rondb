@@ -19437,16 +19437,27 @@ output_overflow:
  */
 void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
   jamEntry();
+  if (unlikely(!assembleFragments(signal))) {
+    jam();
+    return;
+  }
 
   const CteScanReq *req = (const CteScanReq *)signal->getDataPtr();
   const Uint32 senderRef = req->senderRef;
   const Uint32 senderData = req->senderData;
   const Uint32 aggStateKey = req->aggStateKey;
   const Uint32 batchSize = req->batchSize;
+  const Uint32 transId1 = req->transId1;
+  const Uint32 transId2 = req->transId2;
+
+  /* Release incoming signal sections early so all error paths are safe.
+   * We copy the AttrInfo section into a local buffer before releasing. */
+  SectionHandle handle(this, signal);
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (unlikely(state == nullptr)) {
     jam();
+    releaseSections(handle);
     CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
     ref->senderRef = reference();
     ref->senderData = senderData;
@@ -19458,6 +19469,7 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
 
   if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
     jam();
+    releaseSections(handle);
     CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
     ref->senderRef = reference();
     ref->senderData = senderData;
@@ -19477,6 +19489,7 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
       senderRef != state->m_cteScan_senderRef) {
     /* Different sender, scan not yet started — duplicate first request */
     jam();
+    releaseSections(handle);
     CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
     conf->senderRef = reference();
     conf->senderData = senderData;
@@ -19487,12 +19500,73 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
     return;
   }
 
+  /* Optional AttrInfo section: 5-word header + interpreted program.
+   * When present the final-read section drives per-group TRANSID_AI
+   * formatting and FLUSH_AI routing (mirroring CTE_LOOKUP_REQ). */
+  Uint32 *cinBuf = cattrInfoBuffer;
+  Uint32 attrInfoLen = 0;
+  SegmentedSectionPtr attrInfoSection;
+  if (handle.getSection(attrInfoSection, CteScanReq::AttrInfoSectionNum)) {
+    if (unlikely(attrInfoSection.sz > ZATTR_BUFFER_SIZE)) {
+      jam();
+      releaseSections(handle);
+      CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->senderData = senderData;
+      ref->errorCode = ZATTRINFO_TOO_LARGE;
+      sendSignal(senderRef, GSN_CTE_SCAN_REF,
+                 signal, CteScanRef::SignalLength, JBB);
+      return;
+    }
+    copy(cinBuf, attrInfoSection);
+    attrInfoLen = attrInfoSection.sz;
+  }
+  releaseSections(handle);
+
+  /* Parse 5-word AttrInfo header and locate final-read section.
+   * Header: [initReadLen, execRegionLen, finalUpdateLen, finalRLen, rsubLen].
+   * The final-read section starts after the header + init-read + exec + final-update. */
+  const Uint32 *finalR = nullptr;
+  Uint32 finalRLen = 0;
+  bool haveFinalR = false;
+  /* Cache the FLUSH_AI target (resultRef/resultData) by pre-scanning
+   * finalR.  CORR_FACTOR64 is emitted BEFORE FLUSH_AI in the program
+   * (it lives inside the user projection), but the API expects
+   * CORR_FACTOR64[word 2] = root receiver id, which is the FLUSH_AI
+   * resultData.  So we must know the FLUSH_AI target before the walk. */
+  Uint32 flushRef = 0;
+  Uint32 flushData = 0;
+  if (attrInfoLen >= 5) {
+    const Uint32 initReadLen = cinBuf[0];
+    const Uint32 execRegionLen = cinBuf[1];
+    const Uint32 finalUpdateLen = cinBuf[2];
+    const Uint32 fr = cinBuf[3];
+    const Uint32 finalRStart = 5 + initReadLen + execRegionLen + finalUpdateLen;
+    if (finalRStart + fr <= attrInfoLen) {
+      finalR = &cinBuf[finalRStart];
+      finalRLen = fr;
+      haveFinalR = (fr > 0);
+
+      Uint32 scan = 0;
+      while (scan < finalRLen) {
+        const Uint32 aId = AttributeHeader::getAttributeId(finalR[scan]);
+        if (aId == AttributeHeader::FLUSH_AI) {
+          if (scan + 3 >= finalRLen) break;
+          flushRef = finalR[scan + 1];
+          flushData = finalR[scan + 2];
+          break;
+        }
+        scan += 1;
+      }
+    }
+  }
+
   /* Save sender info for this scan (first or continuation) */
   state->m_cteScan_active = true;
   state->m_cteScan_senderRef = senderRef;
   state->m_cteScan_senderData = senderData;
-  state->m_cteScan_transId[0] = req->transId1;
-  state->m_cteScan_transId[1] = req->transId2;
+  state->m_cteScan_transId[0] = transId1;
+  state->m_cteScan_transId[1] = transId2;
 
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
@@ -19528,54 +19602,172 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
       const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
           groupData + keyLen);
 
-      /* Build TRANSID_AI: key columns + aggregate columns + CORR_FACTOR */
       Uint32 *outBuf = cevictBuffer;
       Uint32 outPos = 0;
 
-      /* Copy GROUP BY key columns (already AttributeHeader-encoded) */
-      const Uint32 keyWords = keyLen >> 2;
-      if (unlikely(outPos + keyWords > ZATTR_BUFFER_SIZE)) {
-        jam();
-        groupIdx++;
-        continue;  /* Skip oversized groups */
-      }
-      memcpy(&outBuf[outPos], groupData, keyLen);
-      outPos += keyWords;
+      if (haveFinalR) {
+        /* AttrInfo-driven path: walk final-read section, building output
+         * and routing per FLUSH_AI targets.  Mirrors CTE_LOOKUP. */
+        Uint32 pos = 0;
+        while (pos < finalRLen) {
+          const Uint32 word = finalR[pos];
+          const Uint32 attrId = AttributeHeader::getAttributeId(word);
 
-      /* Convert aggregate results to AttributeHeader-encoded columns */
-      for (Uint32 a = 0; a < n_agg_results; a++) {
-        const AggResItem &item = accumulators[a];
-        if (item.is_null) {
-          if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) break;
-          AttributeHeader::init(&outBuf[outPos], n_gb_cols + a, 0);
-          outPos += 1;
-        } else {
-          if (unlikely(outPos + 3 > ZATTR_BUFFER_SIZE)) break;
-          AttributeHeader::init(&outBuf[outPos], n_gb_cols + a, 8);
-          memcpy(&outBuf[outPos + 1], &item.value, 8);
-          outPos += 3;
+          if (attrId == AttributeHeader::FLUSH_AI) {
+            jam();
+            if (unlikely(pos + 3 >= finalRLen)) break;
+
+            if (outPos > 0) {
+              TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+              transIdAI->connectPtr = flushData;
+              transIdAI->transId[0] = transId1;
+              transIdAI->transId[1] = transId2;
+
+              LinearSectionPtr lsp[3];
+              lsp[0].p = outBuf;
+              lsp[0].sz = outPos;
+              sendSignal(flushRef, GSN_TRANSID_AI, signal,
+                         TransIdAI::HeaderLength, JBB, lsp, 1);
+              outPos = 0;
+            }
+            pos += 4;
+            continue;
+          }
+
+          if (attrId == AttributeHeader::CORR_FACTOR32) {
+            jam();
+            if (unlikely(outPos + 2 > ZATTR_BUFFER_SIZE)) break;
+            AttributeHeader::init(&outBuf[outPos], attrId, 4);
+            outBuf[outPos + 1] = groupIdx;  /* sequential correlation */
+            outPos += 2;
+            pos += 1;
+            continue;
+          }
+          if (attrId == AttributeHeader::CORR_FACTOR64) {
+            /* NdbQueryOperationImpl::serializeProject appends CORR_FACTOR64
+             * as the last word of the user projection for scan queries.
+             * DBTUP emits it as [AH, tupleCorr, rootReceiverId] via
+             * execREAD_PSEUDO_REQ; we mirror that here.  The rootReceiverId
+             * is the FLUSH_AI resultData (the API-side receiver id). */
+            jam();
+            if (unlikely(outPos + 3 > ZATTR_BUFFER_SIZE)) break;
+            AttributeHeader::init(&outBuf[outPos], attrId, 8);
+            outBuf[outPos + 1] = groupIdx;    /* tuple correlation */
+            outBuf[outPos + 2] = flushData;   /* root receiver id = API rcvr */
+            outPos += 3;
+            pos += 1;
+            continue;
+          }
+
+          if (attrId < n_gb_cols) {
+            /* GROUP BY key column — walk key data to the N-th entry */
+            jam();
+            const Uint32 *keyData =
+                reinterpret_cast<const Uint32 *>(groupData);
+            const Uint32 keyWords = keyLen >> 2;
+            Uint32 kp = 0;
+            Uint32 colIdx = 0;
+            while (kp < keyWords && colIdx < attrId) {
+              Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+              kp += 1 + dataSize;
+              colIdx++;
+            }
+            if (kp < keyWords) {
+              Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+              Uint32 words = 1 + dataSize;
+              if (unlikely(outPos + words > ZATTR_BUFFER_SIZE)) break;
+              AttributeHeader::init(&outBuf[outPos], attrId, dataSize * 4);
+              memcpy(&outBuf[outPos + 1], &keyData[kp + 1],
+                     dataSize * sizeof(Uint32));
+              outPos += words;
+            } else {
+              if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) break;
+              AttributeHeader::init(&outBuf[outPos], attrId, 0);
+              outPos += 1;
+            }
+          } else if (attrId < n_gb_cols + n_agg_results) {
+            /* Aggregate result — convert AggResItem to column data */
+            jam();
+            const Uint32 aggIdx = attrId - n_gb_cols;
+            const AggResItem &item = accumulators[aggIdx];
+            if (item.is_null) {
+              if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) break;
+              AttributeHeader::init(&outBuf[outPos], attrId, 0);
+              outPos += 1;
+            } else {
+              if (unlikely(outPos + 3 > ZATTR_BUFFER_SIZE)) break;
+              AttributeHeader::init(&outBuf[outPos], attrId, 8);
+              memcpy(&outBuf[outPos + 1], &item.value, 8);
+              outPos += 3;
+            }
+          } else {
+            /* Unknown attribute ID — write NULL */
+            jam();
+            if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) break;
+            AttributeHeader::init(&outBuf[outPos], attrId, 0);
+            outPos += 1;
+          }
+          pos += 1;
         }
+
+        /* Residual (e.g. CORR_FACTOR after FLUSH_AI) goes to DBSPJ */
+        if (outPos > 0) {
+          TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+          transIdAI->connectPtr = senderData;
+          transIdAI->transId[0] = transId1;
+          transIdAI->transId[1] = transId2;
+
+          LinearSectionPtr lsp[3];
+          lsp[0].p = outBuf;
+          lsp[0].sz = outPos;
+          sendSignal(senderRef, GSN_TRANSID_AI, signal,
+                     TransIdAI::HeaderLength, JBB, lsp, 1);
+        }
+      } else {
+        /* Legacy path (no AttrInfo section): emit raw key + agg columns +
+         * CORR_FACTOR32 to senderRef.  Used by nested CTE_SCAN within
+         * aggregation trees (the feed target has no user projection). */
+        const Uint32 keyWords = keyLen >> 2;
+        if (unlikely(outPos + keyWords > ZATTR_BUFFER_SIZE)) {
+          jam();
+          groupIdx++;
+          continue;
+        }
+        memcpy(&outBuf[outPos], groupData, keyLen);
+        outPos += keyWords;
+
+        for (Uint32 a = 0; a < n_agg_results; a++) {
+          const AggResItem &item = accumulators[a];
+          if (item.is_null) {
+            if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) break;
+            AttributeHeader::init(&outBuf[outPos], n_gb_cols + a, 0);
+            outPos += 1;
+          } else {
+            if (unlikely(outPos + 3 > ZATTR_BUFFER_SIZE)) break;
+            AttributeHeader::init(&outBuf[outPos], n_gb_cols + a, 8);
+            memcpy(&outBuf[outPos + 1], &item.value, 8);
+            outPos += 3;
+          }
+        }
+
+        if (likely(outPos + 2 <= ZATTR_BUFFER_SIZE)) {
+          AttributeHeader::init(&outBuf[outPos],
+                                AttributeHeader::CORR_FACTOR32, 4);
+          outBuf[outPos + 1] = groupIdx;
+          outPos += 2;
+        }
+
+        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+        transIdAI->connectPtr = senderData;
+        transIdAI->transId[0] = transId1;
+        transIdAI->transId[1] = transId2;
+
+        LinearSectionPtr lsp[3];
+        lsp[0].p = outBuf;
+        lsp[0].sz = outPos;
+        sendSignal(senderRef, GSN_TRANSID_AI, signal,
+                   TransIdAI::HeaderLength, JBB, lsp, 1);
       }
-
-      /* Append CORR_FACTOR32 for parent-child correlation in DBSPJ */
-      if (likely(outPos + 2 <= ZATTR_BUFFER_SIZE)) {
-        AttributeHeader::init(&outBuf[outPos],
-                              AttributeHeader::CORR_FACTOR32, 4);
-        outBuf[outPos + 1] = groupIdx;  /* Sequential correlation ID */
-        outPos += 2;
-      }
-
-      /* Send TRANSID_AI with this group's data */
-      TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-      transIdAI->connectPtr = senderData;
-      transIdAI->transId[0] = req->transId1;
-      transIdAI->transId[1] = req->transId2;
-
-      LinearSectionPtr lsp[3];
-      lsp[0].p = outBuf;
-      lsp[0].sz = outPos;
-      sendSignal(senderRef, GSN_TRANSID_AI, signal,
-                 TransIdAI::HeaderLength, JBB, lsp, 1);
 
       numRowsSent++;
       groupIdx++;

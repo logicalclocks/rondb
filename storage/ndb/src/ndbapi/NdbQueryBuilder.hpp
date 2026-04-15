@@ -282,6 +282,7 @@ class NdbQueryOperationDef  // Base class for all operation definitions
     TableScan,          ///< Full table scan
     OrderedIndexScan,   ///< Ordered index scan, optionally w/ bounds
     CteLookup,          ///< Lookup into materialized CTE hash table
+    CteScan,            ///< Scan all groups from materialized CTE hash table
     CteSubtree          ///< Container for CTE materialization sub-tree
   };
 
@@ -341,7 +342,8 @@ class NdbQueryScanOperationDef
     : public NdbQueryOperationDef  // Base class for scans
 {
  protected:
-  // Enforce object creation through NdbQueryBuilder factory
+  // Enforce object creation through NdbQueryBuilder factory.
+  // Protected (not private) so NdbQueryCteScanOperationDef can subclass.
   explicit NdbQueryScanOperationDef(NdbQueryOperationDefImpl &impl);
   ~NdbQueryScanOperationDef();
 };  // class NdbQueryScanOperationDef
@@ -371,6 +373,15 @@ class NdbQueryCteLookupOperationDef : public NdbQueryLookupOperationDef {
       : NdbQueryLookupOperationDef(impl) {}
   ~NdbQueryCteLookupOperationDef() {}
 };  // class NdbQueryCteLookupOperationDef
+
+class NdbQueryCteScanOperationDef : public NdbQueryScanOperationDef {
+ private:
+  // Enforce object creation through NdbQueryBuilder factory
+  friend class NdbQueryCteScanOperationDefImpl;
+  explicit NdbQueryCteScanOperationDef(NdbQueryOperationDefImpl &impl)
+      : NdbQueryScanOperationDef(impl) {}
+  ~NdbQueryCteScanOperationDef() {}
+};  // class NdbQueryCteScanOperationDef
 
 /**
  * class NdbQueryIndexBound is an argument container for defining
@@ -551,6 +562,30 @@ class NdbQueryBuilder {
       Uint32 cteId, Uint32 numResultCols,
       const NdbDictionary::Table *virtualTable,
       const NdbQueryOperand *const keys[],
+      const NdbQueryOptions *options = nullptr, const char *ident = nullptr);
+
+  /**
+   * Create a CTE scan operation that scans all groups from a
+   * materialized CTE hash table. The virtualTable parameter is a
+   * dummy NDB table whose columns match the CTE's result columns
+   * (GROUP BY columns + aggregate result columns).
+   *
+   * A scanCte may appear as the root of a main query ("SELECT * FROM
+   * cte0") or as the root of a dependent CTE subtree (CTE-to-CTE
+   * full scan, complementing lookupCte which is the point-lookup
+   * variant). Children may be attached via linkedValue from this
+   * scan — each scanned CTE row then drives the children as a
+   * pushdown join outer.
+   *
+   * @param cteId         CTE identifier (0-based index into CTE list)
+   * @param numResultCols Number of result columns from the CTE aggregation
+   * @param virtualTable  Dummy table whose columns match CTE result types
+   * @param options       Optional query options (aggregation, etc.)
+   * @param ident         Optional name for this operation
+   */
+  const NdbQueryCteScanOperationDef *scanCte(
+      Uint32 cteId, Uint32 numResultCols,
+      const NdbDictionary::Table *virtualTable,
       const NdbQueryOptions *options = nullptr, const char *ident = nullptr);
 
   /**
