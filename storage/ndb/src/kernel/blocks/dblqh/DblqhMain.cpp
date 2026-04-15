@@ -1106,6 +1106,22 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     continueRedistQueueDrain(signal, data0);
     return;
   }
+  case ZCONTINUE_CTE_SCAN_AGG_FEED:
+  {
+    jam();
+    const char *rawPtr = reinterpret_cast<const char *>(
+        (uintptr_t)signal->theData[6] |
+        ((uintptr_t)signal->theData[7] << 32));
+    cteScanAggFeed(signal,
+                   signal->theData[1],   // aggStateKey
+                   signal->theData[2],   // senderRef
+                   signal->theData[3],   // senderData
+                   signal->theData[4],   // joinAggStateKey
+                   signal->theData[5],   // iterBucket
+                   rawPtr,               // iterRaw
+                   signal->theData[8]);  // groupsSent
+    return;
+  }
   case ZRESUME_BLOCKED_COPY_FRAGMENT:
   {
     jam();
@@ -19450,228 +19466,171 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
                       cinBuf, attrInfoLen);
 }
 
+static const Uint32 CTE_SCAN_AGG_FEED_BATCH = 256;
+
 /**
- * CTE_SCAN_REQ — scan groups from a materialized CTE hash table.
+ * cteScanAggFeed — scan CTE hash table and feed each group into another
+ * JoinAggInterpreter (CTE-2-reads-CTE-1 materialization).
+ * Processes up to CTE_SCAN_AGG_FEED_BATCH groups per invocation, then
+ * yields via CONTINUEB.  Sends CTE_SCAN_CONF only when all groups are done.
  *
- * Iterates JoinAggregationState's hash table, resuming from a saved
- * iterator position (m_cteScan_iterBucket/iterRaw) for O(1) resume.
- * Sends up to batchSize groups as TRANSID_AI.  Sends CTE_SCAN_CONF
- * with EndOfData when all groups have been sent.
- *
- * Iteration state is stored in JoinAggregationState so it persists
- * across batches.  Each CTE_SCAN_REQ either starts a new scan
- * (groupsSent == 0) or continues from the saved position.
+ * Called from execCTE_SCAN_REQ (initial: groupsSent=0, iterRaw=nullptr)
+ * and execCONTINUEB (resume: all state from signal data).
+ * No per-scan state is stored on JoinAggregationState — the CTE hash
+ * table is read-only and may be scanned concurrently by multiple DBSPJ
+ * instances.
  */
-void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
-  jamEntry();
-  if (unlikely(!assembleFragments(signal))) {
-    jam();
-    return;
-  }
-
-  const CteScanReq req =
-      *(const CteScanReq *)signal->getDataPtr();
-
-  /* Release incoming signal sections early so all error paths are safe.
-   * We copy the AttrInfo section into a local buffer before releasing. */
-  SectionHandle handle(this, signal);
-
-  JoinAggregationState *state = getJoinAggState(req.aggStateKey);
-  if (unlikely(state == nullptr)) {
-    jam();
-    sendCteScanRef(signal, req.senderRef, req.senderData,
-                   ZJOIN_AGG_STATE_NOT_FOUND, &handle);
-    return;
-  }
-
-  if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
-    jam();
-    sendCteScanRef(signal, req.senderRef, req.senderData,
-                   ZCTE_LOOKUP_STATE_NOT_READY, &handle);
-    return;
-  }
-
-  /* Optional AttrInfo section: 5-word header + interpreted program.
-   * When present the final-read section drives per-group TRANSID_AI
-   * formatting and FLUSH_AI routing (mirroring CTE_LOOKUP_REQ). */
-  Uint32 *cinBuf = cattrInfoBuffer;
-  Uint32 attrInfoLen = 0;
-  SegmentedSectionPtr attrInfoSection;
-  if (handle.getSection(attrInfoSection, CteScanReq::AttrInfoSectionNum)) {
-    if (unlikely(attrInfoSection.sz > ZATTR_BUFFER_SIZE)) {
-      jam();
-      sendCteScanRef(signal, req.senderRef, req.senderData,
-                     ZATTRINFO_TOO_LARGE, &handle);
-      return;
-    }
-    copy(cinBuf, attrInfoSection);
-    attrInfoLen = attrInfoSection.sz;
-  }
-  releaseSections(handle);
-
-  /* Parse 5-word AttrInfo header and locate final-read section.
-   * Header: [initReadLen, execRegionLen, finalUpdateLen, finalRLen, rsubLen].
-   * The final-read section starts after the header + init-read + exec + final-update. */
-  const Uint32 *finalR = nullptr;
-  Uint32 finalRLen = 0;
-  bool haveFinalR = false;
-  /* Use the per-fragment FLUSH_AI target from the CTE_SCAN_REQ direct
-   * fields.  parseDA's section was built once with the API's common
-   * (worker[0]) receiverId, so its FLUSH_AI words can NOT be trusted —
-   * each fragment's request carries its own resultRef/resultData
-   * (= per-worker API receiverId) in the signal header instead. */
-  if (attrInfoLen >= 5) {
-    const Uint32 initReadLen = cinBuf[0];
-    const Uint32 execRegionLen = cinBuf[1];
-    const Uint32 finalUpdateLen = cinBuf[2];
-    const Uint32 fr = cinBuf[3];
-    const Uint32 finalRStart = 5 + initReadLen + execRegionLen + finalUpdateLen;
-    if (finalRStart + fr <= attrInfoLen) {
-      finalR = &cinBuf[finalRStart];
-      finalRLen = fr;
-      haveFinalR = (fr > 0);
-    }
-  }
-
-  /* Save transId for this scan (first or continuation) — used when
-   * sending TRANSID_AI back to the API and to validate continuation
-   * REQs belong to the same transaction. */
-  state->m_cteScan_transId[0] = req.transId1;
-  state->m_cteScan_transId[1] = req.transId2;
-
+void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
+                            Uint32 senderRef, Uint32 senderData,
+                            Uint32 joinAggStateKey,
+                            Uint32 iterBucket, const char *iterRaw,
+                            Uint32 groupsSent) {
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  ndbrequire(state != nullptr);
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
 
-  /* Aggregation feed path: when joinAggStateKey != RNIL, the scanned
-   * groups feed into another JoinAggInterpreter (typically the
-   * enclosing CTE's local aggregator for a CTE-2-reads-CTE-1
-   * materialization) instead of being shipped to API/DBSPJ.  Each
-   * group's [key + accumulators] is converted to linked_attr_data
-   * and inserted via processRecWithLinkedAttrs(), bypassing both
-   * the API and DBSPJ.  Only a CTE_SCAN_CONF is sent back. */
-  if (req.joinAggStateKey != RNIL) {
+  const Uint32 targetBaseKey =
+      JoinAggregationState::decodeBaseKey(joinAggStateKey);
+  const Uint32 targetLeafIndex =
+      JoinAggregationState::decodeLeafIndex(joinAggStateKey);
+
+  JoinAggregationState *targetState = getJoinAggState(targetBaseKey);
+  if (unlikely(targetState == nullptr)) {
     jam();
-    const Uint32 targetBaseKey =
-        JoinAggregationState::decodeBaseKey(req.joinAggStateKey);
-    const Uint32 targetLeafIndex =
-        JoinAggregationState::decodeLeafIndex(req.joinAggStateKey);
-
-    JoinAggregationState *targetState = getJoinAggState(targetBaseKey);
-    if (unlikely(targetState == nullptr)) {
-      jam();
-      sendCteScanRef(signal, req.senderRef, req.senderData,
-                     ZJOIN_AGG_STATE_NOT_FOUND);
-      return;
-    }
-    JoinAggInterpreter *targetInterp = getJoinAggInterpreter(targetState);
-    ndbrequire(targetInterp != nullptr);
-
-    const LeafProgram *leaf = nullptr;
-    if (targetState->m_num_leaves > 1) {
-      ndbrequire(targetLeafIndex < targetState->m_num_leaves);
-      leaf = &targetState->m_leaf_programs[targetLeafIndex];
-    }
-
-    auto *gb_map = interp->gb_map_mutable();
-    Uint32 numRowsSent = 0;
-    bool endOfData = true;
-    if (gb_map != nullptr && !gb_map->empty()) {
-      jam();
-      const Uint32 src_n_gb_cols = interp->n_gb_cols();
-      const Uint32 src_n_agg_results = interp->n_agg_results();
-
-      /* Resume position — same scheme as the API/DBSPJ path */
-      Uint32 groupIdx = state->m_cteScan_groupsSent;
-      auto iter = (groupIdx == 0)
-          ? gb_map->begin()
-          : gb_map->iteratorAt(state->m_cteScan_iterBucket,
-                               state->m_cteScan_iterRaw);
-
-      for (; iter.valid(); gb_map->next(iter)) {
-        if (numRowsSent >= req.batchSize) {
-          jam();
-          endOfData = false;
-          break;
-        }
-        jam();
-        const char *groupData = reinterpret_cast<const char *>(iter.data());
-        const Uint32 keyLen = iter.keyLen();
-        const AggResItem *accumulators =
-            reinterpret_cast<const AggResItem *>(groupData + keyLen);
-
-        /* Build linked_attr_data: [tableId=0][schemaVersion=0][AH][data..]
-         * per column.  Mirrors CTE_LOOKUP agg-feed at line ~19130. */
-        Uint32 *linkedBuf = cevictBuffer;
-        Uint32 linkedPos = 0;
-
-        const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
-        const Uint32 keyWords = keyLen >> 2;
-        Uint32 kp = 0;
-        while (kp < keyWords) {
-          linkedBuf[linkedPos++] = 0;  // tableId
-          linkedBuf[linkedPos++] = 0;  // schemaVersion
-          Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
-          Uint32 words = 1 + dataSize;
-          memcpy(&linkedBuf[linkedPos], &keyData[kp], words * sizeof(Uint32));
-          linkedPos += words;
-          kp += words;
-        }
-
-        for (Uint32 i = 0; i < src_n_agg_results; i++) {
-          const Uint32 attrId = src_n_gb_cols + i;
-          linkedBuf[linkedPos++] = 0;  // tableId
-          linkedBuf[linkedPos++] = 0;  // schemaVersion
-          if (accumulators[i].is_null) {
-            AttributeHeader::init(&linkedBuf[linkedPos], attrId, 0);
-            linkedPos += 1;
-          } else {
-            AttributeHeader::init(&linkedBuf[linkedPos], attrId, 8);
-            memcpy(&linkedBuf[linkedPos + 1], &accumulators[i].value, 8);
-            linkedPos += 3;
-          }
-        }
-
-      retry_agg_scan:
-        Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-            nullptr, nullptr, linkedBuf, linkedPos, leaf);
-        if (aggRet == AGG_EVICT_NEEDED) {
-          jam();
-          sendEvictedAggGroup(signal, targetInterp, targetState);
-          goto retry_agg_scan;
-        }
-        if (unlikely(aggRet != 0)) {
-          jam();
-          g_eventLogger->info("(%u) CTE_SCAN agg feed FAILED: aggRet=%d "
-              "targetKey=%u leafIdx=%u linkedWords=%u",
-              instance(), aggRet, targetBaseKey, targetLeafIndex,
-              linkedPos);
-          sendCteScanRef(signal, req.senderRef, req.senderData,
-                         ZCTE_LOOKUP_OUTPUT_OVERFLOW);
-          return;
-        }
-        targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
-        numRowsSent++;
-        groupIdx++;
-      }
-
-      state->m_cteScan_groupsSent = groupIdx;
-      if (!endOfData && iter.valid()) {
-        state->m_cteScan_iterBucket = iter.bucket();
-        state->m_cteScan_iterRaw = iter.raw();
-      }
-    }
-
-    /* Send CTE_SCAN_CONF — no TRANSID_AI in the agg-feed path. */
-    CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
-    conf->senderRef = reference();
-    conf->senderData = req.senderData;
-    conf->numRows = numRowsSent;
-    conf->flags = endOfData ? CteScanConf::EndOfData : 0;
-    sendSignal(req.senderRef, GSN_CTE_SCAN_CONF,
-               signal, CteScanConf::SignalLength, JBB);
+    sendCteScanRef(signal, senderRef, senderData,
+                   ZJOIN_AGG_STATE_NOT_FOUND);
     return;
   }
+  JoinAggInterpreter *targetInterp = getJoinAggInterpreter(targetState);
+  ndbrequire(targetInterp != nullptr);
 
+  const LeafProgram *leaf = nullptr;
+  if (targetState->m_num_leaves > 1) {
+    ndbrequire(targetLeafIndex < targetState->m_num_leaves);
+    leaf = &targetState->m_leaf_programs[targetLeafIndex];
+  }
+
+  auto *gb_map = interp->gb_map_mutable();
+  Uint32 rowsThisBatch = 0;
+  bool endOfData = true;
+  if (gb_map != nullptr && !gb_map->empty()) {
+    jam();
+    const Uint32 src_n_gb_cols = interp->n_gb_cols();
+    const Uint32 src_n_agg_results = interp->n_agg_results();
+
+    /* Resume from saved iterator position (O(1)), or begin() on first call */
+    auto iter = (groupsSent == 0)
+        ? gb_map->begin()
+        : gb_map->iteratorAt(iterBucket, const_cast<char *>(iterRaw));
+
+    for (; iter.valid(); gb_map->next(iter)) {
+      if (rowsThisBatch >= CTE_SCAN_AGG_FEED_BATCH) {
+        jam();
+        endOfData = false;
+        break;
+      }
+      jam();
+      const char *groupData = reinterpret_cast<const char *>(iter.data());
+      const Uint32 keyLen = iter.keyLen();
+      const AggResItem *accumulators =
+          reinterpret_cast<const AggResItem *>(groupData + keyLen);
+
+      /* Build linked_attr_data: [tableId=0][schemaVersion=0][AH][data..]
+       * per column.  Mirrors CTE_LOOKUP agg-feed. */
+      Uint32 *linkedBuf = cevictBuffer;
+      Uint32 linkedPos = 0;
+
+      const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
+      const Uint32 keyWords = keyLen >> 2;
+      Uint32 kp = 0;
+      while (kp < keyWords) {
+        linkedBuf[linkedPos++] = 0;  // tableId
+        linkedBuf[linkedPos++] = 0;  // schemaVersion
+        Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+        Uint32 words = 1 + dataSize;
+        memcpy(&linkedBuf[linkedPos], &keyData[kp], words * sizeof(Uint32));
+        linkedPos += words;
+        kp += words;
+      }
+
+      for (Uint32 i = 0; i < src_n_agg_results; i++) {
+        const Uint32 attrId = src_n_gb_cols + i;
+        linkedBuf[linkedPos++] = 0;  // tableId
+        linkedBuf[linkedPos++] = 0;  // schemaVersion
+        if (accumulators[i].is_null) {
+          AttributeHeader::init(&linkedBuf[linkedPos], attrId, 0);
+          linkedPos += 1;
+        } else {
+          AttributeHeader::init(&linkedBuf[linkedPos], attrId, 8);
+          memcpy(&linkedBuf[linkedPos + 1], &accumulators[i].value, 8);
+          linkedPos += 3;
+        }
+      }
+
+    retry_agg_scan:
+      Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
+          nullptr, nullptr, linkedBuf, linkedPos, leaf);
+      if (aggRet == AGG_EVICT_NEEDED) {
+        jam();
+        sendEvictedAggGroup(signal, targetInterp, targetState);
+        goto retry_agg_scan;
+      }
+      if (unlikely(aggRet != 0)) {
+        jam();
+        g_eventLogger->info("(%u) CTE_SCAN agg feed FAILED: aggRet=%d "
+            "targetKey=%u leafIdx=%u linkedWords=%u",
+            instance(), aggRet, targetBaseKey, targetLeafIndex,
+            linkedPos);
+        sendCteScanRef(signal, senderRef, senderData,
+                       ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+        return;
+      }
+      targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+      rowsThisBatch++;
+      groupsSent++;
+    }
+
+    if (!endOfData && iter.valid()) {
+      /* Yield — schedule continuation via CONTINUEB.
+       * All scan state is carried in signal data so the CTE hash table
+       * remains read-only (multiple DBSPJ instances may scan concurrently). */
+      jam();
+      const char *rawPtr = iter.raw();
+      signal->theData[0] = ZCONTINUE_CTE_SCAN_AGG_FEED;
+      signal->theData[1] = aggStateKey;
+      signal->theData[2] = senderRef;
+      signal->theData[3] = senderData;
+      signal->theData[4] = joinAggStateKey;
+      signal->theData[5] = iter.bucket();
+      signal->theData[6] = (Uint32)(uintptr_t)rawPtr;
+      signal->theData[7] = (Uint32)((uintptr_t)rawPtr >> 32);
+      signal->theData[8] = groupsSent;
+      sendSignal(reference(), GSN_CONTINUEB, signal, 9, JBB);
+      return;
+    }
+  }
+
+  /* All groups processed — send CTE_SCAN_CONF with EndOfData */
+  CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = senderData;
+  conf->numRows = groupsSent;
+  conf->flags = CteScanConf::EndOfData;
+  sendSignal(senderRef, GSN_CTE_SCAN_CONF,
+             signal, CteScanConf::SignalLength, JBB);
+}
+
+/**
+ * cteScanEmitResults — iterate CTE hash table groups and emit TRANSID_AI
+ * output to the API/DBSPJ.  Uses emitCteGroupOutput for the AttrInfo-driven
+ * path or a legacy raw-column path.  Sends CTE_SCAN_CONF when done.
+ */
+void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
+                                JoinAggregationState *state,
+                                JoinAggInterpreter *interp,
+                                const Uint32 *finalR, Uint32 finalRLen,
+                                bool haveFinalR) {
   auto *gb_map = interp->gb_map_mutable();
   Uint32 numRowsSent = 0;
   bool endOfData = true;
@@ -19802,6 +19761,111 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
   conf->flags = endOfData ? CteScanConf::EndOfData : 0;
   sendSignal(req.senderRef, GSN_CTE_SCAN_CONF,
              signal, CteScanConf::SignalLength, JBB);
+}
+
+/**
+ * CTE_SCAN_REQ — scan groups from a materialized CTE hash table.
+ *
+ * Iterates JoinAggregationState's hash table, resuming from a saved
+ * iterator position (m_cteScan_iterBucket/iterRaw) for O(1) resume.
+ * Sends up to batchSize groups as TRANSID_AI.  Sends CTE_SCAN_CONF
+ * with EndOfData when all groups have been sent.
+ *
+ * Iteration state is stored in JoinAggregationState so it persists
+ * across batches.  Each CTE_SCAN_REQ either starts a new scan
+ * (groupsSent == 0) or continues from the saved position.
+ */
+void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
+  jamEntry();
+  if (unlikely(!assembleFragments(signal))) {
+    jam();
+    return;
+  }
+
+  const CteScanReq req =
+      *(const CteScanReq *)signal->getDataPtr();
+
+  /* Release incoming signal sections early so all error paths are safe.
+   * We copy the AttrInfo section into a local buffer before releasing. */
+  SectionHandle handle(this, signal);
+
+  JoinAggregationState *state = getJoinAggState(req.aggStateKey);
+  if (unlikely(state == nullptr)) {
+    jam();
+    sendCteScanRef(signal, req.senderRef, req.senderData,
+                   ZJOIN_AGG_STATE_NOT_FOUND, &handle);
+    return;
+  }
+
+  if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
+    jam();
+    sendCteScanRef(signal, req.senderRef, req.senderData,
+                   ZCTE_LOOKUP_STATE_NOT_READY, &handle);
+    return;
+  }
+
+  /* Optional AttrInfo section: 5-word header + interpreted program.
+   * When present the final-read section drives per-group TRANSID_AI
+   * formatting and FLUSH_AI routing (mirroring CTE_LOOKUP_REQ). */
+  Uint32 *cinBuf = cattrInfoBuffer;
+  Uint32 attrInfoLen = 0;
+  SegmentedSectionPtr attrInfoSection;
+  if (handle.getSection(attrInfoSection, CteScanReq::AttrInfoSectionNum)) {
+    if (unlikely(attrInfoSection.sz > ZATTR_BUFFER_SIZE)) {
+      jam();
+      sendCteScanRef(signal, req.senderRef, req.senderData,
+                     ZATTRINFO_TOO_LARGE, &handle);
+      return;
+    }
+    copy(cinBuf, attrInfoSection);
+    attrInfoLen = attrInfoSection.sz;
+  }
+  releaseSections(handle);
+
+  /* Parse 5-word AttrInfo header and locate final-read section.
+   * Header: [initReadLen, execRegionLen, finalUpdateLen, finalRLen, rsubLen].
+   * The final-read section starts after the header + init-read + exec + final-update. */
+  const Uint32 *finalR = nullptr;
+  Uint32 finalRLen = 0;
+  bool haveFinalR = false;
+  /* Use the per-fragment FLUSH_AI target from the CTE_SCAN_REQ direct
+   * fields.  parseDA's section was built once with the API's common
+   * (worker[0]) receiverId, so its FLUSH_AI words can NOT be trusted —
+   * each fragment's request carries its own resultRef/resultData
+   * (= per-worker API receiverId) in the signal header instead. */
+  if (attrInfoLen >= 5) {
+    const Uint32 initReadLen = cinBuf[0];
+    const Uint32 execRegionLen = cinBuf[1];
+    const Uint32 finalUpdateLen = cinBuf[2];
+    const Uint32 fr = cinBuf[3];
+    const Uint32 finalRStart = 5 + initReadLen + execRegionLen + finalUpdateLen;
+    if (finalRStart + fr <= attrInfoLen) {
+      finalR = &cinBuf[finalRStart];
+      finalRLen = fr;
+      haveFinalR = (fr > 0);
+    }
+  }
+
+  /* Save transId for this scan (first or continuation) — used when
+   * sending TRANSID_AI back to the API and to validate continuation
+   * REQs belong to the same transaction. */
+  state->m_cteScan_transId[0] = req.transId1;
+  state->m_cteScan_transId[1] = req.transId2;
+
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  ndbrequire(interp != nullptr);
+
+  /* Aggregation feed path: scanned groups feed into another interpreter */
+  if (req.joinAggStateKey != RNIL) {
+    jam();
+    cteScanAggFeed(signal, req.aggStateKey, req.senderRef, req.senderData,
+                   req.joinAggStateKey,
+                   0, nullptr, 0);
+    return;
+  }
+
+  /* Non-agg path: emit groups as TRANSID_AI to API/DBSPJ */
+  cteScanEmitResults(signal, req, state, interp, finalR, finalRLen, haveFinalR);
 }
 
 /* ------------------------------------------------------------------ */

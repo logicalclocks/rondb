@@ -359,6 +359,7 @@ class FsReadWriteReq;
 #define ZCONTINUE_JOIN_AGG_MERGE 46
 #define ZCONTINUE_JOIN_AGG_REDISTRIBUTE 47
 #define ZCONTINUE_CTE_REDIST_DRAIN 48
+#define ZCONTINUE_CTE_SCAN_AGG_FEED 49
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -3380,6 +3381,16 @@ private:
   void sendCteLookupRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
                         Uint32 errorCode, SectionHandle *handle = nullptr);
   void execCTE_SCAN_REQ(Signal* signal);
+  void cteScanAggFeed(Signal* signal, Uint32 aggStateKey,
+                      Uint32 senderRef, Uint32 senderData,
+                      Uint32 joinAggStateKey,
+                      Uint32 iterBucket, const char *iterRaw,
+                      Uint32 groupsSent);
+  void cteScanEmitResults(Signal* signal, const CteScanReq &req,
+                          JoinAggregationState *state,
+                          JoinAggInterpreter *interp,
+                          const Uint32 *finalR, Uint32 finalRLen,
+                          bool haveFinalR);
   void sendCteScanRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
                       Uint32 errorCode, SectionHandle *handle = nullptr);
   void execJOIN_AGG_REDISTRIBUTE_REQ(Signal* signal);
