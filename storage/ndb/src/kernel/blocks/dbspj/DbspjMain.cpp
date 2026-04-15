@@ -13976,12 +13976,23 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
        * PI_ATTR_LIST is present, suppress the user projection and
        * FLUSH_AI to avoid READ_PACKED columns (unparseable by
        * buildRowHeader) in the TRANSID_AI sent to DBSPJ.
+       *
+       * The same suppression applies to non-agg-leaf nodes inside a
+       * CTE materialization subtree (ctx.m_cteSubtreeRemaining > 0).
+       * RT_AGGREGATE is only set for main-query nodes — CTE subtree
+       * nodes never set it — so without this extra guard a non-agg-leaf
+       * scanCte at a CTE subtree root (T16) would emit FLUSH_AI to API
+       * during materialization instead of routing rows back to DBSPJ
+       * for child driving.
        */
       const bool isAggregateRequest =
           (requestPtr.p->m_bits & Request::RT_AGGREGATE) != 0;
       const bool isAggregateLeaf =
           (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0;
-      const bool suppressFlushAI = isAggregateRequest && !isAggregateLeaf;
+      const bool isInsideCteSubtree =
+          (ctx.m_cteSubtreeRemaining > 0);
+      const bool suppressFlushAI =
+          (isAggregateRequest || isInsideCteSubtree) && !isAggregateLeaf;
 
       if (paramBits & DABits::PI_ATTR_LIST) {
         jam();
