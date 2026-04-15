@@ -2034,11 +2034,21 @@ Dbspj::build(Build_context& ctx,
          * is the enclosing CTE's aggregate leaf. The subtree feeds
          * its aggregator indirectly — via this node's result rows
          * rather than via the base-table scan's rows. Walk up to
-         * the subtree's scan root and mark it T_CTE_INDIRECT_FEED
-         * so scanFrag_send() does NOT set JoinAggFlag on the scan's
-         * SCAN_FRAGREQ (otherwise DBLQH would pipe the scan rows
-         * through the aggregator, mis-read linked-column metadata
-         * and segfault in JoinAggInterpreter::initGBTypes). */
+         * the subtree's root.
+         *
+         * Two outcomes depending on what's at the subtree root:
+         *
+         * (a) Real-table scan/lookup at root: mark T_CTE_INDIRECT_FEED
+         *     so scanFrag_send() does NOT set JoinAggFlag on the scan's
+         *     SCAN_FRAGREQ.  The scan is already T_CTE_SCAN (set above
+         *     in the !CTE_LOOKUP/!CTE_SCAN branch).
+         *
+         * (b) CTE_LOOKUP / CTE_SCAN at root: there's no real-table
+         *     scan above the agg leaf — the subtree consists entirely
+         *     of CTE-only ops.  The root must itself become the
+         *     materialization start point.  Mark it T_CTE_SCAN
+         *     (so checkPrepareComplete / execCTE_PHASE_START_REQ find
+         *     it) and record m_scanTreeNodeNo on the CteContext. */
         jam();
         Uint32 ancestorPtrI = nodePtr.p->m_parentPtrI;
         bool foundScanAncestor = false;
@@ -2046,13 +2056,34 @@ Dbspj::build(Build_context& ctx,
           Ptr<TreeNode> ancestorPtr;
           ndbrequire(m_treenode_pool.getPtr(ancestorPtr, ancestorPtrI));
           if (ancestorPtr.p->m_parentPtrI == RNIL) {
-            ancestorPtr.p->m_bits |= TreeNode::T_CTE_INDIRECT_FEED;
-            DEB_CTE(("(%u) build: mark T_CTE_INDIRECT_FEED on "
-                     "subtree root node %u (nested agg leaf "
-                     "node %u cteId=%u)",
-                     instance(), ancestorPtr.p->m_node_no,
-                     nodePtr.p->m_node_no,
-                     nodePtr.p->m_cteId));
+            const bool ancestorIsCteOnly =
+                (ancestorPtr.p->m_info == &g_CteLookupOpInfo ||
+                 ancestorPtr.p->m_info == &g_CteScanOpInfo);
+            if (ancestorIsCteOnly) {
+              ancestorPtr.p->m_bits |= TreeNode::T_CTE_SCAN;
+              DEB_CTE(("(%u) build: mark T_CTE_SCAN on CTE-only "
+                       "subtree root node %u (nested agg leaf "
+                       "node %u cteId=%u)",
+                       instance(), ancestorPtr.p->m_node_no,
+                       nodePtr.p->m_node_no,
+                       nodePtr.p->m_cteId));
+              for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+                if (requestPtr.p->m_cteContexts[i].m_cteId ==
+                    ctx.m_cteSubtreeCteId) {
+                  requestPtr.p->m_cteContexts[i].m_scanTreeNodeNo =
+                      ancestorPtr.p->m_node_no;
+                  break;
+                }
+              }
+            } else {
+              ancestorPtr.p->m_bits |= TreeNode::T_CTE_INDIRECT_FEED;
+              DEB_CTE(("(%u) build: mark T_CTE_INDIRECT_FEED on "
+                       "subtree root node %u (nested agg leaf "
+                       "node %u cteId=%u)",
+                       instance(), ancestorPtr.p->m_node_no,
+                       nodePtr.p->m_node_no,
+                       nodePtr.p->m_cteId));
+            }
             foundScanAncestor = true;
             break;
           }
@@ -5832,10 +5863,41 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
 void Dbspj::cte_start(Signal *signal, Ptr<Request> requestPtr,
                        Ptr<TreeNode> treeNodePtr) {
   jam();
-  // CTE lookups don't "start" in the traditional sense — they are
-  // driven by cte_parent_row() when the parent provides keys.
-  // CTE materialization is triggered separately (Step 6+).
-  // Nothing to do here until the materialization infrastructure is in place.
+  /* Two cases:
+   *
+   * (1) Driven from a parent row (the common case): the lookup
+   *     fires from cte_parent_row(), not here.  In that case
+   *     T_CTE_SCAN is NOT set on this node and we do nothing.
+   *
+   * (2) Constant-keyed lookupCte at a CTE subtree root (T12):
+   *     the lookup is the materialization root for an enclosing
+   *     CTE — it has no parent, and the build loop marked it
+   *     T_CTE_SCAN so checkPrepareComplete found it here.  We
+   *     fire one CTE_LOOKUP_REQ with the pre-built constant key
+   *     by calling cte_lookup_send() with a dummy RowPtr (the
+   *     constant-key path doesn't read rowRef). */
+  if ((treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) == 0) {
+    jam();
+    return;
+  }
+
+  jam();
+  /* Constant-keyed root lookup: synthesize a zero correlation and
+   * fire the lookup.  cte_lookup_send only reads rowRef inside the
+   * T_KEYINFO_CONSTRUCTED branch, which a constant-keyed root does
+   * not take. */
+  treeNodePtr.p->m_state = TreeNode::TN_ACTIVE;
+  requestPtr.p->m_cnt_active++;
+  requestPtr.p->m_active_tree_nodes.set(treeNodePtr.p->m_node_no);
+  requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
+  treeNodePtr.p->m_send.m_correlation = 0;
+  RowPtr dummyRow;
+  dummyRow.m_src_correlation = 0;
+  dummyRow.m_src_node_ptrI = RNIL;
+  dummyRow.m_matched = nullptr;
+  dummyRow.m_row_data.m_header = nullptr;
+  dummyRow.m_row_data.m_data = nullptr;
+  cte_lookup_send(signal, requestPtr, treeNodePtr, dummyRow);
 }
 
 void Dbspj::cte_countSignal(Signal *signal, Ptr<Request> requestPtr,

@@ -3330,6 +3330,293 @@ testLookupCteMainInternal(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 12: lookupCte as CTE materialization root + child              */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   WITH                                                              */
+/*     cte0 AS (SELECT grp, SUM(val) AS total FROM cte_src GROUP BY  */
+/*              grp),                                                  */
+/*     cte1 AS (SELECT cte_src.grp, SUM(cte_src.val) AS total          */
+/*              FROM cte0 -- via lookupCte(0, key=1)                  */
+/*              JOIN cte_src ON cte_src.pk = cte0.grp                  */
+/*              GROUP BY cte_src.grp)                                  */
+/*   SELECT * FROM cte1                                                */
+/*                                                                     */
+/* Why this test:                                                      */
+/*   Exercises CTE_LOOKUP_REQ in the "root non-leaf" role inside a     */
+/*   CTE materialization subtree.  CTE 1's subtree starts with a      */
+/*   constant-keyed lookupCte (no parent row drives it — it fires    */
+/*   once at materialization start) and that lookup's result drives   */
+/*   a child readTuple which is the agg leaf for cte1.                */
+/*                                                                     */
+/*   Two kernel-side pieces enable this:                               */
+/*    (1) DBSPJ build loop walk-up extension: when an agg leaf has    */
+/*        no real-table scan above it but its subtree-root ancestor  */
+/*        is itself a CTE_LOOKUP / CTE_SCAN, mark THAT ancestor with  */
+/*        T_CTE_SCAN and record it on the CteContext.  This makes    */
+/*        checkPrepareComplete / execCTE_PHASE_START_REQ find the    */
+/*        CTE-only subtree root for materialization startup.          */
+/*    (2) cte_start (the OpInfo m_start hook for CTE_LOOKUP nodes):  */
+/*        when called on a node with T_CTE_SCAN set, fire the        */
+/*        constant-keyed lookup directly via cte_lookup_send with    */
+/*        a dummy RowPtr (the constant-key path doesn't read         */
+/*        rowRef, only the T_KEYINFO_CONSTRUCTED path does).         */
+/*                                                                     */
+/* Tree shape:                                                         */
+/*                                                                     */
+/*   Node 0: CTE 0 subtree container                                   */
+/*   Node 1: scanTable(cte_src) inside CTE 0                          */
+/*           T_CTE_SCAN, m_cteId=0                                     */
+/*   Node 2: readTuple(cte_src, key=linked(node1,"pk"))                */
+/*           T_AGGREGATE_LEAF, m_cteId=0                               */
+/*   Node 3: CTE 1 subtree container                                   */
+/*   Node 4: lookupCte(0, key=constInt(1))    -- CTE 1 subtree root   */
+/*           m_cteId=1, T_CTE_SCAN (set by build-loop extension),     */
+/*           NOT T_AGGREGATE_LEAF, has child node 5                    */
+/*   Node 5: readTuple(cte_src, key=linked(node4,"grp"),               */
+/*           setAggregation(cte1Agg))                                  */
+/*           T_AGGREGATE_LEAF, T_INNER_JOIN, T_LEAF, m_cteId=1,       */
+/*           parent=node 4, agg leaf for cte1                          */
+/*   Node 6: scanCte(1)                       -- main query root      */
+/*           m_cteId=RNIL, T_USER_PROJECTION                           */
+/*                                                                     */
+/* Expected execution:                                                 */
+/*                                                                     */
+/* Phase 0 (CTE 0 materialization):                                    */
+/*   Standard Test 2 pattern: cte0 = {(1,30),(2,70),(3,50)}.           */
+/*                                                                     */
+/* Phase 1 (CTE 1 materialization):                                    */
+/*   - execCTE_PHASE_START_REQ finds node 4 (T_CTE_SCAN, m_cteId=1,   */
+/*     phase=1) and calls its m_start = cte_start.                     */
+/*   - cte_start sees T_CTE_SCAN is set on node 4 (lookupCte) and     */
+/*     fires cte_lookup_send with a dummy RowPtr.  cte_lookup_send   */
+/*     takes the constant-key branch (no T_KEYINFO_CONSTRUCTED), uses */
+/*     the pre-built keyInfoPtrI (constant key=1).                    */
+/*   - DBLQH receives CTE_LOOKUP_REQ with key=1 → looks up cte0 for  */
+/*     grp=1 → returns row (grp=1, total=30) via TRANSID_AI.          */
+/*   - DBSPJ receives the row, runs startNextNodes for child node 5. */
+/*   - Node 5 readTuple fires with pk=linkedValue(cteLookup,"grp")=1 */
+/*     → returns cte_src row (pk=1, grp=1, val=10).                   */
+/*   - readTuple is the agg leaf — feeds cte1Agg with row             */
+/*     (cte_src.grp=1, cte_src.val=10).                                */
+/*   - cte1Agg = GROUP BY cte_src.grp, SUM(cte_src.val) → 1 group:   */
+/*     (grp=1, total=10).                                              */
+/*                                                                     */
+/* Main query:                                                         */
+/*   - scanCte(1) at main root reads cte1 (1 group) and delivers     */
+/*     1 row via FLUSH_AI to API.                                      */
+/*                                                                     */
+/* Expected result: 1 main row [grp=1, total=10].                     */
+/*                                                                     */
+/* Flag bits to verify in the DBSPJ tree dump:                         */
+/*   Node 1: T_CTE_SCAN | T_INNER_JOIN | T_BUFFER_*                    */
+/*   Node 2: T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF (cte0 leaf)     */
+/*   Node 4: T_CTE_SCAN | T_INNER_JOIN  -- the new build path        */
+/*   Node 5: T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF (cte1 leaf)     */
+/*   Node 6: T_USER_PROJECTION  (main scanCte)                         */
+/* ------------------------------------------------------------------ */
+
+static int
+testLookupCteCteMatRoot(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 12: lookupCte as CTE materialization root ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  dict->invalidateTable(VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  /* CTE 0: GROUP BY grp, SUM(val) */
+  NdbAggregator cte0Agg(srcTab);
+  if (!cte0Agg.GroupBy("grp") ||
+      !cte0Agg.LoadColumn("val", 0) ||
+      !cte0Agg.Sum(0, 0) ||
+      !cte0Agg.Finalize()) {
+    printf("FAILED (cte0Agg: %s)\n", cte0Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* CTE 1: GROUP BY cte_src.grp, SUM(cte_src.val).  Built on srcTab
+   * because the agg leaf is a readTuple over cte_src. */
+  NdbAggregator cte1Agg(srcTab);
+  if (!cte1Agg.GroupBy("grp") ||
+      !cte1Agg.LoadColumn("val", 0) ||
+      !cte1Agg.Sum(0, 0) ||
+      !cte1Agg.Finalize()) {
+    printf("FAILED (cte1Agg: %s)\n", cte1Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+
+  /* CTE 0 subtree: standard scanTable + readTuple agg leaf */
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      printf("FAILED (CTE 0 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte0Agg);
+    if (qb->readTuple(srcTab, key, &opts) == nullptr) {
+      printf("FAILED (CTE 0 leaf: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, cte0Agg, /*depMask=*/0) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* CTE 1 subtree: lookupCte(0, key=constInt(1)) at the root,
+   * readTuple as the agg leaf child. */
+  qb->beginCteSubtree(1);
+  {
+    const NdbQueryOperand *cteLookupKey[] = {
+      qb->constValue(Int32(1)), nullptr
+    };
+    NdbQueryOptions cteLookupOpts;
+    cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    const NdbQueryCteLookupOperationDef *cteLookupOp =
+        qb->lookupCte(0, 2, virtTab, cteLookupKey, &cteLookupOpts);
+    if (cteLookupOp == nullptr) {
+      printf("FAILED (CTE 1 lookupCte: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+
+    const NdbQueryOperand *leafKey[] = {
+      qb->linkedValue(cteLookupOp, "grp"), nullptr
+    };
+    NdbQueryOptions leafOpts;
+    leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    leafOpts.setAggregation(cte1Agg);
+    if (qb->readTuple(srcTab, leafKey, &leafOpts) == nullptr) {
+      printf("FAILED (CTE 1 leaf readTuple: %s)\n",
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(1, srcTab, cte1Agg, /*depMask=*/(1ULL << 0)) != 0) {
+    printf("FAILED (defineCte 1)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: scanCte(1) — read cte1 hash table to API */
+  const NdbQueryCteScanOperationDef *mainScanCteOp =
+      qb->scanCte(1, 2, virtTab);
+  if (mainScanCteOp == nullptr) {
+    printf("FAILED (main scanCte(1): %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  V("\n  Query prepared: %u operations\n", queryDef->getNoOfOperations());
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainOp = query->getQueryOperation(mainOpNo);
+  NdbRecAttr *raGrp = nullptr;
+  NdbRecAttr *raTotal = nullptr;
+  if (mainOp != nullptr) {
+    raGrp = mainOp->getValue("grp");
+    raTotal = mainOp->getValue("total");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    Int32 grp = raGrp ? raGrp->int32_value() : -1;
+    Int64 total = raTotal ? raTotal->int64_value() : -1;
+    V("  row: grp=%d total=%lld\n", grp, (long long)total);
+    if (grp != 1 || total != 10) {
+      printf("FAILED (cte1 mismatch: grp=%d total=%lld, expected 1/10)\n",
+             grp, (long long)total);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+  }
+
+  if (outcome == NdbQuery::NextResult_error) {
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (nextResult err %d: %s)\n", qErr.code, qErr.message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount != 1) {
+    printf("FAILED (expected 1 row, got %u)\n", rowCount);
+    return -1;
+  }
+
+  printf("OK (%u rows)\n", rowCount);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -3400,6 +3687,7 @@ int main(int argc, char **argv)
             exitCode = 1;
           if (testScanCteMainAggLeaf(&ndb, conn) != 0) exitCode = 1;
           if (testLookupCteMainInternal(&ndb, conn) != 0) exitCode = 1;
+          if (testLookupCteCteMatRoot(&ndb, conn) != 0) exitCode = 1;
         }
 
         dropTestTables(conn);
