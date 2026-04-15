@@ -150,9 +150,54 @@ dropTestTables(MYSQL *conn)
 /*   SELECT COUNT(*), SUM(t2.val)                                      */
 /*   FROM cte_src t1 JOIN cte_src t2 ON t1.pk = t2.pk                  */
 /*                                                                     */
-/* CTE is materialized but main query doesn't use it.                  */
-/* Tests that CTE pipeline doesn't break normal aggregation.           */
-/* Expected: COUNT=5, SUM=150                                          */
+/* Why this test:                                                      */
+/*   Smoke test that the CTE pipeline (build, materialize, release)   */
+/*   doesn't break a query whose MAIN SELECT is a normal joined       */
+/*   aggregate that doesn't reference the CTE.  CTE 0 is built and    */
+/*   materialized but no main-query op consults it.                    */
+/*                                                                     */
+/* Tree shape:                                                         */
+/*                                                                     */
+/*   Node 0: CTE 0 subtree container (g_CteSubtreeOpInfo)              */
+/*   Node 1: scanTable(cte_src) inside CTE 0   T_CTE_SCAN, m_cteId=0  */
+/*   Node 2: readTuple(cte_src,                                       */
+/*           key=linked(node1,"pk"),                                  */
+/*           setAggregation(cteAgg))           T_AGGREGATE_LEAF,      */
+/*                                              T_INNER_JOIN, T_LEAF, */
+/*                                              m_cteId=0             */
+/*   Node 3: scanTable(cte_src)                — main root            */
+/*           m_cteId=RNIL                                              */
+/*   Node 4: readTuple(cte_src,                                       */
+/*           key=linked(node3,"pk"),                                  */
+/*           setAggregation(mainAgg))          T_AGGREGATE_LEAF,      */
+/*                                              T_INNER_JOIN, T_LEAF, */
+/*                                              m_cteId=RNIL          */
+/*                                                                     */
+/* Expected execution:                                                 */
+/*                                                                     */
+/* Phase 0 (CTE 0 materialization):                                    */
+/*   - Node 1 scans cte_src (5 rows).  T_CTE_SCAN causes              */
+/*     scanFrag_send to set JoinAggFlag on the SCAN_FRAGREQ so DBLQH  */
+/*     pipes the rows directly into the cte0 hash table at the        */
+/*     materialization-aggregator level.                               */
+/*   - Per parent row, node 2 (readTuple) fires keyed by linked pk   */
+/*     and is the agg leaf — feeds cteAgg.                             */
+/*   - cteAgg = GROUP BY grp, SUM(val) → cte0 = {(1,30),(2,70),(3,50)}*/
+/*                                                                     */
+/* Main query (after execCTE_START_MAIN_REQ):                          */
+/*   - Node 3 scans cte_src (5 rows).                                 */
+/*   - Per row, node 4 (readTuple) fires as the main agg leaf.       */
+/*   - mainAgg = COUNT(*), SUM(val) over the 5 rows.                  */
+/*                                                                     */
+/* Expected aggregation result:                                        */
+/*   COUNT = 5                                                         */
+/*   SUM   = 150 (10+20+30+40+50)                                      */
+/*                                                                     */
+/* Flag bits to verify:                                                */
+/*   Node 1: T_CTE_SCAN | T_INNER_JOIN | T_BUFFER_*                    */
+/*   Node 2: T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF                  */
+/*   Node 3: T_INNER_JOIN | T_BUFFER_*                                 */
+/*   Node 4: T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF                  */
 /* ------------------------------------------------------------------ */
 
 static int
@@ -363,9 +408,58 @@ testCteWithStandardMain(Ndb *ndb, MYSQL * /*conn*/)
 /*   SELECT cte0.grp, cte0.total                                       */
 /*   FROM cte_src t1 JOIN cte0 ON t1.grp = cte0.grp                    */
 /*                                                                     */
-/* CTE materializes GROUP BY grp, SUM(val). Main query scans src and   */
-/* looks up CTE by grp key. No main aggregation — raw CTE rows.        */
-/* Expected: 5 rows: grp=1→30 (x2), grp=2→70 (x2), grp=3→50 (x1)     */
+/* Why this test:                                                      */
+/*   The first end-to-end test that has the main query CONSUME a CTE  */
+/*   via a leaf CTE_LOOKUP_REQ.  Verifies the basic materialize-then- */
+/*   lookup path with no main aggregation: each main scan row fires  */
+/*   one CTE_LOOKUP whose result is delivered straight to the API.   */
+/*                                                                     */
+/* Tree shape:                                                         */
+/*                                                                     */
+/*   Node 0: CTE 0 subtree container                                   */
+/*   Node 1: scanTable(cte_src)                T_CTE_SCAN, m_cteId=0  */
+/*   Node 2: readTuple(cte_src,                                       */
+/*           key=linked(node1,"pk"),                                  */
+/*           setAggregation(cteAgg))           T_AGGREGATE_LEAF,      */
+/*                                              T_INNER_JOIN, T_LEAF, */
+/*                                              m_cteId=0             */
+/*   Node 3: scanTable(cte_src)                — main root            */
+/*           m_cteId=RNIL, T_USER_PROJECTION,                         */
+/*                                              T_BUFFER_MAP          */
+/*           (T_BUFFER_MAP / T_CHK_CONGESTION set by appendTreeNode  */
+/*           because node 4 below is a lookup child of this scan.)    */
+/*   Node 4: lookupCte(0,                                             */
+/*           key=linked(node3,"grp"))          T_USER_PROJECTION,     */
+/*                                              T_INNER_JOIN, T_LEAF, */
+/*                                              m_cteId=RNIL,         */
+/*                                              parent=node 3,        */
+/*                                              NOT T_AGGREGATE_LEAF  */
+/*                                                                     */
+/* Expected execution:                                                 */
+/*                                                                     */
+/* Phase 0 (CTE 0 materialization):                                    */
+/*   Same as Test 1: cte0 = {(1,30),(2,70),(3,50)}.                    */
+/*                                                                     */
+/* Main query:                                                         */
+/*   - Node 3 scans cte_src — 5 rows total across all fragments.      */
+/*   - Per main row, node 4 fires CTE_LOOKUP_REQ keyed by main.grp.  */
+/*     DBLQH looks up cte0 hash table and FLUSH_AI sends the cte0    */
+/*     row directly to the API receiver of node 4.                    */
+/*       (pk=1,grp=1) → cte0(1)=(grp=1,total=30)                       */
+/*       (pk=2,grp=1) → cte0(1)=(grp=1,total=30)  -- duplicate         */
+/*       (pk=3,grp=2) → cte0(2)=(grp=2,total=70)                       */
+/*       (pk=4,grp=2) → cte0(2)=(grp=2,total=70)  -- duplicate         */
+/*       (pk=5,grp=3) → cte0(3)=(grp=3,total=50)                       */
+/*                                                                     */
+/* Expected result row count: 5                                        */
+/*   {(grp=1,total=30) ×2, (grp=2,total=70) ×2, (grp=3,total=50) ×1} */
+/*                                                                     */
+/* Flag bits to verify:                                                */
+/*   Node 1: T_CTE_SCAN | T_INNER_JOIN | T_BUFFER_*                    */
+/*   Node 2: T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF                  */
+/*   Node 3: T_USER_PROJECTION | T_INNER_JOIN | T_BUFFER_MAP |        */
+/*           T_CHK_CONGESTION                                          */
+/*   Node 4: T_USER_PROJECTION | T_INNER_JOIN | T_LEAF                 */
 /* ------------------------------------------------------------------ */
 
 static int
@@ -555,13 +649,66 @@ testCteLookupMain(Ndb *ndb, MYSQL * /*conn*/)
 /*   SELECT COUNT(*), SUM(cte0.total)                                  */
 /*   FROM cte_src AS s JOIN cte0 ON s.grp = cte0.grp                   */
 /*                                                                     */
-/* CTE 0 materializes GROUP BY grp, SUM(val): 3 groups.                */
-/* Main query scans cte_src (5 rows), for each row does CTE_LOOKUP     */
-/* into CTE 0 by grp key. The CTE_LOOKUP node is the main aggregate   */
-/* leaf — its result feeds into the main JoinAggInterpreter via the    */
-/* joinAggStateKey path (no FLUSH_AI to API).                          */
+/* Why this test:                                                      */
+/*   Exercises CTE_LOOKUP_REQ in the "leaf with agg" role for the     */
+/*   main SELECT.  The lookupCte is the main query's aggregate leaf, */
+/*   so its result flows into the main JoinAggInterpreter directly   */
+/*   via DBLQH's agg-feed path (joinAggStateKey != RNIL) and never   */
+/*   reaches the API as a per-row TRANSID_AI.  The main aggregator's */
+/*   final result is fetched via query->getAggregator().              */
 /*                                                                     */
-/* Expected: COUNT=5, SUM=250 (30+30+70+70+50)                        */
+/* Tree shape:                                                         */
+/*                                                                     */
+/*   Node 0: CTE 0 subtree container                                   */
+/*   Node 1: scanTable(cte_src)                T_CTE_SCAN, m_cteId=0  */
+/*   Node 2: readTuple(cte_src,                                       */
+/*           key=linked(node1,"pk"),                                  */
+/*           setAggregation(cteAgg))           T_AGGREGATE_LEAF,      */
+/*                                              T_INNER_JOIN, T_LEAF, */
+/*                                              m_cteId=0             */
+/*   Node 3: scanTable(cte_src)                — main root            */
+/*           m_cteId=RNIL                                              */
+/*   Node 4: lookupCte(0,                                             */
+/*           key=linked(node3,"grp"),                                 */
+/*           setAggregation(mainAgg))          T_AGGREGATE_LEAF,      */
+/*                                              T_INNER_JOIN, T_LEAF, */
+/*                                              m_cteId=RNIL          */
+/*           cte_lookup_send computes                                  */
+/*           joinAggStateKey from m_aggStateKeys[localNode].           */
+/*                                                                     */
+/* Expected execution:                                                 */
+/*                                                                     */
+/* Phase 0 (CTE 0 materialization):                                    */
+/*   cte0 = {(grp=1,total=30),(grp=2,total=70),(grp=3,total=50)}.     */
+/*                                                                     */
+/* Main query:                                                         */
+/*   - Node 3 scans cte_src (5 rows).                                 */
+/*   - Per main row, node 4 fires CTE_LOOKUP_REQ keyed by main.grp   */
+/*     with joinAggStateKey set.  DBLQH walks the CTE 0 hash table   */
+/*     to find the matching group, then takes the agg-feed branch:  */
+/*     processRecWithLinkedAttrs() inserts the cte0 row into the     */
+/*     main aggregator's local hash table on this node.  No          */
+/*     TRANSID_AI is sent.                                             */
+/*   - 5 inserts into mainAgg, one per main row:                      */
+/*       (pk=1,grp=1) → cte0(1).total=30                               */
+/*       (pk=2,grp=1) → cte0(1).total=30                               */
+/*       (pk=3,grp=2) → cte0(2).total=70                               */
+/*       (pk=4,grp=2) → cte0(2).total=70                               */
+/*       (pk=5,grp=3) → cte0(3).total=50                               */
+/*   - mainAgg has no GROUP BY → single result row.                   */
+/*                                                                     */
+/* Expected aggregation result:                                        */
+/*   COUNT = 5                                                         */
+/*   SUM   = 250 (30+30+70+70+50)                                      */
+/*                                                                     */
+/* Flag bits to verify:                                                */
+/*   Node 1: T_CTE_SCAN | T_INNER_JOIN | T_BUFFER_*                    */
+/*   Node 2: T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF                  */
+/*   Node 3: T_INNER_JOIN | T_BUFFER_*  (NO T_USER_PROJECTION         */
+/*           because the main is an aggregate query — RT_AGGREGATE  */
+/*           is set and parseDA's suppressFlushAI fires for non-leaf */
+/*           main nodes)                                               */
+/*   Node 4: T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF                  */
 /* ------------------------------------------------------------------ */
 
 static int
@@ -765,10 +912,54 @@ testCteLookupAggLeaf(Ndb *ndb, MYSQL * /*conn*/)
 /*   FROM cte_src t1 JOIN cte_src t2 ON t1.pk = t2.pk                  */
 /*   WHERE t1.grp >= 2                                                 */
 /*                                                                     */
-/* The WHERE filter is pushed as NdbInterpretedCode on the CTE scan    */
-/* and the main scan. Only rows with grp >= 2 are scanned.             */
-/* Data: (3,2,30),(4,2,40),(5,3,50) pass the filter.                   */
-/* Expected: COUNT=3, SUM=120                                          */
+/* Why this test:                                                      */
+/*   Verifies that NdbInterpretedCode-style WHERE filters on the      */
+/*   parent scan compose correctly with CTE materialization and the  */
+/*   main aggregation.  Filter is applied on BOTH the CTE 0 scan    */
+/*   and the main scan — only rows with grp >= 2 reach the agg      */
+/*   leaves, so cte0 has 2 groups and main aggregator sees 3 rows.  */
+/*                                                                     */
+/* Tree shape: same as Test 3 except the two scanTable nodes carry   */
+/* an interpreted filter program:                                      */
+/*                                                                     */
+/*   Node 0: CTE 0 subtree container                                   */
+/*   Node 1: scanTable(cte_src, filter=grp>=2)                        */
+/*           T_CTE_SCAN | T_ATTR_INTERPRETED, m_cteId=0               */
+/*   Node 2: readTuple(cte_src, key=linked(node1,"pk"),               */
+/*           setAggregation(cte0Agg))                                  */
+/*           T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF, m_cteId=0      */
+/*   Node 3: scanTable(cte_src, filter=grp>=2)                        */
+/*           T_ATTR_INTERPRETED, m_cteId=RNIL                          */
+/*   Node 4: readTuple(cte_src, key=linked(node3,"pk"),               */
+/*           setAggregation(mainAgg))                                  */
+/*           T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF, m_cteId=RNIL   */
+/*                                                                     */
+/* Expected execution:                                                 */
+/*                                                                     */
+/* Phase 0 (CTE 0 materialization):                                    */
+/*   - Node 1's interpreted filter rejects rows with grp < 2          */
+/*     (eliminates pk=1 grp=1 and pk=2 grp=1).                         */
+/*   - Surviving cte_src rows: (pk=3,grp=2,val=30),                   */
+/*     (pk=4,grp=2,val=40), (pk=5,grp=3,val=50).                       */
+/*   - Per surviving row, node 2 fires with linked pk → matched      */
+/*     rows feed cte0Agg: (grp=2,val=30),(grp=2,val=40),(grp=3,val=50)*/
+/*   - cte0 = {(grp=2,total=70),(grp=3,total=50)} → 2 groups.          */
+/*                                                                     */
+/* Main query:                                                         */
+/*   - Node 3's interpreted filter rejects pk=1, pk=2.                */
+/*   - 3 surviving rows feed mainAgg: COUNT=3,                        */
+/*     SUM(val) = 30+40+50 = 120.                                      */
+/*                                                                     */
+/* Expected aggregation result:                                        */
+/*   COUNT = 3                                                         */
+/*   SUM   = 120                                                       */
+/*                                                                     */
+/* Flag bits to verify:                                                */
+/*   Node 1: T_CTE_SCAN | T_ATTR_INTERPRETED | T_INNER_JOIN |         */
+/*           T_BUFFER_*                                                */
+/*   Node 2: T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF                  */
+/*   Node 3: T_ATTR_INTERPRETED | T_INNER_JOIN | T_BUFFER_*            */
+/*   Node 4: T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF                  */
 /* ------------------------------------------------------------------ */
 
 static int
@@ -998,27 +1189,82 @@ testCteWithScanFilter(Ndb *ndb, MYSQL * /*conn*/)
 /*   SELECT s.grp, cte1.total                                          */
 /*   FROM cte_src s JOIN cte1 ON s.grp = cte1.grp                      */
 /*                                                                     */
-/* CTE 0 materializes via the existing Test 2 pattern.                 */
-/* CTE 1 materializes by scanning cte_src and CTE_LOOKUP cte0 INSIDE   */
-/* its subtree — this is the new Part A pattern under test.          */
-/* Main query scans cte_src and CTE_LOOKUPs cte1.                     */
+/* Why this test:                                                      */
+/*   First test of CTE_LOOKUP_REQ in the "leaf with agg" role inside */
+/*   a CTE materialization subtree (Part A pattern).  CTE 1's        */
+/*   subtree has a scanTable parent and a NESTED lookupCte child    */
+/*   that is the agg leaf for cte1Agg — its result is fed via       */
+/*   joinAggStateKey directly into cte1's local aggregator at DBLQH. */
 /*                                                                     */
-/* Expected cte0 = {(1,30),(2,70),(3,50)}                              */
-/* Expected cte1 per source row:                                       */
-/*   row (1,1,10) → cte0(1).total=30 → grp=1, sum+=30                  */
-/*   row (2,1,20) → cte0(1).total=30 → grp=1, sum+=30 → 60 for grp=1   */
-/*   row (3,2,30) → cte0(2).total=70 → grp=2, sum+=70                  */
-/*   row (4,2,40) → cte0(2).total=70 → grp=2, sum+=70 → 140 for grp=2  */
-/*   row (5,3,50) → cte0(3).total=50 → grp=3, sum+=50 → 50 for grp=3   */
-/* Expected cte1 = {(1,60),(2,140),(3,50)}                             */
-/* Expected main = 5 rows, one per source row, each carries cte1.total */
+/* Tree shape:                                                         */
 /*                                                                     */
-/* This test is expected to FAIL until all three Part A bugs are       */
-/* fixed (see part_a_cte_to_cte_lookup_plan.md). Initial failure       */
-/* symptom is DbspjErr::InvalidAggregateFlags (20022) raised by        */
-/* validateAggregateFlags() because the nested lookupCte(0) with       */
-/* setAggregation() is mis-classified as a main-query aggregate        */
-/* leaf.                                                               */
+/*   Node 0: CTE 0 subtree container                                   */
+/*   Node 1: scanTable(cte_src)                T_CTE_SCAN, m_cteId=0  */
+/*   Node 2: readTuple(cte_src, key=linked(node1,"pk"),               */
+/*           setAggregation(cte0Agg))           T_AGGREGATE_LEAF,     */
+/*                                              T_INNER_JOIN, T_LEAF, */
+/*                                              m_cteId=0             */
+/*   Node 3: CTE 1 subtree container                                   */
+/*   Node 4: scanTable(cte_src) inside CTE 1                          */
+/*           T_CTE_SCAN, m_cteId=1, T_BUFFER_*                         */
+/*           NOT the agg leaf — Part A walk-up sets                    */
+/*           T_CTE_INDIRECT_FEED on this node (scan rows do NOT      */
+/*           feed cte1 directly; the nested lookupCte does).          */
+/*   Node 5: lookupCte(0, key=linked(node4,"grp"),                    */
+/*           setAggregation(cte1Agg))           T_AGGREGATE_LEAF,     */
+/*                                              T_INNER_JOIN, T_LEAF, */
+/*                                              m_cteId=1,            */
+/*                                              parent=node 4         */
+/*           cte_lookup_send computes joinAggStateKey from           */
+/*           m_cteAggStateKeys[encCteIdx*MAX_NDB_NODES+localNode]    */
+/*           because m_cteId=1 (inside CTE subtree).                  */
+/*   Node 6: scanTable(cte_src)                — main root            */
+/*           m_cteId=RNIL                                              */
+/*   Node 7: lookupCte(1, key=linked(node6,"grp"))                    */
+/*           T_USER_PROJECTION | T_INNER_JOIN | T_LEAF, m_cteId=RNIL */
+/*                                                                     */
+/* Expected execution:                                                 */
+/*                                                                     */
+/* Phase 0 (CTE 0 materialization):                                    */
+/*   cte0 = {(1,30),(2,70),(3,50)}.                                    */
+/*                                                                     */
+/* Phase 1 (CTE 1 materialization on each DBSPJ instance):             */
+/*   - Node 4 scans cte_src locally (5 rows).  T_CTE_INDIRECT_FEED  */
+/*     causes scanFrag_send to NOT set JoinAggFlag on the SCAN_FRAGREQ*/
+/*     so the scanned rows come back to DBSPJ as plain TRANSID_AI    */
+/*     (not piped through any aggregator).                            */
+/*   - Per scanned row, node 5 fires CTE_LOOKUP_REQ keyed by         */
+/*     s.grp with joinAggStateKey set — DBLQH's agg-feed branch     */
+/*     inserts each cte0 row into cte1Agg directly.                   */
+/*   - 5 inserts into cte1Agg:                                        */
+/*       s=(pk=1,grp=1) → cte0(1).total=30 → cte1Agg insert (grp=1,30)*/
+/*       s=(pk=2,grp=1) → cte0(1).total=30 → insert (grp=1,30)        */
+/*       s=(pk=3,grp=2) → cte0(2).total=70 → insert (grp=2,70)        */
+/*       s=(pk=4,grp=2) → cte0(2).total=70 → insert (grp=2,70)        */
+/*       s=(pk=5,grp=3) → cte0(3).total=50 → insert (grp=3,50)        */
+/*   - cte1Agg = GROUP BY cte0.grp, SUM(cte0.total):                  */
+/*       grp=1: 30+30 = 60                                             */
+/*       grp=2: 70+70 = 140                                            */
+/*       grp=3: 50                                                     */
+/*   - cte1 = {(1,60),(2,140),(3,50)} → 3 groups.                      */
+/*                                                                     */
+/* Main query:                                                         */
+/*   - Node 6 scans cte_src (5 rows).                                 */
+/*   - Per main row, node 7 fires CTE_LOOKUP_REQ to cte1 keyed by   */
+/*     main.grp.  Result delivered to API via FLUSH_AI.               */
+/*                                                                     */
+/* Expected result row count: 5                                        */
+/*   {(grp=1,total=60) ×2, (grp=2,total=140) ×2, (grp=3,total=50) ×1}*/
+/*                                                                     */
+/* Flag bits to verify:                                                */
+/*   Node 1: T_CTE_SCAN | T_INNER_JOIN | T_BUFFER_*                    */
+/*   Node 2: T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF                  */
+/*   Node 4: T_CTE_SCAN | T_CTE_INDIRECT_FEED | T_INNER_JOIN |        */
+/*           T_BUFFER_*                                                */
+/*   Node 5: T_AGGREGATE_LEAF | T_INNER_JOIN | T_LEAF                  */
+/*   Node 6: T_USER_PROJECTION | T_INNER_JOIN | T_BUFFER_MAP |        */
+/*           T_CHK_CONGESTION                                          */
+/*   Node 7: T_USER_PROJECTION | T_INNER_JOIN | T_LEAF                 */
 /* ------------------------------------------------------------------ */
 
 static int
@@ -1267,22 +1513,78 @@ testCteToCteLookup(Ndb *ndb, MYSQL * /*conn*/)
 /* Test 6: CTE-to-CTE lookup + main aggregation                        */
 /*                                                                     */
 /* Same CTE 0 / CTE 1 structure as Test 5, but the main query also     */
-/* aggregates: SELECT COUNT(*), SUM(cte1.total) FROM cte_src s JOIN    */
-/* cte1 ON s.grp = cte1.grp. This is the query structure that forces  */
-/* validateAggregateFlags (Bug 3 from the original Part A plan) to    */
-/* actually run — RT_AGGREGATE is set because the main query has its  */
-/* own aggregate leaf.                                                 */
+/* aggregates.  Exercises RT_AGGREGATE on the main request AND the     */
+/* nested CTE_LOOKUP agg-leaf inside a CTE subtree.                    */
 /*                                                                     */
-/* Expected:                                                           */
-/*   cte0 = {(1,30),(2,70),(3,50)}                                     */
-/*   cte1 = {(1,60),(2,140),(3,50)}                                    */
-/*   main scan produces 5 rows (1..5), each CTE_LOOKUPs cte1 by grp:  */
-/*     (1,1,*) → cte1(1).total=60                                      */
-/*     (2,1,*) → cte1(1).total=60                                      */
-/*     (3,2,*) → cte1(2).total=140                                     */
-/*     (4,2,*) → cte1(2).total=140                                     */
-/*     (5,3,*) → cte1(3).total=50                                      */
-/*   main aggregator: COUNT=5, SUM=60+60+140+140+50 = 450              */
+/* SQL equivalent:                                                     */
+/*   WITH                                                              */
+/*     cte0 AS (SELECT grp, SUM(val) AS total FROM cte_src GROUP BY grp),*/
+/*     cte1 AS (SELECT cte0.grp, SUM(cte0.total) AS total              */
+/*              FROM cte_src s JOIN cte0 ON s.grp = cte0.grp           */
+/*              GROUP BY cte0.grp)                                     */
+/*   SELECT COUNT(*), SUM(cte1.total)                                  */
+/*     FROM cte_src s JOIN cte1 ON s.grp = cte1.grp;                   */
+/*                                                                     */
+/* Tree shape (6 tree nodes, built in this order):                     */
+/*   CTE 0 subtree (2 nodes):                                          */
+/*     node 0: scanTable(cte_src)                       [parent=RNIL]  */
+/*       ↳ node 1: readTuple(cte_src, pk=linkedValue(scan0,"pk")),     */
+/*                 setAggregation(cte0Agg)              [parent=node 0]*/
+/*   CTE 1 subtree (2 nodes):                                          */
+/*     node 2: scanTable(cte_src)                       [parent=RNIL]  */
+/*       ↳ node 3: lookupCte(0, grp=linkedValue(scan1,"grp")),         */
+/*                 setAggregation(cte1Agg)              [parent=node 2]*/
+/*   Main query (2 nodes):                                             */
+/*     node 4: scanTable(cte_src)                       [parent=RNIL]  */
+/*       ↳ node 5: lookupCte(1, grp=linkedValue(mainScan,"grp")),      */
+/*                 setAggregation(mainAgg)              [parent=node 4]*/
+/*                                                                     */
+/* Roles / expected flag bits:                                         */
+/*   node 0 (cte0 scanTable):  T_CTE_SCAN, m_cteId=0 — materialization */
+/*          root for CTE 0 (drives scan during RT_CTE_PHASE).          */
+/*   node 1 (cte0 readTuple): T_AGGREGATE_LEAF, m_cteId=0 —            */
+/*          inserts groups into cte0's hash table via cte0Agg.         */
+/*   node 2 (cte1 scanTable): T_CTE_SCAN + T_CTE_INDIRECT_FEED,        */
+/*          m_cteId=1 — walk-up from node 3 marks this as the          */
+/*          indirect-feed scan ancestor (no JoinAggFlag on its         */
+/*          SCAN_FRAGREQ; rows come back to DBSPJ to drive node 3).    */
+/*   node 3 (cte1 lookupCte(0)): T_AGGREGATE_LEAF, m_cteId=1 — fires   */
+/*          a CTE_LOOKUP per parent row; result rows are routed into   */
+/*          cte1Agg's local state via joinAggStateKey.                 */
+/*   node 4 (main scanTable):   regular scan, m_cteId=RNIL — main      */
+/*          root; its SCAN_FRAGREQ carries JoinAggFlag (RT_AGGREGATE). */
+/*   node 5 (main lookupCte(1)): T_AGGREGATE_LEAF, m_cteId=RNIL —      */
+/*          fires a CTE_LOOKUP per main row; result row goes to main   */
+/*          aggregator via mainAgg's aggStateKey.                      */
+/*                                                                     */
+/* Step-by-step execution:                                             */
+/*   1. Phase 0 (CTE 0 materialization):                               */
+/*      - Each data node runs node 0 locally (scanFrag per fragment    */
+/*        with fragment-per-node skip on cte_src).                     */
+/*      - Per parent row, node 1 fires readTuple(pk=parent.pk) and     */
+/*        cte0Agg inserts/updates a group keyed by "grp".              */
+/*      - cte0 = {(1, sum 10+20 = 30), (2, sum 30+40=70), (3, 50)}.    */
+/*   2. Phase 1 (CTE 1 materialization):                               */
+/*      - Each data node runs node 2 locally. Per parent row, node 3  */
+/*        fires CTE_LOOKUP_REQ(cte0, grp=parent.grp). DBLQH returns   */
+/*        one matching cte0 row. cte1Agg inserts into cte1's hash     */
+/*        table keyed on cte0.grp, summing cte0.total.                */
+/*      - cte1 groups: grp=1 seen twice → total=60; grp=2 seen twice  */
+/*        → total=140; grp=3 seen once → total=50.                     */
+/*      - cte1 = {(1,60),(2,140),(3,50)}.                              */
+/*   3. Main query:                                                    */
+/*      - Node 4 scans cte_src (5 rows). Per parent row, node 5 fires */
+/*        CTE_LOOKUP_REQ(cte1, grp=parent.grp); matching cte1 row is  */
+/*        fed to mainAgg's local state via joinAggStateKey.           */
+/*      - Expected per-row: (pk=1,grp=1)→cte1.total=60,                */
+/*        (pk=2,grp=1)→60, (pk=3,grp=2)→140, (pk=4,grp=2)→140,         */
+/*        (pk=5,grp=3)→50.                                             */
+/*      - mainAgg: COUNT=5, SUM=60+60+140+140+50=450.                  */
+/*   4. Main aggregator delivered to API.                              */
+/*                                                                     */
+/* Expected row counts:                                                */
+/*   cte0=3 groups; cte1=3 groups; main=1 row.                         */
+/*   COUNT=5, SUM=450.                                                 */
 /* ------------------------------------------------------------------ */
 
 static int
@@ -1518,33 +1820,89 @@ testCteToCteLookupWithMainAgg(Ndb *ndb, MYSQL * /*conn*/)
 /* ------------------------------------------------------------------ */
 /* Test 7: Three-level CTE chain (CTE 2 → CTE 1 → CTE 0)               */
 /*                                                                     */
-/* WITH                                                                */
-/*   cte0 AS (SELECT grp, SUM(val) AS total FROM cte_src GROUP BY grp),*/
-/*   cte1 AS (SELECT cte0.grp, SUM(cte0.total) AS total                */
-/*            FROM cte_src s JOIN cte0 ON s.grp = cte0.grp             */
-/*            GROUP BY cte0.grp),                                      */
-/*   cte2 AS (SELECT cte1.grp, SUM(cte1.total) AS total                */
-/*            FROM cte_src s JOIN cte1 ON s.grp = cte1.grp             */
-/*            GROUP BY cte1.grp)                                       */
-/* SELECT s.grp, cte2.total                                            */
-/* FROM cte_src s JOIN cte2 ON s.grp = cte2.grp                        */
+/* Exercises multi-phase sequencing at depth 3 — verifies that the     */
+/* CTE_INDIRECT_FEED / nested-agg-leaf machinery works for two nested  */
+/* CTE lookups chained through three phases.                           */
 /*                                                                     */
-/* Phase graph: CTE 0 (phase 0) → CTE 1 (phase 1) → CTE 2 (phase 2).  */
-/* Exercises the multi-phase sequencing machinery with three phases,  */
-/* and verifies that the Part A fixes (Bugs 4/5) work at depth 3,     */
-/* not just depth 2.                                                   */
+/* SQL equivalent:                                                     */
+/*   WITH                                                              */
+/*     cte0 AS (SELECT grp, SUM(val) AS total FROM cte_src GROUP BY grp),*/
+/*     cte1 AS (SELECT cte0.grp, SUM(cte0.total) AS total              */
+/*              FROM cte_src s JOIN cte0 ON s.grp = cte0.grp           */
+/*              GROUP BY cte0.grp),                                    */
+/*     cte2 AS (SELECT cte1.grp, SUM(cte1.total) AS total              */
+/*              FROM cte_src s JOIN cte1 ON s.grp = cte1.grp           */
+/*              GROUP BY cte1.grp)                                     */
+/*   SELECT s.grp, cte2.total                                          */
+/*     FROM cte_src s JOIN cte2 ON s.grp = cte2.grp;                   */
 /*                                                                     */
-/* Expected:                                                           */
-/*   cte0 = {(1,30),(2,70),(3,50)}                                     */
-/*   cte1 = {(1,60),(2,140),(3,50)}   (Test 5 pattern)                */
-/*   cte2: 5 source rows, each CTE_LOOKUPs cte1 by grp:               */
-/*     (1,1,*) → cte1(1).total=60  → grp=1 sum+=60                    */
-/*     (2,1,*) → cte1(1).total=60  → grp=1 sum+=60 = 120              */
-/*     (3,2,*) → cte1(2).total=140 → grp=2 sum+=140                   */
-/*     (4,2,*) → cte1(2).total=140 → grp=2 sum+=140 = 280             */
-/*     (5,3,*) → cte1(3).total=50  → grp=3 sum+=50  = 50              */
-/*   cte2 = {(1,120),(2,280),(3,50)}                                   */
-/*   main: 5 output rows via lookupCte(2) by grp                      */
+/* Tree shape (8 tree nodes):                                          */
+/*   CTE 0 subtree:                                                    */
+/*     node 0: scanTable(cte_src)                        [parent=RNIL] */
+/*       ↳ node 1: readTuple(cte_src, pk=linkedValue(scan0,"pk")),     */
+/*                 setAggregation(cte0Agg)               [parent=node 0]*/
+/*   CTE 1 subtree:                                                    */
+/*     node 2: scanTable(cte_src)                        [parent=RNIL] */
+/*       ↳ node 3: lookupCte(0, grp=linkedValue(scan1,"grp")),         */
+/*                 setAggregation(cte1Agg)               [parent=node 2]*/
+/*   CTE 2 subtree:                                                    */
+/*     node 4: scanTable(cte_src)                        [parent=RNIL] */
+/*       ↳ node 5: lookupCte(1, grp=linkedValue(scan2,"grp")),         */
+/*                 setAggregation(cte2Agg)               [parent=node 4]*/
+/*   Main query:                                                       */
+/*     node 6: scanTable(cte_src)                        [parent=RNIL] */
+/*       ↳ node 7: lookupCte(2, grp=linkedValue(mainScan,"grp")),      */
+/*                 T_USER_PROJECTION                    [parent=node 6]*/
+/*                                                                     */
+/* Roles / expected flag bits:                                         */
+/*   node 0: T_CTE_SCAN, m_cteId=0 — cte0 materialization root.        */
+/*   node 1: T_AGGREGATE_LEAF, m_cteId=0 — feeds cte0Agg.              */
+/*   node 2: T_CTE_SCAN + T_CTE_INDIRECT_FEED, m_cteId=1 — scan        */
+/*           ancestor of node 3; SCAN_FRAGREQ runs without JoinAggFlag.*/
+/*   node 3: T_AGGREGATE_LEAF, m_cteId=1 — CTE_LOOKUP_REQ to cte0,     */
+/*           result row routed into cte1Agg via joinAggStateKey.       */
+/*   node 4: T_CTE_SCAN + T_CTE_INDIRECT_FEED, m_cteId=2 — same        */
+/*           pattern as node 2 but for CTE 2 subtree.                  */
+/*   node 5: T_AGGREGATE_LEAF, m_cteId=2 — CTE_LOOKUP_REQ to cte1,     */
+/*           result row routed into cte2Agg via joinAggStateKey.       */
+/*   node 6: regular main scan, m_cteId=RNIL.                          */
+/*   node 7: T_USER_PROJECTION, m_cteId=RNIL — CTE_LOOKUP_REQ to cte2, */
+/*           result row delivered to API via FLUSH_AI.                 */
+/*                                                                     */
+/* Step-by-step execution:                                             */
+/*   1. Phase 0 (CTE 0 materialization):                               */
+/*      - node 0 scans cte_src (5 rows); per row node 1 fires          */
+/*        readTuple and cte0Agg groups by "grp".                        */
+/*      - cte0 = {(1,30),(2,70),(3,50)}.                                */
+/*   2. Phase 1 (CTE 1 materialization):                               */
+/*      - node 2 scans cte_src locally; per parent row node 3 fires    */
+/*        CTE_LOOKUP_REQ(cte0, grp=parent.grp). cte1Agg groups rows    */
+/*        by cte0.grp, summing cte0.total.                              */
+/*      - Per-grp sums (repeated per source row):                       */
+/*          grp=1: seen twice (pk=1,pk=2) → 30+30=60                    */
+/*          grp=2: seen twice (pk=3,pk=4) → 70+70=140                   */
+/*          grp=3: seen once (pk=5)       → 50                          */
+/*      - cte1 = {(1,60),(2,140),(3,50)}.                               */
+/*   3. Phase 2 (CTE 2 materialization):                               */
+/*      - node 4 scans cte_src; per parent row node 5 fires            */
+/*        CTE_LOOKUP_REQ(cte1, grp=parent.grp). cte2Agg groups rows    */
+/*        by cte1.grp, summing cte1.total.                              */
+/*      - Per-grp sums:                                                 */
+/*          grp=1: twice → 60+60=120                                    */
+/*          grp=2: twice → 140+140=280                                  */
+/*          grp=3: once → 50                                            */
+/*      - cte2 = {(1,120),(2,280),(3,50)}.                              */
+/*   4. Main query:                                                    */
+/*      - node 6 scans cte_src (5 rows). Per row node 7 fires          */
+/*        CTE_LOOKUP_REQ(cte2, grp=parent.grp). Matching cte2 row is   */
+/*        delivered to API via FLUSH_AI.                                */
+/*                                                                     */
+/* Expected row counts:                                                */
+/*   cte0=3 groups; cte1=3 groups; cte2=3 groups; main=5 rows.         */
+/*   Per-row main result:                                              */
+/*     (mainGrp=1, cteTotal=120), (mainGrp=1, cteTotal=120),            */
+/*     (mainGrp=2, cteTotal=280), (mainGrp=2, cteTotal=280),            */
+/*     (mainGrp=3, cteTotal=50).                                        */
 /* ------------------------------------------------------------------ */
 
 static int
@@ -1834,25 +2192,47 @@ testCteThreeLevelChain(Ndb *ndb, MYSQL * /*conn*/)
 /* ------------------------------------------------------------------ */
 /* Test 8: scanCte as main query root (plain row delivery)             */
 /*                                                                     */
-/* WITH cte0 AS (SELECT grp, SUM(val) AS total FROM cte_src GROUP BY  */
-/*               grp)                                                  */
-/* SELECT * FROM cte0                                                  */
+/* Simplest possible scanCte test — scan the CTE and deliver rows to   */
+/* the API without a main aggregator or child operations.              */
 /*                                                                     */
-/* Main query = scanCte(0) as root with user projection via getValue.*/
-/* No main aggregation, no children — just scan the CTE and deliver   */
-/* rows to the API. Expected: 3 rows matching cte0 contents            */
-/* {(1,30),(2,70),(3,50)}.                                             */
+/* SQL equivalent:                                                     */
+/*   WITH cte0 AS (SELECT grp, SUM(val) AS total                       */
+/*                   FROM cte_src GROUP BY grp)                        */
+/*   SELECT grp, total FROM cte0;                                      */
 /*                                                                     */
-/* This is the simplest possible scanCte test and exercises:           */
-/*   - QN_CTE_SCAN serialization + DBSPJ cte_scan_build                */
-/*   - cte_scan_start → CTE_SCAN_REQ → DBLQH hash walk                 */
-/*   - TRANSID_AI delivery of CTE rows back to DBSPJ                   */
-/*   - DBSPJ forwarding rows to the API via the FLUSH_AI path          */
+/* Tree shape (3 tree nodes):                                          */
+/*   CTE 0 subtree:                                                    */
+/*     node 0: scanTable(cte_src)                        [parent=RNIL] */
+/*       ↳ node 1: readTuple(cte_src, pk=linkedValue(scan0,"pk")),     */
+/*                 setAggregation(cte0Agg)               [parent=node 0]*/
+/*   Main query:                                                       */
+/*     node 2: scanCte(0)                                [parent=RNIL] */
 /*                                                                     */
-/* Note: "scanCte as main aggregate leaf" (main agg over CTE rows) is */
-/* NOT covered here — it requires CteScanReq signal extension so      */
-/* DBLQH can route rows into a JoinAggInterpreter, which is a         */
-/* separate piece of work. See future test when that lands.            */
+/* Roles / expected flag bits:                                         */
+/*   node 0: T_CTE_SCAN, m_cteId=0 — cte0 materialization root.        */
+/*   node 1: T_AGGREGATE_LEAF, m_cteId=0 — feeds cte0Agg.              */
+/*   node 2: T_USER_PROJECTION, m_cteId=RNIL, no joinAggStateKey.      */
+/*           Fragment-per-node skip applies: only fragments whose      */
+/*           rootFragId < numDataNodes send CTE_SCAN_REQ; the others   */
+/*           short-circuit with zero rows.                              */
+/*                                                                     */
+/* Step-by-step execution:                                             */
+/*   1. Phase 0 (CTE 0 materialization):                               */
+/*      - node 0 scans cte_src (5 rows); per row node 1 fires          */
+/*        readTuple and cte0Agg groups by grp, summing val.             */
+/*      - cte0 = {(1,30),(2,70),(3,50)}.                                */
+/*   2. Main query:                                                    */
+/*      - DBSPJ runs one SCAN_FRAGREQ-equivalent per fragment.         */
+/*      - For rootFragId < numDataNodes, cte_scan_start sends          */
+/*        CTE_SCAN_REQ to DBLQH which walks that node's local cte0     */
+/*        partition and returns each group via TRANSID_AI to the API   */
+/*        (direct via FLUSH_AI, resultRef/resultData set on the req).  */
+/*      - For rootFragId >= numDataNodes, the fragment short-circuits  */
+/*        with zero rows (no CTE_SCAN_REQ sent).                        */
+/*                                                                     */
+/* Expected row counts:                                                */
+/*   cte0=3 groups; main=3 rows delivered to API.                      */
+/*   Per-row result set: {(1,30),(2,70),(3,50)}.                       */
 /* ------------------------------------------------------------------ */
 
 static int
@@ -2028,19 +2408,55 @@ testScanCteMainRoot(Ndb *ndb, MYSQL * /*conn*/)
 /* ------------------------------------------------------------------ */
 /* Test 9: scanCte + lookupCte self-join (normal pushdown join)       */
 /*                                                                     */
-/* WITH cte0 AS (SELECT grp, SUM(val) AS total FROM cte_src GROUP BY  */
-/*               grp)                                                  */
-/* SELECT outer.grp, outer.total, inner.grp, inner.total              */
-/* FROM cte0 AS outer JOIN cte0 AS inner ON outer.grp = inner.grp     */
+/* Exercises CTE_SCAN as the main root in a pushdown join where a     */
+/* child CTE_LOOKUP is driven by each outer CTE row via linkedValue.  */
 /*                                                                     */
-/* Main query = scanCte(0) as root outer + lookupCte(0) linked by     */
-/* outer.grp as child. Exercises the scanCte + pushdown join path:    */
-/* linkedValue FROM a CTE scan row, child lookupCte driven by each    */
-/* outer CTE scan row.                                                 */
+/* SQL equivalent:                                                     */
+/*   WITH cte0 AS (SELECT grp, SUM(val) AS total                       */
+/*                   FROM cte_src GROUP BY grp)                        */
+/*   SELECT outer.grp, outer.total, inner.grp, inner.total             */
+/*     FROM cte0 AS outer                                              */
+/*     JOIN cte0 AS inner ON outer.grp = inner.grp;                    */
 /*                                                                     */
-/* Since the self-join is by grp (the CTE's own group key), each      */
-/* outer row matches exactly one inner row. Expected: 3 output rows.  */
-/* Both outer.grp and inner.grp should match per row.                 */
+/* Tree shape (4 tree nodes):                                          */
+/*   CTE 0 subtree:                                                    */
+/*     node 0: scanTable(cte_src)                        [parent=RNIL] */
+/*       ↳ node 1: readTuple(cte_src, pk=linkedValue(scan0,"pk")),     */
+/*                 setAggregation(cte0Agg)               [parent=node 0]*/
+/*   Main query:                                                       */
+/*     node 2: scanCte(0)                                [parent=RNIL] */
+/*       ↳ node 3: lookupCte(0, grp=linkedValue(outerScan,"grp"))      */
+/*                                                       [parent=node 2]*/
+/*                                                                     */
+/* Roles / expected flag bits:                                         */
+/*   node 0: T_CTE_SCAN, m_cteId=0 — cte0 materialization root.        */
+/*   node 1: T_AGGREGATE_LEAF, m_cteId=0 — feeds cte0Agg.              */
+/*   node 2: T_USER_PROJECTION, m_cteId=RNIL — main scanCte outer.     */
+/*           Outer rows flow back to DBSPJ (TRANSID_AI) and drive      */
+/*           the child via cte_parent_row; simultaneously delivered   */
+/*           to API via FLUSH_AI.                                      */
+/*   node 3: T_USER_PROJECTION, T_LEAF, m_cteId=RNIL — inner           */
+/*           lookupCte; one CTE_LOOKUP_REQ fired per parent row with   */
+/*           grp=parent.grp as key. Result row delivered to API.       */
+/*                                                                     */
+/* Step-by-step execution:                                             */
+/*   1. Phase 0 (CTE 0 materialization):                               */
+/*      - node 0 scans cte_src (5 rows); per row node 1 fires          */
+/*        readTuple and cte0Agg groups by grp.                          */
+/*      - cte0 = {(1,30),(2,70),(3,50)}.                                */
+/*   2. Main query:                                                    */
+/*      - node 2 sends CTE_SCAN_REQ to DBLQH; walker returns each      */
+/*        cte0 group back to DBSPJ (fragment-per-node skip applies).    */
+/*      - For each parent row, cte_parent_row fires node 3 which      */
+/*        sends CTE_LOOKUP_REQ(cte0, grp=parent.grp) to DBLQH.         */
+/*      - Both parent and child rows are delivered to API via          */
+/*        FLUSH_AI. Self-join by grp: each outer row matches exactly   */
+/*        one inner row (same row).                                    */
+/*                                                                     */
+/* Expected row counts:                                                */
+/*   cte0=3 groups; main=3 rows.                                       */
+/*   Per-row result: outer.grp == inner.grp AND outer.total ==         */
+/*   inner.total for all 3 rows.                                       */
 /* ------------------------------------------------------------------ */
 
 static int
@@ -2246,20 +2662,68 @@ testScanCteWithJoin(Ndb *ndb, MYSQL * /*conn*/)
 /* ------------------------------------------------------------------ */
 /* Test 10: CTE 1 reads from CTE 0 via scanCte (agg-feed path)         */
 /*                                                                     */
-/* WITH cte0 AS (SELECT grp, SUM(val) AS total FROM cte_src GROUP BY  */
-/*               grp),                                                 */
-/*      cte1 AS (SELECT grp, SUM(total) AS doubled FROM cte0          */
-/*               GROUP BY grp)                                         */
-/* SELECT * FROM cte1                                                  */
+/* Exercises the CTE_SCAN agg-feed path — a scanCte node inside a CTE  */
+/* subtree that is BOTH the subtree root AND the aggregate leaf for   */
+/* the enclosing CTE, so scanned rows are inserted directly into the  */
+/* enclosing CTE's JoinAggInterpreter without going back to DBSPJ.    */
 /*                                                                     */
-/* CTE 0: standard scanTable + readTuple aggregate leaf (existing).   */
-/* CTE 1: scanCte(0) with setAggregation(cte1Agg) — the scanCte node  */
-/* is itself the aggregate leaf for CTE 1, so each group scanned from */
-/* CTE 0 is fed via processRecWithLinkedAttrs() into cte1's local     */
-/* JoinAggInterpreter.  After phase 1 materialization completes,      */
-/* the main scanCte(1) reads the resulting cte1 hash table and        */
-/* delivers rows to the API — same 3 rows since GROUP BY grp gives a  */
-/* 1:1 mapping with cte0.                                              */
+/* SQL equivalent:                                                     */
+/*   WITH                                                              */
+/*     cte0 AS (SELECT grp, SUM(val) AS total FROM cte_src GROUP BY grp),*/
+/*     cte1 AS (SELECT grp, SUM(total) AS total FROM cte0 GROUP BY grp)*/
+/*   SELECT grp, total FROM cte1;                                      */
+/*                                                                     */
+/* Tree shape (4 tree nodes):                                          */
+/*   CTE 0 subtree:                                                    */
+/*     node 0: scanTable(cte_src)                        [parent=RNIL] */
+/*       ↳ node 1: readTuple(cte_src, pk=linkedValue(scan0,"pk")),     */
+/*                 setAggregation(cte0Agg)               [parent=node 0]*/
+/*   CTE 1 subtree (CTE-only; one node):                               */
+/*     node 2: scanCte(0), setAggregation(cte1Agg)       [parent=RNIL] */
+/*   Main query:                                                       */
+/*     node 3: scanCte(1)                                [parent=RNIL] */
+/*                                                                     */
+/* Roles / expected flag bits:                                         */
+/*   node 0: T_CTE_SCAN, m_cteId=0 — cte0 materialization root.        */
+/*   node 1: T_AGGREGATE_LEAF, m_cteId=0 — feeds cte0Agg.              */
+/*   node 2: T_CTE_SCAN + T_AGGREGATE_LEAF, m_cteId=1 —                */
+/*           CTE-2-reads-CTE-1 special case: nested CTE_SCAN is also   */
+/*           the subtree root (no scan ancestor), so the walk-up in   */
+/*           DbspjMain.cpp marks node 2 itself as T_CTE_SCAN and       */
+/*           records m_scanTreeNodeNo so RT_CTE_PHASE finds it.        */
+/*           joinAggStateKey points at cte1's local aggStateKey; the  */
+/*           DBLQH walker's agg-feed branch inserts each cte0 group   */
+/*           into cte1's JoinAggInterpreter via                        */
+/*           processRecWithLinkedAttrs().                              */
+/*   node 3: T_USER_PROJECTION, m_cteId=RNIL — main scanCte(1),        */
+/*           delivers cte1 rows to API via FLUSH_AI.                   */
+/*                                                                     */
+/* Step-by-step execution:                                             */
+/*   1. Phase 0 (CTE 0 materialization):                               */
+/*      - node 0 scans cte_src; per row node 1 fires and cte0Agg      */
+/*        groups by grp, summing val.                                  */
+/*      - cte0 = {(1,30),(2,70),(3,50)}.                                */
+/*   2. Phase 1 (CTE 1 materialization):                               */
+/*      - Each DBSPJ instance runs CTE 1's subtree. cte_scan_start    */
+/*        computes joinAggStateKey (cte1 base + cte1 leafIndex) and   */
+/*        sends CTE_SCAN_REQ to DBLQH with joinAggStateKey != RNIL.   */
+/*      - DBLQH's walker visits each local cte0 group and takes the  */
+/*        agg-feed branch: builds linked_attr_data from the group    */
+/*        and calls cte1Agg's local                                    */
+/*        targetInterp->processRecWithLinkedAttrs(), which inserts   */
+/*        the row into cte1's hash table. No TRANSID_AI is sent back  */
+/*        to DBSPJ for this node (execCTE_SCAN_CONF must detect      */
+/*        joinAggStateKey != RNIL and NOT bump m_rows).                */
+/*      - cte1 = {(1,30),(2,70),(3,50)} (identity since each grp has  */
+/*        exactly one row in cte0).                                    */
+/*   3. Main query:                                                    */
+/*      - node 3 sends CTE_SCAN_REQ for cte1 (no joinAggStateKey);    */
+/*        walker's non-agg-feed branch emits each cte1 group via      */
+/*        FLUSH_AI directly to API.                                    */
+/*                                                                     */
+/* Expected row counts:                                                */
+/*   cte0=3 groups; cte1=3 groups; main=3 rows delivered to API.      */
+/*   Per-row result: {(1,30),(2,70),(3,50)}.                           */
 /* ------------------------------------------------------------------ */
 
 static int
