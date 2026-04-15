@@ -4720,10 +4720,36 @@ testScanCteCteMatRootNonLeaf(Ndb *ndb, MYSQL * /*conn*/)
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
+struct TestEntry {
+  int number;
+  int (*fn)(Ndb *, MYSQL *);
+};
+
+static const TestEntry g_tests[] = {
+    { 2,  testCteLookupMain },
+    { 1,  testCteWithStandardMain },
+    { 3,  testCteLookupAggLeaf },
+    { 4,  testCteWithScanFilter },
+    { 5,  testCteToCteLookup },
+    { 6,  testCteToCteLookupWithMainAgg },
+    { 7,  testCteThreeLevelChain },
+    { 8,  testScanCteMainRoot },
+    { 9,  testScanCteWithJoin },
+    { 10, testCteScanFeedsAgg },
+    { 11, testLookupCteMainRootWithChild },
+    { 15, testScanCteMainAggLeaf },
+    { 13, testLookupCteMainInternal },
+    { 12, testLookupCteCteMatRoot },
+    { 14, testLookupCteCteMatInternal },
+    { 16, testScanCteCteMatRootNonLeaf },
+};
+static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
+
 int main(int argc, char **argv)
 {
   const char *connectString = "localhost:1186";
   int mysqlPort = 3306;
+  int onlyTest = -1;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-c") == 0 && i + 1 < argc)
@@ -4732,14 +4758,31 @@ int main(int argc, char **argv)
       mysqlPort = atoi(argv[++i]);
     else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0)
       verbose = true;
+    else if (strcmp(argv[i], "--only") == 0 && i + 1 < argc)
+      onlyTest = atoi(argv[++i]);
     else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-      printf("Usage: %s -c <connect_string> -m <mysql_port> [-v]\n", argv[0]);
+      printf("Usage: %s -c <connect_string> -m <mysql_port> [-v] "
+             "[--only N]\n", argv[0]);
+      printf("  --only N    run only test number N (1..16)\n");
       return 0;
     }
   }
 
+  if (onlyTest != -1) {
+    bool found = false;
+    for (size_t i = 0; i < g_test_count; i++) {
+      if (g_tests[i].number == onlyTest) { found = true; break; }
+    }
+    if (!found) {
+      fprintf(stderr, "No such test: %d (valid: 1..16)\n", onlyTest);
+      return 1;
+    }
+  }
+
   printf("=== testCteNdbApi ===\n");
-  printf("Connect: %s, MySQL port: %d\n\n", connectString, mysqlPort);
+  printf("Connect: %s, MySQL port: %d\n", connectString, mysqlPort);
+  if (onlyTest != -1) printf("Filter: --only %d\n", onlyTest);
+  printf("\n");
 
   /* Redirect stdout to stderr; only PASSED/FAILED goes to real stdout */
   int mtr_fd = dup(fileno(stdout));
@@ -4772,26 +4815,10 @@ int main(int argc, char **argv)
           exitCode = 1;
         }
         else {
-          if (testCteLookupMain(&ndb, conn) != 0) exitCode = 1;
-          if (testCteWithStandardMain(&ndb, conn) != 0) exitCode = 1;
-          if (testCteLookupAggLeaf(&ndb, conn) != 0) exitCode = 1;
-          if (testCteWithScanFilter(&ndb, conn) != 0) exitCode = 1;
-          if (testCteToCteLookup(&ndb, conn) != 0) exitCode = 1;
-          if (testCteToCteLookupWithMainAgg(&ndb, conn) != 0)
-            exitCode = 1;
-          if (testCteThreeLevelChain(&ndb, conn) != 0) exitCode = 1;
-          if (testScanCteMainRoot(&ndb, conn) != 0) exitCode = 1;
-          if (testScanCteWithJoin(&ndb, conn) != 0) exitCode = 1;
-          if (testCteScanFeedsAgg(&ndb, conn) != 0) exitCode = 1;
-          if (testLookupCteMainRootWithChild(&ndb, conn) != 0)
-            exitCode = 1;
-          if (testScanCteMainAggLeaf(&ndb, conn) != 0) exitCode = 1;
-          if (testLookupCteMainInternal(&ndb, conn) != 0) exitCode = 1;
-          if (testLookupCteCteMatRoot(&ndb, conn) != 0) exitCode = 1;
-          if (testLookupCteCteMatInternal(&ndb, conn) != 0)
-            exitCode = 1;
-          if (testScanCteCteMatRootNonLeaf(&ndb, conn) != 0)
-            exitCode = 1;
+          for (size_t i = 0; i < g_test_count; i++) {
+            if (onlyTest != -1 && g_tests[i].number != onlyTest) continue;
+            if (g_tests[i].fn(&ndb, conn) != 0) exitCode = 1;
+          }
         }
 
         dropTestTables(conn);
