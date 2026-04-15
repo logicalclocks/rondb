@@ -18887,6 +18887,38 @@ void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
                       senderRef, senderData, requestId);
 }
 
+void Dblqh::sendCteLookupRef(Signal *signal, Uint32 senderRef,
+                             Uint32 senderData, Uint32 errorCode,
+                             SectionHandle *handle) {
+  if (handle != nullptr) {
+    jam();
+    releaseSections(*handle);
+  }
+  jam();
+  CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
+  ref->senderRef = reference();
+  ref->senderData = senderData;
+  ref->errorCode = errorCode;
+  sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
+             signal, CteLookupRef::SignalLength, JBB);
+}
+
+void Dblqh::sendCteScanRef(Signal *signal, Uint32 senderRef,
+                            Uint32 senderData, Uint32 errorCode,
+                            SectionHandle *handle) {
+  if (handle != nullptr) {
+    jam();
+    releaseSections(*handle);
+  }
+  jam();
+  CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
+  ref->senderRef = reference();
+  ref->senderData = senderData;
+  ref->errorCode = errorCode;
+  sendSignal(senderRef, GSN_CTE_SCAN_REF,
+             signal, CteScanRef::SignalLength, JBB);
+}
+
 /**
  * CTE_LOOKUP_REQ — look up a single group in a materialized CTE hash table.
  *
@@ -18934,25 +18966,15 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (unlikely(state == nullptr)) {
     jam();
-    releaseSections(handle);
-    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
-    ref->senderRef = reference();
-    ref->senderData = senderData;
-    ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
-    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
-               signal, CteLookupRef::SignalLength, JBB);
+    sendCteLookupRef(signal, senderRef, senderData,
+                     ZJOIN_AGG_STATE_NOT_FOUND, &handle);
     return;
   }
 
   if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
     jam();
-    releaseSections(handle);
-    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
-    ref->senderRef = reference();
-    ref->senderData = senderData;
-    ref->errorCode = ZCTE_LOOKUP_STATE_NOT_READY;
-    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
-               signal, CteLookupRef::SignalLength, JBB);
+    sendCteLookupRef(signal, senderRef, senderData,
+                     ZCTE_LOOKUP_STATE_NOT_READY, &handle);
     return;
   }
 
@@ -18962,13 +18984,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   Uint32 keyBuf[MAX_KEY_SIZE_IN_WORDS + 1];
   if (unlikely(keySection.sz > MAX_KEY_SIZE_IN_WORDS)) {
     jam();
-    releaseSections(handle);
-    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
-    ref->senderRef = reference();
-    ref->senderData = senderData;
-    ref->errorCode = ZATTRINFO_TOO_LARGE;
-    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
-               signal, CteLookupRef::SignalLength, JBB);
+    sendCteLookupRef(signal, senderRef, senderData,
+                     ZATTRINFO_TOO_LARGE, &handle);
     return;
   }
   copy(keyBuf, keySection);
@@ -18980,13 +18997,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   if (handle.getSection(attrInfoSection, CteLookupReq::AttrInfoSectionNum)) {
     if (unlikely(attrInfoSection.sz > ZATTR_BUFFER_SIZE)) {
       jam();
-      releaseSections(handle);
-      CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
-      ref->senderRef = reference();
-      ref->senderData = senderData;
-      ref->errorCode = ZATTRINFO_TOO_LARGE;
-      sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
-                 signal, CteLookupRef::SignalLength, JBB);
+      sendCteLookupRef(signal, senderRef, senderData,
+                       ZATTRINFO_TOO_LARGE, &handle);
       return;
     }
     copy(cinBuf, attrInfoSection);
@@ -19000,12 +19012,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
    * it builds linked_attr_data directly from the CTE hash table. */
   if (joinAggStateKey == RNIL && unlikely(attrInfoLen < 8)) {
     jam();
-    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
-    ref->senderRef = reference();
-    ref->senderData = senderData;
-    ref->errorCode = ZCTE_LOOKUP_ATTRINFO_MALFORMED;
-    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
-               signal, CteLookupRef::SignalLength, JBB);
+    sendCteLookupRef(signal, senderRef, senderData,
+                     ZCTE_LOOKUP_ATTRINFO_MALFORMED);
     return;
   }
 
@@ -19089,12 +19097,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     }
     /* Genuine not-found (local owner or no ROUTE_FLAG) */
     jam();
-    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
-    ref->senderRef = reference();
-    ref->senderData = senderData;
-    ref->errorCode = ZCTE_LOOKUP_GROUP_NOT_FOUND;
-    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
-               signal, CteLookupRef::SignalLength, JBB);
+    sendCteLookupRef(signal, senderRef, senderData,
+                     ZCTE_LOOKUP_GROUP_NOT_FOUND);
     return;
   }
 
@@ -19115,12 +19119,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     JoinAggregationState *targetState = getJoinAggState(targetBaseKey);
     if (unlikely(targetState == nullptr)) {
       jam();
-      CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
-      ref->senderRef = reference();
-      ref->senderData = senderData;
-      ref->errorCode = ZCTE_LOOKUP_STATE_NOT_READY;
-      sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
-                 signal, CteLookupRef::SignalLength, JBB);
+      sendCteLookupRef(signal, senderRef, senderData,
+                       ZCTE_LOOKUP_STATE_NOT_READY);
       return;
     }
 
@@ -19200,12 +19200,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
           targetInterp->n_agg_results(),
           (unsigned long long)targetInterp->processed_rows(),
           targetInterp->inited() ? 1 : 0);
-      CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
-      ref->senderRef = reference();
-      ref->senderData = senderData;
-      ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
-      sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
-                 signal, CteLookupRef::SignalLength, JBB);
+      sendCteLookupRef(signal, senderRef, senderData,
+                       ZCTE_LOOKUP_OUTPUT_OVERFLOW);
       return;
     }
 
@@ -19242,12 +19238,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   const Uint32 finalRStart = 5 + initReadLen + execRegionLen + finalUpdateLen;
   if (unlikely(finalRStart + finalRLen > attrInfoLen || finalRLen < 2)) {
     jam();
-    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
-    ref->senderRef = reference();
-    ref->senderData = senderData;
-    ref->errorCode = ZCTE_LOOKUP_ATTRINFO_MALFORMED;
-    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
-               signal, CteLookupRef::SignalLength, JBB);
+    sendCteLookupRef(signal, senderRef, senderData,
+                     ZCTE_LOOKUP_ATTRINFO_MALFORMED);
     return;
   }
 
@@ -19413,14 +19405,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   return;
 
 output_overflow:
-  {
-    CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
-    ref->senderRef = reference();
-    ref->senderData = senderData;
-    ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
-    sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
-               signal, CteLookupRef::SignalLength, JBB);
-  }
+  sendCteLookupRef(signal, senderRef, senderData,
+                   ZCTE_LOOKUP_OUTPUT_OVERFLOW);
 }
 
 /**
@@ -19460,25 +19446,15 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (unlikely(state == nullptr)) {
     jam();
-    releaseSections(handle);
-    CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
-    ref->senderRef = reference();
-    ref->senderData = senderData;
-    ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
-    sendSignal(senderRef, GSN_CTE_SCAN_REF,
-               signal, CteScanRef::SignalLength, JBB);
+    sendCteScanRef(signal, senderRef, senderData,
+                   ZJOIN_AGG_STATE_NOT_FOUND, &handle);
     return;
   }
 
   if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
     jam();
-    releaseSections(handle);
-    CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
-    ref->senderRef = reference();
-    ref->senderData = senderData;
-    ref->errorCode = ZCTE_LOOKUP_STATE_NOT_READY;
-    sendSignal(senderRef, GSN_CTE_SCAN_REF,
-               signal, CteScanRef::SignalLength, JBB);
+    sendCteScanRef(signal, senderRef, senderData,
+                   ZCTE_LOOKUP_STATE_NOT_READY, &handle);
     return;
   }
 
@@ -19491,13 +19467,8 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
   if (handle.getSection(attrInfoSection, CteScanReq::AttrInfoSectionNum)) {
     if (unlikely(attrInfoSection.sz > ZATTR_BUFFER_SIZE)) {
       jam();
-      releaseSections(handle);
-      CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
-      ref->senderRef = reference();
-      ref->senderData = senderData;
-      ref->errorCode = ZATTRINFO_TOO_LARGE;
-      sendSignal(senderRef, GSN_CTE_SCAN_REF,
-                 signal, CteScanRef::SignalLength, JBB);
+      sendCteScanRef(signal, senderRef, senderData,
+                     ZATTRINFO_TOO_LARGE, &handle);
       return;
     }
     copy(cinBuf, attrInfoSection);
@@ -19557,12 +19528,8 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
     JoinAggregationState *targetState = getJoinAggState(targetBaseKey);
     if (unlikely(targetState == nullptr)) {
       jam();
-      CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
-      ref->senderRef = reference();
-      ref->senderData = senderData;
-      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
-      sendSignal(senderRef, GSN_CTE_SCAN_REF,
-                 signal, CteScanRef::SignalLength, JBB);
+      sendCteScanRef(signal, senderRef, senderData,
+                     ZJOIN_AGG_STATE_NOT_FOUND);
       return;
     }
     JoinAggInterpreter *targetInterp = getJoinAggInterpreter(targetState);
@@ -19647,12 +19614,8 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
               "targetKey=%u leafIdx=%u linkedWords=%u",
               instance(), aggRet, targetBaseKey, targetLeafIndex,
               linkedPos);
-          CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
-          ref->senderRef = reference();
-          ref->senderData = senderData;
-          ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
-          sendSignal(senderRef, GSN_CTE_SCAN_REF,
-                     signal, CteScanRef::SignalLength, JBB);
+          sendCteScanRef(signal, senderRef, senderData,
+                         ZCTE_LOOKUP_OUTPUT_OVERFLOW);
           return;
         }
         targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);

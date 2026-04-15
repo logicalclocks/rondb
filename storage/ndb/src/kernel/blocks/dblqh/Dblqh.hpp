@@ -3340,7 +3340,11 @@ private:
   void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
   void execCTE_LOOKUP_REQ(Signal* signal);
+  void sendCteLookupRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
+                        Uint32 errorCode, SectionHandle *handle = nullptr);
   void execCTE_SCAN_REQ(Signal* signal);
+  void sendCteScanRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
+                      Uint32 errorCode, SectionHandle *handle = nullptr);
   void execJOIN_AGG_REDISTRIBUTE_REQ(Signal* signal);
   void execJOIN_AGG_REDISTRIBUTE_CONF(Signal* signal);
   void execJOIN_AGG_REDISTRIBUTE_REF(Signal* signal);
