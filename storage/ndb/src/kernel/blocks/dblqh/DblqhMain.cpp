@@ -18983,6 +18983,14 @@ retry_agg:
       nullptr, nullptr, linkedBuf, linkedPos, leaf);
   if (aggRet == AGG_EVICT_NEEDED) {
     jam();
+    if (unlikely(targetState->m_cte_mode)) {
+      /* Eviction is not supported for CTE materialization targets —
+       * the CTE hash table must hold all groups. */
+      jam();
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       ZCTE_EVICT_IN_CTE_LEAF);
+      return;
+    }
     sendEvictedAggGroup(signal, targetInterp, targetState);
     goto retry_agg;
   }
@@ -19573,6 +19581,13 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
           nullptr, nullptr, linkedBuf, linkedPos, leaf);
       if (aggRet == AGG_EVICT_NEEDED) {
         jam();
+        if (unlikely(targetState->m_cte_mode)) {
+          /* Eviction is not supported for CTE materialization targets */
+          jam();
+          sendCteScanRef(signal, senderRef, senderData,
+                         ZCTE_EVICT_IN_CTE_LEAF);
+          return;
+        }
         sendEvictedAggGroup(signal, targetInterp, targetState);
         goto retry_agg_scan;
       }

@@ -494,6 +494,7 @@ class FsReadWriteReq;
 #define ZCTE_LOOKUP_STATE_NOT_READY        1264
 #define ZCTE_LOOKUP_ATTRINFO_MALFORMED     1265
 #define ZCTE_LOOKUP_OUTPUT_OVERFLOW        1266
+#define ZCTE_EVICT_IN_CTE_LEAF             1267
 
 /**
  * @class dblqh
