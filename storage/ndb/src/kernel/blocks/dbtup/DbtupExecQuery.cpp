@@ -8761,35 +8761,27 @@ int Dbtup::interpreterNextLab(Signal* signal,
   };
 
   /* Macro to dispatch a switch case to an extracted handler function.
-   * Keeps the case body small and centralises the handler return-value
-   * interpretation. The compiler inlines the handler (it is static inline
-   * in the same translation unit) so the resulting code is identical to
-   * the original inline case body.
+   * The macro simply assigns the handler result to the loop-local _rc
+   * variable. The return-value interpretation happens ONCE, after the
+   * switch statement, avoiding the code duplication of inlining the
+   * error/exit checks at every case label. The compiler still inlines
+   * the handler (it is static inline in the same TU) so the resulting
+   * code at each call site is just the inlined handler body plus a
+   * store to _rc — and the post-switch check runs at most once per
+   * loop iteration.
    *
    * Usage:
    *   case X:
    *     INTERP_DISPATCH(handleX);
    *     break;
    *
-   * The macro handles the exit/error return values by returning from
-   * interpreterNextLab directly. INTERP_CONTINUE (0) falls through the
-   * do-while(0) so the caller's `break` exits the switch case normally.
-   *
-   * Handler return values:
-   *   0   → continue to next instruction  (fall-through)
-   *   > 0 → EXIT_OK / EXIT_OK_LAST        → return req_struct->log_size
-   *   < 0 → error: _rc is -(error_code);  → TUPKEY_abort(req_struct, -_rc)
-   *         which records jam, sets terrorCode, calls tupkeyErrorLab
-   *         and returns -1.
+   * Handler return values interpreted after the switch:
+   *   0 (INTERP_CONTINUE) → continue loop
+   *   1 (INTERP_EXIT)      → return req_struct->log_size
+   *   < 0                   → error: TUPKEY_abort(req_struct, -_rc)
    */
-#define INTERP_DISPATCH(handler)                                \
-  do {                                                          \
-    int _rc = InterpreterContext::handler(ctx);                 \
-    if (unlikely(_rc != INTERP_CONTINUE)) {                     \
-      if (_rc == INTERP_EXIT) return req_struct->log_size;      \
-      return TUPKEY_abort(req_struct, -_rc);                    \
-    }                                                           \
-  } while (0)
+#define INTERP_DISPATCH(handler) \
+  _rc = InterpreterContext::handler(ctx)
 
 #ifdef TRACE_INTERPRETER
   g_eventLogger->info("(%u)Program size: %u", instance(), TcurrentSize);
@@ -8841,6 +8833,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
       Uint32 opCode = Interpreter::getOpCode(theInstruction);
       jamDebug();
       jamDataDebug(opCode);
+      int _rc = INTERP_CONTINUE;
       switch (opCode) {
         case Interpreter::LOAD_OP_TYPE:
           INTERP_DISPATCH(handleLoadOpType);
@@ -9143,6 +9136,19 @@ int Dbtup::interpreterNextLab(Signal* signal,
                               opCode);
 #endif
 	  return TUPKEY_abort(req_struct, ZNO_INSTRUCTION_ERROR);
+      }
+      /* Handler return-value interpretation — done ONCE after the switch
+       * instead of inlined at every case via the INTERP_DISPATCH macro.
+       *
+       *   INTERP_CONTINUE (0) — fall through to the next loop iteration
+       *   INTERP_EXIT     (1) — EXIT_OK / EXIT_OK_LAST: return log_size
+       *   _rc < 0             — error: _rc is -(error_code). TUPKEY_abort
+       *                         records jam, sets terrorCode, calls
+       *                         tupkeyErrorLab, returns -1.
+       */
+      if (unlikely(_rc != INTERP_CONTINUE)) {
+        if (_rc == INTERP_EXIT) return req_struct->log_size;
+        return TUPKEY_abort(req_struct, -_rc);
       }
     } else {
       return TUPKEY_abort(req_struct, ZOUTSIDE_OF_PROGRAM_ERROR);
