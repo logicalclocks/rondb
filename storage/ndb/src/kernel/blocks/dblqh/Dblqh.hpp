@@ -48,6 +48,8 @@
 #include <signaldata/CopyActive.hpp>
 #include <signaldata/CopyFrag.hpp>
 #include <signaldata/CreateTab.hpp>
+#include <signaldata/CteLookup.hpp>
+#include <signaldata/CteScan.hpp>
 #include <signaldata/DropTab.hpp>
 #include <signaldata/FsOpenReq.hpp>
 #include <signaldata/LCP.hpp>
@@ -55,6 +57,7 @@
 #include <signaldata/LqhKey.hpp>
 #include <signaldata/LqhTransConf.hpp>
 #include <signaldata/NodeRecoveryStatusRep.hpp>
+#include "NdbAggregationCommon.hpp"
 #include "kernel/DblqhState.hpp"
 
 // primary key is stored in TUP
@@ -5094,6 +5097,10 @@ public:
    * has its own state and the CTE hash table stays read-only. */
   struct CteScanIterState {
     static constexpr Uint32 TYPE_ID = RT_DBLQH_CTE_SCAN_ITER;
+    Uint32 m_magic;
+
+    CteScanIterState() : m_magic(Magic::make(TYPE_ID)) {}
+
     Uint32 iterBucket;      // Hash table iterator: bucket index
     char  *iterRaw;         // Hash table iterator: raw entry pointer
     Uint32 groupsSent;      // Groups sent so far (for CORR_FACTOR ID)
