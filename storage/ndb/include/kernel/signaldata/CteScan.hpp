@@ -97,13 +97,13 @@ struct CtePhaseStartReq {
 /**
  * CTE_SCAN_REQ — DBSPJ → DBLQH
  *
- * Scan groups from a materialized CTE hash table.  On the first call,
- * DBLQH initializes iteration state in JoinAggregationState and sends
- * up to batchSize groups as TRANSID_AI (AttributeHeader-encoded GROUP BY
- * keys + aggregate results + CORR_FACTOR), followed by CTE_SCAN_CONF.
+ * Scan groups from a materialized CTE hash table.  On the first call
+ * (SignalLength=9), DBLQH sends up to batchSize groups as TRANSID_AI
+ * (AttributeHeader-encoded GROUP BY keys + aggregate results +
+ * CORR_FACTOR), followed by CTE_SCAN_CONF.
  *
- * On subsequent calls (when m_cteScan_groupsSent > 0 in the state),
- * DBLQH resumes from the saved position and sends the next batch.
+ * On subsequent calls (SignalLengthContinue=10, scanIterI from CONF),
+ * DBLQH resumes from the saved pool-based iterator position.
  *
  * Used by QN_CTE_SCAN nodes when a CTE reads from an earlier CTE.
  *
@@ -139,8 +139,13 @@ struct CteScanReq {
                           // API and DBSPJ.  Used when scanCte is the root
                           // of a CTE subtree that aggregates the scanned
                           // groups (CTE 2 reads from CTE 1).
+  Uint32 scanIterI;       // CteScanIterState pool i-value (RNIL on first batch;
+                          // echoed from CONF on continuation)
 
+  /* First CTE_SCAN_REQ uses SignalLength (no scanIterI).
+   * Continuation requests use SignalLengthContinue. */
   static constexpr Uint32 SignalLength = 9;
+  static constexpr Uint32 SignalLengthContinue = 10;
   enum { AttrInfoSectionNum = 0 };
 };
 
@@ -149,8 +154,10 @@ struct CteScanConf {
   Uint32 senderData;      // TreeNode pointer (echoed from REQ)
   Uint32 numRows;         // Number of groups sent as TRANSID_AI in this batch
   Uint32 flags;           // Flags (EndOfData)
+  Uint32 scanIterI;       // CteScanIterState pool i-value (RNIL when EndOfData;
+                          // echo back as CteScanReq::scanIterI on continuation)
 
-  static constexpr Uint32 SignalLength = 4;
+  static constexpr Uint32 SignalLength = 5;
   enum { EndOfData = 0x1 };
 };
 

@@ -3388,10 +3388,9 @@ private:
                       Uint32 iterBucket, const char *iterRaw,
                       Uint32 groupsSent);
   void cteScanEmitResults(Signal* signal, const CteScanReq &req,
-                          JoinAggregationState *state,
                           JoinAggInterpreter *interp,
                           const Uint32 *finalR, Uint32 finalRLen,
-                          bool haveFinalR);
+                          bool haveFinalR, Uint32 scanIterI);
   void sendCteScanRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
                       Uint32 errorCode, SectionHandle *handle = nullptr);
   void execJOIN_AGG_REDISTRIBUTE_REQ(Signal* signal);
@@ -5089,7 +5088,22 @@ public:
   void sendPoolShrink(Uint32 pool_index);
   void shrinkTransientPools(Uint32 pool_index);
 
-  static const Uint32 c_transient_pool_count = 5;
+  /* Per-scan iteration state for CTE_SCAN_REQ (non-agg path).
+   * Allocated on first batch, released on EndOfData.  Pool i-value is
+   * round-tripped through DBSPJ (CONF → REQ) so each concurrent scan
+   * has its own state and the CTE hash table stays read-only. */
+  struct CteScanIterState {
+    static constexpr Uint32 TYPE_ID = RT_DBLQH_CTE_SCAN_ITER;
+    Uint32 iterBucket;      // Hash table iterator: bucket index
+    char  *iterRaw;         // Hash table iterator: raw entry pointer
+    Uint32 groupsSent;      // Groups sent so far (for CORR_FACTOR ID)
+    Uint32 nextPool;
+  };
+  static constexpr Uint32 DBLQH_CTE_SCAN_ITER_TRANSIENT_POOL_INDEX = 5;
+  typedef TransientPool<CteScanIterState> CteScanIterState_pool;
+  CteScanIterState_pool c_cteScanIterStatePool;
+
+  static const Uint32 c_transient_pool_count = 6;
   TransientFastSlotPool* c_transient_pools[c_transient_pool_count];
   Bitmask<1> c_transient_pools_shrinking;
 

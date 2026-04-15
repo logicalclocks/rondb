@@ -437,6 +437,12 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg,
     Uint32(1),
     UINT32_MAX);
 
+  c_cteScanIterStatePool.init(
+    CteScanIterState::TYPE_ID,
+    pc,
+    Uint32(1),
+    UINT32_MAX);
+
   Uint32 reserveTcConnRecs = 0;
   ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg, CFG_LDM_RESERVED_OPERATIONS,
                                         &reserveTcConnRecs));
@@ -883,7 +889,9 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
     &c_map_fragment_pool;
   c_transient_pools[DBLQH_COPY_ACTIVE_RECORD_TRANSIENT_POOL_INDEX] =
     &c_copy_active_pool;
-  static_assert(c_transient_pool_count == 5);
+  c_transient_pools[DBLQH_CTE_SCAN_ITER_TRANSIENT_POOL_INDEX] =
+    &c_cteScanIterStatePool;
+  static_assert(c_transient_pool_count == 6);
   c_transient_pools_shrinking.clear();
 }  // Dblqh::Dblqh()
 

@@ -19640,12 +19640,38 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
  * cteScanEmitResults — iterate CTE hash table groups and emit TRANSID_AI
  * output to the API/DBSPJ.  Uses emitCteGroupOutput for the AttrInfo-driven
  * path or a legacy raw-column path.  Sends CTE_SCAN_CONF when done.
+ *
+ * Iteration state is kept in a heap-allocated CteScanIterState, returned
+ * to DBSPJ in CTE_SCAN_CONF and passed back in the next CTE_SCAN_REQ.
+ * This allows concurrent scans by multiple DBSPJ instances on the same
+ * read-only CTE hash table.
  */
 void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
-                                JoinAggregationState *state,
                                 JoinAggInterpreter *interp,
                                 const Uint32 *finalR, Uint32 finalRLen,
-                                bool haveFinalR) {
+                                bool haveFinalR, Uint32 scanIterI) {
+  /* Recover iteration state from pool or start fresh.
+   * We work on a stack-local copy; a pool record is only seized
+   * if we need to pause for a continuation batch. */
+  CteScanIterState localState;
+  if (scanIterI != RNIL) {
+    jam();
+    Ptr<CteScanIterState> ptr;
+    ptr.i = scanIterI;
+    if (unlikely(!c_cteScanIterStatePool.getValidPtr(ptr))) {
+      jam();
+      sendCteScanRef(signal, req.senderRef, req.senderData,
+                     ZJOIN_AGG_STATE_NOT_FOUND);
+      return;
+    }
+    localState = *ptr.p;
+  } else {
+    localState.iterBucket = 0;
+    localState.iterRaw = nullptr;
+    localState.groupsSent = 0;
+  }
+  CteScanIterState *scanState = &localState;
+
   auto *gb_map = interp->gb_map_mutable();
   Uint32 numRowsSent = 0;
   bool endOfData = true;
@@ -19655,13 +19681,12 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
     const Uint32 n_gb_cols = interp->n_gb_cols();
     const Uint32 n_agg_results = interp->n_agg_results();
 
-    /* Resume from saved iterator position (O(1)) instead of
-     * skipping from begin() (which would be O(N) per batch). */
-    Uint32 groupIdx = state->m_cteScan_groupsSent;
+    /* Resume from saved iterator position (O(1)) */
+    Uint32 groupIdx = scanState->groupsSent;
     auto iter = (groupIdx == 0)
         ? gb_map->begin()
-        : gb_map->iteratorAt(state->m_cteScan_iterBucket,
-                             state->m_cteScan_iterRaw);
+        : gb_map->iteratorAt(scanState->iterBucket,
+                             scanState->iterRaw);
 
     for (; iter.valid(); gb_map->next(iter)) {
       /* Batch limit reached — pause for next CTE_SCAN_REQ */
@@ -19760,11 +19785,11 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       groupIdx++;
     }
 
-    /* Update resume position — save iterator state for O(1) resume */
-    state->m_cteScan_groupsSent = groupIdx;
+    /* Save resume position for next batch */
+    scanState->groupsSent = groupIdx;
     if (!endOfData && iter.valid()) {
-      state->m_cteScan_iterBucket = iter.bucket();
-      state->m_cteScan_iterRaw = iter.raw();
+      scanState->iterBucket = iter.bucket();
+      scanState->iterRaw = iter.raw();
     }
   }
 
@@ -19773,7 +19798,39 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
   conf->senderRef = reference();
   conf->senderData = req.senderData;
   conf->numRows = numRowsSent;
-  conf->flags = endOfData ? CteScanConf::EndOfData : 0;
+  if (endOfData) {
+    jam();
+    conf->flags = CteScanConf::EndOfData;
+    conf->scanIterI = RNIL;
+    /* Release pool record if we had one from a previous continuation */
+    if (scanIterI != RNIL) {
+      jam();
+      Ptr<CteScanIterState> ptr;
+      ptr.i = scanIterI;
+      c_cteScanIterStatePool.getValidPtr(ptr);
+      c_cteScanIterStatePool.release(ptr);
+    }
+  } else {
+    jam();
+    conf->flags = 0;
+    /* Seize pool record for continuation (or reuse existing) */
+    Ptr<CteScanIterState> ptr;
+    if (scanIterI != RNIL) {
+      jam();
+      ptr.i = scanIterI;
+      c_cteScanIterStatePool.getValidPtr(ptr);
+    } else {
+      jam();
+      if (unlikely(!c_cteScanIterStatePool.seize(ptr))) {
+        jam();
+        sendCteScanRef(signal, req.senderRef, req.senderData,
+                       ZJOIN_AGG_STATE_ALLOC_FAILED);
+        return;
+      }
+    }
+    *ptr.p = localState;
+    conf->scanIterI = ptr.i;
+  }
   sendSignal(req.senderRef, GSN_CTE_SCAN_CONF,
              signal, CteScanConf::SignalLength, JBB);
 }
@@ -19879,8 +19936,15 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
     return;
   }
 
+  /* Extract scanIterI while signal is still intact.
+   * First CTE_SCAN_REQ (SignalLength=9) has no scanIterI field. */
+  const Uint32 scanIterI =
+      (signal->getLength() >= CteScanReq::SignalLengthContinue)
+      ? req.scanIterI : RNIL;
+
   /* Non-agg path: emit groups as TRANSID_AI to API/DBSPJ */
-  cteScanEmitResults(signal, req, state, interp, finalR, finalRLen, haveFinalR);
+  cteScanEmitResults(signal, req, interp, finalR, finalRLen,
+                     haveFinalR, scanIterI);
 }
 
 /* ------------------------------------------------------------------ */
