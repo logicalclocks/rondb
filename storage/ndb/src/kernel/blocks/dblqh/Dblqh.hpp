@@ -3349,6 +3349,34 @@ private:
   void cteLookupAggFeed(Signal* signal, const CteLookupReq &req,
                         const JoinAggInterpreter *interp,
                         const char *groupData);
+  void cteLookupEmitResult(Signal* signal, const CteLookupReq &req,
+                           const JoinAggregationState *state,
+                           const JoinAggInterpreter *interp,
+                           const char *groupData,
+                           const Uint32 *cinBuf, Uint32 attrInfoLen);
+
+  /**
+   * Parameters for emitCteGroupOutput — captures the per-caller differences
+   * between CTE_LOOKUP and CTE_SCAN when walking a final-read section.
+   */
+  struct CteOutputParams {
+    Uint32 transId[2];      // Transaction ID for TRANSID_AI
+    Uint32 flushRef;        // FLUSH_AI target block reference
+    Uint32 flushData;       // FLUSH_AI connect ptr
+    Uint32 residualRef;     // Where to send residual output (after FLUSH_AI)
+    Uint32 residualData;    // Connect ptr for residual
+    Uint32 correlation;     // CORR_FACTOR32/64 tuple correlation value
+    Uint32 corrRootRcvr;    // CORR_FACTOR64 root receiver ID
+    bool useFlushAiFromFinalR;  // true: read flushRef/Data from finalR section
+  };
+  Int32 emitCteGroupOutput(Signal* signal,
+                           const CteOutputParams &params,
+                           const char *groupData, Uint32 keyLen,
+                           const Uint32 *finalR, Uint32 finalRLen,
+                           Uint32 n_gb_cols, Uint32 n_agg_results,
+                           const AggResItem *accumulators,
+                           Uint32 *outBuf);
+
   void sendCteLookupRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
                         Uint32 errorCode, SectionHandle *handle = nullptr);
   void execCTE_SCAN_REQ(Signal* signal);
