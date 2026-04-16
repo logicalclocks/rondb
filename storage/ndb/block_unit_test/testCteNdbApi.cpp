@@ -4726,8 +4726,8 @@ struct TestEntry {
 };
 
 static const TestEntry g_tests[] = {
-    { 2,  testCteLookupMain },
     { 1,  testCteWithStandardMain },
+    { 2,  testCteLookupMain },
     { 3,  testCteLookupAggLeaf },
     { 4,  testCteWithScanFilter },
     { 5,  testCteToCteLookup },
@@ -4737,10 +4737,10 @@ static const TestEntry g_tests[] = {
     { 9,  testScanCteWithJoin },
     { 10, testCteScanFeedsAgg },
     { 11, testLookupCteMainRootWithChild },
-    { 15, testScanCteMainAggLeaf },
-    { 13, testLookupCteMainInternal },
     { 12, testLookupCteCteMatRoot },
+    { 13, testLookupCteMainInternal },
     { 14, testLookupCteCteMatInternal },
+    { 15, testScanCteMainAggLeaf },
     { 16, testScanCteCteMatRootNonLeaf },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);

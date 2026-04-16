@@ -19807,7 +19807,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       jam();
       Ptr<CteScanIterState> ptr;
       ptr.i = scanIterI;
-      c_cteScanIterStatePool.getValidPtr(ptr);
+      ndbrequire(c_cteScanIterStatePool.getValidPtr(ptr));
       c_cteScanIterStatePool.release(ptr);
     }
   } else {
@@ -19818,7 +19818,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
     if (scanIterI != RNIL) {
       jam();
       ptr.i = scanIterI;
-      c_cteScanIterStatePool.getValidPtr(ptr);
+      ndbrequire(c_cteScanIterStatePool.getValidPtr(ptr));
     } else {
       jam();
       if (unlikely(!c_cteScanIterStatePool.seize(ptr))) {
