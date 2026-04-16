@@ -4717,6 +4717,261 @@ testScanCteCteMatRootNonLeaf(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 17: readTuple as main root + lookupCte as child leaf           */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   WITH cte0 AS (SELECT grp, SUM(val) AS total                       */
+/*     FROM cte_src GROUP BY grp)                                      */
+/*   SELECT cte_src.pk, cte_src.grp, cte_src.val,                      */
+/*          cte0.grp, cte0.total                                       */
+/*   FROM cte_src                       -- via readTuple with pk=2     */
+/*   JOIN cte0 ON cte0.grp = cte_src.grp                               */
+/*                                                                     */
+/* Why this test:                                                      */
+/*   Reverse of Test 11.  The main query root is a plain readTuple     */
+/*   (LQHKEYREQ) with a constant key, and the child/leaf is a          */
+/*   lookupCte (CTE_LOOKUP_REQ) keyed by a linked value from the       */
+/*   parent's result row.  This is a harder case than Test 11 because  */
+/*   the root sends LQHKEYREQ through SCAN_TABREQ — the lookup node   */
+/*   is consumed by lookup_build (not cte_build) via m_start_signal,   */
+/*   and the CTE lookup child must fire from the parent_row path.      */
+/*                                                                     */
+/* Tree shape (built by NdbQueryBuilder):                              */
+/*                                                                     */
+/*   Node 0: CTE 0 subtree container (g_CteSubtreeOpInfo)              */
+/*   Node 1: scanTable(cte_src) inside CTE 0  -- T_CTE_SCAN            */
+/*           m_cteId=0                                                 */
+/*   Node 2: readTuple(cte_src) inside CTE 0  -- T_AGGREGATE_LEAF      */
+/*           m_cteId=0, parent=node 1                                  */
+/*   Node 3: readTuple(cte_src, key=constInt(2)) -- main root          */
+/*           m_cteId=RNIL, LQHKEYREQ, T_USER_PROJECTION,              */
+/*           has child node 4                                          */
+/*   Node 4: lookupCte(0, key=linked(node3,"grp")) -- child leaf       */
+/*           m_cteId=RNIL, T_USER_PROJECTION, T_LEAF,                  */
+/*           parent=node 3                                             */
+/*                                                                     */
+/* Expected execution:                                                 */
+/*                                                                     */
+/* Phase 0 (CTE 0 materialization):                                    */
+/*   Same as Test 2/11: cte0 = {(1,30),(2,70),(3,50)}.                 */
+/*                                                                     */
+/* Main query (after execCTE_START_MAIN_REQ):                          */
+/*   - Only rootFragId 0 proceeds with the main root lookup.           */
+/*     Other fragments complete immediately.                           */
+/*   - Node 3 fires LQHKEYREQ for cte_src pk=2.                        */
+/*     Returns (pk=2, grp=1, val=20).                                  */
+/*   - TRANSID_AI arrives at DBSPJ → startNextNodes fires child       */
+/*     node 4 (lookupCte with key=linked(node3,"grp")=1).              */
+/*   - Node 4: CTE_LOOKUP_REQ to DBLQH with key grp=1.                */
+/*     DBLQH returns cte0 row (grp=1, total=30).                       */
+/*   - Both rows flushed to API.                                       */
+/*                                                                     */
+/* Expected result row count: 1                                        */
+/*   row[0]: cte_src.pk=2, cte_src.grp=1, cte_src.val=20,              */
+/*           cte0.grp=1, cte0.total=30                                 */
+/* ------------------------------------------------------------------ */
+
+static int
+testReadTupleRootWithCteLookupChild(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 17: readTuple root + lookupCte child leaf ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  dict->invalidateTable(VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  /* CTE 0: GROUP BY grp, SUM(val) */
+  NdbAggregator cte0Agg(srcTab);
+  if (!cte0Agg.GroupBy("grp") ||
+      !cte0Agg.LoadColumn("val", 0) ||
+      !cte0Agg.Sum(0, 0) ||
+      !cte0Agg.Finalize()) {
+    printf("FAILED (cte0Agg: %s)\n", cte0Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+
+  /* CTE 0 subtree: scanTable + readTuple agg-leaf */
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      printf("FAILED (CTE 0 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte0Agg);
+    if (qb->readTuple(srcTab, key, &opts) == nullptr) {
+      printf("FAILED (CTE 0 leaf: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, cte0Agg, /*depMask=*/0) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query root: readTuple(cte_src) with constant key pk=2.
+   * This is an LQHKEYREQ-based lookup through the SCAN_TABREQ path
+   * (because isScanQuery() is true due to CTEs). */
+  const NdbQueryOperand *rootKey[] = {
+    qb->constValue(Int32(2)), nullptr
+  };
+  NdbQueryOptions rootOpts;
+  rootOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  const NdbQueryLookupOperationDef *rootReadOp =
+      qb->readTuple(srcTab, rootKey, &rootOpts);
+  if (rootReadOp == nullptr) {
+    printf("FAILED (main readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main child/leaf: lookupCte(0) keyed by linked(root,"grp").
+   * The root's grp value (=1 for pk=2) drives the CTE lookup.
+   * cte0 grp=1 → (grp=1, total=30). */
+  const NdbQueryOperand *childCteKey[] = {
+    qb->linkedValue(rootReadOp, "grp"), nullptr
+  };
+  NdbQueryOptions childOpts;
+  childOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  const NdbQueryCteLookupOperationDef *childCteLookup =
+      qb->lookupCte(0, 2, virtTab, childCteKey, &childOpts);
+  if (childCteLookup == nullptr) {
+    printf("FAILED (child lookupCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  V("\n  Query prepared: %u operations\n", queryDef->getNoOfOperations());
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Wire projections: root readTuple (cte_src columns),
+   * child lookupCte (cte0 columns). */
+  const Uint32 rootOpNo = queryDef->getNoOfOperations() - 2;
+  const Uint32 childOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *rootOp = query->getQueryOperation(rootOpNo);
+  NdbQueryOperation *childOp = query->getQueryOperation(childOpNo);
+  NdbRecAttr *raSrcPk = nullptr;
+  NdbRecAttr *raSrcGrp = nullptr;
+  NdbRecAttr *raSrcVal = nullptr;
+  NdbRecAttr *raCteGrp = nullptr;
+  NdbRecAttr *raCteTotal = nullptr;
+  if (rootOp != nullptr) {
+    raSrcPk = rootOp->getValue("pk");
+    raSrcGrp = rootOp->getValue("grp");
+    raSrcVal = rootOp->getValue("val");
+  }
+  if (childOp != nullptr) {
+    raCteGrp = childOp->getValue("grp");
+    raCteTotal = childOp->getValue("total");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    Int32 srcPk = raSrcPk ? raSrcPk->int32_value() : -1;
+    Int32 srcGrp = raSrcGrp ? raSrcGrp->int32_value() : -1;
+    Int64 srcVal = raSrcVal ? raSrcVal->int64_value() : -1;
+    Int32 cteGrp = raCteGrp ? raCteGrp->int32_value() : -1;
+    Int64 cteTotal = raCteTotal ? raCteTotal->int64_value() : -1;
+    V("  row: cte_src(pk=%d,grp=%d,val=%lld) cte0(grp=%d,total=%lld)\n",
+      srcPk, srcGrp, (long long)srcVal, cteGrp, (long long)cteTotal);
+    if (srcPk != 2 || srcGrp != 1 || srcVal != 20) {
+      printf("FAILED (cte_src mismatch: pk=%d grp=%d val=%lld, "
+             "expected 2/1/20)\n",
+             srcPk, srcGrp, (long long)srcVal);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+    if (cteGrp != 1 || cteTotal != 30) {
+      printf("FAILED (cte0 mismatch: grp=%d total=%lld, expected 1/30)\n",
+             cteGrp, (long long)cteTotal);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+  }
+
+  if (outcome == NdbQuery::NextResult_error) {
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (nextResult err %d: %s)\n", qErr.code, qErr.message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount != 1) {
+    printf("FAILED (expected 1 row, got %u)\n", rowCount);
+    return -1;
+  }
+
+  printf("OK (%u rows)\n", rowCount);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -4742,6 +4997,7 @@ static const TestEntry g_tests[] = {
     { 14, testLookupCteCteMatInternal },
     { 15, testScanCteMainAggLeaf },
     { 16, testScanCteCteMatRootNonLeaf },
+    { 17, testReadTupleRootWithCteLookupChild },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
@@ -4763,7 +5019,7 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       printf("Usage: %s -c <connect_string> -m <mysql_port> [-v] "
              "[--only N]\n", argv[0]);
-      printf("  --only N    run only test number N (1..16)\n");
+      printf("  --only N    run only test number N (1..17)\n");
       return 0;
     }
   }
