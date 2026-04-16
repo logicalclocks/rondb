@@ -3099,7 +3099,8 @@ int NdbQueryImpl::prepareSend() {
         }
       }
     }
-    const NdbTableImpl &rootTable = *fragTable;
+    const NdbDictionary::Table &rootTable =
+        static_cast<const NdbDictionary::Table &>(*fragTable);
 
     /* For CTE compound queries the root scan is not op[0] — CTE subtree
      * containers precede it. The constructor initializes m_parallelism
