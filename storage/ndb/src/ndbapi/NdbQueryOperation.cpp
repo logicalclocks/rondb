@@ -3756,7 +3756,7 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
     m_workers[i].prepareNextReceiveSet();
   }
 
-  if (rootDef.isScanOperation()) {
+  if (rootDef.isScanOperation() || getQueryDef().isScanQuery()) {
     Uint32 scan_flags = 0;  // TODO: Specify with ScanOptions::SO_SCANFLAGS
 
     // The number of acc-scans are limited therefore use tup-scans instead.
