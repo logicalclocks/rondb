@@ -3740,7 +3740,26 @@ void Dbspj::sendConf(Signal *signal, Ptr<Request> requestPtr,
       conf->transId2 = requestPtr.p->m_transId[1];
       conf->completedOps = requestPtr.p->m_rows;
       conf->fragmentCompleted = is_complete ? 1 : 0;
-      conf->total_len = requestPtr.p->m_active_tree_nodes.rep.data[0];
+      DEB_CTE(("(%u) sendConf: is_complete=%d completedOps=%u "
+               "cnt_active=%u m_outstanding=%u",
+               instance(), (int)is_complete, conf->completedOps,
+               requestPtr.p->m_cnt_active,
+               requestPtr.p->m_outstanding));
+
+      /* Mask out CTE subtree nodes from active_tree_nodes — they
+       * don't produce main query rows and must not set moreMask
+       * in the SCAN_TABCONF, which would cause spurious SCAN_NEXTREQ. */
+      {
+        Uint32 activeNodes = requestPtr.p->m_active_tree_nodes.rep.data[0];
+        Ptr<TreeNode> tn;
+        Local_TreeNode_list tlist(m_treenode_pool, requestPtr.p->m_nodes);
+        for (tlist.first(tn); !tn.isNull(); tlist.next(tn)) {
+          if (tn.p->m_cteId != RNIL) {
+            activeNodes &= ~(1 << tn.p->m_node_no);
+          }
+        }
+        conf->total_len = activeNodes;
+      }
 
       /**
        * Collect the map of nodes still having more rows to return.
@@ -3755,7 +3774,8 @@ void Dbspj::sendConf(Signal *signal, Ptr<Request> requestPtr,
 
       for (list.first(treeNodePtr); !treeNodePtr.isNull();
            list.next(treeNodePtr)) {
-        if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
+        if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE &&
+            treeNodePtr.p->m_cteId == RNIL) {
           ndbassert(treeNodePtr.p->m_node_no <= 31);
           activeMask |= (1 << treeNodePtr.p->m_node_no);
         }
@@ -6258,8 +6278,10 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
   // for regular lookups (T_USER_PROJECTION → m_rows++). Without this,
   // SCAN_FRAGCONF::completedOps undercounts and the API asserts on
   // outstanding results mismatch.
-  // Skip for aggregate leaf: no FLUSH_AI sent (result fed to aggregation).
-  if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) {
+  // Skip for aggregate leaf (result fed to aggregation) and for nodes
+  // inside CTE subtrees (result feeds enclosing CTE's aggregator, not API).
+  if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+      treeNodePtr.p->m_cteId == RNIL) {
     requestPtr.p->m_rows++;
   }
 
@@ -6894,19 +6916,37 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
    *     TRANSID_AI.  Bump rowsExpecting only. */
   if (data.m_joinAggStateKey != RNIL) {
     jam();
-    /* path (a): nothing to track per row — the agg-feed walker
-     * inserts each group directly into the target hash table */
+    DEB_CTE(("(%u) execCTE_SCAN_CONF: path (a) agg-feed", instance()));
   } else if (treeNodePtr.p->m_bits & TreeNode::T_USER_PROJECTION) {
     jam();
+    DEB_CTE(("(%u) execCTE_SCAN_CONF: path (b) USER_PROJ isLeaf=%d",
+             instance(), (int)treeNodePtr.p->isLeaf()));
     requestPtr.p->m_rows += conf->numRows;
     if (!treeNodePtr.p->isLeaf()) {
       jam();
       data.m_rowsExpecting += conf->numRows;
     }
+  } else if (treeNodePtr.p->isLeaf()) {
+    jam();
+    DEB_CTE(("(%u) execCTE_SCAN_CONF: path (leaf) m_rows %u->%u",
+             instance(), requestPtr.p->m_rows,
+             requestPtr.p->m_rows + conf->numRows));
+    requestPtr.p->m_rows += conf->numRows;
   } else {
     jam();
+    DEB_CTE(("(%u) execCTE_SCAN_CONF: path (c) rowsExpecting %u->%u",
+             instance(), data.m_rowsExpecting,
+             data.m_rowsExpecting + conf->numRows));
     data.m_rowsExpecting += conf->numRows;
   }
+
+  DEB_CTE(("(%u) execCTE_SCAN_CONF: after accounting: m_rows=%u "
+           "rowsReceived=%u rowsExpecting=%u m_outstanding=%u "
+           "endOfData=%d bits=0x%x",
+           instance(), requestPtr.p->m_rows,
+           data.m_rowsReceived, data.m_rowsExpecting,
+           data.m_outstanding, (int)data.m_endOfData,
+           treeNodePtr.p->m_bits));
 
   bool endOfData = (conf->flags & CteScanConf::EndOfData) != 0;
   /* Only set m_endOfData once the FINAL CONF arrives; intermediate
@@ -6970,10 +7010,18 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
    * all expected rows have arrived. Mirrors the matching check in
    * cte_scan_countSignal which may fire instead when a row arrives
    * AFTER the CONF. */
+  DEB_CTE(("(%u) execCTE_SCAN_CONF: completion check: "
+           "data_outstanding=%u endOfData=%d rowsRecv=%u rowsExp=%u "
+           "req_outstanding=%u cnt_active=%u",
+           instance(), data.m_outstanding, (int)data.m_endOfData,
+           data.m_rowsReceived, data.m_rowsExpecting,
+           requestPtr.p->m_outstanding, requestPtr.p->m_cnt_active));
   if (data.m_outstanding == 0 &&
       data.m_endOfData &&
       data.m_rowsReceived == data.m_rowsExpecting) {
     jam();
+    DEB_CTE(("(%u) execCTE_SCAN_CONF: COMPLETING node=%u",
+             instance(), treeNodePtr.p->m_node_no));
     ndbrequire(requestPtr.p->m_outstanding > 0);
     requestPtr.p->m_outstanding--;
     treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
@@ -6984,6 +7032,9 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
     if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
       requestPtr.p->m_cteScansComplete++;
     }
+  } else {
+    DEB_CTE(("(%u) execCTE_SCAN_CONF: NOT completing node=%u",
+             instance(), treeNodePtr.p->m_node_no));
   }
 
   checkBatchComplete(signal, requestPtr);
