@@ -3348,7 +3348,8 @@ int NdbQueryImpl::prepareSend() {
  * aggregation program for Section 2, and create NdbAggregator.
  */
 int NdbQueryImpl::prepareAggregation() {
-  assert(getQueryDef().isScanQuery());
+  // Aggregation is supported for both scan queries (scanCte main root)
+  // and lookup queries (lookupCte main root with CTE-only aggregation).
   const Uint32 numLeaves = getQueryDef().getNumAggregateLeaves();
   const Uint32 numCtes = getQueryDef().getNumCtes();
 
@@ -6326,6 +6327,14 @@ Uint32 NdbQueryOperationImpl::getMaxBatchBytes() const {
       // the tiny API buffer (no getValue columns). Restore to the value
       // from calculate_batch_size() so config BatchByteSize takes effect.
       m_maxBatchBytes = batchByteSize;
+    }
+
+    // Ensure m_maxBatchBytes is non-zero after calculation to prevent
+    // re-entry into this block.  For lookup operations batchByteSize
+    // is 0 (no scan batch sizing), but m_resultBufferSize was already
+    // computed — re-entry would trigger the assert(m_resultBufferSize==0).
+    if (m_maxBatchBytes == 0) {
+      m_maxBatchBytes = m_resultBufferSize > 0 ? m_resultBufferSize : 1;
     }
   }
 
