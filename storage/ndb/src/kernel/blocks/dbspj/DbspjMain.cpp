@@ -7133,6 +7133,17 @@ void Dbspj::execCTE_PHASE_START_REQ(Signal *signal) {
 
   Uint32 phase = req->phase;
 
+  /* Clean up any residual outstanding/active state from the previous
+   * CTE phase.  All CTE nodes should have completed, but child lookups
+   * may leave m_outstanding or m_cnt_active non-zero if their completion
+   * races with the phase-complete signal.  Reset to ensure a clean start. */
+  DEB_CTE(("(%u) execCTE_PHASE_START_REQ: phase=%u outstanding=%u "
+           "cnt_active=%u",
+           instance(), phase, requestPtr.p->m_outstanding,
+           requestPtr.p->m_cnt_active));
+  requestPtr.p->m_outstanding = 0;
+  requestPtr.p->m_cnt_active = 0;
+
   /* Transition previous phases' CTEs to CTE_READY.
    * Note: CTE_MATERIALIZING is never set anywhere — all CTEs
    * start in CTE_NOT_STARTED and transition directly to
@@ -7197,6 +7208,15 @@ void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
     requestPtr.p->m_cteContexts[i].m_state = CteContext::CTE_READY;
   }
   requestPtr.p->m_ctesReady = requestPtr.p->m_numCtes;
+
+  /* Clean up residual outstanding/active state from the final CTE phase.
+   * All CTE work is done; the main query starts with clean counters. */
+  DEB_CTE(("(%u) execCTE_START_MAIN_REQ: before reset outstanding=%u "
+           "cnt_active=%u",
+           instance(), requestPtr.p->m_outstanding,
+           requestPtr.p->m_cnt_active));
+  requestPtr.p->m_outstanding = 0;
+  requestPtr.p->m_cnt_active = 0;
 
   // Clear CTE phase flag
   requestPtr.p->m_bits &= ~Request::RT_CTE_PHASE;
