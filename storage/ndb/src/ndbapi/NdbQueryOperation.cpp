@@ -3082,7 +3082,7 @@ int NdbQueryImpl::prepareSend() {
   Uint32 rootFragments;
   if (getQueryDef().isScanQuery()) {
     NdbQueryOperationImpl &rootOp = getRoot();
-    const NdbDictionary::Table *fragTable =
+    const NdbTableImpl *fragTable =
         &rootOp.getQueryOperationDef().getTable();
 
     /* When the main root is a lookup (lookupCte), it doesn't scan a
@@ -3099,7 +3099,7 @@ int NdbQueryImpl::prepareSend() {
         }
       }
     }
-    const NdbDictionary::Table &rootTable = *fragTable;
+    const NdbTableImpl &rootTable = *fragTable;
 
     /* For CTE compound queries the root scan is not op[0] — CTE subtree
      * containers precede it. The constructor initializes m_parallelism
@@ -3773,7 +3773,7 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
       const NdbQueryOperationDefImpl &opDef =
           getQueryOperation(i).getQueryOperationDef();
       if (opDef.isCteEmbedded() && opDef.isScanOperation()) {
-        rootTable = &NdbTableImpl::getImpl(opDef.getTable());
+        rootTable = &opDef.getTable();
         break;
       }
     }
