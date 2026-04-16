@@ -1099,12 +1099,15 @@ const NdbQueryCteLookupOperationDef *NdbQueryBuilder::lookupCte(
   // CTE lookup must not be the first (root) operation
   returnErrIf(m_impl.m_operations.size() == 0, QRY_UNKNOWN_PARENT);
   // Must depend on some other operation via linked operands — unless this is
-  // the root of a CTE subtree, where const keys are allowed (analogous to
-  // scanTable allowing non-root placement inside a CTE subtree).
+  // the root of a CTE subtree or the main query root (after CTE subtrees),
+  // where const keys are allowed.
   const bool isCteSubtreeRoot =
       m_impl.m_inCteSubtree &&
       m_impl.m_operations.size() == m_impl.m_cteSubtreeStartOpIdx + 1;
-  returnErrIf(!isCteSubtreeRoot && !hasLinkedOperand(keys), QRY_UNKNOWN_PARENT);
+  const bool isMainQueryRoot =
+      !m_impl.m_inCteSubtree && m_impl.m_completedCteSubtrees > 0;
+  returnErrIf(!isCteSubtreeRoot && !isMainQueryRoot &&
+              !hasLinkedOperand(keys), QRY_UNKNOWN_PARENT);
 
   const NdbTableImpl &tableImpl = NdbTableImpl::getImpl(*virtualTable);
 
