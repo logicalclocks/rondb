@@ -29453,7 +29453,13 @@ void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
   scanptr.i = scanFragPtr.p->scanRec;
   scanRecordPool.getPtr(scanptr);
 
-  ndbrequire(scanptr.p->scanState == ScanRecord::RUNNING);
+  /* A late CTE_PHASE_COMPLETE_REP can arrive after the scan has
+   * timed out or been aborted (scanState != RUNNING).  Ignore it
+   * rather than crashing — the scan is already being cleaned up. */
+  if (unlikely(scanptr.p->scanState != ScanRecord::RUNNING)) {
+    jam();
+    return;
+  }
   ndbrequire(scanptr.p->m_numCtes > 0);
 
   scanptr.p->m_cteScanReportsReceived++;

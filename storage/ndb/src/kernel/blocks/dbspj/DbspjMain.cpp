@@ -2015,8 +2015,11 @@ Dbspj::build(Build_context& ctx,
       Ptr<TreeNode> nodePtr = ctx.m_node_list[ctx.m_cnt];
       nodePtr.p->m_cteId = ctx.m_cteSubtreeCteId;
 
-      if (node_op != QueryNode::QN_CTE_LOOKUP &&
-          node_op != QueryNode::QN_CTE_SCAN) {
+      const bool isCteOnlyNode =
+          (node_op == QueryNode::QN_CTE_LOOKUP ||
+           node_op == QueryNode::QN_CTE_SCAN);
+
+      if (!isCteOnlyNode) {
         jam();
         nodePtr.p->m_bits |= TreeNode::T_CTE_SCAN;
 
@@ -2029,26 +2032,15 @@ Dbspj::build(Build_context& ctx,
             break;
           }
         }
-      } else if ((nodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0) {
-        /* Part A: this CTE_LOOKUP / CTE_SCAN nested inside a subtree
-         * is the enclosing CTE's aggregate leaf. The subtree feeds
-         * its aggregator indirectly — via this node's result rows
-         * rather than via the base-table scan's rows. Walk up to
-         * the subtree's root.
-         *
-         * Two outcomes depending on what's at the subtree root:
-         *
-         * (a) Real-table scan/lookup at root: mark T_CTE_INDIRECT_FEED
-         *     so scanFrag_send() does NOT set JoinAggFlag on the scan's
-         *     SCAN_FRAGREQ.  The scan is already T_CTE_SCAN (set above
-         *     in the !CTE_LOOKUP/!CTE_SCAN branch).
-         *
-         * (b) CTE_LOOKUP / CTE_SCAN at root: there's no real-table
-         *     scan above the agg leaf — the subtree consists entirely
-         *     of CTE-only ops.  The root must itself become the
-         *     materialization start point.  Mark it T_CTE_SCAN
-         *     (so checkPrepareComplete / execCTE_PHASE_START_REQ find
-         *     it) and record m_scanTreeNodeNo on the CteContext. */
+      }
+
+      /* For any aggregate leaf inside a CTE subtree, check whether
+       * the subtree root is a CTE-only node (lookupCte / scanCte).
+       * If so, the root must become the materialization start point
+       * (T_CTE_SCAN), since there's no real-table scan driving it.
+       * If the root is a real-table node, mark it T_CTE_INDIRECT_FEED
+       * so scanFrag_send() skips JoinAggFlag on its SCAN_FRAGREQ. */
+      if ((nodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0) {
         jam();
         Uint32 ancestorPtrI = nodePtr.p->m_parentPtrI;
         bool foundScanAncestor = false;
@@ -2062,7 +2054,7 @@ Dbspj::build(Build_context& ctx,
             if (ancestorIsCteOnly) {
               ancestorPtr.p->m_bits |= TreeNode::T_CTE_SCAN;
               DEB_CTE(("(%u) build: mark T_CTE_SCAN on CTE-only "
-                       "subtree root node %u (nested agg leaf "
+                       "subtree root node %u (agg leaf "
                        "node %u cteId=%u)",
                        instance(), ancestorPtr.p->m_node_no,
                        nodePtr.p->m_node_no,
@@ -2078,7 +2070,7 @@ Dbspj::build(Build_context& ctx,
             } else {
               ancestorPtr.p->m_bits |= TreeNode::T_CTE_INDIRECT_FEED;
               DEB_CTE(("(%u) build: mark T_CTE_INDIRECT_FEED on "
-                       "subtree root node %u (nested agg leaf "
+                       "subtree root node %u (agg leaf "
                        "node %u cteId=%u)",
                        instance(), ancestorPtr.p->m_node_no,
                        nodePtr.p->m_node_no,
@@ -2799,6 +2791,9 @@ Uint32 Dbspj::planSequentialExec(Ptr<Request> requestPtr,
   Ptr<TreeNode> treeNodePtr(branchPtr);
   prevExecPtr = treeNodePtr;
   while (list.next(treeNodePtr)) {
+    // Stop at another root-level node — it starts a different subtree
+    // whose nodes (including children/leaves) are planned separately.
+    if (treeNodePtr.p->m_parentPtrI == RNIL) break;
     DEB_CTE(("(%u) planSeq step1: check node=%u predClear=%d "
              "ancestorsContained=%d isInner=%d isLookup=%d",
              instance(), treeNodePtr.p->m_node_no,
@@ -2834,6 +2829,7 @@ Uint32 Dbspj::planSequentialExec(Ptr<Request> requestPtr,
    */
   treeNodePtr = branchPtr;  // Start over
   while (list.next(treeNodePtr)) {
+    if (treeNodePtr.p->m_parentPtrI == RNIL) break;
     /**
      * Scan has to be executed in same order as found in the
      * list of TreeNodes. (Legacy of the original SPJ-API result protocol)
@@ -2868,6 +2864,7 @@ Uint32 Dbspj::planSequentialExec(Ptr<Request> requestPtr,
    */
   treeNodePtr = branchPtr;  // Start over
   while (list.next(treeNodePtr)) {
+    if (treeNodePtr.p->m_parentPtrI == RNIL) break;
     if (treeNodePtr.p->m_predecessors.isclear() &&
         predecessors.contains(treeNodePtr.p->m_ancestors) &&
         treeNodePtr.p->m_ancestors.contains(outerJoins)) {
@@ -5882,14 +5879,33 @@ void Dbspj::cte_start(Signal *signal, Ptr<Request> requestPtr,
   }
 
   jam();
-  /* Constant-keyed root lookup: synthesize a zero correlation and
-   * fire the lookup.  cte_lookup_send only reads rowRef inside the
-   * T_KEYINFO_CONSTRUCTED branch, which a constant-keyed root does
-   * not take. */
+  /* Constant-keyed root lookup: only rootFragId 0 actually fires the
+   * lookup.  All other fragments complete immediately with no results,
+   * since the same constant key would produce identical results and
+   * we must not duplicate rows into the enclosing CTE's aggregator. */
   treeNodePtr.p->m_state = TreeNode::TN_ACTIVE;
   requestPtr.p->m_cnt_active++;
   requestPtr.p->m_active_tree_nodes.set(treeNodePtr.p->m_node_no);
   requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
+
+  if (requestPtr.p->m_rootFragId != 0) {
+    jam();
+    DEB_CTE(("(%u) cte_start: skip non-zero rootFragId=%u node=%u",
+             instance(), requestPtr.p->m_rootFragId,
+             treeNodePtr.p->m_node_no));
+    treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+    requestPtr.p->m_cnt_active--;
+    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+    if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
+      requestPtr.p->m_cteScansComplete++;
+    }
+    return;
+  }
+
+  /* Synthesize a zero correlation and fire the lookup.
+   * cte_lookup_send only reads rowRef inside the
+   * T_KEYINFO_CONSTRUCTED branch, which a constant-keyed root does
+   * not take. */
   treeNodePtr.p->m_send.m_correlation = 0;
   RowPtr dummyRow;
   dummyRow.m_src_correlation = 0;
@@ -6276,19 +6292,31 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
   Ptr<Request> requestPtr;
   ndbrequire(m_request_pool.getPtr(requestPtr, treeNodePtr.p->m_requestPtrI));
 
-  DEB_CTE(("(%u) execCTE_LOOKUP_REF: node=%u errorCode=%u outstanding=%u/%u",
+  // A REF means no TRANSID_AI will follow — account for both the
+  // REF and the non-arriving TRANSID_AI, same as lookup_execLQHKEYREF.
+  const Uint32 cnt =
+      (treeNodePtr.p->m_bits & TreeNode::T_EXPECT_TRANSID_AI) ? 2 : 1;
+
+  DEB_CTE(("(%u) execCTE_LOOKUP_REF: node=%u errorCode=%u outstanding=%u/%u "
+           "cnt=%u",
            instance(), treeNodePtr.p->m_node_no, ref->errorCode,
            treeNodePtr.p->m_cteLookup_data.m_outstanding,
-           requestPtr.p->m_outstanding));
+           requestPtr.p->m_outstanding, cnt));
 
-  ndbrequire(treeNodePtr.p->m_cteLookup_data.m_outstanding > 0);
-  treeNodePtr.p->m_cteLookup_data.m_outstanding--;
+  ndbrequire(treeNodePtr.p->m_cteLookup_data.m_outstanding >= cnt);
+  treeNodePtr.p->m_cteLookup_data.m_outstanding -= cnt;
 
-  ndbrequire(requestPtr.p->m_outstanding > 0);
-  requestPtr.p->m_outstanding--;
+  ndbrequire(requestPtr.p->m_outstanding >= cnt);
+  requestPtr.p->m_outstanding -= cnt;
 
   if (treeNodePtr.p->m_cteLookup_data.m_outstanding == 0) {
     requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+    if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
+      jam();
+      treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+      ndbrequire(requestPtr.p->m_cnt_active > 0);
+      requestPtr.p->m_cnt_active--;
+    }
   }
 
   if (ref->errorCode != CteLookupRef::GROUP_NOT_FOUND) {

@@ -61,7 +61,7 @@
 static const bool doPrintQueryTree = false;
 
 #ifdef VM_TRACE
-//#define DEBUG_CTE_API 1
+#define DEBUG_CTE_API 1
 #endif
 
 #ifdef DEBUG_CTE_API
@@ -1098,8 +1098,13 @@ const NdbQueryCteLookupOperationDef *NdbQueryBuilder::lookupCte(
   returnErrIf(virtualTable == nullptr || keys == nullptr, QRY_REQ_ARG_IS_NULL);
   // CTE lookup must not be the first (root) operation
   returnErrIf(m_impl.m_operations.size() == 0, QRY_UNKNOWN_PARENT);
-  // Must depend on some other operation via linked operands
-  returnErrIf(!hasLinkedOperand(keys), QRY_UNKNOWN_PARENT);
+  // Must depend on some other operation via linked operands — unless this is
+  // the root of a CTE subtree, where const keys are allowed (analogous to
+  // scanTable allowing non-root placement inside a CTE subtree).
+  const bool isCteSubtreeRoot =
+      m_impl.m_inCteSubtree &&
+      m_impl.m_operations.size() == m_impl.m_cteSubtreeStartOpIdx + 1;
+  returnErrIf(!isCteSubtreeRoot && !hasLinkedOperand(keys), QRY_UNKNOWN_PARENT);
 
   const NdbTableImpl &tableImpl = NdbTableImpl::getImpl(*virtualTable);
 
@@ -1120,6 +1125,10 @@ const NdbQueryCteLookupOperationDef *NdbQueryBuilder::lookupCte(
 
   returnErrIf(m_impl.takeOwnership(op) != 0, Err_MemoryAlloc);
   returnErrIf(error != 0, error);
+
+  DEB_CTE_API("lookupCte: cteId=%u opIdx=%u internalOpNo=%u isCteRoot=%d\n",
+              cteId, (unsigned)(m_impl.m_operations.size() - 1),
+              op->getInternalOpNo(), (int)isCteSubtreeRoot);
 
   // Bind key operands to the virtual table's PK columns
   Uint32 keyindex = 0;
@@ -2586,7 +2595,18 @@ Uint32 NdbQueryCteLookupOperationDefImpl::appendKeyPattern(
               *static_cast<const NdbConstOperandImpl *>(key);
           const Uint32 wordCount =
               AttributeHeader::getDataSize(constOp.getSizeInBytes());
-          serializedDef.append(QueryPattern::data(wordCount));
+          /* CTE hash table keys include AttributeHeaders (written by
+           * readAttributes during aggregation). Prepend an AttrHeader
+           * for the bound column so the constant key matches the hash
+           * table format — same as P_ATTRINFO does for linked keys. */
+          const NdbColumnImpl *col = constOp.getColumn();
+          if (col != nullptr) {
+            AttributeHeader ah(col->m_attrId, constOp.getSizeInBytes());
+            serializedDef.append(QueryPattern::data(1 + wordCount));
+            serializedDef.append(ah.m_value);
+          } else {
+            serializedDef.append(QueryPattern::data(wordCount));
+          }
           serializedDef.appendBytes(constOp.getAddr(),
                                     constOp.getSizeInBytes());
           break;
