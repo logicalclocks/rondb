@@ -716,7 +716,7 @@ class NdbQueryDefImpl {
     /* Queries with CTEs always use the scan protocol (SCAN_TABREQ)
      * because CTE materialization requires multi-phase coordination
      * by DBTC, even when the main query root is a lookup (lookupCte). */
-    if (m_numCtes > 0) return true;
+    if (m_cteDefs.size() > 0) return true;
     for (Uint32 i = 0; i < m_operations.size(); i++) {
       if (m_operations[i]->getType() == NdbQueryOperationDef::CteSubtree)
         continue;
