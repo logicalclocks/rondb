@@ -5861,6 +5861,20 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
       }
     }
 
+    /* When the lookupCte is the main query root (arrived via SCAN_FRAGREQ,
+     * not LQHKEYREQ), consume m_start_signal so that child lookup nodes
+     * built after this don't try to interpret the SCAN_FRAGREQ signal as
+     * an LqhKeyReq. The lookupCte main root uses CTE_LOOKUP_REQ (not
+     * LQHKEYREQ) so it doesn't need start_signal fields. */
+    if (ctx.m_start_signal &&
+        ctx.m_cteSubtreeRemaining == 0 &&
+        treeNodePtr.p->m_parentPtrI == RNIL) {
+      jam();
+      DEB_CTE(("(%u) cte_build: main root node %u consuming m_start_signal",
+               instance(), treeNodePtr.p->m_node_no));
+      ctx.m_start_signal = NULL;
+    }
+
     // Inherit batch_size from parent (same as lookup)
     if (treeNodePtr.p->m_parentPtrI != RNIL) {
       jam();
@@ -5880,22 +5894,34 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
 void Dbspj::cte_start(Signal *signal, Ptr<Request> requestPtr,
                        Ptr<TreeNode> treeNodePtr) {
   jam();
-  /* Two cases:
+  /* Three cases:
    *
    * (1) Driven from a parent row (the common case): the lookup
    *     fires from cte_parent_row(), not here.  In that case
-   *     T_CTE_SCAN is NOT set on this node and we do nothing.
+   *     T_CTE_SCAN is NOT set AND the node has a parent, so we
+   *     do nothing.
    *
    * (2) Constant-keyed lookupCte at a CTE subtree root (T12):
    *     the lookup is the materialization root for an enclosing
    *     CTE — it has no parent, and the build loop marked it
-   *     T_CTE_SCAN so checkPrepareComplete found it here.  We
-   *     fire one CTE_LOOKUP_REQ with the pre-built constant key
-   *     by calling cte_lookup_send() with a dummy RowPtr (the
-   *     constant-key path doesn't read rowRef). */
-  if ((treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) == 0) {
+   *     T_CTE_SCAN so checkPrepareComplete found it here.
+   *
+   * (3) Constant-keyed lookupCte as the main query root (T11):
+   *     the lookup has no parent and m_cteId == RNIL (not inside
+   *     a CTE subtree). T_CTE_SCAN is NOT set (it's not a CTE
+   *     materialization root). Called from execCTE_START_MAIN_REQ.
+   *
+   * For cases (2) and (3) we fire one CTE_LOOKUP_REQ with the
+   * pre-built constant key by calling cte_lookup_send() with a
+   * dummy RowPtr (the constant-key path doesn't read rowRef). */
+  const bool isCteSubtreeRoot =
+      (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) != 0;
+  const bool isMainRoot =
+      treeNodePtr.p->m_parentPtrI == RNIL &&
+      treeNodePtr.p->m_cteId == RNIL;
+  if (!isCteSubtreeRoot && !isMainRoot) {
     jam();
-    return;
+    return;  // Case (1): parent-driven lookup
   }
 
   jam();
@@ -6272,6 +6298,12 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
   // cte_lookup_send cleared the bit; restore it when done.
   if (treeNodePtr.p->m_cteLookup_data.m_outstanding == 0) {
     requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+    if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
+      jam();
+      treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+      ndbrequire(requestPtr.p->m_cnt_active > 0);
+      requestPtr.p->m_cnt_active--;
+    }
   }
 
   // Count FLUSH_AI result sent to API — same as lookup_countSignal does

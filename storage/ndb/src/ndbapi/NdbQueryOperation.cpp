@@ -6074,7 +6074,7 @@ bool NdbQueryOperationImpl::execSCAN_TABCONF(Uint32 tcPtrI, Uint32 rowCount,
   assert(checkMagicNumber());
   // For now, only the root operation may be a scan.
   assert(&getRoot() == this);
-  assert(m_operationDef.isScanOperation());
+  assert(m_operationDef.isScanOperation() || getQuery().getQueryDef().isScanQuery());
 
   NdbWorker *worker = NdbWorker::receiverIdLookup(
       m_queryImpl.m_workers, m_queryImpl.getWorkerCount(), receiver->getId());
