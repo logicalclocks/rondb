@@ -3082,8 +3082,24 @@ int NdbQueryImpl::prepareSend() {
   Uint32 rootFragments;
   if (getQueryDef().isScanQuery()) {
     NdbQueryOperationImpl &rootOp = getRoot();
-    const NdbDictionary::Table &rootTable =
-        rootOp.getQueryOperationDef().getTable();
+    const NdbDictionary::Table *fragTable =
+        &rootOp.getQueryOperationDef().getTable();
+
+    /* When the main root is a lookup (lookupCte), it doesn't scan a
+     * real table.  Use the first CTE-embedded scan's table for fragment
+     * routing — that table determines the number of DBSPJ instances
+     * needed for CTE materialization. */
+    if (!rootOp.getQueryOperationDef().isScanOperation()) {
+      for (Uint32 i = 0; i < getNoOfOperations(); i++) {
+        const NdbQueryOperationDefImpl &opDef =
+            getQueryOperation(i).getQueryOperationDef();
+        if (opDef.isCteEmbedded() && opDef.isScanOperation()) {
+          fragTable = &opDef.getTable();
+          break;
+        }
+      }
+    }
+    const NdbDictionary::Table &rootTable = *fragTable;
 
     /* For CTE compound queries the root scan is not op[0] — CTE subtree
      * containers precede it. The constructor initializes m_parallelism
@@ -3745,9 +3761,23 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
 
   const NdbQueryOperationImpl &root = getRoot();
   const NdbQueryOperationDefImpl &rootDef = root.getQueryOperationDef();
-  const NdbTableImpl *const rootTable =
+  const NdbTableImpl *rootTable =
       rootDef.getIndex() ? rootDef.getIndex()->getIndexTable()
                          : &rootDef.getTable();
+
+  /* For CTE queries where the main root is a lookup (lookupCte),
+   * use the CTE base scan table for the SCAN_TABREQ tableId so that
+   * DBTC can route fragments correctly via DIH. */
+  if (getQueryDef().isScanQuery() && !rootDef.isScanOperation()) {
+    for (Uint32 i = 0; i < getNoOfOperations(); i++) {
+      const NdbQueryOperationDefImpl &opDef =
+          getQueryOperation(i).getQueryOperationDef();
+      if (opDef.isCteEmbedded() && opDef.isScanOperation()) {
+        rootTable = &NdbTableImpl::getImpl(opDef.getTable());
+        break;
+      }
+    }
+  }
 
   Uint32 tTableId = rootTable->m_id;
   Uint32 tSchemaVersion = rootTable->m_version;
