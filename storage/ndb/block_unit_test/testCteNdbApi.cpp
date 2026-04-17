@@ -67,6 +67,7 @@ static bool verbose = false;
 static const char *TEST_DB = "test";
 static const char *SRC_TABLE = "cte_src";
 static const char *VIRTUAL_TABLE = "cte_virtual";
+static const char *SCALAR_VIRTUAL_TABLE = "cte_virtual_scalar";
 
 /* ------------------------------------------------------------------ */
 /* MySQL helpers                                                       */
@@ -106,6 +107,7 @@ createTestTables(MYSQL *conn)
 {
   sqlExec(conn, "DROP TABLE IF EXISTS cte_src");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual_scalar");
 
   if (sqlExec(conn,
       "CREATE TABLE cte_src ("
@@ -121,6 +123,13 @@ createTestTables(MYSQL *conn)
       "CREATE TABLE cte_virtual ("
       "  grp INT NOT NULL PRIMARY KEY,"
       "  total BIGINT NOT NULL"
+      ") ENGINE=NDB") != 0) return -1;
+
+  /* Virtual table for scalar aggregate CTEs (no GROUP BY).
+   * Single BIGINT column for the aggregate result. */
+  if (sqlExec(conn,
+      "CREATE TABLE cte_virtual_scalar ("
+      "  result BIGINT NOT NULL PRIMARY KEY"
       ") ENGINE=NDB") != 0) return -1;
 
   /* Ordered index on val for scanIndex CTE tests (Test 18+) */
@@ -144,6 +153,7 @@ dropTestTables(MYSQL *conn)
 {
   sqlExec(conn, "DROP TABLE IF EXISTS cte_src");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual_scalar");
 }
 
 /* ------------------------------------------------------------------ */
@@ -5185,47 +5195,46 @@ testScanIndexCteMaterialization(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 19: GROUP BY grp, MAX(val) with descending scanIndex           */
+/* Test 19: Scalar MAX(val) CTE with descending scanIndex + maxRows=1  */
 /*                                                                     */
 /* SQL equivalent:                                                     */
-/*   WITH cte0 AS (SELECT grp, MAX(val) AS max_val                     */
-/*                   FROM cte_src GROUP BY grp)                        */
+/*   WITH cte0 AS (SELECT MAX(val) AS max_val FROM cte_src)            */
 /*   SELECT * FROM cte0;                                               */
 /*                                                                     */
 /* Why this test:                                                      */
-/*   Verifies that a descending ordered index scan works correctly     */
-/*   inside a CTE materialization subtree, and that the SFP_DESCENDING */
-/*   flag properly sets the DescendingFlag on the SCAN_FRAGREQ sent    */
-/*   to DBLQH. The rows arrive in descending val order, but the       */
-/*   aggregator still groups correctly by grp.                         */
+/*   Exercises the complete MIN/MAX index optimization:                */
+/*   1. Scalar aggregate CTE (no GROUP BY) — tests cteScanEmitResults */
+/*      handling of n_gb_cols==0 (m_agg_results path)                  */
+/*   2. Descending ordered index scan (SFP_DESCENDING flag)            */
+/*   3. maxRows=1 (close scan after first row per fragment)            */
 /*                                                                     */
 /* Tree shape:                                                         */
 /*   Node 0: CTE 0 subtree container                                   */
-/*   Node 1: scanIndex(cte_src, idx_cte_src_val, DESC)                 */
+/*   Node 1: scanIndex(cte_src, idx_cte_src_val, DESC, maxRows=1)      */
 /*   Node 2: readTuple(cte_src, key=linked(node1,"pk"),               */
-/*           setAggregation(GROUP BY grp, MAX(val))) T_AGGREGATE_LEAF  */
-/*   Node 3: scanCte(0)                              MAIN ROOT         */
+/*           setAggregation(MAX(val)))             T_AGGREGATE_LEAF    */
+/*   Node 3: scanCte(0)                            MAIN ROOT           */
 /*                                                                     */
 /* Data: (1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)                  */
-/* Expected: {grp=1,max=20}, {grp=2,max=40}, {grp=3,max=50}           */
-/*   3 result rows.                                                    */
+/* Expected: MAX(val)=50, 1 result row.                                */
 /* ------------------------------------------------------------------ */
 
 static int
 testMaxValWithDescScanIndex(Ndb *ndb, MYSQL * /*conn*/)
 {
-  printf("Test 19: GROUP BY grp, MAX(val) with descending scanIndex ... ");
+  printf("Test 19: Scalar MAX(val) CTE + DESC scanIndex + maxRows=1 ... ");
   fflush(stdout);
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(SRC_TABLE);
-  dict->invalidateTable(VIRTUAL_TABLE);
+  dict->invalidateTable(SCALAR_VIRTUAL_TABLE);
   dict->invalidateIndex("idx_cte_src_val", SRC_TABLE);
   const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
-  const NdbDictionary::Table *virtTab = dict->getTable(VIRTUAL_TABLE);
+  const NdbDictionary::Table *scalarVirtTab =
+      dict->getTable(SCALAR_VIRTUAL_TABLE);
   const NdbDictionary::Index *valIdx =
       dict->getIndex("idx_cte_src_val", SRC_TABLE);
-  if (srcTab == nullptr || virtTab == nullptr) {
+  if (srcTab == nullptr || scalarVirtTab == nullptr) {
     printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
     return -1;
   }
@@ -5234,10 +5243,9 @@ testMaxValWithDescScanIndex(Ndb *ndb, MYSQL * /*conn*/)
     return -1;
   }
 
-  /* CTE 0 aggregation: GROUP BY grp, MAX(val) */
+  /* CTE 0 aggregation: MAX(val) — no GROUP BY (scalar aggregate) */
   NdbAggregator cte0Agg(srcTab);
-  if (!cte0Agg.GroupBy("grp") ||
-      !cte0Agg.LoadColumn("val", 0) ||
+  if (!cte0Agg.LoadColumn("val", 0) ||
       !cte0Agg.Max(0, 0) ||
       !cte0Agg.Finalize()) {
     printf("FAILED (cte0Agg: %s)\n", cte0Agg.GetError().err_msg_);
@@ -5251,11 +5259,12 @@ testMaxValWithDescScanIndex(Ndb *ndb, MYSQL * /*conn*/)
     return -1;
   }
 
-  /* CTE 0 subtree: scanIndex (DESC) + readTuple leaf */
+  /* CTE 0 subtree: scanIndex (DESC, maxRows=1) + readTuple leaf */
   qb->beginCteSubtree(0);
   {
     NdbQueryOptions scanOpts;
     scanOpts.setOrdering(NdbQueryOptions::ScanOrdering_descending);
+    scanOpts.setMaxRows(1);
 
     const NdbQueryIndexScanOperationDef *scan =
         qb->scanIndex(valIdx, srcTab, nullptr, &scanOpts);
@@ -5284,9 +5293,11 @@ testMaxValWithDescScanIndex(Ndb *ndb, MYSQL * /*conn*/)
     return -1;
   }
 
-  /* Main query: scanCte(0) */
+  /* Main query: scanCte(0) — returns 1 row with MAX(val).
+   * scalarVirtTab has (result BIGINT PK). numResultCols=1 matches
+   * the single aggregate result. */
   const NdbQueryCteScanOperationDef *mainOp =
-      qb->scanCte(0, 2, virtTab);
+      qb->scanCte(0, 1, scalarVirtTab);
   if (mainOp == nullptr) {
     printf("FAILED (main scanCte: %s)\n", qb->getNdbError().message);
     qb->destroy();
@@ -5319,14 +5330,12 @@ testMaxValWithDescScanIndex(Ndb *ndb, MYSQL * /*conn*/)
     return -1;
   }
 
-  /* Wire user projection on the scanCte root */
+  /* Wire user projection — read the single aggregate result column */
   const Uint32 mainOpNo = queryDef->getNoOfOperations() - 1;
   NdbQueryOperation *mainQueryOp = query->getQueryOperation(mainOpNo);
-  NdbRecAttr *raGrp = nullptr;
-  NdbRecAttr *raTotal = nullptr;
+  NdbRecAttr *raMaxVal = nullptr;
   if (mainQueryOp != nullptr) {
-    raGrp = mainQueryOp->getValue("grp");
-    raTotal = mainQueryOp->getValue("total");
+    raMaxVal = mainQueryOp->getValue("result");
   }
 
   if (trans->execute(NdbTransaction::NoCommit) != 0) {
@@ -5339,35 +5348,13 @@ testMaxValWithDescScanIndex(Ndb *ndb, MYSQL * /*conn*/)
     return -1;
   }
 
-  /* Expected: GROUP BY grp, MAX(val) */
-  std::map<Int32, Int64> expected;
-  expected[1] = 20;   /* max(10,20) */
-  expected[2] = 40;   /* max(30,40) */
-  expected[3] = 50;   /* max(50) */
-
   Uint32 rowCount = 0;
+  Int64 maxVal = -1;
   NdbQuery::NextResultOutcome outcome;
   while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
     rowCount++;
-    Int32 grp = raGrp ? raGrp->int32_value() : -1;
-    Int64 total = raTotal ? raTotal->int64_value() : -1;
-    V("  row: grp=%d max_val=%lld\n", grp, (long long)total);
-    auto it = expected.find(grp);
-    if (it == expected.end()) {
-      printf("FAILED (unexpected grp=%d)\n", grp);
-      query->close();
-      trans->close();
-      queryDef->destroy();
-      return -1;
-    }
-    if (total != it->second) {
-      printf("FAILED (grp=%d expected max=%lld got %lld)\n",
-             grp, (long long)it->second, (long long)total);
-      query->close();
-      trans->close();
-      queryDef->destroy();
-      return -1;
-    }
+    maxVal = raMaxVal ? raMaxVal->int64_value() : -1;
+    V("  row: MAX(val)=%lld\n", (long long)maxVal);
   }
 
   if (outcome == NdbQuery::NextResult_error) {
@@ -5383,12 +5370,16 @@ testMaxValWithDescScanIndex(Ndb *ndb, MYSQL * /*conn*/)
   trans->close();
   queryDef->destroy();
 
-  if (rowCount != 3) {
-    printf("FAILED (expected 3 rows, got %u)\n", rowCount);
+  if (rowCount != 1) {
+    printf("FAILED (expected 1 row, got %u)\n", rowCount);
+    return -1;
+  }
+  if (maxVal != 50) {
+    printf("FAILED (expected MAX(val)=50, got %lld)\n", (long long)maxVal);
     return -1;
   }
 
-  printf("OK (%u rows)\n", rowCount);
+  printf("OK (MAX(val)=%lld)\n", (long long)maxVal);
   return 0;
 }
 

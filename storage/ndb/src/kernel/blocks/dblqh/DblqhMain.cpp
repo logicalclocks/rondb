@@ -19624,6 +19624,70 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
       sendSignal(reference(), GSN_CONTINUEB, signal, 9, JBB);
       return;
     }
+  } else if (interp->n_gb_cols() == 0 &&
+             interp->processed_rows() > 0 &&
+             groupsSent == 0) {
+    /**
+     * Scalar aggregate (no GROUP BY): single result in m_agg_results.
+     * Build linked_attr_data and feed into target aggregator once.
+     */
+    jam();
+    const Uint32 src_n_agg_results = interp->n_agg_results();
+    const AggResItem *accumulators = interp->agg_results();
+
+    Uint32 *linkedBuf = cevictBuffer;
+    Uint32 linkedPos = 0;
+
+    /* No group-by key columns — go straight to aggregate results */
+    for (Uint32 i = 0; i < src_n_agg_results; i++) {
+      const Uint32 attrId = i;  /* n_gb_cols==0, so attrId == i */
+      linkedBuf[linkedPos++] = 0;  // tableId
+      linkedBuf[linkedPos++] = 0;  // schemaVersion
+      if (accumulators[i].is_null) {
+        AttributeHeader::init(&linkedBuf[linkedPos], attrId, 0);
+        linkedPos += 1;
+      } else {
+        AttributeHeader::init(&linkedBuf[linkedPos], attrId, 8);
+        memcpy(&linkedBuf[linkedPos + 1], &accumulators[i].value, 8);
+        linkedPos += 3;
+      }
+    }
+
+    const LeafProgram *leaf = nullptr;
+    if (targetState->m_num_leaves > 1) {
+      ndbrequire(targetLeafIndex < targetState->m_num_leaves);
+      leaf = &targetState->m_leaf_programs[targetLeafIndex];
+    }
+
+    Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
+        nullptr, nullptr, linkedBuf, linkedPos, leaf);
+    if (unlikely(aggRet != 0 && aggRet != AGG_EVICT_NEEDED)) {
+      jam();
+      sendCteScanRef(signal, senderRef, senderData,
+                     ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+      return;
+    }
+    if (aggRet == AGG_EVICT_NEEDED) {
+      jam();
+      if (unlikely(targetState->m_cte_mode)) {
+        jam();
+        sendCteScanRef(signal, senderRef, senderData,
+                       ZCTE_EVICT_IN_CTE_LEAF);
+        return;
+      }
+      sendEvictedAggGroup(signal, targetInterp, targetState);
+      /* Retry after eviction */
+      aggRet = targetInterp->processRecWithLinkedAttrs(
+          nullptr, nullptr, linkedBuf, linkedPos, leaf);
+      if (unlikely(aggRet != 0)) {
+        jam();
+        sendCteScanRef(signal, senderRef, senderData,
+                       ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+        return;
+      }
+    }
+    targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+    groupsSent = 1;
   }
 
   /* All groups processed — send CTE_SCAN_CONF with EndOfData */
@@ -19791,6 +19855,80 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       scanState->iterBucket = iter.bucket();
       scanState->iterRaw = iter.raw();
     }
+  } else if (interp->n_gb_cols() == 0 &&
+             interp->processed_rows() > 0 &&
+             scanState->groupsSent == 0) {
+    /**
+     * Scalar aggregate (no GROUP BY): single result in m_agg_results.
+     * gb_map is nullptr for n_gb_cols==0 — results go directly to
+     * m_agg_results during aggregation.  Emit once.
+     */
+    jam();
+    const Uint32 n_agg_results = interp->n_agg_results();
+    const AggResItem *accumulators = interp->agg_results();
+    Uint32 *outBuf = cevictBuffer;
+
+    if (haveFinalR) {
+      CteOutputParams params;
+      params.transId[0] = req.transId1;
+      params.transId[1] = req.transId2;
+      params.flushRef = req.resultRef;
+      params.flushData = req.resultData;
+      params.residualRef = req.senderRef;
+      params.residualData = req.senderData;
+      params.correlation = 0;
+      params.corrRootRcvr = req.resultData;
+      params.useFlushAiFromFinalR = false;
+
+      Int32 outPos = emitCteGroupOutput(signal, params,
+                                        nullptr, 0,
+                                        finalR, finalRLen,
+                                        0, n_agg_results,
+                                        accumulators, outBuf);
+      if (outPos > 0) {
+        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+        transIdAI->connectPtr = req.senderData;
+        transIdAI->transId[0] = req.transId1;
+        transIdAI->transId[1] = req.transId2;
+
+        LinearSectionPtr lsp[3];
+        lsp[0].p = outBuf;
+        lsp[0].sz = (Uint32)outPos;
+        sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
+                   TransIdAI::HeaderLength, JBB, lsp, 1);
+      }
+    } else {
+      /* Legacy path: emit agg columns + CORR_FACTOR32 */
+      Uint32 outPos = 0;
+      for (Uint32 a = 0; a < n_agg_results; a++) {
+        const AggResItem &item = accumulators[a];
+        if (item.is_null) {
+          AttributeHeader::init(&outBuf[outPos], a, 0);
+          outPos += 1;
+        } else {
+          AttributeHeader::init(&outBuf[outPos], a, 8);
+          memcpy(&outBuf[outPos + 1], &item.value, 8);
+          outPos += 3;
+        }
+      }
+      AttributeHeader::init(&outBuf[outPos],
+                            AttributeHeader::CORR_FACTOR32, 4);
+      outBuf[outPos + 1] = 0;
+      outPos += 2;
+
+      TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+      transIdAI->connectPtr = req.senderData;
+      transIdAI->transId[0] = req.transId1;
+      transIdAI->transId[1] = req.transId2;
+
+      LinearSectionPtr lsp[3];
+      lsp[0].p = outBuf;
+      lsp[0].sz = outPos;
+      sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
+                 TransIdAI::HeaderLength, JBB, lsp, 1);
+    }
+    numRowsSent = 1;
+    scanState->groupsSent = 1;
   }
 
   /* Send CTE_SCAN_CONF */
