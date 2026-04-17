@@ -23,6 +23,10 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `chained_outer_join_plan.md` — Chained outer join aggregation fix plan (Phases 1-6)
 - `star_schema_plan.md` — Star schema fan-out aggregation design (RONDB-1044)
 - `star_schema_implementation.md` — Star schema implementation plan (Steps 1-12)
+- `cte_filter_plan.md` — CTE filter + 3rd interpreter (jump-table) overview + phase index
+- `cte_filter_phase_a.md` — Phase A: CTE_LOOKUP_REQ filter support
+- `cte_filter_phase_b.md` — Phase B: CTE_SCAN_REQ (root) filter support
+- `cte_filter_phase_c.md` — Phase C: aggregation interpreter reuses the jump-table interpreter
 
 ### Key Source Files
 - `DblqhMain.cpp` — Signal handlers for JOIN_AGG_SETUP/COMPLETE/RELEASE, scan processing, sendScanFragConf
