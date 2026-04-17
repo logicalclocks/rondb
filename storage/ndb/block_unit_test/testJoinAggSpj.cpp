@@ -1547,6 +1547,7 @@ testManyGroups(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
 /* ------------------------------------------------------------------ */
 /* Test 8: Forced eviction via ERROR_INSERT 4040                       */
 /* ------------------------------------------------------------------ */
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 
 static int
 testForcedEviction(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn,
@@ -1675,6 +1676,8 @@ testForcedEviction(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn,
   ss.lock();
   return 0;
 }
+
+#endif  /* VM_TRACE || ERROR_INSERT */
 
 /* ------------------------------------------------------------------ */
 /* Test: Reject too many leaves in multi-leaf agg program (> 32)       */
@@ -1854,8 +1857,13 @@ int main(int argc, char *argv[])
       if (testSingleRow(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
       if (testLargeDataset(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
       if (testManyGroups(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
       if (testForcedEviction(&ndb, ss, (Uint32)nodeId, conn,
                              restarter) != 0) result = 1;
+#else
+      printf("Test 8: SKIPPED (production build, ERROR_INSERT unavailable)\n");
+      (void)restarter;
+#endif
       if (testRejectTooManyLeaves(&ndb, ss, (Uint32)nodeId, conn) != 0)
         result = 1;
 

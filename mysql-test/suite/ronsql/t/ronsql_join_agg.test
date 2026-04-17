@@ -839,10 +839,15 @@ DELIMITER ;|
 --echo
 --echo === Test 44: Group eviction with ERROR_INSERT 5116 ===
 
---source include/check_ndb_debug.inc
-
-if ($have_ndb_debug)
-{
+# ERROR_INSERT 5116 forces maxGroups=3 in the data node so the query path
+# exercises the eviction + merge code. In production builds ERROR_INSERT
+# is compiled out — the "ALL ERROR 5116" command is silently a no-op — so
+# the query runs on the normal (non-evicting) path. The logical query
+# result is identical in both cases, so the test runs unconditionally and
+# the recorded .result matches.
+# In production ndb_mgm rejects "ALL ERROR …" with non-zero exit; accept
+# either success or failure so the test keeps running on both builds.
+--error 0,1,255
 --exec $NDB_MGM -e "ALL ERROR 5116" > /dev/null 2>&1
 
 DELIMITER |;
@@ -861,8 +866,8 @@ GROUP BY o.o_id|
 
 DELIMITER ;|
 
+--error 0,1,255
 --exec $NDB_MGM -e "ALL ERROR 0" > /dev/null 2>&1
-}
 
 --echo
 --echo

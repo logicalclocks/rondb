@@ -64,7 +64,7 @@
 
 #define JAM_FILE_ID 479
 
-#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
 #define DEBUG_TRANSID_AI 1
 #define DEBUG_AGGREGATION 1
@@ -79,7 +79,7 @@
  * so it's split out from DEBUG_CTE and defaulted OFF. Enable only
  * when debugging a specific CTE build/flag routing issue. */
 //#define DEBUG_CTE_BUILD 1
-#endif
+//#endif
 
 #ifdef DEBUG_CTE
 #define DEB_CTE(arglist) do { g_eventLogger->info arglist ; } while (0)
@@ -1783,13 +1783,16 @@ Dbspj::build(Build_context& ctx,
 
   while (ctx.m_cnt < loop) {
     DEBUG(" - loop " << ctx.m_cnt << " pos: " << tree.getPos().currPos);
-#ifdef DEBUG_CTE
     bool treePeekOk = tree.peekWord(&tmp0);
     bool paramPeekOk = param.peekWord(&tmp1);
-    Uint32 node_op = QueryNode::getOpType(tmp0);
+    (void)treePeekOk;
+    (void)paramPeekOk;
     Uint32 node_len = QueryNode::getLength(tmp0);
-    Uint32 param_op = QueryNodeParameters::getOpType(tmp1);
     Uint32 param_len = QueryNodeParameters::getLength(tmp1);
+    Uint32 node_op = QueryNode::getOpType(tmp0);
+    Uint32 param_op = QueryNodeParameters::getOpType(tmp1);
+    (void)node_op;
+    (void)param_op;
     DEB_CTE(("(%u) build loop node[%u]: treePeek=%d paramPeek=%d "
              "node_op=%u node_len=%u param_op=%u param_len=%u "
              "paramPos=%u paramSize=%u",
@@ -1797,7 +1800,6 @@ Dbspj::build(Build_context& ctx,
              (int)treePeekOk, (int)paramPeekOk,
              node_op, node_len, param_op, param_len,
              param.getPos().currPos, param.getSize()));
-#endif
     err = DbspjErr::QueryNodeTooBig;
     if (unlikely(node_len >= NDB_ARRAY_SIZE(m_buffer0))) {
       jam();

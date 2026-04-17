@@ -95,8 +95,10 @@ static const char *SS_PROJECT = "ss_project";
 static const char *SS_TASK    = "ss_task";
 
 /* Group E tables (Test 9 — eviction via ERROR_INSERT 4040) */
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 static const char *SS_STORE_E = "ss_store_e";
 static const char *SS_SALE_E  = "ss_sale_e";
+#endif
 
 /* ------------------------------------------------------------------ */
 /* MySQL helpers                                                       */
@@ -1955,6 +1957,7 @@ testCompositeIndexBounds(Ndb *ndb, MYSQL *conn)
 /* ------------------------------------------------------------------ */
 /* Group E: ss_store_e + ss_sale_e (Test 9 — eviction)                 */
 /* ------------------------------------------------------------------ */
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 
 static int
 createGroupETables(MYSQL *conn)
@@ -2230,6 +2233,8 @@ testEvictionScanScan(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   return 0;
 }
 
+#endif  /* VM_TRACE || ERROR_INSERT */
+
 /* ------------------------------------------------------------------ */
 /* usage / main                                                        */
 /* ------------------------------------------------------------------ */
@@ -2352,6 +2357,7 @@ int main(int argc, char **argv)
           dropGroupDTables(conn);
 
           /* Test 9: Group E tables (ss_store_e + ss_sale_e) — eviction */
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
           {
             NdbRestarter restarter(connectString);
             if (createGroupETables(conn) == 0 &&
@@ -2363,6 +2369,10 @@ int main(int argc, char **argv)
             }
             dropGroupETables(conn);
           }
+#else
+          printf("Test 9: SKIPPED "
+                 "(production build, ERROR_INSERT unavailable)\n");
+#endif
         }
 
         mysql_close(conn);

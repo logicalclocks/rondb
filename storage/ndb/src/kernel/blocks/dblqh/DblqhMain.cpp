@@ -124,7 +124,7 @@
 
 #include <EventLogger.hpp>
 
-#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_ABORT_TRANS 1
 //#define DEBUG_LQH_TRANS 1
 //#define DEBUG_TABLE_LIST 1
@@ -169,7 +169,7 @@
 //#define DEBUG_JOIN_AGG 1
 #define DEBUG_MATCH 1
 #define DEBUG_CTE 1
-#endif
+//#endif
 
 #ifdef DEBUG_CTE
 #define DEB_CTE(arglist) do { g_eventLogger->info arglist ; } while (0)
