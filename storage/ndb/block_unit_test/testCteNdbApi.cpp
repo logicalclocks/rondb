@@ -5185,6 +5185,214 @@ testScanIndexCteMaterialization(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 19: GROUP BY grp, MAX(val) with descending scanIndex           */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   WITH cte0 AS (SELECT grp, MAX(val) AS max_val                     */
+/*                   FROM cte_src GROUP BY grp)                        */
+/*   SELECT * FROM cte0;                                               */
+/*                                                                     */
+/* Why this test:                                                      */
+/*   Verifies that a descending ordered index scan works correctly     */
+/*   inside a CTE materialization subtree, and that the SFP_DESCENDING */
+/*   flag properly sets the DescendingFlag on the SCAN_FRAGREQ sent    */
+/*   to DBLQH. The rows arrive in descending val order, but the       */
+/*   aggregator still groups correctly by grp.                         */
+/*                                                                     */
+/* Tree shape:                                                         */
+/*   Node 0: CTE 0 subtree container                                   */
+/*   Node 1: scanIndex(cte_src, idx_cte_src_val, DESC)                 */
+/*   Node 2: readTuple(cte_src, key=linked(node1,"pk"),               */
+/*           setAggregation(GROUP BY grp, MAX(val))) T_AGGREGATE_LEAF  */
+/*   Node 3: scanCte(0)                              MAIN ROOT         */
+/*                                                                     */
+/* Data: (1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)                  */
+/* Expected: {grp=1,max=20}, {grp=2,max=40}, {grp=3,max=50}           */
+/*   3 result rows.                                                    */
+/* ------------------------------------------------------------------ */
+
+static int
+testMaxValWithDescScanIndex(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 19: GROUP BY grp, MAX(val) with descending scanIndex ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  dict->invalidateTable(VIRTUAL_TABLE);
+  dict->invalidateIndex("idx_cte_src_val", SRC_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(VIRTUAL_TABLE);
+  const NdbDictionary::Index *valIdx =
+      dict->getIndex("idx_cte_src_val", SRC_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+  if (valIdx == nullptr) {
+    printf("FAILED (index lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  /* CTE 0 aggregation: GROUP BY grp, MAX(val) */
+  NdbAggregator cte0Agg(srcTab);
+  if (!cte0Agg.GroupBy("grp") ||
+      !cte0Agg.LoadColumn("val", 0) ||
+      !cte0Agg.Max(0, 0) ||
+      !cte0Agg.Finalize()) {
+    printf("FAILED (cte0Agg: %s)\n", cte0Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Build query */
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+
+  /* CTE 0 subtree: scanIndex (DESC) + readTuple leaf */
+  qb->beginCteSubtree(0);
+  {
+    NdbQueryOptions scanOpts;
+    scanOpts.setOrdering(NdbQueryOptions::ScanOrdering_descending);
+
+    const NdbQueryIndexScanOperationDef *scan =
+        qb->scanIndex(valIdx, srcTab, nullptr, &scanOpts);
+    if (scan == nullptr) {
+      printf("FAILED (CTE 0 scanIndex: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions leafOpts;
+    leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    leafOpts.setAggregation(cte0Agg);
+    if (qb->readTuple(srcTab, key, &leafOpts) == nullptr) {
+      printf("FAILED (CTE 0 leaf: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+
+  if (qb->defineCte(0, srcTab, cte0Agg, /*depMask=*/0) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: scanCte(0) */
+  const NdbQueryCteScanOperationDef *mainOp =
+      qb->scanCte(0, 2, virtTab);
+  if (mainOp == nullptr) {
+    printf("FAILED (main scanCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  V("\n  Query prepared: %u operations\n", queryDef->getNoOfOperations());
+
+  /* Execute */
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Wire user projection on the scanCte root */
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainQueryOp = query->getQueryOperation(mainOpNo);
+  NdbRecAttr *raGrp = nullptr;
+  NdbRecAttr *raTotal = nullptr;
+  if (mainQueryOp != nullptr) {
+    raGrp = mainQueryOp->getValue("grp");
+    raTotal = mainQueryOp->getValue("total");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Expected: GROUP BY grp, MAX(val) */
+  std::map<Int32, Int64> expected;
+  expected[1] = 20;   /* max(10,20) */
+  expected[2] = 40;   /* max(30,40) */
+  expected[3] = 50;   /* max(50) */
+
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    Int32 grp = raGrp ? raGrp->int32_value() : -1;
+    Int64 total = raTotal ? raTotal->int64_value() : -1;
+    V("  row: grp=%d max_val=%lld\n", grp, (long long)total);
+    auto it = expected.find(grp);
+    if (it == expected.end()) {
+      printf("FAILED (unexpected grp=%d)\n", grp);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+    if (total != it->second) {
+      printf("FAILED (grp=%d expected max=%lld got %lld)\n",
+             grp, (long long)it->second, (long long)total);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+  }
+
+  if (outcome == NdbQuery::NextResult_error) {
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (nextResult err %d: %s)\n", qErr.code, qErr.message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount != 3) {
+    printf("FAILED (expected 3 rows, got %u)\n", rowCount);
+    return -1;
+  }
+
+  printf("OK (%u rows)\n", rowCount);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -5212,6 +5420,7 @@ static const TestEntry g_tests[] = {
     { 16, testScanCteCteMatRootNonLeaf },
     { 17, testReadTupleRootWithCteLookupChild },
     { 18, testScanIndexCteMaterialization },
+    { 19, testMaxValWithDescScanIndex },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
@@ -5233,7 +5442,7 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       printf("Usage: %s -c <connect_string> -m <mysql_port> [-v] "
              "[--only N]\n", argv[0]);
-      printf("  --only N    run only test number N (1..18)\n");
+      printf("  --only N    run only test number N (1..19)\n");
       return 0;
     }
   }
@@ -5244,7 +5453,7 @@ int main(int argc, char **argv)
       if (g_tests[i].number == onlyTest) { found = true; break; }
     }
     if (!found) {
-      fprintf(stderr, "No such test: %d (valid: 1..18)\n", onlyTest);
+      fprintf(stderr, "No such test: %d (valid: 1..19)\n", onlyTest);
       return 1;
     }
   }

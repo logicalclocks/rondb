@@ -289,11 +289,13 @@ class NdbQueryOptionsImpl {
         m_aggDiskColumns(false),
         m_aggTable(nullptr),
         m_aggGbColumns(nullptr),
-        m_linkedProjection(0) {}
+        m_linkedProjection(0),
+        m_maxRows(0) {}
   NdbQueryOptionsImpl(const NdbQueryOptionsImpl &);
   ~NdbQueryOptionsImpl();
 
   NdbQueryOptions::ScanOrdering getOrdering() const { return m_scanOrder; }
+  Uint32 getMaxRows() const { return m_maxRows; }
 
   bool hasAggregation() const { return m_aggProgramBuffer != nullptr; }
   const Uint32 *getAggProgramBuffer() const { return m_aggProgramBuffer; }
@@ -330,6 +332,10 @@ class NdbQueryOptionsImpl {
 
   // Linked operands for parent column projection in aggregation
   Vector<const NdbLinkedOperandImpl *> m_linkedProjection;
+
+  // Per-fragment row limit (0 = unlimited). When > 0, DBSPJ closes
+  // the fragment scan after this many rows instead of requesting more.
+  Uint32 m_maxRows;
 
   /**
    * Assign NdbInterpretedCode by taking a deep copy of 'src'

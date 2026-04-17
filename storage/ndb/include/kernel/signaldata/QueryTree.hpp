@@ -417,7 +417,7 @@ struct QN_ScanFragParameters {
 
   Uint32 unused0;  // Future
   Uint32 unused1;
-  Uint32 unused2;
+  Uint32 maxRows;  // Per-fragment row limit (0 = unlimited)
 
   static constexpr Uint32 NodeSize = 8;
 
@@ -440,6 +440,14 @@ struct QN_ScanFragParameters {
      *   (Also require SFP_PARALLEL)
      */
     SFP_SORTED_ORDER = 0x40000,
+
+    /**
+     * Scan in descending index order.  Used for CTE materialization
+     * scans where the descending flag cannot be passed via ScanTabReq
+     * (which is root-only).  DBSPJ sets DescendingFlag on the
+     * SCAN_FRAGREQ sent to DBLQH.
+     */
+    SFP_DESCENDING = 0x80000,
 
     SFP_END = 0
   };

@@ -614,6 +614,17 @@ int NdbQueryOptions::addLinkedProjection(const NdbLinkedOperand *operand) {
   return 0;
 }
 
+int NdbQueryOptions::setMaxRows(Uint32 maxRows) {
+  if (m_pimpl == &defaultOptions) {
+    m_pimpl = new NdbQueryOptionsImpl;
+    if (unlikely(m_pimpl == nullptr)) {
+      return Err_MemoryAlloc;
+    }
+  }
+  m_pimpl->m_maxRows = maxRows;
+  return 0;
+}
+
 int NdbQueryOptions::setParameters(const NdbQueryOperand *const parameters[]) {
   if (m_pimpl == &defaultOptions) {
     m_pimpl = new NdbQueryOptionsImpl;
@@ -660,7 +671,8 @@ NdbQueryOptionsImpl::NdbQueryOptionsImpl(const NdbQueryOptionsImpl &src)
       m_aggDiskColumns(src.m_aggDiskColumns),
       m_aggTable(src.m_aggTable),
       m_aggGbColumns(nullptr),
-      m_linkedProjection(src.m_linkedProjection) {
+      m_linkedProjection(src.m_linkedProjection),
+      m_maxRows(src.m_maxRows) {
   if (src.m_interpretedCode != nullptr) {
     copyInterpretedCode(*src.m_interpretedCode);
   }

@@ -859,6 +859,13 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_totalBytes;
 
     /**
+     * Per-fragment row limit. When > 0, close the fragment scan after
+     * this many rows instead of sending SCAN_NEXTREQ. Used for
+     * MIN/MAX index optimization (maxRows=1).
+     */
+    Uint32 m_maxRows;
+
+    /**
      * Non-pruned firstMatch may save their original range and param's
      * before removeMatchedKeys()
      */
@@ -894,6 +901,7 @@ class Dbspj : public SimulatedBlock {
           m_completedRows(0),
           m_totalRows(0),
           m_totalBytes(0),
+          m_maxRows(0),
           m_rangeCntSave(0),
           m_rangePtrISave(RNIL),
           m_paramPtrISave(RNIL),

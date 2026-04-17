@@ -254,6 +254,19 @@ class NdbQueryOptions {
    */
   int addLinkedProjection(const NdbLinkedOperand *operand);
 
+  /**
+   * Set a per-fragment row limit for this scan operation.
+   * When maxRows > 0 and the scan has delivered that many rows from a
+   * fragment, DBSPJ closes the fragment scan early instead of requesting
+   * more rows. This enables the MIN/MAX index optimization: an ordered
+   * index scan (descending for MAX, ascending for MIN) only needs 1 row
+   * per fragment.
+   *
+   * @param maxRows Maximum rows per fragment (0 = unlimited, the default).
+   * @return 0 if ok, -1 in case of error.
+   */
+  int setMaxRows(Uint32 maxRows);
+
   int setParameters(const NdbQueryOperand *const parameters[]);
 
   const NdbQueryOptionsImpl &getImpl() const;

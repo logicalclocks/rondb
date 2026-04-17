@@ -5455,9 +5455,19 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
         requestInfo |= QN_ScanFragParameters::SFP_PRUNE_PARAMS;
       }
       if (getOrdering() != NdbQueryOptions::ScanOrdering_unordered) {
-        requestInfo |= QN_ScanFragParameters::SFP_SORTED_ORDER;
-        // Only supported for root yet.
-        assert(this == &getRoot());
+        if (def.isCteEmbedded()) {
+          // CTE-embedded scans: pass descending flag via SFP_DESCENDING
+          // so DBSPJ sets DescendingFlag on the SCAN_FRAGREQ to DBLQH.
+          // SFP_SORTED_ORDER is not used here (it triggers SPJ merge-sort
+          // which is root-only and not needed for CTE materialization).
+          if (getOrdering() == NdbQueryOptions::ScanOrdering_descending) {
+            requestInfo |= QN_ScanFragParameters::SFP_DESCENDING;
+          }
+        } else {
+          requestInfo |= QN_ScanFragParameters::SFP_SORTED_ORDER;
+          // Only supported for root yet.
+          assert(this == &getRoot());
+        }
       }
 
       param->requestInfo = requestInfo;
@@ -5466,7 +5476,7 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
       param->batch_size_bytes = batchByteSize;
       param->unused0 = 0;  // Future
       param->unused1 = 0;
-      param->unused2 = 0;
+      param->maxRows = def.getOptions().getMaxRows();
       QueryNodeParameters::setOpLen(param->len, paramType, length);
       break;
     }

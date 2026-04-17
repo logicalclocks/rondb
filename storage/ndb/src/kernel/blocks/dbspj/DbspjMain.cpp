@@ -1953,7 +1953,7 @@ Dbspj::build(Build_context& ctx,
       param->batch_size_bytes = req->batch_size_bytes;
       param->unused0 = 0;
       param->unused1 = 0;
-      param->unused2 = 0;
+      param->maxRows = 0;
 
       /* Execute root scan with full parallelism - as SCAN_FRAG_v1 always did */
       param->requestInfo |= QN_ScanFragParameters::SFP_PARALLEL;
@@ -2000,7 +2000,7 @@ Dbspj::build(Build_context& ctx,
           batchSize >> QN_ScanIndexParameters_v1::BatchRowBits;
       param->unused0 = 0;
       param->unused1 = 0;
-      param->unused2 = 0;
+      param->maxRows = 0;
 
       info = &Dbspj::g_ScanFragOpInfo;
     } else {
@@ -9760,6 +9760,7 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
     }
 
     ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
+    data.m_maxRows = param->maxRows;
     ScanFragReq *const dst =
         reinterpret_cast<ScanFragReq *>(data.m_scanFragReq);
 
@@ -9977,6 +9978,10 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
       if (indexId != tableId) {
         jam();
         ScanFragReq::setRangeScanFlag(requestInfo, 1);
+      }
+      if (paramBits & QN_ScanFragParameters::SFP_DESCENDING) {
+        jam();
+        ScanFragReq::setDescendingFlag(requestInfo, 1);
       }
       dst->requestInfo = requestInfo;
     } else {
@@ -12174,6 +12179,20 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
 
   data.m_frags_outstanding--;
   fragPtr.p->m_state = ScanFragHandle::SFH_WAIT_NEXTREQ;
+
+  /**
+   * maxRows close: if this fragment has delivered enough rows and DBLQH
+   * says there are more, close the scan early.  Used for MIN/MAX index
+   * optimization where only 1 row per fragment is needed.
+   */
+  if (!done && data.m_maxRows > 0 &&
+      fragPtr.p->m_totalRows >= data.m_maxRows) {
+    jam();
+    send_close_scan(signal, fragPtr, requestPtr);
+    /* After send_close_scan the fragment enters SFH_WAIT_CLOSE;
+     * the close confirmation will arrive as a SCAN_FRAGCONF with
+     * done=1, which enters the normal 'done' path below. */
+  }
 
   if (done) {
     jam();
