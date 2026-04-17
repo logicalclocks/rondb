@@ -3086,7 +3086,7 @@ int NdbQueryImpl::prepareSend() {
         &rootOp.getQueryOperationDef().getTable();
 
     /* When the main root is a lookup (lookupCte), it doesn't scan a
-     * real table.  Use the first CTE-embedded scan's table for fragment
+     * real table. Use the first CTE-embedded scan's table for fragment
      * routing — that table determines the number of DBSPJ instances
      * needed for CTE materialization. */
     if (!rootOp.getQueryOperationDef().isScanOperation()) {

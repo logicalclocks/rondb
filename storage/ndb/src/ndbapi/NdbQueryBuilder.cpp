@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2011, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1104,11 +1105,17 @@ const NdbQueryCteLookupOperationDef *NdbQueryBuilder::lookupCte(
   if (m_impl.hasError()) return nullptr;
 
   returnErrIf(virtualTable == nullptr || keys == nullptr, QRY_REQ_ARG_IS_NULL);
-  // CTE lookup must not be the first (root) operation
+  // CTE lookup must reference a previously-defined CTE, so at least one
+  // operation (the CTE subtree) must exist.
   returnErrIf(m_impl.m_operations.size() == 0, QRY_UNKNOWN_PARENT);
-  // Must depend on some other operation via linked operands — unless this is
-  // the root of a CTE subtree or the main query root (after CTE subtrees),
-  // where const keys are allowed.
+  /* A lookupCte may be a subtree/main root with a constant key (walk-up
+   * in DbspjMain::build + cte_lookup_start handles that), or a non-root driven
+   * by a parent row via linkedValue.  Both are valid; don't require
+   * hasLinkedOperand here.
+   *
+   * Must depend on some other operation via linked operands — unless this is
+   * the root of a CTE subtree or the main query root (after CTE subtrees),
+   * where const keys are allowed. */
   const bool isCteSubtreeRoot =
       m_impl.m_inCteSubtree &&
       m_impl.m_operations.size() == m_impl.m_cteSubtreeStartOpIdx + 1;

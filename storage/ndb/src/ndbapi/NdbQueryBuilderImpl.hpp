@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2011, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -709,21 +710,21 @@ class NdbQueryDefImpl {
                            int &error);
   ~NdbQueryDefImpl();
 
-  // Entire query is a scan iff the main root operation is a scan.
-  // For CTE queries, skip CTE subtree containers and CTE-embedded
-  // operations to find the main query root.
+  // A query is treated as scan-type when:
+  //   (a) the main query root is a scan, OR
+  //   (b) the query contains some CTE
+  // Case (b) forces SCAN_TABREQ so CTE SETUP / aggStateKeys /
+  // RT_CTE_PHASE machinery runs.  DBSPJ short-circuits the main
+  // query on all but rootFragId == 0 for CTE_LOOKUP_REQ and
+  // rootFragId < numDataNodes for CTE_SCAN_REQ to avoid duplicating
+  // the result across fragments.
+  //
+  // Real-table PK/UniqueIndex main roots without CTEs stay as TCKEYREQ
   bool isScanQuery() const {
     /* Queries with CTEs always use the scan protocol (SCAN_TABREQ)
      * because CTE materialization requires multi-phase coordination
      * by DBTC, even when the main query root is a lookup (lookupCte). */
     if (m_cteDefs.size() > 0) return true;
-    for (Uint32 i = 0; i < m_operations.size(); i++) {
-      if (m_operations[i]->getType() == NdbQueryOperationDef::CteSubtree)
-        continue;
-      if (m_operations[i]->isCteEmbedded())
-        continue;
-      return m_operations[i]->isScanOperation();
-    }
     return m_operations[0]->isScanOperation();
   }
 

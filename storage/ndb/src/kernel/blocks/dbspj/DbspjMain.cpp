@@ -7285,6 +7285,8 @@ void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
            "cnt_active=%u",
            instance(), requestPtr.p->m_outstanding,
            requestPtr.p->m_cnt_active));
+  ndbassert(requestPtr.p->m_outstanding == 0);
+  ndbassert(requestPtr.p->m_cnt_active == 0);
   requestPtr.p->m_outstanding = 0;
   requestPtr.p->m_cnt_active = 0;
 
@@ -7316,7 +7318,7 @@ void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
   /* Main query nodes were already prepared during the initial
    * prepare pass (DIH fragment resolution done). Just start the
    * main root via checkPrepareComplete() which will find the
-   * non-CTE root and call scanFrag_start(). */
+   * root and call the proper start method. */
   ndbrequire(rootNodePtr.p->m_info != 0 &&
              rootNodePtr.p->m_info->m_start != 0);
   (this->*(rootNodePtr.p->m_info->m_start))(
