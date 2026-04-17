@@ -194,6 +194,9 @@
     <li><a href="#compound-exec">Compound Query Execution</a></li>
     <li><a href="#cte-lookup-flow">CTE_LOOKUP Query Flow</a></li>
     <li><a href="#multi-phase-flow">Multi-Phase CTE Dependency Flow</a></li>
+    <li><a href="#cte-scan-flow">CTE_SCAN Query Flow</a></li>
+    <li><a href="#cte-topology-variants">CTE Query Topology Variants</a></li>
+    <li><a href="#impl-details">Implementation Details and Bug Fixes</a></li>
     <li><a href="#signals">Signal Reference</a></li>
     <li><a href="#state-machines">State Machines</a></li>
   </ol>
@@ -1075,8 +1078,8 @@ or <code>0x0722</code> (multi-leaf wrapper, walk per-leaf entries for total leng
 </tr>
 <tr>
   <td><code>execCTE_START_MAIN_REQ()</code></td>
-  <td>Finds main query root (first non-CTE, non-container node) and calls <code>scanFrag_start()</code></td>
-  <td>Node 0 is CTE_SUBTREE container; main scan is at a later index</td>
+  <td>Finds main query root (first non-CTE-subtree node) and calls its <code>start()</code> method</td>
+  <td>Main root may be scanFrag, scanCte, lookupCte, or readTuple (see <a href="#cte-topology-variants">section 17</a>)</td>
 </tr>
 <tr>
   <td><code>lookup_send()</code></td>
@@ -1366,7 +1369,7 @@ CTE_LOOKUP Key (expanded from parent scan row):
 </div>
 
 <div class="note">
-<strong>Build-time validation:</strong> <code>cte_build()</code> validates the
+<strong>Build-time validation:</strong> <code>cte_lookup_build()</code> validates the
 key pattern after <code>parseDA()</code>. If any pattern element uses
 <code>P_COL</code> instead of <code>P_ATTRINFO</code>, the build fails with
 <code>InvalidTreeNodeSpecification</code> and a log message, catching the
@@ -1795,10 +1798,922 @@ but is empty until phase 1 populates it.
 </section>
 
 <!-- ============================================================ -->
-<!-- 16. SIGNAL REFERENCE -->
+<!-- 16. CTE_SCAN QUERY FLOW -->
+<!-- ============================================================ -->
+<section id="cte-scan-flow">
+<h2>16. CTE_SCAN Query Flow</h2>
+
+<p>This section traces the complete signal flow for a query where the main SELECT
+uses <code>CTE_SCAN_REQ</code> to iterate over a materialized CTE hash table and
+feed its results into a main aggregation interpreter. Unlike <code>CTE_LOOKUP</code>
+(which probes the hash table for a single key per parent row), <code>CTE_SCAN</code>
+iterates over all groups in the CTE hash table and feeds each group's
+key+accumulator row into the main aggregation pipeline.</p>
+
+<h3>16.1 Example SQL</h3>
+<pre class="code">
+-- Test 15: scanCte as main query agg leaf
+WITH cte0 AS (
+  SELECT grp, SUM(val) AS total
+  FROM cte_src s1 JOIN cte_src s2 ON s1.pk = s2.pk
+  GROUP BY grp
+)
+SELECT COUNT(*), SUM(total)
+FROM cte0;
+</pre>
+
+<div class="note">
+<strong>Main query has no base table scan:</strong> The main SELECT reads entirely
+from the materialized CTE. Node 3 (<code>QN_CTE_SCAN</code>) replaces a
+<code>QN_SCAN_FRAG</code> as the root of the main query, iterating the CTE hash
+table directly rather than scanning an NDB table.
+</div>
+
+<h3>16.2 Query Tree (4 Nodes)</h3>
+<div class="diagram-box">
+<pre>
+┌──────────────────────────────────────────────────────────────────┐
+│  Node 0: QN_CTE_SUBTREE (cteId=0, numNodes=2)                   │
+│  ├─ Node 1: QN_SCAN_FRAG (CTE scan root, NI_AGGREGATE)          │
+│  └─ Node 2: QN_LOOKUP    (CTE agg leaf, NI_AGGREGATE_LEAF)      │
+│                                                                  │
+│  Node 3: QN_CTE_SCAN (main root, cteId=0, T_AGGREGATE_LEAF)     │
+└──────────────────────────────────────────────────────────────────┘
+
+Aggregation structure:
+  CTE 0:  GROUP BY grp, SUM(val)  →  CTE hash table
+  Main:   COUNT(*), SUM(total)    →  main hash table (fed from CTE scan)
+
+Node 3 is both the main query root AND an aggregate leaf (T_AGGREGATE_LEAF).
+It has no child nodes — it feeds CTE results directly into the main
+JoinAggInterpreter via CTE_SCAN_REQ.
+</pre>
+</div>
+
+<h3>16.3 Signal Flow Diagram</h3>
+<div class="diagram-box">
+<pre>
+  API (test)           DBTC               DBSPJ              DBLQH
+      │                  │                  │               (DblqhProxy)
+      │ SCAN_TABREQ      │                  │                  │
+      │ (JoinAggFlag,    │                  │                  │
+      │  KeyInfo w/ main │                  │                  │
+      │  agg + CTE def)  │                  │                  │
+      │─────────────────►│                  │                  │
+      │                  │                  │                  │
+      │       ┌──────────┴───────────┐      │                  │
+      │       │ parseJoinAggKeyInfo: │      │                  │
+      │       │ mainAgg: COUNT+SUM   │      │                  │
+      │       │ numCtes = 1          │      │                  │
+      │       │ CTE 0: GROUP BY grp, │      │                  │
+      │       │        SUM(val)      │      │                  │
+      │       └──────────┬───────────┘      │                  │
+      │                  │                  │                  │
+      │                  │     ═══ SETUP PHASE ═══             │
+      │                  │                  │                  │
+      │                  │─ JOIN_AGG_SETUP_REQ (main, cteIndex=RNIL) ──►
+      │                  │─ JOIN_AGG_SETUP_REQ (CTE0, cteIndex=0,  ────►
+      │                  │                      CTE_MODE_FLAG)     │
+      │                  │                  │      ┌───────────┤
+      │                  │                  │      │ Create 2  │
+      │                  │                  │      │ AggInterp │
+      │                  │                  │      │ + hash    │
+      │                  │                  │      │ tables    │
+      │                  │                  │      └───────────┤
+      │                  │◄─ JOIN_AGG_SETUP_CONF (main aggStateKey) ─┤
+      │                  │◄─ JOIN_AGG_SETUP_CONF (CTE0 aggStateKey) ─┤
+      │                  │                  │                  │
+      │       ┌──────────┴───────────┐      │                  │
+      │       │ Pack aggStateKeys:   │      │                  │
+      │       │ main key + CTE key   │      │                  │
+      │       │ + CTE_KEYS_MARKER    │      │                  │
+      │       └──────────┬───────────┘      │                  │
+      │                  │                  │                  │
+      │                  │ SCAN_FRAGREQ     │                  │
+      │                  │ (QueryTree +     │                  │
+      │                  │  aggStateKeys)   │                  │
+      │                  │─────────────────►│                  │
+      │                  │                  │                  │
+      │                  │          ┌───────┴────────┐         │
+      │                  │          │ buildExecPlan: │         │
+      │                  │          │ 4 nodes built  │         │
+      │                  │          │ Node 3: scanCte│         │
+      │                  │          │ T_AGGREGATE_   │         │
+      │                  │          │ LEAF flag set  │         │
+      │                  │          └───────┬────────┘         │
+      │                  │                  │                  │
+      │                  │     ═══ CTE MATERIALIZATION ═══     │
+      │                  │                  │                  │
+      │                  │          ┌───────┴────────┐         │
+      │                  │          │ Start CTE root │         │
+      │                  │          │ node 1 (scan)  │         │
+      │                  │          └───────┬────────┘         │
+      │                  │                  │ SCAN_FRAGREQ     │
+      │                  │                  │────────────────►│
+      │                  │                  │  TRANSID_AI×N   │
+      │                  │                  │◄────────────────┤
+      │                  │                  │  per row:       │
+      │                  │                  │  startNextNodes │
+      │                  │                  │  → node 2       │
+      │                  │                  │  LQHKEYREQ      │
+      │                  │                  │  (JoinAggFlag,  │
+      │                  │                  │   CTE 0 key)    │
+      │                  │                  │────────────────►│
+      │                  │                  │  handleJoinAgg  │
+      │                  │                  │  Row → CTE 0    │
+      │                  │                  │  AggInterpreter │
+      │                  │                  │  builds hash    │
+      │                  │                  │  table groups   │
+      │                  │                  │                  │
+      │                  │                  │ SCAN_FRAGCONF   │
+      │                  │                  │◄────────────────┤
+      │                  │                  │                  │
+      │                  │ CTE_PHASE_       │                  │
+      │                  │ COMPLETE_REP     │                  │
+      │                  │ (phase=0)        │                  │
+      │                  │◄────────────────┤                  │
+      │                  │                  │                  │
+      │                  │ JOIN_AGG_COMPLETE_REQ               │
+      │                  │ (CTE 0 aggStateKey)                 │
+      │                  │─────────────────────────────────────►
+      │                  │                  │      ┌───────────┤
+      │                  │ JOIN_AGG_        │      │ Finalize  │
+      │                  │ COMPLETE_CONF    │      │ CTE 0     │
+      │                  │◄────────────────────────│ hash table│
+      │                  │                  │      │ Redist    │
+      │                  │                  │      │ → state=  │
+      │                  │                  │      │ CTE_READY │
+      │                  │                  │      └───────────┤
+      │                  │                  │                  │
+      │                  │    ═══ MAIN QUERY: CTE_SCAN ═══     │
+      │                  │                  │                  │
+      │                  │ CTE_START_MAIN_  │                  │
+      │                  │ REQ              │                  │
+      │                  │─────────────────►│                  │
+      │                  │                  │                  │
+      │                  │          ┌───────┴────────────┐     │
+      │                  │          │ All CteContexts    │     │
+      │                  │          │ → CTE_READY        │     │
+      │                  │          │ Start node 3       │     │
+      │                  │          │ (scanCte)          │     │
+      │                  │          │                    │     │
+      │                  │          │ Per rootFragId:    │     │
+      │                  │          │ if rootFragId >=   │     │
+      │                  │          │   numDataNodes     │     │
+      │                  │          │   → skip (empty)   │     │
+      │                  │          │ else:              │     │
+      │                  │          │   compute target   │     │
+      │                  │          │   nodeId, encode   │     │
+      │                  │          │   aggStateKey      │     │
+      │                  │          └───────┬────────────┘     │
+      │                  │                  │                  │
+      │                  │                  │ CTE_SCAN_REQ     │
+      │                  │                  │ (joinAggState    │
+      │                  │                  │  Key != RNIL,    │
+      │                  │                  │  batchSize=256)  │
+      │                  │                  │────────────────►│
+      │                  │                  │                  │
+      │                  │                  │   ┌──────────────┤
+      │                  │                  │   │cteScanAggFeed│
+      │                  │                  │   │              │
+      │                  │                  │   │ Iterate CTE  │
+      │                  │                  │   │ hash table:  │
+      │                  │                  │   │ for each grp:│
+      │                  │                  │   │  format key+ │
+      │                  │                  │   │  accumulators│
+      │                  │                  │   │  → feed into │
+      │                  │                  │   │  main Agg    │
+      │                  │                  │   │  Interpreter │
+      │                  │                  │   │              │
+      │                  │                  │   │ yield every  │
+      │                  │                  │   │ 256 groups   │
+      │                  │                  │   │ via CONTINUEB│
+      │                  │                  │   │              │
+      │                  │                  │   │ All groups   │
+      │                  │                  │   │ processed    │
+      │                  │                  │   └──────────────┤
+      │                  │                  │                  │
+      │                  │                  │ CTE_SCAN_CONF    │
+      │                  │                  │ (EndOfData=1)    │
+      │                  │                  │◄────────────────┤
+      │                  │                  │                  │
+      │                  │          ┌───────┴────────┐         │
+      │                  │          │ Node 3 done    │         │
+      │                  │          │ scanCte        │         │
+      │                  │          │ complete       │         │
+      │                  │          └───────┬────────┘         │
+      │                  │                  │                  │
+      │                  │ SCAN_FRAGCONF    │                  │
+      │                  │◄────────────────┤                  │
+      │                  │                  │                  │
+      │                  │     ═══ MAIN AGG FINALIZE ═══       │
+      │                  │                  │                  │
+      │                  │ JOIN_AGG_COMPLETE_REQ               │
+      │                  │ (main aggStateKey)                   │
+      │                  │─────────────────────────────────────►
+      │                  │                  │      ┌───────────┤
+      │  TRANSID_AI      │                  │      │ Finalize  │
+      │  (COUNT, SUM)    │ JOIN_AGG_        │      │ main agg  │
+      │◄──────────────────│ COMPLETE_CONF   │      │ hash table│
+      │                  │◄────────────────────────│ → send    │
+      │                  │                  │      │ TRANSID_AI│
+      │                  │                  │      │ to API    │
+      │                  │                  │      └───────────┤
+      │                  │                  │                  │
+      │                  │     ═══ CLEANUP ═══                 │
+      │                  │                  │                  │
+      │                  │─ JOIN_AGG_RELEASE_REQ (main key) ───►
+      │                  │─ JOIN_AGG_RELEASE_REQ (CTE0 key) ───►
+      │                  │                  │      ┌───────────┤
+      │                  │                  │      │ Free 2    │
+      │                  │                  │      │ AggInterp │
+      │                  │                  │      │ + hash    │
+      │                  │                  │      │ tables    │
+      │                  │                  │      └───────────┤
+      │                  │◄─ JOIN_AGG_RELEASE_CONF (main) ─────┤
+      │                  │◄─ JOIN_AGG_RELEASE_CONF (CTE0) ─────┤
+      │                  │                  │                  │
+      │ SCAN_TABCONF     │                  │                  │
+      │ (EndOfData)      │                  │                  │
+      │◄─────────────────┤                  │                  │
+      │                  │                  │                  │
+</pre>
+</div>
+
+<h3>16.4 Aggregation Feed vs Emit Paths</h3>
+
+<p>When DBLQH receives <code>CTE_SCAN_REQ</code>, it checks
+<code>joinAggStateKey</code> to decide which path to take:</p>
+
+<div class="diagram-box">
+<pre>
+execCTE_SCAN_REQ
+      │
+      ▼
+joinAggStateKey != RNIL ?
+      │
+      ├── YES ──► cteScanAggFeed()         (Aggregation Feed Path)
+      │           │
+      │           │  CTE hash table groups are iterated.
+      │           │  For each group:
+      │           │    1. Format key columns + accumulators as a row
+      │           │    2. Feed row into the MAIN JoinAggInterpreter
+      │           │       (identified by joinAggStateKey)
+      │           │    3. Main interpreter applies COUNT(*), SUM(total)
+      │           │
+      │           │  No TRANSID_AI sent — rows are consumed internally.
+      │           │  Result: main hash table accumulates aggregates.
+      │           │
+      │           └─► CTE_SCAN_CONF (EndOfData=1)
+      │
+      └── NO ───► cteScanEmitResults()     (Emit Path)
+                  │
+                  │  CTE hash table groups are iterated.
+                  │  For each group:
+                  │    1. Format key columns + accumulators as a row
+                  │    2. Send TRANSID_AI directly to DBSPJ
+                  │    3. DBSPJ dispatches child nodes via startNextNodes
+                  │
+                  │  When all groups sent:
+                  └─► CTE_SCAN_CONF (EndOfData=1)
+</pre>
+</div>
+
+<div class="note">
+<strong>Feed path is zero-copy to API:</strong> In the aggregation feed path,
+CTE rows never leave DBLQH. They are fed directly from the CTE hash table into
+the main aggregation interpreter on the same LDM thread. The API only receives
+the final aggregated result (e.g., a single row with COUNT and SUM) when
+<code>JOIN_AGG_COMPLETE_REQ</code> finalizes the main hash table.
+</div>
+
+<table>
+<tr>
+  <th>Aspect</th>
+  <th>Aggregation Feed (<code>cteScanAggFeed</code>)</th>
+  <th>Emit (<code>cteScanEmitResults</code>)</th>
+</tr>
+<tr>
+  <td>Trigger</td>
+  <td><code>joinAggStateKey != RNIL</code></td>
+  <td><code>joinAggStateKey == RNIL</code></td>
+</tr>
+<tr>
+  <td>Rows sent to API</td>
+  <td>None (consumed locally)</td>
+  <td>All groups via TRANSID_AI</td>
+</tr>
+<tr>
+  <td>Batching</td>
+  <td>CONTINUEB yield only (no API batching)</td>
+  <td>CTE_SCAN_CONF / CTE_SCAN_NEXTREQ batching</td>
+</tr>
+<tr>
+  <td>Use case</td>
+  <td><code>SELECT COUNT(*), SUM(total) FROM cte0</code></td>
+  <td><code>SELECT * FROM cte0</code> (no main agg)</td>
+</tr>
+<tr>
+  <td>Main agg interpreter</td>
+  <td>Fed per-group; finalized via JOIN_AGG_COMPLETE</td>
+  <td>Not used</td>
+</tr>
+</table>
+
+<h3>16.5 Fragment-Per-Node Skip Logic</h3>
+
+<p>CTE hash tables are per-data-node, not per-fragment. They are created by
+<span class="tag tag-dblqh">DblqhProxy</span> and shared across all LDM threads
+on the same node. When DBSPJ starts the <code>scanCte</code> node, it must avoid
+scanning the same hash table multiple times (which would produce N&times; duplicated
+results for N fragments on the same node).</p>
+
+<div class="diagram-box">
+<pre>
+Example: 2 data nodes, 4 fragments (2 per node)
+
+DBSPJ gets rootFragIds: [0, 1, 2, 3]
+numDataNodes = 2
+
+  rootFragId=0  →  targetNodeId=node1  →  CTE_SCAN_REQ  ✓ (fires)
+  rootFragId=1  →  targetNodeId=node2  →  CTE_SCAN_REQ  ✓ (fires)
+  rootFragId=2  →  rootFragId >= N     →  SKIP           ✗ (empty result)
+  rootFragId=3  →  rootFragId >= N     →  SKIP           ✗ (empty result)
+
+Result: exactly 1 CTE_SCAN_REQ per data node.
+
+Skip logic in cte_scan_start():
+┌─────────────────────────────────────────────────────────┐
+│  if (rootFragId >= numDataNodes) {                       │
+│    // This fragment would scan a duplicate hash table    │
+│    // Complete immediately with empty result             │
+│    markNodeComplete(...)                                 │
+│    return;                                               │
+│  }                                                       │
+│                                                          │
+│  // Compute target: rootFragId maps 1:1 to data nodeId  │
+│  Uint32 targetNodeId = nodeIds[rootFragId];              │
+│  Uint32 baseKey = m_aggStateKeys[targetNodeId];          │
+│  Uint32 key = encodeAggStateKey(baseKey, leafIdx);       │
+│  // Send CTE_SCAN_REQ to DBLQH on targetNodeId          │
+└─────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<div class="note">
+<strong>Applies in both CTE and main phases:</strong> The fragment-per-node skip
+is unconditional — it fires whether the scanCte is in a CTE subtree (during
+materialization) or in the main query. CTE hash tables are always per-data-node
+regardless of execution phase.
+</div>
+
+<h3>16.6 CTE_SCAN Batching and Yielding</h3>
+
+<p>CTE hash tables can contain many groups. To avoid blocking the LDM
+thread, <code>cteScanAggFeed</code> uses <code>CONTINUEB</code> yielding to
+break the iteration into manageable chunks.</p>
+
+<div class="diagram-box">
+<pre>
+cteScanAggFeed() execution model:
+
+  ┌─────────────────────────────────────────────────────────┐
+  │ Entry: CTE_SCAN_REQ received                            │
+  │                                                         │
+  │ state.m_iterator = cteHashTable.begin()                 │
+  │ state.m_groupsProcessed = 0                             │
+  └────────────────────┬────────────────────────────────────┘
+                       │
+                       ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │ PROCESSING LOOP (up to 256 groups per invocation)       │
+  │                                                         │
+  │ while (iterator != end) {                               │
+  │   group = *iterator                                     │
+  │   formatRow(group.keys, group.accumulators)             │
+  │   mainAggInterpreter.feedRow(formattedRow)              │
+  │   iterator++                                            │
+  │   groupsProcessed++                                     │
+  │                                                         │
+  │   if (groupsProcessed % 256 == 0) {                     │
+  │     // Save iterator state in CteScanIterState pool rec │
+  │     // Schedule CONTINUEB to resume                     │
+  │     signal→theData[0] = ContinueB::CTE_SCAN_AGG_FEED   │
+  │     sendSignal(DBLQH_REF, CONTINUEB, ...)               │
+  │     return;   // yield back to job scheduler            │
+  │   }                                                     │
+  │ }                                                       │
+  └────────────────────┬────────────────────────────────────┘
+                       │
+                       ▼ (all groups processed)
+  ┌─────────────────────────────────────────────────────────┐
+  │ Send CTE_SCAN_CONF (EndOfData=1) back to DBSPJ          │
+  └─────────────────────────────────────────────────────────┘
+
+Timeline for 1000 groups:
+
+  CTE_SCAN_REQ ──► process groups 0-255
+                   ──► CONTINUEB ──► process groups 256-511
+                                     ──► CONTINUEB ──► process groups 512-767
+                                                       ──► CONTINUEB ──► 768-999
+                                                                         ──► CTE_SCAN_CONF
+                                                                              (EndOfData=1)
+</pre>
+</div>
+
+<p>The <code>CONTINUEB</code> mechanism ensures that other signals (heartbeats,
+other scan operations, node failure handling) can be processed between chunks.
+The iterator state is preserved in a pool-allocated <code>CteScanIterState</code>
+record to support concurrent <code>CTE_SCAN_REQ</code> operations from multiple
+DBSPJ instances.</p>
+
+</section>
+
+<!-- ============================================================ -->
+<!-- 17. CTE QUERY TOPOLOGY VARIANTS -->
+<!-- ============================================================ -->
+<section id="cte-topology-variants">
+<h2>17. CTE Query Topology Variants</h2>
+
+<p>
+CTE pushdown supports seven distinct query tree topologies, determined by
+where <code>lookupCte</code> and <code>scanCte</code>
+operations appear in the tree (root vs internal, main query vs CTE subtree)
+and whether they carry aggregation. Each topology exercises a different signal
+path through DBSPJ and DBLQH.
+</p>
+
+<h3>17.1 lookupCte as Main Query Root (Test 11)</h3>
+
+<div class="diagram-box">
+<pre>
+CTE0: scanTable(t1) ──► aggLeaf
+                            │
+                       [hash table]
+                            │
+Main: lookupCte(0, key=2)        ◄── root, constant key
+           │
+           ▼
+      readTuple(t2)
+</pre>
+<div class="diagram-caption">lookupCte is the root of the main query with a constant key (no parent linkage).</div>
+</div>
+
+<p><b>Key Signal Path:</b></p>
+<pre>
+DBSPJ receives SCAN_TABREQ
+  → CTE phase: SCAN_FRAGREQ to DBLQH → aggLeaf builds CTE 0 hash table
+  → Main phase: only rootFragId==0 fires CTE_LOOKUP_REQ(cteId=0, key=2)
+      → DBLQH: hash probe → TRANSID_AI result
+      → DBSPJ startNextNodes → dispatches child readTuple via LQHKEYREQ
+</pre>
+
+<div class="note">
+<ul>
+<li><code>m_start_signal</code> is consumed in
+<code>cte_lookup_build</code>. This prevents the child
+<code>readTuple</code> from misinterpreting the original
+SCAN_FRAGREQ as an LQHKEYREQ.</li>
+<li>Only the fragment with <code>rootFragId == 0</code> fires
+CTE_LOOKUP_REQ. All other fragments skip, since a constant-key lookup
+needs to execute exactly once across all fragments.</li>
+</ul>
+</div>
+
+<h3>17.2 lookupCte as CTE Materialization Root (Test 12)</h3>
+
+<div class="diagram-box">
+<pre>
+CTE0: scanTable(t1) ──► aggLeaf
+                            │
+                       [hash table 0]
+
+CTE1: lookupCte(0, key=1)        ◄── CTE subtree root, constant key
+           │
+           ▼
+      aggLeaf
+           │
+      [hash table 1]
+
+Main: scanCte(1)
+</pre>
+<div class="diagram-caption">lookupCte roots a CTE subtree that re-aggregates CTE 0 output into CTE 1.</div>
+</div>
+
+<p><b>Key Signal Path:</b></p>
+<pre>
+DBSPJ receives SCAN_TABREQ
+  → CTE phase 0: SCAN_FRAGREQ → aggLeaf builds CTE 0 hash table
+  → CTE phase 1: rootFragId==0 fires CTE_LOOKUP_REQ(cteId=0, key=1)
+      → TRANSID_AI → child aggLeaf feeds CTE 1 hash table via agg-feed path
+  → Main phase: CTE_SCAN_REQ(cteId=1) → emit CTE 1 results
+</pre>
+
+<div class="note">
+<ul>
+<li>The <code>lookupCte</code> is marked <code>T_CTE_SCAN</code>,
+so it fires during CTE materialization, not the main query phase.</li>
+<li>Constant-key branch: no <code>T_KEYINFO_CONSTRUCTED</code>
+flag set. The key value is baked into the QueryDef.</li>
+</ul>
+</div>
+
+<h3>17.3 lookupCte as Main Query Internal (Test 13)</h3>
+
+<div class="diagram-box">
+<pre>
+CTE0: scanTable(t1) ──► aggLeaf
+                            │
+                       [hash table]
+
+Main: scanTable(t2)               ◄── root scan
+           │
+           ▼
+      lookupCte(0)                ◄── internal, linked key from parent
+           │
+           ▼
+      readTuple(t3)
+</pre>
+<div class="diagram-caption">lookupCte is an internal node in the main query, keyed from parent scan rows.</div>
+</div>
+
+<p><b>Key Signal Path:</b></p>
+<pre>
+DBSPJ receives SCAN_TABREQ
+  → CTE phase: SCAN_FRAGREQ → aggLeaf builds CTE 0 hash table
+  → Main phase: SCAN_FRAGREQ for scanTable(t2)
+      → each parent row triggers cte_lookup_parent_row
+      → extracts linked key (T_KEYINFO_CONSTRUCTED, P_ATTRINFO pattern)
+      → CTE_LOOKUP_REQ(cteId=0, key=linked) to DBLQH
+      → TRANSID_AI → child readTuple fires via startNextNodes
+</pre>
+
+<h3>17.4 lookupCte as CTE Internal (Test 14)</h3>
+
+<div class="diagram-box">
+<pre>
+CTE0: scanTable(t1) ──► aggLeaf
+                            │
+                       [hash table 0]
+
+CTE1: scanTable(t2)               ◄── CTE subtree root scan
+           │
+           ▼
+      lookupCte(0)                ◄── internal in CTE subtree, linked key
+           │
+           ▼
+      aggLeaf
+           │
+      [hash table 1]
+
+Main: scanCte(1)
+</pre>
+<div class="diagram-caption">lookupCte is internal to a CTE subtree, with key linked from the CTE's own scan.</div>
+</div>
+
+<p><b>Key Signal Path:</b></p>
+<pre>
+DBSPJ receives SCAN_TABREQ
+  → CTE phase 0: SCAN_FRAGREQ → aggLeaf builds CTE 0 hash table
+  → CTE phase 1: SCAN_FRAGREQ for scanTable(t2)
+      → each parent row → cte_lookup_parent_row
+      → CTE_LOOKUP_REQ(cteId=0, key=linked) → TRANSID_AI
+      → child aggLeaf feeds CTE 1 aggregator via joinAggStateKey
+  → Main phase: CTE_SCAN_REQ(cteId=1) → emit CTE 1 results
+</pre>
+
+<div class="note">
+The child <code>aggLeaf</code> routes its result through the
+<code>joinAggStateKey</code> into CTE 1's aggregator. This uses the agg-feed
+path in DBLQH, where the result is fed directly into the aggregation
+interpreter rather than returning to DBSPJ.
+</div>
+
+<h3>17.5 scanCte as Main Query Agg Leaf (Test 15)</h3>
+
+<div class="diagram-box">
+<pre>
+CTE0: scanTable(t1) ──► aggLeaf
+                            │
+                       [hash table 0]
+
+Main: scanCte(0)                  ◄── agg leaf (T_AGGREGATE_LEAF)
+           │
+      [main aggregator]
+           │
+      final result
+</pre>
+<div class="diagram-caption">scanCte is the main query root and also an aggregate leaf — it re-aggregates CTE output.</div>
+</div>
+
+<p><b>Key Signal Path:</b></p>
+<pre>
+DBSPJ receives SCAN_TABREQ
+  → CTE phase: SCAN_FRAGREQ → aggLeaf builds CTE 0 hash table
+  → Main phase: CTE_SCAN_REQ with joinAggStateKey (non-RNIL)
+      → DBLQH cteScanAggFeed: iterates all groups, feeds each into main aggregator
+      → JOIN_AGG_COMPLETE_REQ → finalize → TRANSID_AI results
+</pre>
+
+<div class="note">
+<code>CTE_SCAN_REQ</code> carries a non-RNIL <code>joinAggStateKey</code>,
+telling DBLQH to take the <code>cteScanAggFeed</code> path.
+Rows never leave DBLQH — results are accumulated in the main aggregator and
+emitted only at finalization. Fragment-per-node skip applies.
+</div>
+
+<h3>17.6 scanCte as CTE Materialization Root Non-Leaf (Test 16)</h3>
+
+<div class="diagram-box">
+<pre>
+CTE0: scanTable(t1) ──► aggLeaf
+                            │
+                       [hash table 0]
+
+CTE1: scanCte(0)                  ◄── NOT agg leaf, emits rows
+           │
+           ▼
+      aggLeaf                     ◄── child aggregates into CTE 1
+           │
+      [hash table 1]
+
+Main: scanCte(1)
+</pre>
+<div class="diagram-caption">2-level CTE chain: scanCte emits CTE 0 rows, child aggLeaf re-aggregates into CTE 1.</div>
+</div>
+
+<p><b>Key Signal Path:</b></p>
+<pre>
+DBSPJ receives SCAN_TABREQ
+  → CTE phase 0: SCAN_FRAGREQ → aggLeaf builds CTE 0 hash table
+  → CTE phase 1: CTE_SCAN_REQ with joinAggStateKey=RNIL (non-agg-leaf)
+      → DBLQH cteScanEmitResults: sends one TRANSID_AI per group back to DBSPJ
+      → DBSPJ startNextNodes → child aggLeaf fires per emitted row
+      → aggLeaf feeds each row into CTE 1 aggregator
+  → Main phase: CTE_SCAN_REQ(cteId=1) → emit CTE 1 results
+</pre>
+
+<div class="note">
+Because scanCte is NOT an aggregate leaf (<code>T_AGGREGATE_LEAF</code> not set),
+<code>CTE_SCAN_REQ</code> carries <code>joinAggStateKey = RNIL</code>.
+DBLQH takes the <code>cteScanEmitResults</code> path with CONTINUEB yielding.
+Fragment-per-node skip applies in both CTE phases and the main phase.
+</div>
+
+<h3>17.7 readTuple Root + lookupCte Child (Test 17)</h3>
+
+<div class="diagram-box">
+<pre>
+CTE0: scanTable(t1) ──► aggLeaf
+                            │
+                       [hash table]
+
+Main: readTuple(cte_src, key=2)   ◄── root is a plain lookup
+           │
+           ▼
+      lookupCte(0)                ◄── child, key linked from parent
+</pre>
+<div class="diagram-caption">Main query root is a plain readTuple; its child is a lookupCte with key linked from the parent result.</div>
+</div>
+
+<p><b>Key Signal Path:</b></p>
+<pre>
+DBSPJ receives SCAN_TABREQ
+  → CTE phase: SCAN_FRAGREQ → aggLeaf builds CTE 0 hash table
+  → Main phase: LQHKEYREQ for readTuple(key=2)
+      → m_start_signal consumed in lookup_build (main root lookup)
+      → TRANSID_AI result back to DBSPJ
+      → cte_lookup_parent_row → extracts linked key from parent result
+      → CTE_LOOKUP_REQ(cteId=0, key=linked) → hash probe → TRANSID_AI → API
+</pre>
+
+<div class="note">
+The main root is a plain <code>readTuple</code>, not a CTE operation.
+<code>m_start_signal</code> is consumed in <code>lookup_build</code> (the standard
+lookup root consumption). The child <code>lookupCte</code> fires from the
+parent_row path with a key linked from the parent's TRANSID_AI result.
+</div>
+
+<h3>17.8 Summary</h3>
+
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>CTE Op</th>
+<th>Position</th>
+<th>Key Source</th>
+<th>Signal</th>
+<th>DBLQH Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>17.1</td>
+<td>lookupCte</td>
+<td>Main root</td>
+<td>Constant</td>
+<td>CTE_LOOKUP_REQ</td>
+<td>lookupGroup</td>
+</tr>
+<tr>
+<td>17.2</td>
+<td>lookupCte</td>
+<td>CTE root</td>
+<td>Constant</td>
+<td>CTE_LOOKUP_REQ</td>
+<td>lookupGroup</td>
+</tr>
+<tr>
+<td>17.3</td>
+<td>lookupCte</td>
+<td>Main internal</td>
+<td>Linked (parent row)</td>
+<td>CTE_LOOKUP_REQ</td>
+<td>lookupGroup</td>
+</tr>
+<tr>
+<td>17.4</td>
+<td>lookupCte</td>
+<td>CTE internal</td>
+<td>Linked (parent row)</td>
+<td>CTE_LOOKUP_REQ</td>
+<td>lookupGroup + agg-feed</td>
+</tr>
+<tr>
+<td>17.5</td>
+<td>scanCte</td>
+<td>Main root (agg leaf)</td>
+<td>N/A (full scan)</td>
+<td>CTE_SCAN_REQ</td>
+<td>cteScanAggFeed</td>
+</tr>
+<tr>
+<td>17.6</td>
+<td>scanCte</td>
+<td>CTE root (non-leaf)</td>
+<td>N/A (full scan)</td>
+<td>CTE_SCAN_REQ</td>
+<td>cteScanEmitResults</td>
+</tr>
+<tr>
+<td>17.7</td>
+<td>lookupCte</td>
+<td>Main child</td>
+<td>Linked (parent row)</td>
+<td>CTE_LOOKUP_REQ</td>
+<td>lookupGroup</td>
+</tr>
+</tbody>
+</table>
+
+<div class="note">
+<b>Common invariants across all topologies:</b>
+<ul>
+<li>CTE hash tables are always fully materialized before any operation references them.</li>
+<li>Constant-key lookups (17.1, 17.2) execute on <code>rootFragId == 0</code> only.</li>
+<li>scanCte operations (17.5, 17.6) use fragment-per-node skip: <code>rootFragId &lt; numDataNodes</code>.</li>
+<li>The <code>joinAggStateKey</code> in CTE_SCAN_REQ determines the DBLQH path: non-RNIL routes to <code>cteScanAggFeed</code>, RNIL routes to <code>cteScanEmitResults</code>.</li>
+</ul>
+</div>
+
+</section>
+
+<!-- ============================================================ -->
+<!-- 18. IMPLEMENTATION DETAILS AND BUG FIXES -->
+<!-- ============================================================ -->
+<section id="impl-details">
+<h2>18. Implementation Details and Bug Fixes</h2>
+
+<p>Key implementation details and bug fixes discovered during CTE development.
+These issues were non-obvious, often manifesting only with specific query shapes
+or data volumes.</p>
+
+<h3>18.1 Uint32Buffer Dangling Pointer Fix (NdbQueryOperation.cpp)</h3>
+
+<p>The <code>prepareAttrInfo()</code> function serializes <code>QueryNodeParameters</code>
+for each operation into a <code>Uint32Buffer</code>. The <code>QN_CTE_LOOKUP</code>
+and <code>QN_CTE_SCAN</code> cases had a dangling pointer bug.</p>
+
+<p><strong>Bug:</strong> <code>attrInfo.addr(startPos)</code> was called BEFORE
+<code>attrInfo.append()</code> calls. Since <code>Uint32Buffer::alloc()</code>
+doubles the internal buffer when full (initial size 32, grows to 64, 128...),
+the pointer returned by <code>addr()</code> becomes invalid after reallocation.</p>
+
+<p><strong>Symptom:</strong> For queries with 6+ operations (like Test 16's 7 nodes),
+the buffer grew past the initial 32-word allocation. The CTE param header
+(<code>requestInfo</code>, <code>resultData</code>, <code>len</code>) was written
+to freed memory &mdash; the new buffer had zeros. DBSPJ received
+<code>paramLen=0</code> &rarr; error 20003 "unknown query operation".</p>
+
+<div class="diagram-box">
+<pre>
+BEFORE (buggy):
+  Uint32 startPos = attrInfo.getSize();
+  attrInfo.alloc(3);  // header space
+  QN_CteScanParameters *param = (QN_CteScanParameters*)attrInfo.addr(startPos);
+  // ^^^ pointer valid here
+  attrInfo.append(...);  // may trigger realloc — pointer DANGLING
+  attrInfo.append(...);  // more appends
+  param-&gt;requestInfo = ...;  // WRITE TO FREED MEMORY
+
+AFTER (fixed):
+  Uint32 startPos = attrInfo.getSize();
+  attrInfo.alloc(3);  // header space
+  attrInfo.append(...);  // all appends first
+  attrInfo.append(...);
+  // NOW resolve pointer — buffer is stable
+  QN_CteScanParameters *param = (QN_CteScanParameters*)attrInfo.addr(startPos);
+  param-&gt;requestInfo = ...;  // safe write
+</pre>
+<div class="diagram-caption">The pointer from addr() must be resolved only after all buffer mutations are complete.</div>
+</div>
+
+<h3>18.2 Multi-Fragment CTE Duplication Fix (DbspjMain.cpp)</h3>
+
+<p><strong>Bug:</strong> <code>cte_scan_start()</code> originally only skipped
+excess rootFragIds (<code>rootFragId &gt;= numDataNodes</code>) when NOT in CTE
+phase (<code>!(m_bits &amp; RT_CTE_PHASE)</code>). During CTE materialization,
+ALL DBSPJ instances ran <code>scanCte</code>, each reading the same shared CTE
+hash table. With 8 fragments on 1 data node, results were 8&times; too large.</p>
+
+<p><strong>Root cause:</strong> The <code>RT_CTE_PHASE</code> guard was added
+thinking only main query <code>scanCte</code> needed the skip. But
+<code>scanCte</code> inside CTE subtrees (e.g., CTE 1 reading CTE 0 in Test 16)
+also needs the skip because CTE hash tables are shared across LDM threads via
+<code>DblqhProxy</code>.</p>
+
+<div class="diagram-box">
+<pre>
+Fix: Remove the RT_CTE_PHASE guard. Skip is now unconditional:
+
+  if (requestPtr.p-&gt;m_rootFragId &gt;= m_numDataNodes) {
+    // Skip — CTE hash tables are per-data-node, only one LDM instance reads
+    markNodeComplete(...)
+  }
+
+Real table scans use scanFrag_start(), not cte_scan_start(), so unaffected.
+</pre>
+</div>
+
+<h3>18.3 m_start_signal Consumption in cte_lookup_build</h3>
+
+<p><strong>Bug:</strong> When <code>lookupCte</code> is the main query root
+(no parent, not in CTE subtree), the build loop's <code>ctx.m_start_signal</code>
+(pointing to SCAN_FRAGREQ) was not consumed. The next child node's
+<code>lookup_build()</code> interpreted SCAN_FRAGREQ as LQHKEYREQ, reading garbage
+for <code>LqhKeyReq::getAttrLen</code> &mdash; crash.</p>
+
+<div class="diagram-box">
+<pre>
+Fix: In cte_lookup_build(), consume m_start_signal when the node is the main root:
+
+  if (ctx.m_start_signal &amp;&amp;
+      ctx.m_cteSubtreeRemaining == 0 &amp;&amp;
+      treeNodePtr.p-&gt;m_parentPtrI == RNIL) {
+    ctx.m_start_signal = NULL;  // consume — lookupCte uses CTE_LOOKUP_REQ, not LQHKEYREQ
+  }
+</pre>
+<div class="diagram-caption">The start signal must be consumed by the root node during build, preventing child nodes from misinterpreting it.</div>
+</div>
+
+<div class="note">
+The <code>m_start_signal</code> mechanism is part of DBSPJ's build loop: the
+first node in the query tree consumes the initial request signal
+(<code>SCAN_FRAGREQ</code> or <code>LQHKEYREQ</code>) and sets
+<code>m_start_signal = NULL</code> so subsequent nodes parse their parameters
+from <code>attrInfo</code> sections rather than from a signal.
+</div>
+
+<h3>18.4 Method Naming: cte_lookup_* Convention</h3>
+
+<p>All methods in <code>g_CteLookupOpInfo</code> were renamed from
+<code>cte_*</code> to <code>cte_lookup_*</code> for consistency with
+<code>g_CteScanOpInfo</code> (which uses <code>cte_scan_*</code>):</p>
+
+<table>
+<tr><th>Old Name</th><th>New Name</th></tr>
+<tr><td><code>cte_build</code></td><td><code>cte_lookup_build</code></td></tr>
+<tr><td><code>cte_start</code></td><td><code>cte_lookup_start</code></td></tr>
+<tr><td><code>cte_countSignal</code></td><td><code>cte_lookup_countSignal</code></td></tr>
+<tr><td><code>cte_parent_row</code></td><td><code>cte_lookup_parent_row</code></td></tr>
+<tr><td><code>cte_serve_cached_row</code></td><td><code>cte_lookup_serve_cached_row</code></td></tr>
+<tr><td><code>cte_cleanup</code></td><td><code>cte_lookup_cleanup</code></td></tr>
+<tr><td><code>cte_checkNode</code></td><td><code>cte_lookup_checkNode</code></td></tr>
+<tr><td><code>cte_dumpNode</code></td><td><code>cte_lookup_dumpNode</code></td></tr>
+</table>
+
+<p>Each <code>OpInfo</code> struct in DBSPJ uses a consistent prefix:
+<code>scanFrag_*</code>, <code>lookup_*</code>, <code>scanIndex_*</code>,
+<code>cte_scan_*</code>, and now <code>cte_lookup_*</code>.</p>
+
+</section>
+
+<!-- ============================================================ -->
+<!-- 19. SIGNAL REFERENCE -->
 <!-- ============================================================ -->
 <section id="signals">
-<h2>16. Signal Reference</h2>
+<h2>19. Signal Reference</h2>
 
 <h3>CTE Signals</h3>
 <table>
@@ -1862,10 +2777,10 @@ but is empty until phase 1 populates it.
 </section>
 
 <!-- ============================================================ -->
-<!-- 13. STATE MACHINES -->
+<!-- 20. STATE MACHINES -->
 <!-- ============================================================ -->
 <section id="state-machines">
-<h2>17. State Machines</h2>
+<h2>20. State Machines</h2>
 
 <div class="diagram-box">
 <svg width="880" height="280" viewBox="0 0 880 280">
@@ -1950,7 +2865,7 @@ but is empty until phase 1 populates it.
 <tr>
   <td><span class="tag tag-dbspj">DBSPJ</span></td>
   <td>blocks/dbspj/DbspjMain.cpp</td>
-  <td>cte_build, cte_subtree_build, cte_scan_build, cte_scan_start, cte_parent_row, cte_lookup_send, execCTE_LOOKUP_CONF/REF, execCTE_SCAN_CONF/REF, execCTE_PHASE_START_REQ, execCTE_START_MAIN_REQ</td>
+  <td>cte_lookup_build, cte_subtree_build, cte_scan_build, cte_scan_start, cte_lookup_parent_row, cte_lookup_send, execCTE_LOOKUP_CONF/REF, execCTE_SCAN_CONF/REF, execCTE_PHASE_START_REQ, execCTE_START_MAIN_REQ</td>
 </tr>
 <tr>
   <td><span class="tag tag-dblqh">DBLQH</span></td>
