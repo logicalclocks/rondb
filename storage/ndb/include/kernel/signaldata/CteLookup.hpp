@@ -51,7 +51,7 @@ struct CteLookupReq {
   Uint32 flags;           // CTE_LOOKUP_ROUTE_FLAG: DBLQH may forward to remote node
 
   static constexpr Uint32 SignalLength = 10;
-  enum { KeySectionNum = 0, AttrInfoSectionNum = 1 };
+  enum { KeySectionNum = 0, AttrInfoSectionNum = 1, LinkedSectionNum = 2 };
 
   // Flags
   static constexpr Uint32 CTE_LOOKUP_ROUTE_FLAG = 0x1;

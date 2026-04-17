@@ -18911,7 +18911,9 @@ void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
  */
 void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
                               const JoinAggInterpreter *interp,
-                              const char *groupData) {
+                              const char *groupData,
+                              const Uint32 *attrInfoBuf,
+                              Uint32 attrInfoLen) {
   const Uint32 targetBaseKey =
       JoinAggregationState::decodeBaseKey(req.joinAggStateKey);
   const Uint32 targetLeafIndex =
@@ -18928,14 +18930,46 @@ void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
   JoinAggInterpreter *targetInterp = getJoinAggInterpreter(targetState);
   ndbrequire(targetInterp != nullptr);
 
-  /* Build linked_attr_data from the CTE result: key columns followed
-   * by accumulator columns, all in AttributeHeader format.
+  /* Build linked_attr_data: parent linked columns (from AttrInfo
+   * subroutine section) followed by CTE result columns (key + accum).
    * Format: [tableId=0][schemaVersion=0][AH][data...] per column. */
   const Uint32 n_gb_cols = interp->n_gb_cols();
   const Uint32 n_agg_results = interp->n_agg_results();
 
   Uint32 *linkedBuf = cevictBuffer;
   Uint32 linkedPos = 0;
+
+  /* Step 1: Prepend parent linked columns from AttrInfo subroutine section.
+   * These are expanded by DBSPJ from the parent row's linked projection
+   * (same format as LQHKEYREQ interpreter subroutine section). */
+  if (attrInfoBuf != nullptr && attrInfoLen >= 5) {
+    jam();
+    const Uint32 initReadLen = attrInfoBuf[0];
+    const Uint32 interpretLen = attrInfoBuf[1];
+    const Uint32 finalUpdateLen = attrInfoBuf[2];
+    const Uint32 finalReadLen = attrInfoBuf[3];
+    const Uint32 subLen = attrInfoBuf[4];
+
+    if (subLen > 1) {
+      jam();
+      const Uint32 subStart = 5 + initReadLen + interpretLen +
+                              finalUpdateLen + finalReadLen;
+      /* Skip the paramLen word (same as prepareAndHandleJoinAggRow) */
+      const Uint32 *parentLinked = &attrInfoBuf[subStart + 1];
+      const Uint32 parentLinkedLen = subLen - 1;
+
+      DEB_CTE(("(%u) cteLookupAggFeed: prepending %u words of parent "
+               "linked data from AttrInfo subroutine",
+               instance(), parentLinkedLen));
+
+      ndbrequire(linkedPos + parentLinkedLen < ZATTR_BUFFER_SIZE);
+      memcpy(&linkedBuf[linkedPos], parentLinked,
+             parentLinkedLen * sizeof(Uint32));
+      linkedPos += parentLinkedLen;
+    }
+  }
+
+  /* Step 2: Append CTE result columns (key + accumulators) */
 
   /* Key columns from CTE GROUP BY */
   const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
@@ -19503,7 +19537,8 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   /* Aggregation feed path: result feeds into another JoinAggInterpreter */
   if (req.joinAggStateKey != RNIL) {
     jam();
-    cteLookupAggFeed(signal, req, interp, groupData);
+    cteLookupAggFeed(signal, req, interp, groupData,
+                     attrInfoLen > 0 ? cinBuf : nullptr, attrInfoLen);
     return;
   }
 

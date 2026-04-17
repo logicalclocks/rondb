@@ -5618,6 +5618,287 @@ testCrossJoinTwoScalarCtes(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 21: GREATEST(MAX(val), MIN(val)) via CASE in aggregation       */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   WITH cte_max AS (SELECT MAX(val) AS result FROM cte_src),         */
+/*        cte_min AS (SELECT MIN(val) AS result FROM cte_src)          */
+/*   SELECT GREATEST(cte_max.result, cte_min.result) AS watermark      */
+/*   FROM cte_max, cte_min;                                            */
+/*                                                                     */
+/* Why this test:                                                      */
+/*   End-to-end test of the Hopsworks watermark query pattern.         */
+/*   GREATEST is expressed as CASE WHEN a >= b THEN a ELSE b END       */
+/*   using the NdbAggregator's BranchRegGe + Mov instructions.         */
+/*   The lookupCte child is the aggregate leaf whose program computes  */
+/*   GREATEST of the parent's CTE0 result and its own CTE1 result.    */
+/*                                                                     */
+/* Tree shape:                                                         */
+/*   Nodes 0-2: CTE 0 subtree (scanTable + agg leaf → MAX(val))        */
+/*   Nodes 3-5: CTE 1 subtree (scanTable + agg leaf → MIN(val))        */
+/*   Node 6: scanCte(0) — MAIN ROOT (1 row: MAX=50)                   */
+/*   Node 7: lookupCte(1, dummy_key, parent=root,                     */
+/*           setAggregation(GREATEST via CASE))  — AGG LEAF            */
+/*                                                                     */
+/* Aggregation program on node 7:                                      */
+/*   LoadLinkedColumn(pos=0, reg0, col)       // reg0 = CTE0 MAX=50   */
+/*   LoadLinkedColumn(pos=1, reg1, col)       // reg1 = CTE1 MIN=10   */
+/*   BranchRegGe(reg0, reg1, 1)              // skip Mov if reg0>=reg1*/
+/*   Mov(reg0, reg1)                          // reg0 = reg1           */
+/*   Max(0, reg0)                             // agg[0] = reg0         */
+/*                                                                     */
+/* Linked positions: pos 0 = parent linked col (forwarded via          */
+/*   AttrInfo subroutine section in CTE_LOOKUP_REQ).                   */
+/*   pos 1 = CTE1 result col (appended by cteLookupAggFeed).           */
+/*                                                                     */
+/* Data: (1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)                  */
+/* Expected: GREATEST(50, 10) = 50, returned via aggregator.           */
+/* ------------------------------------------------------------------ */
+
+static int
+testGreatestViaCaseAgg(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 21: GREATEST(MAX, MIN) via CASE in aggregation ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  dict->invalidateTable(SCALAR_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  const NdbDictionary::Table *scalarVirtTab =
+      dict->getTable(SCALAR_VIRTUAL_TABLE);
+  if (srcTab == nullptr || scalarVirtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  /* CTE 0: MAX(val) */
+  NdbAggregator cte0Agg(srcTab);
+  if (!cte0Agg.LoadColumn("val", 0) ||
+      !cte0Agg.Max(0, 0) ||
+      !cte0Agg.Finalize()) {
+    printf("FAILED (cte0Agg: %s)\n", cte0Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* CTE 1: MIN(val) */
+  NdbAggregator cte1Agg(srcTab);
+  if (!cte1Agg.LoadColumn("val", 0) ||
+      !cte1Agg.Min(0, 0) ||
+      !cte1Agg.Finalize()) {
+    printf("FAILED (cte1Agg: %s)\n", cte1Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Main aggregation: GREATEST(parent.result, this.result)
+   * = CASE WHEN reg0 >= reg1 THEN reg0 ELSE reg1 END
+   * Expressed as:
+   *   LoadLinkedColumn(0, reg0, col)
+   *   LoadColumn("result", reg1)
+   *   BranchRegGe(reg0, reg1, 1)   // skip Mov if reg0 >= reg1
+   *   Mov(reg0, reg1)              // reg0 = reg1
+   *   Max(0, reg0)                 // store GREATEST in agg[0]
+   */
+  const NdbDictionary::Column *virtResultCol =
+      scalarVirtTab->getColumn("result");
+  NdbAggregator mainAgg(scalarVirtTab);
+  if (!mainAgg.LoadLinkedColumn(0, 0, virtResultCol) ||
+      !mainAgg.LoadLinkedColumn(1, 1, virtResultCol) ||
+      /* BranchRegGe: skip when reg0 >= reg1 → keep larger in reg0 */
+      !mainAgg.BranchRegGe(0, 1, 1) ||
+      !mainAgg.Mov(0, 1) ||
+      !mainAgg.Max(0, 0) ||
+      !mainAgg.Finalize()) {
+    printf("FAILED (mainAgg: %s)\n", mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+
+  /* CTE 0 subtree: scanTable + readTuple leaf → MAX(val) */
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      printf("FAILED (CTE 0 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte0Agg);
+    if (qb->readTuple(srcTab, key, &opts) == nullptr) {
+      printf("FAILED (CTE 0 leaf: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, cte0Agg, /*depMask=*/0) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* CTE 1 subtree: scanTable + readTuple leaf → MIN(val) */
+  qb->beginCteSubtree(1);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      printf("FAILED (CTE 1 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte1Agg);
+    if (qb->readTuple(srcTab, key, &opts) == nullptr) {
+      printf("FAILED (CTE 1 leaf: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(1, srcTab, cte1Agg, /*depMask=*/0) != 0) {
+    printf("FAILED (defineCte 1)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: scanCte(0) root + lookupCte(1) aggregate leaf.
+   * The lookupCte carries the GREATEST aggregation program and
+   * a linked projection to access the parent's CTE0 result. */
+  const NdbQueryCteScanOperationDef *mainRoot =
+      qb->scanCte(0, 1, scalarVirtTab);
+  if (mainRoot == nullptr) {
+    printf("FAILED (main scanCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Link parent's "result" column so GREATEST can access CTE0 value */
+  const NdbLinkedOperand *linkedParentResult =
+      qb->linkedValue(mainRoot, "result");
+  if (linkedParentResult == nullptr) {
+    printf("FAILED (linkedValue: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryOperand *dummyKey[] = {
+    qb->constValue((Int64)0), nullptr
+  };
+  NdbQueryOptions cteLookupOpts;
+  cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLookupOpts.setParent(mainRoot);
+  cteLookupOpts.setAggregation(mainAgg);
+  cteLookupOpts.addLinkedProjection(linkedParentResult);
+  const NdbQueryCteLookupOperationDef *childLookup =
+      qb->lookupCte(1, 1, scalarVirtTab, dummyKey, &cteLookupOpts);
+  if (childLookup == nullptr) {
+    printf("FAILED (lookupCte 1: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  V("\n  Query prepared: %u operations\n", queryDef->getNoOfOperations());
+
+  /* Execute */
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* For aggregate queries, result comes from the aggregator, not getValue */
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Consume scan results */
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    /* nothing — aggregate results are fetched after scan completes */
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (nextResult err %d: %s)\n", qErr.code, qErr.message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Fetch aggregation result */
+  NdbAggregator *agg = query->getAggregator();
+  if (agg == nullptr) {
+    printf("FAILED (getAggregator returned null)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  agg->PrepareResults();
+  NdbAggregator::ResultRecord rr = agg->FetchResultRecord();
+  if (rr.end()) {
+    printf("FAILED (no aggregation results)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::Result res = rr.FetchAggregationResult();
+  Int64 watermark = res.is_null() ? -1 : res.data_int64();
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (watermark != 50) {
+    printf("FAILED (expected GREATEST=50, got %lld)\n", (long long)watermark);
+    return -1;
+  }
+
+  printf("OK (GREATEST=%lld)\n", (long long)watermark);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -5647,6 +5928,7 @@ static const TestEntry g_tests[] = {
     { 18, testScanIndexCteMaterialization },
     { 19, testMaxValWithDescScanIndex },
     { 20, testCrossJoinTwoScalarCtes },
+    { 21, testGreatestViaCaseAgg },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
@@ -5668,7 +5950,7 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       printf("Usage: %s -c <connect_string> -m <mysql_port> [-v] "
              "[--only N]\n", argv[0]);
-      printf("  --only N    run only test number N (1..20)\n");
+      printf("  --only N    run only test number N (1..21)\n");
       return 0;
     }
   }
@@ -5679,7 +5961,7 @@ int main(int argc, char **argv)
       if (g_tests[i].number == onlyTest) { found = true; break; }
     }
     if (!found) {
-      fprintf(stderr, "No such test: %d (valid: 1..20)\n", onlyTest);
+      fprintf(stderr, "No such test: %d (valid: 1..21)\n", onlyTest);
       return 1;
     }
   }

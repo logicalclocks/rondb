@@ -6250,13 +6250,65 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     SectionHandle handle(this);
     getSection(handle.m_ptr[CteLookupReq::KeySectionNum], keyInfoPtrI);
     handle.m_cnt = 1;
-    if (joinAggStateKey == RNIL && attrInfoPtrI != RNIL) {
-      // Only send AttrInfo for non-agg path (FLUSH_AI to API)
+    if (joinAggStateKey != RNIL &&
+        (treeNodePtr.p->m_bits & TreeNode::T_ATTRINFO_CONSTRUCTED) &&
+        attrInfoPtrI != RNIL) {
+      /**
+       * Agg feed path WITH linked parent columns: expand m_attrParamPattern
+       * with the parent row data, same mechanism as lookup_parent_row.
+       * The expanded AttrInfo carries the parent's linked columns in the
+       * interpreter subroutine section so cteLookupAggFeed can prepend
+       * them to the CTE result columns in linked_attr_data.
+       */
+      jam();
+
+      Uint32 org_size;
+      {
+        SegmentedSectionPtr ptr;
+        getSection(ptr, attrInfoPtrI);
+        org_size = ptr.sz;
+      }
+      Uint32 paramLen = 0;
+      if (unlikely(!appendToSection(attrInfoPtrI, &paramLen, 1))) {
+        jam();
+        releaseSection(attrInfoPtrI);
+        err = DbspjErr::OutOfSectionMemory;
+        break;
+      }
+      bool hasNull;
+      LocalArenaPool<DataBufferSegment<14>> pool(requestPtr.p->m_arena,
+                                                 m_dependency_map_pool);
+      Local_pattern_store pattern(pool, treeNodePtr.p->m_attrParamPattern);
+      err = expand(attrInfoPtrI, pattern, rowRef, hasNull,
+                   true /* addTableMeta */);
+      if (unlikely(err != 0)) {
+        jam();
+        releaseSection(attrInfoPtrI);
+        break;
+      }
+
+      SegmentedSectionPtr ptr;
+      getSection(ptr, attrInfoPtrI);
+      Uint32 new_size = ptr.sz;
+      paramLen = new_size - org_size;
+      writeToSection(attrInfoPtrI, org_size, &paramLen, 1);
+
+      Uint32 *sectionptrs = ptr.p->theData;
+      sectionptrs[4] = paramLen;
+
+      DEB_CTE(("(%u) cte_lookup_send: expanded linked attrs: "
+               "org_size=%u new_size=%u paramLen=%u",
+               instance(), org_size, new_size, paramLen));
+
+      getSection(handle.m_ptr[CteLookupReq::AttrInfoSectionNum], attrInfoPtrI);
+      handle.m_cnt = 2;
+    } else if (joinAggStateKey == RNIL && attrInfoPtrI != RNIL) {
+      // Non-agg path: send base AttrInfo for FLUSH_AI formatting
       jam();
       getSection(handle.m_ptr[CteLookupReq::AttrInfoSectionNum], attrInfoPtrI);
       handle.m_cnt = 2;
     } else if (attrInfoPtrI != RNIL) {
-      // Agg feed path doesn't need AttrInfo — release it
+      // Agg feed path without linked columns — release
       releaseSection(attrInfoPtrI);
     }
 

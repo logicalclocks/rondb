@@ -3353,7 +3353,9 @@ private:
                       const CteLookupReq *req);
   void cteLookupAggFeed(Signal* signal, const CteLookupReq &req,
                         const JoinAggInterpreter *interp,
-                        const char *groupData);
+                        const char *groupData,
+                        const Uint32 *attrInfoBuf,
+                        Uint32 attrInfoLen);
   void cteLookupEmitResult(Signal* signal, const CteLookupReq &req,
                            const JoinAggregationState *state,
                            const JoinAggInterpreter *interp,
