@@ -9970,6 +9970,14 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
       ScanFragReq::setNoDiskFlag(requestInfo,
                                  (treeBits & DABits::NI_LINKED_DISK) == 0 &&
                                      (paramBits & DABits::PI_DISK_ATTR) == 0);
+      /* If the serialized node carries an ordered index ID (indexId != tableId),
+       * set the range scan flag so DBLQH treats the tableId as an index
+       * reference.  This happens when scanIndex is used as the CTE
+       * materialization scan instead of scanTable. */
+      if (indexId != tableId) {
+        jam();
+        ScanFragReq::setRangeScanFlag(requestInfo, 1);
+      }
       dst->requestInfo = requestInfo;
     } else {
       requestPtr.p->m_bits |= Request::RT_NEED_PREPARE;

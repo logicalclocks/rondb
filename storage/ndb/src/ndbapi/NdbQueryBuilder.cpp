@@ -1344,17 +1344,34 @@ const NdbQueryIndexScanOperationDef *NdbQueryBuilder::scanIndex(
   returnErrIf(table == nullptr || index == nullptr, QRY_REQ_ARG_IS_NULL);
 
   if (m_impl.m_operations.size() > 0) {
-    // All operations but the first one must depend on some other operation.
-    returnErrIf(bound == nullptr || (!hasLinkedOperand(bound->m_low) &&
-                                     !hasLinkedOperand(bound->m_high)),
-                QRY_UNKNOWN_PARENT);
+    /**
+     * Inside a CTE subtree the scanIndex is the CTE materialization scan
+     * which needs no linked operands (it is a root-level scan within the
+     * CTE subtree). Similarly, after all CTE subtrees have been defined
+     * the scanIndex may appear as the main query root.
+     * Outside these contexts every non-first scan must depend on a parent
+     * operation via linked operands in bounds.
+     */
+    if (!m_impl.m_inCteSubtree && m_impl.m_completedCteSubtrees == 0) {
+      // All operations but the first one must depend on some other operation.
+      returnErrIf(bound == nullptr || (!hasLinkedOperand(bound->m_low) &&
+                                       !hasLinkedOperand(bound->m_high)),
+                  QRY_UNKNOWN_PARENT);
+    }
 
     // Scan with root lookup operation has not been implemented.
-    returnErrIf(!m_impl.m_operations[0]->isScanOperation(),
-                QRY_WRONG_OPERATION_TYPE);
+    // Skip this check for CTE queries: m_operations[0] is the CteSubtree
+    // container (isScanOperation()=false) but the overall query uses the
+    // scan protocol (isScanQuery()=true when cteDefs exist).
+    if (!m_impl.m_inCteSubtree && m_impl.m_completedCteSubtrees == 0) {
+      returnErrIf(!m_impl.m_operations[0]->isScanOperation(),
+                  QRY_WRONG_OPERATION_TYPE);
+    }
 
-    if (options != nullptr) {
-      // A child scan should not be sorted.
+    if (options != nullptr &&
+        !m_impl.m_inCteSubtree && m_impl.m_completedCteSubtrees == 0) {
+      // A child scan should not be sorted (but CTE materialization and
+      // main-query-root scans after CTEs may use ordering).
       const NdbQueryOptions::ScanOrdering order =
           options->getImpl().getOrdering();
       returnErrIf(order == NdbQueryOptions::ScanOrdering_ascending ||
