@@ -1198,7 +1198,7 @@ class Dbspj : public SimulatedBlock {
        * (not the base scan rows) are what populate the CTE's hash
        * table. The base scan marked with this bit must NOT set
        * JoinAggFlag on its SCAN_FRAGREQ; its rows come back to DBSPJ
-       * as plain TRANSID_AI and drive cte_parent_row / cte_lookup_send
+       * as plain TRANSID_AI and drive cte_lookup_parent_row / cte_lookup_send
        * for each scanned row. The CTE_LOOKUP leaf carries the real
        * agg feed via joinAggStateKey.
        */
@@ -1820,20 +1820,20 @@ class Dbspj : public SimulatedBlock {
    * CTE Lookup — looks up rows in a materialized CTE hash table
    */
   static const OpInfo g_CteLookupOpInfo;
-  Uint32 cte_build(Build_context &, Ptr<Request>, const QueryNode *,
-                   const QueryNodeParameters *);
-  void cte_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
-  void cte_countSignal(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 cnt);
-  void cte_parent_row(Signal *, Ptr<Request>, Ptr<TreeNode>, const RowPtr &);
-  void cte_serve_cached_row(Signal *, Ptr<Request>,
-                            Ptr<TreeNode>, const CteContext &);
+  Uint32 cte_lookup_build(Build_context &, Ptr<Request>, const QueryNode *,
+                          const QueryNodeParameters *);
+  void cte_lookup_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  void cte_lookup_countSignal(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 cnt);
+  void cte_lookup_parent_row(Signal *, Ptr<Request>, Ptr<TreeNode>, const RowPtr &);
+  void cte_lookup_serve_cached_row(Signal *, Ptr<Request>,
+                                   Ptr<TreeNode>, const CteContext &);
   void cte_lookup_send(Signal *, Ptr<Request>, Ptr<TreeNode>,
                        const RowPtr &);
   void execCTE_LOOKUP_CONF(Signal *);
   void execCTE_LOOKUP_REF(Signal *);
-  void cte_cleanup(Ptr<Request>, Ptr<TreeNode>);
-  bool cte_checkNode(const Ptr<Request>, const Ptr<TreeNode>);
-  void cte_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
+  void cte_lookup_cleanup(Ptr<Request>, Ptr<TreeNode>);
+  bool cte_lookup_checkNode(const Ptr<Request>, const Ptr<TreeNode>);
+  void cte_lookup_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
 
   /**
    * CTE Subtree — container for CTE materialization scan sub-tree

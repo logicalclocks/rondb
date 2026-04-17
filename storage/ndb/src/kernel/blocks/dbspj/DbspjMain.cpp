@@ -1448,7 +1448,7 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
     /**
      * Part A: parseJoinAggKeyInfo runs BEFORE build() — but the
      * CteContexts it needs to update are only created later when
-     * cte_build() processes each QN_CTE_LOOKUP / QN_CTE_SCAN /
+     * cte_lookup_build() processes each QN_CTE_LOOKUP / QN_CTE_SCAN /
      * QN_CTE_SUBTREE node. We therefore parse the per-CTE metadata
      * (depMask / flags / phase / singleNodeId) into a small local
      * temp array here, and apply it to the CteContexts after build()
@@ -1586,7 +1586,7 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
       if (unlikely(err != 0)) break;
 
       /**
-       * Part A: build() has now created CteContexts via cte_build()
+       * Part A: build() has now created CteContexts via cte_lookup_build()
        * for each QN_CTE_LOOKUP / QN_CTE_SCAN / QN_CTE_SUBTREE node.
        * Apply the metadata we stashed earlier from the aggKeys
        * section — depMask, flags, phase, singleNodeId — so that
@@ -2154,7 +2154,7 @@ Dbspj::build(Build_context& ctx,
 
 #ifdef DEBUG_CTE_BUILD
     /* Post-build flag dump: print the final TreeNode state that
-     * cte_build / scanFrag_build / lookup_build / etc. have set on
+     * cte_lookup_build / scanFrag_build / lookup_build / etc. have set on
      * this node, PLUS the subtree membership bits applied in the
      * block above. Useful for debugging CTE routing bugs where the
      * TreeNode flags disagree with what later signal handlers
@@ -5716,15 +5716,15 @@ const Dbspj::OpInfo Dbspj::g_LookupOpInfo = {
  * and the CTE_LOOKUP_REQ signal.
  */
 const Dbspj::OpInfo Dbspj::g_CteLookupOpInfo = {
-    &Dbspj::cte_build,
+    &Dbspj::cte_lookup_build,
     0,                          // prepare
-    &Dbspj::cte_start,
-    &Dbspj::cte_countSignal,    // countSignal
+    &Dbspj::cte_lookup_start,
+    &Dbspj::cte_lookup_countSignal,    // countSignal
     0,                          // execLQHKEYREF — not used for CTE lookups
     0,                          // execLQHKEYCONF — not used for CTE lookups
     0,                          // execSCAN_FRAGREF
     0,                          // execSCAN_FRAGCONF
-    &Dbspj::cte_parent_row,
+    &Dbspj::cte_lookup_parent_row,
     0,                          // parent_batch_complete
     0,                          // parent_batch_repeat
     0,                          // parent_batch_cleanup
@@ -5732,18 +5732,18 @@ const Dbspj::OpInfo Dbspj::g_CteLookupOpInfo = {
     0,                          // complete
     0,                          // abort
     0,                          // execNODE_FAILREP
-    &Dbspj::cte_cleanup,
-    &Dbspj::cte_checkNode,
-    &Dbspj::cte_dumpNode};
+    &Dbspj::cte_lookup_cleanup,
+    &Dbspj::cte_lookup_checkNode,
+    &Dbspj::cte_lookup_dumpNode};
 
-Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
+Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
                          const QueryNode *qn, const QueryNodeParameters *qp) {
   Uint32 err = 0;
   Ptr<TreeNode> treeNodePtr;
   const QN_CteLookupNode *node = (const QN_CteLookupNode *)qn;
   const QN_CteLookupParameters *param = (const QN_CteLookupParameters *)qp;
 
-  DEB_CTE(("(%u) cte_build", instance()));
+  DEB_CTE(("(%u) cte_lookup_build", instance()));
   do {
     jam();
     err = DbspjErr::InvalidTreeNodeSpecification;
@@ -5779,7 +5779,7 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_cteLookup_data.m_pendingCount = 0;
     treeNodePtr.p->m_cteLookup_data.m_api_resultRef = ctx.m_resultRef;
     treeNodePtr.p->m_cteLookup_data.m_api_resultData = ctx.m_resultData;
-    DEB_CTE(("(%u) cte_build: node=%u resultRef=0x%x resultData=0x%x "
+    DEB_CTE(("(%u) cte_lookup_build: node=%u resultRef=0x%x resultData=0x%x "
              "rootResultData=0x%x",
              instance(), treeNodePtr.p->m_node_no,
              ctx.m_resultRef, ctx.m_resultData,
@@ -5878,7 +5878,7 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
         Uint32 type = QueryPattern::getType(info);
         if (unlikely(type == QueryPattern::P_COL)) {
           jam();
-          g_eventLogger->info("(%u) cte_build: ERROR key pattern uses "
+          g_eventLogger->info("(%u) cte_lookup_build: ERROR key pattern uses "
               "P_COL (must use P_ATTRINFO for CTE lookup keys)",
               instance());
           err = DbspjErr::InvalidTreeNodeSpecification;
@@ -5900,7 +5900,7 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
         ctx.m_cteSubtreeRemaining == 0 &&
         treeNodePtr.p->m_parentPtrI == RNIL) {
       jam();
-      DEB_CTE(("(%u) cte_build: main root node %u consuming m_start_signal",
+      DEB_CTE(("(%u) cte_lookup_build: main root node %u consuming m_start_signal",
                instance(), treeNodePtr.p->m_node_no));
       ctx.m_start_signal = NULL;
     }
@@ -5919,15 +5919,15 @@ Uint32 Dbspj::cte_build(Build_context &ctx, Ptr<Request> requestPtr,
   } while (0);
 
   return err;
-}  // Dbspj::cte_build
+}  // Dbspj::cte_lookup_build
 
-void Dbspj::cte_start(Signal *signal, Ptr<Request> requestPtr,
+void Dbspj::cte_lookup_start(Signal *signal, Ptr<Request> requestPtr,
                        Ptr<TreeNode> treeNodePtr) {
   jam();
   /* Three cases:
    *
    * (1) Driven from a parent row (the common case): the lookup
-   *     fires from cte_parent_row(), not here.  In that case
+   *     fires from cte_lookup_parent_row(), not here.  In that case
    *     T_CTE_SCAN is NOT set AND the node has a parent, so we
    *     do nothing.
    *
@@ -5966,7 +5966,7 @@ void Dbspj::cte_start(Signal *signal, Ptr<Request> requestPtr,
 
   if (requestPtr.p->m_rootFragId != 0) {
     jam();
-    DEB_CTE(("(%u) cte_start: skip non-zero rootFragId=%u node=%u",
+    DEB_CTE(("(%u) cte_lookup_start: skip non-zero rootFragId=%u node=%u",
              instance(), requestPtr.p->m_rootFragId,
              treeNodePtr.p->m_node_no));
     treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
@@ -5992,10 +5992,10 @@ void Dbspj::cte_start(Signal *signal, Ptr<Request> requestPtr,
   cte_lookup_send(signal, requestPtr, treeNodePtr, dummyRow);
 }
 
-void Dbspj::cte_countSignal(Signal *signal, Ptr<Request> requestPtr,
+void Dbspj::cte_lookup_countSignal(Signal *signal, Ptr<Request> requestPtr,
                              Ptr<TreeNode> treeNodePtr, Uint32 cnt) {
   jam();
-  DEB_CTE(("(%u) cte_countSignal: node=%u cnt=%u "
+  DEB_CTE(("(%u) cte_lookup_countSignal: node=%u cnt=%u "
            "req_outstanding_before=%u node_outstanding_before=%u "
            "completed_nodes=0x%x",
            instance(), treeNodePtr.p->m_node_no, cnt,
@@ -6009,12 +6009,12 @@ void Dbspj::cte_countSignal(Signal *signal, Ptr<Request> requestPtr,
   treeNodePtr.p->m_cteLookup_data.m_outstanding -= cnt;
 }
 
-void Dbspj::cte_parent_row(Signal *signal, Ptr<Request> requestPtr,
+void Dbspj::cte_lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
                             Ptr<TreeNode> treeNodePtr,
                             const RowPtr &rowRef) {
   jam();
   const Uint32 cteId = treeNodePtr.p->m_cteLookup_data.m_cteId;
-  DEB_CTE(("(%u) cte_parent_row: node=%u cteId=%u",
+  DEB_CTE(("(%u) cte_lookup_parent_row: node=%u cteId=%u",
            instance(), treeNodePtr.p->m_node_no, cteId));
 
   // Find CteContext for this cteId
@@ -6026,7 +6026,7 @@ void Dbspj::cte_parent_row(Signal *signal, Ptr<Request> requestPtr,
     }
   }
   ndbrequire(cteCtx != nullptr);
-  DEB_CTE(("(%u) cte_parent_row: cteState=%u cachedRowPtrI=0x%x",
+  DEB_CTE(("(%u) cte_lookup_parent_row: cteState=%u cachedRowPtrI=0x%x",
            instance(), cteCtx->m_state, cteCtx->m_cachedRowPtrI));
 
   switch (cteCtx->m_state) {
@@ -6035,7 +6035,7 @@ void Dbspj::cte_parent_row(Signal *signal, Ptr<Request> requestPtr,
     if (cteCtx->m_cachedRowPtrI != RNIL) {
       /* Single-row CTE: serve cached result directly */
       jam();
-      cte_serve_cached_row(signal, requestPtr,
+      cte_lookup_serve_cached_row(signal, requestPtr,
                            treeNodePtr, *cteCtx);
     } else {
       /* Set correlation from parent row — same pattern as
@@ -6070,7 +6070,7 @@ void Dbspj::cte_parent_row(Signal *signal, Ptr<Request> requestPtr,
  * Constructs a TRANSID_AI signal from the cached section
  * and delivers it to the tree node's row processing pipeline.
  */
-void Dbspj::cte_serve_cached_row(Signal *signal,
+void Dbspj::cte_lookup_serve_cached_row(Signal *signal,
                                   Ptr<Request> requestPtr,
                                   Ptr<TreeNode> treeNodePtr,
                                   const CteContext &cteCtx) {
@@ -6416,19 +6416,19 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
   checkBatchComplete(signal, requestPtr);
 }
 
-void Dbspj::cte_cleanup(Ptr<Request> requestPtr,
+void Dbspj::cte_lookup_cleanup(Ptr<Request> requestPtr,
                          Ptr<TreeNode> treeNodePtr) {
   jam();
   // Release any key/attr sections that were constructed during build
   cleanup_common(requestPtr, treeNodePtr);
 }
 
-bool Dbspj::cte_checkNode(const Ptr<Request> requestPtr,
+bool Dbspj::cte_lookup_checkNode(const Ptr<Request> requestPtr,
                            const Ptr<TreeNode> treeNodePtr) {
   return true;
 }
 
-void Dbspj::cte_dumpNode(const Ptr<Request> requestPtr,
+void Dbspj::cte_lookup_dumpNode(const Ptr<Request> requestPtr,
                           const Ptr<TreeNode> treeNodePtr) {
   g_eventLogger->info("CTE_LOOKUP: cteId=%u numResultCols=%u",
                       treeNodePtr.p->m_cteLookup_data.m_cteId,
@@ -7222,7 +7222,7 @@ void Dbspj::execCTE_PHASE_START_REQ(Signal *signal) {
    * previous MATERIALIZING check was dead code that caused
    * multi-phase CTE queries (e.g. CTE-to-CTE lookup) to leave
    * earlier CTEs in CTE_NOT_STARTED, which then caused
-   * cte_parent_row() to queue lookups that were never flushed. */
+   * cte_lookup_parent_row() to queue lookups that were never flushed. */
   for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
     CteContext &ctx = requestPtr.p->m_cteContexts[i];
     if (ctx.m_phase < phase &&
@@ -7551,7 +7551,7 @@ void Dbspj::lookup_start(Signal *signal, Ptr<Request> requestPtr,
     jam();
     /* CTE query with lookup main root (arrived via SCAN_FRAGREQ).
      * Only rootFragId 0 fires the lookup — all other fragments
-     * complete immediately, same pattern as cte_start. */
+     * complete immediately, same pattern as cte_lookup_start. */
     if (requestPtr.p->m_rootFragId != 0) {
       jam();
       DEB_CTE(("(%u) lookup_start: skip non-zero rootFragId=%u node=%u",
