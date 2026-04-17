@@ -64,7 +64,7 @@
 
 #define JAM_FILE_ID 479
 
-//#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
 #define DEBUG_TRANSID_AI 1
 #define DEBUG_AGGREGATION 1
@@ -79,7 +79,7 @@
  * so it's split out from DEBUG_CTE and defaulted OFF. Enable only
  * when debugging a specific CTE build/flag routing issue. */
 //#define DEBUG_CTE_BUILD 1
-//#endif
+#endif
 
 #ifdef DEBUG_CTE
 #define DEB_CTE(arglist) do { g_eventLogger->info arglist ; } while (0)
