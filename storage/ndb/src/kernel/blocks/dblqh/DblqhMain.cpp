@@ -19435,6 +19435,23 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
            interp->n_gb_cols(), interp->n_agg_results(),
            (unsigned long long)interp->processed_rows()));
 
+  /* Normalize each GB column's AttributeHeader attrId to its position
+   * (0..N-1) so the lookup key matches the normalized stored keys in
+   * the CTE hash table. DBSPJ builds keys from constants (attrId=0)
+   * or linkedValues (source attrId), so incoming keys are inconsistent.
+   * Matches the insertion-time normalization in JoinAggInterpreter
+   * when m_cte_mode is set. Preserves byteSize + NULL bit (low 16). */
+  {
+    const Uint32 n_gb_cols = interp->n_gb_cols();
+    const Uint32 keyWords = (req.keyLen + 3) >> 2;
+    Uint32 kp = 0;
+    for (Uint32 i = 0; i < n_gb_cols && kp < keyWords; i++) {
+      Uint32 dataSize = AttributeHeader::getDataSize(keyBuf[kp]);
+      keyBuf[kp] = (i << 16) | (keyBuf[kp] & 0x0000FFFF);
+      kp += 1 + dataSize;
+    }
+  }
+
   const char *groupData;
   if (interp->n_gb_cols() == 0) {
     /**

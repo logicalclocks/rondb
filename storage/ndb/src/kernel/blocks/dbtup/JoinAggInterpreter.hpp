@@ -61,7 +61,7 @@ class JoinAggInterpreter : public PushdownInterpreter {
     m_result_size(0),
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
     m_null_local_columns(false),
-    m_use_mutex(false), m_max_groups(0),
+    m_use_mutex(false), m_max_groups(0), m_cte_mode(false),
     m_chunks(nullptr), m_chunks_tail(nullptr),
     m_current_chunk(nullptr), m_total_chunk_bytes(0),
     m_memory_budget(0), m_budget_increment(0),
@@ -162,6 +162,18 @@ class JoinAggInterpreter : public PushdownInterpreter {
   Uint32 maxGroups() const { return m_max_groups; }
 
   /**
+   * CTE mode: rewrite each stored GROUP BY column's AttributeHeader
+   * attrId to the column's position (0..N-1) before hash insert.
+   *
+   * Why: DBSPJ builds CTE_LOOKUP keys with virtual CTE attrIds (0..N-1),
+   * but rows read from the source table carry source attrIds (e.g.
+   * attrId=1 for "grp"). Without normalization, the raw-byte hash and
+   * memcmp of the stored key diverge from the lookup key, so
+   * CTE_LOOKUP_REQ and cross-node hash routing fail to find the group.
+   */
+  void setCteMode(bool v) { m_cte_mode = v; }
+
+  /**
    * Multi-leaf aggregation support.
    *
    * setTotalAggResults() overrides m_n_agg_results to the combined count
@@ -230,6 +242,7 @@ class JoinAggInterpreter : public PushdownInterpreter {
   // limit, processRecWithLinkedAttrs returns AGG_EVICT_NEEDED so the
   // caller can evict a group before retrying.
   Uint32 m_max_groups;                // 0 = unlimited
+  bool m_cte_mode;                    // see setCteMode()
 
   // Chunk-based allocator for group data.
   MemChunk* m_chunks;

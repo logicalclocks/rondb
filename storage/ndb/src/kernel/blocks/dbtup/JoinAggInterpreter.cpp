@@ -952,6 +952,20 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
       }
     }
 
+    /* CTE mode: normalize each GB column's AttributeHeader attrId to
+     * its column position (0..N-1) so stored keys match the virtual
+     * CTE attrIds that DBSPJ uses to build CTE_LOOKUP keys. Preserves
+     * byteSize/flags in the low 16 bits; only the attrId bits change. */
+    if (m_cte_mode) {
+      Uint32* p = m_attr_read_buf;
+      Uint32* end = m_attr_read_buf + m_attr_read_pos;
+      for (Uint32 i = 0; i < m_n_gb_cols && p < end; i++) {
+        AttributeHeader ah(*p);
+        *p = (i << 16) | (*p & 0x0000FFFF);
+        p += 1 + ah.getDataSize();
+      }
+    }
+
     Uint32 len_in_char = m_attr_read_pos * sizeof(Uint32);
     char* found = m_gb_map->find(reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
     if (found != nullptr) {

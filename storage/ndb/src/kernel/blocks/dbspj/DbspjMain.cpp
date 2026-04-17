@@ -6712,7 +6712,11 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
   /* Resolve aggStateKey for this CTE from the Request's CTE key table */
   const Uint32 cteId = data.m_cteId;
   const Uint32 max_nodes = MAX_NDB_NODES;
-  Uint32 targetNodeId = getOwnNodeId();
+  /* targetNodeId is computed from rootFragId below, after the skip check;
+   * it must NOT default to getOwnNodeId() because TC may concentrate all
+   * virtual-table fragments on a single DBSPJ node — using the local node
+   * would read the wrong CTE partition for every fragment. */
+  Uint32 targetNodeId = 0;
 
   /* Find CTE index by cteId */
   Uint32 cteIdx = RNIL;
@@ -6782,6 +6786,11 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     return;
   }
 
+  /* rootFragId < m_numDataNodes — map the fragment to the data node
+   * whose local CTE partition we must scan. m_dataNodeList[K] is the
+   * nodeId of the K-th connected DB node. */
+  targetNodeId = m_dataNodeList[requestPtr.p->m_rootFragId];
+
   /* Determine joinAggStateKey: when scanCte is an aggregate leaf,
    * the scanned groups feed into a JoinAggInterpreter (typically the
    * enclosing CTE's aggregator for CTE-2-reads-CTE-1) instead of
@@ -6817,8 +6826,9 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
 
   if (!requestPtr.p->m_cteScanAllNodes) {
     jam();
-    /* Common case: local-only scan (instances >= nodes).
-     * Send CTE_SCAN_REQ to local DBLQH only. */
+    /* Common case: per-fragment scan (instances >= nodes).
+     * Send one CTE_SCAN_REQ to the DBLQH owning rootFragId's partition
+     * (targetNodeId = m_dataNodeList[rootFragId]); may be remote. */
     data.m_aggStateKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
 
