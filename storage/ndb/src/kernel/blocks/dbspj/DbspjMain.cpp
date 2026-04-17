@@ -1783,13 +1783,21 @@ Dbspj::build(Build_context& ctx,
 
   while (ctx.m_cnt < loop) {
     DEBUG(" - loop " << ctx.m_cnt << " pos: " << tree.getPos().currPos);
-    tree.peekWord(&tmp0);
-    param.peekWord(&tmp1);
+#ifdef DEBUG_CTE
+    bool treePeekOk = tree.peekWord(&tmp0);
+    bool paramPeekOk = param.peekWord(&tmp1);
     Uint32 node_op = QueryNode::getOpType(tmp0);
     Uint32 node_len = QueryNode::getLength(tmp0);
     Uint32 param_op = QueryNodeParameters::getOpType(tmp1);
     Uint32 param_len = QueryNodeParameters::getLength(tmp1);
-
+    DEB_CTE(("(%u) build loop node[%u]: treePeek=%d paramPeek=%d "
+             "node_op=%u node_len=%u param_op=%u param_len=%u "
+             "paramPos=%u paramSize=%u",
+             instance(), ctx.m_cnt,
+             (int)treePeekOk, (int)paramPeekOk,
+             node_op, node_len, param_op, param_len,
+             param.getPos().currPos, param.getSize()));
+#endif
     err = DbspjErr::QueryNodeTooBig;
     if (unlikely(node_len >= NDB_ARRAY_SIZE(m_buffer0))) {
       jam();
@@ -1872,6 +1880,28 @@ Dbspj::build(Build_context& ctx,
     err = DbspjErr::UnknowQueryOperation;
     if (unlikely(node_op != param_op)) {
       jam();
+#ifdef DEBUG_CTE
+      DEB_CTE(("(%u) build node[%u]: node_op=%u != param_op=%u "
+               "param_len=%u paramPos=%u paramSize=%u "
+               "tmp1=0x%08x",
+        instance(), ctx.m_cnt,
+        node_op, param_op, param_len,
+        param.getPos().currPos, param.getSize(),
+        tmp1));
+      /* Dump raw param words around the mismatch position */
+      {
+        SectionReader::PosInfo savedPos = param.getPos();
+        Uint32 remaining = param.getSize() - savedPos.currPos;
+        Uint32 dumpLen = (remaining > 12) ? 12 : remaining;
+        Uint32 dumpBuf[12];
+        param.getWords(dumpBuf, dumpLen);
+        for (Uint32 d = 0; d < dumpLen; d++) {
+          DEB_CTE(("  param[%u+%u] = 0x%08x",
+            savedPos.currPos, d, dumpBuf[d]));
+        }
+        param.setPos(savedPos);
+      }
+#endif
       goto error;
     }
     if (ERROR_INSERTED_CLEAR(17006)) {
@@ -6670,6 +6700,13 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
 void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
                             Ptr<TreeNode> treeNodePtr) {
   jam();
+  DEB_CTE(("(%u) cte_scan_start: node=%u cteId=%u rootFragId=%u "
+           "numDataNodes=%u RT_CTE_PHASE=%d m_cteId=%u",
+           instance(), treeNodePtr.p->m_node_no,
+           treeNodePtr.p->m_cteScan_data.m_cteId,
+           requestPtr.p->m_rootFragId, m_numDataNodes,
+           !!(requestPtr.p->m_bits & Request::RT_CTE_PHASE),
+           treeNodePtr.p->m_cteId));
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
 
   /* Resolve aggStateKey for this CTE from the Request's CTE key table */
@@ -6717,13 +6754,14 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
    * function returns) then sends SCAN_FRAGCONF(completedOps=0) for the
    * skipped fragment.
    *
-   * Only applies to the MAIN query root scanCte.  CTE materialization
-   * scans (cte_scan_start called from execCTE_PHASE_START_REQ during
-   * RT_CTE_PHASE) need to run on EVERY DBSPJ instance because each
-   * instance owns its local CTE state — not skipped here. */
+   * Applies to BOTH the main query root scanCte AND scanCte nodes
+   * inside CTE subtrees (CTE-reads-CTE).  CTE hash tables are
+   * per-data-node (shared across LDM threads via DblqhProxy), so
+   * only one LDM instance per node should read from them.  Real
+   * table scans (scanFrag_start) are different: each LDM instance
+   * scans its own local fragment partition. */
   ndbrequire(m_numDataNodes > 0);
-  if (!(requestPtr.p->m_bits & Request::RT_CTE_PHASE) &&
-      requestPtr.p->m_rootFragId >= m_numDataNodes) {
+  if (requestPtr.p->m_rootFragId >= m_numDataNodes) {
     jam();
     DEB_CTE(("(%u) cte_scan_start: skip non-node fragment rootFragId=%u "
              "numDataNodes=%u node=%u",

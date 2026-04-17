@@ -61,7 +61,7 @@
  */
 #ifdef VM_TRACE
 //#define DEBUG_JOIN_AGG_TRACE 1
-#define DEBUG_CTE_API 1
+//#define DEBUG_CTE_API 1
 #endif
 
 #ifdef DEBUG_CTE_API
@@ -5253,6 +5253,14 @@ void NdbQueryOperationImpl::setBatchedRows(Uint32 batchedRows) {
 int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
                                            const QueryNode *&queryNode) {
   const NdbQueryOperationDefImpl &def = getQueryOperationDef();
+#ifdef DEBUG_CTE_API
+  const Uint32 entrySize = attrInfo.getSize();
+  DEB_CTE_API("prepareAttrInfo: op[%u] type=%d treeOp=%u treeLen=%u "
+              "attrInfoPos=%u\n",
+              def.getInternalOpNo(), (int)def.getType(),
+              QueryNode::getOpType(queryNode->len),
+              QueryNode::getLength(queryNode->len), entrySize);
+#endif
 
   /**
    * Serialize parameters referred by this NdbQueryOperation.
@@ -5516,10 +5524,6 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
       break;
     }
     case QueryNodeParameters::QN_CTE_LOOKUP: {
-      QN_CteLookupParameters *param =
-          reinterpret_cast<QN_CteLookupParameters *>(attrInfo.addr(startPos));
-      if (unlikely(param == nullptr)) return Err_MemoryAlloc;
-
       /* CTE_LOOKUP needs PI_ATTR_INTERPRET (ExitOK) and PI_ATTR_LIST
        * (virtual column reads) so DBSPJ builds proper AttrInfo with
        * FLUSH_AI for CTE_LOOKUP_REQ result delivery.
@@ -5547,6 +5551,11 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
         attrInfo.append(AttributeHeader::CORR_FACTOR64 << 16);
       }
 
+      /* Resolve param pointer AFTER all appends — appends may
+       * reallocate the buffer, invalidating earlier pointers. */
+      QN_CteLookupParameters *param =
+          reinterpret_cast<QN_CteLookupParameters *>(attrInfo.addr(startPos));
+      if (unlikely(param == nullptr)) return Err_MemoryAlloc;
       param->requestInfo = requestInfo;
       param->resultData = getIdOfReceiver();
       length = attrInfo.getSize() - startPos;
@@ -5554,10 +5563,6 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
       break;
     }
     case QueryNodeParameters::QN_CTE_SCAN: {
-      QN_CteScanParameters *param =
-          reinterpret_cast<QN_CteScanParameters *>(attrInfo.addr(startPos));
-      if (unlikely(param == nullptr)) return Err_MemoryAlloc;
-
       /* CTE_SCAN needs the same PI_ATTR_INTERPRET (ExitOK) + PI_ATTR_LIST
        * (virtual column reads) setup as CTE_LOOKUP so DBSPJ builds the
        * proper AttrInfo for delivering scanned CTE rows. Read
@@ -5582,6 +5587,11 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
         attrInfo.append(AttributeHeader::CORR_FACTOR64 << 16);
       }
 
+      /* Resolve param pointer AFTER all appends — appends may
+       * reallocate the buffer, invalidating earlier pointers. */
+      QN_CteScanParameters *param =
+          reinterpret_cast<QN_CteScanParameters *>(attrInfo.addr(startPos));
+      if (unlikely(param == nullptr)) return Err_MemoryAlloc;
       param->requestInfo = requestInfo;
       param->resultData = getIdOfReceiver();
       length = attrInfo.getSize() - startPos;
@@ -5591,6 +5601,12 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
     default:
       assert(false);
   }
+  DEB_CTE_API("prepareAttrInfo: op[%u] param header: [0]=0x%08x "
+              "[1]=0x%08x [2]=0x%08x\n",
+              def.getInternalOpNo(),
+              attrInfo.get(startPos),
+              attrInfo.get(startPos + 1),
+              attrInfo.get(startPos + 2));
 
 #ifdef __TRACE_SERIALIZATION
   ndbout << "Serialized params for node " << getInternalOpNo() << " : ";
@@ -5605,6 +5621,11 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
   // Parameter values was appended to AttrInfo, shrink param buffer
   // to reduce memory footprint.
   m_params.releaseExtend();
+
+  DEB_CTE_API("prepareAttrInfo: op[%u] done, wrote %u param words "
+              "(attrInfo now %u)\n",
+              def.getInternalOpNo(), attrInfo.getSize() - entrySize,
+              attrInfo.getSize());
 
   queryNode = QueryNode::nextQueryNode(queryNode);
   return 0;
