@@ -7427,65 +7427,79 @@ Uint32 Dbspj::lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
     if (ctx.m_start_signal &&
         ctx.m_cteSubtreeRemaining == 0) {
       jam();
-      Signal *signal = ctx.m_start_signal;
-      const LqhKeyReq *src = (const LqhKeyReq *)signal->getDataPtr();
+      if (requestPtr.p->isScan()) {
+        /* CTE query: the start signal is a SCAN_FRAGREQ, not an LqhKeyReq.
+         * The constant key is already in m_keyInfoPtrI (serialized in
+         * QueryParameters since getOpNo() != 0, expanded by parseDA).
+         * Hash/fragment/LDM routing is deferred to lookup_start which
+         * will call computeHash + getNodes using the key. */
+        jam();
+        DEB_CTE(("(%u) lookup_build: CTE scan-mode root node %u, "
+                 "consuming m_start_signal (SCAN_FRAGREQ)",
+                 instance(), treeNodePtr.p->m_node_no));
+        ctx.m_start_signal = NULL;
+        treeNodePtr.p->m_bits |= TreeNode::T_ONE_SHOT;
+      } else {
+        Signal *signal = ctx.m_start_signal;
+        const LqhKeyReq *src = (const LqhKeyReq *)signal->getDataPtr();
 #ifdef NOT_YET
-      Uint32 instanceNo =
-          blockToInstance(signal->header.theReceiversBlockNumber);
-      treeNodePtr.p->m_send.m_ref =
-          numberToRef(DBLQH, instanceNo, getOwnNodeId());
+        Uint32 instanceNo =
+            blockToInstance(signal->header.theReceiversBlockNumber);
+        treeNodePtr.p->m_send.m_ref =
+            numberToRef(DBLQH, instanceNo, getOwnNodeId());
 #else
-      treeNodePtr.p->m_send.m_ref =
-          numberToRef(get_query_block_no(getOwnNodeId()),
-                      getInstance(src->tableSchemaVersion & 0xFFFF,
-                                  src->fragmentData & 0xFFFF),
-                      getOwnNodeId());
+        treeNodePtr.p->m_send.m_ref =
+            numberToRef(get_query_block_no(getOwnNodeId()),
+                        getInstance(src->tableSchemaVersion & 0xFFFF,
+                                    src->fragmentData & 0xFFFF),
+                        getOwnNodeId());
 #endif
 
-      Uint32 hashValue = src->hashValue;
-      Uint32 fragId = src->fragmentData;
-      Uint32 attrLen = src->attrLen;  // fragdist-key is in here
+        Uint32 hashValue = src->hashValue;
+        Uint32 fragId = src->fragmentData;
+        Uint32 attrLen = src->attrLen;  // fragdist-key is in here
 
-      /**
-       * assertions
-       */
+        /**
+         * assertions
+         */
 #ifdef VM_TRACE
-      Uint32 requestInfo = src->requestInfo;
-      ndbassert(LqhKeyReq::getAttrLen(attrLen) == 0);           // Only long
-      ndbassert(LqhKeyReq::getScanTakeOverFlag(attrLen) == 0);  // Not supported
-      ndbassert(LqhKeyReq::getReorgFlag(attrLen) ==
-                ScanFragReq::REORG_ALL);  // Not supported
-      ndbassert(LqhKeyReq::getOperation(requestInfo) == ZREAD);
-      ndbassert(LqhKeyReq::getKeyLen(requestInfo) == 0);      // Only long
-      ndbassert(LqhKeyReq::getMarkerFlag(requestInfo) == 0);  // Only read
-      ndbassert(LqhKeyReq::getSeqNoReplica(requestInfo) == 0);
-      ndbassert(LqhKeyReq::getLastReplicaNo(requestInfo) == 0);
-      ndbassert(LqhKeyReq::getApplicationAddressFlag(requestInfo) != 0);
-      ndbassert(LqhKeyReq::getSameClientAndTcFlag(requestInfo) == 0);
+        Uint32 requestInfo = src->requestInfo;
+        ndbassert(LqhKeyReq::getAttrLen(attrLen) == 0);           // Only long
+        ndbassert(LqhKeyReq::getScanTakeOverFlag(attrLen) == 0);  // Not supported
+        ndbassert(LqhKeyReq::getReorgFlag(attrLen) ==
+                  ScanFragReq::REORG_ALL);  // Not supported
+        ndbassert(LqhKeyReq::getOperation(requestInfo) == ZREAD);
+        ndbassert(LqhKeyReq::getKeyLen(requestInfo) == 0);      // Only long
+        ndbassert(LqhKeyReq::getMarkerFlag(requestInfo) == 0);  // Only read
+        ndbassert(LqhKeyReq::getSeqNoReplica(requestInfo) == 0);
+        ndbassert(LqhKeyReq::getLastReplicaNo(requestInfo) == 0);
+        ndbassert(LqhKeyReq::getApplicationAddressFlag(requestInfo) != 0);
+        ndbassert(LqhKeyReq::getSameClientAndTcFlag(requestInfo) == 0);
 #endif
 
 #ifdef TODO
-      /**
-       * Handle various lock-modes
-       */
-      static Uint8 getDirtyFlag(const UintR &requestInfo);
-      static Uint8 getSimpleFlag(const UintR &requestInfo);
+        /**
+         * Handle various lock-modes
+         */
+        static Uint8 getDirtyFlag(const UintR &requestInfo);
+        static Uint8 getSimpleFlag(const UintR &requestInfo);
 #endif
 
 #ifdef VM_TRACE
-      Uint32 dst_requestInfo = dst->requestInfo;
-      ndbassert(LqhKeyReq::getInterpretedFlag(requestInfo) ==
-                LqhKeyReq::getInterpretedFlag(dst_requestInfo));
-      ndbassert(LqhKeyReq::getNoDiskFlag(requestInfo) ==
-                LqhKeyReq::getNoDiskFlag(dst_requestInfo));
+        Uint32 dst_requestInfo = dst->requestInfo;
+        ndbassert(LqhKeyReq::getInterpretedFlag(requestInfo) ==
+                  LqhKeyReq::getInterpretedFlag(dst_requestInfo));
+        ndbassert(LqhKeyReq::getNoDiskFlag(requestInfo) ==
+                  LqhKeyReq::getNoDiskFlag(dst_requestInfo));
 #endif
 
-      dst->hashValue = hashValue;
-      dst->fragmentData = fragId;
-      dst->attrLen = attrLen;  // fragdist is in here
-      ctx.m_start_signal = NULL;  // Consumed by main query root
+        dst->hashValue = hashValue;
+        dst->fragmentData = fragId;
+        dst->attrLen = attrLen;  // fragdist is in here
+        ctx.m_start_signal = NULL;  // Consumed by main query root
 
-      treeNodePtr.p->m_bits |= TreeNode::T_ONE_SHOT;
+        treeNodePtr.p->m_bits |= TreeNode::T_ONE_SHOT;
+      }  // !isScan (LqhKeyReq path)
     }
     return 0;
   } while (0);
@@ -7495,6 +7509,53 @@ Uint32 Dbspj::lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
 
 void Dbspj::lookup_start(Signal *signal, Ptr<Request> requestPtr,
                          Ptr<TreeNode> treeNodePtr) {
+  if (requestPtr.p->isScan() && treeNodePtr.p->m_parentPtrI == RNIL) {
+    jam();
+    /* CTE query with lookup main root (arrived via SCAN_FRAGREQ).
+     * Only rootFragId 0 fires the lookup — all other fragments
+     * complete immediately, same pattern as cte_start. */
+    if (requestPtr.p->m_rootFragId != 0) {
+      jam();
+      DEB_CTE(("(%u) lookup_start: skip non-zero rootFragId=%u node=%u",
+               instance(), requestPtr.p->m_rootFragId,
+               treeNodePtr.p->m_node_no));
+      treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+      requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+      return;
+    }
+
+    /* Activate the root node for the main query. */
+    treeNodePtr.p->m_state = TreeNode::TN_ACTIVE;
+    requestPtr.p->m_cnt_active++;
+    requestPtr.p->m_active_tree_nodes.set(treeNodePtr.p->m_node_no);
+    requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
+
+    /* Compute hash and fragment routing from the constant key
+     * (already in m_keyInfoPtrI from parseDA during build).
+     * Same approach as lookup_parent_row lines 8222-8402. */
+    const Uint32 tableId = treeNodePtr.p->m_tableOrIndexId;
+    BuildKeyReq tmp;
+    Uint32 err = computeHash(signal, tmp, tableId,
+                             treeNodePtr.p->m_send.m_keyInfoPtrI);
+    ndbrequire(err == 0);
+    err = getNodes(signal, tmp, tableId);
+    ndbrequire(err == 0);
+
+    treeNodePtr.p->m_send.m_ref = tmp.receiverRef;
+    treeNodePtr.p->m_send.m_correlation = 0;
+    LqhKeyReq *dst =
+        (LqhKeyReq *)treeNodePtr.p->m_lookup_data.m_lqhKeyReq;
+    dst->hashValue = tmp.hashInfo[0];
+    dst->fragmentData = tmp.fragId;
+    Uint32 attrLen = 0;
+    LqhKeyReq::setDistributionKey(attrLen, tmp.fragDistKey);
+    dst->attrLen = attrLen;
+
+    DEB_CTE(("(%u) lookup_start: CTE root node=%u tableId=%u "
+             "fragId=%u ref=0x%x hash=0x%x",
+             instance(), treeNodePtr.p->m_node_no, tableId,
+             tmp.fragId, tmp.receiverRef, tmp.hashInfo[0]));
+  }
   lookup_send(signal, requestPtr, treeNodePtr);
 }
 
@@ -7852,6 +7913,17 @@ void Dbspj::lookup_countSignal(Signal *signal, Ptr<Request> requestPtr,
     jam();
     // We have received all rows for this treeNode in this batch.
     requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+    /* CTE scan-mode root lookup: lookup_start set TN_ACTIVE and
+     * incremented m_cnt_active. Decrement now that the node is done,
+     * so sendConf sees is_complete=true and doesn't trigger
+     * SCAN_NEXTREQ (which lookup has no handler for).
+     * Normal lookups have m_state == TN_BUILDING, not TN_ACTIVE. */
+    if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
+      jam();
+      treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+      ndbrequire(requestPtr.p->m_cnt_active > 0);
+      requestPtr.p->m_cnt_active--;
+    }
   }
 
   if (!requestPtr.p->m_suspended_tree_nodes.isclear() &&

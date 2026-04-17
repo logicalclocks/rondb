@@ -988,8 +988,16 @@ const NdbQueryLookupOperationDef *NdbQueryBuilder::readTuple(
 
   returnErrIf(table == nullptr || keys == nullptr, QRY_REQ_ARG_IS_NULL);
   // All operations but the first one must depend on some other operation.
-  returnErrIf(m_impl.m_operations.size() > 0 && !hasLinkedOperand(keys),
-              QRY_UNKNOWN_PARENT);
+  // Exception: a readTuple with constant keys is allowed as the main query
+  // root in a CTE compound query (not inside a CTE subtree, but after
+  // completed CTE subtrees). The root uses LQHKEYREQ via SCAN_TABREQ.
+  {
+    const bool isMainQueryRoot =
+        !m_impl.m_inCteSubtree && m_impl.m_completedCteSubtrees > 0;
+    returnErrIf(m_impl.m_operations.size() > 0 && !hasLinkedOperand(keys) &&
+                    !isMainQueryRoot,
+                QRY_UNKNOWN_PARENT);
+  }
 
   const NdbTableImpl &tableImpl = NdbTableImpl::getImpl(*table);
 
