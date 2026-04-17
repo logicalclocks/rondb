@@ -19435,8 +19435,30 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
            interp->n_gb_cols(), interp->n_agg_results(),
            (unsigned long long)interp->processed_rows()));
 
-  const char *groupData = interp->lookupGroup(
-      reinterpret_cast<const char *>(keyBuf), req.keyLen);
+  const char *groupData;
+  if (interp->n_gb_cols() == 0) {
+    /**
+     * Scalar aggregate CTE (no GROUP BY): results are in m_agg_results
+     * directly (gb_map is nullptr). Return the scalar result regardless
+     * of the lookup key.  The key is a dummy constant provided by the
+     * NdbQueryBuilder for cross-join support.
+     */
+    jam();
+    if (interp->processed_rows() == 0) {
+      jam();
+      /* Empty table — no result to return */
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_GROUP_NOT_FOUND);
+      return;
+    }
+    groupData = reinterpret_cast<const char *>(interp->agg_results());
+    /* Override keyLen to 0 so cteLookupEmitResult computes
+     * accumulators = groupData + 0 = m_agg_results correctly. */
+    const_cast<CteLookupReq &>(req).keyLen = 0;
+  } else {
+    groupData = interp->lookupGroup(
+        reinterpret_cast<const char *>(keyBuf), req.keyLen);
+  }
 
   DEB_CTE(("(%u) CTE_LOOKUP: key[0]=0x%x keyLen=%u → %s",
            instance(), keyBuf[0], req.keyLen,

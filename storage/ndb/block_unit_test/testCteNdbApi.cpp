@@ -5384,6 +5384,240 @@ testMaxValWithDescScanIndex(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 20: Cross-join of two scalar CTEs via lookupCte                */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   WITH cte_max AS (SELECT MAX(val) AS result FROM cte_src),         */
+/*        cte_min AS (SELECT MIN(val) AS result FROM cte_src)          */
+/*   SELECT cte_max.result, cte_min.result                             */
+/*   FROM cte_max, cte_min;                                            */
+/*                                                                     */
+/* Why this test:                                                      */
+/*   Cross-join of two single-row scalar CTEs, the pattern needed for  */
+/*   the Hopsworks watermark query. Uses scanCte(0) as main root and   */
+/*   lookupCte(1, dummy_key) as child. The lookupCte on a scalar CTE   */
+/*   ignores the key and returns m_agg_results directly.               */
+/*                                                                     */
+/* Tree shape:                                                         */
+/*   Node 0: CteSubtree(0)                                             */
+/*   Node 1: scanTable(cte_src)          CTE 0 materialization          */
+/*   Node 2: readTuple(cte_src, pk)      agg leaf → MAX(val)           */
+/*   Node 3: CteSubtree(1)                                             */
+/*   Node 4: scanTable(cte_src)          CTE 1 materialization          */
+/*   Node 5: readTuple(cte_src, pk)      agg leaf → MIN(val)           */
+/*   Node 6: scanCte(0)                  MAIN ROOT (1 row: MAX=50)     */
+/*   Node 7: lookupCte(1, dummy_key=0)   CHILD (1 row: MIN=10)        */
+/*                                                                     */
+/* Expected: 1 row with MAX=50, MIN=10.                                */
+/* ------------------------------------------------------------------ */
+
+static int
+testCrossJoinTwoScalarCtes(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 20: Cross-join of two scalar CTEs ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  dict->invalidateTable(SCALAR_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  const NdbDictionary::Table *scalarVirtTab =
+      dict->getTable(SCALAR_VIRTUAL_TABLE);
+  if (srcTab == nullptr || scalarVirtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  /* CTE 0: MAX(val) */
+  NdbAggregator cte0Agg(srcTab);
+  if (!cte0Agg.LoadColumn("val", 0) ||
+      !cte0Agg.Max(0, 0) ||
+      !cte0Agg.Finalize()) {
+    printf("FAILED (cte0Agg: %s)\n", cte0Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* CTE 1: MIN(val) */
+  NdbAggregator cte1Agg(srcTab);
+  if (!cte1Agg.LoadColumn("val", 0) ||
+      !cte1Agg.Min(0, 0) ||
+      !cte1Agg.Finalize()) {
+    printf("FAILED (cte1Agg: %s)\n", cte1Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+
+  /* CTE 0 subtree: scanTable + readTuple leaf → MAX(val) */
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      printf("FAILED (CTE 0 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte0Agg);
+    if (qb->readTuple(srcTab, key, &opts) == nullptr) {
+      printf("FAILED (CTE 0 leaf: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, cte0Agg, /*depMask=*/0) != 0) {
+    printf("FAILED (defineCte 0)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* CTE 1 subtree: scanTable + readTuple leaf → MIN(val) */
+  qb->beginCteSubtree(1);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      printf("FAILED (CTE 1 scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte1Agg);
+    if (qb->readTuple(srcTab, key, &opts) == nullptr) {
+      printf("FAILED (CTE 1 leaf: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(1, srcTab, cte1Agg, /*depMask=*/0) != 0) {
+    printf("FAILED (defineCte 1)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: scanCte(0) as root + lookupCte(1, dummy_key) as child.
+   * For scalar CTEs (no GROUP BY), the lookup key is a dummy constant;
+   * DBLQH ignores the key when n_gb_cols==0 and returns m_agg_results. */
+  const NdbQueryCteScanOperationDef *mainRoot =
+      qb->scanCte(0, 1, scalarVirtTab);
+  if (mainRoot == nullptr) {
+    printf("FAILED (main scanCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Dummy constant key for the scalar CTE lookup.
+   * scalarVirtTab has (result BIGINT PK), so we need a BIGINT const.
+   * setParent establishes the cross-join dependency (no linked value). */
+  const NdbQueryOperand *dummyKey[] = {
+    qb->constValue((Int64)0), nullptr
+  };
+  NdbQueryOptions cteLookupOpts;
+  cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLookupOpts.setParent(mainRoot);
+  const NdbQueryCteLookupOperationDef *childLookup =
+      qb->lookupCte(1, 1, scalarVirtTab, dummyKey, &cteLookupOpts);
+  if (childLookup == nullptr) {
+    printf("FAILED (lookupCte 1: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  V("\n  Query prepared: %u operations\n", queryDef->getNoOfOperations());
+
+  /* Execute */
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Wire projections: scanCte(0) → MAX, lookupCte(1) → MIN */
+  NdbQueryOperation *rootOp = query->getQueryOperation(
+      queryDef->getNoOfOperations() - 2);
+  NdbQueryOperation *childOp = query->getQueryOperation(
+      queryDef->getNoOfOperations() - 1);
+  NdbRecAttr *raMax = rootOp ? rootOp->getValue("result") : nullptr;
+  NdbRecAttr *raMin = childOp ? childOp->getValue("result") : nullptr;
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  Uint32 rowCount = 0;
+  Int64 maxVal = -1, minVal = -1;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    maxVal = raMax ? raMax->int64_value() : -1;
+    minVal = raMin ? raMin->int64_value() : -1;
+    V("  row: MAX=%lld MIN=%lld\n", (long long)maxVal, (long long)minVal);
+  }
+
+  if (outcome == NdbQuery::NextResult_error) {
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (nextResult err %d: %s)\n", qErr.code, qErr.message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount != 1) {
+    printf("FAILED (expected 1 row, got %u)\n", rowCount);
+    return -1;
+  }
+  if (maxVal != 50 || minVal != 10) {
+    printf("FAILED (expected MAX=50 MIN=10, got MAX=%lld MIN=%lld)\n",
+           (long long)maxVal, (long long)minVal);
+    return -1;
+  }
+
+  printf("OK (MAX=%lld, MIN=%lld)\n", (long long)maxVal, (long long)minVal);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -5412,6 +5646,7 @@ static const TestEntry g_tests[] = {
     { 17, testReadTupleRootWithCteLookupChild },
     { 18, testScanIndexCteMaterialization },
     { 19, testMaxValWithDescScanIndex },
+    { 20, testCrossJoinTwoScalarCtes },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
@@ -5433,7 +5668,7 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       printf("Usage: %s -c <connect_string> -m <mysql_port> [-v] "
              "[--only N]\n", argv[0]);
-      printf("  --only N    run only test number N (1..19)\n");
+      printf("  --only N    run only test number N (1..20)\n");
       return 0;
     }
   }
@@ -5444,7 +5679,7 @@ int main(int argc, char **argv)
       if (g_tests[i].number == onlyTest) { found = true; break; }
     }
     if (!found) {
-      fprintf(stderr, "No such test: %d (valid: 1..19)\n", onlyTest);
+      fprintf(stderr, "No such test: %d (valid: 1..20)\n", onlyTest);
       return 1;
     }
   }
