@@ -1,0 +1,4 @@
+--source include/have_ndb.inc
+
+--echo Running testCteNdbApiFilter (multi-node)
+--exec $NDB_PUSH_AGG_DIR/testCteNdbApiFilter -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT
