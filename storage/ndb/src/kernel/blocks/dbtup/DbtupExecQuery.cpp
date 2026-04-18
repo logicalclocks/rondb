@@ -8687,6 +8687,170 @@ struct Dbtup::InterpreterContext {
 /* Handler signature — uniform for dispatch table use. */
 typedef int (*InterpreterHandler)(Dbtup::InterpreterContext& ctx);
 
+/* ------------------------------------------------------------------
+ * s_cte_filter_handlers — dispatch table for interpreterFilterCte.
+ *
+ * Indexed by opcode [0..INTERP_HANDLER_TABLE_SIZE).  A nullptr slot
+ * means the opcode is not accepted in CTE filter mode; the dispatch
+ * loop detects it and raises ZNO_INSTRUCTION_ERROR.  EXIT_REFUSE is
+ * redirected to handleExitRefuseCte so a user-visible filter reject
+ * returns INTERPRETER_FILTER_REJECT rather than aborting the tuple
+ * operation (CTE rows have no operPtrP to abort against).
+ *
+ * Opcode values come from Interpreter.hpp:60-248.  The low range
+ * (0..63) is the primary opcode; the high range (64..127) is the
+ * _CONST / overflow variant (opcode + OVERFLOW_OPCODE=64).  We must
+ * list all 128 slots positionally because array designated
+ * initialisers are a C99 extension outside the C++20 standard; GCC
+ * 12 accepts them only with a warning flag.
+ *
+ * Accepted ops: constant loads, register arithmetic/bitwise, all
+ * register branches, heap R/W on the register-indirect mem buffers,
+ * EXIT_OK / EXIT_OK_LAST / CALL / RETURN, and the two CTE-critical
+ * opcodes BRANCH_MEM_OP_ARG / READ_LINKED_TO_MEM that compare and
+ * load linked (virtual-column) data from m_linked_attr_data.
+ *
+ * Rejected ops: everything that reads or writes a real tuple
+ * attribute (READ_ATTR_INTO_REG, WRITE_ATTR_FROM_REG / _FROM_MEM,
+ * APPEND, WRITE_PARTIAL, READ_ATTR_TO_MEM, the BRANCH_ATTR_* family,
+ * LOAD_OP_TYPE, READ/WRITE_INTERPRETER_INPUT/OUTPUT); all the
+ * BINARY_SEARCH / SEARCH_INTERVAL / STRING_SEARCH / QSORT /
+ * COMPRESS_NUM_ARRAY / SPECIAL_INSTR instructions.
+ * ------------------------------------------------------------------ */
+static const InterpreterHandler
+s_cte_filter_handlers[INTERP_HANDLER_TABLE_SIZE] = {
+  /*   0  (unused)                */ nullptr,
+  /*   1  READ_ATTR_INTO_REG      */ nullptr,
+  /*   2  WRITE_ATTR_FROM_REG     */ nullptr,
+  /*   3  LOAD_CONST_NULL         */ &Dbtup::InterpreterContext::handleLoadConstNull,
+  /*   4  LOAD_CONST16            */ &Dbtup::InterpreterContext::handleLoadConst16,
+  /*   5  LOAD_CONST32            */ &Dbtup::InterpreterContext::handleLoadConst32,
+  /*   6  LOAD_CONST64            */ &Dbtup::InterpreterContext::handleLoadConst64,
+  /*   7  ADD_REG_REG             */ &Dbtup::InterpreterContext::handleAddRegReg,
+  /*   8  SUB_REG_REG             */ &Dbtup::InterpreterContext::handleSubRegReg,
+  /*   9  BRANCH                  */ &Dbtup::InterpreterContext::handleBranch,
+  /*  10  BRANCH_REG_EQ_NULL      */ &Dbtup::InterpreterContext::handleBranchRegEqNull,
+  /*  11  BRANCH_REG_NE_NULL      */ &Dbtup::InterpreterContext::handleBranchRegNeNull,
+  /*  12  BRANCH_EQ_REG_REG       */ &Dbtup::InterpreterContext::handleBranchEqRegReg,
+  /*  13  BRANCH_NE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchNeRegReg,
+  /*  14  BRANCH_LT_REG_REG       */ &Dbtup::InterpreterContext::handleBranchLtRegReg,
+  /*  15  BRANCH_LE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchLeRegReg,
+  /*  16  BRANCH_GT_REG_REG       */ &Dbtup::InterpreterContext::handleBranchGtRegReg,
+  /*  17  BRANCH_GE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchGeRegReg,
+  /*  18  EXIT_OK                 */ &Dbtup::InterpreterContext::handleExitOk,
+  /*  19  EXIT_REFUSE  (OVERRIDE) */ &Dbtup::InterpreterContext::handleExitRefuseCte,
+  /*  20  CALL                    */ &Dbtup::InterpreterContext::handleCall,
+  /*  21  RETURN                  */ &Dbtup::InterpreterContext::handleReturn,
+  /*  22  EXIT_OK_LAST            */ &Dbtup::InterpreterContext::handleExitOkLast,
+  /*  23  BRANCH_ATTR_OP_ARG      */ nullptr,
+  /*  24  BRANCH_ATTR_EQ_NULL     */ nullptr,
+  /*  25  BRANCH_ATTR_NE_NULL     */ nullptr,
+  /*  26  BRANCH_ATTR_OP_PARAM    */ nullptr,
+  /*  27  BRANCH_ATTR_OP_ATTR     */ nullptr,
+  /*  28  LSHIFT_REG_REG          */ &Dbtup::InterpreterContext::handleLshiftRegReg,
+  /*  29  RSHIFT_REG_REG          */ &Dbtup::InterpreterContext::handleRshiftRegReg,
+  /*  30  MUL_REG_REG             */ &Dbtup::InterpreterContext::handleMulRegReg,
+  /*  31  DIV_REG_REG             */ &Dbtup::InterpreterContext::handleDivRegReg,
+  /*  32  AND_REG_REG             */ &Dbtup::InterpreterContext::handleAndRegReg,
+  /*  33  OR_REG_REG              */ &Dbtup::InterpreterContext::handleOrRegReg,
+  /*  34  XOR_REG_REG             */ &Dbtup::InterpreterContext::handleXorRegReg,
+  /*  35  MOD_REG_REG             */ &Dbtup::InterpreterContext::handleModRegReg,
+  /*  36  NOT_REG_REG             */ &Dbtup::InterpreterContext::handleNotRegReg,
+  /*  37  STR_TO_INT64            */ &Dbtup::InterpreterContext::handleStrToInt64,
+  /*  38  BRANCH_MEM_OP_ARG       */ &Dbtup::InterpreterContext::handleBranchMemOpArg,
+  /*  39  READ_LINKED_TO_MEM      */ &Dbtup::InterpreterContext::handleReadLinkedToMem,
+  /*  40  (unused)                */ nullptr,
+  /*  41  (unused)                */ nullptr,
+  /*  42  (unused)                */ nullptr,
+  /*  43  (unused)                */ nullptr,
+  /*  44  (unused)                */ nullptr,
+  /*  45  (unused)                */ nullptr,
+  /*  46  (unused)                */ nullptr,
+  /*  47  READ_PARTIAL_ATTR_TO_MEM*/ nullptr,
+  /*  48  READ_ATTR_TO_MEM        */ nullptr,
+  /*  49  READ_UINT8_MEM_TO_REG   */ &Dbtup::InterpreterContext::handleReadUint8MemToReg,
+  /*  50  READ_UINT16_MEM_TO_REG  */ &Dbtup::InterpreterContext::handleReadUint16MemToReg,
+  /*  51  READ_UINT32_MEM_TO_REG  */ &Dbtup::InterpreterContext::handleReadUint32MemToReg,
+  /*  52  READ_INT64_MEM_TO_REG   */ &Dbtup::InterpreterContext::handleReadInt64MemToReg,
+  /*  53  WRITE_UINT8_REG_TO_MEM  */ &Dbtup::InterpreterContext::handleWriteUint8RegToMem,
+  /*  54  WRITE_UINT16_REG_TO_MEM */ &Dbtup::InterpreterContext::handleWriteUint16RegToMem,
+  /*  55  WRITE_UINT32_REG_TO_MEM */ &Dbtup::InterpreterContext::handleWriteUint32RegToMem,
+  /*  56  WRITE_INT64_REG_TO_MEM  */ &Dbtup::InterpreterContext::handleWriteInt64RegToMem,
+  /*  57  WRITE_ATTR_FROM_MEM     */ nullptr,
+  /*  58  APPEND_ATTR_FROM_MEM    */ nullptr,
+  /*  59  LOAD_CONST_MEM          */ &Dbtup::InterpreterContext::handleLoadConstMem,
+  /*  60  CONVERT_SIZE            */ &Dbtup::InterpreterContext::handleConvertSize,
+  /*  61  LOAD_OP_TYPE            */ nullptr,
+  /*  62  (unused)                */ nullptr,
+  /*  63  SPECIAL_INSTR           */ nullptr,
+
+  /* --- overflow range 64..127 (opcode + OVERFLOW_OPCODE=64) ----- */
+  /*  64  (unused)                */ nullptr,
+  /*  65  BINARY_SEARCH_64        */ nullptr,
+  /*  66  BINARY_SEARCH_32        */ nullptr,
+  /*  67  BINARY_SEARCH_16        */ nullptr,
+  /*  68  BINARY_SEARCH_ODD       */ nullptr,
+  /*  69  SEARCH_INTERVAL_64      */ nullptr,
+  /*  70  SEARCH_INTERVAL_32      */ nullptr,
+  /*  71  ADD_REG_CONST           */ &Dbtup::InterpreterContext::handleAddRegConst,
+  /*  72  SUB_REG_CONST           */ &Dbtup::InterpreterContext::handleSubRegConst,
+  /*  73  SEARCH_INTERVAL_16      */ nullptr,
+  /*  74  SEARCH_INTERVAL_ODD     */ nullptr,
+  /*  75  STRING_SEARCH           */ nullptr,
+  /*  76  BRANCH_EQ_REG_CONST     */ &Dbtup::InterpreterContext::handleBranchEqRegConst,
+  /*  77  BRANCH_NE_REG_CONST     */ &Dbtup::InterpreterContext::handleBranchNeRegConst,
+  /*  78  BRANCH_LT_REG_CONST     */ &Dbtup::InterpreterContext::handleBranchLtRegConst,
+  /*  79  BRANCH_LE_REG_CONST     */ &Dbtup::InterpreterContext::handleBranchLeRegConst,
+  /*  80  BRANCH_GT_REG_CONST     */ &Dbtup::InterpreterContext::handleBranchGtRegConst,
+  /*  81  BRANCH_GE_REG_CONST     */ &Dbtup::InterpreterContext::handleBranchGeRegConst,
+  /*  82  QSORT                   */ nullptr,
+  /*  83  COMPRESS_NUM_ARRAY      */ nullptr,
+  /*  84  (unused)                */ nullptr,
+  /*  85  (unused)                */ nullptr,
+  /*  86  (unused)                */ nullptr,
+  /*  87  (unused)                */ nullptr,
+  /*  88  (unused)                */ nullptr,
+  /*  89  (unused)                */ nullptr,
+  /*  90  (unused)                */ nullptr,
+  /*  91  (unused)                */ nullptr,
+  /*  92  LSHIFT_REG_CONST        */ &Dbtup::InterpreterContext::handleLshiftRegConst,
+  /*  93  RSHIFT_REG_CONST        */ &Dbtup::InterpreterContext::handleRshiftRegConst,
+  /*  94  MUL_REG_CONST           */ &Dbtup::InterpreterContext::handleMulRegConst,
+  /*  95  DIV_REG_CONST           */ &Dbtup::InterpreterContext::handleDivRegConst,
+  /*  96  AND_REG_CONST           */ &Dbtup::InterpreterContext::handleAndRegConst,
+  /*  97  OR_REG_CONST            */ &Dbtup::InterpreterContext::handleOrRegConst,
+  /*  98  XOR_REG_CONST           */ &Dbtup::InterpreterContext::handleXorRegConst,
+  /*  99  MOD_REG_CONST           */ &Dbtup::InterpreterContext::handleModRegConst,
+  /* 100  (NOT_REG_REG overflow)  */ nullptr,
+  /* 101  INT64_TO_STR            */ &Dbtup::InterpreterContext::handleInt64ToStr,
+  /* 102  (unused)                */ nullptr,
+  /* 103  (unused)                */ nullptr,
+  /* 104  (unused)                */ nullptr,
+  /* 105  (unused)                */ nullptr,
+  /* 106  (unused)                */ nullptr,
+  /* 107  (unused)                */ nullptr,
+  /* 108  (unused)                */ nullptr,
+  /* 109  (unused)                */ nullptr,
+  /* 110  (unused)                */ nullptr,
+  /* 111  (unused)                */ nullptr,
+  /* 112  (unused)                */ nullptr,
+  /* 113  READ_UINT8_REG_TO_REG   */ &Dbtup::InterpreterContext::handleReadUint8RegToReg,
+  /* 114  READ_UINT16_REG_TO_REG  */ &Dbtup::InterpreterContext::handleReadUint16RegToReg,
+  /* 115  READ_UINT32_REG_TO_REG  */ &Dbtup::InterpreterContext::handleReadUint32RegToReg,
+  /* 116  READ_INT64_REG_TO_REG   */ &Dbtup::InterpreterContext::handleReadInt64RegToReg,
+  /* 117  WRITE_UINT8_REG_TO_REG  */ &Dbtup::InterpreterContext::handleWriteUint8RegToReg,
+  /* 118  WRITE_UINT16_REG_TO_REG */ &Dbtup::InterpreterContext::handleWriteUint16RegToReg,
+  /* 119  WRITE_UINT32_REG_TO_REG */ &Dbtup::InterpreterContext::handleWriteUint32RegToReg,
+  /* 120  WRITE_INT64_REG_TO_REG  */ &Dbtup::InterpreterContext::handleWriteInt64RegToReg,
+  /* 121  READ_INTERPRETER_INPUT  */ nullptr,
+  /* 122  WRITE_PARTIAL_ATTR_FROM_MEM */ nullptr,
+  /* 123  WRITE_INTERPRETER_OUTPUT*/ nullptr,
+  /* 124  WRITE_SIZE_MEM          */ &Dbtup::InterpreterContext::handleWriteSizeMem,
+  /* 125  BZERO_MEM               */ &Dbtup::InterpreterContext::handleBzeroMem,
+  /* 126  (unused)                */ nullptr,
+  /* 127  (unused)                */ nullptr,
+};
+
 int Dbtup::interpreterNextLab(Signal* signal,
                               KeyReqStruct* req_struct,
                               Uint32* mainProgram,
@@ -9155,6 +9319,132 @@ int Dbtup::interpreterNextLab(Signal* signal,
     }
   }
   return TUPKEY_abort(req_struct, ZTOO_MANY_INSTRUCTIONS_ERROR);
+}
+
+/**
+ * interpreterFilterCte — third interpreter, used to evaluate a WHERE
+ * filter program on a synthetic CTE row produced by CTE_LOOKUP_REQ
+ * (and later, CTE_SCAN_REQ as a root scan).  Unlike interpreterNextLab,
+ * this loop does not have a real tuple: there is no operPtrP, so
+ * TUPKEY_abort must not be called; errors set terrorCode directly
+ * and return -1.  Accept returns 0; a user EXIT_REFUSE is translated
+ * (via the s_cte_filter_handlers EXIT_REFUSE slot pointing at
+ * handleExitRefuseCte) into the sentinel INTERPRETER_FILTER_REJECT,
+ * which the caller treats as "row doesn't match".
+ *
+ * The locals + InterpreterContext aggregate init mirror the top of
+ * interpreterNextLab line-for-line so the extracted handlers see an
+ * identical execution environment.  The only difference is the
+ * dispatch itself: s_cte_filter_handlers[opCode] is a function-pointer
+ * table indexed by opcode, with nullptr in slots that are not safe on
+ * a virtual CTE row (anything that touches a real tuple attribute).
+ *
+ * The prevPC capture is dead code in Phase A — it becomes active in
+ * Phase C when interpreterFilterCte is generalised into
+ * interpreterJumpTable and agg-mode enables a backward-jump guard.
+ */
+int Dbtup::interpreterFilterCte(Signal* signal,
+                                KeyReqStruct* req_struct,
+                                Uint32* mainProgram,
+                                Uint32 TmainProgLen,
+                                Uint32* subroutineProg,
+                                Uint32 TsubroutineLen,
+                                Uint32* tmpArea,
+                                Uint32 tmpAreaSz)
+{
+  Uint32 theRegister;
+  Uint32 theInstruction;
+  Uint32 TprogramCounter = 0;
+  Uint32 *TcurrentProgram = mainProgram;
+  Uint32 TcurrentSize = TmainProgLen;
+  Uint32 RstackPtr = 0;
+  char *TheapMemoryChar;
+  union {
+    Uint32 TregMemBuffer[32];
+    Uint64 align[16];
+  };
+  (void)align;  // kill warning
+  Uint32 TstackMemBuffer[32];
+
+  TheapMemoryChar = (char*)&cheapMemory[0];
+
+  Uint32 &RnoOfInstructions = req_struct->no_exec_instructions;
+  ndbassert(RnoOfInstructions == 0);
+  /* Initialise 8 registers to NULL, as interpreterNextLab does. */
+  TregMemBuffer[0]  = NULL_INDICATOR;
+  TregMemBuffer[4]  = NULL_INDICATOR;
+  TregMemBuffer[8]  = NULL_INDICATOR;
+  TregMemBuffer[12] = NULL_INDICATOR;
+  TregMemBuffer[16] = NULL_INDICATOR;
+  TregMemBuffer[20] = NULL_INDICATOR;
+  TregMemBuffer[24] = NULL_INDICATOR;
+  TregMemBuffer[28] = NULL_INDICATOR;
+  Uint32 tmpHabitant = ~0;
+
+  InterpreterContext ctx{
+    this,                /* tup */
+    signal,
+    req_struct,
+    TcurrentProgram,     /* Uint32*&  — program pointer, may swap on CALL */
+    TcurrentSize,        /* Uint32&                                      */
+    TprogramCounter,     /* Uint32&                                      */
+    theInstruction,      /* Uint32&                                      */
+    theRegister,         /* Uint32&                                      */
+    &TregMemBuffer[0],   /* Uint32*  — array base                        */
+    &TstackMemBuffer[0], /* Uint32*  — array base                        */
+    RstackPtr,           /* Uint32&                                      */
+    TheapMemoryChar,     /* char*                                        */
+    RnoOfInstructions,   /* Uint32&  — bound to req_struct field         */
+    tmpHabitant,         /* Uint32&                                      */
+    mainProgram,         /* Uint32*  — immutable, for RETURN to restore  */
+    TmainProgLen,        /* Uint32                                       */
+    subroutineProg,      /* Uint32*                                      */
+    TsubroutineLen,      /* Uint32                                       */
+    tmpArea,             /* Uint32*                                      */
+    tmpAreaSz,           /* Uint32                                       */
+  };
+
+  while (RnoOfInstructions < 16000) {
+    if (TprogramCounter < TcurrentSize) {
+      RnoOfInstructions++;
+      theInstruction = TcurrentProgram[TprogramCounter];
+      theRegister    = Interpreter::getReg1(theInstruction) << 2;
+      const Uint32 prevPC = TprogramCounter;  /* Phase C: backward-jump guard */
+      (void)prevPC;
+      TprogramCounter++;
+      const Uint32 opCode = Interpreter::getOpCode(theInstruction);
+      const InterpreterHandler h = s_cte_filter_handlers[opCode];
+      if (unlikely(h == nullptr)) {
+        jam();
+        terrorCode = ZNO_INSTRUCTION_ERROR;
+        return -1;
+      }
+      jamDebug();
+      jamDataDebug(opCode);
+      const int _rc = h(ctx);
+      if (unlikely(_rc != INTERP_CONTINUE)) {
+        if (_rc == INTERP_EXIT) return 0;                    /* accept  */
+        if (_rc == Dbtup::INTERPRETER_FILTER_REJECT) {
+          return _rc;                                        /* reject  */
+        }
+        /* Handler error: it either set terrorCode directly and returned
+         * -1, or returned -(error_code) without setting it.  Mirror the
+         * TUPKEY_abort path used by interpreterNextLab: derive
+         * terrorCode from -_rc when the handler hasn't already set one. */
+        if (_rc < -1 && terrorCode == 0) {
+          terrorCode = (Uint32)(-_rc);
+        }
+        return -1;
+      }
+    } else {
+      jam();
+      terrorCode = ZOUTSIDE_OF_PROGRAM_ERROR;
+      return -1;
+    }
+  }
+  jam();
+  terrorCode = ZTOO_MANY_INSTRUCTIONS_ERROR;
+  return -1;
 }
 
 /**
