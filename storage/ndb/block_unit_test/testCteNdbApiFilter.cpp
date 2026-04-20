@@ -1432,6 +1432,390 @@ testCteLookupFilterMultipleCte(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 12: CTE_SCAN filter on root scan — cte0.total > 40             */
+/*                                                                     */
+/* Main query is `scanCte(0)` with a filter on the scanned virtual     */
+/* rows.  CTE 0 = GROUP BY grp, SUM(val): {(1,30),(2,70),(3,50)}.      */
+/* Filter `total > 40` keeps grp=2 (total=70) and grp=3 (total=50);    */
+/* grp=1 (total=30) is rejected — 2 rows.                              */
+/*                                                                     */
+/* Exercises the per-group filter gate in cteScanEmitResults (API      */
+/* emit via FLUSH_AI) — every emitted group goes through the filter   */
+/* before being routed to the API as a TRANSID_AI row.                 */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteScanFilterRoot(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 12: CTE_SCAN filter on root — cte0.total > 40 ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") || !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) || !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg)\n");
+    return -1;
+  }
+
+  Uint32 codeBuf[64];
+  NdbInterpretedCode filterCode(virtTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  Int64 threshold = 40;
+  const Uint32 REJECT = 0;
+  const Uint32 totalAttrId = virtTab->getColumn("total")->getColumnNo();
+  if (filterCode.branch_linked_mem_ge(1, virtTab, totalAttrId,
+                                       &threshold, sizeof(threshold),
+                                       REJECT) != 0 ||
+      filterCode.interpret_exit_ok() != 0 ||
+      filterCode.def_label(REJECT) != 0 ||
+      filterCode.interpret_exit_nok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter)\n");
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cteAgg);
+    qb->readTuple(srcTab, key, &opts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  /* Main query: scanCte(0) with filter on the emitted CTE rows */
+  NdbQueryOptions scanOpts;
+  scanOpts.setInterpretedCode(filterCode);
+  if (qb->scanCte(0, 2, virtTab, &scanOpts) == nullptr) {
+    printf("FAILED (scanCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainOp = query->getQueryOperation(mainOpNo);
+  NdbRecAttr *raGrp = nullptr;
+  NdbRecAttr *raTotal = nullptr;
+  if (mainOp != nullptr) {
+    raGrp   = mainOp->getValue("grp");
+    raTotal = mainOp->getValue("total");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    Int32 g = raGrp ? raGrp->int32_value() : -1;
+    Int64 t = raTotal ? raTotal->int64_value() : -1;
+    V("  row: grp=%d total=%lld\n", g, (long long)t);
+    if (t <= 40) {
+      printf("FAILED (emitted row with total=%lld violates filter)\n",
+             (long long)t);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount == 2) {
+    printf("OK (%u rows)\n", rowCount);
+    return 0;
+  }
+  printf("FAILED (expected 2, got %u)\n", rowCount);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 13: CTE_SCAN filter + agg-feed — rejects don't reach target agg*/
+/*                                                                     */
+/* scanCte(0) is an aggregate leaf (setAggregation).  mainAgg sums     */
+/* cte0.total.  Filter runs BEFORE the feed so rejected groups don't   */
+/* contribute to the sum.                                              */
+/*                                                                     */
+/* Without filter, SUM(total) = 30+70+50 = 150 (COUNT=3).              */
+/* With filter total > 40, SUM(total) = 70+50 = 120 (COUNT=2).         */
+/*                                                                     */
+/* Exercises the filter gate in cteScanAggFeed (first batch) along     */
+/* with the B.2 DBSPJ AttrInfo-forwarding already present for          */
+/* CTE_SCAN_REQ (no cte_scan_send release bug to fix here).            */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteScanFilterAggFeed(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 13: CTE_SCAN filter — runs before agg feed ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") || !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) || !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg)\n");
+    return -1;
+  }
+
+  const NdbDictionary::Column *totalCol = virtTab->getColumn("total");
+  NdbAggregator mainAgg(virtTab);
+  if (!mainAgg.LoadLinkedColumn(1, 0, totalCol) ||
+      !mainAgg.Count(0, 0) ||
+      !mainAgg.Sum(1, 0) ||
+      !mainAgg.Finalize()) {
+    printf("FAILED (mainAgg: %s)\n", mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  Uint32 codeBuf[64];
+  NdbInterpretedCode filterCode(virtTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  Int64 threshold = 40;
+  const Uint32 REJECT = 0;
+  const Uint32 totalAttrId = totalCol->getColumnNo();
+  if (filterCode.branch_linked_mem_ge(1, virtTab, totalAttrId,
+                                       &threshold, sizeof(threshold),
+                                       REJECT) != 0 ||
+      filterCode.interpret_exit_ok() != 0 ||
+      filterCode.def_label(REJECT) != 0 ||
+      filterCode.interpret_exit_nok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter)\n");
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cteAgg);
+    qb->readTuple(srcTab, key, &opts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  NdbQueryOptions scanOpts;
+  scanOpts.setAggregation(mainAgg);
+  scanOpts.setInterpretedCode(filterCode);
+  if (qb->scanCte(0, 2, virtTab, &scanOpts) == nullptr) {
+    printf("FAILED (scanCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result rows)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  Int64 count = rec.FetchAggregationResult().data_int64();
+  Int64 sum = rec.FetchAggregationResult().data_int64();
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (count == 2 && sum == 120) {
+    printf("OK (COUNT=%lld, SUM=%lld)\n", (long long)count, (long long)sum);
+    return 0;
+  }
+  printf("FAILED (expected COUNT=2 SUM=120, got COUNT=%lld SUM=%lld)\n",
+         (long long)count, (long long)sum);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 14: CTE_SCAN filter — rejects every scanned group              */
+/*                                                                     */
+/* scanCte(0) as root with filter cte0.total > 1000 (no group matches).*/
+/* Every group is rejected by cteScanEmitResults's filter gate.        */
+/* CteScanConf emits numRows=0 and EndOfData=0x1 — the scan terminates */
+/* cleanly with no TRANSID_AI rows.                                    */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteScanFilterEmptyResult(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 14: CTE_SCAN filter — rejects all groups ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") || !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) || !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg)\n");
+    return -1;
+  }
+
+  Uint32 codeBuf[64];
+  NdbInterpretedCode filterCode(virtTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  Int64 threshold = 1000;
+  const Uint32 REJECT = 0;
+  const Uint32 totalAttrId = virtTab->getColumn("total")->getColumnNo();
+  if (filterCode.branch_linked_mem_ge(1, virtTab, totalAttrId,
+                                       &threshold, sizeof(threshold),
+                                       REJECT) != 0 ||
+      filterCode.interpret_exit_ok() != 0 ||
+      filterCode.def_label(REJECT) != 0 ||
+      filterCode.interpret_exit_nok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter)\n");
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cteAgg);
+    qb->readTuple(srcTab, key, &opts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  NdbQueryOptions scanOpts;
+  scanOpts.setInterpretedCode(filterCode);
+  qb->scanCte(0, 2, virtTab, &scanOpts);
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainOp = query->getQueryOperation(mainOpNo);
+  if (mainOp != nullptr) {
+    (void)mainOp->getValue("grp");
+    (void)mainOp->getValue("total");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow)
+    rowCount++;
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount == 0) {
+    printf("OK (0 rows)\n");
+    return 0;
+  }
+  printf("FAILED (expected 0, got %u)\n", rowCount);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1452,6 +1836,9 @@ static const TestEntry g_tests[] = {
     { 9, testCteLookupFilterInAggFeed },
     { 10, testCteLookupFilterLeftJoin },
     { 11, testCteLookupFilterMultipleCte },
+    { 12, testCteScanFilterRoot },
+    { 13, testCteScanFilterAggFeed },
+    { 14, testCteScanFilterEmptyResult },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
