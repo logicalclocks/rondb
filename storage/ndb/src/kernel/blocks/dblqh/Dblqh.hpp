@@ -498,6 +498,7 @@ class FsReadWriteReq;
 #define ZCTE_LOOKUP_ATTRINFO_MALFORMED     1265
 #define ZCTE_LOOKUP_OUTPUT_OVERFLOW        1266
 #define ZCTE_EVICT_IN_CTE_LEAF             1267
+#define ZCTE_LOOKUP_FILTER_ERROR           1268
 
 /**
  * @class dblqh
@@ -3351,6 +3352,17 @@ private:
                       const Uint32 *keyBuf, Uint32 keySectionSz,
                       const Uint32 *cinBuf, Uint32 attrInfoLen,
                       const CteLookupReq *req);
+  /* Assemble linked_attr_data for a CTE group row into outBuf.  Layout:
+   * [optional parent linked columns from AttrInfo subroutine section]
+   * followed by [GROUP BY key columns] and [aggregate result columns].
+   * Each entry is [tableId=0][schemaVersion=0][AttrHeader][data...].
+   * Shared by cteLookupAggFeed (downstream agg feed) and the filter
+   * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation). */
+  void buildCteLinkedBuffer(const JoinAggInterpreter *interp,
+                            const char *groupData, Uint32 keyLen,
+                            const Uint32 *attrInfoBuf, Uint32 attrInfoLen,
+                            Uint32 *outBuf, Uint32 *lenOut);
+
   void cteLookupAggFeed(Signal* signal, const CteLookupReq &req,
                         const JoinAggInterpreter *interp,
                         const char *groupData,

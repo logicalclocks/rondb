@@ -475,6 +475,8 @@ ErrorBundle ErrorCodes[] = {
   { 1264, DMEC, IE, "CTE lookup state not ready" },
   { 1265, DMEC, IE, "CTE lookup attrinfo malformed" },
   { 1266, DMEC, IE, "CTE lookup output buffer overflow" },
+  { 1267, DMEC, IE, "CTE evict in CTE materialization leaf" },
+  { 1268, DMEC, IE, "CTE lookup filter execution error" },
 
   /**
    * Application error

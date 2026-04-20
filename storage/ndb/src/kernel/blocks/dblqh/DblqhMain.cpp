@@ -18904,6 +18904,94 @@ void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
 }
 
 /**
+ * buildCteLinkedBuffer — assemble linked_attr_data for a CTE group row.
+ *
+ * Layout per entry: [tableId=0][schemaVersion=0][AttrHeader][data...].
+ *
+ *   1. (optional) parent linked columns from AttrInfo subroutine section
+ *      when attrInfoBuf is present and its subLen > 1.
+ *   2. GROUP BY key columns from groupData (each entry is a standalone
+ *      AttrHeader + payload, so word-size is read from each header).
+ *   3. Aggregate result columns: for each accumulator, either an 8-byte
+ *      value with attrId = n_gb_cols + i, or a zero-length AttrHeader
+ *      when the accumulator is NULL.
+ *
+ * Writes up to ZATTR_BUFFER_SIZE words; overflow is ndbrequire-fatal.
+ * lenOut receives the word count written.
+ *
+ * Shared between cteLookupAggFeed (downstream agg feed) and the filter
+ * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation pre-emit).
+ */
+void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
+                                 const char *groupData, Uint32 keyLen,
+                                 const Uint32 *attrInfoBuf,
+                                 Uint32 attrInfoLen,
+                                 Uint32 *outBuf, Uint32 *lenOut) {
+  const Uint32 n_gb_cols = interp->n_gb_cols();
+  const Uint32 n_agg_results = interp->n_agg_results();
+  Uint32 linkedPos = 0;
+
+  /* Step 1: Prepend parent linked columns from AttrInfo subroutine section.
+   * These are expanded by DBSPJ from the parent row's linked projection
+   * (same format as LQHKEYREQ interpreter subroutine section). */
+  if (attrInfoBuf != nullptr && attrInfoLen >= 5) {
+    jam();
+    const Uint32 initReadLen = attrInfoBuf[0];
+    const Uint32 interpretLen = attrInfoBuf[1];
+    const Uint32 finalUpdateLen = attrInfoBuf[2];
+    const Uint32 finalReadLen = attrInfoBuf[3];
+    const Uint32 subLen = attrInfoBuf[4];
+
+    if (subLen > 1) {
+      jam();
+      const Uint32 subStart = 5 + initReadLen + interpretLen +
+                              finalUpdateLen + finalReadLen;
+      /* Skip the paramLen word (same as prepareAndHandleJoinAggRow) */
+      const Uint32 *parentLinked = &attrInfoBuf[subStart + 1];
+      const Uint32 parentLinkedLen = subLen - 1;
+
+      ndbrequire(linkedPos + parentLinkedLen < ZATTR_BUFFER_SIZE);
+      memcpy(&outBuf[linkedPos], parentLinked,
+             parentLinkedLen * sizeof(Uint32));
+      linkedPos += parentLinkedLen;
+    }
+  }
+
+  /* Step 2: GROUP BY key columns from the group row */
+  const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
+  const Uint32 keyWords = keyLen >> 2;
+  Uint32 kp = 0;
+  while (kp < keyWords) {
+    outBuf[linkedPos++] = 0;  // tableId
+    outBuf[linkedPos++] = 0;  // schemaVersion
+    Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+    Uint32 words = 1 + dataSize;
+    memcpy(&outBuf[linkedPos], &keyData[kp], words * sizeof(Uint32));
+    linkedPos += words;
+    kp += words;
+  }
+
+  /* Step 3: Aggregate result columns */
+  const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
+      groupData + keyLen);
+  for (Uint32 i = 0; i < n_agg_results; i++) {
+    const Uint32 attrId = n_gb_cols + i;
+    outBuf[linkedPos++] = 0;  // tableId
+    outBuf[linkedPos++] = 0;  // schemaVersion
+    if (accumulators[i].is_null) {
+      AttributeHeader::init(&outBuf[linkedPos], attrId, 0);
+      linkedPos += 1;
+    } else {
+      AttributeHeader::init(&outBuf[linkedPos], attrId, 8);
+      memcpy(&outBuf[linkedPos + 1], &accumulators[i].value, 8);
+      linkedPos += 3;
+    }
+  }
+
+  *lenOut = linkedPos;
+}
+
+/**
  * cteLookupAggFeed — CTE_LOOKUP result feeds into another JoinAggInterpreter
  * (CTE-to-CTE dependency or CTE_LOOKUP as main aggregate leaf).
  * Builds linked_attr_data from the group's key + accumulators and inserts
@@ -18930,77 +19018,14 @@ void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
   JoinAggInterpreter *targetInterp = getJoinAggInterpreter(targetState);
   ndbrequire(targetInterp != nullptr);
 
-  /* Build linked_attr_data: parent linked columns (from AttrInfo
-   * subroutine section) followed by CTE result columns (key + accum).
-   * Format: [tableId=0][schemaVersion=0][AH][data...] per column. */
-  const Uint32 n_gb_cols = interp->n_gb_cols();
-  const Uint32 n_agg_results = interp->n_agg_results();
-
   Uint32 *linkedBuf = cevictBuffer;
   Uint32 linkedPos = 0;
+  buildCteLinkedBuffer(interp, groupData, req.keyLen,
+                       attrInfoBuf, attrInfoLen,
+                       linkedBuf, &linkedPos);
 
-  /* Step 1: Prepend parent linked columns from AttrInfo subroutine section.
-   * These are expanded by DBSPJ from the parent row's linked projection
-   * (same format as LQHKEYREQ interpreter subroutine section). */
-  if (attrInfoBuf != nullptr && attrInfoLen >= 5) {
-    jam();
-    const Uint32 initReadLen = attrInfoBuf[0];
-    const Uint32 interpretLen = attrInfoBuf[1];
-    const Uint32 finalUpdateLen = attrInfoBuf[2];
-    const Uint32 finalReadLen = attrInfoBuf[3];
-    const Uint32 subLen = attrInfoBuf[4];
-
-    if (subLen > 1) {
-      jam();
-      const Uint32 subStart = 5 + initReadLen + interpretLen +
-                              finalUpdateLen + finalReadLen;
-      /* Skip the paramLen word (same as prepareAndHandleJoinAggRow) */
-      const Uint32 *parentLinked = &attrInfoBuf[subStart + 1];
-      const Uint32 parentLinkedLen = subLen - 1;
-
-      DEB_CTE(("(%u) cteLookupAggFeed: prepending %u words of parent "
-               "linked data from AttrInfo subroutine",
-               instance(), parentLinkedLen));
-
-      ndbrequire(linkedPos + parentLinkedLen < ZATTR_BUFFER_SIZE);
-      memcpy(&linkedBuf[linkedPos], parentLinked,
-             parentLinkedLen * sizeof(Uint32));
-      linkedPos += parentLinkedLen;
-    }
-  }
-
-  /* Step 2: Append CTE result columns (key + accumulators) */
-
-  /* Key columns from CTE GROUP BY */
-  const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
-  const Uint32 keyWords = req.keyLen >> 2;
-  Uint32 kp = 0;
-  while (kp < keyWords) {
-    linkedBuf[linkedPos++] = 0;  // tableId
-    linkedBuf[linkedPos++] = 0;  // schemaVersion
-    Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
-    Uint32 words = 1 + dataSize;
-    memcpy(&linkedBuf[linkedPos], &keyData[kp], words * sizeof(Uint32));
-    linkedPos += words;
-    kp += words;
-  }
-
-  /* Accumulator values as linked columns */
-  const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
-      groupData + req.keyLen);
-  for (Uint32 i = 0; i < n_agg_results; i++) {
-    const Uint32 attrId = n_gb_cols + i;
-    linkedBuf[linkedPos++] = 0;  // tableId
-    linkedBuf[linkedPos++] = 0;  // schemaVersion
-    if (accumulators[i].is_null) {
-      AttributeHeader::init(&linkedBuf[linkedPos], attrId, 0);
-      linkedPos += 1;
-    } else {
-      AttributeHeader::init(&linkedBuf[linkedPos], attrId, 8);
-      memcpy(&linkedBuf[linkedPos + 1], &accumulators[i].value, 8);
-      linkedPos += 3;
-    }
-  }
+  DEB_CTE(("(%u) cteLookupAggFeed: built linked buffer (%u words)",
+           instance(), linkedPos));
 
   const LeafProgram *leaf = nullptr;
   if (targetState->m_num_leaves > 1) {
@@ -19532,6 +19557,55 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZCTE_LOOKUP_GROUP_NOT_FOUND);
     return;
+  }
+
+  /* Filter gate — evaluate the WHERE-clause interpreter program (if the
+   * client supplied a non-trivial one) against the found group BEFORE
+   * routing to the emit / agg-feed path.  The AttrInfo section's 5-word
+   * header reserves cinBuf[0] = initReadLen words of filter program at
+   * cinBuf[5..]; a legacy stub is just a single ExitOK (initReadLen==1),
+   * which we short-circuit for zero overhead.  A filter reject is
+   * reported as ZCTE_LOOKUP_GROUP_NOT_FOUND so DBSPJ's LEFT-JOIN
+   * machinery synthesises a NULL row exactly as it would for a missing
+   * CTE entry.  An execution error surfaces as the new
+   * ZCTE_LOOKUP_FILTER_ERROR. */
+  if (attrInfoLen >= 5 && cinBuf[0] > 1) {
+    jam();
+    const Uint32 filterLen = cinBuf[0];
+
+    Uint32 linkedLen = 0;
+    buildCteLinkedBuffer(interp, groupData, req.keyLen,
+                         cinBuf, attrInfoLen, cevictBuffer, &linkedLen);
+
+    Dbtup::KeyReqStruct filterReqStruct(c_tup);
+    filterReqStruct.m_linked_attr_data  = cevictBuffer;
+    filterReqStruct.m_linked_attr_len   = linkedLen;
+    filterReqStruct.no_exec_instructions = 0;
+    filterReqStruct.log_size            = 0;
+    filterReqStruct.last_row            = false;
+
+    Uint32 tmpArea[32];   /* unused by accepted CTE filter opcodes */
+    const int rc = c_tup->interpreterFilterCte(
+        signal, &filterReqStruct,
+        cinBuf + 5, filterLen,
+        nullptr, 0,
+        tmpArea, sizeof(tmpArea) / sizeof(Uint32));
+
+    if (rc == Dbtup::INTERPRETER_FILTER_REJECT) {
+      jam();
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_GROUP_NOT_FOUND);
+      return;
+    }
+    if (unlikely(rc < 0)) {
+      jam();
+      DEB_CTE(("(%u) CTE_LOOKUP filter execution error rc=%d",
+               instance(), rc));
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_FILTER_ERROR);
+      return;
+    }
+    /* rc == 0: accept, fall through to the emit / agg-feed path */
   }
 
   /* Aggregation feed path: result feeds into another JoinAggInterpreter */
