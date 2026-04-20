@@ -4480,81 +4480,95 @@ Uint32 Dbacc::find_key_operation(Ptr<Operationrec> opPtr,
   return RNIL;
 }
 
-Uint32 Dbacc::readTablePk(Uint32 localkey1, Uint32 localkey2, Uint32 eh,
-                          Ptr<Operationrec> opPtr, Uint32 *keys, bool xfrm) {
-  int ret = -ZTUPLE_DELETED_ERROR;
+/*
+ * Hot path: valid local key and tuple still live. Marked inline so the two
+ * call sites in this TU (getElement and the release-queue path) can merge
+ * the fast path directly; the cold TUPLE_DELETED fallback stays out-of-line
+ * in readTablePkTupleDeletedSlow() so it does not bloat the callers.
+ */
+inline Uint32 Dbacc::readTablePk(Uint32 localkey1, Uint32 localkey2, Uint32 eh,
+                                 Ptr<Operationrec> opPtr, Uint32 *keys,
+                                 bool xfrm) {
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   const int xfrm_multiply = (xfrm) ? MAX_XFRM_MULTIPLY : 1;
   std::memset(keys, 0x1f, (fragrecptr.p->keyLength * xfrm_multiply) << 2);
 #endif
-  bool invalid_local_key = true;
   if (likely(!Local_key::isInvalid(localkey1, localkey2))) {
     jamDebug();
-    invalid_local_key = false;
-    ret = c_tup->accReadPk(localkey1, localkey2, keys, xfrm);
-  }
-  if (ret == (-ZTUPLE_DELETED_ERROR))
-  {
-    jam();
-    /**
-     * We can come here in two cases:
-     * 1) The local key hasn't been updated yet. In this case the Insert
-     *    was delayed by a disk allocation. The key is found from the
-     *    lock owners operation record.
-     * 2) The local key is set, but the FREE flag is set. In
-     *    this case accReadPk will return -TUPLE_DELETED_ERROR. This means
-     *    that the INSERT was followed by a DELETE and the DELETE have been
-     *    committed. There is thus no key to be found in the row and there
-     *    is no copy row. Thus we're back to reading the key from the lock
-     *    queue.
-     *
-     *    We need to find an operation record that still has the key
-     *    attached to it. We will check the lock owner and all operations
-     *    in the serial queue. If the local key is invalid we will find
-     *    the key in the lock owner. We won't search the parallel queue
-     *    since these operations have likely already released the key
-     *    and also if the decision was taken to delete the record, then
-     *    no operation in the parallel queue will revert that decision.
-     *    However all operations in the serial queue have not yet
-     *    released any key they might have. If none in the serial queue
-     *    has a key attached to it, then there are either no operation
-     *    there or there are only SCAN operations. Thus we can safely
-     *    return not found since the tuple is going away and we can start
-     *    a new tuple here.
-     *
-     * find_key_operation will only check lock owner if the local key is
-     * invalid. This will only happen when INSERT has started, but not
-     * yet arrived at the point where we called ACCMINUPDATE. This is
-     * protected by the ACC mutex, thus the query thread need no extra
-     * protection to check the keyInfoIVal in DBLQH since this is not
-     * released before we have called ACCMINUPDATE and it is certain to
-     * have been set before starting the INSERT operation in DBACC.
-     *
-     * When local key isn't invalid we are dealing with a DELETE operation.
-     * In this case we only need to worry about any operations in the
-     * serial queue. These are waiting in the queue and are currently idle
-     * and can only be removed from serial queue when holding the ACC mutex.
-     * keyInfoIVal is not released before the ACC operation is removed. Thus
-     * it is safe to check the keyInfoIVal also for query threads from here.
-     */
-    ndbrequire(ElementHeader::getLocked(eh));
-    Uint32 lqhOpPtr = find_key_operation(opPtr, invalid_local_key);
-    if (lqhOpPtr == RNIL)
-    {
-      jam();
-      dump_lock_queue(opPtr);
-      ndbrequire(opPtr.p->m_op_bits & Operationrec::OP_ELEMENT_DISAPPEARED);
-      if (unlikely((opPtr.p->m_op_bits & Operationrec::OP_MASK) == ZSCAN_OP)) {
-        ndbrequire(opPtr.p->m_op_bits & Operationrec::OP_COMMIT_DELETE_CHECK);
-        ndbrequire(((opPtr.p->m_op_bits & Operationrec::OP_STATE_MASK) ==
-                    Operationrec::OP_STATE_RUNNING) ||
-                   ((opPtr.p->m_op_bits & Operationrec::OP_STATE_MASK) ==
-                    Operationrec::OP_STATE_EXECUTED));
-      }
-      return 0;
+    int ret = c_tup->accReadPk(localkey1, localkey2, keys, xfrm);
+    if (likely(ret != -ZTUPLE_DELETED_ERROR)) {
+      jamEntryDebug();
+      ndbrequire(ret >= 0);
+      return ret;
     }
-    ret = m_ldm_instance_used->c_lqh->readPrimaryKeys(lqhOpPtr, keys, xfrm);
+    return readTablePkTupleDeletedSlow(eh, opPtr, keys, xfrm,
+                                       /*invalid_local_key=*/false);
   }
+  return readTablePkTupleDeletedSlow(eh, opPtr, keys, xfrm,
+                                     /*invalid_local_key=*/true);
+}
+
+Uint32 Dbacc::readTablePkTupleDeletedSlow(Uint32 eh, OperationrecPtr opPtr,
+                                          Uint32 *keys, bool xfrm,
+                                          bool invalid_local_key) {
+  jam();
+  /**
+   * We can come here in two cases:
+   * 1) The local key hasn't been updated yet. In this case the Insert
+   *    was delayed by a disk allocation. The key is found from the
+   *    lock owners operation record.
+   * 2) The local key is set, but the FREE flag is set. In
+   *    this case accReadPk will return -TUPLE_DELETED_ERROR. This means
+   *    that the INSERT was followed by a DELETE and the DELETE have been
+   *    committed. There is thus no key to be found in the row and there
+   *    is no copy row. Thus we're back to reading the key from the lock
+   *    queue.
+   *
+   *    We need to find an operation record that still has the key
+   *    attached to it. We will check the lock owner and all operations
+   *    in the serial queue. If the local key is invalid we will find
+   *    the key in the lock owner. We won't search the parallel queue
+   *    since these operations have likely already released the key
+   *    and also if the decision was taken to delete the record, then
+   *    no operation in the parallel queue will revert that decision.
+   *    However all operations in the serial queue have not yet
+   *    released any key they might have. If none in the serial queue
+   *    has a key attached to it, then there are either no operation
+   *    there or there are only SCAN operations. Thus we can safely
+   *    return not found since the tuple is going away and we can start
+   *    a new tuple here.
+   *
+   * find_key_operation will only check lock owner if the local key is
+   * invalid. This will only happen when INSERT has started, but not
+   * yet arrived at the point where we called ACCMINUPDATE. This is
+   * protected by the ACC mutex, thus the query thread need no extra
+   * protection to check the keyInfoIVal in DBLQH since this is not
+   * released before we have called ACCMINUPDATE and it is certain to
+   * have been set before starting the INSERT operation in DBACC.
+   *
+   * When local key isn't invalid we are dealing with a DELETE operation.
+   * In this case we only need to worry about any operations in the
+   * serial queue. These are waiting in the queue and are currently idle
+   * and can only be removed from serial queue when holding the ACC mutex.
+   * keyInfoIVal is not released before the ACC operation is removed. Thus
+   * it is safe to check the keyInfoIVal also for query threads from here.
+   */
+  ndbrequire(ElementHeader::getLocked(eh));
+  Uint32 lqhOpPtr = find_key_operation(opPtr, invalid_local_key);
+  if (lqhOpPtr == RNIL) {
+    jam();
+    dump_lock_queue(opPtr);
+    ndbrequire(opPtr.p->m_op_bits & Operationrec::OP_ELEMENT_DISAPPEARED);
+    if (unlikely((opPtr.p->m_op_bits & Operationrec::OP_MASK) == ZSCAN_OP)) {
+      ndbrequire(opPtr.p->m_op_bits & Operationrec::OP_COMMIT_DELETE_CHECK);
+      ndbrequire(((opPtr.p->m_op_bits & Operationrec::OP_STATE_MASK) ==
+                  Operationrec::OP_STATE_RUNNING) ||
+                 ((opPtr.p->m_op_bits & Operationrec::OP_STATE_MASK) ==
+                  Operationrec::OP_STATE_EXECUTED));
+    }
+    return 0;
+  }
+  int ret = m_ldm_instance_used->c_lqh->readPrimaryKeys(lqhOpPtr, keys, xfrm);
   jamEntryDebug();
   ndbrequire(ret >= 0);
   return ret;

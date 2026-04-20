@@ -1081,6 +1081,15 @@ private:
   Uint32 find_key_operation(OperationrecPtr, bool);
   Uint32 readTablePk(Uint32, Uint32, Uint32, OperationrecPtr, Uint32 *,
                      bool xfrm);
+  /*
+   * Cold fallback: TUPLE_DELETED — search the lock queue for an operation
+   * that still carries the key. Out-of-line so readTablePk's hot path can
+   * be inlined into its two call sites in DbaccMain.cpp without dragging
+   * the ~50-line find_key_operation path along with it.
+   */
+  Uint32 readTablePkTupleDeletedSlow(Uint32 eh, OperationrecPtr opPtr,
+                                     Uint32 *keys, bool xfrm,
+                                     bool invalid_local_key);
   Uint32 getElement(const AccKeyReq *signal, OperationrecPtr &lockOwner,
                     Page8Ptr &bucketPageptr, Uint32 &bucketConidx,
                     Page8Ptr &elemPageptr, Uint32 &elemConptr, Uint32 &elemptr);
