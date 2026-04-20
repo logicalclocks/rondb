@@ -4947,7 +4947,15 @@ inline void Dbtup::setup_fixed_tuple_ref(KeyReqStruct *req_struct,
                                          Tablerec *regTabPtr) {
   PagePtr page_ptr;
   Uint32 *ptr = get_ptr(&page_ptr, &regOperPtr->m_tuple_location, regTabPtr);
+  /*
+   * Prefetch the first two cache lines of the tuple. Most rows span at
+   * least two lines, and even when they don't the second prfm is benign
+   * (bandwidth-cheap, same 4KB page). These issue in parallel with the
+   * subsequent prepare_read / readAttributes work so the first attribute
+   * loads don't stall on DRAM.
+   */
   NDB_PREFETCH_READ(ptr);
+  NDB_PREFETCH_READ(ptr + 16);
   req_struct->m_page_ptr = page_ptr;
   req_struct->m_tuple_ptr = (Tuple_header *)ptr;
 }
