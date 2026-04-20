@@ -29,6 +29,7 @@
 #include "Dbtup.hpp"
 #include "util/require.h"
 
+#include <cassert>
 #include <cstring>
 
 #include <ndb_limits.h>
@@ -1945,6 +1946,7 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
                             Uint32* inBuffer,
                             Uint32 inBufLen)
 {
+  ndbassert(!req_struct->uses_dummy_scratch());
   Tablerec * const regTabPtr = req_struct->tablePtrP;
   Operationrec* const regOperPtr = req_struct->operPtrP;
   Uint32 numAttributes= regTabPtr->m_no_of_attributes;
@@ -2872,6 +2874,7 @@ Dbtup::updateVarSizeNULLable(Uint32* inBuffer,
                              KeyReqStruct *req_struct,
                              Uint64 attrDes)
 {
+  assert(!req_struct->uses_dummy_scratch());
   thrjamDebug(req_struct->jamBuffer);
   Uint32 attrDescriptor = Uint32((attrDes << 32) >> 32);
   Uint32 ind = (AttributeDescriptor::getDiskBased(attrDescriptor)) ?
@@ -4203,6 +4206,7 @@ Uint32 Dbtup::read_lcp(const Uint32 *inBuf, Uint32 inPos,
 
 void Dbtup::update_lcp(KeyReqStruct *req_struct, const Uint32 *src,
                        Uint32 len) {
+  ndbassert(!req_struct->uses_dummy_scratch());
   Tablerec *const tabPtrP = req_struct->tablePtrP;
 
   req_struct->m_is_lcp = true;

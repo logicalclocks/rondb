@@ -10701,13 +10701,14 @@ expand_var_part(Dbtup::KeyReqStruct::Var_data *dst,
 }
 
 void
-Dbtup::expand_tuple(KeyReqStruct* req_struct, 
+Dbtup::expand_tuple(KeyReqStruct* req_struct,
                     Uint32 sizes[2],
-                    Tuple_header* src, 
+                    Tuple_header* src,
                     const Tablerec* tabPtrP,
                     bool disk,
                     bool from_lcp_keep)
 {
+  ndbassert(!req_struct->uses_dummy_scratch());
   /**
    * The source tuple only touches the header parts. The updates of the
    * tuple is applied on the new copy tuple. We still need to ensure that
@@ -11345,6 +11346,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
 
 void Dbtup::shrink_tuple(KeyReqStruct *req_struct, Uint32 sizes[2],
                          const Tablerec *tabPtrP, bool disk) {
+  ndbassert(!req_struct->uses_dummy_scratch());
   ndbassert(tabPtrP->need_shrink());
   ndbassert(req_struct->is_expanded);
   Tuple_header* ptr= req_struct->m_tuple_ptr;

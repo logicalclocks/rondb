@@ -2137,6 +2137,35 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_dbtup_ptr = tup;
     }
 
+    /*
+     * Stand-alone constructor for call paths that run OUTSIDE an LDM/query
+     * thread and therefore cannot legitimately use the caller's Dbtup
+     * instance (its jamBuffer belongs to the LDM thread and its scratch
+     * buffers are not safe to share across threads). Currently used by
+     * Dbtup::tuxReadAttrs / tuxReadAttrsOpt, which can be invoked from
+     * Dbtux::mt_buildIndexFragment running on an AsyncIoThread.
+     *
+     * changeMask / var_pos_array bind to TU-level dummies defined in
+     * DbtupIndex.cpp. The read path from these two entry points does NOT
+     * touch either field (audited Apr 2026: all writers/readers live in
+     * update / trigger / expand_tuple / shrink_tuple code). If that
+     * invariant ever changes, this ctor must switch to caller-supplied
+     * stack storage for those two fields.
+     */
+    KeyReqStruct(EmulatedJamBuffer *_jamBuffer)
+        : changeMask(s_dummy_changeMask),
+          var_pos_array(s_dummy_var_pos_array) {
+      poison_debug_self();
+      jamBuffer = _jamBuffer;
+      m_when = KRS_PREPARE;
+      m_deferred_constraints = true;
+      m_disable_fk_checks = false;
+      ttl_purge_window_size = 0;
+      m_use_corr_factor = 0;
+      m_linked_attr_data = nullptr;
+      m_linked_attr_len = 0;
+    }
+
    private:
     /*
      * Poison struct members and scratch buffers in debug builds so that any
@@ -2145,10 +2174,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
      * In release builds this compiles to nothing.
      */
     inline void poison_debug(Dbtup *tup) {
+      poison_debug_self();
 #if defined VM_TRACE || defined ERROR_INSERT
-      char *poison_begin = reinterpret_cast<char *>(&tablePtrP);
-      char *poison_end = reinterpret_cast<char *>(this) + sizeof(*this);
-      std::memset(poison_begin, 0xf3, poison_end - poison_begin);
       std::memset(&tup->m_var_pos_scratch, 0xf3,
                   sizeof(tup->m_var_pos_scratch));
       std::memset(&tup->m_changeMask_scratch, 0xf3,
@@ -2158,7 +2185,39 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
 #endif
     }
 
+    /*
+     * Poison just this struct's non-reference members (from &tablePtrP to
+     * end). Used by the stand-alone ctor that has no Dbtup to poison
+     * scratch buffers on.
+     */
+    inline void poison_debug_self() {
+#if defined VM_TRACE || defined ERROR_INSERT
+      char *poison_begin = reinterpret_cast<char *>(&tablePtrP);
+      char *poison_end = reinterpret_cast<char *>(this) + sizeof(*this);
+      std::memset(poison_begin, 0xf3, poison_end - poison_begin);
+#endif
+    }
+
+    /*
+     * Dummy scratch for the stand-alone ctor. Never read on the
+     * tuxReadAttrs path; exists only so the two reference members have
+     * something valid to bind to.
+     */
+    static AttributeMask s_dummy_changeMask;
+    static Uint16 s_dummy_var_pos_array[2][2 * MAX_ATTRIBUTES_IN_TABLE + 1];
+
    public:
+    /*
+     * True iff this KeyReqStruct was built via the stand-alone ctor and
+     * therefore has changeMask / var_pos_array bound to the shared dummy
+     * buffers. Readers of either field must ndbassert(!uses_dummy_scratch())
+     * to catch a regression that routes a tuxReadAttrs-path struct into
+     * update / trigger / expand / shrink code.
+     */
+    inline bool uses_dummy_scratch() const {
+      return &changeMask == &s_dummy_changeMask;
+    }
+
 
     /**
      * These variables are used as temporary storage during execution of the
@@ -2419,7 +2478,12 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
                              const Uint32 *attrIds, Uint32 numAttrs,
                              Uint32 *dataOut) {
     thrjamEntryDebug(jamBuf);
-    KeyReqStruct req_struct(this, KeyReqStruct::SimpleReadTag{});
+    /*
+     * Use the stand-alone ctor: mt_buildIndexFragment calls this on an
+     * AsyncIoThread, where `this->jamBuffer()` would be the LDM thread's
+     * jam (wrong thread). jamBuf is the running thread's TLS jam.
+     */
+    KeyReqStruct req_struct(jamBuf);
     Tablerec *regTabPtr = (Tablerec *)tablePtrP;
     /*
      * Build a Local_key on the stack rather than a full Operationrec.

@@ -42,6 +42,16 @@
 
 #include <EventLogger.hpp>
 
+/*
+ * Dummy scratch bound by the stand-alone KeyReqStruct(EmulatedJamBuffer*)
+ * ctor. The tuxReadAttrs / tuxReadAttrsOpt read path never touches
+ * changeMask or var_pos_array, so these exist only to give the reference
+ * members something valid to bind to.
+ */
+AttributeMask Dbtup::KeyReqStruct::s_dummy_changeMask;
+Uint16 Dbtup::KeyReqStruct::s_dummy_var_pos_array
+    [2][2 * MAX_ATTRIBUTES_IN_TABLE + 1];
+
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 // #define DEBUG_INDEX_BUILD 1
 #endif
@@ -477,7 +487,13 @@ Dbtup::tuxReadAttrs(EmulatedJamBuffer * jamBuf,
   // search for tuple version if not original
 
   Operationrec tmpOp;
-  KeyReqStruct req_struct(this);
+  /*
+   * Stand-alone ctor: this function may be invoked from an AsyncIoThread
+   * (Dbtux::mt_buildIndexFragment → readKeyAttrs path) where
+   * `this->jamBuffer()` would be the LDM thread's jam. Use the caller's
+   * jamBuf, which is the running thread's TLS jam.
+   */
+  KeyReqStruct req_struct(jamBuf);
 
   tmpOp.m_tuple_location.m_page_no = pageId;
   tmpOp.m_tuple_location.m_page_idx = pageIndex;
