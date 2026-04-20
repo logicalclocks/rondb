@@ -1099,7 +1099,6 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     agg_res_ptr = m_agg_results + m_acc_offset;
   }
 
-  Uint32 col_index;
   Uint32 value;
   DataType type;
   bool is_unsigned;
