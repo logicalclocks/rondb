@@ -2420,15 +2420,24 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
                              Uint32 *dataOut) {
     thrjamEntryDebug(jamBuf);
     KeyReqStruct req_struct(this, KeyReqStruct::SimpleReadTag{});
-    Operationrec tmpOp;
-    tmpOp.m_tuple_location.m_page_no = pageId;
-    tmpOp.m_tuple_location.m_page_idx = pageIndex;
-    tmpOp.op_type = ZREAD;  // valgrind
-    setup_fixed_tuple_ref(&req_struct, &tmpOp, (Tablerec *)tablePtrP);
+    Tablerec *regTabPtr = (Tablerec *)tablePtrP;
+    /*
+     * Build a Local_key on the stack rather than a full Operationrec.
+     * The *_simple_read setup helpers only need the tuple location;
+     * that avoids ~0x70 bytes of tmpOp stack + ~8 wasted init stores
+     * (m_magic, bitfield q0, op_type bits, sentinel halfwords). File no.
+     * is not touched by get_ptr on this path.
+     */
+    Local_key tuple_loc;
+    tuple_loc.m_page_no = pageId;
+    tuple_loc.m_page_idx = pageIndex;
+
+    setup_fixed_tuple_ref_simple_read(&req_struct, &tuple_loc, regTabPtr);
     req_struct.m_lqh = c_lqh;
-    req_struct.tablePtrP = (Tablerec *)tablePtrP;
+    req_struct.tablePtrP = regTabPtr;
     req_struct.fragPtrP = (Fragrecord *)fragPtrP;
-    setup_fixed_part(&req_struct, &tmpOp, (Tablerec *)tablePtrP);
+    setup_fixed_part_simple_read(&req_struct, regTabPtr);
+
     /*
      * Fast path: tuple version matches what the caller expects, so skip the
      * operation-list walk and go straight to prepare_read + readAttributes.
@@ -3870,8 +3879,13 @@ public:
   void setup_fixed_tuple_ref_opt(KeyReqStruct *req_struct);
   void setup_fixed_tuple_ref(KeyReqStruct *req_struct, Operationrec *regOperPtr,
                              Tablerec *regTabPtr);
+  void setup_fixed_tuple_ref_simple_read(KeyReqStruct *req_struct,
+                                         const Local_key *tuple_loc,
+                                         Tablerec *regTabPtr);
   void setup_fixed_part(KeyReqStruct *req_struct, Operationrec *regOperPtr,
                         Tablerec *regTabPtr);
+  void setup_fixed_part_simple_read(KeyReqStruct *req_struct,
+                                    Tablerec *regTabPtr);
 
   void send_TUPKEYREF(const KeyReqStruct *req_struct);
   void early_tupkey_error(KeyReqStruct *);
@@ -4958,6 +4972,48 @@ inline void Dbtup::setup_fixed_tuple_ref(KeyReqStruct *req_struct,
   NDB_PREFETCH_READ(ptr + 16);
   req_struct->m_page_ptr = page_ptr;
   req_struct->m_tuple_ptr = (Tuple_header *)ptr;
+}
+
+/*
+ * Simple-read variant of setup_fixed_tuple_ref. Takes a Local_key
+ * directly rather than fishing it out of an Operationrec, so callers on
+ * the simple-read fast paths (tuxReadPk, tuxReadAttrsOpt) can skip
+ * allocating a scratch Operationrec on the stack (sizeof ~0x70 + ~8
+ * wasted init stores for m_magic / bitfield / op_type sentinel).
+ * ALWAYS_INLINE so the bl disappears from the hot path.
+ *
+ * Kept logically adjacent to setup_fixed_tuple_ref so any future change
+ * to one is visible to the other.
+ */
+ALWAYS_INLINE void Dbtup::setup_fixed_tuple_ref_simple_read(
+    KeyReqStruct *req_struct, const Local_key *tuple_loc,
+    Tablerec *regTabPtr) {
+  PagePtr page_ptr;
+  Uint32 *ptr = get_ptr(&page_ptr, tuple_loc, regTabPtr);
+  NDB_PREFETCH_READ(ptr);
+  NDB_PREFETCH_READ(ptr + 16);
+  req_struct->m_page_ptr = page_ptr;
+  req_struct->m_tuple_ptr = (Tuple_header *)ptr;
+}
+
+/*
+ * Simple-read variant of setup_fixed_part. The only thing
+ * setup_fixed_part reads out of its regOperPtr argument is an
+ * ndbassert on op_type; in prod there is no reference to it at all.
+ * Dropping the argument (and the bl) lets tuxReadAttrsOpt reach
+ * readAttributes with no intervening call.
+ *
+ * Kept logically adjacent to the out-of-line setup_fixed_part (which
+ * lives in DbtupExecQuery.cpp) — if that function's body changes, the
+ * grep will land here too.
+ */
+ALWAYS_INLINE void Dbtup::setup_fixed_part_simple_read(
+    KeyReqStruct *req_struct, Tablerec *regTabPtr) {
+  Uint32 *tab_descr = regTabPtr->tabDescriptor;
+  NDB_PREFETCH_READ((char *)tab_descr);
+  req_struct->check_offset[MM] = regTabPtr->get_check_offset(MM);
+  req_struct->check_offset[DD] = regTabPtr->get_check_offset(DD);
+  req_struct->attr_descr = tab_descr;
 }
 
 inline Dbtup::TransState Dbtup::get_trans_state(Operationrec *regOperPtr) {
