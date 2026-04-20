@@ -1112,6 +1112,12 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     const char *rawPtr = reinterpret_cast<const char *>(
         (uintptr_t)signal->theData[6] |
         ((uintptr_t)signal->theData[7] << 32));
+    /* CONTINUEB can't carry sections, so the filter program is lost
+     * on resumption.  Filter therefore only applies to the first
+     * batch of an agg-feed CTE scan — documented Phase B limitation.
+     * Groups already emitted in batch 1 went through the filter;
+     * groups in batch N>1 don't.  Fix: plumb filter through per-scan
+     * state once we have one (deferred). */
     cteScanAggFeed(signal,
                    signal->theData[1],   // aggStateKey
                    signal->theData[2],   // senderRef
@@ -1119,7 +1125,8 @@ void Dblqh::execCONTINUEB(Signal *signal) {
                    signal->theData[4],   // joinAggStateKey
                    signal->theData[5],   // iterBucket
                    rawPtr,               // iterRaw
-                   signal->theData[8]);  // groupsSent
+                   signal->theData[8],   // groupsSent
+                   nullptr, 0);          // cinBuf,attrInfoLen — none
     return;
   }
   case ZRESUME_BLOCKED_COPY_FRAGMENT:
@@ -18992,6 +18999,64 @@ void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
 }
 
 /**
+ * runCteFilter — evaluate the WHERE-clause interpreter program (if the
+ * client supplied a non-trivial one) against a single CTE virtual
+ * group row.  Shared between CTE_LOOKUP_REQ and CTE_SCAN_REQ so the
+ * accept / reject / error semantics stay consistent across both.
+ *
+ * The AttrInfo section's 5-word header is laid out as
+ *   [0]=initReadLen [1]=interpretLen [2]=finalUpdateLen
+ *   [3]=finalReadLen [4]=subLen
+ * and DBSPJ's parseDA for PI_ATTR_INTERPRET puts the user program in
+ * the INTERPRET region — so the filter length is cinBuf[1] and the
+ * program starts at cinBuf[5 + initReadLen].  A legacy stub is just a
+ * single ExitOK (interpretLen == 1), short-circuited for zero overhead
+ * so existing callers (no client filter) incur no cost.
+ */
+Dblqh::CteFilterResult
+Dblqh::runCteFilter(Signal *signal,
+                    const JoinAggInterpreter *interp,
+                    const char *groupData, Uint32 keyLen,
+                    const Uint32 *cinBuf, Uint32 attrInfoLen) {
+  if (attrInfoLen < 5 || cinBuf[1] <= 1) return CTE_FILTER_ACCEPT;
+
+  jam();
+  const Uint32 initReadLen  = cinBuf[0];
+  const Uint32 interpretLen = cinBuf[1];
+  const Uint32 programStart = 5 + initReadLen;
+  ndbrequire(programStart + interpretLen <= attrInfoLen);
+
+  Uint32 linkedLen = 0;
+  buildCteLinkedBuffer(interp, groupData, keyLen,
+                       cinBuf, attrInfoLen, cevictBuffer, &linkedLen);
+
+  Dbtup::KeyReqStruct filterReqStruct(c_tup);
+  filterReqStruct.m_linked_attr_data  = cevictBuffer;
+  filterReqStruct.m_linked_attr_len   = linkedLen;
+  filterReqStruct.no_exec_instructions = 0;
+  filterReqStruct.log_size            = 0;
+  filterReqStruct.last_row            = false;
+
+  Uint32 tmpArea[32];   /* unused by accepted CTE filter opcodes */
+  const int rc = c_tup->interpreterFilterCte(
+      signal, &filterReqStruct,
+      const_cast<Uint32 *>(cinBuf + programStart), interpretLen,
+      nullptr, 0,
+      tmpArea, sizeof(tmpArea) / sizeof(Uint32));
+
+  if (rc == Dbtup::INTERPRETER_FILTER_REJECT) {
+    jam();
+    return CTE_FILTER_REJECT;
+  }
+  if (unlikely(rc < 0)) {
+    jam();
+    DEB_CTE(("(%u) CTE filter execution error rc=%d", instance(), rc));
+    return CTE_FILTER_ERROR;
+  }
+  return CTE_FILTER_ACCEPT;
+}
+
+/**
  * cteLookupAggFeed — CTE_LOOKUP result feeds into another JoinAggInterpreter
  * (CTE-to-CTE dependency or CTE_LOOKUP as main aggregate leaf).
  * Builds linked_attr_data from the group's key + accumulators and inserts
@@ -19559,60 +19624,23 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     return;
   }
 
-  /* Filter gate — evaluate the WHERE-clause interpreter program (if the
-   * client supplied a non-trivial one) against the found group BEFORE
-   * routing to the emit / agg-feed path.  The AttrInfo section's
-   * 5-word header is laid out as
-   *   [0]=initReadLen [1]=interpretLen [2]=finalUpdateLen
-   *   [3]=finalReadLen [4]=subLen
-   * and DBSPJ's parseDA for PI_ATTR_INTERPRET puts the user program
-   * into the INTERPRET region — so the filter length is cinBuf[1],
-   * and the program starts at cinBuf[5 + initReadLen].  A legacy stub
-   * is just a single ExitOK (interpretLen == 1), short-circuited for
-   * zero overhead.  A filter reject is reported as
-   * ZCTE_LOOKUP_GROUP_NOT_FOUND so DBSPJ's LEFT-JOIN machinery
-   * synthesises a NULL row exactly as it would for a missing CTE
-   * entry; an execution error surfaces as ZCTE_LOOKUP_FILTER_ERROR. */
-  if (attrInfoLen >= 5 && cinBuf[1] > 1) {
-    jam();
-    const Uint32 initReadLen  = cinBuf[0];
-    const Uint32 interpretLen = cinBuf[1];
-    const Uint32 programStart = 5 + initReadLen;
-    ndbrequire(programStart + interpretLen <= attrInfoLen);
-
-    Uint32 linkedLen = 0;
-    buildCteLinkedBuffer(interp, groupData, req.keyLen,
-                         cinBuf, attrInfoLen, cevictBuffer, &linkedLen);
-
-    Dbtup::KeyReqStruct filterReqStruct(c_tup);
-    filterReqStruct.m_linked_attr_data  = cevictBuffer;
-    filterReqStruct.m_linked_attr_len   = linkedLen;
-    filterReqStruct.no_exec_instructions = 0;
-    filterReqStruct.log_size            = 0;
-    filterReqStruct.last_row            = false;
-
-    Uint32 tmpArea[32];   /* unused by accepted CTE filter opcodes */
-    const int rc = c_tup->interpreterFilterCte(
-        signal, &filterReqStruct,
-        cinBuf + programStart, interpretLen,
-        nullptr, 0,
-        tmpArea, sizeof(tmpArea) / sizeof(Uint32));
-
-    if (rc == Dbtup::INTERPRETER_FILTER_REJECT) {
-      jam();
+  /* Filter gate — see runCteFilter for the semantics.  A reject maps
+   * to ZCTE_LOOKUP_GROUP_NOT_FOUND so DBSPJ's LEFT-JOIN machinery
+   * synthesises a NULL row; execution error -> ZCTE_LOOKUP_FILTER_ERROR. */
+  {
+    const CteFilterResult fr = runCteFilter(signal, interp, groupData,
+                                             req.keyLen, cinBuf, attrInfoLen);
+    if (fr == CTE_FILTER_REJECT) {
       sendCteLookupRef(signal, req.senderRef, req.senderData,
                        ZCTE_LOOKUP_GROUP_NOT_FOUND);
       return;
     }
-    if (unlikely(rc < 0)) {
-      jam();
-      DEB_CTE(("(%u) CTE_LOOKUP filter execution error rc=%d",
-               instance(), rc));
+    if (fr == CTE_FILTER_ERROR) {
       sendCteLookupRef(signal, req.senderRef, req.senderData,
                        ZCTE_LOOKUP_FILTER_ERROR);
       return;
     }
-    /* rc == 0: accept, fall through to the emit / agg-feed path */
+    /* CTE_FILTER_ACCEPT: fall through to the emit / agg-feed path. */
   }
 
   /* Aggregation feed path: result feeds into another JoinAggInterpreter */
@@ -19647,7 +19675,8 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
                             Uint32 senderRef, Uint32 senderData,
                             Uint32 joinAggStateKey,
                             Uint32 iterBucket, const char *iterRaw,
-                            Uint32 groupsSent) {
+                            Uint32 groupsSent,
+                            const Uint32 *cinBuf, Uint32 attrInfoLen) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
@@ -19698,6 +19727,22 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
       const Uint32 keyLen = iter.keyLen();
       const AggResItem *accumulators =
           reinterpret_cast<const AggResItem *>(groupData + keyLen);
+
+      /* Per-group filter gate.  cinBuf is nullptr on CONTINUEB
+       * resumption (Phase B limitation); runCteFilter short-circuits
+       * then.  On reject, skip this group without side effects. */
+      const CteFilterResult fr = runCteFilter(
+          signal, interp, groupData, keyLen, cinBuf, attrInfoLen);
+      if (fr == CTE_FILTER_REJECT) {
+        jam();
+        continue;
+      }
+      if (fr == CTE_FILTER_ERROR) {
+        jam();
+        sendCteScanRef(signal, senderRef, senderData,
+                       ZCTE_LOOKUP_FILTER_ERROR);
+        return;
+      }
 
       /* Build linked_attr_data: [tableId=0][schemaVersion=0][AH][data..]
        * per column.  Mirrors CTE_LOOKUP agg-feed. */
@@ -19790,6 +19835,22 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
     const Uint32 src_n_agg_results = interp->n_agg_results();
     const AggResItem *accumulators = interp->agg_results();
 
+    /* Scalar filter gate — single synthetic group from agg_results(). */
+    const CteFilterResult fr = runCteFilter(
+        signal, interp,
+        reinterpret_cast<const char *>(accumulators),
+        /*keyLen=*/0, cinBuf, attrInfoLen);
+    if (fr == CTE_FILTER_ERROR) {
+      jam();
+      sendCteScanRef(signal, senderRef, senderData,
+                     ZCTE_LOOKUP_FILTER_ERROR);
+      return;
+    }
+    if (fr == CTE_FILTER_REJECT) {
+      jam();
+      /* Single scalar group rejected — groupsSent stays 0, fall
+       * through to CTE_SCAN_CONF with EndOfData + numRows=0. */
+    } else {
     Uint32 *linkedBuf = cevictBuffer;
     Uint32 linkedPos = 0;
 
@@ -19843,6 +19904,7 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
     }
     targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
     groupsSent = 1;
+    }  /* else branch of scalar filter gate */
   }
 
   /* All groups processed — send CTE_SCAN_CONF with EndOfData */
@@ -19868,7 +19930,8 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
 void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
                                 JoinAggInterpreter *interp,
                                 const Uint32 *finalR, Uint32 finalRLen,
-                                bool haveFinalR, Uint32 scanIterI) {
+                                bool haveFinalR, Uint32 scanIterI,
+                                const Uint32 *cinBuf, Uint32 attrInfoLen) {
   /* Recover iteration state from pool or start fresh.
    * We work on a stack-local copy; a pool record is only seized
    * if we need to pause for a continuation batch. */
@@ -19920,6 +19983,24 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       const Uint32 keyLen = iter.keyLen();
       const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
           groupData + keyLen);
+
+      /* Per-group filter gate.  Unlike cteScanAggFeed, every
+       * cteScanEmitResults invocation (first REQ or continuation
+       * REQ) carries its own AttrInfo, so the filter applies in
+       * all batches. */
+      const CteFilterResult fr = runCteFilter(
+          signal, interp, groupData, keyLen, cinBuf, attrInfoLen);
+      if (fr == CTE_FILTER_REJECT) {
+        jam();
+        groupIdx++;
+        continue;
+      }
+      if (fr == CTE_FILTER_ERROR) {
+        jam();
+        sendCteScanRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_FILTER_ERROR);
+        return;
+      }
 
       Uint32 *outBuf = cevictBuffer;
 
@@ -20023,7 +20104,22 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
     const AggResItem *accumulators = interp->agg_results();
     Uint32 *outBuf = cevictBuffer;
 
-    if (haveFinalR) {
+    /* Scalar filter gate — one synthetic group from agg_results(). */
+    const CteFilterResult fr = runCteFilter(
+        signal, interp,
+        reinterpret_cast<const char *>(accumulators),
+        /*keyLen=*/0, cinBuf, attrInfoLen);
+    if (fr == CTE_FILTER_ERROR) {
+      jam();
+      sendCteScanRef(signal, req.senderRef, req.senderData,
+                     ZCTE_LOOKUP_FILTER_ERROR);
+      return;
+    }
+    if (fr == CTE_FILTER_REJECT) {
+      jam();
+      /* Scalar group rejected — numRowsSent stays 0.  Fall through
+       * to CTE_SCAN_CONF with EndOfData + numRows=0. */
+    } else if (haveFinalR) {
       CteOutputParams params;
       params.transId[0] = req.transId1;
       params.transId[1] = req.transId2;
@@ -20225,7 +20321,8 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
     jam();
     cteScanAggFeed(signal, req.aggStateKey, req.senderRef, req.senderData,
                    req.joinAggStateKey,
-                   0, nullptr, 0);
+                   0, nullptr, 0,
+                   attrInfoLen > 0 ? cinBuf : nullptr, attrInfoLen);
     return;
   }
 
@@ -20237,7 +20334,8 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
 
   /* Non-agg path: emit groups as TRANSID_AI to API/DBSPJ */
   cteScanEmitResults(signal, req, interp, finalR, finalRLen,
-                     haveFinalR, scanIterI);
+                     haveFinalR, scanIterI,
+                     attrInfoLen > 0 ? cinBuf : nullptr, attrInfoLen);
 }
 
 /* ------------------------------------------------------------------ */

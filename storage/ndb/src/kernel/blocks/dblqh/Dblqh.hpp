@@ -3363,6 +3363,26 @@ private:
                             const Uint32 *attrInfoBuf, Uint32 attrInfoLen,
                             Uint32 *outBuf, Uint32 *lenOut);
 
+  /* Outcome of a CTE filter program applied to one virtual group. */
+  enum CteFilterResult {
+    CTE_FILTER_ACCEPT = 0,
+    CTE_FILTER_REJECT = 1,
+    CTE_FILTER_ERROR  = -1
+  };
+
+  /* Run a CTE filter program against a single virtual group row.
+   * Short-circuits for the legacy single-ExitOK stub (interpretLen<=1)
+   * and returns CTE_FILTER_ACCEPT without touching the interpreter.
+   * Otherwise builds the linked-attr buffer via buildCteLinkedBuffer
+   * into cevictBuffer and invokes Dbtup::interpreterFilterCte.
+   * Shared between execCTE_LOOKUP_REQ, cteScanAggFeed, and
+   * cteScanEmitResults — keep the semantics consistent across all
+   * three sites. */
+  CteFilterResult runCteFilter(Signal *signal,
+                               const JoinAggInterpreter *interp,
+                               const char *groupData, Uint32 keyLen,
+                               const Uint32 *cinBuf, Uint32 attrInfoLen);
+
   void cteLookupAggFeed(Signal* signal, const CteLookupReq &req,
                         const JoinAggInterpreter *interp,
                         const char *groupData,
@@ -3399,15 +3419,22 @@ private:
   void sendCteLookupRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
                         Uint32 errorCode, SectionHandle *handle = nullptr);
   void execCTE_SCAN_REQ(Signal* signal);
+  /* cinBuf + attrInfoLen carry the AttrInfo section needed to run a
+   * CTE filter program per group.  On the initial CTE_SCAN_REQ the
+   * caller passes the AttrInfo bound into the incoming signal; on a
+   * CONTINUEB resumption within the agg-feed path they are
+   * (nullptr, 0) — see runCteFilter's short-circuit. */
   void cteScanAggFeed(Signal* signal, Uint32 aggStateKey,
                       Uint32 senderRef, Uint32 senderData,
                       Uint32 joinAggStateKey,
                       Uint32 iterBucket, const char *iterRaw,
-                      Uint32 groupsSent);
+                      Uint32 groupsSent,
+                      const Uint32 *cinBuf, Uint32 attrInfoLen);
   void cteScanEmitResults(Signal* signal, const CteScanReq &req,
                           JoinAggInterpreter *interp,
                           const Uint32 *finalR, Uint32 finalRLen,
-                          bool haveFinalR, Uint32 scanIterI);
+                          bool haveFinalR, Uint32 scanIterI,
+                          const Uint32 *cinBuf, Uint32 attrInfoLen);
   void sendCteScanRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
                       Uint32 errorCode, SectionHandle *handle = nullptr);
   void execJOIN_AGG_REDISTRIBUTE_REQ(Signal* signal);
