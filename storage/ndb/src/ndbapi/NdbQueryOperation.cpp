@@ -5534,20 +5534,28 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
       break;
     }
     case QueryNodeParameters::QN_CTE_LOOKUP: {
-      /* CTE_LOOKUP needs PI_ATTR_INTERPRET (ExitOK) and PI_ATTR_LIST
-       * (virtual column reads) so DBSPJ builds proper AttrInfo with
-       * FLUSH_AI for CTE_LOOKUP_REQ result delivery.
+      /* CTE_LOOKUP needs PI_ATTR_INTERPRET (ExitOK or user filter) and
+       * PI_ATTR_LIST (virtual column reads) so DBSPJ builds proper
+       * AttrInfo with FLUSH_AI for CTE_LOOKUP_REQ result delivery.
        * Read numResultCols from the serialized QN_CteLookupNode. */
       {
         const QN_CteLookupNode *cteNode =
             reinterpret_cast<const QN_CteLookupNode *>(queryNode);
         const Uint32 numCols = cteNode->numResultCols;
 
-        // PI_ATTR_INTERPRET: minimal ExitOK program
-        requestInfo |= DABits::PI_ATTR_INTERPRET;
-        Uint32 interpHeader = (0u << 16) | 1u;  // subroutine_len=0, prog_len=1
-        attrInfo.append(interpHeader);
-        attrInfo.append(Uint32(18));  // Interpreter::ExitOK = 18
+        /* PI_ATTR_INTERPRET: when the user attached a WHERE-clause
+         * filter via setInterpretedCode(), prepareInterpretedCode()
+         * above already emitted [prog_len, user_program...] and set
+         * the PI_ATTR_INTERPRET flag.  Appending another [1, ExitOK]
+         * stub here would concatenate a second interpreter header and
+         * produce a malformed AttrInfo section.  Only emit the stub
+         * when no user program is present. */
+        if (!hasInterpretedCode()) {
+          requestInfo |= DABits::PI_ATTR_INTERPRET;
+          Uint32 interpHeader = (0u << 16) | 1u;  // sub_len=0, prog_len=1
+          attrInfo.append(interpHeader);
+          attrInfo.append(Uint32(18));  // Interpreter::ExitOK = 18
+        }
 
         // PI_ATTR_LIST: virtual column reads + CORR_FACTOR64.
         // CORR_FACTOR must be in the user projection (before FLUSH_AI)
@@ -5573,20 +5581,27 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
       break;
     }
     case QueryNodeParameters::QN_CTE_SCAN: {
-      /* CTE_SCAN needs the same PI_ATTR_INTERPRET (ExitOK) + PI_ATTR_LIST
-       * (virtual column reads) setup as CTE_LOOKUP so DBSPJ builds the
-       * proper AttrInfo for delivering scanned CTE rows. Read
-       * numResultCols from the serialized QN_CteScanNode. */
+      /* CTE_SCAN needs the same PI_ATTR_INTERPRET (ExitOK or user
+       * filter) + PI_ATTR_LIST (virtual column reads) setup as
+       * CTE_LOOKUP so DBSPJ builds the proper AttrInfo for delivering
+       * scanned CTE rows. Read numResultCols from the serialized
+       * QN_CteScanNode. */
       {
         const QN_CteScanNode *cteNode =
             reinterpret_cast<const QN_CteScanNode *>(queryNode);
         const Uint32 numCols = cteNode->numResultCols;
 
-        // PI_ATTR_INTERPRET: minimal ExitOK program
-        requestInfo |= DABits::PI_ATTR_INTERPRET;
-        Uint32 interpHeader = (0u << 16) | 1u;  // subroutine_len=0, prog_len=1
-        attrInfo.append(interpHeader);
-        attrInfo.append(Uint32(18));  // Interpreter::ExitOK = 18
+        /* See QN_CTE_LOOKUP case above: only emit the ExitOK stub when
+         * the user has not attached their own filter program; otherwise
+         * prepareInterpretedCode() above has already written the user
+         * program and appending another header produces a malformed
+         * AttrInfo section. */
+        if (!hasInterpretedCode()) {
+          requestInfo |= DABits::PI_ATTR_INTERPRET;
+          Uint32 interpHeader = (0u << 16) | 1u;  // sub_len=0, prog_len=1
+          attrInfo.append(interpHeader);
+          attrInfo.append(Uint32(18));  // Interpreter::ExitOK = 18
+        }
 
         // PI_ATTR_LIST: virtual column reads + CORR_FACTOR64.
         requestInfo |= DABits::PI_ATTR_LIST;
