@@ -19561,17 +19561,24 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
 
   /* Filter gate — evaluate the WHERE-clause interpreter program (if the
    * client supplied a non-trivial one) against the found group BEFORE
-   * routing to the emit / agg-feed path.  The AttrInfo section's 5-word
-   * header reserves cinBuf[0] = initReadLen words of filter program at
-   * cinBuf[5..]; a legacy stub is just a single ExitOK (initReadLen==1),
-   * which we short-circuit for zero overhead.  A filter reject is
-   * reported as ZCTE_LOOKUP_GROUP_NOT_FOUND so DBSPJ's LEFT-JOIN
-   * machinery synthesises a NULL row exactly as it would for a missing
-   * CTE entry.  An execution error surfaces as the new
-   * ZCTE_LOOKUP_FILTER_ERROR. */
-  if (attrInfoLen >= 5 && cinBuf[0] > 1) {
+   * routing to the emit / agg-feed path.  The AttrInfo section's
+   * 5-word header is laid out as
+   *   [0]=initReadLen [1]=interpretLen [2]=finalUpdateLen
+   *   [3]=finalReadLen [4]=subLen
+   * and DBSPJ's parseDA for PI_ATTR_INTERPRET puts the user program
+   * into the INTERPRET region — so the filter length is cinBuf[1],
+   * and the program starts at cinBuf[5 + initReadLen].  A legacy stub
+   * is just a single ExitOK (interpretLen == 1), short-circuited for
+   * zero overhead.  A filter reject is reported as
+   * ZCTE_LOOKUP_GROUP_NOT_FOUND so DBSPJ's LEFT-JOIN machinery
+   * synthesises a NULL row exactly as it would for a missing CTE
+   * entry; an execution error surfaces as ZCTE_LOOKUP_FILTER_ERROR. */
+  if (attrInfoLen >= 5 && cinBuf[1] > 1) {
     jam();
-    const Uint32 filterLen = cinBuf[0];
+    const Uint32 initReadLen  = cinBuf[0];
+    const Uint32 interpretLen = cinBuf[1];
+    const Uint32 programStart = 5 + initReadLen;
+    ndbrequire(programStart + interpretLen <= attrInfoLen);
 
     Uint32 linkedLen = 0;
     buildCteLinkedBuffer(interp, groupData, req.keyLen,
@@ -19587,7 +19594,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     Uint32 tmpArea[32];   /* unused by accepted CTE filter opcodes */
     const int rc = c_tup->interpreterFilterCte(
         signal, &filterReqStruct,
-        cinBuf + 5, filterLen,
+        cinBuf + programStart, interpretLen,
         nullptr, 0,
         tmpArea, sizeof(tmpArea) / sizeof(Uint32));
 
