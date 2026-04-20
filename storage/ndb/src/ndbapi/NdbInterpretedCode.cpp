@@ -1728,6 +1728,116 @@ int NdbInterpretedCode::branch_col_notlike(const void *val, Uint32 len,
   return branch_col_val(Interpreter::NOT_LIKE, attrId, val, len, label);
 }
 
+/* Shared implementation for the branch_linked_mem_* family.  Emits
+ *   [READ_LINKED_TO_MEM | (position<<16)]
+ *   [BranchMem(cond, nulls) | <label placeholder>]
+ *   [(sourceAttrId << 16) | len]
+ *   [sourceTableId]
+ *   [sourceSchemaVersion]
+ *   [inline constant data, len bytes rounded up to whole words]
+ *
+ * Server-side handlers: handleReadLinkedToMem loads entry `position`
+ * of ctx.req_struct->m_linked_attr_data into cheapMemory[0];
+ * handleBranchMemOpArg then uses sourceTableId + sourceSchemaVersion
+ * to resolve the column's type descriptor and compare via the SQL
+ * type's cmp function (charset-aware for CHAR).
+ *
+ * The NdbInterpretedCode instance's own m_table_impl is not used for
+ * type lookup — the source column typically lives in a different
+ * table (e.g., the CTE's source or a parent operation).
+ */
+int NdbInterpretedCode::branch_linked_mem_val(
+    Uint32 branch_type, Uint32 position,
+    const NdbDictionary::Table *sourceTable, Uint32 sourceAttrId,
+    const void *val, Uint32 len, Uint32 label) {
+  DBUG_ENTER("NdbInterpretedCode::branch_linked_mem_val");
+  if (unlikely(sourceTable == nullptr)) DBUG_RETURN(error(4538));
+
+  const Interpreter::BinaryCondition cond =
+      static_cast<Interpreter::BinaryCondition>(branch_type);
+
+  /* 1. READ_LINKED_TO_MEM — must be before add_branch so the label
+   *    offset in the branch instruction resolves correctly. */
+  if (add1(Interpreter::READ_LINKED_TO_MEM | (position << 16)) != 0)
+    DBUG_RETURN(-1);
+
+  /* 2. BRANCH_MEM_OP_ARG header (branch target via add_branch). */
+  Interpreter::NullSemantics nulls = Interpreter::NULL_CMP_EQUAL;
+  if (m_unknown_action == BranchIfUnknown)
+    nulls = Interpreter::IF_NULL_BREAK_OUT;
+  else if (m_unknown_action == ContinueIfUnknown)
+    nulls = Interpreter::IF_NULL_CONTINUE;
+
+  if (add_branch(Interpreter::BranchMem(cond, nulls), label) != 0)
+    DBUG_RETURN(-1);
+
+  /* 3. (sourceAttrId << 16) | argLen  — same encoding as BranchCol_2 */
+  if (add1(Interpreter::BranchMem_2(sourceAttrId, len)) != 0)
+    DBUG_RETURN(-1);
+
+  /* 4-5. Source table metadata for type/charset resolution. */
+  if (add1(sourceTable->getTableId()) != 0) DBUG_RETURN(-1);
+  if (add1(sourceTable->getObjectVersion()) != 0) DBUG_RETURN(-1);
+
+  /* 6. Inline constant data — round up to whole 32-bit words,
+   *    zero-pad the tail partial word (matches branch_col_val's
+   *    handling of non-word-aligned lengths). */
+  const Uint32 len4 = Interpreter::mod4(len);
+  if (len4 == len) {
+    DBUG_RETURN(addN(static_cast<const char *>(val), len4 >> 2));
+  }
+
+  const Uint32 fullWords = (len4 >= 4) ? (len4 - 4) >> 2 : 0;
+  if (fullWords > 0) {
+    if (addN(static_cast<const char *>(val), fullWords) != 0)
+      DBUG_RETURN(-1);
+  }
+  Uint32 tail = 0;
+  const Uint32 tailStart = fullWords * 4;
+  char *tailBytes = reinterpret_cast<char *>(&tail);
+  for (Uint32 i = 0; i < len - tailStart; i++) {
+    tailBytes[i] = static_cast<const char *>(val)[tailStart + i];
+  }
+  DBUG_RETURN(add1(tail));
+}
+
+int NdbInterpretedCode::branch_linked_mem_eq(
+    Uint32 position, const NdbDictionary::Table *sourceTable,
+    Uint32 sourceAttrId, const void *val, Uint32 len, Uint32 label) {
+  return branch_linked_mem_val(Interpreter::EQ, position, sourceTable,
+                               sourceAttrId, val, len, label);
+}
+int NdbInterpretedCode::branch_linked_mem_ne(
+    Uint32 position, const NdbDictionary::Table *sourceTable,
+    Uint32 sourceAttrId, const void *val, Uint32 len, Uint32 label) {
+  return branch_linked_mem_val(Interpreter::NE, position, sourceTable,
+                               sourceAttrId, val, len, label);
+}
+int NdbInterpretedCode::branch_linked_mem_lt(
+    Uint32 position, const NdbDictionary::Table *sourceTable,
+    Uint32 sourceAttrId, const void *val, Uint32 len, Uint32 label) {
+  return branch_linked_mem_val(Interpreter::LT, position, sourceTable,
+                               sourceAttrId, val, len, label);
+}
+int NdbInterpretedCode::branch_linked_mem_le(
+    Uint32 position, const NdbDictionary::Table *sourceTable,
+    Uint32 sourceAttrId, const void *val, Uint32 len, Uint32 label) {
+  return branch_linked_mem_val(Interpreter::LE, position, sourceTable,
+                               sourceAttrId, val, len, label);
+}
+int NdbInterpretedCode::branch_linked_mem_gt(
+    Uint32 position, const NdbDictionary::Table *sourceTable,
+    Uint32 sourceAttrId, const void *val, Uint32 len, Uint32 label) {
+  return branch_linked_mem_val(Interpreter::GT, position, sourceTable,
+                               sourceAttrId, val, len, label);
+}
+int NdbInterpretedCode::branch_linked_mem_ge(
+    Uint32 position, const NdbDictionary::Table *sourceTable,
+    Uint32 sourceAttrId, const void *val, Uint32 len, Uint32 label) {
+  return branch_linked_mem_val(Interpreter::GE, position, sourceTable,
+                               sourceAttrId, val, len, label);
+}
+
 int NdbInterpretedCode::branch_col_and_mask_eq_mask(const void *mask, Uint32,
                                                     Uint32 attrId,
                                                     Uint32 label) {

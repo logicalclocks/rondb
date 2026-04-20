@@ -869,6 +869,64 @@ class NdbInterpretedCode {
   int branch_col_eq_null(Uint32 attrId, Uint32 label);
   int branch_col_ne_null(Uint32 attrId, Uint32 label);
 
+  /* Conditional branches on a linked (virtual) column for CTE filters.
+   * Used by filters attached to lookupCte() / scanCte() operations,
+   * where the filtered "row" is the CTE's projected columns
+   * materialised in the interpreter's linked-attr buffer rather than
+   * a real stored tuple.
+   *
+   * Emits a two-instruction sequence:
+   *   READ_LINKED_TO_MEM  — loads entry `position` of the linked-attr
+   *                         buffer into the interpreter's memory.
+   *   BRANCH_MEM_OP_ARG   — compares memory against the inline `val`
+   *                         using the source column's
+   *                         type/charset, branching to `label` on
+   *                         the chosen predicate.
+   *
+   * `position` is the zero-based index in the linked-attr buffer
+   * constructed by DBLQH (see Dblqh::buildCteLinkedBuffer): for a
+   * CTE lookup/scan used as the root of a query the layout is
+   *   [GROUP BY key columns ...] [aggregate result columns ...]
+   * so position = attrId of the virtual CTE column.
+   *
+   * `sourceTable` and `sourceAttrId` identify the source column used
+   * for server-side type/charset lookup: the CTE's source table +
+   * underlying attrId for GB keys / aggregate results, or the parent
+   * table + attrId for a linked parent-row column.
+   *
+   * Inequality branches follow the project-wide inverted-semantics
+   * convention (see CLAUDE.md):
+   *   branch_linked_mem_le branches when col >= val
+   *   branch_linked_mem_ge branches when col <= val
+   *   branch_linked_mem_lt branches when col >  val
+   *   branch_linked_mem_gt branches when col <  val
+   * Equality (eq / ne) is NOT inverted.
+   */
+  int branch_linked_mem_eq(Uint32 position,
+                           const NdbDictionary::Table *sourceTable,
+                           Uint32 sourceAttrId,
+                           const void *val, Uint32 len, Uint32 label);
+  int branch_linked_mem_ne(Uint32 position,
+                           const NdbDictionary::Table *sourceTable,
+                           Uint32 sourceAttrId,
+                           const void *val, Uint32 len, Uint32 label);
+  int branch_linked_mem_lt(Uint32 position,
+                           const NdbDictionary::Table *sourceTable,
+                           Uint32 sourceAttrId,
+                           const void *val, Uint32 len, Uint32 label);
+  int branch_linked_mem_le(Uint32 position,
+                           const NdbDictionary::Table *sourceTable,
+                           Uint32 sourceAttrId,
+                           const void *val, Uint32 len, Uint32 label);
+  int branch_linked_mem_gt(Uint32 position,
+                           const NdbDictionary::Table *sourceTable,
+                           Uint32 sourceAttrId,
+                           const void *val, Uint32 len, Uint32 label);
+  int branch_linked_mem_ge(Uint32 position,
+                           const NdbDictionary::Table *sourceTable,
+                           Uint32 sourceAttrId,
+                           const void *val, Uint32 len, Uint32 label);
+
   /*
    * Variants comparing an Attribute from this table with a parameter
    * value specified in the supplied attrInfo section.
@@ -1330,6 +1388,10 @@ class NdbInterpretedCode {
                      Uint32 len, Uint32 label);
   int branch_col_col(Uint32 branch_type, Uint32 attrId1, Uint32 attrId2,
                      Uint32 label);
+  int branch_linked_mem_val(Uint32 branch_type, Uint32 position,
+                            const NdbDictionary::Table *sourceTable,
+                            Uint32 sourceAttrId, const void *val,
+                            Uint32 len, Uint32 label);
   int branch_col_param(Uint32 branch_type, Uint32 attrId, Uint32 paramId,
                        Uint32 label);
   int getInfo(Uint32 number, CodeMetaInfo &info) const;
