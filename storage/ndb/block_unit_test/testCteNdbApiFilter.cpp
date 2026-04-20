@@ -1816,6 +1816,172 @@ testCteScanFilterEmptyResult(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 15: CTE_SCAN filter — spans batch boundary (>256 groups)       */
+/*                                                                     */
+/* CTE_SCAN_AGG_FEED_BATCH = 256, so a CTE with more than 256 groups   */
+/* triggers a CONTINUEB self-signal between batches.  CONTINUEB can't  */
+/* carry AttrInfo — the filter program survives only because           */
+/* execCTE_SCAN_REQ now caches it in a CteScanIterState pool record    */
+/* keyed through theData[9].  Verify by seeding 300 unique groups and  */
+/* running an aggregation over them with a filter that rejects half.   */
+/*                                                                     */
+/* Dataset: cte_src(pk=grp=1..300, val=2*grp).  Re-seeded inside this  */
+/* test (after tests 1-14 have run against the baseline 5 rows).       */
+/*                                                                     */
+/* CTE:    SELECT grp, SUM(val) AS total FROM cte_src GROUP BY grp     */
+/*         => 300 groups, total = 2*grp for each (val=2*grp, one row). */
+/* Main:   SUM(cte0.total) scalar aggregation, fed from scanCte(0)     */
+/*         with filter total >= 302 (i.e. reject when total <= 300,    */
+/*         keeping grp >= 151..300 = 150 groups).                      */
+/* Expected: COUNT=150, SUM = 2*(151+152+...+300) = 67650.             */
+/*                                                                     */
+/* Without the CONTINUEB filter-forwarding fix, batch 2 (44 groups)    */
+/* would skip the filter entirely, giving COUNT/SUM that depend on    */
+/* hash ordering and exceed the expected values.                       */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteScanFilterBatchBoundary(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 15: CTE_SCAN filter across batch boundary (300 groups) ... ");
+  fflush(stdout);
+
+  /* Re-seed cte_src with 300 distinct groups (bulk-insert in chunks
+   * of 50 to keep per-statement size modest but setup time short). */
+  if (sqlExec(conn, "DELETE FROM cte_src") != 0) {
+    printf("FAILED (delete)\n");
+    return -1;
+  }
+  char sql[4096];
+  int pos = 0;
+  bool first = true;
+  for (int g = 1; g <= 300; g++) {
+    if (first) {
+      pos = snprintf(sql, sizeof(sql), "INSERT INTO cte_src VALUES ");
+      first = false;
+    } else {
+      pos += snprintf(sql + pos, sizeof(sql) - pos, ",");
+    }
+    pos += snprintf(sql + pos, sizeof(sql) - pos, "(%d,%d,%d)", g, g, 2 * g);
+    if (g % 50 == 0 || g == 300) {
+      if (sqlExec(conn, sql) != 0) {
+        printf("FAILED (seed insert at g=%d)\n", g);
+        return -1;
+      }
+      first = true;
+    }
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") || !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) || !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg)\n");
+    return -1;
+  }
+
+  const NdbDictionary::Column *totalCol = virtTab->getColumn("total");
+  NdbAggregator mainAgg(virtTab);
+  if (!mainAgg.LoadLinkedColumn(1, 0, totalCol) ||
+      !mainAgg.Count(0, 0) ||
+      !mainAgg.Sum(1, 0) ||
+      !mainAgg.Finalize()) {
+    printf("FAILED (mainAgg: %s)\n", mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Filter: reject when total <= 300, i.e. keep grp >= 151. */
+  Uint32 codeBuf[64];
+  NdbInterpretedCode filterCode(virtTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  Int64 threshold = 300;
+  const Uint32 REJECT = 0;
+  const Uint32 totalAttrId = totalCol->getColumnNo();
+  if (filterCode.branch_linked_mem_ge(1, virtTab, totalAttrId,
+                                       &threshold, sizeof(threshold),
+                                       REJECT) != 0 ||
+      filterCode.interpret_exit_ok() != 0 ||
+      filterCode.def_label(REJECT) != 0 ||
+      filterCode.interpret_exit_nok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter)\n");
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cteAgg);
+    qb->readTuple(srcTab, key, &opts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  NdbQueryOptions scanOpts;
+  scanOpts.setAggregation(mainAgg);
+  scanOpts.setInterpretedCode(filterCode);
+  if (qb->scanCte(0, 2, virtTab, &scanOpts) == nullptr) {
+    printf("FAILED (scanCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  Int64 count = rec.FetchAggregationResult().data_int64();
+  Int64 sum = rec.FetchAggregationResult().data_int64();
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  /* Expected: 150 groups pass the filter (grp 151..300),
+   *   SUM = 2*(151+152+...+300) = 2 * 33825 = 67650. */
+  if (count == 150 && sum == 67650) {
+    printf("OK (COUNT=%lld, SUM=%lld)\n", (long long)count, (long long)sum);
+    return 0;
+  }
+  printf("FAILED (expected COUNT=150 SUM=67650, got COUNT=%lld SUM=%lld)\n",
+         (long long)count, (long long)sum);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1839,6 +2005,7 @@ static const TestEntry g_tests[] = {
     { 12, testCteScanFilterRoot },
     { 13, testCteScanFilterAggFeed },
     { 14, testCteScanFilterEmptyResult },
+    { 15, testCteScanFilterBatchBoundary },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
