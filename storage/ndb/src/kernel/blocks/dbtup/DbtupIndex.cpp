@@ -150,40 +150,6 @@ int Dbtup::tuxReadAttrsCurr(EmulatedJamBuffer *jamBuf, const Uint32 *attrIds,
   return tuxReadAttrsCommon(req_struct, attrIds, numAttrs, dataOut, tupVersion);
 }
 
-/**
- * This method can be called from MT-build of
- * ordered indexes.
- */
-int Dbtup::tuxReadAttrsOpt(EmulatedJamBuffer *jamBuf, Uint32 *fragPtrP,
-                           Uint32 *tablePtrP, Uint32 pageId, Uint32 pageIndex,
-                           Uint32 tupVersion, const Uint32 *attrIds,
-                           Uint32 numAttrs, Uint32 *dataOut) {
-  thrjamEntryDebug(jamBuf);
-  // search for tuple version if not original
-
-  KeyReqStruct req_struct(this);
-  Operationrec tmpOp;
-  tmpOp.m_tuple_location.m_page_no= pageId;
-  tmpOp.m_tuple_location.m_page_idx= pageIndex;
-  tmpOp.op_type = ZREAD; // valgrind
-  setup_fixed_tuple_ref(&req_struct,
-                        &tmpOp,
-                        (Tablerec*)tablePtrP);
-
-  req_struct.m_lqh = c_lqh;
-  req_struct.tablePtrP = (Tablerec*)tablePtrP;
-  req_struct.fragPtrP = (Fragrecord*)fragPtrP;
-
-  setup_fixed_part(&req_struct,
-                   &tmpOp,
-                   (Tablerec*)tablePtrP);
-  return tuxReadAttrsCommon(req_struct,
-                            attrIds,
-                            numAttrs,
-                            dataOut,
-                            tupVersion);
-}
-
 int Dbtup::tuxReadAttrsCommon(KeyReqStruct &req_struct, const Uint32 *attrIds,
                               Uint32 numAttrs, Uint32 *dataOut,
                               Uint32 tupVersion) {

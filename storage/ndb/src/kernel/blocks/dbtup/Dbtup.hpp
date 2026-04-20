@@ -2402,15 +2402,41 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
                    const Uint32* attrIds,
                    Uint32 numAttrs,
                    Uint32* dataOut);
-  int tuxReadAttrsOpt(EmulatedJamBuffer*,
-                      Uint32* fragPtrP,
-                      Uint32* tablePtrP,
-                      Uint32 pageId,
-                      Uint32 pageOffset,
-                      Uint32 tupVersion,
-                      const Uint32* attrIds,
-                      Uint32 numAttrs,
-                      Uint32* dataOut);
+  /**
+   * Called from MT-build of ordered indexes. Inlined here so the single
+   * caller (Dbtux::readKeyAttrs) can avoid the cross-TU bl and argument
+   * marshalling.
+   */
+  ALWAYS_INLINE int tuxReadAttrsOpt(EmulatedJamBuffer *jamBuf, Uint32 *fragPtrP,
+                             Uint32 *tablePtrP, Uint32 pageId,
+                             Uint32 pageIndex, Uint32 tupVersion,
+                             const Uint32 *attrIds, Uint32 numAttrs,
+                             Uint32 *dataOut) {
+    thrjamEntryDebug(jamBuf);
+    KeyReqStruct req_struct(this);
+    Operationrec tmpOp;
+    tmpOp.m_tuple_location.m_page_no = pageId;
+    tmpOp.m_tuple_location.m_page_idx = pageIndex;
+    tmpOp.op_type = ZREAD;  // valgrind
+    setup_fixed_tuple_ref(&req_struct, &tmpOp, (Tablerec *)tablePtrP);
+    req_struct.m_lqh = c_lqh;
+    req_struct.tablePtrP = (Tablerec *)tablePtrP;
+    req_struct.fragPtrP = (Fragrecord *)fragPtrP;
+    setup_fixed_part(&req_struct, &tmpOp, (Tablerec *)tablePtrP);
+    /*
+     * Fast path: tuple version matches what the caller expects, so skip the
+     * operation-list walk and go straight to prepare_read + readAttributes.
+     * The slow path (version mismatch, requiring a walk of the operation
+     * chain to locate the right copy-tuple) stays out-of-line in
+     * tuxReadAttrsCommon so the common case doesn't pay for it.
+     */
+    if (likely(req_struct.m_tuple_ptr->get_tuple_version() == tupVersion)) {
+      prepare_read(&req_struct, req_struct.tablePtrP, false);
+      return readAttributes(&req_struct, attrIds, numAttrs, dataOut, ZNIL);
+    }
+    return tuxReadAttrsCommon(req_struct, attrIds, numAttrs, dataOut,
+                              tupVersion);
+  }
   int tuxReadAttrsCurr(EmulatedJamBuffer*,
                        const Uint32* attrIds,
                        Uint32 numAttrs,
