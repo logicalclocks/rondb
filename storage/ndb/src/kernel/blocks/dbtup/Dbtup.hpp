@@ -329,11 +329,39 @@ class Dbtup : public SimulatedBlock {
   typedef Tup_fixsize_page Fix_page;
   typedef Tup_varsize_page Var_page;
 
+ public:
+  // Forward declarations so the hot-pointer group below can live at a low
+  // offset within Dbtup and be reached with a single immediate-offset ldr
+  // (offsets must be < 0x8000 for scaled 8-byte loads); the full definitions
+  // follow later in this header. Access must match the definitions (public).
+  struct Fragrecord;
+  struct Tablerec;
+
+  typedef Ptr64<Fragrecord> FragrecordPtr;
+  typedef Ptr<Tablerec> TablerecPtr;
+
+ private:
   Uint32 m_acc_block;
   Uint32 m_tup_block;
   Uint32 m_lqh_block;
   Uint32 m_tux_block;
   Uint32 m_backup_block;
+
+  /*
+   * Hot-pointer group consumed together on every TUP operation entry
+   * (readTablePk path: c_page_map_pool_ptr used by getRealpid;
+   * prepare_fragptr/prepare_tabptr passed to tuxReadPk). alignas(64) aligns
+   * the group to a cache-line boundary; all three pointers fit within the
+   * first 40 bytes of the 64-byte line (one fetch covers everything). Placed
+   * near the top of Dbtup so the offset stays within the scaled-immediate
+   * range for ldr, avoiding a precomputed base-add at every call site.
+   */
+ public:
+  alignas(64) DynArr256Pool *c_page_map_pool_ptr;
+
+ private:
+  FragrecordPtr prepare_fragptr;
+  TablerecPtr prepare_tabptr;
 
  public:
   bool m_is_query_block;
@@ -616,7 +644,7 @@ struct Fragoperrec {
   void releaseScanOp(ScanOpPtr &scanPtr);
 
   struct Tuple_header;
-  struct Fragrecord;
+  // Fragrecord forward-declared near the top of this class.
 
   Uint32 prepare_lcp_scan_page(ScanOp &scan, Local_key &key, Uint32 *next_ptr,
                                Uint32 *prev_ptr);
@@ -694,7 +722,7 @@ struct Fragoperrec {
   typedef DLHashTable<Extent_info_pool> Extent_info_hash;
   typedef SLCList<Extent_info_pool, IA_Fragment> Fragment_extent_list;
   typedef LocalSLCList<Extent_info_pool, IA_Fragment> Local_fragment_extent_list;
-  struct Tablerec;
+  // Tablerec forward-declared near the top of this class.
   struct Disk_alloc_info {
     Disk_alloc_info() {}
     Disk_alloc_info(const Tablerec* tabPtrP, 
@@ -895,7 +923,7 @@ struct Fragrecord {
       }
     }
   };
-  typedef Ptr64<Fragrecord> FragrecordPtr;
+  // FragrecordPtr typedef moved to the top of this class.
   typedef RecordPool64<RWPool64<Fragrecord> > Fragment_pool;
   Fragment_pool c_fragment_pool;
   RSS_OP_COUNTER(cnoOfAllocatedFragrec);
@@ -1632,7 +1660,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
   Extent_info_hash c_extent_hash;
   Page_request_pool c_page_request_pool;
 
-  typedef Ptr<Tablerec> TablerecPtr;
+  // TablerecPtr typedef moved to the top of this class.
 
   struct storedProc {
     static constexpr Uint32 TYPE_ID = RT_DBTUP_STORED_PROCEDURE;
@@ -4103,10 +4131,6 @@ private:
   RSS_OP_COUNTER(cnoOfFreeFragoprec);
   RSS_OP_SNAPSHOT(cnoOfFreeFragoprec);
 
-public:
-  DynArr256Pool *c_page_map_pool_ptr;
-
- private:
   /*
    * DefaultValuesFragment is a normal struct Fragrecord.
    * It is TUP block-variable.
@@ -4140,16 +4164,8 @@ public:
  private:
   RSS_OP_COUNTER(cnoOfFreeTabDescrRec);
   RSS_OP_SNAPSHOT(cnoOfFreeTabDescrRec);
-  /*
-   * Keep prepare_fragptr and prepare_tabptr adjacent and on the same 64-byte
-   * cache line — they are always consumed together on every TUP operation
-   * entry (e.g. readTablePk's hash-compare path). alignas(64) ensures the
-   * pair starts at a cache-line boundary; without it the natural layout put
-   * the two .p slots 16 B apart spanning a line boundary, requiring two
-   * line fetches.
-   */
-  alignas(64) FragrecordPtr prepare_fragptr;
-  TablerecPtr prepare_tabptr;
+  // c_page_map_pool_ptr, prepare_fragptr, prepare_tabptr are at the top of
+  // this class for low-offset access on the PK-read hot path.
 
   /*
    * Per-instance scratch used by KeyReqStruct so the struct itself does not
