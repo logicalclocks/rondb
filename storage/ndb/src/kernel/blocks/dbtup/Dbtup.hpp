@@ -3205,6 +3205,63 @@ private:
                      Uint32 inBufLen, Uint32 *outBuffer, Uint32 TmaxRead,
                      Uint32* max_vec_rec_size = nullptr);
 
+  /*
+   * Fast-path single-attribute read for interpreter hot loops
+   * (AggInterpreter / JoinAggInterpreter group-by fetch + agg feed,
+   * VecSearchInterpreter column fetch). Skips the loop bookkeeping,
+   * PSEUDO-attr dispatch, partial-read handling, and the cross-TU bl
+   * that readAttributes carries on every invocation.
+   *
+   * Preconditions (caller guarantees — intentionally NOT rechecked in
+   * release builds; ndbassert-checked in debug):
+   *   - attrId is a real column id, NOT an AttributeHeader::PSEUDO attr
+   *   - attrId < req_struct->tablePtrP->m_no_of_attributes
+   *   - outBuf is Uint32-aligned with at least maxWords words space
+   *   - req_struct has been set up by setup_fixed_part + prepare_read
+   *     (attr_descr, tablePtrP, m_tuple_ptr, check_offset[], m_var_data[]
+   *     all populated) — same contract as readAttributes
+   *   - caller never requests a partial read
+   *
+   * Returns: words written (>= 1, including the AttributeHeader), or
+   *          -errorCode on failure.
+   *
+   * NOTE: If future edits to readAttributes introduce new invariant
+   * setup for the ReadFunction dispatch, the same setup must be
+   * replicated here — grep for "readAttributes" to find both.
+   */
+  ALWAYS_INLINE int readSingleAttribute(KeyReqStruct *req_struct,
+                                        Uint32 attrId, Uint32 *outBuf,
+                                        Uint32 maxWords) {
+    ndbassert(!(attrId & AttributeHeader::PSEUDO));
+    ndbassert(attrId < req_struct->tablePtrP->m_no_of_attributes);
+
+    req_struct->out_buf_index = 0;
+    req_struct->out_buf_bits = 0;
+    req_struct->partial_size = 0;
+    req_struct->max_read = 4 * maxWords;
+    req_struct->xfrm_flag = false;
+
+    const Uint32 *attr_descr = req_struct->attr_descr;
+    const Uint32 descrIdx = attrId * ZAD_SIZE;
+    const Uint32 attrDes1 = attr_descr[descrIdx];
+    const Uint32 attrDes2 = attr_descr[descrIdx + 1];
+    const Uint64 attrDes =
+        (Uint64(attrDes2) << 32) | Uint64(attrDes1);
+
+    AttributeHeader::init(outBuf, attrId, 0);
+    AttributeHeader *ahOut = (AttributeHeader *)outBuf;
+    req_struct->out_buf_index = 4;  // header consumed; read funcs add size
+
+    Tablerec *const regTabPtr = req_struct->tablePtrP;
+    ReadFunction f = regTabPtr->readFunctionArray[attrId];
+    Uint8 *outBuffer = (Uint8 *)outBuf;
+
+    if (likely((*f)(outBuffer, req_struct, ahOut, attrDes))) {
+      return 1 + ahOut->getDataSize();
+    }
+    return -(int)req_struct->errorCode;
+  }
+
   int setInputParameters(KeyReqStruct *req_struct,
                          Uint32 *inBuffer,
                          Uint32 inBufLen);

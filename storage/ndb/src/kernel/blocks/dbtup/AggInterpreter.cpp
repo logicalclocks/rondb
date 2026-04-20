@@ -1143,14 +1143,16 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     AttributeHeader* header = nullptr;
     m_attr_read_pos = 0;
     for (Uint32 i = 0; i < m_n_gb_cols; i++) {
-      int ret = block_tup->readAttributes(req_struct, &(m_gb_cols[i]), 1,
-                    m_attr_read_buf + m_attr_read_pos, g_attr_read_buf_len_ - m_attr_read_pos);
+      int ret = block_tup->readSingleAttribute(
+          req_struct, m_gb_cols[i] >> 16,
+          m_attr_read_buf + m_attr_read_pos,
+          g_attr_read_buf_len_ - m_attr_read_pos);
       if (ret < 0) {
         DEB_AGG(("read group by column error: %d", ret));
         return -ret;
       }
       header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
-      m_attr_read_pos += (1 + header->getDataSize());
+      m_attr_read_pos += Uint32(ret);
     }
 
     Uint32 len_in_char = m_attr_read_pos * sizeof(Uint32);
@@ -1413,17 +1415,19 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         is_unsigned = IsUnsigned(type);
         reg_index = (value & 0x000F0000) >> 16;
         {
-          col_index = (value & 0x0000FFFF) << 16;
-          ret = block_tup->readAttributes(req_struct, &(col_index), 1,
-                    m_attr_read_buf + m_attr_read_pos, g_attr_read_buf_len_ - m_attr_read_pos);
+          const Uint32 col_id = value & 0x0000FFFF;
+          ret = block_tup->readSingleAttribute(
+              req_struct, col_id,
+              m_attr_read_buf + m_attr_read_pos,
+              g_attr_read_buf_len_ - m_attr_read_pos);
           if (ret < 0) {
             DEB_AGG(("read column error: %d", ret));
             return -ret;
           }
           header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
-          attrDescriptor = req_struct->tablePtrP->tabDescriptor +
-              (((col_index) >> 16) * ZAD_SIZE);
-          assert(header->getAttributeId() == (col_index >> 16));
+          attrDescriptor =
+              req_struct->tablePtrP->tabDescriptor + (col_id * ZAD_SIZE);
+          assert(header->getAttributeId() == col_id);
           assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
         }
         if (!TypeSupported(type)) {

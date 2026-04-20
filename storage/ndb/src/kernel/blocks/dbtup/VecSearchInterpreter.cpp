@@ -178,9 +178,10 @@ Int32 VecSearchInterpreter::ProcessRec(Dbtup* block_tup,
 
   *vec_update_candidate = false;
 
-  Uint32 vec_col_idx = (m_vec_col_idx & 0x0000FFFF) << 16;
-  int ret = block_tup->readAttributes(req_struct, &(vec_col_idx), 1,
-                m_vec_buf + m_vec_buf_pos, g_vec_buf_len_ - m_vec_buf_pos);
+  const Uint32 vec_col_idx = m_vec_col_idx & 0x0000FFFF;
+  int ret = block_tup->readSingleAttribute(
+      req_struct, vec_col_idx,
+      m_vec_buf + m_vec_buf_pos, g_vec_buf_len_ - m_vec_buf_pos);
   if (ret < 0) {
     g_eventLogger->debug("read vector column error: %d", ret);
     return -ret;
@@ -188,7 +189,7 @@ Int32 VecSearchInterpreter::ProcessRec(Dbtup* block_tup,
   AttributeHeader* header = nullptr;
   header = reinterpret_cast<AttributeHeader*>(m_vec_buf + m_vec_buf_pos);
   const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
-    (((vec_col_idx) >> 16) * ZAD_SIZE);
+    (vec_col_idx * ZAD_SIZE);
   const Uint32 TattrDesc1 = attrDescriptor[0];
   const Uint32 type_id = AttributeDescriptor::getType(TattrDesc1);
   const Uint32 array_type = AttributeDescriptor::getArrayType(TattrDesc1);
