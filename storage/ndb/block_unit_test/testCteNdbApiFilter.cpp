@@ -54,6 +54,7 @@
 #include <ndb_global.h>
 #include <ndb_opts.h>
 #include <NdbApi.hpp>
+#include <NdbAggregator.hpp>
 #include <NdbSleep.h>
 #include "NdbQueryBuilder.hpp"
 #include "NdbQueryBuilderImpl.hpp"
@@ -71,6 +72,8 @@ static bool verbose = false;
 
 static const char *TEST_DB = "test";
 static const char *SRC_TABLE = "filter_src";
+static const char *CTE_SRC_TABLE = "cte_src";
+static const char *CTE_VIRTUAL_TABLE = "cte_virtual";
 
 /* ------------------------------------------------------------------ */
 /* MySQL helpers                                                       */
@@ -109,7 +112,10 @@ static int
 createTestTables(MYSQL *conn)
 {
   sqlExec(conn, "DROP TABLE IF EXISTS filter_src");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_src");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual");
 
+  /* Flat table for the baseline scan-filter tests (Tests 1-5). */
   if (sqlExec(conn,
       "CREATE TABLE filter_src ("
       "  pk INT NOT NULL PRIMARY KEY,"
@@ -118,23 +124,47 @@ createTestTables(MYSQL *conn)
       "  tag CHAR(8) NOT NULL"
       ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
+  /* CTE source + virtual tables, mirroring testCteNdbApi.cpp so Phase A.6
+   * CTE_LOOKUP filter tests can be written against a familiar schema. */
+  if (sqlExec(conn,
+      "CREATE TABLE cte_src ("
+      "  pk INT NOT NULL PRIMARY KEY,"
+      "  grp INT NOT NULL,"
+      "  val BIGINT NOT NULL"
+      ") ENGINE=NDB") != 0) return -1;
+
+  if (sqlExec(conn,
+      "CREATE TABLE cte_virtual ("
+      "  grp INT NOT NULL PRIMARY KEY,"
+      "  total BIGINT NOT NULL"
+      ") ENGINE=NDB") != 0) return -1;
+
   return 0;
 }
 
 static int
 insertTestData(MYSQL *conn)
 {
-  return sqlExec(conn,
+  if (sqlExec(conn,
       "INSERT INTO filter_src VALUES "
       "(1,1,10,'alpha'),(2,1,20,'alpha'),"
       "(3,2,30,'beta'), (4,2,40,'beta'),"
-      "(5,3,50,'gamma'),(6,3,60,'gamma')");
+      "(5,3,50,'gamma'),(6,3,60,'gamma')") != 0) return -1;
+
+  /* CTE 0 = SELECT grp, SUM(val) FROM cte_src GROUP BY grp
+   * Data: (1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)
+   * → cte0 = {(grp=1,total=30),(grp=2,total=70),(grp=3,total=50)} */
+  return sqlExec(conn,
+      "INSERT INTO cte_src VALUES "
+      "(1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)");
 }
 
 static void
 dropTestTables(MYSQL *conn)
 {
   sqlExec(conn, "DROP TABLE IF EXISTS filter_src");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_src");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual");
 }
 
 /* ------------------------------------------------------------------ */
@@ -526,6 +556,192 @@ testScanFilterRejectAll(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 6: CTE_LOOKUP with filter on a CTE virtual column              */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   WITH cte0 AS (SELECT grp, SUM(val) AS total                       */
+/*                 FROM cte_src GROUP BY grp)                          */
+/*   SELECT s.grp                                                      */
+/*   FROM cte_src s JOIN cte0 ON cte0.grp = s.grp                      */
+/*   WHERE cte0.total > 40                                             */
+/*                                                                     */
+/* cte0 = {(1,30),(2,70),(3,50)}.  Main scans cte_src (5 rows);        */
+/* only lookups with cte0.total > 40 pass the filter:                  */
+/*   pk=1 (grp=1, total=30) -> filter rejects                          */
+/*   pk=2 (grp=1, total=30) -> filter rejects                          */
+/*   pk=3 (grp=2, total=70) -> filter accepts                          */
+/*   pk=4 (grp=2, total=70) -> filter accepts                          */
+/*   pk=5 (grp=3, total=50) -> filter accepts                          */
+/* With MatchNonNull (inner join), rejects drop the main row, so 3     */
+/* main rows survive.                                                  */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteLookupFilterSingleCol(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 6: CTE_LOOKUP filter — cte0.total > 40 ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  /* CTE 0 = GROUP BY grp, SUM(val) */
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") ||
+      !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) ||
+      !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg: %s)\n", cteAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Build filter: WHERE cte0.total > 40
+   * Virtual layout per buildCteLinkedBuffer:
+   *   position 0 = grp    (GB key)
+   *   position 1 = total  (aggregate result)
+   * Use inverted-inequality: branch_linked_mem_ge(total, 40, REJECT)
+   * branches when col <= val, i.e. reject when total <= 40. */
+  Uint32 codeBuf[64];
+  NdbInterpretedCode filterCode(virtTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  Int64 threshold = 40;
+  const Uint32 REJECT = 0;
+  const Uint32 totalAttrId = virtTab->getColumn("total")->getColumnNo();
+  if (filterCode.branch_linked_mem_ge(
+          /*position=*/1, virtTab, totalAttrId,
+          &threshold, sizeof(threshold), REJECT) != 0 ||
+      filterCode.interpret_exit_ok() != 0 ||
+      filterCode.def_label(REJECT) != 0 ||
+      filterCode.interpret_exit_nok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter: %s)\n", filterCode.getNdbError().message);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) { printf("FAILED (create)\n"); return -1; }
+
+  /* CTE 0 subtree: scan cte_src + readTuple(self-join) aggregating */
+  qb->beginCteSubtree(0);
+  const NdbQueryTableScanOperationDef *cteScanOp = qb->scanTable(srcTab);
+  if (cteScanOp == nullptr) {
+    printf("FAILED (CTE scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteJoinKey[] = {
+      qb->linkedValue(cteScanOp, "pk"), nullptr
+  };
+  NdbQueryOptions cteLeafOpts;
+  cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLeafOpts.setAggregation(cteAgg);
+  if (qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts) == nullptr) {
+    printf("FAILED (CTE leaf: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, cteAgg) != 0) {
+    printf("FAILED (defineCte)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main query: scan cte_src, CTE_LOOKUP by grp, filter applied. */
+  const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+  if (mainScanOp == nullptr) {
+    printf("FAILED (main scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteKey[] = {
+      qb->linkedValue(mainScanOp, "grp"), nullptr
+  };
+  NdbQueryOptions cteLookupOpts;
+  cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLookupOpts.setInterpretedCode(filterCode);
+  if (qb->lookupCte(0, 2, virtTab, cteKey, &cteLookupOpts) == nullptr) {
+    printf("FAILED (lookupCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Define the row projection so the receive buffers are sized. */
+  NdbQueryOperation *mainQOp = query->getQueryOperation(3U);
+  NdbQueryOperation *cteQOp = query->getQueryOperation(4U);
+  NdbRecAttr *raGrp = nullptr;
+  if (mainQOp != nullptr) raGrp = mainQOp->getValue("grp");
+  if (cteQOp != nullptr) {
+    (void)cteQOp->getValue("grp");
+    (void)cteQOp->getValue("total");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans %d:%s, query %d:%s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    if (raGrp != nullptr) V("  row: main.grp=%d\n", raGrp->int32_value());
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount == 3) {
+    printf("OK (%u rows)\n", rowCount);
+    return 0;
+  }
+  printf("FAILED (expected 3 rows, got %u)\n", rowCount);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -540,6 +756,7 @@ static const TestEntry g_tests[] = {
     { 3, testScanFilterTwoCol },
     { 4, testScanFilterStringEq },
     { 5, testScanFilterRejectAll },
+    { 6, testCteLookupFilterSingleCol },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
