@@ -204,7 +204,7 @@ int Dbtup::tuxReadPk(Uint32 *fragPtrP_input, Uint32 *tablePtrP_input,
   tmpOp.m_tuple_location.m_page_idx = pageIndex;
 
   // Use the PK-read-path ctor: skips init of fields unused by tuxReadPk.
-  KeyReqStruct req_struct(this, KeyReqStruct::PkReadTag{});
+  KeyReqStruct req_struct(this, KeyReqStruct::SimpleReadTag{});
   req_struct.m_lqh = c_lqh;
   req_struct.tablePtrP = tablePtrP;
   req_struct.fragPtrP = fragPtrP;
