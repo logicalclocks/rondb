@@ -900,7 +900,9 @@ struct Fragrecord {
   Fragment_pool c_fragment_pool;
   RSS_OP_COUNTER(cnoOfAllocatedFragrec);
   RSS_OP_SNAPSHOT(cnoOfAllocatedFragrec);
-  FragrecordPtr prepare_fragptr;
+  // prepare_fragptr lives alongside prepare_tabptr further down so they share
+  // a single cache line; both are read back-to-back on the hash-compare hot
+  // path (Dbacc::readTablePk → accReadPk → tuxReadPk).
 
   void acquire_frag_page_map_mutex(Fragrecord *fragPtrP,
                                    EmulatedJamBuffer *jamBuf)
@@ -4133,6 +4135,15 @@ public:
  private:
   RSS_OP_COUNTER(cnoOfFreeTabDescrRec);
   RSS_OP_SNAPSHOT(cnoOfFreeTabDescrRec);
+  /*
+   * Keep prepare_fragptr and prepare_tabptr adjacent and on the same 64-byte
+   * cache line — they are always consumed together on every TUP operation
+   * entry (e.g. readTablePk's hash-compare path). alignas(64) ensures the
+   * pair starts at a cache-line boundary; without it the natural layout put
+   * the two .p slots 16 B apart spanning a line boundary, requiring two
+   * line fetches.
+   */
+  alignas(64) FragrecordPtr prepare_fragptr;
   TablerecPtr prepare_tabptr;
 
   /*
