@@ -4481,14 +4481,17 @@ Uint32 Dbacc::find_key_operation(Ptr<Operationrec> opPtr,
 }
 
 /*
- * Hot path: valid local key and tuple still live. Marked inline so the two
- * call sites in this TU (getElement and the release-queue path) can merge
- * the fast path directly; the cold TUPLE_DELETED fallback stays out-of-line
- * in readTablePkTupleDeletedSlow() so it does not bloat the callers.
+ * Hot path: valid local key and tuple still live. ALWAYS_INLINE because plain
+ * `inline` was only a hint and clang's cost heuristic declined at -O2 (body
+ * has ~80 instructions so the threshold was not cleared). The two call sites
+ * in this TU (getElement and the release-queue path) both pay a full function
+ * frame otherwise — forcing the inline removes that per hash compare. The
+ * cold TUPLE_DELETED fallback stays out-of-line in readTablePkTupleDeletedSlow
+ * so it does not bloat the callers.
  */
-inline Uint32 Dbacc::readTablePk(Uint32 localkey1, Uint32 localkey2, Uint32 eh,
-                                 Ptr<Operationrec> opPtr, Uint32 *keys,
-                                 bool xfrm) {
+ALWAYS_INLINE Uint32 Dbacc::readTablePk(Uint32 localkey1, Uint32 localkey2,
+                                        Uint32 eh, Ptr<Operationrec> opPtr,
+                                        Uint32 *keys, bool xfrm) {
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   const int xfrm_multiply = (xfrm) ? MAX_XFRM_MULTIPLY : 1;
   std::memset(keys, 0x1f, (fragrecptr.p->keyLength * xfrm_multiply) << 2);
