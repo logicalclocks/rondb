@@ -2382,10 +2382,15 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
   inline int accReadPk(Uint32 fragPageId, Uint32 pageIndex, Uint32 *dataOut,
                        bool xfrmFlag) {
     jamEntryDebug();
-    Uint32 pageId = getRealpid(prepare_fragptr.p, fragPageId);
-    return tuxReadPk((Uint32 *)prepare_fragptr.p,
-                     (Uint32 *)prepare_tabptr.p,
-                     pageId, pageIndex, dataOut, xfrmFlag);
+    // Cache the two prepare_* pointers in locals so the compiler can keep
+    // them in callee-saved registers across the getRealpid call instead of
+    // reloading prepare_fragptr.p from Dbtup's memory afterwards. Both
+    // pointers are stable for the duration of the operation.
+    Fragrecord *const fragPtrP = prepare_fragptr.p;
+    Tablerec *const tabPtrP = prepare_tabptr.p;
+    Uint32 pageId = getRealpid(fragPtrP, fragPageId);
+    return tuxReadPk((Uint32 *)fragPtrP, (Uint32 *)tabPtrP, pageId, pageIndex,
+                     dataOut, xfrmFlag);
   }
 
   inline Uint32 get_tuple_operation_ptr_i() {
