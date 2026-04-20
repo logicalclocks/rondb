@@ -11126,55 +11126,6 @@ void Dbtup::dump_tuple(const KeyReqStruct *req_struct,
 #endif
 }
 
-/*
- * Shared tail of prepare_read's former two-iteration loop. Given
- * flex_data/flex_len for either the MM or DD var part, fills dst with
- * the var/dyn pointer layout. Defined locally (TU-private static) so
- * the compiler can inline it into both call sites in prepare_read.
- */
-ALWAYS_INLINE static void prepare_read_fill_var_data(
-    Dbtup::KeyReqStruct::Var_data *dst,
-    const Uint32 *flex_data,
-    Uint32 flex_len,
-    Uint16 num_vars,
-    EmulatedJamBuffer *jamBuffer)
-{
-  char *varstart;
-  Uint32 varlen;
-  const Uint32 *dynstart;
-  if (num_vars) {
-    varstart = (char *)(((Uint16 *)flex_data) + num_vars + 1);
-    varlen = ((Uint16 *)flex_data)[num_vars];
-    dynstart = ALIGN_WORD(varstart + varlen);
-#ifdef TUP_DATA_VALIDATION
-    thrjam(jamBuffer);
-    thrjamLine(jamBuffer, num_vars);
-    for (Uint16 i = 0; i < (num_vars + 1); i++)
-      thrjamLine(jamBuffer, ((Uint16 *)flex_data)[i]);
-#else
-    (void)jamBuffer;
-#endif
-  } else {
-#ifdef TUP_DATA_VALIDATION
-    thrjam(jamBuffer);
-#else
-    (void)jamBuffer;
-#endif
-    varstart = 0;
-    varlen = 0;
-    dynstart = flex_data;
-  }
-  dst->m_data_ptr = varstart;
-  dst->m_offset_array_ptr = (Uint16 *)flex_data;
-  dst->m_var_len_offset = 1;
-  dst->m_max_var_offset = varlen;
-
-  Uint32 dynlen = Uint32(flex_len - (dynstart - flex_data));
-  assert((ptrdiff_t)flex_len >= (dynstart - flex_data));
-  dst->m_dyn_data_ptr = (char *)dynstart;
-  dst->m_dyn_part_len = dynlen;
-}
-
 void Dbtup::prepare_read(KeyReqStruct *req_struct, Tablerec *tabPtrP,
                          bool disk)
 {
@@ -11247,8 +11198,45 @@ void Dbtup::prepare_read(KeyReqStruct *req_struct, Tablerec *tabPtrP,
        * from the right place in COPY tuples. */
       src_ptr += flex_len;
 
-      prepare_read_fill_var_data(dst, flex_data, flex_len, num_vars,
-                                 req_struct->jamBuffer);
+      /* Shared tail: fill dst with var/dyn pointer layout. Intentionally
+       * duplicated (not factored into an ALWAYS_INLINE helper) — when the
+       * same inline helper is called from two sites in the same function,
+       * Clang 17 and GCC 12.2.1-7 tail-merge the two inlined bodies and
+       * reference only one call site's parameter spill slot, leaving the
+       * other call site's parameter read uninitialised (SIGSEGV in
+       * TUP_DATA_VALIDATION's thrjam on the MM path). */
+      {
+        char *varstart;
+        Uint32 varlen;
+        const Uint32 *dynstart;
+        if (num_vars) {
+          varstart = (char *)(((Uint16 *)flex_data) + num_vars + 1);
+          varlen = ((Uint16 *)flex_data)[num_vars];
+          dynstart = ALIGN_WORD(varstart + varlen);
+#ifdef TUP_DATA_VALIDATION
+          thrjam(req_struct->jamBuffer);
+          thrjamLine(req_struct->jamBuffer, num_vars);
+          for (Uint16 i = 0; i < (num_vars + 1); i++)
+            thrjamLine(req_struct->jamBuffer, ((Uint16 *)flex_data)[i]);
+#endif
+        } else {
+#ifdef TUP_DATA_VALIDATION
+          thrjam(req_struct->jamBuffer);
+#endif
+          varstart = 0;
+          varlen = 0;
+          dynstart = flex_data;
+        }
+        dst->m_data_ptr = varstart;
+        dst->m_offset_array_ptr = (Uint16 *)flex_data;
+        dst->m_var_len_offset = 1;
+        dst->m_max_var_offset = varlen;
+
+        Uint32 dynlen = Uint32(flex_len - (dynstart - flex_data));
+        ndbassert((ptrdiff_t)flex_len >= (dynstart - flex_data));
+        dst->m_dyn_data_ptr = (char *)dynstart;
+        dst->m_dyn_part_len = dynlen;
+      }
     }
   }
 
@@ -11335,8 +11323,40 @@ void Dbtup::prepare_read(KeyReqStruct *req_struct, Tablerec *tabPtrP,
     return;
   }
 
-  prepare_read_fill_var_data(dst, flex_data, flex_len, num_vars,
-                             req_struct->jamBuffer);
+  /* Shared tail: duplicated from the MM block above. See the comment at
+   * the MM site for why this is not factored into a helper. */
+  {
+    char *varstart;
+    Uint32 varlen;
+    const Uint32 *dynstart;
+    if (num_vars) {
+      varstart = (char *)(((Uint16 *)flex_data) + num_vars + 1);
+      varlen = ((Uint16 *)flex_data)[num_vars];
+      dynstart = ALIGN_WORD(varstart + varlen);
+#ifdef TUP_DATA_VALIDATION
+      thrjam(req_struct->jamBuffer);
+      thrjamLine(req_struct->jamBuffer, num_vars);
+      for (Uint16 i = 0; i < (num_vars + 1); i++)
+        thrjamLine(req_struct->jamBuffer, ((Uint16 *)flex_data)[i]);
+#endif
+    } else {
+#ifdef TUP_DATA_VALIDATION
+      thrjam(req_struct->jamBuffer);
+#endif
+      varstart = 0;
+      varlen = 0;
+      dynstart = flex_data;
+    }
+    dst->m_data_ptr = varstart;
+    dst->m_offset_array_ptr = (Uint16 *)flex_data;
+    dst->m_var_len_offset = 1;
+    dst->m_max_var_offset = varlen;
+
+    Uint32 dynlen = Uint32(flex_len - (dynstart - flex_data));
+    ndbassert((ptrdiff_t)flex_len >= (dynstart - flex_data));
+    dst->m_dyn_data_ptr = (char *)dynstart;
+    dst->m_dyn_part_len = dynlen;
+  }
 }
 
 void Dbtup::shrink_tuple(KeyReqStruct *req_struct, Uint32 sizes[2],
