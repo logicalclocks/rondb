@@ -3424,12 +3424,18 @@ private:
    * caller passes the AttrInfo bound into the incoming signal; on a
    * CONTINUEB resumption within the agg-feed path they are
    * (nullptr, 0) — see runCteFilter's short-circuit. */
+  /* Release a CteScanIterState pool record and, if populated, free
+   * the cinBufOverflow filter buffer allocated via lc_ndbd_pool_malloc.
+   * Safe to call with stateI == RNIL (no-op). */
+  void releaseCteScanIterState(Uint32 stateI);
+
   void cteScanAggFeed(Signal* signal, Uint32 aggStateKey,
                       Uint32 senderRef, Uint32 senderData,
                       Uint32 joinAggStateKey,
                       Uint32 iterBucket, const char *iterRaw,
                       Uint32 groupsSent,
-                      const Uint32 *cinBuf, Uint32 attrInfoLen);
+                      const Uint32 *cinBuf, Uint32 attrInfoLen,
+                      Uint32 aggFeedStateI);
   void cteScanEmitResults(Signal* signal, const CteScanReq &req,
                           JoinAggInterpreter *interp,
                           const Uint32 *finalR, Uint32 finalRLen,
@@ -5132,20 +5138,42 @@ public:
   void sendPoolShrink(Uint32 pool_index);
   void shrinkTransientPools(Uint32 pool_index);
 
-  /* Per-scan iteration state for CTE_SCAN_REQ (non-agg path).
-   * Allocated on first batch, released on EndOfData.  Pool i-value is
-   * round-tripped through DBSPJ (CONF → REQ) so each concurrent scan
-   * has its own state and the CTE hash table stays read-only. */
+  /* Per-scan iteration state for CTE_SCAN_REQ.  Allocated on the first
+   * batch, released on EndOfData.
+   *
+   *   - Non-agg (emit) path: pool i-value round-trips through DBSPJ
+   *     (CONF.scanIterI -> REQ.scanIterI) so each concurrent scan has
+   *     its own state.  attrInfoLen stays 0 in this path because
+   *     every CTE_SCAN_REQ re-carries its own AttrInfo section.
+   *
+   *   - Agg-feed path: CONTINUEB (self-signal) can't carry sections,
+   *     so the user's filter program has to survive on the server
+   *     across batches.  On the first call we copy cinBuf into
+   *     cinBufInline (or lc_ndbd_pool_malloc'd cinBufOverflow for
+   *     programs larger than the inline cap) and pass the pool
+   *     i-value through CONTINUEB; continuations resolve the state
+   *     and reuse the copy.
+   *
+   * cinBuf() returns whichever buffer is populated.  Release always
+   * frees cinBufOverflow via lc_ndbd_pool_free() if set. */
+  static constexpr Uint32 CTE_SCAN_FILTER_INLINE_WORDS = 64;
   struct CteScanIterState {
     static constexpr Uint32 TYPE_ID = RT_DBLQH_CTE_SCAN_ITER;
     Uint32 m_magic;
 
     CteScanIterState() : m_magic(Magic::make(TYPE_ID)) {}
 
-    Uint32 iterBucket;      // Hash table iterator: bucket index
-    char  *iterRaw;         // Hash table iterator: raw entry pointer
-    Uint32 groupsSent;      // Groups sent so far (for CORR_FACTOR ID)
-    Uint32 nextPool;
+    Uint32  iterBucket;      // Hash table iterator: bucket index
+    char   *iterRaw;         // Hash table iterator: raw entry pointer
+    Uint32  groupsSent;      // Groups sent so far (for CORR_FACTOR ID)
+    Uint32  attrInfoLen;     // Words of filter data (0 = no filter)
+    Uint32  cinBufInline[CTE_SCAN_FILTER_INLINE_WORDS];
+    Uint32 *cinBufOverflow;  // nullptr if attrInfoLen fits inline
+    Uint32  nextPool;
+
+    const Uint32 *cinBuf() const {
+      return cinBufOverflow != nullptr ? cinBufOverflow : cinBufInline;
+    }
   };
   static constexpr Uint32 DBLQH_CTE_SCAN_ITER_TRANSIENT_POOL_INDEX = 5;
   typedef TransientPool<CteScanIterState> CteScanIterState_pool;
