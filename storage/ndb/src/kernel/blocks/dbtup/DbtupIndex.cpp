@@ -321,15 +321,67 @@ int Dbtup::tuxReadPk(Uint32 *fragPtrP_input, Uint32 *tablePtrP_input,
     req_struct.m_tuple_ptr = get_copy_tuple(opPtr.p->m_copy_tuple_location);
   }
   prepare_read(&req_struct, tablePtrP, false);
-    
-  const Uint32* attrIds = tablePtrP->readKeyArray;
-  const Uint32 numAttrs= tablePtrP->noOfKeyAttr;
-  // read pk attributes from original tuple
 
-  // do it
-  ret = readKeyAttributes(&req_struct, attrIds, numAttrs, dataOut, ZNIL,
-                          xfrmFlag);
-  // done
+  const Uint32* attrIds = tablePtrP->readKeyArray;
+  const Uint32 numAttrs = tablePtrP->noOfKeyAttr;
+
+  /*
+   * Inlined body of the former Dbtup::readKeyAttributes() — its only caller.
+   * Simplified compared to readAttributes(): PK attributes are never pseudo,
+   * never Bit-typed, never partial reads, and the output is written without
+   * AttributeHeader so that the result is directly usable by cmp_key(),
+   * xfrm_key_hash() and md5_hash(). maxRead is ZNIL (unlimited).
+   */
+  {
+    AttributeHeader ahOutDummy;
+    const Uint32 *attr_descr = req_struct.attr_descr;
+    const Uint32 numAttributes = tablePtrP->m_no_of_attributes;
+    Uint8 *outBuffer = (Uint8 *)dataOut;
+
+    req_struct.out_buf_index = 0;
+    req_struct.out_buf_bits = 0;
+    req_struct.partial_size = 0;
+    req_struct.max_read = 4 * ZNIL;
+    req_struct.xfrm_flag = xfrmFlag;
+    thrjamDebug(req_struct.jamBuffer);
+
+    ret = 0;
+    for (Uint32 inBufIndex = 0; inBufIndex < numAttrs; inBufIndex++) {
+      thrjamDebug(req_struct.jamBuffer);
+      // pad32(x, 0) simplifies to ((x + 3) & ~3). out_buf_bits is 0 for PK
+      // reads — asserted below after the read function returns.
+      Uint32 tmpAttrBufIndex = (req_struct.out_buf_index + 3) & ~Uint32(3);
+      req_struct.out_buf_index = tmpAttrBufIndex;
+      AttributeHeader ahIn(attrIds[inBufIndex]);
+      Uint32 attributeId = ahIn.getAttributeId();
+      if (unlikely(attributeId >= numAttributes)) {
+        thrjam(req_struct.jamBuffer);
+        ret = -ZATTRIBUTE_ID_ERROR;
+        break;
+      }
+      Uint32 descr_index = attributeId * ZAD_SIZE;
+      Uint32 attrDescriptor = attr_descr[descr_index];
+      Uint32 attrDes2 = attr_descr[descr_index + 1];
+      Uint64 attrDes = (Uint64(attrDes2) << 32) + Uint64(attrDescriptor);
+      ReadFunction f = tablePtrP->readFunctionArray[attributeId];
+      thrjamLineDebug(req_struct.jamBuffer, attributeId);
+      if (unlikely(!(*f)(outBuffer, &req_struct, &ahOutDummy, attrDes))) {
+        ndbassert(!(attributeId & AttributeHeader::PSEUDO));
+        thrjam(req_struct.jamBuffer);
+        ret = -(int)req_struct.errorCode;
+        break;
+      }
+      // PK columns are never pseudo and never Bit-typed
+      ndbassert(AttributeDescriptor::getPrimaryKey(attrDescriptor));
+      ndbassert(req_struct.out_buf_bits == 0);
+    }
+    if (likely(ret == 0)) {
+      thrjamDebug(req_struct.jamBuffer);
+      ndbassert(req_struct.out_buf_bits == 0);
+      ret = (((req_struct.out_buf_index + 3) & ~Uint32(3)) >> 2);
+    }
+  }
+
   if (unlikely(ret < 0)) {
     jam();
     return ret;
