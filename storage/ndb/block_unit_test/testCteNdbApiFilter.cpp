@@ -983,6 +983,455 @@ testCteLookupFilterBranchOpcode(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 9: CTE_LOOKUP filter — runs BEFORE agg feed                    */
+/*                                                                     */
+/* CTE_LOOKUP is an aggregate leaf (setAggregation on the lookup op).  */
+/* The filter must run BEFORE the result is fed into the main          */
+/* aggregation, so rejected rows don't contribute to COUNT / SUM.      */
+/*                                                                     */
+/*   mainAgg = COUNT(*), SUM(cte0.total)                               */
+/*   Filter on CTE_LOOKUP: cte0.total > 40                             */
+/*                                                                     */
+/* Without filter the 5 main rows would feed the main agg with         */
+/* COUNT=5, SUM(total) = 30+30+70+70+50 = 250.                         */
+/* With filter the 2 rows where grp=1 (total=30) are rejected:         */
+/* COUNT=3, SUM(total) = 70+70+50 = 190.                               */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteLookupFilterInAggFeed(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 9: CTE_LOOKUP filter — runs before agg feed ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup)\n");
+    return -1;
+  }
+
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") || !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) || !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg)\n");
+    return -1;
+  }
+
+  /* Main agg over the CTE_LOOKUP's virtual `total` column at linked
+   * position 1 (position 0 = grp key, position 1 = total aggregate). */
+  const NdbDictionary::Column *totalCol = virtTab->getColumn("total");
+  NdbAggregator mainAgg(virtTab);
+  if (!mainAgg.LoadLinkedColumn(1, 0, totalCol) ||
+      !mainAgg.Count(0, 0) ||
+      !mainAgg.Sum(1, 0) ||
+      !mainAgg.Finalize()) {
+    printf("FAILED (mainAgg: %s)\n", mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Filter on cte0.total > 40 — reject when total <= 40. */
+  Uint32 codeBuf[64];
+  NdbInterpretedCode filterCode(virtTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  Int64 threshold = 40;
+  const Uint32 REJECT = 0;
+  const Uint32 totalAttrId = totalCol->getColumnNo();
+  if (filterCode.branch_linked_mem_ge(1, virtTab, totalAttrId,
+                                       &threshold, sizeof(threshold),
+                                       REJECT) != 0 ||
+      filterCode.interpret_exit_ok() != 0 ||
+      filterCode.def_label(REJECT) != 0 ||
+      filterCode.interpret_exit_nok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter)\n");
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  qb->beginCteSubtree(0);
+  const NdbQueryTableScanOperationDef *cteScanOp = qb->scanTable(srcTab);
+  const NdbQueryOperand *cteJoinKey[] = {
+      qb->linkedValue(cteScanOp, "pk"), nullptr
+  };
+  NdbQueryOptions cteLeafOpts;
+  cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLeafOpts.setAggregation(cteAgg);
+  qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts);
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+  const NdbQueryOperand *cteKey[] = {
+      qb->linkedValue(mainScanOp, "grp"), nullptr
+  };
+  NdbQueryOptions cteLookupOpts;
+  cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLookupOpts.setAggregation(mainAgg);
+  cteLookupOpts.setInterpretedCode(filterCode);
+  qb->lookupCte(0, 2, virtTab, cteKey, &cteLookupOpts);
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result rows)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  Int64 count = rec.FetchAggregationResult().data_int64();
+  Int64 sum = rec.FetchAggregationResult().data_int64();
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (count == 3 && sum == 190) {
+    printf("OK (COUNT=%lld, SUM=%lld)\n", (long long)count, (long long)sum);
+    return 0;
+  }
+  printf("FAILED (expected COUNT=3 SUM=190, got COUNT=%lld SUM=%lld)\n",
+         (long long)count, (long long)sum);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 10: CTE_LOOKUP filter — LEFT JOIN semantics                    */
+/*                                                                     */
+/* Same query as Test 6, but without MatchNonNull on the lookupCte —   */
+/* i.e. LEFT JOIN semantics.  Filter-rejected lookups emit             */
+/* CTE_LOOKUP_REF GROUP_NOT_FOUND, which DBSPJ maps to a NULL CTE row  */
+/* instead of dropping the main row.  Every one of the 5 main rows    */
+/* survives; verify by iterating and counting.                         */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteLookupFilterLeftJoin(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 10: CTE_LOOKUP filter — LEFT JOIN null-row ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") || !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) || !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg)\n");
+    return -1;
+  }
+
+  Uint32 codeBuf[64];
+  NdbInterpretedCode filterCode(virtTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  Int64 threshold = 40;
+  const Uint32 REJECT = 0;
+  const Uint32 totalAttrId = virtTab->getColumn("total")->getColumnNo();
+  if (filterCode.branch_linked_mem_ge(1, virtTab, totalAttrId,
+                                       &threshold, sizeof(threshold),
+                                       REJECT) != 0 ||
+      filterCode.interpret_exit_ok() != 0 ||
+      filterCode.def_label(REJECT) != 0 ||
+      filterCode.interpret_exit_nok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter)\n");
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  qb->beginCteSubtree(0);
+  const NdbQueryTableScanOperationDef *cteScanOp = qb->scanTable(srcTab);
+  const NdbQueryOperand *cteJoinKey[] = {
+      qb->linkedValue(cteScanOp, "pk"), nullptr
+  };
+  NdbQueryOptions cteLeafOpts;
+  cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLeafOpts.setAggregation(cteAgg);
+  qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts);
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+  const NdbQueryOperand *cteKey[] = {
+      qb->linkedValue(mainScanOp, "grp"), nullptr
+  };
+  NdbQueryOptions cteLookupOpts;
+  /* No setMatchType -> default (LEFT JOIN): filter-rejected lookups
+   * yield NULL CTE rows but the main row still emits. */
+  cteLookupOpts.setInterpretedCode(filterCode);
+  qb->lookupCte(0, 2, virtTab, cteKey, &cteLookupOpts);
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  NdbQueryOperation *mainQOp = query->getQueryOperation(3U);
+  NdbQueryOperation *cteQOp = query->getQueryOperation(4U);
+  if (mainQOp != nullptr) (void)mainQOp->getValue("grp");
+  if (cteQOp != nullptr) {
+    (void)cteQOp->getValue("grp");
+    (void)cteQOp->getValue("total");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow)
+    rowCount++;
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount == 5) {
+    printf("OK (%u rows)\n", rowCount);
+    return 0;
+  }
+  printf("FAILED (expected 5, got %u)\n", rowCount);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 11: Two CTEs, each with its own filter — no cross-contamination*/
+/*                                                                     */
+/* Define cte0 and cte1 as identical GROUP BY grp, SUM(val) CTEs       */
+/* (both materialise {(1,30),(2,70),(3,50)}), then attach a different  */
+/* filter to each of two CTE_LOOKUP ops in the same main query:        */
+/*                                                                     */
+/*   filter0 on cte0-lookup: total > 40  (accepts grp=2, grp=3)        */
+/*   filter1 on cte1-lookup: total > 60  (accepts only grp=2)          */
+/*                                                                     */
+/* With MatchNonNull on both lookups, a main row survives only when    */
+/* BOTH filters accept it.  Only grp=2 meets both, so pk=3 and pk=4    */
+/* survive.                                                             */
+/*                                                                     */
+/* If either filter were leaking into the other's execution (e.g.,     */
+/* shared buffer clobbering), the count would be wrong.                */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteLookupFilterMultipleCte(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 11: CTE_LOOKUP filter — two CTEs, two filters ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+
+  /* Two independent NdbAggregators (same definition, separate instances
+   * — each CTE has its own aggregation state). */
+  NdbAggregator cteAgg0(srcTab), cteAgg1(srcTab);
+  for (NdbAggregator *a : {&cteAgg0, &cteAgg1}) {
+    if (!a->GroupBy("grp") || !a->LoadColumn("val", 0) ||
+        !a->Sum(0, 0) || !a->Finalize()) {
+      printf("FAILED (cteAgg)\n");
+      return -1;
+    }
+  }
+
+  const Uint32 totalAttrId = virtTab->getColumn("total")->getColumnNo();
+
+  /* Filter 0: total > 40 */
+  Uint32 code0Buf[64];
+  NdbInterpretedCode filter0(virtTab, code0Buf,
+                              sizeof(code0Buf) / sizeof(code0Buf[0]));
+  {
+    Int64 t = 40;
+    const Uint32 R = 0;
+    if (filter0.branch_linked_mem_ge(1, virtTab, totalAttrId, &t, sizeof(t), R) != 0 ||
+        filter0.interpret_exit_ok() != 0 ||
+        filter0.def_label(R) != 0 ||
+        filter0.interpret_exit_nok() != 0 ||
+        filter0.finalise() != 0) {
+      printf("FAILED (build filter0)\n");
+      return -1;
+    }
+  }
+
+  /* Filter 1: total > 60 */
+  Uint32 code1Buf[64];
+  NdbInterpretedCode filter1(virtTab, code1Buf,
+                              sizeof(code1Buf) / sizeof(code1Buf[0]));
+  {
+    Int64 t = 60;
+    const Uint32 R = 0;
+    if (filter1.branch_linked_mem_ge(1, virtTab, totalAttrId, &t, sizeof(t), R) != 0 ||
+        filter1.interpret_exit_ok() != 0 ||
+        filter1.def_label(R) != 0 ||
+        filter1.interpret_exit_nok() != 0 ||
+        filter1.finalise() != 0) {
+      printf("FAILED (build filter1)\n");
+      return -1;
+    }
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+
+  /* cte0 */
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cteAgg0);
+    qb->readTuple(srcTab, key, &opts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg0);
+
+  /* cte1 — identical definition, separate subtree & agg */
+  qb->beginCteSubtree(1);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cteAgg1);
+    qb->readTuple(srcTab, key, &opts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(1, srcTab, cteAgg1);
+
+  /* Main: scan + CTE_LOOKUP cte0 with filter0 + CTE_LOOKUP cte1 with filter1 */
+  const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+
+  const NdbQueryOperand *key0[] = {
+      qb->linkedValue(mainScanOp, "grp"), nullptr
+  };
+  NdbQueryOptions opts0;
+  opts0.setMatchType(NdbQueryOptions::MatchNonNull);
+  opts0.setInterpretedCode(filter0);
+  qb->lookupCte(0, 2, virtTab, key0, &opts0);
+
+  const NdbQueryOperand *key1[] = {
+      qb->linkedValue(mainScanOp, "grp"), nullptr
+  };
+  NdbQueryOptions opts1;
+  opts1.setMatchType(NdbQueryOptions::MatchNonNull);
+  opts1.setInterpretedCode(filter1);
+  qb->lookupCte(1, 2, virtTab, key1, &opts1);
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  /* Op indices: 0=cte0 subtree, 1=cte0 scan, 2=cte0 readTuple,
+   *             3=cte1 subtree, 4=cte1 scan, 5=cte1 readTuple,
+   *             6=main scan,    7=lookupCte(0), 8=lookupCte(1) */
+  NdbQueryOperation *mainQOp = query->getQueryOperation(6U);
+  NdbQueryOperation *lk0QOp  = query->getQueryOperation(7U);
+  NdbQueryOperation *lk1QOp  = query->getQueryOperation(8U);
+  if (mainQOp != nullptr) (void)mainQOp->getValue("grp");
+  if (lk0QOp != nullptr) {
+    (void)lk0QOp->getValue("grp");
+    (void)lk0QOp->getValue("total");
+  }
+  if (lk1QOp != nullptr) {
+    (void)lk1QOp->getValue("grp");
+    (void)lk1QOp->getValue("total");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow)
+    rowCount++;
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount == 2) {
+    printf("OK (%u rows)\n", rowCount);
+    return 0;
+  }
+  printf("FAILED (expected 2, got %u)\n", rowCount);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1000,6 +1449,9 @@ static const TestEntry g_tests[] = {
     { 6, testCteLookupFilterSingleCol },
     { 7, testCteLookupFilterNoMatch },
     { 8, testCteLookupFilterBranchOpcode },
+    { 9, testCteLookupFilterInAggFeed },
+    { 10, testCteLookupFilterLeftJoin },
+    { 11, testCteLookupFilterMultipleCte },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
