@@ -11170,7 +11170,7 @@ ALWAYS_INLINE static void prepare_read_fill_var_data(
   dst->m_max_var_offset = varlen;
 
   Uint32 dynlen = Uint32(flex_len - (dynstart - flex_data));
-  ndbassert((ptrdiff_t)flex_len >= (dynstart - flex_data));
+  assert((ptrdiff_t)flex_len >= (dynstart - flex_data));
   dst->m_dyn_data_ptr = (char *)dynstart;
   dst->m_dyn_part_len = dynlen;
 }
