@@ -1219,8 +1219,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     agg_res_ptr = m_agg_results;
   }
 
-  Uint32 col_index;
-
   Uint32 value;
   DataType type;
   bool is_unsigned;
