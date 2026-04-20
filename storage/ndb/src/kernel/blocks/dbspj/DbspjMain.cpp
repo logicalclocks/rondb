@@ -6309,8 +6309,18 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       jam();
       getSection(handle.m_ptr[CteLookupReq::AttrInfoSectionNum], attrInfoPtrI);
       handle.m_cnt = 2;
+    } else if ((treeNodePtr.p->m_bits & TreeNode::T_ATTR_INTERPRETED) &&
+               attrInfoPtrI != RNIL) {
+      /* Agg-feed path without linked parent columns, but the user
+       * attached an interpreted-code filter via setInterpretedCode().
+       * Forward the base AttrInfo (containing the 5-word header and
+       * the filter program) so the DBLQH filter gate can execute it
+       * against the CTE group row before the agg feed. */
+      jam();
+      getSection(handle.m_ptr[CteLookupReq::AttrInfoSectionNum], attrInfoPtrI);
+      handle.m_cnt = 2;
     } else if (attrInfoPtrI != RNIL) {
-      // Agg feed path without linked columns — release
+      // Agg feed path without linked columns or filter — release
       releaseSection(attrInfoPtrI);
     }
 
