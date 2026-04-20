@@ -148,17 +148,26 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
 #endif // DEBUG_VS_INTERP
 
 /**
- * validateEmbeddedProgram — validate an embedded old-interpreter program
- * at Init() time ("compile" step).
+ * validateEmbeddedProgram — sanity-check an embedded program at
+ * Init() time ("compile" step).
+ *
+ * Phase C simplification: the opcode whitelist and the forward-only
+ * branch-direction check are gone — those are now enforced at
+ * runtime by s_agg_interp_handlers (nullptr slots raise
+ * ZNO_INSTRUCTION_ERROR) and IFLAG_DISALLOW_BACKWARD_JUMPS (raises
+ * ZBACKWARD_JUMP_NOT_ALLOWED).  Keeping those checks here would be
+ * a second source of truth that could drift; keep only the
+ * structural bounds check on branch targets so a malformed program
+ * doesn't pass Init with a garbage offset that would later confuse
+ * the runtime.
  *
  * Walks the instruction stream and checks:
- * 1. All opcodes are in the allowed whitelist (no CALL, RETURN, EXIT_REFUSE,
- *    WRITE_ATTR, heap memory ops)
- * 2. All branch offsets are forward-only (bit 31 = 0)
- * 3. All branch targets fall within the embedded program bounds
- * 4. Instruction lengths computed via getInstructionPreProcessingInfo are valid
+ *   1. Each instruction has a well-defined length
+ *      (getInstructionPreProcessingInfo returns non-null).
+ *   2. Branch targets (forward or otherwise) fall within the
+ *      embedded program bounds.
  *
- * Returns true if the program is safe to execute in interpreterNextLab.
+ * Returns true if the program is structurally valid.
  */
 bool AggInterpreter::validateEmbeddedProgram(
     const Uint32* emb_prog, Uint32 emb_len) {
@@ -167,48 +176,9 @@ bool AggInterpreter::validateEmbeddedProgram(
     Uint32 instr = emb_prog[pc];
     Uint32 opCode = Interpreter::getOpCode(instr);
 
-    /* Check opcode whitelist */
-    switch (opCode) {
-      /* Load/store register operations */
-      case Interpreter::READ_ATTR_INTO_REG:
-      case Interpreter::LOAD_CONST_NULL:
-      case Interpreter::LOAD_CONST16:
-      case Interpreter::LOAD_CONST32:
-      case Interpreter::LOAD_CONST64:
-      /* Arithmetic */
-      case Interpreter::ADD_REG_REG:
-      case Interpreter::SUB_REG_REG:
-      /* Unconditional branch */
-      case Interpreter::BRANCH:
-      /* Null-check branches */
-      case Interpreter::BRANCH_REG_EQ_NULL:
-      case Interpreter::BRANCH_REG_NE_NULL:
-      /* Register comparison branches */
-      case Interpreter::BRANCH_EQ_REG_REG:
-      case Interpreter::BRANCH_NE_REG_REG:
-      case Interpreter::BRANCH_LT_REG_REG:
-      case Interpreter::BRANCH_LE_REG_REG:
-      case Interpreter::BRANCH_GT_REG_REG:
-      case Interpreter::BRANCH_GE_REG_REG:
-      /* Exit */
-      case Interpreter::EXIT_OK:
-      /* Column comparison branches */
-      case Interpreter::BRANCH_ATTR_OP_ARG:
-      case Interpreter::BRANCH_ATTR_EQ_NULL:
-      case Interpreter::BRANCH_ATTR_NE_NULL:
-      /* Output for skip_offset communication */
-      case Interpreter::WRITE_INTERPRETER_OUTPUT:
-        break;  /* Allowed */
-
-      default:
-        g_eventLogger->warning(
-            "validateEmbeddedProgram: forbidden opcode %u at pc=%u",
-            opCode, pc);
-        return false;
-    }
-
-    /* Validate branch targets: forward-only, within bounds */
-    bool is_branch = false;
+    /* Bounds-check branch targets.  Direction is left to the runtime
+     * backward-jump guard; here we only care that the target doesn't
+     * leave the program. */
     switch (opCode) {
       case Interpreter::BRANCH:
       case Interpreter::BRANCH_REG_EQ_NULL:
@@ -221,32 +191,22 @@ bool AggInterpreter::validateEmbeddedProgram(
       case Interpreter::BRANCH_GE_REG_REG:
       case Interpreter::BRANCH_ATTR_OP_ARG:
       case Interpreter::BRANCH_ATTR_EQ_NULL:
-      case Interpreter::BRANCH_ATTR_NE_NULL:
-        is_branch = true;
+      case Interpreter::BRANCH_ATTR_NE_NULL: {
+        Uint32 offset = (instr >> 16) & 0x7FFF;
+        Uint32 target = pc + offset;
+        if (target >= emb_len) {
+          g_eventLogger->warning(
+              "validateEmbeddedProgram: branch target %u out of bounds "
+              "(emb_len=%u) at pc=%u", target, emb_len, pc);
+          return false;
+        }
         break;
+      }
       default:
         break;
     }
 
-    if (is_branch) {
-      Uint32 direction = instr >> 31;
-      if (direction != 0) {
-        g_eventLogger->warning(
-            "validateEmbeddedProgram: backward branch at pc=%u", pc);
-        return false;
-      }
-      Uint32 offset = (instr >> 16) & 0x7FFF;
-      /* Target = pc + offset (brancher logic: TprogramCounter-- then + offset) */
-      Uint32 target = pc + offset;
-      if (target >= emb_len) {
-        g_eventLogger->warning(
-            "validateEmbeddedProgram: branch target %u out of bounds "
-            "(emb_len=%u) at pc=%u", target, emb_len, pc);
-        return false;
-      }
-    }
-
-    /* Advance to next instruction using getInstructionPreProcessingInfo */
+    /* Advance via getInstructionPreProcessingInfo. */
     Interpreter::InstructionPreProcessing processing;
     Uint32* next = Interpreter::getInstructionPreProcessingInfo(
         const_cast<Uint32*>(&emb_prog[pc]), processing);
