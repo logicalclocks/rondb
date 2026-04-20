@@ -1887,17 +1887,27 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           return ZAGG_OTHER_ERROR;
         }
 
-        /* Save and reset instruction counter (interpreterNextLab asserts 0) */
+        /* Save and reset instruction counter (interpreterJumpTable
+         * asserts it is 0 on entry). */
         Uint32 saved_instr_count = req_struct->no_exec_instructions;
         req_struct->no_exec_instructions = 0;
 
-        /* Local output buffer — avoids corrupting outer interpreter coutBuffer */
+        /* Local tmp buffer — unused by the accepted agg-interp opcodes
+         * (handleBranchAttrOp reads via readAttributes into tmpArea),
+         * but sized for safety in case handlers use it. */
         Uint32 local_tmpArea[16];
 
-        int rc = block_tup->interpreterNextLab(
+        /* Phase C.3: delegate the embedded user bytecode to the
+         * generalised jump-table interpreter with the aggregation
+         * handler table and a backward-jump guard.  The old path
+         * called interpreterNextLab, which also accepted opcodes the
+         * agg-interp whitelist rejects — the new dispatch raises
+         * ZNO_INSTRUCTION_ERROR for any non-whitelisted opcode at
+         * runtime, so the invariants AggInterpreter relies on hold by
+         * construction. */
+        int rc = block_tup->interpreterAggEmbedded(
             req_struct->signal, req_struct,
             &m_prog[exec_pos], emb_len,   /* main program = embedded portion */
-            nullptr, 0,                   /* no subroutines */
             local_tmpArea, 16);
 
         req_struct->no_exec_instructions = saved_instr_count;

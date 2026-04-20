@@ -8853,6 +8853,151 @@ s_cte_filter_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /* 127  (unused)                */ nullptr,
 };
 
+/* ------------------------------------------------------------------
+ * s_agg_interp_handlers — dispatch table for the aggregation
+ * interpreter's embedded user-bytecode programs (WHERE / CASE
+ * predicates inside an aggregation tree).  Consumed by
+ * AggInterpreter::ProcessRec via Dbtup::interpreterJumpTable with
+ * IFLAG_DISALLOW_BACKWARD_JUMPS.
+ *
+ * Accepted set mirrors AggInterpreter::validateEmbeddedProgram's
+ * whitelist at AggInterpreter.cpp:173-201.  Runs against a REAL
+ * tuple so it can include READ_ATTR_INTO_REG and BRANCH_ATTR_* —
+ * unlike s_cte_filter_handlers, which must nullptr them because a
+ * CTE virtual row has no operPtrP / tablePtrP.
+ *
+ * Deliberately omits CALL / RETURN (opcodes 20/21): combined with
+ * IFLAG_DISALLOW_BACKWARD_JUMPS and forward-only branches this makes
+ * every program provably terminating and lets the interpreter drop
+ * its 16000-instruction fuse in this mode.  Do NOT add CALL/RETURN
+ * here without also revisiting the fuse in interpreterJumpTable.
+ * ------------------------------------------------------------------ */
+static const InterpreterHandler
+s_agg_interp_handlers[INTERP_HANDLER_TABLE_SIZE] = {
+  /*   0  (unused)                */ nullptr,
+  /*   1  READ_ATTR_INTO_REG      */ &Dbtup::InterpreterContext::handleReadAttrIntoReg,
+  /*   2  WRITE_ATTR_FROM_REG     */ nullptr,
+  /*   3  LOAD_CONST_NULL         */ &Dbtup::InterpreterContext::handleLoadConstNull,
+  /*   4  LOAD_CONST16            */ &Dbtup::InterpreterContext::handleLoadConst16,
+  /*   5  LOAD_CONST32            */ &Dbtup::InterpreterContext::handleLoadConst32,
+  /*   6  LOAD_CONST64            */ &Dbtup::InterpreterContext::handleLoadConst64,
+  /*   7  ADD_REG_REG             */ &Dbtup::InterpreterContext::handleAddRegReg,
+  /*   8  SUB_REG_REG             */ &Dbtup::InterpreterContext::handleSubRegReg,
+  /*   9  BRANCH                  */ &Dbtup::InterpreterContext::handleBranch,
+  /*  10  BRANCH_REG_EQ_NULL      */ &Dbtup::InterpreterContext::handleBranchRegEqNull,
+  /*  11  BRANCH_REG_NE_NULL      */ &Dbtup::InterpreterContext::handleBranchRegNeNull,
+  /*  12  BRANCH_EQ_REG_REG       */ &Dbtup::InterpreterContext::handleBranchEqRegReg,
+  /*  13  BRANCH_NE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchNeRegReg,
+  /*  14  BRANCH_LT_REG_REG       */ &Dbtup::InterpreterContext::handleBranchLtRegReg,
+  /*  15  BRANCH_LE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchLeRegReg,
+  /*  16  BRANCH_GT_REG_REG       */ &Dbtup::InterpreterContext::handleBranchGtRegReg,
+  /*  17  BRANCH_GE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchGeRegReg,
+  /*  18  EXIT_OK                 */ &Dbtup::InterpreterContext::handleExitOk,
+  /*  19  EXIT_REFUSE             */ nullptr,
+  /*  20  CALL                    */ nullptr,  /* termination proof */
+  /*  21  RETURN                  */ nullptr,  /* termination proof */
+  /*  22  EXIT_OK_LAST            */ nullptr,
+  /*  23  BRANCH_ATTR_OP_ARG      */ &Dbtup::InterpreterContext::handleBranchAttrOp,
+  /*  24  BRANCH_ATTR_EQ_NULL     */ &Dbtup::InterpreterContext::handleBranchAttrEqNull,
+  /*  25  BRANCH_ATTR_NE_NULL     */ &Dbtup::InterpreterContext::handleBranchAttrNeNull,
+  /*  26  BRANCH_ATTR_OP_PARAM    */ nullptr,
+  /*  27  BRANCH_ATTR_OP_ATTR     */ nullptr,
+  /*  28  LSHIFT_REG_REG          */ nullptr,
+  /*  29  RSHIFT_REG_REG          */ nullptr,
+  /*  30  MUL_REG_REG             */ nullptr,
+  /*  31  DIV_REG_REG             */ nullptr,
+  /*  32  AND_REG_REG             */ nullptr,
+  /*  33  OR_REG_REG              */ nullptr,
+  /*  34  XOR_REG_REG             */ nullptr,
+  /*  35  MOD_REG_REG             */ nullptr,
+  /*  36  NOT_REG_REG             */ nullptr,
+  /*  37  STR_TO_INT64            */ nullptr,
+  /*  38  BRANCH_MEM_OP_ARG       */ nullptr,
+  /*  39  READ_LINKED_TO_MEM      */ nullptr,
+  /*  40  (unused)                */ nullptr,
+  /*  41  (unused)                */ nullptr,
+  /*  42  (unused)                */ nullptr,
+  /*  43  (unused)                */ nullptr,
+  /*  44  (unused)                */ nullptr,
+  /*  45  (unused)                */ nullptr,
+  /*  46  (unused)                */ nullptr,
+  /*  47  READ_PARTIAL_ATTR_TO_MEM*/ nullptr,
+  /*  48  READ_ATTR_TO_MEM        */ nullptr,
+  /*  49  READ_UINT8_MEM_TO_REG   */ nullptr,
+  /*  50  READ_UINT16_MEM_TO_REG  */ nullptr,
+  /*  51  READ_UINT32_MEM_TO_REG  */ nullptr,
+  /*  52  READ_INT64_MEM_TO_REG   */ nullptr,
+  /*  53  WRITE_UINT8_REG_TO_MEM  */ nullptr,
+  /*  54  WRITE_UINT16_REG_TO_MEM */ nullptr,
+  /*  55  WRITE_UINT32_REG_TO_MEM */ nullptr,
+  /*  56  WRITE_INT64_REG_TO_MEM  */ nullptr,
+  /*  57  WRITE_ATTR_FROM_MEM     */ nullptr,
+  /*  58  APPEND_ATTR_FROM_MEM    */ nullptr,
+  /*  59  LOAD_CONST_MEM          */ nullptr,
+  /*  60  CONVERT_SIZE            */ nullptr,
+  /*  61  LOAD_OP_TYPE            */ nullptr,
+  /*  62  (unused)                */ nullptr,
+  /*  63  SPECIAL_INSTR           */ nullptr,
+
+  /* --- overflow range 64..127 — all rejected in agg mode ---------- */
+  /*  64  (unused)                */ nullptr,
+  /*  65  BINARY_SEARCH_64        */ nullptr,
+  /*  66  BINARY_SEARCH_32        */ nullptr,
+  /*  67  BINARY_SEARCH_16        */ nullptr,
+  /*  68  BINARY_SEARCH_ODD       */ nullptr,
+  /*  69  SEARCH_INTERVAL_64      */ nullptr,
+  /*  70  SEARCH_INTERVAL_32      */ nullptr,
+  /*  71  ADD_REG_CONST           */ nullptr,
+  /*  72  SUB_REG_CONST           */ nullptr,
+  /*  73  SEARCH_INTERVAL_16      */ nullptr,
+  /*  74  SEARCH_INTERVAL_ODD     */ nullptr,
+  /*  75  STRING_SEARCH           */ nullptr,
+  /*  76  BRANCH_EQ_REG_CONST     */ nullptr,
+  /*  77  BRANCH_NE_REG_CONST     */ nullptr,
+  /*  78  BRANCH_LT_REG_CONST     */ nullptr,
+  /*  79  BRANCH_LE_REG_CONST     */ nullptr,
+  /*  80  BRANCH_GT_REG_CONST     */ nullptr,
+  /*  81  BRANCH_GE_REG_CONST     */ nullptr,
+  /*  82  QSORT                   */ nullptr,
+  /*  83  COMPRESS_NUM_ARRAY      */ nullptr,
+  /*  84  (unused)                */ nullptr,
+  /*  85  (unused)                */ nullptr,
+  /*  86  (unused)                */ nullptr,
+  /*  87  (unused)                */ nullptr,
+  /*  88  (unused)                */ nullptr,
+  /*  89  (unused)                */ nullptr,
+  /*  90  (unused)                */ nullptr,
+  /*  91  (unused)                */ nullptr,
+  /*  92  LSHIFT_REG_CONST        */ nullptr,
+  /*  93  RSHIFT_REG_CONST        */ nullptr,
+  /*  94  MUL_REG_CONST           */ nullptr,
+  /*  95  DIV_REG_CONST           */ nullptr,
+  /*  96  AND_REG_CONST           */ nullptr,
+  /*  97  OR_REG_CONST            */ nullptr,
+  /*  98  XOR_REG_CONST           */ nullptr,
+  /*  99  MOD_REG_CONST           */ nullptr,
+  /* 100  (NOT_REG_REG overflow)  */ nullptr,
+  /* 101  INT64_TO_STR            */ nullptr,
+  /* 102..112 (unused)            */ nullptr, nullptr, nullptr, nullptr,
+                                    nullptr, nullptr, nullptr, nullptr,
+                                    nullptr, nullptr, nullptr,
+  /* 113  READ_UINT8_REG_TO_REG   */ nullptr,
+  /* 114  READ_UINT16_REG_TO_REG  */ nullptr,
+  /* 115  READ_UINT32_REG_TO_REG  */ nullptr,
+  /* 116  READ_INT64_REG_TO_REG   */ nullptr,
+  /* 117  WRITE_UINT8_REG_TO_REG  */ nullptr,
+  /* 118  WRITE_UINT16_REG_TO_REG */ nullptr,
+  /* 119  WRITE_UINT32_REG_TO_REG */ nullptr,
+  /* 120  WRITE_INT64_REG_TO_REG  */ nullptr,
+  /* 121  READ_INTERPRETER_INPUT  */ nullptr,
+  /* 122  WRITE_PARTIAL_ATTR_FROM_MEM */ nullptr,
+  /* 123  WRITE_INTERPRETER_OUTPUT*/ &Dbtup::InterpreterContext::handleWriteInterpreterOutput,
+  /* 124  WRITE_SIZE_MEM          */ nullptr,
+  /* 125  BZERO_MEM               */ nullptr,
+  /* 126  (unused)                */ nullptr,
+  /* 127  (unused)                */ nullptr,
+};
+
 int Dbtup::interpreterNextLab(Signal* signal,
                               KeyReqStruct* req_struct,
                               Uint32* mainProgram,
@@ -9485,6 +9630,28 @@ int Dbtup::interpreterFilterCte(Signal* signal,
                               tmpArea, tmpAreaSz,
                               s_cte_filter_handlers,
                               IFLAG_REJECT_RETURNS_NEG);
+}
+
+/**
+ * interpreterAggEmbedded — Phase C.3 entry point for
+ * AggInterpreter::ProcessRec's kOpEmbeddedInterp case.  Dispatches
+ * the user's embedded program via s_agg_interp_handlers with
+ * IFLAG_DISALLOW_BACKWARD_JUMPS — terminating by construction, so
+ * the 16000-instruction fuse is off in this mode.
+ */
+int Dbtup::interpreterAggEmbedded(Signal* signal,
+                                  KeyReqStruct* req_struct,
+                                  Uint32* mainProgram,
+                                  Uint32 TmainProgLen,
+                                  Uint32* tmpArea,
+                                  Uint32 tmpAreaSz)
+{
+  return interpreterJumpTable(signal, req_struct,
+                              mainProgram, TmainProgLen,
+                              nullptr, 0,
+                              tmpArea, tmpAreaSz,
+                              s_agg_interp_handlers,
+                              IFLAG_DISALLOW_BACKWARD_JUMPS);
 }
 
 /**

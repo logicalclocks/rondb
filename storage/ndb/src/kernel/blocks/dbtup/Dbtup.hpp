@@ -2976,6 +2976,17 @@ public:
                            Uint32 *subroutineProg, Uint32 TsubroutineLen,
                            Uint32 *tmpArea, Uint32 tmpAreaSz);
 
+  /* Run an aggregation-interpreter embedded user-bytecode program
+   * (the WHERE / CASE predicate compiled into an aggregation tree,
+   * invoked from AggInterpreter::ProcessRec's kOpEmbeddedInterp
+   * case).  Dispatches via the aggregation handler table with
+   * IFLAG_DISALLOW_BACKWARD_JUMPS — programs are forward-only and
+   * use no CALL/RETURN, so they terminate by construction and the
+   * loop runs without the 16000-instruction fuse. */
+  int interpreterAggEmbedded(Signal *signal, KeyReqStruct *req_struct,
+                             Uint32 *mainProgram, Uint32 TmainProgLen,
+                             Uint32 *tmpArea, Uint32 tmpAreaSz);
+
 private:
 
   const Uint32 *lookupInterpreterParameter(Uint32 paramNo,
