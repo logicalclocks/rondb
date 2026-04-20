@@ -138,7 +138,7 @@ int Dbtup::tuxReadAttrsCurr(EmulatedJamBuffer *jamBuf, const Uint32 *attrIds,
 
   // search for tuple version if not original
   Operationrec tmpOp;
-  KeyReqStruct req_struct(jamBuf);
+  KeyReqStruct req_struct(this);
   req_struct.m_lqh = c_lqh;
   req_struct.tablePtrP = tablePtrP;
   req_struct.fragPtrP = fragPtrP;
@@ -161,7 +161,7 @@ int Dbtup::tuxReadAttrsOpt(EmulatedJamBuffer *jamBuf, Uint32 *fragPtrP,
   thrjamEntryDebug(jamBuf);
   // search for tuple version if not original
 
-  KeyReqStruct req_struct(jamBuf);
+  KeyReqStruct req_struct(this);
   Operationrec tmpOp;
   tmpOp.m_tuple_location.m_page_no= pageId;
   tmpOp.m_tuple_location.m_page_idx= pageIndex;
@@ -457,7 +457,7 @@ Dbtup::tuxReadAttrs(EmulatedJamBuffer * jamBuf,
   // search for tuple version if not original
 
   Operationrec tmpOp;
-  KeyReqStruct req_struct(jamBuf);
+  KeyReqStruct req_struct(this);
 
   tmpOp.m_tuple_location.m_page_no = pageId;
   tmpOp.m_tuple_location.m_page_idx = pageIndex;

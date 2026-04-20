@@ -12521,7 +12521,7 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
     ndbrequire(c_scanOpPool.getValidPtr(scanOp));
     if (is_rowid_in_remaining_lcp_set(pagePtr.p, fragPtr.p, *key, *scanOp.p,
                                       0)) {
-      KeyReqStruct req_struct(jamBuffer(), KRS_PREPARE);
+      KeyReqStruct req_struct(this, KRS_PREPARE);
       req_struct.m_lqh = c_lqh;
       req_struct.fragPtrP = fragPtr.p;
       Operationrec oprec;

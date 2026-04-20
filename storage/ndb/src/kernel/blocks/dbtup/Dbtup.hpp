@@ -2020,39 +2020,18 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
   };
 
   struct KeyReqStruct {
-    KeyReqStruct(EmulatedJamBuffer *_jamBuffer, When when) : changeMask() {
-#if defined VM_TRACE || defined ERROR_INSERT
-      std::memset(this, 0xf3, sizeof(*this));
-#endif
-      jamBuffer = _jamBuffer;
-      m_when = when;
-      m_deferred_constraints = true;
-      m_disable_fk_checks = false;
-      m_tuple_ptr = NULL;
-      ttl_purge_window_size = 0;
-      m_use_corr_factor = 0;
-      m_linked_attr_data = nullptr;
-      m_linked_attr_len = 0;
-    }
-
-    KeyReqStruct(EmulatedJamBuffer *_jamBuffer) : changeMask(false) {
-#if defined VM_TRACE || defined ERROR_INSERT
-      std::memset(this, 0xf3, sizeof(*this));
-#endif
-      jamBuffer = _jamBuffer;
-      m_when = KRS_PREPARE;
-      m_deferred_constraints = true;
-      m_disable_fk_checks = false;
-      ttl_purge_window_size = 0;
-      m_use_corr_factor = 0;
-      m_linked_attr_data = nullptr;
-      m_linked_attr_len = 0;
-    }
-
-    KeyReqStruct(Dbtup *tup) : changeMask(false) {
-#if defined VM_TRACE || defined ERROR_INSERT
-      std::memset(this, 0xf3, sizeof(*this));
-#endif
+    /*
+     * changeMask and var_pos_array are references bound to per-Dbtup-instance
+     * scratch buffers. The reference members sit at the very start of the
+     * struct; the debug poison starts at &tablePtrP and covers everything
+     * after them, so the references themselves are never corrupted. The
+     * scratch buffers on the owning Dbtup instance are poisoned separately
+     * to catch reads of uninitialised changeMask / var_pos_array state.
+     */
+    KeyReqStruct(Dbtup *tup)
+        : changeMask(tup->m_changeMask_scratch),
+          var_pos_array(tup->m_var_pos_scratch) {
+      poison_debug(tup);
       jamBuffer = tup->jamBuffer();
       m_when = KRS_PREPARE;
       m_deferred_constraints = true;
@@ -2064,10 +2043,11 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_linked_attr_len = 0;
     }
 
-    KeyReqStruct(Dbtup *tup, When when) : changeMask() {
-#if defined VM_TRACE || defined ERROR_INSERT
-      std::memset(this, 0xf3, sizeof(*this));
-#endif
+    KeyReqStruct(Dbtup *tup, When when)
+        : changeMask(tup->m_changeMask_scratch),
+          var_pos_array(tup->m_var_pos_scratch) {
+      poison_debug(tup);
+      changeMask.clear();
       jamBuffer = tup->jamBuffer();
       m_when = when;
       m_deferred_constraints = true;
@@ -2079,6 +2059,29 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_linked_attr_data = nullptr;
       m_linked_attr_len = 0;
     }
+
+   private:
+    /*
+     * Poison struct members and scratch buffers in debug builds so that any
+     * read of a field before it is explicitly initialised surfaces as 0xf3
+     * bytes rather than whatever remained from the previous operation.
+     * In release builds this compiles to nothing.
+     */
+    inline void poison_debug(Dbtup *tup) {
+#if defined VM_TRACE || defined ERROR_INSERT
+      char *poison_begin = reinterpret_cast<char *>(&tablePtrP);
+      char *poison_end = reinterpret_cast<char *>(this) + sizeof(*this);
+      std::memset(poison_begin, 0xf3, poison_end - poison_begin);
+      std::memset(&tup->m_var_pos_scratch, 0xf3,
+                  sizeof(tup->m_var_pos_scratch));
+      std::memset(&tup->m_changeMask_scratch, 0xf3,
+                  sizeof(tup->m_changeMask_scratch));
+#else
+      (void)tup;
+#endif
+    }
+
+   public:
 
     /**
      * These variables are used as temporary storage during execution of the
@@ -2099,6 +2102,15 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
      * contains the real allocated lengths whereas the tuple contains
      * the length of attribute stored.
      */
+
+    /*
+     * Reference members bound to per-Dbtup-instance scratch buffers. Placed at
+     * the very beginning of the struct so the debug memset(0xf3) can poison
+     * the rest of the struct by starting at &tablePtrP without touching these
+     * reference slots (memset would otherwise corrupt them).
+     */
+    AttributeMask &changeMask;
+    Uint16 (&var_pos_array)[2][2 * MAX_ATTRIBUTES_IN_TABLE + 1];
 
     Tablerec *tablePtrP;
     Fragrecord *fragPtrP;
@@ -2215,8 +2227,6 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
      * A bitmap where a set bit means that the operation has
      * supplied a value for this column
      */
-    AttributeMask changeMask;
-    Uint16 var_pos_array[2][2 * MAX_ATTRIBUTES_IN_TABLE + 1];
     OperationrecPtr prevOpPtr;
     Dblqh *m_lqh;
 
@@ -4111,6 +4121,15 @@ public:
   RSS_OP_COUNTER(cnoOfFreeTabDescrRec);
   RSS_OP_SNAPSHOT(cnoOfFreeTabDescrRec);
   TablerecPtr prepare_tabptr;
+
+  /*
+   * Per-instance scratch used by KeyReqStruct so the struct itself does not
+   * have to carry these large arrays on the stack. TUP signal handling is
+   * serialized within an Dbtup instance (one instance per LDM / query
+   * thread), so these scratch buffers are not accessed reentrantly.
+   */
+  Uint16 m_var_pos_scratch[2][2 * MAX_ATTRIBUTES_IN_TABLE + 1];
+  AttributeMask m_changeMask_scratch;
 
   TablerecPtr m_curr_tabptr;
   FragrecordPtr m_curr_fragptr;
