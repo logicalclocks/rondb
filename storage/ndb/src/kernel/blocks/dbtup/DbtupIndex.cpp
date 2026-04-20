@@ -394,17 +394,6 @@ int Dbtup::tuxReadPk(Uint32 *fragPtrP_input, Uint32 *tablePtrP_input,
   return ret;
 }
 
-int Dbtup::accReadPk(Uint32 fragPageId, Uint32 pageIndex, Uint32 *dataOut,
-                     bool xfrmFlag) {
-  jamEntryDebug();
-  // get real page id and tuple offset
-  Uint32 pageId = getRealpid(prepare_fragptr.p, fragPageId);
-  // use TUX routine - optimize later
-  int ret = tuxReadPk((Uint32 *)prepare_fragptr.p, (Uint32 *)prepare_tabptr.p,
-                      pageId, pageIndex, dataOut, xfrmFlag);
-  return ret;
-}
-
 /*
  * TUX index contains all tuple versions.  A scan in TUX has scanned
  * one of them and asks if it can be returned as scan result.  This

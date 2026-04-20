@@ -2363,9 +2363,19 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
    * ACC reads primary key without headers into an array of words.  At
    * this point in ACC deconstruction, ACC still uses logical references
    * to fragment and tuple.
+   *
+   * Defined inline so cross-block callers (Dbacc::readTablePk,
+   * Dblqh) merge the fragPageId→real pageId translation and the
+   * tuxReadPk call at the caller site, eliminating the trampoline frame.
    */
-  int accReadPk(Uint32 fragPageId, Uint32 pageIndex, Uint32 *dataOut,
-                bool xfrmFlag);
+  inline int accReadPk(Uint32 fragPageId, Uint32 pageIndex, Uint32 *dataOut,
+                       bool xfrmFlag) {
+    jamEntryDebug();
+    Uint32 pageId = getRealpid(prepare_fragptr.p, fragPageId);
+    return tuxReadPk((Uint32 *)prepare_fragptr.p,
+                     (Uint32 *)prepare_tabptr.p,
+                     pageId, pageIndex, dataOut, xfrmFlag);
+  }
 
   inline Uint32 get_tuple_operation_ptr_i() {
     Tuple_header *tuple_ptr = (Tuple_header *)prepare_tuple_ptr;
