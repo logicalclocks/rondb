@@ -2099,6 +2099,38 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_linked_attr_len = 0;
     }
 
+    /*
+     * Tag for the PK-read-path ctor overload below. Used only to pick the
+     * fast-init variant of KeyReqStruct that is safe for tuxReadPk.
+     */
+    struct PkReadTag {};
+
+    /*
+     * Fast constructor for the PK-read path (Dbtup::tuxReadPk). It
+     * deliberately omits the default-init of fields that are never read on
+     * this path, trading a handful of ctor stores for correctness constrained
+     * by the PK-read contract. Audited-safe omissions (release-build state is
+     * stack-garbage; VM_TRACE/ERROR_INSERT poison_debug fills them with 0xf3):
+     *
+     *   m_when                 - only read by DbtupTrigger.cpp
+     *   m_deferred_constraints - only read by DbtupTrigger.cpp
+     *   m_disable_fk_checks    - only read by DbtupTrigger.cpp
+     *   ttl_purge_window_size  - only read by checkTTL (execTUPKEYREQ path)
+     *   m_use_corr_factor      - only read by scan-buffer sendReadAttrinfo
+     *   m_linked_attr_data/len - only read by JoinAggInterpreter READ_LINKED
+     *
+     * jamBuffer and m_dbtup_ptr are still set: the former is used by every
+     * read function; the latter is reached by handle_partial_read, which is
+     * unreachable on the PK-fast-path (partial_size==0) but kept for safety.
+     */
+    KeyReqStruct(Dbtup *tup, PkReadTag)
+        : changeMask(tup->m_changeMask_scratch),
+          var_pos_array(tup->m_var_pos_scratch) {
+      poison_debug(tup);
+      jamBuffer = tup->jamBuffer();
+      m_dbtup_ptr = tup;
+    }
+
    private:
     /*
      * Poison struct members and scratch buffers in debug builds so that any
