@@ -2226,6 +2226,7 @@ void Dbtup::setUpKeyArray(Tablerec* const regTabPtr)
 {
   Uint32* keyArray = regTabPtr->readKeyArray;
   Uint32 countKeyAttr= 0;
+  bool pk_all_fixed = true;
   for (Uint32 i= 0; i < regTabPtr->m_no_of_attributes; i++) {
     jam();
     Uint32 attrDescriptor = regTabPtr->tabDescriptor[(i * ZAD_SIZE)];
@@ -2234,9 +2235,16 @@ void Dbtup::setUpKeyArray(Tablerec* const regTabPtr)
       jam();
       AttributeHeader::init(&keyArray[countKeyAttr], i, 0);
       countKeyAttr++;
+      if (AttributeDescriptor::getArrayType(attrDescriptor) !=
+              NDB_ARRAYTYPE_FIXED ||
+          AttributeDescriptor::getDynamic(attrDescriptor))
+      {
+        pk_all_fixed = false;
+      }
     }
   }
   ndbrequire(countKeyAttr == regTabPtr->noOfKeyAttr);
+  regTabPtr->m_pk_all_fixed = pk_all_fixed;
 
   /**
    * Setup real order array (16 bit per column)

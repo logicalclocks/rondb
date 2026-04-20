@@ -320,7 +320,19 @@ int Dbtup::tuxReadPk(Uint32 *fragPtrP_input, Uint32 *tablePtrP_input,
     ndbrequire(opPtr.p->m_copy_tuple_location != nullptr);
     req_struct.m_tuple_ptr = get_copy_tuple(opPtr.p->m_copy_tuple_location);
   }
-  prepare_read(&req_struct, tablePtrP, false);
+  /*
+   * When every PK column is fixed-size and non-dynamic (the overwhelmingly
+   * common case: INT/BIGINT/fixed-CHAR PKs), prepare_read's only effect on
+   * this path is setting is_expanded=false and m_disk_ptr=nullptr — neither
+   * is consumed by the fixed-size read functions below or by the GCI append.
+   * Skip the call entirely and assign the minimum state at the call site.
+   */
+  if (likely(tablePtrP->m_pk_all_fixed)) {
+    req_struct.is_expanded = false;
+    req_struct.m_disk_ptr = nullptr;
+  } else {
+    prepare_read(&req_struct, tablePtrP, false);
+  }
 
   const Uint32* attrIds = tablePtrP->readKeyArray;
   const Uint32 numAttrs = tablePtrP->noOfKeyAttr;

@@ -1435,7 +1435,16 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
 
     bool m_allow_use_spare;
 
-    bool need_expand() const { 
+    /*
+     * True iff every attribute listed in readKeyArray is fixed-size and
+     * non-dynamic. Computed once in setUpKeyArray. Lets PK-read paths
+     * (tuxReadPk) skip the prepare_read call entirely: prepare_read's only
+     * effect on such reads is setting is_expanded and m_disk_ptr, which are
+     * cheaper to assign at the call site.
+     */
+    bool m_pk_all_fixed;
+
+    bool need_expand() const {
       return m_no_of_attributes > m_attributes[MM].m_no_of_fixsize;
     }
 
