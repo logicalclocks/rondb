@@ -2417,6 +2417,35 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Fragrecord *const fragPtrP = prepare_fragptr.p;
     Tablerec *const tabPtrP = prepare_tabptr.p;
     Uint32 pageId = getRealpid(fragPtrP, fragPageId);
+
+    /*
+     * Issue speculative prefetches of the tuple's first two cache lines
+     * (the first holds m_header_bits and the start of the fixed part; the
+     * second holds further fixed columns — most tuples span at least two
+     * lines). These run in parallel with the bl to tuxReadPk, its prologue
+     * (~13 register saves) and the KeyReqStruct init (~15 stores), hiding
+     * tuple-miss latency on cold rows. Bounds are not re-checked here;
+     * tuxReadPk does the real check and a stray prefetch has no side
+     * effects.
+     *
+     *   tuple_data = (Uint32 *)memBase
+     *              + pageId * (32 KB / 4)
+     *              + Tup_fixsize_page::HEADER_WORDS
+     *              + pageIndex
+     * which matches what tuxReadPk's get_ptr expands to internally. The
+     * second prefetch adds one cache line (16 Uint32s = 64 B).
+     */
+    {
+      static constexpr Uint32 PAGE_WORDS = 8192;  // 32 KB page as Uint32s
+      static constexpr Uint32 HEADER_WORDS = 32;  // Tup_fixsize_page header
+      static constexpr Uint32 CL_WORDS = 16;      // 64 B cache line
+      const Uint32 *memBase = (const Uint32 *)c_page_pool.getArrayPtr();
+      const Uint32 *tuple_data =
+          memBase + pageId * PAGE_WORDS + HEADER_WORDS + pageIndex;
+      NDB_PREFETCH_READ(const_cast<Uint32 *>(tuple_data));
+      NDB_PREFETCH_READ(const_cast<Uint32 *>(tuple_data + CL_WORDS));
+    }
+
     return tuxReadPk((Uint32 *)fragPtrP, (Uint32 *)tabPtrP, pageId, pageIndex,
                      dataOut, xfrmFlag);
   }
