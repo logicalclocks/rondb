@@ -195,6 +195,7 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZCALL_ERROR 890
 #define ZSHIFT_OPERAND_ERROR 891
 #define ZUNSUPPORTED_BRANCH 892
+#define ZBACKWARD_JUMP_NOT_ALLOWED 893
 
 #define ZSTORED_TOO_MUCH_ATTRINFO_ERROR 874
 
@@ -2902,34 +2903,74 @@ public:
    */
   struct InterpreterContext;
 
-  /* INTERPRETER_FILTER_REJECT is returned by interpreterFilterCte when
-   * a CTE row fails the WHERE clause (EXIT_REFUSE in filter mode). It
-   * must NOT collide with any -error_code return from a handler, so we
-   * pick a value far below any 16-bit error code range. */
+  /* Handler function-pointer type for the jump-table interpreter.
+   * Defined here (not just in DbtupExecQuery.cpp) so interpreter
+   * method signatures on Dbtup can name it. */
+  typedef int (*InterpreterHandler)(InterpreterContext &ctx);
+
+  /* INTERPRETER_FILTER_REJECT is returned by interpreterJumpTable in
+   * IFLAG_REJECT_RETURNS_NEG mode when a row fails its WHERE clause
+   * (EXIT_REFUSE in filter mode).  Picked far below any 16-bit error
+   * code range so it can never collide with a handler's -error_code
+   * return. */
   static constexpr int INTERPRETER_FILTER_REJECT = -0x7FFFFFFF;
 
+  /* Mode flags for interpreterJumpTable.
+   *
+   *   IFLAG_REJECT_RETURNS_NEG — EXIT_REFUSE returns
+   *       INTERPRETER_FILTER_REJECT instead of aborting the tuple
+   *       operation (which has no meaning when running against a
+   *       synthetic CTE row).  Implicit in the CTE filter path.
+   *
+   *   IFLAG_DISALLOW_BACKWARD_JUMPS — after every handler dispatch,
+   *       check that the new TprogramCounter is not less than the
+   *       pre-dispatch value; violations set
+   *       ZBACKWARD_JUMP_NOT_ALLOWED and return -1.  Combined with a
+   *       handler table that omits CALL / RETURN, this makes the
+   *       program provably terminating — so the 16000-instruction
+   *       fuse is dropped in this mode for the aggregation
+   *       interpreter's embedded programs.
+   */
+  enum InterpreterJumpTableFlags {
+    IFLAG_REJECT_RETURNS_NEG       = 0x1,
+    IFLAG_DISALLOW_BACKWARD_JUMPS  = 0x2,
+  };
+
   /**
-   * interpreterFilterCte — run an interpreter program in CTE filter mode.
+   * interpreterJumpTable — run an interpreter program via a
+   * caller-supplied function-pointer dispatch table.
    *
-   * Used by DBLQH to evaluate a WHERE filter against CTE hash-table rows
-   * when serving CTE_LOOKUP_REQ / CTE_SCAN_REQ. The filter program reads
-   * CTE virtual columns via READ_LINKED_TO_MEM from
-   * req_struct->m_linked_attr_data (built by DBLQH from the CTE group).
-   *
-   * Dispatch uses a CTE-specific function table (s_cte_filter_handlers)
-   * that overrides EXIT_REFUSE to return INTERPRETER_FILTER_REJECT (-2)
-   * instead of calling tupkeyErrorLab(), and overrides tuple-dependent
-   * instructions (READ_ATTR_INTO_REG, BRANCH_ATTR_OP_ARG, LOAD_OP_TYPE …)
-   * with a clean error handler — CTE rows have no real tuple / operation.
+   * Three call sites, each with its own handler table and mode
+   * flags:
+   *   1. CTE filter (execCTE_LOOKUP_REQ, cteScanAggFeed,
+   *      cteScanEmitResults) — table s_cte_filter_handlers +
+   *      IFLAG_REJECT_RETURNS_NEG.  Wrapper:
+   *      Dbtup::interpreterFilterCte.
+   *   2. Aggregation interpreter embedded programs
+   *      (AggInterpreter::ProcessRec) — table s_agg_interp_handlers +
+   *      IFLAG_DISALLOW_BACKWARD_JUMPS.
    *
    * Return values:
-   *   >= 0                          — filter ACCEPT (row passes WHERE clause)
-   *   INTERPRETER_FILTER_REJECT(-2) — filter REJECT (normal, not an error)
+   *   >= 0                          — ACCEPT / normal exit
+   *   INTERPRETER_FILTER_REJECT     — filter REJECT (requires
+   *                                   IFLAG_REJECT_RETURNS_NEG;
+   *                                   produced by handleExitRefuseCte)
    *   -1                            — interpreter error (terrorCode set)
    *
-   * Caller is responsible for setting up req_struct with m_linked_attr_data,
-   * m_linked_attr_len, no_exec_instructions = 0, log_size = 0 before calling.
+   * Caller is responsible for setting up req_struct with
+   * m_linked_attr_data, m_linked_attr_len, no_exec_instructions = 0,
+   * log_size = 0 before calling.
    */
+  int interpreterJumpTable(Signal *signal, KeyReqStruct *req_struct,
+                           Uint32 *mainProgram, Uint32 TmainProgLen,
+                           Uint32 *subroutineProg, Uint32 TsubroutineLen,
+                           Uint32 *tmpArea, Uint32 tmpAreaSz,
+                           const InterpreterHandler *handlerTable,
+                           Uint32 flags);
+
+  /* Thin wrapper preserved for the CTE filter call sites from
+   * Phase A/B.  Calls interpreterJumpTable with s_cte_filter_handlers
+   * and IFLAG_REJECT_RETURNS_NEG. */
   int interpreterFilterCte(Signal *signal, KeyReqStruct *req_struct,
                            Uint32 *mainProgram, Uint32 TmainProgLen,
                            Uint32 *subroutineProg, Uint32 TsubroutineLen,

@@ -8684,8 +8684,10 @@ struct Dbtup::InterpreterContext {
   }
 };
 
-/* Handler signature — uniform for dispatch table use. */
-typedef int (*InterpreterHandler)(Dbtup::InterpreterContext& ctx);
+/* Handler signature — declared in Dbtup.hpp as Dbtup::InterpreterHandler
+ * so method signatures on Dbtup can name it; re-alias file-scope here
+ * for the local dispatch tables and INTERP_DISPATCH macro. */
+using InterpreterHandler = Dbtup::InterpreterHandler;
 
 /* ------------------------------------------------------------------
  * s_cte_filter_handlers — dispatch table for interpreterFilterCte.
@@ -9322,35 +9324,43 @@ int Dbtup::interpreterNextLab(Signal* signal,
 }
 
 /**
- * interpreterFilterCte — third interpreter, used to evaluate a WHERE
- * filter program on a synthetic CTE row produced by CTE_LOOKUP_REQ
- * (and later, CTE_SCAN_REQ as a root scan).  Unlike interpreterNextLab,
- * this loop does not have a real tuple: there is no operPtrP, so
- * TUPKEY_abort must not be called; errors set terrorCode directly
- * and return -1.  Accept returns 0; a user EXIT_REFUSE is translated
- * (via the s_cte_filter_handlers EXIT_REFUSE slot pointing at
- * handleExitRefuseCte) into the sentinel INTERPRETER_FILTER_REJECT,
- * which the caller treats as "row doesn't match".
+ * interpreterJumpTable — third interpreter, dispatched via a
+ * caller-supplied function-pointer table and mode flags.
  *
- * The locals + InterpreterContext aggregate init mirror the top of
- * interpreterNextLab line-for-line so the extracted handlers see an
- * identical execution environment.  The only difference is the
- * dispatch itself: s_cte_filter_handlers[opCode] is a function-pointer
- * table indexed by opcode, with nullptr in slots that are not safe on
- * a virtual CTE row (anything that touches a real tuple attribute).
+ * Used by two distinct call sites:
+ *   1. CTE filter (execCTE_LOOKUP_REQ, cteScanAggFeed,
+ *      cteScanEmitResults) via the Dbtup::interpreterFilterCte
+ *      wrapper.  Table: s_cte_filter_handlers.  Flag:
+ *      IFLAG_REJECT_RETURNS_NEG so EXIT_REFUSE surfaces as
+ *      INTERPRETER_FILTER_REJECT rather than aborting a synthetic
+ *      CTE row.
+ *   2. Aggregation interpreter embedded programs
+ *      (AggInterpreter::ProcessRec) — future Phase C.3.  Table:
+ *      s_agg_interp_handlers.  Flag: IFLAG_DISALLOW_BACKWARD_JUMPS
+ *      so programs are provably terminating (no CALL/RETURN in the
+ *      table + forward-only branches) — the 16000-instruction fuse
+ *      is dropped in that mode.
  *
- * The prevPC capture is dead code in Phase A — it becomes active in
- * Phase C when interpreterFilterCte is generalised into
- * interpreterJumpTable and agg-mode enables a backward-jump guard.
+ * The locals + InterpreterContext aggregate init mirror
+ * interpreterNextLab line-for-line so the extracted handlers see
+ * an identical execution environment.  The only difference is the
+ * dispatch: handlerTable[opCode] instead of the big switch.
+ *
+ * Return values:
+ *   >= 0                          — normal exit / accept
+ *   INTERPRETER_FILTER_REJECT     — filter reject (IFLAG_REJECT_RETURNS_NEG)
+ *   -1                            — interpreter error (terrorCode set)
  */
-int Dbtup::interpreterFilterCte(Signal* signal,
+int Dbtup::interpreterJumpTable(Signal* signal,
                                 KeyReqStruct* req_struct,
                                 Uint32* mainProgram,
                                 Uint32 TmainProgLen,
                                 Uint32* subroutineProg,
                                 Uint32 TsubroutineLen,
                                 Uint32* tmpArea,
-                                Uint32 tmpAreaSz)
+                                Uint32 tmpAreaSz,
+                                const InterpreterHandler *handlerTable,
+                                Uint32 flags)
 {
   Uint32 theRegister;
   Uint32 theInstruction;
@@ -9404,16 +9414,19 @@ int Dbtup::interpreterFilterCte(Signal* signal,
     tmpAreaSz,           /* Uint32                                       */
   };
 
-  while (RnoOfInstructions < 16000) {
+  const bool noBackJumps = (flags & IFLAG_DISALLOW_BACKWARD_JUMPS) != 0;
+  /* Instruction fuse only applies when backward jumps are allowed —
+   * without them, every handler dispatch moves the PC strictly
+   * forward and the program is provably terminating. */
+  while (noBackJumps || RnoOfInstructions < 16000) {
     if (TprogramCounter < TcurrentSize) {
       RnoOfInstructions++;
       theInstruction = TcurrentProgram[TprogramCounter];
       theRegister    = Interpreter::getReg1(theInstruction) << 2;
-      const Uint32 prevPC = TprogramCounter;  /* Phase C: backward-jump guard */
-      (void)prevPC;
+      const Uint32 prevPC = TprogramCounter;
       TprogramCounter++;
       const Uint32 opCode = Interpreter::getOpCode(theInstruction);
-      const InterpreterHandler h = s_cte_filter_handlers[opCode];
+      const InterpreterHandler h = handlerTable[opCode];
       if (unlikely(h == nullptr)) {
         jam();
         terrorCode = ZNO_INSTRUCTION_ERROR;
@@ -9422,20 +9435,26 @@ int Dbtup::interpreterFilterCte(Signal* signal,
       jamDebug();
       jamDataDebug(opCode);
       const int _rc = h(ctx);
-      if (unlikely(_rc != INTERP_CONTINUE)) {
-        if (_rc == INTERP_EXIT) return 0;                    /* accept  */
-        if (_rc == Dbtup::INTERPRETER_FILTER_REJECT) {
-          return _rc;                                        /* reject  */
+      if (likely(_rc == INTERP_CONTINUE)) {
+        if (noBackJumps && unlikely(TprogramCounter < prevPC)) {
+          jam();
+          terrorCode = ZBACKWARD_JUMP_NOT_ALLOWED;
+          return -1;
         }
-        /* Handler error: it either set terrorCode directly and returned
-         * -1, or returned -(error_code) without setting it.  Mirror the
-         * TUPKEY_abort path used by interpreterNextLab: derive
-         * terrorCode from -_rc when the handler hasn't already set one. */
-        if (_rc < -1 && terrorCode == 0) {
-          terrorCode = (Uint32)(-_rc);
-        }
-        return -1;
+        continue;
       }
+      if (_rc == INTERP_EXIT) return 0;                    /* accept  */
+      if (_rc == Dbtup::INTERPRETER_FILTER_REJECT) {
+        return _rc;                                        /* reject  */
+      }
+      /* Handler error: it either set terrorCode directly and returned
+       * -1, or returned -(error_code) without setting it.  Mirror the
+       * TUPKEY_abort path used by interpreterNextLab: derive
+       * terrorCode from -_rc when the handler hasn't already set one. */
+      if (_rc < -1 && terrorCode == 0) {
+        terrorCode = (Uint32)(-_rc);
+      }
+      return -1;
     } else {
       jam();
       terrorCode = ZOUTSIDE_OF_PROGRAM_ERROR;
@@ -9445,6 +9464,27 @@ int Dbtup::interpreterFilterCte(Signal* signal,
   jam();
   terrorCode = ZTOO_MANY_INSTRUCTIONS_ERROR;
   return -1;
+}
+
+/**
+ * interpreterFilterCte — thin wrapper for Phase A/B callers that
+ * dispatches via s_cte_filter_handlers with IFLAG_REJECT_RETURNS_NEG.
+ */
+int Dbtup::interpreterFilterCte(Signal* signal,
+                                KeyReqStruct* req_struct,
+                                Uint32* mainProgram,
+                                Uint32 TmainProgLen,
+                                Uint32* subroutineProg,
+                                Uint32 TsubroutineLen,
+                                Uint32* tmpArea,
+                                Uint32 tmpAreaSz)
+{
+  return interpreterJumpTable(signal, req_struct,
+                              mainProgram, TmainProgLen,
+                              subroutineProg, TsubroutineLen,
+                              tmpArea, tmpAreaSz,
+                              s_cte_filter_handlers,
+                              IFLAG_REJECT_RETURNS_NEG);
 }
 
 /**
