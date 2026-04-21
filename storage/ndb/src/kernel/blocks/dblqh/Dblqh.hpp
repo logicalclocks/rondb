@@ -3570,6 +3570,18 @@ private:
   void updatePackedList(Signal* signal, HostRecord * ahostptr, Uint16 hostId);
   void LQHKEY_abort(Signal* signal, int errortype, TcConnectionrecPtr);
   void LQHKEY_error(Signal* signal, int errortype, TcConnectionrecPtr);
+
+  // Outlined cold helpers used by execLQHKEYREQ; jamLine(callerLine) so
+  // the jam ring records the original call site. Keeps the hot-path
+  // function body free of error-return epilogues.
+  void LQHKEY_abort_cold(Signal *signal, int errortype,
+                         Uint16 callerLine,
+                         TcConnectionrecPtr tcConnectptr)
+      __attribute__((cold, noinline));
+  void LQHKEY_error_cold(Signal *signal, int errortype,
+                         Uint16 callerLine,
+                         TcConnectionrecPtr tcConnectptr)
+      __attribute__((cold, noinline));
   void nextRecordCopy(Signal* signal, TcConnectionrecPtr);
   Uint32 calculateHash(Uint32 tableId,
                        const Uint32* src,
@@ -3933,6 +3945,20 @@ private:
                                   const class LqhKeyReq *req);
   void earlyKeyReqAbort(Signal *signal, const class LqhKeyReq *lqhKeyReq,
                         Uint32 errorCode, TcConnectionrecPtr);
+  // See LQHKEY_abort_cold above.
+  void earlyKeyReqAbort_releasing(Signal *signal,
+                                  const class LqhKeyReq *lqhKeyReq,
+                                  Uint32 errCode,
+                                  Uint16 callerLine,
+                                  SectionHandle &handle,
+                                  TcConnectionrecPtr tcConnectptr)
+      __attribute__((cold, noinline));
+  void earlyKeyReqAbort_simple(Signal *signal,
+                               const class LqhKeyReq *lqhKeyReq,
+                               Uint32 errCode,
+                               Uint16 callerLine,
+                               TcConnectionrecPtr tcConnectptr)
+      __attribute__((cold, noinline));
   void logLqhkeyrefLab(Signal *signal, TcConnectionrecPtr, Uint32 errorCode);
   void closeCopyLab(Signal *signal, TcConnectionrec *);
   void commitReplyLab(Signal *signal, TcConnectionrec *);

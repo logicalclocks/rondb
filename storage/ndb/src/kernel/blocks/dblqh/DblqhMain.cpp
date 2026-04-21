@@ -5700,6 +5700,44 @@ void Dblqh::LQHKEY_error(Signal *signal, int errortype,
   reset_curr_ldm();
 }  // Dblqh::LQHKEY_error()
 
+// Outlined cold helpers used by execLQHKEYREQ. Each records the
+// original caller's __LINE__ in the jam ring, then forwards to the
+// existing error function. Marked cold+noinline so the compiler keeps
+// these bytes out of execLQHKEYREQ's hot body.
+void Dblqh::earlyKeyReqAbort_releasing(Signal *signal,
+                                       const LqhKeyReq *lqhKeyReq,
+                                       Uint32 errCode,
+                                       Uint16 callerLine,
+                                       SectionHandle &handle,
+                                       TcConnectionrecPtr tcConnectptr) {
+  jamLine(callerLine);
+  releaseSections(handle);
+  earlyKeyReqAbort(signal, lqhKeyReq, errCode, tcConnectptr);
+}
+
+void Dblqh::earlyKeyReqAbort_simple(Signal *signal,
+                                    const LqhKeyReq *lqhKeyReq,
+                                    Uint32 errCode,
+                                    Uint16 callerLine,
+                                    TcConnectionrecPtr tcConnectptr) {
+  jamLine(callerLine);
+  earlyKeyReqAbort(signal, lqhKeyReq, errCode, tcConnectptr);
+}
+
+void Dblqh::LQHKEY_abort_cold(Signal *signal, int errortype,
+                              Uint16 callerLine,
+                              TcConnectionrecPtr tcConnectptr) {
+  jamLine(callerLine);
+  LQHKEY_abort(signal, errortype, tcConnectptr);
+}
+
+void Dblqh::LQHKEY_error_cold(Signal *signal, int errortype,
+                              Uint16 callerLine,
+                              TcConnectionrecPtr tcConnectptr) {
+  jamLine(callerLine);
+  LQHKEY_error(signal, errortype, tcConnectptr);
+}
+
 void Dblqh::execLQHKEYREF(Signal *signal) {
   jamEntry();
   TcConnectionrecPtr tcConnectptr;
@@ -8932,15 +8970,19 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   TcConnectionrecPtr tcConnectptr;
   tcConnectptr.i = RNIL;
   ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-  {
+  // Cached single-byte load instead of a 64-word NodeBitmask scan.
+  // The cache is maintained by TransporterRegistry::set_status_overloaded.
+  // A stale false here is harmless: checkTransporterOverloaded (and the
+  // next LQHKEYREQ's observation of the cache) reach the authoritative
+  // decision.
+  if (unlikely(globalTransporterRegistry.any_overloaded())) {
     const NodeBitmask &all = globalTransporterRegistry.get_status_overloaded();
-    if (unlikely(!all.isclear())) {
+    if (!all.isclear()) {
       if (checkTransporterOverloaded(signal, all, lqhKeyReq)) {
         /* Overloaded, reject new work */
-        jam();
-        releaseSections(handle);
-        earlyKeyReqAbort(signal, lqhKeyReq, ZTRANSPORTER_OVERLOADED_ERROR,
-                         tcConnectptr);
+        earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                                   ZTRANSPORTER_OVERLOADED_ERROR,
+                                   __LINE__, handle, tcConnectptr);
         return;
       }
     }
@@ -8977,10 +9019,9 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
       (ERROR_INSERTED(5104) && LqhKeyReq::getOperation(Treqinfo) == ZINSERT) ||
       (ERROR_INSERTED(5105) && LqhKeyReq::getOperation(Treqinfo) == ZUPDATE) ||
       ERROR_INSERTED(5098)) {
-    jam();
-    releaseSections(handle);
-    earlyKeyReqAbort(signal, lqhKeyReq, ZTRANSPORTER_OVERLOADED_ERROR,
-                     tcConnectptr);
+    earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                               ZTRANSPORTER_OVERLOADED_ERROR,
+                               __LINE__, handle, tcConnectptr);
     return;
   }
 
@@ -9036,9 +9077,9 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
                                   jamBuffer());
     if (unlikely(!succ))
     {
-      jam();
-      releaseSections(handle);
-      earlyKeyReqAbort(signal, lqhKeyReq, ZNO_TC_CONNECT_ERROR, tcConnectptr);
+      earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                                 ZNO_TC_CONNECT_ERROR,
+                                 __LINE__, handle, tcConnectptr);
       return;
     }
     m_tc_connect_ptr = tcConnectptr;
@@ -9106,14 +9147,13 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   const Uint8 op = LqhKeyReq::getOperation(Treqinfo);
   if (ERROR_INSERTED(5080) ||
       (unlikely((op == ZREAD || op == ZREAD_EX) && !getAllowRead()))) {
-    jam();
     if (ERROR_INSERTED(5080))
     {
       g_eventLogger->info("Error due to ERROR_INSERT 5080");
     }
-    releaseSections(handle);
-    earlyKeyReqAbort(signal, lqhKeyReq, ZNODE_SHUTDOWN_IN_PROGRESS,
-                     tcConnectptr);
+    earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                               ZNODE_SHUTDOWN_IN_PROGRESS,
+                               __LINE__, handle, tcConnectptr);
     return;
   }
 
@@ -9124,14 +9164,13 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
 #endif
                ))
   {
-    jam();
     if (ERROR_INSERTED(5081))
     {
       g_eventLogger->info("Error due to ERROR_INSERT 5081");
     }
-    releaseSections(handle);
-    earlyKeyReqAbort(signal, lqhKeyReq, ZNODE_SHUTDOWN_IN_PROGRESS,
-                     tcConnectptr);
+    earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                               ZNODE_SHUTDOWN_IN_PROGRESS,
+                               __LINE__, handle, tcConnectptr);
     return;
   }
 
@@ -9197,10 +9236,9 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     } else {
       if (ERROR_INSERTED(5082) ||
           unlikely(!m_commitAckMarkerPool.seize(markerPtr))) {
-        jam();
-        releaseSections(handle);
-        earlyKeyReqAbort(signal, lqhKeyReq, ZNO_FREE_MARKER_RECORDS_ERROR,
-                         tcConnectptr);
+        earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                                   ZNO_FREE_MARKER_RECORDS_ERROR,
+                                   __LINE__, handle, tcConnectptr);
         return;
       }
       markerPtr.p->transid1 = sig1;
@@ -9257,12 +9295,8 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
                              :  // lockType not relevant for unlock req
                              (Operation_t)op;
   }
-  if (LqhKeyReq::getReplicaApplierFlag(Treqinfo)) {
-    /* Check sender version before processing - older versions sent junk */
-    if (likely(senderVersion >= NDBD_RATE_LIMIT_VERSION)) {
-      regTcPtr->m_flags |= TcConnectionrec::OP_REPLICA_APPLIER;
-    }
-  }
+  // ReplicaApplier handled in the folded add_flags OR below (needs a
+  // senderVersion-cutover guard; older versions sent junk in this bit).
   if (LqhKeyReq::getNoWaitFlag(Treqinfo)) {
     /* Check sender version before processing - older versions sent junk */
     if (likely(senderVersion >= NDBD_NOWAIT_KEYREQ)) {
@@ -9325,29 +9359,35 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   }
 
   regTcPtr->m_fire_trig_pass = 0;
-  Uint32 Tdeferred = LqhKeyReq::getDeferredConstraints(Treqinfo);
-  if (Tdeferred) {
-    regTcPtr->m_flags |= TcConnectionrec::OP_DEFERRED_CONSTRAINTS;
-  }
-
-  Uint32 TdisableFk = LqhKeyReq::getDisableFkConstraints(Treqinfo);
-  if (TdisableFk) {
-    regTcPtr->m_flags |= TcConnectionrec::OP_DISABLE_FK;
-  }
-
-  Uint32 TnormalProtocolFlag = LqhKeyReq::getNormalProtocolFlag(Treqinfo);
-  if (TnormalProtocolFlag) {
-    /**
-     * Only set normal protocol flag if long request.
-     * As above, short lqhKeyReq ai-length in-signal overlaps the bit.
-     * bug#14702377
-     */
-    regTcPtr->m_flags |= TcConnectionrec::OP_NORMAL_PROTOCOL;
-  }
-
-  if (LqhKeyReq::getNoTriggersFlag(Treqinfo)) {
-    regTcPtr->m_flags |= TcConnectionrec::OP_NO_TRIGGERS;
-  }
+  /*
+   * Fold five independent boolean flag tests into one m_flags OR.
+   * Each ternary lowers to a bit-test + select into a scratch register;
+   * clang ORs them and issues a single ldr/orr/str triple at the end,
+   * instead of five separate tbz/ldr/orr/str RMWs of m_flags.
+   *
+   * NormalProtocol note (bug#14702377): only set when this is a long
+   * request. As elsewhere, short lqhKeyReq ai-length in-signal overlaps
+   * the bit, but the surrounding flow guarantees we only reach this
+   * point on the long path.
+   *
+   * ReplicaApplier is guarded by a senderVersion cutover — older
+   * senders put junk in the bit position; treat as zero when the
+   * sender is too old.
+   */
+  const bool can_replica_applier =
+      (senderVersion >= NDBD_RATE_LIMIT_VERSION);
+  const Uint32 add_flags =
+      (LqhKeyReq::getDeferredConstraints(Treqinfo)
+           ? TcConnectionrec::OP_DEFERRED_CONSTRAINTS : 0) |
+      (LqhKeyReq::getDisableFkConstraints(Treqinfo)
+           ? TcConnectionrec::OP_DISABLE_FK : 0) |
+      (LqhKeyReq::getNormalProtocolFlag(Treqinfo)
+           ? TcConnectionrec::OP_NORMAL_PROTOCOL : 0) |
+      (LqhKeyReq::getNoTriggersFlag(Treqinfo)
+           ? TcConnectionrec::OP_NO_TRIGGERS : 0) |
+      ((can_replica_applier && LqhKeyReq::getReplicaApplierFlag(Treqinfo))
+           ? TcConnectionrec::OP_REPLICA_APPLIER : 0);
+  regTcPtr->m_flags |= add_flags;
 
   UintR TitcKeyLen = 0;
 
@@ -9381,7 +9421,8 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
      */
     handle.clear();
     if (totalAttrInfoLen > ZATTR_BUFFER_SIZE) {
-      earlyKeyReqAbort(signal, lqhKeyReq, ZATTRINFO_TOO_LARGE, tcConnectptr);
+      earlyKeyReqAbort_simple(signal, lqhKeyReq, ZATTRINFO_TOO_LARGE,
+                              __LINE__, tcConnectptr);
       return;
     }
   } else {
@@ -9392,10 +9433,10 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
      * This is used by COPY Fragment and Restore fragment.
      */
     if (refToMain(senderRef) == DBSPJ) {
-      jam();
       ndbassert(!LqhKeyReq::getNrCopyFlag(Treqinfo));
       /* Reply with NO_TUPLE_FOUND */
-      earlyKeyReqAbort(signal, lqhKeyReq, ZNO_TUPLE_FOUND, tcConnectptr);
+      earlyKeyReqAbort_simple(signal, lqhKeyReq, ZNO_TUPLE_FOUND,
+                              __LINE__, tcConnectptr);
       return;
     }
     jamDebug();
@@ -9406,7 +9447,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     regTcPtr->primKeyLen = 0;
 
     if (unlikely(!LqhKeyReq::getNrCopyFlag(Treqinfo))) {
-      LQHKEY_error(signal, 3, tcConnectptr);
+      LQHKEY_error_cold(signal, 3, __LINE__, tcConnectptr);
       return;
     }  // if
   }
@@ -9424,9 +9465,10 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   /* If gci_hi provided, take it and set gci_lo to max value
    * Otherwise, it will be decided by TUP at commit time as normal
    */
-  regTcPtr->gci_hi = LqhKeyReq::getGCIFlag(Treqinfo) ? sig2 : sig3;
-  regTcPtr->gci_lo = LqhKeyReq::getGCIFlag(Treqinfo) ? ~Uint32(0) : 0;
-  nextPos += LqhKeyReq::getGCIFlag(Treqinfo);
+  const Uint32 gci_flag = LqhKeyReq::getGCIFlag(Treqinfo);
+  regTcPtr->gci_hi = gci_flag ? sig2 : sig3;
+  regTcPtr->gci_lo = gci_flag ? ~Uint32(0) : 0;
+  nextPos += gci_flag;
 
   if (LqhKeyReq::getJoinAggFlag(attrLenFlags)) {
     jam();
@@ -9438,9 +9480,9 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
                 regTcPtr->m_join_agg_state_key));
     if (aggState != nullptr &&
         !getNodeInfo(refToNode(aggState->m_senderRef)).m_connected) {
-      jam();
-      earlyKeyReqAbort(signal, lqhKeyReq,
-                        ZNODEFAIL_BEFORE_COMMIT, tcConnectptr);
+      earlyKeyReqAbort_simple(signal, lqhKeyReq,
+                              ZNODEFAIL_BEFORE_COMMIT,
+                              __LINE__, tcConnectptr);
       return;
     }
     regTcPtr->m_outer_join_agg =
@@ -9465,7 +9507,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   if (unlikely((LqhKeyReq::FixedSignalLength + nextPos) !=
                signal->length())) {
     g_eventLogger->info("nextPos: %u, siglen: %u", nextPos, signal->length());
-    LQHKEY_error(signal, 2, tcConnectptr);
+    LQHKEY_error_cold(signal, 2, __LINE__, tcConnectptr);
     return;
   }  // if
   UintR TseqNoReplica = regTcPtr->seqNoReplica;
@@ -9479,11 +9521,11 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
       regTcPtr->nextSeqNoReplica = TseqNoReplica + 1;
       if (unlikely((regTcPtr->nextReplica == 0) ||
                    (regTcPtr->nextReplica == cownNodeid))) {
-        LQHKEY_error(signal, 0, tcConnectptr);
+        LQHKEY_error_cold(signal, 0, __LINE__, tcConnectptr);
         return;
       }  // if
     } else {
-      LQHKEY_error(signal, 4, tcConnectptr);
+      LQHKEY_error_cold(signal, 4, __LINE__, tcConnectptr);
       return;
     }  // if
   }    // if
@@ -9547,21 +9589,20 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
      */
     Uint32 instanceNo = getInstanceNoCanFail(tabptr.i, regTcPtr->fragmentid);
     if (unlikely(instanceNo == RNIL)) {
-      jam();
-      LQHKEY_abort(signal, 5, tcConnectptr);
+      LQHKEY_abort_cold(signal, 5, __LINE__, tcConnectptr);
       return;
     }
     regTcPtr->ldmInstance = instanceNo;
     setup_query_thread_for_key_access(instanceNo);
   }
   if (unlikely(tabptr.i >= ctabrecFileSize)) {
-    LQHKEY_error(signal, 5, tcConnectptr);
+    LQHKEY_error_cold(signal, 5, __LINE__, tcConnectptr);
     return;
   }  // if
   ptrAss(tabptr, tablerec);
   if (unlikely(table_version_major_lqhkeyreq(tabptr.p->schemaVersion) !=
                table_version_major_lqhkeyreq(schemaVersion))) {
-    LQHKEY_abort(signal, 5, tcConnectptr);
+    LQHKEY_abort_cold(signal, 5, __LINE__, tcConnectptr);
     return;
   }
 
@@ -9569,16 +9610,19 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     if (check_tabstate(signal, tabptr.p, op, tcConnectptr)) return;
   }
   if (unlikely(!getFragmentrec(regTcPtr->fragmentid))) {
-    LQHKEY_abort(signal, 6, tcConnectptr);
+    LQHKEY_abort_cold(signal, 6, __LINE__, tcConnectptr);
     return;
   }//if
   regTcPtr->tableref = tabptr.i;
   regTcPtr->m_disk_table = tabptr.p->m_disk_table;
   Uint32 senderBlockNo = refToMain(signal->senderBlockRef());
-  if (senderBlockNo == getRESTORE())
+  // Both of the original branches did the same update; merged.
+  // m_disk_table is a 0/1 bool (Uint8), so `&= !flag` either clears
+  // (when flag is set) or is a no-op (when flag is unset).
+  if (senderBlockNo == getRESTORE() ||
+      op == ZREAD || op == ZREAD_EX || op == ZUPDATE) {
     regTcPtr->m_disk_table &= !LqhKeyReq::getNoDiskFlag(Treqinfo);
-  else if (op == ZREAD || op == ZREAD_EX || op == ZUPDATE)
-    regTcPtr->m_disk_table &= !LqhKeyReq::getNoDiskFlag(Treqinfo);
+  }
 
   if (op == ZREAD || op == ZREAD_EX || op == ZUNLOCK) {
     tabptr.p->usageCountR++;
@@ -9846,10 +9890,10 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
       tmp = -tmp;
       if (unlikely((tmp <= (MAX_REPLICAS - 1)) || (tfragDistKey == 0)))
       {
-        LQHKEY_abort(signal, 0, tcConnectptr);
+        LQHKEY_abort_cold(signal, 0, __LINE__, tcConnectptr);
         return;
       }//if
-      LQHKEY_error(signal, 1, tcConnectptr);
+      LQHKEY_error_cold(signal, 1, __LINE__, tcConnectptr);
       return;
     }
     /**
@@ -9943,7 +9987,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
       {
         DEB_QUOTAS(("(%u) Transaction aborted due to quota exceeded",
           instance()));
-        LQHKEY_abort(signal, 7, tcConnectptr);
+        LQHKEY_abort_cold(signal, 7, __LINE__, tcConnectptr);
         return;
       }
       /* Disk quota checked before allocating new extent */

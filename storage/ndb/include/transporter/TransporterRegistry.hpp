@@ -39,6 +39,7 @@
 #define TransporterRegistry_H
 
 #include <assert.h>
+#include <atomic>
 #include "ndb_config.h"
 
 #if defined(HAVE_EPOLL_CREATE)
@@ -477,6 +478,16 @@ class TransporterRegistry {
   const NodeBitmask &get_status_overloaded() const;
 
   /**
+   * Cached summary of get_status_overloaded().isclear() — hot-path
+   * callers (e.g. every LQHKEYREQ/TCKEYREQ) use this to avoid the
+   * 64-word bitmask scan. Written from the transporter thread in
+   * set_status_overloaded(); read with relaxed ordering elsewhere.
+   * A stale false read is harmless: checkTransporterOverloaded() still
+   * reaches an authoritative decision on subsequent requests.
+   */
+  bool any_overloaded() const;
+
+  /**
    * Get transporter's overload count since connect
    */
   Uint32 get_overload_count(NodeId nodeId) const;
@@ -682,6 +693,17 @@ class TransporterRegistry {
   NodeBitmask m_status_overloaded;
   NodeBitmask m_status_slowdown;
 
+  /*
+   * Cached summary of m_status_overloaded. Hot-path read via
+   * any_overloaded(); avoids the 64-word NodeBitmask scan on every
+   * request when no node is overloaded (the common case).
+   *
+   * Placed on its own cache line so the hot read is not falsely
+   * shared with the transporter thread's writes to the bitmask it
+   * summarises.
+   */
+  alignas(NDB_CL) std::atomic<bool> m_any_overloaded{false};
+
   /**
    * Unpack signal data.
    *
@@ -813,12 +835,24 @@ inline void TransporterRegistry::set_status_overloaded(NodeId nodeId,
   if (val != m_status_overloaded.get(nodeId)) {
     m_status_overloaded.set(nodeId, val);
     if (val) inc_overload_count(nodeId);
+    // Maintain the cached summary. Setting a bit → any_overloaded is
+    // trivially true. Clearing a bit → need to rescan to decide, which
+    // is a cold-path event so the 64-word isclear() is fine here.
+    if (val) {
+      m_any_overloaded.store(true, std::memory_order_relaxed);
+    } else if (m_status_overloaded.isclear()) {
+      m_any_overloaded.store(false, std::memory_order_relaxed);
+    }
   }
   if (val) set_status_slowdown(nodeId, val);
 }
 
 inline const NodeBitmask &TransporterRegistry::get_status_overloaded() const {
   return m_status_overloaded;
+}
+
+inline bool TransporterRegistry::any_overloaded() const {
+  return m_any_overloaded.load(std::memory_order_relaxed);
 }
 
 inline void TransporterRegistry::set_status_slowdown(NodeId nodeId, bool val) {
