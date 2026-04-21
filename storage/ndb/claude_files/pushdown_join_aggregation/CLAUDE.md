@@ -32,6 +32,11 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_nextreq_phase_2.md` — Phase 2: SCAN_NEXTREQ flow control for CTE_SCAN root
 - `cte_nextreq_phase_3.md` — Phase 3: CTE state lifetime audit across SCAN_NEXTREQ pauses
 - `cte_nextreq_phase_4.md` — Phase 4: NDB API tests for multi-batch CTE main-SELECTs
+- `cte_outer_join_plan.md` — CTE outer-join support: overview + phase index
+- `cte_outer_join_phase_1.md` — Phase 1: CTE_LOOKUP outer-join child (API + agg-feed)
+- `cte_outer_join_phase_2.md` — Phase 2: scanCte as outer-join LEFT-side parent (verification)
+- `cte_outer_join_phase_3.md` — Phase 3: CTE_SCAN as outer-join child
+- `cte_outer_join_phase_4.md` — Phase 4: testCteNdbApiOuterJoin.cpp consolidated tests
 
 ### Key Source Files
 - `DblqhMain.cpp` — Signal handlers for JOIN_AGG_SETUP/COMPLETE/RELEASE, scan processing, sendScanFragConf
