@@ -1982,6 +1982,179 @@ testCteScanFilterBatchBoundary(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 16: CTE_SCAN root, large result (600 groups), no top agg       */
+/*                                                                     */
+/* Exercises the DBSPJ-mediated CTE_SCAN_REQ continuation path         */
+/* (T_USER_PROJECTION / FLUSH_AI → API) across multiple batches.       */
+/* CteScanData::m_batchSize is 256, so 600 groups spans 3 batches;     */
+/* DBSPJ echoes the scanIterI from each CTE_SCAN_CONF back as the      */
+/* next REQ's scanIterI (SignalLengthContinue) so DBLQH resumes from   */
+/* the saved CteScanIterState pool record instead of restarting from   */
+/* bucket 0.  Without Phase 1's fix this would deliver duplicate rows  */
+/* (or loop forever) once more than 256 groups are present.            */
+/* ------------------------------------------------------------------ */
+static int
+testCteScanRootLargeResult(Ndb *ndb, MYSQL *conn)
+{
+  const int NUM_GROUPS = 600;
+  printf("Test 16: CTE_SCAN root — large result (%d groups) ... ",
+         NUM_GROUPS);
+  fflush(stdout);
+
+  /* Re-seed cte_src with NUM_GROUPS distinct groups.  Bulk-insert in
+   * chunks to keep per-statement size reasonable. */
+  if (sqlExec(conn, "DELETE FROM cte_src") != 0) {
+    printf("FAILED (delete)\n");
+    return -1;
+  }
+  char sql[8192];
+  int pos = 0;
+  bool first = true;
+  for (int g = 1; g <= NUM_GROUPS; g++) {
+    if (first) {
+      pos = snprintf(sql, sizeof(sql), "INSERT INTO cte_src VALUES ");
+      first = false;
+    } else {
+      pos += snprintf(sql + pos, sizeof(sql) - pos, ",");
+    }
+    pos += snprintf(sql + pos, sizeof(sql) - pos, "(%d,%d,%d)", g, g, g);
+    if (g % 100 == 0 || g == NUM_GROUPS) {
+      if (sqlExec(conn, sql) != 0) {
+        printf("FAILED (seed insert at g=%d)\n", g);
+        return -1;
+      }
+      first = true;
+      pos = 0;
+    }
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") || !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) || !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg)\n");
+    return -1;
+  }
+
+  /* Trivial accept-all filter.  The presence of an interpreted program
+   * is what routes rows through cteScanEmitResults (T_USER_PROJECTION
+   * path) rather than the raw-emit legacy path, matching the shape
+   * Test 12 uses but without row-dropping. */
+  Uint32 codeBuf[16];
+  NdbInterpretedCode filterCode(virtTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  if (filterCode.interpret_exit_ok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter)\n");
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cteAgg);
+    qb->readTuple(srcTab, key, &opts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  /* Main query: scanCte(0) with trivial filter, NO top-level
+   * aggregation.  Each group flows back to the API as TRANSID_AI via
+   * FLUSH_AI. */
+  NdbQueryOptions scanOpts;
+  scanOpts.setInterpretedCode(filterCode);
+  if (qb->scanCte(0, 2, virtTab, &scanOpts) == nullptr) {
+    printf("FAILED (scanCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainOp = query->getQueryOperation(mainOpNo);
+  NdbRecAttr *raGrp = nullptr;
+  NdbRecAttr *raTotal = nullptr;
+  if (mainOp != nullptr) {
+    raGrp   = mainOp->getValue("grp");
+    raTotal = mainOp->getValue("total");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Verify each grp in [1..NUM_GROUPS] appears exactly once and
+   * total == grp (val == grp, each group has exactly one row). */
+  bool seen[NUM_GROUPS + 1] = { false };
+  Uint32 rowCount = 0;
+  Int64 sumTotal = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    Int32 g = raGrp ? raGrp->int32_value() : -1;
+    Int64 t = raTotal ? raTotal->int64_value() : -1;
+    if (g < 1 || g > NUM_GROUPS) {
+      printf("FAILED (out-of-range grp=%d)\n", g);
+      query->close(); trans->close(); queryDef->destroy();
+      return -1;
+    }
+    if (seen[g]) {
+      printf("FAILED (duplicate grp=%d at row %u)\n", g, rowCount);
+      query->close(); trans->close(); queryDef->destroy();
+      return -1;
+    }
+    seen[g] = true;
+    if (t != (Int64)g) {
+      printf("FAILED (grp=%d total=%lld expected %d)\n",
+             g, (long long)t, g);
+      query->close(); trans->close(); queryDef->destroy();
+      return -1;
+    }
+    sumTotal += t;
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close(); trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  /* Expected: NUM_GROUPS rows, SUM = 1+2+...+NUM_GROUPS = N*(N+1)/2 */
+  const Int64 expectedSum = (Int64)NUM_GROUPS * (NUM_GROUPS + 1) / 2;
+  if (rowCount == (Uint32)NUM_GROUPS && sumTotal == expectedSum) {
+    printf("OK (%u rows, SUM=%lld)\n", rowCount, (long long)sumTotal);
+    return 0;
+  }
+  printf("FAILED (expected rows=%d sum=%lld, got rows=%u sum=%lld)\n",
+         NUM_GROUPS, (long long)expectedSum, rowCount, (long long)sumTotal);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -2006,6 +2179,7 @@ static const TestEntry g_tests[] = {
     { 13, testCteScanFilterAggFeed },
     { 14, testCteScanFilterEmptyResult },
     { 15, testCteScanFilterBatchBoundary },
+    { 16, testCteScanRootLargeResult },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 

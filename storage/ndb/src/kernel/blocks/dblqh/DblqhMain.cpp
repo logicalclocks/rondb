@@ -19953,6 +19953,7 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
   conf->senderData = senderData;
   conf->numRows = groupsSent;
   conf->flags = CteScanConf::EndOfData;
+  conf->scanIterI = RNIL;
   sendSignal(senderRef, GSN_CTE_SCAN_CONF,
              signal, CteScanConf::SignalLength, JBB);
 }

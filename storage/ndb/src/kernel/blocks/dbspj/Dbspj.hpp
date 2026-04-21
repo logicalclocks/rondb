@@ -679,6 +679,26 @@ class Dbspj : public SimulatedBlock {
                               // JoinAggInterpreter (CTE-2-reads-CTE-1).
                               // Computed once in cte_scan_start, reused
                               // by continuation REQs in execCTE_SCAN_CONF.
+
+    /* Per-source-node scan iterator state for multi-batch continuation.
+     * Each DBLQH node that participates in this CTE_SCAN gets a slot
+     * allocated on its first REQ; subsequent CONFs update m_scanIterI,
+     * and continuation REQs echo it back as CteScanReq::scanIterI so
+     * DBLQH can resume from the saved CteScanIterState pool record
+     * (O(1) hash-bucket resume instead of restarting from bucket 0).
+     * Slots are compact: m_numNodeSlots in [0, MAX_CTE_SCAN_NODE_SLOTS]. */
+    struct NodeSlot {
+      Uint32 m_sourceNodeId;   // DBLQH nodeId this slot tracks
+      Uint32 m_scanIterI;      // CteScanIterState pool i-value; RNIL on
+                               // first REQ and after EndOfData CONF
+      bool m_endOfData;        // Final CONF seen from this node
+    };
+    /* Single-node scans use slot[0]; m_cteScanAllNodes fan-out uses
+     * one slot per participating node.  Sized to cover every possible
+     * data node in the cluster (ABS_MAX_NDB_NODES = 145). */
+    static constexpr Uint32 MAX_CTE_SCAN_NODE_SLOTS = ABS_MAX_NDB_NODES;
+    NodeSlot m_nodeSlots[MAX_CTE_SCAN_NODE_SLOTS];
+    Uint32 m_numNodeSlots;
   };
 
   /**
@@ -1867,6 +1887,23 @@ class Dbspj : public SimulatedBlock {
   void cte_scan_cleanup(Ptr<Request>, Ptr<TreeNode>);
   bool cte_scan_checkNode(const Ptr<Request>, const Ptr<TreeNode>);
   void cte_scan_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
+
+  /* Build and send a CTE_SCAN_REQ to the DBLQH on sourceNodeId.
+   * scanIterI == RNIL produces a first REQ (SignalLength = 9); any
+   * other value produces a continuation (SignalLengthContinue = 10)
+   * that echoes the scanIterI from a prior CTE_SCAN_CONF.  Duplicates
+   * the AttrInfo section so the caller's copy is preserved for the
+   * next batch.  Increments data.m_outstanding on success. */
+  void cte_scan_sendReq(Signal *signal, Ptr<Request> requestPtr,
+                        Ptr<TreeNode> treeNodePtr,
+                        Uint32 sourceNodeId, Uint32 aggStateKey,
+                        Uint32 joinAggStateKey, Uint32 scanIterI);
+
+  /* Return the NodeSlot for sourceNodeId, allocating a new one if
+   * none exists.  Returns nullptr if all slots are in use (should
+   * never happen: ABS_MAX_NDB_NODES slots are available). */
+  CteScanData::NodeSlot *cte_scan_findOrAddNodeSlot(
+      CteScanData &data, Uint32 sourceNodeId);
 
   /**
    * CTE orchestration signals

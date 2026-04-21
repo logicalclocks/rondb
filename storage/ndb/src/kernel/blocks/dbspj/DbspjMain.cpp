@@ -6761,6 +6761,77 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
   return err;
 }
 
+Dbspj::CteScanData::NodeSlot *
+Dbspj::cte_scan_findOrAddNodeSlot(CteScanData &data, Uint32 sourceNodeId) {
+  for (Uint32 i = 0; i < data.m_numNodeSlots; i++) {
+    if (data.m_nodeSlots[i].m_sourceNodeId == sourceNodeId) {
+      return &data.m_nodeSlots[i];
+    }
+  }
+  if (unlikely(data.m_numNodeSlots >= CteScanData::MAX_CTE_SCAN_NODE_SLOTS)) {
+    return nullptr;
+  }
+  CteScanData::NodeSlot *slot = &data.m_nodeSlots[data.m_numNodeSlots++];
+  slot->m_sourceNodeId = sourceNodeId;
+  slot->m_scanIterI = RNIL;
+  slot->m_endOfData = false;
+  return slot;
+}
+
+void Dbspj::cte_scan_sendReq(Signal *signal, Ptr<Request> requestPtr,
+                              Ptr<TreeNode> treeNodePtr,
+                              Uint32 sourceNodeId, Uint32 aggStateKey,
+                              Uint32 joinAggStateKey, Uint32 scanIterI) {
+  CteScanData &data = treeNodePtr.p->m_cteScan_data;
+
+  CteScanReq *req =
+      reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
+  req->senderRef = reference();
+  req->senderData = treeNodePtr.i;
+  req->aggStateKey = aggStateKey;
+  req->transId1 = requestPtr.p->m_transId[0];
+  req->transId2 = requestPtr.p->m_transId[1];
+  req->batchSize = data.m_batchSize;
+  /* Per-fragment FLUSH_AI target: each DBSPJ request's
+   * m_rootResultData is the per-fragment receiverId from its
+   * SCAN_FRAGREQ.  DBLQH uses these for CORR_FACTOR64's
+   * rootReceiverId so the API routes the row to the right
+   * NdbWorker. */
+  req->resultRef = data.m_api_resultRef;
+  req->resultData = requestPtr.p->m_rootResultData;
+  req->joinAggStateKey = joinAggStateKey;
+  req->scanIterI = scanIterI;
+
+  /* Attach AttrInfo section (with FLUSH_AI + user projection) when
+   * present — this tells DBLQH how to format each group into a
+   * TRANSID_AI and where to route it (API vs DBSPJ).  Every REQ
+   * carries the section because DBLQH reads it per call. */
+  SectionHandle handle(this);
+  Uint32 cnt = 0;
+  if (treeNodePtr.p->m_send.m_attrInfoPtrI != RNIL) {
+    jam();
+    Uint32 attrInfoPtrI = RNIL;
+    if (!dupSection(attrInfoPtrI,
+                    treeNodePtr.p->m_send.m_attrInfoPtrI)) {
+      jam();
+      abort(signal, requestPtr, DbspjErr::OutOfSectionMemory);
+      return;
+    }
+    getSection(handle.m_ptr[CteScanReq::AttrInfoSectionNum], attrInfoPtrI);
+    cnt = 1;
+  }
+  handle.m_cnt = cnt;
+
+  const Uint32 length =
+      (scanIterI == RNIL) ? CteScanReq::SignalLength
+                          : CteScanReq::SignalLengthContinue;
+  Uint32 ref = numberToRef(DBLQH, 1, sourceNodeId);
+  sendSignal(ref, GSN_CTE_SCAN_REQ, signal, length, JBB,
+             cnt > 0 ? &handle : nullptr);
+
+  data.m_outstanding++;
+}
+
 void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
                             Ptr<TreeNode> treeNodePtr) {
   jam();
@@ -6798,6 +6869,7 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
   data.m_rowsReceived = 0;
   data.m_rowsExpecting = 0;
   data.m_endOfData = false;
+  data.m_numNodeSlots = 0;
 
   treeNodePtr.p->m_state = TreeNode::TN_ACTIVE;
   requestPtr.p->m_cnt_active++;
@@ -6896,49 +6968,13 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     data.m_aggStateKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
 
-    CteScanReq *req =
-        reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
-    req->senderRef = reference();
-    req->senderData = treeNodePtr.i;
-    req->aggStateKey = data.m_aggStateKey;
-    req->transId1 = requestPtr.p->m_transId[0];
-    req->transId2 = requestPtr.p->m_transId[1];
-    req->batchSize = data.m_batchSize;
-    /* Per-fragment FLUSH_AI target: parseDA's section was built with
-     * the common worker[0] receiverId (from getIdOfReceiver()), but
-     * each DBSPJ request's m_rootResultData is the per-fragment
-     * receiverId from its SCAN_FRAGREQ.  DBLQH uses these for
-     * CORR_FACTOR64's rootReceiverId so the API routes the row to
-     * the right NdbWorker. */
-    req->resultRef = data.m_api_resultRef;
-    req->resultData = requestPtr.p->m_rootResultData;
-    req->joinAggStateKey = joinAggStateKey;
+    CteScanData::NodeSlot *slot =
+        cte_scan_findOrAddNodeSlot(data, targetNodeId);
+    ndbrequire(slot != nullptr);
 
-    /* Attach AttrInfo section (with FLUSH_AI + user projection) when
-     * present — this tells DBLQH how to format each group into a
-     * TRANSID_AI and where to route it (API vs DBSPJ). */
-    SectionHandle handle(this);
-    Uint32 cnt = 0;
-    if (treeNodePtr.p->m_send.m_attrInfoPtrI != RNIL) {
-      jam();
-      Uint32 attrInfoPtrI = RNIL;
-      if (!dupSection(attrInfoPtrI,
-                      treeNodePtr.p->m_send.m_attrInfoPtrI)) {
-        jam();
-        abort(signal, requestPtr, DbspjErr::OutOfSectionMemory);
-        return;
-      }
-      getSection(handle.m_ptr[CteScanReq::AttrInfoSectionNum], attrInfoPtrI);
-      cnt = 1;
-    }
-    handle.m_cnt = cnt;
-
-    Uint32 ref = numberToRef(DBLQH, 1, targetNodeId);
-    sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
-               CteScanReq::SignalLength, JBB,
-               cnt > 0 ? &handle : nullptr);
-
-    data.m_outstanding = 1;
+    cte_scan_sendReq(signal, requestPtr, treeNodePtr, targetNodeId,
+                     data.m_aggStateKey, joinAggStateKey,
+                     /*scanIterI=*/ RNIL);
   } else {
     jam();
     /* Uncommon case: instances < nodes.  Send CTE_SCAN_REQ to ALL
@@ -6949,39 +6985,13 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
           requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
       if (aggKey == 0) continue;  /* No CTE state on this node */
 
-      CteScanReq *req =
-          reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
-      req->senderRef = reference();
-      req->senderData = treeNodePtr.i;
-      req->aggStateKey = aggKey;
-      req->transId1 = requestPtr.p->m_transId[0];
-      req->transId2 = requestPtr.p->m_transId[1];
-      req->batchSize = data.m_batchSize;
-      req->resultRef = data.m_api_resultRef;
-      req->resultData = requestPtr.p->m_rootResultData;
+      CteScanData::NodeSlot *slot =
+          cte_scan_findOrAddNodeSlot(data, nodeId);
+      ndbrequire(slot != nullptr);
 
-      SectionHandle handle(this);
-      Uint32 cnt = 0;
-      if (treeNodePtr.p->m_send.m_attrInfoPtrI != RNIL) {
-        jam();
-        Uint32 attrInfoPtrI = RNIL;
-        if (!dupSection(attrInfoPtrI,
-                        treeNodePtr.p->m_send.m_attrInfoPtrI)) {
-          jam();
-          abort(signal, requestPtr, DbspjErr::OutOfSectionMemory);
-          return;
-        }
-        getSection(handle.m_ptr[CteScanReq::AttrInfoSectionNum], attrInfoPtrI);
-        cnt = 1;
-      }
-      handle.m_cnt = cnt;
-
-      Uint32 ref = numberToRef(DBLQH, 1, nodeId);
-      sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
-                 CteScanReq::SignalLength, JBB,
-                 cnt > 0 ? &handle : nullptr);
-
-      data.m_outstanding++;
+      cte_scan_sendReq(signal, requestPtr, treeNodePtr, nodeId,
+                       aggKey, joinAggStateKey,
+                       /*scanIterI=*/ RNIL);
     }
   }
 }
@@ -7048,6 +7058,15 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
   ndbrequire(data.m_outstanding > 0);
   data.m_outstanding--;
 
+  /* Look up (or allocate) the per-source-node slot and stash the
+   * iterator token.  RNIL on EndOfData CONFs — DBLQH has already
+   * released its CteScanIterState pool record at that point. */
+  const Uint32 sourceNodeId = refToNode(conf->senderRef);
+  CteScanData::NodeSlot *slot =
+      cte_scan_findOrAddNodeSlot(data, sourceNodeId);
+  ndbrequire(slot != nullptr);
+  slot->m_scanIterI = conf->scanIterI;
+
   /* Three accounting paths:
    * (a) Agg-feed (joinAggStateKey != RNIL): rows go INTO the target
    *     JoinAggInterpreter at DBLQH, not to API or DBSPJ.  Don't
@@ -7097,53 +7116,24 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
    * CONFs (for batches where the scan continues) keep it false. */
   if (endOfData) {
     data.m_endOfData = true;
+    slot->m_endOfData = true;
   }
 
   if (!endOfData) {
     jam();
     /* More groups on this node — send continuation CTE_SCAN_REQ.
-     * Use conf->senderRef to route back to the same DBLQH node. */
-    const Uint32 sourceNodeId = refToNode(conf->senderRef);
+     * Use conf->senderRef to route back to the same DBLQH node.
+     * Echo the scanIterI from the CONF back as the REQ's scanIterI so
+     * DBLQH resumes from the saved CteScanIterState pool record
+     * (O(1) hash-bucket resume); the helper selects
+     * SignalLengthContinue when scanIterI != RNIL. */
     const Uint32 sourceAggKey =
         requestPtr.p->m_cteAggStateKeys[
             data.m_cteId * (Uint32)MAX_NDB_NODES + sourceNodeId];
 
-    CteScanReq *req =
-        reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
-    req->senderRef = reference();
-    req->senderData = treeNodePtr.i;
-    req->aggStateKey = sourceAggKey;
-    req->transId1 = requestPtr.p->m_transId[0];
-    req->transId2 = requestPtr.p->m_transId[1];
-    req->batchSize = data.m_batchSize;
-    req->resultRef = data.m_api_resultRef;
-    req->resultData = requestPtr.p->m_rootResultData;
-    req->joinAggStateKey = data.m_joinAggStateKey;
-
-    /* Re-attach AttrInfo section for continuation (DBLQH needs it on
-     * every CTE_SCAN_REQ, not just the first). */
-    SectionHandle handle(this);
-    Uint32 cnt = 0;
-    if (treeNodePtr.p->m_send.m_attrInfoPtrI != RNIL) {
-      jam();
-      Uint32 attrInfoPtrI = RNIL;
-      if (!dupSection(attrInfoPtrI,
-                      treeNodePtr.p->m_send.m_attrInfoPtrI)) {
-        jam();
-        abort(signal, requestPtr, DbspjErr::OutOfSectionMemory);
-        return;
-      }
-      getSection(handle.m_ptr[CteScanReq::AttrInfoSectionNum], attrInfoPtrI);
-      cnt = 1;
-    }
-    handle.m_cnt = cnt;
-
-    Uint32 ref = numberToRef(DBLQH, 1, sourceNodeId);
-    sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
-               CteScanReq::SignalLength, JBB,
-               cnt > 0 ? &handle : nullptr);
-
-    data.m_outstanding++;
+    cte_scan_sendReq(signal, requestPtr, treeNodePtr, sourceNodeId,
+                     sourceAggKey, data.m_joinAggStateKey,
+                     slot->m_scanIterI);
     /* requestPtr.m_outstanding is the overall REQ-count for this
      * CTE scan and must NOT be incremented here — it was set to 1
      * in cte_scan_start and stays at 1 until the entire scan is
