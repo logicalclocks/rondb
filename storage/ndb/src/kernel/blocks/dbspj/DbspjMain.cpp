@@ -6760,6 +6760,20 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
       if (batch == 0 || batch > 256) batch = 256;
       data.m_batchSize = batch;
     }
+    /* Consume m_start_signal when CTE_SCAN is the main-query root so that
+     * child lookups built after this don't mistake the SCAN_FRAGREQ for
+     * an LqhKeyReq and set T_ONE_SHOT on themselves.  CTE scans as
+     * CTE-subtree internal roots leave it alone — they aren't the main
+     * query's root, and ctx.m_cteSubtreeRemaining is still > 0 in that
+     * case.  Matches cte_lookup_build's guard. */
+    if (ctx.m_start_signal &&
+        ctx.m_cteSubtreeRemaining == 0 &&
+        treeNodePtr.p->m_parentPtrI == RNIL) {
+      jam();
+      DEB_CTE(("(%u) cte_scan_build: main root node %u consuming "
+               "m_start_signal", instance(), treeNodePtr.p->m_node_no));
+      ctx.m_start_signal = NULL;
+    }
     data.m_endOfData = false;
     /* Save the per-fragment API block ref now — ctx.m_resultRef is set
      * from the SCAN_FRAGREQ at execSCAN_FRAGREQ time, so each request
