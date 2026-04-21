@@ -2428,6 +2428,334 @@ testCteScanRootEarlyClose(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 19: real-table main scan + CTE_LOOKUP child, multi-batch       */
+/*                                                                     */
+/* WITH cte AS (SELECT grp, SUM(val) FROM cte_src GROUP BY grp)        */
+/* SELECT s.pk, s.grp, cte.total FROM cte_src s JOIN cte ON s.grp=cte.grp */
+/*                                                                     */
+/* cte_src seeded with NUM_ROWS rows across NUM_GROUPS groups          */
+/* (ROWS_PER_GROUP rows each, val=1).  Each group's cte.total ==       */
+/* ROWS_PER_GROUP.  No explicit setBatchSize — relies on the default   */
+/* batch size being < NUM_ROWS so SCAN_NEXTREQ fires.  Exercises       */
+/* Phase 3.3: JoinAggregationState stays CTE_READY across scanFrag     */
+/* batch pauses, so CTE_LOOKUPs keep resolving after each SCAN_NEXTREQ.*/
+/* NUM_ROWS is large enough to exceed HighlyCongestedLimit (256), so   */
+/* DBSPJ's congestion-control path gets exercised too — this fix      */
+/* requires execCTE_LOOKUP_CONF/REF to call resumeCongestedNode (same  */
+/* as lookup_countSignal does for regular LQH lookups).               */
+/* ------------------------------------------------------------------ */
+static int
+testCteLookupMainMultiBatch(Ndb *ndb, MYSQL *conn)
+{
+  const int NUM_GROUPS = 100;
+  const int ROWS_PER_GROUP = 10;
+  const int NUM_ROWS = NUM_GROUPS * ROWS_PER_GROUP;  // 1000
+  const Int64 EXPECTED_TOTAL = ROWS_PER_GROUP;  // val=1 per row
+  printf("Test 19: real-root + CTE_LOOKUP child, %d rows ... ",
+         NUM_ROWS);
+  fflush(stdout);
+
+  if (sqlExec(conn, "DELETE FROM cte_src") != 0) {
+    printf("FAILED (delete)\n");
+    return -1;
+  }
+  char sql[16384];
+  int pos = 0;
+  bool first = true;
+  for (int pk = 1; pk <= NUM_ROWS; pk++) {
+    int grp = ((pk - 1) % NUM_GROUPS) + 1;
+    if (first) {
+      pos = snprintf(sql, sizeof(sql), "INSERT INTO cte_src VALUES ");
+      first = false;
+    } else {
+      pos += snprintf(sql + pos, sizeof(sql) - pos, ",");
+    }
+    pos += snprintf(sql + pos, sizeof(sql) - pos, "(%d,%d,1)", pk, grp);
+    if (pk % 200 == 0 || pk == NUM_ROWS) {
+      if (sqlExec(conn, sql) != 0) {
+        printf("FAILED (seed at pk=%d)\n", pk);
+        return -1;
+      }
+      first = true;
+      pos = 0;
+    }
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") || !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) || !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg)\n");
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cteAgg);
+    qb->readTuple(srcTab, key, &opts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  /* Main query: real-table scan + CTE_LOOKUP by grp. */
+  const NdbQueryTableScanOperationDef *mainScan = qb->scanTable(srcTab);
+  const NdbQueryOperand *cteKey[] = {
+      qb->linkedValue(mainScan, "grp"), nullptr
+  };
+  NdbQueryOptions lookupOpts;
+  lookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  if (qb->lookupCte(0, 2, virtTab, cteKey, &lookupOpts) == nullptr) {
+    printf("FAILED (lookupCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare)\n");
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 2;  // main scan
+  const Uint32 cteOpNo  = queryDef->getNoOfOperations() - 1;  // cte lookup
+  NdbQueryOperation *mainOp = query->getQueryOperation(mainOpNo);
+  NdbQueryOperation *cteOp  = query->getQueryOperation(cteOpNo);
+  /* Request columns in attrId order — NdbReceiver matches incoming
+   * attributes to the NdbRecAttr list by order, so reversing produces
+   * handle_rec_attrs "attribute in wrong order" errors.
+   * cte_src: pk=0, grp=1, val=2.
+   * cte_virtual: grp=0, total=1.  CTE_LOOKUP's DBLQH-side emits every
+   * column the virtual row has (GB keys + aggregate results), so even
+   * if we only care about total, we must also receive grp. */
+  NdbRecAttr *raPk  = mainOp->getValue("pk");
+  NdbRecAttr *raGrp = mainOp->getValue("grp");
+  (void)cteOp->getValue("grp");
+  NdbRecAttr *raTotal = cteOp->getValue("total");
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  bool seenPk[NUM_ROWS + 1] = { false };
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    Int32 pk  = raPk->int32_value();
+    Int32 grp = raGrp->int32_value();
+    Int64 tot = raTotal->int64_value();
+    if (pk < 1 || pk > NUM_ROWS || seenPk[pk] ||
+        grp != ((pk - 1) % NUM_GROUPS) + 1 || tot != EXPECTED_TOTAL) {
+      printf("FAILED (bad row pk=%d grp=%d total=%lld at row %u)\n",
+             pk, grp, (long long)tot, rowCount);
+      query->close(); trans->close(); queryDef->destroy();
+      return -1;
+    }
+    seenPk[pk] = true;
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close(); trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount != (Uint32)NUM_ROWS) {
+    printf("FAILED (expected %d rows, got %u)\n", NUM_ROWS, rowCount);
+    return -1;
+  }
+  printf("OK (%u rows)\n", rowCount);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 20: chained CTEs with multi-batch main-SELECT output           */
+/*                                                                     */
+/* WITH                                                                */
+/*   cte0 AS (SELECT grp, SUM(val) AS total FROM cte_src GROUP BY grp),*/
+/*   cte1 AS (SELECT grp, SUM(total) AS total FROM cte0 GROUP BY grp)  */
+/* SELECT grp, total FROM cte1                                         */
+/*                                                                     */
+/* cte_src: NUM_GROUPS distinct groups, 1 row each, val = grp.         */
+/* cte0 = {(grp=G, total=G) for G in 1..NUM_GROUPS}                    */
+/* cte1 = identity of cte0 (SUM of a singleton group sums to itself).  */
+/* Main scanCte(1) with setBatchSize(50) → multiple SCAN_NEXTREQ       */
+/* rounds across cte1 groups.  Exercises Phase 3.4: both cte0 and      */
+/* cte1 JoinAggregationStates stay CTE_READY across main-SELECT batch  */
+/* pauses.                                                             */
+/* ------------------------------------------------------------------ */
+static int
+testCteChainedMultiBatch(Ndb *ndb, MYSQL *conn)
+{
+  const int NUM_GROUPS = 250;
+  const Uint32 BATCH = 50;
+  printf("Test 20: chained CTEs, %d groups, batch %u ... ",
+         NUM_GROUPS, BATCH);
+  fflush(stdout);
+
+  if (sqlExec(conn, "DELETE FROM cte_src") != 0) {
+    printf("FAILED (delete)\n");
+    return -1;
+  }
+  char sql[8192];
+  int pos = 0;
+  bool first = true;
+  for (int g = 1; g <= NUM_GROUPS; g++) {
+    if (first) {
+      pos = snprintf(sql, sizeof(sql), "INSERT INTO cte_src VALUES ");
+      first = false;
+    } else {
+      pos += snprintf(sql + pos, sizeof(sql) - pos, ",");
+    }
+    pos += snprintf(sql + pos, sizeof(sql) - pos, "(%d,%d,%d)", g, g, g);
+    if (g % 100 == 0 || g == NUM_GROUPS) {
+      if (sqlExec(conn, sql) != 0) {
+        printf("FAILED (seed)\n");
+        return -1;
+      }
+      first = true;
+      pos = 0;
+    }
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+
+  /* cte0 aggregator: groups (grp, SUM(val)) off the real table. */
+  NdbAggregator cte0Agg(srcTab);
+  if (!cte0Agg.GroupBy("grp") || !cte0Agg.LoadColumn("val", 0) ||
+      !cte0Agg.Sum(0, 0) || !cte0Agg.Finalize()) {
+    printf("FAILED (cte0Agg)\n");
+    return -1;
+  }
+
+  /* cte1 aggregator: reads virtual (grp, total) and SUMs total. */
+  const NdbDictionary::Column *grpCol   = virtTab->getColumn("grp");
+  const NdbDictionary::Column *totalCol = virtTab->getColumn("total");
+  NdbAggregator cte1Agg(virtTab);
+  if (!cte1Agg.GroupByLinked(0, grpCol) ||
+      !cte1Agg.LoadLinkedColumn(1, 0, totalCol) ||
+      !cte1Agg.Sum(0, 0) ||
+      !cte1Agg.Finalize()) {
+    printf("FAILED (cte1Agg)\n");
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+
+  /* CTE 0: scanTable(cte_src) + readTuple agg-leaf. */
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte0Agg);
+    qb->readTuple(srcTab, key, &opts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cte0Agg);
+
+  /* CTE 1: scanCte(0) agg-feeds into cte1's aggregator. */
+  qb->beginCteSubtree(1);
+  {
+    NdbQueryOptions opts;
+    opts.setAggregation(cte1Agg);
+    qb->scanCte(0, 2, virtTab, &opts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(1, virtTab, cte1Agg, /*depMask=*/(1ULL << 0));
+
+  /* Main query: scanCte(1) — deliver cte1 rows to the API. */
+  if (qb->scanCte(1, 2, virtTab) == nullptr) {
+    printf("FAILED (main scanCte(1): %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare)\n");
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainOp = query->getQueryOperation(mainOpNo);
+  NdbRecAttr *raGrp   = mainOp->getValue("grp");
+  NdbRecAttr *raTotal = mainOp->getValue("total");
+
+  if (mainOp->setBatchSize(BATCH) != 0) {
+    printf("FAILED (setBatchSize: %s)\n", query->getNdbError().message);
+    trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  bool seen[NUM_GROUPS + 1] = { false };
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    Int32 g = raGrp->int32_value();
+    Int64 t = raTotal->int64_value();
+    if (g < 1 || g > NUM_GROUPS || seen[g] || t != (Int64)g) {
+      printf("FAILED (bad row grp=%d total=%lld at row %u)\n",
+             g, (long long)t, rowCount);
+      query->close(); trans->close(); queryDef->destroy();
+      return -1;
+    }
+    seen[g] = true;
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close(); trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount != (Uint32)NUM_GROUPS) {
+    printf("FAILED (expected %d rows, got %u)\n", NUM_GROUPS, rowCount);
+    return -1;
+  }
+  printf("OK (%u rows)\n", rowCount);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -2455,6 +2783,8 @@ static const TestEntry g_tests[] = {
     { 16, testCteScanRootLargeResult },
     { 17, testCteScanRootSmallBatch },
     { 18, testCteScanRootEarlyClose },
+    { 19, testCteLookupMainMultiBatch },
+    { 20, testCteChainedMultiBatch },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 

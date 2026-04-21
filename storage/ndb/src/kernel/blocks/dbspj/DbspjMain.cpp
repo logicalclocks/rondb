@@ -6009,6 +6009,8 @@ void Dbspj::cte_lookup_countSignal(Signal *signal, Ptr<Request> requestPtr,
 
   ndbassert(treeNodePtr.p->m_cteLookup_data.m_outstanding >= cnt);
   treeNodePtr.p->m_cteLookup_data.m_outstanding -= cnt;
+
+  maybeResumeCongestedNodes(signal, requestPtr, treeNodePtr);
 }
 
 void Dbspj::cte_lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
@@ -6418,6 +6420,7 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
            requestPtr.p->m_completed_tree_nodes.rep.data[0],
            requestPtr.p->m_rows));
 
+  maybeResumeCongestedNodes(signal, requestPtr, treeNodePtr);
   checkBatchComplete(signal, requestPtr);
 }
 
@@ -6477,6 +6480,7 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
   // GROUP_NOT_FOUND: inner join — parent row has no match, just skip.
   // (Left outer join NULL row propagation is a future extension.)
 
+  maybeResumeCongestedNodes(signal, requestPtr, treeNodePtr);
   checkBatchComplete(signal, requestPtr);
 }
 
@@ -8209,33 +8213,52 @@ void Dbspj::lookup_countSignal(Signal *signal, Ptr<Request> requestPtr,
     }
   }
 
-  if (!requestPtr.p->m_suspended_tree_nodes.isclear() &&
-      requestPtr.p->m_outstanding <= MildlyCongestedLimit) {
-    // Had congestion: Can we resume some suspended operations?
-    // First try to resume from the scan ancestor of this TreeNode.
-    Ptr<TreeNode> scanAncestorPtr;
-    ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
-                                      treeNodePtr.p->m_scanAncestorPtrI));
-    if (likely(requestPtr.p->m_suspended_tree_nodes.get(
-            scanAncestorPtr.p->m_node_no))) {
-      jam();
-      resumeCongestedNode(signal, requestPtr, scanAncestorPtr);
-    } else {
-      Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
-      Ptr<TreeNode> suspendedTreeNodePtr;
-      list.first(suspendedTreeNodePtr);
+  maybeResumeCongestedNodes(signal, requestPtr, treeNodePtr);
+}
 
-      while (true) {
-        ndbassert(!suspendedTreeNodePtr.isNull());
-        if (requestPtr.p->m_suspended_tree_nodes.get(
-                suspendedTreeNodePtr.p->m_node_no)) {
-          jam();
-          resumeCongestedNode(signal, requestPtr, suspendedTreeNodePtr);
-          break;
-        }
-        list.next(suspendedTreeNodePtr);
-      }
+/**
+ * Shared congestion-resume helper.  Called after any CONF/REF handler
+ * has decremented m_outstanding — if congestion control suspended any
+ * tree nodes and m_outstanding has now dropped to MildlyCongestedLimit
+ * or below, resume one suspended node's deferred operations.  Tries
+ * the caller's scan ancestor first for cache-friendliness; otherwise
+ * scans the tree for any suspended node.
+ *
+ * The three call sites (lookup_countSignal, execCTE_LOOKUP_CONF,
+ * execCTE_LOOKUP_REF) all share identical recovery logic — without
+ * this helper, every CONF/REF path that decrements m_outstanding
+ * would need its own copy, and CTE_LOOKUP handlers originally lacked
+ * it, causing prepareNextBatch to fire with m_suspended_tree_nodes
+ * still set at moderate volumes (HighlyCongestedLimit = 256).
+ */
+void Dbspj::maybeResumeCongestedNodes(Signal *signal,
+                                       Ptr<Request> requestPtr,
+                                       Ptr<TreeNode> treeNodePtr) {
+  if (likely(requestPtr.p->m_suspended_tree_nodes.isclear() ||
+             requestPtr.p->m_outstanding > MildlyCongestedLimit)) {
+    return;
+  }
+  Ptr<TreeNode> scanAncestorPtr;
+  ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
+                                    treeNodePtr.p->m_scanAncestorPtrI));
+  if (likely(requestPtr.p->m_suspended_tree_nodes.get(
+          scanAncestorPtr.p->m_node_no))) {
+    jam();
+    resumeCongestedNode(signal, requestPtr, scanAncestorPtr);
+    return;
+  }
+  Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+  Ptr<TreeNode> suspendedTreeNodePtr;
+  list.first(suspendedTreeNodePtr);
+  while (true) {
+    ndbassert(!suspendedTreeNodePtr.isNull());
+    if (requestPtr.p->m_suspended_tree_nodes.get(
+            suspendedTreeNodePtr.p->m_node_no)) {
+      jam();
+      resumeCongestedNode(signal, requestPtr, suspendedTreeNodePtr);
+      return;
     }
+    list.next(suspendedTreeNodePtr);
   }
 }
 

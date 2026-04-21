@@ -1916,6 +1916,14 @@ class Dbspj : public SimulatedBlock {
    * by DBLQH for open slots (scanIterI != RNIL, !m_endOfData). */
   void cte_scan_abort(Signal *, Ptr<Request>, Ptr<TreeNode>);
 
+  /* Shared congestion-resume helper: if any tree node is suspended
+   * and m_outstanding has dropped to MildlyCongestedLimit or below,
+   * resume one suspended node's deferred operations.  Caller passes
+   * its own TreeNode so the helper can try that node's scanAncestor
+   * first for cache friendliness. */
+  void maybeResumeCongestedNodes(Signal *signal, Ptr<Request> requestPtr,
+                                 Ptr<TreeNode> treeNodePtr);
+
   /* Return the NodeSlot for sourceNodeId, allocating a new one if
    * none exists.  Returns nullptr if all slots are in use (should
    * never happen: ABS_MAX_NDB_NODES slots are available). */
