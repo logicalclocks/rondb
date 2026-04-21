@@ -266,12 +266,7 @@ static bool get_int64(std::string opt_val,
   try {
     val = std::stoll(opt_val);
   } catch (const std::exception &e) {
-    char error_message[256];
-    snprintf(error_message,
-             sizeof(error_message),
-             REDIS_INVALID_INTEGER,
-             opt_val.c_str());
-    assign_generic_err_to_response(response, error_message);
+    assign_generic_err_to_response(response, REDIS_INVALID_INTEGER);
     return false;
   }
   *ret_value = val;
@@ -2316,11 +2311,11 @@ void rondb_setrange_command(Ndb *ndb,
   if (get_int64(argv[2], response, &offset) == false) return;
 
   if (offset < 0) {
-    assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
+    assign_generic_err_to_response(response, REDIS_OFFSET_OUT_OF_RANGE);
     return;
   }
   if (offset > MAX_REDIS_ROW_SIZE) {
-    assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
+    assign_generic_err_to_response(response, REDIS_OFFSET_OUT_OF_RANGE);
     return;
   }
   Uint32 start = Uint32(offset);
@@ -2346,7 +2341,7 @@ void rondb_setrange_command(Ndb *ndb,
   key_store->m_set_value_size = argv[3].size();
   Uint32 end = key_store->m_set_value_size + start;
   if (end > MAX_REDIS_ROW_SIZE) {
-    assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
+    assign_generic_err_to_response(response, REDIS_OFFSET_OUT_OF_RANGE);
     return;
   }
   if (!setup_transaction(ndb,
