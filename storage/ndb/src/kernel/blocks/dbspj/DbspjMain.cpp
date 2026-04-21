@@ -6663,9 +6663,9 @@ const Dbspj::OpInfo Dbspj::g_CteScanOpInfo = {
     0,                              // parent_batch_complete
     0,                              // parent_batch_repeat
     0,                              // parent_batch_cleanup
-    0,                              // execSCAN_NEXTREQ
+    &Dbspj::cte_scan_execSCAN_NEXTREQ,
     0,                              // complete
-    0,                              // abort
+    &Dbspj::cte_scan_abort,
     0,                              // execNODE_FAILREP
     &Dbspj::cte_scan_cleanup,
     &Dbspj::cte_scan_checkNode,
@@ -6719,7 +6719,22 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
     data.m_outstanding = 0;
     data.m_rowsReceived = 0;
     data.m_rowsExpecting = 0;
-    data.m_batchSize = 256;
+    /* Derive batch size from the originating SCAN_FRAGREQ's
+     * batch_size_rows so SCAN_NEXTREQ-driven resumption in
+     * cte_scan_execSCAN_NEXTREQ honours the API-requested pacing.
+     * Capped at 256 groups/batch as a safety ceiling (same as the
+     * old hard-coded value).  QN_CteScanParameters has no
+     * batch_size_rows field, so we read it from ctx.m_start_signal
+     * — same pattern as the QN_SCAN_FRAG_v1 conversion above. */
+    {
+      Signal *startSignal = ctx.m_start_signal;
+      ndbassert(startSignal != nullptr);
+      const ScanFragReq *fragReq =
+          reinterpret_cast<const ScanFragReq *>(startSignal->getDataPtr());
+      Uint32 batch = fragReq->batch_size_rows;
+      if (batch == 0 || batch > 256) batch = 256;
+      data.m_batchSize = batch;
+    }
     data.m_endOfData = false;
     /* Save the per-fragment API block ref now — ctx.m_resultRef is set
      * from the SCAN_FRAGREQ at execSCAN_FRAGREQ time, so each request
@@ -6830,6 +6845,10 @@ void Dbspj::cte_scan_sendReq(Signal *signal, Ptr<Request> requestPtr,
              cnt > 0 ? &handle : nullptr);
 
   data.m_outstanding++;
+  /* Per-REQ increment so checkBatchComplete fires at every batch
+   * boundary (fragmentCompleted=0 + activeMask) and the API drives
+   * the next batch with SCAN_NEXTREQ. */
+  requestPtr.p->m_outstanding++;
 }
 
 void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
@@ -6873,17 +6892,28 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
 
   treeNodePtr.p->m_state = TreeNode::TN_ACTIVE;
   requestPtr.p->m_cnt_active++;
-  requestPtr.p->m_active_tree_nodes.set(treeNodePtr.p->m_node_no);
   requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
+  if (treeNodePtr.p->m_cteId == RNIL) {
+    /* Main-SELECT CTE_SCAN root: register on m_cursor_nodes so
+     * execSCAN_NEXTREQ dispatches to cte_scan_execSCAN_NEXTREQ when
+     * the API asks for the next batch.  Also sets m_active_tree_nodes. */
+    jam();
+    registerActiveCursor(requestPtr, treeNodePtr);
+  } else {
+    /* CTE-subtree scanCte (agg-feed path): rows go INTO another
+     * aggregator at DBLQH, never to the API.  Must NOT enter the
+     * cursor list — SCAN_NEXTREQ never applies, and after completion
+     * the TN_INACTIVE dispatch branch would ndbrequire on RT_REPEAT.
+     * Just mark the node active. */
+    jam();
+    requestPtr.p->m_active_tree_nodes.set(treeNodePtr.p->m_node_no);
+  }
 
-  /* requestPtr.m_outstanding is incremented ONCE per cte_scan_start:
-   * the whole CTE scan represents a single "unit of outstanding work"
-   * at the request level. data.m_outstanding tracks individual
-   * CTE_SCAN_REQs in flight at the node level. The completion check
-   * (in cte_scan_countSignal and execCTE_SCAN_CONF) decrements
-   * requestPtr.m_outstanding by 1 exactly once, when ALL per-node
-   * REQs have settled and all expected rows have arrived. */
-  requestPtr.p->m_outstanding++;
+  /* requestPtr.m_outstanding is bumped per-REQ inside cte_scan_sendReq
+   * and decremented per CTE_SCAN_CONF in execCTE_SCAN_CONF, mirroring
+   * the scanFrag model.  That gives checkBatchComplete a chance to
+   * fire at every batch boundary (fragmentCompleted=0 + activeMask),
+   * so the API can pace the scan via SCAN_NEXTREQ. */
 
   /* Treat data nodes as fragments for scanCte: with N data nodes,
    * only rootFragId 0..N-1 are "valid" and actually scan their local
@@ -6907,11 +6937,9 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
              "numDataNodes=%u node=%u",
              instance(), requestPtr.p->m_rootFragId, m_numDataNodes,
              treeNodePtr.p->m_node_no));
-    /* Force completion: data.m_outstanding == 0 (initialized above),
-     * data.m_endOfData = true, rowsReceived == rowsExpecting (both 0). */
+    /* Force completion without sending any REQ.  No per-REQ bump was
+     * made, so nothing to decrement from requestPtr.m_outstanding. */
     data.m_endOfData = true;
-    ndbrequire(requestPtr.p->m_outstanding > 0);
-    requestPtr.p->m_outstanding--;
     treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
     ndbrequire(requestPtr.p->m_cnt_active > 0);
     requestPtr.p->m_cnt_active--;
@@ -6999,13 +7027,12 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
 /**
  * Count TRANSID_AI signals for CTE scan.
  *
- * Accounting mirrors scanFrag_countSignal: the per-CTE_SCAN_REQ
- * requestPtr.m_outstanding increment is held until BOTH all
- * rows for the scan have arrived (rowsReceived == rowsExpecting)
- * AND the CONF with EndOfData has been processed (m_endOfData
- * is set and data.m_outstanding == 0). This correctly handles
- * numRows > 1 per REQ and the case where rows arrive before
- * CONF vs CONF before rows.
+ * requestPtr.m_outstanding is bumped/decremented per CTE_SCAN_REQ
+ * in cte_scan_sendReq / execCTE_SCAN_CONF (mirroring the scanFrag
+ * model), so this function only transitions the tree node to
+ * TN_INACTIVE when the entire scan has finished (endOfData seen AND
+ * all expected rows received).  Handles the race where a row arrives
+ * AFTER the final CONF and tips the received==expected balance.
  */
 void Dbspj::cte_scan_countSignal(Signal *signal, Ptr<Request> requestPtr,
                                   Ptr<TreeNode> treeNodePtr, Uint32 cnt) {
@@ -7013,17 +7040,10 @@ void Dbspj::cte_scan_countSignal(Signal *signal, Ptr<Request> requestPtr,
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
   data.m_rowsReceived += cnt;
 
-  /* Check if this row completes the scan: all pending CTE_SCAN_REQs
-   * settled (data.m_outstanding == 0), all expected rows received,
-   * and the final CONF with EndOfData flag has arrived. Only then
-   * do we decrement requestPtr.m_outstanding and mark the tree node
-   * complete. */
   if (data.m_outstanding == 0 &&
       data.m_endOfData &&
       data.m_rowsReceived == data.m_rowsExpecting) {
     jam();
-    ndbrequire(requestPtr.p->m_outstanding > 0);
-    requestPtr.p->m_outstanding--;
     treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
     ndbrequire(requestPtr.p->m_cnt_active > 0);
     requestPtr.p->m_cnt_active--;
@@ -7032,6 +7052,60 @@ void Dbspj::cte_scan_countSignal(Signal *signal, Ptr<Request> requestPtr,
       requestPtr.p->m_cteScansComplete++;
     }
   }
+}
+
+/**
+ * SCAN_NEXTREQ handler for CTE_SCAN as main-SELECT root.
+ *
+ * The previous batch's CTE_SCAN_CONFs have all arrived (checkBatchComplete
+ * → sendConf emitted SCAN_FRAGCONF(fragmentCompleted=0) and the API
+ * responded with SCAN_NEXTREQ).  For every per-source-node slot that
+ * still has rows to deliver (scanIterI != RNIL, !m_endOfData), send a
+ * continuation CTE_SCAN_REQ with SignalLengthContinue echoing the
+ * stashed scanIterI so DBLQH resumes from the saved CteScanIterState.
+ */
+void Dbspj::cte_scan_execSCAN_NEXTREQ(Signal *signal, Ptr<Request> requestPtr,
+                                       Ptr<TreeNode> treeNodePtr) {
+  jam();
+  CteScanData &data = treeNodePtr.p->m_cteScan_data;
+  ndbassert(treeNodePtr.p->m_state == TreeNode::TN_ACTIVE);
+  ndbassert(data.m_outstanding == 0);
+  ndbassert(!data.m_endOfData);
+
+  /* Reset per-batch counters; the scanFrag model does the same at
+   * scanFrag_execSCAN_NEXTREQ entry.  requestPtr.m_rows is already
+   * reset by sendConf for the previous batch. */
+  data.m_rowsReceived = 0;
+  data.m_rowsExpecting = 0;
+
+  const Uint32 cteIdx = [&]{
+    for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+      if (requestPtr.p->m_cteContexts[i].m_cteId == data.m_cteId) return i;
+    }
+    ndbabort();
+    return Uint32{0};
+  }();
+
+  const Uint32 numSlots = data.m_numNodeSlots;
+  Uint32 sent = 0;
+  for (Uint32 i = 0; i < numSlots; i++) {
+    CteScanData::NodeSlot &slot = data.m_nodeSlots[i];
+    if (slot.m_endOfData) continue;
+    ndbrequire(slot.m_scanIterI != RNIL);
+    const Uint32 srcNode = slot.m_sourceNodeId;
+    const Uint32 aggKey =
+        requestPtr.p->m_cteAggStateKeys[cteIdx * (Uint32)MAX_NDB_NODES + srcNode];
+    cte_scan_sendReq(signal, requestPtr, treeNodePtr, srcNode,
+                     aggKey, data.m_joinAggStateKey,
+                     slot.m_scanIterI);
+    sent++;
+  }
+  /* At least one slot must have been open; otherwise we wouldn't be
+   * here (the tree would have transitioned to TN_INACTIVE at the
+   * previous CONF and checkBatchComplete would have sent
+   * fragmentCompleted=1). */
+  ndbrequire(sent > 0);
+  requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
 }
 
 void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
@@ -7057,6 +7131,13 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
   ndbrequire(data.m_outstanding > 0);
   data.m_outstanding--;
+  /* Per-CONF decrement matches the per-REQ bump in cte_scan_sendReq.
+   * When all per-node CONFs for the current batch have arrived,
+   * requestPtr.m_outstanding drops to 0 and checkBatchComplete will
+   * emit SCAN_FRAGCONF (fragmentCompleted=0 + activeMask for an
+   * intermediate batch, fragmentCompleted=1 for the final batch). */
+  ndbrequire(requestPtr.p->m_outstanding > 0);
+  requestPtr.p->m_outstanding--;
 
   /* Look up (or allocate) the per-source-node slot and stash the
    * iterator token.  RNIL on EndOfData CONFs — DBLQH has already
@@ -7119,31 +7200,16 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
     slot->m_endOfData = true;
   }
 
-  if (!endOfData) {
-    jam();
-    /* More groups on this node — send continuation CTE_SCAN_REQ.
-     * Use conf->senderRef to route back to the same DBLQH node.
-     * Echo the scanIterI from the CONF back as the REQ's scanIterI so
-     * DBLQH resumes from the saved CteScanIterState pool record
-     * (O(1) hash-bucket resume); the helper selects
-     * SignalLengthContinue when scanIterI != RNIL. */
-    const Uint32 sourceAggKey =
-        requestPtr.p->m_cteAggStateKeys[
-            data.m_cteId * (Uint32)MAX_NDB_NODES + sourceNodeId];
+  /* Intermediate CONF (EndOfData=0): nothing to do here.  Another REQ
+   * is NOT sent from this function — the API drives the next batch
+   * via SCAN_NEXTREQ, which lands in cte_scan_execSCAN_NEXTREQ.  The
+   * slot->m_scanIterI stashed above is what the continuation REQ
+   * will echo back to DBLQH for O(1) hash-bucket resume. */
 
-    cte_scan_sendReq(signal, requestPtr, treeNodePtr, sourceNodeId,
-                     sourceAggKey, data.m_joinAggStateKey,
-                     slot->m_scanIterI);
-    /* requestPtr.m_outstanding is the overall REQ-count for this
-     * CTE scan and must NOT be incremented here — it was set to 1
-     * in cte_scan_start and stays at 1 until the entire scan is
-     * complete (all rows received AND final EndOfData CONF). */
-  }
-
-  /* Check completion: final CONF received, no REQs in flight, and
-   * all expected rows have arrived. Mirrors the matching check in
-   * cte_scan_countSignal which may fire instead when a row arrives
-   * AFTER the CONF. */
+  /* On the final CONF (endOfData=1), and once all expected rows have
+   * arrived, transition the tree node to TN_INACTIVE.  Race: rows can
+   * arrive AFTER the CONF — cte_scan_countSignal performs the same
+   * check and finalises the node when the tally completes late. */
   DEB_CTE(("(%u) execCTE_SCAN_CONF: completion check: "
            "data_outstanding=%u endOfData=%d rowsRecv=%u rowsExp=%u "
            "req_outstanding=%u cnt_active=%u",
@@ -7156,8 +7222,6 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
     jam();
     DEB_CTE(("(%u) execCTE_SCAN_CONF: COMPLETING node=%u",
              instance(), treeNodePtr.p->m_node_no));
-    ndbrequire(requestPtr.p->m_outstanding > 0);
-    requestPtr.p->m_outstanding--;
     treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
     ndbrequire(requestPtr.p->m_cnt_active > 0);
     requestPtr.p->m_cnt_active--;
@@ -7205,6 +7269,65 @@ void Dbspj::cte_scan_cleanup(Ptr<Request> requestPtr,
                               Ptr<TreeNode> treeNodePtr) {
   jam();
   cleanup_common(requestPtr, treeNodePtr);
+}
+
+/**
+ * Fire-and-forget close REQ to free a CteScanIterState pool record in
+ * DBLQH.  No CONF is expected; no section is attached.  Used only from
+ * cte_scan_abort to clean up state left behind when a main-SELECT
+ * CTE_SCAN is aborted mid-scan (e.g. API close-flag, node failure,
+ * upstream error).  Must NOT touch m_outstanding — the abort path
+ * drains outstanding counters independently.
+ */
+void Dbspj::cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
+                                   Uint32 sourceNodeId, Uint32 aggStateKey,
+                                   Uint32 scanIterI) {
+  ndbrequire(scanIterI != RNIL);
+  CteScanReq *req =
+      reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
+  req->senderRef = reference();
+  req->senderData = 0;              // unused — DBLQH sends nothing back
+  req->aggStateKey = aggStateKey;
+  req->transId1 = requestPtr.p->m_transId[0];
+  req->transId2 = requestPtr.p->m_transId[1];
+  req->batchSize = 0;
+  req->resultRef = 0;
+  req->resultData = 0;
+  req->joinAggStateKey = RNIL;
+  req->scanIterI = scanIterI;
+  req->flags = CteScanReq::CloseFlag;
+
+  Uint32 ref = numberToRef(DBLQH, 1, sourceNodeId);
+  sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
+             CteScanReq::SignalLengthClose, JBB);
+}
+
+/**
+ * Abort handler for CTE_SCAN.  On query abort (user close,
+ * node-failure-triggered abort, error propagation), free any
+ * CteScanIterState pool records that DBLQH is holding for this tree
+ * node's open slots.  A slot needs a close REQ if it has a stashed
+ * scanIterI from a previous CONF (DBLQH is paused between batches
+ * waiting for SCAN_NEXTREQ).  Slots with an in-flight REQ cannot be
+ * closed from here — their CONF will arrive and the decrement will
+ * happen normally; the remaining pool record (if the CONF was
+ * non-EndOfData) is left for the block's TransientPool to reclaim
+ * when the state is later released.
+ */
+void Dbspj::cte_scan_abort(Signal *signal, Ptr<Request> requestPtr,
+                            Ptr<TreeNode> treeNodePtr) {
+  jam();
+  CteScanData &data = treeNodePtr.p->m_cteScan_data;
+  const Uint32 numSlots = data.m_numNodeSlots;
+  for (Uint32 i = 0; i < numSlots; i++) {
+    CteScanData::NodeSlot &slot = data.m_nodeSlots[i];
+    if (slot.m_endOfData) continue;
+    if (slot.m_scanIterI == RNIL) continue;  // nothing held by DBLQH
+    jam();
+    cte_scan_sendCloseReq(signal, requestPtr, slot.m_sourceNodeId,
+                          /*aggStateKey=*/RNIL, slot.m_scanIterI);
+    slot.m_scanIterI = RNIL;
+  }
 }
 
 bool Dbspj::cte_scan_checkNode(const Ptr<Request> requestPtr,

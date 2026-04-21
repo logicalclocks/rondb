@@ -1882,6 +1882,7 @@ class Dbspj : public SimulatedBlock {
                         const QueryNodeParameters *);
   void cte_scan_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void cte_scan_countSignal(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 cnt);
+  void cte_scan_execSCAN_NEXTREQ(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void execCTE_SCAN_CONF(Signal *);
   void execCTE_SCAN_REF(Signal *);
   void cte_scan_cleanup(Ptr<Request>, Ptr<TreeNode>);
@@ -1898,6 +1899,18 @@ class Dbspj : public SimulatedBlock {
                         Ptr<TreeNode> treeNodePtr,
                         Uint32 sourceNodeId, Uint32 aggStateKey,
                         Uint32 joinAggStateKey, Uint32 scanIterI);
+
+  /* Fire-and-forget close REQ: tells DBLQH to free the CteScanIterState
+   * pool record for scanIterI.  No CONF expected; no section attached.
+   * Used by cte_scan_abort to clean up state held by DBLQH when the
+   * main-SELECT is aborted mid-scan.  Does NOT touch m_outstanding. */
+  void cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
+                             Uint32 sourceNodeId, Uint32 aggStateKey,
+                             Uint32 scanIterI);
+
+  /* Abort handler: tears down any CteScanIterState pool records held
+   * by DBLQH for open slots (scanIterI != RNIL, !m_endOfData). */
+  void cte_scan_abort(Signal *, Ptr<Request>, Ptr<TreeNode>);
 
   /* Return the NodeSlot for sourceNodeId, allocating a new one if
    * none exists.  Returns nullptr if all slots are in use (should

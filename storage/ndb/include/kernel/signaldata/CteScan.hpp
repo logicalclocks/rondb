@@ -141,12 +141,19 @@ struct CteScanReq {
                           // groups (CTE 2 reads from CTE 1).
   Uint32 scanIterI;       // CteScanIterState pool i-value (RNIL on first batch;
                           // echoed from CONF on continuation)
+  Uint32 flags;           // CloseFlag (DBSPJ → DBLQH "release this scanIterI
+                          // and discard, no CONF expected"). Only read when
+                          // signal length >= SignalLengthClose.
 
-  /* First CTE_SCAN_REQ uses SignalLength (no scanIterI).
-   * Continuation requests use SignalLengthContinue. */
+  /* First CTE_SCAN_REQ uses SignalLength (no scanIterI, no flags).
+   * Continuation requests use SignalLengthContinue (with scanIterI).
+   * Close requests use SignalLengthClose (with scanIterI + flags) and
+   * DBLQH silently releases the pool record — no TRANSID_AI, no CONF. */
   static constexpr Uint32 SignalLength = 9;
   static constexpr Uint32 SignalLengthContinue = 10;
+  static constexpr Uint32 SignalLengthClose = 11;
   enum { AttrInfoSectionNum = 0 };
+  enum Flags { CloseFlag = 0x1 };
 };
 
 struct CteScanConf {

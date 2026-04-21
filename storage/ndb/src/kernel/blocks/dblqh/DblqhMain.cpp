@@ -20289,6 +20289,22 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
    * We copy the AttrInfo section into a local buffer before releasing. */
   SectionHandle handle(this, signal);
 
+  /* Close REQ: DBSPJ is aborting or closing the scan and asks DBLQH to
+   * free the pool record for req.scanIterI.  No CONF in reply — DBSPJ
+   * has already stopped tracking this slot.  Must run before any
+   * JoinAggregationState lookups so a dying request can still clean
+   * up even if the state itself is being torn down concurrently. */
+  if (signal->getLength() >= CteScanReq::SignalLengthClose &&
+      (req.flags & CteScanReq::CloseFlag) != 0) {
+    jam();
+    releaseSections(handle);
+    if (req.scanIterI != RNIL) {
+      jam();
+      releaseCteScanIterState(req.scanIterI);
+    }
+    return;
+  }
+
   JoinAggregationState *state = getJoinAggState(req.aggStateKey);
   if (unlikely(state == nullptr)) {
     jam();

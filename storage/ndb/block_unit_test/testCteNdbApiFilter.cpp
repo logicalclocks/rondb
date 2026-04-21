@@ -2155,6 +2155,279 @@ testCteScanRootLargeResult(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 17: CTE_SCAN root + setBatchSize, forces SCAN_NEXTREQ cycles   */
+/*                                                                     */
+/* 500 groups, setBatchSize(50) on the scanCte root.  Phase 2 wires    */
+/* CTE_SCAN root into the standard SCAN_FRAGCONF/SCAN_NEXTREQ cycle,   */
+/* so DBLQH emits 50 rows → DBSPJ sends SCAN_FRAGCONF(                 */
+/* fragmentCompleted=0) → DBTC → API → SCAN_NEXTREQ →                  */
+/* cte_scan_execSCAN_NEXTREQ → next CTE_SCAN_REQ (SignalLengthContinue */
+/* + scanIterI).  Expect ~10 API round-trips; test verifies            */
+/* correctness only — no round-trip counter surface.                   */
+/* ------------------------------------------------------------------ */
+static int
+testCteScanRootSmallBatch(Ndb *ndb, MYSQL *conn)
+{
+  const int NUM_GROUPS = 500;
+  const Uint32 BATCH = 50;
+  printf("Test 17: CTE_SCAN root — setBatchSize(%u), %d groups ... ",
+         BATCH, NUM_GROUPS);
+  fflush(stdout);
+
+  if (sqlExec(conn, "DELETE FROM cte_src") != 0) {
+    printf("FAILED (delete)\n");
+    return -1;
+  }
+  char sql[8192];
+  int pos = 0;
+  bool first = true;
+  for (int g = 1; g <= NUM_GROUPS; g++) {
+    if (first) {
+      pos = snprintf(sql, sizeof(sql), "INSERT INTO cte_src VALUES ");
+      first = false;
+    } else {
+      pos += snprintf(sql + pos, sizeof(sql) - pos, ",");
+    }
+    pos += snprintf(sql + pos, sizeof(sql) - pos, "(%d,%d,%d)", g, g, g);
+    if (g % 100 == 0 || g == NUM_GROUPS) {
+      if (sqlExec(conn, sql) != 0) {
+        printf("FAILED (seed insert)\n");
+        return -1;
+      }
+      first = true;
+      pos = 0;
+    }
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") || !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) || !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg)\n");
+    return -1;
+  }
+
+  Uint32 codeBuf[16];
+  NdbInterpretedCode filterCode(virtTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  if (filterCode.interpret_exit_ok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter)\n");
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cteAgg);
+    qb->readTuple(srcTab, key, &opts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  NdbQueryOptions scanOpts;
+  scanOpts.setInterpretedCode(filterCode);
+  if (qb->scanCte(0, 2, virtTab, &scanOpts) == nullptr) {
+    printf("FAILED (scanCte)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare)\n");
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainOp = query->getQueryOperation(mainOpNo);
+  NdbRecAttr *raGrp = mainOp->getValue("grp");
+  NdbRecAttr *raTotal = mainOp->getValue("total");
+  if (mainOp->setBatchSize(BATCH) != 0) {
+    printf("FAILED (setBatchSize: %s)\n", query->getNdbError().message);
+    trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute)\n");
+    trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  bool seen[NUM_GROUPS + 1] = { false };
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    Int32 g = raGrp->int32_value();
+    Int64 t = raTotal->int64_value();
+    if (g < 1 || g > NUM_GROUPS || seen[g] || t != (Int64)g) {
+      printf("FAILED (bad row grp=%d total=%lld at row %u)\n",
+             g, (long long)t, rowCount);
+      query->close(); trans->close(); queryDef->destroy();
+      return -1;
+    }
+    seen[g] = true;
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close(); trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (rowCount != (Uint32)NUM_GROUPS) {
+    printf("FAILED (expected %d rows, got %u)\n", NUM_GROUPS, rowCount);
+    return -1;
+  }
+  printf("OK (%u rows)\n", rowCount);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 18: CTE_SCAN root — early close mid-scan                       */
+/*                                                                     */
+/* Read a few rows, then close() the query before exhausting it.       */
+/* This hits the user-close SCAN_NEXTREQ path (ScanFragNextReq         */
+/* CloseFlag), which DBSPJ converts to abort() → cte_scan_abort →      */
+/* fire-and-forget CTE_SCAN_REQ(CloseFlag) to every DBLQH holding a    */
+/* CteScanIterState pool record.  Exercises the close path without    */
+/* leaving pool records behind.                                        */
+/* ------------------------------------------------------------------ */
+static int
+testCteScanRootEarlyClose(Ndb *ndb, MYSQL *conn)
+{
+  const int NUM_GROUPS = 200;
+  const Uint32 BATCH = 20;
+  const int READ_FIRST = 30;  // > 1 batch, < full scan
+  printf("Test 18: CTE_SCAN root — early close after %d/%d rows ... ",
+         READ_FIRST, NUM_GROUPS);
+  fflush(stdout);
+
+  if (sqlExec(conn, "DELETE FROM cte_src") != 0) {
+    printf("FAILED (delete)\n");
+    return -1;
+  }
+  char sql[4096];
+  int pos = snprintf(sql, sizeof(sql), "INSERT INTO cte_src VALUES ");
+  for (int g = 1; g <= NUM_GROUPS; g++) {
+    pos += snprintf(sql + pos, sizeof(sql) - pos, "%s(%d,%d,%d)",
+                    (g == 1 ? "" : ","), g, g, g);
+  }
+  if (sqlExec(conn, sql) != 0) {
+    printf("FAILED (seed)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") || !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) || !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg)\n");
+    return -1;
+  }
+
+  Uint32 codeBuf[16];
+  NdbInterpretedCode filterCode(virtTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  if (filterCode.interpret_exit_ok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter)\n");
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cteAgg);
+    qb->readTuple(srcTab, key, &opts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  NdbQueryOptions scanOpts;
+  scanOpts.setInterpretedCode(filterCode);
+  if (qb->scanCte(0, 2, virtTab, &scanOpts) == nullptr) {
+    printf("FAILED (scanCte)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare)\n");
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainOp = query->getQueryOperation(mainOpNo);
+  mainOp->getValue("grp");
+  mainOp->getValue("total");
+  if (mainOp->setBatchSize(BATCH) != 0) {
+    printf("FAILED (setBatchSize)\n");
+    trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute)\n");
+    trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  int got = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while (got < READ_FIRST &&
+         (outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    got++;
+  }
+  if (got < READ_FIRST) {
+    printf("FAILED (got only %d rows before close)\n", got);
+    query->close(); trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  /* Close mid-scan.  Drives user-close SCAN_NEXTREQ → DBSPJ abort →
+   * cte_scan_abort → close REQs to every DBLQH holding a pool record. */
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  printf("OK (closed after %d/%d)\n", got, NUM_GROUPS);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -2180,6 +2453,8 @@ static const TestEntry g_tests[] = {
     { 14, testCteScanFilterEmptyResult },
     { 15, testCteScanFilterBatchBoundary },
     { 16, testCteScanRootLargeResult },
+    { 17, testCteScanRootSmallBatch },
+    { 18, testCteScanRootEarlyClose },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
