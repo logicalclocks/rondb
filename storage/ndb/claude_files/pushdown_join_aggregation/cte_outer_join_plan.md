@@ -25,26 +25,36 @@ extend from regular lookup/scan, and `NdbQueryOptions::setMatchType`
 `DABits::NI_INNER_JOIN` → DBSPJ `TreeNode::T_INNER_JOIN`. The CTE
 builders in DBSPJ just don't honor that bit yet.
 
-## In scope
+## In scope (shipped)
 
-1. CTE_LOOKUP as outer-join child — main SELECT (emit NULL row to API)
-   and inside CTE subtree (feed NULL row into aggregator).
+1. CTE_LOOKUP as outer-join child — main SELECT (API auto-fills NULL
+   via `NdbResultStream::prepareResultSet`). Phase 1.
 2. scanCte as LEFT-side parent of outer join — driving regular
-   `readTuple`/`scanTable` children. Likely no code changes.
-3. CTE_SCAN as outer-join child — requires new `cte_scan_parent_row`
-   machinery (CTE_SCAN today has `parent_row == NULL`, root-only).
-4. New NDB-API test binary `testCteNdbApiOuterJoin.cpp`.
+   `readTuple`/`scanTable` children. Phase 2 (uncovered one
+   pre-existing `cte_scan_build` bug along the way).
+3. NDB-API test binary `testCteNdbApiOuterJoin.cpp`, integrated in
+   the `ndb_push_agg` MTR suite. Phase 4.
 
-Out of scope: `MatchNullOnly` (anti-join), `MatchFirst`.
+## Out of scope / dropped
+
+- **CTE_SCAN as outer-join child** (Phase 3) — dropped. The SQL shape
+  is a cross-join with NULL-fill-if-empty, uncommon in practice, and
+  requires substantial new DBSPJ machinery (`cte_scan_parent_row` +
+  per-parent tracking + match-bit sweep). See
+  `cte_outer_join_phase_3.md`.
+- **Agg-feed NULL injection** for CTE_LOOKUP returning
+  GROUP_NOT_FOUND inside an enclosing CTE's aggregation subtree —
+  deferred; see `next_steps.md`.
+- `MatchNullOnly` (anti-join), `MatchFirst`.
 
 ## Phase index
 
-| Phase | Doc | Scope |
-|---|---|---|
-| 1 | `cte_outer_join_phase_1.md` | CTE_LOOKUP outer-join child (API + agg-feed) |
-| 2 | `cte_outer_join_phase_2.md` | scanCte as outer-join LEFT-side parent (verification) |
-| 3 | `cte_outer_join_phase_3.md` | CTE_SCAN as outer-join child (new parent_row) |
-| 4 | `cte_outer_join_phase_4.md` | `testCteNdbApiOuterJoin.cpp` consolidated tests |
+| Phase | Doc | Scope | Status |
+|---|---|---|---|
+| 1 | `cte_outer_join_phase_1.md` | CTE_LOOKUP outer-join child (API-direct path) | Shipped |
+| 2 | `cte_outer_join_phase_2.md` | scanCte as outer-join LEFT-side parent | Shipped (plus pre-existing T_ONE_SHOT bug fix) |
+| 3 | `cte_outer_join_phase_3.md` | CTE_SCAN as outer-join child | Dropped |
+| 4 | `cte_outer_join_phase_4.md` | `testCteNdbApiOuterJoin.cpp` consolidated tests | Shipped |
 
 ## Key files
 
