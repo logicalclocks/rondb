@@ -2357,6 +2357,76 @@ SimulatedBlock::progError(int line, int err_code, const char* extra,
   ErrorReporter::handleError(err_code, extra, buf);
 }
 
+// Outlined failure helpers for ndbrequire / ndbabort (declared in pc.hpp).
+// Called from every ndbrequire failure kernel-wide, replacing the former
+// inline expansion of jamNoBlock() + progError(...). Bypasses
+// SimulatedBlock::progError so we don't need a SimulatedBlock* here; the
+// trade-off is that the crash log loses the block-name prefix, the
+// magic-status bits, and the failed-check string. File name, line
+// number, and error code are preserved.
+//
+// The caller's JAM_FILE_ID is passed explicitly:
+//   - jamNoBlock() would use this helper's own JAM_FILE_ID via a
+//     compile-time static_assert, destroying crash forensics; we build
+//     the JamEvent manually instead.
+//   - The same file_id indexes jamFileNames[] so the source file name
+//     is recoverable here without passing __FILE__ as a separate arg.
+static const char *file_name_from_id(Uint32 file_id) {
+  if (file_id < sizeof jamFileNames / sizeof jamFileNames[0] &&
+      jamFileNames[file_id] != nullptr) {
+    return jamFileNames[file_id];
+  }
+  return "(unknown file)";
+}
+
+[[noreturn]] void ndbrequire_fail(Uint32 caller_file_id, int line) {
+  globalData.theStopFlag = true;
+  mb();
+  EmulatedJamBuffer *buf_p = NDB_THREAD_TLS_JAM;
+  if (buf_p != nullptr) {
+    buf_p->insertJamEvent(JamEvent(caller_file_id,
+                                   static_cast<Uint16>(line),
+                                   /*isLineNumber=*/true));
+  }
+  char buf[100];
+  BaseString::snprintf(buf, sizeof(buf), "ndbrequire (Line: %d)", line);
+  ErrorReporter::handleError(NDBD_EXIT_NDBREQUIRE,
+                             file_name_from_id(caller_file_id), buf);
+  abort();  // belt-and-braces; handleError is [[noreturn]]
+}
+
+[[noreturn]] void ndbrequire_err_fail(Uint32 caller_file_id,
+                                      int line, int code) {
+  globalData.theStopFlag = true;
+  mb();
+  EmulatedJamBuffer *buf_p = NDB_THREAD_TLS_JAM;
+  if (buf_p != nullptr) {
+    buf_p->insertJamEvent(JamEvent(caller_file_id,
+                                   static_cast<Uint16>(line),
+                                   /*isLineNumber=*/true));
+  }
+  char buf[100];
+  BaseString::snprintf(buf, sizeof(buf), "ndbrequireErr (Line: %d)", line);
+  ErrorReporter::handleError(code, file_name_from_id(caller_file_id), buf);
+  abort();
+}
+
+[[noreturn]] void ndbabort_fail(Uint32 caller_file_id, int line) {
+  globalData.theStopFlag = true;
+  mb();
+  EmulatedJamBuffer *buf_p = NDB_THREAD_TLS_JAM;
+  if (buf_p != nullptr) {
+    buf_p->insertJamEvent(JamEvent(caller_file_id,
+                                   static_cast<Uint16>(line),
+                                   /*isLineNumber=*/true));
+  }
+  char buf[100];
+  BaseString::snprintf(buf, sizeof(buf), "ndbabort (Line: %d)", line);
+  ErrorReporter::handleError(NDBD_EXIT_PRGERR,
+                             file_name_from_id(caller_file_id), buf);
+  abort();
+}
+
 #define MAX_EVENT_REP_SIZE_BYTES (MAX_EVENT_REP_SIZE_WORDS * 4)
 void SimulatedBlock::infoEvent(const char *msg, ...) const {
   if (msg == 0) return;
