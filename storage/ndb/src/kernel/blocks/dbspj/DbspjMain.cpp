@@ -6427,15 +6427,17 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
 /**
  * CTE_LOOKUP_REF — lookup failed.
  *
- * GROUP_NOT_FOUND is expected for inner joins (parent row has no match).
- * For left outer joins, we would send a NULL row to API (not yet
- * implemented — CTE lookups are currently inner join only).
+ * GROUP_NOT_FOUND: no matching group in the CTE hash table (or the filter
+ * rejected the group — DBLQH maps filter-reject to GROUP_NOT_FOUND too).
+ * Handling by mode (see body for details; agg-feed NULL-row injection is
+ * not yet wired — tracked alongside testCteNdbApiOuterJoin Test 5).
  * Other errors abort the request.
  */
 void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
   jamEntry();
   const CteLookupRef *ref =
       reinterpret_cast<const CteLookupRef *>(signal->getDataPtr());
+  const Uint32 refCorrelation = ref->correlation;
 
   Ptr<TreeNode> treeNodePtr;
   ndbrequire(m_treenode_pool.getPtr(treeNodePtr, ref->senderData));
@@ -6443,16 +6445,21 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
   Ptr<Request> requestPtr;
   ndbrequire(m_request_pool.getPtr(requestPtr, treeNodePtr.p->m_requestPtrI));
 
+  const Uint32 errorCode = ref->errorCode;
+
   // A REF means no TRANSID_AI will follow — account for both the
   // REF and the non-arriving TRANSID_AI, same as lookup_execLQHKEYREF.
   const Uint32 cnt =
       (treeNodePtr.p->m_bits & TreeNode::T_EXPECT_TRANSID_AI) ? 2 : 1;
 
   DEB_CTE(("(%u) execCTE_LOOKUP_REF: node=%u errorCode=%u outstanding=%u/%u "
-           "cnt=%u",
-           instance(), treeNodePtr.p->m_node_no, ref->errorCode,
+           "cnt=%u innerJoin=%u aggFeed=%u corr=0x%x",
+           instance(), treeNodePtr.p->m_node_no, errorCode,
            treeNodePtr.p->m_cteLookup_data.m_outstanding,
-           requestPtr.p->m_outstanding, cnt));
+           requestPtr.p->m_outstanding, cnt,
+           (treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) != 0,
+           (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0,
+           refCorrelation));
 
   ndbrequire(treeNodePtr.p->m_cteLookup_data.m_outstanding >= cnt);
   treeNodePtr.p->m_cteLookup_data.m_outstanding -= cnt;
@@ -6470,15 +6477,29 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
     }
   }
 
-  if (ref->errorCode != CteLookupRef::GROUP_NOT_FOUND) {
+  if (errorCode != CteLookupRef::GROUP_NOT_FOUND) {
     jam();
     // Internal error — abort the request
-    abort(signal, requestPtr, ref->errorCode);
+    abort(signal, requestPtr, errorCode);
     return;
   }
 
-  // GROUP_NOT_FOUND: inner join — parent row has no match, just skip.
-  // (Left outer join NULL row propagation is a future extension.)
+  // GROUP_NOT_FOUND path.
+  //   Inner join (T_INNER_JOIN set): parent row is dropped — counters
+  //     have already accounted for the missing TRANSID_AI, nothing
+  //     further to do.
+  //   Outer join + direct-to-API: no emit needed. The API's
+  //     NdbResultStream auto-fills NULL for parents whose correlation
+  //     had no matching child TRANSID_AI (isOuterJoin() path in
+  //     NdbQueryOperation), same as lookup_execLQHKEYREF for scan-root
+  //     regular outer joins.
+  //   Outer join + agg-feed (T_AGGREGATE_LEAF set): NULL-row
+  //     propagation via sendJoinAggNullRow is not yet wired from this
+  //     REF path — it requires T_BUFFER_ANY on the scan ancestor and
+  //     the completion-time sweep in handleAggAncestorComplete. That
+  //     lands together with the CTE-subtree outer-join test (Phase 1
+  //     Test 5 in testCteNdbApiOuterJoin.cpp).
+  ndbassert(refCorrelation != ~Uint32(0));  // DBLQH echoed something
 
   maybeResumeCongestedNodes(signal, requestPtr, treeNodePtr);
   checkBatchComplete(signal, requestPtr);

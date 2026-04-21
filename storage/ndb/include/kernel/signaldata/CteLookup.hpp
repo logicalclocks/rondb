@@ -74,8 +74,12 @@ struct CteLookupRef {
   Uint32 senderRef;       // DBLQH block reference
   Uint32 senderData;      // TreeNode pointer (echo back)
   Uint32 errorCode;       // Error code (0 = not found, >0 = internal error)
+  Uint32 correlation;     // Echo of CteLookupReq::correlation — lets DBSPJ
+                          // locate the parent row on outer-join NULL-row
+                          // synthesis, since m_send.m_correlation gets
+                          // overwritten by later parent rows.
 
-  static constexpr Uint32 SignalLength = 3;
+  static constexpr Uint32 SignalLength = 4;
 
   // Error codes (mirrors ZCTE_LOOKUP_* in Dblqh.hpp / ndberror.cpp)
   static constexpr Uint32 GROUP_NOT_FOUND = 1263;

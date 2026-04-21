@@ -3417,7 +3417,8 @@ private:
                            Uint32 *outBuf);
 
   void sendCteLookupRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
-                        Uint32 errorCode, SectionHandle *handle = nullptr);
+                        Uint32 errorCode, Uint32 correlation,
+                        SectionHandle *handle = nullptr);
   void execCTE_SCAN_REQ(Signal* signal);
   /* cinBuf + attrInfoLen carry the AttrInfo section needed to run a
    * CTE filter program per group.  On the initial CTE_SCAN_REQ the

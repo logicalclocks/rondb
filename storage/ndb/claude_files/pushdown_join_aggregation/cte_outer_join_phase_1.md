@@ -3,108 +3,78 @@
 ## Goal
 
 When a CTE_LOOKUP child is built with outer-join semantics and DBLQH
-replies `CteLookupRef(GROUP_NOT_FOUND)` for a parent row, DBSPJ must
-emit a NULL-padded row instead of silently dropping the parent.
+replies `CteLookupRef(GROUP_NOT_FOUND)` for a parent row, make sure the
+parent row survives the join.
 
-Same code path handles both endpoints — the branch is on whether the
-CTE_LOOKUP feeds an aggregator (CTE subtree case) or emits to the API
-(main SELECT case). The discriminator is
-`treeNodePtr.p->m_cteLookup_data.m_joinAggStateKey != RNIL`.
+## What actually ships in this phase
 
-## Design
+### API-direct outer join (main SELECT, lookupCte)
 
-### DBSPJ build-time wiring
+**No behavior change needed.** During implementation I verified by
+testing that the API's `NdbResultStream::prepareResultSet` already
+auto-fills NULL for parents whose correlation had no matching child
+TRANSID_AI, as long as:
 
-1. **Honor `DABits::NI_INNER_JOIN`** in `cte_lookup_build`
-   (`DbspjMain.cpp:5741`). Mirror the existing `lookup_build` pattern
-   that sets `TreeNode::T_INNER_JOIN` from the wire flag. Without this,
-   every CTE_LOOKUP acts as if `MatchNonNull` was set.
+- `lookupCte` is built without `setMatchType(MatchNonNull)` —
+  `NdbQueryCteLookupOperationDef` extends `NdbQueryLookupOperationDef`,
+  so `isOuterJoin()` on the result stream returns true.
+- DBSPJ's `execCTE_LOOKUP_REF` keeps the outstanding-counters
+  consistent — matching `lookup_execLQHKEYREF` for scan-root regular
+  outer joins, which also does not emit a synthetic NULL row.
 
-### DBSPJ runtime NULL-row path
+Test 10 in `testCteNdbApiFilter.cpp` (the scan-root + `lookupCte`
+LEFT JOIN case with filter-reject forcing REFs) now returns 5 rows
+with no further code change.
 
-2. **Rewrite `execCTE_LOOKUP_REF`** (`DbspjMain.cpp:6435-6485`).
-   After the outstanding-counter bookkeeping:
+### CTE_LOOKUP_REF wire — correlation echo
 
-   ```cpp
-   const bool groupNotFound =
-       (ref->errorCode == CteLookupRef::GROUP_NOT_FOUND);
-   const bool isOuterJoin =
-       (treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) == 0;
+`CteLookupRef` gains a `correlation` field; DBLQH echoes
+`req.correlation` back in every REF. This plumbs the parent-row
+correlation through the REF path so Phase 3's CTE_SCAN-as-child
+sweep can locate the unmatched parent in buffered-row storage.
 
-   if (groupNotFound && isOuterJoin) {
-     if (treeNodePtr.p->m_cteLookup_data.m_joinAggStateKey != RNIL) {
-       sendCteLookupAggNullRow(signal, requestPtr, treeNodePtr, ref);
-     } else {
-       sendCteLookupApiNullRow(signal, requestPtr, treeNodePtr, ref);
-     }
-     // fallthrough to completion checks
-   } else if (!groupNotFound) {
-     abort(signal, requestPtr, ref->errorCode);  // real error
-     return;
-   }
-   // else: inner join + group missing → skip (legacy behavior)
+`CteLookupRef::SignalLength` goes from 3 to 4. Pre-release branch, no
+wire-compat constraint.
 
-   maybeResumeCongestedNodes(signal, requestPtr, treeNodePtr);
-   checkBatchComplete(signal, requestPtr);
-   ```
+### DBSPJ REF handler
 
-3. **New `sendCteLookupApiNullRow`** — builds a TRANSID_AI of NULL
-   values for all virtual-table columns of the CTE, routes via
-   `m_cteLookup_data.m_api_resultRef` / `m_api_resultData`. Copies
-   the parent correlation from the REF (step 5). Implementation
-   pattern to mirror: existing NULL-row synthesis in `lookup_build`
-   family — grep for `AttributeHeader::setNULL` within `DbspjMain.cpp`.
+`execCTE_LOOKUP_REF` now documents the three modes:
+- Inner join: silently drop (existing behavior).
+- Outer join + direct-to-API: no emit — API auto-fills NULL.
+- Outer join + agg-feed (`T_AGGREGATE_LEAF`): NULL-row propagation
+  via `sendJoinAggNullRow` is **not yet wired** from this REF path.
+  It requires `T_BUFFER_ANY` on the scan ancestor and the
+  completion-time sweep pattern used by
+  `handleAggAncestorComplete`. Deferred to when Test 5 in
+  `testCteNdbApiOuterJoin.cpp` exercises it.
 
-4. **New `sendCteLookupAggNullRow`** — thin wrapper that constructs
-   the `parentRowRef` expected by `sendJoinAggNullRow(signal,
-   requestPtr, treeNodePtr, parentRowRef)` (`DbspjMain.cpp:8529+`).
-   The existing helper handles both `T_AGGREGATE_LEAF` direct
-   injection and the `T_AGGREGATE_ANCESTOR` deferred path.
+Debug trace in the handler now prints innerJoin / aggFeed / corr so
+the three modes are distinguishable in traces.
 
-### Correlation preservation across REF
+## Files touched
 
-5. **Extend `CteLookupRef`** with a `correlation` field (`Uint32`), and
-   bump `CteLookupRef::SignalLength`. Pre-release branch, wire-compat
-   is not a concern.
-   - `DblqhMain.cpp::execCTE_LOOKUP_REQ`: echo `req->correlation` into
-     the REF when `sendCteLookupRef` is called with `GROUP_NOT_FOUND`,
-     `FILTER_*`, or any error path that preserves the REQ body.
-   - Header: `storage/ndb/include/kernel/signaldata/CteLookup.hpp`.
+| File | Change |
+|---|---|
+| `storage/ndb/include/kernel/signaldata/CteLookup.hpp` | Add `Uint32 correlation` to `CteLookupRef`; SignalLength 3→4 |
+| `storage/ndb/src/kernel/blocks/dblqh/Dblqh.hpp` | `sendCteLookupRef` signature gains `Uint32 correlation` |
+| `storage/ndb/src/kernel/blocks/dblqh/DblqhMain.cpp` | 14 call sites pass `req.correlation`; helper writes the field |
+| `storage/ndb/src/kernel/blocks/dbspj/DbspjMain.cpp` | `execCTE_LOOKUP_REF` comment/debug trace updated; behavior unchanged |
 
-### DBLQH side — no behavior change
+## Deferred to a later phase
 
-The only change is echoing `correlation` in REF. The decision of
-inner vs. outer join is entirely DBSPJ-side.
+- Outer-join CTE_LOOKUP inside a CTE subtree (`T_AGGREGATE_LEAF` path):
+  needs `T_BUFFER_ANY` on the scan ancestor and NULL-row injection via
+  `sendJoinAggNullRow`. Will land when Phase 4's Test 5 needs it.
 
-## Risks
+## Canary
 
-- **`cte_lookup_start` pre-READY branch** (`DbspjMain.cpp:5926`):
-  calls `cte_lookup_send` directly when CTE is already READY.
-  NULL-row path must cover this too. Verify the REF handler is
-  reached regardless of materialization timing.
-- **Filter-reject path**: DBLQH maps filter-reject to
-  `GROUP_NOT_FOUND` (`DblqhMain.cpp:19626-19643`). Phase 1 treats
-  both "group truly missing" and "filter rejected" identically —
-  both produce NULL in outer-join mode. Matches SQL `LEFT JOIN … ON
-  cte_filter_cond` semantics.
-- **Leaf-vs-non-leaf CTE_LOOKUP**: non-leaf lookups bump
-  `requestPtr.p->m_rows`; NULL-row emit must mirror that.
-
-## Test canary
-
-`testCteNdbApiFilter.cpp::testCteLookupFilterLeftJoin` (Test 10) exists
-in-tree and asserts `rowCount == 5`. Today it fails (returns 3 — the
-2 filter-rejected parents are silently dropped). After Phase 1 it
-must pass.
-
-Pre-existing inner-join tests (Tests 1-9, 11-15) must stay green —
-the `T_INNER_JOIN` branch preserves current behavior.
+`testCteNdbApiFilter::testCteLookupFilterLeftJoin` (Test 10) returns
+5 rows. Confirmed passing with this change.
 
 ## Build / run (user runs)
 
 ```
 cd debug_build
-make -j$(sysctl -n hw.ncpu) ndbd ndbmtd ndb_mgmd
-make -j$(sysctl -n hw.ncpu) testCteNdbApiFilter
+make -j$(sysctl -n hw.ncpu) ndbd ndbmtd ndb_mgmd testCteNdbApiFilter
 ./runtime_output_directory/testCteNdbApiFilter -c <cs> -m 3306 -v
 ```

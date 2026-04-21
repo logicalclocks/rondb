@@ -19075,7 +19075,7 @@ void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
   if (unlikely(targetState == nullptr)) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
-                     ZCTE_LOOKUP_STATE_NOT_READY);
+                     ZCTE_LOOKUP_STATE_NOT_READY, req.correlation);
     return;
   }
 
@@ -19111,7 +19111,7 @@ retry_agg:
        * the CTE hash table must hold all groups. */
       jam();
       sendCteLookupRef(signal, req.senderRef, req.senderData,
-                       ZCTE_EVICT_IN_CTE_LEAF);
+                       ZCTE_EVICT_IN_CTE_LEAF, req.correlation);
       return;
     }
     sendEvictedAggGroup(signal, targetInterp, targetState);
@@ -19128,7 +19128,7 @@ retry_agg:
         (unsigned long long)targetInterp->processed_rows(),
         targetInterp->inited() ? 1 : 0);
     sendCteLookupRef(signal, req.senderRef, req.senderData,
-                     ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+                     ZCTE_LOOKUP_OUTPUT_OVERFLOW, req.correlation);
     return;
   }
 
@@ -19308,7 +19308,7 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
   if (unlikely(finalRStart + finalRLen > attrInfoLen || finalRLen < 2)) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
-                     ZCTE_LOOKUP_ATTRINFO_MALFORMED);
+                     ZCTE_LOOKUP_ATTRINFO_MALFORMED, req.correlation);
     return;
   }
 
@@ -19333,7 +19333,7 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
   if (outPos < 0) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
-                     ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+                     ZCTE_LOOKUP_OUTPUT_OVERFLOW, req.correlation);
     return;
   }
 
@@ -19427,6 +19427,7 @@ bool Dblqh::routeCteLookup(Signal *signal,
 
 void Dblqh::sendCteLookupRef(Signal *signal, Uint32 senderRef,
                              Uint32 senderData, Uint32 errorCode,
+                             Uint32 correlation,
                              SectionHandle *handle) {
   if (handle != nullptr) {
     jam();
@@ -19437,6 +19438,7 @@ void Dblqh::sendCteLookupRef(Signal *signal, Uint32 senderRef,
   ref->senderRef = reference();
   ref->senderData = senderData;
   ref->errorCode = errorCode;
+  ref->correlation = correlation;
   sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
              signal, CteLookupRef::SignalLength, JBB);
 }
@@ -19497,14 +19499,14 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   if (unlikely(state == nullptr)) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
-                     ZJOIN_AGG_STATE_NOT_FOUND, &handle);
+                     ZJOIN_AGG_STATE_NOT_FOUND, req.correlation, &handle);
     return;
   }
 
   if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
-                     ZCTE_LOOKUP_STATE_NOT_READY, &handle);
+                     ZCTE_LOOKUP_STATE_NOT_READY, req.correlation, &handle);
     return;
   }
 
@@ -19515,7 +19517,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   if (unlikely(keySection.sz > MAX_KEY_SIZE_IN_WORDS)) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
-                     ZATTRINFO_TOO_LARGE, &handle);
+                     ZATTRINFO_TOO_LARGE, req.correlation, &handle);
     return;
   }
   copy(keyBuf, keySection);
@@ -19528,7 +19530,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     if (unlikely(attrInfoSection.sz > ZATTR_BUFFER_SIZE)) {
       jam();
       sendCteLookupRef(signal, req.senderRef, req.senderData,
-                       ZATTRINFO_TOO_LARGE, &handle);
+                       ZATTRINFO_TOO_LARGE, req.correlation, &handle);
       return;
     }
     copy(cinBuf, attrInfoSection);
@@ -19543,7 +19545,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   if (req.joinAggStateKey == RNIL && unlikely(attrInfoLen < 8)) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
-                     ZCTE_LOOKUP_ATTRINFO_MALFORMED);
+                     ZCTE_LOOKUP_ATTRINFO_MALFORMED, req.correlation);
     return;
   }
 
@@ -19588,7 +19590,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
       jam();
       /* Empty table — no result to return */
       sendCteLookupRef(signal, req.senderRef, req.senderData,
-                       ZCTE_LOOKUP_GROUP_NOT_FOUND);
+                       ZCTE_LOOKUP_GROUP_NOT_FOUND, req.correlation);
       return;
     }
     groupData = reinterpret_cast<const char *>(interp->agg_results());
@@ -19619,7 +19621,7 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
     /* Genuine not-found (local owner or no ROUTE_FLAG) */
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
-                     ZCTE_LOOKUP_GROUP_NOT_FOUND);
+                     ZCTE_LOOKUP_GROUP_NOT_FOUND, req.correlation);
     return;
   }
 
@@ -19631,12 +19633,12 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
                                              req.keyLen, cinBuf, attrInfoLen);
     if (fr == CTE_FILTER_REJECT) {
       sendCteLookupRef(signal, req.senderRef, req.senderData,
-                       ZCTE_LOOKUP_GROUP_NOT_FOUND);
+                       ZCTE_LOOKUP_GROUP_NOT_FOUND, req.correlation);
       return;
     }
     if (fr == CTE_FILTER_ERROR) {
       sendCteLookupRef(signal, req.senderRef, req.senderData,
-                       ZCTE_LOOKUP_FILTER_ERROR);
+                       ZCTE_LOOKUP_FILTER_ERROR, req.correlation);
       return;
     }
     /* CTE_FILTER_ACCEPT: fall through to the emit / agg-feed path. */
