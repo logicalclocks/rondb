@@ -27,6 +27,11 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_filter_phase_a.md` — Phase A: CTE_LOOKUP_REQ filter support
 - `cte_filter_phase_b.md` — Phase B: CTE_SCAN_REQ (root) filter support
 - `cte_filter_phase_c.md` — Phase C: aggregation interpreter reuses the jump-table interpreter
+- `cte_nextreq_plan.md` — SCAN_NEXTREQ flow control for CTE main-SELECTs: overview + phase index
+- `cte_nextreq_phase_1.md` — Phase 1: fix CTE_SCAN_REQ continuation plumbing (scanIterI, SignalLengthContinue)
+- `cte_nextreq_phase_2.md` — Phase 2: SCAN_NEXTREQ flow control for CTE_SCAN root
+- `cte_nextreq_phase_3.md` — Phase 3: CTE state lifetime audit across SCAN_NEXTREQ pauses
+- `cte_nextreq_phase_4.md` — Phase 4: NDB API tests for multi-batch CTE main-SELECTs
 
 ### Key Source Files
 - `DblqhMain.cpp` — Signal handlers for JOIN_AGG_SETUP/COMPLETE/RELEASE, scan processing, sendScanFragConf
