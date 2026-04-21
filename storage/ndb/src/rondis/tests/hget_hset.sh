@@ -24,6 +24,15 @@
 
 set -e
 
+# Allow MTR / external harness to override Rondis host and port. The real
+# redis-cli does not know about RONDIS_HOST/RONDIS_PORT, so wrap it in a
+# function that injects -h / -p and keep every call site unchanged.
+REDIS_HOST="${RONDIS_HOST:-localhost}"
+REDIS_PORT="${RONDIS_PORT:-6379}"
+redis-cli() {
+    command redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" "$@"
+}
+
 # Change key suffixes using script arguments
 HASH_KEY_SUFFIX=${1:-0}
 HASH_KEY="key_$HASH_KEY_SUFFIX"

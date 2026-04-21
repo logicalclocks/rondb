@@ -1,0 +1,31 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+
+#
+# Drive the legacy shell-based Rondis MSET/MGET stress harness
+# (storage/ndb/src/rondis/tests/mget_mset.sh) from MTR. This one
+# exercises the multi-row value threshold (30 KB) and byte boundaries
+# around 4095/4096/4097 that single-row vs. multi-row storage paths
+# split on.
+#
+# See rondis_stress_strings.test for the rationale behind exec-only
+# gating and the redis-cli dependency.
+#
+
+--source suite/rondis/include/create_rondis_tables.inc
+
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PING > /dev/null
+
+--let $script = $MYSQL_TEST_DIR/../storage/ndb/src/rondis/tests/mget_mset.sh
+--let $log    = $MYSQLTEST_VARDIR/tmp/rondis_stress_mget_mset.log
+
+--echo # Running mget_mset.sh (per-op PASS/FAIL diverted to var/tmp/ on failure)
+--exec bash $script > $log 2>&1
+--echo # mget_mset.sh completed successfully
+
+# Drop the log on success; check-testcase fails on leftover files in var/tmp.
+--remove_file $log
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
