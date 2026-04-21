@@ -20040,6 +20040,10 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       }
       if (fr == CTE_FILTER_ERROR) {
         jam();
+        /* Leak-free early exit: free any CteScanIterState pool record
+         * we inherited from a prior continuation — there will be no
+         * more CONFs driving the normal release path. */
+        releaseCteScanIterState(scanIterI);
         sendCteScanRef(signal, req.senderRef, req.senderData,
                        ZCTE_LOOKUP_FILTER_ERROR);
         return;
@@ -20154,6 +20158,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         /*keyLen=*/0, cinBuf, attrInfoLen);
     if (fr == CTE_FILTER_ERROR) {
       jam();
+      releaseCteScanIterState(scanIterI);
       sendCteScanRef(signal, req.senderRef, req.senderData,
                      ZCTE_LOOKUP_FILTER_ERROR);
       return;
@@ -20290,10 +20295,12 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
   SectionHandle handle(this, signal);
 
   /* Close REQ: DBSPJ is aborting or closing the scan and asks DBLQH to
-   * free the pool record for req.scanIterI.  No CONF in reply — DBSPJ
-   * has already stopped tracking this slot.  Must run before any
+   * free the pool record for req.scanIterI.  Runs before any
    * JoinAggregationState lookups so a dying request can still clean
-   * up even if the state itself is being torn down concurrently. */
+   * up even if the state itself is being torn down concurrently.
+   * Round-trips with an EndOfData CONF so DBSPJ's normal m_outstanding
+   * accounting drains and the tree node can transition TN_INACTIVE
+   * via execCTE_SCAN_CONF. */
   if (signal->getLength() >= CteScanReq::SignalLengthClose &&
       (req.flags & CteScanReq::CloseFlag) != 0) {
     jam();
@@ -20302,6 +20309,14 @@ void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
       jam();
       releaseCteScanIterState(req.scanIterI);
     }
+    CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = req.senderData;
+    conf->numRows = 0;
+    conf->flags = CteScanConf::EndOfData;
+    conf->scanIterI = RNIL;
+    sendSignal(req.senderRef, GSN_CTE_SCAN_CONF, signal,
+               CteScanConf::SignalLength, JBB);
     return;
   }
 

@@ -692,6 +692,10 @@ class Dbspj : public SimulatedBlock {
       Uint32 m_scanIterI;      // CteScanIterState pool i-value; RNIL on
                                // first REQ and after EndOfData CONF
       bool m_endOfData;        // Final CONF seen from this node
+      bool m_close_pending;    // Set by cte_scan_abort on slots with an
+                               // in-flight REQ; the CONF handler fires
+                               // a close REQ for the CONF's scanIterI
+                               // when RS_ABORTING is observed.
     };
     /* Single-node scans use slot[0]; m_cteScanAllNodes fan-out uses
      * one slot per participating node.  Sized to cover every possible
@@ -1900,13 +1904,13 @@ class Dbspj : public SimulatedBlock {
                         Uint32 sourceNodeId, Uint32 aggStateKey,
                         Uint32 joinAggStateKey, Uint32 scanIterI);
 
-  /* Fire-and-forget close REQ: tells DBLQH to free the CteScanIterState
-   * pool record for scanIterI.  No CONF expected; no section attached.
-   * Used by cte_scan_abort to clean up state held by DBLQH when the
-   * main-SELECT is aborted mid-scan.  Does NOT touch m_outstanding. */
+  /* Round-trip close REQ: tells DBLQH to free the CteScanIterState
+   * pool record for scanIterI and reply with an EndOfData CONF.
+   * Bumps data.m_outstanding and requestPtr.m_outstanding so the
+   * close CONF drains them via the normal execCTE_SCAN_CONF path. */
   void cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
-                             Uint32 sourceNodeId, Uint32 aggStateKey,
-                             Uint32 scanIterI);
+                             Ptr<TreeNode> treeNodePtr,
+                             Uint32 sourceNodeId, Uint32 scanIterI);
 
   /* Abort handler: tears down any CteScanIterState pool records held
    * by DBLQH for open slots (scanIterI != RNIL, !m_endOfData). */

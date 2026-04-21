@@ -6790,6 +6790,7 @@ Dbspj::cte_scan_findOrAddNodeSlot(CteScanData &data, Uint32 sourceNodeId) {
   slot->m_sourceNodeId = sourceNodeId;
   slot->m_scanIterI = RNIL;
   slot->m_endOfData = false;
+  slot->m_close_pending = false;
   return slot;
 }
 
@@ -7198,6 +7199,23 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
   if (endOfData) {
     data.m_endOfData = true;
     slot->m_endOfData = true;
+    slot->m_close_pending = false;
+  }
+
+  /* Abort-in-progress: if the in-flight REQ whose CONF just arrived
+   * was flagged for closure by cte_scan_abort, fire a close REQ now
+   * for the CONF's scanIterI (DBLQH holds that pool record until the
+   * close lands).  The close CONF will arrive with EndOfData=1 and
+   * drain this slot through the normal completion path above. */
+  if (!endOfData &&
+      (requestPtr.p->m_state & Request::RS_ABORTING) != 0 &&
+      slot->m_close_pending &&
+      conf->scanIterI != RNIL) {
+    jam();
+    slot->m_close_pending = false;
+    slot->m_scanIterI = RNIL;  // ownership handed to the close REQ
+    cte_scan_sendCloseReq(signal, requestPtr, treeNodePtr,
+                          sourceNodeId, conf->scanIterI);
   }
 
   /* Intermediate CONF (EndOfData=0): nothing to do here.  Another REQ
@@ -7272,22 +7290,24 @@ void Dbspj::cte_scan_cleanup(Ptr<Request> requestPtr,
 }
 
 /**
- * Fire-and-forget close REQ to free a CteScanIterState pool record in
- * DBLQH.  No CONF is expected; no section is attached.  Used only from
- * cte_scan_abort to clean up state left behind when a main-SELECT
- * CTE_SCAN is aborted mid-scan (e.g. API close-flag, node failure,
- * upstream error).  Must NOT touch m_outstanding — the abort path
- * drains outstanding counters independently.
+ * Round-trip close REQ: asks DBLQH to free the CteScanIterState pool
+ * record for scanIterI and reply with an EndOfData CONF.  The CONF
+ * drives the normal execCTE_SCAN_CONF accounting path so the tree
+ * node can transition TN_INACTIVE cleanly.  Bumps per-REQ counters
+ * like cte_scan_sendReq so checkBatchComplete waits for the close
+ * CONF before firing SCAN_FRAGREF.
  */
 void Dbspj::cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
-                                   Uint32 sourceNodeId, Uint32 aggStateKey,
+                                   Ptr<TreeNode> treeNodePtr,
+                                   Uint32 sourceNodeId,
                                    Uint32 scanIterI) {
   ndbrequire(scanIterI != RNIL);
+  CteScanData &data = treeNodePtr.p->m_cteScan_data;
   CteScanReq *req =
       reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
   req->senderRef = reference();
-  req->senderData = 0;              // unused — DBLQH sends nothing back
-  req->aggStateKey = aggStateKey;
+  req->senderData = treeNodePtr.i;  // needed so DBLQH's CONF routes back
+  req->aggStateKey = RNIL;           // unused on close path
   req->transId1 = requestPtr.p->m_transId[0];
   req->transId2 = requestPtr.p->m_transId[1];
   req->batchSize = 0;
@@ -7300,33 +7320,69 @@ void Dbspj::cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
   Uint32 ref = numberToRef(DBLQH, 1, sourceNodeId);
   sendSignal(ref, GSN_CTE_SCAN_REQ, signal,
              CteScanReq::SignalLengthClose, JBB);
+
+  data.m_outstanding++;
+  requestPtr.p->m_outstanding++;
 }
 
 /**
- * Abort handler for CTE_SCAN.  On query abort (user close,
- * node-failure-triggered abort, error propagation), free any
- * CteScanIterState pool records that DBLQH is holding for this tree
- * node's open slots.  A slot needs a close REQ if it has a stashed
- * scanIterI from a previous CONF (DBLQH is paused between batches
- * waiting for SCAN_NEXTREQ).  Slots with an in-flight REQ cannot be
- * closed from here — their CONF will arrive and the decrement will
- * happen normally; the remaining pool record (if the CONF was
- * non-EndOfData) is left for the block's TransientPool to reclaim
- * when the state is later released.
+ * Abort handler for CTE_SCAN.  Drives the tree node through the same
+ * bookkeeping the normal scan path uses, but via close REQs rather
+ * than TRANSID_AI:
+ *
+ *  - Slot with a stashed scanIterI (paused between batches, nothing
+ *    in flight): fire a close REQ now.  DBLQH releases the pool
+ *    record and replies with an EndOfData CONF that drains the
+ *    per-REQ counters via execCTE_SCAN_CONF.
+ *  - Slot with an in-flight REQ (scanIterI == RNIL because no CONF
+ *    back yet, or in flight after a continuation): set close_pending.
+ *    When the CONF lands, execCTE_SCAN_CONF notices RS_ABORTING +
+ *    close_pending and fires a close REQ for the CONF's scanIterI.
+ *  - Already-finished slot (m_endOfData): skip.
+ *
+ * If nothing needed closing (all slots m_endOfData, no in-flight
+ * REQs) the tree would otherwise leave cnt_active > 0 and the
+ * ndbassert at batchComplete would fire.  In that case transition
+ * TN_INACTIVE directly.
  */
 void Dbspj::cte_scan_abort(Signal *signal, Ptr<Request> requestPtr,
                             Ptr<TreeNode> treeNodePtr) {
   jam();
+  if (treeNodePtr.p->m_state != TreeNode::TN_ACTIVE) {
+    jam();
+    return;
+  }
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
+  const bool in_flight = (data.m_outstanding > 0);
   const Uint32 numSlots = data.m_numNodeSlots;
   for (Uint32 i = 0; i < numSlots; i++) {
     CteScanData::NodeSlot &slot = data.m_nodeSlots[i];
     if (slot.m_endOfData) continue;
-    if (slot.m_scanIterI == RNIL) continue;  // nothing held by DBLQH
+    if (!in_flight && slot.m_scanIterI != RNIL) {
+      /* Scan is paused between batches; the stashed scanIterI is the
+       * pool record DBLQH still holds.  Safe to close it now. */
+      jam();
+      cte_scan_sendCloseReq(signal, requestPtr, treeNodePtr,
+                            slot.m_sourceNodeId, slot.m_scanIterI);
+      slot.m_scanIterI = RNIL;
+    } else {
+      /* Either a REQ is in flight for SOME slot (we can't tell which
+       * from data.m_outstanding alone, so defer for every non-ended
+       * slot) or the slot never saw a CONF.  execCTE_SCAN_CONF will
+       * fire the close REQ when the in-flight CONF lands. */
+      jam();
+      slot.m_close_pending = true;
+    }
+  }
+
+  /* No close REQs queued and no in-flight work: drive the state
+   * transition directly so batchComplete sees cnt_active == 0. */
+  if (data.m_outstanding == 0) {
     jam();
-    cte_scan_sendCloseReq(signal, requestPtr, slot.m_sourceNodeId,
-                          /*aggStateKey=*/RNIL, slot.m_scanIterI);
-    slot.m_scanIterI = RNIL;
+    treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+    ndbrequire(requestPtr.p->m_cnt_active > 0);
+    requestPtr.p->m_cnt_active--;
+    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
   }
 }
 
