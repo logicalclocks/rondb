@@ -9054,7 +9054,7 @@ void Dblqh::handle_release_exclusive_frag_access(Fragrecord *fragPtrP) {
 /* ------------------------------------------------------------------------- */
 void Dblqh::execLQHKEYREQ(Signal *signal) {
   if (unlikely(!assembleFragments(signal))) {
-    jam();
+    jamDebug();
     return;
   }
   UintR sig0, sig1, sig2, sig3, sig4;
@@ -9132,12 +9132,12 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     {
       if (likely(LqhKeyReq::getDirtyFlag(Treqinfo)))
       {
-        jam();
+        jamDebug();
         use_lock = false;
       }
       else
       {
-        jam();
+        jamDebug();
         /**
          * We are performing a non-dirty operation in a Query thread, this means
          * that we need to acquire an operation record from the LDM block owning
@@ -9154,7 +9154,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
         }
         else
         {
-          jam();
+          jamDebug();
         }
         m_curr_lqh = lqh;
         c_acc->m_curr_acc = lqh->c_acc;
@@ -9193,7 +9193,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   }
   if(ERROR_INSERTED(5038) && 
      refToNode(signal->getSendersBlockRef()) != getOwnNodeId()){
-    jam();
+    jamDebug();
     releaseSections(handle);
     SET_ERROR_INSERT_VALUE(5039);
     reset_curr_ldm();
@@ -9753,7 +9753,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   LogPartRecord *logPart = fragptr.p->m_log_part_ptr_p;
   tfragDistKey = fragptr.p->fragDistributionKey;
   if (fragptr.p->fragStatus == Fragrecord::ACTIVE_CREATION) {
-    jam();
+    jamDebug();
     /**
      * Starting node in active creation mode, we set activeCreat to
      * either AC_IGNORED (before first copy row arrived, or to
@@ -10069,7 +10069,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
   Uint32 activeCreat = regTcPtr->activeCreat;
   if (regTcPtr->operation == ZUNLOCK) {
-    jam();
+    jamDebug();
     ndbassert(!m_is_in_query_thread);
     handleUserUnlockRequest(signal, tcConnectptr);
     return;
@@ -10181,7 +10181,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
      *    refCount to be 0 (usually happen immediately). After this we
      *    complete the close of the scan request.
      */
-    jam();
+    jamDebug();
     Uint32 ttcScanOp = KeyInfo20::getScanOp(regTcPtr->tcScanInfo);
     scanptr.i = RNIL;
     if (m_is_query_block)
@@ -10212,7 +10212,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
        *
        * Thus only NDB API users will get access to the query threads.
        */
-      jam();
+      jamDebug();
       if (m_is_query_block)
       {
         m_curr_lqh->unlock_take_over_hash();
@@ -10225,7 +10225,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
                                                       true);
     if (unlikely(regTcPtr->accOpPtr == RNIL))
     {
-      jam();
+      jamDebug();
       if (m_is_query_block)
       {
         m_curr_lqh->unlock_take_over_hash();
@@ -10296,7 +10296,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
     }
     else
     {
-      jam();
+      jamDebug();
       /**
        * Delete by ROWID from RESTORE
        */
@@ -10315,7 +10315,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
      * need to be careful with all variants of how we deal with syncing
      * this starting fragment with the live fragment.
      */
-    jam();
+    jamDebug();
     ndbassert(!m_is_query_block);
     ndbrequire(!regTcPtr->indTakeOver);
     regTcPtr->totSendlenAi = regTcPtr->totReclenAi;
@@ -10328,7 +10328,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
      * but to the other nodes we will act as if we have applied the
      * changes.
      */
-    jam();
+    jamDebug();
     ndbassert(!m_is_query_block);
     ndbrequire(!regTcPtr->indTakeOver);
     ndbassert(activeCreat == Fragrecord::AC_IGNORED);
@@ -10349,7 +10349,7 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
   /*  ACCKEYREQ < */
   /* ************ */
   prefetch_op_record_3((Uint32 *)regTcPtr.p->accConnectPtrP);
-  jam();
+  jamDebug();
   {
     Uint32 taccreq = 0;
     taccreq = AccKeyReq::setOperation(taccreq, regTcPtr.p->operation);
@@ -10475,7 +10475,6 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
 }  // Dblqh::prepareContinueAfterBlockedLab()
 
 void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
-  jam();
   Uint64 fragPtr = fragptr.p->tupFragptr;
   Uint32 op = regTcPtr.p->operation;
 
@@ -10497,6 +10496,7 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
     exec_acckeyreq(signal, regTcPtr);
     return;
   }
+  jam();
 
   /* Signal header was counted for when receiving LQHKEYREQ */
   Fragrecord::UsageStat& useStat = fragptr.p->m_useStat;
@@ -10567,12 +10567,13 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
          *   We are performing DELETE by ROWID and the row id had an already
          *   existing, we need to delete the row in this position.
          */
-        jam();
-        if (TRACENR_FLAG) TRACENR(" performing DELETE key: " << dst[0] << endl);
 
         if (refToMain(regTcPtr.p->tcBlockref) == getRESTORE()) {
           jam();
           c_restore->delete_by_rowid_succ(regTcPtr.p->tcOprec);
+        } else {
+          jam();
+        if (TRACENR_FLAG) TRACENR(" performing DELETE key: " << dst[0] << endl);
         }
         DEB_LCP_RESTORE(("(%u)tab(%u,%u) row(%u,%u), set GCI = %u", instance(),
                          regTcPtr.p->tableref, regTcPtr.p->fragmentid,
@@ -10598,11 +10599,12 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
          * We are performing a DELETE by ROWID and there was no row at this
          * row id. We set the correct GCI in this row id.
          */
-        jam();
         if (TRACENR_FLAG) TRACENR(" UPDATE_GCI" << endl);
         if (refToMain(regTcPtr.p->tcBlockref) == getRESTORE()) {
           jam();
           c_restore->delete_by_rowid_fail(regTcPtr.p->tcOprec);
+        } else {
+          jam();
         }
         c_tup->nr_update_gci(fragPtr, &regTcPtr.p->m_row_id, regTcPtr.p->gci_hi,
                              false);
@@ -10630,6 +10632,9 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
       jam();
       nr_copy_delete_row(signal, regTcPtr, &regTcPtr.p->m_row_id, len);
     }
+    else {
+      jam();
+    }
     /**
      * 2) Delete specified row at different rowid (if exists)
      * It is technically possible that a row with the same primary key
@@ -10644,7 +10649,6 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      * placed should have a higher row id since the copy process goes from
      * low row ids to higher row ids.
      */
-    jam();
     nr_copy_delete_row(signal, regTcPtr, 0, 0);
     if (TRACENR_FLAG) TRACENR(" RUN INSERT" << endl);
     goto run;
@@ -10709,12 +10713,13 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
        */
       jam();
       nr_copy_delete_row(signal, regTcPtr, &regTcPtr.p->m_row_id, len);
+    } else {
+      jam();
     }
 
     /**
      * 2) Delete specified row at different rowid (if exists)
      */
-    jam();
     nr_copy_delete_row(signal, regTcPtr, 0, 0);
     if (TRACENR_FLAG) TRACENR(" RUN op: " << op << endl);
     goto run;
