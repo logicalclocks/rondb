@@ -591,6 +591,157 @@ testMainLookupCteLeftJoinSmallBatch(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 5 (Phase 5 — CTE-subtree agg-feed NULL injection):             */
+/*   WITH cte0 AS (SELECT grp, SUM(val) FROM oj_cte_src GROUP BY grp)  */
+/*   SELECT COUNT(*), SUM(cte0.total)                                  */
+/*     FROM oj_rhs LEFT JOIN cte0 ON cte0.grp = oj_rhs.id;             */
+/*                                                                     */
+/* scalar main aggregation — no GROUP BY.                              */
+/* oj_rhs: id={1,3,5}; cte0 groups={1,2,3}.                            */
+/*   id=1 → cte0.total=30,  contributes count=1, sum=30                */
+/*   id=3 → cte0.total=50,  contributes count=1, sum=50                */
+/*   id=5 → no match — LEFT JOIN must inject NULL row:                 */
+/*                          contributes count=1, sum=0 (NULL ignored)  */
+/*                                                                     */
+/* Expected with fix:        COUNT=3, SUM=80.                          */
+/* Without fix (regression): COUNT=2, SUM=80 (id=5 silently dropped).  */
+/*                                                                     */
+/* COUNT(*) is built via LoadUint64(1) → register 0 = constant 1       */
+/* which never NULLs even on an outer-join null row — same trick as    */
+/* testOuterJoinAggNdbApi's scalar-count tests.                        */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteSubtreeLeftJoinAggFeed(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 5: CTE subtree LEFT JOIN agg-feed ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRT_TABLE);
+  dict->invalidateTable(RHS_TABLE);
+  const NdbDictionary::Table *srcTab  = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRT_TABLE);
+  const NdbDictionary::Table *rhsTab  = dict->getTable(RHS_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr || rhsTab == nullptr) {
+    printf("FAILED (table lookup)\n");
+    return -1;
+  }
+
+  /* CTE 0: GROUP BY grp, SUM(val) → {(1,30),(2,70),(3,50)} */
+  NdbAggregator cteAgg(srcTab);
+  if (!buildCteAgg(cteAgg)) {
+    printf("FAILED (cteAgg build)\n");
+    return -1;
+  }
+
+  /* Main scalar aggregator over virtTab:
+   *   LoadUint64(1, 0)         → reg 0 = constant 1 (survives NULL rows)
+   *   LoadLinkedColumn(1, 1)   → reg 1 = cte0.total (NULL when unmatched)
+   *   Count(0, 0)              → agg[0] = COUNT(*)
+   *   Sum(1, 1)                → agg[1] = SUM(cte0.total)
+   */
+  const NdbDictionary::Column *totalCol = virtTab->getColumn("total");
+  NdbAggregator mainAgg(virtTab);
+  if (!mainAgg.LoadUint64(1, 0) ||
+      !mainAgg.LoadLinkedColumn(1, 1, totalCol) ||
+      !mainAgg.Count(0, 0) ||
+      !mainAgg.Sum(1, 1) ||
+      !mainAgg.Finalize()) {
+    printf("FAILED (mainAgg: %s)\n", mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+
+  /* CTE 0 subtree */
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions leafOpts;
+    leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    leafOpts.setAggregation(cteAgg);
+    qb->readTuple(srcTab, key, &leafOpts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  /* Main: scanTable(oj_rhs) LEFT JOIN lookupCte(0, grp=id) + mainAgg. */
+  const NdbQueryTableScanOperationDef *mainScan = qb->scanTable(rhsTab);
+  if (mainScan == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteKey[] = {
+      qb->linkedValue(mainScan, "id"), nullptr
+  };
+  NdbQueryOptions cteLookupOpts;
+  /* No setMatchType → MatchAll (LEFT JOIN). */
+  cteLookupOpts.setAggregation(mainAgg);
+  if (qb->lookupCte(0, 2, virtTab, cteKey, &cteLookupOpts) == nullptr) {
+    printf("FAILED (lookupCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close(); trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator)\n");
+    query->close(); trans->close(); queryDef->destroy();
+    return -1;
+  }
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result rows)\n");
+    query->close(); trans->close(); queryDef->destroy();
+    return -1;
+  }
+  Int64 count = rec.FetchAggregationResult().data_int64();
+  Int64 sum = rec.FetchAggregationResult().data_int64();
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  V("  count=%lld sum=%lld\n", (long long)count, (long long)sum);
+
+  if (count == 3 && sum == 80) {
+    printf("OK (COUNT=%lld, SUM=%lld)\n", (long long)count, (long long)sum);
+    return 0;
+  }
+  printf("FAILED (expected COUNT=3 SUM=80, got COUNT=%lld SUM=%lld)\n",
+         (long long)count, (long long)sum);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -604,6 +755,7 @@ static const TestEntry g_tests[] = {
     { 2, testScanCteLeftJoin  },
     { 3, testMainLookupCteLeftJoinDefaultBatch },
     { 4, testMainLookupCteLeftJoinSmallBatch },
+    { 5, testCteSubtreeLeftJoinAggFeed },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 

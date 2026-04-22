@@ -2509,6 +2509,42 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
         }
       }
     }
+
+    /**
+     * Outer-join CTE_LOOKUP agg-leaf: buffer the scan ancestor's rows
+     * in MAP layout so execCTE_LOOKUP_REF(GROUP_NOT_FOUND) can resolve
+     * the unmatched parent via getBufferedRow() using the correlation
+     * echoed back in CteLookupRef, then inject a NULL row into the
+     * downstream JoinAggInterpreter via sendJoinAggNullRow (Phase 5).
+     * Regular lookup agg-leaves don't need this: they use the
+     * completion-time sweep in handleAggAncestorComplete iterating
+     * a COLLECTION_LIST.
+     */
+    for (list.first(treeNodePtr); !treeNodePtr.isNull();
+         list.next(treeNodePtr)) {
+      if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+          !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
+          treeNodePtr.p->m_info == &g_CteLookupOpInfo) {
+        jam();
+        Ptr<TreeNode> scanAncestorPtr;
+        Uint32 parentPtrI = treeNodePtr.p->m_parentPtrI;
+        bool found = false;
+        while (parentPtrI != RNIL) {
+          jam();
+          ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr, parentPtrI));
+          if (scanAncestorPtr.p->isScan()) {
+            found = true;
+            break;
+          }
+          parentPtrI = scanAncestorPtr.p->m_parentPtrI;
+        }
+        if (found) {
+          jam();
+          scanAncestorPtr.p->m_bits |=
+              TreeNode::T_BUFFER_ROW | TreeNode::T_BUFFER_MAP;
+        }
+      }
+    }
   } else {
     if (unlikely(ctx.m_aggregate_node_count != 0)) {
       jam();
@@ -3081,16 +3117,6 @@ Uint32 Dbspj::appendTreeNode(Ptr<Request> requestPtr, Ptr<TreeNode> treeNodePtr,
           TreeNode::T_BUFFER_MAP | TreeNode::T_BUFFER_MATCH;
     }
 
-    /**
-     * Outer join aggregation leaf: buffer parent rows so we can iterate
-     * them during null row injection for unmatched parents.
-     */
-    if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
-        !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
-      jam();
-      // Buffer parent rows for null row iteration after scan completes
-      scanAncestorPtr.p->m_bits |= TreeNode::T_BUFFER_ROW;
-    }
   }
 
   /**
@@ -6493,13 +6519,43 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
   //     had no matching child TRANSID_AI (isOuterJoin() path in
   //     NdbQueryOperation), same as lookup_execLQHKEYREF for scan-root
   //     regular outer joins.
-  //   Outer join + agg-feed (T_AGGREGATE_LEAF set): NULL-row
-  //     propagation via sendJoinAggNullRow is not yet wired from this
-  //     REF path — it requires T_BUFFER_ANY on the scan ancestor and
-  //     the completion-time sweep in handleAggAncestorComplete. That
-  //     lands together with the CTE-subtree outer-join test (Phase 1
-  //     Test 5 in testCteNdbApiOuterJoin.cpp).
+  //   Outer join + agg-feed (T_AGGREGATE_LEAF): inject a NULL row into
+  //     the enclosing CTE's aggregator so the parent row still
+  //     contributes. Parent row is resolved by the correlation echoed
+  //     back in CteLookupRef; build-plan ensures T_BUFFER_MAP on the
+  //     scan ancestor so getBufferedRow works here.
   ndbassert(refCorrelation != ~Uint32(0));  // DBLQH echoed something
+
+  const bool isOuterJoin =
+      (treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) == 0;
+  const bool isAggFeed =
+      (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0;
+
+  if (isOuterJoin && isAggFeed) {
+    jam();
+    Ptr<TreeNode> scanAncestorPtr;
+    ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
+                                       treeNodePtr.p->m_scanAncestorPtrI));
+    ndbassert(scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_ANY);
+    ndbassert(scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_MAP);
+
+    RowPtr parentRow;
+    getBufferedRow(scanAncestorPtr, (refCorrelation >> 16), &parentRow);
+
+    /* Mark this CTE_LOOKUP node's own columns as NULL in the expanded
+     * linked-attr payload — there is no lookup result row to pull them
+     * from.  Parent linked columns come from parentRow as usual. */
+    ndbassert(treeNodePtr.p->m_node_no < 64);
+    const Uint64 nullNodes = 1ULL << treeNodePtr.p->m_node_no;
+    Uint32 err = sendJoinAggNullRow(signal, requestPtr, treeNodePtr,
+                                     parentRow, /*parentLevelAdjust=*/0,
+                                     nullNodes);
+    if (unlikely(err != 0)) {
+      jam();
+      abort(signal, requestPtr, err);
+      return;
+    }
+  }
 
   maybeResumeCongestedNodes(signal, requestPtr, treeNodePtr);
   checkBatchComplete(signal, requestPtr);
@@ -9471,6 +9527,28 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
       jam();
       releaseSection(linkedPtrI);
       return err;
+    }
+  }
+
+  /* CTE_LOOKUP agg-feed null path: the success path's cteLookupAggFeed
+   * appends the source CTE's GB-key and aggregate-result columns to the
+   * linked buffer after the parent-expanded pattern.  On GROUP_NOT_FOUND
+   * there is no source row, so synthesize m_numResultCols NULL
+   * AttributeHeader entries here so that the downstream mainAgg's
+   * LoadLinkedColumn instructions find their positions. */
+  if (treeNodePtr.p->m_info == &g_CteLookupOpInfo) {
+    jam();
+    const Uint32 nCols = treeNodePtr.p->m_cteLookup_data.m_numResultCols;
+    for (Uint32 i = 0; i < nCols; i++) {
+      Uint32 entry[3];
+      entry[0] = 0;  // tableId
+      entry[1] = 0;  // schemaVersion
+      AttributeHeader::init(&entry[2], i, 0);  // byteSize=0 → NULL
+      if (unlikely(!appendToSection(linkedPtrI, entry, 3))) {
+        jam();
+        releaseSection(linkedPtrI);
+        return DbspjErr::OutOfSectionMemory;
+      }
     }
   }
 
