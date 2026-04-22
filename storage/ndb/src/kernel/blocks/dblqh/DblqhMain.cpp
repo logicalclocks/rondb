@@ -10406,7 +10406,20 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
     }
     /*
      * TTL related
+     *
+     * Only one combination actually changes state: not-yet-marked
+     * on our side AND ACCKEYCONF reports ttl_ignore == 1 → set to 1.
+     * The other combinations are either already correct or are
+     * intentional "keep current" outcomes by design.
+     *
+     * In debug builds (TTL_DEBUG) we keep the full 3-way chain to
+     * emit the per-arm trace messages the TTL author relies on for
+     * state-transition diagnostics. In prod builds TTL_RONDB_TRACE
+     * expands to {} and the 3-way chain would compile to several
+     * empty-arm branches plus one store; gate the whole chain on
+     * the same macro so prod sees only the single effective `if`.
      */
+#ifdef TTL_DEBUG
     if (regTcPtr.p->ttl_ignore && signal->theData[5] != 1) {
       TTL_RONDB_TRACE(regTcPtr.p->tableref, "Dblqh::execACCKEYCONF[1], ttl_ignore in "
                       "ACCKEYCONF is 0 but the related "
@@ -10435,6 +10448,11 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
                     "table id: %u",
                     regTcPtr.p->ttl_ignore,
                     regTcPtr.p->tableref);
+#else
+    if (!regTcPtr.p->ttl_ignore && signal->theData[5] == 1) {
+      regTcPtr.p->ttl_ignore = 1;
+    }
+#endif
     jamDebug();
     continueACCKEYCONF(signal, signal->theData[3], signal->theData[4],
                        regTcPtr);
