@@ -10075,168 +10075,12 @@ void Dblqh::prepareContinueAfterBlockedLab(
     return;
   }
 
-  if (unlikely(regTcPtr->indTakeOver == ZTRUE))
-  {
-    /**
-     * When Take Over requests are executed in the Query threads we have the
-     * following issues to handle:
-     *
-     * 1) We must find the scan record
-     * 2) We must find the operation record in DBACC
-     * 3) When we found the scan record the record must not be removed while
-     *    we use it.
-     * 4) When we found the operation record in DBACC the record must not
-     *    be removed while we are using it.
-     *
-     * We find the scan record using the hash table in the variable
-     * c_scanTakeOverHash. This means that this hash table is read from the
-     * query threads, but only written from the LDM threads.
-     *
-     * This means that we need to use a mutex to access the hash table from
-     * query threads.
-     *
-     * To understand the concurrency issue for Take Over requests we must
-     * understand when they occur. The scan protocol relies on that the
-     * take over request comes after sending SCAN_FRAGCONF to DBTC which
-     * in return sends SCAN_TABCONF to the NDB API. The NDB API can then
-     * send TCKEYREQ with the Take Over flag set and some scan information
-     * used to find the correct scan record and DBACC operation record.
-     *
-     * Thus we cannot receive LQHKEYREQ when we are currently scanning.
-     * The scan state we set after sending SCAN_FRAGCONF is
-     * WAIT_SCAN_NEXTREQ. This is the only state in which it is allowed
-     * to receive a LQHKEYREQ with Take Over flag set.
-     *
-     * In this state the only signal we can receive to continue the scan
-     * is SCAN_NEXTREQ. The normal protocol cannot send such a signal
-     * while we are performing a Take Over operation. However a timeout
-     * in DBTC, or a timeout in DBLQH can lead to a close of the scan
-     * even when we are allowed to receive LQHKEYREQ with the Take Over
-     * flag set. Thus we need to find a protection for this.
-     *
-     * When an LQHKEYREQ with Take Over flag set is received we need to
-     * lock the mutex in the Query threads to access the hash table
-     * in c_scanTakeOverHash and to access scanState on the scan record.
-     * If the scan record is found in the hash table and it is in the
-     * state WAIT_SCAN_NEXTREQ then we can proceed with the LQHKEYREQ
-     * execution. However we must do something to block SCAN_NEXTREQ
-     * from proceeding in this case. This protection is only required
-     * if we are executing in the query thread. No such protection is
-     * required for Take Over operations arriving in LDM threads since
-     * in this case we are serialised compared to the SCAN operation.
-     *
-     * Given that the LQHKEYREQ will execute without any real-time breaks
-     * during the take over process, we only need to wait until this
-     * LQHKEYREQ has completed before any SCAN_NEXTREQ can proceed (or
-     * timeout actions in DBLQH).
-     *
-     * We need to make sure that the setting of scanState to
-     * WAIT_SCAN_NEXTREQ in LDM thread must be seen by the Query thread.
-     * There are two ways to do this, we can either use a mutex when
-     * setting scanState. The other option is to use a memory barrier
-     * right before setting scanState and immediately after setting it.
-     * Thus either a mutex lock or 2 calls to wmb() (we only need a
-     * write memory barrier if we use a read memory barrier in the Query
-     * thread. However the query thread reads scanState under mutex
-     * protection which implies a memory barrier. So no need to add more
-     * memory barriers here.
-     *
-     * When we receive a close scan request either from timeout or from
-     * SCAN_NEXTREQ we need to perform the following:
-     * 1) Wait until any ongoing LQHKEYREQ in Query thread is completed
-     *
-     *    This is accomplished by incrementing scanPtrP->m_takeOverRefCount
-     *    before taking over the lock from the scan operation. When
-     *    starting this takeover, we don't want another thread to remove the
-     *    scan in the short time while we are taking over the lock.
-     *    This is checked in closeScanRequestLab.
-     *
-     *    The m_takeOverRefCount is protected by the take over hash mutex.
-     *    This means that it is incremented with a lock, also the first
-     *    check of the counter must be protected. However when discovering
-     *    that the counter is > 0 the only thing that can bring it to 0 is
-     *    that the lock take over is completed. There is no need to protect
-     *    this with a mutex. Also no need to protect the decrement of the
-     *    counter. Before starting the check of the counter we changed the
-     *    state of the scan to ensure that no more incremements to the
-     *    counter can happen. Thus we are only waiting for active LQHKEYREQ
-     *    take overs to complete their take over action before we proceed.
-     *    Once the take over is complete the operation is independent of
-     *    the scan operation, thus no need for more checks.
-     *    
-     * 2) Change scanState to ensure that no more Take Over operations
-     * are accepted for this scan.
-     *
-     * So what we need to do are the following actions:
-     * 1) Here we need to perform the following for Query threads
-     *    - Lock mutex covering take over hash
-     *    - Check that scanState == WAIT_SCAN_NEXTREQ (also for LDM threads)
-     *    - Increment refCount indicating an LQHKEYREQ take over is active
-     *    - Decrement refCount when done with the LQHKEYREQ request
-     * 2) While sending SCAN_FRAGCONF we need to use 2 memory barriers while
-     *    setting scanState to WAIT_SCAN_NEXTREQ.
-     * 3) When receiving SCAN_NEXTREQ(close) or timeout of scan request we
-     *    need to acquire mutex and set scanState to new state indicating
-     *    that we are closing. After releasing mutex we loop waiting for
-     *    refCount to be 0 (usually happen immediately). After this we
-     *    complete the close of the scan request.
-     */
-    jamDebug();
-    Uint32 ttcScanOp = KeyInfo20::getScanOp(regTcPtr->tcScanInfo);
-    scanptr.i = RNIL;
-    if (m_is_query_block)
-    {
-      m_curr_lqh->lock_take_over_hash();
-    }
-    {
-      ScanRecord key;
-      key.scanNumber = KeyInfo20::getScanNo(regTcPtr->tcScanInfo);
-      key.fragPtrI = fragptr.i;
-      m_curr_lqh->c_scanTakeOverHash.find(scanptr, key);
-#ifdef TRACE_SCAN_TAKEOVER
-      if(scanptr.i == RNIL)
-        g_eventLogger->info("not finding (%d %lld)", key.scanNumber,
-                            key.fragPtrI);
-#endif
-    }
-    if (unlikely((scanptr.i == RNIL) ||
-        ((scanptr.p->scanState != ScanRecord::WAIT_SCAN_NEXTREQ) &&
-         (!LqhKeyReq::getUtilFlag(regTcPtr->reqinfo)))))
-    {
-      /**
-       * NDB API applications cannot start a take over operation until
-       * they have received SCAN_TABCONF. DBUTIL can since it starts
-       * the take over operation immediately on receiving a TRANSID_AI
-       * signal. To ensure that this works ok we ensure that DBUTIL
-       * always use an LDM thread for the take over operations.
-       *
-       * Thus only NDB API users will get access to the query threads.
-       */
-      jamDebug();
-      if (m_is_query_block)
-      {
-        m_curr_lqh->unlock_take_over_hash();
-      }
-      takeOverErrorLab(signal, tcConnectptr);
-      return;
-    }//if
-    regTcPtr->accOpPtr = get_acc_ptr_from_scan_record(scanptr.p,
-                                                      ttcScanOp,
-                                                      true);
-    if (unlikely(regTcPtr->accOpPtr == RNIL))
-    {
-      jamDebug();
-      if (m_is_query_block)
-      {
-        m_curr_lqh->unlock_take_over_hash();
-      }
-      takeOverErrorLab(signal, tcConnectptr);
-      return;
-    }//if
-    if (m_is_query_block)
-    {
-      scanptr.p->m_takeOverRefCount++;
-      m_curr_lqh->unlock_take_over_hash();
+  if (unlikely(regTcPtr->indTakeOver == ZTRUE)) {
+    // Scan take-over is rare and heavy (hash lookup, query-thread
+    // mutex, ScanRecord + refcount management). Keep it out of this
+    // function's hot body. See prepareScanTakeOverOnKeyReq below.
+    if (!prepareScanTakeOverOnKeyReq(signal, tcConnectptr)) {
+      return;  // takeOverErrorLab has been called
     }
   }
 /*-------------------------------------------------------------------*/
@@ -10342,6 +10186,180 @@ void Dblqh::prepareContinueAfterBlockedLab(
     regTcPtr->totSendlenAi = regTcPtr->totReclenAi;
     packLqhkeyreqLab(signal, tcConnectptr);
   }
+}
+
+// Scan take-over setup on LQHKEYREQ. Only called when
+// regTcPtr->indTakeOver == ZTRUE (rare) — the path after an NDB API
+// has received SCAN_TABCONF and issues a keyed op that reuses the
+// scan's lock. Moved out of prepareContinueAfterBlockedLab because
+// it accounts for roughly two thirds of that function's size while
+// firing on a small fraction of traffic.
+//
+// Returns false if the take-over was rejected (takeOverErrorLab
+// already called — caller must return). Returns true when the
+// caller should continue into the normal dispatch.
+//
+// See the long design comment preserved below for concurrency notes
+// on query-thread take-over, the take-over hash mutex and
+// m_takeOverRefCount semantics.
+bool Dblqh::prepareScanTakeOverOnKeyReq(Signal *signal,
+                                        TcConnectionrecPtr tcConnectptr) {
+  /**
+   * When Take Over requests are executed in the Query threads we have the
+   * following issues to handle:
+   *
+   * 1) We must find the scan record
+   * 2) We must find the operation record in DBACC
+   * 3) When we found the scan record the record must not be removed while
+   *    we use it.
+   * 4) When we found the operation record in DBACC the record must not
+   *    be removed while we are using it.
+   *
+   * We find the scan record using the hash table in the variable
+   * c_scanTakeOverHash. This means that this hash table is read from the
+   * query threads, but only written from the LDM threads.
+   *
+   * This means that we need to use a mutex to access the hash table from
+   * query threads.
+   *
+   * To understand the concurrency issue for Take Over requests we must
+   * understand when they occur. The scan protocol relies on that the
+   * take over request comes after sending SCAN_FRAGCONF to DBTC which
+   * in return sends SCAN_TABCONF to the NDB API. The NDB API can then
+   * send TCKEYREQ with the Take Over flag set and some scan information
+   * used to find the correct scan record and DBACC operation record.
+   *
+   * Thus we cannot receive LQHKEYREQ when we are currently scanning.
+   * The scan state we set after sending SCAN_FRAGCONF is
+   * WAIT_SCAN_NEXTREQ. This is the only state in which it is allowed
+   * to receive a LQHKEYREQ with Take Over flag set.
+   *
+   * In this state the only signal we can receive to continue the scan
+   * is SCAN_NEXTREQ. The normal protocol cannot send such a signal
+   * while we are performing a Take Over operation. However a timeout
+   * in DBTC, or a timeout in DBLQH can lead to a close of the scan
+   * even when we are allowed to receive LQHKEYREQ with the Take Over
+   * flag set. Thus we need to find a protection for this.
+   *
+   * When an LQHKEYREQ with Take Over flag set is received we need to
+   * lock the mutex in the Query threads to access the hash table
+   * in c_scanTakeOverHash and to access scanState on the scan record.
+   * If the scan record is found in the hash table and it is in the
+   * state WAIT_SCAN_NEXTREQ then we can proceed with the LQHKEYREQ
+   * execution. However we must do something to block SCAN_NEXTREQ
+   * from proceeding in this case. This protection is only required
+   * if we are executing in the query thread. No such protection is
+   * required for Take Over operations arriving in LDM threads since
+   * in this case we are serialised compared to the SCAN operation.
+   *
+   * Given that the LQHKEYREQ will execute without any real-time breaks
+   * during the take over process, we only need to wait until this
+   * LQHKEYREQ has completed before any SCAN_NEXTREQ can proceed (or
+   * timeout actions in DBLQH).
+   *
+   * We need to make sure that the setting of scanState to
+   * WAIT_SCAN_NEXTREQ in LDM thread must be seen by the Query thread.
+   * There are two ways to do this, we can either use a mutex when
+   * setting scanState. The other option is to use a memory barrier
+   * right before setting scanState and immediately after setting it.
+   * Thus either a mutex lock or 2 calls to wmb() (we only need a
+   * write memory barrier if we use a read memory barrier in the Query
+   * thread. However the query thread reads scanState under mutex
+   * protection which implies a memory barrier. So no need to add more
+   * memory barriers here.
+   *
+   * When we receive a close scan request either from timeout or from
+   * SCAN_NEXTREQ we need to perform the following:
+   * 1) Wait until any ongoing LQHKEYREQ in Query thread is completed
+   *
+   *    This is accomplished by incrementing scanPtrP->m_takeOverRefCount
+   *    before taking over the lock from the scan operation. When
+   *    starting this takeover, we don't want another thread to remove the
+   *    scan in the short time while we are taking over the lock.
+   *    This is checked in closeScanRequestLab.
+   *
+   *    The m_takeOverRefCount is protected by the take over hash mutex.
+   *    This means that it is incremented with a lock, also the first
+   *    check of the counter must be protected. However when discovering
+   *    that the counter is > 0 the only thing that can bring it to 0 is
+   *    that the lock take over is completed. There is no need to protect
+   *    this with a mutex. Also no need to protect the decrement of the
+   *    counter. Before starting the check of the counter we changed the
+   *    state of the scan to ensure that no more incremements to the
+   *    counter can happen. Thus we are only waiting for active LQHKEYREQ
+   *    take overs to complete their take over action before we proceed.
+   *    Once the take over is complete the operation is independent of
+   *    the scan operation, thus no need for more checks.
+   *
+   * 2) Change scanState to ensure that no more Take Over operations
+   * are accepted for this scan.
+   *
+   * So what we need to do are the following actions:
+   * 1) Here we need to perform the following for Query threads
+   *    - Lock mutex covering take over hash
+   *    - Check that scanState == WAIT_SCAN_NEXTREQ (also for LDM threads)
+   *    - Increment refCount indicating an LQHKEYREQ take over is active
+   *    - Decrement refCount when done with the LQHKEYREQ request
+   * 2) While sending SCAN_FRAGCONF we need to use 2 memory barriers while
+   *    setting scanState to WAIT_SCAN_NEXTREQ.
+   * 3) When receiving SCAN_NEXTREQ(close) or timeout of scan request we
+   *    need to acquire mutex and set scanState to new state indicating
+   *    that we are closing. After releasing mutex we loop waiting for
+   *    refCount to be 0 (usually happen immediately). After this we
+   *    complete the close of the scan request.
+   */
+  TcConnectionrec *const regTcPtr = tcConnectptr.p;
+  jamDebug();
+  const Uint32 ttcScanOp = KeyInfo20::getScanOp(regTcPtr->tcScanInfo);
+  scanptr.i = RNIL;
+  if (m_is_query_block) {
+    m_curr_lqh->lock_take_over_hash();
+  }
+  {
+    ScanRecord key;
+    key.scanNumber = KeyInfo20::getScanNo(regTcPtr->tcScanInfo);
+    key.fragPtrI = fragptr.i;
+    m_curr_lqh->c_scanTakeOverHash.find(scanptr, key);
+#ifdef TRACE_SCAN_TAKEOVER
+    if (scanptr.i == RNIL)
+      g_eventLogger->info("not finding (%d %lld)", key.scanNumber,
+                          key.fragPtrI);
+#endif
+  }
+  if (unlikely((scanptr.i == RNIL) ||
+               ((scanptr.p->scanState != ScanRecord::WAIT_SCAN_NEXTREQ) &&
+                (!LqhKeyReq::getUtilFlag(regTcPtr->reqinfo))))) {
+    /**
+     * NDB API applications cannot start a take over operation until
+     * they have received SCAN_TABCONF. DBUTIL can since it starts
+     * the take over operation immediately on receiving a TRANSID_AI
+     * signal. To ensure that this works ok we ensure that DBUTIL
+     * always use an LDM thread for the take over operations.
+     *
+     * Thus only NDB API users will get access to the query threads.
+     */
+    jamDebug();
+    if (m_is_query_block) {
+      m_curr_lqh->unlock_take_over_hash();
+    }
+    takeOverErrorLab(signal, tcConnectptr);
+    return false;
+  }
+  regTcPtr->accOpPtr =
+      get_acc_ptr_from_scan_record(scanptr.p, ttcScanOp, true);
+  if (unlikely(regTcPtr->accOpPtr == RNIL)) {
+    jamDebug();
+    if (m_is_query_block) {
+      m_curr_lqh->unlock_take_over_hash();
+    }
+    takeOverErrorLab(signal, tcConnectptr);
+    return false;
+  }
+  if (m_is_query_block) {
+    scanptr.p->m_takeOverRefCount++;
+    m_curr_lqh->unlock_take_over_hash();
+  }
+  return true;
 }
 
 void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {

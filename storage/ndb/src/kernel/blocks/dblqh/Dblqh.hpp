@@ -3976,6 +3976,15 @@ private:
                                        const class LqhKeyReq *lqhKeyReq)
       __attribute__((cold, noinline));
 
+  // Scan take-over setup on LQHKEYREQ. Only called when
+  // regTcPtr->indTakeOver == ZTRUE (rare; only after a scan has
+  // produced SCAN_TABCONF and the API issues a TCKEYREQ reusing
+  // the scan's lock). Returns false if take-over was rejected
+  // (takeOverErrorLab was already called — caller must return).
+  bool prepareScanTakeOverOnKeyReq(Signal *signal,
+                                   TcConnectionrecPtr tcConnectptr)
+      __attribute__((noinline));
+
   void logLqhkeyrefLab(Signal *signal, TcConnectionrecPtr, Uint32 errorCode);
   void closeCopyLab(Signal *signal, TcConnectionrec *);
   void commitReplyLab(Signal *signal, TcConnectionrec *);

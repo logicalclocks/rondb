@@ -603,3 +603,150 @@ Plus **~380 insns saved per LQHKEYREQ** at runtime (Item 7).
   Dblqh range).
 - [x] `ndb_basic` — PASS.
 - [x] Kernel-wide `__TEXT` unchanged (local change).
+
+## User jam-reduction pass (between Item 8 and Item 9)
+
+Commit `7dcd6979b44` (user): a handful of `jam()` sites in
+`execLQHKEYREQ` and `prepareContinueAfterBlockedLab` replaced with
+`jamDebug()` (no-op in prod). ~41 fewer instructions in
+`execLQHKEYREQ`.
+
+| | Size | Instructions |
+|---|--:|--:|
+| Item 8 post (ours) | 4464 B | 1116 |
+| User jam post | **4300 B** | **1075** |
+
+Cumulative vs baseline: −1660 B (−27.85 %), −415 instructions.
+
+## Item 9 — Inline assembleFragments fast path
+
+Commit: `54146e1a99e` on `RONDB-1051-execLQHKEYREQ`.
+
+### What changed
+
+- `SimulatedBlock.hpp`: new inline header definition for
+  `assembleFragments(Signal*)` — three-insn fast path that returns
+  `true` when `signal->header.m_fragmentInfo == 0`. Delegates to a
+  new private out-of-line `assembleFragmentsSlow(Signal*)` when
+  reassembly is needed.
+- `SimulatedBlock.cpp`: renamed the existing body from
+  `assembleFragments` to `assembleFragmentsSlow`, dropped the now-
+  redundant `fragInfo == 0` early-return (replaced with an
+  `ndbassert`).
+
+Motivation: the old out-of-line `assembleFragments` unconditionally
+set up a 336-byte stack frame, saved 14 callee-save registers (7
+`stp` pairs) and a stack canary before loading the fragInfo byte.
+That is ~20 instructions of setup paid on every signal across 72
+call sites in the kernel, even though the function returns
+immediately in ~99 % of cases.
+
+### Metrics (prod_build, arm64, RelWithDebInfo)
+
+- `assembleFragments` symbol: **gone** — fully inlined at all call
+  sites.
+- `assembleFragmentsSlow` symbol: 1504 B (old size 1508 B minus
+  the deleted 4-byte early-return sequence).
+- 71 `bl assembleFragmentsSlow` in the binary (vs 0 remaining
+  `bl assembleFragments`).
+- `__TEXT` section: **7 995 392 B — unchanged** vs Item 2 post.
+  The inline fast-path bytes added to each of the 71 callers
+  (~3 insns × 71 ≈ 852 B) are offset by the function-call
+  overhead removed.
+- `execLQHKEYREQ` static size: **4300 B — unchanged** vs user-jam
+  post. The inline fast-path (`ldrb + cbz + 2 arg moves + bl`) is
+  the same byte count as the old `bl + tbz` pattern.
+
+### Dynamic win
+
+This is the main impact. Per signal (any block, any handler):
+
+- **Before**: 336-byte frame alloc + 7 `stp` pairs (14 registers)
+  + stack canary setup + `ldrb fragInfo` + `cbz exit` + epilogue
+  reversal when returning. ~20 insns executed on the fast path.
+- **After**: inline `ldrb fragInfo` + `cbz fast-path-return`. **3
+  insns executed on the fast path.**
+
+**Saving: ~17 instructions per signal kernel-wide.** At typical
+NDB signal rates of 10⁶/s on a busy data node, this reclaims
+~17 million instructions per second across the receive path.
+
+### Verification
+
+- [x] Build succeeds.
+- [x] `assembleFragments` symbol absent in binary (inlined).
+- [x] `assembleFragmentsSlow` symbol present with correct size.
+- [x] 71 `bl` to the new slow helper (fast path inlined everywhere).
+- [x] `ndb_basic` — PASS.
+- [x] execLQHKEYREQ disasm confirms: `ldrb [x1, #0x2f]; cbz skip`
+  as first real work in the body, no `bl assembleFragments`.
+
+### Cumulative against baseline
+
+| | Size | Instructions | vs baseline |
+|---|--:|--:|---|
+| Baseline | 5960 B | 1490 | |
+| Item 8 post | 4464 B | 1116 | −1496 B, −25.10 % |
+| User jam post | 4300 B | 1075 | −1660 B, −27.85 % |
+| **Item 9 post** | **4300 B** | **1075** | **−1660 B, −27.85 %** |
+
+Static is unchanged from the user-jam baseline, but dynamic
+(kernel-wide) savings from the inline fast path are large.
+
+## Item 10 — Outline scan-take-over block from prepareContinueAfterBlockedLab
+
+Commit: pending (branch `RONDB-1051-execLQHKEYREQ`).
+
+### What changed
+
+- `Dblqh.hpp`: new declaration
+  `bool prepareScanTakeOverOnKeyReq(Signal*, TcConnectionrecPtr)`
+  with `__attribute__((noinline))`.
+- `DblqhMain.cpp`: the `if (unlikely(regTcPtr->indTakeOver == ZTRUE))`
+  block inside `prepareContinueAfterBlockedLab` — ~160 lines
+  including its large design comment — moved into the new helper.
+  Helper returns `false` when `takeOverErrorLab()` was called so
+  the caller knows to return; `true` to continue into the normal
+  dispatch.
+
+Motivation: the inline take-over block was 174 instructions / 61 %
+of `prepareContinueAfterBlockedLab`'s body, but fires only on
+scan-take-over LQHKEYREQs (post-SCAN_TABCONF keyed ops that reuse
+a scan's lock). Normal KV traffic skips it via `b.ne`, but the 696
+cold bytes still polluted the hot function's I-cache footprint.
+
+### Metrics
+
+| | Item 9 | Item 10 | Δ |
+|---|--:|--:|--:|
+| `prepareContinueAfterBlockedLab` | 1140 B / 285 insns | **356 B / 89 insns** | **−784 B (−68.8 %) / −196 insns** |
+| `prepareScanTakeOverOnKeyReq` (new) | — | 780 B / 195 insns | new helper |
+| Kernel-wide `__TEXT` | 7 995 392 B | 7 995 392 B | 0 |
+| `execLQHKEYREQ` | 4300 B | 4300 B | 0 |
+
+Net kernel-wide delta: **~−4 B** (pure code motion; the outlined
+helper is essentially the same size as the inline block, while
+`prepareContinueAfterBlockedLab` shrank to fit).
+
+### Why this matters (even though `__TEXT` is unchanged)
+
+The I-cache footprint of `prepareContinueAfterBlockedLab` is now
+**3.2× denser**. The hot function — invoked after every LQHKEYREQ
+post-prologue via the fragment-status switch in
+`execLQHKEYREQ` — previously occupied ~18 cache lines (at
+64 B/line). After Item 10 it occupies ~6 lines. On a busy data
+node processing ~1 M LQHKEYREQs/sec this is a real front-end win.
+
+No dynamic cost change on the hot path (the `indTakeOver` branch
+already short-circuited); the helper call only fires on take-over
+requests.
+
+### Verification
+
+- [x] Build succeeds.
+- [x] `prepareScanTakeOverOnKeyReq` present at 0x100155ce0 (regular
+  text, not cold — correct for a noinline-but-not-cold helper).
+- [x] `prepareContinueAfterBlockedLab` shrank from 1140 B to 356 B.
+- [x] `ndb_basic` — PASS.
+- [x] `execLQHKEYREQ` unchanged (expected — Item 10 is downstream).
+- [x] Kernel-wide `__TEXT` unchanged (pure code motion).
