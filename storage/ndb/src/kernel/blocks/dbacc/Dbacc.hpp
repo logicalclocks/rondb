@@ -1195,6 +1195,10 @@ private:
                           OperationrecPtr lockOwnerPtr,
                           Uint32 hash,
                           bool is_ttl_table);
+  bool handleTakeOver(Signal* signal,
+                      const AccKeyReq* req,
+                      OperationrecPtr lockOwnerPtr,
+                      Uint32 hash) __attribute__((noinline, cold));
   void releaseScanLab(Signal* signal);
   void initialiseRecordsLab(Signal* signal, Uint32, Uint32, Uint32);
   void checkNextBucketLab(Signal* signal);

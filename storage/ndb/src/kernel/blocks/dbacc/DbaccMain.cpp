@@ -1374,6 +1374,41 @@ void Dbacc::sendAcckeyconf(Signal *signal, bool ignore_ttl) const {
 /*                    TKEY3,                PRIMARY KEY 3                   */
 /*                    TKEY4,                PRIMARY KEY 4                   */
 /* ******************-------------------------------------------------------*/
+bool Dbacc::handleTakeOver(Signal *signal,
+                           const AccKeyReq *req,
+                           OperationrecPtr lockOwnerPtr,
+                           Uint32 hash) {
+  /* Verify that lock taken over and operation are on same
+   * element by checking that lockOwner match.
+   */
+  jamDebug();
+  OperationrecPtr lockOpPtr;
+  lockOpPtr.i = req->lockConnectPtr;
+  const bool is_valid = m_curr_acc->oprec_pool.getValidPtr(lockOpPtr);
+  if (!is_valid || lockOwnerPtr.i == RNIL ||
+      !(lockOwnerPtr.i == lockOpPtr.i ||
+        lockOwnerPtr.i == lockOpPtr.p->m_lock_owner_ptr_i)) {
+    jam();
+    signal->theData[0] = Uint32(-1);
+    signal->theData[1] = ZTO_OP_STATE_ERROR;
+    operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
+    release_frag_mutex_hash(fragrecptr.p, hash);
+    return false;
+  }
+
+  signal->theData[1] = req->lockConnectPtr;
+  signal->theData[2] = operationRecPtr.p->transId1;
+  signal->theData[3] = operationRecPtr.p->transId2;
+  execACC_TO_REQ(signal);
+  if (unlikely(signal->theData[0] == Uint32(-1))) {
+    operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
+    ndbassert(signal->theData[1] == ZTO_OP_STATE_ERROR);
+    release_frag_mutex_hash(fragrecptr.p, hash);
+    return false;
+  }
+  return true;
+}
+
 void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
                           Dbacc::Operationrec *opPtrP) {
   jamEntryDebug();
@@ -1440,32 +1475,7 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
   Uint32 opbits = operationRecPtr.p->m_op_bits;
 
   if (unlikely(AccKeyReq::getTakeOver(req->requestInfo))) {
-    /* Verify that lock taken over and operation are on same
-     * element by checking that lockOwner match.
-     */
-    jamDebug();
-    OperationrecPtr lockOpPtr;
-    lockOpPtr.i = req->lockConnectPtr;
-    const bool is_valid = m_curr_acc->oprec_pool.getValidPtr(lockOpPtr);
-    if (!is_valid || lockOwnerPtr.i == RNIL ||
-        !(lockOwnerPtr.i == lockOpPtr.i ||
-          lockOwnerPtr.i == lockOpPtr.p->m_lock_owner_ptr_i)) {
-      jam();
-      signal->theData[0] = Uint32(-1);
-      signal->theData[1] = ZTO_OP_STATE_ERROR;
-      operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
-      release_frag_mutex_hash(fragrecptr.p, hash);
-      return; /* Take over failed */
-    }
-
-    signal->theData[1] = req->lockConnectPtr;
-    signal->theData[2] = operationRecPtr.p->transId1;
-    signal->theData[3] = operationRecPtr.p->transId2;
-    execACC_TO_REQ(signal);
-    if (unlikely(signal->theData[0] == Uint32(-1))) {
-      operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
-      ndbassert(signal->theData[1] == ZTO_OP_STATE_ERROR);
-      release_frag_mutex_hash(fragrecptr.p, hash);
+    if (!handleTakeOver(signal, req, lockOwnerPtr, hash)) {
       return; /* Take over failed */
     }
   }
