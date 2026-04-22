@@ -1,0 +1,28 @@
+#
+# Non-integer argument.
+#
+ERR Wrong parameter to SELECT command; NDB(1)
+
+OK
+ERR Wrong parameter to SELECT command; NDB(1)
+
+#
+# Out-of-range database id.
+#
+ERR The database selected doesn't exist; NDB(1)
+
+ERR The database selected doesn't exist; NDB(1)
+
+ERR The database selected doesn't exist; NDB(1)
+
+#
+# Negative database id - rejected since B2 was fixed; previously
+# silently accepted.
+#
+ERR The database selected doesn't exist; NDB(1)
+
+#
+# Confirm a valid SELECT still succeeds - guards against
+# the B1 fall-through regression reappearing.
+#
+OK

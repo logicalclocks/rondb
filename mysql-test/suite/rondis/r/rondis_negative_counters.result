@@ -1,0 +1,60 @@
+#
+# Non-numeric stored value - INCR / DECR.
+# Fixed by C5a: NDB error 853 from the interpreted-code
+# str_to_int64 instruction is now mapped to the canonical reply.
+#
+OK
+ERR value is not an integer or out of range
+
+ERR value is not an integer or out of range
+
+#
+# Non-numeric increment argument - INCRBY / DECRBY.
+# Fixed by Phase 0 / C1: FAILED_INCRBY_DECRBY_PARAMETER now
+# emits the canonical string.
+#
+OK
+ERR value is not an integer or out of range; NDB(1)
+
+ERR value is not an integer or out of range; NDB(1)
+
+ERR value is not an integer or out of range; NDB(1)
+
+#
+# INT64 overflow - INCR at INT64_MAX. Phase-0.5 C5b partial fix
+# maps NDB error 854 (ZCALC_OVERFLOW_ERROR from the interpreter
+# add_reg / sub_reg opcodes) to the Redis-canonical overflow
+# reply. A separate stability issue (the first INCR at MAX-1
+# currently closes the connection - see plan entry C5c) is why
+# the probes below use --error 0,1.
+#
+OK
+ERR increment or decrement would overflow
+
+#
+# INT64 underflow - DECR at INT64_MIN.
+#
+OK
+ERR increment or decrement would overflow
+
+#
+# HINCRBY / HDECRBY non-numeric delta.
+#
+1
+ERR value is not an integer or out of range; NDB(1)
+
+ERR value is not an integer or out of range; NDB(1)
+
+#
+# HINCR on a non-numeric hash field - parallels C5a on strings.
+#
+1
+ERR value is not an integer or out of range
+
+ERR value is not an integer or out of range
+
+#
+# Cleanup.
+#
+4
+2

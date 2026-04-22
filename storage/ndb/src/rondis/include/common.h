@@ -65,10 +65,17 @@ Uint32 get_length(char* buf);
 #define FAILED_SELECT_NO_SUCH_DATABASE "The database selected doesn't exist"
 
 // NDB interpreted-code runtime error codes that we surface specially.
-// Mirrors ZINVALID_LONG_LONG_STRING in storage/ndb/src/kernel/blocks/dbtup/Dbtup.hpp.
-// Emitted when the STR_TO_INT64 instruction cannot parse the stored value,
-// i.e. the user ran INCR/DECR/HINCR/HDECR on a non-numeric string.
+// Mirrors entries in storage/ndb/src/kernel/blocks/dbtup/Dbtup.hpp.
+// - INVALID_INT64: STR_TO_INT64 cannot parse the stored value as Int64
+//   (INCR/DECR/HINCR/HDECR on a non-numeric string).
+// - CALC_OVERFLOW:  ADD_REG_REG / SUB_REG_REG detected overflow
+//   (INCR/DECR at the INT64_MAX / INT64_MIN boundary).
 #define RONDB_INTERP_INVALID_INT64 853
+#define RONDB_INTERP_CALC_OVERFLOW 854
+
+// Redis-canonical error strings we reuse for overflow.
+#define FAILED_INCRBY_DECRBY_OVERFLOW \
+  "increment or decrement would overflow"
 
 // Redis errors
 #define REDIS_UNKNOWN_COMMAND "unknown command '%s'"

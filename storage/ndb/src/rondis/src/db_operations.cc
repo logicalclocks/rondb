@@ -1072,26 +1072,32 @@ void incr_decr_key_row(std::string *response,
   }
 
   /* Send to RonDB and execute the INCR operation */
-  if (trans->execute(NdbTransaction::Commit,
-                     NdbOperation::AbortOnError) != 0 ||
-      trans->getNdbError().code != 0) {
-    if (trans->getNdbError().code == RONDB_KEY_NOT_NULL_ERROR) {
-      DEB_INCR(("RONDB_KEY_NOT_NULL_ERROR\n"));
+  int exec_rc = trans->execute(NdbTransaction::Commit,
+                               NdbOperation::AbortOnError);
+  const NdbError &ndb_err = trans->getNdbError();
+  if (exec_rc != 0 || ndb_err.code != 0) {
+    if (ndb_err.code == RONDB_KEY_NOT_NULL_ERROR) {
       assign_ndb_err_to_response(response,
                                  FAILED_INCR_KEY_MULTI_ROW,
-                                 trans->getNdbError());
+                                 ndb_err);
       return;
     }
-    if (trans->getNdbError().code == RONDB_INTERP_INVALID_INT64) {
-      // STR_TO_INT64 could not parse the stored value. Redis-canonical
-      // reply for INCR/DECR on a non-numeric string.
+    if (ndb_err.code == RONDB_INTERP_INVALID_INT64) {
+      // STR_TO_INT64 in the interpreted-code program could not parse
+      // the stored value as an Int64. Redis-canonical reply for
+      // INCR/DECR/HINCR/HDECR on a non-numeric string.
       assign_generic_err_to_response(response, FAILED_INCRBY_DECRBY_PARAMETER);
       return;
     }
-    DEB_INCR(("INCR_DECR_ERROR: %d\n", trans->getNdbError().code));
+    if (ndb_err.code == RONDB_INTERP_CALC_OVERFLOW) {
+      // ADD_REG_REG / SUB_REG_REG overflowed Int64. Redis-canonical
+      // reply for INCR/DECR/HINCR/HDECR crossing INT64 boundaries.
+      assign_generic_err_to_response(response, FAILED_INCRBY_DECRBY_OVERFLOW);
+      return;
+    }
     assign_ndb_err_to_response(response,
                                FAILED_INCR_KEY,
-                               trans->getNdbError());
+                               ndb_err);
     return;
   }
   /* Retrieve the returned new value as an Int64 value */

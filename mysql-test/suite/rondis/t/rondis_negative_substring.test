@@ -1,0 +1,58 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Negative-path coverage for STRLEN / GETRANGE / SETRANGE.
+#
+# Expected canonical replies:
+#   (error) ERR value is not an integer or out of range  (bad index)
+#   (error) ERR offset is out of range                   (SETRANGE)
+#
+
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k "Hello, World!"
+
+--echo #
+--echo # GETRANGE with non-integer start / end.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE k abc 5 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE k 0 xyz 2>&1
+
+--echo #
+--echo # SETRANGE with negative offset - 'offset is out of range'.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE k -1 "v" 2>&1
+
+--echo #
+--echo # SETRANGE with offset beyond Rondis's MAX_REDIS_ROW_SIZE
+--echo # (512 KiB / 524288 bytes). Note: real Redis allows up to 512 MiB;
+--echo # the smaller Rondis ceiling is a known limitation (plan L1),
+--echo # exercised here to confirm the canonical error path kicks in.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE k 600000 "v" 2>&1
+
+--echo #
+--echo # SETRANGE where offset + value-length exceeds the ceiling
+--echo # (same OFFSET_OUT_OF_RANGE guard at commands.cc:2349).
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE k 524280 "this-will-overflow" 2>&1
+
+--echo #
+--echo # SETRANGE with non-integer offset - canonical integer error.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE k abc "v" 2>&1
+
+--echo #
+--echo # Cleanup.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL k
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

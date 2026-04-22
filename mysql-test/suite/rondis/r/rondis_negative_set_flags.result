@@ -1,0 +1,47 @@
+#
+# Conflicting flags: NX + XX can never both hold. Syntax error.
+#
+ERR syntax error
+
+#
+# KEEPTTL combined with EX (or any explicit TTL) is mutually
+# exclusive. Syntax error.
+#
+ERR syntax error
+
+ERR syntax error
+
+#
+# Non-integer TTL argument - canonical integer error.
+#
+ERR value is not an integer or out of range
+
+OK
+#
+# Unknown trailing flag - syntax error.
+#
+ERR syntax error
+
+#
+# Negative EX - Redis emits 'ERR invalid expire time in set'.
+# Rondis currently accepts EX -1 and conflates with the "never
+# expires" sentinel (generate_expire_at at commands.cc:280
+# treats ttl == -1 as "never expires"), so the key ends up with
+# expiry_date = g_max_expire_at (2038-01-19). This is divergent
+# and should be tightened; see plan entry C12.
+#
+OK
+SELECT UNIX_TIMESTAMP(expiry_date) = 2147483647 AS clamped_to_2038
+FROM redis_0.string_keys WHERE redis_key = 'k_neg';
+clamped_to_2038
+1
+#
+# Zero EX - Redis emits the same invalid-expire error. Rondis
+# accepts it and stamps expiry at the current time (expired
+# immediately). Another C12-bucket divergence.
+#
+OK
+#
+# Cleanup.
+#
+1

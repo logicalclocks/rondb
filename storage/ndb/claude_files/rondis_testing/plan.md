@@ -257,6 +257,52 @@ changes.
 - Pipeline / transaction (MULTI/EXEC) — Rondis does not support these.
 - RESP3 / HELLO — not supported.
 
+### C12 — EX/PX accept non-positive values; EX -1 conflates with sentinel
+
+Surfaced while recording `t/rondis_negative_set_flags.test`.
+
+Real Redis rejects `SET k v EX 0` and `SET k v EX <negative>` with
+`ERR invalid expire time in set`. Rondis accepts both and stamps
+`expiry_date` accordingly:
+
+- `SET k v EX 0` — `ttl=0`, `generate_expire_at` computes `now + 0`,
+  key is immediately expired (relies on the background TTL purger to
+  remove it).
+- `SET k v EX -1` — the inner `ttl` variable lands at `-1`, which
+  `generate_expire_at` treats as the sentinel for "never expires"
+  (commands.cc:280) and stamps `expiry_date = g_max_expire_at`
+  (2038-01-19). So EX -1 is not even "already expired" - it is
+  accepted as a permanent key! That is a direct semantic collision
+  between the wire-level `-1` input and the internal sentinel.
+
+**Fix direction**: reject `EX <= 0` (and `PX <= 0`) at the parse site
+in `commands.cc:1040-1053` before calling `generate_expire_at`, and
+stop reusing `-1` as a sentinel - switch to an explicit `set_ttl`
+/ `no_ttl` flag (already present as `set_ttl`, so the sentinel
+collision is avoidable with a small refactor).
+
+`t/rondis_negative_set_flags.test` records the current clamped-to-2038
+behavior via SQL so a fix surfaces as a visible diff.
+
+### C13 — HDEL with no fields crashes the server
+
+Surfaced while recording `t/rondis_negative_arity.test`.
+
+`HDEL <key>` with no field arguments passes the dispatcher arity
+check at `storage/ndb/src/rondis/src/rondb.cc:732`
+(`argv.size() >= 2`), falls into `rondb_del` at
+`storage/ndb/src/rondis/src/commands.cc:562`, and hits
+`assert(num_keys > 0)`. On debug builds that aborts the Rondis worker
+and the next client command gets "Server closed the connection"; on
+release builds the assert is compiled out and the handler proceeds
+with `num_keys = 0`, which is undefined behavior.
+
+**Fix**: tighten the HDEL dispatcher to `argv.size() >= 3` (one key
+plus at least one field), and keep the inner `assert(num_keys > 0)`
+as defense in depth. The negative-arity test currently exercises
+`HDEL` with no args and deliberately skips the `HDEL key` probe to
+avoid the crash.
+
 ### C10, C11 — HSET / HMSET reply semantics (discovered in Phase 2)
 
 Surfaced while recording `t/rondis_hash.test`.
@@ -342,7 +388,76 @@ isolates cleanly), then C7 (related interpreted-code construction),
 then C9 (likely shares code with C7). Each should re-record
 `rondis_set_flags.result` in lockstep.
 
-### C5b — INCR/DECR integer overflow silently wraps (correctness bug)
+### C5b (partial fix) — INCR/DECR integer overflow now surfaces canonically
+
+Update to the earlier analysis: the NDB interpreter already detects
+add/sub overflow and returns `ZCALC_OVERFLOW_ERROR` (code 854 in
+`storage/ndb/src/kernel/blocks/dbtup/Dbtup.hpp:157`). It was not a
+silent wrap — Rondis just failed to map the code, so the generic
+"Failed to increment key; NDB(854) Calculation resulted in overflow"
+reply leaked through.
+
+Phase-0.5 fix in `db_operations.cc` now maps NDB 854 to the canonical
+`ERR increment or decrement would overflow`, mirroring the C5a
+pattern for 853. New macro `RONDB_INTERP_CALC_OVERFLOW` in
+`common.h`, new canonical string `FAILED_INCRBY_DECRBY_OVERFLOW`
+"increment or decrement would overflow".
+
+### C14 — `std::stoll` silently accepts trailing garbage on PX / EX
+
+Discovered while recording `t/rondis_negative_set_flags.test`.
+
+`get_int64` at `storage/ndb/src/rondis/src/commands.cc:262` uses
+`std::stoll`, which parses the longest valid integer prefix and
+returns it without complaint — so `SET k v PX 1.5` is accepted as
+`PX 1`, `SET k v EX 42abc` as `EX 42`. Redis rejects both with
+`value is not an integer or out of range`.
+
+Fix: switch `get_int64` to `strtoll` with an end-pointer check (or
+explicit `std::from_chars`) so a non-integer suffix is detected.
+Low-risk one-file change in a helper used by EX/PX/EXAT/PXAT/
+GETRANGE/SETRANGE.
+
+### C15 — "NDB(1)" sentinel leaks into non-NDB error replies
+
+`assign_err_to_response` at `common.cc:48` formats
+`-ERR %s; NDB(%u)` even when there is no NDB error in play — call
+sites pass the literal `1` as a placeholder. The current baselines
+show this as `ERR Wrong parameter to SELECT command; NDB(1)` and
+`ERR value is not an integer or out of range; NDB(1)` across the
+negative-path tests. Redis-canonical replies never carry such a
+suffix; clients parsing the reply text will trip on the extra token.
+
+Fix: migrate every `assign_err_to_response(..., 1)` call site to
+`assign_generic_err_to_response(...)` (which does not append the
+suffix), or keep the helper but gate the `; NDB(%u)` emission on
+`code != 0`. Affects SELECT error paths and the INCRBY/HINCRBY
+integer-error paths. Once fixed, the five negative-path .result
+files need re-recording.
+
+### C5c — INCR near INT64_MAX / INT64_MIN closes the connection
+
+Discovered while recording `t/rondis_negative_counters.test`. The
+first `INCR` on a counter set to `INT64_MAX - 1` (or the first `DECR`
+on `INT64_MIN + 1`) closes the client connection ("Error: Server
+closed the connection" from redis-cli). A subsequent reconnect
+reproduces the overflow error cleanly, so the data node and the
+transaction state recover.
+
+Hypothesis: the first INCR successfully wraps to INT64_MAX (ADD_REG
+succeeds because `MAX - 1 + 1 == MAX` has no overflow), but the
+INT64_TO_STR instruction then formats a value at the extreme edge and
+fails, tearing down the connection. Could also be related to buffer
+sizing around `MAX_LONG_LONG_STRING = 32` plus the 4-byte length
+prefix the Rondis value_start format uses.
+
+Needs on-host repro with DEBUG_INCR enabled and a core-dump watch.
+Separately tracked; negative-counters test uses `SET x INT64_MAX`
+then `INCR x` so the overflow path lands in a single operation and
+the connection-close path is not exercised. Plan to revisit once the
+data-node flow is instrumented.
+
+### C5b (original) — INCR/DECR silently wraps (SUPERSEDED by above)
 
 While fixing C5a (non-numeric stored value mapped to the canonical
 `ERR value is not an integer or out of range`), the NDB interpreted-code

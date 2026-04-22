@@ -1,0 +1,80 @@
+#
+# Connection commands
+#
+ERR wrong number of arguments for 'PING' command
+
+ERR wrong number of arguments for 'ECHO' command
+
+ERR wrong number of arguments for 'ECHO' command
+
+ERR wrong number of arguments for 'CONFIG' command
+
+ERR wrong number of arguments for 'SELECT' command
+
+#
+# String commands
+#
+ERR wrong number of arguments for 'GET' command
+
+ERR wrong number of arguments for 'GET' command
+
+ERR wrong number of arguments for 'SET' command
+
+ERR wrong number of arguments for 'MGET' command
+
+ERR wrong number of arguments for 'MSET' command
+
+ERR wrong number of arguments for 'DEL' command
+
+#
+# Counter commands
+#
+ERR wrong number of arguments for 'INCR' command
+
+ERR wrong number of arguments for 'INCRBY' command
+
+ERR wrong number of arguments for 'DECR' command
+
+ERR wrong number of arguments for 'DECRBY' command
+
+#
+# Substring commands
+#
+ERR wrong number of arguments for 'STRLEN' command
+
+ERR wrong number of arguments for 'GETRANGE' command
+
+ERR wrong number of arguments for 'GETRANGE' command
+
+ERR wrong number of arguments for 'SETRANGE' command
+
+ERR wrong number of arguments for 'SETRANGE' command
+
+#
+# Hash commands - note HSET requires field/value pairs after the key
+#
+ERR wrong number of arguments for 'HGET' command
+
+ERR wrong number of arguments for 'HGET' command
+
+ERR wrong number of arguments for 'HMGET' command
+
+ERR wrong number of arguments for 'HSET' command
+
+ERR wrong number of arguments for 'HSET' command
+
+ERR wrong number of arguments for 'HSET' command
+
+ERR wrong number of arguments for 'HDEL' command
+
+ERR wrong number of arguments for 'HINCR' command
+
+ERR wrong number of arguments for 'HINCR' command
+
+ERR wrong number of arguments for 'HINCRBY' command
+
+#
+# Unknown command
+#
+ERR unknown command 'FOOBAR'
+
