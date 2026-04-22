@@ -918,3 +918,83 @@ Net effect on binary:
 `execLQHKEYREQ` stayed at 4308 B (−27.72 % vs baseline) but the
 hot call graph has now shed ~940 B of I-cache footprint on
 acquire + release between Items 11 and 12.
+
+## Item 13 — Split `seize_op_rec`
+
+Commit: pending (branch `RONDB-1051-execLQHKEYREQ`).
+
+### What changed
+
+- `Dblqh.hpp`: `seize_op_rec` becomes header-defined inline. New
+  `seize_op_rec_slow` with `noinline`.
+- `DblqhMain.cpp`: renamed the function body to
+  `seize_op_rec_slow` and removed the fast-path prefix
+  (ERROR_INSERTED(5031) early-return, conditional
+  lock_alloc_operation, and the `ctcNumFreeShared > 0 &&
+  !5099 → seizeTcrec; return true;` block). Body now starts at
+  the slow-path allocation.
+
+### Why
+
+`seize_op_rec` was 992 B but the hot fast path was just ~15 insns
+of actual work wrapped in ~28 insns of prologue/epilogue
+overhead (352-byte stack frame, 12 callee-save spills, stack
+canary). The remaining ~800 B was the slow `tcConnect_pool.seize`
++ ACC/TUP seize + error-unwind paths, inline but fired only when
+the shared pool is exhausted.
+
+Callers: `execLQHKEYREQ` (query-thread non-dirty branch /
+low-free branch) and `execSCAN_FRAGREQ`.
+
+### Metrics
+
+| Symbol | Item 12 post | Item 13 post |
+|---|--:|--:|
+| `seize_op_rec` | 992 B `T` | **gone** (inlined) |
+| `seize_op_rec_slow` | — | **956 B `T`** |
+| `seizeTcrec` | 424 B | 424 B |
+| `execLQHKEYREQ` | 4308 B | **4392 B** (+84 B) |
+| `execSCAN_FRAGREQ` | ~3270 B | 3348 B (+~78 B) |
+| Kernel-wide `__TEXT` | 7 995 392 B | 7 995 392 B |
+
+### Dynamic win per call (fast path — query-thread traffic)
+
+- Before: `bl seize_op_rec` → 352-byte frame + 12-reg `stp` +
+  stack canary + ~15-insn wrapper + canary check + 12-reg `ldp`
+  + `ret`.
+- After: ~21-insn inline fast path. No frame, no spill, no
+  `bl`/`ret`.
+- **~19 fewer insns per call.**
+
+### I-cache win
+
+**~900 B of I-cache reclaimed per hot-path call** (the full 992 B
+`seize_op_rec` body is no longer pulled in; only the ~84 B
+inline fast path is touched).
+
+### Verification
+
+- [x] Build succeeds.
+- [x] `ndb_basic` — PASS.
+- [x] `seize_op_rec` symbol absent, `_slow` present at 956 B.
+- [x] Both callers grew by expected ~80 B each.
+- [x] Kernel-wide `__TEXT` unchanged at page granularity.
+
+### Deployment sensitivity
+
+- **LDM-only**: `seize_op_rec` wasn't on the hot path. Item 13
+  adds +84 B of inline code in `execLQHKEYREQ` that is
+  branched-past on normal traffic. Zero dynamic impact.
+- **Query-thread deployments**: every non-dirty LQHKEYREQ on a
+  query thread benefits (~19 insns and ~900 B I-cache saved per
+  call).
+
+### Cumulative hot-call-graph I-cache reclaim
+
+| Item | Function | Bytes off hot path |
+|---|---|--:|
+| 10 | Scan-take-over block (in `prepareContinueAfterBlockedLab`) | ~700 |
+| 11 | `handle_release_frag_access` (6-arm dispatcher) | 340 |
+| 12 | `handle_acquire_read_key_frag_access` (contended path) | 600 |
+| **13** | **`seize_op_rec`** (slow-path pool-exhausted) | **900** |
+| **Total** | | **~2.5 KB** |

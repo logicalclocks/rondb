@@ -7004,41 +7004,17 @@ inline static void prefetch_op_record_4(Uint32 *op_ptr) {
   NDB_PREFETCH_WRITE(op_ptr + 64);
 }
 
-bool
-Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr,
-                    bool use_lock,
-                    BlockReference tcRef,
-                    EmulatedJamBuffer *jamBuf)
-{
-  /* Cannot use jam here, called from other thread */
-  if (ERROR_INSERTED(5031))
-  {
-    thrjam(jamBuf);
-    return false;
-  }
+// Slow path for TC-connect-record seize. Called from the inline fast
+// path in Dblqh.hpp when ctcNumFreeShared == 0 (or ERROR_INSERT is
+// active). Preconditions:
+//   - If use_lock is true: lock_alloc_operation() has been taken.
+//   - If use_lock is false: no lock held.
+// Postcondition: lock released (if use_lock) in every return path.
+bool Dblqh::seize_op_rec_slow(TcConnectionrecPtr& tcConnectptr,
+                              bool use_lock,
+                              BlockReference tcRef,
+                              EmulatedJamBuffer *jamBuf) {
   TcConnectionrecPtr opPtr;
-  if (use_lock)
-  {
-    lock_alloc_operation();
-  }
-  if (ctcNumFreeShared > 0 &&
-      (!ERROR_INSERTED(5031)) &&
-      (!ERROR_INSERTED(5099)))
-  {
-    thrjamDebug(jamBuf);
-#ifdef CONNECT_DEBUG
-    ctcNumUseShared++;
-#endif
-    seizeTcrec(tcConnectptr,
-               tcRef,
-               ctcNumFreeShared,
-               cfirstfreeTcConrecShared);
-    if (use_lock)
-    {
-      unlock_alloc_operation();
-    }
-    return true;
-  }
 #ifdef CONNECT_DEBUG
   ctcNumUseTM++;
 #endif

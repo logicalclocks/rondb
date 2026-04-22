@@ -5324,10 +5324,18 @@ public:
   Uint32 getRESTORE() { return m_restore_block; }
   bool check_expand_shrink_ongoing(Uint32, Uint32);
 private:
+  // Fast path is inline below (in header). Slow path — full
+  // tcConnect_pool.seize + ACC/TUP seize with error unwinds — lives
+  // out-of-line in DblqhMain.cpp as seize_op_rec_slow.
   bool seize_op_rec(TcConnectionrecPtr &tcConnectptr,
                     bool use_lock,
                     BlockReference tcRef,
                     EmulatedJamBuffer *jamBuf);
+  bool seize_op_rec_slow(TcConnectionrecPtr &tcConnectptr,
+                         bool use_lock,
+                         BlockReference tcRef,
+                         EmulatedJamBuffer *jamBuf)
+      __attribute__((noinline));
   void release_op_rec(TcConnectionrecPtr tcConnectptr);
   void send_scan_fragref(Signal *, Uint32, Uint32, Uint32, Uint32, Uint32);
   void init_release_scanrec(ScanRecord *);
@@ -5951,6 +5959,38 @@ inline void Dblqh::handle_acquire_read_key_frag_access(
   // returning with m_concurrent_read_key_count bumped.
   handle_acquire_read_key_frag_access_contended(fragPtrP,
                                                 check_exclusive_waiters);
+}
+
+// Fast path for TC-connect-record seize. Uncontended case — shared
+// free-record pool is nonempty — is inlined at the two callers
+// (execLQHKEYREQ's query-thread / low-free branch, and
+// execSCAN_FRAGREQ). The slow pool-seize + ACC/TUP seize with
+// error-unwind paths live out-of-line in seize_op_rec_slow.
+inline bool Dblqh::seize_op_rec(TcConnectionrecPtr &tcConnectptr,
+                                 bool use_lock,
+                                 BlockReference tcRef,
+                                 EmulatedJamBuffer *jamBuf) {
+  /* Cannot use jam here, called from other thread */
+  if (ERROR_INSERTED(5031)) {
+    thrjam(jamBuf);
+    return false;
+  }
+  if (use_lock) {
+    lock_alloc_operation();
+  }
+  if (likely(ctcNumFreeShared > 0 && !ERROR_INSERTED(5099))) {
+    thrjamDebug(jamBuf);
+#ifdef CONNECT_DEBUG
+    ctcNumUseShared++;
+#endif
+    seizeTcrec(tcConnectptr, tcRef, ctcNumFreeShared,
+               cfirstfreeTcConrecShared);
+    if (use_lock) {
+      unlock_alloc_operation();
+    }
+    return true;
+  }
+  return seize_op_rec_slow(tcConnectptr, use_lock, tcRef, jamBuf);
 }
 
 inline bool Dblqh::is_write_key_condition_ready(Fragrecord *fragPtrP) {
