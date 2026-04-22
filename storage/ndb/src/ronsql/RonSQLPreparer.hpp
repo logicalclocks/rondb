@@ -144,13 +144,7 @@ private:
   DynamicArray<LexCString> m_column_qualifiers; /* table qualifier per col_idx */
   DynamicArray<bool> m_col_is_inner; /* true for columns from inner subqueries */
   DynamicArray<bool> m_col_is_alias; /* true for ORDER BY alias references */
-  NdbAttrId* m_column_attrId_map = NULL;
-  const NdbDictionary::Column** m_column_map = NULL;
-  Uint32* m_column_table_idx = NULL;
   const NdbDictionary::Dictionary* m_dict = NULL;
-  const NdbDictionary::Table* m_table = NULL;
-  JoinPlan m_join_plan;
-  ConditionalExpression* m_join_where_ce[MAX_SPJ_TREE_NODES];
 
   // Cross-table WHERE filters (e.g., WHERE l.price > o.min_price).
   // These reference columns from two different tables and cannot be
@@ -161,7 +155,23 @@ private:
     Uint32 child_table_idx;   // table index of the "inner" side
     Uint32 parent_table_idx;  // table index of the "outer" side
   };
-  DynamicArray<CrossTableFilter> m_cross_table_where_filters;
+
+  // QueryScope groups the per-join-plan state that the planner, filter
+  // compiler and NdbQueryBuilder emit path all read. One instance per
+  // query body — the outer SELECT uses m_main_scope; CTE bodies carry
+  // their own scopes so they can be planned and emitted independently.
+  struct QueryScope {
+    JoinPlan join_plan;
+    ConditionalExpression* join_where_ce[MAX_SPJ_TREE_NODES];
+    DynamicArray<CrossTableFilter> cross_table_where_filters;
+    NdbAttrId* column_attrId_map = NULL;
+    const NdbDictionary::Column** column_map = NULL;
+    Uint32* column_table_idx = NULL;
+    const NdbDictionary::Table* table = NULL;
+
+    QueryScope(ArenaMalloc* amalloc) : cross_table_where_filters(amalloc) {}
+  };
+  QueryScope m_main_scope;
 
   DynamicArray<const NdbDictionary::Index*> m_indexes;
   NdbTransaction* m_trans = NULL;

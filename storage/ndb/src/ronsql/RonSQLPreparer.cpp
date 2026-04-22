@@ -140,7 +140,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_column_qualifiers(conf.amalloc),
   m_col_is_inner(conf.amalloc),
   m_col_is_alias(conf.amalloc),
-  m_cross_table_where_filters(conf.amalloc),
+  m_main_scope(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
   m_scan_config_candidates(conf.amalloc),
@@ -727,12 +727,12 @@ RonSQLPreparer::load()
    * the parse tree in ast_root. Now that parsing is done and we know the table
    * name, we look up the column attrIds in the schema and check that the table
    * and columns exist. RonSQLPreparer keeps the col_idx around and relies on
-   * m_column_attrId_map to map col_idx to column attrId, e.g. when programming
+   * m_main_scope.column_attrId_map to map col_idx to column attrId, e.g. when programming
    * the aggregator. This also means we don't need to change anything in m_agg;
    * instead, RonSQLPreparer::programAggregator will read the program from m_agg
    * and map col_idx to attrId before speaking to NdbAggregator.
    */
-  // Populate m_dict, m_table, m_column_attrId_map and m_column_map, on the
+  // Populate m_dict, m_main_scope.table, m_main_scope.column_attrId_map and m_main_scope.column_map, on the
   // condition that m_conf.ndb is available. If m_conf.ndb is not available,
   // we'll still be able to do a (partial) EXPLAIN SELECT, so no need to fail
   // yet.
@@ -761,23 +761,23 @@ void
 RonSQLPreparer::load_single_table()
 {
   std::basic_ostream<char>& err = *m_conf.err_stream;
-  // Populate m_table
-  m_table = DBG(m_dict->getTable(DBG(m_context.ast_root.table.c_str())));
-  require_prm(m_table != NULL,
+  // Populate m_main_scope.table
+  m_main_scope.table = DBG(m_dict->getTable(DBG(m_context.ast_root.table.c_str())));
+  require_prm(m_main_scope.table != NULL,
               "Failed to get table. Note that RonSQL only supports tables"
               " with ENGINE=NDB.");
   // Populate m_indexes — use schema cache if available to skip listIndexes()
   ndbrequire(m_dict != NULL);
-  ndbrequire(m_table != NULL);
+  ndbrequire(m_main_scope.table != NULL);
   const char* db = m_conf.ndb ? m_conf.ndb->getDatabaseName() : nullptr;
   const auto* cached_indexes = (m_conf.schema_cache && db)
-      ? m_conf.schema_cache->getIndexes(m_dict, m_table, db,
-                                         m_table->getName())
+      ? m_conf.schema_cache->getIndexes(m_dict, m_main_scope.table, db,
+                                         m_main_scope.table->getName())
       : nullptr;
 
   NdbDictionary::Dictionary::List index_list;
   if (cached_indexes == nullptr) {
-    require_sch(m_dict->listIndexes(index_list, *m_table) == 0,
+    require_sch(m_dict->listIndexes(index_list, *m_main_scope.table) == 0,
                 "Failed to list indexes.");
   }
 
@@ -811,7 +811,7 @@ RonSQLPreparer::load_single_table()
     }
     require_bug(idx_type == NdbDictionary::Object::OrderedIndex,
                 "Unexpected index type.");
-    const NdbDictionary::Index* index = m_dict->getIndex(idx_name, *m_table);
+    const NdbDictionary::Index* index = m_dict->getIndex(idx_name, *m_main_scope.table);
     if (index == NULL) {
       err_failed_to_get_index = true;
       DEB_TRACE();
@@ -822,14 +822,14 @@ RonSQLPreparer::load_single_table()
       DEB_TRACE();
       err_object_status_not_retrieved = true;
     }
-    if(DBG(index->getTableId()) != DBG(m_table->getObjectId()) ||
-       DBG(index->getTableVersion()) != DBG(m_table->getObjectVersion())) {
+    if(DBG(index->getTableId()) != DBG(m_main_scope.table->getObjectId()) ||
+       DBG(index->getTableVersion()) != DBG(m_main_scope.table->getObjectVersion())) {
       DEB_TRACE();
       err_table_verid_mismatch = true;
     }
     m_indexes.push(index);
   }
-  require_sch(DBG(m_table->getObjectStatus()) ==
+  require_sch(DBG(m_main_scope.table->getObjectStatus()) ==
               NdbDictionary::Object::Status::Retrieved,
               "Schema cache for table not up to date.");
   if (err_failed_to_get_index) {
@@ -845,7 +845,7 @@ RonSQLPreparer::load_single_table()
     throw RonSQLMaybeStaleSchema("Index's table id/version did not match"
                                  " table's object id/version.");
   }
-  // Populate m_column_attrId_map and m_column_map
+  // Populate m_main_scope.column_attrId_map and m_main_scope.column_map
   NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(m_columns.size());
   const NdbDictionary::Column** col_map =
       m_amalloc->alloc_exc<const NdbDictionary::Column*>(m_columns.size());
@@ -856,7 +856,7 @@ RonSQLPreparer::load_single_table()
       continue;
     }
     const char* col_name = DBG(m_columns[DBG(col_idx)].c_str());
-    const NdbDictionary::Column* col = m_table->getColumn(col_name);
+    const NdbDictionary::Column* col = m_main_scope.table->getColumn(col_name);
     if (col == NULL) {
       // An ORDER BY alias that shares col_idx with a real column would
       // have been found above.  A pure alias (no matching table column)
@@ -875,8 +875,8 @@ RonSQLPreparer::load_single_table()
     col_id_map[col_idx] = DBG(col->getAttrId());
     col_map[col_idx] = col;
   }
-  m_column_attrId_map = col_id_map;
-  m_column_map = col_map;
+  m_main_scope.column_attrId_map = col_id_map;
+  m_main_scope.column_map = col_map;
 }
 
 void
@@ -891,7 +891,7 @@ RonSQLPreparer::load_join()
       m_context.ast_root.joins,
       m_dict,
       err,
-      m_join_plan,
+      m_main_scope.join_plan,
       m_conf.schema_cache,
       db,
       m_context.ast_root.cte_list);
@@ -903,16 +903,16 @@ RonSQLPreparer::load_join()
     // The injected joins were appended after any pre-existing joins.
     // With no pre-existing joins (outer query is single-table + subqueries),
     // the first injected join is op index 1, second is 2, etc.
-    Uint32 first_injected_op = m_join_plan.num_ops - m_merged_leaves.size();
+    Uint32 first_injected_op = m_main_scope.join_plan.num_ops - m_merged_leaves.size();
     for (Uint32 i = 0; i < m_merged_leaves.size(); i++) {
       m_merged_leaves[i].plan_op_idx = first_injected_op + i;
-      m_join_plan.agg_leaf_indices[i] = first_injected_op + i;
+      m_main_scope.join_plan.agg_leaf_indices[i] = first_injected_op + i;
     }
-    m_join_plan.num_agg_leaves = m_merged_leaves.size();
+    m_main_scope.join_plan.num_agg_leaves = m_merged_leaves.size();
   }
 
-  // Set m_table to root table (used by existing code paths)
-  m_table = m_join_plan.ops[0].table;
+  // Set m_main_scope.table to root table (used by existing code paths)
+  m_main_scope.table = m_main_scope.join_plan.ops[0].table;
 
   // Resolve columns: match each column to its table
   Uint32 num_cols = m_columns.size();
@@ -937,14 +937,14 @@ RonSQLPreparer::load_join()
     {
       // Qualified column: find the table by alias
       bool found = false;
-      for (Uint32 t = 0; t < m_join_plan.num_ops; t++)
+      for (Uint32 t = 0; t < m_main_scope.join_plan.num_ops; t++)
       {
-        if (strcmp(m_join_plan.ops[t].alias.c_str(), qualifier) == 0)
+        if (strcmp(m_main_scope.join_plan.ops[t].alias.c_str(), qualifier) == 0)
         {
-          if (m_join_plan.ops[t].type == JoinOp::CTE_LOOKUP)
+          if (m_main_scope.join_plan.ops[t].type == JoinOp::CTE_LOOKUP)
           {
             // CTE column: look up in CTE output list
-            const CteDefinition* cte = m_join_plan.ops[t].cte_def;
+            const CteDefinition* cte = m_main_scope.join_plan.ops[t].cte_def;
             Uint32 cte_col_idx = 0;
             bool cte_found = false;
             for (const Outputs* o = cte->stmt->outputs; o; o = o->next, cte_col_idx++)
@@ -973,12 +973,12 @@ RonSQLPreparer::load_join()
           else
           {
             const NdbDictionary::Column* col =
-                m_join_plan.ops[t].table->getColumn(col_name);
+                m_main_scope.join_plan.ops[t].table->getColumn(col_name);
             if (col == NULL)
             {
               err << "Column '" << qualifier << "." << col_name
                   << "' not found in table '"
-                  << m_join_plan.ops[t].table->getName() << "'." << endl;
+                  << m_main_scope.join_plan.ops[t].table->getName() << "'." << endl;
               throw RonSQLMaybeStaleSchema("Column not found.");
             }
             col_id_map[col_idx] = col->getAttrId();
@@ -1003,12 +1003,12 @@ RonSQLPreparer::load_join()
       Uint32 match_table = 0;
       const NdbDictionary::Column* match_col = NULL;
       NdbAttrId match_attr_id = -1;
-      for (Uint32 t = 0; t < m_join_plan.num_ops; t++)
+      for (Uint32 t = 0; t < m_main_scope.join_plan.num_ops; t++)
       {
-        if (m_join_plan.ops[t].type == JoinOp::CTE_LOOKUP)
+        if (m_main_scope.join_plan.ops[t].type == JoinOp::CTE_LOOKUP)
         {
           // Search CTE output list
-          const CteDefinition* cte = m_join_plan.ops[t].cte_def;
+          const CteDefinition* cte = m_main_scope.join_plan.ops[t].cte_def;
           Uint32 cte_col_idx = 0;
           for (const Outputs* o = cte->stmt->outputs; o; o = o->next, cte_col_idx++)
           {
@@ -1026,7 +1026,7 @@ RonSQLPreparer::load_join()
         else
         {
           const NdbDictionary::Column* col =
-              m_join_plan.ops[t].table->getColumn(col_name);
+              m_main_scope.join_plan.ops[t].table->getColumn(col_name);
           if (col != NULL)
           {
             match_count++;
@@ -1061,9 +1061,9 @@ RonSQLPreparer::load_join()
     }
   }
 
-  m_column_attrId_map = col_id_map;
-  m_column_map = col_map;
-  m_column_table_idx = col_table_idx;
+  m_main_scope.column_attrId_map = col_id_map;
+  m_main_scope.column_map = col_map;
+  m_main_scope.column_table_idx = col_table_idx;
 
   // Classify WHERE conditions by table for per-table filter pushdown
   classify_where_by_table();
@@ -1078,35 +1078,35 @@ RonSQLPreparer::load_join()
       SelectSubqueryLeaf &base = m_select_subquery_leaves[ml.first_subquery_idx];
       if (base.inner_filter != NULL) {
         Uint32 op_idx = ml.plan_op_idx;
-        if (m_join_where_ce[op_idx] == NULL) {
-          m_join_where_ce[op_idx] = base.inner_filter;
+        if (m_main_scope.join_where_ce[op_idx] == NULL) {
+          m_main_scope.join_where_ce[op_idx] = base.inner_filter;
         } else {
           ConditionalExpression* combined =
               m_amalloc->alloc_exc<ConditionalExpression>(1);
           combined->op = T_AND;
-          combined->args.left = m_join_where_ce[op_idx];
+          combined->args.left = m_main_scope.join_where_ce[op_idx];
           combined->args.right = base.inner_filter;
-          m_join_where_ce[op_idx] = combined;
+          m_main_scope.join_where_ce[op_idx] = combined;
         }
       }
     }
   }
 
   // Build linked projections for GROUP BY columns on non-leaf tables
-  Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+  Uint32 leaf_idx = m_main_scope.join_plan.agg_leaf_idx;
   struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
   while (groupby != NULL)
   {
     Uint32 col_idx = groupby->col_idx;
     if (col_table_idx[col_idx] != leaf_idx)
     {
-      require_prm(m_join_plan.num_linked_projs < MAX_LINKED_PROJS,
+      require_prm(m_main_scope.join_plan.num_linked_projs < MAX_LINKED_PROJS,
                   "Too many linked projections.");
       JoinPlan::LinkedProj& lp =
-          m_join_plan.linked_projs[m_join_plan.num_linked_projs];
+          m_main_scope.join_plan.linked_projs[m_main_scope.join_plan.num_linked_projs];
       lp.source_op_idx = col_table_idx[col_idx];
       lp.column_name = m_columns[col_idx].c_str();
-      m_join_plan.num_linked_projs++;
+      m_main_scope.join_plan.num_linked_projs++;
     }
     groupby = groupby->next;
   }
@@ -1116,7 +1116,7 @@ void
 RonSQLPreparer::classify_where_by_table()
 {
   for (Uint32 t = 0; t < MAX_SPJ_TREE_NODES; t++)
-    m_join_where_ce[t] = NULL;
+    m_main_scope.join_where_ce[t] = NULL;
 
   ConditionalExpression* where_ce = m_context.ast_root.where_expression;
   if (where_ce == NULL) return;
@@ -1129,7 +1129,7 @@ RonSQLPreparer::classify_where_by_table()
   // Classify each conjunct by table
   for (Uint32 i = 0; i < num_conjuncts; i++)
   {
-    Int32 table_idx = classify_ce_table(conjuncts[i], m_column_table_idx);
+    Int32 table_idx = classify_ce_table(conjuncts[i], m_main_scope.column_table_idx);
 
     if (table_idx == -2)
     {
@@ -1168,8 +1168,8 @@ RonSQLPreparer::classify_where_by_table()
             atom->args.left != NULL && atom->args.right != NULL;
         if (!is_cmp) { valid = false; break; }
 
-        Int32 lt = classify_ce_table(atom->args.left, m_column_table_idx);
-        Int32 rt = classify_ce_table(atom->args.right, m_column_table_idx);
+        Int32 lt = classify_ce_table(atom->args.left, m_main_scope.column_table_idx);
+        Int32 rt = classify_ce_table(atom->args.right, m_main_scope.column_table_idx);
         if (lt == -2 || rt == -2) { valid = false; break; }
         if (filter_expr_reg_depth(atom->args.left) > 2 ||
             filter_expr_reg_depth(atom->args.right) > 2) { valid = false; break; }
@@ -1205,7 +1205,7 @@ RonSQLPreparer::classify_where_by_table()
       ctf.ce = ce;
       ctf.child_table_idx = child_t;
       ctf.parent_table_idx = parent_t;
-      m_cross_table_where_filters.push(ctf);
+      m_main_scope.cross_table_where_filters.push(ctf);
       continue;
     }
 
@@ -1214,9 +1214,9 @@ RonSQLPreparer::classify_where_by_table()
       table_idx = 0;
 
     // Accumulate conditions for this table
-    if (m_join_where_ce[table_idx] == NULL)
+    if (m_main_scope.join_where_ce[table_idx] == NULL)
     {
-      m_join_where_ce[table_idx] = conjuncts[i];
+      m_main_scope.join_where_ce[table_idx] = conjuncts[i];
     }
     else
     {
@@ -1224,9 +1224,9 @@ RonSQLPreparer::classify_where_by_table()
       ConditionalExpression* combined =
           m_amalloc->alloc_exc<ConditionalExpression>(1);
       combined->op = T_AND;
-      combined->args.left = m_join_where_ce[table_idx];
+      combined->args.left = m_main_scope.join_where_ce[table_idx];
       combined->args.right = conjuncts[i];
-      m_join_where_ce[table_idx] = combined;
+      m_main_scope.join_where_ce[table_idx] = combined;
     }
   }
 }
@@ -1241,9 +1241,9 @@ RonSQLPreparer::assign_cross_table_index_bounds()
   //
   // Index bounds must follow prefix order: once a column has a
   // non-equality bound, later columns cannot be bounded.
-  for (Uint32 op_idx = 1; op_idx < m_join_plan.num_ops; op_idx++)
+  for (Uint32 op_idx = 1; op_idx < m_main_scope.join_plan.num_ops; op_idx++)
   {
-    JoinOp& op = m_join_plan.ops[op_idx];
+    JoinOp& op = m_main_scope.join_plan.ops[op_idx];
     if (op.type != JoinOp::INDEX_SCAN || op.index == NULL)
       continue;
 
@@ -1262,9 +1262,9 @@ RonSQLPreparer::assign_cross_table_index_bounds()
 
       // Find a cross-table filter matching this index column + operation
       bool matched = false;
-      for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
+      for (Uint32 f = 0; f < m_main_scope.cross_table_where_filters.size(); f++)
       {
-        CrossTableFilter& ctf = m_cross_table_where_filters[f];
+        CrossTableFilter& ctf = m_main_scope.cross_table_where_filters[f];
         if (ctf.ce == NULL) continue;  // Already consumed
         if (ctf.child_table_idx != op_idx && ctf.parent_table_idx != op_idx)
           continue;  // Not for this operation
@@ -1273,7 +1273,7 @@ RonSQLPreparer::assign_cross_table_index_bounds()
         Uint32 left_cidx = cf->args.left->col_idx;
         Uint32 right_cidx = cf->args.right->col_idx;
 
-        bool left_is_child = (m_column_table_idx[left_cidx] == op_idx);
+        bool left_is_child = (m_main_scope.column_table_idx[left_cidx] == op_idx);
         Uint32 child_cidx = left_is_child ? left_cidx : right_cidx;
         const char* child_col_name = m_columns[child_cidx].c_str();
 
@@ -1295,7 +1295,7 @@ RonSQLPreparer::assign_cross_table_index_bounds()
         }
 
         const char* parent_col_name = m_columns[parent_cidx].c_str();
-        Uint32 parent_op = m_column_table_idx[parent_cidx];
+        Uint32 parent_op = m_main_scope.column_table_idx[parent_cidx];
         bool assigned = false;
 
         if (filter_op == T_GT || filter_op == T_GE || filter_op == T_EQUALS)
@@ -1361,7 +1361,7 @@ find_or_add_linked_proj(JoinPlan& plan, Uint32 op_idx, const char* col_name)
 void
 RonSQLPreparer::build_agg_linked_projections()
 {
-  if (m_has_select_subqueries && m_join_plan.num_agg_leaves > 0) {
+  if (m_has_select_subqueries && m_main_scope.join_plan.num_agg_leaves > 0) {
     // Multi-leaf: build linked projections for GROUP BY columns from root.
     // All leaves share the same GROUP BY columns via linked projection.
     struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
@@ -1370,14 +1370,14 @@ RonSQLPreparer::build_agg_linked_projections()
       // GROUP BY column is from the root — needs linked projection to leaves
       bool is_on_any_leaf = false;
       for (Uint32 ml = 0; ml < m_merged_leaves.size(); ml++) {
-        if (m_column_table_idx[col_idx] == m_merged_leaves[ml].plan_op_idx) {
+        if (m_main_scope.column_table_idx[col_idx] == m_merged_leaves[ml].plan_op_idx) {
           is_on_any_leaf = true;
           break;
         }
       }
       if (!is_on_any_leaf) {
-        find_or_add_linked_proj(m_join_plan,
-                                m_column_table_idx[col_idx],
+        find_or_add_linked_proj(m_main_scope.join_plan,
+                                m_main_scope.column_table_idx[col_idx],
                                 m_columns[col_idx].c_str());
       }
       groupby = groupby->next;
@@ -1387,17 +1387,17 @@ RonSQLPreparer::build_agg_linked_projections()
 
   if (m_agg == NULL)
     return;
-  Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+  Uint32 leaf_idx = m_main_scope.join_plan.agg_leaf_idx;
   DynamicArray<AggregationAPICompiler::Instr>& program = m_agg->m_program;
   for (Uint32 i = 0; i < program.size(); i++)
   {
     if (program[i].type == AggregationAPICompiler::SVMInstrType::Load)
     {
       Uint32 col_idx = program[i].src;
-      if (m_column_table_idx[col_idx] != leaf_idx)
+      if (m_main_scope.column_table_idx[col_idx] != leaf_idx)
       {
-        find_or_add_linked_proj(m_join_plan,
-                                m_column_table_idx[col_idx],
+        find_or_add_linked_proj(m_main_scope.join_plan,
+                                m_main_scope.column_table_idx[col_idx],
                                 m_columns[col_idx].c_str());
       }
     }
@@ -1411,9 +1411,9 @@ RonSQLPreparer::build_agg_linked_projections()
     if (ce == NULL) return;
     if (ce->op == T_IDENTIFIER) {
       Uint32 cidx = ce->col_idx;
-      if (m_column_table_idx[cidx] != leaf_idx) {
-        find_or_add_linked_proj(m_join_plan,
-                                m_column_table_idx[cidx],
+      if (m_main_scope.column_table_idx[cidx] != leaf_idx) {
+        find_or_add_linked_proj(m_main_scope.join_plan,
+                                m_main_scope.column_table_idx[cidx],
                                 m_columns[cidx].c_str());
       }
       return;
@@ -1426,9 +1426,9 @@ RonSQLPreparer::build_agg_linked_projections()
     if (ce->args.left != NULL) register_linked_projs(ce->args.left);
     if (ce->args.right != NULL) register_linked_projs(ce->args.right);
   };
-  for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
+  for (Uint32 f = 0; f < m_main_scope.cross_table_where_filters.size(); f++)
   {
-    CrossTableFilter& ctf = m_cross_table_where_filters[f];
+    CrossTableFilter& ctf = m_main_scope.cross_table_where_filters[f];
     if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
     register_linked_projs(ctf.ce->args.left);
     register_linked_projs(ctf.ce->args.right);
@@ -1458,10 +1458,10 @@ RonSQLPreparer::build_agg_linked_projections()
         ConditionalExpression* atom = atoms[a];
         if (atom->args.left != NULL && atom->args.left->op == T_IDENTIFIER) {
           Uint32 col_idx = atom->args.left->col_idx;
-          if (m_column_table_idx != NULL &&
-              m_column_table_idx[col_idx] != leaf_idx) {
-            find_or_add_linked_proj(m_join_plan,
-                                    m_column_table_idx[col_idx],
+          if (m_main_scope.column_table_idx != NULL &&
+              m_main_scope.column_table_idx[col_idx] != leaf_idx) {
+            find_or_add_linked_proj(m_main_scope.join_plan,
+                                    m_main_scope.column_table_idx[col_idx],
                                     m_columns[col_idx].c_str());
           }
         }
@@ -3267,8 +3267,8 @@ RonSQLPreparer::compile()
     // Check for remaining (non-consumed) cross-table WHERE filters.
     // Consumed filters (ce == NULL) were converted to index bounds.
     bool has_remaining = false;
-    for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++) {
-      if (m_cross_table_where_filters[f].ce != NULL) {
+    for (Uint32 f = 0; f < m_main_scope.cross_table_where_filters.size(); f++) {
+      if (m_main_scope.cross_table_where_filters[f].ce != NULL) {
         has_remaining = true;
         break;
       }
@@ -3311,7 +3311,7 @@ RonSQLPreparer::compile()
       ResultPrinter(m_amalloc,
                     &m_context.ast_root,
                     &m_columns,
-                    m_column_map,
+                    m_main_scope.column_map,
                     m_conf.output_format,
                     m_conf.err_stream);
   }
@@ -3852,9 +3852,9 @@ RonSQLPreparer::execute()
     ndbrequire(m_trans == NULL);
     m_trans = DBG(ndb->startTransaction());
     require_run(m_trans != NULL, "Failed to start transaction.");
-    // Since ndb exists, m_table should have been initialized in load()
-    ndbrequire(m_table != NULL);
-    NdbAggregator aggregator(m_table);
+    // Since ndb exists, m_main_scope.table should have been initialized in load()
+    ndbrequire(m_main_scope.table != NULL);
+    NdbAggregator aggregator(m_main_scope.table);
     DBGV(programAggregator(&aggregator));
     require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
     ScanConfig& sc = *m_scan_config;
@@ -3870,7 +3870,7 @@ RonSQLPreparer::execute()
     if(index == NULL) {
       // Prepare and execute full table scan
       DEB_TRACE();
-      NdbScanOperation* myScanOp = DBG(m_trans->getNdbScanOperation(DBG(m_table)));
+      NdbScanOperation* myScanOp = DBG(m_trans->getNdbScanOperation(DBG(m_main_scope.table)));
       require_sch(myScanOp != NULL, "Failed to get scan operation.");
       require_prm(DBG(myScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead)) == 0,
                   "Failed to initialize scan operation.");
@@ -3894,9 +3894,9 @@ RonSQLPreparer::execute()
     } else {
       DEB_TRACE();
       // Prepare and execute index scan
-      require_sch(DBG(index->getTableId()) == DBG(m_table->getObjectId()) &&
+      require_sch(DBG(index->getTableId()) == DBG(m_main_scope.table->getObjectId()) &&
                   DBG(index->getTableVersion()) ==
-                  DBG(m_table->getObjectVersion()),
+                  DBG(m_main_scope.table->getObjectVersion()),
                   "Table id/version mismatch");
       NdbIndexScanOperation *myIndexScanOp =
         DBG(m_trans->getNdbIndexScanOperation(DBG(index)));
@@ -3937,7 +3937,7 @@ RonSQLPreparer::execute()
         }
         const char* colName = m_columns[condition_col_idx].c_str();
         raw_value rv = encode_constant(condition_constant,
-                                       m_column_map[condition_col_idx]);
+                                       m_main_scope.column_map[condition_col_idx]);
         require_run(DBG(myIndexScanOp->setBound(DBG(colName),
                                                 DBG(bt),
                                                 DBG(rv).val)) == 0,
@@ -4041,7 +4041,7 @@ RonSQLPreparer::execute_join()
   m_trans = ndb->startTransaction();
   require_run(m_trans != NULL, "Failed to start transaction.");
 
-  JoinPlan& plan = m_join_plan;
+  JoinPlan& plan = m_main_scope.join_plan;
 
   // Build aggregator(s).
   // Multi-leaf: one NdbAggregator per merged leaf, each with its own program.
@@ -4062,12 +4062,12 @@ RonSQLPreparer::execute_join()
       struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
       while (groupby != NULL) {
         Uint32 col_idx = groupby->col_idx;
-        if (m_column_table_idx[col_idx] == op_idx) {
-          require_prm(agg->GroupBy(m_column_attrId_map[col_idx]),
+        if (m_main_scope.column_table_idx[col_idx] == op_idx) {
+          require_prm(agg->GroupBy(m_main_scope.column_attrId_map[col_idx]),
                       "Failed to program GroupBy on leaf.");
         } else {
           require_prm(agg->GroupByLinked(linked_proj_pos,
-                                         m_column_map[col_idx]),
+                                         m_main_scope.column_map[col_idx]),
                       "Failed to program GroupByLinked on leaf.");
           linked_proj_pos++;
         }
@@ -4082,7 +4082,7 @@ RonSQLPreparer::execute_join()
         if (sl.merged_leaf_idx != ml) continue;
 
         Uint32 col_idx = sl.inner_agg_col_idx;
-        NdbAttrId attr_id = m_column_attrId_map[col_idx];
+        NdbAttrId attr_id = m_main_scope.column_attrId_map[col_idx];
         Uint32 reg = 0;  // use register 0 for loads
         Uint32 agg_slot = leaf_local_slot++;
 
@@ -4120,18 +4120,18 @@ RonSQLPreparer::execute_join()
 
           // Add linked projection for the outer column
           Uint32 outer_lp_pos = find_or_add_linked_proj(
-              m_join_plan, m_column_table_idx[outer_cidx],
+              m_main_scope.join_plan, m_main_scope.column_table_idx[outer_cidx],
               m_columns[outer_cidx].c_str());
 
           // Load outer column into register 2 via linked projection
           Uint32 reg_outer = 2;
           require_prm(agg->LoadLinkedColumn(outer_lp_pos, reg_outer,
-                                            m_column_map[outer_cidx]),
+                                            m_main_scope.column_map[outer_cidx]),
                       "Failed to load linked outer column for cross-table filter.");
 
           // Load inner filter column into register 1
           Uint32 reg_inner = 1;
-          NdbAttrId inner_filter_attr = m_column_attrId_map[inner_cidx];
+          NdbAttrId inner_filter_attr = m_main_scope.column_attrId_map[inner_cidx];
           require_prm(agg->LoadColumn(inner_filter_attr, reg_inner),
                       "Failed to load inner column for cross-table filter.");
 
@@ -4255,9 +4255,9 @@ RonSQLPreparer::execute_join()
     int nkeys = 0;
     ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
 
-    if (m_join_where_ce[0] != NULL)
+    if (m_main_scope.join_where_ce[0] != NULL)
     {
-      where_ce = simplify_ce(m_join_where_ce[0], -1);
+      where_ce = simplify_ce(m_main_scope.join_where_ce[0], -1);
 
       // Check if WHERE fully covers the root PK with equality constants
       nkeys = root_table->getNoOfPrimaryKeys();
@@ -4427,9 +4427,9 @@ RonSQLPreparer::execute_join()
     // Attach WHERE filter for this child table (if any).
     // CTE lookups have no physical table — skip filter and aggregation.
     NdbInterpretedCode child_code_storage(op.table);
-    if (op.type != JoinOp::CTE_LOOKUP && m_join_where_ce[i] != NULL)
+    if (op.type != JoinOp::CTE_LOOKUP && m_main_scope.join_where_ce[i] != NULL)
     {
-      ConditionalExpression* child_ce = simplify_ce(m_join_where_ce[i], -1);
+      ConditionalExpression* child_ce = simplify_ce(m_main_scope.join_where_ce[i], -1);
       NdbScanFilter filter(&child_code_storage);
       filter.setSqlCmpSemantics();
       filter.begin(NdbScanFilter::AND);
@@ -4721,11 +4721,11 @@ RonSQLPreparer::unload_schema() {
     DEB_TRACE();
     return false;
   }
-  ndbrequire(m_table != NULL);
+  ndbrequire(m_main_scope.table != NULL);
   // Save table object ID and version
   typedef std::pair<int, int> Idver;
-  const Idver old_table_idver = { DBG(m_table->getObjectId()),
-                                  DBG(m_table->getObjectVersion()) };
+  const Idver old_table_idver = { DBG(m_main_scope.table->getObjectId()),
+                                  DBG(m_main_scope.table->getObjectVersion()) };
   // Unload indexes, saving their object IDs and versions in a sorted list
   bool table_idver_mismatch = false;
   const Uint32 old_indexes_count = DBG(m_indexes.size());
@@ -4751,8 +4751,8 @@ RonSQLPreparer::unload_schema() {
   }
   std::sort(old_indexes_idver, old_indexes_idver + old_indexes_count);
   // Unload table
-  dict->invalidateTable(m_table);
-  m_table = NULL;
+  dict->invalidateTable(m_main_scope.table);
+  m_main_scope.table = NULL;
   if (table_idver_mismatch) {
     // We don't need to reload table or indexes, since we have already
     // determined an inconsistency. This inconsistency should go away next time
@@ -4925,18 +4925,18 @@ RonSQLPreparer::apply_filter_cmp(NdbScanFilter* filter,
                                " operands must be a column name");
   }
   if (right->op == T_IDENTIFIER) {
-    ndbrequire(m_column_attrId_map != NULL);
+    ndbrequire(m_main_scope.column_attrId_map != NULL);
     require_sch(DBG(filter->cmp(DBG(cond),
-                                DBG(m_column_attrId_map[left->col_idx]),
-                                DBG(m_column_attrId_map[right->col_idx]))) >= 0,
+                                DBG(m_main_scope.column_attrId_map[left->col_idx]),
+                                DBG(m_main_scope.column_attrId_map[right->col_idx]))) >= 0,
                 filter_fail);
     return;
   }
-  ndbrequire(m_column_attrId_map != NULL);
-  ndbrequire(m_column_map != NULL);
-  raw_value rv = encode_constant(right, m_column_map[left->col_idx]);
+  ndbrequire(m_main_scope.column_attrId_map != NULL);
+  ndbrequire(m_main_scope.column_map != NULL);
+  raw_value rv = encode_constant(right, m_main_scope.column_map[left->col_idx]);
   require_sch(DBG(filter->cmp(DBG(cond),
-                              DBG(m_column_attrId_map[left->col_idx]),
+                              DBG(m_main_scope.column_attrId_map[left->col_idx]),
                               DBG(rv).val,
                               rv.len)) >= 0,
               filter_fail);
@@ -4954,9 +4954,9 @@ RonSQLPreparer::apply_filter_like(NdbScanFilter* filter,
   if (right->op != T_STRING) {
     throw RonSQLPermanentError("LIKE requires a string pattern on the right side");
   }
-  ndbrequire(m_column_attrId_map != NULL);
+  ndbrequire(m_main_scope.column_attrId_map != NULL);
   require_sch(DBG(filter->cmp(cond,
-                               m_column_attrId_map[left->col_idx],
+                               m_main_scope.column_attrId_map[left->col_idx],
                                right->string.str,
                                right->string.len)) >= 0,
               filter_fail);
@@ -5511,12 +5511,12 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
   std::basic_ostream<char>& err = *m_conf.err_stream;
   SelectStatement& ast_root = m_context.ast_root;
   // Program groupby columns
-  assert(m_column_attrId_map != NULL); // Ensured in RonSQLPreparer::load
+  assert(m_main_scope.column_attrId_map != NULL); // Ensured in RonSQLPreparer::load
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
   while (groupby != NULL)
   {
     programAggregator_do_or_fail
-      (aggregator->GroupBy(m_column_attrId_map[groupby->col_idx]));
+      (aggregator->GroupBy(m_main_scope.column_attrId_map[groupby->col_idx]));
     groupby = groupby->next;
   }
   // Program aggregations
@@ -5531,7 +5531,7 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
     {
     case AggregationAPICompiler::SVMInstrType::Load:
     {
-      NdbAttrId col_id = m_column_attrId_map[src];
+      NdbAttrId col_id = m_main_scope.column_attrId_map[src];
       if (!aggregator->LoadColumn(col_id, dest))
       {
         err << "Failed writing aggregation program "
@@ -5727,15 +5727,15 @@ RonSQLPreparer::emit_filter_expr(NdbAggregator* agg,
   case T_IDENTIFIER:
   {
     Uint32 cidx = ce->col_idx;
-    if (m_column_table_idx[cidx] == leaf_idx) {
+    if (m_main_scope.column_table_idx[cidx] == leaf_idx) {
       programAggregator_do_or_fail(
-          agg->LoadColumn(m_column_attrId_map[cidx], reg));
+          agg->LoadColumn(m_main_scope.column_attrId_map[cidx], reg));
     } else {
       Uint32 lp = find_or_add_linked_proj(
-          m_join_plan, m_column_table_idx[cidx],
+          m_main_scope.join_plan, m_main_scope.column_table_idx[cidx],
           m_columns[cidx].c_str());
       programAggregator_do_or_fail(
-          agg->LoadLinkedColumn(lp, reg, m_column_map[cidx]));
+          agg->LoadLinkedColumn(lp, reg, m_main_scope.column_map[cidx]));
     }
     break;
   }
@@ -5785,24 +5785,24 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
 {
   std::basic_ostream<char>& err = *m_conf.err_stream;
   SelectStatement& ast_root = m_context.ast_root;
-  Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+  Uint32 leaf_idx = m_main_scope.join_plan.agg_leaf_idx;
 
   // Program groupby columns — use GroupByLinked for parent columns
-  assert(m_column_attrId_map != NULL);
+  assert(m_main_scope.column_attrId_map != NULL);
   Uint32 linked_proj_pos = 0;
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
   while (groupby != NULL)
   {
     Uint32 col_idx = groupby->col_idx;
-    if (m_column_table_idx[col_idx] == leaf_idx)
+    if (m_main_scope.column_table_idx[col_idx] == leaf_idx)
     {
       programAggregator_do_or_fail
-        (aggregator->GroupBy(m_column_attrId_map[col_idx]));
+        (aggregator->GroupBy(m_main_scope.column_attrId_map[col_idx]));
     }
     else
     {
       programAggregator_do_or_fail
-        (aggregator->GroupByLinked(linked_proj_pos, m_column_map[col_idx]));
+        (aggregator->GroupByLinked(linked_proj_pos, m_main_scope.column_map[col_idx]));
       linked_proj_pos++;
     }
     groupby = groupby->next;
@@ -5813,11 +5813,11 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
   // A hidden sentinel COUNT accumulator is appended so that groups where
   // no rows passed the filter can be suppressed at result time.
   bool has_branchreg_filter = false;
-  if (m_cross_table_where_filters.size() > 0)
+  if (m_main_scope.cross_table_where_filters.size() > 0)
   {
     // Check if any remaining (non-consumed) cross-table filters exist
-    for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++) {
-      CrossTableFilter& ctf = m_cross_table_where_filters[f];
+    for (Uint32 f = 0; f < m_main_scope.cross_table_where_filters.size(); f++) {
+      CrossTableFilter& ctf = m_main_scope.cross_table_where_filters[f];
       if (ctf.ce != NULL)
         has_branchreg_filter = true;
     }
@@ -5863,16 +5863,16 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
       }
     };
 
-    for (Uint32 f = 0; f < m_cross_table_where_filters.size(); f++)
+    for (Uint32 f = 0; f < m_main_scope.cross_table_where_filters.size(); f++)
     {
-      CrossTableFilter& ctf = m_cross_table_where_filters[f];
+      CrossTableFilter& ctf = m_main_scope.cross_table_where_filters[f];
       if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
 
       // Compute remaining filter words for skip count
       Uint32 remaining_words = 0;
-      for (Uint32 f2 = f + 1; f2 < m_cross_table_where_filters.size(); f2++)
+      for (Uint32 f2 = f + 1; f2 < m_main_scope.cross_table_where_filters.size(); f2++)
       {
-        CrossTableFilter& ctf2 = m_cross_table_where_filters[f2];
+        CrossTableFilter& ctf2 = m_main_scope.cross_table_where_filters[f2];
         if (ctf2.ce == NULL) continue;
         remaining_words += cross_table_filter_word_count(
             ctf2.ce, filter_expr_word_count_impl);
@@ -5940,17 +5940,17 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     {
     case AggregationAPICompiler::SVMInstrType::Load:
     {
-      if (m_column_table_idx[src] != leaf_idx)
+      if (m_main_scope.column_table_idx[src] != leaf_idx)
       {
         Uint32 lp_pos = find_or_add_linked_proj(
-            m_join_plan, m_column_table_idx[src],
+            m_main_scope.join_plan, m_main_scope.column_table_idx[src],
             m_columns[src].c_str());
         programAggregator_do_or_fail
-          (aggregator->LoadLinkedColumn(lp_pos, dest, m_column_map[src]));
+          (aggregator->LoadLinkedColumn(lp_pos, dest, m_main_scope.column_map[src]));
       }
       else
       {
-        NdbAttrId col_id = m_column_attrId_map[src];
+        NdbAttrId col_id = m_main_scope.column_attrId_map[src];
         if (!aggregator->LoadColumn(col_id, dest))
         {
           err << "Failed writing aggregation program "
@@ -6088,7 +6088,7 @@ RonSQLPreparer::generate_embedded_condition(
   // Parent columns need READ_LINKED_TO_MEM + BRANCH_MEM_OP_ARG instead of
   // BRANCH_ATTR_OP_ARG. All atoms in a CASE must reference the same column
   // (enforced by the parser), so we check the first atom.
-  Uint32 leaf_idx = (m_column_table_idx != NULL) ? m_join_plan.agg_leaf_idx : 0;
+  Uint32 leaf_idx = (m_main_scope.column_table_idx != NULL) ? m_main_scope.join_plan.agg_leaf_idx : 0;
   bool has_linked_col = false;
   Uint32 linked_position = 0;
 
@@ -6099,14 +6099,14 @@ RonSQLPreparer::generate_embedded_condition(
     ndbrequire(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS);
     ConditionalExpression* col_side = atom->args.left;
     ndbrequire(col_side->op == T_IDENTIFIER);
-    if (m_column_table_idx != NULL &&
-        m_column_table_idx[col_side->col_idx] != leaf_idx) {
+    if (m_main_scope.column_table_idx != NULL &&
+        m_main_scope.column_table_idx[col_side->col_idx] != leaf_idx) {
       has_linked_col = true;
       linked_position = find_or_add_linked_proj(
-          m_join_plan, m_column_table_idx[col_side->col_idx],
+          m_main_scope.join_plan, m_main_scope.column_table_idx[col_side->col_idx],
           m_columns[col_side->col_idx].c_str());
     }
-    const NdbDictionary::Column* col = m_column_map[col_side->col_idx];
+    const NdbDictionary::Column* col = m_main_scope.column_map[col_side->col_idx];
     Uint32 byte_len = col->getLength();
     Uint32 data_words = (byte_len + 3) / 4;
     // BRANCH_MEM_OP_ARG: 4 words (opcode, attrId|len, tableId, schemaVer) + data
@@ -6139,8 +6139,8 @@ RonSQLPreparer::generate_embedded_condition(
     ConditionalExpression* atom = atoms[a];
     ConditionalExpression* col_side = atom->args.left;
     ConditionalExpression* val_side = atom->args.right;
-    const NdbDictionary::Column* col = m_column_map[col_side->col_idx];
-    NdbAttrId attr_id = m_column_attrId_map[col_side->col_idx];
+    const NdbDictionary::Column* col = m_main_scope.column_map[col_side->col_idx];
+    NdbAttrId attr_id = m_main_scope.column_attrId_map[col_side->col_idx];
     Uint32 byte_len = col->getLength();
     Uint32 data_words = (byte_len + 3) / 4;
 
@@ -6163,8 +6163,8 @@ RonSQLPreparer::generate_embedded_condition(
     if (has_linked_col) {
       // Parent-table column: use BRANCH_MEM_OP_ARG (reads from cheapMemory[0])
       // Get parent table's tableId and schemaVersion for type lookup
-      Uint32 parent_op = m_column_table_idx[col_side->col_idx];
-      const NdbDictionary::Table* parentTable = m_join_plan.ops[parent_op].table;
+      Uint32 parent_op = m_main_scope.column_table_idx[col_side->col_idx];
+      const NdbDictionary::Table* parentTable = m_main_scope.join_plan.ops[parent_op].table;
       programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::BranchMem(cond, Interpreter::NULL_CMP_EQUAL) |
           (branch_offset << 16)));
@@ -6250,8 +6250,8 @@ RonSQLPreparer::print()
   }
 
   // Print join plan at the top for multi-table queries
-  if (m_conf.ndb != NULL && m_scan_config == NULL && m_join_plan.num_ops > 1) {
-    const JoinPlan& jp = m_join_plan;
+  if (m_conf.ndb != NULL && m_scan_config == NULL && m_main_scope.join_plan.num_ops > 1) {
+    const JoinPlan& jp = m_main_scope.join_plan;
     out << "Join plan (" << jp.num_ops << " operations):\n";
     for (Uint32 i = 0; i < jp.num_ops; i++) {
       const JoinOp& op = jp.ops[i];
