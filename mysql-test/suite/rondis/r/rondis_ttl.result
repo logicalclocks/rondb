@@ -1,0 +1,50 @@
+#
+# Plain SET (no TTL flags) - expiry_date stays NULL.
+#
+OK
+is_null=1
+#
+# SET ... EX N - expiry_date in [now, now + N + 2s].
+#
+OK
+in_window=1
+#
+# SET ... PX N (milliseconds) - ceil(N/1000) -> same window.
+#
+OK
+in_window=1
+#
+# PX with fractional-second boundary: 60001 ms -> ceil = 61 s.
+#
+OK
+in_window=1
+#
+# SET ... EXAT T - absolute unix-seconds; expiry_date = T.
+# Using 2100000000 (2036-07-18 13:20:00 UTC) to stay below the
+# Y2038 clamp.
+#
+OK
+exact_match=1
+#
+# SET ... PXAT T_ms - absolute unix-milliseconds, ceil to seconds.
+# 2100000000999 ms -> 2100000001 s.
+#
+OK
+exact_match=1
+#
+# SET ... KEEPTTL - overwrite preserves the prior expiry_date.
+# Capture k_ex's current expiry, overwrite with KEEPTTL, confirm
+# the value is unchanged.
+#
+OK
+preserved=1
+updated
+#
+# Overwrite without TTL flags clears the previous TTL (writes NULL).
+#
+OK
+is_null=1
+#
+# Cleanup.
+#
+6
