@@ -8,7 +8,7 @@ WARNING in native method: JNI call made without checking exceptions when require
 WARNING in native method: JNI call made without checking exceptions when required to from CallStaticObjectMethod
 WARNING in native method: JNI call made without checking exceptions when required to from CallStaticObjectMethod
 Java 1.8.0_442
-Running named tests in '/home/zhao/workspace/kernelmaker/rondb-bin/storage/ndb/clusterj/clusterj-test/clusterj-test-25.10.5.jar'
+Running named tests in '/home/zhao/workspace/kernelmaker/rondb-bin/storage/ndb/clusterj/clusterj-test/clusterj-test-26.02.2.jar'
 Found 2 test classes.
 1: testsuite.clusterj.ClearSmokeTest.test running...testsuite.clusterj.ClearSmokeTest
 Test schema failed (normal) select id from t_basic where id = 9999
@@ -18,6 +18,12 @@ Successfully initialized schema.
 [META-CHECK] sensor_id=100 ring_idx=0 ts=0
 [META-CHECK] sensor_id=100 ring_idx=1 ts=1000
 [META-CHECK] totalRows=2 metaFound=true
+[DO-META] ring_buffer_sensor columns (5):
+[DO-META]   [0] sensor_id
+[DO-META]   [1] ring_idx
+[DO-META]   [2] ring_meta
+[DO-META]   [3] timestamp_val
+[DO-META]   [4] sensor_value
 [CONCURRENT-META] ClusterJ find(ring_idx=0) = NOT FOUND (expected)
 [CONCURRENT-META] RingBufferWriter probe: meta row EXISTS (insert at next slot succeeded)
 [DIAG] Flushing tables before show_meta check...
@@ -32,7 +38,7 @@ Successfully initialized schema.
 [DEBUG] totalRows=6 metaRowFound=true
 [DEBUG] PK lookup meta row FOUND: sensor_id=3100 ring_idx=0 ts=0
 [DEBUG] sensorId=1000 meta row: NOT FOUND
-[DIAG] Checking meta row from second mysqld: jdbc:mysql://localhost:13003/test
+[DIAG] Checking meta row from second mysqld
 [DIAG-MYSQLD2] row: sensor_id=3100 ring_idx=0 ts=0 val=0.0
 [DIAG-MYSQLD2] row: sensor_id=3100 ring_idx=1 ts=90000 val=0.0
 [DIAG-MYSQLD2] row: sensor_id=3100 ring_idx=2 ts=90001 val=1.0
@@ -42,7 +48,7 @@ Successfully initialized schema.
 [DIAG-MYSQLD2] totalRows=6 metaRowFound=true
 
 All tests succeeded.
-Finished running tests in '/home/zhao/workspace/kernelmaker/rondb-bin/storage/ndb/clusterj/clusterj-test/clusterj-test-25.10.5.jar'
+Finished running tests in '/home/zhao/workspace/kernelmaker/rondb-bin/storage/ndb/clusterj/clusterj-test/clusterj-test-26.02.2.jar'
 # DIAG: Full table scan with show_meta
 SET ndb_ring_buffer_show_meta = ON;
 SELECT sensor_id, ring_idx, HEX(ring_meta) FROM ring_buffer_sensor

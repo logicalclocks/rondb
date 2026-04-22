@@ -2200,7 +2200,10 @@ public class RingBufferTest extends AbstractClusterJTest {
             // We need to connect to mysqld.2.1 instead of mysqld.1.1.
             String url2 = jdbcURL.replaceFirst(
                     ":\\d+/", ":" + System.getProperty("mysqld2.port", "13001") + "/");
-            System.out.println("[DIAG] Checking meta row from second mysqld: " + url2);
+            // Print without the port number to keep the recorded .result
+            // baseline reproducible across machines (mysqld2.port varies
+            // by MTR port-base allocation).
+            System.out.println("[DIAG] Checking meta row from second mysqld");
             Connection conn2 = DriverManager.getConnection(url2, "root", "");
             Statement stmt2 = conn2.createStatement();
             stmt2.execute("SET ndb_ring_buffer_show_meta = 1");
