@@ -519,3 +519,87 @@ the cache says true).
 Total static: **−760 B (−12.75 %)** vs baseline.
 Plus **−576 KB `__TEXT`** (from Item 2) kernel-wide.
 Plus **~380 insns saved per LQHKEYREQ** at runtime (Item 7).
+
+## Item 8 — Move mid-warmth blocks out of the hot body
+
+Commit: pending (branch `RONDB-1051-execLQHKEYREQ`).
+
+### What changed
+
+Three inline blocks that sit in `execLQHKEYREQ` but only execute on
+specific request shapes were outlined into dedicated member
+functions:
+
+1. **`insertIntoTransactionHash(tcConnectptr)`** — the `!dirtyOp`
+   transaction-hash-insert block (mutex lock, hash insert, collision
+   check, unlock). Was ~35 inline instructions; now one `bl` in the
+   hot body. Hot for transactional writes; zero cost on dirty reads.
+2. **`findOrSeizeCommitAckMarker(transid1, transid2, apiRef, apiOprec,
+   tcRef, opPtrI)`** — the `getMarkerFlag` block (hash lookup, seize,
+   add). Was ~45 inline instructions; now one `bl` + RNIL check.
+3. **`transporter_overloaded_detailed(signal, lqhKeyReq)`** — the
+   slow path reached only when Item 7's cached `any_overloaded` flag
+   is true. Marked `[[gnu::cold, gnu::noinline]]` so the compiler
+   places it in `.text.cold.*` — the bitmask scan and
+   `checkTransporterOverloaded` call no longer live in the hot body.
+
+### Metrics
+
+| | Item 7 post | Item 8 post | Δ |
+|---|--:|--:|--:|
+| `execLQHKEYREQ` size | 5200 B | **4464 B** | **−736 B (−14.2 %)** |
+| Instructions | 1300 | 1116 | **−184** |
+| `bl` calls in body | 59 | 51 | −8 |
+| Total branches in body | 136 | 119 | −17 |
+
+### Helper symbol sizes
+
+| Helper | Size | Placement |
+|---|--:|---|
+| `transporter_overloaded_detailed` | 96 B | `.text.cold.*` (cold+noinline) |
+| `insertIntoTransactionHash` | 408 B | regular text (noinline) |
+| `findOrSeizeCommitAckMarker` | 732 B | regular text (noinline) |
+
+The `insertIntoTransactionHash` and `findOrSeizeCommitAckMarker`
+helpers are larger than their inline forms because they now carry
+their own prologue/epilogue (callee-saves spill/restore, stack
+frame setup) — that's the per-helper overhead of outlining. Net
+binary size is +~1 KB for these two helpers but the hot-body
+reclaim of ~736 B dominates the I-cache accounting.
+
+### Why these three made sense together
+
+All three blocks shared a property: **inline fat, conditional hot**.
+Different from Item 1's error-epilogue outline (cold everywhere) or
+Item 2's macro-scoped outline (kernel-wide). These three are
+mid-warmth — hot for some workloads, cold for others — but in all
+cases the inline form bloated the hot body.
+
+The `transporter_overloaded_detailed` is distinct: after Item 7's
+cache gate it's truly cold (only taken when overload actually
+occurs), so it got the full `[[gnu::cold]]` treatment.
+
+### Cumulative against baseline
+
+| | Size | Instructions | vs baseline |
+|---|--:|--:|---|
+| Baseline | 5960 B | 1490 | |
+| Item 1 | 5792 B | 1448 | −168 B, −2.8 % |
+| Item 2 | 5220 B | 1305 | −740 B, −12.4 % |
+| Item 3 | 5176 B | 1294 | −784 B, −13.15 % |
+| Item 3b | 5176 B | 1294 | −784 B, −13.15 % |
+| Item 7 | 5200 B | 1300 | −760 B, −12.75 % |
+| **Item 8** | **4464 B** | **1116** | **−1496 B, −25.10 %** |
+
+Total static: **−1496 B (−25.10 %)** vs baseline.
+Plus **−576 KB `__TEXT`** (Item 2) kernel-wide.
+Plus **~380 insns saved per LQHKEYREQ** at runtime (Item 7).
+
+### Verification
+
+- [x] Build succeeds.
+- [x] All 3 helper symbols present; `transporter_overloaded_detailed`
+  confirmed in `.text.cold` via address (0x100450xxx, outside normal
+  Dblqh range).
+- [x] `ndb_basic` — PASS.
+- [x] Kernel-wide `__TEXT` unchanged (local change).

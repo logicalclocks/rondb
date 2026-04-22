@@ -5738,6 +5738,101 @@ void Dblqh::LQHKEY_error_cold(Signal *signal, int errortype,
   LQHKEY_error(signal, errortype, tcConnectptr);
 }
 
+// Outlined mid-warmth helpers (declared in Dblqh.hpp). These were
+// inlined at fixed positions inside execLQHKEYREQ's body; moving
+// them behind a `bl` keeps the hot body tight without changing
+// semantics. See claude_files/execLQHKEYREQ_performance/results.md.
+
+void Dblqh::insertIntoTransactionHash(TcConnectionrecPtr tcConnectptr) {
+  TcConnectionrec *const regTcPtr = tcConnectptr.p;
+  jamDebug();
+  TcConnectionrecPtr localNextTcConnectptr;
+  const Uint32 hashIndex = getHashIndex(regTcPtr);
+  NDB_PREFETCH_WRITE(&m_curr_lqh->ctransidHash[hashIndex]);
+  jamDebug();
+  jamDataDebug(Uint16(hashIndex));
+  jamDataDebug(Uint16(m_curr_lqh->instance()));
+  Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
+  regTcPtr->prevHashRec = RNIL;
+  regTcPtr->hashIndex = hashIndex;
+  NdbMutex_Lock(&m_curr_lqh->transaction_hash_mutex[mutexIndex]);
+#if defined VM_TRACE || defined ERROR_INSERT
+  jamLineDebug(Uint16(m_curr_lqh->trans_hash_mutex_counter[mutexIndex]));
+  m_curr_lqh->trans_hash_mutex_counter[mutexIndex]++;
+#endif
+  localNextTcConnectptr.i = m_curr_lqh->ctransidHash[hashIndex];
+  m_curr_lqh->ctransidHash[hashIndex] = tcConnectptr.i;
+  if (unlikely(localNextTcConnectptr.i != RNIL)) {
+    jamDebug();
+    ndbrequire(m_curr_lqh->tcConnect_pool.getValidPtr(localNextTcConnectptr));
+    /* Check that no equal element exists */
+    ndbrequire(!checkTransaction(localNextTcConnectptr,
+                                 regTcPtr->tcHashKeyHi, regTcPtr, true));
+    ndbassert(localNextTcConnectptr.p->prevHashRec == RNIL);
+    localNextTcConnectptr.p->prevHashRec = tcConnectptr.i;
+  }
+  regTcPtr->nextHashRec = localNextTcConnectptr.i;
+  NdbMutex_Unlock(&m_curr_lqh->transaction_hash_mutex[mutexIndex]);
+}
+
+Uint32 Dblqh::findOrSeizeCommitAckMarker(Uint32 transid1, Uint32 transid2,
+                                         Uint32 apiRef, Uint32 apiOprec,
+                                         Uint32 tcRef, Uint32 opPtrI) {
+  struct CommitAckMarker check;
+  CommitAckMarkerPtr markerPtr;
+  jamDebug();
+  check.transid1 = transid1;
+  check.transid2 = transid2;
+
+  if (m_commitAckMarkerHash.find(markerPtr, check)) {
+    /*
+     * A commit ack marker was already placed here for this transaction.
+     * Bump the reference count so we don't remove it prematurely.
+     */
+    ndbrequire(markerPtr.p->in_hash == true);
+    ndbrequire(markerPtr.p->reference_count > 0);
+    markerPtr.p->reference_count++;
+#ifdef MARKER_TRACE
+    g_eventLogger->info("Inc marker[%.8x %.8x] op: %u ref: %u",
+                        markerPtr.p->transid1, markerPtr.p->transid2,
+                        opPtrI, markerPtr.p->reference_count);
+#endif
+    return markerPtr.i;
+  }
+  if (ERROR_INSERTED(5082) ||
+      unlikely(!m_commitAckMarkerPool.seize(markerPtr))) {
+    return RNIL;  // caller issues ZNO_FREE_MARKER_RECORDS_ERROR abort
+  }
+  markerPtr.p->transid1 = transid1;
+  markerPtr.p->transid2 = transid2;
+  markerPtr.p->apiRef = apiRef;
+  markerPtr.p->apiOprec = apiOprec;
+  markerPtr.p->tcRef = tcRef;
+  markerPtr.p->reference_count = 1;
+  markerPtr.p->in_hash = true;
+  markerPtr.p->removed_by_fail_api = false;
+  m_commitAckMarkerHash.add(markerPtr);
+#ifdef MARKER_TRACE
+  g_eventLogger->info("%u Add marker[%.8x %.8x] op: %u", instance(),
+                      markerPtr.p->transid1, markerPtr.p->transid2, opPtrI);
+#else
+  (void)opPtrI;
+#endif
+  return markerPtr.i;
+}
+
+bool Dblqh::transporter_overloaded_detailed(Signal *signal,
+                                            const LqhKeyReq *lqhKeyReq) {
+  // Reached only when the Item-7 cached m_any_overloaded flag is true.
+  // A stale cache (flag true, mask now clear) is handled by the
+  // early-out in isclear(); costs one 64-word scan and returns false.
+  const NodeBitmask &all = globalTransporterRegistry.get_status_overloaded();
+  if (all.isclear()) {
+    return false;
+  }
+  return checkTransporterOverloaded(signal, all, lqhKeyReq);
+}
+
 void Dblqh::execLQHKEYREF(Signal *signal) {
   jamEntry();
   TcConnectionrecPtr tcConnectptr;
@@ -8972,20 +9067,17 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
   // Cached single-byte load instead of a 64-word NodeBitmask scan.
   // The cache is maintained by TransporterRegistry::set_status_overloaded.
-  // A stale false here is harmless: checkTransporterOverloaded (and the
-  // next LQHKEYREQ's observation of the cache) reach the authoritative
-  // decision.
-  if (unlikely(globalTransporterRegistry.any_overloaded())) {
-    const NodeBitmask &all = globalTransporterRegistry.get_status_overloaded();
-    if (!all.isclear()) {
-      if (checkTransporterOverloaded(signal, all, lqhKeyReq)) {
-        /* Overloaded, reject new work */
-        earlyKeyReqAbort_releasing(signal, lqhKeyReq,
-                                   ZTRANSPORTER_OVERLOADED_ERROR,
-                                   __LINE__, handle, tcConnectptr);
-        return;
-      }
-    }
+  // When it is true we fall into the cold-text helper which does the
+  // detailed scan + dispatch decision. A stale false here is harmless:
+  // the next LQHKEYREQ's observation of the cache reaches the
+  // authoritative decision.
+  if (unlikely(globalTransporterRegistry.any_overloaded()) &&
+      transporter_overloaded_detailed(signal, lqhKeyReq)) {
+    /* Overloaded, reject new work */
+    earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                               ZTRANSPORTER_OVERLOADED_ERROR,
+                               __LINE__, handle, tcConnectptr);
+    return;
   }
 
   const UintR Treqinfo = lqhKeyReq->requestInfo;
@@ -9213,51 +9305,15 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->applOprec = sig4;
 
   if (LqhKeyReq::getMarkerFlag(Treqinfo)) {
-    struct CommitAckMarker check;
-    CommitAckMarkerPtr markerPtr;
-    jamDebug();
-    check.transid1 = regTcPtr->transid[0];
-    check.transid2 = regTcPtr->transid[1];
-
-    if (m_commitAckMarkerHash.find(markerPtr, check)) {
-      /*
-        A commit ack marker was already placed here for this transaction.
-        We increase the reference count to ensure we don't remove the
-        commit ack marker prematurely.
-      */
-      ndbrequire(markerPtr.p->in_hash == true);
-      ndbrequire(markerPtr.p->reference_count > 0);
-      markerPtr.p->reference_count++;
-#ifdef MARKER_TRACE
-      g_eventLogger->info("Inc marker[%.8x %.8x] op: %u ref: %u",
-                          markerPtr.p->transid1, markerPtr.p->transid2,
-                          tcConnectptr.i, markerPtr.p->reference_count);
-#endif
-    } else {
-      if (ERROR_INSERTED(5082) ||
-          unlikely(!m_commitAckMarkerPool.seize(markerPtr))) {
-        earlyKeyReqAbort_releasing(signal, lqhKeyReq,
-                                   ZNO_FREE_MARKER_RECORDS_ERROR,
-                                   __LINE__, handle, tcConnectptr);
-        return;
-      }
-      markerPtr.p->transid1 = sig1;
-      markerPtr.p->transid2 = sig2;
-      markerPtr.p->apiRef = sig3;
-      markerPtr.p->apiOprec = sig4;
-      markerPtr.p->tcRef = tcRef;
-      markerPtr.p->reference_count = 1;
-      markerPtr.p->in_hash = true;
-      markerPtr.p->removed_by_fail_api = false;
-      m_commitAckMarkerHash.add(markerPtr);
-
-#ifdef MARKER_TRACE
-      g_eventLogger->info("%u Add marker[%.8x %.8x] op: %u", instance(),
-                          markerPtr.p->transid1, markerPtr.p->transid2,
-                          tcConnectptr.i);
-#endif
+    const Uint32 markerI = findOrSeizeCommitAckMarker(
+        sig1, sig2, sig3, sig4, tcRef, tcConnectptr.i);
+    if (unlikely(markerI == RNIL)) {
+      earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                                 ZNO_FREE_MARKER_RECORDS_ERROR,
+                                 __LINE__, handle, tcConnectptr);
+      return;
     }
-    regTcPtr->commitAckMarker = markerPtr.i;
+    regTcPtr->commitAckMarker = markerI;
   }
 
   regTcPtr->reqinfo = Treqinfo;
@@ -9542,39 +9598,8 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
    */
   if (regTcPtr->dirtyOp == ZFALSE)  // Transactional operation
   {
-    jamDebug();
-    TcConnectionrecPtr localNextTcConnectptr;
-    const Uint32 hashIndex = getHashIndex(regTcPtr);
-    NDB_PREFETCH_WRITE(&m_curr_lqh->ctransidHash[hashIndex]);
-    jamDebug();
-    jamDataDebug(Uint16(hashIndex));
-    jamDataDebug(Uint16(m_curr_lqh->instance()));
-    Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
-    regTcPtr->prevHashRec = RNIL;
-    regTcPtr->hashIndex = hashIndex;
-    NdbMutex_Lock(&m_curr_lqh->transaction_hash_mutex[mutexIndex]);
-#if defined VM_TRACE || defined ERROR_INSERT
-    jamLineDebug(Uint16(m_curr_lqh->trans_hash_mutex_counter[mutexIndex]));
-    m_curr_lqh->trans_hash_mutex_counter[mutexIndex]++;
-#endif
-    localNextTcConnectptr.i = m_curr_lqh->ctransidHash[hashIndex];
-    m_curr_lqh->ctransidHash[hashIndex] = tcConnectptr.i;
-    if (unlikely(localNextTcConnectptr.i != RNIL))
-    {
-      jamDebug();
-      ndbrequire(m_curr_lqh->tcConnect_pool.
-                 getValidPtr(localNextTcConnectptr));
-      /* Check that no equal element exists */
-      ndbrequire(!checkTransaction(localNextTcConnectptr,
-                                   regTcPtr->tcHashKeyHi,
-                                   regTcPtr,
-                                   true));
-      ndbassert(localNextTcConnectptr.p->prevHashRec == RNIL);
-      localNextTcConnectptr.p->prevHashRec = tcConnectptr.i;
-    }//if
-    regTcPtr->nextHashRec = localNextTcConnectptr.i;
-    NdbMutex_Unlock(&m_curr_lqh->transaction_hash_mutex[mutexIndex]);
-  }//if
+    insertIntoTransactionHash(tcConnectptr);
+  }
   /**
    * Up until this point in execLQHKEYREQ all we have done is setting up
    * data structures that are local to this thread. Now we are ready to

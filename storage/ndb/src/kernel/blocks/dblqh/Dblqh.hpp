@@ -3959,6 +3959,23 @@ private:
                                Uint16 callerLine,
                                TcConnectionrecPtr tcConnectptr)
       __attribute__((cold, noinline));
+
+  // Outlined mid-warmth helpers called from execLQHKEYREQ. These
+  // fire on specific request shapes only (tx-hash on !dirtyOp,
+  // marker setup on getMarkerFlag, detailed overload only when the
+  // Item-7 cached flag says true), so they do not belong inline in
+  // the hot body.
+  void insertIntoTransactionHash(TcConnectionrecPtr tcConnectptr)
+      __attribute__((noinline));
+  Uint32 findOrSeizeCommitAckMarker(Uint32 transid1, Uint32 transid2,
+                                    Uint32 apiRef, Uint32 apiOprec,
+                                    Uint32 tcRef,
+                                    Uint32 opPtrI)
+      __attribute__((noinline));
+  bool transporter_overloaded_detailed(Signal *signal,
+                                       const class LqhKeyReq *lqhKeyReq)
+      __attribute__((cold, noinline));
+
   void logLqhkeyrefLab(Signal *signal, TcConnectionrecPtr, Uint32 errorCode);
   void closeCopyLab(Signal *signal, TcConnectionrec *);
   void commitReplyLab(Signal *signal, TcConnectionrec *);
