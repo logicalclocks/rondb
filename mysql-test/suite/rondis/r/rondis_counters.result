@@ -1,0 +1,35 @@
+#
+# INCR / DECR on a non-existent key implicitly creates it at 0.
+#
+1
+1
+-1
+-1
+#
+# INCRBY / DECRBY on a non-existent key with a specified delta.
+#
+7
+7
+-4
+-4
+#
+# Negative delta on INCRBY acts like DECRBY, and vice versa.
+#
+OK
+70
+80
+80
+#
+# Sequence crossing zero - confirm negative results round-trip.
+#
+OK
+1
+0
+-1
+-1
+999
+999
+#
+# Cleanup.
+#
+6

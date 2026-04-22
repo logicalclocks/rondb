@@ -1,0 +1,33 @@
+#
+# HINCR / HDECR on a non-existent field auto-create it at 0.
+#
+1
+1
+-1
+-1
+#
+# HINCRBY / HDECRBY on a non-existent field with a specified delta.
+#
+7
+7
+-4
+-4
+#
+# Negative delta acts in the opposite direction.
+#
+1
+70
+80
+80
+#
+# Cross-zero sequence confirms negative values round-trip.
+#
+1
+1
+0
+-1
+-1
+#
+# Cleanup.
+#
+0

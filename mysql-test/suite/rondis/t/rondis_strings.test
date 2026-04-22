@@ -1,0 +1,55 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Positive-path coverage for Rondis string commands: GET, SET baseline,
+# MGET, MSET, DEL. Variation-heavy: non-existent keys, empty values,
+# overwrite, multi-key return counts, mixed existing/missing on MGET.
+#
+# Large-value and binary payloads are exercised by the stress suite
+# (rondis_stress_strings / rondis_stress_mget_mset).
+#
+
+--echo #
+--echo # SET then GET - baseline, overwrite, empty value
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k1 "hello"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET k1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k1 "world"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET k1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k2 ""
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET k2
+
+--echo #
+--echo # GET on a non-existent key returns nil (rendered as empty line
+--echo # by redis-cli in non-TTY mode).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET no_such_key
+
+--echo #
+--echo # Large key (just under the 3000-byte ceiling). Verifies round-trip.
+--echo #
+--let $bigkey = `SELECT REPEAT('k', 2800)`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET $bigkey "value-for-big-key"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET $bigkey
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL $bigkey
+
+--echo #
+--echo # MSET / MGET - baseline plus mix of existing and missing keys.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT MSET a 1 b 2 c 3
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT MGET a b c
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT MGET a missing b gap c
+
+--echo #
+--echo # DEL return count: 1 for a hit, 0 for a miss, N for multi-key.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL k1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL k1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL a b c k2
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL missing1 missing2
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

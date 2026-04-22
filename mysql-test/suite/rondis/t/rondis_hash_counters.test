@@ -1,0 +1,51 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Positive-path coverage for Rondis hash counter commands: HINCR,
+# HINCRBY, HDECR, HDECRBY. HINCR / HDECR are Rondis extensions (not in
+# real Redis, which only has HINCRBY/HINCRBYFLOAT).
+#
+
+--echo #
+--echo # HINCR / HDECR on a non-existent field auto-create it at 0.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HINCR counters up
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET counters up
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDECR counters dn
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET counters dn
+
+--echo #
+--echo # HINCRBY / HDECRBY on a non-existent field with a specified delta.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HINCRBY counters step_up 7
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET counters step_up
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDECRBY counters step_dn 4
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET counters step_dn
+
+--echo #
+--echo # Negative delta acts in the opposite direction.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET counters mix 100
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HINCRBY counters mix -30
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDECRBY counters mix -10
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET counters mix
+
+--echo #
+--echo # Cross-zero sequence confirms negative values round-trip.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET counters zc 2
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDECR counters zc
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDECR counters zc
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDECR counters zc
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET counters zc
+
+--echo #
+--echo # Cleanup.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL counters
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

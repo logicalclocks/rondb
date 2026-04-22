@@ -1,0 +1,36 @@
+#
+# NX on a non-existent key - stores, returns +OK.
+#
+OK
+first
+#
+# XX on an existing key - stores, returns +OK.
+#
+OK
+OK
+updated
+#
+# EX / PX - TTL in seconds / milliseconds. Shape only; numerical
+# verification is in rondis_ttl.test.
+#
+OK
+value
+OK
+value
+#
+# EXAT / PXAT - absolute unix-timestamp TTL.
+#
+OK
+value
+OK
+value
+#
+# KEEPTTL - preserve the existing TTL on overwrite.
+#
+OK
+OK
+upd
+#
+# Cleanup.
+#
+3

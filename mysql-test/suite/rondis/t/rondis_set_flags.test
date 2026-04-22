@@ -1,0 +1,65 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Coverage for the SET flag matrix: NX, XX, GET, EX, PX, EXAT, PXAT,
+# KEEPTTL.
+#
+# This test exercises only the flag paths that currently work. Three
+# broken paths (NX-on-existing, XX-on-missing, SET GET on any key) are
+# tracked as bugs C7/C8/C9 in the Rondis testing plan; the first two
+# emit bogus NDB-internal errors, and the GET flag outright closes the
+# client connection on the server side. Those paths are deliberately
+# not exercised here so the test does not run into the crash. When
+# they are fixed, the matching probes should be restored.
+#
+# Numerical TTL assertions (does EX 60 really land ~NOW()+60?) live in
+# Phase 3's rondis_ttl.test. Here we only check reply shape.
+#
+
+--echo #
+--echo # NX on a non-existent key - stores, returns +OK.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET nxk "first" NX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET nxk
+
+--echo #
+--echo # XX on an existing key - stores, returns +OK.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET xxk "seed"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET xxk "updated" XX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET xxk
+
+--echo #
+--echo # EX / PX - TTL in seconds / milliseconds. Shape only; numerical
+--echo # verification is in rondis_ttl.test.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttlk "value" EX 60
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ttlk
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttlk "value" PX 60000
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ttlk
+
+--echo #
+--echo # EXAT / PXAT - absolute unix-timestamp TTL.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttlk "value" EXAT 4102444800
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ttlk
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttlk "value" PXAT 4102444800000
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ttlk
+
+--echo #
+--echo # KEEPTTL - preserve the existing TTL on overwrite.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttlk "orig" EX 3600
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttlk "upd" KEEPTTL
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ttlk
+
+--echo #
+--echo # Cleanup.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL nxk xxk ttlk
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

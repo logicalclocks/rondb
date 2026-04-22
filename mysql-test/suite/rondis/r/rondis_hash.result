@@ -1,0 +1,60 @@
+#
+# HSET - single-field insert returns 1 (one new field).
+#
+1
+Alice
+#
+# HSET - overwriting an existing field. Redis returns 0 (nothing
+# new added). BUG C10: Rondis returns 1, counting every supplied
+# pair regardless of whether it was new.
+#
+1
+Alicia
+#
+# HSET - multi-field form. Redis would return 2 (only 'age' and
+# 'city' are new; 'name' is an overwrite). BUG C10: Rondis
+# returns 3, the total number of pairs supplied.
+#
+3
+#
+# HGET - non-existent field returns nil.
+#
+
+#
+# HGET - non-existent hash returns nil.
+#
+
+#
+# HMGET - mix of existing and missing fields.
+#
+Alicia
+
+30
+
+Stockholm
+#
+# HMSET - per Redis spec this legacy alias should return +OK.
+# BUG C11: Rondis reuses the HSET handler and returns the pair
+# count (3) instead of +OK.
+#
+3
+Bob
+Oslo
+#
+# HDEL - single-field delete returns 1, repeat returns 0.
+#
+1
+0
+
+#
+# HDEL - multi-field delete returns the count of fields that
+# actually existed and were removed (missing fields do not count).
+#
+2
+#
+# Cleanup. Note: DEL only clears string_keys, so DEL on hash
+# names returns 0 - a consequence of the namespace split (see
+# rondis_namespace_split.test). HDEL by field is the only way
+# to clear hash entries today.
+#
+0

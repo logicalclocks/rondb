@@ -1,0 +1,53 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Positive-path coverage for Rondis counter commands: INCR, INCRBY,
+# DECR, DECRBY. Focus on auto-create-on-missing semantics, negative
+# deltas, sequences crossing through zero, and GET round-trip.
+#
+
+--echo #
+--echo # INCR / DECR on a non-existent key implicitly creates it at 0.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT INCR counter_up
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET counter_up
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DECR counter_dn
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET counter_dn
+
+--echo #
+--echo # INCRBY / DECRBY on a non-existent key with a specified delta.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT INCRBY step_up 7
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET step_up
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DECRBY step_dn 4
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET step_dn
+
+--echo #
+--echo # Negative delta on INCRBY acts like DECRBY, and vice versa.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET mix 100
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT INCRBY mix -30
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DECRBY mix -10
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET mix
+
+--echo #
+--echo # Sequence crossing zero - confirm negative results round-trip.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET zerocross 2
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DECR zerocross
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DECR zerocross
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DECR zerocross
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET zerocross
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT INCRBY zerocross 1000
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET zerocross
+
+--echo #
+--echo # Cleanup.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL counter_up counter_dn step_up step_dn mix zerocross
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

@@ -257,6 +257,91 @@ changes.
 - Pipeline / transaction (MULTI/EXEC) — Rondis does not support these.
 - RESP3 / HELLO — not supported.
 
+### C10, C11 — HSET / HMSET reply semantics (discovered in Phase 2)
+
+Surfaced while recording `t/rondis_hash.test`.
+
+**C10. HSET returns the total pair count instead of the count of new
+fields.**
+Expected (Redis): HSET returns the number of fields that did **not**
+previously exist and were therefore added. Updates of existing fields
+do not count.
+Actual: Rondis returns the total number of `field value` pairs
+supplied, regardless of whether they were new or overwrites.
+- `HSET k newfield v` on a brand-new field returns `1` (coincidentally
+  correct).
+- `HSET k existingfield v` overwriting a known field returns `1`
+  (should be `0`).
+- `HSET k existing v1 new1 v2 new2 v3` returns `3` (should be `1`).
+
+Root cause: `rondb_hset_command` at
+`storage/ndb/src/rondis/src/commands.cc:1316` delegates to
+`rondb_mset`, which at `:1271-1280` replies with
+`get_ctrl->m_num_keys_requested` — the number of supplied pairs. The
+path has no concept of "which pairs hit an existing row". A proper
+fix needs the MSET/HSET interpreted program to emit, per row, a bit
+indicating insert-vs-update, aggregate those bits on the client side,
+and return the aggregate.
+
+**C11. HMSET returns a field count instead of `+OK`.**
+Expected (Redis): HMSET returns the simple string `+OK` (it is the
+deprecated variant of HSET with a different, simpler reply shape).
+Actual: Rondis's HMSET dispatcher points at the same handler as HSET,
+so it emits the integer field count.
+
+Root cause: same code-reuse at `rondb_hset_command:1316`. HMSET needs
+its own handler (or a flag into `rondb_mset` that swaps the reply
+shape after a successful store). Low-risk fix once C10's plumbing is
+in — the MSET function already branches on `STRING_REDIS_KEY_ID` for
+its reply; HMSET just needs a third branch that emits `+OK`.
+
+`rondis_hash.result` was recorded with the current (wrong) replies so
+that both fixes, when they land, surface as visible .result diffs.
+In-line comments in `rondis_hash.test` flag every assertion that is
+currently divergent.
+
+### C7, C8, C9 — SET flag paths are broken (discovered in Phase 2)
+
+The comprehensive SET flag matrix test (`t/rondis_set_flags.test`)
+surfaced three broken paths in Rondis's conditional-store
+implementation. The test captures current behavior via `--error 0,1`
+so regressions or fixes both show as visible .result diffs, but the
+commands themselves need real fixes.
+
+**C7. `SET k v NX` on an existing key errors out.**
+Expected (Redis): reply is `$-1\r\n` (nil) and the store is skipped.
+Actual: the interpreted-code program built for the "insert only if
+absent" path has an invalid branch target, and NDB refuses to compile
+it: `ERR Failed to create Interpreted code; NDB(4517) Bad label in
+branch instruction`. The bad-label error is deterministic, so this
+path has never worked. Fix is in the SET-NX program construction,
+likely in `storage/ndb/src/rondis/src/interpreted_code.cc` (whichever
+routine builds the conditional-insert program referenced from
+`rondb_set_command` at `commands.cc:1290`).
+
+**C8. `SET k v XX` on a non-existent key errors out.**
+Expected: reply is `$-1\r\n` (nil) and the store is skipped.
+Actual: `ERR Failed to execute MSET operation; NDB(6000)`. Two
+distinct problems: (a) the XX-absent path emits a transaction-abort
+error instead of the canonical nil; (b) the error message incorrectly
+references MSET because the XX path reuses `FAILED_EXECUTE_MSET` as
+its generic failure string. The message fix is cosmetic; the nil-on-
+miss behavior is the real work.
+
+**C9. `SET k v GET` errors out on a non-existent key.**
+Expected: store the value and return `$-1\r\n` (nil old value).
+Actual: the server returns an error that causes redis-cli to exit 1.
+The GET-flag path is probably merging the old-value read into the
+same interpreted-code program and falling off a cliff when the row
+does not exist. Needs the SET+GET code path to treat
+"key-not-found-before-insert" as success with a nil old-value reply,
+not as an error.
+
+**Fix order suggestion**: C8 (message fix is trivial, behavior fix
+isolates cleanly), then C7 (related interpreted-code construction),
+then C9 (likely shares code with C7). Each should re-record
+`rondis_set_flags.result` in lockstep.
+
 ### C5b — INCR/DECR integer overflow silently wraps (correctness bug)
 
 While fixing C5a (non-numeric stored value mapped to the canonical

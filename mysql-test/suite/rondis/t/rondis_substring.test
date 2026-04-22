@@ -1,0 +1,76 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Positive-path coverage for Rondis substring commands: STRLEN,
+# GETRANGE, SETRANGE. Exercises boundary indices, negative indices,
+# inverted ranges, zero-pad extension.
+#
+
+--echo #
+--echo # STRLEN - non-existent key returns 0, empty string returns 0,
+--echo # populated key returns byte count.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN no_such_key
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET empty ""
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN empty
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET msg "Hello, World!"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN msg
+
+--echo #
+--echo # GETRANGE - positive indices inclusive on both ends.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE msg 0 4
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE msg 7 11
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE msg 0 0
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE msg 0 100
+
+--echo #
+--echo # GETRANGE - negative indices count from the end.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE msg -6 -1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE msg -1 -1
+
+--echo #
+--echo # GETRANGE - inverted range (start > end) returns empty string.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE msg 5 2
+
+--echo #
+--echo # SETRANGE - in-place overwrite in the middle of the string.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET greet "Hello, World!"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE greet 7 "Redis"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET greet
+
+--echo #
+--echo # SETRANGE - offset at 0 overwrites from the start.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET over "0123456789"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE over 0 "ABCD"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET over
+
+--echo #
+--echo # SETRANGE - offset past end of string pads with zero bytes
+--echo # (verified via STRLEN; raw GET would contain \0 which interacts
+--echo # badly with the MTR diff framing).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET pad "Hi"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE pad 7 "There"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN pad
+
+--echo #
+--echo # SETRANGE on a non-existent key creates it with leading zero bytes.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE newkey 3 "end"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN newkey
+
+--echo #
+--echo # Cleanup.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL empty msg greet over pad newkey
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
