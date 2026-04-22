@@ -3007,7 +3007,10 @@ SimulatedBlock::FragmentInfo::FragmentInfo(Uint32 fragId, Uint32 sender) {
 
 SimulatedBlock::FragmentSendInfo::FragmentSendInfo() {}
 
-bool SimulatedBlock::assembleFragments(Signal *signal) {
+// Slow path for assembleFragments. Callers go through the inline
+// fast-path in SimulatedBlock.hpp; this function is only reached when
+// signal->header.m_fragmentInfo != 0.
+bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
   Uint32 sigLen = signal->length() - 1;
   Uint32 fragId = signal->theData[sigLen];
   Uint32 fragInfo = signal->header.m_fragmentInfo;
@@ -3015,10 +3018,7 @@ bool SimulatedBlock::assembleFragments(Signal *signal) {
 
   Uint32 *sectionPtr = signal->m_sectionPtrI;
 
-  if (fragInfo == 0) {
-    jamDebug();
-    return true;
-  }
+  ndbassert(fragInfo != 0);  // guaranteed by the inline fast-path caller
 
   const Uint32 secs = signal->header.m_noOfSections;
   const Uint32 *const secNos = &signal->theData[sigLen - secs];

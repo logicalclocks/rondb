@@ -952,7 +952,18 @@ class alignas(NDB_CL) SimulatedBlock
    * @return true if all fragments has arrived
    *         false otherwise
    */
-  bool assembleFragments(Signal *signal);
+  // Fast path: 99%+ of signals are single-fragment (m_fragmentInfo == 0)
+  // and should be handed straight to their handler without paying for
+  // a function call, a 336-byte stack frame, or 14 callee-save spills.
+  // The slow path (fragment reassembly, hash lookup, seize/release) is
+  // kept out-of-line in SimulatedBlock.cpp.
+  bool assembleFragmentsSlow(Signal *signal);
+  inline bool assembleFragments(Signal *signal) {
+    if (likely(signal->header.m_fragmentInfo == 0)) {
+      return true;
+    }
+    return assembleFragmentsSlow(signal);
+  }
 
   /**
    * Assemble dropped fragments
