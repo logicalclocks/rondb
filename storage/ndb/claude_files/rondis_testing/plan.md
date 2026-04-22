@@ -256,3 +256,45 @@ changes.
 - Parallel / stress negative tests (race conditions under load).
 - Pipeline / transaction (MULTI/EXEC) — Rondis does not support these.
 - RESP3 / HELLO — not supported.
+
+### C5b — INCR/DECR integer overflow silently wraps (correctness bug)
+
+While fixing C5a (non-numeric stored value mapped to the canonical
+`ERR value is not an integer or out of range`), the NDB interpreted-code
+program that backs INCR/DECR/HINCR/HDECR was reviewed in
+`storage/ndb/src/rondis/src/interpreted_code.cc:74-98`. The arithmetic
+uses the plain `add_reg` / `sub_reg` NDB instructions with no overflow
+check:
+
+```
+code->load_const_u64(REG5, inc_dec_value);   // desired delta
+code->add_reg(REG5, REG4, REG5);             // 2's-complement wrap on overflow
+```
+
+Concretely:
+
+```
+SET k 9223372036854775806   # INT64_MAX - 1
+INCR k                      # -> 9223372036854775807 (correct)
+INCR k                      # -> -9223372036854775808 (WRAP - should be error)
+```
+
+Redis returns `ERR increment or decrement would overflow`. Rondis
+silently flips the sign. This is not just a conformance gap — it is a
+**correctness bug with data-loss implications**: a counter wraps and
+subsequent reads look legitimate.
+
+**Why it is deferred**: fixing this requires either (a) a new overflow-
+checked variant of the ADD_REG_REG / SUB_REG_REG interpreter opcode
+added to `storage/ndb/src/kernel/blocks/dbtup/DbtupExecQuery.cpp` plus
+the corresponding `NdbInterpretedCode` accessor, or (b) a client-side
+CAS loop that pre-validates `delta + current` fits in Int64 (gives up
+atomicity). Option (a) is the right answer and deserves its own ticket
+with a Dbtup-format bump review; option (b) breaks the atomicity
+guarantee Rondis currently provides.
+
+**Phase 4 handling**: the negative-counters test will SET a value near
+INT64_MAX, INCR twice, capture whatever Rondis currently returns, and
+annotate the .test file with a comment pointing back to this entry.
+When C5b lands, that baseline gets re-recorded with the canonical
+overflow error.

@@ -62,7 +62,13 @@ Uint32 get_length(char* buf);
 #define FAILED_MALLOC "Failed to allocate memory for operation"
 #define FAILED_INCRBY_DECRBY_PARAMETER "value is not an integer or out of range"
 #define FAILED_SELECT_COMMAND "Wrong parameter to SELECT command"
-#define FAILLED_SELECT_NO_SUCH_DATABASE "The database selected doesn't exist"
+#define FAILED_SELECT_NO_SUCH_DATABASE "The database selected doesn't exist"
+
+// NDB interpreted-code runtime error codes that we surface specially.
+// Mirrors ZINVALID_LONG_LONG_STRING in storage/ndb/src/kernel/blocks/dbtup/Dbtup.hpp.
+// Emitted when the STR_TO_INT64 instruction cannot parse the stored value,
+// i.e. the user ran INCR/DECR/HINCR/HDECR on a non-numeric string.
+#define RONDB_INTERP_INVALID_INT64 853
 
 // Redis errors
 #define REDIS_UNKNOWN_COMMAND "unknown command '%s'"

@@ -575,11 +575,18 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
   // First check non-ndb commands
   const char *command = argv[0].c_str();
   if (strcasecmp(command, "ping") == 0) {
-    if (argv.size() != 1) {
+    if (argv.size() == 1) {
+      response->append("+PONG\r\n");
+    } else if (argv.size() == 2) {
+      response->assign("$" +
+                       std::to_string(argv[1].length()) +
+                       "\r\n" +
+                       argv[1] +
+                       "\r\n");
+    } else {
       wrong_number_of_arguments(argv, response);
       return 0;
     }
-    response->append("+PONG\r\n");
   } else if (strcasecmp(command, "echo") == 0) {
     if (argv.size() != 2) {
       wrong_number_of_arguments(argv, response);
@@ -591,17 +598,24 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
                      argv[1] +
                      "\r\n");
   } else if (strcasecmp(command, "config") == 0) {
-    if (argv.size() != 3) {
+    /* CONFIG GET [pattern ...] - Redis accepts one or more patterns and
+     * replies with a flat array of matched name/value pairs (empty if
+     * nothing matches). Rondis does not expose any tunable parameters,
+     * so the reply is always the canonical empty array. */
+    if (argv.size() < 3) {
       wrong_number_of_arguments(argv, response);
       return 0;
     }
-    if (argv[1] == "GET") {
-      *response += "*2\r\n";
-      *response += "$" + std::to_string(argv[2].length()) + "\r\n";
-      *response += argv[2] + "\r\n";
-      *response += "*0\r\n";
+    if (strcasecmp(argv[1].c_str(), "GET") == 0) {
+      response->append("*0\r\n");
     } else {
-      unsupported_command(argv, response);
+      char error_message[256];
+      snprintf(error_message,
+               sizeof(error_message),
+               "Unknown subcommand or wrong number of arguments for '%s'."
+               " Try CONFIG HELP.",
+               argv[1].c_str());
+      assign_generic_err_to_response(response, error_message);
     }
   } else if (strcasecmp(command, "select") == 0) {
     if (argv.size() != 2) {
@@ -611,6 +625,7 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
     char *end_ptr = nullptr;
     const char *val_ptr = argv[1].c_str();
     const char *memory_end = val_ptr + argv[1].size();
+    errno = 0;
     Int64 val = strtoll(val_ptr,
                         &end_ptr,
                         10);
@@ -620,10 +635,11 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
                              1);
       return 0;
     }
-    if (val >= g_num_databases) {
+    if (val < 0 || val >= g_num_databases) {
       assign_err_to_response(response,
-                             FAILLED_SELECT_NO_SUCH_DATABASE,
+                             FAILED_SELECT_NO_SUCH_DATABASE,
                              1);
+      return 0;
     }
     set_current_database(worker_id, (int)val);
     response->append("+OK\r\n");

@@ -12,9 +12,11 @@
 #
 
 --echo #
---echo # PING - baseline
+--echo # PING - baseline (no arg) and with optional message (Redis spec)
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PING
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PING hello
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PING "with spaces"
 
 --echo #
 --echo # ECHO - short arg, with spaces, empty string, digit-like arg
@@ -25,13 +27,19 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT ECHO 12345
 
 --echo #
---echo # CONFIG GET - Rondis returns the parameter name paired with an
---echo # empty array (divergent from real Redis, which returns
---echo # name/value pairs). Any parameter name is accepted.
+--echo # CONFIG GET - Rondis does not expose any tunable parameters, so
+--echo # every pattern yields the Redis-canonical empty array reply.
+--echo # Multi-pattern form is accepted (arity >= 3).
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT CONFIG GET maxmemory
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT CONFIG GET save
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT CONFIG GET does-not-exist
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT CONFIG GET maxmemory timeout
+
+--echo #
+--echo # CONFIG with unsupported subcommand - Redis-canonical error
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT CONFIG SET maxmemory 100 2>&1
 
 --echo #
 --echo # SELECT - valid database (Rondis exposes at least db 0)

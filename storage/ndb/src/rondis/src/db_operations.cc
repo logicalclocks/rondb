@@ -1082,6 +1082,12 @@ void incr_decr_key_row(std::string *response,
                                  trans->getNdbError());
       return;
     }
+    if (trans->getNdbError().code == RONDB_INTERP_INVALID_INT64) {
+      // STR_TO_INT64 could not parse the stored value. Redis-canonical
+      // reply for INCR/DECR on a non-numeric string.
+      assign_generic_err_to_response(response, FAILED_INCRBY_DECRBY_PARAMETER);
+      return;
+    }
     DEB_INCR(("INCR_DECR_ERROR: %d\n", trans->getNdbError().code));
     assign_ndb_err_to_response(response,
                                FAILED_INCR_KEY,
