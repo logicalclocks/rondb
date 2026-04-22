@@ -262,10 +262,17 @@ static Int64 get_current_unix_time() {
 static bool get_int64(std::string opt_val,
                       std::string *response,
                       Int64 *ret_value) {
-  Int64 val;
-  try {
-    val = std::stoll(opt_val);
-  } catch (const std::exception &e) {
+  // Previously used std::stoll, which silently accepts a trailing
+  // non-digit suffix ("1.5" -> 1, "42abc" -> 42). strtoll with an
+  // end-pointer check rejects that, matching the Redis-canonical
+  // "value is not an integer or out of range" semantics and the
+  // stricter pattern already used in INCRBY/HINCRBY (C14).
+  const char *p = opt_val.c_str();
+  const char *end = p + opt_val.size();
+  char *ep = nullptr;
+  errno = 0;
+  Int64 val = strtoll(p, &ep, 10);
+  if (errno == EINVAL || errno == ERANGE || ep != end || ep == p) {
     assign_generic_err_to_response(response, REDIS_INVALID_INTEGER);
     return false;
   }
@@ -1041,12 +1048,24 @@ void rondb_mset(Ndb *ndb,
       set_ttl = true;
       std::string opt_val = argv[arg_index + 1];
       if (get_int64(opt_val, response, &ttl) == false) return;
+      if (ttl <= 0) {
+        // Redis-canonical for EX <= 0 (C12). Also avoids collision
+        // with generate_expire_at's ttl==-1 "never expires" sentinel.
+        assign_generic_err_to_response(response, REDIS_INVALID_EXPIRE_TIME);
+        return;
+      }
       arg_index += 2;
       DEB_TTL(("ex: ttl: %lld\n", ttl));
     } else if (strcasecmp(arg, "px") == 0 && argv.size() > (arg_index + 1)) {
       set_ttl = true;
       std::string opt_val = argv[arg_index + 1];
       if (get_int64(opt_val, response, &ttl) == false) return;
+      if (ttl <= 0) {
+        // Reject before the ceil-division below (PX 0 / PX -1 would
+        // otherwise survive conversion or collide with the sentinel).
+        assign_generic_err_to_response(response, REDIS_INVALID_EXPIRE_TIME);
+        return;
+      }
       //Convert to seconds
       ttl = (ttl + 999) / 1000;
       arg_index += 2;
@@ -1971,7 +1990,7 @@ void rondb_incrby_command(Ndb *ndb,
   if (errno == EINVAL || errno == ERANGE || end_ptr != memory_end) {
     assign_err_to_response(response,
                            FAILED_INCRBY_DECRBY_PARAMETER,
-                           1);
+                           0);
     return;
   }
   rondb_incr_decr(ndb,
@@ -2012,7 +2031,7 @@ void rondb_decrby_command(Ndb *ndb,
   if (errno == EINVAL || errno == ERANGE || end_ptr != memory_end) {
     assign_err_to_response(response,
                            FAILED_INCRBY_DECRBY_PARAMETER,
-                           1);
+                           0);
     return;
   }
   rondb_incr_decr(ndb,
@@ -2073,7 +2092,7 @@ void rondb_hincrby_command(Ndb *ndb,
   if (errno == EINVAL || errno == ERANGE || end_ptr != memory_end) {
     assign_err_to_response(response,
                            FAILED_INCRBY_DECRBY_PARAMETER,
-                           1);
+                           0);
     return;
   }
   rondb_incr_decr(ndb,
@@ -2134,7 +2153,7 @@ void rondb_hdecrby_command(Ndb *ndb,
   if (errno == EINVAL || errno == ERANGE || end_ptr != memory_end) {
     assign_err_to_response(response,
                            FAILED_INCRBY_DECRBY_PARAMETER,
-                           1);
+                           0);
     return;
   }
   rondb_incr_decr(ndb,

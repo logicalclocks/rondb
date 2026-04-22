@@ -632,13 +632,13 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
     if (errno == ERANGE || end_ptr != memory_end) {
       assign_err_to_response(response,
                              FAILED_SELECT_COMMAND,
-                             1);
+                             0);
       return 0;
     }
     if (val < 0 || val >= g_num_databases) {
       assign_err_to_response(response,
                              FAILED_SELECT_NO_SUCH_DATABASE,
-                             1);
+                             0);
       return 0;
     }
     set_current_database(worker_id, (int)val);
@@ -729,7 +729,7 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
         return 0;
       }
     } else if (strcasecmp(command, "HDEL") == 0) {
-      if (argv.size() >= 2) {
+      if (argv.size() >= 3) {
         rondb_hdel_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);

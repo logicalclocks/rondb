@@ -35,21 +35,21 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT INCRBY num 9999999999999999999999 2>&1
 
 --echo #
---echo # INT64 overflow - INCR at INT64_MAX. Phase-0.5 C5b partial fix
---echo # maps NDB error 854 (ZCALC_OVERFLOW_ERROR from the interpreter
---echo # add_reg / sub_reg opcodes) to the Redis-canonical overflow
---echo # reply. A separate stability issue (the first INCR at MAX-1
---echo # currently closes the connection - see plan entry C5c) is why
---echo # the probes below use --error 0,1.
+--echo # INT64 boundaries: INCR at MAX-1 succeeds, next INCR overflows.
+--echo # NDB error 854 (ZCALC_OVERFLOW_ERROR from the ADD_REG_REG /
+--echo # SUB_REG_REG interpreter opcodes) is mapped to the canonical
+--echo # Redis overflow reply by the C5b fix.
 --echo #
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET bignum 9223372036854775807
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET bignum 9223372036854775806
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT INCR bignum
 --error 0,1
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT INCR bignum 2>&1
 
 --echo #
---echo # INT64 underflow - DECR at INT64_MIN.
+--echo # INT64 underflow - DECR at MIN+1 succeeds, next DECR underflows.
 --echo #
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET smallnum -9223372036854775808
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET smallnum -9223372036854775807
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DECR smallnum
 --error 0,1
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DECR smallnum 2>&1
 

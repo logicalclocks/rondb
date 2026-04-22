@@ -85,4 +85,5 @@ Uint32 get_length(char* buf);
 #define REDIS_SYNTAX_ERROR "syntax error"
 #define REDIS_INVALID_INTEGER "value is not an integer or out of range"
 #define REDIS_OFFSET_OUT_OF_RANGE "offset is out of range"
+#define REDIS_INVALID_EXPIRE_TIME "invalid expire time in set"
 #endif

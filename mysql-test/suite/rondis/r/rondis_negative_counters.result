@@ -14,36 +14,36 @@ ERR value is not an integer or out of range
 # emits the canonical string.
 #
 OK
-ERR value is not an integer or out of range; NDB(1)
+ERR value is not an integer or out of range
 
-ERR value is not an integer or out of range; NDB(1)
+ERR value is not an integer or out of range
 
-ERR value is not an integer or out of range; NDB(1)
+ERR value is not an integer or out of range
 
 #
-# INT64 overflow - INCR at INT64_MAX. Phase-0.5 C5b partial fix
-# maps NDB error 854 (ZCALC_OVERFLOW_ERROR from the interpreter
-# add_reg / sub_reg opcodes) to the Redis-canonical overflow
-# reply. A separate stability issue (the first INCR at MAX-1
-# currently closes the connection - see plan entry C5c) is why
-# the probes below use --error 0,1.
+# INT64 boundaries: INCR at MAX-1 succeeds, next INCR overflows.
+# NDB error 854 (ZCALC_OVERFLOW_ERROR from the ADD_REG_REG /
+# SUB_REG_REG interpreter opcodes) is mapped to the canonical
+# Redis overflow reply by the C5b fix.
 #
 OK
+9223372036854775807
 ERR increment or decrement would overflow
 
 #
-# INT64 underflow - DECR at INT64_MIN.
+# INT64 underflow - DECR at MIN+1 succeeds, next DECR underflows.
 #
 OK
+-9223372036854775808
 ERR increment or decrement would overflow
 
 #
 # HINCRBY / HDECRBY non-numeric delta.
 #
 1
-ERR value is not an integer or out of range; NDB(1)
+ERR value is not an integer or out of range
 
-ERR value is not an integer or out of range; NDB(1)
+ERR value is not an integer or out of range
 
 #
 # HINCR on a non-numeric hash field - parallels C5a on strings.

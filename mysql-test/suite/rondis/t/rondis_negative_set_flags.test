@@ -4,17 +4,12 @@
 
 #
 # Negative-path coverage for SET flag combinations: conflicting flags,
-# bad integer arguments, and suspicious TTL values.
+# bad integer arguments, and non-positive TTL values.
 #
 # Expected canonical Redis replies:
 #   (error) ERR syntax error
 #   (error) ERR value is not an integer or out of range
-#
-# Some current Rondis behaviors that diverge from Redis are captured
-# as-is and flagged in-line:
-#   - EX -1 is accepted by Rondis and conflates with the "never expires"
-#     sentinel inside generate_expire_at; Redis would reject it.
-#   - EX 0 is accepted by Rondis (expires now); Redis rejects.
+#   (error) ERR invalid expire time in set
 #
 
 --echo #
@@ -47,23 +42,21 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k v BOGUS 2>&1
 
 --echo #
---echo # Negative EX - Redis emits 'ERR invalid expire time in set'.
---echo # Rondis currently accepts EX -1 and conflates with the "never
---echo # expires" sentinel (generate_expire_at at commands.cc:280
---echo # treats ttl == -1 as "never expires"), so the key ends up with
---echo # expiry_date = g_max_expire_at (2038-01-19). This is divergent
---echo # and should be tightened; see plan entry C12.
+--echo # Negative or zero EX - Redis-canonical error. The C12 fix in
+--echo # commands.cc validates EX/PX > 0 at parse time, which also
+--echo # avoids collision with generate_expire_at's "ttl == -1 means
+--echo # never expires" internal sentinel.
 --echo #
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_neg "value" EX -1
-SELECT UNIX_TIMESTAMP(expiry_date) = 2147483647 AS clamped_to_2038
-  FROM redis_0.string_keys WHERE redis_key = 'k_neg';
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_neg "value" EX -1 2>&1
+# Confirm no row was stored (SELECT should find nothing).
+SELECT COUNT(*) AS nrows FROM redis_0.string_keys WHERE redis_key = 'k_neg';
 
 --echo #
---echo # Zero EX - Redis emits the same invalid-expire error. Rondis
---echo # accepts it and stamps expiry at the current time (expired
---echo # immediately). Another C12-bucket divergence.
+--echo # Zero EX - same invalid-expire error.
 --echo #
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_zero "value" EX 0
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_zero "value" EX 0 2>&1
 
 --echo #
 --echo # Cleanup.

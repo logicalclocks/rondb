@@ -1104,13 +1104,12 @@ void incr_decr_key_row(std::string *response,
   NdbRecAttr *recAttr = getvals[0].recAttr;
   Int64 new_incremented_value = recAttr->int64_value();
   DEB_INCR(("INCR/DECR success, new value: %lld\n", new_incremented_value));
-  /* Send the return message to Redis client */
-  char header_buf[20];
-  [[maybe_unused]]/*todo remove?*/ int header_len =
-    snprintf(header_buf,
-      sizeof(header_buf),
-      ":%lld\r\n",
-      new_incremented_value);
+  /* Send the return message to Redis client. The buffer needs to fit
+   * ":<int64>\r\n" which is up to 24 bytes for INT64_MIN; use 32 for
+   * safety. Previously char[20] truncated replies at |v| >= 10^18,
+   * stripping the trailing \r\n and closing the connection (C5c). */
+  char header_buf[32];
+  snprintf(header_buf, sizeof(header_buf), ":%lld\r\n", new_incremented_value);
   response->append(header_buf);
 }
 

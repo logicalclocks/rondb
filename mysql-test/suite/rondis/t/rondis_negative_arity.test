@@ -87,10 +87,8 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET a f v g 2>&1
 --error 0,1
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL 2>&1
-# HDEL <key> (no field) is deliberately NOT probed: it currently
-# crashes the server via assert(num_keys > 0) in rondb_del, because
-# the HDEL dispatcher arity check at rondb.cc:732 is too loose
-# (>= 2 where >= 3 is required). Tracked as bug C13 in the plan.
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL a 2>&1
 --error 0,1
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HINCR 2>&1
 --error 0,1

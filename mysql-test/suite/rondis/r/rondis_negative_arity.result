@@ -67,6 +67,8 @@ ERR wrong number of arguments for 'HSET' command
 
 ERR wrong number of arguments for 'HDEL' command
 
+ERR wrong number of arguments for 'HDEL' command
+
 ERR wrong number of arguments for 'HINCR' command
 
 ERR wrong number of arguments for 'HINCR' command

@@ -16,32 +16,30 @@ ERR syntax error
 #
 ERR value is not an integer or out of range
 
-OK
+ERR value is not an integer or out of range
+
 #
 # Unknown trailing flag - syntax error.
 #
 ERR syntax error
 
 #
-# Negative EX - Redis emits 'ERR invalid expire time in set'.
-# Rondis currently accepts EX -1 and conflates with the "never
-# expires" sentinel (generate_expire_at at commands.cc:280
-# treats ttl == -1 as "never expires"), so the key ends up with
-# expiry_date = g_max_expire_at (2038-01-19). This is divergent
-# and should be tightened; see plan entry C12.
+# Negative or zero EX - Redis-canonical error. The C12 fix in
+# commands.cc validates EX/PX > 0 at parse time, which also
+# avoids collision with generate_expire_at's "ttl == -1 means
+# never expires" internal sentinel.
 #
-OK
-SELECT UNIX_TIMESTAMP(expiry_date) = 2147483647 AS clamped_to_2038
-FROM redis_0.string_keys WHERE redis_key = 'k_neg';
-clamped_to_2038
-1
+ERR invalid expire time in set
+
+SELECT COUNT(*) AS nrows FROM redis_0.string_keys WHERE redis_key = 'k_neg';
+nrows
+0
 #
-# Zero EX - Redis emits the same invalid-expire error. Rondis
-# accepts it and stamps expiry at the current time (expired
-# immediately). Another C12-bucket divergence.
+# Zero EX - same invalid-expire error.
 #
-OK
+ERR invalid expire time in set
+
 #
 # Cleanup.
 #
-1
+0

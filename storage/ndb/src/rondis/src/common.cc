@@ -51,7 +51,14 @@ void assign_err_to_response(
     int code)
 {
     char buf[512];
-    snprintf(buf, sizeof(buf), "-ERR %s; NDB(%u)\r\n", app_str, code);
+    if (code == 0) {
+        // Non-NDB error: don't leak a bogus "; NDB(0)" suffix into
+        // replies the user sees (C15). Callers that have no NDB
+        // error context now pass 0 instead of the placeholder 1.
+        snprintf(buf, sizeof(buf), "-ERR %s\r\n", app_str);
+    } else {
+        snprintf(buf, sizeof(buf), "-ERR %s; NDB(%u)\r\n", app_str, code);
+    }
 #ifdef DEBUG_ERROR
     std::cout << buf;
 #endif
