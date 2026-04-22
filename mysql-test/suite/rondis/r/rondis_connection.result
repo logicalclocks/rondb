@@ -1,0 +1,26 @@
+#
+# PING - baseline
+#
+PONG
+#
+# ECHO - short arg, with spaces, empty string, digit-like arg
+#
+hello
+with spaces
+
+12345
+#
+# CONFIG GET - Rondis returns the parameter name paired with an
+# empty array (divergent from real Redis, which returns
+# name/value pairs). Any parameter name is accepted.
+#
+maxmemory
+
+save
+
+does-not-exist
+
+#
+# SELECT - valid database (Rondis exposes at least db 0)
+#
+OK

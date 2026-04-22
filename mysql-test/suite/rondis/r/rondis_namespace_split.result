@@ -1,0 +1,29 @@
+#
+# Set the same name as both a string and a hash.
+#
+OK
+1
+#
+# Both lookups succeed independently - no WRONGTYPE.
+#
+string-value
+hash-field-value
+#
+# SQL view confirms the two rows live in separate tables.
+#
+SELECT redis_key, value_start
+FROM redis_0.string_keys
+WHERE redis_key = 'shared';
+redis_key	value_start
+shared	string-value
+SELECT redis_key FROM redis_0.hset_keys WHERE redis_key = 'shared';
+redis_key
+shared
+#
+# Deleting the string leaves the hash intact, and vice versa.
+#
+1
+
+hash-field-value
+1
+

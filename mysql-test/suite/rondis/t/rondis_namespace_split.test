@@ -1,0 +1,51 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Regression anchor for Rondis's namespace-split design.
+#
+# Rondis stores string keys in redis_0.string_keys under a single
+# reserved STRING_REDIS_KEY_ID, while hash keys live in redis_0.hset_keys
+# with per-hash auto-increment redis_key_id values. That means the same
+# key name can exist simultaneously as a string value and as the name
+# of a hash without collision, and Redis's WRONGTYPE error never applies.
+#
+# This diverges from real Redis (which uses a single keyspace and emits
+# WRONGTYPE on type conflicts). Namespace unification is tracked as a
+# follow-up; this test pins down the current behavior so that a future
+# unification cannot land silently.
+#
+
+--echo #
+--echo # Set the same name as both a string and a hash.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET shared "string-value"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET shared field1 "hash-field-value"
+
+--echo #
+--echo # Both lookups succeed independently - no WRONGTYPE.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET shared
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET shared field1
+
+--echo #
+--echo # SQL view confirms the two rows live in separate tables.
+--echo #
+SELECT redis_key, value_start
+  FROM redis_0.string_keys
+ WHERE redis_key = 'shared';
+SELECT redis_key FROM redis_0.hset_keys WHERE redis_key = 'shared';
+
+--echo #
+--echo # Deleting the string leaves the hash intact, and vice versa.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL shared
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET shared
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET shared field1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL shared field1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET shared field1
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
