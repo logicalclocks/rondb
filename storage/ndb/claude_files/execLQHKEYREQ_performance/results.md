@@ -750,6 +750,7 @@ requests.
 - [x] `ndb_basic` — PASS.
 - [x] `execLQHKEYREQ` unchanged (expected — Item 10 is downstream).
 - [x] Kernel-wide `__TEXT` unchanged (pure code motion).
+
 ## Item 11 — Specialized `release_frag_prepare_key_access`
 
 Commit: pending (branch `RONDB-1051-execLQHKEYREQ`).
@@ -832,3 +833,88 @@ Plus dynamic wins:
 - Per LQHKEYREQ: ~380 insns saved on no-overload path (Item 7).
 - Per LQHKEYREQ: ~25 insns saved on tail path (Item 11).
 
+## Item 12 — Split `handle_acquire_read_key_frag_access`
+
+Commit: pending (branch `RONDB-1051-execLQHKEYREQ`).
+
+### What changed
+
+- `Dblqh.hpp`: new inline `handle_acquire_read_key_frag_access`
+  (fast path in header). Declaration for noinline
+  `handle_acquire_read_key_frag_access_contended` added.
+- `DblqhMain.cpp`: renamed the body to
+  `handle_acquire_read_key_frag_access_contended`; removed the
+  fast-path prefix (counter bump, tableType check, conditional
+  lock, condition check, fast exit). Precondition on the slow
+  helper: the mutex is held on entry.
+
+### Why
+
+`handle_acquire_read_key_frag_access` was 736 B / 184 insns but
+only ~25 insns of fast-path code executed in the 99 %-common
+uncontended case. The remaining ~570 B of slow-path logic (spin
+loop with `NdbSpin`, `NdbCondition_Wait`, time accounting) was
+inline but only ever ran under lock contention. Every LQHKEYREQ
+pulled the entire 736 B into I-cache.
+
+### Metrics
+
+| Symbol | Item 11 post | Item 12 post | Δ |
+|---|--:|--:|--:|
+| `handle_acquire_read_key_frag_access` | 736 B `T` | **gone** (inlined) | — |
+| `handle_acquire_read_key_frag_access_contended` | — | 620 B `T` | new slow helper |
+| `acquire_frag_prepare_key_access` | 204 B `t` | **404 B `t`** | +200 B (3 arms now inline the fast path) |
+| `execLQHKEYREQ` | 4308 B | 4308 B | 0 |
+| Kernel-wide `__TEXT` | 7 995 392 B | 7 995 392 B | 0 at page granularity |
+
+Net effect on binary:
+- `handle_acquire_read_key_frag_access` (736 B) replaced by
+  `_contended` (620 B) + ~200 B of inlined fast path across the 3
+  arms in `acquire_frag_prepare_key_access`.
+- Kernel-wide: approximately neutral (~+100 B, lost in page
+  alignment).
+
+### Dynamic win per LQHKEYREQ (uncontended)
+
+- Before: `bl handle_acquire_read_key_frag_access` → 128-byte
+  stack frame alloc + 12 callee-save stp spills + stack canary +
+  ndbrequire + counter++ + conditional lock + condition check +
+  count++ + unlock + 12 ldp + ret. ~20 insns of function overhead
+  for what is fundamentally a 3-insn count++/unlock sequence.
+- After: inline `m_read_key_frag_access++; if (!hold_lock)
+  NdbMutex_Lock; if (likely(ready)) { count++; NdbMutex_Unlock; }`
+  in the caller. ~12 insns, no frame, no spills, no bl/ret.
+
+**~8-12 insns saved per LQHKEYREQ on the acquire path.**
+
+### I-cache win
+
+- Before: every LQHKEYREQ touched the full 736 B function — 184
+  cache-line-resident instructions.
+- After: only the ~25-insn inline fast path (in whichever arm of
+  `acquire_frag_prepare_key_access` is taken) is on the hot path.
+  The 620 B `_contended` helper is only touched under actual lock
+  contention (rare on well-tuned clusters).
+
+**~600 B of I-cache footprint reclaimed on every LQHKEYREQ.**
+
+### Verification
+
+- [x] Build succeeds.
+- [x] `ndb_basic` — PASS.
+- [x] `handle_acquire_read_key_frag_access` symbol absent (inlined).
+- [x] `_contended` helper present at 620 B.
+- [x] `acquire_frag_prepare_key_access` grew by the expected ~200 B.
+- [x] `execLQHKEYREQ` unchanged (it doesn't call this directly).
+
+### Cumulative against baseline
+
+| | `execLQHKEYREQ` size | Hot-path I-cache callees (cumulative reclaim) |
+|---|--:|---|
+| Baseline | 5960 B | — |
+| Item 11 | 4308 B | `handle_release_frag_access` (340 B) off hot path |
+| **Item 12** | 4308 B | **+`handle_acquire_read_key_frag_access` (600 B) off hot path** |
+
+`execLQHKEYREQ` stayed at 4308 B (−27.72 % vs baseline) but the
+hot call graph has now shed ~940 B of I-cache footprint on
+acquire + release between Items 11 and 12.

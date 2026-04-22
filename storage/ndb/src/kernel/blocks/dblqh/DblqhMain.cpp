@@ -8358,22 +8358,12 @@ got_lock:
   jam();
 }
 
-void Dblqh::handle_acquire_read_key_frag_access(Fragrecord *fragPtrP,
-                                                bool hold_lock,
-                                                bool check_exclusive_waiters) {
-  m_read_key_frag_access++;
-  ndbrequire(!DictTabInfo::isOrderedIndex(fragPtrP->tableType));
-  if (!hold_lock) {
-    NdbMutex_Lock(&fragPtrP->frag_mutex);
-    DEB_FRAGMENT_LOCK(fragPtrP);
-  }
-  if (is_read_key_condition_ready(fragPtrP, check_exclusive_waiters)) {
-    fragPtrP->m_concurrent_read_key_count++;
-    DEB_FRAGMENT_LOCK(fragPtrP);
-    NdbMutex_Unlock(&fragPtrP->frag_mutex);
-    jamDebug();
-    return;
-  }
+// Contended slow path for read-key lock acquisition. Called from the
+// inline fast path in Dblqh.hpp when the initial condition check fails.
+// Precondition: fragPtrP->frag_mutex IS held on entry.
+// Postcondition: mutex released, m_concurrent_read_key_count incremented.
+void Dblqh::handle_acquire_read_key_frag_access_contended(
+    Fragrecord *fragPtrP, bool check_exclusive_waiters) {
   NDB_TICKS start_spin_time;
   NDB_TICKS now;
   (void)now;

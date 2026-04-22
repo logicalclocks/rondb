@@ -5409,8 +5409,15 @@ private:
   void release_frag_prepare_key_access(Fragrecord *fragPtrP);
 
   void handle_acquire_scan_frag_access(Fragrecord *fragPtrP);
+
+  // Fast path is inline below (in header) — it is the hot path for every
+  // LQHKEYREQ. The contended slow path (spin + NdbCondition_Wait) is kept
+  // out-of-line since it fires only under lock contention.
   void handle_acquire_read_key_frag_access(Fragrecord *fragPtrP, bool hold_lock,
                                            bool check_exclusive_waiters);
+  void handle_acquire_read_key_frag_access_contended(
+      Fragrecord *fragPtrP, bool check_exclusive_waiters)
+      __attribute__((noinline));
   void handle_acquire_write_key_frag_access(Fragrecord *fragPtrP,
                                             bool hold_lock);
   void handle_acquire_exclusive_frag_access(Fragrecord *fragPtrP,
@@ -5913,6 +5920,37 @@ inline bool Dblqh::is_read_key_condition_ready(Fragrecord *fragPtrP,
     return false;
   }
   return true;
+}
+
+// Fast path for read-key lock acquisition. The contended slow path
+// (spin + NdbCondition_Wait) is out-of-line in DblqhMain.cpp; see
+// handle_acquire_read_key_frag_access_contended.
+//
+// Uncontended case (~99% of LQHKEYREQs): update stat counter, grab
+// mutex if caller did not already hold it, check condition, bump
+// m_concurrent_read_key_count, release mutex, return. No stack frame
+// or callee-save register spill needed in the inlined version —
+// those costs used to be paid on every signal.
+inline void Dblqh::handle_acquire_read_key_frag_access(
+    Fragrecord *fragPtrP, bool hold_lock, bool check_exclusive_waiters) {
+  m_read_key_frag_access++;
+  ndbrequire(!DictTabInfo::isOrderedIndex(fragPtrP->tableType));
+  if (!hold_lock) {
+    NdbMutex_Lock(&fragPtrP->frag_mutex);
+    DEB_FRAGMENT_LOCK(fragPtrP);
+  }
+  if (likely(is_read_key_condition_ready(fragPtrP, check_exclusive_waiters))) {
+    fragPtrP->m_concurrent_read_key_count++;
+    DEB_FRAGMENT_LOCK(fragPtrP);
+    NdbMutex_Unlock(&fragPtrP->frag_mutex);
+    jamDebug();
+    return;
+  }
+  // Slow path assumes the mutex is held and the condition is not yet
+  // satisfied. It spins, condition-waits, and releases the mutex before
+  // returning with m_concurrent_read_key_count bumped.
+  handle_acquire_read_key_frag_access_contended(fragPtrP,
+                                                check_exclusive_waiters);
 }
 
 inline bool Dblqh::is_write_key_condition_ready(Fragrecord *fragPtrP) {
