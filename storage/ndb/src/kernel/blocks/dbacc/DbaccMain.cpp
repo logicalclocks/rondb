@@ -1078,12 +1078,13 @@ void Dbacc::initOpRec(const AccKeyReq *signal, Uint32 siglen) const {
 /* -------------------------------------------------------------------------*/
 /* SEND_ACCKEYCONF                                                          */
 /* -------------------------------------------------------------------------*/
-void Dbacc::sendAcckeyconf(Signal *signal, bool ignore_ttl) const {
-  signal->theData[0] = operationRecPtr.p->userptr;
-  signal->theData[1] = operationRecPtr.p->m_op_bits & Operationrec::OP_MASK;
-  signal->theData[2] = operationRecPtr.p->fid;
-  signal->theData[3] = operationRecPtr.p->localdata.m_page_no;
-  signal->theData[4] = operationRecPtr.p->localdata.m_page_idx;
+void Dbacc::sendAcckeyconf(Signal *signal, const Operationrec *opPtr,
+                           bool ignore_ttl) const {
+  signal->theData[0] = opPtr->userptr;
+  signal->theData[1] = opPtr->m_op_bits & Operationrec::OP_MASK;
+  signal->theData[2] = opPtr->fid;
+  signal->theData[3] = opPtr->localdata.m_page_no;
+  signal->theData[4] = opPtr->localdata.m_page_idx;
   signal->theData[5] = ignore_ttl ? 1 : 0;
   TTL_RONDB_TRACE(fragrecptr.p->myTableId,
                   "Dbacc::sendAcckeyconf(), set ignore_ttl = %u, "
@@ -1593,7 +1594,7 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
         c_tup->prepareTUPKEYREQ(operationRecPtr.p->localdata.m_page_no,
                                 operationRecPtr.p->localdata.m_page_idx,
                                 fragrecptr.p->tupFragptr);
-        sendAcckeyconf(signal);
+        sendAcckeyconf(signal, operationRecPtr.p);
         return;
       }
       else
@@ -2039,7 +2040,7 @@ conf:
     fragrecptr.i = nextOp.p->fragptr;
     ndbrequire(c_fragment_pool.getPtr(fragrecptr));
 
-    sendAcckeyconf(signal);
+    sendAcckeyconf(signal, operationRecPtr.p);
     sendSignal(nextOp.p->userblockref, GSN_ACCKEYCONF, signal, 6, JBB);
   }
 
@@ -2168,12 +2169,12 @@ Dbacc::accIsLockedLab(Signal* signal,
                               operationRecPtr.p->localdata.m_page_idx,
                               fragrecptr.p->tupFragptr);
 
-      fragrecptr.p->m_lockStats.req_start_imm_ok((bits & 
-                                            Operationrec::OP_LOCK_MODE) 
+      fragrecptr.p->m_lockStats.req_start_imm_ok((bits &
+                                            Operationrec::OP_LOCK_MODE)
                                             != ZREADLOCK,
                                             operationRecPtr.p->m_lockTime,
                                             getHighResTimer());
-      sendAcckeyconf(signal, ignore_ttl);
+      sendAcckeyconf(signal, operationRecPtr.p, ignore_ttl);
       return;
     } else if (return_result == ZSERIAL_QUEUE) {
       jam();
@@ -2200,7 +2201,7 @@ Dbacc::accIsLockedLab(Signal* signal,
       c_tup->prepareTUPKEYREQ(operationRecPtr.p->localdata.m_page_no,
                               operationRecPtr.p->localdata.m_page_idx,
                               fragrecptr.p->tupFragptr);
-      sendAcckeyconf(signal, ignore_ttl);
+      sendAcckeyconf(signal, operationRecPtr.p, ignore_ttl);
       operationRecPtr.p->m_op_bits = Operationrec::OP_EXECUTED_DIRTY_READ;
       return;
     } 
@@ -2353,7 +2354,7 @@ void Dbacc::insertelementLab(Signal *signal, Page8Ptr bucketPageptr,
       sendSignal(reference(), GSN_EXPANDCHECK2, signal, 2, JBB);
     }//if
   }//if
-  sendAcckeyconf(signal);
+  sendAcckeyconf(signal, operationRecPtr.p);
   return;
 }  // Dbacc::insertelementLab()
 
@@ -6536,7 +6537,7 @@ conf:
   validate_lock_queue(newOwner);
   release_frag_mutex_hash(fragrecptr.p, hash);
 
-  sendAcckeyconf(signal);
+  sendAcckeyconf(signal, operationRecPtr.p);
   sendSignal(newOwner.p->userblockref, GSN_ACCKEYCONF, signal, 6, JBB);
 
   operationRecPtr = save;

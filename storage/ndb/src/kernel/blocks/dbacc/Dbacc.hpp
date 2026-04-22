@@ -987,7 +987,8 @@ private:
   bool addfragtotab(Uint64 rootIndex, Uint32 fragId) const;
   void drop_fragment_from_table(Uint32 tableId, Uint32 fragId);
   void initOpRec(const AccKeyReq* signal, Uint32 siglen) const;
-  void sendAcckeyconf(Signal* signal, bool ignore_ttl = false) const;
+  void sendAcckeyconf(Signal* signal, const Operationrec* opPtr,
+                      bool ignore_ttl = false) const;
   Uint32 getNoParallelTransaction(const Operationrec*) const;
 
 #ifdef VM_TRACE
