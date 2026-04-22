@@ -35,7 +35,9 @@ import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 
 import com.mysql.clusterj.ClusterJException;
+import com.mysql.clusterj.ColumnMetadata;
 import com.mysql.clusterj.Constants;
+import com.mysql.clusterj.DynamicObject;
 import com.mysql.clusterj.Query;
 import com.mysql.clusterj.Session;
 import com.mysql.clusterj.Transaction;
@@ -169,6 +171,27 @@ public class RingBufferTest extends AbstractClusterJTest {
         testDtoCacheBatchInsert();
         testDtoCacheReadAfterInsert();
         testDtoCacheWithoutCache();
+
+        // P4: DynamicObject reflection path — schema-driven DTOs used by
+        // frameworks (e.g. Hopsworks Feature Store) that don't know the
+        // table shape at compile time. Distinct from the annotation-interface
+        // path: top-half goes through columnMetadata + set(int, Object)
+        // instead of dynamic-proxy + annotated setters.
+        testDynamicObjectColumnMetadata();
+        testDynamicObjectSingleInsert();
+        testDynamicObjectFillRing();
+        testDynamicObjectBatchInsert();
+        testDynamicObjectBatchExceedingRingSize();
+        testDynamicObjectMixedPrefixes();
+        testDynamicObjectDtoCacheInsert();
+        testDynamicObjectNotNullColumns();
+        // Round out DTO-layer parity with the annotation-interface path:
+        // read, update, delete, query — each exercises a DTO code path
+        // distinct from the write-only coverage above.
+        testDynamicObjectRead();
+        testDynamicObjectUpdate();
+        testDynamicObjectDelete();
+        testDynamicObjectQueryScan();
 
         // Concurrent tests (SamePrefix runs last — its normalized state
         // is checked by the SQL diagnostic queries in the .test file)
@@ -2280,6 +2303,519 @@ public class RingBufferTest extends AbstractClusterJTest {
                         + " slot " + slot + " timestamp", expectedTs,
                         r.getTimestampVal());
             }
+        }
+        tx.commit();
+    }
+
+    // =======================================================================
+    // DynamicObject reflection path
+    //
+    // Schema-driven DTOs: only table() is declared, columns are discovered
+    // at runtime via columnMetadata() and written by index via set(i, val).
+    // Mirrors the coverage of the annotation-interface tests above and
+    // verifies both paths land rows identically (reads still go through
+    // the RingBufferSensor / RingBufferNotNull interfaces).
+    // =======================================================================
+
+    public static class RingSensorDTO extends DynamicObject {
+        @Override public String table() { return "ring_buffer_sensor"; }
+    }
+
+    public static class RingNotNullDTO extends DynamicObject {
+        @Override public String table() { return "ring_buffer_notnull"; }
+    }
+
+    // ring_idx and ring_meta are system-managed — leaving their mask bits
+    // clear lets RingBufferWriter own them (same convention as the
+    // annotation-interface tests, which never call setRingIdx()).
+    private void setSensorFields(DynamicObject e, int sensorId, long ts, double val) {
+        ColumnMetadata[] meta = e.columnMetadata();
+        for (int i = 0; i < meta.length; i++) {
+            String n = meta[i].name();
+            if (n.equals("sensor_id"))           e.set(i, sensorId);
+            else if (n.equals("timestamp_val"))  e.set(i, ts);
+            else if (n.equals("sensor_value"))   e.set(i, val);
+            else if (n.equals("ring_idx") || n.equals("ring_meta")) {
+                // system-managed
+            } else {
+                error("Unexpected column in ring_buffer_sensor: " + n);
+            }
+        }
+    }
+
+    private void setNotNullFields(DynamicObject e, int clientId, String name, int score) {
+        ColumnMetadata[] meta = e.columnMetadata();
+        for (int i = 0; i < meta.length; i++) {
+            String n = meta[i].name();
+            if (n.equals("client_id"))  e.set(i, clientId);
+            else if (n.equals("name"))  e.set(i, name);
+            else if (n.equals("score")) e.set(i, score);
+            else if (n.equals("ring_idx") || n.equals("ring_meta")) {
+                // system-managed
+            } else {
+                error("Unexpected column in ring_buffer_notnull: " + n);
+            }
+        }
+    }
+
+    /** Dump columnMetadata for ring_buffer_sensor — shows the reflection
+     *  view a framework client would see, and asserts all expected
+     *  columns (including system-managed ones) are exposed. */
+    private void testDynamicObjectColumnMetadata() {
+        DynamicObject d = session.newInstance(RingSensorDTO.class);
+        ColumnMetadata[] meta = d.columnMetadata();
+        System.out.println("[DO-META] ring_buffer_sensor columns ("
+                + meta.length + "):");
+        boolean hasSensorId = false, hasRingIdx = false, hasRingMeta = false;
+        boolean hasTs = false, hasValue = false;
+        for (int i = 0; i < meta.length; i++) {
+            String n = meta[i].name();
+            System.out.println("[DO-META]   [" + i + "] " + n);
+            if (n.equals("sensor_id"))           hasSensorId = true;
+            else if (n.equals("ring_idx"))       hasRingIdx = true;
+            else if (n.equals("ring_meta"))      hasRingMeta = true;
+            else if (n.equals("timestamp_val"))  hasTs = true;
+            else if (n.equals("sensor_value"))   hasValue = true;
+        }
+        session.release(d);
+        errorIfNotEqual("DO meta: sensor_id exposed", true, hasSensorId);
+        errorIfNotEqual("DO meta: ring_idx exposed", true, hasRingIdx);
+        errorIfNotEqual("DO meta: ring_meta exposed", true, hasRingMeta);
+        errorIfNotEqual("DO meta: timestamp_val exposed", true, hasTs);
+        errorIfNotEqual("DO meta: sensor_value exposed", true, hasValue);
+    }
+
+    private void testDynamicObjectSingleInsert() {
+        cleanup();
+        tx.begin();
+        DynamicObject d = session.newInstance(RingSensorDTO.class);
+        setSensorFields(d, 4100, 41000L, 41.5);
+        session.makePersistent(d);
+        tx.commit();
+
+        tx.begin();
+        RingBufferSensor r = session.find(RingBufferSensor.class,
+                new Object[]{4100, 1});
+        errorIfNotEqual("DO single: sensor_id", 4100, r.getSensorId());
+        errorIfNotEqual("DO single: ring_idx", 1, r.getRingIdx());
+        errorIfNotEqual("DO single: timestamp_val", 41000L, r.getTimestampVal());
+        errorIfNotEqual("DO single: sensor_value", 41.5, r.getSensorValue());
+        tx.commit();
+    }
+
+    /** 7 inserts, ring_size=5 — same wrap pattern as testFillRing.
+     *  Final: slot 1=42005, 2=42006, 3=42002, 4=42003, 5=42004. */
+    private void testDynamicObjectFillRing() {
+        cleanup();
+        for (int i = 0; i < 7; i++) {
+            tx.begin();
+            DynamicObject d = session.newInstance(RingSensorDTO.class);
+            setSensorFields(d, 4200, 42000L + i, i);
+            session.makePersistent(d);
+            tx.commit();
+        }
+        tx.begin();
+        errorIfNotEqual("DO fill slot 1 ts", 42005L,
+                session.find(RingBufferSensor.class, new Object[]{4200, 1}).getTimestampVal());
+        errorIfNotEqual("DO fill slot 2 ts", 42006L,
+                session.find(RingBufferSensor.class, new Object[]{4200, 2}).getTimestampVal());
+        errorIfNotEqual("DO fill slot 3 ts", 42002L,
+                session.find(RingBufferSensor.class, new Object[]{4200, 3}).getTimestampVal());
+        errorIfNotEqual("DO fill slot 4 ts", 42003L,
+                session.find(RingBufferSensor.class, new Object[]{4200, 4}).getTimestampVal());
+        errorIfNotEqual("DO fill slot 5 ts", 42004L,
+                session.find(RingBufferSensor.class, new Object[]{4200, 5}).getTimestampVal());
+        tx.commit();
+    }
+
+    /** 3 rows, same PK, one transaction — batched by RingBufferWriter. */
+    private void testDynamicObjectBatchInsert() {
+        cleanup();
+        tx.begin();
+        for (int i = 0; i < 3; i++) {
+            DynamicObject d = session.newInstance(RingSensorDTO.class);
+            setSensorFields(d, 4300, 43000L + i, i);
+            session.makePersistent(d);
+        }
+        tx.commit();
+
+        tx.begin();
+        for (int slot = 1; slot <= 3; slot++) {
+            RingBufferSensor r = session.find(RingBufferSensor.class,
+                    new Object[]{4300, slot});
+            errorIfNotEqual("DO batch slot " + slot + " ts",
+                    43000L + (slot - 1), r.getTimestampVal());
+        }
+        tx.commit();
+    }
+
+    /** 8 rows (ring_size=5) in one transaction — exercises multiple
+     *  batchMeta.advance() wraps before flushBatch. Final: slot 1=44005,
+     *  2=44006, 3=44007, 4=44003, 5=44004. */
+    private void testDynamicObjectBatchExceedingRingSize() {
+        cleanup();
+        tx.begin();
+        for (int i = 0; i < 8; i++) {
+            DynamicObject d = session.newInstance(RingSensorDTO.class);
+            setSensorFields(d, 4400, 44000L + i, i);
+            session.makePersistent(d);
+        }
+        tx.commit();
+
+        tx.begin();
+        errorIfNotEqual("DO batch>ring slot 1 ts", 44005L,
+                session.find(RingBufferSensor.class, new Object[]{4400, 1}).getTimestampVal());
+        errorIfNotEqual("DO batch>ring slot 2 ts", 44006L,
+                session.find(RingBufferSensor.class, new Object[]{4400, 2}).getTimestampVal());
+        errorIfNotEqual("DO batch>ring slot 3 ts", 44007L,
+                session.find(RingBufferSensor.class, new Object[]{4400, 3}).getTimestampVal());
+        errorIfNotEqual("DO batch>ring slot 4 ts", 44003L,
+                session.find(RingBufferSensor.class, new Object[]{4400, 4}).getTimestampVal());
+        errorIfNotEqual("DO batch>ring slot 5 ts", 44004L,
+                session.find(RingBufferSensor.class, new Object[]{4400, 5}).getTimestampVal());
+        tx.commit();
+    }
+
+    /** Prefix change within one transaction — forces flushBatch() for
+     *  the first prefix and a fresh readMetaRow() for the second. */
+    private void testDynamicObjectMixedPrefixes() {
+        cleanup();
+        tx.begin();
+        for (int i = 0; i < 3; i++) {
+            DynamicObject d = session.newInstance(RingSensorDTO.class);
+            setSensorFields(d, 4501, 45100L + i, i);
+            session.makePersistent(d);
+        }
+        for (int i = 0; i < 2; i++) {
+            DynamicObject d = session.newInstance(RingSensorDTO.class);
+            setSensorFields(d, 4502, 45200L + i, i);
+            session.makePersistent(d);
+        }
+        tx.commit();
+
+        tx.begin();
+        for (int slot = 1; slot <= 3; slot++) {
+            RingBufferSensor r = session.find(RingBufferSensor.class,
+                    new Object[]{4501, slot});
+            errorIfNotEqual("DO mixed 4501 slot " + slot + " ts",
+                    45100L + (slot - 1), r.getTimestampVal());
+        }
+        for (int slot = 1; slot <= 2; slot++) {
+            RingBufferSensor r = session.find(RingBufferSensor.class,
+                    new Object[]{4502, slot});
+            errorIfNotEqual("DO mixed 4502 slot " + slot + " ts",
+                    45200L + (slot - 1), r.getTimestampVal());
+        }
+        tx.commit();
+    }
+
+    /** DynamicObject + DTO cache (releaseCache) — routes through
+     *  SmartValueHandler → NdbRecordOperationImpl.insert(), i.e. the
+     *  Path B that triggers the isRingBuffer() guard rather than the
+     *  NdbRecordRingBufferInsertOperationImpl subclass. */
+    private void testDynamicObjectDtoCacheInsert() {
+        cleanup();
+        tx.begin();
+        for (int i = 0; i < 8; i++) {
+            DynamicObject d = session.newInstance(RingSensorDTO.class);
+            setSensorFields(d, 4600, 46000L + i, i);
+            session.makePersistent(d);
+            session.releaseCache(d, RingSensorDTO.class);
+        }
+        tx.commit();
+
+        tx.begin();
+        errorIfNotEqual("DO cache slot 1", 46005L,
+                session.find(RingBufferSensor.class, new Object[]{4600, 1}).getTimestampVal());
+        errorIfNotEqual("DO cache slot 2", 46006L,
+                session.find(RingBufferSensor.class, new Object[]{4600, 2}).getTimestampVal());
+        errorIfNotEqual("DO cache slot 3", 46007L,
+                session.find(RingBufferSensor.class, new Object[]{4600, 3}).getTimestampVal());
+        errorIfNotEqual("DO cache slot 4", 46003L,
+                session.find(RingBufferSensor.class, new Object[]{4600, 4}).getTimestampVal());
+        errorIfNotEqual("DO cache slot 5", 46004L,
+                session.find(RingBufferSensor.class, new Object[]{4600, 5}).getTimestampVal());
+        tx.commit();
+    }
+
+    /** DynamicObject against the NOT NULL table (MAX_ROWS_PER_PK=3).
+     *  Fills the ring then wraps once; verifies both data rows and that
+     *  the zeroed-column meta row is still generated correctly. */
+    private void testDynamicObjectNotNullColumns() {
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            stmt.execute("DELETE FROM ring_buffer_notnull");
+            stmt.close();
+        } catch (Throwable t) {
+            // ignore
+        }
+
+        tx.begin();
+        DynamicObject a = session.newInstance(RingNotNullDTO.class);
+        setNotNullFields(a, 47, "alpha", 10);
+        session.makePersistent(a);
+        DynamicObject b = session.newInstance(RingNotNullDTO.class);
+        setNotNullFields(b, 47, "beta", 20);
+        session.makePersistent(b);
+        DynamicObject c = session.newInstance(RingNotNullDTO.class);
+        setNotNullFields(c, 47, "gamma", 30);
+        session.makePersistent(c);
+        tx.commit();
+
+        // Wrap: overwrites slot 1
+        tx.begin();
+        DynamicObject d = session.newInstance(RingNotNullDTO.class);
+        setNotNullFields(d, 47, "delta", 40);
+        session.makePersistent(d);
+        tx.commit();
+
+        tx.begin();
+        RingBufferNotNull r1 = session.find(RingBufferNotNull.class, new Object[]{47, 1});
+        RingBufferNotNull r2 = session.find(RingBufferNotNull.class, new Object[]{47, 2});
+        RingBufferNotNull r3 = session.find(RingBufferNotNull.class, new Object[]{47, 3});
+        errorIfNotEqual("DO NOT NULL slot 1 name",  "delta",  r1.getName());
+        errorIfNotEqual("DO NOT NULL slot 1 score", 40,       r1.getScore());
+        errorIfNotEqual("DO NOT NULL slot 2 name",  "beta",   r2.getName());
+        errorIfNotEqual("DO NOT NULL slot 2 score", 20,       r2.getScore());
+        errorIfNotEqual("DO NOT NULL slot 3 name",  "gamma",  r3.getName());
+        errorIfNotEqual("DO NOT NULL slot 3 score", 30,       r3.getScore());
+        tx.commit();
+
+        // Meta row should still have zeroed NOT NULL columns
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            stmt.execute("SET ndb_ring_buffer_show_meta = 1");
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT name, score FROM ring_buffer_notnull"
+                    + " WHERE client_id = 47 AND ring_idx = 0");
+            if (rs.next()) {
+                errorIfNotEqual("DO NOT NULL meta: score", 0, rs.getInt("score"));
+                errorIfNotEqual("DO NOT NULL meta: name",  "", rs.getString("name"));
+            } else {
+                error("DO NOT NULL: meta row not found");
+            }
+            rs.close();
+            stmt.execute("SET ndb_ring_buffer_show_meta = 0");
+            stmt.close();
+        } catch (Exception ex) {
+            error("DO NOT NULL meta check failed: " + ex.getMessage());
+        }
+    }
+
+    /** Read back via DynamicObject path — exercises `e.get(i)` through
+     *  `DynamicObjectDelegateImpl`, not the annotated-getter proxy.
+     *  Writes go through DynamicObject and reads also go through
+     *  DynamicObject, so both halves of the value buffer are
+     *  round-tripped through the reflection path. */
+    private void testDynamicObjectRead() {
+        cleanup();
+        tx.begin();
+        for (int i = 0; i < 3; i++) {
+            DynamicObject d = session.newInstance(RingSensorDTO.class);
+            setSensorFields(d, 4700, 47000L + i, i * 1.5);
+            session.makePersistent(d);
+        }
+        tx.commit();
+
+        tx.begin();
+        for (int slot = 1; slot <= 3; slot++) {
+            DynamicObject r = session.find(RingSensorDTO.class,
+                    new Object[]{4700, slot});
+            errorIfNotEqual("DO read slot " + slot + " not null", true, r != null);
+            Integer sensorId = null, ringIdx = null;
+            Long ts = null;
+            Double val = null;
+            ColumnMetadata[] meta = r.columnMetadata();
+            for (int i = 0; i < meta.length; i++) {
+                String n = meta[i].name();
+                Object v = r.get(i);
+                if (n.equals("sensor_id"))          sensorId = (Integer) v;
+                else if (n.equals("ring_idx"))      ringIdx  = (Integer) v;
+                else if (n.equals("timestamp_val")) ts       = (Long) v;
+                else if (n.equals("sensor_value"))  val      = (Double) v;
+            }
+            errorIfNotEqual("DO read slot " + slot + " sensor_id",
+                    4700, sensorId.intValue());
+            errorIfNotEqual("DO read slot " + slot + " ring_idx",
+                    slot, ringIdx.intValue());
+            errorIfNotEqual("DO read slot " + slot + " timestamp_val",
+                    47000L + (slot - 1), ts.longValue());
+            errorIfNotEqual("DO read slot " + slot + " sensor_value",
+                    (slot - 1) * 1.5, val.doubleValue());
+        }
+        tx.commit();
+    }
+
+    /** Update via DynamicObject — `session.updatePersistent(dto)` where
+     *  the DTO's mask bits are set via `set(i, val)` for a subset of
+     *  columns. Parallels `testUpdateViaClusterJ`: update path is NOT
+     *  intercepted by ring buffer code, so either it succeeds or throws
+     *  — ring state must remain intact either way. */
+    private void testDynamicObjectUpdate() {
+        cleanup();
+        tx.begin();
+        for (int i = 0; i < 3; i++) {
+            DynamicObject d = session.newInstance(RingSensorDTO.class);
+            setSensorFields(d, 4800, 48000L + i, i);
+            session.makePersistent(d);
+        }
+        tx.commit();
+
+        boolean updateThrew = false;
+        try {
+            tx.begin();
+            DynamicObject u = session.find(RingSensorDTO.class,
+                    new Object[]{4800, 2});
+            if (u != null) {
+                ColumnMetadata[] meta = u.columnMetadata();
+                for (int i = 0; i < meta.length; i++) {
+                    String n = meta[i].name();
+                    if (n.equals("timestamp_val"))     u.set(i, 48999L);
+                    else if (n.equals("sensor_value")) u.set(i, 888.0);
+                }
+                session.updatePersistent(u);
+                tx.commit();
+            } else {
+                tx.commit();
+                error("DO update: could not find row to update");
+            }
+        } catch (ClusterJException ex) {
+            updateThrew = true;
+            if (tx.isActive()) tx.rollback();
+        }
+        if (updateThrew) {
+            session.close();
+            session = sessionFactory.getSession();
+            tx = session.currentTransaction();
+        }
+
+        tx.begin();
+        RingBufferSensor r1 = session.find(RingBufferSensor.class, new Object[]{4800, 1});
+        errorIfNotEqual("DO update: slot 1 intact", 48000L, r1.getTimestampVal());
+        RingBufferSensor r3 = session.find(RingBufferSensor.class, new Object[]{4800, 3});
+        errorIfNotEqual("DO update: slot 3 intact", 48002L, r3.getTimestampVal());
+        RingBufferSensor r2 = session.find(RingBufferSensor.class, new Object[]{4800, 2});
+        if (updateThrew) {
+            errorIfNotEqual("DO update: slot 2 original after exception",
+                    48001L, r2.getTimestampVal());
+        } else {
+            errorIfNotEqual("DO update: slot 2 updated ts", 48999L, r2.getTimestampVal());
+            errorIfNotEqual("DO update: slot 2 updated val", 888.0, r2.getSensorValue());
+        }
+        tx.commit();
+    }
+
+    /** Delete via DynamicObject — parallels `testDeleteViaClusterJ`:
+     *  ring buffer delete without OO_RING_BUFFER_OP may fail; if it
+     *  does, other slots stay intact; ring must still accept new
+     *  inserts afterward. */
+    private void testDynamicObjectDelete() {
+        cleanup();
+        tx.begin();
+        for (int i = 0; i < 3; i++) {
+            DynamicObject d = session.newInstance(RingSensorDTO.class);
+            setSensorFields(d, 4900, 49000L + i, i);
+            session.makePersistent(d);
+        }
+        tx.commit();
+
+        boolean deleteThrew = false;
+        try {
+            tx.begin();
+            DynamicObject toDelete = session.find(RingSensorDTO.class,
+                    new Object[]{4900, 2});
+            if (toDelete != null) {
+                session.deletePersistent(toDelete);
+                tx.commit();
+            } else {
+                tx.commit();
+                error("DO delete: could not find row to delete");
+            }
+        } catch (ClusterJException ex) {
+            deleteThrew = true;
+            if (tx.isActive()) tx.rollback();
+        }
+        if (deleteThrew) {
+            session.close();
+            session = sessionFactory.getSession();
+            tx = session.currentTransaction();
+        }
+
+        tx.begin();
+        RingBufferSensor r1 = session.find(RingBufferSensor.class, new Object[]{4900, 1});
+        errorIfNotEqual("DO delete: slot 1 intact", 49000L, r1.getTimestampVal());
+        RingBufferSensor r3 = session.find(RingBufferSensor.class, new Object[]{4900, 3});
+        errorIfNotEqual("DO delete: slot 3 intact", 49002L, r3.getTimestampVal());
+        RingBufferSensor r2 = session.find(RingBufferSensor.class, new Object[]{4900, 2});
+        if (deleteThrew) {
+            errorIfNotEqual("DO delete: slot 2 intact after exception",
+                    49001L, r2.getTimestampVal());
+        } else {
+            errorIfNotEqual("DO delete: slot 2 null after delete", null, r2);
+        }
+        tx.commit();
+    }
+
+    /** QueryBuilder + QueryDomainType<RingSensorDTO> — for DynamicObject
+     *  types, `dobj.get()` uses the SQL column name directly (not a
+     *  JavaBean property name — that's the annotation-interface form).
+     *  Confirms the kernel meta-row filter also applies to scans driven
+     *  through the reflection type. */
+    private void testDynamicObjectQueryScan() {
+        cleanup();
+        tx.begin();
+        for (int i = 0; i < 3; i++) {
+            DynamicObject d = session.newInstance(RingSensorDTO.class);
+            setSensorFields(d, 4701, 47100L + i, i * 1.5);
+            session.makePersistent(d);
+        }
+        for (int i = 0; i < 2; i++) {
+            DynamicObject d = session.newInstance(RingSensorDTO.class);
+            setSensorFields(d, 4702, 47200L + i, i * 2.5);
+            session.makePersistent(d);
+        }
+        tx.commit();
+
+        tx.begin();
+        QueryBuilder builder = session.getQueryBuilder();
+        QueryDomainType<RingSensorDTO> dobj =
+                builder.createQueryDefinition(RingSensorDTO.class);
+        PredicateOperand param = dobj.param("sid");
+        PredicateOperand column = dobj.get("sensor_id");
+        Predicate pred = column.equal(param);
+        dobj.where(pred);
+        Query<RingSensorDTO> query = session.createQuery(dobj);
+        query.setParameter("sid", 4701);
+        List<RingSensorDTO> results = query.getResultList();
+
+        errorIfNotEqual("DO query: count for sensor 4701 (meta filtered)",
+                3, results.size());
+        boolean[] slotFound = new boolean[RING_SIZE + 1];
+        for (DynamicObject r : results) {
+            ColumnMetadata[] meta = r.columnMetadata();
+            int sId = 0, rIdx = 0;
+            long ts = 0;
+            double val = 0;
+            for (int i = 0; i < meta.length; i++) {
+                String n = meta[i].name();
+                if (n.equals("sensor_id"))          sId  = (Integer) r.get(i);
+                else if (n.equals("ring_idx"))      rIdx = (Integer) r.get(i);
+                else if (n.equals("timestamp_val")) ts   = (Long) r.get(i);
+                else if (n.equals("sensor_value"))  val  = (Double) r.get(i);
+            }
+            errorIfNotEqual("DO query 4701: ring_idx > 0 (no meta)",
+                    true, rIdx > 0);
+            errorIfNotEqual("DO query 4701: sensor_id", 4701, sId);
+            errorIfNotEqual("DO query 4701 slot " + rIdx + " ts",
+                    47100L + (rIdx - 1), ts);
+            errorIfNotEqual("DO query 4701 slot " + rIdx + " val",
+                    (rIdx - 1) * 1.5, val);
+            slotFound[rIdx] = true;
+        }
+        for (int s = 1; s <= 3; s++) {
+            errorIfNotEqual("DO query: slot " + s + " found", true, slotFound[s]);
         }
         tx.commit();
     }
