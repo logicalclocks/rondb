@@ -5400,6 +5400,13 @@ private:
                                     TcConnectionrec *regTcPtr);
   void release_frag_access(Fragrecord *fragPtrP);
   void handle_release_frag_access(Fragrecord *fragPtrP);
+  // Specialized release paired with acquire_frag_prepare_key_access.
+  // That acquire only sets one of three lock modes (READ_KEY,
+  // RK_WK, RK_REFRESH); all three release through
+  // handle_release_read_key_frag_access. Skipping the 6-arm
+  // dispatch in handle_release_frag_access saves ~20 insns and
+  // the I-cache footprint of that function on every LQHKEYREQ tail.
+  void release_frag_prepare_key_access(Fragrecord *fragPtrP);
 
   void handle_acquire_scan_frag_access(Fragrecord *fragPtrP);
   void handle_acquire_read_key_frag_access(Fragrecord *fragPtrP, bool hold_lock,
@@ -6121,6 +6128,37 @@ Dblqh::release_frag_access(Fragrecord *fragPtrP)
   {
     jamDebug();
     handle_release_frag_access(fragPtrP);
+  }
+  else
+  {
+    jamDebug();
+  }
+}
+
+inline void
+Dblqh::release_frag_prepare_key_access(Fragrecord *fragPtrP)
+{
+  // Paired with acquire_frag_prepare_key_access. That acquire sets
+  // the lock status to exactly one of:
+  //   FRAGMENT_LOCKED_IN_READ_KEY_MODE
+  //   FRAGMENT_LOCKED_IN_RK_WK_MODE
+  //   FRAGMENT_LOCKED_IN_RK_REFRESH_MODE
+  // All three release via handle_release_read_key_frag_access, so
+  // no dispatch on lock-mode is needed here. Saves the 6-arm
+  // if/else-if chain in handle_release_frag_access on every
+  // LQHKEYREQ tail.
+  //
+  // The FRAGMENT_UNLOCKED early-out mirrors release_frag_access —
+  // the paired acquire is skipped when the caller is RESTORE, in
+  // which case there is nothing to release.
+  if (qt_likely(m_fragment_lock_status != FRAGMENT_UNLOCKED))
+  {
+    jamDebug();
+    ndbassert(m_fragment_lock_status == FRAGMENT_LOCKED_IN_READ_KEY_MODE ||
+              m_fragment_lock_status == FRAGMENT_LOCKED_IN_RK_WK_MODE ||
+              m_fragment_lock_status == FRAGMENT_LOCKED_IN_RK_REFRESH_MODE);
+    handle_release_read_key_frag_access(fragPtrP);  // sets status = UNLOCKED
+    m_old_fragment_lock_status = FRAGMENT_UNLOCKED;
   }
   else
   {

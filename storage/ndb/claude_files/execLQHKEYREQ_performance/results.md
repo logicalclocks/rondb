@@ -750,3 +750,85 @@ requests.
 - [x] `ndb_basic` — PASS.
 - [x] `execLQHKEYREQ` unchanged (expected — Item 10 is downstream).
 - [x] Kernel-wide `__TEXT` unchanged (pure code motion).
+## Item 11 — Specialized `release_frag_prepare_key_access`
+
+Commit: pending (branch `RONDB-1051-execLQHKEYREQ`).
+
+### What changed
+
+- `Dblqh.hpp`: new inline `void Dblqh::release_frag_prepare_key_access(Fragrecord*)`.
+  Paired with the inline `acquire_frag_prepare_key_access` already
+  in the header.
+- `DblqhMain.cpp` line 10035: the `release_frag_access(fragptr.p)`
+  call at `execLQHKEYREQ`'s tail replaced with
+  `release_frag_prepare_key_access(fragptr.p)`.
+
+### The insight (user's observation)
+
+`acquire_frag_prepare_key_access` only ever sets one of three lock
+modes: `FRAGMENT_LOCKED_IN_READ_KEY_MODE`, `..._RK_WK_MODE`,
+`..._RK_REFRESH_MODE`. All three release via the same sub-function
+`handle_release_read_key_frag_access`. The generic
+`handle_release_frag_access` has a 6-arm `if/else if` dispatch on
+the lock mode that is 100 % redundant on the LQHKEYREQ tail: we
+always land in the same arm.
+
+The specialized version skips the dispatcher entirely and calls
+the sub-function directly.
+
+### Metrics
+
+| | Item 10 post | Item 11 post | Δ |
+|---|--:|--:|--:|
+| `execLQHKEYREQ` size | 4300 B | 4308 B | **+8 B (+2 insns)** |
+| `bl handle_release_frag_access` in execLQHKEYREQ body | 1 | **0** | **−1** |
+| `bl handle_release_read_key_frag_access` in execLQHKEYREQ body | 0 | **1** | **+1** |
+| `handle_release_frag_access` (still present for other callers) | 340 B | 340 B | 0 |
+
+Static size of `execLQHKEYREQ` grew 8 B because the specialized
+wrapper inlines a few more instructions (the `ndbassert` check,
+the `m_old_fragment_lock_status` store) than the plain
+`release_frag_access` wrapper did.
+
+### Dynamic win per LQHKEYREQ tail
+
+The 340 B `handle_release_frag_access` function is no longer
+touched on the hot path. Per call:
+
+- Saved: function prologue (14-reg `stp` pairs), 6-arm binary-tree
+  dispatch, inline `jam()` ring bump on the chosen arm, `bl` to
+  the sub-function, function epilogue. ~25 instructions and one
+  full call frame.
+- Added: inline `qt_likely(!UNLOCKED)` check, `ndbassert` (no-op
+  in prod), direct `bl` to sub-function.
+
+**Net: ~25 fewer instructions executed per LQHKEYREQ at the tail,
+and 340 B of code no longer pulled into I-cache.**
+
+### Verification
+
+- [x] Build succeeds.
+- [x] `ndb_basic` — PASS.
+- [x] `bl handle_release_frag_access` absent in execLQHKEYREQ.
+- [x] `bl handle_release_read_key_frag_access` present (direct call).
+- [x] `handle_release_frag_access` still exists for general
+  `release_frag_access` callers (unchanged).
+
+### Cumulative against baseline
+
+| | Size | Instructions | vs baseline |
+|---|--:|--:|---|
+| Baseline | 5960 B | 1490 | |
+| Item 8 | 4464 B | 1116 | −25.10 % |
+| User jam | 4300 B | 1075 | −27.85 % |
+| Item 9 (assembleFragments inline) | 4300 B | 1075 | −27.85 % |
+| Item 10 (prepareContinue take-over outline) | 4300 B | 1075 | −27.85 % |
+| **Item 11** | **4308 B** | **1077** | **−27.72 %** |
+
+Plus dynamic wins:
+- Kernel-wide `__TEXT`: −576 KB (Item 2).
+- Per signal (kernel-wide): ~17 insns saved (Item 9
+  assembleFragments inline fast path).
+- Per LQHKEYREQ: ~380 insns saved on no-overload path (Item 7).
+- Per LQHKEYREQ: ~25 insns saved on tail path (Item 11).
+

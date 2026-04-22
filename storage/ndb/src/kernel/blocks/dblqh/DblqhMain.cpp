@@ -10039,7 +10039,10 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   case Fragrecord::ACTIVE_CREATION:
     prepareContinueAfterBlockedLab(signal, tcConnectptr);
     jamDebug();
-    release_frag_access(fragptr.p);
+    // Paired with acquire_frag_prepare_key_access above. The specialized
+    // release skips the 6-arm dispatch in handle_release_frag_access
+    // because that acquire only ever sets READ_KEY / RK_WK / RK_REFRESH.
+    release_frag_prepare_key_access(fragptr.p);
     reset_curr_ldm();
     return;
   case Fragrecord::FREE:
