@@ -479,24 +479,22 @@ SignalLength_v3 carrying the upper 32 bits.
 
 ### 6. CTE outer-join remaining shapes (Priority: Low)
 
-Two outer-join shapes were deferred when shipping the CTE outer-join
-branch (`cte_outer_join_plan.md`):
+One outer-join shape remains deferred from the CTE outer-join branch
+(`cte_outer_join_plan.md`):
 
-**6a. CTE_LOOKUP agg-feed NULL injection.**
-When a `lookupCte` inside a CTE subtree returns `GROUP_NOT_FOUND`
-under outer-join semantics, DBSPJ should inject a NULL row into the
-enclosing CTE's aggregator so the parent row still contributes to
-the aggregation. Today the REF is silently dropped (no aggregator
-contribution), which is wrong for chained CTEs with LEFT JOIN inside
-materialization.
-
-Requires build-plan adjustment (T_BUFFER_MATCH on scan ancestor for
-CTE_LOOKUP outer-join + T_AGGREGATE_LEAF), match-bit tracking in
-`execCTE_LOOKUP_CONF`, and a `handleAggAncestorComplete`-style sweep
-at treeNode completion.
+**6a. CTE_LOOKUP agg-feed NULL injection.** SHIPPED in commit
+`47d81b43903` (Phase 5 / `cte_outer_join_phase_5.md`). The REF-time
+injection approach taken there is simpler than the
+`T_BUFFER_MATCH` + match-bit-sweep approach originally sketched here:
+each `CTE_LOOKUP_REF(GROUP_NOT_FOUND)` uniquely identifies one
+unmatched parent via the correlation already echoed in the REF
+signal (Phase 1 extension), so we only need
+`T_BUFFER_ROW | T_BUFFER_MAP` on the scan ancestor + one
+`getBufferedRow` + `sendJoinAggNullRow` call per REF. Verified by
+Test 5 in `testCteNdbApiOuterJoin.cpp`.
 
 **6b. CTE_SCAN as outer-join child.**
 Rare SQL shape (cross-join + NULL-fill-if-empty). Dropped from this
 branch; design notes in `cte_outer_join_phase_3.md`. Requires a new
-`cte_scan_parent_row` handler, per-parent state tracking, and the
-match-bit sweep from 6a.
+`cte_scan_parent_row` handler, per-parent state tracking, and a
+per-scan match-bit sweep.

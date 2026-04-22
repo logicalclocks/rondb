@@ -34,6 +34,10 @@ builders in DBSPJ just don't honor that bit yet.
    pre-existing `cte_scan_build` bug along the way).
 3. NDB-API test binary `testCteNdbApiOuterJoin.cpp`, integrated in
    the `ndb_push_agg` MTR suite. Phase 4.
+4. Agg-feed NULL injection for CTE_LOOKUP returning GROUP_NOT_FOUND
+   inside an enclosing CTE's aggregation subtree (chained CTE with
+   LEFT JOIN on an inner CTE_LOOKUP). REF-time injection via
+   correlation-keyed `getBufferedRow` + `sendJoinAggNullRow`. Phase 5.
 
 ## Out of scope / dropped
 
@@ -41,10 +45,7 @@ builders in DBSPJ just don't honor that bit yet.
   is a cross-join with NULL-fill-if-empty, uncommon in practice, and
   requires substantial new DBSPJ machinery (`cte_scan_parent_row` +
   per-parent tracking + match-bit sweep). See
-  `cte_outer_join_phase_3.md`.
-- **Agg-feed NULL injection** for CTE_LOOKUP returning
-  GROUP_NOT_FOUND inside an enclosing CTE's aggregation subtree —
-  deferred; see `next_steps.md`.
+  `cte_outer_join_phase_3.md` and `next_steps.md` 6b.
 - `MatchNullOnly` (anti-join), `MatchFirst`.
 
 ## Phase index
@@ -55,6 +56,7 @@ builders in DBSPJ just don't honor that bit yet.
 | 2 | `cte_outer_join_phase_2.md` | scanCte as outer-join LEFT-side parent | Shipped (plus pre-existing T_ONE_SHOT bug fix) |
 | 3 | `cte_outer_join_phase_3.md` | CTE_SCAN as outer-join child | Dropped |
 | 4 | `cte_outer_join_phase_4.md` | `testCteNdbApiOuterJoin.cpp` consolidated tests | Shipped |
+| 5 | `cte_outer_join_phase_5.md` | CTE_LOOKUP agg-feed NULL injection (was next_steps 6a) | Shipped |
 
 ## Key files
 

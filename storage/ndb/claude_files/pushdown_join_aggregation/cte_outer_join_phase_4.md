@@ -3,10 +3,11 @@
 ## Goal
 
 End-to-end NDB-API coverage of CTE outer-join shapes shipped in
-Phases 1 and 2. Phase 3 is dropped (see phase 3 doc), so tests for
-CTE_SCAN as outer-join child are not included. The CTE-subtree
-agg-feed NULL-injection path is also deferred; see
-`next_steps.md` for the pending work.
+Phases 1 and 2. Phase 3 (CTE_SCAN as outer-join child) is dropped —
+see phase 3 doc — so tests for that shape are not included. The
+CTE-subtree agg-feed NULL-injection path subsequently shipped as
+Phase 5 (`cte_outer_join_phase_5.md`) and added Test 5 to this
+binary.
 
 ## Binary registration
 

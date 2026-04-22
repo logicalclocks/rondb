@@ -37,6 +37,7 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_outer_join_phase_2.md` — Phase 2: scanCte as outer-join LEFT-side parent (verification)
 - `cte_outer_join_phase_3.md` — Phase 3: CTE_SCAN as outer-join child
 - `cte_outer_join_phase_4.md` — Phase 4: testCteNdbApiOuterJoin.cpp consolidated tests
+- `cte_outer_join_phase_5.md` — Phase 5: CTE_LOOKUP agg-feed NULL injection (was next_steps 6a)
 
 ### Key Source Files
 - `DblqhMain.cpp` — Signal handlers for JOIN_AGG_SETUP/COMPLETE/RELEASE, scan processing, sendScanFragConf
