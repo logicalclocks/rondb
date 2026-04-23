@@ -52,10 +52,18 @@ extern NdbRecord *entire_hset_key_record[MAX_NUM_DATABASES];
 
 #define HSET_KEY_TABLE_COL_redis_key "redis_key"
 #define HSET_KEY_TABLE_COL_redis_key_id "redis_key_id"
+#define HSET_KEY_TABLE_COL_field_count "field_count"
+#define HSET_KEY_TABLE_COL_expiry_date "expiry_date"
 
 struct hset_key_table
 {
+    // null_bits covers the nullable expiry_date column (matches the
+    // key_table / value_table layout — the column order inside the
+    // NdbRecord map is what matters, not the struct order).
+    Uint32 null_bits;
     Uint64 redis_key_id;
+    Int32 expiry_date;
+    Uint32 field_count;
     char redis_key[MAX_KEY_VALUE_LEN + 2];
 };
 

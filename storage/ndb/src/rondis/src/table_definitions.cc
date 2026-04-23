@@ -53,9 +53,15 @@ int init_hset_key_records(NdbDictionary::Dictionary *dict,
       tab->getColumn(HSET_KEY_TABLE_COL_redis_key);
     const NdbDictionary::Column *redis_key_id_col =
       tab->getColumn(HSET_KEY_TABLE_COL_redis_key_id);
+    const NdbDictionary::Column *field_count_col =
+      tab->getColumn(HSET_KEY_TABLE_COL_field_count);
+    const NdbDictionary::Column *expiry_date_col =
+      tab->getColumn(HSET_KEY_TABLE_COL_expiry_date);
 
     if (redis_key_col == nullptr ||
-        redis_key_id_col == nullptr) {
+        redis_key_id_col == nullptr ||
+        field_count_col == nullptr ||
+        expiry_date_col == nullptr) {
         printf("Failed getting Ndb columns for table %s\n",
           HSET_KEY_TABLE_NAME);
         return -1;
@@ -78,6 +84,8 @@ int init_hset_key_records(NdbDictionary::Dictionary *dict,
              std::pair<size_t, int>> read_all_column_map = {
         {redis_key_col, {offsetof(struct hset_key_table, redis_key), 0}},
         {redis_key_id_col, {offsetof(struct hset_key_table, redis_key_id), 0}},
+        {field_count_col, {offsetof(struct hset_key_table, field_count), 0}},
+        {expiry_date_col, {offsetof(struct hset_key_table, expiry_date), 0}},
     };
     if (init_record(dict,
                     tab,
