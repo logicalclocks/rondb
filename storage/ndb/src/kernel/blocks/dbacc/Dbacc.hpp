@@ -1282,6 +1282,19 @@ public:
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   Uint32 m_acc_mutex_locked;
 #endif
+
+  /*
+   * Per-instance scratch buffer for getElement's table-key compare. The
+   * buffer must hold the maximum NDB key including possible XFRM expansion;
+   * 2048 Uint32 (8 KB) covers all valid configurations. Keeping it as a
+   * member instead of a stack local avoids an 8 KB sp adjustment plus a
+   * __chkstk_darwin probe and stack canary on every getElement() call.
+   * Safe because getElement is never reentrant on a single Dbacc instance.
+   */
+  union {
+    Uint32 m_get_element_keys[2048];
+    Uint64 m_get_element_keys_align;
+  };
   void getFragPtr(FragmentrecPtr &rootPtr,
                   Uint32 tableId,
                   Uint32 fragId,

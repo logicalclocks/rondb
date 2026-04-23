@@ -4616,11 +4616,6 @@ Uint32 Dbacc::getElement(const AccKeyReq *signal, OperationrecPtr &lockOwnerPtr,
   const Uint32 localkeylen = fragrecptr.p->localkeylen;
   Uint32 bucket_number =
       fragrecptr.p->level.getBucketNumber(operationRecPtr.p->hashValue);
-  union {
-    Uint32 keys[2048];
-    Uint64 keys_align;
-  };
-  (void)keys_align;
 
   getdirindex(bucketPageptr, bucketConidx);
   elemPageptr = bucketPageptr;
@@ -4631,6 +4626,7 @@ Uint32 Dbacc::getElement(const AccKeyReq *signal, OperationrecPtr &lockOwnerPtr,
    * - local key (1 word) for ACC_LOCKREQ and UNDO, stored in ACC
    */
   const bool searchLocalKey = operationRecPtr.p->tupkeylen == 0;
+  Uint32 * const keys = m_get_element_keys;
 
   ndbrequire(TelemLen == ZELEM_HEAD_SIZE + localkeylen);
   tgeNextptrtype = ZLEFT;
