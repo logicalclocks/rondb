@@ -688,8 +688,8 @@ void Dbtup::checkImmediateTriggersAfterInsert(KeyReqStruct *req_struct,
      * collide on UNIQUE indexes and violate FK constraints.
      */
     const bool skip_idx_fk =
-        unlikely(is_ring_buffer_table(regTablePtr)) &&
-        isRingBufferMetaRow(regTablePtr, req_struct->m_tuple_ptr);
+        unlikely(is_ring_buffer_meta_tuple(regTablePtr,
+                                           req_struct->m_tuple_ptr));
 
     if (!regTablePtr->afterInsertTriggers.isEmpty()) {
       jam();
@@ -715,8 +715,8 @@ void Dbtup::checkImmediateTriggersAfterUpdate(KeyReqStruct *req_struct,
   if (regOperPtr->op_struct.bit_field.m_triggers ==
       TupKeyReq::OP_PRIMARY_REPLICA) {
     const bool skip_idx_fk =
-        unlikely(is_ring_buffer_table(regTablePtr)) &&
-        isRingBufferMetaRow(regTablePtr, req_struct->m_tuple_ptr);
+        unlikely(is_ring_buffer_meta_tuple(regTablePtr,
+                                           req_struct->m_tuple_ptr));
 
     if (!regTablePtr->afterUpdateTriggers.isEmpty()) {
       jam();
@@ -749,8 +749,8 @@ void Dbtup::checkImmediateTriggersAfterDelete(KeyReqStruct *req_struct,
   if (regOperPtr->op_struct.bit_field.m_triggers ==
       TupKeyReq::OP_PRIMARY_REPLICA) {
     const bool skip_idx_fk =
-        unlikely(is_ring_buffer_table(regTablePtr)) &&
-        isRingBufferMetaRow(regTablePtr, req_struct->m_tuple_ptr);
+        unlikely(is_ring_buffer_meta_tuple(regTablePtr,
+                                           req_struct->m_tuple_ptr));
 
     if (!regTablePtr->afterDeleteTriggers.isEmpty()) {
       fireImmediateTriggers(req_struct, regTablePtr->afterDeleteTriggers,
@@ -893,8 +893,8 @@ void Dbtup::checkDeferredTriggers(KeyReqStruct *req_struct,
      *    already handled 'immediate'.
      */
     const bool skip_idx_fk =
-        unlikely(is_ring_buffer_table(regTablePtr)) &&
-        isRingBufferMetaRow(regTablePtr, req_struct->m_tuple_ptr);
+        unlikely(is_ring_buffer_meta_tuple(regTablePtr,
+                                           req_struct->m_tuple_ptr));
 
     if (!deferred_list->isEmpty()) {
       jam();

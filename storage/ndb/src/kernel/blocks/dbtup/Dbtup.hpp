@@ -4550,6 +4550,21 @@ public:
     return isRingBufferMetaRow(regTabPtr, tuple_ptr);
   }
 
+  /**
+   * Pure tuple property: is this tuple a ring-buffer meta row (ring_idx=0)?
+   * Safe to call on any table — first checks is_ring_buffer_table.
+   * Used by trigger-fire paths to skip secondary-index and FK triggers:
+   * meta-row user columns are zeroed and would collide on UNIQUE / violate
+   * FK constraints. Deliberately does NOT consult Operationrec flags —
+   * trigger skip is a tuple property, not an operation property (e.g.
+   * SUMA triggers still need to fire on the meta row for replication).
+   */
+  bool is_ring_buffer_meta_tuple(Tablerec *regTabPtr,
+                                 const Tuple_header *tuple_ptr) {
+    return is_ring_buffer_table(regTabPtr) &&
+           isRingBufferMetaRow(regTabPtr, tuple_ptr);
+  }
+
 public:
   Dbtup *m_curr_tup;
   static Uint64 getTransactionMemoryNeed(
