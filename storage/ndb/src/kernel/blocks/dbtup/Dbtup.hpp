@@ -3241,6 +3241,26 @@ private:
   //------------------------------------------------------------------
   void sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
                         Uint32 TnoOfData);
+  // Cold helpers for the paths in sendReadAttrinfo that need a local
+  // LinearSectionPtr[3]. Outlined to keep the array off the hot path
+  // so the compiler does not emit a stack canary in sendReadAttrinfo.
+  // Split by !connectedToNode vs connectedToNode — the two cases
+  // share no state and splitting them lets each helper take only the
+  // args it actually needs.
+
+  // Disconnected-node path: route via TRANSID_AI_R through TC.
+  void sendReadAttrinfoRouted(Signal *signal, KeyReqStruct *req_struct,
+                              Uint32 ToutBufIndex,
+                              BlockReference recBlockref,
+                              BlockReference routeBlockref)
+      __attribute__((noinline, cold));
+  // Connected-node long-signal path: cross-node DN or same-node
+  // (not same-instance EXECUTE_DIRECT).
+  void sendReadAttrinfoLong(Signal *signal, KeyReqStruct *req_struct,
+                            Uint32 ToutBufIndex,
+                            BlockReference recBlockref,
+                            Uint32 nodeId)
+      __attribute__((noinline, cold));
   int handleJoinAggRow(KeyReqStruct *req_struct,
                        const Uint32 *linked_data, Uint32 linked_len);
   int prepareAndHandleJoinAggRow(KeyReqStruct *req_struct, Uint32 RsubLen);

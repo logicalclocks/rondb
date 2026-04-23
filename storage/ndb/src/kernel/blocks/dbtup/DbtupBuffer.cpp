@@ -297,7 +297,6 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
   const Uint32 type = getNodeInfo(nodeId).m_type;
   const bool is_api = (type >= NodeInfo::API && type <= NodeInfo::MGM);
 
-
   if (ERROR_INSERTED(4006) && (nodeId != getOwnNodeId())) {
     // Use error insert to turn routing on
     jam();
@@ -317,227 +316,196 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
   transIdAI->transId[1] = sig2;
 
   const Uint32 routeBlockref = req_struct->TC_ref;
-  /**
-   * If we are not connected to the destination block, we may reach it
-   * indirectly by sending a TRANSID_AI_R signal to routeBlockref. Only
-   * TC can handle TRANSID_AI_R signals. The 'ndbrequire' below should
-   * check that there is no chance of sending TRANSID_AI_R to a block
-   * that cannot handle it.
-   */
   ndbassert(refToMain(routeBlockref) == DBTC ||
-            /**
-             * routeBlockref will point to SPJ for operations initiated by
-             * that block. TRANSID_AI_R should not be sent to SPJ, as
-             * SPJ will do its own internal error handling to compensate
-             * for the lost TRANSID_AI signal.
-             */
             refToMain(routeBlockref) == DBSPJ ||
-            /**
-             * A node should always be connected to itself. So we should
-             * never need to send TRANSID_AI_R in this case.
-             */
             (nodeId == getOwnNodeId() && connectedToNode));
 
 #ifdef DEBUG_TRANSID_AI
   print_checksum(&signal->theData[25], recBlockref, ToutBufIndex, __LINE__);
 #endif
-  /**
-   * If a previous read_pseudo executed a 'FLUSH_AI', we may
-   * already have sent a TRANSID_AI signal with the result row
-   * to the API node. The result size was then already recorded
-   * in 'read_length' and we should not add the size of this
-   * row as it is not part of the 'result' .
-   */
   if (req_struct->read_length != 0) {
     ndbassert(!is_api);  // API result already FLUSH_AI'ed
   } else {
-    // No API-result produced yet, record this
     req_struct->read_length = ToutBufIndex;
   }
 
-  if (connectedToNode) {
-    /**
-     * Own node -> execute direct
-     */
-    if (nodeId != getOwnNodeId()) {
-      jamDebug();
-      if (is_api) {
-        DEB_TRANSID_AI(("(%u) sendReadAttrinfo: API AI len: %u, ref: 0x%x",
-          instance(), ToutBufIndex, recBlockref));
-        sendAPI_TRANSID_AI(signal, recBlockref, &signal->theData[25],
-                           ToutBufIndex, req_struct);
-        return;
-      }
-      /* Send long signal if 'long' data. */
-      if (ToutBufIndex > TransIdAI::DataLength) {
-        jam();
-        /**
-         * Receiver block doesn't support packed 'short' signals.
-         */
-        LinearSectionPtr ptr[3];
-        ptr[0].p = &signal->theData[25];
-        ptr[0].sz = ToutBufIndex;
-        DEB_TRANSID_AI(("(%u) sendReadAttrinfo: DN AI len: %u, ref: 0x%x",
-          instance(), ToutBufIndex, recBlockref));
-        if (ToutBufIndex <= MAX_TRANSID_AI_SIZE) {
-          jamDebug();
-          sendSignal(recBlockref, GSN_TRANSID_AI, signal,
-                     TransIdAI::HeaderLength, JBB, ptr, 1);
-        } else {
-          jam();
-          jamDataDebug(ToutBufIndex);
-          sendBatchedFragmentedSignal(recBlockref, GSN_TRANSID_AI, signal,
-            TransIdAI::HeaderLength, JBB, ptr, 1);
-        }
-        return;
-      } else {
-        jam();
-        ndbassert(ToutBufIndex <= TransIdAI::DataLength);
-        /**
-         * Data is 'short', send short signal
-         */
-        MEMCOPY_NO_WORDS(&signal->theData[TransIdAI::HeaderLength],
-                         &signal->theData[25], ToutBufIndex);
-        sendSignal(recBlockref, GSN_TRANSID_AI, signal,
-                   TransIdAI::HeaderLength + ToutBufIndex, JBB);
-      }
-      return;
-    }  // nodeId != getOwnNodeId()
+  /*
+   * Hot path: connected to dest node, short signal (or EXECUTE_DIRECT
+   * locally, or sendAPI_TRANSID_AI for API clients). These cases never
+   * need a local LinearSectionPtr array, so the compiler emits no stack
+   * canary here.
+   *
+   * Anything that needs a LinearSectionPtr — cross-node or same-node
+   * long signals, ERROR_INSERT-delayed send, and the disconnected
+   * TRANSID_AI_R routing path — is handled in sendReadAttrinfoSlow.
+   */
+  if (unlikely(!connectedToNode)) {
+    sendReadAttrinfoRouted(signal, req_struct, ToutBufIndex, recBlockref,
+                           routeBlockref);
+    return;
+  }
 
-    /**
-     * BACKUP, LQH run in our thread, so we can EXECUTE_DIRECT().
-     *
-     * The UTIL/TC blocks are in another thread (in multi-threaded ndbd), so
-     * must use sendSignal().
-     *
-     * In MT LQH only LQH and BACKUP are in same thread, and BACKUP only
-     * in LCP case since user-backup uses single worker.
-     */
-    const bool sameInstance = refToInstance(recBlockref) == instance();
-    const Uint32 blockNumber= refToMain(recBlockref);
-    if (sameInstance &&
-        (blockNumber == getBACKUP() ||
-         blockNumber == getDBLQH()))
-    {
-      memmove(&signal->theData[TransIdAI::HeaderLength],
-              &signal->theData[25],
-              ToutBufIndex * sizeof(Uint32));
-      static_assert(MAX_TUPLE_SIZE_IN_WORDS + MAX_ATTRIBUTES_IN_TABLE <=
-                    NDB_ARRAY_SIZE(signal->theData) - TransIdAI::HeaderLength);
-      ndbrequire(TransIdAI::HeaderLength + ToutBufIndex <=
-                 NDB_ARRAY_SIZE(signal->theData));
-      EXECUTE_DIRECT(blockNumber, GSN_TRANSID_AI, signal,
-                     TransIdAI::HeaderLength + ToutBufIndex);
-      jamEntryDebug();
+  if (nodeId != getOwnNodeId()) {
+    jamDebug();
+    if (is_api) {
+      DEB_TRANSID_AI(("(%u) sendReadAttrinfo: API AI len: %u, ref: 0x%x",
+        instance(), ToutBufIndex, recBlockref));
+      sendAPI_TRANSID_AI(signal, recBlockref, &signal->theData[25],
+                         ToutBufIndex, req_struct);
       return;
-    } else if (ToutBufIndex <= TransIdAI::DataLength) {
-      /**
-       * Data is 'short', send short signal
-       */
-      jam();
-      MEMCOPY_NO_WORDS(&signal->theData[TransIdAI::HeaderLength],
-                       &signal->theData[25], ToutBufIndex);
-      const JobBufferLevel prioLevel = req_struct->m_prio_a_flag ? JBA : JBB;
+    }
+    if (unlikely(ToutBufIndex > TransIdAI::DataLength)) {
+      sendReadAttrinfoLong(signal, req_struct, ToutBufIndex, recBlockref,
+                           nodeId);
+      return;
+    }
+    jam();
+    /* Data is 'short', send short signal */
+    MEMCOPY_NO_WORDS(&signal->theData[TransIdAI::HeaderLength],
+                     &signal->theData[25], ToutBufIndex);
+    sendSignal(recBlockref, GSN_TRANSID_AI, signal,
+               TransIdAI::HeaderLength + ToutBufIndex, JBB);
+    return;
+  }
+
+  /*
+   * Same node.
+   * BACKUP, LQH run in our thread, so we can EXECUTE_DIRECT().
+   * The UTIL/TC blocks are in another thread (in multi-threaded ndbd),
+   * so must use sendSignal().
+   */
+  const bool sameInstance = refToInstance(recBlockref) == instance();
+  const Uint32 blockNumber = refToMain(recBlockref);
+  if (sameInstance &&
+      (blockNumber == getBACKUP() || blockNumber == getDBLQH())) {
+    memmove(&signal->theData[TransIdAI::HeaderLength],
+            &signal->theData[25],
+            ToutBufIndex * sizeof(Uint32));
+    static_assert(MAX_TUPLE_SIZE_IN_WORDS + MAX_ATTRIBUTES_IN_TABLE <=
+                  NDB_ARRAY_SIZE(signal->theData) - TransIdAI::HeaderLength);
+    ndbrequire(TransIdAI::HeaderLength + ToutBufIndex <=
+               NDB_ARRAY_SIZE(signal->theData));
+    EXECUTE_DIRECT(blockNumber, GSN_TRANSID_AI, signal,
+                   TransIdAI::HeaderLength + ToutBufIndex);
+    jamEntryDebug();
+    return;
+  }
+
+  if (unlikely(ToutBufIndex > TransIdAI::DataLength)) {
+    sendReadAttrinfoLong(signal, req_struct, ToutBufIndex, recBlockref,
+                         nodeId);
+    return;
+  }
+
+  jam();
+  MEMCOPY_NO_WORDS(&signal->theData[TransIdAI::HeaderLength],
+                   &signal->theData[25], ToutBufIndex);
+  const JobBufferLevel prioLevel = req_struct->m_prio_a_flag ? JBA : JBB;
+  sendSignal(recBlockref, GSN_TRANSID_AI, signal,
+             TransIdAI::HeaderLength + ToutBufIndex, prioLevel);
+}
+
+void Dbtup::sendReadAttrinfoLong(Signal *signal, KeyReqStruct *req_struct,
+                                 Uint32 ToutBufIndex,
+                                 BlockReference recBlockref,
+                                 Uint32 nodeId) {
+  LinearSectionPtr ptr[3];
+  ptr[0].p = &signal->theData[25];
+  ptr[0].sz = ToutBufIndex;
+
+  if (nodeId != getOwnNodeId()) {
+    /* Cross-node long signal. Receiver block doesn't support
+     * packed 'short' signals. */
+    jam();
+    DEB_TRANSID_AI(("(%u) sendReadAttrinfo: DN AI len: %u, ref: 0x%x",
+      instance(), ToutBufIndex, recBlockref));
+    if (ToutBufIndex <= MAX_TRANSID_AI_SIZE) {
+      jamDebug();
       sendSignal(recBlockref, GSN_TRANSID_AI, signal,
-                 TransIdAI::HeaderLength + ToutBufIndex, prioLevel);
-      return;
+                 TransIdAI::HeaderLength, JBB, ptr, 1);
     } else {
       jam();
-      LinearSectionPtr ptr[3];
-      ptr[0].p = &signal->theData[25];
-      ptr[0].sz = ToutBufIndex;
-      if (ERROR_INSERTED(4038) &&
-          refToMain(recBlockref) != BACKUP &&
-          ptr[0].sz <= 7500) {
-        /* Copy data to Seg-section for delayed send */
-        jam();
-        Uint32 sectionIVal = RNIL;
-        ndbrequire(appendToSection(sectionIVal, ptr[0].p, ptr[0].sz));
-        SectionHandle sh(this, sectionIVal);
-
-        sendSignalWithDelay(recBlockref, GSN_TRANSID_AI, signal, 10,
-                            TransIdAI::HeaderLength, &sh);
-        return;
-      } else {
-        /**
-         * We are sending to the same node, it is important that we maintain
-         * signal order with SCAN_FRAGCONF and other signals. So we make sure
-         * that TRANSID_AI is sent at the same priority level as the
-         * SCAN_FRAGCONF will be sent at.
-         *
-         * One case for this is Backups, the receiver is the first LDM thread
-         * which could have raised priority of scan executions to Priority A.
-         * To ensure that TRANSID_AI arrives there before SCAN_FRAGCONF we
-         * send also TRANSID_AI on priority A if the signal is sent on prio A.
-         */
-        JobBufferLevel prioLevel;
-        if (!req_struct->m_prio_a_flag)
-        {
-          jam();
-          prioLevel = JBB;
-        }
-        else
-        {
-          jam();
-          prioLevel = JBA;
-        }
-        /**
-         * Since we are sending within the same data node we need not
-         * communicate the totalLen in the signal, the receiver will
-         * figure it out in assembleFragments.
-         *
-         * Also setting it here would overwrite the data sent and thus
-         * corrupt the signal.
-         */
-#ifdef DEBUG_TRANSID_AI
-        /* Data node expects CORR_FACTOR32, 2 words */
-        DEB_TRANSID_AI(("(%u) sendReadAttrinfo: Same DN AI len: %u, ref: 0x%x",
-          instance(), ToutBufIndex, recBlockref));
-        if (req_struct->m_use_corr_factor) {
-          ndbrequire(req_struct->m_use_corr_factor == 1);
-          Uint32 len = ToutBufIndex;
-          const Uint32 *dataPtr = ptr[0].p;
-          DEB_TRANSID_AI(("(%u) CorrelationData: 0x%x,0x%x",
-            instance(), dataPtr[len - 2], dataPtr[len - 1]));
-        }
-#endif
-        if (ToutBufIndex <= MAX_TRANSID_AI_SIZE) {
-          jamDebug();
-          sendSignal(recBlockref, GSN_TRANSID_AI, signal,
-            TransIdAI::HeaderLength, prioLevel, ptr, 1);
-        } else {
-          jamDebug();
-          /**
-           * Batched signals overwrite part of the signal object to send
-           * segment information, thus we have to copy the data away from
-           * this area.
-           */
-          sendBatchedFragmentedSignal(
-            recBlockref, GSN_TRANSID_AI, signal,
-            TransIdAI::HeaderLength, prioLevel, ptr, 1);
-        }
-        return;
-      }
+      jamDataDebug(ToutBufIndex);
+      sendBatchedFragmentedSignal(recBlockref, GSN_TRANSID_AI, signal,
+        TransIdAI::HeaderLength, JBB, ptr, 1);
     }
     return;
   }
 
-  /**
-   * If this node does not have a direct connection
-   * to the receiving node, we want to send the signals
-   * routed via the node that controls this read
-   */
-  // TODO is_api && !old_dest){
-  if (refToNode(recBlockref) == refToNode(routeBlockref)) {
+  /* Same-node long signal (not same-instance EXECUTE_DIRECT). */
+  jam();
+  if (ERROR_INSERTED(4038) &&
+      refToMain(recBlockref) != BACKUP &&
+      ptr[0].sz <= 7500) {
+    /* Copy data to Seg-section for delayed send */
     jam();
-    /**
-     * Signal's only alternative route is direct - cannot be delivered,
-     * drop it. (Expected behavior if recBlockRef is an SPJ block.)
-     */
+    Uint32 sectionIVal = RNIL;
+    ndbrequire(appendToSection(sectionIVal, ptr[0].p, ptr[0].sz));
+    SectionHandle sh(this, sectionIVal);
+
+    sendSignalWithDelay(recBlockref, GSN_TRANSID_AI, signal, 10,
+                        TransIdAI::HeaderLength, &sh);
     return;
   }
-  // Only TC can handle TRANSID_AI_R signals.
+  /*
+   * Same-node: maintain signal order with SCAN_FRAGCONF by sending at
+   * the same priority (A if the caller's m_prio_a_flag is set).
+   * Since we are within the same data node we need not communicate
+   * the totalLen in the signal — the receiver figures it out in
+   * assembleFragments, and setting it here would overwrite the data
+   * sent.
+   */
+  JobBufferLevel prioLevel;
+  if (!req_struct->m_prio_a_flag) {
+    jam();
+    prioLevel = JBB;
+  } else {
+    jam();
+    prioLevel = JBA;
+  }
+#ifdef DEBUG_TRANSID_AI
+  DEB_TRANSID_AI(("(%u) sendReadAttrinfo: Same DN AI len: %u, ref: 0x%x",
+    instance(), ToutBufIndex, recBlockref));
+  if (req_struct->m_use_corr_factor) {
+    ndbrequire(req_struct->m_use_corr_factor == 1);
+    Uint32 len = ToutBufIndex;
+    const Uint32 *dataPtr = ptr[0].p;
+    DEB_TRANSID_AI(("(%u) CorrelationData: 0x%x,0x%x",
+      instance(), dataPtr[len - 2], dataPtr[len - 1]));
+  }
+#endif
+  if (ToutBufIndex <= MAX_TRANSID_AI_SIZE) {
+    jamDebug();
+    sendSignal(recBlockref, GSN_TRANSID_AI, signal,
+      TransIdAI::HeaderLength, prioLevel, ptr, 1);
+  } else {
+    jamDebug();
+    /*
+     * Batched signals overwrite part of the signal object to send
+     * segment information, thus we have to copy the data away from
+     * this area.
+     */
+    sendBatchedFragmentedSignal(
+      recBlockref, GSN_TRANSID_AI, signal,
+      TransIdAI::HeaderLength, prioLevel, ptr, 1);
+  }
+}
+
+void Dbtup::sendReadAttrinfoRouted(Signal *signal, KeyReqStruct *req_struct,
+                                   Uint32 ToutBufIndex,
+                                   BlockReference recBlockref,
+                                   BlockReference routeBlockref) {
+  /*
+   * No direct connection to the receiving node. Send routed via
+   * the node that controls this read (TC).
+   */
+  if (refToNode(recBlockref) == refToNode(routeBlockref)) {
+    jam();
+    /* Only alternative route is direct — cannot be delivered, drop. */
+    return;
+  }
   ndbrequire(refToMain(routeBlockref) == DBTC);
+  TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
   LinearSectionPtr ptr[3];
   ptr[0].p = &signal->theData[25];
   ptr[0].sz = ToutBufIndex;
@@ -551,7 +519,8 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
   } else {
     jam();
     Uint32 sig_len;
-    TransIdAILong *const transIdAILong = (TransIdAILong *)signal->getDataPtr();
+    TransIdAILong *const transIdAILong =
+        (TransIdAILong *)signal->getDataPtr();
     if (req_struct->m_use_corr_factor) {
       const Uint32 *dataPtr = ptr[0].p;
       const Uint32 len_corr = req_struct->m_use_corr_factor + 1;
