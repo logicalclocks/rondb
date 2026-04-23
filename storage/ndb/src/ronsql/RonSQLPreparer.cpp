@@ -4196,21 +4196,27 @@ RonSQLPreparer::execute_join()
         "the plan.");
   }
 
-  // Main-query aggregator attach would need a physical leaf table; a CTE
-  // op has no NdbDictionary::Table. Reject until that path ships.
-  if (plan.ops[plan.agg_leaf_idx].type == JoinOp::CTE_LOOKUP ||
-      plan.ops[plan.agg_leaf_idx].type == JoinOp::CTE_SCAN)
-  {
-    throw RonSQLPermanentError(
-        "Main-query aggregation over CTE output not yet supported. "
-        "Arrange the FROM list so a physical table is the last (leaf) op.");
-  }
+  // Virtual tables for CTE children of the main plan. Built up-front so
+  // the agg leaf's NdbAggregator can be constructed against the right
+  // schema even when the leaf is a CTE_LOOKUP (no physical table).
+  NdbDictionary::Table* cteVirtualTables[MAX_SPJ_TREE_NODES] = {};
+  build_cte_virtual_tables(plan, cteVirtualTables);
 
   // Build aggregator(s).
   // Multi-leaf: one NdbAggregator per merged leaf, each with its own program.
   // Single-leaf: one NdbAggregator on plan.agg_leaf_idx (existing path).
   NdbAggregator* leafAggs[MAX_SPJ_TREE_NODES] = {};
-  NdbAggregator singleAgg(plan.ops[plan.agg_leaf_idx].table);
+  const NdbDictionary::Table* agg_leaf_table =
+      plan.ops[plan.agg_leaf_idx].table;
+  if (agg_leaf_table == NULL) {
+    // CTE_LOOKUP / CTE_SCAN leaf: use the per-CTE virtual table whose
+    // columns mirror the CTE's output schema.
+    agg_leaf_table = cteVirtualTables[plan.agg_leaf_idx];
+    require_run(agg_leaf_table != NULL,
+                "Main aggregator leaf is a CTE op but its virtual table "
+                "was not built.");
+  }
+  NdbAggregator singleAgg(agg_leaf_table);
 
   if (m_has_select_subqueries && plan.num_agg_leaves > 0) {
     // Build per-leaf aggregators for subquery pushdown
@@ -4443,9 +4449,6 @@ RonSQLPreparer::execute_join()
 
   emit_root_op(qb, m_main_scope, opDefs);
 
-  NdbDictionary::Table* cteVirtualTables[MAX_SPJ_TREE_NODES] = {};
-  build_cte_virtual_tables(plan, cteVirtualTables);
-
   emit_child_ops(qb, m_main_scope, opDefs, &singleAgg, leafAggs,
                  cteVirtualTables);
 
@@ -4630,38 +4633,136 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   require_run(opDefs[0] != NULL, "Failed to create root scan.");
 }
 
-// Allocate per-CTE_LOOKUP virtual NdbDictionary::Table objects. Each
-// virtual table carries the parent's key columns so lookupCte can bind
-// linked keys. out[] is indexed by op-index; non-CTE ops leave NULL.
+// Allocate per-CTE virtual NdbDictionary::Table objects. Each virt table's
+// columns mirror the referenced CTE's output list: GROUP BY columns as PK
+// (same names/types as their source columns, supporting linked-key binding
+// via the parent's join operand), aggregate columns as non-PK (types
+// derived from the aggregate function + source column). Column order
+// matches cte->stmt->outputs so attrIds align with cte_col_idx from
+// load_join's name→attrId resolution. out[] is indexed by op-index of the
+// referencing CTE_LOOKUP or CTE_SCAN; non-CTE ops leave NULL.
 void
 RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
                                           NdbDictionary::Table** out)
 {
-  for (Uint32 i = 1; i < plan.num_ops; i++) {
+  for (Uint32 i = 0; i < plan.num_ops; i++) {
     const JoinOp& op = plan.ops[i];
-    if (op.type != JoinOp::CTE_LOOKUP) continue;
+    if (op.type != JoinOp::CTE_LOOKUP && op.type != JoinOp::CTE_SCAN)
+      continue;
 
-    const NdbDictionary::Table* parentTable =
-        plan.ops[op.parent_op_idx].table;
-    require_run(parentTable != NULL,
-                "CTE lookup parent has no NDB table.");
+    const CteDefinition* cte = op.cte_def;
+    ndbrequire(cte != NULL);
+    ndbrequire(op.cte_def_idx < m_cte_scopes.size());
+    QueryScope* cte_scope = m_cte_scopes[op.cte_def_idx];
+    ndbrequire(cte_scope != NULL);
 
     char vtname[64];
     snprintf(vtname, sizeof(vtname), "__cte_%u", op.cte_def_idx);
     NdbDictionary::Table* vt = new NdbDictionary::Table(vtname);
 
-    for (Uint32 k = 0; k < op.num_key_cols; k++) {
-      const NdbDictionary::Column* parentCol =
-          parentTable->getColumn(op.parent_key_col_names[k]);
-      require_run(parentCol != NULL,
-                  "CTE lookup parent key column not found.");
-
+    for (const Outputs* o = cte->stmt->outputs; o != NULL; o = o->next) {
       NdbDictionary::Column vcol;
-      vcol.setName(op.parent_key_col_names[k]);
-      vcol.setType(parentCol->getType());
-      vcol.setLength(parentCol->getLength());
-      vcol.setPrimaryKey(true);
-      vcol.setNullable(false);
+      const char* vcol_name =
+          o->output_name.to_LexCString(m_amalloc).c_str();
+      vcol.setName(vcol_name);
+
+      // GROUP BY columns become PK of the virt table and keep their
+      // source type; everything else is non-PK.
+      bool is_groupby = false;
+      if (o->type == Outputs::Type::COLUMN) {
+        for (const GroupbyColumns* gb = cte->stmt->groupby_columns;
+             gb != NULL; gb = gb->next) {
+          if (gb->col_idx == o->column.col_idx) { is_groupby = true; break; }
+        }
+      }
+
+      // Derive type. Simple cases only: plain column refs, COUNT(*),
+      // and SUM/MIN/MAX over a direct column load. More complex
+      // expressions raise a clear error.
+      const NdbDictionary::Column* src_col = NULL;
+      NdbDictionary::Column::Type derived_type =
+          NdbDictionary::Column::Bigint;  // fallback for COUNT
+      Uint32 derived_length = 1;
+      const void* derived_cs = NULL;
+      bool have_derived = false;
+
+      if (o->type == Outputs::Type::COLUMN) {
+        Uint32 col_idx = o->column.col_idx;
+        src_col = cte_scope->column_map[col_idx];
+        require_prm(src_col != NULL,
+                    "CTE output column has no resolved source type.");
+        derived_type = src_col->getType();
+        derived_length = src_col->getLength();
+        derived_cs = src_col->getCharset();
+        have_derived = true;
+      } else if (o->type == Outputs::Type::AGGREGATE) {
+        TokenKind fun = o->aggregate.fun;
+        AggregationAPICompiler::Expr* arg = o->aggregate.arg;
+        if (fun == T_COUNT) {
+          derived_type = NdbDictionary::Column::Bigunsigned;
+          derived_length = 1;
+          have_derived = true;
+        } else if (arg != NULL && arg->isLoad()) {
+          Uint32 src_col_idx = arg->getLoadIdx();
+          src_col = cte_scope->column_map[src_col_idx];
+          require_prm(src_col != NULL,
+                      "CTE aggregate references unresolved source column.");
+          NdbDictionary::Column::Type st = src_col->getType();
+          if (fun == T_SUM) {
+            switch (st) {
+            case NdbDictionary::Column::Tinyint:
+            case NdbDictionary::Column::Smallint:
+            case NdbDictionary::Column::Mediumint:
+            case NdbDictionary::Column::Int:
+            case NdbDictionary::Column::Bigint:
+              derived_type = NdbDictionary::Column::Bigint;
+              break;
+            case NdbDictionary::Column::Tinyunsigned:
+            case NdbDictionary::Column::Smallunsigned:
+            case NdbDictionary::Column::Mediumunsigned:
+            case NdbDictionary::Column::Unsigned:
+            case NdbDictionary::Column::Bigunsigned:
+              derived_type = NdbDictionary::Column::Bigunsigned;
+              break;
+            case NdbDictionary::Column::Float:
+            case NdbDictionary::Column::Double:
+              derived_type = NdbDictionary::Column::Double;
+              break;
+            default:
+              throw RonSQLPermanentError(
+                  "SUM over this column type in CTE not yet supported.");
+            }
+            derived_length = 1;
+            have_derived = true;
+          } else if (fun == T_MIN || fun == T_MAX) {
+            derived_type = st;
+            derived_length = src_col->getLength();
+            derived_cs = src_col->getCharset();
+            have_derived = true;
+          } else {
+            throw RonSQLPermanentError(
+                "Unsupported aggregate function in CTE output.");
+          }
+        } else {
+          throw RonSQLPermanentError(
+              "CTE aggregate over complex expression not yet supported.");
+        }
+      } else if (o->type == Outputs::Type::AVG) {
+        throw RonSQLPermanentError("AVG in CTE output not yet supported.");
+      } else {
+        throw RonSQLPermanentError(
+            "Unsupported CTE output kind.");
+      }
+      ndbrequire(have_derived);
+
+      vcol.setType(derived_type);
+      vcol.setLength(derived_length);
+      if (derived_cs != NULL) {
+        vcol.setCharset(
+            static_cast<CHARSET_INFO*>(const_cast<void*>(derived_cs)));
+      }
+      vcol.setPrimaryKey(is_groupby);
+      vcol.setNullable(!is_groupby);
       vt->addColumn(vcol);
     }
     out[i] = vt;
@@ -4722,32 +4823,34 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       opts.setInterpretedCode(child_code_storage);
     }
 
-    if (op.type != JoinOp::CTE_LOOKUP) {
-      if (plan.num_agg_leaves > 0 && leafAggs != NULL &&
-          leafAggs[i] != NULL) {
-        // Multi-leaf: attach this leaf's aggregator
-        require_run(opts.setAggregation(*leafAggs[i]) == 0,
-                    "Failed to set aggregation on leaf.");
-        for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
-          NdbLinkedOperand* lv = qb->linkedValue(
-              opDefs[plan.linked_projs[j].source_op_idx],
-              plan.linked_projs[j].column_name);
-          require_run(lv != NULL, "Failed to create linked projection.");
-          require_run(opts.addLinkedProjection(lv) == 0,
-                      "Failed to add linked projection.");
-        }
-      } else if (i == plan.agg_leaf_idx && plan.num_agg_leaves == 0 &&
-                 singleAgg != NULL) {
-        require_run(opts.setAggregation(*singleAgg) == 0,
-                    "Failed to set aggregation.");
-        for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
-          NdbLinkedOperand* lv = qb->linkedValue(
-              opDefs[plan.linked_projs[j].source_op_idx],
-              plan.linked_projs[j].column_name);
-          require_run(lv != NULL, "Failed to create linked projection.");
-          require_run(opts.addLinkedProjection(lv) == 0,
-                      "Failed to add linked projection.");
-        }
+    // Attach aggregator. Multi-leaf path (leafAggs[i]) is for merged
+    // select-list subqueries and never fires for CTE ops. Single-leaf
+    // path fires when this op is plan.agg_leaf_idx — works for both
+    // physical-table leaves and CTE leaves (A0), the latter using the
+    // per-CTE virtual table for schema.
+    if (plan.num_agg_leaves > 0 && leafAggs != NULL &&
+        leafAggs[i] != NULL) {
+      require_run(opts.setAggregation(*leafAggs[i]) == 0,
+                  "Failed to set aggregation on leaf.");
+      for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
+        NdbLinkedOperand* lv = qb->linkedValue(
+            opDefs[plan.linked_projs[j].source_op_idx],
+            plan.linked_projs[j].column_name);
+        require_run(lv != NULL, "Failed to create linked projection.");
+        require_run(opts.addLinkedProjection(lv) == 0,
+                    "Failed to add linked projection.");
+      }
+    } else if (i == plan.agg_leaf_idx && plan.num_agg_leaves == 0 &&
+               singleAgg != NULL) {
+      require_run(opts.setAggregation(*singleAgg) == 0,
+                  "Failed to set aggregation.");
+      for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
+        NdbLinkedOperand* lv = qb->linkedValue(
+            opDefs[plan.linked_projs[j].source_op_idx],
+            plan.linked_projs[j].column_name);
+        require_run(lv != NULL, "Failed to create linked projection.");
+        require_run(opts.addLinkedProjection(lv) == 0,
+                    "Failed to add linked projection.");
       }
     }
 
