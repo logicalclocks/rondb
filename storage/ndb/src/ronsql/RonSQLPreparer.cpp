@@ -4387,7 +4387,7 @@ RonSQLPreparer::execute_join()
     }
   } else {
     // Single-leaf path (existing)
-    programAggregator_join(&singleAgg);
+    programAggregator_join(m_main_scope, m_context.ast_root, &singleAgg);
     require_prm(singleAgg.Finalize(), "Failed to finalize aggregator.");
   }
 
@@ -5955,28 +5955,29 @@ RonSQLPreparer::emit_filter_expr(NdbAggregator* agg,
 }
 
 void
-RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
+RonSQLPreparer::programAggregator_join(QueryScope& scope,
+                                        SelectStatement& ast_root,
+                                        NdbAggregator* aggregator)
 {
   std::basic_ostream<char>& err = *m_conf.err_stream;
-  SelectStatement& ast_root = m_context.ast_root;
-  Uint32 leaf_idx = m_main_scope.join_plan.agg_leaf_idx;
+  Uint32 leaf_idx = scope.join_plan.agg_leaf_idx;
 
   // Program groupby columns — use GroupByLinked for parent columns
-  assert(m_main_scope.column_attrId_map != NULL);
+  assert(scope.column_attrId_map != NULL);
   Uint32 linked_proj_pos = 0;
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
   while (groupby != NULL)
   {
     Uint32 col_idx = groupby->col_idx;
-    if (m_main_scope.column_table_idx[col_idx] == leaf_idx)
+    if (scope.column_table_idx[col_idx] == leaf_idx)
     {
       programAggregator_do_or_fail
-        (aggregator->GroupBy(m_main_scope.column_attrId_map[col_idx]));
+        (aggregator->GroupBy(scope.column_attrId_map[col_idx]));
     }
     else
     {
       programAggregator_do_or_fail
-        (aggregator->GroupByLinked(linked_proj_pos, m_main_scope.column_map[col_idx]));
+        (aggregator->GroupByLinked(linked_proj_pos, scope.column_map[col_idx]));
       linked_proj_pos++;
     }
     groupby = groupby->next;
@@ -5987,15 +5988,15 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
   // A hidden sentinel COUNT accumulator is appended so that groups where
   // no rows passed the filter can be suppressed at result time.
   bool has_branchreg_filter = false;
-  if (m_main_scope.cross_table_where_filters.size() > 0)
+  if (scope.cross_table_where_filters.size() > 0)
   {
     // Check if any remaining (non-consumed) cross-table filters exist
-    for (Uint32 f = 0; f < m_main_scope.cross_table_where_filters.size(); f++) {
-      CrossTableFilter& ctf = m_main_scope.cross_table_where_filters[f];
+    for (Uint32 f = 0; f < scope.cross_table_where_filters.size(); f++) {
+      CrossTableFilter& ctf = scope.cross_table_where_filters[f];
       if (ctf.ce != NULL)
         has_branchreg_filter = true;
     }
-    Uint32 agg_word_count = m_main_scope.agg->raw_word_size(0, m_main_scope.agg->m_program.size());
+    Uint32 agg_word_count = scope.agg->raw_word_size(0, scope.agg->m_program.size());
     // Add 4 words for sentinel (LoadUint64=3 + Count=1) that follows agg ops
     if (has_branchreg_filter)
       agg_word_count += 4;
@@ -6003,9 +6004,9 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     auto emit_negated_branch = [&](ConditionalExpression* atom,
                                    Uint32 skip_count) {
       Uint32 reg_left = 1, reg_right = 2, tmp_reg = 3;
-      emit_filter_expr(aggregator, m_main_scope, atom->args.left, leaf_idx,
+      emit_filter_expr(aggregator, scope, atom->args.left, leaf_idx,
                         reg_left, tmp_reg);
-      emit_filter_expr(aggregator, m_main_scope, atom->args.right, leaf_idx,
+      emit_filter_expr(aggregator, scope, atom->args.right, leaf_idx,
                         reg_right, tmp_reg);
       switch (atom->op) {
       case T_GT:
@@ -6037,16 +6038,16 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
       }
     };
 
-    for (Uint32 f = 0; f < m_main_scope.cross_table_where_filters.size(); f++)
+    for (Uint32 f = 0; f < scope.cross_table_where_filters.size(); f++)
     {
-      CrossTableFilter& ctf = m_main_scope.cross_table_where_filters[f];
+      CrossTableFilter& ctf = scope.cross_table_where_filters[f];
       if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
 
       // Compute remaining filter words for skip count
       Uint32 remaining_words = 0;
-      for (Uint32 f2 = f + 1; f2 < m_main_scope.cross_table_where_filters.size(); f2++)
+      for (Uint32 f2 = f + 1; f2 < scope.cross_table_where_filters.size(); f2++)
       {
-        CrossTableFilter& ctf2 = m_main_scope.cross_table_where_filters[f2];
+        CrossTableFilter& ctf2 = scope.cross_table_where_filters[f2];
         if (ctf2.ce == NULL) continue;
         remaining_words += cross_table_filter_word_count(
             ctf2.ce, filter_expr_word_count_impl);
@@ -6103,8 +6104,8 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
   }
 
   // Program aggregations — same as single-table path
-  assert(m_main_scope.agg != NULL);
-  DynamicArray<AggregationAPICompiler::Instr>& program = m_main_scope.agg->m_program;
+  assert(scope.agg != NULL);
+  DynamicArray<AggregationAPICompiler::Instr>& program = scope.agg->m_program;
   for (Uint32 i = 0; i < program.size(); i++)
   {
     AggregationAPICompiler::Instr* instr = &program[i];
@@ -6114,17 +6115,17 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     {
     case AggregationAPICompiler::SVMInstrType::Load:
     {
-      if (m_main_scope.column_table_idx[src] != leaf_idx)
+      if (scope.column_table_idx[src] != leaf_idx)
       {
         Uint32 lp_pos = find_or_add_linked_proj(
-            m_main_scope.join_plan, m_main_scope.column_table_idx[src],
+            scope.join_plan, scope.column_table_idx[src],
             m_columns[src].c_str());
         programAggregator_do_or_fail
-          (aggregator->LoadLinkedColumn(lp_pos, dest, m_main_scope.column_map[src]));
+          (aggregator->LoadLinkedColumn(lp_pos, dest, scope.column_map[src]));
       }
       else
       {
-        NdbAttrId col_id = m_main_scope.column_attrId_map[src];
+        NdbAttrId col_id = scope.column_attrId_map[src];
         if (!aggregator->LoadColumn(col_id, dest))
         {
           err << "Failed writing aggregation program "
@@ -6138,7 +6139,7 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     }
     case AggregationAPICompiler::SVMInstrType::LoadConstantInteger:
       programAggregator_do_or_fail
-        (aggregator->LoadInt64(m_main_scope.agg->m_constants[src].int_64, dest));
+        (aggregator->LoadInt64(scope.agg->m_constants[src].int_64, dest));
       break;
     case AggregationAPICompiler::SVMInstrType::Mov:
       programAggregator_do_or_fail(aggregator->Mov(dest, src));
@@ -6178,8 +6179,8 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
       break;
     case AggregationAPICompiler::SVMInstrType::EmbeddedInterp:
     {
-      auto& ci = m_main_scope.agg->m_cases[dest];
-      Uint32 then_raw = m_main_scope.agg->raw_word_size(ci.then_start, ci.skip_pos);
+      auto& ci = scope.agg->m_cases[dest];
+      Uint32 then_raw = scope.agg->raw_word_size(ci.then_start, ci.skip_pos);
       Uint32 skip_raw = 1;
       Uint32 then_arm_total = then_raw + skip_raw;
       generate_embedded_condition(aggregator, ci.condition, then_arm_total);
@@ -6187,12 +6188,12 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     }
     case AggregationAPICompiler::SVMInstrType::Skip:
     {
-      for (Uint32 c = 0; c < m_main_scope.agg->m_cases.size(); c++)
+      for (Uint32 c = 0; c < scope.agg->m_cases.size(); c++)
       {
-        if (m_main_scope.agg->m_cases[c].skip_pos == i)
+        if (scope.agg->m_cases[c].skip_pos == i)
         {
-          auto& ci = m_main_scope.agg->m_cases[c];
-          Uint32 else_raw = m_main_scope.agg->raw_word_size(ci.else_start, ci.else_end);
+          auto& ci = scope.agg->m_cases[c];
+          Uint32 else_raw = scope.agg->raw_word_size(ci.else_start, ci.else_end);
           programAggregator_do_or_fail(aggregator->Skip(else_raw));
           break;
         }

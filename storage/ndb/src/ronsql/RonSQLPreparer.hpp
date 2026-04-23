@@ -330,7 +330,8 @@ private:
   struct ConditionalExpression* simplify_ce(struct ConditionalExpression* ce,
                                             int maxdepth);
   void programAggregator(NdbAggregator* aggregator);
-  void programAggregator_join(NdbAggregator* aggregator);
+  void programAggregator_join(QueryScope& scope, SelectStatement& stmt,
+                              NdbAggregator* aggregator);
   Uint32 filter_expr_word_count(struct ConditionalExpression* ce);
   void emit_filter_expr(NdbAggregator* agg, QueryScope& scope,
                         struct ConditionalExpression* ce,
