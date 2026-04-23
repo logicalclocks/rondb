@@ -3456,19 +3456,16 @@ RonSQLPreparer::compile()
     }
   }
 
-  // Compile post-processing/printer program.
-  // Skip for CTE queries — the main SELECT has no GROUP BY (aggregation is
-  // inside the CTEs), so ResultPrinter validation would reject COLUMN outputs.
-  // CTE execution is not yet implemented; only EXPLAIN is supported.
-  if (!m_has_ctes) {
-    m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
-      ResultPrinter(m_amalloc,
-                    &m_context.ast_root,
-                    &m_columns,
-                    m_main_scope.column_map,
-                    m_conf.output_format,
-                    m_conf.err_stream);
-  }
+  // Compile post-processing/printer program. CTE queries use the main
+  // aggregator on a physical-table leaf (CTE-at-leaf is rejected in
+  // execute_join), so ResultPrinter's normal construction applies.
+  m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
+    ResultPrinter(m_amalloc,
+                  &m_context.ast_root,
+                  &m_columns,
+                  m_main_scope.column_map,
+                  m_conf.output_format,
+                  m_conf.err_stream);
 }
 
 void
@@ -4183,19 +4180,31 @@ RonSQLPreparer::collect_pk_equalities(
 void
 RonSQLPreparer::execute_join()
 {
-  // CTE execution is not yet implemented — only EXPLAIN is supported
-  if (m_has_ctes)
-  {
-    throw RonSQLPermanentError(
-        "CTE execution is not yet implemented. Use EXPLAIN to see the plan.");
-  }
-
   Ndb* ndb = m_conf.ndb;
   ndbrequire(m_trans == NULL);
   m_trans = ndb->startTransaction();
   require_run(m_trans != NULL, "Failed to start transaction.");
 
   JoinPlan& plan = m_main_scope.join_plan;
+
+  // scanCte as main-query root is deferred; the main SELECT's FROM must
+  // reference a physical table.
+  if (plan.ops[0].type == JoinOp::CTE_SCAN)
+  {
+    throw RonSQLPermanentError(
+        "scanCte as main-query root not yet supported. Use EXPLAIN to see "
+        "the plan.");
+  }
+
+  // Main-query aggregator attach would need a physical leaf table; a CTE
+  // op has no NdbDictionary::Table. Reject until that path ships.
+  if (plan.ops[plan.agg_leaf_idx].type == JoinOp::CTE_LOOKUP ||
+      plan.ops[plan.agg_leaf_idx].type == JoinOp::CTE_SCAN)
+  {
+    throw RonSQLPermanentError(
+        "Main-query aggregation over CTE output not yet supported. "
+        "Arrange the FROM list so a physical table is the last (leaf) op.");
+  }
 
   // Build aggregator(s).
   // Multi-leaf: one NdbAggregator per merged leaf, each with its own program.
@@ -4395,6 +4404,41 @@ RonSQLPreparer::execute_join()
   NdbQueryBuilder* qb = NdbQueryBuilder::create();
   ndbrequire(qb != NULL);
 
+  // Emit CTE subtrees first, in declaration order, so the main query's
+  // CTE_LOOKUP / CTE_SCAN references resolve.
+  NdbAggregator** cteAggs = NULL;
+  if (m_cte_scopes.size() > 0) {
+    cteAggs = m_amalloc->alloc_exc<NdbAggregator*>(m_cte_scopes.size());
+    CteDefinition* cte = m_context.ast_root.cte_list;
+    for (Uint32 c = 0; c < m_cte_scopes.size();
+         c++, cte = cte->next) {
+      QueryScope& cs = *m_cte_scopes[c];
+      JoinPlan& cp = cs.join_plan;
+      const NdbDictionary::Table* cte_leaf_table =
+          cp.ops[cp.agg_leaf_idx].table;
+      require_run(cte_leaf_table != NULL,
+                  "CTE aggregation leaf has no physical table.");
+      NdbAggregator* cteAgg = new NdbAggregator(cte_leaf_table);
+      cteAggs[c] = cteAgg;
+
+      programAggregator_join(cs, *cte->stmt, cteAgg);
+      require_prm(cteAgg->Finalize(), "Failed to finalize CTE aggregator.");
+
+      qb->beginCteSubtree(c);
+      const NdbQueryOperationDef* cteOpDefs[MAX_SPJ_TREE_NODES];
+      emit_root_op(qb, cs, cteOpDefs);
+      NdbDictionary::Table* cteChildVT[MAX_SPJ_TREE_NODES] = {};
+      build_cte_virtual_tables(cp, cteChildVT);
+      emit_child_ops(qb, cs, cteOpDefs, cteAgg, nullptr, cteChildVT);
+      qb->endCteSubtree();
+      require_run(qb->defineCte(c, cs.table, *cteAgg) == 0,
+                  "Failed to defineCte.");
+      for (Uint32 i = 0; i < MAX_SPJ_TREE_NODES; i++) {
+        delete cteChildVT[i];
+      }
+    }
+  }
+
   const NdbQueryOperationDef* opDefs[MAX_SPJ_TREE_NODES];
 
   emit_root_op(qb, m_main_scope, opDefs);
@@ -4462,6 +4506,14 @@ RonSQLPreparer::execute_join()
     if (leafAggs[i] != NULL) {
       delete leafAggs[i];
       leafAggs[i] = NULL;
+    }
+  }
+
+  // Free per-CTE aggregators
+  if (cteAggs != NULL) {
+    for (Uint32 c = 0; c < m_cte_scopes.size(); c++) {
+      delete cteAggs[c];
+      cteAggs[c] = NULL;
     }
   }
 }
