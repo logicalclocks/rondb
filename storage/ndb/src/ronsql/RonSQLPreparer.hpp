@@ -44,6 +44,12 @@ typedef void* yyscan_t;
 typedef struct yy_buffer_state *YY_BUFFER_STATE;
 struct yy_buffer_state;
 
+// NdbQueryBuilder.hpp is an internal (src-side) header, not pulled in via
+// <NdbApi.hpp>, so forward-declare the handful of types we reference from
+// this header. Full definitions are included in RonSQLPreparer.cpp.
+class NdbQueryBuilder;
+class NdbQueryOperationDef;
+
 struct LexLocation
 {
   char* begin = NULL;
@@ -285,16 +291,26 @@ private:
   void substitute_subquery_results();
   void substitute_subquery_results_ce(ConditionalExpression** ce_ptr);
   void execute_join();
+  void emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
+                    const NdbQueryOperationDef** opDefs);
+  void build_cte_virtual_tables(const JoinPlan& plan,
+                                NdbDictionary::Table** out);
+  void emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
+                      const NdbQueryOperationDef** opDefs,
+                      NdbAggregator* singleAgg,
+                      NdbAggregator** leafAggs,
+                      NdbDictionary::Table** cteVirtualTables);
   void collect_pk_equalities(struct ConditionalExpression* ce,
                              const NdbDictionary::Table* table,
                              struct ConditionalExpression* pk_const[]);
   void apply_filter_top_level(NdbScanFilter* filter);
-  void apply_filter(NdbScanFilter* filter, struct ConditionalExpression* ce);
-  void apply_filter_cmp(NdbScanFilter* filter,
+  void apply_filter(NdbScanFilter* filter, QueryScope& scope,
+                    struct ConditionalExpression* ce);
+  void apply_filter_cmp(NdbScanFilter* filter, QueryScope& scope,
                         NdbScanFilter::BinaryCondition cond,
                         struct ConditionalExpression* left,
                         struct ConditionalExpression* right);
-  void apply_filter_like(NdbScanFilter* filter,
+  void apply_filter_like(NdbScanFilter* filter, QueryScope& scope,
                          NdbScanFilter::BinaryCondition cond,
                          struct ConditionalExpression* left,
                          struct ConditionalExpression* right);
@@ -305,7 +321,7 @@ private:
   void programAggregator(NdbAggregator* aggregator);
   void programAggregator_join(NdbAggregator* aggregator);
   Uint32 filter_expr_word_count(struct ConditionalExpression* ce);
-  void emit_filter_expr(NdbAggregator* agg,
+  void emit_filter_expr(NdbAggregator* agg, QueryScope& scope,
                         struct ConditionalExpression* ce,
                         Uint32 leaf_idx, Uint32 reg, Uint32 tmp_reg);
   void generate_embedded_condition(NdbAggregator* aggregator,

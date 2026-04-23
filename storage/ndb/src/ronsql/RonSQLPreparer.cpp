@@ -4243,309 +4243,13 @@ RonSQLPreparer::execute_join()
 
   const NdbQueryOperationDef* opDefs[MAX_SPJ_TREE_NODES];
 
-  // Root operation: PK lookup if WHERE fully covers PK, else TABLE_SCAN.
-  // When children have scan ops, NDB doesn't support lookup root, so use
-  // an ordered index scan on PK with equality bounds instead.
-  {
-    NdbQueryOptions rootOpts;
-    const NdbDictionary::Table* root_table = plan.ops[0].table;
-    ConditionalExpression* where_ce = NULL;
-    bool pk_covered = false;
-    bool has_scan_child = false;
-    int nkeys = 0;
-    ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  emit_root_op(qb, m_main_scope, opDefs);
 
-    if (m_main_scope.join_where_ce[0] != NULL)
-    {
-      where_ce = simplify_ce(m_main_scope.join_where_ce[0], -1);
-
-      // Check if WHERE fully covers the root PK with equality constants
-      nkeys = root_table->getNoOfPrimaryKeys();
-      for (int k = 0; k < nkeys; k++)
-        pk_const[k] = NULL;
-      collect_pk_equalities(where_ce, root_table, pk_const);
-      pk_covered = true;
-      for (int k = 0; k < nkeys; k++)
-      {
-        if (pk_const[k] == NULL) { pk_covered = false; break; }
-      }
-
-      if (pk_covered)
-      {
-        for (Uint32 ci = 1; ci < plan.num_ops; ci++)
-        {
-          if (plan.ops[ci].type == JoinOp::INDEX_SCAN ||
-              plan.ops[ci].type == JoinOp::TABLE_SCAN)
-          {
-            has_scan_child = true;
-            break;
-          }
-        }
-      }
-    }
-
-    if (pk_covered && !has_scan_child)
-    {
-      // All children are lookups — use readTuple PK lookup for root
-      const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-      for (int k = 0; k < nkeys; k++)
-      {
-        const char* pk_name = root_table->getPrimaryKey(k);
-        const NdbDictionary::Column* pk_col =
-            root_table->getColumn(pk_name);
-        ndbrequire(pk_col != NULL);
-        raw_value rv = encode_constant(pk_const[k], pk_col);
-        pk_keys[k] = qb->constValue(rv.val, rv.len);
-        require_run(pk_keys[k] != NULL,
-                    "Failed to create const value for PK lookup.");
-      }
-      pk_keys[nkeys] = nullptr;
-      opDefs[0] = qb->readTuple(root_table, pk_keys, &rootOpts);
-      require_run(opDefs[0] != NULL, "Failed to create root PK lookup.");
-    }
-    else if (pk_covered && has_scan_child)
-    {
-      // Children have scans — NDB doesn't support lookup root with scan
-      // children. Use ordered index scan on PK with equality bounds.
-      const char* pk_col_names[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
-      for (int k = 0; k < nkeys; k++)
-        pk_col_names[k] = root_table->getPrimaryKey(k);
-      const NdbDictionary::Index* pk_ordered_idx =
-          QueryPlanner::findOrderedIndex(
-              m_dict, root_table, pk_col_names, (Uint32)nkeys);
-      if (pk_ordered_idx != NULL)
-      {
-        const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-        for (int k = 0; k < nkeys; k++)
-        {
-          const NdbDictionary::Column* pk_col =
-              root_table->getColumn(pk_col_names[k]);
-          ndbrequire(pk_col != NULL);
-          raw_value rv = encode_constant(pk_const[k], pk_col);
-          pk_keys[k] = qb->constValue(rv.val, rv.len);
-          require_run(pk_keys[k] != NULL,
-                      "Failed to create const value for PK index scan.");
-        }
-        pk_keys[nkeys] = nullptr;
-        NdbQueryIndexBound bound(pk_keys);
-        opDefs[0] = qb->scanIndex(pk_ordered_idx, root_table,
-                                  &bound, &rootOpts);
-        require_run(opDefs[0] != NULL,
-                    "Failed to create root PK index scan.");
-      }
-      else
-      {
-        // No ordered index on PK — fall back to table scan with filter
-        pk_covered = false;
-      }
-    }
-
-    if (!pk_covered)
-    {
-      NdbInterpretedCode code(root_table);
-      if (where_ce != NULL)
-      {
-        NdbScanFilter filter(&code);
-        filter.setSqlCmpSemantics();
-        filter.begin(NdbScanFilter::AND);
-        apply_filter(&filter, where_ce);
-        filter.end();
-        code.finalise();
-        rootOpts.setInterpretedCode(code);
-      }
-      opDefs[0] = qb->scanTable(root_table, &rootOpts);
-      require_run(opDefs[0] != NULL, "Failed to create root scan.");
-    }
-  }
-
-  // Build virtual tables for CTE lookups (key columns matching parent types).
-  // These are in-memory NdbDictionary::Table objects used only for key binding.
   NdbDictionary::Table* cteVirtualTables[MAX_SPJ_TREE_NODES] = {};
-  if (m_has_ctes) {
-    for (Uint32 i = 1; i < plan.num_ops; i++) {
-      JoinOp& op = plan.ops[i];
-      if (op.type != JoinOp::CTE_LOOKUP) continue;
+  build_cte_virtual_tables(plan, cteVirtualTables);
 
-      // Create virtual table with PK columns matching the parent key types
-      const NdbDictionary::Table* parentTable =
-          plan.ops[op.parent_op_idx].table;
-      require_run(parentTable != NULL,
-                  "CTE lookup parent has no NDB table.");
-
-      char vtname[64];
-      snprintf(vtname, sizeof(vtname), "__cte_%u", op.cte_def_idx);
-      NdbDictionary::Table* vt = new NdbDictionary::Table(vtname);
-
-      for (Uint32 k = 0; k < op.num_key_cols; k++) {
-        const NdbDictionary::Column* parentCol =
-            parentTable->getColumn(op.parent_key_col_names[k]);
-        require_run(parentCol != NULL,
-                    "CTE lookup parent key column not found.");
-
-        NdbDictionary::Column vcol;
-        vcol.setName(op.parent_key_col_names[k]);
-        vcol.setType(parentCol->getType());
-        vcol.setLength(parentCol->getLength());
-        vcol.setPrimaryKey(true);
-        vcol.setNullable(false);
-        vt->addColumn(vcol);
-      }
-      cteVirtualTables[i] = vt;
-    }
-  }
-
-  // Child operations
-  for (Uint32 i = 1; i < plan.num_ops; i++) {
-    JoinOp& op = plan.ops[i];
-    NdbQueryOptions opts;
-    switch (op.match_type) {
-    case JoinOp::SEMI_JOIN:
-      opts.setMatchType(NdbQueryOptions::MatchNonNull);
-      opts.setMatchType(NdbQueryOptions::MatchFirst);
-      break;
-    case JoinOp::ANTI_JOIN:
-      opts.setMatchType(NdbQueryOptions::MatchNullOnly);
-      break;
-    case JoinOp::LEFT_OUTER:
-      // MatchAll is the default (outer join) — no setMatchType needed
-      break;
-    case JoinOp::INNER:
-    default:
-      opts.setMatchType(NdbQueryOptions::MatchNonNull);
-      break;
-    }
-
-    // Build linked key from parent
-    const NdbQueryOperand* keys[MAX_JOIN_KEY_COLS + 1];
-    for (Uint32 k = 0; k < op.num_key_cols; k++) {
-      keys[k] = qb->linkedValue(opDefs[op.parent_op_idx],
-                                 op.parent_key_col_names[k]);
-      require_run(keys[k] != NULL, "Failed to create linked value.");
-    }
-    keys[op.num_key_cols] = nullptr;
-
-    // Attach WHERE filter for this child table (if any).
-    // CTE lookups have no physical table — skip filter and aggregation.
-    NdbInterpretedCode child_code_storage(op.table);
-    if (op.type != JoinOp::CTE_LOOKUP && m_main_scope.join_where_ce[i] != NULL)
-    {
-      ConditionalExpression* child_ce = simplify_ce(m_main_scope.join_where_ce[i], -1);
-      NdbScanFilter filter(&child_code_storage);
-      filter.setSqlCmpSemantics();
-      filter.begin(NdbScanFilter::AND);
-      apply_filter(&filter, child_ce);
-      filter.end();
-      child_code_storage.finalise();
-      opts.setInterpretedCode(child_code_storage);
-    }
-
-    // Attach aggregation to leaf(s) — not applicable for CTE lookups
-    if (op.type != JoinOp::CTE_LOOKUP) {
-      if (m_has_select_subqueries && plan.num_agg_leaves > 0 &&
-          leafAggs[i] != NULL) {
-        // Multi-leaf: attach this leaf's aggregator
-        require_run(opts.setAggregation(*leafAggs[i]) == 0,
-                    "Failed to set aggregation on leaf.");
-        for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
-          NdbLinkedOperand* lv = qb->linkedValue(
-              opDefs[plan.linked_projs[j].source_op_idx],
-              plan.linked_projs[j].column_name);
-          require_run(lv != NULL, "Failed to create linked projection.");
-          require_run(opts.addLinkedProjection(lv) == 0,
-                      "Failed to add linked projection.");
-        }
-      } else if (i == plan.agg_leaf_idx && plan.num_agg_leaves == 0) {
-        // Single-leaf: existing path
-        require_run(opts.setAggregation(singleAgg) == 0,
-                    "Failed to set aggregation.");
-        for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
-          NdbLinkedOperand* lv = qb->linkedValue(
-              opDefs[plan.linked_projs[j].source_op_idx],
-              plan.linked_projs[j].column_name);
-          require_run(lv != NULL, "Failed to create linked projection.");
-          require_run(opts.addLinkedProjection(lv) == 0,
-                      "Failed to add linked projection.");
-        }
-      }
-    }
-
-    switch (op.type) {
-    case JoinOp::PK_LOOKUP:
-      opDefs[i] = qb->readTuple(op.table, keys, &opts);
-      break;
-    case JoinOp::UNIQUE_LOOKUP:
-      opDefs[i] = qb->readTuple(op.index, op.table, keys, &opts);
-      break;
-    case JoinOp::INDEX_SCAN:
-    {
-      if (op.num_low_bounds == 0 && op.num_high_bounds == 0)
-      {
-        // Simple equality bounds (join keys only)
-        NdbQueryIndexBound bound(keys);
-        opDefs[i] = qb->scanIndex(op.index, op.table, &bound, &opts);
-      }
-      else
-      {
-        // Range bounds: equality join keys + cross-table WHERE range
-        const NdbQueryOperand* lowKeys[MAX_JOIN_KEY_COLS * 2 + 1];
-        const NdbQueryOperand* highKeys[MAX_JOIN_KEY_COLS * 2 + 1];
-
-        // Copy equality join keys to both low and high
-        for (Uint32 k = 0; k < op.num_key_cols; k++) {
-          lowKeys[k] = highKeys[k] = qb->linkedValue(
-              opDefs[op.parent_op_idx], op.parent_key_col_names[k]);
-          require_run(lowKeys[k] != NULL, "Failed to create linked value.");
-        }
-
-        // Append lower range bounds after equality prefix
-        bool lowIncl = true;
-        Uint32 lowIdx = op.num_key_cols;
-        for (Uint32 b = 0; b < op.num_low_bounds; b++) {
-          lowKeys[lowIdx] = qb->linkedValue(
-              opDefs[op.low_bounds[b].parent_op_idx],
-              op.low_bounds[b].parent_col_name);
-          require_run(lowKeys[lowIdx] != NULL,
-                      "Failed to create linked lower bound.");
-          lowIncl = op.low_bounds[b].inclusive;
-          lowIdx++;
-        }
-        lowKeys[lowIdx] = nullptr;
-
-        // Append upper range bounds after equality prefix
-        bool highIncl = true;
-        Uint32 highIdx = op.num_key_cols;
-        for (Uint32 b = 0; b < op.num_high_bounds; b++) {
-          highKeys[highIdx] = qb->linkedValue(
-              opDefs[op.high_bounds[b].parent_op_idx],
-              op.high_bounds[b].parent_col_name);
-          require_run(highKeys[highIdx] != NULL,
-                      "Failed to create linked upper bound.");
-          highIncl = op.high_bounds[b].inclusive;
-          highIdx++;
-        }
-        highKeys[highIdx] = nullptr;
-
-        NdbQueryIndexBound bound(lowKeys, lowIncl, highKeys, highIncl);
-        opDefs[i] = qb->scanIndex(op.index, op.table, &bound, &opts);
-      }
-      break;
-    }
-    case JoinOp::CTE_LOOKUP:
-    {
-      Uint32 numResultCols = 0;
-      for (const Outputs* o = op.cte_def->stmt->outputs; o; o = o->next)
-        numResultCols++;
-      opDefs[i] = qb->lookupCte(
-          op.cte_def_idx, numResultCols,
-          cteVirtualTables[i],
-          keys, &opts);
-      break;
-    }
-    default:
-      abort();
-    }
-    require_run(opDefs[i] != NULL, "Failed to create child operation.");
-  }
+  emit_child_ops(qb, m_main_scope, opDefs, &singleAgg, leafAggs,
+                 cteVirtualTables);
 
   // Free virtual tables
   for (Uint32 i = 0; i < MAX_SPJ_TREE_NODES; i++) {
@@ -4605,6 +4309,313 @@ RonSQLPreparer::execute_join()
       delete leafAggs[i];
       leafAggs[i] = NULL;
     }
+  }
+}
+
+// Emit the root scan/lookup/index-scan for the scope's plan. Chooses PK
+// lookup when WHERE fully covers the PK and no child is a scan; ordered
+// index scan with equality bounds when PK-covered with a scan child;
+// table scan with WHERE filter otherwise.
+void
+RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
+                              const NdbQueryOperationDef** opDefs)
+{
+  JoinPlan& plan = scope.join_plan;
+  NdbQueryOptions rootOpts;
+  const NdbDictionary::Table* root_table = plan.ops[0].table;
+  ConditionalExpression* where_ce = NULL;
+  bool pk_covered = false;
+  bool has_scan_child = false;
+  int nkeys = 0;
+  ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+
+  if (scope.join_where_ce[0] != NULL)
+  {
+    where_ce = simplify_ce(scope.join_where_ce[0], -1);
+
+    nkeys = root_table->getNoOfPrimaryKeys();
+    for (int k = 0; k < nkeys; k++)
+      pk_const[k] = NULL;
+    collect_pk_equalities(where_ce, root_table, pk_const);
+    pk_covered = true;
+    for (int k = 0; k < nkeys; k++)
+    {
+      if (pk_const[k] == NULL) { pk_covered = false; break; }
+    }
+
+    if (pk_covered)
+    {
+      for (Uint32 ci = 1; ci < plan.num_ops; ci++)
+      {
+        if (plan.ops[ci].type == JoinOp::INDEX_SCAN ||
+            plan.ops[ci].type == JoinOp::TABLE_SCAN)
+        {
+          has_scan_child = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (pk_covered && !has_scan_child)
+  {
+    const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+    for (int k = 0; k < nkeys; k++)
+    {
+      const char* pk_name = root_table->getPrimaryKey(k);
+      const NdbDictionary::Column* pk_col =
+          root_table->getColumn(pk_name);
+      ndbrequire(pk_col != NULL);
+      raw_value rv = encode_constant(pk_const[k], pk_col);
+      pk_keys[k] = qb->constValue(rv.val, rv.len);
+      require_run(pk_keys[k] != NULL,
+                  "Failed to create const value for PK lookup.");
+    }
+    pk_keys[nkeys] = nullptr;
+    opDefs[0] = qb->readTuple(root_table, pk_keys, &rootOpts);
+    require_run(opDefs[0] != NULL, "Failed to create root PK lookup.");
+    return;
+  }
+
+  if (pk_covered && has_scan_child)
+  {
+    const char* pk_col_names[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+    for (int k = 0; k < nkeys; k++)
+      pk_col_names[k] = root_table->getPrimaryKey(k);
+    const NdbDictionary::Index* pk_ordered_idx =
+        QueryPlanner::findOrderedIndex(
+            m_dict, root_table, pk_col_names, (Uint32)nkeys);
+    if (pk_ordered_idx != NULL)
+    {
+      const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+      for (int k = 0; k < nkeys; k++)
+      {
+        const NdbDictionary::Column* pk_col =
+            root_table->getColumn(pk_col_names[k]);
+        ndbrequire(pk_col != NULL);
+        raw_value rv = encode_constant(pk_const[k], pk_col);
+        pk_keys[k] = qb->constValue(rv.val, rv.len);
+        require_run(pk_keys[k] != NULL,
+                    "Failed to create const value for PK index scan.");
+      }
+      pk_keys[nkeys] = nullptr;
+      NdbQueryIndexBound bound(pk_keys);
+      opDefs[0] = qb->scanIndex(pk_ordered_idx, root_table,
+                                &bound, &rootOpts);
+      require_run(opDefs[0] != NULL,
+                  "Failed to create root PK index scan.");
+      return;
+    }
+    // No ordered index on PK — fall through to table scan with filter
+  }
+
+  NdbInterpretedCode code(root_table);
+  if (where_ce != NULL)
+  {
+    NdbScanFilter filter(&code);
+    filter.setSqlCmpSemantics();
+    filter.begin(NdbScanFilter::AND);
+    apply_filter(&filter, scope, where_ce);
+    filter.end();
+    code.finalise();
+    rootOpts.setInterpretedCode(code);
+  }
+  opDefs[0] = qb->scanTable(root_table, &rootOpts);
+  require_run(opDefs[0] != NULL, "Failed to create root scan.");
+}
+
+// Allocate per-CTE_LOOKUP virtual NdbDictionary::Table objects. Each
+// virtual table carries the parent's key columns so lookupCte can bind
+// linked keys. out[] is indexed by op-index; non-CTE ops leave NULL.
+void
+RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
+                                          NdbDictionary::Table** out)
+{
+  for (Uint32 i = 1; i < plan.num_ops; i++) {
+    const JoinOp& op = plan.ops[i];
+    if (op.type != JoinOp::CTE_LOOKUP) continue;
+
+    const NdbDictionary::Table* parentTable =
+        plan.ops[op.parent_op_idx].table;
+    require_run(parentTable != NULL,
+                "CTE lookup parent has no NDB table.");
+
+    char vtname[64];
+    snprintf(vtname, sizeof(vtname), "__cte_%u", op.cte_def_idx);
+    NdbDictionary::Table* vt = new NdbDictionary::Table(vtname);
+
+    for (Uint32 k = 0; k < op.num_key_cols; k++) {
+      const NdbDictionary::Column* parentCol =
+          parentTable->getColumn(op.parent_key_col_names[k]);
+      require_run(parentCol != NULL,
+                  "CTE lookup parent key column not found.");
+
+      NdbDictionary::Column vcol;
+      vcol.setName(op.parent_key_col_names[k]);
+      vcol.setType(parentCol->getType());
+      vcol.setLength(parentCol->getLength());
+      vcol.setPrimaryKey(true);
+      vcol.setNullable(false);
+      vt->addColumn(vcol);
+    }
+    out[i] = vt;
+  }
+}
+
+// Emit every non-root op in scope.join_plan: linked keys from the parent,
+// optional WHERE filter, optional aggregator attachment (multi-leaf if
+// leafAggs[i] is non-null, else single-leaf at plan.agg_leaf_idx), and
+// dispatch on op.type to readTuple / scanIndex / lookupCte.
+void
+RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
+                                const NdbQueryOperationDef** opDefs,
+                                NdbAggregator* singleAgg,
+                                NdbAggregator** leafAggs,
+                                NdbDictionary::Table** cteVirtualTables)
+{
+  JoinPlan& plan = scope.join_plan;
+  for (Uint32 i = 1; i < plan.num_ops; i++) {
+    JoinOp& op = plan.ops[i];
+    NdbQueryOptions opts;
+    switch (op.match_type) {
+    case JoinOp::SEMI_JOIN:
+      opts.setMatchType(NdbQueryOptions::MatchNonNull);
+      opts.setMatchType(NdbQueryOptions::MatchFirst);
+      break;
+    case JoinOp::ANTI_JOIN:
+      opts.setMatchType(NdbQueryOptions::MatchNullOnly);
+      break;
+    case JoinOp::LEFT_OUTER:
+      // MatchAll is the default (outer join) — no setMatchType needed
+      break;
+    case JoinOp::INNER:
+    default:
+      opts.setMatchType(NdbQueryOptions::MatchNonNull);
+      break;
+    }
+
+    const NdbQueryOperand* keys[MAX_JOIN_KEY_COLS + 1];
+    for (Uint32 k = 0; k < op.num_key_cols; k++) {
+      keys[k] = qb->linkedValue(opDefs[op.parent_op_idx],
+                                 op.parent_key_col_names[k]);
+      require_run(keys[k] != NULL, "Failed to create linked value.");
+    }
+    keys[op.num_key_cols] = nullptr;
+
+    NdbInterpretedCode child_code_storage(op.table);
+    if (op.type != JoinOp::CTE_LOOKUP && scope.join_where_ce[i] != NULL)
+    {
+      ConditionalExpression* child_ce = simplify_ce(scope.join_where_ce[i],
+                                                    -1);
+      NdbScanFilter filter(&child_code_storage);
+      filter.setSqlCmpSemantics();
+      filter.begin(NdbScanFilter::AND);
+      apply_filter(&filter, scope, child_ce);
+      filter.end();
+      child_code_storage.finalise();
+      opts.setInterpretedCode(child_code_storage);
+    }
+
+    if (op.type != JoinOp::CTE_LOOKUP) {
+      if (plan.num_agg_leaves > 0 && leafAggs != NULL &&
+          leafAggs[i] != NULL) {
+        // Multi-leaf: attach this leaf's aggregator
+        require_run(opts.setAggregation(*leafAggs[i]) == 0,
+                    "Failed to set aggregation on leaf.");
+        for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
+          NdbLinkedOperand* lv = qb->linkedValue(
+              opDefs[plan.linked_projs[j].source_op_idx],
+              plan.linked_projs[j].column_name);
+          require_run(lv != NULL, "Failed to create linked projection.");
+          require_run(opts.addLinkedProjection(lv) == 0,
+                      "Failed to add linked projection.");
+        }
+      } else if (i == plan.agg_leaf_idx && plan.num_agg_leaves == 0 &&
+                 singleAgg != NULL) {
+        require_run(opts.setAggregation(*singleAgg) == 0,
+                    "Failed to set aggregation.");
+        for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
+          NdbLinkedOperand* lv = qb->linkedValue(
+              opDefs[plan.linked_projs[j].source_op_idx],
+              plan.linked_projs[j].column_name);
+          require_run(lv != NULL, "Failed to create linked projection.");
+          require_run(opts.addLinkedProjection(lv) == 0,
+                      "Failed to add linked projection.");
+        }
+      }
+    }
+
+    switch (op.type) {
+    case JoinOp::PK_LOOKUP:
+      opDefs[i] = qb->readTuple(op.table, keys, &opts);
+      break;
+    case JoinOp::UNIQUE_LOOKUP:
+      opDefs[i] = qb->readTuple(op.index, op.table, keys, &opts);
+      break;
+    case JoinOp::INDEX_SCAN:
+    {
+      if (op.num_low_bounds == 0 && op.num_high_bounds == 0)
+      {
+        NdbQueryIndexBound bound(keys);
+        opDefs[i] = qb->scanIndex(op.index, op.table, &bound, &opts);
+      }
+      else
+      {
+        const NdbQueryOperand* lowKeys[MAX_JOIN_KEY_COLS * 2 + 1];
+        const NdbQueryOperand* highKeys[MAX_JOIN_KEY_COLS * 2 + 1];
+
+        for (Uint32 k = 0; k < op.num_key_cols; k++) {
+          lowKeys[k] = highKeys[k] = qb->linkedValue(
+              opDefs[op.parent_op_idx], op.parent_key_col_names[k]);
+          require_run(lowKeys[k] != NULL, "Failed to create linked value.");
+        }
+
+        bool lowIncl = true;
+        Uint32 lowIdx = op.num_key_cols;
+        for (Uint32 b = 0; b < op.num_low_bounds; b++) {
+          lowKeys[lowIdx] = qb->linkedValue(
+              opDefs[op.low_bounds[b].parent_op_idx],
+              op.low_bounds[b].parent_col_name);
+          require_run(lowKeys[lowIdx] != NULL,
+                      "Failed to create linked lower bound.");
+          lowIncl = op.low_bounds[b].inclusive;
+          lowIdx++;
+        }
+        lowKeys[lowIdx] = nullptr;
+
+        bool highIncl = true;
+        Uint32 highIdx = op.num_key_cols;
+        for (Uint32 b = 0; b < op.num_high_bounds; b++) {
+          highKeys[highIdx] = qb->linkedValue(
+              opDefs[op.high_bounds[b].parent_op_idx],
+              op.high_bounds[b].parent_col_name);
+          require_run(highKeys[highIdx] != NULL,
+                      "Failed to create linked upper bound.");
+          highIncl = op.high_bounds[b].inclusive;
+          highIdx++;
+        }
+        highKeys[highIdx] = nullptr;
+
+        NdbQueryIndexBound bound(lowKeys, lowIncl, highKeys, highIncl);
+        opDefs[i] = qb->scanIndex(op.index, op.table, &bound, &opts);
+      }
+      break;
+    }
+    case JoinOp::CTE_LOOKUP:
+    {
+      Uint32 numResultCols = 0;
+      for (const Outputs* o = op.cte_def->stmt->outputs; o; o = o->next)
+        numResultCols++;
+      opDefs[i] = qb->lookupCte(
+          op.cte_def_idx, numResultCols,
+          cteVirtualTables[i],
+          keys, &opts);
+      break;
+    }
+    default:
+      abort();
+    }
+    require_run(opDefs[i] != NULL, "Failed to create child operation.");
   }
 }
 
@@ -4854,7 +4865,7 @@ RonSQLPreparer::apply_filter_top_level(NdbScanFilter* filter)
   for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
     if (m_scan_config->condition_handling_map[i] == -1) {
       has_filter = true;
-      apply_filter(filter, m_toplevel_conditions[i]);
+      apply_filter(filter, m_main_scope, m_toplevel_conditions[i]);
     }
   }
   ndbrequire(has_filter);
@@ -4862,7 +4873,7 @@ RonSQLPreparer::apply_filter_top_level(NdbScanFilter* filter)
 }
 
 void
-RonSQLPreparer::apply_filter(NdbScanFilter* filter,
+RonSQLPreparer::apply_filter(NdbScanFilter* filter, QueryScope& scope,
                              struct ConditionalExpression* ce)
 {
   ndbrequire(ce != NULL);
@@ -4870,43 +4881,49 @@ RonSQLPreparer::apply_filter(NdbScanFilter* filter,
   {
   case T_OR:
     require_tmp(DBG(filter->begin(NdbScanFilter::OR)) >= 0, filter_fail);
-    apply_filter(filter, ce->args.left);
-    apply_filter(filter, ce->args.right);
+    apply_filter(filter, scope, ce->args.left);
+    apply_filter(filter, scope, ce->args.right);
     require_sch(DBG(filter->end()) >= 0, filter_fail);
     break;
   case T_XOR:
     abort(); // This should have been "simplified" away
   case T_AND:
     require_tmp(DBG(filter->begin(NdbScanFilter::AND)) >= 0, filter_fail);
-    apply_filter(filter, ce->args.left);
-    apply_filter(filter, ce->args.right);
+    apply_filter(filter, scope, ce->args.left);
+    apply_filter(filter, scope, ce->args.right);
     require_sch(DBG(filter->end()) >= 0, filter_fail);
     break;
   case T_NOT:
     require_tmp(DBG(filter->begin(NdbScanFilter::NAND)) >= 0, filter_fail);
-    apply_filter(filter, ce->args.left);
+    apply_filter(filter, scope, ce->args.left);
     require_sch(DBG(filter->end()) >= 0, filter_fail);
     break;
   case T_EQUALS:
-    apply_filter_cmp(filter, NdbScanFilter::COND_EQ, ce->args.left, ce->args.right);
+    apply_filter_cmp(filter, scope, NdbScanFilter::COND_EQ,
+                     ce->args.left, ce->args.right);
     break;
   case T_GE:
-    apply_filter_cmp(filter, NdbScanFilter::COND_GE, ce->args.left, ce->args.right);
+    apply_filter_cmp(filter, scope, NdbScanFilter::COND_GE,
+                     ce->args.left, ce->args.right);
     break;
   case T_GT:
-    apply_filter_cmp(filter, NdbScanFilter::COND_GT, ce->args.left, ce->args.right);
+    apply_filter_cmp(filter, scope, NdbScanFilter::COND_GT,
+                     ce->args.left, ce->args.right);
     break;
   case T_LE:
-    apply_filter_cmp(filter, NdbScanFilter::COND_LE, ce->args.left, ce->args.right);
+    apply_filter_cmp(filter, scope, NdbScanFilter::COND_LE,
+                     ce->args.left, ce->args.right);
     break;
   case T_LT:
-    apply_filter_cmp(filter, NdbScanFilter::COND_LT, ce->args.left, ce->args.right);
+    apply_filter_cmp(filter, scope, NdbScanFilter::COND_LT,
+                     ce->args.left, ce->args.right);
     break;
   case T_NOT_EQUALS:
-    apply_filter_cmp(filter, NdbScanFilter::COND_NE, ce->args.left, ce->args.right);
+    apply_filter_cmp(filter, scope, NdbScanFilter::COND_NE,
+                     ce->args.left, ce->args.right);
     break;
   case T_LIKE:
-    apply_filter_like(filter, NdbScanFilter::COND_LIKE,
+    apply_filter_like(filter, scope, NdbScanFilter::COND_LIKE,
                       ce->args.left, ce->args.right);
     break;
   default:
@@ -4916,6 +4933,7 @@ RonSQLPreparer::apply_filter(NdbScanFilter* filter,
 
 void
 RonSQLPreparer::apply_filter_cmp(NdbScanFilter* filter,
+                                 QueryScope& scope,
                                  NdbScanFilter::BinaryCondition cond,
                                  struct ConditionalExpression* left,
                                  struct ConditionalExpression* right)
@@ -4925,18 +4943,18 @@ RonSQLPreparer::apply_filter_cmp(NdbScanFilter* filter,
                                " operands must be a column name");
   }
   if (right->op == T_IDENTIFIER) {
-    ndbrequire(m_main_scope.column_attrId_map != NULL);
+    ndbrequire(scope.column_attrId_map != NULL);
     require_sch(DBG(filter->cmp(DBG(cond),
-                                DBG(m_main_scope.column_attrId_map[left->col_idx]),
-                                DBG(m_main_scope.column_attrId_map[right->col_idx]))) >= 0,
+                                DBG(scope.column_attrId_map[left->col_idx]),
+                                DBG(scope.column_attrId_map[right->col_idx]))) >= 0,
                 filter_fail);
     return;
   }
-  ndbrequire(m_main_scope.column_attrId_map != NULL);
-  ndbrequire(m_main_scope.column_map != NULL);
-  raw_value rv = encode_constant(right, m_main_scope.column_map[left->col_idx]);
+  ndbrequire(scope.column_attrId_map != NULL);
+  ndbrequire(scope.column_map != NULL);
+  raw_value rv = encode_constant(right, scope.column_map[left->col_idx]);
   require_sch(DBG(filter->cmp(DBG(cond),
-                              DBG(m_main_scope.column_attrId_map[left->col_idx]),
+                              DBG(scope.column_attrId_map[left->col_idx]),
                               DBG(rv).val,
                               rv.len)) >= 0,
               filter_fail);
@@ -4944,6 +4962,7 @@ RonSQLPreparer::apply_filter_cmp(NdbScanFilter* filter,
 
 void
 RonSQLPreparer::apply_filter_like(NdbScanFilter* filter,
+                                   QueryScope& scope,
                                    NdbScanFilter::BinaryCondition cond,
                                    struct ConditionalExpression* left,
                                    struct ConditionalExpression* right)
@@ -4954,9 +4973,9 @@ RonSQLPreparer::apply_filter_like(NdbScanFilter* filter,
   if (right->op != T_STRING) {
     throw RonSQLPermanentError("LIKE requires a string pattern on the right side");
   }
-  ndbrequire(m_main_scope.column_attrId_map != NULL);
+  ndbrequire(scope.column_attrId_map != NULL);
   require_sch(DBG(filter->cmp(cond,
-                               m_main_scope.column_attrId_map[left->col_idx],
+                               scope.column_attrId_map[left->col_idx],
                                right->string.str,
                                right->string.len)) >= 0,
               filter_fail);
@@ -5719,6 +5738,7 @@ cross_table_filter_word_count(ConditionalExpression* ce,
  */
 void
 RonSQLPreparer::emit_filter_expr(NdbAggregator* agg,
+                                  QueryScope& scope,
                                   ConditionalExpression* ce,
                                   Uint32 leaf_idx, Uint32 reg,
                                   Uint32 tmp_reg)
@@ -5727,15 +5747,15 @@ RonSQLPreparer::emit_filter_expr(NdbAggregator* agg,
   case T_IDENTIFIER:
   {
     Uint32 cidx = ce->col_idx;
-    if (m_main_scope.column_table_idx[cidx] == leaf_idx) {
+    if (scope.column_table_idx[cidx] == leaf_idx) {
       programAggregator_do_or_fail(
-          agg->LoadColumn(m_main_scope.column_attrId_map[cidx], reg));
+          agg->LoadColumn(scope.column_attrId_map[cidx], reg));
     } else {
       Uint32 lp = find_or_add_linked_proj(
-          m_main_scope.join_plan, m_main_scope.column_table_idx[cidx],
+          scope.join_plan, scope.column_table_idx[cidx],
           m_columns[cidx].c_str());
       programAggregator_do_or_fail(
-          agg->LoadLinkedColumn(lp, reg, m_main_scope.column_map[cidx]));
+          agg->LoadLinkedColumn(lp, reg, scope.column_map[cidx]));
     }
     break;
   }
@@ -5757,8 +5777,8 @@ RonSQLPreparer::emit_filter_expr(NdbAggregator* agg,
   case T_MULTIPLY:
   {
     // Evaluate left into reg, right into tmp_reg, then operate
-    emit_filter_expr(agg, ce->args.left, leaf_idx, reg, tmp_reg);
-    emit_filter_expr(agg, ce->args.right, leaf_idx, tmp_reg, reg);
+    emit_filter_expr(agg, scope, ce->args.left, leaf_idx, reg, tmp_reg);
+    emit_filter_expr(agg, scope, ce->args.right, leaf_idx, tmp_reg, reg);
     switch (ce->op) {
     case T_PLUS:
       programAggregator_do_or_fail(agg->Add(reg, tmp_reg));
@@ -5829,9 +5849,9 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     auto emit_negated_branch = [&](ConditionalExpression* atom,
                                    Uint32 skip_count) {
       Uint32 reg_left = 1, reg_right = 2, tmp_reg = 3;
-      emit_filter_expr(aggregator, atom->args.left, leaf_idx,
+      emit_filter_expr(aggregator, m_main_scope, atom->args.left, leaf_idx,
                         reg_left, tmp_reg);
-      emit_filter_expr(aggregator, atom->args.right, leaf_idx,
+      emit_filter_expr(aggregator, m_main_scope, atom->args.right, leaf_idx,
                         reg_right, tmp_reg);
       switch (atom->op) {
       case T_GT:
