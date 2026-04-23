@@ -949,8 +949,9 @@ static int set_simple_rows(Ndb *ndb,
       continue;
     }
     DEB_MSET_CMD(("Try simple write with value_len: %u\n", value_len));
-    if (get_ctrl->m_get_cmd_part) {
-      /* Transaction already started */
+    if (get_ctrl->m_get_cmd_part &&
+        key_storage[inx].m_trans != nullptr) {
+      /* Transaction already started by the get-phase read. */
       if (key_storage[inx].m_num_rows > 0) {
         /* There are rows to delete, not simple transaction */
         DEB_MSET_CMD(("Multi row detected with SET .. GET\n"));
@@ -958,6 +959,10 @@ static int set_simple_rows(Ndb *ndb,
         continue;
       }
     } else {
+      /* Either no get-phase (plain SET / MSET) or the get-phase read
+       * closed the transaction because the key did not exist
+       * (SET .. GET on a non-existent key - C9). In both cases we
+       * need a fresh transaction for the write. */
       if (!setup_one_transaction(ndb,
                                  response,
                                  redis_key_id,

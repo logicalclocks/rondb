@@ -22,6 +22,17 @@ OK
 OK
 updated
 #
+# GET flag on a non-existent key - stores and returns nil for
+# the old value.
+#
+
+v1
+#
+# GET flag on an existing key - returns old value, stores new.
+#
+v1
+v2
+#
 # EX / PX - TTL in seconds / milliseconds. Shape only; numerical
 # verification is in rondis_ttl.test.
 #
@@ -45,4 +56,4 @@ upd
 #
 # Cleanup.
 #
-3
+4

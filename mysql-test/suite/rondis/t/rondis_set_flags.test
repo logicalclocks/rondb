@@ -44,6 +44,21 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET xxk
 
 --echo #
+--echo # GET flag on a non-existent key - stores and returns nil for
+--echo # the old value.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET getk "v1" GET 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET getk
+
+--echo #
+--echo # GET flag on an existing key - returns old value, stores new.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET getk "v2" GET 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET getk
+
+--echo #
 --echo # EX / PX - TTL in seconds / milliseconds. Shape only; numerical
 --echo # verification is in rondis_ttl.test.
 --echo #
@@ -70,7 +85,7 @@
 --echo #
 --echo # Cleanup.
 --echo #
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL nxk xxk ttlk
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL nxk xxk getk ttlk
 
 --disable_query_log
 DROP DATABASE IF EXISTS redis_0;
