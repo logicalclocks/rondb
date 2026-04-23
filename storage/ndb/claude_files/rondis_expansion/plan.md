@@ -188,46 +188,85 @@ conditional `hset_keys` op into both paths.
 
 Three commits, each independently bisectable:
 
-##### Phase 1.0.2a — Convert `set_simple_rows` to two-phase NoCommit/Commit
+##### Phase 1.0.2a — Unify simple and complex write paths into one NoCommit-first pipeline
 
-Pure refactor — no new behaviour. Validates the two-phase simple
-path against the existing test suite before any hset_keys work
-lands.
+With NoCommit as the first step, the current `set_simple_rows`
+abort-and-retry pattern for RESTRICT_VALUE_ROWS_ERROR (6000 from
+the simple interpreter) is no longer needed: a single transaction
+can service both inline single-row writes and multi-row extension
+writes. Merging the two paths also makes room for Phase 1.0.2b to
+attach the `hset_keys.field_count` bump op atomically on the same
+transaction. As a side benefit, multi-row HSET drops from 3+ NDB
+round-trips (simple 6000 abort + complex reopen + ext writes +
+commit) to 2+ (NoCommit + ext writes + commit). Inline HSET pays
+1 extra RT (1 → 2), which we accept as the price of atomicity with
+`hset_keys`.
 
-- `src/commands.cc` `set_simple_rows` (~line 920): change the
-  `write_data_to_key_op(..., commit_flag=true, ...)` call to
-  `commit_flag=false`; swap `commit_simple_write_transaction` for a
-  new `prepare_simple_write_transaction` (NoCommit + a new
-  `simple_write_phaseA_callback`). Drain the Phase A batch in the
-  existing `execute_ndb` loop.
-- Add a Phase B loop that iterates keys with state
-  `SimpleWriteDone*` and calls `commit_simple_write_transaction`
-  (now a no-extra-op Commit + `simple_write_phaseB_callback`).
-  Drain Phase B in a second `execute_ndb` loop.
-- `src/db_operations.cc`:
-  - `simple_write_phaseA_callback` — new. Mirrors the current
-    `simple_write_callback` for error / conditional-fail / OK
-    cases but on OK sets `m_key_state =
-    SimpleWriteDoneOverwrite` (new_field==0) or
-    `SimpleWriteDoneNewField` (new_field==1), does NOT set
-    `m_close_flag`, does NOT increment
-    `m_num_keys_completed_first_pass`. Error and
-    conditional-fail branches still close the transaction (no op2
-    possible on a failed trans) and set `m_close_flag`.
-  - `simple_write_phaseB_callback` — new. Runs after the Commit.
-    On success sets `CompletedSuccess`, bumps
-    `m_num_keys_completed_first_pass` and
-    `m_num_new_fields` (moved here from Phase A so the counter
-    still reflects only committed INSERTs). Sets `m_close_flag`.
-- `include/table_definitions.h` — two new KeyState values
-  (`SimpleWriteDoneOverwrite`, `SimpleWriteDoneNewField`) to
-  thread the INSERT/UPDATE signal across the NoCommit → Commit
-  boundary. Alternative: single transitional state + a bool on
-  KeyStorage. Either works; the enum-values approach matches the
-  complex-path idiom of state-machine-per-key.
+Three-phase in-function state machine, one transaction per key,
+all keys processed in parallel by the existing async NDB drain
+loop:
 
-Validates: all existing rondis MTR tests green with no functional
-change (only timing).
+- **Phase A** — NoCommit write on `string_keys` with the complex
+  interpreter (`write_key_row_no_commit`) for every key. No
+  `value_len > INLINE_VALUE_LEN` pre-filter. `write_callback`
+  consumes the interpreter's OUTPUT_INDEX_0 (prev_num_rows),
+  OUTPUT_INDEX_1 (rondb_key), and OUTPUT_INDEX_3 (new_field)
+  and transitions the key to `MultiRowRWValue` (existing state —
+  means "first write succeeded, trans still open, needs dispatch").
+- **Phase B** — dispatch per key (mirrors today's
+  `send_next_write_batch` logic): if `m_num_rows == 0 &&
+  m_prev_num_rows == 0`, commit directly. If extension rows
+  needed, issue them NoCommit. If old ext rows need deletion,
+  issue deletes. Drain any deferred writes.
+- **Phase C** — commit multi-row keys after their extension / delete
+  ops complete. Drain.
+
+Split into three bisectable sub-commits to keep each change small:
+
+**Phase 1.0.2a.i** — Remove the pre-filter and route all keys through
+the complex path. Concretely: in `set_simple_rows`, delete the
+`if (value_len > INLINE_VALUE_LEN)` branch that pre-marks keys as
+`MultiRow`; keep everything else as is. `set_complex_rows` now
+receives no pre-filtered keys through this path — but set_simple_rows
+is still reached first and handles the inline case on its own. Verify
+existing tests pass. (This step on its own is slightly wasteful —
+large values hit the 6000 abort + set_complex_rows reopen — but it's
+a small, low-risk diff that makes the next step trivial.)
+
+**Phase 1.0.2a.ii** — Switch set_simple_rows writes to
+`commit_flag=false` + `prepare_write_transaction` + the existing
+`write_callback`. After the NoCommit drain, set_simple_rows becomes
+responsible for the dispatch loop (Phase B + Phase C). Either:
+- inline `send_next_write_batch` inside set_simple_rows and run a
+  second drain; OR
+- fall through to `set_complex_rows` for the drain (since
+  set_complex_rows already has the dispatch loop — but it expects
+  keys in `MultiRow` state, which our NoCommit drain leaves them in
+  `MultiRowRWValue`; a small change to set_complex_rows accepts
+  either starting state).
+
+The second form is smaller: we use set_complex_rows purely as the
+tail drain, and set_simple_rows as the head submit. Validate: all
+existing rondis tests pass. Simple interpreter (`write_key_row_commit`)
+becomes dead code in this step but is not yet removed.
+
+**Phase 1.0.2a.iii** — Merge the two functions. Delete
+`set_complex_rows` as a separately-called entry point; inline its
+dispatch loop into set_simple_rows (or rename set_simple_rows to
+`set_rows`). Delete `write_key_row_commit` (simple interpreter),
+`commit_simple_write_transaction` (replaced by
+`commit_write_value_transaction` / in-flow commits), and the
+`commit_flag` parameter on `write_data_to_key_op`. Drop
+`RESTRICT_VALUE_ROWS_ERROR` from `common.h` if no other caller
+uses it.
+
+After 1.0.2a.iii lands, the HSET / MSET write pipeline is one
+uniform state machine per key: startTransaction → writeTuple
+(NoCommit) → callback (phaseA) → dispatch (commit OR ext writes)
+→ optional ext drain → commit. Ready for 1.0.2b to slot the
+`hset_keys` bump op into each commit site.
+
+Validates after each sub-commit: `./mtr --suite=rondis` green.
 
 ##### Phase 1.0.2b — Insert the conditional `hset_keys` bump op
 
