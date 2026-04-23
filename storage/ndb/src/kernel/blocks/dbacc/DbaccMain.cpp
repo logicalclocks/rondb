@@ -2253,8 +2253,9 @@ void Dbacc::insertelementLab(Signal *signal, Page8Ptr bucketPageptr,
       return;
     }  // if
   }    // if
-  ndbassert(operationRecPtr.p->tupkeylen <= fragrecptr.p->keyLength);
-  ndbassert(!(operationRecPtr.p->m_op_bits & Operationrec::OP_LOCK_REQ));
+  Operationrec * const opP = operationRecPtr.p;
+  ndbassert(opP->tupkeylen <= fragrecptr.p->keyLength);
+  ndbassert(!(opP->m_op_bits & Operationrec::OP_LOCK_REQ));
 
   /**
    * We acquire the mutex before starting to insert the new element.
@@ -2269,11 +2270,10 @@ void Dbacc::insertelementLab(Signal *signal, Page8Ptr bucketPageptr,
   TTL_RONDB_TRACE(fragrecptr.p->myTableId,
                   "Dbacc::insertelementLab(), lock, table id: %u, frag id: %u",
                   fragrecptr.p->myTableId, fragrecptr.p->fragmentid);
-  operationRecPtr.p->m_op_bits |= Operationrec::OP_LOCK_OWNER;
+  opP->m_op_bits |= Operationrec::OP_LOCK_OWNER;
   fragrecptr.p->lockCount[hash]++;
 
-  operationRecPtr.p->reducedHashValue =
-      fragrecptr.p->level.reduce(operationRecPtr.p->hashValue);
+  opP->reducedHashValue = fragrecptr.p->level.reduce(opP->hashValue);
   const Uint32 tidrElemhead = ElementHeader::setLocked(operationRecPtr.i);
   Page8Ptr idrPageptr;
   idrPageptr = bucketPageptr;
@@ -2285,7 +2285,7 @@ void Dbacc::insertelementLab(Signal *signal, Page8Ptr bucketPageptr,
   /* ----------------------------------------------------------------------- */
   Local_key localKey;
   localKey.setInvalid();
-  operationRecPtr.p->localdata = localKey;
+  opP->localdata = localKey;
   Uint32 conptr;
   insertElement(Element(tidrElemhead, localKey.m_page_no),
                 operationRecPtr,
@@ -2300,7 +2300,7 @@ void Dbacc::insertelementLab(Signal *signal, Page8Ptr bucketPageptr,
   Uint32 tcOprec;
   Uint32 tcBlockref;
   m_ldm_instance_used->c_lqh->get_tc_ref(
-    operationRecPtr.p->userptr,
+    opP->userptr,
     tcOprec,
     tcBlockref);
 #endif
@@ -2311,15 +2311,15 @@ void Dbacc::insertelementLab(Signal *signal, Page8Ptr bucketPageptr,
                    localKey.m_page_idx,
                    fragrecptr.p->myTableId,
                    fragrecptr.p->fragmentid,
-                   operationRecPtr.p->transId1,
-                   operationRecPtr.p->transId2,
+                   opP->transId1,
+                   opP->transId2,
                    operationRecPtr.i,
                    tcOprec,
                    tcBlockref));
 
   release_frag_mutex_hash(fragrecptr.p, hash);
   fragrecptr.p->m_lockStats.req_start_imm_ok(true /* Exclusive */,
-                                             operationRecPtr.p->m_lockTime,
+                                             opP->m_lockTime,
                                              getHighResTimer());
   c_tup->prepareTUPKEYREQ(localKey.m_page_no,
                           localKey.m_page_idx,
@@ -2349,7 +2349,7 @@ void Dbacc::insertelementLab(Signal *signal, Page8Ptr bucketPageptr,
       sendSignal(reference(), GSN_EXPANDCHECK2, signal, 2, JBB);
     }//if
   }//if
-  sendAcckeyconf(signal, operationRecPtr.p);
+  sendAcckeyconf(signal, opP);
   return;
 }  // Dbacc::insertelementLab()
 
