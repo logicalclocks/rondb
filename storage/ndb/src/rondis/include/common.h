@@ -73,6 +73,13 @@ Uint32 get_length(char* buf);
 #define RONDB_INTERP_INVALID_INT64 853
 #define RONDB_INTERP_CALC_OVERFLOW 854
 
+// Sentinel emitted by the SET-write interpreted-code program via
+// interpret_exit_nok(6000) when an NX or XX guard is tripped. Rondis
+// translates this to a nil reply ($-1\r\n) - it is not a real error,
+// just "the conditional store could not proceed". See interpreted_code.cc
+// lines ~229 (NX-existing) and ~279 (XX-missing).
+#define RONDB_CONDITIONAL_STORE_NOT_MET 6000
+
 // Redis-canonical error strings we reuse for overflow.
 #define FAILED_INCRBY_DECRBY_OVERFLOW \
   "increment or decrement would overflow"

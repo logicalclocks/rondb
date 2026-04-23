@@ -1287,6 +1287,16 @@ void rondb_mset(Ndb *ndb,
     release_mset(get_ctrl);
     return;
   }
+  // SET ... NX / XX without GET: when the conditional guard tripped,
+  // the write callback set CompletedConditionalFail. Emit Redis-
+  // canonical nil (C7 / C8). NX / XX are only exposed through the
+  // single-key SET path, so only key 0 can carry this state here.
+  if (num_keys == 1 &&
+      key_storage[0].m_key_state == KeyState::CompletedConditionalFail) {
+    response->append(REDIS_NO_SUCH_KEY);
+    release_mset(get_ctrl);
+    return;
+  }
   if (redis_key_id == STRING_REDIS_KEY_ID) {
     response->append("+OK\r\n");
   } else {

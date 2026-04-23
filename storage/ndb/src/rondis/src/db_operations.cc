@@ -493,11 +493,19 @@ write_callback(int result, NdbTransaction *trans, void *aObject) {
   assert(get_ctrl->m_num_transactions > 0);
   int code = trans->getNdbError().code;
   if (code != 0) {
-    key_storage->m_key_state = KeyState::CompletedFailed;
-    get_ctrl->m_num_keys_failed++;
-    DEB_HSET_KEY(("key %u had ERROR: %d\n", key_storage->m_index, code));
-    if (get_ctrl->m_error_code == 0) {
-      get_ctrl->m_error_code = code;
+    if (code == RONDB_CONDITIONAL_STORE_NOT_MET) {
+      // NX / XX guard tripped in the write interpreter program
+      // (C7 / C8). Not a real failure - the response builder will
+      // emit Redis-canonical nil ($-1\r\n) for this key.
+      key_storage->m_key_state = KeyState::CompletedConditionalFail;
+      get_ctrl->m_num_keys_completed_first_pass++;
+    } else {
+      key_storage->m_key_state = KeyState::CompletedFailed;
+      get_ctrl->m_num_keys_failed++;
+      DEB_HSET_KEY(("key %u had ERROR: %d\n", key_storage->m_index, code));
+      if (get_ctrl->m_error_code == 0) {
+        get_ctrl->m_error_code = code;
+      }
     }
     assert(get_ctrl->m_num_keys_outstanding > 0);
     get_ctrl->m_num_keys_outstanding--;
@@ -552,6 +560,12 @@ simple_write_callback(int result, NdbTransaction *trans, void *aObject) {
       get_ctrl->m_num_keys_multi_rows++;
       DEB_HSET_KEY(("key %u had RESTRICT_VALUE_ROWS_ERROR\n",
         key_store->m_index));
+    } else if (code == RONDB_CONDITIONAL_STORE_NOT_MET) {
+      // NX / XX guard tripped in the write interpreter program
+      // (C7 / C8). Not a real failure - the response builder will
+      // emit Redis-canonical nil ($-1\r\n) for this key.
+      key_store->m_key_state = KeyState::CompletedConditionalFail;
+      get_ctrl->m_num_keys_completed_first_pass++;
     } else {
       key_store->m_key_state = KeyState::CompletedFailed;
       get_ctrl->m_num_keys_failed++;

@@ -222,8 +222,18 @@ int write_key_row_no_commit(std::string *response,
     tab->getColumn(KEY_TABLE_COL_num_rows);
   const NdbDictionary::Column *rondb_key_col =
     tab->getColumn(KEY_TABLE_COL_rondb_key);
+  // NDB validates branch targets as label indices in def_label order.
+  // The non-IsInsert path below calls def_label(LABEL0..LABEL2) before
+  // def_label(LABEL3), so LABEL3 (index 3) is valid. The IsInsert
+  // branch skips those earlier def_label calls and would leave
+  // m_number_of_labels == 1, which makes the NDB finalise() check
+  // "label > m_number_of_labels" reject LABEL3 with error 4517. Use
+  // LABEL0 as the insert-path target in the IsInsert program so the
+  // single def_label matches (was bug C7).
+  int insert_label =
+    (key_store->m_set_type == IsInsert) ? LABEL0 : LABEL3;
   code.load_op_type(REG1); // Read operation type into register 1
-  code.branch_eq_const(REG1, RONDB_INSERT, LABEL3); // Inserts go to label3
+  code.branch_eq_const(REG1, RONDB_INSERT, insert_label);
   /* UPDATE */
   if (key_store->m_set_type == IsInsert) {
     code.interpret_exit_nok(6000);
@@ -274,7 +284,7 @@ int write_key_row_no_commit(std::string *response,
     code.interpret_exit_ok();
   }
   /* INSERT */
-  code.def_label(LABEL3);
+  code.def_label(insert_label);
   if (key_store->m_set_type == IsUpdate) {
     code.interpret_exit_nok(6000);
   } else {

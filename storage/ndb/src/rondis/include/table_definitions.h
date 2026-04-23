@@ -160,7 +160,12 @@ enum KeyState {
     MultiRowRWValueSent = 7,
     MultiRowRWAll = 8,
     CompletedMultiRow = 9,
-    CompletedReadError = 10 
+    CompletedReadError = 10,
+    // The SET write tripped an NX / XX guard (NDB 6000 sentinel from
+    // the interpreted-code program). Not a failure: Redis-canonical
+    // reply is the nil bulk string. Only ever set on the single-key
+    // plain SET path (MSET / HSET do not expose conditional flags).
+    CompletedConditionalFail = 11
 };
 
 #define MAX_PARALLEL_KEY_OPS 1024

@@ -4,6 +4,18 @@
 OK
 first
 #
+# NX on an existing key - guard tripped, returns nil without
+# overwriting (redis-cli prints nil as a blank line).
+#
+
+first
+#
+# XX on a non-existent key - guard tripped, returns nil and
+# does not create the key.
+#
+
+
+#
 # XX on an existing key - stores, returns +OK.
 #
 OK

@@ -6,13 +6,11 @@
 # Coverage for the SET flag matrix: NX, XX, GET, EX, PX, EXAT, PXAT,
 # KEEPTTL.
 #
-# This test exercises only the flag paths that currently work. Three
-# broken paths (NX-on-existing, XX-on-missing, SET GET on any key) are
-# tracked as bugs C7/C8/C9 in the Rondis testing plan; the first two
-# emit bogus NDB-internal errors, and the GET flag outright closes the
-# client connection on the server side. Those paths are deliberately
-# not exercised here so the test does not run into the crash. When
-# they are fixed, the matching probes should be restored.
+# The SET GET flag path is still broken (C9 - closes the client
+# connection on non-existent keys); those probes remain out of this
+# test until the Phase C fix lands. NX / XX on their "condition not
+# met" paths are restored here after the Phase B fix translates the
+# NDB 6000 sentinel to Redis-canonical nil.
 #
 # Numerical TTL assertions (does EX 60 really land ~NOW()+60?) live in
 # Phase 3's rondis_ttl.test. Here we only check reply shape.
@@ -23,6 +21,20 @@
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET nxk "first" NX
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET nxk
+
+--echo #
+--echo # NX on an existing key - guard tripped, returns nil without
+--echo # overwriting (redis-cli prints nil as a blank line).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET nxk "second" NX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET nxk
+
+--echo #
+--echo # XX on a non-existent key - guard tripped, returns nil and
+--echo # does not create the key.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET xxk "first" XX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET xxk
 
 --echo #
 --echo # XX on an existing key - stores, returns +OK.
