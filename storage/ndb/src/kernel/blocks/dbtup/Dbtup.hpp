@@ -4512,6 +4512,44 @@ public:
     return (tuple_ptr->m_data[readOffset] == 0);
   }
 
+  /**
+   * Ring buffer write guard predicate (used by execTUPKEYREQ).
+   * Returns true if this operation is a user-direct write to a ring-buffer
+   * table that must be rejected with ZRING_BUFFER_DIRECT_WRITE_ERROR.
+   * Writes via the internal ring-buffer writer (ring_buffer_op) and writes
+   * from a replica applier (is_replica_applier) are allowed through.
+   * Caller extracts is_replica_applier from the LQH flags mask — we don't
+   * do it here because Dblqh::TcConnectionrec is defined in Dblqh.hpp,
+   * which includes Dbtup.hpp; pulling that symbol in here would create a
+   * circular header dependency.
+   */
+  bool is_ring_buffer_write_blocked(Tablerec *regTabPtr,
+                                    Uint32 Roptype,
+                                    const Operationrec *regOperPtr,
+                                    bool is_replica_applier) {
+    if (!is_ring_buffer_table(regTabPtr)) return false;
+    if (Roptype != ZINSERT && Roptype != ZWRITE &&
+        Roptype != ZUPDATE && Roptype != ZDELETE) return false;
+    if (regOperPtr->ring_buffer_op) return false;
+    return !is_replica_applier;
+  }
+
+  /**
+   * Ring buffer meta-row filter predicate (used by handleReadReq).
+   * Returns true if the tuple at tuple_ptr is a meta row (ring_idx=0) that
+   * must be hidden from this read. Reads via the internal ring-buffer
+   * writer (ring_buffer_op) and diagnostic reads with
+   * ndb_ring_buffer_show_meta set are allowed to see meta rows.
+   */
+  bool is_ring_buffer_meta_row_hidden(Tablerec *regTabPtr,
+                                      const Operationrec *regOperPtr,
+                                      const Tuple_header *tuple_ptr) {
+    if (!is_ring_buffer_table(regTabPtr)) return false;
+    if (regOperPtr->ring_buffer_op) return false;
+    if (regOperPtr->ring_buffer_show_meta) return false;
+    return isRingBufferMetaRow(regTabPtr, tuple_ptr);
+  }
+
 public:
   Dbtup *m_curr_tup;
   static Uint64 getTransactionMemoryNeed(

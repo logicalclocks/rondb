@@ -2326,23 +2326,14 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
 
   regOperPtr->m_any_value = 0;
 
-  /**
-   * Ring Buffer write guard:
-   * Reject write operations on ring-buffer tables unless the operation
-   * carries OO_RING_BUFFER_OP or OO_REPLICA_APPLIER flag.
-   */
-  if (unlikely(is_ring_buffer_table(regTabPtr))) {
-    if (Roptype == ZINSERT || Roptype == ZWRITE ||
-        Roptype == ZUPDATE || Roptype == ZDELETE) {
-      const bool is_replica_applier =
-          (flags & Dblqh::TcConnectionrec::OP_REPLICA_APPLIER) != 0;
-      if (!regOperPtr->ring_buffer_op && !is_replica_applier) {
-        jam();
-        terrorCode = ZRING_BUFFER_DIRECT_WRITE_ERROR;
-        tupkeyErrorLab(&req_struct);
-        return false;
-      }
-    }
+  const bool is_replica_applier =
+      (flags & Dblqh::TcConnectionrec::OP_REPLICA_APPLIER) != 0;
+  if (unlikely(is_ring_buffer_write_blocked(regTabPtr, Roptype,
+                                            regOperPtr, is_replica_applier))) {
+    jam();
+    terrorCode = ZRING_BUFFER_DIRECT_WRITE_ERROR;
+    tupkeyErrorLab(&req_struct);
+    return false;
   }
 
   const Uint32 loc_prepare_page_id = prepare_page_no;
@@ -3245,27 +3236,12 @@ int Dbtup::handleReadReq(
     }
   }
 
-  /*
-   * Ring Buffer meta row filtering:
-   * Hide ring_idx=0 meta rows from ALL read operations unless
-   * ring_buffer_op (handler internal) or ring_buffer_show_meta (debug) is set.
-   */
-  if (unlikely(is_ring_buffer_table(regTabPtr)) &&
-      _regOperPtr->ring_buffer_show_meta == 0 &&
-      _regOperPtr->ring_buffer_op == 0) {
-    /*
-     * Use the direct-offset helper instead of the readAttributes
-     * interpreter to avoid per-row overhead on ring-buffer scans.
-     * ring_idx is a fixed-size INT in the PK, so it is always in
-     * main memory at a compile-time-known offset.
-     */
-    if (isRingBufferMetaRow(regTabPtr, req_struct->m_tuple_ptr)) {
-      /* ring_idx == 0: this is a meta row, hide it */
-      jam();
-      terrorCode = 626;
-      tupkeyErrorLab(req_struct);
-      return -1;
-    }
+  if (unlikely(is_ring_buffer_meta_row_hidden(regTabPtr, _regOperPtr,
+                                              req_struct->m_tuple_ptr))) {
+    jam();
+    terrorCode = 626;
+    tupkeyErrorLab(req_struct);
+    return -1;
   }
 
   if (!req_struct->interpreted_exec)
