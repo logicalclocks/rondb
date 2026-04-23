@@ -248,6 +248,11 @@ private:
   bool m_has_subqueries = false;
   bool m_has_ctes = false;
 
+  // One QueryScope per CTE in ast_root.cte_list, in declaration order.
+  // Pointers because QueryScope holds a DynamicArray — non-trivially-copyable.
+  // Allocated from m_amalloc (arena), so no explicit delete is needed.
+  DynamicArray<QueryScope*> m_cte_scopes;
+
   ResultPrinter* m_resultprinter = NULL;
   LexCString column_idx_to_name(uint);
   void (*m_print_json_string)(std::basic_ostream<char>& out, const char* str) = NULL;
@@ -269,6 +274,7 @@ private:
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();
   void analyze_ctes();
+  void build_cte_scopes();
   void analyze_subqueries();
   void analyze_subqueries_ce(ConditionalExpression* ce);
   void analyze_select_subqueries();

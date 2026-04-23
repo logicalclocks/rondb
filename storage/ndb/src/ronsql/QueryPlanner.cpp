@@ -84,30 +84,45 @@ QueryPlanner::plan(
   out.num_linked_projs = 0;
 
   /*
-   * Root operation: always TABLE_SCAN for now.
-   * PK lookup root is deferred to a later step.
+   * Root operation: CTE_SCAN if the root name refers to a CTE visible in
+   * this scope, otherwise TABLE_SCAN on the physical table. PK lookup
+   * root is deferred to a later step.
    */
   const char *root_name = root_table->name.c_str();
-  const NdbDictionary::Table *root_ndb_table = dict->getTable(root_name);
-  if (root_ndb_table == NULL)
-  {
-    err << "Table '" << root_name << "' not found." << std::endl;
-    throw RonSQLPermanentError("Table not found.");
-  }
+  Uint32 root_cte_idx = 0;
+  const CteDefinition *root_cte_match =
+      findCte(cte_list, root_name, root_cte_idx);
 
   JoinOp &rootOp = out.ops[0];
-  rootOp.type = JoinOp::TABLE_SCAN;
-  rootOp.table = root_ndb_table;
-  rootOp.index = NULL;
   rootOp.alias = root_table->alias;
+  rootOp.index = NULL;
   rootOp.parent_op_idx = 0;
   rootOp.is_root = true;
   rootOp.match_type = JoinOp::INNER;
   rootOp.num_key_cols = 0;
   rootOp.num_low_bounds = 0;
   rootOp.num_high_bounds = 0;
-  rootOp.cte_def = NULL;
-  rootOp.cte_def_idx = 0;
+
+  if (root_cte_match != NULL)
+  {
+    rootOp.type = JoinOp::CTE_SCAN;
+    rootOp.table = NULL;
+    rootOp.cte_def = const_cast<CteDefinition*>(root_cte_match);
+    rootOp.cte_def_idx = root_cte_idx;
+  }
+  else
+  {
+    const NdbDictionary::Table *root_ndb_table = dict->getTable(root_name);
+    if (root_ndb_table == NULL)
+    {
+      err << "Table '" << root_name << "' not found." << std::endl;
+      throw RonSQLPermanentError("Table not found.");
+    }
+    rootOp.type = JoinOp::TABLE_SCAN;
+    rootOp.table = root_ndb_table;
+    rootOp.cte_def = NULL;
+    rootOp.cte_def_idx = 0;
+  }
   out.num_ops = 1;
 
   /*

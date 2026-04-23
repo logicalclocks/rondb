@@ -40,7 +40,8 @@ static const Uint32 MAX_LINKED_PROJS = 16;
 
 struct JoinOp
 {
-  enum Type { TABLE_SCAN, INDEX_SCAN, PK_LOOKUP, UNIQUE_LOOKUP, CTE_LOOKUP };
+  enum Type { TABLE_SCAN, INDEX_SCAN, PK_LOOKUP, UNIQUE_LOOKUP, CTE_LOOKUP,
+              CTE_SCAN };
   enum MatchType { INNER, LEFT_OUTER, SEMI_JOIN, ANTI_JOIN };
   Type type;
   MatchType match_type;

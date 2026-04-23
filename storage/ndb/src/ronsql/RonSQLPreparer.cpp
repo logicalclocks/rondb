@@ -146,7 +146,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_scan_config_candidates(conf.amalloc),
   m_select_subquery_leaves(conf.amalloc),
   m_merged_leaves(conf.amalloc),
-  m_subquery_infos(conf.amalloc)
+  m_subquery_infos(conf.amalloc),
+  m_cte_scopes(conf.amalloc)
 {
   ndbrequire(m_status == Status::BEGIN);
   try {
@@ -754,6 +755,13 @@ RonSQLPreparer::load()
     load_join();
   } else {
     load_single_table();
+  }
+
+  // Plan each CTE body into its own QueryScope. Main-query load runs first
+  // so m_dict is populated; each CTE's planner call resolves CTE references
+  // in its body against the CTEs declared before it (topological order).
+  if (m_has_ctes) {
+    build_cte_scopes();
   }
 }
 
@@ -2612,6 +2620,45 @@ RonSQLPreparer::analyze_ctes()
             << std::endl;
         throw RonSQLPermanentError("Duplicate CTE name.");
       }
+    }
+  }
+}
+
+// Plan each CTE body into a per-scope JoinPlan and stash the resulting
+// QueryScope in m_cte_scopes. Visibility is topological: CTE N sees
+// CTEs 0..N-1. Achieved by temporarily truncating the cte_list at the
+// predecessor's `next` pointer during the planner call, then restoring.
+void
+RonSQLPreparer::build_cte_scopes()
+{
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  const char* db = m_conf.ndb ? m_conf.ndb->getDatabaseName() : nullptr;
+
+  CteDefinition* prev = NULL;
+  for (CteDefinition* cte = m_context.ast_root.cte_list;
+       cte != NULL;
+       prev = cte, cte = cte->next)
+  {
+    // Truncate list so findCte sees only predecessors of `cte`.
+    CteDefinition* visible_head = m_context.ast_root.cte_list;
+    CteDefinition* saved_next = NULL;
+    if (prev == NULL) {
+      visible_head = NULL;
+    } else {
+      saved_next = prev->next;
+      prev->next = NULL;
+    }
+
+    QueryScope* scope = m_amalloc->alloc_exc<QueryScope>(1);
+    new (scope) QueryScope(m_amalloc);
+    QueryPlanner::plan(cte->stmt->root_table, cte->stmt->joins, m_dict,
+                       err, scope->join_plan, m_conf.schema_cache, db,
+                       visible_head);
+    scope->table = scope->join_plan.ops[0].table;
+    m_cte_scopes.push(scope);
+
+    if (prev != NULL) {
+      prev->next = saved_next;
     }
   }
 }
@@ -6293,8 +6340,9 @@ RonSQLPreparer::print()
       case JoinOp::PK_LOOKUP:      out << "PK_LOOKUP ";     break;
       case JoinOp::UNIQUE_LOOKUP:  out << "UNIQUE_LOOKUP "; break;
       case JoinOp::CTE_LOOKUP:     out << "CTE_LOOKUP ";    break;
+      case JoinOp::CTE_SCAN:       out << "CTE_SCAN ";      break;
       }
-      if (op.type == JoinOp::CTE_LOOKUP) {
+      if (op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) {
         out << "CTE:" << op.cte_def->name.c_str();
       } else {
         out << op.table->getName();
