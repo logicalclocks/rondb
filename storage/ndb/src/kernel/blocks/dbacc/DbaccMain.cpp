@@ -1515,32 +1515,32 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
 	}
 	opbits |= Operationrec::OP_STATE_RUNNING;
 	opbits |= Operationrec::OP_RUN_QUEUE;
-        if (! (opbits & Operationrec::OP_DIRTY_READ))
+        Operationrec * const opP = operationRecPtr.p;
+        if (!(opbits & Operationrec::OP_DIRTY_READ))
         {
-	  /*---------------------------------------------------------------*/
-	  // It is not a dirty read. We proceed by locking and continue with
-	  // the operation.
-	  /*---------------------------------------------------------------*/
+          /*---------------------------------------------------------------*/
+          // It is not a dirty read. We proceed by locking and continue with
+          // the operation.
+          /*---------------------------------------------------------------*/
           jamDebug();
           Uint32 eh = elemPageptr.p->word32[elemptr];
-          operationRecPtr.p->reducedHashValue =
-            ElementHeader::getReducedHashValue(eh);
-          operationRecPtr.p->elementPage = elemPageptr.i;
-          operationRecPtr.p->elementContainer = elemConptr;
-          operationRecPtr.p->elementPointer = elemptr;
+          opP->reducedHashValue = ElementHeader::getReducedHashValue(eh);
+          opP->elementPage = elemPageptr.i;
+          opP->elementContainer = elemConptr;
+          opP->elementPointer = elemptr;
 
-	  eh = ElementHeader::setLocked(operationRecPtr.i);
+          eh = ElementHeader::setLocked(operationRecPtr.i);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-	  insertLockOwnersList(operationRecPtr);
+          insertLockOwnersList(operationRecPtr);
 #endif
-	  fragrecptr.p->lockCount[hash]++;
-    TTL_RONDB_TRACE(fragrecptr.p->myTableId,
-                    "Dbacc::execACCKEYREQ(), lock, "
-                    "op: %u table id: %u, frag id: %u",
-                    op,
-                    fragrecptr.p->myTableId, fragrecptr.p->fragmentid);
-	  opbits |= Operationrec::OP_LOCK_OWNER;
-          operationRecPtr.p->m_op_bits = opbits;
+          fragrecptr.p->lockCount[hash]++;
+          TTL_RONDB_TRACE(fragrecptr.p->myTableId,
+                          "Dbacc::execACCKEYREQ(), lock, "
+                          "op: %u table id: %u, frag id: %u",
+                          op,
+                          fragrecptr.p->myTableId, fragrecptr.p->fragmentid);
+          opbits |= Operationrec::OP_LOCK_OWNER;
+          opP->m_op_bits = opbits;
           /**
            * Ensure that any thread that reads element header also can see
            * the updates to the operation record. Only required when we are
@@ -1551,19 +1551,19 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
           Uint32 tcOprec;
           Uint32 tcBlockref;
           m_ldm_instance_used->c_lqh->get_tc_ref(
-            operationRecPtr.p->userptr,
+            opP->userptr,
             tcOprec,
             tcBlockref);
 #endif
           DEB_LOCK_TRANS(("(%u) Got lock on row(%u,%u) in tab(%u,%u), "
                           " trans(%u,%u) opPtrI: %u, op: %u, tcRef(%u,%x)",
                           instance(),
-                          operationRecPtr.p->localdata.m_page_no,
-                          operationRecPtr.p->localdata.m_page_idx,
+                          opP->localdata.m_page_no,
+                          opP->localdata.m_page_idx,
                           fragrecptr.p->myTableId,
                           fragrecptr.p->fragmentid,
-                          operationRecPtr.p->transId1,
-                          operationRecPtr.p->transId2,
+                          opP->transId1,
+                          opP->transId2,
                           operationRecPtr.i,
                           opbits & Operationrec::OP_MASK,
                           tcOprec,
@@ -1571,27 +1571,25 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
 
           release_frag_mutex_hash(fragrecptr.p, hash);
 
-          fragrecptr.p->
-            m_lockStats.req_start_imm_ok((opbits & 
-                                          Operationrec::OP_LOCK_MODE) 
-                                         != ZREADLOCK,
-                                         operationRecPtr.p->m_lockTime,
-                                          getHighResTimer());
+          fragrecptr.p->m_lockStats.req_start_imm_ok(
+              (opbits & Operationrec::OP_LOCK_MODE) != ZREADLOCK,
+              opP->m_lockTime,
+              getHighResTimer());
         }
         else
         {
           release_frag_mutex_hash(fragrecptr.p, hash);
           jamDebug();
-	  /*---------------------------------------------------------------*/
-	  // It is a dirty read. We do not lock anything. Set state to
-	  // IDLE since no COMMIT call will come.
-	  /*---------------------------------------------------------------*/
-	  operationRecPtr.p->m_op_bits = Operationrec::OP_EXECUTED_DIRTY_READ;
+          /*---------------------------------------------------------------*/
+          // It is a dirty read. We do not lock anything. Set state to
+          // IDLE since no COMMIT call will come.
+          /*---------------------------------------------------------------*/
+          opP->m_op_bits = Operationrec::OP_EXECUTED_DIRTY_READ;
         }//if
-        c_tup->prepareTUPKEYREQ(operationRecPtr.p->localdata.m_page_no,
-                                operationRecPtr.p->localdata.m_page_idx,
+        c_tup->prepareTUPKEYREQ(opP->localdata.m_page_no,
+                                opP->localdata.m_page_idx,
                                 fragrecptr.p->tupFragptr);
-        sendAcckeyconf(signal, operationRecPtr.p);
+        sendAcckeyconf(signal, opP);
         return;
       }
       else
