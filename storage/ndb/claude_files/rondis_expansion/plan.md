@@ -50,8 +50,14 @@ label `RONDB-1053`.
 ## PR 1 — Key introspection, TTL exposure, and expired-key filtering
 
 Adds `EXISTS`, `TYPE`, `TTL`, `PTTL`, `EXPIRE`, `PEXPIRE`, `EXPIREAT`,
-`PEXPIREAT`, `PERSIST`, plus a correctness fix: **expired keys are
-filtered out on read** once TTL is a first-class user-visible feature.
+`PEXPIREAT`, `PERSIST`, plus two correctness fixes:
+1. **`hset_keys` is now the authoritative "does this hash exist"
+   signal** — Phase 1.0 adds a `field_count` column and wires HSET
+   and HDEL to maintain it so the row is removed when the last
+   field is deleted (fixes the orphan-row bug documented in
+   `rondis_namespace_split.test`).
+2. **Expired keys are filtered out on read** once TTL is a
+   first-class user-visible feature (Phase 1.11).
 
 All commands operate on string keys and hash keys (look in both
 `string_keys` and `hset_keys`). Shared infrastructure:
@@ -67,24 +73,211 @@ All commands operate on string keys and hash keys (look in both
   converts `ttl` seconds to a stored `expiry_date` value with
   `g_max_expire_at` as the "no TTL" sentinel.
 
+### Phase 1.0 — `hset_keys.field_count` and hash-lifecycle cleanup
+
+**Why this is a prerequisite for EXISTS/TYPE:** today the
+`hset_keys` row persists after `HDEL` of the last field (only fields
+are removed from `string_keys`; the name→id mapping row leaks).
+After Phase 1.0 the row is deleted when `field_count` hits 0, so
+"row exists in `hset_keys`" becomes equivalent to "hash exists". Both
+EXISTS and TYPE can then trust a two-probe design
+(`string_keys(0, k)` + `hset_keys(k)`) without seeing ghost hashes.
+It also turns Phase 2.4 (HLEN) from a table-scan into a PK read.
+
+**Scope:** one schema change, plus four small maintenance phases.
+
+#### Phase 1.0.1 — Schema: add `field_count` and `expiry_date` to `hset_keys`
+
+Two columns, added together because both require the same schema
+migration and downstream record/struct updates. The rationale for
+`expiry_date` is that Redis's `EXPIRE` / `TTL` / `PERSIST` work on
+hash keys as well as strings — and once a hash can expire, the
+canonical place to store its TTL is on the hash-name row (same
+pattern as `string_keys.expiry_date` for string keys).
+
+**Files:**
+- `sql/create_rondis_tables.sql` — add both columns to the
+  `hset_keys` CREATE (in-place since the script uses
+  `CREATE TABLE IF NOT EXISTS`):
+  ```sql
+  field_count INT UNSIGNED NOT NULL DEFAULT 0,
+  expiry_date TIMESTAMP,
+  KEY ttl_index(expiry_date),
+  ```
+  Mirror the `TTL=0@expiry_date` NDB table comment from `string_keys`
+  so NDB lazy-expires the mapping row when its TTL passes.
+- `sql/HSET_key.sql` — mirror the change for standalone schema
+  install.
+- `mysql-test/suite/rondis/include/create_rondis_tables.inc` — mirror.
+- `include/table_definitions.h` — add `Uint32 field_count` and
+  `Int32 expiry_date` to the `hset_key_table` struct; add
+  `HSET_KEY_TABLE_COL_field_count` and
+  `HSET_KEY_TABLE_COL_expiry_date` defines.
+- `src/table_definitions.cc` `init_hset_key_records` — fetch both
+  new columns via `tab->getColumn`; add them to
+  `read_all_column_map` so `entire_hset_key_record` projects them.
+  `pk_hset_key_record` stays unchanged (PK is still just `redis_key`).
+
+**Hash-TTL semantics (applies to Phases 1.3/1.5-1.9/1.11):**
+- `EXPIRE user:1 N` on a hash sets `hset_keys(user:1).expiry_date`.
+  The field rows in `string_keys` keep whatever per-row
+  `expiry_date` they had — they are *not* mass-updated. NDB's
+  built-in `TTL=0@expiry_date` on `hset_keys` then lazy-drops the
+  mapping row when it expires; any hash read that reaches an
+  expired mapping row returns `nil` (Phase 1.11's read-filter
+  covers this path explicitly).
+- **Known limitation (flagged in the out-of-scope section):** when
+  the `hset_keys` row expires, its field rows in `string_keys`
+  become orphaned (unreachable by name, but still on disk). They
+  are eventually reclaimed either by being overwritten under a
+  freshly-allocated `redis_key_id` on a later HSET of the same
+  name, or by a separate ops-level GC (out of scope for v1). A
+  follow-up ticket can close this by having Phase 1.11's read
+  path also issue a partitioned scan-delete for the orphaned
+  field rows on first-observed hash expiry.
+
+**Migration:** existing `redis_0.hset_keys` rows need `field_count`
+backfilled — 1 is safe (at-least-one is the current invariant for a
+non-orphaned row; true-count resync is a separate ops task). Do the
+backfill in the CREATE script post-create via `UPDATE ... SET
+field_count = 1 WHERE field_count = 0` when the column is freshly
+added (idempotent on re-run). `expiry_date` defaults to NULL, which
+we treat as "no TTL" (alongside the existing `g_max_expire_at`
+sentinel convention); no backfill needed. Note both in the upgrade
+notes.
+
+**Test:** (no standalone test — verified by Phase 1.0.2-1.0.4 tests
+and by Phase 1.5-1.9's EXPIRE-on-hash assertions).
+
+#### Phase 1.0.2 — HSET bumps `field_count` on new-field writes
+
+**Scope:** the HSET batch already knows which fields were new vs
+overwrites via the RONDB-1052 C10 plumbing (`m_num_new_fields` is
+aggregated from `OUTPUT_INDEX_3` in `simple_write_callback` @
+`src/db_operations.cc:588-590` and `write_callback` @ `:526-528`).
+After the HSET batch completes successfully with
+`m_num_new_fields > 0`, issue **one** interpreted-code UPDATE on
+`hset_keys` that adds `m_num_new_fields` to `field_count`.
+
+**Files:**
+- `src/commands.cc` `rondb_mset` / `rondb_hset_command` — after the
+  existing `set_simple_rows` / `set_complex_rows` drain and before
+  emitting the reply, call a new `bump_hset_field_count` helper.
+- `src/db_operations.cc` — new `bump_hset_field_count(ndb, redis_key,
+  redis_key_id, delta, database_id, response)`: opens a transaction
+  on `hset_keys`, issues an interpreted-code `updateTuple` that
+  reads `field_count`, adds `delta`, writes back. Reuses the
+  `add_reg` / `read_attr` / `write_attr` primitives already used by
+  `initNdbCodeIncrDecr` @ `src/interpreted_code.cc:44-115`.
+
+**Atomicity note:** this is NOT atomic with the string_keys field
+writes — on a worker crash between those commits and the
+`hset_keys` UPDATE, `field_count` ends up too low. We accept this
+for v1; the same non-atomicity already exists today for the
+`rondb_get_redis_key_id`→`write_hset_key_table` path. Symptoms are
+recoverable via a subsequent HSET of the same hash. Documented as a
+known limitation.
+
+**Test:** `t/rondis_hash_lifecycle.test` phase 1 — HSET on a new
+hash sets `field_count` to N (verified via SQL `SELECT field_count
+FROM redis_0.hset_keys WHERE redis_key = ...`); HSET overwrites
+leave it unchanged; HSET of one new + one overwrite bumps by 1.
+
+#### Phase 1.0.3 — HDEL decrements `field_count`; deletes row at 0
+
+**Scope:** after an HDEL batch completes, compute
+`deleted_count = num_keys - m_num_read_errors` (the existing "fields
+actually deleted" derivation at `src/commands.cc:693`). If
+`deleted_count > 0`, issue an interpreted-code UPDATE on
+`hset_keys` that subtracts from `field_count`; if the new value is
+0, immediately delete the `hset_keys` row and purge the in-memory
+cache.
+
+**Files:**
+- `src/commands.cc` `rondb_hdel_command` — after `rondb_del`
+  returns, call a new `decrement_hset_field_count` helper with the
+  `deleted_count` derived from `get_ctrl`.
+- `src/db_operations.cc` — new `decrement_hset_field_count(ndb,
+  redis_key, delta, database_id, response)`:
+  1. Interpreted-code UPDATE that reads `field_count`, subtracts
+     `delta`, writes back, and emits the resulting value as
+     `OUTPUT_INDEX_0`.
+  2. If the emitted value is 0: issue a follow-up DELETE on
+     `hset_keys` (PK = redis_key), and erase the in-memory
+     `redis_key_id_hash` entry. Both ops can be folded into one
+     transaction (delete + interpreted UPDATE in the same commit),
+     but splitting is acceptable for v1.
+- `src/db_operations.cc` — `redis_key_id_hash` accesses gain a
+  `std::mutex` guard (see Phase 1.0.4).
+
+**Test:** `t/rondis_hash_lifecycle.test` phase 2 — HSET 3 fields,
+HDEL 1 (`field_count`=2 and row present), HDEL 2 more
+(`field_count` reaches 0, row deleted, cache purged — verified via
+SQL `SELECT COUNT(*) FROM redis_0.hset_keys WHERE redis_key =
+...`). HDEL on missing fields does not decrement.
+
+#### Phase 1.0.4 — Lock the `redis_key_id_hash` cache
+
+**Scope:** Pre-existing latent bug — `redis_key_id_hash` at
+`src/db_operations.cc:1196` is a global `std::unordered_map`
+accessed from multiple worker threads without synchronization.
+Phase 1.0.3 introduces erasures (previously only lookups +
+insertions), which makes the race observable. Add an
+`std::mutex` guard around all accesses.
+
+**Files:**
+- `src/db_operations.cc` — wrap find/insert/erase in a helper with
+  `std::lock_guard<std::mutex>`.
+
+**Test:** no dedicated test — covered by the existing rondis stress
+tests under `--repeat=3` after 1.0.3 lands.
+
+#### Phase 1.0.5 — HSET on an existing hash after cleanup
+
+**Scope:** After 1.0.3, a hash that was fully `HDEL`'d returns to
+"doesn't exist" state. A subsequent HSET must re-create the
+`hset_keys` row cleanly — `rondb_get_redis_key_id` (@
+`src/db_operations.cc:1197`) already handles this because its
+cache was purged. Validate end-to-end.
+
+**Files:** no code changes — just verification.
+
+**Test:** `t/rondis_hash_lifecycle.test` phase 3 — HSET, full HDEL,
+HSET on same name: verify `redis_key_id` may be reused or a fresh
+id allocated; HGET works on the new fields; old hash's field rows
+are not visible (if any stale rows in string_keys from the
+pre-cleanup era existed, they would be under the old id and thus
+unreachable via the name).
+
 ### Phase 1.1 — EXISTS
 
 **Scope:** `EXISTS key [key ...]` — integer count of keys that exist.
 Duplicates in the argument list count each time (per Redis canonical).
 
+After Phase 1.0, the presence of an `hset_keys` row is authoritative
+for hash existence — no ghost rows, no scan. EXISTS becomes two
+batched HASH PK probes per key: first `string_keys(0, k)`, then
+`hset_keys(k)` for anything that missed.
+
 **Files:**
 - `src/rondb.cc` — dispatcher entry (NDB-dependent block), arity `>= 2`
-- `src/commands.cc` — new `rondb_exists_command`
-- `src/db_operations.cc` — new helper: metadata-only PK read on
-  `string_keys` with `redis_key_id=0`; if miss, probe `hset_keys`
-  via `rondb_get_redis_key_id` path
-- `include/commands.h` — declaration
+- `src/commands.cc` — new `rondb_exists_command`. Pass 1 reuses
+  `rondb_get_func` with a new `m_probe_only = true` flag on
+  `GetControl` (mask `0x10`, `num_rows` forced to 0, multi-row
+  branch of `simple_read_callback` short-circuited). Pass 2 uses a
+  new `exists_batch_probe_hset` helper — async batched PK reads on
+  `hset_keys` with the same window size as pass 1 (the code for
+  both passes is already drafted on the work branch).
+- `include/table_definitions.h` — add `bool m_probe_only` to
+  `GetControl`.
+- `include/commands.h` — declaration.
 
 **Reply shape:** `:N\r\n`.
 
 **Test:** `t/rondis_keyinfo_exists.test` — existing string key,
-existing hash key, missing key, mixed batch, duplicates counted
-separately, case-sensitivity.
+existing hash key (verified correct after Phase 1.0 cleanup — so
+fully HDEL'd hashes count as 0), missing key, mixed batch,
+duplicates counted separately, case-sensitivity.
 
 ### Phase 1.2 — TYPE
 
@@ -93,36 +286,45 @@ string reply, not bulk).
 
 **Files:**
 - `src/rondb.cc` — dispatcher entry, arity `== 2`
-- `src/commands.cc` — new `rondb_type_command`: probe `string_keys`
-  with `redis_key_id=0`; on miss, probe `hset_keys` by name; on miss,
-  emit `+none\r\n`
+- `src/commands.cc` — new `rondb_type_command`: single-key variant
+  of the Phase 1.1 two-probe machinery. Emit `+string\r\n` if the
+  first probe (`string_keys(0, k)`) hits, `+hash\r\n` if the second
+  probe (`hset_keys(k)`) hits, `+none\r\n` otherwise. (Post-Phase
+  1.0 `hset_keys` can no longer lie about an empty hash.)
 - `include/commands.h` — declaration
 
 **Reply shape:** `+string\r\n` / `+hash\r\n` / `+none\r\n`.
 
 **Test:** `t/rondis_keyinfo_type.test` — all three outcomes; string
 key and hash key with the same name each report their own type
-(namespace-split per `rondis_namespace_split.test`).
+(namespace-split per `rondis_namespace_split.test`); fully-HDEL'd
+hash reports `none`.
 
 ### Phase 1.3 — TTL
 
 **Scope:** `TTL key` → seconds remaining, `-1` if no TTL, `-2` if
 missing. Also `-2` if row exists but `expiry_date < now` (already
-expired — phase 1.10 will also hide the row from GET, but TTL's
-reply is decided here).
+expired — Phase 1.11 will also hide the row from GET/HGET, but
+TTL's reply is decided here). Works on both string and hash keys.
 
 **Files:**
 - `src/rondb.cc` — dispatcher, arity `== 2`
 - `src/commands.cc` — new `rondb_ttl_command(... bool millis)` shared
-  with PTTL (Phase 1.4), `millis=false` here
+  with PTTL (Phase 1.4), `millis=false` here. Probe `string_keys(0,
+  k).expiry_date` first (metadata-only mask that now also covers
+  expiry); on miss, probe `hset_keys(k).expiry_date` — both reads
+  reuse the Phase 1.1 two-probe machinery, just projecting one more
+  column.
 - `src/db_operations.cc` — extend metadata-only mask to include
-  `expiry_date`; reuse `prepare_get_simple_key_row` unchanged
+  `expiry_date`; reuse `prepare_get_simple_key_row` unchanged. Add
+  a parallel `prepare_get_simple_hset_key_row` variant that
+  projects `field_count` and `expiry_date` from `hset_keys`.
 - `include/commands.h` — declaration
 
-**Test:** `t/rondis_keyinfo_ttl.test` — SET with EX then TTL (value
-in window), SET without EX then TTL (-1), TTL missing (-2). Uses the
-`--let $r = \`SELECT ...\`` pattern from `rondis_ttl.test` for
-determinism.
+**Test:** `t/rondis_keyinfo_ttl.test` — SET with EX then TTL
+(string, in window), SET without EX (-1), TTL missing (-2); EXPIRE
+on a hash then TTL on the hash-name (in window); TTL on a fully
+HDEL'd hash (-2).
 
 ### Phase 1.4 — PTTL
 
@@ -140,27 +342,35 @@ uses range check.
 ### Phase 1.5 — EXPIRE
 
 **Scope:** `EXPIRE key seconds` → `:1\r\n` if applied, `:0\r\n` if
-missing. Redis 7's NX/XX/GT/LT flags deferred (noted in the
-follow-ups section).
+missing. Works on both string and hash keys. Redis 7's NX/XX/GT/LT
+flags deferred (noted in the follow-ups section).
 
 **Files:**
 - `src/rondb.cc` — dispatcher, arity `== 3`
 - `src/commands.cc` — new `rondb_expire_command(... ExpireMode)` where
   `ExpireMode ∈ {EX, PX, EXAT, PXAT}` drives the ttl-to-epoch
-  conversion. Rejects `seconds <= 0` per C12 precedent.
-- `src/db_operations.cc` — new `update_expiry_key_row` modelled on
-  `incr_decr_key_row` @ `:1054`: `writeTuple` with mask covering only
-  PK + `expiry_date`
+  conversion. Rejects `seconds <= 0` per C12 precedent. Dispatch:
+  probe `string_keys(0, k)` first — if hit, update its
+  `expiry_date`; else probe `hset_keys(k)` — if hit, update its
+  `expiry_date`; else `:0`.
+- `src/db_operations.cc` — two helpers:
+  - `update_expiry_string_row` modelled on `incr_decr_key_row` @
+    `:1054` — `writeTuple` on `string_keys` with mask covering only
+    PK + `expiry_date`.
+  - `update_expiry_hset_row` — same pattern against `hset_keys`
+    (`entire_hset_key_record` now projects `expiry_date` after
+    Phase 1.0.1).
 - `src/interpreted_code.cc` — a short interpreter program: load new
-  expiry, write_attr, exit_ok; on missing row the write naturally
-  fails and the reply is `:0\r\n`
+  expiry, write_attr, exit_ok; used by both helpers. On missing row
+  the write naturally fails and the caller returns `:0`.
 - `include/commands.h`, `include/db_operations.h` — declarations
 
 **Reuses:** `generate_expire_at` @ `commands.cc:284`.
 
-**Test:** `t/rondis_keyinfo_expire.test` — EXPIRE on existing key
-(returns 1, TTL reflects it), EXPIRE on missing (returns 0), EXPIRE
-0 / EXPIRE -1 rejected.
+**Test:** `t/rondis_keyinfo_expire.test` — EXPIRE on existing
+string key (returns 1, TTL reflects it), EXPIRE on existing hash
+key (returns 1, TTL on hash-name reflects it), EXPIRE on missing
+(returns 0), EXPIRE 0 / EXPIRE -1 rejected.
 
 ### Phase 1.6 — PEXPIRE
 
@@ -207,48 +417,60 @@ millisecond input.
 ### Phase 1.9 — PERSIST
 
 **Scope:** `PERSIST key` → `:1\r\n` if TTL cleared, `:0\r\n` if
-missing or already had no TTL.
+missing or already had no TTL. Works on both string and hash keys.
 
 **Files:**
 - `src/rondb.cc` — dispatcher, arity `== 2`
-- `src/commands.cc` — new `rondb_persist_command`: pre-read
-  `expiry_date` to decide the 1-vs-0 reply, then call
-  `update_expiry_key_row` (from Phase 1.5) with
-  `expiry_date = g_max_expire_at`
+- `src/commands.cc` — new `rondb_persist_command`: probe+dispatch
+  pattern from Phase 1.5. For whichever table holds the key,
+  pre-read `expiry_date` to decide the 1-vs-0 reply, then call the
+  appropriate `update_expiry_*_row` helper with
+  `expiry_date = g_max_expire_at`.
 
 **Test:** `t/rondis_keyinfo_persist.test` — SET with EX, PERSIST
 (returns 1), TTL (-1), PERSIST again (returns 0), PERSIST missing
-(returns 0).
+(returns 0); EXPIRE on hash then PERSIST on hash (returns 1, TTL
+on hash -1).
 
 ### Phase 1.10 — Expired-key filtering on read
 
-**Scope:** Correctness fix. Once TTL is a user-visible feature, GET /
-MGET / HGET / HMGET / STRLEN / GETRANGE / EXISTS / TYPE must treat
+**Scope:** Correctness fix. Once TTL is a user-visible feature, GET
+/ MGET / HGET / HMGET / STRLEN / GETRANGE / EXISTS / TYPE must treat
 rows where `expiry_date < now` as absent. A still-present expired
 row is an eventual-consistency artifact of lazy expiry and must not
-leak back to the client.
+leak back to the client. Covers both `string_keys.expiry_date`
+(per-key string or per-field hash TTL) and `hset_keys.expiry_date`
+(whole-hash TTL set by EXPIRE on the hash name).
 
 **Files:**
 - `src/interpreted_code.cc` — extend the read interpreter program
-  (the one generated alongside `prepare_get_simple_key_row`) with a
-  branch that compares `expiry_date` against `now` and emits
-  `interpret_exit_nok(RONDB_EXPIRED_KEY)` (new sentinel) if expired
+  (the one generated alongside `prepare_get_simple_key_row`) with
+  a branch that compares `expiry_date` against `now` and emits
+  `interpret_exit_nok(RONDB_EXPIRED_KEY)` (new sentinel) if
+  expired. Add the same branch to the hset_keys read program used
+  by Phase 1.1's pass 2.
 - `src/common.h` — define `RONDB_EXPIRED_KEY` sentinel
 - `src/db_operations.cc` — in the read callbacks, translate the
   sentinel to `KeyState::CompletedFailed` with a code that the
   reply path already treats as "key does not exist" (i.e. emits
-  `$-1\r\n` / counts as miss). Mirrors C5a/C5b/C7 plumbing.
+  `$-1\r\n` / counts as miss). Mirrors C5a/C5b/C7 plumbing. Also:
+  the `rondb_get_redis_key_id` path (used by HGET/HMGET/HSET/HDEL)
+  must honor expiry on `hset_keys` — an expired mapping row must
+  look like "hash not found" rather than yielding a stale
+  `redis_key_id`.
 - `src/commands.cc` — EXISTS counting and TYPE probes must also
-  honor the sentinel (their reply builders are new in Phase 1.1/1.2
-  so this just wires in the translation)
+  honor the sentinel (their reply builders are new in Phase
+  1.1/1.2 so this just wires in the translation).
 
-**Test:** `t/rondis_keyinfo_expired_read.test` — SET with EX 1, sleep
-until expiry_date < now via a SQL-clocked sleep (not `sleep 2`; use
-the existing TTL-test pattern for determinism), then GET returns
-nil, EXISTS returns 0, TYPE returns none, HGET (hash variant) nil.
+**Test:** `t/rondis_keyinfo_expired_read.test` — SET with EX 1, SQL-
+clocked sleep until `expiry_date < now` (reuse the `rondis_ttl.test`
+deterministic pattern, not `sleep 2`), then GET returns nil, EXISTS
+returns 0, TYPE returns none. Hash variant: HSET fields + EXPIRE
+on the hash name, sleep past expiry, then HGET field returns nil,
+HLEN returns 0, EXISTS returns 0.
 
-**Note:** This phase depends on Phases 1.1/1.2/1.3/1.5 having landed
-so the translation has call sites to plumb through. The phase lands
+**Note:** This phase depends on Phases 1.0/1.1/1.2/1.3/1.5 having
+landed so the translation has call sites to plumb through. Lands
 as the capstone of PR 1.
 
 ### Phase 1.11 — PR 1 final
@@ -320,33 +542,41 @@ field already existed.
 **Test:** `t/rondis_hash_setnx.test` — new field (1 + visible),
 existing field (0 + unchanged).
 
-### Phase 2.4 — HLEN (first scan path)
+### Phase 2.4 — HLEN
 
 **Scope:** `HLEN key` → `:N\r\n` (field count, 0 if hash missing).
 
+After Phase 1.0 this is a **single PK read on `hset_keys`** —
+`field_count` is the authoritative count. Not a scan.
+
 **Files:**
 - `src/rondb.cc` — dispatcher, arity `== 2`
-- `src/commands.cc` — new `rondb_hlen_command`
-- `src/db_operations.cc` — new `scan_hash_fields_count` — partitioned
-  NDB table scan on `string_keys` with `NdbScanFilter::cmp(Equal,
-  redis_key_id_col, hash_id)`; count rows in the scan callback
+- `src/commands.cc` — new `rondb_hlen_command` — PK read on
+  `hset_keys` by name using `pk_hset_key_record` /
+  `entire_hset_key_record`; return `:field_count\r\n` on hit,
+  `:0\r\n` on miss.
 
-First scan-based command in Rondis. Validates the scan-with-filter
-pattern before Phases 2.5-2.7 layer projection on top.
+(The "first scan path" role originally pinned on Phase 2.4 moves
+to Phase 2.5 — HKEYS is now the first command that actually needs
+a table scan.)
 
-**Test:** `t/rondis_hash_len.test` — empty hash (0 after HDEL-all),
+**Test:** `t/rondis_hash_len.test` — empty hash (0 — verifies
+Phase 1.0 cleanup emitted a `DELETE` rather than a 0-count row),
 1-field, 10-field, missing hash.
 
-### Phase 2.5 — HKEYS
+### Phase 2.5 — HKEYS (first scan path)
 
 **Scope:** `HKEYS key` → `*N\r\n` + N bulk strings (field names).
 
 **Files:**
 - `src/rondb.cc` — dispatcher, arity `== 2`
 - `src/commands.cc` — new `rondb_hkeys_command`
-- `src/db_operations.cc` — new `scan_hash_fields` — extends
-  `scan_hash_fields_count` from Phase 2.4 to project `redis_key`
-  (= field name) per row
+- `src/db_operations.cc` — new `scan_hash_fields` — partitioned
+  NDB table scan on `string_keys` with
+  `NdbScanFilter::cmp(Equal, redis_key_id_col, hash_id)`; project
+  `redis_key` (= field name) per row. First scan-based command in
+  Rondis; validates the scan-with-filter pattern before Phases 2.6
+  and 2.7 layer value projection on top.
 
 **Test:** `t/rondis_hash_keys.test` — populated hash (order is
 unspecified per Redis spec; use `--sorted_result`), empty hash (`*0`),
@@ -569,7 +799,9 @@ no fresh timestamps. Use the `--let $r = \`SELECT ...\`` pattern
 
 **New MTR tests (one per phase plus capstones):**
 
-PR 1 (10 tests):
+PR 1 (11 tests):
+- `rondis_hash_lifecycle.test` (Phase 1.0 — schema + HSET/HDEL
+  maintenance, end-to-end)
 - `rondis_keyinfo_exists.test`
 - `rondis_keyinfo_type.test`
 - `rondis_keyinfo_ttl.test`
@@ -602,36 +834,61 @@ PR 3 (10 tests):
 
 **Rondis source:**
 - `src/rondb.cc` — all three PRs extend the dispatcher
-- `src/commands.cc` — all three PRs add new command implementations
-- `src/db_operations.cc` — PR 1 adds `update_expiry_key_row`; PR 2
-  adds scan-based enumeration helpers (`scan_hash_fields_count`,
-  `scan_hash_fields`)
-- `src/interpreted_code.cc` — PR 1 adds a short expiry-update program
-  (Phase 1.5) and extends the read program with an expired-filter
-  branch (Phase 1.10)
+- `src/commands.cc` — all three PRs add new command implementations;
+  PR 1 Phase 1.0.2/1.0.3 adds hset_keys-maintenance hooks on HSET
+  and HDEL paths
+- `src/db_operations.cc` — PR 1 Phase 1.0.2/1.0.3 adds
+  `bump_hset_field_count` / `decrement_hset_field_count`; PR 1
+  Phase 1.5 adds `update_expiry_key_row`; PR 2 adds a single
+  scan-based enumeration helper `scan_hash_fields` (Phase 2.5+);
+  PR 1 Phase 1.0.4 adds a mutex around `redis_key_id_hash`
+- `src/interpreted_code.cc` — PR 1 Phase 1.0.2/1.0.3 adds short
+  add/subtract programs for `hset_keys.field_count`; PR 1 Phase
+  1.5 adds a short expiry-update program; PR 1 Phase 1.11 extends
+  the read program with an expired-filter branch
+- `src/table_definitions.cc` — PR 1 Phase 1.0.1 adds the
+  `field_count` column to `entire_hset_key_record`
+- `include/table_definitions.h` — PR 1 Phase 1.0.1 adds the
+  `field_count` field to `hset_key_table`; PR 1 Phase 1.1 adds
+  `m_probe_only` to `GetControl`
 - `include/commands.h`, `include/db_operations.h`, `include/common.h`
   — declarations and the new `RONDB_EXPIRED_KEY` sentinel
+
+**Schema (PR 1 Phase 1.0.1 only):**
+- `sql/create_rondis_tables.sql`, `sql/HSET_key.sql`,
+  `mysql-test/suite/rondis/include/create_rondis_tables.inc` —
+  add `field_count INT UNSIGNED NOT NULL DEFAULT 0` to `hset_keys`
+- Existing `redis_0.hset_keys` rows backfilled to 1 in the
+  CREATE script (idempotent)
 
 **Plan (Phase 0):**
 - `storage/ndb/claude_files/rondis_expansion/plan.md` — this file
 
-**No schema changes across any of the three PRs.**
+**PR 2 and PR 3 have no schema changes.**
 
 ---
 
 ## Rough effort
 
-- PR 1: 16-20h — ten phases, but most reuse STRLEN / INCR templates;
-  Phase 1.10 (expired-key filtering) is the biggest unknown because
-  it extends the read interpreter program.
-- PR 2: 16-20h — hinges on the scan-with-filter pattern (Phase 2.4);
-  once that lands, Phases 2.5/2.6/2.7 are "add projection columns".
+- PR 1: 26-32h — now with eleven phases including Phase 1.0
+  (five sub-phases: schema with `field_count` **and** `expiry_date`,
+  HSET bump, HDEL decrement-and-cleanup, cache mutex, end-to-end
+  validation). Phase 1.0 is the largest single chunk — ~10h —
+  because it changes schema (two columns + index), interpreter
+  programs, and the HSET / HDEL transaction flow. The EXPIRE /
+  TTL / PERSIST phases (1.3, 1.5-1.9) each gain a small
+  hash-dispatch extension (~+1h each). Phase 1.11 (expired-key
+  filtering) is the other large unknown, ~5h (must cover both
+  `string_keys` and `hset_keys` expiry).
+- PR 2: 14-18h — hinges on the scan-with-filter pattern (Phase 2.5,
+  now the first scan path); once that lands, Phases 2.6/2.7 are
+  "add projection columns". Phase 2.4 (HLEN) drops from a scan to a
+  single PK read thanks to Phase 1.0's `field_count` column.
 - PR 3: 10-14h — lots of small surface area but each phase reuses
   existing paths; the biggest unknown is reply-rewriting for
   SETNX / HSETNX's integer reply.
 
-Total: ~45-55h plus review overhead. Distributes cleanly across the
-28 phases in this plan.
+Total: ~46-60h plus review overhead.
 
 ## Out of scope (follow-ups)
 
@@ -644,6 +901,15 @@ Total: ~45-55h plus review overhead. Distributes cleanly across the
   around blocking semantics.
 - Batching extension-row reads across fields in HVALS/HGETALL —
   noted in PR 2 Phase 2.8 as a performance follow-up.
+- Cascade-delete of field rows when `hset_keys.expiry_date`
+  expires — v1 leaves the orphan rows in `string_keys`,
+  unreachable by name. Follow-up: hook the Phase 1.11 expired-key
+  detector to issue a partitioned scan-delete on first-observed
+  hash expiry, or add an ops-level GC job.
+- Per-field hash TTL (Redis 7.4's `HEXPIRE` / `HPEXPIRE` /
+  `HPERSIST` / `HTTL`) — requires extending the per-row
+  `expiry_date` on `string_keys` hash-field rows with a new
+  command set. Not covered by the plan.
 - Lists / Sets / Sorted Sets / Streams — new schemas, feature-sized.
 - `MULTI` / `EXEC` / `WATCH`, Pub/Sub — protocol-level, separate
   design.
