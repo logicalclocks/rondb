@@ -1074,7 +1074,8 @@ RonSQLPreparer::load_join()
   m_main_scope.column_table_idx = col_table_idx;
 
   // Classify WHERE conditions by table for per-table filter pushdown
-  classify_where_by_table();
+  classify_where_by_table(m_main_scope,
+                          m_context.ast_root.where_expression);
 
   // Convert cross-table WHERE filters to index range bounds where possible
   assign_cross_table_index_bounds();
@@ -1121,12 +1122,12 @@ RonSQLPreparer::load_join()
 }
 
 void
-RonSQLPreparer::classify_where_by_table()
+RonSQLPreparer::classify_where_by_table(QueryScope& scope,
+                                         ConditionalExpression* where_ce)
 {
   for (Uint32 t = 0; t < MAX_SPJ_TREE_NODES; t++)
-    m_main_scope.join_where_ce[t] = NULL;
+    scope.join_where_ce[t] = NULL;
 
-  ConditionalExpression* where_ce = m_context.ast_root.where_expression;
   if (where_ce == NULL) return;
 
   // Flatten top-level AND conjuncts
@@ -1137,7 +1138,7 @@ RonSQLPreparer::classify_where_by_table()
   // Classify each conjunct by table
   for (Uint32 i = 0; i < num_conjuncts; i++)
   {
-    Int32 table_idx = classify_ce_table(conjuncts[i], m_main_scope.column_table_idx);
+    Int32 table_idx = classify_ce_table(conjuncts[i], scope.column_table_idx);
 
     if (table_idx == -2)
     {
@@ -1176,8 +1177,8 @@ RonSQLPreparer::classify_where_by_table()
             atom->args.left != NULL && atom->args.right != NULL;
         if (!is_cmp) { valid = false; break; }
 
-        Int32 lt = classify_ce_table(atom->args.left, m_main_scope.column_table_idx);
-        Int32 rt = classify_ce_table(atom->args.right, m_main_scope.column_table_idx);
+        Int32 lt = classify_ce_table(atom->args.left, scope.column_table_idx);
+        Int32 rt = classify_ce_table(atom->args.right, scope.column_table_idx);
         if (lt == -2 || rt == -2) { valid = false; break; }
         if (filter_expr_reg_depth(atom->args.left) > 2 ||
             filter_expr_reg_depth(atom->args.right) > 2) { valid = false; break; }
@@ -1213,7 +1214,7 @@ RonSQLPreparer::classify_where_by_table()
       ctf.ce = ce;
       ctf.child_table_idx = child_t;
       ctf.parent_table_idx = parent_t;
-      m_main_scope.cross_table_where_filters.push(ctf);
+      scope.cross_table_where_filters.push(ctf);
       continue;
     }
 
@@ -1222,9 +1223,9 @@ RonSQLPreparer::classify_where_by_table()
       table_idx = 0;
 
     // Accumulate conditions for this table
-    if (m_main_scope.join_where_ce[table_idx] == NULL)
+    if (scope.join_where_ce[table_idx] == NULL)
     {
-      m_main_scope.join_where_ce[table_idx] = conjuncts[i];
+      scope.join_where_ce[table_idx] = conjuncts[i];
     }
     else
     {
@@ -1232,9 +1233,9 @@ RonSQLPreparer::classify_where_by_table()
       ConditionalExpression* combined =
           m_amalloc->alloc_exc<ConditionalExpression>(1);
       combined->op = T_AND;
-      combined->args.left = m_main_scope.join_where_ce[table_idx];
+      combined->args.left = scope.join_where_ce[table_idx];
       combined->args.right = conjuncts[i];
-      m_main_scope.join_where_ce[table_idx] = combined;
+      scope.join_where_ce[table_idx] = combined;
     }
   }
 }
@@ -2657,6 +2658,7 @@ RonSQLPreparer::build_cte_scopes()
     scope->table = scope->join_plan.ops[0].table;
     scope->agg = cte->stmt->agg;
     resolve_columns_for_cte_scope(*scope);
+    classify_where_by_table(*scope, cte->stmt->where_expression);
     m_cte_scopes.push(scope);
 
     if (prev != NULL) {
