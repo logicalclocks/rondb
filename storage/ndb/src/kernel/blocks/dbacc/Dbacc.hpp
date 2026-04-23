@@ -518,6 +518,11 @@ struct Fragmentrec {
   //Use new hash function or not
   Uint8 m_use_new_hash_function;
 
+  // Cached TTL flag: 1 if the table this fragment belongs to has TTL
+  // configured, 0 otherwise. Set once at fragment creation; TTL is a
+  // CREATE TABLE property that does not change at runtime.
+  Uint8 m_is_ttl_table;
+
   // Number of Page8 pages allocated for the hash index.
   Int32 m_noOfAllocatedPages;
 
@@ -1216,7 +1221,9 @@ private:
 #else
   void debug_lh_vars(const char *where) const {}
 #endif
-  bool is_ttl_table(Fragmentrec* fragptr);
+  bool is_ttl_table(const Fragmentrec* fragptr) const {
+    return fragptr->m_is_ttl_table != 0;
+  }
 
  public:
   // Variables

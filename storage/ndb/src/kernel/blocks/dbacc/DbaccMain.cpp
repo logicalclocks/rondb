@@ -8116,6 +8116,7 @@ void Dbacc::initFragAdd(Signal *signal, FragmentrecPtr regFragPtr) const {
   
   Uint32 hasCharAttr = g_key_descriptor_pool.getPtr(req->tableId)->hasCharAttr;
   regFragPtr.p->hasCharAttr = hasCharAttr;
+  regFragPtr.p->m_is_ttl_table = c_lqh->is_ttl_table(req->tableId) ? 1 : 0;
   for (Uint32 i = 0; i < NUM_ACC_FRAGMENT_MUTEXES; i++) {
     NdbMutex_Init(&regFragPtr.p->acc_frag_mutex[i]);
   }
@@ -8136,6 +8137,7 @@ void Dbacc::initFragGeneral(FragmentrecPtr regFragPtr) const {
   }
   regFragPtr.p->hasCharAttr = ZFALSE;
   regFragPtr.p->dirRangeFull = ZFALSE;
+  regFragPtr.p->m_is_ttl_table = 0;
   regFragPtr.p->fragState = FREEFRAG;
 
   regFragPtr.p->sparsepages.init();
@@ -10737,7 +10739,3 @@ void Dbacc::shrinkTransientPools(Uint32 pool_index) {
   }
 }
 
-bool Dbacc::is_ttl_table(Fragmentrec* fragptr) {
-  ndbrequire(fragptr != nullptr);
-  return (c_lqh->is_ttl_table(fragptr->myTableId));
-}
