@@ -195,6 +195,8 @@ void Dbtup::execCREATE_TAB_REQ(Signal *signal) {
   // TTL related
   regTabPtr.p->m_ttl_sec = req->ttlSec;
   regTabPtr.p->m_ttl_col_no = req->ttlColumnNo;
+  regTabPtr.p->m_is_ttl_table =
+      (req->ttlSec != RNIL && req->ttlColumnNo != RNIL) ? 1 : 0;
   TTL_RONDB_TRACE(regTabPtr.i, /* == req->tableId */
                   "[TUP]Gen Tablerec, table_id: %u, TTL sec: %u, "
                   "TTL column no: %u", regTabPtr.i,
@@ -1568,6 +1570,9 @@ void Dbtup::handleAlterTableCommit(Signal *signal, const AlterTabReq *req,
       jam();
       regTabPtr->m_ttl_sec = regAlterTabOpPtr.p->ttlSec;
       regTabPtr->m_ttl_col_no = regAlterTabOpPtr.p->ttlColumnNo;
+      regTabPtr->m_is_ttl_table =
+          (regTabPtr->m_ttl_sec != RNIL &&
+           regTabPtr->m_ttl_col_no != RNIL) ? 1 : 0;
       g_eventLogger->info("[DBTUP], execALTER_TAB_REQ, update TTL on table "
                            "%u, [%u, %u]",
                            req->tableId,
@@ -1636,6 +1641,9 @@ void Dbtup::handleAlterTableCommit(Signal *signal, const AlterTabReq *req,
     ptrCheckGuard(regAlterTabOpPtr, cnoOfAlterTabOps, alterTabOperRec);
     regTabPtr->m_ttl_sec = regAlterTabOpPtr.p->ttlSec;
     regTabPtr->m_ttl_col_no = regAlterTabOpPtr.p->ttlColumnNo;
+    regTabPtr->m_is_ttl_table =
+        (regTabPtr->m_ttl_sec != RNIL &&
+         regTabPtr->m_ttl_col_no != RNIL) ? 1 : 0;
     g_eventLogger->info("[DBTUP], execALTER_TAB_REQ, update TTL on table "
                          "%u, [%u, %u]",
                          req->tableId,

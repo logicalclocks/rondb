@@ -1383,7 +1383,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
           deferredDeleteTriggers(triggerPool),
           tuxCustomTriggers(triggerPool),
           m_ttl_sec(RNIL),
-          m_ttl_col_no(RNIL) {}
+          m_ttl_col_no(RNIL),
+          m_is_ttl_table(0) {}
 
     AttributeMask notNullAttributeMask;
     AttributeMask blobAttributeMask;
@@ -1584,6 +1585,11 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
      */
     Uint32 m_ttl_sec;
     Uint32 m_ttl_col_no;
+    // Cached: non-zero iff (m_ttl_sec != RNIL && m_ttl_col_no != RNIL).
+    // Set whenever m_ttl_sec / m_ttl_col_no are updated. Lets hot-path
+    // is_ttl_table() be a single byte load + branch instead of two
+    // Uint32 compares.
+    Uint8 m_is_ttl_table;
   };
   Uint32 m_read_ctl_file_data[BackupFormat::LCP_CTL_FILE_BUFFER_SIZE_IN_WORDS];
   /*
@@ -4931,8 +4937,27 @@ private:
 
   bool is_ttl_table(Tablerec* tabptr) {
     ndbassert(tabptr != nullptr);
-    return (tabptr->m_ttl_sec != RNIL && tabptr->m_ttl_col_no != RNIL);
+    return tabptr->m_is_ttl_table != 0;
   }
+
+  /**
+   * TTL-aware row filter for handleReadReq. Only called when the
+   * table is a TTL table (caller checks is_ttl_table first). Returns
+   * 0 if the caller should continue to the read path; returns -1 if
+   * the row is expired / only_expired-filtered and the caller must
+   * propagate -1 to its caller (terrorCode set, tupkeyErrorLab called).
+   */
+  int handleReadReqTtl(Signal *signal,
+                       Operationrec *regOperPtr,
+                       Tablerec *regTabPtr,
+                       KeyReqStruct *req_struct);
+  /**
+   * Rare error path: client sent ttl_only_expired for a non-TTL
+   * table. Always returns -1. Marked cold/noinline so its body does
+   * not sit in handleReadReq's hot text.
+   */
+  int handleReadReqOnlyExpiredOnNonTtlTable(KeyReqStruct *req_struct)
+      __attribute__((noinline, cold));
 
   bool is_ttl_table(Uint32 table_id) {
     TablerecPtr tablePtr;

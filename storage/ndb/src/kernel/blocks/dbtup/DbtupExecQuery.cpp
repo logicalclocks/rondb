@@ -3178,105 +3178,20 @@ int Dbtup::handleReadReq(
   dst = &signal->theData[25];
   dstLen = (MAX_READ / 4) - 25;
 
-  if (unlikely(_regOperPtr->ttl_ignore == 0 &&
-               _regOperPtr->ttl_only_expired == 1)) {
-    ndbassert(req_struct->fragPtrP != nullptr);
-    if (!c_lqh->is_ttl_table(req_struct->fragPtrP->fragTableId)) {
-      g_eventLogger->warning("(Read) Received an read request with "
-                             "ttl_only_expired on a non-TTL table: %d",
-                             req_struct->fragPtrP->fragTableId);
-      // return Notfound
-      terrorCode = 626;
-      tupkeyErrorLab(req_struct);
-      return -1;
-    }
-  }
-
   /*
-   * TTL related
-   * Here we check whether the row is expired
+   * TTL related. The non-TTL hot path is a single ldrb+cbz on the
+   * cached Tablerec::m_is_ttl_table bit and falls straight through
+   * to the read path below. TTL tables dispatch to handleReadReqTtl,
+   * non-TTL tables receiving the unusual ttl_only_expired flag go to
+   * the cold handleReadReqOnlyExpiredOnNonTtlTable helper.
    */
-  if (_regOperPtr->ttl_ignore == 1) {
-    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                    "(Read) Skip checking TTL since "
-                    "ttl ignore is set");
-  }
-
-  if (_regOperPtr->ttl_ignore == 0 &&
-      is_ttl_table(regTabPtr)) {
-    bool has_error = false;
-    int err_no = 0;
-    int cmp_ret = 0;
-    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                    "(READ) handleReadReq TTL check");
-    cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
-    if (!has_error) {
-      if (_regOperPtr->ttl_only_expired == 0) {
-        if (cmp_ret <= 0) {
-          // Expired
-          bool ttl_ignore_for_ral = false;
-          if (req_struct->scan_rec != nullptr) {
-            Dblqh::ScanRecord* scan_rec_ptr =
-              reinterpret_cast<Dblqh::ScanRecord*>(req_struct->scan_rec);
-            if (!scan_rec_ptr->scanLockMode /* X */ &&
-                !scan_rec_ptr->scanLockHold /* S */) {
-               /*
-                * NOTICE:
-                * Dbtc::fk_scanFromChildTable will break this assumption.
-                * Something seems wrong when constructing the scan request
-                * flag there.
-                */
-              // ndbrequire(scan_rec_ptr->readCommitted);
-              if (scan_rec_ptr->scanBlock == this) {
-                PrepareAccLockReq4RAL(req_struct->scan_rec, signal);
-              } else {
-                ndbrequire(reinterpret_cast<const void*>(c_lqh->get_c_tux()) ==
-                    reinterpret_cast<const void*>(
-                      scan_rec_ptr->scanBlock));
-                reinterpret_cast<Dbtux*>(scan_rec_ptr->scanBlock)->
-                  PrepareAccLockReq4RAL(
-                      req_struct->scan_rec,
-                      signal);
-              }
-              ttl_ignore_for_ral = c_acc->WhetherSkipTTL(signal);
-              TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                              "Dbtup::handleReadReq() check whether needs "
-                              "to ignore TTL: %d", ttl_ignore_for_ral);
-            } else {
-              TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                              "Dbtup::handleReadReq() skip TTL "
-                              "checking for locking-scan on TTL "
-                              "table");
-            }
-          }
-          if (!ttl_ignore_for_ral) {
-            TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId, "(READ) TTL expired");
-            terrorCode = 626;
-            tupkeyErrorLab(req_struct);
-            return -1;
-          }
-        }
-      } else {
-        if (cmp_ret > 0) {
-          TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                          "(READ) TTL skip non-expired row "
-                          "since only_expired flag is set");
-          terrorCode = 626;
-          tupkeyErrorLab(req_struct);
-          return -1;
-        } else {
-          TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                          "(READ) TTL return expired row "
-                          "since only_expired flag is set");
-        }
-      }
-    } else {
-      jam();
-      ndbrequire(err_no < 0);
-      terrorCode = Uint32(-err_no);
-      tupkeyErrorLab(req_struct);
+  if (is_ttl_table(regTabPtr)) {
+    if (handleReadReqTtl(signal, _regOperPtr, regTabPtr, req_struct) == -1) {
       return -1;
     }
+  } else if (unlikely(_regOperPtr->ttl_ignore == 0 &&
+                      _regOperPtr->ttl_only_expired == 1)) {
+    return handleReadReqOnlyExpiredOnNonTtlTable(req_struct);
   }
 
   if (!req_struct->interpreted_exec)
@@ -3317,6 +3232,104 @@ int Dbtup::handleReadReq(
   }
 
   jam();
+  tupkeyErrorLab(req_struct);
+  return -1;
+}
+
+int Dbtup::handleReadReqTtl(Signal *signal,
+                            Operationrec *regOperPtr,
+                            Tablerec *regTabPtr,
+                            KeyReqStruct *req_struct) {
+  if (regOperPtr->ttl_ignore != 0) {
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(Read) Skip checking TTL since "
+                    "ttl ignore is set");
+    return 0;
+  }
+
+  bool has_error = false;
+  int err_no = 0;
+  int cmp_ret = 0;
+  TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                  "(READ) handleReadReq TTL check");
+  cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
+  if (unlikely(has_error)) {
+    jam();
+    ndbrequire(err_no < 0);
+    terrorCode = Uint32(-err_no);
+    tupkeyErrorLab(req_struct);
+    return -1;
+  }
+
+  if (regOperPtr->ttl_only_expired == 0) {
+    if (cmp_ret <= 0) {
+      // Expired
+      bool ttl_ignore_for_ral = false;
+      if (req_struct->scan_rec != nullptr) {
+        Dblqh::ScanRecord *scan_rec_ptr =
+            reinterpret_cast<Dblqh::ScanRecord *>(req_struct->scan_rec);
+        if (!scan_rec_ptr->scanLockMode /* X */ &&
+            !scan_rec_ptr->scanLockHold /* S */) {
+          /*
+           * NOTICE:
+           * Dbtc::fk_scanFromChildTable will break this assumption.
+           * Something seems wrong when constructing the scan request
+           * flag there.
+           */
+          // ndbrequire(scan_rec_ptr->readCommitted);
+          if (scan_rec_ptr->scanBlock == this) {
+            PrepareAccLockReq4RAL(req_struct->scan_rec, signal);
+          } else {
+            ndbrequire(reinterpret_cast<const void *>(c_lqh->get_c_tux()) ==
+                       reinterpret_cast<const void *>(scan_rec_ptr->scanBlock));
+            reinterpret_cast<Dbtux *>(scan_rec_ptr->scanBlock)
+                ->PrepareAccLockReq4RAL(req_struct->scan_rec, signal);
+          }
+          ttl_ignore_for_ral = c_acc->WhetherSkipTTL(signal);
+          TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                          "Dbtup::handleReadReq() check whether needs "
+                          "to ignore TTL: %d",
+                          ttl_ignore_for_ral);
+        } else {
+          TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                          "Dbtup::handleReadReq() skip TTL "
+                          "checking for locking-scan on TTL "
+                          "table");
+        }
+      }
+      if (!ttl_ignore_for_ral) {
+        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                        "(READ) TTL expired");
+        terrorCode = 626;
+        tupkeyErrorLab(req_struct);
+        return -1;
+      }
+    }
+  } else {
+    if (cmp_ret > 0) {
+      TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                      "(READ) TTL skip non-expired row "
+                      "since only_expired flag is set");
+      terrorCode = 626;
+      tupkeyErrorLab(req_struct);
+      return -1;
+    } else {
+      TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                      "(READ) TTL return expired row "
+                      "since only_expired flag is set");
+    }
+  }
+  return 0;
+}
+
+int Dbtup::handleReadReqOnlyExpiredOnNonTtlTable(KeyReqStruct *req_struct) {
+  // Client sent ttl_only_expired for a non-TTL table.
+  ndbassert(req_struct->fragPtrP != nullptr);
+  g_eventLogger->warning("(Read) Received an read request with "
+                         "ttl_only_expired on a non-TTL table: %d",
+                         req_struct->fragPtrP->fragTableId);
+  // return Notfound
+  terrorCode = 626;
   tupkeyErrorLab(req_struct);
   return -1;
 }
