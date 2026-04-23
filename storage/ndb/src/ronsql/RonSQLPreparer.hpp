@@ -278,6 +278,7 @@ private:
   void generate_scan_config_candidates();
   void analyze_ctes();
   void build_cte_scopes();
+  void resolve_columns_for_cte_scope(QueryScope& scope);
   void analyze_subqueries();
   void analyze_subqueries_ce(ConditionalExpression* ce);
   void analyze_select_subqueries();

@@ -2656,12 +2656,116 @@ RonSQLPreparer::build_cte_scopes()
                        visible_head);
     scope->table = scope->join_plan.ops[0].table;
     scope->agg = cte->stmt->agg;
+    resolve_columns_for_cte_scope(*scope);
     m_cte_scopes.push(scope);
 
     if (prev != NULL) {
       prev->next = saved_next;
     }
   }
+}
+
+// Populate scope.column_attrId_map / column_map / column_table_idx for
+// column references that belong to this CTE body. The parser keeps a
+// single global column namespace (m_columns / m_column_qualifiers); we
+// use m_col_is_inner as a coarse filter for "this col was referenced
+// inside some subquery or CTE body" and then try to resolve against
+// this scope's join plan. Columns that don't resolve stay as -1 / NULL;
+// using such an unresolved col_idx during emit would hit a mapped value
+// of -1 and fail loudly. Multi-CTE disambiguation is deferred to a
+// later step (AST walk to attribute each col_idx to its owning CTE).
+void
+RonSQLPreparer::resolve_columns_for_cte_scope(QueryScope& scope)
+{
+  Uint32 num_cols = m_columns.size();
+  NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(num_cols);
+  const NdbDictionary::Column** col_map =
+      m_amalloc->alloc_exc<const NdbDictionary::Column*>(num_cols);
+  Uint32* col_table_idx = m_amalloc->alloc_exc<Uint32>(num_cols);
+
+  JoinPlan& plan = scope.join_plan;
+
+  for (Uint32 col_idx = 0; col_idx < num_cols; col_idx++) {
+    col_id_map[col_idx] = -1;
+    col_map[col_idx] = NULL;
+    col_table_idx[col_idx] = 0;
+
+    if (!(m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx])) {
+      continue;
+    }
+
+    const char* col_name = m_columns[col_idx].c_str();
+    const char* qualifier = m_column_qualifiers[col_idx].c_str();
+
+    if (qualifier != NULL) {
+      for (Uint32 t = 0; t < plan.num_ops; t++) {
+        if (strcmp(plan.ops[t].alias.c_str(), qualifier) != 0) continue;
+        JoinOp& op = plan.ops[t];
+        if (op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) {
+          const CteDefinition* cte = op.cte_def;
+          Uint32 cte_col_idx = 0;
+          for (const Outputs* o = cte->stmt->outputs; o;
+               o = o->next, cte_col_idx++) {
+            if (o->output_name.len == strlen(col_name) &&
+                strncmp(o->output_name.str, col_name, o->output_name.len) == 0) {
+              col_id_map[col_idx] = (NdbAttrId)cte_col_idx;
+              col_map[col_idx] = NULL;
+              col_table_idx[col_idx] = t;
+              break;
+            }
+          }
+        } else if (op.table != NULL) {
+          const NdbDictionary::Column* col = op.table->getColumn(col_name);
+          if (col != NULL) {
+            col_id_map[col_idx] = col->getAttrId();
+            col_map[col_idx] = col;
+            col_table_idx[col_idx] = t;
+          }
+        }
+        break;
+      }
+    } else {
+      Uint32 match_count = 0;
+      Uint32 match_table = 0;
+      const NdbDictionary::Column* match_col = NULL;
+      NdbAttrId match_attr_id = -1;
+      for (Uint32 t = 0; t < plan.num_ops; t++) {
+        JoinOp& op = plan.ops[t];
+        if (op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) {
+          const CteDefinition* cte = op.cte_def;
+          Uint32 cte_col_idx = 0;
+          for (const Outputs* o = cte->stmt->outputs; o;
+               o = o->next, cte_col_idx++) {
+            if (o->output_name.len == strlen(col_name) &&
+                strncmp(o->output_name.str, col_name, o->output_name.len) == 0) {
+              match_count++;
+              match_table = t;
+              match_col = NULL;
+              match_attr_id = (NdbAttrId)cte_col_idx;
+              break;
+            }
+          }
+        } else if (op.table != NULL) {
+          const NdbDictionary::Column* col = op.table->getColumn(col_name);
+          if (col != NULL) {
+            match_count++;
+            match_table = t;
+            match_col = col;
+            match_attr_id = col->getAttrId();
+          }
+        }
+      }
+      if (match_count == 1) {
+        col_id_map[col_idx] = match_attr_id;
+        col_map[col_idx] = match_col;
+        col_table_idx[col_idx] = match_table;
+      }
+    }
+  }
+
+  scope.column_attrId_map = col_id_map;
+  scope.column_map = col_map;
+  scope.column_table_idx = col_table_idx;
 }
 
 void
