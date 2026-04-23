@@ -129,7 +129,11 @@ public:
     Uint32 column_name_to_idx(LexCString);
     Uint32 qualified_column_name_to_idx(LexCString table, LexCString column);
     void enter_subquery();
-    void leave_subquery();
+    // Returns the AggregationAPICompiler that was active inside the
+    // subquery/CTE body just exited (or NULL if none was created because
+    // the body had no aggregate expressions). Callers save the pointer on
+    // the corresponding SelectStatement before the next subquery begins.
+    AggregationAPICompiler* leave_subquery();
     SelectStatement ast_root;
   };
 private:
@@ -174,6 +178,7 @@ private:
     const NdbDictionary::Column** column_map = NULL;
     Uint32* column_table_idx = NULL;
     const NdbDictionary::Table* table = NULL;
+    AggregationAPICompiler* agg = NULL;
 
     QueryScope(ArenaMalloc* amalloc) : cross_table_where_filters(amalloc) {}
   };
@@ -201,8 +206,6 @@ private:
   DynamicArray<ConditionalExpression*> m_toplevel_conditions;
   DynamicArray<ScanConfig> m_scan_config_candidates;
   ScanConfig* m_scan_config = NULL;
-
-  AggregationAPICompiler* m_agg = NULL;
 
   // SELECT-list subquery aggregation (multi-leaf pushdown)
   struct SelectSubqueryLeaf {

@@ -286,10 +286,11 @@ cte_def:
   groupby_opt having_opt orderby_opt limit_opt
   T_RIGHT
   {
-    context->leave_subquery();
+    AggregationAPICompiler* cte_agg = context->leave_subquery();
     initptr($$);
     $$->name = $1;
     $$->stmt = context->get_allocator()->alloc_exc<SelectStatement>(1);
+    $$->stmt->agg = cte_agg;
     $$->stmt->do_explain = false;
     $$->stmt->cte_list = NULL;
     $$->stmt->outputs = $6.head;
@@ -602,8 +603,9 @@ subquery:
   T_SELECT outputlist T_FROM table_ref join_list where_opt
   groupby_opt having_opt orderby_opt limit_opt
   {
-    context->leave_subquery();
+    AggregationAPICompiler* subq_agg = context->leave_subquery();
     $$ = context->get_allocator()->alloc_exc<SelectStatement>(1);
+    $$->agg = subq_agg;
     $$->do_explain = false;
     $$->outputs = $3.head;
     $$->root_table = $5;

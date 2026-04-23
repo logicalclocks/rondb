@@ -377,8 +377,8 @@ RonSQLPreparer::parse()
   {
     ndbrequire(m_context.m_err_state == ErrState::NONE);
     /* We have already provided columns and expressions to the
-     * AggregationAPICompiler. E.g. in `SELECT Max(col1 + col2)`, m_agg already
-     * knows about `col1`, `col2` and `col1 + col2`. Here, we let m_agg know about
+     * AggregationAPICompiler. E.g. in `SELECT Max(col1 + col2)`, m_main_scope.agg already
+     * knows about `col1`, `col2` and `col1 + col2`. Here, we let m_main_scope.agg know about
      * the aggregate expressions themselves, e.g. `Max(col1 + col2)`, making sure
      * they are provided in the correct order.
      */
@@ -394,22 +394,22 @@ RonSQLPreparer::parse()
       case Outputs::Type::AGGREGATE:
       {
         has_aggregate_outputs = true;
-        ndbrequire(m_agg != NULL);
+        ndbrequire(m_main_scope.agg != NULL);
         TokenKind fun = outputs->aggregate.fun;
         AggregationAPICompiler::Expr* expr = outputs->aggregate.arg;
         switch (fun)
         {
         case T_COUNT:
-          outputs->aggregate.agg_index = m_agg->Count(expr);
+          outputs->aggregate.agg_index = m_main_scope.agg->Count(expr);
           break;
         case T_MAX:
-          outputs->aggregate.agg_index = m_agg->Max(expr);
+          outputs->aggregate.agg_index = m_main_scope.agg->Max(expr);
           break;
         case T_MIN:
-          outputs->aggregate.agg_index = m_agg->Min(expr);
+          outputs->aggregate.agg_index = m_main_scope.agg->Min(expr);
           break;
         case T_SUM:
-          outputs->aggregate.agg_index = m_agg->Sum(expr);
+          outputs->aggregate.agg_index = m_main_scope.agg->Sum(expr);
           break;
         default:
           abort();
@@ -418,12 +418,12 @@ RonSQLPreparer::parse()
       }
       case Outputs::Type::AVG:
         has_aggregate_outputs = true;
-        outputs->avg.agg_index_sum = m_agg->Sum(outputs->avg.arg);
-        outputs->avg.agg_index_count = m_agg->Count(outputs->avg.arg);
+        outputs->avg.agg_index_sum = m_main_scope.agg->Sum(outputs->avg.arg);
+        outputs->avg.agg_index_count = m_main_scope.agg->Count(outputs->avg.arg);
         break;
       case Outputs::Type::SUBQUERY_AGG:
         // Handled later in analyze_select_subqueries() and compile().
-        // Don't set has_aggregate_outputs (avoids m_agg != NULL assert).
+        // Don't set has_aggregate_outputs (avoids m_main_scope.agg != NULL assert).
         has_subquery_agg_outputs = true;
         break;
       default:
@@ -431,16 +431,16 @@ RonSQLPreparer::parse()
       }
       outputs = outputs->next;
     }
-    bool has_having_aggregates = (m_agg != NULL &&
+    bool has_having_aggregates = (m_main_scope.agg != NULL &&
                                   m_context.ast_root.having_expression != NULL);
-    if (m_agg == NULL)
+    if (m_main_scope.agg == NULL)
     {
       ndbrequire(!has_aggregate_outputs);
     }
     else
     {
       ndbrequire(has_aggregate_outputs || has_having_aggregates);
-      ndbrequire(m_agg->getStatus() == AggregationAPICompiler::Status::PROGRAMMING);
+      ndbrequire(m_main_scope.agg->getStatus() == AggregationAPICompiler::Status::PROGRAMMING);
     }
     if (!has_aggregate_outputs && !has_having_aggregates &&
         !has_subquery_agg_outputs)
@@ -724,13 +724,13 @@ RonSQLPreparer::load()
   /*
    * During parsing, strings that were claimed to be column names were inserted
    * into m_columns. The element indexes in m_columns, usually called col_idx,
-   * have already been used to construct Load instructions in m_agg, as well as
+   * have already been used to construct Load instructions in m_main_scope.agg, as well as
    * the parse tree in ast_root. Now that parsing is done and we know the table
    * name, we look up the column attrIds in the schema and check that the table
    * and columns exist. RonSQLPreparer keeps the col_idx around and relies on
    * m_main_scope.column_attrId_map to map col_idx to column attrId, e.g. when programming
-   * the aggregator. This also means we don't need to change anything in m_agg;
-   * instead, RonSQLPreparer::programAggregator will read the program from m_agg
+   * the aggregator. This also means we don't need to change anything in m_main_scope.agg;
+   * instead, RonSQLPreparer::programAggregator will read the program from m_main_scope.agg
    * and map col_idx to attrId before speaking to NdbAggregator.
    */
   // Populate m_dict, m_main_scope.table, m_main_scope.column_attrId_map and m_main_scope.column_map, on the
@@ -1393,10 +1393,10 @@ RonSQLPreparer::build_agg_linked_projections()
     return;
   }
 
-  if (m_agg == NULL)
+  if (m_main_scope.agg == NULL)
     return;
   Uint32 leaf_idx = m_main_scope.join_plan.agg_leaf_idx;
-  DynamicArray<AggregationAPICompiler::Instr>& program = m_agg->m_program;
+  DynamicArray<AggregationAPICompiler::Instr>& program = m_main_scope.agg->m_program;
   for (Uint32 i = 0; i < program.size(); i++)
   {
     if (program[i].type == AggregationAPICompiler::SVMInstrType::Load)
@@ -1445,9 +1445,9 @@ RonSQLPreparer::build_agg_linked_projections()
   // Add linked projections for CASE condition columns on parent tables.
   // Walk the aggregation program looking for CASE instructions whose
   // condition column is not on the leaf table.
-  if (m_agg != NULL) {
-    for (Uint32 c = 0; c < m_agg->m_cases.size(); c++) {
-      auto& ci = m_agg->m_cases[c];
+  if (m_main_scope.agg != NULL) {
+    for (Uint32 c = 0; c < m_main_scope.agg->m_cases.size(); c++) {
+      auto& ci = m_main_scope.agg->m_cases[c];
       if (ci.condition == NULL) continue;
       // Flatten AND/OR to find all atom conditions
       DynamicArray<ConditionalExpression*> atoms(m_amalloc);
@@ -2655,6 +2655,7 @@ RonSQLPreparer::build_cte_scopes()
                        err, scope->join_plan, m_conf.schema_cache, db,
                        visible_head);
     scope->table = scope->join_plan.ops[0].table;
+    scope->agg = cte->stmt->agg;
     m_cte_scopes.push(scope);
 
     if (prev != NULL) {
@@ -3298,11 +3299,11 @@ RonSQLPreparer::compile()
   }
 
   // Compile aggregation program if applicable
-  if (m_agg != NULL) {
-    if (m_agg->compile()) {
-      ndbrequire(m_agg->getStatus() == AggregationAPICompiler::Status::COMPILED);
+  if (m_main_scope.agg != NULL) {
+    if (m_main_scope.agg->compile()) {
+      ndbrequire(m_main_scope.agg->getStatus() == AggregationAPICompiler::Status::COMPILED);
     } else {
-      ndbrequire(m_agg->getStatus() == AggregationAPICompiler::Status::FAILED);
+      ndbrequire(m_main_scope.agg->getStatus() == AggregationAPICompiler::Status::FAILED);
       throw RonSQLPermanentError("Failed to compile aggregation program.");
     }
   }
@@ -3321,7 +3322,7 @@ RonSQLPreparer::compile()
       }
     }
     if (has_remaining) {
-      if (m_agg == NULL) {
+      if (m_main_scope.agg == NULL) {
         throw RonSQLPermanentError(
             "Cross-table WHERE conditions (e.g., a.x > b.y) are only "
             "supported in queries with aggregation (GROUP BY / aggregate "
@@ -3330,9 +3331,9 @@ RonSQLPreparer::compile()
       }
       // Pre-compute sentinel slot for ResultPrinter (set before construction).
       // The actual sentinel instructions are emitted later in execute_join().
-      if (m_agg != NULL && !m_has_select_subqueries) {
+      if (m_main_scope.agg != NULL && !m_has_select_subqueries) {
         Uint32 sentinel_slot = 0;
-        DynamicArray<AggregationAPICompiler::Instr>& prog = m_agg->m_program;
+        DynamicArray<AggregationAPICompiler::Instr>& prog = m_main_scope.agg->m_program;
         for (Uint32 pi = 0; pi < prog.size(); pi++) {
           auto t = prog[pi].type;
           if (t == AggregationAPICompiler::SVMInstrType::Sum ||
@@ -5586,8 +5587,8 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
     groupby = groupby->next;
   }
   // Program aggregations
-  assert(m_agg != NULL); // Ensured in RonSQLPreparer::load
-  DynamicArray<AggregationAPICompiler::Instr>& program = m_agg->m_program;
+  assert(m_main_scope.agg != NULL); // Ensured in RonSQLPreparer::load
+  DynamicArray<AggregationAPICompiler::Instr>& program = m_main_scope.agg->m_program;
   for (Uint32 i=0; i<program.size(); i++)
   {
     AggregationAPICompiler::Instr* instr = &program[i];
@@ -5609,7 +5610,7 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
     }
     case AggregationAPICompiler::SVMInstrType::LoadConstantInteger:
       programAggregator_do_or_fail
-        (aggregator->LoadInt64(m_agg->m_constants[src].int_64, dest));
+        (aggregator->LoadInt64(m_main_scope.agg->m_constants[src].int_64, dest));
       break;
     case AggregationAPICompiler::SVMInstrType::Mov:
       programAggregator_do_or_fail(aggregator->Mov(dest, src));
@@ -5649,8 +5650,8 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
       break;
     case AggregationAPICompiler::SVMInstrType::EmbeddedInterp:
     {
-      auto& ci = m_agg->m_cases[dest];
-      Uint32 then_raw = m_agg->raw_word_size(ci.then_start, ci.skip_pos);
+      auto& ci = m_main_scope.agg->m_cases[dest];
+      Uint32 then_raw = m_main_scope.agg->raw_word_size(ci.then_start, ci.skip_pos);
       Uint32 skip_raw = 1;
       Uint32 then_arm_total = then_raw + skip_raw;
       generate_embedded_condition(aggregator, ci.condition, then_arm_total);
@@ -5658,12 +5659,12 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
     }
     case AggregationAPICompiler::SVMInstrType::Skip:
     {
-      for (Uint32 c = 0; c < m_agg->m_cases.size(); c++)
+      for (Uint32 c = 0; c < m_main_scope.agg->m_cases.size(); c++)
       {
-        if (m_agg->m_cases[c].skip_pos == i)
+        if (m_main_scope.agg->m_cases[c].skip_pos == i)
         {
-          auto& ci = m_agg->m_cases[c];
-          Uint32 else_raw = m_agg->raw_word_size(ci.else_start, ci.else_end);
+          auto& ci = m_main_scope.agg->m_cases[c];
+          Uint32 else_raw = m_main_scope.agg->raw_word_size(ci.else_start, ci.else_end);
           programAggregator_do_or_fail(aggregator->Skip(else_raw));
           break;
         }
@@ -5888,7 +5889,7 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
       if (ctf.ce != NULL)
         has_branchreg_filter = true;
     }
-    Uint32 agg_word_count = m_agg->raw_word_size(0, m_agg->m_program.size());
+    Uint32 agg_word_count = m_main_scope.agg->raw_word_size(0, m_main_scope.agg->m_program.size());
     // Add 4 words for sentinel (LoadUint64=3 + Count=1) that follows agg ops
     if (has_branchreg_filter)
       agg_word_count += 4;
@@ -5996,8 +5997,8 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
   }
 
   // Program aggregations — same as single-table path
-  assert(m_agg != NULL);
-  DynamicArray<AggregationAPICompiler::Instr>& program = m_agg->m_program;
+  assert(m_main_scope.agg != NULL);
+  DynamicArray<AggregationAPICompiler::Instr>& program = m_main_scope.agg->m_program;
   for (Uint32 i = 0; i < program.size(); i++)
   {
     AggregationAPICompiler::Instr* instr = &program[i];
@@ -6031,7 +6032,7 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     }
     case AggregationAPICompiler::SVMInstrType::LoadConstantInteger:
       programAggregator_do_or_fail
-        (aggregator->LoadInt64(m_agg->m_constants[src].int_64, dest));
+        (aggregator->LoadInt64(m_main_scope.agg->m_constants[src].int_64, dest));
       break;
     case AggregationAPICompiler::SVMInstrType::Mov:
       programAggregator_do_or_fail(aggregator->Mov(dest, src));
@@ -6071,8 +6072,8 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
       break;
     case AggregationAPICompiler::SVMInstrType::EmbeddedInterp:
     {
-      auto& ci = m_agg->m_cases[dest];
-      Uint32 then_raw = m_agg->raw_word_size(ci.then_start, ci.skip_pos);
+      auto& ci = m_main_scope.agg->m_cases[dest];
+      Uint32 then_raw = m_main_scope.agg->raw_word_size(ci.then_start, ci.skip_pos);
       Uint32 skip_raw = 1;
       Uint32 then_arm_total = then_raw + skip_raw;
       generate_embedded_condition(aggregator, ci.condition, then_arm_total);
@@ -6080,12 +6081,12 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     }
     case AggregationAPICompiler::SVMInstrType::Skip:
     {
-      for (Uint32 c = 0; c < m_agg->m_cases.size(); c++)
+      for (Uint32 c = 0; c < m_main_scope.agg->m_cases.size(); c++)
       {
-        if (m_agg->m_cases[c].skip_pos == i)
+        if (m_main_scope.agg->m_cases[c].skip_pos == i)
         {
-          auto& ci = m_agg->m_cases[c];
-          Uint32 else_raw = m_agg->raw_word_size(ci.else_start, ci.else_end);
+          auto& ci = m_main_scope.agg->m_cases[c];
+          Uint32 else_raw = m_main_scope.agg->raw_word_size(ci.else_start, ci.else_end);
           programAggregator_do_or_fail(aggregator->Skip(else_raw));
           break;
         }
@@ -6427,23 +6428,23 @@ RonSQLPreparer::print()
         switch (outputs->aggregate.fun)
         {
         case T_COUNT:
-          pr = m_agg->Count(outputs->aggregate.arg);
+          pr = m_main_scope.agg->Count(outputs->aggregate.arg);
           break;
         case T_MAX:
-          pr = m_agg->Max(outputs->aggregate.arg);
+          pr = m_main_scope.agg->Max(outputs->aggregate.arg);
           break;
         case T_MIN:
-          pr = m_agg->Min(outputs->aggregate.arg);
+          pr = m_main_scope.agg->Min(outputs->aggregate.arg);
           break;
         case T_SUM:
-          pr = m_agg->Sum(outputs->aggregate.arg);
+          pr = m_main_scope.agg->Sum(outputs->aggregate.arg);
           break;
         default:
           // Unknown aggregate function
           abort();
         }
         out << "A" << pr << ":";
-        m_agg->print_aggregate(pr);
+        m_main_scope.agg->print_aggregate(pr);
         out << '\n';
       }
       break;
@@ -6451,13 +6452,13 @@ RonSQLPreparer::print()
       {
         Uint32 pr;
         out << "CLIENT-SIDE CALCULATION: ";
-        pr = m_agg->Sum(outputs->avg.arg);
+        pr = m_main_scope.agg->Sum(outputs->avg.arg);
         out << "A" << pr << ":";
-        m_agg->print_aggregate(pr);
+        m_main_scope.agg->print_aggregate(pr);
         out << " / ";
-        pr = m_agg->Count(outputs->avg.arg);
+        pr = m_main_scope.agg->Count(outputs->avg.arg);
         out << "A" << pr << ":";
-        m_agg->print_aggregate(pr);
+        m_main_scope.agg->print_aggregate(pr);
         out << '\n';
       }
       break;
@@ -6515,9 +6516,9 @@ RonSQLPreparer::print()
   out << '\n';
 
   // Print aggregation program
-  if (m_agg != NULL)
+  if (m_main_scope.agg != NULL)
   {
-    m_agg->print_program();
+    m_main_scope.agg->print_program();
   }
   else
   {
@@ -6919,9 +6920,9 @@ RonSQLPreparer::Context::get_agg()
     }
     return m_inner_agg;
   }
-  if (m_parser.m_agg)
+  if (m_parser.m_main_scope.agg)
   {
-    return m_parser.m_agg;
+    return m_parser.m_main_scope.agg;
   }
   RonSQLPreparer* _this = &m_parser;
   std::function<const char*(uint)> column_idx_to_name =
@@ -6936,12 +6937,12 @@ RonSQLPreparer::Context::get_agg()
    * compilation, a new object will be crafted that holds the information
    * necessary for execution and post-processing.
    */
-  m_parser.m_agg = new (get_allocator()->alloc_exc<AggregationAPICompiler>(1))
+  m_parser.m_main_scope.agg = new (get_allocator()->alloc_exc<AggregationAPICompiler>(1))
     AggregationAPICompiler(column_idx_to_name,
                            *m_parser.m_conf.out_stream,
                            *m_parser.m_conf.err_stream,
                            m_parser.m_amalloc);
-  return m_parser.m_agg;
+  return m_parser.m_main_scope.agg;
 }
 
 void
@@ -6951,12 +6952,14 @@ RonSQLPreparer::Context::enter_subquery()
   m_inner_agg = NULL;
 }
 
-void
+AggregationAPICompiler*
 RonSQLPreparer::Context::leave_subquery()
 {
   ndbrequire(m_subquery_depth > 0);
   m_subquery_depth--;
+  AggregationAPICompiler* out = m_inner_agg;
   m_inner_agg = NULL;
+  return out;
 }
 
 ArenaMalloc*

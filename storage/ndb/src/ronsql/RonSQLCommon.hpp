@@ -230,6 +230,7 @@ struct JoinClause
 };
 
 struct CteDefinition;
+class AggregationAPICompiler;
 
 struct SelectStatement
 {
@@ -249,6 +250,12 @@ struct SelectStatement
                                 // rows pass the filter and must be suppressed.
   char* sql_begin = NULL;  // Start of inner query SQL (points into original buffer)
   char* sql_end = NULL;    // End of inner query SQL
+
+  // Aggregator program compiled while parsing this SELECT body. Populated
+  // by the cte_def / subquery grammar actions via the value returned from
+  // Context::leave_subquery(). The main query's aggregator lives on
+  // QueryScope::agg and is not stored here.
+  AggregationAPICompiler* agg = NULL;
 };
 
 struct CteDefinition
