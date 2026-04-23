@@ -1482,25 +1482,22 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
   }
 
   Uint32 op = opbits & Operationrec::OP_MASK;
-  /*
-   * TTL related
-   * Convert ZINSERT to ZWRITE for TTL table
-   * NOTICE:
-   * we only need change the operation to ZWRITE in DbAcc::Operationrec
-   * to make the following steps pass. The operation in DBLQH is
-   * unchanged
-   *
-   */
-  if (op == ZINSERT && found && is_ttl) {
-    ndbrequire((operationRecPtr.p->m_op_bits & (Uint32)Operationrec::OP_MASK) ==
-               ZINSERT);
-    op = ZWRITE;
-    Uint32 tmp_opbits = operationRecPtr.p->m_op_bits;
-	  tmp_opbits &= ~(Uint32)Operationrec::OP_MASK;
-	  tmp_opbits |= op;
-	  operationRecPtr.p->m_op_bits = tmp_opbits;
-  }
   if (found == ZTRUE) {
+    /*
+     * TTL related
+     * Convert ZINSERT-on-existing to ZWRITE for TTL tables. The switch
+     * arm for ZWRITE then converts to ZUPDATE in the lock-free path. The
+     * operation in DBLQH is unchanged.
+     */
+    if (op == ZINSERT && is_ttl) {
+      ndbrequire((operationRecPtr.p->m_op_bits &
+                  (Uint32)Operationrec::OP_MASK) == ZINSERT);
+      op = ZWRITE;
+      Uint32 tmp_opbits = operationRecPtr.p->m_op_bits;
+      tmp_opbits &= ~(Uint32)Operationrec::OP_MASK;
+      tmp_opbits |= op;
+      operationRecPtr.p->m_op_bits = tmp_opbits;
+    }
     switch (op) {
     case ZREAD:
     case ZUPDATE:
