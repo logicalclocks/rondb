@@ -308,6 +308,10 @@ static MYSQL_THDVAR_BOOL(
     "Show ring buffer meta rows (ring_idx=0) in read results. Default OFF.",
     nullptr, nullptr, 0);
 
+namespace ndb_ring_buffer {
+bool thdvar_show_meta(THD *thd) { return THDVAR(thd, ring_buffer_show_meta); }
+}  // namespace ndb_ring_buffer
+
 static MYSQL_THDVAR_BOOL(table_no_logging,                 /* name */
                          PLUGIN_VAR_NOCMDARG, "", nullptr, /* check func. */
                          nullptr,                          /* update func. */
@@ -3589,7 +3593,7 @@ const NdbOperation *ha_ndbcluster::pk_unique_index_read_key(
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
     poptions = &options;
   }
-  if (THDVAR(current_thd, ring_buffer_show_meta)) {
+  if (ndb_ring_buffer::thdvar_show_meta(current_thd)) {
     options.optionsPresent |= NdbOperation::OperationOptions::OO_RING_BUFFER_SHOW_META;
     poptions = &options;
   }
@@ -3865,10 +3869,8 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
     if (m_ttl_ignore) {
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
     }
-    if (THDVAR(current_thd, ring_buffer_show_meta) ||
-        m_ring_buffer_delete_allowed ||
-        (thd_sql_command(current_thd) == SQLCOM_ALTER_TABLE &&
-         m_table->isRingBuffer())) {
+    if (ndb_ring_buffer::show_meta_active(current_thd, m_table->isRingBuffer(),
+                                          m_ring_buffer_delete_allowed)) {
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
     }
 
@@ -3994,10 +3996,8 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
   if (m_ttl_ignore) {
     options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
   }
-  if (THDVAR(current_thd, ring_buffer_show_meta) ||
-      m_ring_buffer_delete_allowed ||
-      (thd_sql_command(current_thd) == SQLCOM_ALTER_TABLE &&
-       m_table->isRingBuffer())) {
+  if (ndb_ring_buffer::show_meta_active(current_thd, m_table->isRingBuffer(),
+                                        m_ring_buffer_delete_allowed)) {
     options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
   }
 
@@ -10025,16 +10025,14 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
   uint32_t ring_meta_col_no = RNIL;
 
   if (mod_ring_buffer->m_found) {
-    std::string rb_comment(mod_ring_buffer->m_val_str.str,
-                           mod_ring_buffer->m_val_str.len);
-
-    /* Check for "off" */
-    if (!my_strcasecmp(system_charset_info,
-                       mod_ring_buffer->m_val_str.str, "off")) {
-      /* Block disable on ring buffer table during ALTER */
+    ndb_ring_buffer::Spec rb_spec;
+    if (const char *err = ndb_ring_buffer::parse_spec(mod_ring_buffer,
+                                                      &rb_spec)) {
+      return create.failed_illegal_create_option(err);
+    }
+    if (rb_spec.is_off) {
       if (thd_sql_command(thd) == SQLCOM_ALTER_TABLE) {
-        const char *orig_db =
-            thd->lex->query_block->get_table_list()->db;
+        const char *orig_db = thd->lex->query_block->get_table_list()->db;
         const char *orig_name =
             thd->lex->query_block->get_table_list()->table_name;
         Ndb_table_guard old_tab_g(ndb, orig_db, orig_name);
@@ -10046,161 +10044,26 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
       }
       ndb_log_info("[API] MAX_ROWS_PER_PK = OFF");
     } else {
-      /*
-       * Parse: SIZE or SIZE@idx_col@meta_col
-       * When @col@col is omitted, default to ring_idx / ring_meta.
-       */
-      std::string size_str;
-      std::size_t pos1 = rb_comment.find('@');
-      if (pos1 == std::string::npos) {
-        /* No '@' — size only, use default column names */
-        size_str = rb_comment;
-        ring_idx_col_name = "ring_idx";
-        ring_meta_col_name = "ring_meta";
-      } else {
-        if (pos1 == 0) {
-          return create.failed_illegal_create_option(
-              "MAX_ROWS_PER_PK format: 'SIZE' or 'SIZE@idx_col@meta_col'");
-        }
-        std::size_t pos2 = rb_comment.find('@', pos1 + 1);
-        if (pos2 == std::string::npos || pos2 == pos1 + 1) {
-          return create.failed_illegal_create_option(
-              "MAX_ROWS_PER_PK format: 'SIZE' or 'SIZE@idx_col@meta_col'");
-        }
-        if (rb_comment.find('@', pos2 + 1) != std::string::npos) {
-          return create.failed_illegal_create_option(
-              "MAX_ROWS_PER_PK format: 'SIZE' or 'SIZE@idx_col@meta_col'");
-        }
-        size_str = rb_comment.substr(0, pos1);
-        ring_idx_col_name = rb_comment.substr(pos1 + 1, pos2 - pos1 - 1);
-        ring_meta_col_name = rb_comment.substr(pos2 + 1);
-        if (ring_meta_col_name.empty()) {
-          return create.failed_illegal_create_option(
-              "MAX_ROWS_PER_PK format: 'SIZE' or 'SIZE@idx_col@meta_col'");
-        }
+      if (const char *err =
+              ndb_ring_buffer::validate_columns_mysql(table, rb_spec)) {
+        return create.failed_illegal_create_option(err);
       }
-
-      /* Validate size */
-      if (size_str.empty()) {
-        return create.failed_illegal_create_option(
-            "MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647");
-      }
-      for (std::size_t i = 0; i < size_str.length(); i++) {
-        if (size_str.at(i) < '0' || size_str.at(i) > '9') {
-          return create.failed_illegal_create_option(
-              "Invalid MAX_ROWS_PER_PK format, size must be a positive integer");
-        }
-      }
-      if (size_str.length() > 10) {
-        return create.failed_illegal_create_option(
-            "MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647");
-      }
-      int64_t size_raw = std::stoll(size_str);
-      if (size_raw < 1 || size_raw > 0x7FFFFFFF) {
-        return create.failed_illegal_create_option(
-            "MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647");
-      }
-      ring_buffer_size = static_cast<uint32_t>(size_raw);
-
-      /* Validate ring_idx column */
-      bool found_idx = false;
-      for (uint i = 0; i < table->s->fields; i++) {
-        Field *const field = table->field[i];
-        if (!my_strcasecmp(system_charset_info,
-                           field->field_name,
-                           ring_idx_col_name.c_str())) {
-          if (field->real_type() != MYSQL_TYPE_LONG) {
-            return create.failed_illegal_create_option(
-                "Ring index column must be INT type");
-          }
-          if (field->is_flag_set(NO_DEFAULT_VALUE_FLAG)) {
-            return create.failed_illegal_create_option(
-                "Ring index column must have DEFAULT (e.g. 0)");
-          }
-          found_idx = true;
-          break;
-        }
-      }
-      if (!found_idx) {
-        return create.failed_illegal_create_option(
-            "Ring index column not found in table");
-      }
-
-      /* Validate ring_idx is the last PK column */
-      KEY *pk = &table->s->key_info[0];
-      uint last_pk_idx = pk->user_defined_key_parts - 1;
-      if (my_strcasecmp(system_charset_info,
-                        pk->key_part[last_pk_idx].field->field_name,
-                        ring_idx_col_name.c_str())) {
-        return create.failed_illegal_create_option(
-            "Ring index column must be the last column of the PRIMARY KEY");
-      }
-
-      /* Validate ring_meta column */
-      bool found_meta = false;
-      for (uint i = 0; i < table->s->fields; i++) {
-        Field *const field = table->field[i];
-        if (!my_strcasecmp(system_charset_info,
-                           field->field_name,
-                           ring_meta_col_name.c_str())) {
-          if (field->real_type() != MYSQL_TYPE_VARCHAR ||
-              field->charset() != &my_charset_bin) {
-            return create.failed_illegal_create_option(
-                "Ring meta column must be VARBINARY type");
-          }
-          if (field->field_length < ndb_ring_buffer::META_SIZE) {
-            return create.failed_illegal_create_option(
-                "Ring meta column must be VARBINARY with length >= 32");
-          }
-          if (!field->is_nullable()) {
-            return create.failed_illegal_create_option(
-                "Ring meta column must be nullable");
-          }
-          found_meta = true;
-          break;
-        }
-      }
-      if (!found_meta) {
-        return create.failed_illegal_create_option(
-            "Ring meta column not found in table");
-      }
-
-      /* Reject NOT NULL BLOB/TEXT user columns: meta rows cannot set a
-         zero-default for BLOB types, causing NDB error 839. */
-      for (uint i = 0; i < table->s->fields; i++) {
-        Field *const field = table->field[i];
-        if (!my_strcasecmp(system_charset_info, field->field_name,
-                           ring_idx_col_name.c_str()) ||
-            !my_strcasecmp(system_charset_info, field->field_name,
-                           ring_meta_col_name.c_str())) {
-          continue;
-        }
-        if (!field->is_nullable()) {
-          enum_field_types ft = field->real_type();
-          if (ft == MYSQL_TYPE_BLOB || ft == MYSQL_TYPE_TINY_BLOB ||
-              ft == MYSQL_TYPE_MEDIUM_BLOB || ft == MYSQL_TYPE_LONG_BLOB) {
-            return create.failed_illegal_create_option(
-                "Ring buffer tables cannot have NOT NULL BLOB/TEXT columns");
-          }
-        }
-      }
-
-      found_ring_buffer = true;
-
-      /* Block shrink during ALTER TABLE */
       if (thd_sql_command(thd) == SQLCOM_ALTER_TABLE) {
-        const char *orig_db =
-            thd->lex->query_block->get_table_list()->db;
+        const char *orig_db = thd->lex->query_block->get_table_list()->db;
         const char *orig_name =
             thd->lex->query_block->get_table_list()->table_name;
         Ndb_table_guard old_tab_g(ndb, orig_db, orig_name);
         const NDBTAB *old_tab = old_tab_g.get_table();
         if (old_tab && old_tab->isRingBuffer() &&
-            ring_buffer_size < old_tab->getRingBufferSize()) {
+            rb_spec.size < old_tab->getRingBufferSize()) {
           return create.failed_illegal_create_option(
               "Cannot shrink ring buffer size");
         }
       }
+      found_ring_buffer = true;
+      ring_buffer_size = rb_spec.size;
+      ring_idx_col_name = rb_spec.idx_col_name;
+      ring_meta_col_name = rb_spec.meta_col_name;
     }
   }
 
@@ -10901,39 +10764,11 @@ int ha_ndbcluster::create_index(THD *thd, const char *name, const KEY *key_info,
     DBUG_PRINT("info", ("unique_name: '%s'", unique_name));
   }
 
-  /* Block creating index on ring buffer internal columns */
-  if (ndbtab->isRingBuffer() &&
-      idx_type != PRIMARY_KEY_INDEX &&
-      idx_type != PRIMARY_KEY_ORDERED_INDEX) {
-    const NdbDictionary::Column *ring_idx_col =
-        ndbtab->getColumn(ndbtab->getRingIdxColumnNo());
-    const NdbDictionary::Column *ring_meta_col =
-        ndbtab->getColumn(ndbtab->getRingMetaColumnNo());
-    const KEY_PART_INFO *key_part = key_info->key_part;
-    const KEY_PART_INFO *end = key_part + key_info->user_defined_key_parts;
-    for (; key_part != end; key_part++) {
-      const char *col_name = key_part->field->field_name;
-      if ((ring_idx_col && strcmp(col_name, ring_idx_col->getName()) == 0) ||
-          (ring_meta_col && strcmp(col_name, ring_meta_col->getName()) == 0)) {
-        if (thd_sql_command(thd) == SQLCOM_ALTER_TABLE ||
-            thd_sql_command(thd) == SQLCOM_CREATE_INDEX) {
-          /* Inplace ALTER: set error directly, HA_ERR_GENERIC tells
-             print_error() to skip (error already reported). */
-          my_printf_error(ER_ILLEGAL_HA_CREATE_OPTION,
-                          "Cannot create index on ring buffer internal "
-                          "column '%s'",
-                          MYF(0), col_name);
-          return HA_ERR_GENERIC;
-        }
-        /* CREATE TABLE: push warning for create helper, which wraps it
-           with ER_CANT_CREATE_TABLE. */
-        push_warning_printf(
-            thd, Sql_condition::SL_WARNING, ER_ILLEGAL_HA_CREATE_OPTION,
-            "Cannot create index on ring buffer internal column '%s'",
-            col_name);
-        return HA_ERR_UNSUPPORTED;
-      }
-    }
+  if (int rb_err = ndb_ring_buffer::check_index_columns(
+          thd, ndbtab, key_info,
+          idx_type == PRIMARY_KEY_INDEX ||
+              idx_type == PRIMARY_KEY_ORDERED_INDEX)) {
+    return rb_err;
   }
 
   switch (idx_type) {
@@ -14523,10 +14358,9 @@ int ha_ndbcluster::multi_range_start_retrievals(uint starting_range) {
         if (m_ttl_ignore) {
           options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
         }
-        if (THDVAR(current_thd, ring_buffer_show_meta) ||
-            m_ring_buffer_delete_allowed ||
-            (thd_sql_command(current_thd) == SQLCOM_ALTER_TABLE &&
-             m_table->isRingBuffer())) {
+        if (ndb_ring_buffer::show_meta_active(
+                current_thd, m_table->isRingBuffer(),
+                m_ring_buffer_delete_allowed)) {
           options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
         }
 
@@ -16968,95 +16802,29 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
 
   const NDB_Modifier *mod_ring_buffer = table_modifiers.get("MAX_ROWS_PER_PK");
   if (mod_ring_buffer->m_found) {
-    std::string rb_comment(mod_ring_buffer->m_val_str.str,
-                           mod_ring_buffer->m_val_str.len);
-
-    if (!my_strcasecmp(system_charset_info,
-                       mod_ring_buffer->m_val_str.str, "off")) {
+    ndb_ring_buffer::Spec rb_spec;
+    if (const char *err = ndb_ring_buffer::parse_spec(mod_ring_buffer,
+                                                      &rb_spec)) {
+      *reason = err;
+      return true;
+    }
+    if (rb_spec.is_off) {
       if (old_tab->isRingBuffer()) {
         *reason = "Cannot disable ring buffer via ALTER";
         return true;
       }
       /* off on non-ring-buffer table — no-op, ignore */
     } else {
-      /*
-       * Parse: SIZE or SIZE@idx_col@meta_col
-       * When @col@col is omitted, default to ring_idx / ring_meta.
-       */
-      std::string size_str;
-      std::string ring_idx_col_name;
-      std::string ring_meta_col_name;
-
-      std::size_t pos1 = rb_comment.find('@');
-      if (pos1 == std::string::npos) {
-        /* No '@' — size only, use default column names */
-        size_str = rb_comment;
-        ring_idx_col_name = "ring_idx";
-        ring_meta_col_name = "ring_meta";
-      } else {
-        if (pos1 == 0) {
-          *reason = "MAX_ROWS_PER_PK format: SIZE or SIZE@idx_col@meta_col";
-          return true;
-        }
-        std::size_t pos2 = rb_comment.find('@', pos1 + 1);
-        if (pos2 == std::string::npos || pos2 == pos1 + 1) {
-          *reason = "MAX_ROWS_PER_PK format: SIZE or SIZE@idx_col@meta_col";
-          return true;
-        }
-        if (rb_comment.find('@', pos2 + 1) != std::string::npos) {
-          *reason = "MAX_ROWS_PER_PK format: SIZE or SIZE@idx_col@meta_col";
-          return true;
-        }
-        size_str = rb_comment.substr(0, pos1);
-        ring_idx_col_name = rb_comment.substr(pos1 + 1, pos2 - pos1 - 1);
-        ring_meta_col_name = rb_comment.substr(pos2 + 1);
-        if (ring_meta_col_name.empty()) {
-          *reason = "MAX_ROWS_PER_PK format: SIZE or SIZE@idx_col@meta_col";
-          return true;
-        }
-      }
-
-      if (size_str.empty()) {
-        *reason = "MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647";
-        return true;
-      }
-      for (std::size_t i = 0; i < size_str.length(); i++) {
-        if (size_str.at(i) < '0' || size_str.at(i) > '9') {
-          *reason = "MAX_ROWS_PER_PK size must be a positive integer";
-          return true;
-        }
-      }
-      if (size_str.length() > 10) {
-        *reason = "MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647";
-        return true;
-      }
-      int64_t size_raw = std::stoll(size_str);
-      if (size_raw < 1 || size_raw > 0x7FFFFFFF) {
-        *reason = "MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647";
-        return true;
-      }
-      uint32_t new_ring_buffer_size = static_cast<uint32_t>(size_raw);
-
-      /* Block shrink */
       if (old_tab->isRingBuffer() &&
-          new_ring_buffer_size < old_tab->getRingBufferSize()) {
+          rb_spec.size < old_tab->getRingBufferSize()) {
         *reason = "Cannot shrink ring buffer size";
         return true;
       }
-
-      /* Look up column numbers */
-      NdbDictionary::Column *idx_col =
-          new_tab->getColumn(ring_idx_col_name.c_str());
-      NdbDictionary::Column *meta_col =
-          new_tab->getColumn(ring_meta_col_name.c_str());
-      if (idx_col == nullptr || meta_col == nullptr) {
-        *reason = "Ring buffer column not found in table";
+      if (const char *err =
+              ndb_ring_buffer::apply_columns_ndb(new_tab, rb_spec)) {
+        *reason = err;
         return true;
       }
-
-      new_tab->setRingBufferSize(new_ring_buffer_size);
-      new_tab->setRingIdxColumnNo(idx_col->getColumnNo());
-      new_tab->setRingMetaColumnNo(meta_col->getColumnNo());
     }
   }
 

@@ -32,16 +32,20 @@
 #include "storage/ndb/plugin/ha_ndbcluster_ring_buffer.h"
 #include "storage/ndb/plugin/ha_ndbcluster.h"
 
+#include <cstdint>
 #include <cstring>
+#include <string>
 
 #include "my_dbug.h"
 #include "mysql/strings/m_ctype.h"
 #include "sql/item.h"
 #include "sql/item_cmpfunc.h"
+#include "sql/key.h"
 #include "sql/sql_class.h"
 #include "sql/sql_lex.h"
 #include "sql/table.h"
 #include "storage/ndb/include/ndbapi/NdbApi.hpp"
+#include "storage/ndb/plugin/ndb_modifiers.h"
 #include "storage/ndb/plugin/ndb_table_map.h"
 #include "storage/ndb/plugin/ndb_thd_ndb.h"
 
@@ -181,6 +185,174 @@ bool delete_where_allowed(const TABLE *table, unsigned ring_idx_field_index,
   const KEY *pk_info = table->key_info + table->s->primary_key;
   return check_ring_buffer_delete_condition(table, ring_idx_field_index,
                                             pk_info, cond);
+}
+
+bool show_meta_active(THD *thd, bool is_ring_buffer, bool delete_allowed) {
+  if (thdvar_show_meta(thd)) return true;
+  if (delete_allowed) return true;
+  if (is_ring_buffer && thd_sql_command(thd) == SQLCOM_ALTER_TABLE) return true;
+  return false;
+}
+
+const char *parse_spec(const NDB_Modifier *mod, Spec *out) {
+  std::string rb_comment(mod->m_val_str.str, mod->m_val_str.len);
+
+  /* "off" keyword — caller owns the policy of what "off" means. */
+  if (!my_strcasecmp(system_charset_info, mod->m_val_str.str, "off")) {
+    out->is_off = true;
+    return nullptr;
+  }
+
+  /*
+    Grammar: SIZE  |  SIZE@idx_col@meta_col
+    When the @col@col suffix is omitted, default to ring_idx / ring_meta.
+  */
+  std::string size_str;
+  std::size_t pos1 = rb_comment.find('@');
+  if (pos1 == std::string::npos) {
+    size_str = rb_comment;
+    out->idx_col_name = "ring_idx";
+    out->meta_col_name = "ring_meta";
+  } else {
+    static const char *kFormatErr =
+        "MAX_ROWS_PER_PK format: 'SIZE' or 'SIZE@idx_col@meta_col'";
+    if (pos1 == 0) return kFormatErr;
+    std::size_t pos2 = rb_comment.find('@', pos1 + 1);
+    if (pos2 == std::string::npos || pos2 == pos1 + 1) return kFormatErr;
+    if (rb_comment.find('@', pos2 + 1) != std::string::npos) return kFormatErr;
+    size_str = rb_comment.substr(0, pos1);
+    out->idx_col_name = rb_comment.substr(pos1 + 1, pos2 - pos1 - 1);
+    out->meta_col_name = rb_comment.substr(pos2 + 1);
+    if (out->meta_col_name.empty()) return kFormatErr;
+  }
+
+  static const char *kSizeRangeErr =
+      "MAX_ROWS_PER_PK size must be >= 1 and <= 2147483647";
+  if (size_str.empty()) return kSizeRangeErr;
+  for (std::size_t i = 0; i < size_str.length(); i++) {
+    if (size_str.at(i) < '0' || size_str.at(i) > '9') {
+      return "Invalid MAX_ROWS_PER_PK format, size must be a positive integer";
+    }
+  }
+  if (size_str.length() > 10) return kSizeRangeErr;
+  std::int64_t size_raw = std::stoll(size_str);
+  if (size_raw < 1 || size_raw > 0x7FFFFFFF) return kSizeRangeErr;
+  out->size = static_cast<std::uint32_t>(size_raw);
+  return nullptr;
+}
+
+const char *validate_columns_mysql(const TABLE *table, const Spec &spec) {
+  /* ring_idx column: INT with DEFAULT, last column of PK. */
+  bool found_idx = false;
+  for (uint i = 0; i < table->s->fields; i++) {
+    Field *const field = table->field[i];
+    if (!my_strcasecmp(system_charset_info, field->field_name,
+                       spec.idx_col_name.c_str())) {
+      if (field->real_type() != MYSQL_TYPE_LONG)
+        return "Ring index column must be INT type";
+      if (field->is_flag_set(NO_DEFAULT_VALUE_FLAG))
+        return "Ring index column must have DEFAULT (e.g. 0)";
+      found_idx = true;
+      break;
+    }
+  }
+  if (!found_idx) return "Ring index column not found in table";
+
+  KEY *pk = &table->s->key_info[0];
+  uint last_pk_idx = pk->user_defined_key_parts - 1;
+  if (my_strcasecmp(system_charset_info,
+                    pk->key_part[last_pk_idx].field->field_name,
+                    spec.idx_col_name.c_str())) {
+    return "Ring index column must be the last column of the PRIMARY KEY";
+  }
+
+  /* ring_meta column: VARBINARY with length >= META_SIZE, nullable. */
+  bool found_meta = false;
+  for (uint i = 0; i < table->s->fields; i++) {
+    Field *const field = table->field[i];
+    if (!my_strcasecmp(system_charset_info, field->field_name,
+                       spec.meta_col_name.c_str())) {
+      if (field->real_type() != MYSQL_TYPE_VARCHAR ||
+          field->charset() != &my_charset_bin)
+        return "Ring meta column must be VARBINARY type";
+      if (field->field_length < META_SIZE)
+        return "Ring meta column must be VARBINARY with length >= 32";
+      if (!field->is_nullable()) return "Ring meta column must be nullable";
+      found_meta = true;
+      break;
+    }
+  }
+  if (!found_meta) return "Ring meta column not found in table";
+
+  /* No NOT NULL BLOB/TEXT user columns (meta rows cannot set zero-defaults
+     for BLOB types → NDB error 839 at runtime). */
+  for (uint i = 0; i < table->s->fields; i++) {
+    Field *const field = table->field[i];
+    if (!my_strcasecmp(system_charset_info, field->field_name,
+                       spec.idx_col_name.c_str()) ||
+        !my_strcasecmp(system_charset_info, field->field_name,
+                       spec.meta_col_name.c_str())) {
+      continue;
+    }
+    if (!field->is_nullable()) {
+      enum_field_types ft = field->real_type();
+      if (ft == MYSQL_TYPE_BLOB || ft == MYSQL_TYPE_TINY_BLOB ||
+          ft == MYSQL_TYPE_MEDIUM_BLOB || ft == MYSQL_TYPE_LONG_BLOB) {
+        return "Ring buffer tables cannot have NOT NULL BLOB/TEXT columns";
+      }
+    }
+  }
+  return nullptr;
+}
+
+const char *apply_columns_ndb(NdbDictionary::Table *new_tab,
+                              const Spec &spec) {
+  NdbDictionary::Column *idx_col = new_tab->getColumn(spec.idx_col_name.c_str());
+  NdbDictionary::Column *meta_col =
+      new_tab->getColumn(spec.meta_col_name.c_str());
+  if (idx_col == nullptr || meta_col == nullptr)
+    return "Ring buffer column not found in table";
+  new_tab->setRingBufferSize(spec.size);
+  new_tab->setRingIdxColumnNo(idx_col->getColumnNo());
+  new_tab->setRingMetaColumnNo(meta_col->getColumnNo());
+  return nullptr;
+}
+
+int check_index_columns(THD *thd, const NdbDictionary::Table *ndbtab,
+                        const KEY *key_info, bool is_primary_key_index) {
+  if (!ndbtab->isRingBuffer() || is_primary_key_index) return 0;
+
+  const NdbDictionary::Column *ring_idx_col =
+      ndbtab->getColumn(ndbtab->getRingIdxColumnNo());
+  const NdbDictionary::Column *ring_meta_col =
+      ndbtab->getColumn(ndbtab->getRingMetaColumnNo());
+  const KEY_PART_INFO *key_part = key_info->key_part;
+  const KEY_PART_INFO *end = key_part + key_info->user_defined_key_parts;
+  for (; key_part != end; key_part++) {
+    const char *col_name = key_part->field->field_name;
+    if ((ring_idx_col && strcmp(col_name, ring_idx_col->getName()) == 0) ||
+        (ring_meta_col && strcmp(col_name, ring_meta_col->getName()) == 0)) {
+      if (thd_sql_command(thd) == SQLCOM_ALTER_TABLE ||
+          thd_sql_command(thd) == SQLCOM_CREATE_INDEX) {
+        /* Inplace ALTER: set error directly; HA_ERR_GENERIC tells
+           print_error() to skip (error already reported). */
+        my_printf_error(ER_ILLEGAL_HA_CREATE_OPTION,
+                        "Cannot create index on ring buffer internal "
+                        "column '%s'",
+                        MYF(0), col_name);
+        return HA_ERR_GENERIC;
+      }
+      /* CREATE TABLE: push warning; create_helper wraps it with
+         ER_CANT_CREATE_TABLE. */
+      push_warning_printf(thd, Sql_condition::SL_WARNING,
+                          ER_ILLEGAL_HA_CREATE_OPTION,
+                          "Cannot create index on ring buffer internal "
+                          "column '%s'",
+                          col_name);
+      return HA_ERR_UNSUPPORTED;
+    }
+  }
+  return 0;
 }
 
 }  // namespace ndb_ring_buffer
