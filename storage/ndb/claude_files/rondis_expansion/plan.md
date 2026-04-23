@@ -149,39 +149,153 @@ notes.
 **Test:** (no standalone test — verified by Phase 1.0.2-1.0.4 tests
 and by Phase 1.5-1.9's EXPIRE-on-hash assertions).
 
-#### Phase 1.0.2 — HSET bumps `field_count` on new-field writes
+#### Phase 1.0.2 — HSET atomically bumps `field_count` on new-field writes
 
-**Scope:** the HSET batch already knows which fields were new vs
-overwrites via the RONDB-1052 C10 plumbing (`m_num_new_fields` is
-aggregated from `OUTPUT_INDEX_3` in `simple_write_callback` @
-`src/db_operations.cc:588-590` and `write_callback` @ `:526-528`).
-After the HSET batch completes successfully with
-`m_num_new_fields > 0`, issue **one** interpreted-code UPDATE on
-`hset_keys` that adds `m_num_new_fields` to `field_count`.
+**Goal:** every HSET that inserts a new field into `string_keys`
+also bumps `hset_keys.field_count` **in the same NDB transaction**,
+so a worker crash cannot leave the counter too low. If the write
+ends up overwriting an existing field (UPDATE branch), no
+`hset_keys` op is issued — the counter already reflects reality.
 
-**Files:**
-- `src/commands.cc` `rondb_mset` / `rondb_hset_command` — after the
-  existing `set_simple_rows` / `set_complex_rows` drain and before
-  emitting the reply, call a new `bump_hset_field_count` helper.
-- `src/db_operations.cc` — new `bump_hset_field_count(ndb, redis_key,
-  redis_key_id, delta, database_id, response)`: opens a transaction
-  on `hset_keys`, issues an interpreted-code `updateTuple` that
-  reads `field_count`, adds `delta`, writes back. Reuses the
-  `add_reg` / `read_attr` / `write_attr` primitives already used by
-  `initNdbCodeIncrDecr` @ `src/interpreted_code.cc:44-115`.
+**Why this needs a transaction-flow refactor**
 
-**Atomicity note:** this is NOT atomic with the string_keys field
-writes — on a worker crash between those commits and the
-`hset_keys` UPDATE, `field_count` ends up too low. We accept this
-for v1; the same non-atomicity already exists today for the
-`rondb_get_redis_key_id`→`write_hset_key_table` path. Symptoms are
-recoverable via a subsequent HSET of the same hash. Documented as a
-known limitation.
+The existing simple-path HSET writes each field in its own
+single-op transaction, committed in one round-trip via
+`commit_simple_write_transaction` (`executeAsynchPrepare(Commit,
+&simple_write_callback)`). That leaves no window to add a second
+op on `hset_keys` to the same transaction.
 
-**Test:** `t/rondis_hash_lifecycle.test` phase 1 — HSET on a new
-hash sets `field_count` to N (verified via SQL `SELECT field_count
-FROM redis_0.hset_keys WHERE redis_key = ...`); HSET overwrites
-leave it unchanged; HSET of one new + one overwrite bumps by 1.
+The existing complex-path HSET (field values that overflow into
+`string_values`) already demonstrates the multi-op-per-transaction
+pattern we need:
+1. `write_data_to_key_op(..., commit_flag=false)` stages op1 on
+   `string_keys`.
+2. `prepare_write_transaction` issues `executeAsynchPrepare(NoCommit,
+   &write_callback)`.
+3. `write_callback` (db_operations.cc:488) reads op1's interpreter
+   outputs (`prev_num_rows`, `rondb_key`, `new_field` via
+   `NdbRecAttr::u_64_value()`) — **mid-transaction**, same trans
+   handle.
+4. `send_next_write_batch` (commands.cc:796) inspects the callback-
+   set state and either adds more ops to the same trans
+   (`send_value_write` / `send_delete_write`) or commits it
+   (`commit_write_value_transaction`).
+
+Phase 1.0.2 extends that pattern to the simple path and slots a
+conditional `hset_keys` op into both paths.
+
+**Sub-phases**
+
+Three commits, each independently bisectable:
+
+##### Phase 1.0.2a — Convert `set_simple_rows` to two-phase NoCommit/Commit
+
+Pure refactor — no new behaviour. Validates the two-phase simple
+path against the existing test suite before any hset_keys work
+lands.
+
+- `src/commands.cc` `set_simple_rows` (~line 920): change the
+  `write_data_to_key_op(..., commit_flag=true, ...)` call to
+  `commit_flag=false`; swap `commit_simple_write_transaction` for a
+  new `prepare_simple_write_transaction` (NoCommit + a new
+  `simple_write_phaseA_callback`). Drain the Phase A batch in the
+  existing `execute_ndb` loop.
+- Add a Phase B loop that iterates keys with state
+  `SimpleWriteDone*` and calls `commit_simple_write_transaction`
+  (now a no-extra-op Commit + `simple_write_phaseB_callback`).
+  Drain Phase B in a second `execute_ndb` loop.
+- `src/db_operations.cc`:
+  - `simple_write_phaseA_callback` — new. Mirrors the current
+    `simple_write_callback` for error / conditional-fail / OK
+    cases but on OK sets `m_key_state =
+    SimpleWriteDoneOverwrite` (new_field==0) or
+    `SimpleWriteDoneNewField` (new_field==1), does NOT set
+    `m_close_flag`, does NOT increment
+    `m_num_keys_completed_first_pass`. Error and
+    conditional-fail branches still close the transaction (no op2
+    possible on a failed trans) and set `m_close_flag`.
+  - `simple_write_phaseB_callback` — new. Runs after the Commit.
+    On success sets `CompletedSuccess`, bumps
+    `m_num_keys_completed_first_pass` and
+    `m_num_new_fields` (moved here from Phase A so the counter
+    still reflects only committed INSERTs). Sets `m_close_flag`.
+- `include/table_definitions.h` — two new KeyState values
+  (`SimpleWriteDoneOverwrite`, `SimpleWriteDoneNewField`) to
+  thread the INSERT/UPDATE signal across the NoCommit → Commit
+  boundary. Alternative: single transitional state + a bool on
+  KeyStorage. Either works; the enum-values approach matches the
+  complex-path idiom of state-machine-per-key.
+
+Validates: all existing rondis MTR tests green with no functional
+change (only timing).
+
+##### Phase 1.0.2b — Insert the conditional `hset_keys` bump op
+
+Adds the cross-table op and integrates it into both simple and
+complex paths' pre-commit dispatchers.
+
+- `src/interpreted_code.cc` — new
+  `init_hset_field_count_bump_code(code, tab, delta)`: emits the
+  tiny interpreter program `read field_count → add delta → write
+  field_count → exit_ok`. Reuses `read_attr` / `load_const_u64`
+  / `add_reg` / `write_attr` — primitives already used by
+  `initNdbCodeIncrDecr` (interpreted_code.cc:44-115).
+- `src/db_operations.cc` — new `add_hset_field_count_bump_op(
+  trans, tab_hset, hash_name, hash_name_len, delta, database_id,
+  response)`: appends an `interpretedUpdateTuple` on the **same**
+  `NdbTransaction` as the field write, with
+  `entire_hset_key_record[database_id]` as attr_rec and the
+  bump interpreter code. No record-level mask needed — all
+  updates go through `write_attr` inside the interpreter.
+- `src/commands.cc` `set_simple_rows` Phase B dispatcher — before
+  calling `commit_simple_write_transaction`, if the key is a
+  hash field (`redis_key_id != STRING_REDIS_KEY_ID`) and state is
+  `SimpleWriteDoneNewField`, call
+  `add_hset_field_count_bump_op(..., delta=1, ...)` on the
+  existing `m_trans`.
+- `src/commands.cc` `send_next_write_batch` / `send_value_write` /
+  `send_delete_write` (complex path pre-commit sites) — at each
+  call to `commit_write_value_transaction`, if the key is a hash
+  field and the callback-captured new_field was 1, insert the
+  same `add_hset_field_count_bump_op` call before the commit.
+  Use a KeyStorage flag (`m_was_new_field`) that
+  `write_callback` sets when it reads OUTPUT_INDEX_3 == 1, so
+  the pre-commit dispatcher doesn't have to consult the NdbRecAttr
+  again.
+
+Transaction-level correctness:
+- INSERT branch (op1 writes new `string_keys` row, op2 bumps
+  `hset_keys.field_count`) — commits as one atomic unit.
+- UPDATE branch (op1 overwrites existing row, no op2) —
+  `hset_keys.field_count` unchanged. Correct.
+- Conditional-fail / error on op1 — transaction aborts before
+  any op2 can be queued. Correct.
+
+Atomicity: **guaranteed by NDB** — both ops live on the same
+transaction, Commit is all-or-nothing.
+
+##### Phase 1.0.2c — Test and record baseline
+
+- `t/rondis_hash_lifecycle.test` phase 1 — HSET on a new hash:
+  assert `field_count` equals N via `SELECT field_count FROM
+  redis_0.hset_keys WHERE redis_key = ...`. HSET of overwrites:
+  `field_count` unchanged. HSET mixing new + overwrite: counter
+  goes up only by the new count. Also exercise the complex path
+  by HSETing a field with value length > `INLINE_VALUE_LEN` so
+  the hset_keys bump lands through `set_complex_rows`' pre-
+  commit dispatcher.
+- Re-record existing rondis_hash / rondis_hash_counters baselines
+  only if their values actually change (they should not, since
+  the user-visible HSET reply shape stays identical).
+
+**Notes:**
+- HMSET and HSETNX ride on the same `rondb_mset` infrastructure
+  and will also maintain `field_count` correctly for free. No
+  separate phase needed.
+- The simple-path callback changes are small enough to be one
+  commit with 1.0.2b, but keeping 1.0.2a as a standalone commit
+  makes the refactor bisectable if something regresses in
+  rondis_stress_*.
 
 #### Phase 1.0.3 — HDEL decrements `field_count`; deletes row at 0
 
@@ -870,16 +984,21 @@ PR 3 (10 tests):
 
 ## Rough effort
 
-- PR 1: 26-32h — now with eleven phases including Phase 1.0
-  (five sub-phases: schema with `field_count` **and** `expiry_date`,
-  HSET bump, HDEL decrement-and-cleanup, cache mutex, end-to-end
-  validation). Phase 1.0 is the largest single chunk — ~10h —
-  because it changes schema (two columns + index), interpreter
-  programs, and the HSET / HDEL transaction flow. The EXPIRE /
-  TTL / PERSIST phases (1.3, 1.5-1.9) each gain a small
-  hash-dispatch extension (~+1h each). Phase 1.11 (expired-key
-  filtering) is the other large unknown, ~5h (must cover both
-  `string_keys` and `hset_keys` expiry).
+- PR 1: 30-36h — now with eleven phases. Phase 1.0 is the largest
+  single chunk — ~14h:
+  - 1.0.1 schema (done, ~2h)
+  - 1.0.2a set_simple_rows NoCommit+Commit refactor (~4h —
+    mirrors the complex-path two-phase pattern)
+  - 1.0.2b conditional `hset_keys` bump op integrated into
+    both simple and complex pre-commit dispatchers (~4h)
+  - 1.0.2c lifecycle test phase 1 (~1h)
+  - 1.0.3 HDEL decrement + row delete (~3h)
+  - 1.0.4 mutex on `redis_key_id_hash` (~0.5h)
+  - 1.0.5 end-to-end validation test phase 3 (~0.5h)
+  The EXPIRE / TTL / PERSIST phases (1.3, 1.5-1.9) each gain a
+  small hash-dispatch extension (~+1h each). Phase 1.11
+  (expired-key filtering) is the other large unknown, ~5h (must
+  cover both `string_keys` and `hset_keys` expiry).
 - PR 2: 14-18h — hinges on the scan-with-filter pattern (Phase 2.5,
   now the first scan path); once that lands, Phases 2.6/2.7 are
   "add projection columns". Phase 2.4 (HLEN) drops from a scan to a
