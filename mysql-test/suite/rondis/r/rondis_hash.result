@@ -4,18 +4,17 @@
 1
 Alice
 #
-# HSET - overwriting an existing field. Redis returns 0 (nothing
-# new added). BUG C10: Rondis returns 1, counting every supplied
-# pair regardless of whether it was new.
+# HSET - overwriting an existing field returns 0 (nothing new
+# added), matching Redis semantics.
 #
-1
+0
 Alicia
 #
-# HSET - multi-field form. Redis would return 2 (only 'age' and
-# 'city' are new; 'name' is an overwrite). BUG C10: Rondis
-# returns 3, the total number of pairs supplied.
+# HSET - multi-field form returns the count of NEW fields added
+# (not the total count of supplied pairs). Here 'name' is
+# preexisting (counts 0), 'age' and 'city' are new -> returns 2.
 #
-3
+2
 #
 # HGET - non-existent field returns nil.
 #
@@ -33,11 +32,10 @@ Alicia
 
 Stockholm
 #
-# HMSET - per Redis spec this legacy alias should return +OK.
-# BUG C11: Rondis reuses the HSET handler and returns the pair
-# count (3) instead of +OK.
+# HMSET - legacy alias, returns +OK (per Redis spec - distinct
+# reply shape from HSET's field-count).
 #
-3
+OK
 Bob
 Oslo
 #

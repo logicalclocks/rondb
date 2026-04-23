@@ -709,14 +709,14 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
       }
     } else if (strcasecmp(command, "HSET") == 0) {
       if (argv.size() >= 4 && (argv.size() % 2) == 0) {
-        rondb_hset_command(ndb, argv, response, worker_id);
+        rondb_hset_command(ndb, argv, response, false, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HMSET") == 0) {
       if (argv.size() >= 4 && (argv.size() % 2) == 0) {
-        rondb_hset_command(ndb, argv, response, worker_id);
+        rondb_hset_command(ndb, argv, response, true, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;

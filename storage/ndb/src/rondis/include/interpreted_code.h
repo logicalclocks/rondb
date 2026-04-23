@@ -51,6 +51,11 @@
 #define OUTPUT_INDEX_0 0
 #define OUTPUT_INDEX_1 1
 #define OUTPUT_INDEX_2 2
+// Emitted by the SET write interpreter programs with the literal 1
+// on the INSERT branch and 0 on the UPDATE branch. Client-side we
+// aggregate it into GetControl::m_num_new_fields so HSET can return
+// the Redis-canonical count-of-newly-added-fields reply (C10).
+#define OUTPUT_INDEX_3 3
 #define RONDB_KEY_NOT_NULL_ERROR 6000
 
 #define INITIAL_INT_VALUE 1

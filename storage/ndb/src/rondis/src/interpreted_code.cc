@@ -259,8 +259,13 @@ int write_key_row_no_commit(std::string *response,
     code.branch_eq_null(REG6, LABEL0);
     code.branch_eq_const(REG5, Uint16(0), LABEL1);
 
+    // All four UPDATE-path exits signal 0 = "existing field" for
+    // the HSET new-field-count aggregation (C10). REG4 was loaded
+    // with 0 at line above and is not written elsewhere in the
+    // UPDATE block, so we can reuse it for every exit_ok below.
     /* prev_num_rows > 0 and num_rows > 0 */
     code.write_interpreter_output(REG6, OUTPUT_INDEX_1);
+    code.write_interpreter_output(REG4, OUTPUT_INDEX_3);
     code.interpret_exit_ok();
 
     /* rondb_key NULL => prev_num_rows == 0 */
@@ -270,17 +275,20 @@ int write_key_row_no_commit(std::string *response,
     /* prev_num_rows == 0 and num_rows > 0 */
     code.write_interpreter_output(REG5, OUTPUT_INDEX_1);
     code.write_attr(rondb_key_col, REG5);
+    code.write_interpreter_output(REG4, OUTPUT_INDEX_3);
     code.interpret_exit_ok();
 
     code.def_label(LABEL1);
     /* prev_num_rows > 0 and num_rows == 0 */
     code.write_interpreter_output(REG6, OUTPUT_INDEX_1);
     code.write_attr(rondb_key_col, REG3);
+    code.write_interpreter_output(REG4, OUTPUT_INDEX_3);
     code.interpret_exit_ok();
 
     code.def_label(LABEL2);
     /* prev_num_rows == 0 and num_rows == 0 */
     code.write_interpreter_output(REG4, OUTPUT_INDEX_1);
+    code.write_interpreter_output(REG4, OUTPUT_INDEX_3);
     code.interpret_exit_ok();
   }
   /* INSERT */
@@ -298,6 +306,9 @@ int write_key_row_no_commit(std::string *response,
       code.write_interpreter_output(REG7, OUTPUT_INDEX_1);
     }
     code.write_interpreter_output(REG7, OUTPUT_INDEX_0);
+    // Signal 1 = "new field" for the HSET new-field-count (C10).
+    code.load_const_u16(REG5, 1);
+    code.write_interpreter_output(REG5, OUTPUT_INDEX_3);
     code.interpret_exit_ok();
   }
   // Program end, now compile code
@@ -323,6 +334,9 @@ int write_key_row_commit(std::string *response,
   if (key_store->m_set_type == IsUpdate) {
     code.interpret_exit_nok(6000);
   } else {
+    // Signal "new field" for HSET new-field-count aggregation (C10).
+    code.load_const_u16(REG5, 1);
+    code.write_interpreter_output(REG5, OUTPUT_INDEX_3);
     code.interpret_exit_ok();
   }
   /* UPDATE */
@@ -342,6 +356,9 @@ int write_key_row_commit(std::string *response,
     code.branch_eq_const(REG7, 0, LABEL1);
     code.interpret_exit_nok(6000);
     code.def_label(LABEL1);
+    // Signal "existing field" (update) for HSET new-field-count (C10).
+    code.load_const_u16(REG5, 0);
+    code.write_interpreter_output(REG5, OUTPUT_INDEX_3);
     code.interpret_exit_ok();
   }
 

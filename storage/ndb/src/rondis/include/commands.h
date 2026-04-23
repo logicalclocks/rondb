@@ -111,6 +111,7 @@ void rondb_hmget_command(Ndb *ndb,
 void rondb_hset_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
                        std::string *response,
+                       bool is_hmset,
                        int worker_id);
 
 void rondb_hincr_command(Ndb *ndb,

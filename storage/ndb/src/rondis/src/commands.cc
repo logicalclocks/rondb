@@ -1012,6 +1012,7 @@ static
 void rondb_mset(Ndb *ndb,
                const pink::RedisCmdArgsType &argv,
                std::string *response,
+               bool is_hmset,
                Uint64 redis_key_id,
                bool set_command,
                int worker_id) {
@@ -1145,6 +1146,7 @@ void rondb_mset(Ndb *ndb,
   get_ctrl->m_num_keys_completed_first_pass = 0;
   get_ctrl->m_num_keys_multi_rows = 0;
   get_ctrl->m_num_keys_failed = 0;
+  get_ctrl->m_num_new_fields = 0;
   get_ctrl->m_num_read_errors = 0;
   get_ctrl->m_error_code = 0;
   get_ctrl->m_is_set_command = set_command;
@@ -1302,14 +1304,19 @@ void rondb_mset(Ndb *ndb,
     release_mset(get_ctrl);
     return;
   }
-  if (redis_key_id == STRING_REDIS_KEY_ID) {
+  if (redis_key_id == STRING_REDIS_KEY_ID || is_hmset) {
+    // MSET / SET / HMSET all return the simple-string +OK reply.
     response->append("+OK\r\n");
   } else {
+    // HSET returns the count of fields that did not previously exist
+    // and were therefore added (C10). The interpreter writes
+    // OUTPUT_INDEX_3 = 1 on its INSERT branch and 0 on UPDATE; the
+    // write callbacks aggregate into m_num_new_fields.
     char buf[20];
     snprintf(buf,
              sizeof(buf),
              ":%u\r\n",
-             get_ctrl->m_num_keys_requested);
+             get_ctrl->m_num_new_fields);
     response->append(&buf[0]);
   }
   release_mset(get_ctrl);
@@ -1321,7 +1328,8 @@ void rondb_set_command(Ndb *ndb,
                        std::string *response,
                        int worker_id)
 {
-  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID, true, worker_id);
+  rondb_mset(ndb, argv, response, false,
+             STRING_REDIS_KEY_ID, true, worker_id);
 }
 
 void rondb_mset_command(Ndb *ndb,
@@ -1329,12 +1337,18 @@ void rondb_mset_command(Ndb *ndb,
                         std::string *response,
                         int worker_id)
 {
-  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID, false, worker_id);
+  rondb_mset(ndb, argv, response, false,
+             STRING_REDIS_KEY_ID, false, worker_id);
 }
 
+// HSET / HMSET share the hash-write implementation but diverge on
+// reply shape: HSET returns the count of newly-added fields, HMSET
+// always returns +OK (C10 / C11). The is_hmset flag selects between
+// them at the response site inside rondb_mset.
 void rondb_hset_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
+                        bool is_hmset,
                         int worker_id)
 {
   Uint64 redis_key_id;
@@ -1347,7 +1361,8 @@ void rondb_hset_command(Ndb *ndb,
   if (ret_code != 0) {
       return;
   }
-  rondb_mset(ndb, argv, response, redis_key_id, false, worker_id);
+  rondb_mset(ndb, argv, response, is_hmset,
+             redis_key_id, false, worker_id);
 }
 
 /**

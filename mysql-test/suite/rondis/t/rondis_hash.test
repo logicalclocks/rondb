@@ -15,17 +15,16 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET user:1 name
 
 --echo #
---echo # HSET - overwriting an existing field. Redis returns 0 (nothing
---echo # new added). BUG C10: Rondis returns 1, counting every supplied
---echo # pair regardless of whether it was new.
+--echo # HSET - overwriting an existing field returns 0 (nothing new
+--echo # added), matching Redis semantics.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET user:1 name "Alicia"
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET user:1 name
 
 --echo #
---echo # HSET - multi-field form. Redis would return 2 (only 'age' and
---echo # 'city' are new; 'name' is an overwrite). BUG C10: Rondis
---echo # returns 3, the total number of pairs supplied.
+--echo # HSET - multi-field form returns the count of NEW fields added
+--echo # (not the total count of supplied pairs). Here 'name' is
+--echo # preexisting (counts 0), 'age' and 'city' are new -> returns 2.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET user:1 name "Alicia" age 30 city "Stockholm"
 
@@ -45,9 +44,8 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HMGET user:1 name missing age gap city
 
 --echo #
---echo # HMSET - per Redis spec this legacy alias should return +OK.
---echo # BUG C11: Rondis reuses the HSET handler and returns the pair
---echo # count (3) instead of +OK.
+--echo # HMSET - legacy alias, returns +OK (per Redis spec - distinct
+--echo # reply shape from HSET's field-count).
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HMSET user:2 name "Bob" age 25 city "Oslo"
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET user:2 name

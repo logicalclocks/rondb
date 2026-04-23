@@ -190,6 +190,10 @@ struct KeyStorage {
     NdbRecAttr *m_rec_attr_prev_num_rows;
     NdbRecAttr *m_rec_attr_rondb_key;
     NdbRecAttr *m_rec_attr_expiry_date;
+    // Receives OUTPUT_INDEX_3 from the SET write interpreter program:
+    // 1 on the INSERT branch (new field), 0 on UPDATE. Aggregated into
+    // GetControl::m_num_new_fields for the HSET reply (C10).
+    NdbRecAttr *m_rec_attr_new_field;
     union {
       char *m_value_ptr;
       const char *m_const_value_ptr;
@@ -238,6 +242,11 @@ struct GetControl {
     Uint32 m_num_keys_completed_first_pass;
     Uint32 m_num_keys_multi_rows;
     Uint32 m_num_keys_failed;
+    // Running count of fields/rows whose SET write actually inserted
+    // rather than overwrote. Used by HSET's Redis-canonical reply
+    // (C10) - incremented by write_callback / simple_write_callback
+    // when OUTPUT_INDEX_3 from the interpreter program is 1.
+    Uint32 m_num_new_fields;
     Uint32 m_num_read_errors;
     Uint32 m_error_code;
     Uint32 m_database_id;
