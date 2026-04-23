@@ -11695,6 +11695,59 @@ void Dblqh::execACCKEYCONF(Signal *signal) {
   release_frag_access(fragptr.p);
 }
 
+void Dblqh::continueACCKEYCONF_zwrite_slow(Signal *signal,
+                                           TcConnectionrec *regTcPtr) {
+  /*
+   * TTL related
+   * [TTL Replication ZWRITE to replicas]
+   * Before developing TTL. The code here seems to convert operation
+   * from ZWRITE to real operation and update to regTcPtr->operation on
+   * primary node. So that then in Dblqh::packLqhkeyreqLab() to replicate
+   * this operation to replica, the operation would be the real one(replicas
+   * will never receive ZWRITE
+   *
+   * BUT NOW. In TTL situation, we need to send ZWRITE to replicas because
+   * ZWRITE won't need to check TTL when do the update but normal ZUPDATE will do.
+   * If we send ZUPDATE to replica, replica may be failed to apply this
+   * operation because of the already existing row has expired.
+   * Like this situation:
+   * on a TTL table, we do that:
+   * 1. replace into TTL_TABLE values(xxx,...);
+   * 2. wait until this row expired
+   * 3. replace into TTL_TABLE values(xxx,...);
+   * If we don't send ZWRITE to replica, then in the 3rd step, the replica
+   * won't be successed because of trying to update on an expired row.
+   * So, I keep this convert and will convert it back in the later steps in
+   * Dblqh::packLqhkeyreqLab()
+   *
+   * NOTICE: regTcPtr->seqNoReplica == 0 means it's on primary fragment.
+   *
+   * NOTICE: the replica here is RonDB cluster replica fragment, not the
+   * Binlog slaves
+   */
+  ndbassert((is_ttl_table(regTcPtr->tableref) ||
+            regTcPtr->seqNoReplica == 0) ||
+            regTcPtr->dirtyOp ||
+            regTcPtr->activeCreat == Fragrecord::AC_NR_COPY);
+  Uint32 op = signal->theData[1];
+  Uint32 requestInfo = regTcPtr->reqinfo;
+  if (likely(op == ZINSERT || op == ZUPDATE)) {
+    jam();
+    regTcPtr->operation = op;
+  } else {
+    jam();
+    warningEvent("Converting %d to ZUPDATE", op);
+    op = regTcPtr->operation = ZUPDATE;
+  }
+  if (regTcPtr->seqNoReplica == 0) {
+    jam();
+    requestInfo &=
+        ~(LqhKeyReq::RI_OPERATION_MASK << LqhKeyReq::RI_OPERATION_SHIFT);
+    LqhKeyReq::setOperation(requestInfo, op);
+    regTcPtr->reqinfo = requestInfo;
+  }
+}
+
 void Dblqh::continueACCKEYCONF(Signal *signal, Uint32 localKey1,
                                Uint32 localKey2,
                                const TcConnectionrecPtr tcConnectptr) {
@@ -11707,64 +11760,9 @@ void Dblqh::continueACCKEYCONF(Signal *signal, Uint32 localKey1,
    * IS NEEDED SINCE TWO SCHEMA VERSIONS CAN BE ACTIVE SIMULTANEOUSLY ON A
    * TABLE.
    * ----------------------------------------------------------------------- */
-  /*
-   * TTL related
-   * TODO (Zhao)
-   * Check this if path. Maybe we need to do operation converting
-   *
-   */
   if (unlikely(regTcPtr->operation == ZWRITE)) {
-    /*
-     * TTL related
-     * [TTL Replication ZWRITE to replicas]
-     * Before developing TTL. The code here seems to convert operation
-     * from ZWRITE to real operation and update to regTcPtr->operation on
-     * primary node. So that then in Dblqh::packLqhkeyreqLab() to replicate
-     * this operation to replica, the operation would be the real one(replicas
-     * will never receive ZWRITE
-     *
-     * BUT NOW. In TTL situation, we need to send ZWRITE to replicas because
-     * ZWRITE won't need to check TTL when do the update but normal ZUPDATE will do.
-     * If we send ZUPDATE to replica, replica may be failed to apply this
-     * operation because of the already existing row has expired.
-     * Like this situation:
-     * on a TTL table, we do that:
-     * 1. replace into TTL_TABLE values(xxx,...);
-     * 2. wait until this row expired
-     * 3. replace into TTL_TABLE values(xxx,...);
-     * If we don't send ZWRITE to replica, then in the 3rd step, the replica
-     * won't be successed because of trying to update on an expired row.
-     * So, I keep this convert and will convert it back in the later steps in
-     * Dblqh::packLqhkeyreqLab()
-     *
-     * NOTICE: regTcPtr->seqNoReplica == 0 means it's on primary fragment.
-     *
-     * NOTICE: the replica here is RonDB cluster replica fragment, not the
-     * Binlog slaves
-     */
-
-    ndbassert((is_ttl_table(regTcPtr->tableref) ||
-              regTcPtr->seqNoReplica == 0) ||
-              regTcPtr->dirtyOp ||
-              regTcPtr->activeCreat == Fragrecord::AC_NR_COPY);
-    Uint32 op = signal->theData[1];
-    Uint32 requestInfo = regTcPtr->reqinfo;
-    if (likely(op == ZINSERT || op == ZUPDATE)) {
-      jam();
-      regTcPtr->operation = op;
-    } else {
-      jam();
-      warningEvent("Converting %d to ZUPDATE", op);
-      op = regTcPtr->operation = ZUPDATE;
-    }
-    if (regTcPtr->seqNoReplica == 0) {
-      jam();
-      requestInfo &=
-          ~(LqhKeyReq::RI_OPERATION_MASK << LqhKeyReq::RI_OPERATION_SHIFT);
-      LqhKeyReq::setOperation(requestInfo, op);
-      regTcPtr->reqinfo = requestInfo;
-    }
-  }  // if
+    continueACCKEYCONF_zwrite_slow(signal, regTcPtr);
+  }
 
   /* ------------------------------------------------------------------------
    * IT IS NOW TIME TO CONTACT THE TUPLE MANAGER. THE TUPLE MANAGER NEEDS THE

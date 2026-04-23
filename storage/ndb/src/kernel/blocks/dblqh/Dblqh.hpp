@@ -3924,6 +3924,9 @@ private:
   void continueAfterReceivingAllAiLab(Signal *signal, TcConnectionrecPtr);
   void continueACCKEYCONF(Signal *signal, Uint32 localKey1, Uint32 localKey2,
                           TcConnectionrecPtr);
+  void continueACCKEYCONF_zwrite_slow(Signal *signal,
+                                      TcConnectionrec *regTcPtr)
+      __attribute__((noinline, cold));
   void continueACCKEYREF(Signal *signal, TcConnectionrecPtr, Uint32 errorCode);
   void abortStateHandlerLab(Signal *signal, TcConnectionrecPtr);
   void writeAttrinfoLab(Signal *signal, const TcConnectionrec *,
