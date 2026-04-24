@@ -850,6 +850,7 @@ static int set_complex_rows(Ndb *ndb,
                             Uint32 loop_count,
                             Uint32 current_index) {
   Uint32 num_complex_writes = 0;
+  Uint32 num_pre_drained = 0;
   for (Uint32 i = 0; i < loop_count; i++) {
     Uint32 inx = current_index + i;
     if (key_storage[inx].m_key_state == KeyState::MultiRow) {
@@ -877,13 +878,41 @@ static int set_complex_rows(Ndb *ndb,
         return 1;
       }
       prepare_write_transaction(&key_storage[inx]);
+    } else if (key_storage[inx].m_key_state == KeyState::MultiRowRWValue) {
+      // Head submit already done by set_simple_rows and write_callback
+      // already transitioned the key to MultiRowRWValue. No fresh
+      // NoCommit pending; credit its callback into current_finished
+      // below so send_next_write_batch's dispatch-consumes-credit
+      // assertion balances.
+      num_complex_writes++;
+      num_pre_drained++;
     }
   }
-  assert(num_complex_writes == get_ctrl->m_num_keys_multi_rows);
-  Uint32 current_finished_in_loop = 0;
+  // send_next_write_batch gates on m_num_keys_multi_rows; after the
+  // unified NoCommit-first pipeline most keys arrive in
+  // MultiRowRWValue without having touched that counter in
+  // set_simple_rows, so set it here from the authoritative count.
+  get_ctrl->m_num_keys_multi_rows = num_complex_writes;
+  Uint32 current_finished_in_loop = num_pre_drained;
   get_ctrl->m_num_keys_outstanding = num_complex_writes;
   get_ctrl->m_num_bytes_outstanding =
     num_complex_writes * (sizeof(struct key_table) - MAX_KEY_VALUE_LEN);
+  if (num_pre_drained > 0) {
+    // Dispatch MultiRowRWValue keys inherited from set_simple_rows
+    // before entering the drain loop; otherwise execute_ndb would
+    // block 100ms waiting for a callback that will never fire
+    // (their NoCommit already completed in set_simple_rows).
+    int ret_code = send_next_write_batch(response,
+                                         key_storage,
+                                         get_ctrl,
+                                         current_index,
+                                         loop_count,
+                                         current_finished_in_loop);
+    if (ret_code != 0) return 1;
+  }
+  if (num_complex_writes == 0) {
+    return 0;
+  }
   do {
     /**
      * Now send off all prepared and wait for at least one to complete.
@@ -930,6 +959,10 @@ static int set_simple_rows(Ndb *ndb,
     key_storage[inx].m_rondb_key = 0;
     Uint32 value_len = key_storage[inx].m_set_value_size;
     if (value_len > INLINE_VALUE_LEN) {
+      // Compute extension-row layout and allocate a fresh rondb_key
+      // so write_data_to_key_op writes the correct num_rows and so
+      // send_next_write_batch knows to take the ext-rows branch
+      // instead of the inline fast-path commit.
       Uint32 extended_value_len = value_len - INLINE_VALUE_LEN;
       Uint32 num_value_rows = extended_value_len / EXTENSION_VALUE_LEN;
       if (extended_value_len % EXTENSION_VALUE_LEN != 0) {
@@ -942,13 +975,10 @@ static int set_simple_rows(Ndb *ndb,
         return 1;
       }
       key_storage[inx].m_num_rows = num_value_rows;
-      key_storage[inx].m_key_state = KeyState::MultiRow;
-      get_ctrl->m_num_keys_multi_rows++;
-      DEB_HSET_KEY(("key %u requires complex write, rondb_key: %llu\n",
-        inx, key_storage[inx].m_rondb_key));
-      continue;
+      DEB_HSET_KEY(("key %u large value, num_rows: %u, rondb_key: %llu\n",
+        inx, num_value_rows, key_storage[inx].m_rondb_key));
     }
-    DEB_MSET_CMD(("Try simple write with value_len: %u\n", value_len));
+    DEB_MSET_CMD(("NoCommit write with value_len: %u\n", value_len));
     if (get_ctrl->m_get_cmd_part &&
         key_storage[inx].m_trans != nullptr) {
       /* Transaction already started by the get-phase read. */
@@ -977,13 +1007,13 @@ static int set_simple_rows(Ndb *ndb,
                                         tab,
                                         &key_storage[inx],
                                         redis_key_id,
-                                        true,
+                                        false,
                                         row_state,
                                         get_ctrl->m_database_id);
     if (ret_code != 0) {
       return 1;
     }
-    commit_simple_write_transaction(&key_storage[inx]);
+    prepare_write_transaction(&key_storage[inx]);
   }
   Uint32 current_finished_in_loop = 0;
   assert(loop_count >= get_ctrl->m_num_keys_multi_rows);
@@ -1246,15 +1276,15 @@ void rondb_mset(Ndb *ndb,
                   get_ctrl->m_num_keys_multi_rows,
                   get_ctrl->m_num_keys_completed_first_pass));
     /**
-     * We have finished the initial round of simple SETs. Now time
-     * to handle those that require multi-row SETs. Since we used
-     * an optimistic approach we need to start this from scratch
-     * again for these new SETs.
+     * set_simple_rows has NoCommit'd every non-SET..GET-multi key
+     * and left them in MultiRowRWValue with open transactions.
+     * set_complex_rows is now the tail dispatcher for all keys
+     * regardless of value size; it handles MultiRow (from the
+     * SET..GET-multi continue path) and MultiRowRWValue (the
+     * common NoCommit'd case) in a single loop.
      */
-    assert(get_ctrl->m_num_transactions == 0 || get_cmd_part == true);
     assert(get_ctrl->m_num_keys_outstanding == 0);
-    if (get_ctrl->m_num_keys_multi_rows > 0 &&
-      get_ctrl->m_num_keys_failed == 0) {
+    if (get_ctrl->m_num_keys_failed == 0) {
       int ret_code = set_complex_rows(ndb,
                                       tab,
                                       response,
