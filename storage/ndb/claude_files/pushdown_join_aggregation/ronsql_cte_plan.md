@@ -63,7 +63,15 @@ matching test coverage.
   on the override so the main aggregator on the deepest CTE reads
   earlier CTE outputs as ancestor-linked projections.
   Materialization stays parallel (`defineCte` `depMask` untouched).
-- **Phase B.2b–d: planned below.**
+- **Phase B.2b (CTE-body WHERE): DONE** — fix in the single-table
+  CTE body emit path (`cp.num_ops == 1` branch, ~4579). That path
+  hand-rolls `scanTable(srcTab)` + self-lookup `readTuple` and skipped
+  attaching `cs.join_where_ce[0]` (which `build_cte_scopes` had
+  already populated via `classify_where_by_table`). `emit_root_op`
+  handles this for multi-op bodies; the single-table path now builds
+  the `NdbScanFilter` + `NdbInterpretedCode` inline and passes
+  `rootOpts.setInterpretedCode` to `scanTable`.
+- **Phase B.2c–d: planned below.**
 - **Phase C–H, Phase P-GB: NOT STARTED.** Phase C has the virtual-table
   prerequisite; Phase P-GB (DBLQH `buildCteLinkedBuffer` fix to uniformly
   prefix step-1 parent-linked entries) should land before Phase D so
@@ -453,9 +461,17 @@ reference two CTE-LOOKUP children simultaneously? If not, the Load path
 needs `cteVirtualTables[scope.column_table_idx[src]]` instead of
 `cteVirtualTables[leaf_idx]`.
 
-**Shape B.2b — WHERE clause inside CTE body (pre-GROUP BY filter).**
-Exercises the CTE-scope filter path that Phase A wired via
-`classify_where_by_table` and `emit_child_ops` cross-table filters.
+**Shape B.2b — WHERE clause inside CTE body (pre-GROUP BY filter). DONE.**
+
+Exposed one gap: the single-table CTE body emit path
+(`cp.num_ops == 1` in `execute_join`) skipped the WHERE filter.
+`build_cte_scopes` already classifies `cte->stmt->where_expression`
+into `cs.join_where_ce`, and `emit_root_op` handles it for the
+multi-op path. The single-table self-lookup path now builds an
+`NdbScanFilter` against `cs.join_where_ce[0]` and attaches it via
+`rootOpts.setInterpretedCode` on `scanTable`. Filter evaluates
+pre-GB as expected; aggregator on the readTuple leaf sees only
+rows that passed the filter.
 ```sql
 WITH big_orders AS (
   SELECT o_custkey AS k, SUM(o_amt) AS t

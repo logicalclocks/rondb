@@ -4584,7 +4584,26 @@ RonSQLPreparer::execute_join()
         // joined children.
         const NdbDictionary::Table* srcTab = cp.ops[0].table;
         require_run(srcTab != NULL, "CTE body root has no physical table.");
-        cteOpDefs[0] = qb->scanTable(srcTab);
+
+        // Attach the CTE body WHERE filter (pre-GROUP BY) to the root
+        // scan when present. build_cte_scopes classifies the CTE body's
+        // WHERE into cs.join_where_ce; emit_root_op handles this for
+        // multi-op bodies, but the single-table self-lookup path below
+        // must do it inline.
+        NdbQueryOptions rootOpts;
+        NdbInterpretedCode rootCode(srcTab);
+        if (cs.join_where_ce[0] != NULL) {
+          ConditionalExpression* root_ce =
+              simplify_ce(cs.join_where_ce[0], -1);
+          NdbScanFilter filter(&rootCode);
+          filter.setSqlCmpSemantics();
+          filter.begin(NdbScanFilter::AND);
+          apply_filter(&filter, cs, root_ce);
+          filter.end();
+          rootCode.finalise();
+          rootOpts.setInterpretedCode(rootCode);
+        }
+        cteOpDefs[0] = qb->scanTable(srcTab, &rootOpts);
         require_run(cteOpDefs[0] != NULL,
                     "Failed to create CTE body scan root.");
         const NdbQueryOperand* keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];

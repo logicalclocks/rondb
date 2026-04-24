@@ -167,6 +167,41 @@ k	SUM(sums.t)	SUM(cnt.n)
 200	100	2
 300	90	1
 
+
+=== Test 6 (B.2b): WHERE inside CTE body (pre-GROUP BY filter) ===
+== Query ==
+WITH big_orders AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders
+WHERE o_amt > 50
+GROUP BY o_custkey)
+SELECT big_orders.k, SUM(big_orders.t)
+FROM cte_customer AS c
+JOIN big_orders ON big_orders.k = c.c_id
+GROUP BY big_orders.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH big_orders AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders
+WHERE o_amt > 50
+GROUP BY o_custkey)
+SELECT big_orders.k, SUM(big_orders.t)
+FROM cte_customer AS c
+JOIN big_orders ON big_orders.k = c.c_id
+GROUP BY big_orders.k|
+k	SUM(big_orders.t)
+100	75
+200	60
+300	90
+
 === Cleanup ===
 DROP TABLE cte_lineitem;
 DROP TABLE cte_customer;
