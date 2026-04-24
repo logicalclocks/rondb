@@ -1,0 +1,184 @@
+--source include/have_ndb.inc
+
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+# ronsql_cli does not properly refresh NDB dictionary cache for join queries,
+# so the CTE tests (which all involve joins) rely on the RDRS comparison
+# only, matching the convention in ronsql_join_agg.test.
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for CTE basic tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE cte_orders (
+  o_id INT NOT NULL,
+  o_custkey INT NOT NULL,
+  o_amt INT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_o_custkey ON cte_orders (o_custkey);
+
+CREATE TABLE cte_customer (
+  c_id INT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  c_region INT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+CREATE TABLE cte_lineitem (
+  l_id INT NOT NULL,
+  l_custkey INT NOT NULL,
+  l_price INT NOT NULL,
+  PRIMARY KEY USING HASH (l_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_l_custkey ON cte_lineitem (l_custkey);
+
+INSERT INTO cte_customer VALUES
+  (100, 'Alice',   1),
+  (200, 'Bob',     1),
+  (300, 'Charlie', 2);
+
+INSERT INTO cte_orders VALUES
+  (1, 100, 50),
+  (2, 100, 75),
+  (3, 200, 40),
+  (4, 200, 60),
+  (5, 300, 90);
+
+INSERT INTO cte_lineitem VALUES
+  (1, 100, 10),
+  (2, 100, 20),
+  (3, 200, 30),
+  (4, 200, 40),
+  (5, 300, 50),
+  (6, 300, 60);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+# Note on GROUP BY column choice:
+#   These Phase B tests GROUP BY a CTE-output column rather than a
+#   parent-table column. The DBLQH CTE_LOOKUP agg-feed linked buffer uses
+#   two different on-wire formats — LQHKEYREQ subroutine format for parent
+#   projections, [tableId][schemaVersion][AttrHeader][data] format for the
+#   CTE's own GB keys and agg results — but JoinAggInterpreter::initGBTypes
+#   walks the buffer assuming only the latter format. Mixing a parent-table
+#   GROUP BY column (local) with a CTE-output aggregate (linked) therefore
+#   mis-aligns on step-1 entries. A future phase covers this shape.
+
+--echo
+--echo
+--echo === Test 1: CTE as main aggregation leaf (A0 shape) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 2: Multi-table CTE body, main agg on CTE leaf (A0) ===
+
+let $QUERY=
+WITH revenue AS (
+  SELECT o.o_custkey AS k, SUM(l.l_price) AS r
+  FROM cte_orders AS o JOIN cte_lineitem AS l ON l.l_custkey = o.o_custkey
+  GROUP BY o.o_custkey)
+SELECT revenue.k, SUM(revenue.r)
+FROM cte_customer AS c
+JOIN revenue ON revenue.k = c.c_id
+GROUP BY revenue.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH revenue AS (
+  SELECT o.o_custkey AS k, SUM(l.l_price) AS r
+  FROM cte_orders AS o JOIN cte_lineitem AS l ON l.l_custkey = o.o_custkey
+  GROUP BY o.o_custkey)
+SELECT revenue.k, SUM(revenue.r)
+FROM cte_customer AS c
+JOIN revenue ON revenue.k = c.c_id
+GROUP BY revenue.k|
+
+--echo
+--echo
+--echo === Test 3: CTE with MIN + MAX aggregates ===
+
+let $QUERY=
+WITH bounds AS (
+  SELECT o_custkey AS k, MIN(o_amt) AS mn, MAX(o_amt) AS mx
+  FROM cte_orders GROUP BY o_custkey)
+SELECT bounds.k, SUM(bounds.mn), SUM(bounds.mx)
+FROM cte_customer AS c
+JOIN bounds ON bounds.k = c.c_id
+GROUP BY bounds.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH bounds AS (
+  SELECT o_custkey AS k, MIN(o_amt) AS mn, MAX(o_amt) AS mx
+  FROM cte_orders GROUP BY o_custkey)
+SELECT bounds.k, SUM(bounds.mn), SUM(bounds.mx)
+FROM cte_customer AS c
+JOIN bounds ON bounds.k = c.c_id
+GROUP BY bounds.k|
+
+--echo
+--echo
+--echo === Test 4: CTE with COUNT aggregate ===
+
+let $QUERY=
+WITH cnt AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM cte_orders GROUP BY o_custkey)
+SELECT cnt.k, SUM(cnt.n)
+FROM cte_customer AS c
+JOIN cnt ON cnt.k = c.c_id
+GROUP BY cnt.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH cnt AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM cte_orders GROUP BY o_custkey)
+SELECT cnt.k, SUM(cnt.n)
+FROM cte_customer AS c
+JOIN cnt ON cnt.k = c.c_id
+GROUP BY cnt.k|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+DROP TABLE cte_lineitem;
+DROP TABLE cte_customer;
+DROP TABLE cte_orders;

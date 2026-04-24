@@ -289,6 +289,7 @@ private:
   void decorrelate_scalar();
   void compile();
   void build_agg_linked_projections();
+  void build_cte_linked_projections();
   void determine_explain();
   bool unload_schema();
   void handle_ronsql_exception(std::exception_ptr eptr);
@@ -331,7 +332,9 @@ private:
                                             int maxdepth);
   void programAggregator(NdbAggregator* aggregator);
   void programAggregator_join(QueryScope& scope, SelectStatement& stmt,
-                              NdbAggregator* aggregator);
+                              NdbAggregator* aggregator,
+                              NdbDictionary::Table* const* cteVirtualTables
+                                  = NULL);
   Uint32 filter_expr_word_count(struct ConditionalExpression* ce);
   void emit_filter_expr(NdbAggregator* agg, QueryScope& scope,
                         struct ConditionalExpression* ce,

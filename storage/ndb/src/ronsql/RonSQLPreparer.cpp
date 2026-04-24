@@ -171,6 +171,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     compile();
     if (m_context.ast_root.joins != NULL)
       build_agg_linked_projections();
+    if (m_cte_scopes.size() > 0)
+      build_cte_linked_projections();
     PERF_TS(t_compile_end);
     PERF_LOG("  compile", t_compile_start, t_compile_end);
     determine_explain();
@@ -450,6 +452,49 @@ RonSQLPreparer::parse()
       err << "This query has no aggregate expression, so it is not an aggregate query.\n"
              "Currently, RonSQL only supports aggregate queries.\n";
       throw RonSQLPermanentError("Not an aggregate query.");
+    }
+
+    // Mirror the main-query aggregate-registration loop for each CTE body.
+    // The parser builds each AGGREGATE output's arg Expr in the CTE's own
+    // AggregationAPICompiler (stashed on cte->stmt->agg by leave_subquery),
+    // but the Sum/Count/Min/Max call that binds the aggregate to the
+    // program only happens here. Without it, compile() would reject the
+    // CTE's program because the arg Exprs have usage=0.
+    for (CteDefinition* cte = m_context.ast_root.cte_list;
+         cte != NULL; cte = cte->next) {
+      if (cte->stmt->agg == NULL) continue;
+      for (Outputs* co = cte->stmt->outputs; co != NULL; co = co->next) {
+        switch (co->type) {
+        case Outputs::Type::COLUMN:
+          break;
+        case Outputs::Type::AGGREGATE: {
+          AggregationAPICompiler::Expr* expr = co->aggregate.arg;
+          switch (co->aggregate.fun) {
+          case T_COUNT:
+            co->aggregate.agg_index = cte->stmt->agg->Count(expr); break;
+          case T_MAX:
+            co->aggregate.agg_index = cte->stmt->agg->Max(expr); break;
+          case T_MIN:
+            co->aggregate.agg_index = cte->stmt->agg->Min(expr); break;
+          case T_SUM:
+            co->aggregate.agg_index = cte->stmt->agg->Sum(expr); break;
+          default:
+            abort();
+          }
+          break;
+        }
+        case Outputs::Type::AVG:
+          co->avg.agg_index_sum = cte->stmt->agg->Sum(co->avg.arg);
+          co->avg.agg_index_count = cte->stmt->agg->Count(co->avg.arg);
+          break;
+        case Outputs::Type::SUBQUERY_AGG:
+          // Disallowed in CTE bodies (would need nested subquery orchestration).
+          throw RonSQLPermanentError(
+              "Subquery aggregation inside CTE body not yet supported.");
+        default:
+          abort();
+        }
+      }
     }
     return;
   }
@@ -1475,6 +1520,86 @@ RonSQLPreparer::build_agg_linked_projections()
           }
         }
       }
+    }
+  }
+}
+
+// Register linked projections for each CTE body's aggregator program —
+// the CTE-scope analogue of build_agg_linked_projections (main scope) and
+// the GB pre-registration block in analyze_columns (line ~1147).
+//
+// A CTE body aggregator can reference parent-table columns (from tables
+// above its own agg leaf) in its GROUP BY, Load, and cross-table WHERE
+// filters. Those parent columns must be registered as linked projections
+// in scope.join_plan.linked_projs so the NDB API includes them in the
+// leaf op's inbound linked buffer. Without this, GroupByLinked/LoadLinkedColumn
+// walks into undefined buffer positions and DBLQH crashes.
+void
+RonSQLPreparer::build_cte_linked_projections()
+{
+  for (Uint32 c = 0; c < m_cte_scopes.size(); c++) {
+    QueryScope& scope = *m_cte_scopes[c];
+    if (scope.agg == NULL) continue;
+    // Locate the CTE definition to access its GroupbyColumns list.
+    const CteDefinition* cte = NULL;
+    Uint32 ci = 0;
+    for (CteDefinition* it = m_context.ast_root.cte_list; it != NULL;
+         it = it->next, ci++) {
+      if (ci == c) { cte = it; break; }
+    }
+    if (cte == NULL) continue;
+
+    const Uint32 leaf_idx = scope.join_plan.agg_leaf_idx;
+
+    // GB parent columns
+    for (GroupbyColumns* g = cte->stmt->groupby_columns; g != NULL;
+         g = g->next) {
+      Uint32 col_idx = g->col_idx;
+      if (scope.column_table_idx[col_idx] != leaf_idx) {
+        find_or_add_linked_proj(scope.join_plan,
+                                scope.column_table_idx[col_idx],
+                                m_columns[col_idx].c_str());
+      }
+    }
+
+    // Load parent columns from the CTE body's aggregate program
+    DynamicArray<AggregationAPICompiler::Instr>& program =
+        scope.agg->m_program;
+    for (Uint32 i = 0; i < program.size(); i++) {
+      if (program[i].type != AggregationAPICompiler::SVMInstrType::Load)
+        continue;
+      Uint32 col_idx = program[i].src;
+      if (scope.column_table_idx[col_idx] != leaf_idx) {
+        find_or_add_linked_proj(scope.join_plan,
+                                scope.column_table_idx[col_idx],
+                                m_columns[col_idx].c_str());
+      }
+    }
+
+    // Cross-table WHERE filter columns on non-leaf tables
+    std::function<void(ConditionalExpression*)> register_from_ce =
+        [&](ConditionalExpression* ce) {
+      if (ce == NULL) return;
+      if (ce->op == T_IDENTIFIER) {
+        Uint32 cidx = ce->col_idx;
+        if (scope.column_table_idx[cidx] != leaf_idx) {
+          find_or_add_linked_proj(scope.join_plan,
+                                  scope.column_table_idx[cidx],
+                                  m_columns[cidx].c_str());
+        }
+        return;
+      }
+      if (ce->op == T_INT || ce->op == T_FLOAT ||
+          ce->op == T_STRING || ce->op == T_NULL)
+        return;
+      if (ce->args.left != NULL) register_from_ce(ce->args.left);
+      if (ce->args.right != NULL) register_from_ce(ce->args.right);
+    };
+    for (Uint32 f = 0; f < scope.cross_table_where_filters.size(); f++) {
+      CrossTableFilter& ctf = scope.cross_table_where_filters[f];
+      if (ctf.ce == NULL) continue;
+      register_from_ce(ctf.ce->args.left);
+      register_from_ce(ctf.ce->args.right);
     }
   }
 }
@@ -3414,6 +3539,23 @@ RonSQLPreparer::compile()
     }
   }
 
+  // Compile each CTE body's aggregator. These were captured during parsing
+  // (Context::leave_subquery returned the inner AggregationAPICompiler),
+  // stashed on SelectStatement::agg, and copied into QueryScope::agg by
+  // build_cte_scopes. They start in PROGRAMMING state and must be compiled
+  // before NdbAggregator::Finalize will accept them.
+  for (Uint32 c = 0; c < m_cte_scopes.size(); c++) {
+    AggregationAPICompiler* cte_agg = m_cte_scopes[c]->agg;
+    if (cte_agg == NULL) continue;
+    if (cte_agg->compile()) {
+      ndbrequire(cte_agg->getStatus() == AggregationAPICompiler::Status::COMPILED);
+    } else {
+      ndbrequire(cte_agg->getStatus() == AggregationAPICompiler::Status::FAILED);
+      throw RonSQLPermanentError(
+          "Failed to compile CTE aggregation program.");
+    }
+  }
+
   // Cross-table WHERE filters require aggregation (BranchReg is in the
   // aggregation program).  Non-aggregate queries with cross-table WHERE
   // are not yet supported.
@@ -4402,7 +4544,8 @@ RonSQLPreparer::execute_join()
     }
   } else {
     // Single-leaf path (existing)
-    programAggregator_join(m_main_scope, m_context.ast_root, &singleAgg);
+    programAggregator_join(m_main_scope, m_context.ast_root, &singleAgg,
+                           cteVirtualTables);
     require_prm(singleAgg.Finalize(), "Failed to finalize aggregator.");
   }
 
@@ -4432,10 +4575,39 @@ RonSQLPreparer::execute_join()
 
       qb->beginCteSubtree(c);
       const NdbQueryOperationDef* cteOpDefs[MAX_SPJ_TREE_NODES];
-      emit_root_op(qb, cs, cteOpDefs);
       NdbDictionary::Table* cteChildVT[MAX_SPJ_TREE_NODES] = {};
-      build_cte_virtual_tables(cp, cteChildVT);
-      emit_child_ops(qb, cs, cteOpDefs, cteAgg, nullptr, cteChildVT);
+      if (cp.num_ops == 1) {
+        // Single-table CTE body: emit the "self-join" pattern the NDB API
+        // expects — scanTable + readTuple(linked_pk) with the aggregator
+        // on the readTuple. The normal emit_child_ops path would start
+        // at i=1 and never attach the aggregator when there are no
+        // joined children.
+        const NdbDictionary::Table* srcTab = cp.ops[0].table;
+        require_run(srcTab != NULL, "CTE body root has no physical table.");
+        cteOpDefs[0] = qb->scanTable(srcTab);
+        require_run(cteOpDefs[0] != NULL,
+                    "Failed to create CTE body scan root.");
+        const NdbQueryOperand* keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+        int nkeys = srcTab->getNoOfPrimaryKeys();
+        for (int k = 0; k < nkeys; k++) {
+          const char* pk_name = srcTab->getPrimaryKey(k);
+          keys[k] = qb->linkedValue(cteOpDefs[0], pk_name);
+          require_run(keys[k] != NULL,
+                      "Failed to create CTE body self-join linked key.");
+        }
+        keys[nkeys] = nullptr;
+        NdbQueryOptions leafOpts;
+        leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+        require_run(leafOpts.setAggregation(*cteAgg) == 0,
+                    "Failed to attach aggregator to CTE body leaf.");
+        cteOpDefs[1] = qb->readTuple(srcTab, keys, &leafOpts);
+        require_run(cteOpDefs[1] != NULL,
+                    "Failed to create CTE body self-join leaf.");
+      } else {
+        emit_root_op(qb, cs, cteOpDefs);
+        build_cte_virtual_tables(cp, cteChildVT);
+        emit_child_ops(qb, cs, cteOpDefs, cteAgg, nullptr, cteChildVT);
+      }
       qb->endCteSubtree();
       require_run(qb->defineCte(c, cs.table, *cteAgg) == 0,
                   "Failed to defineCte.");
@@ -4452,10 +4624,11 @@ RonSQLPreparer::execute_join()
   emit_child_ops(qb, m_main_scope, opDefs, &singleAgg, leafAggs,
                  cteVirtualTables);
 
-  // Free virtual tables
-  for (Uint32 i = 0; i < MAX_SPJ_TREE_NODES; i++) {
-    delete cteVirtualTables[i];
-  }
+  // Virtual tables stay alive until the end of this function: the
+  // NdbAggregator caches virt-table NdbDictionary::Column pointers (see
+  // gb_columns_ in NdbAggregator::GroupByLinked) and ResultPrinter reads
+  // them via column.type() during print_result. Deleting here would leave
+  // dangling pointers.
 
   // Prepare and execute
   PERF_TS(t_qb_prepare);
@@ -4518,6 +4691,14 @@ RonSQLPreparer::execute_join()
       delete cteAggs[c];
       cteAggs[c] = NULL;
     }
+  }
+
+  // Free per-CTE virtual tables last. Aggregators and ResultPrinter have
+  // already been drained, so the cached virt-table column pointers they
+  // used are no longer needed.
+  for (Uint32 i = 0; i < MAX_SPJ_TREE_NODES; i++) {
+    delete cteVirtualTables[i];
+    cteVirtualTables[i] = NULL;
   }
 }
 
@@ -4765,6 +4946,14 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
       vcol.setNullable(!is_groupby);
       vt->addColumn(vcol);
     }
+    // NdbDictionary::Table aggregate counts (getNoOfPrimaryKeys etc.) are
+    // not auto-updated as columns are added. For in-memory virtual tables
+    // built by this helper, we must call aggregate() explicitly before
+    // handing the table to lookupCte — otherwise the PK count stays 0 and
+    // lookupCte's key-count check fails with QRY_TOO_MANY_KEY_VALUES.
+    NdbError vtErr;
+    require_run(vt->aggregate(vtErr) == 0,
+                "Failed to aggregate CTE virtual table metadata.");
     out[i] = vt;
   }
 }
@@ -6112,13 +6301,36 @@ RonSQLPreparer::emit_filter_expr(NdbAggregator* agg,
 void
 RonSQLPreparer::programAggregator_join(QueryScope& scope,
                                         SelectStatement& ast_root,
-                                        NdbAggregator* aggregator)
+                                        NdbAggregator* aggregator,
+                                        NdbDictionary::Table* const*
+                                            cteVirtualTables)
 {
   std::basic_ostream<char>& err = *m_conf.err_stream;
   Uint32 leaf_idx = scope.join_plan.agg_leaf_idx;
+  // When the aggregation leaf is a CTE op, the CTE's per-group data
+  // (GROUP BY key + aggregate results, in cte->stmt->outputs order)
+  // reaches the main aggregator through the linked-attr buffer that
+  // cteLookupAggFeed builds in DBLQH. We therefore emit LoadLinkedColumn
+  // at linked-position == cte_col_idx instead of a row-fetch LoadColumn.
+  const bool leafIsCte =
+      (scope.join_plan.ops[leaf_idx].type == JoinOp::CTE_LOOKUP ||
+       scope.join_plan.ops[leaf_idx].type == JoinOp::CTE_SCAN);
+  const NdbDictionary::Table* cteLeafVirtTab =
+      (leafIsCte && cteVirtualTables != NULL)
+      ? cteVirtualTables[leaf_idx]
+      : NULL;
 
-  // Program groupby columns — use GroupByLinked for parent columns
+  // Program groupby columns.
+  //
+  // For a CTE agg-feed leaf, the DBLQH linked-attr buffer layout is:
+  //   [parent linked projections, N entries] [CTE GB keys] [CTE agg results]
+  // i.e. parent projections occupy positions 0..N-1, and the CTE's virt-table
+  // outputs begin at position N = scope.join_plan.num_linked_projs.
+  // For a non-CTE leaf, CTE output positions are unused; parent projections
+  // still occupy positions 0..N-1 and leaf-local cols are addressed via
+  // GroupBy(attrId).
   assert(scope.column_attrId_map != NULL);
+  const Uint32 cte_base_pos = leafIsCte ? scope.join_plan.num_linked_projs : 0;
   Uint32 linked_proj_pos = 0;
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
   while (groupby != NULL)
@@ -6126,8 +6338,21 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
     Uint32 col_idx = groupby->col_idx;
     if (scope.column_table_idx[col_idx] == leaf_idx)
     {
-      programAggregator_do_or_fail
-        (aggregator->GroupBy(scope.column_attrId_map[col_idx]));
+      if (leafIsCte && cteLeafVirtTab != NULL) {
+        // CTE leaf: GB col is a CTE output. column_attrId_map holds the
+        // CTE-output index (see analyze_columns CTE branch), which is also
+        // the virt-table column index. Offset by parent linked projections.
+        const Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
+        const NdbDictionary::Column* vtcol =
+            cteLeafVirtTab->getColumn((int)cte_col_idx);
+        require_prm(vtcol != NULL,
+                    "CTE leaf GroupBy: virt table has no column at cte_col_idx.");
+        programAggregator_do_or_fail(
+            aggregator->GroupByLinked(cte_base_pos + cte_col_idx, vtcol));
+      } else {
+        programAggregator_do_or_fail
+          (aggregator->GroupBy(scope.column_attrId_map[col_idx]));
+      }
     }
     else
     {
@@ -6277,6 +6502,20 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
             m_columns[src].c_str());
         programAggregator_do_or_fail
           (aggregator->LoadLinkedColumn(lp_pos, dest, scope.column_map[src]));
+      }
+      else if (leafIsCte && cteLeafVirtTab != NULL)
+      {
+        // CTE leaf: agg-feed data arrives via the linked-attr buffer after
+        // any parent linked projections. Final position is
+        // num_linked_projs + cte_col_idx (see cte_base_pos in the GB loop).
+        const Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[src];
+        const NdbDictionary::Column* vtcol =
+            cteLeafVirtTab->getColumn((int)cte_col_idx);
+        require_prm(vtcol != NULL,
+                    "CTE leaf load: virt table has no column at cte_col_idx.");
+        programAggregator_do_or_fail(
+            aggregator->LoadLinkedColumn(cte_base_pos + cte_col_idx,
+                                          dest, vtcol));
       }
       else
       {
