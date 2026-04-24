@@ -4990,6 +4990,16 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       break;
     }
 
+    // When the tree parent differs from the key-source parent (chained
+    // CTE_LOOKUPs — see QueryPlanner tree_parent_op_idx assignment),
+    // explicitly pin the tree parent. The implicit parent from linkedValue
+    // would otherwise point at the key source, yielding a sibling-CTE
+    // topology that the SPJ protocol rejects.
+    if (op.tree_parent_op_idx != op.parent_op_idx) {
+      require_run(opts.setParent(opDefs[op.tree_parent_op_idx]) == 0,
+                  "Failed to set tree parent override.");
+    }
+
     const NdbQueryOperand* keys[MAX_JOIN_KEY_COLS + 1];
     for (Uint32 k = 0; k < op.num_key_cols; k++) {
       keys[k] = qb->linkedValue(opDefs[op.parent_op_idx],
@@ -6356,8 +6366,30 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
     }
     else
     {
-      programAggregator_do_or_fail
-        (aggregator->GroupByLinked(linked_proj_pos, scope.column_map[col_idx]));
+      const Uint32 src_op_idx = scope.column_table_idx[col_idx];
+      const JoinOp::Type src_type = scope.join_plan.ops[src_op_idx].type;
+      const bool src_is_cte = (src_type == JoinOp::CTE_LOOKUP ||
+                               src_type == JoinOp::CTE_SCAN);
+      if (src_is_cte && cteVirtualTables != NULL &&
+          cteVirtualTables[src_op_idx] != NULL)
+      {
+        // Non-leaf CTE GB column: column_map is NULL for CTE outputs;
+        // resolve the column descriptor from the non-leaf CTE's virt table.
+        const Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
+        const NdbDictionary::Column* vtcol =
+            cteVirtualTables[src_op_idx]->getColumn((int)cte_col_idx);
+        require_prm(vtcol != NULL,
+                    "Non-leaf CTE GroupBy: virt table has no column at"
+                    " cte_col_idx.");
+        programAggregator_do_or_fail(
+            aggregator->GroupByLinked(linked_proj_pos, vtcol));
+      }
+      else
+      {
+        programAggregator_do_or_fail(
+            aggregator->GroupByLinked(linked_proj_pos,
+                                      scope.column_map[col_idx]));
+      }
       linked_proj_pos++;
     }
     groupby = groupby->next;
@@ -6497,11 +6529,35 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
     {
       if (scope.column_table_idx[src] != leaf_idx)
       {
+        const Uint32 src_op_idx = scope.column_table_idx[src];
+        const JoinOp::Type src_type = scope.join_plan.ops[src_op_idx].type;
+        const bool src_is_cte = (src_type == JoinOp::CTE_LOOKUP ||
+                                 src_type == JoinOp::CTE_SCAN);
         Uint32 lp_pos = find_or_add_linked_proj(
-            scope.join_plan, scope.column_table_idx[src],
+            scope.join_plan, src_op_idx,
             m_columns[src].c_str());
-        programAggregator_do_or_fail
-          (aggregator->LoadLinkedColumn(lp_pos, dest, scope.column_map[src]));
+        if (src_is_cte && cteVirtualTables != NULL &&
+            cteVirtualTables[src_op_idx] != NULL)
+        {
+          // Non-leaf CTE: column_map[src] is NULL for CTE output columns
+          // (see load_join()). Resolve the column from the CTE's virtual
+          // table, indexed by the CTE-output position stored in
+          // column_attrId_map.
+          const Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[src];
+          const NdbDictionary::Column* vtcol =
+              cteVirtualTables[src_op_idx]->getColumn((int)cte_col_idx);
+          require_prm(vtcol != NULL,
+                      "Non-leaf CTE load: virt table has no column at"
+                      " cte_col_idx.");
+          programAggregator_do_or_fail(
+              aggregator->LoadLinkedColumn(lp_pos, dest, vtcol));
+        }
+        else
+        {
+          programAggregator_do_or_fail(
+              aggregator->LoadLinkedColumn(lp_pos, dest,
+                                           scope.column_map[src]));
+        }
       }
       else if (leafIsCte && cteLeafVirtTab != NULL)
       {

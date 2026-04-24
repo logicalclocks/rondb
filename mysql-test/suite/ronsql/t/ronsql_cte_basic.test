@@ -174,6 +174,36 @@ FROM cte_customer AS c
 JOIN cnt ON cnt.k = c.c_id
 GROUP BY cnt.k|
 
+--echo
+--echo
+--echo === Test 5 (B.2a): Two independent CTEs in one query ===
+
+let $QUERY=
+WITH
+  sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+           FROM cte_orders GROUP BY o_custkey),
+  cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+           FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH
+  sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+           FROM cte_orders GROUP BY o_custkey),
+  cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+           FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+GROUP BY sums.k|
+
 DELIMITER ;|
 
 --echo

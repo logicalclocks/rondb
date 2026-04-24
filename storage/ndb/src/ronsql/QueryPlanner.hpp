@@ -49,6 +49,16 @@ struct JoinOp
   const NdbDictionary::Index *index;
   LexCString alias;
   Uint32 parent_op_idx;
+  // Tree parent in the SPJ query tree. Normally equals parent_op_idx (the
+  // op whose column provides this op's join key — also used as the key-
+  // source for linkedValue). They diverge when CTE_LOOKUP siblings are
+  // chained in the main query: the key source stays on the original join
+  // parent (e.g. the real-table root), while the tree parent is set to the
+  // previous CTE_LOOKUP so the main aggregator (on the deepest CTE_LOOKUP)
+  // can read all other CTE outputs as ancestor-linked projections. See
+  // testCrossJoinTwoScalarCtes / testGreatestViaCaseAgg for the canonical
+  // chained-CTE-LOOKUP topology.
+  Uint32 tree_parent_op_idx;
   bool is_root;
   const char *child_key_col_names[MAX_JOIN_KEY_COLS];
   const char *parent_key_col_names[MAX_JOIN_KEY_COLS];

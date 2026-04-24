@@ -97,6 +97,7 @@ QueryPlanner::plan(
   rootOp.alias = root_table->alias;
   rootOp.index = NULL;
   rootOp.parent_op_idx = 0;
+  rootOp.tree_parent_op_idx = 0;
   rootOp.is_root = true;
   rootOp.match_type = JoinOp::INNER;
   rootOp.num_key_cols = 0;
@@ -227,6 +228,7 @@ QueryPlanner::plan(
     }
 
     childOp.parent_op_idx = parent_idx;
+    childOp.tree_parent_op_idx = parent_idx;
     childOp.num_key_cols = num_keys;
 
     /* CTE_LOOKUP type and index are already set — skip index determination */
@@ -274,6 +276,34 @@ QueryPlanner::plan(
     }
 
     out.num_ops++;
+  }
+
+  /* Chain sibling CTE_LOOKUPs in declaration order. The SPJ tree requires
+   * linked-projection sources to be ancestors of the op that consumes them;
+   * two CTE_LOOKUPs sharing a common non-CTE parent are siblings and
+   * cannot reference each other. Re-parenting the later CTE_LOOKUP under
+   * the earlier one (as its tree parent, leaving parent_op_idx / key
+   * source unchanged) forms a chain: the common ancestor remains reachable
+   * via linkedValue, and the deepest CTE_LOOKUP sees all earlier CTE
+   * outputs as ancestor-linked projections. Materialization still runs in
+   * parallel (defineCte depMask unaffected). */
+  for (Uint32 i = 1; i < out.num_ops; i++)
+  {
+    if (out.ops[i].type != JoinOp::CTE_LOOKUP) continue;
+    Uint32 latest_cte_idx = out.num_ops; /* sentinel */
+    for (Uint32 j = i; j-- > 1; )
+    {
+      if (out.ops[j].type == JoinOp::CTE_LOOKUP &&
+          out.ops[j].parent_op_idx == out.ops[i].parent_op_idx)
+      {
+        latest_cte_idx = j;
+        break;
+      }
+    }
+    if (latest_cte_idx < out.num_ops)
+    {
+      out.ops[i].tree_parent_op_idx = latest_cte_idx;
+    }
   }
 
   /* Leaf = last operation */

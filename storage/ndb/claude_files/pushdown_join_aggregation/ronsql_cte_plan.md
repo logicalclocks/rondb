@@ -51,7 +51,19 @@ matching test coverage.
   (2) `cteVirtualTables[]` lifetime until after `print_result`,
   (3) new `build_cte_linked_projections()` for CTE-scope parent-linked
   GBs. Result file recorded.
-- **Phase B.2: planned below.**
+- **Phase B.2a (two independent CTEs): DONE** — three fixes:
+  (1) non-leaf CTE Load dispatch in `programAggregator_join` —
+  `column_map[src]` is NULL for CTE output columns, so resolve the
+  descriptor from `cteVirtualTables[src_op_idx]`;
+  (2) symmetric non-leaf CTE GroupBy dispatch;
+  (3) topology fix — new `JoinOp::tree_parent_op_idx` field; planner
+  chains sibling CTE_LOOKUPs under the same non-CTE parent (later CTE
+  gets `tree_parent_op_idx = previous_cte_idx`, `parent_op_idx` /
+  key source unchanged); emit calls `opts.setParent(opDefs[tree_parent])`
+  on the override so the main aggregator on the deepest CTE reads
+  earlier CTE outputs as ancestor-linked projections.
+  Materialization stays parallel (`defineCte` `depMask` untouched).
+- **Phase B.2b–d: planned below.**
 - **Phase C–H, Phase P-GB: NOT STARTED.** Phase C has the virtual-table
   prerequisite; Phase P-GB (DBLQH `buildCteLinkedBuffer` fix to uniformly
   prefix step-1 parent-linked entries) should land before Phase D so
@@ -393,11 +405,31 @@ with `.result` re-recorded.
 
 ---
 
-**Shape B.2a — Two independent CTEs in one query.** Exercises two
-sequential `beginCteSubtree`/`endCteSubtree`/`defineCte` cycles in
-declaration order and verifies that `m_cte_scopes` bookkeeping, CTE
-virtual-table allocation, and `build_cte_linked_projections` scale past
-one.
+**Shape B.2a — Two independent CTEs in one query. DONE.**
+
+Surfaced three RonSQL gaps, landed all three. What the test exposed:
+1. The main aggregator hit "Failed writing aggregation program" on a GB
+   or Load where the CTE-output column had a NULL `column_map` entry
+   (CTE output cols are stored as `(attrId=cte_col_idx, column=NULL)`
+   in `load_join`). Fix: dispatch on `src_is_cte` + non-leaf in both
+   the GB and Load branches of `programAggregator_join`, resolving
+   `vtcol` from `cteVirtualTables[src_op_idx]`.
+2. With the emit fixed, `NdbQueryBuilder::prepare()` asserted at
+   `appendParamConstructor` NdbQueryBuilder.cpp:2987: the main tree was
+   being built with the two CTE_LOOKUPs as siblings under `c`, and SPJ
+   linked projections require the source to be an ancestor. Reference
+   topology in `testCrossJoinTwoScalarCtes` / `testGreatestViaCaseAgg`:
+   chain the CTE_LOOKUPs in the main tree (scanCte/lookupCte →
+   lookupCte → ... → lookupCte with aggregator on deepest one);
+   materialization stays parallel. Fix: add
+   `JoinOp::tree_parent_op_idx`, post-process in `QueryPlanner::plan`
+   to chain sibling CTE_LOOKUPs, emit `opts.setParent` when override
+   differs from key-source parent.
+3. Implicit linkWithParent already handles the grandparent case —
+   when `setParent(sums)` is set and keys reference grandparent `c`,
+   `linkWithParent(c)` sees `cnt.isChildOf(c)` via `m_parent=sums →
+   sums.m_parent=c` and returns 0 (already linked). No
+   QRY_MULTIPLE_PARENTS.
 ```sql
 WITH
   sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t

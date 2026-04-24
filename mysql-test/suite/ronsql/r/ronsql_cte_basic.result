@@ -130,6 +130,43 @@ k	SUM(cnt.n)
 200	2
 300	1
 
+
+=== Test 5 (B.2a): Two independent CTEs in one query ===
+== Query ==
+WITH
+sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey),
+cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+GROUP BY sums.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH
+sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey),
+cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+GROUP BY sums.k|
+k	SUM(sums.t)	SUM(cnt.n)
+100	125	2
+200	100	2
+300	90	1
+
 === Cleanup ===
 DROP TABLE cte_lineitem;
 DROP TABLE cte_customer;
