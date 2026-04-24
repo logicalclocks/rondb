@@ -71,7 +71,16 @@ matching test coverage.
   handles this for multi-op bodies; the single-table path now builds
   the `NdbScanFilter` + `NdbInterpretedCode` inline and passes
   `rootOpts.setInterpretedCode` to `scanTable`.
-- **Phase B.2c–d: planned below.**
+- **Phase B.2c (VARCHAR GB column in CTE body): DONE** — fix is
+  a new `resolve_cte_output_columns()` pass after `build_cte_scopes`
+  that fills `m_main_scope.column_map` for CTE output references
+  (`load_join` leaves them NULL because CTE cols have no real-table
+  column). For `Outputs::Type::COLUMN` and `Outputs::Type::AGGREGATE`
+  MIN/MAX, it plumbs the CTE body's source column through so
+  ResultPrinter can read charset/precision/scale. SUM/COUNT outputs
+  stay NULL (charset-irrelevant for numeric types;
+  ResultPrinter's existing fallback handles it).
+- **Phase B.2d: planned below.**
 - **Phase C–H, Phase P-GB: NOT STARTED.** Phase C has the virtual-table
   prerequisite; Phase P-GB (DBLQH `buildCteLinkedBuffer` fix to uniformly
   prefix step-1 parent-linked entries) should land before Phase D so
@@ -488,9 +497,19 @@ filter pushdown goes through a separate path in `resolve_columns_for_cte_scope`
 and `emit_child_ops`. Verify the interpreted-code for the CTE-body scan
 compiles and executes (single-table filter on `cte_orders.o_amt`).
 
-**Shape B.2c — CHAR/VARCHAR GB column in CTE body.** Covers charset
-descriptor plumbing through `initGBTypes` for the CTE-body aggregator and
-virt-table column type derivation in `build_cte_virtual_tables()`.
+**Shape B.2c — CHAR/VARCHAR GB column in CTE body. DONE.**
+
+Exposed one gap: `ResultPrinter` threw `"Could not find charset for
+VARCHAR column"` when printing a CHAR/VARCHAR CTE-output column.
+`build_cte_virtual_tables` sets charset correctly on the virt-table
+column at execute time, but `ResultPrinter` is compiled at prepare
+time from `m_main_scope.column_map`, which `load_join` set to NULL
+for CTE output refs. Fix: new `resolve_cte_output_columns()` pass
+after `build_cte_scopes` resolves CTE-output column_idx → source
+real column (from the CTE's own scope) and fills `column_map` for
+the COLUMN / MIN / MAX output kinds. SUM/COUNT remain NULL (no
+charset needed). An alternative grammar note: SQL identifier `code`
+is parsed as a reserved keyword — test uses `rcode`.
 ```sql
 CREATE TABLE cte_regions (
   r_id INT NOT NULL,

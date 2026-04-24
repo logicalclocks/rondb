@@ -61,6 +61,20 @@ INSERT INTO cte_lineitem VALUES
   (5, 300, 50),
   (6, 300, 60);
 
+CREATE TABLE cte_regions (
+  r_id INT NOT NULL,
+  r_code VARCHAR(8) NOT NULL,
+  PRIMARY KEY USING HASH (r_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_r_code ON cte_regions (r_code);
+
+INSERT INTO cte_regions VALUES
+  (1, 'US'),
+  (2, 'US'),
+  (3, 'UK'),
+  (4, 'UK');
+
 --enable_warnings
 --enable_query_log
 
@@ -232,6 +246,30 @@ FROM cte_customer AS c
 JOIN big_orders ON big_orders.k = c.c_id
 GROUP BY big_orders.k|
 
+--echo
+--echo
+--echo === Test 7 (B.2c): VARCHAR GROUP BY column in CTE body ===
+
+let $QUERY=
+WITH by_code AS (
+  SELECT r_code AS rcode, COUNT(*) AS n
+  FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+GROUP BY by_code.rcode;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH by_code AS (
+  SELECT r_code AS rcode, COUNT(*) AS n
+  FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+GROUP BY by_code.rcode|
+
 DELIMITER ;|
 
 --echo
@@ -240,3 +278,4 @@ DELIMITER ;|
 DROP TABLE cte_lineitem;
 DROP TABLE cte_customer;
 DROP TABLE cte_orders;
+DROP TABLE cte_regions;

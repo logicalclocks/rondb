@@ -807,6 +807,7 @@ RonSQLPreparer::load()
   // in its body against the CTEs declared before it (topological order).
   if (m_has_ctes) {
     build_cte_scopes();
+    resolve_cte_output_columns();
   }
 }
 
@@ -2788,6 +2789,60 @@ RonSQLPreparer::build_cte_scopes()
 
     if (prev != NULL) {
       prev->next = saved_next;
+    }
+  }
+}
+
+// Fill in source NdbDictionary::Column* for each CTE-output reference in
+// the main scope's column_map. load_join() leaves those entries NULL
+// because the CTE's virtual columns don't exist yet; build_cte_scopes()
+// populates per-CTE scopes so we can now walk back from a CTE output to
+// its body-source column. The charset/precision/scale on that real column
+// is what ResultPrinter needs when a CHAR/VARCHAR CTE output is projected
+// or grouped by in the main query. Non-COLUMN outputs (COUNT / SUM) stay
+// NULL — ResultPrinter's fallback (charset=NULL, precision=0) is fine
+// for numeric types.
+void
+RonSQLPreparer::resolve_cte_output_columns()
+{
+  if (m_main_scope.column_map == NULL) return;
+  if (m_main_scope.column_table_idx == NULL) return;
+  for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
+    if (m_main_scope.column_map[col_idx] != NULL) continue;
+    Uint32 t = m_main_scope.column_table_idx[col_idx];
+    if (t >= m_main_scope.join_plan.num_ops) continue;
+    const JoinOp& op = m_main_scope.join_plan.ops[t];
+    if (op.type != JoinOp::CTE_LOOKUP && op.type != JoinOp::CTE_SCAN)
+      continue;
+    if (op.cte_def == NULL) continue;
+    if (op.cte_def_idx >= m_cte_scopes.size()) continue;
+    QueryScope* cs = m_cte_scopes[op.cte_def_idx];
+    if (cs == NULL || cs->column_map == NULL) continue;
+
+    // Walk the CTE output list to position cte_col_idx (stored in
+    // column_attrId_map by load_join's CTE branch).
+    Uint32 cte_col_idx = (Uint32)m_main_scope.column_attrId_map[col_idx];
+    Uint32 i = 0;
+    const Outputs* o = op.cte_def->stmt->outputs;
+    while (o != NULL && i < cte_col_idx) { o = o->next; i++; }
+    if (o == NULL) continue;
+
+    if (o->type == Outputs::Type::COLUMN) {
+      Uint32 src_col_idx = o->column.col_idx;
+      const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
+      if (src_col != NULL)
+        m_main_scope.column_map[col_idx] = src_col;
+    } else if (o->type == Outputs::Type::AGGREGATE) {
+      // MIN/MAX preserve source type; SUM/COUNT synthesize numeric
+      // (charset-irrelevant) — only plumb MIN/MAX here.
+      TokenKind fun = o->aggregate.fun;
+      if (fun != T_MIN && fun != T_MAX) continue;
+      AggregationAPICompiler::Expr* arg = o->aggregate.arg;
+      if (arg == NULL || !arg->isLoad()) continue;
+      Uint32 src_col_idx = arg->getLoadIdx();
+      const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
+      if (src_col != NULL)
+        m_main_scope.column_map[col_idx] = src_col;
     }
   }
 }

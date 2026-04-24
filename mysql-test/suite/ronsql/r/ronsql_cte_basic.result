@@ -202,7 +202,38 @@ k	SUM(big_orders.t)
 200	60
 300	90
 
+
+=== Test 7 (B.2c): VARCHAR GROUP BY column in CTE body ===
+== Query ==
+WITH by_code AS (
+SELECT r_code AS rcode, COUNT(*) AS n
+FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+GROUP BY by_code.rcode;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH by_code AS (
+SELECT r_code AS rcode, COUNT(*) AS n
+FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+GROUP BY by_code.rcode|
+rcode	SUM(by_code.n)
+UK	4
+US	4
+
 === Cleanup ===
 DROP TABLE cte_lineitem;
 DROP TABLE cte_customer;
 DROP TABLE cte_orders;
+DROP TABLE cte_regions;
