@@ -841,119 +841,33 @@ static int send_next_write_batch(std::string *response,
   return 0;
 }
 
-static int set_complex_rows(Ndb *ndb,
-                            const NdbDictionary::Table *tab,
-                            std::string *response,
-                            Uint64 redis_key_id,
-                            struct KeyStorage *key_storage,
-                            struct GetControl *get_ctrl,
-                            Uint32 loop_count,
-                            Uint32 current_index) {
-  Uint32 num_complex_writes = 0;
-  Uint32 num_pre_drained = 0;
-  for (Uint32 i = 0; i < loop_count; i++) {
-    Uint32 inx = current_index + i;
-    if (key_storage[inx].m_key_state == KeyState::MultiRow) {
-      num_complex_writes++;
-      DEB_MSET_CMD(("Start complex write of key id %u\n", inx));
-      if (key_storage[i].m_trans == nullptr) {
-        if (!setup_one_transaction(ndb,
-                                   response,
-                                   redis_key_id,
-                                   &key_storage[inx],
-                                   tab)) {
-          return 1;
-        }
-        get_ctrl->m_num_transactions++;
-      }
-      Uint32 row_state = 0;
-      int ret_code = write_data_to_key_op(response,
-                                          tab,
-                                          &key_storage[inx],
-                                          redis_key_id,
-                                          false,
-                                          row_state,
-                                          get_ctrl->m_database_id);
-      if (ret_code != 0) {
-        return 1;
-      }
-      prepare_write_transaction(&key_storage[inx]);
-    } else if (key_storage[inx].m_key_state == KeyState::MultiRowRWValue) {
-      // Head submit already done by set_simple_rows and write_callback
-      // already transitioned the key to MultiRowRWValue. No fresh
-      // NoCommit pending; credit its callback into current_finished
-      // below so send_next_write_batch's dispatch-consumes-credit
-      // assertion balances.
-      num_complex_writes++;
-      num_pre_drained++;
-    }
-  }
-  // send_next_write_batch gates on m_num_keys_multi_rows; after the
-  // unified NoCommit-first pipeline most keys arrive in
-  // MultiRowRWValue without having touched that counter in
-  // set_simple_rows, so set it here from the authoritative count.
-  get_ctrl->m_num_keys_multi_rows = num_complex_writes;
-  Uint32 current_finished_in_loop = num_pre_drained;
-  get_ctrl->m_num_keys_outstanding = num_complex_writes;
-  get_ctrl->m_num_bytes_outstanding =
-    num_complex_writes * (sizeof(struct key_table) - MAX_KEY_VALUE_LEN);
-  if (num_pre_drained > 0) {
-    // Dispatch MultiRowRWValue keys inherited from set_simple_rows
-    // before entering the drain loop; otherwise execute_ndb would
-    // block 100ms waiting for a callback that will never fire
-    // (their NoCommit already completed in set_simple_rows).
-    int ret_code = send_next_write_batch(response,
-                                         key_storage,
-                                         get_ctrl,
-                                         current_index,
-                                         loop_count,
-                                         current_finished_in_loop);
-    if (ret_code != 0) return 1;
-  }
-  if (num_complex_writes == 0) {
-    return 0;
-  }
-  do {
-    /**
-     * Now send off all prepared and wait for at least one to complete.
-     * We cannot wait for multiple ones since we could then run into
-     * deadlock issues. The transactions are independent of each other,
-     * so if one of them has to wait for a lock, it should not stop
-     * other transactions from progressing.
-     */
-    DEB_MSET_CMD(("Call sendPollNdb with %u keys, %u keys out and %u bytes"
-                  " out, current_finished_in_loop: %u\n",
-                  get_ctrl->m_num_keys_multi_rows,
-                  get_ctrl->m_num_keys_outstanding,
-                  get_ctrl->m_num_bytes_outstanding,
-                  current_finished_in_loop));
-    int min_finished = 1;
-    int finished = execute_ndb(ndb, min_finished, __LINE__);
-    assert(finished >= 0);
-    current_finished_in_loop += finished;
-    DEB_MSET_CMD(("Finished serving %u keys, %u remain,"
-                  " prepare next batch\n",
-      finished, current_finished_in_loop));
-    if (get_ctrl->m_num_keys_failed > 0) return 0;
-    int ret_code = send_next_write_batch(response,
-                                         key_storage,
-                                         get_ctrl,
-                                         current_index,
-                                         loop_count,
-                                         current_finished_in_loop);
-    if (ret_code != 0) return 1;
-  } while (current_finished_in_loop < num_complex_writes);
-  return 0;
-}
-
-static int set_simple_rows(Ndb *ndb,
-                           const NdbDictionary::Table *tab,
-                           std::string *response,
-                           Uint64 redis_key_id,
-                           struct KeyStorage *key_storage,
-                           struct GetControl *get_ctrl,
-                           Uint32 loop_count,
-                           Uint32 current_index) {
+// Unified HSET / MSET / SET write pipeline. All keys go through:
+//   Phase A - submit NoCommit on string_keys via the complex
+//             interpreter (write_key_row_no_commit).
+//   Phase B - drain the NoCommit callbacks; every successful key
+//             lands in MultiRowRWValue with its trans still open.
+//   Phase C - dispatch: fast-path commit for inline-only keys
+//             (m_num_rows == 0 && m_prev_num_rows == 0), or queue
+//             extension-row writes / deletes for keys that need
+//             them, via send_next_write_batch.
+//   Phase D - drain terminal commit callbacks (with intermediate
+//             dispatch rounds for keys that needed ext-row writes).
+//
+// Replaces the old split of set_simple_rows + set_complex_rows with
+// their simple-path abort-and-retry-via-6000 pattern. The split was
+// unsafe after the interpreter-less pre-filter came out, because
+// write_data_to_key_op silently truncates values > INLINE_VALUE_LEN
+// into value_start without the interpreter catching the mismatch;
+// unifying on the complex interpreter closes that hole.
+static int set_rows(Ndb *ndb,
+                    const NdbDictionary::Table *tab,
+                    std::string *response,
+                    Uint64 redis_key_id,
+                    struct KeyStorage *key_storage,
+                    struct GetControl *get_ctrl,
+                    Uint32 loop_count,
+                    Uint32 current_index) {
+  // Phase A - submit NoCommit for every key.
   for (Uint32 i = 0; i < loop_count; i++) {
     Uint32 inx = current_index + i;
     key_storage[inx].m_rondb_key = 0;
@@ -961,8 +875,8 @@ static int set_simple_rows(Ndb *ndb,
     if (value_len > INLINE_VALUE_LEN) {
       // Compute extension-row layout and allocate a fresh rondb_key
       // so write_data_to_key_op writes the correct num_rows and so
-      // send_next_write_batch knows to take the ext-rows branch
-      // instead of the inline fast-path commit.
+      // send_next_write_batch picks the ext-rows branch instead of
+      // the inline fast-path commit.
       Uint32 extended_value_len = value_len - INLINE_VALUE_LEN;
       Uint32 num_value_rows = extended_value_len / EXTENSION_VALUE_LEN;
       if (extended_value_len % EXTENSION_VALUE_LEN != 0) {
@@ -978,21 +892,12 @@ static int set_simple_rows(Ndb *ndb,
       DEB_HSET_KEY(("key %u large value, num_rows: %u, rondb_key: %llu\n",
         inx, num_value_rows, key_storage[inx].m_rondb_key));
     }
-    DEB_MSET_CMD(("NoCommit write with value_len: %u\n", value_len));
-    if (get_ctrl->m_get_cmd_part &&
-        key_storage[inx].m_trans != nullptr) {
-      /* Transaction already started by the get-phase read. */
-      if (key_storage[inx].m_num_rows > 0) {
-        /* There are rows to delete, not simple transaction */
-        DEB_MSET_CMD(("Multi row detected with SET .. GET\n"));
-        get_ctrl->m_num_keys_multi_rows++;
-        continue;
-      }
-    } else {
-      /* Either no get-phase (plain SET / MSET) or the get-phase read
-       * closed the transaction because the key did not exist
-       * (SET .. GET on a non-existent key - C9). In both cases we
-       * need a fresh transaction for the write. */
+    if (!(get_ctrl->m_get_cmd_part &&
+          key_storage[inx].m_trans != nullptr)) {
+      // Either no get-phase (plain SET / MSET) or the get-phase read
+      // closed the transaction because the key did not exist
+      // (SET .. GET on a non-existent key - C9). In both cases we
+      // need a fresh transaction for the write.
       if (!setup_one_transaction(ndb,
                                  response,
                                  redis_key_id,
@@ -1007,7 +912,6 @@ static int set_simple_rows(Ndb *ndb,
                                         tab,
                                         &key_storage[inx],
                                         redis_key_id,
-                                        false,
                                         row_state,
                                         get_ctrl->m_database_id);
     if (ret_code != 0) {
@@ -1015,26 +919,76 @@ static int set_simple_rows(Ndb *ndb,
     }
     prepare_write_transaction(&key_storage[inx]);
   }
+
+  // Phase B - drain NoCommit callbacks. write_callback decrements
+  // m_num_keys_outstanding on both success and error paths.
+  get_ctrl->m_num_keys_outstanding = loop_count;
   Uint32 current_finished_in_loop = 0;
-  assert(loop_count >= get_ctrl->m_num_keys_multi_rows);
-  Uint32 count_finished = loop_count - get_ctrl->m_num_keys_multi_rows;
-  DEB_MSET_CMD(("count_finished: %u\n", count_finished));
-  get_ctrl->m_num_keys_outstanding = count_finished;
   do {
-    /**
-     * Now send off all prepared and wait for all to complete.
-     * Since each transaction is independent and only takes one
-     * Exclusive lock there is no risk for deadlock.
-     *
-     * In the future when we can run it in one transaction we will
-     * avoid deadlocks by sorting the rows AND by using a single
-     * partition in the table 'string_keys'.
-     */
     int min_finished = 1;
     int finished = execute_ndb(ndb, min_finished, __LINE__);
     assert(finished >= 0);
     current_finished_in_loop += finished;
-  } while (current_finished_in_loop < count_finished);
+  } while (current_finished_in_loop < loop_count);
+
+  if (get_ctrl->m_num_keys_failed > 0) return 0;
+
+  // Phase C - count dispatchable keys. Error keys (CompletedFailed,
+  // CompletedConditionalFail) stay on the side; only MultiRowRWValue
+  // keys need a commit or ext-row write.
+  Uint32 num_dispatch = 0;
+  for (Uint32 i = 0; i < loop_count; i++) {
+    Uint32 inx = current_index + i;
+    if (key_storage[inx].m_key_state == KeyState::MultiRowRWValue) {
+      num_dispatch++;
+    }
+  }
+  get_ctrl->m_num_keys_multi_rows = num_dispatch;
+  if (num_dispatch == 0) {
+    return 0;
+  }
+  get_ctrl->m_num_keys_outstanding = num_dispatch;
+  get_ctrl->m_num_bytes_outstanding =
+    num_dispatch * (sizeof(struct key_table) - MAX_KEY_VALUE_LEN);
+  // Credit the NoCommit callbacks that already fired in Phase B
+  // (send_next_write_batch decrements this counter for each key it
+  // dispatches). Without the credit the dispatch-consumes-credit
+  // assertion inside send_next_write_batch would trip.
+  current_finished_in_loop = num_dispatch;
+
+  // First dispatch sweep: queue commit / ext-write ops on each
+  // MultiRowRWValue trans so Phase D's execute_ndb has pending
+  // callbacks to wait for.
+  int ret_code = send_next_write_batch(response,
+                                       key_storage,
+                                       get_ctrl,
+                                       current_index,
+                                       loop_count,
+                                       current_finished_in_loop);
+  if (ret_code != 0) return 1;
+
+  // Phase D - drain terminal callbacks. Ext-row paths loop through
+  // extra dispatch rounds until their final commit fires.
+  do {
+    DEB_MSET_CMD(("Call sendPollNdb with %u keys, %u keys out and %u bytes"
+                  " out, current_finished_in_loop: %u\n",
+                  get_ctrl->m_num_keys_multi_rows,
+                  get_ctrl->m_num_keys_outstanding,
+                  get_ctrl->m_num_bytes_outstanding,
+                  current_finished_in_loop));
+    int min_finished = 1;
+    int finished = execute_ndb(ndb, min_finished, __LINE__);
+    assert(finished >= 0);
+    current_finished_in_loop += finished;
+    if (get_ctrl->m_num_keys_failed > 0) return 0;
+    ret_code = send_next_write_batch(response,
+                                     key_storage,
+                                     get_ctrl,
+                                     current_index,
+                                     loop_count,
+                                     current_finished_in_loop);
+    if (ret_code != 0) return 1;
+  } while (current_finished_in_loop < num_dispatch);
   return 0;
 }
 
@@ -1255,49 +1209,30 @@ void rondb_mset(Ndb *ndb,
   do {
     Uint32 loop_count = std::min(num_keys - current_index,
                                  (Uint32)MAX_PARALLEL_KEY_OPS);
-    int ret_code = set_simple_rows(ndb,
-                                   tab,
-                                   response,
-                                   redis_key_id,
-                                   key_storage,
-                                   get_ctrl,
-                                   loop_count,
-                                   current_index);
+    int ret_code = set_rows(ndb,
+                            tab,
+                            response,
+                            redis_key_id,
+                            key_storage,
+                            get_ctrl,
+                            loop_count,
+                            current_index);
     if (ret_code != 0) {
       release_mset(get_ctrl);
       return;
     }
+    // After set_rows, every key is in a terminal state with
+    // m_close_flag set: CompletedSuccess (via write_commit_callback),
+    // CompletedFailed, or CompletedConditionalFail. Close their
+    // transactions now so we don't hold open handles across batches.
     close_finished_transactions(key_storage,
                                 get_ctrl,
                                 loop_count,
                                 current_index);
-    DEB_MSET_CMD(("%u keys, %u multi rows, %u completed\n",
+    DEB_MSET_CMD(("%u keys, %u dispatched, %u completed\n",
                   num_keys,
                   get_ctrl->m_num_keys_multi_rows,
                   get_ctrl->m_num_keys_completed_first_pass));
-    /**
-     * set_simple_rows has NoCommit'd every non-SET..GET-multi key
-     * and left them in MultiRowRWValue with open transactions.
-     * set_complex_rows is now the tail dispatcher for all keys
-     * regardless of value size; it handles MultiRow (from the
-     * SET..GET-multi continue path) and MultiRowRWValue (the
-     * common NoCommit'd case) in a single loop.
-     */
-    assert(get_ctrl->m_num_keys_outstanding == 0);
-    if (get_ctrl->m_num_keys_failed == 0) {
-      int ret_code = set_complex_rows(ndb,
-                                      tab,
-                                      response,
-                                      redis_key_id,
-                                      key_storage,
-                                      get_ctrl,
-                                      loop_count,
-                                      current_index);
-      if (ret_code != 0) {
-        release_mset(get_ctrl);
-        return;
-      }
-    }
     current_index += loop_count;
   } while (current_index < num_keys && get_ctrl->m_num_keys_failed == 0);
   /**

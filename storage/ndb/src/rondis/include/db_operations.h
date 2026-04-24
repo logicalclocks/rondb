@@ -55,7 +55,6 @@ int prepare_simple_delete_row(std::string *response,
 void commit_write_value_transaction(struct KeyStorage *key_store);
 void prepare_write_value_transaction(struct KeyStorage *key_store);
 void prepare_write_transaction(struct KeyStorage *key_store);
-void commit_simple_write_transaction(struct KeyStorage *key_storage);
 
 /* Setup operation record for SET MODULE */
 int prepare_delete_value_row(std::string *response,
@@ -68,7 +67,6 @@ int write_data_to_key_op(std::string *response,
                          const NdbDictionary::Table *tab,
                          KeyStorage *key_store,
                          Uint64 redis_key_id,
-                         bool commit_flag,
                          Uint32 row_state,
                          Uint32 database_id);
 

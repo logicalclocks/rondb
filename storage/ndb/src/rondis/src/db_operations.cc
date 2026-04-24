@@ -551,63 +551,10 @@ void commit_write_transaction(struct KeyStorage *key_store) {
                                            (void*)key_store);
 }
 
-static void
-simple_write_callback(int result, NdbTransaction *trans, void *aObject) {
-  struct KeyStorage *key_store = (struct KeyStorage*)aObject;
-  struct GetControl *get_ctrl = key_store->m_get_ctrl;
-  (void)result;
-  DEB_HSET_KEY(("result = %d\n", result));
-  assert(trans == key_store->m_trans);
-  assert(get_ctrl->m_num_transactions > 0);
-  int code = trans->getNdbError().code;
-  if (code != 0 || result != 0) {
-    if (code == RESTRICT_VALUE_ROWS_ERROR) {
-      key_store->m_key_state = KeyState::MultiRow;
-      get_ctrl->m_num_keys_multi_rows++;
-      DEB_HSET_KEY(("key %u had RESTRICT_VALUE_ROWS_ERROR\n",
-        key_store->m_index));
-    } else if (code == RONDB_CONDITIONAL_STORE_NOT_MET) {
-      // NX / XX guard tripped in the write interpreter program
-      // (C7 / C8). Not a real failure - the response builder will
-      // emit Redis-canonical nil ($-1\r\n) for this key.
-      key_store->m_key_state = KeyState::CompletedConditionalFail;
-      get_ctrl->m_num_keys_completed_first_pass++;
-    } else {
-      key_store->m_key_state = KeyState::CompletedFailed;
-      get_ctrl->m_num_keys_failed++;
-      DEB_HSET_KEY(("key %u had ERROR: %d\n", key_store->m_index, code));
-      if (get_ctrl->m_error_code == 0) {
-        get_ctrl->m_error_code = code;
-      }
-    }
-  } else {
-    get_ctrl->m_num_keys_completed_first_pass++;
-    key_store->m_key_state = KeyState::CompletedSuccess;
-    // OUTPUT_INDEX_3 from the interpreter: 1 on INSERT, 0 on UPDATE.
-    // Aggregate for the HSET new-field-count reply (C10).
-    if (key_store->m_rec_attr_new_field != nullptr &&
-        key_store->m_rec_attr_new_field->u_64_value() != 0) {
-      get_ctrl->m_num_new_fields++;
-    }
-    DEB_HSET_KEY(("key %u simple write succeeded\n",
-      key_store->m_index));
-  }
-  assert(get_ctrl->m_num_keys_outstanding > 0);
-  get_ctrl->m_num_keys_outstanding--;
-  key_store->m_close_flag = true;
-}
-
-void commit_simple_write_transaction(struct KeyStorage *key_store) {
-  key_store->m_trans->executeAsynchPrepare(NdbTransaction::Commit,
-                                           &simple_write_callback,
-                                           (void*)key_store);
-}
-
 int write_data_to_key_op(std::string *response,
                          const NdbDictionary::Table *tab,
                          KeyStorage *key_store,
                          Uint64 redis_key_id,
-                         bool commit_flag,
                          Uint32 row_state,
                          Uint32 database_id) {
   struct key_table key_row;
@@ -643,15 +590,7 @@ int write_data_to_key_op(std::string *response,
 
   Uint32 code_buffer[64];
   NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer) / sizeof(code_buffer[0]));
-  int ret_code = 0;
-  if (commit_flag) {
-    ret_code = write_key_row_commit(response, code, tab, key_store);
-  } else {
-    ret_code = write_key_row_no_commit(response,
-                                       code,
-                                       tab,
-                                       key_store);
-  }
+  int ret_code = write_key_row_no_commit(response, code, tab, key_store);
   if (ret_code != 0) {
     return ret_code;
   }
@@ -664,44 +603,34 @@ int write_data_to_key_op(std::string *response,
   opts.interpretedCode = &code;
 
   // getvals[] carries the extra-final-values we want the data node to
-  // return from the interpreted-code OUTPUT channels.
-  // Commit (simple) path: only OUTPUT_INDEX_3 (new-field flag for C10).
-  // No-commit (complex) path: OUTPUT_INDEX_0 (prev_num_rows) plus
-  // OUTPUT_INDEX_1 (rondb_key), optionally OUTPUT_INDEX_2 (expiry for
-  // KEEPTTL), and always OUTPUT_INDEX_3 (new-field flag).
+  // return from the interpreted-code OUTPUT channels:
+  //   INDEX_0 prev_num_rows, INDEX_1 rondb_key, INDEX_2 expiry_date
+  //   (only when KEEPTTL), INDEX_3 new-field flag (always).
   NdbOperation::GetValueSpec getvals[4];
-  if (commit_flag) {
-    getvals[0].appStorage = nullptr;
-    getvals[0].recAttr = nullptr;
-    getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_3;
-    opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
-    opts.numExtraGetFinalValues = 1;
-    opts.extraGetFinalValues = getvals;
-  } else {
-    getvals[0].appStorage = nullptr;
-    getvals[0].recAttr = nullptr;
-    getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
-    getvals[1].appStorage = nullptr;
-    getvals[1].recAttr = nullptr;
-    getvals[1].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_1;
-    opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
-    Uint32 num_vals = 2;
-    if (key_store->m_keep_ttl == true &&
-        key_store->m_num_rows > 0) {
-      getvals[num_vals].appStorage = nullptr;
-      getvals[num_vals].recAttr = nullptr;
-      getvals[num_vals].column =
-        NdbDictionary::Column::READ_INTERPRETER_OUTPUT_2;
-      num_vals++;
-    }
+  getvals[0].appStorage = nullptr;
+  getvals[0].recAttr = nullptr;
+  getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
+  getvals[1].appStorage = nullptr;
+  getvals[1].recAttr = nullptr;
+  getvals[1].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_1;
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
+  Uint32 num_vals = 2;
+  if (key_store->m_keep_ttl == true &&
+      key_store->m_num_rows > 0) {
     getvals[num_vals].appStorage = nullptr;
     getvals[num_vals].recAttr = nullptr;
     getvals[num_vals].column =
-      NdbDictionary::Column::READ_INTERPRETER_OUTPUT_3;
+      NdbDictionary::Column::READ_INTERPRETER_OUTPUT_2;
     num_vals++;
-    opts.numExtraGetFinalValues = num_vals;
-    opts.extraGetFinalValues = getvals;
   }
+  getvals[num_vals].appStorage = nullptr;
+  getvals[num_vals].recAttr = nullptr;
+  getvals[num_vals].column =
+    NdbDictionary::Column::READ_INTERPRETER_OUTPUT_3;
+  num_vals++;
+  opts.numExtraGetFinalValues = num_vals;
+  opts.extraGetFinalValues = getvals;
+
   /* Define the actual operation to be sent to RonDB data node. */
   const NdbOperation *op = trans->writeTuple(
     pk_key_record[database_id],
@@ -717,25 +646,17 @@ int write_data_to_key_op(std::string *response,
                                trans->getNdbError());
     return -1;
   }
-  key_store->m_rec_attr_prev_num_rows = nullptr;
-  key_store->m_rec_attr_rondb_key = nullptr;
+  key_store->m_rec_attr_prev_num_rows = getvals[0].recAttr;
+  key_store->m_rec_attr_rondb_key = getvals[1].recAttr;
   key_store->m_rec_attr_expiry_date = nullptr;
-  key_store->m_rec_attr_new_field = nullptr;
-  if (commit_flag) {
-    // Only the new-field flag is requested on the simple path.
-    key_store->m_rec_attr_new_field = getvals[0].recAttr;
-  } else {
-    key_store->m_rec_attr_prev_num_rows = getvals[0].recAttr;
-    key_store->m_rec_attr_rondb_key = getvals[1].recAttr;
-    // Walk the layout assembled above: INDEX_2 is present only when
-    // the KEEPTTL branch ran, and INDEX_3 always comes last.
-    Uint32 getvals_slot = 2;
-    if (key_store->m_keep_ttl == true && key_store->m_num_rows > 0) {
-      key_store->m_rec_attr_expiry_date = getvals[getvals_slot].recAttr;
-      getvals_slot++;
-    }
-    key_store->m_rec_attr_new_field = getvals[getvals_slot].recAttr;
+  // Walk the layout assembled above: INDEX_2 is present only when
+  // the KEEPTTL branch ran, and INDEX_3 always comes last.
+  Uint32 getvals_slot = 2;
+  if (key_store->m_keep_ttl == true && key_store->m_num_rows > 0) {
+    key_store->m_rec_attr_expiry_date = getvals[getvals_slot].recAttr;
+    getvals_slot++;
   }
+  key_store->m_rec_attr_new_field = getvals[getvals_slot].recAttr;
   return 0;
 }
 

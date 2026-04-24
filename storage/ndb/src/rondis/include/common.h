@@ -33,8 +33,6 @@
 
 #define REDIS_DB_NAME "redis"
 
-#define RESTRICT_VALUE_ROWS_ERROR 6000
-
 #define RONDB_INTERNAL_ERROR 2
 #define READ_ERROR 626
 

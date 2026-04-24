@@ -322,57 +322,6 @@ int write_key_row_no_commit(std::string *response,
   return 0;
 }
 
-int write_key_row_commit(std::string *response,
-                         NdbInterpretedCode &code,
-                         const NdbDictionary::Table *tab,
-                         KeyStorage *key_store) {
-  const NdbDictionary::Column *num_rows_col =
-    tab->getColumn(KEY_TABLE_COL_num_rows);
-  code.load_op_type(REG1);         // Read operation type into register 1
-  code.branch_ne_const(REG1, RONDB_INSERT, LABEL0); // Updates go to label 0
-  /* INSERT */
-  if (key_store->m_set_type == IsUpdate) {
-    code.interpret_exit_nok(6000);
-  } else {
-    // Signal "new field" for HSET new-field-count aggregation (C10).
-    code.load_const_u16(REG5, 1);
-    code.write_interpreter_output(REG5, OUTPUT_INDEX_3);
-    code.interpret_exit_ok();
-  }
-  /* UPDATE */
-  code.def_label(LABEL0);
-  if (key_store->m_set_type == IsInsert) {
-    DEB_MSET_CMD(("IsInsert on existing row\n"));
-    code.interpret_exit_nok(6000);
-  } else {
-    if (key_store->m_keep_ttl == false &&
-        key_store->m_set_ttl == false) {
-      const NdbDictionary::Column *expiry_date_col =
-        tab->getColumn(KEY_TABLE_COL_expiry_date);
-      code.load_const_null(REG3);
-      code.write_attr(expiry_date_col, REG3);
-    }
-    code.read_attr(REG7, num_rows_col);
-    code.branch_eq_const(REG7, 0, LABEL1);
-    code.interpret_exit_nok(6000);
-    code.def_label(LABEL1);
-    // Signal "existing field" (update) for HSET new-field-count (C10).
-    code.load_const_u16(REG5, 0);
-    code.write_interpreter_output(REG5, OUTPUT_INDEX_3);
-    code.interpret_exit_ok();
-  }
-
-  // Program end, now compile code
-  int ret_code = code.finalise();
-  if (ret_code != 0) {
-    assign_ndb_err_to_response(response,
-                               "Failed to create Interpreted code",
-                               code.getNdbError());
-    return -1;
-  }
-  return 0;
-}
-
 int simple_delete_key_row_code(std::string *response,
                                NdbInterpretedCode &code,
                                const NdbDictionary::Table *tab) {

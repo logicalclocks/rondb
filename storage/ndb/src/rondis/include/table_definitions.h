@@ -252,8 +252,8 @@ struct GetControl {
     Uint32 m_num_keys_failed;
     // Running count of fields/rows whose SET write actually inserted
     // rather than overwrote. Used by HSET's Redis-canonical reply
-    // (C10) - incremented by write_callback / simple_write_callback
-    // when OUTPUT_INDEX_3 from the interpreter program is 1.
+    // (C10) - incremented by write_callback when OUTPUT_INDEX_3 from
+    // the interpreter program is 1.
     Uint32 m_num_new_fields;
     Uint32 m_num_read_errors;
     Uint32 m_error_code;
