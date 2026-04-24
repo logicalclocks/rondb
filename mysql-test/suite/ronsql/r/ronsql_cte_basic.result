@@ -232,6 +232,37 @@ rcode	SUM(by_code.n)
 UK	4
 US	4
 
+
+=== Test 8 (B.2d): COUNT(*) alongside SUM(cte.col) in main ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, COUNT(*), SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, COUNT(*), SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+k	COUNT(*)	SUM(sums.t)
+100	1	125
+200	1	100
+300	1	90
+
 === Cleanup ===
 DROP TABLE cte_lineitem;
 DROP TABLE cte_customer;

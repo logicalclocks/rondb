@@ -270,6 +270,30 @@ FROM cte_regions AS r
 JOIN by_code ON by_code.rcode = r.r_code
 GROUP BY by_code.rcode|
 
+--echo
+--echo
+--echo === Test 8 (B.2d): COUNT(*) alongside SUM(cte.col) in main ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, COUNT(*), SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, COUNT(*), SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+
 DELIMITER ;|
 
 --echo

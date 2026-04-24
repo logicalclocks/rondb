@@ -80,7 +80,14 @@ matching test coverage.
   ResultPrinter can read charset/precision/scale. SUM/COUNT outputs
   stay NULL (charset-irrelevant for numeric types;
   ResultPrinter's existing fallback handles it).
-- **Phase B.2d: planned below.**
+- **Phase B.2d (COUNT(*) + SUM(cte.col) in main): DONE** — no emit
+  changes required. `COUNT(*)` slot interleaves cleanly with
+  `LoadLinkedColumn(cte_base_pos + ..., vtcol)` for the CTE-backed
+  SUM; Phase B.1's `cte_base_pos` offset did not disturb non-linked
+  slot numbering.
+- **Phase B.2 COMPLETE** — all four shapes (B.2a/b/c/d) green in
+  `ronsql_cte_basic.test`. Ready to move on to Phase C (filter on
+  CTE_LOOKUP child in main query).
 - **Phase C–H, Phase P-GB: NOT STARTED.** Phase C has the virtual-table
   prerequisite; Phase P-GB (DBLQH `buildCteLinkedBuffer` fix to uniformly
   prefix step-1 parent-linked entries) should land before Phase D so
@@ -533,9 +540,13 @@ it correctly. Note the join uses `by_code.code = r.r_code`, a VARCHAR
 linked key — exercises charset-aware key binding in the CTE_LOOKUP
 emit.
 
-**Shape B.2d — COUNT(*) in the MAIN query over CTE output.** Verifies
-multi-slot alignment of the outer aggregator when main slots are
-`COUNT(*)` + `SUM(cte.col)` together.
+**Shape B.2d — COUNT(*) in the MAIN query over CTE output. DONE.**
+
+No emit fixes needed. `COUNT(*)` interleaves cleanly with
+`LoadLinkedColumn(cte_base_pos + cte_col_idx, reg, vtcol)` for a
+CTE-backed SUM — Phase B.1's `cte_base_pos` offset applies only to
+linked loads, non-linked slots (LoadUint64 + Count) keep their
+register IDs independently.
 ```sql
 WITH sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
               FROM cte_orders GROUP BY o_custkey)
