@@ -38,6 +38,10 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_outer_join_phase_3.md` — Phase 3: CTE_SCAN as outer-join child
 - `cte_outer_join_phase_4.md` — Phase 4: testCteNdbApiOuterJoin.cpp consolidated tests
 - `cte_outer_join_phase_5.md` — Phase 5: CTE_LOOKUP agg-feed NULL injection (was next_steps 6a)
+- `ronsql_cte_plan.md` — RonSQL client-side wiring for all the above CTE
+  features (Phases A–H + Phase P-GB). Phase A + A0 + B.1 landed; Phase B.2
+  next. Portable copy of the plan-mode file — use this to resume the
+  session on another machine.
 
 ### Key Source Files
 - `DblqhMain.cpp` — Signal handlers for JOIN_AGG_SETUP/COMPLETE/RELEASE, scan processing, sendScanFragConf
