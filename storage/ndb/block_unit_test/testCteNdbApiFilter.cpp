@@ -59,6 +59,7 @@
 #include "NdbQueryBuilder.hpp"
 #include "NdbQueryBuilderImpl.hpp"
 #include "NdbQueryOperation.hpp"
+#include "mysql/strings/m_ctype.h"  /* CHARSET_INFO body for csNumber lookup */
 
 #include <mysql.h>
 
@@ -2756,6 +2757,464 @@ testCteChainedMultiBatch(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 21: CTE_LOOKUP filter — inline-type opcode, numeric SUM result */
+/*                                                                     */
+/* Mirrors Test 6 (cte0.total > 40) but builds the filter with         */
+/* branch_linked_inline_ge instead of branch_linked_mem_ge.  The new   */
+/* opcode (BRANCH_MEM_OP_ARG_INLINE_TYPE = 40) carries type/length/    */
+/* charset metadata inline in the program rather than indirecting      */
+/* through a registered NDB tableId+attrId — required for filtering    */
+/* on synthesized aggregate result types whose virtual columns are     */
+/* not registered in DBTUP's tablerec[].  Server-side handler:         */
+/* Dbtup::InterpreterContext::handleBranchMemOpArgInlineType.          */
+/*                                                                     */
+/* Same expected result as Test 6 (3 rows survive the filter): the     */
+/* filter program is logically equivalent — only the encoding differs. */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteLookupFilterInlineTypeNumeric(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 21: CTE_LOOKUP filter (inline-type, numeric SUM) ... ");
+  fflush(stdout);
+
+  /* Tests 19 and 20 reseed cte_src with thousands of rows for their
+   * multi-batch coverage and don't restore the original 5-row
+   * dataset.  Reseed to the same data insertTestData uses so the
+   * expected row count below stays meaningful. */
+  if (sqlExec(conn, "DELETE FROM cte_src") != 0 ||
+      sqlExec(conn,
+              "INSERT INTO cte_src VALUES "
+              "(1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)") != 0) {
+    printf("FAILED (reseed cte_src)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  /* CTE 0 = GROUP BY grp, SUM(val) */
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") ||
+      !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Sum(0, 0) ||
+      !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg: %s)\n", cteAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Build filter via the inline-type opcode.  No virtTab indirection;
+   * type/length/charset are encoded directly in the program. */
+  Uint32 codeBuf[64];
+  NdbInterpretedCode filterCode(/*table=*/nullptr, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  Int64 threshold = 40;
+  const Uint32 REJECT = 0;
+  const Uint32 typeId =
+      static_cast<Uint32>(NdbDictionary::Column::Bigint);
+  const Uint32 columnSizeBytes = 8;  /* SUM result is Uint64-encoded */
+  const Uint32 csNumber = 0;          /* numeric, no charset */
+  if (filterCode.branch_linked_inline_ge(
+          /*position=*/1, typeId, columnSizeBytes, csNumber,
+          &threshold, sizeof(threshold), REJECT) != 0 ||
+      filterCode.interpret_exit_ok() != 0 ||
+      filterCode.def_label(REJECT) != 0 ||
+      filterCode.interpret_exit_nok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter: %s)\n", filterCode.getNdbError().message);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) { printf("FAILED (create)\n"); return -1; }
+
+  qb->beginCteSubtree(0);
+  const NdbQueryTableScanOperationDef *cteScanOp = qb->scanTable(srcTab);
+  if (cteScanOp == nullptr) {
+    printf("FAILED (CTE scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteJoinKey[] = {
+      qb->linkedValue(cteScanOp, "pk"), nullptr
+  };
+  NdbQueryOptions cteLeafOpts;
+  cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLeafOpts.setAggregation(cteAgg);
+  if (qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts) == nullptr) {
+    printf("FAILED (CTE leaf: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, cteAgg) != 0) {
+    printf("FAILED (defineCte)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+  if (mainScanOp == nullptr) {
+    printf("FAILED (main scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteKey[] = {
+      qb->linkedValue(mainScanOp, "grp"), nullptr
+  };
+  NdbQueryOptions cteLookupOpts;
+  cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLookupOpts.setInterpretedCode(filterCode);
+  if (qb->lookupCte(0, 2, virtTab, cteKey, &cteLookupOpts) == nullptr) {
+    printf("FAILED (lookupCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQueryOperation *mainQOp = query->getQueryOperation(3U);
+  NdbQueryOperation *cteQOp  = query->getQueryOperation(4U);
+  NdbRecAttr *raGrp = nullptr;
+  if (mainQOp != nullptr) raGrp = mainQOp->getValue("grp");
+  if (cteQOp != nullptr) {
+    (void)cteQOp->getValue("grp");
+    (void)cteQOp->getValue("total");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans %d:%s, query %d:%s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    if (raGrp != nullptr) V("  row: main.grp=%d\n", raGrp->int32_value());
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  /* Same expected count as Test 6: cte_src has 5 rows; CTE groups
+   * are grp=1/total=30, grp=2/total=70, grp=3/total=50.  Filter
+   * total > 40 keeps grp=2 and grp=3.  Main scan over cte_src has
+   * pk=1/grp=1 (reject), pk=2/grp=1 (reject), pk=3/grp=2 (match),
+   * pk=4/grp=2 (match), pk=5/grp=3 (match) → 3 surviving main rows. */
+  if (rowCount == 3) {
+    printf("OK (%u rows)\n", rowCount);
+    return 0;
+  }
+  printf("FAILED (expected 3 rows, got %u)\n", rowCount);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 22: CTE_LOOKUP filter — inline-type opcode, CHAR GB key        */
+/*                                                                     */
+/* Architectural validation for the inline-type opcode's charset       */
+/* round-trip (csNumber → all_charsets[csNumber] in DBTUP).            */
+/*                                                                     */
+/* Builds a CTE over filter_src (which has a CHAR(8) latin1 column     */
+/* `tag`):                                                             */
+/*   SELECT tag, COUNT(*) FROM filter_src GROUP BY tag                 */
+/* The CTE virt-table is constructed *in memory* (not registered in    */
+/* MySQL / NDB dictionary) — the whole point of the inline-type        */
+/* opcode is that DBTUP doesn't need a registered tableId for type     */
+/* resolution.  RonSQL already uses synthetic virt tables routinely    */
+/* (build_cte_virtual_tables); this test mirrors that pattern at the   */
+/* block-test layer.                                                   */
+/*                                                                     */
+/* Result delivery is via aggregator (query->getAggregator()), not     */
+/* per-row nextResult.  RonSQL's CTE queries take the same path        */
+/* because synthetic virt-table columns leave m_attrSize=0 (no         */
+/* public NdbDictionary API populates it from setType+setLength), so   */
+/* NdbReceiver's row-buffer sizing (which uses getSizeInBytes()) is    */
+/* undersized on the per-row delivery path.  The aggregator-delivery   */
+/* path bypasses that buffer entirely, matching the architectural      */
+/* shape RonSQL already exercises.  Main aggregator: COUNT(*).         */
+/*                                                                     */
+/* Filter: tag = 'beta'.  CHAR(8) latin1 → typeId=Char, columnSize=8,  */
+/* csNumber=tag's source charset id.  Constant 'beta' padded to 8      */
+/* bytes with spaces (PAD-SPACE collation, same as Test 4).            */
+/*                                                                     */
+/* Expected COUNT: 2 (the two 'beta' rows in filter_src).              */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteLookupFilterInlineTypeChar(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 22: CTE_LOOKUP filter (inline-type, CHAR GB key) ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  if (srcTab == nullptr) {
+    printf("FAILED (filter_src lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+  const NdbDictionary::Column *tagSrcCol = srcTab->getColumn("tag");
+  if (tagSrcCol == nullptr) {
+    printf("FAILED (filter_src.tag lookup)\n");
+    return -1;
+  }
+  CHARSET_INFO *tagCharset = tagSrcCol->getCharset();
+  if (tagCharset == nullptr) {
+    printf("FAILED (filter_src.tag has no charset)\n");
+    return -1;
+  }
+  const Uint32 csNumber = (Uint32)tagCharset->number;
+
+  /* Build the CTE virt-table in memory.  Schema mirrors the CTE
+   * outputs: [tag CHAR(8) PK, n BIGINT].  No MySQL-side CREATE
+   * TABLE — the inline-type filter opcode resolves type and
+   * charset from inline metadata, so DBTUP does not need to
+   * find this table in tablerec[]. */
+  NdbDictionary::Table virtTabSyn("__cte_text_virt");
+  {
+    NdbDictionary::Column tagCol;
+    tagCol.setName("tag");
+    tagCol.setType(NdbDictionary::Column::Char);
+    tagCol.setLength(8);
+    tagCol.setCharset(tagCharset);
+    tagCol.setPrimaryKey(true);
+    tagCol.setNullable(false);
+    virtTabSyn.addColumn(tagCol);
+
+    NdbDictionary::Column nCol;
+    nCol.setName("n");
+    nCol.setType(NdbDictionary::Column::Bigunsigned);
+    nCol.setLength(1);
+    nCol.setPrimaryKey(false);
+    nCol.setNullable(true);
+    virtTabSyn.addColumn(nCol);
+  }
+  /* aggregate() finalises Table-level metadata (PK count etc.) which
+   * addColumn does NOT auto-update.  Without this lookupCte's key-count
+   * check rejects with QRY_TOO_MANY_KEY_VALUES because
+   * getNoOfPrimaryKeys() still reports 0.  Same reason build_cte_
+   * virtual_tables() in RonSQL calls aggregate() after addColumn. */
+  {
+    NdbError vtErr;
+    if (virtTabSyn.aggregate(vtErr) != 0) {
+      printf("FAILED (virtTab aggregate: %d %s)\n",
+             vtErr.code, vtErr.message);
+      return -1;
+    }
+  }
+  const NdbDictionary::Table *virtTab = &virtTabSyn;
+
+  /* CTE 0 = GROUP BY tag, COUNT(*) FROM filter_src */
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("tag") ||
+      !cteAgg.LoadUint64(1, 0) ||
+      !cteAgg.Count(0, 0) ||
+      !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg: %s)\n", cteAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Main aggregator: COUNT(*) over CTE_LOOKUP-matched main rows.
+   * No GROUP BY → single result record carrying the count. */
+  NdbAggregator mainAgg(srcTab);
+  if (!mainAgg.LoadUint64(1, 0) ||
+      !mainAgg.Count(0, 0) ||
+      !mainAgg.Finalize()) {
+    printf("FAILED (mainAgg: %s)\n", mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Build filter via inline-type opcode.  Position 0 is the GB key
+   * (tag) — buildCteLinkedBuffer copies GB-key bytes verbatim, so
+   * the linked-buffer slot stores 8 bytes of CHAR(8) latin1 data. */
+  Uint32 codeBuf[64];
+  NdbInterpretedCode filterCode(/*table=*/nullptr, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  char tagVal[8];
+  memset(tagVal, ' ', sizeof(tagVal));
+  memcpy(tagVal, "beta", 4);
+  const Uint32 REJECT = 0;
+  const Uint32 typeId =
+      static_cast<Uint32>(NdbDictionary::Column::Char);
+  const Uint32 columnSizeBytes = 8;  /* CHAR(8) is fixed 8 bytes */
+  if (filterCode.branch_linked_inline_ne(
+          /*position=*/0, typeId, columnSizeBytes, csNumber,
+          tagVal, sizeof(tagVal), REJECT) != 0 ||
+      filterCode.interpret_exit_ok() != 0 ||
+      filterCode.def_label(REJECT) != 0 ||
+      filterCode.interpret_exit_nok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter: %s)\n", filterCode.getNdbError().message);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) { printf("FAILED (create)\n"); return -1; }
+
+  qb->beginCteSubtree(0);
+  const NdbQueryTableScanOperationDef *cteScanOp = qb->scanTable(srcTab);
+  if (cteScanOp == nullptr) {
+    printf("FAILED (CTE scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteJoinKey[] = {
+      qb->linkedValue(cteScanOp, "pk"), nullptr
+  };
+  NdbQueryOptions cteLeafOpts;
+  cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLeafOpts.setAggregation(cteAgg);
+  if (qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts) == nullptr) {
+    printf("FAILED (CTE leaf: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, cteAgg) != 0) {
+    printf("FAILED (defineCte)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  /* Main: scan filter_src; lookupCte by tag. */
+  const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+  if (mainScanOp == nullptr) {
+    printf("FAILED (main scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteKey[] = {
+      qb->linkedValue(mainScanOp, "tag"), nullptr
+  };
+  NdbQueryOptions cteLookupOpts;
+  cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLookupOpts.setInterpretedCode(filterCode);
+  cteLookupOpts.setAggregation(mainAgg);
+  if (qb->lookupCte(0, 2, virtTab, cteKey, &cteLookupOpts) == nullptr) {
+    printf("FAILED (lookupCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans %d:%s, query %d:%s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Drain to make the aggregator finalise its result. */
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    /* nothing — main aggregator carries the count */
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult drain: %s)\n",
+           query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  Int64 count = -1;
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (!rec.end()) {
+    NdbAggregator::Result countRes = rec.FetchAggregationResult();
+    count = countRes.data_int64();
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  /* filter_src has 6 rows; 2 of them have tag='beta'.  CTE has
+   * 3 groups (alpha/beta/gamma); filter accepts only 'beta'.
+   * So exactly 2 main rows satisfy MatchNonNull → COUNT=2. */
+  if (count == 2) {
+    printf("OK (COUNT=%lld)\n", (long long)count);
+    return 0;
+  }
+  printf("FAILED (expected COUNT=2, got %lld)\n", (long long)count);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -2785,6 +3244,8 @@ static const TestEntry g_tests[] = {
     { 18, testCteScanRootEarlyClose },
     { 19, testCteLookupMainMultiBatch },
     { 20, testCteChainedMultiBatch },
+    { 21, testCteLookupFilterInlineTypeNumeric },
+    { 22, testCteLookupFilterInlineTypeChar },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 

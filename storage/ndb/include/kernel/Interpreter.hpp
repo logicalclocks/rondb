@@ -196,7 +196,40 @@ class Interpreter {
   static constexpr Uint32 READ_LINKED_TO_MEM = 39;
   /* Overflow constant 39 free */
 
-  /* 40-46 free, both of them */
+  /**
+   * BRANCH_MEM_OP_ARG_INLINE_TYPE: Like BRANCH_MEM_OP_ARG but carries
+   * type/length/charset info inline rather than indirecting through
+   * tablerec[tableId]. Used by CTE filter mode to compare against
+   * synthesized aggregate result values (SUM produces Bigint, COUNT
+   * produces Bigunsigned) for which no real registered NDB column
+   * descriptor exists.
+   *
+   * Word layout:
+   *   Word 0: opcode | cond | null_semantics | branch_offset
+   *           (same shape as BranchMem)
+   *   Word 1: (typeId << 16) | arg_byte_len
+   *           typeId is an NdbDictionary::Column::Type value (fits in
+   *           ~5 bits, comfortably inside the 16-bit field).
+   *           arg_byte_len is the inline constant length in bytes.
+   *   Word 2: (columnSizeBytes << 16) | csNumber
+   *           columnSizeBytes — full on-wire size of the column data
+   *             in m_linked_attr_data[position] (matches what
+   *             AttributeDescriptor::getSizeInBytes returns for a
+   *             registered column). For VARCHAR includes the
+   *             1-or-2-byte length prefix.
+   *           csNumber — CHARSET_INFO::number for charset-bearing
+   *             types, 0 otherwise. Resolved server-side via
+   *             all_charsets[csNumber] (the kernel-wide registry
+   *             that Dbdict / DbtupMeta populate as tables load).
+   *           Both fit in 16 bits comfortably (max VARCHAR is
+   *           65537 bytes including 2-byte prefix; MySQL charset
+   *           numbers are well under 1024).
+   *   Words 3..N: inline constant data, padded to whole words.
+   */
+  static constexpr Uint32 BRANCH_MEM_OP_ARG_INLINE_TYPE = 40;
+  /* Overflow constant 40 free */
+
+  /* 41-46 free, both of them */
   static constexpr Uint32 READ_PARTIAL_ATTR_TO_MEM = 47;
   /* Overflow constant 47 free */
   static constexpr Uint32 READ_ATTR_TO_MEM = 48;
@@ -1369,6 +1402,17 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
       Uint32 byteLength = getBranchCol_Len(*(op + 1));
       Uint32 wordLength = (byteLength + 3) >> 2;
       return op + 4 + wordLength;  // +4: opcode, attrId/len, tableId, schemaVer
+    }
+    case BRANCH_MEM_OP_ARG_INLINE_TYPE:
+    {
+      /* Like BRANCH_MEM_OP_ARG but the tableId+schemaVer indirection
+       * is replaced by a single word packing columnSizeBytes (high
+       * 16) and csNumber (low 16) — see opcode declaration.
+       */
+      processing = LABEL_ADDRESS_REPLACEMENT;
+      Uint32 byteLength = getBranchCol_Len(*(op + 1));
+      Uint32 wordLength = (byteLength + 3) >> 2;
+      return op + 3 + wordLength;  // +3: opcode, typeId/len, packed-meta
     }
     case BRANCH_ATTR_OP_PARAM:
     case BRANCH_ATTR_OP_ATTR:

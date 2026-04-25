@@ -7247,6 +7247,102 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
+  /* BRANCH_MEM_OP_ARG_INLINE_TYPE — like BRANCH_MEM_OP_ARG, but the
+   * column descriptor (type, length, charset) is encoded inline in
+   * the program rather than looked up via tableId+schemaVersion in
+   * tablerec[]. Used by the CTE filter interpreter to compare against
+   * synthesized aggregate result values for which no real registered
+   * NDB column exists (e.g. SUM produces Bigint; the synthetic CTE
+   * virt table is not registered in DBTUP).
+   *
+   * Layout: [opcode+cond, typeId|argLen, columnSizeBytes<<16|csNumber,
+   *          data...]
+   */
+  static inline int handleBranchMemOpArgInlineType(InterpreterContext& ctx) {
+    thrjamDebug(ctx.tup->jamBuffer());
+    const Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
+    const Uint32 typeId = Interpreter::getBranchCol_AttrId(ins2);
+    const Uint32 argLen = Interpreter::getBranchCol_Len(ins2);
+    const Uint32 meta   = ctx.TcurrentProgram[ctx.TprogramCounter + 1];
+    const Uint32 attrLen  = (meta >> 16) & 0xFFFF;
+    const Uint32 csNumber = meta & 0xFFFF;
+
+    const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(typeId);
+    if (unlikely(sqlType.m_cmp == 0)) {
+      thrjam(ctx.tup->jamBuffer());
+      return -40;
+    }
+
+    const CHARSET_INFO* cs = nullptr;
+    if (csNumber != 0) {
+      if (unlikely(csNumber >= MY_ALL_CHARSETS_SIZE)) {
+        thrjam(ctx.tup->jamBuffer());
+        return -40;
+      }
+      cs = all_charsets[csNumber];
+      if (unlikely(cs == nullptr)) {
+        thrjam(ctx.tup->jamBuffer());
+        return -40;
+      }
+    }
+
+    // Read column data from heap (written by READ_LINKED_TO_MEM)
+    const Uint32* memData = (const Uint32*)&ctx.TheapMemoryChar[0];
+    const AttributeHeader ah(memData[0]);
+    const char* s1 = (const char*)&memData[1];
+    // Inline constant starts after word 0 (ins2) + word 1 (meta)
+    const char* s2 = (const char*)&ctx.TcurrentProgram[ctx.TprogramCounter + 2];
+    const Uint32 step = argLen;
+
+    const bool r1_null = ah.isNULL();
+    const bool r2_null = (argLen == 0);
+
+    if (r1_null || r2_null) {
+      const Uint32 nullSemantics =
+          Interpreter::getNullSemantics(ctx.theInstruction);
+      if (nullSemantics == Interpreter::IF_NULL_BREAK_OUT) {
+        ctx.TprogramCounter =
+            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+        return INTERP_CONTINUE;
+      }
+      if (nullSemantics == Interpreter::IF_NULL_CONTINUE) {
+        // Skip: 1(ins2) + 1(meta) + data words
+        const Uint32 tmp = ((step + 3) >> 2) + 2;
+        ctx.TprogramCounter += tmp;
+        return INTERP_CONTINUE;
+      }
+    }
+
+    const Uint32 cond = Interpreter::getBinaryCondition(ctx.theInstruction);
+    int res1;
+    if (r1_null || r2_null) {
+      res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
+    } else {
+      res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+    }
+
+    bool res = false;
+    switch (cond) {
+      case Interpreter::EQ: res = (res1 == 0); break;
+      case Interpreter::NE: res = (res1 != 0); break;
+      case Interpreter::LT: res = (res1 > 0); break;   // inverted
+      case Interpreter::LE: res = (res1 >= 0); break;
+      case Interpreter::GT: res = (res1 < 0); break;
+      case Interpreter::GE: res = (res1 <= 0); break;
+      default: break;
+    }
+
+    if (res) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    } else {
+      // Skip: 1(ins2) + 1(meta) + data words
+      Uint32 tmp = ((step + 3) >> 2) + 2;
+      ctx.TprogramCounter += tmp;
+    }
+    return INTERP_CONTINUE;
+  }
+
   /* WRITE_ATTR_FROM_REG — write register value to tuple attribute */
   static inline int handleWriteAttrFromReg(InterpreterContext& ctx) {
     ctx.RnoOfInstructions += 3;  // A bit heavier instruction
@@ -8761,7 +8857,7 @@ s_cte_filter_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  37  STR_TO_INT64            */ &Dbtup::InterpreterContext::handleStrToInt64,
   /*  38  BRANCH_MEM_OP_ARG       */ &Dbtup::InterpreterContext::handleBranchMemOpArg,
   /*  39  READ_LINKED_TO_MEM      */ &Dbtup::InterpreterContext::handleReadLinkedToMem,
-  /*  40  (unused)                */ nullptr,
+  /*  40  BRANCH_MEM_OP_ARG_INLINE_TYPE */ &Dbtup::InterpreterContext::handleBranchMemOpArgInlineType,
   /*  41  (unused)                */ nullptr,
   /*  42  (unused)                */ nullptr,
   /*  43  (unused)                */ nullptr,

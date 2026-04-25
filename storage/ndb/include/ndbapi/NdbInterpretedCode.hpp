@@ -928,6 +928,60 @@ class NdbInterpretedCode {
                            const void *val, Uint32 len, Uint32 label);
 
   /*
+   * branch_linked_inline_*: like branch_linked_mem_* but the source
+   * column descriptor is encoded inline in the program rather than
+   * indirected through a registered NDB tableId.  Required when the
+   * compared column is synthesized — e.g. an aggregate result that
+   * does not correspond to any real NDB-registered column.
+   *
+   * Caller passes type info explicitly:
+   *   typeId — an NdbDictionary::Column::Type cast to Uint32.
+   *   columnSizeBytes — the on-wire size of one entry in the linked
+   *     buffer at this position (matches what
+   *     AttributeDescriptor::getSizeInBytes would return on a real
+   *     column).  For 8-byte aggregate results pass 8; for VARCHAR
+   *     include the 1-or-2-byte length prefix.  Must fit in 16 bits.
+   *   csNumber — CHARSET_INFO::number for charset-bearing types,
+   *     0 otherwise.  Must fit in 16 bits.
+   *
+   * Explicit args (rather than an NdbDictionary::Column*) because
+   * synthetic in-memory columns built via setType+setLength leave
+   * m_attrSize at 0, so getSizeInBytes() returns 0 on them — making
+   * a column-descriptor-based API silently broken for the use case
+   * this opcode exists for.
+   *
+   * Server-side: the new opcode BRANCH_MEM_OP_ARG_INLINE_TYPE
+   * resolves the type via NdbSqlUtil::getType(typeId) and the
+   * charset via all_charsets[csNumber] (the kernel charset registry
+   * populated by Dbdict / DbtupMeta), bypassing tablerec[] entirely.
+   *
+   * v1 supports numeric and CHAR/VARCHAR types; rejects DECIMAL
+   * (precision/scale not yet encoded inline) and BLOB/TEXT.
+   *
+   * Inequality semantics follow the project-wide inverted convention
+   * (branch_linked_inline_le branches when col >= val, etc.) — same
+   * as the branch_linked_mem_* family above.
+   */
+  int branch_linked_inline_eq(Uint32 position, Uint32 typeId,
+                              Uint32 columnSizeBytes, Uint32 csNumber,
+                              const void *val, Uint32 len, Uint32 label);
+  int branch_linked_inline_ne(Uint32 position, Uint32 typeId,
+                              Uint32 columnSizeBytes, Uint32 csNumber,
+                              const void *val, Uint32 len, Uint32 label);
+  int branch_linked_inline_lt(Uint32 position, Uint32 typeId,
+                              Uint32 columnSizeBytes, Uint32 csNumber,
+                              const void *val, Uint32 len, Uint32 label);
+  int branch_linked_inline_le(Uint32 position, Uint32 typeId,
+                              Uint32 columnSizeBytes, Uint32 csNumber,
+                              const void *val, Uint32 len, Uint32 label);
+  int branch_linked_inline_gt(Uint32 position, Uint32 typeId,
+                              Uint32 columnSizeBytes, Uint32 csNumber,
+                              const void *val, Uint32 len, Uint32 label);
+  int branch_linked_inline_ge(Uint32 position, Uint32 typeId,
+                              Uint32 columnSizeBytes, Uint32 csNumber,
+                              const void *val, Uint32 len, Uint32 label);
+
+  /*
    * Variants comparing an Attribute from this table with a parameter
    * value specified in the supplied attrInfo section.
    *
@@ -1392,6 +1446,10 @@ class NdbInterpretedCode {
                             const NdbDictionary::Table *sourceTable,
                             Uint32 sourceAttrId, const void *val,
                             Uint32 len, Uint32 label);
+  int branch_linked_inline_val(Uint32 branch_type, Uint32 position,
+                               Uint32 typeId, Uint32 columnSizeBytes,
+                               Uint32 csNumber, const void *val,
+                               Uint32 len, Uint32 label);
   int branch_col_param(Uint32 branch_type, Uint32 attrId, Uint32 paramId,
                        Uint32 label);
   int getInfo(Uint32 number, CodeMetaInfo &info) const;

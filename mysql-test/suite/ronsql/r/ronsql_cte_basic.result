@@ -325,6 +325,37 @@ k	SUM(sums.t)
 300	90
 NULL	NULL
 
+
+=== Test 11 (D-followup): WHERE on aggregate CTE output (inline-type opcode) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 100
+GROUP BY sums.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 100
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+
 === Cleanup ===
 DROP TABLE cte_lineitem;
 DROP TABLE cte_customer;

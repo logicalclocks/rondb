@@ -99,12 +99,24 @@ matching test coverage.
   `require_prm` error and are deferred to the follow-up
   inline-type-opcode phase (see below).
 - **Phase C-followup (inline-type opcode for CTE filters):
-  PLANNED.** Add a new DBTUP opcode that carries
-  `[typeId, length, charsetPos]` inline rather than
-  `[tableId, schemaVersion, attrId]`. Lifts Phase C's
-  column-only restriction; lets RonSQL filter on synthesized
-  aggregate outputs. One new handler in `s_cte_filter_handlers`
-  + one new client-side emitter on `NdbInterpretedCode`.
+  DONE.** New DBTUP opcode `BRANCH_MEM_OP_ARG_INLINE_TYPE = 40`
+  carries `[typeId, columnSizeBytes, csNumber]` inline (packed
+  word: high 16 bits = columnSizeBytes, low 16 bits = csNumber)
+  rather than indirecting through tablerec[tableId]. New
+  client-side emitter family `branch_linked_inline_*`. RonSQL
+  dispatches SUM and COUNT outputs through the inline path
+  (always 8-byte numerics — `Dblqh::buildCteLinkedBuffer` Step 3
+  encodes agg results as `AggResItem.value: Uint64`). MIN/MAX
+  over numeric and DECIMAL aggregates still rejected
+  (virt-table type derivation lies for MIN/MAX over Int —
+  separate fix).
+  Phase doc: `cte_filter_phase_d.md`. MTR test: Test 11 in
+  `ronsql_cte_basic` (`WHERE sums.t > 100`). Block tests:
+  Test 21 (numeric SUM via inline) + Test 22 (CHAR GB key
+  via inline using a synthetic in-memory virt table +
+  aggregator-delivery — matches RonSQL's pattern, sidesteps
+  the receiver-buffer sizing limitation that otherwise
+  hits synthetic columns whose `m_attrSize` stays 0).
 - **Phase D (CTE_LOOKUP in LEFT OUTER JOIN): DONE** — no code
   changes. Test 10 in `ronsql_cte_basic.test` adds a 4th customer
   (Dave / c_id=400) with no orders and runs `LEFT JOIN sums ON

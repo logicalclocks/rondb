@@ -5115,15 +5115,22 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
     Uint32 position = cte_col_idx;
 
-    // branch_linked_mem_* needs a real, registered NDB table for
-    // server-side type/charset lookup (DBTUP indexes tablerec[tableId]).
-    // Our synthetic virt tables (new NdbDictionary::Table(name)) are
-    // not registered, so we look up the SOURCE real column from the
-    // CTE body's scope. This restricts filter pushdown to CTE outputs
-    // that are direct column projections (Outputs::Type::COLUMN);
-    // filtering on SUM/MIN/MAX/COUNT outputs needs either a registered
-    // virt table or a new opcode that takes type info inline, and is
-    // deferred to a later phase.
+    // The compare path depends on whether the CTE output is a direct
+    // column projection or an aggregate result:
+    //   - COLUMN: linked-buffer slot stores the source-column-typed
+    //     value, so we can reference the source real column's
+    //     descriptor via the existing branch_linked_mem_* family
+    //     (server resolves type via tablerec[tableId]).
+    //   - AGGREGATE / SUM | COUNT: result type is synthesized
+    //     (Bigint / Bigunsigned / Double — always 8 bytes in the
+    //     buffer slot; see Dblqh::buildCteLinkedBuffer Step 3) and
+    //     no real registered NDB column matches.  Use the new
+    //     branch_linked_inline_* family which encodes type/length/
+    //     charset inline in the program.
+    //   - AGGREGATE / MIN | MAX: virt-table type follows source type
+    //     (e.g. Int = 4 bytes) but the buffer slot is 8 bytes, so
+    //     descriptor wouldn't match the data.  Reject for now.
+    //   - AGGREGATE / AVG and DECIMAL aggregates: out of scope.
     const JoinOp& cte_op = scope.join_plan.ops[op_idx];
     require_run(cte_op.cte_def != NULL,
                 "CTE_LOOKUP filter: op has no CTE definition.");
@@ -5138,35 +5145,49 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     const Outputs* o = cte_op.cte_def->stmt->outputs;
     while (o != NULL && walk < cte_col_idx) { o = o->next; walk++; }
     require_prm(o != NULL, "CTE_LOOKUP filter: output index out of range.");
-    require_prm(o->type == Outputs::Type::COLUMN,
-                "CTE_LOOKUP filter currently supports only direct column "
-                "projections (e.g. SELECT col AS alias). Filtering on "
-                "aggregate outputs (SUM/MIN/MAX/COUNT) requires a "
-                "registered virtual table; that path is not yet wired in "
-                "RonSQL.");
 
-    Uint32 src_col_idx = o->column.col_idx;
-    const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
-    require_prm(src_col != NULL,
-                "CTE_LOOKUP filter: CTE body source column not resolved.");
-    Uint32 src_op_idx = cs->column_table_idx[src_col_idx];
-    require_prm(src_op_idx < cs->join_plan.num_ops,
-                "CTE_LOOKUP filter: CTE body source op idx out of range.");
-    const NdbDictionary::Table* src_table =
-        cs->join_plan.ops[src_op_idx].table;
-    require_prm(src_table != NULL,
-                "CTE_LOOKUP filter: CTE body source op has no physical "
-                "table.");
-    Uint32 attrId = (Uint32)src_col->getColumnNo();
+    bool use_inline_path = false;
+    const NdbDictionary::Table* src_table = NULL;
+    Uint32 attrId = 0;
 
     // Use the synthetic virt-table column for vt-context (charset etc.
-    // for encode_constant), but the SOURCE real table for the
-    // branch_linked_mem_* descriptor lookup.
+    // for encode_constant) and for the inline-path source-column.
     const NdbDictionary::Column* vtcol =
         virtTab->getColumn((int)cte_col_idx);
     require_prm(vtcol != NULL,
                 "CTE_LOOKUP filter: virt table has no column at "
                 "cte_col_idx.");
+
+    if (o->type == Outputs::Type::COLUMN) {
+      // Source-real-column path.
+      Uint32 src_col_idx = o->column.col_idx;
+      const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
+      require_prm(src_col != NULL,
+                  "CTE_LOOKUP filter: CTE body source column not "
+                  "resolved.");
+      Uint32 src_op_idx = cs->column_table_idx[src_col_idx];
+      require_prm(src_op_idx < cs->join_plan.num_ops,
+                  "CTE_LOOKUP filter: CTE body source op idx out of "
+                  "range.");
+      src_table = cs->join_plan.ops[src_op_idx].table;
+      require_prm(src_table != NULL,
+                  "CTE_LOOKUP filter: CTE body source op has no "
+                  "physical table.");
+      attrId = (Uint32)src_col->getColumnNo();
+    } else if (o->type == Outputs::Type::AGGREGATE) {
+      TokenKind fun = o->aggregate.fun;
+      require_prm(fun == T_SUM || fun == T_COUNT,
+                  "CTE_LOOKUP filter on aggregate output: only SUM and "
+                  "COUNT are supported.  MIN/MAX over numerics need "
+                  "widened virt-table type derivation; AVG and DECIMAL "
+                  "aggregates need DECIMAL precision/scale encoding "
+                  "in the inline opcode — both deferred to follow-up "
+                  "work.");
+      use_inline_path = true;
+    } else {
+      require_prm(false,
+                  "CTE_LOOKUP filter: unsupported CTE output kind.");
+    }
 
     raw_value rv = encode_constant(const_side, vtcol);
 
@@ -5189,6 +5210,55 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     // The two inversions net out to "pick the method that matches the
     // SQL operator that should still REJECT".
     int rc = -1;
+    if (use_inline_path) {
+      // SUM / COUNT aggregate results are written into the linked
+      // buffer as fixed 8-byte values regardless of source type
+      // (Dblqh::buildCteLinkedBuffer Step 3 — AggResItem.value:
+      // Uint64).  typeId comes from the synthetic virt-table column
+      // (correctly set by build_cte_virtual_tables).  No charset
+      // since SUM / COUNT produce numeric results only.
+      const Uint32 inline_typeId = (Uint32)vtcol->getType();
+      const Uint32 inline_columnSize = 8;
+      const Uint32 inline_csNumber = 0;
+      switch (eff_op) {
+      case T_EQUALS:
+        rc = code.branch_linked_inline_ne(position, inline_typeId,
+                                          inline_columnSize, inline_csNumber,
+                                          rv.val, rv.len, REJECT);
+        break;
+      case T_NOT_EQUALS:
+        rc = code.branch_linked_inline_eq(position, inline_typeId,
+                                          inline_columnSize, inline_csNumber,
+                                          rv.val, rv.len, REJECT);
+        break;
+      case T_LT:
+        rc = code.branch_linked_inline_le(position, inline_typeId,
+                                          inline_columnSize, inline_csNumber,
+                                          rv.val, rv.len, REJECT);
+        break;
+      case T_LE:
+        rc = code.branch_linked_inline_lt(position, inline_typeId,
+                                          inline_columnSize, inline_csNumber,
+                                          rv.val, rv.len, REJECT);
+        break;
+      case T_GT:
+        rc = code.branch_linked_inline_ge(position, inline_typeId,
+                                          inline_columnSize, inline_csNumber,
+                                          rv.val, rv.len, REJECT);
+        break;
+      case T_GE:
+        rc = code.branch_linked_inline_gt(position, inline_typeId,
+                                          inline_columnSize, inline_csNumber,
+                                          rv.val, rv.len, REJECT);
+        break;
+      default:
+        require_prm(false,
+                    "Unsupported CTE_LOOKUP filter operator (inline).");
+      }
+      require_prm(rc == 0,
+                  "CTE_LOOKUP filter: failed to emit inline branch.");
+      continue;
+    }
     switch (eff_op) {
     case T_EQUALS:
       rc = code.branch_linked_mem_ne(position, src_table, attrId,

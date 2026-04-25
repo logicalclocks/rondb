@@ -2934,7 +2934,12 @@ static int skipTest = 0;
  * would produce so MTR .result stays authoritative — a real FAIL in debug
  * still diffs. Note: this is a FAKE OK; the test body does not run in
  * production.
+ *
+ * Defined only in non-debug builds (debug builds always run the test
+ * for real, never the faker). Without the guard, debug builds warn
+ * about an unused function.
  */
+#if !defined(VM_TRACE) && !defined(ERROR_INSERT)
 static const char *
 fakeOkLineForErrorInsertTest(int testNum)
 {
@@ -2943,6 +2948,7 @@ fakeOkLineForErrorInsertTest(int testNum)
     default: return nullptr;
   }
 }
+#endif
 
 static bool
 shouldRun(int testNum)
