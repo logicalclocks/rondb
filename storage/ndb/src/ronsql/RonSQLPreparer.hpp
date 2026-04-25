@@ -313,6 +313,11 @@ private:
                       NdbAggregator* singleAgg,
                       NdbAggregator** leafAggs,
                       NdbDictionary::Table** cteVirtualTables);
+  void emit_cte_lookup_filter(NdbInterpretedCode& code,
+                              QueryScope& scope,
+                              Uint32 op_idx,
+                              NdbDictionary::Table* virtTab,
+                              struct ConditionalExpression* where_ce);
   void collect_pk_equalities(struct ConditionalExpression* ce,
                              const NdbDictionary::Table* table,
                              struct ConditionalExpression* pk_const[]);

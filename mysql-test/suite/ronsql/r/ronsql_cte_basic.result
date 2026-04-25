@@ -263,6 +263,38 @@ k	COUNT(*)	SUM(sums.t)
 200	1	100
 300	1	90
 
+
+=== Test 9 (C): WHERE on CTE_LOOKUP column (main-query filter pushdown) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k > 100
+GROUP BY sums.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k > 100
+GROUP BY sums.k|
+k	SUM(sums.t)
+200	100
+300	90
+
 === Cleanup ===
 DROP TABLE cte_lineitem;
 DROP TABLE cte_customer;

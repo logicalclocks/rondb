@@ -86,8 +86,25 @@ matching test coverage.
   SUM; Phase B.1's `cte_base_pos` offset did not disturb non-linked
   slot numbering.
 - **Phase B.2 COMPLETE** — all four shapes (B.2a/b/c/d) green in
-  `ronsql_cte_basic.test`. Ready to move on to Phase C (filter on
-  CTE_LOOKUP child in main query).
+  `ronsql_cte_basic.test`.
+- **Phase C (CTE_LOOKUP filter, column-only): DONE** — new
+  `emit_cte_lookup_filter` helper builds an `NdbInterpretedCode`
+  using `branch_linked_mem_*`. Filter pushdown applies to CTE
+  outputs that are direct column projections
+  (`Outputs::Type::COLUMN`); for those we resolve the SOURCE real
+  column from the CTE body's scope so DBTUP can look up the
+  type descriptor via `tablerec[tableId]`. Aggregate outputs
+  (SUM/MIN/MAX/COUNT) produce synthesized types whose descriptors
+  aren't registered in NDB — those filter shapes throw a clear
+  `require_prm` error and are deferred to the follow-up
+  inline-type-opcode phase (see below).
+- **Phase C-followup (inline-type opcode for CTE filters):
+  PLANNED.** Add a new DBTUP opcode that carries
+  `[typeId, length, charsetPos]` inline rather than
+  `[tableId, schemaVersion, attrId]`. Lifts Phase C's
+  column-only restriction; lets RonSQL filter on synthesized
+  aggregate outputs. One new handler in `s_cte_filter_handlers`
+  + one new client-side emitter on `NdbInterpretedCode`.
 - **Phase C–H, Phase P-GB: NOT STARTED.** Phase C has the virtual-table
   prerequisite; Phase P-GB (DBLQH `buildCteLinkedBuffer` fix to uniformly
   prefix step-1 parent-linked entries) should land before Phase D so
@@ -607,8 +624,35 @@ cd mysql-test && ./mtr --record --suite=ronsql ronsql_cte_basic
 **Goal.** Wire `setInterpretedCode` for CTE_LOOKUP children over the CTE-safe
 opcode subset (Phase A of `cte_filter_plan.md`).
 
-**Status.** Virtual-table extension with CTE result cols — DONE in
-`build_cte_virtual_tables()`. Filter short-circuit removal — PENDING.
+**Status (column-only): DONE.** Test 9 in `ronsql_cte_basic.test`
+exercises `WHERE sums.k > 100` on a CTE output that's a direct column
+projection. Implementation:
+- `emit_cte_lookup_filter()` builds a raw `NdbInterpretedCode` using
+  `branch_linked_mem_*` (mirrors the testCteNdbApiFilter pattern).
+- Server-side `BRANCH_MEM_OP_ARG` resolves type/charset via
+  `tablerec[tableId]`, which RonSQL's synthetic virt tables do not
+  populate. Workaround: walk through the CTE body's scope to find the
+  SOURCE real column for each filter conjunct, and pass its real
+  table + attrId. The linked-buffer slot at `cte_col_idx` stores the
+  source-column-typed value for `Outputs::Type::COLUMN` outputs, so
+  the descriptor matches the data.
+- Constrained to single-table CTE bodies and AND-combined column-vs-
+  constant comparisons. OR, column-vs-column, expressions, and
+  filters on aggregate outputs (SUM/MIN/MAX/COUNT — type doesn't match
+  any registered NDB column) throw a clear "not yet supported" error
+  via `require_prm`.
+- Inversion table for the `branch_linked_mem_*` family follows the
+  project-wide convention (see CLAUDE.md): `branch_linked_mem_le`
+  branches on `col >= val`, etc. The helper double-inverts so the
+  sense matches the SQL operator that should still be REJECTED.
+
+**Followup phase.** Aggregate-output filter pushdown needs a new DBTUP
+opcode that carries `[typeId, length, charsetPos]` inline rather than
+indirecting through `[tableId, schemaVersion, attrId]`. One new entry
+in `s_cte_filter_handlers` + one new client-side
+`branch_linked_mem_typed_*` family on `NdbInterpretedCode`. Lifts the
+column-only restriction; until then RonSQL rejects filters on
+SUM/COUNT/AVG outputs with a clear error.
 
 **Files.**
 - `RonSQLPreparer.cpp` — find the `op.type != JoinOp::CTE_LOOKUP` guard in

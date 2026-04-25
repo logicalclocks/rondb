@@ -5032,6 +5032,212 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
   }
 }
 
+// Compile a main-query WHERE filter on a CTE_LOOKUP child into an
+// NdbInterpretedCode program of branch_linked_mem_* instructions. The
+// filter evaluates against DBLQH's linked-attr buffer for the CTE
+// lookup: position 0..N-1 matches the virtual table's columns in the
+// order added by build_cte_virtual_tables. A conjunct that fails jumps
+// to REJECT; when all conjuncts pass we fall through to exit_ok.
+//
+// Scope is intentionally narrow: only AND-combined simple comparisons
+// (column-vs-constant) on CTE output columns are supported. More
+// complex shapes (OR, cross-table, column-vs-column) throw a clean
+// error — they can be added later without protocol work since the
+// server-side jump-table interpreter already accepts the full
+// CTE-safe opcode set (see cte_filter_plan.md).
+void
+RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
+                                       QueryScope& scope,
+                                       Uint32 op_idx,
+                                       NdbDictionary::Table* virtTab,
+                                       ConditionalExpression* where_ce)
+{
+  require_run(virtTab != NULL,
+              "CTE_LOOKUP filter requires a virtual table descriptor.");
+
+  ConditionalExpression* simplified = simplify_ce(where_ce, -1);
+  ConditionalExpression* conjuncts[MAX_WHERE_CONJUNCTS];
+  Uint32 num_conjuncts = 0;
+  flatten_and_conjuncts(simplified, conjuncts, &num_conjuncts);
+  require_prm(num_conjuncts > 0,
+              "CTE_LOOKUP filter: no conjuncts after simplification.");
+
+  const Uint32 REJECT = 0;
+
+  for (Uint32 c = 0; c < num_conjuncts; c++) {
+    ConditionalExpression* atom = conjuncts[c];
+    require_prm(atom != NULL, "CTE_LOOKUP filter: NULL conjunct.");
+    bool is_cmp = (atom->op == T_EQUALS || atom->op == T_NOT_EQUALS ||
+                   atom->op == T_LT || atom->op == T_LE ||
+                   atom->op == T_GT || atom->op == T_GE);
+    require_prm(is_cmp,
+                "CTE_LOOKUP filter supports only simple comparisons "
+                "(=, !=, <, <=, >, >=) at top level; OR and expressions "
+                "will be added in a later phase.");
+
+    ConditionalExpression* left = atom->args.left;
+    ConditionalExpression* right = atom->args.right;
+    require_prm(left != NULL && right != NULL,
+                "CTE_LOOKUP filter: comparison has NULL operand.");
+
+    // Identify which side is the CTE column and which is the constant.
+    auto is_const = [](ConditionalExpression* e) {
+      return e->op == T_INT || e->op == T_FLOAT ||
+             e->op == T_STRING || e->op == T_NULL;
+    };
+    ConditionalExpression* col_side = NULL;
+    ConditionalExpression* const_side = NULL;
+    bool swapped = false;
+    if (left->op == T_IDENTIFIER && is_const(right)) {
+      col_side = left;
+      const_side = right;
+    } else if (right->op == T_IDENTIFIER && is_const(left)) {
+      col_side = right;
+      const_side = left;
+      swapped = true;
+    } else {
+      require_prm(false,
+                  "CTE_LOOKUP filter supports only column-vs-constant "
+                  "comparisons; column-vs-column and expressions will be "
+                  "added in a later phase.");
+    }
+
+    Uint32 col_idx = col_side->col_idx;
+    require_prm(scope.column_table_idx[col_idx] == op_idx,
+                "CTE_LOOKUP filter conjunct references a column not on "
+                "this CTE. classify_where_by_table should have routed it "
+                "elsewhere.");
+
+    // cte_col_idx is the 0-based CTE output index (see load_join CTE
+    // branch). The linked-buffer position used by handleReadLinkedToMem
+    // matches the addColumn order — GB keys first, then aggregate
+    // results — which is also the order of CTE outputs.
+    Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
+    Uint32 position = cte_col_idx;
+
+    // branch_linked_mem_* needs a real, registered NDB table for
+    // server-side type/charset lookup (DBTUP indexes tablerec[tableId]).
+    // Our synthetic virt tables (new NdbDictionary::Table(name)) are
+    // not registered, so we look up the SOURCE real column from the
+    // CTE body's scope. This restricts filter pushdown to CTE outputs
+    // that are direct column projections (Outputs::Type::COLUMN);
+    // filtering on SUM/MIN/MAX/COUNT outputs needs either a registered
+    // virt table or a new opcode that takes type info inline, and is
+    // deferred to a later phase.
+    const JoinOp& cte_op = scope.join_plan.ops[op_idx];
+    require_run(cte_op.cte_def != NULL,
+                "CTE_LOOKUP filter: op has no CTE definition.");
+    require_run(cte_op.cte_def_idx < m_cte_scopes.size(),
+                "CTE_LOOKUP filter: cte_def_idx out of range.");
+    QueryScope* cs = m_cte_scopes[cte_op.cte_def_idx];
+    require_run(cs != NULL,
+                "CTE_LOOKUP filter: missing CTE body scope.");
+
+    // Walk the CTE outputs list to position cte_col_idx.
+    Uint32 walk = 0;
+    const Outputs* o = cte_op.cte_def->stmt->outputs;
+    while (o != NULL && walk < cte_col_idx) { o = o->next; walk++; }
+    require_prm(o != NULL, "CTE_LOOKUP filter: output index out of range.");
+    require_prm(o->type == Outputs::Type::COLUMN,
+                "CTE_LOOKUP filter currently supports only direct column "
+                "projections (e.g. SELECT col AS alias). Filtering on "
+                "aggregate outputs (SUM/MIN/MAX/COUNT) requires a "
+                "registered virtual table; that path is not yet wired in "
+                "RonSQL.");
+
+    Uint32 src_col_idx = o->column.col_idx;
+    const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
+    require_prm(src_col != NULL,
+                "CTE_LOOKUP filter: CTE body source column not resolved.");
+    Uint32 src_op_idx = cs->column_table_idx[src_col_idx];
+    require_prm(src_op_idx < cs->join_plan.num_ops,
+                "CTE_LOOKUP filter: CTE body source op idx out of range.");
+    const NdbDictionary::Table* src_table =
+        cs->join_plan.ops[src_op_idx].table;
+    require_prm(src_table != NULL,
+                "CTE_LOOKUP filter: CTE body source op has no physical "
+                "table.");
+    Uint32 attrId = (Uint32)src_col->getColumnNo();
+
+    // Use the synthetic virt-table column for vt-context (charset etc.
+    // for encode_constant), but the SOURCE real table for the
+    // branch_linked_mem_* descriptor lookup.
+    const NdbDictionary::Column* vtcol =
+        virtTab->getColumn((int)cte_col_idx);
+    require_prm(vtcol != NULL,
+                "CTE_LOOKUP filter: virt table has no column at "
+                "cte_col_idx.");
+
+    raw_value rv = encode_constant(const_side, vtcol);
+
+    // Canonicalise the operator so we can think of it as "col OP const".
+    TokenKind eff_op = atom->op;
+    if (swapped) {
+      switch (eff_op) {
+      case T_LT: eff_op = T_GT; break;
+      case T_LE: eff_op = T_GE; break;
+      case T_GT: eff_op = T_LT; break;
+      case T_GE: eff_op = T_LE; break;
+      default: break;  // EQ / NE unchanged
+      }
+    }
+
+    // Emit the INVERTED branch — we want to jump to REJECT when the
+    // predicate is FALSE. Inequality methods on NdbInterpretedCode are
+    // themselves documented as inverted (branch_linked_mem_le branches
+    // when col >= val, etc — see the header comment and CLAUDE.md).
+    // The two inversions net out to "pick the method that matches the
+    // SQL operator that should still REJECT".
+    int rc = -1;
+    switch (eff_op) {
+    case T_EQUALS:
+      rc = code.branch_linked_mem_ne(position, src_table, attrId,
+                                     rv.val, rv.len, REJECT);
+      break;
+    case T_NOT_EQUALS:
+      rc = code.branch_linked_mem_eq(position, src_table, attrId,
+                                     rv.val, rv.len, REJECT);
+      break;
+    case T_LT:
+      // keep: col < val; reject: col >= val; method that branches on
+      // col >= val is branch_linked_mem_le.
+      rc = code.branch_linked_mem_le(position, src_table, attrId,
+                                     rv.val, rv.len, REJECT);
+      break;
+    case T_LE:
+      // keep: col <= val; reject: col > val; branches on col > val is
+      // branch_linked_mem_lt.
+      rc = code.branch_linked_mem_lt(position, src_table, attrId,
+                                     rv.val, rv.len, REJECT);
+      break;
+    case T_GT:
+      // keep: col > val; reject: col <= val; branches on col <= val is
+      // branch_linked_mem_ge.
+      rc = code.branch_linked_mem_ge(position, src_table, attrId,
+                                     rv.val, rv.len, REJECT);
+      break;
+    case T_GE:
+      // keep: col >= val; reject: col < val; branches on col < val is
+      // branch_linked_mem_gt.
+      rc = code.branch_linked_mem_gt(position, src_table, attrId,
+                                     rv.val, rv.len, REJECT);
+      break;
+    default:
+      require_prm(false, "Unsupported CTE_LOOKUP filter operator.");
+    }
+    require_prm(rc == 0, "CTE_LOOKUP filter: failed to emit branch.");
+  }
+
+  require_prm(code.interpret_exit_ok() == 0,
+              "CTE_LOOKUP filter: interpret_exit_ok failed.");
+  require_prm(code.def_label(REJECT) == 0,
+              "CTE_LOOKUP filter: def_label(REJECT) failed.");
+  require_prm(code.interpret_exit_nok() == 0,
+              "CTE_LOOKUP filter: interpret_exit_nok failed.");
+  require_prm(code.finalise() == 0,
+              "CTE_LOOKUP filter: finalise failed.");
+}
+
 // Emit every non-root op in scope.join_plan: linked keys from the parent,
 // optional WHERE filter, optional aggregator attachment (multi-leaf if
 // leafAggs[i] is non-null, else single-leaf at plan.agg_leaf_idx), and
@@ -5083,6 +5289,9 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
     keys[op.num_key_cols] = nullptr;
 
     NdbInterpretedCode child_code_storage(op.table);
+    NdbInterpretedCode cte_filter_code_storage(
+        (op.type == JoinOp::CTE_LOOKUP && cteVirtualTables != NULL)
+        ? cteVirtualTables[i] : NULL);
     if (op.type != JoinOp::CTE_LOOKUP && scope.join_where_ce[i] != NULL)
     {
       ConditionalExpression* child_ce = simplify_ce(scope.join_where_ce[i],
@@ -5094,6 +5303,20 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       filter.end();
       child_code_storage.finalise();
       opts.setInterpretedCode(child_code_storage);
+    }
+    else if (op.type == JoinOp::CTE_LOOKUP && scope.join_where_ce[i] != NULL)
+    {
+      // Main-query WHERE conjuncts on this CTE's output columns push down
+      // to the CTE_LOOKUP's interpreted-code filter. See
+      // cte_filter_plan.md Phase A for the server-side jump-table
+      // interpreter that evaluates branch_linked_mem_* instructions
+      // against DBLQH's linked-attr buffer.
+      require_run(cteVirtualTables != NULL && cteVirtualTables[i] != NULL,
+                  "CTE_LOOKUP filter requires a virtual table; missing "
+                  "in emit context.");
+      emit_cte_lookup_filter(cte_filter_code_storage, scope, i,
+                             cteVirtualTables[i], scope.join_where_ce[i]);
+      opts.setInterpretedCode(cte_filter_code_storage);
     }
 
     // Attach aggregator. Multi-leaf path (leafAggs[i]) is for merged
