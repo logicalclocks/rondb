@@ -4990,9 +4990,48 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
             derived_length = 1;
             have_derived = true;
           } else if (fun == T_MIN || fun == T_MAX) {
-            derived_type = st;
-            derived_length = src_col->getLength();
-            derived_cs = src_col->getCharset();
+            // Numeric MIN/MAX results are written into the CTE
+            // linked-attr buffer as 8-byte AggResItem.value (Uint64),
+            // identical to SUM/COUNT — see Dblqh::cteLookupEmitResult
+            // (DblqhMain.cpp ~19268: AttributeHeader::init(..., 8);
+            // memcpy(..., 8) unconditionally for every aggregate slot).
+            // Widen the virt-table column type to match the wire size
+            // so the inline-type filter opcode and any client-side size
+            // checks see consistent metadata. Aggregator loads
+            // (LoadLinkedColumn etc.) read the buffer header length, so
+            // the widening doesn't disturb existing aggregate consumers.
+            switch (st) {
+            case NdbDictionary::Column::Tinyint:
+            case NdbDictionary::Column::Smallint:
+            case NdbDictionary::Column::Mediumint:
+            case NdbDictionary::Column::Int:
+            case NdbDictionary::Column::Bigint:
+              derived_type = NdbDictionary::Column::Bigint;
+              derived_length = 1;
+              break;
+            case NdbDictionary::Column::Tinyunsigned:
+            case NdbDictionary::Column::Smallunsigned:
+            case NdbDictionary::Column::Mediumunsigned:
+            case NdbDictionary::Column::Unsigned:
+            case NdbDictionary::Column::Bigunsigned:
+              derived_type = NdbDictionary::Column::Bigunsigned;
+              derived_length = 1;
+              break;
+            case NdbDictionary::Column::Float:
+            case NdbDictionary::Column::Double:
+              derived_type = NdbDictionary::Column::Double;
+              derived_length = 1;
+              break;
+            default:
+              // Non-numeric source (CHAR/VARCHAR/DECIMAL/etc.):
+              // preserve source metadata. Filter pushdown on these
+              // shapes still rejects (see emit_cte_lookup_filter), but
+              // the pass-through aggregator path is unaffected.
+              derived_type = st;
+              derived_length = src_col->getLength();
+              derived_cs = src_col->getCharset();
+              break;
+            }
             have_derived = true;
           } else {
             throw RonSQLPermanentError(
@@ -5176,13 +5215,28 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
       attrId = (Uint32)src_col->getColumnNo();
     } else if (o->type == Outputs::Type::AGGREGATE) {
       TokenKind fun = o->aggregate.fun;
-      require_prm(fun == T_SUM || fun == T_COUNT,
-                  "CTE_LOOKUP filter on aggregate output: only SUM and "
-                  "COUNT are supported.  MIN/MAX over numerics need "
-                  "widened virt-table type derivation; AVG and DECIMAL "
-                  "aggregates need DECIMAL precision/scale encoding "
-                  "in the inline opcode — both deferred to follow-up "
-                  "work.");
+      if (fun == T_MIN || fun == T_MAX) {
+        // Numeric MIN/MAX has been widened to Bigint/Bigunsigned/Double
+        // by build_cte_virtual_tables — those share the 8-byte
+        // AggResItem.value wire format with SUM/COUNT and dispatch
+        // through the same inline-type opcode. Non-numeric MIN/MAX
+        // (CHAR/VARCHAR/DECIMAL) keeps its source type, which the
+        // inline opcode can't encode as a 8-byte slot — reject those.
+        NdbDictionary::Column::Type vt = vtcol->getType();
+        require_prm(vt == NdbDictionary::Column::Bigint ||
+                    vt == NdbDictionary::Column::Bigunsigned ||
+                    vt == NdbDictionary::Column::Double,
+                    "CTE_LOOKUP filter on MIN/MAX of non-numeric source "
+                    "(CHAR/VARCHAR/DECIMAL) not yet supported — would "
+                    "need wide AggResItem encoding in the kernel.");
+      } else {
+        require_prm(fun == T_SUM || fun == T_COUNT,
+                    "CTE_LOOKUP filter on aggregate output: only SUM, "
+                    "COUNT, and numeric MIN/MAX are supported.  AVG "
+                    "and DECIMAL aggregates need DECIMAL precision/scale "
+                    "encoding in the inline opcode — deferred to "
+                    "follow-up work.");
+      }
       use_inline_path = true;
     } else {
       require_prm(false,

@@ -3215,6 +3215,200 @@ testCteLookupFilterInlineTypeChar(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 23: CTE_LOOKUP filter — inline-type opcode, MAX(int) result    */
+/*                                                                     */
+/* Validation for the MIN/MAX virt-type widening change                */
+/* (cte_filter_phase_d2.md): RonSQL widens MIN/MAX over int sources    */
+/* to Bigint/Bigunsigned to match the 8-byte AggResItem.value wire     */
+/* format.  This test exercises the same encoding directly via         */
+/* NdbInterpretedCode — same shape as Test 21 but with Max in place    */
+/* of Sum.                                                             */
+/*                                                                     */
+/* CTE: GROUP BY grp, MAX(val).  cte_src groups: grp=1 max=20,         */
+/* grp=2 max=40, grp=3 max=50.  Filter MAX > 30 keeps grp=2 and        */
+/* grp=3.  Main scan over cte_src has 5 rows distributed 2/2/1, so     */
+/* 3 surviving main rows after the lookupCte filter.                   */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteLookupFilterInlineTypeMax(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 23: CTE_LOOKUP filter (inline-type, numeric MAX) ... ");
+  fflush(stdout);
+
+  /* Reseed cte_src to the original 5-row dataset (Tests 19/20 leave
+   * thousands of rows behind). */
+  if (sqlExec(conn, "DELETE FROM cte_src") != 0 ||
+      sqlExec(conn,
+              "INSERT INTO cte_src VALUES "
+              "(1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)") != 0) {
+    printf("FAILED (reseed cte_src)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRTUAL_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  /* CTE 0 = GROUP BY grp, MAX(val) */
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") ||
+      !cteAgg.LoadColumn("val", 0) ||
+      !cteAgg.Max(0, 0) ||
+      !cteAgg.Finalize()) {
+    printf("FAILED (cteAgg: %s)\n", cteAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Build filter via the inline-type opcode.  MAX(int) results are
+   * written into the linked-attr buffer as 8-byte Uint64 — same
+   * encoding as SUM, validating the widening claim that
+   * Dblqh::cteLookupEmitResult writes 8 bytes regardless of source
+   * type. */
+  Uint32 codeBuf[64];
+  NdbInterpretedCode filterCode(/*table=*/nullptr, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  Int64 threshold = 30;
+  const Uint32 REJECT = 0;
+  const Uint32 typeId =
+      static_cast<Uint32>(NdbDictionary::Column::Bigint);
+  const Uint32 columnSizeBytes = 8;
+  const Uint32 csNumber = 0;
+  if (filterCode.branch_linked_inline_ge(
+          /*position=*/1, typeId, columnSizeBytes, csNumber,
+          &threshold, sizeof(threshold), REJECT) != 0 ||
+      filterCode.interpret_exit_ok() != 0 ||
+      filterCode.def_label(REJECT) != 0 ||
+      filterCode.interpret_exit_nok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (build filter: %s)\n", filterCode.getNdbError().message);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) { printf("FAILED (create)\n"); return -1; }
+
+  qb->beginCteSubtree(0);
+  const NdbQueryTableScanOperationDef *cteScanOp = qb->scanTable(srcTab);
+  if (cteScanOp == nullptr) {
+    printf("FAILED (CTE scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteJoinKey[] = {
+      qb->linkedValue(cteScanOp, "pk"), nullptr
+  };
+  NdbQueryOptions cteLeafOpts;
+  cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLeafOpts.setAggregation(cteAgg);
+  if (qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts) == nullptr) {
+    printf("FAILED (CTE leaf: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, cteAgg) != 0) {
+    printf("FAILED (defineCte)\n");
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+  if (mainScanOp == nullptr) {
+    printf("FAILED (main scan: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteKey[] = {
+      qb->linkedValue(mainScanOp, "grp"), nullptr
+  };
+  NdbQueryOptions cteLookupOpts;
+  cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLookupOpts.setInterpretedCode(filterCode);
+  if (qb->lookupCte(0, 2, virtTab, cteKey, &cteLookupOpts) == nullptr) {
+    printf("FAILED (lookupCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQueryOperation *mainQOp = query->getQueryOperation(3U);
+  NdbQueryOperation *cteQOp  = query->getQueryOperation(4U);
+  NdbRecAttr *raGrp = nullptr;
+  if (mainQOp != nullptr) raGrp = mainQOp->getValue("grp");
+  if (cteQOp != nullptr) {
+    (void)cteQOp->getValue("grp");
+    (void)cteQOp->getValue("total");  /* virt-table column 1 carries MAX */
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans %d:%s, query %d:%s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  Uint32 rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+    if (raGrp != nullptr) V("  row: main.grp=%d\n", raGrp->int32_value());
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  /* CTE groups: grp=1 max=20 (reject), grp=2 max=40 (keep), grp=3
+   * max=50 (keep).  Main scan rows: pk=1/grp=1 (reject), pk=2/grp=1
+   * (reject), pk=3/grp=2 (match), pk=4/grp=2 (match), pk=5/grp=3
+   * (match) → 3 surviving rows. */
+  if (rowCount == 3) {
+    printf("OK (%u rows)\n", rowCount);
+    return 0;
+  }
+  printf("FAILED (expected 3 rows, got %u)\n", rowCount);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -3246,6 +3440,7 @@ static const TestEntry g_tests[] = {
     { 20, testCteChainedMultiBatch },
     { 21, testCteLookupFilterInlineTypeNumeric },
     { 22, testCteLookupFilterInlineTypeChar },
+    { 23, testCteLookupFilterInlineTypeMax },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 

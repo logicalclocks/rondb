@@ -356,6 +356,38 @@ GROUP BY sums.k|
 k	SUM(sums.t)
 100	125
 
+
+=== Test 12 (D2): WHERE on MAX aggregate output (widened virt-type) ===
+== Query ==
+WITH maxes AS (
+SELECT o_custkey AS k, MAX(o_amt) AS mx
+FROM cte_orders GROUP BY o_custkey)
+SELECT maxes.k, SUM(maxes.mx)
+FROM cte_customer AS c
+JOIN maxes ON maxes.k = c.c_id
+WHERE maxes.mx > 70
+GROUP BY maxes.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH maxes AS (
+SELECT o_custkey AS k, MAX(o_amt) AS mx
+FROM cte_orders GROUP BY o_custkey)
+SELECT maxes.k, SUM(maxes.mx)
+FROM cte_customer AS c
+JOIN maxes ON maxes.k = c.c_id
+WHERE maxes.mx > 70
+GROUP BY maxes.k|
+k	SUM(maxes.mx)
+100	75
+300	90
+
 === Cleanup ===
 DROP TABLE cte_lineitem;
 DROP TABLE cte_customer;

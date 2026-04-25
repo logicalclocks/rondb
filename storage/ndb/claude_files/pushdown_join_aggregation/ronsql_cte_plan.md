@@ -117,6 +117,19 @@ matching test coverage.
   aggregator-delivery — matches RonSQL's pattern, sidesteps
   the receiver-buffer sizing limitation that otherwise
   hits synthetic columns whose `m_attrSize` stays 0).
+- **Phase D2 (MIN/MAX virt-type widening for inline-filter):
+  DONE.** `build_cte_virtual_tables` now widens MIN/MAX over
+  numeric source types to `Bigint`/`Bigunsigned`/`Double`
+  (matches the 8-byte `AggResItem.value` wire format that
+  `Dblqh::cteLookupEmitResult` writes unconditionally).
+  `emit_cte_lookup_filter` accepts `T_MIN`/`T_MAX` when the
+  widened virt-column type is one of those numerics; rejects
+  MIN/MAX over non-numeric source (CHAR/VARCHAR/DECIMAL) with
+  a clear message — those need wider `AggResItem` encoding in
+  the kernel. Phase doc: `cte_filter_phase_d2.md`. MTR test:
+  Test 12 in `ronsql_cte_basic` (`WHERE maxes.mx > 70`).
+  Block test: Test 23 in `testCteNdbApiFilter` (numeric MAX
+  via inline opcode).
 - **Phase D (CTE_LOOKUP in LEFT OUTER JOIN): DONE** — no code
   changes. Test 10 in `ronsql_cte_basic.test` adds a 4th customer
   (Dave / c_id=400) with no orders and runs `LEFT JOIN sums ON
