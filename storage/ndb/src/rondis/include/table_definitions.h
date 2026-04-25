@@ -258,5 +258,15 @@ struct GetControl {
     Uint32 m_num_read_errors;
     Uint32 m_error_code;
     Uint32 m_database_id;
+    // Set by rondb_mset when the batch is a hash write (is_hmset /
+    // rondb_hset_command); used by write_callback to PK-address the
+    // hset_keys row when queuing the field_count bump op (Phase
+    // 1.0.2b). Points into argv[1]'s backing storage, so lifetime
+    // spans the batch. Empty for plain SET/MSET batches.
+    const char *m_hash_name_ptr;
+    Uint32 m_hash_name_len;
+    // Cached hset_keys table pointer for the same bump path - avoids
+    // redoing dict->getTable on every callback.
+    const NdbDictionary::Table *m_hset_key_tab;
 };
 #endif

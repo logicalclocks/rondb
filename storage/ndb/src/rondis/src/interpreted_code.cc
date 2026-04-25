@@ -114,6 +114,36 @@ int initNdbCodeIncrDecr(std::string *response,
   return 0;
 }
 
+// Tiny interpreter program that reads hset_keys.field_count, adds
+// a signed delta, writes it back, and exits OK. Used by the atomic
+// HSET new-field-count maintenance (Phase 1.0.2b) with delta=+1,
+// and by HDEL (Phase 1.0.3) with delta<0.
+int init_hset_field_count_bump_code(std::string *response,
+                                    NdbInterpretedCode *code,
+                                    const NdbDictionary::Table *tab,
+                                    Int64 delta) {
+  const NdbDictionary::Column *field_count_col =
+    tab->getColumn(HSET_KEY_TABLE_COL_field_count);
+  code->read_attr(REG1, field_count_col);
+  if (delta >= 0) {
+    code->load_const_u64(REG2, (Uint64)delta);
+    code->add_reg(REG3, REG1, REG2);
+  } else {
+    code->load_const_u64(REG2, (Uint64)(-delta));
+    code->sub_reg(REG3, REG1, REG2);
+  }
+  code->write_attr(field_count_col, REG3);
+  code->interpret_exit_ok();
+  int ret_code = code->finalise();
+  if (ret_code != 0) {
+    assign_ndb_err_to_response(response,
+                               "Failed to create field_count bump code",
+                               code->getNdbError());
+    return -1;
+  }
+  return 0;
+}
+
 int write_hset_key_table(Ndb *ndb,
                          const NdbDictionary::Table *tab,
                          std::string std_key_str,
@@ -133,7 +163,9 @@ int write_hset_key_table(Ndb *ndb,
   const NdbDictionary::Column *redis_key_id_col =
     tab->getColumn(HSET_KEY_TABLE_COL_redis_key_id);
   Uint32 code_buffer[64];
-  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer) / sizeof(code_buffer[0]));
+  NdbInterpretedCode code(tab,
+                          &code_buffer[0],
+                          sizeof(code_buffer) / sizeof(code_buffer[0]));
   code.load_op_type(REG1); // Read operation type into register 1
   code.branch_eq_const(REG1, RONDB_INSERT, LABEL0); // Inserts go to label 0
   /* UPDATE */

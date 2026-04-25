@@ -484,6 +484,63 @@ void prepare_write_value_transaction(struct KeyStorage *key_store) {
                                            (void*)key_store);
 }
 
+// Append an interpretedUpdate op on the same NdbTransaction that
+// adjusts hset_keys.field_count by delta. Used for atomic HSET /
+// HDEL counter maintenance (Phase 1.0.2b / 1.0.3). Must be called
+// with a trans that hasn't committed yet - the op rides out on the
+// next executeAsynchPrepare the dispatcher issues (NoCommit during
+// ext-row writes, or Commit for inline fast-path keys).
+static int
+add_hset_field_count_bump_op(NdbTransaction *trans,
+                             const NdbDictionary::Table *tab_hset,
+                             const char *hash_name,
+                             Uint32 hash_name_len,
+                             Int64 delta,
+                             Uint32 database_id,
+                             std::string *response) {
+  struct hset_key_table key_row;
+  key_row.null_bits = 0;
+  memcpy(&key_row.redis_key[2], hash_name, hash_name_len);
+  set_length(&key_row.redis_key[0], hash_name_len);
+
+  Uint32 code_buffer[16];
+  NdbInterpretedCode code(tab_hset,
+                          &code_buffer[0],
+                          sizeof(code_buffer) / sizeof(code_buffer[0]));
+  int ret_code = init_hset_field_count_bump_code(response,
+                                                 &code,
+                                                 tab_hset,
+                                                 delta);
+  if (ret_code != 0) {
+    return ret_code;
+  }
+
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_INTERPRETED;
+  opts.interpretedCode = &code;
+
+  // updateTuple (not writeTuple): if the hset_keys row is missing
+  // something has gone wrong upstream (rondb_get_redis_key_id
+  // should have inserted it). Fail the trans rather than writing
+  // a row with uninitialized non-PK columns.
+  const NdbOperation *op = trans->updateTuple(
+    pk_hset_key_record[database_id],
+    (const char *)&key_row,
+    entire_hset_key_record[database_id],
+    (char *)&key_row,
+    nullptr,
+    &opts,
+    sizeof(opts));
+  if (op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to add hset_keys bump op",
+                               trans->getNdbError());
+    return -1;
+  }
+  return 0;
+}
+
 static void
 write_callback(int result, NdbTransaction *trans, void *aObject) {
   struct KeyStorage *key_storage = (struct KeyStorage*)aObject;
@@ -523,9 +580,39 @@ write_callback(int result, NdbTransaction *trans, void *aObject) {
     }
     // OUTPUT_INDEX_3 from the interpreter: 1 on INSERT, 0 on UPDATE.
     // Aggregate for the HSET new-field-count reply (C10).
-    if (key_storage->m_rec_attr_new_field != nullptr &&
-        key_storage->m_rec_attr_new_field->u_64_value() != 0) {
+    bool new_field = (key_storage->m_rec_attr_new_field != nullptr &&
+                      key_storage->m_rec_attr_new_field->u_64_value() != 0);
+    if (new_field) {
       get_ctrl->m_num_new_fields++;
+    }
+    // Phase 1.0.2b: for hash batches, queue an atomic
+    // hset_keys.field_count += 1 op on the same open trans whenever
+    // the field write was an INSERT. The op rides out with the next
+    // executeAsynchPrepare the dispatcher issues, so it commits
+    // atomically with the field write (and any ext-row writes).
+    // m_hset_key_tab is set only by rondb_mset when is_hmset is
+    // true, so it doubles as the "this is a hash batch" signal.
+    if (new_field && get_ctrl->m_hset_key_tab != nullptr) {
+      int bump_ret = add_hset_field_count_bump_op(trans,
+                                                  get_ctrl->m_hset_key_tab,
+                                                  get_ctrl->m_hash_name_ptr,
+                                                  get_ctrl->m_hash_name_len,
+                                                  +1,
+                                                  get_ctrl->m_database_id,
+                                                  nullptr);
+      if (bump_ret != 0) {
+        // Queueing the op failed; surface as a trans-level failure
+        // so set_rows' Phase D drain aborts cleanly.
+        key_storage->m_key_state = KeyState::CompletedFailed;
+        get_ctrl->m_num_keys_failed++;
+        if (get_ctrl->m_error_code == 0) {
+          get_ctrl->m_error_code = RONDB_INTERNAL_ERROR;
+        }
+        key_storage->m_close_flag = true;
+        assert(get_ctrl->m_num_keys_outstanding > 0);
+        get_ctrl->m_num_keys_outstanding--;
+        return;
+      }
     }
     key_storage->m_current_pos = INLINE_VALUE_LEN;
     key_storage->m_key_state = KeyState::MultiRowRWValue;
@@ -589,7 +676,9 @@ int write_data_to_key_op(std::string *response,
   set_length(&key_row.value_start[0], this_value_len);
 
   Uint32 code_buffer[64];
-  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer) / sizeof(code_buffer[0]));
+  NdbInterpretedCode code(tab,
+                          &code_buffer[0],
+                          sizeof(code_buffer) / sizeof(code_buffer[0]));
   int ret_code = write_key_row_no_commit(response, code, tab, key_store);
   if (ret_code != 0) {
     return ret_code;

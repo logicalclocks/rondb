@@ -1137,6 +1137,9 @@ void rondb_mset(Ndb *ndb,
   get_ctrl->m_get_cmd_part = get_cmd_part;
   get_ctrl->m_worker_id = worker_id;
   get_ctrl->m_database_id = get_current_database(worker_id);
+  get_ctrl->m_hash_name_ptr = nullptr;
+  get_ctrl->m_hash_name_len = 0;
+  get_ctrl->m_hset_key_tab = nullptr;
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index_key = (2 * i) + arg_index_start;
     Uint32 arg_index_val = ((2 * i) + 1) + arg_index_start;
@@ -1185,6 +1188,24 @@ void rondb_mset(Ndb *ndb,
                       &tab)) {
     release_mset(get_ctrl);
     return;
+  }
+  if (is_hmset) {
+    // Phase 1.0.2b: stash the hash name and the hset_keys table
+    // pointer so write_callback can queue an atomic field_count
+    // bump on every new-field INSERT. argv[1] lives for the entire
+    // batch so no copy is needed.
+    const NdbDictionary::Table *hset_tab =
+      dict->getTable(HSET_KEY_TABLE_NAME);
+    if (hset_tab == nullptr) {
+      assign_ndb_err_to_response(response,
+                                 "Failed to get hset_keys table",
+                                 dict->getNdbError());
+      release_mset(get_ctrl);
+      return;
+    }
+    get_ctrl->m_hset_key_tab = hset_tab;
+    get_ctrl->m_hash_name_ptr = argv[1].c_str();
+    get_ctrl->m_hash_name_len = argv[1].size();
   }
   if (get_cmd_part) {
     int ret_code = rondb_get_func(ndb,
