@@ -105,6 +105,13 @@ matching test coverage.
   column-only restriction; lets RonSQL filter on synthesized
   aggregate outputs. One new handler in `s_cte_filter_handlers`
   + one new client-side emitter on `NdbInterpretedCode`.
+- **Phase D (CTE_LOOKUP in LEFT OUTER JOIN): DONE** — no code
+  changes. Test 10 in `ronsql_cte_basic.test` adds a 4th customer
+  (Dave / c_id=400) with no orders and runs `LEFT JOIN sums ON
+  sums.k = c.c_id GROUP BY sums.k`. The unmatched row produces a
+  k=NULL group with SUM=NULL — confirms agg-feed NULL injection
+  (server-side commit `47d81b43903`) flows through RonSQL's
+  per-column Load dispatch (Phase B.1) without further wiring.
 - **Phase C–H, Phase P-GB: NOT STARTED.** Phase C has the virtual-table
   prerequisite; Phase P-GB (DBLQH `buildCteLinkedBuffer` fix to uniformly
   prefix step-1 parent-linked entries) should land before Phase D so
@@ -679,11 +686,17 @@ Add CHAR-comparison variant (exercises charset descriptors on linked cols).
 **Goal.** Confirm MatchAll-default path for CTE_LOOKUP under `LEFT JOIN` and
 cover it end-to-end.
 
-**Files.** No emit changes — RonSQL already maps `JoinOp::LEFT_OUTER` to
-MatchAll-default by omitting `setMatchType()`. After Phase B.1's per-column
-dispatch lands, CTE-leaf Load positions resolve correctly for
-NULL-injected rows (agg-feed NULL injection landed server-side in branch
-commit `47d81b43903` / `cte_outer_join_phase_5.md`).
+**Status: DONE.** Test 10 in `ronsql_cte_basic.test`. No code changes
+required — RonSQL already maps `JoinOp::LEFT_OUTER` to MatchAll-default
+by omitting `setMatchType()`, and Phase B.1's per-column Load dispatch
+resolves CTE-leaf positions correctly for NULL-injected rows. The
+fixture now has a 4th customer (Dave / c_id=400) with no orders, so
+`LEFT JOIN sums ON sums.k = c.c_id GROUP BY sums.k` produces a NULL
+group whose `SUM(sums.t)` is NULL. INNER JOIN tests (1-9) are
+unaffected because Dave's c_id doesn't match any sums.k. Anti-join
+patterns (`WHERE sums.t IS NULL`) and parent-table-column GROUP BY
+under LEFT JOIN remain unexplored — they would land on the same
+DBLQH parent-GB issue tracked in Phase B notes.
 
 **Tests (MTR).** Append to `ronsql_cte_basic.test`:
 ```sql
