@@ -8,6 +8,10 @@
 > Related documents in the same directory:
 > - `cte_filter_plan.md` + `cte_filter_phase_{a,b,c}.md` — NDB-API layer
 >   (DBLQH filter / interpreter) that this plan consumes.
+> - `cte_filter_phase_d.md` + `cte_filter_phase_d2.md` — RonSQL phases D /
+>   D2 (inline-type opcode wiring + MIN/MAX virt-type widening).
+> - `cte_filter_phase_e1.md` + `cte_filter_phase_e2.md` — RonSQL Phase E
+>   plan: scanCte as main-query root (E.1) + chained CTEs (E.2).
 > - `cte_nextreq_plan.md` + `cte_nextreq_phase_{1,2,3,4}.md` —
 >   SCAN_NEXTREQ multi-batch flow for CTEs.
 > - `cte_outer_join_plan.md` + `cte_outer_join_phase_{1..5}.md` —

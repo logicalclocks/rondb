@@ -27,6 +27,10 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_filter_phase_a.md` — Phase A: CTE_LOOKUP_REQ filter support
 - `cte_filter_phase_b.md` — Phase B: CTE_SCAN_REQ (root) filter support
 - `cte_filter_phase_c.md` — Phase C: aggregation interpreter reuses the jump-table interpreter
+- `cte_filter_phase_d.md` — Phase D: inline-type opcode for synthesized columns (RonSQL)
+- `cte_filter_phase_d2.md` — Phase D2: MIN/MAX virt-type widening for inline filter (RonSQL)
+- `cte_filter_phase_e1.md` — Phase E.1: scanCte as main-query root (RonSQL)
+- `cte_filter_phase_e2.md` — Phase E.2: chained CTEs / CTE-of-CTE (RonSQL)
 - `cte_nextreq_plan.md` — SCAN_NEXTREQ flow control for CTE main-SELECTs: overview + phase index
 - `cte_nextreq_phase_1.md` — Phase 1: fix CTE_SCAN_REQ continuation plumbing (scanIterI, SignalLengthContinue)
 - `cte_nextreq_phase_2.md` — Phase 2: SCAN_NEXTREQ flow control for CTE_SCAN root
