@@ -484,12 +484,260 @@ void prepare_write_value_transaction(struct KeyStorage *key_store) {
                                            (void*)key_store);
 }
 
+// Phase 1.0.2d Phase-1 op. Stages a writeTuple on hset_keys(key)
+// with the lock-claim interpreter (init_hset_lock_claim_code),
+// records the OUTPUT_INDEX_0/1 NdbRecAttr handles on get_ctrl so
+// the Phase-1 callback can read them. Caller is responsible for
+// pre-allocating prealloc_id from getAutoIncrementValue and for
+// running executeAsynchPrepare(NoCommit, hset_phase1_callback)
+// after this returns.
+int add_hset_lock_claim_op(NdbTransaction *trans,
+                           const NdbDictionary::Table *tab_hset,
+                           const char *hash_name,
+                           Uint32 hash_name_len,
+                           Uint64 prealloc_id,
+                           struct GetControl *get_ctrl,
+                           Uint32 database_id,
+                           std::string *response) {
+  struct hset_key_table key_row;
+  key_row.null_bits = 0;
+  memcpy(&key_row.redis_key[2], hash_name, hash_name_len);
+  set_length(&key_row.redis_key[0], hash_name_len);
+
+  Uint32 code_buffer[32];
+  NdbInterpretedCode code(tab_hset,
+                          &code_buffer[0],
+                          sizeof(code_buffer) / sizeof(code_buffer[0]));
+  int ret_code = init_hset_lock_claim_code(response,
+                                           &code,
+                                           tab_hset,
+                                           prealloc_id);
+  if (ret_code != 0) {
+    return ret_code;
+  }
+
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_INTERPRETED;
+  opts.optionsPresent |=
+    NdbOperation::OperationOptions::OO_INTERPRETED_INSERT;
+  opts.interpretedCode = &code;
+
+  NdbOperation::GetValueSpec getvals[2];
+  getvals[0].appStorage = nullptr;
+  getvals[0].recAttr = nullptr;
+  getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
+  getvals[1].appStorage = nullptr;
+  getvals[1].recAttr = nullptr;
+  getvals[1].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_1;
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
+  opts.numExtraGetFinalValues = 2;
+  opts.extraGetFinalValues = getvals;
+
+  // writeTuple (insert-or-update): UPDATE branch reads existing
+  // values and emits them; INSERT branch writes prealloc_id and
+  // field_count=0 and emits those. Both branches take the X-lock.
+  // Mask 0x1 = only the PK column from the row buffer is consumed
+  // by NDB; the interpreter writes the non-PK columns explicitly.
+  const Uint32 mask = 0x1;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+  const NdbOperation *op = trans->writeTuple(
+    pk_hset_key_record[database_id],
+    (const char *)&key_row,
+    entire_hset_key_record[database_id],
+    (char *)&key_row,
+    mask_ptr,
+    &opts,
+    sizeof(opts));
+  if (op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to add hset_keys lock-claim op",
+                               trans->getNdbError());
+    return -1;
+  }
+  get_ctrl->m_rec_attr_hset_id = getvals[0].recAttr;
+  get_ctrl->m_rec_attr_hset_field_count = getvals[1].recAttr;
+  return 0;
+}
+
+// Phase 1.0.2d Phase-3 op. Plain updateTuple writing the new
+// field_count value (no interpreter; we already know the value
+// because Phase 1 read the old one and Phase 2 counted the delta).
+int add_hset_field_count_set_op(NdbTransaction *trans,
+                                const NdbDictionary::Table *tab_hset,
+                                const char *hash_name,
+                                Uint32 hash_name_len,
+                                Uint32 new_count,
+                                Uint32 database_id,
+                                std::string *response) {
+  struct hset_key_table key_row;
+  key_row.null_bits = 0;
+  memcpy(&key_row.redis_key[2], hash_name, hash_name_len);
+  set_length(&key_row.redis_key[0], hash_name_len);
+  key_row.field_count = new_count;
+
+  // Mask: only field_count column is updated. The schema layout
+  // for hset_keys (per init_hset_key_records read_all_column_map)
+  // orders columns as redis_key (PK) [0], redis_key_id [1],
+  // field_count [2], expiry_date [3] - the mask is keyed by the
+  // record's column index in entire_hset_key_record. We rely on
+  // the NDB API treating PK columns as auto-included for an
+  // updateTuple, so mask only needs to include field_count.
+  // To stay robust against record-spec reordering, use the full
+  // record but only set the field_count column via mask bit 2.
+  const Uint32 mask = 0x4; // bit 2 = field_count
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+
+  const NdbOperation *op = trans->updateTuple(
+    pk_hset_key_record[database_id],
+    (const char *)&key_row,
+    entire_hset_key_record[database_id],
+    (char *)&key_row,
+    mask_ptr);
+  if (op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to add hset_keys field_count set op",
+                               trans->getNdbError());
+    return -1;
+  }
+  return 0;
+}
+
+// Phase 1.0.2d Phase-1 callback. Fires once per HSET trans, after
+// the lock-claim op's NoCommit response arrives. Captures the two
+// outputs (redis_key_id, field_count) from the interpreter into
+// GetControl. Errors propagate via m_num_keys_failed; the outer
+// state machine (set_rows_hset) checks that flag after the drain.
+static void
+hset_phase1_callback(int result, NdbTransaction *trans, void *aObject) {
+  struct GetControl *get_ctrl = (struct GetControl*)aObject;
+  (void)result;
+  assert(get_ctrl->m_num_transactions > 0);
+  int code = trans->getNdbError().code;
+  if (code != 0) {
+    get_ctrl->m_num_keys_failed++;
+    if (get_ctrl->m_error_code == 0) {
+      get_ctrl->m_error_code = code;
+    }
+  } else {
+    get_ctrl->m_hset_redis_key_id =
+      get_ctrl->m_rec_attr_hset_id->u_64_value();
+    get_ctrl->m_hset_field_count_pre =
+      (Uint32)get_ctrl->m_rec_attr_hset_field_count->u_64_value();
+  }
+  assert(get_ctrl->m_num_keys_outstanding > 0);
+  get_ctrl->m_num_keys_outstanding--;
+}
+
+void prepare_hset_phase1_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans) {
+  trans->executeAsynchPrepare(NdbTransaction::NoCommit,
+                              &hset_phase1_callback,
+                              (void*)get_ctrl);
+}
+
+// Phase 1.0.2d Phase-2 callback. Fires once when the field-write
+// NoCommit response arrives (one callback for all N field ops on
+// the shared trans). Iterates every key in the batch and pulls
+// the per-op interpreter outputs from the NdbRecAttr handles
+// stashed by write_data_to_key_op.
+static void
+hset_phase2_callback(int result, NdbTransaction *trans, void *aObject) {
+  struct GetControl *get_ctrl = (struct GetControl*)aObject;
+  (void)result;
+  assert(get_ctrl->m_num_transactions > 0);
+  int code = trans->getNdbError().code;
+  Uint32 num_keys = get_ctrl->m_num_keys_requested;
+  if (code != 0) {
+    if (code == RONDB_CONDITIONAL_STORE_NOT_MET) {
+      // HSETNX-style guard (NX/XX) tripped on at least one field.
+      // HSET / HMSET don't expose conditional flags so this only
+      // fires on HSETNX. Reply path handles ConditionalFail per
+      // C7 / C8 conventions.
+      for (Uint32 i = 0; i < num_keys; i++) {
+        get_ctrl->m_key_store[i].m_key_state =
+          KeyState::CompletedConditionalFail;
+      }
+    } else {
+      get_ctrl->m_num_keys_failed++;
+      if (get_ctrl->m_error_code == 0) {
+        get_ctrl->m_error_code = code;
+      }
+      for (Uint32 i = 0; i < num_keys; i++) {
+        get_ctrl->m_key_store[i].m_key_state = KeyState::CompletedFailed;
+      }
+    }
+  } else {
+    for (Uint32 i = 0; i < num_keys; i++) {
+      struct KeyStorage *ks = &get_ctrl->m_key_store[i];
+      ks->m_prev_num_rows =
+        (Uint32)ks->m_rec_attr_prev_num_rows->u_64_value();
+      ks->m_rondb_key =
+        (Uint64)ks->m_rec_attr_rondb_key->u_64_value();
+      // KEEPTTL is not exposed by HSET so OUTPUT_INDEX_2 is never
+      // requested for the hash-write path. Skip the m_keep_ttl
+      // branch.
+      if (ks->m_rec_attr_new_field != nullptr &&
+          ks->m_rec_attr_new_field->u_64_value() != 0) {
+        get_ctrl->m_num_new_fields++;
+      }
+      ks->m_current_pos = INLINE_VALUE_LEN;
+      ks->m_key_state = KeyState::MultiRowRWValue;
+    }
+  }
+  assert(get_ctrl->m_num_keys_outstanding > 0);
+  get_ctrl->m_num_keys_outstanding--;
+}
+
+void prepare_hset_phase2_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans) {
+  trans->executeAsynchPrepare(NdbTransaction::NoCommit,
+                              &hset_phase2_callback,
+                              (void*)get_ctrl);
+}
+
+// Phase 1.0.2d Phase-3 callback. Fires once when the Commit
+// response arrives (with any ext-row ops + field_count update
+// folded in). Marks every key in the batch as terminal so the
+// reply builder can run.
+static void
+hset_phase3_callback(int result, NdbTransaction *trans, void *aObject) {
+  struct GetControl *get_ctrl = (struct GetControl*)aObject;
+  (void)result;
+  assert(get_ctrl->m_num_transactions > 0);
+  int code = trans->getNdbError().code;
+  Uint32 num_keys = get_ctrl->m_num_keys_requested;
+  if (code != 0) {
+    get_ctrl->m_num_keys_failed++;
+    if (get_ctrl->m_error_code == 0) {
+      get_ctrl->m_error_code = code;
+    }
+    for (Uint32 i = 0; i < num_keys; i++) {
+      get_ctrl->m_key_store[i].m_key_state = KeyState::CompletedFailed;
+      get_ctrl->m_key_store[i].m_close_flag = true;
+    }
+  } else {
+    for (Uint32 i = 0; i < num_keys; i++) {
+      get_ctrl->m_key_store[i].m_key_state = KeyState::CompletedSuccess;
+      get_ctrl->m_key_store[i].m_close_flag = true;
+    }
+  }
+  assert(get_ctrl->m_num_keys_outstanding > 0);
+  get_ctrl->m_num_keys_outstanding--;
+}
+
+void prepare_hset_phase3_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans) {
+  trans->executeAsynchPrepare(NdbTransaction::Commit,
+                              &hset_phase3_callback,
+                              (void*)get_ctrl);
+}
+
 // Append an interpretedUpdate op on the same NdbTransaction that
-// adjusts hset_keys.field_count by delta. Used for atomic HSET /
-// HDEL counter maintenance (Phase 1.0.2b / 1.0.3). Must be called
-// with a trans that hasn't committed yet - the op rides out on the
-// next executeAsynchPrepare the dispatcher issues (NoCommit during
-// ext-row writes, or Commit for inline fast-path keys).
+// adjusts hset_keys.field_count by delta. Used by HDEL (Phase
+// 1.0.3) with delta<0. Phase 1.0.2b's per-field bump call site
+// in write_callback was removed in Phase 1.0.2d; this helper
+// remains for HDEL.
 static int
 add_hset_field_count_bump_op(NdbTransaction *trans,
                              const NdbDictionary::Table *tab_hset,
@@ -579,40 +827,12 @@ write_callback(int result, NdbTransaction *trans, void *aObject) {
       key_storage->m_expire_at = (Int64)expiry_date;
     }
     // OUTPUT_INDEX_3 from the interpreter: 1 on INSERT, 0 on UPDATE.
-    // Aggregate for the HSET new-field-count reply (C10).
-    bool new_field = (key_storage->m_rec_attr_new_field != nullptr &&
-                      key_storage->m_rec_attr_new_field->u_64_value() != 0);
-    if (new_field) {
+    // Aggregate for the HSET new-field-count reply (C10). For
+    // is_hmset batches (Phase 1.0.2d), this is also the source for
+    // the field_count delta written in Phase 3.
+    if (key_storage->m_rec_attr_new_field != nullptr &&
+        key_storage->m_rec_attr_new_field->u_64_value() != 0) {
       get_ctrl->m_num_new_fields++;
-    }
-    // Phase 1.0.2b: for hash batches, queue an atomic
-    // hset_keys.field_count += 1 op on the same open trans whenever
-    // the field write was an INSERT. The op rides out with the next
-    // executeAsynchPrepare the dispatcher issues, so it commits
-    // atomically with the field write (and any ext-row writes).
-    // m_hset_key_tab is set only by rondb_mset when is_hmset is
-    // true, so it doubles as the "this is a hash batch" signal.
-    if (new_field && get_ctrl->m_hset_key_tab != nullptr) {
-      int bump_ret = add_hset_field_count_bump_op(trans,
-                                                  get_ctrl->m_hset_key_tab,
-                                                  get_ctrl->m_hash_name_ptr,
-                                                  get_ctrl->m_hash_name_len,
-                                                  +1,
-                                                  get_ctrl->m_database_id,
-                                                  nullptr);
-      if (bump_ret != 0) {
-        // Queueing the op failed; surface as a trans-level failure
-        // so set_rows' Phase D drain aborts cleanly.
-        key_storage->m_key_state = KeyState::CompletedFailed;
-        get_ctrl->m_num_keys_failed++;
-        if (get_ctrl->m_error_code == 0) {
-          get_ctrl->m_error_code = RONDB_INTERNAL_ERROR;
-        }
-        key_storage->m_close_flag = true;
-        assert(get_ctrl->m_num_keys_outstanding > 0);
-        get_ctrl->m_num_keys_outstanding--;
-        return;
-      }
     }
     key_storage->m_current_pos = INLINE_VALUE_LEN;
     key_storage->m_key_state = KeyState::MultiRowRWValue;

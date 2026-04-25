@@ -114,10 +114,62 @@ int initNdbCodeIncrDecr(std::string *response,
   return 0;
 }
 
+// Phase 1.0.2d Phase-1 interpreter. Used as the writeTuple program
+// on hset_keys(key) at the start of a single-trans HSET / HMSET /
+// HSETNX. Two branches:
+//
+//   UPDATE branch (row already exists): read redis_key_id and
+//     field_count, emit them as OUTPUT_INDEX_0 and OUTPUT_INDEX_1,
+//     exit_ok. The writeTuple itself takes the X-lock; the
+//     interpreter does not modify any column.
+//
+//   INSERT branch (row didn't exist): write the caller-supplied
+//     prealloc_id into redis_key_id, write field_count = 0, emit
+//     prealloc_id as OUTPUT_INDEX_0 and 0 as OUTPUT_INDEX_1, exit_ok.
+//
+// Phase 1's callback consumes the two outputs to populate
+// GetControl::m_hset_redis_key_id and m_hset_field_count_pre.
+int init_hset_lock_claim_code(std::string *response,
+                              NdbInterpretedCode *code,
+                              const NdbDictionary::Table *tab,
+                              Uint64 prealloc_id) {
+  const NdbDictionary::Column *redis_key_id_col =
+    tab->getColumn(HSET_KEY_TABLE_COL_redis_key_id);
+  const NdbDictionary::Column *field_count_col =
+    tab->getColumn(HSET_KEY_TABLE_COL_field_count);
+
+  code->load_op_type(REG1);
+  code->branch_eq_const(REG1, RONDB_INSERT, LABEL0); // INSERT to label 0
+  /* UPDATE branch */
+  code->read_attr(REG6, redis_key_id_col);
+  code->read_attr(REG7, field_count_col);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->interpret_exit_ok();
+
+  /* INSERT branch */
+  code->def_label(LABEL0);
+  code->load_const_u64(REG6, prealloc_id);
+  code->load_const_u64(REG7, 0);
+  code->write_attr(redis_key_id_col, REG6);
+  code->write_attr(field_count_col, REG7);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->interpret_exit_ok();
+
+  int ret_code = code->finalise();
+  if (ret_code != 0) {
+    assign_ndb_err_to_response(response,
+                               "Failed to create hset lock-claim code",
+                               code->getNdbError());
+    return -1;
+  }
+  return 0;
+}
+
 // Tiny interpreter program that reads hset_keys.field_count, adds
-// a signed delta, writes it back, and exits OK. Used by the atomic
-// HSET new-field-count maintenance (Phase 1.0.2b) with delta=+1,
-// and by HDEL (Phase 1.0.3) with delta<0.
+// a signed delta, writes it back, and exits OK. Used by HDEL
+// (Phase 1.0.3) with delta<0.
 int init_hset_field_count_bump_code(std::string *response,
                                     NdbInterpretedCode *code,
                                     const NdbDictionary::Table *tab,

@@ -992,6 +992,166 @@ static int set_rows(Ndb *ndb,
   return 0;
 }
 
+// Phase 1.0.2d single-trans HSET / HMSET pipeline. One NDB
+// transaction per HSET command:
+//   Phase 1 (NoCommit, 1 op) - writeTuple hset_keys(key) with
+//     init_hset_lock_claim_code; takes X-lock + reads or writes
+//     redis_key_id and field_count. Drains.
+//   Phase 2 (NoCommit, N ops) - writeTuple per field on string_keys
+//     with the existing complex interpreter. All on the shared
+//     trans. Drains. Field-row locks acquired only after Phase 1's
+//     X-lock is fully held in the cluster, so no cross-LDM deadlock
+//     with concurrent HSET / HDEL on the same hash.
+//   Phase 3 (Commit, with optional ext-row ops + field_count update
+//     folded into the same submission) - one round-trip.
+//
+// First cut (Phase 1.0.2d): inline values only (each field's
+// value <= INLINE_VALUE_LEN). Phase 1.0.2e adds extension-row
+// support for large values.
+static int set_rows_hset(Ndb *ndb,
+                         const NdbDictionary::Table *tab_string_keys,
+                         std::string *response,
+                         struct KeyStorage *key_storage,
+                         struct GetControl *get_ctrl,
+                         Uint32 num_fields) {
+  // Pre: pre-allocate hset_keys.redis_key_id from auto-incr. NDB
+  // batches getAutoIncrementValue internally (block size 1024) so
+  // amortized cost is ~zero RTs per HSET. The id is wasted on the
+  // UPDATE branch (existing hash) - that's fine, ids don't need
+  // to be gap-free.
+  Uint64 prealloc_id = 0;
+  if (ndb->getAutoIncrementValue(get_ctrl->m_hset_key_tab,
+                                 prealloc_id, unsigned(1024)) != 0) {
+    assign_ndb_err_to_response(response,
+                               "Failed to pre-allocate redis_key_id",
+                               ndb->getNdbError());
+    return 1;
+  }
+  get_ctrl->m_hset_prealloc_id = prealloc_id;
+
+  // Open trans hinted at hset_keys(key) so the TC lives on that
+  // partition's data node; the PK we're about to lock is on the
+  // same partition.
+  struct hset_key_table hset_pk_buf;
+  hset_pk_buf.null_bits = 0;
+  memcpy(&hset_pk_buf.redis_key[2],
+         get_ctrl->m_hash_name_ptr,
+         get_ctrl->m_hash_name_len);
+  set_length(&hset_pk_buf.redis_key[0], get_ctrl->m_hash_name_len);
+  NdbTransaction *trans = ndb->startTransaction(
+    get_ctrl->m_hset_key_tab,
+    (const char*)&hset_pk_buf.redis_key[0],
+    get_ctrl->m_hash_name_len + 2);
+  if (trans == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to start HSET transaction",
+                               ndb->getNdbError());
+    return 1;
+  }
+  // Every key_storage[i] shares this trans for the duration of the
+  // HSET. write_data_to_key_op queues against key_store->m_trans,
+  // so this assignment is enough to make all field writes land on
+  // the same trans without modifying the helper. The aliases are
+  // nulled at every exit so close_transactions doesn't double-close
+  // the shared handle.
+  for (Uint32 i = 0; i < num_fields; i++) {
+    key_storage[i].m_trans = trans;
+  }
+  get_ctrl->m_num_transactions++;
+  // Local lambda emulation: a label-based dealias-and-return helper
+  // is awkward in C++; use a small block at every return site
+  // instead. Pattern: dealias_and_return = goto-style with a flag.
+  bool dealias_pending = true;
+#define HSET_DEALIAS_RETURN(rc) do {                                  \
+    if (dealias_pending) {                                            \
+      for (Uint32 _i = 1; _i < num_fields; _i++) {                    \
+        key_storage[_i].m_trans = nullptr;                            \
+      }                                                               \
+      dealias_pending = false;                                        \
+    }                                                                 \
+    return (rc);                                                      \
+  } while (0)
+
+  // Phase 1: lock claim + redis_key_id / field_count read.
+  if (add_hset_lock_claim_op(trans,
+                             get_ctrl->m_hset_key_tab,
+                             get_ctrl->m_hash_name_ptr,
+                             get_ctrl->m_hash_name_len,
+                             prealloc_id,
+                             get_ctrl,
+                             get_ctrl->m_database_id,
+                             response) != 0) {
+    HSET_DEALIAS_RETURN(1);
+  }
+  get_ctrl->m_num_keys_outstanding = 1;
+  prepare_hset_phase1_transaction(get_ctrl, trans);
+  while (get_ctrl->m_num_keys_outstanding > 0) {
+    int finished = execute_ndb(ndb, 1, __LINE__);
+    assert(finished >= 0);
+  }
+  if (get_ctrl->m_num_keys_failed > 0) {
+    HSET_DEALIAS_RETURN(0);
+  }
+
+  // Phase 2: queue every field's writeTuple on the shared trans.
+  for (Uint32 i = 0; i < num_fields; i++) {
+    key_storage[i].m_rondb_key = 0;
+    Uint32 value_len = key_storage[i].m_set_value_size;
+    if (value_len > INLINE_VALUE_LEN) {
+      // Phase 1.0.2e will plumb ext-rows support through Phase 3's
+      // pre-Commit dispatch. For now reject so we don't silently
+      // truncate.
+      assign_generic_err_to_response(response,
+        "HSET large-value (>INLINE_VALUE_LEN) not yet supported "
+        "in single-trans path");
+      HSET_DEALIAS_RETURN(1);
+    }
+    int wret = write_data_to_key_op(response,
+                                    tab_string_keys,
+                                    &key_storage[i],
+                                    get_ctrl->m_hset_redis_key_id,
+                                    /* row_state */ 0,
+                                    get_ctrl->m_database_id);
+    if (wret != 0) {
+      HSET_DEALIAS_RETURN(1);
+    }
+  }
+  get_ctrl->m_num_keys_outstanding = 1;
+  prepare_hset_phase2_transaction(get_ctrl, trans);
+  while (get_ctrl->m_num_keys_outstanding > 0) {
+    int finished = execute_ndb(ndb, 1, __LINE__);
+    assert(finished >= 0);
+  }
+  if (get_ctrl->m_num_keys_failed > 0) {
+    HSET_DEALIAS_RETURN(0);
+  }
+
+  // Phase 3: queue field_count update if any field was a new INSERT,
+  // then Commit. Ext-row work is empty in this first cut (rejected
+  // above).
+  if (get_ctrl->m_num_new_fields > 0) {
+    Uint32 new_count = get_ctrl->m_hset_field_count_pre +
+                       get_ctrl->m_num_new_fields;
+    if (add_hset_field_count_set_op(trans,
+                                    get_ctrl->m_hset_key_tab,
+                                    get_ctrl->m_hash_name_ptr,
+                                    get_ctrl->m_hash_name_len,
+                                    new_count,
+                                    get_ctrl->m_database_id,
+                                    response) != 0) {
+      HSET_DEALIAS_RETURN(1);
+    }
+  }
+  get_ctrl->m_num_keys_outstanding = 1;
+  prepare_hset_phase3_transaction(get_ctrl, trans);
+  while (get_ctrl->m_num_keys_outstanding > 0) {
+    int finished = execute_ndb(ndb, 1, __LINE__);
+    assert(finished >= 0);
+  }
+  HSET_DEALIAS_RETURN(0);
+#undef HSET_DEALIAS_RETURN
+}
+
 static
 void rondb_mset(Ndb *ndb,
                const pink::RedisCmdArgsType &argv,
@@ -1140,6 +1300,11 @@ void rondb_mset(Ndb *ndb,
   get_ctrl->m_hash_name_ptr = nullptr;
   get_ctrl->m_hash_name_len = 0;
   get_ctrl->m_hset_key_tab = nullptr;
+  get_ctrl->m_hset_prealloc_id = 0;
+  get_ctrl->m_hset_redis_key_id = 0;
+  get_ctrl->m_hset_field_count_pre = 0;
+  get_ctrl->m_rec_attr_hset_id = nullptr;
+  get_ctrl->m_rec_attr_hset_field_count = nullptr;
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index_key = (2 * i) + arg_index_start;
     Uint32 arg_index_val = ((2 * i) + 1) + arg_index_start;
@@ -1207,6 +1372,26 @@ void rondb_mset(Ndb *ndb,
     get_ctrl->m_hash_name_ptr = argv[1].c_str();
     get_ctrl->m_hash_name_len = argv[1].size();
   }
+  // Phase 1.0.2d: HSET / HMSET take a single-trans path that
+  // resolves redis_key_id in-trans, takes hset_keys(key) X-lock
+  // before any field-row op runs, and commits all field writes
+  // atomically. No batching loop; one trans for the whole HSET.
+  // The reply-shape switch below (+OK vs count-of-new-fields) is
+  // shared with the per-key MSET path so we fall through to it.
+  bool hset_done = false;
+  if (is_hmset) {
+    int ret_code = set_rows_hset(ndb,
+                                 tab,
+                                 response,
+                                 key_storage,
+                                 get_ctrl,
+                                 num_keys);
+    if (ret_code != 0) {
+      release_mset(get_ctrl);
+      return;
+    }
+    hset_done = true;
+  }
   if (get_cmd_part) {
     int ret_code = rondb_get_func(ndb,
                                   tab,
@@ -1226,36 +1411,38 @@ void rondb_mset(Ndb *ndb,
     get_ctrl->m_num_keys_multi_rows = 0;
   }
   DEB_MSET_CMD(("MSET of %u keys\n", num_keys));
-  Uint32 current_index = 0;
-  do {
-    Uint32 loop_count = std::min(num_keys - current_index,
-                                 (Uint32)MAX_PARALLEL_KEY_OPS);
-    int ret_code = set_rows(ndb,
-                            tab,
-                            response,
-                            redis_key_id,
-                            key_storage,
-                            get_ctrl,
-                            loop_count,
-                            current_index);
-    if (ret_code != 0) {
-      release_mset(get_ctrl);
-      return;
-    }
-    // After set_rows, every key is in a terminal state with
-    // m_close_flag set: CompletedSuccess (via write_commit_callback),
-    // CompletedFailed, or CompletedConditionalFail. Close their
-    // transactions now so we don't hold open handles across batches.
-    close_finished_transactions(key_storage,
-                                get_ctrl,
-                                loop_count,
-                                current_index);
-    DEB_MSET_CMD(("%u keys, %u dispatched, %u completed\n",
-                  num_keys,
-                  get_ctrl->m_num_keys_multi_rows,
-                  get_ctrl->m_num_keys_completed_first_pass));
-    current_index += loop_count;
-  } while (current_index < num_keys && get_ctrl->m_num_keys_failed == 0);
+  if (!hset_done) {
+    Uint32 current_index = 0;
+    do {
+      Uint32 loop_count = std::min(num_keys - current_index,
+                                   (Uint32)MAX_PARALLEL_KEY_OPS);
+      int ret_code = set_rows(ndb,
+                              tab,
+                              response,
+                              redis_key_id,
+                              key_storage,
+                              get_ctrl,
+                              loop_count,
+                              current_index);
+      if (ret_code != 0) {
+        release_mset(get_ctrl);
+        return;
+      }
+      // After set_rows, every key is in a terminal state with
+      // m_close_flag set: CompletedSuccess (via write_commit_callback),
+      // CompletedFailed, or CompletedConditionalFail. Close their
+      // transactions now so we don't hold open handles across batches.
+      close_finished_transactions(key_storage,
+                                  get_ctrl,
+                                  loop_count,
+                                  current_index);
+      DEB_MSET_CMD(("%u keys, %u dispatched, %u completed\n",
+                    num_keys,
+                    get_ctrl->m_num_keys_multi_rows,
+                    get_ctrl->m_num_keys_completed_first_pass));
+      current_index += loop_count;
+    } while (current_index < num_keys && get_ctrl->m_num_keys_failed == 0);
+  }
   /**
    * We are done with the writing process, now it is time to report the
    * result.
@@ -1337,18 +1524,16 @@ void rondb_hset_command(Ndb *ndb,
                         bool is_hmset,
                         int worker_id)
 {
-  Uint64 redis_key_id;
-  int ret_code = rondb_get_redis_key_id(ndb,
-                                        redis_key_id,
-                                        argv[1].c_str(),
-                                        argv[1].size(),
-                                        response,
-                                        get_current_database(worker_id));
-  if (ret_code != 0) {
-      return;
-  }
+  // Phase 1.0.2d: redis_key_id is resolved inside set_rows_hset's
+  // Phase 1 (the hset_keys lock-claim writeTuple), not pre-called.
+  // The redis_key_id parameter to rondb_mset is unused for the
+  // is_hmset branch but the reply-shape switch later in rondb_mset
+  // tests redis_key_id == STRING_REDIS_KEY_ID (==0) to distinguish
+  // plain SET/MSET from HSET; pass a non-zero sentinel so HSET
+  // (is_hmset=false) routes to the count-of-new-fields reply, not
+  // the +OK reply.
   rondb_mset(ndb, argv, response, is_hmset,
-             redis_key_id, false, worker_id);
+             /* redis_key_id sentinel */ 1, false, worker_id);
 }
 
 /**

@@ -56,6 +56,29 @@ void commit_write_value_transaction(struct KeyStorage *key_store);
 void prepare_write_value_transaction(struct KeyStorage *key_store);
 void prepare_write_transaction(struct KeyStorage *key_store);
 
+/* Phase 1.0.2d single-trans HSET helpers. */
+int add_hset_lock_claim_op(NdbTransaction *trans,
+                           const NdbDictionary::Table *tab_hset,
+                           const char *hash_name,
+                           Uint32 hash_name_len,
+                           Uint64 prealloc_id,
+                           struct GetControl *get_ctrl,
+                           Uint32 database_id,
+                           std::string *response);
+int add_hset_field_count_set_op(NdbTransaction *trans,
+                                const NdbDictionary::Table *tab_hset,
+                                const char *hash_name,
+                                Uint32 hash_name_len,
+                                Uint32 new_count,
+                                Uint32 database_id,
+                                std::string *response);
+void prepare_hset_phase1_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans);
+void prepare_hset_phase2_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans);
+void prepare_hset_phase3_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans);
+
 /* Setup operation record for SET MODULE */
 int prepare_delete_value_row(std::string *response,
                              struct KeyStorage *key_store,

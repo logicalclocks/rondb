@@ -72,6 +72,10 @@ int init_hset_field_count_bump_code(std::string *response,
                                     NdbInterpretedCode *code,
                                     const NdbDictionary::Table *tab,
                                     Int64 delta);
+int init_hset_lock_claim_code(std::string *response,
+                              NdbInterpretedCode *code,
+                              const NdbDictionary::Table *tab,
+                              Uint64 prealloc_id);
 int write_hset_key_table(Ndb *ndb,
                          const NdbDictionary::Table *tab,
                          std::string std_key_str,

@@ -259,14 +259,27 @@ struct GetControl {
     Uint32 m_error_code;
     Uint32 m_database_id;
     // Set by rondb_mset when the batch is a hash write (is_hmset /
-    // rondb_hset_command); used by write_callback to PK-address the
-    // hset_keys row when queuing the field_count bump op (Phase
-    // 1.0.2b). Points into argv[1]'s backing storage, so lifetime
-    // spans the batch. Empty for plain SET/MSET batches.
+    // rondb_hset_command); used by the single-trans HSET state
+    // machine (Phase 1.0.2d). Points into argv[1]'s backing storage,
+    // so lifetime spans the batch. Empty for plain SET/MSET batches.
     const char *m_hash_name_ptr;
     Uint32 m_hash_name_len;
-    // Cached hset_keys table pointer for the same bump path - avoids
-    // redoing dict->getTable on every callback.
     const NdbDictionary::Table *m_hset_key_tab;
+    // State for set_rows_hset's three-phase pipeline.
+    // Pre-allocated id (from getAutoIncrementValue) handed to Phase 1's
+    // interpreter; written into hset_keys on the INSERT branch,
+    // discarded on the UPDATE branch.
+    Uint64 m_hset_prealloc_id;
+    // Captured by Phase 1's callback from the lock-claim op's
+    // OUTPUT_INDEX_0 (existing redis_key_id, or m_hset_prealloc_id
+    // if INSERT branch ran) and OUTPUT_INDEX_1 (existing field_count,
+    // or 0 if INSERT). Phase 2 uses redis_key_id to PK-address each
+    // field_row write; Phase 3 uses field_count + delta to write the
+    // new count.
+    Uint64 m_hset_redis_key_id;
+    Uint32 m_hset_field_count_pre;
+    // NdbRecAttr handles for Phase 1's two output values.
+    NdbRecAttr *m_rec_attr_hset_id;
+    NdbRecAttr *m_rec_attr_hset_field_count;
 };
 #endif
