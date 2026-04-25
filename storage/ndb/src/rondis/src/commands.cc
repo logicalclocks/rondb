@@ -1093,79 +1093,107 @@ static int set_rows_hset(Ndb *ndb,
     HSET_DEALIAS_RETURN(0);
   }
 
-  // Phase 2: queue every field's writeTuple on the shared trans.
+  // Phase 2: chunked field writes. An HSET of N fields submits N
+  // writeTuples on the shared trans. To avoid overrunning NDB's
+  // per-trans op buffer for very large N, break the field set into
+  // chunks of MAX_PARALLEL_KEY_OPS and submit a NoCommit per chunk.
   // Pre-compute the extension-row layout for fields that overflow
   // value_start so the complex interpreter writes the correct
   // num_rows and so Phase 3 knows how many ext rows to stage.
-  for (Uint32 i = 0; i < num_fields; i++) {
-    key_storage[i].m_rondb_key = 0;
-    Uint32 value_len = key_storage[i].m_set_value_size;
-    if (value_len > INLINE_VALUE_LEN) {
-      Uint32 extended_value_len = value_len - INLINE_VALUE_LEN;
-      Uint32 num_value_rows = extended_value_len / EXTENSION_VALUE_LEN;
-      if (extended_value_len % EXTENSION_VALUE_LEN != 0) {
-        num_value_rows++;
+  Uint32 phase2_idx = 0;
+  while (phase2_idx < num_fields) {
+    Uint32 chunk_count =
+      std::min(num_fields - phase2_idx, (Uint32)MAX_PARALLEL_KEY_OPS);
+    for (Uint32 i = phase2_idx; i < phase2_idx + chunk_count; i++) {
+      key_storage[i].m_rondb_key = 0;
+      Uint32 value_len = key_storage[i].m_set_value_size;
+      if (value_len > INLINE_VALUE_LEN) {
+        Uint32 extended_value_len = value_len - INLINE_VALUE_LEN;
+        Uint32 num_value_rows = extended_value_len / EXTENSION_VALUE_LEN;
+        if (extended_value_len % EXTENSION_VALUE_LEN != 0) {
+          num_value_rows++;
+        }
+        if (rondb_get_rondb_key(tab_string_keys,
+                                key_storage[i].m_rondb_key,
+                                ndb,
+                                response) != 0) {
+          HSET_DEALIAS_RETURN(1);
+        }
+        key_storage[i].m_num_rows = num_value_rows;
       }
-      if (rondb_get_rondb_key(tab_string_keys,
-                              key_storage[i].m_rondb_key,
-                              ndb,
-                              response) != 0) {
+      int wret = write_data_to_key_op(response,
+                                      tab_string_keys,
+                                      &key_storage[i],
+                                      get_ctrl->m_hset_redis_key_id,
+                                      /* row_state */ 0,
+                                      get_ctrl->m_database_id);
+      if (wret != 0) {
         HSET_DEALIAS_RETURN(1);
       }
-      key_storage[i].m_num_rows = num_value_rows;
     }
-    int wret = write_data_to_key_op(response,
-                                    tab_string_keys,
-                                    &key_storage[i],
-                                    get_ctrl->m_hset_redis_key_id,
-                                    /* row_state */ 0,
-                                    get_ctrl->m_database_id);
-    if (wret != 0) {
-      HSET_DEALIAS_RETURN(1);
+    get_ctrl->m_hset_phase_chunk_start = phase2_idx;
+    get_ctrl->m_hset_phase_chunk_count = chunk_count;
+    get_ctrl->m_num_keys_outstanding = 1;
+    prepare_hset_phase2_transaction(get_ctrl, trans);
+    while (get_ctrl->m_num_keys_outstanding > 0) {
+      int finished = execute_ndb(ndb, 1, __LINE__);
+      assert(finished >= 0);
     }
-  }
-  get_ctrl->m_num_keys_outstanding = 1;
-  prepare_hset_phase2_transaction(get_ctrl, trans);
-  while (get_ctrl->m_num_keys_outstanding > 0) {
-    int finished = execute_ndb(ndb, 1, __LINE__);
-    assert(finished >= 0);
-  }
-  if (get_ctrl->m_num_keys_failed > 0) {
-    HSET_DEALIAS_RETURN(0);
+    if (get_ctrl->m_num_keys_failed > 0) {
+      HSET_DEALIAS_RETURN(0);
+    }
+    phase2_idx += chunk_count;
   }
 
-  // Phase 3: stage ext-row writes / deletes per field, plus the
-  // field_count update if any field was a new INSERT, then Commit.
-  // For each field:
-  //   m_num_rows == new value's required ext-row count
-  //   m_prev_num_rows == old row's ext-row count (from Phase 2
-  //     interpreter output captured by hset_phase2_callback)
-  //   m_rondb_key == new pre-allocated id (INSERT) or existing id
-  //     (UPDATE), captured by Phase 2 callback from OUTPUT_INDEX_1.
-  // Branches:
-  //   - m_num_rows > 0: write ordinals 0..m_num_rows-1, overwriting
-  //     any existing ext rows for that key.
-  //   - m_prev_num_rows > m_num_rows: delete surplus ordinals
-  //     m_num_rows..m_prev_num_rows-1.
-  // All ops queued on the shared trans; the upcoming Commit
-  // submission carries them along with the field_count update.
+  // Phase 3: chunked ext-row writes / deletes, then Commit folding
+  // in the field_count update. Per field, after Phase 2's callback
+  // populated m_prev_num_rows / m_rondb_key:
+  //   m_num_rows > 0       -> write ordinals 0..m_num_rows-1,
+  //                            overwriting any existing ext rows.
+  //   m_prev_num_rows >    -> delete surplus ordinals
+  //     m_num_rows             m_num_rows..m_prev_num_rows-1.
+  // Tally ops as we queue them; when a chunk fills
+  // MAX_PARALLEL_KEY_OPS, submit NoCommit + drain. The final
+  // submission is a Commit that also carries the field_count
+  // updateTuple.
+  Uint32 ops_in_chunk = 0;
   for (Uint32 i = 0; i < num_fields; i++) {
     struct KeyStorage *ks = &key_storage[i];
-    if (ks->m_num_rows > 0) {
-      while (ks->m_num_rw_rows < ks->m_num_rows) {
-        if (prepare_set_value_row(response, ks) != 0) {
-          HSET_DEALIAS_RETURN(1);
+    while (ks->m_num_rw_rows < ks->m_num_rows) {
+      if (prepare_set_value_row(response, ks) != 0) {
+        HSET_DEALIAS_RETURN(1);
+      }
+      if (++ops_in_chunk >= MAX_PARALLEL_KEY_OPS) {
+        get_ctrl->m_num_keys_outstanding = 1;
+        prepare_hset_phase_chunk_transaction(get_ctrl, trans);
+        while (get_ctrl->m_num_keys_outstanding > 0) {
+          int finished = execute_ndb(ndb, 1, __LINE__);
+          assert(finished >= 0);
         }
+        if (get_ctrl->m_num_keys_failed > 0) {
+          HSET_DEALIAS_RETURN(0);
+        }
+        ops_in_chunk = 0;
       }
     }
-    if (ks->m_prev_num_rows > ks->m_num_rows) {
-      for (Uint32 ord = ks->m_num_rows; ord < ks->m_prev_num_rows; ord++) {
-        if (prepare_delete_value_row(response,
-                                     ks,
-                                     ord,
-                                     get_ctrl->m_database_id) != 0) {
-          HSET_DEALIAS_RETURN(1);
+    for (Uint32 ord = ks->m_num_rows; ord < ks->m_prev_num_rows; ord++) {
+      if (prepare_delete_value_row(response,
+                                   ks,
+                                   ord,
+                                   get_ctrl->m_database_id) != 0) {
+        HSET_DEALIAS_RETURN(1);
+      }
+      if (++ops_in_chunk >= MAX_PARALLEL_KEY_OPS) {
+        get_ctrl->m_num_keys_outstanding = 1;
+        prepare_hset_phase_chunk_transaction(get_ctrl, trans);
+        while (get_ctrl->m_num_keys_outstanding > 0) {
+          int finished = execute_ndb(ndb, 1, __LINE__);
+          assert(finished >= 0);
         }
+        if (get_ctrl->m_num_keys_failed > 0) {
+          HSET_DEALIAS_RETURN(0);
+        }
+        ops_in_chunk = 0;
       }
     }
   }
@@ -1345,6 +1373,8 @@ void rondb_mset(Ndb *ndb,
   get_ctrl->m_hset_field_count_pre = 0;
   get_ctrl->m_rec_attr_hset_id = nullptr;
   get_ctrl->m_rec_attr_hset_field_count = nullptr;
+  get_ctrl->m_hset_phase_chunk_start = 0;
+  get_ctrl->m_hset_phase_chunk_count = 0;
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index_key = (2 * i) + arg_index_start;
     Uint32 arg_index_val = ((2 * i) + 1) + arg_index_start;

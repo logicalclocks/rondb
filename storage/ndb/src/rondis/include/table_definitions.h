@@ -176,7 +176,7 @@ enum KeyState {
     CompletedConditionalFail = 11
 };
 
-#define MAX_PARALLEL_KEY_OPS 1024
+#define MAX_PARALLEL_KEY_OPS 256
 #define MAX_VALUES_TO_WRITE 4
 #define STRING_REDIS_KEY_ID 0
 #define MAX_PARALLEL_VALUE_RWS 2
@@ -281,5 +281,13 @@ struct GetControl {
     // NdbRecAttr handles for Phase 1's two output values.
     NdbRecAttr *m_rec_attr_hset_id;
     NdbRecAttr *m_rec_attr_hset_field_count;
+    // Phase 2 / Phase 3 chunk-window. set_rows_hset breaks an
+    // N-field HSET into MAX_PARALLEL_KEY_OPS-sized batches so a
+    // single NoCommit submission does not overrun NDB's per-trans
+    // op buffer. The Phase-2 callback iterates only
+    // [chunk_start, chunk_start+chunk_count) of m_key_store; the
+    // Phase-3 ack callback uses no per-key state.
+    Uint32 m_hset_phase_chunk_start;
+    Uint32 m_hset_phase_chunk_count;
 };
 #endif

@@ -76,6 +76,8 @@ void prepare_hset_phase1_transaction(struct GetControl *get_ctrl,
                                      NdbTransaction *trans);
 void prepare_hset_phase2_transaction(struct GetControl *get_ctrl,
                                      NdbTransaction *trans);
+void prepare_hset_phase_chunk_transaction(struct GetControl *get_ctrl,
+                                          NdbTransaction *trans);
 void prepare_hset_phase3_transaction(struct GetControl *get_ctrl,
                                      NdbTransaction *trans);
 

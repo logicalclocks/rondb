@@ -636,24 +636,28 @@ void prepare_hset_phase1_transaction(struct GetControl *get_ctrl,
                               (void*)get_ctrl);
 }
 
-// Phase 1.0.2d Phase-2 callback. Fires once when the field-write
-// NoCommit response arrives (one callback for all N field ops on
-// the shared trans). Iterates every key in the batch and pulls
+// Phase 1.0.2d/f Phase-2 chunk callback. Fires once per Phase-2
+// NoCommit submission. Iterates only the keys in the current
+// chunk window (m_hset_phase_chunk_start ..
+// m_hset_phase_chunk_start + m_hset_phase_chunk_count) and pulls
 // the per-op interpreter outputs from the NdbRecAttr handles
-// stashed by write_data_to_key_op.
+// stashed by write_data_to_key_op for those keys. set_rows_hset
+// loops Phase-2 chunks until every field has been written.
 static void
 hset_phase2_callback(int result, NdbTransaction *trans, void *aObject) {
   struct GetControl *get_ctrl = (struct GetControl*)aObject;
   (void)result;
   assert(get_ctrl->m_num_transactions > 0);
   int code = trans->getNdbError().code;
-  Uint32 num_keys = get_ctrl->m_num_keys_requested;
+  Uint32 chunk_start = get_ctrl->m_hset_phase_chunk_start;
+  Uint32 chunk_end = chunk_start + get_ctrl->m_hset_phase_chunk_count;
   if (code != 0) {
     if (code == RONDB_CONDITIONAL_STORE_NOT_MET) {
-      // HSETNX-style guard (NX/XX) tripped on at least one field.
-      // HSET / HMSET don't expose conditional flags so this only
-      // fires on HSETNX. Reply path handles ConditionalFail per
-      // C7 / C8 conventions.
+      // HSETNX-style guard (NX/XX) tripped on at least one field
+      // in this chunk. HSET / HMSET don't expose conditional flags
+      // so this only fires on HSETNX. Mark the entire batch
+      // ConditionalFail (the trans aborts on commit anyway).
+      Uint32 num_keys = get_ctrl->m_num_keys_requested;
       for (Uint32 i = 0; i < num_keys; i++) {
         get_ctrl->m_key_store[i].m_key_state =
           KeyState::CompletedConditionalFail;
@@ -663,12 +667,13 @@ hset_phase2_callback(int result, NdbTransaction *trans, void *aObject) {
       if (get_ctrl->m_error_code == 0) {
         get_ctrl->m_error_code = code;
       }
+      Uint32 num_keys = get_ctrl->m_num_keys_requested;
       for (Uint32 i = 0; i < num_keys; i++) {
         get_ctrl->m_key_store[i].m_key_state = KeyState::CompletedFailed;
       }
     }
   } else {
-    for (Uint32 i = 0; i < num_keys; i++) {
+    for (Uint32 i = chunk_start; i < chunk_end; i++) {
       struct KeyStorage *ks = &get_ctrl->m_key_store[i];
       ks->m_prev_num_rows =
         (Uint32)ks->m_rec_attr_prev_num_rows->u_64_value();
@@ -693,6 +698,36 @@ void prepare_hset_phase2_transaction(struct GetControl *get_ctrl,
                                      NdbTransaction *trans) {
   trans->executeAsynchPrepare(NdbTransaction::NoCommit,
                               &hset_phase2_callback,
+                              (void*)get_ctrl);
+}
+
+// Phase 1.0.2f Phase-3 chunk-ack callback. Fires once per Phase-3
+// NoCommit submission carrying ext-row writes / deletes.
+// Acknowledges the chunk; no per-key state to read (ext-row ops
+// don't emit interpreter outputs we care about). The final Phase-3
+// submission is a Commit that uses hset_phase3_callback instead.
+static void
+hset_phase_chunk_callback(int result,
+                          NdbTransaction *trans,
+                          void *aObject) {
+  struct GetControl *get_ctrl = (struct GetControl*)aObject;
+  (void)result;
+  assert(get_ctrl->m_num_transactions > 0);
+  int code = trans->getNdbError().code;
+  if (code != 0) {
+    get_ctrl->m_num_keys_failed++;
+    if (get_ctrl->m_error_code == 0) {
+      get_ctrl->m_error_code = code;
+    }
+  }
+  assert(get_ctrl->m_num_keys_outstanding > 0);
+  get_ctrl->m_num_keys_outstanding--;
+}
+
+void prepare_hset_phase_chunk_transaction(struct GetControl *get_ctrl,
+                                          NdbTransaction *trans) {
+  trans->executeAsynchPrepare(NdbTransaction::NoCommit,
+                              &hset_phase_chunk_callback,
                               (void*)get_ctrl);
 }
 
