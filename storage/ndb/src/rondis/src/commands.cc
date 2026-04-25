@@ -1005,9 +1005,9 @@ static int set_rows(Ndb *ndb,
 //   Phase 3 (Commit, with optional ext-row ops + field_count update
 //     folded into the same submission) - one round-trip.
 //
-// First cut (Phase 1.0.2d): inline values only (each field's
-// value <= INLINE_VALUE_LEN). Phase 1.0.2e adds extension-row
-// support for large values.
+// Phase 1.0.2e: large values (each field's value > INLINE_VALUE_LEN)
+// are supported by staging ext-row writes/deletes on the same trans
+// in Phase 3 alongside the field_count update.
 static int set_rows_hset(Ndb *ndb,
                          const NdbDictionary::Table *tab_string_keys,
                          std::string *response,
@@ -1094,17 +1094,25 @@ static int set_rows_hset(Ndb *ndb,
   }
 
   // Phase 2: queue every field's writeTuple on the shared trans.
+  // Pre-compute the extension-row layout for fields that overflow
+  // value_start so the complex interpreter writes the correct
+  // num_rows and so Phase 3 knows how many ext rows to stage.
   for (Uint32 i = 0; i < num_fields; i++) {
     key_storage[i].m_rondb_key = 0;
     Uint32 value_len = key_storage[i].m_set_value_size;
     if (value_len > INLINE_VALUE_LEN) {
-      // Phase 1.0.2e will plumb ext-rows support through Phase 3's
-      // pre-Commit dispatch. For now reject so we don't silently
-      // truncate.
-      assign_generic_err_to_response(response,
-        "HSET large-value (>INLINE_VALUE_LEN) not yet supported "
-        "in single-trans path");
-      HSET_DEALIAS_RETURN(1);
+      Uint32 extended_value_len = value_len - INLINE_VALUE_LEN;
+      Uint32 num_value_rows = extended_value_len / EXTENSION_VALUE_LEN;
+      if (extended_value_len % EXTENSION_VALUE_LEN != 0) {
+        num_value_rows++;
+      }
+      if (rondb_get_rondb_key(tab_string_keys,
+                              key_storage[i].m_rondb_key,
+                              ndb,
+                              response) != 0) {
+        HSET_DEALIAS_RETURN(1);
+      }
+      key_storage[i].m_num_rows = num_value_rows;
     }
     int wret = write_data_to_key_op(response,
                                     tab_string_keys,
@@ -1126,9 +1134,41 @@ static int set_rows_hset(Ndb *ndb,
     HSET_DEALIAS_RETURN(0);
   }
 
-  // Phase 3: queue field_count update if any field was a new INSERT,
-  // then Commit. Ext-row work is empty in this first cut (rejected
-  // above).
+  // Phase 3: stage ext-row writes / deletes per field, plus the
+  // field_count update if any field was a new INSERT, then Commit.
+  // For each field:
+  //   m_num_rows == new value's required ext-row count
+  //   m_prev_num_rows == old row's ext-row count (from Phase 2
+  //     interpreter output captured by hset_phase2_callback)
+  //   m_rondb_key == new pre-allocated id (INSERT) or existing id
+  //     (UPDATE), captured by Phase 2 callback from OUTPUT_INDEX_1.
+  // Branches:
+  //   - m_num_rows > 0: write ordinals 0..m_num_rows-1, overwriting
+  //     any existing ext rows for that key.
+  //   - m_prev_num_rows > m_num_rows: delete surplus ordinals
+  //     m_num_rows..m_prev_num_rows-1.
+  // All ops queued on the shared trans; the upcoming Commit
+  // submission carries them along with the field_count update.
+  for (Uint32 i = 0; i < num_fields; i++) {
+    struct KeyStorage *ks = &key_storage[i];
+    if (ks->m_num_rows > 0) {
+      while (ks->m_num_rw_rows < ks->m_num_rows) {
+        if (prepare_set_value_row(response, ks) != 0) {
+          HSET_DEALIAS_RETURN(1);
+        }
+      }
+    }
+    if (ks->m_prev_num_rows > ks->m_num_rows) {
+      for (Uint32 ord = ks->m_num_rows; ord < ks->m_prev_num_rows; ord++) {
+        if (prepare_delete_value_row(response,
+                                     ks,
+                                     ord,
+                                     get_ctrl->m_database_id) != 0) {
+          HSET_DEALIAS_RETURN(1);
+        }
+      }
+    }
+  }
   if (get_ctrl->m_num_new_fields > 0) {
     Uint32 new_count = get_ctrl->m_hset_field_count_pre +
                        get_ctrl->m_num_new_fields;
