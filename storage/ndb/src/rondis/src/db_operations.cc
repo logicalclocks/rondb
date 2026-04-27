@@ -765,14 +765,224 @@ void prepare_hset_phase3_transaction(struct GetControl *get_ctrl,
                               (void*)get_ctrl);
 }
 
+// Phase 1.0.3 single-trans HDEL helpers. The shape mirrors HSET's
+// three-phase pipeline (Phase 1 lock-claim, Phase 2 chunked
+// per-field probes, Phase 3 commit-with-deletes-and-bump) but the
+// Phase 1 op is a read (no auto-INSERT of hset_keys), Phase 2 is a
+// read pass that classifies each field as inline / ext-row /
+// missing, and Phase 3's per-field ops are deletes rather than
+// writes.
+
+// Phase 1: take an X-lock on hset_keys(key) by reading the row
+// LM_Exclusive. Projects redis_key_id (column index 1) and
+// field_count (column index 2) into get_ctrl->m_hset_lock_read_buf.
+// On NoDataFound (626) the read fails individually; the
+// trans-level error is 0 because reads default to AO_IgnoreError.
+// hdel_phase1_callback inspects the per-op error to distinguish
+// "hash exists, X-lock held" from "hash never existed".
+int add_hdel_lock_read_op(NdbTransaction *trans,
+                          const NdbDictionary::Table *tab_hset,
+                          const char *hash_name,
+                          Uint32 hash_name_len,
+                          struct GetControl *get_ctrl,
+                          Uint32 database_id,
+                          std::string *response) {
+  (void)tab_hset;
+  struct hset_key_table *key_row = &get_ctrl->m_hset_lock_read_buf;
+  key_row->null_bits = 0;
+  memcpy(&key_row->redis_key[2], hash_name, hash_name_len);
+  set_length(&key_row->redis_key[0], hash_name_len);
+
+  // Mask 0x6 = bits 1,2 (redis_key_id, field_count). PK is read
+  // implicitly by the PK lookup. Skip expiry_date (bit 3) — HDEL
+  // doesn't consult it.
+  const Uint32 mask = 0x6;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_BATCH_SAFE_FLAG;
+
+  const NdbOperation *op = trans->readTuple(
+    pk_hset_key_record[database_id],
+    (const char *)key_row,
+    entire_hset_key_record[database_id],
+    (char *)key_row,
+    NdbOperation::LM_Exclusive,
+    mask_ptr,
+    &opts,
+    sizeof(opts));
+  if (op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to add hset_keys lock-read op",
+                               trans->getNdbError());
+    return -1;
+  }
+  get_ctrl->m_hdel_phase1_op = op;
+  return 0;
+}
+
+static void
+hdel_phase1_callback(int result, NdbTransaction *trans, void *aObject) {
+  struct GetControl *get_ctrl = (struct GetControl*)aObject;
+  (void)result;
+  assert(get_ctrl->m_num_transactions > 0);
+  // Trans-level error first: a non-626 error here is a real
+  // failure (op-build error, schema mismatch, network) and
+  // should fail the batch. NoDataFound on the read does NOT
+  // bubble up to trans level (default AO_IgnoreError for reads).
+  int trans_code = trans->getNdbError().code;
+  if (trans_code != 0 && trans_code != 626) {
+    get_ctrl->m_num_keys_failed++;
+    if (get_ctrl->m_error_code == 0) {
+      get_ctrl->m_error_code = trans_code;
+    }
+    assert(get_ctrl->m_num_keys_outstanding > 0);
+    get_ctrl->m_num_keys_outstanding--;
+    return;
+  }
+  // Per-op error: 626 means the hash row does not exist. Signal
+  // the missing-hash case via m_hset_redis_key_id == 0 (reserved
+  // STRING_REDIS_KEY_ID is never assigned to a hash, so 0 is a
+  // safe "no row" sentinel). The outer state machine skips
+  // Phase 2/3 and replies :0\r\n.
+  int op_code =
+    (get_ctrl->m_hdel_phase1_op != nullptr)
+    ? get_ctrl->m_hdel_phase1_op->getNdbError().code
+    : 0;
+  if (op_code == 626) {
+    get_ctrl->m_hset_redis_key_id = 0;
+    get_ctrl->m_hset_field_count_pre = 0;
+  } else if (op_code != 0) {
+    get_ctrl->m_num_keys_failed++;
+    if (get_ctrl->m_error_code == 0) {
+      get_ctrl->m_error_code = op_code;
+    }
+  } else {
+    get_ctrl->m_hset_redis_key_id =
+      get_ctrl->m_hset_lock_read_buf.redis_key_id;
+    get_ctrl->m_hset_field_count_pre =
+      get_ctrl->m_hset_lock_read_buf.field_count;
+  }
+  assert(get_ctrl->m_num_keys_outstanding > 0);
+  get_ctrl->m_num_keys_outstanding--;
+}
+
+void prepare_hdel_phase1_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans) {
+  trans->executeAsynchPrepare(NdbTransaction::NoCommit,
+                              &hdel_phase1_callback,
+                              (void*)get_ctrl);
+}
+
+// Phase 2: per-field LM_Exclusive readTuple on string_keys(
+// redis_key_id, field). Projects num_rows + rondb_key + tot_value_len
+// into key_store->m_key_row. Default AO_IgnoreError for reads
+// means individual NoDataFound (626) on missing fields does not
+// abort the trans; hdel_phase2_callback walks per-op errors via
+// the stashed NdbOperation* to classify each field.
+int add_hdel_field_probe_op(KeyStorage *key_store,
+                            Uint32 database_id,
+                            std::string *response) {
+  struct key_table *key_row = &key_store->m_key_row;
+  // PK is set up by the caller (hash redis_key_id + field name).
+  // Mask 0xFC matches prepare_get_key_row: read every non-PK col.
+  const Uint32 mask = 0xFC;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_BATCH_SAFE_FLAG;
+
+  const NdbOperation *op = key_store->m_trans->readTuple(
+    pk_key_record[database_id],
+    (const char *)key_row,
+    entire_key_record[database_id],
+    (char *)key_row,
+    NdbOperation::LM_Exclusive,
+    mask_ptr,
+    &opts,
+    sizeof(opts));
+  if (op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_GET_OP,
+                               key_store->m_trans->getNdbError());
+    return RONDB_INTERNAL_ERROR;
+  }
+  key_store->m_hdel_phase2_probe_op = op;
+  return 0;
+}
+
+static void
+hdel_phase2_callback(int result, NdbTransaction *trans, void *aObject) {
+  struct GetControl *get_ctrl = (struct GetControl*)aObject;
+  (void)result;
+  assert(get_ctrl->m_num_transactions > 0);
+  int trans_code = trans->getNdbError().code;
+  if (trans_code != 0 && trans_code != 626) {
+    get_ctrl->m_num_keys_failed++;
+    if (get_ctrl->m_error_code == 0) {
+      get_ctrl->m_error_code = trans_code;
+    }
+    assert(get_ctrl->m_num_keys_outstanding > 0);
+    get_ctrl->m_num_keys_outstanding--;
+    return;
+  }
+  Uint32 chunk_start = get_ctrl->m_hset_phase_chunk_start;
+  Uint32 chunk_end = chunk_start + get_ctrl->m_hset_phase_chunk_count;
+  for (Uint32 i = chunk_start; i < chunk_end; i++) {
+    struct KeyStorage *ks = &get_ctrl->m_key_store[i];
+    int op_code = (ks->m_hdel_phase2_probe_op != nullptr)
+                  ? ks->m_hdel_phase2_probe_op->getNdbError().code
+                  : 0;
+    if (op_code == 0) {
+      ks->m_hdel_field_present = true;
+      // m_key_row was populated by the read; copy out the bits
+      // Phase 3 needs.
+      ks->m_num_rows = ks->m_key_row.num_rows;
+      ks->m_rondb_key = ks->m_key_row.rondb_key;
+      get_ctrl->m_num_deleted_fields++;
+    } else if (op_code == 626) {
+      ks->m_hdel_field_present = false;
+      ks->m_num_rows = 0;
+      ks->m_rondb_key = 0;
+    } else {
+      get_ctrl->m_num_keys_failed++;
+      if (get_ctrl->m_error_code == 0) {
+        get_ctrl->m_error_code = op_code;
+      }
+      ks->m_hdel_field_present = false;
+    }
+  }
+  assert(get_ctrl->m_num_keys_outstanding > 0);
+  get_ctrl->m_num_keys_outstanding--;
+}
+
+void prepare_hdel_phase2_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans) {
+  trans->executeAsynchPrepare(NdbTransaction::NoCommit,
+                              &hdel_phase2_callback,
+                              (void*)get_ctrl);
+}
+
+// Phase 3: commit. Mark every key terminal so the caller can emit
+// the integer reply. Reuses the HSET Phase 3 callback semantics
+// (CompletedSuccess / CompletedFailed for the whole batch) under
+// a thin wrapper for naming clarity.
+void prepare_hdel_phase3_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans) {
+  trans->executeAsynchPrepare(NdbTransaction::Commit,
+                              &hset_phase3_callback,
+                              (void*)get_ctrl);
+}
+
 // Append an interpretedUpdate op on the same NdbTransaction that
 // adjusts hset_keys.field_count by delta. Used by HDEL (Phase
-// 1.0.3) with delta<0. Phase 1.0.2b's per-field bump call site
-// in write_callback was removed in Phase 1.0.2d; this helper
-// stays in the file because Phase 1.0.3 will reuse it. The
-// [[maybe_unused]] silences the unused-function warning until
-// then.
-[[maybe_unused]] static int
+// 1.0.3) with delta<0 to fold a deferred decrement into the
+// Commit op that also carries the field-row deletes. The
+// cross-server invariant (Phase 1.0.3) keeps the hset_keys row
+// present forever, so updateTuple is safe.
+int
 add_hset_field_count_bump_op(NdbTransaction *trans,
                              const NdbDictionary::Table *tab_hset,
                              const char *hash_name,
@@ -803,15 +1013,24 @@ add_hset_field_count_bump_op(NdbTransaction *trans,
   opts.interpretedCode = &code;
 
   // updateTuple (not writeTuple): if the hset_keys row is missing
-  // something has gone wrong upstream (rondb_get_redis_key_id
-  // should have inserted it). Fail the trans rather than writing
-  // a row with uninitialized non-PK columns.
+  // something has gone wrong upstream. Fail the trans rather than
+  // writing a row with uninitialized non-PK columns.
+  //
+  // mask=0 (zero, NOT nullptr): nullptr would tell NDB to write
+  // every non-PK column from key_row, including the unset
+  // redis_key_id and field_count fields - that would clobber the
+  // existing row's redis_key_id with stack garbage. With an
+  // explicit zero mask, only the interpreter writes
+  // (init_hset_field_count_bump_code's write_attr on field_count),
+  // and the existing redis_key_id is preserved.
+  const Uint32 mask = 0;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
   const NdbOperation *op = trans->updateTuple(
     pk_hset_key_record[database_id],
     (const char *)&key_row,
     entire_hset_key_record[database_id],
     (char *)&key_row,
-    nullptr,
+    mask_ptr,
     &opts,
     sizeof(opts));
   if (op == nullptr) {

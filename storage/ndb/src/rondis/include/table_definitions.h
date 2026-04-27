@@ -221,6 +221,13 @@ struct KeyStorage {
     Uint32 m_num_rw_rows;
     Uint32 m_num_current_rw_rows;
     Uint32 m_prev_num_rows;
+    // Phase 1.0.3 single-trans HDEL: per-field probe op (set in
+    // Phase 2's read-pass) and per-field "row was found" flag set
+    // by the Phase-2 callback. m_num_rows is reused to carry the
+    // ext-row count when a field has overflow; m_rondb_key carries
+    // the row's rondb_key for ext-row PK addressing in Phase 3.
+    const NdbOperation *m_hdel_phase2_probe_op;
+    bool m_hdel_field_present;
     Int64 m_expire_at;
     union {
         Uint32 m_get_value_size;
@@ -289,5 +296,17 @@ struct GetControl {
     // Phase-3 ack callback uses no per-key state.
     Uint32 m_hset_phase_chunk_start;
     Uint32 m_hset_phase_chunk_count;
+    // Phase 1.0.3 single-trans HDEL: deleted-field count carried
+    // from Phase 2's classifier callback to Phase 3's commit, so
+    // the field_count bump uses delta = -m_num_deleted_fields.
+    Uint32 m_num_deleted_fields;
+    // HDEL Phase 1's lock-read on hset_keys(key) projects into this
+    // buffer; the callback consumes m_hset_redis_key_id and
+    // m_hset_field_count_pre from it on success. m_hdel_phase1_op
+    // is the per-op handle used to read the per-op error code (so
+    // we can distinguish 626 "no row" from a real failure under
+    // the default AO_IgnoreError that NDB sets for reads).
+    struct hset_key_table m_hset_lock_read_buf;
+    const NdbOperation *m_hdel_phase1_op;
 };
 #endif

@@ -711,22 +711,137 @@ void rondb_del_command(Ndb *ndb,
   rondb_del(ndb, argv, response, STRING_REDIS_KEY_ID, worker_id);
 }
 
+// Forward decl: set_rows_hdel is defined below set_rows_hset (where it
+// can sit next to its mirror) but rondb_hdel_command needs to call it.
+static int set_rows_hdel(Ndb *ndb,
+                         const NdbDictionary::Table *tab_string_keys,
+                         std::string *response,
+                         struct KeyStorage *key_storage,
+                         struct GetControl *get_ctrl,
+                         Uint32 num_fields);
+
 void rondb_hdel_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
                         int worker_id) {
   DEB_DEL_CMD(("HDEL command with %lu parameters", argv.size()));
-  Uint64 redis_key_id;
-  int ret_code = rondb_get_redis_key_id(ndb,
-                                       redis_key_id,
-                                       argv[1].c_str(),
-                                       argv[1].size(),
-                                       response,
-                                       get_current_database(worker_id));
-  if (ret_code != 0) {
-      return;
+  // Phase 1.0.3: HDEL is a single-trans pipeline that mirrors HSET
+  // (Phase 1.0.2d) - one NDB transaction for the whole batch, taking
+  // hset_keys(key)'s X-lock as the trans's first op so concurrent
+  // HSET / HDEL on the same hash are mutually serialized cluster-
+  // wide. argv[0] = "HDEL", argv[1] = hash name, argv[2..] = fields.
+  Uint32 num_fields = argv.size() - 2;
+  assert(num_fields > 0);
+  struct KeyStorage *key_storage = (struct KeyStorage*)
+    malloc(sizeof(struct KeyStorage) * num_fields);
+  if (key_storage == nullptr) {
+    assign_generic_err_to_response(response, FAILED_MALLOC);
+    return;
   }
-  rondb_del(ndb, argv, response, redis_key_id, worker_id);
+  struct GetControl *get_ctrl = (struct GetControl*)
+    malloc(sizeof(struct GetControl));
+  if (get_ctrl == nullptr) {
+    assign_generic_err_to_response(response, FAILED_MALLOC);
+    free(key_storage);
+    return;
+  }
+  get_ctrl->m_ndb = ndb;
+  get_ctrl->m_key_store = key_storage;
+  get_ctrl->m_value_rows = nullptr;
+  get_ctrl->m_next_value_row = 0;
+  get_ctrl->m_num_transactions = 0;
+  get_ctrl->m_num_keys_requested = num_fields;
+  get_ctrl->m_num_keys_outstanding = 0;
+  get_ctrl->m_num_bytes_outstanding = 0;
+  get_ctrl->m_num_keys_completed_first_pass = 0;
+  get_ctrl->m_num_keys_multi_rows = 0;
+  get_ctrl->m_num_keys_failed = 0;
+  get_ctrl->m_num_new_fields = 0;
+  get_ctrl->m_num_read_errors = 0;
+  get_ctrl->m_error_code = 0;
+  get_ctrl->m_is_set_command = false;
+  get_ctrl->m_get_cmd_part = false;
+  get_ctrl->m_worker_id = worker_id;
+  get_ctrl->m_database_id = get_current_database(worker_id);
+  get_ctrl->m_hash_name_ptr = argv[1].c_str();
+  get_ctrl->m_hash_name_len = argv[1].size();
+  get_ctrl->m_hset_key_tab = nullptr;
+  get_ctrl->m_hset_prealloc_id = 0;
+  get_ctrl->m_hset_redis_key_id = 0;
+  get_ctrl->m_hset_field_count_pre = 0;
+  get_ctrl->m_rec_attr_hset_id = nullptr;
+  get_ctrl->m_rec_attr_hset_field_count = nullptr;
+  get_ctrl->m_hset_phase_chunk_start = 0;
+  get_ctrl->m_hset_phase_chunk_count = 0;
+  get_ctrl->m_num_deleted_fields = 0;
+  get_ctrl->m_hdel_phase1_op = nullptr;
+  for (Uint32 i = 0; i < num_fields; i++) {
+    key_storage[i].m_index = i;
+    key_storage[i].m_close_flag = false;
+    key_storage[i].m_get_ctrl = get_ctrl;
+    key_storage[i].m_trans = nullptr;
+    key_storage[i].m_key_str = argv[i + 2].c_str();
+    key_storage[i].m_key_len = argv[i + 2].size();
+    key_storage[i].m_value_ptr = nullptr;
+    key_storage[i].m_get_value_size = 0;
+    key_storage[i].m_set_value_size = 0;
+    key_storage[i].m_header_len = 0;
+    key_storage[i].m_first_value_row = 0;
+    key_storage[i].m_current_pos = 0;
+    key_storage[i].m_num_rows = 0;
+    key_storage[i].m_num_rw_rows = 0;
+    key_storage[i].m_num_current_rw_rows = 0;
+    key_storage[i].m_rondb_key = 0;
+    key_storage[i].m_rec_attr_prev_num_rows = nullptr;
+    key_storage[i].m_rec_attr_rondb_key = nullptr;
+    key_storage[i].m_rec_attr_expiry_date = nullptr;
+    key_storage[i].m_rec_attr_new_field = nullptr;
+    key_storage[i].m_hdel_phase2_probe_op = nullptr;
+    key_storage[i].m_hdel_field_present = false;
+    key_storage[i].m_key_state = KeyState::NotCompleted;
+  }
+
+  const NdbDictionary::Dictionary *dict;
+  const NdbDictionary::Table *tab_string_keys = nullptr;
+  if (!setup_metadata(ndb, response, &dict, &tab_string_keys)) {
+    release_del(get_ctrl);
+    return;
+  }
+  const NdbDictionary::Table *hset_tab =
+    dict->getTable(HSET_KEY_TABLE_NAME);
+  if (hset_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to get hset_keys table",
+                               dict->getNdbError());
+    release_del(get_ctrl);
+    return;
+  }
+  get_ctrl->m_hset_key_tab = hset_tab;
+
+  int ret_code = set_rows_hdel(ndb,
+                               tab_string_keys,
+                               response,
+                               key_storage,
+                               get_ctrl,
+                               num_fields);
+  if (ret_code != 0) {
+    release_del(get_ctrl);
+    return;
+  }
+  if (get_ctrl->m_num_keys_failed > 0) {
+    assign_err_to_response(response,
+                           FAILED_EXECUTE_DEL,
+                           get_ctrl->m_error_code);
+    release_del(get_ctrl);
+    return;
+  }
+  // Reply is the count of fields actually deleted (Redis-canonical
+  // HDEL semantics). Missing-hash case lands here with
+  // m_num_deleted_fields == 0 -> :0\r\n.
+  char buf[20];
+  snprintf(buf, sizeof(buf), ":%u\r\n", get_ctrl->m_num_deleted_fields);
+  response->append(&buf[0]);
+  release_del(get_ctrl);
 }
 
 /**
@@ -1213,6 +1328,200 @@ static int set_rows_hset(Ndb *ndb,
   }
   HSET_DEALIAS_RETURN(0);
 #undef HSET_DEALIAS_RETURN
+}
+
+// Phase 1.0.3 single-trans HDEL state machine. Mirrors set_rows_hset's
+// three-phase shape on a single shared NdbTransaction:
+//   Phase 1: X-locked readTuple on hset_keys(key) - no INSERT side
+//            effect on miss; hash-not-found is a valid result that
+//            short-circuits to :0\r\n.
+//   Phase 2: per-field LM_Exclusive readTuple on string_keys to
+//            classify each field as inline / ext-row / missing.
+//            Chunked by MAX_PARALLEL_KEY_OPS like HSET Phase 2.
+//   Phase 3: per-field deleteTuple on string_keys plus per-ordinal
+//            deleteTuple on string_values for ext fields, plus
+//            add_hset_field_count_bump_op(delta = -deleted_count)
+//            folded into the Commit. Chunked when ops fill the
+//            per-trans op buffer.
+//
+// Returns 0 on success or "expected failure" (caller inspects
+// get_ctrl->m_num_keys_failed and m_hset_redis_key_id to decide
+// the reply); 1 on hard failure.
+static int set_rows_hdel(Ndb *ndb,
+                         const NdbDictionary::Table *tab_string_keys,
+                         std::string *response,
+                         struct KeyStorage *key_storage,
+                         struct GetControl *get_ctrl,
+                         Uint32 num_fields) {
+  struct hset_key_table hset_pk_buf;
+  hset_pk_buf.null_bits = 0;
+  memcpy(&hset_pk_buf.redis_key[2],
+         get_ctrl->m_hash_name_ptr,
+         get_ctrl->m_hash_name_len);
+  set_length(&hset_pk_buf.redis_key[0], get_ctrl->m_hash_name_len);
+  NdbTransaction *trans = ndb->startTransaction(
+    get_ctrl->m_hset_key_tab,
+    (const char*)&hset_pk_buf.redis_key[0],
+    get_ctrl->m_hash_name_len + 2);
+  if (trans == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to start HDEL transaction",
+                               ndb->getNdbError());
+    return 1;
+  }
+  for (Uint32 i = 0; i < num_fields; i++) {
+    key_storage[i].m_trans = trans;
+    key_storage[i].m_hdel_field_present = false;
+    key_storage[i].m_hdel_phase2_probe_op = nullptr;
+  }
+  get_ctrl->m_num_transactions++;
+  get_ctrl->m_hdel_phase1_op = nullptr;
+  get_ctrl->m_num_deleted_fields = 0;
+
+  // Same dealias-and-return pattern as set_rows_hset: every key
+  // shares one trans, so close_finished_transactions must not
+  // double-close. Null out the aliases at every exit.
+  bool dealias_pending = true;
+#define HDEL_DEALIAS_RETURN(rc) do {                                    \
+    if (dealias_pending) {                                              \
+      for (Uint32 _i = 1; _i < num_fields; _i++) {                      \
+        key_storage[_i].m_trans = nullptr;                              \
+      }                                                                 \
+      dealias_pending = false;                                          \
+    }                                                                   \
+    return (rc);                                                        \
+  } while (0)
+
+  // Phase 1: X-locked read on hset_keys(key).
+  if (add_hdel_lock_read_op(trans,
+                            get_ctrl->m_hset_key_tab,
+                            get_ctrl->m_hash_name_ptr,
+                            get_ctrl->m_hash_name_len,
+                            get_ctrl,
+                            get_ctrl->m_database_id,
+                            response) != 0) {
+    HDEL_DEALIAS_RETURN(1);
+  }
+  get_ctrl->m_num_keys_outstanding = 1;
+  prepare_hdel_phase1_transaction(get_ctrl, trans);
+  while (get_ctrl->m_num_keys_outstanding > 0) {
+    int finished = execute_ndb(ndb, 1, __LINE__);
+    assert(finished >= 0);
+  }
+  if (get_ctrl->m_num_keys_failed > 0) {
+    HDEL_DEALIAS_RETURN(0);
+  }
+  // Hash row didn't exist - nothing to delete, no field_count to
+  // touch, no Commit needed. The trans aborts cleanly when closed.
+  if (get_ctrl->m_hset_redis_key_id == 0) {
+    HDEL_DEALIAS_RETURN(0);
+  }
+
+  // Phase 2: chunked per-field probes. Set up each key's m_key_row
+  // PK (redis_key_id from Phase 1's read + per-field name), queue a
+  // readTuple, submit NoCommit, drain. The classifier callback
+  // populates m_hdel_field_present + m_num_rows + m_rondb_key per
+  // field and increments m_num_deleted_fields.
+  Uint32 phase2_idx = 0;
+  while (phase2_idx < num_fields) {
+    Uint32 chunk_count =
+      std::min(num_fields - phase2_idx, (Uint32)MAX_PARALLEL_KEY_OPS);
+    for (Uint32 i = phase2_idx; i < phase2_idx + chunk_count; i++) {
+      struct key_table *kr = &key_storage[i].m_key_row;
+      kr->null_bits = 0;
+      kr->redis_key_id = get_ctrl->m_hset_redis_key_id;
+      memcpy(&kr->redis_key[2],
+             key_storage[i].m_key_str,
+             key_storage[i].m_key_len);
+      memset(&kr->redis_key[2 + key_storage[i].m_key_len], 0, 3);
+      set_length((char*)&kr->redis_key[0], key_storage[i].m_key_len);
+      if (add_hdel_field_probe_op(&key_storage[i],
+                                  get_ctrl->m_database_id,
+                                  response) != 0) {
+        HDEL_DEALIAS_RETURN(1);
+      }
+    }
+    get_ctrl->m_hset_phase_chunk_start = phase2_idx;
+    get_ctrl->m_hset_phase_chunk_count = chunk_count;
+    get_ctrl->m_num_keys_outstanding = 1;
+    prepare_hdel_phase2_transaction(get_ctrl, trans);
+    while (get_ctrl->m_num_keys_outstanding > 0) {
+      int finished = execute_ndb(ndb, 1, __LINE__);
+      assert(finished >= 0);
+    }
+    if (get_ctrl->m_num_keys_failed > 0) {
+      HDEL_DEALIAS_RETURN(0);
+    }
+    phase2_idx += chunk_count;
+  }
+
+  // Phase 3: queue deleteTuples for every present field (plus
+  // per-ordinal ext-row deletes), fold the field_count bump into
+  // the final Commit. Chunk the per-field ops via the existing
+  // hset_phase_chunk helper when ops_in_chunk fills the per-trans
+  // buffer.
+  Uint32 ops_in_chunk = 0;
+  for (Uint32 i = 0; i < num_fields; i++) {
+    struct KeyStorage *ks = &key_storage[i];
+    if (!ks->m_hdel_field_present) continue;
+    for (Uint32 ord = 0; ord < ks->m_num_rows; ord++) {
+      if (prepare_delete_value_row(response,
+                                   ks,
+                                   ord,
+                                   get_ctrl->m_database_id) != 0) {
+        HDEL_DEALIAS_RETURN(1);
+      }
+      if (++ops_in_chunk >= MAX_PARALLEL_KEY_OPS) {
+        get_ctrl->m_num_keys_outstanding = 1;
+        prepare_hset_phase_chunk_transaction(get_ctrl, trans);
+        while (get_ctrl->m_num_keys_outstanding > 0) {
+          int finished = execute_ndb(ndb, 1, __LINE__);
+          assert(finished >= 0);
+        }
+        if (get_ctrl->m_num_keys_failed > 0) {
+          HDEL_DEALIAS_RETURN(0);
+        }
+        ops_in_chunk = 0;
+      }
+    }
+    if (prepare_complex_delete_row(response,
+                                   tab_string_keys,
+                                   ks) != 0) {
+      HDEL_DEALIAS_RETURN(1);
+    }
+    if (++ops_in_chunk >= MAX_PARALLEL_KEY_OPS) {
+      get_ctrl->m_num_keys_outstanding = 1;
+      prepare_hset_phase_chunk_transaction(get_ctrl, trans);
+      while (get_ctrl->m_num_keys_outstanding > 0) {
+        int finished = execute_ndb(ndb, 1, __LINE__);
+        assert(finished >= 0);
+      }
+      if (get_ctrl->m_num_keys_failed > 0) {
+        HDEL_DEALIAS_RETURN(0);
+      }
+      ops_in_chunk = 0;
+    }
+  }
+  if (get_ctrl->m_num_deleted_fields > 0) {
+    Int64 delta = -(Int64)get_ctrl->m_num_deleted_fields;
+    if (add_hset_field_count_bump_op(trans,
+                                     get_ctrl->m_hset_key_tab,
+                                     get_ctrl->m_hash_name_ptr,
+                                     get_ctrl->m_hash_name_len,
+                                     delta,
+                                     get_ctrl->m_database_id,
+                                     response) != 0) {
+      HDEL_DEALIAS_RETURN(1);
+    }
+  }
+  get_ctrl->m_num_keys_outstanding = 1;
+  prepare_hdel_phase3_transaction(get_ctrl, trans);
+  while (get_ctrl->m_num_keys_outstanding > 0) {
+    int finished = execute_ndb(ndb, 1, __LINE__);
+    assert(finished >= 0);
+  }
+  HDEL_DEALIAS_RETURN(0);
+#undef HDEL_DEALIAS_RETURN
 }
 
 static

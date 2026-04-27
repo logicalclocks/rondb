@@ -72,6 +72,13 @@ int add_hset_field_count_set_op(NdbTransaction *trans,
                                 Uint32 new_count,
                                 Uint32 database_id,
                                 std::string *response);
+int add_hset_field_count_bump_op(NdbTransaction *trans,
+                                 const NdbDictionary::Table *tab_hset,
+                                 const char *hash_name,
+                                 Uint32 hash_name_len,
+                                 Int64 delta,
+                                 Uint32 database_id,
+                                 std::string *response);
 void prepare_hset_phase1_transaction(struct GetControl *get_ctrl,
                                      NdbTransaction *trans);
 void prepare_hset_phase2_transaction(struct GetControl *get_ctrl,
@@ -79,6 +86,24 @@ void prepare_hset_phase2_transaction(struct GetControl *get_ctrl,
 void prepare_hset_phase_chunk_transaction(struct GetControl *get_ctrl,
                                           NdbTransaction *trans);
 void prepare_hset_phase3_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans);
+
+/* Phase 1.0.3 single-trans HDEL helpers. */
+int add_hdel_lock_read_op(NdbTransaction *trans,
+                          const NdbDictionary::Table *tab_hset,
+                          const char *hash_name,
+                          Uint32 hash_name_len,
+                          struct GetControl *get_ctrl,
+                          Uint32 database_id,
+                          std::string *response);
+int add_hdel_field_probe_op(KeyStorage *key_store,
+                            Uint32 database_id,
+                            std::string *response);
+void prepare_hdel_phase1_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans);
+void prepare_hdel_phase2_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans);
+void prepare_hdel_phase3_transaction(struct GetControl *get_ctrl,
                                      NdbTransaction *trans);
 
 /* Setup operation record for SET MODULE */
