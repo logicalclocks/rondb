@@ -115,6 +115,7 @@
 #include "../dbtup/JoinAggInterpreter.hpp"
 #include "../dbtup/PushdownInterpreter.hpp"
 #include "../dbtup/VecSearchInterpreter.hpp"
+#include <CteLinkedAttr.hpp>
 
 /**
  * overload handling...
@@ -2748,6 +2749,12 @@ void Dblqh::send_CONTINUEB_all(Signal *signal, Uint32 continueb_case) {
 // and execute direct to local DICT to get everything at once
 void Dblqh::execCREATE_TAB_REQ(Signal *signal) {
   CreateTabReq *req = (CreateTabReq *)signal->getDataPtr();
+  /* Bit 31 of tableId is reserved as the CTE virt-column marker in
+   * the linked-attr buffer encoding (CteLinkedAttr.hpp).  Real NDB
+   * tableIds fit in 31 bits trivially; defend the invariant at table
+   * creation so a future tableId allocator change can't silently
+   * collide with the marker. */
+  ndbrequire(req->tableId < CteLinkedAttr::MARKER_BIT);
   tabptr.i = req->tableId;
   ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
 
@@ -18912,15 +18919,23 @@ void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
 /**
  * buildCteLinkedBuffer — assemble linked_attr_data for a CTE group row.
  *
- * Layout per entry: [tableId=0][schemaVersion=0][AttrHeader][data...].
+ * Layout per entry (CTE virt-column inline encoding,
+ * CteLinkedAttr.hpp): [word0 = MARKER | typeId | maxBytes]
+ *                     [word1 = csNumber | flags] [AttrHeader] [data...]
  *
  *   1. (optional) parent linked columns from AttrInfo subroutine section
- *      when attrInfoBuf is present and its subLen > 1.
+ *      when attrInfoBuf is present and its subLen > 1.  These are already
+ *      tagged by DBSPJ's appendFromParent — either real-table
+ *      [tableId][schemaVersion] or CTE-marker entries — and are
+ *      copied through verbatim.
  *   2. GROUP BY key columns from groupData (each entry is a standalone
- *      AttrHeader + payload, so word-size is read from each header).
- *   3. Aggregate result columns: for each accumulator, either an 8-byte
- *      value with attrId = n_gb_cols + i, or a zero-length AttrHeader
- *      when the accumulator is NULL.
+ *      AttrHeader + payload).  Type info from the source aggregator's
+ *      m_gb_types[i].
+ *   3. Aggregate result columns: 8-byte values per AggResItem, or a
+ *      zero-length AttrHeader when the accumulator is NULL.  Aggregate
+ *      result types follow the well-known widening rules; we emit the
+ *      runtime AggResItem.type when set, falling back to BIGINT (8B)
+ *      when undefined (all-null group).
  *
  * Writes up to ZATTR_BUFFER_SIZE words; overflow is ndbrequire-fatal.
  * lenOut receives the word count written.
@@ -18963,27 +18978,47 @@ void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
     }
   }
 
+  /* Resolve per-GB-column type info from the source aggregator.
+   * gb_types() returns nullptr if initGBTypes hasn't run yet — but
+   * any group we read from the hash map must have been processed,
+   * which guarantees init.  Defensive null-check stays for safety. */
+  const GBColTypeInfo *gbTypes = interp->gb_types();
+
   /* Step 2: GROUP BY key columns from the group row */
   const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
   const Uint32 keyWords = keyLen >> 2;
   Uint32 kp = 0;
+  Uint32 gbIdx = 0;
   while (kp < keyWords) {
-    outBuf[linkedPos++] = 0;  // tableId
-    outBuf[linkedPos++] = 0;  // schemaVersion
+    Uint32 typeId = 0;
+    Uint32 maxBytes = 0;
+    Uint32 csNumber = 0;
+    if (gbTypes != nullptr && gbIdx < n_gb_cols) {
+      typeId = gbTypes[gbIdx].typeId;
+      maxBytes = gbTypes[gbIdx].maxBytes;
+      if (gbTypes[gbIdx].cs != nullptr) csNumber = gbTypes[gbIdx].cs->number;
+    }
+    outBuf[linkedPos++] = CteLinkedAttr::encodeWord0(typeId, maxBytes);
+    outBuf[linkedPos++] = CteLinkedAttr::encodeWord1(csNumber);
     Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
     Uint32 words = 1 + dataSize;
     memcpy(&outBuf[linkedPos], &keyData[kp], words * sizeof(Uint32));
     linkedPos += words;
     kp += words;
+    gbIdx++;
   }
 
-  /* Step 3: Aggregate result columns */
+  /* Step 3: Aggregate result columns.  All accumulators are 8-byte
+   * AggResItem.value slots (BIGINT/BIGUNSIGNED/DOUBLE per widening
+   * rules); emit the runtime type when set.  Charset is N/A. */
   const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
       groupData + keyLen);
   for (Uint32 i = 0; i < n_agg_results; i++) {
     const Uint32 attrId = n_gb_cols + i;
-    outBuf[linkedPos++] = 0;  // tableId
-    outBuf[linkedPos++] = 0;  // schemaVersion
+    Uint32 typeId = accumulators[i].type;
+    if (typeId == NDB_TYPE_UNDEFINED) typeId = NDB_TYPE_BIGINT;
+    outBuf[linkedPos++] = CteLinkedAttr::encodeWord0(typeId, 8);
+    outBuf[linkedPos++] = CteLinkedAttr::encodeWord1(0);
     if (accumulators[i].is_null) {
       AttributeHeader::init(&outBuf[linkedPos], attrId, 0);
       linkedPos += 1;
@@ -19739,8 +19774,6 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
   bool endOfData = true;
   if (gb_map != nullptr && !gb_map->empty()) {
     jam();
-    const Uint32 src_n_gb_cols = interp->n_gb_cols();
-    const Uint32 src_n_agg_results = interp->n_agg_results();
 
     /* Resume from saved iterator position (O(1)), or begin() on first call */
     auto iter = (groupsSent == 0)
@@ -19756,8 +19789,6 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
       jam();
       const char *groupData = reinterpret_cast<const char *>(iter.data());
       const Uint32 keyLen = iter.keyLen();
-      const AggResItem *accumulators =
-          reinterpret_cast<const AggResItem *>(groupData + keyLen);
 
       /* Per-group filter gate.  effCinBuf resolves to the active
        * filter across both first-batch and CONTINUEB resumption
@@ -19777,37 +19808,16 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
         return;
       }
 
-      /* Build linked_attr_data: [tableId=0][schemaVersion=0][AH][data..]
-       * per column.  Mirrors CTE_LOOKUP agg-feed. */
+      /* Build linked_attr_data via the shared CTE writer so the
+       * inline CTE virt-column encoding (CteLinkedAttr.hpp) stays
+       * consistent with cteLookupAggFeed.  No parent linked columns
+       * for cteScanAggFeed (it's a hash-walk feed, not a per-row
+       * CTE_LOOKUP), so the attrInfoBuf args are nullptr/0. */
       Uint32 *linkedBuf = cevictBuffer;
       Uint32 linkedPos = 0;
-
-      const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
-      const Uint32 keyWords = keyLen >> 2;
-      Uint32 kp = 0;
-      while (kp < keyWords) {
-        linkedBuf[linkedPos++] = 0;  // tableId
-        linkedBuf[linkedPos++] = 0;  // schemaVersion
-        Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
-        Uint32 words = 1 + dataSize;
-        memcpy(&linkedBuf[linkedPos], &keyData[kp], words * sizeof(Uint32));
-        linkedPos += words;
-        kp += words;
-      }
-
-      for (Uint32 i = 0; i < src_n_agg_results; i++) {
-        const Uint32 attrId = src_n_gb_cols + i;
-        linkedBuf[linkedPos++] = 0;  // tableId
-        linkedBuf[linkedPos++] = 0;  // schemaVersion
-        if (accumulators[i].is_null) {
-          AttributeHeader::init(&linkedBuf[linkedPos], attrId, 0);
-          linkedPos += 1;
-        } else {
-          AttributeHeader::init(&linkedBuf[linkedPos], attrId, 8);
-          memcpy(&linkedBuf[linkedPos + 1], &accumulators[i].value, 8);
-          linkedPos += 3;
-        }
-      }
+      buildCteLinkedBuffer(interp, groupData, keyLen,
+                            nullptr, 0,
+                            linkedBuf, &linkedPos);
 
     retry_agg_scan:
       Int32 aggRet = targetInterp->processRecWithLinkedAttrs(

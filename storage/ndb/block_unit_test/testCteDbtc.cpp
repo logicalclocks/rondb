@@ -93,7 +93,9 @@
 #include <kernel/signaldata/ScanTab.hpp>
 #include <kernel/signaldata/TransIdAI.hpp>
 #include <kernel/signaldata/QueryTree.hpp>
+#include <kernel/CteLinkedAttr.hpp>
 #include <ndbapi/NdbAggregationCommon.hpp>
+#include <ndb_constants.h>
 
 #include <NdbRestarter.hpp>
 #include <mysql.h>
@@ -965,7 +967,10 @@ buildQueryTreeWithCteLookup(Uint32 tableId, Uint32 tableVersion,
   const Uint32 cte_scan_len = 5;
   const Uint32 cte_leaf_len = 7;
   const Uint32 main_scan_len = 5;
-  const Uint32 cte_lookup_len = 7;  /* same as lookup: 4 fixed + parent + key */
+  /* CTE_LOOKUP layout: 4 fixed header + 4 words virt-col type info
+   * (numResultCols=2: grp INT + SUM BIGINT, 2 words each) +
+   * 3 optional (parent + key pattern).  See CteLinkedAttr.hpp. */
+  const Uint32 cte_lookup_len = 4 + 4 + 3;
 
   const Uint32 tree_len = 1 +
     cte_sub_len + cte_scan_len + cte_leaf_len +
@@ -1027,6 +1032,13 @@ buildQueryTreeWithCteLookup(Uint32 tableId, Uint32 tableVersion,
   ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED);
   ai.push_back(0);                       /* cteId = 0 */
   ai.push_back(2);                       /* numResultCols = 2 (grp + SUM) */
+  /* Per-column virt-col type info (CteLinkedAttr.hpp): 2 words/col,
+   * sits between the fixed header and the parseDA optional region.
+   * col 0: grp INT (4 bytes); col 1: SUM(val) BIGINT (8 bytes). */
+  ai.push_back(CteLinkedAttr::encodeWord0(NDB_TYPE_INT, 4));
+  ai.push_back(CteLinkedAttr::encodeWord1(0));
+  ai.push_back(CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8));
+  ai.push_back(CteLinkedAttr::encodeWord1(0));
   ai.push_back((3 << 16) | 1);           /* parent: node 3 */
   ai.push_back((0 << 16) | 1);           /* key: 1 pattern word */
   ai.push_back(QueryPattern::attrInfo(0)); /* grp WITH header from parent linked[0] */
@@ -2437,7 +2449,10 @@ testNegative_InvalidCteId(TestCtx &ctx)
   /* Build tree like Test 5 but with cteId=99 on the CTE_LOOKUP node */
   std::vector<Uint32> ai;
   const Uint32 cte_sub_len = 4, cte_scan_len = 5, cte_leaf_len = 7;
-  const Uint32 main_scan_len = 5, cte_lookup_len = 7;
+  const Uint32 main_scan_len = 5;
+  /* CTE_LOOKUP layout: 4 header + 4 virt-col type info + 3 optional
+   * (numResultCols=2). See CteLinkedAttr.hpp. */
+  const Uint32 cte_lookup_len = 4 + 4 + 3;
   const Uint32 tree_len = 1 + cte_sub_len + cte_scan_len + cte_leaf_len +
     main_scan_len + cte_lookup_len;
   Uint32 cnt_len = 0;
@@ -2482,6 +2497,11 @@ testNegative_InvalidCteId(TestCtx &ctx)
   ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED);
   ai.push_back(99);  /* cteId = 99 — NO MATCHING CTE SUBTREE */
   ai.push_back(2);
+  /* Virt-col type info (CteLinkedAttr.hpp): grp INT, SUM BIGINT. */
+  ai.push_back(CteLinkedAttr::encodeWord0(NDB_TYPE_INT, 4));
+  ai.push_back(CteLinkedAttr::encodeWord1(0));
+  ai.push_back(CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8));
+  ai.push_back(CteLinkedAttr::encodeWord1(0));
   ai.push_back((3 << 16) | 1); ai.push_back((0 << 16) | 1);
   ai.push_back(QueryPattern::attrInfo(0));
 

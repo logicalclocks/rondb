@@ -26,6 +26,12 @@
  *   Phase 3  — dropped (CTE_SCAN as outer-join child — see
  *              cte_outer_join_phase_3.md).
  *
+ * Phase E.1K extension (Test 6): scanCte parent + readTuple child +
+ *   main aggregator on the child leaf with GROUP BY on a CTE virtual
+ *   column.  Drives the DBSPJ appendFromParent CTE-marker writer and
+ *   the JoinAggInterpreter::initGBTypes inline-type decoder
+ *   (cte_filter_phase_e1k.md).
+ *
  * Schema (created via MySQL):
  *   oj_cte_src(pk INT PK, grp INT, val BIGINT)         -- CTE source
  *   oj_cte_virtual(grp INT PK, total BIGINT)           -- virtual table
@@ -742,6 +748,176 @@ testCteSubtreeLeftJoinAggFeed(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 6 (Phase E.1K kernel CTE virt-col linked-attr support):        */
+/*   scanCte(0) INNER JOIN readTuple(oj_rhs, id=grp)                   */
+/*     + main aggregator on the child leaf,                            */
+/*       GROUP BY <CTE.grp>, SUM(<CTE.total>).                         */
+/*                                                                     */
+/* Drives the same kernel path as the deferred ronsql_cte_scan.test    */
+/* block reinstated in Phase E.1K: a CTE_SCAN parent feeds CTE virt-   */
+/* column values via DBSPJ's appendFromParent (Path 2) into the main   */
+/* aggregator's linked-attr buffer.  Without the inline-type encoding  */
+/* this fails with ZINVALID_SCHEMA_VERSION (1227) at initGBTypes.      */
+/*                                                                     */
+/* Expected: 2 groups (grp=1 → SUM=30, grp=3 → SUM=50);                */
+/* grp=2 is dropped by the INNER JOIN.                                 */
+/* ------------------------------------------------------------------ */
+
+static int
+testScanCteParentMainAgg(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 6: scanCte parent + main agg ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRT_TABLE);
+  dict->invalidateTable(RHS_TABLE);
+  const NdbDictionary::Table *srcTab  = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRT_TABLE);
+  const NdbDictionary::Table *rhsTab  = dict->getTable(RHS_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr || rhsTab == nullptr) {
+    printf("FAILED (table lookup)\n");
+    return -1;
+  }
+
+  /* CTE 0: GROUP BY grp, SUM(val) → {(1,30),(2,70),(3,50)} */
+  NdbAggregator cteAgg(srcTab);
+  if (!buildCteAgg(cteAgg)) {
+    printf("FAILED (cteAgg build)\n");
+    return -1;
+  }
+
+  /* Main aggregator on the rhs leaf:
+   *   GroupByLinked(pos=0, virt.grp) → grouping key linked from the CTE
+   *                                    parent at position 0
+   *   LoadLinkedColumn(pos=1, reg=0) → reg 0 = cte.total (virt position 1)
+   *   Sum(reg=0, agg=0)              → agg[0] = SUM(cte.total)
+   */
+  const NdbDictionary::Column *grpCol   = virtTab->getColumn("grp");
+  const NdbDictionary::Column *totalCol = virtTab->getColumn("total");
+  NdbAggregator mainAgg(rhsTab);
+  if (!mainAgg.GroupByLinked(0, grpCol) ||
+      !mainAgg.LoadLinkedColumn(1, 0, totalCol) ||
+      !mainAgg.Sum(0, 0) ||
+      !mainAgg.Finalize()) {
+    printf("FAILED (mainAgg: %s)\n", mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+
+  /* Build CTE 0: scanTable -> readTuple(pk) aggregate-leaf. */
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions leafOpts;
+    leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    leafOpts.setAggregation(cteAgg);
+    qb->readTuple(srcTab, key, &leafOpts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  /* Main: scanCte(0) INNER JOIN readTuple(oj_rhs, id = cte.grp)
+   * with the main aggregator attached to the leaf. */
+  const NdbQueryCteScanOperationDef *cteScanOp =
+      qb->scanCte(0, 2, virtTab, nullptr);
+  if (cteScanOp == nullptr) {
+    printf("FAILED (scanCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *rhsKey[] = {
+      qb->linkedValue(cteScanOp, "grp"), nullptr
+  };
+  /* Linked projections from the CTE parent that the main aggregator
+   * needs in its linked-attr buffer.  Order MUST match the position
+   * args of GroupByLinked / LoadLinkedColumn (grp at 0, total at 1). */
+  const NdbLinkedOperand *grpLink   = qb->linkedValue(cteScanOp, "grp");
+  const NdbLinkedOperand *totalLink = qb->linkedValue(cteScanOp, "total");
+  if (grpLink == nullptr || totalLink == nullptr) {
+    printf("FAILED (linkedValue: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  NdbQueryOptions innerOpts;
+  innerOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  innerOpts.setAggregation(mainAgg);
+  innerOpts.addLinkedProjection(grpLink);
+  innerOpts.addLinkedProjection(totalLink);
+  if (qb->readTuple(rhsTab, rhsKey, &innerOpts) == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close(); trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator)\n");
+    query->close(); trans->close(); queryDef->destroy();
+    return -1;
+  }
+
+  Uint32 numGroups = 0;
+  Int64 sumGrp1 = -1, sumGrp3 = -1;
+  bool sawGrp2 = false;
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  for (; !rec.end(); rec = resultAgg->FetchResultRecord()) {
+    Int32 grp = rec.FetchGroupbyColumn().data_int32();
+    Int64 sum = rec.FetchAggregationResult().data_int64();
+    V("  group: grp=%d sum=%lld\n", grp, (long long)sum);
+    if (grp == 1) sumGrp1 = sum;
+    else if (grp == 2) sawGrp2 = true;
+    else if (grp == 3) sumGrp3 = sum;
+    numGroups++;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (sawGrp2) {
+    printf("FAILED (grp=2 should have been dropped by INNER JOIN)\n");
+    return -1;
+  }
+  if (numGroups != 2 || sumGrp1 != 30 || sumGrp3 != 50) {
+    printf("FAILED (expected 2 groups grp1=30 grp3=50, got %u groups "
+           "grp1=%lld grp3=%lld)\n",
+           numGroups, (long long)sumGrp1, (long long)sumGrp3);
+    return -1;
+  }
+  printf("OK (%u groups: grp1=%lld grp3=%lld)\n",
+         numGroups, (long long)sumGrp1, (long long)sumGrp3);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -756,6 +932,7 @@ static const TestEntry g_tests[] = {
     { 3, testMainLookupCteLeftJoinDefaultBatch },
     { 4, testMainLookupCteLeftJoinSmallBatch },
     { 5, testCteSubtreeLeftJoinAggFeed },
+    { 6, testScanCteParentMainAgg },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 

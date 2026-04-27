@@ -646,6 +646,13 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_pendingCount;    // Parent rows queued while CTE is materializing
     Uint32 m_api_resultRef;   // FLUSH_AI target: API block reference
     Uint32 m_api_resultData;  // FLUSH_AI connect ptr: API receiver ID
+    /* Per-column inline type info (2 words/col, encoded per
+     * CteLinkedAttr.hpp) carried in the QueryTree.  Used by
+     * appendFromParent / emitNullAttrinfo when this CTE op is the
+     * source of a linked-attr column for a downstream operation.
+     * lc_ndbd_pool_malloc'd in cte_lookup_build, freed in
+     * cleanup_common.  nullptr when m_numResultCols == 0. */
+    Uint32 *m_virtTypeInfo;
   };
 
   /**
@@ -703,6 +710,11 @@ class Dbspj : public SimulatedBlock {
     static constexpr Uint32 MAX_CTE_SCAN_NODE_SLOTS = ABS_MAX_NDB_NODES;
     NodeSlot m_nodeSlots[MAX_CTE_SCAN_NODE_SLOTS];
     Uint32 m_numNodeSlots;
+
+    /* Per-column inline type info (2 words/col, encoded per
+     * CteLinkedAttr.hpp).  Same role as CteLookupData::m_virtTypeInfo
+     * — see comment there. */
+    Uint32 *m_virtTypeInfo;
   };
 
   /**
@@ -1767,6 +1779,23 @@ class Dbspj : public SimulatedBlock {
   Uint32 appendAttrinfoWithTableMeta(Uint32 &dst, const RowPtr::Row &row,
                                      Uint32 col, Uint32 tableId,
                                      Uint32 schemaVersion, bool &hasNull);
+  /**
+   * Emit a CTE virt-column linked-attr entry: 2-word inline type info
+   * (CteLinkedAttr.hpp encoding) followed by the column's
+   * AttributeHeader + data.  Used in place of
+   * appendAttrinfoWithTableMeta when the source TreeNode is a CTE op
+   * (m_primaryTableId == 0).  See cte_filter_phase_e1k.md for design.
+   */
+  Uint32 appendCteAttrinfoWithVirtMeta(Uint32 &dst, const RowPtr::Row &row,
+                                        Uint32 col, Ptr<TreeNode> srcNode,
+                                        bool &hasNull);
+  /**
+   * Resolve (virtTypeInfo, numResultCols) for a CTE op TreeNode.
+   * Asserts the TreeNode is a CTE op (CteScan or CteLookup).
+   */
+  void cteVirtTypeInfo(Ptr<TreeNode> srcNode,
+                        const Uint32 *&virtInfoOut,
+                        Uint32 &numColsOut) const;
   Uint32 appendDataToSection(Uint32 &ptrI, Local_pattern_store &,
                              Local_pattern_store::ConstDataBufferIterator &,
                              Uint32 len, bool &hasNull);
@@ -1776,11 +1805,19 @@ class Dbspj : public SimulatedBlock {
                           bool addTableMeta = false,
                           Uint32 parentLevelAdjust = 0,
                           Uint64 nullNodes = 0);
+  /**
+   * Emit a NULL attribute entry.  When addTableMeta is true, prepend
+   * the per-entry 2-word header: zeros for a real-table NULL,
+   * CteLinkedAttr::MARKER_BIT for a CTE virt-column NULL (cteOrigin =
+   * true).  See cte_filter_phase_e1k.md.
+   */
   Uint32 emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
-                          bool &hasNull, bool addTableMeta);
+                          bool &hasNull, bool addTableMeta,
+                          bool cteOrigin = false);
   Uint32 emitNullFromParent(Uint32 &dst, Local_pattern_store &,
                              Local_pattern_store::ConstDataBufferIterator &,
-                             bool &hasNull, bool addTableMeta);
+                             bool &hasNull, bool addTableMeta,
+                             bool cteOrigin = false);
   Uint32 expand(Uint32 &ptrI, Local_pattern_store &p, const RowPtr &r,
                 bool &hasNull, bool addTableMeta = false,
                 Uint32 parentLevelAdjust = 0,

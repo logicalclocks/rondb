@@ -33,6 +33,8 @@
 #include "util/require.h"
 #include "decimal.h"
 #include "Dbtup.hpp"
+#include <CteLinkedAttr.hpp>
+#include "my_sys.h"
 #include "../dblqh/Dblqh.hpp"
 #include "../dblqh/JoinAggregationState.hpp"
 #include <NdbSqlUtil.hpp>
@@ -910,7 +912,22 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     m_attr_read_pos = 0;
     for (Uint32 i = 0; i < m_n_gb_cols; i++) {
       Uint32 attr_id = m_gb_cols[i] >> 16;
-      if ((attr_id & 0x8000) != 0 && m_linked_attr_data != nullptr) {
+      if ((attr_id & 0x8000) != 0) {
+        /* Linked GROUP BY column — must have a linked-attr buffer.
+         * If the attr_id has the linked flag set but
+         * m_linked_attr_data is null, the API caller didn't
+         * addLinkedProjection() for the position the aggregator
+         * references — fail cleanly rather than falling through to
+         * the local-column path, which would read tabDescriptor at
+         * attr_id=0x8000+pos and crash. */
+        if (unlikely(m_linked_attr_data == nullptr)) {
+          g_eventLogger->debug(
+              "JoinAggInterpreter::ProcessRec: linked GB col %u "
+              "(attr_id=0x%x) but m_linked_attr_data is NULL — "
+              "API likely missing addLinkedProjection for the "
+              "position", i, attr_id);
+          return ZAGG_OTHER_ERROR;
+        }
         Uint32 position = attr_id & 0x7FFF;
         const Uint32* p = m_linked_attr_data;
         const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
@@ -1892,7 +1909,21 @@ Int32 JoinAggInterpreter::initGBTypes(Dbtup* block_tup,
     Uint32 attr_id = m_gb_cols[i] >> 16;
     GBColTypeInfo &info = m_gb_types[i];
 
-    if ((attr_id & 0x8000) != 0 && m_linked_attr_data != nullptr) {
+    if ((attr_id & 0x8000) != 0) {
+      /* Linked GROUP BY column — must have a linked-attr buffer.
+       * If the attr_id has the linked flag set but
+       * m_linked_attr_data is null, the API caller didn't
+       * addLinkedProjection() for the position the aggregator
+       * references — fail cleanly rather than falling through to
+       * the local-column path, which would read tabDescriptor at
+       * attr_id=0x8000+pos and crash. */
+      if (unlikely(m_linked_attr_data == nullptr)) {
+        g_eventLogger->debug(
+            "initGBTypes: linked GB col %u (attr_id=0x%x) but "
+            "m_linked_attr_data is NULL — API likely missing "
+            "addLinkedProjection for the position", i, attr_id);
+        return ZAGG_OTHER_ERROR;
+      }
       Uint32 position = attr_id & 0x7FFF;
       const Uint32* p = m_linked_attr_data;
       const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
@@ -1907,37 +1938,57 @@ Int32 JoinAggInterpreter::initGBTypes(Dbtup* block_tup,
             "position %u (linked_len=%u)", position, m_linked_attr_len);
         return ZAGG_OTHER_ERROR;
       }
-      Uint32 tableId = p[0];
-      Uint32 tableVersion = p[1];
+      Uint32 word0 = p[0];
+      Uint32 word1 = p[1];
 
-      Dblqh* lqh = block_tup->c_lqh;
-      if (unlikely(tableId >= lqh->ctabrecFileSize)) {
-        g_eventLogger->debug("initGBTypes: tableId %u out of range "
-            "(max=%u)", tableId, lqh->ctabrecFileSize);
-        return ZINVALID_SCHEMA_VERSION;
-      }
-      if (unlikely(table_version_major(tableVersion) !=
-                   table_version_major(lqh->tablerec[tableId].schemaVersion))) {
-        g_eventLogger->debug("initGBTypes: schema version mismatch for "
-            "tableId %u: linked=%u, current=%u",
-            tableId, tableVersion, lqh->tablerec[tableId].schemaVersion);
-        return ZINVALID_SCHEMA_VERSION;
-      }
+      if (CteLinkedAttr::isCteMarker(word0)) {
+        /* CTE virt-column entry — type info is inline; no DBTUP
+         * tablerec lookup needed.  See CteLinkedAttr.hpp. */
+        info.typeId = CteLinkedAttr::decodeTypeId(word0);
+        info.maxBytes = CteLinkedAttr::decodeMaxBytes(word0);
+        info.cs = nullptr;
+        Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
+        if (csNumber != 0) {
+          info.cs = all_charsets[csNumber];
+        }
+      } else {
+        /* Real-table parent: tableId / schemaVersion validated against
+         * the local DBLQH tablerec; column metadata read from the
+         * table's tabDescriptor. */
+        Uint32 tableId = word0;
+        Uint32 tableVersion = word1;
+        require(tableId != 0);  /* CTE entries take the branch above */
 
-      if (unlikely(tableId >= block_tup->cnoOfTablerec)) {
-        g_eventLogger->debug("initGBTypes: tableId %u out of range for "
-            "DBTUP (max=%u)", tableId, block_tup->cnoOfTablerec);
-        return ZINVALID_SCHEMA_VERSION;
-      }
-      Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
-      Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
-      const Uint32* attrDesc = tab->tabDescriptor + linkedAttrId * ZAD_SIZE;
-      info.typeId = AttributeDescriptor::getType(attrDesc[0]);
-      info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
-      info.cs = nullptr;
-      if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
-        Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
-        info.cs = tab->charsetArray[csPos];
+        Dblqh* lqh = block_tup->c_lqh;
+        if (unlikely(tableId >= lqh->ctabrecFileSize)) {
+          g_eventLogger->debug("initGBTypes: tableId %u out of range "
+              "(max=%u)", tableId, lqh->ctabrecFileSize);
+          return ZINVALID_SCHEMA_VERSION;
+        }
+        if (unlikely(table_version_major(tableVersion) !=
+                     table_version_major(
+                         lqh->tablerec[tableId].schemaVersion))) {
+          g_eventLogger->debug("initGBTypes: schema version mismatch for "
+              "tableId %u: linked=%u, current=%u",
+              tableId, tableVersion, lqh->tablerec[tableId].schemaVersion);
+          return ZINVALID_SCHEMA_VERSION;
+        }
+
+        if (unlikely(tableId >= block_tup->cnoOfTablerec)) {
+          g_eventLogger->debug("initGBTypes: tableId %u out of range for "
+              "DBTUP (max=%u)", tableId, block_tup->cnoOfTablerec);
+          return ZINVALID_SCHEMA_VERSION;
+        }
+        Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
+        Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+        const Uint32* attrDesc = tab->tabDescriptor + linkedAttrId * ZAD_SIZE;
+        info.typeId = AttributeDescriptor::getType(attrDesc[0]);
+        info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
+        info.cs = nullptr;
+        if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+          Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
+          info.cs = tab->charsetArray[csPos];
+        }
       }
     } else {
       const Uint32* attrDesc = req_struct->tablePtrP->tabDescriptor +
@@ -2004,19 +2055,35 @@ void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup) {
         p += 1 + AttributeHeader::getDataSize(*p);
         pos_count++;
       }
-      if (p + 2 < p_end && block_tup != nullptr) {
-        Uint32 tableId = p[0];
-        if (tableId < block_tup->cnoOfTablerec) {
-          Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
-          Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
-          const Uint32* attrDesc = tab->tabDescriptor +
-              linkedAttrId * ZAD_SIZE;
-          info.typeId = AttributeDescriptor::getType(attrDesc[0]);
-          info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
+      if (p + 2 < p_end) {
+        Uint32 word0 = p[0];
+        Uint32 word1 = p[1];
+        if (CteLinkedAttr::isCteMarker(word0)) {
+          info.typeId = CteLinkedAttr::decodeTypeId(word0);
+          info.maxBytes = CteLinkedAttr::decodeMaxBytes(word0);
           info.cs = nullptr;
-          if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
-            Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
-            info.cs = tab->charsetArray[csPos];
+          Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
+          if (csNumber != 0) {
+            info.cs = all_charsets[csNumber];
+          }
+        } else if (block_tup != nullptr) {
+          Uint32 tableId = word0;
+          if (tableId != 0 && tableId < block_tup->cnoOfTablerec) {
+            Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
+            Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+            const Uint32* attrDesc = tab->tabDescriptor +
+                linkedAttrId * ZAD_SIZE;
+            info.typeId = AttributeDescriptor::getType(attrDesc[0]);
+            info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
+            info.cs = nullptr;
+            if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+              Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
+              info.cs = tab->charsetArray[csPos];
+            }
+          } else {
+            info.typeId = NDB_TYPE_UNSIGNED;
+            info.maxBytes = 4;
+            info.cs = nullptr;
           }
         } else {
           info.typeId = NDB_TYPE_UNSIGNED;

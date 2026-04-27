@@ -77,6 +77,35 @@ k	SUM(t)
 200	100
 
 
+=== Test (E.1K): CTE_SCAN root + real-table child + agg ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT s.k, SUM(s.t)
+FROM sums AS s JOIN cte_customer AS c ON c.c_id = s.k
+GROUP BY s.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT s.k, SUM(s.t)
+FROM sums AS s JOIN cte_customer AS c ON c.c_id = s.k
+GROUP BY s.k|
+k	SUM(s.t)
+100	125
+200	100
+300	90
+
+
 === Test 4 (E.1): main agg over CTE_SCAN root, no GB (single row) ===
 == Query ==
 WITH sums AS (

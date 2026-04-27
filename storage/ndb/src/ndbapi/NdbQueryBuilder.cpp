@@ -31,6 +31,9 @@
 #include "NdbIndexScanOperation.hpp"
 #include "NdbQueryBuilderImpl.hpp"
 #include "signaldata/QueryTree.hpp"
+#include "kernel/CteLinkedAttr.hpp"
+#include <ndb_constants.h>
+#include "mysql/strings/m_ctype.h"
 
 #include <NdbInterpretedCode.hpp>
 #include <NdbRecord.hpp>
@@ -3088,6 +3091,70 @@ int NdbQueryPKLookupOperationDefImpl ::serializeOperation(
   return 0;
 }  // NdbQueryPKLookupOperationDefImpl::serializeOperation
 
+/**
+ * Append per-column inline type info (2 words/col) for a CTE virt
+ * table.  Sits between the CTE node's fixed header and the parseDA
+ * optional region; consumed by DBSPJ's cte_lookup_build /
+ * cte_scan_build.  See CteLinkedAttr.hpp for the encoding.
+ *
+ * For synthetic NdbDictionary::Table columns built via setType +
+ * setLength (RonSQL's build_cte_virtual_tables), m_attrSize is left
+ * at 0 and getSizeInBytes() silently returns 0.  Fall back to a
+ * type-driven fixed-size lookup so the encoded maxBytes matches what
+ * the kernel computes from AttributeDescriptor for the same type.
+ */
+static void appendCteVirtTypeInfo(Uint32Buffer &serializedDef,
+                                   const NdbTableImpl &table,
+                                   Uint32 numResultCols) {
+  for (Uint32 i = 0; i < numResultCols; i++) {
+    const NdbColumnImpl *col = table.getColumn(i);
+    Uint32 typeId = (col != nullptr) ? Uint32(col->m_type) : 0;
+    Uint32 maxBytes =
+        (col != nullptr) ? Uint32(col->m_attrSize) * Uint32(col->m_arraySize)
+                         : 0;
+    if (maxBytes == 0) {
+      switch (typeId) {
+        case NDB_TYPE_TINYINT:
+        case NDB_TYPE_TINYUNSIGNED:
+          maxBytes = 1; break;
+        case NDB_TYPE_SMALLINT:
+        case NDB_TYPE_SMALLUNSIGNED:
+        case NDB_TYPE_YEAR:
+          maxBytes = 2; break;
+        case NDB_TYPE_MEDIUMINT:
+        case NDB_TYPE_MEDIUMUNSIGNED:
+          maxBytes = 3; break;
+        case NDB_TYPE_INT:
+        case NDB_TYPE_UNSIGNED:
+        case NDB_TYPE_FLOAT:
+        case NDB_TYPE_TIME:
+        case NDB_TYPE_DATE:
+        case NDB_TYPE_TIMESTAMP:
+          maxBytes = 4; break;
+        case NDB_TYPE_BIGINT:
+        case NDB_TYPE_BIGUNSIGNED:
+        case NDB_TYPE_DOUBLE:
+        case NDB_TYPE_DATETIME:
+          maxBytes = 8; break;
+        default:
+          /* Char/Varchar with synthetic m_attrSize=0 falls through
+           * with maxBytes=0; receiver rejects per the design's
+           * "Cleanly-rejected shapes". */
+          maxBytes = 0; break;
+      }
+    }
+    Uint32 csNumber = 0;
+    if (col != nullptr && col->m_cs != nullptr) {
+      csNumber = Uint32(col->m_cs->number);
+    }
+    Uint32 *dst = serializedDef.alloc(2);
+    if (likely(dst != nullptr)) {
+      dst[0] = CteLinkedAttr::encodeWord0(typeId, maxBytes);
+      dst[1] = CteLinkedAttr::encodeWord1(csNumber);
+    }
+  }
+}
+
 int NdbQueryCteLookupOperationDefImpl::serializeOperation(
     const Ndb * /*ndb*/, Uint32Buffer &serializedDef) {
   assert(m_keys[0] != nullptr);
@@ -3098,6 +3165,12 @@ int NdbQueryCteLookupOperationDefImpl::serializeOperation(
   Uint32 startPos = serializedDef.getSize();
   serializedDef.alloc(QN_CteLookupNode::NodeSize);
   Uint32 requestInfo = 0;
+
+  // Per-column virt-column type info for inline CTE marker encoding
+  // in DBSPJ-built linked-attr buffers.  Lives between the fixed
+  // header and the parseDA optional region; cte_lookup_build skips
+  // past it before invoking parseDA.
+  appendCteVirtTypeInfo(serializedDef, getTable(), m_numResultCols);
 
   if (getMatchType() & NdbQueryOptions::MatchNonNull) {
     requestInfo |= DABits::NI_INNER_JOIN;
@@ -3166,6 +3239,10 @@ int NdbQueryCteScanOperationDefImpl::serializeOperation(
   Uint32 startPos = serializedDef.getSize();
   serializedDef.alloc(QN_CteScanNode::NodeSize);
   Uint32 requestInfo = 0;
+
+  // Per-column virt-column type info for inline CTE marker encoding
+  // in DBSPJ-built linked-attr buffers.  Same layout as CteLookup.
+  appendCteVirtTypeInfo(serializedDef, getTable(), m_numResultCols);
 
   if (getMatchType() & NdbQueryOptions::MatchNonNull) {
     requestInfo |= DABits::NI_INNER_JOIN;

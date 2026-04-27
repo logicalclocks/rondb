@@ -137,6 +137,13 @@ class JoinAggInterpreter : public PushdownInterpreter {
   Uint32 n_agg_results() const { return m_n_agg_results; }
   const AggResItem* agg_results() const { return m_agg_results; }
   Uint64 processed_rows() const { return m_processed_rows; }
+  /* Per-column GROUP BY type info, populated by initGBTypes on first
+   * processed row.  Returns nullptr until initialized.  Used by
+   * Dblqh::buildCteLinkedBuffer / cteScanAggFeed to encode CTE
+   * virt-column markers in linked-attr entries (cte_filter_phase_e1k.md). */
+  const GBColTypeInfo* gb_types() const {
+    return m_gb_types_inited ? m_gb_types : nullptr;
+  }
 
   /**
    * Look up a single group by key in the hash table.

@@ -30,6 +30,7 @@
 #include <ndb_version.h>
 #include <AttributeDescriptor.hpp>
 #include <AttributeHeader.hpp>
+#include <CteLinkedAttr.hpp>
 #include <Interpreter.hpp>
 #include <KeyDescriptor.hpp>
 #include <SectionReader.hpp>
@@ -4329,6 +4330,18 @@ void Dbspj::cleanup_common(Ptr<Request> requestPtr, Ptr<TreeNode> treeNodePtr) {
       lc_ndbd_pool_free(data.m_agg_range_corrs);
       data.m_agg_range_corrs = nullptr;
     }
+  } else if (treeNodePtr.p->m_info == &g_CteScanOpInfo) {
+    CteScanData &data = treeNodePtr.p->m_cteScan_data;
+    if (data.m_virtTypeInfo != nullptr) {
+      lc_ndbd_pool_free(data.m_virtTypeInfo);
+      data.m_virtTypeInfo = nullptr;
+    }
+  } else if (treeNodePtr.p->m_info == &g_CteLookupOpInfo) {
+    CteLookupData &data = treeNodePtr.p->m_cteLookup_data;
+    if (data.m_virtTypeInfo != nullptr) {
+      lc_ndbd_pool_free(data.m_virtTypeInfo);
+      data.m_virtTypeInfo = nullptr;
+    }
   }
 
   releasePages(treeNodePtr.p->m_rowBuffer);
@@ -5807,6 +5820,7 @@ Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_cteLookup_data.m_pendingCount = 0;
     treeNodePtr.p->m_cteLookup_data.m_api_resultRef = ctx.m_resultRef;
     treeNodePtr.p->m_cteLookup_data.m_api_resultData = ctx.m_resultData;
+    treeNodePtr.p->m_cteLookup_data.m_virtTypeInfo = nullptr;
     DEB_CTE(("(%u) cte_lookup_build: node=%u resultRef=0x%x resultData=0x%x "
              "rootResultData=0x%x",
              instance(), treeNodePtr.p->m_node_no,
@@ -5875,10 +5889,36 @@ Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
     // receiver, not the root scan's. Same as lookup_build does.
     ctx.m_resultData = param->resultData;
 
+    /* Per-column virt-column type info: 2 words per column, between
+     * the fixed header and the parseDA optional region (see
+     * appendCteVirtTypeInfo in NdbQueryBuilder.cpp).  Copy into a
+     * pool-allocated buffer kept on the TreeNode for the request
+     * lifetime; freed in cleanup_common.  Skip past in nodeDA before
+     * invoking parseDA. */
+    const Uint32 typeInfoWords = node->numResultCols * 2;
+    if (unlikely(node->len < QN_CteLookupNode::NodeSize + typeInfoWords)) {
+      jam();
+      err = DbspjErr::InvalidTreeNodeSpecification;
+      break;
+    }
+    if (typeInfoWords > 0) {
+      jam();
+      void *mem = lc_ndbd_pool_malloc(typeInfoWords * sizeof(Uint32),
+                                       RG_QUERY_MEMORY, getThreadId(), true);
+      if (unlikely(mem == nullptr)) {
+        jam();
+        err = DbspjErr::OutOfQueryMemory;
+        break;
+      }
+      memcpy(mem, node->optional, typeInfoWords * sizeof(Uint32));
+      treeNodePtr.p->m_cteLookup_data.m_virtTypeInfo =
+          static_cast<Uint32 *>(mem);
+    }
+
     // Parse optional data (parent list, key pattern, etc.)
     struct DABuffer nodeDA, paramDA;
-    nodeDA.ptr = node->optional;
-    nodeDA.end = nodeDA.ptr + (node->len - QN_CteLookupNode::NodeSize);
+    nodeDA.ptr = node->optional + typeInfoWords;
+    nodeDA.end = node->optional + (node->len - QN_CteLookupNode::NodeSize);
     paramDA.ptr = param->optional;
     paramDA.end = paramDA.ptr + (param->len - QN_CteLookupParameters::NodeSize);
 
@@ -6836,15 +6876,40 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
      * for a different fragment captures its own API ref here. */
     data.m_api_resultRef = ctx.m_resultRef;
     data.m_joinAggStateKey = RNIL;  /* Computed at start when T_AGG_LEAF */
+    data.m_virtTypeInfo = nullptr;
 
     treeNodePtr.p->m_batch_size = data.m_batchSize;
+
+    /* Per-column virt-column type info: 2 words per column, between
+     * the fixed header and the parseDA optional region.  Copy into a
+     * pool-allocated buffer kept on the TreeNode for the request
+     * lifetime; freed in cleanup_common.  Skip past in nodeDA before
+     * invoking parseDA. */
+    const Uint32 typeInfoWords = node->numResultCols * 2;
+    if (unlikely(node->len < QN_CteScanNode::NodeSize + typeInfoWords)) {
+      jam();
+      err = DbspjErr::InvalidTreeNodeSpecification;
+      break;
+    }
+    if (typeInfoWords > 0) {
+      jam();
+      void *mem = lc_ndbd_pool_malloc(typeInfoWords * sizeof(Uint32),
+                                       RG_QUERY_MEMORY, getThreadId(), true);
+      if (unlikely(mem == nullptr)) {
+        jam();
+        err = DbspjErr::OutOfQueryMemory;
+        break;
+      }
+      memcpy(mem, node->optional, typeInfoWords * sizeof(Uint32));
+      data.m_virtTypeInfo = static_cast<Uint32 *>(mem);
+    }
 
     /* Parse optional DA (NI_LINKED_ATTR etc.) */
     Uint32 treeBits = node->requestInfo;
     Uint32 paramBits = param->requestInfo;
     struct DABuffer nodeDA, paramDA;
-    nodeDA.ptr = node->optional;
-    nodeDA.end = nodeDA.ptr + (node->len - QN_CteScanNode::NodeSize);
+    nodeDA.ptr = node->optional + typeInfoWords;
+    nodeDA.end = node->optional + (node->len - QN_CteScanNode::NodeSize);
     paramDA.ptr = param->optional;
     paramDA.end = paramDA.ptr + (param->len - QN_CteScanParameters::NodeSize);
 
@@ -13684,6 +13749,36 @@ Uint32 Dbspj::appendAttrinfoWithTableMeta(
   return appendAttrinfoToSection(dst, row, col, hasNull);
 }
 
+void Dbspj::cteVirtTypeInfo(Ptr<TreeNode> srcNode,
+                             const Uint32 *&virtInfoOut,
+                             Uint32 &numColsOut) const {
+  if (srcNode.p->m_info == &g_CteScanOpInfo) {
+    virtInfoOut = srcNode.p->m_cteScan_data.m_virtTypeInfo;
+    numColsOut = srcNode.p->m_cteScan_data.m_numResultCols;
+  } else if (srcNode.p->m_info == &g_CteLookupOpInfo) {
+    virtInfoOut = srcNode.p->m_cteLookup_data.m_virtTypeInfo;
+    numColsOut = srcNode.p->m_cteLookup_data.m_numResultCols;
+  } else {
+    /* Caller guards on m_primaryTableId == 0; only CTE ops set that. */
+    ndbabort();
+  }
+}
+
+Uint32 Dbspj::appendCteAttrinfoWithVirtMeta(
+    Uint32 &dst, const RowPtr::Row &row,
+    Uint32 col, Ptr<TreeNode> srcNode, bool &hasNull) {
+  jam();
+  const Uint32 *virtInfo = nullptr;
+  Uint32 numCols = 0;
+  cteVirtTypeInfo(srcNode, virtInfo, numCols);
+  ndbrequire(virtInfo != nullptr);
+  ndbrequire(col < numCols);
+  Uint32 meta[2] = { virtInfo[col * 2], virtInfo[col * 2 + 1] };
+  if (unlikely(!appendToSection(dst, meta, 2)))
+    return DbspjErr::OutOfSectionMemory;
+  return appendAttrinfoToSection(dst, row, col, hasNull);
+}
+
 /**
  * 'PkCol' is the composite NDB$PK column in an unique index consisting of
  * a fragment id and the composite PK value (all PK columns concatenated)
@@ -13705,12 +13800,23 @@ Uint32 Dbspj::appendPkColToSection(Uint32 &dst, const RowPtr::Row &row,
  *
  * Emit a NULL attribute for a given attrId: optional dummy table metadata
  * (2 zero words) followed by an AttributeHeader with length 0.
+ *
+ * When cteOrigin is true, set the CTE marker bit on word 0 so the
+ * receiver's marker check stays consistent with non-null CTE entries.
+ * No type info is needed since the AttrHeader length is 0 and the
+ * receiver short-circuits on isNULL before reading per-column type
+ * metadata.  See cte_filter_phase_e1k.md.
  */
 Uint32 Dbspj::emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
-                                bool &hasNull, bool addTableMeta) {
+                                bool &hasNull, bool addTableMeta,
+                                bool cteOrigin) {
   jam();
   if (addTableMeta) {
     Uint32 meta[2] = {0, 0};
+    if (cteOrigin) {
+      jam();
+      meta[0] = CteLinkedAttr::MARKER_BIT;
+    }
     if (unlikely(!appendToSection(dst, meta, 2)))
       return DbspjErr::OutOfSectionMemory;
   }
@@ -13732,7 +13838,7 @@ Uint32 Dbspj::emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
 Uint32 Dbspj::emitNullFromParent(
     Uint32 &dst, Local_pattern_store &pattern,
     Local_pattern_store::ConstDataBufferIterator &it,
-    bool &hasNull, bool addTableMeta) {
+    bool &hasNull, bool addTableMeta, bool cteOrigin) {
   jam();
   if (unlikely(it.isNull())) {
     DEBUG_CRASH();
@@ -13744,7 +13850,7 @@ Uint32 Dbspj::emitNullFromParent(
   pattern.next(it);
 
   if (subType == QueryPattern::P_ATTRINFO) {
-    return emitNullAttrinfo(dst, subVal, hasNull, addTableMeta);
+    return emitNullAttrinfo(dst, subVal, hasNull, addTableMeta, cteOrigin);
   }
   if (subType == QueryPattern::P_COL) {
     hasNull = true;
@@ -13855,6 +13961,15 @@ Uint32 Dbspj::appendFromParent(Uint32 &dst, Local_pattern_store &pattern,
     case QueryPattern::P_ATTRINFO:
       jam();
       if (addTableMeta) {
+        if (treeNodePtr.p->m_primaryTableId == 0) {
+          /* CTE op parent (CteScan / CteLookup): tableId 0 is not a
+           * real NDB table — emit the CTE virt-column marker with
+           * inline type info from the QueryTree.  See
+           * cte_filter_phase_e1k.md. */
+          jam();
+          return appendCteAttrinfoWithVirtMeta(
+              dst, targetRow.m_row_data, val, treeNodePtr, hasNull);
+        }
         // Use the primary table's version (not index table version).
         // m_schemaVersion is the index table version for index scans,
         // but linked attr data is validated against primaryTableId in DBLQH.
@@ -13978,19 +14093,28 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
            * Null propagation path: direct P_ATTRINFO references the leaf's
            * parent, but rowRef is from the scan ancestor. The leaf's parent
            * is an unmatched or unreachable intermediate whose columns
-           * should be NULL.
+           * should be NULL.  cteOrigin defaults to false here; chained
+           * outer joins through a CTE intermediate are not yet exercised
+           * (see cte_filter_phase_e1k.md, Site 4 followups).
            */
           err = emitNullAttrinfo(dst, val, hasNull, addTableMeta);
         } else if (addTableMeta) {
           Ptr<TreeNode> srcNode;
           ndbrequire(m_treenode_pool.getPtr(srcNode, row.m_src_node_ptrI));
-          TableRecordPtr primaryTabRec;
-          primaryTabRec.i = srcNode.p->m_primaryTableId;
-          ptrAss(primaryTabRec, m_tableRecord);
-          err = appendAttrinfoWithTableMeta(
-              dst, row.m_row_data, val,
-              srcNode.p->m_primaryTableId,
-              primaryTabRec.p->m_currentSchemaVersion, hasNull);
+          if (srcNode.p->m_primaryTableId == 0) {
+            /* CTE op parent — emit CTE virt-column marker. */
+            jam();
+            err = appendCteAttrinfoWithVirtMeta(
+                dst, row.m_row_data, val, srcNode, hasNull);
+          } else {
+            TableRecordPtr primaryTabRec;
+            primaryTabRec.i = srcNode.p->m_primaryTableId;
+            ptrAss(primaryTabRec, m_tableRecord);
+            err = appendAttrinfoWithTableMeta(
+                dst, row.m_row_data, val,
+                srcNode.p->m_primaryTableId,
+                primaryTabRec.p->m_currentSchemaVersion, hasNull);
+          }
         } else {
           err = appendAttrinfoToSection(dst, row.m_row_data, val, hasNull);
         }
