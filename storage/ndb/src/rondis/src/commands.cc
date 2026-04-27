@@ -45,13 +45,13 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 #define DEBUG_MGET_CMD 1
-//#define DEBUG_MSET_CMD 1
-//#define DEBUG_DEL_CMD 1
-//#define DEBUG_HSET_KEY 1
-//#define DEBUG_INCR 1
-//#define DEBUG_RAND_KEY 1
-//#define DEBUG_TTL 1
-//#define DEBUG_SETRANGE 1
+#define DEBUG_MSET_CMD 1
+#define DEBUG_DEL_CMD 1
+#define DEBUG_HSET_KEY 1
+#define DEBUG_INCR 1
+#define DEBUG_RAND_KEY 1
+#define DEBUG_TTL 1
+#define DEBUG_SETRANGE 1
 #endif
 
 #ifdef DEBUG_SETRANGE
@@ -1014,11 +1014,6 @@ static int set_rows_hset(Ndb *ndb,
                          struct KeyStorage *key_storage,
                          struct GetControl *get_ctrl,
                          Uint32 num_fields) {
-  // Pre: pre-allocate hset_keys.redis_key_id from auto-incr. NDB
-  // batches getAutoIncrementValue internally (block size 1024) so
-  // amortized cost is ~zero RTs per HSET. The id is wasted on the
-  // UPDATE branch (existing hash) - that's fine, ids don't need
-  // to be gap-free.
   Uint64 prealloc_id = 0;
   if (ndb->getAutoIncrementValue(get_ctrl->m_hset_key_tab,
                                  prealloc_id, unsigned(1024)) != 0) {
@@ -1424,11 +1419,19 @@ void rondb_mset(Ndb *ndb,
     release_mset(get_ctrl);
     return;
   }
-  if (is_hmset) {
+  // is_hmset distinguishes the +OK reply shape (HMSET) from the
+  // count-of-new-fields reply shape (HSET), but BOTH commands flow
+  // through rondb_hset_command and need the single-trans hash path.
+  // rondb_hset_command always passes redis_key_id != STRING_REDIS_KEY_ID
+  // (sentinel 1); plain MSET/SET pass STRING_REDIS_KEY_ID (0). So
+  // "redis_key_id != STRING || is_hmset" is the right gate for the
+  // hash path.
+  const bool is_hash_command =
+    (redis_key_id != STRING_REDIS_KEY_ID) || is_hmset;
+  if (is_hash_command) {
     // Phase 1.0.2b: stash the hash name and the hset_keys table
-    // pointer so write_callback can queue an atomic field_count
-    // bump on every new-field INSERT. argv[1] lives for the entire
-    // batch so no copy is needed.
+    // pointer so set_rows_hset can address the hash row.
+    // argv[1] lives for the entire batch so no copy is needed.
     const NdbDictionary::Table *hset_tab =
       dict->getTable(HSET_KEY_TABLE_NAME);
     if (hset_tab == nullptr) {
@@ -1449,7 +1452,7 @@ void rondb_mset(Ndb *ndb,
   // The reply-shape switch below (+OK vs count-of-new-fields) is
   // shared with the per-key MSET path so we fall through to it.
   bool hset_done = false;
-  if (is_hmset) {
+  if (is_hash_command) {
     int ret_code = set_rows_hset(ndb,
                                  tab,
                                  response,

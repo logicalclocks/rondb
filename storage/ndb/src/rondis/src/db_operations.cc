@@ -534,11 +534,6 @@ int add_hset_lock_claim_op(NdbTransaction *trans,
   opts.numExtraGetFinalValues = 2;
   opts.extraGetFinalValues = getvals;
 
-  // writeTuple (insert-or-update): UPDATE branch reads existing
-  // values and emits them; INSERT branch writes prealloc_id and
-  // field_count=0 and emits those. Both branches take the X-lock.
-  // Mask 0x1 = only the PK column from the row buffer is consumed
-  // by NDB; the interpreter writes the non-PK columns explicitly.
   const Uint32 mask = 0x1;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
   const NdbOperation *op = trans->writeTuple(
@@ -560,9 +555,6 @@ int add_hset_lock_claim_op(NdbTransaction *trans,
   return 0;
 }
 
-// Phase 1.0.2d Phase-3 op. Plain updateTuple writing the new
-// field_count value (no interpreter; we already know the value
-// because Phase 1 read the old one and Phase 2 counted the delta).
 int add_hset_field_count_set_op(NdbTransaction *trans,
                                 const NdbDictionary::Table *tab_hset,
                                 const char *hash_name,
@@ -570,6 +562,11 @@ int add_hset_field_count_set_op(NdbTransaction *trans,
                                 Uint32 new_count,
                                 Uint32 database_id,
                                 std::string *response) {
+  // tab_hset is unused for this plain updateTuple (the
+  // entire_hset_key_record / pk_hset_key_record globals carry the
+  // schema knowledge). Kept in the signature for symmetry with
+  // add_hset_lock_claim_op / add_hset_field_count_bump_op.
+  (void)tab_hset;
   struct hset_key_table key_row;
   key_row.null_bits = 0;
   memcpy(&key_row.redis_key[2], hash_name, hash_name_len);
@@ -772,8 +769,10 @@ void prepare_hset_phase3_transaction(struct GetControl *get_ctrl,
 // adjusts hset_keys.field_count by delta. Used by HDEL (Phase
 // 1.0.3) with delta<0. Phase 1.0.2b's per-field bump call site
 // in write_callback was removed in Phase 1.0.2d; this helper
-// remains for HDEL.
-static int
+// stays in the file because Phase 1.0.3 will reuse it. The
+// [[maybe_unused]] silences the unused-function warning until
+// then.
+[[maybe_unused]] static int
 add_hset_field_count_bump_op(NdbTransaction *trans,
                              const NdbDictionary::Table *tab_hset,
                              const char *hash_name,
