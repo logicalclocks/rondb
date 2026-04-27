@@ -1,5 +1,37 @@
 # CTE Filter Phase E.2 — Chained CTEs (CTE-of-CTE)
 
+## Status: DONE (commit `13a588ad4d4`, 2026-04-27)
+
+Tests 7–9 in `mysql-test/suite/ronsql/t/ronsql_cte_scan.test` are
+green. The per-CTE loop refactor landed as planned; the recursive
+`resolve_chained_column_type` helper was added during implementation
+to handle multi-layer aggregate widening (e.g. b.MAX(a.SUM(real))).
+
+Three runtime bugs surfaced beyond the planned scope and were fixed
+in the same commit:
+
+1. **`load_join` skipped m_col_is_inner cols unconditionally**, leaving
+   `column_attrId_map=-1` for chained-CTE refs that main also uses
+   (e.g. "k" first registered inside CTE b's body, then re-referenced
+   in main `SELECT k FROM b GROUP BY k`). Replaced with a fall-through:
+   attempt main-plan resolution first; only return the sentinel when
+   the col genuinely doesn't exist in main scope.
+2. **`defineCte` was called without `depMask`**, so DBTC grouped all
+   CTEs in phase 0 and `execCTE_SCAN_REQ` on a not-yet-ready
+   predecessor returned `ZCTE_LOOKUP_STATE_NOT_READY` (1264).
+   Compute the bitmask from each body's CTE_LOOKUP/CTE_SCAN ops and
+   pass it to `defineCte`.
+3. **Per-CTE child virt tables were deleted at the end of each CTE's
+   iteration**, but `qb`'s serialized `scanCte` ops retain raw
+   `NdbDictionary::Table*` pointers — use-after-free when
+   `qb->prepare()` ran later. Hoisted storage to a 2D buffer spanning
+   `execute_join` and deferred deletion to the end-of-execute cleanup
+   alongside main `cteVirtualTables`.
+
+The remainder of the plan below is preserved as historical context.
+
+---
+
 ## Context
 
 Phase E.1 lands `scanCte` as a main-query root. This phase covers

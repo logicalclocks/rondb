@@ -48,7 +48,7 @@ in RonSQL: `beginCteSubtree`, `endCteSubtree`, `defineCte`, `scanCte`
 This plan wires RonSQL through to the new NDB-API CTE primitives and adds
 matching test coverage.
 
-## Current status (2026-04-24)
+## Current status (2026-04-27)
 
 - **Phase A (subtree emit, CTE bodies, virt-table schema): DONE** — commits
   `aebf69d6c2b` … `67a83950c16`.
@@ -146,12 +146,68 @@ matching test coverage.
   k=NULL group with SUM=NULL — confirms agg-feed NULL injection
   (server-side commit `47d81b43903`) flows through RonSQL's
   per-column Load dispatch (Phase B.1) without further wiring.
-- **Phase C–H, Phase P-GB: NOT STARTED.** Phase C has the virtual-table
-  prerequisite; Phase P-GB (DBLQH `buildCteLinkedBuffer` fix to uniformly
-  prefix step-1 parent-linked entries) should land before Phase D so
-  `LEFT JOIN cte` can SELECT parent columns.
+- **Phase E.1 (scanCte as main-query root): DONE** — commit
+  `5aa5347a1a7`. `ronsql_cte_scan.test` Tests 1–4 cover main-query
+  GB on a CTE_SCAN root col + agg, WHERE on CTE_SCAN root agg
+  output, WHERE on CTE_SCAN root GB column, and main agg over
+  CTE_SCAN root with no GB (single row).
+- **Phase E.1K (kernel CTE virt-col linked-attr support): DONE** —
+  commit `dd659310e77`. Inline encoding (bit 31 of tableId word as
+  CTE marker; pack typeId / maxBytes / csNumber) so CTE virt cols
+  reach the aggregator with usable type metadata even though they
+  have no real `tablerec` slot. Includes defensive guards in
+  `JoinAggInterpreter` that return `ZAGG_OTHER_ERROR` (1869) when
+  an aggregator references a linked col but `m_linked_attr_data`
+  is NULL — surfaces as a clear API error rather than a SEGV when
+  a client forgets `addLinkedProjection`. Reinstates the deferred
+  Test E.1K (CTE_SCAN root + real-table child + main agg) in
+  `ronsql_cte_scan.test`.
+- **Phase E.2 (chained CTEs / CTE-of-CTE): DONE** — commit
+  `13a588ad4d4`. Per-CTE loop now dispatches the CTE-body root on
+  `cp.ops[0].type`: TABLE_SCAN keeps the existing self-join inline
+  emit, CTE_SCAN routes through `emit_root_op`, multi-op falls
+  through to the original combo. New recursive
+  `resolve_chained_column_type` walks chained CTE outputs (e.g.
+  b.MAX(a.SUM(real))) so `build_cte_virtual_tables` can derive
+  the correct widened type at each layer. Three runtime bugs
+  surfaced and fixed:
+  1. `load_join` skipped m_col_is_inner cols unconditionally,
+     leaving column_attrId_map=-1 for chained-CTE refs that main
+     also uses (e.g. "k" first registered inside CTE b's body,
+     then re-referenced in main). Replaced with a fall-through:
+     attempt main-plan resolution first; only return the sentinel
+     when the col genuinely doesn't exist in main scope.
+  2. `defineCte` was called without depMask, so DBTC grouped all
+     CTEs in phase 0 and `execCTE_SCAN_REQ` on a not-yet-ready
+     predecessor returned `ZCTE_LOOKUP_STATE_NOT_READY` (1264).
+     Compute the bitmask from each body's CTE_LOOKUP/CTE_SCAN ops
+     and pass it to `defineCte`.
+  3. Per-CTE child virt tables were deleted at the end of each
+     CTE's iteration, but `qb`'s serialized scanCte ops retain
+     raw `NdbDictionary::Table*` pointers — use-after-free when
+     `qb->prepare()` ran later. Hoisted storage to a 2D buffer
+     spanning `execute_join` and deferred deletion to the
+     end-of-execute cleanup alongside main `cteVirtualTables`.
+  Phase E.2 also generalizes `resolve_cte_output_columns` to a
+  per-scope helper (chained CTEs need cs_b's column_map resolved
+  before main walks through it), switches `emit_root_op`'s
+  CTE_SCAN agg gate to `scope.agg` so it fires for per-CTE-body
+  emit too, and adds a CTE_SCAN case to `emit_child_ops` (rejects
+  keyed shapes; supports virt-table-driven scan-as-child for the
+  rare `WITH a, b AS (SELECT … FROM real JOIN a)` pattern).
+  Tests 7–9 in `ronsql_cte_scan.test` cover the basic chain, a
+  chain feeding a real-table join in the outer SELECT, and a
+  chain with WHERE on the intermediate.
 
-Working tree: clean (Phase B.1 push done).
+- **Phase F (SCAN_NEXTREQ multi-batch — folded into E for scanCte
+  root), Phase G (reject-cleanly outer-join-child-scanCte), Phase H
+  (test consolidation): NOT STARTED.** Phase P-GB (DBLQH
+  `buildCteLinkedBuffer` fix to uniformly prefix step-1
+  parent-linked entries) is still open and would let `LEFT JOIN
+  cte` SELECT parent columns; current LEFT-JOIN tests work around
+  it by grouping on a CTE-output column.
+
+Working tree: clean (Phase E.2 push done as commit `13a588ad4d4`).
 
 ## Scope (confirmed)
 
@@ -750,6 +806,12 @@ anti-join to produce a row).
 ---
 
 ### Phase E — scanCte as main-query root + CTE-child-of-CTE
+
+**Status: E.1 / E.1K / E.2 DONE.** See `cte_filter_phase_e1.md`,
+`cte_filter_phase_e1k.md`, `cte_filter_phase_e2.md`. Phase E.3
+(projection-only main SELECT over CTE_SCAN root — `SELECT k, t FROM
+sums` without aggregation) is deferred behind a separate plan if/when
+needed; today RonSQL's "Not an aggregate query" check rejects it.
 
 **Goal.** Recognize `FROM <cte_name>` in any FROM clause (main or inside
 another CTE); emit `scanCte` (as root) or `lookupCte`/`scanCte` (as child).
