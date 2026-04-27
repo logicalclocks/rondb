@@ -208,6 +208,17 @@ matching test coverage.
   projection; `initGBTypes` already discriminates real-table-vs-CTE
   via the marker bit. No kernel changes required; the deliverable is
   the two new MTR tests.
+- **Phase E.1K Site 4 (chained outer-join null path encoding):
+  DONE.** `Dbspj::emitNullAttrinfo` defaults flipped to
+  `cteOrigin=true` and the cteOrigin=true encoding now includes a
+  neutral `NDB_TYPE_BIGINT` typeId so the receiver gets a valid
+  cmpFn fallback.  Removes a latent crash on
+  chained-outer-join-with-CTE-intermediate shapes that route through
+  `propagateNullToAggLeaf → sendJoinAggNullRow → expand` with
+  `parentLevelAdjust > 0`.  Phase doc:
+  `cte_filter_phase_e1k_site4.md`.  No MTR test — RonSQL doesn't
+  currently produce a query that hits this code path; coverage
+  lands with Phase H if such a shape ships through.
 - **Phase G (reject-cleanly outer-join-child CTE_SCAN): DONE —
   defensive tripwire only.** New `validate_cte_execution_shapes()`
   in `RonSQLPreparer.cpp` walks every scope's `JoinPlan` and throws

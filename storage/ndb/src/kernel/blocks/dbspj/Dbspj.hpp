@@ -1813,11 +1813,11 @@ class Dbspj : public SimulatedBlock {
    */
   Uint32 emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
                           bool &hasNull, bool addTableMeta,
-                          bool cteOrigin = false);
+                          bool cteOrigin = true);
   Uint32 emitNullFromParent(Uint32 &dst, Local_pattern_store &,
                              Local_pattern_store::ConstDataBufferIterator &,
                              bool &hasNull, bool addTableMeta,
-                             bool cteOrigin = false);
+                             bool cteOrigin = true);
   Uint32 expand(Uint32 &ptrI, Local_pattern_store &p, const RowPtr &r,
                 bool &hasNull, bool addTableMeta = false,
                 Uint32 parentLevelAdjust = 0,
