@@ -165,11 +165,11 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     load();
     PERF_TS(t_load_end);
     PERF_LOG("  load (dict)", t_load_start, t_load_end);
-    if (m_context.ast_root.joins == NULL)
+    if (!is_join_query())
       plan_index_and_filter();
     PERF_TS(t_compile_start);
     compile();
-    if (m_context.ast_root.joins != NULL)
+    if (is_join_query())
       build_agg_linked_projections();
     if (m_cte_scopes.size() > 0)
       build_cte_linked_projections();
@@ -794,9 +794,7 @@ RonSQLPreparer::load()
   // Transform correlated scalar subqueries (may set m_has_subqueries)
   decorrelate_scalar();
 
-  bool is_join = (m_context.ast_root.joins != NULL);
-
-  if (is_join) {
+  if (is_join_query()) {
     load_join();
   } else {
     load_single_table();
@@ -809,6 +807,23 @@ RonSQLPreparer::load()
     build_cte_scopes();
     resolve_cte_output_columns();
   }
+}
+
+bool
+RonSQLPreparer::is_join_query() const
+{
+  if (m_context.ast_root.joins != NULL) return true;
+  // FROM <cte_name> with no joins: route through load_join so
+  // QueryPlanner produces a CTE_SCAN root op and execute_join
+  // drives result delivery.
+  for (const CteDefinition* cte = m_context.ast_root.cte_list;
+       cte != NULL; cte = cte->next) {
+    if (strcmp(cte->name.c_str(),
+               m_context.ast_root.table.c_str()) == 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void
@@ -995,7 +1010,8 @@ RonSQLPreparer::load_join()
       {
         if (strcmp(m_main_scope.join_plan.ops[t].alias.c_str(), qualifier) == 0)
         {
-          if (m_main_scope.join_plan.ops[t].type == JoinOp::CTE_LOOKUP)
+          if (m_main_scope.join_plan.ops[t].type == JoinOp::CTE_LOOKUP ||
+              m_main_scope.join_plan.ops[t].type == JoinOp::CTE_SCAN)
           {
             // CTE column: look up in CTE output list
             const CteDefinition* cte = m_main_scope.join_plan.ops[t].cte_def;
@@ -1059,7 +1075,8 @@ RonSQLPreparer::load_join()
       NdbAttrId match_attr_id = -1;
       for (Uint32 t = 0; t < m_main_scope.join_plan.num_ops; t++)
       {
-        if (m_main_scope.join_plan.ops[t].type == JoinOp::CTE_LOOKUP)
+        if (m_main_scope.join_plan.ops[t].type == JoinOp::CTE_LOOKUP ||
+            m_main_scope.join_plan.ops[t].type == JoinOp::CTE_SCAN)
         {
           // Search CTE output list
           const CteDefinition* cte = m_main_scope.join_plan.ops[t].cte_def;
@@ -4191,7 +4208,7 @@ RonSQLPreparer::execute()
       substitute_subquery_results();
     }
 
-    if (m_context.ast_root.joins != NULL) {
+    if (is_join_query()) {
       execute_join();
       cleanup_trans();
       return;
@@ -4383,15 +4400,6 @@ RonSQLPreparer::execute_join()
   require_run(m_trans != NULL, "Failed to start transaction.");
 
   JoinPlan& plan = m_main_scope.join_plan;
-
-  // scanCte as main-query root is deferred; the main SELECT's FROM must
-  // reference a physical table.
-  if (plan.ops[0].type == JoinOp::CTE_SCAN)
-  {
-    throw RonSQLPermanentError(
-        "scanCte as main-query root not yet supported. Use EXPLAIN to see "
-        "the plan.");
-  }
 
   // Virtual tables for CTE children of the main plan. Built up-front so
   // the agg leaf's NdbAggregator can be constructed against the right
@@ -4693,7 +4701,7 @@ RonSQLPreparer::execute_join()
 
   const NdbQueryOperationDef* opDefs[MAX_SPJ_TREE_NODES];
 
-  emit_root_op(qb, m_main_scope, opDefs);
+  emit_root_op(qb, m_main_scope, opDefs, &singleAgg, cteVirtualTables);
 
   emit_child_ops(qb, m_main_scope, opDefs, &singleAgg, leafAggs,
                  cteVirtualTables);
@@ -4782,10 +4790,47 @@ RonSQLPreparer::execute_join()
 // table scan with WHERE filter otherwise.
 void
 RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
-                              const NdbQueryOperationDef** opDefs)
+                              const NdbQueryOperationDef** opDefs,
+                              NdbAggregator* singleAgg,
+                              NdbDictionary::Table** cteVirtualTables)
 {
   JoinPlan& plan = scope.join_plan;
   NdbQueryOptions rootOpts;
+
+  // Dispatch CTE_SCAN root before the real-table logic. Reuses the
+  // CTE_LOOKUP filter helper (same opcode family — verified by
+  // testCteNdbApiFilter::testCteScanFilterRoot) and attaches the main
+  // aggregator on the root when the agg leaf IS the root.
+  if (plan.ops[0].type == JoinOp::CTE_SCAN)
+  {
+    require_run(cteVirtualTables != NULL && cteVirtualTables[0] != NULL,
+                "CTE_SCAN root requires a virtual table.");
+    NdbInterpretedCode code(cteVirtualTables[0]);
+    if (scope.join_where_ce[0] != NULL)
+    {
+      // emit_cte_lookup_filter already finalises the program
+      // (line ~5406 in this file).  Don't double-finalise.
+      emit_cte_lookup_filter(code, scope, /*op_idx=*/0,
+                             cteVirtualTables[0],
+                             scope.join_where_ce[0]);
+      require_run(rootOpts.setInterpretedCode(code) == 0,
+                  "Failed to set interpreted code on CTE_SCAN root.");
+    }
+    if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
+        plan.num_agg_leaves == 0 && m_main_scope.agg != NULL)
+    {
+      require_run(rootOpts.setAggregation(*singleAgg) == 0,
+                  "Failed to set aggregation on CTE_SCAN root.");
+    }
+    Uint32 numResultCols = 0;
+    for (const Outputs* o = plan.ops[0].cte_def->stmt->outputs;
+         o != NULL; o = o->next) numResultCols++;
+    opDefs[0] = qb->scanCte(plan.ops[0].cte_def_idx, numResultCols,
+                            cteVirtualTables[0], &rootOpts);
+    require_run(opDefs[0] != NULL, "Failed to create scanCte root.");
+    return;
+  }
+
   const NdbDictionary::Table* root_table = plan.ops[0].table;
   ConditionalExpression* where_ce = NULL;
   bool pk_covered = false;
@@ -5661,7 +5706,14 @@ RonSQLPreparer::unload_schema() {
     DEB_TRACE();
     return false;
   }
-  ndbrequire(m_main_scope.table != NULL);
+  // CTE-root queries leave m_main_scope.table NULL — there's no
+  // single physical table to invalidate, and any underlying CTE-body
+  // tables go through their own scopes. Treat as "no schema change
+  // detected" so the caller falls back to a permanent error.
+  if (m_main_scope.table == NULL) {
+    DEB_TRACE();
+    return false;
+  }
   // Save table object ID and version
   typedef std::pair<int, int> Idver;
   const Idver old_table_idver = { DBG(m_main_scope.table->getObjectId()),
@@ -7329,7 +7381,8 @@ RonSQLPreparer::print()
       if (op.alias.len > 0) out << " AS " << op.alias.c_str();
       out << '\n';
       const char *indent = is_last ? "   " : "│  ";
-      if (op.type == JoinOp::CTE_LOOKUP && op.cte_def != NULL) {
+      if ((op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) &&
+          op.cte_def != NULL) {
         out << indent << "  CTE outputs: ";
         Uint32 oc = 0;
         for (const Outputs *o = op.cte_def->stmt->outputs; o; o = o->next) {

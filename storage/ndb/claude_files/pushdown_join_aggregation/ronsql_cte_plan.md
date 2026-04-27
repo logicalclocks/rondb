@@ -10,8 +10,13 @@
 >   (DBLQH filter / interpreter) that this plan consumes.
 > - `cte_filter_phase_d.md` + `cte_filter_phase_d2.md` — RonSQL phases D /
 >   D2 (inline-type opcode wiring + MIN/MAX virt-type widening).
-> - `cte_filter_phase_e1.md` + `cte_filter_phase_e2.md` — RonSQL Phase E
->   plan: scanCte as main-query root (E.1) + chained CTEs (E.2).
+> - `cte_filter_phase_e1.md` + `cte_filter_phase_e1k.md` +
+>   `cte_filter_phase_e2.md` — RonSQL Phase E plan: scanCte as
+>   main-query root (E.1), kernel-side CTE virtual-column linked-attr
+>   support (E.1K — sequenced between E.1 landing and E.2), chained
+>   CTEs (E.2). Phase E.3 (relax the agg-required check so
+>   projection-only main SELECTs over a CTE_SCAN root work) deferred
+>   to a separate plan if needed.
 > - `cte_nextreq_plan.md` + `cte_nextreq_phase_{1,2,3,4}.md` —
 >   SCAN_NEXTREQ multi-batch flow for CTEs.
 > - `cte_outer_join_plan.md` + `cte_outer_join_phase_{1..5}.md` —

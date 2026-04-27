@@ -35,16 +35,23 @@ calls exist anywhere in `RonSQLPreparer.cpp` today.
 ## Goal
 
 Lift the guard and emit `qb->scanCte(...)` for CTE_SCAN main-query
-roots. Cover four sub-shapes end-to-end:
+roots. Cover three sub-shapes end-to-end:
 
-1. Pass-through (`SELECT k, t FROM cte ORDER BY k`).
-2. WHERE on root (filter via `emit_cte_lookup_filter` →
-   `setInterpretedCode`).
-3. Main-query aggregation over the CTE_SCAN root (`agg_leaf_idx ==
+1. WHERE on root (filter via `emit_cte_lookup_filter` →
+   `setInterpretedCode`), both on aggregate output and on GB column.
+2. Main-query aggregation over the CTE_SCAN root (`agg_leaf_idx ==
    0`, attach `singleAgg` via `setAggregation` on the root options).
-4. CTE_SCAN root joined to real-table children (real-table lookup
+3. CTE_SCAN root joined to real-table children (real-table lookup
    children with linked keys from the CTE_SCAN root's virt-table
-   columns).
+   columns), with main-query aggregation.
+
+**Pass-through (projection-only) main SELECTs are deferred to a
+separate Phase E.3.** RonSQL today rejects any non-aggregating SELECT
+with `"Not an aggregate query."` at `RonSQLPreparer.cpp:447-455` —
+this applies regardless of CTE_SCAN root vs real-table root.
+Lifting that restriction is an independent gap (would benefit
+projection-only real-table SELECTs too) and not required for the
+scanCte emit work. CTE bodies remain aggregate-only by design.
 
 ## Scope
 
@@ -99,19 +106,33 @@ Out of scope (deferred to later phases):
 
 ## Test plan
 
+All tests aggregate in the main SELECT (per the deferral note above).
+
 | Test | Shape | Notes |
 |------|-------|-------|
-| 1 | `SELECT k, t FROM sums ORDER BY k` | pass-through (no WHERE, no GB) |
-| 2 | `SELECT k, t FROM sums WHERE t > 50` | inline-type filter on aggregate output |
-| 3 | `SELECT k, t FROM sums WHERE k = 200` | mem-opcode filter on GB column |
-| 4 | `SELECT s.k, s.t, c.c_name FROM sums s JOIN cte_customer c ON c.c_id = s.k` | CTE_SCAN root joined to real-table child |
-| 5 | `SELECT SUM(t) AS gt FROM sums` | main-query aggregation over CTE_SCAN root, agg_leaf_idx == 0 |
-| 6 | `SELECT k, SUM(t) FROM sums GROUP BY k` | main-query GB over CTE_SCAN root |
+| 1 | `SELECT k, SUM(t) FROM sums GROUP BY k` | main GB on CTE_SCAN root col + agg over another |
+| 2 | `SELECT k, SUM(t) FROM sums WHERE t > 50 GROUP BY k` | WHERE on agg output (inline-type filter) |
+| 3 | `SELECT k, SUM(t) FROM sums WHERE k = 200 GROUP BY k` | WHERE on GB column |
+| 4 | `SELECT SUM(t) AS gt FROM sums` | main agg over CTE_SCAN root, no GB (single result row, agg_leaf_idx == 0) |
 
-The kernel side is already validated by `testCteScanRootLargeResult`
-/ `testCteScanRootSmallBatch` in `testCteNdbApiFilter.cpp`, so
-Phase F's multi-batch concern is implicitly covered by Test 1 once
-it runs against larger seeded data (or via a follow-on test).
+**Deferred — `SELECT s.k, SUM(s.t) FROM sums s JOIN cte_customer c ON
+c.c_id = s.k GROUP BY s.k` (CTE_SCAN root + real-table child + main
+aggregator on the child leaf).** This shape exposes a pre-existing
+kernel gap: `Dbspj::appendFromParent` writes a junk schemaVersion
+when the parent tree node is a CTE op (`m_primaryTableId == 0`),
+producing `[tableId=0][schemaVersion=junk]` linked-attr entries that
+fail the version check in `JoinAggInterpreter::initGBTypes` (error
+1227). The fix is sequenced as Phase E.1K immediately after E.1
+landing — see `cte_filter_phase_e1k.md`. The dropped test block is
+preserved as commented-out reference in `ronsql_cte_scan.test` so
+E.1K can restore it verbatim.
+
+The kernel side for the four landed shapes is validated by
+`testCteScanRootLargeResult` / `testCteScanRootSmallBatch` in
+`testCteNdbApiFilter.cpp`. Phase F's multi-batch concern can fold in
+via a 600-group seeded variant once Phase E.3 enables pass-through;
+for now Tests 1–4 cover the emit path end-to-end on the standard
+fixture.
 
 ## Risks
 

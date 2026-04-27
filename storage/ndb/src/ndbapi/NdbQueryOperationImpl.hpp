@@ -662,6 +662,16 @@ class NdbQueryImpl {
   /** Get the opNo of the main query root (0 for non-CTE queries). */
   Uint32 getRootOpNo() const;
 
+  /** Get the table that drives DBTC fragment routing for this query.
+   *  Normally that's the root operation's table, but for queries
+   *  whose root cannot drive routing on its own — lookupCte (no
+   *  table at all) or scanCte over a synthetic in-memory virt
+   *  table (FragmentCount == 0) — falls back to the first
+   *  CTE-embedded scan's table, which has the real fragment
+   *  topology DBTC needs.  Used by SCAN_TABREQ tableId selection,
+   *  prepareSend fragment counting, and per-op batch sizing. */
+  const NdbTableImpl &getFragRoutingTable() const;
+
   /** A complete batch has been received for a given SPJ-worker result.
    *  Update whatever required before the appl. is allowed to navigate
    *  the result.

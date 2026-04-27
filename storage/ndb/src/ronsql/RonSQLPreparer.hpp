@@ -304,8 +304,15 @@ private:
   void substitute_subquery_results();
   void substitute_subquery_results_ce(ConditionalExpression** ce_ptr);
   void execute_join();
+  // Returns true iff the query routes through the multi-op join path:
+  // either AST joins are present, or the FROM root names a CTE alias
+  // (which forces QueryPlanner to produce a CTE_SCAN root op and the
+  // emit/execute path to use the multi-op infrastructure).
+  bool is_join_query() const;
   void emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
-                    const NdbQueryOperationDef** opDefs);
+                    const NdbQueryOperationDef** opDefs,
+                    NdbAggregator* singleAgg = nullptr,
+                    NdbDictionary::Table** cteVirtualTables = nullptr);
   void build_cte_virtual_tables(const JoinPlan& plan,
                                 NdbDictionary::Table** out);
   void emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,

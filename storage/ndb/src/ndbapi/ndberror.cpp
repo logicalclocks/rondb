@@ -1107,6 +1107,11 @@ ErrorBundle ErrorCodes[] = {
   //  "Outer joined scans need FirstInner/Upper to be specified" },
   { QRY_NEST_NOT_SUPPORTED, DMEC, AE,
     "FirstInner/Upper has to be an ancestor or a sibling" },
+  { QRY_TABLE_HAVE_NO_FRAGMENTS, DMEC, AE,
+    "Query root table has no fragments — virtual / synthetic CTE table "
+    "missing fragment routing override" },
+  { QRY_BAD_FRAGMENT_DATA, DMEC, AE,
+    "Query root table fragment has no nodes" },
 
   /*
    * Management server error codes

@@ -3065,6 +3065,39 @@ Uint32 NdbQueryImpl::getRootOpNo() const {
   return 0;
 }
 
+const NdbTableImpl &NdbQueryImpl::getFragRoutingTable() const {
+  const NdbQueryOperationDefImpl &rootDef =
+      getRoot().getQueryOperationDef();
+  const NdbTableImpl *table =
+      rootDef.getIndex() ? rootDef.getIndex()->getIndexTable()
+                         : &rootDef.getTable();
+  // lookupCte: not a scan operation at all → no table.
+  // scanCte over synthetic virt table: scan op but FragmentCount==0.
+  // In both cases, fall back to the first CTE-embedded scan's table —
+  // that's the real source whose fragment topology DBTC needs to
+  // route SCAN_FRAGREQ correctly.  scanCte over a registered virt
+  // table (existing testCteNdbApi pattern) has FragmentCount > 0
+  // and the fallback is skipped.
+  const bool rootIsCteScan =
+      (rootDef.getType() == NdbQueryOperationDef::CteScan);
+  const bool needOverride =
+      !rootDef.isScanOperation() ||
+      (rootIsCteScan &&
+       static_cast<const NdbDictionary::Table &>(*table)
+           .getFragmentCount() == 0);
+  if (needOverride) {
+    for (Uint32 i = 0; i < m_countOperations; i++) {
+      const NdbQueryOperationDefImpl &opDef =
+          m_operations[i].getQueryOperationDef();
+      if (opDef.isCteEmbedded() && opDef.isScanOperation()) {
+        table = &opDef.getTable();
+        break;
+      }
+    }
+  }
+  return *table;
+}
+
 int NdbQueryImpl::prepareSend() {
   if (unlikely(m_state != Defined)) {
     assert(m_state >= Initial && m_state < Destructed);
@@ -3082,25 +3115,8 @@ int NdbQueryImpl::prepareSend() {
   Uint32 rootFragments;
   if (getQueryDef().isScanQuery()) {
     NdbQueryOperationImpl &rootOp = getRoot();
-    const NdbTableImpl *fragTable =
-        &rootOp.getQueryOperationDef().getTable();
-
-    /* When the main root is a lookup (lookupCte), it doesn't scan a
-     * real table. Use the first CTE-embedded scan's table for fragment
-     * routing — that table determines the number of DBSPJ instances
-     * needed for CTE materialization. */
-    if (!rootOp.getQueryOperationDef().isScanOperation()) {
-      for (Uint32 i = 0; i < getNoOfOperations(); i++) {
-        const NdbQueryOperationDefImpl &opDef =
-            getQueryOperation(i).getQueryOperationDef();
-        if (opDef.isCteEmbedded() && opDef.isScanOperation()) {
-          fragTable = &opDef.getTable();
-          break;
-        }
-      }
-    }
     const NdbDictionary::Table &rootTable =
-        static_cast<const NdbDictionary::Table &>(*fragTable);
+        static_cast<const NdbDictionary::Table &>(getFragRoutingTable());
 
     /* For CTE compound queries the root scan is not op[0] — CTE subtree
      * containers precede it. The constructor initializes m_parallelism
@@ -3762,23 +3778,15 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
 
   const NdbQueryOperationImpl &root = getRoot();
   const NdbQueryOperationDefImpl &rootDef = root.getQueryOperationDef();
+  /* For CTE queries where the main root is a lookup (lookupCte) or
+   * a scanCte over a synthetic virt table, getFragRoutingTable falls
+   * back to the CTE base scan table so DBTC can route fragments
+   * correctly via DIH.  Otherwise it's the root op's own table. */
   const NdbTableImpl *rootTable =
-      rootDef.getIndex() ? rootDef.getIndex()->getIndexTable()
-                         : &rootDef.getTable();
-
-  /* For CTE queries where the main root is a lookup (lookupCte),
-   * use the CTE base scan table for the SCAN_TABREQ tableId so that
-   * DBTC can route fragments correctly via DIH. */
-  if (getQueryDef().isScanQuery() && !rootDef.isScanOperation()) {
-    for (Uint32 i = 0; i < getNoOfOperations(); i++) {
-      const NdbQueryOperationDefImpl &opDef =
-          getQueryOperation(i).getQueryOperationDef();
-      if (opDef.isCteEmbedded() && opDef.isScanOperation()) {
-        rootTable = &opDef.getTable();
-        break;
-      }
-    }
-  }
+      getQueryDef().isScanQuery()
+          ? &getFragRoutingTable()
+          : (rootDef.getIndex() ? rootDef.getIndex()->getIndexTable()
+                                : &rootDef.getTable());
 
   Uint32 tTableId = rootTable->m_id;
   Uint32 tSchemaVersion = rootTable->m_version;
@@ -5177,7 +5185,7 @@ Uint32 NdbQueryOperationImpl ::calculateBatchedRows(
      * determined.
      */
     const Uint32 rootFragments =
-        getRoot().getQueryOperationDef().getTable().getFragmentCount();
+        getQuery().getFragRoutingTable().getFragmentCount();
     Uint32 batchByteSize;
     /**
      * myClosestScan->m_maxBatchRows may be zero to indicate that we
@@ -6354,7 +6362,7 @@ Uint32 NdbQueryOperationImpl::getMaxBatchBytes() const {
     assert(m_resultBufferSize == 0);
 
     const Uint32 rootFragments =
-        getRoot().getQueryOperationDef().getTable().getFragmentCount();
+        getQuery().getFragRoutingTable().getFragmentCount();
 
     if (m_operationDef.isScanOperation()) {
       const Ndb *const ndb = getQuery().getNdbTransaction().getNdb();
