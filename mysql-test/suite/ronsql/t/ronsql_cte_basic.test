@@ -395,6 +395,57 @@ JOIN maxes ON maxes.k = c.c_id
 WHERE maxes.mx > 70
 GROUP BY maxes.k|
 
+# Phase P-GB — verification.  Earlier branch state flagged a buffer-format
+# mismatch that would SEGV on parent-table GROUP BY over a CTE agg leaf.
+# That mismatch was incidentally fixed by Phase E.1K's writer-side rework
+# (DBSPJ now writes a uniform 2-word [tableId][schemaVersion] / CTE-marker
+# prefix for every linked entry, and the reader already discriminates via
+# the marker bit).  These tests exercise the previously-untested shape.
+
+--echo
+--echo
+--echo === Test 13 (P-GB): main GROUP BY parent-table column over CTE agg leaf ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_region, SUM(sums.t)
+FROM cte_customer AS c JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_region, SUM(sums.t)
+FROM cte_customer AS c JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_region|
+
+--echo
+--echo
+--echo === Test 14 (P-GB): same as 13 but LEFT JOIN (NULL-injected unmatched parent) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_region, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_region, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_region|
+
 DELIMITER ;|
 
 --echo

@@ -199,15 +199,20 @@ matching test coverage.
   chain feeding a real-table join in the outer SELECT, and a
   chain with WHERE on the intermediate.
 
+- **Phase P-GB (parent-table GB over CTE agg leaf): DONE — incidentally
+  fixed by Phase E.1K.** Verified by Tests 13–14 in
+  `ronsql_cte_basic.test` (INNER + LEFT JOIN, `GROUP BY c.c_region`
+  over a `sums` CTE agg leaf). Phase E.1K's writer-side rework
+  (`appendAttrinfoWithTableMeta` / `appendCteAttrinfoWithVirtMeta`)
+  produces a uniform 2-word prefix for every parent linked
+  projection; `initGBTypes` already discriminates real-table-vs-CTE
+  via the marker bit. No kernel changes required; the deliverable is
+  the two new MTR tests.
 - **Phase F (SCAN_NEXTREQ multi-batch — folded into E for scanCte
   root), Phase G (reject-cleanly outer-join-child-scanCte), Phase H
-  (test consolidation): NOT STARTED.** Phase P-GB (DBLQH
-  `buildCteLinkedBuffer` fix to uniformly prefix step-1
-  parent-linked entries) is still open and would let `LEFT JOIN
-  cte` SELECT parent columns; current LEFT-JOIN tests work around
-  it by grouping on a CTE-output column.
+  (test consolidation): NOT STARTED.**
 
-Working tree: clean (Phase E.2 push done as commit `13a588ad4d4`).
+Working tree: clean (Phase P-GB push done).
 
 ## Scope (confirmed)
 
