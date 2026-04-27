@@ -1,0 +1,35 @@
+#
+# Step 1: HSET 3 NEW fields on a fresh hash.
+#
+3
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:1';
+redis_key	field_count
+life:1	3
+SELECT redis_key, value_start FROM redis_0.string_keys
+WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+WHERE redis_key = 'life:1')
+ORDER BY redis_key;
+redis_key	value_start
+a	A
+b	B
+c	C
+A
+#
+# Step 2: HSET overwriting all 3 fields. delta=0; field_count
+# stays at 3.
+#
+0
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:1';
+redis_key	field_count
+life:1	3
+#
+# Step 3: HSET mixing existing (a, b) with new (d, e). field_count
+# 3 -> 5.
+#
+2
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:1';
+redis_key	field_count
+life:1	5

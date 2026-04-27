@@ -1,0 +1,48 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Phase 1.0.2c lifecycle test for the single-trans HSET pipeline.
+# Asserts that hset_keys.field_count is maintained correctly across:
+#   - HSET on a new hash      (delta = N, Phase 3 sets count = N)
+#   - Pure overwrite          (delta = 0, Phase 3 skips the update)
+#   - Mixed new + overwrite   (delta = #new only)
+#
+# Large-value (> INLINE_VALUE_LEN) and many-field (> MAX_PARALLEL_KEY_OPS
+# chunk) assertions need shell-substitution at exec time and are
+# covered separately by rondis_stress_hashes (which already exercises
+# >100KB values through this pipeline).
+#
+
+--echo #
+--echo # Step 1: HSET 3 NEW fields on a fresh hash.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET life:1 a A b B c C
+SELECT redis_key, field_count FROM redis_0.hset_keys
+ WHERE redis_key = 'life:1';
+SELECT redis_key, value_start FROM redis_0.string_keys
+ WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+                        WHERE redis_key = 'life:1')
+ ORDER BY redis_key;
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET life:1 a
+
+--echo #
+--echo # Step 2: HSET overwriting all 3 fields. delta=0; field_count
+--echo # stays at 3.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET life:1 a A2 b B2 c C2
+SELECT redis_key, field_count FROM redis_0.hset_keys
+ WHERE redis_key = 'life:1';
+
+--echo #
+--echo # Step 3: HSET mixing existing (a, b) with new (d, e). field_count
+--echo # 3 -> 5.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET life:1 a A3 b B3 d D e E
+SELECT redis_key, field_count FROM redis_0.hset_keys
+ WHERE redis_key = 'life:1';
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
