@@ -1,0 +1,63 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Phase 1.1 - EXISTS key [key ...]
+#
+# Two-pass batched probe: first string_keys, then hset_keys for
+# misses. After Phase 1.0.3 a fully-HDEL'd hash leaves the hset_keys
+# row present with field_count = 0 (cross-server invariant); EXISTS
+# must NOT count that as existing.
+#
+
+--echo #
+--echo # Set up: a string key, a populated hash, a hash that's about
+--echo # to be emptied, and an absent name.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_a "value-a"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_a f1 v1 f2 v2
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_empty x X
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL hash_empty x
+
+--echo #
+--echo # Existing string key.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS str_a
+
+--echo #
+--echo # Existing hash key.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS hash_a
+
+--echo #
+--echo # Fully-HDEL'd hash. Row remains in hset_keys with field_count=0
+--echo # (Phase 1.0.3 invariant) but EXISTS must report 0.
+--echo #
+SELECT redis_key, field_count FROM redis_0.hset_keys
+ WHERE redis_key = 'hash_empty';
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS hash_empty
+
+--echo #
+--echo # Missing key.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS no_such_key
+
+--echo #
+--echo # Mixed batch - 1 string + 1 hash + 1 missing + 1 emptied = 2.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS str_a hash_a missing hash_empty
+
+--echo #
+--echo # Duplicates count each occurrence per Redis canonical.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS str_a str_a str_a hash_a
+
+--echo #
+--echo # Case-sensitivity: STR_A != str_a.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS STR_A
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

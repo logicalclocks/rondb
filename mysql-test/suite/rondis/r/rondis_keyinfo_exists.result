@@ -1,0 +1,41 @@
+#
+# Set up: a string key, a populated hash, a hash that's about
+# to be emptied, and an absent name.
+#
+OK
+2
+1
+1
+#
+# Existing string key.
+#
+1
+#
+# Existing hash key.
+#
+1
+#
+# Fully-HDEL'd hash. Row remains in hset_keys with field_count=0
+# (Phase 1.0.3 invariant) but EXISTS must report 0.
+#
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'hash_empty';
+redis_key	field_count
+hash_empty	0
+0
+#
+# Missing key.
+#
+0
+#
+# Mixed batch - 1 string + 1 hash + 1 missing + 1 emptied = 2.
+#
+2
+#
+# Duplicates count each occurrence per Redis canonical.
+#
+4
+#
+# Case-sensitivity: STR_A != str_a.
+#
+0
