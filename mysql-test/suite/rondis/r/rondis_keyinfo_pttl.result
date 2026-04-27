@@ -1,0 +1,30 @@
+#
+# Set up.
+#
+OK
+OK
+1
+1
+1
+#
+# SET ... EX 60 -> PTTL ~60000 ms (window for host-clock jitter).
+# rondis stores expiry at second-resolution, so PTTL returns
+# (seconds_remaining * 1000) - the window is [58000, 62000] ms.
+#
+PTTL str_ex in_window=1
+#
+# SET without TTL -> :-1.
+#
+-1
+#
+# Hash without TTL -> :-1.
+#
+-1
+#
+# Fully-HDEL'd hash -> :-2.
+#
+-2
+#
+# Missing key -> :-2.
+#
+-2
