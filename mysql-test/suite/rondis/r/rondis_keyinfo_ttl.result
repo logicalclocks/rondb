@@ -1,0 +1,30 @@
+#
+# Set up: a string with TTL, a string without TTL, a populated
+# hash without TTL, an emptied hash, an absent name.
+#
+OK
+OK
+1
+1
+1
+#
+# SET ... EX 60 -> TTL between 58 and 62 (host-clock jitter window).
+#
+TTL str_ex in_window=1
+#
+# SET without TTL -> :-1.
+#
+-1
+#
+# Existing hash without TTL -> :-1 (hset_keys.expiry_date IS NULL
+# for fresh hashes).
+#
+-1
+#
+# Fully-HDEL'd hash -> :-2 (matching EXISTS = 0).
+#
+-2
+#
+# Missing key -> :-2.
+#
+-2
