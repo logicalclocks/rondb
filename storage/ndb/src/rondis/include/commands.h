@@ -73,6 +73,11 @@ void rondb_hdel_command(Ndb *ndb,
                         std::string *response,
                         int worker_id);
 
+void rondb_exists_command(Ndb *ndb,
+                          const pink::RedisCmdArgsType &argv,
+                          std::string *response,
+                          int worker_id);
+
 void rondb_mset_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,

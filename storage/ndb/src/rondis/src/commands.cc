@@ -711,6 +711,315 @@ void rondb_del_command(Ndb *ndb,
   rondb_del(ndb, argv, response, STRING_REDIS_KEY_ID, worker_id);
 }
 
+// Phase 1.1 EXISTS support. Two-pass batched probe: first
+// string_keys(STRING_REDIS_KEY_ID, key), then hset_keys(key) for
+// keys that missed pass 1. After Phase 1.0, hset_keys is
+// authoritative for hash existence - a fully HDEL'd hash has the
+// row present with field_count = 0; that should NOT count as
+// existing (cross-server invariant: row stays for cache stability,
+// but logically the hash is gone). Pass 2 reads field_count and
+// only counts the key if it's > 0.
+//
+// Per-key state lives in a small heap-allocated array; no
+// KeyStorage overload (KeyStorage is much wider than EXISTS needs).
+struct exists_probe {
+  const char *m_key_str;
+  Uint32 m_key_len;
+  bool m_present;
+  const NdbOperation *m_op;
+  // Pass 1: PK buffer for string_keys.
+  struct key_table m_string_buf;
+  // Pass 2: PK buffer + field_count read-back for hset_keys.
+  struct hset_key_table m_hset_buf;
+};
+
+static int add_exists_string_probe_op(NdbTransaction *trans,
+                                      struct exists_probe *probe,
+                                      Uint32 database_id,
+                                      std::string *response) {
+  struct key_table *kr = &probe->m_string_buf;
+  kr->null_bits = 0;
+  kr->redis_key_id = STRING_REDIS_KEY_ID;
+  memcpy(&kr->redis_key[2], probe->m_key_str, probe->m_key_len);
+  memset(&kr->redis_key[2 + probe->m_key_len], 0, 3);
+  set_length((char*)&kr->redis_key[0], probe->m_key_len);
+
+  // Project rondb_key (bit 2). We don't actually need it - all
+  // EXISTS cares about is op success vs 626 - but NDB's NdbRecord
+  // readTuple requires at least one non-PK column projected, so
+  // pick a small fixed-size column. Buffer space is already in
+  // probe->m_string_buf at the right offset.
+  const Uint32 mask = 0x4;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_ABORTOPTION;
+  opts.abortOption = NdbOperation::AO_IgnoreError;
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_BATCH_SAFE_FLAG;
+
+  const NdbOperation *op = trans->readTuple(
+    pk_key_record[database_id],
+    (const char *)kr,
+    entire_key_record[database_id],
+    (char *)kr,
+    NdbOperation::LM_CommittedRead,
+    mask_ptr,
+    &opts,
+    sizeof(opts));
+  if (op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_GET_OP,
+                               trans->getNdbError());
+    return RONDB_INTERNAL_ERROR;
+  }
+  probe->m_op = op;
+  return 0;
+}
+
+static int add_exists_hset_probe_op(NdbTransaction *trans,
+                                    struct exists_probe *probe,
+                                    Uint32 database_id,
+                                    std::string *response) {
+  struct hset_key_table *kr = &probe->m_hset_buf;
+  kr->null_bits = 0;
+  memcpy(&kr->redis_key[2], probe->m_key_str, probe->m_key_len);
+  memset(&kr->redis_key[2 + probe->m_key_len], 0, 3);
+  set_length(&kr->redis_key[0], probe->m_key_len);
+  kr->field_count = 0;
+
+  // mask 0x4 = bit 2 = field_count. Project only that column.
+  // The post-Phase-1.0.3 invariant says the row may be present
+  // with field_count == 0 (post full HDEL); we count it as
+  // "exists" only when field_count > 0.
+  const Uint32 mask = 0x4;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_ABORTOPTION;
+  opts.abortOption = NdbOperation::AO_IgnoreError;
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_BATCH_SAFE_FLAG;
+
+  const NdbOperation *op = trans->readTuple(
+    pk_hset_key_record[database_id],
+    (const char *)kr,
+    entire_hset_key_record[database_id],
+    (char *)kr,
+    NdbOperation::LM_CommittedRead,
+    mask_ptr,
+    &opts,
+    sizeof(opts));
+  if (op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_GET_OP,
+                               trans->getNdbError());
+    return RONDB_INTERNAL_ERROR;
+  }
+  probe->m_op = op;
+  return 0;
+}
+
+// Tiny drain state shared by both EXISTS passes. The callback just
+// decrements m_outstanding and stashes the trans-level error (if
+// any). Per-op results are walked separately via probes[i].m_op
+// after the drain.
+struct exists_drain_state {
+  Uint32 m_outstanding;
+  int m_error_code;
+};
+
+static void
+exists_drain_callback(int result, NdbTransaction *trans, void *aObject) {
+  struct exists_drain_state *st = (struct exists_drain_state*)aObject;
+  (void)result;
+  int code = trans->getNdbError().code;
+  if (code != 0 && code != 626 && st->m_error_code == 0) {
+    st->m_error_code = code;
+  }
+  assert(st->m_outstanding > 0);
+  st->m_outstanding--;
+}
+
+void rondb_exists_command(Ndb *ndb,
+                          const pink::RedisCmdArgsType &argv,
+                          std::string *response,
+                          int worker_id) {
+  Uint32 num_keys = argv.size() - 1;
+  assert(num_keys > 0);
+  struct exists_probe *probes = (struct exists_probe*)
+    malloc(sizeof(struct exists_probe) * num_keys);
+  if (probes == nullptr) {
+    assign_generic_err_to_response(response, FAILED_MALLOC);
+    return;
+  }
+  for (Uint32 i = 0; i < num_keys; i++) {
+    probes[i].m_key_str = argv[i + 1].c_str();
+    probes[i].m_key_len = argv[i + 1].size();
+    probes[i].m_present = false;
+    probes[i].m_op = nullptr;
+  }
+
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  if (dict == nullptr) {
+    assign_ndb_err_to_response(response, FAILED_GET_DICT, ndb->getNdbError());
+    free(probes);
+    return;
+  }
+  const NdbDictionary::Table *string_tab = dict->getTable(KEY_TABLE_NAME);
+  const NdbDictionary::Table *hset_tab = dict->getTable(HSET_KEY_TABLE_NAME);
+  if (string_tab == nullptr || hset_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TABLE_OBJECT,
+                               dict->getNdbError());
+    free(probes);
+    return;
+  }
+  Uint32 database_id = get_current_database(worker_id);
+  Uint32 found_count = 0;
+
+  // Process keys in MAX_PARALLEL_KEY_OPS-sized chunks. One trans
+  // per chunk; both passes ride on the same trans, driven through
+  // the same async executeAsynchPrepare + execute_ndb drain
+  // pattern as the rest of the codebase. AO_IgnoreError per-op so
+  // a 626 does not abort the trans; per-op errors are read from
+  // the stashed NdbOperation* after drain.
+  Uint32 idx = 0;
+  while (idx < num_keys) {
+    Uint32 chunk = std::min(num_keys - idx, (Uint32)MAX_PARALLEL_KEY_OPS);
+    // Hint the trans on the first probe's PK so the TC lives on
+    // that partition's data node (matches every other startTransaction
+    // call site in the codebase). Not critical for correctness but
+    // expected by NDB for predictable routing.
+    {
+      struct exists_probe *p0 = &probes[idx];
+      struct key_table *kr = &p0->m_string_buf;
+      kr->null_bits = 0;
+      kr->redis_key_id = STRING_REDIS_KEY_ID;
+      memcpy(&kr->redis_key[2], p0->m_key_str, p0->m_key_len);
+      memset(&kr->redis_key[2 + p0->m_key_len], 0, 3);
+      set_length((char*)&kr->redis_key[0], p0->m_key_len);
+    }
+    NdbTransaction *trans = ndb->startTransaction(
+      string_tab,
+      (const char*)&probes[idx].m_string_buf.redis_key_id,
+      probes[idx].m_key_len + 10);
+    if (trans == nullptr) {
+      assign_ndb_err_to_response(response,
+                                 FAILED_CREATE_TXN_OBJECT,
+                                 ndb->getNdbError());
+      free(probes);
+      return;
+    }
+    // Pass 1: string_keys probes.
+    for (Uint32 i = idx; i < idx + chunk; i++) {
+      if (add_exists_string_probe_op(trans,
+                                     &probes[i],
+                                     database_id,
+                                     response) != 0) {
+        ndb->closeTransaction(trans);
+        free(probes);
+        return;
+      }
+    }
+    struct exists_drain_state st;
+    st.m_outstanding = 1;
+    st.m_error_code = 0;
+    trans->executeAsynchPrepare(NdbTransaction::NoCommit,
+                                &exists_drain_callback,
+                                (void*)&st);
+    while (st.m_outstanding > 0) {
+      int finished = execute_ndb(ndb, 1, __LINE__);
+      assert(finished >= 0);
+    }
+    if (st.m_error_code != 0) {
+      assign_err_to_response(response,
+                             "Failed to execute EXISTS pass 1",
+                             st.m_error_code);
+      ndb->closeTransaction(trans);
+      free(probes);
+      return;
+    }
+    // Walk pass-1 per-op results.
+    Uint32 missers = 0;
+    for (Uint32 i = idx; i < idx + chunk; i++) {
+      int code = probes[i].m_op->getNdbError().code;
+      if (code == 0) {
+        probes[i].m_present = true;
+        found_count++;
+      } else if (code == 626) {
+        missers++;
+      } else {
+        assign_err_to_response(response,
+                               "EXISTS pass 1 per-op error",
+                               code);
+        ndb->closeTransaction(trans);
+        free(probes);
+        return;
+      }
+    }
+    // Pass 2: hset_keys probes for missers. Skip if every key
+    // was found in pass 1.
+    if (missers > 0) {
+      for (Uint32 i = idx; i < idx + chunk; i++) {
+        if (probes[i].m_present) continue;
+        if (add_exists_hset_probe_op(trans,
+                                     &probes[i],
+                                     database_id,
+                                     response) != 0) {
+          ndb->closeTransaction(trans);
+          free(probes);
+          return;
+        }
+      }
+      st.m_outstanding = 1;
+      st.m_error_code = 0;
+      trans->executeAsynchPrepare(NdbTransaction::NoCommit,
+                                  &exists_drain_callback,
+                                  (void*)&st);
+      while (st.m_outstanding > 0) {
+        int finished = execute_ndb(ndb, 1, __LINE__);
+        assert(finished >= 0);
+      }
+      if (st.m_error_code != 0) {
+        assign_err_to_response(response,
+                               "Failed to execute EXISTS pass 2",
+                               st.m_error_code);
+        ndb->closeTransaction(trans);
+        free(probes);
+        return;
+      }
+      for (Uint32 i = idx; i < idx + chunk; i++) {
+        if (probes[i].m_present) continue;
+        int code = probes[i].m_op->getNdbError().code;
+        if (code == 0) {
+          // Row exists; count as exists only when field_count > 0
+          // (post-1.0.3, fully HDEL'd hashes leave the row at 0).
+          if (probes[i].m_hset_buf.field_count > 0) {
+            probes[i].m_present = true;
+            found_count++;
+          }
+        } else if (code == 626) {
+          // Hash row missing: not present.
+        } else {
+          assign_err_to_response(response,
+                                 "EXISTS pass 2 per-op error",
+                                 code);
+          ndb->closeTransaction(trans);
+          free(probes);
+          return;
+        }
+      }
+    }
+    ndb->closeTransaction(trans);
+    idx += chunk;
+  }
+  free(probes);
+  char buf[20];
+  snprintf(buf, sizeof(buf), ":%u\r\n", found_count);
+  response->append(&buf[0]);
+}
+
 // Forward decl: set_rows_hdel is defined below set_rows_hset (where it
 // can sit next to its mirror) but rondb_hdel_command needs to call it.
 static int set_rows_hdel(Ndb *ndb,
