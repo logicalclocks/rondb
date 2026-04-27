@@ -196,7 +196,7 @@ Int32 VecSearchInterpreter::ProcessRec(Dbtup* block_tup,
 
 #ifdef DEBUG_VS_INTERP
   const Uint32 attributeId = header->getAttributeId();
-  assert(attributeId == (vec_col_idx >> 16));
+  assert(attributeId == vec_col_idx);
   const Uint32 size = AttributeDescriptor::getSize(TattrDesc1);
   const Uint32 size_in_bytes = AttributeDescriptor::getSizeInBytes(TattrDesc1);
   const Uint32 size_in_words = AttributeDescriptor::getSizeInWords(TattrDesc1);

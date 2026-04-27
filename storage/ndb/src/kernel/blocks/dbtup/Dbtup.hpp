@@ -94,6 +94,10 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
   return (Uint32 *)(((UintPtr(ptr) + 3) >> 2) << 2);
 }
 
+// Visible to all TUs that include Dbtup.hpp because it is referenced by
+// the inline readSingleAttribute fast path below.
+#define ZATTRIBUTE_ID_ERROR 879
+
 #ifdef DBTUP_C
 
 /*
@@ -183,7 +187,6 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZOUTSIDE_OF_PROGRAM_ERROR 876
 #define ZMEMORY_OFFSET_ERROR 877
 #define ZREGISTER_INIT_ERROR 878
-#define ZATTRIBUTE_ID_ERROR 879
 #define ZTRY_TO_READ_TOO_MUCH_ERROR 880
 #define ZTOTAL_LEN_ERROR 882
 #define ZAPPEND_COLUMN_ERROR 883
@@ -3302,8 +3305,7 @@ private:
    * PSEUDO-attr dispatch, partial-read handling, and the cross-TU bl
    * that readAttributes carries on every invocation.
    *
-   * Preconditions (caller guarantees — intentionally NOT rechecked in
-   * release builds; ndbassert-checked in debug):
+   * Preconditions (caller guarantees):
    *   - attrId is a real column id, NOT an AttributeHeader::PSEUDO attr
    *   - attrId < req_struct->tablePtrP->m_no_of_attributes
    *   - outBuf is Uint32-aligned with at least maxWords words space
@@ -3313,7 +3315,13 @@ private:
    *   - caller never requests a partial read
    *
    * Returns: words written (>= 1, including the AttributeHeader), or
-   *          -errorCode on failure.
+   *          a negative error code on failure. -ZATTRIBUTE_ID_ERROR is
+   *          returned in release builds for an attrId that violates
+   *          the PSEUDO/range preconditions; debug builds catch the
+   *          violation earlier via ndbassert. A wrong attrId would
+   *          otherwise index past attr_descr and dispatch through a
+   *          stale function pointer, so the runtime check is required
+   *          for production safety.
    *
    * NOTE: If future edits to readAttributes introduce new invariant
    * setup for the ReadFunction dispatch, the same setup must be
@@ -3324,6 +3332,11 @@ private:
                                         Uint32 maxWords) {
     ndbassert(!(attrId & AttributeHeader::PSEUDO));
     ndbassert(attrId < req_struct->tablePtrP->m_no_of_attributes);
+    if (unlikely((attrId & AttributeHeader::PSEUDO) ||
+                 attrId >= req_struct->tablePtrP->m_no_of_attributes)) {
+      thrjam(req_struct->jamBuffer);
+      return -ZATTRIBUTE_ID_ERROR;
+    }
 
     req_struct->out_buf_index = 0;
     req_struct->out_buf_bits = 0;
