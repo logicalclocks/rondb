@@ -24,6 +24,7 @@
 */
 
 #include <unordered_map>
+#include <mutex>
 #include <string.h>
 #include <stdio.h>
 #include <assert.h>
@@ -1721,6 +1722,24 @@ int get_unique_redis_key_id(const NdbDictionary::Table *tab,
   return 0;
 }
 
+// Phase 1.0.4: redis_key_id_hash is a process-wide cache shared by
+// every Rondis worker thread. The map is accessed both by the
+// HGET-style read commands (which call rondb_get_redis_key_id
+// directly) and was historically accessed by HSET / HDEL too,
+// though Phase 1.0.2d / 1.0.3 moved those to in-trans lock-claim
+// reads. Concurrent unsynchronized find / insert on a
+// std::unordered_map is undefined behavior; guard with a mutex.
+//
+// The mutex is NOT held across NDB calls (get_unique_redis_key_id,
+// write_hset_key_table) - those can take many milliseconds and
+// holding the mutex would serialize every read command in the
+// process. Pattern: lookup under lock, drop lock, do NDB work on
+// a miss, re-acquire lock for the insert. A racing thread that
+// won the insert wins; the loser uses the winner's id and
+// discards its own prealloc (write_hset_key_table is an UPSERT,
+// so both threads end up with the same row's redis_key_id - the
+// loser's prealloc is harmlessly skipped).
+static std::mutex redis_key_id_hash_mutex;
 std::unordered_map<std::string, Uint64> redis_key_id_hash;
 int rondb_get_redis_key_id(Ndb *ndb,
                            Uint64 &redis_key_id,
@@ -1729,48 +1748,61 @@ int rondb_get_redis_key_id(Ndb *ndb,
                            std::string *response,
                            Uint32 database_id) {
   std::string std_key_str = std::string(key_str, key_len);
-  auto it = redis_key_id_hash.find(std_key_str);
-  if (it == redis_key_id_hash.end()) {
-    /* Found no redis_key_id in local hash */
-    const NdbDictionary::Dictionary *dict = ndb->getDictionary();
-    if (dict == nullptr) {
-      assign_ndb_err_to_response(response, FAILED_GET_DICT, ndb->getNdbError());
-      return -1;
+  {
+    std::lock_guard<std::mutex> guard(redis_key_id_hash_mutex);
+    auto it = redis_key_id_hash.find(std_key_str);
+    if (it != redis_key_id_hash.end()) {
+      redis_key_id = it->second;
+      DEB_HSET_KEY(("Found local redis_key_id = %llu for key: %s\n",
+        redis_key_id, key_str));
+      return 0;
     }
-    const NdbDictionary::Table *tab = dict->getTable(HSET_KEY_TABLE_NAME);
-    if (tab == nullptr) {
-      assign_ndb_err_to_response(response,
-                                  FAILED_CREATE_TABLE_OBJECT,
-                                  dict->getNdbError());
-      return -1;
-    }
-    int ret_code = get_unique_redis_key_id(tab,
-                                           ndb,
-                                           redis_key_id,
-                                           response);
-    if (ret_code < 0) {
-      DEB_HSET_KEY(("Failed get_unique_redis_key_id, err: %d\n", ret_code));
-      return -1;
-    }
-    ret_code = write_hset_key_table(ndb,
-                                    tab,
-                                    std_key_str,
-                                    redis_key_id,
-                                    response,
-                                    database_id);
-    if (ret_code < 0) {
-      DEB_HSET_KEY(("Failed write_hset_key_table, err: %d\n", ret_code));
-      return -1;
-    }
-    redis_key_id_hash[std_key_str] = redis_key_id;
-    DEB_HSET_KEY(("Created redis_key_id = %llu for key: %s\n",
-      redis_key_id, key_str));
-  } else {
-    redis_key_id = it->second;
-    /* Found local redis_key_id */
-    DEB_HSET_KEY(("Found local redis_key_id = %llu for key: %s\n",
-      redis_key_id, key_str));
   }
+  /* Cache miss; resolve via NDB without holding the mutex. */
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  if (dict == nullptr) {
+    assign_ndb_err_to_response(response, FAILED_GET_DICT, ndb->getNdbError());
+    return -1;
+  }
+  const NdbDictionary::Table *tab = dict->getTable(HSET_KEY_TABLE_NAME);
+  if (tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                                FAILED_CREATE_TABLE_OBJECT,
+                                dict->getNdbError());
+    return -1;
+  }
+  int ret_code = get_unique_redis_key_id(tab,
+                                         ndb,
+                                         redis_key_id,
+                                         response);
+  if (ret_code < 0) {
+    DEB_HSET_KEY(("Failed get_unique_redis_key_id, err: %d\n", ret_code));
+    return -1;
+  }
+  ret_code = write_hset_key_table(ndb,
+                                  tab,
+                                  std_key_str,
+                                  redis_key_id,
+                                  response,
+                                  database_id);
+  if (ret_code < 0) {
+    DEB_HSET_KEY(("Failed write_hset_key_table, err: %d\n", ret_code));
+    return -1;
+  }
+  /* Reacquire lock for the insert. If another thread populated the
+   * entry while we were doing NDB work, use that thread's id (both
+   * threads UPSERTed the same hset_keys row, so the ids match).
+   */
+  {
+    std::lock_guard<std::mutex> guard(redis_key_id_hash_mutex);
+    auto [it, inserted] =
+      redis_key_id_hash.emplace(std_key_str, redis_key_id);
+    if (!inserted) {
+      redis_key_id = it->second;
+    }
+  }
+  DEB_HSET_KEY(("Created redis_key_id = %llu for key: %s\n",
+    redis_key_id, key_str));
   return 0;
 }
 
