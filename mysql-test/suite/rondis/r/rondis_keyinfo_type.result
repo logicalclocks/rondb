@@ -1,0 +1,41 @@
+#
+# Set up: a string, a populated hash, a hash about to be emptied.
+#
+OK
+1
+1
+1
+#
+# Existing string key.
+#
+string
+#
+# Existing hash.
+#
+hash
+#
+# Fully-HDEL'd hash. Row exists with field_count=0; TYPE returns
+# none (matching EXISTS = 0).
+#
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'hash_empty';
+redis_key	field_count
+hash_empty	0
+none
+#
+# Missing key.
+#
+none
+#
+# Namespace split: a name that lives as both a string and a hash
+# reports "string" because pass 1 (string_keys) hits first.
+#
+OK
+1
+string
+#
+# After deleting the string side, TYPE on the same name reports
+# "hash" because pass 2 (hset_keys) is now the only hit.
+#
+1
+hash

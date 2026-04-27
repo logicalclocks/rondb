@@ -1,0 +1,63 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Phase 1.2 - TYPE key
+#
+# Single-key two-probe (string_keys then hset_keys) sharing the
+# EXISTS pipeline. Reply is a simple string +string\r\n / +hash\r\n
+# / +none\r\n. After Phase 1.0.3 a fully-HDEL'd hash leaves the
+# hset_keys row present with field_count=0; TYPE must report
+# "none" for that case (matching EXISTS).
+#
+
+--echo #
+--echo # Set up: a string, a populated hash, a hash about to be emptied.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_a "value-a"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_a f1 v1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_empty x X
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL hash_empty x
+
+--echo #
+--echo # Existing string key.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE str_a
+
+--echo #
+--echo # Existing hash.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE hash_a
+
+--echo #
+--echo # Fully-HDEL'd hash. Row exists with field_count=0; TYPE returns
+--echo # none (matching EXISTS = 0).
+--echo #
+SELECT redis_key, field_count FROM redis_0.hset_keys
+ WHERE redis_key = 'hash_empty';
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE hash_empty
+
+--echo #
+--echo # Missing key.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE no_such_key
+
+--echo #
+--echo # Namespace split: a name that lives as both a string and a hash
+--echo # reports "string" because pass 1 (string_keys) hits first.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET shared "string-value"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET shared f1 hash-value
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE shared
+
+--echo #
+--echo # After deleting the string side, TYPE on the same name reports
+--echo # "hash" because pass 2 (hset_keys) is now the only hit.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL shared
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE shared
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
