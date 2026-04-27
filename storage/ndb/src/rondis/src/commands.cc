@@ -752,12 +752,14 @@ static int add_exists_string_probe_op(NdbTransaction *trans,
   memset(&kr->redis_key[2 + probe->m_key_len], 0, 3);
   set_length((char*)&kr->redis_key[0], probe->m_key_len);
 
-  // Project rondb_key (bit 2). We don't actually need it - all
-  // EXISTS cares about is op success vs 626 - but NDB's NdbRecord
-  // readTuple requires at least one non-PK column projected, so
-  // pick a small fixed-size column. Buffer space is already in
-  // probe->m_string_buf at the right offset.
-  const Uint32 mask = 0x4;
+  // Project all non-PK columns. The same mask prepare_get_key_row
+  // uses, so we know it works against the actual std::map iteration
+  // order of init_key_records' read_all_column_map. EXISTS / TYPE
+  // ignore the projected values; TTL / PTTL read expiry_date from
+  // probe->m_string_buf via mi_sint4korr. NDB's NdbRecord readTuple
+  // also requires at least one non-PK column projected (mask = 0
+  // crashes the worker under LM_CommittedRead).
+  const Uint32 mask = 0xFC;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
 
   NdbOperation::OperationOptions opts;
@@ -796,11 +798,13 @@ static int add_exists_hset_probe_op(NdbTransaction *trans,
   set_length(&kr->redis_key[0], probe->m_key_len);
   kr->field_count = 0;
 
-  // mask 0x4 = bit 2 = field_count. Project only that column.
-  // The post-Phase-1.0.3 invariant says the row may be present
-  // with field_count == 0 (post full HDEL); we count it as
-  // "exists" only when field_count > 0.
-  const Uint32 mask = 0x4;
+  // Project all non-PK columns of hset_keys (redis_key_id,
+  // field_count, expiry_date). Mask 0xE = bits 1,2,3.
+  // add_hset_field_count_set_op uses mask 0x4 successfully for
+  // field_count, so the std::map iteration order matches source
+  // declaration order: bit 0 = redis_key (PK), bit 1 = redis_key_id,
+  // bit 2 = field_count, bit 3 = expiry_date.
+  const Uint32 mask = 0xE;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
 
   NdbOperation::OperationOptions opts;
@@ -1090,6 +1094,93 @@ void rondb_type_command(Ndb *ndb,
       response->append("+none\r\n");
       break;
   }
+}
+
+// Phase 1.3 / 1.4: TTL / PTTL key. Reply:
+//   :-2\r\n  - key missing OR row expired (expiry_date < now)
+//   :-1\r\n  - key has no TTL (expiry_date IS NULL or
+//              g_max_expire_at sentinel)
+//   :N\r\n   - seconds (TTL) or milliseconds (PTTL) remaining
+//
+// Single-key variant of EXISTS that additionally reads
+// expiry_date from the projected probe buffer. The probe masks
+// were widened to include expiry_date (bit 3 in both records),
+// so EXISTS / TYPE pay one extra projected column for the shared
+// pipeline - cheap. expiry_date is stored in NDB TIMESTAMP format
+// (4 bytes); read via mi_sint4korr for portability.
+static void rondb_ttl_or_pttl(Ndb *ndb,
+                              const pink::RedisCmdArgsType &argv,
+                              std::string *response,
+                              int worker_id,
+                              bool millis) {
+  struct exists_probe probe;
+  probe.m_key_str = argv[1].c_str();
+  probe.m_key_len = argv[1].size();
+  probe.m_present = false;
+  probe.m_match_kind = EXISTS_MATCH_NONE;
+  probe.m_op = nullptr;
+
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  if (dict == nullptr) {
+    assign_ndb_err_to_response(response, FAILED_GET_DICT, ndb->getNdbError());
+    return;
+  }
+  const NdbDictionary::Table *string_tab = dict->getTable(KEY_TABLE_NAME);
+  if (string_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TABLE_OBJECT,
+                               dict->getNdbError());
+    return;
+  }
+  Uint32 database_id = get_current_database(worker_id);
+  if (run_exists_probes(ndb, &probe, 1,
+                        database_id, string_tab, response) != 0) {
+    return;
+  }
+
+  // Missing key (or hash with field_count == 0): :-2\r\n.
+  if (probe.m_match_kind == EXISTS_MATCH_NONE) {
+    response->append(":-2\r\n");
+    return;
+  }
+  // Pull expiry_date from the right buffer. Null bit positions
+  // differ per init_*_records column_map: string_keys expiry_date
+  // = bit 1 of null_bits, hset_keys expiry_date = bit 0.
+  bool expiry_is_null;
+  Int32 expiry_seconds;
+  if (probe.m_match_kind == EXISTS_MATCH_STRING) {
+    expiry_is_null = (probe.m_string_buf.null_bits & 0x2) != 0;
+    expiry_seconds = mi_sint4korr(
+      (const unsigned char*)&probe.m_string_buf.expiry_date);
+  } else {
+    expiry_is_null = (probe.m_hset_buf.null_bits & 0x1) != 0;
+    expiry_seconds = mi_sint4korr(
+      (const unsigned char*)&probe.m_hset_buf.expiry_date);
+  }
+  if (expiry_is_null || expiry_seconds == g_max_expire_at) {
+    response->append(":-1\r\n");
+    return;
+  }
+  Int64 now_seconds = (Int64)my_micro_time() / 1000000;
+  if (expiry_seconds <= now_seconds) {
+    // Expired but not yet GC'd. Phase 1.10 will hide such rows
+    // from GET/HGET reads; TTL's reply for the expired-but-present
+    // case is decided here.
+    response->append(":-2\r\n");
+    return;
+  }
+  Int64 remaining = (Int64)expiry_seconds - now_seconds;
+  if (millis) remaining *= 1000;
+  char buf[32];
+  snprintf(buf, sizeof(buf), ":%lld\r\n", (long long)remaining);
+  response->append(&buf[0]);
+}
+
+void rondb_ttl_command(Ndb *ndb,
+                       const pink::RedisCmdArgsType &argv,
+                       std::string *response,
+                       int worker_id) {
+  rondb_ttl_or_pttl(ndb, argv, response, worker_id, /*millis=*/false);
 }
 
 // Forward decl: set_rows_hdel is defined below set_rows_hset (where it
