@@ -1,0 +1,70 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+# NDB schema-dist coordinator timeout is a known transient (CLAUDE.md).
+--disable_query_log
+call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
+--enable_query_log
+
+#
+# Phase 1.5 - EXPIRE key seconds
+#
+# Reply:
+#   :1\r\n  - applied (key existed)
+#   :0\r\n  - missing (or hash with field_count == 0)
+#   error   - seconds <= 0
+#
+
+--echo #
+--echo # Set up: a string, a populated hash, an emptied hash.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_a "value-a"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_a f1 v1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_empty x X
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL hash_empty x
+
+--echo #
+--echo # EXPIRE on existing string -> :1; expiry_date is set in the
+--echo # window [now, now + 60 + 2].
+--echo #
+--let $now = `SELECT UNIX_TIMESTAMP(NOW())`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE str_a 60
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) - $now BETWEEN 58 AND 62 FROM redis_0.string_keys WHERE redis_key = 'str_a' AND redis_key_id = 0`
+--echo str_a_in_window=$r
+
+--echo #
+--echo # EXPIRE on existing hash -> :1; hset_keys.expiry_date set.
+--echo #
+--let $now = `SELECT UNIX_TIMESTAMP(NOW())`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE hash_a 60
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) - $now BETWEEN 58 AND 62 FROM redis_0.hset_keys WHERE redis_key = 'hash_a'`
+--echo hash_a_in_window=$r
+
+--echo #
+--echo # EXPIRE on a fully-HDEL'd hash -> :0 (matches EXISTS = 0).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE hash_empty 60
+
+--echo #
+--echo # EXPIRE on a missing key -> :0.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE no_such_key 60
+
+--echo #
+--echo # EXPIRE 0 / EXPIRE -1 are rejected with an error.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE str_a 0
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE str_a -1
+
+--echo #
+--echo # End-to-end: EXPIRE then TTL on the same key falls in window.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttl_round "value"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE ttl_round 60
+--let $script = $MYSQL_TEST_DIR/../storage/ndb/src/rondis/tests/ttl_probe.sh
+--exec bash $script TTL ttl_round 58 62
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
