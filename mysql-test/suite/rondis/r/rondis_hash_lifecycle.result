@@ -33,3 +33,40 @@ SELECT redis_key, field_count FROM redis_0.hset_keys
 WHERE redis_key = 'life:1';
 redis_key	field_count
 life:1	5
+#
+# Step 4: HSET single field with value > INLINE_VALUE_LEN (4096).
+# field_count = 1 and the row carries num_rows >= 1 ext rows.
+#
+large_value life:big f len=5000 hset_reply=1
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:big';
+redis_key	field_count
+life:big	1
+SELECT redis_key, num_rows, tot_value_len FROM redis_0.string_keys
+WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+WHERE redis_key = 'life:big');
+redis_key	num_rows	tot_value_len
+f	1	5000
+#
+# Step 5: HSET 300 fields (> MAX_PARALLEL_KEY_OPS = 256). Phase 2
+# and Phase 3 each iterate the chunk loop. field_count = 300.
+#
+many_fields life:many count=300 hset_reply=300
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:many';
+redis_key	field_count
+life:many	300
+SELECT COUNT(*) FROM redis_0.string_keys
+WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+WHERE redis_key = 'life:many');
+COUNT(*)
+300
+#
+# Step 6: re-HSET the same 300 fields, all overwrites. field_count
+# stays at 300.
+#
+many_fields life:many count=300 hset_reply=0
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:many';
+redis_key	field_count
+life:many	300

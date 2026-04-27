@@ -3,16 +3,16 @@
 --source suite/rondis/include/rondis_setup.inc
 
 #
-# Phase 1.0.2c lifecycle test for the single-trans HSET pipeline.
+# Lifecycle test for the single-trans HSET pipeline.
 # Asserts that hset_keys.field_count is maintained correctly across:
-#   - HSET on a new hash      (delta = N, Phase 3 sets count = N)
-#   - Pure overwrite          (delta = 0, Phase 3 skips the update)
-#   - Mixed new + overwrite   (delta = #new only)
+#   - HSET on a new hash             (delta = N, Phase 3 sets count = N)
+#   - Pure overwrite                 (delta = 0, Phase 3 skips update)
+#   - Mixed new + overwrite          (delta = #new only)
+#   - Single field > INLINE_VALUE_LEN (Phase 2 ext-row branch)
+#   - HSET > MAX_PARALLEL_KEY_OPS    (Phase 2/3 chunk loop)
 #
-# Large-value (> INLINE_VALUE_LEN) and many-field (> MAX_PARALLEL_KEY_OPS
-# chunk) assertions need shell-substitution at exec time and are
-# covered separately by rondis_stress_hashes (which already exercises
-# >100KB values through this pipeline).
+# The last two cases need shell substitution to build a large value or
+# a long argv, so they go through hash_lifecycle.sh.
 #
 
 --echo #
@@ -42,6 +42,38 @@ SELECT redis_key, field_count FROM redis_0.hset_keys
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET life:1 a A3 b B3 d D e E
 SELECT redis_key, field_count FROM redis_0.hset_keys
  WHERE redis_key = 'life:1';
+
+--let $script = $MYSQL_TEST_DIR/../storage/ndb/src/rondis/tests/hash_lifecycle.sh
+
+--echo #
+--echo # Step 4: HSET single field with value > INLINE_VALUE_LEN (4096).
+--echo # field_count = 1 and the row carries num_rows >= 1 ext rows.
+--echo #
+--exec bash $script large_value life:big f 5000
+SELECT redis_key, field_count FROM redis_0.hset_keys
+ WHERE redis_key = 'life:big';
+SELECT redis_key, num_rows, tot_value_len FROM redis_0.string_keys
+ WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+                        WHERE redis_key = 'life:big');
+
+--echo #
+--echo # Step 5: HSET 300 fields (> MAX_PARALLEL_KEY_OPS = 256). Phase 2
+--echo # and Phase 3 each iterate the chunk loop. field_count = 300.
+--echo #
+--exec bash $script many_fields life:many 300
+SELECT redis_key, field_count FROM redis_0.hset_keys
+ WHERE redis_key = 'life:many';
+SELECT COUNT(*) FROM redis_0.string_keys
+ WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+                        WHERE redis_key = 'life:many');
+
+--echo #
+--echo # Step 6: re-HSET the same 300 fields, all overwrites. field_count
+--echo # stays at 300.
+--echo #
+--exec bash $script many_fields life:many 300
+SELECT redis_key, field_count FROM redis_0.hset_keys
+ WHERE redis_key = 'life:many';
 
 --disable_query_log
 DROP DATABASE IF EXISTS redis_0;
