@@ -1371,8 +1371,6 @@ static int set_rows_hdel(Ndb *ndb,
   }
   for (Uint32 i = 0; i < num_fields; i++) {
     key_storage[i].m_trans = trans;
-    key_storage[i].m_hdel_field_present = false;
-    key_storage[i].m_hdel_phase2_probe_op = nullptr;
   }
   get_ctrl->m_num_transactions++;
   get_ctrl->m_hdel_phase1_op = nullptr;
@@ -1407,9 +1405,6 @@ static int set_rows_hdel(Ndb *ndb,
   while (get_ctrl->m_num_keys_outstanding > 0) {
     int finished = execute_ndb(ndb, 1, __LINE__);
     assert(finished >= 0);
-  }
-  if (get_ctrl->m_num_keys_failed > 0) {
-    HDEL_DEALIAS_RETURN(0);
   }
   // Hash row didn't exist - nothing to delete, no field_count to
   // touch, no Commit needed. The trans aborts cleanly when closed.
