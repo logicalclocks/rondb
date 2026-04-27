@@ -208,11 +208,19 @@ matching test coverage.
   projection; `initGBTypes` already discriminates real-table-vs-CTE
   via the marker bit. No kernel changes required; the deliverable is
   the two new MTR tests.
+- **Phase G (reject-cleanly outer-join-child CTE_SCAN): DONE —
+  defensive tripwire only.** New `validate_cte_execution_shapes()`
+  in `RonSQLPreparer.cpp` walks every scope's `JoinPlan` and throws
+  `RonSQLPermanentError` if any non-root op is CTE_SCAN under
+  LEFT_OUTER.  Phase doc: `cte_filter_phase_g.md`.  No MTR test
+  because today's planner can't produce the shape (child CTE refs
+  always become CTE_LOOKUP — `QueryPlanner.cpp:160`).  The guard
+  exists to convert a future planner regression into a clean
+  prepare-time error instead of a DBSPJ-side crash.
 - **Phase F (SCAN_NEXTREQ multi-batch — folded into E for scanCte
-  root), Phase G (reject-cleanly outer-join-child-scanCte), Phase H
-  (test consolidation): NOT STARTED.**
+  root), Phase H (test consolidation): NOT STARTED.**
 
-Working tree: clean (Phase P-GB push done).
+Working tree: clean (Phase G push done).
 
 ## Scope (confirmed)
 
@@ -889,6 +897,13 @@ distinct groups, scan via `scanCte` root, assert full result set.
 ---
 
 ### Phase G — Reject-cleanly guard for the one NDB-un-shipped shape
+
+**Status: DONE.** See `cte_filter_phase_g.md`. Guard lives in
+`RonSQLPreparer::validate_cte_execution_shapes`, called from
+`prepare()` after `load()` when CTEs are present. Defensive only:
+the planner doesn't currently produce CTE_SCAN as a non-root op so
+the throw never fires from SQL today.
+
 
 **Goal.** Emit `RonSQLPermanentError` for the single CTE shape the NDB API
 does not yet support.

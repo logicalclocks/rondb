@@ -283,6 +283,14 @@ private:
   void resolve_cte_output_columns();
   void resolve_cte_output_columns_for_scope(QueryScope& scope);
   /**
+   * Reject CTE shapes the kernel/SPJ doesn't currently support.
+   * Defensive tripwire — see cte_filter_phase_g.md.  Today only
+   * blocks CTE_SCAN-as-outer-join-child (which the planner doesn't
+   * emit, so this never fires from SQL — but a planner regression
+   * would surface here as a clean error instead of a runtime crash).
+   */
+  void validate_cte_execution_shapes();
+  /**
    * Resolve the (NdbDictionary::Column::Type, length, charset) tuple
    * for a column reference in `scope`, walking through chained CTE
    * outputs when scope.column_map[col_idx] is NULL.  Mirrors the

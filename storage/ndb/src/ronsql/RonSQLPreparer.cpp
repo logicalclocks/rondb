@@ -165,6 +165,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     load();
     PERF_TS(t_load_end);
     PERF_LOG("  load (dict)", t_load_start, t_load_end);
+    if (m_has_ctes)
+      validate_cte_execution_shapes();
     if (!is_join_query())
       plan_index_and_filter();
     PERF_TS(t_compile_start);
@@ -2885,6 +2887,35 @@ RonSQLPreparer::resolve_cte_output_columns()
     }
   }
   resolve_cte_output_columns_for_scope(m_main_scope);
+}
+
+// Reject CTE shapes that aren't supported end-to-end.  Defensive
+// tripwire — today only flags CTE_SCAN-as-outer-join-child, a shape
+// the planner doesn't currently produce (CTE children always become
+// CTE_LOOKUP — see QueryPlanner.cpp:160).  A planner regression that
+// started selecting CTE_SCAN for a non-root op under LEFT JOIN would
+// otherwise reach DBSPJ and surface as a runtime crash; this guard
+// turns it into a clean RonSQLPermanentError at prepare time.  See
+// cte_filter_phase_g.md.
+void
+RonSQLPreparer::validate_cte_execution_shapes()
+{
+  auto check_plan = [](const JoinPlan& plan) {
+    for (Uint32 i = 1; i < plan.num_ops; i++) {
+      const JoinOp& op = plan.ops[i];
+      if (op.type == JoinOp::CTE_SCAN &&
+          op.match_type == JoinOp::LEFT_OUTER) {
+        throw RonSQLPermanentError(
+            "CTE_SCAN as outer-join child is not supported by NDB.");
+      }
+    }
+  };
+  check_plan(m_main_scope.join_plan);
+  for (Uint32 c = 0; c < m_cte_scopes.size(); c++) {
+    if (m_cte_scopes[c] != NULL) {
+      check_plan(m_cte_scopes[c]->join_plan);
+    }
+  }
 }
 
 // Populate scope.column_attrId_map / column_map / column_table_idx for
