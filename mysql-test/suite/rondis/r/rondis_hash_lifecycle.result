@@ -70,3 +70,97 @@ SELECT redis_key, field_count FROM redis_0.hset_keys
 WHERE redis_key = 'life:many';
 redis_key	field_count
 life:many	300
+#
+# Step 7: HSET life:hd with 3 fields, then HDEL one. Reply :1,
+# field_count 3 -> 2, hset_keys row still present.
+#
+3
+1
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:hd';
+redis_key	field_count
+life:hd	2
+SELECT redis_key FROM redis_0.string_keys
+WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+WHERE redis_key = 'life:hd')
+ORDER BY redis_key;
+redis_key
+b
+c
+#
+# Step 8: HDEL of two fields, one missing. Reply :1 (only 'b' was
+# present); field_count 2 -> 1.
+#
+1
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:hd';
+redis_key	field_count
+life:hd	1
+#
+# Step 9: HDEL the last remaining field. field_count goes to 0
+# but the hset_keys row STILL exists (cross-server invariant).
+#
+1
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:hd';
+redis_key	field_count
+life:hd	0
+SELECT COUNT(*) FROM redis_0.string_keys
+WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+WHERE redis_key = 'life:hd');
+COUNT(*)
+0
+#
+# Step 10: HDEL on a hash that never existed. Reply :0 and no
+# hset_keys row is created (Phase 1 reads, doesn't insert).
+#
+0
+SELECT COUNT(*) FROM redis_0.hset_keys
+WHERE redis_key = 'life:nope';
+COUNT(*)
+0
+#
+# Step 11: HSET on the empty-but-still-present life:hd. Same
+# redis_key_id is reused (Phase 1 lock-claim's UPDATE branch);
+# field_count goes 0 -> 2.
+#
+2
+include/assert.inc [redis_key_id reused after full HDEL]
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:hd';
+redis_key	field_count
+life:hd	2
+#
+# Step 12: HDEL of an ext-row field (>INLINE_VALUE_LEN). Verifies
+# that string_values ordinals are cleaned up alongside the
+# string_keys row, and field_count goes from 1 to 0.
+#
+large_value life:big2 f len=5000 hset_reply=1
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:big2';
+redis_key	field_count
+life:big2	1
+SELECT COUNT(*) FROM redis_0.string_values
+WHERE rondb_key = (SELECT rondb_key FROM redis_0.string_keys
+WHERE redis_key = 'f' AND redis_key_id =
+(SELECT redis_key_id FROM redis_0.hset_keys
+WHERE redis_key = 'life:big2'));
+COUNT(*)
+1
+1
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:big2';
+redis_key	field_count
+life:big2	0
+SELECT COUNT(*) FROM redis_0.string_keys
+WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+WHERE redis_key = 'life:big2');
+COUNT(*)
+0
+SELECT COUNT(*) FROM redis_0.string_values
+WHERE rondb_key IN (SELECT rondb_key FROM redis_0.string_keys
+WHERE redis_key_id = (SELECT redis_key_id
+FROM redis_0.hset_keys
+WHERE redis_key = 'life:big2'));
+COUNT(*)
+0
