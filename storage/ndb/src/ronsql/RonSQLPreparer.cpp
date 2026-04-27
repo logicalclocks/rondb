@@ -993,12 +993,18 @@ RonSQLPreparer::load_join()
 
   for (Uint32 col_idx = 0; col_idx < num_cols; col_idx++)
   {
-    if (m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx]) {
-      col_id_map[col_idx] = -1;
-      col_map[col_idx] = NULL;
-      col_table_idx[col_idx] = 0;
-      continue;
-    }
+    // Defaults match the original early-skip behavior so that any
+    // fall-through (col not found in main's plan but referenced inside
+    // an inner scope, e.g. CTE body) leaves the same -1/NULL/0 sentinel.
+    col_id_map[col_idx] = -1;
+    col_map[col_idx] = NULL;
+    col_table_idx[col_idx] = 0;
+
+    const bool is_inner =
+        (m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx]);
+    const bool is_alias =
+        (m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]);
+
     const char* col_name = m_columns[col_idx].c_str();
     const char* qualifier = m_column_qualifiers[col_idx].c_str();
 
@@ -1061,6 +1067,10 @@ RonSQLPreparer::load_join()
       }
       if (!found)
       {
+        // Inner-only refs (CTE body / subquery) and pure aliases may legitimately
+        // qualify against a table that doesn't exist in main scope. Leave
+        // sentinel defaults; caller scopes resolve these via their own maps.
+        if (is_inner || is_alias) continue;
         err << "Unknown table alias '" << qualifier << "' in column '"
             << qualifier << "." << col_name << "'." << endl;
         throw RonSQLPermanentError("Unknown table alias.");
@@ -1109,12 +1119,9 @@ RonSQLPreparer::load_join()
       }
       if (match_count == 0)
       {
-        if (m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]) {
-          col_id_map[col_idx] = -1;
-          col_map[col_idx] = NULL;
-          col_table_idx[col_idx] = 0;
-          continue;
-        }
+        // Same fall-through as the qualified branch: inner-only and pure
+        // aliases keep their sentinel defaults rather than throwing.
+        if (is_inner || is_alias) continue;
         err << "Column '" << col_name << "' not found in any joined table."
             << endl;
         throw RonSQLPermanentError("Column not found.");
@@ -2811,24 +2818,26 @@ RonSQLPreparer::build_cte_scopes()
 }
 
 // Fill in source NdbDictionary::Column* for each CTE-output reference in
-// the main scope's column_map. load_join() leaves those entries NULL
-// because the CTE's virtual columns don't exist yet; build_cte_scopes()
-// populates per-CTE scopes so we can now walk back from a CTE output to
-// its body-source column. The charset/precision/scale on that real column
-// is what ResultPrinter needs when a CHAR/VARCHAR CTE output is projected
-// or grouped by in the main query. Non-COLUMN outputs (COUNT / SUM) stay
-// NULL — ResultPrinter's fallback (charset=NULL, precision=0) is fine
-// for numeric types.
+// `scope`'s column_map. load_join() leaves those entries NULL because
+// the CTE's virtual columns don't exist yet; build_cte_scopes() populates
+// per-CTE scopes so we can now walk back from a CTE output to its
+// body-source column. The charset/precision/scale on that real column is
+// what ResultPrinter needs when a CHAR/VARCHAR CTE output is projected or
+// grouped by, and what build_cte_virtual_tables needs to derive the
+// virt-table column type for chained CTEs.  Non-COLUMN outputs (COUNT /
+// SUM) stay NULL — ResultPrinter's fallback (charset=NULL,
+// precision=0) is fine for numeric types.
 void
-RonSQLPreparer::resolve_cte_output_columns()
+RonSQLPreparer::resolve_cte_output_columns_for_scope(QueryScope& scope)
 {
-  if (m_main_scope.column_map == NULL) return;
-  if (m_main_scope.column_table_idx == NULL) return;
+  if (scope.column_map == NULL) return;
+  if (scope.column_table_idx == NULL) return;
+  if (scope.column_attrId_map == NULL) return;
   for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
-    if (m_main_scope.column_map[col_idx] != NULL) continue;
-    Uint32 t = m_main_scope.column_table_idx[col_idx];
-    if (t >= m_main_scope.join_plan.num_ops) continue;
-    const JoinOp& op = m_main_scope.join_plan.ops[t];
+    if (scope.column_map[col_idx] != NULL) continue;
+    Uint32 t = scope.column_table_idx[col_idx];
+    if (t >= scope.join_plan.num_ops) continue;
+    const JoinOp& op = scope.join_plan.ops[t];
     if (op.type != JoinOp::CTE_LOOKUP && op.type != JoinOp::CTE_SCAN)
       continue;
     if (op.cte_def == NULL) continue;
@@ -2838,7 +2847,7 @@ RonSQLPreparer::resolve_cte_output_columns()
 
     // Walk the CTE output list to position cte_col_idx (stored in
     // column_attrId_map by load_join's CTE branch).
-    Uint32 cte_col_idx = (Uint32)m_main_scope.column_attrId_map[col_idx];
+    Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
     Uint32 i = 0;
     const Outputs* o = op.cte_def->stmt->outputs;
     while (o != NULL && i < cte_col_idx) { o = o->next; i++; }
@@ -2848,7 +2857,7 @@ RonSQLPreparer::resolve_cte_output_columns()
       Uint32 src_col_idx = o->column.col_idx;
       const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
       if (src_col != NULL)
-        m_main_scope.column_map[col_idx] = src_col;
+        scope.column_map[col_idx] = src_col;
     } else if (o->type == Outputs::Type::AGGREGATE) {
       // MIN/MAX preserve source type; SUM/COUNT synthesize numeric
       // (charset-irrelevant) — only plumb MIN/MAX here.
@@ -2859,9 +2868,23 @@ RonSQLPreparer::resolve_cte_output_columns()
       Uint32 src_col_idx = arg->getLoadIdx();
       const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
       if (src_col != NULL)
-        m_main_scope.column_map[col_idx] = src_col;
+        scope.column_map[col_idx] = src_col;
     }
   }
+}
+
+void
+RonSQLPreparer::resolve_cte_output_columns()
+{
+  // Iterate CTEs in declaration order so a chained CTE's body sees its
+  // predecessors' already-resolved column_map.  The main scope is
+  // resolved last because it can reference any CTE.
+  for (Uint32 c = 0; c < m_cte_scopes.size(); c++) {
+    if (m_cte_scopes[c] != NULL) {
+      resolve_cte_output_columns_for_scope(*m_cte_scopes[c]);
+    }
+  }
+  resolve_cte_output_columns_for_scope(m_main_scope);
 }
 
 // Populate scope.column_attrId_map / column_map / column_table_idx for
@@ -4619,27 +4642,55 @@ RonSQLPreparer::execute_join()
   // Emit CTE subtrees first, in declaration order, so the main query's
   // CTE_LOOKUP / CTE_SCAN references resolve.
   NdbAggregator** cteAggs = NULL;
+  // Per-CTE child virt tables.  Storage spans the whole execute_join body
+  // because qb's serialized scanCte ops retain raw NdbDictionary::Table*
+  // pointers into these virt tables — they must outlive qb->prepare()
+  // and the result-drain phase.  A 2D array (per CTE × per op) gives each
+  // iteration its own cteChildVT row while keeping the underlying
+  // NdbDictionary::Table objects alive until the end-of-execute cleanup.
+  NdbDictionary::Table** cteChildVTAll = NULL;
   if (m_cte_scopes.size() > 0) {
     cteAggs = m_amalloc->alloc_exc<NdbAggregator*>(m_cte_scopes.size());
+    cteChildVTAll = m_amalloc->alloc_exc<NdbDictionary::Table*>(
+        m_cte_scopes.size() * MAX_SPJ_TREE_NODES);
+    for (Uint32 i = 0; i < m_cte_scopes.size() * MAX_SPJ_TREE_NODES; i++) {
+      cteChildVTAll[i] = NULL;
+    }
     CteDefinition* cte = m_context.ast_root.cte_list;
     for (Uint32 c = 0; c < m_cte_scopes.size();
          c++, cte = cte->next) {
       QueryScope& cs = *m_cte_scopes[c];
       JoinPlan& cp = cs.join_plan;
+
+      // Build virtual tables for this CTE body's CTE children up-front
+      // (mirrors the main-query path).  Required so a chained CTE body
+      // whose agg leaf is a CTE op can anchor cteAgg on the predecessor's
+      // virt table; programAggregator_join also uses these to resolve
+      // column metadata for inter-CTE GROUP BY / linked-load references.
+      NdbDictionary::Table** cteChildVT =
+          &cteChildVTAll[c * MAX_SPJ_TREE_NODES];
+      build_cte_virtual_tables(cp, cteChildVT);
+
       const NdbDictionary::Table* cte_leaf_table =
           cp.ops[cp.agg_leaf_idx].table;
-      require_run(cte_leaf_table != NULL,
-                  "CTE aggregation leaf has no physical table.");
+      if (cte_leaf_table == NULL) {
+        // Chained CTE body whose aggregation leaf is a CTE op (the leaf
+        // has no physical NDB table).  Anchor on the per-CTE virt table
+        // — same trick as the main-query agg-leaf-table fallback above.
+        cte_leaf_table = cteChildVT[cp.agg_leaf_idx];
+        require_run(cte_leaf_table != NULL,
+                    "CTE aggregation leaf is a CTE op but its virtual "
+                    "table was not built.");
+      }
       NdbAggregator* cteAgg = new NdbAggregator(cte_leaf_table);
       cteAggs[c] = cteAgg;
 
-      programAggregator_join(cs, *cte->stmt, cteAgg);
+      programAggregator_join(cs, *cte->stmt, cteAgg, cteChildVT);
       require_prm(cteAgg->Finalize(), "Failed to finalize CTE aggregator.");
 
       qb->beginCteSubtree(c);
       const NdbQueryOperationDef* cteOpDefs[MAX_SPJ_TREE_NODES];
-      NdbDictionary::Table* cteChildVT[MAX_SPJ_TREE_NODES] = {};
-      if (cp.num_ops == 1) {
+      if (cp.num_ops == 1 && cp.ops[0].type == JoinOp::TABLE_SCAN) {
         // Single-table CTE body: emit the "self-join" pattern the NDB API
         // expects — scanTable + readTuple(linked_pk) with the aggregator
         // on the readTuple. The normal emit_child_ops path would start
@@ -4685,17 +4736,54 @@ RonSQLPreparer::execute_join()
         cteOpDefs[1] = qb->readTuple(srcTab, keys, &leafOpts);
         require_run(cteOpDefs[1] != NULL,
                     "Failed to create CTE body self-join leaf.");
+      } else if (cp.num_ops == 1 && cp.ops[0].type == JoinOp::CTE_SCAN) {
+        // Chained CTE body whose root is a CTE_SCAN reading a
+        // predecessor CTE.  emit_root_op already handles CTE_SCAN
+        // (sets up scanCte + main aggregator + WHERE filter) — reuse
+        // it with cteAgg in the singleAgg slot so the body's aggregator
+        // attaches on the scanCte root.
+        emit_root_op(qb, cs, cteOpDefs, cteAgg, cteChildVT);
       } else {
-        emit_root_op(qb, cs, cteOpDefs);
-        build_cte_virtual_tables(cp, cteChildVT);
+        // Multi-op body.  Pass cteAgg to emit_root_op so it attaches
+        // on the CTE_SCAN root when cp.agg_leaf_idx == 0 (chained CTE
+        // with joined children).  emit_child_ops covers all other
+        // agg-leaf positions.
+        emit_root_op(qb, cs, cteOpDefs, cteAgg, cteChildVT);
         emit_child_ops(qb, cs, cteOpDefs, cteAgg, nullptr, cteChildVT);
       }
       qb->endCteSubtree();
-      require_run(qb->defineCte(c, cs.table, *cteAgg) == 0,
-                  "Failed to defineCte.");
-      for (Uint32 i = 0; i < MAX_SPJ_TREE_NODES; i++) {
-        delete cteChildVT[i];
+      // For chained CTE bodies whose root is CTE_SCAN, cs.table is NULL.
+      // defineCte's srcTab argument expects a table descriptor that
+      // matches the CTE's output schema — use the predecessor's virt
+      // table from cteChildVT[0].
+      const NdbDictionary::Table* defineSrcTab = cs.table;
+      if (cp.ops[0].type == JoinOp::CTE_SCAN) {
+        defineSrcTab = cteChildVT[0];
+        require_run(defineSrcTab != NULL,
+                    "defineCte for chained CTE: predecessor virtual "
+                    "table missing.");
       }
+      // Compute dependency bitmask: bit i set for each predecessor CTE
+      // referenced by this body.  DBTC turns this into phase numbers so
+      // chained CTEs materialize in the right order; without it,
+      // execCTE_SCAN_REQ for a not-yet-ready predecessor returns
+      // ZCTE_LOOKUP_STATE_NOT_READY (1264).
+      Uint64 cteDepMask = 0;
+      for (Uint32 i = 0; i < cp.num_ops; i++) {
+        const JoinOp& cop = cp.ops[i];
+        if (cop.type == JoinOp::CTE_LOOKUP || cop.type == JoinOp::CTE_SCAN) {
+          require_run(cop.cte_def_idx < 64,
+                      "CTE depMask: cte_def_idx out of range.");
+          cteDepMask |= (Uint64(1) << cop.cte_def_idx);
+        }
+      }
+      require_run(qb->defineCte(c, defineSrcTab, *cteAgg,
+                                 cteDepMask) == 0,
+                  "Failed to defineCte.");
+      // Don't delete cteChildVT entries here: qb's serialized scanCte
+      // op retains raw NdbDictionary::Table* pointers into them.
+      // Deletion happens in the end-of-execute cleanup alongside main
+      // cteVirtualTables.
     }
   }
 
@@ -4782,6 +4870,15 @@ RonSQLPreparer::execute_join()
     delete cteVirtualTables[i];
     cteVirtualTables[i] = NULL;
   }
+  // Same for per-CTE-body child virt tables held alive across qb's lifetime
+  // (chained CTE scanCte ops retain raw pointers into these).
+  if (cteChildVTAll != NULL) {
+    for (Uint32 i = 0;
+         i < m_cte_scopes.size() * MAX_SPJ_TREE_NODES; i++) {
+      delete cteChildVTAll[i];
+      cteChildVTAll[i] = NULL;
+    }
+  }
 }
 
 // Emit the root scan/lookup/index-scan for the scope's plan. Chooses PK
@@ -4816,8 +4913,12 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       require_run(rootOpts.setInterpretedCode(code) == 0,
                   "Failed to set interpreted code on CTE_SCAN root.");
     }
+    // scope.agg is the per-scope aggregator (main scope OR per-CTE
+    // body scope), so this gate fires correctly whether emit_root_op
+    // is called for the main query (Phase E.1) or for a chained CTE
+    // body (Phase E.2).
     if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
-        plan.num_agg_leaves == 0 && m_main_scope.agg != NULL)
+        plan.num_agg_leaves == 0 && scope.agg != NULL)
     {
       require_run(rootOpts.setAggregation(*singleAgg) == 0,
                   "Failed to set aggregation on CTE_SCAN root.");
@@ -4933,6 +5034,124 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   require_run(opDefs[0] != NULL, "Failed to create root scan.");
 }
 
+// Recursively resolve the (Type, length, charset) tuple for a column
+// reference, walking through chained CTE outputs when the direct
+// column_map lookup is NULL.  Mirrors the aggregate widening rules in
+// build_cte_virtual_tables so chained CTE layers (e.g. b's MAX(a.s)
+// where a.s = SUM(real.col)) yield consistent types.
+bool
+RonSQLPreparer::resolve_chained_column_type(
+    QueryScope& scope, Uint32 col_idx,
+    NdbDictionary::Column::Type& out_type,
+    Uint32& out_length,
+    const void*& out_cs)
+{
+  // Direct real-table column: column_map already resolved.
+  if (scope.column_map != NULL) {
+    const NdbDictionary::Column* src = scope.column_map[col_idx];
+    if (src != NULL) {
+      out_type = src->getType();
+      out_length = src->getLength();
+      out_cs = src->getCharset();
+      return true;
+    }
+  }
+  // Walk through CTE: identify the op owning col_idx and look up the
+  // matching output in the predecessor CTE.
+  if (scope.column_table_idx == NULL || scope.column_attrId_map == NULL)
+    return false;
+  Uint32 t = scope.column_table_idx[col_idx];
+  if (t >= scope.join_plan.num_ops) return false;
+  const JoinOp& op = scope.join_plan.ops[t];
+  if (op.type != JoinOp::CTE_LOOKUP && op.type != JoinOp::CTE_SCAN)
+    return false;
+  if (op.cte_def == NULL) return false;
+  if (op.cte_def_idx >= m_cte_scopes.size()) return false;
+  QueryScope* cs = m_cte_scopes[op.cte_def_idx];
+  if (cs == NULL) return false;
+
+  Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
+  Uint32 i = 0;
+  const Outputs* o = op.cte_def->stmt->outputs;
+  while (o != NULL && i < cte_col_idx) { o = o->next; i++; }
+  if (o == NULL) return false;
+
+  if (o->type == Outputs::Type::COLUMN) {
+    return resolve_chained_column_type(*cs, o->column.col_idx,
+                                        out_type, out_length, out_cs);
+  }
+  if (o->type == Outputs::Type::AGGREGATE) {
+    TokenKind fun = o->aggregate.fun;
+    if (fun == T_COUNT) {
+      out_type = NdbDictionary::Column::Bigunsigned;
+      out_length = 1;
+      out_cs = NULL;
+      return true;
+    }
+    AggregationAPICompiler::Expr* arg = o->aggregate.arg;
+    if (arg == NULL || !arg->isLoad()) return false;
+    NdbDictionary::Column::Type arg_type;
+    Uint32 arg_length;
+    const void* arg_cs;
+    if (!resolve_chained_column_type(*cs, arg->getLoadIdx(),
+                                      arg_type, arg_length, arg_cs))
+      return false;
+    if (fun == T_SUM) {
+      switch (arg_type) {
+        case NdbDictionary::Column::Tinyint:
+        case NdbDictionary::Column::Smallint:
+        case NdbDictionary::Column::Mediumint:
+        case NdbDictionary::Column::Int:
+        case NdbDictionary::Column::Bigint:
+          out_type = NdbDictionary::Column::Bigint;
+          out_length = 1; out_cs = NULL; return true;
+        case NdbDictionary::Column::Tinyunsigned:
+        case NdbDictionary::Column::Smallunsigned:
+        case NdbDictionary::Column::Mediumunsigned:
+        case NdbDictionary::Column::Unsigned:
+        case NdbDictionary::Column::Bigunsigned:
+          out_type = NdbDictionary::Column::Bigunsigned;
+          out_length = 1; out_cs = NULL; return true;
+        case NdbDictionary::Column::Float:
+        case NdbDictionary::Column::Double:
+          out_type = NdbDictionary::Column::Double;
+          out_length = 1; out_cs = NULL; return true;
+        default:
+          return false;
+      }
+    }
+    if (fun == T_MIN || fun == T_MAX) {
+      // Same widening as build_cte_virtual_tables MIN/MAX branch.
+      switch (arg_type) {
+        case NdbDictionary::Column::Tinyint:
+        case NdbDictionary::Column::Smallint:
+        case NdbDictionary::Column::Mediumint:
+        case NdbDictionary::Column::Int:
+        case NdbDictionary::Column::Bigint:
+          out_type = NdbDictionary::Column::Bigint;
+          out_length = 1; out_cs = NULL; return true;
+        case NdbDictionary::Column::Tinyunsigned:
+        case NdbDictionary::Column::Smallunsigned:
+        case NdbDictionary::Column::Mediumunsigned:
+        case NdbDictionary::Column::Unsigned:
+        case NdbDictionary::Column::Bigunsigned:
+          out_type = NdbDictionary::Column::Bigunsigned;
+          out_length = 1; out_cs = NULL; return true;
+        case NdbDictionary::Column::Float:
+        case NdbDictionary::Column::Double:
+          out_type = NdbDictionary::Column::Double;
+          out_length = 1; out_cs = NULL; return true;
+        default:
+          out_type = arg_type;
+          out_length = arg_length;
+          out_cs = arg_cs;
+          return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Allocate per-CTE virtual NdbDictionary::Table objects. Each virt table's
 // columns mirror the referenced CTE's output list: GROUP BY columns as PK
 // (same names/types as their source columns, supporting linked-key binding
@@ -4977,9 +5196,9 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
       }
 
       // Derive type. Simple cases only: plain column refs, COUNT(*),
-      // and SUM/MIN/MAX over a direct column load. More complex
-      // expressions raise a clear error.
-      const NdbDictionary::Column* src_col = NULL;
+      // and SUM/MIN/MAX over a direct column load (possibly chained
+      // through a predecessor CTE — resolve_chained_column_type walks
+      // the chain).  More complex expressions raise a clear error.
       NdbDictionary::Column::Type derived_type =
           NdbDictionary::Column::Bigint;  // fallback for COUNT
       Uint32 derived_length = 1;
@@ -4988,12 +5207,15 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
 
       if (o->type == Outputs::Type::COLUMN) {
         Uint32 col_idx = o->column.col_idx;
-        src_col = cte_scope->column_map[col_idx];
-        require_prm(src_col != NULL,
-                    "CTE output column has no resolved source type.");
-        derived_type = src_col->getType();
-        derived_length = src_col->getLength();
-        derived_cs = src_col->getCharset();
+        NdbDictionary::Column::Type rt;
+        Uint32 rlen = 1;
+        const void* rcs = NULL;
+        require_prm(
+            resolve_chained_column_type(*cte_scope, col_idx, rt, rlen, rcs),
+            "CTE output column has no resolved source type.");
+        derived_type = rt;
+        derived_length = rlen;
+        derived_cs = rcs;
         have_derived = true;
       } else if (o->type == Outputs::Type::AGGREGATE) {
         TokenKind fun = o->aggregate.fun;
@@ -5004,10 +5226,13 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
           have_derived = true;
         } else if (arg != NULL && arg->isLoad()) {
           Uint32 src_col_idx = arg->getLoadIdx();
-          src_col = cte_scope->column_map[src_col_idx];
-          require_prm(src_col != NULL,
-                      "CTE aggregate references unresolved source column.");
-          NdbDictionary::Column::Type st = src_col->getType();
+          NdbDictionary::Column::Type st;
+          Uint32 src_length = 1;
+          const void* src_cs = NULL;
+          require_prm(
+              resolve_chained_column_type(*cte_scope, src_col_idx,
+                                           st, src_length, src_cs),
+              "CTE aggregate references unresolved source column.");
           if (fun == T_SUM) {
             switch (st) {
             case NdbDictionary::Column::Tinyint:
@@ -5073,8 +5298,8 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
               // shapes still rejects (see emit_cte_lookup_filter), but
               // the pass-through aggregator path is unaffected.
               derived_type = st;
-              derived_length = src_col->getLength();
-              derived_cs = src_col->getCharset();
+              derived_length = src_length;
+              derived_cs = src_cs;
               break;
             }
             have_derived = true;
@@ -5584,6 +5809,25 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
           op.cte_def_idx, numResultCols,
           cteVirtualTables[i],
           keys, &opts);
+      break;
+    }
+    case JoinOp::CTE_SCAN:
+    {
+      // scanCte takes (cteId, numCols, virtTab, options) — no keys[].
+      // If the planner picked CTE_SCAN as a non-root child WITH linked
+      // keys, that's a shape scanCte doesn't support — reject cleanly
+      // rather than emit incorrect code.  The parent->child join must
+      // express its dependency via aggregator linked-loads instead.
+      require_run(op.num_key_cols == 0,
+                  "CTE_SCAN as join child with linked keys is not "
+                  "supported (use CTE_LOOKUP for keyed access).");
+      require_run(cteVirtualTables != NULL && cteVirtualTables[i] != NULL,
+                  "CTE_SCAN as join child requires a virtual table.");
+      Uint32 numResultCols = 0;
+      for (const Outputs* o = op.cte_def->stmt->outputs; o; o = o->next)
+        numResultCols++;
+      opDefs[i] = qb->scanCte(op.cte_def_idx, numResultCols,
+                               cteVirtualTables[i], &opts);
       break;
     }
     default:

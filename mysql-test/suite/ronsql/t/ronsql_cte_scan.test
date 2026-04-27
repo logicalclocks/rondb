@@ -151,6 +151,88 @@ WITH sums AS (
   FROM cte_orders GROUP BY o_custkey)
 SELECT SUM(t) AS gt FROM sums|
 
+# Phase E.2 — chained CTEs (CTE-of-CTE).  The second CTE's body has
+# CTE_SCAN reading the first CTE.  Drives the per-CTE-loop refactor
+# in RonSQLPreparer.cpp (build_cte_virtual_tables hoisted before
+# aggregator anchor; CTE_SCAN single-op branch via emit_root_op;
+# defineCte srcTab from predecessor virt table).
+
+--echo
+--echo
+--echo === Test 7 (E.2): basic chained CTEs (b reads a, both with GB) ===
+
+let $QUERY=
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS s
+  FROM cte_orders GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS s
+  FROM cte_orders GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k|
+
+--echo
+--echo
+--echo === Test 8 (E.2): chained CTE feeding a real-table join in outer SELECT ===
+
+let $QUERY=
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS s
+  FROM cte_orders GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT b.k, SUM(b.m)
+FROM b JOIN cte_customer AS c ON c.c_id = b.k
+GROUP BY b.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS s
+  FROM cte_orders GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT b.k, SUM(b.m)
+FROM b JOIN cte_customer AS c ON c.c_id = b.k
+GROUP BY b.k|
+
+--echo
+--echo
+--echo === Test 9 (E.2): chained CTE with WHERE filter on the intermediate ===
+
+let $QUERY=
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS s
+  FROM cte_orders GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a WHERE s > 100 GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS s
+  FROM cte_orders GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a WHERE s > 100 GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k|
+
 DELIMITER ;|
 
 --echo

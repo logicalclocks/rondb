@@ -281,6 +281,19 @@ private:
   void build_cte_scopes();
   void resolve_columns_for_cte_scope(QueryScope& scope);
   void resolve_cte_output_columns();
+  void resolve_cte_output_columns_for_scope(QueryScope& scope);
+  /**
+   * Resolve the (NdbDictionary::Column::Type, length, charset) tuple
+   * for a column reference in `scope`, walking through chained CTE
+   * outputs when scope.column_map[col_idx] is NULL.  Mirrors the
+   * aggregate widening rules in build_cte_virtual_tables — keeps the
+   * derived type consistent across CTE chain layers.
+   * Returns true on success.  Caller raises a clear error on false.
+   */
+  bool resolve_chained_column_type(QueryScope& scope, Uint32 col_idx,
+                                    NdbDictionary::Column::Type& out_type,
+                                    Uint32& out_length,
+                                    const void*& out_cs);
   void analyze_subqueries();
   void analyze_subqueries_ce(ConditionalExpression* ce);
   void analyze_select_subqueries();

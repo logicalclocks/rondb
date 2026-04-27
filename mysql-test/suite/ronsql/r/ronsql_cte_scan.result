@@ -128,6 +128,101 @@ SELECT SUM(t) AS gt FROM sums|
 gt
 315
 
+
+=== Test 7 (E.2): basic chained CTEs (b reads a, both with GB) ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_amt) AS s
+FROM cte_orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_amt) AS s
+FROM cte_orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k|
+k	SUM(m)
+100	125
+200	100
+300	90
+
+
+=== Test 8 (E.2): chained CTE feeding a real-table join in outer SELECT ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_amt) AS s
+FROM cte_orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k)
+SELECT b.k, SUM(b.m)
+FROM b JOIN cte_customer AS c ON c.c_id = b.k
+GROUP BY b.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_amt) AS s
+FROM cte_orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a GROUP BY k)
+SELECT b.k, SUM(b.m)
+FROM b JOIN cte_customer AS c ON c.c_id = b.k
+GROUP BY b.k|
+k	SUM(b.m)
+100	125
+200	100
+300	90
+
+
+=== Test 9 (E.2): chained CTE with WHERE filter on the intermediate ===
+== Query ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_amt) AS s
+FROM cte_orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a WHERE s > 100 GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (
+SELECT o_custkey AS k, SUM(o_amt) AS s
+FROM cte_orders GROUP BY o_custkey),
+b AS (
+SELECT k, MAX(s) AS m
+FROM a WHERE s > 100 GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k|
+k	SUM(m)
+100	125
+
 === Cleanup ===
 DROP TABLE cte_customer;
 DROP TABLE cte_orders;
