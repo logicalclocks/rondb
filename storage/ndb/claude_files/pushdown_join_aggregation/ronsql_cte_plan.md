@@ -11,12 +11,14 @@
 > - `cte_filter_phase_d.md` + `cte_filter_phase_d2.md` — RonSQL phases D /
 >   D2 (inline-type opcode wiring + MIN/MAX virt-type widening).
 > - `cte_filter_phase_e1.md` + `cte_filter_phase_e1k.md` +
->   `cte_filter_phase_e2.md` — RonSQL Phase E plan: scanCte as
->   main-query root (E.1), kernel-side CTE virtual-column linked-attr
->   support (E.1K — sequenced between E.1 landing and E.2), chained
->   CTEs (E.2). Phase E.3 (relax the agg-required check so
->   projection-only main SELECTs over a CTE_SCAN root work) deferred
->   to a separate plan if needed.
+>   `cte_filter_phase_e1k_site4.md` + `cte_filter_phase_e2.md` +
+>   `cte_filter_phase_e3.md` + `cte_filter_phase_g.md` +
+>   `cte_filter_phase_p_gb.md` — RonSQL Phase E + follow-ups:
+>   scanCte as main-query root (E.1), kernel-side CTE virtual-column
+>   linked-attr support (E.1K), Site 4 followup encoding fix
+>   (E.1K Site 4), chained CTEs (E.2), projection-only main SELECT
+>   over CTE_SCAN (E.3 — planned), defensive reject-cleanly guard
+>   (G), parent-table GB over CTE agg leaf verification (P-GB).
 > - `cte_nextreq_plan.md` + `cte_nextreq_phase_{1,2,3,4}.md` —
 >   SCAN_NEXTREQ multi-batch flow for CTEs.
 > - `cte_outer_join_plan.md` + `cte_outer_join_phase_{1..5}.md` —
@@ -831,11 +833,12 @@ anti-join to produce a row).
 
 ### Phase E — scanCte as main-query root + CTE-child-of-CTE
 
-**Status: E.1 / E.1K / E.2 DONE.** See `cte_filter_phase_e1.md`,
-`cte_filter_phase_e1k.md`, `cte_filter_phase_e2.md`. Phase E.3
-(projection-only main SELECT over CTE_SCAN root — `SELECT k, t FROM
-sums` without aggregation) is deferred behind a separate plan if/when
-needed; today RonSQL's "Not an aggregate query" check rejects it.
+**Status: E.1 / E.1K / E.2 DONE; E.3 PLANNED.** See
+`cte_filter_phase_e1.md`, `cte_filter_phase_e1k.md`,
+`cte_filter_phase_e2.md`, `cte_filter_phase_e3.md` (planned).
+Phase E.3 (projection-only main SELECT over CTE_SCAN root — `SELECT
+k, t FROM sums` without aggregation) lifts RonSQL's "Not an aggregate
+query" check via a flag + new pass-through result-delivery path.
 
 **Goal.** Recognize `FROM <cte_name>` in any FROM clause (main or inside
 another CTE); emit `scanCte` (as root) or `lookupCte`/`scanCte` (as child).
