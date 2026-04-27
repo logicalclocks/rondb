@@ -1190,6 +1190,86 @@ void rondb_pttl_command(Ndb *ndb,
   rondb_ttl_or_pttl(ndb, argv, response, worker_id, /*millis=*/true);
 }
 
+// Phase 1.5: EXPIRE key seconds. Reply :1 if applied, :0 if missing.
+// Rejects seconds <= 0 (Redis-canonical, also avoids generate_expire_at's
+// -1 sentinel). Probes string_keys then hset_keys via run_exists_probes
+// to learn the type, then issues a single interpretedUpdateTuple writing
+// expiry_date on the appropriate table.
+void rondb_expire_command(Ndb *ndb,
+                          const pink::RedisCmdArgsType &argv,
+                          std::string *response,
+                          int worker_id) {
+  Int64 ttl_seconds = 0;
+  if (get_int64(argv[2], response, &ttl_seconds) == false) return;
+  if (ttl_seconds <= 0) {
+    assign_generic_err_to_response(response, REDIS_INVALID_EXPIRE_TIME);
+    return;
+  }
+
+  struct exists_probe probe;
+  probe.m_key_str = argv[1].c_str();
+  probe.m_key_len = argv[1].size();
+  probe.m_present = false;
+  probe.m_match_kind = EXISTS_MATCH_NONE;
+  probe.m_op = nullptr;
+
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  if (dict == nullptr) {
+    assign_ndb_err_to_response(response, FAILED_GET_DICT, ndb->getNdbError());
+    return;
+  }
+  const NdbDictionary::Table *string_tab = dict->getTable(KEY_TABLE_NAME);
+  if (string_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TABLE_OBJECT,
+                               dict->getNdbError());
+    return;
+  }
+  Uint32 database_id = get_current_database(worker_id);
+  if (run_exists_probes(ndb, &probe, 1,
+                        database_id, string_tab, response) != 0) {
+    return;
+  }
+  if (probe.m_match_kind == EXISTS_MATCH_NONE) {
+    response->append(":0\r\n");
+    return;
+  }
+
+  // Use the same encoding as the SET ... EX write path. m_expire_at
+  // ends up holding mi_int4 BE bytes of (now + ttl) in its low 4
+  // bytes; the helper assigns to key_row.expiry_date via Int64
+  // truncation, which writes those BE bytes verbatim into the
+  // buffer at the column's offset. NDB stores them, mi_sint4korr
+  // (TTL read path) recovers the native epoch seconds.
+  Int64 m_expire_at = 0;
+  generate_expire_at(&m_expire_at, ttl_seconds);
+
+  int err;
+  if (probe.m_match_kind == EXISTS_MATCH_STRING) {
+    err = update_expiry_string_row(ndb,
+                                   probe.m_key_str,
+                                   probe.m_key_len,
+                                   m_expire_at,
+                                   database_id,
+                                   response);
+  } else {
+    err = update_expiry_hset_row(ndb,
+                                 probe.m_key_str,
+                                 probe.m_key_len,
+                                 m_expire_at,
+                                 database_id,
+                                 response);
+  }
+  if (err == 0) {
+    response->append(":1\r\n");
+  } else if (err == 626) {
+    // Row vanished between probe and update (concurrent DEL /
+    // HDEL-of-last-field). Redis-canonical reply for missing key.
+    response->append(":0\r\n");
+  }
+  // Other errors: response already populated by update_expiry_*_row.
+}
+
 // Forward decl: set_rows_hdel is defined below set_rows_hset (where it
 // can sit next to its mirror) but rondb_hdel_command needs to call it.
 static int set_rows_hdel(Ndb *ndb,

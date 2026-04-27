@@ -601,6 +601,141 @@ int add_hset_field_count_set_op(NdbTransaction *trans,
   return 0;
 }
 
+// Phase 1.5 EXPIRE-family helpers. Each opens its own trans,
+// commits a single plain updateTuple writing only expiry_date,
+// and closes. Returns the trans-level NdbError code
+// (0 = applied, 626 = row missing, other = real error).
+//
+// The buffer's expiry_date is set to the mi_int4-encoded value
+// matching the rondis SET ... EX path (see write_data_to_key_op:
+// `key_row.expiry_date = key_store->m_expire_at` where m_expire_at
+// was filled by generate_expire_at via mi_int4store). NDB then
+// stores the bytes verbatim; mi_sint4korr at read time recovers
+// the native epoch seconds. Mask 0x8 (bit 3 = expiry_date in both
+// records, per declaration order matching std::map iteration).
+//
+// Caller passes m_expire_at_encoded (the Int64 produced by
+// generate_expire_at - low 4 bytes are the mi_int4 BE bytes).
+int update_expiry_string_row(Ndb *ndb,
+                             const char *key_str,
+                             Uint32 key_len,
+                             Int64 m_expire_at_encoded,
+                             Uint32 database_id,
+                             std::string *response) {
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Table *tab = dict->getTable(KEY_TABLE_NAME);
+  if (tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TABLE_OBJECT,
+                               dict->getNdbError());
+    return -1;
+  }
+  struct key_table key_row;
+  key_row.null_bits = 0;
+  key_row.redis_key_id = STRING_REDIS_KEY_ID;
+  memcpy(&key_row.redis_key[2], key_str, key_len);
+  memset(&key_row.redis_key[2 + key_len], 0, 3);
+  set_length((char*)&key_row.redis_key[0], key_len);
+  key_row.expiry_date = (Int32)m_expire_at_encoded;
+
+  NdbTransaction *trans = ndb->startTransaction(
+    tab, (const char*)&key_row.redis_key_id, key_len + 10);
+  if (trans == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TXN_OBJECT,
+                               ndb->getNdbError());
+    return -1;
+  }
+  // bit 7 = expiry_date in string_keys NdbRecord. The
+  // std::map<column_ptr,...> iteration order does not match source
+  // declaration order for this 8-column table (column pointers
+  // happen to land out of order); empirically derived from
+  // write_data_to_key_op which drops bit 7 (mask 0xFB -> 0x7B) when
+  // set_ttl is false to leave expiry_date alone.
+  const Uint32 mask = 0x80;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+  const NdbOperation *op = trans->updateTuple(
+    pk_key_record[database_id],
+    (const char *)&key_row,
+    entire_key_record[database_id],
+    (char *)&key_row,
+    mask_ptr);
+  if (op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_GET_OP,
+                               trans->getNdbError());
+    ndb->closeTransaction(trans);
+    return -1;
+  }
+  trans->execute(NdbTransaction::Commit, NdbOperation::AO_IgnoreError);
+  int code_val = trans->getNdbError().code;
+  if (code_val != 0 && code_val != 626) {
+    assign_ndb_err_to_response(response,
+                               "Failed to commit expire update",
+                               trans->getNdbError());
+  }
+  ndb->closeTransaction(trans);
+  return code_val;
+}
+
+int update_expiry_hset_row(Ndb *ndb,
+                           const char *key_str,
+                           Uint32 key_len,
+                           Int64 m_expire_at_encoded,
+                           Uint32 database_id,
+                           std::string *response) {
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Table *tab = dict->getTable(HSET_KEY_TABLE_NAME);
+  if (tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TABLE_OBJECT,
+                               dict->getNdbError());
+    return -1;
+  }
+  struct hset_key_table key_row;
+  key_row.null_bits = 0;
+  memcpy(&key_row.redis_key[2], key_str, key_len);
+  set_length(&key_row.redis_key[0], key_len);
+  key_row.expiry_date = (Int32)m_expire_at_encoded;
+
+  NdbTransaction *trans = ndb->startTransaction(
+    tab, (const char*)&key_row.redis_key[0], key_len + 2);
+  if (trans == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TXN_OBJECT,
+                               ndb->getNdbError());
+    return -1;
+  }
+  // bit 3 = expiry_date in hset_keys NdbRecord. add_hset_field_count_set_op
+  // uses mask 0x4 (bit 2 = field_count); declaration order matches
+  // std::map iteration for this 4-column table, so expiry_date is
+  // at bit 3 (the last column).
+  const Uint32 mask = 0x8;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+  const NdbOperation *op = trans->updateTuple(
+    pk_hset_key_record[database_id],
+    (const char *)&key_row,
+    entire_hset_key_record[database_id],
+    (char *)&key_row,
+    mask_ptr);
+  if (op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_GET_OP,
+                               trans->getNdbError());
+    ndb->closeTransaction(trans);
+    return -1;
+  }
+  trans->execute(NdbTransaction::Commit, NdbOperation::AO_IgnoreError);
+  int code_val = trans->getNdbError().code;
+  if (code_val != 0 && code_val != 626) {
+    assign_ndb_err_to_response(response,
+                               "Failed to commit expire update",
+                               trans->getNdbError());
+  }
+  ndb->closeTransaction(trans);
+  return code_val;
+}
+
 // Phase 1.0.2d Phase-1 callback. Fires once per HSET trans, after
 // the lock-claim op's NoCommit response arrives. Captures the two
 // outputs (redis_key_id, field_count) from the interpreter into

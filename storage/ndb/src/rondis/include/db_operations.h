@@ -79,6 +79,26 @@ int add_hset_field_count_bump_op(NdbTransaction *trans,
                                  Int64 delta,
                                  Uint32 database_id,
                                  std::string *response);
+
+/* Phase 1.5 EXPIRE-family helpers. Each opens its own trans and
+ * commits a single plain updateTuple writing only expiry_date
+ * (mask 0x8). Caller passes the mi_int4-encoded value as the low
+ * 4 bytes of an Int64 (matches generate_expire_at output and the
+ * existing rondis SET ... EX write path). Returns the trans-level
+ * NdbError code (0 = applied, 626 = row missing, other = real
+ * error). */
+int update_expiry_string_row(Ndb *ndb,
+                             const char *key_str,
+                             Uint32 key_len,
+                             Int64 m_expire_at_encoded,
+                             Uint32 database_id,
+                             std::string *response);
+int update_expiry_hset_row(Ndb *ndb,
+                           const char *key_str,
+                           Uint32 key_len,
+                           Int64 m_expire_at_encoded,
+                           Uint32 database_id,
+                           std::string *response);
 void prepare_hset_phase1_transaction(struct GetControl *get_ctrl,
                                      NdbTransaction *trans);
 void prepare_hset_phase2_transaction(struct GetControl *get_ctrl,
