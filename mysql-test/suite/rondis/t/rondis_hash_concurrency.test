@@ -1,0 +1,45 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Deadlock-freedom check for the single-trans HSET pipeline.
+#
+# Spawns K parallel redis-cli HSETs against the same hash. With strict
+# phasing (Phase 1's writeTuple X-locks hset_keys(key) before any
+# field-row op runs in Phase 2), the cross-LDM deadlock between
+# hset_keys and string_keys can't form: every other writer of this
+# hash is parked at its own Phase 1 until the current trans commits.
+#
+# We verify that (a) every concurrent HSET worker completes
+# successfully, and (b) the final hset_keys.field_count plus the
+# string_keys field row count both equal the number of distinct fields
+# written across all workers (W * U + S).
+#
+
+--let $script = $MYSQL_TEST_DIR/../storage/ndb/src/rondis/tests/concurrent_hsets.sh
+
+--echo #
+--echo # 8 workers * 50 unique fields + 10 shared fields = 410 distinct.
+--echo #
+--exec bash $script life:concur 8 50 10
+SELECT redis_key, field_count FROM redis_0.hset_keys
+ WHERE redis_key = 'life:concur';
+SELECT COUNT(*) FROM redis_0.string_keys
+ WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+                        WHERE redis_key = 'life:concur');
+
+--echo #
+--echo # Re-run all 8 workers with the same field sets. All HSETs are
+--echo # pure overwrites; field_count must stay at 410.
+--echo #
+--exec bash $script life:concur 8 50 10
+SELECT redis_key, field_count FROM redis_0.hset_keys
+ WHERE redis_key = 'life:concur';
+SELECT COUNT(*) FROM redis_0.string_keys
+ WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+                        WHERE redis_key = 'life:concur');
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
