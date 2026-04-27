@@ -157,9 +157,31 @@ public:
                 const NdbDictionary::Column** column_map,
                 RonSQLExecParams::OutputFormat output_format,
                 std::basic_ostream<char>* err);
+  // Phase E.3 pass-through constructor for projection-only main SELECTs
+  // over a CTE_SCAN root.  Skips compile()/optimize() (which require
+  // every COLUMN output to be in GROUP BY); only sets up the output-format
+  // helpers used by print_passthrough_*.
+  ResultPrinter(ArenaMalloc* amalloc,
+                struct SelectStatement* query,
+                DynamicArray<LexCString>* column_names,
+                RonSQLExecParams::OutputFormat output_format,
+                std::basic_ostream<char>* err,
+                bool /*passthrough_marker*/);
   void print_result(NdbAggregator* aggregator,
                     std::basic_ostream<char>* out_stream);
+  void print_passthrough_header(const class NdbRecAttr* const* attrs,
+                                Uint32 num_cols,
+                                std::basic_ostream<char>* out_stream);
+  void print_passthrough_row(const class NdbRecAttr* const* attrs,
+                             Uint32 num_cols,
+                             bool is_first_row,
+                             std::basic_ostream<char>* out_stream);
+  void print_passthrough_finish(std::basic_ostream<char>* out_stream);
   void explain(std::basic_ostream<char>* out_stream);
+private:
+  void setup_output_format();
+  void print_passthrough_value(std::ostream& out,
+                               const class NdbRecAttr* attr);
 };
 
 #endif

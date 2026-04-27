@@ -250,6 +250,12 @@ private:
   DynamicArray<SubqueryInfo> m_subquery_infos;
   bool m_has_subqueries = false;
   bool m_has_ctes = false;
+  // True for aggregating queries (the only ones RonSQL fully supports).
+  // Set to false in parse() for the narrow projection-only-over-CTE_SCAN
+  // shape that Phase E.3 enables — drives the pass-through delivery
+  // path in execute_join() and skips ResultPrinter::compile() (which
+  // requires every SELECT-list column to appear in GROUP BY).
+  bool m_is_aggregate_query = true;
 
   // One QueryScope per CTE in ast_root.cte_list, in declaration order.
   // Pointers because QueryScope holds a DynamicArray — non-trivially-copyable.
@@ -325,6 +331,14 @@ private:
   void substitute_subquery_results();
   void substitute_subquery_results_ce(ConditionalExpression** ce_ptr);
   void execute_join();
+  // Pass-through row delivery for projection-only main SELECTs over a
+  // CTE_SCAN root (Phase E.3).  Wires getValue() per output, loops
+  // nextResult, formats each row through ResultPrinter::print_passthrough_*.
+  // Caller passes the prepared NdbQuery* and the CTE_SCAN root virt
+  // table built by build_cte_virtual_tables() (used to resolve column
+  // descriptors for getValue()).
+  void execute_passthrough_drain(class NdbQuery* query,
+                                 const NdbDictionary::Table* root_virt);
   // Returns true iff the query routes through the multi-op join path:
   // either AST joins are present, or the FROM root names a CTE alias
   // (which forces QueryPlanner to produce a CTE_SCAN root op and the

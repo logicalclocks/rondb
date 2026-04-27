@@ -223,6 +223,54 @@ SELECT k, SUM(m) FROM b GROUP BY k|
 k	SUM(m)
 100	125
 
+
+=== Test 10 (E.3): projection-only over a CTE_SCAN root ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT k, t FROM sums;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT k, t FROM sums|
+k	t
+100	125
+200	100
+300	90
+
+
+=== Test 11 (E.3): projection-only with WHERE on CTE output ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT k, t FROM sums WHERE t > 100;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT k, t FROM sums WHERE t > 100|
+k	t
+100	125
+
 === Cleanup ===
 DROP TABLE cte_customer;
 DROP TABLE cte_orders;

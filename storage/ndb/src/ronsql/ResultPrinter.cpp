@@ -126,6 +126,32 @@ ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
   optimize();
 }
 
+ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
+                             struct SelectStatement* query,
+                             DynamicArray<LexCString>* column_names,
+                             RonSQLExecParams::OutputFormat output_format,
+                             std::basic_ostream<char>* err,
+                             bool /*passthrough_marker*/):
+  m_amalloc(amalloc),
+  m_query(query),
+  m_column_names(column_names),
+  m_column_map(NULL),
+  m_output_format(output_format),
+  m_err(err),
+  m_program(amalloc),
+  m_groupby_cols(amalloc),
+  m_outputs(amalloc),
+  m_col_idx_groupby_map(amalloc),
+  m_orderby_specs(amalloc),
+  m_has_orderby(false)
+{
+  assert(amalloc != NULL);
+  assert(query != NULL);
+  assert(column_names != NULL);
+  assert(err != NULL);
+  setup_output_format();
+}
+
 void
 ResultPrinter::validate_orderby_columns()
 {
@@ -350,43 +376,7 @@ ResultPrinter::compile()
     m_program.push(cmd);
   }
   m_print_start_idx = m_program.size();
-  switch (m_output_format)
-  {
-  case RonSQLExecParams::OutputFormat::TEXT:
-    m_json_output = false;
-    m_utf8_output = true;
-    m_tsv_output = true;
-    m_tsv_headers = true;
-    m_quote = "";
-    m_null_representation = LexString{"NULL", 4};
-    break;
-  case RonSQLExecParams::OutputFormat::TEXT_NOHEADER:
-    m_json_output = false;
-    m_utf8_output = true;
-    m_tsv_output = true;
-    m_tsv_headers = false;
-    m_quote = "";
-    m_null_representation = LexString{"NULL", 4};
-    break;
-  case RonSQLExecParams::OutputFormat::JSON:
-    m_json_output = true;
-    m_utf8_output = true;
-    m_tsv_output = false;
-    m_tsv_headers = false;
-    m_quote = "\"";
-    m_null_representation = LexString{"null", 4};
-    break;
-  case RonSQLExecParams::OutputFormat::JSON_ASCII:
-    m_json_output = true;
-    m_utf8_output = false;
-    m_tsv_output = false;
-    m_tsv_headers = false;
-    m_quote = "\"";
-    m_null_representation = LexString{"null", 4};
-    break;
-  default:
-    abort();
-  }
+  setup_output_format();
   for (Uint32 i = 0; i < m_outputs.size(); i++)
   {
     {
@@ -1028,6 +1018,167 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
   {
     DEB_TRACE();
     abort();
+  }
+}
+
+void
+ResultPrinter::setup_output_format()
+{
+  switch (m_output_format)
+  {
+  case RonSQLExecParams::OutputFormat::TEXT:
+    m_json_output = false;
+    m_utf8_output = true;
+    m_tsv_output = true;
+    m_tsv_headers = true;
+    m_quote = "";
+    m_null_representation = LexString{"NULL", 4};
+    break;
+  case RonSQLExecParams::OutputFormat::TEXT_NOHEADER:
+    m_json_output = false;
+    m_utf8_output = true;
+    m_tsv_output = true;
+    m_tsv_headers = false;
+    m_quote = "";
+    m_null_representation = LexString{"NULL", 4};
+    break;
+  case RonSQLExecParams::OutputFormat::JSON:
+    m_json_output = true;
+    m_utf8_output = true;
+    m_tsv_output = false;
+    m_tsv_headers = false;
+    m_quote = "\"";
+    m_null_representation = LexString{"null", 4};
+    break;
+  case RonSQLExecParams::OutputFormat::JSON_ASCII:
+    m_json_output = true;
+    m_utf8_output = false;
+    m_tsv_output = false;
+    m_tsv_headers = false;
+    m_quote = "\"";
+    m_null_representation = LexString{"null", 4};
+    break;
+  default:
+    abort();
+  }
+}
+
+// Phase E.3 helpers: format a single NdbRecAttr value for the
+// projection-only pass-through path.  Mirrors the type cases the
+// aggregator path handles in print_record (see Column::data_*) but
+// reads directly from NdbRecAttr instead of NdbAggregator::Column.
+// Decimal / blob / date-time types follow whatever the CTE virt-table
+// builder produces — for Phase E.3 the supported set is integer, float,
+// double; non-numeric chained-CTE outputs aren't reachable yet because
+// the virt-table builder only emits numeric types from SUM/COUNT/MIN/MAX.
+void
+ResultPrinter::print_passthrough_value(std::ostream& out,
+                                       const NdbRecAttr* attr)
+{
+  if (attr == NULL || attr->isNULL() == 1) {
+    out << m_null_representation;
+    return;
+  }
+  NdbDictionary::Column::Type t = attr->getType();
+  switch (t) {
+  case NdbDictionary::Column::Tinyint:
+    out << (int)attr->int8_value(); break;
+  case NdbDictionary::Column::Tinyunsigned:
+    out << (unsigned)attr->u_8_value(); break;
+  case NdbDictionary::Column::Smallint:
+    out << (int)attr->short_value(); break;
+  case NdbDictionary::Column::Smallunsigned:
+    out << (unsigned)attr->u_short_value(); break;
+  case NdbDictionary::Column::Mediumint:
+    out << (int)attr->medium_value(); break;
+  case NdbDictionary::Column::Mediumunsigned:
+    out << (unsigned)attr->u_medium_value(); break;
+  case NdbDictionary::Column::Int:
+    out << (int)attr->int32_value(); break;
+  case NdbDictionary::Column::Unsigned:
+    out << (unsigned)attr->u_32_value(); break;
+  case NdbDictionary::Column::Bigint:
+    out << (long long)attr->int64_value(); break;
+  case NdbDictionary::Column::Bigunsigned:
+    out << (unsigned long long)attr->u_64_value(); break;
+  case NdbDictionary::Column::Float:
+    print_float_or_double(out, (double)attr->float_value()); break;
+  case NdbDictionary::Column::Double:
+    print_float_or_double(out, attr->double_value()); break;
+  default:
+    // Phase E.3 supports the numeric types that build_cte_virtual_tables
+    // can produce (SUM/COUNT/MIN/MAX widening + plain numeric column
+    // refs).  Other types would need format-specific handling matching
+    // print_record (CHAR/VARCHAR with quoting, DATE/TIMESTAMP, DECIMAL).
+    throw RonSQLPermanentError(
+        "Unsupported column type in projection-only CTE_SCAN result.");
+  }
+}
+
+void
+ResultPrinter::print_passthrough_header(const NdbRecAttr* const* /*attrs*/,
+                                         Uint32 num_cols,
+                                         std::basic_ostream<char>* out_stream)
+{
+  assert(out_stream != NULL);
+  std::ostream& out = *out_stream;
+  if (m_json_output) {
+    out << '[';
+    return;
+  }
+  if (m_tsv_output && m_tsv_headers) {
+    Outputs* o = m_query->outputs;
+    for (Uint32 i = 0; i < num_cols; i++) {
+      if (i > 0) out << '\t';
+      assert(o != NULL);
+      out << o->output_name;
+      o = o->next;
+    }
+    out << '\n';
+  }
+}
+
+void
+ResultPrinter::print_passthrough_row(const NdbRecAttr* const* attrs,
+                                      Uint32 num_cols,
+                                      bool is_first_row,
+                                      std::basic_ostream<char>* out_stream)
+{
+  assert(out_stream != NULL);
+  std::ostream& out = *out_stream;
+  if (m_json_output) {
+    if (!is_first_row) out << ',';
+    out << '{';
+    Outputs* o = m_query->outputs;
+    for (Uint32 i = 0; i < num_cols; i++) {
+      assert(o != NULL);
+      if (i > 0) out << ',';
+      out << '"' << o->output_name << "\":";
+      // Numbers print without quotes; strings/temporals would need
+      // quoting once supported (see print_passthrough_value's default
+      // branch — currently rejects).
+      print_passthrough_value(out, attrs[i]);
+      o = o->next;
+    }
+    out << '}';
+    return;
+  }
+  if (m_tsv_output) {
+    for (Uint32 i = 0; i < num_cols; i++) {
+      if (i > 0) out << '\t';
+      print_passthrough_value(out, attrs[i]);
+    }
+    out << '\n';
+  }
+}
+
+void
+ResultPrinter::print_passthrough_finish(std::basic_ostream<char>* out_stream)
+{
+  assert(out_stream != NULL);
+  std::ostream& out = *out_stream;
+  if (m_json_output) {
+    out << "]\n";
   }
 }
 

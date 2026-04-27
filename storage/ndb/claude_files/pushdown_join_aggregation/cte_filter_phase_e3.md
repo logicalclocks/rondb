@@ -1,5 +1,34 @@
 # CTE Filter Phase E.3 — projection-only main SELECT over CTE_SCAN root
 
+## Status
+
+**Landed.**  Tests 10 and 11 in
+`mysql-test/suite/ronsql/t/ronsql_cte_scan.test` cover both the
+no-WHERE and WHERE-on-CTE-output shapes.  Two implementation issues
+surfaced beyond the original plan and required follow-up fixes:
+
+1. `getQueryOperation(0)` returns the FIRST CTE-subtree op, not the
+   main scanCte.  CTE subtree ops are appended to the NdbQuery before
+   main-query ops, so the scanCte root is at
+   `query->getNoOfOperations() - 1`.  Mirrors testCteNdbApi.cpp Test 8
+   (`mainOpNo = queryDef->getNoOfOperations() - 1`).  Initial fix
+   yielded NDB error 4826 "Query has operation with empty projection".
+
+2. Synthetic CTE virt-table columns (built in
+   `build_cte_virtual_tables`) have `m_attrId = -1` because
+   `NdbDictionary::Table::addColumn` only sets `m_column_no`; the
+   dictionary's table-create path is what normally assigns attrIds.
+   The kernel's `CTE_SCAN` result delivery emits attrIds 0..numCols-1
+   (hardcoded `PI_ATTR_LIST` in `prepareAttrInfo`'s `QN_CTE_SCAN`
+   case), and `NdbReceiver::handle_rec_attrs` aborts when matching
+   incoming attrId=0 against `recAttr.attrId=-1`.  Fix: after
+   `vt->aggregate()`, walk columns and assign
+   `NdbColumnImpl::getImpl(*col).m_attrId = position`.  Required
+   adding `#include "NdbDictionaryImpl.hpp"` to RonSQLPreparer.cpp.
+   testCteNdbApi.cpp Test 8 didn't hit this because its
+   `VIRTUAL_TABLE` is a real NDB table loaded via `dict->getTable()`,
+   so attrIds are already assigned.
+
 ## Context
 
 After Phase E.1 (`scanCte` as main-query root with aggregation),

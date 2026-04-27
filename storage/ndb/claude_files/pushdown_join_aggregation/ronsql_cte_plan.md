@@ -17,8 +17,8 @@
 >   scanCte as main-query root (E.1), kernel-side CTE virtual-column
 >   linked-attr support (E.1K), Site 4 followup encoding fix
 >   (E.1K Site 4), chained CTEs (E.2), projection-only main SELECT
->   over CTE_SCAN (E.3 — planned), defensive reject-cleanly guard
->   (G), parent-table GB over CTE agg leaf verification (P-GB).
+>   over CTE_SCAN (E.3), defensive reject-cleanly guard (G),
+>   parent-table GB over CTE agg leaf verification (P-GB).
 > - `cte_nextreq_plan.md` + `cte_nextreq_phase_{1,2,3,4}.md` —
 >   SCAN_NEXTREQ multi-batch flow for CTEs.
 > - `cte_outer_join_plan.md` + `cte_outer_join_phase_{1..5}.md` —
@@ -833,12 +833,20 @@ anti-join to produce a row).
 
 ### Phase E — scanCte as main-query root + CTE-child-of-CTE
 
-**Status: E.1 / E.1K / E.2 DONE; E.3 PLANNED.** See
+**Status: E.1 / E.1K / E.2 / E.3 DONE.** See
 `cte_filter_phase_e1.md`, `cte_filter_phase_e1k.md`,
-`cte_filter_phase_e2.md`, `cte_filter_phase_e3.md` (planned).
+`cte_filter_phase_e2.md`, `cte_filter_phase_e3.md`.
 Phase E.3 (projection-only main SELECT over CTE_SCAN root — `SELECT
 k, t FROM sums` without aggregation) lifts RonSQL's "Not an aggregate
-query" check via a flag + new pass-through result-delivery path.
+query" check via an `m_is_aggregate_query` flag and a new
+pass-through result-delivery path
+(`RonSQLPreparer::execute_passthrough_drain`,
+`ResultPrinter::print_passthrough_*`).  Two follow-ups beyond the
+plan: use `query->getNoOfOperations()-1` to find the main scanCte
+(CTE-subtree ops come first), and assign synthetic attrIds to virt
+table columns post-`addColumn` since
+`NdbReceiver::handle_rec_attrs` matches recAttr.attrId against
+incoming attrIds 0..numCols-1.
 
 **Goal.** Recognize `FROM <cte_name>` in any FROM clause (main or inside
 another CTE); emit `scanCte` (as root) or `lookupCte`/`scanCte` (as child).

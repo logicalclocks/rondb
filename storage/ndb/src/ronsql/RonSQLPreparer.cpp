@@ -25,6 +25,7 @@
 */
 
 #include "AggregationAPICompiler.hpp"
+#include "NdbDictionaryImpl.hpp"
 #include "NdbQueryBuilder.hpp"
 #include "NdbQueryOperation.hpp"
 #include "QueryPlanner.hpp"
@@ -446,14 +447,62 @@ RonSQLPreparer::parse()
       ndbrequire(has_aggregate_outputs || has_having_aggregates);
       ndbrequire(m_main_scope.agg->getStatus() == AggregationAPICompiler::Status::PROGRAMMING);
     }
-    if (!has_aggregate_outputs && !has_having_aggregates &&
-        !has_subquery_agg_outputs)
+    m_is_aggregate_query = (has_aggregate_outputs || has_having_aggregates ||
+                            has_subquery_agg_outputs);
+    if (!m_is_aggregate_query)
     {
-      ndbrequire(m_conf.err_stream != NULL);
-      std::basic_ostream<char>& err = *m_conf.err_stream;
-      err << "This query has no aggregate expression, so it is not an aggregate query.\n"
-             "Currently, RonSQL only supports aggregate queries.\n";
-      throw RonSQLPermanentError("Not an aggregate query.");
+      // Phase E.3: allow the narrowly-supported projection-only main
+      // SELECT over a CTE_SCAN root (e.g. SELECT k, t FROM cte [WHERE ...]).
+      // The kernel + NDB API already support scanCte without
+      // setAggregation(); the gap was purely RonSQL's client-side
+      // delivery path.  All other non-aggregating shapes still hit the
+      // existing rejection — Phase 7 / step 45 in ronsql_join_phase7.md
+      // tracks general non-aggregate support.
+      //
+      // Plan-shape decisions (CTE_SCAN root, GROUP BY, HAVING, ORDER BY,
+      // LIMIT) are checked in execute_join() / passthrough_drain when
+      // the JoinPlan is finalised — analyze_ctes() runs before this
+      // point but the join_plan is only populated by load_join().  We
+      // do the cheap parse-time guards here (no aggregates already
+      // implies no HAVING aggregates) and require the FROM root to be
+      // a CTE alias; remaining shape rejection is deferred.
+      bool from_is_cte = false;
+      for (const CteDefinition* cte = m_context.ast_root.cte_list;
+           cte != NULL; cte = cte->next) {
+        if (m_context.ast_root.table.str != NULL &&
+            cte->name.len == m_context.ast_root.table.len &&
+            strncmp(cte->name.str, m_context.ast_root.table.str,
+                    m_context.ast_root.table.len) == 0) {
+          from_is_cte = true;
+          break;
+        }
+      }
+      bool has_groupby   = (m_context.ast_root.groupby_columns != NULL);
+      bool has_having    = (m_context.ast_root.having_expression != NULL);
+      bool has_orderby   = (m_context.ast_root.orderby_columns != NULL);
+      bool has_limit     = (m_context.ast_root.limit >= 0);
+      bool has_joins     = (m_context.ast_root.joins != NULL);
+      // All projection-only outputs must be plain COLUMN refs.
+      bool all_column_outputs = true;
+      for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+           o = o->next) {
+        if (o->type != Outputs::Type::COLUMN) {
+          all_column_outputs = false;
+          break;
+        }
+      }
+      bool projection_only_cte_scan =
+          (from_is_cte && all_column_outputs && !has_groupby &&
+           !has_having && !has_orderby && !has_limit && !has_joins);
+      if (!projection_only_cte_scan) {
+        ndbrequire(m_conf.err_stream != NULL);
+        std::basic_ostream<char>& err = *m_conf.err_stream;
+        err << "This query has no aggregate expression, so it is not an aggregate query.\n"
+               "Currently, RonSQL only supports aggregate queries and projection-only\n"
+               "SELECTs over a CTE (Phase E.3).  See ronsql_join_phase7.md for the\n"
+               "broader non-aggregate roadmap.\n";
+        throw RonSQLPermanentError("Not an aggregate query.");
+      }
     }
 
     // Mirror the main-query aggregate-registration loop for each CTE body.
@@ -3727,13 +3776,26 @@ RonSQLPreparer::compile()
   // Compile post-processing/printer program. CTE queries use the main
   // aggregator on a physical-table leaf (CTE-at-leaf is rejected in
   // execute_join), so ResultPrinter's normal construction applies.
-  m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
-    ResultPrinter(m_amalloc,
-                  &m_context.ast_root,
-                  &m_columns,
-                  m_main_scope.column_map,
-                  m_conf.output_format,
-                  m_conf.err_stream);
+  // Phase E.3: projection-only CTE_SCAN-root queries skip the
+  // GROUP-BY-validating compile() path and use the pass-through
+  // formatter helpers instead.
+  if (m_is_aggregate_query) {
+    m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
+      ResultPrinter(m_amalloc,
+                    &m_context.ast_root,
+                    &m_columns,
+                    m_main_scope.column_map,
+                    m_conf.output_format,
+                    m_conf.err_stream);
+  } else {
+    m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
+      ResultPrinter(m_amalloc,
+                    &m_context.ast_root,
+                    &m_columns,
+                    m_conf.output_format,
+                    m_conf.err_stream,
+                    /*passthrough_marker=*/true);
+  }
 }
 
 void
@@ -4659,12 +4721,16 @@ RonSQLPreparer::execute_join()
       require_prm(agg->Finalize(), "Failed to finalize leaf aggregator.");
       leafAggs[op_idx] = agg;
     }
-  } else {
+  } else if (m_is_aggregate_query) {
     // Single-leaf path (existing)
     programAggregator_join(m_main_scope, m_context.ast_root, &singleAgg,
                            cteVirtualTables);
     require_prm(singleAgg.Finalize(), "Failed to finalize aggregator.");
   }
+  // Phase E.3: when !m_is_aggregate_query, singleAgg stays unprogrammed
+  // and unfinalized.  emit_root_op will receive NULL and skip
+  // setAggregation() on the scanCte root; result delivery uses
+  // execute_passthrough_drain instead of NdbAggregator.
 
   // Build NdbQueryBuilder tree
   NdbQueryBuilder* qb = NdbQueryBuilder::create();
@@ -4820,10 +4886,18 @@ RonSQLPreparer::execute_join()
 
   const NdbQueryOperationDef* opDefs[MAX_SPJ_TREE_NODES];
 
-  emit_root_op(qb, m_main_scope, opDefs, &singleAgg, cteVirtualTables);
+  NdbAggregator* main_singleAgg =
+      m_is_aggregate_query ? &singleAgg : nullptr;
+  emit_root_op(qb, m_main_scope, opDefs, main_singleAgg, cteVirtualTables);
 
-  emit_child_ops(qb, m_main_scope, opDefs, &singleAgg, leafAggs,
-                 cteVirtualTables);
+  // Phase E.3: projection-only CTE_SCAN-root queries have num_ops==1 and
+  // no joined children; skip emit_child_ops in that case.  emit_child_ops
+  // tolerates singleAgg=NULL for a CTE_SCAN root, but the projection-only
+  // shape has nothing for it to do.
+  if (m_is_aggregate_query) {
+    emit_child_ops(qb, m_main_scope, opDefs, &singleAgg, leafAggs,
+                   cteVirtualTables);
+  }
 
   // Virtual tables stay alive until the end of this function: the
   // NdbAggregator caches virt-table NdbDictionary::Column pointers (see
@@ -4841,37 +4915,50 @@ RonSQLPreparer::execute_join()
   NdbQuery* query = m_trans->createQuery(queryDef);
   require_run(query != NULL, "Failed to create query.");
 
-  PERF_TS(t_exec_start);
-  require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
-              "Failed to execute transaction.");
-  PERF_TS(t_exec_sent);
-  PERF_LOG("  trans->execute", t_exec_start, t_exec_sent);
+  if (!m_is_aggregate_query) {
+    // Phase E.3 pass-through path: wire getValue() per output BEFORE
+    // m_trans->execute() (NdbQueryOperation::getValue must be called
+    // between createQuery and execute, mirroring testCteNdbApi.cpp
+    // Test 8), then drain rows after execute.  Helper does both halves
+    // around the trans->execute() the existing aggregating path runs
+    // separately below.
+    execute_passthrough_drain(query, cteVirtualTables[0]);
+    PERF_TS(t_drain_done);
+    PERF_LOG("  pass-through drain", t_qb_prepare, t_drain_done);
+    PERF_LOG("  execute total", t_qb_prepare, t_drain_done);
+  } else {
+    PERF_TS(t_exec_start);
+    require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
+                "Failed to execute transaction.");
+    PERF_TS(t_exec_sent);
+    PERF_LOG("  trans->execute", t_exec_start, t_exec_sent);
 
-  // Consume all rows
-  NdbQuery::NextResultOutcome rc;
-  while ((rc = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
-  PERF_TS(t_drain_done);
-  PERF_LOG("  drain results", t_exec_sent, t_drain_done);
-  if (rc == NdbQuery::NextResult_error)
-  {
-    const NdbError& err = query->getNdbError();
-    std::basic_ostream<char>& errout = *m_conf.err_stream;
-    errout << "Join query failed: " << err.message
-           << " (code " << err.code << ")" << std::endl;
-    query->close();
-    queryDef->destroy();
-    qb->destroy();
-    throw RonSQLRetryableError("Join query execution failed.");
+    // Consume all rows
+    NdbQuery::NextResultOutcome rc;
+    while ((rc = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+    PERF_TS(t_drain_done);
+    PERF_LOG("  drain results", t_exec_sent, t_drain_done);
+    if (rc == NdbQuery::NextResult_error)
+    {
+      const NdbError& err = query->getNdbError();
+      std::basic_ostream<char>& errout = *m_conf.err_stream;
+      errout << "Join query failed: " << err.message
+             << " (code " << err.code << ")" << std::endl;
+      query->close();
+      queryDef->destroy();
+      qb->destroy();
+      throw RonSQLRetryableError("Join query execution failed.");
+    }
+
+    // Collect and print aggregation results
+    PERF_TS(t_result_start);
+    NdbAggregator* resultAgg = query->getAggregator();
+    ndbrequire(resultAgg != NULL);
+    m_resultprinter->print_result(resultAgg, m_conf.out_stream);
+    PERF_TS(t_result_done);
+    PERF_LOG("  print results", t_result_start, t_result_done);
+    PERF_LOG("  execute total", t_qb_prepare, t_result_done);
   }
-
-  // Collect and print aggregation results
-  PERF_TS(t_result_start);
-  NdbAggregator* resultAgg = query->getAggregator();
-  ndbrequire(resultAgg != NULL);
-  m_resultprinter->print_result(resultAgg, m_conf.out_stream);
-  PERF_TS(t_result_done);
-  PERF_LOG("  print results", t_result_start, t_result_done);
-  PERF_LOG("  execute total", t_qb_prepare, t_result_done);
 
   // Cleanup
   query->close();
@@ -4910,6 +4997,97 @@ RonSQLPreparer::execute_join()
       cteChildVTAll[i] = NULL;
     }
   }
+}
+
+// Phase E.3 — pass-through row delivery for projection-only main
+// SELECTs over a CTE_SCAN root.  Mirrors testCteNdbApi.cpp Test 8:
+// wire NdbRecAttr* per output via getValue() on the root operation,
+// run trans->execute(NoCommit), then loop nextResult and format each
+// row through ResultPrinter::print_passthrough_*.
+//
+// The CTE materialization subtree(s) and scanCte root are already
+// emitted on `qb`; this helper only handles the API-side projection
+// wiring and result delivery.
+void
+RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
+                                           const NdbDictionary::Table*
+                                               root_virt)
+{
+  ndbrequire(query != NULL);
+  ndbrequire(root_virt != NULL);
+  ndbrequire(m_resultprinter != NULL);
+
+  // Wire result projections on the scanCte root operation.  CTE
+  // subtree ops are appended to the NdbQuery before the main-query
+  // ops (qb->beginCteSubtree...endCteSubtree precedes scanCte), so
+  // getQueryOperation(0) returns the FIRST CTE subtree op — not the
+  // main scanCte.  The main scanCte is the LAST operation in the
+  // query def (mirrors testCteNdbApi.cpp Test 8 — see mainOpNo
+  // computation there).  Calling getValue() on the wrong op yields
+  // NDB error 4826 ("operation with empty projection") at execute
+  // time.
+  Uint32 mainOpIdx = query->getNoOfOperations();
+  require_run(mainOpIdx > 0, "Pass-through drain: query has no operations.");
+  mainOpIdx--;
+  NdbQueryOperation* rootOp = query->getQueryOperation(mainOpIdx);
+  require_run(rootOp != NULL,
+              "Pass-through drain: failed to resolve root NdbQueryOperation.");
+
+  // Allocate the NdbRecAttr* array from the arena so it survives the
+  // call.  (Caller-side stack would also work but using the arena keeps
+  // the helper self-contained.)
+  Uint32 num_cols = 0;
+  for (const Outputs* o = m_context.ast_root.outputs; o != NULL; o = o->next)
+    num_cols++;
+  require_run(num_cols > 0, "Pass-through drain: no outputs to deliver.");
+  NdbRecAttr** attrs =
+      m_amalloc->alloc_exc<NdbRecAttr*>(num_cols);
+
+  Uint32 i = 0;
+  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+       o = o->next, i++) {
+    ndbrequire(o->type == Outputs::Type::COLUMN);
+    Uint32 col_idx = o->column.col_idx;
+    // For CTE-output references, column_attrId_map holds the position
+    // within the CTE's output list (set in load_join's CTE branch —
+    // see RonSQLPreparer.cpp ~1104).  build_cte_virtual_tables adds
+    // virt-table columns in CTE-output declaration order, so the
+    // virt-table column attrId equals cte_col_idx.
+    Uint32 cte_col_idx = (Uint32)m_main_scope.column_attrId_map[col_idx];
+    const NdbDictionary::Column* vcol = root_virt->getColumn(cte_col_idx);
+    require_run(vcol != NULL,
+                "Pass-through drain: virt-table column lookup failed.");
+    attrs[i] = rootOp->getValue(vcol);
+    require_run(attrs[i] != NULL,
+                "Pass-through drain: getValue() failed.");
+  }
+
+  require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
+              "Failed to execute transaction (pass-through).");
+
+  // Header in JSON mode emits '['; in TEXT mode emits column names if
+  // m_tsv_headers is set.  Done before any rows.
+  m_resultprinter->print_passthrough_header(
+      const_cast<const NdbRecAttr* const*>(attrs), num_cols, m_conf.out_stream);
+
+  Uint32 row_count = 0;
+  NdbQuery::NextResultOutcome rc;
+  while ((rc = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    m_resultprinter->print_passthrough_row(
+        const_cast<const NdbRecAttr* const*>(attrs), num_cols,
+        /*is_first_row=*/(row_count == 0),
+        m_conf.out_stream);
+    row_count++;
+  }
+  if (rc == NdbQuery::NextResult_error) {
+    const NdbError& err = query->getNdbError();
+    std::basic_ostream<char>& errout = *m_conf.err_stream;
+    errout << "Pass-through query failed: " << err.message
+           << " (code " << err.code << ")" << std::endl;
+    throw RonSQLRetryableError("Pass-through drain failed.");
+  }
+
+  m_resultprinter->print_passthrough_finish(m_conf.out_stream);
 }
 
 // Emit the root scan/lookup/index-scan for the scope's plan. Chooses PK
@@ -5368,6 +5546,24 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
     NdbError vtErr;
     require_run(vt->aggregate(vtErr) == 0,
                 "Failed to aggregate CTE virtual table metadata.");
+    // Assign synthetic attrIds.  NdbDictionary::Table::addColumn leaves
+    // m_attrId=-1 on each column (only the dictionary's table-create
+    // path sets it).  Most use sites resolve columns by index via
+    // getColumn(idx), but the Phase E.3 pass-through drain calls
+    // NdbQueryOperation::getValue(column*) on the scanCte root, which
+    // copies column.m_attrId into the resulting NdbRecAttr.theAttrId.
+    // The kernel's CTE_SCAN result delivery emits attrIds 0..numCols-1
+    // (see prepareAttrInfo's QN_CTE_SCAN case in NdbQueryOperation.cpp);
+    // without this assignment, NdbReceiver::handle_rec_attrs aborts
+    // when matching incoming attrId=0,1,... against recAttr.attrId=-1.
+    {
+      Uint32 ncol = (Uint32)vt->getNoOfColumns();
+      for (Uint32 cidx = 0; cidx < ncol; cidx++) {
+        NdbDictionary::Column* mut_col = vt->getColumn((int)cidx);
+        ndbrequire(mut_col != NULL);
+        NdbColumnImpl::getImpl(*mut_col).m_attrId = (int)cidx;
+      }
+    }
     out[i] = vt;
   }
 }
