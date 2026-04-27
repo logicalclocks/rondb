@@ -726,12 +726,20 @@ struct exists_probe {
   const char *m_key_str;
   Uint32 m_key_len;
   bool m_present;
+  // Phase 1.2: which pass matched. 0 = none, 1 = string, 2 = hash.
+  // EXISTS only reads m_present; TYPE consults m_match_kind to
+  // emit +string\r\n / +hash\r\n / +none\r\n.
+  Uint8 m_match_kind;
   const NdbOperation *m_op;
   // Pass 1: PK buffer for string_keys.
   struct key_table m_string_buf;
   // Pass 2: PK buffer + field_count read-back for hset_keys.
   struct hset_key_table m_hset_buf;
 };
+
+#define EXISTS_MATCH_NONE   0
+#define EXISTS_MATCH_STRING 1
+#define EXISTS_MATCH_HASH   2
 
 static int add_exists_string_probe_op(NdbTransaction *trans,
                                       struct exists_probe *probe,
@@ -841,49 +849,25 @@ exists_drain_callback(int result, NdbTransaction *trans, void *aObject) {
   st->m_outstanding--;
 }
 
-void rondb_exists_command(Ndb *ndb,
-                          const pink::RedisCmdArgsType &argv,
-                          std::string *response,
-                          int worker_id) {
-  Uint32 num_keys = argv.size() - 1;
-  assert(num_keys > 0);
-  struct exists_probe *probes = (struct exists_probe*)
-    malloc(sizeof(struct exists_probe) * num_keys);
-  if (probes == nullptr) {
-    assign_generic_err_to_response(response, FAILED_MALLOC);
-    return;
-  }
-  for (Uint32 i = 0; i < num_keys; i++) {
-    probes[i].m_key_str = argv[i + 1].c_str();
-    probes[i].m_key_len = argv[i + 1].size();
-    probes[i].m_present = false;
-    probes[i].m_op = nullptr;
-  }
-
-  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  if (dict == nullptr) {
-    assign_ndb_err_to_response(response, FAILED_GET_DICT, ndb->getNdbError());
-    free(probes);
-    return;
-  }
-  const NdbDictionary::Table *string_tab = dict->getTable(KEY_TABLE_NAME);
-  const NdbDictionary::Table *hset_tab = dict->getTable(HSET_KEY_TABLE_NAME);
-  if (string_tab == nullptr || hset_tab == nullptr) {
-    assign_ndb_err_to_response(response,
-                               FAILED_CREATE_TABLE_OBJECT,
-                               dict->getNdbError());
-    free(probes);
-    return;
-  }
-  Uint32 database_id = get_current_database(worker_id);
-  Uint32 found_count = 0;
-
-  // Process keys in MAX_PARALLEL_KEY_OPS-sized chunks. One trans
-  // per chunk; both passes ride on the same trans, driven through
-  // the same async executeAsynchPrepare + execute_ndb drain
-  // pattern as the rest of the codebase. AO_IgnoreError per-op so
-  // a 626 does not abort the trans; per-op errors are read from
-  // the stashed NdbOperation* after drain.
+// Phase 1.1 / 1.2 shared two-pass probe pipeline. For each probe:
+//   - Pass 1 (string_keys): if found, m_match_kind = STRING,
+//                           m_present = true.
+//   - Pass 2 (hset_keys, only run for missers): if found and
+//                           field_count > 0, m_match_kind = HASH,
+//                           m_present = true. field_count == 0 leaves
+//                           m_match_kind = NONE per the post-1.0.3
+//                           cross-server-invariant semantics.
+//   - Both miss: m_match_kind stays NONE, m_present stays false.
+//
+// Runs the whole batch on shared trans(es), chunked at
+// MAX_PARALLEL_KEY_OPS. Returns 0 on success, 1 on hard NDB failure
+// (response already populated).
+static int run_exists_probes(Ndb *ndb,
+                             struct exists_probe *probes,
+                             Uint32 num_keys,
+                             Uint32 database_id,
+                             const NdbDictionary::Table *string_tab,
+                             std::string *response) {
   Uint32 idx = 0;
   while (idx < num_keys) {
     Uint32 chunk = std::min(num_keys - idx, (Uint32)MAX_PARALLEL_KEY_OPS);
@@ -908,8 +892,7 @@ void rondb_exists_command(Ndb *ndb,
       assign_ndb_err_to_response(response,
                                  FAILED_CREATE_TXN_OBJECT,
                                  ndb->getNdbError());
-      free(probes);
-      return;
+      return 1;
     }
     // Pass 1: string_keys probes.
     for (Uint32 i = idx; i < idx + chunk; i++) {
@@ -918,8 +901,7 @@ void rondb_exists_command(Ndb *ndb,
                                      database_id,
                                      response) != 0) {
         ndb->closeTransaction(trans);
-        free(probes);
-        return;
+        return 1;
       }
     }
     struct exists_drain_state st;
@@ -934,11 +916,10 @@ void rondb_exists_command(Ndb *ndb,
     }
     if (st.m_error_code != 0) {
       assign_err_to_response(response,
-                             "Failed to execute EXISTS pass 1",
+                             "Failed to execute pass 1",
                              st.m_error_code);
       ndb->closeTransaction(trans);
-      free(probes);
-      return;
+      return 1;
     }
     // Walk pass-1 per-op results.
     Uint32 missers = 0;
@@ -946,16 +927,15 @@ void rondb_exists_command(Ndb *ndb,
       int code = probes[i].m_op->getNdbError().code;
       if (code == 0) {
         probes[i].m_present = true;
-        found_count++;
+        probes[i].m_match_kind = EXISTS_MATCH_STRING;
       } else if (code == 626) {
         missers++;
       } else {
         assign_err_to_response(response,
-                               "EXISTS pass 1 per-op error",
+                               "Pass 1 per-op error",
                                code);
         ndb->closeTransaction(trans);
-        free(probes);
-        return;
+        return 1;
       }
     }
     // Pass 2: hset_keys probes for missers. Skip if every key
@@ -968,8 +948,7 @@ void rondb_exists_command(Ndb *ndb,
                                      database_id,
                                      response) != 0) {
           ndb->closeTransaction(trans);
-          free(probes);
-          return;
+          return 1;
         }
       }
       st.m_outstanding = 1;
@@ -983,11 +962,10 @@ void rondb_exists_command(Ndb *ndb,
       }
       if (st.m_error_code != 0) {
         assign_err_to_response(response,
-                               "Failed to execute EXISTS pass 2",
+                               "Failed to execute pass 2",
                                st.m_error_code);
         ndb->closeTransaction(trans);
-        free(probes);
-        return;
+        return 1;
       }
       for (Uint32 i = idx; i < idx + chunk; i++) {
         if (probes[i].m_present) continue;
@@ -997,27 +975,121 @@ void rondb_exists_command(Ndb *ndb,
           // (post-1.0.3, fully HDEL'd hashes leave the row at 0).
           if (probes[i].m_hset_buf.field_count > 0) {
             probes[i].m_present = true;
-            found_count++;
+            probes[i].m_match_kind = EXISTS_MATCH_HASH;
           }
         } else if (code == 626) {
           // Hash row missing: not present.
         } else {
           assign_err_to_response(response,
-                                 "EXISTS pass 2 per-op error",
+                                 "Pass 2 per-op error",
                                  code);
           ndb->closeTransaction(trans);
-          free(probes);
-          return;
+          return 1;
         }
       }
     }
     ndb->closeTransaction(trans);
     idx += chunk;
   }
+  return 0;
+}
+
+void rondb_exists_command(Ndb *ndb,
+                          const pink::RedisCmdArgsType &argv,
+                          std::string *response,
+                          int worker_id) {
+  Uint32 num_keys = argv.size() - 1;
+  assert(num_keys > 0);
+  struct exists_probe *probes = (struct exists_probe*)
+    malloc(sizeof(struct exists_probe) * num_keys);
+  if (probes == nullptr) {
+    assign_generic_err_to_response(response, FAILED_MALLOC);
+    return;
+  }
+  for (Uint32 i = 0; i < num_keys; i++) {
+    probes[i].m_key_str = argv[i + 1].c_str();
+    probes[i].m_key_len = argv[i + 1].size();
+    probes[i].m_present = false;
+    probes[i].m_match_kind = EXISTS_MATCH_NONE;
+    probes[i].m_op = nullptr;
+  }
+
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  if (dict == nullptr) {
+    assign_ndb_err_to_response(response, FAILED_GET_DICT, ndb->getNdbError());
+    free(probes);
+    return;
+  }
+  const NdbDictionary::Table *string_tab = dict->getTable(KEY_TABLE_NAME);
+  const NdbDictionary::Table *hset_tab = dict->getTable(HSET_KEY_TABLE_NAME);
+  if (string_tab == nullptr || hset_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TABLE_OBJECT,
+                               dict->getNdbError());
+    free(probes);
+    return;
+  }
+  (void)hset_tab;
+  Uint32 database_id = get_current_database(worker_id);
+  if (run_exists_probes(ndb, probes, num_keys,
+                        database_id, string_tab, response) != 0) {
+    free(probes);
+    return;
+  }
+  Uint32 found_count = 0;
+  for (Uint32 i = 0; i < num_keys; i++) {
+    if (probes[i].m_present) found_count++;
+  }
   free(probes);
   char buf[20];
   snprintf(buf, sizeof(buf), ":%u\r\n", found_count);
   response->append(&buf[0]);
+}
+
+// Phase 1.2: TYPE key. Single-key two-probe variant of EXISTS.
+// Reuses run_exists_probes with num_keys = 1; reply word is
+// chosen from probes[0].m_match_kind.
+void rondb_type_command(Ndb *ndb,
+                        const pink::RedisCmdArgsType &argv,
+                        std::string *response,
+                        int worker_id) {
+  struct exists_probe probe;
+  probe.m_key_str = argv[1].c_str();
+  probe.m_key_len = argv[1].size();
+  probe.m_present = false;
+  probe.m_match_kind = EXISTS_MATCH_NONE;
+  probe.m_op = nullptr;
+
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  if (dict == nullptr) {
+    assign_ndb_err_to_response(response, FAILED_GET_DICT, ndb->getNdbError());
+    return;
+  }
+  const NdbDictionary::Table *string_tab = dict->getTable(KEY_TABLE_NAME);
+  const NdbDictionary::Table *hset_tab = dict->getTable(HSET_KEY_TABLE_NAME);
+  if (string_tab == nullptr || hset_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TABLE_OBJECT,
+                               dict->getNdbError());
+    return;
+  }
+  (void)hset_tab;
+  Uint32 database_id = get_current_database(worker_id);
+  if (run_exists_probes(ndb, &probe, 1,
+                        database_id, string_tab, response) != 0) {
+    return;
+  }
+  switch (probe.m_match_kind) {
+    case EXISTS_MATCH_STRING:
+      response->append("+string\r\n");
+      break;
+    case EXISTS_MATCH_HASH:
+      response->append("+hash\r\n");
+      break;
+    default:
+      response->append("+none\r\n");
+      break;
+  }
 }
 
 // Forward decl: set_rows_hdel is defined below set_rows_hset (where it
