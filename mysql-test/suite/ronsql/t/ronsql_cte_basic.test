@@ -1,7 +1,9 @@
 --source include/have_ndb.inc
 
+--disable_warnings
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
+--enable_warnings
 
 # ronsql_cli does not properly refresh NDB dictionary cache for join queries,
 # so the CTE tests (which all involve joins) rely on the RDRS comparison

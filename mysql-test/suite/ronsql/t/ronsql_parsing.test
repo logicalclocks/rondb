@@ -1,7 +1,9 @@
 --echo # vim: set fileencoding=utf-8 : -*- coding: utf-8 -*-
 --source include/have_ndb.inc
+--disable_warnings
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
+--enable_warnings
 
 # mtr doesn't seem to support escape sequences. sh only supports octal escapes.
 # For the sake of readability, we use variables named after hexadecimal values.

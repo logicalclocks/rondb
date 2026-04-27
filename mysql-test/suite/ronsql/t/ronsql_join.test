@@ -1,7 +1,9 @@
 --source include/have_ndb.inc
 
+--disable_warnings
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
+--enable_warnings
 
 --echo
 --echo === Create tables for join tests ===

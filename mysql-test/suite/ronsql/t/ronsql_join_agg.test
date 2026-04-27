@@ -1,7 +1,9 @@
 --source include/have_ndb.inc
 
+--disable_warnings
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
+--enable_warnings
 # ronsql_cli does not properly refresh NDB dictionary cache for join queries,
 # causing "Invalid schema version (code 1227)" errors. Suppress ronsql_cli
 # and rely on RDRS comparison (which handles schema refresh correctly).
