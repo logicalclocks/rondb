@@ -875,31 +875,44 @@ void prepare_hdel_phase1_transaction(struct GetControl *get_ctrl,
                               (void*)get_ctrl);
 }
 
-// Phase 2: per-field LM_Exclusive readTuple on string_keys(
-// redis_key_id, field). Projects num_rows + rondb_key + tot_value_len
-// into key_store->m_key_row. Default AO_IgnoreError for reads
-// means individual NoDataFound (626) on missing fields does not
-// abort the trans; hdel_phase2_callback walks per-op errors via
-// the stashed NdbOperation* to classify each field.
-int add_hdel_field_probe_op(KeyStorage *key_store,
-                            Uint32 database_id,
-                            std::string *response) {
+// Phase 2: per-field deleteTuple on string_keys(redis_key_id,
+// field) that also reads back the row's rondb_key + num_rows
+// before the delete is applied. NDB's deleteTuple accepts a
+// result_record / result_mask just like readTuple; the row's
+// pre-delete column values are projected into key_store->m_key_row.
+// AO_IgnoreError per-op so a NoDataFound (626) on a field that
+// doesn't exist does not abort the trans; hdel_phase2_callback
+// walks per-op errors via the stashed NdbOperation* to classify
+// each field as inline / ext-row / missing.
+//
+// The deleteTuples are staged (NoCommit), so the row is locked
+// for delete but not yet applied. Phase 3 queues per-ordinal
+// string_values deletes for ext fields and folds the field_count
+// bump into the Commit, which applies every staged delete
+// atomically.
+int add_hdel_field_delete_op(KeyStorage *key_store,
+                             Uint32 database_id,
+                             std::string *response) {
   struct key_table *key_row = &key_store->m_key_row;
   // PK is set up by the caller (hash redis_key_id + field name).
-  // Mask 0xFC matches prepare_get_key_row: read every non-PK col.
-  const Uint32 mask = 0xFC;
+  // Mask 0x64 = rondb_key (bit 2) + tot_value_len (bit 5) +
+  // num_rows (bit 6). Phase 3 reads num_rows to decide how many
+  // string_values ordinals need cleanup, and rondb_key for the
+  // ext-row PK.
+  const Uint32 mask = 0x64;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
 
   NdbOperation::OperationOptions opts;
   std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_ABORTOPTION;
+  opts.abortOption = NdbOperation::AO_IgnoreError;
   opts.optionsPresent |= NdbOperation::OperationOptions::OO_BATCH_SAFE_FLAG;
 
-  const NdbOperation *op = key_store->m_trans->readTuple(
+  const NdbOperation *op = key_store->m_trans->deleteTuple(
     pk_key_record[database_id],
     (const char *)key_row,
     entire_key_record[database_id],
     (char *)key_row,
-    NdbOperation::LM_Exclusive,
     mask_ptr,
     &opts,
     sizeof(opts));
@@ -909,10 +922,19 @@ int add_hdel_field_probe_op(KeyStorage *key_store,
                                key_store->m_trans->getNdbError());
     return RONDB_INTERNAL_ERROR;
   }
-  key_store->m_hdel_phase2_probe_op = op;
+  key_store->m_hdel_phase2_op = op;
   return 0;
 }
 
+// NDB's executeAsynchPrepare fires one batch-level callback per
+// submission, not one per op. Per-field results (success vs 626 vs
+// real error) are pulled out of each field's stashed NdbOperation*
+// (m_hdel_phase2_op) inside the batch callback below - that is the
+// "per-row callback" equivalent in NDB's async API. There is no
+// need for a dedicated per-string_keys-delete callback: the
+// per-op error is captured at NoCommit time here, and the actual
+// row delete applies atomically at Phase 3's Commit alongside the
+// ext-row deletes and the field_count bump.
 static void
 hdel_phase2_callback(int result, NdbTransaction *trans, void *aObject) {
   struct GetControl *get_ctrl = (struct GetControl*)aObject;
@@ -932,8 +954,8 @@ hdel_phase2_callback(int result, NdbTransaction *trans, void *aObject) {
   Uint32 chunk_end = chunk_start + get_ctrl->m_hset_phase_chunk_count;
   for (Uint32 i = chunk_start; i < chunk_end; i++) {
     struct KeyStorage *ks = &get_ctrl->m_key_store[i];
-    int op_code = (ks->m_hdel_phase2_probe_op != nullptr)
-                  ? ks->m_hdel_phase2_probe_op->getNdbError().code
+    int op_code = (ks->m_hdel_phase2_op != nullptr)
+                  ? ks->m_hdel_phase2_op->getNdbError().code
                   : 0;
     if (op_code == 0) {
       ks->m_hdel_field_present = true;
@@ -965,14 +987,44 @@ void prepare_hdel_phase2_transaction(struct GetControl *get_ctrl,
                               (void*)get_ctrl);
 }
 
-// Phase 3: commit. Mark every key terminal so the caller can emit
-// the integer reply. Reuses the HSET Phase 3 callback semantics
-// (CompletedSuccess / CompletedFailed for the whole batch) under
-// a thin wrapper for naming clarity.
+// Phase 3: commit. Like hset_phase3_callback, marks every key
+// terminal so the caller can emit the integer reply. Differs from
+// the HSET version in tolerating a 626 at trans level: Phase 2's
+// per-op deleteTuples on missing fields surface 626 (under
+// AO_IgnoreError) and the tolerated code is still visible on the
+// trans's NdbError at the post-Commit callback. Treat 626 as
+// "no real failure", same as hdel_phase1_callback /
+// hdel_phase2_callback do.
+static void
+hdel_phase3_callback(int result, NdbTransaction *trans, void *aObject) {
+  struct GetControl *get_ctrl = (struct GetControl*)aObject;
+  (void)result;
+  assert(get_ctrl->m_num_transactions > 0);
+  int code = trans->getNdbError().code;
+  Uint32 num_keys = get_ctrl->m_num_keys_requested;
+  if (code != 0 && code != 626) {
+    get_ctrl->m_num_keys_failed++;
+    if (get_ctrl->m_error_code == 0) {
+      get_ctrl->m_error_code = code;
+    }
+    for (Uint32 i = 0; i < num_keys; i++) {
+      get_ctrl->m_key_store[i].m_key_state = KeyState::CompletedFailed;
+      get_ctrl->m_key_store[i].m_close_flag = true;
+    }
+  } else {
+    for (Uint32 i = 0; i < num_keys; i++) {
+      get_ctrl->m_key_store[i].m_key_state = KeyState::CompletedSuccess;
+      get_ctrl->m_key_store[i].m_close_flag = true;
+    }
+  }
+  assert(get_ctrl->m_num_keys_outstanding > 0);
+  get_ctrl->m_num_keys_outstanding--;
+}
+
 void prepare_hdel_phase3_transaction(struct GetControl *get_ctrl,
                                      NdbTransaction *trans) {
   trans->executeAsynchPrepare(NdbTransaction::Commit,
-                              &hset_phase3_callback,
+                              &hdel_phase3_callback,
                               (void*)get_ctrl);
 }
 

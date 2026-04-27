@@ -796,7 +796,7 @@ void rondb_hdel_command(Ndb *ndb,
     key_storage[i].m_rec_attr_rondb_key = nullptr;
     key_storage[i].m_rec_attr_expiry_date = nullptr;
     key_storage[i].m_rec_attr_new_field = nullptr;
-    key_storage[i].m_hdel_phase2_probe_op = nullptr;
+    key_storage[i].m_hdel_phase2_op = nullptr;
     key_storage[i].m_hdel_field_present = false;
     key_storage[i].m_key_state = KeyState::NotCompleted;
   }
@@ -1335,13 +1335,20 @@ static int set_rows_hset(Ndb *ndb,
 //   Phase 1: X-locked readTuple on hset_keys(key) - no INSERT side
 //            effect on miss; hash-not-found is a valid result that
 //            short-circuits to :0\r\n.
-//   Phase 2: per-field LM_Exclusive readTuple on string_keys to
-//            classify each field as inline / ext-row / missing.
-//            Chunked by MAX_PARALLEL_KEY_OPS like HSET Phase 2.
-//   Phase 3: per-field deleteTuple on string_keys plus per-ordinal
-//            deleteTuple on string_values for ext fields, plus
+//   Phase 2: per-field deleteTuple on string_keys with read-back of
+//            num_rows + rondb_key (NDB's deleteTuple takes a
+//            result_record / result_mask just like readTuple, so
+//            the row's pre-delete columns project into m_key_row
+//            before the staged delete applies). AO_IgnoreError
+//            per-op so 626 on a missing field does not abort the
+//            trans; the callback classifies each field as inline /
+//            ext-row / missing. Chunked by MAX_PARALLEL_KEY_OPS.
+//   Phase 3: per-ordinal deleteTuple on string_values for fields
+//            that had overflow rows, plus
 //            add_hset_field_count_bump_op(delta = -deleted_count)
-//            folded into the Commit. Chunked when ops fill the
+//            folded into the Commit. The string_keys deletes from
+//            Phase 2 are still held under NoCommit and apply
+//            atomically at this Commit. Chunked when ops fill the
 //            per-trans op buffer.
 //
 // Returns 0 on success or "expected failure" (caller inspects
@@ -1430,9 +1437,9 @@ static int set_rows_hdel(Ndb *ndb,
              key_storage[i].m_key_len);
       memset(&kr->redis_key[2 + key_storage[i].m_key_len], 0, 3);
       set_length((char*)&kr->redis_key[0], key_storage[i].m_key_len);
-      if (add_hdel_field_probe_op(&key_storage[i],
-                                  get_ctrl->m_database_id,
-                                  response) != 0) {
+      if (add_hdel_field_delete_op(&key_storage[i],
+                                   get_ctrl->m_database_id,
+                                   response) != 0) {
         HDEL_DEALIAS_RETURN(1);
       }
     }
@@ -1450,11 +1457,14 @@ static int set_rows_hdel(Ndb *ndb,
     phase2_idx += chunk_count;
   }
 
-  // Phase 3: queue deleteTuples for every present field (plus
-  // per-ordinal ext-row deletes), fold the field_count bump into
-  // the final Commit. Chunk the per-field ops via the existing
+  // Phase 3: Phase 2 already staged the per-field deleteTuples on
+  // string_keys (they're held under NoCommit and apply at this
+  // Commit). All Phase 3 has to do is queue per-ordinal deleteTuples
+  // on string_values for fields with overflow, and fold the
+  // field_count bump into the Commit op. Chunk via the existing
   // hset_phase_chunk helper when ops_in_chunk fills the per-trans
   // buffer.
+  (void)tab_string_keys;
   Uint32 ops_in_chunk = 0;
   for (Uint32 i = 0; i < num_fields; i++) {
     struct KeyStorage *ks = &key_storage[i];
@@ -1478,23 +1488,6 @@ static int set_rows_hdel(Ndb *ndb,
         }
         ops_in_chunk = 0;
       }
-    }
-    if (prepare_complex_delete_row(response,
-                                   tab_string_keys,
-                                   ks) != 0) {
-      HDEL_DEALIAS_RETURN(1);
-    }
-    if (++ops_in_chunk >= MAX_PARALLEL_KEY_OPS) {
-      get_ctrl->m_num_keys_outstanding = 1;
-      prepare_hset_phase_chunk_transaction(get_ctrl, trans);
-      while (get_ctrl->m_num_keys_outstanding > 0) {
-        int finished = execute_ndb(ndb, 1, __LINE__);
-        assert(finished >= 0);
-      }
-      if (get_ctrl->m_num_keys_failed > 0) {
-        HDEL_DEALIAS_RETURN(0);
-      }
-      ops_in_chunk = 0;
     }
   }
   if (get_ctrl->m_num_deleted_fields > 0) {

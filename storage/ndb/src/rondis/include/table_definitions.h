@@ -221,12 +221,14 @@ struct KeyStorage {
     Uint32 m_num_rw_rows;
     Uint32 m_num_current_rw_rows;
     Uint32 m_prev_num_rows;
-    // Phase 1.0.3 single-trans HDEL: per-field probe op (set in
-    // Phase 2's read-pass) and per-field "row was found" flag set
-    // by the Phase-2 callback. m_num_rows is reused to carry the
-    // ext-row count when a field has overflow; m_rondb_key carries
-    // the row's rondb_key for ext-row PK addressing in Phase 3.
-    const NdbOperation *m_hdel_phase2_probe_op;
+    // Phase 1.0.3 single-trans HDEL: per-field op handle (the
+    // Phase-2 deleteTuple-with-readback) and "row was found" flag
+    // set by the Phase-2 callback. The deleteTuple is staged
+    // (NoCommit) and reads back num_rows + rondb_key before the
+    // delete applies. m_num_rows is reused to carry the ext-row
+    // count when a field has overflow; m_rondb_key carries the
+    // row's rondb_key for ext-row PK addressing in Phase 3.
+    const NdbOperation *m_hdel_phase2_op;
     bool m_hdel_field_present;
     Int64 m_expire_at;
     union {

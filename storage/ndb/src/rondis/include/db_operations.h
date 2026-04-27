@@ -96,9 +96,9 @@ int add_hdel_lock_read_op(NdbTransaction *trans,
                           struct GetControl *get_ctrl,
                           Uint32 database_id,
                           std::string *response);
-int add_hdel_field_probe_op(KeyStorage *key_store,
-                            Uint32 database_id,
-                            std::string *response);
+int add_hdel_field_delete_op(KeyStorage *key_store,
+                             Uint32 database_id,
+                             std::string *response);
 void prepare_hdel_phase1_transaction(struct GetControl *get_ctrl,
                                      NdbTransaction *trans);
 void prepare_hdel_phase2_transaction(struct GetControl *get_ctrl,
