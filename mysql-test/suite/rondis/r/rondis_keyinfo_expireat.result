@@ -1,0 +1,49 @@
+#
+# Set up: a string, a populated hash, an emptied hash.
+#
+OK
+1
+1
+1
+#
+# EXPIREAT (now + 60) on existing string -> :1; expiry_date
+# equals the supplied timestamp exactly (no now+ttl arithmetic).
+#
+1
+str_a_matches_target=1
+#
+# EXPIREAT on existing hash -> :1; hset_keys.expiry_date set.
+#
+1
+hash_a_matches_target=1
+#
+# EXPIREAT with a timestamp in the past -> still applied :1
+# (Phase 1.10 will hide the row from reads; the EXPIREAT
+# reply itself does not check whether the target is in the
+# past). expiry_date stores the supplied past timestamp.
+#
+OK
+1
+str_past_matches=
+#
+# EXPIREAT on a fully-HDEL'd hash -> :0.
+#
+0
+#
+# EXPIREAT on a missing key -> :0.
+#
+0
+#
+# EXPIREAT 0 / EXPIREAT -1 are rejected with an error.
+#
+ERR invalid expire time in set
+
+ERR invalid expire time in set
+
+#
+# End-to-end: EXPIREAT then TTL on the same key falls in
+# window. Same probe / encode round-trip as EXPIRE.
+#
+OK
+1
+TTL ttl_round in_window=1

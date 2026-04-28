@@ -1222,31 +1222,66 @@ void rondb_pttl_command(Ndb *ndb,
   rondb_ttl_or_pttl(ndb, argv, response, worker_id, /*millis=*/true);
 }
 
-// Phase 1.5 / 1.6: EXPIRE / PEXPIRE key {seconds|millis}. Reply :1 if
-// applied, :0 if missing. Rejects input <= 0 (Redis-canonical, also
-// avoids generate_expire_at's -1 sentinel and the (N+999)/1000 ceil
-// division collapsing PX 0 to 0). Probes string_keys then hset_keys
-// via run_exists_probes to learn the type, then issues a single
-// updateTuple writing expiry_date on the appropriate table.
+// Phase 1.5 / 1.6 / 1.7: EXPIRE / PEXPIRE / EXPIREAT key value. Reply
+// :1 if applied, :0 if missing. Rejects input <= 0 (Redis-canonical,
+// also avoids the (N+999)/1000 ceil division collapsing PX/PXAT 0 to
+// 0 and the generate_expire_at -1 sentinel). Probes string_keys then
+// hset_keys via run_exists_probes to learn the type, then issues a
+// single updateTuple writing expiry_date on the appropriate table.
 //
-// PEXPIRE rounds millis up to the next whole second (matches the
-// SET ... PX path at commands.cc:2171). expiry_date storage on both
-// tables is TIMESTAMP - second granularity - so any sub-second remainder
-// becomes "round up by ~1s" for the user. Acceptable: caller asked for
-// PEXPIRE and got a TTL strictly >= what they requested.
+// PEXPIRE / PXAT round millis up to the next whole second (matches
+// the SET ... PX path at commands.cc:2171). expiry_date storage on
+// both tables is TIMESTAMP - second granularity - so any sub-second
+// remainder becomes "round up by ~1s" for the user. Acceptable:
+// caller asked for ms precision and got a TTL strictly >= what they
+// requested.
+//
+// EXAT / PXAT take the absolute target epoch directly; EX / PX add
+// the relative TTL to my_micro_time(). All four converge on a single
+// abs_seconds value that is clamped to g_max_expire_at and
+// mi_int4-encoded into the low 4 bytes of an Int64 (matches the
+// in-buffer layout the SET ... EX write path uses, see
+// generate_expire_at:284 and the NDB TIMESTAMP read path's
+// mi_sint4korr decode at commands.cc:1191).
+enum ExpireMode {
+  EXPIRE_EX,
+  EXPIRE_PX,
+  EXPIRE_EXAT,
+  EXPIRE_PXAT,
+};
 static void rondb_expire_or_pexpire(Ndb *ndb,
                                     const pink::RedisCmdArgsType &argv,
                                     std::string *response,
                                     int worker_id,
-                                    bool millis) {
-  Int64 ttl_seconds = 0;
-  if (get_int64(argv[2], response, &ttl_seconds) == false) return;
-  if (ttl_seconds <= 0) {
+                                    enum ExpireMode mode) {
+  Int64 raw = 0;
+  if (get_int64(argv[2], response, &raw) == false) return;
+  if (raw <= 0) {
     assign_generic_err_to_response(response, REDIS_INVALID_EXPIRE_TIME);
     return;
   }
-  if (millis) {
-    ttl_seconds = (ttl_seconds + 999) / 1000;
+
+  // Compute target absolute epoch seconds. Mirrors generate_expire_at's
+  // clamp-at-g_max_expire_at semantics, but with explicit input
+  // dispatch so EXAT / PXAT bypass the now+ttl math.
+  Int64 abs_seconds;
+  Int64 now_seconds = (Int64)my_micro_time() / 1000000;
+  switch (mode) {
+    case EXPIRE_EX:
+      abs_seconds = now_seconds + raw;
+      break;
+    case EXPIRE_PX:
+      abs_seconds = now_seconds + (raw + 999) / 1000;
+      break;
+    case EXPIRE_EXAT:
+      abs_seconds = raw;
+      break;
+    case EXPIRE_PXAT:
+      abs_seconds = (raw + 999) / 1000;
+      break;
+  }
+  if (abs_seconds > g_max_expire_at) {
+    abs_seconds = g_max_expire_at;
   }
 
   struct exists_probe probe;
@@ -1279,13 +1314,13 @@ static void rondb_expire_or_pexpire(Ndb *ndb,
   }
 
   // Use the same encoding as the SET ... EX write path. m_expire_at
-  // ends up holding mi_int4 BE bytes of (now + ttl) in its low 4
-  // bytes; the helper assigns to key_row.expiry_date via Int64
-  // truncation, which writes those BE bytes verbatim into the
-  // buffer at the column's offset. NDB stores them, mi_sint4korr
-  // (TTL read path) recovers the native epoch seconds.
+  // holds mi_int4 BE bytes in its low 4 bytes; update_expiry_*_row
+  // assigns to key_row.expiry_date via Int64 truncation, which
+  // writes those BE bytes verbatim into the buffer at the column's
+  // offset. NDB stores them, mi_sint4korr (TTL read path) recovers
+  // the native epoch seconds.
   Int64 m_expire_at = 0;
-  generate_expire_at(&m_expire_at, ttl_seconds);
+  mi_int4store(&m_expire_at, abs_seconds);
 
   int err;
   if (probe.m_match_kind == EXISTS_MATCH_STRING) {
@@ -1317,14 +1352,21 @@ void rondb_expire_command(Ndb *ndb,
                           const pink::RedisCmdArgsType &argv,
                           std::string *response,
                           int worker_id) {
-  rondb_expire_or_pexpire(ndb, argv, response, worker_id, /*millis=*/false);
+  rondb_expire_or_pexpire(ndb, argv, response, worker_id, EXPIRE_EX);
 }
 
 void rondb_pexpire_command(Ndb *ndb,
                            const pink::RedisCmdArgsType &argv,
                            std::string *response,
                            int worker_id) {
-  rondb_expire_or_pexpire(ndb, argv, response, worker_id, /*millis=*/true);
+  rondb_expire_or_pexpire(ndb, argv, response, worker_id, EXPIRE_PX);
+}
+
+void rondb_expireat_command(Ndb *ndb,
+                            const pink::RedisCmdArgsType &argv,
+                            std::string *response,
+                            int worker_id) {
+  rondb_expire_or_pexpire(ndb, argv, response, worker_id, EXPIRE_EXAT);
 }
 
 // Forward decl: set_rows_hdel is defined below set_rows_hset (where it
