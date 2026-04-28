@@ -275,6 +275,82 @@ WITH sums AS (
   FROM cte_orders GROUP BY o_custkey)
 SELECT k, t FROM sums WHERE t > 100|
 
+# Phase H.1 — filter operator + conjunct matrix on CTE_SCAN root.
+# Mirrors the CTE_LOOKUP coverage in ronsql_cte_basic.test Tests
+# 15-18 for the CTE_SCAN code path.
+
+--echo
+--echo
+--echo === Test 12a (H.1): != on CTE_SCAN agg output ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t != 100 GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t != 100 GROUP BY k|
+
+--echo
+--echo
+--echo === Test 12b (H.1): <= on CTE_SCAN agg output ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t <= 100 GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t <= 100 GROUP BY k|
+
+--echo
+--echo
+--echo === Test 13 (H.1): multi-conjunct AND on CTE_SCAN root ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE k > 100 AND t < 200 GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE k > 100 AND t < 200 GROUP BY k|
+
+--echo
+--echo
+--echo === Test 14 (H.1): all-reject filter on CTE_SCAN ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t > 1000000 GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t > 1000000 GROUP BY k|
+
 DELIMITER ;|
 
 --echo

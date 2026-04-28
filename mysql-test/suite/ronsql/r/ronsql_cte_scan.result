@@ -271,6 +271,100 @@ SELECT k, t FROM sums WHERE t > 100|
 k	t
 100	125
 
+
+=== Test 12a (H.1): != on CTE_SCAN agg output ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t != 100 GROUP BY k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t != 100 GROUP BY k|
+k	SUM(t)
+100	125
+300	90
+
+
+=== Test 12b (H.1): <= on CTE_SCAN agg output ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t <= 100 GROUP BY k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t <= 100 GROUP BY k|
+k	SUM(t)
+200	100
+300	90
+
+
+=== Test 13 (H.1): multi-conjunct AND on CTE_SCAN root ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE k > 100 AND t < 200 GROUP BY k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE k > 100 AND t < 200 GROUP BY k|
+k	SUM(t)
+200	100
+300	90
+
+
+=== Test 14 (H.1): all-reject filter on CTE_SCAN ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t > 1000000 GROUP BY k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t > 1000000 GROUP BY k|
+k	SUM(t)
+
 === Cleanup ===
 DROP TABLE cte_customer;
 DROP TABLE cte_orders;
