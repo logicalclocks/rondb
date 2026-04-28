@@ -1657,18 +1657,14 @@ RS_Status CompileIndexRanges(const NdbTransaction* transaction,
       IndexBound& lower = range.lower.value();
       bound.low_inclusive = lower.inclusive;
       bound.low_key_count = lower.values.size();
-      Uint32 curr_attrId = 0;
       Uint32 curr_pos = 0;
-      bool ret = NdbDictionary::getFirstAttrId(index_rec, curr_attrId);
-      if (!ret) {
-        return RS_SERVER_ERROR("Failed to get first attribute ID for index record");
-      }
       for (auto& node : lower.values) {
         node.col = index_params.cols[curr_pos];
         RS_Status status = GenerateBinary(node, node.binary);
         if (status.http_code != HTTP_CODE::SUCCESS) {
           return status;
         }
+        Uint32 curr_attrId = node.col->getAttrId();
         char* field = NdbDictionary::getValuePtr(index_rec, row_ptr, curr_attrId);
         DEB_SCAN("curr_pos: " << curr_pos << ", curr_attrId: " << curr_attrId
           << ", col: " << node.col->getName()
@@ -1679,7 +1675,7 @@ RS_Status CompileIndexRanges(const NdbTransaction* transaction,
         if (node.value.kind == Node::ParsedValue::Kind::NULLVAL) {
           Uint32 nullbit_byte_offset = 0;
           Uint32 nullbit_bit_in_byte = 0;
-          ret = NdbDictionary::getNullBitOffset(index_rec, curr_attrId,
+          bool ret = NdbDictionary::getNullBitOffset(index_rec, curr_attrId,
               nullbit_byte_offset,
               nullbit_bit_in_byte);
           if (!ret) {
@@ -1689,7 +1685,6 @@ RS_Status CompileIndexRanges(const NdbTransaction* transaction,
         } else {
           memcpy(field, node.binary.data(), node.binary.size());
         }
-        NdbDictionary::getNextAttrId(index_rec, curr_attrId);
         curr_pos++;
       }
       bound.low_key = row_ptr;
@@ -1719,18 +1714,14 @@ RS_Status CompileIndexRanges(const NdbTransaction* transaction,
       IndexBound& upper = range.upper.value();
       bound.high_inclusive = upper.inclusive;
       bound.high_key_count = upper.values.size();
-      Uint32 curr_attrId = 0;
       Uint32 curr_pos = 0;
-      bool ret = NdbDictionary::getFirstAttrId(index_rec, curr_attrId);
-      if (!ret) {
-        return RS_SERVER_ERROR("Failed to get first attribute ID for index record");
-      }
       for (auto& node : upper.values) {
         node.col = index_params.cols[curr_pos];
         RS_Status status = GenerateBinary(node, node.binary);
         if (status.http_code != HTTP_CODE::SUCCESS) {
           return status;
         }
+        Uint32 curr_attrId = node.col->getAttrId();
         char* field = NdbDictionary::getValuePtr(index_rec, row_ptr, curr_attrId);
         DEB_SCAN("curr_pos: " << curr_pos << ", curr_attrId: " << curr_attrId
           << ", col: " << node.col->getName()
@@ -1741,7 +1732,7 @@ RS_Status CompileIndexRanges(const NdbTransaction* transaction,
         if (node.value.kind == Node::ParsedValue::Kind::NULLVAL) {
           Uint32 nullbit_byte_offset = 0;
           Uint32 nullbit_bit_in_byte = 0;
-          ret = NdbDictionary::getNullBitOffset(index_rec, curr_attrId,
+          bool ret = NdbDictionary::getNullBitOffset(index_rec, curr_attrId,
               nullbit_byte_offset,
               nullbit_bit_in_byte);
           if (!ret) {
@@ -1751,7 +1742,6 @@ RS_Status CompileIndexRanges(const NdbTransaction* transaction,
         } else {
           memcpy(field, node.binary.data(), node.binary.size());
         }
-        NdbDictionary::getNextAttrId(index_rec, curr_attrId);
         curr_pos++;
       }
       bound.high_key = row_ptr;

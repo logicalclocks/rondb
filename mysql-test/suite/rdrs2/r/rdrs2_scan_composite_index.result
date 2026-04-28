@@ -1,0 +1,30 @@
+===== Prepare table to exercise a composite secondary-index scan =====
+
+The index columns (customer_number, occurred_at) have non-contiguous
+base-table attrIds because occurred_at (col 1) sits inside the primary
+key while customer_number (col 3) is after it. Before the fix in
+CompileIndexRanges in rdrs_dal.cpp, this shape corrupted the scan
+buffer because the code iterated the record's attrIds in ascending
+order and wrote each user-supplied bound value at the wrong column's
+offset. Three rows sharing one customer_number are enough to trip it.
+CREATE DATABASE db1;
+USE db1;
+CREATE TABLE t1 (
+client_id       VARCHAR(40) NOT NULL,
+occurred_at     BIGINT      NOT NULL,
+event_id        VARCHAR(36) NOT NULL,
+customer_number VARCHAR(16),
+v               VARCHAR(20),
+PRIMARY KEY (client_id, occurred_at, event_id),
+KEY idx_cn_ts (customer_number, occurred_at)
+) ENGINE=ndbcluster;
+INSERT INTO t1 VALUES
+('ca', 1000, 'ea', '91861192135020', 'x'),
+('cb', 2000, 'eb', '91861192135020', 'y'),
+('cc', 3000, 'ec', '91861192135020', 'z');
+===== DESC ordered scan on the composite secondary index =====
+{"data":[{"customer_number":"91861192135020","occurred_at":3000,"event_id":"ec"},{"customer_number":"91861192135020","occurred_at":2000,"event_id":"eb"},{"customer_number":"91861192135020","occurred_at":1000,"event_id":"ea"}],"rows":3}
+===== ASC ordered scan on the composite secondary index =====
+{"data":[{"customer_number":"91861192135020","occurred_at":1000,"event_id":"ea"},{"customer_number":"91861192135020","occurred_at":2000,"event_id":"eb"},{"customer_number":"91861192135020","occurred_at":3000,"event_id":"ec"}],"rows":3}
+USE test;
+DROP DATABASE db1;
