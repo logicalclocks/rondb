@@ -122,7 +122,10 @@ void TTLPurger::SchemaWatcherJob() {
   NdbEventOperation* ev_op = nullptr;
   NdbEventOperation* op = nullptr;
   NdbDictionary::Dictionary::List list;
-  const char* message_buf = "API_OK";
+  // NDB VARBINARY on-wire format: 1-byte length prefix + data.
+  // setValue("message", ...) reads the length byte and then that many data
+  // bytes from the buffer; a bare C string literal is mis-sized.
+  const char message_buf[] = {6, 'A', 'P', 'I', '_', 'O', 'K'};
 #ifdef DEBUG_EVENT
   Uint32 event_nums = 0;
 #endif
