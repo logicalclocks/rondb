@@ -113,6 +113,11 @@ void rondb_pexpireat_command(Ndb *ndb,
                              std::string *response,
                              int worker_id);
 
+void rondb_persist_command(Ndb *ndb,
+                           const pink::RedisCmdArgsType &argv,
+                           std::string *response,
+                           int worker_id);
+
 void rondb_mset_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,

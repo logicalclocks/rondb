@@ -1,0 +1,36 @@
+#
+# Set up: a string with TTL, a string without TTL, a hash
+# with TTL on the hset_keys row, and a fully-HDEL'd hash.
+#
+OK
+OK
+1
+1
+1
+1
+#
+# PERSIST on string with TTL -> :1; subsequent TTL -> :-1.
+#
+1
+-1
+#
+# PERSIST again on the same key -> :0 (no TTL to clear).
+#
+0
+#
+# PERSIST on plain SET (no TTL) -> :0.
+#
+0
+#
+# PERSIST on hash with TTL -> :1; subsequent TTL on hash -> :-1.
+#
+1
+-1
+#
+# PERSIST on a fully-HDEL'd hash -> :0 (matches EXISTS = 0).
+#
+0
+#
+# PERSIST on a missing key -> :0.
+#
+0

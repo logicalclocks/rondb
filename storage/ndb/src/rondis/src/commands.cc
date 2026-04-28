@@ -1376,6 +1376,98 @@ void rondb_pexpireat_command(Ndb *ndb,
   rondb_expire_or_pexpire(ndb, argv, response, worker_id, EXPIRE_PXAT);
 }
 
+// Phase 1.9: PERSIST key. Reply :1 if a TTL was cleared, :0 if the
+// key is missing or already had no TTL. Works on both string and hash
+// keys.
+//
+// run_exists_probes already projects expiry_date alongside the
+// existence check (mask 0xFC for string_keys / 0xE for hset_keys -
+// see Phase 1.3 commit), so we can decide :0-vs-:1 from the probe
+// result without another round-trip. The TTL-cleared write reuses
+// the EXPIRE update helpers with g_max_expire_at as the new
+// expiry - matches the no-TTL sentinel that the SET ... no-EX
+// path leaves alone (and that rondb_ttl_or_pttl interprets as :-1).
+void rondb_persist_command(Ndb *ndb,
+                           const pink::RedisCmdArgsType &argv,
+                           std::string *response,
+                           int worker_id) {
+  struct exists_probe probe;
+  probe.m_key_str = argv[1].c_str();
+  probe.m_key_len = argv[1].size();
+  probe.m_present = false;
+  probe.m_match_kind = EXISTS_MATCH_NONE;
+  probe.m_trans = nullptr;
+
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  if (dict == nullptr) {
+    assign_ndb_err_to_response(response, FAILED_GET_DICT, ndb->getNdbError());
+    return;
+  }
+  const NdbDictionary::Table *string_tab = dict->getTable(KEY_TABLE_NAME);
+  if (string_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TABLE_OBJECT,
+                               dict->getNdbError());
+    return;
+  }
+  Uint32 database_id = get_current_database(worker_id);
+  if (run_exists_probes(ndb, &probe, 1,
+                        database_id, string_tab, response) != 0) {
+    return;
+  }
+  if (probe.m_match_kind == EXISTS_MATCH_NONE) {
+    response->append(":0\r\n");
+    return;
+  }
+
+  // Decide whether the row currently has a TTL. Same null-bit / sentinel
+  // logic as rondb_ttl_or_pttl (commands.cc:1184): string_keys
+  // expiry_date null bit is bit 1 of null_bits, hset_keys is bit 0.
+  bool expiry_is_null;
+  const Int32 *expiry_ptr;
+  if (probe.m_match_kind == EXISTS_MATCH_STRING) {
+    expiry_is_null = (probe.m_string_buf.null_bits & 0x2) != 0;
+    expiry_ptr = &probe.m_string_buf.expiry_date;
+  } else {
+    expiry_is_null = (probe.m_hset_buf.null_bits & 0x1) != 0;
+    expiry_ptr = &probe.m_hset_buf.expiry_date;
+  }
+  Int32 expiry_seconds = mi_sint4korr((const unsigned char*)expiry_ptr);
+  if (expiry_is_null || expiry_seconds == g_max_expire_at) {
+    response->append(":0\r\n");
+    return;
+  }
+
+  // Encode g_max_expire_at the same way EXPIRE / EXPIREAT do.
+  Int64 m_expire_at = 0;
+  mi_int4store(&m_expire_at, g_max_expire_at);
+
+  int err;
+  if (probe.m_match_kind == EXISTS_MATCH_STRING) {
+    err = update_expiry_string_row(ndb,
+                                   probe.m_key_str,
+                                   probe.m_key_len,
+                                   m_expire_at,
+                                   database_id,
+                                   response);
+  } else {
+    err = update_expiry_hset_row(ndb,
+                                 probe.m_key_str,
+                                 probe.m_key_len,
+                                 m_expire_at,
+                                 database_id,
+                                 response);
+  }
+  if (err == 0) {
+    response->append(":1\r\n");
+  } else if (err == 626) {
+    // Row vanished between probe and update (concurrent DEL /
+    // HDEL-of-last-field). Redis-canonical reply for missing key.
+    response->append(":0\r\n");
+  }
+  // Other errors: response already populated by update_expiry_*_row.
+}
+
 // Forward decl: set_rows_hdel is defined below set_rows_hset (where it
 // can sit next to its mirror) but rondb_hdel_command needs to call it.
 static int set_rows_hdel(Ndb *ndb,
