@@ -3220,6 +3220,31 @@ void Suma::SyncRecord::nextScan(Signal *signal) {
    * Ignore TTL in suma scan
    */
   ScanFragReq::setTTLIgnoreFragFlag(req->requestInfo, 1);
+  /*
+   * Ring buffer related
+   * For event subscriptions (replication), show meta rows so they are
+   * captured by the binlog injector.
+   * For index build scans (SingleTableScan), hide meta rows so they
+   * don't pollute the new index with zero-default values.
+   * Unknown subscription types default to hidden (safer than leaking
+   * meta rows to an unknown consumer); add explicit cases as needed.
+   */
+  {
+    Uint32 subType = subPtr.p->m_subscriptionType;
+    Uint32 show_meta;
+    switch (subType) {
+      case SubCreateReq::TableEvent:
+        show_meta = 1;
+        break;
+      case SubCreateReq::SingleTableScan:
+        show_meta = 0;
+        break;
+      default:
+        show_meta = 0;
+        break;
+    }
+    ScanFragReq::setRingBufferShowMetaFragFlag(req->requestInfo, show_meta);
+  }
 
   req->fragmentNoKeyLen = fd.m_fragDesc.m_fragmentNo;
   req->schemaVersion = tabPtr.p->m_schemaVersion;

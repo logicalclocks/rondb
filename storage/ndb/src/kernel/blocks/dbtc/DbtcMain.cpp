@@ -4182,6 +4182,8 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     regCachePtr->m_noWait = TcKeyReq::getNoWaitFlag(Treqinfo);
     regCachePtr->m_ttl_ignore = TcKeyReq::getTTLIgnoreFlag(Treqinfo);
     regCachePtr->m_ttl_only_expired = TcKeyReq::getTTLOnlyExpiredFlag(Treqinfo);
+    regCachePtr->m_ring_buffer_op = TcKeyReq::getRingBufferOpFlag(Treqinfo);
+    regCachePtr->m_ring_buffer_show_meta = TcKeyReq::getRingBufferShowMetaFlag(Treqinfo);
   } else {
     TkeyLength = TcKeyReq::getKeyLength(Treqinfo);
     TattrLen = TcKeyReq::getAttrinfoLen(tcKeyReq->attrLen);
@@ -4195,6 +4197,8 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
      */
     regCachePtr->m_ttl_ignore = 0;
     regCachePtr->m_ttl_only_expired = 0;
+    regCachePtr->m_ring_buffer_op = 0;
+    regCachePtr->m_ring_buffer_show_meta = 0;
   }
   bool util_flag = ZFALSE;
   if (unlikely(refToMain(sendersBlockRef) == DBUTIL))
@@ -5461,6 +5465,8 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
     (replica_applier == ApiConnectRecord::TF_REPLICA_APPLIER));
   LqhKeyReq::setTTLIgnoreFlag(Tdata10, regCachePtr->m_ttl_ignore);
   LqhKeyReq::setTTLOnlyExpiredFlag(Tdata10, regCachePtr->m_ttl_only_expired);
+  LqhKeyReq::setRingBufferOpFlag(Tdata10, regCachePtr->m_ring_buffer_op);
+  LqhKeyReq::setRingBufferShowMetaFlag(Tdata10, regCachePtr->m_ring_buffer_show_meta);
 
   /* -----------------------------------------------------------------------
    * If we are sending a short LQHKEYREQ, then there will be some AttrInfo
@@ -16215,6 +16221,8 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   ScanFragReq::setTTLOnlyExpiredFragFlag(tmp,
                       ScanTabReq::getTTLOnlyExpiredFlag(ri));
   ScanFragReq::setParallelOrderedScanFlag(tmp, par_ordered_scan_flag);
+  ScanFragReq::setRingBufferShowMetaFragFlag(tmp,
+                      ScanTabReq::getRingBufferShowMetaFlag(ri));
 
   if (unlikely(ScanTabReq::getViaSPJFlag(ri))) {
     jam();

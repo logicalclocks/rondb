@@ -1,0 +1,25 @@
+# ndbapi_ring_buffer_test.test
+#
+# MTR wrapper for the NdbRingBufferWriter NDB API test binary.
+# Runs the standalone C++ test program and verifies all cases pass.
+
+--source include/have_ndb.inc
+--source include/have_ndbapi_examples.inc
+
+--echo #
+--echo # Running NdbRingBufferWriter NDB API test suite
+--echo #
+
+# Ensure the test database exists
+--disable_warnings
+CREATE DATABASE IF NOT EXISTS test;
+--enable_warnings
+
+# Run the NDB API test binary.
+# Stdout (test results) goes to MTR result for comparison.
+# Stderr is discarded.
+--exec $NDB_EXAMPLES_DIR/ndb_ndbapi_ring_buffer_test 127.0.0.1 $MASTER_MYPORT "$NDB_CONNECTSTRING" 2>/dev/null
+
+--echo #
+--echo # Done
+--echo #

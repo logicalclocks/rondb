@@ -1066,7 +1066,10 @@ void DblqhProxy::execALTER_TAB_REQ(Signal *signal) {
   Uint32 ssId = getSsId(req);
   Ss_ALTER_TAB_REQ &ss = ssSeize<Ss_ALTER_TAB_REQ>(ssId);
   ss.m_req = *req;
-  ndbrequire(signal->getLength() == AlterTabReq::SignalLength);
+  const Uint32 sig_len = signal->getLength();
+  ndbrequire(sig_len == AlterTabReq::SignalLength ||
+             sig_len == AlterTabReq::SignalLengthWithRingBuffer);
+  ss.m_sig_len = sig_len;
 
   SectionHandle handle(this, signal);
   saveSections(ss, handle);
@@ -1084,7 +1087,7 @@ void DblqhProxy::sendALTER_TAB_REQ(Signal *signal, Uint32 ssId,
   req->senderRef = reference();
   req->senderData = ssId;
   sendSignalNoRelease(workerRef(ss.m_worker), GSN_ALTER_TAB_REQ, signal,
-                      AlterTabReq::SignalLength, JBB, handle);
+                      ss.m_sig_len, JBB, handle);
 }
 
 void DblqhProxy::execALTER_TAB_CONF(Signal *signal) {

@@ -8206,6 +8206,12 @@ Backup::sendScanFragReq(Signal* signal,
      * Ignore TTL in backup scan
      */
     ScanFragReq::setTTLIgnoreFragFlag(req->requestInfo, 1);
+    /*
+     * Ring buffer related
+     * Show meta rows in backup/LCP scan so meta rows (ring_idx=0)
+     * are included in the backup and LCP data files.
+     */
+    ScanFragReq::setRingBufferShowMetaFragFlag(req->requestInfo, 1);
     if (ptr.p->is_lcp()) {
       ScanFragReq::setScanPrio(req->requestInfo, 1);
       ScanFragReq::setNoDiskFlag(req->requestInfo, 1);

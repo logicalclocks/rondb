@@ -682,13 +682,22 @@ void Dbtup::checkImmediateTriggersAfterInsert(KeyReqStruct *req_struct,
 
   if (regOperPtr->op_struct.bit_field.m_triggers ==
       TupKeyReq::OP_PRIMARY_REPLICA) {
+    /*
+     * Ring buffer meta rows: skip secondary index and FK triggers.
+     * Meta rows have zero-default values for user columns which would
+     * collide on UNIQUE indexes and violate FK constraints.
+     */
+    const bool skip_idx_fk =
+        unlikely(is_ring_buffer_meta_tuple(regTablePtr,
+                                           req_struct->m_tuple_ptr));
+
     if (!regTablePtr->afterInsertTriggers.isEmpty()) {
       jam();
       fireImmediateTriggers(req_struct, regTablePtr->afterInsertTriggers,
-                            regOperPtr, disk);
+                            regOperPtr, disk, skip_idx_fk);
     }
 
-    if (!regTablePtr->deferredInsertTriggers.isEmpty()) {
+    if (!skip_idx_fk && !regTablePtr->deferredInsertTriggers.isEmpty()) {
       checkDeferredTriggersDuringPrepare(
           req_struct, regTablePtr->deferredInsertTriggers, regOperPtr, disk);
     }
@@ -705,19 +714,23 @@ void Dbtup::checkImmediateTriggersAfterUpdate(KeyReqStruct *req_struct,
 
   if (regOperPtr->op_struct.bit_field.m_triggers ==
       TupKeyReq::OP_PRIMARY_REPLICA) {
+    const bool skip_idx_fk =
+        unlikely(is_ring_buffer_meta_tuple(regTablePtr,
+                                           req_struct->m_tuple_ptr));
+
     if (!regTablePtr->afterUpdateTriggers.isEmpty()) {
       jam();
       fireImmediateTriggers(req_struct, regTablePtr->afterUpdateTriggers,
-                            regOperPtr, disk);
+                            regOperPtr, disk, skip_idx_fk);
     }
 
     if (!regTablePtr->constraintUpdateTriggers.isEmpty()) {
       jam();
       fireImmediateTriggers(req_struct, regTablePtr->constraintUpdateTriggers,
-                            regOperPtr, disk);
+                            regOperPtr, disk, skip_idx_fk);
     }
 
-    if (!regTablePtr->deferredUpdateTriggers.isEmpty()) {
+    if (!skip_idx_fk && !regTablePtr->deferredUpdateTriggers.isEmpty()) {
       jam();
       checkDeferredTriggersDuringPrepare(
           req_struct, regTablePtr->deferredUpdateTriggers, regOperPtr, disk);
@@ -735,12 +748,16 @@ void Dbtup::checkImmediateTriggersAfterDelete(KeyReqStruct *req_struct,
 
   if (regOperPtr->op_struct.bit_field.m_triggers ==
       TupKeyReq::OP_PRIMARY_REPLICA) {
+    const bool skip_idx_fk =
+        unlikely(is_ring_buffer_meta_tuple(regTablePtr,
+                                           req_struct->m_tuple_ptr));
+
     if (!regTablePtr->afterDeleteTriggers.isEmpty()) {
       fireImmediateTriggers(req_struct, regTablePtr->afterDeleteTriggers,
-                            regOperPtr, disk);
+                            regOperPtr, disk, skip_idx_fk);
     }
 
-    if (!regTablePtr->deferredDeleteTriggers.isEmpty()) {
+    if (!skip_idx_fk && !regTablePtr->deferredDeleteTriggers.isEmpty()) {
       checkDeferredTriggersDuringPrepare(
           req_struct, regTablePtr->deferredDeleteTriggers, regOperPtr, disk);
     }
@@ -864,24 +881,32 @@ void Dbtup::checkDeferredTriggers(KeyReqStruct *req_struct,
    */
   set_commit_change_mask_info(regTablePtr, req_struct, regOperPtr);
 
-  /**
-   * Note that there are two variants of deferred trigger/constraints:
-   * 1) Triggers created by a 'NO ACTION' foreign key are deferred by
-   *    declaration, and managed by deferred<Op>Triggers list.
-   *    These are always fired at commit time (below)
-   * 2) Any 'immediate' constraints in after<Op>Triggers may be
-   *    deferred by setting 'TupKeyReq::deferred_constraints'.
-   *    These should be conditionally fired here only if not
-   *    already handled 'immediate'.
-   */
-  if (!deferred_list->isEmpty()) {
-    jam();
-    fireDeferredTriggers(req_struct, *deferred_list, regOperPtr, disk);
-  }
+  {
+    /**
+     * Note that there are two variants of deferred trigger/constraints:
+     * 1) Triggers created by a 'NO ACTION' foreign key are deferred by
+     *    declaration, and managed by deferred<Op>Triggers list.
+     *    These are always fired at commit time (below)
+     * 2) Any 'immediate' constraints in after<Op>Triggers may be
+     *    deferred by setting 'TupKeyReq::deferred_constraints'.
+     *    These should be conditionally fired here only if not
+     *    already handled 'immediate'.
+     */
+    const bool skip_idx_fk =
+        unlikely(is_ring_buffer_meta_tuple(regTablePtr,
+                                           req_struct->m_tuple_ptr));
 
-  if (req_struct->m_deferred_constraints && !constraint_list->isEmpty()) {
-    jam();
-    fireDeferredConstraints(req_struct, *constraint_list, regOperPtr, disk);
+    if (!deferred_list->isEmpty()) {
+      jam();
+      fireDeferredTriggers(req_struct, *deferred_list, regOperPtr, disk,
+                           skip_idx_fk);
+    }
+
+    if (req_struct->m_deferred_constraints && !constraint_list->isEmpty()) {
+      jam();
+      fireDeferredConstraints(req_struct, *constraint_list, regOperPtr, disk,
+                              skip_idx_fk);
+    }
   }
 
 end:
@@ -1031,11 +1056,25 @@ static bool is_constraint(const Dbtup::TupTriggerData *trigPtr) {
 
 void Dbtup::fireImmediateTriggers(KeyReqStruct *req_struct,
                                   TupTriggerData_list &triggerList,
-                                  Operationrec *const regOperPtr, bool disk) {
+                                  Operationrec *const regOperPtr, bool disk,
+                                  bool skip_index_fk) {
   TriggerPtr trigPtr;
   bool ret = triggerList.first(trigPtr);
   while (ret) {
     jam();
+
+    /* Skip secondary index and FK triggers for ring buffer meta rows.
+     * FK constraints are blocked at DDL time (ha_ndb_ddl_fk.cc), but
+     * FK types kept here as a safeguard. */
+    if (unlikely(skip_index_fk) &&
+        (trigPtr.p->triggerType == TriggerType::SECONDARY_INDEX ||
+         trigPtr.p->triggerType == TriggerType::FK_PARENT ||
+         trigPtr.p->triggerType == TriggerType::FK_CHILD)) {
+      jam();
+      ret = triggerList.next(trigPtr);
+      continue;
+    }
+
     if (trigPtr.p->monitorAllAttributes ||
         trigPtr.p->attributeMask.overlaps(req_struct->changeMask)) {
       jam();
@@ -1065,12 +1104,25 @@ void
 Dbtup::fireDeferredConstraints(KeyReqStruct *req_struct,
                                TupTriggerData_list& triggerList,
                                Operationrec* const regOperPtr,
-                               bool disk)
+                               bool disk,
+                               bool skip_index_fk)
 {
   TriggerPtr trigPtr;
   bool ret = triggerList.first(trigPtr);
   while (ret) {
     jam();
+
+    /* Skip secondary index and FK triggers for ring buffer meta rows.
+     * FK constraints are blocked at DDL time (ha_ndb_ddl_fk.cc), but
+     * FK types kept here as a safeguard. */
+    if (unlikely(skip_index_fk) &&
+        (trigPtr.p->triggerType == TriggerType::SECONDARY_INDEX ||
+         trigPtr.p->triggerType == TriggerType::FK_PARENT ||
+         trigPtr.p->triggerType == TriggerType::FK_CHILD)) {
+      jam();
+      ret = triggerList.next(trigPtr);
+      continue;
+    }
 
     if (trigPtr.p->monitorAllAttributes ||
         trigPtr.p->attributeMask.overlaps(req_struct->changeMask)) {
@@ -1108,12 +1160,26 @@ void
 Dbtup::fireDeferredTriggers(KeyReqStruct *req_struct,
                             TupTriggerData_list& triggerList,
                             Operationrec* const regOperPtr,
-                            bool disk)
+                            bool disk,
+                            bool skip_index_fk)
 {
   TriggerPtr trigPtr;
   bool ret = triggerList.first(trigPtr);
   while (ret) {
     jam();
+
+    /* Skip secondary index and FK triggers for ring buffer meta rows.
+     * FK constraints are blocked at DDL time (ha_ndb_ddl_fk.cc), but
+     * FK types kept here as a safeguard. */
+    if (unlikely(skip_index_fk) &&
+        (trigPtr.p->triggerType == TriggerType::SECONDARY_INDEX ||
+         trigPtr.p->triggerType == TriggerType::FK_PARENT ||
+         trigPtr.p->triggerType == TriggerType::FK_CHILD)) {
+      jam();
+      ret = triggerList.next(trigPtr);
+      continue;
+    }
+
     if (trigPtr.p->monitorAllAttributes ||
         trigPtr.p->attributeMask.overlaps(req_struct->changeMask)) {
       jam();

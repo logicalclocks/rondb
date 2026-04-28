@@ -1,0 +1,144 @@
+# ndb_ring_buffer_bugfix_validation.test
+#
+# Regression tests for ring buffer validation bugs found during code review.
+# Each test case first reproduces a bug, then verifies the fix.
+
+--source include/have_ndb.inc
+
+--echo #
+--echo # Bug 1: Empty MAX_ROWS_PER_PK value crashes server (std::stoll(""))
+--echo #
+
+# MAX_ROWS_PER_PK= with no value (empty string) — should return error, not crash
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_empty (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=";
+
+# MAX_ROWS_PER_PK with size 0 — should also be rejected (size must be >= 1)
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_zero (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=0";
+
+--echo #
+--echo # Bug 1b: Empty MAX_ROWS_PER_PK in ALTER TABLE — should not crash
+--echo #
+
+CREATE TABLE test.rb_alter_empty (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5";
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_alter_empty COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=";
+
+DROP TABLE test.rb_alter_empty;
+
+--echo #
+--echo # Bug 2: ring_meta column size validation too lenient (allows < 32 bytes)
+--echo #
+
+# VARBINARY(16) is too small for the 32-byte Ring_meta struct
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_small_meta (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(16),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+
+# VARBINARY(31) — still too small
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_small_meta2 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(31),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+
+# VARBINARY(32) — exactly large enough, should succeed
+CREATE TABLE test.rb_exact_meta (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(32),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+
+# Verify the table works — insert and read
+INSERT INTO test.rb_exact_meta (client_id, data) VALUES (1, 'hello');
+SELECT client_id, ring_idx, data FROM test.rb_exact_meta ORDER BY client_id, ring_idx;
+
+DROP TABLE test.rb_exact_meta;
+
+--echo #
+--echo # Bug 3: DELETE condition check bypass via nested function arguments
+--echo #
+
+CREATE TABLE test.rb_del_bypass (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    event_data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+
+INSERT INTO test.rb_del_bypass (client_id, event_data) VALUES (1, 'a');
+INSERT INTO test.rb_del_bypass (client_id, event_data) VALUES (1, 'b');
+INSERT INTO test.rb_del_bypass (client_id, event_data) VALUES (2, 'c');
+
+# Sanity: direct non-PK column reference is blocked
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_del_bypass WHERE event_data = 'a';
+
+# Bug: nested function wrapping a non-PK column bypasses the check
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_del_bypass WHERE client_id = LENGTH(event_data);
+
+# Bug: COALESCE wrapping a non-PK column
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_del_bypass WHERE client_id = COALESCE(event_data, 0);
+
+# Bug: IFNULL wrapping a non-PK column
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_del_bypass WHERE client_id = IFNULL(event_data, 0);
+
+# Bug: arithmetic expression with non-PK column
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_del_bypass WHERE client_id = ring_idx + 1;
+
+# Sanity: valid DELETE with PK-only columns still works
+DELETE FROM test.rb_del_bypass WHERE client_id = 1;
+SELECT client_id, ring_idx, event_data FROM test.rb_del_bypass ORDER BY client_id, ring_idx;
+
+# Sanity: valid DELETE with function on PK column works
+INSERT INTO test.rb_del_bypass (client_id, event_data) VALUES (3, 'x');
+DELETE FROM test.rb_del_bypass WHERE client_id = ABS(3);
+SELECT client_id, ring_idx, event_data FROM test.rb_del_bypass ORDER BY client_id, ring_idx;
+
+DROP TABLE test.rb_del_bypass;
+
+--echo #
+--echo # Done — all bug regression tests passed
+--echo #

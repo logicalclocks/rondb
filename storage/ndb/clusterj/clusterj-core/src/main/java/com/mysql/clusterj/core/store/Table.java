@@ -62,4 +62,16 @@ public interface Table {
     /** Get the autoincrement column; null if no autoincrement column defined */
     Column getAutoIncrementColumn();
 
+    /** Is this a ring buffer table? */
+    boolean isRingBuffer();
+
+    /** Get the ring buffer size (max rows per PK prefix); 0 if not a ring buffer */
+    int getRingBufferSize();
+
+    /** Get the ring_idx system column; null if not a ring buffer */
+    Column getRingIdxColumn();
+
+    /** Get the ring_meta system column; null if not a ring buffer */
+    Column getRingMetaColumn();
+
 }

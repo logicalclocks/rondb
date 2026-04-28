@@ -1,0 +1,168 @@
+#
+# Setup
+#
+CREATE TABLE test.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=8@ring_idx@ring_meta";
+#
+# Case 1: Two sessions inserting to different PK prefixes — no conflict
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'con1_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'con1_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'con2_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'con2_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'con1_C');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'con2_C');
+SELECT client_id, ring_idx, event_data FROM test.rb
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	con1_A
+1	2	con1_B
+1	3	con1_C
+2	1	con2_A
+2	2	con2_B
+2	3	con2_C
+#
+# Case 2: Two sessions inserting to same PK prefix — sequential
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'con1_X');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'con1_Y');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'con2_Z');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'con2_W');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 3
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+3	1	con1_X
+3	2	con1_Y
+3	3	con2_Z
+3	4	con2_W
+#
+# Case 3: Concurrent sessions fill and wrap the ring
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'fill_5');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'fill_6');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'fill_7');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'fill_8');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 3
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+3	1	con1_X
+3	2	con1_Y
+3	3	con2_Z
+3	4	con2_W
+3	5	fill_5
+3	6	fill_6
+3	7	fill_7
+3	8	fill_8
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'wrap_9');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'wrap_10');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 3
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+3	1	wrap_9
+3	2	wrap_10
+3	3	con2_Z
+3	4	con2_W
+3	5	fill_5
+3	6	fill_6
+3	7	fill_7
+3	8	fill_8
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
+WHERE client_id = 3 AND ring_idx = 0;
+client_id	ring_idx	HEX(ring_meta)
+3	0	010000000300000008000000000000000A000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 4: One session inserts, another reads — meta rows never visible
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (4, 'read_test_A');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 4
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+4	1	read_test_A
+SELECT COUNT(*) AS cnt FROM test.rb WHERE client_id = 4;
+cnt
+1
+INSERT INTO test.rb (client_id, event_data) VALUES (4, 'read_test_B');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 4
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+4	1	read_test_A
+4	2	read_test_B
+SELECT COUNT(*) AS cnt FROM test.rb WHERE client_id = 4;
+cnt
+2
+#
+# Case 5: Transaction isolation — committed data visible to other session
+#
+BEGIN;
+INSERT INTO test.rb (client_id, event_data) VALUES (5, 'tx_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (5, 'tx_B');
+COMMIT;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 5
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+5	1	tx_A
+5	2	tx_B
+#
+# Case 6: Transaction isolation — rolled back data not visible
+#
+BEGIN;
+INSERT INTO test.rb (client_id, event_data) VALUES (6, 'rollback_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (6, 'rollback_B');
+ROLLBACK;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 6
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+INSERT INTO test.rb (client_id, event_data) VALUES (6, 'after_rb');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 6
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+6	1	after_rb
+#
+# Case 7: DELETE in one session, re-INSERT in another
+#
+DELETE FROM test.rb WHERE client_id = 1;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'reborn_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'reborn_B');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	reborn_A
+1	2	reborn_B
+#
+# Case 8: UPDATE from con1, INSERT from con2 on same prefix
+#
+UPDATE test.rb SET event_data = 'UPDATED' WHERE client_id = 1 AND ring_idx = 1;
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'after_update');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	UPDATED
+1	2	reborn_B
+1	3	after_update
+#
+# Cleanup
+#
+DROP TABLE test.rb;
+# Done.

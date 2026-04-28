@@ -160,6 +160,9 @@ class ScanFragReq {
 
   static void setTTLOnlyExpiredFragFlag(Uint32 & requestInfo, Uint32 val);
   static Uint32 getTTLOnlyExpiredFragFlag(const Uint32 & requestInfo);
+
+  static void setRingBufferShowMetaFragFlag(Uint32 & requestInfo, Uint32 val);
+  static Uint32 getRingBufferShowMetaFragFlag(const Uint32 & requestInfo);
 };
 
 /*
@@ -366,11 +369,12 @@ class ScanFragNextReq {
  * I = TTL ignore flag       - 1  Bit 24
  * e = TTL only expired flag - 1  Bit 25
  * P = Parallel ordered flag - 1  Bit 26
+ * M = Ring Buffer Show Meta - 1  Bit 27
  *
  *           1111111111222222222233
  * 01234567890123456789012345678901
  *  oocdlxhkrztppppaaaaaaaaaaaaaaaa   Short variant ( < 6.4.0)
- *  oocdlxhkrztppppCsaimfqgIeP        Long variant (6.4.0 +)
+ *  oocdlxhkrztppppCsaimfqgIePM       Long variant (6.4.0 +)
  */
 #define SF_LOCK_MODE_SHIFT (5)
 #define SF_LOCK_MODE_MASK (1)
@@ -405,6 +409,7 @@ class ScanFragNextReq {
 #define SF_TTL_IGNORE_SHIFT (24)
 #define SF_TTL_ONLY_EXPIRED_SHIFT (25)
 #define SF_PAR_ORDERED_SCAN_SHIFT (26)
+#define SF_RING_BUFFER_SHOW_META_SHIFT (27)
 
 inline Uint32 ScanFragReq::getLockMode(const Uint32 &requestInfo) {
   return (requestInfo >> SF_LOCK_MODE_SHIFT) & SF_LOCK_MODE_MASK;
@@ -645,6 +650,20 @@ inline
 Uint32
 ScanFragReq::getTTLOnlyExpiredFragFlag(const Uint32 & requestInfo) {
   return (requestInfo >> SF_TTL_ONLY_EXPIRED_SHIFT) & 1;
+}
+
+inline
+void
+ScanFragReq::setRingBufferShowMetaFragFlag(Uint32 & requestInfo, UintR val) {
+  ASSERT_BOOL(val, "ScanFragReq::setRingBufferShowMetaFragFlag");
+  requestInfo= (requestInfo & ~(1 << SF_RING_BUFFER_SHOW_META_SHIFT)) |
+               (val << SF_RING_BUFFER_SHOW_META_SHIFT);
+}
+
+inline
+Uint32
+ScanFragReq::getRingBufferShowMetaFragFlag(const Uint32 & requestInfo) {
+  return (requestInfo >> SF_RING_BUFFER_SHOW_META_SHIFT) & 1;
 }
 
 /**

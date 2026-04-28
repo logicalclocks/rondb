@@ -1,0 +1,159 @@
+# ndb_ring_buffer_node_restart.test
+#
+# Tests for ring-buffer table data survival across NDB node restarts.
+# Covers single node restart, system restart, continued ring operation
+# after restart, and wrapped ring survival.
+
+--source include/have_multi_ndb.inc
+
+###############################################################################
+# Setup: Create a ring-buffer table and populate it
+###############################################################################
+
+--echo #
+--echo # Setup
+--echo #
+
+CREATE TABLE test.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    event_data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'ev_X');
+
+###############################################################################
+# Case 1: Single node restart — data survives
+###############################################################################
+
+--echo #
+--echo # Case 1: Single node restart — data survives
+--echo #
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    ORDER BY client_id, ring_idx;
+
+# Restart node 1 (node 2 keeps cluster alive)
+--exec $NDB_MGM -e "1 RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --nowait-nodes=2 --not-started >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "1 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+
+# Data should survive
+SELECT client_id, ring_idx, event_data FROM test.rb
+    ORDER BY client_id, ring_idx;
+
+# Meta rows should also survive
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx FROM test.rb ORDER BY client_id, ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+
+###############################################################################
+# Case 2: System restart (ALL RESTART) — data survives
+###############################################################################
+
+--echo #
+--echo # Case 2: System restart — data survives
+--echo #
+
+# Verify data before system restart
+SELECT client_id, ring_idx, event_data FROM test.rb
+    ORDER BY client_id, ring_idx;
+
+# Restart all nodes
+--exec $NDB_MGM -e "ALL RESTART -N" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "ALL START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+
+# Wait for mysqld to reconnect after system restart
+--source include/ndb_not_readonly.inc
+
+--connection server2
+--source include/ndb_not_readonly.inc
+--connection server1
+
+# Data should survive system restart
+SELECT client_id, ring_idx, event_data FROM test.rb
+    ORDER BY client_id, ring_idx;
+
+###############################################################################
+# Case 3: INSERT after restart continues ring correctly
+###############################################################################
+
+--echo #
+--echo # Case 3: INSERT after restart continues ring from correct position
+--echo #
+
+# Ring for client_id=1 had 3 rows (slots 1-3), ring_size=4
+# Next insert should go to slot 4
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_D');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+# Next insert should wrap to slot 1
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_E');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+###############################################################################
+# Case 4: Wrapped ring survives system restart
+###############################################################################
+
+--echo #
+--echo # Case 4: Wrapped ring survives system restart
+--echo #
+
+# client_id=1 now has a wrapped ring (ev_E overwrote slot 1)
+# Add more to wrap further
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_F');
+
+# Verify wrapped state before restart
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+# System restart
+--exec $NDB_MGM -e "ALL RESTART -N" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "ALL START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+
+--source include/ndb_not_readonly.inc
+
+--connection server2
+--source include/ndb_not_readonly.inc
+--connection server1
+
+# Wrapped ring state should survive
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+# Continue inserting — ring should keep working
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_G');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+# SHOW CREATE TABLE should preserve ring buffer comment
+SHOW CREATE TABLE test.rb;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP TABLE test.rb;
+--remove_file $NDB_TOOLS_OUTPUT
+
+--echo # Done.

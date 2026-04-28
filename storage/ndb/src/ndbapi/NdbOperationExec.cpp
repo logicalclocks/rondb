@@ -163,6 +163,10 @@ void NdbOperation::setRequestInfoTCKEYREQ(bool lastFlag, bool longSignal) {
                           (m_flags & OF_TTL_IGNORE) != 0);
   TcKeyReq::setTTLOnlyExpiredFlag(requestInfo,
                           (m_flags & OF_TTL_ONLY_EXPIRED) != 0);
+  TcKeyReq::setRingBufferOpFlag(requestInfo,
+                          (m_flags & OF_RING_BUFFER_OP) != 0);
+  TcKeyReq::setRingBufferShowMetaFlag(requestInfo,
+                          (m_flags & OF_RING_BUFFER_SHOW_META) != 0);
   req->requestInfo = requestInfo;
 }
 

@@ -2684,7 +2684,7 @@ void Dblqh::execCREATE_TAB_REQ(Signal *signal) {
    * CreateTabReq is a local signal, no need to consider
    * the length compatibility.
    */
-  ndbassert(signal->length() == CreateTabReq::NewSignalLengthLDMWithTTL);
+  ndbassert(signal->length() == CreateTabReq::NewSignalLengthLDMWithRingBuffer);
 
   DEB_HASH(("(%u) lqh_tab(%u) hashFunctionFlag: %u",
             instance(),
@@ -2692,7 +2692,7 @@ void Dblqh::execCREATE_TAB_REQ(Signal *signal) {
             req->hashFunctionFlag));
   seizeAddfragrec(signal);
   addfragptr.p->m_createTabReq = *req;
-  addfragptr.p->m_createTabReq_len = CreateTabReq::NewSignalLengthLDMWithTTL;
+  addfragptr.p->m_createTabReq_len = CreateTabReq::NewSignalLengthLDMWithRingBuffer;
 
   req = &addfragptr.p->m_createTabReq;
 
@@ -2723,6 +2723,11 @@ void Dblqh::execCREATE_TAB_REQ(Signal *signal) {
   TTL_RONDB_TRACE(tabptr.i, "[LQH]Gen Tablerec, table_id: %u, TTL sec: %u, "
                   "TTL column no: %u", tabptr.i,
                   tabptr.p->m_ttl_sec, tabptr.p->m_ttl_col_no);
+
+  // Ring Buffer related
+  tabptr.p->m_ring_buffer_size = req->ringBufferSize;
+  tabptr.p->m_ring_idx_col_no = req->ringIdxColumnNo;
+  tabptr.p->m_ring_meta_col_no = req->ringMetaColumnNo;
 
   if (req->primaryTableId != RNIL)
   {
@@ -4617,6 +4622,12 @@ bool Dblqh::is_ttl_table(Uint32 table_id) {
             t_tabptr.p->m_ttl_col_no != RNIL);
   }
 }
+bool Dblqh::is_ring_buffer_table(Uint32 table_id) {
+  TablerecPtr t_tabptr;
+  t_tabptr.i = table_id;
+  ptrCheckGuard(t_tabptr, ctabrecFileSize, tablerec);
+  return (t_tabptr.p->m_ring_buffer_size != RNIL);
+}
 void
 Dblqh::release_frag_array(Tablerec *tabPtrP)
 {
@@ -4886,6 +4897,9 @@ void Dblqh::execALTER_TAB_REQ(Signal *signal) {
   const Uint32 newTableVersion = req->newTableVersion;
   const Uint32 ttlSec = req->ttlSec;
   const Uint32 ttlColumnNo = req->ttlColumnNo;
+  const Uint32 ringBufferSize = req->ringBufferSize;
+  const Uint32 ringIdxColumnNo = req->ringIdxColumnNo;
+  const Uint32 ringMetaColumnNo = req->ringMetaColumnNo;
   AlterTabReq::RequestType requestType =
       (AlterTabReq::RequestType)req->requestType;
 
@@ -4905,6 +4919,11 @@ void Dblqh::execALTER_TAB_REQ(Signal *signal) {
         tablePtr.p->tmp_ttl_sec = ttlSec;
         tablePtr.p->tmp_ttl_col_no = ttlColumnNo;
       }
+      if (AlterTableReq::getRingBufferSizeFlag(req->changeMask)) {
+        tablePtr.p->tmp_ring_buffer_size = ringBufferSize;
+        tablePtr.p->tmp_ring_idx_col_no = ringIdxColumnNo;
+        tablePtr.p->tmp_ring_meta_col_no = ringMetaColumnNo;
+      }
       break;
     case AlterTabReq::AlterTableRevert:
       jam();
@@ -4916,6 +4935,9 @@ void Dblqh::execALTER_TAB_REQ(Signal *signal) {
                           tablePtr.p->tableStatus));
       tablePtr.p->tmp_ttl_sec = RNIL;
       tablePtr.p->tmp_ttl_col_no = RNIL;
+      tablePtr.p->tmp_ring_buffer_size = RNIL;
+      tablePtr.p->tmp_ring_idx_col_no = RNIL;
+      tablePtr.p->tmp_ring_meta_col_no = RNIL;
       break;
     case AlterTabReq::AlterTableCommit:
       jam();
@@ -4957,6 +4979,14 @@ void Dblqh::execALTER_TAB_REQ(Signal *signal) {
                              tableId,
                              tablePtr.p->m_ttl_sec,
                              tablePtr.p->m_ttl_col_no);
+      }
+      if (AlterTableReq::getRingBufferSizeFlag(req->changeMask)) {
+        tablePtr.p->m_ring_buffer_size = tablePtr.p->tmp_ring_buffer_size;
+        tablePtr.p->m_ring_idx_col_no = tablePtr.p->tmp_ring_idx_col_no;
+        tablePtr.p->m_ring_meta_col_no = tablePtr.p->tmp_ring_meta_col_no;
+        tablePtr.p->tmp_ring_buffer_size = RNIL;
+        tablePtr.p->tmp_ring_idx_col_no = RNIL;
+        tablePtr.p->tmp_ring_meta_col_no = RNIL;
       }
       break;
     case AlterTabReq::AlterTableComplete:
@@ -6896,6 +6926,8 @@ void Dblqh::seizeTcrec(TcConnectionrecPtr& tcConnectptr,
   locTcConnectptr.p->original_operation = 0xFF;
   locTcConnectptr.p->ttl_ignore = 0;
   locTcConnectptr.p->ttl_only_expired = 0;
+  locTcConnectptr.p->ring_buffer_op = 0;
+  locTcConnectptr.p->ring_buffer_show_meta = 0;
 
   tcConnectptr = locTcConnectptr;
   ndbrequire(Magic::check_ptr(locTcConnectptr.p->tupConnectPtrP));
@@ -9120,6 +9152,8 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
    */
   regTcPtr->ttl_ignore = LqhKeyReq::getTTLIgnoreFlag(Treqinfo);
   regTcPtr->ttl_only_expired = LqhKeyReq::getTTLOnlyExpiredFlag(Treqinfo);
+  regTcPtr->ring_buffer_op = LqhKeyReq::getRingBufferOpFlag(Treqinfo);
+  regTcPtr->ring_buffer_show_meta = LqhKeyReq::getRingBufferShowMetaFlag(Treqinfo);
   TTL_RONDB_TRACE(tabptr.i, "Dblqh::execLQHKEYREQ(), ttl_ignore: %u, only_expired: %u",
                   regTcPtr->ttl_ignore,
                   regTcPtr->ttl_only_expired);
@@ -12394,6 +12428,8 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
    * in other places as well
    */
   LqhKeyReq::setTTLIgnoreFlag(Treqinfo, regTcPtr->ttl_ignore);
+  LqhKeyReq::setRingBufferOpFlag(Treqinfo, regTcPtr->ring_buffer_op);
+  LqhKeyReq::setRingBufferShowMetaFlag(Treqinfo, regTcPtr->ring_buffer_show_meta);
 
 #ifdef VM_TRACE
   if (LqhKeyReq::getRowidFlag(Treqinfo)) {
@@ -19707,6 +19743,8 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   scanPtr->m_ttl_ignore = ttl_ignore;
   scanPtr->m_ttl_ignore_for_ral = false;
   scanPtr->m_ttl_only_expired = ttl_only_expired;
+  scanPtr->m_ring_buffer_show_meta =
+      ScanFragReq::getRingBufferShowMetaFragFlag(reqinfo);
 
   const Uint32 descending = ScanFragReq::getDescendingFlag(reqinfo);
   Uint32 tupScan = ScanFragReq::getTupScanFlag(reqinfo);
@@ -21255,6 +21293,16 @@ void Dblqh::execCOPY_FRAGREQ(Signal *signal) {
     scanPtr->m_ttl_ignore = 1;
     scanPtr->m_ttl_ignore_for_ral = 0;
     scanPtr->m_ttl_only_expired = 0;
+    /*
+     * Ring buffer related
+     * Show meta rows during copy scan so meta rows (ring_idx=0) are
+     * copied to the restarting node. Set ring_buffer_op on the TC
+     * record so writes to the target pass the kernel write guard.
+     */
+    scanPtr->m_ring_buffer_show_meta = 1;
+    if (is_ring_buffer_table(tabptr.i)) {
+      tcConnectptr.p->ring_buffer_op = 1;
+    }
     scanPtr->m_curr_batch_size_rows = 0;
     scanPtr->m_curr_batch_size_bytes = 0;
     scanPtr->m_exec_direct_batch_size_words = 0;
@@ -33699,6 +33747,13 @@ void Dblqh::initReqinfoExecSr(Signal *signal,
   regTcPtr->m_dealloc_data.m_unused = RNIL;
   regTcPtr->indTakeOver = ZFALSE;
   regTcPtr->m_flags = 0;
+  regTcPtr->ring_buffer_show_meta = 0;
+  /*
+   * Ring buffer tables: redo replay needs ring_buffer_op flag to pass
+   * the kernel write guard in DBTUP.
+   */
+  regTcPtr->ring_buffer_op =
+      is_ring_buffer_table(regTcPtr->tableref) ? 1 : 0;
 }  // Dblqh::initReqinfoExecSr()
 
 Uint32

@@ -1,0 +1,530 @@
+# ndb_ring_buffer_ddl_edge.test
+#
+# Tests for DDL edge cases on ring-buffer tables:
+# CREATE TABLE LIKE, CREATE TABLE AS SELECT, RENAME TABLE,
+# VARCHAR PK prefix, composite PK with 4+ columns, foreign keys,
+# and INFORMATION_SCHEMA / SHOW TABLE STATUS.
+
+--source include/have_ndb.inc
+
+###############################################################################
+# Case 1: CREATE TABLE ... LIKE — preserves MAX_ROWS_PER_PK
+###############################################################################
+
+--echo #
+--echo # Case 1: CREATE TABLE ... LIKE preserves MAX_ROWS_PER_PK metadata
+--echo #
+
+CREATE TABLE test.rb_orig (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    event_data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+
+CREATE TABLE test.rb_copy LIKE test.rb_orig;
+
+# SHOW CREATE TABLE should preserve MAX_ROWS_PER_PK comment
+SHOW CREATE TABLE test.rb_copy;
+
+# Ring buffer operations should work on the copied table
+INSERT INTO test.rb_copy (client_id, event_data) VALUES (1, 'like_A');
+INSERT INTO test.rb_copy (client_id, event_data) VALUES (1, 'like_B');
+
+SELECT client_id, ring_idx, event_data FROM test.rb_copy
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+# Meta row created
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx FROM test.rb_copy
+    WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+DROP TABLE test.rb_copy;
+DROP TABLE test.rb_orig;
+
+###############################################################################
+# Case 2: CREATE TABLE ... AS SELECT
+###############################################################################
+
+--echo #
+--echo # Case 2: CREATE TABLE ... AS SELECT from ring-buffer table
+--echo #
+
+CREATE TABLE test.rb_src (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_src (id, val) VALUES (1, 'src_A');
+INSERT INTO test.rb_src (id, val) VALUES (1, 'src_B');
+
+# CREATE AS SELECT creates a new table — it should NOT be a ring buffer
+# It copies the data but not the NDB_TABLE comment semantics
+CREATE TABLE test.rb_as_sel ENGINE=NDB AS
+    SELECT id, ring_idx, val FROM test.rb_src WHERE id = 1;
+
+# The new table is a regular NDB table — no MAX_ROWS_PER_PK in SHOW CREATE
+SHOW CREATE TABLE test.rb_as_sel;
+
+# Should contain the selected rows
+SELECT id, ring_idx, val FROM test.rb_as_sel ORDER BY ring_idx;
+
+DROP TABLE test.rb_as_sel;
+DROP TABLE test.rb_src;
+
+###############################################################################
+# Case 3: RENAME TABLE
+###############################################################################
+
+--echo #
+--echo # Case 3: RENAME TABLE preserves ring-buffer properties
+--echo #
+
+CREATE TABLE test.rb_before (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+INSERT INTO test.rb_before (id, val) VALUES (1, 'rename_A');
+INSERT INTO test.rb_before (id, val) VALUES (1, 'rename_B');
+INSERT INTO test.rb_before (id, val) VALUES (1, 'rename_C');
+
+RENAME TABLE test.rb_before TO test.rb_after;
+
+# SHOW CREATE should still have MAX_ROWS_PER_PK comment
+SHOW CREATE TABLE test.rb_after;
+
+# Data should be preserved
+SELECT id, ring_idx, val FROM test.rb_after ORDER BY ring_idx;
+
+# Ring operations should continue working
+INSERT INTO test.rb_after (id, val) VALUES (1, 'rename_D');
+INSERT INTO test.rb_after (id, val) VALUES (1, 'rename_E');
+
+# Should wrap (ring_size=4, 5th insert wraps)
+SELECT id, ring_idx, val FROM test.rb_after ORDER BY ring_idx;
+
+DROP TABLE test.rb_after;
+
+###############################################################################
+# Case 4: VARCHAR PK prefix columns
+###############################################################################
+
+--echo #
+--echo # Case 4: VARCHAR PK prefix columns
+--echo #
+
+CREATE TABLE test.rb_varchar (
+    name VARCHAR(50) NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    event_data VARCHAR(100),
+    PRIMARY KEY (name, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_1');
+INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_2');
+INSERT INTO test.rb_varchar (name, event_data) VALUES ('Bob', 'bob_1');
+
+SELECT name, ring_idx, event_data FROM test.rb_varchar
+    ORDER BY name, ring_idx;
+
+# Wrap Alice's ring
+INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_3');
+INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_4');
+
+SELECT name, ring_idx, event_data FROM test.rb_varchar
+    WHERE name = 'Alice' ORDER BY ring_idx;
+
+# Bob unaffected
+SELECT name, ring_idx, event_data FROM test.rb_varchar
+    WHERE name = 'Bob' ORDER BY ring_idx;
+
+# DELETE by VARCHAR PK prefix
+DELETE FROM test.rb_varchar WHERE name = 'Alice';
+
+SELECT name, ring_idx, event_data FROM test.rb_varchar
+    ORDER BY name, ring_idx;
+
+# Re-insert after delete
+INSERT INTO test.rb_varchar (name, event_data) VALUES ('Alice', 'alice_fresh');
+
+SELECT name, ring_idx, event_data FROM test.rb_varchar
+    ORDER BY name, ring_idx;
+
+DROP TABLE test.rb_varchar;
+
+###############################################################################
+# Case 5: CHAR PK prefix (fixed-length string)
+###############################################################################
+
+--echo #
+--echo # Case 5: CHAR PK prefix — fixed-length string
+--echo #
+
+CREATE TABLE test.rb_char (
+    code CHAR(10) NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (code, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_char (code, val) VALUES ('ABC', 'char_A');
+INSERT INTO test.rb_char (code, val) VALUES ('ABC', 'char_B');
+INSERT INTO test.rb_char (code, val) VALUES ('XYZ', 'char_X');
+
+SELECT code, ring_idx, val FROM test.rb_char ORDER BY code, ring_idx;
+
+# Wrap
+INSERT INTO test.rb_char (code, val) VALUES ('ABC', 'char_C');
+INSERT INTO test.rb_char (code, val) VALUES ('ABC', 'char_D');
+
+SELECT code, ring_idx, val FROM test.rb_char
+    WHERE code = 'ABC' ORDER BY ring_idx;
+
+DROP TABLE test.rb_char;
+
+###############################################################################
+# Case 6: Multi-column VARCHAR + INT PK prefix
+###############################################################################
+
+--echo #
+--echo # Case 6: Multi-column VARCHAR + INT PK prefix
+--echo #
+
+CREATE TABLE test.rb_mixed_pk (
+    region VARCHAR(20) NOT NULL,
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (region, client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r1');
+INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r2');
+INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-West', 1, 'r3');
+INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 2, 'r4');
+
+SELECT region, client_id, ring_idx, data FROM test.rb_mixed_pk
+    ORDER BY region, client_id, ring_idx;
+
+# Wrap US-East/1
+INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r5');
+INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r6');
+
+SELECT region, client_id, ring_idx, data FROM test.rb_mixed_pk
+    WHERE region = 'US-East' AND client_id = 1 ORDER BY ring_idx;
+
+# DELETE by partial PK prefix (region only)
+DELETE FROM test.rb_mixed_pk WHERE region = 'US-East';
+
+SELECT region, client_id, ring_idx, data FROM test.rb_mixed_pk
+    ORDER BY region, client_id, ring_idx;
+
+DROP TABLE test.rb_mixed_pk;
+
+###############################################################################
+# Case 7: 4-column composite PK (3 prefix columns + ring_idx)
+###############################################################################
+
+--echo #
+--echo # Case 7: 4-column composite PK — 3 prefix columns + ring_idx
+--echo #
+
+CREATE TABLE test.rb_4pk (
+    region INT NOT NULL,
+    dept INT NOT NULL,
+    user_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    event VARCHAR(100),
+    PRIMARY KEY (region, dept, user_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 100, 'ev_A');
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 100, 'ev_B');
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 200, 'ev_C');
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 20, 100, 'ev_D');
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (2, 10, 100, 'ev_E');
+
+SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
+    ORDER BY region, dept, user_id, ring_idx;
+
+# Wrap (1,10,100)
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 100, 'ev_F');
+INSERT INTO test.rb_4pk (region, dept, user_id, event) VALUES (1, 10, 100, 'ev_G');
+
+SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
+    WHERE region = 1 AND dept = 10 AND user_id = 100
+    ORDER BY ring_idx;
+
+# DELETE by full PK prefix
+DELETE FROM test.rb_4pk WHERE region = 1 AND dept = 10 AND user_id = 100;
+
+SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
+    ORDER BY region, dept, user_id, ring_idx;
+
+# DELETE by partial prefix (region only)
+DELETE FROM test.rb_4pk WHERE region = 1;
+
+SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
+    ORDER BY region, dept, user_id, ring_idx;
+
+DROP TABLE test.rb_4pk;
+
+###############################################################################
+# Case 8: SHOW TABLE STATUS — row count
+###############################################################################
+
+--echo #
+--echo # Case 8: SHOW TABLE STATUS reports meaningful row info
+--echo #
+
+CREATE TABLE test.rb_status (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+INSERT INTO test.rb_status (id, val) VALUES (1, 'a');
+INSERT INTO test.rb_status (id, val) VALUES (1, 'b');
+INSERT INTO test.rb_status (id, val) VALUES (2, 'c');
+
+# Note: NDB's SHOW TABLE STATUS row count is an estimate and includes
+# physical rows (data + meta). This is expected behavior.
+# The important thing is it doesn't error out.
+--replace_column 2 # 3 # 4 # 5 # 6 # 7 # 8 # 9 # 10 # 11 # 12 # 13 # 14 # 15 # 16 # 17 # 18 #
+SHOW TABLE STATUS FROM test LIKE 'rb_status';
+
+# Known limitation: bare SELECT COUNT(*) without WHERE uses NDB's
+# handler::records() fast path which returns the physical row count
+# (includes meta rows).  COUNT(*) with a WHERE clause uses a scan
+# that correctly filters meta rows.
+SELECT COUNT(*) AS visible_rows FROM test.rb_status;
+
+DROP TABLE test.rb_status;
+
+###############################################################################
+# Case 9: INFORMATION_SCHEMA.TABLES
+###############################################################################
+
+--echo #
+--echo # Case 9: INFORMATION_SCHEMA.TABLES for ring-buffer table
+--echo #
+
+CREATE TABLE test.rb_is (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_is (id, val) VALUES (1, 'x');
+INSERT INTO test.rb_is (id, val) VALUES (1, 'y');
+
+SELECT TABLE_NAME, ENGINE, TABLE_COMMENT
+    FROM INFORMATION_SCHEMA.TABLES
+    WHERE TABLE_SCHEMA = 'test' AND TABLE_NAME = 'rb_is';
+
+SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = 'test' AND TABLE_NAME = 'rb_is'
+    ORDER BY ORDINAL_POSITION;
+
+DROP TABLE test.rb_is;
+
+###############################################################################
+# Case 10: DROP COLUMN that is ring_idx or ring_meta — should error
+###############################################################################
+
+--echo #
+--echo # Case 10: ALTER TABLE DROP ring_idx/ring_meta columns — blocked
+--echo #
+
+CREATE TABLE test.rb_drop_col (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_drop_col DROP COLUMN ring_idx;
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_drop_col DROP COLUMN ring_meta;
+
+DROP TABLE test.rb_drop_col;
+
+###############################################################################
+# Case 11: Trigger on ring-buffer table
+###############################################################################
+
+--echo #
+--echo # Case 11: AFTER INSERT trigger on ring-buffer table
+--echo #
+
+CREATE TABLE test.rb_trigger (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+CREATE TABLE test.trigger_log (
+    log_id INT AUTO_INCREMENT PRIMARY KEY,
+    logged_id INT,
+    logged_val VARCHAR(50)
+) ENGINE = NDB;
+
+DELIMITER //;
+CREATE TRIGGER test.rb_after_ins AFTER INSERT ON test.rb_trigger
+FOR EACH ROW
+BEGIN
+    INSERT INTO test.trigger_log (logged_id, logged_val)
+        VALUES (NEW.id, NEW.val);
+END//
+DELIMITER ;//
+
+INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_A');
+INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_B');
+
+SELECT id, ring_idx, val FROM test.rb_trigger ORDER BY ring_idx;
+SELECT log_id, logged_id, logged_val FROM test.trigger_log ORDER BY log_id;
+
+# Wrap — trigger still fires
+INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_C');
+INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_D');
+
+SELECT id, ring_idx, val FROM test.rb_trigger ORDER BY ring_idx;
+SELECT log_id, logged_id, logged_val FROM test.trigger_log ORDER BY log_id;
+
+DROP TRIGGER test.rb_after_ins;
+DROP TABLE test.trigger_log;
+DROP TABLE test.rb_trigger;
+
+###############################################################################
+# Case 12: CREATE TABLE with index on ring buffer internal columns — blocked
+###############################################################################
+
+--echo #
+--echo # Case 12: CREATE TABLE with index on ring_idx — blocked
+--echo #
+
+--error ER_CANT_CREATE_TABLE
+CREATE TABLE test.rb_idx_on_internal (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx),
+    INDEX idx_ring_idx (ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 13: CREATE TABLE with index on ring_meta — blocked
+--echo #
+
+--error ER_CANT_CREATE_TABLE
+CREATE TABLE test.rb_idx_on_meta (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx),
+    INDEX idx_ring_meta (ring_meta)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 14: CREATE TABLE with UNIQUE index on ring_idx — blocked
+--echo #
+
+--error ER_CANT_CREATE_TABLE
+CREATE TABLE test.rb_uniq_on_internal (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx),
+    UNIQUE INDEX idx_ring_idx_uniq (ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 15: CREATE TABLE with composite index including ring_idx — blocked
+--echo #
+
+--error ER_CANT_CREATE_TABLE
+CREATE TABLE test.rb_composite_idx (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx),
+    INDEX idx_val_ring (val, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+###############################################################################
+# Case 16: ALTER TABLE ADD INDEX on ring buffer internal columns — blocked
+###############################################################################
+
+--echo #
+--echo # Case 16: ALTER TABLE ADD INDEX on ring_idx — blocked
+--echo #
+
+CREATE TABLE test.rb_alter_idx (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_alter_idx ADD INDEX idx_ring_idx (ring_idx);
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_alter_idx ADD INDEX idx_ring_meta (ring_meta);
+
+# Index on user column should still work
+ALTER TABLE test.rb_alter_idx ADD INDEX idx_val (val);
+
+# Verify the table still works normally
+INSERT INTO test.rb_alter_idx (id, val) VALUES (1, 'test_A');
+INSERT INTO test.rb_alter_idx (id, val) VALUES (1, 'test_B');
+
+SELECT id, ring_idx, val FROM test.rb_alter_idx ORDER BY ring_idx;
+
+DROP TABLE test.rb_alter_idx;
+
+--echo # Done.

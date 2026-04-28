@@ -49,6 +49,7 @@ IF(NOT WITHOUT_SERVER)
     plugin/ha_ndbcluster.cc
     plugin/ha_ndbcluster_cond.cc
     plugin/ha_ndbcluster_push.cc
+    plugin/ha_ndbcluster_ring_buffer.cc
     plugin/ha_ndbcluster_connection.cc
     plugin/ha_ndbcluster_binlog.cc
     plugin/ha_ndb_index_stat.cc

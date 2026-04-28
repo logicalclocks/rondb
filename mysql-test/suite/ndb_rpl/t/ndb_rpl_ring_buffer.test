@@ -1,0 +1,413 @@
+# ndb_rpl_ring_buffer.test
+#
+# Tests for replication of ring-buffer tables.
+# Verifies DDL replication, INSERT/UPDATE/DELETE propagation,
+# ring wrapping, bulk inserts, and meta row handling on slave.
+#
+# Key implementation detail: ha_ndbcluster.cc checks
+# !thd_ndb->get_applier() before entering ring buffer write path,
+# so the replica applies replicated rows directly via normal NDB
+# write path — this is correct behavior.
+
+--source include/have_ndb.inc
+--source include/have_binlog_format_mixed_or_row.inc
+--source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
+
+###############################################################################
+# Case 1: CREATE TABLE DDL replicates — SHOW CREATE TABLE on slave
+###############################################################################
+
+--echo #
+--echo # Case 1: CREATE TABLE DDL replicates with MAX_ROWS_PER_PK comment
+--echo #
+
+--connection master
+
+CREATE TABLE test.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    event_data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should have the table with MAX_ROWS_PER_PK comment
+SHOW CREATE TABLE test.rb;
+
+###############################################################################
+# Case 2: Basic INSERT replicates — data visible, meta rows hidden
+###############################################################################
+
+--echo #
+--echo # Case 2: Basic INSERT replicates to slave
+--echo #
+
+--connection master
+
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should have the same data rows, meta rows hidden
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+###############################################################################
+# Case 3: Ring wrapping replicates correctly
+###############################################################################
+
+--echo #
+--echo # Case 3: Ring wrapping replicates correctly
+--echo #
+
+--connection master
+
+# Fill remaining slot and wrap (ring_size=4, already have 3 rows)
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_D');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_E');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_F');
+
+# Master state after wrapping
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should match master's wrapped state
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+###############################################################################
+# Case 4: Multiple PK prefixes replicate independently
+###############################################################################
+
+--echo #
+--echo # Case 4: Multiple PK prefixes replicate independently
+--echo #
+
+--connection master
+
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'c2_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'c2_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'c3_A');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    ORDER BY client_id, ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    ORDER BY client_id, ring_idx;
+
+###############################################################################
+# Case 5: Bulk INSERT replicates correctly
+###############################################################################
+
+--echo #
+--echo # Case 5: Bulk INSERT replicates correctly
+--echo #
+
+--connection master
+
+CREATE TABLE test.rb_bulk (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+
+# Multi-row INSERT (bulk path)
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b1');
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b2');
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b3');
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b4');
+INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b5');
+
+SELECT id, ring_idx, data FROM test.rb_bulk WHERE id = 1 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+SELECT id, ring_idx, data FROM test.rb_bulk WHERE id = 1 ORDER BY ring_idx;
+
+###############################################################################
+# Case 6: UPDATE on user columns replicates
+###############################################################################
+
+--echo #
+--echo # Case 6: UPDATE replicates to slave
+--echo #
+
+--connection master
+
+UPDATE test.rb SET event_data = 'UPDATED' WHERE client_id = 2 AND ring_idx = 1;
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 2 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 2 ORDER BY ring_idx;
+
+###############################################################################
+# Case 7: DELETE replicates — ring cleared on slave
+###############################################################################
+
+--echo #
+--echo # Case 7: DELETE replicates to slave
+--echo #
+
+--connection master
+
+DELETE FROM test.rb WHERE client_id = 3;
+
+# client_id=3 should be gone
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 3 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should also show no rows for client_id=3
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 3 ORDER BY ring_idx;
+
+###############################################################################
+# Case 8: Meta rows on slave — visible with ndb_ring_buffer_show_meta
+###############################################################################
+
+--echo #
+--echo # Case 8: Meta rows replicated and visible on slave with show_meta
+--echo #
+
+--connection master
+
+# Check meta rows on master
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--sync_slave_with_master
+--connection slave
+
+# Meta rows should also be present on slave
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+
+###############################################################################
+# Case 9: TRUNCATE TABLE replicates — slave also cleared
+###############################################################################
+
+--echo #
+--echo # Case 9: TRUNCATE TABLE replicates to slave
+--echo #
+
+--connection master
+
+# Verify data exists before truncate
+SELECT client_id, ring_idx, event_data FROM test.rb
+    ORDER BY client_id, ring_idx;
+
+TRUNCATE TABLE test.rb;
+
+# Master should be empty
+SELECT COUNT(*) AS master_cnt FROM test.rb;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should also be empty
+SELECT COUNT(*) AS slave_cnt FROM test.rb;
+
+# Verify meta rows also gone on slave
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) AS slave_all_cnt FROM test.rb;
+SET ndb_ring_buffer_show_meta = OFF;
+
+###############################################################################
+# Case 10: Re-INSERT after TRUNCATE replicates correctly
+###############################################################################
+
+--echo #
+--echo # Case 10: Re-INSERT after TRUNCATE replicates correctly
+--echo #
+
+--connection master
+
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'post_trunc_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'post_trunc_B');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+###############################################################################
+# Case 11: ALTER TABLE grow replicates
+###############################################################################
+
+--echo #
+--echo # Case 11: ALTER TABLE grow replicates to slave
+--echo #
+
+--connection master
+
+# Current ring_size=4, grow to 8
+# Need NOLOGGING=1 in replication setup to match table's current setting
+ALTER TABLE test.rb COMMENT="NDB_TABLE=NOLOGGING=1,MAX_ROWS_PER_PK=8@ring_idx@ring_meta";
+
+SHOW CREATE TABLE test.rb;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should have the grown ring_size
+SHOW CREATE TABLE test.rb;
+
+###############################################################################
+# Case 12: INSERT after grow uses new ring size on both master and slave
+###############################################################################
+
+--echo #
+--echo # Case 12: INSERT after grow uses new ring size
+--echo #
+
+--connection master
+
+# Currently has 2 rows (post_trunc_A, post_trunc_B). Ring size is now 8.
+# Add 6 more to fill ring at new size
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_C');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_D');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_E');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_F');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_G');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_H');
+
+# Ring full at size 8, all 8 slots occupied
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+# Wrap at new size
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'wrap_I');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave should match master
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+###############################################################################
+# Case 13: DELETE + re-INSERT cycle replicates
+###############################################################################
+
+--echo #
+--echo # Case 13: DELETE + re-INSERT cycle replicates
+--echo #
+
+--connection master
+
+DELETE FROM test.rb WHERE client_id = 1;
+
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'cycle_A');
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+###############################################################################
+# Case 14: NOT NULL + unique index replicates correctly
+# Meta rows (code=0) must not appear in unique index on slave.
+###############################################################################
+
+--echo #
+--echo # Case 14: NOT NULL + unique index replicates correctly
+--echo #
+
+--connection master
+
+CREATE TABLE test.rb_nn_uniq (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    code INT NOT NULL,
+    PRIMARY KEY (id, ring_idx),
+    UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 100);
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (2, 200);
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 300);
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 400);
+
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave has same data, unique index intact
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+--connection master
+
+# Wrap on master: ring full for id=1, slot 1 (100) overwritten with 500
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 500);
+
+# Freed value 100 can be reused by different prefix
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (2, 100);
+
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+--sync_slave_with_master
+--connection slave
+
+# Slave matches master after wrapping
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+--echo #
+--echo # Cleanup
+--echo #
+
+--connection master
+DROP TABLE test.rb;
+DROP TABLE test.rb_bulk;
+DROP TABLE test.rb_nn_uniq;
+--sync_slave_with_master
+
+--source include/rpl/deinit.inc

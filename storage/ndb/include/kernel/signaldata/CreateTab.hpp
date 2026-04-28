@@ -37,6 +37,7 @@ struct CreateTabReq {
   static constexpr Uint32 SignalLengthLDM = 6 + 12;
   static constexpr Uint32 NewSignalLengthLDM = 6 + 13;
   static constexpr Uint32 NewSignalLengthLDMWithTTL = 6 + 15;
+  static constexpr Uint32 NewSignalLengthLDMWithRingBuffer = 6 + 18;
 
   enum RequestType {};
 
@@ -69,6 +70,13 @@ struct CreateTabReq {
    */
   Uint32 ttlSec;
   Uint32 ttlColumnNo;
+
+  /*
+   * Ring Buffer
+   */
+  Uint32 ringBufferSize;
+  Uint32 ringIdxColumnNo;
+  Uint32 ringMetaColumnNo;
 
   SECTION(DICT_TAB_INFO = 0);
   SECTION(FRAGMENTATION = 1);

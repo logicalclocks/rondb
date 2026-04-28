@@ -56,6 +56,7 @@ ADD_CONVENIENCE_LIBRARY(ndbapi
   NdbQueryOperation.cpp
   NdbRecAttr.cpp
   NdbReceiver.cpp
+  NdbRingBufferWriter.cpp
   NdbScanFilter.cpp
   NdbScanOperation.cpp
   NdbTransaction.cpp

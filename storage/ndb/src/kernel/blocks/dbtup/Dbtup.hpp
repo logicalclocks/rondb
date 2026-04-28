@@ -228,6 +228,11 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZTOO_MUCH_INPUT_PARAM 938
 #define ZWRONG_INPUT_PARAM_COLUMN 939
 
+/*
+ * Ring Buffer related
+ */
+#define ZRING_BUFFER_DIRECT_WRITE_ERROR 940
+
 #define MAX_INPUT_PARAMS 16
 
 /*
@@ -423,6 +428,9 @@ struct Fragoperrec {
     Uint32 *dynTableDescriptor[2];
     Uint32 ttlSec;
     Uint32 ttlColumnNo;
+    Uint32 ringBufferSize;
+    Uint32 ringIdxColNo;
+    Uint32 ringMetaColNo;
   };
   typedef Ptr<AlterTabOperation> AlterTabOperationPtr;
 
@@ -998,7 +1006,9 @@ struct Operationrec {
     get_disk_page_flags(RNIL),
     original_op_type(ZREAD),
     ttl_ignore(0),
-    ttl_only_expired(0)
+    ttl_only_expired(0),
+    ring_buffer_op(0),
+    ring_buffer_show_meta(0)
   {
     op_struct.bit_field.in_active_list = false;
     op_struct.bit_field.tupVersion = ZNIL;
@@ -1175,6 +1185,8 @@ struct Operationrec {
     Uint32 original_op_type;
     Uint8 ttl_ignore;
     Uint8 ttl_only_expired;
+    Uint8 ring_buffer_op;
+    Uint8 ring_buffer_show_meta;
   };
 
   Uint32 m_base_header_bits;
@@ -1340,7 +1352,10 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
           deferredDeleteTriggers(triggerPool),
           tuxCustomTriggers(triggerPool),
           m_ttl_sec(RNIL),
-          m_ttl_col_no(RNIL) {}
+          m_ttl_col_no(RNIL),
+          m_ring_buffer_size(RNIL),
+          m_ring_idx_col_no(RNIL),
+          m_ring_meta_col_no(RNIL) {}
 
     AttributeMask notNullAttributeMask;
     AttributeMask blobAttributeMask;
@@ -1532,6 +1547,13 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
      */
     Uint32 m_ttl_sec;
     Uint32 m_ttl_col_no;
+
+    /*
+     * Ring Buffer
+     */
+    Uint32 m_ring_buffer_size;
+    Uint32 m_ring_idx_col_no;
+    Uint32 m_ring_meta_col_no;
   };
   Uint32 m_read_ctl_file_data[BackupFormat::LCP_CTL_FILE_BUFFER_SIZE_IN_WORDS];
   /*
@@ -3342,7 +3364,8 @@ public:
 
   void fireImmediateTriggers(KeyReqStruct *req_struct,
                              TupTriggerData_list &triggerList,
-                             Operationrec *regOperPtr, bool disk);
+                             Operationrec *regOperPtr, bool disk,
+                             bool skip_index_fk = false);
 
   void checkDeferredTriggersDuringPrepare(KeyReqStruct *req_struct,
                                           TupTriggerData_list &triggerList,
@@ -3350,11 +3373,13 @@ public:
                                           bool disk);
   void fireDeferredTriggers(KeyReqStruct *req_struct,
                             TupTriggerData_list &triggerList,
-                            Operationrec *const regOperPtr, bool disk);
+                            Operationrec *const regOperPtr, bool disk,
+                            bool skip_index_fk = false);
 
   void fireDeferredConstraints(KeyReqStruct *req_struct,
                                TupTriggerData_list &triggerList,
-                               Operationrec *const regOperPtr, bool disk);
+                               Operationrec *const regOperPtr, bool disk,
+                               bool skip_index_fk = false);
 
   void fireDetachedTriggers(KeyReqStruct *req_struct,
                             TupTriggerData_list &triggerList,
@@ -4460,6 +4485,84 @@ public:
     tablePtr.i = table_id;
     ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
     return is_ttl_table(tablePtr.p);
+  }
+
+  bool is_ring_buffer_table(Tablerec* tabptr) {
+    ndbassert(tabptr != nullptr);
+    return (tabptr->m_ring_buffer_size != RNIL);
+  }
+
+  bool is_ring_buffer_table(Uint32 table_id) {
+    TablerecPtr tablePtr;
+    tablePtr.i = table_id;
+    ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
+    return is_ring_buffer_table(tablePtr.p);
+  }
+
+  /**
+   * Check if a tuple is a ring buffer meta row (ring_idx == 0).
+   * Reads ring_idx directly from the tuple via the attribute descriptor.
+   * Caller must ensure is_ring_buffer_table(regTabPtr) is true.
+   */
+  bool isRingBufferMetaRow(Tablerec *regTabPtr, const Tuple_header *tuple_ptr) {
+    ndbassert(is_ring_buffer_table(regTabPtr));
+    Uint32 col_no = regTabPtr->m_ring_idx_col_no;
+    Uint32 attrDes2 = regTabPtr->tabDescriptor[col_no * ZAD_SIZE + 1];
+    Uint32 readOffset = AttributeOffset::getOffset(attrDes2);
+    return (tuple_ptr->m_data[readOffset] == 0);
+  }
+
+  /**
+   * Ring buffer write guard predicate (used by execTUPKEYREQ).
+   * Returns true if this operation is a user-direct write to a ring-buffer
+   * table that must be rejected with ZRING_BUFFER_DIRECT_WRITE_ERROR.
+   * Writes via the internal ring-buffer writer (ring_buffer_op) and writes
+   * from a replica applier (is_replica_applier) are allowed through.
+   * Caller extracts is_replica_applier from the LQH flags mask — we don't
+   * do it here because Dblqh::TcConnectionrec is defined in Dblqh.hpp,
+   * which includes Dbtup.hpp; pulling that symbol in here would create a
+   * circular header dependency.
+   */
+  bool is_ring_buffer_write_blocked(Tablerec *regTabPtr,
+                                    Uint32 Roptype,
+                                    const Operationrec *regOperPtr,
+                                    bool is_replica_applier) {
+    if (!is_ring_buffer_table(regTabPtr)) return false;
+    if (Roptype != ZINSERT && Roptype != ZWRITE &&
+        Roptype != ZUPDATE && Roptype != ZDELETE) return false;
+    if (regOperPtr->ring_buffer_op) return false;
+    return !is_replica_applier;
+  }
+
+  /**
+   * Ring buffer meta-row filter predicate (used by handleReadReq).
+   * Returns true if the tuple at tuple_ptr is a meta row (ring_idx=0) that
+   * must be hidden from this read. Reads via the internal ring-buffer
+   * writer (ring_buffer_op) and diagnostic reads with
+   * ndb_ring_buffer_show_meta set are allowed to see meta rows.
+   */
+  bool is_ring_buffer_meta_row_hidden(Tablerec *regTabPtr,
+                                      const Operationrec *regOperPtr,
+                                      const Tuple_header *tuple_ptr) {
+    if (!is_ring_buffer_table(regTabPtr)) return false;
+    if (regOperPtr->ring_buffer_op) return false;
+    if (regOperPtr->ring_buffer_show_meta) return false;
+    return isRingBufferMetaRow(regTabPtr, tuple_ptr);
+  }
+
+  /**
+   * Pure tuple property: is this tuple a ring-buffer meta row (ring_idx=0)?
+   * Safe to call on any table — first checks is_ring_buffer_table.
+   * Used by trigger-fire paths to skip secondary-index and FK triggers:
+   * meta-row user columns are zeroed and would collide on UNIQUE / violate
+   * FK constraints. Deliberately does NOT consult Operationrec flags —
+   * trigger skip is a tuple property, not an operation property (e.g.
+   * SUMA triggers still need to fire on the meta row for replication).
+   */
+  bool is_ring_buffer_meta_tuple(Tablerec *regTabPtr,
+                                 const Tuple_header *tuple_ptr) {
+    return is_ring_buffer_table(regTabPtr) &&
+           isRingBufferMetaRow(regTabPtr, tuple_ptr);
   }
 
 public:

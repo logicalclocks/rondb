@@ -2101,6 +2101,8 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
       regOperPtr->ttl_ignore = 0;
     }
     regOperPtr->ttl_only_expired = lqhScanPtrP->m_ttl_only_expired;
+    regOperPtr->ring_buffer_op = 0; /* Scans never carry ring_buffer_op */
+    regOperPtr->ring_buffer_show_meta = lqhScanPtrP->m_ring_buffer_show_meta;
 
     TTL_RONDB_TRACE(prepare_fragptr.p->fragTableId,
                     "Dbtup::execTUPKEYREQ(), Ignore TTL[%u, %u]: %u, "
@@ -2155,6 +2157,8 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.scan_rec = nullptr;
     regOperPtr->ttl_ignore = lqhOpPtrP->ttl_ignore;
     regOperPtr->ttl_only_expired = lqhOpPtrP->ttl_only_expired;
+    regOperPtr->ring_buffer_op = lqhOpPtrP->ring_buffer_op;
+    regOperPtr->ring_buffer_show_meta = lqhOpPtrP->ring_buffer_show_meta;
 #ifdef TTL_DEBUG
     if (regOperPtr->ttl_ignore) {
       TTL_RONDB_TRACE(prepare_fragptr.p->fragTableId,
@@ -2321,6 +2325,16 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   const Uint32 Roptype = regOperPtr->op_type;
 
   regOperPtr->m_any_value = 0;
+
+  const bool is_replica_applier =
+      (flags & Dblqh::TcConnectionrec::OP_REPLICA_APPLIER) != 0;
+  if (unlikely(is_ring_buffer_write_blocked(regTabPtr, Roptype,
+                                            regOperPtr, is_replica_applier))) {
+    jam();
+    terrorCode = ZRING_BUFFER_DIRECT_WRITE_ERROR;
+    tupkeyErrorLab(&req_struct);
+    return false;
+  }
 
   const Uint32 loc_prepare_page_id = prepare_page_no;
   /**
@@ -3220,6 +3234,14 @@ int Dbtup::handleReadReq(
       tupkeyErrorLab(req_struct);
       return -1;
     }
+  }
+
+  if (unlikely(is_ring_buffer_meta_row_hidden(regTabPtr, _regOperPtr,
+                                              req_struct->m_tuple_ptr))) {
+    jam();
+    terrorCode = 626;
+    tupkeyErrorLab(req_struct);
+    return -1;
   }
 
   if (!req_struct->interpreted_exec)

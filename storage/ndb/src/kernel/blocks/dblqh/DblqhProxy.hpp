@@ -215,9 +215,11 @@ class DblqhProxy : public LocalProxy {
   // GSN_ALTER_TAB_REQ
   struct Ss_ALTER_TAB_REQ : SsParallel {
     AlterTabReq m_req;
+    Uint32 m_sig_len;
     Ss_ALTER_TAB_REQ() {
       m_sendREQ = (SsFUNCREQ)&DblqhProxy::sendALTER_TAB_REQ;
       m_sendCONF = (SsFUNCREP)&DblqhProxy::sendALTER_TAB_CONF;
+      m_sig_len = AlterTabReq::SignalLength;
     }
     enum { poolSize = 1 };
     static SsPool<Ss_ALTER_TAB_REQ> &pool(LocalProxy *proxy) {

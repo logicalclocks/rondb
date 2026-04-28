@@ -265,6 +265,15 @@ public interface Session  extends AutoCloseable {
      */
     String unloadSchema(Class<?> cls);
 
+    /** Check whether the table mapped to the given class is a ring buffer table.
+     * A ring buffer table is defined with NDB_TABLE=MAX_ROWS_PER_PK=N in its
+     * table comment, which limits the number of rows per primary key prefix
+     * using a circular buffer.
+     * @param cls the interface or dynamic class mapped to the table
+     * @return true if the table is a ring buffer table
+     */
+    boolean isRingBufferTable(Class<?> cls);
+
     /** Release resources associated with an instance. The instance must be a domain object obtained via
      * session.newInstance(T.class), find(T.class), or query; or Iterable<T>, or array T[].
      * Resources released can include direct buffers used to hold instance data.

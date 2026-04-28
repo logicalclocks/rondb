@@ -803,6 +803,7 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_ttl_ignore_for_ral; // ignore set by Read after lock
     Uint8 m_ttl_only_expired;   // Only be insterested in expired rows
     Uint32 m_ttl_purge_window_size;
+    Uint8 m_ring_buffer_show_meta;
   };
   static constexpr Uint32 DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX = 1;
   typedef Ptr<ScanRecord> ScanRecordPtr;
@@ -2621,7 +2622,13 @@ class Dblqh : public SimulatedBlock {
     Tablerec() : m_ttl_sec(RNIL),
                  m_ttl_col_no(RNIL),
                  tmp_ttl_sec(RNIL),
-                 tmp_ttl_col_no(RNIL) {
+                 tmp_ttl_col_no(RNIL),
+                 m_ring_buffer_size(RNIL),
+                 m_ring_idx_col_no(RNIL),
+                 m_ring_meta_col_no(RNIL),
+                 tmp_ring_buffer_size(RNIL),
+                 tmp_ring_idx_col_no(RNIL),
+                 tmp_ring_meta_col_no(RNIL) {
     }
     enum TableStatus {
       TABLE_DEFINED = 0,
@@ -2683,9 +2690,19 @@ class Dblqh : public SimulatedBlock {
     Uint32 m_ttl_col_no;
     Uint32 tmp_ttl_sec;
     Uint32 tmp_ttl_col_no;
+    /*
+     * Ring Buffer
+     */
+    Uint32 m_ring_buffer_size;
+    Uint32 m_ring_idx_col_no;
+    Uint32 m_ring_meta_col_no;
+    Uint32 tmp_ring_buffer_size;
+    Uint32 tmp_ring_idx_col_no;
+    Uint32 tmp_ring_meta_col_no;
   };  // Size 100 bytes
   typedef Ptr<Tablerec> TablerecPtr;
   bool is_ttl_table(Uint32 table_id);
+  bool is_ring_buffer_table(Uint32 table_id);
   void release_frag_array(Tablerec*);
   Uint32 findFreeFragEntry(Uint32 num_fragments_in_array);
   bool seize_frag_array(Tablerec*,
@@ -2862,7 +2879,8 @@ class Dblqh : public SimulatedBlock {
       //m_nr_delete only used in Copy fragment, set before used
       original_operation(0xFF),
       ttl_ignore(0),
-      ttl_only_expired(0)
+      ttl_only_expired(0),
+      ring_buffer_op(0)
     {
       m_dealloc_data.m_unused = RNIL;
 #ifdef DEBUG_USAGE_COUNT
@@ -3053,6 +3071,8 @@ class Dblqh : public SimulatedBlock {
     Uint8 original_operation; /* TTL related, original operation */
     Uint8 ttl_ignore; /* TTL related, ttl ignore */
     Uint8 ttl_only_expired;
+    Uint8 ring_buffer_op; /* Ring Buffer related */
+    Uint8 ring_buffer_show_meta;
   };                 /* p2c: size = 308 bytes */
 
   static constexpr Uint32 DBLQH_OPERATION_RECORD_TRANSIENT_POOL_INDEX = 0;

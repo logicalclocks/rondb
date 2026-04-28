@@ -65,6 +65,7 @@ extern "C"
   ndb_rand();
   (void)NdbDir::chdir("");
   NdbAggregator aggregator(nullptr);
+  NdbRingBufferWriter ring_buffer_writer(nullptr, nullptr, nullptr);
   /*
    * The below calls will export symbols for BitmaskImpl::getFieldImpl and
    * BitmaskImpl::setFieldImpl.

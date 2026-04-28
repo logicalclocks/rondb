@@ -230,6 +230,13 @@ class LqhKeyReq {
   static UintR getTTLIgnoreFlag(const UintR &requestInfo);
   static void setTTLOnlyExpiredFlag(UintR &requestInfo, UintR val);
   static UintR getTTLOnlyExpiredFlag(const UintR &requestInfo);
+  /**
+   * Ring Buffer related
+   */
+  static void setRingBufferOpFlag(UintR &requestInfo, UintR val);
+  static UintR getRingBufferOpFlag(const UintR &requestInfo);
+  static void setRingBufferShowMetaFlag(UintR &requestInfo, UintR val);
+  static UintR getRingBufferShowMetaFlag(const UintR &requestInfo);
 
   enum RequestInfo {
     RI_KEYLEN_SHIFT = 0,
@@ -246,8 +253,9 @@ class LqhKeyReq {
     RI_TTL_IGNORE_SHIFT = 6,
     RI_INTERPRETED_INSERT_SHIFT = 7,
     RI_TTL_ONLY_EXPIRED_SHIFT = 8,
-    /* Currently unused */
-    RI_CLEAR_SHIFT9 = 9,
+    /* Ring Buffer related */
+    RI_RING_BUFFER_OP_SHIFT = 9,
+    RI_RING_BUFFER_SHOW_META_SHIFT = 4,
 
     RI_LAST_REPL_SHIFT = 10,
     RI_LAST_REPL_MASK = 3,
@@ -320,7 +328,7 @@ class LqhKeyReq {
  * T = no triggers            - 1  Bit (1)
  * U = Operation came from UTIL - 1 Bit (2)
  * w = NoWait flag            = 1 Bit (3)
- * Q = Query Thread Flag      = 1 Bit (4)
+ * S = Ring Buffer Show Meta  = 1 Bit (4)
  * R = Replica Applier        = 1 Bit (5)
  * L = TTL flag               = 1 Bit (6)
  * N = Interpreted Insert flag= 1 Bit (7)
@@ -334,7 +342,7 @@ class LqhKeyReq {
  * Long LQHKEYREQ :
  *             1111111111222222222233
  *   01234567890123456789012345678901
- *   FTUwQRLN  llgnqpdisooorrAPDcumxz
+ *   FTUwSRLN  llgnqpdisooorrAPDcumxz
  *
  */
 
@@ -647,7 +655,8 @@ inline UintR LqhKeyReq::getDisableFkConstraints(const UintR &requestInfo) {
 }
 
 inline UintR LqhKeyReq::getLongClearBits(const UintR &requestInfo) {
-  const Uint32 mask = (1 << RI_CLEAR_SHIFT9);
+  const Uint32 mask = (1 << RI_RING_BUFFER_OP_SHIFT) |
+                      (1 << RI_RING_BUFFER_SHOW_META_SHIFT);
 
   return (requestInfo & mask);
 }
@@ -704,6 +713,24 @@ inline void LqhKeyReq::setTTLOnlyExpiredFlag(UintR &requestInfo, UintR val){
 
 inline UintR LqhKeyReq::getTTLOnlyExpiredFlag(const UintR & requestInfo){
   return (requestInfo >> RI_TTL_ONLY_EXPIRED_SHIFT) & 1;
+}
+
+inline void LqhKeyReq::setRingBufferOpFlag(UintR &requestInfo, UintR val){
+  ASSERT_BOOL(val, "LqhKeyReq::setRingBufferOpFlag");
+  requestInfo |= (val << RI_RING_BUFFER_OP_SHIFT);
+}
+
+inline UintR LqhKeyReq::getRingBufferOpFlag(const UintR & requestInfo){
+  return (requestInfo >> RI_RING_BUFFER_OP_SHIFT) & 1;
+}
+
+inline void LqhKeyReq::setRingBufferShowMetaFlag(UintR &requestInfo, UintR val){
+  ASSERT_BOOL(val, "LqhKeyReq::setRingBufferShowMetaFlag");
+  requestInfo |= (val << RI_RING_BUFFER_SHOW_META_SHIFT);
+}
+
+inline UintR LqhKeyReq::getRingBufferShowMetaFlag(const UintR & requestInfo){
+  return (requestInfo >> RI_RING_BUFFER_SHOW_META_SHIFT) & 1;
 }
 
 inline Uint32 table_version_major_lqhkeyreq(Uint32 x) {

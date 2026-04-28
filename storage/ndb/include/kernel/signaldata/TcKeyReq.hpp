@@ -260,6 +260,13 @@ class TcKeyReq {
   static UintR getTTLIgnoreFlag(const UintR &requestInfo);
   static void setTTLOnlyExpiredFlag(UintR &requestInfo, UintR val);
   static UintR getTTLOnlyExpiredFlag(const UintR &requestInfo);
+  /**
+   * Ring Buffer related
+   */
+  static void setRingBufferOpFlag(UintR &requestInfo, UintR val);
+  static UintR getRingBufferOpFlag(const UintR &requestInfo);
+  static void setRingBufferShowMetaFlag(UintR &requestInfo, UintR val);
+  static UintR getRingBufferShowMetaFlag(const UintR &requestInfo);
 };
 
 /**
@@ -389,11 +396,13 @@ class TcKeyReq {
  A = Replica applier       - 1  Bit 25
  I = IgnoreTTL             - 1  Bit 26
  N = Interpreted Insert    - 1  Bit 27
+ G = Ring Buffer Op        - 1  Bit 29
+ S = Ring Buffer Show Meta - 1  Bit 30
 
            1111111111222222222233
  01234567890123456789012345678901
  dnb cooop lsyyeiaaarkkkkkkkkkkkk  (Short TCKEYREQ)
- dnbvcooopqlsyyeixDfrRwBUQAIN       (Long TCKEYREQ)
+ dnbvcooopqlsyyeixDfrRwBUQAINGS    (Long TCKEYREQ)
 */
 
 #define TCKEY_NODISK_SHIFT (1)
@@ -440,6 +449,11 @@ class TcKeyReq {
 #define TC_TTL_IGNORE_SHIFT (26)
 #define INTERPRETED_INSERT_SHIFT (27)
 #define TC_TTL_ONLY_EXPIRED_SHIFT (28)
+/*
+ * Ring Buffer related
+ */
+#define TC_RING_BUFFER_OP_SHIFT (29)
+#define TC_RING_BUFFER_SHOW_META_SHIFT (30)
 
 /**
  * Scan Info
@@ -828,6 +842,34 @@ UintR
 TcKeyReq::getTTLOnlyExpiredFlag(const UintR & requestInfo)
 {
   return (requestInfo >> TC_TTL_ONLY_EXPIRED_SHIFT) & 1;
+}
+
+inline
+void
+TcKeyReq::setRingBufferOpFlag(UintR & requestInfo, UintR flag){
+  ASSERT_BOOL(flag, "TcKeyReq::setRingBufferOpFlag");
+  requestInfo |= (flag << TC_RING_BUFFER_OP_SHIFT);
+}
+
+inline
+UintR
+TcKeyReq::getRingBufferOpFlag(const UintR & requestInfo)
+{
+  return (requestInfo >> TC_RING_BUFFER_OP_SHIFT) & 1;
+}
+
+inline
+void
+TcKeyReq::setRingBufferShowMetaFlag(UintR & requestInfo, UintR flag){
+  ASSERT_BOOL(flag, "TcKeyReq::setRingBufferShowMetaFlag");
+  requestInfo |= (flag << TC_RING_BUFFER_SHOW_META_SHIFT);
+}
+
+inline
+UintR
+TcKeyReq::getRingBufferShowMetaFlag(const UintR & requestInfo)
+{
+  return (requestInfo >> TC_RING_BUFFER_SHOW_META_SHIFT) & 1;
 }
 
 #undef JAM_FILE_ID

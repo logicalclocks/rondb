@@ -68,6 +68,7 @@
 #include "storage/ndb/plugin/ha_ndbcluster_cond.h"
 #include "storage/ndb/plugin/ha_ndbcluster_connection.h"
 #include "storage/ndb/plugin/ha_ndbcluster_push.h"
+#include "storage/ndb/plugin/ha_ndbcluster_ring_buffer.h"
 #include "storage/ndb/plugin/ndb_anyvalue.h"
 #include "storage/ndb/plugin/ndb_applier.h"
 #include "storage/ndb/plugin/ndb_binlog_client.h"
@@ -300,6 +301,16 @@ static MYSQL_THDVAR_BOOL(index_stat_enable, /* name */
                          nullptr, /* update func. */
                          true     /* default */
 );
+
+static MYSQL_THDVAR_BOOL(
+    ring_buffer_show_meta,
+    PLUGIN_VAR_OPCMDARG,
+    "Show ring buffer meta rows (ring_idx=0) in read results. Default OFF.",
+    nullptr, nullptr, 0);
+
+namespace ndb_ring_buffer {
+bool thdvar_show_meta(THD *thd) { return THDVAR(thd, ring_buffer_show_meta); }
+}  // namespace ndb_ring_buffer
 
 static MYSQL_THDVAR_BOOL(table_no_logging,                 /* name */
                          PLUGIN_VAR_NOCMDARG, "", nullptr, /* check func. */
@@ -970,9 +981,8 @@ static inline int check_completed_operations(NdbTransaction *trans,
   return 0;
 }
 
-static inline int execute_no_commit(Thd_ndb *thd_ndb, NdbTransaction *trans,
-                                    bool ignore_no_key,
-                                    uint *ignore_count = nullptr) {
+int execute_no_commit(Thd_ndb *thd_ndb, NdbTransaction *trans,
+                      bool ignore_no_key, uint *ignore_count = nullptr) {
   DBUG_TRACE;
 
   trans->releaseCompletedOpsAndQueries();
@@ -3583,6 +3593,10 @@ const NdbOperation *ha_ndbcluster::pk_unique_index_read_key(
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
     poptions = &options;
   }
+  if (ndb_ring_buffer::thdvar_show_meta(current_thd)) {
+    options.optionsPresent |= NdbOperation::OperationOptions::OO_RING_BUFFER_SHOW_META;
+    poptions = &options;
+  }
 
   /*
     We prepared a ScanFilter. However it turns out that we will
@@ -3855,6 +3869,10 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
     if (m_ttl_ignore) {
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
     }
+    if (ndb_ring_buffer::show_meta_active(current_thd, m_table->isRingBuffer(),
+                                          m_ring_buffer_delete_allowed)) {
+      options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
+    }
 
     NdbInterpretedCode code(m_table);
     generate_scan_filter(&code, &options);
@@ -3977,6 +3995,10 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
    */
   if (m_ttl_ignore) {
     options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
+  }
+  if (ndb_ring_buffer::show_meta_active(current_thd, m_table->isRingBuffer(),
+                                        m_ring_buffer_delete_allowed)) {
+    options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
   }
 
   options.scan_flags =
@@ -4853,6 +4875,11 @@ int ha_ndbcluster::write_row(uchar *record) {
   return ndb_write_row(record, false, false);
 }
 
+/*
+  Ring Buffer Table: the Ring_meta on-disk format, flush_ring_buffer_batch(),
+  and ndb_ring_buffer_write_row() live in ha_ndbcluster_ring_buffer.cc.
+*/
+
 /**
   Insert one record into NDB
 */
@@ -4882,6 +4909,16 @@ int ha_ndbcluster::ndb_write_row(uchar *record, bool primary_key_update,
     if ((error = update_auto_increment())) return error;
     m_skip_auto_increment = (insert_id_for_cur_row == 0 ||
                              thd->auto_inc_intervals_forced.nb_elements());
+  }
+
+  /*
+   * Ring Buffer: intercept inserts on ring-buffer tables early,
+   * before peek_indexed_rows() which would find the meta row and
+   * trigger the IODKU update path.
+   */
+  if (m_table->isRingBuffer() && !thd_ndb->get_applier() &&
+      thd_sql_command(thd) != SQLCOM_ALTER_TABLE) {
+    return ndb_ring_buffer_write_row(record);
   }
 
   /*
@@ -5011,6 +5048,17 @@ int ha_ndbcluster::ndb_write_row(uchar *record, bool primary_key_update,
   if (thd_ndb->get_applier()) {
     options.optionsPresent |=
         NdbOperation::OperationOptions::OO_REPLICA_APPLIER;
+  }
+
+  /*
+   * Ring buffer table: kernel write guard needs OO_RING_BUFFER_OP for
+   * ALTER TABLE copies and replica applier writes.
+   */
+  if (m_table->isRingBuffer() &&
+      (thd_sql_command(thd) == SQLCOM_ALTER_TABLE ||
+       thd_ndb->get_applier())) {
+    options.optionsPresent |=
+        NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
   }
 
   if (thd_test_options(thd, OPTION_NO_FOREIGN_KEY_CHECKS)) {
@@ -5599,6 +5647,54 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
 
   DBUG_TRACE;
 
+  /*
+   * Ring buffer UPDATE restrictions:
+   * - Block updates to ring_idx or ring_meta columns (system-managed)
+   * - Block updates to the meta row (ring_idx=0)
+   * - Allow user-column-only updates on data rows
+   */
+  if (m_table->isRingBuffer() && !thd_ndb->get_applier()) {
+    const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
+    const Uint32 ring_meta_col_no = m_table->getRingMetaColumnNo();
+    Field *ring_idx_field = table->field[ring_idx_col_no];
+    Field *ring_meta_field = table->field[ring_meta_col_no];
+
+    if (bitmap_is_set(table->write_set, ring_idx_field->field_index())) {
+      my_error(ER_ILLEGAL_HA, MYF(0),
+               "Cannot update ring_idx on ring-buffer table");
+      return HA_ERR_UNSUPPORTED;
+    }
+    if (bitmap_is_set(table->write_set, ring_meta_field->field_index())) {
+      my_error(ER_ILLEGAL_HA, MYF(0),
+               "Cannot update ring_meta on ring-buffer table");
+      return HA_ERR_UNSUPPORTED;
+    }
+
+    /*
+     * Block updates to meta row (ring_idx=0).
+     *
+     * We only check when ring_idx is in the read_set, meaning it was
+     * actually fetched from NDB into the record buffer. When ring_idx
+     * is NOT in the read_set, the record buffer contains the column's
+     * DEFAULT value (0), which would be a false positive.
+     *
+     * This is safe because the kernel-level meta-row filter (Commit 3,
+     * handleReadReq in DbtupExecQuery.cpp) hides all ring_idx=0 rows
+     * from scans unless ring_buffer_show_meta is ON. When show_meta
+     * is ON, ring_idx is in the read_set (the user explicitly asked to
+     * see meta rows), so this check will fire. When show_meta is OFF,
+     * the kernel guarantees no meta row reaches update_row().
+     */
+    if (bitmap_is_set(table->read_set, ring_idx_field->field_index())) {
+      long long old_ring_idx = ring_idx_field->val_int();
+      if (old_ring_idx == 0) {
+        my_error(ER_ILLEGAL_HA, MYF(0),
+                 "Cannot update meta row on ring-buffer table");
+        return HA_ERR_UNSUPPORTED;
+      }
+    }
+  }
+
   /* Start a transaction now if none available
    * (Manual Binlog application...)
    */
@@ -5743,6 +5839,11 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
   }
 
+  if (m_table->isRingBuffer()) {
+    options.optionsPresent |=
+        NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
+  }
+
   if (cursor) {
     /*
       We are scanning records and want to update the record
@@ -5867,6 +5968,32 @@ int ha_ndbcluster::delete_row(const uchar *record) {
 bool ha_ndbcluster::start_bulk_delete() {
   DBUG_TRACE;
   m_is_bulk_delete = true;
+
+  /*
+   * Ring buffer: validate DELETE WHERE clause early, before the scan
+   * is set up. This allows the scan to include meta rows (ring_idx=0)
+   * so they get deleted along with data rows.
+   *
+   * Must reject here (not only in delete_row) because if the WHERE
+   * matches 0 rows, delete_row is never called and the invalid DELETE
+   * would silently succeed.
+   */
+  if (m_table->isRingBuffer() && !m_ring_buffer_delete_allowed) {
+    THD *thd = table->in_use;
+    const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
+    const uint ring_idx_fi = table->field[ring_idx_col_no]->field_index();
+    const Item *where = thd->lex->query_block->where_cond();
+    if (ndb_ring_buffer::delete_where_allowed(table, ring_idx_fi, where)) {
+      m_ring_buffer_delete_allowed = true;
+    } else if (!m_thd_ndb->get_applier()) {
+      my_error(ER_ILLEGAL_HA, MYF(0),
+               "DELETE WHERE on ring-buffer table may only reference "
+               "PK-prefix columns (excluding ring_idx)");
+      m_is_bulk_delete = false;
+      return 1;
+    }
+  }
+
   return 0;  // Bulk delete used by handler
 }
 
@@ -5965,6 +6092,36 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
 
   DBUG_TRACE;
 
+  /*
+   * Ring buffer DELETE restriction:
+   * Only allow DELETE with a WHERE clause covering all PK-prefix columns
+   * (all PK columns except ring_idx). Replica applier is always allowed.
+   *
+   * Validation runs in start_bulk_delete() for bulk deletes and again
+   * here as a fallback for the non-bulk path; the result is cached in
+   * m_ring_buffer_delete_allowed (reset in ha_ndbcluster::reset()).
+   * push_to_engine() is not called for DELETE, so we cannot validate
+   * there.
+   */
+  if (m_table->isRingBuffer() &&
+      !m_ring_buffer_delete_allowed &&
+      !m_thd_ndb->get_applier()) {
+    const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
+    const uint ring_idx_fi = table->field[ring_idx_col_no]->field_index();
+    const Item *where = thd->lex->query_block->where_cond();
+    if (ndb_ring_buffer::delete_where_allowed(table, ring_idx_fi, where)) {
+      m_ring_buffer_delete_allowed = true;
+    }
+  }
+  if (m_table->isRingBuffer() &&
+      !m_ring_buffer_delete_allowed &&
+      !m_thd_ndb->get_applier()) {
+    my_error(ER_ILLEGAL_HA, MYF(0),
+             "DELETE WHERE on ring-buffer table may only reference "
+             "PK-prefix columns (excluding ring_idx)");
+    return HA_ERR_UNSUPPORTED;
+  }
+
   /* Start a transaction now if none available
    * (Manual Binlog application...)
    */
@@ -6031,6 +6188,11 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
     TTL_HANDLER_TRACE(m_share->table_name, "ha_ndbcluster::ndb_delete_row(), "
                       "set TTL_IGNORE flag");
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
+  }
+
+  if (m_table->isRingBuffer()) {
+    options.optionsPresent |=
+        NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
   }
 
   if (cursor) {
@@ -7237,6 +7399,10 @@ int ha_ndbcluster::reset() {
    * TTL related
    */
   m_ttl_ignore = false;
+
+  m_rb_batch_active = false;
+  m_ring_buffer_delete_allowed = false;
+
   return 0;
 }
 
@@ -7289,11 +7455,14 @@ void ha_ndbcluster::start_bulk_insert(ha_rows rows) {
   DBUG_TRACE;
   DBUG_PRINT("enter", ("rows: %d", (int)rows));
 
-  if (!m_use_write && m_ignore_dup_key) {
+  if (!m_use_write && m_ignore_dup_key &&
+      !(m_table && m_table->isRingBuffer())) {
     /*
       compare if expression with that in write_row
       we have a situation where peek_indexed_rows() will be called
-      so we cannot batch
+      so we cannot batch.
+      Ring buffer tables bypass peek_indexed_rows() entirely, so
+      they can still batch.
     */
     DBUG_PRINT("info", ("Batching turned off as duplicate key is "
                         "ignored by using peek_row"));
@@ -7321,6 +7490,29 @@ int ha_ndbcluster::end_bulk_insert() {
 
   DBUG_TRACE;
   // Check if last inserts need to be flushed
+
+  /* Flush any pending ring-buffer batch meta write */
+  if (m_table && m_table->isRingBuffer() && m_rb_batch_active) {
+    /*
+     * flush_ring_buffer_batch() sets write_set/read_set bits for ring
+     * columns but does not clear them — we must clean up here.
+     */
+    const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
+    const Uint32 ring_meta_col_no = m_table->getRingMetaColumnNo();
+    int rb_err = flush_ring_buffer_batch();
+    bitmap_clear_bit(table->write_set,
+                     table->field[ring_idx_col_no]->field_index());
+    bitmap_clear_bit(table->write_set,
+                     table->field[ring_meta_col_no]->field_index());
+    bitmap_clear_bit(table->read_set,
+                     table->field[ring_idx_col_no]->field_index());
+    bitmap_clear_bit(table->read_set,
+                     table->field[ring_meta_col_no]->field_index());
+    if (rb_err != 0) {
+      set_my_errno(rb_err);
+      return rb_err;
+    }
+  }
 
   THD *thd = table->in_use;
   Thd_ndb *thd_ndb = m_thd_ndb;
@@ -8172,6 +8364,7 @@ static const struct NDB_Modifier ndb_table_modifiers[] = {
     {NDB_Modifier::M_BOOL, STRING_WITH_LEN("FULLY_REPLICATED"), 0, {0}},
     {NDB_Modifier::M_STRING, STRING_WITH_LEN("PARTITION_BALANCE"), 0, {0}},
     {NDB_Modifier::M_STRING, STRING_WITH_LEN("TTL"), 0, {0}},
+    {NDB_Modifier::M_STRING, STRING_WITH_LEN("MAX_ROWS_PER_PK"), 0, {0}},
     {NDB_Modifier::M_BOOL, nullptr, 0, 0, {0}}};
 
 static const char *ndb_column_modifier_prefix = "NDB_COLUMN=";
@@ -8976,7 +9169,8 @@ enum COMMENT_ITEMS {
   READ_BACKUP = 1,
   FULLY_REPLICATED = 2,
   PARTITION_BALANCE = 3,
-  TTL = 4
+  TTL = 4,
+  RING_BUFFER = 5
 };
 
 /**
@@ -9003,6 +9197,7 @@ int ha_ndbcluster::get_old_table_comment_items(THD *thd,
       table_modifiers.get("FULLY_REPLICATED");
   const NDB_Modifier *mod_frags = table_modifiers.get("PARTITION_BALANCE");
   const NDB_Modifier *mod_ttl = table_modifiers.get("TTL");
+  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("MAX_ROWS_PER_PK");
 
   if (mod_nologging->m_found) comment_items_shown[NOLOGGING] = true;
   if (mod_read_backup->m_found) comment_items_shown[READ_BACKUP] = true;
@@ -9011,6 +9206,9 @@ int ha_ndbcluster::get_old_table_comment_items(THD *thd,
   if (mod_frags->m_found) comment_items_shown[PARTITION_BALANCE] = true;
   if (mod_ttl->m_found) {
     comment_items_shown[TTL] = true;
+  }
+  if (mod_ring_buffer->m_found) {
+    comment_items_shown[RING_BUFFER] = true;
   }
   return 0;
 }
@@ -9066,6 +9264,7 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
       table_modifiers.get("FULLY_REPLICATED");
   const NDB_Modifier *mod_frags = table_modifiers.get("PARTITION_BALANCE");
   const NDB_Modifier * mod_ttl = table_modifiers.get("TTL");
+  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("MAX_ROWS_PER_PK");
 
   // Get the comment items from the old Ndb table
   bool old_nologging = !ndbtab->getLogging();
@@ -9076,7 +9275,7 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
 
   // Merge any previous comment changes from the old table from share
   // into the current changes specified in create_info
-  bool old_table_comment[5] = {false, false, false, false, false};
+  bool old_table_comment[6] = {false, false, false, false, false, false};
   if (get_old_table_comment_items(thd, old_table_comment, table->s->comment.str,
                                   table->s->comment.length)) {
     return;
@@ -9240,9 +9439,35 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
     }
   }
 
+  bool add_ring_buffer = false;
+  if (!mod_ring_buffer->m_found) {
+    if (old_table_comment[RING_BUFFER]) {
+      add_ring_buffer = true;
+      NDB_Modifiers old_table_modifiers(ndb_table_modifier_prefix,
+                                        ndb_table_modifiers);
+      if (old_table_modifiers.loadComment(
+            table->s->comment.str, table->s->comment.length) == -1) {
+        push_warning_printf(thd, Sql_condition::SL_WARNING,
+                            ER_ILLEGAL_HA_CREATE_OPTION, "%s",
+                            table_modifiers.getErrMsg());
+        my_error(ER_ILLEGAL_HA_CREATE_OPTION, MYF(0), ndbcluster_hton_name,
+                 "Syntax error in COMMENT modifier");
+        return;
+      }
+
+      char old_rb_str[256] = {0};
+      size_t rb_len = old_table_modifiers.get("MAX_ROWS_PER_PK")->m_val_str.len;
+      if (rb_len >= sizeof(old_rb_str)) rb_len = sizeof(old_rb_str) - 1;
+      strncpy(old_rb_str,
+             old_table_modifiers.get("MAX_ROWS_PER_PK")->m_val_str.str,
+             rb_len);
+
+      table_modifiers.set("MAX_ROWS_PER_PK", old_rb_str);
+    }
+  }
 
   if (!(add_nologging || add_read_backup || add_fully_replicated ||
-        add_part_bal || add_ttl)) {
+        add_part_bal || add_ttl || add_ring_buffer)) {
     /* No change of comment is needed. */
     return;
   }
@@ -9789,6 +10014,65 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
     ndb_log_info("[API]parse TTL successfully: TTL = %u sec, TTL_COLUMN = %s",
                   ttl_sec, ttl_column.c_str());
   }
+
+  /* Ring Buffer parsing */
+  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("MAX_ROWS_PER_PK");
+  bool found_ring_buffer = false;
+  uint32_t ring_buffer_size = RNIL;
+  std::string ring_idx_col_name;
+  std::string ring_meta_col_name;
+  uint32_t ring_idx_col_no = RNIL;
+  uint32_t ring_meta_col_no = RNIL;
+
+  if (mod_ring_buffer->m_found) {
+    ndb_ring_buffer::Spec rb_spec;
+    if (const char *err = ndb_ring_buffer::parse_spec(mod_ring_buffer,
+                                                      &rb_spec)) {
+      return create.failed_illegal_create_option(err);
+    }
+    if (rb_spec.is_off) {
+      if (thd_sql_command(thd) == SQLCOM_ALTER_TABLE) {
+        const char *orig_db = thd->lex->query_block->get_table_list()->db;
+        const char *orig_name =
+            thd->lex->query_block->get_table_list()->table_name;
+        Ndb_table_guard old_tab_g(ndb, orig_db, orig_name);
+        const NDBTAB *old_tab = old_tab_g.get_table();
+        if (old_tab && old_tab->isRingBuffer()) {
+          return create.failed_illegal_create_option(
+              "Cannot disable ring buffer via ALTER");
+        }
+      }
+      ndb_log_info("[API] MAX_ROWS_PER_PK = OFF");
+    } else {
+      if (const char *err =
+              ndb_ring_buffer::validate_columns_mysql(table, rb_spec)) {
+        return create.failed_illegal_create_option(err);
+      }
+      if (thd_sql_command(thd) == SQLCOM_ALTER_TABLE) {
+        const char *orig_db = thd->lex->query_block->get_table_list()->db;
+        const char *orig_name =
+            thd->lex->query_block->get_table_list()->table_name;
+        Ndb_table_guard old_tab_g(ndb, orig_db, orig_name);
+        const NDBTAB *old_tab = old_tab_g.get_table();
+        if (old_tab && old_tab->isRingBuffer() &&
+            rb_spec.size < old_tab->getRingBufferSize()) {
+          return create.failed_illegal_create_option(
+              "Cannot shrink ring buffer size");
+        }
+      }
+      found_ring_buffer = true;
+      ring_buffer_size = rb_spec.size;
+      ring_idx_col_name = rb_spec.idx_col_name;
+      ring_meta_col_name = rb_spec.meta_col_name;
+    }
+  }
+
+  /* Mutual exclusion: TTL and MAX_ROWS_PER_PK */
+  if (found_ttl && found_ring_buffer) {
+    return create.failed_illegal_create_option(
+        "A table cannot be both TTL and MAX_ROWS_PER_PK");
+  }
+
   NdbDictionary::Object::PartitionBalance part_bal =
       g_default_partition_balance;
   if (parsePartitionBalance(thd, mod_frags, &part_bal) == false) {
@@ -10102,6 +10386,16 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
                         col.getType());
         }
       }
+      if (found_ring_buffer) {
+        if (!my_strcasecmp(system_charset_info,
+            col.getName(), ring_idx_col_name.c_str())) {
+          ring_idx_col_no = tab.getColumn(col.getName())->getColumnNo();
+        }
+        if (!my_strcasecmp(system_charset_info,
+            col.getName(), ring_meta_col_name.c_str())) {
+          ring_meta_col_no = tab.getColumn(col.getName())->getColumnNo();
+        }
+      }
     }
   }
   if (found_ttl) {
@@ -10109,6 +10403,11 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
     tab.setTTLSec(ttl_sec);
     tab.setTTLColumnNo(ttl_column_no);
     // assert(tab.isTTLEnabled());
+  }
+  if (found_ring_buffer) {
+    tab.setRingBufferSize(ring_buffer_size);
+    tab.setRingIdxColumnNo(ring_idx_col_no);
+    tab.setRingMetaColumnNo(ring_meta_col_no);
   }
 
   tmp_restore_column_map(table->read_set, old_map);
@@ -10463,6 +10762,13 @@ int ha_ndbcluster::create_index(THD *thd, const char *name, const KEY *key_info,
   if (idx_type == UNIQUE_ORDERED_INDEX || idx_type == UNIQUE_INDEX) {
     strxnmov(unique_name, FN_LEN, name, unique_suffix, NullS);
     DBUG_PRINT("info", ("unique_name: '%s'", unique_name));
+  }
+
+  if (int rb_err = ndb_ring_buffer::check_index_columns(
+          thd, ndbtab, key_info,
+          idx_type == PRIMARY_KEY_INDEX ||
+              idx_type == PRIMARY_KEY_ORDERED_INDEX)) {
+    return rb_err;
   }
 
   switch (idx_type) {
@@ -14052,6 +14358,11 @@ int ha_ndbcluster::multi_range_start_retrievals(uint starting_range) {
         if (m_ttl_ignore) {
           options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
         }
+        if (ndb_ring_buffer::show_meta_active(
+                current_thd, m_table->isRingBuffer(),
+                m_ring_buffer_delete_allowed)) {
+          options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
+        }
 
         options.scan_flags =
             NdbScanOperation::SF_ReadRangeNo | NdbScanOperation::SF_MultiRange;
@@ -16487,6 +16798,40 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
           new_tab->setTTLSec(new_ttl_sec);
           new_tab->setTTLColumnNo(new_ttl_column_no);
     }
+  }
+
+  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("MAX_ROWS_PER_PK");
+  if (mod_ring_buffer->m_found) {
+    ndb_ring_buffer::Spec rb_spec;
+    if (const char *err = ndb_ring_buffer::parse_spec(mod_ring_buffer,
+                                                      &rb_spec)) {
+      *reason = err;
+      return true;
+    }
+    if (rb_spec.is_off) {
+      if (old_tab->isRingBuffer()) {
+        *reason = "Cannot disable ring buffer via ALTER";
+        return true;
+      }
+      /* off on non-ring-buffer table — no-op, ignore */
+    } else {
+      if (old_tab->isRingBuffer() &&
+          rb_spec.size < old_tab->getRingBufferSize()) {
+        *reason = "Cannot shrink ring buffer size";
+        return true;
+      }
+      if (const char *err =
+              ndb_ring_buffer::apply_columns_ndb(new_tab, rb_spec)) {
+        *reason = err;
+        return true;
+      }
+    }
+  }
+
+  /* Mutual exclusion: TTL and MAX_ROWS_PER_PK */
+  if (new_tab->isTTLEnabled() && new_tab->isRingBuffer()) {
+    *reason = "A table cannot be both TTL and MAX_ROWS_PER_PK";
+    return true;
   }
 
   NdbDictionary::Object::PartitionBalance part_bal =
@@ -19165,6 +19510,7 @@ static SYS_VAR *system_variables[] = {
     MYSQL_SYSVAR(metadata_check_interval),
     MYSQL_SYSVAR(metadata_sync),
     MYSQL_SYSVAR(applier_allow_skip_epoch),
+    MYSQL_SYSVAR(ring_buffer_show_meta),
     nullptr};
 
 struct st_mysql_storage_engine ndbcluster_storage_engine = {
