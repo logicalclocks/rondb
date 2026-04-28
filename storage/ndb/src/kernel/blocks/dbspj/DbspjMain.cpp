@@ -89,6 +89,31 @@
 #define DEB_CTE(arglist) do { } while (0)
 #endif
 
+/* m_cnt_active is the SPJ request's count of tree nodes still in
+ * TN_ACTIVE state.  Mutating it via these helpers (rather than the
+ * raw ++/-- ) gives every site a name and makes the debug build emit
+ * a trace line per change — invaluable when a tree node finishes its
+ * active→inactive transition out of order with the CTE-phase
+ * boundary (see ronsql_cte_multi_batch race in cte_nextreq_plan.md).
+ *
+ * To enable: uncomment DEBUG_CNT_ACTIVE below in a debug build and
+ * rebuild ndbd.  Production builds always inline to a bare ++/--. */
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+#define DEBUG_CNT_ACTIVE 1
+#endif
+
+/* m_cnt_active mutations always inline to a bare ++/-- — keeping the
+ * hot path zero-overhead vs. raw counter math.  The site/nodeNo
+ * arguments document the call site (and are available for ad-hoc
+ * traces if needed).  When a race is detected — e.g.
+ * handleCtePhaseComplete fires with cnt_active != 0 (under
+ * DEBUG_CNT_ACTIVE) — dump_cnt_active_state walks the tree and prints
+ * which TreeNodes are still TN_ACTIVE.  That identifies the path that
+ * incremented but never decremented without slowing the race window
+ * enough to mask the bug. */
+#define INC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active++; } while (0)
+#define DEC_CNT_ACTIVE(reqP, site, nodeNo) do { (reqP)->m_cnt_active--; } while (0)
+
 #ifdef DEBUG_CTE_BUILD
 #define DEB_CTE_BUILD(arglist) \
   do { g_eventLogger->info arglist ; } while (0)
@@ -6029,7 +6054,7 @@ void Dbspj::cte_lookup_start(Signal *signal, Ptr<Request> requestPtr,
    * since the same constant key would produce identical results and
    * we must not duplicate rows into the enclosing CTE's aggregator. */
   treeNodePtr.p->m_state = TreeNode::TN_ACTIVE;
-  requestPtr.p->m_cnt_active++;
+  INC_CNT_ACTIVE(requestPtr.p, "cte_lookup_start", treeNodePtr.p->m_node_no);
   requestPtr.p->m_active_tree_nodes.set(treeNodePtr.p->m_node_no);
   requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
 
@@ -6039,7 +6064,8 @@ void Dbspj::cte_lookup_start(Signal *signal, Ptr<Request> requestPtr,
              instance(), requestPtr.p->m_rootFragId,
              treeNodePtr.p->m_node_no));
     treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
-    requestPtr.p->m_cnt_active--;
+    DEC_CNT_ACTIVE(requestPtr.p, "cte_lookup_start_skip",
+                   treeNodePtr.p->m_node_no);
     requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
     if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
       requestPtr.p->m_cteScansComplete++;
@@ -6478,7 +6504,8 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
       jam();
       treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
       ndbrequire(requestPtr.p->m_cnt_active > 0);
-      requestPtr.p->m_cnt_active--;
+      DEC_CNT_ACTIVE(requestPtr.p, "execCTE_LOOKUP_CONF",
+                     treeNodePtr.p->m_node_no);
     }
   }
 
@@ -6553,7 +6580,8 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
       jam();
       treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
       ndbrequire(requestPtr.p->m_cnt_active > 0);
-      requestPtr.p->m_cnt_active--;
+      DEC_CNT_ACTIVE(requestPtr.p, "execCTE_LOOKUP_REF",
+                     treeNodePtr.p->m_node_no);
     }
   }
 
@@ -7066,7 +7094,7 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
   data.m_numNodeSlots = 0;
 
   treeNodePtr.p->m_state = TreeNode::TN_ACTIVE;
-  requestPtr.p->m_cnt_active++;
+  INC_CNT_ACTIVE(requestPtr.p, "cte_scan_start", treeNodePtr.p->m_node_no);
   requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
   if (treeNodePtr.p->m_cteId == RNIL) {
     /* Main-SELECT CTE_SCAN root: register on m_cursor_nodes so
@@ -7117,7 +7145,8 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     data.m_endOfData = true;
     treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
     ndbrequire(requestPtr.p->m_cnt_active > 0);
-    requestPtr.p->m_cnt_active--;
+    DEC_CNT_ACTIVE(requestPtr.p, "cte_scan_start_skip",
+                   treeNodePtr.p->m_node_no);
     requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
     if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
       requestPtr.p->m_cteScansComplete++;
@@ -7221,7 +7250,8 @@ void Dbspj::cte_scan_countSignal(Signal *signal, Ptr<Request> requestPtr,
     jam();
     treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
     ndbrequire(requestPtr.p->m_cnt_active > 0);
-    requestPtr.p->m_cnt_active--;
+    DEC_CNT_ACTIVE(requestPtr.p, "cte_scan_countSignal",
+                   treeNodePtr.p->m_node_no);
     requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
     if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
       requestPtr.p->m_cteScansComplete++;
@@ -7416,7 +7446,8 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
              instance(), treeNodePtr.p->m_node_no));
     treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
     ndbrequire(requestPtr.p->m_cnt_active > 0);
-    requestPtr.p->m_cnt_active--;
+    DEC_CNT_ACTIVE(requestPtr.p, "execCTE_SCAN_CONF",
+                   treeNodePtr.p->m_node_no);
     requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
 
     if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
@@ -7555,7 +7586,7 @@ void Dbspj::cte_scan_abort(Signal *signal, Ptr<Request> requestPtr,
     jam();
     treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
     ndbrequire(requestPtr.p->m_cnt_active > 0);
-    requestPtr.p->m_cnt_active--;
+    DEC_CNT_ACTIVE(requestPtr.p, "cte_scan_abort", treeNodePtr.p->m_node_no);
     requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
   }
 }
@@ -7594,6 +7625,45 @@ void Dbspj::handleCtePhaseComplete(Signal *signal, Ptr<Request> requestPtr) {
            requestPtr.p->m_cteCurrentPhase,
            requestPtr.p->m_outstanding,
            requestPtr.p->m_cnt_active));
+
+#ifdef DEBUG_CNT_ACTIVE
+  /* Race diagnostic: handleCtePhaseComplete fires when m_outstanding
+   * == 0, but m_cnt_active may be non-zero if a tree node's TN_ACTIVE
+   * → TN_INACTIVE transition raced with the phase boundary.  Dump
+   * which nodes are still active so the offending path is identifiable
+   * once execCTE_START_MAIN_REQ asserts.  Cheap because it only fires
+   * in the failing case. */
+  if (requestPtr.p->m_cnt_active != 0) {
+    g_eventLogger->info(
+        "(%u) CNT_ACTIVE_RACE handleCtePhaseComplete: phase=%u "
+        "cnt_active=%u outstanding=%u — listing active tree nodes:",
+        instance(), requestPtr.p->m_cteCurrentPhase,
+        requestPtr.p->m_cnt_active, requestPtr.p->m_outstanding);
+    Local_TreeNode_list dbg_list(m_treenode_pool, requestPtr.p->m_nodes);
+    Ptr<TreeNode> dbgPtr;
+    for (dbg_list.first(dbgPtr); !dbgPtr.isNull(); dbg_list.next(dbgPtr)) {
+      const char *st_name = "?";
+      switch (dbgPtr.p->m_state) {
+        case TreeNode::TN_BUILDING: st_name = "BUILDING"; break;
+        case TreeNode::TN_PREPARING: st_name = "PREPARING"; break;
+        case TreeNode::TN_INACTIVE: st_name = "INACTIVE"; break;
+        case TreeNode::TN_ACTIVE: st_name = "ACTIVE"; break;
+        case TreeNode::TN_COMPLETING: st_name = "COMPLETING"; break;
+        case TreeNode::TN_END: st_name = "END"; break;
+      }
+      g_eventLogger->info(
+          "(%u)   node=%u state=%s m_bits=0x%x cteId=%u "
+          "T_CTE_SCAN=%d T_AGGREGATE_LEAF=%d "
+          "in_completed=%d in_active=%d",
+          instance(), dbgPtr.p->m_node_no, st_name,
+          dbgPtr.p->m_bits, dbgPtr.p->m_cteId,
+          !!(dbgPtr.p->m_bits & TreeNode::T_CTE_SCAN),
+          !!(dbgPtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF),
+          requestPtr.p->m_completed_tree_nodes.get(dbgPtr.p->m_node_no),
+          requestPtr.p->m_active_tree_nodes.get(dbgPtr.p->m_node_no));
+    }
+  }
+#endif
 
   // Send CTE_PHASE_COMPLETE_REP to DBTC
   CtePhaseCompleteRep *rep =
@@ -7983,7 +8053,7 @@ void Dbspj::lookup_start(Signal *signal, Ptr<Request> requestPtr,
 
     /* Activate the root node for the main query. */
     treeNodePtr.p->m_state = TreeNode::TN_ACTIVE;
-    requestPtr.p->m_cnt_active++;
+    INC_CNT_ACTIVE(requestPtr.p, "lookup_start_cte", treeNodePtr.p->m_node_no);
     requestPtr.p->m_active_tree_nodes.set(treeNodePtr.p->m_node_no);
     requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
 
@@ -8379,7 +8449,8 @@ void Dbspj::lookup_countSignal(Signal *signal, Ptr<Request> requestPtr,
       jam();
       treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
       ndbrequire(requestPtr.p->m_cnt_active > 0);
-      requestPtr.p->m_cnt_active--;
+      DEC_CNT_ACTIVE(requestPtr.p, "lookup_countSignal",
+                     treeNodePtr.p->m_node_no);
     }
   }
 
@@ -11741,7 +11812,7 @@ void Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
                                    data.m_frags_complete) <= data.m_fragCount);
 
     data.m_batch_chunks = 1;
-    requestPtr.p->m_cnt_active++;
+    INC_CNT_ACTIVE(requestPtr.p, "scanFrag_send", treeNodePtr.p->m_node_no);
     requestPtr.p->m_outstanding++;
     requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
     treeNodePtr.p->m_state = TreeNode::TN_ACTIVE;
@@ -12696,7 +12767,8 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
       jam();
 
       ndbrequire(requestPtr.p->m_cnt_active);
-      requestPtr.p->m_cnt_active--;
+      DEC_CNT_ACTIVE(requestPtr.p, "scanFrag_FRAGCONF_all_done",
+                     treeNodePtr.p->m_node_no);
       treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
 
       // Track CTE scan completion for compound queries
@@ -12776,7 +12848,8 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
           /* All fragments completed -> Done with this treeNode */
           jamDebug();
           ndbassert(requestPtr.p->m_cnt_active > 0);
-          requestPtr.p->m_cnt_active--;
+          DEC_CNT_ACTIVE(requestPtr.p, "scanFrag_FRAGCONF_pruned",
+                         treeNodePtr.p->m_node_no);
           treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
         }
       }
@@ -12900,7 +12973,8 @@ void Dbspj::scanFrag_execSCAN_FRAGREF(Signal *signal, Ptr<Request> requestPtr,
   if (data.m_fragCount == (data.m_frags_complete + data.m_frags_not_started)) {
     jam();
     ndbrequire(requestPtr.p->m_cnt_active);
-    requestPtr.p->m_cnt_active--;
+    DEC_CNT_ACTIVE(requestPtr.p, "scanFrag_FRAGREF",
+                   treeNodePtr.p->m_node_no);
     treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
   }
 
@@ -13185,7 +13259,8 @@ void Dbspj::scanFrag_abort(Signal *signal, Ptr<Request> requestPtr,
       jam();
       ndbassert(data.m_frags_not_started > 0);
       ndbrequire(requestPtr.p->m_cnt_active);
-      requestPtr.p->m_cnt_active--;
+      DEC_CNT_ACTIVE(requestPtr.p, "scanFrag_abort",
+                     treeNodePtr.p->m_node_no);
       treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
     }
   }
@@ -13274,7 +13349,8 @@ Uint32 Dbspj::scanFrag_execNODE_FAILREP(Signal *signal, Ptr<Request> requestPtr,
       data.m_fragCount == (data.m_frags_complete + data.m_frags_not_started)) {
     jam();
     ndbrequire(requestPtr.p->m_cnt_active);
-    requestPtr.p->m_cnt_active--;
+    DEC_CNT_ACTIVE(requestPtr.p, "scanFrag_NODE_FAILREP",
+                   treeNodePtr.p->m_node_no);
     treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
   }
 
