@@ -1,0 +1,48 @@
+#
+# Set up: a string, a populated hash, an emptied hash.
+#
+OK
+1
+1
+1
+#
+# PEXPIREAT (now+60)*1000 on existing string -> :1; the
+# stored expiry_date equals the supplied millis / 1000.
+#
+1
+str_a_matches_target=1
+#
+# PEXPIREAT on existing hash -> :1; hset_keys.expiry_date set.
+#
+1
+hash_a_matches_target=1
+#
+# Sub-second PEXPIREAT rounds up to the next whole second.
+# PEXPIREAT (now+60)*1000 + 1 -> stored expiry is now+61.
+#
+OK
+1
+str_round_rounded_up=1
+#
+# PEXPIREAT on a fully-HDEL'd hash -> :0.
+#
+0
+#
+# PEXPIREAT on a missing key -> :0.
+#
+0
+#
+# PEXPIREAT 0 / PEXPIREAT -1 are rejected with an error.
+#
+ERR invalid expire time in set
+
+ERR invalid expire time in set
+
+#
+# End-to-end: PEXPIREAT then PTTL on the same key falls
+# in window. PTTL replies in millis, so the window scales
+# up by 1000.
+#
+OK
+1
+PTTL pttl_round in_window=1

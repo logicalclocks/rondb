@@ -777,6 +777,13 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
         wrong_number_of_arguments(argv, response);
         return 0;
       }
+    } else if (strcasecmp(command, "PEXPIREAT") == 0) {
+      if (argv.size() == 3) {
+        rondb_pexpireat_command(ndb, argv, response, worker_id);
+      } else {
+        wrong_number_of_arguments(argv, response);
+        return 0;
+      }
     } else if (strcasecmp(command, "HDEL") == 0) {
       if (argv.size() >= 3) {
         rondb_hdel_command(ndb, argv, response, worker_id);

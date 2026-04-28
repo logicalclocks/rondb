@@ -1,0 +1,96 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+# NDB schema-dist coordinator timeout is a known transient (CLAUDE.md).
+--disable_query_log
+call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
+--enable_query_log
+
+#
+# Phase 1.8 - PEXPIREAT key unix-timestamp-millis
+#
+# Reply:
+#   :1\r\n  - applied (key existed)
+#   :0\r\n  - missing (or hash with field_count == 0)
+#   error   - timestamp <= 0
+#
+# Like EXPIREAT but the input is millis-precision. Internally
+# rounds up to the next whole second via (N + 999) / 1000 -
+# expiry_date storage on both tables is TIMESTAMP (second
+# granularity), so a sub-second remainder becomes "round up by
+# ~1s". Acceptable: caller asked for ms precision and got a TTL
+# strictly >= what they requested.
+#
+
+--echo #
+--echo # Set up: a string, a populated hash, an emptied hash.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_a "value-a"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_a f1 v1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_empty x X
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL hash_empty x
+
+--echo #
+--echo # PEXPIREAT (now+60)*1000 on existing string -> :1; the
+--echo # stored expiry_date equals the supplied millis / 1000.
+--echo #
+--let $target_sec = `SELECT UNIX_TIMESTAMP(NOW()) + 60`
+--let $target_ms = `SELECT ($target_sec) * 1000`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIREAT str_a $target_ms
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) = $target_sec FROM redis_0.string_keys WHERE redis_key = 'str_a' AND redis_key_id = 0`
+--echo str_a_matches_target=$r
+
+--echo #
+--echo # PEXPIREAT on existing hash -> :1; hset_keys.expiry_date set.
+--echo #
+--let $target_sec = `SELECT UNIX_TIMESTAMP(NOW()) + 60`
+--let $target_ms = `SELECT ($target_sec) * 1000`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIREAT hash_a $target_ms
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) = $target_sec FROM redis_0.hset_keys WHERE redis_key = 'hash_a'`
+--echo hash_a_matches_target=$r
+
+--echo #
+--echo # Sub-second PEXPIREAT rounds up to the next whole second.
+--echo # PEXPIREAT (now+60)*1000 + 1 -> stored expiry is now+61.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_round "value"
+--let $target_sec = `SELECT UNIX_TIMESTAMP(NOW()) + 60`
+--let $target_ms_plus1 = `SELECT ($target_sec) * 1000 + 1`
+--let $expected_sec = `SELECT $target_sec + 1`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIREAT str_round $target_ms_plus1
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) = $expected_sec FROM redis_0.string_keys WHERE redis_key = 'str_round' AND redis_key_id = 0`
+--echo str_round_rounded_up=$r
+
+--echo #
+--echo # PEXPIREAT on a fully-HDEL'd hash -> :0.
+--echo #
+--let $target_ms = `SELECT (UNIX_TIMESTAMP(NOW()) + 60) * 1000`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIREAT hash_empty $target_ms
+
+--echo #
+--echo # PEXPIREAT on a missing key -> :0.
+--echo #
+--let $target_ms = `SELECT (UNIX_TIMESTAMP(NOW()) + 60) * 1000`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIREAT no_such_key $target_ms
+
+--echo #
+--echo # PEXPIREAT 0 / PEXPIREAT -1 are rejected with an error.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIREAT str_a 0
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIREAT str_a -1
+
+--echo #
+--echo # End-to-end: PEXPIREAT then PTTL on the same key falls
+--echo # in window. PTTL replies in millis, so the window scales
+--echo # up by 1000.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET pttl_round "value"
+--let $target_ms = `SELECT (UNIX_TIMESTAMP(NOW()) + 60) * 1000`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIREAT pttl_round $target_ms
+--let $script = $MYSQL_TEST_DIR/../storage/ndb/src/rondis/tests/ttl_probe.sh
+--exec bash $script PTTL pttl_round 58000 62000
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

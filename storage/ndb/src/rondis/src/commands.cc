@@ -1369,6 +1369,13 @@ void rondb_expireat_command(Ndb *ndb,
   rondb_expire_or_pexpire(ndb, argv, response, worker_id, EXPIRE_EXAT);
 }
 
+void rondb_pexpireat_command(Ndb *ndb,
+                             const pink::RedisCmdArgsType &argv,
+                             std::string *response,
+                             int worker_id) {
+  rondb_expire_or_pexpire(ndb, argv, response, worker_id, EXPIRE_PXAT);
+}
+
 // Forward decl: set_rows_hdel is defined below set_rows_hset (where it
 // can sit next to its mirror) but rondb_hdel_command needs to call it.
 static int set_rows_hdel(Ndb *ndb,
