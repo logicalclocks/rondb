@@ -1,0 +1,33 @@
+#
+# Set up: an expired string and an alive one.
+#
+OK
+OK
+1
+#
+# GET on the expired key returns nil; alive key returns its value.
+#
+
+value-alive
+#
+# MGET returns array with nil for expired, value for alive.
+#
+
+value-alive
+
+#
+# STRLEN on expired key returns 0; alive returns the length.
+#
+0
+11
+#
+# GETRANGE on expired key returns empty bulk; alive returns
+# the requested slice.
+#
+
+value-alive
+#
+# The expired row is still physically present (Phase 1.10
+# only filters on read - it does not initiate cleanup).
+#
+physical_row=

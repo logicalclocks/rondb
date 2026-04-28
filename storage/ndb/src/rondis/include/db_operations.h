@@ -36,6 +36,19 @@
 
 const Uint32 ROWS_PER_READ = 2;
 
+// Defined in commands.cc. The "no TTL" sentinel for string_keys /
+// hset_keys.expiry_date - rows storing this value (or NULL) are
+// treated as having no TTL by TTL / PERSIST and are never filtered
+// out by Phase 1.10's expired-key reads.
+extern const Int32 g_max_expire_at;
+
+// Phase 1.10b: returns true iff key_row's expiry_date is non-null,
+// non-sentinel, and < now (mi_sint4korr-decoded). The mask used by
+// prepare_get_key_row / prepare_get_simple_key_row (0xFC) already
+// projects expiry_date and null_bits, so callers just pass the
+// post-read key_row in. Defined in db_operations.cc.
+bool key_row_is_expired(const struct key_table *key_row);
+
 /* Callback function setup for DELETE MODULE */
 void prepare_delete_value_transaction(struct KeyStorage *key_storage);
 void commit_complex_delete_transaction(struct KeyStorage *key_storage);

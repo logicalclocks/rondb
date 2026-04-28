@@ -37,6 +37,8 @@
 #include "db_operations.h"
 #include "table_definitions.h"
 #include "interpreted_code.h"
+#include "include/my_systime.h"
+#include "include/myisampack.h"
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_DEL_CMD 1
@@ -1546,6 +1548,23 @@ int prepare_get_value_row(std::string *response,
   return 0;
 }
 
+// Phase 1.10b: filter expired string_keys rows out of GET-shape
+// reads (GET / MGET / GETRANGE / STRLEN). The mask 0xFC used by
+// prepare_get_key_row / prepare_get_simple_key_row already projects
+// expiry_date, so this is a pure post-read C-side check in the
+// same shape as filter_expired_probe in commands.cc. Bit position
+// for expiry_date in null_bits is bit 1 (0x2), matching the probe
+// path's m_string_buf decode at commands.cc:1185 (string_keys'
+// std::map column ordering, see feedback_ndb_record_column_index).
+bool key_row_is_expired(const struct key_table *key_row) {
+  if ((key_row->null_bits & 0x2) != 0) return false;
+  Int32 expiry_seconds =
+    mi_sint4korr((const unsigned char*)&key_row->expiry_date);
+  if (expiry_seconds == g_max_expire_at) return false;
+  Int64 now_seconds = (Int64)my_micro_time() / 1000000;
+  return expiry_seconds <= now_seconds;
+}
+
 static void
 read_callback(int result, NdbTransaction *trans, void *aObject) {
   struct KeyStorage *key_store = (struct KeyStorage*)aObject;
@@ -1692,6 +1711,16 @@ simple_read_callback(int result, NdbTransaction *trans, void *aObject) {
         get_ctrl->m_error_code = code;
       }
     }
+  } else if (key_row_is_expired(&key_storage->m_key_row)) {
+    // Phase 1.10b: NDB lazy GC may leave expiry_date < now rows
+    // physically present. Treat as missing - same shape as the
+    // READ_ERROR (626) branch above (CompletedFailed without a
+    // num_keys_failed bump). Reply layer emits $-1 for GET, nil
+    // entry for MGET, +0 for STRLEN, $0 for GETRANGE.
+    key_storage->m_key_state = KeyState::CompletedFailed;
+    get_ctrl->m_num_keys_completed_first_pass++;
+    DEB_HSET_KEY(("key %u was expired (expiry_date < now)\n",
+      key_storage->m_index));
   } else if (key_storage->m_key_row.num_rows > 0) {
     key_storage->m_key_state = KeyState::MultiRow;
     get_ctrl->m_num_keys_multi_rows++;

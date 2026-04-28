@@ -3565,10 +3565,15 @@ void rondb_strlen_command(Ndb *ndb,
     return;
   }
   // Initialize tot_value_len to 0 before executing - if the key doesn't exist,
-  // NDB may return success without populating the row, leaving it uninitialized
+  // NDB may return success without populating the row, leaving it uninitialized.
+  // Phase 1.10b: also project expiry_date (bit 7 = 0x80) so the same read
+  // can decide whether to suppress a still-present-but-expired row. The
+  // null_bits header is always projected by NdbRecord, no extra mask bit
+  // needed.
   key_store->m_key_row.tot_value_len = 0;
+  key_store->m_key_row.null_bits = 0x2;  // mark expiry_date NULL by default
   int ret_code = prepare_get_simple_key_row(response,
-                                            Uint32(0x10),
+                                            Uint32(0x90),
                                             key_store->m_trans,
                                             &key_store->m_key_row,
                                             database_id);
@@ -3578,6 +3583,10 @@ void rondb_strlen_command(Ndb *ndb,
     return;
   }
   if (key_store->m_trans->execute(NdbTransaction::Commit) != 0) {
+    key_store->m_key_row.tot_value_len = 0;
+  } else if (key_row_is_expired(&key_store->m_key_row)) {
+    // Phase 1.10b: row exists but expiry_date < now. Treat as
+    // "key does not exist" (Redis-canonical STRLEN miss reply).
     key_store->m_key_row.tot_value_len = 0;
   }
   char buf[20];

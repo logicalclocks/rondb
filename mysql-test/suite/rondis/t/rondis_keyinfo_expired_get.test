@@ -1,0 +1,65 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+# NDB schema-dist coordinator timeout is a known transient (CLAUDE.md).
+--disable_query_log
+call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
+--enable_query_log
+
+#
+# Phase 1.10b - GET / MGET / STRLEN / GETRANGE filter expired keys
+#
+# String reads must hide rows where expiry_date < now (NDB lazy
+# GC may leave them physically present until the periodic
+# expire-scan reaps them). Forced via EXPIREAT key 1 - past
+# absolute timestamp, deterministic without sleep.
+#
+# Reply when expired:
+#   GET      -> $-1\r\n   (nil)
+#   MGET     -> nil entry inside the array
+#   STRLEN   -> :0
+#   GETRANGE -> empty bulk
+#
+
+--echo #
+--echo # Set up: an expired string and an alive one.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_x "value-x"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_alive "value-alive"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT str_x 1
+
+--echo #
+--echo # GET on the expired key returns nil; alive key returns its value.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET str_x
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET str_alive
+
+--echo #
+--echo # MGET returns array with nil for expired, value for alive.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT MGET str_x str_alive nope
+
+--echo #
+--echo # STRLEN on expired key returns 0; alive returns the length.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN str_x
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN str_alive
+
+--echo #
+--echo # GETRANGE on expired key returns empty bulk; alive returns
+--echo # the requested slice.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE str_x 0 -1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE str_alive 0 -1
+
+--echo #
+--echo # The expired row is still physically present (Phase 1.10
+--echo # only filters on read - it does not initiate cleanup).
+--echo #
+--let $r = `SELECT redis_key FROM redis_0.string_keys WHERE redis_key = 'str_x' AND redis_key_id = 0`
+--echo physical_row=$r
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
