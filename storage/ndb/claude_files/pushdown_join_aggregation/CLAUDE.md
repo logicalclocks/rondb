@@ -35,6 +35,7 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_filter_phase_j.md` — Phase J: LEFT-to-INNER promotion when WHERE rejects NULL on RHS (RonSQL)
 - `cte_filter_phase_i1.md` — Phase I.1: IS NULL / IS NOT NULL on CTE column or aggregate output (kernel + RonSQL)
 - `cte_filter_phase_k.md` — Phase K: ANTI_JOIN promotion for WHERE col IS NULL on LEFT JOIN RHS (RonSQL)
+- `cte_filter_phase_l.md` — Phase L: JOIN_AGG_COMPLETE robustness — checkCteReady / continueJoinAggRedistribute idempotency, per-CTE state in DBTC, multi-LDM serialization, test coverage (kernel + DBTC, plan-only)
 - `cte_nextreq_plan.md` — SCAN_NEXTREQ flow control for CTE main-SELECTs: overview + phase index
 - `cte_nextreq_phase_1.md` — Phase 1: fix CTE_SCAN_REQ continuation plumbing (scanIterI, SignalLengthContinue)
 - `cte_nextreq_phase_2.md` — Phase 2: SCAN_NEXTREQ flow control for CTE_SCAN root
