@@ -755,6 +755,43 @@ struct exists_probe {
 #define EXISTS_MATCH_STRING 1
 #define EXISTS_MATCH_HASH   2
 
+// Phase 1.10a: probe-side expired-key filter. NDB's lazy GC means
+// `expiry_date < now` rows can still be physically present after
+// they have logically expired. Once TTL is user-visible (Phases
+// 1.3-1.9), every read - EXISTS / TYPE / EXPIRE / PERSIST / TTL /
+// HGET ... - must hide such rows. The probe pipeline already
+// projects expiry_date for TTL's sake, so the filter here is a
+// pure C-side check in the same shape as rondb_ttl_or_pttl
+// (commands.cc:1184). Bit positions: string_keys expiry_date null
+// bit is bit 1 of null_bits, hset_keys is bit 0 - per the
+// init_*_records column_map ordering documented in
+// feedback_ndb_record_column_index.md.
+static bool probe_is_expired(const struct exists_probe *probe) {
+  bool expiry_is_null;
+  const Int32 *expiry_ptr;
+  if (probe->m_match_kind == EXISTS_MATCH_STRING) {
+    expiry_is_null = (probe->m_string_buf.null_bits & 0x2) != 0;
+    expiry_ptr = &probe->m_string_buf.expiry_date;
+  } else if (probe->m_match_kind == EXISTS_MATCH_HASH) {
+    expiry_is_null = (probe->m_hset_buf.null_bits & 0x1) != 0;
+    expiry_ptr = &probe->m_hset_buf.expiry_date;
+  } else {
+    return false;
+  }
+  if (expiry_is_null) return false;
+  Int32 expiry_seconds = mi_sint4korr((const unsigned char*)expiry_ptr);
+  if (expiry_seconds == g_max_expire_at) return false;
+  Int64 now_seconds = (Int64)my_micro_time() / 1000000;
+  return expiry_seconds <= now_seconds;
+}
+
+static void filter_expired_probe(struct exists_probe *probe) {
+  if (probe->m_match_kind != EXISTS_MATCH_NONE && probe_is_expired(probe)) {
+    probe->m_match_kind = EXISTS_MATCH_NONE;
+    probe->m_present = false;
+  }
+}
+
 static int add_exists_string_probe_op(NdbTransaction *trans,
                                       struct exists_probe *probe,
                                       Uint32 database_id,
@@ -1073,6 +1110,7 @@ void rondb_exists_command(Ndb *ndb,
   }
   Uint32 found_count = 0;
   for (Uint32 i = 0; i < num_keys; i++) {
+    filter_expired_probe(&probes[i]);
     if (probes[i].m_present) found_count++;
   }
   free(probes);
@@ -1114,6 +1152,7 @@ void rondb_type_command(Ndb *ndb,
                         database_id, string_tab, response) != 0) {
     return;
   }
+  filter_expired_probe(&probe);
   switch (probe.m_match_kind) {
     case EXISTS_MATCH_STRING:
       response->append("+string\r\n");
@@ -1308,6 +1347,7 @@ static void rondb_expire_or_pexpire(Ndb *ndb,
                         database_id, string_tab, response) != 0) {
     return;
   }
+  filter_expired_probe(&probe);
   if (probe.m_match_kind == EXISTS_MATCH_NONE) {
     response->append(":0\r\n");
     return;
@@ -1415,6 +1455,7 @@ void rondb_persist_command(Ndb *ndb,
                         database_id, string_tab, response) != 0) {
     return;
   }
+  filter_expired_probe(&probe);
   if (probe.m_match_kind == EXISTS_MATCH_NONE) {
     response->append(":0\r\n");
     return;

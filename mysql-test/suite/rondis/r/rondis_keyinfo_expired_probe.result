@@ -1,0 +1,46 @@
+#
+# Set up: a string, a populated hash, plus their always-fresh
+# counterparts to keep the multi-key EXISTS case interesting.
+#
+OK
+OK
+1
+1
+#
+# Force expiry_date well into the past via EXPIREAT 1
+# (1970-01-01 00:00:01 UTC).
+#
+1
+1
+#
+# EXISTS on each expired key alone -> :0; on the alive ones -> :1.
+#
+0
+0
+1
+1
+#
+# EXISTS multi-key (mix of expired + alive + missing) - only
+# the alive keys count.
+#
+2
+#
+# TYPE on each expired key -> +none; alive keys still report
+# their kind.
+#
+none
+none
+string
+hash
+#
+# EXPIRE on an expired-but-present key -> :0 (no update).
+# The stored expiry_date stays in the past (unchanged).
+#
+0
+str_x_expiry_unchanged=
+#
+# PERSIST on an expired-but-present key -> :0 (no clear).
+# The stored expiry_date stays in the past.
+#
+0
+hash_x_expiry_unchanged=

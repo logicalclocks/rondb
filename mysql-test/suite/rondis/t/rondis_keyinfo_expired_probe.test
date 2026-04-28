@@ -1,0 +1,81 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+# NDB schema-dist coordinator timeout is a known transient (CLAUDE.md).
+--disable_query_log
+call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
+--enable_query_log
+
+#
+# Phase 1.10a - Probe-based commands honor expiry_date < now
+#
+# NDB lazy GC may leave expired rows physically present after their
+# expiry_date has passed. Commands that look at "does this key
+# exist" - EXISTS, TYPE, EXPIRE, PERSIST - must hide such rows.
+# (TTL / PTTL already do this themselves, returning :-2 for the
+# expired-but-present case.)
+#
+# We force the expired state deterministically by writing a past
+# absolute timestamp via EXPIREAT (commands.cc Phase 1.7) - no
+# sleep needed.
+#
+
+--echo #
+--echo # Set up: a string, a populated hash, plus their always-fresh
+--echo # counterparts to keep the multi-key EXISTS case interesting.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_x "value-x"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_alive "value-alive"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_x f1 v1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_alive f1 v1
+
+--echo #
+--echo # Force expiry_date well into the past via EXPIREAT 1
+--echo # (1970-01-01 00:00:01 UTC).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT str_x 1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT hash_x 1
+
+--echo #
+--echo # EXISTS on each expired key alone -> :0; on the alive ones -> :1.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS str_x
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS hash_x
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS str_alive
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS hash_alive
+
+--echo #
+--echo # EXISTS multi-key (mix of expired + alive + missing) - only
+--echo # the alive keys count.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS str_x str_alive hash_x hash_alive nope
+
+--echo #
+--echo # TYPE on each expired key -> +none; alive keys still report
+--echo # their kind.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE str_x
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE hash_x
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE str_alive
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE hash_alive
+
+--echo #
+--echo # EXPIRE on an expired-but-present key -> :0 (no update).
+--echo # The stored expiry_date stays in the past (unchanged).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE str_x 60
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) = 1 FROM redis_0.string_keys WHERE redis_key = 'str_x' AND redis_key_id = 0`
+--echo str_x_expiry_unchanged=$r
+
+--echo #
+--echo # PERSIST on an expired-but-present key -> :0 (no clear).
+--echo # The stored expiry_date stays in the past.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PERSIST hash_x
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) = 1 FROM redis_0.hset_keys WHERE redis_key = 'hash_x'`
+--echo hash_x_expiry_unchanged=$r
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
