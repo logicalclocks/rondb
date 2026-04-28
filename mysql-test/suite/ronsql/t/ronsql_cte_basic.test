@@ -847,14 +847,11 @@ JOIN sums ON sums.k = c.c_id
 WHERE sums.t IS NULL
 GROUP BY sums.k|
 
-# Test 28 (LEFT JOIN + WHERE cte.t IS NULL — find unmatched rows) is
-# deferred.  The IS NULL pushdown collides with LEFT-JOIN
-# NULL-injection: the kernel filter rejects matched rows (CTE
-# columns are non-NULL on the matched path), and the API can't
-# distinguish "rejected match" from "no match", so all parents end
-# up NULL-injected.  Needs post-join filtering architecture.
-# RonSQLPreparer rejects this shape with a clear error message; no
-# silent wrong results.
+# Phase K aborted — the kernel doesn't implement MatchNullOnly /
+# NI_ANTI_JOIN filtering for CTE_LOOKUP (only for scans, see
+# DbspjMain.cpp:10460 vs the commented-out lookup path at line 7817).
+# IS NULL on LEFT JOIN's RHS column stays under Phase I.1's defensive
+# reject until kernel-side anti-join support is added.
 
 DELIMITER ;|
 

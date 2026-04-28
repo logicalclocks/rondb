@@ -1,230 +1,240 @@
-# CTE filter Phase K — ANTI_JOIN promotion for `WHERE col IS NULL` on LEFT JOIN RHS
+# CTE filter Phase K (restart) — ANTI_JOIN for `WHERE col IS NULL` on LEFT JOIN RHS, kernel + RonSQL
 
 ## Status
 
-**Plan only.**  No code yet.
+**Plan only.**  No code yet.  Restart of Phase K with extended scope
+covering the kernel-side gap discovered during the original
+attempt.
 
 ## Context
 
 Phase I.1 closed `IS NULL` / `IS NOT NULL` for INNER JOIN but
-defensively rejected `WHERE col IS NULL` on a LEFT JOIN's RHS
-column.  Reason: the kernel filter pushdown rejects matched rows
-(CTE columns are non-NULL on the matched path), and the API can't
-distinguish "rejected match" from "no match" — so all parents end
-up NULL-injected and the result mixes rejected matches with
-genuine unmatched rows.
+defensively rejected `WHERE col IS NULL` on a LEFT JOIN's RHS.
+A first attempt at Phase K tried to lift this with a pure-RonSQL
+ANTI_JOIN promotion (`match_type = ANTI_JOIN` →
+`setMatchType(MatchNullOnly)`).  Test 28 still produced wrong
+results: all four parents passed through with their matched data
+intact.
 
-The user-visible idiom — "find unmatched parents" via
-`LEFT JOIN ... WHERE rhs.col IS NULL` — still falls into a clean
-`require_prm` rejection today.  Phase K closes it.
+Investigation: `MatchNullOnly` correctly translates to
+`NI_ANTI_JOIN` in the QueryTree, and `Dbspj::parseDA` sets
+`T_FIRST_MATCH` on the tree node from that bit
+(`DbspjMain.cpp:14372-14376`).  The API-level anti-join filter at
+`NdbResultStream::prepareResultSet` (`NdbQueryOperation.cpp:1387`)
+DOES suppress matched rows for non-aggregating queries.  But for
+**aggregating** queries — which are RonSQL's CTE bread and butter —
+results don't go through `prepareResultSet`; matched rows feed
+into the kernel-side aggregator via `Dblqh::cteLookupAggFeed`.
+The aggregator never gets told about anti-join, so it processes
+matched rows alongside unmatched ones.
+
+The fix needs a kernel signal: tell DBLQH "this is an anti-join,
+suppress the agg feed when a match is found".
 
 ## Goal
 
-Detect the canonical LEFT-anti-join idiom and emit it as an
-**anti-join** (NDB API `MatchNullOnly`) instead of pushing the
-WHERE down to CTE_LOOKUP.  `MatchNullOnly` instructs DBSPJ to
-deliver only the NULL-padded unmatched rows — exactly the user's
-intent — with no kernel filter involvement.
+Implement anti-join semantics end-to-end for the
+`LEFT JOIN cte WHERE cte.col IS NULL` idiom on aggregating
+queries.  Behaviour:
 
-The infrastructure is already in place:
+- **Matched parent:** CTE_LOOKUP succeeds, but the row is NOT fed
+  into the aggregator.  Treated as if no match was found for the
+  aggregation pipeline.
+- **Unmatched parent:** existing
+  `JOIN_AGG_NULL_ROW_REQ` path fires — DBLQH feeds a NULL-extended
+  row into the aggregator.  Unchanged.
 
-- `JoinOp::MatchType` enum has `ANTI_JOIN`
-  (`QueryPlanner.hpp:45`).
-- `emit_child_ops` already maps `JoinOp::ANTI_JOIN` →
-  `setMatchType(MatchNullOnly)` (`RonSQLPreparer.cpp:5988-5989`).
-- `EXPLAIN` already prints `[ANTI]` for the case
-  (`RonSQLPreparer.cpp:7942`).
+End result: only the unmatched parents' NULL rows reach the
+aggregator, exactly the user's intent for the LEFT-anti-join
+idiom.
 
-What's missing is the **detection pass**: nothing currently sets
-`match_type = ANTI_JOIN`.
+## Design — five steps
 
-## Design
+### Step 1 — kernel signal: new `CTE_LOOKUP_ANTI_JOIN_FLAG`
 
-### Detection pass
-
-Add to `RonSQLPreparer::promote_left_to_inner_for_where` (or a
-companion pass right after it).  For each `LEFT_OUTER` op `t`:
-
-1. If `is_null_rejecting(scope.join_where_ce[t])` is true:
-   already promoted to `INNER` by Phase J — no change.
-2. Else if `is_anti_join_promotable(scope, t,
-   scope.join_where_ce[t])` is true: set
-   `op.match_type = JoinOp::ANTI_JOIN` and clear
-   `scope.join_where_ce[t] = NULL` (the `MatchNullOnly` itself
-   implements the filter; emit_cte_lookup_filter must not run on
-   this op).
-3. Else: leave as `LEFT_OUTER`.  emit_cte_lookup_filter will hit
-   the I.1 defensive reject if any IS NULL conjunct remains.
-
-### `is_anti_join_promotable` helper
-
-The promotion is safe only when **every conjunct is `IS NULL` on a
-CTE column that's provably non-NULL on the matched path**:
-
-- **CTE GB key (`Outputs::Type::COLUMN`):** never NULL by
-  construction — rows with NULL GB key don't aggregate into a
-  group at all.
-- **SUM / COUNT aggregate output (`Outputs::Type::AGGREGATE` with
-  `fun ∈ {T_SUM, T_COUNT}`):** never NULL on a non-empty group
-  (the only path that produces a CTE row).
-- **MIN / MAX aggregate output:** **NOT safe.**  `AggResItem.is_null`
-  is set to true when every source value in the group is NULL,
-  yielding a legitimately-NULL aggregate output for a *matched*
-  group.  `IS NULL` should match such groups in MySQL semantics,
-  but `MatchNullOnly` would skip them (they're matched).  Phase K
-  leaves MIN/MAX IS NULL on LEFT JOIN under the existing I.1
-  defensive reject.
+Add a flag bit in `CteLookupReq::flags`
+(`storage/ndb/include/kernel/signaldata/CteLookup.hpp`):
 
 ```cpp
-static bool
-is_anti_join_promotable(const QueryScope& scope, Uint32 op_idx,
-                        const ConditionalExpression* ce)
-{
-  if (ce == NULL) return false;
-  if (ce->op == T_AND) {
-    return is_anti_join_promotable(scope, op_idx, ce->args.left) &&
-           is_anti_join_promotable(scope, op_idx, ce->args.right);
-  }
-  if (ce->op != T_IS || !ce->is.null) return false;
+static constexpr Uint32 CTE_LOOKUP_ROUTE_FLAG = 0x1;
+static constexpr Uint32 CTE_LOOKUP_ANTI_JOIN_FLAG = 0x2;  // NEW
+```
 
-  const ConditionalExpression* col_side = ce->is.arg;
-  if (col_side == NULL || col_side->op != T_IDENTIFIER) return false;
-  Uint32 col_idx = col_side->col_idx;
-  if (scope.column_table_idx[col_idx] != op_idx) return false;
+Backward-compatible: senders that don't set the bit get the
+existing behaviour.  Per the user's standing rule for this branch,
+all CTE+pushdown-join code lands together, so no signal-version
+gating needed.
 
-  // Walk the CTE outputs to the referenced column and check it's
-  // a GB-key column or a SUM/COUNT aggregate.
-  const JoinOp& cte_op = scope.join_plan.ops[op_idx];
-  if (cte_op.cte_def == NULL) return false;  // not a CTE — be safe
-  Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
-  Uint32 walk = 0;
-  const Outputs* o = cte_op.cte_def->stmt->outputs;
-  while (o != NULL && walk < cte_col_idx) { o = o->next; walk++; }
-  if (o == NULL) return false;
+### Step 2 — DBSPJ: emit the flag in `cte_lookup_send`
 
-  if (o->type == Outputs::Type::COLUMN) return true;
-  if (o->type == Outputs::Type::AGGREGATE) {
-    TokenKind fun = o->aggregate.fun;
-    return fun == T_SUM || fun == T_COUNT;
-  }
-  return false;
+In `Dbspj::cte_lookup_send` (`DbspjMain.cpp:6180`), where
+`lookupFlags` is built (around line 6252-6253):
+
+```cpp
+Uint32 lookupFlags =
+    (m_numDataNodes > 1) ? CteLookupReq::CTE_LOOKUP_ROUTE_FLAG : 0;
+
+// Anti-join: parseDA sets T_FIRST_MATCH from NI_ANTI_JOIN, but
+// only ANTI_JOIN distinguishes itself from FirstMatch via the
+// absence of T_INNER_JOIN (FirstMatch is a SEMI_JOIN
+// optimization that wraps an INNER_JOIN; ANTI_JOIN is a
+// LEFT_OUTER variant).
+const bool isAntiJoin =
+    (treeNodePtr.p->m_bits & TreeNode::T_FIRST_MATCH) &&
+    !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN);
+if (isAntiJoin) {
+  lookupFlags |= CteLookupReq::CTE_LOOKUP_ANTI_JOIN_FLAG;
 }
 ```
 
-### Why we clear `join_where_ce[t]`
+The discriminator `T_FIRST_MATCH && !T_INNER_JOIN` matches what
+the API uses to set `Is_Anti_Join` on `NdbResultStream`
+(`NdbQueryOperation.cpp:937-944`): `MatchNullOnly` is the only
+flag combination that sets `NI_ANTI_JOIN` without `NI_INNER_JOIN`.
 
-`emit_cte_lookup_filter` runs per child op when
-`scope.join_where_ce[i] != NULL` (`RonSQLPreparer.cpp:5973`).  For
-ANTI_JOIN the WHERE is implicit in `MatchNullOnly`; pushing the
-IS NULL conjunct down would do nothing useful (CTE_LOOKUP doesn't
-even fire for unmatched parents) and would still incur the
-DBTUP-side filter program emit cost.  Clearing the conjunct keeps
-the emit path clean.
+### Step 3 — DBLQH: handle the flag in `execCTE_LOOKUP_REQ`
 
-### Cross-table filters
+In `Dblqh::execCTE_LOOKUP_REQ` (`DblqhMain.cpp:19511`), the matched
+path currently calls `cteLookupAggFeed` to forward the result to
+the aggregator.  When the anti-join flag is set, **suppress the
+agg feed** but still respond to DBSPJ with `CteLookupConf` so its
+`m_outstanding` accounting drains correctly:
 
-`promote_left_to_inner_for_where` also iterates
-`cross_table_where_filters`.  Cross-table filters reference two
-tables; if one of those is a CTE on the LEFT_OUTER side and the
-condition is `cte.col IS NULL`, in principle the same promotion
-could apply.  But cross-table filters today carry comparison
-operators only (= != < <= > >=, see `classify_where_by_table`
-line 1294-1298) — no `T_IS`.  So this case can't arise with the
-current pushdown grammar.  Leave the cross-table loop unchanged.
+```cpp
+// Existing match-found path (before agg feed):
+if (req.flags & CteLookupReq::CTE_LOOKUP_ANTI_JOIN_FLAG) {
+  jam();
+  // Anti-join: matched row is suppressed (the user's WHERE
+  // col IS NULL filter wants only unmatched parents to feed the
+  // aggregator).  Send CONF without invoking cteLookupAggFeed.
+  CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = req.senderData;
+  sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
+             signal, CteLookupConf::SignalLength, JBB);
+  return;
+}
+// Else: existing agg feed path.
+cteLookupAggFeed(signal, req, ...);
+```
 
-## Test plan
+The unmatched path is **unchanged** — already routes through
+`JOIN_AGG_NULL_ROW_REQ` to feed a NULL row to the aggregator
+(`DbspjMain.cpp:9533-9651`).  ANTI_JOIN's "deliver only unmatched"
+semantic is the unmatched path's existing behaviour, so no edits
+on that side.
 
-Reinstate Test 28 in `ronsql_cte_basic.test` — the H.3 dropped /
-I.1 deferred test — plus three companions:
+### Step 4 — RonSQL: detection logic (same as previous attempt)
+
+Same `is_anti_join_promotable` helper and second branch in
+`promote_left_to_inner_for_where` as the original Phase K plan.
+Promote `LEFT_OUTER` → `ANTI_JOIN` when WHERE consists of `IS
+NULL` conjuncts on provably non-NULL CTE columns (GB key, SUM,
+COUNT).  Clear `join_where_ce[t]` so emit_cte_lookup_filter
+doesn't run.  MIN/MAX outputs stay under I.1's defensive reject
+(can be NULL on matched groups via all-NULL source).
+
+### Step 5 — Tests
+
+**Block test** in `storage/ndb/block_unit_test/testCteNdbApiOuterJoin.cpp`:
+
+```cpp
+// New test: parent LEFT JOIN cteLookup with anti-join + agg feed.
+//   - 5 parent rows: 3 with matching CTE entries, 2 with no match.
+//   - Aggregator on the lookup result counts unmatched-only.
+//   - Expected: COUNT == 2 (only unmatched parents reach the agg).
+```
+
+The test exercises Step 1+2+3 together at the NDB-API level
+without RonSQL in the loop.  Pattern matches the existing
+`scanCte LEFT JOIN readTuple` tests in the same file (Phase 2).
+
+**MTR tests** in `mysql-test/suite/ronsql/t/ronsql_cte_basic.test`
+— restore the original Phase K Tests 28-30:
 
 | # | Shape | Expected |
 |---|---|---|
-| 28 | `LEFT JOIN sums ... WHERE sums.t IS NULL` | `c_id=400, NULL` (unmatched only) |
-| 29 | `LEFT JOIN sums ... WHERE sums.k IS NULL` | same — IS NULL on GB key, also unmatched only |
-| 30 | `LEFT JOIN sums ... WHERE sums.t IS NULL AND sums.k IS NULL` | same — AND of two IS NULL on same op, both promotable |
-| 31 | `LEFT JOIN bounds ... WHERE bounds.mn IS NULL` (bounds = MIN aggregate) | **expect rejection** — MIN can be NULL on matched group, ANTI_JOIN would be incorrect; covered by I.1 defensive reject |
-
-Test 31 should hit the existing `require_prm` from I.1 with the
-"WHERE col IS NULL on a LEFT JOIN's RHS column is not yet
-supported" message.  MTR can capture that with `--error 0,N` or
-the `--replace_regex` patterns used elsewhere — adapt to whatever
-ronsql_compare.inc supports for error queries.  If error capture
-isn't wired, drop Test 31 from MTR and document the case in the
-plan doc only.
+| 28 | `LEFT JOIN sums ... WHERE sums.t IS NULL` (SUM) | `(400, NULL)` only |
+| 29 | `LEFT JOIN sums ... WHERE sums.k IS NULL` (GB key) | same |
+| 30 | `LEFT JOIN sums ... WHERE sums.t IS NULL AND sums.k IS NULL` | same |
 
 ## Files
 
-- `storage/ndb/src/ronsql/RonSQLPreparer.cpp`:
-  - Add `is_anti_join_promotable` static helper near
-    `is_null_rejecting` and `promote_left_to_inner_for_where`.
-  - Extend `promote_left_to_inner_for_where` with the second
-    promotion branch.
-- `mysql-test/suite/ronsql/t/ronsql_cte_basic.test` — restore
-  Test 28 and add Tests 29 / 30 (and 31 if reachable).
-- `mysql-test/suite/ronsql/r/ronsql_cte_basic.result` — re-record.
+- `storage/ndb/include/kernel/signaldata/CteLookup.hpp` —
+  `CTE_LOOKUP_ANTI_JOIN_FLAG = 0x2`.
+- `storage/ndb/src/kernel/blocks/dbspj/DbspjMain.cpp` — set flag
+  in `cte_lookup_send` based on `T_FIRST_MATCH && !T_INNER_JOIN`.
+- `storage/ndb/src/kernel/blocks/dblqh/DblqhMain.cpp` —
+  handle flag in `execCTE_LOOKUP_REQ` matched path; suppress agg
+  feed and send bare CONF.
+- `storage/ndb/src/ronsql/RonSQLPreparer.{hpp,cpp}` —
+  `is_anti_join_promotable` helper + second branch in
+  `promote_left_to_inner_for_where`.
+- `storage/ndb/block_unit_test/testCteNdbApiOuterJoin.cpp` —
+  new test for anti-join + lookupCte + aggregator.
+- `mysql-test/suite/ronsql/t/ronsql_cte_basic.test` — Tests
+  28-30.
+- `mysql-test/suite/ronsql/r/ronsql_cte_basic.result` —
+  re-record.
 - `storage/ndb/claude_files/pushdown_join_aggregation/CLAUDE.md`
-  — add `cte_filter_phase_k.md` to the index.
+  — already references this doc.
 - `storage/ndb/claude_files/pushdown_join_aggregation/cte_filter_phase_i1.md`
-  — update "Limitations" section: GB-key / SUM / COUNT cases
-  closed by Phase K; MIN/MAX IS NULL still rejected.
+  — update "Limitations" to point at K shipped (replacing the
+  current "K aborted" note).
 
 ## Verification
 
 ```
-cd debug_build && make -j$(sysctl -n hw.ncpu) ronsql_cli rdrs2
+cd debug_build && make -j$(sysctl -n hw.ncpu) ndbd ndbmtd ndb_mgmd \
+    ronsql_cli rdrs2 testCteNdbApiOuterJoin testCteNdbApiFilter
 cd debug_build/mysql-test
+./mtr --suite=ndb_push_agg testCteNdbApiOuterJoin   # block test
 ./mtr --record --suite=ronsql ronsql_cte_basic
-./mtr --suite=ronsql                # full suite — no regressions
-./mtr --suite=ndb_push_agg          # block tests — no regressions
+./mtr --suite=ronsql            # full suite — no regressions
+./mtr --suite=ndb_push_agg      # block tests — no regressions
 ```
-
-Spot-check `EXPLAIN` output (if RonSQL exposes it) for the new
-shapes — should show `[ANTI]` for the promoted ops, confirming the
-right promotion fired.
 
 ## Risks
 
-1. **`MatchNullOnly` semantics for chained CTE_LOOKUP children.**
-   The kernel side's `MatchNullOnly` delivers only NULL-padded
-   unmatched rows.  For a chained CTE_LOOKUP under another
-   CTE_LOOKUP the topology is more nuanced.  Phase K's detection
-   pass triggers per-op based on `match_type == LEFT_OUTER` — same
-   shape as Phase J.  No additional check needed; if the kernel
-   doesn't support ANTI_JOIN inside a CTE-feeding tree, we'd see
-   it at runtime and add a planner-time rejection then.  Standard
-   `LEFT JOIN sums ... WHERE sums.col IS NULL` shapes don't hit
-   this and pass straight through.
-2. **GB key vs aggregate distinction in the helper.**  The walker
-   relies on `Outputs::Type::COLUMN` for GB and
-   `Outputs::Type::AGGREGATE` for aggregates.  CTE bodies in
-   RonSQL today only emit those two output kinds (verified via
-   the existing emit_cte_lookup_filter walker at
-   RonSQLPreparer.cpp:5814-5876).  A future kind would need an
-   explicit case here; default-`return false` is the safe
-   fallback.
-3. **Phase J + Phase K ordering.**  Phase J's `is_null_rejecting`
-   returns false for `IS NULL` conjuncts, so Phase J never
-   promotes a LEFT_OUTER with an IS-NULL WHERE.  Phase K runs
-   after (or as a second branch in the same pass) and picks up
-   the LEFT_OUTERs Phase J skipped.  Order is correct by
-   construction.
-4. **Multiple LEFT JOINs, IS NULL on only one.**  E.g.
-   `... LEFT JOIN a ... LEFT JOIN b ... WHERE a.t IS NULL`.
-   Phase K promotes only `a` to ANTI_JOIN; `b` stays
-   LEFT_OUTER.  WHERE conjunct on `a` is per-op via
-   `join_where_ce[a_idx]` — no cross-op leak.
+1. **`m_outstanding` accounting drains.**  The CONF-without-agg-feed
+   path must use the same accounting as the existing CONF-after-feed
+   path.  Existing CteLookupConf already decrements
+   `m_cteLookup_data.m_outstanding` on the DBSPJ side
+   (`DbspjMain.cpp:6072-6078`); the suppressed-match path sends the
+   same signal so accounting is identical.
+2. **Anti-join discriminator collision with FirstMatch.**  The
+   `T_FIRST_MATCH && !T_INNER_JOIN` discriminator must not
+   misidentify a SEMI_JOIN (FirstMatch over INNER) as ANTI_JOIN.
+   `SEMI_JOIN` sets `MatchNonNull | MatchFirst`, which gives
+   `NI_INNER_JOIN | NI_FIRST_MATCH` → both `T_INNER_JOIN` and
+   `T_FIRST_MATCH` set.  Discriminator returns false for SEMI.
+   `ANTI_JOIN` sets `MatchNullOnly`, which gives `NI_ANTI_JOIN` →
+   `T_FIRST_MATCH` only (no `T_INNER_JOIN`).  Discriminator
+   returns true for ANTI.  Verified against
+   `NdbQueryOperation.cpp:925-944`.
+3. **Existing CTE_LOOKUP tests in `testCteNdbApiFilter` and
+   `testCteNdbApi`.**  None set `MatchNullOnly` today, so the new
+   flag bit is always zero and the new branch is never taken.
+   Backward-compatible by construction.  Re-run the full block-test
+   suite to confirm.
+4. **MIN/MAX-over-all-NULL edge case.**  Phase K's promotion still
+   excludes MIN/MAX outputs (a matched group can have a NULL
+   MIN/MAX from all-NULL source; ANTI_JOIN would skip that legit
+   match).  Stays under I.1's defensive reject; documented in the
+   helper and in `cte_filter_phase_i1.md`.
 
 ## What we're not doing
 
-- **MIN/MAX IS NULL on LEFT JOIN.**  Stays under I.1's defensive
-  reject.  A future phase could lift it by combining ANTI_JOIN
-  with a post-join filter that re-checks the MIN/MAX value, but
-  that's strictly more complex than this phase's scope.
-- **`IS NULL OR <other>` conjuncts.**  Not in the pushdown grammar;
-  rejected at classify time.  Covered by Phase I.2 if/when that
-  lands.
-- **`IS NULL` on a non-CTE-driven LEFT JOIN (e.g. a real-table
-  LEFT JOIN with no CTE involvement).**  The helper checks
-  `cte_op.cte_def != NULL` — non-CTE LEFT JOINs are out of scope.
-  Real-table anti-join is a separate planner concern; track if a
-  user hits the existing I.1 reject on that shape.
+- **Lookup-without-aggregation anti-join.**  The non-aggregating
+  path already works via `NdbResultStream::prepareResultSet`
+  line 1387 (`isAntiJoin()` skip).  RonSQL doesn't reach that
+  path today (CTE queries always aggregate); if a non-agg CTE
+  query becomes reachable later (e.g. via Phase E.3 expansion),
+  no kernel changes are needed for that path.
+- **Anti-join on a CTE_SCAN child.**  Phase G already rejects
+  CTE_SCAN as outer-join child.  Out of scope.
+- **`IS NOT NULL OR ...` mixed conjuncts.**  Not in pushdown
+  grammar.  I.2 territory.
+- **MIN/MAX `IS NULL` lift.**  Stays defensively rejected.
+  Lifting needs a post-aggregation re-check of the MIN/MAX value
+  — separate phase if a use case appears.

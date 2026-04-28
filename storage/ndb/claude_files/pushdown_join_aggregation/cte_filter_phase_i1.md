@@ -331,10 +331,13 @@ unmatched rows.
 promotion already converts those queries to INNER JOIN before
 emit_cte_lookup_filter sees them.
 
-**Fix sketch** for a future phase: skip pushdown for `IS NULL` on
-LEFT_OUTER, apply the predicate at the API/aggregator level (post-
-join filter step).  Requires extending RonSQL with a post-join
-filter mechanism — out of scope for I.1.
+**Update (2026-04-28):** Phase K is being restarted with extended
+scope to fix the kernel-side gap (the original pure-RonSQL attempt
+failed because the lookup-aggregator path doesn't honour
+`MatchNullOnly`).  See `cte_filter_phase_k.md` for the kernel
+signal extension that lifts the GB-key / SUM / COUNT cases.
+MIN/MAX outputs stay under this defensive reject — `AggResItem.is_null`
+legitimately fires for all-NULL source.
 
 ## What we're not doing
 
