@@ -1,4 +1,4 @@
-# CTE filter Phase L — JOIN_AGG_COMPLETE robustness: idempotency, per-CTE state in DBTC, concurrent-access serialization
+# CTE filter Phase L — JOIN_AGG_COMPLETE robustness: idempotency, unified requestId correlation, single-owner COMPLETE routing
 
 ## Status
 
@@ -70,9 +70,19 @@ The duplicate originates in DBLQH:
    duplicate CONFs that A and B describe.
 
 Phase L addresses all four together. They are independent fixes but
-each contributes to a single coherent story: the CTE-completion
-phase must be idempotent, scoped per-CTE, and free of memory
-unsafety.
+each contributes to a single coherent story: the JOIN_AGG_COMPLETE
+phase must be idempotent, scoped per aggregation-completion record,
+and owned by one DBLQH thread per aggregation state.
+
+Important correlation rule: every `JOIN_AGG_COMPLETE_REQ`, including
+non-CTE main SELECT aggregation, uses the existing `requestId` field
+to carry an encoded DBTC aggregation-completion record id instead of
+`scanApiRec`. DBLQH already echoes `requestId` in CONF/REF, so no
+COMPLETE wire-format extension is needed. DBTC resolves the encoded
+`requestId` to the completion record, and the record then supplies
+the owning `ScanRecord`, aggregation kind (main or CTE), CTE index
+and phase when applicable, expected node, expected `aggStateKey`,
+error state, and phase/main-query bookkeeping.
 
 ## Goal
 
@@ -82,17 +92,22 @@ load. Concretely:
 - DBLQH never sends duplicate `JOIN_AGG_COMPLETE_CONF` for a single
   CTE's `JOIN_AGG_COMPLETE_REQ` (A, B).
 - DBLQH never broadcasts duplicate FINAL_REPs (B).
-- DBTC tracks each CTE's completion independently; stale or
-  duplicate CONFs are detected and dropped (C).
-- All multi-LDM accesses to `JoinAggregationState`'s
-  CTE-redistribution fields are serialized (E).
+- DBTC tracks every aggregation completion independently using
+  `requestId` as the completion record id; stale or duplicate CONFs
+  are detected and dropped (C).
+- `CTE_PHASE_COMPLETE_REP` is correlated to the active CTE phase
+  record and deduplicated before DBTC sends any COMPLETE_REQs (C.2).
+- All COMPLETE / REDISTRIBUTE / FINAL_REP actions for a given
+  `aggStateKey` run on the same DBLQH worker thread (E).
 
 ## Five sub-phases — A, B, C, D, E
 
-A and B are surgical kernel fixes. C is a DBTC architectural
-cleanup. D is the test coverage. E is the concurrency
-serialization. Land in commit order: 1=A+B+D1-D6, 2=E.2,
-3=C+D7-D9, 4=D11, then 5=E.1 (architectural follow-up).
+A and B are surgical kernel idempotency fixes. C is a DBTC
+correlation cleanup. D is the test coverage. E is the single-owner
+DBLQH routing needed to make the state transitions race-safe. Land
+in commit order: 1=A+B+E core routing, 2=C+C.2+D7-D9, 3=D1-D6
+MTR coverage, 4=D11 concurrency coverage, then 5=E cleanup/audit
+follow-up.
 
 ---
 
@@ -120,6 +135,22 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
 The state-load guard makes every subsequent invocation a no-op
 once the CONF has been sent. Cheap, defensive, idempotent.
 
+This is only the final guard. Every CTE state transition in the
+COMPLETE path must check the current state before acting:
+
+- `SETUP_COMPLETE -> FINALIZING` only from the initial
+  `JOIN_AGG_COMPLETE_REQ`.
+- `FINALIZING -> SENDING_RESULTS` only after merge/finalize.
+- `SENDING_RESULTS -> CTE_REDISTRIBUTING` only for multi-node CTEs.
+- `CTE_REDISTRIBUTING -> CTE_READY` only after local redistribution
+  and all remote FINAL_REPs are observed.
+- A duplicate entry into any earlier phase after `CTE_READY` returns
+  without changing state and without sending another CONF.
+
+The implementation should not move the state backwards. In
+particular, `execJOIN_AGG_COMPLETE_REQ` must check the current state
+before the current unconditional `FINALIZING` store.
+
 ### B — `continueJoinAggRedistribute` idempotency
 
 `storage/ndb/src/kernel/blocks/dblqh/DblqhMain.cpp:20580`
@@ -129,6 +160,10 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal,
                                          Uint32 aggStateKey) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
+  if (state->m_state.load() != JoinAggregationState::CTE_REDISTRIBUTING) {
+    jam();
+    return;  // stale continuation or duplicate entry
+  }
   if (state->m_cte_redistribution_done) {
     jam();
     return;  // redistribution already finished — duplicate entry
@@ -143,144 +178,225 @@ Prevents:
   re-trigger their `checkCteReady` and propagate the duplicate-CONF
   bug across nodes).
 - Re-calling `checkCteReady` from a stale code path.
+- Re-entering redistribution from an old CONTINUEB /
+  REDISTRIBUTE_CONF after the state has already left
+  `CTE_REDISTRIBUTING`.
 
-### C — Per-CTE completion state in DBTC
+### C — Unified aggregation-completion state in DBTC
 
-**Problem:** today `ScanRecord` holds a single
-`m_cteCompleteOutstanding`, `m_aggNodesPending`,
-`m_aggNodesOutstanding`, and `scanState` for *all* CTEs in *all*
-phases. Late or duplicate CONFs mix into the wrong CTE's
-accounting; `cteAdvancePhase` fires on a corrupt counter; the next
-phase sees a `scanState` already advanced past
-`WAIT_CTE_COMPLETE`.
+**Problem:** today DBTC has separate accounting paths for main
+aggregation and CTE materialization. CTEs share
+`m_cteCompleteOutstanding`, while main SELECT aggregation uses
+`m_aggNodesOutstanding` / `m_joinAggNodes->m_aggNodesPending` and
+`WAIT_JOIN_AGG_COMPLETE`. This leaves two subtly different reply
+paths and makes it too easy for CTE fixes to miss the main path, or
+vice versa.
 
-**Fix:** introduce a per-CTE record, linked from `ScanRecord`.
-Every `JOIN_AGG_COMPLETE_REQ` allocates one; every `_CONF` looks it
-up by `(scanPtr, aggStateKey)`; phase advance is driven by "all
-records in this phase complete?" rather than the global counter.
+**Fix:** introduce one aggregation-completion record type, linked
+from `ScanRecord`, and use the existing
+`JoinAggCompleteReq::requestId` as an encoded record id for **all**
+JOIN_AGG_COMPLETE requests. CTE materialization records carry CTE
+index and phase. Main SELECT aggregation records carry
+`m_cteIndex = RNIL` and `m_phase = RNIL`. DBLQH echoes `requestId`
+in `_CONF` / `_REF`. DBTC decodes the record id and always handles
+the reply through the same record-state machine.
+
+`WAIT_CTE_COMPLETE` and `WAIT_JOIN_AGG_COMPLETE` remain as logical
+states, but they move from `ScanRecord::scanState` to the
+aggregation-completion record. `scanState` can still be used as a
+broad scan lifecycle guard; it is no longer the source of truth for
+whether an individual COMPLETE reply is valid.
 
 **New struct** in `storage/ndb/src/kernel/blocks/dbtc/Dbtc.hpp`:
 
 ```cpp
-struct CteAggCompleteRecord {
+struct AggCompleteRecord {
   Uint32 m_magic;
   Uint32 m_nextI;                              // singly-linked, RNIL = tail
+  Uint32 m_scanPtrI;                           // owning ScanRecord
+  enum Kind {
+    KIND_MAIN = 0,
+    KIND_CTE = 1
+  } m_kind;
   Uint32 m_cteIndex;                           // index into m_cteInfos
   Uint32 m_phase;                              // CTE phase
   Uint32 m_aggStateKeys[MAX_NDB_NODES];        // per-node aggKey
   NdbNodeBitmask m_aggNodesPending;            // CONFs still expected
   Uint32 m_outstanding;                        // |m_aggNodesPending|
-  bool   m_complete;
-  bool   m_failed;
+  enum State {
+    REC_IDLE = 0,
+    REC_WAIT_COMPLETE = 1,
+    REC_COMPLETE = 2,
+    REC_FAILED = 3
+  } m_state;
   Uint32 m_errorCode;
 };
 ```
 
-**Pool:** `TransientPool<CteAggCompleteRecord>` mirroring existing
+**Pool:** `TransientPool<AggCompleteRecord>` mirroring existing
 scan/api pools.
 
 **`ScanRecord` additions:**
 
 ```cpp
-Uint32 m_cteRecordsHead;     // RNIL or first record (linked list head)
-Uint32 m_cteRecordsCount;    // total live records on this scan
+Uint32 m_aggRecordsHead;     // RNIL or first record (linked list head)
+Uint32 m_aggRecordsCount;    // total live records on this scan
+Uint32 m_mainAggRecI;        // main SELECT aggregation record, RNIL if none
 Uint32 m_ctePhaseRemaining;  // records in current phase not yet complete
                              //   — phase-advance trigger
+Uint32 m_cteActivePhaseRecI; // current CtePhaseRecord, RNIL outside CTE phase
 ```
 
-Replaces `m_cteCompleteOutstanding`, `m_aggNodesPending`,
-`m_aggNodesOutstanding` for the CTE side. The main-query agg path
-keeps its existing single-set fields (it doesn't have the
-per-CTE-multiplicity problem).
+Replaces `m_cteCompleteOutstanding`, `m_aggNodesPending`, and
+`m_aggNodesOutstanding` for COMPLETE accounting. RELEASE accounting
+can continue to use the existing per-scan node set until release is
+separately refactored.
 
 **`Dbtc::sendCteCompleteReqsForPhase`** (line 29522) changes:
 
 - Set `m_ctePhaseRemaining = 0` (per phase, not per scan).
 - For each CTE in the phase:
-  - Allocate a `CteAggCompleteRecord`.
-  - Populate `m_phase`, `m_cteIndex`, `m_aggStateKeys[]`,
+  - Allocate or reset an `AggCompleteRecord`.
+  - Populate `m_kind = KIND_CTE`, `m_phase`, `m_cteIndex`,
+    `m_aggStateKeys[]`,
     `m_aggNodesPending` from `cteNodes->m_aggNodes`,
-    `m_outstanding = popcnt`.
-  - Append to `scanptr.p->m_cteRecordsHead`.
+    `m_outstanding = popcnt`, `m_scanPtrI = scanptr.i`,
+    `m_state = REC_WAIT_COMPLETE`.
+  - Append to `scanptr.p->m_aggRecordsHead`.
   - Increment `m_ctePhaseRemaining`.
 - For each node in the CTE: send `JOIN_AGG_COMPLETE_REQ`
-  (signal-format unchanged). The per-CTE record owns the
-  `m_outstanding` count instead of `scanptr.p->`.
+  with:
+
+```cpp
+req->senderData = scanptr.i;       // compatibility / validation
+req->requestId = makeAggCompleteRequestId(aggRec.i);
+req->aggStateKey = cteNodes->m_aggStateKeys[nodeId];
+```
+
+The aggregation-completion record owns the `m_outstanding` count instead of
+`scanptr.p->`.
+
+**`Dbtc::sendJoinAggCompleteReqs`** (main SELECT aggregation) changes
+similarly:
+
+- Allocate or reset one `AggCompleteRecord`.
+- Populate `m_kind = KIND_MAIN`, `m_cteIndex = RNIL`,
+  `m_phase = RNIL`, `m_scanPtrI = scanptr.i`, `m_aggStateKeys[]`
+  from `scanptr.p->m_joinAggNodes`, `m_aggNodesPending` from
+  `m_joinAggNodes->m_aggNodes`, and `m_state = REC_WAIT_COMPLETE`.
+- Store it in `scanptr.p->m_mainAggRecI` and link it from
+  `m_aggRecordsHead`.
+- Send every main `JOIN_AGG_COMPLETE_REQ` with
+  `req->requestId = makeAggCompleteRequestId(mainAggRec.i)`.
+
+This means DBTC has one COMPLETE reply path for CTE and non-CTE
+queries. The only difference is what completion of the record drives:
+`KIND_CTE` decrements `m_ctePhaseRemaining`; `KIND_MAIN` triggers
+`sendJoinAggReleaseReqs`.
 
 **`Dbtc::execJOIN_AGG_COMPLETE_CONF`** (around line 29283):
 
 ```cpp
-ScanRecordPtr scanptr;
-scanptr.i = conf->senderData;
-scanRecordPool.getPtr(scanptr);
+const Uint32 senderNodeId = refToNode(conf->senderRef);
 
-if (scanptr.p->scanState == ScanRecord::WAIT_CTE_COMPLETE) {
-  // CTE-side path — look up by aggStateKey
-  CteAggCompleteRecord *rec = findCteCompleteRecord(scanptr,
-                                                     conf->aggStateKey,
-                                                     senderNodeId);
-  if (rec == nullptr) {
-    // stale duplicate — log + drop silently
-    DEB_JOIN_AGG(("(%u) drop stale COMPLETE_CONF aggKey=%u node=%u",
-                  instance(), conf->aggStateKey, senderNodeId));
+AggCompleteRecordPtr rec;
+if (isAggCompleteRequestId(conf->requestId)) {
+  rec.i = decodeAggCompleteRequestId(conf->requestId);
+  if (!getValidAggCompleteRecord(rec)) {
+    return;  // stale record id
+  }
+  if (rec.p->m_state != AggCompleteRecord::REC_WAIT_COMPLETE) {
+    // stale duplicate after this aggregation was already completed/failed
     return;
   }
-  if (!rec->m_aggNodesPending.get(senderNodeId)) {
-    // already-counted node — duplicate CONF for this CTE
-    DEB_JOIN_AGG(("(%u) drop duplicate COMPLETE_CONF aggKey=%u node=%u",
-                  instance(), conf->aggStateKey, senderNodeId));
+
+  ScanRecordPtr scanptr;
+  scanptr.i = rec.p->m_scanPtrI;
+  if (!scanRecordPool.getValidPtr(scanptr) ||
+      conf->senderData != scanptr.i ||
+      rec.p->m_aggStateKeys[senderNodeId] == 0 ||
+      !rec.p->m_aggNodesPending.get(senderNodeId)) {
+    // stale, wrong scan, wrong node, or duplicate node reply
     return;
   }
-  rec->m_aggNodesPending.clear(senderNodeId);
-  rec->m_outstanding--;
-  if (rec->m_outstanding == 0) {
-    rec->m_complete = true;
-    scanptr.p->m_ctePhaseRemaining--;
-    if (scanptr.p->m_ctePhaseRemaining == 0) {
-      cteAdvancePhase(signal, scanptr);
+
+  rec.p->m_aggNodesPending.clear(senderNodeId);
+  rec.p->m_outstanding--;
+  if (rec.p->m_outstanding == 0) {
+    rec.p->m_state = AggCompleteRecord::REC_COMPLETE;
+    if (rec.p->m_kind == AggCompleteRecord::KIND_CTE) {
+      scanptr.p->m_ctePhaseRemaining--;
+      if (scanptr.p->m_ctePhaseRemaining == 0) cteAdvancePhase(signal, scanptr);
+    } else {
+      sendJoinAggReleaseReqs(signal, scanptr);
     }
   }
   return;
 }
 
-// Main-query agg path (unchanged): scanState must be
-// WAIT_JOIN_AGG_COMPLETE.
-ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_COMPLETE);
-// ... existing main-query handling
+// Unknown/non-record requestId. This is stale or malformed in Phase L.
+return;
 ```
 
-The `WAIT_CTE_COMPLETE` precondition for the CTE path goes away —
-the per-CTE record is the source of truth, and a stale CONF is
-detected by lookup miss rather than by a state assertion. Phase-1
-CONFs that arrive before phase 0 finishes find their per-CTE
-record and slot in normally.
+The scan-level `WAIT_CTE_COMPLETE` and `WAIT_JOIN_AGG_COMPLETE`
+assertions go away for COMPLETE CONFs. The aggregation-completion
+record state is the source of truth, and stale CONFs are detected by
+record lookup miss, scan mismatch, wrong node, or already-cleared
+pending bit. Phase-1 CONFs that arrive while scan state has already
+advanced still find their own record and are handled or dropped
+deterministically.
 
 **`Dbtc::execJOIN_AGG_COMPLETE_REF`:** same lookup pattern. Set
-`rec->m_failed`, `rec->m_errorCode`, decrement counters; bubble up
-to the abort path when `m_ctePhaseRemaining == 0`.
-
-**Lookup helper:**
-
-```cpp
-CteAggCompleteRecord *findCteCompleteRecord(ScanRecordPtr scanptr,
-                                             Uint32 aggStateKey,
-                                             Uint32 nodeId) {
-  Uint32 i = scanptr.p->m_cteRecordsHead;
-  while (i != RNIL) {
-    CteAggCompleteRecord *rec = pool.getPtr(i);
-    if (rec->m_aggStateKeys[nodeId] == aggStateKey) return rec;
-    i = rec->m_nextI;
-  }
-  return nullptr;
-}
-```
-
-≤ ~10 records per scan in practice; linear walk is fine.
+`rec->m_state = REC_FAILED`, `rec->m_errorCode`, clear the node
+pending bit if it was still pending, decrement counters, and bubble
+up to the CTE or main aggregation abort/release path according to
+`rec->m_kind`.
 
 **Cleanup:** records stay linked across phase boundaries (needed
-for late-CONF deduplication). `releaseCteAggCompleteRecords(scanptr)`
+for late-CONF deduplication). `releaseAggCompleteRecords(scanptr)`
 walks the list and releases all records back to the pool, called
 from scan teardown and the abort path.
+
+#### C.2 — Phase-complete correlation
+
+`CTE_PHASE_COMPLETE_REP` is a separate race source. Today it is
+correlated only by `ScanFragRec.i` and a phase number, then counted
+in shared scan-level counters. Phase reports must be deduplicated
+before DBTC sends any `JOIN_AGG_COMPLETE_REQ`s.
+
+Add a lightweight per-phase record:
+
+```cpp
+struct CtePhaseRecord {
+  Uint32 m_magic;
+  Uint32 m_scanPtrI;
+  Uint32 m_phase;
+  // Or use a ScanFragRec list if node bitmask is not precise enough.
+  NdbNodeBitmask m_spjReportsPending;
+  Uint32 m_reportsOutstanding;
+  Uint32 m_firstAggRecI;               // Agg records for this phase
+  enum State {
+    PHASE_WAIT_REPORTS = 0,
+    PHASE_WAIT_CTE_COMPLETE = 1,
+    PHASE_COMPLETE = 2
+  } m_state;
+};
+```
+
+`execCTE_PHASE_COMPLETE_REP` resolves `rep->senderData` to
+`ScanFragRec`, then `ScanRecord`, then the active `CtePhaseRecord`.
+It must verify:
+
+- `rep->phase == phaseRec.m_phase`.
+- The reporting DBSPJ / `ScanFragRec` was pending for this phase.
+- The phase record is still in `PHASE_WAIT_REPORTS`.
+
+Only the first valid report from each expected DBSPJ instance clears
+a pending slot. Duplicate or stale reports are logged and dropped.
+When all reports are received, DBTC transitions the phase record to
+`PHASE_WAIT_CTE_COMPLETE`, initializes the CTE aggregation records
+for that phase, and sends `JOIN_AGG_COMPLETE_REQ`s carrying each
+aggregation record id in `requestId`.
 
 ### D — Test coverage
 
@@ -363,9 +479,10 @@ duplicate FINAL_REP outbound and no duplicate CONF inbound. Tests
 **B**.
 
 **D9 — `testJoinAggCrossPhaseStaleConf`:** chained-CTE setup;
-replay phase-0 CONF after phase 1 has started. With **C**, DBTC's
-`findCteCompleteRecord` returns nullptr → log + drop. Without
-**C**, asserts.
+replay phase-0 CONF after phase 1 has started. With **C**, DBTC
+decodes `requestId`, finds that the aggregation record is already
+complete, and drops the stale reply. Without **C**, the shared scan
+counter path asserts.
 
 **D11 — `testJoinAggConcurrentRedistribute`:** 4-LDM-thread
 cluster. Fire `JOIN_AGG_COMPLETE_REQ` and
@@ -374,7 +491,7 @@ simultaneously, with ERROR_INSERT µs jitter between handlers. Run
 1000 iterations. Without **E**, expect intermittent corruption;
 with **E**, all 1000 pass.
 
-### E — Serialize concurrent multi-LDM access
+### E — Single-owner DBLQH routing for COMPLETE state
 
 `JoinAggregationState` is accessed concurrently by:
 
@@ -388,58 +505,105 @@ with **E**, all 1000 pass.
 | `CONTINUEB(ZCONTINUE_JOIN_AGG_MERGE)` | self | merge phase |
 
 `m_redist_mutex` is held only inside `execJOIN_AGG_REDISTRIBUTE_REQ`
-today. Every other path is unprotected.
+today. Every other path is unprotected. Rather than extending the
+mutex across a large signal graph, Phase L makes a stricter routing
+rule: for a given destination `aggStateKey`, all COMPLETE /
+REDISTRIBUTE / FINAL_REP work runs on one owner LDM thread.
 
-#### E.2 — Mutex extension (short-term, ship now)
+#### E.1 — Owner calculation
 
-Acquire `m_redist_mutex` at every entry that touches the CTE
-fields, release at every exit. Specifically:
+Each `JoinAggregationState` gets a stable owner instance at setup
+time:
 
-- `execJOIN_AGG_COMPLETE_REQ` (the `m_cte_mode` branch from line
-  18378)
-- `continueJoinAggMerge` (the cte_mode branch at line 18631+)
-- `continueJoinAggRedistribute` (whole function body)
-- `execJOIN_AGG_FINAL_REP`
-- `execJOIN_AGG_REDISTRIBUTE_CONF` / `_REF`
-- `checkCteReady`
-- The `CONTINUEB` dispatchers (lines 1093, 1101) before calling
-  the continue helpers
+```cpp
+ownerInstance = (aggStateKey % lqhWorkersOnNode) + 1;
+```
 
-**Critical:** `sendSignal` while holding the mutex risks deadlock
-if the recipient blocks on the same lock. Build the signal payload
-under the lock, drop the lock, then `sendSignal`. Some helpers
-(notably the FINAL_REP broadcast in `redistribution_done`) need to
-be split into "build" and "send" halves.
+`JOIN_AGG_SETUP_CONF` must return the owner instance together with
+the `aggStateKey`, or DBTC must be able to recompute the exact same
+owner from node worker count and `aggStateKey`. Prefer echoing it in
+SETUP_CONF so routing does not depend on duplicate worker-count
+logic in every sender.
 
-#### E.1 — Single-owner LDM routing (long-term, follow-up)
+DBTC stores per-node:
 
-Assign each `aggStateKey` an "owning" LDM instance at
-`JOIN_AGG_SETUP_REQ` time
-(`owner = aggStateKey % m_lqh_workers + 1`). Senders compute owner
-before sending: DBTC's `sendCteCompleteReqsForPhase` and DBLQH's
-remote `sendSignal`s for FINAL_REP / REDISTRIBUTE_REQ.
+```cpp
+cteNodes->m_aggStateKeys[nodeId]
+cteNodes->m_aggOwnerInstances[nodeId]
+```
 
-Eliminates the mutex entirely: only one LDM ever touches a given
-state. Needs `JOIN_AGG_SETUP_CONF` to carry the owner instance so
-senders know the routing.
+The main aggregation path can keep existing routing initially, but
+the CTE COMPLETE path must use owner routing from this phase onward.
 
-Land E.1 as a separate commit after the rest of Phase L
-stabilises. E.2 stays as the safety net in case any path is
-missed during E.1's audit.
+#### E.2 — DBTC sends COMPLETE_REQ to the owner
+
+`sendCteCompleteReqsForPhase` no longer sends CTE COMPLETE_REQ via
+round-robin V_QUERY. For each node:
+
+```cpp
+Uint32 owner = cteNodes->m_aggOwnerInstances[nodeId];
+BlockReference ref = numberToRef(DBLQH, owner, nodeId);
+req->requestId = makeCteCompleteRequestId(cteRec.i);
+req->aggStateKey = cteNodes->m_aggStateKeys[nodeId];
+sendSignal(ref, GSN_JOIN_AGG_COMPLETE_REQ, ...);
+```
+
+This guarantees `execJOIN_AGG_COMPLETE_REQ`,
+`continueJoinAggMerge`, `continueJoinAggRedistribute`, and
+`checkCteReady` execute on the owner instance for that state.
+
+#### E.3 — DBLQH sends REDISTRIBUTE / FINAL_REP to destination owners
+
+For remote redistribution, route by the **destination** state key,
+not by the sender's local key:
+
+```cpp
+Uint32 dstKey = state->m_cte_remote_aggKeys[ownerNode];
+Uint32 dstOwner = state->m_cte_remote_ownerInstances[ownerNode];
+BlockReference remoteRef = numberToRef(DBLQH, dstOwner, ownerNode);
+req->aggStateKey = dstKey;
+sendSignal(remoteRef, GSN_JOIN_AGG_REDISTRIBUTE_REQ, ...);
+```
+
+The same rule applies to `JOIN_AGG_FINAL_REP`: the receiver must get
+a FINAL_REP addressed to its local `aggStateKey` and owner instance.
+Do not rely on pool indexes being equal across data nodes.
+
+#### E.4 — Mutex status after owner routing
+
+With owner routing, `m_redist_mutex` should no longer be required
+for CTE COMPLETE/redistribution state changes because only one LDM
+instance touches a given `JoinAggregationState`. Keep existing
+mutex use inside `execJOIN_AGG_REDISTRIBUTE_REQ` during the first
+owner-routing implementation as a defensive assertion point, but
+add debug checks that all CTE COMPLETE/REDISTRIBUTE/FINAL_REP
+handlers execute on `state->m_cte_owner_instance`.
+
+If any path cannot be routed to the owner in the first implementation
+commit, either keep that path outside Phase L or protect it with a
+small, local mutex section that does not include `sendSignal`.
 
 ## Files
 
 - `storage/ndb/src/kernel/blocks/dblqh/DblqhMain.cpp` — A (line
-  20997), B (line 20580), E.2 (mutex extensions across ~6
-  functions).
+  20997), B (line 20580), E owner-thread assertions and destination
+  owner routing for REDISTRIBUTE / FINAL_REP.
+- `storage/ndb/src/kernel/blocks/dblqh/DblqhProxy.cpp` — setup
+  path stores / returns the owner LDM instance for each CTE
+  `aggStateKey`.
+- `storage/ndb/include/kernel/signaldata/JoinAgg.hpp` — if needed,
+  extend SETUP_CONF with owner instance. COMPLETE_CONF/REF wire
+  format is unchanged; `requestId` carries the aggregation-complete
+  record id for both CTE and main SELECT complete requests.
 - `storage/ndb/src/kernel/blocks/dbtc/Dbtc.hpp` —
-  `CteAggCompleteRecord` struct, pool decl, `ScanRecord` field
-  additions.
+  `AggCompleteRecord` and `CtePhaseRecord` structs, pool decls,
+  per-node owner-instance storage, `ScanRecord` field additions.
 - `storage/ndb/src/kernel/blocks/dbtc/DbtcMain.cpp` — pool init,
   `sendCteCompleteReqsForPhase` rewrite (line 29522),
   `execJOIN_AGG_COMPLETE_CONF/_REF` rewrite (around 29283),
-  `cteAdvancePhase` driver swap, `releaseCteAggCompleteRecords`
-  helper, `findCteCompleteRecord` helper.
+  `execCTE_PHASE_COMPLETE_REP` deduplication, `cteAdvancePhase`
+  driver swap, `releaseAggCompleteRecords` helper,
+  `releaseCtePhaseRecords` helper.
 - `mysql-test/suite/ronsql/t/ronsql_cte_chained.test` — new file
   with D1-D4.
 - `mysql-test/suite/ronsql/r/ronsql_cte_chained.result` —
@@ -462,25 +626,24 @@ make -j$(sysctl -n hw.ncpu) ndbd ndbmtd ronsql_cli rdrs2 \
                             testJoinAggIdempotency
 cd debug_build/mysql-test
 
-# A + B + D1-D6 (commit 1)
+# A + B + E owner routing (commit 1)
+./mtr --suite=ronsql ronsql_cte_multi_batch
+
+# C + C.2 + D7-D9 (commit 2)
+./mtr --suite=ndb_push_agg testJoinAggIdempotency
+
+# D1-D6 (commit 3)
 ./mtr --suite=ronsql ronsql_cte_chained
 ./mtr --suite=ronsql ronsql_cte_multi_batch     # D6 stress wraps
                                                   # tests 1-4 × 50
 ./mtr --suite=ronsql                             # full suite — no
                                                   # regressions
 
-# E.2 (commit 2) — same checks, expect no change in functional
-# behaviour, just memory-safety guarantee under concurrency
-
-# C + D7-D9 (commit 3)
-./mtr --suite=ndb_push_agg testJoinAggIdempotency
-./mtr --suite=ronsql                             # full suite
-
 # D11 (commit 4)
 ./mtr --suite=ndb_push_agg testJoinAggIdempotency \
       --mysqld=--ndb-num-lqh-workers=4
 
-# E.1 (commit 5, follow-up) — drops the mutex
+# E cleanup/audit follow-up (commit 5)
 ./mtr --suite=ronsql                             # full suite
 ./mtr --suite=ndb_push_agg                       # block tests
 ```
@@ -489,11 +652,11 @@ cd debug_build/mysql-test
 
 | Commit | Contents | Approx LoC |
 |---|---|---|
-| 1 | A + B + D1-D6 (MTR functional regressions) | ~150 |
-| 2 | E.2 (mutex extension) | ~50-80 |
-| 3 | C + D7-D9 (DBTC per-CTE state + idempotency block tests) | ~400-600 |
+| 1 | A + B + E owner routing for CTE COMPLETE/REDISTRIBUTE/FINAL_REP | ~200-350 |
+| 2 | C + C.2 + D7-D9 (DBTC unified complete/phase state + idempotency block tests) | ~500-800 |
+| 3 | D1-D6 (MTR functional regressions) | ~150 |
 | 4 | D11 (concurrency block test) | ~150 |
-| 5 (later) | E.1 (single-owner routing refactor) — drops mutex | ~200 |
+| 5 | E cleanup/audit follow-up: debug owner assertions, remove redundant mutex use where proven | ~100-200 |
 
 Plan-doc deliverables: this file (Phase L). Optionally a separate
 `cte_agg_complete_state.md` for the deeper C details once
@@ -501,25 +664,29 @@ implementation starts.
 
 ## Risks
 
-1. **C is a non-trivial DBTC refactor.** Pool init order, signal-ID
-   / senderData compatibility, and node-failure cleanup all need
-   careful handling. Lands in its own commit so it's individually
-   testable and revertable.
+1. **C is a non-trivial DBTC refactor.** Pool init order,
+   `requestId` compatibility, senderData validation, phase-record
+   cleanup, and node-failure cleanup all need careful handling.
+   Lands in its own commit so it's individually testable and
+   revertable.
 
 2. **Backward compatibility of signals.** Wire formats are
-   unchanged. Older nodes still work as long as they're not running
-   this DBTC. With single-branch upgrade-locked development that's
-   fine.
+   mostly unchanged. COMPLETE_CONF/REF remain unchanged because
+   `requestId` carries the aggregation-complete record id. SETUP_CONF may
+   need an owner-instance field; if that is not acceptable for the
+   branch, DBTC must recompute the owner deterministically from
+   `aggStateKey` and node worker count.
 
-3. **Pool sizing for `CteAggCompleteRecord`.** Per-scan record
-   count is small (≤ MAX_CTES_PER_QUERY, ~10). Existing transient
-   pool sizing accommodates easily.
+3. **Pool sizing for `AggCompleteRecord`.** Per-scan record
+   count is small (≤ MAX_CTES_PER_QUERY, ~10), plus one phase record
+   per CTE phase. Existing transient pool sizing should accommodate
+   this, but it must be sized explicitly rather than assumed.
 
-4. **Mutex deadlock risk in E.2.** `sendSignal` while holding
-   `m_redist_mutex` could deadlock if the recipient takes the same
-   lock. Mitigation: every `sendSignal` site that's currently inside
-   a critical section gets split — payload built under lock, lock
-   released, signal sent. Audit checklist included in commit 2.
+4. **Owner-routing completeness.** Every signal that mutates CTE
+   completion/redistribution state must route to the destination
+   owner. Missing just one path reintroduces multi-LDM races. Add
+   debug assertions in each handler that the current instance is the
+   expected owner.
 
 5. **Reproduction reliability.** The race is timing-sensitive
    (~1:50 reproduction without diagnostics). D6's 50× stress loop
@@ -534,6 +701,12 @@ implementation starts.
    protocol regression can still be diagnosed from production
    logs.
 
+7. **Node failure.** Full per-aggregation-record node-failure accounting is
+   deliberately deferred. During this phase, do not make the old
+   scan-level node-failure logic pretend it has per-record precision.
+   It is acceptable to fail/abort conservatively on node failure
+   while the unified completion state model stabilizes.
+
 ## What we're not doing
 
 - **JOIN_AGG_RELEASE accounting.** The `m_aggNodesOutstanding` /
@@ -544,22 +717,23 @@ implementation starts.
 
 - **Refactoring `m_aggErrorCode`.** Today `scanptr.p->m_aggErrorCode`
   collects the first error from any CTE's failure across the scan.
-  C makes per-CTE error codes available
-  (`CteAggCompleteRecord::m_errorCode`) but the propagation to the
-  API layer keeps the existing single-error convention. Per-CTE
-  error reporting to the API is out of scope.
+  C makes per-aggregation-record error codes available
+  (`AggCompleteRecord::m_errorCode`) but the propagation to the API
+  layer keeps the existing single-error convention. Per-CTE error
+  reporting to the API is out of scope.
 
 - **Aggregator merge phase concurrency.**
   `continueJoinAggMerge`'s per-thread merge into interpreter[0]
   predates this work and uses its own protection model
-  (single-threaded merge driven by CONTINUEB). E.2 covers the
-  cte_mode branch of `continueJoinAggMerge`; the non-cte path is
+  (single-threaded merge driven by CONTINUEB). E owner routing covers
+  the cte_mode branch of `continueJoinAggMerge`; the non-cte path is
   unchanged.
 
 - **CTE redistribution flow control.** The `needConf` /
   `m_cte_waiting_conf` pacing in `continueJoinAggRedistribute` is
   correct as-is and stays.
 
-- **Replacing the mutex with something fancier.** E.2 keeps
-  `m_redist_mutex`. The lock-free / sharded alternatives are E.1's
-  territory.
+- **Full node-failure correctness for aggregation records.** This is
+  important, but it is large enough to be its own follow-up. Phase L
+  should not block on perfect node-failure recovery while fixing the
+  deterministic duplicate/stale completion races.
