@@ -6722,6 +6722,31 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
+  /* BRANCH_LINKED_EQ_NULL — branch if linked column at the most
+   * recent READ_LINKED_TO_MEM position is NULL.  Examines the
+   * AttributeHeader at cheapMemory[0]. */
+  static inline int handleBranchLinkedEqNull(InterpreterContext& ctx) {
+    const Uint32* memory_ptr = (const Uint32*)&ctx.TheapMemoryChar[0];
+    AttributeHeader ah(memory_ptr[0]);
+    if (ah.isNULL()) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_LINKED_NE_NULL — branch if linked column at the most
+   * recent READ_LINKED_TO_MEM position is NOT NULL. */
+  static inline int handleBranchLinkedNeNull(InterpreterContext& ctx) {
+    const Uint32* memory_ptr = (const Uint32*)&ctx.TheapMemoryChar[0];
+    AttributeHeader ah(memory_ptr[0]);
+    if (!ah.isNULL()) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
   /* BRANCH_ATTR_NE_NULL — branch if tuple attribute is NOT NULL */
   static inline int handleBranchAttrNeNull(InterpreterContext& ctx) {
     Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
@@ -8858,8 +8883,8 @@ s_cte_filter_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  38  BRANCH_MEM_OP_ARG       */ &Dbtup::InterpreterContext::handleBranchMemOpArg,
   /*  39  READ_LINKED_TO_MEM      */ &Dbtup::InterpreterContext::handleReadLinkedToMem,
   /*  40  BRANCH_MEM_OP_ARG_INLINE_TYPE */ &Dbtup::InterpreterContext::handleBranchMemOpArgInlineType,
-  /*  41  (unused)                */ nullptr,
-  /*  42  (unused)                */ nullptr,
+  /*  41  BRANCH_LINKED_EQ_NULL   */ &Dbtup::InterpreterContext::handleBranchLinkedEqNull,
+  /*  42  BRANCH_LINKED_NE_NULL   */ &Dbtup::InterpreterContext::handleBranchLinkedNeNull,
   /*  43  (unused)                */ nullptr,
   /*  44  (unused)                */ nullptr,
   /*  45  (unused)                */ nullptr,
@@ -9010,9 +9035,9 @@ s_agg_interp_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  37  STR_TO_INT64            */ nullptr,
   /*  38  BRANCH_MEM_OP_ARG       */ nullptr,
   /*  39  READ_LINKED_TO_MEM      */ nullptr,
-  /*  40  (unused)                */ nullptr,
-  /*  41  (unused)                */ nullptr,
-  /*  42  (unused)                */ nullptr,
+  /*  40  BRANCH_MEM_OP_ARG_INLINE_TYPE */ nullptr,
+  /*  41  BRANCH_LINKED_EQ_NULL   */ nullptr,
+  /*  42  BRANCH_LINKED_NE_NULL   */ nullptr,
   /*  43  (unused)                */ nullptr,
   /*  44  (unused)                */ nullptr,
   /*  45  (unused)                */ nullptr,
@@ -9482,6 +9507,12 @@ int Dbtup::interpreterNextLab(Signal* signal,
           break;
         case Interpreter::BRANCH_ATTR_NE_NULL:
           INTERP_DISPATCH(handleBranchAttrNeNull);
+          break;
+        case Interpreter::BRANCH_LINKED_EQ_NULL:
+          INTERP_DISPATCH(handleBranchLinkedEqNull);
+          break;
+        case Interpreter::BRANCH_LINKED_NE_NULL:
+          INTERP_DISPATCH(handleBranchLinkedNeNull);
           break;
         case Interpreter::EXIT_OK:
           INTERP_DISPATCH(handleExitOk);

@@ -788,6 +788,74 @@ LEFT JOIN cnt  ON cnt.k  = c.c_id
 WHERE sums.t > 50
 GROUP BY sums.k|
 
+# Phase I.1 — IS NULL / IS NOT NULL on CTE column or aggregate output.
+# Exercises the new BRANCH_LINKED_EQ_NULL / BRANCH_LINKED_NE_NULL
+# kernel opcodes via emit_cte_lookup_filter.  Test 28 also verifies
+# Phase J's promotion gate correctly defers when WHERE is
+# null-preserving (so the LEFT JOIN survives and unmatched rows
+# pass through).  See cte_filter_phase_i1.md.
+
+--echo
+--echo
+--echo === Test 26 (I.1): INNER JOIN + WHERE cte.k IS NOT NULL (always-true) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k IS NOT NULL
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k IS NOT NULL
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 27 (I.1): INNER JOIN + WHERE cte.t IS NULL (always-false on matched) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL
+GROUP BY sums.k|
+
+# Test 28 (LEFT JOIN + WHERE cte.t IS NULL — find unmatched rows) is
+# deferred.  The IS NULL pushdown collides with LEFT-JOIN
+# NULL-injection: the kernel filter rejects matched rows (CTE
+# columns are non-NULL on the matched path), and the API can't
+# distinguish "rejected match" from "no match", so all parents end
+# up NULL-injected.  Needs post-join filtering architecture.
+# RonSQLPreparer rejects this shape with a clear error message; no
+# silent wrong results.
+
 DELIMITER ;|
 
 --echo

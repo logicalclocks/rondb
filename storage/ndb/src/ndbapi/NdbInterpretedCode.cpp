@@ -1975,6 +1975,29 @@ int NdbInterpretedCode::branch_linked_inline_ge(
                                   val, len, label);
 }
 
+/* Branch when linked column at `position` IS NULL.
+ *
+ * Emits:
+ *   [READ_LINKED_TO_MEM | (position << 16)]
+ *   [BRANCH_LINKED_EQ_NULL | <label placeholder>]
+ *
+ * Server-side handler: handleBranchLinkedEqNull (DBTUP).
+ */
+int NdbInterpretedCode::branch_linked_isnull(Uint32 position, Uint32 label) {
+  DBUG_ENTER("NdbInterpretedCode::branch_linked_isnull");
+  if (add1(Interpreter::READ_LINKED_TO_MEM | (position << 16)) != 0)
+    DBUG_RETURN(-1);
+  DBUG_RETURN(add_branch(Interpreter::BRANCH_LINKED_EQ_NULL, label));
+}
+
+int NdbInterpretedCode::branch_linked_isnotnull(Uint32 position,
+                                                Uint32 label) {
+  DBUG_ENTER("NdbInterpretedCode::branch_linked_isnotnull");
+  if (add1(Interpreter::READ_LINKED_TO_MEM | (position << 16)) != 0)
+    DBUG_RETURN(-1);
+  DBUG_RETURN(add_branch(Interpreter::BRANCH_LINKED_NE_NULL, label));
+}
+
 int NdbInterpretedCode::branch_col_and_mask_eq_mask(const void *mask, Uint32,
                                                     Uint32 attrId,
                                                     Uint32 label) {

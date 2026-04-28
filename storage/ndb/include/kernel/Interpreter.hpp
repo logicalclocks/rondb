@@ -229,7 +229,26 @@ class Interpreter {
   static constexpr Uint32 BRANCH_MEM_OP_ARG_INLINE_TYPE = 40;
   /* Overflow constant 40 free */
 
-  /* 41-46 free, both of them */
+  /**
+   * BRANCH_LINKED_EQ_NULL / BRANCH_LINKED_NE_NULL: Branch based on
+   * the AttributeHeader.isNULL() flag of the entry already loaded
+   * into cheapMemory[0] by READ_LINKED_TO_MEM.  Linked counterparts
+   * of BRANCH_ATTR_EQ_NULL / BRANCH_ATTR_NE_NULL — used by CTE
+   * filter mode for `WHERE col IS NULL` / `WHERE col IS NOT NULL`
+   * on a CTE column or aggregate output.
+   *
+   * Word layout (single word):
+   *   opcode | branch_offset
+   *   No operand word — the position is implicit from the
+   *   immediately-preceding READ_LINKED_TO_MEM.
+   */
+  static constexpr Uint32 BRANCH_LINKED_EQ_NULL = 41;
+  /* Overflow constant 41 free */
+
+  static constexpr Uint32 BRANCH_LINKED_NE_NULL = 42;
+  /* Overflow constant 42 free */
+
+  /* 43-46 free, both of them */
   static constexpr Uint32 READ_PARTIAL_ATTR_TO_MEM = 47;
   /* Overflow constant 47 free */
   static constexpr Uint32 READ_ATTR_TO_MEM = 48;
@@ -1429,6 +1448,13 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
     case BRANCH_ATTR_NE_NULL:
       processing = LABEL_ADDRESS_REPLACEMENT;
       return op + 2;
+    case BRANCH_LINKED_EQ_NULL:
+    case BRANCH_LINKED_NE_NULL:
+      /* Single-word branch — no operand.  Position implicit from
+       * the immediately-preceding READ_LINKED_TO_MEM.
+       */
+      processing = LABEL_ADDRESS_REPLACEMENT;
+      return op + 1;
     case EXIT_OK:
     case EXIT_OK_LAST:
     case EXIT_REFUSE:

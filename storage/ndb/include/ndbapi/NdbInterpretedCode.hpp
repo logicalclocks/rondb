@@ -982,6 +982,25 @@ class NdbInterpretedCode {
                               const void *val, Uint32 len, Uint32 label);
 
   /*
+   * branch_linked_isnull / branch_linked_isnotnull: branch based on
+   * the AttributeHeader.isNULL() flag of the linked column at
+   * `position` in the linked-attr buffer.  Used by CTE filter mode
+   * for `WHERE col IS NULL` / `WHERE col IS NOT NULL`.  Linked
+   * counterparts of branch_col_eq_null / branch_col_ne_null.
+   *
+   * Emits a 2-instruction sequence:
+   *   READ_LINKED_TO_MEM  — load the entry's AH at position into
+   *                         cheapMemory[0].
+   *   BRANCH_LINKED_EQ_NULL or BRANCH_LINKED_NE_NULL — single-word
+   *                         branch examining the loaded AH's
+   *                         isNULL flag.
+   *
+   * No type info needed — the check is purely on the NULL flag.
+   */
+  int branch_linked_isnull(Uint32 position, Uint32 label);
+  int branch_linked_isnotnull(Uint32 position, Uint32 label);
+
+  /*
    * Variants comparing an Attribute from this table with a parameter
    * value specified in the supplied attrInfo section.
    *

@@ -2,7 +2,8 @@
 
 ## Status
 
-**Plan only.**  No code yet.
+**Implemented (INNER-only).**  IS NULL on a LEFT JOIN RHS column is
+defensively rejected — see "Limitations" below.
 
 ## Context
 
@@ -303,6 +304,37 @@ cd debug_build/mysql-test
 Spot-check that the new opcode 41 is reachable only via the new
 NDB-API methods — older programs never set the opcode value, so
 backward compatibility on existing tests is by construction.
+
+## Limitations discovered during implementation
+
+**IS NULL on a LEFT JOIN's RHS column.**  The intent is the standard
+"find unmatched parent rows" idiom (e.g.
+`WHERE cte.t IS NULL` after `LEFT JOIN cte`).  In RonSQL today the
+WHERE pushes down to CTE_LOOKUP server-side via
+`emit_cte_lookup_filter`.  For matched parents the CTE's column is
+non-NULL by construction (GB key never NULL, SUM/COUNT outputs never
+NULL on a non-empty group), so the kernel filter rejects them.  The
+API can't distinguish "filter rejected" from "no match", so all
+parents end up NULL-injected and the result mixes rejected matches
+with genuine unmatched rows.
+
+The implementation defensively rejects this shape at preparer time
+with a clear `require_prm` message:
+
+```
+WHERE col IS NULL on a LEFT JOIN's RHS column is not yet supported
+— kernel filter pushdown collides with LEFT-JOIN NULL-injection of
+unmatched rows.
+```
+
+`IS NOT NULL` on LEFT JOIN's RHS is unaffected: Phase J's
+promotion already converts those queries to INNER JOIN before
+emit_cte_lookup_filter sees them.
+
+**Fix sketch** for a future phase: skip pushdown for `IS NULL` on
+LEFT_OUTER, apply the predicate at the API/aggregator level (post-
+join filter step).  Requires extending RonSQL with a post-join
+filter mechanism — out of scope for I.1.
 
 ## What we're not doing
 

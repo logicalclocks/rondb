@@ -1365,12 +1365,39 @@ RonSQLPreparer::classify_where_by_table(QueryScope& scope,
   }
 }
 
+// Predicate is null-rejecting if it evaluates to FALSE/NULL whenever
+// any of its column references is NULL.  Used by Phase J's LEFT-to-
+// INNER promotion: a LEFT JOIN with a null-rejecting WHERE conjunct
+// over the RHS is equivalent to INNER JOIN.  See cte_filter_phase_j.md
+// and cte_filter_phase_i1.md.
+static bool
+is_null_rejecting(const ConditionalExpression* ce)
+{
+  if (ce == NULL) return false;
+  switch (ce->op) {
+  case T_EQUALS: case T_NOT_EQUALS:
+  case T_LT: case T_LE: case T_GT: case T_GE:
+    return true;
+  case T_IS:
+    // IS NOT NULL rejects NULL; IS NULL preserves NULL.
+    return !ce->is.null;
+  case T_AND:
+    // AND is null-rejecting if at least one branch is — the whole
+    // AND evaluates to FALSE/NULL when that branch does.
+    return is_null_rejecting(ce->args.left) ||
+           is_null_rejecting(ce->args.right);
+  case T_OR:
+    // OR is null-rejecting only if every branch rejects NULL.
+    return is_null_rejecting(ce->args.left) &&
+           is_null_rejecting(ce->args.right);
+  default:
+    return false;
+  }
+}
+
 // Standard MySQL optimizer rule: a LEFT OUTER JOIN of A and B can be
 // reduced to INNER JOIN when the WHERE clause has a null-rejecting
-// predicate over B.  All current RonSQL pushdown WHERE conjuncts in
-// join_where_ce[t] / cross_table_where_filters use null-rejecting
-// comparison ops (= != < <= > >=), so any non-empty entry is
-// sufficient evidence to promote.  See cte_filter_phase_j.md.
+// predicate over B.  See cte_filter_phase_j.md.
 void
 RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
 {
@@ -1378,7 +1405,7 @@ RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
   {
     JoinOp& op = scope.join_plan.ops[t];
     if (op.match_type == JoinOp::LEFT_OUTER &&
-        scope.join_where_ce[t] != NULL)
+        is_null_rejecting(scope.join_where_ce[t]))
     {
       op.match_type = JoinOp::INNER;
     }
@@ -1388,7 +1415,8 @@ RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
     const CrossTableFilter& ctf = scope.cross_table_where_filters[i];
     if (ctf.child_table_idx >= scope.join_plan.num_ops) continue;
     JoinOp& op = scope.join_plan.ops[ctf.child_table_idx];
-    if (op.match_type == JoinOp::LEFT_OUTER)
+    if (op.match_type == JoinOp::LEFT_OUTER &&
+        is_null_rejecting(ctf.ce))
     {
       op.match_type = JoinOp::INNER;
     }
@@ -5638,13 +5666,56 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
   for (Uint32 c = 0; c < num_conjuncts; c++) {
     ConditionalExpression* atom = conjuncts[c];
     require_prm(atom != NULL, "CTE_LOOKUP filter: NULL conjunct.");
+
+    // T_IS: `col IS NULL` / `col IS NOT NULL` — Phase I.1.  Emit a
+    // single null-flag branch on the linked-attr buffer entry.  No
+    // type info needed; the AttributeHeader's NULL flag is the only
+    // thing examined.
+    if (atom->op == T_IS) {
+      ConditionalExpression* col_side = atom->is.arg;
+      require_prm(col_side != NULL && col_side->op == T_IDENTIFIER,
+                  "CTE_LOOKUP filter: IS NULL operand must be a "
+                  "column reference.");
+      Uint32 col_idx = col_side->col_idx;
+      require_prm(scope.column_table_idx[col_idx] == op_idx,
+                  "CTE_LOOKUP filter: IS conjunct references a column "
+                  "not on this CTE.");
+
+      // IS NULL on a LEFT_OUTER op's RHS column collides with the
+      // LEFT JOIN's NULL-injection: the kernel filter rejects matched
+      // rows (CTE columns are non-NULL on the matched path), and the
+      // API can't distinguish "rejected match" from "no match" — so
+      // all parents end up NULL-injected and the result mixes
+      // rejected matches with unmatched rows.  Reject cleanly until
+      // post-join filtering lands; IS NOT NULL is fine because
+      // Phase J already promoted the LEFT JOIN to INNER for it.
+      if (atom->is.null) {
+        require_prm(scope.join_plan.ops[op_idx].match_type !=
+                    JoinOp::LEFT_OUTER,
+                    "WHERE col IS NULL on a LEFT JOIN's RHS column is "
+                    "not yet supported — kernel filter pushdown "
+                    "collides with LEFT-JOIN NULL-injection of "
+                    "unmatched rows.");
+      }
+
+      Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
+      Uint32 position = cte_col_idx;
+      int rc = atom->is.null
+          ? code.branch_linked_isnotnull(position, REJECT)
+          : code.branch_linked_isnull(position, REJECT);
+      require_prm(rc == 0,
+                  "CTE_LOOKUP filter: failed to emit IS-null branch.");
+      continue;
+    }
+
     bool is_cmp = (atom->op == T_EQUALS || atom->op == T_NOT_EQUALS ||
                    atom->op == T_LT || atom->op == T_LE ||
                    atom->op == T_GT || atom->op == T_GE);
     require_prm(is_cmp,
                 "CTE_LOOKUP filter supports only simple comparisons "
-                "(=, !=, <, <=, >, >=) at top level; OR and expressions "
-                "will be added in a later phase.");
+                "(=, !=, <, <=, >, >=) and IS NULL / IS NOT NULL at "
+                "top level; OR and expressions will be added in a "
+                "later phase.");
 
     ConditionalExpression* left = atom->args.left;
     ConditionalExpression* right = atom->args.right;
