@@ -279,6 +279,7 @@ private:
   void load_join();
   void classify_where_by_table(QueryScope& scope,
                                 ConditionalExpression* where_ce);
+  void promote_left_to_inner_for_where(QueryScope& scope);
   void assign_cross_table_index_bounds();
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);

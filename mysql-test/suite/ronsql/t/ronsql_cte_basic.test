@@ -655,12 +655,6 @@ JOIN by_code ON by_code.rcode = r.r_code
 WHERE by_code.rcode = 'US'
 GROUP BY by_code.rcode|
 
-# Test 21 (LEFT JOIN + WHERE on CTE output) is deferred.  The LEFT
-# JOIN NULL-injected unmatched rows leak past the WHERE filter pushed
-# down to CTE_LOOKUP — MySQL drops (NULL, NULL) since `NULL > 50` is
-# NULL (not TRUE), but RonSQL keeps it.  Genuine feature gap, not a
-# test bug.  Track separately if a use case appears.
-
 --echo
 --echo
 --echo === Test 21 (H.3): empty CTE ===
@@ -707,6 +701,91 @@ WITH sums AS (
 SELECT sums.k, SUM(sums.t)
 FROM cte_customer AS c
 JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+
+# Phase J — LEFT-to-INNER promotion when WHERE rejects NULL on the
+# RHS column.  Standard MySQL optimizer rule; before this fix, the
+# WHERE pushed down to CTE_LOOKUP didn't see NULL-injected rows and
+# RonSQL diverged from MySQL.  See cte_filter_phase_j.md.
+
+--echo
+--echo
+--echo === Test 23 (J): LEFT JOIN + WHERE on aggregate output (promotes to INNER) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 50
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 50
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 24 (J): LEFT JOIN + WHERE on CTE GB key (promotes to INNER) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 25 (J): two LEFT JOINs, WHERE on only one (per-op promotion) ===
+
+let $QUERY=
+WITH
+  sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+           FROM cte_orders GROUP BY o_custkey),
+  cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+           FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+LEFT JOIN sums ON sums.k = c.c_id
+LEFT JOIN cnt  ON cnt.k  = c.c_id
+WHERE sums.t > 50
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH
+  sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+           FROM cte_orders GROUP BY o_custkey),
+  cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+           FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+LEFT JOIN sums ON sums.k = c.c_id
+LEFT JOIN cnt  ON cnt.k  = c.c_id
+WHERE sums.t > 50
 GROUP BY sums.k|
 
 DELIMITER ;|

@@ -1198,6 +1198,10 @@ RonSQLPreparer::load_join()
   classify_where_by_table(m_main_scope,
                           m_context.ast_root.where_expression);
 
+  // Promote LEFT OUTER children to INNER when WHERE rejects NULL on
+  // their column — see cte_filter_phase_j.md.
+  promote_left_to_inner_for_where(m_main_scope);
+
   // Convert cross-table WHERE filters to index range bounds where possible
   assign_cross_table_index_bounds();
 
@@ -1357,6 +1361,36 @@ RonSQLPreparer::classify_where_by_table(QueryScope& scope,
       combined->args.left = scope.join_where_ce[table_idx];
       combined->args.right = conjuncts[i];
       scope.join_where_ce[table_idx] = combined;
+    }
+  }
+}
+
+// Standard MySQL optimizer rule: a LEFT OUTER JOIN of A and B can be
+// reduced to INNER JOIN when the WHERE clause has a null-rejecting
+// predicate over B.  All current RonSQL pushdown WHERE conjuncts in
+// join_where_ce[t] / cross_table_where_filters use null-rejecting
+// comparison ops (= != < <= > >=), so any non-empty entry is
+// sufficient evidence to promote.  See cte_filter_phase_j.md.
+void
+RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
+{
+  for (Uint32 t = 1; t < scope.join_plan.num_ops; t++)
+  {
+    JoinOp& op = scope.join_plan.ops[t];
+    if (op.match_type == JoinOp::LEFT_OUTER &&
+        scope.join_where_ce[t] != NULL)
+    {
+      op.match_type = JoinOp::INNER;
+    }
+  }
+  for (Uint32 i = 0; i < scope.cross_table_where_filters.size(); i++)
+  {
+    const CrossTableFilter& ctf = scope.cross_table_where_filters[i];
+    if (ctf.child_table_idx >= scope.join_plan.num_ops) continue;
+    JoinOp& op = scope.join_plan.ops[ctf.child_table_idx];
+    if (op.match_type == JoinOp::LEFT_OUTER)
+    {
+      op.match_type = JoinOp::INNER;
     }
   }
 }
@@ -2860,6 +2894,7 @@ RonSQLPreparer::build_cte_scopes()
     scope->agg = cte->stmt->agg;
     resolve_columns_for_cte_scope(*scope);
     classify_where_by_table(*scope, cte->stmt->where_expression);
+    promote_left_to_inner_for_where(*scope);
     m_cte_scopes.push(scope);
 
     if (prev != NULL) {
