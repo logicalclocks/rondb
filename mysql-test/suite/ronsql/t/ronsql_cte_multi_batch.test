@@ -1,0 +1,154 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase H.2 — multi-batch / SCAN_NEXTREQ pacing.  CTE scans with
+# > 256 groups force the API to issue a continuation SCAN_NEXTREQ.
+# Existing ronsql_cte_* tests use ≤ 7 rows and never trigger this
+# path; this file gives MTR coverage for the protocol-pacing path
+# that's currently exercised only by testCteNdbApiFilter block tests.
+#
+# Same convention as ronsql_cte_basic.test: skip ronsql_cli (which
+# doesn't refresh dictionary cache for join queries) and rely on
+# RDRS comparison.
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for CTE multi-batch tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE cte_big (
+  pk INT NOT NULL,
+  grp INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (pk)
+) ENGINE=NDB;
+
+CREATE INDEX idx_grp ON cte_big (grp);
+
+CREATE TABLE cte_parent (
+  id INT NOT NULL,
+  grp INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_p_grp ON cte_parent (grp);
+
+# 300 groups, 5 rows per group, val = grp.  Per-group SUM(val) = 5*grp,
+# yielding t values 5, 10, 15, ..., 1500.  The 256-row batch boundary
+# lands well inside both the unfiltered and the WHERE-filtered subsets.
+let $i = 1;
+while ($i <= 300)
+{
+  --eval INSERT INTO cte_big VALUES (5*$i-4, $i, $i), (5*$i-3, $i, $i), (5*$i-2, $i, $i), (5*$i-1, $i, $i), (5*$i, $i, $i)
+  inc $i;
+}
+
+# 300 parent rows, one per group: id = grp.
+let $i = 1;
+while ($i <= 300)
+{
+  --eval INSERT INTO cte_parent VALUES ($i, $i)
+  inc $i;
+}
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === Test 1 (H.2): CTE_SCAN root over 300 groups (multi-batch) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT grp AS k, SUM(val) AS t
+  FROM cte_big GROUP BY grp)
+SELECT k, SUM(t) FROM sums GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT grp AS k, SUM(val) AS t
+  FROM cte_big GROUP BY grp)
+SELECT k, SUM(t) FROM sums GROUP BY k|
+
+--echo
+--echo
+--echo === Test 2 (H.2): CTE_SCAN WHERE rejecting half (boundary inside filtered set) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT grp AS k, SUM(val) AS t
+  FROM cte_big GROUP BY grp)
+SELECT k, SUM(t) FROM sums WHERE t > 750 GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT grp AS k, SUM(val) AS t
+  FROM cte_big GROUP BY grp)
+SELECT k, SUM(t) FROM sums WHERE t > 750 GROUP BY k|
+
+--echo
+--echo
+--echo === Test 3 (H.2): chained CTE, both > 256 groups ===
+
+let $QUERY=
+WITH a AS (
+  SELECT grp AS k, SUM(val) AS s
+  FROM cte_big GROUP BY grp),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH a AS (
+  SELECT grp AS k, SUM(val) AS s
+  FROM cte_big GROUP BY grp),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k|
+
+--echo
+--echo
+--echo === Test 4 (H.2): CTE_LOOKUP under multi-batch parent scan ===
+
+let $QUERY=
+WITH g AS (
+  SELECT grp AS k, COUNT(*) AS c
+  FROM cte_big GROUP BY grp)
+SELECT p.id, SUM(g.c)
+FROM cte_parent AS p JOIN g ON g.k = p.grp
+GROUP BY p.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH g AS (
+  SELECT grp AS k, COUNT(*) AS c
+  FROM cte_big GROUP BY grp)
+SELECT p.id, SUM(g.c)
+FROM cte_parent AS p JOIN g ON g.k = p.grp
+GROUP BY p.id|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+DROP TABLE cte_parent;
+DROP TABLE cte_big;
