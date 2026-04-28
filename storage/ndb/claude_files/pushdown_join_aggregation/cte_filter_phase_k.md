@@ -2,9 +2,10 @@
 
 ## Status
 
-**Plan only.**  No code yet.  Restart of Phase K with extended scope
-covering the kernel-side gap discovered during the original
-attempt.
+**Shipped.**  All five steps in place; Tests 28-30 pass under
+multi-node MTR (`--suite=ronsql ronsql_cte_basic`).  The kernel
++ RonSQL fix replaced the previous defensive reject from Phase
+I.1.
 
 ## Context
 
@@ -91,6 +92,25 @@ The discriminator `T_FIRST_MATCH && !T_INNER_JOIN` matches what
 the API uses to set `Is_Anti_Join` on `NdbResultStream`
 (`NdbQueryOperation.cpp:937-944`): `MatchNullOnly` is the only
 flag combination that sets `NI_ANTI_JOIN` without `NI_INNER_JOIN`.
+
+### Step 2.5 — DBLQH: preserve flag during `routeCteLookup`
+
+When DBSPJ sends `CTE_LOOKUP_REQ` to its local DBLQH and the key
+hashes to a remote owner, `Dblqh::routeCteLookup`
+(`DblqhMain.cpp:19437`) forwards the request to that owner.  The
+forwarder previously did `fwd->flags = 0` to clear the route flag
+— which silently stripped every other flag, including the new
+`CTE_LOOKUP_ANTI_JOIN_FLAG`.  In a multi-node cluster the remote
+owner DBLQH would then run the regular agg-feed path on matched
+rows, leaking matched groups into the main aggregator.  Fix:
+
+```cpp
+fwd->flags = req->flags & ~CteLookupReq::CTE_LOOKUP_ROUTE_FLAG;
+```
+
+The route flag is cleared (no further forwarding); every other
+flag survives.  Without this fix, multi-node Tests 28-30 produce
+the full LEFT-JOIN result instead of the anti-join filtered one.
 
 ### Step 3 — DBLQH: handle the flag in `execCTE_LOOKUP_REQ`
 

@@ -19426,10 +19426,13 @@ bool Dblqh::routeCteLookup(Signal *signal,
            (unsigned long long)h, ownerIdx));
 
   /* Signal data is already populated from the incoming REQ — just
-   * update the two fields that differ for the forwarded request. */
+   * update the two fields that differ for the forwarded request.
+   * Clear ROUTE_FLAG so the remote DBLQH doesn't try to forward again,
+   * but preserve every other flag (notably CTE_LOOKUP_ANTI_JOIN_FLAG,
+   * which the remote owner needs to suppress agg feed on matches). */
   CteLookupReq *fwd = (CteLookupReq *)signal->getDataPtrSend();
   fwd->aggStateKey = remoteAggKey;
-  fwd->flags = 0;  /* Clear ROUTE_FLAG — no further forwarding */
+  fwd->flags = req->flags & ~CteLookupReq::CTE_LOOKUP_ROUTE_FLAG;
 
   SectionHandle fwdHandle(this);
   Uint32 keyPtrI = RNIL;
@@ -19682,6 +19685,21 @@ void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
   /* Aggregation feed path: result feeds into another JoinAggInterpreter */
   if (req.joinAggStateKey != RNIL) {
     jam();
+    /* Anti-join: a matched row should NOT reach the aggregator —
+     * the user's WHERE col IS NULL filter wants only NULL-injected
+     * unmatched parents to contribute.  Send bare CONF so DBSPJ's
+     * m_outstanding accounting drains; the unmatched-parent path
+     * (DBSPJ JOIN_AGG_NULL_ROW_REQ) is unchanged.  See
+     * cte_filter_phase_k.md. */
+    if (req.flags & CteLookupReq::CTE_LOOKUP_ANTI_JOIN_FLAG) {
+      jam();
+      CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
+      conf->senderRef = reference();
+      conf->senderData = req.senderData;
+      sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
+                 signal, CteLookupConf::SignalLength, JBB);
+      return;
+    }
     cteLookupAggFeed(signal, req, interp, groupData,
                      attrInfoLen > 0 ? cinBuf : nullptr, attrInfoLen);
     return;

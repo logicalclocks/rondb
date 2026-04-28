@@ -55,6 +55,12 @@ struct CteLookupReq {
 
   // Flags
   static constexpr Uint32 CTE_LOOKUP_ROUTE_FLAG = 0x1;
+  // Anti-join: when set, on a found-match the agg-feed step is
+  // suppressed and DBLQH responds with bare CONF.  Used by the
+  // LEFT-anti-join idiom (`LEFT JOIN cte WHERE cte.col IS NULL`)
+  // to deliver only NULL-injected unmatched parents into the
+  // aggregator.  See cte_filter_phase_k.md.
+  static constexpr Uint32 CTE_LOOKUP_ANTI_JOIN_FLAG = 0x2;
 };
 
 /**

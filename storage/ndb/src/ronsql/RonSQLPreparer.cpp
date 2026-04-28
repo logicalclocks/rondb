@@ -1395,19 +1395,84 @@ is_null_rejecting(const ConditionalExpression* ce)
   }
 }
 
+// Phase K: detect the canonical LEFT-anti-join idiom — `LEFT JOIN
+// cte ON ... WHERE cte.col IS NULL` — where every WHERE conjunct is
+// IS NULL on a CTE column that's provably non-NULL on the matched
+// path (GB key, SUM, COUNT).  For such cases ANTI_JOIN is
+// semantically equivalent to MySQL's LEFT JOIN + WHERE filter.
+// emit_child_ops emits setMatchType(MatchNullOnly) which
+// translates to NI_ANTI_JOIN in the QueryTree; DBSPJ's
+// cte_lookup_send picks up the flag and tells DBLQH to suppress
+// the agg feed on matched rows (kernel work landed alongside this
+// helper).  Unmatched parents continue to NULL-inject via the
+// existing JOIN_AGG_NULL_ROW_REQ path.
+//
+// MIN/MAX outputs are NOT promotable: AggResItem.is_null
+// legitimately fires when every source value is NULL, so a matched
+// group can have a NULL MIN/MAX.  ANTI_JOIN would skip those
+// matched-but-NULL groups, breaking semantics.  Such cases stay
+// under Phase I.1's defensive reject.
+//
+// See cte_filter_phase_k.md.
+bool
+RonSQLPreparer::is_anti_join_promotable(const QueryScope& scope,
+                                         Uint32 op_idx,
+                                         const ConditionalExpression* ce)
+{
+  if (ce == NULL) return false;
+  if (ce->op == T_AND) {
+    return is_anti_join_promotable(scope, op_idx, ce->args.left) &&
+           is_anti_join_promotable(scope, op_idx, ce->args.right);
+  }
+  if (ce->op != T_IS || !ce->is.null) return false;
+
+  const ConditionalExpression* col_side = ce->is.arg;
+  if (col_side == NULL || col_side->op != T_IDENTIFIER) return false;
+  Uint32 col_idx = col_side->col_idx;
+  if (scope.column_table_idx[col_idx] != op_idx) return false;
+
+  // Walk the CTE outputs to the referenced column and check it's a
+  // GB-key (Outputs::Type::COLUMN) or a SUM/COUNT aggregate.
+  const JoinOp& cte_op = scope.join_plan.ops[op_idx];
+  if (cte_op.cte_def == NULL) return false;
+  Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
+  Uint32 walk = 0;
+  const Outputs* o = cte_op.cte_def->stmt->outputs;
+  while (o != NULL && walk < cte_col_idx) { o = o->next; walk++; }
+  if (o == NULL) return false;
+
+  if (o->type == Outputs::Type::COLUMN) return true;
+  if (o->type == Outputs::Type::AGGREGATE) {
+    TokenKind fun = o->aggregate.fun;
+    return fun == T_SUM || fun == T_COUNT;
+  }
+  return false;
+}
+
 // Standard MySQL optimizer rule: a LEFT OUTER JOIN of A and B can be
 // reduced to INNER JOIN when the WHERE clause has a null-rejecting
-// predicate over B.  See cte_filter_phase_j.md.
+// predicate over B.  See cte_filter_phase_j.md.  Phase K extends
+// this with ANTI_JOIN promotion for the LEFT-anti-join idiom.
 void
 RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
 {
   for (Uint32 t = 1; t < scope.join_plan.num_ops; t++)
   {
     JoinOp& op = scope.join_plan.ops[t];
-    if (op.match_type == JoinOp::LEFT_OUTER &&
-        is_null_rejecting(scope.join_where_ce[t]))
+    if (op.match_type != JoinOp::LEFT_OUTER) continue;
+
+    if (is_null_rejecting(scope.join_where_ce[t]))
     {
       op.match_type = JoinOp::INNER;
+    }
+    else if (is_anti_join_promotable(scope, t, scope.join_where_ce[t]))
+    {
+      // Phase K: promote to ANTI_JOIN and clear the WHERE — the
+      // MatchNullOnly emitted by emit_child_ops, plus the kernel
+      // CTE_LOOKUP_ANTI_JOIN_FLAG handling in DBLQH, implements the
+      // filter without pushing IS NULL down.
+      op.match_type = JoinOp::ANTI_JOIN;
+      scope.join_where_ce[t] = NULL;
     }
   }
   for (Uint32 i = 0; i < scope.cross_table_where_filters.size(); i++)

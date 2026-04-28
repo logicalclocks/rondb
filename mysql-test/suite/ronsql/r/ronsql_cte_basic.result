@@ -890,6 +890,93 @@ WHERE sums.t IS NULL
 GROUP BY sums.k|
 k	SUM(sums.t)
 
+
+=== Test 28 (K): LEFT JOIN + WHERE cte.t IS NULL on SUM (anti-join) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL
+GROUP BY c.c_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL
+GROUP BY c.c_id|
+c_id	SUM(sums.t)
+400	NULL
+
+
+=== Test 29 (K): LEFT JOIN + WHERE cte.k IS NULL on GB key (anti-join) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.k IS NULL
+GROUP BY c.c_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.k IS NULL
+GROUP BY c.c_id|
+c_id	SUM(sums.t)
+400	NULL
+
+
+=== Test 30 (K): LEFT JOIN + AND of two IS NULL conjuncts (anti-join) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL AND sums.k IS NULL
+GROUP BY c.c_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL AND sums.k IS NULL
+GROUP BY c.c_id|
+c_id	SUM(sums.t)
+400	NULL
+
 === Cleanup ===
 DROP TABLE cte_lineitem;
 DROP TABLE cte_customer;

@@ -6252,6 +6252,19 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     Uint32 lookupFlags =
         (m_numDataNodes > 1) ? CteLookupReq::CTE_LOOKUP_ROUTE_FLAG : 0;
 
+    /* Anti-join: parseDA sets T_FIRST_MATCH from NI_ANTI_JOIN, but
+     * SEMI_JOIN (FirstMatch over INNER) sets both T_FIRST_MATCH and
+     * T_INNER_JOIN.  Only ANTI_JOIN has T_FIRST_MATCH without
+     * T_INNER_JOIN — see NdbQueryOperation.cpp:925-944.  Tell DBLQH
+     * to suppress agg feed on matched rows so only the unmatched
+     * NULL-injected rows reach the aggregator.
+     */
+    if ((treeNodePtr.p->m_bits & TreeNode::T_FIRST_MATCH) &&
+        !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
+      jam();
+      lookupFlags |= CteLookupReq::CTE_LOOKUP_ANTI_JOIN_FLAG;
+    }
+
     DEB_CTE(("(%u) cte_lookup_send: targetNodeId=%u (local) "
              "cteIdx=%u targetAggKey=%u keyLenBytes=%u flags=0x%x",
              instance(), targetNodeId,
