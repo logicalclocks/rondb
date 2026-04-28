@@ -1222,20 +1222,31 @@ void rondb_pttl_command(Ndb *ndb,
   rondb_ttl_or_pttl(ndb, argv, response, worker_id, /*millis=*/true);
 }
 
-// Phase 1.5: EXPIRE key seconds. Reply :1 if applied, :0 if missing.
-// Rejects seconds <= 0 (Redis-canonical, also avoids generate_expire_at's
-// -1 sentinel). Probes string_keys then hset_keys via run_exists_probes
-// to learn the type, then issues a single interpretedUpdateTuple writing
-// expiry_date on the appropriate table.
-void rondb_expire_command(Ndb *ndb,
-                          const pink::RedisCmdArgsType &argv,
-                          std::string *response,
-                          int worker_id) {
+// Phase 1.5 / 1.6: EXPIRE / PEXPIRE key {seconds|millis}. Reply :1 if
+// applied, :0 if missing. Rejects input <= 0 (Redis-canonical, also
+// avoids generate_expire_at's -1 sentinel and the (N+999)/1000 ceil
+// division collapsing PX 0 to 0). Probes string_keys then hset_keys
+// via run_exists_probes to learn the type, then issues a single
+// updateTuple writing expiry_date on the appropriate table.
+//
+// PEXPIRE rounds millis up to the next whole second (matches the
+// SET ... PX path at commands.cc:2171). expiry_date storage on both
+// tables is TIMESTAMP - second granularity - so any sub-second remainder
+// becomes "round up by ~1s" for the user. Acceptable: caller asked for
+// PEXPIRE and got a TTL strictly >= what they requested.
+static void rondb_expire_or_pexpire(Ndb *ndb,
+                                    const pink::RedisCmdArgsType &argv,
+                                    std::string *response,
+                                    int worker_id,
+                                    bool millis) {
   Int64 ttl_seconds = 0;
   if (get_int64(argv[2], response, &ttl_seconds) == false) return;
   if (ttl_seconds <= 0) {
     assign_generic_err_to_response(response, REDIS_INVALID_EXPIRE_TIME);
     return;
+  }
+  if (millis) {
+    ttl_seconds = (ttl_seconds + 999) / 1000;
   }
 
   struct exists_probe probe;
@@ -1300,6 +1311,20 @@ void rondb_expire_command(Ndb *ndb,
     response->append(":0\r\n");
   }
   // Other errors: response already populated by update_expiry_*_row.
+}
+
+void rondb_expire_command(Ndb *ndb,
+                          const pink::RedisCmdArgsType &argv,
+                          std::string *response,
+                          int worker_id) {
+  rondb_expire_or_pexpire(ndb, argv, response, worker_id, /*millis=*/false);
+}
+
+void rondb_pexpire_command(Ndb *ndb,
+                           const pink::RedisCmdArgsType &argv,
+                           std::string *response,
+                           int worker_id) {
+  rondb_expire_or_pexpire(ndb, argv, response, worker_id, /*millis=*/true);
 }
 
 // Forward decl: set_rows_hdel is defined below set_rows_hset (where it

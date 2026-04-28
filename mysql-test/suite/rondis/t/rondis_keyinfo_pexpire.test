@@ -1,0 +1,89 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+# NDB schema-dist coordinator timeout is a known transient (CLAUDE.md).
+--disable_query_log
+call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
+--enable_query_log
+
+#
+# Phase 1.6 - PEXPIRE key milliseconds
+#
+# Reply:
+#   :1\r\n  - applied (key existed)
+#   :0\r\n  - missing (or hash with field_count == 0)
+#   error   - milliseconds <= 0
+#
+# Internally PEXPIRE rounds millis up to the next whole second
+# (matches the SET ... PX path's (N + 999) / 1000 ceil division)
+# and reuses the EXPIRE update path.
+#
+
+--echo #
+--echo # Set up: a string, a populated hash, an emptied hash.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_a "value-a"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_a f1 v1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_empty x X
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL hash_empty x
+
+--echo #
+--echo # PEXPIRE 60000 ms on existing string -> :1; expiry_date set
+--echo # in the [now, now + 60 + 2] window (PEXPIRE rounds up to the
+--echo # next whole second, so the result is identical to EXPIRE 60).
+--echo #
+--let $now = `SELECT UNIX_TIMESTAMP(NOW())`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIRE str_a 60000
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) - $now BETWEEN 58 AND 62 FROM redis_0.string_keys WHERE redis_key = 'str_a' AND redis_key_id = 0`
+--echo str_a_in_window=$r
+
+--echo #
+--echo # PEXPIRE on existing hash -> :1; hset_keys.expiry_date set.
+--echo #
+--let $now = `SELECT UNIX_TIMESTAMP(NOW())`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIRE hash_a 60000
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) - $now BETWEEN 58 AND 62 FROM redis_0.hset_keys WHERE redis_key = 'hash_a'`
+--echo hash_a_in_window=$r
+
+--echo #
+--echo # Sub-second PEXPIRE rounds up to 1s (avoids truncating
+--echo # to zero, which would collide with the no-TTL sentinel).
+--echo # PEXPIRE 1 -> stored expiry is exactly now + 1.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_round "value"
+--let $now = `SELECT UNIX_TIMESTAMP(NOW())`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIRE str_round 1
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) - $now BETWEEN 0 AND 2 FROM redis_0.string_keys WHERE redis_key = 'str_round' AND redis_key_id = 0`
+--echo str_round_within_1s=$r
+
+--echo #
+--echo # PEXPIRE on a fully-HDEL'd hash -> :0 (matches EXISTS = 0).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIRE hash_empty 60000
+
+--echo #
+--echo # PEXPIRE on a missing key -> :0.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIRE no_such_key 60000
+
+--echo #
+--echo # PEXPIRE 0 / PEXPIRE -1 are rejected with an error (mirrors
+--echo # the SET ... PX 0 / -1 rejection at commands.cc:2164).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIRE str_a 0
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIRE str_a -1
+
+--echo #
+--echo # End-to-end: PEXPIRE then PTTL on the same key falls in
+--echo # window. PTTL replies in millis, so the window scales up by
+--echo # 1000.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET pttl_round "value"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIRE pttl_round 60000
+--let $script = $MYSQL_TEST_DIR/../storage/ndb/src/rondis/tests/ttl_probe.sh
+--exec bash $script PTTL pttl_round 58000 62000
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
