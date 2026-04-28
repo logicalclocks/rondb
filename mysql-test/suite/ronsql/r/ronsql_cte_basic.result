@@ -601,6 +601,132 @@ WHERE sums.t > 1000000
 GROUP BY sums.k|
 k	SUM(sums.t)
 
+
+=== Test 19 (H.3): multi-CTE filter isolation ===
+== Query ==
+WITH
+sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey),
+cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+WHERE sums.t > 90 AND cnt.n > 1
+GROUP BY sums.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH
+sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey),
+cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+WHERE sums.t > 90 AND cnt.n > 1
+GROUP BY sums.k|
+k	SUM(sums.t)	SUM(cnt.n)
+100	125	2
+200	100	2
+
+
+=== Test 20 (H.3): VARCHAR GB key + WHERE filter on it ===
+== Query ==
+WITH by_code AS (
+  SELECT r_code AS rcode, COUNT(*) AS n
+  FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+WHERE by_code.rcode = 'US'
+GROUP BY by_code.rcode;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH by_code AS (
+SELECT r_code AS rcode, COUNT(*) AS n
+FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+WHERE by_code.rcode = 'US'
+GROUP BY by_code.rcode|
+rcode	SUM(by_code.n)
+US	4
+
+
+=== Test 21 (H.3): empty CTE ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders WHERE o_custkey = 999999 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders WHERE o_custkey = 999999 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+k	SUM(sums.t)
+
+
+=== Test 22 (H.3): single-row CTE ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders WHERE o_id = 5 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders WHERE o_id = 5 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+k	SUM(sums.t)
+300	90
+
 === Cleanup ===
 DROP TABLE cte_lineitem;
 DROP TABLE cte_customer;
