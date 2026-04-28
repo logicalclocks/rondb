@@ -711,17 +711,26 @@ void rondb_del_command(Ndb *ndb,
   rondb_del(ndb, argv, response, STRING_REDIS_KEY_ID, worker_id);
 }
 
-// Phase 1.1 EXISTS support. Two-pass batched probe: first
-// string_keys(STRING_REDIS_KEY_ID, key), then hset_keys(key) for
-// keys that missed pass 1. After Phase 1.0, hset_keys is
-// authoritative for hash existence - a fully HDEL'd hash has the
-// row present with field_count = 0; that should NOT count as
-// existing (cross-server invariant: row stays for cache stability,
-// but logically the hash is gone). Pass 2 reads field_count and
-// only counts the key if it's > 0.
+// Phase 1.1 EXISTS / Phase 1.2 TYPE / Phase 1.3 TTL / Phase 1.4 PTTL
+// shared probe pipeline. Two-pass batched probe: first string_keys
+// (STRING_REDIS_KEY_ID, key), then hset_keys(key) for keys that
+// missed pass 1.
+//
+// Each probe gets its own NDB transaction for parallelism: with
+// LM_CommittedRead reads there is no lock-coordination benefit to
+// batching keys on a shared trans, and per-key trans can route to
+// distinct partitions in parallel - significantly better
+// scale-up under MGET-shape workloads. Callbacks are per-trans
+// (one per probe) and write directly into probe->m_present /
+// m_match_kind based on the trans-level error code.
 //
 // Per-key state lives in a small heap-allocated array; no
 // KeyStorage overload (KeyStorage is much wider than EXISTS needs).
+struct probe_drain_state {
+  Uint32 m_outstanding;
+  int m_error_code;
+};
+
 struct exists_probe {
   const char *m_key_str;
   Uint32 m_key_len;
@@ -730,7 +739,12 @@ struct exists_probe {
   // EXISTS only reads m_present; TYPE consults m_match_kind to
   // emit +string\r\n / +hash\r\n / +none\r\n.
   Uint8 m_match_kind;
-  const NdbOperation *m_op;
+  // Per-trans state (one trans per probe per pass; reused across
+  // passes for the same probe). m_drain points at the per-pass
+  // shared counter so the callback can decrement it.
+  NdbTransaction *m_trans;
+  bool m_is_pass2;
+  struct probe_drain_state *m_drain;
   // Pass 1: PK buffer for string_keys.
   struct key_table m_string_buf;
   // Pass 2: PK buffer + field_count read-back for hset_keys.
@@ -783,7 +797,6 @@ static int add_exists_string_probe_op(NdbTransaction *trans,
                                trans->getNdbError());
     return RONDB_INTERNAL_ERROR;
   }
-  probe->m_op = op;
   return 0;
 }
 
@@ -828,171 +841,189 @@ static int add_exists_hset_probe_op(NdbTransaction *trans,
                                trans->getNdbError());
     return RONDB_INTERNAL_ERROR;
   }
-  probe->m_op = op;
   return 0;
 }
 
-// Tiny drain state shared by both EXISTS passes. The callback just
-// decrements m_outstanding and stashes the trans-level error (if
-// any). Per-op results are walked separately via probes[i].m_op
-// after the drain.
-struct exists_drain_state {
-  Uint32 m_outstanding;
-  int m_error_code;
-};
-
+// Per-probe callback: fires once per per-key trans completion.
+// Trans-level error code drives the classification:
+//   0   -> Pass 1: m_match_kind = STRING, m_present = true.
+//          Pass 2: read field_count from buffer; m_match_kind =
+//                  HASH and m_present = true only if > 0
+//                  (post-1.0.3 cross-server invariant - row may
+//                  be present with field_count == 0).
+//   626 -> row not found; leave probe untouched (Pass 2 will
+//          probe hset_keys for it).
+//   any other -> hard failure; record on shared drain state.
 static void
-exists_drain_callback(int result, NdbTransaction *trans, void *aObject) {
-  struct exists_drain_state *st = (struct exists_drain_state*)aObject;
+probe_callback(int result, NdbTransaction *trans, void *aObject) {
+  struct exists_probe *probe = (struct exists_probe*)aObject;
   (void)result;
   int code = trans->getNdbError().code;
-  if (code != 0 && code != 626 && st->m_error_code == 0) {
-    st->m_error_code = code;
+  if (code == 0) {
+    if (probe->m_is_pass2) {
+      if (probe->m_hset_buf.field_count > 0) {
+        probe->m_present = true;
+        probe->m_match_kind = EXISTS_MATCH_HASH;
+      }
+    } else {
+      probe->m_present = true;
+      probe->m_match_kind = EXISTS_MATCH_STRING;
+    }
+  } else if (code != 626) {
+    if (probe->m_drain->m_error_code == 0) {
+      probe->m_drain->m_error_code = code;
+    }
   }
-  assert(st->m_outstanding > 0);
-  st->m_outstanding--;
+  assert(probe->m_drain->m_outstanding > 0);
+  probe->m_drain->m_outstanding--;
 }
 
-// Phase 1.1 / 1.2 shared two-pass probe pipeline. For each probe:
-//   - Pass 1 (string_keys): if found, m_match_kind = STRING,
-//                           m_present = true.
-//   - Pass 2 (hset_keys, only run for missers): if found and
-//                           field_count > 0, m_match_kind = HASH,
-//                           m_present = true. field_count == 0 leaves
-//                           m_match_kind = NONE per the post-1.0.3
-//                           cross-server-invariant semantics.
-//   - Both miss: m_match_kind stays NONE, m_present stays false.
-//
-// Runs the whole batch on shared trans(es), chunked at
-// MAX_PARALLEL_KEY_OPS. Returns 0 on success, 1 on hard NDB failure
-// (response already populated).
+// Close every per-probe trans in [start, end). Used both as
+// post-drain cleanup and as setup-error-path cleanup. Idempotent
+// via m_trans = nullptr after close.
+static void close_probe_trans(Ndb *ndb,
+                              struct exists_probe *probes,
+                              Uint32 start, Uint32 end) {
+  for (Uint32 i = start; i < end; i++) {
+    if (probes[i].m_trans != nullptr) {
+      ndb->closeTransaction(probes[i].m_trans);
+      probes[i].m_trans = nullptr;
+    }
+  }
+}
+
+// Phase 1.1 / 1.2 / 1.3 shared two-pass probe pipeline.
+// Per-key trans for parallelism: each key opens its own trans
+// hinted on its PK, all are submitted async, then drained
+// together via execute_ndb. Chunked at MAX_PARALLEL_KEY_OPS to
+// cap fan-out per drain cycle.
 static int run_exists_probes(Ndb *ndb,
                              struct exists_probe *probes,
                              Uint32 num_keys,
                              Uint32 database_id,
                              const NdbDictionary::Table *string_tab,
                              std::string *response) {
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Table *hset_tab = dict->getTable(HSET_KEY_TABLE_NAME);
+  if (hset_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TABLE_OBJECT,
+                               dict->getNdbError());
+    return 1;
+  }
+
   Uint32 idx = 0;
   while (idx < num_keys) {
     Uint32 chunk = std::min(num_keys - idx, (Uint32)MAX_PARALLEL_KEY_OPS);
-    // Hint the trans on the first probe's PK so the TC lives on
-    // that partition's data node (matches every other startTransaction
-    // call site in the codebase). Not critical for correctness but
-    // expected by NDB for predictable routing.
-    {
-      struct exists_probe *p0 = &probes[idx];
-      struct key_table *kr = &p0->m_string_buf;
+    Uint32 chunk_end = idx + chunk;
+
+    // Pass 1: per-key trans on string_keys, submitted in parallel.
+    struct probe_drain_state drain1;
+    drain1.m_outstanding = 0;
+    drain1.m_error_code = 0;
+    for (Uint32 i = idx; i < chunk_end; i++) {
+      struct exists_probe *p = &probes[i];
+      struct key_table *kr = &p->m_string_buf;
       kr->null_bits = 0;
       kr->redis_key_id = STRING_REDIS_KEY_ID;
-      memcpy(&kr->redis_key[2], p0->m_key_str, p0->m_key_len);
-      memset(&kr->redis_key[2 + p0->m_key_len], 0, 3);
-      set_length((char*)&kr->redis_key[0], p0->m_key_len);
-    }
-    NdbTransaction *trans = ndb->startTransaction(
-      string_tab,
-      (const char*)&probes[idx].m_string_buf.redis_key_id,
-      probes[idx].m_key_len + 10);
-    if (trans == nullptr) {
-      assign_ndb_err_to_response(response,
-                                 FAILED_CREATE_TXN_OBJECT,
-                                 ndb->getNdbError());
-      return 1;
-    }
-    // Pass 1: string_keys probes.
-    for (Uint32 i = idx; i < idx + chunk; i++) {
-      if (add_exists_string_probe_op(trans,
-                                     &probes[i],
-                                     database_id,
-                                     response) != 0) {
-        ndb->closeTransaction(trans);
+      memcpy(&kr->redis_key[2], p->m_key_str, p->m_key_len);
+      memset(&kr->redis_key[2 + p->m_key_len], 0, 3);
+      set_length((char*)&kr->redis_key[0], p->m_key_len);
+
+      p->m_trans = ndb->startTransaction(
+        string_tab,
+        (const char*)&kr->redis_key_id,
+        p->m_key_len + 10);
+      if (p->m_trans == nullptr) {
+        assign_ndb_err_to_response(response,
+                                   FAILED_CREATE_TXN_OBJECT,
+                                   ndb->getNdbError());
+        // Drain anything already in flight, then close all.
+        while (drain1.m_outstanding > 0) {
+          execute_ndb(ndb, 1, __LINE__);
+        }
+        close_probe_trans(ndb, probes, idx, chunk_end);
         return 1;
       }
+      p->m_is_pass2 = false;
+      p->m_drain = &drain1;
+      if (add_exists_string_probe_op(p->m_trans, p,
+                                     database_id, response) != 0) {
+        while (drain1.m_outstanding > 0) {
+          execute_ndb(ndb, 1, __LINE__);
+        }
+        close_probe_trans(ndb, probes, idx, chunk_end);
+        return 1;
+      }
+      drain1.m_outstanding++;
+      p->m_trans->executeAsynchPrepare(NdbTransaction::Commit,
+                                       &probe_callback,
+                                       (void*)p);
     }
-    struct exists_drain_state st;
-    st.m_outstanding = 1;
-    st.m_error_code = 0;
-    trans->executeAsynchPrepare(NdbTransaction::NoCommit,
-                                &exists_drain_callback,
-                                (void*)&st);
-    while (st.m_outstanding > 0) {
-      int finished = execute_ndb(ndb, 1, __LINE__);
-      assert(finished >= 0);
+    while (drain1.m_outstanding > 0) {
+      execute_ndb(ndb, 1, __LINE__);
     }
-    if (st.m_error_code != 0) {
+    close_probe_trans(ndb, probes, idx, chunk_end);
+    if (drain1.m_error_code != 0) {
       assign_err_to_response(response,
-                             "Failed to execute pass 1",
-                             st.m_error_code);
-      ndb->closeTransaction(trans);
+                             "Pass 1 per-op error",
+                             drain1.m_error_code);
       return 1;
     }
-    // Walk pass-1 per-op results.
-    Uint32 missers = 0;
-    for (Uint32 i = idx; i < idx + chunk; i++) {
-      int code = probes[i].m_op->getNdbError().code;
-      if (code == 0) {
-        probes[i].m_present = true;
-        probes[i].m_match_kind = EXISTS_MATCH_STRING;
-      } else if (code == 626) {
-        missers++;
-      } else {
-        assign_err_to_response(response,
-                               "Pass 1 per-op error",
-                               code);
-        ndb->closeTransaction(trans);
+
+    // Pass 2: per-key trans on hset_keys for missers, in parallel.
+    struct probe_drain_state drain2;
+    drain2.m_outstanding = 0;
+    drain2.m_error_code = 0;
+    for (Uint32 i = idx; i < chunk_end; i++) {
+      struct exists_probe *p = &probes[i];
+      if (p->m_present) continue;
+      struct hset_key_table *kr = &p->m_hset_buf;
+      kr->null_bits = 0;
+      memcpy(&kr->redis_key[2], p->m_key_str, p->m_key_len);
+      memset(&kr->redis_key[2 + p->m_key_len], 0, 3);
+      set_length(&kr->redis_key[0], p->m_key_len);
+      kr->field_count = 0;
+
+      p->m_trans = ndb->startTransaction(
+        hset_tab,
+        (const char*)&kr->redis_key[0],
+        p->m_key_len + 2);
+      if (p->m_trans == nullptr) {
+        assign_ndb_err_to_response(response,
+                                   FAILED_CREATE_TXN_OBJECT,
+                                   ndb->getNdbError());
+        while (drain2.m_outstanding > 0) {
+          execute_ndb(ndb, 1, __LINE__);
+        }
+        close_probe_trans(ndb, probes, idx, chunk_end);
         return 1;
       }
-    }
-    // Pass 2: hset_keys probes for missers. Skip if every key
-    // was found in pass 1.
-    if (missers > 0) {
-      for (Uint32 i = idx; i < idx + chunk; i++) {
-        if (probes[i].m_present) continue;
-        if (add_exists_hset_probe_op(trans,
-                                     &probes[i],
-                                     database_id,
-                                     response) != 0) {
-          ndb->closeTransaction(trans);
-          return 1;
+      p->m_is_pass2 = true;
+      p->m_drain = &drain2;
+      if (add_exists_hset_probe_op(p->m_trans, p,
+                                   database_id, response) != 0) {
+        while (drain2.m_outstanding > 0) {
+          execute_ndb(ndb, 1, __LINE__);
         }
-      }
-      st.m_outstanding = 1;
-      st.m_error_code = 0;
-      trans->executeAsynchPrepare(NdbTransaction::NoCommit,
-                                  &exists_drain_callback,
-                                  (void*)&st);
-      while (st.m_outstanding > 0) {
-        int finished = execute_ndb(ndb, 1, __LINE__);
-        assert(finished >= 0);
-      }
-      if (st.m_error_code != 0) {
-        assign_err_to_response(response,
-                               "Failed to execute pass 2",
-                               st.m_error_code);
-        ndb->closeTransaction(trans);
+        close_probe_trans(ndb, probes, idx, chunk_end);
         return 1;
       }
-      for (Uint32 i = idx; i < idx + chunk; i++) {
-        if (probes[i].m_present) continue;
-        int code = probes[i].m_op->getNdbError().code;
-        if (code == 0) {
-          // Row exists; count as exists only when field_count > 0
-          // (post-1.0.3, fully HDEL'd hashes leave the row at 0).
-          if (probes[i].m_hset_buf.field_count > 0) {
-            probes[i].m_present = true;
-            probes[i].m_match_kind = EXISTS_MATCH_HASH;
-          }
-        } else if (code == 626) {
-          // Hash row missing: not present.
-        } else {
-          assign_err_to_response(response,
-                                 "Pass 2 per-op error",
-                                 code);
-          ndb->closeTransaction(trans);
-          return 1;
-        }
-      }
+      drain2.m_outstanding++;
+      p->m_trans->executeAsynchPrepare(NdbTransaction::Commit,
+                                       &probe_callback,
+                                       (void*)p);
     }
-    ndb->closeTransaction(trans);
+    while (drain2.m_outstanding > 0) {
+      execute_ndb(ndb, 1, __LINE__);
+    }
+    close_probe_trans(ndb, probes, idx, chunk_end);
+    if (drain2.m_error_code != 0) {
+      assign_err_to_response(response,
+                             "Pass 2 per-op error",
+                             drain2.m_error_code);
+      return 1;
+    }
     idx += chunk;
   }
   return 0;
@@ -1015,7 +1046,7 @@ void rondb_exists_command(Ndb *ndb,
     probes[i].m_key_len = argv[i + 1].size();
     probes[i].m_present = false;
     probes[i].m_match_kind = EXISTS_MATCH_NONE;
-    probes[i].m_op = nullptr;
+    probes[i].m_trans = nullptr;
   }
 
   const NdbDictionary::Dictionary *dict = ndb->getDictionary();
@@ -1062,7 +1093,7 @@ void rondb_type_command(Ndb *ndb,
   probe.m_key_len = argv[1].size();
   probe.m_present = false;
   probe.m_match_kind = EXISTS_MATCH_NONE;
-  probe.m_op = nullptr;
+  probe.m_trans = nullptr;
 
   const NdbDictionary::Dictionary *dict = ndb->getDictionary();
   if (dict == nullptr) {
@@ -1118,7 +1149,7 @@ static void rondb_ttl_or_pttl(Ndb *ndb,
   probe.m_key_len = argv[1].size();
   probe.m_present = false;
   probe.m_match_kind = EXISTS_MATCH_NONE;
-  probe.m_op = nullptr;
+  probe.m_trans = nullptr;
 
   const NdbDictionary::Dictionary *dict = ndb->getDictionary();
   if (dict == nullptr) {
@@ -1145,18 +1176,19 @@ static void rondb_ttl_or_pttl(Ndb *ndb,
   }
   // Pull expiry_date from the right buffer. Null bit positions
   // differ per init_*_records column_map: string_keys expiry_date
-  // = bit 1 of null_bits, hset_keys expiry_date = bit 0.
+  // = bit 1 of null_bits, hset_keys expiry_date = bit 0. Once the
+  // pointer + null check are picked, the mi_sint4korr decode is
+  // the same for both tables.
   bool expiry_is_null;
-  Int32 expiry_seconds;
+  const Int32 *expiry_ptr;
   if (probe.m_match_kind == EXISTS_MATCH_STRING) {
     expiry_is_null = (probe.m_string_buf.null_bits & 0x2) != 0;
-    expiry_seconds = mi_sint4korr(
-      (const unsigned char*)&probe.m_string_buf.expiry_date);
+    expiry_ptr = &probe.m_string_buf.expiry_date;
   } else {
     expiry_is_null = (probe.m_hset_buf.null_bits & 0x1) != 0;
-    expiry_seconds = mi_sint4korr(
-      (const unsigned char*)&probe.m_hset_buf.expiry_date);
+    expiry_ptr = &probe.m_hset_buf.expiry_date;
   }
+  Int32 expiry_seconds = mi_sint4korr((const unsigned char*)expiry_ptr);
   if (expiry_is_null || expiry_seconds == g_max_expire_at) {
     response->append(":-1\r\n");
     return;
@@ -1211,7 +1243,7 @@ void rondb_expire_command(Ndb *ndb,
   probe.m_key_len = argv[1].size();
   probe.m_present = false;
   probe.m_match_kind = EXISTS_MATCH_NONE;
-  probe.m_op = nullptr;
+  probe.m_trans = nullptr;
 
   const NdbDictionary::Dictionary *dict = ndb->getDictionary();
   if (dict == nullptr) {
