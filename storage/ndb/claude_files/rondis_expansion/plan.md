@@ -660,7 +660,21 @@ The schema change for this lands in 1.10c.1:
 -- before:
 redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 -- after (rondis is alpha; no migration):
-redis_key_id BIGINT UNSIGNED NULL DEFAULT NULL AUTO_INCREMENT,
+redis_key_id BIGINT UNSIGNED NULL DEFAULT NULL,
+```
+
+`redis_key_id` deliberately remains the indexed ownership column:
+`NULL` means a string owns the name and a non-NULL value means a hash
+owns it. It must **not** remain `AUTO_INCREMENT`, because writing
+`NULL` to an auto-increment column is allocation input in MySQL/NDB
+semantics rather than a reliable stored discriminator. Hash id
+generation moves to a separate one-column sequence table:
+
+```sql
+CREATE TABLE redis_0.hset_key_id_sequence (
+  redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  PRIMARY KEY (redis_key_id) USING HASH
+) ENGINE NDB;
 ```
 
 The `NULL` change is also load-bearing for concurrency: the original
@@ -668,7 +682,10 @@ plan implicitly stored `redis_key_id = 0` for strings, and `UNIQUE
 KEY (redis_key_id)` then serialized concurrent string-INSERTs on the
 unique-index entry for `0`, producing cross-trans 266 lock-wait
 timeouts under MSET / parallel-worker SET. Multiple `NULL` entries
-in a UNIQUE index are allowed, which removes the contention.
+in a UNIQUE index are allowed, which removes the contention. Keeping
+string registry rows at `NULL` also avoids updating the unique index
+for SET / MSET operations; only hash rows write a generated non-NULL
+id into that unique index.
 
 Sub-phases (each its own commit, separately bisectable):
 
@@ -680,14 +697,17 @@ Sub-phases (each its own commit, separately bisectable):
   `redis_key_id` (i.e. the name is owned by a hash). On INSERT, the
   row buffer + `null_bits = 0x3` + `mask = 0xF` writes
   `redis_key_id = NULL`, `field_count = 0`, `expiry_date = NULL`.
-  Phase 1 (HSET) and HDEL Phase 1 callbacks map the read-back NULL
-  back to `0` so the existing `m_hset_redis_key_id == 0` "string row"
-  check downstream stays valid. **Open issue:** rondis_basic Test 3
-  (SET overwrite) currently trips WRONGTYPE because the first
-  INSERT seems to leave `redis_key_id` non-NULL despite the explicit
-  null_bits. A diagnostic printf is in place in
-  `add_hset_string_claim_op`; next cycle is to rebuild and inspect
-  the actual stored value via SQL probe.
+  HSET no longer calls `getAutoIncrementValue` on `hset_keys`;
+  it preallocates from `hset_key_id_sequence` and writes that
+  explicit id into `hset_keys.redis_key_id` only for hash-owned
+  rows. Phase 1 (HSET) and HDEL Phase 1 callbacks map the read-back
+  NULL back to `0` so the existing `m_hset_redis_key_id == 0`
+  "string row" check downstream stays valid. **Open issue:** the
+  current WIP still has `redis_key_id ... AUTO_INCREMENT`, so
+  rondis_basic Test 3 (SET overwrite) trips WRONGTYPE because the
+  first SET can allocate a non-NULL `redis_key_id`. Fix by removing
+  AUTO_INCREMENT from `hset_keys.redis_key_id`, adding the sequence
+  table, and switching HSET preallocation to that table.
 - **1.10c.2 — DEL deletes both rows + supports hash DEL (PENDING).**
   String DEL also drops the `hset_keys` row; hash DEL routes through
   `hset_keys` first.
@@ -1098,10 +1118,13 @@ PR 3 (10 tests):
 - `include/commands.h`, `include/db_operations.h`, `include/common.h`
   — declarations and the new `RONDB_EXPIRED_KEY` sentinel
 
-**Schema (PR 1 Phase 1.0.1 only):**
+**Schema (PR 1):**
 - `sql/create_rondis_tables.sql`, `sql/HSET_key.sql`,
   `mysql-test/suite/rondis/include/create_rondis_tables.inc` —
-  add `field_count INT UNSIGNED NOT NULL DEFAULT 0` to `hset_keys`
+  Phase 1.0.1 adds `field_count INT UNSIGNED NOT NULL DEFAULT 0`
+  to `hset_keys`; Phase 1.10c.1 makes `hset_keys.redis_key_id`
+  nullable without `AUTO_INCREMENT` and adds
+  `hset_key_id_sequence` as the hash-id allocator
 - Existing `redis_0.hset_keys` rows backfilled to 1 in the
   CREATE script (idempotent)
 
