@@ -1666,11 +1666,12 @@ static int send_delete_write(std::string *response,
   commit_write_value_transaction(key_store);
   key_store->m_key_state = KeyState::MultiRowRWAll;
   DEB_MSET_CMD(("Prepare send value delete: Key %u, prev rows: %u"
-                ", num_rows: %u, key_state: %u\n",
+                ", num_rows: %u, key_state: %u worker=%d\n",
                 key_store->m_index,
                 key_store->m_prev_num_rows,
                 key_store->m_num_rows,
-                key_store->m_key_state));
+                key_store->m_key_state,
+                get_ctrl->m_worker_id));
   return 0;
 }
 
@@ -1697,12 +1698,13 @@ static int send_value_write(std::string *response,
     key_store->m_key_state = KeyState::MultiRowRWValueSent;
   }
   DEB_MSET_CMD(("Prepare send value write: Key %u, rw rows: %u"
-                ", num_rows: %u, num_rw_rows: %u, key_state: %u\n",
+                ", num_rows: %u, num_rw_rows: %u, key_state: %u worker=%d\n",
                 key_store->m_index,
                 key_store->m_num_current_rw_rows,
                 key_store->m_num_rows,
                 key_store->m_num_rw_rows,
-                key_store->m_key_state));
+                key_store->m_key_state,
+                get_ctrl->m_worker_id));
   return 0;
 }
 
@@ -1729,6 +1731,10 @@ static int send_next_write_batch(std::string *response,
         commit_write_value_transaction(&key_storage[inx]);
         assert(current_finished > 0);
         current_finished--;
+        printf("[DBG] queue commit key=%u outstanding=%u current_finished=%u\n",
+          key_storage[inx].m_index,
+          get_ctrl->m_num_keys_outstanding, current_finished);
+        fflush(stdout);
         DEB_DEL_CMD(("Commit with no value rows"));
         key_storage[inx].m_key_state = KeyState::MultiRowRWAll;
         continue;
@@ -1830,6 +1836,24 @@ static int set_rows(Ndb *ndb,
     if (ret_code != 0) {
       return 1;
     }
+    // Phase 1.10c.1: namespace-unification claim. Stage an
+    // hset_keys UPSERT on the same trans so the dual write
+    // (string_keys + hset_keys) is atomic. The interpreter aborts
+    // the trans with RONDB_WRONGTYPE if a hash already owns the
+    // name; otherwise it inserts (redis_key_id = 0, field_count = 0)
+    // or no-ops on an existing string row. SET / MSET only -
+    // hash commands take set_rows_hset which does its own claim.
+    if (redis_key_id == STRING_REDIS_KEY_ID) {
+      ret_code = add_hset_string_claim_op(key_storage[inx].m_trans,
+                                          get_ctrl->m_hset_key_tab,
+                                          key_storage[inx].m_key_str,
+                                          key_storage[inx].m_key_len,
+                                          get_ctrl->m_database_id,
+                                          response);
+      if (ret_code != 0) {
+        return 1;
+      }
+    }
     prepare_write_transaction(&key_storage[inx]);
   }
 
@@ -1884,11 +1908,12 @@ static int set_rows(Ndb *ndb,
   // extra dispatch rounds until their final commit fires.
   do {
     DEB_MSET_CMD(("Call sendPollNdb with %u keys, %u keys out and %u bytes"
-                  " out, current_finished_in_loop: %u\n",
+                  " out, current_finished_in_loop: %u worker=%d\n",
                   get_ctrl->m_num_keys_multi_rows,
                   get_ctrl->m_num_keys_outstanding,
                   get_ctrl->m_num_bytes_outstanding,
-                  current_finished_in_loop));
+                  current_finished_in_loop,
+                  get_ctrl->m_worker_id));
     int min_finished = 1;
     int finished = execute_ndb(ndb, min_finished, __LINE__);
     assert(finished >= 0);
@@ -1999,6 +2024,21 @@ static int set_rows_hset(Ndb *ndb,
   }
   if (get_ctrl->m_num_keys_failed > 0) {
     HSET_DEALIAS_RETURN(0);
+  }
+  // Phase 1.10c.1: namespace unification. After Phase 1 completes,
+  // get_ctrl->m_hset_redis_key_id holds either the existing
+  // redis_key_id (UPDATE branch) or prealloc_id (INSERT branch).
+  // STRING_REDIS_KEY_ID (0) here means the name is currently a
+  // string - the SET path's hset_string_claim already inserted
+  // the row with redis_key_id = 0, and HSET would overwrite it,
+  // colliding with the string namespace. Refuse with WRONGTYPE.
+  // Return code 1 signals "response populated, caller should return"
+  // (same shape as the error paths above). Until Phase 1.10c.6
+  // (silent replace) lands, cross-type writes error rather than
+  // overwrite.
+  if (get_ctrl->m_hset_redis_key_id == STRING_REDIS_KEY_ID) {
+    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+    HSET_DEALIAS_RETURN(1);
   }
 
   // Phase 2: chunked field writes. An HSET of N fields submits N
@@ -2523,20 +2563,23 @@ void rondb_mset(Ndb *ndb,
   // hash path.
   const bool is_hash_command =
     (redis_key_id != STRING_REDIS_KEY_ID) || is_hmset;
+  // Phase 1.10c.1: SET / MSET also need hset_tab so set_rows can
+  // queue the namespace-claim op alongside each per-key string_keys
+  // write. Fetch unconditionally and stash on get_ctrl.
+  const NdbDictionary::Table *hset_tab =
+    dict->getTable(HSET_KEY_TABLE_NAME);
+  if (hset_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to get hset_keys table",
+                               dict->getNdbError());
+    release_mset(get_ctrl);
+    return;
+  }
+  get_ctrl->m_hset_key_tab = hset_tab;
   if (is_hash_command) {
-    // Phase 1.0.2b: stash the hash name and the hset_keys table
-    // pointer so set_rows_hset can address the hash row.
-    // argv[1] lives for the entire batch so no copy is needed.
-    const NdbDictionary::Table *hset_tab =
-      dict->getTable(HSET_KEY_TABLE_NAME);
-    if (hset_tab == nullptr) {
-      assign_ndb_err_to_response(response,
-                                 "Failed to get hset_keys table",
-                                 dict->getNdbError());
-      release_mset(get_ctrl);
-      return;
-    }
-    get_ctrl->m_hset_key_tab = hset_tab;
+    // Phase 1.0.2b: stash the hash name so set_rows_hset can
+    // address the hash row. argv[1] lives for the entire batch so
+    // no copy is needed. SET / MSET don't have a hash name.
     get_ctrl->m_hash_name_ptr = argv[1].c_str();
     get_ctrl->m_hash_name_len = argv[1].size();
   }
@@ -2578,7 +2621,8 @@ void rondb_mset(Ndb *ndb,
     }
     get_ctrl->m_num_keys_multi_rows = 0;
   }
-  DEB_MSET_CMD(("MSET of %u keys\n", num_keys));
+  DEB_MSET_CMD(("MSET of %u keys worker=%d\n",
+                num_keys, get_ctrl->m_worker_id));
   if (!hset_done) {
     Uint32 current_index = 0;
     do {
@@ -2604,10 +2648,11 @@ void rondb_mset(Ndb *ndb,
                                   get_ctrl,
                                   loop_count,
                                   current_index);
-      DEB_MSET_CMD(("%u keys, %u dispatched, %u completed\n",
+      DEB_MSET_CMD(("%u keys, %u dispatched, %u completed worker=%d\n",
                     num_keys,
                     get_ctrl->m_num_keys_multi_rows,
-                    get_ctrl->m_num_keys_completed_first_pass));
+                    get_ctrl->m_num_keys_completed_first_pass,
+                    get_ctrl->m_worker_id));
       current_index += loop_count;
     } while (current_index < num_keys && get_ctrl->m_num_keys_failed == 0);
   }
@@ -2623,6 +2668,16 @@ void rondb_mset(Ndb *ndb,
     return;
   }
   if (get_cmd_part) {
+    // Phase 1.10c.1: SET ... GET on a hash key returns -WRONGTYPE
+    // (rather than the prior string value, which is nil anyway).
+    // Check write-side state before restoring the get-side state.
+    for (Uint32 i = 0; i < num_keys; i++) {
+      if (key_storage[i].m_key_state == KeyState::CompletedTypeError) {
+        assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+        release_mset(get_ctrl);
+        return;
+      }
+    }
     for (Uint32 i = 0; i < num_keys; i++) {
       key_storage[i].m_key_state = key_storage[i].m_get_key_state;
     }
@@ -2644,6 +2699,19 @@ void rondb_mset(Ndb *ndb,
     response->append(REDIS_NO_SUCH_KEY);
     release_mset(get_ctrl);
     return;
+  }
+  // Phase 1.10c.1: dual-write claim found a hash already owning at
+  // least one of the keys. Emit Redis-canonical -WRONGTYPE error.
+  // For MSET, any one type-conflict aborts the whole reply; per-key
+  // partial commits may have landed (each MSET key has its own
+  // trans), but that lossiness is tracked under "MSET atomicity"
+  // and supersedes once Phase 1.10c.6 lands silent replace.
+  for (Uint32 i = 0; i < num_keys; i++) {
+    if (key_storage[i].m_key_state == KeyState::CompletedTypeError) {
+      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+      release_mset(get_ctrl);
+      return;
+    }
   }
   if (redis_key_id == STRING_REDIS_KEY_ID || is_hmset) {
     // MSET / SET / HMSET all return the simple-string +OK reply.

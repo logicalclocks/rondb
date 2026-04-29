@@ -78,9 +78,22 @@ Uint32 get_length(char* buf);
 // lines ~229 (NX-existing) and ~279 (XX-missing).
 #define RONDB_CONDITIONAL_STORE_NOT_MET 6000
 
+// Phase 1.10c.1: emitted by init_hset_string_claim_code when a SET
+// finds the hset_keys row already taken by a hash (redis_key_id != 0).
+// Rondis translates this to "-WRONGTYPE Operation against a key
+// holding the wrong kind of value\r\n". Until the silent-replace
+// phase (1.10c.6), cross-type writes error rather than overwrite.
+#define RONDB_WRONGTYPE 6010
+
 // Redis-canonical error strings we reuse for overflow.
 #define FAILED_INCRBY_DECRBY_OVERFLOW \
   "increment or decrement would overflow"
+
+// Redis-canonical WRONGTYPE message. Emitted by SET when the name
+// is currently used as a hash (and, in Phase 1.10c.3, by HSET when
+// the name is a string).
+#define REDIS_WRONGTYPE_VALUE \
+  "WRONGTYPE Operation against a key holding the wrong kind of value"
 
 // Redis errors
 #define REDIS_UNKNOWN_COMMAND "unknown command '%s'"

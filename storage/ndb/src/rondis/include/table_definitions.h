@@ -57,9 +57,11 @@ extern NdbRecord *entire_hset_key_record[MAX_NUM_DATABASES];
 
 struct hset_key_table
 {
-    // null_bits covers the nullable expiry_date column (matches the
-    // key_table / value_table layout — the column order inside the
-    // NdbRecord map is what matters, not the struct order).
+    // Phase 1.10c.1: redis_key_id is also nullable. NULL = string row
+    // (registered by SET / MSET); non-null = hash row.
+    // Bit assignment in null_bits (per init_hset_key_records):
+    //   bit 0 -> redis_key_id
+    //   bit 1 -> expiry_date
     Uint32 null_bits;
     Uint64 redis_key_id;
     Int32 expiry_date;
@@ -173,7 +175,13 @@ enum KeyState {
     // the interpreted-code program). Not a failure: Redis-canonical
     // reply is the nil bulk string. Only ever set on the single-key
     // plain SET path (MSET / HSET do not expose conditional flags).
-    CompletedConditionalFail = 11
+    CompletedConditionalFail = 11,
+    // Phase 1.10c.1: SET dual-write claim found a hash already owning
+    // the name (RONDB_WRONGTYPE 6010 sentinel from
+    // init_hset_string_claim_code). Reply is the Redis-canonical
+    // -WRONGTYPE error. Phase 1.10c.6 (silent replace) removes this
+    // path in favor of overwriting the hash.
+    CompletedTypeError = 12
 };
 
 #define MAX_PARALLEL_KEY_OPS 256

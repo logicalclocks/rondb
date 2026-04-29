@@ -403,6 +403,11 @@ write_commit_callback(int result, NdbTransaction *trans, void *aObject) {
   assert(get_ctrl->m_num_keys_outstanding > 0);
   get_ctrl->m_num_keys_outstanding--;
   key_storage->m_close_flag = true;
+  printf("[DBG] write_commit_callback key=%u code=%d outstanding=%u multi=%u\n",
+    key_storage->m_index, code,
+    get_ctrl->m_num_keys_outstanding,
+    get_ctrl->m_num_keys_multi_rows);
+  fflush(stdout);
 }
 
 void commit_write_value_transaction(struct KeyStorage *key_store) {
@@ -555,6 +560,98 @@ int add_hset_lock_claim_op(NdbTransaction *trans,
   }
   get_ctrl->m_rec_attr_hset_id = getvals[0].recAttr;
   get_ctrl->m_rec_attr_hset_field_count = getvals[1].recAttr;
+  return 0;
+}
+
+// Phase 1.10c.1: SET / MSET dual-write claim op. Stages a writeTuple
+// (UPSERT) on hset_keys(key) with init_hset_string_claim_code so the
+// trans aborts with RONDB_WRONGTYPE if a hash already owns this name.
+// The string_keys op stays where it is (queued by write_data_to_key_op
+// before this); both share the same NoCommit / Commit so the dual
+// write is atomic.
+//
+// No outputs - SET doesn't need anything back; the claim is a pure
+// gate. The interpreter handles the redis_key_id = 0, field_count = 0
+// writes for the INSERT branch; the UPDATE branch is idempotent.
+int add_hset_string_claim_op(NdbTransaction *trans,
+                             const NdbDictionary::Table *tab_hset,
+                             const char *key_str,
+                             Uint32 key_len,
+                             Uint32 database_id,
+                             std::string *response) {
+  struct hset_key_table key_row;
+  // null_bits layout (per init_hset_key_records):
+  //   bit 0 -> redis_key_id IS NULL
+  //   bit 1 -> expiry_date  IS NULL
+  // We set both: strings are NULL-id, no TTL claimed at insert time.
+  // mask=0xF below tells writeTuple to write all 4 columns from the
+  // row buffer; auto-increment is bypassed because the column is
+  // explicitly NULL via null_bits.
+  key_row.null_bits = 0x3;
+  memcpy(&key_row.redis_key[2], key_str, key_len);
+  set_length(&key_row.redis_key[0], key_len);
+  key_row.redis_key_id = 0;   // ignored (NULL via null_bits bit 0)
+  key_row.field_count = 0;
+  key_row.expiry_date = 0;    // ignored (NULL via null_bits bit 1)
+
+  // 32 words matches add_hset_lock_claim_op; the string-claim
+  // interpreter's UPDATE branch + INSERT branch + two exit edges
+  // overflow a 16-word buffer (NDB 4518: too many instructions).
+  Uint32 code_buffer[32];
+  NdbInterpretedCode code(tab_hset,
+                          &code_buffer[0],
+                          sizeof(code_buffer) / sizeof(code_buffer[0]));
+  int ret_code = init_hset_string_claim_code(response, &code, tab_hset);
+  if (ret_code != 0) {
+    return ret_code;
+  }
+
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_INTERPRETED;
+  opts.optionsPresent |=
+    NdbOperation::OperationOptions::OO_INTERPRETED_INSERT;
+  opts.interpretedCode = &code;
+
+  // Match the exact OperationOptions shape of add_hset_lock_claim_op
+  // (interpreted writeTuple seems to need a registered final-value
+  // get when it participates in a multi-op trans, otherwise NDB
+  // never delivers the callback for the trans).
+  NdbOperation::GetValueSpec getvals[1];
+  getvals[0].appStorage = nullptr;
+  getvals[0].recAttr = nullptr;
+  getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
+  opts.numExtraGetFinalValues = 1;
+  opts.extraGetFinalValues = getvals;
+
+  // mask=0xF -> write all 4 columns of entire_hset_key_record from
+  // the row buffer (PK + redis_key_id + field_count + expiry_date).
+  // null_bits handles the two nullable columns.
+  const Uint32 mask = 0xF;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+  printf("[DBG] string_claim writeTuple key='%.*s' null_bits=0x%x"
+         " redis_key_id=%llu field_count=%u mask=0x%x\n",
+    (int)key_len, key_str,
+    key_row.null_bits,
+    (unsigned long long)key_row.redis_key_id,
+    key_row.field_count,
+    mask);
+  fflush(stdout);
+  const NdbOperation *op = trans->writeTuple(
+    pk_hset_key_record[database_id],
+    (const char *)&key_row,
+    entire_hset_key_record[database_id],
+    (char *)&key_row,
+    mask_ptr,
+    &opts,
+    sizeof(opts));
+  if (op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to add hset_keys string-claim op",
+                               trans->getNdbError());
+    return -1;
+  }
   return 0;
 }
 
@@ -755,8 +852,15 @@ hset_phase1_callback(int result, NdbTransaction *trans, void *aObject) {
       get_ctrl->m_error_code = code;
     }
   } else {
-    get_ctrl->m_hset_redis_key_id =
-      get_ctrl->m_rec_attr_hset_id->u_64_value();
+    // Phase 1.10c.1: redis_key_id IS NULL on string rows. Map NULL
+    // back to 0 so the existing "m_hset_redis_key_id == 0 means
+    // string row" check downstream continues to work.
+    if (get_ctrl->m_rec_attr_hset_id->isNULL() == 1) {
+      get_ctrl->m_hset_redis_key_id = 0;
+    } else {
+      get_ctrl->m_hset_redis_key_id =
+        get_ctrl->m_rec_attr_hset_id->u_64_value();
+    }
     get_ctrl->m_hset_field_count_pre =
       (Uint32)get_ctrl->m_rec_attr_hset_field_count->u_64_value();
   }
@@ -997,8 +1101,16 @@ hdel_phase1_callback(int result, NdbTransaction *trans, void *aObject) {
       get_ctrl->m_error_code = op_code;
     }
   } else {
-    get_ctrl->m_hset_redis_key_id =
-      get_ctrl->m_hset_lock_read_buf.redis_key_id;
+    // Phase 1.10c.1: redis_key_id IS NULL on string rows; map NULL
+    // back to 0 (the existing "string row" sentinel for downstream
+    // checks). null_bits bit 0 is redis_key_id (see hset_key_table
+    // layout in include/table_definitions.h).
+    if ((get_ctrl->m_hset_lock_read_buf.null_bits & 0x1) != 0) {
+      get_ctrl->m_hset_redis_key_id = 0;
+    } else {
+      get_ctrl->m_hset_redis_key_id =
+        get_ctrl->m_hset_lock_read_buf.redis_key_id;
+    }
     get_ctrl->m_hset_field_count_pre =
       get_ctrl->m_hset_lock_read_buf.field_count;
   }
@@ -1240,12 +1352,22 @@ write_callback(int result, NdbTransaction *trans, void *aObject) {
   assert(trans == key_storage->m_trans);
   assert(get_ctrl->m_num_transactions > 0);
   int code = trans->getNdbError().code;
+  printf("[DBG] write_callback ENTER key=%u code=%d\n",
+    key_storage->m_index, code);
+  fflush(stdout);
   if (code != 0) {
     if (code == RONDB_CONDITIONAL_STORE_NOT_MET) {
       // NX / XX guard tripped in the write interpreter program
       // (C7 / C8). Not a real failure - the response builder will
       // emit Redis-canonical nil ($-1\r\n) for this key.
       key_storage->m_key_state = KeyState::CompletedConditionalFail;
+      get_ctrl->m_num_keys_completed_first_pass++;
+    } else if (code == RONDB_WRONGTYPE) {
+      // Phase 1.10c.1: SET / MSET dual-write claim found a hash
+      // already owning this name. Mark the key with a dedicated
+      // type-error state so the response builder emits
+      // -WRONGTYPE ... rather than a generic NDB error.
+      key_storage->m_key_state = KeyState::CompletedTypeError;
       get_ctrl->m_num_keys_completed_first_pass++;
     } else {
       key_storage->m_key_state = KeyState::CompletedFailed;
@@ -1281,6 +1403,11 @@ write_callback(int result, NdbTransaction *trans, void *aObject) {
     key_storage->m_key_state = KeyState::MultiRowRWValue;
     assert(get_ctrl->m_num_keys_outstanding > 0);
     get_ctrl->m_num_keys_outstanding--;
+    printf("[DBG] write_callback OK key=%u outstanding=%u multi=%u\n",
+      key_storage->m_index,
+      get_ctrl->m_num_keys_outstanding,
+      get_ctrl->m_num_keys_multi_rows);
+    fflush(stdout);
     DEB_HSET_KEY(("key %u simple write succeeded, prev_num_rows: %u"
                   ", rondb_key: %llu\n",
       key_storage->m_index,

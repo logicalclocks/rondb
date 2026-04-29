@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS redis_0.string_keys(
 
 CREATE TABLE IF NOT EXISTS redis_0.hset_keys(
   redis_key VARBINARY(3000) NOT NULL,
-  redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  redis_key_id BIGINT UNSIGNED NULL DEFAULT NULL AUTO_INCREMENT,
   field_count INT UNSIGNED NOT NULL DEFAULT 0,
   expiry_date TIMESTAMP,
   KEY ttl_index(expiry_date),

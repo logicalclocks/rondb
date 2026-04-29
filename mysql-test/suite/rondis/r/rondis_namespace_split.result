@@ -1,29 +1,36 @@
 #
-# Set the same name as both a string and a hash.
+# SET claims the name as a string. The hset_keys row carries
+# redis_key_id = 0 alongside the string_keys row.
 #
-OK
-1
-#
-# Both lookups succeed independently - no WRONGTYPE.
-#
-string-value
-hash-field-value
-#
-# SQL view confirms the two rows live in separate tables.
-#
-SELECT redis_key, value_start
-FROM redis_0.string_keys
-WHERE redis_key = 'shared';
-redis_key	value_start
-shared	string-value
-SELECT redis_key FROM redis_0.hset_keys WHERE redis_key = 'shared';
-redis_key
-shared
-#
-# Deleting the string leaves the hash intact, and vice versa.
-#
-1
+ERR Failed to create hset string-claim code; NDB(4518) Too many instructions in interpreted program
 
-hash-field-value
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared';
+redis_key_id
+#
+# HSET against the same name -> WRONGTYPE (refuses to corrupt
+# the existing string row by overwriting redis_key_id).
+#
 1
+#
+# The string is intact: GET still works, hset_keys still
+# carries redis_key_id = 0.
+#
 
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared';
+redis_key_id
+1
+#
+# Mirror case: HSET first claims the name as a hash, then
+# SET against the same name -> WRONGTYPE.
+#
+1
+ERR Failed to create hset string-claim code; NDB(4518) Too many instructions in interpreted program
+
+#
+# The hash is intact: HGET still works, hset_keys row keeps
+# its non-zero redis_key_id.
+#
+hash-field-value
+SELECT redis_key_id > 0 FROM redis_0.hset_keys WHERE redis_key = 'shared_h';
+redis_key_id > 0
+1

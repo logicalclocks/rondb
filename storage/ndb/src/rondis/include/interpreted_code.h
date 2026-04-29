@@ -76,6 +76,9 @@ int init_hset_lock_claim_code(std::string *response,
                               NdbInterpretedCode *code,
                               const NdbDictionary::Table *tab,
                               Uint64 prealloc_id);
+int init_hset_string_claim_code(std::string *response,
+                                NdbInterpretedCode *code,
+                                const NdbDictionary::Table *tab);
 int write_hset_key_table(Ndb *ndb,
                          const NdbDictionary::Table *tab,
                          std::string std_key_str,

@@ -167,6 +167,63 @@ int init_hset_lock_claim_code(std::string *response,
   return 0;
 }
 
+// Phase 1.10c.1: SET / MSET dual-write claim on hset_keys for the
+// string namespace. Strings store redis_key_id = NULL so that the
+// UNIQUE KEY (redis_key_id) tolerates concurrent string INSERTs
+// (NULL is not equal to NULL in a unique index). Hashes still
+// auto-assign a non-NULL value.
+//
+//   UPDATE branch (row exists):
+//     - if redis_key_id IS NULL  -> exit_ok (idempotent; no-op)
+//     - else (a hash already owns this name) -> exit_nok(WRONGTYPE)
+//
+//   INSERT branch (row is new): write redis_key_id = NULL and
+//     field_count = 0 then exit_ok.
+//
+// Always emits OUTPUT_INDEX_0 (constant 0) so the op shape matches
+// init_hset_lock_claim_code; NDB requires at least one
+// register-final-value when an interpreted writeTuple participates
+// in a multi-op trans.
+int init_hset_string_claim_code(std::string *response,
+                                NdbInterpretedCode *code,
+                                const NdbDictionary::Table *tab) {
+  const NdbDictionary::Column *redis_key_id_col =
+    tab->getColumn(HSET_KEY_TABLE_COL_redis_key_id);
+
+  code->load_op_type(REG1);
+  code->branch_eq_const(REG1, RONDB_INSERT, LABEL0); // INSERT to label 0
+
+  /* UPDATE branch */
+  // If existing redis_key_id IS NULL -> string row, idempotent OK.
+  code->branch_col_eq_null(redis_key_id_col->getColumnNo(), LABEL1);
+  // Non-null: a hash already owns this name -> WRONGTYPE.
+  code->interpret_exit_nok(RONDB_WRONGTYPE);
+
+  code->def_label(LABEL1);
+  code->load_const_u64(REG6, 0);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->interpret_exit_ok();
+
+  /* INSERT branch */
+  // Row buffer + null_bits already populates all columns
+  // (redis_key_id NULL, field_count 0, expiry_date NULL). The
+  // interpreter just emits the canonical OUTPUT_INDEX_0 sentinel
+  // and exits.
+  code->def_label(LABEL0);
+  code->load_const_u64(REG6, 0);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->interpret_exit_ok();
+
+  int ret_code = code->finalise();
+  if (ret_code != 0) {
+    assign_ndb_err_to_response(response,
+                               "Failed to create hset string-claim code",
+                               code->getNdbError());
+    return -1;
+  }
+  return 0;
+}
+
 // Tiny interpreter program that reads hset_keys.field_count, adds
 // a signed delta, writes it back, and exits OK. Used by HDEL
 // (Phase 1.0.3) with delta<0.

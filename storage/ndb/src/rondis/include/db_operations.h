@@ -78,6 +78,12 @@ int add_hset_lock_claim_op(NdbTransaction *trans,
                            struct GetControl *get_ctrl,
                            Uint32 database_id,
                            std::string *response);
+int add_hset_string_claim_op(NdbTransaction *trans,
+                             const NdbDictionary::Table *tab_hset,
+                             const char *key_str,
+                             Uint32 key_len,
+                             Uint32 database_id,
+                             std::string *response);
 int add_hset_field_count_set_op(NdbTransaction *trans,
                                 const NdbDictionary::Table *tab_hset,
                                 const char *hash_name,

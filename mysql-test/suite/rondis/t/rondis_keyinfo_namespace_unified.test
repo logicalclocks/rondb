@@ -1,0 +1,53 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Phase 1.10c.1 - SET / MSET dual-write claim on hset_keys.
+#
+# As of Phase 1.10c.1 SET writes to BOTH string_keys (the value)
+# and hset_keys (the namespace registry, with redis_key_id = 0
+# marking the row as a string). The dual write is atomic on a
+# single NDB transaction. Cross-type writes return Redis-canonical
+# WRONGTYPE; see rondis_namespace_split.test for that case. This
+# test pins the positive shape: SET inserts both rows, second SET
+# is idempotent, MSET writes hset_keys per key.
+#
+
+--echo #
+--echo # SET claims a fresh name. Both rows visible via SQL with
+--echo # matching redis_key, redis_key_id = 0 in hset_keys.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k1 "v1"
+SELECT redis_key, redis_key_id FROM redis_0.string_keys WHERE redis_key = 'k1';
+SELECT redis_key, redis_key_id, field_count FROM redis_0.hset_keys WHERE redis_key = 'k1';
+
+--echo #
+--echo # Overwriting the same string key is idempotent at the
+--echo # hset_keys level - the row stays put, redis_key_id remains 0.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k1 "v1-updated"
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'k1';
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET k1
+
+--echo #
+--echo # MSET k2 v2 k3 v3 - each key gets its own hset_keys row.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT MSET k2 "v2" k3 "v3"
+SELECT redis_key, redis_key_id FROM redis_0.hset_keys
+ WHERE redis_key IN ('k2', 'k3') ORDER BY redis_key;
+
+--echo #
+--echo # SET on a name claimed by a hash -> WRONGTYPE.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h1 f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET h1 "stringy"
+
+--echo #
+--echo # HSET on a name claimed by a string -> WRONGTYPE.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET k1 f v
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

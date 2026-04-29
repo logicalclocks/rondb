@@ -80,12 +80,17 @@ int init_hset_key_records(NdbDictionary::Dictionary *dict,
         return -1;
     }
 
+    // Phase 1.10c.1: redis_key_id is now NULLable (NULL = string row,
+    // non-null = hash row). UNIQUE KEY(redis_key_id) tolerates many NULLs,
+    // so concurrent string-claim INSERTs no longer serialize on the
+    // unique index. redis_key_id gets nullbit 0; expiry_date gets nullbit
+    // 1 (must be distinct within the same null_bits byte).
     std::map<const NdbDictionary::Column *,
              std::pair<size_t, int>> read_all_column_map = {
         {redis_key_col, {offsetof(struct hset_key_table, redis_key), 0}},
         {redis_key_id_col, {offsetof(struct hset_key_table, redis_key_id), 0}},
         {field_count_col, {offsetof(struct hset_key_table, field_count), 0}},
-        {expiry_date_col, {offsetof(struct hset_key_table, expiry_date), 0}},
+        {expiry_date_col, {offsetof(struct hset_key_table, expiry_date), 1}},
     };
     if (init_record(dict,
                     tab,

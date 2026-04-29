@@ -357,7 +357,7 @@ int create_rondis_tables(const char *mysql_host,
     snprintf(query, sizeof(query),
       "CREATE TABLE IF NOT EXISTS %s_%u.%s("
       "  redis_key VARBINARY(%u) NOT NULL,"
-      "  redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"
+      "  redis_key_id BIGINT UNSIGNED NULL DEFAULT NULL AUTO_INCREMENT,"
       "  PRIMARY KEY (redis_key) USING HASH,"
       "  UNIQUE KEY (redis_key_id) USING HASH"
       ") ENGINE NDB CHARSET=latin1 "
@@ -574,6 +574,28 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
   RondisEndPoint rondisEndpoint;
   // First check non-ndb commands
   const char *command = argv[0].c_str();
+  std::string cmd_dbg;
+  for (Uint32 i = 0; i < argv.size(); i++) {
+    if (i > 0) cmd_dbg.append(" ");
+    cmd_dbg.append(argv[i]);
+    if (cmd_dbg.size() > 200) {
+      cmd_dbg.resize(200);
+      cmd_dbg.append("...");
+      break;
+    }
+  }
+  printf("[DBG] CMD START worker=%d argc=%lu: %s\n",
+    worker_id, argv.size(), cmd_dbg.c_str());
+  fflush(stdout);
+  struct CmdEndGuard {
+    int worker_id;
+    const std::string *cmd_dbg;
+    ~CmdEndGuard() {
+      printf("[DBG] CMD END   worker=%d: %s\n",
+        worker_id, cmd_dbg->c_str());
+      fflush(stdout);
+    }
+  } cmd_end_guard{worker_id, &cmd_dbg};
   if (strcasecmp(command, "ping") == 0) {
     if (argv.size() == 1) {
       response->append("+PONG\r\n");
