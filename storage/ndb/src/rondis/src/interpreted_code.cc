@@ -117,19 +117,26 @@ int initNdbCodeIncrDecr(std::string *response,
 
 // Phase 1.0.2d Phase-1 interpreter. Used as the writeTuple program
 // on hset_keys(key) at the start of a single-trans HSET / HMSET /
-// HSETNX. Two branches:
+// HSETNX. Three branches:
 //
-//   UPDATE branch (row already exists): read redis_key_id and
-//     field_count, emit them as OUTPUT_INDEX_0 and OUTPUT_INDEX_1,
-//     exit_ok. The writeTuple itself takes the X-lock; the
-//     interpreter does not modify any column.
+//   UPDATE-on-hash (row exists, redis_key_id non-null): emit
+//     existing (redis_key_id, field_count, OUTPUT_INDEX_2 = 0),
+//     exit_ok. Field writes append to the existing hash.
 //
-//   INSERT branch (row didn't exist): write the caller-supplied
-//     prealloc_id into redis_key_id, write field_count = 0, emit
-//     prealloc_id as OUTPUT_INDEX_0 and 0 as OUTPUT_INDEX_1, exit_ok.
+//   UPDATE-on-string (Phase 1.10c.7a, silent replace):
+//     row exists but is a string (redis_key_id IS NULL). Write
+//     prealloc_id into redis_key_id and 0 into field_count
+//     (claims the name as a hash), emit (prealloc_id, 0,
+//     OUTPUT_INDEX_2 = 1). The was-string flag tells Phase 1.5
+//     to delete the matching string_keys row and any
+//     value-extension rows in the same trans.
 //
-// Phase 1's callback consumes the two outputs to populate
-// GetControl::m_hset_redis_key_id and m_hset_field_count_pre.
+//   INSERT branch (row didn't exist): write prealloc_id and
+//     field_count = 0, emit (prealloc_id, 0, OUTPUT_INDEX_2 = 0).
+//
+// Phase 1's callback consumes the three outputs into
+// GetControl::m_hset_redis_key_id, m_hset_field_count_pre, and
+// m_hset_was_string_replaced.
 int init_hset_lock_claim_code(std::string *response,
                               NdbInterpretedCode *code,
                               const NdbDictionary::Table *tab,
@@ -147,29 +154,40 @@ int init_hset_lock_claim_code(std::string *response,
   // register and then write_interpreter_output trips NDB(878)
   // "Register with NULL value involved in arithmetic operation".
   code->branch_col_eq_null(redis_key_id_col->getColumnNo(), LABEL1);
-  // Non-null: existing hash row. Emit redis_key_id and field_count.
+  // UPDATE-on-hash: existing hash row. Emit (id, count, 0).
   code->read_attr(REG6, redis_key_id_col);
   code->read_attr(REG7, field_count_col);
+  code->load_const_u64(REG2, 0);
   code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
   code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG2, OUTPUT_INDEX_2);
   code->interpret_exit_ok();
-  // String row: emit (0, 0). Phase 1's callback maps OUTPUT_INDEX_0
-  // == 0 to "WRONGTYPE: existing string blocks HSET" downstream.
+
+  // UPDATE-on-string (Phase 1.10c.7a): claim the row as a hash.
+  // Write redis_key_id = prealloc_id and field_count = 0, then
+  // emit (prealloc_id, 0, was_string=1) so Phase 1's callback
+  // and Phase 1.5 can drop the string row + ext rows.
   code->def_label(LABEL1);
-  code->load_const_u64(REG6, 0);
+  code->load_const_u64(REG6, prealloc_id);
   code->load_const_u64(REG7, 0);
+  code->load_const_u64(REG2, 1);
+  code->write_attr(redis_key_id_col, REG6);
+  code->write_attr(field_count_col, REG7);
   code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
   code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG2, OUTPUT_INDEX_2);
   code->interpret_exit_ok();
 
   /* INSERT branch */
   code->def_label(LABEL0);
   code->load_const_u64(REG6, prealloc_id);
   code->load_const_u64(REG7, 0);
+  code->load_const_u64(REG2, 0);
   code->write_attr(redis_key_id_col, REG6);
   code->write_attr(field_count_col, REG7);
   code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
   code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG2, OUTPUT_INDEX_2);
   code->interpret_exit_ok();
 
   int ret_code = code->finalise();

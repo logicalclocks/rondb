@@ -1,5 +1,5 @@
 #
-# SET claims the name as a string. The hset_keys row carries
+# SET claims the name as a string. hset_keys carries
 # redis_key_id NULL alongside the string_keys row.
 #
 OK
@@ -7,22 +7,28 @@ SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared';
 redis_key_id
 NULL
 #
-# HSET against the same name -> WRONGTYPE (refuses to corrupt
-# the existing string row by overwriting redis_key_id).
+# HSET against the same name -> silent replace.
+# Reply is :1 (one new field), not -WRONGTYPE.
 #
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+1
+#
+# GET on the replaced name returns nil; the string_keys row
+# is gone; hset_keys now carries a non-NULL redis_key_id.
+#
 
+SELECT COUNT(*) AS string_rows_for_shared
+FROM redis_0.string_keys
+WHERE redis_key = 'shared' AND redis_key_id = 0;
+string_rows_for_shared
+0
+SELECT redis_key_id > 0 FROM redis_0.hset_keys WHERE redis_key = 'shared';
+redis_key_id > 0
+1
+hash-field-value
 #
-# The string is intact: GET still works, hset_keys still
-# carries redis_key_id NULL.
-#
-string-value
-SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared';
-redis_key_id
-NULL
-#
-# Mirror case: HSET first claims the name as a hash, then
-# SET against the same name -> WRONGTYPE.
+# Mirror case (still 1.10c.1 WRONGTYPE until 1.10c.7b lands):
+# HSET first claims the name as a hash, then SET on the same
+# name -> WRONGTYPE.
 #
 1
 ERR WRONGTYPE Operation against a key holding the wrong kind of value

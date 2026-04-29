@@ -302,9 +302,17 @@ struct GetControl {
     // new count.
     Uint64 m_hset_redis_key_id;
     Uint32 m_hset_field_count_pre;
-    // NdbRecAttr handles for Phase 1's two output values.
+    // NdbRecAttr handles for Phase 1's three output values.
+    // m_rec_attr_hset_was_string is OUTPUT_INDEX_2: 1 if the
+    // existing hset_keys row was a string and got claimed as a
+    // hash by Phase 1's UPDATE-on-string branch (Phase 1.10c.7a),
+    // 0 otherwise. The callback copies it into
+    // m_hset_was_string_replaced and Phase 1.5 dispatches the
+    // string-row + ext-row deletes when set.
     NdbRecAttr *m_rec_attr_hset_id;
     NdbRecAttr *m_rec_attr_hset_field_count;
+    NdbRecAttr *m_rec_attr_hset_was_string;
+    bool m_hset_was_string_replaced;
     // Phase 2 / Phase 3 chunk-window. set_rows_hset breaks an
     // N-field HSET into MAX_PARALLEL_KEY_OPS-sized batches so a
     // single NoCommit submission does not overrun NDB's per-trans

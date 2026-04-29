@@ -158,6 +158,10 @@ hset_and_hget "$KEY:edge_large" "$edge_value"
 redis-cli HDEL $HASH_KEY $KEY:edge_large
 
 echo ""
+# Phase 1.10c.6 makes empty hashes invisible to read-side commands.
+# Keep the hash non-empty so the counter section still tests
+# missing-field creation inside an existing hash.
+redis-cli HSET "$HASH_KEY" "$KEY:counter_anchor" 0
 incr_field="$KEY:incr${RANDOM}${RANDOM}"
 incr_output=$(redis-cli HINCR "$HASH_KEY" "$incr_field")
 incr_result=$(redis-cli HGET "$HASH_KEY" "$incr_field")
@@ -189,6 +193,7 @@ done
 redis-cli HDEL $HASH_KEY $incr_field
 
 echo ""
+redis-cli HSET "$HASH_KEY" "$KEY:counter_anchor_incrby" 0
 incrby_field="$KEY:incrby${RANDOM}${RANDOM}"
 incrby_output=$(redis-cli HINCRBY "$HASH_KEY" "$incrby_field" "20")
 incrby_result=$(redis-cli HGET "$HASH_KEY" "$incrby_field")
@@ -221,6 +226,7 @@ done
 redis-cli HDEL $HASH_KEY $incrby_field
 
 echo ""
+redis-cli HSET "$HASH_KEY" "$KEY:counter_anchor_decr" 0
 decr_field="$KEY:decr${RANDOM}${RANDOM}"
 decr_output=$(redis-cli HDECR "$HASH_KEY" "$decr_field")
 decr_result=$(redis-cli HGET "$HASH_KEY" "$decr_field")
@@ -252,6 +258,7 @@ done
 redis-cli HDEL $HASH_KEY $decr_field
 
 echo ""
+redis-cli HSET "$HASH_KEY" "$KEY:counter_anchor_decrby" 0
 decrby_field="$KEY:decr${RANDOM}${RANDOM}"
 decrby_output=$(redis-cli HDECRBY "$HASH_KEY" "$decrby_field" "20")
 decrby_result=$(redis-cli HGET "$HASH_KEY" "$decrby_field")
@@ -282,5 +289,9 @@ for i in {1..10}; do
     fi
 done
 redis-cli HDEL $HASH_KEY $decrby_field
+redis-cli HDEL $HASH_KEY "$KEY:counter_anchor"
+redis-cli HDEL $HASH_KEY "$KEY:counter_anchor_incrby"
+redis-cli HDEL $HASH_KEY "$KEY:counter_anchor_decr"
+redis-cli HDEL $HASH_KEY "$KEY:counter_anchor_decrby"
 
 echo "All tests completed."

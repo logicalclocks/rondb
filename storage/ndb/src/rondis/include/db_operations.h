@@ -100,6 +100,24 @@ int add_hset_field_count_set_op(NdbTransaction *trans,
                                 Uint32 new_count,
                                 Uint32 database_id,
                                 std::string *response);
+
+/* Phase 1.10c.7a Phase-1.5 silent-replace helpers. Stage the
+ * deletion of a string-typed name's string_keys row + ext rows
+ * inside the same HSET trans that just claimed hset_keys for the
+ * hash namespace. */
+int add_hset_string_replace_delete_op(NdbTransaction *trans,
+                                      const char *name_str,
+                                      Uint32 name_len,
+                                      struct key_table *key_row_buf,
+                                      Uint32 database_id,
+                                      std::string *response);
+int add_hset_string_replace_value_deletes(NdbTransaction *trans,
+                                          Uint64 rondb_key,
+                                          Uint32 num_rows,
+                                          Uint32 database_id,
+                                          std::string *response);
+void prepare_hset_phase15_transaction(struct GetControl *get_ctrl,
+                                      NdbTransaction *trans);
 int add_hset_field_count_bump_op(NdbTransaction *trans,
                                  const NdbDictionary::Table *tab_hset,
                                  const char *hash_name,

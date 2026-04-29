@@ -8,10 +8,10 @@
 # As of Phase 1.10c.1 SET writes to BOTH string_keys (the value)
 # and hset_keys (the namespace registry, with redis_key_id NULL
 # marking the row as a string). The dual write is atomic on a
-# single NDB transaction. Cross-type writes return Redis-canonical
-# WRONGTYPE; see rondis_namespace_split.test for that case. This
-# test pins the positive shape: SET inserts both rows, second SET
-# is idempotent, MSET writes hset_keys per key.
+# single NDB transaction.
+#
+# Phase 1.10c.7a flipped HSET-on-string from WRONGTYPE to silent
+# replace; SET-on-hash still returns WRONGTYPE until 1.10c.7b.
 #
 
 --echo #
@@ -38,15 +38,23 @@ SELECT redis_key, redis_key_id FROM redis_0.hset_keys
  WHERE redis_key IN ('k2', 'k3') ORDER BY redis_key;
 
 --echo #
---echo # SET on a name claimed by a hash -> WRONGTYPE.
+--echo # SET on a name claimed by a hash -> WRONGTYPE
+--echo # (1.10c.7b will flip this to silent replace).
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h1 f v
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET h1 "stringy"
 
 --echo #
---echo # HSET on a name claimed by a string -> WRONGTYPE.
+--echo # HSET on a name claimed by a string -> silent replace
+--echo # (1.10c.7a). Reply is :1 (new field); the string row +
+--echo # any ext rows are gone in the same trans.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET k1 f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET k1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET k1 f
+SELECT COUNT(*) AS string_rows_for_k1
+  FROM redis_0.string_keys WHERE redis_key = 'k1' AND redis_key_id = 0;
+SELECT redis_key_id > 0 FROM redis_0.hset_keys WHERE redis_key = 'k1';
 
 --disable_query_log
 DROP DATABASE IF EXISTS redis_0;

@@ -44,16 +44,17 @@ SELECT redis_key, field_count FROM redis_0.hset_keys
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE no_such_key
 
 --echo #
---echo # Unified namespace: HSET on an existing string is rejected, so
---echo # TYPE still reports "string".
+--echo # 1.10c.7a: HSET on an existing string silently replaces the
+--echo # string with a hash. TYPE flips from "string" to "hash" in
+--echo # a single step (no WRONGTYPE).
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET shared "string-value"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE shared
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET shared f1 hash-value
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE shared
 
 --echo #
---echo # After deleting the string, TYPE on the same name reports
---echo # "none"; no hash row was created by the rejected HSET.
+--echo # After DEL of the now-hash, TYPE reports "none".
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL shared
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE shared

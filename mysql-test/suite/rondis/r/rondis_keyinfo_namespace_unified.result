@@ -28,13 +28,24 @@ redis_key	redis_key_id
 k2	NULL
 k3	NULL
 #
-# SET on a name claimed by a hash -> WRONGTYPE.
+# SET on a name claimed by a hash -> WRONGTYPE
+# (1.10c.7b will flip this to silent replace).
 #
 1
 ERR WRONGTYPE Operation against a key holding the wrong kind of value
 
 #
-# HSET on a name claimed by a string -> WRONGTYPE.
+# HSET on a name claimed by a string -> silent replace
+# (1.10c.7a). Reply is :1 (new field); the string row +
+# any ext rows are gone in the same trans.
 #
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+1
 
+v
+SELECT COUNT(*) AS string_rows_for_k1
+FROM redis_0.string_keys WHERE redis_key = 'k1' AND redis_key_id = 0;
+string_rows_for_k1
+0
+SELECT redis_key_id > 0 FROM redis_0.hset_keys WHERE redis_key = 'k1';
+redis_key_id > 0
+1

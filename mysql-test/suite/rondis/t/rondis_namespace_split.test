@@ -3,43 +3,44 @@
 --source suite/rondis/include/rondis_setup.inc
 
 #
-# Phase 1.10c.1 - namespace unification.
+# Phase 1.10c.7a - HSET on a string silently replaces the string
+# with a hash (real Redis behaviour). The matching string_keys row
+# and any value-extension rows are dropped inside the same NDB
+# transaction that claims hset_keys for the hash namespace.
 #
-# This test originally pinned Rondis's namespace-split design, where
-# the same key name could simultaneously live as a string value and
-# as a hash. As of Phase 1.10c.1 strings and hashes share the
-# hset_keys row as the unique-name registry; cross-type writes are
-# rejected with Redis-canonical WRONGTYPE.
-#
-# Phase 1.10c.6 will replace WRONGTYPE with silent type replacement
-# (real Redis: SET on a hash drops the hash; HSET on a string drops
-# the string). Until then this test pins the WRONGTYPE
-# intermediate behavior.
+# This file used to pin WRONGTYPE on cross-type writes (1.10c.1)
+# and currently still pins WRONGTYPE for SET-on-hash (handled by
+# 1.10c.7b). HSET-on-string switched to silent replace at 1.10c.7a.
 #
 
 --echo #
---echo # SET claims the name as a string. The hset_keys row carries
+--echo # SET claims the name as a string. hset_keys carries
 --echo # redis_key_id NULL alongside the string_keys row.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET shared "string-value"
 SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared';
 
 --echo #
---echo # HSET against the same name -> WRONGTYPE (refuses to corrupt
---echo # the existing string row by overwriting redis_key_id).
+--echo # HSET against the same name -> silent replace.
+--echo # Reply is :1 (one new field), not -WRONGTYPE.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET shared field1 "hash-field-value"
 
 --echo #
---echo # The string is intact: GET still works, hset_keys still
---echo # carries redis_key_id NULL.
+--echo # GET on the replaced name returns nil; the string_keys row
+--echo # is gone; hset_keys now carries a non-NULL redis_key_id.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET shared
-SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared';
+SELECT COUNT(*) AS string_rows_for_shared
+  FROM redis_0.string_keys
+ WHERE redis_key = 'shared' AND redis_key_id = 0;
+SELECT redis_key_id > 0 FROM redis_0.hset_keys WHERE redis_key = 'shared';
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET shared field1
 
 --echo #
---echo # Mirror case: HSET first claims the name as a hash, then
---echo # SET against the same name -> WRONGTYPE.
+--echo # Mirror case (still 1.10c.1 WRONGTYPE until 1.10c.7b lands):
+--echo # HSET first claims the name as a hash, then SET on the same
+--echo # name -> WRONGTYPE.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET shared_h field1 "hash-field-value"
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET shared_h "string-value"

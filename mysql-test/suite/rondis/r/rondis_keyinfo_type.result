@@ -27,16 +27,16 @@ none
 #
 none
 #
-# Unified namespace: HSET on an existing string is rejected, so
-# TYPE still reports "string".
+# 1.10c.7a: HSET on an existing string silently replaces the
+# string with a hash. TYPE flips from "string" to "hash" in
+# a single step (no WRONGTYPE).
 #
 OK
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
-
 string
+1
+hash
 #
-# After deleting the string, TYPE on the same name reports
-# "none"; no hash row was created by the rejected HSET.
+# After DEL of the now-hash, TYPE reports "none".
 #
 1
 none

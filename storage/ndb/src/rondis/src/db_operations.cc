@@ -534,15 +534,23 @@ int add_hset_lock_claim_op(NdbTransaction *trans,
     NdbOperation::OperationOptions::OO_INTERPRETED_INSERT;
   opts.interpretedCode = &code;
 
-  NdbOperation::GetValueSpec getvals[2];
+  // Phase 1.10c.7a: OUTPUT_INDEX_2 is the was-string-replaced flag
+  // emitted by the UPDATE-on-string branch of init_hset_lock_claim_code
+  // (1 if the existing row was a string and got claimed as a hash,
+  // 0 otherwise). Phase 1.5 dispatch consults it to drop the string
+  // row + any value-extension rows on the same trans.
+  NdbOperation::GetValueSpec getvals[3];
   getvals[0].appStorage = nullptr;
   getvals[0].recAttr = nullptr;
   getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
   getvals[1].appStorage = nullptr;
   getvals[1].recAttr = nullptr;
   getvals[1].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_1;
+  getvals[2].appStorage = nullptr;
+  getvals[2].recAttr = nullptr;
+  getvals[2].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_2;
   opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
-  opts.numExtraGetFinalValues = 2;
+  opts.numExtraGetFinalValues = 3;
   opts.extraGetFinalValues = getvals;
 
   const Uint32 mask = 0x1;
@@ -563,6 +571,7 @@ int add_hset_lock_claim_op(NdbTransaction *trans,
   }
   get_ctrl->m_rec_attr_hset_id = getvals[0].recAttr;
   get_ctrl->m_rec_attr_hset_field_count = getvals[1].recAttr;
+  get_ctrl->m_rec_attr_hset_was_string = getvals[2].recAttr;
   return 0;
 }
 
@@ -719,6 +728,105 @@ int add_hset_string_delete_op(NdbTransaction *trans,
     return -1;
   }
   return 0;
+}
+
+// Phase 1.10c.7a Phase-1.5 string-row delete-with-readback. Stages
+// a deleteTuple on string_keys(STRING_REDIS_KEY_ID, name) that reads
+// rondb_key + tot_value_len + num_rows into the caller-supplied row
+// buffer before applying the delete (mask 0x34 - same projection as
+// prepare_complex_delete_row, which is the existing-DEL mirror of
+// this op). The set_rows_hset call site then queues per-ordinal
+// deleteTuples on string_values for ordinals [0, num_rows) using
+// the captured rondb_key.
+//
+// Only invoked when Phase 1's UPDATE-on-string branch fired
+// (m_hset_was_string_replaced == true), so the row is guaranteed
+// to exist - 1.10c.2's atomic dual-DEL would have grabbed the
+// hset_keys X-lock first, blocking on Phase 1's writeTuple. No
+// AO_IgnoreError; a 626 here is a real bug.
+int add_hset_string_replace_delete_op(NdbTransaction *trans,
+                                      const char *name_str,
+                                      Uint32 name_len,
+                                      struct key_table *key_row_buf,
+                                      Uint32 database_id,
+                                      std::string *response) {
+  key_row_buf->null_bits = 0;
+  memcpy(&key_row_buf->redis_key[2], name_str, name_len);
+  set_length(&key_row_buf->redis_key[0], name_len);
+  key_row_buf->redis_key_id = STRING_REDIS_KEY_ID;
+
+  // Mask 0x34: bits 2 (rondb_key) + 4 (tot_value_len) + 5 (num_rows).
+  // Same as prepare_complex_delete_row.
+  const Uint32 mask = 0x34;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+
+  const NdbOperation *del_op = trans->deleteTuple(
+    pk_key_record[database_id],
+    (const char *)key_row_buf,
+    entire_key_record[database_id],
+    (char *)key_row_buf,
+    mask_ptr);
+  if (del_op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to add string-replace delete op",
+                               trans->getNdbError());
+    return -1;
+  }
+  return 0;
+}
+
+// Phase 1.10c.7a Phase-1.5 ext-row deletes. Issues one deleteTuple
+// on string_values per ordinal in [0, num_rows). Invoked after
+// Phase 1.5's first NoCommit drain populates rondb_key + num_rows.
+int add_hset_string_replace_value_deletes(NdbTransaction *trans,
+                                          Uint64 rondb_key,
+                                          Uint32 num_rows,
+                                          Uint32 database_id,
+                                          std::string *response) {
+  for (Uint32 ord = 0; ord < num_rows; ord++) {
+    struct value_table value_row;
+    value_row.ordinal = ord;
+    value_row.rondb_key = rondb_key;
+    const NdbOperation *del_op = trans->deleteTuple(
+      pk_value_record[database_id],
+      (const char *)&value_row,
+      entire_value_record[database_id]);
+    if (del_op == nullptr) {
+      assign_ndb_err_to_response(response,
+                                 "Failed to add string-replace ext-row delete",
+                                 trans->getNdbError());
+      return -1;
+    }
+  }
+  return 0;
+}
+
+// Phase 1.10c.7a Phase-1.5 callback. Fires once per NoCommit
+// submission; just decrements outstanding so set_rows_hset's
+// drain loop terminates. The captured row-buffer values
+// (rondb_key + num_rows) are read inline by the caller after
+// the drain.
+static void
+hset_phase15_callback(int result, NdbTransaction *trans, void *aObject) {
+  struct GetControl *get_ctrl = (struct GetControl*)aObject;
+  (void)result;
+  assert(get_ctrl->m_num_transactions > 0);
+  int code = trans->getNdbError().code;
+  if (code != 0) {
+    get_ctrl->m_num_keys_failed++;
+    if (get_ctrl->m_error_code == 0) {
+      get_ctrl->m_error_code = code;
+    }
+  }
+  assert(get_ctrl->m_num_keys_outstanding > 0);
+  get_ctrl->m_num_keys_outstanding--;
+}
+
+void prepare_hset_phase15_transaction(struct GetControl *get_ctrl,
+                                      NdbTransaction *trans) {
+  trans->executeAsynchPrepare(NdbTransaction::NoCommit,
+                              &hset_phase15_callback,
+                              (void*)get_ctrl);
 }
 
 int add_hset_field_count_set_op(NdbTransaction *trans,
@@ -1020,17 +1128,18 @@ hset_phase1_callback(int result, NdbTransaction *trans, void *aObject) {
       get_ctrl->m_error_code = code;
     }
   } else {
-    // Phase 1.10c.1: redis_key_id IS NULL on string rows. Map NULL
-    // back to 0 so the existing "m_hset_redis_key_id == 0 means
-    // string row" check downstream continues to work.
-    if (get_ctrl->m_rec_attr_hset_id->isNULL() == 1) {
-      get_ctrl->m_hset_redis_key_id = 0;
-    } else {
-      get_ctrl->m_hset_redis_key_id =
-        get_ctrl->m_rec_attr_hset_id->u_64_value();
-    }
+    // Phase 1.10c.7a: with silent replace, the UPDATE-on-string
+    // branch claims the row by writing redis_key_id = prealloc_id
+    // and emits OUTPUT_INDEX_2 = 1. The interpreter never emits
+    // a NULL OUTPUT_INDEX_0 anymore (every branch loads a value
+    // into REG6 first). m_hset_was_string_replaced drives Phase
+    // 1.5's string-row + ext-row delete dispatch.
+    get_ctrl->m_hset_redis_key_id =
+      get_ctrl->m_rec_attr_hset_id->u_64_value();
     get_ctrl->m_hset_field_count_pre =
       (Uint32)get_ctrl->m_rec_attr_hset_field_count->u_64_value();
+    get_ctrl->m_hset_was_string_replaced =
+      (get_ctrl->m_rec_attr_hset_was_string->u_64_value() != 0);
   }
   assert(get_ctrl->m_num_keys_outstanding > 0);
   get_ctrl->m_num_keys_outstanding--;

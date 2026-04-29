@@ -1,6 +1,8 @@
 #
-# HINCR / HDECR on a non-existent field auto-create it at 0.
+# HINCR / HDECR on a non-existent field in an existing hash
+# auto-create the field at 0.
 #
+1
 1
 1
 -1

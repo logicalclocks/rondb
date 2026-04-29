@@ -9,8 +9,10 @@
 #
 
 --echo #
---echo # HINCR / HDECR on a non-existent field auto-create it at 0.
+--echo # HINCR / HDECR on a non-existent field in an existing hash
+--echo # auto-create the field at 0.
 --echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET counters anchor 0
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HINCR counters up
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET counters up
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDECR counters dn

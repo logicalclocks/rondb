@@ -1601,6 +1601,8 @@ void rondb_hdel_command(Ndb *ndb,
   get_ctrl->m_hset_field_count_pre = 0;
   get_ctrl->m_rec_attr_hset_id = nullptr;
   get_ctrl->m_rec_attr_hset_field_count = nullptr;
+  get_ctrl->m_rec_attr_hset_was_string = nullptr;
+  get_ctrl->m_hset_was_string_replaced = false;
   get_ctrl->m_hset_phase_chunk_start = 0;
   get_ctrl->m_hset_phase_chunk_count = 0;
   get_ctrl->m_num_deleted_fields = 0;
@@ -2073,20 +2075,57 @@ static int set_rows_hset(Ndb *ndb,
   if (get_ctrl->m_num_keys_failed > 0) {
     HSET_DEALIAS_RETURN(0);
   }
-  // Phase 1.10c.1: namespace unification. After Phase 1 completes,
-  // get_ctrl->m_hset_redis_key_id holds either the existing
-  // redis_key_id (UPDATE branch) or prealloc_id (INSERT branch).
-  // STRING_REDIS_KEY_ID (0) here means the name is currently a
-  // string - the SET path's hset_string_claim already inserted
-  // the row with redis_key_id = 0, and HSET would overwrite it,
-  // colliding with the string namespace. Refuse with WRONGTYPE.
-  // Return code 1 signals "response populated, caller should return"
-  // (same shape as the error paths above). Until Phase 1.10c.6
-  // (silent replace) lands, cross-type writes error rather than
-  // overwrite.
-  if (get_ctrl->m_hset_redis_key_id == STRING_REDIS_KEY_ID) {
-    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
-    HSET_DEALIAS_RETURN(1);
+  // Phase 1.10c.7a: silent replace. If Phase 1's UPDATE-on-string
+  // branch fired, the hset_keys row has been claimed for the hash
+  // namespace (redis_key_id = prealloc_id, field_count = 0) on
+  // the same trans. Phase 1.5 now drops the matching string_keys
+  // row and any value-extension rows so the caller stops seeing
+  // the old string. All in the same trans, atomic with Phase 2's
+  // field writes and Phase 3's commit.
+  //
+  // First NoCommit submits the deleteTuple-with-readback on
+  // string_keys(0, name); the row buffer captures rondb_key +
+  // num_rows before the delete applies. If num_rows > 0 a second
+  // NoCommit follows for the per-ordinal string_values deletes.
+  if (get_ctrl->m_hset_was_string_replaced) {
+    struct key_table replace_buf;
+    if (add_hset_string_replace_delete_op(trans,
+                                          get_ctrl->m_hash_name_ptr,
+                                          get_ctrl->m_hash_name_len,
+                                          &replace_buf,
+                                          get_ctrl->m_database_id,
+                                          response) != 0) {
+      HSET_DEALIAS_RETURN(1);
+    }
+    get_ctrl->m_num_keys_outstanding = 1;
+    prepare_hset_phase15_transaction(get_ctrl, trans);
+    while (get_ctrl->m_num_keys_outstanding > 0) {
+      int finished = execute_ndb(ndb, 1, __LINE__);
+      assert(finished >= 0);
+    }
+    if (get_ctrl->m_num_keys_failed > 0) {
+      HSET_DEALIAS_RETURN(0);
+    }
+    Uint32 num_ext_rows = replace_buf.num_rows;
+    if (num_ext_rows > 0) {
+      Uint64 rondb_key = replace_buf.rondb_key;
+      if (add_hset_string_replace_value_deletes(trans,
+                                                rondb_key,
+                                                num_ext_rows,
+                                                get_ctrl->m_database_id,
+                                                response) != 0) {
+        HSET_DEALIAS_RETURN(1);
+      }
+      get_ctrl->m_num_keys_outstanding = 1;
+      prepare_hset_phase15_transaction(get_ctrl, trans);
+      while (get_ctrl->m_num_keys_outstanding > 0) {
+        int finished = execute_ndb(ndb, 1, __LINE__);
+        assert(finished >= 0);
+      }
+      if (get_ctrl->m_num_keys_failed > 0) {
+        HSET_DEALIAS_RETURN(0);
+      }
+    }
   }
 
   // Phase 2: chunked field writes. An HSET of N fields submits N
@@ -2551,6 +2590,8 @@ void rondb_mset(Ndb *ndb,
   get_ctrl->m_hset_field_count_pre = 0;
   get_ctrl->m_rec_attr_hset_id = nullptr;
   get_ctrl->m_rec_attr_hset_field_count = nullptr;
+  get_ctrl->m_rec_attr_hset_was_string = nullptr;
+  get_ctrl->m_hset_was_string_replaced = false;
   get_ctrl->m_hset_phase_chunk_start = 0;
   get_ctrl->m_hset_phase_chunk_count = 0;
   for (Uint32 i = 0; i < num_keys; i++) {

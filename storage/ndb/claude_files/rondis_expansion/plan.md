@@ -748,6 +748,36 @@ Sub-phases (each its own commit, separately bisectable):
   - `HSET h f v; HDEL h f; TYPE h` remains `none` while the empty
     registry row can still persist internally.
 
+- **1.10c.6b — HINCR / HDECR field-count repair (PENDING).**
+  Cache removal made `hset_keys.field_count` authoritative for hash
+  visibility. HINCR / HINCRBY / HDECR / HDECRBY already write the
+  field row through the generic INCR interpreter, but a missing-field
+  INSERT currently does not bump `hset_keys.field_count`. That makes
+  the hash invisible after a later HDEL can decrement the count to
+  zero even when other fields still exist.
+
+  Implementation:
+  - Detect whether the counter operation inserted a new hash field
+    versus updated an existing field. Reuse the same interpreter
+    output shape used by HSET (`OUTPUT_INDEX_3` / new-field flag) or
+    add an equivalent final-value output to the INCR path.
+  - For hash counters only (`redis_key_id != 0`), if a new field was
+    inserted, update `hset_keys.field_count` in the same transaction
+    as the counter write. String INCR / DECR continue to only claim
+    the string namespace row in `hset_keys`.
+  - Preserve current cache-removal semantics: HINCR* / HDECR* on a
+    never-existed hash still returns `0` and creates no row; the
+    field-count repair applies only after the hash row is already
+    visible (`field_count > 0`).
+
+  Test coverage:
+  - `HSET h anchor 0; HINCR h f; HDEL h f; TYPE h` returns `hash`,
+    because the anchor field keeps `field_count > 0`.
+  - Same coverage for `HINCRBY`, `HDECR`, and `HDECRBY`.
+  - `rondis_stress_hashes` should not need extra per-counter anchor
+    resets once this is fixed; a single anchor before the counter
+    section is enough.
+
 - **1.10c.7 — Redis-canonical silent replace (PENDING).** Real
   Redis SET on a hash silently drops the hash; HSET on a string
   silently drops the string. Replace 1.10c.1's WRONGTYPE
@@ -791,6 +821,8 @@ Sub-phases (each its own commit, separately bisectable):
        the deleted string row's PK `(0, name)`, so no conflict.
 
   - **1.10c.7b — SET-on-hash silent replace.**
+    This is still required after 1.10c.7a; current behavior remains
+    WRONGTYPE for SET on a hash-owned name.
     `init_hset_string_claim_code` (interpreted_code.cc:202)
     drops `interpret_exit_nok(RONDB_WRONGTYPE)`. The UPDATE-on-
     hash branch reads existing `redis_key_id` and `field_count`,
@@ -811,6 +843,17 @@ Sub-phases (each its own commit, separately bisectable):
     scan projection). `RONDB_WRONGTYPE` translation in
     `write_callback` and the `CompletedTypeError` state become
     dead; remove them.
+
+    Required tests:
+    - `HSET k f v; SET k string` returns `OK`, `GET k` returns
+      `string`, `HGET k f` returns nil, and `TYPE k` returns
+      `string`.
+    - SQL confirms all old hash field rows under the replaced
+      `redis_key_id` are gone, including large field values with
+      `string_values` extension rows.
+    - SET-on-hash with the `GET` option and TTL variants (`EX`,
+      `PX`, `KEEPTTL` where applicable) behaves consistently with
+      the normal string SET path and does not leave stale hash rows.
 
   - **1.10c.7c — Test coverage.**
     `t/rondis_keyinfo_silent_replace.test`:
