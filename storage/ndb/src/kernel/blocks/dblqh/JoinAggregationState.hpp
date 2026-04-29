@@ -231,6 +231,25 @@ struct JoinAggregationState {
   Uint32 m_cte_node_list[MAX_DATA_NODE_ID]; // Live data node IDs at setup time
   Uint32 m_cte_num_nodes;                   // Number of live data nodes
   Uint32 m_cte_remote_aggKeys[ABS_MAX_NDB_NODES]; // Per-node aggStateKeys (indexed by nodeId)
+
+  // Phase L (E.1): owning LDM instance on this node for every signal
+  // that mutates this aggregation's COMPLETE / (CTE-only) REDISTRIBUTE
+  // / FINAL_REP state.  Applies to both main-SELECT and CTE
+  // aggregation: a stable owner per aggStateKey gives DBTC and remote
+  // DBLQHs a single routing target and removes any need for cross-LDM
+  // synchronisation on the aggregation state.  Computed at SETUP as
+  // (aggStateKey % lqhWorkersOnNode) + 1 and echoed in SETUP_CONF.
+  // Eliminates the multi-LDM race that motivates Phase L; takes the
+  // place of the m_redist_mutex once owner routing is complete.  See
+  // cte_filter_phase_l.md.
+  Uint32 m_owner_instance;
+  // Per-node owner instance for remote nodes — populated from
+  // SETUP_CONFs collected by the originating DBSPJ-driver node and
+  // distributed back via the COMPLETE_REQ aggKey-pairs section.  Zero
+  // means "unknown / not applicable".  CTE-only — main aggregation
+  // never sends to remote DBLQHs.
+  Uint32 m_cte_remote_ownerInstances[ABS_MAX_NDB_NODES];
+
   bool m_cte_redistribution_done;           // This node finished sending
   bool m_cte_waiting_conf;                  // Paused waiting for REDISTRIBUTE_CONF
   Uint32 m_cte_redist_batch_bytes;          // Bytes sent in current batch (flow control)
@@ -340,6 +359,7 @@ struct JoinAggregationState {
     m_outer_join_agg_scan(false),
     m_cte_mode(false),
     m_cte_num_nodes(0),
+    m_owner_instance(0),
     m_cte_redistribution_done(false),
     m_cte_waiting_conf(false),
     m_cte_redist_batch_bytes(0),

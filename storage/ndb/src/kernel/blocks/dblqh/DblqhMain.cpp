@@ -18372,6 +18372,38 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
                   state->m_cte_mode));
   }
 
+  /* Phase L (E.1): owner-instance check.  DBTC routes every
+   * JOIN_AGG_COMPLETE_REQ to numberToRef(DBLQH, m_owner_instance,
+   * nodeId) — landing on any other LDM instance means the routing
+   * has regressed and the rest of Phase L's idempotency guarantees
+   * (which assume single-owner serialization) no longer hold. */
+  ndbassert(state->m_owner_instance == instance());
+
+  /* Phase L (A): duplicate-REQ guard.  A second JOIN_AGG_COMPLETE_REQ
+   * for an aggregation already past SETUP_COMPLETE would clobber state
+   * (m_max_batch_rows, m_cte_remote_aggKeys[], m_state) and re-enter
+   * the merge / redistribution pipeline that the first REQ already
+   * started.  Once we observe m_state != SETUP_COMPLETE the work has
+   * begun (or finished) — the only correct action is to drop.  Every
+   * Phase L commit retains this invariant.  See cte_filter_phase_l.md.
+   *
+   * ndbassert in debug builds so any path that re-fires the REQ is
+   * caught loudly; the silent return is the production-build safety
+   * net. */
+  {
+    JoinAggregationState::State curState = state->m_state.load();
+    if (curState != JoinAggregationState::SETUP_COMPLETE) {
+      jam();
+      DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ: aggStateKey=%u "
+                    "state=%u != SETUP_COMPLETE — drop duplicate REQ",
+                    getThreadId(), aggStateKey, (Uint32)curState));
+      ndbassert(false);
+      SectionHandle handle(this, signal);
+      releaseSections(handle);
+      return;
+    }
+  }
+
   /* Read per-node aggStateKeys section (required for CTE mode).
    * Format: [nodeId1, aggKey1, nodeId2, aggKey2, ...] */
   SectionHandle handle(this, signal);
@@ -18394,8 +18426,10 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     SegmentedSectionPtr ptr;
     ndbrequire(handle.getSection(ptr,
                                  JoinAggCompleteReq::AggKeysSectionNum));
-    Uint32 pairBuf[2 * ABS_MAX_NDB_NODES];
-    if (unlikely(ptr.sz > 2 * MAX_NDB_NODES)) {
+    /* Phase L (E.1): triples instead of pairs.
+     * Format: [nodeId, aggKey, ownerInstance, ...] */
+    Uint32 tripleBuf[3 * ABS_MAX_NDB_NODES];
+    if (unlikely(ptr.sz > 3 * MAX_NDB_NODES)) {
       jam();
       releaseSections(handle);
       JoinAggCompleteRef *ref =
@@ -18409,17 +18443,21 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
                  signal, JoinAggCompleteRef::SignalLength, JBB);
       return;
     }
-    copy(pairBuf, ptr);
+    copy(tripleBuf, ptr);
     memset(state->m_cte_remote_aggKeys, 0,
            sizeof(state->m_cte_remote_aggKeys));
-    for (Uint32 i = 0; i + 1 < ptr.sz; i += 2) {
-      Uint32 nd = pairBuf[i];
-      Uint32 key = pairBuf[i + 1];
+    memset(state->m_cte_remote_ownerInstances, 0,
+           sizeof(state->m_cte_remote_ownerInstances));
+    for (Uint32 i = 0; i + 2 < ptr.sz; i += 3) {
+      Uint32 nd = tripleBuf[i];
+      Uint32 key = tripleBuf[i + 1];
+      Uint32 owner = tripleBuf[i + 2];
       ndbrequire(nd < ABS_MAX_NDB_NODES);
       state->m_cte_remote_aggKeys[nd] = key;
+      state->m_cte_remote_ownerInstances[nd] = owner;
     }
-    DEB_CTE(("(%u) COMPLETE_REQ: stored %u aggKey pairs",
-             instance(), ptr.sz / 2));
+    DEB_CTE(("(%u) COMPLETE_REQ: stored %u aggKey triples",
+             instance(), ptr.sz / 3));
   }
   releaseSections(handle);
 
@@ -18622,7 +18660,24 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
   /*
    * Merge complete (or MUTEX_BASED — no merge needed).
    * Select the result interpreter, finalize, and start sending.
+   *
+   * Phase L (A): a stale CONTINUEB(ZCONTINUE_JOIN_AGG_MERGE) re-entry
+   * after the merge already finished would re-store SENDING_RESULTS
+   * and then re-fire either the single-node CTE_READY CONF or the
+   * CTE_REDISTRIBUTING transition.  Guard the post-merge tail so it
+   * runs exactly once per aggregation.  See cte_filter_phase_l.md.
    */
+  {
+    JoinAggregationState::State curState = state->m_state.load();
+    if (curState != JoinAggregationState::FINALIZING) {
+      jam();
+      DEB_JOIN_AGG(("(%u)DBLQH continueJoinAggMerge tail: aggStateKey=%u "
+                    "state=%u != FINALIZING — drop stale continuation",
+                    getThreadId(), aggStateKey, (Uint32)curState));
+      ndbassert(false);
+      return;
+    }
+  }
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   interp->finalizeResults();
 
@@ -20581,6 +20636,37 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
 
+  /* Phase L (E.1): redistribution runs on the owner LDM only. */
+  ndbassert(state->m_owner_instance == instance());
+
+  /* Phase L (B): idempotency guards.
+   *
+   * Stale CONTINUEBs or REDISTRIBUTE_CONFs can re-enter this function
+   * after redistribution has already finished.  Without the guards, the
+   * now-empty gb_map falls through to redistribution_done, re-broadcasts
+   * FINAL_REPs to every remote node (which then re-trigger their own
+   * checkCteReady → propagate the duplicate-CONF bug), and re-calls
+   * checkCteReady locally.  Either condition means "redistribution is
+   * past us"; the only correct action is to drop the entry.
+   *
+   * ndbassert in debug builds so any such re-entry is caught loudly and
+   * the originating path can be removed.  See cte_filter_phase_l.md. */
+  if (state->m_state.load() != JoinAggregationState::CTE_REDISTRIBUTING) {
+    jam();
+    DEB_CTE(("(%u) continueJoinAggRedistribute: state=%u != "
+             "CTE_REDISTRIBUTING — skip stale continuation",
+             instance(), (Uint32)state->m_state.load()));
+    ndbassert(false);
+    return;
+  }
+  if (state->m_cte_redistribution_done) {
+    jam();
+    DEB_CTE(("(%u) continueJoinAggRedistribute: already done — skip "
+             "duplicate entry", instance()));
+    ndbassert(false);
+    return;
+  }
+
   /* Check for node failure since SETUP */
   if (JoinAggregationState::s_node_fail_count.load(
           std::memory_order_relaxed) != state->m_cte_node_fail_count) {
@@ -20642,10 +20728,17 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
                          JoinAggRedistributeReq::SignalLength) * sizeof(Uint32);
       bool needConf = (batch_bytes + sigBytes >= REDIST_MAX_BATCH_BYTES);
 
-      /* Send REDISTRIBUTE_REQ to owner */
+      /* Send REDISTRIBUTE_REQ to owner.  Phase L (E.1): address it
+       * to the destination's owner LDM and the destination's local
+       * aggStateKey, not to instance 1 + our own key.  Both come
+       * from the COMPLETE_REQ aggKey-triples section, populated at
+       * the top of execJOIN_AGG_COMPLETE_REQ. */
+      const Uint32 dstKey = state->m_cte_remote_aggKeys[ownerNode];
+      const Uint32 dstOwner = state->m_cte_remote_ownerInstances[ownerNode];
+      ndbrequire(dstOwner > 0);
       JoinAggRedistributeReq *req =
         (JoinAggRedistributeReq *)signal->getDataPtrSend();
-      req->aggStateKey = aggStateKey;
+      req->aggStateKey = dstKey;
       req->keyLen = keyLen;
       req->valueLen = valLen;
       req->requestInfo = needConf ? JoinAggRedistributeReq::RI_NEED_CONF : 0;
@@ -20656,7 +20749,7 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       lsp[1].p = reinterpret_cast<const Uint32 *>(data + keyLen);
       lsp[1].sz = (valLen + 3) >> 2;
 
-      BlockReference remoteRef = numberToRef(DBLQH, 1, ownerNode);
+      BlockReference remoteRef = numberToRef(DBLQH, dstOwner, ownerNode);
       sendBatchedFragmentedSignal(remoteRef,
                                   GSN_JOIN_AGG_REDISTRIBUTE_REQ, signal,
                                   JoinAggRedistributeReq::SignalLength,
@@ -20687,19 +20780,26 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
   }
 
 redistribution_done:
-  /* All local groups processed — send FINAL_REP to all other nodes */
+  /* All local groups processed — send FINAL_REP to all other nodes.
+   * Phase L (E.1): address each FINAL_REP to the destination's owner
+   * LDM and the destination's local aggStateKey, mirroring the
+   * REDISTRIBUTE_REQ routing.  The receiver's checkCteReady runs on
+   * the same LDM that owns its CTE state. */
   {
     const Uint32 ownNodeId = getOwnNodeId();
     for (Uint32 i = 0; i < state->m_cte_num_nodes; i++) {
-      if (state->m_cte_node_list[i] != ownNodeId) {
+      const Uint32 dstNode = state->m_cte_node_list[i];
+      if (dstNode != ownNodeId) {
         jam();
+        const Uint32 dstKey = state->m_cte_remote_aggKeys[dstNode];
+        const Uint32 dstOwner = state->m_cte_remote_ownerInstances[dstNode];
+        ndbrequire(dstOwner > 0);
         JoinAggFinalRep *rep =
           (JoinAggFinalRep *)signal->getDataPtrSend();
-        rep->aggStateKey = aggStateKey;
+        rep->aggStateKey = dstKey;
         rep->senderNodeId = ownNodeId;
 
-        BlockReference remoteRef =
-            numberToRef(DBLQH, 1, state->m_cte_node_list[i]);
+        BlockReference remoteRef = numberToRef(DBLQH, dstOwner, dstNode);
         sendSignal(remoteRef, GSN_JOIN_AGG_FINAL_REP, signal,
                    JoinAggFinalRep::SignalLength, JBB);
       }
@@ -20740,6 +20840,10 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     releaseSections(handle);
     return;  /* State gone — query already aborted */
   }
+
+  /* Phase L (E.1): senders address REDISTRIBUTE_REQ to the
+   * destination's owner LDM via numberToRef(DBLQH, dstOwner, dstNode). */
+  ndbassert(state->m_owner_instance == instance());
 
   SectionHandle handle(this, signal);
 
@@ -20864,6 +20968,10 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_CONF(Signal *signal) {
     return;
   }
 
+  /* Phase L (E.1): the CONF returns to the LDM that sent the
+   * REDISTRIBUTE_REQ, which is the owner LDM for this state. */
+  ndbassert(state->m_owner_instance == instance());
+
   state->m_cte_waiting_conf = false;
   continueJoinAggRedistribute(signal, aggStateKey);
 }
@@ -20882,6 +20990,10 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REF(Signal *signal) {
     jam();
     return;
   }
+
+  /* Phase L (E.1): same as the CONF path — the REF returns to the
+   * owner LDM that sent the original REDISTRIBUTE_REQ. */
+  ndbassert(state->m_owner_instance == instance());
 
   abortCteRedistribution(signal, state, ref->errorCode);
 }
@@ -20987,14 +21099,38 @@ void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
     return;
   }
 
+  /* Phase L (E.1): senders address FINAL_REP to the destination's
+   * owner LDM via numberToRef(DBLQH, dstOwner, dstNode). */
+  ndbassert(state->m_owner_instance == instance());
+
   state->m_cte_nodes_finalized.set(senderNodeId);
   checkCteReady(signal, state);
 }
 
 /**
  * checkCteReady — transition to CTE_READY if all redistribution is done.
+ *
+ * Phase L (A): both preconditions are sticky — m_cte_redistribution_done
+ * stays true and m_cte_nodes_finalized bits stay set after the CONF is
+ * sent.  Re-entry from a late FINAL_REP, a stale CONTINUEB, or
+ * continueJoinAggRedistribute being called twice would otherwise re-fire
+ * the COMPLETE_CONF.  Guard with the terminal state to make the function
+ * idempotent.  ndbassert in debug builds so any such re-entry is caught
+ * loudly and the originating path can be removed; the silent return is
+ * the production-build safety net.  See cte_filter_phase_l.md.
  */
 void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
+  /* Phase L (E.1): all callers — continueJoinAggRedistribute,
+   * execJOIN_AGG_FINAL_REP — are already pinned to the owner LDM, so
+   * this assertion just confirms the chain hasn't been broken. */
+  ndbassert(state->m_owner_instance == instance());
+  if (state->m_state.load() == JoinAggregationState::CTE_READY) {
+    jam();
+    DEB_CTE(("(%u) checkCteReady: already CTE_READY — skip duplicate CONF",
+             instance()));
+    ndbassert(false);
+    return;
+  }
   DEB_CTE(("(%u) checkCteReady: redistribution_done=%u",
            instance(), state->m_cte_redistribution_done));
   if (!state->m_cte_redistribution_done) {

@@ -28475,10 +28475,14 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
   scanptr.p->scanKeyInfoPtr = RNIL;
   scanptr.p->m_aggProgramPtrI = RNIL;
 
-  /* Allocate per-node join agg state sized to MAX_NDB_NODES */
+  /* Allocate per-node join agg state sized to MAX_NDB_NODES.
+   * Phase L (E.1): tail buffer holds two parallel arrays —
+   *   [0 .. maxNodes-1]          : m_aggStateKeys
+   *   [maxNodes .. 2*maxNodes-1] : m_aggOwnerInstances
+   * m_aggOwnerInstances points at the second half. */
   const Uint32 maxNodes = MAX_NDB_NODES;
   const size_t allocSize = sizeof(ScanRecord::JoinAggNodeState) +
-                           maxNodes * sizeof(Uint32);
+                           2 * maxNodes * sizeof(Uint32);
   auto *aggNodes = (ScanRecord::JoinAggNodeState *)
       lc_ndbd_pool_malloc(allocSize, RG_QUERY_MEMORY,
                           getThreadId(), true);
@@ -28491,6 +28495,7 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
                  apiConnectptr);
     return -1;
   }
+  aggNodes->m_aggOwnerInstances = &aggNodes->m_aggStateKeys[maxNodes];
   scanptr.p->m_joinAggNodes = aggNodes;
 
   SectionReader reader(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i,
@@ -28968,9 +28973,11 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
     jam();
     const Uint32 maxNodes = MAX_NDB_NODES;
     for (Uint32 c = 0; c < scanptr.p->m_numCtes; c++) {
-      /* Allocate per-CTE JoinAggNodeState */
+      /* Allocate per-CTE JoinAggNodeState.  Phase L (E.1): tail
+       * holds keys + owner instances back-to-back; same layout as
+       * the main-aggregation allocation. */
       const size_t allocSize = sizeof(ScanRecord::JoinAggNodeState) +
-                               maxNodes * sizeof(Uint32);
+                               2 * maxNodes * sizeof(Uint32);
       auto *cteNodes = (ScanRecord::JoinAggNodeState *)
           lc_ndbd_pool_malloc(allocSize, RG_QUERY_MEMORY,
                               getThreadId(), true);
@@ -28982,7 +28989,8 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
       }
       cteNodes->m_aggNodes.clear();
       cteNodes->m_aggNodesPending.clear();
-      memset(cteNodes->m_aggStateKeys, 0, maxNodes * sizeof(Uint32));
+      cteNodes->m_aggOwnerInstances = &cteNodes->m_aggStateKeys[maxNodes];
+      memset(cteNodes->m_aggStateKeys, 0, 2 * maxNodes * sizeof(Uint32));
       scanptr.p->m_cteAggNodeState[c] = cteNodes;
 
       /* For single-row CTEs: send SETUP to one node only (round-robin).
@@ -29069,12 +29077,16 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
   const Uint32 cteIndex = conf->cteIndex;
 
   if (cteIndex != RNIL) {
-    /* CTE SETUP_CONF — store aggStateKey in per-CTE node state */
+    /* CTE SETUP_CONF — store aggStateKey + owner instance in per-CTE
+     * node state.  Phase L (E.1): owner instance is the LDM worker on
+     * `nodeId` that owns every subsequent COMPLETE / REDISTRIBUTE /
+     * FINAL_REP for this aggregation. */
     jam();
     ndbrequire(cteIndex < scanptr.p->m_numCtes);
     auto *cteNodes = scanptr.p->m_cteAggNodeState[cteIndex];
     ndbrequire(cteNodes != nullptr);
     cteNodes->m_aggStateKeys[nodeId] = conf->aggStateKey;
+    cteNodes->m_aggOwnerInstances[nodeId] = conf->ownerInstance;
     cteNodes->m_aggNodesPending.clear(nodeId);
     scanptr.p->m_cteSetupOutstanding--;
 
@@ -29085,9 +29097,13 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
       scanptr.p->m_cteInfos[cteIndex].aggProgramPtrI = RNIL;
     }
   } else {
-    /* Main aggregation SETUP_CONF */
+    /* Main aggregation SETUP_CONF.  Phase L (E.1): same owner-routing
+     * rule as CTE — store the owner LDM instance for every node so
+     * subsequent COMPLETE_REQ / RELEASE_REQ are addressed to it. */
     jam();
     scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId] = conf->aggStateKey;
+    scanptr.p->m_joinAggNodes->m_aggOwnerInstances[nodeId] =
+        conf->ownerInstance;
     scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
     scanptr.p->m_aggNodesOutstanding--;
 
@@ -29550,9 +29566,15 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
     NdbNodeBitmask nodes = cteNodes->m_aggNodes;
     cteNodes->m_aggNodesPending.clear();
 
-    /* Build per-node aggStateKey map for CTE_LOOKUP forwarding.
-     * Format: [nodeId1, aggKey1, nodeId2, aggKey2, ...] */
-    Uint32 aggKeysBuf[2 * ABS_MAX_NDB_NODES];
+    /* Build per-node aggStateKey + owner-instance map.  Used by:
+     *   - CTE_LOOKUP forwarding (aggKey)
+     *   - Phase L (E.1) cross-node REDISTRIBUTE_REQ / FINAL_REP
+     *     routing (owner instance) — every receiver must address its
+     *     destination's owning LDM, not instance 1, so the destination's
+     *     CTE state is mutated by exactly one thread.
+     * Format: [nodeId1, aggKey1, owner1, nodeId2, aggKey2, owner2, ...]
+     * — triples instead of pairs. */
+    Uint32 aggKeysBuf[3 * ABS_MAX_NDB_NODES];
     Uint32 aggKeysLen = 0;
     for (Uint32 n = nodes.find_first();
          n != NdbNodeBitmask::NotFound;
@@ -29560,6 +29582,7 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
       if (getNodeInfo(n).m_connected) {
         aggKeysBuf[aggKeysLen++] = n;
         aggKeysBuf[aggKeysLen++] = cteNodes->m_aggStateKeys[n];
+        aggKeysBuf[aggKeysLen++] = cteNodes->m_aggOwnerInstances[n];
       }
     }
 
@@ -29587,17 +29610,15 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
       DEB_JOIN_AGG(("(%u) send JOIN_AGG_COMPLETE_REQ aggKey: %u to node: %u",
         instance(), cteNodes->m_aggStateKeys[nodeId], nodeId));
 
-      Uint32 ref = numberToRef(V_QUERY, 1, nodeId);
-      if (nodeId == getOwnNodeId()) {
-        HostRecordPtr Thostptr;
-        Thostptr.i = nodeId;
-        ptrCheckGuard(Thostptr, MAX_NDB_NODES, hostRecord);
-        Uint32 inst = Thostptr.p->m_round_robin_instance++;
-        if (inst >= getNodeInfo(nodeId).m_lqh_workers) {
-          Thostptr.p->m_round_robin_instance = 1;
-        }
-        ref = get_scan_fragreq_ref(&m_distribution_handle, inst);
-      }
+      /* Phase L (E.1): route every CTE COMPLETE_REQ to the LDM owner
+       * returned in JOIN_AGG_SETUP_CONF.  Owner is per-node, computed
+       * at SETUP from (aggStateKey % lqhWorkersOnNode) + 1.  Replaces
+       * the previous round-robin-on-local-node + V_QUERY fallback so
+       * concurrent multi-LDM access of the aggregation state is
+       * impossible by construction.  See cte_filter_phase_l.md. */
+      const Uint32 owner = cteNodes->m_aggOwnerInstances[nodeId];
+      ndbrequire(owner > 0);
+      const BlockReference ref = numberToRef(DBLQH, owner, nodeId);
       LinearSectionPtr lsp[1];
       lsp[0].p = aggKeysBuf;
       lsp[0].sz = aggKeysLen;
@@ -29779,19 +29800,15 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
                   instance(), nodeId,
                   req->aggStateKey, scanptr.i));
 
-    HostRecordPtr Thostptr;
-    Thostptr.i = nodeId;
-    ptrCheckGuard(Thostptr, MAX_NDB_NODES, hostRecord);
-
-    Uint32 instance = Thostptr.p->m_round_robin_instance++;
-    if (instance >= getNodeInfo(nodeId).m_lqh_workers) {
-      jam();
-      Thostptr.p->m_round_robin_instance = 1;
-    }
-    Uint32 ref = numberToRef(V_QUERY, 1, nodeId);
-    if (nodeId == getOwnNodeId()) {
-      ref = get_scan_fragreq_ref(&m_distribution_handle, instance);
-    }
+    /* Phase L (E.1): main aggregation routes to the LDM owner returned
+     * in JOIN_AGG_SETUP_CONF, same rule as the CTE COMPLETE path.
+     * Eliminates the previous round-robin / V_QUERY fallback that let
+     * stale or duplicate signals land on a different LDM than the one
+     * holding the aggregation state. */
+    const Uint32 owner =
+        scanptr.p->m_joinAggNodes->m_aggOwnerInstances[nodeId];
+    ndbrequire(owner > 0);
+    const BlockReference ref = numberToRef(DBLQH, owner, nodeId);
     sendSignal(ref, GSN_JOIN_AGG_COMPLETE_REQ, signal,
                JoinAggCompleteReq::SignalLength, JBB);
     scanptr.p->m_joinAggNodes->m_aggNodesPending.set(nodeId);

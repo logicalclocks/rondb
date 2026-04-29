@@ -55,12 +55,21 @@ struct JoinAggSetupReq {
 };
 
 struct JoinAggSetupConf {
-  static constexpr Uint32 SignalLength = 5;
+  static constexpr Uint32 SignalLength = 6;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
   Uint32 aggStateKey;     // Pool index for O(1) lookup
   Uint32 cteIndex;        // Echoed from SETUP_REQ
+  Uint32 ownerInstance;   // Phase L (E.1): single LDM thread on this node
+                          // that owns every signal mutating this
+                          // aggregation's COMPLETE state — and, for CTE
+                          // mode, REDISTRIBUTE / FINAL_REP too.  Applies
+                          // to both main-SELECT and CTE aggregation:
+                          // DBTC must address every JOIN_AGG_COMPLETE_REQ
+                          // to numberToRef(DBLQH, ownerInstance, ownNode)
+                          // so concurrent multi-LDM access is impossible
+                          // by construction.  See cte_filter_phase_l.md.
 };
 
 struct JoinAggSetupRef {

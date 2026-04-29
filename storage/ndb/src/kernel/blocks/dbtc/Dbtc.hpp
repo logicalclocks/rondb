@@ -2017,10 +2017,20 @@ class Dbtc : public SimulatedBlock {
      * lc_ndbd_pool_malloc only for JoinAgg queries to avoid ~620
      * bytes overhead in every ScanRecord. Sized to MAX_NDB_NODES
      * (the runtime cluster max) rather than ABS_MAX_NDB_NODES.
+     *
+     * Phase L (E.1): m_aggOwnerInstances stores the LDM instance on
+     * each remote node that owns COMPLETE / (CTE-only) REDISTRIBUTE
+     * / FINAL_REP for the per-node aggStateKey at the same index.
+     * Echoed in JOIN_AGG_SETUP_CONF, used to address subsequent
+     * COMPLETE_REQs.  Same shape as m_aggStateKeys[]; both arrays
+     * live in the tail buffer allocated alongside this struct.  See
+     * cte_filter_phase_l.md.
      */
     struct JoinAggNodeState {
       NdbNodeBitmask m_aggNodes;
       NdbNodeBitmask m_aggNodesPending;
+      Uint32 *m_aggOwnerInstances;  // Points into tail buffer:
+                                    //   &m_aggStateKeys[maxNodes]
       Uint32 m_aggStateKeys[];  // Flexible array member, sized at allocation
     };
     JoinAggNodeState *m_joinAggNodes;  // nullptr when not JoinAgg

@@ -2420,11 +2420,30 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   }
   state->m_num_threads = globalData.ndbMtQueryWorkers;
 
+  /* Phase L (E.1): pin all subsequent COMPLETE work for this
+   * aggregation (and, for CTE mode, REDISTRIBUTE / FINAL_REP too) to
+   * a single LDM worker on this node.  Senders address the owner
+   * with numberToRef(DBLQH, m_owner_instance, ownNode) so concurrent
+   * multi-LDM access of the aggregation state is impossible by
+   * construction.  Applied to both main-SELECT and CTE aggregation
+   * — same routing rule, single source of truth.  Echoed in
+   * JOIN_AGG_SETUP_CONF so DBTC routes without duplicating
+   * worker-count math.  Use LDM worker count (not query worker
+   * count) since the owner is a DBLQH instance.
+   * See cte_filter_phase_l.md. */
+  {
+    Uint32 workers = globalData.ndbMtLqhWorkers;
+    if (workers == 0) workers = 1;
+    state->m_owner_instance = (key % workers) + 1;
+  }
+
   // CTE mode: initialize CTE-specific fields and build node list.
   // Non-CTE queries never touch these fields so they can be skipped.
   if (state->m_cte_mode) {
     jam();
     NdbMutex_Init(&state->m_redist_mutex);
+    memset(state->m_cte_remote_ownerInstances, 0,
+           sizeof(state->m_cte_remote_ownerInstances));
     state->m_cte_waiting_conf = false;
     state->m_cte_redist_batch_bytes = 0;
     state->m_cte_complete_senderRef = 0;
@@ -2746,6 +2765,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   conf->requestId = requestId;
   conf->aggStateKey = key;
   conf->cteIndex = state->m_cte_index;
+  /* Phase L (E.1): owner instance is meaningful for both main-SELECT
+   * and CTE aggregation — DBTC routes every JOIN_AGG_COMPLETE_REQ
+   * (and, for CTE, every cross-LDM signal) to this owner. */
+  conf->ownerInstance = state->m_owner_instance;
   sendSignal(senderRef, GSN_JOIN_AGG_SETUP_CONF,
              signal, JoinAggSetupConf::SignalLength, JBB);
 }
