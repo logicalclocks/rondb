@@ -355,13 +355,23 @@ runChainedCteOnce(Ndb *ndb, Uint32 iterIdx)
     return -1;
   }
 
-  NdbQueryOperation *mainScanOp     = query->getQueryOperation(4U);
-  NdbQueryOperation *mainCteLookup  = query->getQueryOperation(5U);
+  const Uint32 mainScanOpNo = queryDef->getNoOfOperations() - 2;
+  const Uint32 mainCteLookupOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainScanOp = query->getQueryOperation(mainScanOpNo);
+  NdbQueryOperation *mainCteLookup =
+      query->getQueryOperation(mainCteLookupOpNo);
   NdbRecAttr *raMainGrp  = nullptr;
+  NdbRecAttr *raCteGrp   = nullptr;
   NdbRecAttr *raCteTotal = nullptr;
   if (mainScanOp != nullptr) raMainGrp  = mainScanOp->getValue("grp");
-  if (mainCteLookup != nullptr) raCteTotal = mainCteLookup->getValue("total");
-  if (raMainGrp == nullptr || raCteTotal == nullptr) {
+  if (mainCteLookup != nullptr) {
+    /* CTE_LOOKUP delivers all virtual result columns requested by the
+     * serialized CTE attr list; registering both columns here also sizes
+     * the API receive buffer for the full row. */
+    raCteGrp = mainCteLookup->getValue("grp");
+    raCteTotal = mainCteLookup->getValue("total");
+  }
+  if (raMainGrp == nullptr || raCteGrp == nullptr || raCteTotal == nullptr) {
     fprintf(stderr, "FAILED (getValue iter=%u)\n", iterIdx);
     trans->close();
     queryDef->destroy();
@@ -497,6 +507,13 @@ int main(int argc, char **argv)
   printf("Connect: %s, MySQL port: %d, iterations: %u\n",
          connectString, mysqlPort, iterations);
 
+  /* MTR integration: dup stdout, redirect stdout → stderr.  The
+   * verbose progress output goes to stderr; only the final
+   * "PASSED\n" line goes to the original stdout so the .result
+   * file matches.  Same pattern as testCteNdbApiOuterJoin. */
+  int mtr_fd = dup(fileno(stdout));
+  dup2(fileno(stderr), fileno(stdout));
+
   ndb_init();
   int rc = 0;
 
@@ -550,5 +567,9 @@ cleanup:
   mysql_close(conn);
   mysql_library_end();
   ndb_end(0);
+  if (rc == 0) {
+    write(mtr_fd, "PASSED\n", 7);
+  }
+  close(mtr_fd);
   return rc;
 }
