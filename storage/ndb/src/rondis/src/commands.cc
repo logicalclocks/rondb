@@ -472,6 +472,22 @@ static int del_complex_rows(Ndb *ndb,
       if (ret_code != 0) {
         return 1;
       }
+      // Phase 1.10c.2: pair the string_keys delete (with ext-row
+      // cleanup) with a hset_keys delete on the same trans. The
+      // ext-row sweep finishes during the NoCommit phase below; the
+      // final commit ships all of { string_keys delete + N value
+      // deletes + hset_keys delete } atomically.
+      if (redis_key_id == STRING_REDIS_KEY_ID) {
+        ret_code = add_hset_string_delete_op(key_storage[inx].m_trans,
+                                             get_ctrl->m_hset_key_tab,
+                                             key_storage[inx].m_key_str,
+                                             key_storage[inx].m_key_len,
+                                             get_ctrl->m_database_id,
+                                             response);
+        if (ret_code != 0) {
+          return 1;
+        }
+      }
       prepare_complex_delete_transaction(&key_storage[inx]);
     } else {
       DEB_DEL_CMD(("No complex delete of key: %u\n", inx));
@@ -546,6 +562,22 @@ static int del_simple_rows(Ndb *ndb,
     if (ret_code != 0) {
       return 1;
     }
+    // Phase 1.10c.2: pair the string_keys delete with a hset_keys
+    // delete on the same trans. If string_keys delete succeeds the
+    // hset_keys row is dropped atomically. If string_keys delete
+    // fails (626 / 6000) the trans aborts and hset_keys is untouched
+    // (handled in 1.10c.2b for hash-name DEL).
+    if (redis_key_id == STRING_REDIS_KEY_ID) {
+      ret_code = add_hset_string_delete_op(key_storage[inx].m_trans,
+                                           get_ctrl->m_hset_key_tab,
+                                           key_storage[inx].m_key_str,
+                                           key_storage[inx].m_key_len,
+                                           get_ctrl->m_database_id,
+                                           response);
+      if (ret_code != 0) {
+        return 1;
+      }
+    }
     prepare_simple_delete_transaction(&key_storage[inx]);
   }
   Uint32 current_finished_in_loop = 0;
@@ -610,6 +642,9 @@ void rondb_del(Ndb *ndb,
   get_ctrl->m_num_read_errors = 0;
   get_ctrl->m_error_code = 0;
   get_ctrl->m_database_id = get_current_database(worker_id);
+  // Phase 1.10c.2: m_hset_key_tab is set after setup_metadata below.
+  // Init to nullptr so an early release_del doesn't read garbage.
+  get_ctrl->m_hset_key_tab = nullptr;
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index_key = i + arg_index_start;
     key_storage[i].m_index = i;
@@ -641,6 +676,20 @@ void rondb_del(Ndb *ndb,
     release_del(get_ctrl);
     return;
   }
+  // Phase 1.10c.2: each DEL trans also drops the matching hset_keys
+  // row so the dual-write claim from SET / MSET (Phase 1.10c.1) is
+  // reversed atomically. Fetch the hset_keys table once for the
+  // whole batch.
+  const NdbDictionary::Table *hset_tab =
+    dict->getTable(HSET_KEY_TABLE_NAME);
+  if (hset_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to get hset_keys table",
+                               dict->getNdbError());
+    release_del(get_ctrl);
+    return;
+  }
+  get_ctrl->m_hset_key_tab = hset_tab;
   Uint32 current_index = 0;
   do {
     Uint32 loop_count = std::min(num_keys - current_index,

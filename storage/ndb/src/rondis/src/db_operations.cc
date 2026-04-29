@@ -650,6 +650,37 @@ int add_hset_string_claim_op(NdbTransaction *trans,
   return 0;
 }
 
+// Phase 1.10c.2: queues a deleteTuple on hset_keys(key) on the
+// caller's trans. Used by string DEL to drop the namespace registry
+// row alongside the string_keys row in the same NDB trans, so the
+// dual-write claim from SET / MSET (Phase 1.10c.1) is reversed
+// atomically. If the string_keys deleteTuple fails (626 / 6000),
+// the trans aborts and this delete is also rolled back - so a
+// hash-name DEL leaves both rows alone (handled in 1.10c.2b).
+int add_hset_string_delete_op(NdbTransaction *trans,
+                              const NdbDictionary::Table *tab_hset,
+                              const char *key_str,
+                              Uint32 key_len,
+                              Uint32 database_id,
+                              std::string *response) {
+  struct hset_key_table key_row;
+  key_row.null_bits = 0;
+  memcpy(&key_row.redis_key[2], key_str, key_len);
+  set_length(&key_row.redis_key[0], key_len);
+
+  const NdbOperation *del_op = trans->deleteTuple(
+    pk_hset_key_record[database_id],
+    (const char *)&key_row,
+    entire_hset_key_record[database_id]);
+  if (del_op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to add hset_keys delete op",
+                               trans->getNdbError());
+    return -1;
+  }
+  return 0;
+}
+
 int add_hset_field_count_set_op(NdbTransaction *trans,
                                 const NdbDictionary::Table *tab_hset,
                                 const char *hash_name,
