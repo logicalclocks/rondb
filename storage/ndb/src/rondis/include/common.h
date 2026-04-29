@@ -29,6 +29,32 @@
 #ifndef RONDIS_COMMON_H
 #define RONDIS_COMMON_H
 
+// Worker-id tracing: every Rondis worker thread sets g_dbg_worker_id
+// at the dispatcher entry (rondb_redis_handler) so all DEB_* lines
+// fired further down the call stack can prefix themselves with
+// "[w<id>] ". Thread-local so concurrent workers don't clobber each
+// other.
+extern thread_local int g_dbg_worker_id;
+
+// DEB_PREFIX is the leading "[w<id>] " on every DEB_* line. Each
+// DEB_* macro emits two printf calls (prefix + arglist) so existing
+// DEB_*(("text\n", arg)) call sites keep their format unchanged
+// while gaining the worker tag automatically.
+#define DEB_PREFIX() printf("[w%d] ", g_dbg_worker_id)
+
+// DEB_CMD: command-level start / end trace, used by the dispatcher
+// (rondb_redis_handler). Defined here so all .cc files share the
+// same DEBUG_CMD compile flag.
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+#define DEBUG_CMD 1
+#endif
+#ifdef DEBUG_CMD
+#define DEB_CMD(arglist) \
+  do { DEB_PREFIX(); printf arglist ; fflush(stdout); } while (0)
+#else
+#define DEB_CMD(arglist)
+#endif
+
 #define RONDIS_MAX_CONNECTIONS 2
 
 #define REDIS_DB_NAME "redis"

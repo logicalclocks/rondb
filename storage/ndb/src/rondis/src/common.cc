@@ -29,6 +29,12 @@
 
 #include "common.h"
 
+// Per-thread worker id used by every DEB_* line (via DEB_PREFIX in
+// common.h). Set at the dispatcher entry rondb_redis_handler before
+// any DEB_* call fires; -1 means "not in a command" (e.g. setup
+// path) so DEB_* lines emitted there carry [w-1].
+thread_local int g_dbg_worker_id = -1;
+
 //#define DEBUG_ERROR 1
 
 void assign_ndb_err_to_response(

@@ -36,7 +36,8 @@
 //#define DEBUG_MSET_CMD 1
 
 #ifdef DEBUG_MSET_CMD
-#define DEB_MSET_CMD(arglist) do { printf arglist ; } while (0)
+#define DEB_MSET_CMD(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_MSET_CMD(arglist)
 #endif

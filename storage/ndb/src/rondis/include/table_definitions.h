@@ -45,6 +45,13 @@
 */
 #define HSET_KEY_TABLE_NAME "hset_keys"
 
+// Phase 1.10c.1: Source of fresh hash redis_key_id values. HSET
+// pre-allocates from this table's AUTO_INCREMENT (via
+// Ndb::getAutoIncrementValue, batch=1024) and writes the explicit
+// value into hset_keys.redis_key_id only for hash-owned rows.
+// Strings keep redis_key_id IS NULL.
+#define HSET_KEY_ID_SEQUENCE_TABLE_NAME "hset_key_id_sequence"
+
 int init_hset_key_records(NdbDictionary::Dictionary *dict);
 
 extern NdbRecord *pk_hset_key_record[MAX_NUM_DATABASES];

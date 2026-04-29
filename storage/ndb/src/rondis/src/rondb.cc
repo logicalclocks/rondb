@@ -353,11 +353,15 @@ int create_rondis_tables(const char *mysql_host,
     }
     printf("Table %s_%u.%s ready\n", REDIS_DB_NAME, db_id, KEY_TABLE_NAME);
 
-    // Create hset_keys table (with retry for NDB readiness)
+    // Create hset_keys table (with retry for NDB readiness).
+    // Phase 1.10c.1: redis_key_id is NULL for string rows, non-NULL
+    // for hash rows. AUTO_INCREMENT moved to hset_key_id_sequence
+    // below so writing NULL is a stored discriminator rather than
+    // allocation input.
     snprintf(query, sizeof(query),
       "CREATE TABLE IF NOT EXISTS %s_%u.%s("
       "  redis_key VARBINARY(%u) NOT NULL,"
-      "  redis_key_id BIGINT UNSIGNED NULL DEFAULT NULL AUTO_INCREMENT,"
+      "  redis_key_id BIGINT UNSIGNED NULL DEFAULT NULL,"
       "  PRIMARY KEY (redis_key) USING HASH,"
       "  UNIQUE KEY (redis_key_id) USING HASH"
       ") ENGINE NDB CHARSET=latin1 "
@@ -370,6 +374,26 @@ int create_rondis_tables(const char *mysql_host,
       return -1;
     }
     printf("Table %s_%u.%s ready\n", REDIS_DB_NAME, db_id, HSET_KEY_TABLE_NAME);
+
+    // Create hset_key_id_sequence table - the sole source of fresh
+    // hash redis_key_id values (Phase 1.10c.1). HSET preallocates
+    // from this table's AUTO_INCREMENT and writes the explicit id
+    // into hset_keys.redis_key_id.
+    snprintf(query, sizeof(query),
+      "CREATE TABLE IF NOT EXISTS %s_%u.%s("
+      "  redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"
+      "  PRIMARY KEY (redis_key_id) USING HASH"
+      ") ENGINE NDB CHARSET=latin1",
+      REDIS_DB_NAME, db_id, HSET_KEY_ID_SEQUENCE_TABLE_NAME);
+    if (execute_query_with_retry(conn, query, &elapsed_seconds) != 0) {
+      printf("Failed to create table %s_%u.%s: %s\n",
+             REDIS_DB_NAME, db_id, HSET_KEY_ID_SEQUENCE_TABLE_NAME,
+             mysql_error(conn));
+      mysql_close(conn);
+      return -1;
+    }
+    printf("Table %s_%u.%s ready\n",
+           REDIS_DB_NAME, db_id, HSET_KEY_ID_SEQUENCE_TABLE_NAME);
 
     // Create string_values table (with retry for NDB readiness)
     snprintf(query, sizeof(query),
@@ -572,30 +596,23 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
                         std::string *response,
                         int worker_id) {
   RondisEndPoint rondisEndpoint;
+  // Publish worker_id to DEB_PREFIX (thread-local) so every DEB_*
+  // line fired below carries [w<id>]. Reset on exit so any later
+  // setup-phase trace doesn't borrow the previous command's id.
+  g_dbg_worker_id = worker_id;
+  struct DbgWorkerGuard {
+    ~DbgWorkerGuard() { g_dbg_worker_id = -1; }
+  } dbg_worker_guard;
   // First check non-ndb commands
   const char *command = argv[0].c_str();
-  std::string cmd_dbg;
-  for (Uint32 i = 0; i < argv.size(); i++) {
-    if (i > 0) cmd_dbg.append(" ");
-    cmd_dbg.append(argv[i]);
-    if (cmd_dbg.size() > 200) {
-      cmd_dbg.resize(200);
-      cmd_dbg.append("...");
-      break;
-    }
-  }
-  printf("[DBG] CMD START worker=%d argc=%lu: %s\n",
-    worker_id, argv.size(), cmd_dbg.c_str());
-  fflush(stdout);
+  DEB_CMD(("CMD START argc=%lu cmd=%s\n", argv.size(), command));
+  // Guard fires on every return path, matching the START line above.
   struct CmdEndGuard {
-    int worker_id;
-    const std::string *cmd_dbg;
+    const char *command;
     ~CmdEndGuard() {
-      printf("[DBG] CMD END   worker=%d: %s\n",
-        worker_id, cmd_dbg->c_str());
-      fflush(stdout);
+      DEB_CMD(("CMD END   cmd=%s\n", command));
     }
-  } cmd_end_guard{worker_id, &cmd_dbg};
+  } cmd_end_guard{command};
   if (strcasecmp(command, "ping") == 0) {
     if (argv.size() == 1) {
       response->append("+PONG\r\n");

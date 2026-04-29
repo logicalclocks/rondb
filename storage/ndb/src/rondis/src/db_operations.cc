@@ -49,38 +49,46 @@
 //#define DEBUG_SETRANGE 1
 #endif
 
+// All DEB_* macros lead with DEB_PREFIX() so every line carries the
+// thread's worker id (g_dbg_worker_id, set in rondb_redis_handler).
 #ifdef DEBUG_SETRANGE
-#define DEB_SETRANGE(arglist) do { printf arglist ; fflush(stdout); } while (0)
+#define DEB_SETRANGE(arglist) \
+  do { DEB_PREFIX(); printf arglist ; fflush(stdout); } while (0)
 #else
 #define DEB_SETRANGE(arglist)
 #endif
 
 #ifdef DEBUG_DEL_CMD
-#define DEB_DEL_CMD(arglist) do { printf arglist ; fflush(stdout); } while (0)
+#define DEB_DEL_CMD(arglist) \
+  do { DEB_PREFIX(); printf arglist ; fflush(stdout); } while (0)
 #else
 #define DEB_DEL_CMD(arglist)
 #endif
 
 #ifdef DEBUG_INCR
-#define DEB_INCR(arglist) do { printf arglist ; } while (0)
+#define DEB_INCR(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_INCR(arglist)
 #endif
 
 #ifdef DEBUG_KS
-#define DEB_KS(arglist) do { printf arglist ; } while (0)
+#define DEB_KS(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_KS(arglist)
 #endif
 
 #ifdef DEBUG_HSET_KEY
-#define DEB_HSET_KEY(arglist) do { printf arglist ; } while (0)
+#define DEB_HSET_KEY(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_HSET_KEY(arglist)
 #endif
 
 #ifdef DEBUG_MSET
-#define DEB_MSET(arglist) do { printf arglist ; } while (0)
+#define DEB_MSET(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_MSET(arglist)
 #endif
@@ -403,11 +411,6 @@ write_commit_callback(int result, NdbTransaction *trans, void *aObject) {
   assert(get_ctrl->m_num_keys_outstanding > 0);
   get_ctrl->m_num_keys_outstanding--;
   key_storage->m_close_flag = true;
-  printf("[DBG] write_commit_callback key=%u code=%d outstanding=%u multi=%u\n",
-    key_storage->m_index, code,
-    get_ctrl->m_num_keys_outstanding,
-    get_ctrl->m_num_keys_multi_rows);
-  fflush(stdout);
 }
 
 void commit_write_value_transaction(struct KeyStorage *key_store) {
@@ -630,14 +633,6 @@ int add_hset_string_claim_op(NdbTransaction *trans,
   // null_bits handles the two nullable columns.
   const Uint32 mask = 0xF;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
-  printf("[DBG] string_claim writeTuple key='%.*s' null_bits=0x%x"
-         " redis_key_id=%llu field_count=%u mask=0x%x\n",
-    (int)key_len, key_str,
-    key_row.null_bits,
-    (unsigned long long)key_row.redis_key_id,
-    key_row.field_count,
-    mask);
-  fflush(stdout);
   const NdbOperation *op = trans->writeTuple(
     pk_hset_key_record[database_id],
     (const char *)&key_row,
@@ -1352,9 +1347,6 @@ write_callback(int result, NdbTransaction *trans, void *aObject) {
   assert(trans == key_storage->m_trans);
   assert(get_ctrl->m_num_transactions > 0);
   int code = trans->getNdbError().code;
-  printf("[DBG] write_callback ENTER key=%u code=%d\n",
-    key_storage->m_index, code);
-  fflush(stdout);
   if (code != 0) {
     if (code == RONDB_CONDITIONAL_STORE_NOT_MET) {
       // NX / XX guard tripped in the write interpreter program
@@ -1403,11 +1395,6 @@ write_callback(int result, NdbTransaction *trans, void *aObject) {
     key_storage->m_key_state = KeyState::MultiRowRWValue;
     assert(get_ctrl->m_num_keys_outstanding > 0);
     get_ctrl->m_num_keys_outstanding--;
-    printf("[DBG] write_callback OK key=%u outstanding=%u multi=%u\n",
-      key_storage->m_index,
-      get_ctrl->m_num_keys_outstanding,
-      get_ctrl->m_num_keys_multi_rows);
-    fflush(stdout);
     DEB_HSET_KEY(("key %u simple write succeeded, prev_num_rows: %u"
                   ", rondb_key: %llu\n",
       key_storage->m_index,
@@ -2062,7 +2049,17 @@ int rondb_get_redis_key_id(Ndb *ndb,
                                 dict->getNdbError());
     return -1;
   }
-  int ret_code = get_unique_redis_key_id(tab,
+  // Phase 1.10c.1: id allocation lives on the sequence table, not
+  // on hset_keys (whose redis_key_id is NULL for strings).
+  const NdbDictionary::Table *seq_tab =
+    dict->getTable(HSET_KEY_ID_SEQUENCE_TABLE_NAME);
+  if (seq_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                                FAILED_CREATE_TABLE_OBJECT,
+                                dict->getNdbError());
+    return -1;
+  }
+  int ret_code = get_unique_redis_key_id(seq_tab,
                                          ndb,
                                          redis_key_id,
                                          response);

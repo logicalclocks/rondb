@@ -43,6 +43,8 @@
 
 #define RAND_CONSTANT 10000
 
+// DEB_CMD lives in common.h so the dispatcher (in rondb.cc) and the
+// per-command code (in this file) share the same enable flag.
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 #define DEBUG_MGET_CMD 1
 #define DEBUG_MSET_CMD 1
@@ -54,50 +56,61 @@
 #define DEBUG_SETRANGE 1
 #endif
 
+// All DEB_* macros lead with DEB_PREFIX() so every line carries the
+// thread's worker id. Existing call sites keep their format strings
+// unchanged - the prefix is added at expansion time.
 #ifdef DEBUG_SETRANGE
-#define DEB_SETRANGE(arglist) do { printf arglist ; } while (0)
+#define DEB_SETRANGE(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_SETRANGE(arglist)
 #endif
 
 #ifdef DEBUG_RAND_KEY
-#define DEB_RAND_KEY(arglist) do { printf arglist ; } while (0)
+#define DEB_RAND_KEY(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_RAND_KEY(arglist)
 #endif
 
 #ifdef DEBUG_INCR
-#define DEB_INCR(arglist) do { printf arglist ; } while (0)
+#define DEB_INCR(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_INCR(arglist)
 #endif
 
 #ifdef DEBUG_MGET_CMD
-#define DEB_MGET_CMD(arglist) do { printf arglist ; } while (0)
+#define DEB_MGET_CMD(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_MGET_CMD(arglist)
 #endif
 
 #ifdef DEBUG_MSET_CMD
-#define DEB_MSET_CMD(arglist) do { printf arglist ; } while (0)
+#define DEB_MSET_CMD(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_MSET_CMD(arglist)
 #endif
 
 #ifdef DEBUG_DEL_CMD
-#define DEB_DEL_CMD(arglist) do { printf arglist ; } while (0)
+#define DEB_DEL_CMD(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_DEL_CMD(arglist)
 #endif
 
 #ifdef DEBUG_HSET_KEY
-#define DEB_HSET_KEY(arglist) do { printf arglist ; } while (0)
+#define DEB_HSET_KEY(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_HSET_KEY(arglist)
 #endif
 
 #ifdef DEBUG_TTL
-#define DEB_TTL(arglist) do { printf arglist ; } while (0)
+#define DEB_TTL(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_TTL(arglist)
 #endif
@@ -416,7 +429,7 @@ static int send_next_delete_batch(std::string *response,
       key_storage[inx].m_key_state = KeyState::MultiRowRWAll;
       key_storage[inx].m_num_current_rw_rows = 0;
       get_ctrl->m_num_keys_outstanding++;
-      DEB_DEL_CMD(("Commit with no value rows"));
+      DEB_DEL_CMD(("Commit with no value rows\n"));
     } else if (key_storage[inx].m_key_state == KeyState::MultiRowRWValue) {
       assert(key_storage[inx].m_num_rows > key_storage[inx].m_num_rw_rows);
       get_ctrl->m_num_keys_outstanding++;
@@ -1666,12 +1679,11 @@ static int send_delete_write(std::string *response,
   commit_write_value_transaction(key_store);
   key_store->m_key_state = KeyState::MultiRowRWAll;
   DEB_MSET_CMD(("Prepare send value delete: Key %u, prev rows: %u"
-                ", num_rows: %u, key_state: %u worker=%d\n",
+                ", num_rows: %u, key_state: %u\n",
                 key_store->m_index,
                 key_store->m_prev_num_rows,
                 key_store->m_num_rows,
-                key_store->m_key_state,
-                get_ctrl->m_worker_id));
+                key_store->m_key_state));
   return 0;
 }
 
@@ -1698,13 +1710,12 @@ static int send_value_write(std::string *response,
     key_store->m_key_state = KeyState::MultiRowRWValueSent;
   }
   DEB_MSET_CMD(("Prepare send value write: Key %u, rw rows: %u"
-                ", num_rows: %u, num_rw_rows: %u, key_state: %u worker=%d\n",
+                ", num_rows: %u, num_rw_rows: %u, key_state: %u\n",
                 key_store->m_index,
                 key_store->m_num_current_rw_rows,
                 key_store->m_num_rows,
                 key_store->m_num_rw_rows,
-                key_store->m_key_state,
-                get_ctrl->m_worker_id));
+                key_store->m_key_state));
   return 0;
 }
 
@@ -1731,10 +1742,6 @@ static int send_next_write_batch(std::string *response,
         commit_write_value_transaction(&key_storage[inx]);
         assert(current_finished > 0);
         current_finished--;
-        printf("[DBG] queue commit key=%u outstanding=%u current_finished=%u\n",
-          key_storage[inx].m_index,
-          get_ctrl->m_num_keys_outstanding, current_finished);
-        fflush(stdout);
         DEB_DEL_CMD(("Commit with no value rows"));
         key_storage[inx].m_key_state = KeyState::MultiRowRWAll;
         continue;
@@ -1908,12 +1915,11 @@ static int set_rows(Ndb *ndb,
   // extra dispatch rounds until their final commit fires.
   do {
     DEB_MSET_CMD(("Call sendPollNdb with %u keys, %u keys out and %u bytes"
-                  " out, current_finished_in_loop: %u worker=%d\n",
+                  " out, current_finished_in_loop: %u\n",
                   get_ctrl->m_num_keys_multi_rows,
                   get_ctrl->m_num_keys_outstanding,
                   get_ctrl->m_num_bytes_outstanding,
-                  current_finished_in_loop,
-                  get_ctrl->m_worker_id));
+                  current_finished_in_loop));
     int min_finished = 1;
     int finished = execute_ndb(ndb, min_finished, __LINE__);
     assert(finished >= 0);
@@ -1952,8 +1958,23 @@ static int set_rows_hset(Ndb *ndb,
                          struct KeyStorage *key_storage,
                          struct GetControl *get_ctrl,
                          Uint32 num_fields) {
+  // Phase 1.10c.1: hash redis_key_id values come from the
+  // hset_key_id_sequence sidecar table, not from hset_keys (whose
+  // redis_key_id is now NULL for strings). Look it up via the
+  // dictionary on each batch; the result is cached in NDB so cost
+  // is amortized.
+  const NdbDictionary::Dictionary *seq_dict = ndb->getDictionary();
+  const NdbDictionary::Table *seq_tab =
+    seq_dict ? seq_dict->getTable(HSET_KEY_ID_SEQUENCE_TABLE_NAME)
+             : nullptr;
+  if (seq_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to get hset_key_id_sequence table",
+                               ndb->getNdbError());
+    return 1;
+  }
   Uint64 prealloc_id = 0;
-  if (ndb->getAutoIncrementValue(get_ctrl->m_hset_key_tab,
+  if (ndb->getAutoIncrementValue(seq_tab,
                                  prealloc_id, unsigned(1024)) != 0) {
     assign_ndb_err_to_response(response,
                                "Failed to pre-allocate redis_key_id",
@@ -2621,8 +2642,7 @@ void rondb_mset(Ndb *ndb,
     }
     get_ctrl->m_num_keys_multi_rows = 0;
   }
-  DEB_MSET_CMD(("MSET of %u keys worker=%d\n",
-                num_keys, get_ctrl->m_worker_id));
+  DEB_MSET_CMD(("MSET of %u keys\n", num_keys));
   if (!hset_done) {
     Uint32 current_index = 0;
     do {
@@ -2648,11 +2668,10 @@ void rondb_mset(Ndb *ndb,
                                   get_ctrl,
                                   loop_count,
                                   current_index);
-      DEB_MSET_CMD(("%u keys, %u dispatched, %u completed worker=%d\n",
+      DEB_MSET_CMD(("%u keys, %u dispatched, %u completed\n",
                     num_keys,
                     get_ctrl->m_num_keys_multi_rows,
-                    get_ctrl->m_num_keys_completed_first_pass,
-                    get_ctrl->m_worker_id));
+                    get_ctrl->m_num_keys_completed_first_pass));
       current_index += loop_count;
     } while (current_index < num_keys && get_ctrl->m_num_keys_failed == 0);
   }
