@@ -19,7 +19,7 @@
 
 --echo #
 --echo # SET claims the name as a string. The hset_keys row carries
---echo # redis_key_id = 0 alongside the string_keys row.
+--echo # redis_key_id NULL alongside the string_keys row.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET shared "string-value"
 SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared';
@@ -32,7 +32,7 @@ SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared';
 
 --echo #
 --echo # The string is intact: GET still works, hset_keys still
---echo # carries redis_key_id = 0.
+--echo # carries redis_key_id NULL.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET shared
 SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared';

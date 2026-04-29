@@ -65,10 +65,8 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL user:2 name age never_was
 
 --echo #
---echo # Cleanup. Note: DEL only clears string_keys, so DEL on hash
---echo # names returns 0 - a consequence of the namespace split (see
---echo # rondis_namespace_split.test). HDEL by field is the only way
---echo # to clear hash entries today.
+--echo # Cleanup. DEL removes top-level hash names from the unified
+--echo # namespace, so both hash containers count as deleted.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL user:1 user:2
 

@@ -2041,7 +2041,7 @@ void commit_simple_read_transaction(struct KeyStorage *key_storage) {
  * --------------------
  */
 void incr_decr_key_row(std::string *response,
-                       [[maybe_unused]]/*todo remove?*/ Ndb *ndb,
+                       Ndb *ndb,
                        const NdbDictionary::Table *tab,
                        NdbTransaction *trans,
                        struct key_table *key_row,
@@ -2114,6 +2114,29 @@ void incr_decr_key_row(std::string *response,
     return;
   }
 
+  if (key_row->redis_key_id == STRING_REDIS_KEY_ID) {
+    const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+    const NdbDictionary::Table *hset_tab =
+      dict ? dict->getTable(HSET_KEY_TABLE_NAME) : nullptr;
+    if (hset_tab == nullptr) {
+      assign_ndb_err_to_response(response,
+                                 "Failed to get hset_keys table",
+                                 ndb->getNdbError());
+      return;
+    }
+    if (add_hset_string_claim_op(trans,
+                                 hset_tab,
+                                 &key_row->redis_key[2],
+                                 get_length(&key_row->redis_key[0]),
+                                 false,
+                                 true,
+                                 0,
+                                 database_id,
+                                 response) != 0) {
+      return;
+    }
+  }
+
   /* Send to RonDB and execute the INCR operation */
   int exec_rc = trans->execute(NdbTransaction::Commit,
                                NdbOperation::AbortOnError);
@@ -2136,6 +2159,10 @@ void incr_decr_key_row(std::string *response,
       // ADD_REG_REG / SUB_REG_REG overflowed Int64. Redis-canonical
       // reply for INCR/DECR/HINCR/HDECR crossing INT64 boundaries.
       assign_generic_err_to_response(response, FAILED_INCRBY_DECRBY_OVERFLOW);
+      return;
+    }
+    if (ndb_err.code == RONDB_WRONGTYPE) {
+      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
       return;
     }
     assign_ndb_err_to_response(response,
@@ -2285,6 +2312,7 @@ int rondb_get_rondb_key(const NdbDictionary::Table *tab,
 void execute_set_range_simple(std::string *response,
                               KeyStorage *key_store,
                               const NdbDictionary::Table *tab,
+                              const NdbDictionary::Table *hset_tab,
                               Uint32 database_id,
                               Uint32 start,
                               Uint32 end) {
@@ -2343,7 +2371,23 @@ void execute_set_range_simple(std::string *response,
                                trans->getNdbError());
     return;
   }
+  ret_code = add_hset_string_claim_op(trans,
+                                      hset_tab,
+                                      key_store->m_key_str,
+                                      key_store->m_key_len,
+                                      false,
+                                      true,
+                                      0,
+                                      database_id,
+                                      response);
+  if (ret_code != 0) {
+    return;
+  }
   if (key_store->m_trans->execute(NdbTransaction::Commit) != 0) {
+    if (trans->getNdbError().code == RONDB_WRONGTYPE) {
+      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+      return;
+    }
     assign_ndb_err_to_response(response,
                                "Failed to execute SETRANGE simple command",
                                trans->getNdbError());
@@ -2360,6 +2404,7 @@ void execute_set_range_simple(std::string *response,
 int write_key_row_setrange(std::string *response,
                            KeyStorage *key_store,
                            const NdbDictionary::Table *tab,
+                           const NdbDictionary::Table *hset_tab,
                            Uint32 database_id,
                            Uint32 start,
                            Uint32 end,
@@ -2423,7 +2468,23 @@ int write_key_row_setrange(std::string *response,
                                trans->getNdbError());
     return -1;
   }
+  ret_code = add_hset_string_claim_op(trans,
+                                      hset_tab,
+                                      key_store->m_key_str,
+                                      key_store->m_key_len,
+                                      false,
+                                      true,
+                                      0,
+                                      database_id,
+                                      response);
+  if (ret_code != 0) {
+    return -1;
+  }
   if (key_store->m_trans->execute(NdbTransaction::NoCommit) != 0) {
+    if (trans->getNdbError().code == RONDB_WRONGTYPE) {
+      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+      return -1;
+    }
     assign_ndb_err_to_response(response,
                                "Failed to execute SETRANGE command",
                                trans->getNdbError());

@@ -9,7 +9,7 @@ sk	1
 #
 # HSET on the existing string -> -WRONGTYPE.
 #
-ERR Failed to execute MSET operation; NDB(878)
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
 
 #
 # The string is intact: GET still returns the original value.
@@ -25,7 +25,7 @@ sk	1
 # The reject lands in Phase 1's lock-claim, before any field
 # write reaches string_keys, so no field rows leak.
 #
-ERR Failed to execute MSET operation; NDB(878)
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
 
 #
 # Still intact - GET returns original, no field rows under

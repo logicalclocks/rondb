@@ -27,15 +27,16 @@ none
 #
 none
 #
-# Namespace split: a name that lives as both a string and a hash
-# reports "string" because pass 1 (string_keys) hits first.
+# Unified namespace: HSET on an existing string is rejected, so
+# TYPE still reports "string".
 #
 OK
-1
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
+
 string
 #
-# After deleting the string side, TYPE on the same name reports
-# "hash" because pass 2 (hset_keys) is now the only hit.
+# After deleting the string, TYPE on the same name reports
+# "none"; no hash row was created by the rejected HSET.
 #
 1
-hash
+none

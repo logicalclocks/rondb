@@ -6,7 +6,7 @@
 # Phase 1.10c.1 - SET / MSET dual-write claim on hset_keys.
 #
 # As of Phase 1.10c.1 SET writes to BOTH string_keys (the value)
-# and hset_keys (the namespace registry, with redis_key_id = 0
+# and hset_keys (the namespace registry, with redis_key_id NULL
 # marking the row as a string). The dual write is atomic on a
 # single NDB transaction. Cross-type writes return Redis-canonical
 # WRONGTYPE; see rondis_namespace_split.test for that case. This
@@ -16,7 +16,7 @@
 
 --echo #
 --echo # SET claims a fresh name. Both rows visible via SQL with
---echo # matching redis_key, redis_key_id = 0 in hset_keys.
+--echo # matching redis_key, redis_key_id NULL in hset_keys.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k1 "v1"
 SELECT redis_key, redis_key_id FROM redis_0.string_keys WHERE redis_key = 'k1';
@@ -24,7 +24,7 @@ SELECT redis_key, redis_key_id, field_count FROM redis_0.hset_keys WHERE redis_k
 
 --echo #
 --echo # Overwriting the same string key is idempotent at the
---echo # hset_keys level - the row stays put, redis_key_id remains 0.
+--echo # hset_keys level - the row stays put, redis_key_id remains NULL.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k1 "v1-updated"
 SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'k1';

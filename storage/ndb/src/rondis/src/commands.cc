@@ -694,6 +694,11 @@ void rondb_del(Ndb *ndb,
   do {
     Uint32 loop_count = std::min(num_keys - current_index,
                                  (Uint32)MAX_PARALLEL_KEY_OPS);
+    // Per-batch counter: del_simple_rows increments this for keys in
+    // [current_index, current_index + loop_count). Leaving a previous
+    // batch's count in place makes del_complex_rows assert when a later
+    // batch has fewer multi-row keys.
+    get_ctrl->m_num_keys_multi_rows = 0;
     int ret_code = del_simple_rows(ndb,
                                    tab,
                                    response,
@@ -3081,6 +3086,7 @@ rondb_get_func(Ndb *ndb,
   do {
     Uint32 loop_count = std::min(num_keys - current_index,
                                  (Uint32)MAX_PARALLEL_KEY_OPS);
+    get_ctrl->m_num_keys_multi_rows = 0;
     if (get_opt_small_values_flag(get_ctrl->m_worker_id) &&
         get_ctrl->m_is_set_command == false) {
       int ret_code = get_simple_rows(ndb,
@@ -3111,7 +3117,7 @@ rondb_get_func(Ndb *ndb,
       assert(get_ctrl->m_num_transactions == 0);
       assert(get_ctrl->m_num_keys_outstanding == 0);
     } else {
-      get_ctrl->m_num_keys_multi_rows = num_keys;
+      get_ctrl->m_num_keys_multi_rows = loop_count;
       for (Uint32 i = current_index; i < current_index + loop_count; i++) {
         key_storage[i].m_key_state = KeyState::MultiRow;
       }
@@ -3859,11 +3865,20 @@ void rondb_setrange_command(Ndb *ndb,
     free(key_store);
     return;
   }
+  const NdbDictionary::Table *hset_tab = dict->getTable(HSET_KEY_TABLE_NAME);
+  if (hset_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to get hset_keys table",
+                               dict->getNdbError());
+    ndb->closeTransaction(key_store->m_trans);
+    free(key_store);
+    return;
+  }
   if (start < INLINE_VALUE_LEN && end <= INLINE_VALUE_LEN) {
-    /* The SETRANGE command only affects the STRING_keys table */
     execute_set_range_simple(response,
                              key_store,
                              tab,
+                             hset_tab,
                              database_id,
                              start,
                              end);
@@ -3884,6 +3899,7 @@ void rondb_setrange_command(Ndb *ndb,
   int ret_code = write_key_row_setrange(response,
                                         key_store,
                                         tab,
+                                        hset_tab,
                                         database_id,
                                         start,
                                         end,

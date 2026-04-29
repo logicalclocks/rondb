@@ -50,9 +50,7 @@ Oslo
 #
 2
 #
-# Cleanup. Note: DEL only clears string_keys, so DEL on hash
-# names returns 0 - a consequence of the namespace split (see
-# rondis_namespace_split.test). HDEL by field is the only way
-# to clear hash entries today.
+# Cleanup. DEL removes top-level hash names from the unified
+# namespace, so both hash containers count as deleted.
 #
-0
+2
