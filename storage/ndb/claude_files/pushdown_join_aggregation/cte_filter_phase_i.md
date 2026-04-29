@@ -62,12 +62,21 @@ comparisons remain rejected — they need either kernel work
 
 #### I.4 — CASE expressions in aggregation over CTE columns (M)
 
-testCteNdbApi Test 21 exercises `GREATEST(MAX, MIN)` via CASE in
-the aggregation program.  RonSQL has CASE plumbing
-(`AggregationAPICompiler::CaseExpr`) but coverage of CASE inside
-aggregates referencing CTE virt columns is incomplete; verify and
-add MTR if reachable, or wire up the missing parser/preparer
-plumbing.
+**Shipped** — see `cte_filter_phase_i4.md` (commit `4828effed0e`).
+CASE conditions can reference a CTE COLUMN projection — both on a
+non-leaf CTE op (BRANCH_MEM_OP_ARG via the CTE body's source-table
+descriptor) and on the leaf CTE op (BRANCH_MEM_OP_ARG_INLINE_TYPE
+via the CteLinkedAttr inline metadata).  Atoms remain `=` / `!=`
+combined under AND / OR — same restriction the embedded condition
+applied to non-CTE columns before.  Kernel side adds a real
+`KeyReqStruct` on the CTE agg-feed path so the embedded interpreter
+actually runs (previously short-circuited by `m_null_local_columns`)
+and wires `BRANCH_MEM_OP_ARG_INLINE_TYPE` into `interpreterNextLab`
++ JoinAggInterpreter validation.  Deferred: CTE AGGREGATE outputs
+in the condition (rejected cleanly with a clear message);
+register-based CASE conditions (Test 21 shape — needs separate
+codegen path); inequality CASE conditions (pre-existing
+non-CTE-or-CTE-agnostic limit).
 
 #### I.5 — `GREATEST` / `LEAST` and similar n-ary functions (M)
 
