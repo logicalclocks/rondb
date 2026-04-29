@@ -48,12 +48,24 @@ FROM redis_0.hset_keys WHERE redis_key IN ('a','b','c');
 hset_keys_after_del
 0
 #
-# DEL on a hash key (Phase 1.10c.2b - hset_keys row stays
-# for now). Reply :0 because no string_keys row was touched.
+# DEL on a hash key (Phase 1.10c.2b): the registry row in
+# hset_keys is dropped via the second-pass retry; field rows
+# in string_keys are left as orphans by design.
 #
 1
-0
+1
 SELECT COUNT(*) AS hset_keys_for_h1
 FROM redis_0.hset_keys WHERE redis_key = 'h1';
 hset_keys_for_h1
+0
+#
+# Mixed batch: DEL of (existing string, existing hash, missing)
+# returns :2 - both real keys removed, missing one ignored.
+#
+OK
 1
+2
+SELECT COUNT(*) AS hset_keys_after_mixed_del
+FROM redis_0.hset_keys WHERE redis_key IN ('s1','h2','nonex');
+hset_keys_after_mixed_del
+0

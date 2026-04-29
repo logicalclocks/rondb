@@ -4,15 +4,17 @@
 
 #
 # Phase 1.10c.2 - DEL drops the matching hset_keys row alongside
-# the string_keys row.
+# the string_keys row. Covers both string DEL (1.10c.2a) and
+# hash-name DEL (1.10c.2b).
 #
 # Phase 1.10c.1 made SET / MSET dual-write to (string_keys,
 # hset_keys); without 1.10c.2 every DEL'd string would leak its
-# hset_keys row. This test pins the cleanup: SET then DEL leaves
-# zero rows in either table.
+# hset_keys row. This test pins the cleanup: SET / MSET / HSET
+# all leave zero hset_keys rows after a matching DEL.
 #
-# Hash-name DEL handling (drop hset_keys row + orphan field rows)
-# is a separate sub-phase (1.10c.2b) and is NOT covered here.
+# Hash DEL leaves the hash's field rows in string_keys as orphans
+# (unreachable by name; reclaimed by future ops or out-of-band GC -
+# see plan.md for the tradeoff).
 #
 
 --echo #
@@ -53,13 +55,24 @@ SELECT COUNT(*) AS hset_keys_after_del
   FROM redis_0.hset_keys WHERE redis_key IN ('a','b','c');
 
 --echo #
---echo # DEL on a hash key (Phase 1.10c.2b - hset_keys row stays
---echo # for now). Reply :0 because no string_keys row was touched.
+--echo # DEL on a hash key (Phase 1.10c.2b): the registry row in
+--echo # hset_keys is dropped via the second-pass retry; field rows
+--echo # in string_keys are left as orphans by design.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h1 f v
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL h1
 SELECT COUNT(*) AS hset_keys_for_h1
   FROM redis_0.hset_keys WHERE redis_key = 'h1';
+
+--echo #
+--echo # Mixed batch: DEL of (existing string, existing hash, missing)
+--echo # returns :2 - both real keys removed, missing one ignored.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET s1 "v"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h2 f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL s1 h2 nonex
+SELECT COUNT(*) AS hset_keys_after_mixed_del
+  FROM redis_0.hset_keys WHERE redis_key IN ('s1','h2','nonex');
 
 --disable_query_log
 DROP DATABASE IF EXISTS redis_0;

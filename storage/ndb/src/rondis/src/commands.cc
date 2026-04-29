@@ -750,6 +750,59 @@ void rondb_del(Ndb *ndb,
     release_del(get_ctrl);
     return;
   }
+  // Phase 1.10c.2b: keys that ended in CompletedReadError might be
+  // hash names rather than truly-missing - the string_keys row 626'd
+  // because the namespace owns the name as a hash. For each such key
+  // try a hset_keys-only delete; if the row exists, the key was a
+  // hash and now both registry rows are gone (field rows in
+  // string_keys are left as orphans, per the plan's tradeoff). Done
+  // synchronously per key since this only fires for the residual
+  // miss set after the main async path has drained.
+  if (redis_key_id == STRING_REDIS_KEY_ID &&
+      get_ctrl->m_num_read_errors > 0) {
+    for (Uint32 i = 0; i < num_keys; i++) {
+      if (key_storage[i].m_key_state != KeyState::CompletedReadError) {
+        continue;
+      }
+      struct hset_key_table hset_pk_buf;
+      hset_pk_buf.null_bits = 0;
+      memcpy(&hset_pk_buf.redis_key[2],
+             key_storage[i].m_key_str,
+             key_storage[i].m_key_len);
+      set_length(&hset_pk_buf.redis_key[0], key_storage[i].m_key_len);
+      NdbTransaction *htrans = ndb->startTransaction(
+        hset_tab,
+        (const char*)&hset_pk_buf.redis_key[0],
+        key_storage[i].m_key_len + 2);
+      if (htrans == nullptr) {
+        continue;
+      }
+      Uint32 db_id = get_ctrl->m_database_id;
+      const NdbOperation *del_op = htrans->deleteTuple(
+        pk_hset_key_record[db_id],
+        (const char *)&hset_pk_buf,
+        entire_hset_key_record[db_id]);
+      if (del_op == nullptr) {
+        ndb->closeTransaction(htrans);
+        continue;
+      }
+      int exec_rc = htrans->execute(NdbTransaction::Commit,
+                                    NdbOperation::AbortOnError);
+      int err = htrans->getNdbError().code;
+      ndb->closeTransaction(htrans);
+      if (exec_rc == 0 && err == 0) {
+        // Key was a hash; the registry row is now gone. Reclassify
+        // so the reply count includes it as deleted.
+        key_storage[i].m_key_state = KeyState::CompletedSuccess;
+        assert(get_ctrl->m_num_read_errors > 0);
+        get_ctrl->m_num_read_errors--;
+      }
+      // Otherwise: 626 means truly missing - leave m_num_read_errors
+      // alone. Other errors are also treated as "still missing"
+      // (DEL is best-effort and never fails the whole batch on a
+      // single-row error).
+    }
+  }
   assert(get_ctrl->m_num_keys_requested >= get_ctrl->m_num_read_errors);
   Uint32 deleted_rows =
     get_ctrl->m_num_keys_requested - get_ctrl->m_num_read_errors;
