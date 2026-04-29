@@ -29412,14 +29412,6 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
                   instance(), senderNodeId, rec.i));
     return;
   }
-  /* Defensive aggKey verification — guards against a wire mismatch
-   * even though owner routing should make this impossible. */
-  if (unlikely(rec.p->m_aggStateKeys[senderNodeId] == 0)) {
-    jam();
-    DEB_JOIN_AGG(("(%u)DBTC drop COMPLETE_CONF: aggKey=0 node=%u recI=%u",
-                  instance(), senderNodeId, rec.i));
-    return;
-  }
 
   rec.p->m_aggNodesPending.clear(senderNodeId);
   ndbrequire(rec.p->m_outstanding > 0);
