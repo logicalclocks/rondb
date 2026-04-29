@@ -83,6 +83,7 @@ int add_hset_string_claim_op(NdbTransaction *trans,
                              const char *key_str,
                              Uint32 key_len,
                              bool set_ttl,
+                             bool keep_ttl,
                              Int32 expire_at,
                              Uint32 database_id,
                              std::string *response);
@@ -126,6 +127,14 @@ int update_expiry_hset_row(Ndb *ndb,
                            Int64 m_expire_at_encoded,
                            Uint32 database_id,
                            std::string *response);
+int update_expiry_string_atomic(Ndb *ndb,
+                                const NdbDictionary::Table *string_tab,
+                                const NdbDictionary::Table *hset_tab,
+                                const char *key_str,
+                                Uint32 key_len,
+                                Int64 m_expire_at_encoded,
+                                Uint32 database_id,
+                                std::string *response);
 void prepare_hset_phase1_transaction(struct GetControl *get_ctrl,
                                      NdbTransaction *trans);
 void prepare_hset_phase2_transaction(struct GetControl *get_ctrl,

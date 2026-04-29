@@ -583,6 +583,7 @@ int add_hset_string_claim_op(NdbTransaction *trans,
                              const char *key_str,
                              Uint32 key_len,
                              bool set_ttl,
+                             bool keep_ttl,
                              Int32 expire_at,
                              Uint32 database_id,
                              std::string *response) {
@@ -590,16 +591,25 @@ int add_hset_string_claim_op(NdbTransaction *trans,
   // null_bits layout (per init_hset_key_records):
   //   bit 0 -> redis_key_id IS NULL
   //   bit 1 -> expiry_date  IS NULL
-  // redis_key_id is always NULL for strings. Phase 1.10c.4 mirrors
-  // SET's expiry_date onto hset_keys.expiry_date so EXISTS / TYPE
-  // can single-probe and still honor TTL filtering. KEEPTTL is not
-  // mirrored yet (rare; followed up later) - it'll leave
-  // hset_keys.expiry_date stale relative to string_keys.expiry_date.
-  // mask=0xF below tells writeTuple to write all 4 columns from the
-  // row buffer.
+  // redis_key_id is always NULL for strings.
+  //
+  // Phase 1.10c.5: three TTL modes
+  //   set_ttl  -> SET ... EX/PX/EXAT/PXAT: write the new expiry.
+  //               mask 0xF includes expiry_date column.
+  //   keep_ttl -> SET ... KEEPTTL: leave existing hset_keys.expiry_date
+  //               alone on UPDATE. mask 0x7 drops the expiry_date
+  //               bit so the writeTuple does not overwrite it. On
+  //               INSERT (no preexisting TTL to preserve) the column
+  //               defaults to NULL.
+  //   neither  -> plain SET: clear expiry_date. mask 0xF + null_bits
+  //               bit 1 set writes NULL.
   if (set_ttl) {
     key_row.null_bits = 0x1; // redis_key_id NULL; expiry_date set
     key_row.expiry_date = expire_at;
+  } else if (keep_ttl) {
+    key_row.null_bits = 0x1; // value irrelevant - mask 0x7 below
+                             // skips expiry_date entirely
+    key_row.expiry_date = 0;
   } else {
     key_row.null_bits = 0x3; // both NULL
     key_row.expiry_date = 0; // ignored (NULL via null_bits bit 1)
@@ -640,10 +650,12 @@ int add_hset_string_claim_op(NdbTransaction *trans,
   opts.numExtraGetFinalValues = 1;
   opts.extraGetFinalValues = getvals;
 
-  // mask=0xF -> write all 4 columns of entire_hset_key_record from
-  // the row buffer (PK + redis_key_id + field_count + expiry_date).
-  // null_bits handles the two nullable columns.
-  const Uint32 mask = 0xF;
+  // mask=0xF -> write all 4 columns from the row buffer. KEEPTTL
+  // drops the expiry_date bit (0x8) so the writeTuple does not
+  // overwrite an existing UPDATE-branch expiry_date; INSERT-branch
+  // gets the schema default (NULL) since no preexisting TTL to
+  // preserve.
+  const Uint32 mask = keep_ttl ? 0x7 : 0xF;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
   const NdbOperation *op = trans->writeTuple(
     pk_hset_key_record[database_id],
@@ -684,10 +696,24 @@ int add_hset_string_delete_op(NdbTransaction *trans,
   memcpy(&key_row.redis_key[2], key_str, key_len);
   set_length(&key_row.redis_key[0], key_len);
 
+  // AO_IgnoreError so a missing hset_keys row (e.g. for keys
+  // created by INCR / DECR / SETRANGE before Phase 1.10c.1's
+  // dual-write SET path was wired up - no hset_keys row was ever
+  // created) does not abort the whole trans. The string_keys
+  // delete is the authoritative side: if it succeeds, we want
+  // the trans to commit even when the registry-row delete 626s.
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_ABORTOPTION;
+  opts.abortOption = NdbOperation::AO_IgnoreError;
   const NdbOperation *del_op = trans->deleteTuple(
     pk_hset_key_record[database_id],
     (const char *)&key_row,
-    entire_hset_key_record[database_id]);
+    entire_hset_key_record[database_id],
+    nullptr,
+    nullptr,
+    &opts,
+    sizeof(opts));
   if (del_op == nullptr) {
     assign_ndb_err_to_response(response,
                                "Failed to add hset_keys delete op",
@@ -873,6 +899,108 @@ int update_expiry_hset_row(Ndb *ndb,
                                "Failed to commit expire update",
                                trans->getNdbError());
   }
+  ndb->closeTransaction(trans);
+  return code_val;
+}
+
+// Phase 1.10c.5: atomic EXPIRE / PERSIST on a string key. One NDB
+// trans, two updateTuples - string_keys.expiry_date (the
+// authoritative TTL store; AbortOnError so a missing row 626s the
+// trans cleanly) plus hset_keys.expiry_date (mirrored so EXISTS /
+// TYPE / TTL single-probe sees the change; AO_IgnoreError so a
+// missing registry row doesn't block the string-side update).
+//
+// Replaces the prior pattern of two separate trans (commands.cc
+// rondb_expire_or_pexpire / rondb_persist_command) where a worker
+// could observe the string's TTL change before the hset_keys
+// mirror caught up.
+int update_expiry_string_atomic(Ndb *ndb,
+                                const NdbDictionary::Table *string_tab,
+                                const NdbDictionary::Table *hset_tab,
+                                const char *key_str,
+                                Uint32 key_len,
+                                Int64 m_expire_at_encoded,
+                                Uint32 database_id,
+                                std::string *response) {
+  // string_keys row buffer + PK
+  struct key_table key_row_str;
+  key_row_str.null_bits = 0;
+  key_row_str.redis_key_id = STRING_REDIS_KEY_ID;
+  memcpy(&key_row_str.redis_key[2], key_str, key_len);
+  memset(&key_row_str.redis_key[2 + key_len], 0, 3);
+  set_length((char*)&key_row_str.redis_key[0], key_len);
+  key_row_str.expiry_date = (Int32)m_expire_at_encoded;
+
+  // hset_keys row buffer + PK
+  struct hset_key_table key_row_hset;
+  key_row_hset.null_bits = 0;
+  memcpy(&key_row_hset.redis_key[2], key_str, key_len);
+  set_length(&key_row_hset.redis_key[0], key_len);
+  key_row_hset.expiry_date = (Int32)m_expire_at_encoded;
+
+  NdbTransaction *trans = ndb->startTransaction(
+    string_tab,
+    (const char*)&key_row_str.redis_key_id,
+    key_len + 10);
+  if (trans == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TXN_OBJECT,
+                               ndb->getNdbError());
+    return -1;
+  }
+  // Op 1: string_keys update (AbortOnError so missing string row
+  // 626s the trans and short-circuits the hset_keys op too).
+  // mask 0x80 = expiry_date in the std::map iteration order of
+  // init_key_records' read_all_column_map.
+  const Uint32 mask_str = 0x80;
+  const unsigned char *mask_str_ptr = (const unsigned char *)&mask_str;
+  const NdbOperation *op_str = trans->updateTuple(
+    pk_key_record[database_id],
+    (const char *)&key_row_str,
+    entire_key_record[database_id],
+    (char *)&key_row_str,
+    mask_str_ptr);
+  if (op_str == nullptr) {
+    ndb->closeTransaction(trans);
+    assign_ndb_err_to_response(response,
+                               FAILED_GET_OP,
+                               trans->getNdbError());
+    return -1;
+  }
+  // Op 2: hset_keys update (AO_IgnoreError so a missing registry
+  // row does not block the string-side update).
+  // mask 0x8 = expiry_date in entire_hset_key_record.
+  const Uint32 mask_hset = 0x8;
+  const unsigned char *mask_hset_ptr = (const unsigned char *)&mask_hset;
+  NdbOperation::OperationOptions opts_hset;
+  std::memset(&opts_hset, 0, sizeof(opts_hset));
+  opts_hset.optionsPresent |= NdbOperation::OperationOptions::OO_ABORTOPTION;
+  opts_hset.abortOption = NdbOperation::AO_IgnoreError;
+  const NdbOperation *op_hset = trans->updateTuple(
+    pk_hset_key_record[database_id],
+    (const char *)&key_row_hset,
+    entire_hset_key_record[database_id],
+    (char *)&key_row_hset,
+    mask_hset_ptr,
+    &opts_hset,
+    sizeof(opts_hset));
+  if (op_hset == nullptr) {
+    ndb->closeTransaction(trans);
+    assign_ndb_err_to_response(response,
+                               FAILED_GET_OP,
+                               trans->getNdbError());
+    return -1;
+  }
+  trans->execute(NdbTransaction::Commit, NdbOperation::AbortOnError);
+  int code_val = trans->getNdbError().code;
+  if (code_val != 0 && code_val != 626) {
+    assign_ndb_err_to_response(response,
+                               "Failed to commit atomic expire update",
+                               trans->getNdbError());
+  }
+  // Suppress hset_tab unused warning - tab pointer not needed for
+  // updateTuple (NdbRecord carries everything).
+  (void)hset_tab;
   ndb->closeTransaction(trans);
   return code_val;
 }

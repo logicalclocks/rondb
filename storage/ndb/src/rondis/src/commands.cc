@@ -1353,6 +1353,13 @@ static void rondb_expire_or_pexpire(Ndb *ndb,
                                dict->getNdbError());
     return;
   }
+  const NdbDictionary::Table *hset_tab = dict->getTable(HSET_KEY_TABLE_NAME);
+  if (hset_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TABLE_OBJECT,
+                               dict->getNdbError());
+    return;
+  }
   Uint32 database_id = get_current_database(worker_id);
   if (run_exists_probes(ndb, &probe, 1,
                         database_id, string_tab, response) != 0) {
@@ -1373,26 +1380,20 @@ static void rondb_expire_or_pexpire(Ndb *ndb,
   Int64 m_expire_at = 0;
   mi_int4store(&m_expire_at, abs_seconds);
 
+  // Phase 1.10c.5: STRING type updates both string_keys and
+  // hset_keys atomically in one trans (so EXISTS / TYPE / TTL
+  // single-probe never sees a mid-write inconsistency). HASH type
+  // only has a hset_keys row, so the single-table helper suffices.
   int err;
   if (probe.m_match_kind == EXISTS_MATCH_STRING) {
-    err = update_expiry_string_row(ndb,
-                                   probe.m_key_str,
-                                   probe.m_key_len,
-                                   m_expire_at,
-                                   database_id,
-                                   response);
-    // Phase 1.10c.4: also write the hset_keys row so the EXISTS /
-    // TYPE single-probe filter (which only consults hset_keys)
-    // sees the new expiry. Two separate trans for now - 1.10c.5
-    // will fold this into one atomic trans.
-    if (err == 0) {
-      update_expiry_hset_row(ndb,
-                             probe.m_key_str,
-                             probe.m_key_len,
-                             m_expire_at,
-                             database_id,
-                             response);
-    }
+    err = update_expiry_string_atomic(ndb,
+                                      string_tab,
+                                      hset_tab,
+                                      probe.m_key_str,
+                                      probe.m_key_len,
+                                      m_expire_at,
+                                      database_id,
+                                      response);
   } else {
     err = update_expiry_hset_row(ndb,
                                  probe.m_key_str,
@@ -1473,6 +1474,13 @@ void rondb_persist_command(Ndb *ndb,
                                dict->getNdbError());
     return;
   }
+  const NdbDictionary::Table *hset_tab = dict->getTable(HSET_KEY_TABLE_NAME);
+  if (hset_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TABLE_OBJECT,
+                               dict->getNdbError());
+    return;
+  }
   Uint32 database_id = get_current_database(worker_id);
   if (run_exists_probes(ndb, &probe, 1,
                         database_id, string_tab, response) != 0) {
@@ -1499,24 +1507,17 @@ void rondb_persist_command(Ndb *ndb,
   Int64 m_expire_at = 0;
   mi_int4store(&m_expire_at, g_max_expire_at);
 
+  // Phase 1.10c.5: STRING type clears TTL atomically on both rows.
   int err;
   if (probe.m_match_kind == EXISTS_MATCH_STRING) {
-    err = update_expiry_string_row(ndb,
-                                   probe.m_key_str,
-                                   probe.m_key_len,
-                                   m_expire_at,
-                                   database_id,
-                                   response);
-    // Phase 1.10c.4: also clear the hset_keys row's TTL so EXISTS /
-    // TYPE single-probe filter no longer treats the key as expired.
-    if (err == 0) {
-      update_expiry_hset_row(ndb,
-                             probe.m_key_str,
-                             probe.m_key_len,
-                             m_expire_at,
-                             database_id,
-                             response);
-    }
+    err = update_expiry_string_atomic(ndb,
+                                      string_tab,
+                                      hset_tab,
+                                      probe.m_key_str,
+                                      probe.m_key_len,
+                                      m_expire_at,
+                                      database_id,
+                                      response);
   } else {
     err = update_expiry_hset_row(ndb,
                                  probe.m_key_str,
@@ -1866,14 +1867,15 @@ static int set_rows(Ndb *ndb,
     if (redis_key_id == STRING_REDIS_KEY_ID) {
       // Phase 1.10c.4: mirror SET's expiry_date onto the hset_keys
       // row so EXISTS / TYPE can single-probe and still honor TTL
-      // filtering. m_set_ttl + m_expire_at carry the encoded expiry
-      // value computed in rondb_mset.
+      // filtering. Phase 1.10c.5: KEEPTTL preserves the existing
+      // hset_keys.expiry_date on UPDATE.
       ret_code = add_hset_string_claim_op(
         key_storage[inx].m_trans,
         get_ctrl->m_hset_key_tab,
         key_storage[inx].m_key_str,
         key_storage[inx].m_key_len,
         key_storage[inx].m_set_ttl,
+        key_storage[inx].m_keep_ttl,
         (Int32)key_storage[inx].m_expire_at,
         get_ctrl->m_database_id,
         response);
