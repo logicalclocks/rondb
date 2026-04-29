@@ -372,7 +372,8 @@ waitForSignal(SignalSender &ss, Uint32 timeoutMs, const char *label)
 static int
 sendSetupReq(SignalSender &ss, Uint32 nodeId,
              const std::vector<Uint32> &aggProg, const TableMeta &meta,
-             Uint32 &aggStateKeyOut)
+             Uint32 &aggStateKeyOut,
+             Uint32 &ownerInstanceOut)
 {
   Uint32 receiverId = FAKE_SENDER_DATA;
   SimpleSignal ssig;
@@ -413,7 +414,11 @@ sendSetupReq(SignalSender &ss, Uint32 nodeId,
     const JoinAggSetupConf *conf =
       reinterpret_cast<const JoinAggSetupConf *>(resp->getDataPtr());
     aggStateKeyOut = conf->aggStateKey;
-    V("  SETUP_CONF: aggStateKey=%u\n", aggStateKeyOut);
+    /* Phase L (E.1): owner LDM instance for routing every subsequent
+     * JOIN_AGG_COMPLETE_REQ. */
+    ownerInstanceOut = conf->ownerInstance;
+    V("  SETUP_CONF: aggStateKey=%u ownerInstance=%u\n",
+      aggStateKeyOut, ownerInstanceOut);
     return 0;
   }
   fprintf(stderr, "Expected SETUP_CONF, got GSN=%d\n", getGsn(resp));
@@ -485,7 +490,9 @@ waitForScanConf(SignalSender &ss, Uint32 &rowsScanned)
 
 static int
 sendCompleteReq(SignalSender &ss, Uint32 nodeId, Uint32 aggStateKey,
-                const std::map<Uint32, Uint32> &allAggKeys)
+                Uint32 ownerInstance,
+                const std::map<Uint32, Uint32> &allAggKeys,
+                const std::map<Uint32, Uint32> &allOwners)
 {
   SimpleSignal ssig;
   JoinAggCompleteReq *req =
@@ -498,19 +505,26 @@ sendCompleteReq(SignalSender &ss, Uint32 nodeId, Uint32 aggStateKey,
   req->aggStateKey = aggStateKey;
   req->maxBatchRows = 1000;
 
-  /* Build per-node aggStateKey pairs section */
-  std::vector<Uint32> keyPairs;
+  /* Phase L (E.1): per-node aggStateKey + ownerInstance triples
+   * (was pairs before commit 1).  Format:
+   *   [nodeId, aggKey, ownerInstance, ...] */
+  std::vector<Uint32> keyTriples;
   for (auto &kv : allAggKeys) {
-    keyPairs.push_back(kv.first);
-    keyPairs.push_back(kv.second);
+    keyTriples.push_back(kv.first);
+    keyTriples.push_back(kv.second);
+    auto it = allOwners.find(kv.first);
+    keyTriples.push_back(it != allOwners.end() ? it->second : 1);
   }
 
-  Uint16 recBlock = numberToBlock(DBLQH, 1);
+  /* Phase L (E.1): COMPLETE_REQ must reach the owner LDM, not
+   * instance 1, otherwise the owner-instance assertion in
+   * execJOIN_AGG_COMPLETE_REQ fires. */
+  Uint16 recBlock = numberToBlock(DBLQH, ownerInstance);
   ssig.set(ss, 0, recBlock, GSN_JOIN_AGG_COMPLETE_REQ,
            JoinAggCompleteReq::SignalLength);
   ssig.header.m_noOfSections = 1;
-  ssig.ptr[0].p = keyPairs.data();
-  ssig.ptr[0].sz = (Uint32)keyPairs.size();
+  ssig.ptr[0].p = keyTriples.data();
+  ssig.ptr[0].sz = (Uint32)keyTriples.size();
 
   if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
     fprintf(stderr, "sendSignal COMPLETE_REQ failed\n");
@@ -624,11 +638,18 @@ setupScanComplete(SignalSender &ss, const TableMeta &meta,
   /* Collect unique data nodes */
   std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
 
-  /* Setup on all nodes */
+  /* Setup on all nodes.  Phase L (E.1): also collect per-node owner
+   * LDM instances returned in JOIN_AGG_SETUP_CONF, used both for
+   * routing the COMPLETE_REQ on this node and for populating the
+   * aggKey-triple section so remote nodes can address their
+   * REDISTRIBUTE_REQ / FINAL_REP back to the right owner. */
+  std::map<Uint32, Uint32> ownerInstances;
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
-    if (sendSetupReq(ss, nd, aggProg, meta, key) != 0) return -1;
+    Uint32 owner = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta, key, owner) != 0) return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   /* Scan all fragments */
@@ -647,7 +668,8 @@ setupScanComplete(SignalSender &ss, const TableMeta &meta,
    * send CONF (cross-node FINAL_REP exchange), so sequential
    * send-wait would deadlock. */
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], aggStateKeys) != 0)
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd],
+                        aggStateKeys, ownerInstances) != 0)
       return -1;
   }
   for (Uint32 i = 0; i < uniqueNodes.size(); i++) {
