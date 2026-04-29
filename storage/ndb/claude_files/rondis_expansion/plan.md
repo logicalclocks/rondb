@@ -626,6 +626,97 @@ HLEN returns 0, EXISTS returns 0.
 landed so the translation has call sites to plumb through. Lands
 as the capstone of PR 1.
 
+### Status snapshot — Phase 1.10 split + 1.10c namespace unification
+
+The original Phase 1.10 (expired-key filtering on read) was split into
+two landing-sized phases during implementation, plus a follow-up
+`1.10c` group that extends the design to *type* unification on top of
+expiry. State as of `2026-04-29`:
+
+- **Phase 1.10a — probe-side expiry filter (DONE).** EXISTS / TYPE /
+  EXPIRE / PERSIST now treat rows with `expiry_date < now` as absent.
+  Read interpreter gained a `RONDB_EXPIRED_KEY` branch that the
+  callbacks translate to `CompletedFailed` with a code the reply
+  builder treats as "miss".
+- **Phase 1.10b — read-path expiry filter (DONE,
+  commit `3f3777bf0e6`).** GET / MGET / STRLEN / GETRANGE / HGET /
+  HMGET went through the same translation. Closed the eventual-
+  consistency leak documented in Phase 1.10's original scope.
+
+#### Phase 1.10c — namespace unification (in progress)
+
+A separate correctness gap surfaced once 1.10b landed: a name like
+`mykey` could simultaneously live as a string row in `string_keys`
+*and* as a hash row in `hset_keys`, with each command path picking
+the row of its own type. Real Redis disallows this — a key has
+exactly one type at a time. The 1.10c sub-phases collapse the two
+namespaces into one by making `hset_keys` the authoritative
+name-registry for *both* string and hash rows; the type
+discriminator is `redis_key_id IS NULL` (string) vs non-null (hash).
+
+The schema change for this lands in 1.10c.1:
+
+```sql
+-- before:
+redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+-- after (rondis is alpha; no migration):
+redis_key_id BIGINT UNSIGNED NULL DEFAULT NULL AUTO_INCREMENT,
+```
+
+The `NULL` change is also load-bearing for concurrency: the original
+plan implicitly stored `redis_key_id = 0` for strings, and `UNIQUE
+KEY (redis_key_id)` then serialized concurrent string-INSERTs on the
+unique-index entry for `0`, producing cross-trans 266 lock-wait
+timeouts under MSET / parallel-worker SET. Multiple `NULL` entries
+in a UNIQUE index are allowed, which removes the contention.
+
+Sub-phases (each its own commit, separately bisectable):
+
+- **1.10c.1 — SET / MSET dual-write claim (WIP, commit
+  `86afca50e32`).** SET / MSET issue an additional `writeTuple` on
+  `hset_keys(key)` in the same NDB trans as the `string_keys` write.
+  An interpreter program rejects the trans with `RONDB_WRONGTYPE`
+  (= 6010) when the existing `hset_keys` row carries a non-null
+  `redis_key_id` (i.e. the name is owned by a hash). On INSERT, the
+  row buffer + `null_bits = 0x3` + `mask = 0xF` writes
+  `redis_key_id = NULL`, `field_count = 0`, `expiry_date = NULL`.
+  Phase 1 (HSET) and HDEL Phase 1 callbacks map the read-back NULL
+  back to `0` so the existing `m_hset_redis_key_id == 0` "string row"
+  check downstream stays valid. **Open issue:** rondis_basic Test 3
+  (SET overwrite) currently trips WRONGTYPE because the first
+  INSERT seems to leave `redis_key_id` non-NULL despite the explicit
+  null_bits. A diagnostic printf is in place in
+  `add_hset_string_claim_op`; next cycle is to rebuild and inspect
+  the actual stored value via SQL probe.
+- **1.10c.2 — DEL deletes both rows + supports hash DEL (PENDING).**
+  String DEL also drops the `hset_keys` row; hash DEL routes through
+  `hset_keys` first.
+- **1.10c.3 — HSET / HMSET WRONGTYPE on existing string (PENDING,
+  partly already in tree).** The check at `set_rows_hset` Phase 1
+  (`commands.cc:2039`) already exists; this phase will add the
+  matching MTR coverage.
+- **1.10c.4 — EXISTS / TYPE single-probe (PENDING).** With unified
+  namespace, both can read `hset_keys` alone instead of probing
+  both tables.
+- **1.10c.5 — TTL / EXPIRE / PERSIST single-probe (PENDING).**
+  Same simplification for the TTL family.
+- **1.10c.6 — Redis-canonical silent replace (PENDING).** Real
+  Redis SET on a hash silently drops the hash; HSET on a string
+  silently drops the string. Replace 1.10c.1's WRONGTYPE
+  intermediate behavior with the Redis-canonical drop semantics.
+- **1.10c.7 — Remove `redis_key_id_hash` cache (PENDING).** Once
+  the `hset_keys` row is the authoritative type registry, the
+  process-local cache becomes a hazard (no cross-server
+  invalidation). Strip it; every read takes the row.
+
+The 1.10c group preserves the cross-server cache invariant
+documented in `feedback_hset_keys_row_persistent.md`: HDEL of the
+last field never deletes the `hset_keys` row, so a freshly-empty
+hash keeps its `redis_key_id` for any cached references in other
+Rondis servers. 1.10c.6's silent-replace and 1.10c.7's
+cache-removal preserve this — both only trigger when the *owning
+type* of the name flips, never on within-type field churn.
+
 ### Phase 1.11 — PR 1 final
 
 - Record all ten `.result` baselines with `./mtr --record`.
