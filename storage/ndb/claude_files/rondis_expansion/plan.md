@@ -724,6 +724,91 @@ Sub-phases (each its own commit, separately bisectable):
   Redis SET on a hash silently drops the hash; HSET on a string
   silently drops the string. Replace 1.10c.1's WRONGTYPE
   intermediate behavior with the Redis-canonical drop semantics.
+
+  Both directions land **fully in-trans** (atomic with the type
+  flip). Detection is free — each path's existing Phase-1
+  interpreter already branches on the type discriminator
+  (`redis_key_id IS NULL` vs not), so the only added cost is the
+  cleanup work itself, which only runs on collision. NDB
+  transactions can carry the work of either direction in the
+  same trans as the type flip; the transaction-size limit is the
+  only ceiling. For v1 we accept "trans grew too big" as a
+  command-level failure (rare in practice — the worst case is
+  SET on a hash with millions of fields); a future bounded-batch
+  variant is out of scope.
+
+  Sub-phases (one commit each):
+
+  - **1.10c.6a — HSET-on-string silent replace.**
+    `init_hset_lock_claim_code` (interpreted_code.cc:133) gains
+    a third interpreter output (`OUTPUT_INDEX_2 = was-string-flag`).
+    The UPDATE-on-string branch flips from "emit `(0, 0)`" to
+    "write `redis_key_id = prealloc_id`, `field_count = 0`; emit
+    `(prealloc_id, 0, 1)`". UPDATE-on-hash and INSERT branches
+    emit `OUTPUT_INDEX_2 = 0`. `add_hset_lock_claim_op` registers
+    a 3rd `GetValueSpec`; `hset_phase1_callback` captures the
+    flag onto a new `GetControl::m_hset_was_string_replaced`
+    field. `set_rows_hset` (commands.cc:2087) drops the
+    WRONGTYPE check; on `m_hset_was_string_replaced` it issues
+    a Phase 1.5 on the same trans:
+    1. NoCommit pass A: PK readTuple LM_Exclusive on
+       `string_keys(0, name)` capturing `rondb_key` + `num_rows`.
+    2. NoCommit pass B: deleteTuple on `string_keys(0, name)` +
+       per-ordinal deleteTuple on `string_values` for ordinals
+       `0..num_rows-1` keyed by the read `rondb_key`.
+    3. Phase 2 (existing): field writes proceed. The new field
+       rows are at `(prealloc_id, field_name)`, disjoint from
+       the deleted string row's PK `(0, name)`, so no conflict.
+
+  - **1.10c.6b — SET-on-hash silent replace.**
+    `init_hset_string_claim_code` (interpreted_code.cc:202)
+    drops `interpret_exit_nok(RONDB_WRONGTYPE)`. The UPDATE-on-
+    hash branch reads existing `redis_key_id` and `field_count`,
+    emits them as `OUTPUT_INDEX_0/1`, and exits OK. The
+    writeTuple's row buffer + `mask` already overwrites
+    `redis_key_id` back to NULL (string ownership) — the
+    interpreter just publishes the old values for the caller
+    to act on. `add_hset_string_claim_op` registers a 2nd
+    `GetValueSpec` for `OUTPUT_INDEX_1`; `write_callback`
+    captures both onto `KeyStorage` (per-key trans, so per-key
+    storage is fine). The dispatcher (`set_simple_rows` Phase D
+    / equivalent) then, when the captured `old_id != 0`, queues
+    a Phase 1.5 partitioned scan on `string_keys` filtered by
+    `redis_key_id = old_id`, with `LM_Exclusive` and
+    `takeOverScanOpForDelete` per row, plus per-ordinal
+    deleteTuple on `string_values` for any field with
+    `num_rows > 0` (`rondb_key` and `num_rows` come back in the
+    scan projection). `RONDB_WRONGTYPE` translation in
+    `write_callback` and the `CompletedTypeError` state become
+    dead; remove them.
+
+  - **1.10c.6c — Test coverage.**
+    `t/rondis_keyinfo_silent_replace.test`:
+    1. `SET k "string"`; `HSET k f v` → returns `1`; `GET k` →
+       `(nil)`; `HGET k f` → `v`; `TYPE k` → `hash`; the old
+       `string_keys(0, k)` row and any value-extension rows
+       are gone.
+    2. `HSET k f v`; `SET k "string"` → returns `OK`; `GET k`
+       → `string`; `HGET k f` → `(nil)`; `TYPE k` → `string`;
+       the old hash field rows under `redis_key_id = old_id`
+       are gone (`SELECT COUNT(*) FROM string_keys WHERE
+       redis_key_id = old_id` → 0).
+    3. Round-trip: SET → HSET → SET → HSET on the same name;
+       each transition is silent.
+    4. SET-on-hash with a 5000-byte value (forces ext-row
+       writes on the new string side) over a hash with several
+       fields, at least one of which has a 5000-byte value
+       (forces ext-row deletes on the old hash side); both
+       sides clean up correctly.
+    5. The new hash from (1) and the new string from (2)
+       interact correctly with EXPIRE / PERSIST / DEL.
+
+  Open question deferred: the trans-size ceiling on (1.10c.6b).
+  An HSET-then-SET on a hash with millions of field rows will
+  exceed NDB's per-trans op buffer and surface as a generic NDB
+  error. Acceptable for v1 (alpha tool, plan.md's "no SLA"
+  posture). Follow-up ticket: bounded-batch silent replace that
+  drains in chunks.
 - **1.10c.7 — Remove `redis_key_id_hash` cache (PENDING).** Once
   the `hset_keys` row is the authoritative type registry, the
   process-local cache becomes a hazard (no cross-server
