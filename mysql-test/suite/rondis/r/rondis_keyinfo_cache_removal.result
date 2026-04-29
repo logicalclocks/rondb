@@ -1,0 +1,73 @@
+#
+# 1. HGET on a never-existed hash returns nil; no hset_keys row.
+#
+
+SELECT COUNT(*) AS hset_keys_for_nope
+FROM redis_0.hset_keys WHERE redis_key = 'nope';
+hset_keys_for_nope
+0
+#
+# HMGET on a never-existed hash returns array of nils, no row.
+#
+
+
+
+SELECT COUNT(*) AS hset_keys_for_nope_after_hmget
+FROM redis_0.hset_keys WHERE redis_key = 'nope';
+hset_keys_for_nope_after_hmget
+0
+#
+# HINCRBY / HDECRBY on a never-existed hash return :0; no row.
+#
+0
+0
+SELECT COUNT(*) AS hset_keys_for_nope_after_hincr
+FROM redis_0.hset_keys WHERE redis_key = 'nope';
+hset_keys_for_nope_after_hincr
+0
+#
+# 2. Same-process HGET after DEL must miss; the cache used to
+#    hold the hash's id from the warming HSET.
+#
+1
+warmup
+1
+
+SELECT COUNT(*) AS hset_keys_for_h1_after_del
+FROM redis_0.hset_keys WHERE redis_key = 'h1';
+hset_keys_for_h1_after_del
+0
+#
+# 3. HDEL of last field leaves the empty hset_keys row by
+#    design (cross-server cache invariant); read paths must
+#    still treat it as "missing".
+#
+1
+1
+SELECT redis_key, field_count
+FROM redis_0.hset_keys WHERE redis_key = 'h2';
+redis_key	field_count
+h2	0
+
+
+
+0
+none
+#
+# Sanity: HSET on the empty-row hash reuses its redis_key_id
+#   and HGET sees the new field.
+#
+1
+after_empty
+SELECT field_count FROM redis_0.hset_keys WHERE redis_key = 'h2';
+field_count
+1
+#
+# HGET on a string key returns nil (string-typed name; not a hash).
+#
+OK
+
+SELECT redis_key_id IS NULL AS id_null
+FROM redis_0.hset_keys WHERE redis_key = 's1';
+id_null
+1

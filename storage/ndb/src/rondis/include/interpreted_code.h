@@ -79,12 +79,6 @@ int init_hset_lock_claim_code(std::string *response,
 int init_hset_string_claim_code(std::string *response,
                                 NdbInterpretedCode *code,
                                 const NdbDictionary::Table *tab);
-int write_hset_key_table(Ndb *ndb,
-                         const NdbDictionary::Table *tab,
-                         std::string std_key_str,
-                         Uint64 & redis_key_id,
-                         std::string *response,
-                         Uint32 database_id);
 int write_key_row_no_commit(std::string *response,
                             NdbInterpretedCode &code,
                             const NdbDictionary::Table *tab,

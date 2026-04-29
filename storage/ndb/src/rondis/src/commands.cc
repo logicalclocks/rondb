@@ -3360,6 +3360,28 @@ void rondb_mget_command(Ndb *ndb,
   rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID, worker_id);
 }
 
+// Phase 1.10c.6: helper for HGET/HMGET on a hash that does not
+// exist (or is logically empty / expired). Emits the same nil
+// shape rondb_get_response would have built had the per-field
+// reads each returned 626 - bulk $-1\r\n per field for HMGET,
+// or a single $-1\r\n for HGET. Uses rondb_get_redis_key_id's
+// "not found" return path; never creates an hset_keys row.
+static void emit_hash_not_found_mget_reply(
+    const pink::RedisCmdArgsType &argv, std::string *response) {
+  // HGET argv: [HGET, hash, field]; HMGET argv: [HMGET, hash, f1, f2, ...].
+  Uint32 num_fields = (Uint32)argv.size() - 2;
+  if (num_fields == 1) {
+    response->append("$-1\r\n");
+    return;
+  }
+  char header[20];
+  snprintf(header, sizeof(header), "*%u\r\n", num_fields);
+  response->append(header);
+  for (Uint32 i = 0; i < num_fields; i++) {
+    response->append("$-1\r\n");
+  }
+}
+
 void rondb_hget_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
@@ -3371,8 +3393,12 @@ void rondb_hget_command(Ndb *ndb,
                                        argv[1].size(),
                                        response,
                                        get_current_database(worker_id));
-  if (ret_code != 0) {
-      return;
+  if (ret_code < 0) {
+    return;  // NDB error; response populated.
+  }
+  if (ret_code == 1) {
+    emit_hash_not_found_mget_reply(argv, response);
+    return;
   }
   rondb_mget(ndb, argv, response, redis_key_id, worker_id);
 }
@@ -3388,8 +3414,12 @@ void rondb_hmget_command(Ndb *ndb,
                                         argv[1].size(),
                                         response,
                                         get_current_database(worker_id));
-  if (ret_code != 0) {
-      return;
+  if (ret_code < 0) {
+    return;
+  }
+  if (ret_code == 1) {
+    emit_hash_not_found_mget_reply(argv, response);
+    return;
   }
   rondb_mget(ndb, argv, response, redis_key_id, worker_id);
 }
@@ -3539,8 +3569,14 @@ void rondb_hincr_command(Ndb *ndb,
                                        argv[1].size(),
                                        response,
                                        get_current_database(worker_id));
-  if (ret_code != 0) {
-      return;
+  if (ret_code < 0) {
+    return;
+  }
+  if (ret_code == 1) {
+    // Phase 1.10c.6: hash not found. Read paths no longer
+    // auto-create hset_keys rows; reply :0 without materializing.
+    response->append(":0\r\n");
+    return;
   }
   rondb_incr_decr(ndb,
                   argv,
@@ -3563,8 +3599,12 @@ void rondb_hincrby_command(Ndb *ndb,
                                        argv[1].size(),
                                        response,
                                        get_current_database(worker_id));
-  if (ret_code != 0) {
-      return;
+  if (ret_code < 0) {
+    return;
+  }
+  if (ret_code == 1) {
+    response->append(":0\r\n");
+    return;
   }
   char *end_ptr = nullptr;
   const char *val_ptr = argv[3].c_str();
@@ -3600,8 +3640,12 @@ void rondb_hdecr_command(Ndb *ndb,
                                        argv[1].size(),
                                        response,
                                        get_current_database(worker_id));
-  if (ret_code != 0) {
-      return;
+  if (ret_code < 0) {
+    return;
+  }
+  if (ret_code == 1) {
+    response->append(":0\r\n");
+    return;
   }
   rondb_incr_decr(ndb,
                   argv,
@@ -3624,8 +3668,12 @@ void rondb_hdecrby_command(Ndb *ndb,
                                        argv[1].size(),
                                        response,
                                        get_current_database(worker_id));
-  if (ret_code != 0) {
-      return;
+  if (ret_code < 0) {
+    return;
+  }
+  if (ret_code == 1) {
+    response->append(":0\r\n");
+    return;
   }
   char *end_ptr = nullptr;
   const char *val_ptr = argv[3].c_str();
