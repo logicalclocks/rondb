@@ -459,6 +459,15 @@ void Dbtc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg) {
     refresh_watch_dog();
   }
   c_gcpRecordList.init();
+
+  /* Phase L (C): per-aggregation completion record pool.  Reserved
+   * size 0 — records only allocated for queries with JoinAgg /
+   * CTE materialization, so they're rare.  See cte_filter_phase_l.md. */
+  c_aggCompleteRecordPool.init(AggCompleteRecord::TYPE_ID, pc, 0,
+                                UINT32_MAX);
+  while (c_aggCompleteRecordPool.startup()) {
+    refresh_watch_dog();
+  }
 }  // Dbtc::initRecords()
 
 bool Dbtc::getParam(const char *name, Uint32 *count) {
@@ -666,7 +675,9 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
     &c_theIndexPool;
   c_transient_pools[DBTC_DEFINED_TRIGGER_RECORD_TRANSIENT_POOL_INDEX] =
     &c_theDefinedTriggerPool;
-  static_assert(c_transient_pool_count == 15);
+  c_transient_pools[DBTC_AGG_COMPLETE_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_aggCompleteRecordPool;
+  static_assert(c_transient_pool_count == 16);
   c_transient_pools_shrinking.clear();
 }  // Dbtc::Dbtc()
 
