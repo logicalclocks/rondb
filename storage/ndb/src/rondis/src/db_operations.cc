@@ -515,7 +515,9 @@ int add_hset_lock_claim_op(NdbTransaction *trans,
   memcpy(&key_row.redis_key[2], hash_name, hash_name_len);
   set_length(&key_row.redis_key[0], hash_name_len);
 
-  Uint32 code_buffer[32];
+  // Phase 1.10c.1's branch-on-NULL branch in init_hset_lock_claim_code
+  // pushes the program past 32 words; 64 keeps it within budget.
+  Uint32 code_buffer[64];
   NdbInterpretedCode code(tab_hset,
                           &code_buffer[0],
                           sizeof(code_buffer) / sizeof(code_buffer[0]));
@@ -580,22 +582,32 @@ int add_hset_string_claim_op(NdbTransaction *trans,
                              const NdbDictionary::Table *tab_hset,
                              const char *key_str,
                              Uint32 key_len,
+                             bool set_ttl,
+                             Int32 expire_at,
                              Uint32 database_id,
                              std::string *response) {
   struct hset_key_table key_row;
   // null_bits layout (per init_hset_key_records):
   //   bit 0 -> redis_key_id IS NULL
   //   bit 1 -> expiry_date  IS NULL
-  // We set both: strings are NULL-id, no TTL claimed at insert time.
+  // redis_key_id is always NULL for strings. Phase 1.10c.4 mirrors
+  // SET's expiry_date onto hset_keys.expiry_date so EXISTS / TYPE
+  // can single-probe and still honor TTL filtering. KEEPTTL is not
+  // mirrored yet (rare; followed up later) - it'll leave
+  // hset_keys.expiry_date stale relative to string_keys.expiry_date.
   // mask=0xF below tells writeTuple to write all 4 columns from the
-  // row buffer; auto-increment is bypassed because the column is
-  // explicitly NULL via null_bits.
-  key_row.null_bits = 0x3;
+  // row buffer.
+  if (set_ttl) {
+    key_row.null_bits = 0x1; // redis_key_id NULL; expiry_date set
+    key_row.expiry_date = expire_at;
+  } else {
+    key_row.null_bits = 0x3; // both NULL
+    key_row.expiry_date = 0; // ignored (NULL via null_bits bit 1)
+  }
   memcpy(&key_row.redis_key[2], key_str, key_len);
   set_length(&key_row.redis_key[0], key_len);
   key_row.redis_key_id = 0;   // ignored (NULL via null_bits bit 0)
   key_row.field_count = 0;
-  key_row.expiry_date = 0;    // ignored (NULL via null_bits bit 1)
 
   // 32 words matches add_hset_lock_claim_op; the string-claim
   // interpreter's UPDATE branch + INSERT branch + two exit edges
@@ -663,6 +675,10 @@ int add_hset_string_delete_op(NdbTransaction *trans,
                               Uint32 key_len,
                               Uint32 database_id,
                               std::string *response) {
+  // tab_hset is taken for symmetry with the claim op (which needs
+  // it for getColumn lookups in the interpreter); deleteTuple goes
+  // through the cached NdbRecord, so the table pointer isn't read.
+  (void)tab_hset;
   struct hset_key_table key_row;
   key_row.null_bits = 0;
   memcpy(&key_row.redis_key[2], key_str, key_len);

@@ -850,19 +850,16 @@ struct exists_probe {
   const char *m_key_str;
   Uint32 m_key_len;
   bool m_present;
-  // Phase 1.2: which pass matched. 0 = none, 1 = string, 2 = hash.
-  // EXISTS only reads m_present; TYPE consults m_match_kind to
-  // emit +string\r\n / +hash\r\n / +none\r\n.
+  // 0 = none, 1 = string, 2 = hash. EXISTS only reads m_present;
+  // TYPE consults m_match_kind to emit +string / +hash / +none.
   Uint8 m_match_kind;
-  // Per-trans state (one trans per probe per pass; reused across
-  // passes for the same probe). m_drain points at the per-pass
-  // shared counter so the callback can decrement it.
+  // Per-trans state. m_drain points at the per-batch shared counter
+  // so the callback can decrement it.
   NdbTransaction *m_trans;
-  bool m_is_pass2;
   struct probe_drain_state *m_drain;
-  // Pass 1: PK buffer for string_keys.
-  struct key_table m_string_buf;
-  // Pass 2: PK buffer + field_count read-back for hset_keys.
+  // Phase 1.10c.4: single-probe of hset_keys. The row carries
+  // redis_key_id (NULL = STRING; non-null = HASH), field_count
+  // (HASH visibility), and expiry_date (TTL filter for both types).
   struct hset_key_table m_hset_buf;
 };
 
@@ -876,23 +873,23 @@ struct exists_probe {
 // 1.3-1.9), every read - EXISTS / TYPE / EXPIRE / PERSIST / TTL /
 // HGET ... - must hide such rows. The probe pipeline already
 // projects expiry_date for TTL's sake, so the filter here is a
-// pure C-side check in the same shape as rondb_ttl_or_pttl
-// (commands.cc:1184). Bit positions: string_keys expiry_date null
-// bit is bit 1 of null_bits, hset_keys is bit 0 - per the
-// init_*_records column_map ordering documented in
-// feedback_ndb_record_column_index.md.
+// pure C-side check.
+//
+// Phase 1.10c.4: with single-probe on hset_keys both STRING and
+// HASH match-kinds read expiry_date from hset_buf. SET / MSET
+// mirrors the string's expiry_date onto hset_keys at write time
+// (add_hset_string_claim_op), and EXPIRE / PEXPIRE on a hash
+// already wrote it there.
+//
+// hset_keys null_bits layout (per init_hset_key_records):
+//   bit 0 -> redis_key_id IS NULL
+//   bit 1 -> expiry_date  IS NULL
 static bool probe_is_expired(const struct exists_probe *probe) {
-  bool expiry_is_null;
-  const Int32 *expiry_ptr;
-  if (probe->m_match_kind == EXISTS_MATCH_STRING) {
-    expiry_is_null = (probe->m_string_buf.null_bits & 0x2) != 0;
-    expiry_ptr = &probe->m_string_buf.expiry_date;
-  } else if (probe->m_match_kind == EXISTS_MATCH_HASH) {
-    expiry_is_null = (probe->m_hset_buf.null_bits & 0x1) != 0;
-    expiry_ptr = &probe->m_hset_buf.expiry_date;
-  } else {
+  if (probe->m_match_kind == EXISTS_MATCH_NONE) {
     return false;
   }
+  bool expiry_is_null = (probe->m_hset_buf.null_bits & 0x2) != 0;
+  const Int32 *expiry_ptr = &probe->m_hset_buf.expiry_date;
   if (expiry_is_null) return false;
   Int32 expiry_seconds = mi_sint4korr((const unsigned char*)expiry_ptr);
   if (expiry_seconds == g_max_expire_at) return false;
@@ -905,51 +902,6 @@ static void filter_expired_probe(struct exists_probe *probe) {
     probe->m_match_kind = EXISTS_MATCH_NONE;
     probe->m_present = false;
   }
-}
-
-static int add_exists_string_probe_op(NdbTransaction *trans,
-                                      struct exists_probe *probe,
-                                      Uint32 database_id,
-                                      std::string *response) {
-  struct key_table *kr = &probe->m_string_buf;
-  kr->null_bits = 0;
-  kr->redis_key_id = STRING_REDIS_KEY_ID;
-  memcpy(&kr->redis_key[2], probe->m_key_str, probe->m_key_len);
-  memset(&kr->redis_key[2 + probe->m_key_len], 0, 3);
-  set_length((char*)&kr->redis_key[0], probe->m_key_len);
-
-  // Project all non-PK columns. The same mask prepare_get_key_row
-  // uses, so we know it works against the actual std::map iteration
-  // order of init_key_records' read_all_column_map. EXISTS / TYPE
-  // ignore the projected values; TTL / PTTL read expiry_date from
-  // probe->m_string_buf via mi_sint4korr. NDB's NdbRecord readTuple
-  // also requires at least one non-PK column projected (mask = 0
-  // crashes the worker under LM_CommittedRead).
-  const Uint32 mask = 0xFC;
-  const unsigned char *mask_ptr = (const unsigned char *)&mask;
-
-  NdbOperation::OperationOptions opts;
-  std::memset(&opts, 0, sizeof(opts));
-  opts.optionsPresent |= NdbOperation::OperationOptions::OO_ABORTOPTION;
-  opts.abortOption = NdbOperation::AO_IgnoreError;
-  opts.optionsPresent |= NdbOperation::OperationOptions::OO_BATCH_SAFE_FLAG;
-
-  const NdbOperation *op = trans->readTuple(
-    pk_key_record[database_id],
-    (const char *)kr,
-    entire_key_record[database_id],
-    (char *)kr,
-    NdbOperation::LM_CommittedRead,
-    mask_ptr,
-    &opts,
-    sizeof(opts));
-  if (op == nullptr) {
-    assign_ndb_err_to_response(response,
-                               FAILED_GET_OP,
-                               trans->getNdbError());
-    return RONDB_INTERNAL_ERROR;
-  }
-  return 0;
 }
 
 static int add_exists_hset_probe_op(NdbTransaction *trans,
@@ -997,14 +949,15 @@ static int add_exists_hset_probe_op(NdbTransaction *trans,
 }
 
 // Per-probe callback: fires once per per-key trans completion.
-// Trans-level error code drives the classification:
-//   0   -> Pass 1: m_match_kind = STRING, m_present = true.
-//          Pass 2: read field_count from buffer; m_match_kind =
-//                  HASH and m_present = true only if > 0
-//                  (post-1.0.3 cross-server invariant - row may
-//                  be present with field_count == 0).
-//   626 -> row not found; leave probe untouched (Pass 2 will
-//          probe hset_keys for it).
+// Phase 1.10c.4: single probe on hset_keys. Trans-level error code
+// drives the classification:
+//   0   -> row exists. Read null_bits bit 0 to determine type:
+//            redis_key_id IS NULL (bit 0 set) -> STRING (always
+//            visible if the row exists).
+//            redis_key_id non-null -> HASH; m_present = true only
+//            if field_count > 0 (post-1.0.3 cross-server invariant
+//            - row may be present with field_count == 0).
+//   626 -> row not found; leave probe untouched.
 //   any other -> hard failure; record on shared drain state.
 static void
 probe_callback(int result, NdbTransaction *trans, void *aObject) {
@@ -1012,15 +965,16 @@ probe_callback(int result, NdbTransaction *trans, void *aObject) {
   (void)result;
   int code = trans->getNdbError().code;
   if (code == 0) {
-    if (probe->m_is_pass2) {
-      if (probe->m_hset_buf.field_count > 0) {
-        probe->m_present = true;
-        probe->m_match_kind = EXISTS_MATCH_HASH;
-      }
-    } else {
+    bool redis_key_id_null = (probe->m_hset_buf.null_bits & 0x1) != 0;
+    if (redis_key_id_null) {
       probe->m_present = true;
       probe->m_match_kind = EXISTS_MATCH_STRING;
+    } else if (probe->m_hset_buf.field_count > 0) {
+      probe->m_present = true;
+      probe->m_match_kind = EXISTS_MATCH_HASH;
     }
+    // else: hash row with field_count == 0 (HDEL'd-empty hash);
+    // treated as not-present per the cross-server invariant.
   } else if (code != 626) {
     if (probe->m_drain->m_error_code == 0) {
       probe->m_drain->m_error_code = code;
@@ -1064,72 +1018,23 @@ static int run_exists_probes(Ndb *ndb,
     return 1;
   }
 
+  // Phase 1.10c.4: single probe on hset_keys. With unified namespace
+  // every name (string or hash) lives in hset_keys, with
+  // redis_key_id IS NULL for strings and a non-null value for
+  // hashes. SET / MSET also mirrors the string's expiry_date onto
+  // the hset_keys row, so the single-probe carries enough info for
+  // EXISTS, TYPE, and the TTL filter to decide. (void)string_tab.
+  (void)string_tab;
   Uint32 idx = 0;
   while (idx < num_keys) {
     Uint32 chunk = std::min(num_keys - idx, (Uint32)MAX_PARALLEL_KEY_OPS);
     Uint32 chunk_end = idx + chunk;
 
-    // Pass 1: per-key trans on string_keys, submitted in parallel.
-    struct probe_drain_state drain1;
-    drain1.m_outstanding = 0;
-    drain1.m_error_code = 0;
+    struct probe_drain_state drain;
+    drain.m_outstanding = 0;
+    drain.m_error_code = 0;
     for (Uint32 i = idx; i < chunk_end; i++) {
       struct exists_probe *p = &probes[i];
-      struct key_table *kr = &p->m_string_buf;
-      kr->null_bits = 0;
-      kr->redis_key_id = STRING_REDIS_KEY_ID;
-      memcpy(&kr->redis_key[2], p->m_key_str, p->m_key_len);
-      memset(&kr->redis_key[2 + p->m_key_len], 0, 3);
-      set_length((char*)&kr->redis_key[0], p->m_key_len);
-
-      p->m_trans = ndb->startTransaction(
-        string_tab,
-        (const char*)&kr->redis_key_id,
-        p->m_key_len + 10);
-      if (p->m_trans == nullptr) {
-        assign_ndb_err_to_response(response,
-                                   FAILED_CREATE_TXN_OBJECT,
-                                   ndb->getNdbError());
-        // Drain anything already in flight, then close all.
-        while (drain1.m_outstanding > 0) {
-          execute_ndb(ndb, 1, __LINE__);
-        }
-        close_probe_trans(ndb, probes, idx, chunk_end);
-        return 1;
-      }
-      p->m_is_pass2 = false;
-      p->m_drain = &drain1;
-      if (add_exists_string_probe_op(p->m_trans, p,
-                                     database_id, response) != 0) {
-        while (drain1.m_outstanding > 0) {
-          execute_ndb(ndb, 1, __LINE__);
-        }
-        close_probe_trans(ndb, probes, idx, chunk_end);
-        return 1;
-      }
-      drain1.m_outstanding++;
-      p->m_trans->executeAsynchPrepare(NdbTransaction::Commit,
-                                       &probe_callback,
-                                       (void*)p);
-    }
-    while (drain1.m_outstanding > 0) {
-      execute_ndb(ndb, 1, __LINE__);
-    }
-    close_probe_trans(ndb, probes, idx, chunk_end);
-    if (drain1.m_error_code != 0) {
-      assign_err_to_response(response,
-                             "Pass 1 per-op error",
-                             drain1.m_error_code);
-      return 1;
-    }
-
-    // Pass 2: per-key trans on hset_keys for missers, in parallel.
-    struct probe_drain_state drain2;
-    drain2.m_outstanding = 0;
-    drain2.m_error_code = 0;
-    for (Uint32 i = idx; i < chunk_end; i++) {
-      struct exists_probe *p = &probes[i];
-      if (p->m_present) continue;
       struct hset_key_table *kr = &p->m_hset_buf;
       kr->null_bits = 0;
       memcpy(&kr->redis_key[2], p->m_key_str, p->m_key_len);
@@ -1145,35 +1050,34 @@ static int run_exists_probes(Ndb *ndb,
         assign_ndb_err_to_response(response,
                                    FAILED_CREATE_TXN_OBJECT,
                                    ndb->getNdbError());
-        while (drain2.m_outstanding > 0) {
+        while (drain.m_outstanding > 0) {
           execute_ndb(ndb, 1, __LINE__);
         }
         close_probe_trans(ndb, probes, idx, chunk_end);
         return 1;
       }
-      p->m_is_pass2 = true;
-      p->m_drain = &drain2;
+      p->m_drain = &drain;
       if (add_exists_hset_probe_op(p->m_trans, p,
                                    database_id, response) != 0) {
-        while (drain2.m_outstanding > 0) {
+        while (drain.m_outstanding > 0) {
           execute_ndb(ndb, 1, __LINE__);
         }
         close_probe_trans(ndb, probes, idx, chunk_end);
         return 1;
       }
-      drain2.m_outstanding++;
+      drain.m_outstanding++;
       p->m_trans->executeAsynchPrepare(NdbTransaction::Commit,
                                        &probe_callback,
                                        (void*)p);
     }
-    while (drain2.m_outstanding > 0) {
+    while (drain.m_outstanding > 0) {
       execute_ndb(ndb, 1, __LINE__);
     }
     close_probe_trans(ndb, probes, idx, chunk_end);
-    if (drain2.m_error_code != 0) {
+    if (drain.m_error_code != 0) {
       assign_err_to_response(response,
-                             "Pass 2 per-op error",
-                             drain2.m_error_code);
+                             "hset_keys probe per-op error",
+                             drain.m_error_code);
       return 1;
     }
     idx += chunk;
@@ -1328,20 +1232,12 @@ static void rondb_ttl_or_pttl(Ndb *ndb,
     response->append(":-2\r\n");
     return;
   }
-  // Pull expiry_date from the right buffer. Null bit positions
-  // differ per init_*_records column_map: string_keys expiry_date
-  // = bit 1 of null_bits, hset_keys expiry_date = bit 0. Once the
-  // pointer + null check are picked, the mi_sint4korr decode is
-  // the same for both tables.
-  bool expiry_is_null;
-  const Int32 *expiry_ptr;
-  if (probe.m_match_kind == EXISTS_MATCH_STRING) {
-    expiry_is_null = (probe.m_string_buf.null_bits & 0x2) != 0;
-    expiry_ptr = &probe.m_string_buf.expiry_date;
-  } else {
-    expiry_is_null = (probe.m_hset_buf.null_bits & 0x1) != 0;
-    expiry_ptr = &probe.m_hset_buf.expiry_date;
-  }
+  // Phase 1.10c.4: single-probe of hset_keys carries the expiry_date
+  // for both STRING and HASH (SET / EXPIRE on string mirror the
+  // value onto hset_keys). null_bits layout (per init_hset_key_records):
+  //   bit 0 -> redis_key_id IS NULL, bit 1 -> expiry_date IS NULL.
+  bool expiry_is_null = (probe.m_hset_buf.null_bits & 0x2) != 0;
+  const Int32 *expiry_ptr = &probe.m_hset_buf.expiry_date;
   Int32 expiry_seconds = mi_sint4korr((const unsigned char*)expiry_ptr);
   if (expiry_is_null || expiry_seconds == g_max_expire_at) {
     response->append(":-1\r\n");
@@ -1485,6 +1381,18 @@ static void rondb_expire_or_pexpire(Ndb *ndb,
                                    m_expire_at,
                                    database_id,
                                    response);
+    // Phase 1.10c.4: also write the hset_keys row so the EXISTS /
+    // TYPE single-probe filter (which only consults hset_keys)
+    // sees the new expiry. Two separate trans for now - 1.10c.5
+    // will fold this into one atomic trans.
+    if (err == 0) {
+      update_expiry_hset_row(ndb,
+                             probe.m_key_str,
+                             probe.m_key_len,
+                             m_expire_at,
+                             database_id,
+                             response);
+    }
   } else {
     err = update_expiry_hset_row(ndb,
                                  probe.m_key_str,
@@ -1576,18 +1484,11 @@ void rondb_persist_command(Ndb *ndb,
     return;
   }
 
-  // Decide whether the row currently has a TTL. Same null-bit / sentinel
-  // logic as rondb_ttl_or_pttl (commands.cc:1184): string_keys
-  // expiry_date null bit is bit 1 of null_bits, hset_keys is bit 0.
-  bool expiry_is_null;
-  const Int32 *expiry_ptr;
-  if (probe.m_match_kind == EXISTS_MATCH_STRING) {
-    expiry_is_null = (probe.m_string_buf.null_bits & 0x2) != 0;
-    expiry_ptr = &probe.m_string_buf.expiry_date;
-  } else {
-    expiry_is_null = (probe.m_hset_buf.null_bits & 0x1) != 0;
-    expiry_ptr = &probe.m_hset_buf.expiry_date;
-  }
+  // Phase 1.10c.4: single-probe of hset_keys carries the expiry_date
+  // for both STRING and HASH (SET / EXPIRE on string mirror the
+  // value onto hset_keys). null_bits bit 1 = expiry_date IS NULL.
+  bool expiry_is_null = (probe.m_hset_buf.null_bits & 0x2) != 0;
+  const Int32 *expiry_ptr = &probe.m_hset_buf.expiry_date;
   Int32 expiry_seconds = mi_sint4korr((const unsigned char*)expiry_ptr);
   if (expiry_is_null || expiry_seconds == g_max_expire_at) {
     response->append(":0\r\n");
@@ -1606,6 +1507,16 @@ void rondb_persist_command(Ndb *ndb,
                                    m_expire_at,
                                    database_id,
                                    response);
+    // Phase 1.10c.4: also clear the hset_keys row's TTL so EXISTS /
+    // TYPE single-probe filter no longer treats the key as expired.
+    if (err == 0) {
+      update_expiry_hset_row(ndb,
+                             probe.m_key_str,
+                             probe.m_key_len,
+                             m_expire_at,
+                             database_id,
+                             response);
+    }
   } else {
     err = update_expiry_hset_row(ndb,
                                  probe.m_key_str,
@@ -1953,12 +1864,19 @@ static int set_rows(Ndb *ndb,
     // or no-ops on an existing string row. SET / MSET only -
     // hash commands take set_rows_hset which does its own claim.
     if (redis_key_id == STRING_REDIS_KEY_ID) {
-      ret_code = add_hset_string_claim_op(key_storage[inx].m_trans,
-                                          get_ctrl->m_hset_key_tab,
-                                          key_storage[inx].m_key_str,
-                                          key_storage[inx].m_key_len,
-                                          get_ctrl->m_database_id,
-                                          response);
+      // Phase 1.10c.4: mirror SET's expiry_date onto the hset_keys
+      // row so EXISTS / TYPE can single-probe and still honor TTL
+      // filtering. m_set_ttl + m_expire_at carry the encoded expiry
+      // value computed in rondb_mset.
+      ret_code = add_hset_string_claim_op(
+        key_storage[inx].m_trans,
+        get_ctrl->m_hset_key_tab,
+        key_storage[inx].m_key_str,
+        key_storage[inx].m_key_len,
+        key_storage[inx].m_set_ttl,
+        (Int32)key_storage[inx].m_expire_at,
+        get_ctrl->m_database_id,
+        response);
       if (ret_code != 0) {
         return 1;
       }

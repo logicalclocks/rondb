@@ -142,8 +142,22 @@ int init_hset_lock_claim_code(std::string *response,
   code->load_op_type(REG1);
   code->branch_eq_const(REG1, RONDB_INSERT, LABEL0); // INSERT to label 0
   /* UPDATE branch */
+  // Phase 1.10c.1: existing row may be a string (redis_key_id IS
+  // NULL). Branch on NULL before read_attr; reading NULL into a
+  // register and then write_interpreter_output trips NDB(878)
+  // "Register with NULL value involved in arithmetic operation".
+  code->branch_col_eq_null(redis_key_id_col->getColumnNo(), LABEL1);
+  // Non-null: existing hash row. Emit redis_key_id and field_count.
   code->read_attr(REG6, redis_key_id_col);
   code->read_attr(REG7, field_count_col);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->interpret_exit_ok();
+  // String row: emit (0, 0). Phase 1's callback maps OUTPUT_INDEX_0
+  // == 0 to "WRONGTYPE: existing string blocks HSET" downstream.
+  code->def_label(LABEL1);
+  code->load_const_u64(REG6, 0);
+  code->load_const_u64(REG7, 0);
   code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
   code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
   code->interpret_exit_ok();
@@ -279,7 +293,18 @@ int write_hset_key_table(Ndb *ndb,
   code.load_op_type(REG1); // Read operation type into register 1
   code.branch_eq_const(REG1, RONDB_INSERT, LABEL0); // Inserts go to label 0
   /* UPDATE */
+  // Phase 1.10c.1: existing row may be a string (redis_key_id IS
+  // NULL). Branch on NULL before read_attr to avoid NDB(878).
+  code.branch_col_eq_null(redis_key_id_col->getColumnNo(), LABEL1);
   code.read_attr(REG7, redis_key_id_col);
+  code.write_interpreter_output(REG7, OUTPUT_INDEX_0);
+  code.interpret_exit_ok();
+  // String row: emit 0 as the redis_key_id sentinel; the caller's
+  // cache will store 0 for this name. (Cache contamination on
+  // string-typed names is addressed in Phase 1.10c.7 - cache
+  // removal.)
+  code.def_label(LABEL1);
+  code.load_const_u64(REG7, 0);
   code.write_interpreter_output(REG7, OUTPUT_INDEX_0);
   code.interpret_exit_ok();
 

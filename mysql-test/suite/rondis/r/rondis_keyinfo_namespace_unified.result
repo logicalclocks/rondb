@@ -2,36 +2,39 @@
 # SET claims a fresh name. Both rows visible via SQL with
 # matching redis_key, redis_key_id = 0 in hset_keys.
 #
-ERR Failed to create hset string-claim code; NDB(4518) Too many instructions in interpreted program
-
+OK
 SELECT redis_key, redis_key_id FROM redis_0.string_keys WHERE redis_key = 'k1';
 redis_key	redis_key_id
+k1	0
 SELECT redis_key, redis_key_id, field_count FROM redis_0.hset_keys WHERE redis_key = 'k1';
 redis_key	redis_key_id	field_count
+k1	NULL	0
 #
 # Overwriting the same string key is idempotent at the
 # hset_keys level - the row stays put, redis_key_id remains 0.
 #
-ERR Failed to create hset string-claim code; NDB(4518) Too many instructions in interpreted program
-
+OK
 SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'k1';
 redis_key_id
-
+NULL
+v1-updated
 #
 # MSET k2 v2 k3 v3 - each key gets its own hset_keys row.
 #
-ERR Failed to create hset string-claim code; NDB(4518) Too many instructions in interpreted program
-
+OK
 SELECT redis_key, redis_key_id FROM redis_0.hset_keys
 WHERE redis_key IN ('k2', 'k3') ORDER BY redis_key;
 redis_key	redis_key_id
+k2	NULL
+k3	NULL
 #
 # SET on a name claimed by a hash -> WRONGTYPE.
 #
 1
-ERR Failed to create hset string-claim code; NDB(4518) Too many instructions in interpreted program
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
 
 #
 # HSET on a name claimed by a string -> WRONGTYPE.
 #
-1
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
+

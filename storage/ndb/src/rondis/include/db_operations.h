@@ -82,6 +82,8 @@ int add_hset_string_claim_op(NdbTransaction *trans,
                              const NdbDictionary::Table *tab_hset,
                              const char *key_str,
                              Uint32 key_len,
+                             bool set_ttl,
+                             Int32 expire_at,
                              Uint32 database_id,
                              std::string *response);
 int add_hset_string_delete_op(NdbTransaction *trans,
