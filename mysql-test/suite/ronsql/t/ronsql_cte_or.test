@@ -1,0 +1,290 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.2: top-level OR / DNF in CTE_LOOKUP filter pushdown.
+# emit_cte_lookup_filter now accepts D_1 OR D_2 OR ... OR D_n, where
+# each D_i is one atom or an AND-conjunction of atoms.  Atoms are the
+# existing column-vs-const comparisons + IS [NOT] NULL set.
+#
+# Same fixture as ronsql_cte_basic so the `sums` / `maxes` virt-table
+# shapes are reusable.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for CTE OR/DNF tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE cte_orders (
+  o_id INT NOT NULL,
+  o_custkey INT NOT NULL,
+  o_amt INT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_o_custkey ON cte_orders (o_custkey);
+
+CREATE TABLE cte_customer (
+  c_id INT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  c_region INT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+INSERT INTO cte_customer VALUES
+  (100, 'Alice',   1),
+  (200, 'Bob',     1),
+  (300, 'Charlie', 2),
+  (400, 'Dave',    2);
+
+INSERT INTO cte_orders VALUES
+  (1, 100, 50),
+  (2, 100, 75),
+  (3, 200, 40),
+  (4, 200, 60),
+  (5, 300, 90);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: 2-disjunct OR on GB column (mem-opcode path) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.k = 300
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.k = 300
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 2: 2-disjunct OR with inequalities ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k < 150 OR sums.k > 250
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k < 150 OR sums.k > 250
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 3: 2-disjunct OR on aggregate output (inline-opcode path) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t = 100 OR sums.t = 125
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t = 100 OR sums.t = 125
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 4: 3-disjunct OR ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.k = 200 OR sums.k = 300
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.k = 200 OR sums.k = 300
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 5: OR mixing GB column and aggregate ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.t > 100
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.t > 100
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 6: DNF — AND-conjunction inside one disjunct ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE (sums.k = 100 AND sums.t > 50) OR sums.k = 300
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE (sums.k = 100 AND sums.t > 50) OR sums.k = 300
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 7: OR with IS NOT NULL on aggregate output ===
+
+# IS NULL inside an OR on a non-LEFT-JOIN CTE is fine — aggregates
+# from a successful match are non-null, so the disjunct is just an
+# always-true predicate.  Exercises the I.1 / I.2 interaction.
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.t IS NOT NULL
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.t IS NOT NULL
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 8: regression — single-disjunct AND path (n=1) ===
+
+# This path must remain byte-equivalent to the pre-I.2 emission: no
+# ACCEPT label, no FAIL_i labels, atoms branch directly to REJECT.
+# Recorded result must match exactly what ronsql_cte_basic Test 17
+# produced.
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100 AND sums.t > 50
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100 AND sums.t > 50
+GROUP BY sums.k|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 9: rejection — non-DNF nesting ===
+--echo Expected error: only top-level OR / DNF is supported
+
+# OR nested inside an AND — RonSQL does not normalise to DNF.  The
+# rejection text in emit_cte_lookup_filter is exact.
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t FROM cte_orders GROUP BY o_custkey) SELECT sums.k, SUM(sums.t) FROM cte_customer AS c JOIN sums ON sums.k = c.c_id WHERE sums.k = 100 AND (sums.t = 50 OR sums.t = 150) GROUP BY sums.k;' 2>&1
+
+--disable_query_log
+DROP TABLE cte_orders;
+DROP TABLE cte_customer;
+--enable_query_log

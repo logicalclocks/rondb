@@ -1,0 +1,268 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for CTE OR/DNF tests ===
+
+
+
+=== Test 1: 2-disjunct OR on GB column (mem-opcode path) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.k = 300
+GROUP BY sums.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.k = 300
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+300	90
+
+
+=== Test 2: 2-disjunct OR with inequalities ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k < 150 OR sums.k > 250
+GROUP BY sums.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k < 150 OR sums.k > 250
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+300	90
+
+
+=== Test 3: 2-disjunct OR on aggregate output (inline-opcode path) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t = 100 OR sums.t = 125
+GROUP BY sums.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t = 100 OR sums.t = 125
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+200	100
+
+
+=== Test 4: 3-disjunct OR ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.k = 200 OR sums.k = 300
+GROUP BY sums.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.k = 200 OR sums.k = 300
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+200	100
+300	90
+
+
+=== Test 5: OR mixing GB column and aggregate ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.t > 100
+GROUP BY sums.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.t > 100
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+
+
+=== Test 6: DNF — AND-conjunction inside one disjunct ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE (sums.k = 100 AND sums.t > 50) OR sums.k = 300
+GROUP BY sums.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE (sums.k = 100 AND sums.t > 50) OR sums.k = 300
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+300	90
+
+
+=== Test 7: OR with IS NOT NULL on aggregate output ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.t IS NOT NULL
+GROUP BY sums.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k = 100 OR sums.t IS NOT NULL
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+200	100
+300	90
+
+
+=== Test 8: regression — single-disjunct AND path (n=1) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100 AND sums.t > 50
+GROUP BY sums.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100 AND sums.t > 50
+GROUP BY sums.k|
+k	SUM(sums.t)
+200	100
+300	90
+
+
+=== Test 9: rejection — non-DNF nesting ===
+Expected error: only top-level OR / DNF is supported
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter: only top-level OR / DNF is supported. Convert '(A OR B) AND C' to DNF or split into UNION.

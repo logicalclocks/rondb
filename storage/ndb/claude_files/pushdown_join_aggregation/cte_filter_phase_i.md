@@ -43,14 +43,11 @@ the SQL surface today.
 
 #### I.2 — OR conjuncts at top level on CTE output (M)
 
-`emit_cte_lookup_filter` flattens AND only.  Lifting requires
-either:
-- Building an OR-aware filter program (jumps with explicit
-  fall-through label), or
-- De-Morganing OR conjuncts into a NOT-AND with negated branches.
-
-testCteNdbApiFilter Test 8 exercises a BRANCH-style multi-conjunct
-filter with mixed semantics; the underlying interpreter supports it.
+**Shipped** — see `cte_filter_phase_i2.md`.  Top-level DNF accepted:
+`D_1 OR D_2 OR ... OR D_n` where each `D_i` is one atom or an
+AND-conjunction of atoms.  Single-disjunct emission is byte-equivalent
+to the pre-I.2 AND-only path.  Non-DNF nesting (OR inside AND) and
+NOT outside `IS NOT NULL` are rejected with clean errors.
 
 #### I.3 — Column-vs-column comparisons on CTE output (M)
 

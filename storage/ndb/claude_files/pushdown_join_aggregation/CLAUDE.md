@@ -34,6 +34,7 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_filter_phase_e2.md` — Phase E.2: chained CTEs / CTE-of-CTE (RonSQL)
 - `cte_filter_phase_j.md` — Phase J: LEFT-to-INNER promotion when WHERE rejects NULL on RHS (RonSQL)
 - `cte_filter_phase_i1.md` — Phase I.1: IS NULL / IS NOT NULL on CTE column or aggregate output (kernel + RonSQL)
+- `cte_filter_phase_i2.md` — Phase I.2: top-level OR / DNF in CTE_LOOKUP filter pushdown (RonSQL)
 - `cte_filter_phase_k.md` — Phase K: ANTI_JOIN promotion for WHERE col IS NULL on LEFT JOIN RHS (RonSQL)
 - `cte_filter_phase_l.md` — Phase L: JOIN_AGG_COMPLETE robustness — checkCteReady / continueJoinAggRedistribute idempotency, unified requestId correlation in DBTC, single-owner DBLQH routing, phase-report deduplication, test coverage (kernel + DBTC, plan-only)
 - `cte_filter_phase_l_commit5.md` — Phase L commit 5: cleanup follow-up — drop redundant `m_redist_mutex` and retire legacy `m_cteCompleteOutstanding` counter

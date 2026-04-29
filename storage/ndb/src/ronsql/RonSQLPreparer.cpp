@@ -314,6 +314,54 @@ flatten_and_conjuncts(struct ConditionalExpression* ce,
   (*count)++;
 }
 
+/*
+ * Flatten nested OR nodes into an array of disjuncts.  Mirrors
+ * flatten_and_conjuncts.  An expression with no top-level T_OR yields
+ * one disjunct (the whole expression).  Used by Phase I.2's CTE_LOOKUP
+ * filter DNF emit; CNF/DNF rewriting is not performed here, so callers
+ * that need DNF must reject non-DNF nesting separately.
+ */
+static void
+flatten_or_disjuncts(struct ConditionalExpression* ce,
+                     ConditionalExpression** disjuncts,
+                     Uint32* count)
+{
+  if (ce == NULL) return;
+  if (ce->op == T_OR)
+  {
+    flatten_or_disjuncts(ce->args.left, disjuncts, count);
+    flatten_or_disjuncts(ce->args.right, disjuncts, count);
+    return;
+  }
+  if (*count >= MAX_WHERE_CONJUNCTS)
+  {
+    throw RonSQLPermanentError(
+        "WHERE clause has too many top-level OR disjuncts.");
+  }
+  disjuncts[*count] = ce;
+  (*count)++;
+}
+
+/*
+ * Phase I.2: detect non-DNF shapes in a CTE_LOOKUP WHERE conjunct.
+ * After flatten_or_disjuncts, each disjunct should contain only T_AND
+ * nodes plus comparison/IS atoms — any remaining T_OR (i.e. an OR
+ * nested inside an AND) means the expression isn't in DNF and we
+ * reject cleanly rather than silently mis-evaluating.
+ */
+static bool
+contains_or_below_top_level(struct ConditionalExpression* ce)
+{
+  if (ce == NULL) return false;
+  if (ce->op == T_OR) return true;
+  if (ce->op == T_AND)
+  {
+    return contains_or_below_top_level(ce->args.left) ||
+           contains_or_below_top_level(ce->args.right);
+  }
+  return false;
+}
+
 void
 RonSQLPreparer::configure()
 {
@@ -5697,18 +5745,36 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
 }
 
 // Compile a main-query WHERE filter on a CTE_LOOKUP child into an
-// NdbInterpretedCode program of branch_linked_mem_* instructions. The
+// NdbInterpretedCode program of branch_linked_* instructions.  The
 // filter evaluates against DBLQH's linked-attr buffer for the CTE
 // lookup: position 0..N-1 matches the virtual table's columns in the
-// order added by build_cte_virtual_tables. A conjunct that fails jumps
-// to REJECT; when all conjuncts pass we fall through to exit_ok.
+// order added by build_cte_virtual_tables.
 //
-// Scope is intentionally narrow: only AND-combined simple comparisons
-// (column-vs-constant) on CTE output columns are supported. More
-// complex shapes (OR, cross-table, column-vs-column) throw a clean
-// error — they can be added later without protocol work since the
-// server-side jump-table interpreter already accepts the full
-// CTE-safe opcode set (see cte_filter_plan.md).
+// Phase I.2: top-level DNF accepted — `D_1 OR D_2 OR ... OR D_n`,
+// where each disjunct D_i is a single atom or a conjunction of
+// atoms (`A AND B AND ...`).  Atoms remain column-vs-constant
+// comparisons (= != < <= > >=) or `IS NULL` / `IS NOT NULL` on a
+// CTE output column.  Single-disjunct emission is byte-equivalent
+// to the original AND-only path.
+//
+// Codegen pattern (n disjuncts, m_i atoms each):
+//
+//   for i = 0..n-1:
+//     fail_i = (i < n-1) ? alloc_label() : REJECT
+//     emit each atom A_ij as "branch fail_i if NOT predicate"
+//     if i < n-1:
+//        branch_label ACCEPT       ; this disjunct matched
+//        def_label fail_i
+//   def_label ACCEPT
+//   interpret_exit_ok
+//   def_label REJECT
+//   interpret_exit_nok
+//
+// Non-DNF nesting (e.g. `(a OR b) AND c`), NOT outside an IS NOT NULL
+// atom, column-vs-column, and cross-table comparisons are still
+// rejected with a clean error — kernel side already supports them
+// via the jump-table interpreter (see cte_filter_plan.md), but the
+// RonSQL surface currently doesn't normalise them.
 void
 RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                                        QueryScope& scope,
@@ -5720,17 +5786,32 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
               "CTE_LOOKUP filter requires a virtual table descriptor.");
 
   ConditionalExpression* simplified = simplify_ce(where_ce, -1);
-  ConditionalExpression* conjuncts[MAX_WHERE_CONJUNCTS];
-  Uint32 num_conjuncts = 0;
-  flatten_and_conjuncts(simplified, conjuncts, &num_conjuncts);
-  require_prm(num_conjuncts > 0,
-              "CTE_LOOKUP filter: no conjuncts after simplification.");
+  ConditionalExpression* disjuncts[MAX_WHERE_CONJUNCTS];
+  Uint32 num_disjuncts = 0;
+  flatten_or_disjuncts(simplified, disjuncts, &num_disjuncts);
+  require_prm(num_disjuncts > 0,
+              "CTE_LOOKUP filter: no disjuncts after simplification.");
+
+  // Defensive cap on disjunct count keeps program size sane and label
+  // allocation predictable.  Far smaller than the kernel's per-program
+  // instruction limit; user-facing queries have at most a handful.
+  static const Uint32 MAX_DNF_DISJUNCTS = 16;
+  require_prm(num_disjuncts <= MAX_DNF_DISJUNCTS,
+              "CTE_LOOKUP filter: too many top-level OR disjuncts.");
 
   const Uint32 REJECT = 0;
+  const Uint32 ACCEPT = 1;
+  Uint32 next_label = 2;  // FAIL_i labels start here
 
-  for (Uint32 c = 0; c < num_conjuncts; c++) {
-    ConditionalExpression* atom = conjuncts[c];
-    require_prm(atom != NULL, "CTE_LOOKUP filter: NULL conjunct.");
+  // Per-atom emit — extracted from the original AND-only loop body so
+  // that DNF emission can re-target the fail label per disjunct.
+  // Captures the surrounding scope/virtTab/op_idx; called repeatedly
+  // for every atom in every disjunct.  Returns nothing; throws on
+  // structural rejections (column-vs-column, NULL operands, etc.) via
+  // require_prm.
+  auto emit_atom = [&](ConditionalExpression* atom,
+                       Uint32 fail_label) -> void {
+    require_prm(atom != NULL, "CTE_LOOKUP filter: NULL atom.");
 
     // T_IS: `col IS NULL` / `col IS NOT NULL` — Phase I.1.  Emit a
     // single null-flag branch on the linked-attr buffer entry.  No
@@ -5766,11 +5847,11 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
       Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
       Uint32 position = cte_col_idx;
       int rc = atom->is.null
-          ? code.branch_linked_isnotnull(position, REJECT)
-          : code.branch_linked_isnull(position, REJECT);
+          ? code.branch_linked_isnotnull(position, fail_label)
+          : code.branch_linked_isnull(position, fail_label);
       require_prm(rc == 0,
                   "CTE_LOOKUP filter: failed to emit IS-null branch.");
-      continue;
+      return;
     }
 
     bool is_cmp = (atom->op == T_EQUALS || atom->op == T_NOT_EQUALS ||
@@ -5778,9 +5859,9 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                    atom->op == T_GT || atom->op == T_GE);
     require_prm(is_cmp,
                 "CTE_LOOKUP filter supports only simple comparisons "
-                "(=, !=, <, <=, >, >=) and IS NULL / IS NOT NULL at "
-                "top level; OR and expressions will be added in a "
-                "later phase.");
+                "(=, !=, <, <=, >, >=), IS NULL / IS NOT NULL, and "
+                "DNF combinations of these — column expressions and "
+                "non-DNF nesting will be added in a later phase.");
 
     ConditionalExpression* left = atom->args.left;
     ConditionalExpression* right = atom->args.right;
@@ -5946,32 +6027,32 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
       case T_EQUALS:
         rc = code.branch_linked_inline_ne(position, inline_typeId,
                                           inline_columnSize, inline_csNumber,
-                                          rv.val, rv.len, REJECT);
+                                          rv.val, rv.len, fail_label);
         break;
       case T_NOT_EQUALS:
         rc = code.branch_linked_inline_eq(position, inline_typeId,
                                           inline_columnSize, inline_csNumber,
-                                          rv.val, rv.len, REJECT);
+                                          rv.val, rv.len, fail_label);
         break;
       case T_LT:
         rc = code.branch_linked_inline_le(position, inline_typeId,
                                           inline_columnSize, inline_csNumber,
-                                          rv.val, rv.len, REJECT);
+                                          rv.val, rv.len, fail_label);
         break;
       case T_LE:
         rc = code.branch_linked_inline_lt(position, inline_typeId,
                                           inline_columnSize, inline_csNumber,
-                                          rv.val, rv.len, REJECT);
+                                          rv.val, rv.len, fail_label);
         break;
       case T_GT:
         rc = code.branch_linked_inline_ge(position, inline_typeId,
                                           inline_columnSize, inline_csNumber,
-                                          rv.val, rv.len, REJECT);
+                                          rv.val, rv.len, fail_label);
         break;
       case T_GE:
         rc = code.branch_linked_inline_gt(position, inline_typeId,
                                           inline_columnSize, inline_csNumber,
-                                          rv.val, rv.len, REJECT);
+                                          rv.val, rv.len, fail_label);
         break;
       default:
         require_prm(false,
@@ -5979,47 +6060,93 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
       }
       require_prm(rc == 0,
                   "CTE_LOOKUP filter: failed to emit inline branch.");
-      continue;
+      return;
     }
     switch (eff_op) {
     case T_EQUALS:
       rc = code.branch_linked_mem_ne(position, src_table, attrId,
-                                     rv.val, rv.len, REJECT);
+                                     rv.val, rv.len, fail_label);
       break;
     case T_NOT_EQUALS:
       rc = code.branch_linked_mem_eq(position, src_table, attrId,
-                                     rv.val, rv.len, REJECT);
+                                     rv.val, rv.len, fail_label);
       break;
     case T_LT:
       // keep: col < val; reject: col >= val; method that branches on
       // col >= val is branch_linked_mem_le.
       rc = code.branch_linked_mem_le(position, src_table, attrId,
-                                     rv.val, rv.len, REJECT);
+                                     rv.val, rv.len, fail_label);
       break;
     case T_LE:
       // keep: col <= val; reject: col > val; branches on col > val is
       // branch_linked_mem_lt.
       rc = code.branch_linked_mem_lt(position, src_table, attrId,
-                                     rv.val, rv.len, REJECT);
+                                     rv.val, rv.len, fail_label);
       break;
     case T_GT:
       // keep: col > val; reject: col <= val; branches on col <= val is
       // branch_linked_mem_ge.
       rc = code.branch_linked_mem_ge(position, src_table, attrId,
-                                     rv.val, rv.len, REJECT);
+                                     rv.val, rv.len, fail_label);
       break;
     case T_GE:
       // keep: col >= val; reject: col < val; branches on col < val is
       // branch_linked_mem_gt.
       rc = code.branch_linked_mem_gt(position, src_table, attrId,
-                                     rv.val, rv.len, REJECT);
+                                     rv.val, rv.len, fail_label);
       break;
     default:
       require_prm(false, "Unsupported CTE_LOOKUP filter operator.");
     }
     require_prm(rc == 0, "CTE_LOOKUP filter: failed to emit branch.");
+  };  // end emit_atom lambda
+
+  // Phase I.2: drive the per-disjunct emit.  For n=1 (no top-level OR)
+  // this collapses to the original AND-only path: no FAIL_i labels are
+  // allocated, no ACCEPT branch is emitted, and atom branches target
+  // REJECT directly — byte-equivalent to pre-I.2 emission.
+  for (Uint32 di = 0; di < num_disjuncts; di++) {
+    ConditionalExpression* d = disjuncts[di];
+    require_prm(d != NULL, "CTE_LOOKUP filter: NULL disjunct.");
+    require_prm(!contains_or_below_top_level(d),
+                "CTE_LOOKUP filter: only top-level OR / DNF is supported. "
+                "Convert '(A OR B) AND C' to DNF or split into UNION.");
+
+    ConditionalExpression* conjuncts[MAX_WHERE_CONJUNCTS];
+    Uint32 num_conjuncts = 0;
+    flatten_and_conjuncts(d, conjuncts, &num_conjuncts);
+    require_prm(num_conjuncts > 0,
+                "CTE_LOOKUP filter: empty disjunct after simplification.");
+
+    const bool is_last = (di + 1 == num_disjuncts);
+    const Uint32 fail_label = is_last ? REJECT : next_label++;
+
+    for (Uint32 c = 0; c < num_conjuncts; c++) {
+      emit_atom(conjuncts[c], fail_label);
+    }
+
+    if (!is_last) {
+      // All atoms in this disjunct passed → skip the remaining
+      // disjuncts and accept.  The next disjunct's atoms are reached
+      // by falling through fail_label.
+      require_prm(code.branch_label(ACCEPT) == 0,
+                  "CTE_LOOKUP filter: failed to emit ACCEPT branch.");
+      require_prm(code.def_label(fail_label) == 0,
+                  "CTE_LOOKUP filter: failed to define disjunct fail "
+                  "label.");
+    }
+    // On the last disjunct, falling through reaches the ACCEPT label
+    // defined just below — no extra branch needed.
   }
 
+  if (num_disjuncts > 1) {
+    // ACCEPT is only reached via branch_label from a passing
+    // non-last disjunct; for n=1 there is no branch to it and we
+    // skip the def_label to keep the program byte-equivalent to the
+    // pre-I.2 emission.
+    require_prm(code.def_label(ACCEPT) == 0,
+                "CTE_LOOKUP filter: def_label(ACCEPT) failed.");
+  }
   require_prm(code.interpret_exit_ok() == 0,
               "CTE_LOOKUP filter: interpret_exit_ok failed.");
   require_prm(code.def_label(REJECT) == 0,
