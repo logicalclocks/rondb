@@ -2059,9 +2059,6 @@ class Dbtc : public SimulatedBlock {
     // CTE COMPLETE coordination (Step 3)
     Uint32 m_cteScanReportsExpected;  // DBSPJ instances that will report
     Uint32 m_cteScanReportsReceived;  // CTE_SCAN_COMPLETE_REPs received
-    Uint32 m_cteCompleteOutstanding;  // Pending JOIN_AGG_COMPLETE_CONFs for CTEs
-                                      // (Phase L: legacy counter, replaced by
-                                      //  m_ctePhaseRemaining + per-record state)
 
     // Phase L (C): per-aggregation completion records.  Singly-linked
     // list of AggCompleteRecord owned by this scan.  Records cover both

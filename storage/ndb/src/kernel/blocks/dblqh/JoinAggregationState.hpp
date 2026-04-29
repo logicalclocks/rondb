@@ -30,7 +30,6 @@
 #include <kernel_types.h>
 #include <kernel/NodeBitmask.hpp>
 #include <kernel/ndb_limits.h>
-#include <NdbMutex.h>
 
 #define JAM_FILE_ID 447
 
@@ -239,8 +238,7 @@ struct JoinAggregationState {
   // DBLQHs a single routing target and removes any need for cross-LDM
   // synchronisation on the aggregation state.  Computed at SETUP as
   // (aggStateKey % lqhWorkersOnNode) + 1 and echoed in SETUP_CONF.
-  // Eliminates the multi-LDM race that motivates Phase L; takes the
-  // place of the m_redist_mutex once owner routing is complete.  See
+  // Eliminates the multi-LDM race that motivates Phase L.  See
   // cte_filter_phase_l.md.
   Uint32 m_owner_instance;
   // Per-node owner instance for remote nodes — populated from
@@ -259,13 +257,6 @@ struct JoinAggregationState {
   // Each CTE state snapshots this at SETUP and checks it hasn't changed
   // before and during redistribution. If changed, the query is aborted.
   static std::atomic<Uint32> s_node_fail_count;
-
-  //------------------------------------------------------------------
-  // Mutex for protecting aggregation state during redistribution.
-  // Multiple DBLQH instances may receive REDISTRIBUTE_REQ concurrently
-  // from different nodes, so we serialize access to the shared state.
-  //------------------------------------------------------------------
-  NdbMutex m_redist_mutex;
 
   //------------------------------------------------------------------
   // Page-based allocator for redistribution queue entries.
@@ -384,13 +375,9 @@ struct JoinAggregationState {
   {
     m_transid[0] = 0;
     m_transid[1] = 0;
-    NdbMutex_Init(&m_redist_mutex);
   }
 
   ~JoinAggregationState() {
-    if (m_cte_mode) {
-      NdbMutex_Deinit(&m_redist_mutex);
-    }
   }
 
   //------------------------------------------------------------------

@@ -16329,7 +16329,6 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_cteSetupOutstanding = 0;
   scanptr.p->m_cteScanReportsExpected = 0;
   scanptr.p->m_cteScanReportsReceived = 0;
-  scanptr.p->m_cteCompleteOutstanding = 0;
   scanptr.p->m_cteInfos = nullptr;
   scanptr.p->m_cteAggNodeState = nullptr;
   /* Phase L (C): per-aggregation completion bookkeeping. */
@@ -29416,13 +29415,12 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
   rec.p->m_aggNodesPending.clear(senderNodeId);
   ndbrequire(rec.p->m_outstanding > 0);
   rec.p->m_outstanding--;
-  /* Mirror onto the legacy scan-level counters during the migration
-   * so existing readers (RELEASE flow, abort path) still observe
-   * progress.  These will be retired in a follow-up commit. */
-  if (rec.p->m_kind == AggCompleteRecord::KIND_CTE) {
-    ndbrequire(scanptr.p->m_cteCompleteOutstanding > 0);
-    scanptr.p->m_cteCompleteOutstanding--;
-  } else {
+  /* Phase L commit 5: m_cteCompleteOutstanding retired (replaced by
+   * m_ctePhaseRemaining + per-record state).  Main-aggregation legacy
+   * counters (m_aggNodesOutstanding / m_aggNodesPending) are still
+   * mirrored here so the deferred node-failure path keeps a consistent
+   * view; they are reset by sendJoinAggReleaseReqs before reuse. */
+  if (rec.p->m_kind == AggCompleteRecord::KIND_MAIN) {
     ndbrequire(scanptr.p->m_aggNodesOutstanding > 0);
     scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(senderNodeId);
     scanptr.p->m_aggNodesOutstanding--;
@@ -29512,13 +29510,12 @@ void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
   rec.p->m_outstanding--;
   if (rec.p->m_errorCode == 0) rec.p->m_errorCode = ref->errorCode;
 
-  if (rec.p->m_kind == AggCompleteRecord::KIND_CTE) {
-    ndbrequire(scanptr.p->m_cteCompleteOutstanding > 0);
-    scanptr.p->m_cteCompleteOutstanding--;
-  } else {
-    /* Main aggregation: do NOT clear nodeId from m_aggNodes here —
-     * the agg state was successfully created during SETUP and still
-     * exists on that node, so RELEASE_REQ must reach it. */
+  /* Phase L commit 5: same as the CONF path — m_cteCompleteOutstanding
+   * is retired; main-aggregation legacy counters keep their mirror
+   * write for the deferred node-failure path.  Note we still do NOT
+   * clear nodeId from m_aggNodes — RELEASE_REQ must reach the node
+   * because SETUP succeeded there. */
+  if (rec.p->m_kind == AggCompleteRecord::KIND_MAIN) {
     ndbrequire(scanptr.p->m_aggNodesOutstanding > 0);
     scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(senderNodeId);
     scanptr.p->m_aggNodesOutstanding--;
@@ -29711,7 +29708,6 @@ void Dbtc::execCTE_SCAN_COMPLETE_REP(Signal *signal) {
  */
 void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
                                         Uint32 phase) {
-  scanptr.p->m_cteCompleteOutstanding = 0;
   /* Phase L (C): authoritative per-phase counter.  Drives
    * cteAdvancePhase together with per-record m_state. */
   scanptr.p->m_ctePhaseRemaining = 0;
@@ -29830,7 +29826,6 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
       sendSignal(ref, GSN_JOIN_AGG_COMPLETE_REQ, signal,
                  JoinAggCompleteReq::SignalLength, JBB, lsp, 1);
       cteNodes->m_aggNodesPending.set(nodeId);
-      scanptr.p->m_cteCompleteOutstanding++;
     }
     if (cteRec.p->m_outstanding == 0) {
       /* No reachable nodes for this CTE — record is dead-on-arrival.
@@ -29842,11 +29837,11 @@ void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
     }
   }
 
-  if (scanptr.p->m_cteCompleteOutstanding == 0) {
+  if (scanptr.p->m_ctePhaseRemaining == 0) {
     jam();
     /**
-     * No nodes to complete (all dead or no CTE state).
-     * Advance to next phase or start main query.
+     * No CTEs in this phase have pending records (all dead or no CTE
+     * state).  Advance to next phase or start main query.
      */
     cteAdvancePhase(signal, scanptr);
   }

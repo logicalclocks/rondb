@@ -20814,9 +20814,9 @@ redistribution_done:
  * execJOIN_AGG_REDISTRIBUTE_REQ — receive a group row from another node.
  * Merge into local hash table or queue if still finalizing.
  *
- * Multiple DBLQH instances may receive this signal concurrently from
- * different nodes, so we hold m_redist_mutex to serialize access to
- * the shared aggregation state.
+ * Phase L (E.1): senders address this signal to the destination's
+ * owner LDM (numberToRef(DBLQH, dstOwner, dstNode)).  Only the owner
+ * mutates the aggregation state, so no mutex is needed.
  */
 void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   jamEntry();
@@ -20861,8 +20861,8 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   copy(valBuf, valueSection);
   releaseSections(handle);
 
-  /* Send CONF immediately if requested — before taking the mutex so
-   * the sender can resume without waiting for our merge to complete. */
+  /* Send CONF immediately if requested so the sender can resume
+   * without waiting for our merge to complete. */
   if (needConf) {
     jam();
     JoinAggRedistributeConf *conf =
@@ -20873,15 +20873,12 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
                signal, JoinAggRedistributeConf::SignalLength, JBB);
   }
 
-  NdbMutex_Lock(&state->m_redist_mutex);
-
   JoinAggregationState::State curState = state->m_state.load();
 
   /* If in ERROR state, send REF */
   if (curState == JoinAggregationState::ERROR ||
       curState == JoinAggregationState::NODE_FAIL_ABORT) {
     jam();
-    NdbMutex_Unlock(&state->m_redist_mutex);
     JoinAggRedistributeRef *ref =
       (JoinAggRedistributeRef *)signal->getDataPtrSend();
     ref->aggStateKey = aggStateKey;
@@ -20905,7 +20902,6 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
         redistAlloc(state, allocBytes, getThreadId());
     if (unlikely(entry == nullptr)) {
       jam();
-      NdbMutex_Unlock(&state->m_redist_mutex);
       abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
       /* Send REF to sender so it aborts too */
       JoinAggRedistributeRef *ref =
@@ -20928,7 +20924,6 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
       state->m_redist_queue_head = entry;
     state->m_redist_queue_tail = entry;
     state->m_redist_queue_count++;
-    NdbMutex_Unlock(&state->m_redist_mutex);
     return;
   }
   /* Process immediately: merge into local hash table */
@@ -20938,7 +20933,6 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   Int32 ret = interp->mergeOneGroup(
       reinterpret_cast<const char *>(keyBuf), keyLen,
       reinterpret_cast<const char *>(valBuf), valueLen);
-  NdbMutex_Unlock(&state->m_redist_mutex);
   if (unlikely(ret != 0)) {
     jam();
     abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
@@ -21007,18 +21001,14 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REF(Signal *signal) {
  * CONF was already sent by execJOIN_AGG_REDISTRIBUTE_REQ before queueing,
  * so no CONF handling is needed here.
  *
- * We hold m_redist_mutex while accessing the queue and merging, since
- * concurrent REDISTRIBUTE_REQ signals may still be adding entries.
- * Once all nodes have sent FINAL_REP no more concurrent activity
- * occurs, but the queue drain happens before that point.
+ * Phase L (E.1): owner-routing guarantees only the owner LDM enqueues
+ * to and drains this queue, so no mutex is needed.
  */
 void Dblqh::processRedistQueue(Signal *signal,
                                 JoinAggregationState *state,
                                 Uint32 aggStateKey) {
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
-
-  NdbMutex_Lock(&state->m_redist_mutex);
 
   Uint32 count = 0;
   auto *entry = state->m_redist_queue_head;
@@ -21031,7 +21021,6 @@ void Dblqh::processRedistQueue(Signal *signal,
         entry->valueLen);
     if (unlikely(ret != 0)) {
       jam();
-      NdbMutex_Unlock(&state->m_redist_mutex);
       abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
       return;
     }
@@ -21045,7 +21034,6 @@ void Dblqh::processRedistQueue(Signal *signal,
       state->m_redist_queue_head = entry;
       if (entry == nullptr) state->m_redist_queue_tail = nullptr;
       state->m_redist_queue_count -= count;
-      NdbMutex_Unlock(&state->m_redist_mutex);
       signal->theData[0] = ZCONTINUE_CTE_REDIST_DRAIN;
       signal->theData[1] = aggStateKey;
       sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
@@ -21057,7 +21045,6 @@ void Dblqh::processRedistQueue(Signal *signal,
   state->m_redist_queue_head = nullptr;
   state->m_redist_queue_tail = nullptr;
   state->m_redist_queue_count = 0;
-  NdbMutex_Unlock(&state->m_redist_mutex);
   if (!freeRedistPagesBatch(state)) {
     /* More pages remain — delegate to proxy block */
     jam();

@@ -2441,7 +2441,6 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   // Non-CTE queries never touch these fields so they can be skipped.
   if (state->m_cte_mode) {
     jam();
-    NdbMutex_Init(&state->m_redist_mutex);
     memset(state->m_cte_remote_ownerInstances, 0,
            sizeof(state->m_cte_remote_ownerInstances));
     state->m_cte_waiting_conf = false;
