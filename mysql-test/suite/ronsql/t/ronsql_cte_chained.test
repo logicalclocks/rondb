@@ -1,0 +1,204 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase L (D1-D4) — chained / sibling / skewed / empty-intermediate
+# CTE shapes that stress the JOIN_AGG_COMPLETE protocol corners
+# closed by Phase L's idempotency guards (A, B), unified
+# AggCompleteRecord (C), phase-report dedup (C.2), and single-owner
+# LDM routing (E.1).  See cte_filter_phase_l.md.
+#
+# Rationale per test:
+#   D1: three CTE phases — three independent chances for stale
+#       JOIN_AGG_COMPLETE_CONFs to cross phase boundaries.  Hits
+#       C's per-record correlation directly.
+#   D2: sibling CTEs in the same phase — two AggCompleteRecords at
+#       phase 0, four COMPLETE_REQs.  With the legacy shared
+#       counter, a stale CONF from one CTE bled into the other's
+#       accounting.  Hits C.
+#   D3: WHERE-skewed CTE so one node materialises few groups —
+#       exercises the empty-gb_map → goto redistribution_done path
+#       that A and B guard, plus the asymmetric REDISTRIBUTE_REQ /
+#       FINAL_REP traffic that motivates E.1's owner routing.
+#   D4: empty-intermediate chain — every node hits the empty-gb_map
+#       fast path on every phase.  Maximum exposure to A.
+#
+# Same convention as ronsql_cte_basic.test: skip ronsql_cli (which
+# doesn't refresh dictionary cache for join queries) and rely on
+# RDRS comparison against MySQL.
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for chained CTE tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE cte_big (
+  pk INT NOT NULL,
+  grp INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (pk)
+) ENGINE=NDB;
+
+CREATE INDEX idx_grp ON cte_big (grp);
+
+CREATE TABLE cte_parent (
+  id INT NOT NULL,
+  grp INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_p_grp ON cte_parent (grp);
+
+# 300 groups × 5 rows.  Same fixture as ronsql_cte_multi_batch so
+# group counts cross the 256-row batch boundary on every chained
+# CTE phase, exercising redistribution batch / FINAL_REP fan-out
+# end-to-end.
+let $i = 1;
+while ($i <= 300)
+{
+  --eval INSERT INTO cte_big VALUES (5*$i-4, $i, $i), (5*$i-3, $i, $i), (5*$i-2, $i, $i), (5*$i-1, $i, $i), (5*$i, $i, $i)
+  inc $i;
+}
+
+let $i = 1;
+while ($i <= 300)
+{
+  --eval INSERT INTO cte_parent VALUES ($i, $i)
+  inc $i;
+}
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === Test 1 (D1): Three-level chained CTE — three CTE phases ===
+
+let $QUERY=
+WITH a AS (
+  SELECT grp AS k, SUM(val) AS s
+  FROM cte_big GROUP BY grp),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k),
+     c AS (
+  SELECT k, MIN(m) AS mn
+  FROM b GROUP BY k)
+SELECT k, SUM(mn) FROM c GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH a AS (
+  SELECT grp AS k, SUM(val) AS s
+  FROM cte_big GROUP BY grp),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k),
+     c AS (
+  SELECT k, MIN(m) AS mn
+  FROM b GROUP BY k)
+SELECT k, SUM(mn) FROM c GROUP BY k|
+
+--echo
+--echo
+--echo === Test 2 (D2): Sibling CTEs in the same phase ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT grp AS k, SUM(val) AS s
+  FROM cte_big GROUP BY grp),
+     cnts AS (
+  SELECT grp AS k, COUNT(*) AS n
+  FROM cte_big GROUP BY grp)
+SELECT p.id, SUM(sums.s), SUM(cnts.n)
+FROM cte_parent AS p
+JOIN sums ON sums.k = p.grp
+JOIN cnts ON cnts.k = p.grp
+GROUP BY p.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT grp AS k, SUM(val) AS s
+  FROM cte_big GROUP BY grp),
+     cnts AS (
+  SELECT grp AS k, COUNT(*) AS n
+  FROM cte_big GROUP BY grp)
+SELECT p.id, SUM(sums.s), SUM(cnts.n)
+FROM cte_parent AS p
+JOIN sums ON sums.k = p.grp
+JOIN cnts ON cnts.k = p.grp
+GROUP BY p.id|
+
+--echo
+--echo
+--echo === Test 3 (D3): Skewed CTE — single-group result, empty on other nodes ===
+
+# WHERE grp = 100 narrows the CTE to one group.  After hash
+# redistribution, that group lives on exactly one node and the
+# other nodes see an empty gb_map for redistribution_done — the
+# code path A + B guard against re-firing FINAL_REPs / CONFs.
+
+let $QUERY=
+WITH skew AS (
+  SELECT grp AS k, SUM(val) AS s
+  FROM cte_big WHERE grp = 100 GROUP BY grp)
+SELECT p.id, SUM(skew.s)
+FROM cte_parent AS p JOIN skew ON skew.k = p.grp
+GROUP BY p.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH skew AS (
+  SELECT grp AS k, SUM(val) AS s
+  FROM cte_big WHERE grp = 100 GROUP BY grp)
+SELECT p.id, SUM(skew.s)
+FROM cte_parent AS p JOIN skew ON skew.k = p.grp
+GROUP BY p.id|
+
+--echo
+--echo
+--echo === Test 4 (D4): Empty-intermediate chain ===
+
+# `a` is always empty (val < 0 never matches non-negative inserts);
+# `b` is therefore also empty.  Both phases on every node hit the
+# empty-gb_map fast path that A's CTE_READY guard covers.
+
+let $QUERY=
+WITH a AS (
+  SELECT grp AS k, SUM(val) AS s
+  FROM cte_big WHERE val < 0 GROUP BY grp),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH a AS (
+  SELECT grp AS k, SUM(val) AS s
+  FROM cte_big WHERE val < 0 GROUP BY grp),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+DROP TABLE cte_parent;
+DROP TABLE cte_big;
