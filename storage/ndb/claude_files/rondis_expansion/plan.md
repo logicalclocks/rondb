@@ -720,10 +720,40 @@ Sub-phases (each its own commit, separately bisectable):
   both tables.
 - **1.10c.5 — TTL / EXPIRE / PERSIST single-probe (PENDING).**
   Same simplification for the TTL family.
-- **1.10c.6 — Redis-canonical silent replace (PENDING).** Real
+- **1.10c.6 — Remove `redis_key_id_hash` cache (PENDING).**
+  Once the `hset_keys` row is the authoritative type registry, the
+  process-local cache becomes a hazard (no cross-server invalidation,
+  and no safe invalidation point for DEL / type replacement). Strip
+  it before silent replace lands; every hash read resolves through
+  `hset_keys`.
+
+  Implementation:
+  - `rondb_get_redis_key_id()` stops allocating ids and stops writing
+    `hset_keys` rows for read paths. It becomes a lookup/read helper:
+    existing hash row with `redis_key_id IS NOT NULL` and
+    `field_count > 0` returns the id; missing row, string row
+    (`redis_key_id IS NULL`), or empty hash row (`field_count == 0`)
+    returns "not found" to the caller.
+  - HSET remains the only read/write path that allocates a fresh hash
+    id from `hset_key_id_sequence`; HDEL keeps the persistent empty
+    hash row while `field_count == 0`.
+  - HGET / HMGET / HINCR* callers map "not found" to Redis nil / 0
+    semantics without creating any durable row.
+
+  Test coverage:
+  - `HGET no_such f; DEL no_such` returns `0` and leaves no
+    `hset_keys` row.
+  - `HSET h f v; HGET h f; DEL h; HGET h f` returns nil after DEL,
+    proving a warmed same-process read cannot see orphan field rows.
+  - `HSET h f v; HDEL h f; TYPE h` remains `none` while the empty
+    registry row can still persist internally.
+
+- **1.10c.7 — Redis-canonical silent replace (PENDING).** Real
   Redis SET on a hash silently drops the hash; HSET on a string
   silently drops the string. Replace 1.10c.1's WRONGTYPE
   intermediate behavior with the Redis-canonical drop semantics.
+  This phase runs after 1.10c.6 so all reads consult authoritative
+  `hset_keys` state instead of process-local cached hash ids.
 
   Both directions land **fully in-trans** (atomic with the type
   flip). Detection is free — each path's existing Phase-1
@@ -739,7 +769,7 @@ Sub-phases (each its own commit, separately bisectable):
 
   Sub-phases (one commit each):
 
-  - **1.10c.6a — HSET-on-string silent replace.**
+  - **1.10c.7a — HSET-on-string silent replace.**
     `init_hset_lock_claim_code` (interpreted_code.cc:133) gains
     a third interpreter output (`OUTPUT_INDEX_2 = was-string-flag`).
     The UPDATE-on-string branch flips from "emit `(0, 0)`" to
@@ -760,7 +790,7 @@ Sub-phases (each its own commit, separately bisectable):
        rows are at `(prealloc_id, field_name)`, disjoint from
        the deleted string row's PK `(0, name)`, so no conflict.
 
-  - **1.10c.6b — SET-on-hash silent replace.**
+  - **1.10c.7b — SET-on-hash silent replace.**
     `init_hset_string_claim_code` (interpreted_code.cc:202)
     drops `interpret_exit_nok(RONDB_WRONGTYPE)`. The UPDATE-on-
     hash branch reads existing `redis_key_id` and `field_count`,
@@ -782,7 +812,7 @@ Sub-phases (each its own commit, separately bisectable):
     `write_callback` and the `CompletedTypeError` state become
     dead; remove them.
 
-  - **1.10c.6c — Test coverage.**
+  - **1.10c.7c — Test coverage.**
     `t/rondis_keyinfo_silent_replace.test`:
     1. `SET k "string"`; `HSET k f v` → returns `1`; `GET k` →
        `(nil)`; `HGET k f` → `v`; `TYPE k` → `hash`; the old
@@ -803,24 +833,20 @@ Sub-phases (each its own commit, separately bisectable):
     5. The new hash from (1) and the new string from (2)
        interact correctly with EXPIRE / PERSIST / DEL.
 
-  Open question deferred: the trans-size ceiling on (1.10c.6b).
+  Open question deferred: the trans-size ceiling on (1.10c.7b).
   An HSET-then-SET on a hash with millions of field rows will
   exceed NDB's per-trans op buffer and surface as a generic NDB
   error. Acceptable for v1 (alpha tool, plan.md's "no SLA"
   posture). Follow-up ticket: bounded-batch silent replace that
   drains in chunks.
-- **1.10c.7 — Remove `redis_key_id_hash` cache (PENDING).** Once
-  the `hset_keys` row is the authoritative type registry, the
-  process-local cache becomes a hazard (no cross-server
-  invalidation). Strip it; every read takes the row.
 
-The 1.10c group preserves the cross-server cache invariant
+The 1.10c group preserves the empty-hash registry invariant
 documented in `feedback_hset_keys_row_persistent.md`: HDEL of the
 last field never deletes the `hset_keys` row, so a freshly-empty
-hash keeps its `redis_key_id` for any cached references in other
-Rondis servers. 1.10c.6's silent-replace and 1.10c.7's
-cache-removal preserve this — both only trigger when the *owning
-type* of the name flips, never on within-type field churn.
+hash keeps its `redis_key_id` internally. 1.10c.6 removes the
+process-local dependency on that id, and 1.10c.7's silent-replace
+only triggers when the *owning type* of the name flips, never on
+within-type field churn.
 
 ### Phase 1.11 — PR 1 final
 
