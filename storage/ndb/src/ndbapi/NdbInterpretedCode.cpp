@@ -1998,6 +1998,17 @@ int NdbInterpretedCode::branch_linked_isnotnull(Uint32 position,
   DBUG_RETURN(add_branch(Interpreter::BRANCH_LINKED_NE_NULL, label));
 }
 
+/* Phase I.3: standalone READ_LINKED_TO_MEM emit for column-vs-column
+ * on CTE_LOOKUP.  Stages one linked-attr buffer entry into
+ * cheapMemory[0]; the caller follows up with read_int64_to_reg_const
+ * (reg, 4) to skip the AttrHeader and read the 8-byte data into a
+ * register, then issues a second read_linked_to_mem + read for the
+ * other side and a branch_<inv>(R1, R2, label). */
+int NdbInterpretedCode::read_linked_to_mem(Uint32 position) {
+  DBUG_ENTER("NdbInterpretedCode::read_linked_to_mem");
+  DBUG_RETURN(add1(Interpreter::READ_LINKED_TO_MEM | (position << 16)));
+}
+
 int NdbInterpretedCode::branch_col_and_mask_eq_mask(const void *mask, Uint32,
                                                     Uint32 attrId,
                                                     Uint32 label) {

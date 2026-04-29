@@ -5868,6 +5868,76 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     require_prm(left != NULL && right != NULL,
                 "CTE_LOOKUP filter: comparison has NULL operand.");
 
+    // Phase I.3: column-vs-column on the same CTE_LOOKUP.  Both
+    // virt-columns must resolve to Bigint (signed 64-bit) so the
+    // 5-instruction reg-cmp sequence below has correct sign
+    // semantics.  Bigunsigned, mixed-width, float, decimal, string,
+    // and parent-vs-CTE comparisons are all rejected with explicit
+    // messages.  See cte_filter_phase_i3.md.
+    if (left->op == T_IDENTIFIER && right->op == T_IDENTIFIER) {
+      Uint32 col_l = left->col_idx;
+      Uint32 col_r = right->col_idx;
+      require_prm(scope.column_table_idx[col_l] == op_idx,
+                  "CTE_LOOKUP filter col-vs-col: left column does not "
+                  "reference this CTE.  Cross-CTE / parent-vs-CTE "
+                  "comparisons not yet supported.");
+      require_prm(scope.column_table_idx[col_r] == op_idx,
+                  "CTE_LOOKUP filter col-vs-col: right column does not "
+                  "reference this CTE.  Cross-CTE / parent-vs-CTE "
+                  "comparisons not yet supported.");
+      Uint32 pos_l = (Uint32)scope.column_attrId_map[col_l];
+      Uint32 pos_r = (Uint32)scope.column_attrId_map[col_r];
+      const NdbDictionary::Column* vc_l = virtTab->getColumn((int)pos_l);
+      const NdbDictionary::Column* vc_r = virtTab->getColumn((int)pos_r);
+      require_prm(vc_l != NULL && vc_r != NULL,
+                  "CTE_LOOKUP filter col-vs-col: virt-table missing "
+                  "column descriptor.");
+      require_prm(vc_l->getType() == NdbDictionary::Column::Bigint &&
+                  vc_r->getType() == NdbDictionary::Column::Bigint,
+                  "CTE_LOOKUP filter col-vs-col: both columns must "
+                  "resolve to Bigint (signed 64-bit).  Bigunsigned, "
+                  "mixed-width, float, decimal, and string col-vs-col "
+                  "comparisons are not yet supported — cast in the CTE "
+                  "body or use a constant-vs-column comparison.");
+
+      // Stage left into cheapMemory, copy to R1; stage right, copy to
+      // R2; signed reg-vs-reg branch with the inverted operator so we
+      // jump to fail_label when the SQL predicate is FALSE.  Data
+      // starts at offset 4 in cheapMemory (4-byte AttrHeader prefix
+      // written by handleReadLinkedToMem).
+      const Uint32 R1 = 1, R2 = 2;
+      require_prm(code.read_linked_to_mem(pos_l) == 0,
+                  "CTE_LOOKUP filter col-vs-col: read_linked_to_mem "
+                  "(left) failed.");
+      require_prm(code.read_int64_to_reg_const(R1, 4) == 0,
+                  "CTE_LOOKUP filter col-vs-col: read_int64 (left) "
+                  "failed.");
+      require_prm(code.read_linked_to_mem(pos_r) == 0,
+                  "CTE_LOOKUP filter col-vs-col: read_linked_to_mem "
+                  "(right) failed.");
+      require_prm(code.read_int64_to_reg_const(R2, 4) == 0,
+                  "CTE_LOOKUP filter col-vs-col: read_int64 (right) "
+                  "failed.");
+
+      int rc = -1;
+      switch (atom->op) {
+      case T_EQUALS:     rc = code.branch_ne(R1, R2, fail_label); break;
+      case T_NOT_EQUALS: rc = code.branch_eq(R1, R2, fail_label); break;
+      case T_LT:         rc = code.branch_ge(R1, R2, fail_label); break;
+      case T_LE:         rc = code.branch_gt(R1, R2, fail_label); break;
+      case T_GT:         rc = code.branch_le(R1, R2, fail_label); break;
+      case T_GE:         rc = code.branch_lt(R1, R2, fail_label); break;
+      default:
+        require_prm(false,
+                    "CTE_LOOKUP filter col-vs-col: unsupported "
+                    "operator.");
+      }
+      require_prm(rc == 0,
+                  "CTE_LOOKUP filter col-vs-col: failed to emit "
+                  "reg-vs-reg branch.");
+      return;
+    }
+
     // Identify which side is the CTE column and which is the constant.
     auto is_const = [](ConditionalExpression* e) {
       return e->op == T_INT || e->op == T_FLOAT ||
@@ -5886,8 +5956,9 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     } else {
       require_prm(false,
                   "CTE_LOOKUP filter supports only column-vs-constant "
-                  "comparisons; column-vs-column and expressions will be "
-                  "added in a later phase.");
+                  "and same-CTE column-vs-column comparisons; "
+                  "expressions on either side will be added in a "
+                  "later phase.");
     }
 
     Uint32 col_idx = col_side->col_idx;

@@ -1001,6 +1001,18 @@ class NdbInterpretedCode {
   int branch_linked_isnotnull(Uint32 position, Uint32 label);
 
   /*
+   * Standalone READ_LINKED_TO_MEM emit.  Most callers should reach
+   * for branch_linked_mem_* / branch_linked_inline_* /
+   * branch_linked_isnull which package this with a follow-up branch.
+   * Phase I.3 (column-vs-column on CTE_LOOKUP) needs the load on its
+   * own so two linked-attr buffer entries can be successively staged
+   * in cheapMemory and read into registers via
+   * read_int64_to_reg_const before a register-vs-register branch.
+   * Returns 0 on success, -1 on overflow.
+   */
+  int read_linked_to_mem(Uint32 position);
+
+  /*
    * Variants comparing an Attribute from this table with a parameter
    * value specified in the supplied attrInfo section.
    *

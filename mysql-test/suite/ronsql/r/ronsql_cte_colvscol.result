@@ -1,0 +1,190 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for CTE col-vs-col tests ===
+
+
+
+=== Test 1: col-vs-col `>` between two Bigint aggregates (SUM > MIN) ===
+== Query ==
+WITH stats AS (
+SELECT o_custkey AS k,
+SUM(o_amt) AS gross,
+MIN(o_amt) AS lo,
+MAX(o_amt) AS hi
+FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.gross > stats.lo
+GROUP BY stats.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (
+SELECT o_custkey AS k,
+SUM(o_amt) AS gross,
+MIN(o_amt) AS lo,
+MAX(o_amt) AS hi
+FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.gross > stats.lo
+GROUP BY stats.k|
+k	SUM(stats.gross)
+100	120
+200	80
+
+
+=== Test 2: col-vs-col `!=` (MIN != MAX) ===
+== Query ==
+WITH stats AS (
+SELECT o_custkey AS k,
+SUM(o_amt) AS gross,
+MIN(o_amt) AS lo,
+MAX(o_amt) AS hi
+FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.lo != stats.hi
+GROUP BY stats.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (
+SELECT o_custkey AS k,
+SUM(o_amt) AS gross,
+MIN(o_amt) AS lo,
+MAX(o_amt) AS hi
+FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.lo != stats.hi
+GROUP BY stats.k|
+k	SUM(stats.gross)
+100	120
+
+
+=== Test 3: col-vs-col `<` (MIN < MAX, always true on multi-row groups) ===
+== Query ==
+WITH stats AS (
+SELECT o_custkey AS k,
+MIN(o_amt) AS lo,
+MAX(o_amt) AS hi
+FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.lo)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.lo < stats.hi
+GROUP BY stats.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (
+SELECT o_custkey AS k,
+MIN(o_amt) AS lo,
+MAX(o_amt) AS hi
+FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.lo)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.lo < stats.hi
+GROUP BY stats.k|
+k	SUM(stats.lo)
+100	50
+
+
+=== Test 4: DNF — col-vs-col OR col-vs-const ===
+== Query ==
+WITH stats AS (
+SELECT o_custkey AS k,
+SUM(o_amt) AS gross,
+MIN(o_amt) AS lo
+FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.gross = stats.lo OR stats.k = 100
+GROUP BY stats.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (
+SELECT o_custkey AS k,
+SUM(o_amt) AS gross,
+MIN(o_amt) AS lo
+FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.gross = stats.lo OR stats.k = 100
+GROUP BY stats.k|
+k	SUM(stats.gross)
+100	120
+300	90
+
+
+=== Test 5: regression — col-vs-const (I.2 path, unchanged) ===
+== Query ==
+WITH stats AS (
+SELECT o_custkey AS k,
+SUM(o_amt) AS gross
+FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.gross > 100
+GROUP BY stats.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (
+SELECT o_custkey AS k,
+SUM(o_amt) AS gross
+FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.gross > 100
+GROUP BY stats.k|
+k	SUM(stats.gross)
+100	120
+
+
+=== Test 6: rejection — Bigunsigned col-vs-col (COUNT result) ===
+Expected error: both columns must resolve to Bigint
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: both columns must resolve to Bigint (signed 64-bit).  Bigunsigned, mixed-width, float, decimal, and string col-vs-col comparisons are not yet supported — cast in the CTE body or use a constant-vs-column comparison.

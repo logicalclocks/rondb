@@ -51,10 +51,12 @@ NOT outside `IS NOT NULL` are rejected with clean errors.
 
 #### I.3 — Column-vs-column comparisons on CTE output (M)
 
-Same rejection site (`RonSQLPreparer.cpp:5634-5638`).  Currently
-column-vs-constant only; column-vs-column would need a second
-linked-load + register compare opcode (similar to how cross-table
-filters work in the aggregator program — `BranchReg*` family).
+**Shipped (Bigint-only)** — see `cte_filter_phase_i3.md`.  Two CTE
+columns from the same lookup, both `Bigint` (signed 64-bit), via
+READ_LINKED_TO_MEM + READ_INT64_MEM_TO_REG twice + BRANCH_<inv>_REG_REG.
+Bigunsigned, mixed-width, float, decimal, string, and parent-vs-CTE
+comparisons remain rejected — they need either kernel work
+(unsigned reg-cmp opcode) or a different code path.
 
 ### Aggregation expression surface
 
