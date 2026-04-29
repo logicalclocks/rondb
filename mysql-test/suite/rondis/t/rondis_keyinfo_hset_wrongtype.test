@@ -1,0 +1,70 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Phase 1.10c.3 - HSET / HMSET WRONGTYPE on existing string.
+#
+# Phase 1.10c.1 wired the WRONGTYPE rejection at set_rows_hset's
+# Phase 1 callback (commands.cc:2162). This test pins three
+# guarantees that the rejection must hold:
+#   1. HSET on an existing string returns -WRONGTYPE.
+#   2. HMSET on an existing string returns -WRONGTYPE before any
+#      field row is written (multi-field atomicity).
+#   3. The string's value is intact after the rejection - the
+#      hset_keys row still has redis_key_id IS NULL and the
+#      string_keys row's value is unchanged.
+#
+# 1.10c.6 will replace WRONGTYPE with Redis-canonical silent
+# replace (SET on hash drops the hash; HSET on string drops the
+# string); until then this test pins the rejection behavior.
+#
+
+--echo #
+--echo # SET claims a string row in both tables.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET sk "original"
+SELECT redis_key, redis_key_id IS NULL AS id_null
+  FROM redis_0.hset_keys WHERE redis_key = 'sk';
+
+--echo #
+--echo # HSET on the existing string -> -WRONGTYPE.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET sk f v
+
+--echo #
+--echo # The string is intact: GET still returns the original value.
+--echo # The hset_keys row still has redis_key_id IS NULL.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET sk
+SELECT redis_key, redis_key_id IS NULL AS id_null
+  FROM redis_0.hset_keys WHERE redis_key = 'sk';
+
+--echo #
+--echo # HMSET (multi-field) on the existing string -> -WRONGTYPE.
+--echo # The reject lands in Phase 1's lock-claim, before any field
+--echo # write reaches string_keys, so no field rows leak.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HMSET sk f1 v1 f2 v2 f3 v3
+
+--echo #
+--echo # Still intact - GET returns original, no field rows under
+--echo # any redis_key_id for sk.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET sk
+SELECT COUNT(*) AS field_rows_for_sk
+  FROM redis_0.string_keys WHERE redis_key = 'sk' AND redis_key_id != 0;
+
+--echo #
+--echo # Sanity: HSET on a fresh hash name still works (the rejection
+--echo # is specific to existing-string collision, not a blanket HSET
+--echo # block).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET fresh_h f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET fresh_h f
+SELECT redis_key_id IS NULL AS id_null, field_count
+  FROM redis_0.hset_keys WHERE redis_key = 'fresh_h';
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
