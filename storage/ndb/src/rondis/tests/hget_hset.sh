@@ -193,7 +193,6 @@ done
 redis-cli HDEL $HASH_KEY $incr_field
 
 echo ""
-redis-cli HSET "$HASH_KEY" "$KEY:counter_anchor_incrby" 0
 incrby_field="$KEY:incrby${RANDOM}${RANDOM}"
 incrby_output=$(redis-cli HINCRBY "$HASH_KEY" "$incrby_field" "20")
 incrby_result=$(redis-cli HGET "$HASH_KEY" "$incrby_field")
@@ -226,7 +225,6 @@ done
 redis-cli HDEL $HASH_KEY $incrby_field
 
 echo ""
-redis-cli HSET "$HASH_KEY" "$KEY:counter_anchor_decr" 0
 decr_field="$KEY:decr${RANDOM}${RANDOM}"
 decr_output=$(redis-cli HDECR "$HASH_KEY" "$decr_field")
 decr_result=$(redis-cli HGET "$HASH_KEY" "$decr_field")
@@ -258,7 +256,6 @@ done
 redis-cli HDEL $HASH_KEY $decr_field
 
 echo ""
-redis-cli HSET "$HASH_KEY" "$KEY:counter_anchor_decrby" 0
 decrby_field="$KEY:decr${RANDOM}${RANDOM}"
 decrby_output=$(redis-cli HDECRBY "$HASH_KEY" "$decrby_field" "20")
 decrby_result=$(redis-cli HGET "$HASH_KEY" "$decrby_field")
@@ -290,8 +287,5 @@ for i in {1..10}; do
 done
 redis-cli HDEL $HASH_KEY $decrby_field
 redis-cli HDEL $HASH_KEY "$KEY:counter_anchor"
-redis-cli HDEL $HASH_KEY "$KEY:counter_anchor_incrby"
-redis-cli HDEL $HASH_KEY "$KEY:counter_anchor_decr"
-redis-cli HDEL $HASH_KEY "$KEY:counter_anchor_decrby"
 
 echo "All tests completed."

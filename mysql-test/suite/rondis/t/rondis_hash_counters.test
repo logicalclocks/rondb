@@ -17,6 +17,8 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET counters up
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDECR counters dn
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET counters dn
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL counters up
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE counters
 
 --echo #
 --echo # HINCRBY / HDECRBY on a non-existent field with a specified delta.

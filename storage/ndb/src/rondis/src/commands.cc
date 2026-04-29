@@ -3511,7 +3511,11 @@ void rondb_incr_decr(
                     &key_store.m_key_row,
                     incr_flag,
                     unsigned_value,
-                    worker_id);
+                    worker_id,
+                    redis_key_id == STRING_REDIS_KEY_ID ? nullptr
+                                                        : argv[1].c_str(),
+                    redis_key_id == STRING_REDIS_KEY_ID ? 0
+                                                        : argv[1].size());
   ndb->closeTransaction(key_store.m_trans);
   return;
 }

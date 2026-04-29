@@ -2154,7 +2154,9 @@ void incr_decr_key_row(std::string *response,
                        struct key_table *key_row,
                        bool incr_flag,
                        Uint64 inc_dec_value,
-                       int worker_id) {
+                       int worker_id,
+                       const char *hash_name,
+                       Uint32 hash_name_len) {
   /**
    * The mask specifies which columns is to be updated after the interpreter
    * has finished. The values are set in the key_row.
@@ -2193,12 +2195,15 @@ void incr_decr_key_row(std::string *response,
    * This is performed by the reading the pseudo column that is reading the
    * output index written in interpreter program.
    */
-  NdbOperation::GetValueSpec getvals[1];
+  NdbOperation::GetValueSpec getvals[2];
   getvals[0].appStorage = nullptr;
   getvals[0].recAttr = nullptr;
   getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
+  getvals[1].appStorage = nullptr;
+  getvals[1].recAttr = nullptr;
+  getvals[1].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_1;
   opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
-  opts.numExtraGetFinalValues = 1;
+  opts.numExtraGetFinalValues = 2;
   opts.extraGetFinalValues = getvals;
 
   if (get_dirty_incr_decr_flag(worker_id))
@@ -2221,31 +2226,40 @@ void incr_decr_key_row(std::string *response,
     return;
   }
 
-  if (key_row->redis_key_id == STRING_REDIS_KEY_ID) {
+  const bool is_string_counter =
+    (key_row->redis_key_id == STRING_REDIS_KEY_ID);
+  const bool is_hash_counter = !is_string_counter;
+  const NdbDictionary::Table *hset_tab = nullptr;
+  if (is_string_counter || is_hash_counter) {
     const NdbDictionary::Dictionary *dict = ndb->getDictionary();
-    const NdbDictionary::Table *hset_tab =
-      dict ? dict->getTable(HSET_KEY_TABLE_NAME) : nullptr;
+    hset_tab = dict ? dict->getTable(HSET_KEY_TABLE_NAME) : nullptr;
     if (hset_tab == nullptr) {
       assign_ndb_err_to_response(response,
                                  "Failed to get hset_keys table",
                                  ndb->getNdbError());
       return;
     }
-    if (add_hset_string_claim_op(trans,
-                                 hset_tab,
-                                 &key_row->redis_key[2],
-                                 get_length(&key_row->redis_key[0]),
-                                 false,
-                                 true,
-                                 0,
-                                 database_id,
-                                 response) != 0) {
-      return;
+    if (is_string_counter) {
+      if (add_hset_string_claim_op(trans,
+                                   hset_tab,
+                                   &key_row->redis_key[2],
+                                   get_length(&key_row->redis_key[0]),
+                                   false,
+                                   true,
+                                   0,
+                                   database_id,
+                                   response) != 0) {
+        return;
+      }
     }
   }
 
-  /* Send to RonDB and execute the INCR operation */
-  int exec_rc = trans->execute(NdbTransaction::Commit,
+  /*
+   * Send the counter write first without committing. For hash counters,
+   * OUTPUT_INDEX_1 tells us whether the field row was inserted; if so,
+   * queue hset_keys.field_count += 1 before the final Commit.
+   */
+  int exec_rc = trans->execute(NdbTransaction::NoCommit,
                                NdbOperation::AbortOnError);
   const NdbError &ndb_err = trans->getNdbError();
   if (exec_rc != 0 || ndb_err.code != 0) {
@@ -2275,6 +2289,30 @@ void incr_decr_key_row(std::string *response,
     assign_ndb_err_to_response(response,
                                FAILED_INCR_KEY,
                                ndb_err);
+    return;
+  }
+
+  NdbRecAttr *new_field_attr = getvals[1].recAttr;
+  if (is_hash_counter &&
+      new_field_attr != nullptr &&
+      new_field_attr->u_64_value() != 0) {
+    if (add_hset_field_count_bump_op(trans,
+                                     hset_tab,
+                                     hash_name,
+                                     hash_name_len,
+                                     1,
+                                     database_id,
+                                     response) != 0) {
+      return;
+    }
+  }
+
+  exec_rc = trans->execute(NdbTransaction::Commit,
+                           NdbOperation::AbortOnError);
+  if (exec_rc != 0 || trans->getNdbError().code != 0) {
+    assign_ndb_err_to_response(response,
+                               FAILED_INCR_KEY,
+                               trans->getNdbError());
     return;
   }
   /* Retrieve the returned new value as an Int64 value */

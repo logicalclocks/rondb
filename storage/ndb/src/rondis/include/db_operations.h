@@ -256,7 +256,9 @@ void incr_decr_key_row(std::string *response,
                        struct key_table *key_row,
                        bool incr_flag,
                        Uint64 inc_dec_value,
-                       int worker_id);
+                       int worker_id,
+                       const char *hash_name,
+                       Uint32 hash_name_len);
 
 /**
  * Uinique key MODULE for Rondis

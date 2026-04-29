@@ -77,6 +77,7 @@ int initNdbCodeIncrDecr(std::string *response,
   code->branch_eq_null(REG7, LABEL0);
   code->interpret_exit_nok(RONDB_KEY_NOT_NULL_ERROR);
   code->def_label(LABEL0);
+  code->load_const_u64(REG7, 0); // Existing row; not a new field.
   code->read_full(value_start_col, REG6, REG2); // Read value_start column
   code->load_const_u16(REG1, MEMORY_OFFSET_STRING);
   code->sub_const_reg(REG3, REG2, NUM_LEN_BYTES);
@@ -94,6 +95,7 @@ int initNdbCodeIncrDecr(std::string *response,
   code->write_size_mem(REG3, REG0); // Write back length bytes in memory
 
   code->write_interpreter_output(REG5, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
   code->write_from_mem(value_start_col, REG6, REG2);  // Write to column
   code->write_attr(tot_value_len_col, REG3);
   code->interpret_exit_ok();
@@ -101,6 +103,7 @@ int initNdbCodeIncrDecr(std::string *response,
   /* INSERT code */
   code->def_label(LABEL2);
   code->load_const_u16(REG4, 0);
+  code->load_const_u64(REG7, 1); // INSERT branch; new field.
   code->load_const_u16(REG1, MEMORY_OFFSET_STRING);
   code->branch_label(LABEL1);
 

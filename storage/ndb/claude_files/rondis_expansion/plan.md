@@ -748,13 +748,13 @@ Sub-phases (each its own commit, separately bisectable):
   - `HSET h f v; HDEL h f; TYPE h` remains `none` while the empty
     registry row can still persist internally.
 
-- **1.10c.6b — HINCR / HDECR field-count repair (PENDING).**
+- **1.10c.6b — HINCR / HDECR field-count repair (DONE).**
   Cache removal made `hset_keys.field_count` authoritative for hash
   visibility. HINCR / HINCRBY / HDECR / HDECRBY already write the
   field row through the generic INCR interpreter, but a missing-field
-  INSERT currently does not bump `hset_keys.field_count`. That makes
-  the hash invisible after a later HDEL can decrement the count to
-  zero even when other fields still exist.
+  INSERT must bump `hset_keys.field_count`. Without that bump, the
+  hash becomes invisible after a later HDEL can decrement the count
+  to zero even when other fields still exist.
 
   Implementation:
   - Detect whether the counter operation inserted a new hash field
