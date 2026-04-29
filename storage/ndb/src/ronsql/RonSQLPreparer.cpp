@@ -7427,7 +7427,8 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
       Uint32 then_raw = m_main_scope.agg->raw_word_size(ci.then_start, ci.skip_pos);
       Uint32 skip_raw = 1;
       Uint32 then_arm_total = then_raw + skip_raw;
-      generate_embedded_condition(aggregator, ci.condition, then_arm_total);
+      generate_embedded_condition(aggregator, m_main_scope, ci.condition,
+                                  then_arm_total, /*cteVirtualTables=*/nullptr);
       break;
     }
     case AggregationAPICompiler::SVMInstrType::Skip:
@@ -7946,7 +7947,8 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
       Uint32 then_raw = scope.agg->raw_word_size(ci.then_start, ci.skip_pos);
       Uint32 skip_raw = 1;
       Uint32 then_arm_total = then_raw + skip_raw;
-      generate_embedded_condition(aggregator, ci.condition, then_arm_total);
+      generate_embedded_condition(aggregator, scope, ci.condition,
+                                  then_arm_total, cteVirtualTables);
       break;
     }
     case AggregationAPICompiler::SVMInstrType::Skip:
@@ -7992,10 +7994,64 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
 }
 
 void
+RonSQLPreparer::require_cte_case_condition_column_output(QueryScope& scope,
+                                                         Uint32 op_idx,
+                                                         Uint32 cidx)
+{
+  const JoinOp& cte_op = scope.join_plan.ops[op_idx];
+  require_run(cte_op.cte_def != NULL,
+              "CASE over CTE: op has no CTE definition.");
+  Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[cidx];
+  Uint32 walk = 0;
+  const Outputs* o = cte_op.cte_def->stmt->outputs;
+  while (o != NULL && walk < cte_col_idx) {
+    o = o->next;
+    walk++;
+  }
+  require_prm(o != NULL,
+              "CASE over CTE: output index out of range.");
+  require_prm(o->type == Outputs::Type::COLUMN,
+              "CASE condition referencing a CTE aggregate output "
+              "is not yet supported; reference a CTE column projection "
+              "instead, or move the predicate into the CTE body's "
+              "WHERE clause.");
+}
+
+const NdbDictionary::Column*
+RonSQLPreparer::resolve_case_condition_column(
+    QueryScope& scope,
+    ConditionalExpression* col_side,
+    NdbDictionary::Table* const* cteVirtualTables)
+{
+  Uint32 cidx = col_side->col_idx;
+  if (scope.column_table_idx == NULL) {
+    return scope.column_map[cidx];
+  }
+  Uint32 op_idx = (Uint32)scope.column_table_idx[cidx];
+  if (cteVirtualTables != NULL && op_idx < scope.join_plan.num_ops) {
+    JoinOp::Type t = scope.join_plan.ops[op_idx].type;
+    if (t == JoinOp::CTE_LOOKUP || t == JoinOp::CTE_SCAN) {
+      if (cteVirtualTables[op_idx] != NULL) {
+        Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[cidx];
+        const NdbDictionary::Column* vtcol =
+            cteVirtualTables[op_idx]->getColumn((int)cte_col_idx);
+        require_prm(vtcol != NULL,
+                    "CASE over CTE: virt-table missing column at "
+                    "cte_col_idx.");
+        return vtcol;
+      }
+    }
+  }
+  return scope.column_map[cidx];
+}
+
+void
 RonSQLPreparer::generate_embedded_condition(
     NdbAggregator* aggregator,
+    QueryScope& scope,
     ConditionalExpression* ce,
-    Uint32 then_arm_raw_size)
+    Uint32 then_arm_raw_size,
+    NdbDictionary::Table* const* cteVirtualTables)
 {
   // Two patterns supported:
   //   OR: (col = 'X' OR col = 'Y') → branch to THEN on match, fall-through ELSE
@@ -8022,12 +8078,12 @@ RonSQLPreparer::generate_embedded_condition(
     atoms.push(ce);
   }
 
-  // Compute embedded word sizes and detect parent-table columns.
-  // Parent columns need READ_LINKED_TO_MEM + BRANCH_MEM_OP_ARG instead of
-  // BRANCH_ATTR_OP_ARG. All atoms in a CASE must reference the same column
-  // (enforced by the parser), so we check the first atom.
-  Uint32 leaf_idx = (m_main_scope.column_table_idx != NULL) ? m_main_scope.join_plan.agg_leaf_idx : 0;
+  // Compute embedded word sizes and detect columns that arrive through the
+  // linked-attr buffer. Parent columns, and CTE leaf columns on a CTE agg-feed
+  // path, need READ_LINKED_TO_MEM before the branch instruction.
+  Uint32 leaf_idx = (scope.column_table_idx != NULL) ? scope.join_plan.agg_leaf_idx : 0;
   bool has_linked_col = false;
+  bool has_inline_linked_col = false;
   Uint32 linked_position = 0;
 
   Uint32 total_branch_words = 0;
@@ -8037,19 +8093,42 @@ RonSQLPreparer::generate_embedded_condition(
     ndbrequire(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS);
     ConditionalExpression* col_side = atom->args.left;
     ndbrequire(col_side->op == T_IDENTIFIER);
-    if (m_main_scope.column_table_idx != NULL &&
-        m_main_scope.column_table_idx[col_side->col_idx] != leaf_idx) {
-      has_linked_col = true;
-      linked_position = find_or_add_linked_proj(
-          m_main_scope.join_plan, m_main_scope.column_table_idx[col_side->col_idx],
-          m_columns[col_side->col_idx].c_str());
+    if (scope.column_table_idx != NULL) {
+      Uint32 op_idx = scope.column_table_idx[col_side->col_idx];
+      bool op_is_cte = false;
+      if (cteVirtualTables != NULL && op_idx < scope.join_plan.num_ops) {
+        JoinOp::Type t = scope.join_plan.ops[op_idx].type;
+        op_is_cte = (t == JoinOp::CTE_LOOKUP || t == JoinOp::CTE_SCAN);
+      }
+      if (op_is_cte) {
+        require_cte_case_condition_column_output(
+            scope, op_idx, col_side->col_idx);
+      }
+      if (op_idx != leaf_idx) {
+        has_linked_col = true;
+        linked_position = find_or_add_linked_proj(
+            scope.join_plan, op_idx, m_columns[col_side->col_idx].c_str());
+      } else if (op_is_cte) {
+        has_linked_col = true;
+        has_inline_linked_col = true;
+        linked_position = scope.join_plan.num_linked_projs +
+            (Uint32)scope.column_attrId_map[col_side->col_idx];
+      }
     }
-    const NdbDictionary::Column* col = m_main_scope.column_map[col_side->col_idx];
-    Uint32 byte_len = col->getLength();
+    const NdbDictionary::Column* col =
+        resolve_case_condition_column(scope, col_side, cteVirtualTables);
+    require_prm(col != NULL,
+                "CASE condition: unresolved column descriptor.");
+    raw_value rv = encode_constant(atom->args.right, col);
+    Uint32 byte_len = rv.len;
     Uint32 data_words = (byte_len + 3) / 4;
+    // BRANCH_MEM_OP_ARG_INLINE_TYPE: 3 words (opcode, type|len, meta) + data
     // BRANCH_MEM_OP_ARG: 4 words (opcode, attrId|len, tableId, schemaVer) + data
     // BRANCH_ATTR_OP_ARG: 2 words (opcode, attrId|len) + data
-    total_branch_words += (has_linked_col ? 4 : 2) + data_words;
+    if (has_inline_linked_col)
+      total_branch_words += 3 + data_words;
+    else
+      total_branch_words += (has_linked_col ? 4 : 2) + data_words;
   }
   // If linked column: add 1 word for READ_LINKED_TO_MEM before the branches
   Uint32 emb_len = total_branch_words + 6 + (has_linked_col ? 1 : 0);
@@ -8077,9 +8156,77 @@ RonSQLPreparer::generate_embedded_condition(
     ConditionalExpression* atom = atoms[a];
     ConditionalExpression* col_side = atom->args.left;
     ConditionalExpression* val_side = atom->args.right;
-    const NdbDictionary::Column* col = m_main_scope.column_map[col_side->col_idx];
-    NdbAttrId attr_id = m_main_scope.column_attrId_map[col_side->col_idx];
-    Uint32 byte_len = col->getLength();
+
+    // Phase I.4: for a CTE COLUMN projection in the condition,
+    // attr_id and the parent-table descriptor must come from the
+    // CTE body's source op — column_attrId_map stores the
+    // CTE-output index and column_map is NULL for CTE outputs.
+    // CTE AGGREGATE outputs would need BRANCH_MEM_OP_ARG_INLINE_TYPE
+    // (synthesized result type) — not yet supported here, rejected
+    // cleanly below.
+    Uint32 cidx = col_side->col_idx;
+    Uint32 parent_op = (Uint32)scope.column_table_idx[cidx];
+    bool col_is_cte = false;
+    if (cteVirtualTables != NULL && parent_op < scope.join_plan.num_ops) {
+      JoinOp::Type t = scope.join_plan.ops[parent_op].type;
+      col_is_cte = (t == JoinOp::CTE_LOOKUP || t == JoinOp::CTE_SCAN);
+    }
+
+    const NdbDictionary::Column* col = NULL;
+    NdbAttrId attr_id = 0;
+    const NdbDictionary::Table* parentTable = NULL;
+    if (has_inline_linked_col && parent_op == leaf_idx) {
+      require_cte_case_condition_column_output(scope, parent_op, cidx);
+      col = resolve_case_condition_column(scope, col_side, cteVirtualTables);
+      require_prm(col != NULL,
+                  "CASE over CTE leaf: unresolved virtual column.");
+    } else if (col_is_cte) {
+      const JoinOp& cte_op = scope.join_plan.ops[parent_op];
+      require_run(cte_op.cte_def != NULL,
+                  "CASE over CTE: op has no CTE definition.");
+      require_run(cte_op.cte_def_idx < m_cte_scopes.size(),
+                  "CASE over CTE: cte_def_idx out of range.");
+      QueryScope* cs = m_cte_scopes[cte_op.cte_def_idx];
+      require_run(cs != NULL,
+                  "CASE over CTE: missing CTE body scope.");
+      Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[cidx];
+      Uint32 walk = 0;
+      const Outputs* o = cte_op.cte_def->stmt->outputs;
+      while (o != NULL && walk < cte_col_idx) { o = o->next; walk++; }
+      require_prm(o != NULL,
+                  "CASE over CTE: output index out of range.");
+      require_prm(o->type == Outputs::Type::COLUMN,
+                  "CASE condition referencing a CTE aggregate output "
+                  "is not yet supported — would need an inline-type "
+                  "branch opcode.  Reference a CTE column projection "
+                  "instead, or move the predicate into the CTE body's "
+                  "WHERE clause.");
+      Uint32 src_col_idx = o->column.col_idx;
+      const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
+      require_prm(src_col != NULL,
+                  "CASE over CTE: source column not resolved.");
+      Uint32 src_op_idx = cs->column_table_idx[src_col_idx];
+      require_prm(src_op_idx < cs->join_plan.num_ops,
+                  "CASE over CTE: source op out of range.");
+      parentTable = cs->join_plan.ops[src_op_idx].table;
+      require_prm(parentTable != NULL,
+                  "CASE over CTE: source op has no physical table.");
+      col = src_col;
+      attr_id = (NdbAttrId)src_col->getColumnNo();
+    } else {
+      col = scope.column_map[cidx];
+      require_prm(col != NULL,
+                  "CASE condition: unresolved column descriptor.");
+      attr_id = scope.column_attrId_map[cidx];
+      if (has_linked_col) {
+        parentTable = scope.join_plan.ops[parent_op].table;
+        require_prm(parentTable != NULL,
+                    "CASE condition: linked parent op has no physical "
+                    "table.");
+      }
+    }
+    raw_value rv = encode_constant(val_side, col);
+    Uint32 byte_len = rv.len;
     Uint32 data_words = (byte_len + 3) / 4;
 
     Uint32 branch_offset = second_exit_label - pos;
@@ -8098,11 +8245,23 @@ RonSQLPreparer::generate_embedded_condition(
       cond = (atom->op == T_EQUALS) ? Interpreter::EQ : Interpreter::NE;
     }
 
-    if (has_linked_col) {
+    if (has_inline_linked_col) {
+      // CTE leaf column: linked buffer entries carry inline type metadata,
+      // so compare cheapMemory[0] with BRANCH_MEM_OP_ARG_INLINE_TYPE.
+      Uint32 csNumber = 0;
+      if (col->getCharset() != NULL)
+        csNumber = (Uint32)col->getCharsetNumber();
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE |
+          (Interpreter::NULL_CMP_EQUAL << 6) | (cond << 12) |
+          (branch_offset << 16)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::BranchMem_2((Uint32)col->getType(), byte_len)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          (byte_len << 16) | csNumber));
+    } else if (has_linked_col) {
       // Parent-table column: use BRANCH_MEM_OP_ARG (reads from cheapMemory[0])
-      // Get parent table's tableId and schemaVersion for type lookup
-      Uint32 parent_op = m_main_scope.column_table_idx[col_side->col_idx];
-      const NdbDictionary::Table* parentTable = m_main_scope.join_plan.ops[parent_op].table;
+      // Get parent table's tableId and schemaVersion for type lookup.
       programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::BranchMem(cond, Interpreter::NULL_CMP_EQUAL) |
           (branch_offset << 16)));
@@ -8121,7 +8280,6 @@ RonSQLPreparer::generate_embedded_condition(
           Interpreter::BranchCol_2(attr_id, byte_len)));
     }
 
-    raw_value rv = encode_constant(val_side, col);
     Uint32 padded_len = data_words * 4;
     Uint8* buf = m_amalloc->alloc_exc<Uint8>(padded_len);
     memcpy(buf, rv.val, rv.len);
@@ -8133,7 +8291,10 @@ RonSQLPreparer::generate_embedded_condition(
       memcpy(&word, buf + w * 4, 4);
       programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(word));
     }
-    pos += 2 + data_words;
+    if (has_inline_linked_col)
+      pos += 3 + data_words;
+    else
+      pos += (has_linked_col ? 4 : 2) + data_words;
   }
 
   // First exit (fall-through)

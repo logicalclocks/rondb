@@ -19191,9 +19191,16 @@ void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
            "linkedWords=%u",
            instance(), targetBaseKey, targetLeafIndex, linkedPos));
 
+  Dbtup::KeyReqStruct aggReq(c_tup);
+  aggReq.signal = signal;
+  aggReq.read_length = 0;
+  aggReq.log_size = 0;
+  aggReq.last_row = false;
+
 retry_agg:
+  aggReq.no_exec_instructions = 0;
   Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-      nullptr, nullptr, linkedBuf, linkedPos, leaf);
+      c_tup, &aggReq, linkedBuf, linkedPos, leaf);
   if (aggRet == AGG_EVICT_NEEDED) {
     jam();
     if (unlikely(targetState->m_cte_mode)) {
@@ -19892,9 +19899,16 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
                             nullptr, 0,
                             linkedBuf, &linkedPos);
 
+      Dbtup::KeyReqStruct aggReq(c_tup);
+      aggReq.signal = signal;
+      aggReq.read_length = 0;
+      aggReq.log_size = 0;
+      aggReq.last_row = false;
+
     retry_agg_scan:
+      aggReq.no_exec_instructions = 0;
       Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-          nullptr, nullptr, linkedBuf, linkedPos, leaf);
+          c_tup, &aggReq, linkedBuf, linkedPos, leaf);
       if (aggRet == AGG_EVICT_NEEDED) {
         jam();
         if (unlikely(targetState->m_cte_mode)) {
@@ -19995,8 +20009,15 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
       leaf = &targetState->m_leaf_programs[targetLeafIndex];
     }
 
+    Dbtup::KeyReqStruct aggReq(c_tup);
+    aggReq.signal = signal;
+    aggReq.read_length = 0;
+    aggReq.no_exec_instructions = 0;
+    aggReq.log_size = 0;
+    aggReq.last_row = false;
+
     Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-        nullptr, nullptr, linkedBuf, linkedPos, leaf);
+        c_tup, &aggReq, linkedBuf, linkedPos, leaf);
     if (unlikely(aggRet != 0 && aggRet != AGG_EVICT_NEEDED)) {
       jam();
       releaseCteScanIterState(aggFeedStateI);
@@ -20015,8 +20036,9 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
       }
       sendEvictedAggGroup(signal, targetInterp, targetState);
       /* Retry after eviction */
+      aggReq.no_exec_instructions = 0;
       aggRet = targetInterp->processRecWithLinkedAttrs(
-          nullptr, nullptr, linkedBuf, linkedPos, leaf);
+          c_tup, &aggReq, linkedBuf, linkedPos, leaf);
       if (unlikely(aggRet != 0)) {
         jam();
         releaseCteScanIterState(aggFeedStateI);

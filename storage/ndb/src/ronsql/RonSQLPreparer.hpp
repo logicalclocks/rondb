@@ -392,8 +392,18 @@ private:
                         struct ConditionalExpression* ce,
                         Uint32 leaf_idx, Uint32 reg, Uint32 tmp_reg);
   void generate_embedded_condition(NdbAggregator* aggregator,
+                                   QueryScope& scope,
                                    struct ConditionalExpression* ce,
-                                   Uint32 then_arm_raw_size);
+                                   Uint32 then_arm_raw_size,
+                                   NdbDictionary::Table* const*
+                                       cteVirtualTables);
+  const NdbDictionary::Column* resolve_case_condition_column(
+      QueryScope& scope,
+      struct ConditionalExpression* col_side,
+      NdbDictionary::Table* const* cteVirtualTables);
+  void require_cte_case_condition_column_output(QueryScope& scope,
+                                                Uint32 op_idx,
+                                                Uint32 cidx);
   void print_result_json(NdbAggregator* aggregator);
   void print();
   void print(struct ConditionalExpression* ce,

@@ -9501,6 +9501,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
         case Interpreter::BRANCH_MEM_OP_ARG:
           INTERP_DISPATCH(handleBranchMemOpArg);
           break;
+        case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE:
+          INTERP_DISPATCH(handleBranchMemOpArgInlineType);
+          break;
 
         case Interpreter::BRANCH_ATTR_EQ_NULL:
           INTERP_DISPATCH(handleBranchAttrEqNull);

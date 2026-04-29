@@ -564,6 +564,7 @@ bool JoinAggInterpreter::validateEmbeddedProgram(
       case Interpreter::EXIT_OK:
       case Interpreter::BRANCH_ATTR_OP_ARG:
       case Interpreter::BRANCH_MEM_OP_ARG:
+      case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE:
       case Interpreter::BRANCH_ATTR_EQ_NULL:
       case Interpreter::BRANCH_ATTR_NE_NULL:
       case Interpreter::READ_LINKED_TO_MEM:
@@ -589,6 +590,7 @@ bool JoinAggInterpreter::validateEmbeddedProgram(
       case Interpreter::BRANCH_GE_REG_REG:
       case Interpreter::BRANCH_ATTR_OP_ARG:
       case Interpreter::BRANCH_MEM_OP_ARG:
+      case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE:
       case Interpreter::BRANCH_ATTR_EQ_NULL:
       case Interpreter::BRANCH_ATTR_NE_NULL:
         is_branch = true;
