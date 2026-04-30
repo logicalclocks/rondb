@@ -779,14 +779,13 @@ Sub-phases (each its own commit, separately bisectable):
     resets once this is fixed; a single anchor before the counter
     section is enough.
 
-- **1.10c.7 — Redis-canonical silent replace (IN PROGRESS;
-  HSET-on-string done at 1.10c.7a, SET-on-hash + combined
-  test still pending).** Real Redis SET on a hash silently drops
-  the hash; HSET on a string silently drops the string. Replace
-  1.10c.1's WRONGTYPE intermediate behavior with the
-  Redis-canonical drop semantics. This phase runs after 1.10c.6
-  so all reads consult authoritative `hset_keys` state instead of
-  process-local cached hash ids.
+- **1.10c.7 — Redis-canonical silent replace (DONE for both
+  directions; combined test 1.10c.7c still pending).** Real Redis
+  SET on a hash silently drops the hash; HSET on a string silently
+  drops the string. Replaces 1.10c.1's WRONGTYPE intermediate
+  behavior with the Redis-canonical drop semantics. Runs after
+  1.10c.6 so all reads consult authoritative `hset_keys` state
+  instead of process-local cached hash ids.
 
   Both directions land **fully in-trans** (atomic with the type
   flip). Detection is free — each path's existing Phase-1
@@ -831,40 +830,58 @@ Sub-phases (each its own commit, separately bisectable):
     rewritten to assert silent-replace shape instead of WRONGTYPE
     on HSET-on-string; `rondis_keyinfo_hset_wrongtype` deleted.
 
-  - **1.10c.7b — SET-on-hash silent replace.**
-    This is still required after 1.10c.7a; current behavior remains
-    WRONGTYPE for SET on a hash-owned name.
-    `init_hset_string_claim_code` (interpreted_code.cc:202)
-    drops `interpret_exit_nok(RONDB_WRONGTYPE)`. The UPDATE-on-
-    hash branch reads existing `redis_key_id` and `field_count`,
-    emits them as `OUTPUT_INDEX_0/1`, and exits OK. The
-    writeTuple's row buffer + `mask` already overwrites
-    `redis_key_id` back to NULL (string ownership) — the
-    interpreter just publishes the old values for the caller
-    to act on. `add_hset_string_claim_op` registers a 2nd
-    `GetValueSpec` for `OUTPUT_INDEX_1`; `write_callback`
-    captures both onto `KeyStorage` (per-key trans, so per-key
-    storage is fine). The dispatcher (`set_simple_rows` Phase D
-    / equivalent) then, when the captured `old_id != 0`, queues
-    a Phase 1.5 partitioned scan on `string_keys` filtered by
-    `redis_key_id = old_id`, with `LM_Exclusive` and
-    `takeOverScanOpForDelete` per row, plus per-ordinal
-    deleteTuple on `string_values` for any field with
-    `num_rows > 0` (`rondb_key` and `num_rows` come back in the
-    scan projection). `RONDB_WRONGTYPE` translation in
-    `write_callback` and the `CompletedTypeError` state become
-    dead; remove them.
+  - **1.10c.7b — SET-on-hash silent replace (DONE; landed in two
+    bisectable commits, `c227dc5b581` for 7b/i + `10e2650e265`
+    for 7b/ii).**
+    Schema: dropped `USING HASH` from `string_keys`'s primary
+    key so NDB auto-builds the PRIMARY ordered index. Added
+    `pk_key_index_record` NdbRecord populated via
+    `dict->getIndex("PRIMARY", KEY_TABLE_NAME)` +
+    `dict->createRecord(index, ...)`.
 
-    Required tests:
-    - `HSET k f v; SET k string` returns `OK`, `GET k` returns
-      `string`, `HGET k f` returns nil, and `TYPE k` returns
-      `string`.
-    - SQL confirms all old hash field rows under the replaced
-      `redis_key_id` are gone, including large field values with
-      `string_values` extension rows.
-    - SET-on-hash with the `GET` option and TTL variants (`EX`,
-      `PX`, `KEEPTTL` where applicable) behaves consistently with
-      the normal string SET path and does not leave stale hash rows.
+    `init_hset_string_claim_code` UPDATE-on-hash branch reads
+    existing `redis_key_id` + `field_count` and emits them on
+    `OUTPUT_INDEX_0/1` instead of `interpret_exit_nok(RONDB_WRONGTYPE)`.
+    `add_hset_string_claim_op` registers `OUTPUT_INDEX_1` and
+    exposes the recAttrs via two optional out-params.
+
+    `run_hset_replace_hash_scan_delete` runs a partial-prefix
+    range `scanIndex` on the PRIMARY ordered index bounded by
+    `redis_key_id = old_id`, projecting (PK, rondb_key, num_rows).
+    For each row it queues a take-over `deleteCurrentTuple` on
+    main_trans plus per-ordinal `deleteTuple` on `string_values`,
+    flushing queued ops with `main_trans->execute(NoCommit)`
+    between scan batches. The scan op gets its own internal
+    NDB-managed read connection via `Ndb::hupp`; take-over
+    deletes go on main_trans rather than a separately hupp'd
+    handle, otherwise a second commit-ack-marker under the same
+    txn id trips `!m_commitAckMarkerHash.find(check, *tmp.p)` at
+    `DbtcMain.cpp:4539`.
+
+    Wired into all four SET write paths:
+    - `incr_decr_key_row` (string counters via INCR / DECR /
+      INCRBY / DECRBY)
+    - `execute_set_range_simple` (SETRANGE inline path: now
+      NoCommit + scan + Commit)
+    - `write_key_row_setrange` (SETRANGE complex / ext-row path)
+    - `rondb_mset` SET path: per-key
+      `KeyStorage::m_rec_attr_string_claim_old_id` captured by
+      `add_hset_string_claim_op`; new Phase B.5 between Phase B
+      drain and Phase C count runs the scan synchronously per
+      affected key.
+
+    Dead-code drop: the `RONDB_WRONGTYPE` branch in
+    `write_callback`, `KeyState::CompletedTypeError`, and both
+    `CompletedTypeError`-driven reply paths in `rondb_mset`.
+    `RONDB_WRONGTYPE` / `REDIS_WRONGTYPE_VALUE` defines stay
+    one cycle in case a side path still emits them.
+
+    Tests `rondis_namespace_split` and
+    `rondis_keyinfo_namespace_unified` rewritten to assert
+    silent-replace in both directions (including a 5000-byte
+    ext-row hash field that exercises `string_values` cleanup);
+    `rondis_negative_counters` and `rondis_negative_substring`
+    updated for the same flip on INCR/DECR/SETRANGE.
 
   - **1.10c.7c — Test coverage.**
     `t/rondis_keyinfo_silent_replace.test`:
