@@ -220,22 +220,7 @@ c_id	SUM(CASE WHEN c.c_region < 2 THEN o.o_amt ELSE 0 END)
 300	0
 
 
-=== Test 8: rejection — GREATEST with three arguments ===
-Expected error: parser rejects 3-arg GREATEST in v1 (n>2 deferred to I.5 v2)
-Syntax error in SQL statement: Unexpected at this point
-> WITH sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t FROM cte_orders GROUP BY o_custkey) SELECT c.c_id, SUM(GREATEST(sums.k, 100, 200)) FROM cte_customer AS c JOIN sums ON sums.k = c.c_id GROUP BY c.c_id;
-!                                                                                                                                 ^
-Error handling: RPE
-ronsql_cli caught exception: Syntax error.
-
-
-=== Test 9: rejection — GREATEST with two distinct columns ===
-Expected error: distinct-column GREATEST deferred to I.5 v2
-Error handling: RPE
-ronsql_cli caught exception: GREATEST/LEAST with two distinct column operands is not yet supported (deferred to I.5 v2 — needs register-based CASE codegen).
-
-
 === Test 10: rejection — nullable column operand ===
-Expected error: nullable GREATEST/LEAST operands rejected in v1
+Expected error: nullable GREATEST/LEAST operands rejected by validate_greatest_least_pair_loads
 Error handling: RPE
 ronsql_cli caught exception: GREATEST/LEAST on nullable column operands is not yet supported because MySQL NULL propagation would require multi-arm CASE lowering.

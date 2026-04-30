@@ -153,6 +153,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
     CteDefinition* head;
     CteDefinition* tail;
   } cte_list;
+  struct ArithExprList* arith_expr_list;
 }
 
 %token<bival> T_INT
@@ -224,6 +225,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %type<outputs_linked_list> outputlist
 %type<tokenkindval> aggfun interval_type
 %type<arith_expr> arith_expr
+%type<arith_expr_list> arith_expr_list
 %type<conditional_expression> where_opt cond_expr having_opt in_list
 %type<bival> limit_opt
 %type<table_ref> table_ref
@@ -399,10 +401,14 @@ arith_expr:
 | arith_expr T_MODULO arith_expr        { $$ = context->get_agg()->Rem($1, $3); }
 | T_CASE T_WHEN cond_expr T_THEN arith_expr T_ELSE arith_expr T_END
                                         { $$ = context->get_agg()->CaseExpr($3, $5, $7); }
-| T_GREATEST T_LEFT arith_expr T_COMMA arith_expr T_RIGHT
-                                        { $$ = context->lower_greatest_least($3, $5, /*is_greatest*/true); }
-| T_LEAST T_LEFT arith_expr T_COMMA arith_expr T_RIGHT
-                                        { $$ = context->lower_greatest_least($3, $5, /*is_greatest*/false); }
+| T_GREATEST T_LEFT arith_expr_list T_RIGHT
+                                        { $$ = context->lower_greatest_least_nary($3, /*is_greatest*/true); }
+| T_LEAST T_LEFT arith_expr_list T_RIGHT
+                                        { $$ = context->lower_greatest_least_nary($3, /*is_greatest*/false); }
+
+arith_expr_list:
+  arith_expr T_COMMA arith_expr         { $$ = context->mk_arg_list($1, $3); }
+| arith_expr_list T_COMMA arith_expr   { $$ = context->append_arg_list($1, $3); }
 
 identifier:
   T_IDENTIFIER                          { $$ = $1; }

@@ -51,6 +51,12 @@ AggregationAPICompiler::getStatus()
   return m_status;
 }
 
+bool
+AggregationAPICompiler::owns_expr(AggregationAPICompiler_Expr* e)
+{
+  return m_exprs.has_item(e);
+}
+
 #define require_status(name) ndbrequire(m_status == Status::name)
 
 /*
@@ -169,6 +175,12 @@ AggregationAPICompiler::new_expr(ExprOp op,
     Int64 result = 0;
     switch (op)
     {
+    case ExprOp::Greatest2:
+      result = (arg1 >= arg2) ? arg1 : arg2;
+      break;
+    case ExprOp::Least2:
+      result = (arg1 <= arg2) ? arg1 : arg2;
+      break;
     case ExprOp::Add:
       if (int64_add_overflow(arg1, arg2)) {
         m_err << "Overflow when attempting to fold constant expression (" << arg1 << " + " << arg2 << ").\n";
@@ -404,6 +416,7 @@ AggregationAPICompiler::svm_execute(AggregationAPICompiler::Instr* instr,
     r[dest]=r[src];
     break;
   FORALL_ARITHMETIC_OPS(OPERATOR_CASE)
+  FORALL_PAIR_OPS(OPERATOR_CASE)
   FORALL_AGGS(AGG_CASE)
   case SVMInstrType::EmbeddedInterp:
     break;
@@ -864,6 +877,7 @@ AggregationAPICompiler::pushInstr(ExprOp op,
   switch (op)
   {
     FORALL_ARITHMETIC_OPS(OP_CASE)
+    FORALL_PAIR_OPS(OP_CASE)
     default:
       // Unknown operation
       abort();
@@ -940,6 +954,7 @@ AggregationAPICompiler::dead_code_elimination()
       }
       break;
     FORALL_ARITHMETIC_OPS(OPERATOR_CASE)
+    FORALL_PAIR_OPS(OPERATOR_CASE)
     FORALL_AGGS(AGG_CASE)
     case SVMInstrType::AggRepeat:
       ndbrequire(dest < m_aggs.size());
@@ -1078,6 +1093,24 @@ AggregationAPICompiler::print(Expr* expr)
     m_out << m_constants[expr->idx].int_64;
     return;
   }
+  if (expr->op == AggregationAPICompiler::ExprOp::Greatest2)
+  {
+    m_out << "GREATEST(";
+    print(expr->left);
+    m_out << ", ";
+    print(expr->right);
+    m_out << ')';
+    return;
+  }
+  if (expr->op == AggregationAPICompiler::ExprOp::Least2)
+  {
+    m_out << "LEAST(";
+    print(expr->left);
+    m_out << ", ";
+    print(expr->right);
+    m_out << ')';
+    return;
+  }
   m_out << '(';
   print(expr->left);
   switch (expr->op)
@@ -1133,6 +1166,8 @@ AggregationAPICompiler::print(Instr* instr)
   static const char* relstr_Div = "/";
   static const char* relstr_DivInt = "DIV";
   static const char* relstr_Rem = "%";
+  static const char* relstr_Greatest2 = "GREATEST";
+  static const char* relstr_Least2 = "LEAST";
   static const char* ucasestr_Sum = "SUM";
   static const char* ucasestr_Min = "MIN";
   static const char* ucasestr_Max = "MAX";
@@ -1156,6 +1191,7 @@ AggregationAPICompiler::print(Instr* instr)
     print(r[src]);
     break;
   FORALL_ARITHMETIC_OPS(OPERATOR_CASE)
+  FORALL_PAIR_OPS(OPERATOR_CASE)
   FORALL_AGGS(AGG_CASE)
   case SVMInstrType::AggRepeat:
     ndbrequire(dest < m_aggs.size());
@@ -1187,8 +1223,12 @@ AggregationAPICompiler::raw_word_size(Uint32 start, Uint32 end)
   Uint32 count = 0;
   for (Uint32 i = start; i < end; i++)
   {
-    if (m_program[i].type == SVMInstrType::LoadConstantInteger)
+    SVMInstrType t = m_program[i].type;
+    if (t == SVMInstrType::LoadConstantInteger)
       count += 3;
+    else if (t == SVMInstrType::Greatest2 || t == SVMInstrType::Least2)
+      // Pair-op expands to BranchReg* + Mov in programAggregator.
+      count += 2;
     else
       count += 1;
   }

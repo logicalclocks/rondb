@@ -62,6 +62,14 @@ struct raw_value
   size_t len = 0;
 };
 
+// Phase I.5 v2b: linked list of operands for an n-ary GREATEST / LEAST.
+// Built bottom-up by the parser via mk_arg_list / append_arg_list.
+struct ArithExprList
+{
+  AggregationAPICompiler::Expr* head;
+  ArithExprList* next;
+};
+
 /*
   NdbAPI is not consistent wrt to the datatype used for attrId. For example,
     int NdbDictionary::Column::getAttrId() const
@@ -128,17 +136,24 @@ public:
     ArenaMalloc* get_allocator();
     Uint32 column_name_to_idx(LexCString);
     Uint32 qualified_column_name_to_idx(LexCString table, LexCString column);
-    // Lower a 2-argument GREATEST/LEAST into a CaseExpr.
-    //   GREATEST(x, y)  →  CASE WHEN x >= y THEN x ELSE y END
-    //   LEAST(x, y)     →  CASE WHEN x <= y THEN x ELSE y END
-    // Operands must be a Load (column ref) or LoadConstantInteger.
-    // At least one column operand is required.  Two distinct columns are
-    // rejected (deferred to I.5 v2).  Returns the CaseExpr Expr*, or NULL
-    // if rejected (after setting the parser error state).
-    AggregationAPICompiler::Expr* lower_greatest_least(
-        AggregationAPICompiler::Expr* a,
-        AggregationAPICompiler::Expr* b,
+    // Phase I.5 v2b — n-ary GREATEST / LEAST.  Operands are folded
+    // left-associative into a chain of Greatest2 / Least2 SVM ops.
+    // Each operand must be a Load (column ref) or LoadConstantInteger.
+    // At least one column operand required.  Nullable column operands
+    // rejected post-resolution via m_greatest_least_pair_loads.
+    AggregationAPICompiler::Expr* lower_greatest_least_nary(
+        struct ArithExprList* args,
         bool is_greatest);
+    // Build a two-element list (the smallest the n-ary grammar
+    // accepts).
+    struct ArithExprList* mk_arg_list(
+        AggregationAPICompiler::Expr* a,
+        AggregationAPICompiler::Expr* b);
+    // Append one operand at the end of an existing list, in source
+    // order.  Returns the same list head.
+    struct ArithExprList* append_arg_list(
+        struct ArithExprList* list,
+        AggregationAPICompiler::Expr* x);
     void enter_subquery();
     // Returns the AggregationAPICompiler that was active inside the
     // subquery/CTE body just exited (or NULL if none was created because
@@ -215,7 +230,12 @@ private:
     int goodness = 0;
   };
   DynamicArray<ConditionalExpression*> m_toplevel_conditions;
-  DynamicArray<ConditionalExpression*> m_greatest_least_conditions;
+  // Phase I.5 v2b: column-Load Expr nodes that appeared as direct
+  // operands of an n-ary GREATEST / LEAST.  Validated at compile()
+  // time against the appropriate scope's column_map to reject
+  // nullable column operands cleanly (NULL propagation deferred to
+  // I.5 v4).
+  DynamicArray<AggregationAPICompiler::Expr*> m_greatest_least_pair_loads;
   DynamicArray<ScanConfig> m_scan_config_candidates;
   ScanConfig* m_scan_config = NULL;
 
@@ -413,7 +433,10 @@ private:
       QueryScope& scope,
       struct ConditionalExpression* col_side,
       NdbDictionary::Table* const* cteVirtualTables);
-  bool is_greatest_least_condition(struct ConditionalExpression* ce) const;
+  // Phase I.5 v2b: walk m_greatest_least_pair_loads and reject any
+  // nullable column operand.  Run at compile() time, after column
+  // resolution has populated each scope's column_map.
+  void validate_greatest_least_pair_loads();
   void require_cte_case_condition_column_output(QueryScope& scope,
                                                 Uint32 op_idx,
                                                 Uint32 cidx);

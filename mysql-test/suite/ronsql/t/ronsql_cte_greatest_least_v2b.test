@@ -1,0 +1,292 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.5 v2b: n-ary GREATEST / LEAST via SVM extension.
+# Grammar lifted from 2-arg-only to n-ary; lowering folds the operand
+# list left-associative into a chain of Greatest2 / Least2 SVM ops,
+# each expanding to BranchRegGe + Mov (or BranchRegLe + Mov) in
+# programAggregator.  Bigint-only / integer-only on each side;
+# nullable column operands rejected post-resolution.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for n-ary GREATEST / LEAST tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE cte_orders (
+  o_id INT NOT NULL,
+  o_custkey BIGINT NOT NULL,
+  o_amt BIGINT NOT NULL,
+  o_disc BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_o_custkey ON cte_orders (o_custkey);
+
+CREATE TABLE cte_customer (
+  c_id BIGINT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  c_region BIGINT NOT NULL,
+  c_floor   BIGINT NOT NULL,
+  c_ceil    BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+INSERT INTO cte_customer VALUES
+  (100, 'Alice',   1, 50,  200),
+  (200, 'Bob',     1, 60,  150),
+  (300, 'Charlie', 2, 100, 400),
+  (400, 'Dave',    2, 120, 130);
+
+INSERT INTO cte_orders VALUES
+  (1, 100, 50,  10),
+  (2, 100, 75,  20),
+  (3, 200, 40,  5),
+  (4, 200, 60,  15),
+  (5, 300, 90,  30);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: SUM(GREATEST(a, b, c)) — three distinct columns ===
+
+# Lowers to Greatest2(Greatest2(c_region, c_floor), c_ceil) on the SVM.
+# Emits LoadColumn(c_region)+LoadColumn(c_floor)+BranchRegGe+Mov+
+# LoadColumn(c_ceil)+BranchRegGe+Mov+Sum.
+let $QUERY=
+SELECT c.c_id, SUM(GREATEST(c.c_region, c.c_floor, c.c_ceil)) AS gmax
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id, SUM(GREATEST(c.c_region, c.c_floor, c.c_ceil)) AS gmax
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 2: SUM(LEAST(a, b, c)) — three distinct columns ===
+
+let $QUERY=
+SELECT c.c_id, SUM(LEAST(c.c_region, c.c_floor, c.c_ceil)) AS lmin
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id, SUM(LEAST(c.c_region, c.c_floor, c.c_ceil)) AS lmin
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 3: SUM(GREATEST(col, 100, 200)) — column + two constants ===
+
+# Mixed col + const.  acc starts at c.c_region; folds 100 then 200.
+# Emits LoadColumn+LoadInt64(100)+BranchRegGe+Mov+LoadInt64(200)+
+# BranchRegGe+Mov+Sum.
+let $QUERY=
+SELECT c.c_id, SUM(GREATEST(c.c_region, 100, 200)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id, SUM(GREATEST(c.c_region, 100, 200)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 4: SUM(GREATEST(t.a, 50, t.b, 200)) — n=4 col + const interleaved ===
+
+let $QUERY=
+SELECT c.c_id, SUM(GREATEST(c.c_region, 50, c.c_floor, 200)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id, SUM(GREATEST(c.c_region, 50, c.c_floor, 200)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 5: SUM(LEAST(a, b, c, d)) — n=4 ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(LEAST(c.c_region, c.c_floor, c.c_ceil, c.c_id)) AS l
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(LEAST(c.c_region, c.c_floor, c.c_ceil, c.c_id)) AS l
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 6: explicit nesting — GREATEST(GREATEST(a, b), c) ===
+
+# User-written nested GREATEST should produce the same chain shape as
+# flat GREATEST(a, b, c).  Output equivalence verifies the planner
+# treats them identically.
+let $QUERY=
+SELECT c.c_id,
+       SUM(GREATEST(GREATEST(c.c_region, c.c_floor), c.c_ceil)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(GREATEST(GREATEST(c.c_region, c.c_floor), c.c_ceil)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 7: regression — v1 two-arg GREATEST(col, const) ===
+
+# v2b replaces v1's CaseExpr-based lowering with a Greatest2 SVM op.
+# Output must remain identical to v1's recorded output.
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.k, 150)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.k, 150)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 8: regression — same-column degenerate GREATEST(x, x, x) ===
+
+# Folds to `c.c_region` directly via lower_greatest_least_nary's
+# same-operand short-circuit; no Greatest2 SVM op emitted.
+let $QUERY=
+SELECT c.c_id,
+       SUM(GREATEST(c.c_region, c.c_region, c.c_region)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(GREATEST(c.c_region, c.c_region, c.c_region)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 9: CTE-scope — chained CTE with n-ary GREATEST in body ===
+
+# Pair-ops emitted into a CTE-body aggregator (CTE-scope
+# programAggregator path).  The CTE projects MAX(o_amt) AS t and uses
+# GREATEST(t, 60, 80) on the result.  Output equivalence with MySQL.
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, MAX(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.t, 60, 80)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, MAX(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.t, 60, 80)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 10: rejection — nullable column operand ===
+--echo Expected error: nullable column operands rejected at compile()
+
+--disable_query_log
+CREATE TABLE cte_nullable (
+  n_id BIGINT NOT NULL,
+  n_val BIGINT NULL,
+  PRIMARY KEY USING HASH (n_id)
+) ENGINE=NDB;
+
+INSERT INTO cte_nullable VALUES
+  (1, 10),
+  (2, NULL);
+--enable_query_log
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(GREATEST(n_val, 5, 100)) AS gmax FROM cte_nullable;' 2>&1
+
+--echo
+--echo
+--echo === Test 11: rejection — pure-constant n-ary GREATEST ===
+--echo Expected error: at least one column operand required
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(GREATEST(1, 2, 3)) AS g FROM cte_nullable;' 2>&1
+
+--disable_query_log
+DROP TABLE cte_nullable;
+DROP TABLE cte_orders;
+DROP TABLE cte_customer;
+--enable_query_log

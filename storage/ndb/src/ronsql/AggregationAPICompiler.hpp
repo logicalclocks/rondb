@@ -44,6 +44,12 @@
   X(Div) \
   X(DivInt) \
   X(Rem)
+// Pair-ops are value-producing binary ops shaped like arithmetic ops at the
+// SVM level, but each one expands to a BranchReg* + Mov pair when emitted to
+// the NdbAggregator program. Used to lower n-ary GREATEST / LEAST.
+#define FORALL_PAIR_OPS(X) \
+  X(Greatest2) \
+  X(Least2)
 #define FORALL_AGGS(X) \
   X(Sum) \
   X(Min) \
@@ -54,6 +60,7 @@
   X(LoadConstantInteger) \
   X(Mov) \
   FORALL_ARITHMETIC_OPS(X) \
+  FORALL_PAIR_OPS(X) \
   FORALL_AGGS(X)
 
 // This class is called AggregationAPICompiler::Expr everywhere except in
@@ -67,6 +74,7 @@ class AggregationAPICompiler_Expr
     Load,
     LoadConstantInt,
     FORALL_ARITHMETIC_OPS(ARITHMETIC_ENUM)
+    FORALL_PAIR_OPS(ARITHMETIC_ENUM)
     Case,
   };
 #undef ARITHMETIC_ENUM
@@ -75,8 +83,12 @@ class AggregationAPICompiler_Expr
 public:
   bool isLoad() const { return op == ExprOp::Load; }
   bool isLoadConstantInt() const { return op == ExprOp::LoadConstantInt; }
+  bool isGreatest2() const { return op == ExprOp::Greatest2; }
+  bool isLeast2() const { return op == ExprOp::Least2; }
   Uint32 getLoadIdx() const { return idx; }
   Uint32 getConstantIdx() const { return idx; }
+  AggregationAPICompiler_Expr* getLeft() const { return left; }
+  AggregationAPICompiler_Expr* getRight() const { return right; }
 private:
   ExprOp op; // Binary operation or Load
   Expr* left = NULL; // Left argument to binary operation
@@ -113,6 +125,10 @@ public:
     FAILED,
   };
   Status getStatus();
+  // Phase I.5 v2b: lets RonSQLPreparer identify which compiler owns a
+  // given Expr* (for cross-scope tracking of GREATEST / LEAST
+  // operands).
+  bool owns_expr(class AggregationAPICompiler_Expr* e);
 private:
   std::basic_ostream<char>& m_out;
   std::basic_ostream<char>& m_err;
@@ -161,6 +177,7 @@ public:
                                                expr_y); \
   }
   FORALL_ARITHMETIC_OPS(DEFINE_ARITH_FUNC)
+  FORALL_PAIR_OPS(DEFINE_ARITH_FUNC)
 #undef DEFINE_ARITH_FUNC
   // Aggregation operations
 #define DEFINE_AGG_FUNC(OP) \

@@ -144,7 +144,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_main_scope(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
-  m_greatest_least_conditions(conf.amalloc),
+  m_greatest_least_pair_loads(conf.amalloc),
   m_scan_config_candidates(conf.amalloc),
   m_select_subquery_leaves(conf.amalloc),
   m_merged_leaves(conf.amalloc),
@@ -3881,6 +3881,11 @@ RonSQLPreparer::compile()
     resolve_having_aliases(m_context.ast_root.having_expression);
   }
 
+  // Phase I.5 v2b: reject nullable column operands of GREATEST /
+  // LEAST cleanly.  Runs after column resolution but before the SVM
+  // compile pass, so any rejection happens before kernel emission.
+  validate_greatest_least_pair_loads();
+
   // Compile aggregation program if applicable
   if (m_main_scope.agg != NULL) {
     if (m_main_scope.agg->compile()) {
@@ -7419,6 +7424,17 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
     case AggregationAPICompiler::SVMInstrType::Count:
       programAggregator_do_or_fail(aggregator->Count(dest, src));
       break;
+    case AggregationAPICompiler::SVMInstrType::Greatest2:
+      // Pair-max: BranchRegGe skips the Mov when r[dest] >= r[src],
+      // leaving the larger value already in r[dest].  Otherwise the
+      // Mov copies r[src] into r[dest].
+      programAggregator_do_or_fail(aggregator->BranchRegGe(dest, src, 1));
+      programAggregator_do_or_fail(aggregator->Mov(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Least2:
+      programAggregator_do_or_fail(aggregator->BranchRegLe(dest, src, 1));
+      programAggregator_do_or_fail(aggregator->Mov(dest, src));
+      break;
     case AggregationAPICompiler::SVMInstrType::AggRepeat:
       programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
       break;
@@ -7939,6 +7955,16 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
     case AggregationAPICompiler::SVMInstrType::Count:
       programAggregator_do_or_fail(aggregator->Count(dest, src));
       break;
+    case AggregationAPICompiler::SVMInstrType::Greatest2:
+      // Pair-max: BranchRegGe + Mov.  See main-scope variant for
+      // notes.
+      programAggregator_do_or_fail(aggregator->BranchRegGe(dest, src, 1));
+      programAggregator_do_or_fail(aggregator->Mov(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Least2:
+      programAggregator_do_or_fail(aggregator->BranchRegLe(dest, src, 1));
+      programAggregator_do_or_fail(aggregator->Mov(dest, src));
+      break;
     case AggregationAPICompiler::SVMInstrType::AggRepeat:
       programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
       break;
@@ -8046,15 +8072,79 @@ RonSQLPreparer::resolve_case_condition_column(
   return scope.column_map[cidx];
 }
 
-bool
-RonSQLPreparer::is_greatest_least_condition(ConditionalExpression* ce) const
+void
+RonSQLPreparer::validate_greatest_least_pair_loads()
 {
-  for (Uint32 i = 0; i < m_greatest_least_conditions.size(); i++)
+  for (Uint32 i = 0; i < m_greatest_least_pair_loads.size(); i++)
   {
-    if (m_greatest_least_conditions[i] == ce)
-      return true;
+    AggregationAPICompiler::Expr* load_expr = m_greatest_least_pair_loads[i];
+    Uint32 col_idx = load_expr->getLoadIdx();
+    // The Expr* belongs to either the main scope's compiler or one of
+    // the CTE scopes' compilers; same col_idx may appear in multiple
+    // scopes' column_maps (e.g. when a CTE references a parent
+    // column).  Find the scope that owns the Expr and validate
+    // against that scope's column_map.
+    QueryScope* owning_scope = NULL;
+    if (m_main_scope.agg != NULL && m_main_scope.agg->owns_expr(load_expr))
+    {
+      owning_scope = &m_main_scope;
+    }
+    else
+    {
+      for (Uint32 c = 0; c < m_cte_scopes.size(); c++)
+      {
+        QueryScope* cs = m_cte_scopes[c];
+        if (cs->agg != NULL && cs->agg->owns_expr(load_expr))
+        {
+          owning_scope = cs;
+          break;
+        }
+      }
+    }
+    require_run(owning_scope != NULL,
+                "GREATEST/LEAST pair-op operand: failed to locate "
+                "owning scope.  Please report a bug.");
+    require_run(owning_scope->column_map != NULL,
+                "GREATEST/LEAST pair-op operand: scope column_map "
+                "not initialised.  Please report a bug.");
+    const NdbDictionary::Column* col = owning_scope->column_map[col_idx];
+    if (col == NULL)
+    {
+      // CTE COLUMN / AGGREGATE projection: the virtual-table column
+      // descriptor isn't built yet at compile() time
+      // (build_cte_virtual_tables runs at execute time).  Skip the
+      // type / nullable check here — the kernel still produces
+      // correct values for non-nullable CTE columns.  Nullable CTE
+      // operands won't be cleanly rejected today; promoting that
+      // check is captured in v4 (NULL propagation work).
+      continue;
+    }
+    require_prm(!col->getNullable(),
+                "GREATEST/LEAST on nullable column operands is not "
+                "yet supported because MySQL NULL propagation would "
+                "require multi-arm CASE lowering.");
+    // Integer-only restriction.  Pair-ops emit LoadColumn into a
+    // register and BranchReg* / Mov.  The kernel's kOpLoadCol
+    // widens every integer type (Tinyint .. Bigint, signed +
+    // unsigned) to NDB_TYPE_BIGINT in the register via AlignedType
+    // (AggInterpreter.cpp:411), so all integer widths compare
+    // correctly through BranchReg.  Float / Decimal / VARCHAR /
+    // string operands are out of scope (deferred to I.5 v3 / I.6).
+    NdbDictionary::Column::Type t = col->getType();
+    require_prm(t == NdbDictionary::Column::Tinyint ||
+                t == NdbDictionary::Column::Tinyunsigned ||
+                t == NdbDictionary::Column::Smallint ||
+                t == NdbDictionary::Column::Smallunsigned ||
+                t == NdbDictionary::Column::Mediumint ||
+                t == NdbDictionary::Column::Mediumunsigned ||
+                t == NdbDictionary::Column::Int ||
+                t == NdbDictionary::Column::Unsigned ||
+                t == NdbDictionary::Column::Bigint ||
+                t == NdbDictionary::Column::Bigunsigned,
+                "GREATEST/LEAST column operand must be an integer "
+                "type.  Float / Decimal / VARCHAR operands are not "
+                "yet supported (deferred to I.5 v3 / I.6).");
   }
-  return false;
 }
 
 void
@@ -8261,25 +8351,11 @@ RonSQLPreparer::generate_embedded_condition(
     AtomInfo& info = infos[a];
 
     resolve_col_side(atom->args.left, info.lhs);
-    if (is_greatest_least_condition(ce))
-    {
-      require_prm(!info.lhs.col->getNullable(),
-                  "GREATEST/LEAST on nullable column operands is not yet "
-                  "supported because MySQL NULL propagation would require "
-                  "multi-arm CASE lowering.");
-    }
 
     info.is_col_vs_col = (atom->args.right->op == T_IDENTIFIER);
     if (info.is_col_vs_col)
     {
       resolve_col_side(atom->args.right, info.rhs);
-      if (is_greatest_least_condition(ce))
-      {
-        require_prm(!info.rhs.col->getNullable(),
-                    "GREATEST/LEAST on nullable column operands is not "
-                    "yet supported because MySQL NULL propagation would "
-                    "require multi-arm CASE lowering.");
-      }
       // v2a: register-based path is Bigint-only on each side, with
       // InlineLinked unsupported (would need an inline-typed
       // register-load opcode).
@@ -9241,101 +9317,134 @@ RonSQLPreparer::Context::get_allocator()
   return m_parser.m_amalloc;
 }
 
-// Phase I.5 v1 — GREATEST/LEAST with two operands.
+// Phase I.5 v2b — n-ary GREATEST / LEAST.
 //
-// Lowering at parse time:
-//   GREATEST(x, y)  →  CASE WHEN x >= y THEN x ELSE y END
-//   LEAST(x, y)     →  CASE WHEN x <= y THEN x ELSE y END
+// Lowering at parse time: the operand list is folded left-associative
+// into a chain of pair-ops on the SVM:
+//   GREATEST(a, b)        =  Greatest2(a, b)
+//   GREATEST(a, b, c)     =  Greatest2(Greatest2(a, b), c)
+//   GREATEST(a, b, c, d)  =  Greatest2(Greatest2(Greatest2(a, b), c), d)
+// Each `Greatest2` SVM instruction expands at programAggregator time
+// to a `BranchRegGe + Mov` pair on the kernel aggregation program;
+// `Least2` expands to `BranchRegLe + Mov`.
 //
 // Scope:
-// - Each operand must be a column ref (Load) or an integer literal
-//   (LoadConstantInteger).  Arithmetic / nested expressions deferred
-//   (would need a register-based codegen path beyond v2a).
-// - At least one operand must be a column.
-// - Two columns: v2a accepts distinct columns by lowering to a CASE
-//   with a col-vs-col condition; the embedded-condition emit path
-//   handles the col-vs-col atom via BRANCH_*_REG_REG.  Both columns
-//   must be Bigint (the register-based path is Bigint-only — see
-//   `cte_filter_phase_i5_v2.md`).
-// - Nullable column operands rejected post-resolution
-//   (`is_greatest_least_condition` check).
-AggregationAPICompiler::Expr*
-RonSQLPreparer::Context::lower_greatest_least(
+// - Each operand must be a column ref (Load) or an integer constant
+//   (LoadConstantInteger).  Arithmetic / nested expressions other
+//   than another GREATEST / LEAST are not yet accepted at this
+//   layer (the SVM compiler can chain pair-ops with arithmetic ops,
+//   but the parser-level validation here is conservative).
+// - At least one column operand is required across the whole list.
+// - Two-or-more constants are accepted only as long as one operand
+//   is a column; pure-constant GREATEST(1, 2, 3) is folded by the
+//   AggregationAPICompiler's constant-folding path before reaching
+//   the SVM.
+// - Same-column degenerate `GREATEST(x, x, ..., x)` collapses to
+//   `x` directly via the SVM's expression de-duplication
+//   (Greatest2(x, x) returns the existing Load expression).
+// - Nullable column operands rejected post-resolution via
+//   `validate_greatest_least_pair_loads`.
+ArithExprList*
+RonSQLPreparer::Context::mk_arg_list(
     AggregationAPICompiler::Expr* a,
-    AggregationAPICompiler::Expr* b,
+    AggregationAPICompiler::Expr* b)
+{
+  ArenaMalloc* amalloc = get_allocator();
+  ArithExprList* tail = amalloc->alloc_exc<ArithExprList>(1);
+  tail->head = b;
+  tail->next = NULL;
+  ArithExprList* list = amalloc->alloc_exc<ArithExprList>(1);
+  list->head = a;
+  list->next = tail;
+  return list;
+}
+
+ArithExprList*
+RonSQLPreparer::Context::append_arg_list(
+    ArithExprList* list,
+    AggregationAPICompiler::Expr* x)
+{
+  ArenaMalloc* amalloc = get_allocator();
+  ArithExprList* node = amalloc->alloc_exc<ArithExprList>(1);
+  node->head = x;
+  node->next = NULL;
+  ArithExprList* cur = list;
+  while (cur->next != NULL) cur = cur->next;
+  cur->next = node;
+  return list;
+}
+
+AggregationAPICompiler::Expr*
+RonSQLPreparer::Context::lower_greatest_least_nary(
+    ArithExprList* args,
     bool is_greatest)
 {
-  require_prm(a != NULL && b != NULL,
-              "GREATEST/LEAST: NULL operand.");
-  bool a_is_col = a->isLoad();
-  bool b_is_col = b->isLoad();
-  bool a_is_const = a->isLoadConstantInt();
-  bool b_is_const = b->isLoadConstantInt();
-  require_prm(a_is_col || a_is_const,
-              "GREATEST/LEAST operand must be a column reference or "
-              "an integer constant — arithmetic / nested expressions "
-              "are not yet supported.");
-  require_prm(b_is_col || b_is_const,
-              "GREATEST/LEAST operand must be a column reference or "
-              "an integer constant — arithmetic / nested expressions "
-              "are not yet supported.");
-  require_prm(a_is_col || b_is_col,
-              "GREATEST/LEAST requires at least one column operand "
-              "— two-constant forms can be folded by hand.");
+  require_prm(args != NULL && args->next != NULL,
+              "GREATEST/LEAST requires at least two arguments.");
 
-  AggregationAPICompiler* agg = get_agg();
-  ArenaMalloc* amalloc = get_allocator();
-
-  // Allocate the cond_expr nodes up front; we'll fill them based on the
-  // operand shape below.  The condition is always written with a column
-  // on the LHS because generate_embedded_condition requires
-  // atom->args.left->op == T_IDENTIFIER.
-  ConditionalExpression* lhs = amalloc->alloc_exc<ConditionalExpression>(1);
-  ConditionalExpression* rhs = amalloc->alloc_exc<ConditionalExpression>(1);
-  ConditionalExpression* cond =
-      amalloc->alloc_exc<ConditionalExpression>(1);
-
-  TokenKind condition_op;
-  if (a_is_col && b_is_col)
+  // Pass 1: validate operand shape and collect column-Load operands
+  // for the post-resolution nullable check.  Operands may be a
+  // Load (column ref), LoadConstantInt, or another Greatest2 /
+  // Least2 (so that user-written nested GREATEST / LEAST works
+  // identically to a flat list); constants are always non-nullable
+  // and pair-op operands are recursively walked to surface their
+  // leaf Loads.
+  bool any_col = false;
+  std::function<void(AggregationAPICompiler::Expr*)> collect_loads =
+      [&](AggregationAPICompiler::Expr* e) -> void
   {
-    // Same-column degenerate: GREATEST(x, x) = x; no CASE needed.
-    if (a->getLoadIdx() == b->getLoadIdx())
+    require_prm(e != NULL,
+                "GREATEST/LEAST: NULL operand.");
+    if (e->isLoad())
     {
-      return a;
+      any_col = true;
+      m_parser.m_greatest_least_pair_loads.push(e);
+      return;
     }
-    // Distinct columns (v2a): col-vs-col condition.  Both LHS and RHS
-    // are T_IDENTIFIER cond_expr nodes.  THEN = a (matches when cond
-    // holds), ELSE = b.
-    lhs->op = T_IDENTIFIER;
-    lhs->col_idx = a->getLoadIdx();
-    rhs->op = T_IDENTIFIER;
-    rhs->col_idx = b->getLoadIdx();
-    condition_op = is_greatest ? T_GE : T_LE;
-  }
-  else if (a_is_col && b_is_const)
+    if (e->isLoadConstantInt())
+    {
+      return;
+    }
+    if (e->isGreatest2() || e->isLeast2())
+    {
+      collect_loads(e->getLeft());
+      collect_loads(e->getRight());
+      return;
+    }
+    require_prm(false,
+                "GREATEST/LEAST operand must be a column reference, "
+                "an integer constant, or a nested GREATEST / LEAST "
+                "— arithmetic and other expression shapes are not "
+                "yet supported.");
+  };
+  for (ArithExprList* it = args; it != NULL; it = it->next)
   {
-    lhs->op = T_IDENTIFIER;
-    lhs->col_idx = a->getLoadIdx();
-    rhs->op = T_INT;
-    rhs->constant_integer = agg->m_constants[b->getConstantIdx()].int_64;
-    condition_op = is_greatest ? T_GE : T_LE;
+    collect_loads(it->head);
   }
-  else
+  require_prm(any_col,
+              "GREATEST/LEAST requires at least one column operand "
+              "— pure-constant forms can be folded by hand.");
+
+  // Pass 2: left-associative fold.  Same-operand degenerate
+  // `GREATEST(x, x, ...)` collapses to `x` directly here so the SVM
+  // never sees a `Greatest2(x, x)` pair-op (which would emit a
+  // wasteful BranchReg + Mov against the same register).
+  AggregationAPICompiler* agg = get_agg();
+  ArithExprList* it = args;
+  AggregationAPICompiler::Expr* acc = it->head;
+  it = it->next;
+  while (it != NULL)
   {
-    // a_is_const && b_is_col: column on LHS via swap; flip the op so
-    // the THEN/ELSE arms (a, b) still compute the right value.
-    ndbrequire(a_is_const && b_is_col);
-    lhs->op = T_IDENTIFIER;
-    lhs->col_idx = b->getLoadIdx();
-    rhs->op = T_INT;
-    rhs->constant_integer = agg->m_constants[a->getConstantIdx()].int_64;
-    condition_op = is_greatest ? T_LE : T_GE;
+    if (acc == it->head)
+    {
+      it = it->next;
+      continue;
+    }
+    if (is_greatest)
+      acc = agg->Greatest2(acc, it->head);
+    else
+      acc = agg->Least2(acc, it->head);
+    it = it->next;
   }
-
-  cond->op = condition_op;
-  cond->args.left = lhs;
-  cond->args.right = rhs;
-  m_parser.m_greatest_least_conditions.push(cond);
-
-  return agg->CaseExpr(cond, a, b);
+  return acc;
 }

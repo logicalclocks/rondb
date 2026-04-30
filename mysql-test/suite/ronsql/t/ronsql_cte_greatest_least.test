@@ -5,11 +5,17 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
-# Phase I.5 v1: GREATEST / LEAST with two arguments — one column,
-# one integer constant.  Lowered at parse time to a single CaseExpr;
-# rides on the I.4 CASE-on-CTE-column path plus the new inequality
-# support in generate_embedded_condition (= / != / < / <= / > / >=).
-# n>2 and two distinct columns rejected, deferred to I.5 v2.
+# Phase I.5 v1: GREATEST / LEAST regression coverage.
+# v1 originally lowered 2-arg GREATEST/LEAST to a CaseExpr; v2b
+# replaced that lowering with a Greatest2/Least2 SVM op (see
+# cte_filter_phase_i5_v2b.md), so this file now functions as a
+# regression check that the v1 query shapes still produce correct
+# output through the new SVM path.  n>2 and distinct-column shapes
+# (originally deferred to v2) are covered by
+# ronsql_cte_greatest_least_v2a.test (col-vs-col atoms in explicit
+# CASE) and ronsql_cte_greatest_least_v2b.test (n-ary GREATEST/LEAST).
+# Test 10 still exercises the nullable-column rejection (now via
+# validate_greatest_least_pair_loads instead of the old CE tracker).
 
 --let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
@@ -234,28 +240,8 @@ DELIMITER ;|
 
 --echo
 --echo
---echo === Test 8: rejection — GREATEST with three arguments ===
---echo Expected error: parser rejects 3-arg GREATEST in v1 (n>2 deferred to I.5 v2)
-
-# v1 grammar accepts 2-arg only; 3+ args produces a parser syntax error.
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t FROM cte_orders GROUP BY o_custkey) SELECT c.c_id, SUM(GREATEST(sums.k, 100, 200)) FROM cte_customer AS c JOIN sums ON sums.k = c.c_id GROUP BY c.c_id;' 2>&1
-
---echo
---echo
---echo === Test 9: rejection — GREATEST with two distinct columns ===
---echo Expected error: distinct-column GREATEST deferred to I.5 v2
-
-# Two real columns from different tables — the v1 helper rejects
-# cleanly with a pointer to the v2 follow-up (register-based CASE
-# codegen).
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c.c_id, SUM(GREATEST(c.c_region, o.o_amt)) FROM cte_customer AS c JOIN cte_orders AS o ON o.o_custkey = c.c_id GROUP BY c.c_id;' 2>&1
-
---echo
---echo
 --echo === Test 10: rejection — nullable column operand ===
---echo Expected error: nullable GREATEST/LEAST operands rejected in v1
+--echo Expected error: nullable GREATEST/LEAST operands rejected by validate_greatest_least_pair_loads
 
 --disable_query_log
 CREATE TABLE cte_nullable (

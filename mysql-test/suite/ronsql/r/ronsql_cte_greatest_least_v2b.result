@@ -1,0 +1,260 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for n-ary GREATEST / LEAST tests ===
+
+
+
+=== Test 1: SUM(GREATEST(a, b, c)) — three distinct columns ===
+== Query ==
+SELECT c.c_id, SUM(GREATEST(c.c_region, c.c_floor, c.c_ceil)) AS gmax
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id, SUM(GREATEST(c.c_region, c.c_floor, c.c_ceil)) AS gmax
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	gmax
+100	400
+200	300
+300	400
+
+
+=== Test 2: SUM(LEAST(a, b, c)) — three distinct columns ===
+== Query ==
+SELECT c.c_id, SUM(LEAST(c.c_region, c.c_floor, c.c_ceil)) AS lmin
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id, SUM(LEAST(c.c_region, c.c_floor, c.c_ceil)) AS lmin
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	lmin
+100	2
+200	2
+300	2
+
+
+=== Test 3: SUM(GREATEST(col, 100, 200)) — column + two constants ===
+== Query ==
+SELECT c.c_id, SUM(GREATEST(c.c_region, 100, 200)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id, SUM(GREATEST(c.c_region, 100, 200)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	g
+100	400
+200	400
+300	200
+
+
+=== Test 4: SUM(GREATEST(t.a, 50, t.b, 200)) — n=4 col + const interleaved ===
+== Query ==
+SELECT c.c_id, SUM(GREATEST(c.c_region, 50, c.c_floor, 200)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id, SUM(GREATEST(c.c_region, 50, c.c_floor, 200)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	g
+100	400
+200	400
+300	200
+
+
+=== Test 5: SUM(LEAST(a, b, c, d)) — n=4 ===
+== Query ==
+SELECT c.c_id,
+SUM(LEAST(c.c_region, c.c_floor, c.c_ceil, c.c_id)) AS l
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(LEAST(c.c_region, c.c_floor, c.c_ceil, c.c_id)) AS l
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	l
+100	2
+200	2
+300	2
+
+
+=== Test 6: explicit nesting — GREATEST(GREATEST(a, b), c) ===
+== Query ==
+SELECT c.c_id,
+SUM(GREATEST(GREATEST(c.c_region, c.c_floor), c.c_ceil)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(GREATEST(GREATEST(c.c_region, c.c_floor), c.c_ceil)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	g
+100	400
+200	300
+300	400
+
+
+=== Test 7: regression — v1 two-arg GREATEST(col, const) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.k, 150)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.k, 150)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+c_id	gmax
+100	150
+200	200
+300	300
+
+
+=== Test 8: regression — same-column degenerate GREATEST(x, x, x) ===
+== Query ==
+SELECT c.c_id,
+SUM(GREATEST(c.c_region, c.c_region, c.c_region)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(GREATEST(c.c_region, c.c_region, c.c_region)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	g
+100	2
+200	2
+300	2
+
+
+=== Test 9: CTE-scope — chained CTE with n-ary GREATEST in body ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, MAX(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.t, 60, 80)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, MAX(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.t, 60, 80)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+c_id	gmax
+100	80
+200	80
+300	90
+
+
+=== Test 10: rejection — nullable column operand ===
+Expected error: nullable column operands rejected at compile()
+Error handling: RPE
+ronsql_cli caught exception: GREATEST/LEAST on nullable column operands is not yet supported because MySQL NULL propagation would require multi-arm CASE lowering.
+
+
+=== Test 11: rejection — pure-constant n-ary GREATEST ===
+Expected error: at least one column operand required
+Error handling: RPE
+ronsql_cli caught exception: GREATEST/LEAST requires at least one column operand — pure-constant forms can be folded by hand.

@@ -9,8 +9,16 @@ unlocking distinct-column `GREATEST` / `LEAST` and multi-column
 Per-atom self-contained loads also fix a latent v1 bug where atoms
 with different LHS columns aliased on `heap[0]`.
 
-**v2b remains planned** — n-ary GREATEST/LEAST via the SVM extension
-described later in this doc.
+**v2b shipped** — n-ary GREATEST/LEAST via the SVM extension; the
+dedicated plan + what-shipped is in `cte_filter_phase_i5_v2b.md`.
+The sketch later in this doc is preserved for design history but
+the v2b plan superseded it (in particular, v2b models pair-max /
+pair-min as a single value-producing SVM instruction shaped like an
+arithmetic op rather than introducing six new `BranchReg*` SVM types
+and a third operand on `Instr`).  v2b also replaced v1's two-arg
+CaseExpr-based lowering — n=2 now flows through the same SVM path
+as n>2, and the v1-specific `m_greatest_least_conditions` /
+`is_greatest_least_condition` machinery was removed.
 
 The CTE linked-vs-linked runtime test that was intentionally removed
 from v2a's MTR file is captured separately in

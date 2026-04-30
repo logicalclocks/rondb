@@ -2,10 +2,18 @@
 
 ## Status
 
-**v1 shipped.**  Two-argument `GREATEST` / `LEAST` with one column +
-one integer constant; nullable column operands rejected; n-ary and
-multi-column forms staged as v2 / v3 follow-ups (sections at the end
-of this doc).  Catalogue entry: `cte_filter_phase_i.md` line 82-85.
+**v1 shipped, then superseded by v2b.**  v1's CaseExpr-based
+two-arg lowering was replaced by v2b's `Greatest2` / `Least2` SVM
+pair-op path — n=2 and n>2 both flow through the same SVM
+chain.  v1's `m_greatest_least_conditions` /
+`is_greatest_least_condition` infrastructure was removed at the
+same time.
+
+The original v1 design described in this doc is preserved for
+historical context, but the live implementation is documented in
+`cte_filter_phase_i5_v2b.md` (with `cte_filter_phase_i5_v2.md`
+covering v2a's col-vs-col CASE atom path, which still applies to
+explicit user-written CASE conditions).
 
 ## Background
 

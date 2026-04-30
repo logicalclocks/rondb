@@ -96,11 +96,18 @@ atoms in embedded CASE conditions (Bigint-only on each side via
 > col_b`) now work.  Per-atom self-contained loads also fix a
 latent v1 bug.
 
-Follow-ups: v2b (n-ary GREATEST/LEAST via SVM extension), v3 / v5
-(wider operand types — float / decimal / string and signed
-sub-Bigint linked columns; v5 in `cte_filter_phase_i5_v5.md`),
-v4 (NULL propagation for nullable operands), v6 (CTE
-linked-vs-linked runtime test coverage; in
+**v2b shipped** — see `cte_filter_phase_i5_v2b.md`.  N-ary
+GREATEST / LEAST via the SVM extension (new `Greatest2` / `Least2`
+ops shaped like arithmetic ops; pair-op expands to `BranchRegGe +
+Mov` / `BranchRegLe + Mov` in `programAggregator`).  v2b also
+replaces v1's two-arg CaseExpr-based lowering — n=2 now flows
+through the same SVM path as n>2.  Integer-typed operands (Tinyint
+through Bigint, signed + unsigned).
+
+Follow-ups: v3 / v5 (wider operand types — float / decimal / string
+and signed sub-Bigint linked columns; v5 in
+`cte_filter_phase_i5_v5.md`), v4 (NULL propagation for nullable
+operands), v6 (CTE linked-vs-linked runtime test coverage; in
 `cte_filter_phase_i5_v6.md`).
 
 ### Aggregator output types
