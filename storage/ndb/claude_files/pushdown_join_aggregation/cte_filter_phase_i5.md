@@ -2,7 +2,10 @@
 
 ## Status
 
-**Planned.**  Catalogue entry in `cte_filter_phase_i.md` line 82-85.
+**v1 shipped.**  Two-argument `GREATEST` / `LEAST` with one column +
+one integer constant; nullable column operands rejected; n-ary and
+multi-column forms staged as v2 / v3 follow-ups (sections at the end
+of this doc).  Catalogue entry: `cte_filter_phase_i.md` line 82-85.
 
 ## Background
 
@@ -110,7 +113,128 @@ embedded path can emit.
   is fine grammatically but the resulting `usage` graph must still
   satisfy the column-vs-constant invariant.
 
-## Implementation
+## What shipped (v1)
+
+### RonSQL grammar
+
+- `Keywords.hpp` — `kwdef(GREATEST)`, `kwdef(LEAST)`.
+- `RonSQLParser.y` — new `T_GREATEST` / `T_LEAST` tokens; two
+  `arith_expr` rules:
+
+  ```
+  | T_GREATEST T_LEFT arith_expr T_COMMA arith_expr T_RIGHT
+      { $$ = context->lower_greatest_least($3, $5, /*is_greatest*/true); }
+  | T_LEAST T_LEFT arith_expr T_COMMA arith_expr T_RIGHT
+      { $$ = context->lower_greatest_least($3, $5, /*is_greatest*/false); }
+  ```
+
+  Three-or-more arguments are caught by bison as a syntax error.
+
+### Lowering helper — `Context::lower_greatest_least`
+
+`lower_greatest_least(a, b, is_greatest)` lives on the parser
+context.  Validates that each operand is `Load` (column ref) or
+`LoadConstantInteger`, that at least one is a column, and — when
+both are columns — that they have the same `col_idx` (same column
+referenced twice degenerates to just `a`; distinct columns rejected
+with a v2 pointer).
+
+The condition is normalised so the **column ends up on the LHS** of
+the `<=` / `>=` comparison.  This is required because
+`generate_embedded_condition` does `ndbrequire(col_side->op ==
+T_IDENTIFIER)` on the atom's left operand, so a literal naive
+lowering of `GREATEST(150, sums.k)` (which would put `150` on the
+left) would crash.  After swap, the comparison op flips:
+
+| call shape                | condition built                | THEN/ELSE  |
+|---------------------------|--------------------------------|------------|
+| `GREATEST(col, const)`    | `col >= const`                 | THEN=col, ELSE=const |
+| `GREATEST(const, col)`    | `col <= const`                 | THEN=const, ELSE=col |
+| `LEAST(col, const)`       | `col <= const`                 | THEN=col, ELSE=const |
+| `LEAST(const, col)`       | `col >= const`                 | THEN=const, ELSE=col |
+
+THEN/ELSE assignment preserves the original operand identity (so
+`a` is always THEN, `b` is always ELSE), which keeps `CaseExpr`'s
+SVM lowering byte-equivalent regardless of operand order.
+
+### NULL-propagation rejection
+
+MySQL's `GREATEST(NULL, …)` / `LEAST(NULL, …)` return `NULL`, but a
+plain `CASE WHEN col CMP K THEN col ELSE K END` lowering returns the
+non-null branch when `col` is `NULL`.  Adding NULL propagation in v1
+would require a multi-arm CASE; instead, v1 **rejects nullable
+column operands cleanly**.
+
+The rejection is wired through a new `RonSQLPreparer::
+m_greatest_least_conditions` array — `lower_greatest_least` pushes
+the synthesized condition pointer into it at parse time, and
+`generate_embedded_condition` calls a new
+`is_greatest_least_condition(ce)` helper after column resolution.
+If the resolved column is nullable, the preparer rejects with
+"GREATEST/LEAST on nullable column operands is not yet supported".
+
+### Embedded-condition inequality lift
+
+`generate_embedded_condition` previously did `ndbrequire(atom->op ==
+T_EQUALS || atom->op == T_NOT_EQUALS)`.  Replaced with a `require_prm`
+that also accepts `T_LT / T_LE / T_GT / T_GE`, plus a full
+direct/invert mapping for the `Interpreter::BinaryCondition` field:
+
+```
+direct: T_EQ→EQ T_NEQ→NE T_LT→GT T_LE→GE T_GT→LT T_GE→LE
+invert: T_EQ→NE T_NEQ→EQ T_LT→LE T_LE→LT T_GT→GE T_GE→GT
+```
+
+The inversion in the inequality cases accounts for the embedded
+`BRANCH_*_OP_ARG` family's quirk (kernel `Interpreter::LT/LE/GT/GE`
+branch on the *opposite* relation between col and const — see
+`DbtupExecQuery.cpp:7257-7260` and `CLAUDE.md` "NdbInterpretedCode:
+Inverted Inequality Branches").  The existing `=` / `!=` mapping is
+unchanged.
+
+### AggregationAPICompiler accessors
+
+Added to `AggregationAPICompiler_Expr`:
+
+```cpp
+bool isLoadConstantInt() const;
+Uint32 getConstantIdx() const;
+```
+
+The constant value is then read via the already-public
+`m_constants[idx].int_64`.
+
+### Test coverage
+
+`mysql-test/suite/ronsql/t/ronsql_cte_greatest_least.test` plus the
+recorded `r/ronsql_cte_greatest_least.result`.  Ten cases:
+
+| # | Shape | Verifies |
+|---|-------|----------|
+| 1 | `SUM(GREATEST(sums.k, 150))` | `GREATEST(col, const)` on CTE column |
+| 2 | `SUM(GREATEST(150, sums.k))` | const-LHS swap path |
+| 3 | `SUM(LEAST(sums.k, 250))` | `LEAST(col, const)` |
+| 4 | `SUM(LEAST(250, sums.k))` | const-LHS swap path for LEAST |
+| 5 | `SUM(GREATEST(c.c_region, 1))` | parent-table column (non-CTE leaf) |
+| 6 | `SUM(GREATEST) + SUM(LEAST)` in one query | both ops together |
+| 7 | `CASE WHEN c.c_region < 2 …` | regression: pure inequality CASE works |
+| 8 | reject: `GREATEST(sums.k, 100, 200)` | n=3 (parser syntax error) |
+| 9 | reject: `GREATEST(c.c_region, o.o_amt)` | distinct columns |
+| 10 | reject: `GREATEST(n_val, 5)` on `n_val INT NULL` | nullable column |
+
+Tests 1-7 use `ronsql_compare.inc` against MySQL native; 8-10 use
+`--error 1` + `--exec`.
+
+### Reserved words
+
+`GREATEST` and `LEAST` are now reserved-word keywords in RonSQL
+(added to `keywords_implemented_in_ronsql[]`).  Existing queries
+with column names `greatest` / `least` will require quoting once
+this lands.  The pre-existing keyword set already shadows `MAX` /
+`MIN` / `SUM` / `COUNT` / `AVG` / `CASE` / `EXTRACT`, so this is a
+small extension of the existing surface, not a new policy.
+
+## Original implementation notes
 
 ### Token + keyword wiring
 

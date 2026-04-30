@@ -80,13 +80,15 @@ non-CTE-or-CTE-agnostic limit).
 
 #### I.5 — `GREATEST` / `LEAST` and similar n-ary functions (M)
 
-**v1 planned** — see `cte_filter_phase_i5.md`.  Two-argument
+**v1 shipped** — see `cte_filter_phase_i5.md`.  Two-argument
 GREATEST/LEAST with one column + one integer constant, lowered at
-parse time to a single `CaseExpr` plus a one-line lift of the
-embedded-condition `=`/`!=`-only restriction (kernel
-`Interpreter::BinaryCondition::LT/LE/GT/GE` already supported).
-Bigint-only.  v2 (n-ary + multi-column) and v3 (wider operand
-types) staged as follow-ups.
+parse time to a single `CaseExpr`; column always normalised to the
+LHS of the comparison; nullable column operands rejected cleanly
+(MySQL NULL-propagation would need multi-arm CASE — deferred).  Also
+lifts the embedded-condition `=` / `!=`-only restriction so any
+inequality (`<` / `<=` / `>` / `>=`) can appear inside an embedded
+CASE atom.  Bigint-only.  v2 (n-ary + multi-column) and v3 (wider
+operand types) staged as follow-ups.
 
 ### Aggregator output types
 

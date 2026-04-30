@@ -74,7 +74,9 @@ class AggregationAPICompiler_Expr
   friend class AggregationAPICompiler;
 public:
   bool isLoad() const { return op == ExprOp::Load; }
+  bool isLoadConstantInt() const { return op == ExprOp::LoadConstantInt; }
   Uint32 getLoadIdx() const { return idx; }
+  Uint32 getConstantIdx() const { return idx; }
 private:
   ExprOp op; // Binary operation or Load
   Expr* left = NULL; // Left argument to binary operation

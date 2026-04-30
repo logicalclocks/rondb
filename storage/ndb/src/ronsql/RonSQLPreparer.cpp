@@ -144,6 +144,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_main_scope(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
+  m_greatest_least_conditions(conf.amalloc),
   m_scan_config_candidates(conf.amalloc),
   m_select_subquery_leaves(conf.amalloc),
   m_merged_leaves(conf.amalloc),
@@ -8045,6 +8046,17 @@ RonSQLPreparer::resolve_case_condition_column(
   return scope.column_map[cidx];
 }
 
+bool
+RonSQLPreparer::is_greatest_least_condition(ConditionalExpression* ce) const
+{
+  for (Uint32 i = 0; i < m_greatest_least_conditions.size(); i++)
+  {
+    if (m_greatest_least_conditions[i] == ce)
+      return true;
+  }
+  return false;
+}
+
 void
 RonSQLPreparer::generate_embedded_condition(
     NdbAggregator* aggregator,
@@ -8090,7 +8102,11 @@ RonSQLPreparer::generate_embedded_condition(
   for (Uint32 a = 0; a < atoms.size(); a++)
   {
     ConditionalExpression* atom = atoms[a];
-    ndbrequire(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS);
+    require_prm(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS ||
+                atom->op == T_LT || atom->op == T_LE ||
+                atom->op == T_GT || atom->op == T_GE,
+                "CASE condition atom: only =, !=, <, <=, >, >= "
+                "supported.");
     ConditionalExpression* col_side = atom->args.left;
     ndbrequire(col_side->op == T_IDENTIFIER);
     if (scope.column_table_idx != NULL) {
@@ -8119,6 +8135,13 @@ RonSQLPreparer::generate_embedded_condition(
         resolve_case_condition_column(scope, col_side, cteVirtualTables);
     require_prm(col != NULL,
                 "CASE condition: unresolved column descriptor.");
+    if (is_greatest_least_condition(ce))
+    {
+      require_prm(!col->getNullable(),
+                  "GREATEST/LEAST on nullable column operands is not yet "
+                  "supported because MySQL NULL propagation would require "
+                  "multi-arm CASE lowering.");
+    }
     raw_value rv = encode_constant(atom->args.right, col);
     Uint32 byte_len = rv.len;
     Uint32 data_words = (byte_len + 3) / 4;
@@ -8231,18 +8254,40 @@ RonSQLPreparer::generate_embedded_condition(
 
     Uint32 branch_offset = second_exit_label - pos;
 
-    // For OR with EQ atoms: BranchCol(EQ) → THEN on match
-    // For AND with NE atoms: invert NE to EQ, BranchCol(EQ) → ELSE on match
+    // For OR: branch to THEN when atom holds (direct cond).
+    // For AND: invert the atom condition so we branch to ELSE on miss.
+    //
+    // Mapping accounts for the embedded BRANCH_*_OP_ARG family's inverted-
+    // inequality quirk (kernel `Interpreter::LT/LE/GT/GE` branch on the
+    // *opposite* relation between col and const — see DbtupExecQuery.cpp
+    // handleBranchMemOpArg and CLAUDE.md "NdbInterpretedCode: Inverted
+    // Inequality Branches"):
+    //   direct: T_EQ→EQ T_NEQ→NE T_LT→GT T_LE→GE T_GT→LT T_GE→LE
+    //   invert: T_EQ→NE T_NEQ→EQ T_LT→LE T_LE→LT T_GT→GE T_GE→GT
     Interpreter::BinaryCondition cond;
     if (is_and)
     {
-      // AND: invert the atom condition for the branch
-      cond = (atom->op == T_NOT_EQUALS) ? Interpreter::EQ : Interpreter::NE;
+      switch (atom->op) {
+        case T_EQUALS:     cond = Interpreter::NE; break;
+        case T_NOT_EQUALS: cond = Interpreter::EQ; break;
+        case T_LT:         cond = Interpreter::LE; break;
+        case T_LE:         cond = Interpreter::LT; break;
+        case T_GT:         cond = Interpreter::GE; break;
+        case T_GE:         cond = Interpreter::GT; break;
+        default: abort();
+      }
     }
     else
     {
-      // OR: branch on the atom condition directly
-      cond = (atom->op == T_EQUALS) ? Interpreter::EQ : Interpreter::NE;
+      switch (atom->op) {
+        case T_EQUALS:     cond = Interpreter::EQ; break;
+        case T_NOT_EQUALS: cond = Interpreter::NE; break;
+        case T_LT:         cond = Interpreter::GT; break;
+        case T_LE:         cond = Interpreter::GE; break;
+        case T_GT:         cond = Interpreter::LT; break;
+        case T_GE:         cond = Interpreter::LE; break;
+        default: abort();
+      }
     }
 
     if (has_inline_linked_col) {
@@ -8998,4 +9043,86 @@ ArenaMalloc*
 RonSQLPreparer::Context::get_allocator()
 {
   return m_parser.m_amalloc;
+}
+
+// Phase I.5 v1 — GREATEST/LEAST with two operands.
+//
+// Lowering at parse time:
+//   GREATEST(x, y)  →  CASE WHEN x >= y THEN x ELSE y END
+//   LEAST(x, y)     →  CASE WHEN x <= y THEN x ELSE y END
+//
+// v1 scope: each operand must be a column ref (Load) or an integer
+// literal (LoadConstantInteger), and at least one operand must be a
+// column.  Two distinct columns are rejected (deferred to I.5 v2,
+// which depends on register-based CASE codegen).  Wider operand
+// types (float / decimal / string) deferred to v3.
+AggregationAPICompiler::Expr*
+RonSQLPreparer::Context::lower_greatest_least(
+    AggregationAPICompiler::Expr* a,
+    AggregationAPICompiler::Expr* b,
+    bool is_greatest)
+{
+  require_prm(a != NULL && b != NULL,
+              "GREATEST/LEAST: NULL operand.");
+  bool a_is_col = a->isLoad();
+  bool b_is_col = b->isLoad();
+  bool a_is_const = a->isLoadConstantInt();
+  bool b_is_const = b->isLoadConstantInt();
+  require_prm(a_is_col || a_is_const,
+              "GREATEST/LEAST operand must be a column reference or "
+              "an integer constant — arithmetic / nested expressions "
+              "are not yet supported (deferred to I.5 v2).");
+  require_prm(b_is_col || b_is_const,
+              "GREATEST/LEAST operand must be a column reference or "
+              "an integer constant — arithmetic / nested expressions "
+              "are not yet supported (deferred to I.5 v2).");
+  require_prm(a_is_col || b_is_col,
+              "GREATEST/LEAST requires at least one column operand "
+              "— two-constant forms can be folded by hand.");
+  if (a_is_col && b_is_col)
+  {
+    require_prm(a->getLoadIdx() == b->getLoadIdx(),
+                "GREATEST/LEAST with two distinct column operands is "
+                "not yet supported (deferred to I.5 v2 — needs "
+                "register-based CASE codegen).");
+    return a;
+  }
+
+  AggregationAPICompiler* agg = get_agg();
+  ArenaMalloc* amalloc = get_allocator();
+
+  AggregationAPICompiler::Expr* condition_col_expr = NULL;
+  AggregationAPICompiler::Expr* condition_const_expr = NULL;
+  TokenKind condition_op = T_EQUALS;
+  if (a_is_col && b_is_const)
+  {
+    condition_col_expr = a;
+    condition_const_expr = b;
+    condition_op = is_greatest ? T_GE : T_LE;
+  }
+  else
+  {
+    ndbrequire(a_is_const && b_is_col);
+    condition_col_expr = b;
+    condition_const_expr = a;
+    condition_op = is_greatest ? T_LE : T_GE;
+  }
+
+  // Build a column-left condition because embedded CASE generation expects
+  // the left side of each atom to be T_IDENTIFIER.
+  ConditionalExpression* lhs = amalloc->alloc_exc<ConditionalExpression>(1);
+  ConditionalExpression* rhs = amalloc->alloc_exc<ConditionalExpression>(1);
+  lhs->op = T_IDENTIFIER;
+  lhs->col_idx = condition_col_expr->getLoadIdx();
+  rhs->op = T_INT;
+  rhs->constant_integer =
+      agg->m_constants[condition_const_expr->getConstantIdx()].int_64;
+  ConditionalExpression* cond =
+      amalloc->alloc_exc<ConditionalExpression>(1);
+  cond->op = condition_op;
+  cond->args.left = lhs;
+  cond->args.right = rhs;
+  m_parser.m_greatest_least_conditions.push(cond);
+
+  return agg->CaseExpr(cond, a, b);
 }

@@ -128,6 +128,17 @@ public:
     ArenaMalloc* get_allocator();
     Uint32 column_name_to_idx(LexCString);
     Uint32 qualified_column_name_to_idx(LexCString table, LexCString column);
+    // Lower a 2-argument GREATEST/LEAST into a CaseExpr.
+    //   GREATEST(x, y)  →  CASE WHEN x >= y THEN x ELSE y END
+    //   LEAST(x, y)     →  CASE WHEN x <= y THEN x ELSE y END
+    // Operands must be a Load (column ref) or LoadConstantInteger.
+    // At least one column operand is required.  Two distinct columns are
+    // rejected (deferred to I.5 v2).  Returns the CaseExpr Expr*, or NULL
+    // if rejected (after setting the parser error state).
+    AggregationAPICompiler::Expr* lower_greatest_least(
+        AggregationAPICompiler::Expr* a,
+        AggregationAPICompiler::Expr* b,
+        bool is_greatest);
     void enter_subquery();
     // Returns the AggregationAPICompiler that was active inside the
     // subquery/CTE body just exited (or NULL if none was created because
@@ -204,6 +215,7 @@ private:
     int goodness = 0;
   };
   DynamicArray<ConditionalExpression*> m_toplevel_conditions;
+  DynamicArray<ConditionalExpression*> m_greatest_least_conditions;
   DynamicArray<ScanConfig> m_scan_config_candidates;
   ScanConfig* m_scan_config = NULL;
 
@@ -401,6 +413,7 @@ private:
       QueryScope& scope,
       struct ConditionalExpression* col_side,
       NdbDictionary::Table* const* cteVirtualTables);
+  bool is_greatest_least_condition(struct ConditionalExpression* ce) const;
   void require_cte_case_condition_column_output(QueryScope& scope,
                                                 Uint32 op_idx,
                                                 Uint32 cidx);
