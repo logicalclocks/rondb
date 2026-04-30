@@ -80,8 +80,13 @@ non-CTE-or-CTE-agnostic limit).
 
 #### I.5 — `GREATEST` / `LEAST` and similar n-ary functions (M)
 
-No parser support today.  testCteNdbApi Test 21 builds these via
-CASE chains — RonSQL would do the same once I.4 is solid.
+**v1 planned** — see `cte_filter_phase_i5.md`.  Two-argument
+GREATEST/LEAST with one column + one integer constant, lowered at
+parse time to a single `CaseExpr` plus a one-line lift of the
+embedded-condition `=`/`!=`-only restriction (kernel
+`Interpreter::BinaryCondition::LT/LE/GT/GE` already supported).
+Bigint-only.  v2 (n-ary + multi-column) and v3 (wider operand
+types) staged as follow-ups.
 
 ### Aggregator output types
 
