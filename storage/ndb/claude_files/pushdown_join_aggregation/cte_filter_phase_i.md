@@ -87,8 +87,9 @@ LHS of the comparison; nullable column operands rejected cleanly
 (MySQL NULL-propagation would need multi-arm CASE — deferred).  Also
 lifts the embedded-condition `=` / `!=`-only restriction so any
 inequality (`<` / `<=` / `>` / `>=`) can appear inside an embedded
-CASE atom.  Bigint-only.  v2 (n-ary + multi-column) and v3 (wider
-operand types) staged as follow-ups.
+CASE atom.  Bigint-only.  v2 (n-ary + multi-column), v3 (wider
+operand types), and v4 (NULL propagation for nullable operands)
+staged as follow-ups.
 
 ### Aggregator output types
 

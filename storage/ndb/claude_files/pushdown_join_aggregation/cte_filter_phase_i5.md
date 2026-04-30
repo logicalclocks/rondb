@@ -467,7 +467,7 @@ Tests 1-6 use `ronsql_compare.inc`.  7-8 use `--error 1`.
 - `CLAUDE.md` (storage/ndb/claude_files/pushdown_join_aggregation/) —
   add I.5 index entry.
 
-## Cleanly-rejected shapes (deferred to I.5 v2 / v3)
+## Cleanly-rejected shapes (deferred to I.5 v2 / v3 / v4)
 
 - GREATEST/LEAST with three or more arguments — needs CaseExpr-as-
   comparison-side support in `generate_embedded_condition`, which in
@@ -481,6 +481,10 @@ Tests 1-6 use `ronsql_compare.inc`.  7-8 use `--error 1`.
 - GREATEST/LEAST referencing CTE aggregate output — same defer as
   CASE-condition-on-CTE-aggregate (I.4 deferred).  → **I.5 v3** or
   bundled with the I.4 follow-up.
+- GREATEST/LEAST with **nullable column operands** — MySQL returns
+  NULL when any argument is NULL; the v1 single-CASE lowering would
+  return the non-null branch instead.  Currently rejected at preparer
+  time (after column resolution) with a clear message.  → **I.5 v4**.
 
 ## Follow-up phases
 
@@ -548,6 +552,78 @@ Also covers: GREATEST/LEAST with a CTE *aggregate* output as an
 operand — same `BRANCH_MEM_OP_ARG_INLINE_TYPE` aggregate-output
 work I.4 deferred.  Bundle with that follow-up if I.4's deferred
 piece lands first.
+
+### I.5 v4 — NULL propagation for nullable operands
+
+**Goal**: lift the v1 "nullable column operand" rejection so
+`GREATEST(nullable_col, K)` and friends return MySQL-correct
+results — i.e. `NULL` when any operand is `NULL`, otherwise the
+greatest/least non-null value.
+
+**Why deferred from v1**: a single-arm `CASE WHEN col CMP K THEN
+col ELSE K END` lowering returns `K` (the non-null branch) when
+`col IS NULL`, contradicting MySQL semantics.  Adding null
+propagation at v1 time would have required either a multi-arm
+CASE encoding the IS-NULL test or a new aggregator-side
+nullability marker — both meaningfully bigger than the v1
+surface, and v1's user-visible reach (NOT NULL columns) is the
+common case.
+
+**Implementation options**:
+
+1. **Multi-arm CASE encoding** (most local).  Lower
+   `GREATEST(col, K)` to a two-WHEN CASE:
+   ```
+   CASE
+     WHEN col IS NULL THEN NULL
+     WHEN col >= K THEN col
+     ELSE K
+   END
+   ```
+   This requires:
+   - Multi-WHEN-arm CASE in the AggregationAPICompiler IR
+     (today CaseExpr supports a single WHEN).  The SVM
+     instruction set + `programAggregator` + `programAggregator_join`
+     would each gain a multi-arm dispatch.
+   - `IS NULL` as an embedded-condition atom on a column.  The
+     kernel `BRANCH_*_OP_ARG` family already encodes
+     `Interpreter::NULL_CMP_*` semantics, but the RonSQL preparer
+     doesn't emit `IS NULL` atoms in CASE conditions today.
+   - A nullable result type from `CaseExpr` (so downstream
+     aggregators handle `NULL` correctly when the THEN/ELSE
+     arm propagates `NULL`).
+   - Test coverage that mirrors v1 Tests 1-6 with one nullable
+     column and a NULL-row in the dataset; assert RonSQL matches
+     MySQL native.
+
+2. **Register-based GREATEST/LEAST with explicit null mask**
+   (bundled with v2).  If v2 lands first, GREATEST/LEAST emit
+   moves to a register-based opcode chain — those opcodes can
+   short-circuit on a NULL flag from `READ_LINKED_TO_MEM` /
+   `READ_ATTR_INTO_REG` and propagate `NULL` natively without
+   the multi-arm CASE detour.  In that world v4 collapses to a
+   "drop the nullable-column rejection" change in
+   `lower_greatest_least` plus the test additions.
+
+**Sequencing**: prefer (2) — bundle v4 with v2 — because the
+multi-arm CASE machinery in (1) doesn't have other consumers in
+RonSQL today, while the register-based path in v2 also unlocks
+n-ary, multi-column, and Test-21-style register CASE conditions.
+If v2 stalls for unrelated reasons, fall back to (1).
+
+**Test plan**: a fresh MTR file (or extension of
+`ronsql_cte_greatest_least.test`) with a `NULL`-bearing fixture:
+
+| Shape | Expected |
+|-------|----------|
+| `GREATEST(nullable_col, K)` over a row where `nullable_col IS NULL` | `NULL` |
+| `GREATEST(nullable_col, K)` mixed NULL + non-NULL rows | per-row NULL or greatest |
+| `LEAST(nullable_col, K)` mirror | mirror |
+| `SUM(GREATEST(nullable_col, K))` aggregating a mixed-NULL CTE column | matches MySQL `SUM(GREATEST(...))` (NULL rows excluded) |
+
+Once shipped, the v1 rejection check at
+`is_greatest_least_condition(ce)` is removed and the
+`m_greatest_least_conditions` array becomes obsolete.
 
 ## Verification
 
