@@ -86,6 +86,10 @@ struct hset_key_table
 int init_key_records(NdbDictionary::Dictionary *dict);
 
 extern NdbRecord *pk_key_record[MAX_NUM_DATABASES];
+// Phase 1.10c.7b: NdbRecord on string_keys's PRIMARY ordered
+// index, used by run_hset_replace_hash_scan_delete's scanIndex
+// to walk only rows with redis_key_id == old_id.
+extern NdbRecord *pk_key_index_record[MAX_NUM_DATABASES];
 extern NdbRecord *entire_key_record[MAX_NUM_DATABASES];
 
 /*

@@ -106,6 +106,15 @@ NdbRecord *pk_key_record[MAX_NUM_DATABASES] =
   nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
   nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
 };
+// Phase 1.10c.7b: NdbRecord built on string_keys's PRIMARY ordered
+// index (created automatically once USING HASH was dropped from the
+// PK declaration). Used by run_hset_replace_hash_scan_delete to
+// scanIndex with a partial-prefix bound on redis_key_id.
+NdbRecord *pk_key_index_record[MAX_NUM_DATABASES] =
+{
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+};
 NdbRecord *entire_key_record[MAX_NUM_DATABASES] =
 {
   nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
@@ -827,6 +836,198 @@ void prepare_hset_phase15_transaction(struct GetControl *get_ctrl,
   trans->executeAsynchPrepare(NdbTransaction::NoCommit,
                               &hset_phase15_callback,
                               (void*)get_ctrl);
+}
+
+// Phase 1.10c.7b/i: silent-replace ordered-index range scan-with-
+// delete. Removes every hash field row from string_keys whose
+// redis_key_id matches old_redis_key_id, plus every value-extension
+// row in string_values for fields with num_rows > 0.
+//
+// Runs on a hupp'd NdbTransaction connected to the caller's
+// main_trans (same txn id, separate handle) so the scan's queued
+// deletes commit atomically with whatever main_trans is doing.
+//
+// Uses scanIndex on the PRIMARY ordered index of string_keys with a
+// partial-prefix IndexBound on redis_key_id. Far cheaper than a
+// table scan with NdbScanFilter — the data nodes only walk rows
+// whose first PK column equals old_redis_key_id rather than every
+// row in string_keys. The PRIMARY ordered index exists because
+// create_rondis_tables.sql declares the PK without USING HASH.
+//
+// Iteration follows NDB's standard "drain local batch, flush queued
+// deletes, fetch next remote batch" pattern: nextResult(true)
+// requests a remote batch, nextResult(false) walks locally cached
+// rows, scan_trans->execute(NoCommit) between batches flushes
+// queued deleteCurrentTuple ops to the data nodes.
+//
+// Caller (the four SET-write paths) commits main_trans afterwards;
+// the scan trans's queued deletes participate in that commit.
+//
+// Returns 0 on success, -1 on NDB error (response populated).
+//
+// [[maybe_unused]] until 1.10c.7b/ii wires the four SET write paths.
+[[maybe_unused]]
+int run_hset_replace_hash_scan_delete(Ndb *ndb,
+                                      NdbTransaction *main_trans,
+                                      Uint64 old_redis_key_id,
+                                      Uint32 database_id,
+                                      std::string *response) {
+  if (old_redis_key_id == STRING_REDIS_KEY_ID) {
+    return 0;  // Caller's was-string flag was 0; nothing to drop.
+  }
+
+  NdbTransaction *scan_trans = ndb->hupp(main_trans);
+  if (scan_trans == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to hupp scan transaction",
+                               ndb->getNdbError());
+    return -1;
+  }
+
+  // IndexBound: low_key == high_key with low_key_count = 1
+  // bounds the scan to redis_key_id == old_redis_key_id (partial-
+  // prefix equality on the leading PK column). Both keys share the
+  // same buffer; only the redis_key_id field is read because
+  // low_key_count is 1.
+  struct key_table bound_buf;
+  std::memset(&bound_buf, 0, sizeof(bound_buf));
+  bound_buf.redis_key_id = old_redis_key_id;
+
+  NdbIndexScanOperation::IndexBound bound;
+  std::memset(&bound, 0, sizeof(bound));
+  bound.low_key = (const char *)&bound_buf;
+  bound.low_key_count = 1;
+  bound.low_inclusive = true;
+  bound.high_key = (const char *)&bound_buf;
+  bound.high_key_count = 1;
+  bound.high_inclusive = true;
+  bound.range_no = 0;
+
+  // Project both PK columns (so deleteCurrentTuple can identify
+  // each row) plus rondb_key + num_rows for ext-row cleanup.
+  // Bits 0+1+2+5 = 0x27.
+  const Uint32 mask = 0x27;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+
+  NdbScanOperation::ScanOptions scanOptions;
+  std::memset(&scanOptions, 0, sizeof(scanOptions));
+  // No filter / interpreted code needed; the IndexBound is the
+  // filter.
+
+  NdbIndexScanOperation *scanOp = scan_trans->scanIndex(
+    pk_key_index_record[database_id],
+    entire_key_record[database_id],
+    NdbOperation::LM_Exclusive,
+    mask_ptr,
+    &bound,
+    &scanOptions,
+    sizeof(scanOptions));
+  if (scanOp == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to create scanIndex op",
+                               scan_trans->getNdbError());
+    ndb->closeTransaction(scan_trans);
+    return -1;
+  }
+
+  // Submit the scan request.
+  if (scan_trans->execute(NdbTransaction::NoCommit,
+                          NdbOperation::AbortOnError) != 0) {
+    assign_ndb_err_to_response(response,
+                               "Failed to execute scanIndex",
+                               scan_trans->getNdbError());
+    scanOp->close();
+    ndb->closeTransaction(scan_trans);
+    return -1;
+  }
+
+  // Drain the scan: outer nextResult(true) requests a remote
+  // batch; inner nextResult(false) walks locally cached rows.
+  // Between batches, execute(NoCommit) flushes queued deletes.
+  const char *row_ptr = nullptr;
+  int outer_rc;
+  while ((outer_rc = scanOp->nextResult(&row_ptr, true, false)) == 0) {
+    int inner_rc;
+    do {
+      const struct key_table *row =
+        reinterpret_cast<const struct key_table *>(row_ptr);
+      Uint64 row_rondb_key = row->rondb_key;
+      Uint32 row_num_rows = row->num_rows;
+
+      // Queue the take-over delete on string_keys. The scan
+      // position identifies the PK; we pass pk_key_record so the
+      // API knows the PK record layout. result_row=nullptr means
+      // we don't read-before-delete (we already have what we
+      // need from the scan projection).
+      if (scanOp->deleteCurrentTuple(scan_trans,
+                                     pk_key_record[database_id])
+          == nullptr) {
+        assign_ndb_err_to_response(response,
+                                   "Failed to delete scanned row",
+                                   scan_trans->getNdbError());
+        scanOp->close();
+        ndb->closeTransaction(scan_trans);
+        return -1;
+      }
+
+      // Queue per-ordinal deletes on string_values for fields
+      // whose value spilled into extension rows.
+      for (Uint32 ord = 0; ord < row_num_rows; ord++) {
+        struct value_table value_pk;
+        value_pk.rondb_key = row_rondb_key;
+        value_pk.ordinal = ord;
+        const NdbOperation *del_op = scan_trans->deleteTuple(
+          pk_value_record[database_id],
+          (const char *)&value_pk,
+          entire_value_record[database_id]);
+        if (del_op == nullptr) {
+          assign_ndb_err_to_response(response,
+                                     "Failed to queue ext-row delete",
+                                     scan_trans->getNdbError());
+          scanOp->close();
+          ndb->closeTransaction(scan_trans);
+          return -1;
+        }
+      }
+
+      inner_rc = scanOp->nextResult(&row_ptr, false, false);
+    } while (inner_rc == 0);
+
+    if (inner_rc < 0) {
+      assign_ndb_err_to_response(response,
+                                 "Scan inner-loop failure",
+                                 scan_trans->getNdbError());
+      scanOp->close();
+      ndb->closeTransaction(scan_trans);
+      return -1;
+    }
+    // inner_rc == 2: local batch exhausted. Flush queued deletes
+    // before requesting the next remote batch.
+    if (scan_trans->execute(NdbTransaction::NoCommit,
+                            NdbOperation::AbortOnError) != 0) {
+      assign_ndb_err_to_response(response,
+                                 "Failed to flush scan deletes",
+                                 scan_trans->getNdbError());
+      scanOp->close();
+      ndb->closeTransaction(scan_trans);
+      return -1;
+    }
+  }
+
+  if (outer_rc < 0) {
+    assign_ndb_err_to_response(response,
+                               "Scan outer-loop failure",
+                               scan_trans->getNdbError());
+    scanOp->close();
+    ndb->closeTransaction(scan_trans);
+    return -1;
+  }
+
+  // outer_rc == 1: scan exhausted. Close + release; main_trans
+  // commits everything atomically via the shared txn id.
+  scanOp->close();
+  ndb->closeTransaction(scan_trans);
+  return 0;
 }
 
 int add_hset_field_count_set_op(NdbTransaction *trans,

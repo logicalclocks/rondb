@@ -174,6 +174,42 @@ int init_key_records(NdbDictionary::Dictionary *dict,
           KEY_TABLE_NAME);
         return -1;
     }
+
+    // Phase 1.10c.7b: NdbRecord for the PRIMARY ordered index.
+    // Required by run_hset_replace_hash_scan_delete's scanIndex,
+    // which uses an IndexBound on redis_key_id (partial-prefix
+    // bound) to walk only the rows owned by a single hash.
+    //
+    // The PRIMARY ordered index exists on string_keys because the
+    // table's CREATE no longer specifies USING HASH on the PK
+    // (NDB then auto-builds both hash and ordered indexes).
+    const NdbDictionary::Index *pIdx =
+      dict->getIndex("PRIMARY", KEY_TABLE_NAME);
+    if (pIdx == nullptr) {
+        printf("Failed getting PRIMARY index for %s\n", KEY_TABLE_NAME);
+        return -1;
+    }
+    // The index NdbRecord projects the index columns, in index
+    // declaration order: (redis_key_id, redis_key) — same shape as
+    // pk_lookup_column_map above. Reuse it.
+    {
+        NdbDictionary::RecordSpecification col_specs[2];
+        int i = 0;
+        for (const auto &entry : pk_lookup_column_map) {
+            col_specs[i].column = entry.first;
+            col_specs[i].offset = entry.second.first;
+            col_specs[i].nullbit_byte_offset = 0;
+            col_specs[i].nullbit_bit_in_byte = entry.second.second;
+            ++i;
+        }
+        pk_key_index_record[database_id] =
+          dict->createRecord(pIdx, col_specs, 2, sizeof(col_specs[0]));
+        if (pk_key_index_record[database_id] == nullptr) {
+            printf("Failed creating PRIMARY index record for %s\n",
+              KEY_TABLE_NAME);
+            return -1;
+        }
+    }
     return 0;
 }
 

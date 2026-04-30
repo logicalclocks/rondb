@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS redis_0.string_keys(
   value_start VARBINARY(4096) NOT NULL,
   expiry_date TIMESTAMP,
   KEY ttl_index(expiry_date),
-  PRIMARY KEY (redis_key_id, redis_key) USING HASH,
+  PRIMARY KEY (redis_key_id, redis_key),
   UNIQUE KEY (rondb_key) USING HASH
 ) ENGINE NDB CHARSET=latin1 COMMENT="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8,TTL=0@expiry_date";
 

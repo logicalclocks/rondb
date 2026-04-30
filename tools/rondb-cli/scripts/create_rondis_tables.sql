@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS string_keys(
   value_start VARBINARY(4096) NOT NULL,
   expiry_date TIMESTAMP,
   KEY ttl_index(expiry_date),
-  PRIMARY KEY (redis_key_id, redis_key) USING HASH,
+  PRIMARY KEY (redis_key_id, redis_key),
   UNIQUE KEY (rondb_key) USING HASH
 ) ENGINE NDB CHARSET = latin1;
 CREATE TABLE IF NOT EXISTS hset_keys(

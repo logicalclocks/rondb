@@ -118,6 +118,15 @@ int add_hset_string_replace_value_deletes(NdbTransaction *trans,
                                           std::string *response);
 void prepare_hset_phase15_transaction(struct GetControl *get_ctrl,
                                       NdbTransaction *trans);
+
+/* Phase 1.10c.7b silent-replace scan-with-delete on the PRIMARY
+ * ordered index of string_keys. Wired into the four SET write
+ * paths in 1.10c.7b/ii. */
+int run_hset_replace_hash_scan_delete(Ndb *ndb,
+                                      NdbTransaction *main_trans,
+                                      Uint64 old_redis_key_id,
+                                      Uint32 database_id,
+                                      std::string *response);
 int add_hset_field_count_bump_op(NdbTransaction *trans,
                                  const NdbDictionary::Table *tab_hset,
                                  const char *hash_name,

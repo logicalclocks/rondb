@@ -43,7 +43,7 @@ CREATE TABLE string_keys(
     expiry_date TIMESTAMP,
     -- Easier to sort and delete keys this way
     KEY ttl_index(expiry_date),
-    PRIMARY KEY (redis_key_id, redis_key) USING HASH,
+    PRIMARY KEY (redis_key_id, redis_key),
     UNIQUE KEY (rondb_key) USING HASH
 ) ENGINE NDB -- Each CHAR will use 1 byte
 CHARSET = latin1 COMMENT = "NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8,TTL=0@expiry_date";
