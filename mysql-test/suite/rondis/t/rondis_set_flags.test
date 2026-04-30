@@ -6,11 +6,9 @@
 # Coverage for the SET flag matrix: NX, XX, GET, EX, PX, EXAT, PXAT,
 # KEEPTTL.
 #
-# The SET GET flag path is still broken (C9 - closes the client
-# connection on non-existent keys); those probes remain out of this
-# test until the Phase C fix lands. NX / XX on their "condition not
-# met" paths are restored here after the Phase B fix translates the
-# NDB 6000 sentinel to Redis-canonical nil.
+# NX / XX on their "condition not met" paths return Redis-canonical
+# nil. SET GET returns the previous string value, or nil when the key
+# was missing or held a non-string type.
 #
 # Numerical TTL assertions (does EX 60 really land ~NOW()+60?) live in
 # Phase 3's rondis_ttl.test. Here we only check reply shape.

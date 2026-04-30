@@ -32,12 +32,11 @@ str_round_rounded_up=1
 #
 0
 #
-# PEXPIREAT 0 / PEXPIREAT -1 are rejected with an error.
+# PEXPIREAT 0 deletes an existing key immediately; a second
+# past PEXPIREAT on the now-missing key returns :0.
 #
-ERR invalid expire time in set
-
-ERR invalid expire time in set
-
+1
+0
 #
 # End-to-end: PEXPIREAT then PTTL on the same key falls
 # in window. PTTL replies in millis, so the window scales

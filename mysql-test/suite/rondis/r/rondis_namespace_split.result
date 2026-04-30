@@ -7,24 +7,27 @@ SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared';
 redis_key_id
 NULL
 #
-# HSET against the same name -> silent replace.
-# Reply is :1 (one new field), not -WRONGTYPE.
+# HSET against the same name -> WRONGTYPE. The string remains
+# intact and hset_keys still marks the name as a string.
 #
-1
-#
-# GET on the replaced name returns nil; the string_keys row
-# is gone; hset_keys now carries a non-NULL redis_key_id.
-#
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
 
+#
+# GET still sees the string; no hash field rows were created.
+#
+string-value
 SELECT COUNT(*) AS string_rows_for_shared
 FROM redis_0.string_keys
 WHERE redis_key = 'shared' AND redis_key_id = 0;
 string_rows_for_shared
-0
-SELECT redis_key_id > 0 FROM redis_0.hset_keys WHERE redis_key = 'shared';
-redis_key_id > 0
 1
-hash-field-value
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared';
+redis_key_id
+NULL
+SELECT COUNT(*) AS hash_field_rows_for_shared
+FROM redis_0.string_keys WHERE redis_key = 'field1';
+hash_field_rows_for_shared
+0
 #
 # Mirror case: HSET first claims the name as a hash, then SET
 # on the same name silently replaces it with a string.
@@ -32,10 +35,10 @@ hash-field-value
 1
 OK
 #
-# HGET now returns nil; GET sees the string; hset_keys is back
-# to redis_key_id NULL for the string namespace.
+# HGET now returns WRONGTYPE; GET sees the string; hset_keys is
+# back to redis_key_id NULL for the string namespace.
 #
-
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
 string-value
 SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared_h';
 redis_key_id

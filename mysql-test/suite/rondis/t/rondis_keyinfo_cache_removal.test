@@ -7,8 +7,8 @@
 # cache.  Read paths (HGET / HMGET / HINCR* / HDECR*) used to allocate
 # a fresh redis_key_id and write a ghost hset_keys row on cache miss.
 # After 1.10c.6 they perform a read-only PK lookup on hset_keys and
-# return Redis-canonical "missing" replies (nil for HGET/HMGET,
-# :0 for HINCR*) without ever materializing a row.
+# return Redis-canonical replies without reading from a stale local
+# cache.
 #
 # Pins:
 #   1. HGET on a name with no hset_keys row returns nil and creates
@@ -18,7 +18,8 @@
 #      returns nil - no orphan field-row leak via stale cache.
 #   3. An empty hash (HDEL of last field; the hset_keys row persists
 #      with field_count = 0 by design) is invisible to read-side
-#      commands - HGET nil, HINCR :0, TYPE none.
+#      commands - HGET nil; HINCRBY reuses the row and makes the
+#      hash visible again.
 #
 
 --echo #
@@ -36,7 +37,8 @@ SELECT COUNT(*) AS hset_keys_for_nope_after_hmget
   FROM redis_0.hset_keys WHERE redis_key = 'nope';
 
 --echo #
---echo # HINCRBY / HDECRBY on a never-existed hash return :0; no row.
+--echo # HINCRBY / HDECRBY on a never-existed hash create the hash
+--echo # and field, matching Redis HINCRBY semantics.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HINCRBY nope cnt 5
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDECRBY nope cnt 3
@@ -57,7 +59,7 @@ SELECT COUNT(*) AS hset_keys_for_h1_after_del
 --echo #
 --echo # 3. HDEL of last field leaves the empty hset_keys row by
 --echo #    design (cross-server cache invariant); read paths must
---echo #    still treat it as "missing".
+--echo #    still treat it as missing for read-only commands.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h2 f v
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL h2 f
@@ -77,10 +79,11 @@ SELECT redis_key, field_count
 SELECT field_count FROM redis_0.hset_keys WHERE redis_key = 'h2';
 
 --echo #
---echo # HGET on a string key returns nil (string-typed name; not a hash).
+--echo # HGET on a string key returns WRONGTYPE.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET s1 "string_value"
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET s1 f
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET s1 f 2>&1
 SELECT redis_key_id IS NULL AS id_null
   FROM redis_0.hset_keys WHERE redis_key = 's1';
 

@@ -543,11 +543,9 @@ int add_hset_lock_claim_op(NdbTransaction *trans,
     NdbOperation::OperationOptions::OO_INTERPRETED_INSERT;
   opts.interpretedCode = &code;
 
-  // Phase 1.10c.7a: OUTPUT_INDEX_2 is the was-string-replaced flag
-  // emitted by the UPDATE-on-string branch of init_hset_lock_claim_code
-  // (1 if the existing row was a string and got claimed as a hash,
-  // 0 otherwise). Phase 1.5 dispatch consults it to drop the string
-  // row + any value-extension rows on the same trans.
+  // OUTPUT_INDEX_2 is retained as a zero-valued compatibility slot.
+  // HSET on an existing string now exits with RONDB_WRONGTYPE before
+  // producing outputs, matching Redis semantics.
   NdbOperation::GetValueSpec getvals[3];
   getvals[0].appStorage = nullptr;
   getvals[0].recAttr = nullptr;
@@ -1341,12 +1339,10 @@ hset_phase1_callback(int result, NdbTransaction *trans, void *aObject) {
       get_ctrl->m_error_code = code;
     }
   } else {
-    // Phase 1.10c.7a: with silent replace, the UPDATE-on-string
-    // branch claims the row by writing redis_key_id = prealloc_id
-    // and emits OUTPUT_INDEX_2 = 1. The interpreter never emits
-    // a NULL OUTPUT_INDEX_0 anymore (every branch loads a value
-    // into REG6 first). m_hset_was_string_replaced drives Phase
-    // 1.5's string-row + ext-row delete dispatch.
+    // The interpreter never emits a NULL OUTPUT_INDEX_0 on success
+    // (every non-error branch loads a value into REG6 first).
+    // OUTPUT_INDEX_2 is currently always 0; HSET-on-string is an
+    // error, not a silent replace.
     get_ctrl->m_hset_redis_key_id =
       get_ctrl->m_rec_attr_hset_id->u_64_value();
     get_ctrl->m_hset_field_count_pre =
@@ -2555,10 +2551,11 @@ void incr_decr_key_row(std::string *response,
 // cross-server invalidation on DEL / type replace.
 //
 // Returns:
-//   0  = found; redis_key_id populated with the hash's id
-//   1  = not found (no row, string row, empty hash row, or expired
-//        hash row); caller emits Redis-canonical reply (nil for
-//        HGET/HMGET, :0 for HINCR*) without creating any row
+//   0  = found; redis_key_id populated with the hash's id. Empty hash
+//        rows count as found so hash mutators can reuse the row.
+//   1  = not found (no row or expired hash row); caller emits the
+//        command-specific missing-key reply.
+//   2  = wrong type (the hset_keys row is a string claim).
 //   -1 = NDB error; response populated by callee
 //
 // Mask 0xE = bits 1,2,3 (redis_key_id, field_count, expiry_date);
@@ -2637,12 +2634,7 @@ int rondb_get_redis_key_id(Ndb *ndb,
 
   // String row owns the name (redis_key_id IS NULL).
   if ((key_row.null_bits & 0x1) != 0) {
-    return 1;
-  }
-  // Empty hash row (HDEL of last field; row persists for cross-server
-  // invariant but is invisible to read paths).
-  if (key_row.field_count == 0) {
-    return 1;
+    return 2;
   }
   // Expired hash row: same filter as filter_expired_probe.
   if ((key_row.null_bits & 0x2) == 0) {

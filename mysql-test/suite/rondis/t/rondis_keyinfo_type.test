@@ -44,17 +44,17 @@ SELECT redis_key, field_count FROM redis_0.hset_keys
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE no_such_key
 
 --echo #
---echo # 1.10c.7a: HSET on an existing string silently replaces the
---echo # string with a hash. TYPE flips from "string" to "hash" in
---echo # a single step (no WRONGTYPE).
+--echo # HSET on an existing string returns WRONGTYPE. TYPE still
+--echo # reports "string".
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET shared "string-value"
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE shared
+--error 0,1
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET shared f1 hash-value
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE shared
 
 --echo #
---echo # After DEL of the now-hash, TYPE reports "none".
+--echo # After DEL of the string, TYPE reports "none".
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL shared
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE shared

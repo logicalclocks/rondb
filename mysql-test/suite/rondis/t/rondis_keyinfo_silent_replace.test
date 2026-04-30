@@ -1,0 +1,122 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Phase 1.10c.7c - integrated Redis semantics for type replacement.
+#
+# Redis SET overwrites keys regardless of their current type. Hash
+# commands and string mutators other than SET do not do cross-type
+# replacement; they return WRONGTYPE.
+#
+
+--echo #
+--echo # 1. SET over a hash silently replaces it with a string and
+--echo # deletes all old hash field rows, including extension rows.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET big_to_str f_small "tiny"
+--exec perl -e 'print "h" x 5000' | redis-cli -x -h $RONDIS_HOST -p $RONDIS_PORT HSET big_to_str f_big
+--disable_query_log
+SET @old_id = (SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'big_to_str');
+SET @old_big_rondb_key = (
+  SELECT rondb_key FROM redis_0.string_keys
+   WHERE redis_key_id = @old_id AND redis_key = 'f_big');
+--enable_query_log
+--exec perl -e 'print "S" x 5000' | redis-cli -x -h $RONDIS_HOST -p $RONDIS_PORT SET big_to_str
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN big_to_str
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE big_to_str
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'big_to_str';
+SELECT COUNT(*) AS old_hash_field_rows
+  FROM redis_0.string_keys WHERE redis_key_id = @old_id;
+SELECT COUNT(*) AS old_hash_ext_rows
+  FROM redis_0.string_values WHERE rondb_key = @old_big_rondb_key;
+
+--echo #
+--echo # 2. SET ... GET over a hash returns nil for the old value,
+--echo # then leaves the key as a string.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET get_hash f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET get_hash stringy GET
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET get_hash
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE get_hash
+
+--echo #
+--echo # 3. SET ... XX over a hash succeeds because the key exists.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET xx_hash f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET xx_hash xx-string XX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET xx_hash
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE xx_hash
+
+--echo #
+--echo # 4. SET ... NX over a hash does not run because the key
+--echo # already exists. The hash remains intact.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET nx_hash f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET nx_hash nx-string NX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE nx_hash
+SELECT COUNT(*) AS nx_hash_rows
+  FROM redis_0.string_keys
+ WHERE redis_key_id = (SELECT redis_key_id
+                         FROM redis_0.hset_keys
+                        WHERE redis_key = 'nx_hash');
+
+--echo #
+--echo # 5. MSET can replace hash keys and create missing string keys
+--echo # in the same command.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET m_hash1 f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET m_hash2 f v
+--disable_query_log
+SET @m_hash1_old_id = (SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'm_hash1');
+SET @m_hash2_old_id = (SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'm_hash2');
+--enable_query_log
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT MSET m_hash1 s1 m_hash2 s2 m_new s3
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT MGET m_hash1 m_hash2 m_new
+SELECT COUNT(*) AS m_hash_old_rows
+  FROM redis_0.string_keys
+ WHERE redis_key_id IN (@m_hash1_old_id, @m_hash2_old_id);
+SELECT redis_key, redis_key_id FROM redis_0.hset_keys
+ WHERE redis_key IN ('m_hash1', 'm_hash2', 'm_new') ORDER BY redis_key;
+
+--echo #
+--echo # 6. Hash writes on string keys return WRONGTYPE and leave the
+--echo # string intact.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_for_hash string-value
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET str_for_hash f v 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET str_for_hash
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'str_for_hash';
+
+--echo #
+--echo # 7. INCR and SETRANGE on hashes return WRONGTYPE and leave
+--echo # the hash intact.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET mut_hash f v
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT INCR mut_hash 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE mut_hash 0 string 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE mut_hash
+SELECT COUNT(*) AS mut_hash_rows
+  FROM redis_0.string_keys
+ WHERE redis_key_id = (SELECT redis_key_id
+                         FROM redis_0.hset_keys
+                        WHERE redis_key = 'mut_hash');
+
+--echo #
+--echo # 8. After SET replaces a hash, DEL behaves correctly on the
+--echo # new string type. Both registry rows go away.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET cleanup_h f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET cleanup_h "now-string"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL cleanup_h
+SELECT COUNT(*) AS cleanup_string_rows
+  FROM redis_0.string_keys WHERE redis_key = 'cleanup_h';
+SELECT COUNT(*) AS cleanup_hset_rows
+  FROM redis_0.hset_keys WHERE redis_key = 'cleanup_h';
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

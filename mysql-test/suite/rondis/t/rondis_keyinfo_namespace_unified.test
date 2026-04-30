@@ -10,8 +10,8 @@
 # marking the row as a string). The dual write is atomic on a
 # single NDB transaction.
 #
-# Phase 1.10c.7a flipped HSET-on-string from WRONGTYPE to silent
-# replace; Phase 1.10c.7b did the same for SET-on-hash.
+# SET overwrites existing keys regardless of type; HSET on an
+# existing string returns WRONGTYPE.
 #
 
 --echo #
@@ -52,7 +52,8 @@ SET @old_h1_big_rondb_key = (
 --enable_query_log
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET h1 "stringy"
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET h1
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET h1 f
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET h1 f 2>&1
 SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'h1';
 SELECT COUNT(*) AS old_h1_field_rows
   FROM redis_0.string_keys WHERE redis_key_id = @old_h1_id;
@@ -60,16 +61,15 @@ SELECT COUNT(*) AS old_h1_ext_rows
   FROM redis_0.string_values WHERE rondb_key = @old_h1_big_rondb_key;
 
 --echo #
---echo # HSET on a name claimed by a string -> silent replace
---echo # (1.10c.7a). Reply is :1 (new field); the string row +
---echo # any ext rows are gone in the same trans.
+--echo # HSET on a name claimed by a string -> WRONGTYPE. The
+--echo # string row remains and no hash field row is created.
 --echo #
+--error 0,1
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET k1 f v
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET k1
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET k1 f
 SELECT COUNT(*) AS string_rows_for_k1
   FROM redis_0.string_keys WHERE redis_key = 'k1' AND redis_key_id = 0;
-SELECT redis_key_id > 0 FROM redis_0.hset_keys WHERE redis_key = 'k1';
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'k1';
 
 --disable_query_log
 DROP DATABASE IF EXISTS redis_0;

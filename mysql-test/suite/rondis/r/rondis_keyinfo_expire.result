@@ -25,12 +25,11 @@ hash_a_in_window=1
 #
 0
 #
-# EXPIRE 0 / EXPIRE -1 are rejected with an error.
+# EXPIRE 0 deletes an existing key immediately; a second
+# non-positive EXPIRE on the now-missing key returns :0.
 #
-ERR invalid expire time in set
-
-ERR invalid expire time in set
-
+1
+0
 #
 # End-to-end: EXPIRE then TTL on the same key falls in window.
 #

@@ -1278,9 +1278,8 @@ void rondb_pttl_command(Ndb *ndb,
 }
 
 // Phase 1.5 / 1.6 / 1.7: EXPIRE / PEXPIRE / EXPIREAT key value. Reply
-// :1 if applied, :0 if missing. Rejects input <= 0 (Redis-canonical,
-// also avoids the (N+999)/1000 ceil division collapsing PX/PXAT 0 to
-// 0 and the generate_expire_at -1 sentinel). Probes string_keys then
+// :1 if applied, :0 if missing. A target time in the past or now
+// deletes the key immediately, matching Redis. Probes string_keys then
 // hset_keys via run_exists_probes to learn the type, then issues a
 // single updateTuple writing expiry_date on the appropriate table.
 //
@@ -1311,10 +1310,6 @@ static void rondb_expire_or_pexpire(Ndb *ndb,
                                     enum ExpireMode mode) {
   Int64 raw = 0;
   if (get_int64(argv[2], response, &raw) == false) return;
-  if (raw <= 0) {
-    assign_generic_err_to_response(response, REDIS_INVALID_EXPIRE_TIME);
-    return;
-  }
 
   // Compute target absolute epoch seconds. Mirrors generate_expire_at's
   // clamp-at-g_max_expire_at semantics, but with explicit input
@@ -1373,6 +1368,13 @@ static void rondb_expire_or_pexpire(Ndb *ndb,
   filter_expired_probe(&probe);
   if (probe.m_match_kind == EXISTS_MATCH_NONE) {
     response->append(":0\r\n");
+    return;
+  }
+  if (abs_seconds <= now_seconds) {
+    pink::RedisCmdArgsType del_argv;
+    del_argv.push_back("DEL");
+    del_argv.push_back(argv[1]);
+    rondb_del(ndb, del_argv, response, STRING_REDIS_KEY_ID, worker_id);
     return;
   }
 
@@ -1855,12 +1857,21 @@ static int set_rows(Ndb *ndb,
       get_ctrl->m_num_transactions++;
     }
     Uint32 row_state = 0;
+    SetType requested_set_type = key_storage[inx].m_set_type;
+    if (redis_key_id == STRING_REDIS_KEY_ID &&
+        (requested_set_type == IsInsert || requested_set_type == IsUpdate)) {
+      // NX/XX must test key existence across the unified namespace,
+      // not just string_keys. Stage a tentative write, then decide
+      // after the hset_keys claim tells us whether a hash existed.
+      key_storage[inx].m_set_type = IsWrite;
+    }
     int ret_code = write_data_to_key_op(response,
                                         tab,
                                         &key_storage[inx],
                                         redis_key_id,
                                         row_state,
                                         get_ctrl->m_database_id);
+    key_storage[inx].m_set_type = requested_set_type;
     if (ret_code != 0) {
       return 1;
     }
@@ -1909,6 +1920,43 @@ static int set_rows(Ndb *ndb,
   } while (current_finished_in_loop < loop_count);
 
   if (get_ctrl->m_num_keys_failed > 0) return 0;
+
+  // Phase B.25 - SET NX/XX conditional handling over the unified
+  // namespace. write_data_to_key_op reports whether the string row
+  // was inserted; add_hset_string_claim_op reports whether a hash
+  // previously owned the name. Combine both signals to decide
+  // key-exists according to Redis, then abort the tentative
+  // NoCommit writes by closing the transaction on condition miss.
+  if (redis_key_id == STRING_REDIS_KEY_ID) {
+    for (Uint32 i = 0; i < loop_count; i++) {
+      Uint32 inx = current_index + i;
+      if (key_storage[inx].m_key_state != KeyState::MultiRowRWValue) {
+        continue;
+      }
+      SetType requested_set_type = key_storage[inx].m_set_type;
+      if (requested_set_type != IsInsert && requested_set_type != IsUpdate) {
+        continue;
+      }
+      bool inserted_string =
+        key_storage[inx].m_rec_attr_new_field != nullptr &&
+        key_storage[inx].m_rec_attr_new_field->u_64_value() != 0;
+      Uint64 old_hset_id = STRING_REDIS_KEY_ID;
+      NdbRecAttr *old_id_attr =
+        key_storage[inx].m_rec_attr_string_claim_old_id;
+      if (old_id_attr != nullptr) {
+        old_hset_id = old_id_attr->u_64_value();
+      }
+      bool key_existed = !inserted_string ||
+                         old_hset_id != STRING_REDIS_KEY_ID;
+      bool condition_failed =
+        (requested_set_type == IsInsert && key_existed) ||
+        (requested_set_type == IsUpdate && !key_existed);
+      if (condition_failed) {
+        key_storage[inx].m_key_state = KeyState::CompletedConditionalFail;
+        key_storage[inx].m_close_flag = true;
+      }
+    }
+  }
 
   // Phase B.5 (1.10c.7b silent replace) - any key whose dual-claim
   // captured a non-zero old hset_keys.redis_key_id had a hash on
@@ -2786,6 +2834,11 @@ void rondb_mset(Ndb *ndb,
    * result.
    */
   if (get_ctrl->m_num_keys_failed > 0) {
+    if (get_ctrl->m_error_code == RONDB_WRONGTYPE) {
+      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+      release_mset(get_ctrl);
+      return;
+    }
     assign_err_to_response(response,
                            FAILED_EXECUTE_MSET,
                            get_ctrl->m_error_code);
@@ -2876,6 +2929,29 @@ void rondb_hset_command(Ndb *ndb,
   // the +OK reply.
   rondb_mset(ndb, argv, response, is_hmset,
              /* redis_key_id sentinel */ 1, false, worker_id);
+}
+
+static void create_missing_hash_counter_field(
+    Ndb *ndb,
+    const pink::RedisCmdArgsType &argv,
+    std::string *response,
+    Int64 value,
+    int worker_id) {
+  pink::RedisCmdArgsType hset_argv;
+  hset_argv.push_back("HSET");
+  hset_argv.push_back(argv[1]);
+  hset_argv.push_back(argv[2]);
+  hset_argv.push_back(std::to_string(value));
+
+  std::string hset_response;
+  rondb_hset_command(ndb, hset_argv, &hset_response, false, worker_id);
+  if (!hset_response.empty() && hset_response[0] == '-') {
+    response->append(hset_response);
+    return;
+  }
+  char buf[64];
+  snprintf(buf, sizeof(buf), ":%lld\r\n", (long long)value);
+  response->append(buf);
 }
 
 /**
@@ -3456,6 +3532,10 @@ void rondb_hget_command(Ndb *ndb,
   if (ret_code < 0) {
     return;  // NDB error; response populated.
   }
+  if (ret_code == 2) {
+    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+    return;
+  }
   if (ret_code == 1) {
     emit_hash_not_found_mget_reply(argv, response);
     return;
@@ -3475,6 +3555,10 @@ void rondb_hmget_command(Ndb *ndb,
                                         response,
                                         get_current_database(worker_id));
   if (ret_code < 0) {
+    return;
+  }
+  if (ret_code == 2) {
+    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
     return;
   }
   if (ret_code == 1) {
@@ -3636,10 +3720,12 @@ void rondb_hincr_command(Ndb *ndb,
   if (ret_code < 0) {
     return;
   }
+  if (ret_code == 2) {
+    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+    return;
+  }
   if (ret_code == 1) {
-    // Phase 1.10c.6: hash not found. Read paths no longer
-    // auto-create hset_keys rows; reply :0 without materializing.
-    response->append(":0\r\n");
+    create_missing_hash_counter_field(ndb, argv, response, 1, worker_id);
     return;
   }
   rondb_incr_decr(ndb,
@@ -3666,10 +3752,6 @@ void rondb_hincrby_command(Ndb *ndb,
   if (ret_code < 0) {
     return;
   }
-  if (ret_code == 1) {
-    response->append(":0\r\n");
-    return;
-  }
   char *end_ptr = nullptr;
   const char *val_ptr = argv[3].c_str();
   const char *memory_end = val_ptr + argv[3].size();
@@ -3681,6 +3763,14 @@ void rondb_hincrby_command(Ndb *ndb,
     assign_err_to_response(response,
                            FAILED_INCRBY_DECRBY_PARAMETER,
                            0);
+    return;
+  }
+  if (ret_code == 2) {
+    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+    return;
+  }
+  if (ret_code == 1) {
+    create_missing_hash_counter_field(ndb, argv, response, val, worker_id);
     return;
   }
   rondb_incr_decr(ndb,
@@ -3707,8 +3797,12 @@ void rondb_hdecr_command(Ndb *ndb,
   if (ret_code < 0) {
     return;
   }
+  if (ret_code == 2) {
+    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+    return;
+  }
   if (ret_code == 1) {
-    response->append(":0\r\n");
+    create_missing_hash_counter_field(ndb, argv, response, -1, worker_id);
     return;
   }
   rondb_incr_decr(ndb,
@@ -3735,10 +3829,6 @@ void rondb_hdecrby_command(Ndb *ndb,
   if (ret_code < 0) {
     return;
   }
-  if (ret_code == 1) {
-    response->append(":0\r\n");
-    return;
-  }
   char *end_ptr = nullptr;
   const char *val_ptr = argv[3].c_str();
   const char *memory_end = val_ptr + argv[3].size();
@@ -3750,6 +3840,14 @@ void rondb_hdecrby_command(Ndb *ndb,
     assign_err_to_response(response,
                            FAILED_INCRBY_DECRBY_PARAMETER,
                            0);
+    return;
+  }
+  if (ret_code == 2) {
+    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+    return;
+  }
+  if (ret_code == 1) {
+    create_missing_hash_counter_field(ndb, argv, response, -val, worker_id);
     return;
   }
   rondb_incr_decr(ndb,

@@ -34,13 +34,11 @@ str_round_within_1s=1
 #
 0
 #
-# PEXPIRE 0 / PEXPIRE -1 are rejected with an error (mirrors
-# the SET ... PX 0 / -1 rejection at commands.cc:2164).
+# PEXPIRE 0 deletes an existing key immediately; a second
+# non-positive PEXPIRE on the now-missing key returns :0.
 #
-ERR invalid expire time in set
-
-ERR invalid expire time in set
-
+1
+0
 #
 # End-to-end: PEXPIRE then PTTL on the same key falls in
 # window. PTTL replies in millis, so the window scales up by

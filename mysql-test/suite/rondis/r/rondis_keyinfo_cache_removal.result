@@ -17,14 +17,15 @@ FROM redis_0.hset_keys WHERE redis_key = 'nope';
 hset_keys_for_nope_after_hmget
 0
 #
-# HINCRBY / HDECRBY on a never-existed hash return :0; no row.
+# HINCRBY / HDECRBY on a never-existed hash create the hash
+# and field, matching Redis HINCRBY semantics.
 #
-0
-0
+5
+2
 SELECT COUNT(*) AS hset_keys_for_nope_after_hincr
 FROM redis_0.hset_keys WHERE redis_key = 'nope';
 hset_keys_for_nope_after_hincr
-0
+1
 #
 # 2. Same-process HGET after DEL must miss; the cache used to
 #    hold the hash's id from the warming HSET.
@@ -40,7 +41,7 @@ hset_keys_for_h1_after_del
 #
 # 3. HDEL of last field leaves the empty hset_keys row by
 #    design (cross-server cache invariant); read paths must
-#    still treat it as "missing".
+#    still treat it as missing for read-only commands.
 #
 1
 1
@@ -51,22 +52,22 @@ h2	0
 
 
 
-0
-none
+1
+hash
 #
 # Sanity: HSET on the empty-row hash reuses its redis_key_id
 #   and HGET sees the new field.
 #
-1
+0
 after_empty
 SELECT field_count FROM redis_0.hset_keys WHERE redis_key = 'h2';
 field_count
 1
 #
-# HGET on a string key returns nil (string-typed name; not a hash).
+# HGET on a string key returns WRONGTYPE.
 #
 OK
-
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
 SELECT redis_key_id IS NULL AS id_null
 FROM redis_0.hset_keys WHERE redis_key = 's1';
 id_null

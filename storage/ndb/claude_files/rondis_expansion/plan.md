@@ -779,56 +779,31 @@ Sub-phases (each its own commit, separately bisectable):
     resets once this is fixed; a single anchor before the counter
     section is enough.
 
-- **1.10c.7 — Redis-canonical silent replace (DONE for both
-  directions; combined test 1.10c.7c still pending).** Real Redis
-  SET on a hash silently drops the hash; HSET on a string silently
-  drops the string. Replaces 1.10c.1's WRONGTYPE intermediate
-  behavior with the Redis-canonical drop semantics. Runs after
+- **1.10c.7 — Redis-canonical SET replacement (DONE for SET-on-hash;
+  HSET-on-string remains WRONGTYPE).** Real Redis SET overwrites an
+  existing key regardless of type; hash commands on string keys
+  return WRONGTYPE. Runs after
   1.10c.6 so all reads consult authoritative `hset_keys` state
   instead of process-local cached hash ids.
 
-  Both directions land **fully in-trans** (atomic with the type
-  flip). Detection is free — each path's existing Phase-1
-  interpreter already branches on the type discriminator
-  (`redis_key_id IS NULL` vs not), so the only added cost is the
-  cleanup work itself, which only runs on collision. NDB
-  transactions can carry the work of either direction in the
-  same trans as the type flip; the transaction-size limit is the
+  SET-on-hash lands fully in-trans (atomic with the type flip).
+  Detection is free: the string-claim interpreter already branches
+  on `hset_keys.redis_key_id`. The transaction-size limit is the
   only ceiling. For v1 we accept "trans grew too big" as a
-  command-level failure (rare in practice — the worst case is
-  SET on a hash with millions of fields); a future bounded-batch
-  variant is out of scope.
+  command-level failure (rare in practice — the worst case is SET
+  on a hash with millions of fields); a future bounded-batch variant
+  is out of scope.
 
   Sub-phases (one commit each):
 
-  - **1.10c.7a — HSET-on-string silent replace (DONE,
-    commit `9a81f36d70c`).**
-    `init_hset_lock_claim_code` gained a third interpreter output
-    (`OUTPUT_INDEX_2 = was-string-flag`). The UPDATE-on-string
-    branch flips from "emit `(0, 0)`" to "write
-    `redis_key_id = prealloc_id`, `field_count = 0`; emit
-    `(prealloc_id, 0, 1)`". UPDATE-on-hash and INSERT branches
-    emit `OUTPUT_INDEX_2 = 0`. `add_hset_lock_claim_op` registers
-    a 3rd `GetValueSpec`; `hset_phase1_callback` captures the
-    flag onto `GetControl::m_hset_was_string_replaced`.
-    `set_rows_hset` drops the WRONGTYPE check; on
-    `m_hset_was_string_replaced` it issues a Phase 1.5 on the
-    same trans:
-    1. NoCommit pass A: deleteTuple-with-readback on
-       `string_keys(0, name)` capturing `rondb_key` +
-       `num_rows` (mask 0x34, same projection as
-       `prepare_complex_delete_row`).
-    2. NoCommit pass B (only when `num_rows > 0`): per-ordinal
-       deleteTuple on `string_values` for ordinals
-       `0..num_rows-1` keyed by the captured `rondb_key`.
-    3. Phase 2 (existing): field writes proceed. The new field
-       rows live at `(prealloc_id, field_name)`, disjoint from
-       the deleted string row's PK `(0, name)`, so no conflict.
-
-    Existing tests `rondis_namespace_split`,
-    `rondis_keyinfo_namespace_unified`, `rondis_keyinfo_type` were
-    rewritten to assert silent-replace shape instead of WRONGTYPE
-    on HSET-on-string; `rondis_keyinfo_hset_wrongtype` deleted.
+  - **1.10c.7a — HSET-on-string Redis WRONGTYPE (DONE).**
+    The transient HSET-on-string silent-replace idea was reverted:
+    `init_hset_lock_claim_code` exits with `RONDB_WRONGTYPE` on
+    UPDATE-on-string (`redis_key_id IS NULL`), and the HSET/HMSET
+    reply path maps that sentinel to the canonical Redis WRONGTYPE
+    error. Tests `rondis_namespace_split`,
+    `rondis_keyinfo_namespace_unified`, and `rondis_keyinfo_type`
+    assert that the original string remains intact.
 
   - **1.10c.7b — SET-on-hash silent replace (DONE; landed in two
     bisectable commits, `c227dc5b581` for 7b/i + `10e2650e265`
@@ -858,17 +833,18 @@ Sub-phases (each its own commit, separately bisectable):
     txn id trips `!m_commitAckMarkerHash.find(check, *tmp.p)` at
     `DbtcMain.cpp:4539`.
 
-    Wired into all four SET write paths:
-    - `incr_decr_key_row` (string counters via INCR / DECR /
-      INCRBY / DECRBY)
-    - `execute_set_range_simple` (SETRANGE inline path: now
-      NoCommit + scan + Commit)
-    - `write_key_row_setrange` (SETRANGE complex / ext-row path)
+    Wired into the SET/MSET write path only:
     - `rondb_mset` SET path: per-key
       `KeyStorage::m_rec_attr_string_claim_old_id` captured by
       `add_hset_string_claim_op`; new Phase B.5 between Phase B
       drain and Phase C count runs the scan synchronously per
       affected key.
+    - `SET NX` / `SET XX` decide existence across the unified
+      namespace after the hset_keys claim has reported whether a
+      hash previously owned the name.
+    `INCR` / `DECR` / `INCRBY` / `DECRBY` and `SETRANGE` use the
+    same old-id signal to return WRONGTYPE on hashes and abort
+    their staged NoCommit writes.
 
     Dead-code drop: the `RONDB_WRONGTYPE` branch in
     `write_callback`, `KeyState::CompletedTypeError`, and both
@@ -877,32 +853,29 @@ Sub-phases (each its own commit, separately bisectable):
     one cycle in case a side path still emits them.
 
     Tests `rondis_namespace_split` and
-    `rondis_keyinfo_namespace_unified` rewritten to assert
-    silent-replace in both directions (including a 5000-byte
-    ext-row hash field that exercises `string_values` cleanup);
-    `rondis_negative_counters` and `rondis_negative_substring`
-    updated for the same flip on INCR/DECR/SETRANGE.
+    `rondis_keyinfo_namespace_unified` assert SET-on-hash
+    replacement and HSET-on-string WRONGTYPE. `rondis_negative_counters`
+    and `rondis_negative_substring` assert WRONGTYPE for
+    INCR/DECR/SETRANGE on hashes.
 
   - **1.10c.7c — Test coverage.**
     `t/rondis_keyinfo_silent_replace.test`:
-    1. `SET k "string"`; `HSET k f v` → returns `1`; `GET k` →
-       `(nil)`; `HGET k f` → `v`; `TYPE k` → `hash`; the old
-       `string_keys(0, k)` row and any value-extension rows
-       are gone.
-    2. `HSET k f v`; `SET k "string"` → returns `OK`; `GET k`
+    1. `HSET k f v`; `SET k "string"` → returns `OK`; `GET k`
        → `string`; `HGET k f` → `(nil)`; `TYPE k` → `string`;
        the old hash field rows under `redis_key_id = old_id`
        are gone (`SELECT COUNT(*) FROM string_keys WHERE
        redis_key_id = old_id` → 0).
-    3. Round-trip: SET → HSET → SET → HSET on the same name;
-       each transition is silent.
-    4. SET-on-hash with a 5000-byte value (forces ext-row
+    2. SET-on-hash with a 5000-byte value (forces ext-row
        writes on the new string side) over a hash with several
        fields, at least one of which has a 5000-byte value
        (forces ext-row deletes on the old hash side); both
        sides clean up correctly.
-    5. The new hash from (1) and the new string from (2)
-       interact correctly with EXPIRE / PERSIST / DEL.
+    3. `SET ... GET`, `SET ... NX`, `SET ... XX`, and mixed `MSET`
+       use Redis existence/replacement semantics across hash and
+       string namespaces.
+    4. HSET-on-string, INCR-on-hash, and SETRANGE-on-hash return
+       WRONGTYPE and leave the original value intact.
+    5. The new string from SET-on-hash interacts correctly with DEL.
 
   Open question deferred: the trans-size ceiling on (1.10c.7b).
   An HSET-then-SET on a hash with millions of field rows will

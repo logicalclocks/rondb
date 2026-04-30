@@ -13,7 +13,7 @@ call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
 # Reply:
 #   :1\r\n  - applied (key existed)
 #   :0\r\n  - missing (or hash with field_count == 0)
-#   error   - seconds <= 0
+#   seconds <= 0 deletes an existing key immediately
 #
 
 --echo #
@@ -52,7 +52,8 @@ call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE no_such_key 60
 
 --echo #
---echo # EXPIRE 0 / EXPIRE -1 are rejected with an error.
+--echo # EXPIRE 0 deletes an existing key immediately; a second
+--echo # non-positive EXPIRE on the now-missing key returns :0.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE str_a 0
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE str_a -1

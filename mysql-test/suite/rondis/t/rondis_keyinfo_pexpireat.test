@@ -13,7 +13,7 @@ call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
 # Reply:
 #   :1\r\n  - applied (key existed)
 #   :0\r\n  - missing (or hash with field_count == 0)
-#   error   - timestamp <= 0
+#   past/now timestamp deletes an existing key immediately
 #
 # Like EXPIREAT but the input is millis-precision. Internally
 # rounds up to the next whole second via (N + 999) / 1000 -
@@ -75,7 +75,8 @@ call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIREAT no_such_key $target_ms
 
 --echo #
---echo # PEXPIREAT 0 / PEXPIREAT -1 are rejected with an error.
+--echo # PEXPIREAT 0 deletes an existing key immediately; a second
+--echo # past PEXPIREAT on the now-missing key returns :0.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIREAT str_a 0
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIREAT str_a -1

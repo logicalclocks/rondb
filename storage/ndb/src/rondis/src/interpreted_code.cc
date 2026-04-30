@@ -126,20 +126,18 @@ int initNdbCodeIncrDecr(std::string *response,
 //     existing (redis_key_id, field_count, OUTPUT_INDEX_2 = 0),
 //     exit_ok. Field writes append to the existing hash.
 //
-//   UPDATE-on-string (Phase 1.10c.7a, silent replace):
-//     row exists but is a string (redis_key_id IS NULL). Write
-//     prealloc_id into redis_key_id and 0 into field_count
-//     (claims the name as a hash), emit (prealloc_id, 0,
-//     OUTPUT_INDEX_2 = 1). The was-string flag tells Phase 1.5
-//     to delete the matching string_keys row and any
-//     value-extension rows in the same trans.
+//   UPDATE-on-string:
+//     row exists but is a string (redis_key_id IS NULL). Redis hash
+//     writes must fail with WRONGTYPE; unlike SET, HSET does not
+//     replace a value of another type.
 //
 //   INSERT branch (row didn't exist): write prealloc_id and
 //     field_count = 0, emit (prealloc_id, 0, OUTPUT_INDEX_2 = 0).
 //
 // Phase 1's callback consumes the three outputs into
-// GetControl::m_hset_redis_key_id, m_hset_field_count_pre, and
-// m_hset_was_string_replaced.
+// GetControl::m_hset_redis_key_id and m_hset_field_count_pre.
+// OUTPUT_INDEX_2 is retained as 0 for the non-error branches for
+// compatibility with the current callback plumbing.
 int init_hset_lock_claim_code(std::string *response,
                               NdbInterpretedCode *code,
                               const NdbDictionary::Table *tab,
@@ -152,10 +150,10 @@ int init_hset_lock_claim_code(std::string *response,
   code->load_op_type(REG1);
   code->branch_eq_const(REG1, RONDB_INSERT, LABEL0); // INSERT to label 0
   /* UPDATE branch */
-  // Phase 1.10c.1: existing row may be a string (redis_key_id IS
-  // NULL). Branch on NULL before read_attr; reading NULL into a
-  // register and then write_interpreter_output trips NDB(878)
-  // "Register with NULL value involved in arithmetic operation".
+  // Existing row may be a string (redis_key_id IS NULL). Branch on
+  // NULL before read_attr; reading NULL into a register and then
+  // write_interpreter_output trips NDB(878) "Register with NULL
+  // value involved in arithmetic operation".
   code->branch_col_eq_null(redis_key_id_col->getColumnNo(), LABEL1);
   // UPDATE-on-hash: existing hash row. Emit (id, count, 0).
   code->read_attr(REG6, redis_key_id_col);
@@ -166,20 +164,9 @@ int init_hset_lock_claim_code(std::string *response,
   code->write_interpreter_output(REG2, OUTPUT_INDEX_2);
   code->interpret_exit_ok();
 
-  // UPDATE-on-string (Phase 1.10c.7a): claim the row as a hash.
-  // Write redis_key_id = prealloc_id and field_count = 0, then
-  // emit (prealloc_id, 0, was_string=1) so Phase 1's callback
-  // and Phase 1.5 can drop the string row + ext rows.
+  // UPDATE-on-string: Redis-canonical WRONGTYPE.
   code->def_label(LABEL1);
-  code->load_const_u64(REG6, prealloc_id);
-  code->load_const_u64(REG7, 0);
-  code->load_const_u64(REG2, 1);
-  code->write_attr(redis_key_id_col, REG6);
-  code->write_attr(field_count_col, REG7);
-  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
-  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
-  code->write_interpreter_output(REG2, OUTPUT_INDEX_2);
-  code->interpret_exit_ok();
+  code->interpret_exit_nok(RONDB_WRONGTYPE);
 
   /* INSERT branch */
   code->def_label(LABEL0);

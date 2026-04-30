@@ -36,7 +36,7 @@ k3	NULL
 1
 OK
 stringy
-
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
 SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'h1';
 redis_key_id
 NULL
@@ -49,17 +49,16 @@ FROM redis_0.string_values WHERE rondb_key = @old_h1_big_rondb_key;
 old_h1_ext_rows
 0
 #
-# HSET on a name claimed by a string -> silent replace
-# (1.10c.7a). Reply is :1 (new field); the string row +
-# any ext rows are gone in the same trans.
+# HSET on a name claimed by a string -> WRONGTYPE. The
+# string row remains and no hash field row is created.
 #
-1
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
 
-v
+v1-updated
 SELECT COUNT(*) AS string_rows_for_k1
 FROM redis_0.string_keys WHERE redis_key = 'k1' AND redis_key_id = 0;
 string_rows_for_k1
-0
-SELECT redis_key_id > 0 FROM redis_0.hset_keys WHERE redis_key = 'k1';
-redis_key_id > 0
 1
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'k1';
+redis_key_id
+NULL

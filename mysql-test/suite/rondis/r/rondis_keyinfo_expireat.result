@@ -17,14 +17,15 @@ str_a_matches_target=1
 1
 hash_a_matches_target=1
 #
-# EXPIREAT with a timestamp in the past -> still applied :1
-# (Phase 1.10 will hide the row from reads; the EXPIREAT
-# reply itself does not check whether the target is in the
-# past). expiry_date stores the supplied past timestamp.
+# EXPIREAT with a timestamp in the past deletes the key
+# immediately.
 #
 OK
 1
-str_past_matches=
+SELECT COUNT(*) AS str_past_rows
+FROM redis_0.string_keys WHERE redis_key = 'str_past' AND redis_key_id = 0;
+str_past_rows
+0
 #
 # EXPIREAT on a fully-HDEL'd hash -> :0.
 #
@@ -34,12 +35,11 @@ str_past_matches=
 #
 0
 #
-# EXPIREAT 0 / EXPIREAT -1 are rejected with an error.
+# EXPIREAT 0 deletes an existing key immediately; a second
+# past EXPIREAT on the now-missing key returns :0.
 #
-ERR invalid expire time in set
-
-ERR invalid expire time in set
-
+1
+0
 #
 # End-to-end: EXPIREAT then TTL on the same key falls in
 # window. Same probe / encode round-trip as EXPIRE.
