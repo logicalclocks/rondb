@@ -186,13 +186,7 @@ enum KeyState {
     // the interpreted-code program). Not a failure: Redis-canonical
     // reply is the nil bulk string. Only ever set on the single-key
     // plain SET path (MSET / HSET do not expose conditional flags).
-    CompletedConditionalFail = 11,
-    // Phase 1.10c.1: SET dual-write claim found a hash already owning
-    // the name (RONDB_WRONGTYPE 6010 sentinel from
-    // init_hset_string_claim_code). Reply is the Redis-canonical
-    // -WRONGTYPE error. Phase 1.10c.6 (silent replace) removes this
-    // path in favor of overwriting the hash.
-    CompletedTypeError = 12
+    CompletedConditionalFail = 11
 };
 
 #define MAX_PARALLEL_KEY_OPS 256
@@ -221,6 +215,13 @@ struct KeyStorage {
     // 1 on the INSERT branch (new field), 0 on UPDATE. Aggregated into
     // GetControl::m_num_new_fields for the HSET reply (C10).
     NdbRecAttr *m_rec_attr_new_field;
+    // Phase 1.10c.7b: per-key dual-claim's OUTPUT_INDEX_0 = old
+    // hset_keys.redis_key_id captured during set_simple_rows
+    // Phase A. After Phase B's NoCommit drain, if non-zero we run
+    // run_hset_replace_hash_scan_delete on this trans before
+    // dispatching the commit. nullptr for HSET (set_rows_hset uses
+    // a different lock-claim op).
+    NdbRecAttr *m_rec_attr_string_claim_old_id;
     union {
       char *m_value_ptr;
       const char *m_const_value_ptr;

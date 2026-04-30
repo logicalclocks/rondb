@@ -38,6 +38,21 @@ OK
 ERR increment or decrement would overflow
 
 #
+# String counters on a hash key return WRONGTYPE and leave the
+# hash intact. SET is the only string write that silently
+# replaces hashes.
+#
+1
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
+
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
+
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
+
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
+
+1
+#
 # HINCRBY / HDECRBY non-numeric delta.
 #
 1
@@ -58,3 +73,4 @@ ERR value is not an integer or out of range
 #
 4
 2
+1

@@ -11,7 +11,7 @@
 # single NDB transaction.
 #
 # Phase 1.10c.7a flipped HSET-on-string from WRONGTYPE to silent
-# replace; SET-on-hash still returns WRONGTYPE until 1.10c.7b.
+# replace; Phase 1.10c.7b did the same for SET-on-hash.
 #
 
 --echo #
@@ -38,11 +38,26 @@ SELECT redis_key, redis_key_id FROM redis_0.hset_keys
  WHERE redis_key IN ('k2', 'k3') ORDER BY redis_key;
 
 --echo #
---echo # SET on a name claimed by a hash -> WRONGTYPE
---echo # (1.10c.7b will flip this to silent replace).
+--echo # SET on a name claimed by a hash -> silent replace.
+--echo # GET sees the new string, HGET misses, and hset_keys carries
+--echo # redis_key_id NULL again.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h1 f v
+--exec perl -e 'print "x" x 5000' | redis-cli -x -h $RONDIS_HOST -p $RONDIS_PORT HSET h1 big
+--disable_query_log
+SET @old_h1_id = (SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'h1');
+SET @old_h1_big_rondb_key = (
+  SELECT rondb_key FROM redis_0.string_keys
+   WHERE redis_key_id = @old_h1_id AND redis_key = 'big');
+--enable_query_log
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET h1 "stringy"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET h1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET h1 f
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'h1';
+SELECT COUNT(*) AS old_h1_field_rows
+  FROM redis_0.string_keys WHERE redis_key_id = @old_h1_id;
+SELECT COUNT(*) AS old_h1_ext_rows
+  FROM redis_0.string_values WHERE rondb_key = @old_h1_big_rondb_key;
 
 --echo #
 --echo # HSET on a name claimed by a string -> silent replace

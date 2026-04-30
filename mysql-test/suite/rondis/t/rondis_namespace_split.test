@@ -8,9 +8,9 @@
 # and any value-extension rows are dropped inside the same NDB
 # transaction that claims hset_keys for the hash namespace.
 #
-# This file used to pin WRONGTYPE on cross-type writes (1.10c.1)
-# and currently still pins WRONGTYPE for SET-on-hash (handled by
-# 1.10c.7b). HSET-on-string switched to silent replace at 1.10c.7a.
+# This file used to pin WRONGTYPE on cross-type writes (1.10c.1).
+# HSET-on-string switched to silent replace at 1.10c.7a; SET-on-hash
+# switched to silent replace at 1.10c.7b.
 #
 
 --echo #
@@ -38,19 +38,19 @@ SELECT redis_key_id > 0 FROM redis_0.hset_keys WHERE redis_key = 'shared';
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET shared field1
 
 --echo #
---echo # Mirror case (still 1.10c.1 WRONGTYPE until 1.10c.7b lands):
---echo # HSET first claims the name as a hash, then SET on the same
---echo # name -> WRONGTYPE.
+--echo # Mirror case: HSET first claims the name as a hash, then SET
+--echo # on the same name silently replaces it with a string.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET shared_h field1 "hash-field-value"
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET shared_h "string-value"
 
 --echo #
---echo # The hash is intact: HGET still works, hset_keys row keeps
---echo # its non-zero redis_key_id.
+--echo # HGET now returns nil; GET sees the string; hset_keys is back
+--echo # to redis_key_id NULL for the string namespace.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET shared_h field1
-SELECT redis_key_id > 0 FROM redis_0.hset_keys WHERE redis_key = 'shared_h';
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET shared_h
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared_h';
 
 --disable_query_log
 DROP DATABASE IF EXISTS redis_0;

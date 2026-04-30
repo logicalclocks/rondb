@@ -54,6 +54,22 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DECR smallnum 2>&1
 
 --echo #
+--echo # String counters on a hash key return WRONGTYPE and leave the
+--echo # hash intact. SET is the only string write that silently
+--echo # replaces hashes.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET counter_hash f 1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT INCR counter_hash 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT INCRBY counter_hash 5 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DECR counter_hash 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DECRBY counter_hash 5 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET counter_hash f
+
+--echo #
 --echo # HINCRBY / HDECRBY non-numeric delta.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h f 10
@@ -77,6 +93,7 @@
 --error 0,1
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL nonnum num bignum smallnum 2>&1
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL h f g
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL counter_hash f
 
 --disable_query_log
 DROP DATABASE IF EXISTS redis_0;

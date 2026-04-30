@@ -49,9 +49,20 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE k abc "v" 2>&1
 
 --echo #
+--echo # SETRANGE on a hash key returns WRONGTYPE and leaves the hash
+--echo # intact. SET is the only string write that silently replaces
+--echo # hashes.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h f v
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE h 0 "x" 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET h f
+
+--echo #
 --echo # Cleanup.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL k
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL h f
 
 --disable_query_log
 DROP DATABASE IF EXISTS redis_0;

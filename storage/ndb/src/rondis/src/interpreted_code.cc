@@ -203,51 +203,84 @@ int init_hset_lock_claim_code(std::string *response,
   return 0;
 }
 
-// Phase 1.10c.1: SET / MSET dual-write claim on hset_keys for the
-// string namespace. Strings store redis_key_id = NULL so that the
-// UNIQUE KEY (redis_key_id) tolerates concurrent string INSERTs
-// (NULL is not equal to NULL in a unique index). Hashes still
-// auto-assign a non-NULL value.
+// Phase 1.10c.1 / 1.10c.7b: SET / MSET dual-write claim on
+// hset_keys for the string namespace. Strings store
+// redis_key_id = NULL so that the UNIQUE KEY (redis_key_id)
+// tolerates concurrent string INSERTs (NULL is not equal to NULL
+// in a unique index). The writeTuple's row buffer (null_bits=0x1,
+// mask=0xF) overwrites redis_key_id back to NULL on every branch;
+// the interpreter publishes the OLD value(s) so the caller can
+// detect a hash-to-string flip.
 //
-//   UPDATE branch (row exists):
-//     - if redis_key_id IS NULL  -> exit_ok (idempotent; no-op)
-//     - else (a hash already owns this name) -> exit_nok(WRONGTYPE)
+//   UPDATE-on-string branch (existing redis_key_id IS NULL):
+//     emit (0, 0) — idempotent no-op for the caller. mask=0xF
+//     overwrites field_count with 0 from the row buffer; that's
+//     a no-op since string rows already have field_count = 0 by
+//     1.10c.1's INSERT shape.
 //
-//   INSERT branch (row is new): write redis_key_id = NULL and
-//     field_count = 0 then exit_ok.
+//   UPDATE-on-hash branch (existing redis_key_id non-null,
+//     1.10c.7b silent replace):
+//     read existing redis_key_id and field_count, emit them as
+//     (old_id, old_field_count). The writeTuple then overwrites
+//     redis_key_id back to NULL; the caller runs an
+//     ordered-index range scan over string_keys filtered by
+//     redis_key_id = old_id and queues the per-row deletes on
+//     the same NDB transaction.
 //
-// Always emits OUTPUT_INDEX_0 (constant 0) so the op shape matches
-// init_hset_lock_claim_code; NDB requires at least one
-// register-final-value when an interpreted writeTuple participates
-// in a multi-op trans.
+//   INSERT branch (row didn't exist):
+//     emit (0, 0). Row buffer + null_bits writes redis_key_id
+//     NULL, field_count 0, expiry_date NULL.
+//
+// OUTPUT_INDEX_0 = old_redis_key_id (0 = no hash to drop;
+// non-zero = hash field rows live under that id and must be
+// scan-deleted by the caller).
+// OUTPUT_INDEX_1 = old_field_count (informational; lets callers
+// short-circuit a scan when a hash row exists with field_count
+// already 0, which is rare but possible after HDEL-of-last-field
+// followed by no further activity).
 int init_hset_string_claim_code(std::string *response,
                                 NdbInterpretedCode *code,
                                 const NdbDictionary::Table *tab) {
   const NdbDictionary::Column *redis_key_id_col =
     tab->getColumn(HSET_KEY_TABLE_COL_redis_key_id);
+  const NdbDictionary::Column *field_count_col =
+    tab->getColumn(HSET_KEY_TABLE_COL_field_count);
 
   code->load_op_type(REG1);
   code->branch_eq_const(REG1, RONDB_INSERT, LABEL0); // INSERT to label 0
 
   /* UPDATE branch */
-  // If existing redis_key_id IS NULL -> string row, idempotent OK.
+  // Phase 1.10c.7b: branch on NULL first. Reading a NULL column
+  // into a register and then write_interpreter_output trips
+  // NDB(878) "Register with NULL value involved in arithmetic
+  // operation". Existing string row -> emit (0, 0); existing
+  // hash row -> emit (old_id, old_field_count) so the caller can
+  // scan-delete.
   code->branch_col_eq_null(redis_key_id_col->getColumnNo(), LABEL1);
-  // Non-null: a hash already owns this name -> WRONGTYPE.
-  code->interpret_exit_nok(RONDB_WRONGTYPE);
+  // UPDATE-on-hash: publish the old values for silent replace.
+  code->read_attr(REG6, redis_key_id_col);
+  code->read_attr(REG7, field_count_col);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->interpret_exit_ok();
 
+  // UPDATE-on-string: idempotent. Emit (0, 0).
   code->def_label(LABEL1);
   code->load_const_u64(REG6, 0);
+  code->load_const_u64(REG7, 0);
   code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
   code->interpret_exit_ok();
 
   /* INSERT branch */
-  // Row buffer + null_bits already populates all columns
-  // (redis_key_id NULL, field_count 0, expiry_date NULL). The
-  // interpreter just emits the canonical OUTPUT_INDEX_0 sentinel
-  // and exits.
+  // Row buffer + null_bits already populates all columns.
+  // Emit (0, 0) so the caller's old_id check sees "no hash to
+  // drop". Field_count is also 0 (newly inserted string row).
   code->def_label(LABEL0);
   code->load_const_u64(REG6, 0);
+  code->load_const_u64(REG7, 0);
   code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
   code->interpret_exit_ok();
 
   int ret_code = code->finalise();

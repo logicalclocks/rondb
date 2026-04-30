@@ -26,18 +26,17 @@ redis_key_id > 0
 1
 hash-field-value
 #
-# Mirror case (still 1.10c.1 WRONGTYPE until 1.10c.7b lands):
-# HSET first claims the name as a hash, then SET on the same
-# name -> WRONGTYPE.
+# Mirror case: HSET first claims the name as a hash, then SET
+# on the same name silently replaces it with a string.
 #
 1
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+OK
+#
+# HGET now returns nil; GET sees the string; hset_keys is back
+# to redis_key_id NULL for the string namespace.
+#
 
-#
-# The hash is intact: HGET still works, hset_keys row keeps
-# its non-zero redis_key_id.
-#
-hash-field-value
-SELECT redis_key_id > 0 FROM redis_0.hset_keys WHERE redis_key = 'shared_h';
-redis_key_id > 0
-1
+string-value
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared_h';
+redis_key_id
+NULL

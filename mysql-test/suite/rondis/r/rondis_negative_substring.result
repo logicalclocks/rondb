@@ -31,6 +31,16 @@ ERR offset is out of range
 ERR value is not an integer or out of range
 
 #
+# SETRANGE on a hash key returns WRONGTYPE and leaves the hash
+# intact. SET is the only string write that silently replaces
+# hashes.
+#
+1
+ERR WRONGTYPE Operation against a key holding the wrong kind of value
+
+v
+#
 # Cleanup.
 #
+1
 1

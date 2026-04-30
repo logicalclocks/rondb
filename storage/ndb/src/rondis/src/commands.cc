@@ -1866,11 +1866,13 @@ static int set_rows(Ndb *ndb,
     }
     // Phase 1.10c.1: namespace-unification claim. Stage an
     // hset_keys UPSERT on the same trans so the dual write
-    // (string_keys + hset_keys) is atomic. The interpreter aborts
-    // the trans with RONDB_WRONGTYPE if a hash already owns the
-    // name; otherwise it inserts (redis_key_id = 0, field_count = 0)
-    // or no-ops on an existing string row. SET / MSET only -
-    // hash commands take set_rows_hset which does its own claim.
+    // (string_keys + hset_keys) is atomic.
+    // Phase 1.10c.7b: capture the dual-claim's old hset_keys
+    // redis_key_id per key. After Phase B drain, any key whose
+    // captured value is non-zero means SET hit a hash and we run
+    // a silent-replace scan-with-delete on that key's trans
+    // before the regular Phase C/D dispatch.
+    key_storage[inx].m_rec_attr_string_claim_old_id = nullptr;
     if (redis_key_id == STRING_REDIS_KEY_ID) {
       // Phase 1.10c.4: mirror SET's expiry_date onto the hset_keys
       // row so EXISTS / TYPE can single-probe and still honor TTL
@@ -1885,7 +1887,9 @@ static int set_rows(Ndb *ndb,
         key_storage[inx].m_keep_ttl,
         (Int32)key_storage[inx].m_expire_at,
         get_ctrl->m_database_id,
-        response);
+        response,
+        &key_storage[inx].m_rec_attr_string_claim_old_id,
+        nullptr);
       if (ret_code != 0) {
         return 1;
       }
@@ -1904,6 +1908,40 @@ static int set_rows(Ndb *ndb,
     current_finished_in_loop += finished;
   } while (current_finished_in_loop < loop_count);
 
+  if (get_ctrl->m_num_keys_failed > 0) return 0;
+
+  // Phase B.5 (1.10c.7b silent replace) - any key whose dual-claim
+  // captured a non-zero old hset_keys.redis_key_id had a hash on
+  // the name; drop its field rows + ext rows on the same trans
+  // before Phase C/D dispatches the commit. Synchronous per-key:
+  // each key's trans is independent, so blocking one for the scan
+  // doesn't block the others (those that don't need a scan are
+  // already past their NoCommit and will dispatch normally).
+  for (Uint32 i = 0; i < loop_count; i++) {
+    Uint32 inx = current_index + i;
+    if (key_storage[inx].m_key_state != KeyState::MultiRowRWValue) {
+      continue;
+    }
+    NdbRecAttr *old_id_attr =
+      key_storage[inx].m_rec_attr_string_claim_old_id;
+    if (old_id_attr == nullptr) continue;
+    Uint64 old_id = old_id_attr->u_64_value();
+    if (old_id == STRING_REDIS_KEY_ID) continue;
+    if (run_hset_replace_hash_scan_delete(
+          ndb,
+          key_storage[inx].m_trans,
+          old_id,
+          get_ctrl->m_database_id,
+          response) != 0) {
+      // Mark this key failed; the trans's queued ops abort on
+      // the next execute. Remaining keys continue normally.
+      key_storage[inx].m_key_state = KeyState::CompletedFailed;
+      get_ctrl->m_num_keys_failed++;
+      if (get_ctrl->m_error_code == 0) {
+        get_ctrl->m_error_code = key_storage[inx].m_trans->getNdbError().code;
+      }
+    }
+  }
   if (get_ctrl->m_num_keys_failed > 0) return 0;
 
   // Phase C - count dispatchable keys. Error keys (CompletedFailed,
@@ -2755,16 +2793,10 @@ void rondb_mset(Ndb *ndb,
     return;
   }
   if (get_cmd_part) {
-    // Phase 1.10c.1: SET ... GET on a hash key returns -WRONGTYPE
-    // (rather than the prior string value, which is nil anyway).
-    // Check write-side state before restoring the get-side state.
-    for (Uint32 i = 0; i < num_keys; i++) {
-      if (key_storage[i].m_key_state == KeyState::CompletedTypeError) {
-        assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
-        release_mset(get_ctrl);
-        return;
-      }
-    }
+    // Phase 1.10c.7b: SET ... GET on a hash silently replaces the
+    // hash; the GET reply is the *prior* string value (nil here,
+    // since the name was a hash). Restore the get-side state and
+    // let rondb_get_response emit the canonical reply.
     for (Uint32 i = 0; i < num_keys; i++) {
       key_storage[i].m_key_state = key_storage[i].m_get_key_state;
     }
@@ -2786,19 +2818,6 @@ void rondb_mset(Ndb *ndb,
     response->append(REDIS_NO_SUCH_KEY);
     release_mset(get_ctrl);
     return;
-  }
-  // Phase 1.10c.1: dual-write claim found a hash already owning at
-  // least one of the keys. Emit Redis-canonical -WRONGTYPE error.
-  // For MSET, any one type-conflict aborts the whole reply; per-key
-  // partial commits may have landed (each MSET key has its own
-  // trans), but that lossiness is tracked under "MSET atomicity"
-  // and supersedes once Phase 1.10c.6 lands silent replace.
-  for (Uint32 i = 0; i < num_keys; i++) {
-    if (key_storage[i].m_key_state == KeyState::CompletedTypeError) {
-      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
-      release_mset(get_ctrl);
-      return;
-    }
   }
   if (redis_key_id == STRING_REDIS_KEY_ID || is_hmset) {
     // MSET / SET / HMSET all return the simple-string +OK reply.

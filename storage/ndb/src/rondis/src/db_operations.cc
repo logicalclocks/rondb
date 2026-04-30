@@ -585,15 +585,22 @@ int add_hset_lock_claim_op(NdbTransaction *trans,
 }
 
 // Phase 1.10c.1: SET / MSET dual-write claim op. Stages a writeTuple
-// (UPSERT) on hset_keys(key) with init_hset_string_claim_code so the
-// trans aborts with RONDB_WRONGTYPE if a hash already owns this name.
-// The string_keys op stays where it is (queued by write_data_to_key_op
+// (UPSERT) on hset_keys(key) with init_hset_string_claim_code. The
+// string_keys op stays where it is (queued by write_data_to_key_op
 // before this); both share the same NoCommit / Commit so the dual
 // write is atomic.
 //
-// No outputs - SET doesn't need anything back; the claim is a pure
-// gate. The interpreter handles the redis_key_id = 0, field_count = 0
-// writes for the INSERT branch; the UPDATE branch is idempotent.
+// Phase 1.10c.7b: out_old_id_attr / out_old_field_count_attr return
+// the recAttr handles for OUTPUT_INDEX_0 (existing redis_key_id, 0
+// for INSERT or string row, non-zero if a hash was here) and
+// OUTPUT_INDEX_1 (existing field_count). Caller reads
+// (*out_old_id_attr)->u_64_value() after the trans's NoCommit drains;
+// SET-family callers use non-zero old_id to run
+// run_hset_replace_hash_scan_delete on the same trans. Other
+// string-writing commands that follow Redis WRONGTYPE semantics
+// (e.g. SETRANGE / INCR) use the same old_id signal to abort before
+// commit. Pass nullptr for either output handle if the caller
+// doesn't need it.
 int add_hset_string_claim_op(NdbTransaction *trans,
                              const NdbDictionary::Table *tab_hset,
                              const char *key_str,
@@ -602,7 +609,9 @@ int add_hset_string_claim_op(NdbTransaction *trans,
                              bool keep_ttl,
                              Int32 expire_at,
                              Uint32 database_id,
-                             std::string *response) {
+                             std::string *response,
+                             NdbRecAttr **out_old_id_attr,
+                             NdbRecAttr **out_old_field_count_attr) {
   struct hset_key_table key_row;
   // null_bits layout (per init_hset_key_records):
   //   bit 0 -> redis_key_id IS NULL
@@ -654,16 +663,20 @@ int add_hset_string_claim_op(NdbTransaction *trans,
     NdbOperation::OperationOptions::OO_INTERPRETED_INSERT;
   opts.interpretedCode = &code;
 
-  // Match the exact OperationOptions shape of add_hset_lock_claim_op
-  // (interpreted writeTuple seems to need a registered final-value
-  // get when it participates in a multi-op trans, otherwise NDB
-  // never delivers the callback for the trans).
-  NdbOperation::GetValueSpec getvals[1];
+  // Phase 1.10c.7b: register OUTPUT_INDEX_0 (old_redis_key_id) and
+  // OUTPUT_INDEX_1 (old_field_count). Same OperationOptions shape
+  // as add_hset_lock_claim_op (interpreted writeTuple seems to
+  // need a registered final-value get when it participates in a
+  // multi-op trans, otherwise NDB never delivers the callback).
+  NdbOperation::GetValueSpec getvals[2];
   getvals[0].appStorage = nullptr;
   getvals[0].recAttr = nullptr;
   getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
+  getvals[1].appStorage = nullptr;
+  getvals[1].recAttr = nullptr;
+  getvals[1].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_1;
   opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
-  opts.numExtraGetFinalValues = 1;
+  opts.numExtraGetFinalValues = 2;
   opts.extraGetFinalValues = getvals;
 
   // mask=0xF -> write all 4 columns from the row buffer. KEEPTTL
@@ -686,6 +699,12 @@ int add_hset_string_claim_op(NdbTransaction *trans,
                                "Failed to add hset_keys string-claim op",
                                trans->getNdbError());
     return -1;
+  }
+  if (out_old_id_attr != nullptr) {
+    *out_old_id_attr = getvals[0].recAttr;
+  }
+  if (out_old_field_count_attr != nullptr) {
+    *out_old_field_count_attr = getvals[1].recAttr;
   }
   return 0;
 }
@@ -843,30 +862,36 @@ void prepare_hset_phase15_transaction(struct GetControl *get_ctrl,
 // redis_key_id matches old_redis_key_id, plus every value-extension
 // row in string_values for fields with num_rows > 0.
 //
-// Runs on a hupp'd NdbTransaction connected to the caller's
-// main_trans (same txn id, separate handle) so the scan's queued
-// deletes commit atomically with whatever main_trans is doing.
+// Runs on the caller's main_trans. NdbScanOperation internally
+// hupps a read-only scan connection (see Ndb.cpp:870 + the
+// internal call at NdbScanOperation.cpp:152), so the scan op's
+// data fetches don't need a separate user-managed trans handle.
+// Critically, the take-over deletes (deleteCurrentTuple) and the
+// ext-row deletes go on main_trans itself, sharing its
+// commit-ack-marker — issuing them on a separately hupp'd trans
+// would register a SECOND marker under the same txn id and trip
+// DBTC's "!m_commitAckMarkerHash.find(check, *tmp.p)" assertion
+// at DbtcMain.cpp:4539.
 //
-// Uses scanIndex on the PRIMARY ordered index of string_keys with a
-// partial-prefix IndexBound on redis_key_id. Far cheaper than a
+// Uses scanIndex on the PRIMARY ordered index of string_keys with
+// a partial-prefix IndexBound on redis_key_id. Far cheaper than a
 // table scan with NdbScanFilter — the data nodes only walk rows
 // whose first PK column equals old_redis_key_id rather than every
 // row in string_keys. The PRIMARY ordered index exists because
 // create_rondis_tables.sql declares the PK without USING HASH.
 //
-// Iteration follows NDB's standard "drain local batch, flush queued
-// deletes, fetch next remote batch" pattern: nextResult(true)
-// requests a remote batch, nextResult(false) walks locally cached
-// rows, scan_trans->execute(NoCommit) between batches flushes
-// queued deleteCurrentTuple ops to the data nodes.
+// Iteration follows NDB's standard "drain local batch, flush
+// queued deletes, fetch next remote batch" pattern:
+// nextResult(true) requests a remote batch, nextResult(false)
+// walks locally cached rows, main_trans->execute(NoCommit)
+// between batches flushes queued deleteCurrentTuple ops to the
+// data nodes AND advances the scan.
 //
-// Caller (the four SET-write paths) commits main_trans afterwards;
-// the scan trans's queued deletes participate in that commit.
+// Caller commits main_trans afterwards; all ops (writes + scan
+// take-over deletes + ext-row deletes) ride that commit
+// atomically.
 //
 // Returns 0 on success, -1 on NDB error (response populated).
-//
-// [[maybe_unused]] until 1.10c.7b/ii wires the four SET write paths.
-[[maybe_unused]]
 int run_hset_replace_hash_scan_delete(Ndb *ndb,
                                       NdbTransaction *main_trans,
                                       Uint64 old_redis_key_id,
@@ -875,19 +900,14 @@ int run_hset_replace_hash_scan_delete(Ndb *ndb,
   if (old_redis_key_id == STRING_REDIS_KEY_ID) {
     return 0;  // Caller's was-string flag was 0; nothing to drop.
   }
-
-  NdbTransaction *scan_trans = ndb->hupp(main_trans);
-  if (scan_trans == nullptr) {
-    assign_ndb_err_to_response(response,
-                               "Failed to hupp scan transaction",
-                               ndb->getNdbError());
-    return -1;
-  }
+  (void)ndb;  // Retained for symmetry / potential future use; the
+              // helper no longer needs ndb directly because the
+              // scan piggybacks on main_trans.
 
   // IndexBound: low_key == high_key with low_key_count = 1
   // bounds the scan to redis_key_id == old_redis_key_id (partial-
-  // prefix equality on the leading PK column). Both keys share the
-  // same buffer; only the redis_key_id field is read because
+  // prefix equality on the leading PK column). Both keys share
+  // the same buffer; only the redis_key_id field is read because
   // low_key_count is 1.
   struct key_table bound_buf;
   std::memset(&bound_buf, 0, sizeof(bound_buf));
@@ -911,10 +931,8 @@ int run_hset_replace_hash_scan_delete(Ndb *ndb,
 
   NdbScanOperation::ScanOptions scanOptions;
   std::memset(&scanOptions, 0, sizeof(scanOptions));
-  // No filter / interpreted code needed; the IndexBound is the
-  // filter.
 
-  NdbIndexScanOperation *scanOp = scan_trans->scanIndex(
+  NdbIndexScanOperation *scanOp = main_trans->scanIndex(
     pk_key_index_record[database_id],
     entire_key_record[database_id],
     NdbOperation::LM_Exclusive,
@@ -925,25 +943,26 @@ int run_hset_replace_hash_scan_delete(Ndb *ndb,
   if (scanOp == nullptr) {
     assign_ndb_err_to_response(response,
                                "Failed to create scanIndex op",
-                               scan_trans->getNdbError());
-    ndb->closeTransaction(scan_trans);
+                               main_trans->getNdbError());
     return -1;
   }
 
-  // Submit the scan request.
-  if (scan_trans->execute(NdbTransaction::NoCommit,
+  // Submit the scan request. main_trans's NoCommit flushes any
+  // already-queued ops on main_trans (e.g. the SET path's
+  // writeTuple + dual-claim) AND submits the scan request.
+  if (main_trans->execute(NdbTransaction::NoCommit,
                           NdbOperation::AbortOnError) != 0) {
     assign_ndb_err_to_response(response,
                                "Failed to execute scanIndex",
-                               scan_trans->getNdbError());
+                               main_trans->getNdbError());
     scanOp->close();
-    ndb->closeTransaction(scan_trans);
     return -1;
   }
 
   // Drain the scan: outer nextResult(true) requests a remote
   // batch; inner nextResult(false) walks locally cached rows.
-  // Between batches, execute(NoCommit) flushes queued deletes.
+  // Between batches, main_trans->execute(NoCommit) flushes
+  // queued deletes and advances the scan.
   const char *row_ptr = nullptr;
   int outer_rc;
   while ((outer_rc = scanOp->nextResult(&row_ptr, true, false)) == 0) {
@@ -954,38 +973,34 @@ int run_hset_replace_hash_scan_delete(Ndb *ndb,
       Uint64 row_rondb_key = row->rondb_key;
       Uint32 row_num_rows = row->num_rows;
 
-      // Queue the take-over delete on string_keys. The scan
-      // position identifies the PK; we pass pk_key_record so the
-      // API knows the PK record layout. result_row=nullptr means
-      // we don't read-before-delete (we already have what we
-      // need from the scan projection).
-      if (scanOp->deleteCurrentTuple(scan_trans,
+      // Take-over delete on main_trans. Sharing the trans avoids
+      // creating a second commit-ack-marker under the same txn
+      // id, which would crash DBTC.
+      if (scanOp->deleteCurrentTuple(main_trans,
                                      pk_key_record[database_id])
           == nullptr) {
         assign_ndb_err_to_response(response,
                                    "Failed to delete scanned row",
-                                   scan_trans->getNdbError());
+                                   main_trans->getNdbError());
         scanOp->close();
-        ndb->closeTransaction(scan_trans);
         return -1;
       }
 
-      // Queue per-ordinal deletes on string_values for fields
-      // whose value spilled into extension rows.
+      // Per-ordinal deletes on string_values for fields whose
+      // value spilled into extension rows.
       for (Uint32 ord = 0; ord < row_num_rows; ord++) {
         struct value_table value_pk;
         value_pk.rondb_key = row_rondb_key;
         value_pk.ordinal = ord;
-        const NdbOperation *del_op = scan_trans->deleteTuple(
+        const NdbOperation *del_op = main_trans->deleteTuple(
           pk_value_record[database_id],
           (const char *)&value_pk,
           entire_value_record[database_id]);
         if (del_op == nullptr) {
           assign_ndb_err_to_response(response,
                                      "Failed to queue ext-row delete",
-                                     scan_trans->getNdbError());
+                                     main_trans->getNdbError());
           scanOp->close();
-          ndb->closeTransaction(scan_trans);
           return -1;
         }
       }
@@ -996,20 +1011,18 @@ int run_hset_replace_hash_scan_delete(Ndb *ndb,
     if (inner_rc < 0) {
       assign_ndb_err_to_response(response,
                                  "Scan inner-loop failure",
-                                 scan_trans->getNdbError());
+                                 main_trans->getNdbError());
       scanOp->close();
-      ndb->closeTransaction(scan_trans);
       return -1;
     }
     // inner_rc == 2: local batch exhausted. Flush queued deletes
     // before requesting the next remote batch.
-    if (scan_trans->execute(NdbTransaction::NoCommit,
+    if (main_trans->execute(NdbTransaction::NoCommit,
                             NdbOperation::AbortOnError) != 0) {
       assign_ndb_err_to_response(response,
                                  "Failed to flush scan deletes",
-                                 scan_trans->getNdbError());
+                                 main_trans->getNdbError());
       scanOp->close();
-      ndb->closeTransaction(scan_trans);
       return -1;
     }
   }
@@ -1017,16 +1030,15 @@ int run_hset_replace_hash_scan_delete(Ndb *ndb,
   if (outer_rc < 0) {
     assign_ndb_err_to_response(response,
                                "Scan outer-loop failure",
-                               scan_trans->getNdbError());
+                               main_trans->getNdbError());
     scanOp->close();
-    ndb->closeTransaction(scan_trans);
     return -1;
   }
 
-  // outer_rc == 1: scan exhausted. Close + release; main_trans
-  // commits everything atomically via the shared txn id.
+  // outer_rc == 1: scan exhausted. Close the scan op; main_trans
+  // commits all queued ops (writes + take-over deletes + ext-row
+  // deletes) atomically.
   scanOp->close();
-  ndb->closeTransaction(scan_trans);
   return 0;
 }
 
@@ -1837,13 +1849,6 @@ write_callback(int result, NdbTransaction *trans, void *aObject) {
       // emit Redis-canonical nil ($-1\r\n) for this key.
       key_storage->m_key_state = KeyState::CompletedConditionalFail;
       get_ctrl->m_num_keys_completed_first_pass++;
-    } else if (code == RONDB_WRONGTYPE) {
-      // Phase 1.10c.1: SET / MSET dual-write claim found a hash
-      // already owning this name. Mark the key with a dedicated
-      // type-error state so the response builder emits
-      // -WRONGTYPE ... rather than a generic NDB error.
-      key_storage->m_key_state = KeyState::CompletedTypeError;
-      get_ctrl->m_num_keys_completed_first_pass++;
     } else {
       key_storage->m_key_state = KeyState::CompletedFailed;
       get_ctrl->m_num_keys_failed++;
@@ -2431,6 +2436,11 @@ void incr_decr_key_row(std::string *response,
     (key_row->redis_key_id == STRING_REDIS_KEY_ID);
   const bool is_hash_counter = !is_string_counter;
   const NdbDictionary::Table *hset_tab = nullptr;
+  // Capture the old hset_keys.redis_key_id from the dual-claim's
+  // UPDATE-on-hash branch. Redis counters do not replace hashes:
+  // after the NoCommit drain, a non-zero old id becomes WRONGTYPE
+  // and the caller closes the still-uncommitted transaction.
+  NdbRecAttr *string_claim_old_id_attr = nullptr;
   if (is_string_counter || is_hash_counter) {
     const NdbDictionary::Dictionary *dict = ndb->getDictionary();
     hset_tab = dict ? dict->getTable(HSET_KEY_TABLE_NAME) : nullptr;
@@ -2449,7 +2459,9 @@ void incr_decr_key_row(std::string *response,
                                    true,
                                    0,
                                    database_id,
-                                   response) != 0) {
+                                   response,
+                                   &string_claim_old_id_attr,
+                                   nullptr) != 0) {
         return;
       }
     }
@@ -2483,14 +2495,22 @@ void incr_decr_key_row(std::string *response,
       assign_generic_err_to_response(response, FAILED_INCRBY_DECRBY_OVERFLOW);
       return;
     }
-    if (ndb_err.code == RONDB_WRONGTYPE) {
-      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
-      return;
-    }
     assign_ndb_err_to_response(response,
                                FAILED_INCR_KEY,
                                ndb_err);
     return;
+  }
+
+  // Redis semantics: INCR/DECR on a hash is WRONGTYPE, not silent
+  // replace. The hset_keys claim and string_keys write have only
+  // executed as NoCommit, so returning here lets transaction close
+  // abort the staged writes.
+  if (is_string_counter && string_claim_old_id_attr != nullptr) {
+    Uint64 old_id = string_claim_old_id_attr->u_64_value();
+    if (old_id != STRING_REDIS_KEY_ID) {
+      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+      return;
+    }
   }
 
   NdbRecAttr *new_field_attr = getvals[1].recAttr;
@@ -2716,6 +2736,9 @@ void execute_set_range_simple(std::string *response,
                                trans->getNdbError());
     return;
   }
+  // Capture the dual-claim's old hset_keys redis_key_id. SETRANGE
+  // follows Redis WRONGTYPE semantics on hashes, unlike SET.
+  NdbRecAttr *string_claim_old_id_attr = nullptr;
   ret_code = add_hset_string_claim_op(trans,
                                       hset_tab,
                                       key_store->m_key_str,
@@ -2724,17 +2747,32 @@ void execute_set_range_simple(std::string *response,
                                       true,
                                       0,
                                       database_id,
-                                      response);
+                                      response,
+                                      &string_claim_old_id_attr,
+                                      nullptr);
   if (ret_code != 0) {
     return;
   }
-  if (key_store->m_trans->execute(NdbTransaction::Commit) != 0) {
-    if (trans->getNdbError().code == RONDB_WRONGTYPE) {
+  // NoCommit so we can read OUTPUT_INDEX_0 before committing. If
+  // the name belonged to a hash, return WRONGTYPE and let close
+  // abort the staged writes.
+  if (key_store->m_trans->execute(NdbTransaction::NoCommit,
+                                  NdbOperation::AbortOnError) != 0) {
+    assign_ndb_err_to_response(response,
+                               "Failed to execute SETRANGE simple command",
+                               trans->getNdbError());
+    return;
+  }
+  if (string_claim_old_id_attr != nullptr) {
+    Uint64 old_id = string_claim_old_id_attr->u_64_value();
+    if (old_id != STRING_REDIS_KEY_ID) {
       assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
       return;
     }
+  }
+  if (key_store->m_trans->execute(NdbTransaction::Commit) != 0) {
     assign_ndb_err_to_response(response,
-                               "Failed to execute SETRANGE simple command",
+                               "Failed to commit SETRANGE simple command",
                                trans->getNdbError());
     return;
   }
@@ -2813,6 +2851,9 @@ int write_key_row_setrange(std::string *response,
                                trans->getNdbError());
     return -1;
   }
+  // Capture the dual-claim's old hset_keys redis_key_id. SETRANGE
+  // follows Redis WRONGTYPE semantics on hashes, unlike SET.
+  NdbRecAttr *string_claim_old_id_attr = nullptr;
   ret_code = add_hset_string_claim_op(trans,
                                       hset_tab,
                                       key_store->m_key_str,
@@ -2821,19 +2862,24 @@ int write_key_row_setrange(std::string *response,
                                       true,
                                       0,
                                       database_id,
-                                      response);
+                                      response,
+                                      &string_claim_old_id_attr,
+                                      nullptr);
   if (ret_code != 0) {
     return -1;
   }
   if (key_store->m_trans->execute(NdbTransaction::NoCommit) != 0) {
-    if (trans->getNdbError().code == RONDB_WRONGTYPE) {
-      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
-      return -1;
-    }
     assign_ndb_err_to_response(response,
                                "Failed to execute SETRANGE command",
                                trans->getNdbError());
     return -1;
+  }
+  if (string_claim_old_id_attr != nullptr) {
+    Uint64 old_id = string_claim_old_id_attr->u_64_value();
+    if (old_id != STRING_REDIS_KEY_ID) {
+      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+      return -1;
+    }
   }
   old_tot_value_len = (Uint32)getvals[0].recAttr->u_64_value();
   key_store->m_rondb_key = getvals[1].recAttr->u_64_value();
