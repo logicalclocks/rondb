@@ -37,7 +37,8 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_filter_phase_i2.md` — Phase I.2: top-level OR / DNF in CTE_LOOKUP filter pushdown (RonSQL)
 - `cte_filter_phase_i3.md` — Phase I.3: column-vs-column on CTE_LOOKUP (Bigint-only) (RonSQL + 1-line NdbInterpretedCode API)
 - `cte_filter_phase_i4.md` — Phase I.4: CASE condition referencing a CTE column projection (kernel + RonSQL)
-- `cte_filter_phase_i5.md` — Phase I.5: GREATEST / LEAST n-ary functions (v1: 2-arg col+const, RonSQL only; v2/v3 follow-ups)
+- `cte_filter_phase_i5.md` — Phase I.5: GREATEST / LEAST n-ary functions (v1 shipped: 2-arg col+const, RonSQL only)
+- `cte_filter_phase_i5_v2.md` — Phase I.5 v2: register-based CASE codegen (v2a: col-vs-col atoms; v2b: n-ary GREATEST/LEAST via SVM extension)
 - `cte_filter_phase_k.md` — Phase K: ANTI_JOIN promotion for WHERE col IS NULL on LEFT JOIN RHS (RonSQL)
 - `cte_filter_phase_l.md` — Phase L: JOIN_AGG_COMPLETE robustness — checkCteReady / continueJoinAggRedistribute idempotency, unified requestId correlation in DBTC, single-owner DBLQH routing, phase-report deduplication, test coverage (kernel + DBTC, plan-only)
 - `cte_filter_phase_l_commit5.md` — Phase L commit 5: cleanup follow-up — drop redundant `m_redist_mutex` and retire legacy `m_cteCompleteOutstanding` counter
