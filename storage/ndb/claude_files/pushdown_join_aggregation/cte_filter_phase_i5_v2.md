@@ -2,9 +2,21 @@
 
 ## Status
 
-**Planned.**  Builds on I.5 v1 (`cte_filter_phase_i5.md`).  This doc
-captures the v2 design; v1 stays in its own file, which keeps the
-shipped-vs-planned status easy to read at a glance.
+**v2a shipped.**  Column-vs-column atoms in embedded CASE conditions
+land via the `READ_*-into-register` + `BRANCH_*_REG_REG` family,
+unlocking distinct-column `GREATEST` / `LEAST` and multi-column
+`CASE WHEN col_a > col_b …` shapes (Bigint-only on each side).
+Per-atom self-contained loads also fix a latent v1 bug where atoms
+with different LHS columns aliased on `heap[0]`.
+
+**v2b remains planned** — n-ary GREATEST/LEAST via the SVM extension
+described later in this doc.
+
+The CTE linked-vs-linked runtime test that was intentionally removed
+from v2a's MTR file is captured separately in
+`cte_filter_phase_i5_v6.md`.  Sub-Bigint integer support for
+linked-column register loads is captured in
+`cte_filter_phase_i5_v5.md`.
 
 ## Goals
 
@@ -66,7 +78,74 @@ present and already validated:
 So v2 is a pure RonSQL-side codegen extension.  No kernel changes
 needed.
 
-## v2a — Column-vs-column embedded-CASE atoms
+## v2a — Column-vs-column embedded-CASE atoms (shipped)
+
+### What shipped
+
+**Kernel** (`storage/ndb/src/kernel/blocks/dbtup/JoinAggInterpreter.cpp`):
+
+- `validateEmbeddedProgram` whitelist gains
+  `Interpreter::READ_INT64_MEM_TO_REG`.  This was the only kernel
+  change required — DBTUP's `interpreterNextLab` switch and the
+  `s_cte_filter_handlers` / `s_agg_interp_handlers` dispatch tables
+  already covered the register-based opcode family.
+
+**RonSQL preparer** (`storage/ndb/src/ronsql/RonSQLPreparer.cpp`):
+
+- `generate_embedded_condition` rewritten to per-atom
+  self-contained loads.  Each linked-column atom emits its own
+  `READ_LINKED_TO_MEM` rather than relying on a shared preamble
+  word, which removes the prior implicit assumption that all atoms
+  in a CASE share the same LHS column (latent v1 bug fix).
+- New col-vs-col emit shape: `READ_*-into-register` for both sides
+  + `BRANCH_*_REG_REG`.  Static R1 / R2 register usage; safe across
+  atoms because the embedded interpreter resets its register file
+  on each `kOpEmbeddedInterp` invocation.
+- Per-atom resolution factored into `resolve_col_side` (also
+  promoted to `std::function` rather than `auto` lambdas to keep
+  the function readable from a cold review).
+- Per-atom shape captured in `AtomInfo { lhs, rhs, is_col_vs_col,
+  word_count }` and reused verbatim in the emit pass.
+- Branch instruction position computed per atom shape: last word
+  for col-vs-col; `pos+1` for linked col-vs-const (after
+  `READ_LINKED_TO_MEM`); `pos` for leaf-table col-vs-const.
+- Two separate cond-direction maps:
+  - `cond_for_arg_family` keeps the existing `_OP_ARG`
+    inverted-inequality mapping.
+  - `reg_branch_opcode` uses direct mapping (the `BRANCH_*_REG_REG`
+    family does *not* have the inverted-inequality quirk — verified
+    in `DbtupExecQuery.cpp:6000-6069`).
+- `lower_greatest_least` lifts the same-column guard.  Distinct
+  columns produce a col-vs-col CASE with both sides as
+  `T_IDENTIFIER` cond_expr nodes.  Same-column `GREATEST(x, x)` /
+  `LEAST(x, x)` still collapses to `x` directly.
+
+**Restrictions kept in v2a:**
+
+- Bigint-only on each side — sub-Bigint integer linked columns
+  defer to v5 (`cte_filter_phase_i5_v5.md`) which adds typed
+  signed/unsigned `READ_*_MEM_TO_REG` opcodes.
+- `InlineLinked` (CTE-leaf inline-typed columns) on either side of
+  a col-vs-col atom rejected — would need an inline-typed
+  register-load opcode; defer with v5.
+- Nullable column operands still rejected via the v1
+  `is_greatest_least_condition` post-resolution check (extended to
+  cover both LHS and RHS in v2a).
+- CTE aggregate outputs in CASE conditions remain rejected (same
+  defer as I.4).
+
+**Test coverage**:
+`mysql-test/suite/ronsql/t/ronsql_cte_greatest_least_v2a.test` —
+seven cases covering distinct-column GREATEST/LEAST, multi-column
+CASE conditions (`>`, `<=`, `=`), same-column regression, and v1
+col-vs-const regression.  The CTE linked-vs-linked runtime case was
+intentionally moved to v6 (`cte_filter_phase_i5_v6.md`) because
+RonSQL's pass-through CTE constraint plus the
+CTE-aggregate-output-in-CASE rejection made the natural shape
+unreachable; v6 either lifts those constraints or finds an
+alternative coverage path.
+
+### Original v2a design (pre-implementation)
 
 ### Surface
 

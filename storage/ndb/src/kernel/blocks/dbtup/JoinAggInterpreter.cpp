@@ -568,6 +568,7 @@ bool JoinAggInterpreter::validateEmbeddedProgram(
       case Interpreter::BRANCH_ATTR_EQ_NULL:
       case Interpreter::BRANCH_ATTR_NE_NULL:
       case Interpreter::READ_LINKED_TO_MEM:
+      case Interpreter::READ_INT64_MEM_TO_REG:
       case Interpreter::WRITE_INTERPRETER_OUTPUT:
         break;
       default:

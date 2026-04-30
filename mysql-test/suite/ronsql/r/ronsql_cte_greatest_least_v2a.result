@@ -1,0 +1,192 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for col-vs-col CASE / GREATEST tests ===
+
+
+
+=== Test 1: GREATEST over two distinct parent-table columns ===
+== Query ==
+SELECT c.c_id, SUM(GREATEST(c.c_region, c.c_floor)) AS gmax
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id, SUM(GREATEST(c.c_region, c.c_floor)) AS gmax
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	gmax
+100	100
+200	120
+300	100
+
+
+=== Test 2: LEAST over two distinct parent-table columns ===
+== Query ==
+SELECT c.c_id, SUM(LEAST(c.c_region, c.c_floor)) AS lmin
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id, SUM(LEAST(c.c_region, c.c_floor)) AS lmin
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	lmin
+100	2
+200	2
+300	2
+
+
+=== Test 3: multi-column CASE condition with > (col-vs-col) ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_region > c.c_floor THEN c.c_region ELSE 0 END) AS s
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_region > c.c_floor THEN c.c_region ELSE 0 END) AS s
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	0
+300	0
+
+
+=== Test 4: multi-column CASE with <= ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_region <= c.c_floor THEN c.c_floor ELSE 0 END) AS s
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_region <= c.c_floor THEN c.c_floor ELSE 0 END) AS s
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	100
+200	120
+300	100
+
+
+=== Test 5: multi-column CASE with = ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_region = c.c_floor THEN 1 ELSE 0 END) AS eq_count
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_region = c.c_floor THEN 1 ELSE 0 END) AS eq_count
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	eq_count
+100	0
+200	0
+300	0
+
+
+=== Test 6: regression — same-column GREATEST still works ===
+== Query ==
+SELECT c.c_id, SUM(GREATEST(c.c_region, c.c_region)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id, SUM(GREATEST(c.c_region, c.c_region)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	g
+100	2
+200	2
+300	2
+
+
+=== Test 7: regression — v1 col-vs-const still works ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, MAX(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.k, 150)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, MAX(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.k, 150)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+c_id	gmax
+100	150
+200	200
+300	300

@@ -8070,6 +8070,18 @@ RonSQLPreparer::generate_embedded_condition(
   //   AND: (col <> 'X' AND col <> 'Y') → branch to ELSE on inverted match,
   //                                       fall-through THEN
   //   Single atom: handled as OR with one atom
+  //
+  // Each atom is one of:
+  //   col-vs-const : LHS is a column, RHS is a literal — uses
+  //                  BRANCH_ATTR_OP_ARG / BRANCH_MEM_OP_ARG /
+  //                  BRANCH_MEM_OP_ARG_INLINE_TYPE.
+  //   col-vs-col   : LHS and RHS are both columns — uses
+  //                  READ_*-into-register loads + BRANCH_*_REG_REG.
+  //                  Bigint-only in v2a; the kernel's only signed
+  //                  memory-to-register opcode is READ_INT64_MEM_TO_REG.
+  //
+  // Each atom emits a SELF-CONTAINED sequence so multiple atoms can
+  // reference different LHS columns without aliasing on heap[0].
   DynamicArray<ConditionalExpression*> atoms(m_amalloc);
   bool is_and = false;
 
@@ -8090,15 +8102,154 @@ RonSQLPreparer::generate_embedded_condition(
     atoms.push(ce);
   }
 
-  // Compute embedded word sizes and detect columns that arrive through the
-  // linked-attr buffer. Parent columns, and CTE leaf columns on a CTE agg-feed
-  // path, need READ_LINKED_TO_MEM before the branch instruction.
+  // Per-atom resolution info, populated in the pre-pass and reused
+  // verbatim in the emit pass.
   Uint32 leaf_idx = (scope.column_table_idx != NULL) ? scope.join_plan.agg_leaf_idx : 0;
-  bool has_linked_col = false;
-  bool has_inline_linked_col = false;
-  Uint32 linked_position = 0;
 
-  Uint32 total_branch_words = 0;
+  enum class SideKind {
+    // col-vs-const RHS literal — only valid for `info[].rhs`.
+    Constant,
+    // Leaf-table column on the agg leaf op (uses READ_ATTR_INTO_REG
+    // for the register path, or BRANCH_ATTR_OP_ARG for col-vs-const).
+    LeafTable,
+    // Parent-table column from a non-leaf op, fed via the linked-attr
+    // buffer (READ_LINKED_TO_MEM).  Type info comes from the parent
+    // table descriptor (BRANCH_MEM_OP_ARG path), or is taken as INT64
+    // for the register path.
+    LinkedParent,
+    // CTE COLUMN projection on a non-leaf CTE op — same opcode family
+    // as LinkedParent but the parent-table descriptor is resolved via
+    // the CTE body's source op.
+    LinkedCteCol,
+    // CTE leaf column (the agg leaf is itself a CTE op): uses inline
+    // type metadata via BRANCH_MEM_OP_ARG_INLINE_TYPE for the
+    // col-vs-const path.  v2a does *not* support col-vs-col over an
+    // inline-linked side (would need an inline-typed register-load
+    // opcode); reject cleanly.
+    InlineLinked
+  };
+
+  struct SideInfo {
+    SideKind kind;
+    Uint32 col_idx;                       // RonSQL column idx for the side
+    Uint32 linked_position;                // valid when kind != Leaf*
+    NdbAttrId attr_id;                     // valid for Leaf* / LinkedParent / LinkedCteCol
+    const NdbDictionary::Column* col;      // resolved column descriptor
+    const NdbDictionary::Table* parent_table;  // for LinkedParent / LinkedCteCol BRANCH_MEM_OP_ARG
+    // Constant operand only:
+    raw_value rv;
+    Uint32 byte_len;
+    Uint32 data_words;
+  };
+
+  struct AtomInfo {
+    SideInfo lhs;
+    SideInfo rhs;
+    bool is_col_vs_col;
+    Uint32 word_count;
+  };
+
+  std::function<void(ConditionalExpression*, SideInfo&)> resolve_col_side =
+      [&](ConditionalExpression* col_side, SideInfo& out)
+      {
+        ndbrequire(col_side->op == T_IDENTIFIER);
+        Uint32 cidx = col_side->col_idx;
+        out.col_idx = cidx;
+        out.linked_position = 0;
+        out.attr_id = 0;
+        out.col = NULL;
+        out.parent_table = NULL;
+        if (scope.column_table_idx == NULL) {
+          out.kind = SideKind::LeafTable;
+          out.col = resolve_case_condition_column(
+              scope, col_side, cteVirtualTables);
+          require_prm(out.col != NULL,
+                      "CASE condition: unresolved column descriptor.");
+          out.attr_id = scope.column_attrId_map != NULL ?
+              scope.column_attrId_map[cidx] : 0;
+          return;
+        }
+        Uint32 op_idx = scope.column_table_idx[cidx];
+        bool op_is_cte = false;
+        if (cteVirtualTables != NULL && op_idx < scope.join_plan.num_ops) {
+          JoinOp::Type t = scope.join_plan.ops[op_idx].type;
+          op_is_cte = (t == JoinOp::CTE_LOOKUP || t == JoinOp::CTE_SCAN);
+        }
+        if (op_is_cte) {
+          require_cte_case_condition_column_output(scope, op_idx, cidx);
+        }
+        if (op_idx != leaf_idx) {
+          // Linked column (parent-table or non-leaf CTE column).
+          out.linked_position = find_or_add_linked_proj(
+              scope.join_plan, op_idx, m_columns[cidx].c_str());
+          if (op_is_cte) {
+            const JoinOp& cte_op = scope.join_plan.ops[op_idx];
+            require_run(cte_op.cte_def != NULL,
+                        "CASE over CTE: op has no CTE definition.");
+            require_run(cte_op.cte_def_idx < m_cte_scopes.size(),
+                        "CASE over CTE: cte_def_idx out of range.");
+            QueryScope* cs = m_cte_scopes[cte_op.cte_def_idx];
+            require_run(cs != NULL,
+                        "CASE over CTE: missing CTE body scope.");
+            Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[cidx];
+            Uint32 walk = 0;
+            const Outputs* o = cte_op.cte_def->stmt->outputs;
+            while (o != NULL && walk < cte_col_idx) { o = o->next; walk++; }
+            require_prm(o != NULL,
+                        "CASE over CTE: output index out of range.");
+            require_prm(o->type == Outputs::Type::COLUMN,
+                        "CASE condition referencing a CTE aggregate "
+                        "output is not yet supported — would need an "
+                        "inline-type branch opcode.  Reference a CTE "
+                        "column projection instead, or move the "
+                        "predicate into the CTE body's WHERE clause.");
+            Uint32 src_col_idx = o->column.col_idx;
+            const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
+            require_prm(src_col != NULL,
+                        "CASE over CTE: source column not resolved.");
+            Uint32 src_op_idx = cs->column_table_idx[src_col_idx];
+            require_prm(src_op_idx < cs->join_plan.num_ops,
+                        "CASE over CTE: source op out of range.");
+            out.parent_table = cs->join_plan.ops[src_op_idx].table;
+            require_prm(out.parent_table != NULL,
+                        "CASE over CTE: source op has no physical table.");
+            out.col = src_col;
+            out.attr_id = (NdbAttrId)src_col->getColumnNo();
+            out.kind = SideKind::LinkedCteCol;
+          } else {
+            out.col = scope.column_map[cidx];
+            require_prm(out.col != NULL,
+                        "CASE condition: unresolved column descriptor.");
+            out.attr_id = scope.column_attrId_map[cidx];
+            out.parent_table = scope.join_plan.ops[op_idx].table;
+            require_prm(out.parent_table != NULL,
+                        "CASE condition: linked parent op has no "
+                        "physical table.");
+            out.kind = SideKind::LinkedParent;
+          }
+        } else if (op_is_cte) {
+          // CTE leaf column: inline-type encoding.
+          out.linked_position = scope.join_plan.num_linked_projs +
+              (Uint32)scope.column_attrId_map[cidx];
+          out.col = resolve_case_condition_column(
+              scope, col_side, cteVirtualTables);
+          require_prm(out.col != NULL,
+                      "CASE over CTE leaf: unresolved virtual column.");
+          out.kind = SideKind::InlineLinked;
+        } else {
+          // Plain leaf-table column on the agg leaf op.
+          out.col = scope.column_map[cidx];
+          require_prm(out.col != NULL,
+                      "CASE condition: unresolved column descriptor.");
+          out.attr_id = scope.column_attrId_map[cidx];
+          out.kind = SideKind::LeafTable;
+        }
+      };
+
+  // Per-atom resolution (pre-pass).
+  DynamicArray<AtomInfo> infos(m_amalloc);
+  for (Uint32 a = 0; a < atoms.size(); a++) infos.push(AtomInfo());
+  Uint32 total_atom_words = 0;
   for (Uint32 a = 0; a < atoms.size(); a++)
   {
     ConditionalExpression* atom = atoms[a];
@@ -8107,54 +8258,88 @@ RonSQLPreparer::generate_embedded_condition(
                 atom->op == T_GT || atom->op == T_GE,
                 "CASE condition atom: only =, !=, <, <=, >, >= "
                 "supported.");
-    ConditionalExpression* col_side = atom->args.left;
-    ndbrequire(col_side->op == T_IDENTIFIER);
-    if (scope.column_table_idx != NULL) {
-      Uint32 op_idx = scope.column_table_idx[col_side->col_idx];
-      bool op_is_cte = false;
-      if (cteVirtualTables != NULL && op_idx < scope.join_plan.num_ops) {
-        JoinOp::Type t = scope.join_plan.ops[op_idx].type;
-        op_is_cte = (t == JoinOp::CTE_LOOKUP || t == JoinOp::CTE_SCAN);
-      }
-      if (op_is_cte) {
-        require_cte_case_condition_column_output(
-            scope, op_idx, col_side->col_idx);
-      }
-      if (op_idx != leaf_idx) {
-        has_linked_col = true;
-        linked_position = find_or_add_linked_proj(
-            scope.join_plan, op_idx, m_columns[col_side->col_idx].c_str());
-      } else if (op_is_cte) {
-        has_linked_col = true;
-        has_inline_linked_col = true;
-        linked_position = scope.join_plan.num_linked_projs +
-            (Uint32)scope.column_attrId_map[col_side->col_idx];
-      }
-    }
-    const NdbDictionary::Column* col =
-        resolve_case_condition_column(scope, col_side, cteVirtualTables);
-    require_prm(col != NULL,
-                "CASE condition: unresolved column descriptor.");
+    AtomInfo& info = infos[a];
+
+    resolve_col_side(atom->args.left, info.lhs);
     if (is_greatest_least_condition(ce))
     {
-      require_prm(!col->getNullable(),
+      require_prm(!info.lhs.col->getNullable(),
                   "GREATEST/LEAST on nullable column operands is not yet "
                   "supported because MySQL NULL propagation would require "
                   "multi-arm CASE lowering.");
     }
-    raw_value rv = encode_constant(atom->args.right, col);
-    Uint32 byte_len = rv.len;
-    Uint32 data_words = (byte_len + 3) / 4;
-    // BRANCH_MEM_OP_ARG_INLINE_TYPE: 3 words (opcode, type|len, meta) + data
-    // BRANCH_MEM_OP_ARG: 4 words (opcode, attrId|len, tableId, schemaVer) + data
-    // BRANCH_ATTR_OP_ARG: 2 words (opcode, attrId|len) + data
-    if (has_inline_linked_col)
-      total_branch_words += 3 + data_words;
+
+    info.is_col_vs_col = (atom->args.right->op == T_IDENTIFIER);
+    if (info.is_col_vs_col)
+    {
+      resolve_col_side(atom->args.right, info.rhs);
+      if (is_greatest_least_condition(ce))
+      {
+        require_prm(!info.rhs.col->getNullable(),
+                    "GREATEST/LEAST on nullable column operands is not "
+                    "yet supported because MySQL NULL propagation would "
+                    "require multi-arm CASE lowering.");
+      }
+      // v2a: register-based path is Bigint-only on each side, with
+      // InlineLinked unsupported (would need an inline-typed
+      // register-load opcode).
+      std::function<bool(const NdbDictionary::Column*)> require_bigint =
+          [](const NdbDictionary::Column* c)
+      {
+        return c->getType() == NdbDictionary::Column::Bigint ||
+               c->getType() == NdbDictionary::Column::Bigunsigned;
+      };
+      require_prm(info.lhs.kind != SideKind::InlineLinked &&
+                  info.rhs.kind != SideKind::InlineLinked,
+                  "CASE condition with two CTE-leaf columns is not yet "
+                  "supported (deferred to I.5 v5 — needs an inline-typed "
+                  "register-load opcode).");
+      require_prm(require_bigint(info.lhs.col) && require_bigint(info.rhs.col),
+                  "Column-vs-column CASE / GREATEST / LEAST is currently "
+                  "Bigint-only (deferred to I.5 v5 for narrower integer "
+                  "and float / decimal / string types).");
+      // Word counts:
+      //   LeafTable side       → 1 word (READ_ATTR_INTO_REG)
+      //   LinkedParent / Cte   → 2 words (READ_LINKED_TO_MEM
+      //                          + READ_INT64_MEM_TO_REG)
+      // + 1 word for the BRANCH_*_REG_REG.
+      std::function<Uint32(const SideInfo&)> side_words =
+          [](const SideInfo& s) -> Uint32
+      {
+        return s.kind == SideKind::LeafTable ? 1u : 2u;
+      };
+      info.word_count = side_words(info.lhs) + side_words(info.rhs) + 1;
+    }
     else
-      total_branch_words += (has_linked_col ? 4 : 2) + data_words;
+    {
+      // col-vs-const path (v1): resolve the constant against the LHS
+      // column descriptor.
+      info.rhs.kind = SideKind::Constant;
+      info.rhs.rv = encode_constant(atom->args.right, info.lhs.col);
+      info.rhs.byte_len = info.rhs.rv.len;
+      info.rhs.data_words = (info.rhs.byte_len + 3) / 4;
+      // BRANCH_ATTR_OP_ARG       : 2 words + data
+      // BRANCH_MEM_OP_ARG        : 4 words + data, plus 1 for READ_LINKED_TO_MEM
+      // BRANCH_MEM_OP_ARG_INLINE : 3 words + data, plus 1 for READ_LINKED_TO_MEM
+      switch (info.lhs.kind) {
+        case SideKind::LeafTable:
+          info.word_count = 2 + info.rhs.data_words;
+          break;
+        case SideKind::LinkedParent:
+        case SideKind::LinkedCteCol:
+          info.word_count = 1 + 4 + info.rhs.data_words;
+          break;
+        case SideKind::InlineLinked:
+          info.word_count = 1 + 3 + info.rhs.data_words;
+          break;
+        case SideKind::Constant:
+          abort();  // unreachable — LHS is always a column
+      }
+    }
+    total_atom_words += info.word_count;
   }
-  // If linked column: add 1 word for READ_LINKED_TO_MEM before the branches
-  Uint32 emb_len = total_branch_words + 6 + (has_linked_col ? 1 : 0);
+
+  Uint32 emb_len = total_atom_words + 6;
 
   // For OR:  branches → second_exit (THEN), fall-through → first_exit (ELSE)
   // For AND: branches → second_exit (ELSE), fall-through → first_exit (THEN)
@@ -8166,180 +8351,191 @@ RonSQLPreparer::generate_embedded_condition(
 
   programAggregator_do_or_fail(aggregator->EmbeddedInterp(emb_len));
 
-  // If linked column, emit READ_LINKED_TO_MEM first to load the parent
-  // column value into cheapMemory[0] for BRANCH_MEM_OP_ARG to read.
-  if (has_linked_col) {
-    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-        Interpreter::READ_LINKED_TO_MEM | (linked_position << 16)));
-  }
-
-  Uint32 pos = has_linked_col ? 1 : 0;
+  Uint32 pos = 0;
   for (Uint32 a = 0; a < atoms.size(); a++)
   {
     ConditionalExpression* atom = atoms[a];
-    ConditionalExpression* col_side = atom->args.left;
-    ConditionalExpression* val_side = atom->args.right;
+    AtomInfo& info = infos[a];
 
-    // Phase I.4: for a CTE COLUMN projection in the condition,
-    // attr_id and the parent-table descriptor must come from the
-    // CTE body's source op — column_attrId_map stores the
-    // CTE-output index and column_map is NULL for CTE outputs.
-    // CTE AGGREGATE outputs would need BRANCH_MEM_OP_ARG_INLINE_TYPE
-    // (synthesized result type) — not yet supported here, rejected
-    // cleanly below.
-    Uint32 cidx = col_side->col_idx;
-    Uint32 parent_op = (Uint32)scope.column_table_idx[cidx];
-    bool col_is_cte = false;
-    if (cteVirtualTables != NULL && parent_op < scope.join_plan.num_ops) {
-      JoinOp::Type t = scope.join_plan.ops[parent_op].type;
-      col_is_cte = (t == JoinOp::CTE_LOOKUP || t == JoinOp::CTE_SCAN);
-    }
-
-    const NdbDictionary::Column* col = NULL;
-    NdbAttrId attr_id = 0;
-    const NdbDictionary::Table* parentTable = NULL;
-    if (has_inline_linked_col && parent_op == leaf_idx) {
-      require_cte_case_condition_column_output(scope, parent_op, cidx);
-      col = resolve_case_condition_column(scope, col_side, cteVirtualTables);
-      require_prm(col != NULL,
-                  "CASE over CTE leaf: unresolved virtual column.");
-    } else if (col_is_cte) {
-      const JoinOp& cte_op = scope.join_plan.ops[parent_op];
-      require_run(cte_op.cte_def != NULL,
-                  "CASE over CTE: op has no CTE definition.");
-      require_run(cte_op.cte_def_idx < m_cte_scopes.size(),
-                  "CASE over CTE: cte_def_idx out of range.");
-      QueryScope* cs = m_cte_scopes[cte_op.cte_def_idx];
-      require_run(cs != NULL,
-                  "CASE over CTE: missing CTE body scope.");
-      Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[cidx];
-      Uint32 walk = 0;
-      const Outputs* o = cte_op.cte_def->stmt->outputs;
-      while (o != NULL && walk < cte_col_idx) { o = o->next; walk++; }
-      require_prm(o != NULL,
-                  "CASE over CTE: output index out of range.");
-      require_prm(o->type == Outputs::Type::COLUMN,
-                  "CASE condition referencing a CTE aggregate output "
-                  "is not yet supported — would need an inline-type "
-                  "branch opcode.  Reference a CTE column projection "
-                  "instead, or move the predicate into the CTE body's "
-                  "WHERE clause.");
-      Uint32 src_col_idx = o->column.col_idx;
-      const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
-      require_prm(src_col != NULL,
-                  "CASE over CTE: source column not resolved.");
-      Uint32 src_op_idx = cs->column_table_idx[src_col_idx];
-      require_prm(src_op_idx < cs->join_plan.num_ops,
-                  "CASE over CTE: source op out of range.");
-      parentTable = cs->join_plan.ops[src_op_idx].table;
-      require_prm(parentTable != NULL,
-                  "CASE over CTE: source op has no physical table.");
-      col = src_col;
-      attr_id = (NdbAttrId)src_col->getColumnNo();
+    // Branch instruction position within the atom: for col-vs-col it
+    // is the last word (after both register loads); for col-vs-const
+    // linked / inline-linked it sits right after the
+    // READ_LINKED_TO_MEM staging word (at pos+1); for col-vs-const
+    // leaf it is the first word.
+    Uint32 branch_instr_pos;
+    if (info.is_col_vs_col) {
+      branch_instr_pos = pos + info.word_count - 1;
+    } else if (info.lhs.kind == SideKind::LeafTable) {
+      branch_instr_pos = pos;
     } else {
-      col = scope.column_map[cidx];
-      require_prm(col != NULL,
-                  "CASE condition: unresolved column descriptor.");
-      attr_id = scope.column_attrId_map[cidx];
-      if (has_linked_col) {
-        parentTable = scope.join_plan.ops[parent_op].table;
-        require_prm(parentTable != NULL,
-                    "CASE condition: linked parent op has no physical "
-                    "table.");
-      }
+      branch_instr_pos = pos + 1;
     }
-    raw_value rv = encode_constant(val_side, col);
-    Uint32 byte_len = rv.len;
-    Uint32 data_words = (byte_len + 3) / 4;
-
-    Uint32 branch_offset = second_exit_label - pos;
+    Uint32 branch_offset = second_exit_label - branch_instr_pos;
 
     // For OR: branch to THEN when atom holds (direct cond).
     // For AND: invert the atom condition so we branch to ELSE on miss.
     //
-    // Mapping accounts for the embedded BRANCH_*_OP_ARG family's inverted-
-    // inequality quirk (kernel `Interpreter::LT/LE/GT/GE` branch on the
-    // *opposite* relation between col and const — see DbtupExecQuery.cpp
-    // handleBranchMemOpArg and CLAUDE.md "NdbInterpretedCode: Inverted
-    // Inequality Branches"):
-    //   direct: T_EQ→EQ T_NEQ→NE T_LT→GT T_LE→GE T_GT→LT T_GE→LE
-    //   invert: T_EQ→NE T_NEQ→EQ T_LT→LE T_LE→LT T_GT→GE T_GE→GT
-    Interpreter::BinaryCondition cond;
-    if (is_and)
-    {
-      switch (atom->op) {
-        case T_EQUALS:     cond = Interpreter::NE; break;
-        case T_NOT_EQUALS: cond = Interpreter::EQ; break;
-        case T_LT:         cond = Interpreter::LE; break;
-        case T_LE:         cond = Interpreter::LT; break;
-        case T_GT:         cond = Interpreter::GE; break;
-        case T_GE:         cond = Interpreter::GT; break;
+    // The embedded BRANCH_*_OP_ARG family inverts inequality
+    // conditions (kernel `Interpreter::LT/LE/GT/GE` branch on the
+    // *opposite* relation between col and const — see
+    // DbtupExecQuery.cpp handleBranchMemOpArg and CLAUDE.md
+    // "NdbInterpretedCode: Inverted Inequality Branches").  The
+    // BRANCH_*_REG_REG family does *not* invert (handleBranchLtRegReg
+    // branches when Tleft0 < Tright0, matching the name).  Maintain
+    // two mappings:
+    //   _arg  family direct: T_EQ→EQ T_NEQ→NE T_LT→GT T_LE→GE T_GT→LT T_GE→LE
+    //   _arg  family invert: T_EQ→NE T_NEQ→EQ T_LT→LE T_LE→LT T_GT→GE T_GE→GT
+    //   _reg  family direct: T_EQ→EQ T_NEQ→NE T_LT→LT T_LE→LE T_GT→GT T_GE→GE
+    //   _reg  family invert: T_EQ→NE T_NEQ→EQ T_LT→GE T_LE→GT T_GT→LE T_GE→LT
+    std::function<Uint32(TokenKind)> cond_for_arg_family =
+        [&](TokenKind op) -> Uint32 {
+      if (is_and) {
+        switch (op) {
+          case T_EQUALS:     return Interpreter::NE;
+          case T_NOT_EQUALS: return Interpreter::EQ;
+          case T_LT:         return Interpreter::LE;
+          case T_LE:         return Interpreter::LT;
+          case T_GT:         return Interpreter::GE;
+          case T_GE:         return Interpreter::GT;
+          default: abort();
+        }
+      }
+      switch (op) {
+        case T_EQUALS:     return Interpreter::EQ;
+        case T_NOT_EQUALS: return Interpreter::NE;
+        case T_LT:         return Interpreter::GT;
+        case T_LE:         return Interpreter::GE;
+        case T_GT:         return Interpreter::LT;
+        case T_GE:         return Interpreter::LE;
         default: abort();
       }
+    };
+    std::function<Uint32(TokenKind)> reg_branch_opcode =
+        [&](TokenKind op) -> Uint32 {
+      if (is_and) {
+        switch (op) {
+          case T_EQUALS:     return Interpreter::BRANCH_NE_REG_REG;
+          case T_NOT_EQUALS: return Interpreter::BRANCH_EQ_REG_REG;
+          case T_LT:         return Interpreter::BRANCH_GE_REG_REG;
+          case T_LE:         return Interpreter::BRANCH_GT_REG_REG;
+          case T_GT:         return Interpreter::BRANCH_LE_REG_REG;
+          case T_GE:         return Interpreter::BRANCH_LT_REG_REG;
+          default: abort();
+        }
+      }
+      switch (op) {
+        case T_EQUALS:     return Interpreter::BRANCH_EQ_REG_REG;
+        case T_NOT_EQUALS: return Interpreter::BRANCH_NE_REG_REG;
+        case T_LT:         return Interpreter::BRANCH_LT_REG_REG;
+        case T_LE:         return Interpreter::BRANCH_LE_REG_REG;
+        case T_GT:         return Interpreter::BRANCH_GT_REG_REG;
+        case T_GE:         return Interpreter::BRANCH_GE_REG_REG;
+        default: abort();
+      }
+    };
+
+    if (info.is_col_vs_col)
+    {
+      // v2a: register-based path.  Two static registers: R1 (LHS), R2 (RHS).
+      // The embedded interpreter has its own register file and is
+      // re-initialised per kOpEmbeddedInterp call, so register reuse
+      // across atoms is safe (each atom is self-contained).
+      const Uint32 R1 = 1;
+      const Uint32 R2 = 2;
+      std::function<void(const SideInfo&, Uint32)> emit_load_into_reg =
+          [&](const SideInfo& s, Uint32 reg)
+          {
+            if (s.kind == SideKind::LeafTable) {
+              // READ_ATTR_INTO_REG handles the column's native type.
+              programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+                  Interpreter::Read((Uint32)s.attr_id, reg)));
+            } else {
+              // Linked column: stage into heap[0] then copy to register.
+              programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+                  Interpreter::READ_LINKED_TO_MEM | (s.linked_position << 16)));
+              // Data starts at byte offset 4 (after AttrHeader).  This
+              // v2a path is guarded to BIGINT/BIGUNSIGNED linked columns;
+              // narrower signed linked loads are deferred to I.5 v5.
+              programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+                  Interpreter::ReadInt64FromMemIntoRegConst(reg, 4)));
+            }
+          };
+      emit_load_into_reg(info.lhs, R1);
+      emit_load_into_reg(info.rhs, R2);
+
+      // Encoding: Branch(opcode, RegRvalue=R2, RegLvalue=R1) per
+      // NdbInterpretedCode::branch_lt et al.  The branch label offset
+      // sits in the high bits like the other BRANCH_* opcodes.
+      Uint32 br_op = reg_branch_opcode(atom->op);
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::Branch(br_op, /*Reg1=*/R2, /*Reg2=*/R1) |
+          (branch_offset << 16)));
     }
     else
     {
-      switch (atom->op) {
-        case T_EQUALS:     cond = Interpreter::EQ; break;
-        case T_NOT_EQUALS: cond = Interpreter::NE; break;
-        case T_LT:         cond = Interpreter::GT; break;
-        case T_LE:         cond = Interpreter::GE; break;
-        case T_GT:         cond = Interpreter::LT; break;
-        case T_GE:         cond = Interpreter::LE; break;
-        default: abort();
+      Uint32 cond = cond_for_arg_family(atom->op);
+      const SideInfo& lhs = info.lhs;
+
+      if (lhs.kind == SideKind::InlineLinked) {
+        // CTE leaf column.  Stage column then compare with
+        // BRANCH_MEM_OP_ARG_INLINE_TYPE.
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+            Interpreter::READ_LINKED_TO_MEM | (lhs.linked_position << 16)));
+        Uint32 csNumber = 0;
+        if (lhs.col->getCharset() != NULL)
+          csNumber = (Uint32)lhs.col->getCharsetNumber();
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+            Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE |
+            (Interpreter::NULL_CMP_EQUAL << 6) | (cond << 12) |
+            ((branch_offset - 0) << 16)));
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+            Interpreter::BranchMem_2((Uint32)lhs.col->getType(),
+                                     info.rhs.byte_len)));
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+            (info.rhs.byte_len << 16) | csNumber));
+      } else if (lhs.kind == SideKind::LinkedParent ||
+                 lhs.kind == SideKind::LinkedCteCol) {
+        // Stage the linked column into heap[0] then compare with
+        // BRANCH_MEM_OP_ARG.
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+            Interpreter::READ_LINKED_TO_MEM | (lhs.linked_position << 16)));
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+            Interpreter::BranchMem(
+                static_cast<Interpreter::BinaryCondition>(cond),
+                Interpreter::NULL_CMP_EQUAL) |
+            ((branch_offset - 0) << 16)));
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+            Interpreter::BranchMem_2(lhs.attr_id, info.rhs.byte_len)));
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+            lhs.parent_table->getTableId()));
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+            lhs.parent_table->getObjectVersion()));
+      } else {
+        // LeafTable: BRANCH_ATTR_OP_ARG (reads via readAttributes).
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+            Interpreter::BranchCol(
+                static_cast<Interpreter::BinaryCondition>(cond),
+                Interpreter::NULL_CMP_EQUAL) |
+            (branch_offset << 16)));
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+            Interpreter::BranchCol_2(lhs.attr_id, info.rhs.byte_len)));
+      }
+
+      // Emit constant data words (after the branch instruction).
+      Uint32 padded_len = info.rhs.data_words * 4;
+      Uint8* buf = m_amalloc->alloc_exc<Uint8>(padded_len);
+      memcpy(buf, info.rhs.rv.val, info.rhs.rv.len);
+      if (padded_len > info.rhs.rv.len)
+        memset(buf + info.rhs.rv.len, 0, padded_len - info.rhs.rv.len);
+      for (Uint32 w = 0; w < info.rhs.data_words; w++)
+      {
+        Uint32 word;
+        memcpy(&word, buf + w * 4, 4);
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(word));
       }
     }
 
-    if (has_inline_linked_col) {
-      // CTE leaf column: linked buffer entries carry inline type metadata,
-      // so compare cheapMemory[0] with BRANCH_MEM_OP_ARG_INLINE_TYPE.
-      Uint32 csNumber = 0;
-      if (col->getCharset() != NULL)
-        csNumber = (Uint32)col->getCharsetNumber();
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE |
-          (Interpreter::NULL_CMP_EQUAL << 6) | (cond << 12) |
-          (branch_offset << 16)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::BranchMem_2((Uint32)col->getType(), byte_len)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          (byte_len << 16) | csNumber));
-    } else if (has_linked_col) {
-      // Parent-table column: use BRANCH_MEM_OP_ARG (reads from cheapMemory[0])
-      // Get parent table's tableId and schemaVersion for type lookup.
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::BranchMem(cond, Interpreter::NULL_CMP_EQUAL) |
-          (branch_offset << 16)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::BranchMem_2(attr_id, byte_len)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          parentTable->getTableId()));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          parentTable->getObjectVersion()));
-    } else {
-      // Leaf-table column: use BRANCH_ATTR_OP_ARG (reads via readAttributes)
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::BranchCol(cond, Interpreter::NULL_CMP_EQUAL) |
-          (branch_offset << 16)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::BranchCol_2(attr_id, byte_len)));
-    }
-
-    Uint32 padded_len = data_words * 4;
-    Uint8* buf = m_amalloc->alloc_exc<Uint8>(padded_len);
-    memcpy(buf, rv.val, rv.len);
-    if (padded_len > rv.len)
-      memset(buf + rv.len, 0, padded_len - rv.len);
-    for (Uint32 w = 0; w < data_words; w++)
-    {
-      Uint32 word;
-      memcpy(&word, buf + w * 4, 4);
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(word));
-    }
-    if (has_inline_linked_col)
-      pos += 3 + data_words;
-    else
-      pos += (has_linked_col ? 4 : 2) + data_words;
+    pos += info.word_count;
   }
 
   // First exit (fall-through)
@@ -9051,11 +9247,18 @@ RonSQLPreparer::Context::get_allocator()
 //   GREATEST(x, y)  →  CASE WHEN x >= y THEN x ELSE y END
 //   LEAST(x, y)     →  CASE WHEN x <= y THEN x ELSE y END
 //
-// v1 scope: each operand must be a column ref (Load) or an integer
-// literal (LoadConstantInteger), and at least one operand must be a
-// column.  Two distinct columns are rejected (deferred to I.5 v2,
-// which depends on register-based CASE codegen).  Wider operand
-// types (float / decimal / string) deferred to v3.
+// Scope:
+// - Each operand must be a column ref (Load) or an integer literal
+//   (LoadConstantInteger).  Arithmetic / nested expressions deferred
+//   (would need a register-based codegen path beyond v2a).
+// - At least one operand must be a column.
+// - Two columns: v2a accepts distinct columns by lowering to a CASE
+//   with a col-vs-col condition; the embedded-condition emit path
+//   handles the col-vs-col atom via BRANCH_*_REG_REG.  Both columns
+//   must be Bigint (the register-based path is Bigint-only — see
+//   `cte_filter_phase_i5_v2.md`).
+// - Nullable column operands rejected post-resolution
+//   (`is_greatest_least_condition` check).
 AggregationAPICompiler::Expr*
 RonSQLPreparer::Context::lower_greatest_least(
     AggregationAPICompiler::Expr* a,
@@ -9071,54 +9274,64 @@ RonSQLPreparer::Context::lower_greatest_least(
   require_prm(a_is_col || a_is_const,
               "GREATEST/LEAST operand must be a column reference or "
               "an integer constant — arithmetic / nested expressions "
-              "are not yet supported (deferred to I.5 v2).");
+              "are not yet supported.");
   require_prm(b_is_col || b_is_const,
               "GREATEST/LEAST operand must be a column reference or "
               "an integer constant — arithmetic / nested expressions "
-              "are not yet supported (deferred to I.5 v2).");
+              "are not yet supported.");
   require_prm(a_is_col || b_is_col,
               "GREATEST/LEAST requires at least one column operand "
               "— two-constant forms can be folded by hand.");
-  if (a_is_col && b_is_col)
-  {
-    require_prm(a->getLoadIdx() == b->getLoadIdx(),
-                "GREATEST/LEAST with two distinct column operands is "
-                "not yet supported (deferred to I.5 v2 — needs "
-                "register-based CASE codegen).");
-    return a;
-  }
 
   AggregationAPICompiler* agg = get_agg();
   ArenaMalloc* amalloc = get_allocator();
 
-  AggregationAPICompiler::Expr* condition_col_expr = NULL;
-  AggregationAPICompiler::Expr* condition_const_expr = NULL;
-  TokenKind condition_op = T_EQUALS;
-  if (a_is_col && b_is_const)
+  // Allocate the cond_expr nodes up front; we'll fill them based on the
+  // operand shape below.  The condition is always written with a column
+  // on the LHS because generate_embedded_condition requires
+  // atom->args.left->op == T_IDENTIFIER.
+  ConditionalExpression* lhs = amalloc->alloc_exc<ConditionalExpression>(1);
+  ConditionalExpression* rhs = amalloc->alloc_exc<ConditionalExpression>(1);
+  ConditionalExpression* cond =
+      amalloc->alloc_exc<ConditionalExpression>(1);
+
+  TokenKind condition_op;
+  if (a_is_col && b_is_col)
   {
-    condition_col_expr = a;
-    condition_const_expr = b;
+    // Same-column degenerate: GREATEST(x, x) = x; no CASE needed.
+    if (a->getLoadIdx() == b->getLoadIdx())
+    {
+      return a;
+    }
+    // Distinct columns (v2a): col-vs-col condition.  Both LHS and RHS
+    // are T_IDENTIFIER cond_expr nodes.  THEN = a (matches when cond
+    // holds), ELSE = b.
+    lhs->op = T_IDENTIFIER;
+    lhs->col_idx = a->getLoadIdx();
+    rhs->op = T_IDENTIFIER;
+    rhs->col_idx = b->getLoadIdx();
+    condition_op = is_greatest ? T_GE : T_LE;
+  }
+  else if (a_is_col && b_is_const)
+  {
+    lhs->op = T_IDENTIFIER;
+    lhs->col_idx = a->getLoadIdx();
+    rhs->op = T_INT;
+    rhs->constant_integer = agg->m_constants[b->getConstantIdx()].int_64;
     condition_op = is_greatest ? T_GE : T_LE;
   }
   else
   {
+    // a_is_const && b_is_col: column on LHS via swap; flip the op so
+    // the THEN/ELSE arms (a, b) still compute the right value.
     ndbrequire(a_is_const && b_is_col);
-    condition_col_expr = b;
-    condition_const_expr = a;
+    lhs->op = T_IDENTIFIER;
+    lhs->col_idx = b->getLoadIdx();
+    rhs->op = T_INT;
+    rhs->constant_integer = agg->m_constants[a->getConstantIdx()].int_64;
     condition_op = is_greatest ? T_LE : T_GE;
   }
 
-  // Build a column-left condition because embedded CASE generation expects
-  // the left side of each atom to be T_IDENTIFIER.
-  ConditionalExpression* lhs = amalloc->alloc_exc<ConditionalExpression>(1);
-  ConditionalExpression* rhs = amalloc->alloc_exc<ConditionalExpression>(1);
-  lhs->op = T_IDENTIFIER;
-  lhs->col_idx = condition_col_expr->getLoadIdx();
-  rhs->op = T_INT;
-  rhs->constant_integer =
-      agg->m_constants[condition_const_expr->getConstantIdx()].int_64;
-  ConditionalExpression* cond =
-      amalloc->alloc_exc<ConditionalExpression>(1);
   cond->op = condition_op;
   cond->args.left = lhs;
   cond->args.right = rhs;

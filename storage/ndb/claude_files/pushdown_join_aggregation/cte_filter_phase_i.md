@@ -87,9 +87,21 @@ LHS of the comparison; nullable column operands rejected cleanly
 (MySQL NULL-propagation would need multi-arm CASE — deferred).  Also
 lifts the embedded-condition `=` / `!=`-only restriction so any
 inequality (`<` / `<=` / `>` / `>=`) can appear inside an embedded
-CASE atom.  Bigint-only.  v2 (n-ary + multi-column), v3 (wider
-operand types), and v4 (NULL propagation for nullable operands)
-staged as follow-ups.
+CASE atom.  Bigint-only.
+
+**v2a shipped** — see `cte_filter_phase_i5_v2.md`.  Column-vs-column
+atoms in embedded CASE conditions (Bigint-only on each side via
+`READ_*-into-register` + `BRANCH_*_REG_REG`).  Distinct-column
+`GREATEST` / `LEAST` and multi-column CASE conditions (`WHEN col_a
+> col_b`) now work.  Per-atom self-contained loads also fix a
+latent v1 bug.
+
+Follow-ups: v2b (n-ary GREATEST/LEAST via SVM extension), v3 / v5
+(wider operand types — float / decimal / string and signed
+sub-Bigint linked columns; v5 in `cte_filter_phase_i5_v5.md`),
+v4 (NULL propagation for nullable operands), v6 (CTE
+linked-vs-linked runtime test coverage; in
+`cte_filter_phase_i5_v6.md`).
 
 ### Aggregator output types
 
