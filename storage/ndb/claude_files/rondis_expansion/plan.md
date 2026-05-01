@@ -981,24 +981,208 @@ expire-scan reaps it.
 
 ---
 
-## PR 2 — Hash enumeration
+## PR 2 — Hash enumeration + compliance follow-ups
 
-Adds `HEXISTS`, `HSTRLEN`, `HSETNX`, `HLEN`, `HKEYS`, `HVALS`,
-`HGETALL`.
+Two scopes bundled. The compliance follow-ups (Phases 2.0a–2.0e)
+close items deferred from PR 1's audit; the hash-enumeration
+phases (2.1–2.7) add the read-side hash commands.
 
-Hash fields live as rows in `string_keys` keyed by `(redis_key_id,
-field_name)` — the hash's own `redis_key_id > 0` is obtained via
-`rondb_get_redis_key_id` against `hset_keys`. So:
+Phase order recommendation: land 2.0a (cosmetic) and 2.0e (EXPIRE
+options) early since they're small and self-contained. 2.0b
+(sub-second TTL) and 2.0d (Y2038) share a schema change and should
+land together. 2.0c (DEL-on-hash storage reclamation) is
+independent. Hash enumeration (2.1–2.7) can interleave with the
+compliance phases or follow them — the only dependency is that 2.5
+(HKEYS, first scan path) reuses primitives from 1.10c.7b/i.
 
-- `HEXISTS` / `HSTRLEN` are single-row PK reads, exactly like HGET.
-- `HSETNX` is a field-level write with the same NX conditional-store
-  guard as SET NX (C7 plumbing already in place).
-- `HLEN` / `HKEYS` / `HVALS` / `HGETALL` need a **scan** over
-  `string_keys` filtered by `redis_key_id = X`. Current PKs are
-  HASH-only, so this is a partitioned NDB table scan with an equality
-  filter pushed via `NdbScanFilter` — efficient because
-  `redis_key_id` is the first PK column and hence the partition key,
-  so the scan is partition-local.
+### Phase 2.0a — Cosmetic error-message wording alignment
+
+**Scope.** Bring three error replies in line with Redis 7.x exact
+strings. None affect the wire-protocol error class (still `-ERR …`)
+but each is something a client hitting Rondis through a Redis-aware
+test harness (e.g. redis-py's exception subclassing) might pin.
+
+| Site | Current | Canonical Redis 7.x |
+|---|---|---|
+| `SELECT abc` / `SELECT 1.5` | `ERR Wrong parameter to SELECT command` | `ERR value is not an integer or out of range` |
+| `SELECT 9999` / `SELECT -1` | `ERR The database selected doesn't exist` | `ERR DB index is out of range` |
+| `FOOBAR` | `ERR unknown command 'FOOBAR'` | `ERR unknown command 'FOOBAR', with args beginning with: ` |
+
+**Files:**
+- `storage/ndb/src/rondis/include/common.h` — replace the
+  `FAILED_SELECT_COMMAND` and `FAILED_SELECT_NO_SUCH_DATABASE`
+  literals; the existing `REDIS_INVALID_INTEGER` macro can be
+  reused for the SELECT-non-integer site (it already holds the
+  canonical string).
+- `storage/ndb/src/rondis/src/rondb.cc` — SELECT error path uses
+  the canonical wording.
+- `storage/ndb/src/rondis/src/rondb.cc` — unknown-command reply
+  path appends the args list (everything after `argv[0]`, joined
+  with spaces) per the Redis 7.x format. Reuse the existing
+  `wrong_number_of_arguments` formatting helper or write a
+  sibling.
+
+**Tests:** re-record `rondis_negative_select.result` and
+`rondis_negative_arity.result`.
+
+### Phase 2.0b — Sub-second TTL precision
+
+**Scope.** Today `expiry_date` is a 4-byte signed integer storing
+whole seconds since epoch. Sub-second TTLs (`PEXPIRE 1`,
+`PEXPIREAT now+500ms`, `SET … PX 1`) round up to one second; the
+`PTTL` reply window is correspondingly inflated by ±1 s.
+
+**Approach.** Widen `expiry_date` to 8 bytes and store **unix
+milliseconds**. Combine with 2.0d (Y2038) since both are
+schema-side and re-recording is shared.
+
+Schema change: `expiry_date` becomes `BIGINT` (signed, ms since
+epoch). Affects `string_keys`, `hset_keys`, the SQL definition,
+the rondis-test mirror (`mysql-test/suite/rondis/include/
+create_rondis_tables.inc`), and the rondb-cli mirror
+(`tools/rondb-cli/scripts/create_rondis_tables.sql`). Per the
+`project_rondis_alpha.md` memory, no migration code — schema
+lands in place.
+
+**Code touches:**
+- `storage/ndb/src/rondis/src/commands.cc` — TTL/PTTL/EXPIRE/
+  PEXPIRE/EXPIREAT/PEXPIREAT and the SET-side EX/PX/EXAT/PXAT
+  paths drop the `(N+999)/1000` ceil-divide and the
+  `(seconds*1000)` reply-side multiplier; instead they store and
+  return raw ms.
+- `storage/ndb/src/rondis/src/db_operations.cc` — the encoding
+  helpers around `mi_int4korr`/`mi_sint4korr` for `expiry_date`
+  flip to `mi_int8korr`/`mi_sint8korr`. Same for the row-buffer
+  layout and the interpreter's `read_attr` of `expiry_date`
+  in `init_hset_string_claim_code`.
+- `storage/ndb/src/rondis/include/table_definitions.h` —
+  `expiry_date` field type in `key_table` and `hset_key_table`
+  flips from `Int32` to `Int64`. Re-derive offsets for the
+  NdbRecord `column_info_map`.
+- The "no-expiry sentinel" (`g_max_expire_at = 0x7FFFFFFF`)
+  becomes `INT64_MAX` or a clearer named constant; this is the
+  natural overlap with 2.0d.
+
+**Tests:** re-record every test that pins TTL/PTTL output
+(rondis_ttl, rondis_keyinfo_ttl, rondis_keyinfo_pttl,
+rondis_keyinfo_pexpire, rondis_keyinfo_pexpireat, rondis_set_flags,
+rondis_keyinfo_expire, rondis_keyinfo_expireat). Sub-second
+windows tighten from ±2 s to ±50 ms (or whatever the host clock
+drift permits).
+
+### Phase 2.0c — DEL-on-hash storage reclamation
+
+**Scope.** Today `DEL` on a hash drops the registry row in
+`hset_keys` (1.10c.2) but leaves the hash's field rows orphaned in
+`string_keys` — and any extension rows orphaned in `string_values`.
+Invisible to clients (the dropped registry row makes the
+`redis_key_id` unreachable from the namespace), but it bloats the
+tablespace.
+
+**Approach.** Reuse `run_hset_replace_hash_scan_delete`
+(`db_operations.cc`, the helper that 1.10c.7b/i added for
+SET-on-hash silent replace). It already does exactly the work
+needed: scanIndex on the PRIMARY ordered index of `string_keys`
+bounded to a single `redis_key_id`, take-over deletes per row,
+per-ordinal deletes on `string_values` for ext rows, all on the
+caller's main trans.
+
+In `rondb_del`'s hash branch (the one added in 1.10c.2 that
+deletes the `hset_keys` row), capture the row's `redis_key_id`
+*before* the deleteTuple, then call
+`run_hset_replace_hash_scan_delete(ndb, htrans, old_id, db_id,
+response)` on the same hupp'd trans before the Commit.
+
+Edge cases to validate:
+- Hash with millions of fields exceeds the per-trans op buffer.
+  Same v1-acceptable failure mode as 1.10c.7b silent replace
+  (NDB error reply); follow-up bounded-batch ticket already
+  captured.
+- DEL of a key that's already an expired-but-present hash:
+  1.10c.9 already routes these through `m_del_logically_absent`
+  bookkeeping; the storage delete still needs to run.
+
+**Tests:** add SQL probes to `rondis_keyinfo_del_unified.test`
+verifying `string_keys` and `string_values` row counts under the
+deleted hash's id are zero post-DEL. Re-record.
+
+### Phase 2.0d — Lift the Y2038 cap on absolute expiry
+
+**Scope.** `g_max_expire_at = 0x7FFFFFFF` clamps absolute
+expiries to 2038-01-19 03:14:07 UTC (the signed-int32 ceiling).
+`SET … EXAT 4102444800` (a 2100 timestamp), `EXPIREAT 4102444800`,
+etc. silently truncate to 2038. Beyond 2038 Rondis becomes useless
+for any real persistence.
+
+**Approach.** Combines naturally with 2.0b: once `expiry_date`
+is a 64-bit ms column, the cap moves to ~292 million years from
+epoch, which is "no cap" in practice. Replace `g_max_expire_at`
+constant with `INT64_MAX` (or rename to `g_no_expiry_sentinel`);
+drop every `clamp(target, g_max_expire_at)` site.
+
+If 2.0b is deferred, do 2.0d standalone: widen `expiry_date` from
+INT4 to INT8 (still seconds, 64-bit). The ceiling becomes
+`9223372036854775807` seconds, which is well past any practical
+horizon. Lower migration cost than the ms widening but loses the
+sub-second precision opportunity.
+
+Recommendation: bundle 2.0b + 2.0d as one schema-change commit.
+
+**Tests:** add a positive-path test
+(`t/rondis_keyinfo_expireat_far_future.test`) verifying
+`SET k v EXAT 4102444800` (year 2100) is accepted and
+`TTL k` returns a positive value. Re-record.
+
+### Phase 2.0e — EXPIRE family conditional options (NX/XX/GT/LT)
+
+**Scope.** Redis 7.0 added four conditional flags to
+`EXPIRE`/`PEXPIRE`/`EXPIREAT`/`PEXPIREAT`:
+
+- `NX` — set expiry only if the key has no TTL
+- `XX` — set expiry only if the key already has a TTL
+- `GT` — set expiry only if the new value is greater than current
+- `LT` — set expiry only if the new value is less than current
+
+Reply: `:1` if applied, `:0` if condition tripped.
+
+**Approach.** `rondb_expire_or_pexpire` currently writes
+unconditionally. Two implementations:
+
+1. **Probe-then-write (simpler).** After the existing
+   `run_exists_probes` resolves the type and current
+   `expiry_date`, evaluate the NX/XX/GT/LT predicate against the
+   probe's captured value before issuing the writeTuple. One
+   extra round-trip on the slow path; the predicate evaluation
+   is local.
+
+2. **Interpreter-conditional (faster, more code).** Push the
+   predicate into the writeTuple's interpreted code via
+   `branch_lt_const`/`branch_gt_const`/`branch_col_eq_null` etc.,
+   and `interpret_exit_nok(RONDB_EXPIRE_CONDITION_NOT_MET)` on
+   miss. Reply path maps the sentinel to `:0`.
+
+Recommend (1) for v1 — `rondb_expire_or_pexpire` already
+does a probe (for type discrimination), so the captured
+`expiry_date` from that probe is "free". The predicate is one
+local comparison.
+
+Argument parsing: tokens after the value are checked with the
+same flexible-order while-loop as 1.10c.9's SET refactor. Mutual
+exclusions: `NX` ⇿ `XX`, `GT` ⇿ `LT`, `NX` ⇿ `GT`, `NX` ⇿ `LT`.
+(`XX` is compatible with `GT` and `LT`.)
+
+**Files:**
+- `storage/ndb/src/rondis/src/commands.cc` —
+  `rondb_expire_or_pexpire` argument parser; predicate after
+  probe; existing write op gated.
+- `storage/ndb/src/rondis/include/common.h` — new sentinel
+  constant if going with (2); else just an enum on the call
+  site.
+
+**Tests:** new
+`t/rondis_keyinfo_expire_options.test` covering each flag's
+positive and negative paths plus the mutual-exclusion errors.
+Add to the four EXPIRE-family commands.
 
 ### Phase 2.1 — HEXISTS
 
