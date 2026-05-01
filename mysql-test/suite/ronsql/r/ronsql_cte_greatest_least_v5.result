@@ -1,0 +1,194 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for typed linked register-load tests ===
+
+
+
+=== Test 1: TINYINT signed linked vs BIGINT leaf — negative linked values ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_tinyint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_tinyint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	0
+300	1
+
+
+=== Test 2: SMALLINT signed linked vs BIGINT leaf — negative linked values ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_smallint <= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_smallint <= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	0
+300	0
+
+
+=== Test 3: MEDIUMINT linked — pre-v5 was rejected, now accepted ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_mediumint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_mediumint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	1
+300	1
+
+
+=== Test 4: INT signed linked vs BIGINT leaf — negative linked values ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_int >= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_int >= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	1
+300	1
+
+
+=== Test 5: INT UNSIGNED linked — large unsigned linked values ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_unsigned > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_unsigned > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	1
+300	1
+
+
+=== Test 6: GREATEST(c.c_smallint, o.o_threshold) — pair-op path regression ===
+== Query ==
+SELECT c.c_id, SUM(GREATEST(c.c_smallint, o.o_threshold)) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id, SUM(GREATEST(c.c_smallint, o.o_threshold)) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	g
+100	35
+200	500
+300	20000
+
+
+=== Test 7: explicit CASE col-vs-col SMALLINT linked vs BIGINT leaf (v2a path) ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_smallint >= o.o_threshold THEN o.o_amt
+ELSE 0 END) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_smallint >= o.o_threshold THEN o.o_amt
+ELSE 0 END) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	g
+100	0
+200	90
+300	70

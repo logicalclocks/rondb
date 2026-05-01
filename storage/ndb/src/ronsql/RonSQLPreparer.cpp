@@ -8460,9 +8460,10 @@ RonSQLPreparer::generate_embedded_condition(
     if (info.is_col_vs_col)
     {
       resolve_col_side(atom->args.right, info.rhs);
-      // Register-based path supports fixed-width integer columns that
-      // DBTUP can load into normal interpreter registers.  Mediumint is
-      // deferred because there is no 24-bit memory-to-register opcode.
+      // Register-based path supports every NDB integer width.  Leaf
+      // operands use READ_ATTR_INTO_REG (DBTUP's type-aware loader);
+      // linked operands use READ_LINKED_COLUMN_TO_REG (Phase I.5 v5)
+      // which decodes by NDB type with correct sign extension.
       std::function<bool(const NdbDictionary::Column*)> can_load_integer_reg =
           [](const NdbDictionary::Column* c)
       {
@@ -8471,6 +8472,8 @@ RonSQLPreparer::generate_embedded_condition(
         case NdbDictionary::Column::Tinyunsigned:
         case NdbDictionary::Column::Smallint:
         case NdbDictionary::Column::Smallunsigned:
+        case NdbDictionary::Column::Mediumint:
+        case NdbDictionary::Column::Mediumunsigned:
         case NdbDictionary::Column::Int:
         case NdbDictionary::Column::Unsigned:
         case NdbDictionary::Column::Bigint:
@@ -8487,20 +8490,15 @@ RonSQLPreparer::generate_embedded_condition(
                   "register-load opcode).");
       require_prm(can_load_integer_reg(info.lhs.col) &&
                   can_load_integer_reg(info.rhs.col),
-                  "Column-vs-column CASE / GREATEST / LEAST is currently "
-                  "integer-only (deferred to I.5 v5 for Mediumint and "
-                  "float / decimal / string types).");
-      // Word counts:
+                  "Column-vs-column CASE / GREATEST / LEAST is "
+                  "integer-only (Float / Decimal / VARCHAR deferred "
+                  "to I.5 v3 / I.6).");
+      // Word counts (Phase I.5 v5: linked side is now one word —
+      // READ_LINKED_COLUMN_TO_REG):
       //   LeafTable side       → 1 word (READ_ATTR_INTO_REG)
-      //   LinkedParent / Cte   → 2 words (READ_LINKED_TO_MEM
-      //                          + READ_INT64_MEM_TO_REG)
+      //   LinkedParent / Cte   → 1 word (READ_LINKED_COLUMN_TO_REG)
       // + 1 word for the BRANCH_*_REG_REG.
-      std::function<Uint32(const SideInfo&)> side_words =
-          [](const SideInfo& s) -> Uint32
-      {
-        return s.kind == SideKind::LeafTable ? 1u : 2u;
-      };
-      info.word_count = side_words(info.lhs) + side_words(info.rhs) + 1;
+      info.word_count = 1u + 1u + 1u;
     }
     else
     {
@@ -8638,35 +8636,22 @@ RonSQLPreparer::generate_embedded_condition(
           [&](const SideInfo& s, Uint32 reg)
           {
             if (s.kind == SideKind::LeafTable) {
-              // READ_ATTR_INTO_REG handles the column's native type.
+              // READ_ATTR_INTO_REG handles the column's native type
+              // (sign extension done by DBTUP's existing path).
               programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
                   Interpreter::Read((Uint32)s.attr_id, reg)));
             } else {
-              // Linked column: stage into heap[0] then copy to register.
+              // Phase I.5 v5: one-word type-aware load from the
+              // linked-attr buffer.  Replaces the previous
+              // READ_LINKED_TO_MEM + READ_*_MEM_TO_REG_CONST(reg, 4)
+              // sequence (which zero-extended signed sub-Bigint
+              // operands).  The kernel handler decodes by NDB type
+              // and writes a sign- or zero-extended value plus the
+              // register's NULL_INDICATOR.
               programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-                  Interpreter::READ_LINKED_TO_MEM | (s.linked_position << 16)));
-              // Data starts at byte offset 4 (after AttrHeader).
-              Uint32 read_word = 0;
-              switch (s.col->getSizeInBytes()) {
-              case 1:
-                read_word = Interpreter::ReadUint8FromMemIntoRegConst(reg, 4);
-                break;
-              case 2:
-                read_word = Interpreter::ReadUint16FromMemIntoRegConst(reg, 4);
-                break;
-              case 4:
-                read_word = Interpreter::ReadUint32FromMemIntoRegConst(reg, 4);
-                break;
-              case 8:
-                read_word = Interpreter::ReadInt64FromMemIntoRegConst(reg, 4);
-                break;
-              default:
-                require_prm(false,
-                            "Unsupported linked integer width in "
-                            "embedded CASE condition.");
-              }
-              programAggregator_do_or_fail(
-                  aggregator->EmitEmbeddedWord(read_word));
+                  Interpreter::ReadLinkedColumnIntoReg(
+                      reg, s.linked_position,
+                      (Uint32)s.col->getType())));
             }
           };
       emit_load_into_reg(info.lhs, R1);

@@ -123,9 +123,19 @@ Surfaced two unrelated planner gaps now captured as I.16 (partial-key
 joins to multi-key CTEs) and I.17 (scalar aggregate CTEs without
 GROUP BY).
 
-Follow-ups: v3 / v5 (wider operand types — float / decimal / string
-and signed sub-Bigint linked columns; v5 in
-`cte_filter_phase_i5_v5.md`).
+**v5 shipped** — see `cte_filter_phase_i5_v5.md`.  New
+`READ_LINKED_COLUMN_TO_REG` kernel opcode; v2a's col-vs-col
+linked-side emission migrated from a two-word
+`READ_LINKED_TO_MEM + READ_*_MEM_TO_REG_CONST` sequence (silently
+zero-extended signed sub-Bigint linked operands) to one-word typed
+loading with correct sign extension.  All 10 NDB integer types
+accepted on the linked side; pair-op SVM path unaffected.  Known
+follow-up: leaf-side `READ_ATTR_INTO_REG` has the same
+zero-extension issue for signed sub-Bigint leaf columns — queued
+as a separate phase.
+
+Follow-ups: v3 (Float / Decimal / VARCHAR — converges with I.6),
+typed `READ_ATTR_TYPED_TO_REG` for the leaf-side gap.
 
 ### Aggregator output types
 
@@ -277,6 +287,30 @@ with no key columns, clear `scanCte` / `lookupCte` planning rules for
 that keyless virtual table, and tests covering both single scalar CTEs
 and joins of two scalar CTEs.  This should be handled before relying
 on watermark-style CTE tests in I.5 or later phases.
+
+#### I.18 — Typed leaf-column register loads for embedded col-vs-col (M)
+
+Detailed plan: `cte_filter_phase_i18.md`.
+
+Phase I.5 v5 adds a typed linked-column register load for parent /
+linked attributes, but leaf columns in embedded col-vs-col conditions
+still use the normal interpreter's existing `READ_ATTR_INTO_REG`.
+That path zero-extends signed sub-Bigint leaf values when expanding
+the raw attribute word into an `Int64` register value.  A condition
+such as:
+
+```sql
+SUM(CASE WHEN c.c_tinyint > o.o_tinyint THEN o.o_int ELSE 0 END)
+```
+
+can therefore compare a correctly sign-extended linked value against a
+zero-extended leaf `TINYINT` value.  Example: linked `5` compared to
+leaf `-20` can become `5 > 236`, returning false.
+
+This phase should add a typed leaf-column register-load path for the
+normal embedded interpreter, or equivalent typed register metadata, so
+signed `TINYINT` / `SMALLINT` / `MEDIUMINT` / `INT` leaf operands are
+sign-extended before `BRANCH_*_REG_REG`.
 
 ## Recommended next-pick heuristic
 

@@ -1,0 +1,234 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.5 v5: typed linked-column register loads.  Replaces the
+# v2a embedded CASE col-vs-col linked-side emission
+# (READ_LINKED_TO_MEM + READ_*_MEM_TO_REG_CONST(reg, 4), which
+# zero-extended signed sub-Bigint linked operands) with a single
+# one-word READ_LINKED_COLUMN_TO_REG opcode that decodes by NDB
+# type and applies correct sign extension.
+#
+# Scope: every NDB integer width on the LINKED side (the parent
+# table in a CTE_LOOKUP / join shape).  The LEAF side stays BIGINT
+# in this test file because the existing READ_ATTR_INTO_REG kernel
+# handler also zero-extends signed sub-Bigint leaf values — that
+# is a pre-existing limitation outside v5's scope (a typed
+# READ_ATTR variant is queued as a separate follow-up).
+#
+# GREATEST / LEAST n-ary lowering through v2b's pair-op SVM path
+# is unaffected by this phase (it goes through LoadColumn /
+# LoadLinkedColumn at the aggregator-program level, which already
+# widens via AlignedType).
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for typed linked register-load tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE v5_orders (
+  o_id        INT NOT NULL,
+  o_custkey   BIGINT NOT NULL,
+  o_amt       BIGINT NOT NULL,
+  o_threshold BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_v5_o_custkey ON v5_orders (o_custkey);
+
+CREATE TABLE v5_customer (
+  c_id        BIGINT NOT NULL,
+  c_threshold BIGINT NOT NULL,
+  c_tinyint   TINYINT NOT NULL,
+  c_smallint  SMALLINT NOT NULL,
+  c_mediumint MEDIUMINT NOT NULL,
+  c_int       INT NOT NULL,
+  c_unsigned  INT UNSIGNED NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+# Fixture mixes positive and negative values across every signed
+# width so the sign-extension path is exercised on every linked
+# read.
+INSERT INTO v5_customer VALUES
+  (100, 50,  -10,  -1000,  -100000,  -1000000,  4000000000),
+  (200, 60,    5,    500,    50000,    500000,  3000000000),
+  (300, 100,  20,  20000,   500000,  20000000,  1000000000);
+
+INSERT INTO v5_orders VALUES
+  (1, 100,  80,   30),
+  (2, 100,  40,    5),
+  (3, 200,  90,   75),
+  (4, 300,  70,   18);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: TINYINT signed linked vs BIGINT leaf — negative linked values ===
+
+# c.c_tinyint covers -10, 5, 20.  o.o_threshold is BIGINT.  Tests
+# sign extension of negative TINYINT on the linked side.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_tinyint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_tinyint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 2: SMALLINT signed linked vs BIGINT leaf — negative linked values ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_smallint <= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_smallint <= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 3: MEDIUMINT linked — pre-v5 was rejected, now accepted ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_mediumint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_mediumint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 4: INT signed linked vs BIGINT leaf — negative linked values ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_int >= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_int >= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 5: INT UNSIGNED linked — large unsigned linked values ===
+
+# c.c_unsigned holds values up to 4_000_000_000, beyond INT range.
+# Verifies zero-extension on the linked UNSIGNED side; leaf is
+# BIGINT (which DBTUP loads correctly).
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_unsigned > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_unsigned > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 6: GREATEST(c.c_smallint, o.o_threshold) — pair-op path regression ===
+
+# v2b's pair-op path uses LoadColumn / LoadLinkedColumn at the
+# aggregator-program level (already type-aware via AlignedType), so
+# this case worked pre-v5 too.  Regression marker that v5's
+# embedded-CASE migration didn't disturb pair-op emission.
+let $QUERY=
+SELECT c.c_id, SUM(GREATEST(c.c_smallint, o.o_threshold)) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id, SUM(GREATEST(c.c_smallint, o.o_threshold)) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 7: explicit CASE col-vs-col SMALLINT linked vs BIGINT leaf (v2a path) ===
+
+# Goes through generate_embedded_condition's col-vs-col path — the
+# path v5 actually rewrote.  Linked SMALLINT now decodes
+# sign-extended via READ_LINKED_COLUMN_TO_REG.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_smallint >= o.o_threshold THEN o.o_amt
+                ELSE 0 END) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_smallint >= o.o_threshold THEN o.o_amt
+                ELSE 0 END) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE v5_orders;
+DROP TABLE v5_customer;
+--enable_query_log

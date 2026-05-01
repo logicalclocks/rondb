@@ -2,9 +2,79 @@
 
 ## Status
 
-**Planned.**  This is a kernel/API support phase for the Phase I.5
-register-based CASE / GREATEST / LEAST work.  It closes the signed
-sub-64-bit linked-column gap discovered during I.5 v2 planning.
+**Shipped.**  Closes the signed sub-64-bit linked-column gap from
+I.5 v2 planning by adding one new opcode
+(`READ_LINKED_COLUMN_TO_REG = 44`) and migrating
+`generate_embedded_condition`'s col-vs-col linked-side emission to
+it.  Pair-op SVM emission (v2b/v4/v7) is untouched — that path uses
+`LoadLinkedColumn` at the aggregator-program level which already
+widens via `AlignedType`.
+
+**What shipped:**
+
+- **Kernel** (`Interpreter.hpp`, `DbtupExecQuery.cpp`,
+  `JoinAggInterpreter.cpp`):
+  - `Interpreter::READ_LINKED_COLUMN_TO_REG = 44` plus inline
+    encoder `Interpreter::ReadLinkedColumnIntoReg(reg, pos,
+    ndb_type)`.  One-word encoding
+    `[type:8 | position:8 | reserved:7 | dst_reg:3 | opcode:6]`.
+  - `handleReadLinkedColumnToReg` walks `m_linked_attr_data` to
+    the requested position (same loop shape as
+    `handleReadLinkedToMem`), inspects the `AttributeHeader`,
+    and decodes by type via `sint*korr` / `uint*korr` for
+    `Tinyint .. Bigunsigned` (10 integer types).  NULL handling
+    matches `READ_AGG_REG_TO_REG`: register's `NULL_INDICATOR`
+    slot is set on missing buffer / out-of-range / NULL header
+    so `BRANCH_REG_EQ_NULL` sees it consistently.  Unsupported
+    type codes return `-ZNO_INSTRUCTION_ERROR`.
+  - Wired into the main interpreter's explicit case, the
+    `s_cte_filter_handlers` table (slot 44), and the
+    `s_agg_interp_handlers` table (slot 44).
+  - Added to the 1-word group in
+    `getInstructionPreProcessingInfo` — picks up the
+    `AggInterpreter::validateEmbeddedProgram` validator for
+    free.
+  - Added to the `JoinAggInterpreter::validateEmbeddedProgram`
+    explicit whitelist switch.
+  - `PushdownInterpreter` only handles agg-program `kOp*`
+    opcodes; no change.
+- **RonSQL preparer** (`RonSQLPreparer.cpp`):
+  - `generate_embedded_condition`'s col-vs-col linked-side
+    emission swapped from the two-word `READ_LINKED_TO_MEM +
+    READ_*_MEM_TO_REG_CONST(reg, 4)` sequence to the one-word
+    `READ_LINKED_COLUMN_TO_REG(reg, pos, type)` opcode.  The
+    previous emission silently zero-extended signed sub-Bigint
+    linked operands; the new one decodes by type with correct
+    sign extension.
+  - `can_load_integer_reg` accepts every NDB integer width
+    including `Mediumint` / `Mediumunsigned` (rejected with a
+    "deferred to v5" message before).
+  - `info.word_count` for col-vs-col atoms simplifies to
+    `1 + 1 + 1 = 3` (leaf and linked sides each emit one word
+    plus the BRANCH).  `total_atom_words` and CASE-arm skip
+    distances scale with the new size.
+- **Tests**:
+  `mysql-test/suite/ronsql/t/ronsql_cte_greatest_least_v5.test`
+  — seven cases covering TINYINT / SMALLINT / MEDIUMINT / INT /
+  INT UNSIGNED linked-side widths with negative linked values, a
+  pair-op-path regression marker, and an explicit-CASE col-vs-col
+  case that exercises the actual v2a path the migration touched.
+
+**Known follow-up: leaf-side READ_ATTR_INTO_REG zero-extends
+signed sub-Bigint values.**  The v5 MTR test surfaced a pre-existing
+bug in `handleReadAttrIntoReg` (`DbtupExecQuery.cpp:7267`): the
+handler calls `readAttributes` and copies the resulting 32-bit data
+word into the register's Int64 slot via implicit assignment, which
+zero-extends.  For signed sub-Bigint leaf columns with negative
+values this produces the wrong register value.  The v5 fixture
+keeps negative values on the **linked** side only and uses BIGINT
+on the leaf side to avoid the unrelated bug; full leaf-side fix
+(probably a typed `READ_ATTR_TYPED_TO_REG` opcode mirroring v5's
+linked variant) is queued as a separate follow-up phase.
+
+**Sequencing within I.5.**  v5 can land independently of v3 (Float
+/ Decimal / VARCHAR — converges with I.6).  v6 (CTE linked-vs-linked
+runtime tests) shipped already and is unaffected.
 
 ## Problem
 
