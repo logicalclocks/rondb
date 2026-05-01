@@ -257,7 +257,35 @@ class Interpreter {
    */
   static constexpr Uint32 READ_AGG_REG_TO_REG = 43;
 
-  /* 44-46 free, both of them */
+  /*
+   * READ_LINKED_COLUMN_TO_REG: type-aware linked-attr-buffer load
+   * (Phase I.5 v5).  Walks the linked buffer to the requested
+   * position, reads the AttributeHeader, and decodes the value into
+   * a normal interpreter register.  Replaces the two-word
+   * READ_LINKED_TO_MEM + READ_*_MEM_TO_REG_CONST sequence for the
+   * integer family and adds correct sign extension for signed
+   * sub-64-bit widths.
+   *
+   * Encoding: READ_LINKED_COLUMN_TO_REG
+   *           | (RegDest << 6)        // bits  6.. 8 (3 bits)
+   *           | (Position << 16)      // bits 16..23 (8 bits)
+   *           | (NdbColumnType << 24) // bits 24..31 (8 bits)
+   *
+   * Supported NdbColumnType values: Tinyint, Tinyunsigned, Smallint,
+   * Smallunsigned, Mediumint, Mediumunsigned, Int, Unsigned, Bigint,
+   * Bigunsigned.  Any other type code is rejected at runtime with
+   * ZNO_INSTRUCTION_ERROR.
+   *
+   * NULL handling: if the linked-attr buffer is missing, the
+   * position is out of range, or the AttributeHeader marks the
+   * column NULL, the destination register's NULL_INDICATOR slot is
+   * set so the existing BRANCH_REG_EQ_NULL / BRANCH_REG_NE_NULL
+   * branches behave consistently with READ_AGG_REG_TO_REG.
+   */
+  static constexpr Uint32 READ_LINKED_COLUMN_TO_REG = 44;
+  /* Overflow constant 44 free */
+
+  /* 45-46 free, both of them */
   static constexpr Uint32 READ_PARTIAL_ATTR_TO_MEM = 47;
   /* Overflow constant 47 free */
   static constexpr Uint32 READ_ATTR_TO_MEM = 48;
@@ -435,6 +463,15 @@ class Interpreter {
   static Uint32 ReadInterpreterInput(Uint32 RegValue, Uint32 InputIndex);
   static Uint32 WriteInterpreterOutput(Uint32 RegValue, Uint32 OutputIndex);
   static Uint32 ReadAggRegIntoReg(Uint32 AggReg, Uint32 RegDest);
+  // Phase I.5 v5: emit READ_LINKED_COLUMN_TO_REG.  Position is the
+  // linked-attr-buffer position (8-bit); NdbColumnType is the
+  // NDB_TYPE_* code for the source column.  Range-checked to the
+  // integer family (Tinyint .. Bigunsigned) by the kernel handler at
+  // runtime; the encoder accepts any 8-bit type code so the same
+  // helper can be reused if the type set widens later.
+  static Uint32 ReadLinkedColumnIntoReg(Uint32 RegDest,
+                                        Uint32 Position,
+                                        Uint32 NdbColumnType);
   static Uint32 ReadUint8FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
   static Uint32 ReadUint16FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
   static Uint32 ReadUint32FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
@@ -1079,6 +1116,16 @@ Interpreter::ReadAggRegIntoReg(Uint32 AggReg, Uint32 RegDest) {
 }
 
 inline Uint32
+Interpreter::ReadLinkedColumnIntoReg(Uint32 RegDest,
+                                     Uint32 Position,
+                                     Uint32 NdbColumnType) {
+  return ((NdbColumnType & 0xFF) << 24)
+       | ((Position & 0xFF) << 16)
+       | (RegDest << 6)
+       | READ_LINKED_COLUMN_TO_REG;
+}
+
+inline Uint32
 Interpreter::ReadUint8FromMemIntoRegConst(Uint32 Dcoleg, Uint16 Constant) {
   return (Dcoleg << 6) + (Constant << 16) + READ_UINT8_MEM_TO_REG;
 }
@@ -1363,6 +1410,7 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
     case READ_ATTR_TO_MEM:
     case READ_LINKED_TO_MEM:
     case READ_AGG_REG_TO_REG:
+    case READ_LINKED_COLUMN_TO_REG:
 
     case BINARY_SEARCH_64:
     case BINARY_SEARCH_32:

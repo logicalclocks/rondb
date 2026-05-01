@@ -574,6 +574,7 @@ bool JoinAggInterpreter::validateEmbeddedProgram(
       case Interpreter::READ_UINT32_MEM_TO_REG:
       case Interpreter::READ_INT64_MEM_TO_REG:
       case Interpreter::READ_AGG_REG_TO_REG:
+      case Interpreter::READ_LINKED_COLUMN_TO_REG:
       case Interpreter::WRITE_INTERPRETER_OUTPUT:
         break;
       default:

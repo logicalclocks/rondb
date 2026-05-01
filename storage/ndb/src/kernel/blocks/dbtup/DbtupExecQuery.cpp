@@ -7100,6 +7100,115 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
+  /* READ_LINKED_COLUMN_TO_REG (Phase I.5 v5) — type-aware
+   * linked-attr-buffer load.  Walks the linked buffer to the
+   * requested 8-bit position, reads the AttributeHeader, and
+   * decodes the value into a normal interpreter register according
+   * to the supplied 8-bit NDB_TYPE_* code.  Replaces the existing
+   * READ_LINKED_TO_MEM + READ_*_MEM_TO_REG_CONST sequence for the
+   * integer family and adds correct sign extension for signed
+   * sub-64-bit widths.
+   *
+   * Encoding: bits 6..8 dest reg, bits 16..23 position, bits
+   * 24..31 NDB column type.  See Interpreter.hpp.
+   *
+   * Supported types: Tinyint, Tinyunsigned, Smallint,
+   * Smallunsigned, Mediumint, Mediumunsigned, Int, Unsigned,
+   * Bigint, Bigunsigned.  Other type codes return
+   * -ZNO_INSTRUCTION_ERROR. */
+  static inline int handleReadLinkedColumnToReg(InterpreterContext& ctx) {
+    Uint32 position = (ctx.theInstruction >> 16) & 0xFF;
+    Uint32 type     = (ctx.theInstruction >> 24) & 0xFF;
+
+    /* Walk the linked-attr buffer to the requested position.  Same
+     * loop shape as handleReadLinkedToMem (per-entry layout is
+     * tableId, schemaVersion, AttrHeader, data). */
+    const Uint32* linked = ctx.req_struct->m_linked_attr_data;
+    Uint32 linked_len = ctx.req_struct->m_linked_attr_len;
+    if (unlikely(linked == nullptr)) {
+      ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
+      return INTERP_CONTINUE;
+    }
+    const Uint32* p = linked;
+    const Uint32* p_end = linked + linked_len;
+    Uint32 pos_count = 0;
+    while (p < p_end) {
+      if (pos_count == position) break;
+      p += 2;  /* skip tableId, schemaVersion */
+      p += 1 + AttributeHeader::getDataSize(*p);
+      pos_count++;
+    }
+    if (unlikely(p >= p_end)) {
+      ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
+      return INTERP_CONTINUE;
+    }
+
+    /* Skip tableId and schemaVersion. */
+    p += 2;
+
+    /* Inspect the AttributeHeader. */
+    AttributeHeader ah(*p);
+    if (ah.isNULL()) {
+      ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
+      return INTERP_CONTINUE;
+    }
+
+    /* Decode the value.  Data starts immediately after the
+     * AttrHeader word, so &p[1] is the first data byte boundary
+     * (aligned to a Uint32 word). */
+    const char* data = reinterpret_cast<const char*>(p + 1);
+    Int64 sval = 0;
+    Uint64 uval = 0;
+    bool is_unsigned = false;
+    switch (type) {
+      case NDB_TYPE_TINYINT:
+        sval = *reinterpret_cast<const Int8*>(data);
+        break;
+      case NDB_TYPE_TINYUNSIGNED:
+        uval = *reinterpret_cast<const Uint8*>(data);
+        is_unsigned = true;
+        break;
+      case NDB_TYPE_SMALLINT:
+        sval = sint2korr(data);
+        break;
+      case NDB_TYPE_SMALLUNSIGNED:
+        uval = uint2korr(data);
+        is_unsigned = true;
+        break;
+      case NDB_TYPE_MEDIUMINT:
+        sval = sint3korr(data);
+        break;
+      case NDB_TYPE_MEDIUMUNSIGNED:
+        uval = uint3korr(data);
+        is_unsigned = true;
+        break;
+      case NDB_TYPE_INT:
+        sval = sint4korr(data);
+        break;
+      case NDB_TYPE_UNSIGNED:
+        uval = uint4korr(data);
+        is_unsigned = true;
+        break;
+      case NDB_TYPE_BIGINT:
+        memcpy(&sval, data, 8);
+        break;
+      case NDB_TYPE_BIGUNSIGNED:
+        memcpy(&uval, data, 8);
+        is_unsigned = true;
+        break;
+      default:
+        return -ZNO_INSTRUCTION_ERROR;
+    }
+
+    ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
+    if (is_unsigned) {
+      *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = uval;
+    } else {
+      *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = sval;
+    }
+    return INTERP_CONTINUE;
+  }
+
   /* CONVERT_SIZE — decode 2-byte little-endian length into destination register */
   static inline int handleConvertSize(InterpreterContext& ctx) {
     Uint32 offsetType = ctx.TregMemBuffer[ctx.theRegister];
@@ -8920,7 +9029,7 @@ s_cte_filter_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  41  BRANCH_LINKED_EQ_NULL   */ &Dbtup::InterpreterContext::handleBranchLinkedEqNull,
   /*  42  BRANCH_LINKED_NE_NULL   */ &Dbtup::InterpreterContext::handleBranchLinkedNeNull,
   /*  43  READ_AGG_REG_TO_REG     */ nullptr,
-  /*  44  (unused)                */ nullptr,
+  /*  44  READ_LINKED_COLUMN_TO_REG */ &Dbtup::InterpreterContext::handleReadLinkedColumnToReg,
   /*  45  (unused)                */ nullptr,
   /*  46  (unused)                */ nullptr,
   /*  47  READ_PARTIAL_ATTR_TO_MEM*/ nullptr,
@@ -9076,7 +9185,7 @@ s_agg_interp_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  41  BRANCH_LINKED_EQ_NULL   */ nullptr,
   /*  42  BRANCH_LINKED_NE_NULL   */ nullptr,
   /*  43  READ_AGG_REG_TO_REG     */ &Dbtup::InterpreterContext::handleReadAggRegToReg,
-  /*  44  (unused)                */ nullptr,
+  /*  44  READ_LINKED_COLUMN_TO_REG */ &Dbtup::InterpreterContext::handleReadLinkedColumnToReg,
   /*  45  (unused)                */ nullptr,
   /*  46  (unused)                */ nullptr,
   /*  47  READ_PARTIAL_ATTR_TO_MEM*/ nullptr,
@@ -9336,6 +9445,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
           break;
         case Interpreter::READ_AGG_REG_TO_REG:
           INTERP_DISPATCH(handleReadAggRegToReg);
+          break;
+        case Interpreter::READ_LINKED_COLUMN_TO_REG:
+          INTERP_DISPATCH(handleReadLinkedColumnToReg);
           break;
 
         case Interpreter::READ_INTERPRETER_INPUT:
