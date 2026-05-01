@@ -188,6 +188,9 @@ commit_complex_delete_callback(int result,
     }
   } else {
     key_store->m_key_state = KeyState::CompletedSuccess;
+    if (key_store->m_del_logically_absent) {
+      get_ctrl->m_num_read_errors++;
+    }
     assert(get_ctrl->m_num_keys_multi_rows > 0);
     get_ctrl->m_num_keys_multi_rows--;
   }
@@ -234,6 +237,8 @@ complex_delete_callback(int result, NdbTransaction *trans, void *aObject) {
     }
     key_store->m_close_flag = true;
   } else {
+    key_store->m_del_logically_absent =
+      key_row_is_expired(&key_store->m_key_row);
     Uint32 num_rows = key_store->m_key_row.num_rows;
     Uint64 rondb_key = key_store->m_key_row.rondb_key;
     if (num_rows == 0) {
@@ -259,9 +264,10 @@ int prepare_complex_delete_row(std::string *response,
                                struct KeyStorage *key_storage) {
   struct key_table *key_row = &key_storage->m_key_row;
   /* Set primary key row already done */
+  key_row->null_bits = 0x2; // mark expiry_date NULL by default
 
-  /* Read rondb_key, tot_value_len, num_rows */
-  const Uint32 mask = 0x34;
+  /* Read rondb_key, tot_value_len, num_rows, expiry_date. */
+  const Uint32 mask = 0xB4;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
   Uint32 database_id = key_storage->m_get_ctrl->m_database_id;
 
@@ -609,7 +615,8 @@ int add_hset_string_claim_op(NdbTransaction *trans,
                              Uint32 database_id,
                              std::string *response,
                              NdbRecAttr **out_old_id_attr,
-                             NdbRecAttr **out_old_field_count_attr) {
+                             NdbRecAttr **out_old_field_count_attr,
+                             NdbRecAttr **out_old_expiry_attr) {
   struct hset_key_table key_row;
   // null_bits layout (per init_hset_key_records):
   //   bit 0 -> redis_key_id IS NULL
@@ -642,10 +649,9 @@ int add_hset_string_claim_op(NdbTransaction *trans,
   key_row.redis_key_id = 0;   // ignored (NULL via null_bits bit 0)
   key_row.field_count = 0;
 
-  // 32 words matches add_hset_lock_claim_op; the string-claim
-  // interpreter's UPDATE branch + INSERT branch + two exit edges
-  // overflow a 16-word buffer (NDB 4518: too many instructions).
-  Uint32 code_buffer[32];
+  // The string-claim interpreter has separate string/hash update
+  // branches and now publishes the old expiry value for SET NX/XX.
+  Uint32 code_buffer[64];
   NdbInterpretedCode code(tab_hset,
                           &code_buffer[0],
                           sizeof(code_buffer) / sizeof(code_buffer[0]));
@@ -661,20 +667,24 @@ int add_hset_string_claim_op(NdbTransaction *trans,
     NdbOperation::OperationOptions::OO_INTERPRETED_INSERT;
   opts.interpretedCode = &code;
 
-  // Phase 1.10c.7b: register OUTPUT_INDEX_0 (old_redis_key_id) and
-  // OUTPUT_INDEX_1 (old_field_count). Same OperationOptions shape
+  // Phase 1.10c.7b/8: register OUTPUT_INDEX_0 (old_redis_key_id),
+  // OUTPUT_INDEX_1 (old_field_count), and OUTPUT_INDEX_2
+  // (old_expiry_date or no-expiry sentinel). Same OperationOptions shape
   // as add_hset_lock_claim_op (interpreted writeTuple seems to
   // need a registered final-value get when it participates in a
   // multi-op trans, otherwise NDB never delivers the callback).
-  NdbOperation::GetValueSpec getvals[2];
+  NdbOperation::GetValueSpec getvals[3];
   getvals[0].appStorage = nullptr;
   getvals[0].recAttr = nullptr;
   getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
   getvals[1].appStorage = nullptr;
   getvals[1].recAttr = nullptr;
   getvals[1].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_1;
+  getvals[2].appStorage = nullptr;
+  getvals[2].recAttr = nullptr;
+  getvals[2].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_2;
   opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
-  opts.numExtraGetFinalValues = 2;
+  opts.numExtraGetFinalValues = 3;
   opts.extraGetFinalValues = getvals;
 
   // mask=0xF -> write all 4 columns from the row buffer. KEEPTTL
@@ -703,6 +713,9 @@ int add_hset_string_claim_op(NdbTransaction *trans,
   }
   if (out_old_field_count_attr != nullptr) {
     *out_old_field_count_attr = getvals[1].recAttr;
+  }
+  if (out_old_expiry_attr != nullptr) {
+    *out_old_expiry_attr = getvals[2].recAttr;
   }
   return 0;
 }
@@ -1587,18 +1600,20 @@ hdel_phase1_callback(int result, NdbTransaction *trans, void *aObject) {
       get_ctrl->m_error_code = op_code;
     }
   } else {
-    // Phase 1.10c.1: redis_key_id IS NULL on string rows; map NULL
-    // back to 0 (the existing "string row" sentinel for downstream
-    // checks). null_bits bit 0 is redis_key_id (see hset_key_table
-    // layout in include/table_definitions.h).
+    // redis_key_id IS NULL means the name is owned by a string.
+    // HDEL is a hash command, so Redis returns WRONGTYPE rather
+    // than treating the hash as missing.
     if ((get_ctrl->m_hset_lock_read_buf.null_bits & 0x1) != 0) {
-      get_ctrl->m_hset_redis_key_id = 0;
+      get_ctrl->m_num_keys_failed++;
+      if (get_ctrl->m_error_code == 0) {
+        get_ctrl->m_error_code = RONDB_WRONGTYPE;
+      }
     } else {
       get_ctrl->m_hset_redis_key_id =
         get_ctrl->m_hset_lock_read_buf.redis_key_id;
+      get_ctrl->m_hset_field_count_pre =
+        get_ctrl->m_hset_lock_read_buf.field_count;
     }
-    get_ctrl->m_hset_field_count_pre =
-      get_ctrl->m_hset_lock_read_buf.field_count;
   }
   assert(get_ctrl->m_num_keys_outstanding > 0);
   get_ctrl->m_num_keys_outstanding--;
@@ -2365,16 +2380,17 @@ void incr_decr_key_row(std::string *response,
    * We have 7 columns, we will update tot_value_len in interpreter, same with
    * value_start.
    *
-   * The rest, redis_key, rondb_key, value_data_type, num_rows and expiry_date
-   * are updated through final update.
+   * The rest, redis_key, rondb_key, value_data_type and num_rows are updated
+   * through final update. expiry_date is intentionally skipped: Redis counter
+   * writes preserve TTL on existing keys, and inserted keys get the schema
+   * default (NULL/no TTL).
    */
-  const Uint32 mask = 0xAB;
+  const Uint32 mask = 0x2B;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
   // redis_key already set as this is the Primary key
   key_row->null_bits = 1; // Set rondb_key to NULL, first NULL column
   key_row->num_rows = 0;
   key_row->value_data_type = 0;
-  key_row->expiry_date = -1;
 
   Uint32 code_buffer[128];
   NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer) / sizeof(code_buffer[0]));

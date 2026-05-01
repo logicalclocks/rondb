@@ -41,6 +41,12 @@ str_past_rows
 1
 0
 #
+# EXPIREAT in the past on a hash also deletes it immediately.
+#
+1
+1
+none
+#
 # End-to-end: EXPIREAT then TTL on the same key falls in
 # window. Same probe / encode round-trip as EXPIRE.
 #

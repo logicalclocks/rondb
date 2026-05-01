@@ -31,6 +31,12 @@ hash_a_in_window=1
 1
 0
 #
+# EXPIRE 0 on a hash also deletes it immediately.
+#
+1
+1
+none
+#
 # End-to-end: EXPIRE then TTL on the same key falls in window.
 #
 OK

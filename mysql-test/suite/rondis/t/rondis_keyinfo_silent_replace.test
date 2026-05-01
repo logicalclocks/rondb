@@ -81,24 +81,35 @@ SELECT redis_key, redis_key_id FROM redis_0.hset_keys
  WHERE redis_key IN ('m_hash1', 'm_hash2', 'm_new') ORDER BY redis_key;
 
 --echo #
---echo # 6. Hash writes on string keys return WRONGTYPE and leave the
---echo # string intact.
+--echo # 6. Hash commands on string keys return WRONGTYPE and leave
+--echo # the string intact.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_for_hash string-value
 --error 0,1
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET str_for_hash f v 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET str_for_hash f 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL str_for_hash f 2>&1
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET str_for_hash
 SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'str_for_hash';
 
 --echo #
---echo # 7. INCR and SETRANGE on hashes return WRONGTYPE and leave
---echo # the hash intact.
+--echo # 7. String commands other than SET on hashes return WRONGTYPE
+--echo # and leave the hash intact.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET mut_hash f v
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET mut_hash 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN mut_hash 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE mut_hash 0 -1 2>&1
 --error 0,1
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT INCR mut_hash 2>&1
 --error 0,1
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE mut_hash 0 string 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET mut_hash f
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE mut_hash
 SELECT COUNT(*) AS mut_hash_rows
   FROM redis_0.string_keys

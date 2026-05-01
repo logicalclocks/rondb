@@ -16,10 +16,9 @@
 #   2. After DEL of a hash, a same-process HGET that previously would
 #      have been a cache hit now reads through to hset_keys and
 #      returns nil - no orphan field-row leak via stale cache.
-#   3. An empty hash (HDEL of last field; the hset_keys row persists
-#      with field_count = 0 by design) is invisible to read-side
-#      commands - HGET nil; HINCRBY reuses the row and makes the
-#      hash visible again.
+#   3. HDEL of the last field drops the hset_keys row. Read paths
+#      see a missing hash; HINCRBY recreates it and makes the hash
+#      visible again.
 #
 
 --echo #

@@ -12,8 +12,9 @@ call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
 #
 # String reads must hide rows where expiry_date < now (NDB lazy
 # GC may leave them physically present until the periodic
-# expire-scan reaps them). Forced via EXPIREAT key 1 - past
-# absolute timestamp, deterministic without sleep.
+# expire-scan reaps them). Forced by SQL-updating expiry_date to a
+# past absolute timestamp; Redis EXPIREAT in the past deletes
+# immediately and cannot manufacture this internal state.
 #
 # Reply when expired:
 #   GET      -> $-1\r\n   (nil)
@@ -23,11 +24,15 @@ call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
 #
 
 --echo #
---echo # Set up: an expired string and an alive one.
+--echo # Set up: an expired-but-present string and an alive one.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_x "value-x"
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_alive "value-alive"
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT str_x 1
+--disable_query_log
+UPDATE redis_0.string_keys
+   SET expiry_date = FROM_UNIXTIME(1)
+ WHERE redis_key = 'str_x' AND redis_key_id = 0;
+--enable_query_log
 
 --echo #
 --echo # GET on the expired key returns nil; alive key returns its value.
@@ -52,13 +57,6 @@ call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE str_x 0 -1
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE str_alive 0 -1
-
---echo #
---echo # The expired row is still physically present (Phase 1.10
---echo # only filters on read - it does not initiate cleanup).
---echo #
---let $r = `SELECT redis_key FROM redis_0.string_keys WHERE redis_key = 'str_x' AND redis_key_id = 0`
---echo physical_row=$r
 
 --disable_query_log
 DROP DATABASE IF EXISTS redis_0;

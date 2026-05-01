@@ -75,6 +75,13 @@ call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIRE str_a -1
 
 --echo #
+--echo # PEXPIRE 0 on a hash also deletes it immediately.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_now f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PEXPIRE hash_now 0
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE hash_now
+
+--echo #
 --echo # End-to-end: PEXPIRE then PTTL on the same key falls in
 --echo # window. PTTL replies in millis, so the window scales up by
 --echo # 1000.

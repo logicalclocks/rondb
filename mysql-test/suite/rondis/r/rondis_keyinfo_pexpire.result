@@ -40,6 +40,12 @@ str_round_within_1s=1
 1
 0
 #
+# PEXPIRE 0 on a hash also deletes it immediately.
+#
+1
+1
+none
+#
 # End-to-end: PEXPIRE then PTTL on the same key falls in
 # window. PTTL replies in millis, so the window scales up by
 # 1000.

@@ -70,10 +70,14 @@ m_hash1	NULL
 m_hash2	NULL
 m_new	NULL
 #
-# 6. Hash writes on string keys return WRONGTYPE and leave the
-# string intact.
+# 6. Hash commands on string keys return WRONGTYPE and leave
+# the string intact.
 #
 OK
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+WRONGTYPE Operation against a key holding the wrong kind of value
+
 WRONGTYPE Operation against a key holding the wrong kind of value
 
 string-value
@@ -81,14 +85,21 @@ SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'str_for_hash';
 redis_key_id
 NULL
 #
-# 7. INCR and SETRANGE on hashes return WRONGTYPE and leave
-# the hash intact.
+# 7. String commands other than SET on hashes return WRONGTYPE
+# and leave the hash intact.
 #
 1
 WRONGTYPE Operation against a key holding the wrong kind of value
 
 WRONGTYPE Operation against a key holding the wrong kind of value
 
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+v
 hash
 SELECT COUNT(*) AS mut_hash_rows
 FROM redis_0.string_keys

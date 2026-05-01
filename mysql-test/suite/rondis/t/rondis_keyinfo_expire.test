@@ -59,6 +59,13 @@ call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE str_a -1
 
 --echo #
+--echo # EXPIRE 0 on a hash also deletes it immediately.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_now f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE hash_now 0
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE hash_now
+
+--echo #
 --echo # End-to-end: EXPIRE then TTL on the same key falls in window.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttl_round "value"

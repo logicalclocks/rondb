@@ -1,9 +1,8 @@
 #
-# Set up: an expired string and an alive one.
+# Set up: an expired-but-present string and an alive one.
 #
 OK
 OK
-1
 #
 # GET on the expired key returns nil; alive key returns its value.
 #
@@ -26,8 +25,3 @@ value-alive
 #
 
 value-alive
-#
-# The expired row is still physically present (Phase 1.10
-# only filters on read - it does not initiate cleanup).
-#
-physical_row=

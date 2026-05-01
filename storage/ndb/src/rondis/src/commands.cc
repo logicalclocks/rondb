@@ -429,6 +429,8 @@ static int send_next_delete_batch(std::string *response,
       key_storage[inx].m_key_state = KeyState::MultiRowRWAll;
       key_storage[inx].m_num_current_rw_rows = 0;
       get_ctrl->m_num_keys_outstanding++;
+      assert(current_finished > 0);
+      current_finished--;
       DEB_DEL_CMD(("Commit with no value rows\n"));
     } else if (key_storage[inx].m_key_state == KeyState::MultiRowRWValue) {
       assert(key_storage[inx].m_num_rows > key_storage[inx].m_num_rw_rows);
@@ -667,6 +669,8 @@ void rondb_del(Ndb *ndb,
     key_storage[i].m_rondb_key = 0;
     key_storage[i].m_rec_attr_prev_num_rows = nullptr;
     key_storage[i].m_rec_attr_rondb_key = nullptr;
+    key_storage[i].m_rec_attr_expiry_date = nullptr;
+    key_storage[i].m_del_logically_absent = false;
     key_storage[i].m_key_state = KeyState::NotCompleted;
   }
   if (!setup_metadata(ndb,
@@ -694,41 +698,16 @@ void rondb_del(Ndb *ndb,
   do {
     Uint32 loop_count = std::min(num_keys - current_index,
                                  (Uint32)MAX_PARALLEL_KEY_OPS);
-    // Per-batch counter: del_simple_rows increments this for keys in
-    // [current_index, current_index + loop_count). Leaving a previous
-    // batch's count in place makes del_complex_rows assert when a later
-    // batch has fewer multi-row keys.
+    // Per-batch counter. For string-key DEL every key enters the
+    // complex path directly so the key row, hset namespace row, and
+    // any extension rows are handled in one transaction per key.
     get_ctrl->m_num_keys_multi_rows = 0;
-    int ret_code = del_simple_rows(ndb,
-                                   tab,
-                                   response,
-                                   redis_key_id,
-                                   key_storage,
-                                   get_ctrl,
-                                   loop_count,
-                                   current_index);
-    if (ret_code != 0) {
-      release_del(get_ctrl);
-      return;
-    }
-    DEB_DEL_CMD(("%u keys, %u multi rows, %u completed\n",
-                 num_keys,
-                 get_ctrl->m_num_keys_multi_rows,
-                 get_ctrl->m_num_keys_completed_first_pass));
-    /**
-     * We have finished the initial round of simple GETs. Now time
-     * to handle those that require multi-row GETs. Since we used
-     * an optimistic approach we need to start this from scratch
-     * again for these new GETs.
-     */
-    close_finished_transactions(key_storage,
-                                get_ctrl,
-                                loop_count,
-                                current_index);
-    assert(get_ctrl->m_num_transactions == 0);
-    assert(get_ctrl->m_num_keys_outstanding == 0);
-    if (get_ctrl->m_num_keys_multi_rows > 0 &&
-        get_ctrl->m_num_keys_failed == 0) {
+    if (redis_key_id == STRING_REDIS_KEY_ID) {
+      for (Uint32 i = 0; i < loop_count; i++) {
+        Uint32 inx = current_index + i;
+        key_storage[inx].m_key_state = KeyState::MultiRow;
+      }
+      get_ctrl->m_num_keys_multi_rows = loop_count;
       int ret_code = del_complex_rows(ndb,
                                       tab,
                                       response,
@@ -740,6 +719,44 @@ void rondb_del(Ndb *ndb,
       if (ret_code != 0) {
         release_del(get_ctrl);
         return;
+      }
+    } else {
+      int ret_code = del_simple_rows(ndb,
+                                     tab,
+                                     response,
+                                     redis_key_id,
+                                     key_storage,
+                                     get_ctrl,
+                                     loop_count,
+                                     current_index);
+      if (ret_code != 0) {
+        release_del(get_ctrl);
+        return;
+      }
+      DEB_DEL_CMD(("%u keys, %u multi rows, %u completed\n",
+                   num_keys,
+                   get_ctrl->m_num_keys_multi_rows,
+                   get_ctrl->m_num_keys_completed_first_pass));
+      close_finished_transactions(key_storage,
+                                  get_ctrl,
+                                  loop_count,
+                                  current_index);
+      assert(get_ctrl->m_num_transactions == 0);
+      assert(get_ctrl->m_num_keys_outstanding == 0);
+      if (get_ctrl->m_num_keys_multi_rows > 0 &&
+          get_ctrl->m_num_keys_failed == 0) {
+        ret_code = del_complex_rows(ndb,
+                                    tab,
+                                    response,
+                                    redis_key_id,
+                                    key_storage,
+                                    get_ctrl,
+                                    loop_count,
+                                    current_index);
+        if (ret_code != 0) {
+          release_del(get_ctrl);
+          return;
+        }
       }
     }
     current_index += loop_count;
@@ -783,10 +800,14 @@ void rondb_del(Ndb *ndb,
         continue;
       }
       Uint32 db_id = get_ctrl->m_database_id;
+      const Uint32 mask = 0xE;
+      const unsigned char *mask_ptr = (const unsigned char *)&mask;
       const NdbOperation *del_op = htrans->deleteTuple(
         pk_hset_key_record[db_id],
         (const char *)&hset_pk_buf,
-        entire_hset_key_record[db_id]);
+        entire_hset_key_record[db_id],
+        (char *)&hset_pk_buf,
+        mask_ptr);
       if (del_op == nullptr) {
         ndb->closeTransaction(htrans);
         continue;
@@ -797,10 +818,21 @@ void rondb_del(Ndb *ndb,
       ndb->closeTransaction(htrans);
       if (exec_rc == 0 && err == 0) {
         // Key was a hash; the registry row is now gone. Reclassify
-        // so the reply count includes it as deleted.
+        // so the reply count includes it as deleted, unless the hash
+        // was already logically expired.
         key_storage[i].m_key_state = KeyState::CompletedSuccess;
-        assert(get_ctrl->m_num_read_errors > 0);
-        get_ctrl->m_num_read_errors--;
+        bool expiry_is_null = (hset_pk_buf.null_bits & 0x2) != 0;
+        Int32 expiry_seconds =
+          mi_sint4korr((const unsigned char*)&hset_pk_buf.expiry_date);
+        Int64 now_seconds = (Int64)my_micro_time() / 1000000;
+        bool expired =
+          !expiry_is_null &&
+          expiry_seconds != g_max_expire_at &&
+          expiry_seconds <= now_seconds;
+        if (!expired) {
+          assert(get_ctrl->m_num_read_errors > 0);
+          get_ctrl->m_num_read_errors--;
+        }
       }
       // Otherwise: 626 means truly missing - leave m_num_read_errors
       // alone. Other errors are also treated as "still missing"
@@ -1187,6 +1219,45 @@ void rondb_type_command(Ndb *ndb,
   }
 }
 
+static int check_string_key_is_not_hash(Ndb *ndb,
+                                        const char *key_str,
+                                        Uint32 key_len,
+                                        std::string *response,
+                                        int worker_id) {
+  struct exists_probe probe;
+  probe.m_key_str = key_str;
+  probe.m_key_len = key_len;
+  probe.m_present = false;
+  probe.m_match_kind = EXISTS_MATCH_NONE;
+  probe.m_trans = nullptr;
+
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  if (dict == nullptr) {
+    assign_ndb_err_to_response(response, FAILED_GET_DICT, ndb->getNdbError());
+    return -1;
+  }
+  const NdbDictionary::Table *string_tab = dict->getTable(KEY_TABLE_NAME);
+  const NdbDictionary::Table *hset_tab = dict->getTable(HSET_KEY_TABLE_NAME);
+  if (string_tab == nullptr || hset_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TABLE_OBJECT,
+                               dict->getNdbError());
+    return -1;
+  }
+  (void)hset_tab;
+  Uint32 database_id = get_current_database(worker_id);
+  if (run_exists_probes(ndb, &probe, 1,
+                        database_id, string_tab, response) != 0) {
+    return -1;
+  }
+  filter_expired_probe(&probe);
+  if (probe.m_match_kind == EXISTS_MATCH_HASH) {
+    assign_class_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+    return 1;
+  }
+  return 0;
+}
+
 // Phase 1.3 / 1.4: TTL / PTTL key. Reply:
 //   :-2\r\n  - key missing OR row expired (expiry_date < now)
 //   :-1\r\n  - key has no TTL (expiry_date IS NULL or
@@ -1312,7 +1383,9 @@ static void rondb_expire_or_pexpire(Ndb *ndb,
   // clamp-at-g_max_expire_at semantics, but with explicit input
   // dispatch so EXAT / PXAT bypass the now+ttl math.
   Int64 abs_seconds;
-  Int64 now_seconds = (Int64)my_micro_time() / 1000000;
+  Int64 now_usec = (Int64)my_micro_time();
+  Int64 now_seconds = now_usec / 1000000;
+  bool expire_now = false;
   switch (mode) {
     case EXPIRE_EX:
       abs_seconds = now_seconds + raw;
@@ -1324,6 +1397,7 @@ static void rondb_expire_or_pexpire(Ndb *ndb,
       abs_seconds = raw;
       break;
     case EXPIRE_PXAT:
+      expire_now = raw <= (now_usec / 1000);
       abs_seconds = (raw + 999) / 1000;
       break;
   }
@@ -1367,7 +1441,7 @@ static void rondb_expire_or_pexpire(Ndb *ndb,
     response->append(":0\r\n");
     return;
   }
-  if (abs_seconds <= now_seconds) {
+  if (expire_now || abs_seconds <= now_seconds) {
     pink::RedisCmdArgsType del_argv;
     del_argv.push_back("DEL");
     del_argv.push_back(argv[1]);
@@ -1660,6 +1734,11 @@ void rondb_hdel_command(Ndb *ndb,
     return;
   }
   if (get_ctrl->m_num_keys_failed > 0) {
+    if (get_ctrl->m_error_code == RONDB_WRONGTYPE) {
+      assign_class_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+      release_del(get_ctrl);
+      return;
+    }
     assign_err_to_response(response,
                            FAILED_EXECUTE_DEL,
                            get_ctrl->m_error_code);
@@ -1787,6 +1866,31 @@ static int send_next_write_batch(std::string *response,
   return 0;
 }
 
+static bool hset_string_claim_old_value_expired(
+    const struct KeyStorage *key_store) {
+  NdbRecAttr *expiry_attr = key_store->m_rec_attr_string_claim_old_expiry;
+  if (expiry_attr == nullptr) {
+    return false;
+  }
+  Uint32 raw_expiry = (Uint32)expiry_attr->u_64_value();
+  if ((Int32)raw_expiry == g_max_expire_at) {
+    return false;
+  }
+  Int32 expiry_seconds =
+    mi_sint4korr((const unsigned char*)&raw_expiry);
+  if (expiry_seconds == g_max_expire_at) {
+    return false;
+  }
+  Int64 now_seconds = (Int64)my_micro_time() / 1000000;
+  return expiry_seconds <= now_seconds;
+}
+
+static bool get_phase_found_string_value(enum KeyState state) {
+  return state == KeyState::CompletedSuccess ||
+         state == KeyState::CompletedMultiRowSuccess ||
+         state == KeyState::CompletedMultiRow;
+}
+
 // Unified HSET / MSET / SET write pipeline. All keys go through:
 //   Phase A - submit NoCommit on string_keys via the complex
 //             interpreter (write_key_row_no_commit).
@@ -1881,6 +1985,7 @@ static int set_rows(Ndb *ndb,
     // a silent-replace scan-with-delete on that key's trans
     // before the regular Phase C/D dispatch.
     key_storage[inx].m_rec_attr_string_claim_old_id = nullptr;
+    key_storage[inx].m_rec_attr_string_claim_old_expiry = nullptr;
     if (redis_key_id == STRING_REDIS_KEY_ID) {
       // Phase 1.10c.4: mirror SET's expiry_date onto the hset_keys
       // row so EXISTS / TYPE can single-probe and still honor TTL
@@ -1897,7 +2002,8 @@ static int set_rows(Ndb *ndb,
         get_ctrl->m_database_id,
         response,
         &key_storage[inx].m_rec_attr_string_claim_old_id,
-        nullptr);
+        nullptr,
+        &key_storage[inx].m_rec_attr_string_claim_old_expiry);
       if (ret_code != 0) {
         return 1;
       }
@@ -1936,6 +2042,9 @@ static int set_rows(Ndb *ndb,
         key_storage[inx].m_rec_attr_string_claim_old_id;
       if (old_id_attr == nullptr) continue;
       if (old_id_attr->u_64_value() == STRING_REDIS_KEY_ID) continue;
+      if (hset_string_claim_old_value_expired(&key_storage[inx])) {
+        continue;
+      }
       key_storage[inx].m_key_state = KeyState::CompletedFailed;
       key_storage[inx].m_close_flag = true;
       get_ctrl->m_num_keys_failed++;
@@ -1973,6 +2082,13 @@ static int set_rows(Ndb *ndb,
       }
       bool key_existed = !inserted_string ||
                          old_hset_id != STRING_REDIS_KEY_ID;
+      if (get_ctrl->m_get_cmd_part &&
+          get_phase_found_string_value(key_storage[inx].m_get_key_state)) {
+        key_existed = true;
+      }
+      if (hset_string_claim_old_value_expired(&key_storage[inx])) {
+        key_existed = false;
+      }
       bool condition_failed =
         (requested_set_type == IsInsert && key_existed) ||
         (requested_set_type == IsUpdate && !key_existed);
@@ -2582,96 +2698,96 @@ void rondb_mset(Ndb *ndb,
   enum SetType set_type = IsWrite;
   bool set_ttl = false;
   bool get_cmd_part = false;
-  const char *empty_str = "";
   size_t arg_size = argv.size();
   Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
   if (set_command &&
       redis_key_id == STRING_REDIS_KEY_ID &&
       arg_size > 3) {
     Uint32 arg_index = 3;
-    const char *arg = argv[arg_index].c_str();
-    if (strcasecmp(arg, "nx") == 0) {
-      set_type = IsInsert;
-      arg_index++;
-      arg = empty_str;
-    } else if (strcasecmp(arg, "xx") == 0) {
-      set_type = IsUpdate;
-      arg_index++;
-      arg = empty_str;
-    }
-    if (arg == empty_str && arg_index < arg_size) {
-      arg = argv[arg_index].c_str();
-    }
-    if (strcasecmp(arg, "get") == 0) {
-      arg_index++;
-      arg = empty_str;
-      get_cmd_part = true;
-    }
-    if (arg == empty_str && arg_index < (arg_size + 1)) {
-      arg = argv[arg_index].c_str();
-    }
-    if (strcasecmp(arg, "ex") == 0 && argv.size() > (arg_index + 1)) {
-      set_ttl = true;
-      std::string opt_val = argv[arg_index + 1];
-      if (get_int64(opt_val, response, &ttl) == false) return;
-      if (ttl <= 0) {
-        // Redis-canonical for EX <= 0 (C12). Also avoids collision
-        // with generate_expire_at's ttl==-1 "never expires" sentinel.
-        assign_generic_err_to_response(response, REDIS_INVALID_EXPIRE_TIME);
+    while (arg_index < arg_size) {
+      const char *arg = argv[arg_index].c_str();
+      if (strcasecmp(arg, "nx") == 0) {
+        if (set_type != IsWrite) {
+          assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
+          return;
+        }
+        set_type = IsInsert;
+        arg_index++;
+      } else if (strcasecmp(arg, "xx") == 0) {
+        if (set_type != IsWrite) {
+          assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
+          return;
+        }
+        set_type = IsUpdate;
+        arg_index++;
+      } else if (strcasecmp(arg, "get") == 0) {
+        if (get_cmd_part) {
+          assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
+          return;
+        }
+        get_cmd_part = true;
+        arg_index++;
+      } else if (strcasecmp(arg, "keepttl") == 0) {
+        if (keep_ttl || set_ttl) {
+          assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
+          return;
+        }
+        keep_ttl = true;
+        arg_index++;
+        DEB_TTL(("keep_ttl set\n"));
+      } else if (strcasecmp(arg, "ex") == 0 ||
+                 strcasecmp(arg, "px") == 0 ||
+                 strcasecmp(arg, "exat") == 0 ||
+                 strcasecmp(arg, "pxat") == 0) {
+        if (set_ttl || keep_ttl || argv.size() <= (arg_index + 1)) {
+          assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
+          return;
+        }
+        set_ttl = true;
+        std::string opt_val = argv[arg_index + 1];
+        if (strcasecmp(arg, "ex") == 0) {
+          if (get_int64(opt_val, response, &ttl) == false) return;
+          if (ttl <= 0) {
+            assign_generic_err_to_response(response, REDIS_INVALID_EXPIRE_TIME);
+            return;
+          }
+          DEB_TTL(("ex: ttl: %lld\n", ttl));
+        } else if (strcasecmp(arg, "px") == 0) {
+          if (get_int64(opt_val, response, &ttl) == false) return;
+          if (ttl <= 0) {
+            assign_generic_err_to_response(response, REDIS_INVALID_EXPIRE_TIME);
+            return;
+          }
+          ttl = (ttl + 999) / 1000;
+          DEB_TTL(("px: ttl: %lld\n", ttl));
+        } else if (strcasecmp(arg, "exat") == 0) {
+          Int64 now = get_current_unix_time();
+          if (get_int64(opt_val, response, &ttl) == false) return;
+          if (now >= ttl) {
+            ttl = 0;
+          } else {
+            ttl -= now;
+          }
+          DEB_TTL(("exat: ttl: %lld\n", ttl));
+        } else {
+          Int64 now_usec = (Int64)my_micro_time();
+          Int64 now = now_usec / 1000000;
+          Int64 now_ms = now_usec / 1000;
+          Int64 raw_ms = 0;
+          if (get_int64(opt_val, response, &raw_ms) == false) return;
+          ttl = (raw_ms + Int64(999)) / Int64(1000);
+          if (raw_ms <= now_ms || now >= ttl) {
+            ttl = 0;
+          } else {
+            ttl -= now;
+          }
+          DEB_TTL(("pxat: ttl: %lld\n", ttl));
+        }
+        arg_index += 2;
+      } else {
+        assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
         return;
       }
-      arg_index += 2;
-      DEB_TTL(("ex: ttl: %lld\n", ttl));
-    } else if (strcasecmp(arg, "px") == 0 && argv.size() > (arg_index + 1)) {
-      set_ttl = true;
-      std::string opt_val = argv[arg_index + 1];
-      if (get_int64(opt_val, response, &ttl) == false) return;
-      if (ttl <= 0) {
-        // Reject before the ceil-division below (PX 0 / PX -1 would
-        // otherwise survive conversion or collide with the sentinel).
-        assign_generic_err_to_response(response, REDIS_INVALID_EXPIRE_TIME);
-        return;
-      }
-      //Convert to seconds
-      ttl = (ttl + 999) / 1000;
-      arg_index += 2;
-      DEB_TTL(("px: ttl: %lld\n", ttl));
-    } else if (strcasecmp(arg, "exat") == 0 && argv.size() > (arg_index + 1)) {
-      set_ttl = true;
-      Int64 now = get_current_unix_time();
-      std::string opt_val = argv[arg_index + 1];
-      if (get_int64(opt_val, response, &ttl) == false) return;
-      if (now >= ttl) {
-        /* Already expired */
-        ttl = 0;
-      } else {
-        ttl -= now;
-      }
-      DEB_TTL(("exat: ttl: %lld\n", ttl));
-      arg_index += 2;
-    } else if (strcasecmp(arg, "pxat") == 0 && argv.size() > (arg_index + 1)) {
-      set_ttl = true;
-      Int64 now = get_current_unix_time();
-      std::string opt_val = argv[arg_index + 1];
-      if (get_int64(opt_val, response, &ttl) == false) return;
-      ttl = (ttl + Int64(999)) / Int64(1000);
-      if (now >= ttl) {
-        /* Already expired */
-        ttl = 0;
-      } else {
-        ttl -= now;
-      }
-      DEB_TTL(("pxat: ttl: %lld\n", ttl));
-      arg_index += 2;
-    } else if (strcasecmp(arg, "keepttl") == 0 && argv.size() > arg_index) {
-      set_ttl = false;
-      keep_ttl = true;
-      arg_index += 1;
-      DEB_TTL(("keep_ttl set\n"));
-    }
-    if (arg_index != arg_size) {
-      assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
-      return;
     }
   } else {
     num_keys = arg_size - arg_index_start;
@@ -3531,6 +3647,14 @@ void rondb_get_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
                        std::string *response,
                        int worker_id) {
+  int type_check = check_string_key_is_not_hash(ndb,
+                                                argv[1].c_str(),
+                                                argv[1].size(),
+                                                response,
+                                                worker_id);
+  if (type_check != 0) {
+    return;
+  }
   rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID, worker_id);
 }
 
@@ -3923,6 +4047,15 @@ void rondb_strlen_command(Ndb *ndb,
   if (memcmp(key_str, "key:__rand_int__", 16) == 0) {
     rand_key(key_store, &key_str, key_len);
   }
+  int type_check = check_string_key_is_not_hash(ndb,
+                                                key_str,
+                                                key_len,
+                                                response,
+                                                worker_id);
+  if (type_check != 0) {
+    free(key_store);
+    return;
+  }
   key_store->m_key_str = key_str;
   key_store->m_key_len = key_len;
   if (!setup_transaction(ndb,
@@ -3980,6 +4113,14 @@ void rondb_getrange_command(Ndb *ndb,
                             const pink::RedisCmdArgsType &argv,
                             std::string *response,
                             int worker_id) {
+  int type_check = check_string_key_is_not_hash(ndb,
+                                                argv[1].c_str(),
+                                                argv[1].size(),
+                                                response,
+                                                worker_id);
+  if (type_check != 0) {
+    return;
+  }
   Uint32 arg_index_start = 1;
   Uint32 num_keys = 1;
   const NdbDictionary::Dictionary *dict;

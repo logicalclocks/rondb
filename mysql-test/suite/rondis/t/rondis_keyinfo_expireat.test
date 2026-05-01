@@ -74,6 +74,13 @@ SELECT COUNT(*) AS str_past_rows
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT str_a -1
 
 --echo #
+--echo # EXPIREAT in the past on a hash also deletes it immediately.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_now f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT hash_now 1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE hash_now
+
+--echo #
 --echo # End-to-end: EXPIREAT then TTL on the same key falls in
 --echo # window. Same probe / encode round-trip as EXPIRE.
 --echo #

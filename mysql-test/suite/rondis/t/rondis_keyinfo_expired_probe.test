@@ -16,9 +16,10 @@ call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
 # (TTL / PTTL already do this themselves, returning :-2 for the
 # expired-but-present case.)
 #
-# We force the expired state deterministically by writing a past
-# absolute timestamp via EXPIREAT (commands.cc Phase 1.7) - no
-# sleep needed.
+# We force the expired state deterministically by SQL-updating
+# expiry_date to a past absolute timestamp. Redis EXPIREAT in the
+# past deletes immediately, so it cannot manufacture the internal
+# expired-but-present state.
 #
 
 --echo #
@@ -31,11 +32,17 @@ call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_alive f1 v1
 
 --echo #
---echo # Force expiry_date well into the past via EXPIREAT 1
+--echo # Force expiry_date well into the past via SQL
 --echo # (1970-01-01 00:00:01 UTC).
 --echo #
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT str_x 1
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT hash_x 1
+--disable_query_log
+UPDATE redis_0.string_keys
+   SET expiry_date = FROM_UNIXTIME(1)
+ WHERE redis_key = 'str_x' AND redis_key_id = 0;
+UPDATE redis_0.hset_keys
+   SET expiry_date = FROM_UNIXTIME(1)
+ WHERE redis_key IN ('str_x', 'hash_x');
+--enable_query_log
 
 --echo #
 --echo # EXISTS on each expired key alone -> :0; on the alive ones -> :1.
@@ -62,19 +69,54 @@ call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
 
 --echo #
 --echo # EXPIRE on an expired-but-present key -> :0 (no update).
---echo # The stored expiry_date stays in the past (unchanged).
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE str_x 60
---let $r = `SELECT UNIX_TIMESTAMP(expiry_date) = 1 FROM redis_0.string_keys WHERE redis_key = 'str_x' AND redis_key_id = 0`
---echo str_x_expiry_unchanged=$r
 
 --echo #
 --echo # PERSIST on an expired-but-present key -> :0 (no clear).
---echo # The stored expiry_date stays in the past.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PERSIST hash_x
---let $r = `SELECT UNIX_TIMESTAMP(expiry_date) = 1 FROM redis_0.hset_keys WHERE redis_key = 'hash_x'`
---echo hash_x_expiry_unchanged=$r
+
+--echo #
+--echo # DEL on expired-but-present keys returns :0 because they are
+--echo # already logically absent.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET del_str v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET del_hash f v
+--disable_query_log
+UPDATE redis_0.string_keys
+   SET expiry_date = FROM_UNIXTIME(1)
+ WHERE redis_key = 'del_str' AND redis_key_id = 0;
+UPDATE redis_0.hset_keys
+   SET expiry_date = FROM_UNIXTIME(1)
+ WHERE redis_key IN ('del_str', 'del_hash');
+--enable_query_log
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL del_str del_hash
+
+--echo #
+--echo # SET NX treats expired-but-present string and hash keys as
+--echo # absent; SET XX treats them as absent and does not write.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET nx_exp_str old
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET xx_exp_str old
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET nx_exp_hash f old
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET xx_exp_hash f old
+--disable_query_log
+UPDATE redis_0.string_keys
+   SET expiry_date = FROM_UNIXTIME(1)
+ WHERE redis_key IN ('nx_exp_str', 'xx_exp_str') AND redis_key_id = 0;
+UPDATE redis_0.hset_keys
+   SET expiry_date = FROM_UNIXTIME(1)
+ WHERE redis_key IN ('nx_exp_str', 'xx_exp_str', 'nx_exp_hash', 'xx_exp_hash');
+--enable_query_log
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET nx_exp_str revived NX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET nx_exp_str
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET xx_exp_str nope XX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE xx_exp_str
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET nx_exp_hash revived_hash NX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET nx_exp_hash
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET xx_exp_hash nope XX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE xx_exp_hash
 
 --disable_query_log
 DROP DATABASE IF EXISTS redis_0;

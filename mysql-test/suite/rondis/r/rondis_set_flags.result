@@ -47,6 +47,8 @@ OK
 value
 OK
 value
+OK
+none
 #
 # KEEPTTL - preserve the existing TTL on overwrite.
 #
@@ -54,6 +56,16 @@ OK
 OK
 upd
 #
+# Redis accepts SET options in flexible order and combinations.
+#
+OK
+ordered
+
+v1
+v2
+v2
+v3
+#
 # Cleanup.
 #
-4
+6

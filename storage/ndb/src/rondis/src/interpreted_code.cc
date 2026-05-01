@@ -225,6 +225,8 @@ int init_hset_lock_claim_code(std::string *response,
 // short-circuit a scan when a hash row exists with field_count
 // already 0, which is rare but possible after HDEL-of-last-field
 // followed by no further activity).
+// OUTPUT_INDEX_2 = old_expiry_date, or the no-expiry sentinel when
+// the old hset_keys row had NULL expiry_date or did not exist.
 int init_hset_string_claim_code(std::string *response,
                                 NdbInterpretedCode *code,
                                 const NdbDictionary::Table *tab) {
@@ -232,6 +234,8 @@ int init_hset_string_claim_code(std::string *response,
     tab->getColumn(HSET_KEY_TABLE_COL_redis_key_id);
   const NdbDictionary::Column *field_count_col =
     tab->getColumn(HSET_KEY_TABLE_COL_field_count);
+  const NdbDictionary::Column *expiry_date_col =
+    tab->getColumn(HSET_KEY_TABLE_COL_expiry_date);
 
   code->load_op_type(REG1);
   code->branch_eq_const(REG1, RONDB_INSERT, LABEL0); // INSERT to label 0
@@ -247,16 +251,37 @@ int init_hset_string_claim_code(std::string *response,
   // UPDATE-on-hash: publish the old values for silent replace.
   code->read_attr(REG6, redis_key_id_col);
   code->read_attr(REG7, field_count_col);
+  code->branch_col_eq_null(expiry_date_col->getColumnNo(), LABEL2);
+  code->read_attr(REG5, expiry_date_col);
   code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
   code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG5, OUTPUT_INDEX_2);
   code->interpret_exit_ok();
 
   // UPDATE-on-string: idempotent. Emit (0, 0).
   code->def_label(LABEL1);
   code->load_const_u64(REG6, 0);
   code->load_const_u64(REG7, 0);
+  code->branch_col_eq_null(expiry_date_col->getColumnNo(), LABEL3);
+  code->read_attr(REG5, expiry_date_col);
   code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
   code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG5, OUTPUT_INDEX_2);
+  code->interpret_exit_ok();
+
+  // UPDATE with NULL expiry: publish the no-expiry sentinel.
+  code->def_label(LABEL2);
+  code->load_const_u64(REG5, 0x7FFFFFFF);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG5, OUTPUT_INDEX_2);
+  code->interpret_exit_ok();
+
+  code->def_label(LABEL3);
+  code->load_const_u64(REG5, 0x7FFFFFFF);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG5, OUTPUT_INDEX_2);
   code->interpret_exit_ok();
 
   /* INSERT branch */
@@ -266,8 +291,10 @@ int init_hset_string_claim_code(std::string *response,
   code->def_label(LABEL0);
   code->load_const_u64(REG6, 0);
   code->load_const_u64(REG7, 0);
+  code->load_const_u64(REG5, 0x7FFFFFFF);
   code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
   code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG5, OUTPUT_INDEX_2);
   code->interpret_exit_ok();
 
   int ret_code = code->finalise();

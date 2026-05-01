@@ -7,8 +7,9 @@
 # KEEPTTL.
 #
 # NX / XX on their "condition not met" paths return Redis-canonical
-# nil. SET GET returns the previous string value, or nil when the key
-# was missing or held a non-string type.
+# nil. SET GET returns the previous string value or nil when the key
+# was missing; it returns WRONGTYPE when the key held a non-string
+# type (covered by rondis_keyinfo_silent_replace).
 #
 # Numerical TTL assertions (does EX 60 really land ~NOW()+60?) live in
 # Phase 3's rondis_ttl.test. Here we only check reply shape.
@@ -72,6 +73,9 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ttlk
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttlk "value" PXAT 4102444800000
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ttlk
+--let $now_ms = `SELECT FLOOR(UNIX_TIMESTAMP(NOW(6)) * 1000)`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET pxat_due "gone" PXAT $now_ms
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE pxat_due
 
 --echo #
 --echo # KEEPTTL - preserve the existing TTL on overwrite.
@@ -81,9 +85,23 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ttlk
 
 --echo #
+--echo # Redis accepts SET options in flexible order and combinations.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET orderk "ordered" EX 60 NX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET orderk
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET getcombo "v1" GET EX 60 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET getcombo "v2" XX GET 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET getcombo
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET getcombo "v3" PX 60000 GET 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET getcombo
+
+--echo #
 --echo # Cleanup.
 --echo #
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL nxk xxk getk ttlk
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL nxk xxk getk ttlk pxat_due orderk getcombo
 
 --disable_query_log
 DROP DATABASE IF EXISTS redis_0;

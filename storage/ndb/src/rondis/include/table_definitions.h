@@ -222,6 +222,7 @@ struct KeyStorage {
     // dispatching the commit. nullptr for HSET (set_rows_hset uses
     // a different lock-claim op).
     NdbRecAttr *m_rec_attr_string_claim_old_id;
+    NdbRecAttr *m_rec_attr_string_claim_old_expiry;
     union {
       char *m_value_ptr;
       const char *m_const_value_ptr;
@@ -250,6 +251,7 @@ struct KeyStorage {
     // row's rondb_key for ext-row PK addressing in Phase 3.
     const NdbOperation *m_hdel_phase2_op;
     bool m_hdel_field_present;
+    bool m_del_logically_absent;
     Int64 m_expire_at;
     union {
         Uint32 m_get_value_size;
