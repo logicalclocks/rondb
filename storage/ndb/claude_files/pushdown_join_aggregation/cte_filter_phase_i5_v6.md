@@ -1,7 +1,27 @@
 # Phase I.5 v6 — CTE linked-vs-linked GREATEST / LEAST tests
 
-**Planned.**  This phase captures the CTE linked-vs-linked runtime
-coverage that was intentionally removed from Phase I.5 v2a.
+**Shipped.**  This phase captures the CTE linked-vs-linked runtime
+coverage that was intentionally removed from Phase I.5 v2a.  No
+production-code changes were needed: v2b's `Greatest2` / `Least2`
+SVM ops handle CTE-leaf operands uniformly through the aggregation
+register machine, so v6 is purely a runtime test addition.
+
+The v6 query swaps the FROM root: `pairs` (the multi-column GROUP BY
+CTE) becomes the CTE_SCAN root and `cte_customer` is the join child.
+That avoids the unrelated "Failed to create child operation" path
+hit when joining INTO a multi-column-GROUP-BY CTE on only one
+column — that limitation is captured in the new `cte_filter_phase_i16.md`
+phase.
+
+**What shipped:**
+
+- `mysql-test/suite/ronsql/t/ronsql_cte_greatest_least_v6.test` —
+  four cases: `SUM(GREATEST(pairs.k, pairs.amt))` linked-vs-linked
+  with `pairs` as CTE_SCAN root, `LEAST` mirror, n=3 chain mixing
+  CTE columns and a parent physical column, and a CTE COLUMN +
+  CTE AGGREGATE (`COUNT(*)`) variant.
+- New phases I.16 / I.17 captured separately for the unrelated
+  planner gaps surfaced while writing the test.
 
 ## Motivation
 

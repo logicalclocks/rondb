@@ -1,0 +1,162 @@
+# Phase I.17 — scalar aggregate CTEs without GROUP BY
+
+## Status
+
+Planned.
+
+## Problem
+
+RonSQL currently requires every CTE body to contain `GROUP BY`.  That
+rejects valid scalar aggregate CTEs such as:
+
+```sql
+WITH max_update AS (
+  SELECT MAX(update_dt) AS latest_update
+  FROM feature_store)
+SELECT latest_update
+FROM max_update;
+```
+
+MySQL semantics: an aggregate query without `GROUP BY` returns one row
+for the whole input, even if the input is empty.  Aggregate values then
+follow normal aggregate rules (`COUNT(*) = 0`, `SUM` / `MIN` / `MAX`
+return `NULL` on empty input).
+
+This limitation blocks watermark-style queries:
+
+```sql
+WITH max_update AS (
+    SELECT MAX(update_dt) AS latest_update
+    FROM hopsworks_online_feature_store
+),
+max_insert AS (
+    SELECT MAX(insert_dt) AS latest_insert
+    FROM hopsworks_online_feature_store
+)
+SELECT GREATEST(latest_update, latest_insert) AS watermark
+FROM max_update, max_insert;
+```
+
+It also blocks Phase I.5 tests that need scalar CTE inputs to
+`GREATEST` / `LEAST`.
+
+## Desired Behaviour
+
+Support CTE bodies that have aggregate outputs and no `GROUP BY`.
+
+The materialized CTE should behave as a one-row virtual table:
+
+- zero key columns;
+- one output column per CTE select-list item;
+- exactly one result row after CTE materialization;
+- aggregate values follow MySQL scalar aggregate semantics.
+
+## Phase I.17a — clear parser / planner classification
+
+Replace the blanket "CTE must contain GROUP BY" rejection with shape
+classification:
+
+1. CTE body has `GROUP BY`:
+   existing grouped CTE path.
+2. CTE body has aggregate outputs and no `GROUP BY`:
+   scalar aggregate CTE path.
+3. CTE body has neither aggregate outputs nor `GROUP BY`:
+   reject for now, unless a separate pass-through CTE body phase
+   explicitly supports it.
+
+The scalar aggregate CTE path should reject mixed non-aggregate column
+outputs without `GROUP BY`, matching MySQL's `ONLY_FULL_GROUP_BY`
+expectations for RonSQL's supported subset.
+
+## Phase I.17b — keyless virtual CTE table
+
+Extend virtual table construction for scalar aggregate CTEs:
+
+- no columns marked as primary key;
+- `COUNT` output type remains unsigned 64-bit;
+- `SUM` / `MIN` / `MAX` output type derivation follows the existing
+  grouped CTE rules;
+- attrIds remain synthetic 0..N-1 as in the grouped path.
+
+Audit all uses of `getNoOfPrimaryKeys()` and key-count assumptions for
+CTE virtual tables.  A keyless virtual table must not accidentally flow
+into `lookupCte()`.
+
+## Phase I.17c — execution and result delivery
+
+Use `scanCte()` for scalar aggregate CTE consumption.
+
+For a scalar CTE as the main root:
+
+```sql
+WITH s AS (SELECT MAX(v) AS m FROM t)
+SELECT m FROM s;
+```
+
+the root operation should be `CTE_SCAN`.
+
+For joins of scalar CTEs, either:
+
+- support the existing join syntax once cross-join support exists, or
+- initially require an explicit supported join form if RonSQL still
+  lacks comma / cross join parsing.
+
+The materialization side must ensure one row is emitted for the scalar
+aggregate, including the empty-input case.
+
+## Phase I.17d — tests
+
+Add RonSQL MTR coverage:
+
+1. Single scalar CTE:
+
+```sql
+WITH s AS (SELECT MAX(v) AS m FROM t)
+SELECT m FROM s;
+```
+
+2. Scalar CTE with `COUNT(*)` over empty input:
+
+```sql
+WITH s AS (SELECT COUNT(*) AS n FROM t WHERE false)
+SELECT n FROM s;
+```
+
+3. Scalar CTE with `MAX` over empty input:
+
+```sql
+WITH s AS (SELECT MAX(v) AS m FROM t WHERE false)
+SELECT m FROM s;
+```
+
+4. Watermark shape once scalar CTE joins are supported:
+
+```sql
+WITH max_update AS (SELECT MAX(update_dt) AS latest_update FROM t),
+     max_insert AS (SELECT MAX(insert_dt) AS latest_insert FROM t)
+SELECT GREATEST(latest_update, latest_insert) AS watermark
+FROM max_update, max_insert;
+```
+
+5. A Phase I.5 integration test using `GREATEST` / `LEAST` over scalar
+   CTE outputs.
+
+## Open Questions
+
+- Does the current kernel CTE aggregation path emit a final row for an
+  aggregate with zero group-by columns, or does it depend on at least
+  one group key?  If it depends on a key, add a synthetic singleton key
+  internally but do not expose it in the virtual table.
+- Should keyless scalar CTEs ever be addressable by `lookupCte()`?  The
+  initial answer should be no; use `scanCte()`.
+- Should non-aggregate, no-`GROUP BY` CTE bodies be included?  Defer
+  unless needed.  This phase is for scalar aggregate CTEs.
+
+## Completion Criteria
+
+- RonSQL accepts scalar aggregate CTE bodies without `GROUP BY`.
+- The scalar CTE is exposed as a one-row `CTE_SCAN` result.
+- Empty-input aggregate semantics match MySQL.
+- Existing grouped CTE tests continue to pass.
+- The watermark query shape can be tested once cross/scalar CTE joins
+  are also accepted.

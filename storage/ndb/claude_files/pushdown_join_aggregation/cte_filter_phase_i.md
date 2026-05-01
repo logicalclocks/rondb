@@ -116,10 +116,16 @@ nullable-column rejection and added per-pair-op NULL detection
 makes that expression's aggregate skip this row; unrelated
 `COUNT(*)` / `SUM` outputs still update.
 
+**v6 shipped** — see `cte_filter_phase_i5_v6.md`.  CTE linked-vs-linked
+GREATEST / LEAST runtime coverage; test-only (no code change needed
+since v2b's pair-op SVM path already handles CTE-leaf operands).
+Surfaced two unrelated planner gaps now captured as I.16 (partial-key
+joins to multi-key CTEs) and I.17 (scalar aggregate CTEs without
+GROUP BY).
+
 Follow-ups: v3 / v5 (wider operand types — float / decimal / string
 and signed sub-Bigint linked columns; v5 in
-`cte_filter_phase_i5_v5.md`), v6 (CTE linked-vs-linked runtime test
-coverage; in `cte_filter_phase_i5_v6.md`).
+`cte_filter_phase_i5_v5.md`).
 
 ### Aggregator output types
 
@@ -211,6 +217,66 @@ satisfied).  Bundle with LIMIT phase.
 fragment-level coverage; MTR cluster config is single-node so this
 is hard to exercise.  Capture as a known coverage gap; rely on
 block tests.
+
+#### I.16 — Partial-key joins to multi-key CTEs (M/L)
+
+Detailed plan: `cte_filter_phase_i16.md`.
+
+Today any joined CTE child is planned as `CTE_LOOKUP`.  That is only
+valid when the join predicates bind the complete virtual CTE primary
+key, which is derived from the CTE's `GROUP BY` columns.  A query such
+as:
+
+```sql
+WITH pairs AS (
+  SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+  FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(GREATEST(pairs.k, pairs.amt))
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id
+GROUP BY c.c_id;
+```
+
+tries to create a `CTE_LOOKUP` with only `k`, while the CTE key is
+`(k, amt)`.  `lookupCte()` returns `NULL`, and RonSQL reports the
+opaque "Failed to create child operation" error.
+
+The planner should detect this before emission.  Short term, reject
+partial-key CTE_LOOKUP with a clear RonSQL error.  Full support means
+planning this as a CTE scan plus join predicate evaluation, most likely
+by driving the query from `CTE_SCAN` when possible, or by adding support
+for non-root CTE_SCAN children with linked predicate evaluation.
+
+#### I.17 — Scalar aggregate CTEs without GROUP BY (M/L)
+
+Detailed plan: `cte_filter_phase_i17.md`.
+
+RonSQL currently rejects CTE bodies that do not contain `GROUP BY`,
+even when the body is a valid scalar aggregate that should produce one
+row:
+
+```sql
+WITH max_update AS (
+  SELECT MAX(update_dt) AS latest_update
+  FROM feature_store)
+SELECT latest_update FROM max_update;
+```
+
+This blocks SQL shapes such as scalar CTE cross-joins and watermark
+queries:
+
+```sql
+WITH max_update AS (SELECT MAX(update_dt) AS latest_update FROM t),
+     max_insert AS (SELECT MAX(insert_dt) AS latest_insert FROM t)
+SELECT GREATEST(latest_update, latest_insert)
+FROM max_update, max_insert;
+```
+
+The implementation needs a representation for a one-row CTE result
+with no key columns, clear `scanCte` / `lookupCte` planning rules for
+that keyless virtual table, and tests covering both single scalar CTEs
+and joins of two scalar CTEs.  This should be handled before relying
+on watermark-style CTE tests in I.5 or later phases.
 
 ## Recommended next-pick heuristic
 

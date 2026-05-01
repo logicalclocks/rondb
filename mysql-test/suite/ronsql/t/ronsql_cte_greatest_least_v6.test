@@ -1,0 +1,189 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.5 v6: CTE linked-vs-linked GREATEST / LEAST runtime coverage.
+#
+# A `pairs` CTE projects two non-trivial column outputs (k and amt)
+# alongside an aggregate (cnt).  The outer SELECT joins to `pairs` and
+# uses GREATEST / LEAST against the two CTE column projections.  Both
+# operands resolve to CTE leaf columns at compile time, exercising the
+# pair-op SVM path with LoadLinkedColumn-style emission for both
+# operands and READ_AGG_REG_TO_REG bridging into the embedded
+# normal-interpreter program.
+#
+# This was the case originally removed from
+# ronsql_cte_greatest_least_v2a.test (which used the embedded CASE
+# col-vs-col path); v2b's Greatest2 / Least2 SVM ops handle CTE-leaf
+# operands uniformly through the aggregation register machine, so v6
+# turned out to be test-only.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for CTE linked-vs-linked GREATEST / LEAST tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE cte_orders (
+  o_id INT NOT NULL,
+  o_custkey BIGINT NOT NULL,
+  o_amt BIGINT NOT NULL,
+  o_disc BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_o_custkey ON cte_orders (o_custkey);
+
+CREATE TABLE cte_customer (
+  c_id BIGINT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  c_region BIGINT NOT NULL,
+  c_floor   BIGINT NOT NULL,
+  c_ceil    BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+INSERT INTO cte_customer VALUES
+  (100, 'Alice',   1, 50,  200),
+  (200, 'Bob',     1, 60,  150),
+  (300, 'Charlie', 2, 100, 400),
+  (400, 'Dave',    2, 120, 130);
+
+INSERT INTO cte_orders VALUES
+  (1, 100, 50,  10),
+  (2, 100, 75,  20),
+  (3, 200, 40,  5),
+  (4, 200, 60,  15),
+  (5, 300, 90,  30);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: SUM(GREATEST(pairs.k, pairs.amt)) — linked-vs-linked CTE columns ===
+
+# `pairs` projects two grouped columns plus a COUNT aggregate.  GREATEST
+# operates on the two CTE column projections only — both operands live
+# on the CTE_SCAN root at compile time.  Expected output (per fixture):
+#   c_id 100 → GREATEST(100, 50) + GREATEST(100, 75) = 200
+#   c_id 200 → GREATEST(200, 40) + GREATEST(200, 60) = 400
+#   c_id 300 → GREATEST(300, 90)                    = 300
+# Use the CTE as the root scan: pairs has a two-column GROUP BY key
+# (k, amt), so joining to it from cte_customer on only k would require
+# unsupported partial CTE_LOOKUP.
+let $QUERY=
+WITH pairs AS (
+  SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+  FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id, SUM(GREATEST(pairs.k, pairs.amt)) AS gmax
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (
+  SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+  FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id, SUM(GREATEST(pairs.k, pairs.amt)) AS gmax
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k|
+
+--echo
+--echo
+--echo === Test 2: SUM(LEAST(pairs.k, pairs.amt)) — LEAST mirror ===
+
+let $QUERY=
+WITH pairs AS (
+  SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+  FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id, SUM(LEAST(pairs.k, pairs.amt)) AS lmin
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (
+  SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+  FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id, SUM(LEAST(pairs.k, pairs.amt)) AS lmin
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k|
+
+--echo
+--echo
+--echo === Test 3: n=3 chain — GREATEST(pairs.k, pairs.amt, c.c_floor) ===
+
+# Three operands: two CTE column projections plus one parent-table
+# physical column reached via linked projection.  Pair-op chain is
+# Greatest2(Greatest2(pairs.k, pairs.amt), c.c_floor).
+let $QUERY=
+WITH pairs AS (
+  SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+  FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id,
+       SUM(GREATEST(pairs.k, pairs.amt, c.c_floor)) AS gmax
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (
+  SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+  FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id,
+       SUM(GREATEST(pairs.k, pairs.amt, c.c_floor)) AS gmax
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k|
+
+--echo
+--echo
+--echo === Test 4: GREATEST against a CTE aggregate output and a CTE column ===
+
+# pairs.cnt is an AGGREGATE projection (COUNT(*)); pairs.amt is a
+# COLUMN projection.  GREATEST mixes both kinds — exercises the
+# pair-op path against a CTE-leaf aggregate output.
+let $QUERY=
+WITH pairs AS (
+  SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+  FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id, SUM(GREATEST(pairs.amt, pairs.cnt)) AS g
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (
+  SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+  FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id, SUM(GREATEST(pairs.amt, pairs.cnt)) AS g
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE cte_orders;
+DROP TABLE cte_customer;
+--enable_query_log

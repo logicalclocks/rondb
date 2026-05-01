@@ -42,8 +42,10 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_filter_phase_i5_v2b.md` — Phase I.5 v2b (shipped): n-ary GREATEST/LEAST via SVM extension (Greatest2/Least2 SVM ops; pair-op now expands to embedded normal-interpreter compare + Mov in programAggregator after Phase M; v2b also replaces v1's CaseExpr-based two-arg lowering)
 - `cte_filter_phase_i5_v4.md` — Phase I.5 v4 (shipped, superseded by v7 for expression-local NULL handling): NULL propagation for nullable GREATEST/LEAST operands; parser-time nullable rejection removed
 - `cte_filter_phase_i5_v5.md` — Phase I.5 v5: typed linked-column register loads for signed/unsigned INT8/16/24/32/64 in all interpreter variants
-- `cte_filter_phase_i5_v6.md` — Phase I.5 v6: deferred CTE linked-vs-linked GREATEST / LEAST runtime tests
+- `cte_filter_phase_i5_v6.md` — Phase I.5 v6 (shipped): CTE linked-vs-linked GREATEST / LEAST runtime coverage; test-only — v2b's pair-op SVM path already handled CTE-leaf operands.  Surfaced unrelated planner gaps now tracked as I.16 / I.17
 - `cte_filter_phase_i5_v7.md` — Phase I.5 v7 (shipped): expression-local NULL propagation in GREATEST/LEAST.  New `kOpSetRegNull` aggregation opcode + `NdbAggregator::SetRegNull`.  Pair-op nullable tail becomes `EmbeddedInterp(14) + Mov + Skip(1) + SetRegNull(dest)` (18 kernel words); only the immediately-following aggregate skips the row, unrelated `COUNT(*)` / `SUM` / `MIN` / `MAX` outputs still update
+- `cte_filter_phase_i16.md` — Phase I.16: partial-key joins to multi-key CTEs; detect when `CTE_LOOKUP` cannot cover the full virtual CTE key and either choose a CTE_SCAN plan or reject clearly
+- `cte_filter_phase_i17.md` — Phase I.17: scalar aggregate CTEs without GROUP BY; keyless one-row CTE_SCAN materialization for shapes such as MAX(...) scalar CTEs and watermark queries
 - `cte_filter_phase_k.md` — Phase K: ANTI_JOIN promotion for WHERE col IS NULL on LEFT JOIN RHS (RonSQL)
 - `cte_filter_phase_l.md` — Phase L: JOIN_AGG_COMPLETE robustness — checkCteReady / continueJoinAggRedistribute idempotency, unified requestId correlation in DBTC, single-owner DBLQH routing, phase-report deduplication, test coverage (kernel + DBTC, plan-only)
 - `cte_filter_phase_l_commit5.md` — Phase L commit 5: cleanup follow-up — drop redundant `m_redist_mutex` and retire legacy `m_cteCompleteOutstanding` counter
