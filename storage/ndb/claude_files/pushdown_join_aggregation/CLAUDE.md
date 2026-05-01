@@ -43,6 +43,7 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_filter_phase_i5_v4.md` — Phase I.5 v4 (shipped): NULL propagation for nullable GREATEST/LEAST operands; pair-op embedded program adds two BRANCH_REG_EQ_NULL words and a STOP_PROGRAM tail (9 → 14 body words); parser-time nullable rejection removed
 - `cte_filter_phase_i5_v5.md` — Phase I.5 v5: typed linked-column register loads for signed/unsigned INT8/16/24/32/64 in all interpreter variants
 - `cte_filter_phase_i5_v6.md` — Phase I.5 v6: deferred CTE linked-vs-linked GREATEST / LEAST runtime tests
+- `cte_filter_phase_i5_v7.md` — Phase I.5 v7: planned fix for expression-local NULL propagation in GREATEST/LEAST so nullable operands do not stop unrelated aggregate updates in the same row
 - `cte_filter_phase_k.md` — Phase K: ANTI_JOIN promotion for WHERE col IS NULL on LEFT JOIN RHS (RonSQL)
 - `cte_filter_phase_l.md` — Phase L: JOIN_AGG_COMPLETE robustness — checkCteReady / continueJoinAggRedistribute idempotency, unified requestId correlation in DBTC, single-owner DBLQH routing, phase-report deduplication, test coverage (kernel + DBTC, plan-only)
 - `cte_filter_phase_l_commit5.md` — Phase L commit 5: cleanup follow-up — drop redundant `m_redist_mutex` and retire legacy `m_cteCompleteOutstanding` counter
