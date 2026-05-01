@@ -115,6 +115,11 @@ it through the normal interpreter path that can load:
 - and branch with the existing normal interpreter branch opcodes.
 
 The plan must not use aggregation-program `BranchReg*` to reject rows.
+If it simplifies implementation, `kOpEmbeddedInterp` may be extended so
+the embedded normal-interpreter program can return a special
+"stop aggregation program for this row" code.  That is acceptable
+because the branch semantics still live in the normal interpreter; the
+aggregation interpreter only consumes the embedded interpreter result.
 
 ### Aggregation Execution
 
@@ -125,10 +130,24 @@ Conditional value selection inside aggregation is still allowed, but
 must use `kOpEmbeddedInterp`.  The embedded program is delegated to the
 normal interpreter and returns the skip offset via
 `WRITE_INTERPRETER_OUTPUT`, as existing CASE lowering already does.
+Phase M may add a second embedded-interpreter outcome that stops the
+rest of the aggregation program for the current row.  This is only for
+row-rejection predicates that cannot conveniently be moved into a
+separate filter program; it must not reintroduce comparison opcodes into
+the aggregation interpreter.
+
+Phase M may also add aggregation-embedded-only normal-interpreter opcodes
+needed to bridge values into the embedded program.  In particular,
+`READ_AGG_REG_TO_REG` copies an aggregation register into a normal
+interpreter register so the embedded program can compare it with the
+normal interpreter's existing branch opcodes.  This opcode is only valid
+from `kOpEmbeddedInterp`; it is not exposed through normal interpreted
+code or CTE filters.
 
 Allowed control flow in aggregation programs after Phase M:
 
 - `kOpEmbeddedInterp` as the bridge to the normal interpreter,
+- optional `kOpEmbeddedInterp` stop-program result for row rejection,
 - `kOpSkip` only as structural CASE-arm control emitted by the SVM
   compiler,
 - no `kOpBranchReg*` opcodes.
@@ -180,8 +199,10 @@ aggregation:
    interpreter filter program instead of `BranchReg*`.
 3. Ensure the embedded program can access the linked-attribute buffer
    through the existing `READ_LINKED_TO_MEM` path.
-4. The embedded program must reject the row before aggregate update, not
-   skip aggregate instructions as an aggregation concern.
+4. The embedded program must reject the row before aggregate update.
+   This can be implemented either as a separate filter program, or as
+   `kOpEmbeddedInterp` returning a special stop-program result consumed
+   by the aggregation interpreter.
 
 The resulting execution shape should be:
 
@@ -192,6 +213,18 @@ Filter execution:
   accept or reject row
 
 Aggregation execution:
+  LoadColumn(...)
+  Sum/Count/Min/Max(...)
+```
+
+Alternative acceptable shape:
+
+```text
+Aggregation execution:
+  EmbeddedInterp(...)
+    normal interpreter loads local / linked values
+    normal interpreter branches
+    returns continue or stop-aggregation-program
   LoadColumn(...)
   Sum/Count/Min/Max(...)
 ```

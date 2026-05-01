@@ -248,7 +248,16 @@ class Interpreter {
   static constexpr Uint32 BRANCH_LINKED_NE_NULL = 42;
   /* Overflow constant 42 free */
 
-  /* 43-46 free, both of them */
+  /*
+   * READ_AGG_REG_TO_REG: aggregation-embedded-only instruction.
+   * Copies an aggregation interpreter register into a normal interpreter
+   * register.  Not available in normal interpreted code or CTE filters.
+   *
+   * Encoding: READ_AGG_REG_TO_REG | (agg_reg << 16) | (interp_reg << 6)
+   */
+  static constexpr Uint32 READ_AGG_REG_TO_REG = 43;
+
+  /* 44-46 free, both of them */
   static constexpr Uint32 READ_PARTIAL_ATTR_TO_MEM = 47;
   /* Overflow constant 47 free */
   static constexpr Uint32 READ_ATTR_TO_MEM = 48;
@@ -425,6 +434,7 @@ class Interpreter {
 
   static Uint32 ReadInterpreterInput(Uint32 RegValue, Uint32 InputIndex);
   static Uint32 WriteInterpreterOutput(Uint32 RegValue, Uint32 OutputIndex);
+  static Uint32 ReadAggRegIntoReg(Uint32 AggReg, Uint32 RegDest);
   static Uint32 ReadUint8FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
   static Uint32 ReadUint16FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
   static Uint32 ReadUint32FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
@@ -1064,6 +1074,11 @@ Interpreter::WriteInterpreterOutput(Uint32 RegValue,
 }
 
 inline Uint32
+Interpreter::ReadAggRegIntoReg(Uint32 AggReg, Uint32 RegDest) {
+  return (AggReg << 16) + (RegDest << 6) + READ_AGG_REG_TO_REG;
+}
+
+inline Uint32
 Interpreter::ReadUint8FromMemIntoRegConst(Uint32 Dcoleg, Uint16 Constant) {
   return (Dcoleg << 6) + (Constant << 16) + READ_UINT8_MEM_TO_REG;
 }
@@ -1347,6 +1362,7 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
     case READ_PARTIAL_ATTR_TO_MEM:
     case READ_ATTR_TO_MEM:
     case READ_LINKED_TO_MEM:
+    case READ_AGG_REG_TO_REG:
 
     case BINARY_SEARCH_64:
     case BINARY_SEARCH_32:

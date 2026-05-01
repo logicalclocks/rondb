@@ -5854,6 +5854,10 @@ struct Dbtup::InterpreterContext {
   Uint32* tmpArea;
   Uint32 tmpAreaSz;
 
+  // Aggregation register import source.  Only set for aggregation
+  // embedded interpreter calls; normal interpreter and CTE filters keep NULL.
+  const Register* aggRegisters;
+
   /* ============================================================
    * Phase A handlers — extracted case bodies
    *
@@ -7063,6 +7067,36 @@ struct Dbtup::InterpreterContext {
     }
     outputInx *= 2;
     memcpy(&ctx.tup->c_interpreter_output[outputInx], value_ptr, 8);
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_AGG_REG_TO_REG — aggregation-embedded-only register import */
+  static inline int handleReadAggRegToReg(InterpreterContext& ctx) {
+    if (ctx.aggRegisters == nullptr) {
+      return -ZNO_INSTRUCTION_ERROR;
+    }
+    Uint32 aggReg = ctx.theInstruction >> 16;
+    if (unlikely(aggReg >= kRegTotal)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    const Register& src = ctx.aggRegisters[aggReg];
+    if (src.is_null) {
+      ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[ctx.theRegister + 2] = 0;
+      ctx.TregMemBuffer[ctx.theRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    if (unlikely(src.type != NDB_TYPE_BIGINT)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
+    if (src.is_unsigned) {
+      *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+          src.value.val_uint64;
+    } else {
+      *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+          src.value.val_int64;
+    }
     return INTERP_CONTINUE;
   }
 
@@ -8885,7 +8919,7 @@ s_cte_filter_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  40  BRANCH_MEM_OP_ARG_INLINE_TYPE */ &Dbtup::InterpreterContext::handleBranchMemOpArgInlineType,
   /*  41  BRANCH_LINKED_EQ_NULL   */ &Dbtup::InterpreterContext::handleBranchLinkedEqNull,
   /*  42  BRANCH_LINKED_NE_NULL   */ &Dbtup::InterpreterContext::handleBranchLinkedNeNull,
-  /*  43  (unused)                */ nullptr,
+  /*  43  READ_AGG_REG_TO_REG     */ nullptr,
   /*  44  (unused)                */ nullptr,
   /*  45  (unused)                */ nullptr,
   /*  46  (unused)                */ nullptr,
@@ -8981,11 +9015,14 @@ s_cte_filter_handlers[INTERP_HANDLER_TABLE_SIZE] = {
  * AggInterpreter::ProcessRec via Dbtup::interpreterJumpTable with
  * IFLAG_DISALLOW_BACKWARD_JUMPS.
  *
- * Accepted set mirrors AggInterpreter::validateEmbeddedProgram's
- * whitelist at AggInterpreter.cpp:173-201.  Runs against a REAL
- * tuple so it can include READ_ATTR_INTO_REG and BRANCH_ATTR_* —
- * unlike s_cte_filter_handlers, which must nullptr them because a
- * CTE virtual row has no operPtrP / tablePtrP.
+ * Accepted set mirrors the aggregation embedded-program validators.
+ * Runs against a REAL tuple so it can include READ_ATTR_INTO_REG and
+ * BRANCH_ATTR_*.  Join aggregation also supplies linked-attribute data,
+ * so BRANCH_MEM_OP_ARG and BRANCH_MEM_OP_ARG_INLINE_TYPE are accepted
+ * for CASE predicates over parent-table or CTE-linked columns.  This
+ * differs from s_cte_filter_handlers, which must nullptr real tuple
+ * attribute handlers because a CTE virtual row has no operPtrP /
+ * tablePtrP.
  *
  * Deliberately omits CALL / RETURN (opcodes 20/21): combined with
  * IFLAG_DISALLOW_BACKWARD_JUMPS and forward-only branches this makes
@@ -9025,7 +9062,7 @@ s_agg_interp_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  27  BRANCH_ATTR_OP_ATTR     */ nullptr,
   /*  28  LSHIFT_REG_REG          */ nullptr,
   /*  29  RSHIFT_REG_REG          */ nullptr,
-  /*  30  MUL_REG_REG             */ nullptr,
+  /*  30  MUL_REG_REG             */ &Dbtup::InterpreterContext::handleMulRegReg,
   /*  31  DIV_REG_REG             */ nullptr,
   /*  32  AND_REG_REG             */ nullptr,
   /*  33  OR_REG_REG              */ nullptr,
@@ -9033,21 +9070,21 @@ s_agg_interp_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  35  MOD_REG_REG             */ nullptr,
   /*  36  NOT_REG_REG             */ nullptr,
   /*  37  STR_TO_INT64            */ nullptr,
-  /*  38  BRANCH_MEM_OP_ARG       */ nullptr,
-  /*  39  READ_LINKED_TO_MEM      */ nullptr,
-  /*  40  BRANCH_MEM_OP_ARG_INLINE_TYPE */ nullptr,
+  /*  38  BRANCH_MEM_OP_ARG       */ &Dbtup::InterpreterContext::handleBranchMemOpArg,
+  /*  39  READ_LINKED_TO_MEM      */ &Dbtup::InterpreterContext::handleReadLinkedToMem,
+  /*  40  BRANCH_MEM_OP_ARG_INLINE_TYPE */ &Dbtup::InterpreterContext::handleBranchMemOpArgInlineType,
   /*  41  BRANCH_LINKED_EQ_NULL   */ nullptr,
   /*  42  BRANCH_LINKED_NE_NULL   */ nullptr,
-  /*  43  (unused)                */ nullptr,
+  /*  43  READ_AGG_REG_TO_REG     */ &Dbtup::InterpreterContext::handleReadAggRegToReg,
   /*  44  (unused)                */ nullptr,
   /*  45  (unused)                */ nullptr,
   /*  46  (unused)                */ nullptr,
   /*  47  READ_PARTIAL_ATTR_TO_MEM*/ nullptr,
   /*  48  READ_ATTR_TO_MEM        */ nullptr,
-  /*  49  READ_UINT8_MEM_TO_REG   */ nullptr,
-  /*  50  READ_UINT16_MEM_TO_REG  */ nullptr,
-  /*  51  READ_UINT32_MEM_TO_REG  */ nullptr,
-  /*  52  READ_INT64_MEM_TO_REG   */ nullptr,
+  /*  49  READ_UINT8_MEM_TO_REG   */ &Dbtup::InterpreterContext::handleReadUint8MemToReg,
+  /*  50  READ_UINT16_MEM_TO_REG  */ &Dbtup::InterpreterContext::handleReadUint16MemToReg,
+  /*  51  READ_UINT32_MEM_TO_REG  */ &Dbtup::InterpreterContext::handleReadUint32MemToReg,
+  /*  52  READ_INT64_MEM_TO_REG   */ &Dbtup::InterpreterContext::handleReadInt64MemToReg,
   /*  53  WRITE_UINT8_REG_TO_MEM  */ nullptr,
   /*  54  WRITE_UINT16_REG_TO_MEM */ nullptr,
   /*  55  WRITE_UINT32_REG_TO_MEM */ nullptr,
@@ -9190,6 +9227,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
     TsubroutineLen,      /* Uint32                                       */
     tmpArea,             /* Uint32*                                      */
     tmpAreaSz,           /* Uint32                                       */
+    nullptr,             /* const Register*                              */
   };
 
   /* Macro to dispatch a switch case to an extracted handler function.
@@ -9295,6 +9333,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
 
         case Interpreter::READ_LINKED_TO_MEM:
           INTERP_DISPATCH(handleReadLinkedToMem);
+          break;
+        case Interpreter::READ_AGG_REG_TO_REG:
+          INTERP_DISPATCH(handleReadAggRegToReg);
           break;
 
         case Interpreter::READ_INTERPRETER_INPUT:
@@ -9635,7 +9676,8 @@ int Dbtup::interpreterJumpTable(Signal* signal,
                                 Uint32* tmpArea,
                                 Uint32 tmpAreaSz,
                                 const InterpreterHandler *handlerTable,
-                                Uint32 flags)
+                                Uint32 flags,
+                                const Register *aggRegisters)
 {
   Uint32 theRegister;
   Uint32 theInstruction;
@@ -9687,6 +9729,7 @@ int Dbtup::interpreterJumpTable(Signal* signal,
     TsubroutineLen,      /* Uint32                                       */
     tmpArea,             /* Uint32*                                      */
     tmpAreaSz,           /* Uint32                                       */
+    aggRegisters,        /* const Register*                              */
   };
 
   const bool noBackJumps = (flags & IFLAG_DISALLOW_BACKWARD_JUMPS) != 0;
@@ -9776,12 +9819,25 @@ int Dbtup::interpreterAggEmbedded(Signal* signal,
                                   Uint32* tmpArea,
                                   Uint32 tmpAreaSz)
 {
+  return interpreterAggEmbedded(signal, req_struct, mainProgram, TmainProgLen,
+                                tmpArea, tmpAreaSz, nullptr);
+}
+
+int Dbtup::interpreterAggEmbedded(Signal* signal,
+                                  KeyReqStruct* req_struct,
+                                  Uint32* mainProgram,
+                                  Uint32 TmainProgLen,
+                                  Uint32* tmpArea,
+                                  Uint32 tmpAreaSz,
+                                  const Register *aggRegisters)
+{
   return interpreterJumpTable(signal, req_struct,
                               mainProgram, TmainProgLen,
                               nullptr, 0,
                               tmpArea, tmpAreaSz,
                               s_agg_interp_handlers,
-                              IFLAG_DISALLOW_BACKWARD_JUMPS);
+                              IFLAG_DISALLOW_BACKWARD_JUMPS,
+                              aggRegisters);
 }
 
 /**

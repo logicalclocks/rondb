@@ -191,7 +191,9 @@ bool AggInterpreter::validateEmbeddedProgram(
       case Interpreter::BRANCH_GE_REG_REG:
       case Interpreter::BRANCH_ATTR_OP_ARG:
       case Interpreter::BRANCH_ATTR_EQ_NULL:
-      case Interpreter::BRANCH_ATTR_NE_NULL: {
+      case Interpreter::BRANCH_ATTR_NE_NULL:
+      case Interpreter::BRANCH_MEM_OP_ARG:
+      case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE: {
         Uint32 offset = (instr >> 16) & 0x7FFF;
         Uint32 target = pc + offset;
         if (target >= emb_len) {
@@ -1794,49 +1796,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         break;
       }
 
-      case kOpBranchRegLt:
-      case kOpBranchRegLe:
-      case kOpBranchRegGt:
-      case kOpBranchRegGe:
-      case kOpBranchRegEq:
-      case kOpBranchRegNe:
-      {
-        Uint32 ra = (value >> 20) & 0x0F;
-        Uint32 rb = (value >> 16) & 0x0F;
-        Uint32 skip_count = value & 0xFFFF;
-        double va = 0, vb = 0;
-        if (m_registers[ra].type == NDB_TYPE_BIGINT) {
-          va = m_registers[ra].is_unsigned
-              ? (double)m_registers[ra].value.val_uint64
-              : (double)m_registers[ra].value.val_int64;
-        } else if (m_registers[ra].type == NDB_TYPE_DOUBLE) {
-          va = m_registers[ra].value.val_double;
-        }
-        if (m_registers[rb].type == NDB_TYPE_BIGINT) {
-          vb = m_registers[rb].is_unsigned
-              ? (double)m_registers[rb].value.val_uint64
-              : (double)m_registers[rb].value.val_int64;
-        } else if (m_registers[rb].type == NDB_TYPE_DOUBLE) {
-          vb = m_registers[rb].value.val_double;
-        }
-        bool do_skip = false;
-        if (m_registers[ra].is_null || m_registers[rb].is_null) {
-          do_skip = true;
-        } else {
-          switch (op) {
-          case kOpBranchRegLt: do_skip = (va < vb); break;
-          case kOpBranchRegLe: do_skip = (va <= vb); break;
-          case kOpBranchRegGt: do_skip = (va > vb); break;
-          case kOpBranchRegGe: do_skip = (va >= vb); break;
-          case kOpBranchRegEq: do_skip = (va == vb); break;
-          case kOpBranchRegNe: do_skip = (va != vb); break;
-          default: break;
-          }
-        }
-        if (do_skip) exec_pos += skip_count;
-        break;
-      }
-
       case kOpEmbeddedInterp:
       {
         Uint32 emb_len = value & 0xFFFF;
@@ -1868,7 +1827,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         int rc = block_tup->interpreterAggEmbedded(
             req_struct->signal, req_struct,
             &m_prog[exec_pos], emb_len,   /* main program = embedded portion */
-            local_tmpArea, 16);
+            local_tmpArea, 16,
+            m_registers);
 
         req_struct->no_exec_instructions = saved_instr_count;
 
@@ -1878,7 +1838,11 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
         /* Read skip_offset written by WRITE_INTERPRETER_OUTPUT in embedded prog */
         Uint32 skip_offset = block_tup->c_interpreter_output[0];
-        exec_pos += emb_len + skip_offset;
+        if (skip_offset == AGG_EMBEDDED_INTERP_STOP_PROGRAM) {
+          exec_pos = m_prog_len;
+        } else {
+          exec_pos += emb_len + skip_offset;
+        }
         break;
       }
 

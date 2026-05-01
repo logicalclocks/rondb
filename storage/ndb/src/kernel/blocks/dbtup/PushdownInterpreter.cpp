@@ -219,12 +219,6 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
       }
 
       case kOpSkip:
-      case kOpBranchRegLt:
-      case kOpBranchRegLe:
-      case kOpBranchRegGt:
-      case kOpBranchRegGe:
-      case kOpBranchRegEq:
-      case kOpBranchRegNe:
         break;
 
       default:

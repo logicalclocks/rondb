@@ -552,6 +552,7 @@ bool JoinAggInterpreter::validateEmbeddedProgram(
       case Interpreter::LOAD_CONST64:
       case Interpreter::ADD_REG_REG:
       case Interpreter::SUB_REG_REG:
+      case Interpreter::MUL_REG_REG:
       case Interpreter::BRANCH:
       case Interpreter::BRANCH_REG_EQ_NULL:
       case Interpreter::BRANCH_REG_NE_NULL:
@@ -568,7 +569,11 @@ bool JoinAggInterpreter::validateEmbeddedProgram(
       case Interpreter::BRANCH_ATTR_EQ_NULL:
       case Interpreter::BRANCH_ATTR_NE_NULL:
       case Interpreter::READ_LINKED_TO_MEM:
+      case Interpreter::READ_UINT8_MEM_TO_REG:
+      case Interpreter::READ_UINT16_MEM_TO_REG:
+      case Interpreter::READ_UINT32_MEM_TO_REG:
       case Interpreter::READ_INT64_MEM_TO_REG:
+      case Interpreter::READ_AGG_REG_TO_REG:
       case Interpreter::WRITE_INTERPRETER_OUTPUT:
         break;
       default:
@@ -859,12 +864,6 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
           break;
         }
         case kOpSkip:
-        case kOpBranchRegLt:
-        case kOpBranchRegLe:
-        case kOpBranchRegGt:
-        case kOpBranchRegGe:
-        case kOpBranchRegEq:
-        case kOpBranchRegNe:
           break;
         default:
           break;
@@ -1437,51 +1436,6 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         break;
       }
 
-      case kOpBranchRegLt:
-      case kOpBranchRegLe:
-      case kOpBranchRegGt:
-      case kOpBranchRegGe:
-      case kOpBranchRegEq:
-      case kOpBranchRegNe:
-      {
-        Uint32 ra = (value >> 20) & 0x0F;
-        Uint32 rb = (value >> 16) & 0x0F;
-        Uint32 skip_count = value & 0xFFFF;
-        // Compare registers as doubles for type-agnostic comparison
-        double va = 0, vb = 0;
-        if (m_registers[ra].type == NDB_TYPE_BIGINT) {
-          va = m_registers[ra].is_unsigned
-              ? (double)m_registers[ra].value.val_uint64
-              : (double)m_registers[ra].value.val_int64;
-        } else if (m_registers[ra].type == NDB_TYPE_DOUBLE) {
-          va = m_registers[ra].value.val_double;
-        }
-        if (m_registers[rb].type == NDB_TYPE_BIGINT) {
-          vb = m_registers[rb].is_unsigned
-              ? (double)m_registers[rb].value.val_uint64
-              : (double)m_registers[rb].value.val_int64;
-        } else if (m_registers[rb].type == NDB_TYPE_DOUBLE) {
-          vb = m_registers[rb].value.val_double;
-        }
-        // If either register is NULL, skip (NULL comparison → no match)
-        bool do_skip = false;
-        if (m_registers[ra].is_null || m_registers[rb].is_null) {
-          do_skip = true;
-        } else {
-          switch (op) {
-          case kOpBranchRegLt: do_skip = (va < vb); break;
-          case kOpBranchRegLe: do_skip = (va <= vb); break;
-          case kOpBranchRegGt: do_skip = (va > vb); break;
-          case kOpBranchRegGe: do_skip = (va >= vb); break;
-          case kOpBranchRegEq: do_skip = (va == vb); break;
-          case kOpBranchRegNe: do_skip = (va != vb); break;
-          default: break;
-          }
-        }
-        if (do_skip) exec_pos += skip_count;
-        break;
-      }
-
       case kOpEmbeddedInterp:
       {
         Uint32 emb_len = value & 0xFFFF;
@@ -1507,11 +1461,11 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         req_struct->m_linked_attr_len = m_linked_attr_len;
 
         Uint32 local_tmpArea[16];
-        int rc = block_tup->interpreterNextLab(
+        int rc = block_tup->interpreterAggEmbedded(
             req_struct->signal, req_struct,
             &m_prog[exec_pos], emb_len,
-            nullptr, 0,
-            local_tmpArea, 16);
+            local_tmpArea, 16,
+            m_registers);
 
         req_struct->no_exec_instructions = saved_instr_count;
         req_struct->m_linked_attr_data = nullptr;
@@ -1520,7 +1474,11 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         if (rc < 0) return ZAGG_EMBEDDED_INTERP_ERROR;
 
         Uint32 skip_offset = block_tup->c_interpreter_output[0];
-        exec_pos += emb_len + skip_offset;
+        if (skip_offset == AGG_EMBEDDED_INTERP_STOP_PROGRAM) {
+          exec_pos = m_prog_len;
+        } else {
+          exec_pos += emb_len + skip_offset;
+        }
         break;
       }
 
@@ -1769,12 +1727,6 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
         break;
       }
       case kOpSkip:
-      case kOpBranchRegLt:
-      case kOpBranchRegLe:
-      case kOpBranchRegGt:
-      case kOpBranchRegGe:
-      case kOpBranchRegEq:
-      case kOpBranchRegNe:
         break;
       default:
         break;

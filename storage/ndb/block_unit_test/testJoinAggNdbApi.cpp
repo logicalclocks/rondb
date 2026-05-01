@@ -5652,6 +5652,7 @@ testCompleteRef(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 static int onlyTest = 0;   /* 0 = run all, N = run only test N */
 static int skipTest = 0;   /* 0 = skip none, N = skip test N */
 
+#if !defined(VM_TRACE) && !defined(ERROR_INSERT)
 /* Tests that require ERROR_INSERT support in the data node.
  * In production builds (no VM_TRACE / ERROR_INSERT), insertErrorInAllNodes
  * is a no-op, so these tests cannot exercise the code path they target.
@@ -5674,6 +5675,7 @@ fakeOkLineForErrorInsertTest(int testNum)
     default: return nullptr;
   }
 }
+#endif
 
 static bool
 shouldRun(int testNum)

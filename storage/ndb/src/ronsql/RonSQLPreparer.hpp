@@ -185,7 +185,7 @@ private:
   // Cross-table WHERE filters (e.g., WHERE l.price > o.min_price).
   // These reference columns from two different tables and cannot be
   // pushed as scan filters.  For aggregation queries, they are compiled
-  // into BranchReg conditional aggregation instructions.
+  // into embedded normal-interpreter predicates before aggregate updates.
   struct CrossTableFilter {
     ConditionalExpression* ce;
     Uint32 child_table_idx;   // table index of the "inner" side
@@ -419,16 +419,28 @@ private:
                               NdbAggregator* aggregator,
                               NdbDictionary::Table* const* cteVirtualTables
                                   = NULL);
-  Uint32 filter_expr_word_count(struct ConditionalExpression* ce);
-  void emit_filter_expr(NdbAggregator* agg, QueryScope& scope,
-                        struct ConditionalExpression* ce,
-                        Uint32 leaf_idx, Uint32 reg, Uint32 tmp_reg);
+  Uint32 embedded_filter_expr_word_count(QueryScope& scope,
+                                         struct ConditionalExpression* ce,
+                                         Uint32 leaf_idx);
+  void emit_embedded_filter_expr(NdbAggregator* agg, QueryScope& scope,
+                                 struct ConditionalExpression* ce,
+                                 Uint32 leaf_idx, Uint32 reg, Uint32 tmp_reg);
+  void generate_embedded_filter_condition(NdbAggregator* aggregator,
+                                          QueryScope& scope,
+                                          struct ConditionalExpression* ce,
+                                          Uint32 true_output,
+                                          Uint32 false_output,
+                                          Uint32 leaf_idx);
   void generate_embedded_condition(NdbAggregator* aggregator,
                                    QueryScope& scope,
                                    struct ConditionalExpression* ce,
                                    Uint32 then_arm_raw_size,
                                    NdbDictionary::Table* const*
-                                       cteVirtualTables);
+                                       cteVirtualTables,
+                                   bool use_custom_outputs = false,
+                                   Uint32 first_exit_output = 0,
+                                   Uint32 second_exit_output = 0,
+                                   Uint32 agg_leaf_idx_override = 0xFFFFFFFF);
   const NdbDictionary::Column* resolve_case_condition_column(
       QueryScope& scope,
       struct ConditionalExpression* col_side,

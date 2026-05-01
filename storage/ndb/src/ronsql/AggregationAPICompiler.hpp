@@ -45,8 +45,9 @@
   X(DivInt) \
   X(Rem)
 // Pair-ops are value-producing binary ops shaped like arithmetic ops at the
-// SVM level, but each one expands to a BranchReg* + Mov pair when emitted to
-// the NdbAggregator program. Used to lower n-ary GREATEST / LEAST.
+// SVM level. Each one emits an embedded normal-interpreter comparison that
+// imports aggregation registers and conditionally skips a Mov. Used to lower
+// n-ary GREATEST / LEAST.
 #define FORALL_PAIR_OPS(X) \
   X(Greatest2) \
   X(Least2)

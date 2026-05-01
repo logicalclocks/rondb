@@ -308,6 +308,7 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 class Dbtux;
 class AggInterpreter;
 class JoinAggInterpreter;
+struct Register;
 
 class Dbtup : public SimulatedBlock {
   friend class DbtupProxy;
@@ -2966,7 +2967,8 @@ public:
                            Uint32 *subroutineProg, Uint32 TsubroutineLen,
                            Uint32 *tmpArea, Uint32 tmpAreaSz,
                            const InterpreterHandler *handlerTable,
-                           Uint32 flags);
+                           Uint32 flags,
+                           const Register *aggRegisters = nullptr);
 
   /* Thin wrapper preserved for the CTE filter call sites from
    * Phase A/B.  Calls interpreterJumpTable with s_cte_filter_handlers
@@ -2986,6 +2988,10 @@ public:
   int interpreterAggEmbedded(Signal *signal, KeyReqStruct *req_struct,
                              Uint32 *mainProgram, Uint32 TmainProgLen,
                              Uint32 *tmpArea, Uint32 tmpAreaSz);
+  int interpreterAggEmbedded(Signal *signal, KeyReqStruct *req_struct,
+                             Uint32 *mainProgram, Uint32 TmainProgLen,
+                             Uint32 *tmpArea, Uint32 tmpAreaSz,
+                             const Register *aggRegisters);
 
 private:
 

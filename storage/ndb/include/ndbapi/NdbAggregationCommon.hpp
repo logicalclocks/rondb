@@ -64,6 +64,15 @@ struct CHARSET_INFO;
 
 #define PUSHDOWN_AGGREGATION_VERSION 2
 
+/*
+ * kOpEmbeddedInterp writes its control result through interpreter output
+ * slot 0.  Normal CASE lowering writes a forward skip offset.  This
+ * reserved value tells the aggregation interpreter to stop processing the
+ * current row's aggregation program.  The embedded normal interpreter still
+ * owns all comparison and branch semantics.
+ */
+#define AGG_EMBEDDED_INTERP_STOP_PROGRAM 0xFFFF
+
 /**
  * CTE definitions marker in the KeyInfo agg section (Section 2).
  * Separates the main aggregation program from CTE definition data.
@@ -107,16 +116,6 @@ enum InterpreterOp {
   // Embedded interpreter support for CASE expressions
   kOpEmbeddedInterp,  // Invoke embedded old-interpreter code block
   kOpSkip,            // Unconditional forward skip in aggregation program
-
-  // Register-to-register comparison with conditional skip
-  // Encoding: (op << 26) | (reg_a << 20) | (reg_b << 16) | skip_count
-  // Skips skip_count instructions if condition is TRUE
-  kOpBranchRegLt,     // Skip if reg_a < reg_b
-  kOpBranchRegLe,     // Skip if reg_a <= reg_b
-  kOpBranchRegGt,     // Skip if reg_a > reg_b
-  kOpBranchRegGe,     // Skip if reg_a >= reg_b
-  kOpBranchRegEq,     // Skip if reg_a == reg_b
-  kOpBranchRegNe,     // Skip if reg_a != reg_b
 
   kOpTotal
 };

@@ -39,13 +39,14 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_filter_phase_i4.md` — Phase I.4: CASE condition referencing a CTE column projection (kernel + RonSQL)
 - `cte_filter_phase_i5.md` — Phase I.5: GREATEST / LEAST n-ary functions (v1 shipped: 2-arg col+const, RonSQL only)
 - `cte_filter_phase_i5_v2.md` — Phase I.5 v2: register-based CASE codegen (v2a + v2b shipped: col-vs-col atoms in embedded CASE, plus n-ary GREATEST/LEAST via SVM extension)
-- `cte_filter_phase_i5_v2b.md` — Phase I.5 v2b (shipped): n-ary GREATEST/LEAST via SVM extension (Greatest2/Least2 SVM ops; pair-op expands to BranchRegGe/Le + Mov in programAggregator; v2b also replaces v1's CaseExpr-based two-arg lowering)
+- `cte_filter_phase_i5_v2b.md` — Phase I.5 v2b (shipped): n-ary GREATEST/LEAST via SVM extension (Greatest2/Least2 SVM ops; pair-op now expands to embedded normal-interpreter compare + Mov in programAggregator after Phase M; v2b also replaces v1's CaseExpr-based two-arg lowering)
 - `cte_filter_phase_i5_v5.md` — Phase I.5 v5: typed linked-column register loads for signed/unsigned INT8/16/24/32/64 in all interpreter variants
 - `cte_filter_phase_i5_v6.md` — Phase I.5 v6: deferred CTE linked-vs-linked GREATEST / LEAST runtime tests
 - `cte_filter_phase_k.md` — Phase K: ANTI_JOIN promotion for WHERE col IS NULL on LEFT JOIN RHS (RonSQL)
 - `cte_filter_phase_l.md` — Phase L: JOIN_AGG_COMPLETE robustness — checkCteReady / continueJoinAggRedistribute idempotency, unified requestId correlation in DBTC, single-owner DBLQH routing, phase-report deduplication, test coverage (kernel + DBTC, plan-only)
 - `cte_filter_phase_l_commit5.md` — Phase L commit 5: cleanup follow-up — drop redundant `m_redist_mutex` and retire legacy `m_cteCompleteOutstanding` counter
 - `cte_filter_phase_m.md` — Phase M: remove aggregation-program BranchReg control flow; route filtering through normal filters / embedded interpreter before continuing Phase I
+- `cte_filter_phase_m1_inventory.txt` — Phase M.1: plain-text BranchReg / Greatest2 / Least2 inventory and guard checklist
 - `cte_nextreq_plan.md` — SCAN_NEXTREQ flow control for CTE main-SELECTs: overview + phase index
 - `cte_nextreq_phase_1.md` — Phase 1: fix CTE_SCAN_REQ continuation plumbing (scanIterI, SignalLengthContinue)
 - `cte_nextreq_phase_2.md` — Phase 2: SCAN_NEXTREQ flow control for CTE_SCAN root

@@ -8,8 +8,8 @@ call mtr.add_suppression("Participant timeout");
 # Phase I.5 v2b: n-ary GREATEST / LEAST via SVM extension.
 # Grammar lifted from 2-arg-only to n-ary; lowering folds the operand
 # list left-associative into a chain of Greatest2 / Least2 SVM ops,
-# each expanding to BranchRegGe + Mov (or BranchRegLe + Mov) in
-# programAggregator.  Bigint-only / integer-only on each side;
+# each expanding to an embedded normal-interpreter comparison plus Mov
+# in programAggregator.  Bigint-only / integer-only on each side;
 # nullable column operands rejected post-resolution.
 
 --let $suppress_ronsql_cli=yes
@@ -64,8 +64,8 @@ DELIMITER |;
 --echo === Test 1: SUM(GREATEST(a, b, c)) — three distinct columns ===
 
 # Lowers to Greatest2(Greatest2(c_region, c_floor), c_ceil) on the SVM.
-# Emits LoadColumn(c_region)+LoadColumn(c_floor)+BranchRegGe+Mov+
-# LoadColumn(c_ceil)+BranchRegGe+Mov+Sum.
+# Emits LoadColumn(c_region)+LoadColumn(c_floor)+EmbeddedInterp+Mov+
+# LoadColumn(c_ceil)+EmbeddedInterp+Mov+Sum.
 let $QUERY=
 SELECT c.c_id, SUM(GREATEST(c.c_region, c.c_floor, c.c_ceil)) AS gmax
 FROM cte_customer AS c
@@ -103,8 +103,8 @@ GROUP BY c.c_id|
 --echo === Test 3: SUM(GREATEST(col, 100, 200)) — column + two constants ===
 
 # Mixed col + const.  acc starts at c.c_region; folds 100 then 200.
-# Emits LoadColumn+LoadInt64(100)+BranchRegGe+Mov+LoadInt64(200)+
-# BranchRegGe+Mov+Sum.
+# Emits LoadColumn+LoadInt64(100)+EmbeddedInterp+Mov+LoadInt64(200)+
+# EmbeddedInterp+Mov+Sum.
 let $QUERY=
 SELECT c.c_id, SUM(GREATEST(c.c_region, 100, 200)) AS g
 FROM cte_customer AS c

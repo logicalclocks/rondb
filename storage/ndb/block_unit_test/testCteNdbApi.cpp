@@ -51,6 +51,10 @@
 #include "NdbQueryBuilder.hpp"
 #include "NdbQueryBuilderImpl.hpp"
 #include "NdbQueryOperation.hpp"
+#ifdef NONE
+#undef NONE
+#endif
+#include <Interpreter.hpp>
 
 #include <mysql.h>
 
@@ -5629,7 +5633,7 @@ testCrossJoinTwoScalarCtes(Ndb *ndb, MYSQL * /*conn*/)
 /* Why this test:                                                      */
 /*   End-to-end test of the Hopsworks watermark query pattern.         */
 /*   GREATEST is expressed as CASE WHEN a >= b THEN a ELSE b END       */
-/*   using the NdbAggregator's BranchRegGe + Mov instructions.         */
+/*   using an embedded interpreter comparison plus Mov.                 */
 /*   The lookupCte child is the aggregate leaf whose program computes  */
 /*   GREATEST of the parent's CTE0 result and its own CTE1 result.    */
 /*                                                                     */
@@ -5643,7 +5647,7 @@ testCrossJoinTwoScalarCtes(Ndb *ndb, MYSQL * /*conn*/)
 /* Aggregation program on node 7:                                      */
 /*   LoadLinkedColumn(pos=0, reg0, col)       // reg0 = CTE0 MAX=50   */
 /*   LoadLinkedColumn(pos=1, reg1, col)       // reg1 = CTE1 MIN=10   */
-/*   BranchRegGe(reg0, reg1, 1)              // skip Mov if reg0>=reg1*/
+/*   EmbeddedInterp(...)                      // skip Mov if reg0>=reg1*/
 /*   Mov(reg0, reg1)                          // reg0 = reg1           */
 /*   Max(0, reg0)                             // agg[0] = reg0         */
 /*                                                                     */
@@ -5694,8 +5698,8 @@ testGreatestViaCaseAgg(Ndb *ndb, MYSQL * /*conn*/)
    * = CASE WHEN reg0 >= reg1 THEN reg0 ELSE reg1 END
    * Expressed as:
    *   LoadLinkedColumn(0, reg0, col)
-   *   LoadColumn("result", reg1)
-   *   BranchRegGe(reg0, reg1, 1)   // skip Mov if reg0 >= reg1
+   *   LoadLinkedColumn(1, reg1, col)
+   *   EmbeddedInterp(...)          // skip Mov if reg0 >= reg1
    *   Mov(reg0, reg1)              // reg0 = reg1
    *   Max(0, reg0)                 // store GREATEST in agg[0]
    */
@@ -5704,8 +5708,18 @@ testGreatestViaCaseAgg(Ndb *ndb, MYSQL * /*conn*/)
   NdbAggregator mainAgg(scalarVirtTab);
   if (!mainAgg.LoadLinkedColumn(0, 0, virtResultCol) ||
       !mainAgg.LoadLinkedColumn(1, 1, virtResultCol) ||
-      /* BranchRegGe: skip when reg0 >= reg1 → keep larger in reg0 */
-      !mainAgg.BranchRegGe(0, 1, 1) ||
+      !mainAgg.EmbeddedInterp(9) ||
+      !mainAgg.EmitEmbeddedWord(Interpreter::ReadAggRegIntoReg(0, 1)) ||
+      !mainAgg.EmitEmbeddedWord(Interpreter::ReadAggRegIntoReg(1, 2)) ||
+      !mainAgg.EmitEmbeddedWord(
+          Interpreter::Branch(Interpreter::BRANCH_GE_REG_REG,
+                              /*Reg1=*/2, /*Reg2=*/1) | (4 << 16)) ||
+      !mainAgg.EmitEmbeddedWord(Interpreter::LoadConst16(3, 0)) ||
+      !mainAgg.EmitEmbeddedWord(Interpreter::WriteInterpreterOutput(3, 0)) ||
+      !mainAgg.EmitEmbeddedWord(Interpreter::ExitOK()) ||
+      !mainAgg.EmitEmbeddedWord(Interpreter::LoadConst16(3, 1)) ||
+      !mainAgg.EmitEmbeddedWord(Interpreter::WriteInterpreterOutput(3, 0)) ||
+      !mainAgg.EmitEmbeddedWord(Interpreter::ExitOK()) ||
       !mainAgg.Mov(0, 1) ||
       !mainAgg.Max(0, 0) ||
       !mainAgg.Finalize()) {

@@ -1543,7 +1543,8 @@ RonSQLPreparer::assign_cross_table_index_bounds()
   // For each child operation that is an INDEX_SCAN, iterate the index
   // columns after the join key prefix and try to match cross-table
   // filters to consecutive columns.  Matching filters become index
-  // range bounds; unmatched filters stay as BranchReg fallbacks.
+  // range bounds; unmatched filters stay as embedded-interpreter
+  // aggregation predicates.
   //
   // Index bounds must follow prefix order: once a column has a
   // non-equality bound, later columns cannot be bounded.
@@ -4758,14 +4759,12 @@ RonSQLPreparer::execute_join()
         Uint32 reg = 0;  // use register 0 for loads
         Uint32 agg_slot = leaf_local_slot++;
 
-        // If cross-table filter exists, build conditional aggregation:
-        //   LoadLinkedColumn(linked_pos, reg_outer, outer_col)
-        //   LoadColumn(inner_attr_id, reg_inner)
-        //   BranchRegXx(reg_inner, reg_outer, 2) — skip Load+Agg
-        //   LoadColumn(agg_col, reg)
-        //   Sum/Count/etc(slot, reg)
+        // If a cross-table filter exists, run the condition through the
+        // embedded normal interpreter.  A failed predicate skips this
+        // subquery's aggregate update; comparison and branch semantics remain
+        // owned by the normal interpreter.
         //
-        // Without cross-table filter, just: LoadColumn + Agg
+        // Without a cross-table filter, just: LoadColumn + Agg.
         if (sl.cross_table_filter != NULL) {
           ConditionalExpression *cf = sl.cross_table_filter;
           require_prm(cf->args.left != NULL && cf->args.right != NULL &&
@@ -4776,93 +4775,13 @@ RonSQLPreparer::execute_join()
                       cf->op == T_GT || cf->op == T_GE ||
                       cf->op == T_EQUALS || cf->op == T_NOT_EQUALS,
                       "Cross-table filter must use <, <=, >, >=, = or !=.");
-
-          // Determine which side is inner, which is outer
-          Uint32 left_cidx = cf->args.left->col_idx;
-          Uint32 right_cidx = cf->args.right->col_idx;
-          LexCString itbl = sl.inner_table_alias;
-          bool left_is_inner =
-              (m_column_qualifiers[left_cidx].str != NULL &&
-               m_column_qualifiers[left_cidx].len == itbl.len &&
-               strncmp(m_column_qualifiers[left_cidx].str, itbl.str,
-                       itbl.len) == 0);
-
-          Uint32 inner_cidx = left_is_inner ? left_cidx : right_cidx;
-          Uint32 outer_cidx = left_is_inner ? right_cidx : left_cidx;
-
-          // Add linked projection for the outer column
-          Uint32 outer_lp_pos = find_or_add_linked_proj(
-              m_main_scope.join_plan, m_main_scope.column_table_idx[outer_cidx],
-              m_columns[outer_cidx].c_str());
-
-          // Load outer column into register 2 via linked projection
-          Uint32 reg_outer = 2;
-          require_prm(agg->LoadLinkedColumn(outer_lp_pos, reg_outer,
-                                            m_main_scope.column_map[outer_cidx]),
-                      "Failed to load linked outer column for cross-table filter.");
-
-          // Load inner filter column into register 1
-          Uint32 reg_inner = 1;
-          NdbAttrId inner_filter_attr = m_main_scope.column_attrId_map[inner_cidx];
-          require_prm(agg->LoadColumn(inner_filter_attr, reg_inner),
-                      "Failed to load inner column for cross-table filter.");
-
-          // Determine branch instruction: we want to SKIP aggregation
-          // when the filter does NOT match.
-          // Original filter: inner_col OP outer_col (when left_is_inner)
-          // We skip when the NEGATION is true.
-          // e.g., filter is "l.qty > o.min_qty" → skip when l.qty <= o.min_qty
-          //        → BranchRegLe(reg_inner, reg_outer, skip_2)
-          TokenKind filter_op = cf->op;
-          if (!left_is_inner) {
-            // Flip: if right is inner, swap operand order
-            // "o.min_qty < l.qty" is same as "l.qty > o.min_qty"
-            switch (filter_op) {
-            case T_LT: filter_op = T_GT; break;
-            case T_LE: filter_op = T_GE; break;
-            case T_GT: filter_op = T_LT; break;
-            case T_GE: filter_op = T_LE; break;
-            default: break;
-            }
-          }
-          // Now filter_op is from inner's perspective: inner_col OP outer_col
-          // We skip when NOT(inner_col OP outer_col):
-          //   NOT(a > b) = a <= b → BranchRegLe
-          //   NOT(a >= b) = a < b → BranchRegLt
-          //   NOT(a < b) = a >= b → BranchRegGe
-          //   NOT(a <= b) = a > b → BranchRegGt
-          //   NOT(a = b) = a != b → BranchRegNe
-          //   NOT(a != b) = a = b → BranchRegEq
-          Uint32 skip_count = 2;  // skip LoadColumn + Agg instruction
-          switch (filter_op) {
-          case T_GT:
-            require_prm(agg->BranchRegLe(reg_inner, reg_outer, skip_count),
-                        "Failed to program BranchRegLe.");
-            break;
-          case T_GE:
-            require_prm(agg->BranchRegLt(reg_inner, reg_outer, skip_count),
-                        "Failed to program BranchRegLt.");
-            break;
-          case T_LT:
-            require_prm(agg->BranchRegGe(reg_inner, reg_outer, skip_count),
-                        "Failed to program BranchRegGe.");
-            break;
-          case T_LE:
-            require_prm(agg->BranchRegGt(reg_inner, reg_outer, skip_count),
-                        "Failed to program BranchRegGt.");
-            break;
-          case T_EQUALS:
-            require_prm(agg->BranchRegNe(reg_inner, reg_outer, skip_count),
-                        "Failed to program BranchRegNe.");
-            break;
-          case T_NOT_EQUALS:
-            require_prm(agg->BranchRegEq(reg_inner, reg_outer, skip_count),
-                        "Failed to program BranchRegEq.");
-            break;
-          default:
-            require_prm(false,
-                "Unsupported cross-table filter operator.");
-          }
+          Uint32 aggregate_update_raw_size = sl.is_count_star ? 4 : 2;
+          generate_embedded_condition(
+              agg, m_main_scope, cf, 0, /*cteVirtualTables=*/NULL,
+              /*use_custom_outputs=*/true,
+              /*first_exit_output=*/aggregate_update_raw_size,
+              /*second_exit_output=*/0,
+              /*agg_leaf_idx_override=*/op_idx);
         }
 
         if (sl.is_count_star) {
@@ -7425,14 +7344,52 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
       programAggregator_do_or_fail(aggregator->Count(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::Greatest2:
-      // Pair-max: BranchRegGe skips the Mov when r[dest] >= r[src],
-      // leaving the larger value already in r[dest].  Otherwise the
-      // Mov copies r[src] into r[dest].
-      programAggregator_do_or_fail(aggregator->BranchRegGe(dest, src, 1));
+      // Pair-max: embedded normal-interpreter comparison imports the
+      // aggregation registers and returns skip=1 when r[dest] >= r[src],
+      // skipping the following Mov.
+      programAggregator_do_or_fail(aggregator->EmbeddedInterp(9));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ReadAggRegIntoReg(dest, 1)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ReadAggRegIntoReg(src, 2)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::Branch(Interpreter::BRANCH_GE_REG_REG,
+                              /*Reg1=*/2, /*Reg2=*/1) | (4 << 16)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::LoadConst16(3, 0)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::WriteInterpreterOutput(3, 0)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ExitOK()));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::LoadConst16(3, 1)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::WriteInterpreterOutput(3, 0)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ExitOK()));
       programAggregator_do_or_fail(aggregator->Mov(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::Least2:
-      programAggregator_do_or_fail(aggregator->BranchRegLe(dest, src, 1));
+      programAggregator_do_or_fail(aggregator->EmbeddedInterp(9));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ReadAggRegIntoReg(dest, 1)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ReadAggRegIntoReg(src, 2)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::Branch(Interpreter::BRANCH_LE_REG_REG,
+                              /*Reg1=*/2, /*Reg2=*/1) | (4 << 16)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::LoadConst16(3, 0)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::WriteInterpreterOutput(3, 0)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ExitOK()));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::LoadConst16(3, 1)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::WriteInterpreterOutput(3, 0)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ExitOK()));
       programAggregator_do_or_fail(aggregator->Mov(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::AggRepeat:
@@ -7499,25 +7456,29 @@ filter_expr_reg_depth(ConditionalExpression* ce)
 
 /*
  * Count the number of NdbAggregator program words needed to compile
- * a filter expression (single-table or constant-only subtree) into
- * a register.  Supports: identifiers, integer/float constants,
- * and +, -, * arithmetic.
+ * Count normal-interpreter words needed to evaluate a cross-table filter
+ * expression into a register.  Supports identifiers, integer constants,
+ * and the arithmetic shapes accepted by cross_table_where_filters.
  */
-static Uint32
-filter_expr_word_count_impl(ConditionalExpression* ce)
+Uint32
+RonSQLPreparer::embedded_filter_expr_word_count(QueryScope& scope,
+                                                ConditionalExpression* ce,
+                                                Uint32 leaf_idx)
 {
   switch (ce->op) {
   case T_IDENTIFIER:
-    return 1;  // LoadColumn or LoadLinkedColumn
+  {
+    Uint32 cidx = ce->col_idx;
+    return scope.column_table_idx[cidx] == leaf_idx ? 1 : 2;
+  }
   case T_INT:
-    return 3;  // LoadInt64
-  case T_FLOAT:
-    return 3;  // LoadUint64 (double via reinterpret)
+    return 3;  // LOAD_CONST64 + 2 value words
   case T_PLUS:
   case T_MINUS:
   case T_MULTIPLY:
-    return filter_expr_word_count_impl(ce->args.left) +
-           filter_expr_word_count_impl(ce->args.right) + 1;  // +1 for arith op
+    return embedded_filter_expr_word_count(scope, ce->args.left, leaf_idx) +
+           embedded_filter_expr_word_count(scope, ce->args.right, leaf_idx) +
+           1;
   default:
     require_prm(false,
         "Unsupported expression in cross-table WHERE filter. "
@@ -7526,107 +7487,87 @@ filter_expr_word_count_impl(ConditionalExpression* ce)
   }
 }
 
-Uint32
-RonSQLPreparer::filter_expr_word_count(ConditionalExpression* ce)
-{
-  return filter_expr_word_count_impl(ce);
-}
-
-/*
- * Compute total program words for a CrossTableFilter (comparison or OR).
- * For a simple comparison: left_words + right_words + 1 (BranchReg).
- * For OR with K atoms: sum of per-atom words + K-1 Skip instructions.
- *   Non-last atom: left_words + right_words + 1 (BranchReg) + 1 (Skip)
- *   Last atom:     left_words + right_words + 1 (BranchReg)
- */
-static Uint32
-cross_table_filter_word_count(ConditionalExpression* ce,
-    Uint32 (*expr_wc)(ConditionalExpression*))
-{
-  if (ce->op != T_OR) {
-    // Simple comparison
-    return expr_wc(ce->args.left) + expr_wc(ce->args.right) + 1;
-  }
-  // OR: flatten and sum
-  ConditionalExpression* atoms[32];
-  Uint32 n = 0;
-  std::function<void(ConditionalExpression*)> flatten =
-      [&](ConditionalExpression* node) {
-    if (node->op == T_OR) {
-      flatten(node->args.left);
-      flatten(node->args.right);
-    } else if (n < 32) {
-      atoms[n++] = node;
-    }
-  };
-  flatten(ce);
-  Uint32 total = 0;
-  for (Uint32 i = 0; i < n; i++) {
-    total += expr_wc(atoms[i]->args.left) +
-             expr_wc(atoms[i]->args.right) + 1;  // loads + BranchReg
-    if (i < n - 1) total += 1;  // Skip instruction for non-last
-  }
-  return total;
-}
-
-/*
- * Emit NdbAggregator instructions to evaluate a single-table expression
- * into `reg`.  Uses `tmp_reg` as scratch for binary operations.
- * `leaf_idx` determines whether to use LoadColumn (leaf) or
- * LoadLinkedColumn (ancestor).
- */
 void
-RonSQLPreparer::emit_filter_expr(NdbAggregator* agg,
-                                  QueryScope& scope,
-                                  ConditionalExpression* ce,
-                                  Uint32 leaf_idx, Uint32 reg,
-                                  Uint32 tmp_reg)
+RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
+                                          QueryScope& scope,
+                                          ConditionalExpression* ce,
+                                          Uint32 leaf_idx,
+                                          Uint32 reg,
+                                          Uint32 tmp_reg)
 {
   switch (ce->op) {
   case T_IDENTIFIER:
   {
     Uint32 cidx = ce->col_idx;
     if (scope.column_table_idx[cidx] == leaf_idx) {
-      programAggregator_do_or_fail(
-          agg->LoadColumn(scope.column_attrId_map[cidx], reg));
+      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+          Interpreter::Read((Uint32)scope.column_attrId_map[cidx], reg)));
     } else {
       Uint32 lp = find_or_add_linked_proj(
           scope.join_plan, scope.column_table_idx[cidx],
           m_columns[cidx].c_str());
-      programAggregator_do_or_fail(
-          agg->LoadLinkedColumn(lp, reg, scope.column_map[cidx]));
+      const NdbDictionary::Column* col = scope.column_map[cidx];
+      require_prm(col != NULL,
+                  "Cross-table WHERE filter: unresolved linked column.");
+      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+          Interpreter::READ_LINKED_TO_MEM | (lp << 16)));
+
+      Uint32 read_word = 0;
+      switch (col->getSizeInBytes()) {
+      case 1:
+        read_word = Interpreter::ReadUint8FromMemIntoRegConst(reg, 4);
+        break;
+      case 2:
+        read_word = Interpreter::ReadUint16FromMemIntoRegConst(reg, 4);
+        break;
+      case 4:
+        read_word = Interpreter::ReadUint32FromMemIntoRegConst(reg, 4);
+        break;
+      case 8:
+        read_word = Interpreter::ReadInt64FromMemIntoRegConst(reg, 4);
+        break;
+      default:
+        require_prm(false,
+                    "Unsupported linked integer width in cross-table "
+                    "WHERE filter.");
+      }
+      programAggregator_do_or_fail(agg->EmitEmbeddedWord(read_word));
     }
     break;
   }
   case T_INT:
-    programAggregator_do_or_fail(
-        agg->LoadInt64(ce->constant_integer, reg));
-    break;
-  case T_FLOAT:
   {
-    // Load double as uint64 via reinterpret
-    Uint64 bits;
-    double d = ce->constant_float.dbl;
-    memcpy(&bits, &d, sizeof(bits));
-    programAggregator_do_or_fail(agg->LoadUint64(bits, reg));
+    Int64 v = ce->constant_integer;
+    Uint32 lo = 0;
+    Uint32 hi = 0;
+    memcpy(&lo, &v, 4);
+    memcpy(&hi, ((char*)&v) + 4, 4);
+    programAggregator_do_or_fail(
+        agg->EmitEmbeddedWord(Interpreter::LoadConst64(reg)));
+    programAggregator_do_or_fail(agg->EmitEmbeddedWord(lo));
+    programAggregator_do_or_fail(agg->EmitEmbeddedWord(hi));
     break;
   }
   case T_PLUS:
   case T_MINUS:
   case T_MULTIPLY:
   {
-    // Evaluate left into reg, right into tmp_reg, then operate
-    emit_filter_expr(agg, scope, ce->args.left, leaf_idx, reg, tmp_reg);
-    emit_filter_expr(agg, scope, ce->args.right, leaf_idx, tmp_reg, reg);
+    emit_embedded_filter_expr(agg, scope, ce->args.left, leaf_idx,
+                              reg, tmp_reg);
+    emit_embedded_filter_expr(agg, scope, ce->args.right, leaf_idx,
+                              tmp_reg, reg);
     switch (ce->op) {
     case T_PLUS:
-      programAggregator_do_or_fail(agg->Add(reg, tmp_reg));
+      programAggregator_do_or_fail(
+          agg->EmitEmbeddedWord(Interpreter::Add(reg, reg, tmp_reg)));
       break;
     case T_MINUS:
-      programAggregator_do_or_fail(agg->Minus(reg, tmp_reg));
+      programAggregator_do_or_fail(
+          agg->EmitEmbeddedWord(Interpreter::Sub(reg, reg, tmp_reg)));
       break;
     case T_MULTIPLY:
-      programAggregator_do_or_fail(agg->Mul(reg, tmp_reg));
+      programAggregator_do_or_fail(
+          agg->EmitEmbeddedWord(Interpreter::Mul(reg, reg, tmp_reg)));
       break;
     default:
       break;
@@ -7637,6 +7578,112 @@ RonSQLPreparer::emit_filter_expr(NdbAggregator* agg,
     require_prm(false,
         "Unsupported expression in cross-table WHERE filter.");
   }
+}
+
+void
+RonSQLPreparer::generate_embedded_filter_condition(NdbAggregator* aggregator,
+                                                   QueryScope& scope,
+                                                   ConditionalExpression* ce,
+                                                   Uint32 true_output,
+                                                   Uint32 false_output,
+                                                   Uint32 leaf_idx)
+{
+  DynamicArray<ConditionalExpression*> atoms(m_amalloc);
+  bool is_and = false;
+  if (ce->op == T_AND || ce->op == T_OR) {
+    is_and = (ce->op == T_AND);
+    TokenKind flatten_op = ce->op;
+    ConditionalExpression* node = ce;
+    while (node->op == flatten_op) {
+      atoms.push(node->args.right);
+      node = node->args.left;
+    }
+    atoms.push(node);
+  } else {
+    atoms.push(ce);
+  }
+
+  Uint32 atom_words[32];
+  require_prm(atoms.size() <= 32,
+              "Cross-table WHERE filter has too many OR/AND atoms.");
+  Uint32 total_atom_words = 0;
+  for (Uint32 a = 0; a < atoms.size(); a++) {
+    ConditionalExpression* atom = atoms[a];
+    require_prm(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS ||
+                atom->op == T_LT || atom->op == T_LE ||
+                atom->op == T_GT || atom->op == T_GE,
+                "Cross-table WHERE filter atom: only =, !=, <, <=, >, >= "
+                "supported.");
+    atom_words[a] =
+        embedded_filter_expr_word_count(scope, atom->args.left, leaf_idx) +
+        embedded_filter_expr_word_count(scope, atom->args.right, leaf_idx) +
+        1;
+    total_atom_words += atom_words[a];
+  }
+
+  Uint32 emb_len = total_atom_words + 6;
+  Uint32 second_exit_label = emb_len - 3;
+  programAggregator_do_or_fail(aggregator->EmbeddedInterp(emb_len));
+
+  std::function<Uint32(TokenKind)> reg_branch_opcode =
+      [&](TokenKind op) -> Uint32 {
+    if (is_and) {
+      switch (op) {
+      case T_EQUALS:     return Interpreter::BRANCH_NE_REG_REG;
+      case T_NOT_EQUALS: return Interpreter::BRANCH_EQ_REG_REG;
+      case T_LT:         return Interpreter::BRANCH_GE_REG_REG;
+      case T_LE:         return Interpreter::BRANCH_GT_REG_REG;
+      case T_GT:         return Interpreter::BRANCH_LE_REG_REG;
+      case T_GE:         return Interpreter::BRANCH_LT_REG_REG;
+      default: abort();
+      }
+    }
+    switch (op) {
+    case T_EQUALS:     return Interpreter::BRANCH_EQ_REG_REG;
+    case T_NOT_EQUALS: return Interpreter::BRANCH_NE_REG_REG;
+    case T_LT:         return Interpreter::BRANCH_LT_REG_REG;
+    case T_LE:         return Interpreter::BRANCH_LE_REG_REG;
+    case T_GT:         return Interpreter::BRANCH_GT_REG_REG;
+    case T_GE:         return Interpreter::BRANCH_GE_REG_REG;
+    default: abort();
+    }
+  };
+
+  Uint32 pos = 0;
+  for (Uint32 a = 0; a < atoms.size(); a++) {
+    ConditionalExpression* atom = atoms[a];
+    const Uint32 R1 = 1;
+    const Uint32 R2 = 2;
+    const Uint32 R3 = 3;
+    emit_embedded_filter_expr(aggregator, scope, atom->args.left, leaf_idx,
+                              R1, R3);
+    emit_embedded_filter_expr(aggregator, scope, atom->args.right, leaf_idx,
+                              R2, R3);
+    Uint32 branch_instr_pos = pos + atom_words[a] - 1;
+    Uint32 branch_offset = second_exit_label - branch_instr_pos;
+    Uint32 br_op = reg_branch_opcode(atom->op);
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::Branch(br_op, /*Reg1=*/R2, /*Reg2=*/R1) |
+        (branch_offset << 16)));
+    pos += atom_words[a];
+  }
+
+  Uint32 first_exit_output = is_and ? true_output : false_output;
+  Uint32 second_exit_output = is_and ? false_output : true_output;
+
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::LoadConst16(2, first_exit_output)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::WriteInterpreterOutput(2, 0)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::ExitOK()));
+
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::LoadConst16(2, second_exit_output)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::WriteInterpreterOutput(2, 0)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::ExitOK()));
 }
 
 void
@@ -7726,123 +7773,32 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
     groupby = groupby->next;
   }
 
-  // Emit cross-table WHERE filters as BranchReg conditional aggregation.
-  // Each filter skips ALL aggregation instructions if not satisfied.
+  // Emit cross-table WHERE filters through the embedded normal interpreter.
+  // Each failed filter stops this row's aggregation program before any
+  // aggregate update.  Branch/comparison semantics stay in the normal
+  // interpreter; the aggregation interpreter only consumes the stop result.
   // A hidden sentinel COUNT accumulator is appended so that groups where
   // no rows passed the filter can be suppressed at result time.
-  bool has_branchreg_filter = false;
+  bool has_embedded_filter = false;
   if (scope.cross_table_where_filters.size() > 0)
   {
     // Check if any remaining (non-consumed) cross-table filters exist
     for (Uint32 f = 0; f < scope.cross_table_where_filters.size(); f++) {
       CrossTableFilter& ctf = scope.cross_table_where_filters[f];
       if (ctf.ce != NULL)
-        has_branchreg_filter = true;
+        has_embedded_filter = true;
     }
-    Uint32 agg_word_count = scope.agg->raw_word_size(0, scope.agg->m_program.size());
-    // Add 4 words for sentinel (LoadUint64=3 + Count=1) that follows agg ops
-    if (has_branchreg_filter)
-      agg_word_count += 4;
-    // Helper: emit negated BranchReg for a comparison atom
-    auto emit_negated_branch = [&](ConditionalExpression* atom,
-                                   Uint32 skip_count) {
-      Uint32 reg_left = 1, reg_right = 2, tmp_reg = 3;
-      emit_filter_expr(aggregator, scope, atom->args.left, leaf_idx,
-                        reg_left, tmp_reg);
-      emit_filter_expr(aggregator, scope, atom->args.right, leaf_idx,
-                        reg_right, tmp_reg);
-      switch (atom->op) {
-      case T_GT:
-        programAggregator_do_or_fail(
-            aggregator->BranchRegLe(reg_left, reg_right, skip_count));
-        break;
-      case T_GE:
-        programAggregator_do_or_fail(
-            aggregator->BranchRegLt(reg_left, reg_right, skip_count));
-        break;
-      case T_LT:
-        programAggregator_do_or_fail(
-            aggregator->BranchRegGe(reg_left, reg_right, skip_count));
-        break;
-      case T_LE:
-        programAggregator_do_or_fail(
-            aggregator->BranchRegGt(reg_left, reg_right, skip_count));
-        break;
-      case T_EQUALS:
-        programAggregator_do_or_fail(
-            aggregator->BranchRegNe(reg_left, reg_right, skip_count));
-        break;
-      case T_NOT_EQUALS:
-        programAggregator_do_or_fail(
-            aggregator->BranchRegEq(reg_left, reg_right, skip_count));
-        break;
-      default:
-        require_prm(false, "Unsupported cross-table WHERE operator.");
-      }
-    };
 
     for (Uint32 f = 0; f < scope.cross_table_where_filters.size(); f++)
     {
       CrossTableFilter& ctf = scope.cross_table_where_filters[f];
       if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
 
-      // Compute remaining filter words for skip count
-      Uint32 remaining_words = 0;
-      for (Uint32 f2 = f + 1; f2 < scope.cross_table_where_filters.size(); f2++)
-      {
-        CrossTableFilter& ctf2 = scope.cross_table_where_filters[f2];
-        if (ctf2.ce == NULL) continue;
-        remaining_words += cross_table_filter_word_count(
-            ctf2.ce, filter_expr_word_count_impl);
-      }
-
-      if (ctf.ce->op != T_OR) {
-        // Simple comparison: emit single negated BranchReg
-        Uint32 skip_count = agg_word_count + remaining_words;
-        emit_negated_branch(ctf.ce, skip_count);
-      } else {
-        // OR filter: chained BranchReg + Skip pattern.
-        // Non-last atoms: BranchReg_neg(1) + Skip(N) → match jumps to agg
-        // Last atom: BranchReg_neg(agg_words) → no match skips agg
-        ConditionalExpression* atoms[32];
-        Uint32 num_atoms = 0;
-        std::function<void(ConditionalExpression*)> flatten_or =
-            [&](ConditionalExpression* node) {
-          if (node->op == T_OR) {
-            flatten_or(node->args.left);
-            flatten_or(node->args.right);
-          } else if (num_atoms < 32) {
-            atoms[num_atoms++] = node;
-          }
-        };
-        flatten_or(ctf.ce);
-
-        // Compute per-atom word counts for skip offset calculation
-        Uint32 atom_words[32];
-        for (Uint32 a = 0; a < num_atoms; a++) {
-          atom_words[a] = filter_expr_word_count_impl(atoms[a]->args.left) +
-                          filter_expr_word_count_impl(atoms[a]->args.right) + 1;
-        }
-
-        for (Uint32 a = 0; a < num_atoms; a++) {
-          bool is_last = (a == num_atoms - 1);
-          if (!is_last) {
-            // Non-match → skip BranchReg(1) skips the Skip instruction
-            emit_negated_branch(atoms[a], 1);
-            // Match → Skip past remaining OR branches to agg ops
-            Uint32 skip_to_agg = 0;
-            for (Uint32 a2 = a + 1; a2 < num_atoms; a2++) {
-              skip_to_agg += atom_words[a2];
-              if (a2 < num_atoms - 1) skip_to_agg += 1;  // Skip instr
-            }
-            programAggregator_do_or_fail(aggregator->Skip(skip_to_agg));
-          } else {
-            // Last atom: non-match skips all agg ops + remaining filters
-            Uint32 skip_count = agg_word_count + remaining_words;
-            emit_negated_branch(atoms[a], skip_count);
-          }
-        }
-      }
+      generate_embedded_filter_condition(
+          aggregator, scope, ctf.ce,
+          /*true_output=*/0,
+          /*false_output=*/AGG_EMBEDDED_INTERP_STOP_PROGRAM,
+          leaf_idx);
     }
   }
 
@@ -7956,13 +7912,49 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
       programAggregator_do_or_fail(aggregator->Count(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::Greatest2:
-      // Pair-max: BranchRegGe + Mov.  See main-scope variant for
-      // notes.
-      programAggregator_do_or_fail(aggregator->BranchRegGe(dest, src, 1));
+      programAggregator_do_or_fail(aggregator->EmbeddedInterp(9));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ReadAggRegIntoReg(dest, 1)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ReadAggRegIntoReg(src, 2)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::Branch(Interpreter::BRANCH_GE_REG_REG,
+                              /*Reg1=*/2, /*Reg2=*/1) | (4 << 16)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::LoadConst16(3, 0)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::WriteInterpreterOutput(3, 0)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ExitOK()));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::LoadConst16(3, 1)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::WriteInterpreterOutput(3, 0)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ExitOK()));
       programAggregator_do_or_fail(aggregator->Mov(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::Least2:
-      programAggregator_do_or_fail(aggregator->BranchRegLe(dest, src, 1));
+      programAggregator_do_or_fail(aggregator->EmbeddedInterp(9));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ReadAggRegIntoReg(dest, 1)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ReadAggRegIntoReg(src, 2)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::Branch(Interpreter::BRANCH_LE_REG_REG,
+                              /*Reg1=*/2, /*Reg2=*/1) | (4 << 16)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::LoadConst16(3, 0)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::WriteInterpreterOutput(3, 0)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ExitOK()));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::LoadConst16(3, 1)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::WriteInterpreterOutput(3, 0)));
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+          Interpreter::ExitOK()));
       programAggregator_do_or_fail(aggregator->Mov(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::AggRepeat:
@@ -7999,7 +7991,7 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
 
   // Emit hidden sentinel COUNT: counts rows that passed cross-table filters.
   // Groups where sentinel is 0 are suppressed at result time.
-  if (has_branchreg_filter) {
+  if (has_embedded_filter) {
     // Sentinel slot = next slot after all user-visible aggregate slots
     Uint32 sentinel_slot = 0;
     for (Uint32 i = 0; i < program.size(); i++) {
@@ -8124,11 +8116,11 @@ RonSQLPreparer::validate_greatest_least_pair_loads()
                 "yet supported because MySQL NULL propagation would "
                 "require multi-arm CASE lowering.");
     // Integer-only restriction.  Pair-ops emit LoadColumn into a
-    // register and BranchReg* / Mov.  The kernel's kOpLoadCol
+    // register and embedded-interpreter compare / Mov.  The kernel's kOpLoadCol
     // widens every integer type (Tinyint .. Bigint, signed +
     // unsigned) to NDB_TYPE_BIGINT in the register via AlignedType
     // (AggInterpreter.cpp:411), so all integer widths compare
-    // correctly through BranchReg.  Float / Decimal / VARCHAR /
+    // correctly through the embedded compare.  Float / Decimal / VARCHAR /
     // string operands are out of scope (deferred to I.5 v3 / I.6).
     NdbDictionary::Column::Type t = col->getType();
     require_prm(t == NdbDictionary::Column::Tinyint ||
@@ -8153,7 +8145,11 @@ RonSQLPreparer::generate_embedded_condition(
     QueryScope& scope,
     ConditionalExpression* ce,
     Uint32 then_arm_raw_size,
-    NdbDictionary::Table* const* cteVirtualTables)
+    NdbDictionary::Table* const* cteVirtualTables,
+    bool use_custom_outputs,
+    Uint32 first_exit_output,
+    Uint32 second_exit_output,
+    Uint32 agg_leaf_idx_override)
 {
   // Two patterns supported:
   //   OR: (col = 'X' OR col = 'Y') → branch to THEN on match, fall-through ELSE
@@ -8194,7 +8190,11 @@ RonSQLPreparer::generate_embedded_condition(
 
   // Per-atom resolution info, populated in the pre-pass and reused
   // verbatim in the emit pass.
-  Uint32 leaf_idx = (scope.column_table_idx != NULL) ? scope.join_plan.agg_leaf_idx : 0;
+  Uint32 leaf_idx = (scope.column_table_idx != NULL) ?
+      scope.join_plan.agg_leaf_idx : 0;
+  if (agg_leaf_idx_override != 0xFFFFFFFF) {
+    leaf_idx = agg_leaf_idx_override;
+  }
 
   enum class SideKind {
     // col-vs-const RHS literal — only valid for `info[].rhs`.
@@ -8356,24 +8356,36 @@ RonSQLPreparer::generate_embedded_condition(
     if (info.is_col_vs_col)
     {
       resolve_col_side(atom->args.right, info.rhs);
-      // v2a: register-based path is Bigint-only on each side, with
-      // InlineLinked unsupported (would need an inline-typed
-      // register-load opcode).
-      std::function<bool(const NdbDictionary::Column*)> require_bigint =
+      // Register-based path supports fixed-width integer columns that
+      // DBTUP can load into normal interpreter registers.  Mediumint is
+      // deferred because there is no 24-bit memory-to-register opcode.
+      std::function<bool(const NdbDictionary::Column*)> can_load_integer_reg =
           [](const NdbDictionary::Column* c)
       {
-        return c->getType() == NdbDictionary::Column::Bigint ||
-               c->getType() == NdbDictionary::Column::Bigunsigned;
+        switch (c->getType()) {
+        case NdbDictionary::Column::Tinyint:
+        case NdbDictionary::Column::Tinyunsigned:
+        case NdbDictionary::Column::Smallint:
+        case NdbDictionary::Column::Smallunsigned:
+        case NdbDictionary::Column::Int:
+        case NdbDictionary::Column::Unsigned:
+        case NdbDictionary::Column::Bigint:
+        case NdbDictionary::Column::Bigunsigned:
+          return true;
+        default:
+          return false;
+        }
       };
       require_prm(info.lhs.kind != SideKind::InlineLinked &&
                   info.rhs.kind != SideKind::InlineLinked,
                   "CASE condition with two CTE-leaf columns is not yet "
                   "supported (deferred to I.5 v5 — needs an inline-typed "
                   "register-load opcode).");
-      require_prm(require_bigint(info.lhs.col) && require_bigint(info.rhs.col),
+      require_prm(can_load_integer_reg(info.lhs.col) &&
+                  can_load_integer_reg(info.rhs.col),
                   "Column-vs-column CASE / GREATEST / LEAST is currently "
-                  "Bigint-only (deferred to I.5 v5 for narrower integer "
-                  "and float / decimal / string types).");
+                  "integer-only (deferred to I.5 v5 for Mediumint and "
+                  "float / decimal / string types).");
       // Word counts:
       //   LeafTable side       → 1 word (READ_ATTR_INTO_REG)
       //   LinkedParent / Cte   → 2 words (READ_LINKED_TO_MEM
@@ -8420,10 +8432,10 @@ RonSQLPreparer::generate_embedded_condition(
   // For OR:  branches → second_exit (THEN), fall-through → first_exit (ELSE)
   // For AND: branches → second_exit (ELSE), fall-through → first_exit (THEN)
   Uint32 second_exit_label = emb_len - 3;
-  Uint32 first_exit_skip_offset =
-      is_and ? 0 : then_arm_raw_size;
-  Uint32 second_exit_skip_offset =
-      is_and ? then_arm_raw_size : 0;
+  if (!use_custom_outputs) {
+    first_exit_output = is_and ? 0 : then_arm_raw_size;
+    second_exit_output = is_and ? then_arm_raw_size : 0;
+  }
 
   programAggregator_do_or_fail(aggregator->EmbeddedInterp(emb_len));
 
@@ -8529,11 +8541,28 @@ RonSQLPreparer::generate_embedded_condition(
               // Linked column: stage into heap[0] then copy to register.
               programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
                   Interpreter::READ_LINKED_TO_MEM | (s.linked_position << 16)));
-              // Data starts at byte offset 4 (after AttrHeader).  This
-              // v2a path is guarded to BIGINT/BIGUNSIGNED linked columns;
-              // narrower signed linked loads are deferred to I.5 v5.
-              programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-                  Interpreter::ReadInt64FromMemIntoRegConst(reg, 4)));
+              // Data starts at byte offset 4 (after AttrHeader).
+              Uint32 read_word = 0;
+              switch (s.col->getSizeInBytes()) {
+              case 1:
+                read_word = Interpreter::ReadUint8FromMemIntoRegConst(reg, 4);
+                break;
+              case 2:
+                read_word = Interpreter::ReadUint16FromMemIntoRegConst(reg, 4);
+                break;
+              case 4:
+                read_word = Interpreter::ReadUint32FromMemIntoRegConst(reg, 4);
+                break;
+              case 8:
+                read_word = Interpreter::ReadInt64FromMemIntoRegConst(reg, 4);
+                break;
+              default:
+                require_prm(false,
+                            "Unsupported linked integer width in "
+                            "embedded CASE condition.");
+              }
+              programAggregator_do_or_fail(
+                  aggregator->EmitEmbeddedWord(read_word));
             }
           };
       emit_load_into_reg(info.lhs, R1);
@@ -8616,7 +8645,7 @@ RonSQLPreparer::generate_embedded_condition(
 
   // First exit (fall-through)
   programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::LoadConst16(2, first_exit_skip_offset)));
+      Interpreter::LoadConst16(2, first_exit_output)));
   programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
       Interpreter::WriteInterpreterOutput(2, 0)));
   programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
@@ -8624,7 +8653,7 @@ RonSQLPreparer::generate_embedded_condition(
 
   // Second exit (branched to)
   programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::LoadConst16(2, second_exit_skip_offset)));
+      Interpreter::LoadConst16(2, second_exit_output)));
   programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
       Interpreter::WriteInterpreterOutput(2, 0)));
   programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
@@ -9324,9 +9353,9 @@ RonSQLPreparer::Context::get_allocator()
 //   GREATEST(a, b)        =  Greatest2(a, b)
 //   GREATEST(a, b, c)     =  Greatest2(Greatest2(a, b), c)
 //   GREATEST(a, b, c, d)  =  Greatest2(Greatest2(Greatest2(a, b), c), d)
-// Each `Greatest2` SVM instruction expands at programAggregator time
-// to a `BranchRegGe + Mov` pair on the kernel aggregation program;
-// `Least2` expands to `BranchRegLe + Mov`.
+// Each `Greatest2` / `Least2` SVM instruction expands at programAggregator
+// time to an embedded normal-interpreter comparison plus a conditional Mov
+// on the kernel aggregation program.
 //
 // Scope:
 // - Each operand must be a column ref (Load) or an integer constant
@@ -9428,7 +9457,7 @@ RonSQLPreparer::Context::lower_greatest_least_nary(
   // Pass 2: left-associative fold.  Same-operand degenerate
   // `GREATEST(x, x, ...)` collapses to `x` directly here so the SVM
   // never sees a `Greatest2(x, x)` pair-op (which would emit a
-  // wasteful BranchReg + Mov against the same register).
+  // wasteful embedded compare + Mov against the same register).
   AggregationAPICompiler* agg = get_agg();
   ArithExprList* it = args;
   AggregationAPICompiler::Expr* acc = it->head;
