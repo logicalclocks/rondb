@@ -983,17 +983,19 @@ expire-scan reaps it.
 
 ## PR 2 — Hash enumeration + compliance follow-ups
 
-Two scopes bundled. The compliance follow-ups (Phases 2.0a–2.0e)
+Two scopes bundled. The compliance follow-ups (Phases 2.0a–2.0g)
 close items deferred from PR 1's audit; the hash-enumeration
 phases (2.1–2.7) add the read-side hash commands.
 
 Phase order recommendation: land 2.0a (cosmetic) and 2.0e (EXPIRE
 options) early since they're small and self-contained. 2.0b
 (sub-second TTL) and 2.0d (Y2038) share a schema change and should
-land together. 2.0c (DEL-on-hash storage reclamation) is
-independent. Hash enumeration (2.1–2.7) can interleave with the
-compliance phases or follow them — the only dependency is that 2.5
-(HKEYS, first scan path) reuses primitives from 1.10c.7b/i.
+land together. 2.0c (DEL-on-hash storage reclamation), 2.0f
+(TTL preservation on in-place mutations), and 2.0g (expired hash
+command semantics) are independent. Hash enumeration (2.1–2.7) can
+interleave with the compliance phases or follow them — the only
+dependency is that 2.5 (HKEYS, first scan path) reuses primitives
+from 1.10c.7b/i.
 
 ### Phase 2.0a — Cosmetic error-message wording alignment
 
@@ -1183,6 +1185,143 @@ exclusions: `NX` ⇿ `XX`, `GT` ⇿ `LT`, `NX` ⇿ `GT`, `NX` ⇿ `LT`.
 `t/rondis_keyinfo_expire_options.test` covering each flag's
 positive and negative paths plus the mutual-exclusion errors.
 Add to the four EXPIRE-family commands.
+
+### Phase 2.0f — TTL preservation for in-place mutations
+
+**Scope.** Redis preserves an existing TTL when a command mutates the
+value in place. The TTL is cleared only by commands that replace the key
+object, such as plain `SET`, unless `KEEPTTL` is used. After 1.10c.9,
+this needs explicit coverage because the counter write path once
+accidentally wrote a bogus `expiry_date` while updating the numeric
+value. Phase 2.0f pins this contract for all currently implemented
+in-place mutators.
+
+Commands to cover:
+- String counters: `INCR`, `INCRBY`, `DECR`, `DECRBY`.
+- String mutation: `SETRANGE`.
+- Hash writes: `HSET`, `HMSET`, `HDEL`, `HINCRBY`.
+- Rondis extension hash counters: `HINCR`, `HDECR`, `HDECRBY`.
+
+**Expected Redis semantics:**
+- Existing string key with TTL:
+  `SET k 1 EX 60; INCR k` keeps the same expiry target. `TTL k`
+  remains positive and close to the original value; the row's
+  `expiry_date` is not rewritten to NULL, `g_max_expire_at`, or a past
+  sentinel.
+- New string counter key:
+  `INCR new_counter` creates a string with no TTL. `TTL new_counter`
+  returns `-1`.
+- Existing hash key with TTL:
+  `HSET h f v; EXPIRE h 60; HSET h g v2`, `HDEL h g`, and
+  `HINCRBY h n 1` preserve `hset_keys.expiry_date`.
+- New hash created by `HSET` or `HINCRBY` has no TTL unless an expiry is
+  set later.
+- Mutating an expired-but-present key is covered by 2.0g, not by this
+  phase; 2.0f assumes the key is logically alive.
+
+**Implementation details to verify/fix:**
+- `incr_decr_key_row` / the string counter write path must never include
+  `expiry_date` in the NdbRecord mask for ordinary counter updates.
+  Existing counters should update value metadata only
+  (`tot_value_len`, `num_rows`, `rondb_key`, inline value bytes as
+  needed). Inserted counters rely on the schema default `NULL` expiry.
+- `SETRANGE` must preserve the existing `string_keys.expiry_date` for
+  both inline and extension-row paths. If the current SETRANGE helper
+  reuses a SET-style row buffer, split the mask so expiry is excluded
+  from the write.
+- HSET / HMSET / HINCR* / HDECR* must preserve
+  `hset_keys.expiry_date` while bumping `field_count` or writing fields.
+  The field rows in `string_keys` should not get independent TTLs from
+  the hash-name TTL; the hash-name TTL stays authoritative.
+- HDEL must decrement `field_count` or delete the final `hset_keys` row
+  without rewriting the expiry for non-final deletes.
+
+**Tests:** add `t/rondis_keyinfo_ttl_preserve_mutators.test`.
+Use SQL checks rather than long sleeps:
+- Capture `UNIX_TIMESTAMP(expiry_date)` (or raw ms after 2.0b) before
+  the mutation, run the mutator, and assert the stored expiry is
+  unchanged.
+- For string counters, include both an existing key with TTL and a
+  missing key auto-created by `INCR`.
+- For SETRANGE, cover an inline update and an offset/value that forces
+  extension rows.
+- For hash paths, set `EXPIRE h 60`, capture `hset_keys.expiry_date`,
+  then run `HSET` overwrite, `HSET` new field, `HINCRBY`, extension
+  hash counter if applicable, and `HDEL` of a non-final field; assert
+  expiry unchanged after each.
+- Also assert a newly-created hash via `HSET` / `HINCRBY` reports
+  `TTL h = -1`.
+
+### Phase 2.0g — Expired hash command semantics
+
+**Scope.** Phase 1.10c.9 made expired-but-present rows logically absent
+for probes, string reads, `DEL`, and `SET NX|XX|GET`. The remaining
+audit gap is direct Redis-visible coverage for hash commands over a
+hash whose `hset_keys.expiry_date` is in the past while the physical
+row and field rows are still present in NDB. Phase 2.0g verifies and,
+if needed, fixes that all hash command paths consult the same
+logical-expiry rule.
+
+**Expected Redis semantics for an expired-but-present hash:**
+- `HGET h f` returns nil.
+- `HMGET h f g` returns nil entries.
+- `HDEL h f` returns `0` because the hash is logically absent.
+- `HSET h f new` treats the key as absent and creates a fresh hash.
+  The old expired hash id and its old field rows must not become
+  visible through the new hash name.
+- `HINCRBY h n 1` likewise treats the key as absent, creates a fresh
+  hash and field, and returns the incremented value. The extension
+  commands `HINCR`, `HDECR`, `HDECRBY` follow the same rule.
+- `EXISTS h` returns `0`, `TYPE h` returns `none`, `TTL h` and `PTTL h`
+  return `-2`; these are already covered, but keep one assertion in the
+  new test as a guard that setup actually produced a logically expired
+  key.
+- Hash commands on an expired string-claimed name are not WRONGTYPE:
+  once the string claim is expired, Redis treats the key as absent.
+  `HSET expired_string f v` creates a hash; `HGET expired_string f`
+  sees the new field.
+
+**Implementation details to verify/fix:**
+- `rondb_get_redis_key_id()` must treat `hset_keys.expiry_date <= now`
+  as missing for all read and write callers. It must not return the old
+  `redis_key_id` for `HGET`, `HMGET`, `HDEL`, `HSET`, or hash counters.
+- HSET's Phase 1 lock-claim must classify an expired string registry row
+  (`redis_key_id IS NULL`, expired `expiry_date`) as absent, not
+  WRONGTYPE. The write should be a normal hash claim with a fresh
+  sequence id.
+- HSET's Phase 1 lock-claim must classify an expired hash registry row
+  as absent for user-visible semantics. It may either:
+  1. overwrite/reuse the `hset_keys` row with a fresh `redis_key_id` and
+     reset `field_count`/`expiry_date`, or
+  2. delete the expired registry row first and then insert the new hash
+     claim.
+  The important invariant is that old field rows under the expired
+  `redis_key_id` are unreachable and not counted in the new hash.
+- HDEL should reuse the DEL expired-row count rule: if the hash registry
+  row is expired, return `0`. Physical cleanup can be best-effort and
+  may reuse the 2.0c scan-delete helper later.
+- Hash counter create-on-absent must share the HSET classification, so
+  expired rows do not block creation or reuse the old id by accident.
+
+**Tests:** add `t/rondis_keyinfo_expired_hash_commands.test`.
+Force the expired-but-present state with SQL updates, not Redis
+`EXPIREAT`/`PEXPIREAT`, because Redis past-expiry commands delete
+immediately.
+- Create `hash_x` with fields, capture `@old_id`, then SQL-update
+  `redis_0.hset_keys.expiry_date = FROM_UNIXTIME(1)`.
+- Assert `EXISTS hash_x = 0`, `TYPE hash_x = none`,
+  `HGET hash_x f` nil, `HMGET hash_x f g` nil/nil, and
+  `HDEL hash_x f = 0`.
+- Run `HSET hash_x fresh v`; assert reply `1`, `TYPE hash_x = hash`,
+  `HGET hash_x fresh = v`, and SQL confirms
+  `redis_key_id <> @old_id`.
+- Assert old rows remain either physically present but unreachable or
+  have been cleaned up, depending on whether 2.0c landed first. The
+  Redis-visible invariant is stronger than the storage cleanup order.
+- Repeat the create-on-absent path with `HINCRBY hash_y n 1`.
+- Create an expired string claim via `SET s old`, SQL-expire both
+  `string_keys` and the `hset_keys` string registry row, then
+  `HSET s f v` must create a hash, not return WRONGTYPE.
 
 ### Phase 2.1 — HEXISTS
 
