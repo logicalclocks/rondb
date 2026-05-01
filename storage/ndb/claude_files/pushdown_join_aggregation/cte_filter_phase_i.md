@@ -107,13 +107,14 @@ two-arg CaseExpr-based lowering — n=2 now flows through the same
 SVM path as n>2.  Integer-typed operands (Tinyint through Bigint,
 signed + unsigned).
 
-**v4 shipped** — see `cte_filter_phase_i5_v4.md`.  NULL propagation
-for nullable column operands: pair-op embedded program detects NULL
-via `BRANCH_REG_EQ_NULL` and writes
-`AGG_EMBEDDED_INTERP_STOP_PROGRAM`, so the aggregation interpreter
-abandons the row and outer SUM/MIN/MAX/COUNT skips it — matching
-MySQL semantics.  v4 also removed the v1/v2b parser-time nullable
-rejection.
+**v4 shipped, refined by v7** — see `cte_filter_phase_i5_v4.md` and
+`cte_filter_phase_i5_v7.md`.  v4 lifted the parser-time
+nullable-column rejection and added per-pair-op NULL detection
+(`BRANCH_REG_EQ_NULL`).  v7 changed the NULL outcome from a row-stop
+(`AGG_EMBEDDED_INTERP_STOP_PROGRAM`) to expression-local
+`SetRegNull(dest)` — so a NULL in one `GREATEST` / `LEAST` only
+makes that expression's aggregate skip this row; unrelated
+`COUNT(*)` / `SUM` outputs still update.
 
 Follow-ups: v3 / v5 (wider operand types — float / decimal / string
 and signed sub-Bigint linked columns; v5 in

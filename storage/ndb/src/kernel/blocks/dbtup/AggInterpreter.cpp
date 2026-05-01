@@ -1713,6 +1713,18 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
                         "Move [%u]->[%u]",
                         reg_index2, reg_index);
         break;
+
+      case kOpSetRegNull:
+        reg_index = (value & 0x000F0000) >> 16;
+        if (m_registers[reg_index].type == NDB_TYPE_UNDEFINED) {
+          m_registers[reg_index].type = NDB_TYPE_BIGINT;
+          m_registers[reg_index].is_unsigned = false;
+          m_registers[reg_index].value.val_int64 = 0;
+        }
+        m_registers[reg_index].is_null = true;
+        PA_INTERP_TRACE(m_frag_id, "SetRegNull[%u]", reg_index);
+        break;
+
       case kOpSum:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);

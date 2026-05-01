@@ -2,12 +2,32 @@
 
 ## Status
 
-**Shipped.**  Supersedes the v4 sketch in `cte_filter_phase_i5.md`
-(multi-arm CASE detour / v2-paired register short-circuit) — neither
-was needed: Phase M (`cte_filter_phase_m.md`) gave us the embedded
-normal-interpreter primitives, and v4 is a focused extension of v2b's
-pair-op program (9 → 14 words) plus removal of the parser-time
-nullable rejection.
+**Shipped — but the row-stop NULL-propagation model documented below
+was superseded by v7 (`cte_filter_phase_i5_v7.md`).**  Supersedes the
+v4 sketch in `cte_filter_phase_i5.md` (multi-arm CASE detour /
+v2-paired register short-circuit) — neither was needed: Phase M
+(`cte_filter_phase_m.md`) gave us the embedded normal-interpreter
+primitives, and v4 is a focused extension of v2b's pair-op program
+(9 → 14 words) plus removal of the parser-time nullable rejection.
+
+**Why v7 superseded v4's NULL handling.**  v4 treated NULL operands
+as a row-stop signal via `AGG_EMBEDDED_INTERP_STOP_PROGRAM`, which
+abandoned the entire row's aggregation program.  That was wrong for
+queries with multiple aggregate outputs — a NULL in one
+`GREATEST` / `LEAST` expression dropped unrelated `COUNT(*)` / `SUM`
+outputs from the same row.  v7 replaced the row-stop with
+`SetRegNull(dest)` so NULL is expression-local: only the
+immediately-following aggregate update skips this row.  See
+`cte_filter_phase_i5_v7.md` for the new emission shape and the
+mixed-aggregate test coverage that catches the v4 model regression.
+
+The "What shipped" section below describes v4's original landing —
+parser-time relaxation, the pair-op embedded program shape (14-word
+body), and the kernel emission factoring into
+`emit_pair_op_embedded`.  All of that still applies; only the
+14-word body's NULL exit changed in v7 (writes scalar `2` instead of
+`STOP_PROGRAM`, and the trailing kernel sequence is now
+`Mov + Skip + SetRegNull` instead of `Mov` alone).
 
 **What shipped:**
 

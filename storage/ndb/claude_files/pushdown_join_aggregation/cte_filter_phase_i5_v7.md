@@ -1,8 +1,57 @@
 # Phase I.5 v7 — expression-local NULL propagation for GREATEST / LEAST
 
-**Planned.**  This phase fixes the Phase I.5 v4 NULL propagation model
-so a NULL operand in one `GREATEST` / `LEAST` expression does not stop
-the entire row's aggregation program.
+**Shipped.**  This phase replaces the Phase I.5 v4 row-stop NULL
+propagation model so a NULL operand in one `GREATEST` / `LEAST`
+expression no longer stops the entire row's aggregation program —
+unrelated `COUNT(*)` / `SUM` / `MIN` / `MAX` outputs still update on
+the same row.
+
+## What shipped
+
+- **New aggregation opcode** `kOpSetRegNull(reg)` defined in
+  `NdbAggregationCommon.hpp`.  Marks `m_registers[reg].is_null = true`
+  and preserves the register's value type.  Handlers added in
+  `AggInterpreter.cpp`, `JoinAggInterpreter.cpp`, and
+  `PushdownInterpreter.cpp`.
+- **Public NDB API surface** `NdbAggregator::SetRegNull(reg_id)` in
+  `NdbAggregator.{hpp,cpp}` to emit the new opcode into an
+  aggregation program.
+- **Pair-op embedded program (nullable path) extended to 3 outputs:**
+  - output `0` → fall through to `Mov(dest, src)`, then `Skip(1)`
+    skips `SetRegNull`.
+  - output `1` → land on `Skip(1)`, preserving dest and skipping
+    `SetRegNull`.
+  - output `2` → land on `SetRegNull(dest)`, making only the
+    current expression's value NULL for this row.
+  Embedded body grew from 14 to 14 words at PC layout but the third
+  exit was repurposed: PC 11–13 now write `2` (instead of
+  `AGG_EMBEDDED_INTERP_STOP_PROGRAM`).
+- **Pair-op tail in `RonSQLPreparer::emit_pair_op_embedded`:**
+  nullable path now emits `EmbeddedInterp(14) + body + Mov(dest, src)
+  + Skip(1) + SetRegNull(dest)` — total 18 kernel words.
+  Non-nullable fast path unchanged at 11 words.
+- **`AggregationAPICompiler::raw_word_size`** updated to count 18
+  for nullable pair-ops (was 16 in v4); 11 for non-nullable.
+- **CASE-arm sizing regression test** added in
+  `ronsql_cte_greatest_least_v4.test` (Test 15) to verify
+  `raw_word_size` matches the emitted nullable pair-op body inside
+  CASE arms.
+- **Mixed aggregate tests** added (Tests 11–14, 16) to cover
+  shapes that the v4 row-stop model produced wrong results for:
+  - `COUNT(*) + SUM(GREATEST(nullable, K))`
+  - `SUM(unrelated) + COUNT(GREATEST(nullable))`
+  - two independent nullable pair-op aggregates
+  - join `COUNT(*) + nullable linked-parent GREATEST`
+  - CTE projection + join mixed aggregate.
+
+## v4 vs v7 difference, in one line
+
+v4: NULL operand → `AGG_EMBEDDED_INTERP_STOP_PROGRAM` →
+`exec_pos = m_prog_len` → entire row dropped from every aggregate.
+
+v7: NULL operand → `SetRegNull(dest)` → only this expression's
+register becomes NULL → only the immediately-following aggregate
+update skips this row.
 
 ## Problem
 
@@ -51,7 +100,7 @@ Keep two distinct embedded-interpreter outcomes:
    expression value or the current aggregate update.  It must not stop
    the rest of the aggregation program for the row.
 
-## Preferred Implementation
+## Implementation
 
 Add expression-local NULL support to the aggregation register machine.
 
@@ -91,41 +140,20 @@ Aggregate(...)
 to:
 
 ```text
-EmbeddedInterp(N) -> output 2 on NULL, output 1 to keep dest,
-                     output 0 to run Mov(dest, src)
-Skip(1) or equivalent control around SetRegNull
-SetRegNull(dest)
+EmbeddedInterp(14) -> output 2 on NULL, output 1 to keep dest,
+                      output 0 to run Mov(dest, src)
 Mov(dest, src)
+Skip(1)
+SetRegNull(dest)
 Aggregate(...)
 ```
 
-One concrete shape:
-
-```text
-EmbeddedInterp(nullable_pair_op)
-  output 0: src wins
-  output 1: dest wins
-  output 2: expression is NULL
-
-Skip/branch in aggregation bytecode:
-  if output 2, execute SetRegNull(dest) and skip Mov
-  if output 1, skip SetRegNull and Mov
-  if output 0, skip SetRegNull and execute Mov
-```
-
-If the current aggregation bytecode cannot branch on the embedded
-output except by using the returned skip count, encode the three exits
-as skip counts over a short sequence:
-
 ```text
 EmbeddedInterp(...)      returns:
-  0  -> execute Mov(dest, src)
-  1  -> skip Mov, keep dest
-  2  -> skip Mov and execute SetRegNull(dest) via reordered sequence
+  0  -> execute Mov(dest, src), then Skip(1) over SetRegNull
+  1  -> land on Skip(1), keeping dest and skipping SetRegNull
+  2  -> land on SetRegNull(dest)
 ```
-
-Choose the concrete layout that keeps the fewest new opcodes while
-remaining readable and verifier-friendly.
 
 The important property is that NULL produces a NULL input register for
 the current expression, not `exec_pos = m_prog_len`.
@@ -145,27 +173,13 @@ Update `AggregationAPICompiler::raw_word_size()` to account for the new
 nullable pair-op expansion:
 
 - non-null fast path remains the existing 9-word embedded body + `Mov`,
-- nullable path includes the embedded body plus any `Skip` /
-  `SetRegNull` / `Mov` words used by the chosen layout.
+- nullable path is 18 words total:
+  `EmbeddedInterp` header + 14 embedded words + `Mov` + `Skip` +
+  `SetRegNull`.
 
 `raw_word_size()` and `emit_pair_op_embedded()` must consume the same
 `m_pair_op_needs_null_check` decision so CASE-arm skip sizes remain
 exact.
-
-## Alternative If Register NULL Opcode Is Too Invasive
-
-If adding `SetRegNull` is more work than expected, add an aggregation
-opcode that skips only the current expression's aggregate update:
-
-```text
-kOpSkipCurrentAggUpdate
-```
-
-or emit an existing `Skip()` sequence around the one aggregate
-instruction that consumes the nullable pair-op result.
-
-This is less general than setting the expression register to NULL and
-is harder for nested expressions, so prefer `SetRegNull`.
 
 ## Tests
 

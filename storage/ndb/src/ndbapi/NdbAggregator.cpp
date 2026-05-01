@@ -986,6 +986,16 @@ bool NdbAggregator::Skip(Uint32 skip_count) {
   return true;
 }
 
+bool NdbAggregator::SetRegNull(Uint32 reg_id) {
+  if (reg_id >= kRegTotal) {
+    SetError(kErrInvalidRegNo);
+    return false;
+  }
+  buffer_[curr_prog_pos_++] =
+      (kOpSetRegNull << 26) | ((reg_id & 0x0F) << 16);
+  return true;
+}
+
 bool NdbAggregator::RepeatAgg(Uint32 agg_id, Uint32 reg_id) {
   if (agg_id >= MAX_AGGREGATION_OP_SIZE) {
     SetError(kErrInvalidAggNo);

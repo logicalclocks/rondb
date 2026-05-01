@@ -7989,10 +7989,10 @@ RonSQLPreparer::resolve_case_condition_column(
   return scope.column_map[cidx];
 }
 
-// Phase I.5 v4 — emit one Greatest2 / Least2 pair-op.  The embedded
+// Phase I.5 v7 — emit one Greatest2 / Least2 pair-op.  The embedded
 // program shape depends on `needs_null_check`:
 //
-// `needs_null_check == true` (14-word body):
+// `needs_null_check == true` (14-word embedded body, 18 total agg words):
 //   0   READ_AGG_REG_TO_REG(dest → r1)
 //   1   READ_AGG_REG_TO_REG(src  → r2)
 //   2   BRANCH_REG_EQ_NULL(r1) | (9 << 16)        → land at PC 11 if r1 == NULL
@@ -8004,10 +8004,17 @@ RonSQLPreparer::resolve_case_condition_column(
 //   8   LoadConst16(r3, 1)             ← cmp lands here; output=1 → skip Mov
 //   9   WriteInterpreterOutput(r3, 0)
 //   10  ExitOK
-//   11  LoadConst16(r3, AGG_EMBEDDED_INTERP_STOP_PROGRAM)  ← null lands here
+//   11  LoadConst16(r3, 2)             ← NULL lands here; output=2 → SetRegNull
 //   12  WriteInterpreterOutput(r3, 0)
 //   13  ExitOK
-// (then Mov(dest, src) at +14, run iff output==0)
+// After the embedded body:
+//   Mov(dest, src)
+//   Skip(1)
+//   SetRegNull(dest)
+//
+// output=0 lands on Mov, then Skip(1) skips SetRegNull.
+// output=1 lands on Skip(1), preserving dest and skipping SetRegNull.
+// output=2 lands on SetRegNull(dest), making only this expression NULL.
 //
 // `needs_null_check == false` (9-word body — Phase I.5 v4 fast path):
 //   0   READ_AGG_REG_TO_REG(dest → r1)
@@ -8065,7 +8072,7 @@ RonSQLPreparer::emit_pair_op_embedded(NdbAggregator* aggregator,
     programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
         Interpreter::ExitOK()));
     programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-        Interpreter::LoadConst16(3, AGG_EMBEDDED_INTERP_STOP_PROGRAM)));
+        Interpreter::LoadConst16(3, 2)));
     programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
         Interpreter::WriteInterpreterOutput(3, 0)));
     programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
@@ -8095,6 +8102,11 @@ RonSQLPreparer::emit_pair_op_embedded(NdbAggregator* aggregator,
         Interpreter::ExitOK()));
   }
   programAggregator_do_or_fail(aggregator->Mov(dest, src));
+  if (needs_null_check)
+  {
+    programAggregator_do_or_fail(aggregator->Skip(1));
+    programAggregator_do_or_fail(aggregator->SetRegNull(dest));
+  }
 }
 
 // Phase I.5 v4 fast path — recursively walk a Greatest2 / Least2
@@ -8196,17 +8208,17 @@ RonSQLPreparer::validate_greatest_least_pair_loads()
     {
       // CTE COLUMN / AGGREGATE projection: the virtual-table column
       // descriptor isn't built until build_cte_virtual_tables runs at
-      // execute time.  Skip the type check here.  v4 propagates NULL
+      // execute time.  Skip the type check here.  v7 propagates NULL
       // at runtime via the pair-op embedded program (BRANCH_REG_EQ_NULL
-      // → STOP_PROGRAM), so nullability is no longer a parser-time
+      // to SetRegNull), so nullability is no longer a parser-time
       // concern even when the descriptor was available.
       continue;
     }
-    // Phase I.5 v4: nullable column operands are supported.  The
+    // Phase I.5 v7: nullable column operands are supported.  The
     // pair-op embedded program detects NULL via BRANCH_REG_EQ_NULL
-    // and writes AGG_EMBEDDED_INTERP_STOP_PROGRAM, so the aggregation
-    // interpreter abandons the row and outer SUM/MIN/MAX/COUNT skips
-    // it — matching MySQL semantics for GREATEST/LEAST on NULL inputs.
+    // and lands on SetRegNull(dest), so only the current expression
+    // becomes NULL.  The following SUM/MIN/MAX/COUNT(expr) skips that
+    // input, while unrelated aggregate outputs still update.
     // Integer-only restriction.  Pair-ops emit LoadColumn into a
     // register and embedded-interpreter compare / Mov.  The kernel's kOpLoadCol
     // widens every integer type (Tinyint .. Bigint, signed +

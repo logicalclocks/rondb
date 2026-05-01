@@ -195,3 +195,145 @@ FROM v4_customer AS c
 JOIN s ON s.k = c.c_id|
 g
 300
+
+
+=== Test 11: mixed COUNT(*) + nullable GREATEST ===
+== Query ==
+SELECT SUM(GREATEST(n_a, 30)) AS g,
+COUNT(*) AS rows_seen
+FROM v4_nullable;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(GREATEST(n_a, 30)) AS g,
+COUNT(*) AS rows_seen
+FROM v4_nullable|
+g	rows_seen
+120	6
+
+
+=== Test 12: unrelated SUM + COUNT(nullable GREATEST) ===
+== Query ==
+SELECT SUM(n_id) AS id_sum,
+COUNT(GREATEST(n_a, n_b)) AS non_null_greatest
+FROM v4_nullable;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(n_id) AS id_sum,
+COUNT(GREATEST(n_a, n_b)) AS non_null_greatest
+FROM v4_nullable|
+id_sum	non_null_greatest
+21	3
+
+
+=== Test 13: independent NULL rows across two pair-op aggregates ===
+== Query ==
+SELECT SUM(GREATEST(n_a, 30)) AS g,
+SUM(LEAST(n_b, 30)) AS l
+FROM v4_nullable;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(GREATEST(n_a, 30)) AS g,
+SUM(LEAST(n_b, 30)) AS l
+FROM v4_nullable|
+g	l
+120	120
+
+
+=== Test 14: join COUNT(*) + linked nullable GREATEST ===
+== Query ==
+SELECT c.c_id,
+SUM(GREATEST(c.c_floor, o.o_amt)) AS g,
+COUNT(*) AS rows_seen
+FROM v4_customer AS c
+JOIN v4_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(GREATEST(c.c_floor, o.o_amt)) AS g,
+COUNT(*) AS rows_seen
+FROM v4_customer AS c
+JOIN v4_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	g	rows_seen
+100	130	2
+200	NULL	2
+300	120	1
+
+
+=== Test 15: CASE arm sizing with nullable pair-op ===
+== Query ==
+SELECT SUM(CASE WHEN n_id < 4 THEN GREATEST(n_a, 30) ELSE 0 END) AS g,
+COUNT(*) AS rows_seen
+FROM v4_nullable;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN n_id < 4 THEN GREATEST(n_a, 30) ELSE 0 END) AS g,
+COUNT(*) AS rows_seen
+FROM v4_nullable|
+g	rows_seen
+60	6
+
+
+=== Test 16: CTE projection + join mixed aggregate ===
+== Query ==
+WITH n AS (
+SELECT c_id AS k, MAX(c_floor) AS a
+FROM v4_customer GROUP BY c_id)
+SELECT SUM(GREATEST(n.a, 30)) AS g,
+COUNT(*) AS rows_seen
+FROM v4_customer AS c
+JOIN n ON n.k = c.c_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH n AS (
+SELECT c_id AS k, MAX(c_floor) AS a
+FROM v4_customer GROUP BY c_id)
+SELECT SUM(GREATEST(n.a, 30)) AS g,
+COUNT(*) AS rows_seen
+FROM v4_customer AS c
+JOIN n ON n.k = c.c_id|
+g	rows_seen
+170	3

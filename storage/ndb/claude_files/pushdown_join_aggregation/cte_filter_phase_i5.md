@@ -2,15 +2,16 @@
 
 ## Status
 
-**v1 shipped, then superseded by v2b; v4 shipped.**  v1's
-CaseExpr-based two-arg lowering was replaced by v2b's `Greatest2` /
-`Least2` SVM pair-op path — n=2 and n>2 both flow through the same
-SVM chain.  v1's `m_greatest_least_conditions` /
+**v1 shipped, then superseded by v2b; v4 shipped, then refined by
+v7.**  v1's CaseExpr-based two-arg lowering was replaced by v2b's
+`Greatest2` / `Least2` SVM pair-op path — n=2 and n>2 both flow
+through the same SVM chain.  v1's `m_greatest_least_conditions` /
 `is_greatest_least_condition` infrastructure was removed at the same
 time.  v4 (`cte_filter_phase_i5_v4.md`) lifted the nullable-column
-rejection: pair-op runtime emits a NULL check that triggers
-`AGG_EMBEDDED_INTERP_STOP_PROGRAM` so MySQL semantics for
-`GREATEST(NULL, …)` are produced under any outer aggregation.
+rejection.  v7 (`cte_filter_phase_i5_v7.md`) replaced v4's row-stop
+NULL handling with expression-local `SetRegNull(dest)` so a NULL in
+one `GREATEST` / `LEAST` does not drop unrelated `COUNT(*)` / `SUM`
+outputs from the same row.
 
 The original v1 design described in this doc is preserved for
 historical context, but the live implementation is documented in

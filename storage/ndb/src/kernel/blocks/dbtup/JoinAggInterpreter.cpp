@@ -864,6 +864,7 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
           break;
         }
         case kOpSkip:
+        case kOpSetRegNull:
           break;
         default:
           break;
@@ -1374,6 +1375,16 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         m_registers[reg_index] = m_registers[reg_index2];
         break;
 
+      case kOpSetRegNull:
+        reg_index = (value & 0x000F0000) >> 16;
+        if (m_registers[reg_index].type == NDB_TYPE_UNDEFINED) {
+          m_registers[reg_index].type = NDB_TYPE_BIGINT;
+          m_registers[reg_index].is_unsigned = false;
+          m_registers[reg_index].value.val_int64 = 0;
+        }
+        m_registers[reg_index].is_null = true;
+        break;
+
       case kOpSum:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
@@ -1727,6 +1738,7 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
         break;
       }
       case kOpSkip:
+      case kOpSetRegNull:
         break;
       default:
         break;

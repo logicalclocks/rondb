@@ -242,9 +242,9 @@ public:
   DynamicArray<Expr*> m_pair_op_program_exprs;
   // Per-program-index needs_null_check decision (filled by
   // RonSQLPreparer at the start of programAggregator before any
-  // raw_word_size queries fire).  true = emit the 14-word body,
-  // false = emit the 9-word body.  Only meaningful at indices where
-  // m_program[i] is a pair-op.
+  // raw_word_size queries fire).  true = emit the nullable 18-word
+  // expansion, false = emit the 9-word embedded body + Mov fast path.
+  // Only meaningful at indices where m_program[i] is a pair-op.
   DynamicArray<bool> m_pair_op_needs_null_check;
 private:
   Uint32 m_locked[REGS];

@@ -62,7 +62,7 @@ struct CHARSET_INFO;
  * type is not otherwise available on the API result side). */
 #define AGG_GB_COL_TYPE_MASK 0xFF
 
-#define PUSHDOWN_AGGREGATION_VERSION 2
+#define PUSHDOWN_AGGREGATION_VERSION 3
 
 /*
  * kOpEmbeddedInterp writes its control result through interpreter output
@@ -116,6 +116,7 @@ enum InterpreterOp {
   // Embedded interpreter support for CASE expressions
   kOpEmbeddedInterp,  // Invoke embedded old-interpreter code block
   kOpSkip,            // Unconditional forward skip in aggregation program
+  kOpSetRegNull,      // Mark register NULL, preserving its value type
 
   kOpTotal
 };

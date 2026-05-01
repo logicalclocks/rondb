@@ -298,6 +298,7 @@ class NdbAggregator {
   bool EmbeddedInterp(Uint32 embedded_length);
   bool EmitEmbeddedWord(Uint32 word);
   bool Skip(Uint32 skip_count);
+  bool SetRegNull(Uint32 reg_id);
   bool RepeatAgg(Uint32 agg_id, Uint32 reg_id);
 
   bool Finalize();

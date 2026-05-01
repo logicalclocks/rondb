@@ -88,16 +88,18 @@ machinery.
     now flows through `validate_greatest_least_pair_loads` instead
     of the v1 CE tracker.
 
-**Limitation resolved by v4.**  The original v2b implementation
+**Limitation resolved by v4 / v7.**  The original v2b implementation
 rejected nullable column operands at compile time and skipped the
 parser-time nullable check on CTE columns (because
 `scope.column_map[col_idx] == NULL` until
 `build_cte_virtual_tables` runs at execute time).  v4
-(`cte_filter_phase_i5_v4.md`) lifted the nullable rejection: the
-pair-op embedded program now writes
-`AGG_EMBEDDED_INTERP_STOP_PROGRAM` whenever an operand register is
-NULL, so MySQL semantics are produced at runtime regardless of
-whether the parser-time check could fire.  The CTE-column skip in
+(`cte_filter_phase_i5_v4.md`) lifted the nullable rejection.  v7
+(`cte_filter_phase_i5_v7.md`) refined v4's NULL outcome from a
+row-stop (`AGG_EMBEDDED_INTERP_STOP_PROGRAM`, which dropped
+unrelated aggregates from the same row) to expression-local
+`SetRegNull(dest)` — so the result is MySQL-correct even when the
+query mixes a nullable `GREATEST` / `LEAST` with `COUNT(*)` or
+unrelated `SUM` outputs.  The CTE-column skip in
 `validate_greatest_least_pair_loads` remains as a "type-check skip"
 only — type validation for CTE columns is still deferred until the
 virt-table descriptors exist at execute time, but nullability is no

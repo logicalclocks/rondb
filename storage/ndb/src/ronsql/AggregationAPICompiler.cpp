@@ -1246,17 +1246,20 @@ AggregationAPICompiler::raw_word_size(Uint32 start, Uint32 end)
       count += 3;
     else if (t == SVMInstrType::Greatest2 || t == SVMInstrType::Least2)
     {
-      // Phase I.5 v4: pair-op expands to EmbeddedInterp(N-word
-      // body) + Mov, where N = 14 when NULL detection is needed and
-      // N = 9 on the static-non-nullable fast path.  The decision is
-      // precomputed by RonSQLPreparer::prepare_pair_op_null_check_cache;
-      // if the cache hasn't been filled yet (raw_word_size called
-      // before that runs), default to the conservative 14-word body.
+      // Phase I.5 v7: pair-op expands to EmbeddedInterp(N-word
+      // body) plus expression-local control.  The nullable path uses
+      // a 14-word embedded body followed by Mov + Skip + SetRegNull
+      // (18 words total including the EmbeddedInterp header).  The
+      // static-non-nullable fast path remains the 9-word body + Mov
+      // (11 words total).  The decision is precomputed by
+      // RonSQLPreparer::prepare_pair_op_null_check_cache; if the
+      // cache hasn't been filled yet (raw_word_size called before
+      // that runs), default to the conservative nullable body.
       bool needs_null_check =
           (i < m_pair_op_needs_null_check.size())
             ? m_pair_op_needs_null_check[i]
             : true;
-      count += needs_null_check ? 16 : 11;
+      count += needs_null_check ? 18 : 11;
     }
     else
       count += 1;

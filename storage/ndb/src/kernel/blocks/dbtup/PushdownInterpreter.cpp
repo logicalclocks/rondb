@@ -219,6 +219,7 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
       }
 
       case kOpSkip:
+      case kOpSetRegNull:
         break;
 
       default:

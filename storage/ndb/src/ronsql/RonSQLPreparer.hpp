@@ -451,11 +451,12 @@ private:
   void validate_greatest_least_pair_loads();
   // Phase I.5 v4: emit the kernel program for one Greatest2 / Least2
   // pair-op.  Expands to either a 14-word embedded normal-interpreter
-  // program (NULL-test on each operand → STOP_PROGRAM, otherwise
+  // program (NULL-test on each operand -> SetRegNull, otherwise
   // BRANCH_(GE|LE)_REG_REG to choose output 0/1) or a 9-word body
-  // (no NULL test) — both followed by Mov(dest, src) which the
-  // embedded program's output skips iff dest already holds the max /
-  // min.  needs_null_check controls which body is emitted.
+  // (no NULL test).  The nullable path appends Mov + Skip +
+  // SetRegNull; the non-null path appends only Mov.  The embedded
+  // program output selects the expression-local path without stopping
+  // unrelated aggregate updates.
   void emit_pair_op_embedded(NdbAggregator* aggregator,
                              Uint32 dest,
                              Uint32 src,
