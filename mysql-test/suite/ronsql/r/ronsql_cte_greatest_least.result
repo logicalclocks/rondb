@@ -220,7 +220,18 @@ c_id	SUM(CASE WHEN c.c_region < 2 THEN o.o_amt ELSE 0 END)
 300	0
 
 
-=== Test 10: rejection — nullable column operand ===
-Expected error: nullable GREATEST/LEAST operands rejected by validate_greatest_least_pair_loads
-Error handling: RPE
-ronsql_cli caught exception: GREATEST/LEAST on nullable column operands is not yet supported because MySQL NULL propagation would require multi-arm CASE lowering.
+=== Test 10: nullable column operand — NULL propagation (v4) ===
+== Query ==
+SELECT SUM(GREATEST(n_val, 5)) AS gmax FROM cte_nullable;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(GREATEST(n_val, 5)) AS gmax FROM cte_nullable|
+gmax
+10

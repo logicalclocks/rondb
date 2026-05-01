@@ -38,8 +38,9 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_filter_phase_i3.md` — Phase I.3: column-vs-column on CTE_LOOKUP (Bigint-only) (RonSQL + 1-line NdbInterpretedCode API)
 - `cte_filter_phase_i4.md` — Phase I.4: CASE condition referencing a CTE column projection (kernel + RonSQL)
 - `cte_filter_phase_i5.md` — Phase I.5: GREATEST / LEAST n-ary functions (v1 shipped: 2-arg col+const, RonSQL only)
-- `cte_filter_phase_i5_v2.md` — Phase I.5 v2: register-based CASE codegen (v2a + v2b shipped: col-vs-col atoms in embedded CASE, plus n-ary GREATEST/LEAST via SVM extension)
+- `cte_filter_phase_i5_v2.md` — Phase I.5 v2: register-based CASE codegen (v2a + v2b + v4 shipped: col-vs-col atoms in embedded CASE, n-ary GREATEST/LEAST via SVM extension, NULL propagation in v4)
 - `cte_filter_phase_i5_v2b.md` — Phase I.5 v2b (shipped): n-ary GREATEST/LEAST via SVM extension (Greatest2/Least2 SVM ops; pair-op now expands to embedded normal-interpreter compare + Mov in programAggregator after Phase M; v2b also replaces v1's CaseExpr-based two-arg lowering)
+- `cte_filter_phase_i5_v4.md` — Phase I.5 v4 (shipped): NULL propagation for nullable GREATEST/LEAST operands; pair-op embedded program adds two BRANCH_REG_EQ_NULL words and a STOP_PROGRAM tail (9 → 14 body words); parser-time nullable rejection removed
 - `cte_filter_phase_i5_v5.md` — Phase I.5 v5: typed linked-column register loads for signed/unsigned INT8/16/24/32/64 in all interpreter variants
 - `cte_filter_phase_i5_v6.md` — Phase I.5 v6: deferred CTE linked-vs-linked GREATEST / LEAST runtime tests
 - `cte_filter_phase_k.md` — Phase K: ANTI_JOIN promotion for WHERE col IS NULL on LEFT JOIN RHS (RonSQL)

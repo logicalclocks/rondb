@@ -7344,53 +7344,10 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
       programAggregator_do_or_fail(aggregator->Count(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::Greatest2:
-      // Pair-max: embedded normal-interpreter comparison imports the
-      // aggregation registers and returns skip=1 when r[dest] >= r[src],
-      // skipping the following Mov.
-      programAggregator_do_or_fail(aggregator->EmbeddedInterp(9));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ReadAggRegIntoReg(dest, 1)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ReadAggRegIntoReg(src, 2)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::Branch(Interpreter::BRANCH_GE_REG_REG,
-                              /*Reg1=*/2, /*Reg2=*/1) | (4 << 16)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::LoadConst16(3, 0)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::WriteInterpreterOutput(3, 0)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ExitOK()));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::LoadConst16(3, 1)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::WriteInterpreterOutput(3, 0)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ExitOK()));
-      programAggregator_do_or_fail(aggregator->Mov(dest, src));
-      break;
     case AggregationAPICompiler::SVMInstrType::Least2:
-      programAggregator_do_or_fail(aggregator->EmbeddedInterp(9));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ReadAggRegIntoReg(dest, 1)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ReadAggRegIntoReg(src, 2)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::Branch(Interpreter::BRANCH_LE_REG_REG,
-                              /*Reg1=*/2, /*Reg2=*/1) | (4 << 16)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::LoadConst16(3, 0)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::WriteInterpreterOutput(3, 0)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ExitOK()));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::LoadConst16(3, 1)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::WriteInterpreterOutput(3, 0)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ExitOK()));
-      programAggregator_do_or_fail(aggregator->Mov(dest, src));
+      emit_pair_op_embedded(
+          aggregator, dest, src,
+          instr->type == AggregationAPICompiler::SVMInstrType::Greatest2);
       break;
     case AggregationAPICompiler::SVMInstrType::AggRepeat:
       programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
@@ -7912,50 +7869,10 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
       programAggregator_do_or_fail(aggregator->Count(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::Greatest2:
-      programAggregator_do_or_fail(aggregator->EmbeddedInterp(9));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ReadAggRegIntoReg(dest, 1)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ReadAggRegIntoReg(src, 2)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::Branch(Interpreter::BRANCH_GE_REG_REG,
-                              /*Reg1=*/2, /*Reg2=*/1) | (4 << 16)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::LoadConst16(3, 0)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::WriteInterpreterOutput(3, 0)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ExitOK()));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::LoadConst16(3, 1)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::WriteInterpreterOutput(3, 0)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ExitOK()));
-      programAggregator_do_or_fail(aggregator->Mov(dest, src));
-      break;
     case AggregationAPICompiler::SVMInstrType::Least2:
-      programAggregator_do_or_fail(aggregator->EmbeddedInterp(9));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ReadAggRegIntoReg(dest, 1)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ReadAggRegIntoReg(src, 2)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::Branch(Interpreter::BRANCH_LE_REG_REG,
-                              /*Reg1=*/2, /*Reg2=*/1) | (4 << 16)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::LoadConst16(3, 0)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::WriteInterpreterOutput(3, 0)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ExitOK()));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::LoadConst16(3, 1)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::WriteInterpreterOutput(3, 0)));
-      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-          Interpreter::ExitOK()));
-      programAggregator_do_or_fail(aggregator->Mov(dest, src));
+      emit_pair_op_embedded(
+          aggregator, dest, src,
+          instr->type == AggregationAPICompiler::SVMInstrType::Greatest2);
       break;
     case AggregationAPICompiler::SVMInstrType::AggRepeat:
       programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
@@ -8064,6 +7981,75 @@ RonSQLPreparer::resolve_case_condition_column(
   return scope.column_map[cidx];
 }
 
+// Phase I.5 v4 — emit one Greatest2 / Least2 pair-op as a 14-word
+// embedded normal-interpreter program plus a trailing Mov.
+//
+// PC (within embedded body)
+//   0   READ_AGG_REG_TO_REG(dest → r1)
+//   1   READ_AGG_REG_TO_REG(src  → r2)
+//   2   BRANCH_REG_EQ_NULL(r1) | (9 << 16)        → land at PC 11 if r1 == NULL
+//   3   BRANCH_REG_EQ_NULL(r2) | (8 << 16)        → land at PC 11 if r2 == NULL
+//   4   BRANCH_(GE|LE)_REG_REG(R2=2, R1=1) | (4 << 16)  cmp picks output
+//   5   LoadConst16(r3, 0)                         output=0 → run trailing Mov
+//   6   WriteInterpreterOutput(r3, 0)
+//   7   ExitOK
+//   8   LoadConst16(r3, 1)             ← cmp lands here; output=1 → skip Mov
+//   9   WriteInterpreterOutput(r3, 0)
+//   10  ExitOK
+//   11  LoadConst16(r3, AGG_EMBEDDED_INTERP_STOP_PROGRAM)  ← null lands here
+//   12  WriteInterpreterOutput(r3, 0)
+//   13  ExitOK
+// (then Mov(dest, src) at +14, run iff output==0)
+//
+// Branch register slots: handler reads getReg1 from bits 6..8 (encoded
+// as Reg2) and getReg2 from bits 9..11 (encoded as Reg1).  For
+// `r1 op r2` the encoded form is therefore Branch(op, Reg1=r2,
+// Reg2=r1).  The handler then evaluates `r1 GE r2` for GREATEST
+// (branch when dest already holds the max → skip Mov), or `r1 LE r2`
+// for LEAST.
+void
+RonSQLPreparer::emit_pair_op_embedded(NdbAggregator* aggregator,
+                                       Uint32 dest,
+                                       Uint32 src,
+                                       bool is_greatest)
+{
+  programAggregator_do_or_fail(aggregator->EmbeddedInterp(14));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::ReadAggRegIntoReg(dest, 1)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::ReadAggRegIntoReg(src, 2)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL,
+                          /*Reg1=*/0, /*Reg2=*/1) | (9 << 16)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL,
+                          /*Reg1=*/0, /*Reg2=*/2) | (8 << 16)));
+  Uint32 cmp = is_greatest ? Interpreter::BRANCH_GE_REG_REG
+                           : Interpreter::BRANCH_LE_REG_REG;
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::Branch(cmp,
+                          /*Reg1=*/2, /*Reg2=*/1) | (4 << 16)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::LoadConst16(3, 0)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::WriteInterpreterOutput(3, 0)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::ExitOK()));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::LoadConst16(3, 1)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::WriteInterpreterOutput(3, 0)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::ExitOK()));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::LoadConst16(3, AGG_EMBEDDED_INTERP_STOP_PROGRAM)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::WriteInterpreterOutput(3, 0)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::ExitOK()));
+  programAggregator_do_or_fail(aggregator->Mov(dest, src));
+}
+
 void
 RonSQLPreparer::validate_greatest_least_pair_loads()
 {
@@ -8103,18 +8089,18 @@ RonSQLPreparer::validate_greatest_least_pair_loads()
     if (col == NULL)
     {
       // CTE COLUMN / AGGREGATE projection: the virtual-table column
-      // descriptor isn't built yet at compile() time
-      // (build_cte_virtual_tables runs at execute time).  Skip the
-      // type / nullable check here — the kernel still produces
-      // correct values for non-nullable CTE columns.  Nullable CTE
-      // operands won't be cleanly rejected today; promoting that
-      // check is captured in v4 (NULL propagation work).
+      // descriptor isn't built until build_cte_virtual_tables runs at
+      // execute time.  Skip the type check here.  v4 propagates NULL
+      // at runtime via the pair-op embedded program (BRANCH_REG_EQ_NULL
+      // → STOP_PROGRAM), so nullability is no longer a parser-time
+      // concern even when the descriptor was available.
       continue;
     }
-    require_prm(!col->getNullable(),
-                "GREATEST/LEAST on nullable column operands is not "
-                "yet supported because MySQL NULL propagation would "
-                "require multi-arm CASE lowering.");
+    // Phase I.5 v4: nullable column operands are supported.  The
+    // pair-op embedded program detects NULL via BRANCH_REG_EQ_NULL
+    // and writes AGG_EMBEDDED_INTERP_STOP_PROGRAM, so the aggregation
+    // interpreter abandons the row and outer SUM/MIN/MAX/COUNT skips
+    // it — matching MySQL semantics for GREATEST/LEAST on NULL inputs.
     // Integer-only restriction.  Pair-ops emit LoadColumn into a
     // register and embedded-interpreter compare / Mov.  The kernel's kOpLoadCol
     // widens every integer type (Tinyint .. Bigint, signed +

@@ -1,0 +1,197 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for NULL-propagation tests ===
+
+
+
+=== Test 1: SUM(GREATEST(n_a, 30)) — nullable col + const ===
+== Query ==
+SELECT SUM(GREATEST(n_a, 30)) AS g FROM v4_nullable;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(GREATEST(n_a, 30)) AS g FROM v4_nullable|
+g
+120
+
+
+=== Test 2: SUM(LEAST(n_a, 30)) — mirror ===
+== Query ==
+SELECT SUM(LEAST(n_a, 30)) AS l FROM v4_nullable;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(LEAST(n_a, 30)) AS l FROM v4_nullable|
+l
+55
+
+
+=== Test 3: SUM(GREATEST(n_a, n_b, n_c)) — n=3 chain, any NULL → row dropped ===
+== Query ==
+SELECT SUM(GREATEST(n_a, n_b, n_c)) AS g FROM v4_nullable;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(GREATEST(n_a, n_b, n_c)) AS g FROM v4_nullable|
+g
+250
+
+
+=== Test 4: SUM(GREATEST(n_a, 5, 100)) — col + 2 constants ===
+== Query ==
+SELECT SUM(GREATEST(n_a, 5, 100)) AS g FROM v4_nullable;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(GREATEST(n_a, 5, 100)) AS g FROM v4_nullable|
+g
+400
+
+
+=== Test 5: MAX(GREATEST(n_a, n_b)) — outer MAX skips NULL rows ===
+== Query ==
+SELECT MAX(GREATEST(n_a, n_b)) AS m FROM v4_nullable;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT MAX(GREATEST(n_a, n_b)) AS m FROM v4_nullable|
+m
+75
+
+
+=== Test 6: COUNT(GREATEST(n_a, n_b)) — NULL rows not counted ===
+== Query ==
+SELECT COUNT(GREATEST(n_a, n_b)) AS c FROM v4_nullable;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(GREATEST(n_a, n_b)) AS c FROM v4_nullable|
+c
+3
+
+
+=== Test 7: explicit nesting — GREATEST(GREATEST(n_a, n_b), n_c) ===
+== Query ==
+SELECT SUM(GREATEST(GREATEST(n_a, n_b), n_c)) AS g FROM v4_nullable;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(GREATEST(GREATEST(n_a, n_b), n_c)) AS g FROM v4_nullable|
+g
+250
+
+
+=== Test 8: regression — NOT NULL fixture, output identical to v2b path ===
+== Query ==
+SELECT o_custkey, SUM(GREATEST(o_amt, 50)) AS g
+FROM v4_orders GROUP BY o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_custkey, SUM(GREATEST(o_amt, 50)) AS g
+FROM v4_orders GROUP BY o_custkey|
+o_custkey	g
+100	130
+200	140
+300	70
+
+
+=== Test 9: join + linked nullable parent column ===
+== Query ==
+SELECT c.c_id, SUM(GREATEST(c.c_floor, o.o_amt)) AS g
+FROM v4_customer AS c
+JOIN v4_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id, SUM(GREATEST(c.c_floor, o.o_amt)) AS g
+FROM v4_customer AS c
+JOIN v4_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	g
+100	130
+200	NULL
+300	120
+
+
+=== Test 10: CTE-scope — nullable operand inside CTE-body aggregator ===
+== Query ==
+WITH s AS (
+SELECT o_custkey AS k, MAX(o_amt) AS t
+FROM v4_orders GROUP BY o_custkey)
+SELECT SUM(GREATEST(s.t, 60, 100)) AS g
+FROM v4_customer AS c
+JOIN s ON s.k = c.c_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (
+SELECT o_custkey AS k, MAX(o_amt) AS t
+FROM v4_orders GROUP BY o_custkey)
+SELECT SUM(GREATEST(s.t, 60, 100)) AS g
+FROM v4_customer AS c
+JOIN s ON s.k = c.c_id|
+g
+300

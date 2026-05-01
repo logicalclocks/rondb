@@ -449,6 +449,16 @@ private:
   // nullable column operand.  Run at compile() time, after column
   // resolution has populated each scope's column_map.
   void validate_greatest_least_pair_loads();
+  // Phase I.5 v4: emit the kernel program for one Greatest2 / Least2
+  // pair-op.  Expands to a 14-word embedded normal-interpreter
+  // program (NULL-test on each operand → STOP_PROGRAM, otherwise
+  // BRANCH_(GE|LE)_REG_REG to choose output 0/1) followed by
+  // Mov(dest, src) which the embedded program's output skips iff
+  // dest already holds the max / min.
+  void emit_pair_op_embedded(NdbAggregator* aggregator,
+                             Uint32 dest,
+                             Uint32 src,
+                             bool is_greatest);
   void require_cte_case_condition_column_output(QueryScope& scope,
                                                 Uint32 op_idx,
                                                 Uint32 cidx);

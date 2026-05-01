@@ -88,14 +88,20 @@ machinery.
     now flows through `validate_greatest_least_pair_loads` instead
     of the v1 CE tracker.
 
-**Known limitation.**  `validate_greatest_least_pair_loads` skips
-the type / nullable check when the operand resolves to a CTE COLUMN
-or AGGREGATE projection (i.e. `scope.column_map[col_idx] == NULL` at
-compile time, before `build_cte_virtual_tables` runs at execute
-time).  Non-nullable CTE columns flow through correctly; nullable
-CTE column operands aren't cleanly rejected by the current
-implementation — promoting that check is folded into the v4 NULL
-propagation work.
+**Limitation resolved by v4.**  The original v2b implementation
+rejected nullable column operands at compile time and skipped the
+parser-time nullable check on CTE columns (because
+`scope.column_map[col_idx] == NULL` until
+`build_cte_virtual_tables` runs at execute time).  v4
+(`cte_filter_phase_i5_v4.md`) lifted the nullable rejection: the
+pair-op embedded program now writes
+`AGG_EMBEDDED_INTERP_STOP_PROGRAM` whenever an operand register is
+NULL, so MySQL semantics are produced at runtime regardless of
+whether the parser-time check could fire.  The CTE-column skip in
+`validate_greatest_least_pair_loads` remains as a "type-check skip"
+only — type validation for CTE columns is still deferred until the
+virt-table descriptors exist at execute time, but nullability is no
+longer a parser-time concern.
 
 **Why pair-op as a single SVM instruction.**  The earlier v2b sketch
 in `cte_filter_phase_i5_v2.md` proposed six new `BranchReg*` SVM

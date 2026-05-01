@@ -1,0 +1,252 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.5 v4: NULL propagation for GREATEST / LEAST.
+#
+# The pair-op embedded program (Phase M shape, extended in v4) detects
+# NULL operands via two BRANCH_REG_EQ_NULL words at the top of the
+# program.  On NULL it writes AGG_EMBEDDED_INTERP_STOP_PROGRAM and the
+# aggregation interpreter abandons the rest of the row's program.
+# Outer SUM / MIN / MAX / COUNT consequently skip the row, matching
+# MySQL's GREATEST(NULL, ...) = NULL semantics under aggregation.
+#
+# Coverage:
+#   1   nullable col + const, single-table SUM
+#   2   LEAST mirror
+#   3   n=3 chained, all three nullable
+#   4   nullable col + ≥2 constants
+#   5   MAX(GREATEST(...))
+#   6   COUNT(GREATEST(...))
+#   7   nested GREATEST(GREATEST(...))
+#   8   regression: NOT NULL fixture (output must match v2b's path)
+#   9   join + linked nullable parent column
+#   10  CTE-scope: nullable operand inside a CTE-body aggregator
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for NULL-propagation tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE v4_nullable (
+  n_id BIGINT NOT NULL,
+  n_a  BIGINT NULL,
+  n_b  BIGINT NULL,
+  n_c  BIGINT NULL,
+  PRIMARY KEY USING HASH (n_id)
+) ENGINE=NDB;
+
+# Fixture row plan:
+#   id=1: all non-null  → max=100, min=10
+#   id=2: n_a NULL      → GREATEST/LEAST = NULL
+#   id=3: n_b NULL      → GREATEST/LEAST = NULL
+#   id=4: n_c NULL      → GREATEST/LEAST = NULL
+#   id=5: all NULL      → GREATEST/LEAST = NULL
+#   id=6: all non-null  → max=150, min=25
+INSERT INTO v4_nullable VALUES
+  (1,   10,   50,   100),
+  (2,   NULL, 50,   100),
+  (3,   10,   NULL, 100),
+  (4,   10,   50,   NULL),
+  (5,   NULL, NULL, NULL),
+  (6,   25,   75,   150);
+
+CREATE TABLE v4_orders (
+  o_id INT NOT NULL,
+  o_custkey BIGINT NOT NULL,
+  o_amt BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_v4_o_custkey ON v4_orders (o_custkey);
+
+CREATE TABLE v4_customer (
+  c_id BIGINT NOT NULL,
+  c_floor BIGINT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+INSERT INTO v4_customer VALUES
+  (100, 50),
+  (200, NULL),
+  (300, 120);
+
+INSERT INTO v4_orders VALUES
+  (1, 100, 80),
+  (2, 100, 40),
+  (3, 200, 90),
+  (4, 200, 30),
+  (5, 300, 70);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: SUM(GREATEST(n_a, 30)) — nullable col + const ===
+
+# Per-row: rows where n_a IS NULL contribute nothing; non-null rows
+# yield max(n_a, 30).  MySQL: SUM(max(10,30), max(25,30)) = 30+30 = 60.
+let $QUERY=
+SELECT SUM(GREATEST(n_a, 30)) AS g FROM v4_nullable;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(GREATEST(n_a, 30)) AS g FROM v4_nullable|
+
+--echo
+--echo
+--echo === Test 2: SUM(LEAST(n_a, 30)) — mirror ===
+
+let $QUERY=
+SELECT SUM(LEAST(n_a, 30)) AS l FROM v4_nullable;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(LEAST(n_a, 30)) AS l FROM v4_nullable|
+
+--echo
+--echo
+--echo === Test 3: SUM(GREATEST(n_a, n_b, n_c)) — n=3 chain, any NULL → row dropped ===
+
+# Only rows 1 and 6 contribute.  Sum = 100 + 150 = 250.
+let $QUERY=
+SELECT SUM(GREATEST(n_a, n_b, n_c)) AS g FROM v4_nullable;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(GREATEST(n_a, n_b, n_c)) AS g FROM v4_nullable|
+
+--echo
+--echo
+--echo === Test 4: SUM(GREATEST(n_a, 5, 100)) — col + 2 constants ===
+
+let $QUERY=
+SELECT SUM(GREATEST(n_a, 5, 100)) AS g FROM v4_nullable;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(GREATEST(n_a, 5, 100)) AS g FROM v4_nullable|
+
+--echo
+--echo
+--echo === Test 5: MAX(GREATEST(n_a, n_b)) — outer MAX skips NULL rows ===
+
+let $QUERY=
+SELECT MAX(GREATEST(n_a, n_b)) AS m FROM v4_nullable;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT MAX(GREATEST(n_a, n_b)) AS m FROM v4_nullable|
+
+--echo
+--echo
+--echo === Test 6: COUNT(GREATEST(n_a, n_b)) — NULL rows not counted ===
+
+let $QUERY=
+SELECT COUNT(GREATEST(n_a, n_b)) AS c FROM v4_nullable;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(GREATEST(n_a, n_b)) AS c FROM v4_nullable|
+
+--echo
+--echo
+--echo === Test 7: explicit nesting — GREATEST(GREATEST(n_a, n_b), n_c) ===
+
+# Same shape as flat n=3.  Output equivalence with MySQL.
+let $QUERY=
+SELECT SUM(GREATEST(GREATEST(n_a, n_b), n_c)) AS g FROM v4_nullable;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(GREATEST(GREATEST(n_a, n_b), n_c)) AS g FROM v4_nullable|
+
+--echo
+--echo
+--echo === Test 8: regression — NOT NULL fixture, output identical to v2b path ===
+
+# c_id was BIGINT NOT NULL; c.c_floor in this fixture is NULL on
+# c_id=200 — but Test 8 deliberately uses NOT-NULL columns by going
+# through v4_orders which has only NOT NULL columns.
+let $QUERY=
+SELECT o_custkey, SUM(GREATEST(o_amt, 50)) AS g
+FROM v4_orders GROUP BY o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o_custkey, SUM(GREATEST(o_amt, 50)) AS g
+FROM v4_orders GROUP BY o_custkey|
+
+--echo
+--echo
+--echo === Test 9: join + linked nullable parent column ===
+
+# c.c_floor is nullable on the parent.  Join groups: c_id 100, 200, 300.
+# c_id=200's c_floor is NULL → all rows for that group drop out → group
+# absent / SUM=NULL depending on join shape.  MySQL is the source of
+# truth; ronsql must match.
+let $QUERY=
+SELECT c.c_id, SUM(GREATEST(c.c_floor, o.o_amt)) AS g
+FROM v4_customer AS c
+JOIN v4_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id, SUM(GREATEST(c.c_floor, o.o_amt)) AS g
+FROM v4_customer AS c
+JOIN v4_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 10: CTE-scope — nullable operand inside CTE-body aggregator ===
+
+# CTE-body GROUP BY produces aggregate rows; the outer SUM uses
+# GREATEST against a constant — exercises the CTE-scope
+# programAggregator path's pair-op emission with NULL handling.
+let $QUERY=
+WITH s AS (
+  SELECT o_custkey AS k, MAX(o_amt) AS t
+  FROM v4_orders GROUP BY o_custkey)
+SELECT SUM(GREATEST(s.t, 60, 100)) AS g
+FROM v4_customer AS c
+JOIN s ON s.k = c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (
+  SELECT o_custkey AS k, MAX(o_amt) AS t
+  FROM v4_orders GROUP BY o_custkey)
+SELECT SUM(GREATEST(s.t, 60, 100)) AS g
+FROM v4_customer AS c
+JOIN s ON s.k = c.c_id|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE v4_nullable;
+DROP TABLE v4_orders;
+DROP TABLE v4_customer;
+--enable_query_log

@@ -1227,8 +1227,10 @@ AggregationAPICompiler::raw_word_size(Uint32 start, Uint32 end)
     if (t == SVMInstrType::LoadConstantInteger)
       count += 3;
     else if (t == SVMInstrType::Greatest2 || t == SVMInstrType::Least2)
-      // Pair-op expands to EmbeddedInterp(9-word program) + Mov.
-      count += 11;
+      // Phase I.5 v4: pair-op expands to EmbeddedInterp(14-word
+      // body) + Mov. Body grew from 9 to 14 to add NULL detection
+      // (BRANCH_REG_EQ_NULL ×2 + STOP_PROGRAM tail).
+      count += 16;
     else
       count += 1;
   }

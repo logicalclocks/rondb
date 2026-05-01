@@ -2,12 +2,62 @@
 
 ## Status
 
-**Planned.**  Supersedes the v4 sketch in `cte_filter_phase_i5.md`,
-which predicted a multi-arm CASE detour or a v2-paired register
-short-circuit.  Neither is needed any more: Phase M
-(`cte_filter_phase_m.md`) already gave us the right primitives, so v4
-is a focused extension of v2b's pair-op embedded program plus a
-relaxation of the parser-time nullable rejection.
+**Shipped.**  Supersedes the v4 sketch in `cte_filter_phase_i5.md`
+(multi-arm CASE detour / v2-paired register short-circuit) — neither
+was needed: Phase M (`cte_filter_phase_m.md`) gave us the embedded
+normal-interpreter primitives, and v4 is a focused extension of v2b's
+pair-op program (9 → 14 words) plus removal of the parser-time
+nullable rejection.
+
+**What shipped:**
+
+- **`RonSQLPreparer.cpp`** — extracted the pair-op kernel emission
+  into `RonSQLPreparer::emit_pair_op_embedded(aggregator, dest, src,
+  is_greatest)`.  Both `programAggregator` and
+  `programAggregator_join` switch cases for `Greatest2` / `Least2`
+  collapse to one helper call.  Helper emits a 14-word embedded
+  program (NULL-test on each operand → STOP_PROGRAM tail; otherwise
+  `BRANCH_(GE|LE)_REG_REG` to write 0 or 1) followed by `Mov(dest,
+  src)`.
+- **Branch register encoding gotcha (documented in code).**  The
+  encoder's `Reg1` lands in bits 9..11 and `Reg2` in bits 6..8, but
+  the handler reads `theRegister = getReg1 << 2` from bits 6..8 and
+  `TrightRegister = getReg2 << 2` from bits 9..11.  So an encoded
+  `Branch(BRANCH_GE_REG_REG, Reg1=2, Reg2=1)` evaluates `r[1] >=
+  r[2]` at runtime — the register names are swapped between encoder
+  and handler.  The new helper's comment captures this so future
+  reviewers don't waste a couple of hours like I did.
+- **`validate_greatest_least_pair_loads`** — dropped the nullable
+  rejection.  The CTE-column `column_map==NULL` early-return is now
+  documented as a "type-check skip"; nullability is no longer the
+  reason it exists.
+- **`AggregationAPICompiler.cpp` `raw_word_size`** — pair-op
+  per-instruction kernel-word count bumped from 11 to 16 (1
+  EmbeddedInterp header + 14-word body + 1 trailing Mov).
+- **`ronsql_cte_greatest_least.test` Test 10** — converted from
+  `--error 1` rejection to a normal `ronsql_compare.inc` pass case
+  with a `BIGINT NULL` fixture; serves as the v1 → v4 regression
+  marker.
+- **New `ronsql_cte_greatest_least_v4.test`** — ten cases covering
+  nullable col+const, n=3 chain, n + multiple constants,
+  `MAX(GREATEST(...))`, `COUNT(GREATEST(...))`, explicit nesting, a
+  NOT NULL regression, join + linked nullable parent column, and
+  CTE-scope chained pair-op against a nullable virtual column.
+
+**Per-row semantics shipped:** the first pair-op that sees a NULL
+operand writes `AGG_EMBEDDED_INTERP_STOP_PROGRAM` to the embedded
+output; the aggregation interpreter abandons the rest of the row's
+program.  Outer SUM / MIN / MAX / COUNT therefore never accumulate
+that row, matching MySQL's `GREATEST(NULL, …) = NULL` under
+aggregation.
+
+**Caveat removed.**  The v2b doc's "validate skips type/nullable
+check for CTE columns because column_map==NULL at compile time" is
+no longer load-bearing for nullable correctness — v4 handles NULL at
+runtime regardless of whether the parser-time check fired.  The skip
+still applies for the type check (CTE virt-table descriptors are
+built at execute time), but a nullable CTE column operand now flows
+through correctly.
 
 ## Goal
 
