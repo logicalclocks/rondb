@@ -98,11 +98,14 @@ latent v1 bug.
 
 **v2b shipped** — see `cte_filter_phase_i5_v2b.md`.  N-ary
 GREATEST / LEAST via the SVM extension (new `Greatest2` / `Least2`
-ops shaped like arithmetic ops; pair-op expands to `BranchRegGe +
-Mov` / `BranchRegLe + Mov` in `programAggregator`).  v2b also
-replaces v1's two-arg CaseExpr-based lowering — n=2 now flows
-through the same SVM path as n>2.  Integer-typed operands (Tinyint
-through Bigint, signed + unsigned).
+ops shaped like arithmetic ops).  Phase M
+(`cte_filter_phase_m.md`) later rewrote pair-op kernel emission from
+`BranchReg + Mov` to an embedded normal-interpreter program (using
+`READ_AGG_REG_TO_REG + BRANCH_(GE|LE)_REG_REG`) plus
+`Mov(dest, src)`; SVM model unchanged.  v2b also replaces v1's
+two-arg CaseExpr-based lowering — n=2 now flows through the same
+SVM path as n>2.  Integer-typed operands (Tinyint through Bigint,
+signed + unsigned).
 
 Follow-ups: v3 / v5 (wider operand types — float / decimal / string
 and signed sub-Bigint linked columns; v5 in

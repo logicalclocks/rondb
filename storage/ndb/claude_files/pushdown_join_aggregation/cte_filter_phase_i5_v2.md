@@ -20,6 +20,18 @@ CaseExpr-based lowering — n=2 now flows through the same SVM path
 as n>2, and the v1-specific `m_greatest_least_conditions` /
 `is_greatest_least_condition` machinery was removed.
 
+**Phase M post-edit (commit `a28ed6d817f`).**  The
+later sections of this doc still describe v2b emission as
+`BranchRegGe + Mov` / `BranchRegLe + Mov`.  That is now obsolete:
+Phase M removed `kOpBranchReg*` entirely from the aggregation
+interpreter and the `NdbAggregator` API.  The pair-op SVM types are
+unchanged, but their kernel emission is now a 9-word embedded
+normal-interpreter program (using `READ_AGG_REG_TO_REG +
+BRANCH_(GE|LE)_REG_REG`) plus `Mov(dest, src)`.  See
+`cte_filter_phase_m.md` for the rationale, and
+`cte_filter_phase_i5_v2b.md` for the current emission shape.  The
+pre-Phase-M sketches below are preserved as design history only.
+
 The CTE linked-vs-linked runtime test that was intentionally removed
 from v2a's MTR file is captured separately in
 `cte_filter_phase_i5_v6.md`.  Sub-Bigint integer support for

@@ -13,7 +13,10 @@ The original v1 design described in this doc is preserved for
 historical context, but the live implementation is documented in
 `cte_filter_phase_i5_v2b.md` (with `cte_filter_phase_i5_v2.md`
 covering v2a's col-vs-col CASE atom path, which still applies to
-explicit user-written CASE conditions).
+explicit user-written CASE conditions).  Phase M
+(`cte_filter_phase_m.md`) later rewrote v2b's pair-op kernel emission
+from `BranchReg + Mov` to an embedded normal-interpreter program +
+`Mov`; the SVM model is unchanged.
 
 ## Background
 

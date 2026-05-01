@@ -2,15 +2,36 @@
 
 ## Status
 
-**Shipped.**  v2b's grammar accepts n-ary GREATEST / LEAST for any
-n ≥ 2; lowering folds the operand list left-associative into a chain
-of `Greatest2` / `Least2` SVM ops.  Each pair-op expands at
-programAggregator time to `BranchRegGe + Mov` (or `BranchRegLe + Mov`)
-on the kernel aggregation program.  v2b also **replaces** v1's
-two-arg CaseExpr-based lowering — n=2 now goes through the same
-SVM pair-op path as n>2, simplifying the implementation and removing
-the v1-specific `m_greatest_least_conditions` /
-`is_greatest_least_condition` machinery.
+**Shipped (commit `959d45a20ce`); pair-op kernel emission rewritten
+in Phase M (commit `a28ed6d817f`).**  v2b's grammar accepts n-ary
+GREATEST / LEAST for any n ≥ 2; lowering folds the operand list
+left-associative into a chain of `Greatest2` / `Least2` SVM ops.
+After Phase M, each pair-op expands at programAggregator time to a
+9-word embedded normal-interpreter program followed by `Mov(dest,
+src)`:
+
+```text
+EmbeddedInterp(9)
+  READ_AGG_REG_TO_REG(dest → reg1)
+  READ_AGG_REG_TO_REG(src  → reg2)
+  BRANCH_(GE|LE)_REG_REG(reg2, reg1, +4)   // skip past "set output=0"
+  LoadConst16(reg3, 0); WriteInterpreterOutput(reg3); ExitOK
+  LoadConst16(reg3, 1); WriteInterpreterOutput(reg3); ExitOK
+Mov(dest, src)                              // skipped iff output == 1
+```
+
+The embedded program returns 0 when `r[dest]` already holds the
+max/min and 1 otherwise; the aggregation interpreter consumes that
+scalar to decide whether the trailing `Mov` runs.  All comparison and
+branching live in the normal interpreter — the aggregation interpreter
+no longer has its own `BranchReg*` opcodes (see
+`cte_filter_phase_m.md`).
+
+v2b also **replaces** v1's two-arg CaseExpr-based lowering — n=2 now
+goes through the same SVM pair-op path as n>2, simplifying the
+implementation and removing the v1-specific
+`m_greatest_least_conditions` / `is_greatest_least_condition`
+machinery.
 
 **What shipped:**
 
@@ -23,11 +44,11 @@ the v1-specific `m_greatest_least_conditions` /
   `relstr_*` entry per pair-op.  Constant folding extended to
   evaluate `Greatest2` / `Least2` of two `LoadConstantInt`
   operands at program-construction time.  `print(Expr*)` adds
-  GREATEST(...)/LEAST(...) cases.  `raw_word_size` returns 2 for
-  pair-ops (BranchReg + Mov on the kernel program).  Public
-  helper `owns_expr(Expr*)` lets RonSQLPreparer identify the
-  owning compiler when validating cross-scope pair-op operand
-  nullability.
+  GREATEST(...)/LEAST(...) cases.  `raw_word_size` returns the
+  per-pair-op kernel-word count (post-Phase-M: the 9-word embedded
+  program plus a `Mov`).  Public helper `owns_expr(Expr*)` lets
+  RonSQLPreparer identify the owning compiler when validating
+  cross-scope pair-op operand nullability.
 - **Parser** (`RonSQLParser.y`): replaces v1's two-arg
   `T_GREATEST T_LEFT arith_expr T_COMMA arith_expr T_RIGHT` rule
   with `T_GREATEST T_LEFT arith_expr_list T_RIGHT` (and the LEAST
@@ -46,9 +67,11 @@ the v1-specific `m_greatest_least_conditions` /
   operands and non-integer types (Tinyint .. Bigint signed +
   unsigned accepted; Float / Decimal / VARCHAR deferred to
   v3 / I.6).  `programAggregator` and `programAggregator_join`
-  gain `Greatest2` / `Least2` cases that emit
-  `aggregator->BranchRegGe + Mov` (or `BranchRegLe + Mov`).  The
-  v1-specific `m_greatest_least_conditions` array,
+  gain `Greatest2` / `Least2` cases that emit a 9-word embedded
+  normal-interpreter program (`READ_AGG_REG_TO_REG ×2 +
+  BRANCH_(GE|LE)_REG_REG + LoadConst16/WriteInterpreterOutput/ExitOK ×2`)
+  followed by `Mov(dest, src)`; see the Status section above for the
+  full shape.  The v1-specific `m_greatest_least_conditions` array,
   `is_greatest_least_condition` helper, and the two call sites in
   `generate_embedded_condition` are removed (dead code under
   v2b's lowering).
@@ -76,17 +99,17 @@ propagation work.
 
 **Why pair-op as a single SVM instruction.**  The earlier v2b sketch
 in `cte_filter_phase_i5_v2.md` proposed six new `BranchReg*` SVM
-types plus a third operand on `Instr` to carry the skip count.
-This plan refined that to a single value-producing SVM instruction
-per pair-op (`Greatest2` / `Least2`) shaped exactly like an
-arithmetic op — `Instr` stays at `{type, dest, src}`, the SVM
-treats the pair-op as if it deterministically writes
-`max(r[dest], r[src])` to `r[dest]`, and the
-`BranchReg + Mov` expansion is encapsulated inside
-`programAggregator`.  Consequence: minimal SVM surface change, no
-risk of breaking the symbolic execution model, and the existing
-arithmetic-op machinery (constant folding, register allocation,
-DCE) covers pair-ops for free.
+types plus a third operand on `Instr` to carry the skip count.  This
+plan refined that to a single value-producing SVM instruction per
+pair-op (`Greatest2` / `Least2`) shaped exactly like an arithmetic op
+— `Instr` stays at `{type, dest, src}`, the SVM treats the pair-op
+as if it deterministically writes `max(r[dest], r[src])` to
+`r[dest]`, and the kernel-level expansion is encapsulated inside
+`programAggregator`.  This shape held up across Phase M's emission
+rewrite: the SVM model didn't change at all when the underlying
+emission moved from `BranchReg + Mov` to embedded interpreter +
+`Mov`.  The existing arithmetic-op machinery (constant folding,
+register allocation, DCE) still covers pair-ops for free.
 
 This doc is a refinement of the v2b sketch in
 `cte_filter_phase_i5_v2.md`.  The key design simplification vs. that

@@ -45,7 +45,7 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_filter_phase_k.md` — Phase K: ANTI_JOIN promotion for WHERE col IS NULL on LEFT JOIN RHS (RonSQL)
 - `cte_filter_phase_l.md` — Phase L: JOIN_AGG_COMPLETE robustness — checkCteReady / continueJoinAggRedistribute idempotency, unified requestId correlation in DBTC, single-owner DBLQH routing, phase-report deduplication, test coverage (kernel + DBTC, plan-only)
 - `cte_filter_phase_l_commit5.md` — Phase L commit 5: cleanup follow-up — drop redundant `m_redist_mutex` and retire legacy `m_cteCompleteOutstanding` counter
-- `cte_filter_phase_m.md` — Phase M: remove aggregation-program BranchReg control flow; route filtering through normal filters / embedded interpreter before continuing Phase I
+- `cte_filter_phase_m.md` — Phase M (shipped, `a28ed6d817f`): aggregation-program BranchReg control flow removed; pair-op kernel emission rewritten to embedded normal-interpreter (`READ_AGG_REG_TO_REG + BRANCH_*_REG_REG`) + `Mov`; cross-table subquery / DNF filter emission rewritten; `NdbAggregator::BranchReg*` API and `kOpBranchReg*` opcodes removed
 - `cte_filter_phase_m1_inventory.txt` — Phase M.1: plain-text BranchReg / Greatest2 / Least2 inventory and guard checklist
 - `cte_nextreq_plan.md` — SCAN_NEXTREQ flow control for CTE main-SELECTs: overview + phase index
 - `cte_nextreq_phase_1.md` — Phase 1: fix CTE_SCAN_REQ continuation plumbing (scanIterI, SignalLengthContinue)
