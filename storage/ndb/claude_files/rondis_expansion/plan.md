@@ -913,13 +913,65 @@ Sub-phases (each its own commit, separately bisectable):
     `feedback_hset_keys_row_persistent.md` updated to reflect the
     new contract.
 
+- **1.10c.9 — Cross-type read WRONGTYPE + expiry compliance
+  (DONE).** Five additional fixes brought to light by deeper
+  testing of the 1.10c.8 baseline:
+
+  - **GET / STRLEN / GETRANGE on a hash → WRONGTYPE.** New helper
+    `check_string_key_is_not_hash` runs the EXISTS probe (with
+    expired-row filter) ahead of the read path; a hash match
+    aborts with WRONGTYPE before the string read. Previously
+    these only consulted `string_keys` and silently returned
+    nil/0 when the name was hash-claimed.
+  - **HDEL on a string → WRONGTYPE.** `hdel_phase1_callback`
+    raises `RONDB_WRONGTYPE` when `redis_key_id IS NULL`, instead
+    of mapping to id 0 and treating the hash as missing.
+    `rondb_hdel_command` surfaces the sentinel through
+    `assign_class_err_to_response`.
+  - **Expired-but-present keys are logically absent for DEL /
+    SET NX|XX / SET … GET.**
+    - `rondb_del`'s complex path now reads `expiry_date`
+      alongside `rondb_key`/`num_rows` (mask `0xB4`) and tracks
+      `m_del_logically_absent` so the returned count excludes
+      keys whose `expiry_date` is in the past — both for string
+      keys and the hset_keys hash registry.
+    - SET NX/XX evaluates "key exists" against the dual-claim's
+      captured old `expiry_date`; an expired hash claim no
+      longer blocks NX or admits XX. Implemented via the new
+      `hset_string_claim_old_value_expired` predicate, fed by a
+      third interpreter output (`OUTPUT_INDEX_2 = old_expiry_date`
+      or a no-expiry sentinel) emitted from
+      `init_hset_string_claim_code`.
+    - SET … GET on a present-but-expired string row treats the
+      old value as nil (consulting `m_get_key_state`).
+  - **SET options accept flexible order and combinations.** The
+    single-arg-per-position parser was replaced with a
+    while-loop validator: NX/XX, GET, KEEPTTL, EX/PX/EXAT/PXAT
+    in any order; conflicting or duplicate flags raise
+    `REDIS_SYNTAX_ERROR`.
+  - **PXAT timestamp ≤ now deletes the key immediately.** PXAT
+    routes through the same `expire_now → rondb_del` short-cut
+    that EXPIRE 0 already used.
+
+  Tests `rondis_keyinfo_silent_replace`, `rondis_keyinfo_expired_get`,
+  `rondis_keyinfo_expired_probe`, `rondis_set_flags`, and
+  `rondis_keyinfo_cache_removal` updated; the EXPIREAT-1 setup that
+  used to manufacture an expired-but-present internal state was
+  replaced with a deterministic SQL `UPDATE` of `expiry_date`,
+  since 1.10c.8/EXPIREAT-past-deletes-immediately means the
+  Redis-side path can no longer leave rows behind.
+
 The 1.10c group's namespace contract: `hset_keys` is the
 authoritative existence registry. Row presence with
 `redis_key_id IS NULL` means string-claimed; row presence with
 `redis_key_id` set means hash-claimed (and by 1.10c.8/D
 `field_count > 0` is implied). Row absence means the name is
 unclaimed. Read paths consult this registry directly per
-operation; no local cache.
+operation; no local cache. After 1.10c.9 expired-but-present
+rows are logically absent across every command surface — DEL,
+SET NX/XX/GET, EXPIRE, EXISTS, TYPE, GET/STRLEN/GETRANGE — even
+though the row is still physically in NDB until the periodic
+expire-scan reaps it.
 
 ### Phase 1.11 — PR 1 final
 
