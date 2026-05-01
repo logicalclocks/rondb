@@ -234,6 +234,18 @@ public:
   // Aggregation Compiler:
 public:
   DynamicArray<Instr> m_program;
+  // Phase I.5 v4 fast path: parallel to m_program.  Slot i holds the
+  // Greatest2 / Least2 Expr* for instruction i if that instruction is
+  // a pair-op, NULL otherwise.  Used by RonSQLPreparer to compute
+  // per-pair-op nullability and elide the BRANCH_REG_EQ_NULL words
+  // when both operands are statically non-nullable.
+  DynamicArray<Expr*> m_pair_op_program_exprs;
+  // Per-program-index needs_null_check decision (filled by
+  // RonSQLPreparer at the start of programAggregator before any
+  // raw_word_size queries fire).  true = emit the 14-word body,
+  // false = emit the 9-word body.  Only meaningful at indices where
+  // m_program[i] is a pair-op.
+  DynamicArray<bool> m_pair_op_needs_null_check;
 private:
   Uint32 m_locked[REGS];
 public:

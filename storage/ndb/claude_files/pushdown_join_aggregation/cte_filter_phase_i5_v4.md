@@ -59,6 +59,59 @@ still applies for the type check (CTE virt-table descriptors are
 built at execute time), but a nullable CTE column operand now flows
 through correctly.
 
+## Static-NULL-elision fast path (follow-up shipped)
+
+After the initial v4 commit, a fast path was added so that pair-ops
+whose operands are statically known to be non-nullable emit the v2b
+9-word body (no NULL test), saving five program words per pair-op
+plus the cost of running the two `BRANCH_REG_EQ_NULL` instructions
+at runtime.  The decision is per-pair-op: nested chains where some
+operands are nullable and others not still pay the cost only on the
+nullable pair-ops.
+
+**Mechanism:**
+
+1. **`AggregationAPICompiler` parallel arrays.**  New
+   `m_pair_op_program_exprs[i]` records the `Greatest2` / `Least2`
+   `Expr*` for each pair-op program slot, NULL otherwise.
+   Populated in `compile(Expr*, …)` immediately after the pair-op
+   `pushInstr`.  `m_pair_op_needs_null_check[i]` records the
+   per-slot bool decision; populated lazily by RonSQLPreparer.
+   Both arrays grow alongside `m_program` (kept in lock-step at the
+   four `m_program.push` sites and through DCE rebuild).
+2. **`RonSQLPreparer::compute_pair_op_needs_null_check(scope, expr)`**
+   recursively walks `Greatest2` / `Least2` operand trees.
+   Returns `false` only when every leaf is a `LoadConstantInt` or a
+   `Load(col_idx)` where
+   `scope.column_map[col_idx]->getNullable() == false`.  CTE virt
+   columns (`column_map[col_idx] == NULL` until execute time)
+   conservatively return `true`.  Other arithmetic ops also
+   conservatively return `true`.
+3. **`prepare_pair_op_null_check_cache(scope)`** fills the per-slot
+   bool array.  Called at the top of `programAggregator` and
+   `programAggregator_join` before any `raw_word_size` query or
+   pair-op emission consumes it.  Idempotent.
+4. **`emit_pair_op_embedded(...)`** gains a `bool needs_null_check`
+   parameter — emits either the 14-word body (NULL-aware) or the
+   9-word body (fast).  Trailing `Mov(dest, src)` is unchanged in
+   both branches.
+5. **`raw_word_size`** consults `m_pair_op_needs_null_check[i]` per
+   slot and counts 16 / 11 accordingly.  Defaults conservatively to
+   16 if the cache hasn't been populated yet (so pre-cache callers
+   don't underflow embedded-CASE skip distances).
+
+**Coverage.**  No new MTR test — existing tests already exercise
+both paths:
+
+- `ronsql_cte_greatest_least.test` / `ronsql_cte_greatest_least_v2b.test`
+  use NOT NULL columns → fast path (9-word body, count 11).
+- `ronsql_cte_greatest_least_v4.test` and the new Test 10 in v2b use
+  nullable columns → slow path (14-word body, count 16).
+
+The recorded baselines for both paths are unchanged after the
+optimisation lands; only the kernel program shape varies per
+pair-op.
+
 ## Goal
 
 Lift the v1 / v2b "nullable column operand" rejection so

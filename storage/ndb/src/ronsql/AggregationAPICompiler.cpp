@@ -42,7 +42,9 @@ AggregationAPICompiler::AggregationAPICompiler
   m_aggs(amalloc),
   m_constants(amalloc),
   m_cases(amalloc),
-  m_program(amalloc)
+  m_program(amalloc),
+  m_pair_op_program_exprs(amalloc),
+  m_pair_op_needs_null_check(amalloc)
 {}
 
 AggregationAPICompiler::Status
@@ -549,6 +551,7 @@ AggregationAPICompiler::compile(AggExpr* agg, Uint32 idx)
     emb_instr.dest = case_idx;
     emb_instr.src = 0;
     m_program.push(emb_instr);
+    m_pair_op_program_exprs.push(NULL);
 
     // THEN arm
     m_cases[case_idx].then_start = m_program.size();
@@ -563,6 +566,7 @@ AggregationAPICompiler::compile(AggExpr* agg, Uint32 idx)
     skip_instr.dest = 0;
     skip_instr.src = 0;
     m_program.push(skip_instr);
+    m_pair_op_program_exprs.push(NULL);
 
     // ELSE arm
     m_cases[case_idx].else_start = m_program.size();
@@ -744,6 +748,11 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
   ndbrequire(m_locked[src] >= 1);
   m_locked[src]--;
   pushInstr(expr->op, dest, src, is_first_compilation);
+  // Phase I.5 v4 fast path: tag the just-pushed pair-op slot with its
+  // Expr* so RonSQLPreparer can introspect operand nullability later.
+  if (expr->op == ExprOp::Greatest2 || expr->op == ExprOp::Least2) {
+    m_pair_op_program_exprs.last_item() = expr;
+  }
   ndbrequire(r[dest] == expr);
   *reg = dest;
   return true;
@@ -841,6 +850,11 @@ AggregationAPICompiler::pushInstr(SVMInstrType type,
   instr.dest = dest;
   instr.src = src;
   m_program.push(instr);
+  // Phase I.5 v4 fast path: keep the parallel pair-op-Expr array in
+  // lock-step with m_program.  Default NULL; the compile() pair-op
+  // site overwrites the just-pushed slot.  DCE rebuilds the parallel
+  // array via the same overwrite step.
+  m_pair_op_program_exprs.push(NULL);
   svm_execute(&m_program.last_item(), is_first_compilation);
 }
 
@@ -985,7 +999,9 @@ AggregationAPICompiler::dead_code_elimination()
   if (dead_code_found)
   {
     DynamicArray<Instr> old_program = m_program;
+    DynamicArray<Expr*> old_pair_op_exprs = m_pair_op_program_exprs;
     m_program.truncate();
+    m_pair_op_program_exprs.truncate();
     svm_init();
     for (Uint32 i=0; i<old_program.size(); i++)
     {
@@ -993,6 +1009,8 @@ AggregationAPICompiler::dead_code_elimination()
       {
         Instr instr = old_program[i];
         pushInstr(instr.type, instr.dest, instr.src, false);
+        // Carry over the pair-op Expr tag from the old slot.
+        m_pair_op_program_exprs.last_item() = old_pair_op_exprs[i];
       }
     }
   }
@@ -1227,10 +1245,19 @@ AggregationAPICompiler::raw_word_size(Uint32 start, Uint32 end)
     if (t == SVMInstrType::LoadConstantInteger)
       count += 3;
     else if (t == SVMInstrType::Greatest2 || t == SVMInstrType::Least2)
-      // Phase I.5 v4: pair-op expands to EmbeddedInterp(14-word
-      // body) + Mov. Body grew from 9 to 14 to add NULL detection
-      // (BRANCH_REG_EQ_NULL ×2 + STOP_PROGRAM tail).
-      count += 16;
+    {
+      // Phase I.5 v4: pair-op expands to EmbeddedInterp(N-word
+      // body) + Mov, where N = 14 when NULL detection is needed and
+      // N = 9 on the static-non-nullable fast path.  The decision is
+      // precomputed by RonSQLPreparer::prepare_pair_op_null_check_cache;
+      // if the cache hasn't been filled yet (raw_word_size called
+      // before that runs), default to the conservative 14-word body.
+      bool needs_null_check =
+          (i < m_pair_op_needs_null_check.size())
+            ? m_pair_op_needs_null_check[i]
+            : true;
+      count += needs_null_check ? 16 : 11;
+    }
     else
       count += 1;
   }

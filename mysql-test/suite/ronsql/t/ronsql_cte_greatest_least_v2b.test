@@ -54,6 +54,16 @@ INSERT INTO cte_orders VALUES
   (4, 200, 60,  15),
   (5, 300, 90,  30);
 
+CREATE TABLE cte_nullable (
+  n_id BIGINT NOT NULL,
+  n_val BIGINT NULL,
+  PRIMARY KEY USING HASH (n_id)
+) ENGINE=NDB;
+
+INSERT INTO cte_nullable VALUES
+  (1, 10),
+  (2, NULL);
+
 --enable_warnings
 --enable_query_log
 
@@ -255,27 +265,27 @@ FROM cte_customer AS c
 JOIN sums ON sums.k = c.c_id
 GROUP BY c.c_id|
 
+--echo
+--echo
+--echo === Test 10: nullable column operand — NULL propagation (v4) ===
+
+# Phase I.5 v4 lifted the v2b parser-time nullable-column rejection.
+# The pair-op embedded program now writes
+# AGG_EMBEDDED_INTERP_STOP_PROGRAM whenever an operand register is
+# NULL, so SUM skips the row.  Detailed nullable-operand coverage
+# lives in `ronsql_cte_greatest_least_v4.test`; this case is the v2b
+# → v4 regression marker on a 3-arg pair-op chain over the
+# cte_nullable fixture set up at the top.
+
+let $QUERY=
+SELECT SUM(GREATEST(n_val, 5, 100)) AS gmax FROM cte_nullable;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(GREATEST(n_val, 5, 100)) AS gmax FROM cte_nullable|
+
 DELIMITER ;|
-
---echo
---echo
---echo === Test 10: rejection — nullable column operand ===
---echo Expected error: nullable column operands rejected at compile()
-
---disable_query_log
-CREATE TABLE cte_nullable (
-  n_id BIGINT NOT NULL,
-  n_val BIGINT NULL,
-  PRIMARY KEY USING HASH (n_id)
-) ENGINE=NDB;
-
-INSERT INTO cte_nullable VALUES
-  (1, 10),
-  (2, NULL);
---enable_query_log
-
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(GREATEST(n_val, 5, 100)) AS gmax FROM cte_nullable;' 2>&1
 
 --echo
 --echo

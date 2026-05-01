@@ -7275,6 +7275,9 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
 {
   std::basic_ostream<char>& err = *m_conf.err_stream;
   SelectStatement& ast_root = m_context.ast_root;
+  // Phase I.5 v4 fast path: precompute per-pair-op nullability so
+  // raw_word_size and emit_pair_op_embedded agree on the body size.
+  prepare_pair_op_null_check_cache(m_main_scope);
   // Program groupby columns
   assert(m_main_scope.column_attrId_map != NULL); // Ensured in RonSQLPreparer::load
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
@@ -7347,7 +7350,8 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
     case AggregationAPICompiler::SVMInstrType::Least2:
       emit_pair_op_embedded(
           aggregator, dest, src,
-          instr->type == AggregationAPICompiler::SVMInstrType::Greatest2);
+          instr->type == AggregationAPICompiler::SVMInstrType::Greatest2,
+          m_main_scope.agg->m_pair_op_needs_null_check[i]);
       break;
     case AggregationAPICompiler::SVMInstrType::AggRepeat:
       programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
@@ -7651,6 +7655,9 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
                                             cteVirtualTables)
 {
   std::basic_ostream<char>& err = *m_conf.err_stream;
+  // Phase I.5 v4 fast path: precompute per-pair-op nullability so
+  // raw_word_size and emit_pair_op_embedded agree on the body size.
+  prepare_pair_op_null_check_cache(scope);
   Uint32 leaf_idx = scope.join_plan.agg_leaf_idx;
   // When the aggregation leaf is a CTE op, the CTE's per-group data
   // (GROUP BY key + aggregate results, in cte->stmt->outputs order)
@@ -7872,7 +7879,8 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
     case AggregationAPICompiler::SVMInstrType::Least2:
       emit_pair_op_embedded(
           aggregator, dest, src,
-          instr->type == AggregationAPICompiler::SVMInstrType::Greatest2);
+          instr->type == AggregationAPICompiler::SVMInstrType::Greatest2,
+          scope.agg->m_pair_op_needs_null_check[i]);
       break;
     case AggregationAPICompiler::SVMInstrType::AggRepeat:
       programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
@@ -7981,10 +7989,10 @@ RonSQLPreparer::resolve_case_condition_column(
   return scope.column_map[cidx];
 }
 
-// Phase I.5 v4 — emit one Greatest2 / Least2 pair-op as a 14-word
-// embedded normal-interpreter program plus a trailing Mov.
+// Phase I.5 v4 — emit one Greatest2 / Least2 pair-op.  The embedded
+// program shape depends on `needs_null_check`:
 //
-// PC (within embedded body)
+// `needs_null_check == true` (14-word body):
 //   0   READ_AGG_REG_TO_REG(dest → r1)
 //   1   READ_AGG_REG_TO_REG(src  → r2)
 //   2   BRANCH_REG_EQ_NULL(r1) | (9 << 16)        → land at PC 11 if r1 == NULL
@@ -8001,6 +8009,18 @@ RonSQLPreparer::resolve_case_condition_column(
 //   13  ExitOK
 // (then Mov(dest, src) at +14, run iff output==0)
 //
+// `needs_null_check == false` (9-word body — Phase I.5 v4 fast path):
+//   0   READ_AGG_REG_TO_REG(dest → r1)
+//   1   READ_AGG_REG_TO_REG(src  → r2)
+//   2   BRANCH_(GE|LE)_REG_REG(R2=2, R1=1) | (4 << 16)
+//   3   LoadConst16(r3, 0)
+//   4   WriteInterpreterOutput(r3, 0)
+//   5   ExitOK
+//   6   LoadConst16(r3, 1)
+//   7   WriteInterpreterOutput(r3, 0)
+//   8   ExitOK
+// (then Mov(dest, src) at +9)
+//
 // Branch register slots: handler reads getReg1 from bits 6..8 (encoded
 // as Reg2) and getReg2 from bits 9..11 (encoded as Reg1).  For
 // `r1 op r2` the encoded form is therefore Branch(op, Reg1=r2,
@@ -8011,43 +8031,129 @@ void
 RonSQLPreparer::emit_pair_op_embedded(NdbAggregator* aggregator,
                                        Uint32 dest,
                                        Uint32 src,
-                                       bool is_greatest)
+                                       bool is_greatest,
+                                       bool needs_null_check)
 {
-  programAggregator_do_or_fail(aggregator->EmbeddedInterp(14));
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::ReadAggRegIntoReg(dest, 1)));
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::ReadAggRegIntoReg(src, 2)));
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL,
-                          /*Reg1=*/0, /*Reg2=*/1) | (9 << 16)));
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL,
-                          /*Reg1=*/0, /*Reg2=*/2) | (8 << 16)));
   Uint32 cmp = is_greatest ? Interpreter::BRANCH_GE_REG_REG
                            : Interpreter::BRANCH_LE_REG_REG;
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::Branch(cmp,
-                          /*Reg1=*/2, /*Reg2=*/1) | (4 << 16)));
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::LoadConst16(3, 0)));
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::WriteInterpreterOutput(3, 0)));
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::ExitOK()));
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::LoadConst16(3, 1)));
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::WriteInterpreterOutput(3, 0)));
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::ExitOK()));
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::LoadConst16(3, AGG_EMBEDDED_INTERP_STOP_PROGRAM)));
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::WriteInterpreterOutput(3, 0)));
-  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
-      Interpreter::ExitOK()));
+  if (needs_null_check)
+  {
+    programAggregator_do_or_fail(aggregator->EmbeddedInterp(14));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::ReadAggRegIntoReg(dest, 1)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::ReadAggRegIntoReg(src, 2)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL,
+                            /*Reg1=*/0, /*Reg2=*/1) | (9 << 16)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL,
+                            /*Reg1=*/0, /*Reg2=*/2) | (8 << 16)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::Branch(cmp,
+                            /*Reg1=*/2, /*Reg2=*/1) | (4 << 16)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::LoadConst16(3, 0)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::WriteInterpreterOutput(3, 0)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::ExitOK()));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::LoadConst16(3, 1)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::WriteInterpreterOutput(3, 0)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::ExitOK()));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::LoadConst16(3, AGG_EMBEDDED_INTERP_STOP_PROGRAM)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::WriteInterpreterOutput(3, 0)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::ExitOK()));
+  }
+  else
+  {
+    programAggregator_do_or_fail(aggregator->EmbeddedInterp(9));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::ReadAggRegIntoReg(dest, 1)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::ReadAggRegIntoReg(src, 2)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::Branch(cmp,
+                            /*Reg1=*/2, /*Reg2=*/1) | (4 << 16)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::LoadConst16(3, 0)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::WriteInterpreterOutput(3, 0)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::ExitOK()));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::LoadConst16(3, 1)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::WriteInterpreterOutput(3, 0)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::ExitOK()));
+  }
   programAggregator_do_or_fail(aggregator->Mov(dest, src));
+}
+
+// Phase I.5 v4 fast path — recursively walk a Greatest2 / Least2
+// Expr tree to determine whether any leaf Load reaches a nullable
+// column.  Returns true (conservative) when a leaf can't be resolved
+// to a non-nullable column descriptor.
+bool
+RonSQLPreparer::compute_pair_op_needs_null_check(
+    const QueryScope& scope,
+    AggregationAPICompiler::Expr* expr) const
+{
+  if (expr == NULL) return true;
+  if (expr->isLoadConstantInt()) return false;
+  if (expr->isLoad())
+  {
+    if (scope.column_map == NULL) return true;
+    Uint32 col_idx = expr->getLoadIdx();
+    const NdbDictionary::Column* col = scope.column_map[col_idx];
+    if (col == NULL) return true;  // CTE virt — descriptor not yet built.
+    return col->getNullable();
+  }
+  if (expr->isGreatest2() || expr->isLeast2())
+  {
+    return compute_pair_op_needs_null_check(scope, expr->getLeft())
+        || compute_pair_op_needs_null_check(scope, expr->getRight());
+  }
+  // Other arithmetic ops (Add / Mul / etc.) — pair-ops aren't nested
+  // inside arithmetic in the lowering today, but if that ever
+  // changes we conservatively assume the operand could be NULL.
+  return true;
+}
+
+// Phase I.5 v4 fast path — populate scope.agg->m_pair_op_needs_null_check
+// once per scope before any raw_word_size or pair-op emission
+// consumes it.  Idempotent: re-running is a no-op once the array is
+// the right size.
+void
+RonSQLPreparer::prepare_pair_op_null_check_cache(QueryScope& scope)
+{
+  if (scope.agg == NULL) return;
+  AggregationAPICompiler* agg = scope.agg;
+  if (agg->m_pair_op_needs_null_check.size() == agg->m_program.size())
+    return;
+  agg->m_pair_op_needs_null_check.truncate();
+  for (Uint32 i = 0; i < agg->m_program.size(); i++)
+  {
+    AggregationAPICompiler::SVMInstrType t = agg->m_program[i].type;
+    if (t == AggregationAPICompiler::SVMInstrType::Greatest2 ||
+        t == AggregationAPICompiler::SVMInstrType::Least2)
+    {
+      AggregationAPICompiler::Expr* expr = agg->m_pair_op_program_exprs[i];
+      agg->m_pair_op_needs_null_check.push(
+          compute_pair_op_needs_null_check(scope, expr));
+    }
+    else
+    {
+      agg->m_pair_op_needs_null_check.push(false);
+    }
+  }
 }
 
 void

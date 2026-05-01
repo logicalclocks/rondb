@@ -450,15 +450,30 @@ private:
   // resolution has populated each scope's column_map.
   void validate_greatest_least_pair_loads();
   // Phase I.5 v4: emit the kernel program for one Greatest2 / Least2
-  // pair-op.  Expands to a 14-word embedded normal-interpreter
+  // pair-op.  Expands to either a 14-word embedded normal-interpreter
   // program (NULL-test on each operand → STOP_PROGRAM, otherwise
-  // BRANCH_(GE|LE)_REG_REG to choose output 0/1) followed by
-  // Mov(dest, src) which the embedded program's output skips iff
-  // dest already holds the max / min.
+  // BRANCH_(GE|LE)_REG_REG to choose output 0/1) or a 9-word body
+  // (no NULL test) — both followed by Mov(dest, src) which the
+  // embedded program's output skips iff dest already holds the max /
+  // min.  needs_null_check controls which body is emitted.
   void emit_pair_op_embedded(NdbAggregator* aggregator,
                              Uint32 dest,
                              Uint32 src,
-                             bool is_greatest);
+                             bool is_greatest,
+                             bool needs_null_check);
+  // Phase I.5 v4 fast path: walk a Greatest2 / Least2 Expr tree and
+  // return true iff any leaf Load reaches a nullable column or an
+  // unresolved CTE virtual column (where nullability isn't known at
+  // compile time).  Used by `prepare_pair_op_null_check_cache` to
+  // populate the AggregationAPICompiler's per-program-index decision
+  // cache.
+  bool compute_pair_op_needs_null_check(
+      const QueryScope& scope,
+      AggregationAPICompiler::Expr* expr) const;
+  // Fill scope.agg->m_pair_op_needs_null_check (one entry per
+  // m_program slot; only meaningful at pair-op slots) before any
+  // raw_word_size or pair-op emission consumes it.  Idempotent.
+  void prepare_pair_op_null_check_cache(QueryScope& scope);
   void require_cte_case_condition_column_output(QueryScope& scope,
                                                 Uint32 op_idx,
                                                 Uint32 cidx);
