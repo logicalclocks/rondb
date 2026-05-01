@@ -10,7 +10,7 @@ NULL
 # HSET against the same name -> WRONGTYPE. The string remains
 # intact and hset_keys still marks the name as a string.
 #
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+WRONGTYPE Operation against a key holding the wrong kind of value
 
 #
 # GET still sees the string; no hash field rows were created.
@@ -38,7 +38,8 @@ OK
 # HGET now returns WRONGTYPE; GET sees the string; hset_keys is
 # back to redis_key_id NULL for the string namespace.
 #
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+WRONGTYPE Operation against a key holding the wrong kind of value
+
 string-value
 SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared_h';
 redis_key_id

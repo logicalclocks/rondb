@@ -884,13 +884,42 @@ Sub-phases (each its own commit, separately bisectable):
   posture). Follow-up ticket: bounded-batch silent replace that
   drains in chunks.
 
-The 1.10c group preserves the empty-hash registry invariant
-documented in `feedback_hset_keys_row_persistent.md`: HDEL of the
-last field never deletes the `hset_keys` row, so a freshly-empty
-hash keeps its `redis_key_id` internally. 1.10c.6 removes the
-process-local dependency on that id, and 1.10c.7's silent-replace
-only triggers when the *owning type* of the name flips, never on
-within-type field churn.
+- **1.10c.8 — Final Redis-compliance pass (DONE).** Closes the
+  four divergences surfaced by the PR-1 audit:
+
+  - **A — `-WRONGTYPE` wire prefix.** Added
+    `assign_class_err_to_response` (no `-ERR ` prefix) in
+    `src/common.cc` and routed all 10 WRONGTYPE callsites through
+    it. Real Redis emits `-WRONGTYPE …\r\n` as its own RESP error
+    class; clients that switch on the class word (redis-py
+    `ResponseError` subclasses, etc.) now recognize WRONGTYPE.
+  - **B — `SET … GET` on a hash → WRONGTYPE.** New Phase B.20 in
+    `set_rows` aborts the whole SET when the GET modifier is set
+    and the dual-claim's captured old hset_keys.redis_key_id is
+    non-zero. Runs before Phase B.5's silent-replace scan, so the
+    hash and its fields stay intact on the WRONGTYPE path.
+  - **C — `SELECT ""` rejection.** Empty-arg short-circuit in
+    `rondb.cc` before `strtoll`. Empty argument now errors as
+    `value is not an integer or out of range` instead of silently
+    selecting db 0.
+  - **D — Drop empty `hset_keys` row on HDEL of last field.** HDEL
+    Phase 3 now branches on post-decrement count: zero → reuse
+    `add_hset_string_delete_op` to drop the row in the same trans;
+    non-zero → existing `add_hset_field_count_bump_op` path. The
+    persistent-empty-row contract was tied to the now-retired
+    local cache (1.10c.6); under per-op transactions the row is
+    pure dead weight. Read-side `field_count == 0` masking
+    branches in `probe_callback` and TYPE/TTL removed. Memory
+    `feedback_hset_keys_row_persistent.md` updated to reflect the
+    new contract.
+
+The 1.10c group's namespace contract: `hset_keys` is the
+authoritative existence registry. Row presence with
+`redis_key_id IS NULL` means string-claimed; row presence with
+`redis_key_id` set means hash-claimed (and by 1.10c.8/D
+`field_count > 0` is implied). Row absence means the name is
+unclaimed. Read paths consult this registry directly per
+operation; no local cache.
 
 ### Phase 1.11 — PR 1 final
 

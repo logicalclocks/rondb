@@ -19,13 +19,14 @@ FROM redis_0.string_values WHERE rondb_key = @old_big_rondb_key;
 old_hash_ext_rows
 0
 #
-# 2. SET ... GET over a hash returns nil for the old value,
-# then leaves the key as a string.
+# 2. SET ... GET against a hash returns WRONGTYPE and leaves
+# the hash intact (the GET modifier requires a string value).
 #
 1
+WRONGTYPE Operation against a key holding the wrong kind of value
 
-stringy
-string
+v
+hash
 #
 # 3. SET ... XX over a hash succeeds because the key exists.
 #
@@ -73,7 +74,7 @@ m_new	NULL
 # string intact.
 #
 OK
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+WRONGTYPE Operation against a key holding the wrong kind of value
 
 string-value
 SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'str_for_hash';
@@ -84,9 +85,9 @@ NULL
 # the hash intact.
 #
 1
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+WRONGTYPE Operation against a key holding the wrong kind of value
 
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+WRONGTYPE Operation against a key holding the wrong kind of value
 
 hash
 SELECT COUNT(*) AS mut_hash_rows

@@ -36,7 +36,7 @@ ERR value is not an integer or out of range
 # hashes.
 #
 1
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+WRONGTYPE Operation against a key holding the wrong kind of value
 
 v
 #

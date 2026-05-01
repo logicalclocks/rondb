@@ -12,7 +12,7 @@ call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
 #
 # Reply:
 #   :1\r\n  - applied (key existed)
-#   :0\r\n  - missing (or hash with field_count == 0)
+#   :0\r\n  - missing (or empty hash (1.10c.8/D drops the row))
 #   past/now timestamp deletes an existing key immediately
 #
 # Like EXPIREAT but the input is millis-precision. Internally

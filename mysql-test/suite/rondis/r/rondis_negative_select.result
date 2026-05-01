@@ -3,7 +3,8 @@
 #
 ERR Wrong parameter to SELECT command
 
-OK
+ERR Wrong parameter to SELECT command
+
 ERR Wrong parameter to SELECT command
 
 #

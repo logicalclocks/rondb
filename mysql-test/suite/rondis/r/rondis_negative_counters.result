@@ -43,13 +43,13 @@ ERR increment or decrement would overflow
 # replaces hashes.
 #
 1
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+WRONGTYPE Operation against a key holding the wrong kind of value
 
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+WRONGTYPE Operation against a key holding the wrong kind of value
 
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+WRONGTYPE Operation against a key holding the wrong kind of value
 
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+WRONGTYPE Operation against a key holding the wrong kind of value
 
 1
 #

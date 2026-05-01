@@ -57,13 +57,13 @@ SELECT COUNT(*) AS hset_keys_for_h1_after_del
   FROM redis_0.hset_keys WHERE redis_key = 'h1';
 
 --echo #
---echo # 3. HDEL of last field leaves the empty hset_keys row by
---echo #    design (cross-server cache invariant); read paths must
---echo #    still treat it as missing for read-only commands.
+--echo # 3. HDEL of last field drops the hset_keys row in the same
+--echo #    trans (1.10c.8/D). Read paths see "missing" because the
+--echo #    row is gone, not because of any field_count masking.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h2 f v
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL h2 f
-SELECT redis_key, field_count
+SELECT COUNT(*) AS h2_rows
   FROM redis_0.hset_keys WHERE redis_key = 'h2';
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET h2 f
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HMGET h2 f g
@@ -71,8 +71,8 @@ SELECT redis_key, field_count
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE h2
 
 --echo #
---echo # Sanity: HSET on the empty-row hash reuses its redis_key_id
---echo #   and HGET sees the new field.
+--echo # Sanity: HSET on the (now re-created via HINCRBY) hash sees
+--echo # the new field via HGET.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h2 f "after_empty"
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET h2 f

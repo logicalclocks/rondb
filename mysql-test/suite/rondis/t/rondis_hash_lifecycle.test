@@ -11,11 +11,14 @@
 #   - Single field > INLINE_VALUE_LEN (Phase 2 ext-row branch)
 #   - HSET > MAX_PARALLEL_KEY_OPS    (Phase 2/3 chunk loop)
 #   - HDEL one of N fields           (delta = -1, row stays)
-#   - HDEL the rest down to 0        (row STILL stays - cross-server
-#                                     invariant; field_count = 0)
+#   - HDEL the rest down to 0        (row dropped on the same trans;
+#                                     1.10c.8/D retired the persistent
+#                                     empty-row contract once the
+#                                     local cache went away)
 #   - HDEL on a hash that never existed (no hset_keys row created)
-#   - HSET on the now-empty hash     (redis_key_id reused, no new row)
-#   - HDEL of an ext-row field       (string_values rows cleaned up)
+#   - HSET re-creates the hash with a fresh redis_key_id
+#   - HDEL of an ext-row field       (row dropped + string_values rows
+#                                     cleaned up)
 #
 # The cases that need shell substitution to build a large value or a
 # long argv go through hash_lifecycle.sh.
@@ -104,15 +107,13 @@ SELECT redis_key, field_count FROM redis_0.hset_keys
  WHERE redis_key = 'life:hd';
 
 --echo #
---echo # Step 9: HDEL the last remaining field. field_count goes to 0
---echo # but the hset_keys row STILL exists (cross-server invariant).
+--echo # Step 9: HDEL the last remaining field. The hset_keys row is
+--echo # dropped in the same trans (1.10c.8/D); no rows remain in
+--echo # either table.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL life:hd c
-SELECT redis_key, field_count FROM redis_0.hset_keys
+SELECT COUNT(*) AS hset_keys_rows FROM redis_0.hset_keys
  WHERE redis_key = 'life:hd';
-SELECT COUNT(*) FROM redis_0.string_keys
- WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
-                        WHERE redis_key = 'life:hd');
 
 --echo #
 --echo # Step 10: HDEL on a hash that never existed. Reply :0 and no
@@ -123,42 +124,41 @@ SELECT COUNT(*) FROM redis_0.hset_keys
  WHERE redis_key = 'life:nope';
 
 --echo #
---echo # Step 11: HSET on the empty-but-still-present life:hd. Same
---echo # redis_key_id is reused (Phase 1 lock-claim's UPDATE branch);
---echo # field_count goes 0 -> 2.
+--echo # Step 11: HSET on the now-missing life:hd. A fresh hset_keys
+--echo # row is INSERTed via Phase 1's lock-claim INSERT branch with
+--echo # a new redis_key_id; field_count = 2.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET life:hd x X y Y
 --let $life_hd_id_after = `SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'life:hd'`
---let $assert_text = redis_key_id reused after full HDEL
---let $assert_cond = $life_hd_id_before = $life_hd_id_after
+--let $assert_text = redis_key_id is fresh after row-drop and re-create
+--let $assert_cond = $life_hd_id_before <> $life_hd_id_after
 --source include/assert.inc
 SELECT redis_key, field_count FROM redis_0.hset_keys
  WHERE redis_key = 'life:hd';
 
 --echo #
---echo # Step 12: HDEL of an ext-row field (>INLINE_VALUE_LEN). Verifies
---echo # that string_values ordinals are cleaned up alongside the
---echo # string_keys row, and field_count goes from 1 to 0.
+--echo # Step 12: HDEL of an ext-row field (>INLINE_VALUE_LEN). Capture
+--echo # the rondb_key BEFORE the HDEL (the hset_keys + string_keys
+--echo # rows go away on the HDEL), then verify the string_values
+--echo # ordinals were cleaned up alongside.
 --echo #
 --exec bash $script large_value life:big2 f 5000
 SELECT redis_key, field_count FROM redis_0.hset_keys
  WHERE redis_key = 'life:big2';
-SELECT COUNT(*) FROM redis_0.string_values
- WHERE rondb_key = (SELECT rondb_key FROM redis_0.string_keys
-                     WHERE redis_key = 'f' AND redis_key_id =
-                       (SELECT redis_key_id FROM redis_0.hset_keys
-                          WHERE redis_key = 'life:big2'));
+--disable_query_log
+SET @life_big2_rk = (
+  SELECT rondb_key FROM redis_0.string_keys
+   WHERE redis_key = 'f' AND redis_key_id =
+     (SELECT redis_key_id FROM redis_0.hset_keys
+       WHERE redis_key = 'life:big2'));
+--enable_query_log
+SELECT COUNT(*) AS pre_hdel_ext_rows FROM redis_0.string_values
+ WHERE rondb_key = @life_big2_rk;
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL life:big2 f
-SELECT redis_key, field_count FROM redis_0.hset_keys
+SELECT COUNT(*) AS hset_keys_rows FROM redis_0.hset_keys
  WHERE redis_key = 'life:big2';
-SELECT COUNT(*) FROM redis_0.string_keys
- WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
-                        WHERE redis_key = 'life:big2');
-SELECT COUNT(*) FROM redis_0.string_values
- WHERE rondb_key IN (SELECT rondb_key FROM redis_0.string_keys
-                      WHERE redis_key_id = (SELECT redis_key_id
-                                              FROM redis_0.hset_keys
-                                              WHERE redis_key = 'life:big2'));
+SELECT COUNT(*) AS string_values_rows FROM redis_0.string_values
+ WHERE rondb_key = @life_big2_rk;
 
 --disable_query_log
 DROP DATABASE IF EXISTS redis_0;

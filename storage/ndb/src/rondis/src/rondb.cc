@@ -661,6 +661,12 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
       wrong_number_of_arguments(argv, response);
       return 0;
     }
+    if (argv[1].empty()) {
+      assign_err_to_response(response,
+                             FAILED_SELECT_COMMAND,
+                             0);
+      return 0;
+    }
     char *end_ptr = nullptr;
     const char *val_ptr = argv[1].c_str();
     const char *memory_end = val_ptr + argv[1].size();

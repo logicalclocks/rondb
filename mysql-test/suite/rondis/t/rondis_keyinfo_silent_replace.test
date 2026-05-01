@@ -32,12 +32,13 @@ SELECT COUNT(*) AS old_hash_ext_rows
   FROM redis_0.string_values WHERE rondb_key = @old_big_rondb_key;
 
 --echo #
---echo # 2. SET ... GET over a hash returns nil for the old value,
---echo # then leaves the key as a string.
+--echo # 2. SET ... GET against a hash returns WRONGTYPE and leaves
+--echo # the hash intact (the GET modifier requires a string value).
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET get_hash f v
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET get_hash stringy GET
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET get_hash
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET get_hash stringy GET 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET get_hash f
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE get_hash
 
 --echo #

@@ -2504,7 +2504,7 @@ void incr_decr_key_row(std::string *response,
   if (is_string_counter && string_claim_old_id_attr != nullptr) {
     Uint64 old_id = string_claim_old_id_attr->u_64_value();
     if (old_id != STRING_REDIS_KEY_ID) {
-      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+      assign_class_err_to_response(response, REDIS_WRONGTYPE_VALUE);
       return;
     }
   }
@@ -2758,7 +2758,7 @@ void execute_set_range_simple(std::string *response,
   if (string_claim_old_id_attr != nullptr) {
     Uint64 old_id = string_claim_old_id_attr->u_64_value();
     if (old_id != STRING_REDIS_KEY_ID) {
-      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+      assign_class_err_to_response(response, REDIS_WRONGTYPE_VALUE);
       return;
     }
   }
@@ -2869,7 +2869,7 @@ int write_key_row_setrange(std::string *response,
   if (string_claim_old_id_attr != nullptr) {
     Uint64 old_id = string_claim_old_id_attr->u_64_value();
     if (old_id != STRING_REDIS_KEY_ID) {
-      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+      assign_class_err_to_response(response, REDIS_WRONGTYPE_VALUE);
       return -1;
     }
   }

@@ -6,9 +6,9 @@
 # Phase 1.1 - EXISTS key [key ...]
 #
 # Two-pass batched probe: first string_keys, then hset_keys for
-# misses. After Phase 1.0.3 a fully-HDEL'd hash leaves the hset_keys
-# row present with field_count = 0 (cross-server invariant); EXISTS
-# must NOT count that as existing.
+# misses. 1.10c.8/D drops the hset_keys row on HDEL of the last
+# field, so EXISTS naturally reports 0 for a hash that's been
+# emptied - no field_count masking needed.
 #
 
 --echo #
@@ -31,10 +31,10 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS hash_a
 
 --echo #
---echo # Fully-HDEL'd hash. Row remains in hset_keys with field_count=0
---echo # (Phase 1.0.3 invariant) but EXISTS must report 0.
+--echo # Fully-HDEL'd hash. 1.10c.8/D drops the hset_keys row in the
+--echo # same trans, so EXISTS reports 0.
 --echo #
-SELECT redis_key, field_count FROM redis_0.hset_keys
+SELECT COUNT(*) AS hash_empty_rows FROM redis_0.hset_keys
  WHERE redis_key = 'hash_empty';
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXISTS hash_empty
 

@@ -39,24 +39,24 @@ FROM redis_0.hset_keys WHERE redis_key = 'h1';
 hset_keys_for_h1_after_del
 0
 #
-# 3. HDEL of last field leaves the empty hset_keys row by
-#    design (cross-server cache invariant); read paths must
-#    still treat it as missing for read-only commands.
+# 3. HDEL of last field drops the hset_keys row in the same
+#    trans (1.10c.8/D). Read paths see "missing" because the
+#    row is gone, not because of any field_count masking.
 #
 1
 1
-SELECT redis_key, field_count
+SELECT COUNT(*) AS h2_rows
 FROM redis_0.hset_keys WHERE redis_key = 'h2';
-redis_key	field_count
-h2	0
+h2_rows
+0
 
 
 
 1
 hash
 #
-# Sanity: HSET on the empty-row hash reuses its redis_key_id
-#   and HGET sees the new field.
+# Sanity: HSET on the (now re-created via HINCRBY) hash sees
+# the new field via HGET.
 #
 0
 after_empty
@@ -67,7 +67,8 @@ field_count
 # HGET on a string key returns WRONGTYPE.
 #
 OK
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+WRONGTYPE Operation against a key holding the wrong kind of value
+
 SELECT redis_key_id IS NULL AS id_null
 FROM redis_0.hset_keys WHERE redis_key = 's1';
 id_null

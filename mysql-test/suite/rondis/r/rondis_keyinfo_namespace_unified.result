@@ -36,7 +36,8 @@ k3	NULL
 1
 OK
 stringy
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+WRONGTYPE Operation against a key holding the wrong kind of value
+
 SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'h1';
 redis_key_id
 NULL
@@ -52,7 +53,7 @@ old_h1_ext_rows
 # HSET on a name claimed by a string -> WRONGTYPE. The
 # string row remains and no hash field row is created.
 #
-ERR WRONGTYPE Operation against a key holding the wrong kind of value
+WRONGTYPE Operation against a key holding the wrong kind of value
 
 v1-updated
 SELECT COUNT(*) AS string_rows_for_k1

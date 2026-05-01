@@ -7,9 +7,9 @@
 #
 # Single-key two-probe (string_keys then hset_keys) sharing the
 # EXISTS pipeline. Reply is a simple string +string\r\n / +hash\r\n
-# / +none\r\n. After Phase 1.0.3 a fully-HDEL'd hash leaves the
-# hset_keys row present with field_count=0; TYPE must report
-# "none" for that case (matching EXISTS).
+# / +none\r\n. 1.10c.8/D drops the hset_keys row on HDEL of last
+# field; TYPE on an emptied hash reports "none" because the row
+# is gone (matching EXISTS).
 #
 
 --echo #
@@ -31,10 +31,10 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE hash_a
 
 --echo #
---echo # Fully-HDEL'd hash. Row exists with field_count=0; TYPE returns
---echo # none (matching EXISTS = 0).
+--echo # Fully-HDEL'd hash. The hset_keys row was dropped on the HDEL;
+--echo # TYPE returns none.
 --echo #
-SELECT redis_key, field_count FROM redis_0.hset_keys
+SELECT COUNT(*) AS hash_empty_rows FROM redis_0.hset_keys
  WHERE redis_key = 'hash_empty';
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE hash_empty
 

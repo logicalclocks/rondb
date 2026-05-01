@@ -83,6 +83,22 @@ void assign_generic_err_to_response(
     response->assign(buf);
 }
 
+// Class-prefixed error reply (no `-ERR ` prefix). Used for RESP error
+// classes that carry their own keyword: WRONGTYPE, MOVED, ASK, etc.
+// Caller passes the full class message, e.g.
+// "WRONGTYPE Operation against a key holding the wrong kind of value".
+void assign_class_err_to_response(
+    std::string *response,
+    const char *class_msg)
+{
+    char buf[512];
+    snprintf(buf, sizeof(buf), "-%s\r\n", class_msg);
+#ifdef DEBUG_ERROR
+    std::cout << buf;
+#endif
+    response->assign(buf);
+}
+
 void set_length(char *buf, Uint32 key_len)
 {
     Uint8 *ptr = (Uint8 *)buf;

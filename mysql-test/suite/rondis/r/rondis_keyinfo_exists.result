@@ -15,13 +15,13 @@ OK
 #
 1
 #
-# Fully-HDEL'd hash. Row remains in hset_keys with field_count=0
-# (Phase 1.0.3 invariant) but EXISTS must report 0.
+# Fully-HDEL'd hash. 1.10c.8/D drops the hset_keys row in the
+# same trans, so EXISTS reports 0.
 #
-SELECT redis_key, field_count FROM redis_0.hset_keys
+SELECT COUNT(*) AS hash_empty_rows FROM redis_0.hset_keys
 WHERE redis_key = 'hash_empty';
-redis_key	field_count
-hash_empty	0
+hash_empty_rows
+0
 0
 #
 # Missing key.

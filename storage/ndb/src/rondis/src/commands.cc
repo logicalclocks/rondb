@@ -957,11 +957,10 @@ static int add_exists_hset_probe_op(NdbTransaction *trans,
 // Phase 1.10c.4: single probe on hset_keys. Trans-level error code
 // drives the classification:
 //   0   -> row exists. Read null_bits bit 0 to determine type:
-//            redis_key_id IS NULL (bit 0 set) -> STRING (always
-//            visible if the row exists).
-//            redis_key_id non-null -> HASH; m_present = true only
-//            if field_count > 0 (post-1.0.3 cross-server invariant
-//            - row may be present with field_count == 0).
+//            redis_key_id IS NULL (bit 0 set) -> STRING.
+//            redis_key_id non-null -> HASH (1.10c.8/D drops the row
+//            on HDEL of last field, so a present hash row always
+//            has field_count > 0).
 //   626 -> row not found; leave probe untouched.
 //   any other -> hard failure; record on shared drain state.
 static void
@@ -974,12 +973,10 @@ probe_callback(int result, NdbTransaction *trans, void *aObject) {
     if (redis_key_id_null) {
       probe->m_present = true;
       probe->m_match_kind = EXISTS_MATCH_STRING;
-    } else if (probe->m_hset_buf.field_count > 0) {
+    } else {
       probe->m_present = true;
       probe->m_match_kind = EXISTS_MATCH_HASH;
     }
-    // else: hash row with field_count == 0 (HDEL'd-empty hash);
-    // treated as not-present per the cross-server invariant.
   } else if (code != 626) {
     if (probe->m_drain->m_error_code == 0) {
       probe->m_drain->m_error_code = code;
@@ -1232,7 +1229,7 @@ static void rondb_ttl_or_pttl(Ndb *ndb,
     return;
   }
 
-  // Missing key (or hash with field_count == 0): :-2\r\n.
+  // Missing key: :-2\r\n.
   if (probe.m_match_kind == EXISTS_MATCH_NONE) {
     response->append(":-2\r\n");
     return;
@@ -1921,6 +1918,34 @@ static int set_rows(Ndb *ndb,
 
   if (get_ctrl->m_num_keys_failed > 0) return 0;
 
+  // Phase B.20 (1.10c.8/B) - SET ... GET against a hash is WRONGTYPE.
+  // Real Redis aborts the whole SET when the GET modifier is set and
+  // the existing value is a non-string. Detect using the dual-claim's
+  // captured old hset_keys.redis_key_id; mark the key failed before
+  // Phase B.5's silent-replace scan runs, so the hash and its fields
+  // stay intact. The staged NoCommit string writeTuple + dual-claim
+  // writeTuple both roll back when the trans closes without commit.
+  if (get_ctrl->m_is_set_command && get_ctrl->m_get_cmd_part &&
+      redis_key_id == STRING_REDIS_KEY_ID) {
+    for (Uint32 i = 0; i < loop_count; i++) {
+      Uint32 inx = current_index + i;
+      if (key_storage[inx].m_key_state != KeyState::MultiRowRWValue) {
+        continue;
+      }
+      NdbRecAttr *old_id_attr =
+        key_storage[inx].m_rec_attr_string_claim_old_id;
+      if (old_id_attr == nullptr) continue;
+      if (old_id_attr->u_64_value() == STRING_REDIS_KEY_ID) continue;
+      key_storage[inx].m_key_state = KeyState::CompletedFailed;
+      key_storage[inx].m_close_flag = true;
+      get_ctrl->m_num_keys_failed++;
+      if (get_ctrl->m_error_code == 0) {
+        get_ctrl->m_error_code = RONDB_WRONGTYPE;
+      }
+    }
+    if (get_ctrl->m_num_keys_failed > 0) return 0;
+  }
+
   // Phase B.25 - SET NX/XX conditional handling over the unified
   // namespace. write_data_to_key_op reports whether the string row
   // was inserted; add_hset_string_claim_op reports whether a hash
@@ -2502,15 +2527,35 @@ static int set_rows_hdel(Ndb *ndb,
     }
   }
   if (get_ctrl->m_num_deleted_fields > 0) {
-    Int64 delta = -(Int64)get_ctrl->m_num_deleted_fields;
-    if (add_hset_field_count_bump_op(trans,
-                                     get_ctrl->m_hset_key_tab,
-                                     get_ctrl->m_hash_name_ptr,
-                                     get_ctrl->m_hash_name_len,
-                                     delta,
-                                     get_ctrl->m_database_id,
-                                     response) != 0) {
-      HDEL_DEALIAS_RETURN(1);
+    // Phase 1.10c.8/D: when HDEL drops field_count to 0, drop the
+    // hset_keys row in the same trans rather than leaving it as a
+    // persistent empty registry entry. The persistent-empty-row
+    // contract was tied to the now-retired local redis_key_id_hash
+    // cache (1.10c.6); under the unified-namespace + per-op trans
+    // model every read does a fresh PK lookup, so an absent row is
+    // the cleaner "missing hash" representation.
+    Int64 new_count = (Int64)get_ctrl->m_hset_field_count_pre -
+                      (Int64)get_ctrl->m_num_deleted_fields;
+    if (new_count == 0) {
+      if (add_hset_string_delete_op(trans,
+                                    get_ctrl->m_hset_key_tab,
+                                    get_ctrl->m_hash_name_ptr,
+                                    get_ctrl->m_hash_name_len,
+                                    get_ctrl->m_database_id,
+                                    response) != 0) {
+        HDEL_DEALIAS_RETURN(1);
+      }
+    } else {
+      Int64 delta = -(Int64)get_ctrl->m_num_deleted_fields;
+      if (add_hset_field_count_bump_op(trans,
+                                       get_ctrl->m_hset_key_tab,
+                                       get_ctrl->m_hash_name_ptr,
+                                       get_ctrl->m_hash_name_len,
+                                       delta,
+                                       get_ctrl->m_database_id,
+                                       response) != 0) {
+        HDEL_DEALIAS_RETURN(1);
+      }
     }
   }
   get_ctrl->m_num_keys_outstanding = 1;
@@ -2835,7 +2880,7 @@ void rondb_mset(Ndb *ndb,
    */
   if (get_ctrl->m_num_keys_failed > 0) {
     if (get_ctrl->m_error_code == RONDB_WRONGTYPE) {
-      assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+      assign_class_err_to_response(response, REDIS_WRONGTYPE_VALUE);
       release_mset(get_ctrl);
       return;
     }
@@ -3533,7 +3578,7 @@ void rondb_hget_command(Ndb *ndb,
     return;  // NDB error; response populated.
   }
   if (ret_code == 2) {
-    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+    assign_class_err_to_response(response, REDIS_WRONGTYPE_VALUE);
     return;
   }
   if (ret_code == 1) {
@@ -3558,7 +3603,7 @@ void rondb_hmget_command(Ndb *ndb,
     return;
   }
   if (ret_code == 2) {
-    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+    assign_class_err_to_response(response, REDIS_WRONGTYPE_VALUE);
     return;
   }
   if (ret_code == 1) {
@@ -3721,7 +3766,7 @@ void rondb_hincr_command(Ndb *ndb,
     return;
   }
   if (ret_code == 2) {
-    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+    assign_class_err_to_response(response, REDIS_WRONGTYPE_VALUE);
     return;
   }
   if (ret_code == 1) {
@@ -3766,7 +3811,7 @@ void rondb_hincrby_command(Ndb *ndb,
     return;
   }
   if (ret_code == 2) {
-    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+    assign_class_err_to_response(response, REDIS_WRONGTYPE_VALUE);
     return;
   }
   if (ret_code == 1) {
@@ -3798,7 +3843,7 @@ void rondb_hdecr_command(Ndb *ndb,
     return;
   }
   if (ret_code == 2) {
-    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+    assign_class_err_to_response(response, REDIS_WRONGTYPE_VALUE);
     return;
   }
   if (ret_code == 1) {
@@ -3843,7 +3888,7 @@ void rondb_hdecrby_command(Ndb *ndb,
     return;
   }
   if (ret_code == 2) {
-    assign_generic_err_to_response(response, REDIS_WRONGTYPE_VALUE);
+    assign_class_err_to_response(response, REDIS_WRONGTYPE_VALUE);
     return;
   }
   if (ret_code == 1) {
