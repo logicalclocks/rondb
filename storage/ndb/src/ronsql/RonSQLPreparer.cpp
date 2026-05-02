@@ -8514,22 +8514,32 @@ RonSQLPreparer::generate_embedded_condition(
       // Phase I.5 v3b: detect float column LHS with numeric literal
       // RHS — emit register-based compare via LOAD_DOUBLE_CONST
       // instead of the integer-only BRANCH_*_OP_ARG family.
+      //
+      // Fold T_NEGATIVE(T_INT|T_FLOAT) wrappers first.  CASE
+      // conditions don't go through the general
+      // WHERE-expression simplify_ce pass, so a literal like
+      // `-50.5` arrives as T_NEGATIVE(T_FLOAT(50.5)) — the
+      // op-check below would fail and encode_constant would
+      // throw "incompatible value" for both the float and the
+      // integer column-vs-negative-literal shapes.
+      ConditionalExpression* rhs_simplified =
+          simplify_ce(atom->args.right, -1);
       bool lhs_is_float =
           info.lhs.col->getType() == NdbDictionary::Column::Float ||
           info.lhs.col->getType() == NdbDictionary::Column::Double;
       info.is_float_const = lhs_is_float &&
-          (atom->args.right->op == T_INT ||
-           atom->args.right->op == T_FLOAT);
+          (rhs_simplified->op == T_INT ||
+           rhs_simplified->op == T_FLOAT);
       if (info.is_float_const) {
         require_prm(info.lhs.kind != SideKind::InlineLinked,
                     "Float / double CTE-leaf column compared to a "
                     "literal in CASE is not yet supported (would need "
                     "an inline-typed double-load opcode).");
-        if (atom->args.right->op == T_INT) {
+        if (rhs_simplified->op == T_INT) {
           info.float_const_val =
-              static_cast<double>(atom->args.right->constant_integer);
+              static_cast<double>(rhs_simplified->constant_integer);
         } else {
-          info.float_const_val = atom->args.right->constant_float.dbl;
+          info.float_const_val = rhs_simplified->constant_float.dbl;
         }
         // 1 word: read LHS into R1
         // 3 words: LOAD_DOUBLE_CONST(R2) + 2 data words
@@ -8537,8 +8547,9 @@ RonSQLPreparer::generate_embedded_condition(
         info.word_count = 1u + 3u + 1u;
       } else {
         // col-vs-const path (v1): resolve the constant against the LHS
-        // column descriptor.
-        info.rhs.rv = encode_constant(atom->args.right, info.lhs.col);
+        // column descriptor.  Use the simplified node so negative
+        // literals fold into T_INT / T_FLOAT here too.
+        info.rhs.rv = encode_constant(rhs_simplified, info.lhs.col);
         info.rhs.byte_len = info.rhs.rv.len;
         info.rhs.data_words = (info.rhs.byte_len + 3) / 4;
         // BRANCH_ATTR_OP_ARG       : 2 words + data
