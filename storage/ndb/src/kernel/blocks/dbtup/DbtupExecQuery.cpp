@@ -6785,8 +6785,11 @@ struct Dbtup::InterpreterContext {
       return -ZMEMORY_OFFSET_ERROR;
     }
     Uint8 value = ctx.TheapMemoryChar[memoryOffset];
-    ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
-    *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = (Int64)value;
+    /* Phase I.18: type-aware register write.  Source is unsigned so
+     * register acquires REG_TYPE_UINT; payload zero-extended to 64
+     * bits via Uint64 store. */
+    ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+    *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = (Uint64)value;
     return INTERP_CONTINUE;
   }
 
@@ -6798,8 +6801,9 @@ struct Dbtup::InterpreterContext {
       return -ZMEMORY_OFFSET_ERROR;
     }
     memcpy(&value, &ctx.TheapMemoryChar[memoryOffset], 2);
-    ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
-    *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = (Int64)value;
+    /* Phase I.18: REG_TYPE_UINT.  See handleReadUint8MemToReg. */
+    ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+    *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = (Uint64)value;
     return INTERP_CONTINUE;
   }
 
@@ -6811,8 +6815,9 @@ struct Dbtup::InterpreterContext {
       return -ZMEMORY_OFFSET_ERROR;
     }
     memcpy(&value, &ctx.TheapMemoryChar[memoryOffset], 4);
-    ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
-    *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = (Int64)value;
+    /* Phase I.18: REG_TYPE_UINT.  See handleReadUint8MemToReg. */
+    ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+    *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = (Uint64)value;
     return INTERP_CONTINUE;
   }
 
@@ -6842,8 +6847,9 @@ struct Dbtup::InterpreterContext {
       return -ZMEMORY_OFFSET_ERROR;
     }
     Uint8 value = ctx.TheapMemoryChar[memoryOffset];
-    *(Int64*)(ctx.TregMemBuffer + destRegister + 2) = (Int64)value;
-    ctx.TregMemBuffer[destRegister] = NOT_NULL_INDICATOR;
+    /* Phase I.18: REG_TYPE_UINT on the destination. */
+    *(Uint64*)(ctx.TregMemBuffer + destRegister + 2) = (Uint64)value;
+    ctx.TregMemBuffer[destRegister] = Interpreter::REG_TYPE_UINT;
     return INTERP_CONTINUE;
   }
 
@@ -6861,8 +6867,9 @@ struct Dbtup::InterpreterContext {
       return -ZMEMORY_OFFSET_ERROR;
     }
     memcpy(&value, &ctx.TheapMemoryChar[memoryOffset], 2);
-    *(Int64*)(ctx.TregMemBuffer + destRegister + 2) = (Int64)value;
-    ctx.TregMemBuffer[destRegister] = NOT_NULL_INDICATOR;
+    /* Phase I.18: REG_TYPE_UINT on the destination. */
+    *(Uint64*)(ctx.TregMemBuffer + destRegister + 2) = (Uint64)value;
+    ctx.TregMemBuffer[destRegister] = Interpreter::REG_TYPE_UINT;
     return INTERP_CONTINUE;
   }
 
@@ -6879,8 +6886,9 @@ struct Dbtup::InterpreterContext {
       return -ZMEMORY_OFFSET_ERROR;
     }
     memcpy(&value, &ctx.TheapMemoryChar[memoryOffset], 4);
-    *(Int64*)(ctx.TregMemBuffer + destRegister + 2) = (Int64)value;
-    ctx.TregMemBuffer[destRegister] = NOT_NULL_INDICATOR;
+    /* Phase I.18: REG_TYPE_UINT on the destination. */
+    *(Uint64*)(ctx.TregMemBuffer + destRegister + 2) = (Uint64)value;
+    ctx.TregMemBuffer[destRegister] = Interpreter::REG_TYPE_UINT;
     return INTERP_CONTINUE;
   }
 
