@@ -6207,6 +6207,14 @@ struct Dbtup::InterpreterContext {
     return 0;
   }
 
+  /* Phase I.18: returns true iff the register's type word marks a
+   * floating-point value (byte 2 of the type word is non-zero).
+   * Used by write-back handlers that reject float operands until the
+   * float-to-integer coercion semantics are designed. */
+  static inline bool reg_is_float(Uint32 typeWord) {
+    return reinterpret_cast<const Uint8*>(&typeWord)[2] != 0;
+  }
+
   /* Phase I.18: type-aware register-vs-immediate-const comparison.
    * The immediate is the 6-bit constant in bits 9..14 of the
    * instruction word (range 0..63), always non-negative — it always
@@ -7273,13 +7281,18 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* WRITE_UINT8_REG_TO_MEM — write 1 byte from register to heap (immediate) */
+  /* WRITE_UINT8_REG_TO_MEM — write 1 byte from register to heap (immediate)
+   *
+   * Phase I.18: strict typing.  The opcode names UINT8, so the source
+   * register must be REG_TYPE_UINT (rejects NULL, signed, and float
+   * sources alike).  Use WRITE_REG_TO_MEM_ANY for type-agnostic
+   * 8-byte memory writes. */
   static inline int handleWriteUint8RegToMem(InterpreterContext& ctx) {
     Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 memoryOffset = ctx.theInstruction >> 16;
-    Int64 Tvalue = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 Tvalue = *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
     Uint8 val = (Uint8)Tvalue;
-    if (unlikely(TregType == NULL_INDICATOR)) {
+    if (unlikely(TregType != Interpreter::REG_TYPE_UINT)) {
       return -ZREGISTER_INIT_ERROR;
     }
     if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 0))) {
@@ -7293,9 +7306,9 @@ struct Dbtup::InterpreterContext {
   static inline int handleWriteUint16RegToMem(InterpreterContext& ctx) {
     Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 memoryOffset = ctx.theInstruction >> 16;
-    Int64 Tvalue = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 Tvalue = *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
     Uint16 val = (Uint16)Tvalue;
-    if (unlikely(TregType == NULL_INDICATOR)) {
+    if (unlikely(TregType != Interpreter::REG_TYPE_UINT)) {
       return -ZREGISTER_INIT_ERROR;
     }
     if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1))) {
@@ -7311,9 +7324,9 @@ struct Dbtup::InterpreterContext {
   static inline int handleWriteUint32RegToMem(InterpreterContext& ctx) {
     Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 memoryOffset = ctx.theInstruction >> 16;
-    Int64 Tvalue = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 Tvalue = *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
     Uint32 val = (Uint32)Tvalue;
-    if (unlikely(TregType == NULL_INDICATOR)) {
+    if (unlikely(TregType != Interpreter::REG_TYPE_UINT)) {
       return -ZREGISTER_INIT_ERROR;
     }
     if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 3))) {
@@ -7323,12 +7336,16 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* WRITE_INT64_REG_TO_MEM — write 8 bytes from register to heap (immediate) */
+  /* WRITE_INT64_REG_TO_MEM — write 8 bytes from register to heap (immediate)
+   *
+   * Phase I.18: strict typing.  Source register must be REG_TYPE_INT
+   * (signed Int64).  Unsigned / float / NULL sources rejected — use
+   * WRITE_REG_TO_MEM_ANY for type-agnostic 8-byte writes. */
   static inline int handleWriteInt64RegToMem(InterpreterContext& ctx) {
     Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 memoryOffset = ctx.theInstruction >> 16;
     Int64 Tvalue = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    if (unlikely(TregType == NULL_INDICATOR)) {
+    if (unlikely(TregType != Interpreter::REG_TYPE_INT)) {
       return -ZREGISTER_INIT_ERROR;
     }
     if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
@@ -7338,16 +7355,21 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* WRITE_UINT8_REG_TO_REG — write 1 byte from register to heap, offset in register */
+  /* WRITE_UINT8_REG_TO_REG — write 1 byte from register to heap, offset in register
+   *
+   * Phase I.18: strict typing.  Source value register must be
+   * REG_TYPE_UINT.  Memory-offset register must be non-NULL and
+   * non-float (signed or unsigned offset both fine). */
   static inline int handleWriteUint8RegToReg(InterpreterContext& ctx) {
     Uint32 registerOffset = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 memoryOffsetType = ctx.TregMemBuffer[registerOffset];
     Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + registerOffset + 2);
-    Int64 Tvalue = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 Tvalue = *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
     Uint8 val = (Uint8)Tvalue;
-    if (unlikely(TregType == NULL_INDICATOR ||
-                 memoryOffsetType == NULL_INDICATOR)) {
+    if (unlikely(TregType != Interpreter::REG_TYPE_UINT ||
+                 memoryOffsetType == NULL_INDICATOR ||
+                 reg_is_float(memoryOffsetType))) {
       return -ZREGISTER_INIT_ERROR;
     }
     if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
@@ -7363,10 +7385,11 @@ struct Dbtup::InterpreterContext {
     Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
     Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + registerOffset + 2);
     Uint32 memoryOffsetType = ctx.TregMemBuffer[registerOffset];
-    Int64 Tvalue = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 Tvalue = *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
     Uint16 val = (Uint16)Tvalue;
-    if (unlikely(TregType == NULL_INDICATOR ||
-                 memoryOffsetType == NULL_INDICATOR)) {
+    if (unlikely(TregType != Interpreter::REG_TYPE_UINT ||
+                 memoryOffsetType == NULL_INDICATOR ||
+                 reg_is_float(memoryOffsetType))) {
       return -ZREGISTER_INIT_ERROR;
     }
     if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
@@ -7382,10 +7405,11 @@ struct Dbtup::InterpreterContext {
     Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 memoryOffsetType = ctx.TregMemBuffer[registerOffset];
     Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + registerOffset + 2);
-    Int64 Tvalue = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 Tvalue = *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
     Uint32 val = (Uint32)Tvalue;
-    if (unlikely(TregType == NULL_INDICATOR ||
-                 memoryOffsetType == NULL_INDICATOR)) {
+    if (unlikely(TregType != Interpreter::REG_TYPE_UINT ||
+                 memoryOffsetType == NULL_INDICATOR ||
+                 reg_is_float(memoryOffsetType))) {
       return -ZREGISTER_INIT_ERROR;
     }
     if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
@@ -7395,15 +7419,20 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* WRITE_INT64_REG_TO_REG — write 8 bytes from register, offset in register */
+  /* WRITE_INT64_REG_TO_REG — write 8 bytes from register, offset in register
+   *
+   * Phase I.18: strict typing.  Source value register must be
+   * REG_TYPE_INT.  Memory-offset register must be non-NULL and
+   * non-float. */
   static inline int handleWriteInt64RegToReg(InterpreterContext& ctx) {
     Uint32 registerOffset = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 memoryOffsetType = ctx.TregMemBuffer[registerOffset];
     Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + registerOffset + 2);
     Int64 Tvalue = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    if (unlikely(TregType == NULL_INDICATOR ||
-                 memoryOffsetType == NULL_INDICATOR)) {
+    if (unlikely(TregType != Interpreter::REG_TYPE_INT ||
+                 memoryOffsetType == NULL_INDICATOR ||
+                 reg_is_float(memoryOffsetType))) {
       return -ZREGISTER_INIT_ERROR;
     }
     if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
@@ -7413,7 +7442,12 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* READ_INTERPRETER_INPUT — load value from an interpreter input slot */
+  /* READ_INTERPRETER_INPUT — load value from an interpreter input slot
+   *
+   * Phase I.18: producer.  Interpreter input slots are opaque 8-byte
+   * values; mark the destination register as REG_TYPE_INT (signed
+   * Int64 is the historical default and bit-identical to
+   * NOT_NULL_INDICATOR). */
   static inline int handleReadInterpreterInput(InterpreterContext& ctx) {
     Uint32 inputInx = ctx.theInstruction >> 16;
     Int64* value_ptr = (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
@@ -7421,16 +7455,20 @@ struct Dbtup::InterpreterContext {
       return -ZINPUT_OUTPUT_INDEX_ERROR;
     }
     memcpy(value_ptr, &ctx.tup->m_interpreter_input[inputInx], 8);
-    ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
+    ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
     return INTERP_CONTINUE;
   }
 
-  /* WRITE_INTERPRETER_OUTPUT — store register into an interpreter output slot */
+  /* WRITE_INTERPRETER_OUTPUT — store register into an interpreter output slot
+   *
+   * Phase I.18: type-agnostic writer (interpreter outputs hold any
+   * 64-bit value).  Reject float and NULL; signed and unsigned both
+   * fine. */
   static inline int handleWriteInterpreterOutput(InterpreterContext& ctx) {
     Uint32 valueType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 outputInx = ctx.theInstruction >> 16;
     Int64* value_ptr = (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    if (unlikely(valueType == NULL_INDICATOR)) {
+    if (unlikely(valueType == NULL_INDICATOR || reg_is_float(valueType))) {
       return -ZREGISTER_INIT_ERROR;
     }
     if (unlikely(outputInx >= AttributeHeader::MaxInterpreterOutputIndex)) {
@@ -7588,12 +7626,16 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* CONVERT_SIZE — decode 2-byte little-endian length into destination register */
+  /* CONVERT_SIZE — decode 2-byte little-endian length into destination register
+   *
+   * Phase I.18: source register is a memory offset (signed or
+   * unsigned integer; reject float and NULL).  Destination is a
+   * non-negative size value tagged REG_TYPE_INT. */
   static inline int handleConvertSize(InterpreterContext& ctx) {
     Uint32 offsetType = ctx.TregMemBuffer[ctx.theRegister];
     Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
     Uint32 TdestRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
-    if (unlikely(offsetType == NULL_INDICATOR)) {
+    if (unlikely(offsetType == NULL_INDICATOR || reg_is_float(offsetType))) {
       return -ZREGISTER_INIT_ERROR;
     }
     if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1) || memoryOffset < 0)) {
@@ -7604,7 +7646,7 @@ struct Dbtup::InterpreterContext {
     Uint32 high_byte = ctx.TheapMemoryChar[memoryOffset + 1];
     Uint32 size_read = low_byte + (256 * high_byte);
     *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = (Int64)size_read;
-    ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
+    ctx.TregMemBuffer[TdestRegister] = Interpreter::REG_TYPE_INT;
     return INTERP_CONTINUE;
   }
 
@@ -8002,6 +8044,13 @@ struct Dbtup::InterpreterContext {
 
     if (unlikely(TattrId >= ctx.req_struct->tablePtrP->m_no_of_attributes)) {
       return -ZATTRIBUTE_ID_ERROR;
+    }
+    /* Phase I.18: column write is type-agnostic on signed/unsigned
+     * integers (the in-register bit pattern is the canonical
+     * representation), but reject float-typed registers until
+     * float-to-integer column-coercion semantics are designed. */
+    if (unlikely(reg_is_float(TregType))) {
+      return -ZREGISTER_INIT_ERROR;
     }
     Uint32 TattrDesc1 =
         ctx.req_struct->tablePtrP->tabDescriptor[TattrDescrIndex];
