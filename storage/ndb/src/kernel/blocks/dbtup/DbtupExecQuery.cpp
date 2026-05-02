@@ -6145,6 +6145,68 @@ struct Dbtup::InterpreterContext {
     return 0;
   }
 
+  /* Phase I.18: type-aware register bitwise / shift operations.
+   * Op is one of:
+   *   '&' '|' '^'  bitwise (binary)
+   *   '~'          bitwise NOT (unary; rightBits is ignored)
+   *   'L' 'R'      left / right shift (rightBits is shift count)
+   *
+   * Float operands rejected (returns -ZREGISTER_INIT_ERROR).  Result
+   * type is REG_TYPE_UINT iff either operand is unsigned (matches
+   * MySQL bitwise-promotion rules); RSHIFT on a signed operand is
+   * arithmetic shift (sign-fill).  Shift count must be 0..64;
+   * out-of-range returns -ZSHIFT_OPERAND_ERROR. */
+  static inline int applyTypedBitwise(char op,
+                                       Uint32 leftType, Uint64 leftBits,
+                                       Uint32 rightType, Uint64 rightBits,
+                                       Uint32* resultType,
+                                       Uint64* resultBits) {
+    const Uint8* lw = reinterpret_cast<const Uint8*>(&leftType);
+    const Uint8* rw = reinterpret_cast<const Uint8*>(&rightType);
+    if (unlikely(lw[2] != 0 || rw[2] != 0)) {
+      return -ZREGISTER_INIT_ERROR;  /* bitwise / shift on float */
+    }
+    bool resultUnsigned = (lw[1] != 0) || (rw[1] != 0);
+    Uint64 res;
+    switch (op) {
+      case '&': res = leftBits & rightBits; break;
+      case '|': res = leftBits | rightBits; break;
+      case '^': res = leftBits ^ rightBits; break;
+      case '~':
+        res = ~leftBits;
+        /* Unary: inherit the source's signedness. */
+        resultUnsigned = (lw[1] != 0);
+        break;
+      case 'L': {
+        Int64 shift = static_cast<Int64>(rightBits);
+        if (unlikely(shift < 0 || shift > 64)) {
+          return -ZSHIFT_OPERAND_ERROR;
+        }
+        res = leftBits << shift;
+        break;
+      }
+      case 'R': {
+        Int64 shift = static_cast<Int64>(rightBits);
+        if (unlikely(shift < 0 || shift > 64)) {
+          return -ZSHIFT_OPERAND_ERROR;
+        }
+        /* Logical shift for unsigned, arithmetic shift for signed. */
+        if (resultUnsigned) {
+          res = leftBits >> shift;
+        } else {
+          res = static_cast<Uint64>(static_cast<Int64>(leftBits) >> shift);
+        }
+        break;
+      }
+      default:
+        return -ZREGISTER_INIT_ERROR;
+    }
+    *resultType = resultUnsigned ? Interpreter::REG_TYPE_UINT
+                                 : Interpreter::REG_TYPE_INT;
+    *resultBits = res;
+    return 0;
+  }
+
   /* Phase I.18: type-aware register-vs-immediate-const comparison.
    * The immediate is the 6-bit constant in bits 9..14 of the
    * instruction word (range 0..63), always non-negative — it always
@@ -6424,18 +6486,26 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* NOT_REG_REG — bitwise NOT of register */
+  /* NOT_REG_REG — bitwise NOT of register
+   *
+   * Phase I.18: type-aware via applyTypedBitwise.  Float operand
+   * rejected; result inherits the source's signedness. */
   static inline int handleNotRegReg(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
-    if (likely(TleftType != NULL_INDICATOR)) {
-      Uint64 Tdest0 = ~Tleft0;
-      ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-      *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = Tdest0;
-    } else {
+    if (unlikely(TleftType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
     }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('~', TleftType, leftBits,
+                               TleftType, 0,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
     return INTERP_CONTINUE;
   }
 
@@ -6683,20 +6753,21 @@ struct Dbtup::InterpreterContext {
   /* LSHIFT_REG_CONST — destReg = reg << 16-bit immediate (shift ≤ 64) */
   static inline int handleLshiftRegConst(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = (Int64)(ctx.theInstruction >> 16);
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
-    if (likely(TleftType != NULL_INDICATOR)) {
-      if (likely(Tright0 <= 64 && Tright0 >= 0)) {
-        Uint64 Tdest0 = Tleft0 << Tright0;
-        ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-        *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = Tdest0;
-      } else {
-        return -ZSHIFT_OPERAND_ERROR;
-      }
-    } else {
+    if (unlikely(TleftType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
     }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits = static_cast<Uint64>(ctx.theInstruction >> 16);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('L', TleftType, leftBits,
+                               Interpreter::REG_TYPE_INT, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
     return INTERP_CONTINUE;
   }
 
@@ -6705,40 +6776,43 @@ struct Dbtup::InterpreterContext {
     Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = *(Int64*)(ctx.TregMemBuffer + TrightRegister + 2);
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
-    if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-      if (likely(Tright0 <= 64 && Tright0 >= 0)) {
-        Uint64 Tdest0 = Tleft0 << Tright0;
-        ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-        *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = Tdest0;
-      } else {
-        return -ZSHIFT_OPERAND_ERROR;
-      }
-    } else {
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
     }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('L', TleftType, leftBits,
+                               TrightType, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
     return INTERP_CONTINUE;
   }
 
   /* RSHIFT_REG_CONST — destReg = reg >> 16-bit immediate (shift ≤ 64) */
   static inline int handleRshiftRegConst(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = (Int64)(ctx.theInstruction >> 16);
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
-    if (likely(TleftType != NULL_INDICATOR)) {
-      if (likely(Tright0 <= 64 && Tright0 >= 0)) {
-        Uint64 Tdest0 = Tleft0 >> Tright0;
-        ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-        *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = Tdest0;
-      } else {
-        return -ZSHIFT_OPERAND_ERROR;
-      }
-    } else {
+    if (unlikely(TleftType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
     }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits = static_cast<Uint64>(ctx.theInstruction >> 16);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('R', TleftType, leftBits,
+                               Interpreter::REG_TYPE_INT, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
     return INTERP_CONTINUE;
   }
 
@@ -6747,36 +6821,43 @@ struct Dbtup::InterpreterContext {
     Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = *(Int64*)(ctx.TregMemBuffer + TrightRegister + 2);
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
-    if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-      if (likely(Tright0 <= 64 && Tright0 >= 0)) {
-        Uint64 Tdest0 = Tleft0 >> Tright0;
-        ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-        *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = Tdest0;
-      } else {
-        return -ZSHIFT_OPERAND_ERROR;
-      }
-    } else {
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
     }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('R', TleftType, leftBits,
+                               TrightType, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
     return INTERP_CONTINUE;
   }
 
   /* AND_REG_CONST — destReg = reg & 16-bit immediate */
   static inline int handleAndRegConst(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = (Int64)(ctx.theInstruction >> 16);
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
-    if (likely(TleftType != NULL_INDICATOR)) {
-      Uint64 Tdest0 = Tleft0 & Tright0;
-      ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-      *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = Tdest0;
-    } else {
+    if (unlikely(TleftType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
     }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits = static_cast<Uint64>(ctx.theInstruction >> 16);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('&', TleftType, leftBits,
+                               Interpreter::REG_TYPE_INT, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
     return INTERP_CONTINUE;
   }
 
@@ -6787,32 +6868,43 @@ struct Dbtup::InterpreterContext {
     Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = *(Int64*)(ctx.TregMemBuffer + TrightRegister + 2);
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
-    if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-      Uint64 Tdest0 = Tleft0 & Tright0;
-      ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-      *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = Tdest0;
-    } else {
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
     }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('&', TleftType, leftBits,
+                               TrightType, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
     return INTERP_CONTINUE;
   }
 
   /* OR_REG_CONST — destReg = reg | 16-bit immediate */
   static inline int handleOrRegConst(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = (Int64)(ctx.theInstruction >> 16);
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
-    if (likely(TleftType != NULL_INDICATOR)) {
-      Uint64 Tdest0 = Tleft0 | Tright0;
-      ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-      *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = Tdest0;
-    } else {
+    if (unlikely(TleftType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
     }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits = static_cast<Uint64>(ctx.theInstruction >> 16);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('|', TleftType, leftBits,
+                               Interpreter::REG_TYPE_INT, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
     return INTERP_CONTINUE;
   }
 
@@ -6821,32 +6913,43 @@ struct Dbtup::InterpreterContext {
     Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = *(Int64*)(ctx.TregMemBuffer + TrightRegister + 2);
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
-    if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-      Uint64 Tdest0 = Tleft0 | Tright0;
-      ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-      *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = Tdest0;
-    } else {
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
     }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('|', TleftType, leftBits,
+                               TrightType, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
     return INTERP_CONTINUE;
   }
 
   /* XOR_REG_CONST — destReg = reg ^ 16-bit immediate */
   static inline int handleXorRegConst(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = (Int64)(ctx.theInstruction >> 16);
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
-    if (likely(TleftType != NULL_INDICATOR)) {
-      Uint64 Tdest0 = Tleft0 ^ Tright0;
-      ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-      *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = Tdest0;
-    } else {
+    if (unlikely(TleftType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
     }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits = static_cast<Uint64>(ctx.theInstruction >> 16);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('^', TleftType, leftBits,
+                               Interpreter::REG_TYPE_INT, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
     return INTERP_CONTINUE;
   }
 
@@ -6855,16 +6958,22 @@ struct Dbtup::InterpreterContext {
     Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = *(Int64*)(ctx.TregMemBuffer + TrightRegister + 2);
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
-    if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-      Uint64 Tdest0 = Tleft0 ^ Tright0;
-      ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-      *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = Tdest0;
-    } else {
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
     }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('^', TleftType, leftBits,
+                               TrightType, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
     return INTERP_CONTINUE;
   }
 
