@@ -8339,8 +8339,14 @@ RonSQLPreparer::generate_embedded_condition(
   struct AtomInfo {
     SideInfo lhs;
     SideInfo rhs;
-    bool is_col_vs_col;
-    Uint32 word_count;
+    bool is_col_vs_col = false;
+    /* Phase I.5 v3b: float column LHS with numeric-literal RHS.
+     * Emits register-based compare with LOAD_DOUBLE_CONST for the
+     * RHS instead of the integer-only BRANCH_*_OP_ARG path. */
+    bool is_float_const = false;
+    /* For is_float_const: the constant pre-converted to double. */
+    double float_const_val = 0.0;
+    Uint32 word_count = 0;
   };
 
   std::function<void(ConditionalExpression*, SideInfo&)> resolve_col_side =
@@ -8504,28 +8510,54 @@ RonSQLPreparer::generate_embedded_condition(
     }
     else
     {
-      // col-vs-const path (v1): resolve the constant against the LHS
-      // column descriptor.
       info.rhs.kind = SideKind::Constant;
-      info.rhs.rv = encode_constant(atom->args.right, info.lhs.col);
-      info.rhs.byte_len = info.rhs.rv.len;
-      info.rhs.data_words = (info.rhs.byte_len + 3) / 4;
-      // BRANCH_ATTR_OP_ARG       : 2 words + data
-      // BRANCH_MEM_OP_ARG        : 4 words + data, plus 1 for READ_LINKED_TO_MEM
-      // BRANCH_MEM_OP_ARG_INLINE : 3 words + data, plus 1 for READ_LINKED_TO_MEM
-      switch (info.lhs.kind) {
-        case SideKind::LeafTable:
-          info.word_count = 2 + info.rhs.data_words;
-          break;
-        case SideKind::LinkedParent:
-        case SideKind::LinkedCteCol:
-          info.word_count = 1 + 4 + info.rhs.data_words;
-          break;
-        case SideKind::InlineLinked:
-          info.word_count = 1 + 3 + info.rhs.data_words;
-          break;
-        case SideKind::Constant:
-          abort();  // unreachable — LHS is always a column
+      // Phase I.5 v3b: detect float column LHS with numeric literal
+      // RHS — emit register-based compare via LOAD_DOUBLE_CONST
+      // instead of the integer-only BRANCH_*_OP_ARG family.
+      bool lhs_is_float =
+          info.lhs.col->getType() == NdbDictionary::Column::Float ||
+          info.lhs.col->getType() == NdbDictionary::Column::Double;
+      info.is_float_const = lhs_is_float &&
+          (atom->args.right->op == T_INT ||
+           atom->args.right->op == T_FLOAT);
+      if (info.is_float_const) {
+        require_prm(info.lhs.kind != SideKind::InlineLinked,
+                    "Float / double CTE-leaf column compared to a "
+                    "literal in CASE is not yet supported (would need "
+                    "an inline-typed double-load opcode).");
+        if (atom->args.right->op == T_INT) {
+          info.float_const_val =
+              static_cast<double>(atom->args.right->constant_integer);
+        } else {
+          info.float_const_val = atom->args.right->constant_float.dbl;
+        }
+        // 1 word: read LHS into R1
+        // 3 words: LOAD_DOUBLE_CONST(R2) + 2 data words
+        // 1 word: BRANCH_*_REG_REG R2, R1
+        info.word_count = 1u + 3u + 1u;
+      } else {
+        // col-vs-const path (v1): resolve the constant against the LHS
+        // column descriptor.
+        info.rhs.rv = encode_constant(atom->args.right, info.lhs.col);
+        info.rhs.byte_len = info.rhs.rv.len;
+        info.rhs.data_words = (info.rhs.byte_len + 3) / 4;
+        // BRANCH_ATTR_OP_ARG       : 2 words + data
+        // BRANCH_MEM_OP_ARG        : 4 words + data, plus 1 for READ_LINKED_TO_MEM
+        // BRANCH_MEM_OP_ARG_INLINE : 3 words + data, plus 1 for READ_LINKED_TO_MEM
+        switch (info.lhs.kind) {
+          case SideKind::LeafTable:
+            info.word_count = 2 + info.rhs.data_words;
+            break;
+          case SideKind::LinkedParent:
+          case SideKind::LinkedCteCol:
+            info.word_count = 1 + 4 + info.rhs.data_words;
+            break;
+          case SideKind::InlineLinked:
+            info.word_count = 1 + 3 + info.rhs.data_words;
+            break;
+          case SideKind::Constant:
+            abort();  // unreachable — LHS is always a column
+        }
       }
     }
     total_atom_words += info.word_count;
@@ -8549,13 +8581,13 @@ RonSQLPreparer::generate_embedded_condition(
     ConditionalExpression* atom = atoms[a];
     AtomInfo& info = infos[a];
 
-    // Branch instruction position within the atom: for col-vs-col it
-    // is the last word (after both register loads); for col-vs-const
-    // linked / inline-linked it sits right after the
-    // READ_LINKED_TO_MEM staging word (at pos+1); for col-vs-const
-    // leaf it is the first word.
+    // Branch instruction position within the atom: for col-vs-col
+    // (and v3b float-const) it is the last word (after both register
+    // loads); for col-vs-const linked / inline-linked it sits right
+    // after the READ_LINKED_TO_MEM staging word (at pos+1); for
+    // col-vs-const leaf it is the first word.
     Uint32 branch_instr_pos;
-    if (info.is_col_vs_col) {
+    if (info.is_col_vs_col || info.is_float_const) {
       branch_instr_pos = pos + info.word_count - 1;
     } else if (info.lhs.kind == SideKind::LeafTable) {
       branch_instr_pos = pos;
@@ -8626,9 +8658,9 @@ RonSQLPreparer::generate_embedded_condition(
       }
     };
 
-    if (info.is_col_vs_col)
+    if (info.is_col_vs_col || info.is_float_const)
     {
-      // v2a: register-based path.  Two static registers: R1 (LHS), R2 (RHS).
+      // Register-based path.  Two static registers: R1 (LHS), R2 (RHS).
       // The embedded interpreter has its own register file and is
       // re-initialised per kOpEmbeddedInterp call, so register reuse
       // across atoms is safe (each atom is self-contained).
@@ -8657,7 +8689,20 @@ RonSQLPreparer::generate_embedded_condition(
             }
           };
       emit_load_into_reg(info.lhs, R1);
-      emit_load_into_reg(info.rhs, R2);
+      if (info.is_float_const) {
+        // Phase I.5 v3b: load the literal as a double immediate.
+        // LOAD_DOUBLE_CONST occupies one opcode word followed by
+        // two data words (low, high) carrying the IEEE-754 bit
+        // pattern, matching LOAD_CONST64's encoding.
+        union { double d; Uint32 w[2]; } pun;
+        pun.d = info.float_const_val;
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+            Interpreter::LoadDoubleConst(R2)));
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(pun.w[0]));
+        programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(pun.w[1]));
+      } else {
+        emit_load_into_reg(info.rhs, R2);
+      }
 
       // Encoding: Branch(opcode, RegRvalue=R2, RegLvalue=R1) per
       // NdbInterpretedCode::branch_lt et al.  The branch label offset
