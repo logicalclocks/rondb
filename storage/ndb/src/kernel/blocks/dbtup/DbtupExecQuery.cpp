@@ -7097,7 +7097,11 @@ struct Dbtup::InterpreterContext {
     if (unlikely(src.type != NDB_TYPE_BIGINT)) {
       return -ZREGISTER_INIT_ERROR;
     }
-    ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
+    /* Phase I.18: carry signedness through to the normal interpreter
+     * register's type word. */
+    ctx.TregMemBuffer[ctx.theRegister] =
+        src.is_unsigned ? Interpreter::REG_TYPE_UINT
+                        : Interpreter::REG_TYPE_INT;
     if (src.is_unsigned) {
       *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
           src.value.val_uint64;
@@ -7208,7 +7212,11 @@ struct Dbtup::InterpreterContext {
         return -ZNO_INSTRUCTION_ERROR;
     }
 
-    ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
+    /* Phase I.18: tag the register's type word so consumers know
+     * whether the payload is signed or unsigned. */
+    ctx.TregMemBuffer[ctx.theRegister] =
+        is_unsigned ? Interpreter::REG_TYPE_UINT
+                    : Interpreter::REG_TYPE_INT;
     if (is_unsigned) {
       *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = uval;
     } else {
@@ -7271,7 +7279,18 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* READ_ATTR_INTO_REG — read tuple attribute into register */
+  /* READ_ATTR_INTO_REG — read tuple attribute into register
+   *
+   * Phase I.18: type-aware register write.  After readAttributes
+   * returns the raw column data, the column descriptor is consulted
+   * to apply correct sign extension on signed sub-Bigint integers,
+   * and to tag the register with REG_TYPE_INT / REG_TYPE_UINT /
+   * REG_TYPE_DOUBLE depending on the source type.  Pre-I.18 the
+   * handler implicitly zero-extended every 32-bit data word into
+   * the Int64 payload, which silently produced wrong values for
+   * signed TINYINT / SMALLINT / MEDIUMINT / INT columns containing
+   * negative values (this was the bug surfaced by the I.5 v5 MTR
+   * fixture). */
   static inline int handleReadAttrIntoReg(InterpreterContext& ctx) {
     ctx.RnoOfInstructions += 3;  // A bit heavier instruction
     Uint32 theAttrinfo = (ctx.theInstruction & 0xFFFF0000);
@@ -7279,19 +7298,109 @@ struct Dbtup::InterpreterContext {
         ctx.req_struct, &theAttrinfo, (Uint32)1,
         &ctx.TregMemBuffer[ctx.theRegister], (Uint32)3);
     if (TnoDataRW == 2) {
-      // 32-bit value read
+      // 32-bit cell read.  TregMemBuffer[theRegister + 1] holds the
+      // raw column data word (after the AttrHeader at slot 0).
+      // Inspect the column descriptor to know how wide the actual
+      // value is and whether it is signed.
       thrjamDebug(ctx.tup->jamBuffer());
-      ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
-      *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
-          ctx.TregMemBuffer[ctx.theRegister + 1];
+      Uint32 attrId = theAttrinfo >> 16;
+      const Uint32 attrDescIndex = attrId * ZAD_SIZE;
+      Uint32 attrDesc1 =
+          ctx.req_struct->tablePtrP->tabDescriptor[attrDescIndex];
+      Uint32 typeId = AttributeDescriptor::getType(attrDesc1);
+      const char* dataPtr =
+          reinterpret_cast<const char*>(
+              &ctx.TregMemBuffer[ctx.theRegister + 1]);
+      switch (typeId) {
+        case NDB_TYPE_TINYINT:
+          *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Int64)*reinterpret_cast<const Int8*>(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
+          break;
+        case NDB_TYPE_TINYUNSIGNED:
+          *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Uint64)*reinterpret_cast<const Uint8*>(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+          break;
+        case NDB_TYPE_SMALLINT:
+          *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Int64)(Int16)sint2korr(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
+          break;
+        case NDB_TYPE_SMALLUNSIGNED:
+          *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Uint64)uint2korr(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+          break;
+        case NDB_TYPE_MEDIUMINT:
+          *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Int64)sint3korr(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
+          break;
+        case NDB_TYPE_MEDIUMUNSIGNED:
+          *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Uint64)uint3korr(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+          break;
+        case NDB_TYPE_INT:
+          *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Int64)sint4korr(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
+          break;
+        case NDB_TYPE_UNSIGNED:
+          *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Uint64)uint4korr(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+          break;
+        case NDB_TYPE_FLOAT: {
+          // Single-precision float in 4 bytes.  Promote to double
+          // and store as REG_TYPE_DOUBLE.
+          float fval;
+          memcpy(&fval, dataPtr, 4);
+          double dval = (double)fval;
+          memcpy(ctx.TregMemBuffer + ctx.theRegister + 2, &dval, 8);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
+          break;
+        }
+        default:
+          // Unknown / unsupported type for typed register loading
+          // — preserve the historical zero-extension behaviour and
+          // mark the register as a default signed integer so
+          // callers that don't care about typed semantics keep
+          // working.
+          *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              ctx.TregMemBuffer[ctx.theRegister + 1];
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
+          break;
+      }
     } else if (TnoDataRW == 3) {
-      // 64-bit value read
+      // 64-bit cell read.  Two data words at slots 1 and 2 — repack
+      // into the canonical Int64 / Uint64 / double layout in slots
+      // 2-3.
       thrjamDebug(ctx.tup->jamBuffer());
-      ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
-      ctx.TregMemBuffer[ctx.theRegister + 3] =
-          ctx.TregMemBuffer[ctx.theRegister + 2];
-      ctx.TregMemBuffer[ctx.theRegister + 2] =
-          ctx.TregMemBuffer[ctx.theRegister + 1];
+      Uint32 lowWord  = ctx.TregMemBuffer[ctx.theRegister + 1];
+      Uint32 highWord = ctx.TregMemBuffer[ctx.theRegister + 2];
+      ctx.TregMemBuffer[ctx.theRegister + 2] = lowWord;
+      ctx.TregMemBuffer[ctx.theRegister + 3] = highWord;
+      Uint32 attrId = theAttrinfo >> 16;
+      const Uint32 attrDescIndex = attrId * ZAD_SIZE;
+      Uint32 attrDesc1 =
+          ctx.req_struct->tablePtrP->tabDescriptor[attrDescIndex];
+      Uint32 typeId = AttributeDescriptor::getType(attrDesc1);
+      switch (typeId) {
+        case NDB_TYPE_BIGUNSIGNED:
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+          break;
+        case NDB_TYPE_DOUBLE:
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
+          break;
+        case NDB_TYPE_BIGINT:
+        default:
+          // Bigint and any other 8-byte source defaults to signed
+          // Int64.
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
+          break;
+      }
     } else if (TnoDataRW == 1) {
       // NULL value
       thrjamDebug(ctx.tup->jamBuffer());
