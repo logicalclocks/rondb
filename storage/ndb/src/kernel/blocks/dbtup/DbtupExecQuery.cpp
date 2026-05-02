@@ -7656,6 +7656,21 @@ struct Dbtup::InterpreterContext {
         memcpy(&uval, data, 8);
         is_unsigned = true;
         break;
+      case NDB_TYPE_FLOAT: {
+        /* Phase I.5 v3: load 4-byte FLOAT, widen to double, tag
+         * REG_TYPE_DOUBLE.  Early-return because the unified tail
+         * below would mis-tag this as REG_TYPE_INT. */
+        float fval;
+        memcpy(&fval, data, 4);
+        double dval = static_cast<double>(fval);
+        ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
+        memcpy(ctx.TregMemBuffer + ctx.theRegister + 2, &dval, 8);
+        return INTERP_CONTINUE;
+      }
+      case NDB_TYPE_DOUBLE:
+        ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
+        memcpy(ctx.TregMemBuffer + ctx.theRegister + 2, data, 8);
+        return INTERP_CONTINUE;
       default:
         return -ZNO_INSTRUCTION_ERROR;
     }
