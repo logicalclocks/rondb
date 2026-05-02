@@ -32,22 +32,29 @@ Commits on `RONDB-1050-cte-filter`:
 | `3c655ee7864` | Consumers batch 3b — write-back handlers: strict-type on `WRITE_UINT*/INT64_REG_TO_MEM/REG`; float-reject on `WRITE_ATTR_FROM_REG`, `WRITE_INTERPRETER_OUTPUT`, `CONVERT_SIZE`; `READ_INTERPRETER_INPUT` marks `REG_TYPE_INT` |
 | `570530f3a85` | New opcode `WRITE_REG_TO_MEM_ANY` (slot 62) — type-agnostic 8-byte register-to-memory escape hatch; encoder + handler + dispatch + `NdbInterpretedCode::write_reg_to_mem_any_const` |
 | `2784d7746e5` | New opcode `LOAD_DOUBLE_CONST` (slot 45) — IEEE-754 double immediate load, marks `REG_TYPE_DOUBLE`; encoder + handler + dispatch + `NdbInterpretedCode::load_double_const`.  `LOAD_INT64_CONST` deliberately not added: existing `LOAD_CONST64` (slot 6) already produces `REG_TYPE_INT` since `NOT_NULL_INDICATOR == 1` is bit-identical to `REG_TYPE_INT` |
+| `0c49b6656e2` | Review fixes: `applyTypedBitwise` shift bound tightened from `> 64` to `>= 64` (a 64-bit shift on a 64-bit value is UB); `handleReadAggRegToReg` extended to handle `NDB_TYPE_DOUBLE` aggregation registers (marks dest `REG_TYPE_DOUBLE`, memcpy's the 8-byte double pattern); `JoinAggInterpreter::validateEmbeddedProgram` whitelists `LOAD_DOUBLE_CONST` so embedded programs in joinagg context can use it |
+| `af1eeaf881e` + `a274e42a2b9` | MTR coverage in `ronsql_cte_greatest_least_v5.test`: Tests 8-11 add leaf-side TINYINT / SMALLINT / MEDIUMINT / INT signed coverage with negative values (incl. INT_MIN), recording confirmed RonSQL output matches MySQL's reference for all 11 tests |
 
 **Not added** — `LOAD_INT64_CONST` (slot was tentative, ended up
 redundant under the typed-word convention).  Slot 46 stays free.
 
 ## Outstanding follow-ups
 
-1. **RonSQL MTR coverage** — extend `ronsql_cte_greatest_least_v5.test`
-   (or add a sibling test file) with negative leaf-side values
-   (the original I.18 motivating bug), float operands, and
-   `Bigunsigned > INT64_MAX`.  Drives the new producer/consumer
-   paths end-to-end.  Requires RonSQL emit changes for floats
-   (`LOAD_DOUBLE_CONST`) and unsigned constants if any RonSQL
-   surface needs to load `Uint64 > INT64_MAX` constants — the
-   current pipeline only encounters unsigneds via column reads,
-   which already work.
-2. **Optional**: a dedicated `LOAD_UINT64_CONST` if a future
+1. **Negative leaf-side coverage** — shipped (`af1eeaf881e` +
+   `a274e42a2b9`).  Tests 8-11 in
+   `ronsql_cte_greatest_least_v5.test` exercise TINYINT / SMALLINT
+   / MEDIUMINT / INT signed leaf operands with negative values
+   (incl. INT_MIN); RonSQL output matches MySQL's reference.
+2. **Float operands MTR coverage** — outstanding.  Needs new
+   RonSQL codegen to emit `LOAD_DOUBLE_CONST` in CASE / pair-op
+   tails before the kernel path can be driven from SQL.  Plan-doc
+   sized.
+3. **`Bigunsigned > INT64_MAX` MTR coverage** — outstanding but
+   smaller than (2): the column-read path already produces
+   `REG_TYPE_UINT` (batch 2), so a test exercising it via a
+   `BIGINT UNSIGNED` column on either side of a CASE atom should
+   work without RonSQL emit changes.
+4. **Optional**: a dedicated `LOAD_UINT64_CONST` if a future
    RonSQL surface ever needs to load a constant Uint64 > INT64_MAX
    (today nothing does — large unsigned constants only appear
    from column reads).
