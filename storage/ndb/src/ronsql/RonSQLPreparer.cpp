@@ -8464,7 +8464,7 @@ RonSQLPreparer::generate_embedded_condition(
       // operands use READ_ATTR_INTO_REG (DBTUP's type-aware loader);
       // linked operands use READ_LINKED_COLUMN_TO_REG (Phase I.5 v5)
       // which decodes by NDB type with correct sign extension.
-      std::function<bool(const NdbDictionary::Column*)> can_load_integer_reg =
+      std::function<bool(const NdbDictionary::Column*)> can_load_typed_reg =
           [](const NdbDictionary::Column* c)
       {
         switch (c->getType()) {
@@ -8478,6 +8478,8 @@ RonSQLPreparer::generate_embedded_condition(
         case NdbDictionary::Column::Unsigned:
         case NdbDictionary::Column::Bigint:
         case NdbDictionary::Column::Bigunsigned:
+        case NdbDictionary::Column::Float:
+        case NdbDictionary::Column::Double:
           return true;
         default:
           return false;
@@ -8488,11 +8490,11 @@ RonSQLPreparer::generate_embedded_condition(
                   "CASE condition with two CTE-leaf columns is not yet "
                   "supported (deferred to I.5 v5 — needs an inline-typed "
                   "register-load opcode).");
-      require_prm(can_load_integer_reg(info.lhs.col) &&
-                  can_load_integer_reg(info.rhs.col),
-                  "Column-vs-column CASE / GREATEST / LEAST is "
-                  "integer-only (Float / Decimal / VARCHAR deferred "
-                  "to I.5 v3 / I.6).");
+      require_prm(can_load_typed_reg(info.lhs.col) &&
+                  can_load_typed_reg(info.rhs.col),
+                  "Column-vs-column CASE / GREATEST / LEAST currently "
+                  "supports integer + float / double types only "
+                  "(VARCHAR / DECIMAL deferred to I.6).");
       // Word counts (Phase I.5 v5: linked side is now one word —
       // READ_LINKED_COLUMN_TO_REG):
       //   LeafTable side       → 1 word (READ_ATTR_INTO_REG)
