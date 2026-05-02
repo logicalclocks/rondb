@@ -207,6 +207,9 @@ class NdbInterpretedCode {
   int load_const_u16(Uint32 RegDest, Uint32 Constant);
   int load_const_u32(Uint32 RegDest, Uint32 Constant);
   int load_const_u64(Uint32 RegDest, Uint64 Constant);
+  /* Phase I.18: load IEEE-754 double immediate, marks register
+   * REG_TYPE_DOUBLE.  3-word instruction (opcode + 2 data words). */
+  int load_double_const(Uint32 RegDest, double Constant);
   /**
    * Load operation type into a register
    * -----------------------------------

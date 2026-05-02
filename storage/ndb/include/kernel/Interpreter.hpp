@@ -333,7 +333,15 @@ class Interpreter {
   static constexpr Uint32 READ_LINKED_COLUMN_TO_REG = 44;
   /* Overflow constant 44 free */
 
-  /* 45-46 free, both of them */
+  /* LOAD_DOUBLE_CONST — Phase I.18: load an IEEE-754 double immediate
+   * (encoded as two program words after the opcode word) into a
+   * register, marking it REG_TYPE_DOUBLE.  Counterpart of LOAD_CONST64
+   * (slot 6) for the floating-point family.  Signed-Int64 constants
+   * stay on LOAD_CONST64 — its existing semantics (NOT_NULL_INDICATOR
+   * == REG_TYPE_INT) match the new typed convention. */
+  static constexpr Uint32 LOAD_DOUBLE_CONST = 45;
+  /* Overflow constant 45 free */
+  /* 46 free, both of them */
   static constexpr Uint32 READ_PARTIAL_ATTR_TO_MEM = 47;
   /* Overflow constant 47 free */
   static constexpr Uint32 READ_ATTR_TO_MEM = 48;
@@ -422,6 +430,7 @@ class Interpreter {
   static Uint32 LoadConst16(Uint32 Register, Uint32 Value);
   static Uint32 LoadConst32(Uint32 Register); // Value in next word
   static Uint32 LoadConst64(Uint32 Register); // Value in next 2 words
+  static Uint32 LoadDoubleConst(Uint32 Register); // IEEE-754 double in next 2 words
   static Uint32 LoadConstMem(Uint32 RegMemoryOffset,
                              Uint32 RegSize,
                              Uint16 ConstantSize); //Value in words after
@@ -779,6 +788,10 @@ inline Uint32 Interpreter::LoadConst32(Uint32 Register) {
 
 inline Uint32 Interpreter::LoadConst64(Uint32 Register) {
   return (Register << 6) + LOAD_CONST64;
+}
+
+inline Uint32 Interpreter::LoadDoubleConst(Uint32 Register) {
+  return (Register << 6) + LOAD_DOUBLE_CONST;
 }
 
 inline Uint32
@@ -1442,6 +1455,7 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
     case LOAD_CONST32:
       return op + 2;
     case LOAD_CONST64:
+    case LOAD_DOUBLE_CONST:
       return op + 3;
     case LOAD_CONST_MEM:
     {

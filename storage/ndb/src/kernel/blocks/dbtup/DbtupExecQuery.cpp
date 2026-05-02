@@ -5909,6 +5909,22 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
+  /* LOAD_DOUBLE_CONST — Phase I.18: load IEEE-754 double immediate
+   * from the next two program words into a register, marking it
+   * REG_TYPE_DOUBLE.  Counterpart of LOAD_CONST64 for floats; signed
+   * Int64 constants stay on LOAD_CONST64.  The two program words are
+   * laid out low-word-first, matching LOAD_CONST64 — producers should
+   * memcpy the double's 8-byte bit pattern into a Uint32[2] when
+   * emitting the program. */
+  static inline int handleLoadDoubleConst(InterpreterContext& ctx) {
+    ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
+    ctx.TregMemBuffer[ctx.theRegister + 2] =
+      *(ctx.TcurrentProgram + ctx.TprogramCounter++);
+    ctx.TregMemBuffer[ctx.theRegister + 3] =
+      *(ctx.TcurrentProgram + ctx.TprogramCounter++);
+    return INTERP_CONTINUE;
+  }
+
   /* BRANCH — unconditional branch */
   static inline int handleBranch(InterpreterContext& ctx) {
     ctx.TprogramCounter =
@@ -9583,7 +9599,7 @@ s_cte_filter_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  42  BRANCH_LINKED_NE_NULL   */ &Dbtup::InterpreterContext::handleBranchLinkedNeNull,
   /*  43  READ_AGG_REG_TO_REG     */ nullptr,
   /*  44  READ_LINKED_COLUMN_TO_REG */ &Dbtup::InterpreterContext::handleReadLinkedColumnToReg,
-  /*  45  (unused)                */ nullptr,
+  /*  45  LOAD_DOUBLE_CONST       */ &Dbtup::InterpreterContext::handleLoadDoubleConst,
   /*  46  (unused)                */ nullptr,
   /*  47  READ_PARTIAL_ATTR_TO_MEM*/ nullptr,
   /*  48  READ_ATTR_TO_MEM        */ nullptr,
@@ -9739,7 +9755,7 @@ s_agg_interp_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  42  BRANCH_LINKED_NE_NULL   */ nullptr,
   /*  43  READ_AGG_REG_TO_REG     */ &Dbtup::InterpreterContext::handleReadAggRegToReg,
   /*  44  READ_LINKED_COLUMN_TO_REG */ &Dbtup::InterpreterContext::handleReadLinkedColumnToReg,
-  /*  45  (unused)                */ nullptr,
+  /*  45  LOAD_DOUBLE_CONST       */ &Dbtup::InterpreterContext::handleLoadDoubleConst,
   /*  46  (unused)                */ nullptr,
   /*  47  READ_PARTIAL_ATTR_TO_MEM*/ nullptr,
   /*  48  READ_ATTR_TO_MEM        */ nullptr,
@@ -10077,6 +10093,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
           break;
         case Interpreter::LOAD_CONST64:
           INTERP_DISPATCH(handleLoadConst64);
+          break;
+        case Interpreter::LOAD_DOUBLE_CONST:
+          INTERP_DISPATCH(handleLoadDoubleConst);
           break;
         case Interpreter::BZERO_MEM:
           INTERP_DISPATCH(handleBzeroMem);

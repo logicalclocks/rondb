@@ -952,6 +952,17 @@ int NdbInterpretedCode::load_const_u64(Uint32 RegDest, Uint64 Constant) {
   return add3(Interpreter::LoadConst64(RegDest), val32[0], val32[1]);
 }
 
+int NdbInterpretedCode::load_double_const(Uint32 RegDest, double Constant) {
+  union {
+    double valDouble;
+    Uint32 val32[2];
+  };
+  valDouble = Constant;
+  if (RegDest >= MaxReg)
+    return error(BadRegister);
+  return add3(Interpreter::LoadDoubleConst(RegDest), val32[0], val32[1]);
+}
+
 int
 NdbInterpretedCode::load_const_null(Uint32 RegDest) {
   if (RegDest >= MaxReg)
