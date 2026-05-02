@@ -35,6 +35,15 @@ call mtr.add_suppression("Participant timeout");
 # v5_orders.o_biguns row 3 = 9_223_372_036_854_775_900 — both
 # above INT64_MAX (9_223_372_036_854_775_807).
 #
+# Phase I.5 v3a (Tests 14-17): float / double operands in
+# col-vs-col CASE.  Kernel handleReadLinkedColumnToReg gained
+# NDB_TYPE_FLOAT / NDB_TYPE_DOUBLE arms (32b86c5052d); RonSQL's
+# can_load_typed_reg whitelist accepts them (c44f0fe928b);
+# compareTypedRegs already promotes mixed int/float operands to
+# double.  v5_customer/orders carry FLOAT and DOUBLE columns;
+# Tests 14-17 cover float-vs-float and float-vs-int on both sides.
+# Col-vs-const float literal stays deferred to v3b.
+#
 # GREATEST / LEAST n-ary lowering through v2b's pair-op SVM path
 # is unaffected by this phase (it goes through LoadColumn /
 # LoadLinkedColumn at the aggregator-program level, which already
@@ -60,6 +69,8 @@ CREATE TABLE v5_orders (
   o_mediumint MEDIUMINT NOT NULL,
   o_int       INT NOT NULL,
   o_biguns    BIGINT UNSIGNED NOT NULL,
+  o_float     FLOAT NOT NULL,
+  o_double    DOUBLE NOT NULL,
   PRIMARY KEY USING HASH (o_id)
 ) ENGINE=NDB;
 
@@ -74,6 +85,8 @@ CREATE TABLE v5_customer (
   c_int       INT NOT NULL,
   c_unsigned  INT UNSIGNED NOT NULL,
   c_biguns    BIGINT UNSIGNED NOT NULL,
+  c_float     FLOAT NOT NULL,
+  c_double    DOUBLE NOT NULL,
   PRIMARY KEY USING HASH (c_id)
 ) ENGINE=NDB;
 
@@ -81,9 +94,9 @@ CREATE TABLE v5_customer (
 # width so the sign-extension path is exercised on every linked
 # read.
 INSERT INTO v5_customer VALUES
-  (100, 50,  -10,  -1000,  -100000,  -1000000,  4000000000,                  100),
-  (200, 60,    5,    500,    50000,    500000,  3000000000,  9500000000000000000),
-  (300, 100,  20,  20000,   500000,  20000000,  1000000000,                 5000);
+  (100, 50,  -10,  -1000,  -100000,  -1000000,  4000000000,                  100,    1.5,    -2.5),
+  (200, 60,    5,    500,    50000,    500000,  3000000000,  9500000000000000000,  -50.25,   100.125),
+  (300, 100,  20,  20000,   500000,  20000000,  1000000000,                 5000,  1000.0, 99999.5);
 
 # Phase I.18: leaf-side sub-Bigint columns carry negatives spanning
 # every signed width (incl. width minimums) so post-I.18 sign-extension
@@ -91,10 +104,10 @@ INSERT INTO v5_customer VALUES
 # value > INT64_MAX in row 3 to cover the unsigned-vs-signed mixed
 # compare path (Phase I.18 batch 1's compareTypedRegs).
 INSERT INTO v5_orders VALUES
-  (1, 100,  80,   30,  -50,    -1000,    -100000,    -1000000,                  200),
-  (2, 100,  40,    5,   60,      600,      60000,      600000,                 1000),
-  (3, 200,  90,   75, -127,   -32768,   -8388608, -2147483648,  9223372036854775900),
-  (4, 300,  70,   18,   10,      100,       1000,       10000,                   50);
+  (1, 100,  80,   30,  -50,    -1000,    -100000,    -1000000,                  200,   3.5,    7.25),
+  (2, 100,  40,    5,   60,      600,      60000,      600000,                 1000,  -7.0,   42.0),
+  (3, 200,  90,   75, -127,   -32768,   -8388608, -2147483648,  9223372036854775900,  0.5, -100.5),
+  (4, 300,  70,   18,   10,      100,       1000,       10000,                   50, 250.0, 1234.5);
 
 --enable_warnings
 --enable_query_log
@@ -394,6 +407,102 @@ GROUP BY c.c_id;|
 --sorted_result
 SELECT c.c_id,
        SUM(CASE WHEN o.o_biguns < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 14: linked DOUBLE vs leaf DOUBLE — both sides float ===
+
+# Both sides DOUBLE.  Linked: handleReadLinkedColumnToReg's
+# NDB_TYPE_DOUBLE arm (memcpy 8 bytes, mark REG_TYPE_DOUBLE).
+# Leaf: handleReadAttrIntoReg's Float/Double arm (Phase I.18
+# batch 2).  Compare: compareTypedRegs same-type fast path on
+# REG_TYPE_DOUBLE.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_double > o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_double > o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 15: linked FLOAT vs leaf BIGINT — mixed int/float ===
+
+# Linked: NDB_TYPE_FLOAT arm widens to double, marks REG_TYPE_DOUBLE.
+# Leaf: BIGINT (REG_TYPE_INT).  compareTypedRegs detects float
+# on either side and promotes both operands to double for the
+# comparison.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_float < o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_float < o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 16: linked DOUBLE > BIGINT linked — int/float mix on linked side ===
+
+# Both linked.  c.c_double (DOUBLE → REG_TYPE_DOUBLE) compared
+# against c.c_threshold (BIGINT → REG_TYPE_INT).  Same int/float
+# promotion as Test 15 but with both operands on the linked side.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_double > c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_double > c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 17: leaf FLOAT vs linked BIGINT — float-on-LEFT, int-on-RIGHT ===
+
+# Leaf-side FLOAT via handleReadAttrIntoReg's Float arm
+# (Phase I.18 batch 2).  Linked: BIGINT (REG_TYPE_INT).  Same
+# mixed promotion in compareTypedRegs.  Coverage of float-on-LEAF
+# specifically — Tests 14 / 15 / 16 had float on linked or both.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_float < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_float < c.c_threshold THEN 1 ELSE 0 END) AS s
 FROM v5_customer AS c
 JOIN v5_orders AS o ON o.o_custkey = c.c_id
 GROUP BY c.c_id|
