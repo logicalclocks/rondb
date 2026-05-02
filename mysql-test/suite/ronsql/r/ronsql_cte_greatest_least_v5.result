@@ -192,3 +192,111 @@ c_id	g
 100	0
 200	90
 300	70
+
+
+=== Test 8: TINYINT signed leaf negative — Phase I.18 leaf path ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_threshold > o.o_tinyint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_threshold > o.o_tinyint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	1
+200	1
+300	1
+
+
+=== Test 9: SMALLINT signed leaf negative — Phase I.18 leaf path ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_threshold > o.o_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_threshold > o.o_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	1
+200	1
+300	0
+
+
+=== Test 10: MEDIUMINT signed leaf negative — Phase I.18 leaf path ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_threshold > o.o_mediumint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_threshold > o.o_mediumint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	1
+200	1
+300	0
+
+
+=== Test 11: INT signed leaf, INT_MIN — leaf-on-left of comparator ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_int < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_int < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	1
+200	1
+300	0
