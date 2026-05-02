@@ -2,17 +2,20 @@
 
 ## Status
 
-**Planned.**  Last of the I.5 typed-register follow-ups.  Phase I.18
-shipped the typed-register infrastructure on the kernel side
-(`REG_TYPE_DOUBLE`, `LOAD_DOUBLE_CONST` opcode, type-aware
-arithmetic / branch helpers, `handleReadAttrIntoReg` Float→double
-descriptor arm).  The remaining gap is RonSQL-side: the col-vs-col
-emit explicitly rejects `Float` / `Double` columns and the linked
-register-load opcode rejects them at runtime.
+**v3a shipped.**  Three commits on `RONDB-1050-cte-filter`:
 
-Original location: `RonSQLPreparer.cpp:8467-8495` —
-`can_load_integer_reg` whitelist + `require_prm` rejection
-"integer-only (Float / Decimal / VARCHAR deferred to I.5 v3 / I.6)".
+| Commit | Scope |
+|--------|-------|
+| `32b86c5052d` | Kernel — `handleReadLinkedColumnToReg` `NDB_TYPE_FLOAT` / `NDB_TYPE_DOUBLE` arms (early-return paths that tag `REG_TYPE_DOUBLE` and store the 8-byte double bit pattern; FLOAT widens to double up front) |
+| `c44f0fe928b` | RonSQL — `can_load_integer_reg` renamed to `can_load_typed_reg`; `Float` and `Double` added to the whitelist; rejection message updated to reflect that only VARCHAR / DECIMAL remain deferred |
+| `ee27b22dea0` + recorded result | MTR — `ronsql_cte_greatest_least_v5.test` Tests 14-17 (linked DOUBLE vs leaf DOUBLE, linked FLOAT vs leaf BIGINT, linked DOUBLE vs linked BIGINT, leaf FLOAT vs linked BIGINT).  All four `== Diff ==` blocks empty: RonSQL output matches MySQL's reference |
+
+**v3b deferred.**  Col-vs-const float literal stays unshipped —
+the RonSQL col-vs-const branch still uses `BRANCH_ATTR_OP_ARG` /
+`BRANCH_MEM_OP_ARG` which lack float compare semantics, and the
+Option A vs Option B trade-off (lower the literal to a register
+via `LOAD_DOUBLE_CONST`, or extend the `_ARG` opcodes with float
+compare) deserves a separate plan.
 
 ## Background
 
