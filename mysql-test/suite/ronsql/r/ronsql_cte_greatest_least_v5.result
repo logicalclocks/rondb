@@ -300,3 +300,57 @@ c_id	s
 100	1
 200	1
 300	0
+
+
+=== Test 12: BIGINT UNSIGNED linked > INT64_MAX vs BIGINT leaf ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_biguns < o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_biguns < o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	0
+300	0
+
+
+=== Test 13: BIGINT UNSIGNED leaf > INT64_MAX vs BIGINT linked ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_biguns < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_biguns < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	0
+300	1

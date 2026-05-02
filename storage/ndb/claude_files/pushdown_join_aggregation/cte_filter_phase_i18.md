@@ -45,15 +45,22 @@ redundant under the typed-word convention).  Slot 46 stays free.
    `ronsql_cte_greatest_least_v5.test` exercise TINYINT / SMALLINT
    / MEDIUMINT / INT signed leaf operands with negative values
    (incl. INT_MIN); RonSQL output matches MySQL's reference.
-2. **Float operands MTR coverage** — outstanding.  Needs new
-   RonSQL codegen to emit `LOAD_DOUBLE_CONST` in CASE / pair-op
-   tails before the kernel path can be driven from SQL.  Plan-doc
-   sized.
-3. **`Bigunsigned > INT64_MAX` MTR coverage** — outstanding but
-   smaller than (2): the column-read path already produces
-   `REG_TYPE_UINT` (batch 2), so a test exercising it via a
-   `BIGINT UNSIGNED` column on either side of a CASE atom should
-   work without RonSQL emit changes.
+2. **`Bigunsigned > INT64_MAX` MTR coverage** — Tests 12-13 added
+   to `ronsql_cte_greatest_least_v5.test`; v5_customer.c_biguns
+   and v5_orders.o_biguns gained values above INT64_MAX
+   (9.5e18 and ~9.22e18 + 100 respectively).  Exercises Phase
+   I.18 batch 1's `compareTypedRegs` mixed signed-vs-unsigned
+   short-circuit on both linked and leaf sides.  The path needs
+   no RonSQL emit changes — `Bigunsigned` was already in the
+   integer-only whitelist at `RonSQLPreparer.cpp:8467-8485`.
+3. **Float operands MTR coverage** — Phase I.5 v3 (planned in
+   `cte_filter_phase_i5_v3.md`).  Smaller scope than originally
+   estimated: I.18 already handles float on the leaf side
+   (`handleReadAttrIntoReg`'s Float→double arm) and in the
+   compare path (`compareTypedRegs` int/float promotion).  v3
+   adds the linked-side `handleReadLinkedColumnToReg` Float /
+   Double cases plus relaxes RonSQL's `can_load_integer_reg`
+   whitelist.  Col-vs-const float literal deferred to v3b.
 4. **Optional**: a dedicated `LOAD_UINT64_CONST` if a future
    RonSQL surface ever needs to load a constant Uint64 > INT64_MAX
    (today nothing does — large unsigned constants only appear
