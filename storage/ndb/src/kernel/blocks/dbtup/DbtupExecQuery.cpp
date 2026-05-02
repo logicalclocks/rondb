@@ -5964,20 +5964,107 @@ struct Dbtup::InterpreterContext {
 
   /* --- Batch 2 --- register comparison branches (reg-reg and reg-const) */
 
-  /* BRANCH_EQ_REG_REG — branch if reg == reg2 (both non-null) */
+  /* Phase I.18: type-aware register-vs-register three-way comparison.
+   * Returns -1 / 0 / 1 by analogy with `memcmp`.  Both operands must
+   * be non-NULL (caller checks via `(leftType & rightType) != 0`).
+   *
+   * Type-word layout from Interpreter.hpp:
+   *   byte 0 = NOT_NULL flag (always 1 for non-NULL operands here)
+   *   byte 1 = UNSIGNED flag
+   *   byte 2 = FLOAT flag
+   *
+   * Single-byte loads keep the dispatch cheap on most CPUs. */
+  static inline int compareTypedRegs(Uint32 leftType, Uint64 leftBits,
+                                     Uint32 rightType, Uint64 rightBits) {
+    const Uint8* lw = reinterpret_cast<const Uint8*>(&leftType);
+    const Uint8* rw = reinterpret_cast<const Uint8*>(&rightType);
+    bool leftFloat  = lw[2] != 0;
+    bool rightFloat = rw[2] != 0;
+    if (unlikely(leftFloat || rightFloat)) {
+      double l;
+      double r;
+      if (leftFloat) {
+        memcpy(&l, &leftBits, 8);
+      } else if (lw[1] != 0) {
+        l = static_cast<double>(leftBits);
+      } else {
+        l = static_cast<double>(static_cast<Int64>(leftBits));
+      }
+      if (rightFloat) {
+        memcpy(&r, &rightBits, 8);
+      } else if (rw[1] != 0) {
+        r = static_cast<double>(rightBits);
+      } else {
+        r = static_cast<double>(static_cast<Int64>(rightBits));
+      }
+      return (l < r) ? -1 : (l > r) ? 1 : 0;
+    }
+    bool leftUnsigned  = lw[1] != 0;
+    bool rightUnsigned = rw[1] != 0;
+    if (likely(leftUnsigned == rightUnsigned)) {
+      if (leftUnsigned) {
+        return (leftBits < rightBits) ? -1 :
+               (leftBits > rightBits) ?  1 : 0;
+      }
+      Int64 ls = static_cast<Int64>(leftBits);
+      Int64 rs = static_cast<Int64>(rightBits);
+      return (ls < rs) ? -1 : (ls > rs) ? 1 : 0;
+    }
+    /* Mixed signed / unsigned: a negative signed operand is strictly
+     * less than any unsigned operand.  Otherwise both fit non-negative
+     * in Uint64 so the unsigned comparison is exact. */
+    if (leftUnsigned) {
+      if (static_cast<Int64>(rightBits) < 0) return 1;
+      return (leftBits < rightBits) ? -1 :
+             (leftBits > rightBits) ?  1 : 0;
+    }
+    if (static_cast<Int64>(leftBits) < 0) return -1;
+    return (leftBits < rightBits) ? -1 :
+           (leftBits > rightBits) ?  1 : 0;
+  }
+
+  /* Phase I.18: type-aware register-vs-immediate-const comparison.
+   * The immediate is the 6-bit constant in bits 9..14 of the
+   * instruction word (range 0..63), always non-negative — it always
+   * fits in Int64, Uint64, and double identically. */
+  static inline int compareTypedRegConst(Uint32 leftType, Uint64 leftBits,
+                                         Uint32 rightConst) {
+    const Uint8* lw = reinterpret_cast<const Uint8*>(&leftType);
+    if (unlikely(lw[2] != 0)) {
+      double l;
+      memcpy(&l, &leftBits, 8);
+      double r = static_cast<double>(rightConst);
+      return (l < r) ? -1 : (l > r) ? 1 : 0;
+    }
+    if (lw[1] != 0) {
+      Uint64 r = static_cast<Uint64>(rightConst);
+      return (leftBits < r) ? -1 : (leftBits > r) ? 1 : 0;
+    }
+    Int64 ls = static_cast<Int64>(leftBits);
+    Int64 rs = static_cast<Int64>(rightConst);
+    return (ls < rs) ? -1 : (ls > rs) ? 1 : 0;
+  }
+
+  /* BRANCH_EQ_REG_REG — branch if reg == reg2 (both non-null)
+   *
+   * Phase I.18: type-aware compare via compareTypedRegs.  Existing
+   * "both signed integer" pair cases fall through to the same
+   * Int64 comparison as before; mixed signed / unsigned and
+   * float-bearing operands now compare correctly. */
   static inline int handleBranchEqRegReg(InterpreterContext& ctx) {
     Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = *(Int64*)(ctx.TregMemBuffer + TrightRegister + 2);
-    if ((TrightType & TleftType) != NULL_INDICATOR) {
-      if (Tleft0 == Tright0) {
-        ctx.TprogramCounter =
-            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
-      }
-    } else {
+    if (unlikely((TrightType & TleftType) == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    if (compareTypedRegs(TleftType, leftBits, TrightType, rightBits) == 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
     }
     return INTERP_CONTINUE;
   }
@@ -5987,103 +6074,113 @@ struct Dbtup::InterpreterContext {
     Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = *(Int64*)(ctx.TregMemBuffer + TrightRegister + 2);
-    if ((TrightType & TleftType) != NULL_INDICATOR) {
-      if (Tleft0 != Tright0) {
-        ctx.TprogramCounter =
-            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
-      }
-    } else {
+    if (unlikely((TrightType & TleftType) == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    if (compareTypedRegs(TleftType, leftBits, TrightType, rightBits) != 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
     }
     return INTERP_CONTINUE;
   }
 
-  /* BRANCH_LT_REG_REG — branch if reg < reg2 (signed comparison) */
+  /* BRANCH_LT_REG_REG — branch if reg < reg2 (type-aware) */
   static inline int handleBranchLtRegReg(InterpreterContext& ctx) {
     Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = *(Int64*)(ctx.TregMemBuffer + TrightRegister + 2);
-    if ((TrightType & TleftType) != NULL_INDICATOR) {
-      if (Tleft0 < Tright0) {
-        ctx.TprogramCounter =
-            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
-      }
-    } else {
+    if (unlikely((TrightType & TleftType) == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    if (compareTypedRegs(TleftType, leftBits, TrightType, rightBits) < 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
     }
     return INTERP_CONTINUE;
   }
 
-  /* BRANCH_LE_REG_REG — branch if reg <= reg2 (signed comparison) */
+  /* BRANCH_LE_REG_REG — branch if reg <= reg2 (type-aware) */
   static inline int handleBranchLeRegReg(InterpreterContext& ctx) {
     Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = *(Int64*)(ctx.TregMemBuffer + TrightRegister + 2);
-    if ((TrightType & TleftType) != NULL_INDICATOR) {
-      if (Tleft0 <= Tright0) {
-        ctx.TprogramCounter =
-            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
-      }
-    } else {
+    if (unlikely((TrightType & TleftType) == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    if (compareTypedRegs(TleftType, leftBits, TrightType, rightBits) <= 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
     }
     return INTERP_CONTINUE;
   }
 
-  /* BRANCH_GT_REG_REG — branch if reg > reg2 (signed comparison) */
+  /* BRANCH_GT_REG_REG — branch if reg > reg2 (type-aware) */
   static inline int handleBranchGtRegReg(InterpreterContext& ctx) {
     Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = *(Int64*)(ctx.TregMemBuffer + TrightRegister + 2);
-    if ((TrightType & TleftType) != NULL_INDICATOR) {
-      if (Tleft0 > Tright0) {
-        ctx.TprogramCounter =
-            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
-      }
-    } else {
+    if (unlikely((TrightType & TleftType) == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    if (compareTypedRegs(TleftType, leftBits, TrightType, rightBits) > 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
     }
     return INTERP_CONTINUE;
   }
 
-  /* BRANCH_GE_REG_REG — branch if reg >= reg2 (signed comparison) */
+  /* BRANCH_GE_REG_REG — branch if reg >= reg2 (type-aware) */
   static inline int handleBranchGeRegReg(InterpreterContext& ctx) {
     Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = *(Int64*)(ctx.TregMemBuffer + TrightRegister + 2);
-    if ((TrightType & TleftType) != NULL_INDICATOR) {
-      if (Tleft0 >= Tright0) {
-        ctx.TprogramCounter =
-            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
-      }
-    } else {
+    if (unlikely((TrightType & TleftType) == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    if (compareTypedRegs(TleftType, leftBits, TrightType, rightBits) >= 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
     }
     return INTERP_CONTINUE;
   }
 
-  /* BRANCH_EQ_REG_CONST — branch if reg == 6-bit immediate */
+  /* BRANCH_EQ_REG_CONST — branch if reg == 6-bit immediate
+   *
+   * Phase I.18: type-aware compare via compareTypedRegConst.  The
+   * 6-bit immediate is always non-negative (range 0..63) so it
+   * fits identically in Int64 / Uint64 / double; only the
+   * register's type word affects the comparison. */
   static inline int handleBranchEqRegConst(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = Int64(((ctx.theInstruction >> 9) & 0x3F));
-    if (TleftType != NULL_INDICATOR) {
-      if (Tleft0 == Tright0) {
-        ctx.TprogramCounter =
-            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
-      }
-    } else {
+    if (unlikely(TleftType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 rightConst = (ctx.theInstruction >> 9) & 0x3F;
+    if (compareTypedRegConst(TleftType, leftBits, rightConst) == 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
     }
     return INTERP_CONTINUE;
   }
@@ -6091,81 +6188,81 @@ struct Dbtup::InterpreterContext {
   /* BRANCH_NE_REG_CONST — branch if reg != 6-bit immediate */
   static inline int handleBranchNeRegConst(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = Int64(((ctx.theInstruction >> 9) & 0x3F));
-    if (TleftType != NULL_INDICATOR) {
-      if (Tleft0 != Tright0) {
-        ctx.TprogramCounter =
-            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
-      }
-    } else {
+    if (unlikely(TleftType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 rightConst = (ctx.theInstruction >> 9) & 0x3F;
+    if (compareTypedRegConst(TleftType, leftBits, rightConst) != 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
     }
     return INTERP_CONTINUE;
   }
 
-  /* BRANCH_LT_REG_CONST — branch if reg < 6-bit immediate */
+  /* BRANCH_LT_REG_CONST — branch if reg < 6-bit immediate (type-aware) */
   static inline int handleBranchLtRegConst(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = Int64(((ctx.theInstruction >> 9) & 0x3F));
-    if (TleftType != NULL_INDICATOR) {
-      if (Tleft0 < Tright0) {
-        ctx.TprogramCounter =
-            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
-      }
-    } else {
+    if (unlikely(TleftType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 rightConst = (ctx.theInstruction >> 9) & 0x3F;
+    if (compareTypedRegConst(TleftType, leftBits, rightConst) < 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
     }
     return INTERP_CONTINUE;
   }
 
-  /* BRANCH_LE_REG_CONST — branch if reg <= 6-bit immediate */
+  /* BRANCH_LE_REG_CONST — branch if reg <= 6-bit immediate (type-aware) */
   static inline int handleBranchLeRegConst(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = Int64(((ctx.theInstruction >> 9) & 0x3F));
-    if (TleftType != NULL_INDICATOR) {
-      if (Tleft0 <= Tright0) {
-        ctx.TprogramCounter =
-            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
-      }
-    } else {
+    if (unlikely(TleftType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 rightConst = (ctx.theInstruction >> 9) & 0x3F;
+    if (compareTypedRegConst(TleftType, leftBits, rightConst) <= 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
     }
     return INTERP_CONTINUE;
   }
 
   /* --- Batch 3 --- remaining reg-const branches, subroutine, memory, arithmetic */
 
-  /* BRANCH_GT_REG_CONST — branch if reg > 6-bit immediate */
+  /* BRANCH_GT_REG_CONST — branch if reg > 6-bit immediate (type-aware) */
   static inline int handleBranchGtRegConst(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = Int64(((ctx.theInstruction >> 9) & 0x3F));
-    if (TleftType != NULL_INDICATOR) {
-      if (Tleft0 > Tright0) {
-        ctx.TprogramCounter =
-            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
-      }
-    } else {
+    if (unlikely(TleftType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 rightConst = (ctx.theInstruction >> 9) & 0x3F;
+    if (compareTypedRegConst(TleftType, leftBits, rightConst) > 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
     }
     return INTERP_CONTINUE;
   }
 
-  /* BRANCH_GE_REG_CONST — branch if reg >= 6-bit immediate */
+  /* BRANCH_GE_REG_CONST — branch if reg >= 6-bit immediate (type-aware) */
   static inline int handleBranchGeRegConst(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
-    Int64 Tleft0 = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
-    Int64 Tright0 = Int64(((ctx.theInstruction >> 9) & 0x3F));
-    if (TleftType != NULL_INDICATOR) {
-      if (Tleft0 >= Tright0) {
-        ctx.TprogramCounter =
-            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
-      }
-    } else {
+    if (unlikely(TleftType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 rightConst = (ctx.theInstruction >> 9) & 0x3F;
+    if (compareTypedRegConst(TleftType, leftBits, rightConst) >= 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
     }
     return INTERP_CONTINUE;
   }
