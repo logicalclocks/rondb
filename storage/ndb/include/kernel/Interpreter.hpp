@@ -38,6 +38,54 @@ class Interpreter {
  public:
   inline static Uint32 mod4(Uint32 len) { return len + ((4 - (len & 3)) & 3); }
 
+  /*
+   * Register type word (Phase I.18)
+   *
+   * Each interpreter register is laid out as 4 Uint32 slots:
+   *
+   *   slot 0   type word (one byte per flag)
+   *   slot 1   reserved / scratch (used by READ_ATTR_INTO_REG for the
+   *            AttributeHeader during the attribute-into-reg path)
+   *   slots 2-3   64-bit value (Int64, Uint64, or double bit pattern)
+   *
+   * The type word encodes one flag per byte so most CPUs can read or
+   * write each flag with a single-byte load/store and avoid shift /
+   * mask sequences:
+   *
+   *   byte 0 (bits  0.. 7)   NOT_NULL byte    1 = value, 0 = NULL
+   *   byte 1 (bits  8..15)   UNSIGNED byte    1 = unsigned integer
+   *   byte 2 (bits 16..23)   FLOAT byte       1 = double-precision float
+   *   byte 3 (bits 24..31)   reserved (always 0 today)
+   *
+   * Resulting slot 0 Uint32 values:
+   *
+   *   REG_TYPE_NULL    0x00000000   (== legacy NULL_INDICATOR)
+   *   REG_TYPE_INT     0x00000001   (== legacy NOT_NULL_INDICATOR — signed Int64)
+   *   REG_TYPE_UINT    0x00000101   (unsigned Uint64)
+   *   REG_TYPE_DOUBLE  0x00010001   (IEEE-754 double in 8 bytes)
+   *
+   * Properties preserved by this encoding:
+   *
+   *   - `slot == 0`            → NULL  (matches legacy NULL_INDICATOR)
+   *   - `slot != 0`            → non-NULL (every non-NULL encoding has byte 0 set)
+   *   - `(left & right) != 0`  → both operands are non-NULL
+   *
+   * The legacy NULL_INDICATOR / NOT_NULL_INDICATOR macros remain
+   * bit-identical to REG_TYPE_NULL / REG_TYPE_INT so producers that
+   * already write a signed Int64 stay correct without changes.
+   * Unsigned and floating-point producers must explicitly write
+   * REG_TYPE_UINT / REG_TYPE_DOUBLE.
+   */
+  static constexpr Uint32 REG_TW_NOT_NULL_BYTE = 0;
+  static constexpr Uint32 REG_TW_UNSIGNED_BYTE = 1;
+  static constexpr Uint32 REG_TW_FLOAT_BYTE    = 2;
+  static constexpr Uint32 REG_TW_RESERVED_BYTE = 3;
+
+  static constexpr Uint32 REG_TYPE_NULL   = 0x00000000u;
+  static constexpr Uint32 REG_TYPE_INT    = 0x00000001u;
+  static constexpr Uint32 REG_TYPE_UINT   = 0x00000101u;
+  static constexpr Uint32 REG_TYPE_DOUBLE = 0x00010001u;
+
   /**
    * General Mnemonic format
    *
