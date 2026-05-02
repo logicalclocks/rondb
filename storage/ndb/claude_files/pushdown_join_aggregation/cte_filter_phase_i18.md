@@ -2,14 +2,55 @@
 
 ## Status
 
-**Planned (Option B chosen).**  Earlier draft of this doc proposed
-Option A (a single typed leaf-load opcode mirroring v5).  The chosen
-direction is broader: equip the normal interpreter's registers with
-explicit type information (NULL flag, unsigned flag, floating-point
-flag, plus 64-bit storage) so every register-using instruction can
-honour the operand type.  This is the correct fix not just for the
-v5 leaf-side zero-extension bug but also for `Bigunsigned` semantics
-above `INT64_MAX` and for floating-point operands.
+**Kernel + NDB-API surface shipped.**  Option B (full typed registers)
+landed across commits 0786adb0f19 → 2784d7746e5 on
+`RONDB-1050-cte-filter`.  See **What shipped** below.  Outstanding:
+RonSQL-side MTR coverage that drives the new producer/consumer paths
+end-to-end (negative leaf values, float, Bigunsigned > INT64_MAX) —
+queued as a follow-up since the kernel infrastructure is independently
+verifiable.
+
+The original plan (Option A — a single typed leaf-load opcode
+mirroring v5) was rejected in favour of full typed registers.  This
+turned out to be the correct fix not just for the v5 leaf-side
+zero-extension bug but also for `Bigunsigned` semantics above
+`INT64_MAX` and floating-point operands.
+
+## What shipped
+
+Commits on `RONDB-1050-cte-filter`:
+
+| Commit | Scope |
+|--------|-------|
+| `7d7ec16f82a` | Phase doc (Option B design) |
+| `0786adb0f19` | Type-word constants in `Interpreter.hpp` (`REG_TW_*_BYTE`, `REG_TYPE_NULL/INT/UINT/DOUBLE`) |
+| `2903dd21e94` | Producers batch 1 — 6 typed `READ_UINT*_MEM_TO_REG` / `READ_UINT*_REG_TO_REG` handlers write `REG_TYPE_UINT` |
+| `bab40b92982` | Producers batch 2 — `handleReadAttrIntoReg` descriptor-driven dispatch (10 NDB integer widths via `sint*korr`/`uint*korr`, Float→double, Bigint/Bigunsigned/Double 64-bit cell); `handleReadAggRegToReg` propagates `is_unsigned`; `handleReadLinkedColumnToReg` switches to `REG_TYPE_INT/UINT` |
+| `ed93f65716a` | Consumers batch 1 — `compareTypedRegs` / `compareTypedRegConst` helpers; 12 type-aware branch handlers |
+| `79b2ef09f59` | Consumers batch 2 — `applyTypedArith` helper; 10 type-aware arithmetic handlers (float promotion, mixed signed/unsigned → unsigned) |
+| `025e11c8bc2` | Consumers batch 3a — `applyTypedBitwise` helper; 11 bitwise/shift handlers (reject float; arithmetic vs logical RSHIFT by signedness) |
+| `3c655ee7864` | Consumers batch 3b — write-back handlers: strict-type on `WRITE_UINT*/INT64_REG_TO_MEM/REG`; float-reject on `WRITE_ATTR_FROM_REG`, `WRITE_INTERPRETER_OUTPUT`, `CONVERT_SIZE`; `READ_INTERPRETER_INPUT` marks `REG_TYPE_INT` |
+| `570530f3a85` | New opcode `WRITE_REG_TO_MEM_ANY` (slot 62) — type-agnostic 8-byte register-to-memory escape hatch; encoder + handler + dispatch + `NdbInterpretedCode::write_reg_to_mem_any_const` |
+| `2784d7746e5` | New opcode `LOAD_DOUBLE_CONST` (slot 45) — IEEE-754 double immediate load, marks `REG_TYPE_DOUBLE`; encoder + handler + dispatch + `NdbInterpretedCode::load_double_const`.  `LOAD_INT64_CONST` deliberately not added: existing `LOAD_CONST64` (slot 6) already produces `REG_TYPE_INT` since `NOT_NULL_INDICATOR == 1` is bit-identical to `REG_TYPE_INT` |
+
+**Not added** — `LOAD_INT64_CONST` (slot was tentative, ended up
+redundant under the typed-word convention).  Slot 46 stays free.
+
+## Outstanding follow-ups
+
+1. **RonSQL MTR coverage** — extend `ronsql_cte_greatest_least_v5.test`
+   (or add a sibling test file) with negative leaf-side values
+   (the original I.18 motivating bug), float operands, and
+   `Bigunsigned > INT64_MAX`.  Drives the new producer/consumer
+   paths end-to-end.  Requires RonSQL emit changes for floats
+   (`LOAD_DOUBLE_CONST`) and unsigned constants if any RonSQL
+   surface needs to load `Uint64 > INT64_MAX` constants — the
+   current pipeline only encounters unsigneds via column reads,
+   which already work.
+2. **Optional**: a dedicated `LOAD_UINT64_CONST` if a future
+   RonSQL surface ever needs to load a constant Uint64 > INT64_MAX
+   (today nothing does — large unsigned constants only appear
+   from column reads).
 
 ## Background
 

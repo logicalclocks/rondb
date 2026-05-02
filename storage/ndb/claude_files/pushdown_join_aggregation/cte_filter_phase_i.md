@@ -288,9 +288,12 @@ that keyless virtual table, and tests covering both single scalar CTEs
 and joins of two scalar CTEs.  This should be handled before relying
 on watermark-style CTE tests in I.5 or later phases.
 
-#### I.18 — Typed leaf-column register loads for embedded col-vs-col (M)
+#### I.18 — Typed leaf-column register loads for embedded col-vs-col (M) — kernel + NDB-API shipped
 
-Detailed plan: `cte_filter_phase_i18.md`.
+Detailed plan: `cte_filter_phase_i18.md` (kernel + NDB-API shipped
+across `0786adb0f19` → `2784d7746e5`).  Outstanding: RonSQL MTR
+coverage for negative leaf, float operands, and `Bigunsigned >
+INT64_MAX` — queued as a follow-up.
 
 Phase I.5 v5 adds a typed linked-column register load for parent /
 linked attributes, but leaf columns in embedded col-vs-col conditions
