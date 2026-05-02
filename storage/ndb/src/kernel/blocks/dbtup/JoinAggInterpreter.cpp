@@ -550,6 +550,7 @@ bool JoinAggInterpreter::validateEmbeddedProgram(
       case Interpreter::LOAD_CONST16:
       case Interpreter::LOAD_CONST32:
       case Interpreter::LOAD_CONST64:
+      case Interpreter::LOAD_DOUBLE_CONST:
       case Interpreter::ADD_REG_REG:
       case Interpreter::SUB_REG_REG:
       case Interpreter::MUL_REG_REG:

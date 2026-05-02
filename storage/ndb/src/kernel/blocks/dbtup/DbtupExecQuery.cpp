@@ -6170,7 +6170,7 @@ struct Dbtup::InterpreterContext {
    * Float operands rejected (returns -ZREGISTER_INIT_ERROR).  Result
    * type is REG_TYPE_UINT iff either operand is unsigned (matches
    * MySQL bitwise-promotion rules); RSHIFT on a signed operand is
-   * arithmetic shift (sign-fill).  Shift count must be 0..64;
+   * arithmetic shift (sign-fill).  Shift count must be 0..63;
    * out-of-range returns -ZSHIFT_OPERAND_ERROR. */
   static inline int applyTypedBitwise(char op,
                                        Uint32 leftType, Uint64 leftBits,
@@ -6195,7 +6195,7 @@ struct Dbtup::InterpreterContext {
         break;
       case 'L': {
         Int64 shift = static_cast<Int64>(rightBits);
-        if (unlikely(shift < 0 || shift > 64)) {
+        if (unlikely(shift < 0 || shift >= 64)) {
           return -ZSHIFT_OPERAND_ERROR;
         }
         res = leftBits << shift;
@@ -6203,7 +6203,7 @@ struct Dbtup::InterpreterContext {
       }
       case 'R': {
         Int64 shift = static_cast<Int64>(rightBits);
-        if (unlikely(shift < 0 || shift > 64)) {
+        if (unlikely(shift < 0 || shift >= 64)) {
           return -ZSHIFT_OPERAND_ERROR;
         }
         /* Logical shift for unsigned, arithmetic shift for signed. */
@@ -6774,7 +6774,7 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* LSHIFT_REG_CONST — destReg = reg << 16-bit immediate (shift ≤ 64) */
+  /* LSHIFT_REG_CONST — destReg = reg << 16-bit immediate (shift < 64) */
   static inline int handleLshiftRegConst(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
@@ -6795,7 +6795,7 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* LSHIFT_REG_REG — destReg = reg << reg2 (shift ≤ 64) */
+  /* LSHIFT_REG_REG — destReg = reg << reg2 (shift < 64) */
   static inline int handleLshiftRegReg(InterpreterContext& ctx) {
     Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
@@ -6819,7 +6819,7 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* RSHIFT_REG_CONST — destReg = reg >> 16-bit immediate (shift ≤ 64) */
+  /* RSHIFT_REG_CONST — destReg = reg >> 16-bit immediate (shift < 64) */
   static inline int handleRshiftRegConst(InterpreterContext& ctx) {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
@@ -6840,7 +6840,7 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* RSHIFT_REG_REG — destReg = reg >> reg2 (shift ≤ 64) */
+  /* RSHIFT_REG_REG — destReg = reg >> reg2 (shift < 64) */
   static inline int handleRshiftRegReg(InterpreterContext& ctx) {
     Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
@@ -7533,6 +7533,13 @@ struct Dbtup::InterpreterContext {
       ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
       ctx.TregMemBuffer[ctx.theRegister + 2] = 0;
       ctx.TregMemBuffer[ctx.theRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    if (src.type == NDB_TYPE_DOUBLE) {
+      ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
+      memcpy(ctx.TregMemBuffer + ctx.theRegister + 2,
+             &src.value.val_double,
+             8);
       return INTERP_CONTINUE;
     }
     if (unlikely(src.type != NDB_TYPE_BIGINT)) {
