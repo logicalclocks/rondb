@@ -13,11 +13,17 @@ call mtr.add_suppression("Participant timeout");
 # type and applies correct sign extension.
 #
 # Scope: every NDB integer width on the LINKED side (the parent
-# table in a CTE_LOOKUP / join shape).  The LEAF side stays BIGINT
-# in this test file because the existing READ_ATTR_INTO_REG kernel
-# handler also zero-extends signed sub-Bigint leaf values — that
-# is a pre-existing limitation outside v5's scope (a typed
-# READ_ATTR variant is queued as a separate follow-up).
+# table in a CTE_LOOKUP / join shape).
+#
+# Phase I.18 follow-up (Tests 8-11): leaf-side sub-Bigint coverage.
+# Pre-I.18 the leaf side went through READ_ATTR_INTO_REG, which
+# zero-extended sub-Bigint signed values (the v5 doc called this
+# out as a pre-existing limitation).  Phase I.18's batch 2
+# replaced READ_ATTR_INTO_REG with a descriptor-driven dispatch
+# using sint*korr / uint*korr per column type.  v5_orders now
+# carries TINYINT / SMALLINT / MEDIUMINT / INT signed columns with
+# negative values, and Tests 8-11 read them on the leaf side of
+# col-vs-col CASE conditions.
 #
 # GREATEST / LEAST n-ary lowering through v2b's pair-op SVM path
 # is unaffected by this phase (it goes through LoadColumn /
@@ -39,6 +45,10 @@ CREATE TABLE v5_orders (
   o_custkey   BIGINT NOT NULL,
   o_amt       BIGINT NOT NULL,
   o_threshold BIGINT NOT NULL,
+  o_tinyint   TINYINT NOT NULL,
+  o_smallint  SMALLINT NOT NULL,
+  o_mediumint MEDIUMINT NOT NULL,
+  o_int       INT NOT NULL,
   PRIMARY KEY USING HASH (o_id)
 ) ENGINE=NDB;
 
@@ -63,11 +73,14 @@ INSERT INTO v5_customer VALUES
   (200, 60,    5,    500,    50000,    500000,  3000000000),
   (300, 100,  20,  20000,   500000,  20000000,  1000000000);
 
+# Phase I.18: leaf-side sub-Bigint columns carry negatives spanning
+# every signed width (incl. width minimums) so post-I.18 sign-extension
+# in handleReadAttrIntoReg is exercised directly.
 INSERT INTO v5_orders VALUES
-  (1, 100,  80,   30),
-  (2, 100,  40,    5),
-  (3, 200,  90,   75),
-  (4, 300,  70,   18);
+  (1, 100,  80,   30,  -50,    -1000,    -100000,    -1000000),
+  (2, 100,  40,    5,   60,      600,      60000,      600000),
+  (3, 200,  90,   75, -127,   -32768,   -8388608, -2147483648),
+  (4, 300,  70,   18,   10,      100,       1000,       10000);
 
 --enable_warnings
 --enable_query_log
@@ -222,6 +235,96 @@ GROUP BY c.c_id;|
 SELECT c.c_id,
        SUM(CASE WHEN c.c_smallint >= o.o_threshold THEN o.o_amt
                 ELSE 0 END) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 8: TINYINT signed leaf negative — Phase I.18 leaf path ===
+
+# Pre-I.18: o.o_tinyint = -50 read via READ_ATTR_INTO_REG would be
+# zero-extended to 206, so c.c_threshold (50) > 206 → FALSE.  Post-I.18
+# handleReadAttrIntoReg dispatches by NDB type and uses sint8korr,
+# so 50 > -50 → TRUE.  RonSQL output must match MySQL's reference.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_threshold > o.o_tinyint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_threshold > o.o_tinyint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 9: SMALLINT signed leaf negative — Phase I.18 leaf path ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_threshold > o.o_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_threshold > o.o_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 10: MEDIUMINT signed leaf negative — Phase I.18 leaf path ===
+
+# Width that uses sint3korr — 24-bit storage, sign-extending the high
+# bit is the easiest case to get wrong.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_threshold > o.o_mediumint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_threshold > o.o_mediumint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 11: INT signed leaf, INT_MIN — leaf-on-left of comparator ===
+
+# Mirrors Test 8-10 with the leaf operand on the LEFT of the binary
+# comparator.  Row 3's o_int = -2147483648 (INT_MIN) is the boundary
+# value where wrong sign extension produces 2147483648 (Uint32 read
+# as Int64).
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_int < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_int < c.c_threshold THEN 1 ELSE 0 END) AS s
 FROM v5_customer AS c
 JOIN v5_orders AS o ON o.o_custkey = c.c_id
 GROUP BY c.c_id|
