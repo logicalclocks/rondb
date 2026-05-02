@@ -2,7 +2,9 @@
 
 ## Status
 
-**v3a shipped.**  Three commits on `RONDB-1050-cte-filter`:
+**v3a + v3b shipped.**  Commits on `RONDB-1050-cte-filter`:
+
+### v3a — col-vs-col over Float / Double
 
 | Commit | Scope |
 |--------|-------|
@@ -10,12 +12,25 @@
 | `c44f0fe928b` | RonSQL — `can_load_integer_reg` renamed to `can_load_typed_reg`; `Float` and `Double` added to the whitelist; rejection message updated to reflect that only VARCHAR / DECIMAL remain deferred |
 | `ee27b22dea0` + recorded result | MTR — `ronsql_cte_greatest_least_v5.test` Tests 14-17 (linked DOUBLE vs leaf DOUBLE, linked FLOAT vs leaf BIGINT, linked DOUBLE vs linked BIGINT, leaf FLOAT vs linked BIGINT).  All four `== Diff ==` blocks empty: RonSQL output matches MySQL's reference |
 
-**v3b deferred.**  Col-vs-const float literal stays unshipped —
-the RonSQL col-vs-const branch still uses `BRANCH_ATTR_OP_ARG` /
-`BRANCH_MEM_OP_ARG` which lack float compare semantics, and the
-Option A vs Option B trade-off (lower the literal to a register
-via `LOAD_DOUBLE_CONST`, or extend the `_ARG` opcodes with float
-compare) deserves a separate plan.
+### v3b — col-vs-const float literal
+
+Took Option A from the design choice (lower the literal via
+`LOAD_DOUBLE_CONST` and reuse v3a's register compare) — no kernel
+work, contained RonSQL change.
+
+| Commit | Scope |
+|--------|-------|
+| `dfc95d9b3da` | RonSQL — `generate_embedded_condition` col-vs-const pre-pass detects FLOAT / DOUBLE column LHS with T_INT / T_FLOAT literal RHS, sets `AtomInfo.is_float_const`, pre-converts the literal to double (T_INT promotes via `static_cast`).  Emit reuses the col-vs-col register-compare path; RHS load swaps to `LoadDoubleConst(R2)` + 2 data words.  Word count: 5 (1 read + 3 load + 1 branch).  CTE-leaf inline-linked operands rejected — no inline-typed double-load opcode |
+| `34fd941303e` | MTR — `ronsql_cte_greatest_least_v5.test` Tests 18-20 (leaf DOUBLE > T_FLOAT, linked FLOAT >= T_INT, leaf DOUBLE < negative T_FLOAT) |
+| `d52ce91428a` | Bugfix — call `simplify_ce(atom->args.right, -1)` at the top of the col-vs-const pre-pass to fold `T_NEGATIVE(T_INT|T_FLOAT)` wrappers.  CASE-condition args don't go through the general WHERE-expression simplify pass, so a literal like `-50.5` arrives as `T_NEGATIVE(T_FLOAT(50.5))` and would slip past the op-check.  Surfaced by Test 20.  Pre-existing integer col-vs-const CASE queries with negative literals would have hit the same bug — Test 20 is just the first to exercise the path |
+| recorded result `c=...` | All three Tests 18-20 `== Diff ==` blocks empty after the fix |
+
+### Out-of-scope (held)
+
+- VARCHAR / DECIMAL col-vs-col / col-vs-const — defer to I.6.
+- Inline-linked (CTE-leaf) float operands — would need an
+  inline-typed double-load opcode; same constraint as v2a's
+  col-vs-col over inline-linked.
 
 ## Background
 

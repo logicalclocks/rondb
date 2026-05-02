@@ -462,3 +462,84 @@ c_id	s
 100	2
 200	1
 300	0
+
+
+=== Test 18: leaf DOUBLE vs T_FLOAT literal — float column, fractional const ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_double > 100.0 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_double > 100.0 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	0
+300	1
+
+
+=== Test 19: linked FLOAT vs T_INT literal — int promotes to double ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_float >= 0 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_float >= 0 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	0
+300	1
+
+
+=== Test 20: leaf FLOAT vs negative T_FLOAT literal ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_double < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_double < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	1
+300	0
