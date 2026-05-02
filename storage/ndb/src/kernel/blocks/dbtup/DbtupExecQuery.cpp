@@ -7355,6 +7355,30 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
+  /* WRITE_REG_TO_MEM_ANY — type-agnostic 8-byte register-to-heap
+   * write (immediate offset).
+   *
+   * Phase I.18: copies the register's slots 2-3 verbatim (8 bytes)
+   * regardless of source type — Int64, Uint64, and IEEE-754 double
+   * already share a 64-bit canonical bit pattern in the register.
+   * Only NULL source is rejected.  Producers that need to spill a
+   * non-matching width through a typed-named opcode can switch to
+   * this opcode instead. */
+  static inline int handleWriteRegToMemAny(InterpreterContext& ctx) {
+    Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 memoryOffset = ctx.theInstruction >> 16;
+    if (unlikely(TregType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&ctx.TheapMemoryChar[memoryOffset],
+           ctx.TregMemBuffer + ctx.theRegister + 2,
+           8);
+    return INTERP_CONTINUE;
+  }
+
   /* WRITE_UINT8_REG_TO_REG — write 1 byte from register to heap, offset in register
    *
    * Phase I.18: strict typing.  Source value register must be
@@ -9576,7 +9600,7 @@ s_cte_filter_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  59  LOAD_CONST_MEM          */ &Dbtup::InterpreterContext::handleLoadConstMem,
   /*  60  CONVERT_SIZE            */ &Dbtup::InterpreterContext::handleConvertSize,
   /*  61  LOAD_OP_TYPE            */ nullptr,
-  /*  62  (unused)                */ nullptr,
+  /*  62  WRITE_REG_TO_MEM_ANY    */ &Dbtup::InterpreterContext::handleWriteRegToMemAny,
   /*  63  SPECIAL_INSTR           */ nullptr,
 
   /* --- overflow range 64..127 (opcode + OVERFLOW_OPCODE=64) ----- */
@@ -9732,7 +9756,7 @@ s_agg_interp_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  59  LOAD_CONST_MEM          */ nullptr,
   /*  60  CONVERT_SIZE            */ nullptr,
   /*  61  LOAD_OP_TYPE            */ nullptr,
-  /*  62  (unused)                */ nullptr,
+  /*  62  WRITE_REG_TO_MEM_ANY    */ nullptr,
   /*  63  SPECIAL_INSTR           */ nullptr,
 
   /* --- overflow range 64..127 — all rejected in agg mode ---------- */
@@ -10026,6 +10050,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
           break;
         case Interpreter::WRITE_INT64_REG_TO_MEM:
           INTERP_DISPATCH(handleWriteInt64RegToMem);
+          break;
+        case Interpreter::WRITE_REG_TO_MEM_ANY:
+          INTERP_DISPATCH(handleWriteRegToMemAny);
           break;
         case Interpreter::WRITE_UINT8_REG_TO_REG:
           INTERP_DISPATCH(handleWriteUint8RegToReg);

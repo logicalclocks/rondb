@@ -927,6 +927,14 @@ NdbInterpretedCode::write_int64_reg_to_mem_reg(Uint32 RegSource,
 }
 
 int
+NdbInterpretedCode::write_reg_to_mem_any_const(Uint32 RegSource,
+                                               Uint16 Constant) {
+  if (RegSource >= MaxReg)
+    return error(BadRegister);
+  return add1(Interpreter::WriteRegToMemAnyConst(RegSource, Constant));
+}
+
+int
 NdbInterpretedCode::load_const_u32(Uint32 RegDest, Uint32 Constant) {
   if (RegDest >= MaxReg)
     return error(BadRegister);

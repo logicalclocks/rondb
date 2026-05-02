@@ -610,6 +610,13 @@ class NdbInterpretedCode {
   int write_uint32_reg_to_mem_reg(Uint32 RegSource, Uint32 RegOffset);
   int write_int64_reg_to_mem_reg(Uint32 RegSource, Uint32 RegOffset);
 
+  /* Type-agnostic 8-byte register-to-memory write (Phase I.18).
+   * Strict-typed writers above reject non-matching source types;
+   * this opcode copies the register's 64-bit slot verbatim regardless
+   * of REG_TYPE_INT / REG_TYPE_UINT / REG_TYPE_DOUBLE.  NULL source
+   * is rejected at runtime. */
+  int write_reg_to_mem_any_const(Uint32 RegSource, Uint16 memory_offset);
+
   /**
    * Library functions
    */

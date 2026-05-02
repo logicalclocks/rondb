@@ -381,7 +381,15 @@ class Interpreter {
   static constexpr Uint32 LOAD_OP_TYPE = 61;
   static constexpr Uint32 BZERO_MEM =
                           LOAD_OP_TYPE + OVERFLOW_OPCODE;
-  /* 62 free, both of them */
+  /* WRITE_REG_TO_MEM_ANY — Phase I.18: 8-byte memcpy from register
+   * slots 2-3 to heap memory regardless of source type.  Strict-typed
+   * writers (WRITE_UINT8/16/32_REG_TO_MEM, WRITE_INT64_REG_TO_MEM)
+   * reject non-matching source types; this opcode is the type-agnostic
+   * escape hatch for producers that need to spill any non-NULL
+   * register (signed Int64, Uint64, IEEE-754 double — the bit pattern
+   * is already canonical 64-bit) to memory.  Rejects NULL only. */
+  static constexpr Uint32 WRITE_REG_TO_MEM_ANY = 62;
+  /* Overflow constant 62 free */
   static constexpr Uint32 SPECIAL_INSTR = 63;
 
   /**
@@ -539,6 +547,12 @@ class Interpreter {
   static Uint32 WriteUint16RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset);
   static Uint32 WriteUint32RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset);
   static Uint32 WriteInt64RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset);
+
+  /* Phase I.18: type-agnostic 8-byte register-to-memory write
+   * (immediate offset).  Source register may be any non-NULL type
+   * (signed Int64, Uint64, IEEE-754 double); the in-register bit
+   * pattern is copied verbatim. */
+  static Uint32 WriteRegToMemAnyConst(Uint32 SrcReg, Uint16 Constant);
 
   static Uint32 BranchConstant(Uint32 Inst, Uint32 Reg1, Uint16 Constant);
   static Uint32 Branch(Uint32 Inst, Uint32 Reg1, Uint32 Reg2);
@@ -1286,6 +1300,11 @@ Interpreter::WriteInt64RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset) {
          WRITE_INT64_REG_TO_MEM;
 }
 
+inline Uint32
+Interpreter::WriteRegToMemAnyConst(Uint32 SrcReg, Uint16 Constant) {
+  return (SrcReg << 6) + (Constant << 16) + WRITE_REG_TO_MEM_ANY;
+}
+
 
 inline Uint32
 Interpreter::Branch(Uint32 Inst, Uint32 Reg1, Uint32 Reg2) {
@@ -1483,6 +1502,7 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
     case WRITE_UINT16_REG_TO_MEM:
     case WRITE_UINT32_REG_TO_MEM:
     case WRITE_INT64_REG_TO_MEM:
+    case WRITE_REG_TO_MEM_ANY:
 
     case READ_UINT8_REG_TO_REG:
     case READ_UINT16_REG_TO_REG:
