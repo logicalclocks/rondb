@@ -512,21 +512,14 @@ join_clause:
     $$->conditions = $6;
     $$->next = NULL;
   }
-| T_COMMA table_ref
-  {
-    /* Phase I.17 cross-join: comma-separated FROM list, restricted
-     * to scalar (no-GROUP-BY) CTE operands so each side is
-     * single-row.  The planner keeps the default CTE_LOOKUP type
-     * for the child; with the scalar CTE's virt-table PK count == 0
-     * and num_key_cols == 0 from the empty ON clause, the existing
-     * CTE_LOOKUP path issues a 0-key lookup that returns the CTE's
-     * single row.  No new CTE_SCAN-as-non-root-child shape needed. */
-    initptr($$);
-    $$->join_type = JoinClause::INNER_JOIN;
-    $$->table = *$2;
-    $$->conditions = NULL;
-    $$->next = NULL;
-  }
+/* Note: comma cross-join (`FROM A, B`) intentionally not in the
+ * grammar.  Two attempted implementations both segfaulted at
+ * runtime — scanCte() (the original I.17 try) and lookupCte() with
+ * empty keys (the second try) — because NDB API genuinely does not
+ * support a CTE in a non-root join-child position regardless of
+ * which API method is used.  Held until the kernel grows that
+ * support, or until a different mechanism (e.g. pre-fetch scalar
+ * CTE values and inline as constants) is implemented. */
 
 join_condition_list:
   join_condition

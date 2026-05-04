@@ -141,64 +141,56 @@ DELIMITER |;
 
 --echo
 --echo
---echo === Test 6: cross-join of two scalar CTEs (comma form), top-level GREATEST ===
+--echo === Test 6: top-level GREATEST over a single scalar CTE's outputs ===
 
-# Watermark-style shape — the query the original I.17 plan
-# motivated.  Two scalar CTEs each materialise a single row;
-# FROM cte_a, cte_b is the comma cross-join syntax.  GREATEST
-# appears as a top-level SELECT output; the parser wraps it in
-# implicit MAX so the rest of the pipeline sees a regular
-# aggregate.  Each scalar CTE has zero PK columns; the cross-
-# joined child uses CTE_LOOKUP with zero keys, returning the
-# CTE's single materialised row.
+# Watermark-shape workaround: collapse the multiple scalar
+# aggregates into a single CTE with multiple output columns.
+# GREATEST appears as a top-level SELECT output; the parser
+# wraps it in implicit MAX so the rest of the pipeline sees a
+# regular aggregate.  MAX over the scalar CTE's single
+# materialised row equals the GREATEST value itself.
 let $QUERY=
-WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
-     min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
-SELECT GREATEST(max_v.hi, min_v.lo) AS biggest FROM max_v, min_v;|
+WITH bounds AS (SELECT MAX(v) AS hi, MIN(v) AS lo FROM scalar_t)
+SELECT GREATEST(bounds.hi, bounds.lo) AS biggest FROM bounds;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
 --sorted_result
-WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
-     min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
-SELECT GREATEST(max_v.hi, min_v.lo) AS biggest FROM max_v, min_v|
+WITH bounds AS (SELECT MAX(v) AS hi, MIN(v) AS lo FROM scalar_t)
+SELECT GREATEST(bounds.hi, bounds.lo) AS biggest FROM bounds|
 
 --echo
 --echo
---echo === Test 7: cross-join of two scalar CTEs, top-level LEAST ===
+--echo === Test 7: top-level LEAST over a single scalar CTE's outputs ===
 
 # Same shape as Test 6 with LEAST instead of GREATEST.
 let $QUERY=
-WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
-     min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
-SELECT LEAST(max_v.hi, min_v.lo) AS smallest FROM max_v, min_v;|
+WITH bounds AS (SELECT MAX(v) AS hi, MIN(v) AS lo FROM scalar_t)
+SELECT LEAST(bounds.hi, bounds.lo) AS smallest FROM bounds;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
 --sorted_result
-WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
-     min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
-SELECT LEAST(max_v.hi, min_v.lo) AS smallest FROM max_v, min_v|
+WITH bounds AS (SELECT MAX(v) AS hi, MIN(v) AS lo FROM scalar_t)
+SELECT LEAST(bounds.hi, bounds.lo) AS smallest FROM bounds|
 
 --echo
 --echo
---echo === Test 8: SELECT with no FROM — auto-synthesised cross-join ===
+--echo === Test 8: SELECT with no FROM — auto-synthesised single-CTE root ===
 
-# Phase I.17h: the watermark shape without an explicit FROM.
-# RonSQL walks every qualified column reference, finds max_v and
-# min_v as scalar CTE qualifiers, and synthesises a cross-join
-# FROM automatically.
+# Phase I.17h: the same shape as Test 6 but written without an
+# explicit FROM.  RonSQL walks every qualified column reference,
+# finds `bounds` as a scalar CTE qualifier, and synthesises
+# root_table = bounds automatically.
 let $QUERY=
-WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
-     min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
-SELECT GREATEST(max_v.hi, min_v.lo) AS biggest;|
+WITH bounds AS (SELECT MAX(v) AS hi, MIN(v) AS lo FROM scalar_t)
+SELECT GREATEST(bounds.hi, bounds.lo) AS biggest;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
 --sorted_result
-WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
-     min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
-SELECT GREATEST(max_v.hi, min_v.lo) AS biggest|
+WITH bounds AS (SELECT MAX(v) AS hi, MIN(v) AS lo FROM scalar_t)
+SELECT GREATEST(bounds.hi, bounds.lo) AS biggest|
 
 DELIMITER ;|
 
@@ -211,6 +203,17 @@ DELIMITER ;|
 # message naming the scalar-CTE-only constraint.
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH g AS (SELECT region AS r, COUNT(*) AS c FROM scalar_t GROUP BY region) SELECT g.c AS x;' 2>&1
+
+--echo
+--echo
+--echo === Test 10: SELECT no FROM referencing two scalar CTEs — must reject ===
+
+# Multiple scalar CTEs would require a non-root CTE join child,
+# which NDB API doesn't support.  Synthesis rejects with the
+# workaround hint pointing at the single-CTE-with-multiple-outputs
+# pattern (Test 6 / 8 above).
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT MAX(v) AS m FROM scalar_t), b AS (SELECT MIN(v) AS m FROM scalar_t) SELECT GREATEST(a.m, b.m) AS x;' 2>&1
 
 --disable_query_log
 DROP TABLE scalar_t;
