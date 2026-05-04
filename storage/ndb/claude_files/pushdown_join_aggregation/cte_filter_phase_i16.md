@@ -2,7 +2,16 @@
 
 ## Status
 
-Planned.
+**I.16a shipped.**  I.16b and I.16c remain deferred.
+
+| Commit | Scope |
+|--------|-------|
+| `4e6f96dc5ae` | RonSQL — emit_child_ops's CTE_LOOKUP arm gains a permanent-error guard.  Counts the CTE body's `groupby_columns` (the virt PK shape used by `build_cte_virtual_tables`) and compares against `op.num_key_cols`.  Mismatch throws with a self-explanatory message naming the workaround instead of letting `lookupCte()` return NULL with the opaque "Failed to create child operation" downstream |
+| `0906344763c` + recorded result | MTR — `ronsql_cte_partial_key.test` exercises the rejected shape (two-column GROUP BY CTE, join on one key) and confirms the new message.  Recorded `.result` shows `Error handling: RPE` followed by the I.16a string — the SRE,te→RPE chain that wrapped the old NdbQueryBuilder failure is gone |
+
+I.16b (planner-side rewrite to CTE_SCAN root when partial key
+detected) and I.16c (true non-root CTE_SCAN child support) stay
+on the queue per the original phase split below.
 
 ## Problem
 
