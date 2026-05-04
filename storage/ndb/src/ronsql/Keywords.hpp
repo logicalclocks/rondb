@@ -38,6 +38,7 @@ static const struct { const char* text; const TokenKind value; } keywords_implem
   kwdef(BY),
   kwdef(CASE),
   kwdef(COUNT),
+  kwdef(CROSS),
   kwdef(DATE_ADD),
   kwdef(DATE_SUB),
   kwdef(DAY),

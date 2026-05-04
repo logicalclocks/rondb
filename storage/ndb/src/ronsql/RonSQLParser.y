@@ -167,6 +167,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %token T_GREATEST T_LEAST
 %token T_WITH
 %token T_KW_LEFT T_KW_OUTER
+%token T_CROSS
 
 // RonSQLPreparer.cpp needs some values that are inequal to all tokens. They
 // need to be declared here but aren't used in the lexer or parser.
@@ -478,6 +479,31 @@ join_clause:
     $$->join_type = JoinClause::LEFT_OUTER_JOIN;
     $$->table = *$4;
     $$->conditions = $6;
+    $$->next = NULL;
+  }
+| T_COMMA table_ref
+  {
+    /* Phase I.17 cross-join: comma-separated FROM list.  Currently
+     * accepted only when every operand resolves to a single-row
+     * source — enforced in QueryPlanner.  No ON clause; conditions
+     * stays NULL.  Treated as INNER for the join-type field; the
+     * cross-join nature is conveyed by num_key_cols == 0 at the
+     * planner level. */
+    initptr($$);
+    $$->join_type = JoinClause::INNER_JOIN;
+    $$->table = *$2;
+    $$->conditions = NULL;
+    $$->next = NULL;
+  }
+| T_CROSS T_JOIN table_ref
+  {
+    /* Same as the comma-list shape, just spelled out with the
+     * explicit CROSS JOIN keyword.  The two forms are
+     * interchangeable. */
+    initptr($$);
+    $$->join_type = JoinClause::INNER_JOIN;
+    $$->table = *$3;
+    $$->conditions = NULL;
     $$->next = NULL;
   }
 
