@@ -2259,12 +2259,12 @@ testSignedUnsignedPromotionMatrix(Ndb *ndb,
         code.def_label(REJECT) != 0 ||
         code.interpret_exit_ok() != 0 ||
         code.def_label(RUN) != 0 ||
-        code.read_attr(1, uIntAttr) != 0 ||
+        code.read_attr(1, uBigAttr) != 0 ||
         loadMemoryConst(&code, 2, 3, oneByte, sizeof(oneByte)) != 0 ||
         code.read_uint8_to_reg_const(4, 0) != 0 ||
         code.sub_reg(5, 1, 4) != 0 ||
         finishRuntimeErrorProgram(&code) != 0 ||
-        expectRuntimeError("Test 19j: unsigned subtract underflow",
+        expectRuntimeError("Test 19j: unsigned BIGINT subtract underflow",
                            ndb, tab, &code) != 0) rc = -1;
   }
   {
@@ -2283,6 +2283,62 @@ testSignedUnsignedPromotionMatrix(Ndb *ndb,
         finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 19k: unsigned multiply overflow",
                            ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 RUN = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 5, REJECT) != 0 ||
+        code.branch_label(RUN) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.def_label(RUN) != 0 ||
+        code.read_attr(1, uBigAttr) != 0 ||
+        code.load_const_u16(2, 2) != 0 ||
+        code.mul_reg(3, 1, 2) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 19l: unsigned BIGINT max times two",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 ACCEPT = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    const int expected[] = { 5 };
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 5, REJECT) != 0 ||
+        code.read_attr(1, uBigAttr) != 0 ||
+        code.load_const_u16(2, 1) != 0 ||
+        code.div_reg(3, 1, 2) != 0 ||
+        code.branch_eq(3, 1, ACCEPT) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_nok() != 0 ||
+        code.def_label(ACCEPT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.finalise() != 0 ||
+        expectPks("Test 19m: unsigned BIGINT max divide by one",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 ACCEPT = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    const int expected[] = { 5 };
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 5, REJECT) != 0 ||
+        code.read_attr(1, uBigAttr) != 0 ||
+        code.load_const_u16(2, 1) != 0 ||
+        code.mod_reg(3, 1, 2) != 0 ||
+        code.load_const_u16(4, 0) != 0 ||
+        code.branch_eq(3, 4, ACCEPT) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_nok() != 0 ||
+        code.def_label(ACCEPT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.finalise() != 0 ||
+        expectPks("Test 19n: unsigned BIGINT max modulo one",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
   }
 
   return rc;
