@@ -463,6 +463,32 @@ expectReadCompareU64(const char *name,
 }
 
 static int
+expectColumnValueBranch(
+    const char *name,
+    Ndb *ndb,
+    const NdbDictionary::Table *tab,
+    Uint32 attr,
+    const void *value,
+    Uint32 valueBytes,
+    int (NdbInterpretedCode::*branch)(const void *, Uint32, Uint32, Uint32),
+    NdbInterpretedCode::UnknownHandling nullHandling,
+    bool useSqlNullSemantics,
+    const int *expected,
+    size_t nExpected)
+{
+  Uint32 buf[128];
+  NdbInterpretedCode code(tab, buf, 128);
+  if (useSqlNullSemantics)
+    code.set_sql_null_semantics(nullHandling);
+  if ((code.*branch)(value, valueBytes, attr, 0) != 0 ||
+      finishAcceptReject(&code, 0) != 0) {
+    printf("%s ... FAILED (build)\n", name);
+    return -1;
+  }
+  return expectPks(name, ndb, tab, &code, expected, nExpected);
+}
+
+static int
 expectColumnEq(const char *name,
                Ndb *ndb,
                const NdbDictionary::Table *tab,
@@ -474,6 +500,27 @@ expectColumnEq(const char *name,
   Uint32 buf[128];
   NdbInterpretedCode code(tab, buf, 128);
   if (code.branch_col_eq(attr1, attr2, 0) != 0 ||
+      finishAcceptReject(&code, 0) != 0) {
+    printf("%s ... FAILED (build)\n", name);
+    return -1;
+  }
+  return expectPks(name, ndb, tab, &code, expected, nExpected);
+}
+
+static int
+expectColumnBranch(
+    const char *name,
+    Ndb *ndb,
+    const NdbDictionary::Table *tab,
+    Uint32 attr1,
+    Uint32 attr2,
+    int (NdbInterpretedCode::*branch)(Uint32, Uint32, Uint32),
+    const int *expected,
+    size_t nExpected)
+{
+  Uint32 buf[128];
+  NdbInterpretedCode code(tab, buf, 128);
+  if ((code.*branch)(attr1, attr2, 0) != 0 ||
       finishAcceptReject(&code, 0) != 0) {
     printf("%s ... FAILED (build)\n", name);
     return -1;
@@ -2170,6 +2217,223 @@ testFloatDoubleMatrix(Ndb *ndb, const NdbDictionary::Table *tab)
   return rc;
 }
 
+static void
+packUint24(Uint32 value, unsigned char out[3])
+{
+  out[0] = (unsigned char)(value & 0xFF);
+  out[1] = (unsigned char)((value >> 8) & 0xFF);
+  out[2] = (unsigned char)((value >> 16) & 0xFF);
+}
+
+static void
+packInt24(Int32 value, unsigned char out[3])
+{
+  packUint24((Uint32)value, out);
+}
+
+static int
+testColumnPredicateTypeMatrix(Ndb *ndb,
+                              const NdbDictionary::Table *mainTab)
+{
+  const NdbDictionary::Table *widthTab =
+      getNamedTable(ndb, BOUNDARY_TABLE_NAME);
+  if (widthTab == NULL) return -1;
+
+  Uint32 nIntAttr = attrId(mainTab, "n_int");
+  Uint32 nDoubleAttr = attrId(mainTab, "n_double");
+  Uint32 nFloatAttr = attrId(mainTab, "n_float");
+  Uint32 fAttr = attrId(mainTab, "f_val");
+  Uint32 dAttr = attrId(mainTab, "d_val");
+  Uint32 d2Attr = attrId(mainTab, "d_val2");
+
+  Int8 sTinyMax = 127;
+  Int16 sSmallMax = 32767;
+  unsigned char sMediumMax[3];
+  Int32 sIntMax = 2147483647;
+  Int64 sBigMax = INT64_MAX;
+  Uint8 uTinyThreshold = 127;
+  Uint16 uSmallThreshold = 32767;
+  unsigned char uMediumThreshold[3];
+  Uint32 uIntThreshold = 2147483647U;
+  Uint64 uBigThreshold = 9223372036854775807ULL;
+  float fTwoPointFive = 2.5F;
+  double dZero = 0.0;
+  Int32 zero = 0;
+  int rc = 0;
+
+  static const int signedMax[] = { 7 };
+  static const int unsignedBelowThreshold[] = { 1, 2, 6 };
+  static const int signedColLtTwin[] = { 5 };
+  static const int floatEq[] = { 2 };
+  static const int doublePositive[] = { 1, 2, 3, 6 };
+  static const int doubleEqTwin[] = { 1, 2, 5 };
+  static const int doubleColGtTwin[] = { 3, 6 };
+  static const int nullRows[] = { 1, 5 };
+  static const int notNullRows[] = { 2, 3, 4, 6 };
+  static const int nullsAndNegative[] = { 1, 3, 5 };
+  static const int onlyNegative[] = { 3 };
+
+  packInt24(8388607, sMediumMax);
+  packUint24(8388607U, uMediumThreshold);
+
+  /*
+   * The NdbInterpretedCode value variants compare in API order:
+   *   *value <op> column
+   * The expected row sets below are written in that order.
+   */
+  {
+    struct ColValCase {
+      const char *name;
+      const char *attr;
+      const void *value;
+      Uint32 valueBytes;
+    };
+    const ColValCase signedCases[] = {
+      { "Test 21a.1: branch_col_eq TINYINT max",
+        "s_tiny", &sTinyMax, sizeof(sTinyMax) },
+      { "Test 21a.2: branch_col_eq SMALLINT max",
+        "s_small", &sSmallMax, sizeof(sSmallMax) },
+      { "Test 21a.3: branch_col_eq MEDIUMINT max",
+        "s_medium", sMediumMax, sizeof(sMediumMax) },
+      { "Test 21a.4: branch_col_eq INT max",
+        "s_int", &sIntMax, sizeof(sIntMax) },
+      { "Test 21a.5: branch_col_eq BIGINT max",
+        "s_big", &sBigMax, sizeof(sBigMax) }
+    };
+    const ColValCase unsignedCases[] = {
+      { "Test 21b.1: branch_col_gt TINYINT UNSIGNED threshold",
+        "u_tiny", &uTinyThreshold, sizeof(uTinyThreshold) },
+      { "Test 21b.2: branch_col_gt SMALLINT UNSIGNED threshold",
+        "u_small", &uSmallThreshold, sizeof(uSmallThreshold) },
+      { "Test 21b.3: branch_col_gt MEDIUMINT UNSIGNED threshold",
+        "u_medium", uMediumThreshold, sizeof(uMediumThreshold) },
+      { "Test 21b.4: branch_col_gt INT UNSIGNED threshold",
+        "u_int", &uIntThreshold, sizeof(uIntThreshold) },
+      { "Test 21b.5: branch_col_gt BIGINT UNSIGNED threshold",
+        "u_big", &uBigThreshold, sizeof(uBigThreshold) }
+    };
+    size_t i;
+    for (i = 0; i < sizeof(signedCases) / sizeof(signedCases[0]); i++) {
+      if (expectColumnValueBranch(
+              signedCases[i].name, ndb, widthTab,
+              attrId(widthTab, signedCases[i].attr),
+              signedCases[i].value, signedCases[i].valueBytes,
+              &NdbInterpretedCode::branch_col_eq,
+              NdbInterpretedCode::CmpHasNoUnknowns, false,
+              signedMax, 1) != 0) rc = -1;
+    }
+    for (i = 0; i < sizeof(unsignedCases) / sizeof(unsignedCases[0]); i++) {
+      if (expectColumnValueBranch(
+              unsignedCases[i].name, ndb, widthTab,
+              attrId(widthTab, unsignedCases[i].attr),
+              unsignedCases[i].value, unsignedCases[i].valueBytes,
+              &NdbInterpretedCode::branch_col_gt,
+              NdbInterpretedCode::CmpHasNoUnknowns, false,
+              unsignedBelowThreshold, 3) != 0) rc = -1;
+    }
+  }
+
+  {
+    const AttrPair signedPairs[] = {
+      { "s_tiny", "s_tiny2", "TINYINT" },
+      { "s_small", "s_small2", "SMALLINT" },
+      { "s_medium", "s_medium2", "MEDIUMINT" },
+      { "s_int", "s_int2", "INT" },
+      { "s_big", "s_big2", "BIGINT" }
+    };
+    const AttrPair unsignedPairs[] = {
+      { "u_tiny", "u_tiny2", "TINYINT UNSIGNED" },
+      { "u_small", "u_small2", "SMALLINT UNSIGNED" },
+      { "u_medium", "u_medium2", "MEDIUMINT UNSIGNED" },
+      { "u_int", "u_int2", "INT UNSIGNED" },
+      { "u_big", "u_big2", "BIGINT UNSIGNED" }
+    };
+    char name[128];
+    size_t i;
+    /*
+     * The NdbInterpretedCode attr-attr variants compare in API order:
+     *   attr2 <op> attr1
+     */
+    for (i = 0; i < sizeof(signedPairs) / sizeof(signedPairs[0]); i++) {
+      snprintf(name, sizeof(name),
+               "Test 21c.%zu: branch_col_lt %s attr-attr",
+               i + 1, signedPairs[i].label);
+      if (expectColumnBranch(name, ndb, widthTab,
+                             attrId(widthTab, signedPairs[i].lhs),
+                             attrId(widthTab, signedPairs[i].rhs),
+                             &NdbInterpretedCode::branch_col_lt,
+                             signedColLtTwin, 1) != 0) rc = -1;
+    }
+    for (i = 0; i < sizeof(unsignedPairs) / sizeof(unsignedPairs[0]); i++) {
+      snprintf(name, sizeof(name),
+               "Test 21d.%zu: branch_col_lt %s attr-attr",
+               i + 1, unsignedPairs[i].label);
+      if (expectColumnBranch(name, ndb, widthTab,
+                             attrId(widthTab, unsignedPairs[i].lhs),
+                             attrId(widthTab, unsignedPairs[i].rhs),
+                             &NdbInterpretedCode::branch_col_lt,
+                             NULL, 0) != 0) rc = -1;
+    }
+  }
+
+  if (expectColumnValueBranch("Test 21e: branch_col_eq FLOAT",
+                              ndb, mainTab, fAttr,
+                              &fTwoPointFive, sizeof(fTwoPointFive),
+                              &NdbInterpretedCode::branch_col_eq,
+                              NdbInterpretedCode::CmpHasNoUnknowns, false,
+                              floatEq, 1) != 0) rc = -1;
+
+  if (expectColumnValueBranch("Test 21f: branch_col_lt DOUBLE",
+                              ndb, mainTab, dAttr,
+                              &dZero, sizeof(dZero),
+                              &NdbInterpretedCode::branch_col_lt,
+                              NdbInterpretedCode::CmpHasNoUnknowns, false,
+                              doublePositive, 4) != 0) rc = -1;
+
+  if (expectColumnBranch("Test 21g: branch_col_eq DOUBLE attr-attr",
+                         ndb, mainTab, dAttr, d2Attr,
+                         &NdbInterpretedCode::branch_col_eq,
+                         doubleEqTwin, 3) != 0) rc = -1;
+
+  if (expectColumnBranch("Test 21h: branch_col_gt DOUBLE attr-attr",
+                         ndb, mainTab, d2Attr, dAttr,
+                         &NdbInterpretedCode::branch_col_gt,
+                         doubleColGtTwin, 2) != 0) rc = -1;
+
+  {
+    Uint32 buf[128];
+    NdbInterpretedCode code(mainTab, buf, 128);
+    if (code.branch_col_eq_null(nFloatAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 21i: branch_col_eq_null FLOAT",
+                  ndb, mainTab, &code, nullRows, 2) != 0) rc = -1;
+  }
+  {
+    Uint32 buf[128];
+    NdbInterpretedCode code(mainTab, buf, 128);
+    if (code.branch_col_ne_null(nDoubleAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 21j: branch_col_ne_null DOUBLE",
+                  ndb, mainTab, &code, notNullRows, 4) != 0) rc = -1;
+  }
+
+  if (expectColumnValueBranch("Test 21k: SQL NULL semantics BranchIfUnknown",
+                              ndb, mainTab, nIntAttr,
+                              &zero, sizeof(zero),
+                              &NdbInterpretedCode::branch_col_gt,
+                              NdbInterpretedCode::BranchIfUnknown, true,
+                              nullsAndNegative, 3) != 0) rc = -1;
+
+  if (expectColumnValueBranch("Test 21l: SQL NULL semantics ContinueIfUnknown",
+                              ndb, mainTab, nIntAttr,
+                              &zero, sizeof(zero),
+                              &NdbInterpretedCode::branch_col_gt,
+                              NdbInterpretedCode::ContinueIfUnknown, true,
+                              onlyNegative, 1) != 0) rc = -1;
+
+  return rc;
+}
+
 struct TestEntry {
   int number;
   int (*fn)(Ndb *, const NdbDictionary::Table *);
@@ -2195,7 +2459,8 @@ static const TestEntry g_tests[] = {
   { 17, testNullAndFloatOpcodeCoverage },
   { 18, testIntegerWidthBoundaryMatrix },
   { 19, testSignedUnsignedPromotionMatrix },
-  { 20, testFloatDoubleMatrix }
+  { 20, testFloatDoubleMatrix },
+  { 21, testColumnPredicateTypeMatrix }
 };
 
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
