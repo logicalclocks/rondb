@@ -3180,6 +3180,359 @@ testMemoryOpcodeExpansion(Ndb *ndb, const NdbDictionary::Table *tab)
   return rc;
 }
 
+static void
+putUint16(char *mem, Uint32 offset, Uint16 value)
+{
+  mem[offset] = (char)(value & 0xFF);
+  mem[offset + 1] = (char)((value >> 8) & 0xFF);
+}
+
+static void
+putUint32(char *mem, Uint32 offset, Uint32 value)
+{
+  mem[offset] = (char)(value & 0xFF);
+  mem[offset + 1] = (char)((value >> 8) & 0xFF);
+  mem[offset + 2] = (char)((value >> 16) & 0xFF);
+  mem[offset + 3] = (char)((value >> 24) & 0xFF);
+}
+
+static void
+putUint64(char *mem, Uint32 offset, Uint64 value)
+{
+  Uint32 i;
+  for (i = 0; i < 8; i++) {
+    mem[offset + i] = (char)((value >> (i * 8)) & 0xFF);
+  }
+}
+
+static void
+putOdd(char *mem, Uint32 offset, Uint64 value, Uint32 bytes)
+{
+  Uint32 i;
+  for (i = 0; i < bytes; i++) {
+    mem[offset + i] = (char)((value >> (i * 8)) & 0xFF);
+  }
+}
+
+static int
+testSearchSortStringLibraryOpcodes(Ndb *ndb,
+                                   const NdbDictionary::Table *tab)
+{
+  Uint32 buf[256];
+  int rc = 0;
+
+  {
+    char mem[6];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putUint16(mem, 0, 10);
+    putUint16(mem, 2, 20);
+    putUint16(mem, 4, 40);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 20) != 0 ||
+        code.load_const_u16(3, 3) != 0 ||
+        code.binary_search_16(2, 0, 3, 4, 0) != 0 ||
+        code.load_const_u16(5, 1) != 0 ||
+        code.branch_eq(4, 5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25a: binary_search_16 exact success",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    char mem[6];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putUint16(mem, 0, 10);
+    putUint16(mem, 2, 20);
+    putUint16(mem, 4, 40);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 30) != 0 ||
+        code.load_const_u16(3, 3) != 0 ||
+        code.binary_search_16(2, 0, 3, 4, 0) != 0 ||
+        code.branch_eq_null(4, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25b: binary_search_16 exact not found",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    char mem[12];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putUint32(mem, 0, 10);
+    putUint32(mem, 4, 20);
+    putUint32(mem, 8, 40);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 30) != 0 ||
+        code.load_const_u16(3, 3) != 0 ||
+        code.binary_search_32(2, 0, 3, 4, 1) != 0 ||
+        code.load_const_u16(5, 2) != 0 ||
+        code.branch_eq(4, 5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25c: binary_search_32 smaller mode",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    char mem[24];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putUint64(mem, 0, 10);
+    putUint64(mem, 8, 30);
+    putUint64(mem, 16, 50);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 30) != 0 ||
+        code.load_const_u16(3, 3) != 0 ||
+        code.binary_search_64(2, 0, 3, 4, 4) != 0 ||
+        code.load_const_u16(5, 1) != 0 ||
+        code.branch_eq(4, 5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25d: binary_search_64 larger-equal mode",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    char mem[9];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putOdd(mem, 0, 5, 3);
+    putOdd(mem, 3, 300, 3);
+    putOdd(mem, 6, 70000, 3);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u32(2, 70000) != 0 ||
+        code.load_const_u16(3, 3) != 0 ||
+        code.binary_search_odd(2, 0, 3, 4, 0, 3) != 0 ||
+        code.load_const_u16(5, 2) != 0 ||
+        code.branch_eq(4, 5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25e: binary_search_odd exact success",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    char mem[9];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putOdd(mem, 0, 5, 3);
+    putOdd(mem, 3, 300, 3);
+    putOdd(mem, 6, 70000, 3);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 301) != 0 ||
+        code.load_const_u16(3, 3) != 0 ||
+        code.binary_search_odd(2, 0, 3, 4, 2, 3) != 0 ||
+        code.load_const_u16(5, 2) != 0 ||
+        code.branch_eq(4, 5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25f: binary_search_odd larger mode",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+
+  {
+    char mem[8];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putUint16(mem, 0, 10);
+    putUint16(mem, 2, 20);
+    putUint16(mem, 4, 30);
+    putUint16(mem, 6, 40);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 15) != 0 ||
+        code.load_const_u16(3, 4) != 0 ||
+        code.search_interval_16(2, 0, 3, 4, 0) != 0 ||
+        code.load_const_u16(5, 0) != 0 ||
+        code.branch_eq(4, 5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25g: search_interval_16 left-closed success",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    char mem[8];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putUint16(mem, 0, 10);
+    putUint16(mem, 2, 20);
+    putUint16(mem, 4, 30);
+    putUint16(mem, 6, 40);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 25) != 0 ||
+        code.load_const_u16(3, 4) != 0 ||
+        code.search_interval_16(2, 0, 3, 4, 0) != 0 ||
+        code.branch_eq_null(4, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25h: search_interval_16 not found",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    char mem[16];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putUint32(mem, 0, 10);
+    putUint32(mem, 4, 20);
+    putUint32(mem, 8, 30);
+    putUint32(mem, 12, 40);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 20) != 0 ||
+        code.load_const_u16(3, 4) != 0 ||
+        code.search_interval_32(2, 0, 3, 4, 1) != 0 ||
+        code.load_const_u16(5, 0) != 0 ||
+        code.branch_eq(4, 5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25i: search_interval_32 right-closed success",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    char mem[32];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putUint64(mem, 0, 10);
+    putUint64(mem, 8, 20);
+    putUint64(mem, 16, 30);
+    putUint64(mem, 24, 40);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 35) != 0 ||
+        code.load_const_u16(3, 4) != 0 ||
+        code.search_interval_64(2, 0, 3, 4, 0) != 0 ||
+        code.load_const_u16(5, 2) != 0 ||
+        code.branch_eq(4, 5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25j: search_interval_64 left-closed success",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    char mem[12];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putOdd(mem, 0, 10, 3);
+    putOdd(mem, 3, 20, 3);
+    putOdd(mem, 6, 30, 3);
+    putOdd(mem, 9, 40, 3);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 35) != 0 ||
+        code.load_const_u16(3, 4) != 0 ||
+        code.search_interval_odd(2, 0, 3, 4, 0, 3) != 0 ||
+        code.load_const_u16(5, 2) != 0 ||
+        code.branch_eq(4, 5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25k: search_interval_odd left-closed success",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+
+  {
+    char mem[3] = { 3, 1, 2 };
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 3) != 0 ||
+        code.qsort_instr(0, 2, 1) != 0 ||
+        code.read_uint8_to_reg_const(3, 1) != 0 ||
+        code.load_const_u16(4, 2) != 0 ||
+        code.branch_eq(3, 4, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25l: qsort 1-byte elements",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    char mem[12];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putUint32(mem, 0, 300);
+    putUint32(mem, 4, 100);
+    putUint32(mem, 8, 200);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 3) != 0 ||
+        code.qsort_instr(0, 2, 4) != 0 ||
+        code.load_const_u16(3, 200) != 0 ||
+        code.binary_search_32(3, 0, 2, 4, 0) != 0 ||
+        code.load_const_u16(5, 1) != 0 ||
+        code.branch_eq(4, 5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25m: qsort 4-byte elements",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    char mem[24];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putUint64(mem, 0, 300);
+    putUint64(mem, 8, 100);
+    putUint64(mem, 16, 200);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 3) != 0 ||
+        code.qsort_instr(0, 2, 8) != 0 ||
+        code.load_const_u16(3, 300) != 0 ||
+        code.binary_search_64(3, 0, 2, 4, 0) != 0 ||
+        code.load_const_u16(5, 2) != 0 ||
+        code.branch_eq(4, 5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25n: qsort 8-byte elements",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+
+  {
+    char mem[12];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putUint32(mem, 0, 1);
+    putUint32(mem, 4, 0x00020304);
+    putUint32(mem, 8, 0x00050607);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 3) != 0 ||
+        code.compress_num_array(0, 2, 4, 3) != 0 ||
+        code.load_const_u32(3, 0x00020304) != 0 ||
+        code.binary_search_odd(3, 0, 2, 4, 0, 3) != 0 ||
+        code.load_const_u16(5, 1) != 0 ||
+        code.branch_eq(4, 5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25o: compress_num_array 4-to-3",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    char mem[24];
+    NdbInterpretedCode code(tab, buf, 256);
+    memset(mem, 0, sizeof(mem));
+    putUint64(mem, 0, 1);
+    putUint64(mem, 8, 0x0000000203040506ULL);
+    putUint64(mem, 16, 0x0000000506070809ULL);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 3) != 0 ||
+        code.compress_num_array(0, 2, 8, 5) != 0 ||
+        code.load_const_u64(3, 0x0000000203040506ULL) != 0 ||
+        code.binary_search_odd(3, 0, 2, 4, 0, 5) != 0 ||
+        code.load_const_u16(5, 1) != 0 ||
+        code.branch_eq(4, 5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25p: compress_num_array 8-to-5",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+
+  {
+    char mem[12] = { 'a', 'b', 'c', 'd', 'e', 'f',
+                     'a', 'b', 'c', 'd', 'e', 'f' };
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 12) != 0 ||
+        code.load_const_u16(3, 3) != 0 ||
+        code.load_const_u16(4, 3) != 0 ||
+        code.string_search(0, 2, 3, 4, 5) != 0 ||
+        code.load_const_u16(6, 3) != 0 ||
+        code.branch_eq(5, 6, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25q: string_search success",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    char mem[12] = { 'a', 'b', 'c', 'd', 'e', 'f',
+                     'x', 'y', 'z', '0', '0', '0' };
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 6) != 0 ||
+        code.load_const_u16(3, 6) != 0 ||
+        code.load_const_u16(4, 3) != 0 ||
+        code.string_search(0, 2, 3, 4, 5) != 0 ||
+        code.branch_eq_null(5, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 25r: string_search not found",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+
+  return rc;
+}
+
 struct TestEntry {
   int number;
   int (*fn)(Ndb *, const NdbDictionary::Table *);
@@ -3209,7 +3562,8 @@ static const TestEntry g_tests[] = {
   { 21, testColumnPredicateTypeMatrix },
   { 22, testStringAndBinaryTypeMatrix },
   { 23, testDateTimeAndDecimalTriage },
-  { 24, testMemoryOpcodeExpansion }
+  { 24, testMemoryOpcodeExpansion },
+  { 25, testSearchSortStringLibraryOpcodes }
 };
 
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
