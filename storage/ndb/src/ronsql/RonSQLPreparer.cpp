@@ -5703,8 +5703,21 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
 
       // GROUP BY columns become PK of the virt table and keep their
       // source type; everything else is non-PK.
+      //
+      // Phase I.17: scalar CTEs (no GROUP BY) have no natural key,
+      // but lookupCte() requires a non-zero PK count to be a valid
+      // join child — see testCteNdbApi.cpp Test 20's
+      // `cte_virtual_scalar (result BIGINT PRIMARY KEY)` shape.
+      // For a scalar CTE we mark the FIRST output column as PK so
+      // the virt table has structural PK count == 1, matching
+      // Test 20's single-PK / single-dummy-key contract.  The
+      // kernel ignores the key at scalar lookup (n_gb_cols == 0 →
+      // returns m_agg_results directly).
+      bool cte_is_scalar = (cte->stmt->groupby_columns == NULL);
       bool is_groupby = false;
-      if (o->type == Outputs::Type::COLUMN) {
+      if (cte_is_scalar) {
+        is_groupby = (o == cte->stmt->outputs);  // first output only
+      } else if (o->type == Outputs::Type::COLUMN) {
         for (const GroupbyColumns* gb = cte->stmt->groupby_columns;
              gb != NULL; gb = gb->next) {
           if (gb->col_idx == o->column.col_idx) { is_groupby = true; break; }
