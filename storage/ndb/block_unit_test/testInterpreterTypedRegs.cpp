@@ -2340,6 +2340,91 @@ testSignedUnsignedPromotionMatrix(Ndb *ndb,
         expectPks("Test 19n: unsigned BIGINT max modulo one",
                   ndb, tab, &code, expected, 1) != 0) rc = -1;
   }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 RUN = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 5, REJECT) != 0 ||
+        code.branch_label(RUN) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.def_label(RUN) != 0 ||
+        code.read_attr(1, uBigAttr) != 0 ||
+        code.load_const_u64(2, 0xFFFFFFFFFFFFFFFFULL) != 0 ||
+        code.sub_reg(3, 1, 2) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 19o: unsigned max minus signed -1",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 RUN = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 3, REJECT) != 0 ||
+        code.branch_label(RUN) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.def_label(RUN) != 0 ||
+        code.read_attr(1, uBigAttr) != 0 ||
+        code.load_const_u16(2, 2) != 0 ||
+        code.mul_reg(3, 1, 2) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 19p: unsigned high-bit times signed two",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 RUN = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 5, REJECT) != 0 ||
+        code.branch_label(RUN) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.def_label(RUN) != 0 ||
+        code.load_const_u64(1, 0xFFFFFFFFFFFFFFFFULL) != 0 ||
+        code.read_attr(2, uBigAttr) != 0 ||
+        code.sub_reg(3, 1, 2) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 19q: signed -1 minus unsigned max",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 RUN = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 1, REJECT) != 0 ||
+        code.branch_label(RUN) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.def_label(RUN) != 0 ||
+        code.read_attr(1, sBigAttr) != 0 ||
+        code.read_attr(2, uBigAttr) != 0 ||
+        code.div_reg(3, 1, 2) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 19r: signed negative divide unsigned zero",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 RUN = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 1, REJECT) != 0 ||
+        code.branch_label(RUN) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.def_label(RUN) != 0 ||
+        code.read_attr(1, sBigAttr) != 0 ||
+        code.read_attr(2, uBigAttr) != 0 ||
+        code.mod_reg(3, 1, 2) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 19s: signed negative modulo unsigned zero",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
 
   return rc;
 }
