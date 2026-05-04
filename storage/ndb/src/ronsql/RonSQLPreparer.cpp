@@ -5470,8 +5470,65 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
         const NdbDictionary::Column* pk_col =
             cteVirtualTables[0]->getColumn(pk_name);
         ndbrequire(pk_col != NULL);
-        raw_value rv = encode_constant(root_pk_const[k], pk_col);
-        lookup_keys[k] = qb->constValue(rv.val, rv.len);
+        const ConditionalExpression* ce_const = root_pk_const[k];
+        // Synthetic virt-table columns have m_attrSize == 0
+        // (memory: project_synthetic_virt_table_gotcha.md), so
+        // the (void*, len) constValue overload fails column
+        // validation at lookupCte().  Dispatch to the typed
+        // constValue overloads instead — they create operands
+        // independent of column metadata.
+        switch (pk_col->getType()) {
+        case NdbDictionary::Column::Tinyint:
+        case NdbDictionary::Column::Smallint:
+        case NdbDictionary::Column::Mediumint:
+        case NdbDictionary::Column::Int:
+          require_prm(ce_const->op == T_INT,
+                      "Expected integer constant for CTE root lookup key.");
+          lookup_keys[k] = qb->constValue((Int32) ce_const->constant_integer);
+          break;
+        case NdbDictionary::Column::Bigint:
+          require_prm(ce_const->op == T_INT,
+                      "Expected integer constant for CTE root lookup key.");
+          lookup_keys[k] = qb->constValue((Int64) ce_const->constant_integer);
+          break;
+        case NdbDictionary::Column::Tinyunsigned:
+        case NdbDictionary::Column::Smallunsigned:
+        case NdbDictionary::Column::Mediumunsigned:
+        case NdbDictionary::Column::Unsigned:
+          require_prm(ce_const->op == T_INT,
+                      "Expected integer constant for CTE root lookup key.");
+          lookup_keys[k] = qb->constValue((Uint32) ce_const->constant_integer);
+          break;
+        case NdbDictionary::Column::Bigunsigned:
+          require_prm(ce_const->op == T_INT,
+                      "Expected integer constant for CTE root lookup key.");
+          lookup_keys[k] = qb->constValue((Uint64) ce_const->constant_integer);
+          break;
+        case NdbDictionary::Column::Float:
+        case NdbDictionary::Column::Double:
+          if (ce_const->op == T_FLOAT) {
+            lookup_keys[k] = qb->constValue(ce_const->constant_float.dbl);
+          } else if (ce_const->op == T_INT) {
+            lookup_keys[k] =
+                qb->constValue((double) ce_const->constant_integer);
+          } else {
+            throw RonSQLPermanentError(
+                "Expected numeric constant for CTE root lookup key.");
+          }
+          break;
+        default:
+          // CHAR / VARCHAR / DECIMAL etc.: fall through to the
+          // byte-buffer variant.  May still fail validation on
+          // synthetic virt-table columns; users hitting this can
+          // fall back to scanCte by removing the equality from
+          // WHERE or expressing the constant as a different type.
+          {
+            raw_value rv = encode_constant(
+                const_cast<ConditionalExpression*>(ce_const), pk_col);
+            lookup_keys[k] = qb->constValue(rv.val, rv.len);
+          }
+          break;
+        }
         require_run(lookup_keys[k] != NULL,
                     "Failed to create const value for CTE root lookup.");
       }
