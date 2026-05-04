@@ -906,6 +906,21 @@ testBoundaryComparisons(Ndb *ndb, const NdbDictionary::Table *tab)
 static int
 testArithmeticErrorHandlers(Ndb *ndb, const NdbDictionary::Table *tab)
 {
+  /*
+   * Typed-register arithmetic / overflow coverage audit:
+   *
+   * Operation   Reg-Reg   Reg-Const   Signed edge       Unsigned edge
+   * ADD         8d,19i    8h          LLONG_MAX+1       UINT64_MAX+1
+   * SUB         8e,19j    8i          LLONG_MIN-1       0-1
+   * MUL         26f,19k   8j          >LLONG_MAX        >UINT64_MAX
+   * DIV         8a,8f     8k          zero,MIN/-1       zero, nonzero max
+   * MOD         8b,8g     8l          zero,MIN%-1       zero, nonzero max
+   *
+   * Mixed signed/unsigned edges are covered by Test 19e..19s.
+   * Source-width promotion is covered by Test 18g..18h.
+   * Float arithmetic behavior is documented by Test 20m..20o.
+   * Shift and bitwise error boundaries are covered by Test 26c..26e.6.
+   */
   Uint32 buf[128];
   int rc = 0;
 
