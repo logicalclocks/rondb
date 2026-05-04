@@ -948,6 +948,46 @@ testArithmeticErrorHandlers(Ndb *ndb, const NdbDictionary::Table *tab)
         expectRuntimeError("Test 8g: signed modulo overflow",
                            ndb, tab, &code) != 0) rc = -1;
   }
+  {
+    NdbInterpretedCode code(tab, buf, 128);
+    if (code.load_const_u64(0, 9223372036854775807ULL) != 0 ||
+        code.add_const_reg(1, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 8h: add_const_reg signed overflow",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 128);
+    if (code.load_const_u64(0, 9223372036854775808ULL) != 0 ||
+        code.sub_const_reg(1, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 8i: sub_const_reg signed overflow",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 128);
+    if (code.load_const_u64(0, 9223372036854775807ULL) != 0 ||
+        code.mul_const_reg(1, 0, 2) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 8j: mul_const_reg signed overflow",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 128);
+    if (code.load_const_u16(0, 1) != 0 ||
+        code.div_const_reg(1, 0, 0) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 8k: div_const_reg divide by zero",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 128);
+    if (code.load_const_u16(0, 1) != 0 ||
+        code.mod_const_reg(1, 0, 0) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 8l: mod_const_reg divide by zero",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
   return rc;
 }
 
