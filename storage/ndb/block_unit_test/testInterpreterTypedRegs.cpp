@@ -3533,6 +3533,179 @@ testSearchSortStringLibraryOpcodes(Ndb *ndb,
   return rc;
 }
 
+static int
+testErrorHandlerMatrix(Ndb *ndb, const NdbDictionary::Table *tab)
+{
+  Uint32 buf[256];
+  int rc = 0;
+  char mem[16];
+  memset(mem, 0, sizeof(mem));
+  putUint16(mem, 0, 10);
+  putUint16(mem, 2, 20);
+  putUint16(mem, 4, 30);
+  putUint16(mem, 6, 40);
+
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.add_reg(2, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26a: arithmetic uninitialised registers",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_null(0) != 0 ||
+        code.load_const_u16(1, 1) != 0 ||
+        code.and_reg(2, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26b: bitwise rejects NULL",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_double_const(0, 1.0) != 0 ||
+        code.load_const_u16(1, 1) != 0 ||
+        code.lshift_reg(2, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26c: shift rejects DOUBLE lhs",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u16(0, 1) != 0 ||
+        code.load_const_u16(1, 64) != 0 ||
+        code.lshift_reg(2, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26d: lshift_reg rejects shift by 64",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u16(0, 16) != 0 ||
+        code.rshift_const_reg(1, 0, 64) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26e: rshift_const_reg rejects shift by 64",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u64(0, 3037000500ULL) != 0 ||
+        code.load_const_u64(1, 3037000500ULL) != 0 ||
+        code.mul_reg(2, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26f: signed multiply overflow",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 2, 3, mem, sizeof(mem)) != 0 ||
+        code.load_double_const(0, 1.0) != 0 ||
+        code.read_uint16_to_reg_const(1, 0) != 0 ||
+        code.write_uint16_reg_to_mem_reg(1, 0) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26g: memory offset rejects DOUBLE",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u64(0, 0xFFFFFFFFFFFFFFFFULL) != 0 ||
+        code.load_const_u16(1, 1) != 0 ||
+        code.bzero(0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26h: bzero rejects negative offset",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u16(0, 65535) != 0 ||
+        code.load_const_u16(1, 2) != 0 ||
+        code.bzero(0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26i: bzero rejects range overflow",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u16(0, 20) != 0 ||
+        code.load_const_u32(1, 65535) != 0 ||
+        code.write_size_mem(1, 0) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26j: write_size_mem rejects huge size",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u64(2, 0xFFFFFFFFFFFFFFFFULL) != 0 ||
+        code.load_const_u16(3, 4) != 0 ||
+        code.binary_search_16(2, 0, 3, 4, 0) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26k: binary_search rejects negative ordinal",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 20) != 0 ||
+        code.load_const_u16(3, 4) != 0 ||
+        code.binary_search_16(2, 0, 3, 4, 9) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26l: binary_search rejects search mode",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 20) != 0 ||
+        code.load_const_u16(3, 4) != 0 ||
+        code.search_interval_16(2, 0, 3, 4, 2) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26m: search_interval rejects mode",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 20) != 0 ||
+        code.load_const_u16(3, 4) != 0 ||
+        code.binary_search_odd(2, 0, 3, 4, 0, 2) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26n: binary_search_odd rejects size",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 4) != 0 ||
+        code.qsort_instr(0, 2, 7) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26o: qsort rejects unsupported size",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 4) != 0 ||
+        code.compress_num_array(0, 2, 4, 4) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26p: compress_num_array rejects sizes",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u16(0, 65535) != 0 ||
+        code.load_const_u16(1, 2) != 0 ||
+        code.load_const_u16(2, 0) != 0 ||
+        code.load_const_u16(3, 1) != 0 ||
+        code.string_search(0, 1, 2, 3, 4) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26q: string_search rejects memory bounds",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+
+  return rc;
+}
+
 struct TestEntry {
   int number;
   int (*fn)(Ndb *, const NdbDictionary::Table *);
@@ -3563,7 +3736,8 @@ static const TestEntry g_tests[] = {
   { 22, testStringAndBinaryTypeMatrix },
   { 23, testDateTimeAndDecimalTriage },
   { 24, testMemoryOpcodeExpansion },
-  { 25, testSearchSortStringLibraryOpcodes }
+  { 25, testSearchSortStringLibraryOpcodes },
+  { 26, testErrorHandlerMatrix }
 };
 
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
