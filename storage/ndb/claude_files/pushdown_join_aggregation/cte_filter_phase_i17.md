@@ -2,7 +2,24 @@
 
 ## Status
 
-Planned.
+**Shipped.**  Five commits on `RONDB-1050-cte-filter`:
+
+| Commit | Scope |
+|--------|-------|
+| `a2e75657e47` | I.17a — RonSQL relaxation: CTE bodies without GROUP BY accepted as long as every output is an aggregate.  Mixed non-aggregate columns without GROUP BY still rejected with a clear error |
+| `cfaf99441d3` | I.17 MTR — `ronsql_cte_scalar.test` Tests 1-5: scalar MAX populated, scalar MAX / COUNT empty, multi-aggregate populated, and a negative test for non-aggregate columns without GROUP BY |
+| `3aa426b3fb9` | Kernel — `JoinAggInterpreter::Init` pre-zeroes COUNT slots in scalar mode so empty input emits 0 (not NULL) for COUNT.  `cteScanEmitResults` initially relaxed the `processed_rows() > 0` precondition |
+| `b4c337a7ac6` | Kernel — interim single-emitter rule via `m_cte_node_list[0]`.  Replaced by I.17e |
+| `d0b9d6e9dd2` | I.17e kernel — cross-node scalar redistribute.  Owner = DBTC's data node (via `refToNode(state->m_senderRef)`).  `JoinAggInterpreter::mergeOneGroup` dispatches `keyLen == 0` to a new `mergeScalarAccumulators`.  `Dblqh::sendScalarRedistributeReq` packages `m_agg_results` into a `JoinAggRedistributeReq` with `keyLen = 0`.  `cteScanShouldEmitScalar` simplifies to `refToNode(state->m_senderRef) == getOwnNodeId()`.  Plan + what-shipped in `cte_filter_phase_i17_redistribute.md` |
+
+After this work, `ronsql_cte_scalar.test` Tests 1-4 produce empty
+`== Diff ==` blocks and Test 5 emits the new "non-aggregate
+output columns and must contain GROUP BY" reject.  No regressions
+in the existing grouped-CTE path.
+
+The watermark / cross-CTE-join shape from the original plan
+remains pending until RonSQL gains comma / cross-join parsing
+on the main SELECT.
 
 ## Problem
 

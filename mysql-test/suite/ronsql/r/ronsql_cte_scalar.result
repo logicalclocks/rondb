@@ -1,0 +1,88 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+
+=== Test 1: scalar MAX over a populated table ===
+== Query ==
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s|
+m
+100
+
+
+=== Test 2: scalar MAX over empty input — returns NULL ===
+== Query ==
+WITH s AS (SELECT MAX(v) AS m FROM scalar_empty)
+SELECT m FROM s;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(v) AS m FROM scalar_empty)
+SELECT m FROM s|
+m
+NULL
+
+
+=== Test 3: scalar COUNT(*) over empty input — returns 0 ===
+== Query ==
+WITH s AS (SELECT COUNT(*) AS n FROM scalar_empty)
+SELECT n FROM s;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT COUNT(*) AS n FROM scalar_empty)
+SELECT n FROM s|
+n
+0
+
+
+=== Test 4: scalar CTE with MIN + MAX + SUM + COUNT ===
+== Query ==
+WITH s AS (SELECT MIN(v) AS lo, MAX(v) AS hi,
+SUM(v) AS total, COUNT(*) AS n
+FROM scalar_t)
+SELECT lo, hi, total, n FROM s;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MIN(v) AS lo, MAX(v) AS hi,
+SUM(v) AS total, COUNT(*) AS n
+FROM scalar_t)
+SELECT lo, hi, total, n FROM s|
+lo	hi	total	n
+10	100	210	5
+
+
+=== Test 5: CTE with non-aggregate column and no GROUP BY — must reject ===
+CTE 's' has non-aggregate output columns and must contain GROUP BY.
+Error handling: RPE
+ronsql_cli caught exception: CTE has non-aggregate columns without GROUP BY.
