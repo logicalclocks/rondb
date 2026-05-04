@@ -64,10 +64,32 @@ typedef void (*JitEntry)(JitState *);
 /* Compiled program handle. Opaque outside jit1.c. */
 typedef struct Jit1Prog Jit1Prog;
 
+/* Optional per-phase timing breakdown of jit1_compile. Caller may
+ * pass NULL. All values in nanoseconds, computed via
+ * CLOCK_MONOTONIC_RAW (or CLOCK_MONOTONIC where unavailable).
+ *
+ * Phases sum to total_ns minus measurement overhead (~6× the cost
+ * of a clock_gettime call, which is ~10-15 ns per sample on x86_64
+ * — small relative to the phase totals). */
+typedef struct {
+  uint64_t total_ns;          /* jit1_compile entry to exit */
+  uint64_t pass1_ns;          /* bytecode walk + size compute */
+  uint64_t alloc_ns;          /* arena bump-pointer alloc */
+  uint64_t emit_ns;           /* memcpy stencils + hole patch + branch fixups */
+  uint64_t seal_ns;           /* arena seal (icache flush, RW->RX translate) */
+  uint64_t handle_ns;         /* Jit1Prog malloc + populate */
+} Jit1Timing;
+
 /* Compile `prog` into `arena`. Returns NULL on arena OOM (the only
  * failure mode in Phase 1). The returned handle remains valid until
- * the arena is destroyed. */
-Jit1Prog *jit1_compile(NdbJitArena *arena, const Program *prog);
+ * the arena is destroyed.
+ *
+ * If `out_timing` is non-NULL, the per-phase breakdown is written
+ * there. Pass NULL when timing isn't needed (no measurement
+ * overhead is paid in that case). */
+Jit1Prog *jit1_compile(NdbJitArena *arena,
+                       const Program *prog,
+                       Jit1Timing *out_timing);
 
 /* Get the per-row entry pointer. Must be called after compile;
  * always succeeds for a non-NULL prog. */

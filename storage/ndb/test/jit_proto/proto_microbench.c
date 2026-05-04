@@ -160,13 +160,22 @@ int main(int argc, char **argv) {
 
   double *compile_samples = (double *)calloc((size_t)repeats, sizeof(double));
   double *jit_per_row_samples = (double *)calloc((size_t)repeats, sizeof(double));
+  /* Per-phase timing samples — same length as compile_samples,
+   * indexed by iteration. */
+  double *pass1_samples  = (double *)calloc((size_t)repeats, sizeof(double));
+  double *alloc_samples  = (double *)calloc((size_t)repeats, sizeof(double));
+  double *emit_samples   = (double *)calloc((size_t)repeats, sizeof(double));
+  double *seal_samples   = (double *)calloc((size_t)repeats, sizeof(double));
+  double *handle_samples = (double *)calloc((size_t)repeats, sizeof(double));
   size_t  emitted = 0;
   int64_t acc_jit = 0;
-  if (!compile_samples || !jit_per_row_samples) {
+  if (!compile_samples || !jit_per_row_samples || !pass1_samples ||
+      !alloc_samples || !emit_samples || !seal_samples || !handle_samples) {
     fprintf(stderr, "FAIL OOM samples\n");
-    free(compile_samples);
-    free(jit_per_row_samples);
-    free(rows);
+    free(compile_samples);   free(jit_per_row_samples);
+    free(pass1_samples);     free(alloc_samples);
+    free(emit_samples);      free(seal_samples);
+    free(handle_samples);    free(rows);
     return 3;
   }
 
@@ -174,20 +183,32 @@ int main(int argc, char **argv) {
     NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
     if (!arena) {
       perror("ndb_jit_arena_create");
-      free(compile_samples); free(jit_per_row_samples); free(rows);
+      free(compile_samples);   free(jit_per_row_samples);
+      free(pass1_samples);     free(alloc_samples);
+      free(emit_samples);      free(seal_samples);
+      free(handle_samples);    free(rows);
       return 3;
     }
 
+    Jit1Timing t = {0};
     uint64_t t_c0 = now_ns();
-    Jit1Prog *jp = jit1_compile(arena, &prog);
+    Jit1Prog *jp = jit1_compile(arena, &prog, &t);
     uint64_t t_c1 = now_ns();
     if (!jp) {
       fprintf(stderr, "FAIL jit1_compile errno=%d (iter=%d)\n", errno, it);
       ndb_jit_arena_destroy(arena);
-      free(compile_samples); free(jit_per_row_samples); free(rows);
+      free(compile_samples);   free(jit_per_row_samples);
+      free(pass1_samples);     free(alloc_samples);
+      free(emit_samples);      free(seal_samples);
+      free(handle_samples);    free(rows);
       return 4;
     }
     compile_samples[it] = (double)(t_c1 - t_c0);
+    pass1_samples[it]  = (double)t.pass1_ns;
+    alloc_samples[it]  = (double)t.alloc_ns;
+    emit_samples[it]   = (double)t.emit_ns;
+    seal_samples[it]   = (double)t.seal_ns;
+    handle_samples[it] = (double)t.handle_ns;
     if (it == 0) emitted = jit1_emitted_size(jp);
 
     JitEntry entry = jit1_entry(jp);
@@ -203,7 +224,10 @@ int main(int argc, char **argv) {
                       " -> %" PRId64 " at iter=%d\n",
               acc_jit, acc_this, it);
       ndb_jit_arena_destroy(arena);
-      free(compile_samples); free(jit_per_row_samples); free(rows);
+      free(compile_samples);   free(jit_per_row_samples);
+      free(pass1_samples);     free(alloc_samples);
+      free(emit_samples);      free(seal_samples);
+      free(handle_samples);    free(rows);
       return 1;
     }
 
@@ -215,12 +239,20 @@ int main(int argc, char **argv) {
     fprintf(stderr, "FAIL acc mismatch: interp=%" PRId64
                     " jit=%" PRId64 "\n",
             acc_interp, acc_jit);
-    free(compile_samples); free(jit_per_row_samples); free(rows);
+    free(compile_samples);   free(jit_per_row_samples);
+    free(pass1_samples);     free(alloc_samples);
+    free(emit_samples);      free(seal_samples);
+    free(handle_samples);    free(rows);
     return 1;
   }
 
   /* ---------------- Distil the distributions ---------------- */
   double cold_compile_ns = compile_samples[0];
+  double cold_pass1_ns   = pass1_samples[0];
+  double cold_alloc_ns   = alloc_samples[0];
+  double cold_emit_ns    = emit_samples[0];
+  double cold_seal_ns    = seal_samples[0];
+  double cold_handle_ns  = handle_samples[0];
 
   /* Warm = iterations 1..N-1 (drop the cold first one). */
   size_t warm_n = (size_t)(repeats - 1);
@@ -229,6 +261,29 @@ int main(int argc, char **argv) {
   double warm_compile_min = warm_compile[0];
   double warm_compile_med = warm_compile[warm_n / 2];
   double warm_compile_p99 = dbl_pct(warm_compile, warm_n, 0.99);
+
+  /* Per-phase warm medians + p99. We sort each phase's warm samples
+   * independently — the sum of phase medians won't exactly equal
+   * total_compile_med because each phase's median may come from a
+   * different iteration. Phase numbers below are nonetheless
+   * representative of "typical" cost per phase. */
+  qsort(pass1_samples  + 1, warm_n, sizeof(double), dbl_cmp);
+  qsort(alloc_samples  + 1, warm_n, sizeof(double), dbl_cmp);
+  qsort(emit_samples   + 1, warm_n, sizeof(double), dbl_cmp);
+  qsort(seal_samples   + 1, warm_n, sizeof(double), dbl_cmp);
+  qsort(handle_samples + 1, warm_n, sizeof(double), dbl_cmp);
+  double warm_pass1_med  = pass1_samples [1 + warm_n / 2];
+  double warm_alloc_med  = alloc_samples [1 + warm_n / 2];
+  double warm_emit_med   = emit_samples  [1 + warm_n / 2];
+  double warm_seal_med   = seal_samples  [1 + warm_n / 2];
+  double warm_handle_med = handle_samples[1 + warm_n / 2];
+  double warm_pass1_p99  = dbl_pct(pass1_samples  + 1, warm_n, 0.99);
+  double warm_alloc_p99  = dbl_pct(alloc_samples  + 1, warm_n, 0.99);
+  double warm_emit_p99   = dbl_pct(emit_samples   + 1, warm_n, 0.99);
+  double warm_seal_p99   = dbl_pct(seal_samples   + 1, warm_n, 0.99);
+  double warm_handle_p99 = dbl_pct(handle_samples + 1, warm_n, 0.99);
+  double phase_sum_med   = warm_pass1_med + warm_alloc_med +
+                           warm_emit_med + warm_seal_med + warm_handle_med;
 
   qsort(jit_per_row_samples, (size_t)repeats, sizeof(double), dbl_cmp);
   double jit_ns_per_row_med = jit_per_row_samples[(size_t)repeats / 2];
@@ -290,6 +345,40 @@ int main(int argc, char **argv) {
          break_even_rows, "< 5000 rows",
          breakeven_ok ? mark_ok : mark_fail);
   printf("\n");
+
+  /* ---------------- Compile breakdown ---------------- */
+  /* Per-phase warm medians + p99. Total may differ slightly from
+   * the sum because each phase's median is independent. */
+  printf("  Compile breakdown — warm median (% of warm-median total):\n");
+  printf("  ---------------------------------------------------------\n");
+  printf("  pass1 (size walk)    : %5.0f ns   (%4.1f%%)   p99 %.0f ns\n",
+         warm_pass1_med,
+         100.0 * warm_pass1_med / phase_sum_med,
+         warm_pass1_p99);
+  printf("  arena alloc          : %5.0f ns   (%4.1f%%)   p99 %.0f ns\n",
+         warm_alloc_med,
+         100.0 * warm_alloc_med / phase_sum_med,
+         warm_alloc_p99);
+  printf("  emit + patch         : %5.0f ns   (%4.1f%%)   p99 %.0f ns\n",
+         warm_emit_med,
+         100.0 * warm_emit_med / phase_sum_med,
+         warm_emit_p99);
+  printf("  arena seal           : %5.0f ns   (%4.1f%%)   p99 %.0f ns\n",
+         warm_seal_med,
+         100.0 * warm_seal_med / phase_sum_med,
+         warm_seal_p99);
+  printf("  malloc handle        : %5.0f ns   (%4.1f%%)   p99 %.0f ns\n",
+         warm_handle_med,
+         100.0 * warm_handle_med / phase_sum_med,
+         warm_handle_p99);
+  printf("  -- sum of phase meds : %5.0f ns\n", phase_sum_med);
+  printf("\n");
+  printf("  Cold first-compile breakdown (informational):\n");
+  printf("  pass1=%4.0f ns  alloc=%4.0f ns  emit=%4.0f ns  "
+         "seal=%4.0f ns  handle=%4.0f ns\n",
+         cold_pass1_ns, cold_alloc_ns, cold_emit_ns,
+         cold_seal_ns, cold_handle_ns);
+  printf("\n");
   printf("VERDICT: %s\n",
          all_ok        ? "PASS - all three Phase 1 thresholds cleared"
        : speedup_ok && breakeven_ok && !compile_ok
@@ -310,9 +399,10 @@ int main(int argc, char **argv) {
          warm_compile_p99,
          speedup, break_even_rows);
 
-  free(compile_samples);
-  free(jit_per_row_samples);
-  free(rows);
+  free(compile_samples);   free(jit_per_row_samples);
+  free(pass1_samples);     free(alloc_samples);
+  free(emit_samples);      free(seal_samples);
+  free(handle_samples);    free(rows);
   return all_ok ? 0 : 6;
 #endif
 }

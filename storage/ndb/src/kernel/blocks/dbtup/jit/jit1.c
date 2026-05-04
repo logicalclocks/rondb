@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if !defined(__x86_64__)
 /* Phase 1 is x86_64 only. The aarch64 stencils need a different
@@ -44,9 +45,12 @@
 
 struct Jit1Prog { int unused; };
 
-Jit1Prog *jit1_compile(NdbJitArena *arena, const Program *prog) {
+Jit1Prog *jit1_compile(NdbJitArena *arena,
+                       const Program *prog,
+                       Jit1Timing *out_timing) {
   (void)arena;
   (void)prog;
+  if (out_timing) memset(out_timing, 0, sizeof(*out_timing));
   errno = ENOTSUP;
   return NULL;
 }
@@ -128,14 +132,38 @@ static inline int32_t hole_value_from_op(uint8_t kind, const Op *op) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Per-phase timing helpers.                                          */
+/* ------------------------------------------------------------------ */
+
+#if defined(CLOCK_MONOTONIC_RAW)
+#define J1_CLOCK CLOCK_MONOTONIC_RAW
+#else
+#define J1_CLOCK CLOCK_MONOTONIC
+#endif
+
+static inline uint64_t j1_now_ns(void) {
+  struct timespec ts;
+  clock_gettime(J1_CLOCK, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+/* ------------------------------------------------------------------ */
 /* Compile — entry point.                                             */
 /* ------------------------------------------------------------------ */
 
-Jit1Prog *jit1_compile(NdbJitArena *arena, const Program *prog) {
+Jit1Prog *jit1_compile(NdbJitArena *arena,
+                       const Program *prog,
+                       Jit1Timing *out_timing) {
+  if (out_timing) memset(out_timing, 0, sizeof(*out_timing));
+
   if (!arena || !prog || prog->n_ops == 0 || prog->n_ops > BC_MAX_OPS) {
     errno = EINVAL;
     return NULL;
   }
+
+  uint64_t t_entry = out_timing ? j1_now_ns() : 0;
+  uint64_t t_pass1_end = 0, t_alloc_end = 0, t_emit_end = 0,
+           t_seal_end = 0, t_handle_end = 0;
 
   /* ---------------------------------------------------------------- */
   /* Pass 1: walk bytecode, compute per-pc byte offsets, total size.  */
@@ -170,6 +198,8 @@ Jit1Prog *jit1_compile(NdbJitArena *arena, const Program *prog) {
   }
   pc_byte_off[prog->n_ops] = total;
 
+  if (out_timing) t_pass1_end = j1_now_ns();
+
   /* ---------------------------------------------------------------- */
   /* Allocate space in the arena: blob bytes + the Jit1Prog handle.  */
   /* The handle is allocated separately (via malloc) because it must  */
@@ -182,6 +212,8 @@ Jit1Prog *jit1_compile(NdbJitArena *arena, const Program *prog) {
     errno = ENOMEM;
     return NULL;
   }
+
+  if (out_timing) t_alloc_end = j1_now_ns();
 
   /* Emit the entry preamble. */
   memcpy(blob_rw, kPreamble, PREAMBLE_SIZE);
@@ -272,6 +304,8 @@ Jit1Prog *jit1_compile(NdbJitArena *arena, const Program *prog) {
     return NULL;
   }
 
+  if (out_timing) t_emit_end = j1_now_ns();
+
   /* ---------------------------------------------------------------- */
   /* Seal the arena range and obtain the RX-mapping pointer.          */
   /* ---------------------------------------------------------------- */
@@ -282,6 +316,8 @@ Jit1Prog *jit1_compile(NdbJitArena *arena, const Program *prog) {
     return NULL;
   }
 
+  if (out_timing) t_seal_end = j1_now_ns();
+
   Jit1Prog *handle = (Jit1Prog *)calloc(1, sizeof(*handle));
   if (!handle) {
     errno = ENOMEM;
@@ -289,6 +325,17 @@ Jit1Prog *jit1_compile(NdbJitArena *arena, const Program *prog) {
   }
   handle->rx_entry = (const uint8_t *)rx;
   handle->emitted  = total;
+
+  if (out_timing) {
+    t_handle_end = j1_now_ns();
+    out_timing->pass1_ns  = t_pass1_end  - t_entry;
+    out_timing->alloc_ns  = t_alloc_end  - t_pass1_end;
+    out_timing->emit_ns   = t_emit_end   - t_alloc_end;
+    out_timing->seal_ns   = t_seal_end   - t_emit_end;
+    out_timing->handle_ns = t_handle_end - t_seal_end;
+    out_timing->total_ns  = t_handle_end - t_entry;
+  }
+
   return handle;
 }
 
