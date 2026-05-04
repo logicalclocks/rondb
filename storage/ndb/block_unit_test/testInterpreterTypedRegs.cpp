@@ -38,6 +38,8 @@
 #include <ndb_opts.h>
 #include <NdbApi.hpp>
 #include <NdbInterpretedCode.hpp>
+#include <NdbSqlUtil.hpp>
+#include <decimal_utils.hpp>
 
 #include <mysql.h>
 
@@ -156,6 +158,7 @@ static int
 createTestTable(MYSQL *conn)
 {
   dropTestTable(conn);
+  if (sqlExec(conn, "SET time_zone = '+00:00'") != 0) return -1;
   if (sqlExec(conn,
       "CREATE TABLE interp_typed_regs ("
       "  pk INT NOT NULL,"
@@ -184,6 +187,15 @@ createTestTable(MYSQL *conn)
       "  vb_val VARBINARY(8) NOT NULL,"
       "  c_wide CHAR(12) NOT NULL,"
       "  v_wide VARCHAR(16) NOT NULL,"
+      "  date_val DATE NOT NULL,"
+      "  date_val2 DATE NOT NULL,"
+      "  dt_val DATETIME NOT NULL,"
+      "  dt_val2 DATETIME NOT NULL,"
+      "  ts_val TIMESTAMP NULL,"
+      "  time_val TIME NOT NULL,"
+      "  year_val YEAR NOT NULL,"
+      "  dec_val DECIMAL(9,2) NOT NULL,"
+      "  dec_val2 DECIMAL(9,2) NOT NULL,"
       "  PRIMARY KEY USING HASH (pk)"
       ") ENGINE=NDB") != 0) return -1;
 
@@ -193,33 +205,51 @@ createTestTable(MYSQL *conn)
       "     5, 1000, 100000, 4000000000, 9223372036854775808,"
       "     -1.5, 4.5, NULL, NULL,"
       "     -1.5, 4.5, NULL, 'alpha', '12345', b'00001111',"
-      "     x'6162007A20FF', x'', 'pad', ''),"
+      "     x'6162007A20FF', x'', 'pad', '',"
+      "     '2024-01-01', '2024-01-01',"
+      "     '2024-01-01 10:00:00', '2024-01-01 10:00:00',"
+      "     '2024-01-01 00:00:00', '01:02:03', 2024, 10.50, 10.50),"
       " (2,  5,   500,   50000,   500000, 500000, -1,"
       "    20, 2000, 200000, 3000000000, 10,"
       "      2.5, 8.0, 7, 8.0,"
       "      2.5, 8.0, 8.0, 'beta', '77', b'11110000',"
-      "     x'000102030405', x'41', 'a', 'one'),"
+      "     x'000102030405', x'41', 'a', 'one',"
+      "     '2024-06-15', '2024-01-01',"
+      "     '2024-06-15 12:00:00', '2024-01-01 00:00:00',"
+      "     '2024-06-15 00:00:00', '12:00:00', 2025, -1.25, 0.00),"
       " (3, 20, 20000,  500000, 20000000, 10000000, 9223372036854775807,"
       "   250, 65000, 8000000, 1, 9223372036854775813,"
       "     12.5, 16.25, -3, 16.25,"
       "     16.25, 12.5, 16.25, 'gamma', '-8', b'10101010',"
       "     x'FF807F000102', x'000041FF', 'alpha beta',"
-      "     'sixteen-byte-str'),"
+      "     'sixteen-byte-str',"
+      "     '1999-12-31', '2000-01-01',"
+      "     '1999-12-31 23:59:59', '2000-01-01 00:00:00',"
+      "     '2000-01-01 00:00:00', '23:59:59', 1999, 99999.99, 99999.99),"
       " (4, -1,    -1,      -1,       -1, 2, 42,"
       "     1,    1,      1, 2, 42,"
       "      0.0, -2.0, 0, -2.0,"
       "     -0.0, 0.0, -0.0, 'delta', '0', b'00000000',"
-      "     x'202020202020', x'616263', 'trail   ', 'trail   '),"
+      "     x'202020202020', x'616263', 'trail   ', 'trail   ',"
+      "     '2024-01-01', '2024-01-02',"
+      "     '2024-01-01 00:00:00', '2024-01-01 00:01:00',"
+      "     NULL, '00:00:00', 2000, 0.00, -0.01),"
       " (5, -128, -32768, -8388608, -2147483648, -1, -9223372036854775808,"
       "     0, 0, 0, 0, 0,"
       "     -3.25, -64.0, NULL, NULL,"
       "     -3.25, -64.0, NULL, 'epsilon', '922', b'01010101',"
-      "     x'404040404040', x'FFFE', '', 'z'),"
+      "     x'404040404040', x'FFFE', '', 'z',"
+      "     '2026-12-31', '2026-12-30',"
+      "     '2026-12-31 23:59:59', '2026-12-30 00:00:00',"
+      "     '2026-12-31 00:00:00', '23:59:59', 2155, -99999.99, -99999.99),"
       " (6, 127, 32767, 8388607, 2147483647, 2147483647, 9223372036854775807,"
       "     255, 65535, 16777215, 4294967295, 18446744073709551615,"
       "     3.25, 64.0, 2147483647, 64.0,"
       "     64.0, 3.25, 64.0, 'zeta', '42', b'11111111',"
-      "     x'6162007A20FD', x'6162636465666768', 'pad', 'abc%def')"
+      "     x'6162007A20FD', x'6162636465666768', 'pad', 'abc%def',"
+      "     '2024-01-02', '2024-01-01',"
+      "     '2024-01-02 06:30:00', '2024-01-02 06:30:00',"
+      "     '2030-01-01 00:00:00', '06:30:00', 1901, 123.45, 120.00)"
       ) != 0) return -1;
 
   return createBoundaryTable(conn);
@@ -2611,6 +2641,288 @@ testStringAndBinaryTypeMatrix(Ndb *ndb,
   return rc;
 }
 
+static int
+packDateConst(const NdbDictionary::Table *tab, Uint32 attr,
+              uint year, uint month, uint day,
+              unsigned char *out, Uint32 *bytes)
+{
+  const NdbDictionary::Column *col = tab->getColumn(attr);
+  if (col == NULL) return -1;
+  memset(out, 0, 16);
+  NdbSqlUtil::Date value;
+  value.year = year;
+  value.month = month;
+  value.day = day;
+  if (col->getType() != NdbDictionary::Column::Date) return -1;
+  NdbSqlUtil::pack_date(value, out);
+  *bytes = (Uint32)col->getSizeInBytes();
+  return 0;
+}
+
+static int
+packDatetimeConst(const NdbDictionary::Table *tab, Uint32 attr,
+                  uint year, uint month, uint day,
+                  uint hour, uint minute, uint second,
+                  unsigned char *out, Uint32 *bytes)
+{
+  const NdbDictionary::Column *col = tab->getColumn(attr);
+  if (col == NULL) return -1;
+  memset(out, 0, 16);
+  if (col->getType() == NdbDictionary::Column::Datetime) {
+    NdbSqlUtil::Datetime value;
+    value.year = year;
+    value.month = month;
+    value.day = day;
+    value.hour = hour;
+    value.minute = minute;
+    value.second = second;
+    NdbSqlUtil::pack_datetime(value, out);
+  } else if (col->getType() == NdbDictionary::Column::Datetime2) {
+    NdbSqlUtil::Datetime2 value;
+    value.sign = 1;
+    value.year = year;
+    value.month = month;
+    value.day = day;
+    value.hour = hour;
+    value.minute = minute;
+    value.second = second;
+    value.fraction = 0;
+    NdbSqlUtil::pack_datetime2(value, out, (uint)col->getPrecision());
+  } else {
+    return -1;
+  }
+  *bytes = (Uint32)col->getSizeInBytes();
+  return 0;
+}
+
+static int
+packTimestampConst(const NdbDictionary::Table *tab, Uint32 attr,
+                   uint second, unsigned char *out, Uint32 *bytes)
+{
+  const NdbDictionary::Column *col = tab->getColumn(attr);
+  if (col == NULL) return -1;
+  memset(out, 0, 16);
+  if (col->getType() == NdbDictionary::Column::Timestamp) {
+    NdbSqlUtil::Timestamp value;
+    value.second = second;
+    NdbSqlUtil::pack_timestamp(value, out);
+  } else if (col->getType() == NdbDictionary::Column::Timestamp2) {
+    NdbSqlUtil::Timestamp2 value;
+    value.second = second;
+    value.fraction = 0;
+    NdbSqlUtil::pack_timestamp2(value, out, (uint)col->getPrecision());
+  } else {
+    return -1;
+  }
+  *bytes = (Uint32)col->getSizeInBytes();
+  return 0;
+}
+
+static int
+packTimeConst(const NdbDictionary::Table *tab, Uint32 attr,
+              uint hour, uint minute, uint second,
+              unsigned char *out, Uint32 *bytes)
+{
+  const NdbDictionary::Column *col = tab->getColumn(attr);
+  if (col == NULL) return -1;
+  memset(out, 0, 16);
+  if (col->getType() == NdbDictionary::Column::Time) {
+    NdbSqlUtil::Time value;
+    value.sign = 1;
+    value.hour = hour;
+    value.minute = minute;
+    value.second = second;
+    NdbSqlUtil::pack_time(value, out);
+  } else if (col->getType() == NdbDictionary::Column::Time2) {
+    NdbSqlUtil::Time2 value;
+    value.sign = 1;
+    value.interval = 0;
+    value.hour = hour;
+    value.minute = minute;
+    value.second = second;
+    value.fraction = 0;
+    NdbSqlUtil::pack_time2(value, out, (uint)col->getPrecision());
+  } else {
+    return -1;
+  }
+  *bytes = (Uint32)col->getSizeInBytes();
+  return 0;
+}
+
+static int
+packYearConst(const NdbDictionary::Table *tab, Uint32 attr,
+              uint year, unsigned char *out, Uint32 *bytes)
+{
+  const NdbDictionary::Column *col = tab->getColumn(attr);
+  if (col == NULL) return -1;
+  memset(out, 0, 16);
+  NdbSqlUtil::Year value;
+  value.year = year;
+  if (col->getType() != NdbDictionary::Column::Year) return -1;
+  NdbSqlUtil::pack_year(value, out);
+  *bytes = (Uint32)col->getSizeInBytes();
+  return 0;
+}
+
+static int
+packDecimal9_2Const(const char *value, unsigned char out[5])
+{
+  int rc = decimal_str2bin(value, (int)strlen(value), 9, 2, out, 5);
+  return (rc == E_DEC_OK) ? 0 : -1;
+}
+
+static int
+testDateTimeAndDecimalTriage(Ndb *ndb,
+                             const NdbDictionary::Table *tab)
+{
+  Uint32 dateAttr = attrId(tab, "date_val");
+  Uint32 date2Attr = attrId(tab, "date_val2");
+  Uint32 dtAttr = attrId(tab, "dt_val");
+  Uint32 dt2Attr = attrId(tab, "dt_val2");
+  Uint32 tsAttr = attrId(tab, "ts_val");
+  Uint32 timeAttr = attrId(tab, "time_val");
+  Uint32 yearAttr = attrId(tab, "year_val");
+  Uint32 decAttr = attrId(tab, "dec_val");
+  Uint32 dec2Attr = attrId(tab, "dec_val2");
+  Uint32 buf[192];
+  unsigned char value[16];
+  Uint32 valueBytes = 0;
+  int rc = 0;
+
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1, 4 };
+    if (packDateConst(tab, dateAttr, 2024, 1, 1,
+                      value, &valueBytes) != 0 ||
+        code.branch_col_eq(value, valueBytes, dateAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23a: DATE equality",
+                  ndb, tab, &code, expected, 2) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 2, 5, 6 };
+    if (packDateConst(tab, dateAttr, 2024, 1, 1,
+                      value, &valueBytes) != 0 ||
+        code.branch_col_lt(value, valueBytes, dateAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23b: DATE ordering",
+                  ndb, tab, &code, expected, 3) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1 };
+    if (code.branch_col_eq(dateAttr, date2Attr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23c: DATE attr-attr equality",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1, 2, 5, 6 };
+    if (packDatetimeConst(tab, dtAttr, 2024, 1, 1, 0, 0, 0,
+                          value, &valueBytes) != 0 ||
+        code.branch_col_lt(value, valueBytes, dtAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23d: DATETIME ordering",
+                  ndb, tab, &code, expected, 4) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 2, 5 };
+    if (code.branch_col_lt(dtAttr, dt2Attr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23e: DATETIME attr-attr ordering",
+                  ndb, tab, &code, expected, 2) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1, 2, 3, 5, 6 };
+    if (code.branch_col_ne_null(tsAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23f: TIMESTAMP IS NOT NULL",
+                  ndb, tab, &code, expected, 5) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 2, 5, 6 };
+    if (packTimestampConst(tab, tsAttr, 1704067200U,
+                           value, &valueBytes) != 0 ||
+        code.branch_col_lt(value, valueBytes, tsAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23g: TIMESTAMP ordering",
+                  ndb, tab, &code, expected, 3) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 4 };
+    if (packTimeConst(tab, timeAttr, 0, 0, 0,
+                      value, &valueBytes) != 0 ||
+        code.branch_col_eq(value, valueBytes, timeAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23h: TIME equality",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 2, 3, 5, 6 };
+    if (packTimeConst(tab, timeAttr, 6, 0, 0,
+                      value, &valueBytes) != 0 ||
+        code.branch_col_lt(value, valueBytes, timeAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23i: TIME ordering",
+                  ndb, tab, &code, expected, 4) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1 };
+    if (packYearConst(tab, yearAttr, 2024, value, &valueBytes) != 0 ||
+        code.branch_col_eq(value, valueBytes, yearAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23j: YEAR equality",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 2, 5 };
+    if (packYearConst(tab, yearAttr, 2024, value, &valueBytes) != 0 ||
+        code.branch_col_lt(value, valueBytes, yearAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23k: YEAR ordering",
+                  ndb, tab, &code, expected, 2) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    unsigned char decValue[5];
+    const int expected[] = { 1 };
+    if (packDecimal9_2Const("10.50", decValue) != 0 ||
+        code.branch_col_eq(decValue, sizeof(decValue), decAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23l: DECIMAL equality",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    unsigned char decValue[5];
+    const int expected[] = { 1, 3, 6 };
+    if (packDecimal9_2Const("0.00", decValue) != 0 ||
+        code.branch_col_lt(decValue, sizeof(decValue), decAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23m: DECIMAL ordering",
+                  ndb, tab, &code, expected, 3) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1, 3, 5 };
+    if (code.branch_col_eq(decAttr, dec2Attr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 23n: DECIMAL attr-attr equality",
+                  ndb, tab, &code, expected, 3) != 0) rc = -1;
+  }
+
+  return rc;
+}
+
 struct TestEntry {
   int number;
   int (*fn)(Ndb *, const NdbDictionary::Table *);
@@ -2638,7 +2950,8 @@ static const TestEntry g_tests[] = {
   { 19, testSignedUnsignedPromotionMatrix },
   { 20, testFloatDoubleMatrix },
   { 21, testColumnPredicateTypeMatrix },
-  { 22, testStringAndBinaryTypeMatrix }
+  { 22, testStringAndBinaryTypeMatrix },
+  { 23, testDateTimeAndDecimalTriage }
 };
 
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
