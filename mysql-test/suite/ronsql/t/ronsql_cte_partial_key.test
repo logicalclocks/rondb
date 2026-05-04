@@ -5,21 +5,31 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
-# Phase I.16a: clean rejection of partial-key joins to multi-key CTEs.
+# Phase I.16: partial-key joins to multi-key CTEs.
 #
 # A CTE whose body has GROUP BY (k, amt) materializes a two-column
-# virtual primary key.  Joining to such a CTE on only the first key
-# (CTE_LOOKUP with one key for a two-key virt table) used to return
-# the opaque "Failed to create child operation" error from
-# NdbQueryBuilder.  Phase I.16a adds a RonSQL-side guard in
-# emit_child_ops that detects the mismatch and throws a clear
-# permanent error naming the workaround (place the multi-key CTE
-# on the joined root and join the smaller table to it).
+# virtual primary key.  Joining to such a CTE on only one key would
+# previously return the opaque "Failed to create child operation"
+# error from NdbQueryBuilder.
 #
-# The positive-test counterpart — multi-key CTE on the root — is
-# already covered by ronsql_cte_greatest_least_v6.  Existing
-# single-key CTE_LOOKUP coverage across the ronsql suite confirms
-# the well-formed path keeps working.
+# Phase I.16a (shipped, 4e6f96dc5ae) added a RonSQL-side guard in
+# emit_child_ops that throws a clear permanent error.
+#
+# Phase I.16b (shipped, 9fcbf1e8352) goes further: for the simple
+# two-table inner-join shape with a real-table root and a CTE join
+# child carrying partial keys, RonSQL rewrites the AST so the CTE
+# becomes the join root and the original parent becomes a child.
+# The planner then produces a CTE_SCAN root with PK / unique /
+# index lookup on the original parent — same execution shape as
+# the manual workaround used by ronsql_cte_greatest_least_v6.
+#
+# Test 1 covers the rewrite (positive): the same query shape that
+# I.16a rejected now executes and matches the MySQL reference.
+# Test 2 covers a shape outside the rewrite's conservative scope
+# (LEFT JOIN), which still falls through to the I.16a clean reject.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
 
 --disable_query_log
 --disable_warnings
@@ -54,16 +64,46 @@ INSERT INTO cte_orders VALUES
 --enable_warnings
 --enable_query_log
 
---echo
---echo === Test 1: partial CTE key (1 of 2) — must be rejected ===
---echo
+DELIMITER |;
 
-# Two-column GROUP BY → virt PK is (k, amt).  Join binds only k →
-# emit_child_ops's I.16a guard throws.  Pre-I.16a, this fell
-# through to lookupCte() and produced "Failed to create child
-# operation. NDB Success 0, No error".
+--echo
+--echo
+--echo === Test 1: partial CTE key (1 of 2), inner join — auto-rewritten to CTE_SCAN root ===
+
+# Two-column GROUP BY → virt PK is (k, amt).  Join binds only k.
+# Pre-I.16b: rejected by I.16a guard.  Post-I.16b: AST rewrite
+# swaps `pairs` to root and `c` to PK_LOOKUP child; planner
+# produces CTE_SCAN root + PK_LOOKUP child.  Result must match
+# MySQL's reference exactly (same per-row aggregation by c.c_id).
+let $QUERY=
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id
+GROUP BY c.c_id|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 2: partial CTE key, LEFT JOIN — outside rewrite scope, I.16a rejects ===
+
+# LEFT_OUTER is intentionally outside I.16b's conservative first
+# cut (the rewrite would change semantics for non-matching parent
+# rows).  This shape stays on the I.16a clean-reject path.
 --error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt FROM cte_orders GROUP BY o_custkey, o_amt) SELECT c.c_id, SUM(pairs.cnt) AS s FROM cte_customer AS c JOIN pairs ON pairs.k = c.c_id GROUP BY c.c_id;' 2>&1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt FROM cte_orders GROUP BY o_custkey, o_amt) SELECT c.c_id, SUM(pairs.cnt) AS s FROM cte_customer AS c LEFT JOIN pairs ON pairs.k = c.c_id GROUP BY c.c_id;' 2>&1
 
 --disable_query_log
 DROP TABLE cte_orders;
