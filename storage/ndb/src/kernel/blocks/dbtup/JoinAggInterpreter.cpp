@@ -742,6 +742,54 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
   m_agg_prog_start_pos = m_cur_pos;
   memset(m_registers, 0, sizeof(m_registers));
 
+  /* Phase I.17: scalar aggregate (no GROUP BY) over empty input
+   * must emit COUNT = 0 (not NULL) per MySQL semantics.  The
+   * Count() handler at JoinAggInterpreter.cpp:522 lazy-initialises
+   * a COUNT slot on the first row, which never runs on empty
+   * input.  Pre-initialise every COUNT slot here so the scalar
+   * emit path in Dblqh::cteScanEmitResults sees value=0,
+   * is_null=false even when no rows were processed.  SUM / MIN /
+   * MAX slots stay is_null=true to surface NULL on empty input.
+   *
+   * The walk below is intentionally targeted at kOpCount only —
+   * cheaper than the full extractAggOps cache and runs once per
+   * Init.  Other opcodes' length encoding mirrors extractAggOps. */
+  if (m_n_gb_cols == 0 && m_n_agg_results > 0) {
+    Uint32 scan_pos = m_agg_prog_start_pos;
+    while (scan_pos < m_prog_len) {
+      Uint32 word = m_prog[scan_pos++];
+      Uint8 op = (word & 0xFC000000) >> 26;
+      switch (op) {
+        case kOpCount: {
+          Uint32 agg_index = word & 0x0000FFFF;
+          if (agg_index < m_n_agg_results) {
+            m_agg_results[agg_index].type = NDB_TYPE_BIGINT;
+            m_agg_results[agg_index].value.val_uint64 = 0;
+            m_agg_results[agg_index].is_unsigned = true;
+            m_agg_results[agg_index].is_null = false;
+          }
+          break;
+        }
+        case kOpLoadCol: {
+          Uint32 type = (word & 0x03E00000) >> 21;
+          if (type == NDB_TYPE_DECIMAL ||
+              type == NDB_TYPE_DECIMALUNSIGNED) scan_pos++;
+          break;
+        }
+        case kOpLoadConst:
+          scan_pos += 2;
+          break;
+        case kOpEmbeddedInterp: {
+          Uint32 emb_len = word & 0xFFFF;
+          scan_pos += emb_len;
+          break;
+        }
+        default:
+          break;
+      }
+    }
+  }
+
   /* Validate embedded interpreter blocks */
   {
     Uint32 scan_pos = m_agg_prog_start_pos;

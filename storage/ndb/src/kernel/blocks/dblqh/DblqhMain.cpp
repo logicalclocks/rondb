@@ -20246,12 +20246,16 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       scanState->iterRaw = iter.raw();
     }
   } else if (interp->n_gb_cols() == 0 &&
-             interp->processed_rows() > 0 &&
              scanState->groupsSent == 0) {
     /**
      * Scalar aggregate (no GROUP BY): single result in m_agg_results.
      * gb_map is nullptr for n_gb_cols==0 — results go directly to
-     * m_agg_results during aggregation.  Emit once.
+     * m_agg_results during aggregation.  Emit once even when no
+     * rows were processed (Phase I.17: MySQL scalar aggregate
+     * semantics — empty input produces one row with NULL for SUM /
+     * MIN / MAX and 0 for COUNT).  The COUNT-zeroing happens in
+     * JoinAggInterpreter::Init via a kOpCount walk over the agg
+     * program, so accumulators are already valid here.
      */
     jam();
     const Uint32 n_agg_results = interp->n_agg_results();
