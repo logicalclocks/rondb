@@ -2,16 +2,44 @@
 
 ## Status
 
-**I.16a shipped.**  I.16b and I.16c remain deferred.
+**I.16a + I.16b shipped.**  I.16c remains deferred.
+
+### I.16a — clean rejection
 
 | Commit | Scope |
 |--------|-------|
 | `4e6f96dc5ae` | RonSQL — emit_child_ops's CTE_LOOKUP arm gains a permanent-error guard.  Counts the CTE body's `groupby_columns` (the virt PK shape used by `build_cte_virtual_tables`) and compares against `op.num_key_cols`.  Mismatch throws with a self-explanatory message naming the workaround instead of letting `lookupCte()` return NULL with the opaque "Failed to create child operation" downstream |
-| `0906344763c` + recorded result | MTR — `ronsql_cte_partial_key.test` exercises the rejected shape (two-column GROUP BY CTE, join on one key) and confirms the new message.  Recorded `.result` shows `Error handling: RPE` followed by the I.16a string — the SRE,te→RPE chain that wrapped the old NdbQueryBuilder failure is gone |
+| `0906344763c` + `f43c822ce60` | MTR — `ronsql_cte_partial_key.test` exercises the rejected shape and confirms the new message.  Recorded `.result` shows `Error handling: RPE` followed by the I.16a string — the SRE,te→RPE chain that wrapped the old NdbQueryBuilder failure is gone |
 
-I.16b (planner-side rewrite to CTE_SCAN root when partial key
-detected) and I.16c (true non-root CTE_SCAN child support) stay
-on the queue per the original phase split below.
+### I.16b — auto-rewrite to CTE_SCAN root
+
+Took the AST-rewrite approach (cheaper than mutating the planner
+output): pre-planner pass in `load_join` swaps `root_table` with
+`joins[0].table` and flips every ON condition's child / parent
+fields, then `QueryPlanner::plan` runs against the swapped AST and
+produces a CTE_SCAN root with the original parent as a child via
+its existing PK / unique / index lookup logic.
+
+Conservative first cut — applies only when:
+- exactly one JOIN clause, INNER
+- the JOIN target is a CTE in scope (multi-key)
+- the CTE has GROUP BY with N columns and the join binds fewer
+  than N column-pairs (i.e. would otherwise hit the I.16a guard)
+- the original root is a real table (not a CTE)
+
+| Commit | Scope |
+|--------|-------|
+| `9fcbf1e8352` | RonSQL — `load_join` AST swap.  TableRef root is a pointer, JoinClause's table is a value; copy goes through a saved TableRef temporary.  Each JoinCondition has child_table/column and parent_table/column swapped 1-for-1 |
+| `f417051a4c4` + recorded result | MTR — `ronsql_cte_partial_key.test` recast as I.16a + I.16b combo.  Test 1: same shape that I.16a rejected now executes via the rewrite, strict diff against MySQL's reference passes.  Test 2: LEFT JOIN with the same shape stays on the I.16a clean-reject path — outside I.16b's scope because outer-join semantics would shift under the swap |
+
+Shapes still falling through to the I.16a clean-reject path:
+multi-table queries with the multi-key CTE somewhere in the join
+chain, LEFT_OUTER joins, and CTE-on-CTE shapes.  These remain
+queued for a follow-up if real queries surface them.
+
+### I.16c — true non-root CTE_SCAN child
+
+Still deferred — the outline below preserves the design notes.
 
 ## Problem
 

@@ -1,7 +1,36 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 
-=== Test 1: partial CTE key (1 of 2) — must be rejected ===
 
+=== Test 1: partial CTE key (1 of 2), inner join — auto-rewritten to CTE_SCAN root ===
+== Query ==
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	2
+300	1
+
+
+=== Test 2: partial CTE key, LEFT JOIN — outside rewrite scope, I.16a rejects ===
 Error handling: RPE
 ronsql_cli caught exception: Partial CTE lookup key not supported.  The virtual CTE primary key matches the CTE body's GROUP BY column list and the join must bind every key column.  Workaround: place the multi-key CTE on the joined root and join the smaller table to it.
