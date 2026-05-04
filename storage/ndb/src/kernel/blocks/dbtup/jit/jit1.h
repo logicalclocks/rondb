@@ -39,22 +39,20 @@ typedef struct JitState {
   const int64_t *row_cols_i64;       /* current row's columns */
 } JitState;
 
-/* Stencil entry function shape — every stencil is one of these.
- * The state pointer is threaded through unchanged.
+/* Per-row entry function — produced by jit1_compile.
  *
- * The `preserve_none` attribute matches the stencil definitions in
- * stencils_src.c. musttail demands matching calling conventions on
- * both sides of the tail call; the typedef inherits the attribute
- * so storing &op_load_const_int into a JitStencilFn is well-typed
- * and chained tail calls compile. Calling a preserve_none function
- * from a default-convention caller (the microbench) is fine — clang
- * generates the appropriate caller-side save/restore. */
-typedef __attribute__((preserve_none)) void (*JitStencilFn)(JitState *);
-
-/* Per-row entry function — produced by jit1_compile. The caller
- * sets state->row_cols_i64 before each call; the function returns
- * after running the row to its terminator. */
-typedef JitStencilFn JitEntry;
+ * preserve_none calling convention: state pointer goes in r12 on
+ * x86_64 (NOT rdi as in the standard ABI). The attribute is applied
+ * directly in this single typedef rather than chained through an
+ * intermediate alias, because some clang versions drop the attribute
+ * when typedef-aliasing twice.
+ *
+ * Calling a preserve_none function from a default-convention caller
+ * (the microbench's jit_run) is fine: clang at the call site sees
+ * the attribute on the typedef and emits the correct `mov r12, ...`
+ * sequence, and saves/restores r12 around the call (since it's
+ * callee-saved in the regular ABI but not in preserve_none). */
+typedef __attribute__((preserve_none)) void (*JitEntry)(JitState *);
 
 /* Compiled program handle. Opaque outside jit1.c. */
 typedef struct Jit1Prog Jit1Prog;

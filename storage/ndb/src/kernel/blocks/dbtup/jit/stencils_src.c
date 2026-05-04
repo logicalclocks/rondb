@@ -143,7 +143,7 @@ extern uint64_t HOLE_BLT_TGT;
 STENCIL op_branch_lt_int_int(JitState *s) {
   if (s->regs_i64[(uint64_t)&HOLE_BLT_A] <
       s->regs_i64[(uint64_t)&HOLE_BLT_B]) {
-    [[clang::musttail]] return ((JitStencilFn)(uintptr_t)&HOLE_BLT_TGT)(s);
+    [[clang::musttail]] return ((JitEntry)(uintptr_t)&HOLE_BLT_TGT)(s);
   }
   TAIL_NEXT(s);
 }
@@ -184,7 +184,7 @@ STENCIL op_exit(JitState *s) {
 /* dead-code-eliminator can't drop the stencils.                      */
 /* ------------------------------------------------------------------ */
 __attribute__((used))
-const JitStencilFn g_stencil_anchor[] = {
+const JitEntry g_stencil_anchor[] = {
     op_load_const_int,
     op_load_col_int,
     op_mov_int_int,
