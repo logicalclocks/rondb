@@ -168,6 +168,16 @@ finishAcceptReject(NdbInterpretedCode *code, Uint32 acceptLabel)
 }
 
 static int
+finishRuntimeErrorProgram(NdbInterpretedCode *code)
+{
+  if (code->interpret_exit_ok() != 0 ||
+      code->finalise() != 0) {
+    return -1;
+  }
+  return 0;
+}
+
+static int
 runScanWithFilter(Ndb *ndb,
                   const NdbDictionary::Table *tab,
                   const NdbInterpretedCode *filterCode,
@@ -286,6 +296,21 @@ expectPks(const char *name, Ndb *ndb, const NdbDictionary::Table *tab,
 }
 
 static int
+expectAllPks(const char *name, Ndb *ndb, const NdbDictionary::Table *tab,
+             NdbInterpretedCode *code)
+{
+  static const int expected[] = { 1, 2, 3, 4, 5, 6 };
+  return expectPks(name, ndb, tab, code, expected, 6);
+}
+
+static int
+expectNoPks(const char *name, Ndb *ndb, const NdbDictionary::Table *tab,
+            NdbInterpretedCode *code)
+{
+  return expectPks(name, ndb, tab, code, NULL, 0);
+}
+
+static int
 expectRuntimeError(const char *name, Ndb *ndb,
                    const NdbDictionary::Table *tab,
                    NdbInterpretedCode *code)
@@ -310,6 +335,21 @@ buildReadCompareConst(NdbInterpretedCode *code,
       code->load_const_u16(1, constant) != 0 ||
       (code->*branch)(0, 1, ACCEPT) != 0 ||
       finishAcceptReject(code, ACCEPT) != 0) {
+    return -1;
+  }
+  return 0;
+}
+
+static int
+loadMemoryConst(NdbInterpretedCode *code,
+                Uint32 offsetReg,
+                Uint32 sizeReg,
+                const char *mem,
+                Uint32 memSize)
+{
+  if (code->load_const_u16(offsetReg, 0) != 0 ||
+      code->load_const_u16(sizeReg, memSize) != 0 ||
+      code->load_const_mem(offsetReg, sizeReg, memSize, mem) != 0) {
     return -1;
   }
   return 0;
@@ -494,21 +534,19 @@ testBitwiseAndShifts(Ndb *ndb, const NdbDictionary::Table *tab)
   {
     NdbInterpretedCode code(tab, buf, 128);
     const Uint32 ACCEPT = 0;
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
     if (code.load_const_u64(0, 1) != 0 ||
         code.lshift_const_reg(1, 0, 63) != 0 ||
         code.load_const_u16(2, 0) != 0 ||
         code.branch_lt(1, 2, ACCEPT) != 0 ||
         finishAcceptReject(&code, ACCEPT) != 0 ||
-        expectPks("Test 5b: signed left shift by 63",
-                  ndb, tab, &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 5b: signed left shift by 63",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 128);
     if (code.load_const_u64(0, 1) != 0 ||
         code.lshift_const_reg(1, 0, 64) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 5c: shift by 64 rejected",
                            ndb, tab, &code) != 0) rc = -1;
   }
@@ -527,22 +565,20 @@ testMemorySpillWriters(Ndb *ndb, const NdbDictionary::Table *tab)
     Uint64 doubleBits;
     double d = 8.0;
     memcpy(&doubleBits, &d, 8);
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
     if (code.load_double_const(0, 8.0) != 0 ||
         code.write_reg_to_mem_any_const(0, 0) != 0 ||
         code.read_int64_to_reg_const(1, 0) != 0 ||
         code.load_const_u64(2, doubleBits) != 0 ||
         code.branch_eq(1, 2, ACCEPT) != 0 ||
         finishAcceptReject(&code, ACCEPT) != 0 ||
-        expectPks("Test 6a: WRITE_REG_TO_MEM_ANY accepts DOUBLE",
-                  ndb, tab, &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 6a: WRITE_REG_TO_MEM_ANY accepts DOUBLE",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 128);
     if (code.load_double_const(0, 8.0) != 0 ||
         code.write_int64_reg_to_mem_const(0, 0) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 6b: strict WRITE_INT64 rejects DOUBLE",
                            ndb, tab, &code) != 0) rc = -1;
   }
@@ -606,8 +642,7 @@ testArithmeticErrorHandlers(Ndb *ndb, const NdbDictionary::Table *tab)
     if (code.load_const_u16(0, 1) != 0 ||
         code.load_const_u16(1, 0) != 0 ||
         code.div_reg(2, 0, 1) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 8a: integer divide by zero",
                            ndb, tab, &code) != 0) rc = -1;
   }
@@ -616,8 +651,7 @@ testArithmeticErrorHandlers(Ndb *ndb, const NdbDictionary::Table *tab)
     if (code.load_const_u16(0, 1) != 0 ||
         code.load_const_u16(1, 0) != 0 ||
         code.mod_reg(2, 0, 1) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 8b: integer modulo by zero",
                            ndb, tab, &code) != 0) rc = -1;
   }
@@ -626,8 +660,7 @@ testArithmeticErrorHandlers(Ndb *ndb, const NdbDictionary::Table *tab)
     if (code.load_double_const(0, 1.25) != 0 ||
         code.load_double_const(1, 0.0) != 0 ||
         code.div_reg(2, 0, 1) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 8c: double divide by zero",
                            ndb, tab, &code) != 0) rc = -1;
   }
@@ -636,8 +669,7 @@ testArithmeticErrorHandlers(Ndb *ndb, const NdbDictionary::Table *tab)
     if (code.load_const_u64(0, 9223372036854775807ULL) != 0 ||
         code.load_const_u16(1, 1) != 0 ||
         code.add_reg(2, 0, 1) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 8d: signed add overflow",
                            ndb, tab, &code) != 0) rc = -1;
   }
@@ -646,8 +678,7 @@ testArithmeticErrorHandlers(Ndb *ndb, const NdbDictionary::Table *tab)
     if (code.load_const_u64(0, 9223372036854775808ULL) != 0 ||
         code.load_const_u16(1, 1) != 0 ||
         code.sub_reg(2, 0, 1) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 8e: signed subtract overflow",
                            ndb, tab, &code) != 0) rc = -1;
   }
@@ -665,8 +696,7 @@ testRegisterErrorHandlers(Ndb *ndb, const NdbDictionary::Table *tab)
     if (code.branch_eq(0, 1, 0) != 0 ||
         code.interpret_exit_ok() != 0 ||
         code.def_label(0) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 9a: branch on uninitialised registers",
                            ndb, tab, &code) != 0) rc = -1;
   }
@@ -675,8 +705,7 @@ testRegisterErrorHandlers(Ndb *ndb, const NdbDictionary::Table *tab)
     if (code.load_double_const(0, 3.5) != 0 ||
         code.load_const_u16(1, 1) != 0 ||
         code.and_reg(2, 0, 1) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 9b: bitwise rejects DOUBLE",
                            ndb, tab, &code) != 0) rc = -1;
   }
@@ -684,8 +713,7 @@ testRegisterErrorHandlers(Ndb *ndb, const NdbDictionary::Table *tab)
     NdbInterpretedCode code(tab, buf, 128);
     if (code.load_const_null(0) != 0 ||
         code.write_reg_to_mem_any_const(0, 0) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 9c: WRITE_REG_TO_MEM_ANY rejects NULL",
                            ndb, tab, &code) != 0) rc = -1;
   }
@@ -693,8 +721,7 @@ testRegisterErrorHandlers(Ndb *ndb, const NdbDictionary::Table *tab)
     NdbInterpretedCode code(tab, buf, 128);
     if (code.load_const_null(0) != 0 ||
         code.read_uint8_to_reg_reg(1, 0) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 9d: memory-offset register NULL",
                            ndb, tab, &code) != 0) rc = -1;
   }
@@ -702,8 +729,7 @@ testRegisterErrorHandlers(Ndb *ndb, const NdbDictionary::Table *tab)
     NdbInterpretedCode code(tab, buf, 128);
     if (code.load_const_u16(0, 1) != 0 ||
         code.write_uint8_reg_to_mem_const(0, 0) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 9e: strict WRITE_UINT8 rejects signed",
                            ndb, tab, &code) != 0) rc = -1;
   }
@@ -816,14 +842,13 @@ testConstBranchesAndShifts(Ndb *ndb, const NdbDictionary::Table *tab)
   {
     NdbInterpretedCode code(tab, buf, 128);
     const Uint32 ACCEPT = 0;
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
     if (code.load_const_u64(0, 18446744073709551608ULL) != 0 ||
         code.rshift_const_reg(1, 0, 1) != 0 ||
         code.load_const_u16(2, 0) != 0 ||
         code.branch_lt(1, 2, ACCEPT) != 0 ||
         finishAcceptReject(&code, ACCEPT) != 0 ||
-        expectPks("Test 11d: signed arithmetic right shift",
-                  ndb, tab, &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 11d: signed arithmetic right shift",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 128);
@@ -866,73 +891,58 @@ testMemoryTypedLoadsAndWrites(Ndb *ndb, const NdbDictionary::Table *tab)
   {
     NdbInterpretedCode code(tab, buf, 160);
     const Uint32 ACCEPT = 0;
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
-    if (code.load_const_u16(0, 0) != 0 ||
-        code.load_const_u16(1, sizeof(mem)) != 0 ||
-        code.load_const_mem(0, 1, sizeof(mem), mem) != 0 ||
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
         code.read_uint8_to_reg_const(2, 0) != 0 ||
         code.load_const_u16(3, 250) != 0 ||
         code.branch_gt(2, 3, ACCEPT) != 0 ||
         finishAcceptReject(&code, ACCEPT) != 0 ||
-        expectPks("Test 12a: READ_UINT8_MEM_TO_REG unsigned value",
-                  ndb, tab, &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 12a: READ_UINT8_MEM_TO_REG unsigned value",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 160);
     const Uint32 ACCEPT = 0;
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
-    if (code.load_const_u16(0, 0) != 0 ||
-        code.load_const_u16(1, sizeof(mem)) != 0 ||
-        code.load_const_mem(0, 1, sizeof(mem), mem) != 0 ||
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
         code.read_uint16_to_reg_const(2, 1) != 0 ||
         code.load_const_u16(3, 0x1234) != 0 ||
         code.branch_eq(2, 3, ACCEPT) != 0 ||
         finishAcceptReject(&code, ACCEPT) != 0 ||
-        expectPks("Test 12b: READ_UINT16_MEM_TO_REG",
-                  ndb, tab, &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 12b: READ_UINT16_MEM_TO_REG",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 160);
     const Uint32 ACCEPT = 0;
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
-    if (code.load_const_u16(0, 0) != 0 ||
-        code.load_const_u16(1, sizeof(mem)) != 0 ||
-        code.load_const_mem(0, 1, sizeof(mem), mem) != 0 ||
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
         code.read_uint32_to_reg_const(2, 4) != 0 ||
         code.load_const_u32(3, 0x12345678) != 0 ||
         code.branch_eq(2, 3, ACCEPT) != 0 ||
         finishAcceptReject(&code, ACCEPT) != 0 ||
-        expectPks("Test 12c: READ_UINT32_MEM_TO_REG",
-                  ndb, tab, &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 12c: READ_UINT32_MEM_TO_REG",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 160);
     const Uint32 ACCEPT = 0;
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
-    if (code.load_const_u16(0, 0) != 0 ||
-        code.load_const_u16(1, sizeof(mem)) != 0 ||
-        code.load_const_mem(0, 1, sizeof(mem), mem) != 0 ||
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
         code.read_int64_to_reg_const(2, 8) != 0 ||
         code.load_const_u16(3, 0) != 0 ||
         code.branch_lt(2, 3, ACCEPT) != 0 ||
         finishAcceptReject(&code, ACCEPT) != 0 ||
-        expectPks("Test 12d: READ_INT64_MEM_TO_REG signed value",
-                  ndb, tab, &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 12d: READ_INT64_MEM_TO_REG signed value",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 160);
     const Uint32 ACCEPT = 0;
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
-    if (code.load_const_u16(0, 0) != 0 ||
-        code.load_const_u16(1, sizeof(mem)) != 0 ||
-        code.load_const_mem(0, 1, sizeof(mem), mem) != 0 ||
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
         code.read_uint8_to_reg_const(2, 0) != 0 ||
         code.write_uint8_reg_to_mem_const(2, 12) != 0 ||
         code.read_uint8_to_reg_const(3, 12) != 0 ||
         code.branch_eq(2, 3, ACCEPT) != 0 ||
         finishAcceptReject(&code, ACCEPT) != 0 ||
-        expectPks("Test 12e: strict WRITE_UINT8 accepts UINT register",
-                  ndb, tab, &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 12e: strict WRITE_UINT8 accepts UINT register",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   return rc;
 }
@@ -1023,14 +1033,13 @@ testRegisterBranchCoverage(Ndb *ndb, const NdbDictionary::Table *tab)
   }
   {
     NdbInterpretedCode code(tab, buf, 160);
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
     if (code.branch_label(0) != 0 ||
         code.interpret_exit_nok() != 0 ||
         code.def_label(0) != 0 ||
         code.interpret_exit_ok() != 0 ||
         code.finalise() != 0 ||
-        expectPks("Test 13i: branch_label unconditional", ndb, tab,
-                  &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 13i: branch_label unconditional",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   return rc;
 }
@@ -1135,14 +1144,13 @@ testArithmeticOpcodeCoverage(Ndb *ndb, const NdbDictionary::Table *tab)
   }
   {
     NdbInterpretedCode code(tab, buf, 160);
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
     if (code.load_const_u64(0, 0) != 0 ||
         code.not_reg(1, 0) != 0 ||
         code.load_const_u16(2, 0) != 0 ||
         code.branch_lt(1, 2, 0) != 0 ||
         finishAcceptReject(&code, 0) != 0 ||
-        expectPks("Test 14i: not_reg unsigned", ndb, tab,
-                  &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 14i: not_reg unsigned",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 160);
@@ -1157,27 +1165,25 @@ testArithmeticOpcodeCoverage(Ndb *ndb, const NdbDictionary::Table *tab)
   }
   {
     NdbInterpretedCode code(tab, buf, 160);
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
     if (code.load_const_u16(0, 1) != 0 ||
         code.load_const_u16(1, 4) != 0 ||
         code.lshift_reg(2, 0, 1) != 0 ||
         code.load_const_u16(3, 16) != 0 ||
         code.branch_eq(2, 3, 0) != 0 ||
         finishAcceptReject(&code, 0) != 0 ||
-        expectPks("Test 14k: lshift_reg", ndb, tab,
-                  &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 14k: lshift_reg",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 160);
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
     if (code.load_const_u16(0, 16) != 0 ||
         code.load_const_u16(1, 4) != 0 ||
         code.rshift_reg(2, 0, 1) != 0 ||
         code.load_const_u16(3, 1) != 0 ||
         code.branch_eq(2, 3, 0) != 0 ||
         finishAcceptReject(&code, 0) != 0 ||
-        expectPks("Test 14l: rshift_reg", ndb, tab,
-                  &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 14l: rshift_reg",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   return rc;
 }
@@ -1280,11 +1286,10 @@ testColumnBranchCoverage(Ndb *ndb, const NdbDictionary::Table *tab)
   }
   {
     NdbInterpretedCode code(tab, buf, 192);
-    const int *expected = NULL;
     if (code.branch_col_eq(alpha, sizeof(alpha), cAttr, 0) != 0 ||
         finishAcceptReject(&code, 0) != 0 ||
-        expectPks("Test 15k: branch_col_eq CHAR", ndb, tab,
-                  &code, expected, 0) != 0) rc = -1;
+        expectNoPks("Test 15k: branch_col_eq CHAR",
+                    ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 192);
@@ -1369,10 +1374,7 @@ testMemoryAndLibraryOpcodeCoverage(Ndb *ndb,
 
   {
     NdbInterpretedCode code(tab, buf, 256);
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
-    if (code.load_const_u16(0, 0) != 0 ||
-        code.load_const_u16(1, sizeof(text)) != 0 ||
-        code.load_const_mem(0, 1, sizeof(text), text) != 0 ||
+    if (loadMemoryConst(&code, 0, 1, text, sizeof(text)) != 0 ||
         code.load_const_u16(2, 2) != 0 ||
         code.load_const_u16(3, 4) != 0 ||
         code.bzero(2, 3) != 0 ||
@@ -1380,29 +1382,23 @@ testMemoryAndLibraryOpcodeCoverage(Ndb *ndb,
         code.load_const_u16(5, 0) != 0 ||
         code.branch_eq(4, 5, 0) != 0 ||
         finishAcceptReject(&code, 0) != 0 ||
-        expectPks("Test 16a: bzero memory", ndb, tab,
-                  &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 16a: bzero memory",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 256);
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
-    if (code.load_const_u16(0, 0) != 0 ||
-        code.load_const_u16(1, sizeof(text)) != 0 ||
-        code.load_const_mem(0, 1, sizeof(text), text) != 0 ||
+    if (loadMemoryConst(&code, 0, 1, text, sizeof(text)) != 0 ||
         code.load_const_u16(2, 4) != 0 ||
         code.str_to_int64(3, 0, 2) != 0 ||
         code.load_const_u16(4, 1234) != 0 ||
         code.branch_eq(3, 4, 0) != 0 ||
         finishAcceptReject(&code, 0) != 0 ||
-        expectPks("Test 16b: str_to_int64 from memory", ndb, tab,
-                  &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 16b: str_to_int64 from memory",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 256);
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
-    if (code.load_const_u16(0, 0) != 0 ||
-        code.load_const_u16(1, 32) != 0 ||
-        code.load_const_mem(0, 1, sizeof(numbers), numbers) != 0 ||
+    if (loadMemoryConst(&code, 0, 1, numbers, sizeof(numbers)) != 0 ||
         code.load_const_u16(2, 20) != 0 ||
         code.load_const_u16(3, 3) != 0 ||
         code.qsort_instr(0, 3, 2) != 0 ||
@@ -1410,27 +1406,23 @@ testMemoryAndLibraryOpcodeCoverage(Ndb *ndb,
         code.load_const_u16(5, 1) != 0 ||
         code.branch_eq(4, 5, 0) != 0 ||
         finishAcceptReject(&code, 0) != 0 ||
-        expectPks("Test 16c: qsort plus binary_search_16", ndb, tab,
-                  &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 16c: qsort plus binary_search_16",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 256);
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
-    if (code.load_const_u16(0, 0) != 0 ||
-        code.load_const_u16(1, 32) != 0 ||
-        code.load_const_mem(0, 1, sizeof(interval16), interval16) != 0 ||
+    if (loadMemoryConst(&code, 0, 1, interval16, sizeof(interval16)) != 0 ||
         code.load_const_u16(2, 15) != 0 ||
         code.load_const_u16(3, 4) != 0 ||
         code.search_interval_16(2, 0, 3, 4, 0) != 0 ||
         code.load_const_u16(5, 0) != 0 ||
         code.branch_eq(4, 5, 0) != 0 ||
         finishAcceptReject(&code, 0) != 0 ||
-        expectPks("Test 16d: search_interval_16", ndb, tab,
-                  &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 16d: search_interval_16",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 256);
-    const int expected[] = { 1, 2, 3, 4, 5, 6 };
     if (code.load_const_u16(0, 0) != 0 ||
         code.load_const_u16(1, 32) != 0 ||
         code.read_full(vAttr, 0, 2) != 0 ||
@@ -1440,8 +1432,8 @@ testMemoryAndLibraryOpcodeCoverage(Ndb *ndb,
         code.load_const_u16(6, 1) != 0 ||
         code.branch_eq(5, 6, 0) != 0 ||
         finishAcceptReject(&code, 0) != 0 ||
-        expectPks("Test 16e: read_full and read_partial", ndb, tab,
-                  &code, expected, 6) != 0) rc = -1;
+        expectAllPks("Test 16e: read_full and read_partial",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   return rc;
 }
@@ -1460,8 +1452,7 @@ testNullAndFloatOpcodeCoverage(Ndb *ndb,
     if (code.load_const_null(0) != 0 ||
         code.load_const_u16(1, 1) != 0 ||
         code.add_reg(2, 0, 1) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 17a: arithmetic rejects NULL",
                            ndb, tab, &code) != 0) rc = -1;
   }
@@ -1472,8 +1463,7 @@ testNullAndFloatOpcodeCoverage(Ndb *ndb,
         code.branch_gt(0, 1, 0) != 0 ||
         code.interpret_exit_ok() != 0 ||
         code.def_label(0) != 0 ||
-        code.interpret_exit_ok() != 0 ||
-        code.finalise() != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 17b: float branch rejects NULL register",
                            ndb, tab, &code) != 0) rc = -1;
   }
