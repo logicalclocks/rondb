@@ -1053,6 +1053,69 @@ RonSQLPreparer::load_join()
 {
   std::basic_ostream<char>& err = *m_conf.err_stream;
 
+  // Phase I.16b: detect a partial-key inner-join to a multi-key CTE
+  // child and rewrite the AST to make the CTE the joined root.
+  // Conservative first cut — applies only when:
+  //   - exactly one JOIN clause, INNER
+  //   - the JOIN target is a CTE in scope
+  //   - the CTE body has GROUP BY with N columns and the join supplies
+  //     fewer than N column-pairs (i.e. CTE_LOOKUP would fail with the
+  //     I.16a guard)
+  //   - the original root is a real table (not a CTE)
+  // After the swap the planner produces a CTE_SCAN root with the
+  // original parent as a child operation (PK / unique / index lookup
+  // via the existing planner logic).
+  if (m_context.ast_root.root_table != NULL &&
+      m_context.ast_root.joins != NULL &&
+      m_context.ast_root.joins->next == NULL &&
+      m_context.ast_root.joins->join_type == JoinClause::INNER_JOIN)
+  {
+    const CteDefinition* root_cte = NULL;
+    for (const CteDefinition* c = m_context.ast_root.cte_list;
+         c != NULL; c = c->next) {
+      if (strcmp(c->name.c_str(),
+                 m_context.ast_root.root_table->name.c_str()) == 0) {
+        root_cte = c;
+        break;
+      }
+    }
+    const CteDefinition* child_cte = NULL;
+    for (const CteDefinition* c = m_context.ast_root.cte_list;
+         c != NULL; c = c->next) {
+      if (strcmp(c->name.c_str(),
+                 m_context.ast_root.joins->table.name.c_str()) == 0) {
+        child_cte = c;
+        break;
+      }
+    }
+    if (root_cte == NULL && child_cte != NULL) {
+      Uint32 cte_pk_cols = 0;
+      for (const GroupbyColumns* gb = child_cte->stmt->groupby_columns;
+           gb != NULL; gb = gb->next) cte_pk_cols++;
+      Uint32 join_cols = 0;
+      for (const JoinCondition* jc = m_context.ast_root.joins->conditions;
+           jc != NULL; jc = jc->next) join_cols++;
+      if (cte_pk_cols > 0 && join_cols < cte_pk_cols) {
+        // Swap root_table <-> joins[0].table.  The TableRef in the
+        // AST root is a pointer, the one in JoinClause is a value;
+        // copy the value through a temporary.
+        TableRef saved = *m_context.ast_root.root_table;
+        *m_context.ast_root.root_table = m_context.ast_root.joins->table;
+        m_context.ast_root.joins->table = saved;
+        // Flip ON conditions: child_table/column <-> parent_table/column.
+        for (JoinCondition* jc = m_context.ast_root.joins->conditions;
+             jc != NULL; jc = jc->next) {
+          LexCString tmp_table = jc->child_table;
+          jc->child_table = jc->parent_table;
+          jc->parent_table = tmp_table;
+          LexCString tmp_col = jc->child_column;
+          jc->child_column = jc->parent_column;
+          jc->parent_column = tmp_col;
+        }
+      }
+    }
+  }
+
   // Build the join plan via QueryPlanner
   const char* db = m_conf.ndb ? m_conf.ndb->getDatabaseName() : nullptr;
   QueryPlanner::plan(
