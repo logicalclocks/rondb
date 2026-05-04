@@ -37,9 +37,48 @@ multi-table queries with the multi-key CTE somewhere in the join
 chain, LEFT_OUTER joins, and CTE-on-CTE shapes.  These remain
 queued for a follow-up if real queries surface them.
 
-### I.16c — true non-root CTE_SCAN child
+### I.16c — N-table chain rewrite + outer-join handling
 
-Still deferred — the outline below preserves the design notes.
+**Redefined scope (per user direction):** stay on the
+root-reordering approach.  Don't pursue true non-root CTE_SCAN
+children — the NDB API doesn't support them, so RonSQL should
+follow what the API offers.  Instead extend I.16b's AST-rewrite
+to handle:
+- Any number of joined tables (not just two).
+- Outer joins ELSEWHERE in the query (the multikey-CTE-join
+  itself must still be INNER for the swap to preserve
+  semantics).
+- Reject cleanly when the multikey-CTE-join is LEFT_OUTER —
+  swapping would replace `A LEFT JOIN cte` with
+  `cte INNER JOIN A` and lose the unmatched-A rows.
+
+Mechanics:
+- Walk `ast_root.joins` and find the JoinClause referencing the
+  partial-key CTE.  Bail to I.16a if its join_type is
+  LEFT_OUTER.
+- Remove that JoinClause from the linked list.
+- Promote its TableRef to `ast_root.root_table`.  Demote the
+  original root's TableRef into a synthetic JoinClause inserted
+  at position 0 of the joins list, with the CTE's ON conditions
+  flipped (child<->parent).
+- Other joins keep their alias-based parent references — they
+  resolve unchanged after QueryPlanner re-runs against the
+  rewritten AST.
+
+Constraints kept:
+- Original root is a real table (CTE-on-CTE shapes still
+  rejected).
+- Original root must be reachable as a child of the CTE — i.e.
+  it must have a usable PK / unique / index on the join columns.
+  Same downstream guarantee QueryPlanner already enforces for
+  the I.16b two-table case; extends for free.
+
+Out of scope:
+- True non-root CTE_SCAN child support (would need NDB API
+  changes — `scanCte()` doesn't accept a key array, and
+  parent-row correlation isn't wired through DBSPJ for
+  CTE_SCAN nodes today).  Held permanently unless NDB API
+  evolves.
 
 ## Problem
 

@@ -1053,57 +1053,89 @@ RonSQLPreparer::load_join()
 {
   std::basic_ostream<char>& err = *m_conf.err_stream;
 
-  // Phase I.16b: detect a partial-key inner-join to a multi-key CTE
-  // child and rewrite the AST to make the CTE the joined root.
-  // Conservative first cut — applies only when:
-  //   - exactly one JOIN clause, INNER
-  //   - the JOIN target is a CTE in scope
-  //   - the CTE body has GROUP BY with N columns and the join supplies
-  //     fewer than N column-pairs (i.e. CTE_LOOKUP would fail with the
-  //     I.16a guard)
+  // Phase I.16b / I.16c: detect a partial-key INNER join to a
+  // multi-key CTE somewhere in the join chain and rewrite the AST so
+  // the CTE becomes the joined root.  After the swap the planner
+  // produces a CTE_SCAN root with the original parent as a child
+  // operation via its existing PK / unique / index lookup logic; the
+  // remaining joins keep their alias-based parent references and
+  // resolve unchanged.
+  //
+  // Applies when:
   //   - the original root is a real table (not a CTE)
-  // After the swap the planner produces a CTE_SCAN root with the
-  // original parent as a child operation (PK / unique / index lookup
-  // via the existing planner logic).
+  //   - the multikey-CTE-join is INNER (LEFT_OUTER would change
+  //     semantics under the swap — bail to I.16a's clean reject)
+  //   - the CTE body has GROUP BY with N columns and the join binds
+  //     fewer than N column-pairs (would otherwise hit I.16a)
+  //
+  // Other joins in the chain may be INNER or LEFT_OUTER and any
+  // count.  Non-root CTE_SCAN child shapes are out of scope —
+  // scanCte() in the NDB API doesn't take a key array, so RonSQL
+  // follows what the API supports.
   if (m_context.ast_root.root_table != NULL &&
-      m_context.ast_root.joins != NULL &&
-      m_context.ast_root.joins->next == NULL &&
-      m_context.ast_root.joins->join_type == JoinClause::INNER_JOIN)
+      m_context.ast_root.joins != NULL)
   {
-    const CteDefinition* root_cte = NULL;
+    // Bail if the original root is itself a CTE.
+    bool root_is_cte = false;
     for (const CteDefinition* c = m_context.ast_root.cte_list;
          c != NULL; c = c->next) {
       if (strcmp(c->name.c_str(),
                  m_context.ast_root.root_table->name.c_str()) == 0) {
-        root_cte = c;
+        root_is_cte = true;
         break;
       }
     }
-    const CteDefinition* child_cte = NULL;
-    for (const CteDefinition* c = m_context.ast_root.cte_list;
-         c != NULL; c = c->next) {
-      if (strcmp(c->name.c_str(),
-                 m_context.ast_root.joins->table.name.c_str()) == 0) {
-        child_cte = c;
-        break;
+    if (!root_is_cte) {
+      // Walk the joins list looking for a partial-key INNER join to a
+      // multi-key CTE.  Track the previous JoinClause so we can splice
+      // the matched one out.
+      JoinClause* prev = NULL;
+      JoinClause* cur = m_context.ast_root.joins;
+      JoinClause* match = NULL;
+      JoinClause* match_prev = NULL;
+      while (cur != NULL) {
+        if (cur->join_type == JoinClause::INNER_JOIN) {
+          const CteDefinition* child_cte = NULL;
+          for (const CteDefinition* c = m_context.ast_root.cte_list;
+               c != NULL; c = c->next) {
+            if (strcmp(c->name.c_str(), cur->table.name.c_str()) == 0) {
+              child_cte = c;
+              break;
+            }
+          }
+          if (child_cte != NULL) {
+            Uint32 cte_pk_cols = 0;
+            for (const GroupbyColumns* gb =
+                     child_cte->stmt->groupby_columns;
+                 gb != NULL; gb = gb->next) cte_pk_cols++;
+            Uint32 join_cols = 0;
+            for (const JoinCondition* jc = cur->conditions;
+                 jc != NULL; jc = jc->next) join_cols++;
+            if (cte_pk_cols > 0 && join_cols < cte_pk_cols) {
+              match = cur;
+              match_prev = prev;
+              break;
+            }
+          }
+        }
+        prev = cur;
+        cur = cur->next;
       }
-    }
-    if (root_cte == NULL && child_cte != NULL) {
-      Uint32 cte_pk_cols = 0;
-      for (const GroupbyColumns* gb = child_cte->stmt->groupby_columns;
-           gb != NULL; gb = gb->next) cte_pk_cols++;
-      Uint32 join_cols = 0;
-      for (const JoinCondition* jc = m_context.ast_root.joins->conditions;
-           jc != NULL; jc = jc->next) join_cols++;
-      if (cte_pk_cols > 0 && join_cols < cte_pk_cols) {
-        // Swap root_table <-> joins[0].table.  The TableRef in the
-        // AST root is a pointer, the one in JoinClause is a value;
-        // copy the value through a temporary.
-        TableRef saved = *m_context.ast_root.root_table;
-        *m_context.ast_root.root_table = m_context.ast_root.joins->table;
-        m_context.ast_root.joins->table = saved;
-        // Flip ON conditions: child_table/column <-> parent_table/column.
-        for (JoinCondition* jc = m_context.ast_root.joins->conditions;
+      if (match != NULL) {
+        // Splice match out of the joins list.
+        if (match_prev == NULL) {
+          m_context.ast_root.joins = match->next;
+        } else {
+          match_prev->next = match->next;
+        }
+        match->next = NULL;
+        // Build a new JoinClause carrying the original root as a
+        // child of the CTE: same conditions as match, flipped.
+        JoinClause* new_jc = m_amalloc->alloc_exc<JoinClause>(1);
+        new_jc->join_type = JoinClause::INNER_JOIN;
+        new_jc->table = *m_context.ast_root.root_table;
+        new_jc->conditions = match->conditions;
+        for (JoinCondition* jc = new_jc->conditions;
              jc != NULL; jc = jc->next) {
           LexCString tmp_table = jc->child_table;
           jc->child_table = jc->parent_table;
@@ -1112,6 +1144,14 @@ RonSQLPreparer::load_join()
           jc->child_column = jc->parent_column;
           jc->parent_column = tmp_col;
         }
+        // Insert new_jc at the head of the joins list (so the
+        // original root resolves before any later join referencing
+        // it as a parent alias).
+        new_jc->next = m_context.ast_root.joins;
+        m_context.ast_root.joins = new_jc;
+        // Promote the matched CTE TableRef to root.  TableRef in
+        // the AST root is a pointer; copy the value in.
+        *m_context.ast_root.root_table = match->table;
       }
     }
   }
