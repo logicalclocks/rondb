@@ -901,14 +901,14 @@ testMixedTypeOperations(Ndb *ndb, const NdbDictionary::Table *tab)
   {
     NdbInterpretedCode code(tab, buf, 128);
     const Uint32 ACCEPT = 0;
-    const int expected[] = { 2, 3, 5, 6 };
+    const int expected[] = { 2, 3, 6 };
     if (code.read_attr(0, uIntAttr) != 0 ||
         code.read_attr(1, sIntAttr) != 0 ||
         code.add_reg(2, 0, 1) != 0 ||
         code.branch_gt(2, 0, ACCEPT) != 0 ||
         finishAcceptReject(&code, ACCEPT) != 0 ||
         expectPks("Test 10a: UINT32 plus signed INT mixed arithmetic",
-                  ndb, tab, &code, expected, 4) != 0) rc = -1;
+                  ndb, tab, &code, expected, 3) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 128);
@@ -939,14 +939,14 @@ testMixedTypeOperations(Ndb *ndb, const NdbDictionary::Table *tab)
   {
     NdbInterpretedCode code(tab, buf, 128);
     const Uint32 ACCEPT = 0;
-    const int expected[] = { 1, 3, 4, 5 };
+    const int expected[] = { 1, 4, 5 };
     if (code.read_attr(0, uIntAttr) != 0 ||
         code.read_attr(1, sIntAttr) != 0 ||
         code.sub_reg(2, 0, 1) != 0 ||
         code.branch_gt(2, 0, ACCEPT) != 0 ||
         finishAcceptReject(&code, ACCEPT) != 0 ||
         expectPks("Test 10d: UINT32 minus signed INT mixed arithmetic",
-                  ndb, tab, &code, expected, 4) != 0) rc = -1;
+                  ndb, tab, &code, expected, 3) != 0) rc = -1;
   }
   return rc;
 }
@@ -1797,6 +1797,201 @@ testIntegerWidthBoundaryMatrix(Ndb *ndb,
   return rc;
 }
 
+static int
+testSignedUnsignedPromotionMatrix(Ndb *ndb,
+                                  const NdbDictionary::Table *mainTab)
+{
+  (void)mainTab;
+  const NdbDictionary::Table *tab = getNamedTable(ndb, BOUNDARY_TABLE_NAME);
+  if (tab == NULL) return -1;
+
+  Uint32 pkAttr = attrId(tab, "pk");
+  Uint32 sTinyAttr = attrId(tab, "s_tiny");
+  Uint32 sIntAttr = attrId(tab, "s_int");
+  Uint32 sBigAttr = attrId(tab, "s_big");
+  Uint32 uTinyAttr = attrId(tab, "u_tiny");
+  Uint32 uIntAttr = attrId(tab, "u_int");
+  Uint32 uBigAttr = attrId(tab, "u_big");
+  Uint32 buf[160];
+  int rc = 0;
+
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    const int expected[] = { 1, 2, 3, 4, 5, 7 };
+    if (code.read_attr(0, sIntAttr) != 0 ||
+        code.read_attr(1, uIntAttr) != 0 ||
+        code.branch_lt(0, 1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 19a: signed INT less than unsigned INT",
+                  ndb, tab, &code, expected, 6) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    const int expected[] = { 6 };
+    if (code.read_attr(0, sIntAttr) != 0 ||
+        code.read_attr(1, uIntAttr) != 0 ||
+        code.branch_gt(0, 1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 19b: signed INT greater than unsigned INT",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    const int expected[] = { 1, 2, 3, 4, 5, 7 };
+    if (code.read_attr(0, uBigAttr) != 0 ||
+        code.read_attr(1, sBigAttr) != 0 ||
+        code.branch_gt(0, 1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 19c: unsigned BIGINT greater than signed BIGINT",
+                  ndb, tab, &code, expected, 6) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    const int expected[] = { 1, 2, 3, 4, 5, 7 };
+    if (code.read_attr(0, sBigAttr) != 0 ||
+        code.read_attr(1, uBigAttr) != 0 ||
+        code.branch_lt(0, 1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 19d: signed BIGINT less than unsigned BIGINT",
+                  ndb, tab, &code, expected, 6) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 ACCEPT = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    const int expected[] = { 1 };
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 1, REJECT) != 0 ||
+        code.read_attr(1, uIntAttr) != 0 ||
+        code.read_attr(2, sIntAttr) != 0 ||
+        code.add_reg(3, 1, 2) != 0 ||
+        code.load_const_u16(4, 0) != 0 ||
+        code.branch_lt(3, 4, ACCEPT) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_nok() != 0 ||
+        code.def_label(ACCEPT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.finalise() != 0 ||
+        expectPks("Test 19e: UINT plus negative INT stays negative",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 ACCEPT = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    const int expected[] = { 3 };
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 3, REJECT) != 0 ||
+        code.read_attr(1, uIntAttr) != 0 ||
+        code.read_attr(2, sIntAttr) != 0 ||
+        code.add_reg(3, 1, 2) != 0 ||
+        code.load_const_u64(4, 2147483647ULL) != 0 ||
+        code.branch_eq(3, 4, ACCEPT) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_nok() != 0 ||
+        code.def_label(ACCEPT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.finalise() != 0 ||
+        expectPks("Test 19f: UINT high-bit plus signed -1",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 ACCEPT = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    const int expected[] = { 3 };
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 3, REJECT) != 0 ||
+        code.read_attr(1, uBigAttr) != 0 ||
+        code.read_attr(2, sBigAttr) != 0 ||
+        code.sub_reg(3, 1, 2) != 0 ||
+        code.branch_gt(3, 1, ACCEPT) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_nok() != 0 ||
+        code.def_label(ACCEPT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.finalise() != 0 ||
+        expectPks("Test 19g: unsigned BIGINT subtract signed -1",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 ACCEPT = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    const int expected[] = { 6 };
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 6, REJECT) != 0 ||
+        code.read_attr(1, uTinyAttr) != 0 ||
+        code.read_attr(2, sTinyAttr) != 0 ||
+        code.mul_reg(3, 1, 2) != 0 ||
+        code.load_const_u64(4, 5000ULL) != 0 ||
+        code.branch_gt(3, 4, ACCEPT) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_nok() != 0 ||
+        code.def_label(ACCEPT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.finalise() != 0 ||
+        expectPks("Test 19h: unsigned TINYINT times signed TINYINT",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 RUN = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 5, REJECT) != 0 ||
+        code.branch_label(RUN) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.def_label(RUN) != 0 ||
+        code.read_attr(1, uBigAttr) != 0 ||
+        code.load_const_u16(2, 1) != 0 ||
+        code.add_reg(3, 1, 2) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 19i: unsigned add overflow",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 RUN = 1;
+    char oneByte[1];
+    NdbInterpretedCode code(tab, buf, 160);
+    oneByte[0] = 1;
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 1, REJECT) != 0 ||
+        code.branch_label(RUN) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.def_label(RUN) != 0 ||
+        code.read_attr(1, uIntAttr) != 0 ||
+        loadMemoryConst(&code, 2, 3, oneByte, sizeof(oneByte)) != 0 ||
+        code.read_uint8_to_reg_const(4, 0) != 0 ||
+        code.sub_reg(5, 1, 4) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 19j: unsigned subtract underflow",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 RUN = 1;
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 3, REJECT) != 0 ||
+        code.branch_label(RUN) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.def_label(RUN) != 0 ||
+        code.read_attr(1, uBigAttr) != 0 ||
+        code.read_attr(2, uTinyAttr) != 0 ||
+        code.mul_reg(3, 1, 2) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 19k: unsigned multiply overflow",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+
+  return rc;
+}
+
 struct TestEntry {
   int number;
   int (*fn)(Ndb *, const NdbDictionary::Table *);
@@ -1820,7 +2015,8 @@ static const TestEntry g_tests[] = {
   { 15, testColumnBranchCoverage },
   { 16, testMemoryAndLibraryOpcodeCoverage },
   { 17, testNullAndFloatOpcodeCoverage },
-  { 18, testIntegerWidthBoundaryMatrix }
+  { 18, testIntegerWidthBoundaryMatrix },
+  { 19, testSignedUnsignedPromotionMatrix }
 };
 
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);

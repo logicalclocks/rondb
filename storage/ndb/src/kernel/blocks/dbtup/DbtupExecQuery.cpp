@@ -6045,9 +6045,11 @@ struct Dbtup::InterpreterContext {
    *
    *   - either operand FLOAT  → double arithmetic, result REG_TYPE_DOUBLE.
    *     Div/Mod by 0.0 returns -ZDIV_BY_ZERO_ERROR.
-   *   - else either UNSIGNED  → Uint64 wrap-around arithmetic,
-   *     result REG_TYPE_UINT.  No overflow check (matches MySQL
-   *     unsigned-arith semantics).  Div/Mod by 0 rejected.
+   *   - else either UNSIGNED  → exact mixed signed/unsigned integer
+   *     arithmetic.  Negative results are tagged REG_TYPE_INT when
+   *     they fit Int64; non-negative results are tagged REG_TYPE_UINT
+   *     when they fit Uint64.  Add/Sub/Mul reject overflow.  Div/Mod
+   *     by 0 rejected.
    *   - else both signed      → Int64 arithmetic, result REG_TYPE_INT.
    *     Add/Sub keep the existing overflow-detection sentinels;
    *     Mul has no overflow check (existing behaviour); Div/Mod
@@ -6102,13 +6104,23 @@ struct Dbtup::InterpreterContext {
     bool leftUnsigned  = lw[1] != 0;
     bool rightUnsigned = rw[1] != 0;
     if (leftUnsigned || rightUnsigned) {
-      Uint64 l = leftBits;
-      Uint64 r = rightBits;
-      Uint64 res;
+      __int128 l = leftUnsigned
+          ? static_cast<__int128>(leftBits)
+          : static_cast<__int128>(static_cast<Int64>(leftBits));
+      __int128 r = rightUnsigned
+          ? static_cast<__int128>(rightBits)
+          : static_cast<__int128>(static_cast<Int64>(rightBits));
+      __int128 res;
       switch (op) {
-        case '+': res = l + r; break;
-        case '-': res = l - r; break;
-        case '*': res = l * r; break;
+        case '+':
+          res = l + r;
+          break;
+        case '-':
+          res = l - r;
+          break;
+        case '*':
+          res = l * r;
+          break;
         case '/':
           if (r == 0) return -ZDIV_BY_ZERO_ERROR;
           res = l / r;
@@ -6119,8 +6131,23 @@ struct Dbtup::InterpreterContext {
           break;
         default: return -ZCALC_OVERFLOW_ERROR;
       }
-      *resultType = Interpreter::REG_TYPE_UINT;
-      *resultBits = res;
+      if (res < 0) {
+        if (unlikely(leftUnsigned && rightUnsigned)) {
+          return -ZCALC_OVERFLOW_ERROR;
+        }
+        if (unlikely(res < static_cast<__int128>(LLONG_MIN))) {
+          return -ZCALC_OVERFLOW_ERROR;
+        }
+        *resultType = Interpreter::REG_TYPE_INT;
+        *resultBits = static_cast<Uint64>(static_cast<Int64>(res));
+      } else {
+        if (unlikely(static_cast<unsigned __int128>(res) >
+                     static_cast<unsigned __int128>(UINT64_MAX))) {
+          return -ZCALC_OVERFLOW_ERROR;
+        }
+        *resultType = Interpreter::REG_TYPE_UINT;
+        *resultBits = static_cast<Uint64>(res);
+      }
       return 0;
     }
     /* Both signed integer. */
