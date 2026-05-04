@@ -6057,7 +6057,60 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
       for (Uint32 cidx = 0; cidx < ncol; cidx++) {
         NdbDictionary::Column* mut_col = vt->getColumn((int)cidx);
         ndbrequire(mut_col != NULL);
-        NdbColumnImpl::getImpl(*mut_col).m_attrId = (int)cidx;
+        NdbColumnImpl& mut_impl = NdbColumnImpl::getImpl(*mut_col);
+        mut_impl.m_attrId = (int)cidx;
+
+        // setType() does not populate m_attrSize / m_arraySize;
+        // those are normally set when the dictionary parses a
+        // table descriptor from the kernel.  For synthetic virt
+        // tables they stay at zero, so getSizeInBytes() returns 0.
+        // The Phase E.3 scanCte pass-through has tolerated this
+        // because NdbReceiver sizes scan-op buffers via
+        // calculate_batch_size (default sizes, column-independent).
+        // The Phase I.7 lookupCte path goes through packed_rowsize
+        // → getColumn()->getSizeInBytes() instead, and a 0 there
+        // makes NdbReceiverBuffer::allocRow's assertion fire when
+        // the actual row arrives.  Populate the attr-size fields
+        // for the numeric types build_cte_virtual_tables can emit.
+        switch (mut_col->getType()) {
+        case NdbDictionary::Column::Tinyint:
+        case NdbDictionary::Column::Tinyunsigned:
+          mut_impl.m_attrSize = 1;
+          mut_impl.m_orgAttrSize = 3;
+          mut_impl.m_arraySize = 1;
+          break;
+        case NdbDictionary::Column::Smallint:
+        case NdbDictionary::Column::Smallunsigned:
+          mut_impl.m_attrSize = 2;
+          mut_impl.m_orgAttrSize = 4;
+          mut_impl.m_arraySize = 1;
+          break;
+        case NdbDictionary::Column::Mediumint:
+        case NdbDictionary::Column::Mediumunsigned:
+          mut_impl.m_attrSize = 1;
+          mut_impl.m_orgAttrSize = 3;
+          mut_impl.m_arraySize = 3;
+          break;
+        case NdbDictionary::Column::Int:
+        case NdbDictionary::Column::Unsigned:
+        case NdbDictionary::Column::Float:
+          mut_impl.m_attrSize = 4;
+          mut_impl.m_orgAttrSize = 5;
+          mut_impl.m_arraySize = 1;
+          break;
+        case NdbDictionary::Column::Bigint:
+        case NdbDictionary::Column::Bigunsigned:
+        case NdbDictionary::Column::Double:
+          mut_impl.m_attrSize = 8;
+          mut_impl.m_orgAttrSize = 6;
+          mut_impl.m_arraySize = 1;
+          break;
+        default:
+          // CHAR / VARCHAR / DECIMAL etc.: existing scanCte path
+          // tolerated 0; lookupCte path with such PK types is not
+          // exercised yet by RonSQL.
+          break;
+        }
       }
     }
     out[i] = vt;
