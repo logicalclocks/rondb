@@ -3444,6 +3444,10 @@ private:
                           const Uint32 *cinBuf, Uint32 attrInfoLen);
   bool cteScanShouldEmitScalar(const CteScanReq &req,
                                 const JoinAggInterpreter *interp);
+  void sendScalarRedistributeReq(Signal* signal,
+                                  JoinAggregationState* state,
+                                  JoinAggInterpreter* interp,
+                                  Uint32 ownerNode);
   void sendCteScanRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
                       Uint32 errorCode, SectionHandle *handle = nullptr);
   void execJOIN_AGG_REDISTRIBUTE_REQ(Signal* signal);

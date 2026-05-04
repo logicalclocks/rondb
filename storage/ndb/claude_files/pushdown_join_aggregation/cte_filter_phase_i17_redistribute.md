@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned.  Companion to `cte_filter_phase_i17.md`.  The RonSQL-side
+**Shipped** (this commit).  See "What shipped" at the end of the doc.  Companion to `cte_filter_phase_i17.md`.  The RonSQL-side
 relaxation in I.17a (commit `a2e75657e47`) accepts CTE bodies
 without `GROUP BY`, but the kernel materialization side has no
 cross-node merge for scalar (n_gb_cols == 0) accumulators.  Each
@@ -61,10 +61,10 @@ The alternative considered — `m_cte_node_list[0]` — is also
 deterministic but couples owner choice to the CTE-participant
 list slot order rather than to the transaction.
 
-Storage: a new `Uint32 m_dbtc_node` field on
-`JoinAggregationState`, populated in
-`Dblqh::execJOIN_AGG_SETUP_REQ` from
-`refToNode(setupReq->senderRef)`.
+Storage: no new field — every state already stores
+`m_senderRef` (set in `DblqhProxy::execJOIN_AGG_SETUP_REQ` from
+the SETUP signal's senderRef, which is DBTC's reference).
+`refToNode(state->m_senderRef)` gives DBTC's node directly.
 
 ## Phase I.17e — implementation
 
@@ -237,3 +237,28 @@ Follow-up positive coverage:
    commit (the new gate only works once redistribute is live).
 4. MTR: existing `ronsql_cte_scalar.test` Tests 1-4 should
    pass after this work without further changes.
+
+## What shipped
+
+| File / area | Change |
+|---|---|
+| `JoinAggInterpreter::mergeOneGroup` | Now dispatches to `mergeScalarAccumulators` when `keyLen == 0`.  Existing keyed-merge logic unchanged.  Same dispatch fires for both the `execJOIN_AGG_REDISTRIBUTE_REQ` direct path and the `processRedistQueue` drain path (queued during FINALIZING / SENDING_RESULTS) — no scattered keyLen == 0 checks needed. |
+| `JoinAggInterpreter::mergeScalarAccumulators` (new) | Folds an inbound payload of `n_agg_results` `AggResItem`s into the local `m_agg_results` via the existing `mergeAccumulators` primitive (the same one used by grouped merges).  Caches `m_cached_agg_ops` on first use, mirroring `mergeOneGroup`. |
+| `Dblqh::sendScalarRedistributeReq` (new) | Packages this node's `m_agg_results` into a `JoinAggRedistributeReq` with `keyLen = 0`, `valueLen = interp->val_len()`.  Section 0 carries a 1-word dummy (the receiver inspects `req->keyLen == 0` and ignores it; a real word avoids any 0-size-section quirks in the transporter).  Section 1 carries the `AggResItem` array.  Addresses the destination via `numberToRef(DBLQH, dstOwner, ownerNode)` using the existing per-node aggKey / ownerInstance arrays. |
+| `Dblqh::continueJoinAggRedistribute` | When `gb_map == nullptr`, branch on `n_gb_cols == 0`: non-owner nodes call `sendScalarRedistributeReq(state, interp, refToNode(state->m_senderRef))`; the owner skips the send and waits for inbound peers.  After the scalar branch falls through to `redistribution_done`, the existing FINAL_REP broadcast and CTE_READY transition complete normally. |
+| `Dblqh::cteScanShouldEmitScalar` | Gate simplifies to `refToNode(state->m_senderRef) == getOwnNodeId()`.  The earlier `processed_rows() > 0 OR m_cte_node_list[0]` heuristic retires.  The COUNT pre-init in `JoinAggInterpreter::Init` (commit `3aa426b3fb9`) keeps the empty-input scalar emitting `0` for COUNT and `NULL` for SUM / MIN / MAX. |
+
+What did **not** change:
+- The `JoinAggRedistributeReq` signal format / sections / field
+  layout — `keyLen == 0` is a marker on the existing field, not a
+  new variant.
+- The grouped-CTE redistribute path — keyed sends and the drain
+  queue replay are unchanged.
+- RonSQL-side I.17a (CTE-without-GROUP-BY parser relaxation, commit
+  `a2e75657e47`) — no further changes needed.
+
+What remained intentionally unchanged:
+- `JoinAggInterpreter::mergeScalarAccumulators` does NOT advance
+  `m_processed_rows` on the owner.  The new emit gate doesn't
+  consult `processed_rows()` so this is fine; if a future caller
+  needs the post-merge processed-rows count it can be added then.

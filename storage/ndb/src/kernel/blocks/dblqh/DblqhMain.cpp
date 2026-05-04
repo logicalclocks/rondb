@@ -20076,44 +20076,31 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
  * read-only CTE hash table.
  */
 /**
- * cteScanShouldEmitScalar — Phase I.17 single-emitter rule for
+ * cteScanShouldEmitScalar — Phase I.17e single-emitter rule for
  * scalar (no GROUP BY) CTE results.
  *
- * Scalar CTE materialization in the kernel is per-node: each
- * data node has its own JoinAggInterpreter and accumulators.
- * There is no cross-node merge for n_gb_cols == 0, so multiple
- * nodes emitting their local accumulators would surface
- * duplicate rows to the API — wrong even when only one node has
- * data, because the empty-partition replicas would emit NULL
- * alongside the real result.
+ * After Phase I.17e's continueJoinAggRedistribute scalar branch
+ * runs, the data node co-located with DBTC holds the cluster-wide
+ * merged m_agg_results — every other node has shipped its
+ * contribution via JOIN_AGG_REDISTRIBUTE_REQ and its local
+ * accumulators are no longer the source of truth.  The emit gate
+ * therefore reduces to: is this node DBTC's node?
  *
- * Rule:
- *  - if this node processed any rows, it has the (locally-merged)
- *    scalar result and emits it.  Other nodes' replicas with
- *    processed_rows == 0 stay silent.
- *  - if no node processed any rows (empty-input scalar
- *    aggregate), exactly one node — the first entry of the
- *    JoinAggregationState's m_cte_node_list — emits the synthetic
- *    one-row output.  The other nodes stay silent.
- *
- * Cross-node correctness for non-empty scalar CTE relies on the
- * input scan landing on a single primary fragment (the common
- * MTR / single-fragment cluster case).  Multi-fragment scalar
- * aggregation is a known follow-up.
+ * For empty-input scalar (no peer ever fed data), the owner's
+ * accumulators stay at the JoinAggInterpreter::Init defaults:
+ * is_null = true for SUM / MIN / MAX, value = 0 with is_null =
+ * false for COUNT (pre-zeroed in Init via the kOpCount walk).
+ * That state cleanly emits one row matching MySQL scalar
+ * aggregate semantics.
  */
 bool Dblqh::cteScanShouldEmitScalar(const CteScanReq &req,
                                      const JoinAggInterpreter *interp) {
-  if (interp->processed_rows() > 0) {
-    return true;
-  }
+  (void)interp;  /* gate is purely positional now */
   JoinAggregationState *state = getJoinAggState(req.aggStateKey);
   if (state == nullptr) {
     return false;
   }
-  if (state->m_cte_num_nodes == 0) {
-    return false;
-  }
-  return state->m_cte_node_list[0] == getOwnNodeId();
+  return refToNode(state->m_senderRef) == getOwnNodeId();
 }
 
 void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
@@ -20696,6 +20683,62 @@ void Dblqh::abortCteRedistribution(Signal *signal,
  * to their hash-owner nodes via JOIN_AGG_REDISTRIBUTE_REQ.
  * Yields via CONTINUEB after batch limit. Pauses on NEED_CONF for flow control.
  */
+/**
+ * Phase I.17e: package this node's scalar (no GROUP BY)
+ * accumulators and ship them to the DBTC-co-located owner via
+ * JOIN_AGG_REDISTRIBUTE_REQ with keyLen == 0.  The owner's
+ * execJOIN_AGG_REDISTRIBUTE_REQ dispatches keyLen == 0 to
+ * JoinAggInterpreter::mergeScalarAccumulators which folds the
+ * inbound payload into its own m_agg_results.  After all
+ * non-owner nodes finish sending, the owner has the cluster-wide
+ * merged scalar result and is the sole emitter for CTE_SCAN.
+ *
+ * Section 0 (KeySectionNum) is intentionally empty for scalar.
+ * Section 1 (ValueSectionNum) carries the AggResItem array.
+ */
+void Dblqh::sendScalarRedistributeReq(Signal* signal,
+                                       JoinAggregationState* state,
+                                       JoinAggInterpreter* interp,
+                                       Uint32 ownerNode) {
+  const Uint32 valLen = interp->val_len();
+  const AggResItem* accumulators = interp->agg_results();
+
+  const Uint32 dstKey = state->m_cte_remote_aggKeys[ownerNode];
+  const Uint32 dstOwner = state->m_cte_remote_ownerInstances[ownerNode];
+  ndbrequire(dstOwner > 0);
+
+  JoinAggRedistributeReq* req =
+      (JoinAggRedistributeReq*)signal->getDataPtrSend();
+  req->aggStateKey = dstKey;
+  req->keyLen = 0;
+  req->valueLen = valLen;
+  /* No NEED_CONF: scalar payload is a single small message; flow
+   * control via batch bytes is irrelevant here. */
+  req->requestInfo = 0;
+
+  /* Two sections required by the existing receive code.  Section 0
+   * (KeySectionNum) carries a single dummy word for scalar; the
+   * receiver inspects req->keyLen == 0 and ignores the dummy.
+   * Sending a real word avoids any 0-size-section quirks in the
+   * NDB transporter / fragmentation layer. */
+  Uint32 dummyKey = 0;
+  LinearSectionPtr lsp[2];
+  lsp[0].p = &dummyKey;
+  lsp[0].sz = 1;
+  lsp[1].p = reinterpret_cast<const Uint32*>(accumulators);
+  lsp[1].sz = (valLen + 3) >> 2;
+
+  BlockReference remoteRef = numberToRef(DBLQH, dstOwner, ownerNode);
+  sendBatchedFragmentedSignal(remoteRef,
+                               GSN_JOIN_AGG_REDISTRIBUTE_REQ, signal,
+                               JoinAggRedistributeReq::SignalLength,
+                               JBB, lsp, 2);
+
+  DEB_CTE(("(%u) CTE REDIST: scalar payload sent to ownerNode=%u "
+           "dstKey=%u dstOwner=%u valLen=%u",
+           instance(), ownerNode, dstKey, dstOwner, valLen));
+}
+
 void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
@@ -20743,7 +20786,33 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
   ndbrequire(interp != nullptr);
 
   JoinGBHashTable *gb_map = interp->gb_map_mutable();
-  if (gb_map == nullptr || gb_map->size() == 0) {
+  if (gb_map == nullptr) {
+    /* Phase I.17e: scalar (no GROUP BY) — every node ships its
+     * m_agg_results to the DBTC-co-located owner.  The owner skips
+     * the send and waits for inbound REDISTRIBUTE_REQs from peers.
+     * After redistribution completes, only the owner's interpreter
+     * holds the cluster-wide merged scalar result; the
+     * cteScanEmitResults gate then trivially picks it. */
+    jam();
+    if (interp->n_gb_cols() == 0) {
+      Uint32 ownerNode = refToNode(state->m_senderRef);
+      if (ownerNode != getOwnNodeId()) {
+        jam();
+        sendScalarRedistributeReq(signal, state, interp, ownerNode);
+      } else {
+        jam();
+        DEB_CTE(("(%u) CTE REDIST: scalar — this node is owner "
+                 "(DBTC node=%u), waiting for peers", instance(),
+                 ownerNode));
+      }
+    } else {
+      DEB_CTE(("(%u) CTE REDIST: gb_map nullptr but n_gb_cols=%u — "
+               "unexpected, treating as no-op", instance(),
+               interp->n_gb_cols()));
+    }
+    goto redistribution_done;
+  }
+  if (gb_map->size() == 0) {
     jam();
     DEB_CTE(("(%u) CTE REDIST: empty gb_map, nothing to redistribute",
              instance()));

@@ -159,10 +159,23 @@ class JoinAggInterpreter : public PushdownInterpreter {
    * Merge a single incoming group into the hash table.
    * If the key exists locally, merges accumulators using cached agg ops.
    * If the key is new, inserts a new group with the incoming data.
+   * For Phase I.17e scalar (no GROUP BY) redistribute, callers can pass
+   * keyLen == 0 and the call dispatches to mergeScalarAccumulators.
    * Returns 0 on success, negative on error (e.g., memory allocation failure).
    */
   Int32 mergeOneGroup(const char* key, Uint32 keyLen,
                       const char* accumulators, Uint32 accLen);
+
+  /**
+   * Phase I.17e: merge an inbound scalar accumulator payload into this
+   * interpreter's m_agg_results.  Used by execJOIN_AGG_REDISTRIBUTE_REQ
+   * for n_gb_cols == 0 CTE materialization, where every node packages
+   * its local m_agg_results and ships it to the DBTC-co-located owner
+   * node.  The owner repeatedly calls this method (one call per
+   * non-owner peer) to fold every node's contribution into its own
+   * accumulators.  Returns 0 on success, negative on error.
+   */
+  Int32 mergeScalarAccumulators(const char* accumulators, Uint32 accLen);
 
   void setUseMutex(bool v) { m_use_mutex = v; }
   void setMaxGroups(Uint32 v) { m_max_groups = v; }

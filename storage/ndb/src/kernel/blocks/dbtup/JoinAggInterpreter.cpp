@@ -1884,6 +1884,11 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
 Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
                                          const char* accumulators,
                                          Uint32 accLen) {
+  /* Phase I.17e: scalar (no GROUP BY) redistribute reuses this entry
+   * point with keyLen == 0 — dispatch to the accumulator-only merge. */
+  if (keyLen == 0) {
+    return mergeScalarAccumulators(accumulators, accLen);
+  }
   if (m_gb_map == nullptr) return -1;
 
   if (!m_agg_ops_cached) {
@@ -1917,6 +1922,27 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
     m_n_groups = m_gb_map->size();
     m_result_size += keyLen + v_len;
   }
+  return 0;
+}
+
+Int32 JoinAggInterpreter::mergeScalarAccumulators(const char* accumulators,
+                                                   Uint32 accLen) {
+  if (m_n_gb_cols != 0) return -1;
+  if (m_agg_results == nullptr) return -1;
+
+  if (!m_agg_ops_cached) {
+    extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
+                  m_cached_agg_ops, m_n_agg_results);
+    m_agg_ops_cached = true;
+  }
+
+  const Uint32 v_len = val_len();
+  if (accLen != v_len) return -1;
+
+  const AggResItem* src_items =
+      reinterpret_cast<const AggResItem*>(accumulators);
+  mergeAccumulators(m_agg_results, src_items, m_n_agg_results,
+                    m_cached_agg_ops);
   return 0;
 }
 
