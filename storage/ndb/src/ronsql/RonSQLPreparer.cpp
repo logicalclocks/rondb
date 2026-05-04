@@ -540,10 +540,32 @@ RonSQLPreparer::parse()
           break;
         }
       }
+      // Phase E.3 (already shipped): FROM <cte>, projection-only,
+      // no joins.
       bool projection_only_cte_scan =
           (from_is_cte && all_column_outputs && !has_groupby &&
            !has_having && !has_orderby && !has_limit && !has_joins);
-      if (!projection_only_cte_scan) {
+      // Phase I.8: FROM <real_table> JOIN <cte> ON ...
+      // (testCteNdbApi.cpp Test 17 shape).  Initial cut accepts
+      // exactly one join entry whose target name resolves to a CTE.
+      // Broader join shapes (multi-table, FROM <cte> JOIN <real>)
+      // each ship as their own follow-up phase.
+      bool single_cte_join_to_real_root = false;
+      if (!from_is_cte && all_column_outputs && !has_groupby &&
+          !has_having && !has_orderby && !has_limit && has_joins &&
+          m_context.ast_root.joins->next == NULL) {
+        const LexCString& jname = m_context.ast_root.joins->table.name;
+        for (const CteDefinition* cte = m_context.ast_root.cte_list;
+             cte != NULL; cte = cte->next) {
+          if (jname.str != NULL &&
+              cte->name.len == jname.len &&
+              strncmp(cte->name.str, jname.str, jname.len) == 0) {
+            single_cte_join_to_real_root = true;
+            break;
+          }
+        }
+      }
+      if (!projection_only_cte_scan && !single_cte_join_to_real_root) {
         ndbrequire(m_conf.err_stream != NULL);
         std::basic_ostream<char>& err = *m_conf.err_stream;
         err << "This query has no aggregate expression, so it is not an aggregate query.\n"
@@ -5197,12 +5219,16 @@ RonSQLPreparer::execute_join()
       m_is_aggregate_query ? &singleAgg : nullptr;
   emit_root_op(qb, m_main_scope, opDefs, main_singleAgg, cteVirtualTables);
 
-  // Phase E.3: projection-only CTE_SCAN-root queries have num_ops==1 and
-  // no joined children; skip emit_child_ops in that case.  emit_child_ops
-  // tolerates singleAgg=NULL for a CTE_SCAN root, but the projection-only
-  // shape has nothing for it to do.
-  if (m_is_aggregate_query) {
-    emit_child_ops(qb, m_main_scope, opDefs, &singleAgg, leafAggs,
+  // Phase E.3 (single-CTE projection): num_ops==1 and no children
+  // to emit.  Phase I.8: real-table root + CTE_LOOKUP child
+  // (testCteNdbApi.cpp Test 17 shape) — the join_plan has the
+  // child op, and emit_child_ops's aggregator-attach blocks are
+  // each gated on singleAgg/leafAggs being non-NULL, so passing
+  // nullptr in the no-aggregate path naturally skips them.
+  if (m_main_scope.join_plan.num_ops > 1) {
+    emit_child_ops(qb, m_main_scope, opDefs,
+                   m_is_aggregate_query ? &singleAgg : nullptr,
+                   m_is_aggregate_query ? leafAggs : nullptr,
                    cteVirtualTables);
   }
 
@@ -5223,13 +5249,15 @@ RonSQLPreparer::execute_join()
   require_run(query != NULL, "Failed to create query.");
 
   if (!m_is_aggregate_query) {
-    // Phase E.3 pass-through path: wire getValue() per output BEFORE
-    // m_trans->execute() (NdbQueryOperation::getValue must be called
-    // between createQuery and execute, mirroring testCteNdbApi.cpp
-    // Test 8), then drain rows after execute.  Helper does both halves
-    // around the trans->execute() the existing aggregating path runs
-    // separately below.
-    execute_passthrough_drain(query, cteVirtualTables[0]);
+    // Phase E.3 / I.8 pass-through path: wire getValue() per output
+    // BEFORE m_trans->execute() (NdbQueryOperation::getValue must be
+    // called between createQuery and execute, mirroring
+    // testCteNdbApi.cpp Tests 8 / 17), then drain rows after execute.
+    // Helper does both halves around the trans->execute() the
+    // existing aggregating path runs separately below.  The whole
+    // cteVirtualTables array is forwarded so the helper can route
+    // each output to the correct op (CTE child or real-table parent).
+    execute_passthrough_drain(query, cteVirtualTables);
     PERF_TS(t_drain_done);
     PERF_LOG("  pass-through drain", t_qb_prepare, t_drain_done);
     PERF_LOG("  execute total", t_qb_prepare, t_drain_done);
@@ -5306,43 +5334,37 @@ RonSQLPreparer::execute_join()
   }
 }
 
-// Phase E.3 — pass-through row delivery for projection-only main
-// SELECTs over a CTE_SCAN root.  Mirrors testCteNdbApi.cpp Test 8:
-// wire NdbRecAttr* per output via getValue() on the root operation,
-// run trans->execute(NoCommit), then loop nextResult and format each
-// row through ResultPrinter::print_passthrough_*.
+// Pass-through row delivery for projection-only main SELECTs.
+// Originally Phase E.3 (single CTE_SCAN root); Phase I.8 generalized
+// to multi-op shapes (real-table root + CTE_LOOKUP child, etc.).
+// Each output column is routed to its owning operation via
+// column_table_idx: CTE refs use cteVirtualTables[op_idx]->getColumn(),
+// real-table refs use column_map[col_idx].
 //
-// The CTE materialization subtree(s) and scanCte root are already
-// emitted on `qb`; this helper only handles the API-side projection
-// wiring and result delivery.
+// Mirrors testCteNdbApi.cpp Tests 8 (single CTE_SCAN root) and 17
+// (readTuple root + CTE_LOOKUP child) — both call getValue() on
+// the right NdbQueryOperation per projection column.
 void
 RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
-                                           const NdbDictionary::Table*
-                                               root_virt)
+                                           NdbDictionary::Table**
+                                               cteVirtualTables)
 {
   ndbrequire(query != NULL);
-  ndbrequire(root_virt != NULL);
   ndbrequire(m_resultprinter != NULL);
 
-  // Wire result projections on the scanCte root operation.  CTE
-  // subtree ops are appended to the NdbQuery before the main-query
-  // ops (qb->beginCteSubtree...endCteSubtree precedes scanCte), so
-  // getQueryOperation(0) returns the FIRST CTE subtree op — not the
-  // main scanCte.  The main scanCte is the LAST operation in the
-  // query def (mirrors testCteNdbApi.cpp Test 8 — see mainOpNo
-  // computation there).  Calling getValue() on the wrong op yields
-  // NDB error 4826 ("operation with empty projection") at execute
-  // time.
-  Uint32 mainOpIdx = query->getNoOfOperations();
-  require_run(mainOpIdx > 0, "Pass-through drain: query has no operations.");
-  mainOpIdx--;
-  NdbQueryOperation* rootOp = query->getQueryOperation(mainOpIdx);
-  require_run(rootOp != NULL,
-              "Pass-through drain: failed to resolve root NdbQueryOperation.");
+  // CTE subtree ops are appended to the NdbQuery before main-query
+  // ops (the qb->beginCteSubtree...endCteSubtree blocks run first
+  // in execute_join, then emit_root_op + emit_child_ops).  Main-query
+  // ops occupy the trailing num_main_ops positions; their JoinPlan
+  // index 0..num_main_ops-1 maps to query op index
+  // numCteSubtreeOps..numCteSubtreeOps+num_main_ops-1.
+  Uint32 numTotalOps = query->getNoOfOperations();
+  Uint32 numMainOps = m_main_scope.join_plan.num_ops;
+  require_run(numTotalOps >= numMainOps,
+              "Pass-through drain: query has fewer operations than the "
+              "main JoinPlan reports.");
+  Uint32 numCteSubtreeOps = numTotalOps - numMainOps;
 
-  // Allocate the NdbRecAttr* array from the arena so it survives the
-  // call.  (Caller-side stack would also work but using the arena keeps
-  // the helper self-contained.)
   Uint32 num_cols = 0;
   for (const Outputs* o = m_context.ast_root.outputs; o != NULL; o = o->next)
     num_cols++;
@@ -5355,16 +5377,42 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
        o = o->next, i++) {
     ndbrequire(o->type == Outputs::Type::COLUMN);
     Uint32 col_idx = o->column.col_idx;
-    // For CTE-output references, column_attrId_map holds the position
-    // within the CTE's output list (set in load_join's CTE branch —
-    // see RonSQLPreparer.cpp ~1104).  build_cte_virtual_tables adds
-    // virt-table columns in CTE-output declaration order, so the
-    // virt-table column attrId equals cte_col_idx.
-    Uint32 cte_col_idx = (Uint32)m_main_scope.column_attrId_map[col_idx];
-    const NdbDictionary::Column* vcol = root_virt->getColumn(cte_col_idx);
-    require_run(vcol != NULL,
-                "Pass-through drain: virt-table column lookup failed.");
-    attrs[i] = rootOp->getValue(vcol);
+    Uint32 plan_op_idx = m_main_scope.column_table_idx[col_idx];
+    require_run(plan_op_idx < numMainOps,
+                "Pass-through drain: column resolves to op outside "
+                "the main JoinPlan.");
+    NdbQueryOperation* op =
+        query->getQueryOperation(numCteSubtreeOps + plan_op_idx);
+    require_run(op != NULL,
+                "Pass-through drain: failed to resolve "
+                "NdbQueryOperation for output column.");
+
+    const JoinOp& jop = m_main_scope.join_plan.ops[plan_op_idx];
+    if (jop.type == JoinOp::CTE_LOOKUP || jop.type == JoinOp::CTE_SCAN) {
+      // CTE column: column_attrId_map holds the position in the
+      // CTE output list; build_cte_virtual_tables adds virt-table
+      // columns in CTE-output declaration order, so the virt-table
+      // column index equals that position.
+      Uint32 cte_col_idx =
+          (Uint32)m_main_scope.column_attrId_map[col_idx];
+      require_run(cteVirtualTables != NULL &&
+                  cteVirtualTables[plan_op_idx] != NULL,
+                  "Pass-through drain: missing CTE virt-table for output "
+                  "column.");
+      const NdbDictionary::Column* vcol =
+          cteVirtualTables[plan_op_idx]->getColumn(cte_col_idx);
+      require_run(vcol != NULL,
+                  "Pass-through drain: virt-table column lookup failed.");
+      attrs[i] = op->getValue(vcol);
+    } else {
+      // Real-table column: column_map[col_idx] is the source
+      // NdbDictionary::Column descriptor (populated in load_join).
+      const NdbDictionary::Column* col = m_main_scope.column_map[col_idx];
+      require_run(col != NULL,
+                  "Pass-through drain: real-table column descriptor "
+                  "missing.");
+      attrs[i] = op->getValue(col);
+    }
     require_run(attrs[i] != NULL,
                 "Pass-through drain: getValue() failed.");
   }

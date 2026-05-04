@@ -1,0 +1,128 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.8: readTuple as the main-query root + CTE_LOOKUP child,
+# no aggregation in the outer SELECT.  testCteNdbApi.cpp Test 17
+# kernel-side reference.
+#
+# Shape:
+#   WITH stats AS (SELECT grp, SUM(amt) AS total
+#                  FROM real_table GROUP BY grp)
+#   SELECT real.pk, real.grp, real.amt, stats.total
+#   FROM real_table
+#   JOIN stats ON stats.k = real.grp
+#   WHERE real.pk = <const>;
+#
+# The plan / emit pieces already produced this shape correctly
+# before I.8: the readTuple-root gate accepts a CTE_LOOKUP child
+# (rejects only INDEX_SCAN / TABLE_SCAN children); emit_child_ops
+# already wires linkedValue keys to a CTE_LOOKUP child.  The gap
+# was the front-end's "aggregate query only" assumption rejecting
+# non-aggregating join queries.
+#
+# Tests cover:
+#   1. Basic Test 17 shape: PK lookup on real table + INNER JOIN
+#      to single-PK CTE.
+#   2. Same as 1 + WHERE inside the CTE body (Phase B.2b path).
+#   3. PK lookup with no matching real-table row.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE pkj_orders (
+  o_id      INT NOT NULL,
+  o_grp     BIGINT NOT NULL,
+  o_amt     BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+INSERT INTO pkj_orders VALUES
+  (1, 100,  50),
+  (2, 100,  60),
+  (3, 200,  30),
+  (4, 200,  70),
+  (5, 300,  40);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: PK lookup on real table + INNER JOIN to single-PK CTE ===
+
+# Root: readTuple(pkj_orders, pk=2) -> (o_id=2, o_grp=100, o_amt=60).
+# Child: lookupCte(stats, key=linked(root,"o_grp")=100) -> total=110.
+let $QUERY=
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM pkj_orders GROUP BY o_grp)
+SELECT o.o_id, o.o_grp, o.o_amt, s.total
+FROM pkj_orders AS o JOIN stats AS s ON s.k = o.o_grp
+WHERE o.o_id = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM pkj_orders GROUP BY o_grp)
+SELECT o.o_id, o.o_grp, o.o_amt, s.total
+FROM pkj_orders AS o JOIN stats AS s ON s.k = o.o_grp
+WHERE o.o_id = 2|
+
+--echo
+--echo
+--echo === Test 2: same as 1 but with WHERE in the CTE body ===
+
+# CTE body filters out o_amt < 50 before grouping (Phase B.2b
+# path), so stats(200) = 70 only.  Root pk=4 -> o_grp=200.
+let $QUERY=
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM pkj_orders WHERE o_amt >= 50 GROUP BY o_grp)
+SELECT o.o_id, o.o_grp, o.o_amt, s.total
+FROM pkj_orders AS o JOIN stats AS s ON s.k = o.o_grp
+WHERE o.o_id = 4;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM pkj_orders WHERE o_amt >= 50 GROUP BY o_grp)
+SELECT o.o_id, o.o_grp, o.o_amt, s.total
+FROM pkj_orders AS o JOIN stats AS s ON s.k = o.o_grp
+WHERE o.o_id = 4|
+
+--echo
+--echo
+--echo === Test 3: PK lookup with no matching real-table row ===
+
+# pk=99 doesn't exist; readTuple returns no row, INNER JOIN
+# produces 0 rows.  Verifies MatchNonNull on root readTuple.
+let $QUERY=
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM pkj_orders GROUP BY o_grp)
+SELECT o.o_id, o.o_grp, o.o_amt, s.total
+FROM pkj_orders AS o JOIN stats AS s ON s.k = o.o_grp
+WHERE o.o_id = 99;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM pkj_orders GROUP BY o_grp)
+SELECT o.o_id, o.o_grp, o.o_amt, s.total
+FROM pkj_orders AS o JOIN stats AS s ON s.k = o.o_grp
+WHERE o.o_id = 99|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE pkj_orders;
+--enable_query_log

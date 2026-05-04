@@ -372,14 +372,15 @@ private:
   void substitute_subquery_results();
   void substitute_subquery_results_ce(ConditionalExpression** ce_ptr);
   void execute_join();
-  // Pass-through row delivery for projection-only main SELECTs over a
-  // CTE_SCAN root (Phase E.3).  Wires getValue() per output, loops
-  // nextResult, formats each row through ResultPrinter::print_passthrough_*.
-  // Caller passes the prepared NdbQuery* and the CTE_SCAN root virt
-  // table built by build_cte_virtual_tables() (used to resolve column
-  // descriptors for getValue()).
+  // Pass-through row delivery for projection-only main SELECTs.
+  // Originally Phase E.3 (single CTE_SCAN root); generalized in
+  // Phase I.8 to multi-op shapes.  Each output column is routed
+  // to its owning operation via column_table_idx; CTE refs use the
+  // virt-table descriptor and real-table refs use column_map.
+  // Caller passes the prepared NdbQuery* and the per-op
+  // cteVirtualTables array (NULL entries for non-CTE ops).
   void execute_passthrough_drain(class NdbQuery* query,
-                                 const NdbDictionary::Table* root_virt);
+                                 NdbDictionary::Table** cteVirtualTables);
   // Returns true iff the query routes through the multi-op join path:
   // either AST joins are present, or the FROM root names a CTE alias
   // (which forces QueryPlanner to produce a CTE_SCAN root op and the
