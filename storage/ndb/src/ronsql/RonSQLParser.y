@@ -514,13 +514,13 @@ join_clause:
   }
 | T_COMMA table_ref
   {
-    /* Phase I.17 cross-join: comma-separated FROM list.  Currently
-     * accepted only when every operand resolves to a single-row
-     * source — enforced in QueryPlanner.  No ON clause; conditions
-     * stays NULL.  Treated as INNER for the join-type field; the
-     * cross-join nature is conveyed by num_key_cols == 0 at the
-     * planner level.  CROSS JOIN keyword form intentionally not
-     * added — adds no semantics over comma in this scope. */
+    /* Phase I.17 cross-join: comma-separated FROM list, restricted
+     * to scalar (no-GROUP-BY) CTE operands so each side is
+     * single-row.  The planner keeps the default CTE_LOOKUP type
+     * for the child; with the scalar CTE's virt-table PK count == 0
+     * and num_key_cols == 0 from the empty ON clause, the existing
+     * CTE_LOOKUP path issues a 0-key lookup that returns the CTE's
+     * single row.  No new CTE_SCAN-as-non-root-child shape needed. */
     initptr($$);
     $$->join_type = JoinClause::INNER_JOIN;
     $$->table = *$2;

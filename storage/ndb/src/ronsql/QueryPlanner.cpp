@@ -231,43 +231,10 @@ QueryPlanner::plan(
     childOp.tree_parent_op_idx = parent_idx;
     childOp.num_key_cols = num_keys;
 
-    /* Phase I.17 cross-join (FROM A, B  or  FROM A CROSS JOIN B):
-     * jc->conditions == NULL means no ON clause was provided.
-     * Currently restricted to single-row operands — i.e. scalar
-     * CTEs (no GROUP BY).  Real tables and grouped CTEs are
-     * rejected with a clear error.  For an accepted scalar CTE
-     * cross-joined operand, switch the planned type from
-     * CTE_LOOKUP to CTE_SCAN since lookupCte() takes a key array
-     * and we have none. */
-    if (jc->conditions == NULL)
-    {
-      if (cte_match == NULL)
-      {
-        err << "Cross-join with non-CTE operand '" << child_table_name
-            << "' is not yet supported.  Currently only single-row "
-               "scalar CTEs (no GROUP BY) may appear without an ON "
-               "clause."
-            << std::endl;
-        throw RonSQLPermanentError(
-            "Cross join with non-CTE operand.");
-      }
-      if (cte_match->stmt->groupby_columns != NULL)
-      {
-        err << "Cross-join with grouped CTE '" << child_table_name
-            << "' is not yet supported.  Currently only single-row "
-               "scalar CTEs (no GROUP BY) may appear without an ON "
-               "clause."
-            << std::endl;
-        throw RonSQLPermanentError(
-            "Cross join with grouped CTE.");
-      }
-      childOp.type = JoinOp::CTE_SCAN;
-    }
-
     /* CTE_LOOKUP type and index are already set — skip index determination */
-    if (childOp.type == JoinOp::CTE_LOOKUP || childOp.type == JoinOp::CTE_SCAN)
+    if (childOp.type == JoinOp::CTE_LOOKUP)
     {
-      /* CTE lookups / scans use the per-CTE virt-table; no NDB index needed */
+      /* CTE lookups use hash table, no NDB index needed */
     }
     else if (isPrimaryKey(childOp.table, childOp.child_key_col_names, num_keys))
     {

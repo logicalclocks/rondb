@@ -1112,7 +1112,12 @@ RonSQLPreparer::synthesize_from_for_scalar_ctes()
   // First matched qualifier becomes the synthetic root_table; the
   // rest become comma cross-join clauses (no ON conditions).  Each
   // synthetic JoinClause / TableRef is allocated from the request
-  // arena so its lifetime matches the rest of the AST.
+  // arena so its lifetime matches the rest of the AST.  The cross-
+  // join shape relies on the planner's default CTE_LOOKUP type for
+  // the children: with cte_pk_cols == 0 (scalar CTE) and
+  // num_key_cols == 0 (no ON), I.16a's guard passes and the
+  // existing CTE_LOOKUP path issues a 0-key lookup that returns
+  // each CTE's single row.
   TableRef* root = m_amalloc->alloc_exc<TableRef>(1);
   root->database = LexCString{NULL, 0};
   root->name = matched_qualifiers[0];
