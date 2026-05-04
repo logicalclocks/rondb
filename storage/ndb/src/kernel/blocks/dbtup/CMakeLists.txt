@@ -26,3 +26,6 @@
 # asserts the optimized integer compare in Dbtup::checkTTL keeps the exact
 # verdict of the original mysys/my_time.cc calendar path.
 NDB_ADD_TEST(ttl_expiry-t ttl_expiry-t.cpp LIBS ndbgeneral)
+
+# RONDB-1056 — JIT arena substrate (Phase 0).
+ADD_SUBDIRECTORY(jit)
