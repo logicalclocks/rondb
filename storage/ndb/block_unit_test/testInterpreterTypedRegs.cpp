@@ -1840,6 +1840,53 @@ testNullAndFloatOpcodeCoverage(Ndb *ndb,
   }
   {
     NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.or_const_reg(1, 0, 3) != 0 ||
+        code.branch_eq_null(1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.15: OR const propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.load_const_u16(1, 3) != 0 ||
+        code.xor_reg(2, 0, 1) != 0 ||
+        code.branch_eq_null(2, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.16: XOR propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.xor_const_reg(1, 0, 3) != 0 ||
+        code.branch_eq_null(1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.17: XOR const propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.load_const_u16(1, 3) != 0 ||
+        code.mod_reg(2, 0, 1) != 0 ||
+        code.branch_eq_null(2, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.18: MOD propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.mod_const_reg(1, 0, 3) != 0 ||
+        code.branch_eq_null(1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.19: MOD const propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
     if (code.read_attr(0, nDoubleAttr) != 0 ||
         code.load_double_const(1, 0.0) != 0 ||
         code.branch_gt(0, 1, 0) != 0 ||
