@@ -6323,6 +6323,22 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
     }
     case JoinOp::CTE_LOOKUP:
     {
+      // Phase I.16a: the virtual CTE primary key is the CTE body's
+      // GROUP BY column list (see build_cte_virtual_tables).  If
+      // the join supplies fewer keys than the CTE has GROUP BY
+      // columns, lookupCte returns NULL with the opaque message
+      // "Failed to create child operation".  Surface a clear
+      // permanent error instead.
+      Uint32 cte_pk_cols = 0;
+      for (const GroupbyColumns* gb = op.cte_def->stmt->groupby_columns;
+           gb != NULL; gb = gb->next) cte_pk_cols++;
+      require_prm(op.num_key_cols == cte_pk_cols,
+                  "Partial CTE lookup key not supported.  The "
+                  "virtual CTE primary key matches the CTE body's "
+                  "GROUP BY column list and the join must bind "
+                  "every key column.  Workaround: place the "
+                  "multi-key CTE on the joined root and join the "
+                  "smaller table to it.");
       Uint32 numResultCols = 0;
       for (const Outputs* o = op.cte_def->stmt->outputs; o; o = o->next)
         numResultCols++;
