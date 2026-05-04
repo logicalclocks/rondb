@@ -66,6 +66,22 @@ size_t jit1_emitted_size(const Jit1Prog *prog) {
 #include "stencils_x86_64.h"
 
 /* ------------------------------------------------------------------ */
+/* x86_64 entry preamble: bridges from the regular C calling          */
+/* convention (state pointer in rdi) into the preserve_none           */
+/* calling convention used internally by the stencil chain (state    */
+/* pointer in r12). Saves the caller's r12 so the regular ABI's      */
+/* callee-saved contract is honoured on return.                       */
+/*                                                                    */
+/*   00: 41 54        push r12                                        */
+/*   02: 49 89 fc     mov  r12, rdi                                   */
+/*                                                                    */
+/* The matching `pop r12; ret` is in the op_skip and op_exit stencil */
+/* bytes (see stencils_x86_64.h).                                     */
+/* ------------------------------------------------------------------ */
+static const uint8_t kPreamble[] = { 0x41, 0x54, 0x49, 0x89, 0xfc };
+#define PREAMBLE_SIZE ((uint32_t)sizeof(kPreamble))
+
+/* ------------------------------------------------------------------ */
 /* Internal types.                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -123,10 +139,21 @@ Jit1Prog *jit1_compile(NdbJitArena *arena, const Program *prog) {
 
   /* ---------------------------------------------------------------- */
   /* Pass 1: walk bytecode, compute per-pc byte offsets, total size.  */
+  /*                                                                  */
+  /* Layout of the emitted blob:                                      */
+  /*   [PREAMBLE_SIZE bytes: push r12; mov r12, rdi]                  */
+  /*   [stencil for pc=0]                                             */
+  /*   [stencil for pc=1]                                             */
+  /*   ...                                                            */
+  /*                                                                  */
+  /* pc_byte_off[pc] is the byte offset where pc's stencil starts —   */
+  /* everything is shifted by PREAMBLE_SIZE relative to "stencils     */
+  /* alone". Branch displacements are relative differences so they    */
+  /* remain correct under the shift.                                  */
   /* ---------------------------------------------------------------- */
 
   uint32_t pc_byte_off[BC_MAX_OPS + 1];   /* +1 for "end of program" */
-  uint32_t total = 0;
+  uint32_t total = PREAMBLE_SIZE;
   for (uint16_t pc = 0; pc < prog->n_ops; ++pc) {
     pc_byte_off[pc] = total;
     uint8_t kind = prog->ops[pc].kind;
@@ -155,6 +182,9 @@ Jit1Prog *jit1_compile(NdbJitArena *arena, const Program *prog) {
     errno = ENOMEM;
     return NULL;
   }
+
+  /* Emit the entry preamble. */
+  memcpy(blob_rw, kPreamble, PREAMBLE_SIZE);
 
   /* ---------------------------------------------------------------- */
   /* Pass 2: emit each stencil, patch holes, queue + drain fixups.   */

@@ -48,6 +48,13 @@
  * calling conventions. */
 extern __attribute__((preserve_none)) void next(JitState *);
 
+/* Internal stencil function-pointer type. preserve_none, distinct
+ * from the public JitEntry typedef (which is regular ABI — see
+ * jit1.h). The branch stencil's tail-call to HOLE_BLT_TGT is
+ * cast through this type so musttail's calling-convention match
+ * is satisfied. */
+typedef __attribute__((preserve_none)) void (*StencilTailFn)(JitState *);
+
 /* preserve_none + noinline: the calling convention has minimal
  * register-save overhead, and we never want clang to inline
  * stencils into one another (we want each to be an extractable
@@ -143,7 +150,7 @@ extern uint64_t HOLE_BLT_TGT;
 STENCIL op_branch_lt_int_int(JitState *s) {
   if (s->regs_i64[(uint64_t)&HOLE_BLT_A] <
       s->regs_i64[(uint64_t)&HOLE_BLT_B]) {
-    [[clang::musttail]] return ((JitEntry)(uintptr_t)&HOLE_BLT_TGT)(s);
+    [[clang::musttail]] return ((StencilTailFn)(uintptr_t)&HOLE_BLT_TGT)(s);
   }
   TAIL_NEXT(s);
 }
@@ -184,7 +191,7 @@ STENCIL op_exit(JitState *s) {
 /* dead-code-eliminator can't drop the stencils.                      */
 /* ------------------------------------------------------------------ */
 __attribute__((used))
-const JitEntry g_stencil_anchor[] = {
+const StencilTailFn g_stencil_anchor[] = {
     op_load_const_int,
     op_load_col_int,
     op_mov_int_int,

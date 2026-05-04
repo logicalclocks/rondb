@@ -41,18 +41,25 @@ typedef struct JitState {
 
 /* Per-row entry function — produced by jit1_compile.
  *
- * preserve_none calling convention: state pointer goes in r12 on
- * x86_64 (NOT rdi as in the standard ABI). The attribute is applied
- * directly in this single typedef rather than chained through an
- * intermediate alias, because some clang versions drop the attribute
- * when typedef-aliasing twice.
+ * REGULAR x86_64 calling convention: state pointer in rdi.
  *
- * Calling a preserve_none function from a default-convention caller
- * (the microbench's jit_run) is fine: clang at the call site sees
- * the attribute on the typedef and emits the correct `mov r12, ...`
- * sequence, and saves/restores r12 around the call (since it's
- * callee-saved in the regular ABI but not in preserve_none). */
-typedef __attribute__((preserve_none)) void (*JitEntry)(JitState *);
+ * The compiled blob's first 5 bytes are a `push r12; mov r12, rdi`
+ * preamble emitted by jit1_compile. The preamble:
+ *   - saves the caller's r12 (callee-saved in regular ABI),
+ *   - moves rdi into r12 so the stencils — which use r12 internally
+ *     under their preserve_none calling convention — find the state
+ *     pointer where they expect.
+ *
+ * Every row terminator (op_exit, op_skip) is overridden to `pop r12;
+ * ret` (3 bytes) so the caller's r12 is restored on the way out
+ * before returning, honouring the regular ABI's callee-saved
+ * contract.
+ *
+ * This decouples the C call site from clang's preserve_none
+ * attribute propagation, which has shown to be unreliable in some
+ * clang versions when the attributed function-pointer type round-
+ * trips through a typedef. Calls to entry() are plain C calls. */
+typedef void (*JitEntry)(JitState *);
 
 /* Compiled program handle. Opaque outside jit1.c. */
 typedef struct Jit1Prog Jit1Prog;

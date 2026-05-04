@@ -265,15 +265,21 @@ static const Hole holes_op_branch_lt_int_int[] = {
 };
 
 /* ------------------------------------------------------------------ */
-/* op_skip / op_exit  (1 byte each — bare `c3` ret)                    */
+/* op_skip / op_exit  (3 bytes each: `pop r12; ret`)                   */
 /*                                                                    */
-/* Phase 1 row terminators. Both are single-byte 0xc3 ret. The JIT    */
-/* row entry function returns when the stencil chain reaches one.    */
-/* Identical bytes; future phases will differentiate when skip can    */
-/* target arbitrary forward addresses.                                */
+/* Phase 1 row terminators. Both restore the caller's r12 (saved by   */
+/* the preamble at offset 0 of the compiled blob) and return.         */
+/*                                                                    */
+/*   00: 41 5c                         pop  r12                       */
+/*   02: c3                            ret                            */
+/*                                                                    */
+/* These bytes are HAND-WRITTEN, not extracted from stencils_src.c    */
+/* (which still defines op_skip/op_exit as bare returns). The         */
+/* preamble/terminator pair is what makes the JIT'd entry callable    */
+/* via the standard C ABI — see JitEntry typedef in jit1.h.           */
 /* ------------------------------------------------------------------ */
-static const uint8_t bytes_op_skip[] = { 0xc3 };
-static const uint8_t bytes_op_exit[] = { 0xc3 };
+static const uint8_t bytes_op_skip[] = { 0x41, 0x5c, 0xc3 };
+static const uint8_t bytes_op_exit[] = { 0x41, 0x5c, 0xc3 };
 /* No Hole[] arrays for the no-hole stencils — the table entry uses
  * NULL + 0 (see STENCIL_NOHOLES macro below). */
 
