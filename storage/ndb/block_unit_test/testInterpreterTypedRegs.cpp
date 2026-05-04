@@ -1700,9 +1700,95 @@ testNullAndFloatOpcodeCoverage(Ndb *ndb,
     if (code.load_const_null(0) != 0 ||
         code.load_const_u16(1, 1) != 0 ||
         code.add_reg(2, 0, 1) != 0 ||
-        finishRuntimeErrorProgram(&code) != 0 ||
-        expectRuntimeError("Test 17a: arithmetic rejects NULL",
-                           ndb, tab, &code) != 0) rc = -1;
+        code.branch_eq_null(2, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a: ADD propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.add_const_reg(1, 0, 10) != 0 ||
+        code.branch_eq_null(1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.1: ADD const propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.load_const_u16(1, 1) != 0 ||
+        code.sub_reg(2, 0, 1) != 0 ||
+        code.branch_eq_null(2, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.2: SUB propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.sub_const_reg(1, 0, 10) != 0 ||
+        code.branch_eq_null(1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.3: SUB const propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.load_const_u16(1, 3) != 0 ||
+        code.mul_reg(2, 0, 1) != 0 ||
+        code.branch_eq_null(2, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.4: MUL propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.mul_const_reg(1, 0, 3) != 0 ||
+        code.branch_eq_null(1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.5: MUL const propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.load_const_u16(1, 3) != 0 ||
+        code.div_reg(2, 0, 1) != 0 ||
+        code.branch_eq_null(2, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.6: DIV propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.div_const_reg(1, 0, 3) != 0 ||
+        code.branch_eq_null(1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.7: DIV const propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.load_const_u16(1, 2) != 0 ||
+        code.lshift_reg(2, 0, 1) != 0 ||
+        code.branch_eq_null(2, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.8: LSHIFT propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.lshift_const_reg(1, 0, 2) != 0 ||
+        code.branch_eq_null(1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.9: LSHIFT const propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 160);
@@ -2174,12 +2260,14 @@ testFloatDoubleMatrix(Ndb *ndb, const NdbDictionary::Table *tab)
   }
   {
     NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1, 5 };
     if (code.read_attr(0, nFloatAttr) != 0 ||
         code.load_const_u16(1, 1) != 0 ||
         code.add_reg(2, 0, 1) != 0 ||
-        finishRuntimeErrorProgram(&code) != 0 ||
-        expectRuntimeError("Test 20h: nullable FLOAT arithmetic rejects NULL",
-                           ndb, tab, &code) != 0) rc = -1;
+        code.branch_eq_null(2, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 20h: nullable FLOAT ADD propagates NULL",
+                  ndb, tab, &code, expected, 2) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 192);
@@ -3548,9 +3636,10 @@ testErrorHandlerMatrix(Ndb *ndb, const NdbDictionary::Table *tab)
   {
     NdbInterpretedCode code(tab, buf, 256);
     if (code.add_reg(2, 0, 1) != 0 ||
-        finishRuntimeErrorProgram(&code) != 0 ||
-        expectRuntimeError("Test 26a: arithmetic uninitialised registers",
-                           ndb, tab, &code) != 0) rc = -1;
+        code.branch_eq_null(2, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 26a: ADD over NULL registers returns NULL",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 256);
