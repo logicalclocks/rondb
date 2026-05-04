@@ -83,6 +83,30 @@ TARGET_INCLUDE_DIRECTORIES(ndb_jit1 PUBLIC
 TARGET_LINK_LIBRARIES(ndb_jit1 PUBLIC ndb_jit_arena)
 
 # ---------------------------------------------------------------------------
+# RONDB-1056 Phase 2: stencil extractor — host tool.
+#
+# Reads an ELF .o produced by clang from stencils_src.c, walks the
+# symbol table for op_* entries, and emits a C header with per-
+# stencil byte arrays + Hole tables. Pure C, no third-party deps,
+# builds and runs on macOS hosts as well as Linux. Used by the
+# regen-stencils target (added once stencils_src.c is restructured
+# to consume the generated headers).
+# ---------------------------------------------------------------------------
+
+ADD_EXECUTABLE(ndb_jit_extract_stencils
+  extract_stencils/extract_stencils.c
+)
+SET_TARGET_PROPERTIES(ndb_jit_extract_stencils PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS YES
+)
+TARGET_INCLUDE_DIRECTORIES(ndb_jit_extract_stencils PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/extract_stencils
+)
+
+# ---------------------------------------------------------------------------
 # RONDB-1056 Phase 1: stencils.o build target.
 #
 # stencils_src.c is compiled with clang (not the project's CC) using a
