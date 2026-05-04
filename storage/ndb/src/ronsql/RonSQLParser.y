@@ -512,14 +512,21 @@ join_clause:
     $$->conditions = $6;
     $$->next = NULL;
   }
-/* Note: comma cross-join (`FROM A, B`) intentionally not in the
- * grammar.  Two attempted implementations both segfaulted at
- * runtime — scanCte() (the original I.17 try) and lookupCte() with
- * empty keys (the second try) — because NDB API genuinely does not
- * support a CTE in a non-root join-child position regardless of
- * which API method is used.  Held until the kernel grows that
- * support, or until a different mechanism (e.g. pre-fetch scalar
- * CTE values and inline as constants) is implemented. */
+| T_COMMA table_ref
+  {
+    /* Phase I.17 cross-join: comma-separated FROM list, restricted
+     * to scalar (no-GROUP-BY) CTE operands.  emit_child_ops uses
+     * the Test 20 pattern from testCteNdbApi.cpp: lookupCte with a
+     * single dummy constValue key and setParent(rootOp) to
+     * establish the cross-join dependency.  The kernel ignores the
+     * key for scalar CTEs (n_gb_cols == 0) and returns the
+     * materialised single-row m_agg_results directly. */
+    initptr($$);
+    $$->join_type = JoinClause::INNER_JOIN;
+    $$->table = *$2;
+    $$->conditions = NULL;
+    $$->next = NULL;
+  }
 
 join_condition_list:
   join_condition

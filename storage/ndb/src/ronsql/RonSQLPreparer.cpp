@@ -1108,38 +1108,39 @@ RonSQLPreparer::synthesize_from_for_scalar_ctes()
     throw RonSQLPermanentError(
         "SELECT without FROM and no scalar-CTE qualifier.");
   }
-  if (matched_qualifiers.size() > 1) {
-    /* Multiple scalar CTEs would require a cross-join, which would
-     * place the second CTE at a non-root join-child position.
-     * NDB API doesn't support CTE references there (verified the
-     * hard way — both scanCte and lookupCte crash on this shape),
-     * so RonSQL rejects the multi-scalar-CTE SELECT-without-FROM
-     * form.  Workaround until kernel support arrives: collapse the
-     * scalar aggregates into a single CTE with multiple output
-     * columns. */
-    err << "SELECT without FROM clause references multiple scalar "
-           "CTEs (";
-    for (Uint32 i = 0; i < matched_qualifiers.size(); i++) {
-      if (i > 0) err << ", ";
-      err << matched_qualifiers[i].c_str();
-    }
-    err << ") which would require a non-root CTE join child — not "
-           "supported by NDB API.  Workaround: collapse the scalar "
-           "aggregates into a single CTE with multiple output "
-           "columns." << std::endl;
-    throw RonSQLPermanentError(
-        "SELECT without FROM with multiple scalar CTE qualifiers.");
-  }
 
-  // Single matched qualifier — synthesise a root_table referencing
-  // the scalar CTE and leave joins NULL.  TableRef allocated from
-  // the request arena so its lifetime matches the rest of the AST.
+  // First matched qualifier becomes the synthetic root_table; the
+  // rest become comma cross-join clauses (no ON conditions).  Each
+  // synthetic JoinClause / TableRef is allocated from the request
+  // arena so its lifetime matches the rest of the AST.  At
+  // emit_child_ops time, scalar CTE cross-join children take the
+  // dummy-key + setParent path patterned on testCteNdbApi.cpp
+  // Test 20.
   TableRef* root = m_amalloc->alloc_exc<TableRef>(1);
   root->database = LexCString{NULL, 0};
   root->name = matched_qualifiers[0];
   root->alias = matched_qualifiers[0];
   m_context.ast_root.root_table = root;
   m_context.ast_root.table = matched_qualifiers[0];
+
+  JoinClause* head = NULL;
+  JoinClause* tail = NULL;
+  for (Uint32 i = 1; i < matched_qualifiers.size(); i++) {
+    JoinClause* jc = m_amalloc->alloc_exc<JoinClause>(1);
+    jc->join_type = JoinClause::INNER_JOIN;
+    jc->table.database = LexCString{NULL, 0};
+    jc->table.name = matched_qualifiers[i];
+    jc->table.alias = matched_qualifiers[i];
+    jc->conditions = NULL;
+    jc->next = NULL;
+    if (head == NULL) {
+      head = tail = jc;
+    } else {
+      tail->next = jc;
+      tail = jc;
+    }
+  }
+  m_context.ast_root.joins = head;
 }
 
 void
@@ -6547,10 +6548,29 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       Uint32 numResultCols = 0;
       for (const Outputs* o = op.cte_def->stmt->outputs; o; o = o->next)
         numResultCols++;
+      // Phase I.17: scalar CTE cross-join child.  When both the join
+      // key count and the virtual PK count are zero, this is a
+      // cross-join over a scalar (no-GROUP-BY) CTE.  Per the
+      // testCteNdbApi.cpp Test 20 pattern, lookupCte requires a
+      // non-empty key array; the kernel ignores the key for scalar
+      // CTEs and returns the materialised m_agg_results directly.
+      // setParent establishes the cross-join dependency since there
+      // is no linkedValue connecting the parent to the child.
+      const NdbQueryOperand* effective_keys[2];
+      const NdbQueryOperand** keys_to_use = keys;
+      if (op.num_key_cols == 0 && cte_pk_cols == 0) {
+        require_run(opts.setParent(opDefs[op.parent_op_idx]) == 0,
+                    "Failed to set parent for scalar CTE cross-join.");
+        effective_keys[0] = qb->constValue((Int64)0);
+        require_run(effective_keys[0] != NULL,
+                    "Failed to create dummy scalar-CTE lookup key.");
+        effective_keys[1] = nullptr;
+        keys_to_use = effective_keys;
+      }
       opDefs[i] = qb->lookupCte(
           op.cte_def_idx, numResultCols,
           cteVirtualTables[i],
-          keys, &opts);
+          keys_to_use, &opts);
       break;
     }
     case JoinOp::CTE_SCAN:
