@@ -2,7 +2,7 @@
 
 ## Status
 
-**I.16a + I.16b shipped.**  I.16c remains deferred.
+**I.16a + I.16b + I.16c shipped.**
 
 ### I.16a — clean rejection
 
@@ -44,6 +44,11 @@ root-reordering approach.  Don't pursue true non-root CTE_SCAN
 children — the NDB API doesn't support them, so RonSQL should
 follow what the API offers.  Instead extend I.16b's AST-rewrite
 to handle:
+
+| Commit | Scope |
+|--------|-------|
+| `8fd075b7ad9` | RonSQL — `load_join`'s rewrite walks the joins list (instead of only checking `joins[0]`) and finds the first INNER-join whose target is a multi-key CTE.  Splices the matched JoinClause out, allocates a new JoinClause carrying the original root with the matched conditions flipped (child<->parent), inserts that new clause at the head of the joins list, and promotes the matched TableRef to root.  Other joins keep their alias-based parent references.  Plan doc updated with the redefined scope and the "out of scope: non-root CTE_SCAN children" note |
+| `318066232e9` + recorded result | MTR — `ronsql_cte_partial_key.test` Tests 3-5: 3-table inner chain (CTE in joins[0]), 3-table chain with LEFT JOIN to a real table elsewhere, and 3-table chain with the multi-key CTE in joins[1].  All match MySQL's reference exactly |
 - Any number of joined tables (not just two).
 - Outer joins ELSEWHERE in the query (the multikey-CTE-join
   itself must still be INNER for the swap to preserve
