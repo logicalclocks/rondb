@@ -180,6 +180,10 @@ createTestTable(MYSQL *conn)
       "  c_val CHAR(8) NOT NULL,"
       "  v_val VARCHAR(20) NOT NULL,"
       "  bit_val BIT(8) NOT NULL,"
+      "  b_val BINARY(6) NOT NULL,"
+      "  vb_val VARBINARY(8) NOT NULL,"
+      "  c_wide CHAR(12) NOT NULL,"
+      "  v_wide VARCHAR(16) NOT NULL,"
       "  PRIMARY KEY USING HASH (pk)"
       ") ENGINE=NDB") != 0) return -1;
 
@@ -188,27 +192,34 @@ createTestTable(MYSQL *conn)
       " (1, -5, -1000, -100000, -1000000, 0, -7,"
       "     5, 1000, 100000, 4000000000, 9223372036854775808,"
       "     -1.5, 4.5, NULL, NULL,"
-      "     -1.5, 4.5, NULL, 'alpha', '12345', b'00001111'),"
+      "     -1.5, 4.5, NULL, 'alpha', '12345', b'00001111',"
+      "     x'6162007A20FF', x'', 'pad', ''),"
       " (2,  5,   500,   50000,   500000, 500000, -1,"
       "    20, 2000, 200000, 3000000000, 10,"
       "      2.5, 8.0, 7, 8.0,"
-      "      2.5, 8.0, 8.0, 'beta', '77', b'11110000'),"
+      "      2.5, 8.0, 8.0, 'beta', '77', b'11110000',"
+      "     x'000102030405', x'41', 'a', 'one'),"
       " (3, 20, 20000,  500000, 20000000, 10000000, 9223372036854775807,"
       "   250, 65000, 8000000, 1, 9223372036854775813,"
       "     12.5, 16.25, -3, 16.25,"
-      "     16.25, 12.5, 16.25, 'gamma', '-8', b'10101010'),"
+      "     16.25, 12.5, 16.25, 'gamma', '-8', b'10101010',"
+      "     x'FF807F000102', x'000041FF', 'alpha beta',"
+      "     'sixteen-byte-str'),"
       " (4, -1,    -1,      -1,       -1, 2, 42,"
       "     1,    1,      1, 2, 42,"
       "      0.0, -2.0, 0, -2.0,"
-      "     -0.0, 0.0, -0.0, 'delta', '0', b'00000000'),"
+      "     -0.0, 0.0, -0.0, 'delta', '0', b'00000000',"
+      "     x'202020202020', x'616263', 'trail   ', 'trail   '),"
       " (5, -128, -32768, -8388608, -2147483648, -1, -9223372036854775808,"
       "     0, 0, 0, 0, 0,"
       "     -3.25, -64.0, NULL, NULL,"
-      "     -3.25, -64.0, NULL, 'epsilon', '922', b'01010101'),"
+      "     -3.25, -64.0, NULL, 'epsilon', '922', b'01010101',"
+      "     x'404040404040', x'FFFE', '', 'z'),"
       " (6, 127, 32767, 8388607, 2147483647, 2147483647, 9223372036854775807,"
       "     255, 65535, 16777215, 4294967295, 18446744073709551615,"
       "     3.25, 64.0, 2147483647, 64.0,"
-      "     64.0, 3.25, 64.0, 'zeta', '42', b'11111111')"
+      "     64.0, 3.25, 64.0, 'zeta', '42', b'11111111',"
+      "     x'6162007A20FD', x'6162636465666768', 'pad', 'abc%def')"
       ) != 0) return -1;
 
   return createBoundaryTable(conn);
@@ -2434,6 +2445,172 @@ testColumnPredicateTypeMatrix(Ndb *ndb,
   return rc;
 }
 
+static int
+testStringAndBinaryTypeMatrix(Ndb *ndb,
+                              const NdbDictionary::Table *tab)
+{
+  Uint32 bAttr = attrId(tab, "b_val");
+  Uint32 vbAttr = attrId(tab, "vb_val");
+  Uint32 cWideAttr = attrId(tab, "c_wide");
+  Uint32 vWideAttr = attrId(tab, "v_wide");
+  Uint32 buf[192];
+  int rc = 0;
+
+  const unsigned char binaryAbz[] =
+      { 0x61, 0x62, 0x00, 0x7A, 0x20, 0xFF };
+  const unsigned char binaryThreshold[] =
+      { 0x61, 0x62, 0x00, 0x7A, 0x20, 0xFE };
+  const unsigned char vbEmpty[] = { 0 };
+  const unsigned char vbOne[] = { 1, 0x41 };
+  const unsigned char vbEmbeddedHigh[] = { 4, 0x00, 0x00, 0x41, 0xFF };
+  const unsigned char vbMax[] =
+      { 8, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68 };
+  const unsigned char vEmpty[] = { 0 };
+  const unsigned char vOne[] = { 3, 'o', 'n', 'e' };
+  const unsigned char vThreshold[] = { 1, 'm' };
+  const char padPattern[] = { 'p', 'a', 'd', '%' };
+  const char trailPattern[] = { 't', 'r', 'a', 'i', 'l', '%' };
+  const char abcPattern[] = { 'a', 'b', 'c', '%' };
+
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1 };
+    if (code.branch_col_eq(binaryAbz, sizeof(binaryAbz), bAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22a: BINARY exact equality with embedded zero",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1, 3 };
+    if (code.branch_col_lt(binaryThreshold, sizeof(binaryThreshold),
+                           bAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22b: BINARY ordering with high-bit bytes",
+                  ndb, tab, &code, expected, 2) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 2, 3, 4, 5, 6 };
+    if (code.branch_col_ne(binaryAbz, sizeof(binaryAbz), bAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22c: BINARY inequality",
+                  ndb, tab, &code, expected, 5) != 0) rc = -1;
+  }
+
+  /*
+   * VARBINARY and VARCHAR constants are in normal NDB column format:
+   * a one-byte length prefix followed by payload bytes.
+   */
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1 };
+    if (code.branch_col_eq(vbEmpty, sizeof(vbEmpty), vbAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22d: VARBINARY empty string equality",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 2 };
+    if (code.branch_col_eq(vbOne, sizeof(vbOne), vbAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22e: VARBINARY one-byte equality",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 3 };
+    if (code.branch_col_eq(vbEmbeddedHigh, sizeof(vbEmbeddedHigh),
+                           vbAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22f: VARBINARY embedded zero and high-bit equality",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 6 };
+    if (code.branch_col_eq(vbMax, sizeof(vbMax), vbAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22g: VARBINARY max-length equality",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1, 6 };
+    if (code.branch_col_like(padPattern, sizeof(padPattern),
+                             cWideAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22h: CHAR LIKE padded short value",
+                  ndb, tab, &code, expected, 2) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 4 };
+    if (code.branch_col_like(trailPattern, sizeof(trailPattern),
+                             cWideAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22i: CHAR LIKE explicit trailing spaces",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 2, 3, 4, 5 };
+    if (code.branch_col_notlike(padPattern, sizeof(padPattern),
+                                cWideAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22j: CHAR NOT LIKE padded short value",
+                  ndb, tab, &code, expected, 4) != 0) rc = -1;
+  }
+
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1 };
+    if (code.branch_col_eq(vEmpty, sizeof(vEmpty), vWideAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22k: VARCHAR empty string equality",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 2 };
+    if (code.branch_col_eq(vOne, sizeof(vOne), vWideAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22l: VARCHAR short string equality",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 2, 3, 4, 5 };
+    if (code.branch_col_lt(vThreshold, sizeof(vThreshold),
+                           vWideAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22m: VARCHAR ordering",
+                  ndb, tab, &code, expected, 4) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 6 };
+    if (code.branch_col_like(abcPattern, sizeof(abcPattern),
+                             vWideAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22n: VARCHAR LIKE with literal percent data",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1, 2, 3, 4, 5 };
+    if (code.branch_col_notlike(abcPattern, sizeof(abcPattern),
+                                vWideAttr, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 22o: VARCHAR NOT LIKE",
+                  ndb, tab, &code, expected, 5) != 0) rc = -1;
+  }
+
+  return rc;
+}
+
 struct TestEntry {
   int number;
   int (*fn)(Ndb *, const NdbDictionary::Table *);
@@ -2460,7 +2637,8 @@ static const TestEntry g_tests[] = {
   { 18, testIntegerWidthBoundaryMatrix },
   { 19, testSignedUnsignedPromotionMatrix },
   { 20, testFloatDoubleMatrix },
-  { 21, testColumnPredicateTypeMatrix }
+  { 21, testColumnPredicateTypeMatrix },
+  { 22, testStringAndBinaryTypeMatrix }
 };
 
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
