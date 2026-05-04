@@ -549,6 +549,29 @@ expectColumnEq(const char *name,
 }
 
 static int
+expectReadAddConstCompareU64(const char *name,
+                             Ndb *ndb,
+                             const NdbDictionary::Table *tab,
+                             Uint32 attr,
+                             Uint16 addend,
+                             Uint64 expectedValue,
+                             const int *expected,
+                             size_t nExpected)
+{
+  Uint32 buf[128];
+  NdbInterpretedCode code(tab, buf, 128);
+  if (code.read_attr(0, attr) != 0 ||
+      code.add_const_reg(1, 0, addend) != 0 ||
+      code.load_const_u64(2, expectedValue) != 0 ||
+      code.branch_eq(1, 2, 0) != 0 ||
+      finishAcceptReject(&code, 0) != 0) {
+    printf("%s ... FAILED (build)\n", name);
+    return -1;
+  }
+  return expectPks(name, ndb, tab, &code, expected, nExpected);
+}
+
+static int
 expectColumnBranch(
     const char *name,
     Ndb *ndb,
@@ -2023,6 +2046,8 @@ testIntegerWidthBoundaryMatrix(Ndb *ndb,
   static const int unsignedEqTwin[] = { 1, 2, 3, 5, 7 };
   static const int unsignedHighBit[] = { 3, 4, 5, 7 };
   static const int unsignedMax[] = { 5, 7 };
+  static const int signedPromotionMax[] = { 7 };
+  static const int unsignedPromotionMax[] = { 5, 7 };
 
   const AttrConst signedAttrs[] = {
     { "s_tiny", "TINYINT", 127ULL },
@@ -2043,6 +2068,18 @@ testIntegerWidthBoundaryMatrix(Ndb *ndb,
     { "u_small", "SMALLINT UNSIGNED", 65535ULL },
     { "u_medium", "MEDIUMINT UNSIGNED", 16777215ULL },
     { "u_int", "INT UNSIGNED", 4294967295ULL }
+  };
+  const AttrConst signedPromotedMaxPlusOne[] = {
+    { "s_tiny", "TINYINT", 128ULL },
+    { "s_small", "SMALLINT", 32768ULL },
+    { "s_medium", "MEDIUMINT", 8388608ULL },
+    { "s_int", "INT", 2147483648ULL }
+  };
+  const AttrConst unsignedPromotedMaxPlusOne[] = {
+    { "u_tiny", "TINYINT UNSIGNED", 256ULL },
+    { "u_small", "SMALLINT UNSIGNED", 65536ULL },
+    { "u_medium", "MEDIUMINT UNSIGNED", 16777216ULL },
+    { "u_int", "INT UNSIGNED", 4294967296ULL }
   };
   const AttrPair signedPairs[] = {
     { "s_tiny", "s_tiny2", "TINYINT" },
@@ -2129,6 +2166,28 @@ testIntegerWidthBoundaryMatrix(Ndb *ndb,
                               attrId(tab, "u_big2"),
                               attrId(tab, "u_int"),
                               unsignedMax, 2) != 0) rc = -1;
+
+  for (i = 0; i < sizeof(signedPromotedMaxPlusOne) /
+                  sizeof(signedPromotedMaxPlusOne[0]); i++) {
+    snprintf(name, sizeof(name),
+             "Test 18g.%zu: %s max plus one promotes to Int64", i + 1,
+             signedPromotedMaxPlusOne[i].label);
+    if (expectReadAddConstCompareU64(
+            name, ndb, tab, attrId(tab, signedPromotedMaxPlusOne[i].attr),
+            1, signedPromotedMaxPlusOne[i].constant,
+            signedPromotionMax, 1) != 0) rc = -1;
+  }
+
+  for (i = 0; i < sizeof(unsignedPromotedMaxPlusOne) /
+                  sizeof(unsignedPromotedMaxPlusOne[0]); i++) {
+    snprintf(name, sizeof(name),
+             "Test 18h.%zu: %s max plus one promotes to Uint64", i + 1,
+             unsignedPromotedMaxPlusOne[i].label);
+    if (expectReadAddConstCompareU64(
+            name, ndb, tab, attrId(tab, unsignedPromotedMaxPlusOne[i].attr),
+            1, unsignedPromotedMaxPlusOne[i].constant,
+            unsignedPromotionMax, 2) != 0) rc = -1;
+  }
 
   return rc;
 }
