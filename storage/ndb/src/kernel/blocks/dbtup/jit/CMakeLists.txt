@@ -59,3 +59,61 @@ IF(APPLE)
   FIND_PACKAGE(Threads REQUIRED)
   TARGET_LINK_LIBRARIES(ndb_jit_arena PUBLIC Threads::Threads)
 ENDIF()
+
+# ---------------------------------------------------------------------------
+# RONDB-1056 Phase 1: stencils.o build target.
+#
+# stencils_src.c is compiled with clang (not the project's CC) using a
+# specific set of flags, into stencils.o. The .o is NOT linked into
+# anything — it's an artefact the developer runs `objdump -d -r` on,
+# then hand-copies bytes + relocations into stencils_x86_64.h per
+# phase_1_implementation.md §7. Phase 2 replaces this with an
+# automated extractor.
+#
+# We require clang explicitly (gcc produces incompatible codegen
+# because preserve_none is clang-only). If clang is not available the
+# target is skipped with a status message and the rest of the build
+# carries on; the developer needs clang only when regenerating
+# stencils.
+# ---------------------------------------------------------------------------
+
+FIND_PROGRAM(NDB_JIT_CLANG clang
+             DOC "clang for RONDB-1056 Phase 1 stencil compilation")
+
+IF(NDB_JIT_CLANG)
+  MESSAGE(STATUS "RONDB-1056: stencils will be compiled with ${NDB_JIT_CLANG}")
+
+  SET(NDB_JIT_STENCIL_FLAGS
+    -O2
+    -fno-asynchronous-unwind-tables
+    -ffreestanding
+    -fno-stack-protector
+    -fno-pic
+    -std=c11
+    -Wall
+    -Wextra
+    -I${CMAKE_CURRENT_SOURCE_DIR}
+  )
+
+  ADD_CUSTOM_COMMAND(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/stencils.o
+    COMMAND ${NDB_JIT_CLANG} ${NDB_JIT_STENCIL_FLAGS}
+            -c ${CMAKE_CURRENT_SOURCE_DIR}/stencils_src.c
+            -o ${CMAKE_CURRENT_BINARY_DIR}/stencils.o
+    DEPENDS
+      ${CMAKE_CURRENT_SOURCE_DIR}/stencils_src.c
+      ${CMAKE_CURRENT_SOURCE_DIR}/jit1.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/bytecode1.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/jit_arena.h
+    COMMENT "[RONDB-1056 Phase 1] compiling stencils.o with clang"
+    VERBATIM
+  )
+
+  ADD_CUSTOM_TARGET(ndb_jit1_stencils ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/stencils.o)
+ELSE()
+  MESSAGE(STATUS "RONDB-1056: clang not found; Phase 1 stencils.o target skipped. "
+                 "Install clang (Linux: dnf/apt install clang; macOS: Apple clang via "
+                 "Xcode CLT or `brew install llvm`) to enable the `ndb_jit1_stencils` "
+                 "target.")
+ENDIF()

@@ -64,3 +64,36 @@ SET_TARGET_PROPERTIES(proto_icache_bench PROPERTIES
   C_EXTENSIONS YES
 )
 TARGET_LINK_LIBRARIES(proto_icache_bench PRIVATE ndb_jit_arena)
+
+# ---------------------------------------------------------------------------
+# RONDB-1056 Phase 1: interpreter + program builder library.
+#
+# Shared between the Day-1 sanity test (proto_interp_only) and the
+# eventual proto_microbench. Pure C; no NDB / arena dependency.
+# ---------------------------------------------------------------------------
+
+ADD_LIBRARY(ndb_jit1_microbench STATIC
+  microbench_program.c
+  microbench_interp.c
+)
+SET_TARGET_PROPERTIES(ndb_jit1_microbench PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS YES
+)
+TARGET_INCLUDE_DIRECTORIES(ndb_jit1_microbench PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/storage/ndb/src/kernel/blocks/dbtup/jit
+)
+
+# proto_interp_only: Day-1 sanity test — runs the 30-op program
+# through the interpreter only over a fixed seed, asserts the
+# expected accumulator value. Validates program builder + interp
+# correctness independent of any JIT path.
+ADD_EXECUTABLE(proto_interp_only proto_interp_only.c)
+SET_TARGET_PROPERTIES(proto_interp_only PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS YES
+)
+TARGET_LINK_LIBRARIES(proto_interp_only PRIVATE ndb_jit1_microbench)
