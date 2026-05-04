@@ -1,0 +1,71 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.16a: clean rejection of partial-key joins to multi-key CTEs.
+#
+# A CTE whose body has GROUP BY (k, amt) materializes a two-column
+# virtual primary key.  Joining to such a CTE on only the first key
+# (CTE_LOOKUP with one key for a two-key virt table) used to return
+# the opaque "Failed to create child operation" error from
+# NdbQueryBuilder.  Phase I.16a adds a RonSQL-side guard in
+# emit_child_ops that detects the mismatch and throws a clear
+# permanent error naming the workaround (place the multi-key CTE
+# on the joined root and join the smaller table to it).
+#
+# The positive-test counterpart — multi-key CTE on the root — is
+# already covered by ronsql_cte_greatest_least_v6.  Existing
+# single-key CTE_LOOKUP coverage across the ronsql suite confirms
+# the well-formed path keeps working.
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE cte_orders (
+  o_id INT NOT NULL,
+  o_custkey BIGINT NOT NULL,
+  o_amt BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_o_custkey ON cte_orders (o_custkey);
+
+CREATE TABLE cte_customer (
+  c_id BIGINT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+INSERT INTO cte_customer VALUES
+  (100, 'Alice'),
+  (200, 'Bob'),
+  (300, 'Charlie');
+
+INSERT INTO cte_orders VALUES
+  (1, 100, 50),
+  (2, 100, 75),
+  (3, 200, 40),
+  (4, 200, 60),
+  (5, 300, 90);
+
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === Test 1: partial CTE key (1 of 2) — must be rejected ===
+--echo
+
+# Two-column GROUP BY → virt PK is (k, amt).  Join binds only k →
+# emit_child_ops's I.16a guard throws.  Pre-I.16a, this fell
+# through to lookupCte() and produced "Failed to create child
+# operation. NDB Success 0, No error".
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt FROM cte_orders GROUP BY o_custkey, o_amt) SELECT c.c_id, SUM(pairs.cnt) AS s FROM cte_customer AS c JOIN pairs ON pairs.k = c.c_id GROUP BY c.c_id;' 2>&1
+
+--disable_query_log
+DROP TABLE cte_orders;
+DROP TABLE cte_customer;
+--enable_query_log
