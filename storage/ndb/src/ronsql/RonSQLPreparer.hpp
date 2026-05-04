@@ -309,6 +309,10 @@ private:
   void load();
   void load_single_table();
   void load_join();
+  /* Phase I.17h: synthesise a FROM clause from qualified column refs
+   * to scalar CTEs when the parser produced a NULL root_table.  No-op
+   * when an explicit FROM was given. */
+  void synthesize_from_for_scalar_ctes();
   void classify_where_by_table(QueryScope& scope,
                                 ConditionalExpression* where_ce);
   void promote_left_to_inner_for_where(QueryScope& scope);

@@ -147,6 +147,15 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
     JoinClause* head;
     JoinClause* tail;
   } join_list;
+  /* Phase I.17h: optional FROM clause at top-level SELECT.  Captures
+   * either a populated FROM (root_table + joins) or an empty FROM
+   * (NULL / NULL).  RonSQLPreparer fills the empty case by walking
+   * qualified column refs and synthesising a comma cross-join over
+   * the referenced scalar CTEs. */
+  struct {
+    TableRef* root_table;
+    JoinClause* joins;
+  } from_clause_val;
   struct SelectStatement* subquery_stmt;
   struct CteDefinition* cte_def;
   struct {
@@ -167,7 +176,6 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %token T_GREATEST T_LEAST
 %token T_WITH
 %token T_KW_LEFT T_KW_OUTER
-%token T_CROSS
 
 // RonSQLPreparer.cpp needs some values that are inequal to all tokens. They
 // need to be declared here but aren't used in the lexer or parser.
@@ -233,6 +241,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %type<join_clause> join_clause
 %type<join_condition> join_condition join_condition_list
 %type<join_list> join_list
+%type<from_clause_val> from_clause
 %type<subquery_stmt> subquery
 %type<cte_def> cte_def
 %type<cte_list> cte_list cte_opt
@@ -242,21 +251,23 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %%
 
 selectstatement:
-  explain_opt cte_opt T_SELECT outputlist T_FROM table_ref join_list where_opt groupby_opt having_opt orderby_opt limit_opt T_SEMICOLON
+  explain_opt cte_opt T_SELECT outputlist from_clause where_opt groupby_opt having_opt orderby_opt limit_opt T_SEMICOLON
   {
     context->ast_root.do_explain = $1;
     context->ast_root.cte_list = $2.head;
     context->ast_root.outputs = $4.head;
-    context->ast_root.root_table = $6;
-    context->ast_root.table = $6->name;
-    if ($7.head != NULL) {
-      context->ast_root.joins = $7.head;
+    context->ast_root.root_table = $5.root_table;
+    if ($5.root_table != NULL) {
+      context->ast_root.table = $5.root_table->name;
     }
-    context->ast_root.where_expression = $8;
-    context->ast_root.groupby_columns = $9;
-    context->ast_root.having_expression = $10;
-    context->ast_root.orderby_columns = $11;
-    context->ast_root.limit = $12;
+    if ($5.joins != NULL) {
+      context->ast_root.joins = $5.joins;
+    }
+    context->ast_root.where_expression = $6;
+    context->ast_root.groupby_columns = $7;
+    context->ast_root.having_expression = $8;
+    context->ast_root.orderby_columns = $9;
+    context->ast_root.limit = $10;
     /*
      * These asserts make sure the definition of TokenKind matches both the
      * yychar variable in RonSQLzparser.y.cpp:rsqlp_parse() and the underlying
@@ -278,6 +289,16 @@ selectstatement:
 cte_opt:
   %empty                                { $$.head = NULL; $$.tail = NULL; }
 | T_WITH cte_list                       { $$ = $2; }
+
+/* Phase I.17h: top-level FROM clause is optional.  When omitted,
+ * RonSQLPreparer walks every qualified column reference in the
+ * SELECT (and aggregator expressions) and synthesises a comma
+ * cross-join over the matching scalar CTEs.  Mandatory in CTE
+ * bodies and subqueries — those keep their original
+ * `T_FROM table_ref join_list` shape directly. */
+from_clause:
+  T_FROM table_ref join_list           { $$.root_table = $2; $$.joins = $3.head; }
+| %empty                                { $$.root_table = NULL; $$.joins = NULL; }
 
 cte_list:
   cte_def                               { $$.head = $1; $$.tail = $1; }
@@ -381,6 +402,16 @@ nonaliased_output:
                                           $$->output_name = LexString{(@$).begin, size_t((@$).end - (@$).begin)};
                                           $$->next = NULL;
                                         }
+/* Phase I.17g: top-level GREATEST / LEAST.  Inputs must be scalar — i.e.
+ * constants or scalar-CTE column refs — RonSQL doesn't run a generic
+ * per-row evaluator at the SELECT level.  Implementation wraps the
+ * lowered n-ary expression in an implicit MAX so the rest of the
+ * pipeline sees a regular aggregate output: over a single-row
+ * scalar input, MAX of one value equals the GREATEST/LEAST itself. */
+| T_GREATEST T_LEFT arith_expr_list T_RIGHT
+                                        { init_aggfun($$, @$, T_MAX, context->lower_greatest_least_nary($3, /*is_greatest*/true)); }
+| T_LEAST T_LEFT arith_expr_list T_RIGHT
+                                        { init_aggfun($$, @$, T_MAX, context->lower_greatest_least_nary($3, /*is_greatest*/false)); }
 
 /* T_COUNT not included here, in order to implement COUNT(*) */
 aggfun:
@@ -488,21 +519,11 @@ join_clause:
      * source — enforced in QueryPlanner.  No ON clause; conditions
      * stays NULL.  Treated as INNER for the join-type field; the
      * cross-join nature is conveyed by num_key_cols == 0 at the
-     * planner level. */
+     * planner level.  CROSS JOIN keyword form intentionally not
+     * added — adds no semantics over comma in this scope. */
     initptr($$);
     $$->join_type = JoinClause::INNER_JOIN;
     $$->table = *$2;
-    $$->conditions = NULL;
-    $$->next = NULL;
-  }
-| T_CROSS T_JOIN table_ref
-  {
-    /* Same as the comma-list shape, just spelled out with the
-     * explicit CROSS JOIN keyword.  The two forms are
-     * interchangeable. */
-    initptr($$);
-    $$->join_type = JoinClause::INNER_JOIN;
-    $$->table = *$3;
     $$->conditions = NULL;
     $$->next = NULL;
   }

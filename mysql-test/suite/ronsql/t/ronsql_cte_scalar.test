@@ -141,50 +141,69 @@ DELIMITER |;
 
 --echo
 --echo
---echo === Test 6: cross-join of two scalar CTEs (comma form) ===
+--echo === Test 6: cross-join of two scalar CTEs (comma form), top-level GREATEST ===
 
 # Watermark-style shape.  Two scalar CTEs each materialise a
-# single row.  FROM cte_a, cte_b is the comma cross-join syntax —
+# single row; FROM cte_a, cte_b is the comma cross-join syntax —
 # RonSQL accepts it for single-row operands (scalar CTEs only).
-# Each CTE_SCAN root produces one row; the cross-product is one
-# row with both columns; GREATEST projects the larger.
+# GREATEST appears as a top-level SELECT output; the parser wraps
+# it in implicit MAX so the rest of the pipeline sees a regular
+# aggregate.  MAX over the single cross-product row equals the
+# GREATEST value itself.
 let $QUERY=
 WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
      min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
-SELECT GREATEST(hi, lo) AS biggest FROM max_v, min_v;|
+SELECT GREATEST(max_v.hi, min_v.lo) AS biggest FROM max_v, min_v;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
 --sorted_result
 WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
      min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
-SELECT GREATEST(hi, lo) AS biggest FROM max_v, min_v|
+SELECT GREATEST(max_v.hi, min_v.lo) AS biggest FROM max_v, min_v|
 
 --echo
 --echo
---echo === Test 7: cross-join with explicit CROSS JOIN keyword ===
+--echo === Test 7: comma cross-join with top-level LEAST ===
 
-# Same shape as Test 6 but spelled with "CROSS JOIN" instead of
-# the comma — interchangeable.
+# Same shape as Test 6 but using LEAST instead of GREATEST.
 let $QUERY=
 WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
      min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
-SELECT GREATEST(hi, lo) AS biggest
-FROM max_v CROSS JOIN min_v;|
+SELECT LEAST(max_v.hi, min_v.lo) AS smallest FROM max_v, min_v;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
 --sorted_result
 WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
      min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
-SELECT GREATEST(hi, lo) AS biggest
-FROM max_v CROSS JOIN min_v|
+SELECT LEAST(max_v.hi, min_v.lo) AS smallest FROM max_v, min_v|
+
+--echo
+--echo
+--echo === Test 8: SELECT with no FROM — auto-synthesised cross-join ===
+
+# Phase I.17h: the watermark-style query without an explicit FROM.
+# RonSQL walks every qualified column reference, finds max_v and
+# min_v as scalar CTE qualifiers, and synthesises a cross-join FROM
+# automatically.
+let $QUERY=
+WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
+     min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
+SELECT GREATEST(max_v.hi, min_v.lo) AS biggest;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
+     min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
+SELECT GREATEST(max_v.hi, min_v.lo) AS biggest|
 
 DELIMITER ;|
 
 --echo
 --echo
---echo === Test 8: cross-join with non-CTE operand — must reject ===
+--echo === Test 9: cross-join with non-CTE operand — must reject ===
 
 # Real-table cross-join is intentionally not yet supported.
 --error 1
@@ -192,13 +211,23 @@ DELIMITER ;|
 
 --echo
 --echo
---echo === Test 9: cross-join with grouped CTE — must reject ===
+--echo === Test 10: cross-join with grouped CTE — must reject ===
 
 # Grouped CTE produces multiple rows, so cross-join semantics
 # would require true Cartesian-product handling which is out of
 # the single-row scope.
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT MAX(v) AS m FROM scalar_t), b AS (SELECT region AS r, COUNT(*) AS c FROM scalar_t GROUP BY region) SELECT a.m FROM a, b;' 2>&1
+
+--echo
+--echo
+--echo === Test 11: SELECT no FROM with grouped CTE qualifier — must reject ===
+
+# I.17h's synthesis only accepts scalar (no-GROUP-BY) CTEs.  A
+# qualifier referencing a grouped CTE is rejected with the same
+# scalar-CTE-only constraint as Test 10.
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH g AS (SELECT region AS r, COUNT(*) AS c FROM scalar_t GROUP BY region) SELECT g.c AS x;' 2>&1
 
 --disable_query_log
 DROP TABLE scalar_t;

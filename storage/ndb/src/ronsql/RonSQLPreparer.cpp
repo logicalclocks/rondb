@@ -894,6 +894,15 @@ RonSQLPreparer::load()
   // Transform correlated scalar subqueries (may set m_has_subqueries)
   decorrelate_scalar();
 
+  // Phase I.17h: optional FROM clause at top-level SELECT.  When the
+  // parser produced a NULL root_table, synthesise one from the
+  // qualified column references in the SELECT — every distinct
+  // qualifier that matches a scalar (no-GROUP-BY) CTE becomes part
+  // of the synthetic FROM, with the first matched qualifier as root
+  // and the rest as comma cross-joins.  Reject if no qualifier
+  // matches a scalar CTE.
+  synthesize_from_for_scalar_ctes();
+
   if (is_join_query()) {
     load_join();
   } else {
@@ -1046,6 +1055,89 @@ RonSQLPreparer::load_single_table()
   }
   m_main_scope.column_attrId_map = col_id_map;
   m_main_scope.column_map = col_map;
+}
+
+void
+RonSQLPreparer::synthesize_from_for_scalar_ctes()
+{
+  if (m_context.ast_root.root_table != NULL) return;  // FROM given
+
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+
+  // Walk every qualified column reference recorded by the parser and
+  // pick the unique qualifiers that match a scalar (no-GROUP-BY) CTE
+  // declared at the outer level.  Qualifiers that don't match any
+  // outer-CTE name are left alone — they're typically subquery-local
+  // and resolved inside their own scope.
+  DynamicArray<LexCString> matched_qualifiers(m_amalloc);
+  for (Uint32 i = 0; i < m_column_qualifiers.size(); i++) {
+    const LexCString& q = m_column_qualifiers[i];
+    if (q.c_str() == NULL) continue;
+    bool already = false;
+    for (Uint32 j = 0; j < matched_qualifiers.size(); j++) {
+      if (strcmp(matched_qualifiers[j].c_str(), q.c_str()) == 0) {
+        already = true;
+        break;
+      }
+    }
+    if (already) continue;
+    const CteDefinition* match = NULL;
+    for (const CteDefinition* cte = m_context.ast_root.cte_list;
+         cte != NULL; cte = cte->next) {
+      if (strcmp(cte->name.c_str(), q.c_str()) == 0) {
+        match = cte;
+        break;
+      }
+    }
+    if (match == NULL) continue;  // Not an outer-CTE qualifier; skip.
+    if (match->stmt->groupby_columns != NULL) {
+      err << "Column qualifier '" << q.c_str()
+          << "' refers to a grouped CTE.  SELECT without an explicit "
+             "FROM clause supports only scalar (no-GROUP-BY) CTEs."
+          << std::endl;
+      throw RonSQLPermanentError(
+          "Grouped CTE referenced with no FROM clause.");
+    }
+    matched_qualifiers.push(q);
+  }
+
+  if (matched_qualifiers.size() == 0) {
+    err << "SELECT without FROM clause requires at least one "
+           "qualified column reference (e.g. cte_name.col) to a "
+           "scalar CTE." << std::endl;
+    throw RonSQLPermanentError(
+        "SELECT without FROM and no scalar-CTE qualifier.");
+  }
+
+  // First matched qualifier becomes the synthetic root_table; the
+  // rest become comma cross-join clauses (no ON conditions).  Each
+  // synthetic JoinClause / TableRef is allocated from the request
+  // arena so its lifetime matches the rest of the AST.
+  TableRef* root = m_amalloc->alloc_exc<TableRef>(1);
+  root->database = LexCString{NULL, 0};
+  root->name = matched_qualifiers[0];
+  root->alias = matched_qualifiers[0];
+  m_context.ast_root.root_table = root;
+  m_context.ast_root.table = matched_qualifiers[0];
+
+  JoinClause* head = NULL;
+  JoinClause* tail = NULL;
+  for (Uint32 i = 1; i < matched_qualifiers.size(); i++) {
+    JoinClause* jc = m_amalloc->alloc_exc<JoinClause>(1);
+    jc->join_type = JoinClause::INNER_JOIN;
+    jc->table.database = LexCString{NULL, 0};
+    jc->table.name = matched_qualifiers[i];
+    jc->table.alias = matched_qualifiers[i];
+    jc->conditions = NULL;
+    jc->next = NULL;
+    if (head == NULL) {
+      head = tail = jc;
+    } else {
+      tail->next = jc;
+      tail = jc;
+    }
+  }
+  m_context.ast_root.joins = head;
 }
 
 void
