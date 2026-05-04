@@ -1,0 +1,132 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+
+=== Test 1: MIN/MAX DECIMAL(10,0) — widens to BIGINT ===
+== Query ==
+WITH stats AS (SELECT o_grp AS k,
+MIN(o_amt0) AS lo,
+MAX(o_amt0) AS hi
+FROM dec_orders GROUP BY o_grp)
+SELECT k, lo, hi FROM stats;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT o_grp AS k,
+MIN(o_amt0) AS lo,
+MAX(o_amt0) AS hi
+FROM dec_orders GROUP BY o_grp)
+SELECT k, lo, hi FROM stats|
+k	lo	hi
+100	500	1000
+200	300	800
+300	400	400
+
+
+=== Test 2: MIN/MAX DECIMAL UNSIGNED — widens to Bigunsigned ===
+== Query ==
+WITH stats AS (SELECT o_grp AS k,
+MIN(o_amtu0) AS lo,
+MAX(o_amtu0) AS hi
+FROM dec_orders GROUP BY o_grp)
+SELECT k, lo, hi FROM stats;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT o_grp AS k,
+MIN(o_amtu0) AS lo,
+MAX(o_amtu0) AS hi
+FROM dec_orders GROUP BY o_grp)
+SELECT k, lo, hi FROM stats|
+k	lo	hi
+100	500	1000
+200	300	800
+300	400	400
+
+
+=== Test 3: MIN/MAX DECIMAL(10,2) (scale > 0) — widens to DOUBLE ===
+== Query ==
+WITH stats AS (SELECT o_grp AS k,
+MIN(o_amt2) AS lo,
+MAX(o_amt2) AS hi
+FROM dec_orders GROUP BY o_grp)
+SELECT k, lo, hi FROM stats;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT o_grp AS k,
+MIN(o_amt2) AS lo,
+MAX(o_amt2) AS hi
+FROM dec_orders GROUP BY o_grp)
+SELECT k, lo, hi FROM stats|
+k	lo	hi
+100	500.55	1000.25
+200	300.75	800.13
+300	400.99	400.99
+
+
+=== Test 4: WHERE filter on MIN/MAX DECIMAL output — inline-type pushdown ===
+== Query ==
+WITH stats AS (SELECT o_grp AS k,
+MAX(o_amt0) AS hi
+FROM dec_orders GROUP BY o_grp)
+SELECT k, hi FROM stats WHERE hi > 600;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT o_grp AS k,
+MAX(o_amt0) AS hi
+FROM dec_orders GROUP BY o_grp)
+SELECT k, hi FROM stats WHERE hi > 600|
+k	hi
+100	1000
+200	800
+
+
+=== Test 5: chained CTE with MIN(MAX(decimal_col)) ===
+== Query ==
+WITH a AS (SELECT o_grp AS k, MAX(o_amt0) AS hi
+FROM dec_orders GROUP BY o_grp),
+b AS (SELECT MIN(a.hi) AS overall_min
+FROM a)
+SELECT overall_min FROM b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT o_grp AS k, MAX(o_amt0) AS hi
+FROM dec_orders GROUP BY o_grp),
+b AS (SELECT MIN(a.hi) AS overall_min
+FROM a)
+SELECT overall_min FROM b|
+overall_min
+400

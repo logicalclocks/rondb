@@ -29,6 +29,7 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `cte_filter_phase_c.md` — Phase C: aggregation interpreter reuses the jump-table interpreter
 - `cte_filter_phase_d.md` — Phase D: inline-type opcode for synthesized columns (RonSQL)
 - `cte_filter_phase_d2.md` — Phase D2: MIN/MAX virt-type widening for inline filter (RonSQL)
+- `cte_filter_minmax_strings_plan.md` — Phase I.6: MIN/MAX over CHAR / VARCHAR / DECIMAL.  F.1 shipped (`d812019e9a4`): DECIMAL widening to BIGINT/Bigunsigned/DOUBLE in CTE virt-table types, mirroring the kernel's `AggInterpreter::AlignedType`; new `out_scale` return on `resolve_chained_column_type`.  F.2 (kernel-side string MIN/MAX) and F.3 (CTE filter on string MIN/MAX) plan-only, only to be implemented if a concrete use case appears
 - `cte_filter_phase_e1.md` — Phase E.1: scanCte as main-query root (RonSQL)
 - `cte_filter_phase_e1k.md` — Phase E.1K: kernel CTE virtual-column linked-attr support (sequenced after E.1, before E.2)
 - `cte_filter_phase_e2.md` — Phase E.2: chained CTEs / CTE-of-CTE (RonSQL)
