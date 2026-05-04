@@ -108,29 +108,41 @@ static const size_t kHoleSymbolTableLen =
 /* byte range for the assembled 64-bit value and records each match  */
 /* as a magic-byte hole.                                              */
 /*                                                                    */
-/* The 0xC0DEC0DE prefix is a recognisable banner; the trailing       */
-/* nibble distinguishes kinds. APPEND-ONLY: never reuse a value or    */
-/* renumber an existing one — that would change historical stencil   */
-/* bytes.                                                             */
+/* These are HIGH-ENTROPY values, deterministically generated from    */
+/* SHA-256(salt || name)[0:8]. The reasons:                           */
 /*                                                                    */
-/* The CI collision audit (see phase_2_implementation.md §7.2)        */
-/* asserts each magic appears exactly the expected number of times    */
-/* in its declaring stencil and zero elsewhere on either arch.        */
+/*   1. clang folds across magic constants when they differ by a      */
+/*      simple arithmetic (e.g., previous version used                */
+/*      0xC0DEC0DE_NNNN_C0DE — clang noticed neighbouring kinds       */
+/*      differed by 0x10000 and emitted ONE movz/movk chain plus an   */
+/*      `add x9, x8, #0x10, lsl #12`, hiding the second magic from   */
+/*      the extractor entirely). High-entropy values defeat this.    */
+/*                                                                    */
+/*   2. Random byte distribution means false positives in stencil     */
+/*      bytes are vanishingly unlikely. The CI collision audit        */
+/*      (see phase_2_implementation.md §7.2) asserts each magic       */
+/*      appears the expected number of times within its declaring     */
+/*      stencil and zero elsewhere.                                   */
+/*                                                                    */
+/* APPEND-ONLY: never reuse a value or renumber an existing one —     */
+/* that would change historical stencil bytes. To add a new hole      */
+/* kind, append a new line; the extractor's table picks it up         */
+/* automatically.                                                     */
 /* ------------------------------------------------------------------ */
 
-#define MAGIC_LCI_DST   0xC0DEC0DE0001C0DEull
-#define MAGIC_LCI_VAL   0xC0DEC0DE0002C0DEull
-#define MAGIC_LRC_DST   0xC0DEC0DE0003C0DEull
-#define MAGIC_LRC_COL   0xC0DEC0DE0004C0DEull
-#define MAGIC_MV_DST    0xC0DEC0DE0005C0DEull
-#define MAGIC_MV_SRC    0xC0DEC0DE0006C0DEull
-#define MAGIC_ADD_DST   0xC0DEC0DE0007C0DEull
-#define MAGIC_ADD_A     0xC0DEC0DE0008C0DEull
-#define MAGIC_ADD_B     0xC0DEC0DE0009C0DEull
-#define MAGIC_SUM_SLOT  0xC0DEC0DE000AC0DEull
-#define MAGIC_SUM_SRC   0xC0DEC0DE000BC0DEull
-#define MAGIC_BLT_A     0xC0DEC0DE000CC0DEull
-#define MAGIC_BLT_B     0xC0DEC0DE000DC0DEull
+#define MAGIC_LCI_DST     0x504a8c2cd757d72bull
+#define MAGIC_LCI_VAL     0x223975d389209953ull
+#define MAGIC_LRC_DST     0xcb07ae05fcf0cf58ull
+#define MAGIC_LRC_COL     0x0a7785535b0dae38ull
+#define MAGIC_MV_DST      0x25470740206cc41bull
+#define MAGIC_MV_SRC      0x5790d9b5c360b5a4ull
+#define MAGIC_ADD_DST     0xc7a90e5900373d62ull
+#define MAGIC_ADD_A       0xdffb058746e5c4c4ull
+#define MAGIC_ADD_B       0x0699c1e457d7617bull
+#define MAGIC_SUM_SLOT    0x807a71779a2095a5ull
+#define MAGIC_SUM_SRC     0xf8922a3d54402fd8ull
+#define MAGIC_BLT_A       0xd79f74ebb8bb0e4dull
+#define MAGIC_BLT_B       0x6595bd297abcb657ull
 /* MAGIC_BLT_TGT is not a magic-byte hole on aarch64 either —
  * branch targets use B/CALL26 relocations on aarch64. */
 
