@@ -347,7 +347,8 @@ private:
   bool resolve_chained_column_type(QueryScope& scope, Uint32 col_idx,
                                     NdbDictionary::Column::Type& out_type,
                                     Uint32& out_length,
-                                    const void*& out_cs);
+                                    const void*& out_cs,
+                                    Int32& out_scale);
   void analyze_subqueries();
   void analyze_subqueries_ce(ConditionalExpression* ce);
   void analyze_select_subqueries();

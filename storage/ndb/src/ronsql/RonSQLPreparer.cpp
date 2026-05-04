@@ -5560,8 +5560,10 @@ RonSQLPreparer::resolve_chained_column_type(
     QueryScope& scope, Uint32 col_idx,
     NdbDictionary::Column::Type& out_type,
     Uint32& out_length,
-    const void*& out_cs)
+    const void*& out_cs,
+    Int32& out_scale)
 {
+  out_scale = 0;
   // Direct real-table column: column_map already resolved.
   if (scope.column_map != NULL) {
     const NdbDictionary::Column* src = scope.column_map[col_idx];
@@ -5569,6 +5571,7 @@ RonSQLPreparer::resolve_chained_column_type(
       out_type = src->getType();
       out_length = src->getLength();
       out_cs = src->getCharset();
+      out_scale = src->getScale();
       return true;
     }
   }
@@ -5594,7 +5597,8 @@ RonSQLPreparer::resolve_chained_column_type(
 
   if (o->type == Outputs::Type::COLUMN) {
     return resolve_chained_column_type(*cs, o->column.col_idx,
-                                        out_type, out_length, out_cs);
+                                        out_type, out_length, out_cs,
+                                        out_scale);
   }
   if (o->type == Outputs::Type::AGGREGATE) {
     TokenKind fun = o->aggregate.fun;
@@ -5609,8 +5613,10 @@ RonSQLPreparer::resolve_chained_column_type(
     NdbDictionary::Column::Type arg_type;
     Uint32 arg_length;
     const void* arg_cs;
+    Int32 arg_scale = 0;
     if (!resolve_chained_column_type(*cs, arg->getLoadIdx(),
-                                      arg_type, arg_length, arg_cs))
+                                      arg_type, arg_length, arg_cs,
+                                      arg_scale))
       return false;
     if (fun == T_SUM) {
       switch (arg_type) {
@@ -5657,10 +5663,29 @@ RonSQLPreparer::resolve_chained_column_type(
         case NdbDictionary::Column::Double:
           out_type = NdbDictionary::Column::Double;
           out_length = 1; out_cs = NULL; return true;
+        case NdbDictionary::Column::Decimal:
+        case NdbDictionary::Column::Decimalunsigned:
+          // Phase I.6 F.1: kernel `AggInterpreter::AlignedType`
+          // widens DECIMAL → BIGINT (scale==0) or DOUBLE (scale>0)
+          // before MIN/MAX runs.  Mirror the same widening here so
+          // RonSQL's virt-table column type matches what the kernel
+          // emits, allowing the inline-type CTE filter opcode to
+          // accept the result.
+          if (arg_scale == 0) {
+            out_type = (arg_type == NdbDictionary::Column::Decimalunsigned)
+                       ? NdbDictionary::Column::Bigunsigned
+                       : NdbDictionary::Column::Bigint;
+          } else {
+            out_type = NdbDictionary::Column::Double;
+          }
+          out_length = 1;
+          out_cs = NULL;
+          return true;
         default:
           out_type = arg_type;
           out_length = arg_length;
           out_cs = arg_cs;
+          out_scale = arg_scale;
           return true;
       }
     }
@@ -5739,8 +5764,10 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
         NdbDictionary::Column::Type rt;
         Uint32 rlen = 1;
         const void* rcs = NULL;
+        Int32 rscale = 0;
         require_prm(
-            resolve_chained_column_type(*cte_scope, col_idx, rt, rlen, rcs),
+            resolve_chained_column_type(*cte_scope, col_idx,
+                                         rt, rlen, rcs, rscale),
             "CTE output column has no resolved source type.");
         derived_type = rt;
         derived_length = rlen;
@@ -5758,9 +5785,11 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
           NdbDictionary::Column::Type st;
           Uint32 src_length = 1;
           const void* src_cs = NULL;
+          Int32 src_scale = 0;
           require_prm(
               resolve_chained_column_type(*cte_scope, src_col_idx,
-                                           st, src_length, src_cs),
+                                           st, src_length, src_cs,
+                                           src_scale),
               "CTE aggregate references unresolved source column.");
           if (fun == T_SUM) {
             switch (st) {
@@ -5821,11 +5850,32 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
               derived_type = NdbDictionary::Column::Double;
               derived_length = 1;
               break;
+            case NdbDictionary::Column::Decimal:
+            case NdbDictionary::Column::Decimalunsigned:
+              // Phase I.6 F.1: kernel widens DECIMAL → BIGINT
+              // (scale==0) or DOUBLE (scale>0) via AlignedType
+              // before MIN/MAX runs.  Mirror the widening here so
+              // the virt-table column type matches the wire format
+              // the kernel actually emits, unblocking the
+              // inline-type CTE filter opcode for DECIMAL MIN/MAX
+              // outputs.  User-visible result type follows the
+              // widening (no DECIMAL precision preservation —
+              // already lossy in the kernel today).
+              if (src_scale == 0) {
+                derived_type = (st == NdbDictionary::Column::Decimalunsigned)
+                               ? NdbDictionary::Column::Bigunsigned
+                               : NdbDictionary::Column::Bigint;
+              } else {
+                derived_type = NdbDictionary::Column::Double;
+              }
+              derived_length = 1;
+              break;
             default:
-              // Non-numeric source (CHAR/VARCHAR/DECIMAL/etc.):
-              // preserve source metadata. Filter pushdown on these
-              // shapes still rejects (see emit_cte_lookup_filter), but
-              // the pass-through aggregator path is unaffected.
+              // Non-numeric source (CHAR/VARCHAR/etc.): preserve
+              // source metadata.  Filter pushdown on these shapes
+              // still rejects (see emit_cte_lookup_filter), but the
+              // pass-through aggregator path is unaffected.
+              // Kernel-side string aggregation is the F.2 follow-up.
               derived_type = st;
               derived_length = src_length;
               derived_cs = src_cs;
