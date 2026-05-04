@@ -69,7 +69,7 @@ WITH stats AS (SELECT o_grp AS k,
                        MIN(o_amt0) AS lo,
                        MAX(o_amt0) AS hi
                 FROM dec_orders GROUP BY o_grp)
-SELECT k, lo, hi FROM stats ORDER BY k;|
+SELECT k, lo, hi FROM stats;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -78,7 +78,7 @@ WITH stats AS (SELECT o_grp AS k,
                        MIN(o_amt0) AS lo,
                        MAX(o_amt0) AS hi
                 FROM dec_orders GROUP BY o_grp)
-SELECT k, lo, hi FROM stats ORDER BY k|
+SELECT k, lo, hi FROM stats|
 
 --echo
 --echo
@@ -89,7 +89,7 @@ WITH stats AS (SELECT o_grp AS k,
                        MIN(o_amtu0) AS lo,
                        MAX(o_amtu0) AS hi
                 FROM dec_orders GROUP BY o_grp)
-SELECT k, lo, hi FROM stats ORDER BY k;|
+SELECT k, lo, hi FROM stats;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -98,7 +98,7 @@ WITH stats AS (SELECT o_grp AS k,
                        MIN(o_amtu0) AS lo,
                        MAX(o_amtu0) AS hi
                 FROM dec_orders GROUP BY o_grp)
-SELECT k, lo, hi FROM stats ORDER BY k|
+SELECT k, lo, hi FROM stats|
 
 --echo
 --echo
@@ -109,7 +109,7 @@ WITH stats AS (SELECT o_grp AS k,
                        MIN(o_amt2) AS lo,
                        MAX(o_amt2) AS hi
                 FROM dec_orders GROUP BY o_grp)
-SELECT k, lo, hi FROM stats ORDER BY k;|
+SELECT k, lo, hi FROM stats;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -118,7 +118,7 @@ WITH stats AS (SELECT o_grp AS k,
                        MIN(o_amt2) AS lo,
                        MAX(o_amt2) AS hi
                 FROM dec_orders GROUP BY o_grp)
-SELECT k, lo, hi FROM stats ORDER BY k|
+SELECT k, lo, hi FROM stats|
 
 --echo
 --echo
@@ -131,7 +131,7 @@ let $QUERY=
 WITH stats AS (SELECT o_grp AS k,
                        MAX(o_amt0) AS hi
                 FROM dec_orders GROUP BY o_grp)
-SELECT k, hi FROM stats WHERE hi > 600 ORDER BY k;|
+SELECT k, hi FROM stats WHERE hi > 600;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -139,7 +139,7 @@ SELECT k, hi FROM stats WHERE hi > 600 ORDER BY k;|
 WITH stats AS (SELECT o_grp AS k,
                        MAX(o_amt0) AS hi
                 FROM dec_orders GROUP BY o_grp)
-SELECT k, hi FROM stats WHERE hi > 600 ORDER BY k|
+SELECT k, hi FROM stats WHERE hi > 600|
 
 --echo
 --echo
