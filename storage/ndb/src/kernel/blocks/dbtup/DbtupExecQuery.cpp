@@ -6051,8 +6051,8 @@ struct Dbtup::InterpreterContext {
    *     when they fit Uint64.  Add/Sub/Mul reject overflow.  Div/Mod
    *     by 0 rejected.
    *   - else both signed      → Int64 arithmetic, result REG_TYPE_INT.
-   *     Add/Sub/Mul reject overflow; Div/Mod reject only the
-   *     divide-by-zero case.
+   *     Add/Sub/Mul reject overflow.  Div/Mod reject divide-by-zero
+   *     and the LLONG_MIN / -1 signed-overflow case.
    *
    * Returns 0 on success, negative error code on failure. */
   static inline int applyTypedArith(char op,
@@ -6181,10 +6181,16 @@ struct Dbtup::InterpreterContext {
       }
       case '/':
         if (r == 0) return -ZDIV_BY_ZERO_ERROR;
+        if (unlikely(l == LLONG_MIN && r == -1)) {
+          return -ZCALC_OVERFLOW_ERROR;
+        }
         res = l / r;
         break;
       case '%':
         if (r == 0) return -ZDIV_BY_ZERO_ERROR;
+        if (unlikely(l == LLONG_MIN && r == -1)) {
+          return -ZCALC_OVERFLOW_ERROR;
+        }
         res = l % r;
         break;
       default: return -ZCALC_OVERFLOW_ERROR;
