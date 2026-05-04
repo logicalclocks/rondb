@@ -2923,6 +2923,263 @@ testDateTimeAndDecimalTriage(Ndb *ndb,
   return rc;
 }
 
+static int
+testMemoryOpcodeExpansion(Ndb *ndb, const NdbDictionary::Table *tab)
+{
+  Uint32 buf[256];
+  int rc = 0;
+  char mem[32];
+  memset(mem, 0, sizeof(mem));
+  mem[0] = (char)0xFA;
+  mem[1] = (char)0x34;
+  mem[2] = (char)0x12;
+  mem[4] = (char)0x78;
+  mem[5] = (char)0x56;
+  mem[6] = (char)0x34;
+  mem[7] = (char)0x12;
+  mem[8] = (char)0xF0;
+  mem[9] = (char)0xDE;
+  mem[10] = (char)0xBC;
+  mem[11] = (char)0x9A;
+  mem[12] = (char)0x78;
+  mem[13] = (char)0x56;
+  mem[14] = (char)0x34;
+  mem[15] = (char)0x12;
+
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 0) != 0 ||
+        code.read_uint8_to_reg_reg(3, 2) != 0 ||
+        code.load_const_u16(4, 0xFA) != 0 ||
+        code.branch_eq(3, 4, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24a: read_uint8 register offset",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 1) != 0 ||
+        code.read_uint16_to_reg_reg(3, 2) != 0 ||
+        code.load_const_u16(4, 0x1234) != 0 ||
+        code.branch_eq(3, 4, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24b: read_uint16 register offset",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 4) != 0 ||
+        code.read_uint32_to_reg_reg(3, 2) != 0 ||
+        code.load_const_u32(4, 0x12345678) != 0 ||
+        code.branch_eq(3, 4, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24c: read_uint32 register offset",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 8) != 0 ||
+        code.read_int64_to_reg_reg(3, 2) != 0 ||
+        code.load_const_u64(4, 0x123456789ABCDEF0ULL) != 0 ||
+        code.branch_eq(3, 4, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24d: read_int64 register offset",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.read_uint8_to_reg_const(2, 0) != 0 ||
+        code.write_uint8_reg_to_mem_const(2, 20) != 0 ||
+        code.read_uint8_to_reg_const(3, 20) != 0 ||
+        code.branch_eq(2, 3, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24e: write_uint8 const offset",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.read_uint16_to_reg_const(2, 1) != 0 ||
+        code.write_uint16_reg_to_mem_const(2, 20) != 0 ||
+        code.read_uint16_to_reg_const(3, 20) != 0 ||
+        code.branch_eq(2, 3, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24f: write_uint16 const offset",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.read_uint32_to_reg_const(2, 4) != 0 ||
+        code.write_uint32_reg_to_mem_const(2, 20) != 0 ||
+        code.read_uint32_to_reg_const(3, 20) != 0 ||
+        code.branch_eq(2, 3, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24g: write_uint32 const offset",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u64(2, 0x123456789ABCDEF0ULL) != 0 ||
+        code.write_int64_reg_to_mem_const(2, 20) != 0 ||
+        code.read_int64_to_reg_const(3, 20) != 0 ||
+        code.branch_eq(2, 3, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24h: write_int64 const offset",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.read_uint8_to_reg_const(2, 0) != 0 ||
+        code.load_const_u16(3, 20) != 0 ||
+        code.write_uint8_reg_to_mem_reg(2, 3) != 0 ||
+        code.read_uint8_to_reg_const(4, 20) != 0 ||
+        code.branch_eq(2, 4, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24i: write_uint8 register offset",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.read_uint16_to_reg_const(2, 1) != 0 ||
+        code.load_const_u16(3, 20) != 0 ||
+        code.write_uint16_reg_to_mem_reg(2, 3) != 0 ||
+        code.read_uint16_to_reg_const(4, 20) != 0 ||
+        code.branch_eq(2, 4, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24j: write_uint16 register offset",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.read_uint32_to_reg_const(2, 4) != 0 ||
+        code.load_const_u16(3, 20) != 0 ||
+        code.write_uint32_reg_to_mem_reg(2, 3) != 0 ||
+        code.read_uint32_to_reg_const(4, 20) != 0 ||
+        code.branch_eq(2, 4, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24k: write_uint32 register offset",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u64(2, 0x123456789ABCDEF0ULL) != 0 ||
+        code.load_const_u16(3, 20) != 0 ||
+        code.write_int64_reg_to_mem_reg(2, 3) != 0 ||
+        code.read_int64_to_reg_const(4, 20) != 0 ||
+        code.branch_eq(2, 4, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24l: write_int64 register offset",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u64(0, 0xFFFFFFFFFFFFFF85ULL) != 0 ||
+        code.write_reg_to_mem_any_const(0, 0) != 0 ||
+        code.read_int64_to_reg_const(1, 0) != 0 ||
+        code.branch_eq(0, 1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24m: WRITE_REG_TO_MEM_ANY signed",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.read_uint8_to_reg_const(2, 0) != 0 ||
+        code.write_reg_to_mem_any_const(2, 8) != 0 ||
+        code.read_int64_to_reg_const(3, 8) != 0 ||
+        code.load_const_u16(4, 0xFA) != 0 ||
+        code.branch_eq(3, 4, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24n: WRITE_REG_TO_MEM_ANY unsigned",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (loadMemoryConst(&code, 0, 1, mem, sizeof(mem)) != 0 ||
+        code.load_const_u16(2, 1) != 0 ||
+        code.convert_size(3, 2) != 0 ||
+        code.load_const_u16(4, 0x1234) != 0 ||
+        code.branch_eq(3, 4, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24o: convert_size",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u16(0, 20) != 0 ||
+        code.load_const_u16(1, 300) != 0 ||
+        code.write_size_mem(1, 0) != 0 ||
+        code.read_uint16_to_reg_const(2, 20) != 0 ||
+        code.load_const_u16(3, 300) != 0 ||
+        code.branch_eq(2, 3, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24p: write_size_mem",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u16(0, 20) != 0 ||
+        code.load_const_u64(1, 0xFFFFFFFFFFFFCFC7ULL) != 0 ||
+        code.int64_to_str(2, 0, 1) != 0 ||
+        code.str_to_int64(3, 0, 2) != 0 ||
+        code.branch_eq(1, 3, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 24q: int64_to_str round trip",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.read_uint16_to_reg_const(0, 65535) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 24r: read_uint16 const offset bounds",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u64(0, 65535) != 0 ||
+        code.read_uint16_to_reg_reg(1, 0) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 24s: read_uint16 register offset bounds",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u16(0, 65535) != 0 ||
+        code.load_const_u16(1, 1) != 0 ||
+        code.write_size_mem(1, 0) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 24t: write_size_mem offset bounds",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u16(0, 20) != 0 ||
+        code.load_const_u16(1, 0) != 0 ||
+        code.write_size_mem(1, 0) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 24u: write_size_mem rejects zero size",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+
+  return rc;
+}
+
 struct TestEntry {
   int number;
   int (*fn)(Ndb *, const NdbDictionary::Table *);
@@ -2951,7 +3208,8 @@ static const TestEntry g_tests[] = {
   { 20, testFloatDoubleMatrix },
   { 21, testColumnPredicateTypeMatrix },
   { 22, testStringAndBinaryTypeMatrix },
-  { 23, testDateTimeAndDecimalTriage }
+  { 23, testDateTimeAndDecimalTriage },
+  { 24, testMemoryOpcodeExpansion }
 };
 
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
