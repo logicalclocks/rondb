@@ -1,0 +1,131 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.7: lookupCte as the main-query root.
+#
+# Before I.7, RonSQL emitted scanCte for every CTE root and let
+# the inline-type CTE filter opcode discard the unmatched rows.
+# When the user's WHERE provides equality predicates on every
+# virt-table PK column (i.e. every GROUP BY column of the CTE
+# body), the optimisation is to call lookupCte() with constant
+# keys instead — exactly the testCteNdbApi.cpp Test 11 pattern.
+# DBLQH does a hash lookup on the materialised CTE and returns
+# the single matching row directly, skipping the scan.
+#
+# Tests cover:
+#   1. Single-PK CTE, equality on the GROUP BY column.
+#   2. Multi-PK CTE (composite GROUP BY), equality on every key.
+#   3. Multi-PK CTE, equality on PARTIAL key — falls back to
+#      scanCte + filter (still produces the right rows).
+#   4. Single-PK CTE, no WHERE — pure scan path (regression).
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE rl_orders (
+  o_id      INT NOT NULL,
+  o_grp     BIGINT NOT NULL,
+  o_amt     BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+INSERT INTO rl_orders VALUES
+  (1, 100,  50),
+  (2, 100,  60),
+  (3, 200,  30),
+  (4, 200,  70),
+  (5, 300,  40);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: single-PK CTE root with WHERE k = const — lookupCte path ===
+
+# CTE has one GROUP BY column (o_grp); WHERE on the outer SELECT
+# binds k via equality with a constant.  emit_root_op detects
+# full virt-PK coverage and emits lookupCte instead of scanCte.
+let $QUERY=
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM rl_orders GROUP BY o_grp)
+SELECT k, total FROM stats WHERE k = 200;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM rl_orders GROUP BY o_grp)
+SELECT k, total FROM stats WHERE k = 200|
+
+--echo
+--echo
+--echo === Test 2: multi-PK CTE root, equality on every key ===
+
+# Two-column GROUP BY (o_grp, o_amt) — both columns become virt
+# PK.  WHERE binds both with constants → lookupCte with two
+# constValue keys.  Returns the single matching row.
+let $QUERY=
+WITH pairs AS (SELECT o_grp AS k, o_amt AS amt, COUNT(*) AS cnt
+                FROM rl_orders GROUP BY o_grp, o_amt)
+SELECT k, amt, cnt FROM pairs WHERE k = 100 AND amt = 60;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (SELECT o_grp AS k, o_amt AS amt, COUNT(*) AS cnt
+                FROM rl_orders GROUP BY o_grp, o_amt)
+SELECT k, amt, cnt FROM pairs WHERE k = 100 AND amt = 60|
+
+--echo
+--echo
+--echo === Test 3: multi-PK CTE root, partial-key WHERE — falls back to scanCte ===
+
+# Only one of the two PK columns is bound.  emit_root_op leaves
+# pk_covered == false and falls back to the scanCte + filter
+# path.  Still returns the correct rows.
+let $QUERY=
+WITH pairs AS (SELECT o_grp AS k, o_amt AS amt, COUNT(*) AS cnt
+                FROM rl_orders GROUP BY o_grp, o_amt)
+SELECT k, amt, cnt FROM pairs WHERE k = 200;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (SELECT o_grp AS k, o_amt AS amt, COUNT(*) AS cnt
+                FROM rl_orders GROUP BY o_grp, o_amt)
+SELECT k, amt, cnt FROM pairs WHERE k = 200|
+
+--echo
+--echo
+--echo === Test 4: CTE root with no WHERE — pure scanCte (regression) ===
+
+# Sanity check that the I.7 path is gated correctly: with no
+# WHERE clause, the scan path stays in use and emits all CTE
+# rows.
+let $QUERY=
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM rl_orders GROUP BY o_grp)
+SELECT k, total FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM rl_orders GROUP BY o_grp)
+SELECT k, total FROM stats|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE rl_orders;
+--enable_query_log

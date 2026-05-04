@@ -5418,6 +5418,78 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   {
     require_run(cteVirtualTables != NULL && cteVirtualTables[0] != NULL,
                 "CTE_SCAN root requires a virtual table.");
+    Uint32 numResultCols = 0;
+    for (const Outputs* o = plan.ops[0].cte_def->stmt->outputs;
+         o != NULL; o = o->next) numResultCols++;
+
+    // Phase I.7: when the WHERE clause supplies equality predicates
+    // on every virt-table PK column (i.e. every GROUP BY column of
+    // the CTE body), convert the scan to a single-row lookupCte
+    // root.  Mirrors the real-table readTuple optimisation just
+    // below.  testCteNdbApi.cpp Test 11 demonstrates the working
+    // NDB API setup: `qb->lookupCte(cteId, numCols, virtTab,
+    // const_keys, opts)` with no parent.
+    bool root_pk_covered = false;
+    int root_nkeys = 0;
+    ConditionalExpression* root_pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+    bool root_has_scan_child = false;
+    if (scope.join_where_ce[0] != NULL)
+    {
+      ConditionalExpression* w = simplify_ce(scope.join_where_ce[0], -1);
+      root_nkeys = cteVirtualTables[0]->getNoOfPrimaryKeys();
+      for (int k = 0; k < root_nkeys; k++) root_pk_const[k] = NULL;
+      if (root_nkeys > 0)
+      {
+        collect_pk_equalities(w, cteVirtualTables[0], root_pk_const);
+        root_pk_covered = true;
+        for (int k = 0; k < root_nkeys; k++)
+        {
+          if (root_pk_const[k] == NULL) { root_pk_covered = false; break; }
+        }
+      }
+      if (root_pk_covered)
+      {
+        for (Uint32 ci = 1; ci < plan.num_ops; ci++)
+        {
+          if (plan.ops[ci].type == JoinOp::INDEX_SCAN ||
+              plan.ops[ci].type == JoinOp::TABLE_SCAN)
+          {
+            root_has_scan_child = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (root_pk_covered && !root_has_scan_child)
+    {
+      const NdbQueryOperand* lookup_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+      for (int k = 0; k < root_nkeys; k++)
+      {
+        const char* pk_name = cteVirtualTables[0]->getPrimaryKey(k);
+        const NdbDictionary::Column* pk_col =
+            cteVirtualTables[0]->getColumn(pk_name);
+        ndbrequire(pk_col != NULL);
+        raw_value rv = encode_constant(root_pk_const[k], pk_col);
+        lookup_keys[k] = qb->constValue(rv.val, rv.len);
+        require_run(lookup_keys[k] != NULL,
+                    "Failed to create const value for CTE root lookup.");
+      }
+      lookup_keys[root_nkeys] = nullptr;
+      if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
+          plan.num_agg_leaves == 0 && scope.agg != NULL)
+      {
+        require_run(rootOpts.setAggregation(*singleAgg) == 0,
+                    "Failed to set aggregation on CTE_LOOKUP root.");
+      }
+      opDefs[0] = qb->lookupCte(plan.ops[0].cte_def_idx, numResultCols,
+                                 cteVirtualTables[0], lookup_keys,
+                                 &rootOpts);
+      require_run(opDefs[0] != NULL,
+                  "Failed to create lookupCte root.");
+      return;
+    }
+
     NdbInterpretedCode code(cteVirtualTables[0]);
     if (scope.join_where_ce[0] != NULL)
     {
@@ -5439,9 +5511,6 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       require_run(rootOpts.setAggregation(*singleAgg) == 0,
                   "Failed to set aggregation on CTE_SCAN root.");
     }
-    Uint32 numResultCols = 0;
-    for (const Outputs* o = plan.ops[0].cte_def->stmt->outputs;
-         o != NULL; o = o->next) numResultCols++;
     opDefs[0] = qb->scanCte(plan.ops[0].cte_def_idx, numResultCols,
                             cteVirtualTables[0], &rootOpts);
     require_run(opDefs[0] != NULL, "Failed to create scanCte root.");
