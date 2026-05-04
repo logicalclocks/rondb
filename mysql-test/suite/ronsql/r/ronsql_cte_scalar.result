@@ -86,3 +86,59 @@ lo	hi	total	n
 CTE 's' has non-aggregate output columns and must contain GROUP BY.
 Error handling: RPE
 ronsql_cli caught exception: CTE has non-aggregate columns without GROUP BY.
+
+
+=== Test 6: cross-join of two scalar CTEs (comma form), top-level GREATEST ===
+== Query ==
+WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
+min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
+SELECT GREATEST(max_v.hi, min_v.lo) AS biggest FROM max_v, min_v;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
+min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
+SELECT GREATEST(max_v.hi, min_v.lo) AS biggest FROM max_v, min_v|
+biggest
+100
+
+
+=== Test 7: cross-join of two scalar CTEs, top-level LEAST ===
+== Query ==
+WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
+min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
+SELECT LEAST(max_v.hi, min_v.lo) AS smallest FROM max_v, min_v;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
+min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
+SELECT LEAST(max_v.hi, min_v.lo) AS smallest FROM max_v, min_v|
+smallest
+10
+
+
+=== Test 8: SELECT with no FROM — auto-synthesised cross-join ===
+biggest
+100
+
+
+=== Test 9: SELECT no FROM with grouped CTE qualifier — must reject ===
+This query has no aggregate expression, so it is not an aggregate query.
+Currently, RonSQL only supports aggregate queries and projection-only
+SELECTs over a CTE (Phase E.3).  See ronsql_join_phase7.md for the
+broader non-aggregate roadmap.
+Error handling: RPE
+ronsql_cli caught exception: Not an aggregate query.

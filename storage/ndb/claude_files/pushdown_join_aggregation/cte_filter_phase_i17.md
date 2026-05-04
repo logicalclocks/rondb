@@ -17,9 +17,42 @@ After this work, `ronsql_cte_scalar.test` Tests 1-4 produce empty
 output columns and must contain GROUP BY" reject.  No regressions
 in the existing grouped-CTE path.
 
-The watermark / cross-CTE-join shape from the original plan
-remains pending until RonSQL gains comma / cross-join parsing
-on the main SELECT.
+### Phase I.17g + h + cross-join shipped (later commits)
+
+The watermark / cross-CTE-join shape from the original plan now
+works end-to-end:
+
+| Commit | Scope |
+|--------|-------|
+| `53a99cb7edc` | Parser — top-level GREATEST / LEAST in `nonaliased_output` (wrapped in implicit MAX); optional FROM clause via `from_clause` non-terminal; `synthesize_from_for_scalar_ctes()` walks qualified column refs and synthesises a comma cross-join AST when the parser produces NULL `root_table` |
+| `7fdb7caba65` | Re-add comma cross-join grammar rule and switch `emit_child_ops`'s scalar-CTE-cross-join child case to the working pattern from `testCteNdbApi.cpp` Test 20: `lookupCte()` with a single dummy `constValue((Int64)0)` key + `setParent(rootOp)`.  The kernel ignores the key for scalar CTEs (`n_gb_cols == 0`) and returns the materialised `m_agg_results` directly |
+| `8609cad17f4` | `build_cte_virtual_tables`: scalar CTE virt tables now mark the first output column as PK (PK count == 1) so they match Test 20's `(result BIGINT PRIMARY KEY)` shape.  Without this, `lookupCte()` rejects the dummy-key array on a 0-PK virt table |
+
+`ronsql_cte_scalar.test` Tests 6-9 cover:
+- 6: comma cross-join, top-level GREATEST → `biggest=100`
+- 7: comma cross-join, top-level LEAST → `smallest=10`
+- 8: no-FROM auto-synthesised cross-join (RonSQL-only; recorded directly)
+- 9: grouped CTE qualifier in no-FROM SELECT — rejected
+
+Working watermark form on the user's actual query:
+
+```sql
+WITH max_update AS (SELECT MAX(update_dt) AS latest_update
+                    FROM hopsworks_online_feature_store),
+     max_insert AS (SELECT MAX(insert_dt) AS latest_insert
+                    FROM hopsworks_online_feature_store)
+SELECT GREATEST(max_update.latest_update,
+                max_insert.latest_insert) AS watermark
+FROM max_update, max_insert;
+```
+
+…or, equivalently, with no explicit FROM:
+
+```sql
+WITH max_update AS (...), max_insert AS (...)
+SELECT GREATEST(max_update.latest_update,
+                max_insert.latest_insert) AS watermark;
+```
 
 ## Problem
 
