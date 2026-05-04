@@ -174,6 +174,9 @@ createTestTable(MYSQL *conn)
       "  d_val DOUBLE NOT NULL,"
       "  n_int INT NULL,"
       "  n_double DOUBLE NULL,"
+      "  f_val2 FLOAT NOT NULL,"
+      "  d_val2 DOUBLE NOT NULL,"
+      "  n_float FLOAT NULL,"
       "  c_val CHAR(8) NOT NULL,"
       "  v_val VARCHAR(20) NOT NULL,"
       "  bit_val BIT(8) NOT NULL,"
@@ -184,22 +187,28 @@ createTestTable(MYSQL *conn)
       "INSERT INTO interp_typed_regs VALUES"
       " (1, -5, -1000, -100000, -1000000, 0, -7,"
       "     5, 1000, 100000, 4000000000, 9223372036854775808,"
-      "     -1.5, 4.5, NULL, NULL, 'alpha', '12345', b'00001111'),"
+      "     -1.5, 4.5, NULL, NULL,"
+      "     -1.5, 4.5, NULL, 'alpha', '12345', b'00001111'),"
       " (2,  5,   500,   50000,   500000, 500000, -1,"
       "    20, 2000, 200000, 3000000000, 10,"
-      "      2.5, 8.0, 7, 8.0, 'beta', '77', b'11110000'),"
+      "      2.5, 8.0, 7, 8.0,"
+      "      2.5, 8.0, 8.0, 'beta', '77', b'11110000'),"
       " (3, 20, 20000,  500000, 20000000, 10000000, 9223372036854775807,"
       "   250, 65000, 8000000, 1, 9223372036854775813,"
-      "     12.5, 16.25, -3, 16.25, 'gamma', '-8', b'10101010'),"
+      "     12.5, 16.25, -3, 16.25,"
+      "     16.25, 12.5, 16.25, 'gamma', '-8', b'10101010'),"
       " (4, -1,    -1,      -1,       -1, 2, 42,"
       "     1,    1,      1, 2, 42,"
-      "      0.0, -2.0, 0, -2.0, 'delta', '0', b'00000000'),"
+      "      0.0, -2.0, 0, -2.0,"
+      "     -0.0, 0.0, -0.0, 'delta', '0', b'00000000'),"
       " (5, -128, -32768, -8388608, -2147483648, -1, -9223372036854775808,"
       "     0, 0, 0, 0, 0,"
-      "     -3.25, -64.0, NULL, NULL, 'epsilon', '922', b'01010101'),"
+      "     -3.25, -64.0, NULL, NULL,"
+      "     -3.25, -64.0, NULL, 'epsilon', '922', b'01010101'),"
       " (6, 127, 32767, 8388607, 2147483647, 2147483647, 9223372036854775807,"
       "     255, 65535, 16777215, 4294967295, 18446744073709551615,"
-      "     3.25, 64.0, 2147483647, 64.0, 'zeta', '42', b'11111111')"
+      "     3.25, 64.0, 2147483647, 64.0,"
+      "     64.0, 3.25, 64.0, 'zeta', '42', b'11111111')"
       ) != 0) return -1;
 
   return createBoundaryTable(conn);
@@ -1992,6 +2001,175 @@ testSignedUnsignedPromotionMatrix(Ndb *ndb,
   return rc;
 }
 
+static int
+testFloatDoubleMatrix(Ndb *ndb, const NdbDictionary::Table *tab)
+{
+  Uint32 pkAttr = attrId(tab, "pk");
+  Uint32 fAttr = attrId(tab, "f_val");
+  Uint32 f2Attr = attrId(tab, "f_val2");
+  Uint32 dAttr = attrId(tab, "d_val");
+  Uint32 d2Attr = attrId(tab, "d_val2");
+  Uint32 nFloatAttr = attrId(tab, "n_float");
+  Uint32 sIntAttr = attrId(tab, "s_int");
+  Uint32 uIntAttr = attrId(tab, "u_int");
+  Uint32 buf[192];
+  int rc = 0;
+
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 3, 6 };
+    if (code.read_attr(0, fAttr) != 0 ||
+        code.load_double_const(1, 3.0) != 0 ||
+        code.branch_gt(0, 1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 20a: FLOAT read and compare",
+                  ndb, tab, &code, expected, 2) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 3, 5, 6 };
+    if (code.read_attr(0, f2Attr) != 0 ||
+        code.read_attr(1, d2Attr) != 0 ||
+        code.branch_gt(0, 1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 20b: FLOAT greater than DOUBLE",
+                  ndb, tab, &code, expected, 3) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 2, 3, 6 };
+    if (code.read_attr(0, sIntAttr) != 0 ||
+        code.read_attr(1, fAttr) != 0 ||
+        code.branch_gt(0, 1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 20c: signed INT greater than FLOAT",
+                  ndb, tab, &code, expected, 3) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1, 2, 4, 5, 6 };
+    if (code.read_attr(0, uIntAttr) != 0 ||
+        code.read_attr(1, dAttr) != 0 ||
+        code.branch_gt(0, 1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 20d: unsigned INT greater than DOUBLE",
+                  ndb, tab, &code, expected, 5) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 4 };
+    if (code.read_attr(0, f2Attr) != 0 ||
+        code.read_attr(1, d2Attr) != 0 ||
+        code.branch_eq(0, 1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 20e: positive zero equals negative zero",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1, 2, 4, 5 };
+    if (code.read_attr(0, fAttr) != 0 ||
+        code.read_attr(1, f2Attr) != 0 ||
+        code.branch_eq(0, 1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 20f: fractional FLOAT equality",
+                  ndb, tab, &code, expected, 4) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 2, 3, 4, 6 };
+    if (code.read_attr(0, nFloatAttr) != 0 ||
+        code.branch_ne_null(0, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 20g: nullable FLOAT branch_ne_null",
+                  ndb, tab, &code, expected, 4) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    if (code.read_attr(0, nFloatAttr) != 0 ||
+        code.load_const_u16(1, 1) != 0 ||
+        code.add_reg(2, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 20h: nullable FLOAT arithmetic rejects NULL",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 3, 6 };
+    if (code.read_attr(0, dAttr) != 0 ||
+        code.read_attr(1, fAttr) != 0 ||
+        code.add_reg(2, 0, 1) != 0 ||
+        code.load_double_const(3, 20.0) != 0 ||
+        code.branch_gt(2, 3, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 20i: DOUBLE plus FLOAT",
+                  ndb, tab, &code, expected, 2) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 6 };
+    if (code.read_attr(0, dAttr) != 0 ||
+        code.read_attr(1, fAttr) != 0 ||
+        code.sub_reg(2, 0, 1) != 0 ||
+        code.load_double_const(3, 60.0) != 0 ||
+        code.branch_gt(2, 3, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 20j: DOUBLE minus FLOAT",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 1 };
+    if (code.read_attr(0, fAttr) != 0 ||
+        code.read_attr(1, dAttr) != 0 ||
+        code.mul_reg(2, 0, 1) != 0 ||
+        code.load_double_const(3, 0.0) != 0 ||
+        code.branch_lt(2, 3, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectPks("Test 20k: FLOAT times DOUBLE",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 ACCEPT = 1;
+    NdbInterpretedCode code(tab, buf, 192);
+    const int expected[] = { 6 };
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 6, REJECT) != 0 ||
+        code.read_attr(1, dAttr) != 0 ||
+        code.read_attr(2, fAttr) != 0 ||
+        code.div_reg(3, 1, 2) != 0 ||
+        code.load_double_const(4, 10.0) != 0 ||
+        code.branch_gt(3, 4, ACCEPT) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_nok() != 0 ||
+        code.def_label(ACCEPT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.finalise() != 0 ||
+        expectPks("Test 20l: DOUBLE divided by FLOAT",
+                  ndb, tab, &code, expected, 1) != 0) rc = -1;
+  }
+  {
+    const Uint32 REJECT = 0;
+    const Uint32 RUN = 1;
+    NdbInterpretedCode code(tab, buf, 192);
+    if (code.read_attr(0, pkAttr) != 0 ||
+        code.branch_ne_const(0, 4, REJECT) != 0 ||
+        code.branch_label(RUN) != 0 ||
+        code.def_label(REJECT) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.def_label(RUN) != 0 ||
+        code.read_attr(1, dAttr) != 0 ||
+        code.read_attr(2, fAttr) != 0 ||
+        code.div_reg(3, 1, 2) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 20m: DOUBLE divide by zero rejects",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+
+  return rc;
+}
+
 struct TestEntry {
   int number;
   int (*fn)(Ndb *, const NdbDictionary::Table *);
@@ -2016,7 +2194,8 @@ static const TestEntry g_tests[] = {
   { 16, testMemoryAndLibraryOpcodeCoverage },
   { 17, testNullAndFloatOpcodeCoverage },
   { 18, testIntegerWidthBoundaryMatrix },
-  { 19, testSignedUnsignedPromotionMatrix }
+  { 19, testSignedUnsignedPromotionMatrix },
+  { 20, testFloatDoubleMatrix }
 };
 
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
