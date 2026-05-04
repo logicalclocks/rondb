@@ -3062,23 +3062,23 @@ RonSQLPreparer::analyze_ctes()
 
   for (; cte != NULL; cte = cte->next)
   {
-    /* Validate: CTE must have GROUP BY */
-    if (cte->stmt->groupby_columns == NULL)
-    {
-      err << "CTE '" << cte->name.c_str()
-          << "' must contain GROUP BY." << std::endl;
-      throw RonSQLPermanentError("CTE without GROUP BY.");
-    }
-
-    /* Validate: CTE must have at least one aggregate output */
+    /* Phase I.17: a CTE without GROUP BY is valid as long as every
+     * output column is an aggregate (scalar aggregate CTE — one
+     * synthetic group, exactly one materialized result row).  CTEs
+     * with non-aggregate output columns still require GROUP BY. */
+    bool has_groupby = (cte->stmt->groupby_columns != NULL);
     bool has_agg = false;
+    bool has_non_agg_column = false;
     for (const Outputs* o = cte->stmt->outputs; o != NULL; o = o->next)
     {
       if (o->type == Outputs::Type::AGGREGATE ||
           o->type == Outputs::Type::AVG)
       {
         has_agg = true;
-        break;
+      }
+      else
+      {
+        has_non_agg_column = true;
       }
     }
     if (!has_agg)
@@ -3086,6 +3086,14 @@ RonSQLPreparer::analyze_ctes()
       err << "CTE '" << cte->name.c_str()
           << "' must contain at least one aggregate function." << std::endl;
       throw RonSQLPermanentError("CTE without aggregate function.");
+    }
+    if (!has_groupby && has_non_agg_column)
+    {
+      err << "CTE '" << cte->name.c_str()
+          << "' has non-aggregate output columns and must contain GROUP BY."
+          << std::endl;
+      throw RonSQLPermanentError(
+          "CTE has non-aggregate columns without GROUP BY.");
     }
 
     /* Validate: CTE must also have a FROM clause (enforced by parser) */
