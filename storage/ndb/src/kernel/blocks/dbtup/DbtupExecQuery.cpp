@@ -6890,7 +6890,10 @@ struct Dbtup::InterpreterContext {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
     if (unlikely(TleftType == NULL_INDICATOR)) {
-      return -ZREGISTER_INIT_ERROR;
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
     }
     Uint64 leftBits =
         *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
@@ -6913,7 +6916,10 @@ struct Dbtup::InterpreterContext {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
     if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
-      return -ZREGISTER_INIT_ERROR;
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
     }
     Uint64 leftBits =
         *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
@@ -6935,7 +6941,10 @@ struct Dbtup::InterpreterContext {
     Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
     if (unlikely(TleftType == NULL_INDICATOR)) {
-      return -ZREGISTER_INIT_ERROR;
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
     }
     Uint64 leftBits =
         *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
@@ -6960,7 +6969,10 @@ struct Dbtup::InterpreterContext {
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
     if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
-      return -ZREGISTER_INIT_ERROR;
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
     }
     Uint64 leftBits =
         *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
@@ -7005,7 +7017,10 @@ struct Dbtup::InterpreterContext {
     Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
     Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
     if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
-      return -ZREGISTER_INIT_ERROR;
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
     }
     Uint64 leftBits =
         *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);

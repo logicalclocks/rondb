@@ -1792,6 +1792,54 @@ testNullAndFloatOpcodeCoverage(Ndb *ndb,
   }
   {
     NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.load_const_u16(1, 2) != 0 ||
+        code.rshift_reg(2, 0, 1) != 0 ||
+        code.branch_eq_null(2, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.10: RSHIFT propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.rshift_const_reg(1, 0, 2) != 0 ||
+        code.branch_eq_null(1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.11: RSHIFT const propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.load_const_u16(1, 3) != 0 ||
+        code.and_reg(2, 0, 1) != 0 ||
+        code.branch_eq_null(2, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.12: AND propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.and_const_reg(1, 0, 3) != 0 ||
+        code.branch_eq_null(1, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.13: AND const propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
+    if (code.load_const_null(0) != 0 ||
+        code.load_const_u16(1, 3) != 0 ||
+        code.or_reg(2, 0, 1) != 0 ||
+        code.branch_eq_null(2, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 17a.14: OR propagates NULL",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 160);
     if (code.read_attr(0, nDoubleAttr) != 0 ||
         code.load_double_const(1, 0.0) != 0 ||
         code.branch_gt(0, 1, 0) != 0 ||
@@ -3646,9 +3694,10 @@ testErrorHandlerMatrix(Ndb *ndb, const NdbDictionary::Table *tab)
     if (code.load_const_null(0) != 0 ||
         code.load_const_u16(1, 1) != 0 ||
         code.and_reg(2, 0, 1) != 0 ||
-        finishRuntimeErrorProgram(&code) != 0 ||
-        expectRuntimeError("Test 26b: bitwise rejects NULL",
-                           ndb, tab, &code) != 0) rc = -1;
+        code.branch_eq_null(2, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 26b: AND over NULL returns NULL",
+                     ndb, tab, &code) != 0) rc = -1;
   }
   {
     NdbInterpretedCode code(tab, buf, 256);
