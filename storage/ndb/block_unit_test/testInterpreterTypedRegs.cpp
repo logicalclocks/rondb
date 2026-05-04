@@ -4032,6 +4032,58 @@ testErrorHandlerMatrix(Ndb *ndb, const NdbDictionary::Table *tab)
   }
   {
     NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u16(0, 16) != 0 ||
+        code.load_const_u16(1, 64) != 0 ||
+        code.rshift_reg(2, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26e.1: rshift_reg rejects shift by 64",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u16(0, 1) != 0 ||
+        code.load_const_u64(1, 0xFFFFFFFFFFFFFFFFULL) != 0 ||
+        code.lshift_reg(2, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26e.2: lshift_reg rejects negative shift",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u16(0, 16) != 0 ||
+        code.load_const_u64(1, 0xFFFFFFFFFFFFFFFFULL) != 0 ||
+        code.rshift_reg(2, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26e.3: rshift_reg rejects negative shift",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_double_const(0, 1.0) != 0 ||
+        code.lshift_const_reg(1, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26e.4: lshift_const_reg rejects DOUBLE",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_const_u16(0, 1) != 0 ||
+        code.load_double_const(1, 1.0) != 0 ||
+        code.or_reg(2, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26e.5: or_reg rejects DOUBLE rhs",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
+    if (code.load_double_const(0, 1.0) != 0 ||
+        code.xor_const_reg(1, 0, 1) != 0 ||
+        finishRuntimeErrorProgram(&code) != 0 ||
+        expectRuntimeError("Test 26e.6: xor_const_reg rejects DOUBLE",
+                           ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 256);
     if (code.load_const_u64(0, 3037000500ULL) != 0 ||
         code.load_const_u64(1, 3037000500ULL) != 0 ||
         code.mul_reg(2, 0, 1) != 0 ||
