@@ -3,6 +3,9 @@
 This plan extends `testInterpreterTypedRegs.cpp` from broad opcode coverage
 into systematic type, boundary-value, memory-helper and error-handler coverage.
 
+Status: completed through Phase 11.  The final coverage audit is recorded in
+`interpreter_typed_regs_coverage_audit.md`.
+
 The test remains an NDB API executable driven by an MTR wrapper. It should keep
 all development isolated to the existing interpreter test file and its MTR
 wrapper unless a later phase explicitly needs a second dedicated test file.
