@@ -97,3 +97,21 @@ SET_TARGET_PROPERTIES(proto_interp_only PROPERTIES
   C_EXTENSIONS YES
 )
 TARGET_LINK_LIBRARIES(proto_interp_only PRIVATE ndb_jit1_microbench)
+
+# proto_microbench: the actual Phase 1 decision-gate benchmark.
+# Builds the 30-op program, runs it through interpreter and JIT,
+# reports compile_ns / per-row times / speedup / break-even, and
+# prints PASS/FAIL against plan.md §7's three thresholds. Real
+# numbers come from Linux x86_64; on aarch64 the binary still
+# builds and reports correctness-only.
+ADD_EXECUTABLE(proto_microbench proto_microbench.c)
+SET_TARGET_PROPERTIES(proto_microbench PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS YES
+)
+TARGET_LINK_LIBRARIES(proto_microbench PRIVATE
+  ndb_jit1_microbench
+  ndb_jit1
+  ndb_jit_arena
+)

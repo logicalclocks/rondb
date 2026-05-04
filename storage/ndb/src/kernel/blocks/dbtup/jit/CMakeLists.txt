@@ -61,6 +61,28 @@ IF(APPLE)
 ENDIF()
 
 # ---------------------------------------------------------------------------
+# RONDB-1056 Phase 1: copy-and-patch JIT engine.
+#
+# Pure C, links the arena substrate. On non-x86_64 architectures the
+# entry points are stub-only; the test binaries will still link, but
+# jit1_compile returns NULL with errno=ENOTSUP so the microbench
+# falls back gracefully.
+# ---------------------------------------------------------------------------
+
+ADD_LIBRARY(ndb_jit1 STATIC
+  jit1.c
+)
+SET_TARGET_PROPERTIES(ndb_jit1 PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS YES
+)
+TARGET_INCLUDE_DIRECTORIES(ndb_jit1 PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+)
+TARGET_LINK_LIBRARIES(ndb_jit1 PUBLIC ndb_jit_arena)
+
+# ---------------------------------------------------------------------------
 # RONDB-1056 Phase 1: stencils.o build target.
 #
 # stencils_src.c is compiled with clang (not the project's CC) using a
