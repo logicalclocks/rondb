@@ -148,14 +148,26 @@ filter on string MIN/MAX).  Listed here for cross-reference.
 
 ### Plan shapes RonSQL doesn't emit
 
-#### I.7 — `lookupCte` as the main-query root (M)
+#### I.7 — `lookupCte` as the main-query root (M) — shipped
 
-testCteNdbApi Test 11 (constant key) and Test 13 (internal
-non-leaf) build `lookupCte` as the root.  RonSQL's `emit_root_op`
-(`RonSQLPreparer.cpp:5098-5141`) only emits `scanCte` for CTE
-roots; lookup-by-constant would correspond to
-`SELECT * FROM cte WHERE pk = const` shapes.  Today RonSQL would
-plan that as `scanCte + filter`, missing the optimisation.
+Shipped via commits `adaf4c9e130` (initial RonSQL emit + test file),
+`0c72daaf55c` (typed `constValue` dispatch — synthetic virt-table
+columns can't go through the byte-buffer overload), and
+`a71f192cf04` (populate `m_attrSize / m_orgAttrSize / m_arraySize`
+in `build_cte_virtual_tables` so the lookup-op receiver buffer
+sizes correctly).
+
+`emit_root_op`'s CTE_SCAN root branch now walks the WHERE for
+equality predicates on every virt-table PK column and, if all PK
+columns are bound and there are no scan children, emits
+`qb->lookupCte(cteId, numCols, virtTab, const_keys, opts)`
+(matching `testCteNdbApi.cpp` Test 11).  Partial-key WHERE / no
+WHERE / non-equality predicates fall back to the existing scanCte
++ inline-type filter path.
+
+MTR coverage: `mysql-test/suite/ronsql/t/ronsql_cte_root_lookup.test`
+(single-PK lookupCte, multi-PK composite, partial-key fallback,
+no-WHERE regression).
 
 #### I.8 — `readTuple` main root + `lookupCte` child (M)
 

@@ -1,0 +1,89 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+
+=== Test 1: single-PK CTE root with WHERE k = const — lookupCte path ===
+== Query ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM rl_orders GROUP BY o_grp)
+SELECT k, total FROM stats WHERE k = 200;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM rl_orders GROUP BY o_grp)
+SELECT k, total FROM stats WHERE k = 200|
+k	total
+200	100
+
+
+=== Test 2: multi-PK CTE root, equality on every key ===
+== Query ==
+WITH pairs AS (SELECT o_grp AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM rl_orders GROUP BY o_grp, o_amt)
+SELECT k, amt, cnt FROM pairs WHERE k = 100 AND amt = 60;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pairs AS (SELECT o_grp AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM rl_orders GROUP BY o_grp, o_amt)
+SELECT k, amt, cnt FROM pairs WHERE k = 100 AND amt = 60|
+k	amt	cnt
+100	60	1
+
+
+=== Test 3: multi-PK CTE root, partial-key WHERE — falls back to scanCte ===
+== Query ==
+WITH pairs AS (SELECT o_grp AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM rl_orders GROUP BY o_grp, o_amt)
+SELECT k, amt, cnt FROM pairs WHERE k = 200;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pairs AS (SELECT o_grp AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM rl_orders GROUP BY o_grp, o_amt)
+SELECT k, amt, cnt FROM pairs WHERE k = 200|
+k	amt	cnt
+200	30	1
+200	70	1
+
+
+=== Test 4: CTE root with no WHERE — pure scanCte (regression) ===
+== Query ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM rl_orders GROUP BY o_grp)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM rl_orders GROUP BY o_grp)
+SELECT k, total FROM stats|
+k	total
+100	110
+200	100
+300	40
