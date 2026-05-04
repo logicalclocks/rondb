@@ -199,11 +199,14 @@ stencils need extraction.
 
 - **Apple clang 17 cross-compile to x86_64-pc-linux-gnu** produced
   byte-compatible stencils with Rocky Linux's clang 20.1.8 in this
-  test (verified by end-to-end correctness on Rocky). For future
-  re-extraction the project pin (Phase 2) is **upstream LLVM
-  19.1.7**; both Apple 17 and Rocky's 20.1.8 sit close enough to
-  produce equivalent codegen for these specific stencil shapes, but
-  this is not guaranteed in general — the pin is the contract.
+  test (verified by end-to-end correctness on Rocky). The Phase 2
+  pin is **upstream LLVM 20.1.8** (bumped from the original 19.1.7
+  to align with what Rocky/Debian/Ubuntu currently ship by default
+  — see plan.md §2). Apple clang 17 ≈ upstream 19, so the Phase 1
+  baseline was technically extracted with a slightly older clang
+  than the pin, but the codegen for these specific stencil shapes
+  was equivalent. Phase 2's `regen-stencils` target enforces the
+  20.1.8 pin.
 - **The `extern uint64_t HOLE_*` placeholder pattern produces
   4-byte `R_X86_64_32` / `R_X86_64_32S` relocations** (not the
   8-byte R_X86_64_64 the implementation plan §3.3 originally

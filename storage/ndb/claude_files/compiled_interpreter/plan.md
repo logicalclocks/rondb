@@ -47,7 +47,7 @@ Out of scope for v1:
 | Languages | Pure **C11** for JIT engine, stencils, extractor tool. C++ interop only at thin shim boundary inside DBTUP. |
 | Compile budget | Linux: ~0.5-1 µs per program (warm arena). macOS ARM64: not optimized, correctness only. macOS x86_64: not built — interpreter only. |
 | Compile technique | **Copy-and-patch JIT** (Xu & Kjolstad 2021; CPython 3.13 precedent). |
-| Stencil compiler | **Upstream LLVM clang 19.1.7** is the **pinned** version. This is the single most important constant in the project: any deviation produces different stencil bytes and `regen-stencils` will diff against the checked-in headers. The pin is recorded in three places that must stay in sync — `jit/CMakeLists.txt` (`set(NDB_JIT_CLANG_VERSION 19.1.7)`), the CI job that runs `regen-stencils`, and `jit/README.md`. **Apple clang (the Xcode-shipped compiler on macOS) is explicitly NOT acceptable for stencil regeneration**, even when its reported version "looks close" — Apple's version numbers don't map to upstream LLVM (Apple clang 15 ≈ upstream 16, Apple clang 16 ≈ upstream 17/18, Apple clang 17 ≈ upstream 19, etc.) and Apple's tree carries Apple-specific patches that drift codegen on the byte level. macOS developers who need to regenerate stencils must install upstream LLVM via Homebrew (`brew install llvm@19` then `/opt/homebrew/opt/llvm@19/bin/clang`) or run `regen-stencils` inside the same Linux container CI uses; system `/usr/bin/clang` is rejected by the version check. Required only for stencil regeneration; normal RonDB builds (including macOS Apple-clang builds) use gcc / Apple clang as today and consume the checked-in headers without regenerating. Minimum-version rationale: 19.1.x for stable `[[clang::preserve_none]]` on **both** x86_64 (since upstream clang 15) and ARM64 (since upstream clang 18, with bug fixes through 19); we pin a specific point release rather than ">= 19" so two contributors on different 19.1.x patch levels do not produce drifting bytes. |
+| Stencil compiler | **Upstream LLVM clang 20.1.8** is the **pinned** version. This is the single most important constant in the project: any deviation produces different stencil bytes and `regen-stencils` will diff against the checked-in headers. The pin is recorded in three places that must stay in sync — `jit/CMakeLists.txt` (`set(NDB_JIT_CLANG_VERSION 20.1.8)`), the CI job that runs `regen-stencils`, and `jit/README.md`. **Apple clang (the Xcode-shipped compiler on macOS) is explicitly NOT acceptable for stencil regeneration**, even when its reported version "looks close" — Apple's version numbers don't map to upstream LLVM (Apple clang 15 ≈ upstream 16, Apple clang 16 ≈ upstream 17/18, Apple clang 17 ≈ upstream 19, Apple clang 18 ≈ upstream 20, etc.) and Apple's tree carries Apple-specific patches that drift codegen on the byte level. macOS developers who need to regenerate stencils must install upstream LLVM via Homebrew (`brew install llvm@20` then `/opt/homebrew/opt/llvm@20/bin/clang`) or run `regen-stencils` inside the same Linux container CI uses; system `/usr/bin/clang` is rejected by the version check. Required only for stencil regeneration; normal RonDB builds (including macOS Apple-clang builds) use gcc / Apple clang as today and consume the checked-in headers without regenerating. Minimum-version rationale: 20.1.x for stable `[[clang::preserve_none]]` on **both** x86_64 (since upstream clang 15) and ARM64 (since upstream clang 18, with bug fixes through 19), plus 20.1 is what current major distros ship by default (Rocky 9.5 / RHEL family AppStream provide 20.1.8; Debian 13 / Ubuntu 24.10 ship 20.x in `apt install clang`). 19.1.7 was the previous pin; bumped to 20.1.8 in May 2026 to align with what's already installed on contributor machines, eliminating the side-by-side-toolchain step that 19.1.7 required on every Linux dev box. We pin a specific point release rather than ">= 20" so two contributors on different 20.1.x patch levels do not produce drifting bytes. |
 | Stencil source format | Hand-written C functions in `stencils_src.c` with `__attribute__((preserve_none))` + `[[clang::musttail]]` and sentinel-constant placeholders. |
 | Generated artefacts | Per-arch C headers (`stencils_x86_64.h`, `stencils_arm64.h`) **checked into git** (CPython model). |
 | Extractor tool | Pure C, ~400-500 LOC, hand-rolled minimal ELF parser, no `libelf`/`binutils` dependency. |
@@ -373,7 +373,7 @@ running `make regen-stencils` reproduces the headers from clean.
     ARM64 stencils.
 
 - README.md in `jit/extract_stencils/`:
-  - **Pinned compiler: upstream LLVM clang 19.1.7** (NOT Apple
+  - **Pinned compiler: upstream LLVM clang 20.1.8** (NOT Apple
     clang). The README leads with this in its first paragraph — same
     constant as §2 and as the `NDB_JIT_CLANG_VERSION` variable in
     `jit/CMakeLists.txt`. If a different version is used, the diff
@@ -388,7 +388,7 @@ running `make regen-stencils` reproduces the headers from clean.
     1. The `clang --version` output starts with `clang version` (rules
        out Apple clang, whose first line is `Apple clang version
        N.N.N`).
-    2. The trailing version string equals `19.1.7`.
+    2. The trailing version string equals `20.1.8`.
     Failing either prints an error pointing back to this README.
   - Exact clang flags, troubleshooting (most common: missing
     `--target=aarch64-linux-gnu` sysroot for cross-compile).
@@ -403,13 +403,13 @@ running `make regen-stencils` reproduces the headers from clean.
   generated headers and asserts identical results and similar
   performance.
 - CI lint: a CI job regenerates stencils using the pinned upstream
-  LLVM clang version (**19.1.7**, per §2) and fails if checked-in
+  LLVM clang version (**20.1.8**, per §2) and fails if checked-in
   headers drift. The CI job's first step asserts both:
   - The first line of `clang --version` begins with `clang version`
     (rejects Apple clang, whose first line begins with
     `Apple clang version` — Apple's numbering is not interchangeable
     with upstream's).
-  - The version string on that line equals `19.1.7`.
+  - The version string on that line equals `20.1.8`.
   Failing either exits non-zero before any stencils are produced —
   preventing a CI infra upgrade from silently bumping the pin or from
   swapping in Apple clang on a macOS-hosted runner.
@@ -1097,10 +1097,10 @@ Tests come in three layers, applied at the phase where they make sense:
    in-tree tests miss.
 
 CI hook for stencil regeneration: a job that runs `regen-stencils`
-with the **pinned upstream LLVM clang `19.1.7`** (§2) and fails if
+with the **pinned upstream LLVM clang `20.1.8`** (§2) and fails if
 the checked-in headers drift. The job's first step asserts the
 `clang --version` first line starts with `clang version` (rejects
-Apple clang outright) and that the version string equals `19.1.7`,
+Apple clang outright) and that the version string equals `20.1.8`,
 so neither a CI image refresh that brings in a newer upstream clang
 nor a macOS-hosted runner using Apple clang can silently produce new
 bytes. Catches the case where someone edits `stencils_src.c` without
@@ -1123,18 +1123,18 @@ levels, or where a macOS dev unwittingly uses `/usr/bin/clang`.
    version numbers do not map to upstream LLVM, so `Apple clang 17`
    and `clang version 17` produce different codegen, and any macOS
    dev who runs `regen-stencils` with `/usr/bin/clang` would silently
-   corrupt the headers. Mitigation: pin **upstream LLVM clang 19.1.7**
+   corrupt the headers. Mitigation: pin **upstream LLVM clang 20.1.8**
    as named in §2 and explicitly reject Apple clang; record the pin
    in three coupled places (§2, `jit/CMakeLists.txt`'s
    `NDB_JIT_CLANG_VERSION`, `jit/README.md`); CI's `regen-stencils`
    job rejects any compiler whose `--version` first line does not
    start with `clang version` *and* whose trailing version string is
-   not exactly `19.1.7`, before any bytes are produced. macOS devs
+   not exactly `20.1.8`, before any bytes are produced. macOS devs
    regenerating stencils install upstream clang via `brew install
    llvm@19` (or use the Linux dev container). Regenerate-and-fail-CI
-   policy if the headers drift. Bumping the pin (e.g., to clang 20)
-   is a deliberate code change that touches all three places and
-   regenerates the headers in one commit.
+   policy if the headers drift. Bumping the pin (e.g., from clang
+   20.1.8 to a future 21.x) is a deliberate code change that touches
+   all three places and regenerates the headers in one commit.
 4. **macOS dev experience.** macOS ARM64 perf is non-critical, but it
    must not be so slow it blocks dev iteration. Mitigation: the simple
    `MAP_JIT` toggle is fast enough; if it isn't, add a `--no-jit` dev
