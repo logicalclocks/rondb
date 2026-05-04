@@ -3442,6 +3442,8 @@ private:
                           const Uint32 *finalR, Uint32 finalRLen,
                           bool haveFinalR, Uint32 scanIterI,
                           const Uint32 *cinBuf, Uint32 attrInfoLen);
+  bool cteScanShouldEmitScalar(const CteScanReq &req,
+                                const JoinAggInterpreter *interp);
   void sendCteScanRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
                       Uint32 errorCode, SectionHandle *handle = nullptr);
   void execJOIN_AGG_REDISTRIBUTE_REQ(Signal* signal);

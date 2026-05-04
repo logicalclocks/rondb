@@ -20075,6 +20075,47 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
  * This allows concurrent scans by multiple DBSPJ instances on the same
  * read-only CTE hash table.
  */
+/**
+ * cteScanShouldEmitScalar — Phase I.17 single-emitter rule for
+ * scalar (no GROUP BY) CTE results.
+ *
+ * Scalar CTE materialization in the kernel is per-node: each
+ * data node has its own JoinAggInterpreter and accumulators.
+ * There is no cross-node merge for n_gb_cols == 0, so multiple
+ * nodes emitting their local accumulators would surface
+ * duplicate rows to the API — wrong even when only one node has
+ * data, because the empty-partition replicas would emit NULL
+ * alongside the real result.
+ *
+ * Rule:
+ *  - if this node processed any rows, it has the (locally-merged)
+ *    scalar result and emits it.  Other nodes' replicas with
+ *    processed_rows == 0 stay silent.
+ *  - if no node processed any rows (empty-input scalar
+ *    aggregate), exactly one node — the first entry of the
+ *    JoinAggregationState's m_cte_node_list — emits the synthetic
+ *    one-row output.  The other nodes stay silent.
+ *
+ * Cross-node correctness for non-empty scalar CTE relies on the
+ * input scan landing on a single primary fragment (the common
+ * MTR / single-fragment cluster case).  Multi-fragment scalar
+ * aggregation is a known follow-up.
+ */
+bool Dblqh::cteScanShouldEmitScalar(const CteScanReq &req,
+                                     const JoinAggInterpreter *interp) {
+  if (interp->processed_rows() > 0) {
+    return true;
+  }
+  JoinAggregationState *state = getJoinAggState(req.aggStateKey);
+  if (state == nullptr) {
+    return false;
+  }
+  if (state->m_cte_num_nodes == 0) {
+    return false;
+  }
+  return state->m_cte_node_list[0] == getOwnNodeId();
+}
+
 void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
                                 JoinAggInterpreter *interp,
                                 const Uint32 *finalR, Uint32 finalRLen,
@@ -20246,16 +20287,13 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       scanState->iterRaw = iter.raw();
     }
   } else if (interp->n_gb_cols() == 0 &&
-             scanState->groupsSent == 0) {
+             scanState->groupsSent == 0 &&
+             cteScanShouldEmitScalar(req, interp)) {
     /**
      * Scalar aggregate (no GROUP BY): single result in m_agg_results.
      * gb_map is nullptr for n_gb_cols==0 — results go directly to
-     * m_agg_results during aggregation.  Emit once even when no
-     * rows were processed (Phase I.17: MySQL scalar aggregate
-     * semantics — empty input produces one row with NULL for SUM /
-     * MIN / MAX and 0 for COUNT).  The COUNT-zeroing happens in
-     * JoinAggInterpreter::Init via a kOpCount walk over the agg
-     * program, so accumulators are already valid here.
+     * m_agg_results during aggregation.  cteScanShouldEmitScalar
+     * picks the single emitter — see Phase I.17.
      */
     jam();
     const Uint32 n_agg_results = interp->n_agg_results();
