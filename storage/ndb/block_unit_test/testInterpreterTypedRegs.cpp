@@ -54,6 +54,7 @@ static bool verbose = false;
 
 static const char *TEST_DB = "test";
 static const char *TABLE_NAME = "interp_typed_regs";
+static const char *BOUNDARY_TABLE_NAME = "interp_typed_regs_iwidth";
 
 static MYSQL *
 connectMysql(int port)
@@ -83,7 +84,72 @@ sqlExec(MYSQL *conn, const char *query)
 static void
 dropTestTable(MYSQL *conn)
 {
+  (void)sqlExec(conn, "DROP TABLE IF EXISTS interp_typed_regs_iwidth");
   (void)sqlExec(conn, "DROP TABLE IF EXISTS interp_typed_regs");
+}
+
+static int
+createBoundaryTable(MYSQL *conn)
+{
+  if (sqlExec(conn,
+      "CREATE TABLE interp_typed_regs_iwidth ("
+      "  pk INT NOT NULL,"
+      "  s_tiny TINYINT NOT NULL,"
+      "  s_tiny2 TINYINT NOT NULL,"
+      "  s_small SMALLINT NOT NULL,"
+      "  s_small2 SMALLINT NOT NULL,"
+      "  s_medium MEDIUMINT NOT NULL,"
+      "  s_medium2 MEDIUMINT NOT NULL,"
+      "  s_int INT NOT NULL,"
+      "  s_int2 INT NOT NULL,"
+      "  s_big BIGINT NOT NULL,"
+      "  s_big2 BIGINT NOT NULL,"
+      "  u_tiny TINYINT UNSIGNED NOT NULL,"
+      "  u_tiny2 TINYINT UNSIGNED NOT NULL,"
+      "  u_small SMALLINT UNSIGNED NOT NULL,"
+      "  u_small2 SMALLINT UNSIGNED NOT NULL,"
+      "  u_medium MEDIUMINT UNSIGNED NOT NULL,"
+      "  u_medium2 MEDIUMINT UNSIGNED NOT NULL,"
+      "  u_int INT UNSIGNED NOT NULL,"
+      "  u_int2 INT UNSIGNED NOT NULL,"
+      "  u_big BIGINT UNSIGNED NOT NULL,"
+      "  u_big2 BIGINT UNSIGNED NOT NULL,"
+      "  PRIMARY KEY USING HASH (pk)"
+      ") ENGINE=NDB") != 0) return -1;
+
+  return sqlExec(conn,
+      "INSERT INTO interp_typed_regs_iwidth VALUES"
+      " (1, -128, -128, -32768, -32768, -8388608, -8388608,"
+      "     -2147483648, -2147483648,"
+      "     -9223372036854775808, -9223372036854775808,"
+      "     0, 0, 0, 0, 0, 0, 0, 0, 0, 0),"
+      " (2, -127, -127, -32767, -32767, -8388607, -8388607,"
+      "     -2147483647, -2147483647,"
+      "     -9223372036854775807, -9223372036854775807,"
+      "     1, 1, 1, 1, 1, 1, 1, 1, 1, 1),"
+      " (3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,"
+      "     128, 128, 32768, 32768, 8388608, 8388608,"
+      "     2147483648, 2147483648,"
+      "     9223372036854775808, 9223372036854775808),"
+      " (4, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,"
+      "     254, 255, 65534, 65535, 16777214, 16777215,"
+      "     4294967294, 4294967295,"
+      "     18446744073709551614, 18446744073709551615),"
+      " (5, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,"
+      "     255, 255, 65535, 65535, 16777215, 16777215,"
+      "     4294967295, 4294967295,"
+      "     18446744073709551615, 18446744073709551615),"
+      " (6, 126, 126, 32766, 32766, 8388606, 8388606,"
+      "     2147483646, 2147483646,"
+      "     9223372036854775806, 9223372036854775806,"
+      "     42, 43, 4242, 4243, 424242, 424243,"
+      "     42424242, 42424243, 4242424242, 4242424243),"
+      " (7, 127, 127, 32767, 32767, 8388607, 8388607,"
+      "     2147483647, 2147483647,"
+      "     9223372036854775807, 9223372036854775807,"
+      "     255, 255, 65535, 65535, 16777215, 16777215,"
+      "     4294967295, 4294967295,"
+      "     18446744073709551615, 18446744073709551615)");
 }
 
 static int
@@ -114,7 +180,7 @@ createTestTable(MYSQL *conn)
       "  PRIMARY KEY USING HASH (pk)"
       ") ENGINE=NDB") != 0) return -1;
 
-  return sqlExec(conn,
+  if (sqlExec(conn,
       "INSERT INTO interp_typed_regs VALUES"
       " (1, -5, -1000, -100000, -1000000, 0, -7,"
       "     5, 1000, 100000, 4000000000, 9223372036854775808,"
@@ -133,18 +199,28 @@ createTestTable(MYSQL *conn)
       "     -3.25, -64.0, NULL, NULL, 'epsilon', '922', b'01010101'),"
       " (6, 127, 32767, 8388607, 2147483647, 2147483647, 9223372036854775807,"
       "     255, 65535, 16777215, 4294967295, 18446744073709551615,"
-      "     3.25, 64.0, 2147483647, 64.0, 'zeta', '42', b'11111111')");
+      "     3.25, 64.0, 2147483647, 64.0, 'zeta', '42', b'11111111')"
+      ) != 0) return -1;
+
+  return createBoundaryTable(conn);
+}
+
+static const NdbDictionary::Table *
+getNamedTable(Ndb *ndb, const char *name)
+{
+  const NdbDictionary::Table *tab =
+      ndb->getDictionary()->getTable(name);
+  if (tab == NULL) {
+    printf("(getTable %s: %s) ",
+           name, ndb->getDictionary()->getNdbError().message);
+  }
+  return tab;
 }
 
 static const NdbDictionary::Table *
 getTable(Ndb *ndb)
 {
-  const NdbDictionary::Table *tab =
-      ndb->getDictionary()->getTable(TABLE_NAME);
-  if (tab == NULL) {
-    printf("(getTable: %s) ", ndb->getDictionary()->getNdbError().message);
-  }
-  return tab;
+  return getNamedTable(ndb, TABLE_NAME);
 }
 
 static Uint32
@@ -353,6 +429,81 @@ loadMemoryConst(NdbInterpretedCode *code,
     return -1;
   }
   return 0;
+}
+
+static int
+expectReadCompareU64(const char *name,
+                     Ndb *ndb,
+                     const NdbDictionary::Table *tab,
+                     Uint32 attr,
+                     Uint64 constant,
+                     int (NdbInterpretedCode::*branch)(Uint32, Uint32, Uint32),
+                     const int *expected,
+                     size_t nExpected)
+{
+  Uint32 buf[128];
+  NdbInterpretedCode code(tab, buf, 128);
+  if (code.read_attr(0, attr) != 0 ||
+      code.load_const_u64(1, constant) != 0 ||
+      (code.*branch)(0, 1, 0) != 0 ||
+      finishAcceptReject(&code, 0) != 0) {
+    printf("%s ... FAILED (build)\n", name);
+    return -1;
+  }
+  return expectPks(name, ndb, tab, &code, expected, nExpected);
+}
+
+static int
+expectColumnEq(const char *name,
+               Ndb *ndb,
+               const NdbDictionary::Table *tab,
+               Uint32 attr1,
+               Uint32 attr2,
+               const int *expected,
+               size_t nExpected)
+{
+  Uint32 buf[128];
+  NdbInterpretedCode code(tab, buf, 128);
+  if (code.branch_col_eq(attr1, attr2, 0) != 0 ||
+      finishAcceptReject(&code, 0) != 0) {
+    printf("%s ... FAILED (build)\n", name);
+    return -1;
+  }
+  return expectPks(name, ndb, tab, &code, expected, nExpected);
+}
+
+static int
+expectUnsignedBigintMax(const char *name,
+                        Ndb *ndb,
+                        const NdbDictionary::Table *tab,
+                        Uint32 uBigAttr,
+                        Uint32 uBig2Attr,
+                        Uint32 uIntAttr,
+                        const int *expected,
+                        size_t nExpected)
+{
+  const Uint32 REJECT = 0;
+  const Uint32 ACCEPT = 1;
+  Uint32 buf[160];
+  NdbInterpretedCode code(tab, buf, 160);
+  if (code.read_attr(0, uBigAttr) != 0 ||
+      code.read_attr(1, uBig2Attr) != 0 ||
+      code.branch_ne(0, 1, REJECT) != 0 ||
+      code.load_const_u64(2, 9223372036854775807ULL) != 0 ||
+      code.branch_le(0, 2, REJECT) != 0 ||
+      code.read_attr(3, uIntAttr) != 0 ||
+      code.load_const_u64(4, 4294967295ULL) != 0 ||
+      code.branch_ne(3, 4, REJECT) != 0 ||
+      code.branch_label(ACCEPT) != 0 ||
+      code.def_label(REJECT) != 0 ||
+      code.interpret_exit_nok() != 0 ||
+      code.def_label(ACCEPT) != 0 ||
+      code.interpret_exit_ok() != 0 ||
+      code.finalise() != 0) {
+    printf("%s ... FAILED (build)\n", name);
+    return -1;
+  }
+  return expectPks(name, ndb, tab, &code, expected, nExpected);
 }
 
 static int
@@ -1510,6 +1661,142 @@ testNullAndFloatOpcodeCoverage(Ndb *ndb,
   return rc;
 }
 
+struct AttrPair {
+  const char *lhs;
+  const char *rhs;
+  const char *label;
+};
+
+struct AttrConst {
+  const char *attr;
+  const char *label;
+  Uint64 constant;
+};
+
+static int
+testIntegerWidthBoundaryMatrix(Ndb *ndb,
+                               const NdbDictionary::Table *mainTab)
+{
+  (void)mainTab;
+  const NdbDictionary::Table *tab = getNamedTable(ndb, BOUNDARY_TABLE_NAME);
+  if (tab == NULL) return -1;
+
+  static const int signedNegative[] = { 1, 2, 3 };
+  static const int signedMax[] = { 7 };
+  static const int signedEqTwin[] = { 1, 2, 3, 6, 7 };
+  static const int unsignedEqTwin[] = { 1, 2, 3, 5, 7 };
+  static const int unsignedHighBit[] = { 3, 4, 5, 7 };
+  static const int unsignedMax[] = { 5, 7 };
+
+  const AttrConst signedAttrs[] = {
+    { "s_tiny", "TINYINT", 127ULL },
+    { "s_small", "SMALLINT", 32767ULL },
+    { "s_medium", "MEDIUMINT", 8388607ULL },
+    { "s_int", "INT", 2147483647ULL },
+    { "s_big", "BIGINT", 9223372036854775807ULL }
+  };
+  const AttrConst unsignedAttrs[] = {
+    { "u_tiny", "TINYINT UNSIGNED", 127ULL },
+    { "u_small", "SMALLINT UNSIGNED", 32767ULL },
+    { "u_medium", "MEDIUMINT UNSIGNED", 8388607ULL },
+    { "u_int", "INT UNSIGNED", 2147483647ULL },
+    { "u_big", "BIGINT UNSIGNED", 9223372036854775807ULL }
+  };
+  const AttrConst unsignedMaxAttrs[] = {
+    { "u_tiny", "TINYINT UNSIGNED", 255ULL },
+    { "u_small", "SMALLINT UNSIGNED", 65535ULL },
+    { "u_medium", "MEDIUMINT UNSIGNED", 16777215ULL },
+    { "u_int", "INT UNSIGNED", 4294967295ULL }
+  };
+  const AttrPair signedPairs[] = {
+    { "s_tiny", "s_tiny2", "TINYINT" },
+    { "s_small", "s_small2", "SMALLINT" },
+    { "s_medium", "s_medium2", "MEDIUMINT" },
+    { "s_int", "s_int2", "INT" },
+    { "s_big", "s_big2", "BIGINT" }
+  };
+  const AttrPair unsignedPairs[] = {
+    { "u_tiny", "u_tiny2", "TINYINT UNSIGNED" },
+    { "u_small", "u_small2", "SMALLINT UNSIGNED" },
+    { "u_medium", "u_medium2", "MEDIUMINT UNSIGNED" },
+    { "u_int", "u_int2", "INT UNSIGNED" },
+    { "u_big", "u_big2", "BIGINT UNSIGNED" }
+  };
+
+  int rc = 0;
+  char name[128];
+  size_t i;
+
+  for (i = 0; i < sizeof(signedAttrs) / sizeof(signedAttrs[0]); i++) {
+    snprintf(name, sizeof(name),
+             "Test 18a.%zu: %s negative boundary", i + 1,
+             signedAttrs[i].label);
+    if (expectReadCompareU64(name, ndb, tab, attrId(tab, signedAttrs[i].attr),
+                             0ULL, &NdbInterpretedCode::branch_lt,
+                             signedNegative, 3) != 0) rc = -1;
+  }
+
+  for (i = 0; i < sizeof(signedAttrs) / sizeof(signedAttrs[0]); i++) {
+    snprintf(name, sizeof(name),
+             "Test 18b.%zu: %s max boundary", i + 1,
+             signedAttrs[i].label);
+    if (expectReadCompareU64(name, ndb, tab, attrId(tab, signedAttrs[i].attr),
+                             signedAttrs[i].constant,
+                             &NdbInterpretedCode::branch_eq,
+                             signedMax, 1) != 0) rc = -1;
+  }
+
+  for (i = 0; i < sizeof(signedPairs) / sizeof(signedPairs[0]); i++) {
+    snprintf(name, sizeof(name),
+             "Test 18c.%zu: %s attr-attr equality", i + 1,
+             signedPairs[i].label);
+    if (expectColumnEq(name, ndb, tab,
+                       attrId(tab, signedPairs[i].lhs),
+                       attrId(tab, signedPairs[i].rhs),
+                       signedEqTwin, 5) != 0) rc = -1;
+  }
+
+  for (i = 0; i < sizeof(unsignedPairs) / sizeof(unsignedPairs[0]); i++) {
+    snprintf(name, sizeof(name),
+             "Test 18d.%zu: %s attr-attr equality", i + 1,
+             unsignedPairs[i].label);
+    if (expectColumnEq(name, ndb, tab,
+                       attrId(tab, unsignedPairs[i].lhs),
+                       attrId(tab, unsignedPairs[i].rhs),
+                       unsignedEqTwin, 5) != 0) rc = -1;
+  }
+
+  for (i = 0; i < sizeof(unsignedAttrs) / sizeof(unsignedAttrs[0]); i++) {
+    snprintf(name, sizeof(name),
+             "Test 18e.%zu: %s high-bit boundary", i + 1,
+             unsignedAttrs[i].label);
+    if (expectReadCompareU64(name, ndb, tab, attrId(tab, unsignedAttrs[i].attr),
+                             unsignedAttrs[i].constant,
+                             &NdbInterpretedCode::branch_gt,
+                             unsignedHighBit, 4) != 0) rc = -1;
+  }
+
+  for (i = 0; i < sizeof(unsignedMaxAttrs) / sizeof(unsignedMaxAttrs[0]); i++) {
+    snprintf(name, sizeof(name),
+             "Test 18f.%zu: %s max boundary", i + 1,
+             unsignedMaxAttrs[i].label);
+    if (expectReadCompareU64(name, ndb, tab,
+                             attrId(tab, unsignedMaxAttrs[i].attr),
+                             unsignedMaxAttrs[i].constant,
+                             &NdbInterpretedCode::branch_eq,
+                             unsignedMax, 2) != 0) rc = -1;
+  }
+
+  if (expectUnsignedBigintMax("Test 18f.5: BIGINT UNSIGNED max boundary",
+                              ndb, tab,
+                              attrId(tab, "u_big"),
+                              attrId(tab, "u_big2"),
+                              attrId(tab, "u_int"),
+                              unsignedMax, 2) != 0) rc = -1;
+
+  return rc;
+}
+
 struct TestEntry {
   int number;
   int (*fn)(Ndb *, const NdbDictionary::Table *);
@@ -1532,7 +1819,8 @@ static const TestEntry g_tests[] = {
   { 14, testArithmeticOpcodeCoverage },
   { 15, testColumnBranchCoverage },
   { 16, testMemoryAndLibraryOpcodeCoverage },
-  { 17, testNullAndFloatOpcodeCoverage }
+  { 17, testNullAndFloatOpcodeCoverage },
+  { 18, testIntegerWidthBoundaryMatrix }
 };
 
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
