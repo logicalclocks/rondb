@@ -44,6 +44,7 @@
 #include <mysql.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -2694,6 +2695,28 @@ testFloatDoubleMatrix(Ndb *ndb, const NdbDictionary::Table *tab)
         finishRuntimeErrorProgram(&code) != 0 ||
         expectRuntimeError("Test 20m: DOUBLE divide by zero rejects",
                            ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    if (code.load_double_const(0, DBL_MAX) != 0 ||
+        code.load_double_const(1, DBL_MAX) != 0 ||
+        code.add_reg(2, 0, 1) != 0 ||
+        code.load_double_const(3, DBL_MAX) != 0 ||
+        code.branch_gt(2, 3, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 20n: DOUBLE add overflow yields infinity",
+                     ndb, tab, &code) != 0) rc = -1;
+  }
+  {
+    NdbInterpretedCode code(tab, buf, 192);
+    if (code.load_double_const(0, DBL_MAX) != 0 ||
+        code.load_double_const(1, 2.0) != 0 ||
+        code.mul_reg(2, 0, 1) != 0 ||
+        code.load_double_const(3, DBL_MAX) != 0 ||
+        code.branch_gt(2, 3, 0) != 0 ||
+        finishAcceptReject(&code, 0) != 0 ||
+        expectAllPks("Test 20o: DOUBLE multiply overflow yields infinity",
+                     ndb, tab, &code) != 0) rc = -1;
   }
 
   return rc;
