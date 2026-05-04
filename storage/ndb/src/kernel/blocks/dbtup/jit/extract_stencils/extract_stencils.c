@@ -305,11 +305,29 @@ static TailPolicy classify_tail(const char *name) {
  * of every compiled program. See jit1.c kPreamble[]. */
 static const uint8_t kX86Terminator[]  = { 0x41, 0x5c, 0xc3 };
 
+/* aarch64 hand-coded terminator: ldp x20, x30, [sp], #16 ; ret.
+ *
+ * Engine-required — must match the aarch64 preamble (stp x20, x30,
+ * [sp, #-16]! ; mov x20, x0) emitted at offset 0 of every compiled
+ * program. The preamble lives in jit1.c, added in Phase 2 Day 4
+ * when the engine is wired to the generated stencils — until then
+ * these bytes are extractor-only and don't get executed.
+ *
+ * Encoding cross-check (little-endian, MSB byte last):
+ *   0xA8C17BF4 = ldp x20, x30, [sp], #16   (post-index)
+ *   0xD65F03C0 = ret  (= ret x30) */
+static const uint8_t kArm64Terminator[] = {
+  0xF4, 0x7B, 0xC1, 0xA8,   /* ldp x20, x30, [sp], #16 */
+  0xC0, 0x03, 0x5F, 0xD6,   /* ret */
+};
+
 /* Trailing-jmp width by arch — informational; the strip code derives
  * the same value from the relocation offset. Kept here as documentation
  * of the model. */
 __attribute__((unused))
-static const size_t kX86TrailJmpSize  = 5;   /* e9 ?? ?? ?? ?? */
+static const size_t kX86TrailJmpSize    = 5;   /* e9 ?? ?? ?? ?? */
+__attribute__((unused))
+static const size_t kArm64TrailJmpSize  = 4;   /* one b imm26 instruction */
 
 static void add_hole(HoleVec *v, uint16_t off, uint8_t kind, uint8_t width) {
   if (v->n_holes >= MAX_HOLES_PER_STENCIL) {
@@ -443,6 +461,209 @@ static ExtractedStencil extract_one_x86(
 }
 
 /* ------------------------------------------------------------------ */
+/* aarch64 per-stencil extraction.                                    */
+/*                                                                    */
+/* Two-pass walk:                                                     */
+/*                                                                    */
+/*   Pass 1 — relocation classification.                              */
+/*     • TAIL_STRIP_TAIL: find the trailing R_AARCH64_CALL26/JUMP26   */
+/*       reloc against `next`; strip its 4-byte b instruction.        */
+/*     • TAIL_KEEP_ALL (branch stencil): keep both unconditional      */
+/*       branches; classify the one against `next` as HK_BRANCH_FALL  */
+/*       and the one against `HOLE_BLT_TGT` as HK_BRANCH_TAKE.        */
+/*     • TAIL_TERMINATOR: replace bytes wholesale (handled before     */
+/*       the walk — see top of function).                             */
+/*                                                                    */
+/*   Pass 2 — magic-byte chain scan for operand holes.                */
+/*     Walk every 4-byte instruction in the trimmed stencil bytes.    */
+/*     Decode movz / movk and accumulate per-Rd 64-bit values with    */
+/*     per-slot byte offsets. When a register's accumulated value     */
+/*     equals one of the magics in kHoleMagicTable, emit 4 Hole       */
+/*     entries — one per imm16 slot (slots 0/16/32/48), each pointing */
+/*     at the start of its movz/movk instruction, all sharing the     */
+/*     same kind. The engine sees four holes of the same kind and     */
+/*     patches the imm16 fields slot-by-slot.                         */
+/*                                                                    */
+/*     movn-based chains are NOT detected: clang only chooses movn    */
+/*     when more than half the bits are 1, and our magics are random  */
+/*     enough to avoid that. If a future magic happens to trigger     */
+/*     movn lowering, the collision audit (Phase 2 Day 4) will flag   */
+/*     it as zero matches; remedy is to regenerate the magic.         */
+/* ------------------------------------------------------------------ */
+
+static ExtractedStencil extract_one_arm64(
+    const SymbolTable *symbols,
+    const TextRelas *tr,
+    const Elf64_Sym *sym,
+    const char *name)
+{
+  ExtractedStencil out = {0};
+  out.name    = name;
+  out.bytes   = tr->text_bytes + sym->st_value;
+  out.n_bytes = (uint16_t)sym->st_size;
+
+  TailPolicy policy = classify_tail(name);
+
+  if (policy == TAIL_TERMINATOR) {
+    out.bytes   = kArm64Terminator;
+    out.n_bytes = (uint16_t)sizeof(kArm64Terminator);
+    return out;
+  }
+
+  uint64_t lo = sym->st_value;
+  uint64_t hi = sym->st_value + sym->st_size;
+
+  size_t   trail_idx = SIZE_MAX;
+  uint64_t trail_off = 0;
+
+  if (policy == TAIL_STRIP_TAIL) {
+    for (size_t i = 0; i < tr->n_relas; ++i) {
+      const Elf64_Rela *r = &tr->relas[i];
+      if (r->r_offset < lo || r->r_offset >= hi) continue;
+      uint32_t type = (uint32_t)ELF64_R_TYPE(r->r_info);
+      if (type != R_AARCH64_CALL26 && type != R_AARCH64_JUMP26) continue;
+      const Elf64_Sym *target = &symbols->syms[ELF64_R_SYM(r->r_info)];
+      if (strcmp(sym_name(symbols, target), "next") != 0) continue;
+      if (trail_idx == SIZE_MAX || r->r_offset > trail_off) {
+        trail_idx = i;
+        trail_off = r->r_offset;
+      }
+    }
+    if (trail_idx == SIZE_MAX) {
+      die("%s: TAIL_STRIP_TAIL but no trailing CALL26/JUMP26 reloc against `next`",
+          name);
+    }
+    if (trail_off + 4 > hi) {
+      die("%s: trailing branch reloc at offset %llu does not fit (sym size=%llu)",
+          name, (unsigned long long)trail_off,
+          (unsigned long long)sym->st_size);
+    }
+    /* Sanity: top 6 bits of the high byte should be 000101 (b imm26) —
+     * stored little-endian, the high byte is at trail_off+3 and must
+     * be in 0x14..0x17. */
+    uint8_t high_byte = tr->text_bytes[trail_off + 3];
+    if ((high_byte & 0xFC) != 0x14) {
+      die("%s: expected b imm26 (top byte 0x14-0x17) at trailing tail, got 0x%02x",
+          name, high_byte);
+    }
+    out.n_bytes = (uint16_t)(trail_off - lo);
+  }
+
+  /* Pass 1: classify relocations within the trimmed byte range. */
+  for (size_t i = 0; i < tr->n_relas; ++i) {
+    if (i == trail_idx) continue;     /* already consumed by strip */
+    const Elf64_Rela *r = &tr->relas[i];
+    if (r->r_offset < lo) continue;
+    if (r->r_offset >= lo + out.n_bytes) continue;
+
+    uint32_t type = (uint32_t)ELF64_R_TYPE(r->r_info);
+    const Elf64_Sym *target = &symbols->syms[ELF64_R_SYM(r->r_info)];
+    const char *tname = sym_name(symbols, target);
+    uint16_t local_off = (uint16_t)(r->r_offset - lo);
+
+    if (policy == TAIL_KEEP_ALL) {
+      if ((type == R_AARCH64_CALL26 || type == R_AARCH64_JUMP26) &&
+          strcmp(tname, "next") == 0) {
+        add_hole(&out.holes, local_off, HK_BRANCH_FALL, 4);
+        continue;
+      }
+      if ((type == R_AARCH64_CALL26 || type == R_AARCH64_JUMP26) &&
+          strcmp(tname, "HOLE_BLT_TGT") == 0) {
+        add_hole(&out.holes, local_off, HK_BRANCH_TAKE, 4);
+        continue;
+      }
+    }
+
+    /* On aarch64 operand holes use magic-byte chains, NOT relocations.
+     * Anything reaching this point is unexpected — diagnose. */
+    die("%s: unrecognised aarch64 relocation: type=%u target=%s offset=%llu",
+        name, type, tname, (unsigned long long)r->r_offset);
+  }
+
+  /* Pass 2: scan stencil bytes for magic-byte movz/movk chains.
+   *
+   * reg_value[Rd]    — current accumulated 64-bit value for register Rd.
+   * reg_slot_off[Rd] — byte offset (within the stencil) of the
+   *                    movz/movk instruction that wrote each slot.
+   * reg_slot_seen[Rd]— bitmask of slots written (0xF = all four). */
+  uint64_t reg_value[32];
+  uint16_t reg_slot_off[32][4];
+  uint8_t  reg_slot_seen[32];
+  for (int i = 0; i < 32; ++i) {
+    reg_value[i]     = 0;
+    reg_slot_seen[i] = 0;
+    for (int s = 0; s < 4; ++s) reg_slot_off[i][s] = 0;
+  }
+
+  for (uint16_t off = 0; off + 4 <= out.n_bytes; off += 4) {
+    const uint8_t *p = out.bytes + off;
+    uint32_t insn = (uint32_t)p[0]        |
+                    ((uint32_t)p[1] << 8) |
+                    ((uint32_t)p[2] << 16)|
+                    ((uint32_t)p[3] << 24);
+
+    /* Decode movz / movk / movn (64-bit form, sf=1).
+     *   movz: 1 10 100101 hw imm16 Rd  → bits 31..23 == 0b110100101
+     *   movk: 1 11 100101 hw imm16 Rd  → bits 31..23 == 0b111100101
+     *   movn: 1 00 100101 hw imm16 Rd  → bits 31..23 == 0b100100101 */
+    int is_movz = (insn & 0xFF800000) == 0xD2800000;
+    int is_movk = (insn & 0xFF800000) == 0xF2800000;
+    int is_movn = (insn & 0xFF800000) == 0x92800000;
+
+    if (is_movn) {
+      /* movn-based chain: we lack movz/movk slot offsets to patch
+       * the slots that movn implicitly fills with 1s. Reset the
+       * register's bookkeeping so we don't mistakenly match a
+       * subsequent movk-only sequence. */
+      uint32_t Rd = insn & 0x1F;
+      reg_slot_seen[Rd] = 0;
+      reg_value[Rd]     = 0;
+      continue;
+    }
+    if (!is_movz && !is_movk) continue;
+
+    uint32_t hw    = (insn >> 21) & 0x3;
+    uint32_t imm16 = (insn >> 5)  & 0xFFFF;
+    uint32_t Rd    = insn & 0x1F;
+
+    if (is_movz) {
+      /* movz starts a fresh chain on Rd: zero everything else,
+       * record this slot's byte offset. */
+      reg_value[Rd]      = (uint64_t)imm16 << (hw * 16);
+      reg_slot_seen[Rd]  = (uint8_t)(1u << hw);
+      for (int s = 0; s < 4; ++s) reg_slot_off[Rd][s] = 0;
+      reg_slot_off[Rd][hw] = off;
+    } else { /* movk */
+      uint64_t mask = ~((uint64_t)0xFFFFu << (hw * 16));
+      reg_value[Rd] = (reg_value[Rd] & mask) |
+                      ((uint64_t)imm16 << (hw * 16));
+      reg_slot_seen[Rd] |= (uint8_t)(1u << hw);
+      reg_slot_off[Rd][hw] = off;
+    }
+
+    if (reg_slot_seen[Rd] == 0xF) {
+      /* All four slots seen — try to match against the magic table. */
+      for (size_t k = 0; k < kHoleMagicTableLen; ++k) {
+        if (kHoleMagicTable[k].magic == reg_value[Rd]) {
+          uint8_t kind = kHoleMagicTable[k].kind;
+          for (int s = 0; s < 4; ++s) {
+            add_hole(&out.holes, reg_slot_off[Rd][s], kind, 4);
+          }
+          /* Reset to avoid double-matching if the same chain
+           * recurs via additional movks later. */
+          reg_slot_seen[Rd] = 0;
+          reg_value[Rd]     = 0;
+          break;
+        }
+      }
+    }
+  }
+
+  qsort(out.holes.holes, out.holes.n_holes, sizeof(Hole), hole_cmp);
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
 /* Header emission.                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -485,7 +706,7 @@ static const char *kind_name(uint8_t kind) {
 }
 
 static void emit_header(FILE *out,
-                        const char *arch_id,
+                        const char *arch_predef,
                         const char *guard_macro,
                         const ExtractedStencil *stencils,
                         size_t n_stencils) {
@@ -501,10 +722,10 @@ static void emit_header(FILE *out,
   fprintf(out, "#ifndef %s\n", guard_macro);
   fprintf(out, "#define %s\n\n", guard_macro);
   fprintf(out,
-          "#if !defined(__%s__)\n"
+          "#if !defined(%s)\n"
           "#error \"%s is only valid on %s build targets.\"\n"
           "#endif\n\n",
-          arch_id, guard_macro, arch_id);
+          arch_predef, guard_macro, arch_predef);
   fprintf(out,
           "#include <stddef.h>\n"
           "#include <stdint.h>\n\n"
@@ -580,7 +801,6 @@ int main(int argc, char **argv) {
   const char *input  = argv[1];
   const char *arch   = argv[2];
   const char *output = argv[3];
-  (void)output;   /* used in Day-1 PM scope (header emission) */
 
   uint16_t want_machine;
   if      (strcmp(arch, "x86_64") == 0) want_machine = EM_X86_64;
@@ -592,11 +812,6 @@ int main(int argc, char **argv) {
   SectionTable sections = parse_sections(&blob, ehdr);
   SymbolTable  symbols  = parse_symbols(&blob, &sections);
   TextRelas    relas    = parse_text_relas(&blob, &sections);
-
-  /* Phase 2 Day 1 PM scope: x86_64 only. arm64 path lands Day 2. */
-  if (want_machine != EM_X86_64) {
-    die("arm64 extraction not yet implemented (Day 2 work)");
-  }
 
   /* Walk symbols in order, extract each op_*. */
   ExtractedStencil stencils[16];
@@ -610,14 +825,22 @@ int main(int argc, char **argv) {
     if (n_stencils >= sizeof(stencils) / sizeof(stencils[0])) {
       die("too many op_* stencils — bump the local stencils[] array");
     }
-    stencils[n_stencils++] = extract_one_x86(&symbols, &relas, sym, name);
+    if (want_machine == EM_X86_64) {
+      stencils[n_stencils++] = extract_one_x86(&symbols, &relas, sym, name);
+    } else {
+      stencils[n_stencils++] = extract_one_arm64(&symbols, &relas, sym, name);
+    }
   }
 
   /* Emit. */
+  const char *arch_predef = (want_machine == EM_X86_64)
+      ? "__x86_64__" : "__aarch64__";
+  const char *guard_macro = (want_machine == EM_X86_64)
+      ? "NDB_JIT_STENCILS_X86_64_H" : "NDB_JIT_STENCILS_ARM64_H";
+
   FILE *out = fopen(output, "w");
   if (!out) die("cannot open %s for writing: %s", output, strerror(errno));
-  emit_header(out, "x86_64", "NDB_JIT_STENCILS_X86_64_H",
-              stencils, n_stencils);
+  emit_header(out, arch_predef, guard_macro, stencils, n_stencils);
   fclose(out);
 
   fprintf(stderr, "%s: wrote %s (%zu stencils)\n",
