@@ -102,10 +102,21 @@ int main(int argc, char **argv) {
   /* Phase 1 has no aarch64 stencils. Report interpreter numbers and
    * a clear "JIT path skipped" note; the macOS Apple Silicon dev
    * gets correctness-only signal from proto_interp_only.c instead. */
-  printf("INFO proto_microbench: JIT path not available on this arch "
-         "(Phase 1 is x86_64-only).\n");
-  printf("interp_ns_per_row,jit_ns_per_row,compile_ns,speedup,break_even_rows\n");
-  printf("%.2f,n/a,n/a,n/a,n/a\n", interp_ns_per_row);
+  printf("\n");
+  printf("Phase 1 microbench (interpreter only)\n");
+  printf("=====================================\n");
+  printf("  Program        : %u ops (seed=%" PRIu64 ")\n",
+         (unsigned)prog.n_ops, seed);
+  printf("  Rows           : %zu\n", nrows);
+  printf("  Aggregate      : %" PRId64 "\n", acc_interp);
+  printf("\n");
+  printf("  Interpreter    : %7.2f ns/row\n", interp_ns_per_row);
+  printf("\n");
+  printf("INFO  JIT path not available on this architecture.\n");
+  printf("      Phase 1 ships x86_64 stencils only; cross-arch lands\n");
+  printf("      in Phase 2's extractor. Run this binary on Linux\n");
+  printf("      x86_64 for the decision-gate numbers.\n");
+  printf("\n");
   free(rows);
   return 0;
 #else
@@ -161,24 +172,53 @@ int main(int argc, char **argv) {
                               ? compile_ns / per_row_savings
                               : 1e9;
 
-  printf("nrows=%zu seed=%" PRIu64 " n_ops=%u emitted=%zu acc=%" PRId64 "\n",
-         nrows, seed, (unsigned)prog.n_ops,
-         jit1_emitted_size(jp), acc_jit);
-  printf("interp_ns_per_row,jit_ns_per_row,compile_ns,speedup,break_even_rows\n");
-  printf("%.2f,%.2f,%.0f,%.2fx,%.0f\n",
-         interp_ns_per_row, jit_ns_per_row,
-         compile_ns, speedup, break_even_rows);
-
   int compile_ok    = (compile_ns < 5000.0);
   int speedup_ok    = (speedup    >= 2.0);
   int breakeven_ok  = (break_even_rows < 5000.0);
   int all_ok        = compile_ok && speedup_ok && breakeven_ok;
 
-  printf("%s compile<5us=%s 2xspeedup=%s breakeven<5k=%s\n",
-         all_ok ? "PASS" : "FAIL",
-         compile_ok    ? "yes" : "NO",
-         speedup_ok    ? "yes" : "NO",
-         breakeven_ok  ? "yes" : "NO");
+  const char *mark_ok   = "[ok]";
+  const char *mark_fail = "[FAIL]";
+
+  printf("\n");
+  printf("Phase 1 microbench  copy-and-patch JIT vs interpreter\n");
+  printf("=====================================================\n");
+  printf("  Program        : %u ops, %zu bytes emitted (seed=%" PRIu64 ")\n",
+         (unsigned)prog.n_ops, jit1_emitted_size(jp), seed);
+  printf("  Rows           : %zu\n", nrows);
+  printf("  Aggregate      : %" PRId64 "  (interp == jit, ok)\n", acc_jit);
+  printf("\n");
+  printf("  Per-row dispatch                target          result\n");
+  printf("  ----------------                ------          ------\n");
+  printf("  Interpreter    : %7.2f ns/row\n", interp_ns_per_row);
+  printf("  JIT'd          : %7.2f ns/row\n", jit_ns_per_row);
+  printf("  Speedup        : %7.2fx       %-15s %s\n",
+         speedup, ">= 2.00x", speedup_ok ? mark_ok : mark_fail);
+  printf("\n");
+  printf("  Compile cost                    target          result\n");
+  printf("  ------------                    ------          ------\n");
+  printf("  Compile time   : %7.2f us      %-15s %s\n",
+         compile_ns / 1000.0, "< 5.00 us",
+         compile_ok ? mark_ok : mark_fail);
+  printf("  Break-even     : %7.0f rows    %-15s %s\n",
+         break_even_rows, "< 5000 rows",
+         breakeven_ok ? mark_ok : mark_fail);
+  printf("\n");
+  printf("VERDICT: %s\n",
+         all_ok        ? "PASS - all three Phase 1 thresholds cleared"
+       : speedup_ok && breakeven_ok && !compile_ok
+                       ? "PARTIAL - speedup and break-even cleared; "
+                         "compile time over budget"
+       : !speedup_ok   ? "FAIL - speedup target missed; reassess approach"
+                       : "FAIL - one or more thresholds missed");
+  printf("\n");
+
+  /* Also emit the original CSV line for scripted parsing. */
+  printf("CSV  interp_ns_per_row,jit_ns_per_row,compile_ns,speedup,"
+         "break_even_rows\n");
+  printf("CSV  %.2f,%.2f,%.0f,%.2fx,%.0f\n",
+         interp_ns_per_row, jit_ns_per_row,
+         compile_ns, speedup, break_even_rows);
 
   ndb_jit_arena_destroy(arena);
   free(rows);
