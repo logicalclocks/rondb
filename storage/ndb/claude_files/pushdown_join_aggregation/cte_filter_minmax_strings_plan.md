@@ -10,7 +10,7 @@ case appears.
 | Commit | Scope |
 |--------|-------|
 | `354f2f811f0` | F.1 implementation: `resolve_chained_column_type` gains an `Int32& out_scale` parameter; T_MIN/T_MAX branch widens DECIMAL → BIGINT (scale==0) / Bigunsigned / DOUBLE (scale>0) mirroring the kernel's `AlignedType`.  `build_cte_virtual_tables` MIN/MAX branch applies the same widening so the virt-table column type matches the kernel's wire format and the inline-type CTE filter opcode accepts DECIMAL outputs |
-| `33e8f5a0d6e` + `88e22832b98` + `d812019e9a4` + recorded result | MTR — new `ronsql_cte_decimal.test` covers DECIMAL(N,0) MIN/MAX → BIGINT, DECIMAL UNSIGNED → Bigunsigned, DECIMAL(N,2) → DOUBLE, WHERE filter on the widened output (inline-type pushdown), and chained-CTE MIN(MAX(decimal)) walking through `resolve_chained_column_type` recursion |
+| `82678211aff` + `7889daac005` + `d812019e9a4` + `974931810fb` | MTR — new `ronsql_cte_decimal.test` covers DECIMAL(N,0) MIN/MAX → BIGINT, DECIMAL UNSIGNED → Bigunsigned, DECIMAL(N,2) → DOUBLE, WHERE filter on the widened output (inline-type pushdown), and chained-CTE MIN(MAX(decimal)) walking through `resolve_chained_column_type` recursion |
 
 ## Context
 

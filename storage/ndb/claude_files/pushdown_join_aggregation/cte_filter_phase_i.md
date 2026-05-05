@@ -409,6 +409,24 @@ aggregate output nullability must stay user-visible, and top-level
 to proven scalar-CTE expressions so ordinary row-wise table queries
 cannot silently become aggregate queries.
 
+#### I.22 — DECIMAL MIN/MAX 64-bit range guard (S/M)
+
+Detailed plan: `cte_filter_phase_i22.md`.
+
+Review of Phase I.6 F.1 found that RonSQL now accepts all
+scale-zero DECIMAL `MIN` / `MAX` outputs by widening the CTE virtual
+type to `BIGINT` / `BIGUNSIGNED`, but the kernel conversion path still
+uses `decimal2longlong()` / `decimal2ulonglong()`.  Declarations such
+as signed `DECIMAL(19,0)` or unsigned `DECIMAL(20,0)` can contain
+valid MySQL values outside the 64-bit target range and can therefore
+fail at execution with a DBTUP decimal conversion overflow.
+
+I.22 should add a prepare-time guard for scale-zero DECIMAL `MIN` /
+`MAX`: accept signed precision up to 18 and unsigned precision up to
+19, reject wider declarations clearly, and add MTR coverage for both
+safe boundaries and rejected unsafe declarations.  Full arbitrary
+precision DECIMAL preservation is explicitly out of scope.
+
 ## Recommended next-pick heuristic
 
 When picking the next post-Phase-H feature work, sort the items
