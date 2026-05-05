@@ -388,6 +388,27 @@ rejecting clearly.  The I.16 root rewrite should use the same helper
 and should also verify that the matched partial-key CTE join references
 the original root alias before demoting the original root under the CTE.
 
+#### I.21 — Scalar CTE semantic guardrails after I.17 (M)
+
+Detailed plan: `cte_filter_phase_i21.md`.
+
+Review of the shipped Phase I.17 scalar CTE work found that the
+first-output-as-PK workaround needed for scalar CTE child lookup can
+leak into normal SQL semantics.  Root scalar CTE queries with `WHERE`
+predicates can be incorrectly considered full-PK lookups even though
+scalar lookup keys are dummy values and should not decide predicate
+truth.  The same structural key can also make nullable aggregate
+outputs such as `MAX()` over empty input look non-nullable in virtual
+table metadata.
+
+I.21 should keep the scalar dummy-key mechanism local to the scalar
+cross-join implementation: root lookup optimisation should remain
+limited to grouped CTEs with real `GROUP BY`-derived keys, scalar
+aggregate output nullability must stay user-visible, and top-level
+`GREATEST` / `LEAST` implicit aggregate lowering should be constrained
+to proven scalar-CTE expressions so ordinary row-wise table queries
+cannot silently become aggregate queries.
+
 ## Recommended next-pick heuristic
 
 When picking the next post-Phase-H feature work, sort the items
