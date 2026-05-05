@@ -350,6 +350,26 @@ normal embedded interpreter, or equivalent typed register metadata, so
 signed `TINYINT` / `SMALLINT` / `MEDIUMINT` / `INT` leaf operands are
 sign-extended before `BRANCH_*_REG_REG`.
 
+#### I.19 — CASE literal normalisation and INT boundary fixes (S/M)
+
+Detailed plan: `cte_filter_phase_i19.md`.
+
+Review of the Phase I.5 v3b float-literal CASE work found three
+follow-ups in the embedded CASE col-vs-const path:
+
+- CASE atoms should be simplified as whole comparisons before side
+  resolution, matching the normal WHERE path.  Today v3b only
+  simplifies the RHS literal, so `o.o_double < -50.5` works but the
+  symmetric `100.0 < o.o_double` shape can still fail before the
+  normaliser swaps it into column-vs-literal form.
+- `encode_constant()` has signed INT bounds off by one
+  (`-2147483647..2147483648` instead of
+  `-2147483648..2147483647`), which can reject valid `INT_MIN` and
+  accept invalid `2147483648`.
+- The v3b MTR labels imply leaf FLOAT negative-literal coverage, but
+  the query uses DOUBLE.  Add explicit leaf FLOAT, leaf DOUBLE,
+  literal-on-left, and INT boundary tests.
+
 ## Recommended next-pick heuristic
 
 When picking the next post-Phase-H feature work, sort the items
