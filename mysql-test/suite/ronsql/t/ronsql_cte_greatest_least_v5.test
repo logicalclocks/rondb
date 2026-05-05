@@ -97,6 +97,27 @@ CREATE TABLE v5_customer (
   PRIMARY KEY USING HASH (c_id)
 ) ENGINE=NDB;
 
+CREATE TABLE v5_bound_orders (
+  o_id        INT NOT NULL,
+  o_custkey   BIGINT NOT NULL,
+  o_tinyint   TINYINT NOT NULL,
+  o_smallint  SMALLINT NOT NULL,
+  o_mediumint MEDIUMINT NOT NULL,
+  o_int       INT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_v5_bound_o_custkey ON v5_bound_orders (o_custkey);
+
+CREATE TABLE v5_bound_customer (
+  c_id        BIGINT NOT NULL,
+  c_tinyint   TINYINT NOT NULL,
+  c_smallint  SMALLINT NOT NULL,
+  c_mediumint MEDIUMINT NOT NULL,
+  c_int       INT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
 # Fixture mixes positive and negative values across every signed
 # width so the sign-extension path is exercised on every linked
 # read.
@@ -115,6 +136,14 @@ INSERT INTO v5_orders VALUES
   (2, 100,  40,    5,   60,      600,      60000,      600000,                 1000,  -7.0,   42.0),
   (3, 200,  90,   75, -127,   -32768,   -8388608, -2147483648,  9223372036854775900,  0.5, -100.5),
   (4, 300,  70,   18,   10,      100,       1000,       10000,                   50, 250.0, 1234.5);
+
+INSERT INTO v5_bound_customer VALUES
+  (10, -128, -32768, -8388608, -2147483648),
+  (20,   -5,    -50,     -500,       -5000);
+
+INSERT INTO v5_bound_orders VALUES
+  (10, 10, -128, -32768, -8388608, -2147483648),
+  (20, 20,   -5,    -50,     -500,       -5000);
 
 --enable_warnings
 --enable_query_log
@@ -516,7 +545,7 @@ GROUP BY c.c_id|
 
 --echo
 --echo
---echo === Test 18: leaf DOUBLE vs T_FLOAT literal — float column, fractional const ===
+--echo === Test 18: leaf DOUBLE vs T_FLOAT literal — double column, fractional const ===
 
 # Leaf-side DOUBLE column compared to a fractional literal.  Pre-v3b
 # this was rejected at codegen ("integer-only").  v3b emits 5 words:
@@ -564,7 +593,7 @@ GROUP BY c.c_id|
 
 --echo
 --echo
---echo === Test 20: leaf FLOAT vs negative T_FLOAT literal ===
+--echo === Test 20: leaf DOUBLE vs negative T_FLOAT literal ===
 
 # Negative fractional literal (parser folds T_NEGATIVE into the
 # constant_float.dbl with a negative sign).  Exercises the
@@ -585,9 +614,199 @@ FROM v5_customer AS c
 JOIN v5_orders AS o ON o.o_custkey = c.c_id
 GROUP BY c.c_id|
 
+--echo
+--echo
+--echo === Test 21: literal-left leaf DOUBLE comparison ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN 100.0 < o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN 100.0 < o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 22: literal-left linked FLOAT comparison ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN 0 <= c.c_float THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN 0 <= c.c_float THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 23: OR with literal-left leaf DOUBLE atom ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN (100.0 < o.o_double OR c.c_float < 0)
+                THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN (100.0 < o.o_double OR c.c_float < 0)
+                THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 24: leaf FLOAT vs negative T_FLOAT literal ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_float < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_float < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 25: linked FLOAT vs negative T_INT literal ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_float > -1 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_float > -1 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 26: literal-left linked SMALLINT signed comparison ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN -1 > c.c_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN -1 > c.c_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 27: leaf signed minimum literals accepted ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+       SUM(CASE WHEN o.o_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+       SUM(CASE WHEN o.o_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+       SUM(CASE WHEN o.o_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+       SUM(CASE WHEN o.o_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+       SUM(CASE WHEN o.o_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+       SUM(CASE WHEN o.o_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 28: linked signed minimum literals accepted ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+       SUM(CASE WHEN c.c_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+       SUM(CASE WHEN c.c_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+       SUM(CASE WHEN c.c_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+       SUM(CASE WHEN c.c_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+       SUM(CASE WHEN c.c_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+       SUM(CASE WHEN c.c_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
 DELIMITER ;|
 
+--echo
+--echo
+--echo === Test 29: signed positive overflow literals rejected ===
+--echo Expected error: signed integer literal out of range
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c.c_id, SUM(CASE WHEN o.o_tinyint = 128 THEN 1 ELSE 0 END) AS s FROM v5_bound_customer AS c JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id GROUP BY c.c_id;' 2>&1
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c.c_id, SUM(CASE WHEN o.o_smallint = 32768 THEN 1 ELSE 0 END) AS s FROM v5_bound_customer AS c JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id GROUP BY c.c_id;' 2>&1
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c.c_id, SUM(CASE WHEN o.o_mediumint = 8388608 THEN 1 ELSE 0 END) AS s FROM v5_bound_customer AS c JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id GROUP BY c.c_id;' 2>&1
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c.c_id, SUM(CASE WHEN o.o_int = 2147483648 THEN 1 ELSE 0 END) AS s FROM v5_bound_customer AS c JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id GROUP BY c.c_id;' 2>&1
+
 --disable_query_log
+DROP TABLE v5_bound_orders;
+DROP TABLE v5_bound_customer;
 DROP TABLE v5_orders;
 DROP TABLE v5_customer;
 --enable_query_log

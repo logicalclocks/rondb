@@ -7829,7 +7829,7 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
   case NdbDictionary::Column::Type::Mediumunsigned:
     tk = INT; min = 0; max = 16777215; bytes = 3; break;
   case NdbDictionary::Column::Type::Int:
-    tk = INT; min = -2147483647LL; max = 2147483648LL; bytes = 4; break;
+    tk = INT; min = INT32_MIN; max = INT32_MAX; bytes = 4; break;
   case NdbDictionary::Column::Type::Unsigned:
     tk = INT; min = 0; max = 4294967295LL; bytes = 4; break;
   case NdbDictionary::Column::Type::Bigint:
@@ -9345,6 +9345,10 @@ RonSQLPreparer::generate_embedded_condition(
   {
     atoms.push(ce);
   }
+  for (Uint32 a = 0; a < atoms.size(); a++)
+  {
+    atoms[a] = simplify_ce(atoms[a], -1);
+  }
 
   // Per-atom resolution info, populated in the pre-pass and reused
   // verbatim in the emit pass.
@@ -9512,6 +9516,10 @@ RonSQLPreparer::generate_embedded_condition(
                 atom->op == T_GT || atom->op == T_GE,
                 "CASE condition atom: only =, !=, <, <=, >, >= "
                 "supported.");
+    require_prm(atom->args.left != NULL &&
+                atom->args.left->op == T_IDENTIFIER,
+                "CASE condition atom: left side must resolve to a "
+                "column after simplification.");
     AtomInfo& info = infos[a];
 
     resolve_col_side(atom->args.left, info.lhs);
@@ -9568,16 +9576,7 @@ RonSQLPreparer::generate_embedded_condition(
       // Phase I.5 v3b: detect float column LHS with numeric literal
       // RHS — emit register-based compare via LOAD_DOUBLE_CONST
       // instead of the integer-only BRANCH_*_OP_ARG family.
-      //
-      // Fold T_NEGATIVE(T_INT|T_FLOAT) wrappers first.  CASE
-      // conditions don't go through the general
-      // WHERE-expression simplify_ce pass, so a literal like
-      // `-50.5` arrives as T_NEGATIVE(T_FLOAT(50.5)) — the
-      // op-check below would fail and encode_constant would
-      // throw "incompatible value" for both the float and the
-      // integer column-vs-negative-literal shapes.
-      ConditionalExpression* rhs_simplified =
-          simplify_ce(atom->args.right, -1);
+      ConditionalExpression* rhs_simplified = atom->args.right;
       bool lhs_is_float =
           info.lhs.col->getType() == NdbDictionary::Column::Float ||
           info.lhs.col->getType() == NdbDictionary::Column::Double;

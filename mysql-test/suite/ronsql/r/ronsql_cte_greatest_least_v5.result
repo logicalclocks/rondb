@@ -464,7 +464,7 @@ c_id	s
 300	0
 
 
-=== Test 18: leaf DOUBLE vs T_FLOAT literal — float column, fractional const ===
+=== Test 18: leaf DOUBLE vs T_FLOAT literal — double column, fractional const ===
 == Query ==
 SELECT c.c_id,
 SUM(CASE WHEN o.o_double > 100.0 THEN 1 ELSE 0 END) AS s
@@ -518,7 +518,7 @@ c_id	s
 300	1
 
 
-=== Test 20: leaf FLOAT vs negative T_FLOAT literal ===
+=== Test 20: leaf DOUBLE vs negative T_FLOAT literal ===
 == Query ==
 SELECT c.c_id,
 SUM(CASE WHEN o.o_double < -50.5 THEN 1 ELSE 0 END) AS s
@@ -543,3 +543,243 @@ c_id	s
 100	0
 200	1
 300	0
+
+
+=== Test 21: literal-left leaf DOUBLE comparison ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN 100.0 < o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN 100.0 < o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	0
+300	1
+
+
+=== Test 22: literal-left linked FLOAT comparison ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN 0 <= c.c_float THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN 0 <= c.c_float THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	0
+300	1
+
+
+=== Test 23: OR with literal-left leaf DOUBLE atom ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN (100.0 < o.o_double OR c.c_float < 0)
+THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN (100.0 < o.o_double OR c.c_float < 0)
+THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	1
+300	1
+
+
+=== Test 24: leaf FLOAT vs negative T_FLOAT literal ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_float < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_float < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	0
+300	0
+
+
+=== Test 25: linked FLOAT vs negative T_INT literal ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_float > -1 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_float > -1 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	0
+300	1
+
+
+=== Test 26: literal-left linked SMALLINT signed comparison ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN -1 > c.c_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN -1 > c.c_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	0
+300	0
+
+
+=== Test 27: leaf signed minimum literals accepted ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+SUM(CASE WHEN o.o_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+SUM(CASE WHEN o.o_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+SUM(CASE WHEN o.o_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+SUM(CASE WHEN o.o_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+SUM(CASE WHEN o.o_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+SUM(CASE WHEN o.o_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	tiny_s	small_s	med_s	int_s
+10	1	1	1	1
+20	0	0	0	0
+
+
+=== Test 28: linked signed minimum literals accepted ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+SUM(CASE WHEN c.c_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+SUM(CASE WHEN c.c_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+SUM(CASE WHEN c.c_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+SUM(CASE WHEN c.c_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+SUM(CASE WHEN c.c_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+SUM(CASE WHEN c.c_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	tiny_s	small_s	med_s	int_s
+10	1	1	1	1
+20	0	0	0	0
+
+
+=== Test 29: signed positive overflow literals rejected ===
+Expected error: signed integer literal out of range
+Error handling: RMS->RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+Error handling: RMS->RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+Error handling: RMS->RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+Error handling: RMS->RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
