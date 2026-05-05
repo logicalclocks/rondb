@@ -92,40 +92,146 @@ col-vs-const path.
    test matrix explicitly covers leaf FLOAT and leaf DOUBLE against
    negative fractional literals.
 
-   Add at least these cases:
+## Test plan
 
-   - Literal on the left:
+Extend `mysql-test/suite/ronsql/t/ronsql_cte_greatest_least_v5.test`
+and re-record the matching result file.  The tests should keep using
+the existing strict MySQL-vs-RonSQL diff harness except for deliberate
+RonSQL rejection tests.
 
-     ```sql
-     SUM(CASE WHEN 100.0 < o.o_double THEN 1 ELSE 0 END)
-     ```
+### Normalisation tests
 
-     Expected to match MySQL after whole-atom simplification.
+1. **Literal on left, leaf DOUBLE on right**
 
-   - Negative signed INT minimum:
+   ```sql
+   SELECT c.c_id,
+          SUM(CASE WHEN 100.0 < o.o_double THEN 1 ELSE 0 END) AS s
+   FROM v5_customer AS c
+   JOIN v5_orders AS o ON o.o_custkey = c.c_id
+   GROUP BY c.c_id;
+   ```
 
-     ```sql
-     SUM(CASE WHEN o.o_int = -2147483648 THEN 1 ELSE 0 END)
-     ```
+   Expected: matches MySQL.  This proves whole-atom simplification
+   swaps the atom to `o.o_double > 100.0` before side resolution.
 
-     Requires fixture data containing `INT_MIN` on a leaf-side INT.
+2. **Literal on left, linked FLOAT on right**
 
-   - Signed INT positive overflow rejection:
+   ```sql
+   SELECT c.c_id,
+          SUM(CASE WHEN 0 <= c.c_float THEN 1 ELSE 0 END) AS s
+   FROM v5_customer AS c
+   JOIN v5_orders AS o ON o.o_custkey = c.c_id
+   GROUP BY c.c_id;
+   ```
 
-     ```sql
-     SUM(CASE WHEN o.o_int = 2147483648 THEN 1 ELSE 0 END)
-     ```
+   Expected: matches MySQL.  This covers the linked-side v3b path and
+   the inequality inversion performed by `simplify_ce()`.
 
-     This should fail cleanly before query execution, rather than
-     being encoded as `INT_MIN`.
+3. **Nested AND / OR with one literal-left atom**
 
-   - Leaf FLOAT vs negative fractional literal:
+   ```sql
+   SELECT c.c_id,
+          SUM(CASE WHEN (100.0 < o.o_double OR c.c_float < 0)
+                   THEN 1 ELSE 0 END) AS s
+   FROM v5_customer AS c
+   JOIN v5_orders AS o ON o.o_custkey = c.c_id
+   GROUP BY c.c_id;
+   ```
 
-     ```sql
-     SUM(CASE WHEN o.o_float < -50.5 THEN 1 ELSE 0 END)
-     ```
+   Expected: matches MySQL.  This guards that per-atom simplification
+   still works after the embedded-condition OR flattener.
 
-     This is the coverage the existing Test 20 label implies.
+### Negative literal and FLOAT / DOUBLE coverage
+
+4. **Leaf DOUBLE vs negative fractional literal**
+
+   Keep or rename the existing Test 20 shape:
+
+   ```sql
+   SELECT c.c_id,
+          SUM(CASE WHEN o.o_double < -50.5 THEN 1 ELSE 0 END) AS s
+   FROM v5_customer AS c
+   JOIN v5_orders AS o ON o.o_custkey = c.c_id
+   GROUP BY c.c_id;
+   ```
+
+   Expected: matches MySQL.  The test label must say DOUBLE if the
+   query uses `o.o_double`.
+
+5. **Leaf FLOAT vs negative fractional literal**
+
+   ```sql
+   SELECT c.c_id,
+          SUM(CASE WHEN o.o_float < -50.5 THEN 1 ELSE 0 END) AS s
+   FROM v5_customer AS c
+   JOIN v5_orders AS o ON o.o_custkey = c.c_id
+   GROUP BY c.c_id;
+   ```
+
+   Expected: matches MySQL.  This is the coverage the existing Test 20
+   label implied but did not actually exercise.
+
+6. **Linked FLOAT vs negative integer literal**
+
+   ```sql
+   SELECT c.c_id,
+          SUM(CASE WHEN c.c_float > -1 THEN 1 ELSE 0 END) AS s
+   FROM v5_customer AS c
+   JOIN v5_orders AS o ON o.o_custkey = c.c_id
+   GROUP BY c.c_id;
+   ```
+
+   Expected: matches MySQL.  This confirms the whole-atom / RHS
+   simplification still folds negative integer constants used by the
+   v3b linked-float path.
+
+### Signed INT boundary coverage
+
+7. **Leaf signed INT minimum accepted**
+
+   Ensure the fixture contains at least one `o.o_int =
+   -2147483648`.  Then run:
+
+   ```sql
+   SELECT c.c_id,
+          SUM(CASE WHEN o.o_int = -2147483648 THEN 1 ELSE 0 END) AS s
+   FROM v5_customer AS c
+   JOIN v5_orders AS o ON o.o_custkey = c.c_id
+   GROUP BY c.c_id;
+   ```
+
+   Expected: matches MySQL.  This proves `encode_constant()` accepts
+   the true signed INT minimum.
+
+8. **Leaf signed INT positive overflow rejected**
+
+   ```sql
+   SELECT c.c_id,
+          SUM(CASE WHEN o.o_int = 2147483648 THEN 1 ELSE 0 END) AS s
+   FROM v5_customer AS c
+   JOIN v5_orders AS o ON o.o_custkey = c.c_id
+   GROUP BY c.c_id;
+   ```
+
+   Expected: clean RonSQL permanent error before execution.  The value
+   must not be encoded as the signed INT minimum bit pattern.
+
+9. **Linked signed INT minimum accepted**
+
+   If the fixture can add `c.c_int = -2147483648`, add the linked-side
+   mirror:
+
+   ```sql
+   SELECT c.c_id,
+          SUM(CASE WHEN c.c_int = -2147483648 THEN 1 ELSE 0 END) AS s
+   FROM v5_customer AS c
+   JOIN v5_orders AS o ON o.o_custkey = c.c_id
+   GROUP BY c.c_id;
+   ```
+
+   Expected: matches MySQL.  This is not a separate code path for
+   constant encoding, but it confirms linked-column register loading
+   still composes with the boundary literal.
 
 ## Non-goals
 
@@ -147,7 +253,7 @@ col-vs-const path.
 3. Correct `NdbDictionary::Column::Int` literal bounds in
    `encode_constant()`.
 4. Update `ronsql_cte_greatest_least_v5.test` and recorded result with
-   the coverage listed above.
+   the test plan above.
 5. Run the focused MTR:
 
    ```bash

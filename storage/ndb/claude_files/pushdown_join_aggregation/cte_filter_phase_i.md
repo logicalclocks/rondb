@@ -370,6 +370,24 @@ follow-ups in the embedded CASE col-vs-const path:
   the query uses DOUBLE.  Add explicit leaf FLOAT, leaf DOUBLE,
   literal-on-left, and INT boundary tests.
 
+#### I.20 — CTE lookup key coverage and rewrite validation (M)
+
+Detailed plan: `cte_filter_phase_i20.md`.
+
+Review of Phase I.16 found that the partial-key guard and rewrite use
+join-key count as a proxy for virtual CTE key coverage.  That is not
+strong enough: full-count joins can still bind the wrong CTE output
+columns or bind the right key columns in the wrong order relative to
+the CTE `GROUP BY`-derived virtual PK.
+
+This phase should add a shared helper that derives the ordered virtual
+CTE PK columns and classifies a join as exact ordered, reorderable,
+partial, or wrong-column.  `CTE_LOOKUP` emission should accept only
+valid key coverage, reordering keys to virtual-PK order if feasible or
+rejecting clearly.  The I.16 root rewrite should use the same helper
+and should also verify that the matched partial-key CTE join references
+the original root alias before demoting the original root under the CTE.
+
 ## Recommended next-pick heuristic
 
 When picking the next post-Phase-H feature work, sort the items
