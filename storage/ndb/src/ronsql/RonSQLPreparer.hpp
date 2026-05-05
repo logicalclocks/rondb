@@ -203,6 +203,12 @@ private:
   // query body — the outer SELECT uses m_main_scope; CTE bodies carry
   // their own scopes so they can be planned and emitted independently.
   struct QueryScope {
+    enum class MinMaxKind : uint8_t {
+      NONE = 0,
+      MIN_ASC,
+      MAX_DESC
+    };
+
     JoinPlan join_plan;
     ConditionalExpression* join_where_ce[MAX_SPJ_TREE_NODES];
     DynamicArray<CrossTableFilter> cross_table_where_filters;
@@ -225,6 +231,7 @@ private:
     DynamicArray<ConditionalExpression*> body_toplevel_conditions;
     DynamicArray<ScanConfig> body_scan_config_candidates;
     ScanConfig* body_scan_config = NULL;
+    MinMaxKind body_minmax_kind = MinMaxKind::NONE;
 
     QueryScope(ArenaMalloc* amalloc)
       : cross_table_where_filters(amalloc),
@@ -356,6 +363,12 @@ private:
   // `scope.body_scan_config->condition_handling_map`.
   void select_cte_body_scan_config(QueryScope& scope,
                                     ConditionalExpression* where_ce);
+  bool load_cte_body_indexes(QueryScope& scope,
+                             const NdbDictionary::Table* tab);
+  static bool minmax_index_source_type_supported(
+      const NdbDictionary::Column* col);
+  void select_cte_body_minmax_index(QueryScope& scope,
+                                     const CteDefinition* cte);
   void analyze_ctes();
   void build_cte_scopes();
   void resolve_columns_for_cte_scope(QueryScope& scope);

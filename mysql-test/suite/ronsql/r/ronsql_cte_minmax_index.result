@@ -1,0 +1,127 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+
+=== Test 1: scalar MAX over NOT NULL indexed column ===
+== Query ==
+WITH mx AS (SELECT MAX(val) AS m FROM ix_minmax)
+SELECT m FROM mx;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH mx AS (SELECT MAX(val) AS m FROM ix_minmax)
+SELECT m FROM mx|
+m
+90
+
+
+=== Test 2: scalar MIN over NOT NULL indexed column ===
+== Query ==
+WITH mn AS (SELECT MIN(val) AS m FROM ix_minmax)
+SELECT m FROM mn;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH mn AS (SELECT MIN(val) AS m FROM ix_minmax)
+SELECT m FROM mn|
+m
+10
+
+
+=== Test 3: scalar MAX without ordered index falls back ===
+== Query ==
+WITH mx AS (SELECT MAX(no_idx) AS m FROM ix_minmax)
+SELECT m FROM mx;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH mx AS (SELECT MAX(no_idx) AS m FROM ix_minmax)
+SELECT m FROM mx|
+m
+900
+
+
+=== Test 4: grouped MAX is not an I.10 scalar body ===
+== Query ==
+WITH mx AS (SELECT grp AS g, MAX(val) AS m
+FROM ix_minmax GROUP BY grp)
+SELECT g, m FROM mx;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH mx AS (SELECT grp AS g, MAX(val) AS m
+FROM ix_minmax GROUP BY grp)
+SELECT g, m FROM mx|
+g	m
+100	60
+200	70
+300	90
+400	80
+
+
+=== Test 5: two scalar MIN/MAX CTEs compose through cross join ===
+== Query ==
+WITH mx AS (SELECT MAX(val) AS max_v FROM ix_minmax),
+mn AS (SELECT MIN(val) AS min_v FROM ix_minmax)
+SELECT SUM(max_v) AS max_v, SUM(min_v) AS min_v FROM mx, mn;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH mx AS (SELECT MAX(val) AS max_v FROM ix_minmax),
+mn AS (SELECT MIN(val) AS min_v FROM ix_minmax)
+SELECT SUM(max_v) AS max_v, SUM(min_v) AS min_v FROM mx, mn|
+max_v	min_v
+90	10
+
+
+=== Test 6: nullable indexed column stays on safe fallback path ===
+== Query ==
+WITH mx AS (SELECT MAX(nullable_val) AS m FROM ix_minmax)
+SELECT m FROM mx;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH mx AS (SELECT MAX(nullable_val) AS m FROM ix_minmax)
+SELECT m FROM mx|
+m
+70
