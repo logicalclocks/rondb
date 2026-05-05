@@ -1,4 +1,24 @@
-# Phase I.9 — `scanIndex` inside a CTE materialisation subtree
+# Phase I.9 — `scanIndex` inside a CTE materialisation subtree (shipped)
+
+**Status:** shipped.  CTE bodies with WHERE bounds on an ordered
+indexed column now plan as `INDEX_SCAN + bounds` instead of
+`TABLE_SCAN + InterpretedCode filter`.  `select_cte_body_scan_config`
+runs per CTE body in `build_cte_scopes`, picks the highest-scoring
+ordered index, rewrites `cp.ops[0]` to `JoinOp::INDEX_SCAN`, and the
+new single-op CTE-body INDEX_SCAN emit branch issues `qb->scanIndex`
+with `NdbQueryIndexBound` plus a residual InterpretedCode filter for
+conjuncts the index couldn't consume.  Per-scope state lives on
+`QueryScope::body_indexes` / `body_toplevel_conditions` /
+`body_scan_config_candidates` / `body_scan_config`, separate from
+the main query's `m_indexes` / `m_toplevel_conditions` /
+`m_scan_config_candidates` / `m_scan_config`.  MTR coverage:
+`mysql-test/suite/ronsql/t/ronsql_cte_index_body.test` (equality
+bound, double-bounded range, half-open + residual filter,
+no-WHERE TABLE_SCAN regression).
+
+The original plan body follows.
+
+
 
 ## What testCteNdbApi.cpp Test 18 demonstrates
 

@@ -1,0 +1,152 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.9: scanIndex inside a CTE materialisation subtree.
+#
+# testCteNdbApi.cpp Test 18 demonstrates the kernel + NDB API
+# accept scanIndex as the materialisation root inside
+# beginCteSubtree...endCteSubtree.  This MTR exercises the SQL
+# trigger: a CTE body with WHERE bounds on an ordered indexed
+# column, which RonSQL now plans as INDEX_SCAN + bounds instead
+# of TABLE_SCAN + InterpretedCode filter.
+#
+# The plan/emit pipeline:
+#   - select_cte_body_scan_config picks an ordered index whose
+#     leading column matches a bound conjunct.
+#   - The single-op CTE-body emit branch (INDEX_SCAN) routes
+#     bound conjuncts to NdbQueryIndexBound and residual conjuncts
+#     to the InterpretedCode filter.
+#   - The readTuple(linked_pk) agg-leaf is unchanged from the
+#     TABLE_SCAN branch; the aggregator runs on the leaf as
+#     before.
+#
+# Tests cover:
+#   1. Single equality bound on indexed column.
+#   2. Range bound (BETWEEN-equivalent: col >= x AND col <= y).
+#   3. Half-open bound (col > x), residual filter on a non-indexed
+#      column composed in the same CTE body.
+#   4. CTE body with no WHERE — must still produce a valid CTE
+#      via the existing TABLE_SCAN branch (regression).
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE ix_orders (
+  o_id      INT NOT NULL,
+  o_grp     BIGINT NOT NULL,
+  o_amt     BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (o_id),
+  INDEX idx_grp (o_grp),
+  INDEX idx_amt (o_amt)
+) ENGINE=NDB;
+
+INSERT INTO ix_orders VALUES
+  (1, 100,  50),
+  (2, 100,  60),
+  (3, 200,  30),
+  (4, 200,  70),
+  (5, 300,  40),
+  (6, 300,  90),
+  (7, 400,  10),
+  (8, 400,  80);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: CTE body with equality bound on indexed column ===
+
+# CTE body filters o_grp = 200 via idx_grp.  Aggregator runs
+# only on the matched rows.  Equivalent of testCteNdbApi.cpp
+# Test 18's scanIndex-in-subtree shape, with a bound.
+let $QUERY=
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM ix_orders WHERE o_grp = 200 GROUP BY o_grp)
+SELECT k, total FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM ix_orders WHERE o_grp = 200 GROUP BY o_grp)
+SELECT k, total FROM stats|
+
+--echo
+--echo
+--echo === Test 2: CTE body with double-bounded range on indexed column ===
+
+# Range on idx_grp (200 <= o_grp <= 300).  Both bounds are
+# captured by the index.  Aggregator runs on the matching subset.
+let $QUERY=
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM ix_orders
+                WHERE o_grp >= 200 AND o_grp <= 300
+                GROUP BY o_grp)
+SELECT k, total FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM ix_orders
+                WHERE o_grp >= 200 AND o_grp <= 300
+                GROUP BY o_grp)
+SELECT k, total FROM stats|
+
+--echo
+--echo
+--echo === Test 3: half-open index bound + residual filter on another column ===
+
+# o_grp > 200 captured by idx_grp; o_amt > 30 stays in the
+# residual InterpretedCode filter (no compatible index match
+# on the LEADING column once the o_grp scoring beats idx_amt's).
+let $QUERY=
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM ix_orders
+                WHERE o_grp > 200 AND o_amt > 30
+                GROUP BY o_grp)
+SELECT k, total FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM ix_orders
+                WHERE o_grp > 200 AND o_amt > 30
+                GROUP BY o_grp)
+SELECT k, total FROM stats|
+
+--echo
+--echo
+--echo === Test 4: CTE body with no WHERE — TABLE_SCAN regression ===
+
+# No WHERE → select_cte_body_scan_config short-circuits and the
+# existing TABLE_SCAN single-op branch handles the body.  Verify
+# the new code path doesn't regress this baseline shape.
+let $QUERY=
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM ix_orders GROUP BY o_grp)
+SELECT k, total FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+                FROM ix_orders GROUP BY o_grp)
+SELECT k, total FROM stats|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE ix_orders;
+--enable_query_log

@@ -2236,6 +2236,206 @@ RonSQLPreparer::generate_scan_config_candidates()
   }
 }
 
+// Phase I.9: pick an ordered index for a single-op CTE body's root
+// scan, mirroring the main-query scan-config selection at
+// `plan_index_and_filter` but writing to per-scope state instead
+// of `m_indexes` / `m_toplevel_conditions` / `m_scan_config*`.
+//
+// On entry, `scope` has already been planned + column-resolved +
+// where-classified.  If the body has a single op whose root is a
+// real table with available ordered indexes, this function:
+//   1. Loads the source-table indexes into `scope.body_indexes`.
+//   2. Walks the body's WHERE for top-level AND conjuncts and
+//      stashes them in `scope.body_toplevel_conditions`.
+//   3. Generates candidate scan configs (one TABLE_SCAN candidate
+//      plus one per index that any conjunct can serve).
+//   4. Picks the highest-scoring candidate.
+//   5. If the chosen candidate uses a real index, rewrites
+//      `cp.ops[0].type = INDEX_SCAN` and `cp.ops[0].index = idx`
+//      so the emit branch below can recognise it.
+//
+// Bound-vs-residual routing for the emit step lives on
+// `scope.body_scan_config->condition_handling_map[i]`:
+// `-1` => apply conjunct as InterpretedCode filter; otherwise the
+// conjunct is consumed as an index-scan bound on column N.
+//
+// Quietly returns without rewriting anything for shapes the
+// optimiser doesn't yet handle (multi-op body, chained CTE,
+// no usable index, no Ndb connection at prepare time).
+void
+RonSQLPreparer::select_cte_body_scan_config(QueryScope& scope,
+                                             ConditionalExpression* where_ce)
+{
+  JoinPlan& plan = scope.join_plan;
+  if (plan.num_ops != 1) return;
+  if (plan.ops[0].type != JoinOp::TABLE_SCAN) return;
+  const NdbDictionary::Table* tab = plan.ops[0].table;
+  if (tab == NULL) return;
+  if (m_conf.ndb == NULL || m_dict == NULL) return;
+  if (where_ce == NULL) return;
+
+  // 1. Load this body's source-table indexes — same listIndexes +
+  //    schema-cache flow as load_single_table, just writing to
+  //    scope.body_indexes.
+  const char* db = m_conf.ndb->getDatabaseName();
+  const auto* cached = (m_conf.schema_cache && db)
+      ? m_conf.schema_cache->getIndexes(m_dict, tab, db, tab->getName())
+      : nullptr;
+  NdbDictionary::Dictionary::List index_list;
+  if (cached == nullptr) {
+    if (m_dict->listIndexes(index_list, *tab) != 0) {
+      // Treat as "no indexes available" — fall back to TABLE_SCAN.
+      return;
+    }
+  }
+  Uint32 idx_count = cached ? cached->size() : index_list.count;
+  for (Uint32 i = 0; i < idx_count; i++) {
+    const char* idx_name;
+    NdbDictionary::Object::Type idx_type;
+    NdbDictionary::Object::State idx_state;
+    if (cached) {
+      const auto& ci = (*cached)[i];
+      idx_name = ci.name.c_str();
+      idx_type = ci.type;
+      idx_state = ci.state;
+    } else {
+      NdbDictionary::Dictionary::List::Element& elem = index_list.elements[i];
+      idx_name = elem.name;
+      idx_type = (NdbDictionary::Object::Type)elem.type;
+      idx_state = elem.state;
+    }
+    if (idx_state != NdbDictionary::Object::StateOnline) continue;
+    if (idx_type != NdbDictionary::Object::OrderedIndex) continue;
+    const NdbDictionary::Index* index = m_dict->getIndex(idx_name, *tab);
+    if (index == NULL) continue;
+    if (index->getObjectStatus() !=
+        NdbDictionary::Object::Status::Retrieved) {
+      continue;
+    }
+    scope.body_indexes.push(index);
+  }
+  if (scope.body_indexes.size() == 0) return;
+
+  // 2. Flatten WHERE to top-level AND conjuncts.  Mirror
+  //    `collect_toplevel_conditions` but write to scope state.
+  ConditionalExpression* simplified = simplify_ce(where_ce, -1);
+  // Inline AND-flatten — the existing helper writes to
+  // m_toplevel_conditions; the per-scope shape uses local logic.
+  // Stack of nodes to expand; cap on top-level conjuncts is the
+  // same as the rest of RonSQL's WHERE flattening.
+  ConditionalExpression* stack[MAX_WHERE_CONJUNCTS];
+  Uint32 stack_top = 0;
+  stack[stack_top++] = simplified;
+  while (stack_top > 0) {
+    ConditionalExpression* node = stack[--stack_top];
+    if (node == NULL) continue;
+    if (node->op == T_AND) {
+      if (stack_top + 2 > MAX_WHERE_CONJUNCTS) return;
+      stack[stack_top++] = node->args.right;
+      stack[stack_top++] = node->args.left;
+    } else {
+      scope.body_toplevel_conditions.push(node);
+    }
+  }
+
+  // 3. Generate candidate scan configs.  TABLE_SCAN candidate
+  //    first (goodness=0) so it's always available as the
+  //    fallback.  Then one per ordered index, scored using the
+  //    same heuristic as the main scope.
+  Uint32 num_conds = scope.body_toplevel_conditions.size();
+  {
+    int* cmh = m_amalloc->alloc_exc<int>(num_conds == 0 ? 1 : num_conds);
+    for (Uint32 i = 0; i < num_conds; i++) cmh[i] = -1;
+    scope.body_scan_config_candidates.push(
+        ScanConfig { NULL, cmh, 0 });
+  }
+  if (num_conds == 0) {
+    // No WHERE — TABLE_SCAN is the only candidate, no INDEX_SCAN
+    // to choose, leave plan as TABLE_SCAN.
+    scope.body_scan_config = &scope.body_scan_config_candidates[0];
+    return;
+  }
+
+  for (Uint32 ix = 0; ix < scope.body_indexes.size(); ix++) {
+    const NdbDictionary::Index* index = scope.body_indexes[ix];
+    int* cmh = m_amalloc->alloc_exc<int>(num_conds);
+    for (Uint32 i = 0; i < num_conds; i++) cmh[i] = -1;
+    int goodness = 0;
+    Uint32 col_count = index->getNoOfColumns();
+    require_bug(col_count > 0, "Index appears to have no columns.");
+    bool later_columns_blocked = false;
+    for (Uint32 col_idx = 0;
+         col_idx < col_count && !later_columns_blocked;
+         col_idx++) {
+      const NdbDictionary::Column* column = index->getColumn(col_idx);
+      require_bug(column != NULL, "Index column object is NULL.");
+      const char* column_name = column->getName();
+      bool lbound_set = false, ubound_set = false;
+      for (Uint32 cond_idx = 0;
+           cond_idx < num_conds && !(lbound_set && ubound_set);
+           cond_idx++) {
+        ConditionalExpression* ce = scope.body_toplevel_conditions[cond_idx];
+        if (cmh[cond_idx] != -1) continue;
+        TokenKind op = ce->op;
+        if (op != T_EQUALS && op != T_GE && op != T_GT &&
+            op != T_LE && op != T_LT) continue;
+        ConditionalExpression* left = ce->args.left;
+        if (left == NULL || left->op != T_IDENTIFIER) continue;
+        const char* cond_col_name = m_columns[left->col_idx].c_str();
+        if (strcmp(column_name, cond_col_name) != 0) {
+          // First-mismatch on this index column blocks later cols.
+          later_columns_blocked = true;
+          continue;
+        }
+        bool wants_lbound = op == T_EQUALS || op == T_GE || op == T_GT;
+        bool wants_ubound = op == T_EQUALS || op == T_LE || op == T_LT;
+        if ((wants_lbound && lbound_set) || (wants_ubound && ubound_set)) {
+          continue;
+        }
+        lbound_set = lbound_set || wants_lbound;
+        ubound_set = ubound_set || wants_ubound;
+        later_columns_blocked = (op != T_EQUALS);
+        cmh[cond_idx] = (int)col_idx;
+      }
+      if (lbound_set || ubound_set) {
+        int points = 100;
+        if (column->getType() != NdbDictionary::Column::Type::Varchar &&
+            column->getType() != NdbDictionary::Column::Type::Longvarchar) {
+          points += 10;
+        }
+        if (lbound_set && ubound_set) points *= 10;
+        if (!later_columns_blocked) points *= 100;
+        goodness += points;
+      }
+    }
+    if (goodness > 0) {
+      if (strcmp(index->getName(), "PRIMARY") == 0) goodness++;
+      scope.body_scan_config_candidates.push(
+          ScanConfig { index, cmh, goodness });
+    }
+  }
+
+  // 4. Pick highest-scoring candidate.
+  Uint32 chosen = 0;
+  for (Uint32 i = 1; i < scope.body_scan_config_candidates.size(); i++) {
+    if (scope.body_scan_config_candidates[i].goodness >
+        scope.body_scan_config_candidates[chosen].goodness) {
+      chosen = i;
+    }
+  }
+  scope.body_scan_config = &scope.body_scan_config_candidates[chosen];
+
+  // 5. If the winner is a real index, rewrite the planner's first
+  //    op so the emit dispatch sees JoinOp::INDEX_SCAN.  (Leaving
+  //    cp.ops[0].type as TABLE_SCAN is the correct fallback when
+  //    no useful index was found — body_scan_config->index stays
+  //    NULL and the existing single-op TABLE_SCAN emit still runs.)
+  if (scope.body_scan_config->index != NULL) {
+    plan.ops[0].type = JoinOp::INDEX_SCAN;
+    plan.ops[0].index = scope.body_scan_config->index;
+  }
+}
+
 /*
  * Walk a CE tree and throw if T_EXISTS is found.
  * Used after decorrelation to catch EXISTS inside OR (unsupported).
@@ -3266,6 +3466,12 @@ RonSQLPreparer::build_cte_scopes()
     resolve_columns_for_cte_scope(*scope);
     classify_where_by_table(*scope, cte->stmt->where_expression);
     promote_left_to_inner_for_where(*scope);
+    // Phase I.9: try to convert this CTE body's root scan into an
+    // ordered index scan when the body's WHERE has bounds on an
+    // indexed column.  Operates only on single-op real-table bodies;
+    // chained CTEs (CTE_SCAN root) and multi-table bodies fall
+    // through unchanged.
+    select_cte_body_scan_config(*scope, cte->stmt->where_expression);
     m_cte_scopes.push(scope);
 
     if (prev != NULL) {
@@ -5146,6 +5352,141 @@ RonSQLPreparer::execute_join()
         cteOpDefs[0] = qb->scanTable(srcTab, &rootOpts);
         require_run(cteOpDefs[0] != NULL,
                     "Failed to create CTE body scan root.");
+        const NdbQueryOperand* keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+        int nkeys = srcTab->getNoOfPrimaryKeys();
+        for (int k = 0; k < nkeys; k++) {
+          const char* pk_name = srcTab->getPrimaryKey(k);
+          keys[k] = qb->linkedValue(cteOpDefs[0], pk_name);
+          require_run(keys[k] != NULL,
+                      "Failed to create CTE body self-join linked key.");
+        }
+        keys[nkeys] = nullptr;
+        NdbQueryOptions leafOpts;
+        leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+        require_run(leafOpts.setAggregation(*cteAgg) == 0,
+                    "Failed to attach aggregator to CTE body leaf.");
+        cteOpDefs[1] = qb->readTuple(srcTab, keys, &leafOpts);
+        require_run(cteOpDefs[1] != NULL,
+                    "Failed to create CTE body self-join leaf.");
+      } else if (cp.num_ops == 1 && cp.ops[0].type == JoinOp::INDEX_SCAN) {
+        // Phase I.9: single-table CTE body via ordered index.  Same
+        // self-join materialisation pattern as the TABLE_SCAN branch,
+        // but use scanIndex(idx, srcTab, &bound) for the root and
+        // route bound conjuncts to NdbQueryIndexBound, residual
+        // conjuncts to the InterpretedCode filter.  Bound vs residual
+        // routing comes from select_cte_body_scan_config's per-scope
+        // condition_handling_map.
+        const NdbDictionary::Table* srcTab = cp.ops[0].table;
+        const NdbDictionary::Index* idx = cp.ops[0].index;
+        require_run(srcTab != NULL,
+                    "CTE body INDEX_SCAN root has no physical table.");
+        require_run(idx != NULL,
+                    "CTE body INDEX_SCAN root has no index.");
+        require_run(cs.body_scan_config != NULL &&
+                    cs.body_scan_config->index == idx,
+                    "CTE body INDEX_SCAN missing scan-config metadata.");
+
+        NdbQueryOptions rootOpts;
+
+        // Build NdbQueryIndexBound key arrays.  Two independent
+        // pointer chains terminated by nullptr — one for low
+        // bounds, one for high.  select_cte_body_scan_config
+        // guarantees consecutive leading-column coverage starting
+        // at column 0 (no gaps): equality-bound columns sit at
+        // the head of both chains; an optional half-open range
+        // can extend exactly one further column on either side.
+        // lowIncl / highIncl reflect the inclusivity of the LAST
+        // entry on each chain (NdbQueryIndexBound uses one bool
+        // per side, applied uniformly).
+        Uint32 idx_col_count = idx->getNoOfColumns();
+        const NdbQueryOperand* lowKeys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+        const NdbQueryOperand* highKeys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+        Uint32 lowFill = 0, highFill = 0;
+        bool lowIncl = true, highIncl = true;
+        for (Uint32 k = 0; k < idx_col_count; k++) {
+          const NdbDictionary::Column* idx_col = idx->getColumn(k);
+          ndbrequire(idx_col != NULL);
+          const NdbDictionary::Column* tab_col =
+              srcTab->getColumn(idx_col->getName());
+          require_run(tab_col != NULL,
+                      "CTE body INDEX_SCAN: index column missing on table.");
+
+          const NdbQueryOperand* low_op = NULL;
+          const NdbQueryOperand* high_op = NULL;
+          bool k_low_incl = true, k_high_incl = true;
+          for (Uint32 ci = 0; ci < cs.body_toplevel_conditions.size(); ci++) {
+            if ((Uint32)cs.body_scan_config->condition_handling_map[ci]
+                != k) continue;
+            ConditionalExpression* ce = cs.body_toplevel_conditions[ci];
+            ConditionalExpression* right_const = ce->args.right;
+            raw_value rv = encode_constant(right_const, tab_col);
+            const NdbQueryOperand* operand = qb->constValue(rv.val, rv.len);
+            require_run(operand != NULL,
+                        "Failed to create const value for CTE body bound.");
+            TokenKind op = ce->op;
+            if (op == T_EQUALS || op == T_GE || op == T_GT) {
+              low_op = operand;
+              if (op == T_GT) k_low_incl = false;
+            }
+            if (op == T_EQUALS || op == T_LE || op == T_LT) {
+              high_op = operand;
+              if (op == T_LT) k_high_incl = false;
+            }
+          }
+          if (low_op == NULL && high_op == NULL) break;
+          if (low_op != NULL) {
+            lowKeys[lowFill++] = low_op;
+            lowIncl = k_low_incl;
+          }
+          if (high_op != NULL) {
+            highKeys[highFill++] = high_op;
+            highIncl = k_high_incl;
+          }
+          // A half-open last column truncates further coverage on
+          // both sides — select_cte_body_scan_config already
+          // enforces this via later_columns_blocked, but make the
+          // emit-side invariant explicit too.
+          if (low_op == NULL || high_op == NULL) break;
+        }
+        lowKeys[lowFill] = nullptr;
+        highKeys[highFill] = nullptr;
+
+        // Residual conjuncts (cmh[i] == -1) go through the
+        // InterpretedCode filter, mirroring the TABLE_SCAN branch.
+        NdbInterpretedCode rootCode(srcTab);
+        bool has_residual = false;
+        ConditionalExpression* residual_root = NULL;
+        for (Uint32 ci = 0; ci < cs.body_toplevel_conditions.size(); ci++) {
+          if (cs.body_scan_config->condition_handling_map[ci] != -1) continue;
+          ConditionalExpression* ce = cs.body_toplevel_conditions[ci];
+          if (residual_root == NULL) {
+            residual_root = ce;
+          } else {
+            ConditionalExpression* combined =
+                m_amalloc->alloc_exc<ConditionalExpression>(1);
+            combined->op = T_AND;
+            combined->args.left = residual_root;
+            combined->args.right = ce;
+            residual_root = combined;
+          }
+          has_residual = true;
+        }
+        if (has_residual) {
+          NdbScanFilter filter(&rootCode);
+          filter.setSqlCmpSemantics();
+          filter.begin(NdbScanFilter::AND);
+          apply_filter(&filter, cs, residual_root);
+          filter.end();
+          rootCode.finalise();
+          rootOpts.setInterpretedCode(rootCode);
+        }
+
+        NdbQueryIndexBound bound(lowKeys, lowIncl, highKeys, highIncl);
+        cteOpDefs[0] = qb->scanIndex(idx, srcTab, &bound, &rootOpts);
+        require_run(cteOpDefs[0] != NULL,
+                    "Failed to create CTE body index-scan root.");
+
+        // readTuple(linked_pk) leaf, identical to the TABLE_SCAN branch.
         const NdbQueryOperand* keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
         int nkeys = srcTab->getNoOfPrimaryKeys();
         for (int k = 0; k < nkeys; k++) {

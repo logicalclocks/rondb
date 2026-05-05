@@ -192,6 +192,12 @@ private:
     Uint32 parent_table_idx;  // table index of the "outer" side
   };
 
+  // Forward decl so QueryScope can carry a chosen scan config pointer.
+  // Phase I.9: CTE bodies need per-scope scan-config state; the existing
+  // m_scan_config_candidates / m_scan_config / m_indexes fields belong
+  // to the main query and would corrupt across CTEs if reused.
+  class ScanConfig;
+
   // QueryScope groups the per-join-plan state that the planner, filter
   // compiler and NdbQueryBuilder emit path all read. One instance per
   // query body — the outer SELECT uses m_main_scope; CTE bodies carry
@@ -206,7 +212,25 @@ private:
     const NdbDictionary::Table* table = NULL;
     AggregationAPICompiler* agg = NULL;
 
-    QueryScope(ArenaMalloc* amalloc) : cross_table_where_filters(amalloc) {}
+    // Phase I.9: per-CTE-body scan-config state.  `body_indexes`,
+    // `body_toplevel_conditions`, and `body_scan_config_candidates`
+    // mirror the main-query members `m_indexes`,
+    // `m_toplevel_conditions`, and `m_scan_config_candidates`, but
+    // scoped to this CTE body so multi-CTE queries don't trample
+    // each other.  `body_scan_config` is the chosen candidate
+    // (NULL for the main scope or for CTE bodies where no useful
+    // index was found, in which case the body falls back to the
+    // existing TABLE_SCAN single-op self-join branch).
+    DynamicArray<const NdbDictionary::Index*> body_indexes;
+    DynamicArray<ConditionalExpression*> body_toplevel_conditions;
+    DynamicArray<ScanConfig> body_scan_config_candidates;
+    ScanConfig* body_scan_config = NULL;
+
+    QueryScope(ArenaMalloc* amalloc)
+      : cross_table_where_filters(amalloc),
+        body_indexes(amalloc),
+        body_toplevel_conditions(amalloc),
+        body_scan_config_candidates(amalloc) {}
   };
   QueryScope m_main_scope;
 
@@ -323,6 +347,15 @@ private:
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();
+  // Phase I.9: per-CTE-body version of the scan-config selection
+  // pipeline.  Loads the body's source-table indexes, walks the
+  // body's WHERE for top-level AND conjuncts, scores candidate
+  // index plans, and (if a usable ordered index is found) flips
+  // the planner's first JoinOp from TABLE_SCAN to INDEX_SCAN.
+  // Bound vs residual filter routing lives in
+  // `scope.body_scan_config->condition_handling_map`.
+  void select_cte_body_scan_config(QueryScope& scope,
+                                    ConditionalExpression* where_ce);
   void analyze_ctes();
   void build_cte_scopes();
   void resolve_columns_for_cte_scope(QueryScope& scope);
