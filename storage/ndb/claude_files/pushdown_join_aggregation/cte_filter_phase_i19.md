@@ -38,51 +38,99 @@ col-vs-const path.
 
    Proposed implementation:
 
-   - In the per-atom loop, call `simplify_ce(atom, -1)` once.
-   - Store the simplified atom in `atoms[a]` or in a parallel
-     `simplified_atoms` array.
-   - Use that same simplified atom in both the word-count pre-pass and
-     the emit pass.
-   - Keep the existing RHS simplification only if it is still needed
-     after whole-atom simplification; otherwise remove the nested call
-     to avoid doing duplicate work.
+   - **Order:** flatten the AND / OR tree into the atoms list first,
+     then simplify each leaf atom.  Simplification runs per leaf, not
+     on the AND / OR tree, so it cannot disturb the DNF / OR
+     flattening that has already happened.
+   - In the per-atom loop, call
+     `simplify_ce(atoms[a], /*maxdepth=*/-1)` once.  `-1` is the
+     "unlimited depth" convention used by every other call site in
+     this file (see `RonSQLPreparer.cpp:7950`); `simplify_ce` returns
+     a possibly-new `ConditionalExpression*` allocated on
+     `m_amalloc`, it does not mutate the input.
+   - Overwrite `atoms[a]` with the returned pointer.  No parallel
+     `simplified_atoms` array — keeping two views of the same data is
+     a footgun for the second pass.  The original AST is still
+     reachable from the caller's root if anything else needs it.
+   - Use the rewritten `atoms[a]` in both the word-count pre-pass and
+     the emit pass.  Both passes MUST see byte-identical input,
+     otherwise emitted code length and reserved buffer length can
+     diverge.  This is why simplification has to run before the
+     pre-pass, not between them.
+   - Drop the existing nested RHS-only simplify call.  Whole-atom
+     simplification subsumes it, so leaving the inner call in place
+     just doubles the work and risks the two simplifies disagreeing
+     on output if `simplify_ce` is ever extended.
 
-   Required checks:
+   Required checks after simplification, in this order:
 
-   - The simplified atom must still be one of `=`, `!=`, `<`, `<=`,
-     `>`, `>=`.
-   - The simplified LHS must be `T_IDENTIFIER`; otherwise reject with
-     the existing clean "CASE condition atom" unsupported-shape error,
-     not an assert.
-   - AND / OR flattening should continue to work.  Whole-atom
-     simplification is per flattened atom, not on the complete AND / OR
-     tree, so it should not change the existing DNF handling.
+   1. **Constant-fold outcome.**  `simplify_ce` can collapse a
+      comparison whose both sides are constants into a single
+      `T_TRUE` / `T_FALSE` literal (see the constant-folding arms
+      around `RonSQLPreparer.cpp:8127`).  Handle this explicitly:
+      - `T_TRUE` atom inside an AND group: drop the atom from the
+        list (it is the AND identity).  If the AND list becomes
+        empty, the whole CASE condition is unconditionally true —
+        emit the THEN branch with no test.
+      - `T_FALSE` atom inside an AND group: the whole AND group is
+        false — drop the entire group from the OR list.
+      - `T_TRUE` atom standing alone (or as a single OR group):
+        unconditionally true CASE branch.
+      - `T_FALSE` atom standing alone: unconditionally false CASE
+        branch — emit the ELSE branch directly, skip the WHEN.
+      All four cases reduce to a one-time fold during the pre-pass.
+      No new opcode, no runtime cost.
+   2. The simplified atom (after the constant-fold step above) must
+      be one of `=`, `!=`, `<`, `<=`, `>`, `>=`.
+   3. The simplified LHS must be `T_IDENTIFIER`; otherwise reject
+      with the existing clean "CASE condition atom" unsupported-shape
+      error, not an assert.
 
-2. **Fix signed INT literal bounds in `encode_constant()`**
+2. **Fix signed integer literal bounds in `encode_constant()` for
+   every signed width**
 
-   The current `NdbDictionary::Column::Int` bounds are off by one:
+   The same off-by-one bug almost certainly exists on every signed
+   integer width, because the bound table was written by the same
+   hand.  Concretely, audit and fix all five widths:
 
-   ```cpp
-   min = -2147483647LL;
-   max =  2147483648LL;
-   ```
+   | Type        | Wrong bounds (suspected)              | Correct bounds                          |
+   |-------------|----------------------------------------|------------------------------------------|
+   | `Tinyint`   | `-127`         …  `+128`               | `-128`         …  `+127`                 |
+   | `Smallint`  | `-32767`       …  `+32768`             | `-32768`       …  `+32767`               |
+   | `Mediumint` | `-8388607`     …  `+8388608`           | `-8388608`     …  `+8388607`             |
+   | `Int`       | `-2147483647`  …  `+2147483648`        | `-2147483648`  …  `+2147483647`          |
+   | `Bigint`    | `-9223372036854775807` … `+9223372036854775808` | `-9223372036854775808` … `+9223372036854775807` |
 
-   The valid SQL / NDB signed INT range is:
+   The first four columns are known wrong from the v3b review; the
+   `Bigint` row needs to be confirmed by reading `encode_constant()`
+   directly.  If `Bigint` is correct, drop it from the table and note
+   that explicitly.
 
-   ```cpp
-   min = -2147483648LL;
-   max =  2147483647LL;
-   ```
+   Consequences today, per width:
 
-   Consequences today:
+   - The true minimum (`INT_MIN` etc.) can be rejected even though it
+     is a valid SQL / NDB literal.
+   - One-past-max (`INT_MAX + 1`) can be accepted, then encoded into N
+     bytes as the signed minimum bit pattern.  This is the more
+     dangerous direction — the parser silently lets a too-large
+     literal through and the kernel sees the wrong value.
 
-   - `-2147483648` can be rejected even though it is valid.
-   - `2147483648` can be accepted, then encoded into four bytes as
-     `0x80000000`, which is the signed INT minimum bit pattern.
+   Two implementation notes:
 
-   This is pre-existing, but v3b's CASE-local negative literal folding
-   makes the boundary reachable from embedded CASE tests, so it belongs
-   in this follow-up.
+   - `Bigint`'s correct max (`+9223372036854775807`) is `INT64_MAX`,
+     and the wrong max (`+9223372036854775808`) is one above
+     `INT64_MAX` and therefore not even representable as `int64_t`.
+     The bound check has to use the correct types — `int64_t` for the
+     min and `uint64_t` for the max comparison (or just use
+     `INT64_MIN` / `INT64_MAX` from `<cstdint>`).
+   - For unsigned widths (`Tinyunsigned` … `Bigunsigned`) the same
+     pass should also confirm `min == 0` and `max == 2^N - 1`, but
+     these are less likely to have an off-by-one because the lower
+     bound is 0.
+
+   v3b's CASE-local negative literal folding makes these boundaries
+   reachable from embedded CASE tests, which is what makes I.19 the
+   right place to fix them.
 
 3. **Fix and extend v3b MTR coverage**
 
@@ -185,12 +233,18 @@ RonSQL rejection tests.
    simplification still folds negative integer constants used by the
    v3b linked-float path.
 
-### Signed INT boundary coverage
+### Signed integer boundary coverage
 
-7. **Leaf signed INT minimum accepted**
+Cover every signed width that section 2 fixes.  Add the matching
+nullable / signed-minimum fixture rows so MIN can be exercised end to
+end.  Each width gets a "minimum accepted" pair (leaf and linked) and
+a "one-past-max rejected" leaf test.
 
-   Ensure the fixture contains at least one `o.o_int =
-   -2147483648`.  Then run:
+7. **Leaf signed minimums accepted**
+
+   Five queries, one per signed width.  `o_tinyint = -128`,
+   `o_smallint = -32768`, `o_mediumint = -8388608`,
+   `o_int = -2147483648`, `o_bigint = -9223372036854775808`:
 
    ```sql
    SELECT c.c_id,
@@ -200,10 +254,14 @@ RonSQL rejection tests.
    GROUP BY c.c_id;
    ```
 
-   Expected: matches MySQL.  This proves `encode_constant()` accepts
-   the true signed INT minimum.
+   Same shape for the other four widths.  Expected: matches MySQL.
+   Proves `encode_constant()` accepts the true signed minimum on
+   every width.
 
-8. **Leaf signed INT positive overflow rejected**
+8. **Leaf signed positive overflow rejected**
+
+   Five queries, one per signed width: `+128`, `+32768`, `+8388608`,
+   `+2147483648`, `+9223372036854775808`:
 
    ```sql
    SELECT c.c_id,
@@ -213,13 +271,18 @@ RonSQL rejection tests.
    GROUP BY c.c_id;
    ```
 
-   Expected: clean RonSQL permanent error before execution.  The value
-   must not be encoded as the signed INT minimum bit pattern.
+   Same shape for the other four widths.  Expected: clean RonSQL
+   permanent error before execution.  The value must not be encoded
+   as the signed minimum bit pattern.  For `Bigint` the parser may
+   reject the literal even before reaching `encode_constant` since
+   `+9223372036854775808` is unrepresentable as `int64_t` — that is
+   acceptable as long as the rejection is clean.
 
-9. **Linked signed INT minimum accepted**
+9. **Linked signed minimums accepted**
 
-   If the fixture can add `c.c_int = -2147483648`, add the linked-side
-   mirror:
+   Mirror Test 7 against the linked side.  Add fixture columns
+   `c.c_tinyint`, `c.c_smallint`, `c.c_mediumint`, `c.c_int`,
+   `c.c_bigint` populated with the corresponding minima:
 
    ```sql
    SELECT c.c_id,
@@ -229,9 +292,30 @@ RonSQL rejection tests.
    GROUP BY c.c_id;
    ```
 
-   Expected: matches MySQL.  This is not a separate code path for
-   constant encoding, but it confirms linked-column register loading
-   still composes with the boundary literal.
+   Same shape for the other four widths.  Expected: matches MySQL.
+   This is not a separate code path for constant encoding but it
+   confirms linked-column register loading composes with the
+   boundary literal on every signed sub-Bigint width — i.e., that
+   v5's `READ_LINKED_COLUMN_TO_REG` zero-extension does not corrupt
+   the comparison when the boundary literal is involved.
+
+10. **Literal-on-left + linked sub-Bigint signed**
+
+    Combines section 1's literal-on-left normalisation with v5's
+    linked sub-Bigint zero-extension path:
+
+    ```sql
+    SELECT c.c_id,
+           SUM(CASE WHEN -1 > c.c_smallint THEN 1 ELSE 0 END) AS s
+    FROM v5_customer AS c
+    JOIN v5_orders AS o ON o.o_custkey = c.c_id
+    GROUP BY c.c_id;
+    ```
+
+    Expected: matches MySQL.  Whole-atom simplify swaps to
+    `c.c_smallint < -1`; the linked-side sub-Bigint zero-extension
+    must not turn the negative `c.c_smallint` value into a large
+    positive register value before the compare.
 
 ## Non-goals
 
@@ -244,24 +328,51 @@ RonSQL rejection tests.
 
 ## Implementation checklist
 
-1. Update `RonSQLPreparer::generate_embedded_condition()` to simplify
-   each flattened atom before side resolution and reuse the simplified
-   atom for emission.
-2. Replace assertion-only LHS assumptions with a clear permanent RonSQL
-   rejection if the simplified atom is not column-vs-column or
-   column-vs-constant.
-3. Correct `NdbDictionary::Column::Int` literal bounds in
-   `encode_constant()`.
-4. Update `ronsql_cte_greatest_least_v5.test` and recorded result with
-   the test plan above.
-5. Run the focused MTR:
+1. In `RonSQLPreparer::generate_embedded_condition()`, after the
+   AND / OR flattening already produces the per-leaf `atoms[]` list
+   and BEFORE either the word-count pre-pass or the emit pass runs,
+   call `simplify_ce(atoms[a], -1)` and overwrite `atoms[a]` in
+   place with the returned pointer.  Drop the existing nested
+   RHS-only simplify call.
+2. Add the constant-fold handling described in section 1: drop
+   `T_TRUE` AND-conjuncts, drop AND groups containing a `T_FALSE`,
+   short-circuit standalone `T_TRUE` / `T_FALSE` to direct THEN /
+   ELSE emission.  Run this fold once during the pre-pass so the
+   word count and the emit pass see identical input.
+3. Replace assertion-only LHS assumptions with a clear permanent
+   RonSQL rejection if the simplified atom is not column-vs-column
+   or column-vs-constant.
+4. Audit `encode_constant()` and correct the literal bounds for
+   every signed integer width (`Tinyint`, `Smallint`, `Mediumint`,
+   `Int`, and `Bigint` if confirmed wrong).  Use `INT*_MIN` /
+   `INT*_MAX` constants from `<cstdint>` rather than open-coded
+   literals; this also makes the `Bigint` case readable.  Spot-check
+   the unsigned widths while the file is open.
+5. Update `ronsql_cte_greatest_least_v5.test` and recorded result
+   with the test plan above.  Add the corresponding fixture columns
+   and rows for the signed-integer boundary tests on both
+   `v5_customer` and `v5_orders`.
+6. Rebuild the touched binaries before running MTR:
 
    ```bash
+   cd debug_build && make -j$(sysctl -n hw.ncpu) ronsql_cli rdrs2
+   ```
+
+7. Run the focused MTR:
+
+   ```bash
+   cd debug_build/mysql-test
    ./mtr --suite=ronsql ronsql_cte_greatest_least_v5
    ```
 
-6. Run the broader RonSQL / pushdown aggregation regression set used
-   for the surrounding Phase I.5 work.
+8. Run the regression suites the rest of Phase I.5 / Phase I.9 used:
+
+   ```bash
+   ./mtr --suite=ronsql
+   ./mtr --suite=ndb_push_agg
+   ```
+
+   Confirm zero regressions before committing.
 
 ## Expected outcome
 
