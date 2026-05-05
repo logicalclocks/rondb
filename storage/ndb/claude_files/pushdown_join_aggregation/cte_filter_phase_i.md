@@ -169,14 +169,37 @@ MTR coverage: `mysql-test/suite/ronsql/t/ronsql_cte_root_lookup.test`
 (single-PK lookupCte, multi-PK composite, partial-key fallback,
 no-WHERE regression).
 
-#### I.8 — `readTuple` main root + `lookupCte` child (M)
+#### I.8 — `readTuple` main root + `lookupCte` child, no aggregation (M) — shipped
 
-testCteNdbApi Test 17.  Pattern is "PK lookup on real table joined
-to CTE by foreign key".  RonSQL today emits `readTuple` as root
-correctly, but the planner's child dispatch may not pick
-`lookupCte` for a CTE join under a PK-rooted parent.  Verify by
-running the existing PK-join shape with a CTE child and check
-which child op the planner emits.
+The original blurb framed this as a planner coverage check, but the
+plan/emit sides already produced the right shape.  The actual gap
+was RonSQL's "aggregate query only" assumption: any join query
+without aggregation in the outer SELECT hit the "Not an aggregate
+query" rejection unless the narrow Phase E.3 single-CTE projection
+carve-out matched.
+
+Phase doc: `cte_filter_phase_i8.md`.  Three RonSQLPreparer.cpp
+edits:
+- Front-end gate accepts `FROM <real_table> JOIN <cte> ON ...`
+  projection-only when there's exactly one AST join entry whose
+  target name resolves to a CTE.
+- `emit_child_ops` invocation no longer gated on
+  `m_is_aggregate_query` — the aggregator-attach blocks inside it
+  are already null-guarded so passing nullptr no-ops naturally.
+- `execute_passthrough_drain` rewritten for multi-op:
+  pre-registers all virt-table columns on each CTE op in attrId
+  order (lookupCte/scanCte hardcode the kernel emit to send all
+  numResultCols cols 0..N-1), then per-output dispatches getValue
+  on the right `NdbQueryOperation` via `column_table_idx`.  TSV
+  header emission deferred until first row arrives so empty
+  results match mysql client's no-output behaviour.
+
+MTR: `mysql-test/suite/ronsql/t/ronsql_cte_pk_join.test` (basic
+Test 17 shape, body-WHERE composition, PK-no-match empty result).
+
+Out of scope (each its own follow-up): `FROM cte JOIN real_table`
+direction, multi-CTE joins in projection-only queries, ORDER BY /
+LIMIT in no-aggregate.
 
 #### I.9 — `scanIndex` inside CTE materialization subtree (M)
 

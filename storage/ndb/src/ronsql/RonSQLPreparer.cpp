@@ -5372,6 +5372,59 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   NdbRecAttr** attrs =
       m_amalloc->alloc_exc<NdbRecAttr*>(num_cols);
 
+  // Register NdbRecAttrs per main op.  Two constraints from the NDB
+  // API receiver layer:
+  //   (a) NdbReceiver::handle_rec_attrs walks the m_firstRecAttr list
+  //       sequentially and matches each entry's attrId against the
+  //       incoming row's attrId stream — entries must be registered
+  //       in the same order the kernel emits.
+  //   (b) For CTE ops, lookupCte/scanCte hardcode the kernel emit to
+  //       send ALL numResultCols virt-table columns (attrIds 0..N-1)
+  //       per row, regardless of which the SELECT projects.  So we
+  //       must register every virt-table column up front in attrId
+  //       order, otherwise packed_rowsize undersizes the buffer
+  //       (NdbReceiverBuffer::allocRow assertion) AND the row's
+  //       attrIds won't line up with our NdbRecAttrs (handle_rec_attrs
+  //       abort).  testCteNdbApi.cpp Test 17 demonstrates the same
+  //       requirement — it always reads BOTH grp and total off the
+  //       CTE child, in declaration order.
+  // For real-table ops, getValue populates the kernel's per-op
+  // AttrInfo program in registration order, so the kernel emits in
+  // the same order — registering only the SELECT'd columns (in any
+  // order) is fine.
+  //
+  // Per-CTE-op map of cte_col_idx → NdbRecAttr*; we look up the right
+  // entry per output afterwards.
+  NdbRecAttr*** cteAttrsByCol =
+      m_amalloc->alloc_exc<NdbRecAttr**>(numMainOps);
+  for (Uint32 dop = 0; dop < numMainOps; dop++) cteAttrsByCol[dop] = NULL;
+
+  for (Uint32 dop = 0; dop < numMainOps; dop++) {
+    const JoinOp& djop = m_main_scope.join_plan.ops[dop];
+    if (djop.type != JoinOp::CTE_LOOKUP &&
+        djop.type != JoinOp::CTE_SCAN) continue;
+    require_run(cteVirtualTables != NULL && cteVirtualTables[dop] != NULL,
+                "Pass-through drain: missing CTE virt-table for op.");
+    NdbQueryOperation* dopOp =
+        query->getQueryOperation(numCteSubtreeOps + dop);
+    require_run(dopOp != NULL,
+                "Pass-through drain: failed to resolve CTE-op handle.");
+    Uint32 vtNcols = (Uint32)cteVirtualTables[dop]->getNoOfColumns();
+    cteAttrsByCol[dop] = m_amalloc->alloc_exc<NdbRecAttr*>(vtNcols);
+    for (Uint32 cte_col = 0; cte_col < vtNcols; cte_col++) {
+      const NdbDictionary::Column* vcol =
+          cteVirtualTables[dop]->getColumn(cte_col);
+      ndbrequire(vcol != NULL);
+      NdbRecAttr* ra = dopOp->getValue(vcol);
+      require_run(ra != NULL,
+                  "Pass-through drain: CTE column getValue() failed.");
+      cteAttrsByCol[dop][cte_col] = ra;
+    }
+  }
+
+  // Real-table outputs — register in SELECT declaration order.  Also
+  // build attrs[] for both real-table and CTE outputs (CTE entries
+  // resolve via cteAttrsByCol).
   Uint32 i = 0;
   for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
        o = o->next, i++) {
@@ -5389,45 +5442,51 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
 
     const JoinOp& jop = m_main_scope.join_plan.ops[plan_op_idx];
     if (jop.type == JoinOp::CTE_LOOKUP || jop.type == JoinOp::CTE_SCAN) {
-      // CTE column: column_attrId_map holds the position in the
-      // CTE output list; build_cte_virtual_tables adds virt-table
-      // columns in CTE-output declaration order, so the virt-table
-      // column index equals that position.
       Uint32 cte_col_idx =
           (Uint32)m_main_scope.column_attrId_map[col_idx];
-      require_run(cteVirtualTables != NULL &&
-                  cteVirtualTables[plan_op_idx] != NULL,
-                  "Pass-through drain: missing CTE virt-table for output "
-                  "column.");
-      const NdbDictionary::Column* vcol =
-          cteVirtualTables[plan_op_idx]->getColumn(cte_col_idx);
-      require_run(vcol != NULL,
-                  "Pass-through drain: virt-table column lookup failed.");
-      attrs[i] = op->getValue(vcol);
+      ndbrequire(cteAttrsByCol[plan_op_idx] != NULL);
+      attrs[i] = cteAttrsByCol[plan_op_idx][cte_col_idx];
+      require_run(attrs[i] != NULL,
+                  "Pass-through drain: CTE NdbRecAttr lookup failed.");
     } else {
-      // Real-table column: column_map[col_idx] is the source
-      // NdbDictionary::Column descriptor (populated in load_join).
       const NdbDictionary::Column* col = m_main_scope.column_map[col_idx];
       require_run(col != NULL,
                   "Pass-through drain: real-table column descriptor "
                   "missing.");
       attrs[i] = op->getValue(col);
+      require_run(attrs[i] != NULL,
+                  "Pass-through drain: real-table getValue() failed.");
     }
-    require_run(attrs[i] != NULL,
-                "Pass-through drain: getValue() failed.");
   }
 
   require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
               "Failed to execute transaction (pass-through).");
 
-  // Header in JSON mode emits '['; in TEXT mode emits column names if
-  // m_tsv_headers is set.  Done before any rows.
-  m_resultprinter->print_passthrough_header(
-      const_cast<const NdbRecAttr* const*>(attrs), num_cols, m_conf.out_stream);
+  // For JSON output we always want the framing '[' ... ']' (an empty
+  // array is the correct empty representation).  For TSV we defer
+  // the header line until at least one row arrives so empty results
+  // produce no output, matching the mysql client baseline that
+  // ronsql_compare.inc diffs against.
+  bool header_emitted = false;
+  bool is_json =
+      (m_conf.output_format == RonSQLExecParams::OutputFormat::JSON ||
+       m_conf.output_format == RonSQLExecParams::OutputFormat::JSON_ASCII);
+  if (is_json) {
+    m_resultprinter->print_passthrough_header(
+        const_cast<const NdbRecAttr* const*>(attrs), num_cols,
+        m_conf.out_stream);
+    header_emitted = true;
+  }
 
   Uint32 row_count = 0;
   NdbQuery::NextResultOutcome rc;
   while ((rc = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    if (!header_emitted) {
+      m_resultprinter->print_passthrough_header(
+          const_cast<const NdbRecAttr* const*>(attrs), num_cols,
+          m_conf.out_stream);
+      header_emitted = true;
+    }
     m_resultprinter->print_passthrough_row(
         const_cast<const NdbRecAttr* const*>(attrs), num_cols,
         /*is_first_row=*/(row_count == 0),
@@ -5442,7 +5501,12 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     throw RonSQLRetryableError("Pass-through drain failed.");
   }
 
-  m_resultprinter->print_passthrough_finish(m_conf.out_stream);
+  // Only finish if we actually opened a frame (JSON always; TSV
+  // never needs a finish since print_passthrough_finish is a no-op
+  // for TSV).
+  if (header_emitted) {
+    m_resultprinter->print_passthrough_finish(m_conf.out_stream);
+  }
 }
 
 // Emit the root scan/lookup/index-scan for the scope's plan. Chooses PK
