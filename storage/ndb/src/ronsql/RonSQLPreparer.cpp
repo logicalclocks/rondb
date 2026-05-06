@@ -1099,6 +1099,7 @@ RonSQLPreparer::load_single_table()
   m_main_scope.column_map = col_map;
   m_main_scope.column_table_idx = col_table_idx;
   m_main_scope.resolved_columns = resolved;
+  validate_legacy_column_arrays(m_main_scope);
 }
 
 void
@@ -3903,6 +3904,51 @@ RonSQLPreparer::collect_scope_column_refs(const SelectStatement& stmt)
   return refs;
 }
 
+void
+RonSQLPreparer::validate_legacy_column_arrays(const QueryScope& scope) const
+{
+  require_bug(scope.resolved_columns != NULL,
+              "Legacy column array validation: missing descriptors.");
+  require_bug(scope.column_attrId_map != NULL,
+              "Legacy column array validation: missing attr ids.");
+  require_bug(scope.column_map != NULL,
+              "Legacy column array validation: missing column map.");
+  require_bug(scope.column_table_idx != NULL,
+              "Legacy column array validation: missing table indexes.");
+
+  for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
+    const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[col_idx];
+    switch (ref.kind) {
+    case QueryScope::ResolvedColumnRef::Kind::StoredColumn:
+      require_bug(scope.column_attrId_map[col_idx] == ref.attr_id,
+                  "Legacy column array validation: attr id mismatch.");
+      require_bug(scope.column_map[col_idx] == ref.dict_column,
+                  "Legacy column array validation: column mismatch.");
+      require_bug(scope.column_table_idx[col_idx] == ref.join_op_idx,
+                  "Legacy column array validation: table index mismatch.");
+      break;
+    case QueryScope::ResolvedColumnRef::Kind::CteResultColumn:
+      require_bug(scope.column_attrId_map[col_idx] ==
+                      (NdbAttrId)ref.cte_result_idx,
+                  "Legacy column array validation: CTE result mismatch.");
+      require_bug(scope.column_map[col_idx] == NULL,
+                  "Legacy column array validation: CTE column not null.");
+      require_bug(scope.column_table_idx[col_idx] == ref.join_op_idx,
+                  "Legacy column array validation: CTE table index mismatch.");
+      break;
+    case QueryScope::ResolvedColumnRef::Kind::AliasOnly:
+    case QueryScope::ResolvedColumnRef::Kind::Unresolved:
+      require_bug(scope.column_attrId_map[col_idx] == -1,
+                  "Legacy column array validation: sentinel attr mismatch.");
+      require_bug(scope.column_map[col_idx] == NULL,
+                  "Legacy column array validation: sentinel column mismatch.");
+      require_bug(scope.column_table_idx[col_idx] == 0,
+                  "Legacy column array validation: sentinel table mismatch.");
+      break;
+    }
+  }
+}
+
 // Populate resolved descriptors for column references that belong to `stmt`.
 // The parser keeps a single global column namespace (m_columns /
 // m_column_qualifiers), so I.23 resolves only the col_idx values reachable
@@ -4132,6 +4178,7 @@ RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
   scope.column_map = col_map;
   scope.column_table_idx = col_table_idx;
   scope.resolved_columns = resolved;
+  validate_legacy_column_arrays(scope);
 }
 
 void

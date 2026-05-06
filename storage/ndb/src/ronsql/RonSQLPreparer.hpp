@@ -447,6 +447,7 @@ private:
                                      const SelectStatement& stmt);
   void resolve_cte_output_columns();
   void resolve_cte_output_columns_for_scope(QueryScope& scope);
+  void validate_legacy_column_arrays(const QueryScope& scope) const;
   /**
    * Reject CTE shapes the kernel/SPJ doesn't currently support.
    * Defensive tripwire — see cte_filter_phase_g.md.  Today only
