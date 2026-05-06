@@ -9144,20 +9144,30 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
   // For a non-CTE leaf, CTE output positions are unused; parent projections
   // still occupy positions 0..N-1 and leaf-local cols are addressed via
   // GroupBy(attrId).
-  assert(scope.column_attrId_map != NULL);
+  require_run(scope.resolved_columns != NULL,
+              "Aggregation emit: missing resolved columns.");
   const Uint32 cte_base_pos = leafIsCte ? scope.join_plan.num_linked_projs : 0;
   Uint32 linked_proj_pos = 0;
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
   while (groupby != NULL)
   {
     Uint32 col_idx = groupby->col_idx;
-    if (scope.column_table_idx[col_idx] == leaf_idx)
+    const QueryScope::ResolvedColumnRef& col_ref =
+        scope.resolved_columns[col_idx];
+    require_prm(
+        col_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn ||
+        col_ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn,
+        "GROUP BY column is not resolved to a table or CTE column.");
+    if (col_ref.join_op_idx == leaf_idx)
     {
       if (leafIsCte && cteLeafVirtTab != NULL) {
-        // CTE leaf: GB col is a CTE output. column_attrId_map holds the
-        // CTE-output index (see analyze_columns CTE branch), which is also
-        // the virt-table column index. Offset by parent linked projections.
-        const Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
+        // CTE leaf: GB col is a CTE output. Offset by parent linked
+        // projections because cteLookupAggFeed puts CTE outputs after them.
+        require_prm(
+            col_ref.kind ==
+            QueryScope::ResolvedColumnRef::Kind::CteResultColumn,
+            "CTE leaf GROUP BY column is not a CTE result column.");
+        const Uint32 cte_col_idx = col_ref.cte_result_idx;
         const NdbDictionary::Column* vtcol =
             cteLeafVirtTab->getColumn((int)cte_col_idx);
         require_prm(vtcol != NULL,
@@ -9165,22 +9175,23 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
         programAggregator_do_or_fail(
             aggregator->GroupByLinked(cte_base_pos + cte_col_idx, vtcol));
       } else {
+        require_prm(
+            col_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+            "Leaf GROUP BY column is not a stored-table column.");
         programAggregator_do_or_fail
-          (aggregator->GroupBy(scope.column_attrId_map[col_idx]));
+          (aggregator->GroupBy(col_ref.attr_id));
       }
     }
     else
     {
-      const Uint32 src_op_idx = scope.column_table_idx[col_idx];
-      const JoinOp::Type src_type = scope.join_plan.ops[src_op_idx].type;
-      const bool src_is_cte = (src_type == JoinOp::CTE_LOOKUP ||
-                               src_type == JoinOp::CTE_SCAN);
-      if (src_is_cte && cteVirtualTables != NULL &&
+      const Uint32 src_op_idx = col_ref.join_op_idx;
+      if (col_ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+          cteVirtualTables != NULL &&
           cteVirtualTables[src_op_idx] != NULL)
       {
-        // Non-leaf CTE GB column: column_map is NULL for CTE outputs;
-        // resolve the column descriptor from the non-leaf CTE's virt table.
-        const Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
+        // Non-leaf CTE GB column: resolve the column descriptor from the
+        // non-leaf CTE's virtual table.
+        const Uint32 cte_col_idx = col_ref.cte_result_idx;
         const NdbDictionary::Column* vtcol =
             cteVirtualTables[src_op_idx]->getColumn((int)cte_col_idx);
         require_prm(vtcol != NULL,
@@ -9191,9 +9202,14 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
       }
       else
       {
+        require_prm(
+            col_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+            "Linked GROUP BY column is not a stored-table column.");
+        require_prm(col_ref.dict_column != NULL,
+                    "Linked GROUP BY column descriptor is missing.");
         programAggregator_do_or_fail(
             aggregator->GroupByLinked(linked_proj_pos,
-                                      scope.column_map[col_idx]));
+                                      col_ref.dict_column));
       }
       linked_proj_pos++;
     }
@@ -9241,23 +9257,24 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
     {
     case AggregationAPICompiler::SVMInstrType::Load:
     {
-      if (scope.column_table_idx[src] != leaf_idx)
+      const QueryScope::ResolvedColumnRef& src_ref =
+          scope.resolved_columns[src];
+      require_prm(
+          src_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn ||
+          src_ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn,
+          "Aggregation load source is not resolved to a table or CTE column.");
+      if (src_ref.join_op_idx != leaf_idx)
       {
-        const Uint32 src_op_idx = scope.column_table_idx[src];
-        const JoinOp::Type src_type = scope.join_plan.ops[src_op_idx].type;
-        const bool src_is_cte = (src_type == JoinOp::CTE_LOOKUP ||
-                                 src_type == JoinOp::CTE_SCAN);
+        const Uint32 src_op_idx = src_ref.join_op_idx;
         Uint32 lp_pos = find_or_add_linked_proj(
             scope.join_plan, src_op_idx,
             m_columns[src].c_str());
-        if (src_is_cte && cteVirtualTables != NULL &&
+        if (src_ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+            cteVirtualTables != NULL &&
             cteVirtualTables[src_op_idx] != NULL)
         {
-          // Non-leaf CTE: column_map[src] is NULL for CTE output columns
-          // (see load_join()). Resolve the column from the CTE's virtual
-          // table, indexed by the CTE-output position stored in
-          // column_attrId_map.
-          const Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[src];
+          // Non-leaf CTE: resolve the column from the CTE's virtual table.
+          const Uint32 cte_col_idx = src_ref.cte_result_idx;
           const NdbDictionary::Column* vtcol =
               cteVirtualTables[src_op_idx]->getColumn((int)cte_col_idx);
           require_prm(vtcol != NULL,
@@ -9268,9 +9285,14 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
         }
         else
         {
+          require_prm(
+              src_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+              "Linked aggregation load is not a stored-table column.");
+          require_prm(src_ref.dict_column != NULL,
+                      "Linked aggregation load column descriptor is missing.");
           programAggregator_do_or_fail(
               aggregator->LoadLinkedColumn(lp_pos, dest,
-                                           scope.column_map[src]));
+                                           src_ref.dict_column));
         }
       }
       else if (leafIsCte && cteLeafVirtTab != NULL)
@@ -9278,7 +9300,10 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
         // CTE leaf: agg-feed data arrives via the linked-attr buffer after
         // any parent linked projections. Final position is
         // num_linked_projs + cte_col_idx (see cte_base_pos in the GB loop).
-        const Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[src];
+        require_prm(
+            src_ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn,
+            "CTE leaf aggregation load is not a CTE result column.");
+        const Uint32 cte_col_idx = src_ref.cte_result_idx;
         const NdbDictionary::Column* vtcol =
             cteLeafVirtTab->getColumn((int)cte_col_idx);
         require_prm(vtcol != NULL,
@@ -9289,7 +9314,10 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
       }
       else
       {
-        NdbAttrId col_id = scope.column_attrId_map[src];
+        require_prm(
+            src_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+            "Leaf aggregation load is not a stored-table column.");
+        NdbAttrId col_id = src_ref.attr_id;
         if (!aggregator->LoadColumn(col_id, dest))
         {
           err << "Failed writing aggregation program "
