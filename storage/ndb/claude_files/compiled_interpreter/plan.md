@@ -447,6 +447,13 @@ absolute addressing of helper-function holes).
 
 ## 9. Phase 3 — Forward-jump fixups + branch handling
 
+**Status: shipped.** See `phase_3_branches.md` for the results doc.
+All §10-equivalent verification gates clear on x86_64 and aarch64;
+admission walk is in place + tested (12 cases); five new branch
+opcodes (LE/EQ/GT/GE/NE) are wired through bytecode → interpreter →
+stencils → engine; forked-program differential test confirms JIT
+matches interp on multi-branch control flow.
+
 **Goal.** Add proper forward-branch handling to the JIT engine, both
 for branches between stencils (e.g., `BRANCH_LT_REG_REG` skipping over
 `Sum`) and for the `Skip` opcode (skip-to-row-end), and **explicitly

@@ -396,6 +396,115 @@ int main(int argc, char **argv) {
   free(compile_samples);   free(jit_per_row_samples);
   free(pass1_samples);     free(alloc_samples);
   free(emit_samples);      free(seal_samples);
-  free(handle_samples);    free(rows);
-  return all_ok ? 0 : 6;
+  free(handle_samples);
+
+  /* ---------------------------------------------------------------- */
+  /* Phase 3 — forked-program differential test.                      */
+  /*                                                                  */
+  /* No perf gates here; the goal is "JIT result == interp result"    */
+  /* on a program that exercises three new branch opcodes (LE/EQ/GT)  */
+  /* and the multi-fixup queue (3 simultaneous pending fixups).       */
+  /*                                                                  */
+  /* The aggregate is acc[0]+acc[1]+acc[2] across all rows.           */
+  /* ---------------------------------------------------------------- */
+
+  Program forked_prog;
+  mb_build_forked_program(&forked_prog);
+
+  /* Interpreter run on the forked program. */
+  int64_t acc_forked_interp = 0;
+  uint64_t t_fi0 = now_ns();
+  /* interp_run only returns acc[0]; for the forked program we need
+   * acc[0]+acc[1]+acc[2]. Wrap the interpreter loop ourselves. */
+  {
+    JitState s;
+    memset(&s, 0, sizeof(s));
+    for (size_t i = 0; i < nrows; ++i) {
+      s.row_cols_i64 = rows[i].cols;
+      memset(s.regs_i64, 0, sizeof(s.regs_i64));
+      /* Inline-interpret one row of the forked program. */
+      for (uint16_t pc = 0; pc < forked_prog.n_ops; /*per-case advance*/) {
+        const Op *op = &forked_prog.ops[pc];
+        switch (op->kind) {
+          case OP_LOAD_CONST_INT:
+            s.regs_i64[op->a] = op->imm; ++pc; break;
+          case OP_LOAD_COL_INT:
+            s.regs_i64[op->a] = s.row_cols_i64[op->b]; ++pc; break;
+          case OP_SUM_BIGINT:
+            s.acc_i64[op->a] += s.regs_i64[op->b]; ++pc; break;
+          case OP_BRANCH_LE_INT_INT:
+            pc = (s.regs_i64[op->a] <= s.regs_i64[op->b]) ? op->c : (uint16_t)(pc + 1);
+            break;
+          case OP_BRANCH_EQ_INT_INT:
+            pc = (s.regs_i64[op->a] == s.regs_i64[op->b]) ? op->c : (uint16_t)(pc + 1);
+            break;
+          case OP_BRANCH_GT_INT_INT:
+            pc = (s.regs_i64[op->a] >  s.regs_i64[op->b]) ? op->c : (uint16_t)(pc + 1);
+            break;
+          case OP_SKIP:
+          case OP_EXIT:
+            goto forked_row_done;
+          default:
+            goto forked_row_done;
+        }
+      }
+    forked_row_done: ;
+    }
+    acc_forked_interp = s.acc_i64[0] + s.acc_i64[1] + s.acc_i64[2];
+  }
+  uint64_t t_fi1 = now_ns();
+  double forked_interp_ns_per_row = (double)(t_fi1 - t_fi0) / (double)nrows;
+
+  /* JIT-compile + run the forked program. */
+  NdbJitArena *arena_f = ndb_jit_arena_create(64 * 1024);
+  if (!arena_f) {
+    fprintf(stderr, "FAIL forked: arena create failed\n");
+    free(rows);
+    return 7;
+  }
+  Jit1Prog *fp = jit1_compile(arena_f, &forked_prog, NULL);
+  if (!fp) {
+    const Jit1AdmitError *err = jit1_last_admit_error();
+    fprintf(stderr, "FAIL forked: jit1_compile failed (errno=%d, reason=%d)\n",
+            errno, err->reason);
+    ndb_jit_arena_destroy(arena_f);
+    free(rows);
+    return 7;
+  }
+  JitEntry fentry = jit1_entry(fp);
+
+  int64_t acc_forked_jit = 0;
+  uint64_t t_fj0 = now_ns();
+  {
+    JitState s;
+    memset(&s, 0, sizeof(s));
+    for (size_t i = 0; i < nrows; ++i) {
+      s.row_cols_i64 = rows[i].cols;
+      memset(s.regs_i64, 0, sizeof(s.regs_i64));
+      fentry(&s);
+      acc_forked_jit += 0;  /* per-row accumulators carry across rows already */
+      (void)acc_forked_jit;
+    }
+    acc_forked_jit = s.acc_i64[0] + s.acc_i64[1] + s.acc_i64[2];
+  }
+  uint64_t t_fj1 = now_ns();
+  double forked_jit_ns_per_row = (double)(t_fj1 - t_fj0) / (double)nrows;
+  ndb_jit_arena_destroy(arena_f);
+
+  int forked_ok = (acc_forked_interp == acc_forked_jit);
+
+  printf("Phase 3 forked program — differential test\n");
+  printf("==========================================\n");
+  printf("  Program        : %u ops, 3 forward branches (LE, EQ, GT)\n",
+         (unsigned)forked_prog.n_ops);
+  printf("  Aggregate (interp): %" PRId64 "\n", acc_forked_interp);
+  printf("  Aggregate (jit)   : %" PRId64 "  %s\n",
+         acc_forked_jit, forked_ok ? "[ok]" : "[MISMATCH]");
+  printf("  Interpreter    : %7.2f ns/row\n", forked_interp_ns_per_row);
+  printf("  JIT'd          : %7.2f ns/row   (informational; no perf gate)\n",
+         forked_jit_ns_per_row);
+  printf("\n");
+
+  free(rows);
+  return (all_ok && forked_ok) ? 0 : 6;
 }

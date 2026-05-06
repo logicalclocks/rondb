@@ -96,6 +96,58 @@ void mb_build_30op_program(Program *out) {
   out->ops[branch_pc].c = (uint8_t)label_skip;
 }
 
+void mb_build_forked_program(Program *out) {
+  memset(out, 0, sizeof(*out));
+  size_t br_le_pc, br_eq_pc, br_gt_pc;
+
+  /* Constants. r0=50, r1=100, r3=1000 (loaded later). */
+  emit_(out, OP_LOAD_CONST_INT, 0, 0, 0, 50);
+  emit_(out, OP_LOAD_CONST_INT, 1, 0, 0, 100);
+  emit_(out, OP_LOAD_COL_INT,   2, 0, 0, 0);   /* r2 = col[0] */
+
+  /* if r2 <= 50 -> label_low (~2.5% of rows) */
+  br_le_pc = out->n_ops;
+  emit_(out, OP_BRANCH_LE_INT_INT, 2, 0, /*target=*/0, 0);
+
+  /* if r2 == 100 -> label_eq (~0.05% of rows) */
+  br_eq_pc = out->n_ops;
+  emit_(out, OP_BRANCH_EQ_INT_INT, 2, 1, /*target=*/0, 0);
+
+  /* r3 = 1000 ; if r2 > r3 -> label_high (~50% of rows) */
+  emit_(out, OP_LOAD_CONST_INT, 3, 0, 0, 1000);
+  br_gt_pc = out->n_ops;
+  emit_(out, OP_BRANCH_GT_INT_INT, 2, 3, /*target=*/0, 0);
+
+  /* Mid-segment: r2 in (50, 100) ∪ (100, 1000].
+   * Sum col[1] + col[2] into acc[0]. */
+  emit_(out, OP_LOAD_COL_INT, 4, 1, 0, 0);
+  emit_(out, OP_SUM_BIGINT,   0, 4, 0, 0);
+  emit_(out, OP_LOAD_COL_INT, 4, 2, 0, 0);
+  emit_(out, OP_SUM_BIGINT,   0, 4, 0, 0);
+  emit_(out, OP_EXIT, 0, 0, 0, 0);
+
+  /* label_high: r2 > 1000 -> sum col[3] into acc[1]. */
+  size_t label_high = out->n_ops;
+  emit_(out, OP_LOAD_COL_INT, 4, 3, 0, 0);
+  emit_(out, OP_SUM_BIGINT,   1, 4, 0, 0);
+  emit_(out, OP_EXIT, 0, 0, 0, 0);
+
+  /* label_eq: r2 == 100 exactly -> sum col[2] into acc[2]. */
+  size_t label_eq = out->n_ops;
+  emit_(out, OP_LOAD_COL_INT, 4, 2, 0, 0);
+  emit_(out, OP_SUM_BIGINT,   2, 4, 0, 0);
+  emit_(out, OP_EXIT, 0, 0, 0, 0);
+
+  /* label_low: r2 <= 50 -> skip (no contribution). */
+  size_t label_low = out->n_ops;
+  emit_(out, OP_SKIP, 0, 0, 0, 0);
+
+  /* Patch the three branch targets. */
+  out->ops[br_le_pc].c = (uint8_t)label_low;
+  out->ops[br_eq_pc].c = (uint8_t)label_eq;
+  out->ops[br_gt_pc].c = (uint8_t)label_high;
+}
+
 Row *mb_generate_rows(size_t nrows, uint64_t seed) {
   Row *rows = (Row *)calloc(nrows, sizeof(Row));
   if (!rows) return NULL;

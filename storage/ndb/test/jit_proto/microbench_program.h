@@ -41,6 +41,21 @@ extern "C" {
  * untouched (caller must zero-init the struct first if it cares). */
 void mb_build_30op_program(Program *out);
 
+/* Build the Phase 3 forked program. ~17 ops, three forward branches
+ * (BRANCH_LE, BRANCH_EQ, BRANCH_GT) creating four control-flow
+ * segments. Exercises:
+ *
+ *   - Multi-fixup queue: branches at pc=3, 4, 6 with targets at
+ *     pcs ~8, ~11, ~14, so 3 fixups are pending simultaneously
+ *     between pc=6 and pc=8.
+ *   - Multiple new branch opcodes (LE, EQ, GT) — not just BLT.
+ *   - Different accumulators per segment, so the final aggregate
+ *     is data-dependent on which branch fires.
+ *
+ * Uses the same row layout as mb_build_30op_program (col[0..3]).
+ * Final aggregate sums acc[0] + acc[1] + acc[2] (acc[3] unused). */
+void mb_build_forked_program(Program *out);
+
 /* Generate `nrows` synthetic rows. Deterministic given a seed.
  * Rows are allocated with malloc; caller free()s.
  *
