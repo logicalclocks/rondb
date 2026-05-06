@@ -43,6 +43,12 @@ The plan deliberately does **not** predict which shapes will work
 versus which need code; the running tree has shifted enough that
 running the tests is faster than reasoning about it.
 
+Important distinction: a positive MTR comparison exercises the RonSQL
+path for the kernel shape.  A `--error` test is only a documented
+RonSQL gap with a stable rejection; it does **not** count as kernel
+shape coverage.  The completion summary must list which of Tests
+12-16 are positive coverage and which are deferred.
+
 ## Per-test SQL shapes
 
 Each section gives the SQL trigger, the kernel-side expected tree,
@@ -114,8 +120,7 @@ WITH cte0 AS (SELECT grp, SUM(val) AS total
 SELECT m.pk, m.grp, cte0.grp AS c_grp, cte0.total, s2.pk AS s2_pk, s2.val
   FROM cte_src AS m
   JOIN cte0 ON cte0.grp = m.grp
-  JOIN cte_src AS s2 ON s2.pk = cte0.grp
-ORDER BY m.pk;
+  JOIN cte_src AS s2 ON s2.pk = cte0.grp;
 ```
 
 Expected result (5 rows, one per `cte_src` row):
@@ -137,12 +142,24 @@ What this exercises that prior phases did not:
 
 Likely RonSQL gap: I.8's single-CTE-join gate at
 `RonSQLPreparer.cpp:543-554` rejects two-join shapes outright with
-the "Not an aggregate query" / similar permanent error.  Concrete
-fix is to relax the gate to accept **any** projection-only join
-chain that contains at least one CTE join, then verify
-`emit_child_ops` and `execute_passthrough_drain` already handle the
-multi-CTE-or-CTE-in-middle shape (the multi-op pre-registration loop
-in `execute_passthrough_drain` was already generalised in I.8).
+the "Not an aggregate query" / similar permanent error.  Do **not**
+relax this to "any projection-only join chain with a CTE" in one
+step; that would admit shapes the emitter may not support.  The I.11
+fix, if small, should accept only this conservative class:
+
+- projection-only outputs;
+- no GROUP BY, HAVING, ORDER BY, or LIMIT;
+- real-table root (`FROM <real>`), not `FROM <cte>`;
+- join clauses are in left-to-right order and each `ON` references
+  only previously defined tables plus the current joined table;
+- at least one joined table is a CTE;
+- every CTE join is planned as a complete-key `CTE_LOOKUP`.
+
+After this front-end gate is relaxed, verify that `emit_child_ops` and
+`execute_passthrough_drain` already handle the CTE-in-middle shape.
+If non-root `CTE_SCAN`, multiple CTE joins, or `FROM cte JOIN real`
+surfaces as a separate need, split it to a follow-up instead of
+folding it into I.11.
 
 ### Test 14 — `lookupCte` as CTE materialisation internal
 
@@ -164,14 +181,18 @@ ORDER BY grp;
 Expected result:
 ```
 grp  total
-1    20
+1    60
 2    30
 ```
 
 (Rows feeding cte1Agg: `(grp=1,val=10), (grp=1,val=10),
 (grp=2,val=20), (grp=2,val=20), (grp=3,val=30)` per the kernel test
-trace.  Note: the test's narrative table at line 4173 differs from
-the actual fixture; trust the fixture-derived computation.)
+trace, but the SQL above groups by `s2.grp`, not by the original
+`cte0.grp`.  With the stated fixture, `s2.pk=1` and `s2.pk=2` both
+belong to `s2.grp=1`, so SQL semantics give `grp=1,total=60` and
+`grp=2,total=30`.  If later we decide to mirror the kernel trace
+grouping instead, change the SQL shape; do not keep an expected result
+that disagrees with the SQL.
 
 What this exercises that prior phases did not:
 - A **multi-op CTE body** (`num_ops > 1`) where the body's middle
@@ -303,9 +324,9 @@ DROP TABLE cte_src;
 --enable_query_log
 ```
 
-ORDER BY in the MTR queries (where used above) keeps the result
-stable across NDB fragment iteration order without needing
-`--sorted_result` for every block.
+Do not add `ORDER BY` to projection-only tests in this phase.  The
+current non-aggregate gate rejects ORDER BY, and the compare include
+sorts result rows by default.  ORDER BY support remains outside I.11.
 
 ## Procedure
 
@@ -342,8 +363,10 @@ stable across NDB fragment iteration order without needing
 
 - MTR file `ronsql_cte_kernel_t12_t16.test` exists and exercises
   all five shapes.
-- Every shape either passes (matches MySQL) or is `--error`-gated
-  with a follow-up phase reference recorded in this plan.
+- Every shape either passes (matches MySQL) as positive coverage, or
+  is `--error`-gated with a follow-up phase reference recorded in
+  this plan.  The final I.11 status must explicitly separate these
+  two categories.
 - Catalogue (`cte_filter_phase_i.md`) updated: I.11 entry
   repointed to "testCteNdbApi.cpp Tests 12–16" and marked
   shipped, with any deferred-shape follow-ups linked.
