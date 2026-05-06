@@ -86,10 +86,12 @@ public:
   bool isLoadConstantInt() const { return op == ExprOp::LoadConstantInt; }
   bool isGreatest2() const { return op == ExprOp::Greatest2; }
   bool isLeast2() const { return op == ExprOp::Least2; }
+  bool isCase() const { return op == ExprOp::Case; }
   Uint32 getLoadIdx() const { return idx; }
   Uint32 getConstantIdx() const { return idx; }
   AggregationAPICompiler_Expr* getLeft() const { return left; }
   AggregationAPICompiler_Expr* getRight() const { return right; }
+  ConditionalExpression* getCaseCondition() const { return case_condition; }
 private:
   ExprOp op; // Binary operation or Load
   Expr* left = NULL; // Left argument to binary operation
@@ -130,6 +132,8 @@ public:
   // given Expr* (for cross-scope tracking of GREATEST / LEAST
   // operands).
   bool owns_expr(class AggregationAPICompiler_Expr* e);
+  void for_each_expr(
+      std::function<void(const AggregationAPICompiler_Expr*)> fn) const;
 private:
   std::basic_ostream<char>& m_out;
   std::basic_ostream<char>& m_err;

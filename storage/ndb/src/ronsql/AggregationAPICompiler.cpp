@@ -59,6 +59,14 @@ AggregationAPICompiler::owns_expr(AggregationAPICompiler_Expr* e)
   return m_exprs.has_item(e);
 }
 
+void
+AggregationAPICompiler::for_each_expr(
+    std::function<void(const AggregationAPICompiler_Expr*)> fn) const
+{
+  for (Uint32 i = 0; i < m_exprs.size(); i++)
+    fn(&m_exprs[i]);
+}
+
 #define require_status(name) ndbrequire(m_status == Status::name)
 
 /*

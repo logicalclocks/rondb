@@ -407,7 +407,18 @@ private:
                                      const CteDefinition* cte);
   void analyze_ctes();
   void build_cte_scopes();
-  void resolve_columns_for_cte_scope(QueryScope& scope);
+  bool* collect_scope_column_refs(const SelectStatement& stmt);
+  void mark_scope_column_ref(bool* refs, Uint32 col_idx) const;
+  void mark_scope_column_refs_ce(bool* refs,
+                                 const ConditionalExpression* ce) const;
+  void mark_scope_column_refs_expr(
+      bool* refs,
+      const AggregationAPICompiler::Expr* expr) const;
+  void resolve_columns_for_scope(QueryScope& scope,
+                                 const SelectStatement& stmt,
+                                 bool main_scope);
+  void resolve_columns_for_cte_scope(QueryScope& scope,
+                                     const SelectStatement& stmt);
   void resolve_cte_output_columns();
   void resolve_cte_output_columns_for_scope(QueryScope& scope);
   /**

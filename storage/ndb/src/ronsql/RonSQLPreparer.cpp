@@ -1484,165 +1484,7 @@ RonSQLPreparer::load_join()
   // Set m_main_scope.table to root table (used by existing code paths)
   m_main_scope.table = m_main_scope.join_plan.ops[0].table;
 
-  // Resolve columns: match each column to its table
-  Uint32 num_cols = m_columns.size();
-  NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(num_cols);
-  const NdbDictionary::Column** col_map =
-      m_amalloc->alloc_exc<const NdbDictionary::Column*>(num_cols);
-  Uint32* col_table_idx =
-      m_amalloc->alloc_exc<Uint32>(num_cols);
-
-  for (Uint32 col_idx = 0; col_idx < num_cols; col_idx++)
-  {
-    // Defaults match the original early-skip behavior so that any
-    // fall-through (col not found in main's plan but referenced inside
-    // an inner scope, e.g. CTE body) leaves the same -1/NULL/0 sentinel.
-    col_id_map[col_idx] = -1;
-    col_map[col_idx] = NULL;
-    col_table_idx[col_idx] = 0;
-
-    const bool is_inner =
-        (m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx]);
-    const bool is_alias =
-        (m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]);
-
-    const char* col_name = m_columns[col_idx].c_str();
-    const char* qualifier = m_column_qualifiers[col_idx].c_str();
-
-    if (qualifier != NULL)
-    {
-      // Qualified column: find the table by alias
-      bool found = false;
-      for (Uint32 t = 0; t < m_main_scope.join_plan.num_ops; t++)
-      {
-        if (strcmp(m_main_scope.join_plan.ops[t].alias.c_str(), qualifier) == 0)
-        {
-          if (m_main_scope.join_plan.ops[t].type == JoinOp::CTE_LOOKUP ||
-              m_main_scope.join_plan.ops[t].type == JoinOp::CTE_SCAN)
-          {
-            // CTE column: look up in CTE output list
-            const CteDefinition* cte = m_main_scope.join_plan.ops[t].cte_def;
-            Uint32 cte_col_idx = 0;
-            bool cte_found = false;
-            for (const Outputs* o = cte->stmt->outputs; o; o = o->next, cte_col_idx++)
-            {
-              if (o->output_name.len == strlen(col_name) &&
-                  strncmp(o->output_name.str, col_name, o->output_name.len) == 0)
-              {
-                cte_found = true;
-                break;
-              }
-            }
-            if (!cte_found)
-            {
-              err << "Column '" << qualifier << "." << col_name
-                  << "' not found in CTE '" << cte->name.c_str() << "'."
-                  << endl;
-              throw RonSQLPermanentError("Column not found in CTE.");
-            }
-            // CTE columns have no NDB attrId or Column — use virtual placeholders
-            col_id_map[col_idx] = (NdbAttrId)cte_col_idx;
-            col_map[col_idx] = NULL;
-            col_table_idx[col_idx] = t;
-            found = true;
-            break;
-          }
-          else
-          {
-            const NdbDictionary::Column* col =
-                m_main_scope.join_plan.ops[t].table->getColumn(col_name);
-            if (col == NULL)
-            {
-              err << "Column '" << qualifier << "." << col_name
-                  << "' not found in table '"
-                  << m_main_scope.join_plan.ops[t].table->getName() << "'." << endl;
-              throw RonSQLMaybeStaleSchema("Column not found.");
-            }
-            col_id_map[col_idx] = col->getAttrId();
-            col_map[col_idx] = col;
-            col_table_idx[col_idx] = t;
-            found = true;
-            break;
-          }
-        }
-      }
-      if (!found)
-      {
-        // Inner-only refs (CTE body / subquery) and pure aliases may legitimately
-        // qualify against a table that doesn't exist in main scope. Leave
-        // sentinel defaults; caller scopes resolve these via their own maps.
-        if (is_inner || is_alias) continue;
-        err << "Unknown table alias '" << qualifier << "' in column '"
-            << qualifier << "." << col_name << "'." << endl;
-        throw RonSQLPermanentError("Unknown table alias.");
-      }
-    }
-    else
-    {
-      // Unqualified column: search all tables
-      Uint32 match_count = 0;
-      Uint32 match_table = 0;
-      const NdbDictionary::Column* match_col = NULL;
-      NdbAttrId match_attr_id = -1;
-      for (Uint32 t = 0; t < m_main_scope.join_plan.num_ops; t++)
-      {
-        if (m_main_scope.join_plan.ops[t].type == JoinOp::CTE_LOOKUP ||
-            m_main_scope.join_plan.ops[t].type == JoinOp::CTE_SCAN)
-        {
-          // Search CTE output list
-          const CteDefinition* cte = m_main_scope.join_plan.ops[t].cte_def;
-          Uint32 cte_col_idx = 0;
-          for (const Outputs* o = cte->stmt->outputs; o; o = o->next, cte_col_idx++)
-          {
-            if (o->output_name.len == strlen(col_name) &&
-                strncmp(o->output_name.str, col_name, o->output_name.len) == 0)
-            {
-              match_count++;
-              match_table = t;
-              match_col = NULL;
-              match_attr_id = (NdbAttrId)cte_col_idx;
-              break;
-            }
-          }
-        }
-        else
-        {
-          const NdbDictionary::Column* col =
-              m_main_scope.join_plan.ops[t].table->getColumn(col_name);
-          if (col != NULL)
-          {
-            match_count++;
-            match_table = t;
-            match_col = col;
-            match_attr_id = col->getAttrId();
-          }
-        }
-      }
-      if (match_count == 0)
-      {
-        // Same fall-through as the qualified branch: inner-only and pure
-        // aliases keep their sentinel defaults rather than throwing.
-        if (is_inner || is_alias) continue;
-        err << "Column '" << col_name << "' not found in any joined table."
-            << endl;
-        throw RonSQLPermanentError("Column not found.");
-      }
-      if (match_count > 1)
-      {
-        err << "Ambiguous column '" << col_name
-            << "' found in multiple tables. Use 'table.column' syntax."
-            << endl;
-        throw RonSQLPermanentError("Ambiguous column.");
-      }
-      col_id_map[col_idx] = match_attr_id;
-      col_map[col_idx] = match_col;
-      col_table_idx[col_idx] = match_table;
-    }
-  }
-
-  m_main_scope.column_attrId_map = col_id_map;
-  m_main_scope.column_map = col_map;
-  m_main_scope.column_table_idx = col_table_idx;
+  resolve_columns_for_scope(m_main_scope, m_context.ast_root, true);
 
   // Classify WHERE conditions by table for per-table filter pushdown
   classify_where_by_table(m_main_scope,
@@ -1682,13 +1524,13 @@ RonSQLPreparer::load_join()
   while (groupby != NULL)
   {
     Uint32 col_idx = groupby->col_idx;
-    if (col_table_idx[col_idx] != leaf_idx)
+    if (m_main_scope.column_table_idx[col_idx] != leaf_idx)
     {
       require_prm(m_main_scope.join_plan.num_linked_projs < MAX_LINKED_PROJS,
                   "Too many linked projections.");
       JoinPlan::LinkedProj& lp =
           m_main_scope.join_plan.linked_projs[m_main_scope.join_plan.num_linked_projs];
-      lp.source_op_idx = col_table_idx[col_idx];
+      lp.source_op_idx = m_main_scope.column_table_idx[col_idx];
       lp.column_name = m_columns[col_idx].c_str();
       m_main_scope.join_plan.num_linked_projs++;
     }
@@ -3761,7 +3603,7 @@ RonSQLPreparer::build_cte_scopes()
                        visible_head);
     scope->table = scope->join_plan.ops[0].table;
     scope->agg = cte->stmt->agg;
-    resolve_columns_for_cte_scope(*scope);
+    resolve_columns_for_cte_scope(*scope, *cte->stmt);
     classify_where_by_table(*scope, cte->stmt->where_expression);
     promote_left_to_inner_for_where(*scope);
     // Phase I.9: try to convert this CTE body's root scan into an
@@ -3880,23 +3722,176 @@ RonSQLPreparer::validate_cte_execution_shapes()
   }
 }
 
-// Populate scope.column_attrId_map / column_map / column_table_idx for
-// column references that belong to this CTE body. The parser keeps a
-// single global column namespace (m_columns / m_column_qualifiers); we
-// use m_col_is_inner as a coarse filter for "this col was referenced
-// inside some subquery or CTE body" and then try to resolve against
-// this scope's join plan. Columns that don't resolve stay as -1 / NULL;
-// using such an unresolved col_idx during emit would hit a mapped value
-// of -1 and fail loudly. Multi-CTE disambiguation is deferred to a
-// later step (AST walk to attribute each col_idx to its owning CTE).
 void
-RonSQLPreparer::resolve_columns_for_cte_scope(QueryScope& scope)
+RonSQLPreparer::mark_scope_column_ref(bool* refs, Uint32 col_idx) const
+{
+  if (col_idx < m_columns.size())
+    refs[col_idx] = true;
+}
+
+void
+RonSQLPreparer::mark_scope_column_refs_ce(
+    bool* refs,
+    const ConditionalExpression* ce) const
+{
+  if (ce == NULL)
+    return;
+  switch (ce->op)
+  {
+  case T_IDENTIFIER:
+    mark_scope_column_ref(refs, ce->col_idx);
+    return;
+  case T_IS:
+    mark_scope_column_refs_ce(refs, ce->is.arg);
+    return;
+  case T_INTERVAL:
+    mark_scope_column_refs_ce(refs, ce->interval.arg);
+    return;
+  case T_EXTRACT:
+    mark_scope_column_refs_ce(refs, ce->extract.arg);
+    return;
+  case T_EXISTS:
+  case I_SUBQUERY:
+    return;
+  case I_IN_SUBQUERY:
+    mark_scope_column_refs_ce(refs, ce->in_subquery.expr);
+    return;
+  case I_CORR_SCALAR:
+    mark_scope_column_refs_ce(refs, ce->corr_scalar.cmp_expr);
+    mark_scope_column_refs_ce(refs, ce->corr_scalar.key_expr);
+    return;
+  case T_INT:
+  case T_FLOAT:
+  case T_STRING:
+  case I_MYSQL_TIME:
+  case T_SUM:
+  case T_MIN:
+  case T_MAX:
+  case T_COUNT:
+  case T_AVG:
+  case T_NULL:
+    return;
+  default:
+    mark_scope_column_refs_ce(refs, ce->args.left);
+    mark_scope_column_refs_ce(refs, ce->args.right);
+    return;
+  }
+}
+
+void
+RonSQLPreparer::mark_scope_column_refs_expr(
+    bool* refs,
+    const AggregationAPICompiler::Expr* expr) const
+{
+  if (expr == NULL)
+    return;
+  if (expr->isLoad())
+  {
+    mark_scope_column_ref(refs, expr->getLoadIdx());
+    return;
+  }
+  if (expr->isLoadConstantInt())
+    return;
+  if (expr->isCase())
+    mark_scope_column_refs_ce(refs, expr->getCaseCondition());
+  mark_scope_column_refs_expr(refs, expr->getLeft());
+  mark_scope_column_refs_expr(refs, expr->getRight());
+}
+
+bool*
+RonSQLPreparer::collect_scope_column_refs(const SelectStatement& stmt)
+{
+  bool* refs = m_amalloc->alloc_exc<bool>(m_columns.size());
+  for (Uint32 i = 0; i < m_columns.size(); i++)
+    refs[i] = false;
+
+  for (const Outputs* o = stmt.outputs; o != NULL; o = o->next)
+  {
+    switch (o->type)
+    {
+    case Outputs::Type::COLUMN:
+      mark_scope_column_ref(refs, o->column.col_idx);
+      break;
+    case Outputs::Type::AGGREGATE:
+      mark_scope_column_refs_expr(refs, o->aggregate.arg);
+      break;
+    case Outputs::Type::AVG:
+      mark_scope_column_refs_expr(refs, o->avg.arg);
+      break;
+    case Outputs::Type::SUBQUERY_AGG:
+      break;
+    }
+  }
+  for (const GroupbyColumns* gb = stmt.groupby_columns; gb != NULL;
+       gb = gb->next)
+    mark_scope_column_ref(refs, gb->col_idx);
+  for (const OrderbyColumns* ob = stmt.orderby_columns; ob != NULL;
+       ob = ob->next)
+  {
+    if (ob->kind == OrderbyColumns::Kind::TABLE_COLUMN)
+      mark_scope_column_ref(refs, ob->col_idx);
+  }
+  mark_scope_column_refs_ce(refs, stmt.where_expression);
+  mark_scope_column_refs_ce(refs, stmt.having_expression);
+  if (stmt.agg != NULL)
+  {
+    stmt.agg->for_each_expr([&](const AggregationAPICompiler::Expr* expr) {
+      mark_scope_column_refs_expr(refs, expr);
+    });
+  }
+  if (&stmt == &m_context.ast_root && m_main_scope.agg != NULL)
+  {
+    m_main_scope.agg->for_each_expr(
+        [&](const AggregationAPICompiler::Expr* expr) {
+      mark_scope_column_refs_expr(refs, expr);
+    });
+  }
+  return refs;
+}
+
+// Populate scope.column_attrId_map / column_map / column_table_idx for
+// column references that belong to `stmt`. The parser keeps a single
+// global column namespace (m_columns / m_column_qualifiers), so I.23
+// resolves only the col_idx values reachable from this SELECT body's AST.
+// This prevents aliases and columns from one CTE body from leaking into
+// later CTE bodies or the main SELECT.
+void
+RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
+                                          const SelectStatement& stmt,
+                                          bool main_scope)
 {
   Uint32 num_cols = m_columns.size();
   NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(num_cols);
   const NdbDictionary::Column** col_map =
       m_amalloc->alloc_exc<const NdbDictionary::Column*>(num_cols);
   Uint32* col_table_idx = m_amalloc->alloc_exc<Uint32>(num_cols);
+  bool* refs = collect_scope_column_refs(stmt);
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+
+  if (main_scope && m_has_select_subqueries)
+  {
+    for (Uint32 i = 0; i < m_select_subquery_leaves.size(); i++)
+    {
+      const SelectSubqueryLeaf& leaf = m_select_subquery_leaves[i];
+      if (!leaf.is_count_star)
+        mark_scope_column_ref(refs, leaf.inner_agg_col_idx);
+      mark_scope_column_refs_ce(refs, leaf.inner_filter);
+      mark_scope_column_refs_ce(refs, leaf.cross_table_filter);
+      for (Uint32 c = 0; c < m_columns.size(); c++)
+      {
+        if (m_column_qualifiers[c].str != NULL &&
+            m_column_qualifiers[c].len == leaf.outer_join_table.len &&
+            strncmp(m_column_qualifiers[c].str, leaf.outer_join_table.str,
+                    leaf.outer_join_table.len) == 0 &&
+            m_columns[c].len == leaf.outer_join_col.len &&
+            strncmp(m_columns[c].str, leaf.outer_join_col.str,
+                    leaf.outer_join_col.len) == 0)
+        {
+          mark_scope_column_ref(refs, c);
+        }
+      }
+    }
+  }
 
   JoinPlan& plan = scope.join_plan;
 
@@ -3905,19 +3900,42 @@ RonSQLPreparer::resolve_columns_for_cte_scope(QueryScope& scope)
     col_map[col_idx] = NULL;
     col_table_idx[col_idx] = 0;
 
-    if (!(m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx])) {
+    if (!refs[col_idx]) {
       continue;
     }
 
     const char* col_name = m_columns[col_idx].c_str();
     const char* qualifier = m_column_qualifiers[col_idx].c_str();
 
+    if (main_scope &&
+        m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]) {
+      continue;
+    }
+    if (main_scope && m_has_select_subqueries &&
+        m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx] &&
+        qualifier == NULL) {
+      bool is_subquery_agg_alias = false;
+      for (const Outputs* o = stmt.outputs; o != NULL; o = o->next) {
+        if (o->type == Outputs::Type::SUBQUERY_AGG &&
+            o->output_name.len == strlen(col_name) &&
+            strncmp(o->output_name.str, col_name, o->output_name.len) == 0) {
+          is_subquery_agg_alias = true;
+          break;
+        }
+      }
+      if (is_subquery_agg_alias)
+        continue;
+    }
+
     if (qualifier != NULL) {
+      bool found_qualifier = false;
       for (Uint32 t = 0; t < plan.num_ops; t++) {
         if (strcmp(plan.ops[t].alias.c_str(), qualifier) != 0) continue;
+        found_qualifier = true;
         JoinOp& op = plan.ops[t];
         if (op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) {
           const CteDefinition* cte = op.cte_def;
+          require_prm(cte != NULL, "CTE op has no CTE definition.");
           Uint32 cte_col_idx = 0;
           for (const Outputs* o = cte->stmt->outputs; o;
                o = o->next, cte_col_idx++) {
@@ -3938,6 +3956,18 @@ RonSQLPreparer::resolve_columns_for_cte_scope(QueryScope& scope)
           }
         }
         break;
+      }
+      if (col_id_map[col_idx] == -1) {
+        if (found_qualifier) {
+          err << "Column '" << qualifier << "." << col_name
+              << "' not found in table or CTE '" << qualifier << "'."
+              << endl;
+          throw RonSQLPermanentError("Column not found.");
+        }
+        err << "Unknown table or CTE alias '" << qualifier
+            << "' in column '" << qualifier << "." << col_name << "'."
+            << endl;
+        throw RonSQLPermanentError("Unknown table alias.");
       }
     } else {
       Uint32 match_count = 0;
@@ -3974,6 +4004,15 @@ RonSQLPreparer::resolve_columns_for_cte_scope(QueryScope& scope)
         col_id_map[col_idx] = match_attr_id;
         col_map[col_idx] = match_col;
         col_table_idx[col_idx] = match_table;
+      } else if (match_count == 0) {
+        err << "Column '" << col_name << "' not found in any visible "
+            << "table or CTE." << endl;
+        throw RonSQLPermanentError("Column not found.");
+      } else {
+        err << "Ambiguous column '" << col_name
+            << "' found in multiple tables or CTEs. Use 'table.column' "
+            << "syntax." << endl;
+        throw RonSQLPermanentError("Ambiguous column.");
       }
     }
   }
@@ -3981,6 +4020,13 @@ RonSQLPreparer::resolve_columns_for_cte_scope(QueryScope& scope)
   scope.column_attrId_map = col_id_map;
   scope.column_map = col_map;
   scope.column_table_idx = col_table_idx;
+}
+
+void
+RonSQLPreparer::resolve_columns_for_cte_scope(QueryScope& scope,
+                                              const SelectStatement& stmt)
+{
+  resolve_columns_for_scope(scope, stmt, false);
 }
 
 void
