@@ -8748,12 +8748,17 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
   // raw_word_size and emit_pair_op_embedded agree on the body size.
   prepare_pair_op_null_check_cache(m_main_scope);
   // Program groupby columns
-  assert(m_main_scope.column_attrId_map != NULL); // Ensured in RonSQLPreparer::load
+  require_run(m_main_scope.resolved_columns != NULL,
+              "Aggregation emit: missing resolved columns.");
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
   while (groupby != NULL)
   {
+    const QueryScope::ResolvedColumnRef& col_ref =
+        m_main_scope.resolved_columns[groupby->col_idx];
+    require_prm(col_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+                "Single-table GROUP BY column is not a stored-table column.");
     programAggregator_do_or_fail
-      (aggregator->GroupBy(m_main_scope.column_attrId_map[groupby->col_idx]));
+      (aggregator->GroupBy(col_ref.attr_id));
     groupby = groupby->next;
   }
   // Program aggregations
@@ -8768,7 +8773,11 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
     {
     case AggregationAPICompiler::SVMInstrType::Load:
     {
-      NdbAttrId col_id = m_main_scope.column_attrId_map[src];
+      const QueryScope::ResolvedColumnRef& src_ref =
+          m_main_scope.resolved_columns[src];
+      require_prm(src_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+                  "Single-table aggregation load is not a stored-table column.");
+      NdbAttrId col_id = src_ref.attr_id;
       if (!aggregator->LoadColumn(col_id, dest))
       {
         err << "Failed writing aggregation program "
@@ -9622,11 +9631,13 @@ RonSQLPreparer::compute_pair_op_needs_null_check(
   if (expr->isLoadConstantInt()) return false;
   if (expr->isLoad())
   {
-    if (scope.column_map == NULL) return true;
+    if (scope.resolved_columns == NULL) return true;
     Uint32 col_idx = expr->getLoadIdx();
-    const NdbDictionary::Column* col = scope.column_map[col_idx];
-    if (col == NULL) return true;  // CTE virt — descriptor not yet built.
-    return col->getNullable();
+    const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[col_idx];
+    if (ref.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn)
+      return true;  // CTE virt — descriptor not yet built here.
+    if (ref.dict_column == NULL) return true;
+    return ref.dict_column->getNullable();
   }
   if (expr->isGreatest2() || expr->isLeast2())
   {
