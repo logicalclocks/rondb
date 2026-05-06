@@ -36,6 +36,14 @@
 
 class JoinAggInterpreter;
 
+/* Phase 4 RONDB-1056: forward-declare the JIT engine's program
+ * handle and entry-pointer typedef so LeafProgram can carry them
+ * without pulling jit1.h transitively. JoinAggInterpreter.cpp +
+ * DblqhProxy.cpp pull jit1.h for the real definitions. */
+struct Jit1Prog;
+struct JitState;
+typedef void (*JitEntry)(JitState *);
+
 /**
  * LeafProgram
  *
@@ -61,6 +69,29 @@ struct LeafProgram {
   Uint32  m_acc_offset;         // First accumulator index for this leaf
   Uint32  m_n_agg_results;      // Number of accumulators for this leaf
   Uint32  m_agg_prog_start_pos; // Instruction start offset within program
+
+  /* Phase 4 RONDB-1056: per-leaf JIT compile result.
+   *
+   * On JOIN_AGG_SETUP_REQ, DblqhProxy attempts to translate this
+   * leaf's bytecode (starting at m_agg_program + m_agg_prog_start_pos)
+   * via ndb_jit_bridge + jit1_compile, storing the resulting
+   * handle and entry pointer here.
+   *
+   * Both fields are nullptr when:
+   *   - The bridge rejects (unsupported opcode like kOpEmbeddedInterp,
+   *     non-bigint type, malformed bytecode, etc.).
+   *   - jit1_compile rejects via the admission walk.
+   *   - DblqhProxy::m_jit_arena was not created (mmap failure on
+   *     a hardened kernel).
+   *   - Multi-leaf programs in Phase 4 (only m_num_leaves == 1
+   *     is JIT-eligible; multi-leaf is Phase 5 territory).
+   *
+   * When set, every JoinAggInterpreter that runs this leaf reads
+   * m_jit_entry once at Init and dispatches via it in ProcessRec.
+   * Workers hold borrowed pointers — DblqhProxy's m_jit_arena owns
+   * the underlying memory. */
+  Jit1Prog *m_jit_prog;
+  JitEntry  m_jit_entry;
 };
 
 /**

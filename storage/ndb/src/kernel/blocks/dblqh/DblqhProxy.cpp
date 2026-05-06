@@ -29,6 +29,8 @@
 #include "dbtup/JoinAggInterpreter.hpp"
 #include <ndbapi/NdbAggregationCommon.hpp>
 #include "dbtup/jit/jit_arena.h"
+#include "dbtup/jit/jit1.h"
+#include "dbtup/jit/ndb_jit_bridge.h"
 
 // Static definition for node failure counter
 std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
@@ -65,6 +67,19 @@ std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
 #define AGGT(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define AGGT(arglist) do { } while (0)
+#endif
+
+/* Phase 4 RONDB-1056: log JIT compile / reject reasons. Mirror of
+ * DEBUG_STAR_AGG — gated on the same VM_TRACE/ERROR_INSERT envelope
+ * by sharing the umbrella define. */
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+#define DEBUG_JIT 1
+#endif
+
+#ifdef DEBUG_JIT
+#define DEB_JIT(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_JIT(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_EXEC_SR
@@ -2667,6 +2682,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       state->m_leaf_programs[i].m_acc_offset = accOffset;
       state->m_leaf_programs[i].m_n_agg_results = leafNAggResults;
       state->m_leaf_programs[i].m_agg_prog_start_pos = 8 + leafNGBCols;
+      /* Phase 4: JIT result fields default to nullptr; the actual
+       * compile attempt happens further down, after
+       * OptimizeProgramBuffer has type-specialised the bytecode. */
+      state->m_leaf_programs[i].m_jit_prog  = nullptr;
+      state->m_leaf_programs[i].m_jit_entry = nullptr;
       DEB_STAR_AGG(("STAR_AGG SETUP: leaf[%u] progLen=%u n_gb=%u "
                     "n_agg=%u acc_off=%u prog_start=%u",
                     i, progLen, leafNGBCols, leafNAggResults,
@@ -2779,6 +2799,62 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     jamDataDebug(lp.m_agg_prog_start_pos);
     PushdownInterpreter::OptimizeProgramBuffer(
         lp.m_agg_program, lp.m_agg_program_len, lp.m_agg_prog_start_pos);
+  }
+
+  /* Phase 4 RONDB-1056: JIT compile attempt.
+   *
+   * Run for single-leaf programs only — multi-leaf is Phase 5. Each
+   * leaf is independently JIT-compiled; failure on one (bridge or
+   * admission reject) leaves m_jit_entry == nullptr so the
+   * corresponding JoinAggInterpreter falls back to the interpreter
+   * loop on every row. The decision is per-leaf, per-program; no
+   * per-row re-evaluation downstream.
+   *
+   * Bytecode handed to the bridge starts at lp.m_agg_program +
+   * lp.m_agg_prog_start_pos (header words 0..7+n_gb_cols precede
+   * the actual aggregation instructions). */
+  if (m_jit_arena != nullptr && state->m_num_leaves == 1) {
+    jam();
+    LeafProgram &lp = state->m_leaf_programs[0];
+    Uint32 bc_off = lp.m_agg_prog_start_pos;
+    if (bc_off < lp.m_agg_program_len) {
+      Uint32 bc_words = lp.m_agg_program_len - bc_off;
+      Program p;
+      JitBridgeError berr;
+      JitBridgeReason brc =
+          ndb_jit_bridge_translate(lp.m_agg_program + bc_off,
+                                    bc_words, &p, &berr);
+      if (brc == JIT_BRIDGE_OK) {
+        Jit1Prog *jp = jit1_compile(m_jit_arena, &p, /*timing=*/nullptr);
+        if (jp != nullptr) {
+          lp.m_jit_prog  = jp;
+          lp.m_jit_entry = jit1_entry(jp);
+          DEB_JIT(("[RONDB-1056] JIT compiled program key=%u "
+                    "leaf 0 (%u bytecode words, %zu bytes emitted)",
+                    key, bc_words, jit1_emitted_size(jp)));
+        } else {
+          const Jit1AdmitError *aerr = jit1_last_admit_error();
+          DEB_JIT(("[RONDB-1056] JIT admission rejected key=%u "
+                    "reason=%d pc=%u kind=%u — interpreter fallback",
+                    key, (int)aerr->reason,
+                    (unsigned)aerr->offending_pc,
+                    (unsigned)aerr->offending_kind));
+        }
+      } else {
+        DEB_JIT(("[RONDB-1056] JIT bridge rejected key=%u "
+                  "reason=%d word=%u op=%u — interpreter fallback",
+                  key, (int)brc,
+                  (unsigned)berr.offending_word,
+                  (unsigned)berr.offending_op));
+      }
+    }
+  } else if (m_jit_arena == nullptr) {
+    DEB_JIT(("[RONDB-1056] JIT disabled (arena unavailable) "
+              "key=%u — interpreter fallback", key));
+  } else {
+    DEB_JIT(("[RONDB-1056] JIT skipped (multi-leaf, %u leaves) "
+              "key=%u — interpreter fallback",
+              state->m_num_leaves, key));
   }
 
   // Allocate JoinAggInterpreter(s) based on strategy.

@@ -50,6 +50,22 @@ if(WITH_SIMSIMD)
   list(APPEND NDBBLOCKS_LINK_LIBS simsimd::simsimd)
 endif()
 
+# RONDB-1056 Phase 4: link the JIT engine + bridge into ndbblocks so
+# DblqhProxy can call jit1_compile / ndb_jit_bridge_translate /
+# ndb_jit_arena_create. The libraries are pure C with no NDB
+# dependencies; on macOS x86_64 they're excluded from the JIT
+# directory's CMakeLists.txt, in which case the variables below are
+# undefined and the corresponding link entries are no-ops.
+IF(TARGET ndb_jit1)
+  list(APPEND NDBBLOCKS_LINK_LIBS ndb_jit1)
+ENDIF()
+IF(TARGET ndb_jit_bridge)
+  list(APPEND NDBBLOCKS_LINK_LIBS ndb_jit_bridge)
+ENDIF()
+IF(TARGET ndb_jit_arena)
+  list(APPEND NDBBLOCKS_LINK_LIBS ndb_jit_arena)
+ENDIF()
+
 ADD_STATIC_LIBRARY(ndbblocks
   LocalProxy.cpp
   PgmanProxy.cpp
