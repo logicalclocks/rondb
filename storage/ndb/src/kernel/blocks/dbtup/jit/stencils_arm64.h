@@ -330,6 +330,28 @@ static const Hole holes_op_mul_int_int[] = {
   { .byte_offset = 76, .kind = HK_OP_A, .width = 4 },
 };
 
+/* op_load_col_ndb — 76 bytes, 9 holes */
+static const uint8_t bytes_op_load_col_ndb[] = {
+  0xff, 0x83, 0x00, 0xd1, 0x88, 0xb9, 0x90, 0xd2, 0xfd, 0x7b, 0x01, 0xa9,
+  0xe0, 0x03, 0x14, 0xaa, 0x68, 0x5f, 0xbd, 0xf2, 0xfd, 0x43, 0x00, 0x91,
+  0xe8, 0x5f, 0xcd, 0xf2, 0x88, 0xfb, 0xff, 0xf2, 0xe8, 0x07, 0x00, 0xf9,
+  0xa8, 0xb8, 0x96, 0xd2, 0x08, 0x98, 0xb9, 0xf2, 0xe1, 0x07, 0x40, 0xf9,
+  0xc8, 0x57, 0xca, 0xf2, 0xe8, 0x31, 0xe7, 0xf2, 0xe8, 0x07, 0x00, 0xf9,
+  0xe2, 0x07, 0x40, 0xf9, 0x00, 0x00, 0x00, 0x94, 0xfd, 0x7b, 0x41, 0xa9,
+  0xff, 0x83, 0x00, 0x91, 
+};
+static const Hole holes_op_load_col_ndb[] = {
+  { .byte_offset = 4, .kind = HK_OP_C, .width = 4 },
+  { .byte_offset = 16, .kind = HK_OP_C, .width = 4 },
+  { .byte_offset = 24, .kind = HK_OP_C, .width = 4 },
+  { .byte_offset = 28, .kind = HK_OP_C, .width = 4 },
+  { .byte_offset = 36, .kind = HK_OP_A, .width = 4 },
+  { .byte_offset = 40, .kind = HK_OP_A, .width = 4 },
+  { .byte_offset = 48, .kind = HK_OP_A, .width = 4 },
+  { .byte_offset = 52, .kind = HK_OP_A, .width = 4 },
+  { .byte_offset = 64, .kind = HK_COLDCALL, .width = 4, .helper_name = "ndb_jit_h_load_col" },
+};
+
 #define STENCIL_(name) \
   { .bytes = bytes_##name, \
     .n_bytes = (uint16_t)sizeof(bytes_##name), \
@@ -358,6 +380,7 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_EXIT] = STENCIL_NOHOLES(op_exit),
   [OP_MINUS_INT_INT] = STENCIL_(op_minus_int_int),
   [OP_MUL_INT_INT] = STENCIL_(op_mul_int_int),
+  [OP_LOAD_COL_NDB] = STENCIL_(op_load_col_ndb),
 };
 
 #endif /* NDB_JIT_STENCILS_ARM64_H */

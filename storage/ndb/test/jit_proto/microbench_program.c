@@ -182,6 +182,7 @@ const char *bc_op_name(uint8_t kind) {
     case OP_EXIT:              return "exit";
     case OP_MINUS_INT_INT:     return "minus_int_int";
     case OP_MUL_INT_INT:       return "mul_int_int";
+    case OP_LOAD_COL_NDB:      return "load_col_ndb";
     default:                   return "?";
   }
 }

@@ -94,7 +94,16 @@ typedef enum {
    * tracks the highest valid kind. */
   OP_MINUS_INT_INT      = 14,
   OP_MUL_INT_INT        = 15,
-  OP_KIND_MAX           = OP_MUL_INT_INT
+  /* Phase 4: NDB cold-call variant of LoadCol. The stencil emits a
+   * regular function call to ndb_jit_h_load_col(state, col_id,
+   * dst_reg) which calls into NDB's readAttributes via the
+   * JitState.ctx pointer. Bridge maps kOpLoadCol to this opcode;
+   * the existing OP_LOAD_COL_INT (pure stencil, reads a flat
+   * row_cols_i64[] array) stays unchanged for microbench tests.
+   * Operand layout: a=dst_reg, c=col_id (16-bit, fits in op->c
+   * after Phase 4's ≤255 col_id restriction). */
+  OP_LOAD_COL_NDB       = 16,
+  OP_KIND_MAX           = OP_LOAD_COL_NDB
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

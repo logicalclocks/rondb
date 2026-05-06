@@ -269,6 +269,37 @@ STENCIL op_mul_int_int(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* op_load_col_ndb : NDB cold-call variant of LoadCol.                */
+/*                                                                    */
+/* The stencil emits a regular C call to ndb_jit_h_load_col(), then   */
+/* tail-calls next. The helper consults JitState.ctx (set by          */
+/* DbtupJitGlue per row) to find the AggInterpreter / Dbtup /         */
+/* KeyReqStruct, calls block_tup->readAttributes(), and writes the    */
+/* int64 value into s->regs_i64[dst_reg].                             */
+/*                                                                    */
+/* The non-tail call is deliberate: the helper has its own stack      */
+/* frame and may invoke ndbrequire / signal-block primitives that     */
+/* expect a normal frame above them.                                  */
+/*                                                                    */
+/* Operand holes:                                                     */
+/*   HOLE(LCN_COL) — col_id (uint32_t passed to helper)               */
+/*   HOLE(LCN_DST) — dst register slot (uint32_t passed to helper)    */
+/*                                                                    */
+/* Cold-call hole:                                                    */
+/*   The `call` / `bl` instruction's PC-rel32 / imm26 displacement    */
+/*   is patched at JIT compile time via the helper registry.          */
+/*   Symbol name "ndb_jit_h_load_col" resolves through                */
+/*   jit1_lookup_helper().                                            */
+/* ------------------------------------------------------------------ */
+DECLARE_HOLE(LCN_COL);
+DECLARE_HOLE(LCN_DST);
+extern void ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg);
+STENCIL op_load_col_ndb(JitState *s) {
+  ndb_jit_h_load_col(s, (uint32_t)HOLE(LCN_COL), (uint32_t)HOLE(LCN_DST));
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* op_skip / op_exit : row terminators.                               */
 /*                                                                    */
 /* Bare returns; the extractor overrides the bytes entirely with      */
@@ -308,4 +339,5 @@ const StencilTailFn g_stencil_anchor[] = {
     op_exit,
     op_minus_int_int,
     op_mul_int_int,
+    op_load_col_ndb,
 };

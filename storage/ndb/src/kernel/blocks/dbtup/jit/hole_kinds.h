@@ -37,7 +37,14 @@ typedef enum {
   HK_OP_IMM         = 4,   /* op->imm (signed; fits 32 bits sign-extended) */
   HK_BRANCH_FALL    = 5,   /* PC-rel disp from patch site to next stencil */
   HK_BRANCH_TAKE    = 6,   /* PC-rel disp from patch site to op.c bytecode pc */
-  HK_KIND_MAX       = HK_BRANCH_TAKE,
+  /* Phase 4 RONDB-1056: HK_COLDCALL — call site for an extern C++
+   * helper (e.g., ndb_jit_h_load_col). Engine resolves the
+   * helper's address at compile time via the helper registry
+   * (jit1_lookup_helper) and patches the PC-rel displacement.
+   * The Hole's helper_name field carries the symbol name to
+   * resolve. */
+  HK_COLDCALL       = 7,
+  HK_KIND_MAX       = HK_COLDCALL,
 } HoleKind;
 
 /* ------------------------------------------------------------------ */
@@ -45,9 +52,14 @@ typedef enum {
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-  uint16_t byte_offset;   /* into the stencil's bytes_*[] array */
-  uint8_t  kind;          /* HoleKind */
-  uint8_t  width;         /* 4 (x86_64 32-bit) or 8 (aarch64 64-bit chain) */
+  uint16_t    byte_offset;  /* into the stencil's bytes_*[] array */
+  uint8_t     kind;         /* HoleKind */
+  uint8_t     width;        /* 4 (x86_64 32-bit) or 8 (aarch64 64-bit chain) */
+  /* Helper symbol name — meaningful only when kind == HK_COLDCALL.
+   * NULL for every other hole kind. The engine resolves this
+   * through jit1_lookup_helper at compile time and patches the
+   * call site with the helper's PC-relative displacement. */
+  const char *helper_name;
 } Hole;
 
 typedef struct {
@@ -93,6 +105,14 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_BLT_A",    HK_OP_A          },
   { "HOLE_BLT_B",    HK_OP_B          },
   { "HOLE_BLT_TGT",  HK_BRANCH_TAKE   },
+  /* Phase 4 op_load_col_ndb — cold-call shape. The two operand
+   * holes are inline mov-imm32 patches; HOLE_HELPER_LOAD_COL is
+   * the cold-call PLT32 / CALL26 patch site (kind=HK_COLDCALL,
+   * helper_name="ndb_jit_h_load_col"). The extractor records the
+   * helper symbol name from the relocation; this table only
+   * lists the operand holes here. */
+  { "HOLE_LCN_COL",  HK_OP_C          },   /* col_id (16-bit, fits in op->c) */
+  { "HOLE_LCN_DST",  HK_OP_A          },   /* dst register slot */
   /* Phase 3 branch-comparison siblings — same hole shape as
    * BLT, one entry per opcode for operand A, B, and target. */
   { "HOLE_BLE_A",    HK_OP_A          },
@@ -200,6 +220,12 @@ static const size_t kHoleSymbolTableLen =
 #define MAGIC_MUL_A       0xb1b16f0f977988afull
 #define MAGIC_MUL_B       0xcdb2fcdafc003d6bull
 
+/* Phase 4 cold-call op_load_col_ndb — operand magics. The
+ * cold-call patch site itself uses HK_COLDCALL with the helper
+ * symbol name; no magic is needed for it. */
+#define MAGIC_LCN_COL     0xffdc6affeafb85ccull
+#define MAGIC_LCN_DST     0x398f52beccc0b5c5ull
+
 /* For the magic-byte scan, the extractor needs a (magic_value,
  * hole_kind) table. We use the same entries as the symbol table
  * above, mapped to magic constants. This is for aarch64 only. */
@@ -242,6 +268,9 @@ static const HoleMagicEntry kHoleMagicTable[] = {
   { MAGIC_MUL_DST,   HK_OP_A,       "MAGIC_MUL_DST"   },
   { MAGIC_MUL_A,     HK_OP_B,       "MAGIC_MUL_A"     },
   { MAGIC_MUL_B,     HK_OP_C,       "MAGIC_MUL_B"     },
+  /* Phase 4 cold-call operand magics. */
+  { MAGIC_LCN_COL,   HK_OP_C,       "MAGIC_LCN_COL"   },
+  { MAGIC_LCN_DST,   HK_OP_A,       "MAGIC_LCN_DST"   },
 };
 static const size_t kHoleMagicTableLen =
     sizeof(kHoleMagicTable) / sizeof(kHoleMagicTable[0]);

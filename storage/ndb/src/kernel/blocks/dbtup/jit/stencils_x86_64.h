@@ -184,6 +184,17 @@ static const Hole holes_op_mul_int_int[] = {
   { .byte_offset = 20, .kind = HK_OP_A, .width = 4 },
 };
 
+/* op_load_col_ndb — 20 bytes, 3 holes */
+static const uint8_t bytes_op_load_col_ndb[] = {
+  0x50, 0xbe, 0x00, 0x00, 0x00, 0x00, 0xba, 0x00, 0x00, 0x00, 0x00, 0x4c,
+  0x89, 0xe7, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x58, 
+};
+static const Hole holes_op_load_col_ndb[] = {
+  { .byte_offset = 2, .kind = HK_OP_C, .width = 4 },
+  { .byte_offset = 7, .kind = HK_OP_A, .width = 4 },
+  { .byte_offset = 15, .kind = HK_COLDCALL, .width = 4, .helper_name = "ndb_jit_h_load_col" },
+};
+
 #define STENCIL_(name) \
   { .bytes = bytes_##name, \
     .n_bytes = (uint16_t)sizeof(bytes_##name), \
@@ -212,6 +223,7 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_EXIT] = STENCIL_NOHOLES(op_exit),
   [OP_MINUS_INT_INT] = STENCIL_(op_minus_int_int),
   [OP_MUL_INT_INT] = STENCIL_(op_mul_int_int),
+  [OP_LOAD_COL_NDB] = STENCIL_(op_load_col_ndb),
 };
 
 #endif /* NDB_JIT_STENCILS_X86_64_H */

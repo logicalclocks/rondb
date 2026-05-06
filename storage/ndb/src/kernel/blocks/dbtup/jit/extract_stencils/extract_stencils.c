@@ -335,7 +335,29 @@ static void add_hole(HoleVec *v, uint16_t off, uint8_t kind, uint8_t width) {
   }
   v->holes[v->n_holes++] = (Hole){
     .byte_offset = off, .kind = kind, .width = width,
+    .helper_name = NULL,
   };
+}
+
+/* Cold-call hole: same as add_hole but carries a helper symbol
+ * name. Phase 4 extractor records the relocation's target symbol
+ * (e.g., "ndb_jit_h_load_col"); the engine's HK_COLDCALL patcher
+ * resolves it through jit1_lookup_helper at compile time. */
+static void add_coldcall_hole(HoleVec *v, uint16_t off, uint8_t width,
+                               const char *helper_name) {
+  if (v->n_holes >= MAX_HOLES_PER_STENCIL) {
+    die("too many holes in one stencil (raise MAX_HOLES_PER_STENCIL)");
+  }
+  v->holes[v->n_holes++] = (Hole){
+    .byte_offset = off, .kind = HK_COLDCALL, .width = width,
+    .helper_name = helper_name,
+  };
+}
+
+/* Phase 4: helper-symbol naming convention. Any extern function
+ * symbol prefixed with "ndb_jit_h_" is a cold-call helper. */
+static int is_jit_helper_symbol(const char *name) {
+  return starts_with(name, "ndb_jit_h_");
 }
 
 /* Sort holes by byte_offset for deterministic output. */
@@ -440,6 +462,16 @@ static ExtractedStencil extract_one_x86(
         add_hole(&out.holes, local_off, HK_BRANCH_TAKE, 4);
         continue;
       }
+    }
+
+    /* Phase 4 cold-call: PLT32 against an ndb_jit_h_* helper symbol.
+     * The patch site is the 4-byte rel32 displacement of the
+     * `call rel32` (e8 ?? ?? ?? ??) instruction. Allowed in any
+     * tail policy — cold-call stencils are TAIL_STRIP_TAIL (the
+     * trailing tail-call to `next` is stripped as usual). */
+    if (type == R_X86_64_PLT32 && is_jit_helper_symbol(tname)) {
+      add_coldcall_hole(&out.holes, local_off, 4, tname);
+      continue;
     }
 
     /* Operand holes: relocation against one of the HOLE_* symbols
@@ -579,6 +611,16 @@ static ExtractedStencil extract_one_arm64(
       }
     }
 
+    /* Phase 4 cold-call: CALL26 against an ndb_jit_h_* helper
+     * symbol. The patch site is the 4-byte `bl imm26` instruction
+     * itself; engine writes the imm26 displacement at compile
+     * time. Allowed in any tail policy. */
+    if ((type == R_AARCH64_CALL26 || type == R_AARCH64_JUMP26) &&
+        is_jit_helper_symbol(tname)) {
+      add_coldcall_hole(&out.holes, local_off, 4, tname);
+      continue;
+    }
+
     /* On aarch64 operand holes use magic-byte chains, NOT relocations.
      * Anything reaching this point is unexpected — diagnose. */
     die("%s: unrecognised aarch64 relocation: type=%u target=%s offset=%llu",
@@ -695,6 +737,7 @@ static const OpkindMap kOpkindMap[] = {
   { "op_exit",                "OP_EXIT"               },
   { "op_minus_int_int",       "OP_MINUS_INT_INT"      },
   { "op_mul_int_int",         "OP_MUL_INT_INT"        },
+  { "op_load_col_ndb",        "OP_LOAD_COL_NDB"       },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 
@@ -713,6 +756,7 @@ static const char *kind_name(uint8_t kind) {
     case HK_OP_IMM:      return "HK_OP_IMM";
     case HK_BRANCH_FALL: return "HK_BRANCH_FALL";
     case HK_BRANCH_TAKE: return "HK_BRANCH_TAKE";
+    case HK_COLDCALL:    return "HK_COLDCALL";
     default:             return "?";
   }
 }
@@ -760,9 +804,17 @@ static void emit_header(FILE *out,
       fprintf(out, "static const Hole holes_%s[] = {\n", s->name);
       for (uint8_t h = 0; h < s->holes.n_holes; ++h) {
         const Hole *hh = &s->holes.holes[h];
-        fprintf(out,
-                "  { .byte_offset = %u, .kind = %s, .width = %u },\n",
-                hh->byte_offset, kind_name(hh->kind), hh->width);
+        if (hh->kind == HK_COLDCALL && hh->helper_name != NULL) {
+          fprintf(out,
+                  "  { .byte_offset = %u, .kind = %s, .width = %u, "
+                  ".helper_name = \"%s\" },\n",
+                  hh->byte_offset, kind_name(hh->kind), hh->width,
+                  hh->helper_name);
+        } else {
+          fprintf(out,
+                  "  { .byte_offset = %u, .kind = %s, .width = %u },\n",
+                  hh->byte_offset, kind_name(hh->kind), hh->width);
+        }
       }
       fprintf(out, "};\n");
     }

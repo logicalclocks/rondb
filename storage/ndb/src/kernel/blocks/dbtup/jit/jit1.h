@@ -31,12 +31,16 @@ extern "C" {
 
 /* JIT execution state. Identical layout in stencils_src.c and the
  * bench so clang's struct-offset calculations match the patcher's
- * runtime use. Phase 4 replaces this with the real
- * AggInterpreter::ProcessRec state. */
+ * runtime use. Phase 4 adds `ctx` for the cold-call mechanism: C++
+ * helpers cast it to a context struct that carries NDB-side
+ * pointers (block_tup, req_struct, the AggInterpreter instance).
+ * Microbench code keeps ctx == nullptr; pure stencils never read
+ * ctx. */
 typedef struct JitState {
   int64_t   regs_i64[BC_MAX_REGS];   /* per-row register file */
   int64_t   acc_i64[BC_MAX_ACCS];    /* program-level accumulators */
-  const int64_t *row_cols_i64;       /* current row's columns */
+  const int64_t *row_cols_i64;       /* current row's columns (microbench path) */
+  void     *ctx;                     /* opaque per-call context for cold-call helpers */
 } JitState;
 
 /* Per-row entry function — produced by jit1_compile.
@@ -131,6 +135,35 @@ JitEntry jit1_entry(const Jit1Prog *prog);
 
 /* Total emitted size in bytes (for diagnostics). */
 size_t jit1_emitted_size(const Jit1Prog *prog);
+
+/* ------------------------------------------------------------------ */
+/* Phase 4 RONDB-1056 — cold-call helper registry.                    */
+/*                                                                    */
+/* Some opcodes (kOpLoadCol, future kOpDiv NULL fixup, kOpStringSearch,*/
+/* etc.) are too complex to inline as pure stencils — their stencils  */
+/* emit a regular C function call to an extern helper, then continue  */
+/* with TAIL_NEXT. The engine's compile-time patcher resolves the    */
+/* helper's address through this registry and writes a PC-relative    */
+/* displacement at the call site (HK_COLDCALL hole).                  */
+/*                                                                    */
+/* Registration is one-shot at engine init (e.g., from                */
+/* DbtupJitGlue::dbtup_jit_register_helpers). Call before any         */
+/* jit1_compile that targets a stencil with cold-call holes —         */
+/* otherwise compile fails ENOENT.                                    */
+/* ------------------------------------------------------------------ */
+
+/* Generic callable type. Helpers cast the JitState* / extra args
+ * to their own signatures; the registry doesn't enforce a shape. */
+typedef void (*JitHelperFn)(void);
+
+/* Register a helper. Returns 0 on success, -1 if the registry is
+ * full (raise the static cap in jit1.c). Re-registering the same
+ * name with the same fn is a no-op; same name with different fn
+ * returns -1 (defensive — name collisions are bugs). */
+int jit1_register_helper(const char *name, JitHelperFn fn);
+
+/* Look up a helper by name. Returns NULL if not registered. */
+JitHelperFn jit1_lookup_helper(const char *name);
 
 #ifdef __cplusplus
 }

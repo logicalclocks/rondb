@@ -203,6 +203,62 @@ static inline void patch_branch_disp(uint8_t *site, int32_t byte_disp) {
 #endif
 
 /* ------------------------------------------------------------------ */
+/* Helper registry (Phase 4 RONDB-1056).                              */
+/*                                                                    */
+/* Cold-call stencils (HK_COLDCALL holes) reference extern helpers    */
+/* by symbol name; the engine resolves them at compile time through  */
+/* this static table. Registration is one-shot at engine init from   */
+/* the C++ glue layer (DbtupJitGlue::dbtup_jit_register_helpers).    */
+/*                                                                    */
+/* Single-threaded compile per RonSQL §10.1, but the table is        */
+/* register-once and never modified after init, so concurrent         */
+/* lookups by future multi-threaded compile would be safe-by-       */
+/* construction without locks. */
+/* ------------------------------------------------------------------ */
+
+#define J1_MAX_HELPERS 16
+
+typedef struct {
+  const char  *name;
+  JitHelperFn  fn;
+} JitHelperEntry;
+
+static JitHelperEntry g_helpers[J1_MAX_HELPERS];
+static int g_n_helpers = 0;
+
+int jit1_register_helper(const char *name, JitHelperFn fn) {
+  if (name == NULL || fn == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+  /* Idempotent re-register: same name + same fn is a no-op. Same
+   * name + different fn is rejected — that's a bug worth catching. */
+  for (int i = 0; i < g_n_helpers; ++i) {
+    if (strcmp(g_helpers[i].name, name) == 0) {
+      if (g_helpers[i].fn == fn) return 0;
+      errno = EEXIST;
+      return -1;
+    }
+  }
+  if (g_n_helpers >= J1_MAX_HELPERS) {
+    errno = ENOSPC;
+    return -1;
+  }
+  g_helpers[g_n_helpers].name = name;
+  g_helpers[g_n_helpers].fn   = fn;
+  g_n_helpers++;
+  return 0;
+}
+
+JitHelperFn jit1_lookup_helper(const char *name) {
+  if (name == NULL) return NULL;
+  for (int i = 0; i < g_n_helpers; ++i) {
+    if (strcmp(g_helpers[i].name, name) == 0) return g_helpers[i].fn;
+  }
+  return NULL;
+}
+
+/* ------------------------------------------------------------------ */
 /* Per-phase timing helpers.                                          */
 /* ------------------------------------------------------------------ */
 
@@ -421,6 +477,44 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
           uint32_t patch_site_off = this_off + hole->byte_offset;
           int32_t  byte_disp = (int32_t)next_off - (int32_t)patch_site_off;
           patch_branch_disp(patch, byte_disp);
+          break;
+        }
+        case HK_COLDCALL: {
+          /* Phase 4 RONDB-1056: PC-relative call to an extern
+           * helper. The helper lives outside the JIT arena (in the
+           * main binary's .text), so the displacement must be
+           * computed using the patch site's eventual RX address —
+           * NOT its RW address — because the CPU executes from the
+           * RX mapping. ndb_jit_arena_exec_addr translates without
+           * sealing.
+           *
+           * Range concern: x86_64 call rel32 covers ±2GB, aarch64
+           * bl imm26 covers ±128MB. Both should comfortably fit
+           * within ndbmtd's address space; if a future huge-binary
+           * configuration overflows, the engine could fall back to
+           * indirect-call codegen (Phase 5 hardening). */
+          if (hole->helper_name == NULL) {
+            errno = EINVAL;   /* extractor bug — HK_COLDCALL without name */
+            return NULL;
+          }
+          JitHelperFn helper = jit1_lookup_helper(hole->helper_name);
+          if (helper == NULL) {
+            errno = ENOENT;   /* helper not registered before compile */
+            return NULL;
+          }
+          uint32_t patch_site_off = this_off + hole->byte_offset;
+          const void *rx_site =
+              ndb_jit_arena_exec_addr(arena, blob_rw + patch_site_off);
+          if (rx_site == NULL) {
+            errno = EFAULT;
+            return NULL;
+          }
+          int64_t byte_disp = (int64_t)(intptr_t)helper -
+                               (int64_t)(uintptr_t)rx_site;
+          /* patch_branch_disp on x86_64 writes (disp - 4) for
+           * next-instruction-relative; on aarch64 writes
+           * (disp >> 2) packed into imm26. Both arch-correct here. */
+          patch_branch_disp(patch, (int32_t)byte_disp);
           break;
         }
         case HK_BRANCH_TAKE: {

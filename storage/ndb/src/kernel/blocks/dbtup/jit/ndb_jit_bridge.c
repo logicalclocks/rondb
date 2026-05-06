@@ -190,6 +190,18 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
       }
 
       case BR_kOpLoadCol: {
+        /* NDB → JIT mapping: kOpLoadCol is too complex to inline as
+         * a pure stencil — it must call into NDB to read the column
+         * from the row buffer. So we emit OP_LOAD_COL_NDB which is
+         * a cold-call stencil; the helper ndb_jit_h_load_col is
+         * registered by DbtupJitGlue at engine init.
+         *
+         * Op layout for OP_LOAD_COL_NDB:
+         *   a = dst register slot (4 bits in NDB's bits 19-16)
+         *   c = NDB col_id        (16 bits in NDB's bits 15-0)
+         *
+         * Phase 4 narrow scope: col_id ≤ 255 (fits in op->c uint8).
+         * Larger col_ids would need an extended hole. */
         uint8_t  type      = (uint8_t)((word >> 21) & 0x1Fu);
         uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
         uint16_t col_index = (uint16_t)(word & 0xFFFFu);
@@ -197,12 +209,12 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_NON_BIGINT, this_pos, op);
           return JIT_BRIDGE_NON_BIGINT;
         }
-        if (reg_index >= BC_MAX_REGS || col_index >= BC_MAX_COLS) {
+        if (reg_index >= BC_MAX_REGS || col_index > 255) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
-        if (!emit_op(out_prog, OP_LOAD_COL_INT,
-                     reg_index, (uint8_t)col_index, 0, 0)) {
+        if (!emit_op(out_prog, OP_LOAD_COL_NDB,
+                     reg_index, 0, (uint8_t)col_index, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }

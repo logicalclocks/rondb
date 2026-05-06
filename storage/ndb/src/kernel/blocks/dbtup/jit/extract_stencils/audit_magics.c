@@ -130,6 +130,9 @@ static const struct {
   { "MAGIC_MUL_DST",   "op_mul_int_int"       },
   { "MAGIC_MUL_A",     "op_mul_int_int"       },
   { "MAGIC_MUL_B",     "op_mul_int_int"       },
+  /* Phase 4 cold-call op_load_col_ndb operand magics. */
+  { "MAGIC_LCN_COL",   "op_load_col_ndb"      },
+  { "MAGIC_LCN_DST",   "op_load_col_ndb"      },
 };
 static const size_t kMagicToStencilLen =
     sizeof(kMagicToStencil) / sizeof(kMagicToStencil[0]);
