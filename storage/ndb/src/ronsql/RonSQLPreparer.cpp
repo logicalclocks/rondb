@@ -6113,8 +6113,8 @@ RonSQLPreparer::execute_join()
 // Originally Phase E.3 (single CTE_SCAN root); Phase I.8 generalized
 // to multi-op shapes (real-table root + CTE_LOOKUP child, etc.).
 // Each output column is routed to its owning operation via
-// column_table_idx: CTE refs use cteVirtualTables[op_idx]->getColumn(),
-// real-table refs use column_map[col_idx].
+// m_main_scope.resolved_columns: CTE refs use the pre-registered
+// cteAttrsByCol entry, real-table refs use the stored column descriptor.
 //
 // Mirrors testCteNdbApi.cpp Tests 8 (single CTE_SCAN root) and 17
 // (readTuple root + CTE_LOOKUP child) — both call getValue() on
@@ -6146,6 +6146,8 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   require_run(num_cols > 0, "Pass-through drain: no outputs to deliver.");
   NdbRecAttr** attrs =
       m_amalloc->alloc_exc<NdbRecAttr*>(num_cols);
+  require_run(m_main_scope.resolved_columns != NULL,
+              "Pass-through drain: missing resolved columns.");
 
   // Register NdbRecAttrs per main op.  Two constraints from the NDB
   // API receiver layer:
@@ -6205,7 +6207,13 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
        o = o->next, i++) {
     ndbrequire(o->type == Outputs::Type::COLUMN);
     Uint32 col_idx = o->column.col_idx;
-    Uint32 plan_op_idx = m_main_scope.column_table_idx[col_idx];
+    const QueryScope::ResolvedColumnRef& col_ref =
+        m_main_scope.resolved_columns[col_idx];
+    require_prm(
+        col_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn ||
+        col_ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn,
+        "Pass-through drain: output is not a table or CTE column.");
+    Uint32 plan_op_idx = col_ref.join_op_idx;
     require_run(plan_op_idx < numMainOps,
                 "Pass-through drain: column resolves to op outside "
                 "the main JoinPlan.");
@@ -6215,16 +6223,14 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
                 "Pass-through drain: failed to resolve "
                 "NdbQueryOperation for output column.");
 
-    const JoinOp& jop = m_main_scope.join_plan.ops[plan_op_idx];
-    if (jop.type == JoinOp::CTE_LOOKUP || jop.type == JoinOp::CTE_SCAN) {
-      Uint32 cte_col_idx =
-          (Uint32)m_main_scope.column_attrId_map[col_idx];
+    if (col_ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn) {
+      Uint32 cte_col_idx = col_ref.cte_result_idx;
       ndbrequire(cteAttrsByCol[plan_op_idx] != NULL);
       attrs[i] = cteAttrsByCol[plan_op_idx][cte_col_idx];
       require_run(attrs[i] != NULL,
                   "Pass-through drain: CTE NdbRecAttr lookup failed.");
     } else {
-      const NdbDictionary::Column* col = m_main_scope.column_map[col_idx];
+      const NdbDictionary::Column* col = col_ref.dict_column;
       require_run(col != NULL,
                   "Pass-through drain: real-table column descriptor "
                   "missing.");
