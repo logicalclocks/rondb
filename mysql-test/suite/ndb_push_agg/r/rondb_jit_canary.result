@@ -1,0 +1,61 @@
+############################################################
+# RONDB-1056 Phase 4 JIT canary
+############################################################
+# Tables: BIGINT NOT NULL columns only.
+CREATE TABLE t1 (
+pk    BIGINT NOT NULL,
+c1    BIGINT NOT NULL,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+CREATE TABLE t2 (
+pk    BIGINT NOT NULL,
+c2    BIGINT NOT NULL,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+# Load test data — small, deterministic.
+INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50);
+INSERT INTO t2 VALUES (1, 100), (2, 200), (3, 300), (4, 400), (5, 500);
+############################################################
+# Q1: SUM over a 2-table PK join, no GROUP BY, no WHERE.
+#     Expected: SUM(t2.c2) for matched pks = 100+200+300+400+500 = 1500
+############################################################
+SET ndb_join_pushdown_aggregate=ON;
+SELECT SUM(t2.c2)
+FROM t1 JOIN t2 ON t2.pk = t1.pk;
+SUM(t2.c2)
+1500
+############################################################
+# Q2: SUM of bigint arithmetic over the same join.
+#     Expected: SUM(t1.c1 + t2.c2) = (10+100)+(20+200)+(30+300)+(40+400)+(50+500) = 1650
+############################################################
+SELECT SUM(t1.c1 + t2.c2)
+FROM t1 JOIN t2 ON t2.pk = t1.pk;
+SUM(t1.c1 + t2.c2)
+1650
+############################################################
+# Q3: SUM of mixed arithmetic (Plus + Minus + Mul).
+#     Expected: SUM(t2.c2 - t1.c1 + t1.c1 * 0)
+#             = (100-10)+(200-20)+(300-30)+(400-40)+(500-50)
+#             = 90+180+270+360+450 = 1350
+############################################################
+SELECT SUM(t2.c2 - t1.c1 + t1.c1 * 0)
+FROM t1 JOIN t2 ON t2.pk = t1.pk;
+SUM(t2.c2 - t1.c1 + t1.c1 * 0)
+1350
+############################################################
+# Q4 (fallback): query with WHERE clause — admission MUST reject
+#                (kOpEmbeddedInterp for the filter), interpreter
+#                takes over. Same expected result as Q1 minus
+#                rows where t1.c1 < 25 (i.e., pk in {1,2}):
+#                SUM(t2.c2) for pk in {3,4,5} = 300+400+500 = 1200
+############################################################
+SELECT SUM(t2.c2)
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+WHERE t1.c1 >= 25;
+SUM(t2.c2)
+1200
+############################################################
+# Cleanup
+############################################################
+DROP TABLE t2;
+DROP TABLE t1;
