@@ -1045,14 +1045,23 @@ RonSQLPreparer::load_single_table()
     throw RonSQLMaybeStaleSchema("Index's table id/version did not match"
                                  " table's object id/version.");
   }
-  // Populate m_main_scope.column_attrId_map and m_main_scope.column_map
+  // Populate m_main_scope.column_attrId_map, column_map, column_table_idx and
+  // resolved_columns for the single-table path. Join queries use
+  // resolve_columns_for_scope(); single-table filters still need the same
+  // descriptor data for the emit path.
   NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(m_columns.size());
   const NdbDictionary::Column** col_map =
       m_amalloc->alloc_exc<const NdbDictionary::Column*>(m_columns.size());
+  Uint32* col_table_idx = m_amalloc->alloc_exc<Uint32>(m_columns.size());
+  QueryScope::ResolvedColumnRef* resolved =
+      m_amalloc->alloc_exc<QueryScope::ResolvedColumnRef>(m_columns.size());
   for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
+    col_id_map[col_idx] = -1;
+    col_map[col_idx] = NULL;
+    col_table_idx[col_idx] = 0;
+    new (&resolved[col_idx]) QueryScope::ResolvedColumnRef();
+
     if (m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx]) {
-      col_id_map[col_idx] = -1;
-      col_map[col_idx] = NULL;
       continue;
     }
     const char* col_name = DBG(m_columns[DBG(col_idx)].c_str());
@@ -1062,8 +1071,8 @@ RonSQLPreparer::load_single_table()
       // have been found above.  A pure alias (no matching table column)
       // is harmless — skip it with a sentinel.
       if (m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]) {
-        col_id_map[col_idx] = -1;
-        col_map[col_idx] = NULL;
+        resolved[col_idx].kind =
+            QueryScope::ResolvedColumnRef::Kind::AliasOnly;
         continue;
       }
       err << "Failed to get column " << quoted_identifier(col_name) << "."
@@ -1074,9 +1083,16 @@ RonSQLPreparer::load_single_table()
     }
     col_id_map[col_idx] = DBG(col->getAttrId());
     col_map[col_idx] = col;
+    resolved[col_idx].kind =
+        QueryScope::ResolvedColumnRef::Kind::StoredColumn;
+    resolved[col_idx].join_op_idx = 0;
+    resolved[col_idx].attr_id = DBG(col->getAttrId());
+    resolved[col_idx].dict_column = col;
   }
   m_main_scope.column_attrId_map = col_id_map;
   m_main_scope.column_map = col_map;
+  m_main_scope.column_table_idx = col_table_idx;
+  m_main_scope.resolved_columns = resolved;
 }
 
 void
@@ -7115,7 +7131,13 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                   "CTE_LOOKUP filter: IS NULL operand must be a "
                   "column reference.");
       Uint32 col_idx = col_side->col_idx;
-      require_prm(scope.column_table_idx[col_idx] == op_idx,
+      require_run(scope.resolved_columns != NULL,
+                  "CTE_LOOKUP filter: missing resolved columns.");
+      const QueryScope::ResolvedColumnRef& col_ref =
+          scope.resolved_columns[col_idx];
+      require_prm(
+          col_ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+          col_ref.join_op_idx == op_idx,
                   "CTE_LOOKUP filter: IS conjunct references a column "
                   "not on this CTE.");
 
@@ -7136,7 +7158,7 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                     "unmatched rows.");
       }
 
-      Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
+      Uint32 cte_col_idx = col_ref.cte_result_idx;
       Uint32 position = cte_col_idx;
       int rc = atom->is.null
           ? code.branch_linked_isnotnull(position, fail_label)
@@ -7169,16 +7191,26 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     if (left->op == T_IDENTIFIER && right->op == T_IDENTIFIER) {
       Uint32 col_l = left->col_idx;
       Uint32 col_r = right->col_idx;
-      require_prm(scope.column_table_idx[col_l] == op_idx,
+      require_run(scope.resolved_columns != NULL,
+                  "CTE_LOOKUP filter: missing resolved columns.");
+      const QueryScope::ResolvedColumnRef& ref_l =
+          scope.resolved_columns[col_l];
+      const QueryScope::ResolvedColumnRef& ref_r =
+          scope.resolved_columns[col_r];
+      require_prm(
+          ref_l.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+          ref_l.join_op_idx == op_idx,
                   "CTE_LOOKUP filter col-vs-col: left column does not "
                   "reference this CTE.  Cross-CTE / parent-vs-CTE "
                   "comparisons not yet supported.");
-      require_prm(scope.column_table_idx[col_r] == op_idx,
+      require_prm(
+          ref_r.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+          ref_r.join_op_idx == op_idx,
                   "CTE_LOOKUP filter col-vs-col: right column does not "
                   "reference this CTE.  Cross-CTE / parent-vs-CTE "
                   "comparisons not yet supported.");
-      Uint32 pos_l = (Uint32)scope.column_attrId_map[col_l];
-      Uint32 pos_r = (Uint32)scope.column_attrId_map[col_r];
+      Uint32 pos_l = ref_l.cte_result_idx;
+      Uint32 pos_r = ref_r.cte_result_idx;
       const NdbDictionary::Column* vc_l = virtTab->getColumn((int)pos_l);
       const NdbDictionary::Column* vc_r = virtTab->getColumn((int)pos_r);
       require_prm(vc_l != NULL && vc_r != NULL,
@@ -7254,7 +7286,13 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     }
 
     Uint32 col_idx = col_side->col_idx;
-    require_prm(scope.column_table_idx[col_idx] == op_idx,
+    require_run(scope.resolved_columns != NULL,
+                "CTE_LOOKUP filter: missing resolved columns.");
+    const QueryScope::ResolvedColumnRef& col_ref =
+        scope.resolved_columns[col_idx];
+    require_prm(
+        col_ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+        col_ref.join_op_idx == op_idx,
                 "CTE_LOOKUP filter conjunct references a column not on "
                 "this CTE. classify_where_by_table should have routed it "
                 "elsewhere.");
@@ -7263,7 +7301,7 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     // branch). The linked-buffer position used by handleReadLinkedToMem
     // matches the addColumn order — GB keys first, then aggregate
     // results — which is also the order of CTE outputs.
-    Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
+    Uint32 cte_col_idx = col_ref.cte_result_idx;
     Uint32 position = cte_col_idx;
 
     // The compare path depends on whether the CTE output is a direct
@@ -7285,16 +7323,15 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     const JoinOp& cte_op = scope.join_plan.ops[op_idx];
     require_run(cte_op.cte_def != NULL,
                 "CTE_LOOKUP filter: op has no CTE definition.");
-    require_run(cte_op.cte_def_idx < m_cte_scopes.size(),
+    require_run(col_ref.cte_def_idx == cte_op.cte_def_idx,
+                "CTE_LOOKUP filter: descriptor CTE index mismatch.");
+    require_run(col_ref.cte_def_idx < m_cte_scopes.size(),
                 "CTE_LOOKUP filter: cte_def_idx out of range.");
-    QueryScope* cs = m_cte_scopes[cte_op.cte_def_idx];
+    QueryScope* cs = m_cte_scopes[col_ref.cte_def_idx];
     require_run(cs != NULL,
                 "CTE_LOOKUP filter: missing CTE body scope.");
 
-    // Walk the CTE outputs list to position cte_col_idx.
-    Uint32 walk = 0;
-    const Outputs* o = cte_op.cte_def->stmt->outputs;
-    while (o != NULL && walk < cte_col_idx) { o = o->next; walk++; }
+    const Outputs* o = col_ref.cte_output;
     require_prm(o != NULL, "CTE_LOOKUP filter: output index out of range.");
 
     bool use_inline_path = false;
@@ -8098,19 +8135,30 @@ RonSQLPreparer::apply_filter_cmp(NdbScanFilter* filter,
     throw RonSQLPermanentError("For comparison operators, at least one of the"
                                " operands must be a column name");
   }
+  require_run(scope.resolved_columns != NULL,
+              "WHERE filter comparison: missing resolved columns.");
+  const QueryScope::ResolvedColumnRef& left_ref =
+      scope.resolved_columns[left->col_idx];
+  require_prm(left_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+              "WHERE filter comparison requires a stored-table column.");
   if (right->op == T_IDENTIFIER) {
-    ndbrequire(scope.column_attrId_map != NULL);
+    const QueryScope::ResolvedColumnRef& right_ref =
+        scope.resolved_columns[right->col_idx];
+    require_prm(
+        right_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+        "WHERE filter column-vs-column comparison requires stored-table "
+        "columns.");
     require_sch(DBG(filter->cmp(DBG(cond),
-                                DBG(scope.column_attrId_map[left->col_idx]),
-                                DBG(scope.column_attrId_map[right->col_idx]))) >= 0,
+                                DBG(left_ref.attr_id),
+                                DBG(right_ref.attr_id))) >= 0,
                 filter_fail);
     return;
   }
-  ndbrequire(scope.column_attrId_map != NULL);
-  ndbrequire(scope.column_map != NULL);
-  raw_value rv = encode_constant(right, scope.column_map[left->col_idx]);
+  require_prm(left_ref.dict_column != NULL,
+              "WHERE filter comparison has no source column descriptor.");
+  raw_value rv = encode_constant(right, left_ref.dict_column);
   require_sch(DBG(filter->cmp(DBG(cond),
-                              DBG(scope.column_attrId_map[left->col_idx]),
+                              DBG(left_ref.attr_id),
                               DBG(rv).val,
                               rv.len)) >= 0,
               filter_fail);
@@ -8129,9 +8177,14 @@ RonSQLPreparer::apply_filter_like(NdbScanFilter* filter,
   if (right->op != T_STRING) {
     throw RonSQLPermanentError("LIKE requires a string pattern on the right side");
   }
-  ndbrequire(scope.column_attrId_map != NULL);
+  require_run(scope.resolved_columns != NULL,
+              "WHERE LIKE filter: missing resolved columns.");
+  const QueryScope::ResolvedColumnRef& left_ref =
+      scope.resolved_columns[left->col_idx];
+  require_prm(left_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+              "WHERE LIKE filter requires a stored-table column.");
   require_sch(DBG(filter->cmp(cond,
-                               scope.column_attrId_map[left->col_idx],
+                               left_ref.attr_id,
                                right->string.str,
                                right->string.len)) >= 0,
               filter_fail);
