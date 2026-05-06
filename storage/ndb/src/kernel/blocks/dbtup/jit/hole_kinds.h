@@ -110,6 +110,14 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_BNE_A",    HK_OP_A          },
   { "HOLE_BNE_B",    HK_OP_B          },
   { "HOLE_BNE_TGT",  HK_BRANCH_TAKE   },
+  /* Phase 4 hot-arithmetic siblings of OP_ADD_INT_INT — same
+   * (a=dst, b=lhs, c=rhs) operand layout. */
+  { "HOLE_MINUS_DST", HK_OP_A         },
+  { "HOLE_MINUS_A",   HK_OP_B         },
+  { "HOLE_MINUS_B",   HK_OP_C         },
+  { "HOLE_MUL_DST",   HK_OP_A         },
+  { "HOLE_MUL_A",     HK_OP_B         },
+  { "HOLE_MUL_B",     HK_OP_C         },
 };
 static const size_t kHoleSymbolTableLen =
     sizeof(kHoleSymbolTable) / sizeof(kHoleSymbolTable[0]);
@@ -181,6 +189,17 @@ static const size_t kHoleSymbolTableLen =
 /* MAGIC_B<XX>_TGT — same as BLT_TGT, no aarch64 magic; targets
  * resolve via R_AARCH64_CALL26 / JUMP26 relocations. */
 
+/* Phase 4 hot-arithmetic siblings (Minus, Mul). Generated via
+ *   sha256("RONDB-1056-Phase4-magic-v1|" + name)[0:8]
+ * interpreted as little-endian uint64. All four 16-bit slots of
+ * each magic are nonzero, so clang emits a full movz+3×movk chain. */
+#define MAGIC_MINUS_DST   0xd8b283b66c231d0cull
+#define MAGIC_MINUS_A     0xab82e19e8b86abd7ull
+#define MAGIC_MINUS_B     0xfbf6f681133e7678ull
+#define MAGIC_MUL_DST     0xf25c1230a00880f1ull
+#define MAGIC_MUL_A       0xb1b16f0f977988afull
+#define MAGIC_MUL_B       0xcdb2fcdafc003d6bull
+
 /* For the magic-byte scan, the extractor needs a (magic_value,
  * hole_kind) table. We use the same entries as the symbol table
  * above, mapped to magic constants. This is for aarch64 only. */
@@ -216,6 +235,13 @@ static const HoleMagicEntry kHoleMagicTable[] = {
   { MAGIC_BGE_B,    HK_OP_B,        "MAGIC_BGE_B"    },
   { MAGIC_BNE_A,    HK_OP_A,        "MAGIC_BNE_A"    },
   { MAGIC_BNE_B,    HK_OP_B,        "MAGIC_BNE_B"    },
+  /* Phase 4 hot-arithmetic siblings. */
+  { MAGIC_MINUS_DST, HK_OP_A,       "MAGIC_MINUS_DST" },
+  { MAGIC_MINUS_A,   HK_OP_B,       "MAGIC_MINUS_A"   },
+  { MAGIC_MINUS_B,   HK_OP_C,       "MAGIC_MINUS_B"   },
+  { MAGIC_MUL_DST,   HK_OP_A,       "MAGIC_MUL_DST"   },
+  { MAGIC_MUL_A,     HK_OP_B,       "MAGIC_MUL_A"     },
+  { MAGIC_MUL_B,     HK_OP_C,       "MAGIC_MUL_B"     },
 };
 static const size_t kHoleMagicTableLen =
     sizeof(kHoleMagicTable) / sizeof(kHoleMagicTable[0]);

@@ -57,6 +57,16 @@ void interp_run(const Program *prog,
           ++pc;
           break;
 
+        case OP_MINUS_INT_INT:
+          s.regs_i64[op->a] = s.regs_i64[op->b] - s.regs_i64[op->c];
+          ++pc;
+          break;
+
+        case OP_MUL_INT_INT:
+          s.regs_i64[op->a] = s.regs_i64[op->b] * s.regs_i64[op->c];
+          ++pc;
+          break;
+
         case OP_SUM_BIGINT:
           s.acc_i64[op->a] += s.regs_i64[op->b];
           ++pc;

@@ -123,6 +123,13 @@ static const struct {
   { "MAGIC_BGE_B",    "op_branch_ge_int_int"  },
   { "MAGIC_BNE_A",    "op_branch_ne_int_int"  },
   { "MAGIC_BNE_B",    "op_branch_ne_int_int"  },
+  /* Phase 4 hot-arithmetic siblings. */
+  { "MAGIC_MINUS_DST", "op_minus_int_int"     },
+  { "MAGIC_MINUS_A",   "op_minus_int_int"     },
+  { "MAGIC_MINUS_B",   "op_minus_int_int"     },
+  { "MAGIC_MUL_DST",   "op_mul_int_int"       },
+  { "MAGIC_MUL_A",     "op_mul_int_int"       },
+  { "MAGIC_MUL_B",     "op_mul_int_int"       },
 };
 static const size_t kMagicToStencilLen =
     sizeof(kMagicToStencil) / sizeof(kMagicToStencil[0]);

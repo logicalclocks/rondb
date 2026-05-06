@@ -693,6 +693,8 @@ static const OpkindMap kOpkindMap[] = {
   { "op_branch_ne_int_int",   "OP_BRANCH_NE_INT_INT"  },
   { "op_skip",                "OP_SKIP"               },
   { "op_exit",                "OP_EXIT"               },
+  { "op_minus_int_int",       "OP_MINUS_INT_INT"      },
+  { "op_mul_int_int",         "OP_MUL_INT_INT"        },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 

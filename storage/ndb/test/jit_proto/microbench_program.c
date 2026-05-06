@@ -180,6 +180,8 @@ const char *bc_op_name(uint8_t kind) {
     case OP_BRANCH_NE_INT_INT: return "branch_ne_int_int";
     case OP_SKIP:              return "skip";
     case OP_EXIT:              return "exit";
+    case OP_MINUS_INT_INT:     return "minus_int_int";
+    case OP_MUL_INT_INT:       return "mul_int_int";
     default:                   return "?";
   }
 }

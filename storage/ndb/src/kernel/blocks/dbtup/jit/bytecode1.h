@@ -84,7 +84,17 @@ typedef enum {
   OP_BRANCH_NE_INT_INT  = 11,
   OP_SKIP               = 12,
   OP_EXIT               = 13,
-  OP_KIND_MAX           = OP_EXIT
+  /* Phase 4 hot-arithmetic siblings of OP_ADD_INT_INT — same
+   * operand layout (a=dst, b=lhs, c=rhs). Bridge maps NDB's
+   * kOpMinusBigint / kOpMulBigint to these; kOpPlusBigint maps to
+   * the existing OP_ADD_INT_INT (Phase 1's name kept for stability).
+   *
+   * These follow OP_EXIT in numeric order — append-only so existing
+   * stencils' g_stencils[kind] indices don't shift. OP_KIND_MAX
+   * tracks the highest valid kind. */
+  OP_MINUS_INT_INT      = 14,
+  OP_MUL_INT_INT        = 15,
+  OP_KIND_MAX           = OP_MUL_INT_INT
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

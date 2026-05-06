@@ -244,6 +244,31 @@ STENCIL op_branch_ne_int_int(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* op_minus_int_int : regs_i64[DST] = regs_i64[A] - regs_i64[B]       */
+/* op_mul_int_int   : regs_i64[DST] = regs_i64[A] * regs_i64[B]       */
+/*                                                                    */
+/* Phase 4 hot-arithmetic siblings of OP_ADD_INT_INT — same hole      */
+/* shape (a=dst, b=lhs, c=rhs). Bridge maps NDB's kOpMinusBigint /    */
+/* kOpMulBigint to these.                                             */
+/* ------------------------------------------------------------------ */
+
+DECLARE_HOLE(MINUS_DST);
+DECLARE_HOLE(MINUS_A);
+DECLARE_HOLE(MINUS_B);
+STENCIL op_minus_int_int(JitState *s) {
+  s->regs_i64[HOLE(MINUS_DST)] = s->regs_i64[HOLE(MINUS_A)] - s->regs_i64[HOLE(MINUS_B)];
+  TAIL_NEXT(s);
+}
+
+DECLARE_HOLE(MUL_DST);
+DECLARE_HOLE(MUL_A);
+DECLARE_HOLE(MUL_B);
+STENCIL op_mul_int_int(JitState *s) {
+  s->regs_i64[HOLE(MUL_DST)] = s->regs_i64[HOLE(MUL_A)] * s->regs_i64[HOLE(MUL_B)];
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* op_skip / op_exit : row terminators.                               */
 /*                                                                    */
 /* Bare returns; the extractor overrides the bytes entirely with      */
@@ -281,4 +306,6 @@ const StencilTailFn g_stencil_anchor[] = {
     op_branch_ne_int_int,
     op_skip,
     op_exit,
+    op_minus_int_int,
+    op_mul_int_int,
 };
