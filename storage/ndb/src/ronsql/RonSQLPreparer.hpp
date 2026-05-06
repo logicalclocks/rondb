@@ -234,12 +234,6 @@ private:
     ConditionalExpression* join_where_ce[MAX_SPJ_TREE_NODES];
     DynamicArray<CrossTableFilter> cross_table_where_filters;
 
-    // Temporary Phase I.24 compatibility arrays. New planner and emit code
-    // must consume resolved_columns; these arrays are derived from descriptors
-    // until the final legacy-removal subphase deletes them.
-    NdbAttrId* column_attrId_map = NULL;
-    const NdbDictionary::Column** column_map = NULL;
-    Uint32* column_table_idx = NULL;
     ResolvedColumnRef* resolved_columns = NULL;
     const NdbDictionary::Table* table = NULL;
     AggregationAPICompiler* agg = NULL;
@@ -447,7 +441,6 @@ private:
                                      const SelectStatement& stmt);
   void resolve_cte_output_columns();
   void resolve_cte_output_columns_for_scope(QueryScope& scope);
-  void validate_legacy_column_arrays(const QueryScope& scope) const;
   /**
    * Reject CTE shapes the kernel/SPJ doesn't currently support.
    * Defensive tripwire — see cte_filter_phase_g.md.  Today only

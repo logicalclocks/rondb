@@ -1052,19 +1052,11 @@ RonSQLPreparer::load_single_table()
     throw RonSQLMaybeStaleSchema("Index's table id/version did not match"
                                  " table's object id/version.");
   }
-  // Populate resolved_columns for the single-table path. The legacy arrays
-  // below are temporary I.24 compatibility outputs derived from descriptors.
-  // Join queries use resolve_columns_for_scope().
-  NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(m_columns.size());
-  const NdbDictionary::Column** col_map =
-      m_amalloc->alloc_exc<const NdbDictionary::Column*>(m_columns.size());
-  Uint32* col_table_idx = m_amalloc->alloc_exc<Uint32>(m_columns.size());
+  // Populate resolved_columns for the single-table path. Join queries use
+  // resolve_columns_for_scope().
   QueryScope::ResolvedColumnRef* resolved =
       m_amalloc->alloc_exc<QueryScope::ResolvedColumnRef>(m_columns.size());
   for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
-    col_id_map[col_idx] = -1;
-    col_map[col_idx] = NULL;
-    col_table_idx[col_idx] = 0;
     new (&resolved[col_idx]) QueryScope::ResolvedColumnRef();
 
     if (m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx]) {
@@ -1087,19 +1079,13 @@ RonSQLPreparer::load_single_table()
       throw RonSQLMaybeStaleSchema("Could not find column (column names are"
                                    " case sensitive).");
     }
-    col_id_map[col_idx] = DBG(col->getAttrId());
-    col_map[col_idx] = col;
     resolved[col_idx].kind =
         QueryScope::ResolvedColumnRef::Kind::StoredColumn;
     resolved[col_idx].join_op_idx = 0;
     resolved[col_idx].attr_id = DBG(col->getAttrId());
     resolved[col_idx].dict_column = col;
   }
-  m_main_scope.column_attrId_map = col_id_map;
-  m_main_scope.column_map = col_map;
-  m_main_scope.column_table_idx = col_table_idx;
   m_main_scope.resolved_columns = resolved;
-  validate_legacy_column_arrays(m_main_scope);
 }
 
 void
@@ -3904,67 +3890,17 @@ RonSQLPreparer::collect_scope_column_refs(const SelectStatement& stmt)
   return refs;
 }
 
-void
-RonSQLPreparer::validate_legacy_column_arrays(const QueryScope& scope) const
-{
-  require_bug(scope.resolved_columns != NULL,
-              "Legacy column array validation: missing descriptors.");
-  require_bug(scope.column_attrId_map != NULL,
-              "Legacy column array validation: missing attr ids.");
-  require_bug(scope.column_map != NULL,
-              "Legacy column array validation: missing column map.");
-  require_bug(scope.column_table_idx != NULL,
-              "Legacy column array validation: missing table indexes.");
-
-  for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
-    const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[col_idx];
-    switch (ref.kind) {
-    case QueryScope::ResolvedColumnRef::Kind::StoredColumn:
-      require_bug(scope.column_attrId_map[col_idx] == ref.attr_id,
-                  "Legacy column array validation: attr id mismatch.");
-      require_bug(scope.column_map[col_idx] == ref.dict_column,
-                  "Legacy column array validation: column mismatch.");
-      require_bug(scope.column_table_idx[col_idx] == ref.join_op_idx,
-                  "Legacy column array validation: table index mismatch.");
-      break;
-    case QueryScope::ResolvedColumnRef::Kind::CteResultColumn:
-      require_bug(scope.column_attrId_map[col_idx] ==
-                      (NdbAttrId)ref.cte_result_idx,
-                  "Legacy column array validation: CTE result mismatch.");
-      require_bug(scope.column_map[col_idx] == NULL,
-                  "Legacy column array validation: CTE column not null.");
-      require_bug(scope.column_table_idx[col_idx] == ref.join_op_idx,
-                  "Legacy column array validation: CTE table index mismatch.");
-      break;
-    case QueryScope::ResolvedColumnRef::Kind::AliasOnly:
-    case QueryScope::ResolvedColumnRef::Kind::Unresolved:
-      require_bug(scope.column_attrId_map[col_idx] == -1,
-                  "Legacy column array validation: sentinel attr mismatch.");
-      require_bug(scope.column_map[col_idx] == NULL,
-                  "Legacy column array validation: sentinel column mismatch.");
-      require_bug(scope.column_table_idx[col_idx] == 0,
-                  "Legacy column array validation: sentinel table mismatch.");
-      break;
-    }
-  }
-}
-
 // Populate resolved descriptors for column references that belong to `stmt`.
 // The parser keeps a single global column namespace (m_columns /
 // m_column_qualifiers), so I.23 resolves only the col_idx values reachable
 // from this SELECT body's AST. This prevents aliases and columns from one CTE
-// body from leaking into later CTE bodies or the main SELECT. The legacy
-// arrays populated at the end are temporary I.24 compatibility outputs.
+// body from leaking into later CTE bodies or the main SELECT.
 void
 RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
                                           const SelectStatement& stmt,
                                           bool main_scope)
 {
   Uint32 num_cols = m_columns.size();
-  NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(num_cols);
-  const NdbDictionary::Column** col_map =
-      m_amalloc->alloc_exc<const NdbDictionary::Column*>(num_cols);
-  Uint32* col_table_idx = m_amalloc->alloc_exc<Uint32>(num_cols);
   QueryScope::ResolvedColumnRef* resolved =
       m_amalloc->alloc_exc<QueryScope::ResolvedColumnRef>(num_cols);
   bool* refs = collect_scope_column_refs(stmt);
@@ -3998,9 +3934,6 @@ RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
   JoinPlan& plan = scope.join_plan;
 
   for (Uint32 col_idx = 0; col_idx < num_cols; col_idx++) {
-    col_id_map[col_idx] = -1;
-    col_map[col_idx] = NULL;
-    col_table_idx[col_idx] = 0;
     new (&resolved[col_idx]) QueryScope::ResolvedColumnRef();
 
     if (!refs[col_idx]) {
@@ -4152,33 +4085,7 @@ RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
     }
   }
 
-  for (Uint32 col_idx = 0; col_idx < num_cols; col_idx++) {
-    const QueryScope::ResolvedColumnRef& r = resolved[col_idx];
-    switch (r.kind) {
-    case QueryScope::ResolvedColumnRef::Kind::StoredColumn:
-      col_id_map[col_idx] = r.attr_id;
-      col_map[col_idx] = r.dict_column;
-      col_table_idx[col_idx] = r.join_op_idx;
-      break;
-    case QueryScope::ResolvedColumnRef::Kind::CteResultColumn:
-      col_id_map[col_idx] = (NdbAttrId)r.cte_result_idx;
-      col_map[col_idx] = NULL;
-      col_table_idx[col_idx] = r.join_op_idx;
-      break;
-    case QueryScope::ResolvedColumnRef::Kind::AliasOnly:
-    case QueryScope::ResolvedColumnRef::Kind::Unresolved:
-      col_id_map[col_idx] = -1;
-      col_map[col_idx] = NULL;
-      col_table_idx[col_idx] = 0;
-      break;
-    }
-  }
-
-  scope.column_attrId_map = col_id_map;
-  scope.column_map = col_map;
-  scope.column_table_idx = col_table_idx;
   scope.resolved_columns = resolved;
-  validate_legacy_column_arrays(scope);
 }
 
 void
@@ -10101,15 +10008,6 @@ RonSQLPreparer::generate_embedded_condition(
             ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn,
             "CASE condition: column is not resolved to a table or CTE "
             "column.");
-        if (scope.column_table_idx == NULL) {
-          out.kind = SideKind::LeafTable;
-          out.col = resolve_case_condition_column(
-              scope, col_side, cteVirtualTables);
-          require_prm(out.col != NULL,
-                      "CASE condition: unresolved column descriptor.");
-          out.attr_id = ref.attr_id;
-          return;
-        }
         Uint32 op_idx = ref.join_op_idx;
         bool op_is_cte =
             ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn;
