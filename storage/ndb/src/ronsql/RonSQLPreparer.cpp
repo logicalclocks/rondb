@@ -3637,33 +3637,26 @@ void
 RonSQLPreparer::resolve_cte_output_columns_for_scope(QueryScope& scope)
 {
   if (scope.column_map == NULL) return;
-  if (scope.column_table_idx == NULL) return;
-  if (scope.column_attrId_map == NULL) return;
+  if (scope.resolved_columns == NULL) return;
   for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
     if (scope.column_map[col_idx] != NULL) continue;
-    Uint32 t = scope.column_table_idx[col_idx];
-    if (t >= scope.join_plan.num_ops) continue;
-    const JoinOp& op = scope.join_plan.ops[t];
-    if (op.type != JoinOp::CTE_LOOKUP && op.type != JoinOp::CTE_SCAN)
+    QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[col_idx];
+    if (ref.kind != QueryScope::ResolvedColumnRef::Kind::CteResultColumn)
       continue;
-    if (op.cte_def == NULL) continue;
-    if (op.cte_def_idx >= m_cte_scopes.size()) continue;
-    QueryScope* cs = m_cte_scopes[op.cte_def_idx];
+    if (ref.cte_def_idx >= m_cte_scopes.size()) continue;
+    QueryScope* cs = m_cte_scopes[ref.cte_def_idx];
     if (cs == NULL || cs->column_map == NULL) continue;
 
-    // Walk the CTE output list to position cte_col_idx (stored in
-    // column_attrId_map by load_join's CTE branch).
-    Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
-    Uint32 i = 0;
-    const Outputs* o = op.cte_def->stmt->outputs;
-    while (o != NULL && i < cte_col_idx) { o = o->next; i++; }
+    const Outputs* o = ref.cte_output;
     if (o == NULL) continue;
 
     if (o->type == Outputs::Type::COLUMN) {
       Uint32 src_col_idx = o->column.col_idx;
       const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
-      if (src_col != NULL)
+      if (src_col != NULL) {
         scope.column_map[col_idx] = src_col;
+        ref.dict_column = src_col;
+      }
     } else if (o->type == Outputs::Type::AGGREGATE) {
       // MIN/MAX preserve source type; SUM/COUNT synthesize numeric
       // (charset-irrelevant) — only plumb MIN/MAX here.
@@ -3673,8 +3666,10 @@ RonSQLPreparer::resolve_cte_output_columns_for_scope(QueryScope& scope)
       if (arg == NULL || !arg->isLoad()) continue;
       Uint32 src_col_idx = arg->getLoadIdx();
       const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
-      if (src_col != NULL)
+      if (src_col != NULL) {
         scope.column_map[col_idx] = src_col;
+        ref.dict_column = src_col;
+      }
     }
   }
 }
@@ -6597,36 +6592,26 @@ RonSQLPreparer::resolve_chained_column_type(
 {
   out_scale = 0;
   out_precision = 0;
-  // Direct real-table column: column_map already resolved.
-  if (scope.column_map != NULL) {
-    const NdbDictionary::Column* src = scope.column_map[col_idx];
-    if (src != NULL) {
-      out_type = src->getType();
-      out_length = src->getLength();
-      out_cs = src->getCharset();
-      out_scale = src->getScale();
-      out_precision = src->getPrecision();
-      return true;
-    }
+  if (scope.resolved_columns == NULL)
+    return false;
+  const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[col_idx];
+  if (ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn) {
+    const NdbDictionary::Column* src = ref.dict_column;
+    if (src == NULL) return false;
+    out_type = src->getType();
+    out_length = src->getLength();
+    out_cs = src->getCharset();
+    out_scale = src->getScale();
+    out_precision = src->getPrecision();
+    return true;
   }
-  // Walk through CTE: identify the op owning col_idx and look up the
-  // matching output in the predecessor CTE.
-  if (scope.column_table_idx == NULL || scope.column_attrId_map == NULL)
+  if (ref.kind != QueryScope::ResolvedColumnRef::Kind::CteResultColumn)
     return false;
-  Uint32 t = scope.column_table_idx[col_idx];
-  if (t >= scope.join_plan.num_ops) return false;
-  const JoinOp& op = scope.join_plan.ops[t];
-  if (op.type != JoinOp::CTE_LOOKUP && op.type != JoinOp::CTE_SCAN)
-    return false;
-  if (op.cte_def == NULL) return false;
-  if (op.cte_def_idx >= m_cte_scopes.size()) return false;
-  QueryScope* cs = m_cte_scopes[op.cte_def_idx];
+  if (ref.cte_def_idx >= m_cte_scopes.size()) return false;
+  QueryScope* cs = m_cte_scopes[ref.cte_def_idx];
   if (cs == NULL) return false;
 
-  Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
-  Uint32 i = 0;
-  const Outputs* o = op.cte_def->stmt->outputs;
-  while (o != NULL && i < cte_col_idx) { o = o->next; i++; }
+  const Outputs* o = ref.cte_output;
   if (o == NULL) return false;
 
   if (o->type == Outputs::Type::COLUMN) {
