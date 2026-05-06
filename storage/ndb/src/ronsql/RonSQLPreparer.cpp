@@ -2344,10 +2344,14 @@ RonSQLPreparer::select_cte_body_minmax_index(QueryScope& scope,
 
   const NdbDictionary::Table* tab = plan.ops[0].table;
   if (tab == NULL) return;
-  if (scope.column_map == NULL || scope.column_table_idx == NULL) return;
-  if (scope.column_table_idx[agg_col_idx] != 0) return;
+  if (scope.resolved_columns == NULL) return;
+  const QueryScope::ResolvedColumnRef& agg_ref =
+      scope.resolved_columns[agg_col_idx];
+  if (agg_ref.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn)
+    return;
+  if (agg_ref.join_op_idx != 0) return;
 
-  const NdbDictionary::Column* agg_col = scope.column_map[agg_col_idx];
+  const NdbDictionary::Column* agg_col = agg_ref.dict_column;
   if (agg_col == NULL) return;
   if (agg_col->getNullable()) return;
   if (!minmax_index_source_type_supported(agg_col)) return;
@@ -9797,9 +9801,9 @@ RonSQLPreparer::validate_greatest_least_pair_loads()
     Uint32 col_idx = load_expr->getLoadIdx();
     // The Expr* belongs to either the main scope's compiler or one of
     // the CTE scopes' compilers; same col_idx may appear in multiple
-    // scopes' column_maps (e.g. when a CTE references a parent
+    // scopes' resolved column descriptors (e.g. when a CTE references a parent
     // column).  Find the scope that owns the Expr and validate
-    // against that scope's column_map.
+    // against that scope's descriptor.
     QueryScope* owning_scope = NULL;
     if (m_main_scope.agg != NULL && m_main_scope.agg->owns_expr(load_expr))
     {
@@ -9820,11 +9824,12 @@ RonSQLPreparer::validate_greatest_least_pair_loads()
     require_run(owning_scope != NULL,
                 "GREATEST/LEAST pair-op operand: failed to locate "
                 "owning scope.  Please report a bug.");
-    require_run(owning_scope->column_map != NULL,
-                "GREATEST/LEAST pair-op operand: scope column_map "
+    require_run(owning_scope->resolved_columns != NULL,
+                "GREATEST/LEAST pair-op operand: scope resolved columns "
                 "not initialised.  Please report a bug.");
-    const NdbDictionary::Column* col = owning_scope->column_map[col_idx];
-    if (col == NULL)
+    const QueryScope::ResolvedColumnRef& ref =
+        owning_scope->resolved_columns[col_idx];
+    if (ref.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn)
     {
       // CTE COLUMN / AGGREGATE projection: the virtual-table column
       // descriptor isn't built until build_cte_virtual_tables runs at
@@ -9834,6 +9839,10 @@ RonSQLPreparer::validate_greatest_least_pair_loads()
       // concern even when the descriptor was available.
       continue;
     }
+    const NdbDictionary::Column* col = ref.dict_column;
+    require_run(col != NULL,
+                "GREATEST/LEAST pair-op operand: stored column descriptor "
+                "missing.  Please report a bug.");
     // Phase I.5 v7: nullable column operands are supported.  The
     // pair-op embedded program detects NULL via BRANCH_REG_EQ_NULL
     // and lands on SetRegNull(dest), so only the current expression
