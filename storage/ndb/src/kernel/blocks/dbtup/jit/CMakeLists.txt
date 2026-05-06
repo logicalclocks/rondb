@@ -135,59 +135,65 @@ TARGET_INCLUDE_DIRECTORIES(ndb_jit_audit_magics PRIVATE
 )
 
 # ---------------------------------------------------------------------------
-# RONDB-1056 Phase 1: stencils.o build target.
+# RONDB-1056 Phase 2: regen-stencils — pinned-clang regeneration target.
 #
-# stencils_src.c is compiled with clang (not the project's CC) using a
-# specific set of flags, into stencils.o. The .o is NOT linked into
-# anything — it's an artefact the developer runs `objdump -d -r` on,
-# then hand-copies bytes + relocations into stencils_x86_64.h per
-# phase_1_implementation.md §7. Phase 2 replaces this with an
-# automated extractor.
+# The default `cmake --build` does NOT run the extractor; the committed
+# stencils_x86_64.h / stencils_arm64.h are consumed directly. This
+# target is invoked explicitly when stencil bytes need to be refreshed
+# (after editing stencils_src.c or rolling the clang pin):
 #
-# We require clang explicitly (gcc produces incompatible codegen
-# because preserve_none is clang-only). If clang is not available the
-# target is skipped with a status message and the rest of the build
-# carries on; the developer needs clang only when regenerating
-# stencils.
+#   cmake -DNDB_JIT_CLANG=/path/to/upstream/clang ..
+#   cmake --build . --target regen-stencils
+#
+# The upstream clang requirement is enforced by extract_stencils/regen.cmake's
+# preflight (rejects Apple clang, requires the exact pinned version).
+# See jit/extract_stencils/README.md for the full extraction recipe.
+#
+# Pinned clang version. Updated as a deliberate three-place change
+# (this var, plan.md §2 clang pin, jit/extract_stencils/README.md).
 # ---------------------------------------------------------------------------
 
+SET(NDB_JIT_CLANG_VERSION "20.1.8"
+    CACHE STRING "Required upstream LLVM clang version for stencil regeneration")
+
+# The Phase 1 ndb_jit1_stencils target (a one-shot stencils.o for
+# manual objdump) is removed in Phase 2 — the extractor + regen-stencils
+# target replaces its purpose.
+
 FIND_PROGRAM(NDB_JIT_CLANG clang
-             DOC "clang for RONDB-1056 Phase 1 stencil compilation")
+             DOC "Upstream LLVM clang for RONDB-1056 stencil regeneration")
 
 IF(NDB_JIT_CLANG)
-  MESSAGE(STATUS "RONDB-1056: stencils will be compiled with ${NDB_JIT_CLANG}")
-
-  SET(NDB_JIT_STENCIL_FLAGS
-    -O2
-    -fno-asynchronous-unwind-tables
-    -ffreestanding
-    -fno-stack-protector
-    -fno-pic
-    -std=c11
-    -Wall
-    -Wextra
-    -I${CMAKE_CURRENT_SOURCE_DIR}
-  )
-
-  ADD_CUSTOM_COMMAND(
-    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/stencils.o
-    COMMAND ${NDB_JIT_CLANG} ${NDB_JIT_STENCIL_FLAGS}
-            -c ${CMAKE_CURRENT_SOURCE_DIR}/stencils_src.c
-            -o ${CMAKE_CURRENT_BINARY_DIR}/stencils.o
-    DEPENDS
-      ${CMAKE_CURRENT_SOURCE_DIR}/stencils_src.c
-      ${CMAKE_CURRENT_SOURCE_DIR}/jit1.h
-      ${CMAKE_CURRENT_SOURCE_DIR}/bytecode1.h
-      ${CMAKE_CURRENT_SOURCE_DIR}/jit_arena.h
-    COMMENT "[RONDB-1056 Phase 1] compiling stencils.o with clang"
-    VERBATIM
-  )
-
-  ADD_CUSTOM_TARGET(ndb_jit1_stencils ALL
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/stencils.o)
+  MESSAGE(STATUS "RONDB-1056: regen-stencils will use ${NDB_JIT_CLANG} "
+                 "(pinned to ${NDB_JIT_CLANG_VERSION}; preflight runs at target time)")
 ELSE()
-  MESSAGE(STATUS "RONDB-1056: clang not found; Phase 1 stencils.o target skipped. "
-                 "Install clang (Linux: dnf/apt install clang; macOS: Apple clang via "
-                 "Xcode CLT or `brew install llvm`) to enable the `ndb_jit1_stencils` "
-                 "target.")
+  MESSAGE(STATUS "RONDB-1056: clang not found on PATH. The regen-stencils "
+                 "target will fail; set -DNDB_JIT_CLANG=/path/to/upstream/clang "
+                 "(macOS: brew install llvm@20 then "
+                 "/opt/homebrew/opt/llvm@20/bin/clang; "
+                 "Linux: dnf/apt install clang).")
 ENDIF()
+
+ADD_CUSTOM_TARGET(regen-stencils
+  COMMAND ${CMAKE_COMMAND}
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/extract_stencils/regen.cmake"
+          --
+          "${NDB_JIT_CLANG}"
+          "${NDB_JIT_CLANG_VERSION}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/stencils_src.c"
+          "${CMAKE_CURRENT_SOURCE_DIR}"
+          "${CMAKE_CURRENT_BINARY_DIR}/regen_tmp"
+          "${CMAKE_CURRENT_SOURCE_DIR}"
+          "$<TARGET_FILE:ndb_jit_extract_stencils>"
+          "$<TARGET_FILE:ndb_jit_audit_magics>"
+  DEPENDS
+    ndb_jit_extract_stencils
+    ndb_jit_audit_magics
+    ${CMAKE_CURRENT_SOURCE_DIR}/stencils_src.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/hole_kinds.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/jit1.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/bytecode1.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/jit_arena.h
+  COMMENT "[RONDB-1056] regenerating stencil headers (clang ${NDB_JIT_CLANG_VERSION})"
+  VERBATIM
+)
