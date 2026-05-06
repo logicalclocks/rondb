@@ -106,13 +106,18 @@ void *ndb_jit_arena_alloc(NdbJitArena *arena, size_t bytes, size_t align) {
   else if (!is_power_of_two(align)) return NULL;
 
 #ifdef __APPLE__
-  /* On macOS the alloc surface must be writable. Defensive toggle in
-   * case the previous seal protected the mapping; first alloc after
-   * create finds it already writable. */
+  /* On macOS the alloc surface must be writable.
+   * pthread_jit_write_protect_np is PER-THREAD; the
+   * arena->jit_write_enabled flag is global and only tracks whether
+   * SOME thread has toggled the protect, not whether the calling
+   * thread has. If alloc runs on a different thread from create
+   * (Phase 4: DblqhProxy constructor on init thread, jit1_compile
+   * on the receiver thread), the calling thread's protect is the
+   * macOS default (ON) and writes through the unified MAP_JIT
+   * mapping fault with SIGBUS. Always re-enable on the calling
+   * thread; the helper is idempotent and cheap. */
   extern void ndb_jit_arena_macos_enable_write(NdbJitArena *);
-  if (!arena->jit_write_enabled) {
-    ndb_jit_arena_macos_enable_write(arena);
-  }
+  ndb_jit_arena_macos_enable_write(arena);
 #endif
 
   size_t off = round_up_to(arena->used, align);
