@@ -238,13 +238,38 @@ also fixed a `QueryPlanner` child-op initialisation gap where a
 physical child could be misclassified as a CTE during scoped
 resolution.
 
-#### I.12 — CTE_SCAN as a LEFT JOIN inner side (L)
+#### I.12 — RonSQL coverage of testCteNdbApiOuterJoin.cpp Tests 1/2/3/5/6 (M) — shipped
 
-Phase G shipped a defensive reject for this.  The kernel side
-isn't ready
-(`testCteNdbApiOuterJoin.cpp` Phase 5 covers some agg-feed
-NULL injection but not the full CTE_SCAN-as-outer-join-child
-shape).  Both kernel + RonSQL work needed.
+Detailed plan: `cte_filter_phase_i12.md`.
+
+The original I.12 catalogue entry mapped to the cross-join LEFT JOIN
+shape over an unkeyed `scanCte` child.  That shape was dropped at the
+kernel level in `cte_outer_join_phase_3.md`; Phase G's defensive
+reject at `RonSQLPreparer.cpp:3801-3805` keeps it firmly rejected.
+
+I.12 repointed to RonSQL coverage of the outer-join shapes that
+**did** ship (cte_outer_join Phase 1 / 2 / 5 / E.1K), exercising
+testCteNdbApiOuterJoin.cpp Tests 1 (`scanCte INNER JOIN readTuple`),
+2 (`scanCte LEFT JOIN readTuple`), 3 (`scanTable LEFT JOIN
+lookupCte`), 5 (scalar main aggregation over `LEFT JOIN cte` with
+NULL-injection), and 6 (`scanCte` parent + main aggregator on real
+leaf with linked CTE GROUP BY).
+
+Three RonSQL changes shipped:
+1. Gate extension at `RonSQLPreparer.cpp:540-636` accepting CTE-root
+   projection-only chains (relaxation A) and `LEFT_OUTER_JOIN` in the
+   chain (relaxation B), with the existing `cte_key_coverage`
+   complete-key check preserved.
+2. `Char` / `Varchar` / `Longvarchar` arms added to
+   `ResultPrinter::print_passthrough_value` so projection-only
+   queries can return real-table string columns alongside CTE
+   numeric columns.
+3. `execute_passthrough_drain` LEFT JOIN NULL-row plumbing — per-row
+   substitution via parallel `output_ops[]` + `effective_attrs[]`
+   arrays, using `NdbQueryOperation::isRowNULL()`.
+
+MTR coverage: `mysql-test/suite/ronsql/t/ronsql_cte_outer_join.test`
+(Tests 1/2/3/5/6).
 
 ### Batch / pacing controls
 

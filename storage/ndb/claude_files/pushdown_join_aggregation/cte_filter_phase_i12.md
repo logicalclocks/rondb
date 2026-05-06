@@ -2,12 +2,72 @@
 
 ## Status
 
-**Planned.**  Test-driven phase.  The original I.12 catalogue entry
+**Shipped.**  Test-driven phase.  The original I.12 catalogue entry
 mapped to "CTE_SCAN as a LEFT JOIN inner side" (the cross-join LEFT
 JOIN shape over an unkeyed `scanCte` child).  That shape was dropped
 at the kernel level in `cte_outer_join_phase_3.md` and is guarded by
 the Phase G defensive reject at `RonSQLPreparer.cpp:3801-3805`.  The
 guard stays.
+
+## Findings
+
+All five I.12 shapes pass as positive MySQL-vs-RonSQL coverage in
+`ronsql_cte_outer_join`.
+
+- **Tests 5 and 6** passed unchanged on first run, confirming the
+  kernel-side outer-join + linked-attr machinery (Phase 5
+  agg-feed NULL injection, Phase E.1K linked CTE virt-columns)
+  works end-to-end through RonSQL for aggregate queries.
+- **Tests 1, 2, 3** failed first on the predicted
+  `Not an aggregate query.` rejection.  Two follow-on gaps
+  surfaced during triage:
+  1. `ResultPrinter::print_passthrough_value` rejected
+     `oj_rhs.label` (VARCHAR) with
+     `Unsupported column type in projection-only CTE_SCAN result.`.
+     Phase E.3's original supported set was integer/float/double
+     because the CTE virt-table builder only emitted numeric
+     types from SUM/COUNT/MIN/MAX; non-aggregate queries are the
+     first time real-table string columns reach this path.  Fix:
+     extend the switch in `ResultPrinter.cpp:1083-...` with
+     `Char` / `Varchar` / `Longvarchar` arms mirroring the
+     aggregator-path formatting (charset lookup, length-prefix
+     parsing, JSON/TSV quoting).
+  2. LEFT JOIN unmatched rows had `oj_rhs.label` empty in the
+     output where MySQL prints `NULL`.  Cause: the LEFT JOIN
+     NULL-row marker lives on `NdbQueryOperation::isRowNULL()`,
+     not on individual `NdbRecAttr::isNULL()`, so the
+     per-attr NULL check in `print_passthrough_value` missed
+     the unmatched-row case.  Fix: track per-output
+     `NdbQueryOperation*` in `execute_passthrough_drain` and,
+     per row, substitute NULL into a transient
+     `effective_attrs[]` for any column whose op reports
+     `isRowNULL()`.
+
+No I.12 shape is deferred to a follow-up phase.
+
+## RonSQL changes shipped
+
+- **Gate extension** at `RonSQLPreparer.cpp:540-636` (one block).
+  Renamed `cte_lookup_join_chain_to_real_root` →
+  `cte_lookup_join_chain`; dropped the `!from_is_cte` precondition;
+  initialised `query_has_cte = from_is_cte` so a CTE root counts
+  toward the "query involves a CTE" requirement; allowed both
+  `INNER_JOIN` and `LEFT_OUTER_JOIN` join types.  Complete-key
+  CTE_LOOKUP coverage check via `cte_key_coverage`
+  (`ExactOrdered` / `ExactPermuted`) preserved.  Phase G's
+  defensive reject for `CTE_SCAN`-as-outer-join-child preserved
+  unchanged at `RonSQLPreparer.cpp:3801-3805`.
+- **Pass-through string support** at `ResultPrinter.cpp:1083-...`.
+  Added `Char` / `Varchar` / `Longvarchar` arms to
+  `print_passthrough_value`'s type switch.  Same charset
+  lookup, same length-prefix parsing, same `m_quote` /
+  `print_string` flags as the aggregator path.
+- **Pass-through NULL-row substitution** at
+  `RonSQLPreparer.cpp:execute_passthrough_drain`.  Allocated
+  parallel `output_ops[]` and `effective_attrs[]` arrays; per-row
+  loop substitutes NULL into `effective_attrs[i]` when
+  `output_ops[i]->isRowNULL()` reports the LEFT JOIN unmatched-row
+  marker.
 
 While the originally-targeted shape was being dropped, the rest of
 the outer-join work shipped:

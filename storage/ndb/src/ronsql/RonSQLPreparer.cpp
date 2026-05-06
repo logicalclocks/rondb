@@ -555,16 +555,28 @@ RonSQLPreparer::parse()
       bool projection_only_cte_scan =
           (from_is_cte && all_column_outputs && !has_groupby &&
            !has_having && !has_orderby && !has_limit && !has_joins);
-      // Phase I.8: FROM <real_table> JOIN <cte> ON ...
-      // (testCteNdbApi.cpp Test 17 shape).  Phase I.11 extends this
-      // gate to the conservative Test 13 class: projection-only
-      // left-to-right INNER join chains from a real-table root, with
-      // complete-key CTE_LOOKUP joins and no ORDER/GROUP/HAVING/LIMIT.
-      bool cte_lookup_join_chain_to_real_root = false;
-      if (!from_is_cte && all_column_outputs && !has_groupby &&
+      // Phase I.8/I.11/I.12: projection-only join chains over CTE-and-
+      // real-table operands.  Accepted shapes:
+      //   - I.8/I.11: FROM <real> JOIN <cte> [JOIN ...] (real root,
+      //     INNER chain).
+      //   - I.12 relaxation A: FROM <cte> JOIN <real> [JOIN ...]
+      //     (CTE root, INNER chain).  testCteNdbApiOuterJoin.cpp
+      //     Test 1 shape.
+      //   - I.12 relaxation B: any join in the chain may be
+      //     LEFT_OUTER_JOIN.  testCteNdbApiOuterJoin.cpp Tests 2, 3.
+      // Constraints (unchanged across A and B): every CTE join must
+      // be a complete-key CTE_LOOKUP (ExactOrdered or ExactPermuted
+      // via cte_key_coverage); no ORDER BY / GROUP BY / HAVING /
+      // LIMIT / aggregate outputs.  Phase G's defensive reject for
+      // CTE_SCAN-as-outer-join-child still fires later in
+      // validate_cte_execution_shapes() for any planner-produced
+      // shape outside this conservative class.
+      bool cte_lookup_join_chain = false;
+      if (all_column_outputs && !has_groupby &&
           !has_having && !has_orderby && !has_limit && has_joins) {
-        cte_lookup_join_chain_to_real_root = true;
-        bool found_cte_join = false;
+        cte_lookup_join_chain = true;
+        // CTE root already counts as a CTE in the query.
+        bool query_has_cte = from_is_cte;
         LexCString visible_aliases[MAX_SPJ_TREE_NODES];
         Uint32 num_visible_aliases = 0;
         visible_aliases[num_visible_aliases++] =
@@ -572,16 +584,17 @@ RonSQLPreparer::parse()
         for (const JoinClause* join = m_context.ast_root.joins;
              join != NULL; join = join->next) {
           if (num_visible_aliases >= MAX_SPJ_TREE_NODES ||
-              join->join_type != JoinClause::INNER_JOIN ||
+              (join->join_type != JoinClause::INNER_JOIN &&
+               join->join_type != JoinClause::LEFT_OUTER_JOIN) ||
               join->conditions == NULL) {
-            cte_lookup_join_chain_to_real_root = false;
+            cte_lookup_join_chain = false;
             break;
           }
           const LexCString& join_alias = join->table.alias;
           for (const JoinCondition* jc = join->conditions;
                jc != NULL; jc = jc->next) {
             if (!(jc->child_table == join_alias)) {
-              cte_lookup_join_chain_to_real_root = false;
+              cte_lookup_join_chain = false;
               break;
             }
             bool parent_seen = false;
@@ -592,11 +605,11 @@ RonSQLPreparer::parse()
               }
             }
             if (!parent_seen) {
-              cte_lookup_join_chain_to_real_root = false;
+              cte_lookup_join_chain = false;
               break;
             }
           }
-          if (!cte_lookup_join_chain_to_real_root) break;
+          if (!cte_lookup_join_chain) break;
           const CteDefinition* cte = find_cte_definition(join->table.name);
           if (cte != NULL) {
             LexCString child_names[MAX_JOIN_KEY_COLS];
@@ -604,32 +617,32 @@ RonSQLPreparer::parse()
             for (const JoinCondition* jc = join->conditions;
                  jc != NULL; jc = jc->next) {
               if (num_keys >= MAX_JOIN_KEY_COLS) {
-                cte_lookup_join_chain_to_real_root = false;
+                cte_lookup_join_chain = false;
                 break;
               }
               child_names[num_keys++] = jc->child_column;
             }
-            if (!cte_lookup_join_chain_to_real_root) break;
+            if (!cte_lookup_join_chain) break;
             CteKeyCoverageResult coverage;
             if (!cte_key_coverage(cte, child_names, num_keys, coverage) ||
                 (coverage.state != CteKeyCoverage::ExactOrdered &&
                  coverage.state != CteKeyCoverage::ExactPermuted)) {
-              cte_lookup_join_chain_to_real_root = false;
+              cte_lookup_join_chain = false;
               break;
             }
-            found_cte_join = true;
+            query_has_cte = true;
           }
           visible_aliases[num_visible_aliases++] = join_alias;
         }
-        cte_lookup_join_chain_to_real_root =
-            cte_lookup_join_chain_to_real_root && found_cte_join;
+        cte_lookup_join_chain =
+            cte_lookup_join_chain && query_has_cte;
       }
-      if (!projection_only_cte_scan && !cte_lookup_join_chain_to_real_root) {
+      if (!projection_only_cte_scan && !cte_lookup_join_chain) {
         ndbrequire(m_conf.err_stream != NULL);
         std::basic_ostream<char>& err = *m_conf.err_stream;
         err << "This query has no aggregate expression, so it is not an aggregate query.\n"
                "Currently, RonSQL only supports aggregate queries and projection-only\n"
-               "SELECTs over supported CTE shapes (Phase E.3/I.8/I.11).  See\n"
+               "SELECTs over supported CTE shapes (Phase E.3/I.8/I.11/I.12).  See\n"
                "ronsql_join_phase7.md for the\n"
                "broader non-aggregate roadmap.\n";
         throw RonSQLPermanentError("Not an aggregate query.");
@@ -6235,6 +6248,17 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   require_run(num_cols > 0, "Pass-through drain: no outputs to deliver.");
   NdbRecAttr** attrs =
       m_amalloc->alloc_exc<NdbRecAttr*>(num_cols);
+  // Phase I.12: parallel array tracking the NdbQueryOperation that
+  // produced each output column.  Needed at row-delivery time so we
+  // can call op->isRowNULL() — the LEFT JOIN NULL-row marker is on
+  // the operation, not on individual NdbRecAttrs.
+  NdbQueryOperation** output_ops =
+      m_amalloc->alloc_exc<NdbQueryOperation*>(num_cols);
+  // Per-row effective_attrs[]: attrs[] with NULL substituted for
+  // every column whose owning op reports isRowNULL().  Allocated
+  // once, refilled per row.
+  NdbRecAttr** effective_attrs =
+      m_amalloc->alloc_exc<NdbRecAttr*>(num_cols);
   require_run(m_main_scope.resolved_columns != NULL,
               "Pass-through drain: missing resolved columns.");
 
@@ -6327,6 +6351,7 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
       require_run(attrs[i] != NULL,
                   "Pass-through drain: real-table getValue() failed.");
     }
+    output_ops[i] = op;
   }
 
   require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
@@ -6357,8 +6382,16 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
           m_conf.out_stream);
       header_emitted = true;
     }
+    // Phase I.12: substitute NULL for every column whose op reports
+    // isRowNULL() (LEFT JOIN unmatched-row marker).  print_passthrough_value
+    // already treats a NULL NdbRecAttr* as the NULL representation.
+    for (Uint32 ci = 0; ci < num_cols; ci++) {
+      effective_attrs[ci] =
+          (output_ops[ci] != NULL && output_ops[ci]->isRowNULL())
+              ? NULL : attrs[ci];
+    }
     m_resultprinter->print_passthrough_row(
-        const_cast<const NdbRecAttr* const*>(attrs), num_cols,
+        const_cast<const NdbRecAttr* const*>(effective_attrs), num_cols,
         /*is_first_row=*/(row_count == 0),
         m_conf.out_stream);
     row_count++;

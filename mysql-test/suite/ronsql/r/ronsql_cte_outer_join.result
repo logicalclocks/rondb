@@ -1,0 +1,140 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+
+=== Test 1: scanCte INNER JOIN readTuple (projection-only) ===
+== Query ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM oj_cte_src GROUP BY grp)
+SELECT cte0.k AS g, cte0.total AS t, oj_rhs.label AS lbl
+FROM cte0
+JOIN oj_rhs ON oj_rhs.id = cte0.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM oj_cte_src GROUP BY grp)
+SELECT cte0.k AS g, cte0.total AS t, oj_rhs.label AS lbl
+FROM cte0
+JOIN oj_rhs ON oj_rhs.id = cte0.k|
+g	t	lbl
+1	30	one
+3	50	three
+
+
+=== Test 2: scanCte LEFT JOIN readTuple (projection-only) ===
+== Query ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM oj_cte_src GROUP BY grp)
+SELECT cte0.k AS g, cte0.total AS t, oj_rhs.label AS lbl
+FROM cte0
+LEFT JOIN oj_rhs ON oj_rhs.id = cte0.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM oj_cte_src GROUP BY grp)
+SELECT cte0.k AS g, cte0.total AS t, oj_rhs.label AS lbl
+FROM cte0
+LEFT JOIN oj_rhs ON oj_rhs.id = cte0.k|
+g	t	lbl
+1	30	one
+2	70	NULL
+3	50	three
+
+
+=== Test 3: scanTable LEFT JOIN lookupCte (projection-only) ===
+== Query ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM oj_cte_src GROUP BY grp)
+SELECT oj_rhs.id AS rid, oj_rhs.label AS lbl,
+cte0.k AS g, cte0.total AS t
+FROM oj_rhs
+LEFT JOIN cte0 ON cte0.k = oj_rhs.id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM oj_cte_src GROUP BY grp)
+SELECT oj_rhs.id AS rid, oj_rhs.label AS lbl,
+cte0.k AS g, cte0.total AS t
+FROM oj_rhs
+LEFT JOIN cte0 ON cte0.k = oj_rhs.id|
+rid	lbl	g	t
+1	one	1	30
+3	three	3	50
+5	five	NULL	NULL
+
+
+=== Test 5: scalar main aggregation over LEFT JOIN cte (NULL-injection) ===
+== Query ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM oj_cte_src GROUP BY grp)
+SELECT COUNT(*) AS cnt, SUM(cte0.total) AS s
+FROM oj_rhs
+LEFT JOIN cte0 ON cte0.k = oj_rhs.id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM oj_cte_src GROUP BY grp)
+SELECT COUNT(*) AS cnt, SUM(cte0.total) AS s
+FROM oj_rhs
+LEFT JOIN cte0 ON cte0.k = oj_rhs.id|
+cnt	s
+3	80
+
+
+=== Test 6: scanCte parent + main aggregator on real leaf with linked CTE GROUP BY ===
+== Query ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM oj_cte_src GROUP BY grp)
+SELECT cte0.k AS g, SUM(cte0.total) AS s
+FROM cte0
+JOIN oj_rhs ON oj_rhs.id = cte0.k
+GROUP BY cte0.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM oj_cte_src GROUP BY grp)
+SELECT cte0.k AS g, SUM(cte0.total) AS s
+FROM cte0
+JOIN oj_rhs ON oj_rhs.id = cte0.k
+GROUP BY cte0.k|
+g	s
+1	30
+3	50
+
+
+=== Cleanup ===

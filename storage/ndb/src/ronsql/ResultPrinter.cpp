@@ -1064,14 +1064,15 @@ ResultPrinter::setup_output_format()
   }
 }
 
-// Phase E.3 helpers: format a single NdbRecAttr value for the
+// Phase E.3 + I.12 helpers: format a single NdbRecAttr value for the
 // projection-only pass-through path.  Mirrors the type cases the
 // aggregator path handles in print_record (see Column::data_*) but
 // reads directly from NdbRecAttr instead of NdbAggregator::Column.
-// Decimal / blob / date-time types follow whatever the CTE virt-table
-// builder produces — for Phase E.3 the supported set is integer, float,
-// double; non-numeric chained-CTE outputs aren't reachable yet because
-// the virt-table builder only emits numeric types from SUM/COUNT/MIN/MAX.
+// Phase E.3's original supported set was integer, float, double — the
+// types build_cte_virtual_tables emits from SUM/COUNT/MIN/MAX.  Phase
+// I.12 extends the set to CHAR / VARCHAR / Longvarchar so projection-
+// only queries that select a real-table string column alongside CTE
+// columns (testCteNdbApiOuterJoin.cpp Test 1 etc.) work.
 void
 ResultPrinter::print_passthrough_value(std::ostream& out,
                                        const NdbRecAttr* attr)
@@ -1106,11 +1107,55 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
     print_float_or_double(out, (double)attr->float_value()); break;
   case NdbDictionary::Column::Double:
     print_float_or_double(out, attr->double_value()); break;
+  case NdbDictionary::Column::Char:
+    {
+      const NdbDictionary::Column* col = attr->getColumn();
+      require_sch(col != nullptr, "NULL column on CHAR NdbRecAttr");
+      CHARSET_INFO* charset = col->getCharset();
+      require_sch(charset != nullptr, "Could not find charset for CHAR column");
+      LexString content = LexString{ attr->aRef(), (size_t)col->getSizeInBytes() };
+      if (m_json_output) {
+        out << '"';
+        print_string(out, content, charset, true, m_utf8_output, true);
+        out << '"';
+      } else if (m_tsv_output) {
+        print_string(out, content, charset, false, true, true);
+      } else {
+        abort();
+      }
+      break;
+    }
+  case NdbDictionary::Column::Varchar:
+  case NdbDictionary::Column::Longvarchar:
+    {
+      const NdbDictionary::Column* col = attr->getColumn();
+      require_sch(col != nullptr, "NULL column on VARCHAR NdbRecAttr");
+      CHARSET_INFO* charset = col->getCharset();
+      require_sch(charset != nullptr, "Could not find charset for VARCHAR column");
+      const char* data = attr->aRef();
+      LexString content;
+      if (t == NdbDictionary::Column::Varchar) {
+        content = LexString{ &data[1],
+                             (size_t)(unsigned char)data[0] };
+      } else {
+        content = LexString{ &data[2],
+                             (size_t)(unsigned char)data[0] |
+                             (((size_t)(unsigned char)data[1]) << 8) };
+      }
+      out << m_quote;
+      print_string(out,
+                   content,
+                   charset,
+                   m_json_output,
+                   m_utf8_output || m_tsv_output,
+                   false);
+      out << m_quote;
+      break;
+    }
   default:
-    // Phase E.3 supports the numeric types that build_cte_virtual_tables
-    // can produce (SUM/COUNT/MIN/MAX widening + plain numeric column
-    // refs).  Other types would need format-specific handling matching
-    // print_record (CHAR/VARCHAR with quoting, DATE/TIMESTAMP, DECIMAL).
+    // Other types would need format-specific handling matching
+    // print_record (DATE/TIMESTAMP, DECIMAL, BIT, BLOB, BINARY).
+    // Add as needed when a query exercises them.
     throw RonSQLPermanentError(
         "Unsupported column type in projection-only CTE_SCAN result.");
   }
