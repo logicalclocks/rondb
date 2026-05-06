@@ -203,6 +203,27 @@ private:
   // query body — the outer SELECT uses m_main_scope; CTE bodies carry
   // their own scopes so they can be planned and emitted independently.
   struct QueryScope {
+    struct ResolvedColumnRef {
+      enum class Kind : uint8_t {
+        Unresolved = 0,
+        StoredColumn,
+        CteResultColumn,
+        AliasOnly
+      };
+
+      Kind kind = Kind::Unresolved;
+      Uint32 join_op_idx = 0;
+
+      // StoredColumn
+      NdbAttrId attr_id = -1;
+      const NdbDictionary::Column* dict_column = NULL;
+
+      // CteResultColumn
+      Uint32 cte_def_idx = 0;
+      Uint32 cte_result_idx = 0;
+      const Outputs* cte_output = NULL;
+    };
+
     enum class MinMaxKind : uint8_t {
       NONE = 0,
       MIN_ASC,
@@ -215,6 +236,7 @@ private:
     NdbAttrId* column_attrId_map = NULL;
     const NdbDictionary::Column** column_map = NULL;
     Uint32* column_table_idx = NULL;
+    ResolvedColumnRef* resolved_columns = NULL;
     const NdbDictionary::Table* table = NULL;
     AggregationAPICompiler* agg = NULL;
 

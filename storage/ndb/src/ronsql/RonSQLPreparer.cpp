@@ -3865,6 +3865,8 @@ RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
   const NdbDictionary::Column** col_map =
       m_amalloc->alloc_exc<const NdbDictionary::Column*>(num_cols);
   Uint32* col_table_idx = m_amalloc->alloc_exc<Uint32>(num_cols);
+  QueryScope::ResolvedColumnRef* resolved =
+      m_amalloc->alloc_exc<QueryScope::ResolvedColumnRef>(num_cols);
   bool* refs = collect_scope_column_refs(stmt);
   std::basic_ostream<char>& err = *m_conf.err_stream;
 
@@ -3899,6 +3901,7 @@ RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
     col_id_map[col_idx] = -1;
     col_map[col_idx] = NULL;
     col_table_idx[col_idx] = 0;
+    new (&resolved[col_idx]) QueryScope::ResolvedColumnRef();
 
     if (!refs[col_idx]) {
       continue;
@@ -3909,6 +3912,7 @@ RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
 
     if (main_scope &&
         m_col_is_alias.size() > col_idx && m_col_is_alias[col_idx]) {
+      resolved[col_idx].kind = QueryScope::ResolvedColumnRef::Kind::AliasOnly;
       continue;
     }
     if (main_scope && m_has_select_subqueries &&
@@ -3923,8 +3927,10 @@ RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
           break;
         }
       }
-      if (is_subquery_agg_alias)
+      if (is_subquery_agg_alias) {
+        resolved[col_idx].kind = QueryScope::ResolvedColumnRef::Kind::AliasOnly;
         continue;
+      }
     }
 
     if (qualifier != NULL) {
@@ -3941,23 +3947,30 @@ RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
                o = o->next, cte_col_idx++) {
             if (o->output_name.len == strlen(col_name) &&
                 strncmp(o->output_name.str, col_name, o->output_name.len) == 0) {
-              col_id_map[col_idx] = (NdbAttrId)cte_col_idx;
-              col_map[col_idx] = NULL;
-              col_table_idx[col_idx] = t;
+              resolved[col_idx].kind =
+                  QueryScope::ResolvedColumnRef::Kind::CteResultColumn;
+              resolved[col_idx].join_op_idx = t;
+              resolved[col_idx].attr_id = (NdbAttrId)cte_col_idx;
+              resolved[col_idx].cte_def_idx = op.cte_def_idx;
+              resolved[col_idx].cte_result_idx = cte_col_idx;
+              resolved[col_idx].cte_output = o;
               break;
             }
           }
         } else if (op.table != NULL) {
           const NdbDictionary::Column* col = op.table->getColumn(col_name);
           if (col != NULL) {
-            col_id_map[col_idx] = col->getAttrId();
-            col_map[col_idx] = col;
-            col_table_idx[col_idx] = t;
+            resolved[col_idx].kind =
+                QueryScope::ResolvedColumnRef::Kind::StoredColumn;
+            resolved[col_idx].join_op_idx = t;
+            resolved[col_idx].attr_id = col->getAttrId();
+            resolved[col_idx].dict_column = col;
           }
         }
         break;
       }
-      if (col_id_map[col_idx] == -1) {
+      if (resolved[col_idx].kind ==
+          QueryScope::ResolvedColumnRef::Kind::Unresolved) {
         if (found_qualifier) {
           err << "Column '" << qualifier << "." << col_name
               << "' not found in table or CTE '" << qualifier << "'."
@@ -3974,6 +3987,10 @@ RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
       Uint32 match_table = 0;
       const NdbDictionary::Column* match_col = NULL;
       NdbAttrId match_attr_id = -1;
+      const Outputs* match_cte_output = NULL;
+      Uint32 match_cte_def_idx = 0;
+      Uint32 match_cte_result_idx = 0;
+      bool match_is_cte = false;
       for (Uint32 t = 0; t < plan.num_ops; t++) {
         JoinOp& op = plan.ops[t];
         if (op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) {
@@ -3987,6 +4004,10 @@ RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
               match_table = t;
               match_col = NULL;
               match_attr_id = (NdbAttrId)cte_col_idx;
+              match_cte_output = o;
+              match_cte_def_idx = op.cte_def_idx;
+              match_cte_result_idx = cte_col_idx;
+              match_is_cte = true;
               break;
             }
           }
@@ -3997,13 +4018,27 @@ RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
             match_table = t;
             match_col = col;
             match_attr_id = col->getAttrId();
+            match_cte_output = NULL;
+            match_cte_def_idx = 0;
+            match_cte_result_idx = 0;
+            match_is_cte = false;
           }
         }
       }
       if (match_count == 1) {
-        col_id_map[col_idx] = match_attr_id;
-        col_map[col_idx] = match_col;
-        col_table_idx[col_idx] = match_table;
+        if (match_is_cte) {
+          resolved[col_idx].kind =
+              QueryScope::ResolvedColumnRef::Kind::CteResultColumn;
+          resolved[col_idx].cte_def_idx = match_cte_def_idx;
+          resolved[col_idx].cte_result_idx = match_cte_result_idx;
+          resolved[col_idx].cte_output = match_cte_output;
+        } else {
+          resolved[col_idx].kind =
+              QueryScope::ResolvedColumnRef::Kind::StoredColumn;
+          resolved[col_idx].dict_column = match_col;
+        }
+        resolved[col_idx].join_op_idx = match_table;
+        resolved[col_idx].attr_id = match_attr_id;
       } else if (match_count == 0) {
         err << "Column '" << col_name << "' not found in any visible "
             << "table or CTE." << endl;
@@ -4017,9 +4052,32 @@ RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
     }
   }
 
+  for (Uint32 col_idx = 0; col_idx < num_cols; col_idx++) {
+    const QueryScope::ResolvedColumnRef& r = resolved[col_idx];
+    switch (r.kind) {
+    case QueryScope::ResolvedColumnRef::Kind::StoredColumn:
+      col_id_map[col_idx] = r.attr_id;
+      col_map[col_idx] = r.dict_column;
+      col_table_idx[col_idx] = r.join_op_idx;
+      break;
+    case QueryScope::ResolvedColumnRef::Kind::CteResultColumn:
+      col_id_map[col_idx] = (NdbAttrId)r.cte_result_idx;
+      col_map[col_idx] = NULL;
+      col_table_idx[col_idx] = r.join_op_idx;
+      break;
+    case QueryScope::ResolvedColumnRef::Kind::AliasOnly:
+    case QueryScope::ResolvedColumnRef::Kind::Unresolved:
+      col_id_map[col_idx] = -1;
+      col_map[col_idx] = NULL;
+      col_table_idx[col_idx] = 0;
+      break;
+    }
+  }
+
   scope.column_attrId_map = col_id_map;
   scope.column_map = col_map;
   scope.column_table_idx = col_table_idx;
+  scope.resolved_columns = resolved;
 }
 
 void
