@@ -427,6 +427,32 @@ I.22 should add a prepare-time guard for scale-zero DECIMAL `MIN` /
 safe boundaries and rejected unsafe declarations.  Full arbitrary
 precision DECIMAL preservation is explicitly out of scope.
 
+#### I.23 — Scoped CTE and stored-table name resolution (M)
+
+Detailed plan: `cte_filter_phase_i23.md`.
+
+The aborted I.11 implementation attempt showed that RonSQL's current
+CTE name handling is still too global.  Internal aliases and columns
+from one CTE body can leak into later scopes, while later planning and
+virtual-table construction sometimes lack the CTE index/result-column
+metadata needed to resolve chained CTE outputs safely.
+
+I.23 should build name resolution one CTE at a time, in SQL visibility
+order.  While resolving a CTE body, only stored tables plus previously
+published CTE result interfaces are visible.  After the CTE is handled,
+only its CTE name and exposed result columns are published to later
+CTEs and to the main SELECT; none of its internal stored-table aliases
+or columns are visible outside the CTE body.
+
+Unqualified names should be accepted only when unique in the current
+scope across both stored tables and visible CTE outputs.  Duplicate
+names require qualification as `stored_alias.column` or
+`cte_name.result_column`.  Resolution must produce stable metadata for
+both stored-table columns and CTE result columns: stored table/join op
+index for physical columns, and CTE index plus result-column index for
+CTE outputs.  I.11 should not be resumed until this resolver model is
+in place.
+
 ## Recommended next-pick heuristic
 
 When picking the next post-Phase-H feature work, sort the items
