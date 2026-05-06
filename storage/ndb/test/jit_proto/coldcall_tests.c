@@ -1,0 +1,331 @@
+/*
+ * Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 2.0,
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License, version 2.0, for more details.
+ */
+
+/*
+ * RONDB-1056 Phase 4 Day 5 — cold-call mechanism unit tests.
+ *
+ * Exercises the HK_COLDCALL hole + helper registry end-to-end at
+ * the JIT layer. No DBTUP / signal-flow involvement — these tests
+ * register a mock helper under the production helper name
+ * "ndb_jit_h_load_col", build small programs that use
+ * OP_LOAD_COL_NDB, compile via jit1_compile, and run the resulting
+ * native code with a hand-built JitState.
+ *
+ * This validates:
+ *   - The HK_COLDCALL patcher computes correct PC-relative
+ *     displacements (using ndb_jit_arena_exec_addr).
+ *   - The helper registry resolves names → function pointers.
+ *   - JitState.ctx round-trips through the JIT'd code into the
+ *     helper's hands.
+ *   - Cold-call values flow back into JitState.regs_i64 and on
+ *     into the rest of the bytecode chain (e.g., OP_SUM_BIGINT).
+ *
+ * What it does NOT validate:
+ *   - SETUP-signal flow (Day 6 / MTR-canary work).
+ *   - real readAttributes integration (covered by ndbmtd build
+ *     + future MTR test).
+ */
+
+#include "bytecode1.h"
+#include "jit1.h"
+#include "jit_arena.h"
+
+#include <errno.h>
+#include <inttypes.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ------------------------------------------------------------------ */
+/* Mock helper + per-test context.                                    */
+/*                                                                    */
+/* The mock has the same signature as DbtupJitGlue's                  */
+/* ndb_jit_h_load_col so registering it under that name causes the    */
+/* JIT'd code's cold-call site to land here at runtime.               */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+  uint32_t n_calls;
+  /* Last-call snapshots for caller assertions. */
+  uint32_t last_col_id;
+  uint32_t last_dst_reg;
+} MockCtx;
+
+/* Mock-A: writes col_id * 10 into dst_reg, bumps call counter. */
+static void mock_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
+  MockCtx *ctx = (MockCtx *)s->ctx;
+  ctx->n_calls++;
+  ctx->last_col_id = col_id;
+  ctx->last_dst_reg = dst_reg;
+  s->regs_i64[dst_reg] = (int64_t)col_id * 10;
+}
+
+/* ------------------------------------------------------------------ */
+/* Harness.                                                           */
+/* ------------------------------------------------------------------ */
+
+static int n_pass = 0;
+static int n_fail = 0;
+
+static void mark_pass(const char *name) {
+  printf("  PASS  %s\n", name);
+  n_pass++;
+}
+static void mark_fail(const char *name, const char *fmt, ...) {
+  printf("  FAIL  %s — ", name);
+  va_list ap;
+  va_start(ap, fmt);
+  vprintf(fmt, ap);
+  va_end(ap);
+  printf("\n");
+  n_fail++;
+}
+
+/* Build a minimal program: OP_LOAD_COL_NDB(dst=r0, col=COL),
+ * OP_SUM_BIGINT(slot=0, src=r0), OP_EXIT.
+ * (Bridge isn't involved — we hand-build the Op array directly.)  */
+static void build_load_col_then_sum(Program *p, uint8_t col_id) {
+  memset(p, 0, sizeof(*p));
+  p->n_ops = 3;
+  /* OP_LOAD_COL_NDB layout: a = dst register, c = col_id. */
+  p->ops[0] = (Op){ .kind = OP_LOAD_COL_NDB, .a = 0, .c = col_id };
+  /* OP_SUM_BIGINT layout: a = acc slot, b = src register. */
+  p->ops[1] = (Op){ .kind = OP_SUM_BIGINT, .a = 0, .b = 0 };
+  p->ops[2] = (Op){ .kind = OP_EXIT };
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests.                                                             */
+/* ------------------------------------------------------------------ */
+
+/* T1: helper-not-registered.
+ *
+ * Run with NO helpers registered; jit1_compile must return NULL
+ * with errno=ENOENT. The arena's used-bytes high-water mark may
+ * have grown (admission passes — the program is well-formed —
+ * and pass-1 / pass-2 emit the bytes before failing on the
+ * unresolved cold-call hole), but no NULL deref / crash. */
+static void test_no_helper_registered(void) {
+  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+  Program p;
+  build_load_col_then_sum(&p, /*col_id=*/3);
+
+  errno = 0;
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp != NULL) {
+    mark_fail("T1 no_helper_registered",
+              "jit1_compile returned non-NULL");
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  if (errno != ENOENT) {
+    mark_fail("T1 no_helper_registered",
+              "errno=%d, want ENOENT", errno);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  mark_pass("T1 no_helper_registered");
+  ndb_jit_arena_destroy(arena);
+}
+
+/* T2: single-row invocation.
+ *
+ * Register the mock under the production helper name. Compile
+ * the program. Run the JIT entry once with a fresh JitState.
+ * Verify the helper was called with the expected args and its
+ * value flowed into the accumulator. */
+static void test_single_row(void) {
+  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+  Program p;
+  build_load_col_then_sum(&p, /*col_id=*/7);
+
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail("T2 single_row",
+              "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  MockCtx ctx = {0};
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+  entry(&s);
+
+  if (ctx.n_calls != 1) {
+    mark_fail("T2 single_row",
+              "n_calls=%u, want 1", ctx.n_calls);
+  } else if (ctx.last_col_id != 7) {
+    mark_fail("T2 single_row",
+              "last_col_id=%u, want 7", ctx.last_col_id);
+  } else if (ctx.last_dst_reg != 0) {
+    mark_fail("T2 single_row",
+              "last_dst_reg=%u, want 0", ctx.last_dst_reg);
+  } else if (s.acc_i64[0] != 70) {
+    mark_fail("T2 single_row",
+              "acc[0]=%" PRId64 ", want 70 (col_id 7 * 10)",
+              s.acc_i64[0]);
+  } else {
+    mark_pass("T2 single_row");
+  }
+  ndb_jit_arena_destroy(arena);
+}
+
+/* T3: multi-row accumulation.
+ *
+ * Run the entry 100 times with the same JitState. acc carries
+ * across rows; regs reset each row (we memset them). Verify the
+ * helper was called 100 times and acc holds the cumulative sum. */
+static void test_multi_row(void) {
+  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+  Program p;
+  build_load_col_then_sum(&p, /*col_id=*/4);
+
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail("T3 multi_row",
+              "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  MockCtx ctx = {0};
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+  for (int i = 0; i < 100; ++i) {
+    /* Per-row: clear regs but carry acc. */
+    memset(s.regs_i64, 0, sizeof(s.regs_i64));
+    entry(&s);
+  }
+
+  if (ctx.n_calls != 100) {
+    mark_fail("T3 multi_row", "n_calls=%u, want 100", ctx.n_calls);
+  } else if (s.acc_i64[0] != 100 * 40) {
+    mark_fail("T3 multi_row",
+              "acc[0]=%" PRId64 ", want %d (100 rows * 40/row)",
+              s.acc_i64[0], 100 * 40);
+  } else {
+    mark_pass("T3 multi_row");
+  }
+  ndb_jit_arena_destroy(arena);
+}
+
+/* T4: cold-call combined with hot arithmetic.
+ *
+ * Program:
+ *   load_col_ndb r0, col=5      ; r0 = 50
+ *   load_col_ndb r1, col=7      ; r1 = 70
+ *   add_int_int  r2, r0, r1     ; r2 = 120
+ *   sum_bigint   acc[0], r2     ; acc += 120
+ *   exit
+ *
+ * Verifies that the cold-call result feeds into the next stencil
+ * via JitState.regs_i64 — i.e., the value the helper writes is
+ * the same value subsequent stencils read. */
+static void test_coldcall_plus_arith(void) {
+  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 5;
+  p.ops[0] = (Op){ .kind = OP_LOAD_COL_NDB, .a = 0, .c = 5 };
+  p.ops[1] = (Op){ .kind = OP_LOAD_COL_NDB, .a = 1, .c = 7 };
+  p.ops[2] = (Op){ .kind = OP_ADD_INT_INT,  .a = 2, .b = 0, .c = 1 };
+  p.ops[3] = (Op){ .kind = OP_SUM_BIGINT,   .a = 0, .b = 2 };
+  p.ops[4] = (Op){ .kind = OP_EXIT };
+
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail("T4 coldcall_plus_arith",
+              "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  MockCtx ctx = {0};
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+  entry(&s);
+
+  if (ctx.n_calls != 2) {
+    mark_fail("T4 coldcall_plus_arith",
+              "n_calls=%u, want 2", ctx.n_calls);
+  } else if (s.acc_i64[0] != 120) {
+    mark_fail("T4 coldcall_plus_arith",
+              "acc[0]=%" PRId64 ", want 120 (50 + 70)",
+              s.acc_i64[0]);
+  } else {
+    mark_pass("T4 coldcall_plus_arith");
+  }
+  ndb_jit_arena_destroy(arena);
+}
+
+/* T5: registry idempotency + miss.
+ *
+ * Re-register the same helper under the same name → no-op (rc=0).
+ * Lookup an unregistered helper → NULL. */
+static void test_registry_basics(void) {
+  /* Same helper, same name — should succeed. */
+  if (jit1_register_helper("ndb_jit_h_load_col",
+                            (JitHelperFn)&mock_load_col) != 0) {
+    mark_fail("T5 registry_basics",
+              "re-register same name+fn returned non-zero");
+    return;
+  }
+  if (jit1_lookup_helper("does_not_exist") != NULL) {
+    mark_fail("T5 registry_basics",
+              "lookup of unregistered name returned non-NULL");
+    return;
+  }
+  if (jit1_lookup_helper("ndb_jit_h_load_col") !=
+      (JitHelperFn)&mock_load_col) {
+    mark_fail("T5 registry_basics",
+              "lookup of registered name returned wrong fn");
+    return;
+  }
+  mark_pass("T5 registry_basics");
+}
+
+/* ------------------------------------------------------------------ */
+/* main.                                                              */
+/* ------------------------------------------------------------------ */
+
+int main(void) {
+  printf("RONDB-1056 Phase 4 — coldcall_tests\n");
+  printf("===================================\n");
+
+  /* T1 must run BEFORE registration (it asserts ENOENT). */
+  test_no_helper_registered();
+
+  /* Register the mock for the rest of the tests. */
+  if (jit1_register_helper("ndb_jit_h_load_col",
+                            (JitHelperFn)&mock_load_col) != 0) {
+    fprintf(stderr, "FATAL: jit1_register_helper failed\n");
+    return 2;
+  }
+
+  test_single_row();
+  test_multi_row();
+  test_coldcall_plus_arith();
+  test_registry_basics();
+
+  printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
+  return n_fail == 0 ? 0 : 1;
+}

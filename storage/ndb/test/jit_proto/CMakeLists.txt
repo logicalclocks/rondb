@@ -155,3 +155,26 @@ SET_TARGET_PROPERTIES(bridge_tests PROPERTIES
 TARGET_LINK_LIBRARIES(bridge_tests PRIVATE
   ndb_jit_bridge
 )
+
+# ---------------------------------------------------------------------------
+# RONDB-1056 Phase 4 Day 5: coldcall_tests — exercises the cold-call
+# mechanism end-to-end at the JIT layer.
+#
+# Registers a mock helper under the production name
+# "ndb_jit_h_load_col", builds programs that use OP_LOAD_COL_NDB,
+# compiles via jit1_compile, runs the JIT'd code with a hand-built
+# JitState, and asserts the helper was called and values flowed
+# through correctly. No DBTUP / signal-flow involvement — the test
+# binary doesn't link DbtupJitGlue.cpp.
+# ---------------------------------------------------------------------------
+
+ADD_EXECUTABLE(coldcall_tests coldcall_tests.c)
+SET_TARGET_PROPERTIES(coldcall_tests PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS YES
+)
+TARGET_LINK_LIBRARIES(coldcall_tests PRIVATE
+  ndb_jit1
+  ndb_jit_arena
+)
