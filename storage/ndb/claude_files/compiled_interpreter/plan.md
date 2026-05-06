@@ -285,6 +285,11 @@ the bytes, the benchmark numbers, and the go/no-go verdict.
 
 ## 8. Phase 2 — Extractor tool + clang build pipeline
 
+**Status: shipped.** See `phase_2_extractor.md` for the results doc.
+Final commit at writing: `16f4692131c`. All §10 verification gates
+clear on x86_64 (Linux) and aarch64 (macOS), modulo the aarch64 perf
+gap that's expected and addressed by Phase 5's operand-folding work.
+
 **Goal.** Replace Phase 1's hand-extracted stencil bytes with an
 automated pipeline. After this phase, editing `stencils_src.c` and
 running `make regen-stencils` reproduces the headers from clean.
