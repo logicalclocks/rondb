@@ -28,6 +28,7 @@
 #include "JoinAggregationState.hpp"
 #include "dbtup/JoinAggInterpreter.hpp"
 #include <ndbapi/NdbAggregationCommon.hpp>
+#include "dbtup/jit/jit_arena.h"
 
 // Static definition for node failure counter
 std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
@@ -78,11 +79,22 @@ std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
 #endif
 
 DblqhProxy::DblqhProxy(Block_context &ctx)
-    : LocalProxy(DBLQH, ctx), c_tableRecSize(0), c_tableRec(0) {
+    : LocalProxy(DBLQH, ctx), c_tableRecSize(0), c_tableRec(0),
+      m_jit_arena(nullptr) {
   m_received_wait_all = false;
   m_lcp_started = false;
   m_outstanding_wait_lcp = 0;
   m_outstanding_start_node_lcp_req = 0;
+
+  /* Phase 4 RONDB-1056: per-node JIT compile arena.
+   *
+   * 1 MB initial. Holds ~500 typical aggregation programs (each
+   * ~2KB on aarch64, ~600B on x86_64). If creation fails (mmap
+   * rejected on hardened kernels — see jit_arena_linux.inc.c for
+   * the W^X fallback path), the pointer stays NULL and the
+   * proxy operates with JIT disabled — interpreter handles
+   * every program, same as before Phase 4. */
+  m_jit_arena = ndb_jit_arena_create(1024 * 1024);
 
   // GSN_CREATE_TAB_REQ
   addRecSignal(GSN_CREATE_TAB_REQ, &DblqhProxy::execCREATE_TAB_REQ);
@@ -220,7 +232,15 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
                &DblqhProxy::execCONTINUEB);
 }
 
-DblqhProxy::~DblqhProxy() {}
+DblqhProxy::~DblqhProxy() {
+  /* Phase 4: tear down the JIT arena. Workers should not hold any
+   * Jit1Prog* references at this point — DblqhProxy outlives every
+   * JoinAggregationState by NDB block-lifecycle invariants. */
+  if (m_jit_arena != nullptr) {
+    ndb_jit_arena_destroy(m_jit_arena);
+    m_jit_arena = nullptr;
+  }
+}
 
 SimulatedBlock *DblqhProxy::newWorker(Uint32 instanceNo) {
   return new Dblqh(m_ctx, instanceNo, DBLQH);

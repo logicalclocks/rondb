@@ -45,6 +45,11 @@
 
 #define JAM_FILE_ID 445
 
+/* Forward-declare the opaque JIT arena type so DblqhProxy can hold a
+ * pointer without pulling jit_arena.h transitively into every block
+ * that includes DblqhProxy.hpp. The .cpp pulls it in for real. */
+struct NdbJitArena;
+
 class DblqhProxy : public LocalProxy {
  public:
   DblqhProxy(Block_context &ctx);
@@ -57,6 +62,21 @@ class DblqhProxy : public LocalProxy {
   // system info
   Uint32 c_tableRecSize;
   Uint8 *c_tableRec;  // bool => table exists
+
+  /* Phase 4 RONDB-1056: per-node JIT compile arena.
+   *
+   * Owned exclusively by the proxy thread. Created at construction,
+   * destroyed at proxy teardown. All compiled blobs that come out of
+   * `jit1_compile` calls in `execJOIN_AGG_SETUP_REQ` live in this
+   * arena and are valid for the rest of the proxy's lifetime. LDM
+   * workers hold borrowed references via `LeafProgram::m_jit_prog`
+   * — they never call `jit1_arena_destroy`.
+   *
+   * If creation fails (mmap rejection on a hardened kernel, etc.),
+   * the pointer stays NULL and the proxy operates without the JIT
+   * path. The interpreter handles every program — same as before
+   * Phase 4. */
+  NdbJitArena *m_jit_arena;
 
   // GSN_NDB_STTOR
   void callNDB_STTOR(Signal *) override;
