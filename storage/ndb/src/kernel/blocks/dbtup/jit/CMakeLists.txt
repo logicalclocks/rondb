@@ -107,6 +107,34 @@ TARGET_INCLUDE_DIRECTORIES(ndb_jit_extract_stencils PRIVATE
 )
 
 # ---------------------------------------------------------------------------
+# RONDB-1056 Phase 2: magic-byte collision audit — host tool.
+#
+# Independent verification that each MAGIC_* declared in hole_kinds.h
+# appears exactly the expected number of times in the generated stencil
+# headers (1x in its declaring stencil on aarch64, 0x everywhere else).
+#
+# The extractor and the audit run independent chain-detection logic; if
+# the extractor ever silently swallows a chain (e.g., due to a clang
+# codegen surprise that confuses the magic decoder), the audit run is
+# meant to flag it.
+#
+# Will be wired into the regen-stencils target in Day 3 AM.
+# ---------------------------------------------------------------------------
+
+ADD_EXECUTABLE(ndb_jit_audit_magics
+  extract_stencils/audit_magics.c
+)
+SET_TARGET_PROPERTIES(ndb_jit_audit_magics PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS YES
+)
+TARGET_INCLUDE_DIRECTORIES(ndb_jit_audit_magics PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/extract_stencils
+)
+
+# ---------------------------------------------------------------------------
 # RONDB-1056 Phase 1: stencils.o build target.
 #
 # stencils_src.c is compiled with clang (not the project's CC) using a
