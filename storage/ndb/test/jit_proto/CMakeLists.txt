@@ -136,3 +136,22 @@ TARGET_LINK_LIBRARIES(admission_tests PRIVATE
   ndb_jit1
   ndb_jit_arena
 )
+
+# ---------------------------------------------------------------------------
+# RONDB-1056 Phase 4: bridge_tests — host-tool unit tests for
+# ndb_jit_bridge_translate().
+#
+# 10 cases covering accept paths (empty, simple SUM, arithmetic
+# battery, load_const) and reject paths (kOpEmbeddedInterp, kOpDiv,
+# kOpSetRegNull, non-bigint type, truncated, register out of range).
+# ---------------------------------------------------------------------------
+
+ADD_EXECUTABLE(bridge_tests bridge_tests.c)
+SET_TARGET_PROPERTIES(bridge_tests PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS YES
+)
+TARGET_LINK_LIBRARIES(bridge_tests PRIVATE
+  ndb_jit_bridge
+)

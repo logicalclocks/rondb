@@ -83,6 +83,26 @@ TARGET_INCLUDE_DIRECTORIES(ndb_jit1 PUBLIC
 TARGET_LINK_LIBRARIES(ndb_jit1 PUBLIC ndb_jit_arena)
 
 # ---------------------------------------------------------------------------
+# RONDB-1056 Phase 4: NDB aggregation bytecode bridge.
+#
+# Translates an NDB Uint32-word aggregation program into our internal
+# Program/Op format. Pure C, no NDB-side dependencies — DBTUP code
+# includes only ndb_jit_bridge.h.
+# ---------------------------------------------------------------------------
+
+ADD_LIBRARY(ndb_jit_bridge STATIC
+  ndb_jit_bridge.c
+)
+SET_TARGET_PROPERTIES(ndb_jit_bridge PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS YES
+)
+TARGET_INCLUDE_DIRECTORIES(ndb_jit_bridge PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+# ---------------------------------------------------------------------------
 # RONDB-1056 Phase 2: stencil extractor — host tool.
 #
 # Reads an ELF .o produced by clang from stencils_src.c, walks the
