@@ -7392,11 +7392,19 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     if (o->type == Outputs::Type::COLUMN) {
       // Source-real-column path.
       Uint32 src_col_idx = o->column.col_idx;
-      const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
+      require_run(cs->resolved_columns != NULL,
+                  "CTE_LOOKUP filter: CTE body missing resolved columns.");
+      const QueryScope::ResolvedColumnRef& src_ref =
+          cs->resolved_columns[src_col_idx];
+      require_prm(
+          src_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+          "CTE_LOOKUP filter: CTE body source is not a stored-table "
+          "column.");
+      const NdbDictionary::Column* src_col = src_ref.dict_column;
       require_prm(src_col != NULL,
                   "CTE_LOOKUP filter: CTE body source column not "
                   "resolved.");
-      Uint32 src_op_idx = cs->column_table_idx[src_col_idx];
+      Uint32 src_op_idx = src_ref.join_op_idx;
       require_prm(src_op_idx < cs->join_plan.num_ops,
                   "CTE_LOOKUP filter: CTE body source op idx out of "
                   "range.");
@@ -10038,10 +10046,19 @@ RonSQLPreparer::generate_embedded_condition(
                         "column projection instead, or move the "
                         "predicate into the CTE body's WHERE clause.");
             Uint32 src_col_idx = o->column.col_idx;
-            const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
+            require_run(cs->resolved_columns != NULL,
+                        "CASE over CTE: CTE body missing resolved columns.");
+            const QueryScope::ResolvedColumnRef& src_ref =
+                cs->resolved_columns[src_col_idx];
+            require_prm(
+                src_ref.kind ==
+                QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+                "CASE over CTE: source column is not a stored-table "
+                "column.");
+            const NdbDictionary::Column* src_col = src_ref.dict_column;
             require_prm(src_col != NULL,
                         "CASE over CTE: source column not resolved.");
-            Uint32 src_op_idx = cs->column_table_idx[src_col_idx];
+            Uint32 src_op_idx = src_ref.join_op_idx;
             require_prm(src_op_idx < cs->join_plan.num_ops,
                         "CASE over CTE: source op out of range.");
             out.parent_table = cs->join_plan.ops[src_op_idx].table;
