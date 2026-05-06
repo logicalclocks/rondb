@@ -30,6 +30,7 @@
 #include "signaldata/TransIdAI.hpp"
 #include "include/my_byteorder.h"
 #include "JoinAggInterpreter.hpp"
+#include "DbtupJitGlue.hpp"
 #include "InterpreterCommonOp.hpp"
 #include "util/require.h"
 #include "decimal.h"
@@ -951,6 +952,27 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     agg_res_ptr = m_agg_results + m_acc_offset;
   }
 
+  /* Phase 4 RONDB-1056: JIT path.
+   *
+   * Bypass the interpreter loop entirely when a JIT'd entry is
+   * cached AND the program isn't using GROUP BY. The Phase 4
+   * narrow scope rejects GB programs at admission, but defense-
+   * in-depth: the runtime check ensures GB programs that slip
+   * through (e.g., via a setup-time bug) still take the
+   * interpreter path.
+   *
+   * The dispatch glue (in DbtupJitGlue.cpp) handles JitState
+   * setup, accumulator copy in/out, and helper-context wiring.
+   * Per-program decision; the branch predictor folds it after
+   * a couple of iterations. */
+  if (m_jit_entry != nullptr && m_n_gb_cols == 0) {
+    m_processed_rows++;
+    return dbtup_jit_invoke(this, block_tup, req_struct,
+                             m_jit_entry, agg_res_ptr,
+                             m_n_agg_results);
+  }
+
+  Uint32 col_index;
   Uint32 value;
   DataType type;
   bool is_unsigned;

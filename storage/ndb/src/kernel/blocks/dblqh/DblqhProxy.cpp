@@ -28,6 +28,7 @@
 #include "JoinAggregationState.hpp"
 #include "dbtup/JoinAggInterpreter.hpp"
 #include <ndbapi/NdbAggregationCommon.hpp>
+#include "dbtup/DbtupJitGlue.hpp"
 #include "dbtup/jit/jit_arena.h"
 #include "dbtup/jit/jit1.h"
 #include "dbtup/jit/ndb_jit_bridge.h"
@@ -110,6 +111,14 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
    * proxy operates with JIT disabled — interpreter handles
    * every program, same as before Phase 4. */
   m_jit_arena = ndb_jit_arena_create(1024 * 1024);
+
+  /* Register all Phase 4 cold-call helpers with the JIT engine.
+   * Idempotent: if multiple DblqhProxy instances ever exist (e.g.,
+   * tests), re-registering the same helpers is a no-op. Done
+   * unconditionally — even if m_jit_arena failed, the helpers
+   * stay registered and become useful as soon as a working arena
+   * appears. */
+  dbtup_jit_register_helpers();
 
   // GSN_CREATE_TAB_REQ
   addRecSignal(GSN_CREATE_TAB_REQ, &DblqhProxy::execCREATE_TAB_REQ);
@@ -2896,6 +2905,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       }
     }
     interp->initChunkAllocator(getThreadId(), budget_pages, available_pages);
+    /* Phase 4: pass the cached JIT entry to the interpreter so
+     * ProcessRec can dispatch via the JIT path. nullptr is the
+     * normal interpreter-only case. */
+    interp->setJitEntry(leaf0.m_jit_entry);
+    state->m_agg_interpreter = interp;
   } else {
     jam();
     Uint32 num_threads = state->m_num_threads;
@@ -2951,6 +2965,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       }
       interp->initChunkAllocator(getThreadId(), per_thread_budget,
                                    available_pages);
+      /* Phase 4: pass the cached JIT entry. All MUTEX_FREE
+       * interpreters share leaf0's compiled blob (or fall back
+       * uniformly when m_jit_entry is nullptr). */
+      interp->setJitEntry(leaf0.m_jit_entry);
+      arr[i] = interp;
     }
   }
 

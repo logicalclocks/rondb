@@ -33,6 +33,12 @@
 #include "AggHashTable.hpp"
 
 // DECIMAL_BUFF_LENGTH now lives in AggInterpreterBase.hpp (Step 1.3).
+/* Phase 4 RONDB-1056: forward-declare the JIT engine's per-row
+ * entry-pointer typedef so JoinAggInterpreter can hold one without
+ * pulling jit1.h transitively. The .cpp pulls jit1.h for the real
+ * definition. */
+struct JitState;
+typedef void (*JitEntry)(JitState *);
 
 /**
  * JoinAggInterpreter — aggregation interpreter for join pushdown.
@@ -83,6 +89,31 @@ class JoinAggInterpreter : public AggInterpreterBase {
   }
 
   bool Init(const Uint32* prog);
+
+  /* Phase 4 RONDB-1056: JIT entry-pointer caching.
+   *
+   * Set once by DblqhProxy::execJOIN_AGG_SETUP_REQ after the JIT
+   * compile, before the interpreter starts processing rows.
+   * ProcessRec dispatches via this when m_n_gb_cols == 0.
+   * Default-null = interpreter path. */
+  void setJitEntry(JitEntry e) { m_jit_entry = e; }
+
+  /* Phase 4 cold-call helper bridge: exposes readAttributes to
+   * DbtupJitGlue via the friend access JoinAggInterpreter has on
+   * Dbtup. Reads the AttributeHeader + raw column bytes into
+   * `read_buf`; caller decodes per the column's type.
+   *
+   * Returns the same value as Dbtup::readAttributes — non-negative
+   * on success, negative on failure. */
+  int readAttributeForJit(Dbtup *block_tup,
+                           Dbtup::KeyReqStruct *req_struct,
+                           Uint32 col_id,
+                           Uint32 *read_buf,
+                           Uint32 buf_words) {
+    Uint32 col_index = col_id << 16;
+    return block_tup->readAttributes(req_struct, &col_index, 1,
+                                      read_buf, buf_words);
+  }
 
   Int32 processRecWithLinkedAttrs(
       Dbtup* block_tup,

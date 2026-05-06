@@ -419,6 +419,12 @@ class AggInterpreterBase : public PushdownInterpreter {
   static Int32 MinDouble(const Register& a, AggResItem* res, bool print);
   static Int32 Count(const Register& a, AggResItem* res, bool print);
 
+  /* Phase 4 RONDB-1056: cached JIT entry pointer. nullptr means
+   * fall-through to the interpreter loop (the path before this
+   * field existed). Set by DblqhProxy via setJitEntry(); read
+   * once at the top of ProcessRec. */
+  JitEntry m_jit_entry = nullptr;
+
   /* Fields lifted from the subclasses in Step 1.2 to support the shared
    * OptimizeProgram.  Total sizeof is unchanged — same fields, moved up
    * the class hierarchy — so both static_asserts on subclass sizeof

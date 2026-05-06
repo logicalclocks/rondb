@@ -126,6 +126,7 @@ ADD_STATIC_LIBRARY(ndbblocks
   dbtup/AggInterpreterBase.cpp
   dbtup/AggInterpreter.cpp
   dbtup/JoinAggInterpreter.cpp
+  dbtup/DbtupJitGlue.cpp
   dbtup/PushdownInterpreter.cpp
   dbtup/VecSearchInterpreter.cpp
   dbtux/Dbqtux.cpp
