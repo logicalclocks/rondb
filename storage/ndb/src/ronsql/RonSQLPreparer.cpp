@@ -9439,16 +9439,19 @@ RonSQLPreparer::require_cte_case_condition_column_output(QueryScope& scope,
                                                          Uint32 op_idx,
                                                          Uint32 cidx)
 {
+  require_run(scope.resolved_columns != NULL,
+              "CASE over CTE: missing resolved columns.");
+  const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[cidx];
+  require_prm(
+      ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+      ref.join_op_idx == op_idx,
+      "CASE over CTE: column is not resolved to the requested CTE op.");
   const JoinOp& cte_op = scope.join_plan.ops[op_idx];
   require_run(cte_op.cte_def != NULL,
               "CASE over CTE: op has no CTE definition.");
-  Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[cidx];
-  Uint32 walk = 0;
-  const Outputs* o = cte_op.cte_def->stmt->outputs;
-  while (o != NULL && walk < cte_col_idx) {
-    o = o->next;
-    walk++;
-  }
+  require_run(ref.cte_def_idx == cte_op.cte_def_idx,
+              "CASE over CTE: descriptor CTE index mismatch.");
+  const Outputs* o = ref.cte_output;
   require_prm(o != NULL,
               "CASE over CTE: output index out of range.");
   require_prm(o->type == Outputs::Type::COLUMN,
@@ -9465,25 +9468,25 @@ RonSQLPreparer::resolve_case_condition_column(
     NdbDictionary::Table* const* cteVirtualTables)
 {
   Uint32 cidx = col_side->col_idx;
-  if (scope.column_table_idx == NULL) {
-    return scope.column_map[cidx];
-  }
-  Uint32 op_idx = (Uint32)scope.column_table_idx[cidx];
-  if (cteVirtualTables != NULL && op_idx < scope.join_plan.num_ops) {
-    JoinOp::Type t = scope.join_plan.ops[op_idx].type;
-    if (t == JoinOp::CTE_LOOKUP || t == JoinOp::CTE_SCAN) {
-      if (cteVirtualTables[op_idx] != NULL) {
-        Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[cidx];
-        const NdbDictionary::Column* vtcol =
-            cteVirtualTables[op_idx]->getColumn((int)cte_col_idx);
-        require_prm(vtcol != NULL,
-                    "CASE over CTE: virt-table missing column at "
-                    "cte_col_idx.");
-        return vtcol;
-      }
+  require_run(scope.resolved_columns != NULL,
+              "CASE condition: missing resolved columns.");
+  const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[cidx];
+  if (ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn) {
+    Uint32 op_idx = ref.join_op_idx;
+    if (cteVirtualTables != NULL && op_idx < scope.join_plan.num_ops &&
+        cteVirtualTables[op_idx] != NULL) {
+      const NdbDictionary::Column* vtcol =
+          cteVirtualTables[op_idx]->getColumn((int)ref.cte_result_idx);
+      require_prm(vtcol != NULL,
+                  "CASE over CTE: virt-table missing column at "
+                  "cte_col_idx.");
+      return vtcol;
     }
+    return NULL;
   }
-  return scope.column_map[cidx];
+  require_prm(ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+              "CASE condition: column is not a stored-table column.");
+  return ref.dict_column;
 }
 
 // Phase I.5 v7 — emit one Greatest2 / Least2 pair-op.  The embedded
@@ -9856,11 +9859,12 @@ RonSQLPreparer::generate_embedded_condition(
   {
     atoms[a] = simplify_ce(atoms[a], -1);
   }
+  require_run(scope.resolved_columns != NULL,
+              "CASE condition: missing resolved columns.");
 
   // Per-atom resolution info, populated in the pre-pass and reused
   // verbatim in the emit pass.
-  Uint32 leaf_idx = (scope.column_table_idx != NULL) ?
-      scope.join_plan.agg_leaf_idx : 0;
+  Uint32 leaf_idx = scope.join_plan.agg_leaf_idx;
   if (agg_leaf_idx_override != 0xFFFFFFFF) {
     leaf_idx = agg_leaf_idx_override;
   }
@@ -9924,22 +9928,25 @@ RonSQLPreparer::generate_embedded_condition(
         out.attr_id = 0;
         out.col = NULL;
         out.parent_table = NULL;
+        const QueryScope::ResolvedColumnRef& ref =
+            scope.resolved_columns[cidx];
+        require_prm(
+            ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn ||
+            ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn,
+            "CASE condition: column is not resolved to a table or CTE "
+            "column.");
         if (scope.column_table_idx == NULL) {
           out.kind = SideKind::LeafTable;
           out.col = resolve_case_condition_column(
               scope, col_side, cteVirtualTables);
           require_prm(out.col != NULL,
                       "CASE condition: unresolved column descriptor.");
-          out.attr_id = scope.column_attrId_map != NULL ?
-              scope.column_attrId_map[cidx] : 0;
+          out.attr_id = ref.attr_id;
           return;
         }
-        Uint32 op_idx = scope.column_table_idx[cidx];
-        bool op_is_cte = false;
-        if (cteVirtualTables != NULL && op_idx < scope.join_plan.num_ops) {
-          JoinOp::Type t = scope.join_plan.ops[op_idx].type;
-          op_is_cte = (t == JoinOp::CTE_LOOKUP || t == JoinOp::CTE_SCAN);
-        }
+        Uint32 op_idx = ref.join_op_idx;
+        bool op_is_cte =
+            ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn;
         if (op_is_cte) {
           require_cte_case_condition_column_output(scope, op_idx, cidx);
         }
@@ -9956,10 +9963,7 @@ RonSQLPreparer::generate_embedded_condition(
             QueryScope* cs = m_cte_scopes[cte_op.cte_def_idx];
             require_run(cs != NULL,
                         "CASE over CTE: missing CTE body scope.");
-            Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[cidx];
-            Uint32 walk = 0;
-            const Outputs* o = cte_op.cte_def->stmt->outputs;
-            while (o != NULL && walk < cte_col_idx) { o = o->next; walk++; }
+            const Outputs* o = ref.cte_output;
             require_prm(o != NULL,
                         "CASE over CTE: output index out of range.");
             require_prm(o->type == Outputs::Type::COLUMN,
@@ -9982,10 +9986,10 @@ RonSQLPreparer::generate_embedded_condition(
             out.attr_id = (NdbAttrId)src_col->getColumnNo();
             out.kind = SideKind::LinkedCteCol;
           } else {
-            out.col = scope.column_map[cidx];
+            out.col = ref.dict_column;
             require_prm(out.col != NULL,
                         "CASE condition: unresolved column descriptor.");
-            out.attr_id = scope.column_attrId_map[cidx];
+            out.attr_id = ref.attr_id;
             out.parent_table = scope.join_plan.ops[op_idx].table;
             require_prm(out.parent_table != NULL,
                         "CASE condition: linked parent op has no "
@@ -9995,7 +9999,7 @@ RonSQLPreparer::generate_embedded_condition(
         } else if (op_is_cte) {
           // CTE leaf column: inline-type encoding.
           out.linked_position = scope.join_plan.num_linked_projs +
-              (Uint32)scope.column_attrId_map[cidx];
+              ref.cte_result_idx;
           out.col = resolve_case_condition_column(
               scope, col_side, cteVirtualTables);
           require_prm(out.col != NULL,
@@ -10003,10 +10007,10 @@ RonSQLPreparer::generate_embedded_condition(
           out.kind = SideKind::InlineLinked;
         } else {
           // Plain leaf-table column on the agg leaf op.
-          out.col = scope.column_map[cidx];
+          out.col = ref.dict_column;
           require_prm(out.col != NULL,
                       "CASE condition: unresolved column descriptor.");
-          out.attr_id = scope.column_attrId_map[cidx];
+          out.attr_id = ref.attr_id;
           out.kind = SideKind::LeafTable;
         }
       };
