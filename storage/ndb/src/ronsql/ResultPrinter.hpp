@@ -35,13 +35,21 @@
 
 class ResultPrinter
 {
+public:
+  struct ColumnMetadata {
+    CHARSET_INFO* charset;
+    int precision;
+    int scale;
+    bool has_metadata;
+  };
+
 private:
 
   // Configuration provided to constructor
   ArenaMalloc* m_amalloc;
   struct SelectStatement* m_query;
   DynamicArray<LexCString>* m_column_names;
-  const NdbDictionary::Column** m_column_map;
+  const ColumnMetadata* m_column_metadata;
   RonSQLExecParams::OutputFormat m_output_format;
   std::basic_ostream<char>* m_err;
 
@@ -154,7 +162,7 @@ public:
   ResultPrinter(ArenaMalloc* amalloc,
                 struct SelectStatement* query,
                 DynamicArray<LexCString>* column_names,
-                const NdbDictionary::Column** column_map,
+                const ColumnMetadata* column_metadata,
                 RonSQLExecParams::OutputFormat output_format,
                 std::basic_ostream<char>* err);
   // Phase E.3 pass-through constructor for projection-only main SELECTs

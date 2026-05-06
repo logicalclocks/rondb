@@ -88,13 +88,13 @@ require_sch(bool condition, const char* msg)
 ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
                              struct SelectStatement* query,
                              DynamicArray<LexCString>* column_names,
-                             const NdbDictionary::Column** column_map,
+                             const ColumnMetadata* column_metadata,
                              RonSQLExecParams::OutputFormat output_format,
                              std::basic_ostream<char>* err):
   m_amalloc(amalloc),
   m_query(query),
   m_column_names(column_names),
-  m_column_map(column_map),
+  m_column_metadata(column_metadata),
   m_output_format(output_format),
   m_err(err),
   m_program(amalloc),
@@ -135,7 +135,7 @@ ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
   m_amalloc(amalloc),
   m_query(query),
   m_column_names(column_names),
-  m_column_map(NULL),
+  m_column_metadata(NULL),
   m_output_format(output_format),
   m_err(err),
   m_program(amalloc),
@@ -182,9 +182,9 @@ ResultPrinter::validate_orderby_columns()
               m_col_idx_groupby_map.push(0);
             m_col_idx_groupby_map[col_idx] = i;
             CHARSET_INFO* charset = NULL;
-            if (m_column_map != NULL &&
-                m_column_map[col_idx] != NULL)
-              charset = m_column_map[col_idx]->getCharset();
+            if (m_column_metadata != NULL &&
+                m_column_metadata[col_idx].has_metadata)
+              charset = m_column_metadata[col_idx].charset;
             OrderbySpec spec;
             spec.kind = OrderbySpec::Kind::GROUPBY_COL;
             spec.groupby_idx = i;
@@ -235,9 +235,9 @@ ResultPrinter::validate_orderby_columns()
             m_col_idx_groupby_map.push(0);
           m_col_idx_groupby_map[col_idx] = i;
           CHARSET_INFO* charset = NULL;
-          if (m_column_map != NULL &&
-              m_column_map[col_idx] != NULL)
-            charset = m_column_map[col_idx]->getCharset();
+          if (m_column_metadata != NULL &&
+              m_column_metadata[col_idx].has_metadata)
+            charset = m_column_metadata[col_idx].charset;
           OrderbySpec spec;
           spec.kind = OrderbySpec::Kind::GROUPBY_COL;
           spec.groupby_idx = i;
@@ -424,12 +424,13 @@ ResultPrinter::compile()
         CHARSET_INFO* charset;
         int precision;
         int scale;
-        if (m_column_map != NULL &&
-            m_column_map[o->column.col_idx] != NULL) {
-          const NdbDictionary::Column* col = m_column_map[o->column.col_idx];
-          charset = col->getCharset();
-          precision = col->getPrecision();
-          scale = col->getScale();
+        if (m_column_metadata != NULL &&
+            m_column_metadata[o->column.col_idx].has_metadata) {
+          const ColumnMetadata& meta =
+              m_column_metadata[o->column.col_idx];
+          charset = meta.charset;
+          precision = meta.precision;
+          scale = meta.scale;
         } else {
           // During EXPLAIN SELECT without access to ndb we still need to
           // compile, but these values won't be used.

@@ -4867,11 +4867,28 @@ RonSQLPreparer::compile()
   // GROUP-BY-validating compile() path and use the pass-through
   // formatter helpers instead.
   if (m_is_aggregate_query) {
+    ResultPrinter::ColumnMetadata* column_metadata =
+        m_amalloc->alloc_exc<ResultPrinter::ColumnMetadata>(m_columns.size());
+    for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
+      column_metadata[col_idx].charset = NULL;
+      column_metadata[col_idx].precision = 0;
+      column_metadata[col_idx].scale = 0;
+      column_metadata[col_idx].has_metadata = false;
+      if (m_main_scope.resolved_columns == NULL) continue;
+      const QueryScope::ResolvedColumnRef& ref =
+          m_main_scope.resolved_columns[col_idx];
+      const NdbDictionary::Column* col = ref.dict_column;
+      if (col == NULL) continue;
+      column_metadata[col_idx].charset = col->getCharset();
+      column_metadata[col_idx].precision = col->getPrecision();
+      column_metadata[col_idx].scale = col->getScale();
+      column_metadata[col_idx].has_metadata = true;
+    }
     m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
       ResultPrinter(m_amalloc,
                     &m_context.ast_root,
                     &m_columns,
-                    m_main_scope.column_map,
+                    column_metadata,
                     m_conf.output_format,
                     m_conf.err_stream);
   } else {
