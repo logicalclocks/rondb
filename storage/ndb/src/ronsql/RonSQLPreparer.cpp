@@ -5516,8 +5516,18 @@ RonSQLPreparer::execute()
         default: abort();
         }
         const char* colName = m_columns[condition_col_idx].c_str();
+        require_run(m_main_scope.resolved_columns != NULL,
+                    "Index scan bound: missing resolved columns.");
+        const QueryScope::ResolvedColumnRef& condition_ref =
+            m_main_scope.resolved_columns[condition_col_idx];
+        require_prm(
+            condition_ref.kind ==
+            QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+            "Index scan bound requires a stored-table column.");
+        require_prm(condition_ref.dict_column != NULL,
+                    "Index scan bound column descriptor missing.");
         raw_value rv = encode_constant(condition_constant,
-                                       m_main_scope.column_map[condition_col_idx]);
+                                       condition_ref.dict_column);
         require_run(DBG(myIndexScanOp->setBound(DBG(colName),
                                                 DBG(bt),
                                                 DBG(rv).val)) == 0,
