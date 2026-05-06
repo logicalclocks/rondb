@@ -1535,18 +1535,22 @@ RonSQLPreparer::load_join()
   }
 
   // Build linked projections for GROUP BY columns on non-leaf tables
+  require_run(m_main_scope.resolved_columns != NULL,
+              "GROUP BY linked projection setup: missing resolved columns.");
   Uint32 leaf_idx = m_main_scope.join_plan.agg_leaf_idx;
   struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
   while (groupby != NULL)
   {
     Uint32 col_idx = groupby->col_idx;
-    if (m_main_scope.column_table_idx[col_idx] != leaf_idx)
+    const QueryScope::ResolvedColumnRef& col_ref =
+        m_main_scope.resolved_columns[col_idx];
+    if (col_ref.join_op_idx != leaf_idx)
     {
       require_prm(m_main_scope.join_plan.num_linked_projs < MAX_LINKED_PROJS,
                   "Too many linked projections.");
       JoinPlan::LinkedProj& lp =
           m_main_scope.join_plan.linked_projs[m_main_scope.join_plan.num_linked_projs];
-      lp.source_op_idx = m_main_scope.column_table_idx[col_idx];
+      lp.source_op_idx = col_ref.join_op_idx;
       lp.column_name = m_columns[col_idx].c_str();
       m_main_scope.join_plan.num_linked_projs++;
     }
@@ -1737,16 +1741,18 @@ RonSQLPreparer::is_anti_join_promotable(const QueryScope& scope,
   const ConditionalExpression* col_side = ce->is.arg;
   if (col_side == NULL || col_side->op != T_IDENTIFIER) return false;
   Uint32 col_idx = col_side->col_idx;
-  if (scope.column_table_idx[col_idx] != op_idx) return false;
+  if (scope.resolved_columns == NULL) return false;
+  const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[col_idx];
+  if (ref.kind != QueryScope::ResolvedColumnRef::Kind::CteResultColumn)
+    return false;
+  if (ref.join_op_idx != op_idx) return false;
 
   // Walk the CTE outputs to the referenced column and check it's a
   // GB-key (Outputs::Type::COLUMN) or a SUM/COUNT aggregate.
   const JoinOp& cte_op = scope.join_plan.ops[op_idx];
   if (cte_op.cte_def == NULL) return false;
-  Uint32 cte_col_idx = (Uint32)scope.column_attrId_map[col_idx];
-  Uint32 walk = 0;
-  const Outputs* o = cte_op.cte_def->stmt->outputs;
-  while (o != NULL && walk < cte_col_idx) { o = o->next; walk++; }
+  if (ref.cte_def_idx != cte_op.cte_def_idx) return false;
+  const Outputs* o = ref.cte_output;
   if (o == NULL) return false;
 
   if (o->type == Outputs::Type::COLUMN) return true;
@@ -1838,8 +1844,19 @@ RonSQLPreparer::assign_cross_table_index_bounds()
         ConditionalExpression* cf = ctf.ce;
         Uint32 left_cidx = cf->args.left->col_idx;
         Uint32 right_cidx = cf->args.right->col_idx;
+        require_run(m_main_scope.resolved_columns != NULL,
+                    "Cross-table index bound setup: missing resolved "
+                    "columns.");
+        const QueryScope::ResolvedColumnRef& left_ref =
+            m_main_scope.resolved_columns[left_cidx];
+        const QueryScope::ResolvedColumnRef& right_ref =
+            m_main_scope.resolved_columns[right_cidx];
+        require_prm(
+            left_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn &&
+            right_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+            "Cross-table index bound setup requires stored-table columns.");
 
-        bool left_is_child = (m_main_scope.column_table_idx[left_cidx] == op_idx);
+        bool left_is_child = (left_ref.join_op_idx == op_idx);
         Uint32 child_cidx = left_is_child ? left_cidx : right_cidx;
         const char* child_col_name = m_columns[child_cidx].c_str();
 
@@ -1861,7 +1878,9 @@ RonSQLPreparer::assign_cross_table_index_bounds()
         }
 
         const char* parent_col_name = m_columns[parent_cidx].c_str();
-        Uint32 parent_op = m_main_scope.column_table_idx[parent_cidx];
+        const QueryScope::ResolvedColumnRef& parent_ref =
+            m_main_scope.resolved_columns[parent_cidx];
+        Uint32 parent_op = parent_ref.join_op_idx;
         bool assigned = false;
 
         if (filter_op == T_GT || filter_op == T_GE || filter_op == T_EQUALS)
