@@ -427,7 +427,7 @@ I.22 should add a prepare-time guard for scale-zero DECIMAL `MIN` /
 safe boundaries and rejected unsafe declarations.  Full arbitrary
 precision DECIMAL preservation is explicitly out of scope.
 
-#### I.23 — Scoped CTE and stored-table name resolution (M)
+#### I.23 — Scoped CTE and stored-table name resolution (M) — shipped
 
 Detailed plan: `cte_filter_phase_i23.md`.
 
@@ -452,6 +452,29 @@ both stored-table columns and CTE result columns: stored table/join op
 index for physical columns, and CTE index plus result-column index for
 CTE outputs.  I.11 should not be resumed until this resolver model is
 in place.
+
+I.23 shipped in `ffae6a9627a`.  It added scoped per-SELECT column
+collection, resolved CTE bodies in declaration order, preserved the
+legacy emit maps as compatibility output, fixed HAVING-only aggregate
+resolution, and added `ronsql_cte_name_resolution` MTR coverage.
+
+#### I.24 — Emit from resolved column descriptors (M)
+
+Detailed plan: `cte_filter_phase_i24.md`.
+
+I.23 made name resolution scope-aware, but emit still consumes the old
+parallel arrays: `column_attrId_map`, `column_map`, and
+`column_table_idx`.  These arrays are now populated from the scoped
+resolver, but they remain a lossy interface: CTE result columns,
+stored-table columns, alias-only HAVING references, and unresolved
+sentinels are distinguished by implicit conventions.
+
+I.24 should introduce explicit `ResolvedColumnRef` descriptors on each
+`QueryScope` and make them the authoritative emit contract.  During the
+transition, the legacy arrays remain as compatibility outputs derived
+from the descriptors.  Convert metadata-only helpers first, then filter
+emit, aggregation emit, and pass-through result routing.  This is a
+refactoring / hardening phase, not a feature-expansion phase.
 
 ## Recommended next-pick heuristic
 
