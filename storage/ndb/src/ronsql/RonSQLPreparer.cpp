@@ -8908,7 +8908,13 @@ RonSQLPreparer::embedded_filter_expr_word_count(QueryScope& scope,
   case T_IDENTIFIER:
   {
     Uint32 cidx = ce->col_idx;
-    return scope.column_table_idx[cidx] == leaf_idx ? 1 : 2;
+    require_run(scope.resolved_columns != NULL,
+                "Cross-table WHERE filter: missing resolved columns.");
+    const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[cidx];
+    require_prm(ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+                "Cross-table WHERE filter expression requires a "
+                "stored-table column.");
+    return ref.join_op_idx == leaf_idx ? 1 : 2;
   }
   case T_INT:
     return 3;  // LOAD_CONST64 + 2 value words
@@ -8938,14 +8944,20 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
   case T_IDENTIFIER:
   {
     Uint32 cidx = ce->col_idx;
-    if (scope.column_table_idx[cidx] == leaf_idx) {
+    require_run(scope.resolved_columns != NULL,
+                "Cross-table WHERE filter: missing resolved columns.");
+    const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[cidx];
+    require_prm(ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+                "Cross-table WHERE filter expression requires a "
+                "stored-table column.");
+    if (ref.join_op_idx == leaf_idx) {
       programAggregator_do_or_fail(agg->EmitEmbeddedWord(
-          Interpreter::Read((Uint32)scope.column_attrId_map[cidx], reg)));
+          Interpreter::Read((Uint32)ref.attr_id, reg)));
     } else {
       Uint32 lp = find_or_add_linked_proj(
-          scope.join_plan, scope.column_table_idx[cidx],
+          scope.join_plan, ref.join_op_idx,
           m_columns[cidx].c_str());
-      const NdbDictionary::Column* col = scope.column_map[cidx];
+      const NdbDictionary::Column* col = ref.dict_column;
       require_prm(col != NULL,
                   "Cross-table WHERE filter: unresolved linked column.");
       programAggregator_do_or_fail(agg->EmitEmbeddedWord(
