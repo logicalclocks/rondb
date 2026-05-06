@@ -233,6 +233,10 @@ private:
     JoinPlan join_plan;
     ConditionalExpression* join_where_ce[MAX_SPJ_TREE_NODES];
     DynamicArray<CrossTableFilter> cross_table_where_filters;
+
+    // Temporary Phase I.24 compatibility arrays. New planner and emit code
+    // must consume resolved_columns; these arrays are derived from descriptors
+    // until the final legacy-removal subphase deletes them.
     NdbAttrId* column_attrId_map = NULL;
     const NdbDictionary::Column** column_map = NULL;
     Uint32* column_table_idx = NULL;
@@ -301,9 +305,7 @@ private:
   DynamicArray<ConditionalExpression*> m_toplevel_conditions;
   // Phase I.5 v2b: column-Load Expr nodes that appeared as direct
   // operands of an n-ary GREATEST / LEAST.  Validated at compile()
-  // time against the appropriate scope's column_map to reject
-  // nullable column operands cleanly (NULL propagation deferred to
-  // I.5 v4).
+  // time against the appropriate scope's resolved descriptors.
   DynamicArray<AggregationAPICompiler::Expr*> m_greatest_least_pair_loads;
   DynamicArray<ScanConfig> m_scan_config_candidates;
   ScanConfig* m_scan_config = NULL;
@@ -456,9 +458,9 @@ private:
   /**
    * Resolve the (NdbDictionary::Column::Type, length, charset) tuple
    * for a column reference in `scope`, walking through chained CTE
-   * outputs when scope.column_map[col_idx] is NULL.  Mirrors the
-   * aggregate widening rules in build_cte_virtual_tables — keeps the
-   * derived type consistent across CTE chain layers.
+   * output descriptors.  Mirrors the aggregate widening rules in
+   * build_cte_virtual_tables so derived types stay consistent across
+   * CTE chain layers.
    * Returns true on success.  Caller raises a clear error on false.
    */
   bool resolve_chained_column_type(QueryScope& scope, Uint32 col_idx,
@@ -492,9 +494,9 @@ private:
   void execute_join();
   // Pass-through row delivery for projection-only main SELECTs.
   // Originally Phase E.3 (single CTE_SCAN root); generalized in
-  // Phase I.8 to multi-op shapes.  Each output column is routed
-  // to its owning operation via column_table_idx; CTE refs use the
-  // virt-table descriptor and real-table refs use column_map.
+  // Phase I.8 to multi-op shapes.  Each output column is routed through
+  // resolved descriptors; CTE refs use the virt-table descriptor and
+  // real-table refs use the stored dictionary column descriptor.
   // Caller passes the prepared NdbQuery* and the per-op
   // cteVirtualTables array (NULL entries for non-CTE ops).
   void execute_passthrough_drain(class NdbQuery* query,
@@ -570,8 +572,8 @@ private:
       struct ConditionalExpression* col_side,
       NdbDictionary::Table* const* cteVirtualTables);
   // Phase I.5 v2b: walk m_greatest_least_pair_loads and reject any
-  // nullable column operand.  Run at compile() time, after column
-  // resolution has populated each scope's column_map.
+  // unsupported column operand.  Run at compile() time, after column
+  // resolution has populated each scope's descriptors.
   void validate_greatest_least_pair_loads();
   // Phase I.21: top-level GREATEST / LEAST is implemented as an
   // implicit MAX over a scalar expression and is only valid for scalar

@@ -901,19 +901,16 @@ RonSQLPreparer::load()
   /*
    * During parsing, strings that were claimed to be column names were inserted
    * into m_columns. The element indexes in m_columns, usually called col_idx,
-   * have already been used to construct Load instructions in m_main_scope.agg, as well as
-   * the parse tree in ast_root. Now that parsing is done and we know the table
-   * name, we look up the column attrIds in the schema and check that the table
-   * and columns exist. RonSQLPreparer keeps the col_idx around and relies on
-   * m_main_scope.column_attrId_map to map col_idx to column attrId, e.g. when programming
-   * the aggregator. This also means we don't need to change anything in m_main_scope.agg;
-   * instead, RonSQLPreparer::programAggregator will read the program from m_main_scope.agg
-   * and map col_idx to attrId before speaking to NdbAggregator.
+   * have already been used to construct Load instructions in m_main_scope.agg,
+   * as well as the parse tree in ast_root. Now that parsing is done and we
+   * know the table name, we look up the column descriptors in the schema and
+   * populate m_main_scope.resolved_columns. The aggregation program can keep
+   * col_idx references; emit resolves them through descriptors before talking
+   * to NdbAggregator.
    */
-  // Populate m_dict, m_main_scope.table, m_main_scope.column_attrId_map and m_main_scope.column_map, on the
-  // condition that m_conf.ndb is available. If m_conf.ndb is not available,
-  // we'll still be able to do a (partial) EXPLAIN SELECT, so no need to fail
-  // yet.
+  // Populate m_dict, m_main_scope.table and resolved column descriptors when
+  // m_conf.ndb is available. If m_conf.ndb is not available, we'll still be
+  // able to do a partial EXPLAIN SELECT, so no need to fail yet.
   Ndb* ndb = m_conf.ndb;
   if (ndb == NULL) return;
 
@@ -1055,10 +1052,9 @@ RonSQLPreparer::load_single_table()
     throw RonSQLMaybeStaleSchema("Index's table id/version did not match"
                                  " table's object id/version.");
   }
-  // Populate m_main_scope.column_attrId_map, column_map, column_table_idx and
-  // resolved_columns for the single-table path. Join queries use
-  // resolve_columns_for_scope(); single-table filters still need the same
-  // descriptor data for the emit path.
+  // Populate resolved_columns for the single-table path. The legacy arrays
+  // below are temporary I.24 compatibility outputs derived from descriptors.
+  // Join queries use resolve_columns_for_scope().
   NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(m_columns.size());
   const NdbDictionary::Column** col_map =
       m_amalloc->alloc_exc<const NdbDictionary::Column*>(m_columns.size());
@@ -3741,8 +3737,8 @@ void
 RonSQLPreparer::resolve_cte_output_columns()
 {
   // Iterate CTEs in declaration order so a chained CTE's body sees its
-  // predecessors' already-resolved column_map.  The main scope is
-  // resolved last because it can reference any CTE.
+  // predecessors' already-resolved descriptors. The main scope is resolved
+  // last because it can reference any CTE.
   for (Uint32 c = 0; c < m_cte_scopes.size(); c++) {
     if (m_cte_scopes[c] != NULL) {
       resolve_cte_output_columns_for_scope(*m_cte_scopes[c]);
@@ -3907,12 +3903,12 @@ RonSQLPreparer::collect_scope_column_refs(const SelectStatement& stmt)
   return refs;
 }
 
-// Populate scope.column_attrId_map / column_map / column_table_idx for
-// column references that belong to `stmt`. The parser keeps a single
-// global column namespace (m_columns / m_column_qualifiers), so I.23
-// resolves only the col_idx values reachable from this SELECT body's AST.
-// This prevents aliases and columns from one CTE body from leaking into
-// later CTE bodies or the main SELECT.
+// Populate resolved descriptors for column references that belong to `stmt`.
+// The parser keeps a single global column namespace (m_columns /
+// m_column_qualifiers), so I.23 resolves only the col_idx values reachable
+// from this SELECT body's AST. This prevents aliases and columns from one CTE
+// body from leaking into later CTE bodies or the main SELECT. The legacy
+// arrays populated at the end are temporary I.24 compatibility outputs.
 void
 RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
                                           const SelectStatement& stmt,
@@ -6687,10 +6683,9 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
 }
 
 // Recursively resolve the (Type, length, charset) tuple for a column
-// reference, walking through chained CTE outputs when the direct
-// column_map lookup is NULL.  Mirrors the aggregate widening rules in
-// build_cte_virtual_tables so chained CTE layers (e.g. b's MAX(a.s)
-// where a.s = SUM(real.col)) yield consistent types.
+// reference, walking through chained CTE output descriptors. Mirrors the
+// aggregate widening rules in build_cte_virtual_tables so chained CTE layers
+// (e.g. b's MAX(a.s) where a.s = SUM(real.col)) yield consistent types.
 bool
 RonSQLPreparer::resolve_chained_column_type(
     QueryScope& scope, Uint32 col_idx,
