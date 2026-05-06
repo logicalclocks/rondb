@@ -34,6 +34,7 @@
 
 #include "jit1.h"
 
+#include <assert.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -218,6 +219,90 @@ static inline uint64_t j1_now_ns(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Admission walk.                                                    */
+/*                                                                    */
+/* A single forward linear pass over prog->ops, executed before any   */
+/* arena allocation or per-phase timing. Produces a yes/no verdict +  */
+/* enough context to log the rejection reason. Cheap rejection: a     */
+/* malformed program never touches the arena.                         */
+/*                                                                    */
+/* Single-threaded compile per RonSQL §10.1, but the sidecar is       */
+/* _Thread_local for defense in depth against future use cases.       */
+/* ------------------------------------------------------------------ */
+
+static _Thread_local Jit1AdmitError g_last_admit = {
+  .reason = JIT_ADMIT_OK,
+};
+
+const Jit1AdmitError *jit1_last_admit_error(void) {
+  return &g_last_admit;
+}
+
+/* True for any opcode whose stencil has an HK_BRANCH_TAKE hole —
+ * i.e., a forward branch whose target is op->c. Phase 3 starts with
+ * branch_lt_int_int; siblings (eq/le/gt/ge/ne) get appended here as
+ * Day 2 PM lands them. */
+static inline int op_is_branch(uint8_t kind) {
+  return kind == OP_BRANCH_LT_INT_INT;
+}
+
+static Jit1AdmitReason admit_program(const Program *prog) {
+  if (prog->n_ops == 0) {
+    g_last_admit = (Jit1AdmitError){ .reason = JIT_ADMIT_EMPTY_PROG };
+    return JIT_ADMIT_EMPTY_PROG;
+  }
+  if (prog->n_ops > BC_MAX_OPS) {
+    g_last_admit = (Jit1AdmitError){ .reason = JIT_ADMIT_PROG_TOO_LARGE };
+    return JIT_ADMIT_PROG_TOO_LARGE;
+  }
+
+  for (uint16_t pc = 0; pc < prog->n_ops; ++pc) {
+    const Op *op   = &prog->ops[pc];
+    uint8_t  kind  = op->kind;
+
+    if (kind == 0 || kind > OP_KIND_MAX) {
+      g_last_admit = (Jit1AdmitError){
+        .reason         = JIT_ADMIT_INVALID_KIND,
+        .offending_pc   = pc,
+        .offending_kind = kind,
+      };
+      return JIT_ADMIT_INVALID_KIND;
+    }
+    if (g_stencils[kind].n_bytes == 0) {
+      g_last_admit = (Jit1AdmitError){
+        .reason         = JIT_ADMIT_UNSUPPORTED_OP,
+        .offending_pc   = pc,
+        .offending_kind = kind,
+      };
+      return JIT_ADMIT_UNSUPPORTED_OP;
+    }
+    if (op_is_branch(kind)) {
+      if (op->c <= pc) {
+        g_last_admit = (Jit1AdmitError){
+          .reason           = JIT_ADMIT_BACKWARD_BRANCH,
+          .offending_pc     = pc,
+          .offending_target = op->c,
+          .offending_kind   = kind,
+        };
+        return JIT_ADMIT_BACKWARD_BRANCH;
+      }
+      if (op->c >= prog->n_ops) {
+        g_last_admit = (Jit1AdmitError){
+          .reason           = JIT_ADMIT_BRANCH_OOR,
+          .offending_pc     = pc,
+          .offending_target = op->c,
+          .offending_kind   = kind,
+        };
+        return JIT_ADMIT_BRANCH_OOR;
+      }
+    }
+  }
+
+  g_last_admit = (Jit1AdmitError){ .reason = JIT_ADMIT_OK };
+  return JIT_ADMIT_OK;
+}
+
+/* ------------------------------------------------------------------ */
 /* Compile — entry point.                                             */
 /* ------------------------------------------------------------------ */
 
@@ -226,7 +311,17 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
                        Jit1Timing *out_timing) {
   if (out_timing) memset(out_timing, 0, sizeof(*out_timing));
 
-  if (!arena || !prog || prog->n_ops == 0 || prog->n_ops > BC_MAX_OPS) {
+  if (!arena || !prog) {
+    /* Null inputs aren't an admission rubric mismatch; leave the
+     * sidecar untouched so a prior reason isn't overwritten by a
+     * less informative result. */
+    errno = EINVAL;
+    return NULL;
+  }
+
+  /* Admission walk runs before any allocation. Rejected programs
+   * cost only the walk's work and never touch the arena. */
+  if (admit_program(prog) != JIT_ADMIT_OK) {
     errno = EINVAL;
     return NULL;
   }
@@ -254,16 +349,13 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
   uint32_t total = PREAMBLE_SIZE;
   for (uint16_t pc = 0; pc < prog->n_ops; ++pc) {
     pc_byte_off[pc] = total;
+    /* admit_program() guarantees kind ∈ [1, OP_KIND_MAX] and
+     * non-empty stencil; the asserts catch a broken upstream
+     * invariant in debug builds and are no-ops in release. */
     uint8_t kind = prog->ops[pc].kind;
-    if (kind == 0 || kind > OP_KIND_MAX) {
-      errno = EINVAL;
-      return NULL;
-    }
+    assert(kind > 0 && kind <= OP_KIND_MAX);
     const Stencil *st = &g_stencils[kind];
-    if (st->n_bytes == 0) {
-      errno = EINVAL;     /* missing stencil */
-      return NULL;
-    }
+    assert(st->n_bytes > 0);
     total += st->n_bytes;
   }
   pc_byte_off[prog->n_ops] = total;
@@ -336,11 +428,10 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
         }
         case HK_BRANCH_TAKE: {
           /* Taken goes to op->c bytecode pc — forward by construction.
-           * The target hasn't been emitted yet, so queue a fixup. */
-          if (op->c <= pc || op->c >= prog->n_ops) {
-            errno = EINVAL;   /* backward / out-of-range branch */
-            return NULL;
-          }
+           * The target hasn't been emitted yet, so queue a fixup.
+           * admit_program() already proved op->c > pc and
+           * op->c < prog->n_ops; assert defends in debug builds. */
+          assert(op->c > pc && op->c < prog->n_ops);
           if (n_fixups >= J1_MAX_FIXUPS) {
             errno = ENOSPC;
             return NULL;

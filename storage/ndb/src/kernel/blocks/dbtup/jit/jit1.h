@@ -80,9 +80,36 @@ typedef struct {
   uint64_t handle_ns;         /* Jit1Prog malloc + populate */
 } Jit1Timing;
 
-/* Compile `prog` into `arena`. Returns NULL on arena OOM (the only
- * failure mode in Phase 1). The returned handle remains valid until
- * the arena is destroyed.
+/* Admission verdicts. jit1_compile runs an admission walk (a single
+ * forward linear pass over prog->ops) before any arena allocation.
+ * On reject, jit1_compile returns NULL with errno=EINVAL and the
+ * thread-local sidecar at jit1_last_admit_error() carries the
+ * specific reason + offending PC for the caller to log.
+ *
+ * Append-only: future opcodes / failure modes add new values at the
+ * end so existing callers' switch statements stay valid. */
+typedef enum {
+  JIT_ADMIT_OK              = 0,
+  JIT_ADMIT_EMPTY_PROG      = 1,   /* n_ops == 0 */
+  JIT_ADMIT_PROG_TOO_LARGE  = 2,   /* n_ops > BC_MAX_OPS */
+  JIT_ADMIT_INVALID_KIND    = 3,   /* op kind out of OpKind range or zero */
+  JIT_ADMIT_UNSUPPORTED_OP  = 4,   /* opcode kind has no stencil */
+  JIT_ADMIT_BACKWARD_BRANCH = 5,   /* op->c <= pc */
+  JIT_ADMIT_BRANCH_OOR      = 6,   /* op->c >= n_ops */
+} Jit1AdmitReason;
+
+typedef struct {
+  Jit1AdmitReason reason;
+  uint16_t        offending_pc;     /* meaningful when reason refers to one */
+  uint16_t        offending_target; /* meaningful for branch-related reasons */
+  uint8_t         offending_kind;   /* meaningful for INVALID_KIND / UNSUPPORTED_OP */
+} Jit1AdmitError;
+
+/* Compile `prog` into `arena`. Returns NULL on:
+ *   - admission rejection (errno=EINVAL; jit1_last_admit_error()
+ *     carries the reason)
+ *   - arena OOM (errno=ENOMEM)
+ * The returned handle remains valid until the arena is destroyed.
  *
  * If `out_timing` is non-NULL, the per-phase breakdown is written
  * there. Pass NULL when timing isn't needed (no measurement
@@ -90,6 +117,13 @@ typedef struct {
 Jit1Prog *jit1_compile(NdbJitArena *arena,
                        const Program *prog,
                        Jit1Timing *out_timing);
+
+/* Read-only view of the most recent admission failure on the
+ * calling thread. Returns a pointer to thread-local storage; the
+ * pointed-to data is only meaningful immediately after a NULL
+ * return from jit1_compile and only when errno was EINVAL.
+ * On accept, the returned struct's reason is JIT_ADMIT_OK. */
+const Jit1AdmitError *jit1_last_admit_error(void);
 
 /* Get the per-row entry pointer. Must be called after compile;
  * always succeeds for a non-NULL prog. */
