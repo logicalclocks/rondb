@@ -231,15 +231,25 @@ require_tmp(bool condition, const char* msg)
  *     -1 : no column references (constant-only subtree)
  *     -2 : columns span multiple tables (cross-table condition)
  */
-static Int32
-classify_ce_table(struct ConditionalExpression* ce, Uint32* col_table_idx)
+Int32
+RonSQLPreparer::classify_ce_table_resolved(
+    const QueryScope& scope,
+    struct ConditionalExpression* ce) const
 {
   if (ce == NULL)
     return -1;
   switch (ce->op)
   {
   case T_IDENTIFIER:
-    return (Int32)col_table_idx[ce->col_idx];
+  {
+    ndbrequire(scope.resolved_columns != NULL);
+    const QueryScope::ResolvedColumnRef& ref =
+        scope.resolved_columns[ce->col_idx];
+    if (ref.kind == QueryScope::ResolvedColumnRef::Kind::Unresolved ||
+        ref.kind == QueryScope::ResolvedColumnRef::Kind::AliasOnly)
+      return -1;
+    return (Int32)ref.join_op_idx;
+  }
   case T_OR:
   case T_AND:
   case T_EQUALS:
@@ -262,8 +272,8 @@ classify_ce_table(struct ConditionalExpression* ce, Uint32* col_table_idx)
   case T_DATE_ADD:
   case T_DATE_SUB:
   {
-    Int32 left_t = classify_ce_table(ce->args.left, col_table_idx);
-    Int32 right_t = classify_ce_table(ce->args.right, col_table_idx);
+    Int32 left_t = classify_ce_table_resolved(scope, ce->args.left);
+    Int32 right_t = classify_ce_table_resolved(scope, ce->args.right);
     if (left_t == -1) return right_t;
     if (right_t == -1) return left_t;
     if (left_t == right_t) return left_t;
@@ -271,13 +281,13 @@ classify_ce_table(struct ConditionalExpression* ce, Uint32* col_table_idx)
   }
   case T_NOT:
   case T_EXCLAMATION:
-    return classify_ce_table(ce->args.left, col_table_idx);
+    return classify_ce_table_resolved(scope, ce->args.left);
   case T_IS:
-    return classify_ce_table(ce->is.arg, col_table_idx);
+    return classify_ce_table_resolved(scope, ce->is.arg);
   case T_INTERVAL:
-    return classify_ce_table(ce->interval.arg, col_table_idx);
+    return classify_ce_table_resolved(scope, ce->interval.arg);
   case T_EXTRACT:
-    return classify_ce_table(ce->extract.arg, col_table_idx);
+    return classify_ce_table_resolved(scope, ce->extract.arg);
   case T_EXISTS:
   case I_IN_SUBQUERY:
   case I_SUBQUERY:
@@ -1575,7 +1585,7 @@ RonSQLPreparer::classify_where_by_table(QueryScope& scope,
   // Classify each conjunct by table
   for (Uint32 i = 0; i < num_conjuncts; i++)
   {
-    Int32 table_idx = classify_ce_table(conjuncts[i], scope.column_table_idx);
+    Int32 table_idx = classify_ce_table_resolved(scope, conjuncts[i]);
 
     if (table_idx == -2)
     {
@@ -1614,8 +1624,8 @@ RonSQLPreparer::classify_where_by_table(QueryScope& scope,
             atom->args.left != NULL && atom->args.right != NULL;
         if (!is_cmp) { valid = false; break; }
 
-        Int32 lt = classify_ce_table(atom->args.left, scope.column_table_idx);
-        Int32 rt = classify_ce_table(atom->args.right, scope.column_table_idx);
+        Int32 lt = classify_ce_table_resolved(scope, atom->args.left);
+        Int32 rt = classify_ce_table_resolved(scope, atom->args.right);
         if (lt == -2 || rt == -2) { valid = false; break; }
         if (filter_expr_reg_depth(atom->args.left) > 2 ||
             filter_expr_reg_depth(atom->args.right) > 2) { valid = false; break; }

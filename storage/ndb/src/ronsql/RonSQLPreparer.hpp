@@ -398,6 +398,8 @@ private:
       JoinClause* join,
       const CteKeyCoverageResult& r);
   void normalize_cte_join_key_order();
+  Int32 classify_ce_table_resolved(const QueryScope& scope,
+                                   ConditionalExpression* ce) const;
   void classify_where_by_table(QueryScope& scope,
                                 ConditionalExpression* where_ce);
   void promote_left_to_inner_for_where(QueryScope& scope);

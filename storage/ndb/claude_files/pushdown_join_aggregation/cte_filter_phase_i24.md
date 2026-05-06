@@ -81,8 +81,10 @@ important invariant is that emit code should not have to rediscover
 whether a column reference is stored-table or CTE-backed by probing
 parallel arrays.
 
-The old arrays should remain during I.24, but become compatibility
-outputs derived from `ResolvedColumnRef`.
+The old arrays remain during the early I.24 conversion commits, but they
+are temporary compatibility outputs derived from `ResolvedColumnRef`.
+The end state of I.24 is to remove them from `QueryScope` after every
+consumer has moved to descriptors or to a descriptor-derived API.
 
 ## Implementation plan
 
@@ -176,6 +178,97 @@ Once all emit users consume descriptors:
 - add debug assertions that legacy arrays, if still present, match the
   descriptor-derived values.
 
+### Step 7 - Convert ResultPrinter input metadata
+
+`ResultPrinter` still takes `column_map` for aggregate result formatting.
+Move it to descriptor-based metadata before deleting the compatibility
+arrays.
+
+Acceptable implementation choices:
+
+- pass `ResolvedColumnRef*` plus the column count and let
+  `ResultPrinter` derive source column metadata from each descriptor; or
+- build a small output/type descriptor array for the printer and keep
+  `ResultPrinter` independent of `QueryScope`.
+
+The second option has a cleaner ownership boundary, but the first option
+is likely smaller.  Either way, `ResultPrinter` must no longer require
+`QueryScope::column_map`.
+
+### Step 8 - Convert CTE output metadata back-fill
+
+`resolve_cte_output_columns_for_scope()` still back-fills
+`scope.column_map[col_idx]` for CTE result columns.  Replace that with
+descriptor-only metadata:
+
+- update `ResolvedColumnRef::dict_column` for source-backed CTE COLUMN
+  outputs;
+- update it for MIN/MAX aggregate outputs where the source type is
+  preserved;
+- leave SUM/COUNT and unsupported aggregate output metadata explicit
+  rather than represented by a NULL `column_map` sentinel.
+
+After this step, CTE virtual-table construction and result formatting
+must read descriptor metadata, not `column_map`.
+
+### Step 9 - Convert remaining index/scan metadata users
+
+Move remaining scan/index emit helpers off `column_map`.
+
+Known examples:
+
+- index-bound constant encoding that still calls
+  `encode_constant(..., column_map[col_idx])`;
+- any scan-config helper that uses `column_map` only to find the source
+  dictionary column.
+
+These should read `ResolvedColumnRef::dict_column` after confirming the
+reference is a stored-table column.
+
+### Step 10 - Update comments and helper API contracts
+
+Remove stale comments and helper signatures that describe
+`column_attrId_map`, `column_map`, or `column_table_idx` as the emit
+contract.
+
+This step should make it clear that:
+
+- descriptors are authoritative;
+- any remaining legacy array use is a temporary compatibility shim;
+- helper APIs either accept descriptors directly or accept a narrow
+  descriptor-derived structure.
+
+### Step 11 - Add temporary consistency checks
+
+Before deleting the legacy arrays, add debug/runtime consistency checks
+that compare each legacy array entry with the descriptor-derived value.
+This should be a small, behaviour-preserving subphase.
+
+Checks should cover:
+
+- stored column descriptor: attr id, dictionary column pointer, op index;
+- CTE result descriptor: result index and op index;
+- alias/unresolved descriptor: sentinel values.
+
+Run the full `ronsql` suite with these checks in place.  If this passes,
+the next subphase can remove the arrays with much lower risk.
+
+### Step 12 - Remove legacy arrays from QueryScope
+
+Final removal subphase:
+
+- delete `QueryScope::column_attrId_map`;
+- delete `QueryScope::column_map`;
+- delete `QueryScope::column_table_idx`;
+- remove allocation and derivation in `load_single_table()` and
+  `resolve_columns_for_scope()`;
+- remove any compatibility assertions added in Step 11 that only exist
+  to compare arrays;
+- update remaining comments and declarations.
+
+After this step, any attempt to add new emit logic through the old arrays
+will fail at compile time.
+
 ## Test plan
 
 I.24 should not rely on new functionality to prove itself.  It should
@@ -205,7 +298,8 @@ the phase notes over duplicate SQL.
 
 ## Rollout rules
 
-- Do not remove the legacy arrays in the first commit.
+- Do not remove the legacy arrays until Steps 7-11 are complete and
+  green.
 - Do not change parser `col_idx` allocation in this phase.
 - Keep each conversion step separately reviewable.
 - Every I.24 subphase commit must pass the full `ronsql` MTR suite.
@@ -214,8 +308,8 @@ the phase notes over duplicate SQL.
   The commit message should mention that the full `ronsql` suite was
   green.
 - If an emit path is hard to convert cleanly, leave it on the legacy
-  arrays but add an explicit TODO in the I.24 notes identifying the
-  remaining dependency.
+  arrays only temporarily and add an explicit TODO in the I.24 notes
+  identifying the remaining dependency before Step 12.
 - Preserve existing user-visible error messages unless the old message
   was misleading or generic.
 
