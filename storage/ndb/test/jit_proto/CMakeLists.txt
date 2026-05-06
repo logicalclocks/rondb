@@ -115,3 +115,24 @@ TARGET_LINK_LIBRARIES(proto_microbench PRIVATE
   ndb_jit1
   ndb_jit_arena
 )
+
+# ---------------------------------------------------------------------------
+# RONDB-1056 Phase 3: admission_tests — host-tool unit tests for
+# jit1_compile's admission walk.
+#
+# 12 cases covering accept paths (minimal program, one forward branch,
+# forked program with two branches) and reject paths (empty, oversized,
+# invalid kinds, backward branches, out-of-range targets). Plus the
+# arena-no-leak assertion that proves rejected programs don't allocate.
+# ---------------------------------------------------------------------------
+
+ADD_EXECUTABLE(admission_tests admission_tests.c)
+SET_TARGET_PROPERTIES(admission_tests PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS YES
+)
+TARGET_LINK_LIBRARIES(admission_tests PRIVATE
+  ndb_jit1
+  ndb_jit_arena
+)
