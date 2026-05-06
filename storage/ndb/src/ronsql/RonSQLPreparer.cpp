@@ -1165,6 +1165,186 @@ RonSQLPreparer::synthesize_from_for_scalar_ctes()
   m_context.ast_root.joins = head;
 }
 
+const CteDefinition*
+RonSQLPreparer::find_cte_definition(const LexCString& name) const
+{
+  for (const CteDefinition* c = m_context.ast_root.cte_list;
+       c != NULL; c = c->next) {
+    if (strcmp(c->name.c_str(), name.c_str()) == 0) return c;
+  }
+  return NULL;
+}
+
+bool
+RonSQLPreparer::cte_key_coverage(
+    const CteDefinition* cte,
+    const LexCString* bound_cte_side_names,
+    Uint32 num_keys,
+    CteKeyCoverageResult& out) const
+{
+  out.state = CteKeyCoverage::WrongColumns;
+  out.num_keys = num_keys;
+  out.num_pk_cols = 0;
+  out.first_wrong_key = 0;
+  out.first_missing_pk = 0;
+  for (Uint32 i = 0; i < MAX_JOIN_KEY_COLS; i++) {
+    out.pk_index_for_key[i] = -1;
+    out.pk_covered[i] = false;
+  }
+  if (cte == NULL || cte->stmt == NULL) return false;
+
+  LexCString pk_names[MAX_JOIN_KEY_COLS];
+  for (const GroupbyColumns* gb = cte->stmt->groupby_columns;
+       gb != NULL; gb = gb->next) {
+    if (out.num_pk_cols >= MAX_JOIN_KEY_COLS) return false;
+    const Outputs* match = NULL;
+    for (const Outputs* o = cte->stmt->outputs; o != NULL; o = o->next) {
+      if (o->type == Outputs::Type::COLUMN &&
+          o->column.col_idx == gb->col_idx) {
+        match = o;
+        break;
+      }
+    }
+    if (match == NULL) return false;
+    pk_names[out.num_pk_cols] =
+        match->output_name.to_LexCString(m_amalloc);
+    out.num_pk_cols++;
+  }
+
+  if (out.num_pk_cols == 0 && num_keys == 0) {
+    out.state = CteKeyCoverage::ScalarDummy;
+    return true;
+  }
+
+  bool wrong_column = false;
+  for (Uint32 k = 0; k < num_keys; k++) {
+    int pk_idx = -1;
+    for (Uint32 p = 0; p < out.num_pk_cols; p++) {
+      if (bound_cte_side_names[k] == pk_names[p]) {
+        pk_idx = (int)p;
+        break;
+      }
+    }
+    out.pk_index_for_key[k] = pk_idx;
+    if (pk_idx < 0) {
+      if (!wrong_column) out.first_wrong_key = k;
+      wrong_column = true;
+    } else {
+      out.pk_covered[pk_idx] = true;
+    }
+  }
+  if (wrong_column) {
+    out.state = CteKeyCoverage::WrongColumns;
+    return true;
+  }
+
+  bool all_pk_covered = (num_keys == out.num_pk_cols);
+  for (Uint32 p = 0; p < out.num_pk_cols; p++) {
+    if (!out.pk_covered[p]) {
+      all_pk_covered = false;
+      out.first_missing_pk = p;
+      break;
+    }
+  }
+  if (!all_pk_covered) {
+    out.state = CteKeyCoverage::Partial;
+    return true;
+  }
+
+  bool ordered = true;
+  for (Uint32 k = 0; k < num_keys; k++) {
+    if (out.pk_index_for_key[k] != (int)k) {
+      ordered = false;
+      break;
+    }
+  }
+  out.state = ordered ? CteKeyCoverage::ExactOrdered
+                      : CteKeyCoverage::ExactPermuted;
+  return true;
+}
+
+bool
+RonSQLPreparer::cte_key_coverage(
+    const CteDefinition* cte,
+    const char* const* bound_cte_side_names,
+    Uint32 num_keys,
+    CteKeyCoverageResult& out) const
+{
+  LexCString names[MAX_JOIN_KEY_COLS];
+  for (Uint32 i = 0; i < num_keys; i++) {
+    names[i] = LexCString(bound_cte_side_names[i],
+                          strlen(bound_cte_side_names[i]));
+  }
+  return cte_key_coverage(cte, names, num_keys, out);
+}
+
+bool
+RonSQLPreparer::join_conditions_reference_only_parent(
+    const JoinCondition* conditions,
+    const LexCString& parent_alias) const
+{
+  for (const JoinCondition* jc = conditions; jc != NULL; jc = jc->next) {
+    if (!(jc->parent_table == parent_alias)) return false;
+  }
+  return true;
+}
+
+void
+RonSQLPreparer::reorder_cte_join_conditions_to_pk_order(
+    JoinClause* join,
+    const CteKeyCoverageResult& r)
+{
+  JoinCondition* by_pk[MAX_JOIN_KEY_COLS];
+  for (Uint32 i = 0; i < MAX_JOIN_KEY_COLS; i++) by_pk[i] = NULL;
+
+  JoinCondition* jc = join->conditions;
+  for (Uint32 k = 0; k < r.num_keys; k++) {
+    ndbrequire(jc != NULL);
+    int pk_idx = r.pk_index_for_key[k];
+    ndbrequire(pk_idx >= 0 && (Uint32)pk_idx < r.num_pk_cols);
+    by_pk[pk_idx] = jc;
+    jc = jc->next;
+  }
+
+  JoinCondition* head = NULL;
+  JoinCondition* tail = NULL;
+  for (Uint32 p = 0; p < r.num_pk_cols; p++) {
+    ndbrequire(by_pk[p] != NULL);
+    if (head == NULL) {
+      head = tail = by_pk[p];
+    } else {
+      tail->next = by_pk[p];
+      tail = by_pk[p];
+    }
+  }
+  tail->next = NULL;
+  join->conditions = head;
+}
+
+void
+RonSQLPreparer::normalize_cte_join_key_order()
+{
+  for (JoinClause* join = m_context.ast_root.joins;
+       join != NULL; join = join->next) {
+    const CteDefinition* child_cte = find_cte_definition(join->table.name);
+    if (child_cte == NULL || join->conditions == NULL) continue;
+
+    LexCString child_names[MAX_JOIN_KEY_COLS];
+    Uint32 num_keys = 0;
+    for (JoinCondition* jc = join->conditions;
+         jc != NULL; jc = jc->next) {
+      if (num_keys >= MAX_JOIN_KEY_COLS) break;
+      child_names[num_keys++] = jc->child_column;
+    }
+    CteKeyCoverageResult coverage;
+    if (!cte_key_coverage(child_cte, child_names, num_keys, coverage))
+      continue;
+    if (coverage.state == CteKeyCoverage::ExactPermuted) {
+      reorder_cte_join_conditions_to_pk_order(join, coverage);
+    }
+  }
+}
+
 void
 RonSQLPreparer::load_join()
 {
@@ -1203,6 +1383,7 @@ RonSQLPreparer::load_join()
       }
     }
     if (!root_is_cte) {
+      LexCString original_root_alias = m_context.ast_root.root_table->alias;
       // Walk the joins list looking for a partial-key INNER join to a
       // multi-key CTE.  Track the previous JoinClause so we can splice
       // the matched one out.
@@ -1212,23 +1393,22 @@ RonSQLPreparer::load_join()
       JoinClause* match_prev = NULL;
       while (cur != NULL) {
         if (cur->join_type == JoinClause::INNER_JOIN) {
-          const CteDefinition* child_cte = NULL;
-          for (const CteDefinition* c = m_context.ast_root.cte_list;
-               c != NULL; c = c->next) {
-            if (strcmp(c->name.c_str(), cur->table.name.c_str()) == 0) {
-              child_cte = c;
-              break;
-            }
-          }
+          const CteDefinition* child_cte =
+              find_cte_definition(cur->table.name);
           if (child_cte != NULL) {
-            Uint32 cte_pk_cols = 0;
-            for (const GroupbyColumns* gb =
-                     child_cte->stmt->groupby_columns;
-                 gb != NULL; gb = gb->next) cte_pk_cols++;
+            LexCString child_names[MAX_JOIN_KEY_COLS];
             Uint32 join_cols = 0;
             for (const JoinCondition* jc = cur->conditions;
-                 jc != NULL; jc = jc->next) join_cols++;
-            if (cte_pk_cols > 0 && join_cols < cte_pk_cols) {
+                 jc != NULL && join_cols < MAX_JOIN_KEY_COLS;
+                 jc = jc->next) {
+              child_names[join_cols++] = jc->child_column;
+            }
+            CteKeyCoverageResult coverage;
+            if (cte_key_coverage(child_cte, child_names, join_cols,
+                                 coverage) &&
+                coverage.state == CteKeyCoverage::Partial &&
+                join_conditions_reference_only_parent(
+                    cur->conditions, original_root_alias)) {
               match = cur;
               match_prev = prev;
               break;
@@ -1272,6 +1452,7 @@ RonSQLPreparer::load_join()
       }
     }
   }
+  normalize_cte_join_key_order();
 
   // Build the join plan via QueryPlanner
   const char* db = m_conf.ndb ? m_conf.ndb->getDatabaseName() : nullptr;
@@ -7342,22 +7523,30 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
     }
     case JoinOp::CTE_LOOKUP:
     {
-      // Phase I.16a: the virtual CTE primary key is the CTE body's
-      // GROUP BY column list (see build_cte_virtual_tables).  If
-      // the join supplies fewer keys than the CTE has GROUP BY
-      // columns, lookupCte returns NULL with the opaque message
-      // "Failed to create child operation".  Surface a clear
-      // permanent error instead.
-      Uint32 cte_pk_cols = 0;
-      for (const GroupbyColumns* gb = op.cte_def->stmt->groupby_columns;
-           gb != NULL; gb = gb->next) cte_pk_cols++;
-      require_prm(op.num_key_cols == cte_pk_cols,
+      // Phase I.20: the virtual CTE primary key is the CTE body's
+      // GROUP BY column list, in GROUP BY order.  Validate both
+      // column identity and order; count alone is not enough.
+      CteKeyCoverageResult coverage;
+      require_prm(cte_key_coverage(op.cte_def,
+                                   op.child_key_col_names,
+                                   op.num_key_cols,
+                                   coverage),
+                  "Could not derive CTE virtual primary key columns.");
+      require_prm(coverage.state != CteKeyCoverage::WrongColumns,
+                  "CTE lookup key references a CTE output column that "
+                  "is not part of the virtual primary key.  The virtual "
+                  "CTE primary key matches the CTE body's GROUP BY "
+                  "column list.");
+      require_prm(coverage.state != CteKeyCoverage::Partial,
                   "Partial CTE lookup key not supported.  The "
                   "virtual CTE primary key matches the CTE body's "
                   "GROUP BY column list and the join must bind "
                   "every key column.  Workaround: place the "
                   "multi-key CTE on the joined root and join the "
                   "smaller table to it.");
+      require_prm(coverage.state != CteKeyCoverage::ExactPermuted,
+                  "CTE lookup keys were not ordered by the virtual "
+                  "primary key.  Please report a bug.");
       Uint32 numResultCols = 0;
       for (const Outputs* o = op.cte_def->stmt->outputs; o; o = o->next)
         numResultCols++;
@@ -7371,7 +7560,7 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       // is no linkedValue connecting the parent to the child.
       const NdbQueryOperand* effective_keys[2];
       const NdbQueryOperand** keys_to_use = keys;
-      if (op.num_key_cols == 0 && cte_pk_cols == 0) {
+      if (coverage.state == CteKeyCoverage::ScalarDummy) {
         require_run(opts.setParent(opDefs[op.parent_op_idx]) == 0,
                     "Failed to set parent for scalar CTE cross-join.");
         effective_keys[0] = qb->constValue((Int64)0);

@@ -2,7 +2,96 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 
 
-=== Test 1: partial CTE key (1 of 2), inner join — auto-rewritten to CTE_SCAN root ===
+=== Test 1: full CTE key in virtual PK order — CTE_LOOKUP ===
+== Query ==
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id AND pairs.amt = c.c_amt
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id AND pairs.amt = c.c_amt
+GROUP BY c.c_id|
+c_id	s
+100	1
+200	1
+300	1
+
+
+=== Test 2: full CTE key in reversed predicate order — reordered ===
+== Query ==
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.amt = c.c_amt AND pairs.k = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.amt = c.c_amt AND pairs.k = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	1
+200	1
+300	1
+
+
+=== Test 3: full CTE key plus residual CTE-output WHERE ===
+== Query ==
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id AND pairs.amt = c.c_amt
+WHERE pairs.cnt > 0
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id AND pairs.amt = c.c_amt
+WHERE pairs.cnt > 0
+GROUP BY c.c_id|
+c_id	s
+100	1
+200	1
+300	1
+
+
+=== Test 4: partial CTE key (1 of 2), inner join — auto-rewritten to CTE_SCAN root ===
 == Query ==
 WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
 FROM cte_orders GROUP BY o_custkey, o_amt)
@@ -31,12 +120,12 @@ c_id	s
 300	1
 
 
-=== Test 2: partial CTE key, LEFT JOIN on the CTE itself — still I.16a rejects ===
+=== Test 5: partial CTE key, LEFT JOIN on the CTE itself — still I.16a rejects ===
 Error handling: RPE
 ronsql_cli caught exception: Partial CTE lookup key not supported.  The virtual CTE primary key matches the CTE body's GROUP BY column list and the join must bind every key column.  Workaround: place the multi-key CTE on the joined root and join the smaller table to it.
 
 
-=== Test 3: 3-table inner chain with multikey CTE in the middle ===
+=== Test 6: 3-table inner chain with multikey CTE in the middle ===
 == Query ==
 WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
 FROM cte_orders GROUP BY o_custkey, o_amt)
@@ -67,7 +156,7 @@ c_id	r_name	s
 300	South	1
 
 
-=== Test 4: rewrite coexists with LEFT JOIN elsewhere in the chain ===
+=== Test 7: rewrite coexists with LEFT JOIN elsewhere in the chain ===
 == Query ==
 WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
 FROM cte_orders GROUP BY o_custkey, o_amt)
@@ -98,7 +187,7 @@ c_id	r_name	s
 300	South	1
 
 
-=== Test 5: multikey CTE not in joins[0] — found later in the chain ===
+=== Test 8: multikey CTE not in joins[0] — found later in the chain ===
 == Query ==
 WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
 FROM cte_orders GROUP BY o_custkey, o_amt)
@@ -127,3 +216,13 @@ c_id	r_name	s
 100	North	2
 200	North	2
 300	South	1
+
+
+=== Test 9: full key count but wrong CTE output column — rejected ===
+Error handling: RPE
+ronsql_cli caught exception: CTE lookup key references a CTE output column that is not part of the virtual primary key.  The virtual CTE primary key matches the CTE body's GROUP BY column list.
+
+
+=== Test 10: partial-key CTE join to non-root parent — rejected ===
+Error handling: RPE
+ronsql_cli caught exception: Partial CTE lookup key not supported.  The virtual CTE primary key matches the CTE body's GROUP BY column list and the join must bind every key column.  Workaround: place the multi-key CTE on the joined root and join the smaller table to it.

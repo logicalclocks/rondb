@@ -260,6 +260,22 @@ private:
     // An estimate of how performant the scan configuration will be.
     int goodness = 0;
   };
+  enum class CteKeyCoverage {
+    ExactOrdered,
+    ExactPermuted,
+    Partial,
+    WrongColumns,
+    ScalarDummy
+  };
+  struct CteKeyCoverageResult {
+    CteKeyCoverage state = CteKeyCoverage::WrongColumns;
+    int pk_index_for_key[MAX_JOIN_KEY_COLS];
+    bool pk_covered[MAX_JOIN_KEY_COLS];
+    Uint32 num_keys = 0;
+    Uint32 num_pk_cols = 0;
+    Uint32 first_wrong_key = 0;
+    Uint32 first_missing_pk = 0;
+  };
   DynamicArray<ConditionalExpression*> m_toplevel_conditions;
   // Phase I.5 v2b: column-Load Expr nodes that appeared as direct
   // operands of an n-ary GREATEST / LEAST.  Validated at compile()
@@ -344,6 +360,22 @@ private:
    * to scalar CTEs when the parser produced a NULL root_table.  No-op
    * when an explicit FROM was given. */
   void synthesize_from_for_scalar_ctes();
+  const CteDefinition* find_cte_definition(const LexCString& name) const;
+  bool cte_key_coverage(const CteDefinition* cte,
+                        const LexCString* bound_cte_side_names,
+                        Uint32 num_keys,
+                        CteKeyCoverageResult& out) const;
+  bool cte_key_coverage(const CteDefinition* cte,
+                        const char* const* bound_cte_side_names,
+                        Uint32 num_keys,
+                        CteKeyCoverageResult& out) const;
+  bool join_conditions_reference_only_parent(
+      const JoinCondition* conditions,
+      const LexCString& parent_alias) const;
+  void reorder_cte_join_conditions_to_pk_order(
+      JoinClause* join,
+      const CteKeyCoverageResult& r);
+  void normalize_cte_join_key_order();
   void classify_where_by_table(QueryScope& scope,
                                 ConditionalExpression* where_ce);
   void promote_left_to_inner_for_where(QueryScope& scope);
