@@ -1928,22 +1928,26 @@ void
 RonSQLPreparer::build_agg_linked_projections()
 {
   if (m_has_select_subqueries && m_main_scope.join_plan.num_agg_leaves > 0) {
+    require_run(m_main_scope.resolved_columns != NULL,
+                "Linked projection setup: missing resolved columns.");
     // Multi-leaf: build linked projections for GROUP BY columns from root.
     // All leaves share the same GROUP BY columns via linked projection.
     struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
     while (groupby != NULL) {
       Uint32 col_idx = groupby->col_idx;
+      const QueryScope::ResolvedColumnRef& col_ref =
+          m_main_scope.resolved_columns[col_idx];
       // GROUP BY column is from the root — needs linked projection to leaves
       bool is_on_any_leaf = false;
       for (Uint32 ml = 0; ml < m_merged_leaves.size(); ml++) {
-        if (m_main_scope.column_table_idx[col_idx] == m_merged_leaves[ml].plan_op_idx) {
+        if (col_ref.join_op_idx == m_merged_leaves[ml].plan_op_idx) {
           is_on_any_leaf = true;
           break;
         }
       }
       if (!is_on_any_leaf) {
         find_or_add_linked_proj(m_main_scope.join_plan,
-                                m_main_scope.column_table_idx[col_idx],
+                                col_ref.join_op_idx,
                                 m_columns[col_idx].c_str());
       }
       groupby = groupby->next;
@@ -1953,6 +1957,8 @@ RonSQLPreparer::build_agg_linked_projections()
 
   if (m_main_scope.agg == NULL)
     return;
+  require_run(m_main_scope.resolved_columns != NULL,
+              "Linked projection setup: missing resolved columns.");
   Uint32 leaf_idx = m_main_scope.join_plan.agg_leaf_idx;
   DynamicArray<AggregationAPICompiler::Instr>& program = m_main_scope.agg->m_program;
   for (Uint32 i = 0; i < program.size(); i++)
@@ -1960,10 +1966,12 @@ RonSQLPreparer::build_agg_linked_projections()
     if (program[i].type == AggregationAPICompiler::SVMInstrType::Load)
     {
       Uint32 col_idx = program[i].src;
-      if (m_main_scope.column_table_idx[col_idx] != leaf_idx)
+      const QueryScope::ResolvedColumnRef& col_ref =
+          m_main_scope.resolved_columns[col_idx];
+      if (col_ref.join_op_idx != leaf_idx)
       {
         find_or_add_linked_proj(m_main_scope.join_plan,
-                                m_main_scope.column_table_idx[col_idx],
+                                col_ref.join_op_idx,
                                 m_columns[col_idx].c_str());
       }
     }
@@ -1977,9 +1985,11 @@ RonSQLPreparer::build_agg_linked_projections()
     if (ce == NULL) return;
     if (ce->op == T_IDENTIFIER) {
       Uint32 cidx = ce->col_idx;
-      if (m_main_scope.column_table_idx[cidx] != leaf_idx) {
+      const QueryScope::ResolvedColumnRef& ref =
+          m_main_scope.resolved_columns[cidx];
+      if (ref.join_op_idx != leaf_idx) {
         find_or_add_linked_proj(m_main_scope.join_plan,
-                                m_main_scope.column_table_idx[cidx],
+                                ref.join_op_idx,
                                 m_columns[cidx].c_str());
       }
       return;
@@ -2024,10 +2034,11 @@ RonSQLPreparer::build_agg_linked_projections()
         ConditionalExpression* atom = atoms[a];
         if (atom->args.left != NULL && atom->args.left->op == T_IDENTIFIER) {
           Uint32 col_idx = atom->args.left->col_idx;
-          if (m_main_scope.column_table_idx != NULL &&
-              m_main_scope.column_table_idx[col_idx] != leaf_idx) {
+          const QueryScope::ResolvedColumnRef& col_ref =
+              m_main_scope.resolved_columns[col_idx];
+          if (col_ref.join_op_idx != leaf_idx) {
             find_or_add_linked_proj(m_main_scope.join_plan,
-                                    m_main_scope.column_table_idx[col_idx],
+                                    col_ref.join_op_idx,
                                     m_columns[col_idx].c_str());
           }
         }
@@ -2052,6 +2063,8 @@ RonSQLPreparer::build_cte_linked_projections()
   for (Uint32 c = 0; c < m_cte_scopes.size(); c++) {
     QueryScope& scope = *m_cte_scopes[c];
     if (scope.agg == NULL) continue;
+    require_run(scope.resolved_columns != NULL,
+                "CTE linked projection setup: missing resolved columns.");
     // Locate the CTE definition to access its GroupbyColumns list.
     const CteDefinition* cte = NULL;
     Uint32 ci = 0;
@@ -2067,9 +2080,11 @@ RonSQLPreparer::build_cte_linked_projections()
     for (GroupbyColumns* g = cte->stmt->groupby_columns; g != NULL;
          g = g->next) {
       Uint32 col_idx = g->col_idx;
-      if (scope.column_table_idx[col_idx] != leaf_idx) {
+      const QueryScope::ResolvedColumnRef& col_ref =
+          scope.resolved_columns[col_idx];
+      if (col_ref.join_op_idx != leaf_idx) {
         find_or_add_linked_proj(scope.join_plan,
-                                scope.column_table_idx[col_idx],
+                                col_ref.join_op_idx,
                                 m_columns[col_idx].c_str());
       }
     }
@@ -2081,9 +2096,11 @@ RonSQLPreparer::build_cte_linked_projections()
       if (program[i].type != AggregationAPICompiler::SVMInstrType::Load)
         continue;
       Uint32 col_idx = program[i].src;
-      if (scope.column_table_idx[col_idx] != leaf_idx) {
+      const QueryScope::ResolvedColumnRef& col_ref =
+          scope.resolved_columns[col_idx];
+      if (col_ref.join_op_idx != leaf_idx) {
         find_or_add_linked_proj(scope.join_plan,
-                                scope.column_table_idx[col_idx],
+                                col_ref.join_op_idx,
                                 m_columns[col_idx].c_str());
       }
     }
@@ -2094,9 +2111,11 @@ RonSQLPreparer::build_cte_linked_projections()
       if (ce == NULL) return;
       if (ce->op == T_IDENTIFIER) {
         Uint32 cidx = ce->col_idx;
-        if (scope.column_table_idx[cidx] != leaf_idx) {
+        const QueryScope::ResolvedColumnRef& ref =
+            scope.resolved_columns[cidx];
+        if (ref.join_op_idx != leaf_idx) {
           find_or_add_linked_proj(scope.join_plan,
-                                  scope.column_table_idx[cidx],
+                                  ref.join_op_idx,
                                   m_columns[cidx].c_str());
         }
         return;
