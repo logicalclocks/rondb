@@ -135,6 +135,109 @@ biggest
 100
 
 
+=== Test 10: scalar CTE root WHERE equality false returns no rows ===
+== Query ==
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s WHERE m = 999;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s WHERE m = 999|
+m
+
+
+=== Test 11: scalar CTE root WHERE equality true returns row ===
+== Query ==
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s WHERE m = 100;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s WHERE m = 100|
+m
+100
+
+
+=== Test 12: scalar CTE root WHERE range false returns no rows ===
+== Query ==
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s WHERE m < 100;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s WHERE m < 100|
+m
+
+
+=== Test 13: nullable first scalar output survives top-level GREATEST ===
+== Query ==
+WITH s AS (SELECT MAX(v) AS m FROM scalar_empty),
+n AS (SELECT COUNT(*) AS rows_seen FROM scalar_t)
+SELECT GREATEST(s.m, n.rows_seen) AS g FROM s, n;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(v) AS m FROM scalar_empty),
+n AS (SELECT COUNT(*) AS rows_seen FROM scalar_t)
+SELECT GREATEST(s.m, n.rows_seen) AS g FROM s, n|
+g
+NULL
+
+
+=== Test 14: top-level GREATEST over ordinary table column rejects ===
+Error handling: RPE
+ronsql_cli caught exception: Top-level GREATEST/LEAST is only supported for scalar CTE output columns.  Use an explicit aggregate for ordinary table columns.
+
+
+=== Test 15: grouped top-level GREATEST over ordinary column rejects ===
+Error handling: RPE
+ronsql_cli caught exception: Top-level GREATEST/LEAST is only supported for scalar CTE output columns.  Use an explicit aggregate for ordinary table columns.
+
+
+=== Test 16: explicit aggregate over GREATEST remains accepted ===
+== Query ==
+SELECT MAX(GREATEST(v, 1)) AS g FROM scalar_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT MAX(GREATEST(v, 1)) AS g FROM scalar_t|
+g
+100
+
+
 === Test 9: SELECT no FROM with grouped CTE qualifier — must reject ===
 This query has no aggregate expression, so it is not an aggregate query.
 Currently, RonSQL only supports aggregate queries and projection-only

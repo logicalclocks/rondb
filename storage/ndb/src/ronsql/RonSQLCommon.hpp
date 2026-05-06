@@ -110,6 +110,7 @@ struct Outputs
       TokenKind fun;
       AggregationAPICompiler_Expr* arg;
       Uint32 agg_index;
+      bool implicit_scalar_pair_op;
     } aggregate;
     struct
     {

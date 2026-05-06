@@ -533,6 +533,14 @@ private:
   // nullable column operand.  Run at compile() time, after column
   // resolution has populated each scope's column_map.
   void validate_greatest_least_pair_loads();
+  // Phase I.21: top-level GREATEST / LEAST is implemented as an
+  // implicit MAX over a scalar expression and is only valid for scalar
+  // CTE outputs.  Ordinary table columns need a real SELECT-level
+  // expression evaluator, not this aggregate wrapper.
+  void validate_implicit_scalar_pair_ops();
+  bool is_scalar_cte_qualifier(const LexCString& qualifier) const;
+  void validate_implicit_scalar_pair_op_expr(
+      AggregationAPICompiler::Expr* expr) const;
   // Phase I.5 v4: emit the kernel program for one Greatest2 / Least2
   // pair-op.  Expands to either a 14-word embedded normal-interpreter
   // program (NULL-test on each operand -> SetRegNull, otherwise

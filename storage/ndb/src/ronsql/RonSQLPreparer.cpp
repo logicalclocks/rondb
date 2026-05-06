@@ -4550,6 +4550,7 @@ RonSQLPreparer::compile()
       out->aggregate.fun = sl.agg_fun;
       out->aggregate.arg = NULL;  // not used for result fetching
       out->aggregate.agg_index = sl.combined_agg_slot;
+      out->aggregate.implicit_scalar_pair_op = false;
     }
   }
 
@@ -4603,6 +4604,7 @@ RonSQLPreparer::compile()
   // LEAST cleanly.  Runs after column resolution but before the SVM
   // compile pass, so any rejection happens before kernel emission.
   validate_greatest_least_pair_loads();
+  validate_implicit_scalar_pair_ops();
 
   // Compile aggregation program if applicable
   if (m_main_scope.agg != NULL) {
@@ -6185,7 +6187,36 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     int root_nkeys = 0;
     ConditionalExpression* root_pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
     bool root_has_scan_child = false;
-    if (scope.join_where_ce[0] != NULL)
+    bool root_cte_is_scalar =
+        (plan.ops[0].cte_def != NULL &&
+         plan.ops[0].cte_def->stmt->groupby_columns == NULL);
+    if (root_cte_is_scalar && scope.join_where_ce[0] != NULL)
+    {
+      NdbInterpretedCode code(cteVirtualTables[0]);
+      emit_cte_lookup_filter(code, scope, /*op_idx=*/0,
+                             cteVirtualTables[0],
+                             scope.join_where_ce[0]);
+      require_run(rootOpts.setInterpretedCode(code) == 0,
+                  "Failed to set interpreted code on scalar CTE root.");
+      if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
+          plan.num_agg_leaves == 0 && scope.agg != NULL)
+      {
+        require_run(rootOpts.setAggregation(*singleAgg) == 0,
+                    "Failed to set aggregation on scalar CTE root.");
+      }
+      const NdbQueryOperand* scalar_keys[2];
+      scalar_keys[0] = qb->constValue((Int64)0);
+      require_run(scalar_keys[0] != NULL,
+                  "Failed to create dummy scalar CTE root lookup key.");
+      scalar_keys[1] = nullptr;
+      opDefs[0] = qb->lookupCte(plan.ops[0].cte_def_idx, numResultCols,
+                                cteVirtualTables[0], scalar_keys,
+                                &rootOpts);
+      require_run(opDefs[0] != NULL,
+                  "Failed to create scalar lookupCte root.");
+      return;
+    }
+    if (scope.join_where_ce[0] != NULL && !root_cte_is_scalar)
     {
       ConditionalExpression* w = simplify_ce(scope.join_where_ce[0], -1);
       root_nkeys = cteVirtualTables[0]->getNoOfPrimaryKeys();
@@ -6783,7 +6814,7 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
             static_cast<CHARSET_INFO*>(const_cast<void*>(derived_cs)));
       }
       vcol.setPrimaryKey(is_groupby);
-      vcol.setNullable(!is_groupby);
+      vcol.setNullable(cte_is_scalar ? true : !is_groupby);
       vt->addColumn(vcol);
     }
     // NdbDictionary::Table aggregate counts (getNoOfPrimaryKeys etc.) are
@@ -9408,6 +9439,70 @@ RonSQLPreparer::prepare_pair_op_null_check_cache(QueryScope& scope)
     {
       agg->m_pair_op_needs_null_check.push(false);
     }
+  }
+}
+
+void
+RonSQLPreparer::validate_implicit_scalar_pair_op_expr(
+    AggregationAPICompiler::Expr* expr) const
+{
+  require_prm(expr != NULL,
+              "Top-level GREATEST/LEAST has an invalid operand.");
+  if (expr->isLoadConstantInt())
+  {
+    return;
+  }
+  if (expr->isLoad())
+  {
+    Uint32 col_idx = expr->getLoadIdx();
+    require_prm(col_idx < m_column_qualifiers.size(),
+                "Top-level GREATEST/LEAST references an unknown column.");
+    const LexCString& qualifier = m_column_qualifiers[col_idx];
+    require_prm(is_scalar_cte_qualifier(qualifier),
+                "Top-level GREATEST/LEAST is only supported for scalar "
+                "CTE output columns.  Use an explicit aggregate for "
+                "ordinary table columns.");
+    return;
+  }
+  if (expr->isGreatest2() || expr->isLeast2())
+  {
+    validate_implicit_scalar_pair_op_expr(expr->getLeft());
+    validate_implicit_scalar_pair_op_expr(expr->getRight());
+    return;
+  }
+  require_prm(false,
+              "Top-level GREATEST/LEAST operand must be a scalar CTE "
+              "column or integer constant.");
+}
+
+bool
+RonSQLPreparer::is_scalar_cte_qualifier(const LexCString& qualifier) const
+{
+  if (qualifier.str == NULL) return false;
+  for (const CteDefinition* cte = m_context.ast_root.cte_list;
+       cte != NULL; cte = cte->next)
+  {
+    if (cte->name.len == qualifier.len &&
+        strncmp(cte->name.str, qualifier.str, qualifier.len) == 0)
+    {
+      return cte->stmt->groupby_columns == NULL;
+    }
+  }
+  return false;
+}
+
+void
+RonSQLPreparer::validate_implicit_scalar_pair_ops()
+{
+  for (const Outputs* out = m_context.ast_root.outputs;
+       out != NULL; out = out->next)
+  {
+    if (out->type != Outputs::Type::AGGREGATE ||
+        !out->aggregate.implicit_scalar_pair_op)
+    {
+      continue;
+    }
+    validate_implicit_scalar_pair_op_expr(out->aggregate.arg);
   }
 }
 

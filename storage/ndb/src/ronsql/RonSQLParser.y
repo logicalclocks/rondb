@@ -106,6 +106,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
     RES->aggregate.fun = FUN; \
     RES->aggregate.arg = ARG; \
     RES->output_name = LexString{(LOC).begin, size_t((LOC).end - (LOC).begin)}; \
+    RES->aggregate.implicit_scalar_pair_op = false; \
     RES->next = NULL; \
   } while (0)
 #define init_cond(RES,LEFT,OP,RIGHT) do \
@@ -409,9 +410,11 @@ nonaliased_output:
  * pipeline sees a regular aggregate output: over a single-row
  * scalar input, MAX of one value equals the GREATEST/LEAST itself. */
 | T_GREATEST T_LEFT arith_expr_list T_RIGHT
-                                        { init_aggfun($$, @$, T_MAX, context->lower_greatest_least_nary($3, /*is_greatest*/true)); }
+                                        { init_aggfun($$, @$, T_MAX, context->lower_greatest_least_nary($3, /*is_greatest*/true));
+                                          $$->aggregate.implicit_scalar_pair_op = true; }
 | T_LEAST T_LEFT arith_expr_list T_RIGHT
-                                        { init_aggfun($$, @$, T_MAX, context->lower_greatest_least_nary($3, /*is_greatest*/false)); }
+                                        { init_aggfun($$, @$, T_MAX, context->lower_greatest_least_nary($3, /*is_greatest*/false));
+                                          $$->aggregate.implicit_scalar_pair_op = true; }
 
 /* T_COUNT not included here, in order to implement COUNT(*) */
 aggfun:
