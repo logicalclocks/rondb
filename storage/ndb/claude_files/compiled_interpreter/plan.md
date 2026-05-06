@@ -608,6 +608,20 @@ the JIT and matches interpreted output bit-for-bit.
 
 ## 10. Phase 4 — DBTUP thin-slice integration
 
+**Status: shipped (partial).** See `phase_4_setup_integration.md`
+for the results doc. The cold-call mechanism, bytecode bridge,
+per-node compile site, per-row dispatch, and first cold-call
+helper (`ndb_jit_h_load_col`) all land. ndbmtd builds and links
+cleanly with the JIT path wired through. Static / unit-level
+testing covers the mechanism end-to-end at the JIT layer
+(coldcall_tests 5/5 PASS, plus ~38 cases across extractor /
+admission / bridge / microbench). The MTR canary that exercises
+the path through real SQL is deferred to Phase 4.5 / future
+because most aggregation queries use kOpEmbeddedInterp blocks
+that admission rejects — a canary needs RonSQL-side cooperation
+to emit admission-clean bytecode. Final commit at writing:
+`6b783a02ff0`.
+
 **Goal.** Wire the JIT into the proxy-level `JOIN_AGG_SETUP_REQ`
 handler so that each aggregation program is compiled **once per data
 node** at setup time, then shared read-only with every LDM worker
