@@ -197,3 +197,37 @@ ADD_CUSTOM_TARGET(regen-stencils
   COMMENT "[RONDB-1056] regenerating stencil headers (clang ${NDB_JIT_CLANG_VERSION})"
   VERBATIM
 )
+
+# ---------------------------------------------------------------------------
+# RONDB-1056 Phase 2: extractor-tests — host-tool unit tests.
+#
+# CLI errors, malformed input, idempotency, audit pass/fail. Runs the
+# committed extractor + audit binaries against the committed
+# stencils_*.h headers (and a freshly compiled stencils_<arch>.o for
+# byte-equivalence). 11 cases; harness lives in
+# extract_stencils/tests/run_tests.cmake.
+#
+# Like regen-stencils, this depends on a working clang on PATH (or
+# overridden via NDB_JIT_CLANG). The harness uses the same flags as
+# regen.cmake so test failure points at extractor / audit regressions
+# rather than at compile-flag drift.
+# ---------------------------------------------------------------------------
+
+ADD_CUSTOM_TARGET(extractor-tests
+  COMMAND ${CMAKE_COMMAND}
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/extract_stencils/tests/run_tests.cmake"
+          --
+          "$<TARGET_FILE:ndb_jit_extract_stencils>"
+          "$<TARGET_FILE:ndb_jit_audit_magics>"
+          "${NDB_JIT_CLANG}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/stencils_src.c"
+          "${CMAKE_CURRENT_SOURCE_DIR}"
+          "${CMAKE_CURRENT_BINARY_DIR}/extractor_test_tmp"
+          "${CMAKE_CURRENT_SOURCE_DIR}/stencils_x86_64.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/stencils_arm64.h"
+  DEPENDS
+    ndb_jit_extract_stencils
+    ndb_jit_audit_magics
+  COMMENT "[RONDB-1056] running extractor + audit unit tests"
+  VERBATIM
+)
