@@ -5594,6 +5594,8 @@ RonSQLPreparer::execute_join()
   NdbAggregator singleAgg(agg_leaf_table);
 
   if (m_has_select_subqueries && plan.num_agg_leaves > 0) {
+    require_run(m_main_scope.resolved_columns != NULL,
+                "Subquery aggregation emit: missing resolved columns.");
     // Build per-leaf aggregators for subquery pushdown
     for (Uint32 ml = 0; ml < m_merged_leaves.size(); ml++) {
       MergedLeaf &merged = m_merged_leaves[ml];
@@ -5606,12 +5608,19 @@ RonSQLPreparer::execute_join()
       struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
       while (groupby != NULL) {
         Uint32 col_idx = groupby->col_idx;
-        if (m_main_scope.column_table_idx[col_idx] == op_idx) {
-          require_prm(agg->GroupBy(m_main_scope.column_attrId_map[col_idx]),
+        const QueryScope::ResolvedColumnRef& col_ref =
+            m_main_scope.resolved_columns[col_idx];
+        require_prm(
+            col_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+            "Subquery GROUP BY column is not a stored-table column.");
+        if (col_ref.join_op_idx == op_idx) {
+          require_prm(agg->GroupBy(col_ref.attr_id),
                       "Failed to program GroupBy on leaf.");
         } else {
+          require_prm(col_ref.dict_column != NULL,
+                      "Subquery linked GROUP BY column descriptor missing.");
           require_prm(agg->GroupByLinked(linked_proj_pos,
-                                         m_main_scope.column_map[col_idx]),
+                                         col_ref.dict_column),
                       "Failed to program GroupByLinked on leaf.");
           linked_proj_pos++;
         }
@@ -5626,7 +5635,12 @@ RonSQLPreparer::execute_join()
         if (sl.merged_leaf_idx != ml) continue;
 
         Uint32 col_idx = sl.inner_agg_col_idx;
-        NdbAttrId attr_id = m_main_scope.column_attrId_map[col_idx];
+        const QueryScope::ResolvedColumnRef& agg_ref =
+            m_main_scope.resolved_columns[col_idx];
+        require_prm(
+            agg_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+            "Subquery aggregate input is not a stored-table column.");
+        NdbAttrId attr_id = agg_ref.attr_id;
         Uint32 reg = 0;  // use register 0 for loads
         Uint32 agg_slot = leaf_local_slot++;
 
