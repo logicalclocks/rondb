@@ -3691,53 +3691,48 @@ RonSQLPreparer::build_cte_scopes()
   }
 }
 
-// Fill in source NdbDictionary::Column* for each CTE-output reference in
-// `scope`'s column_map. load_join() leaves those entries NULL because
-// the CTE's virtual columns don't exist yet; build_cte_scopes() populates
-// per-CTE scopes so we can now walk back from a CTE output to its
+// Fill in source NdbDictionary::Column* metadata for each CTE-output
+// descriptor in `scope`. The CTE's virtual columns don't exist until
+// execute-time virtual table construction, but build_cte_scopes()
+// populates per-CTE scopes so we can walk back from a CTE output to its
 // body-source column. The charset/precision/scale on that real column is
-// what ResultPrinter needs when a CHAR/VARCHAR CTE output is projected or
-// grouped by, and what build_cte_virtual_tables needs to derive the
-// virt-table column type for chained CTEs.  Non-COLUMN outputs (COUNT /
-// SUM) stay NULL — ResultPrinter's fallback (charset=NULL,
-// precision=0) is fine for numeric types.
+// what ResultPrinter and build_cte_virtual_tables need for source-backed
+// CTE outputs. Non-COLUMN outputs (COUNT / SUM) remain without
+// dict_column metadata because their result type is synthesized.
 void
 RonSQLPreparer::resolve_cte_output_columns_for_scope(QueryScope& scope)
 {
-  if (scope.column_map == NULL) return;
   if (scope.resolved_columns == NULL) return;
   for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
-    if (scope.column_map[col_idx] != NULL) continue;
     QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[col_idx];
     if (ref.kind != QueryScope::ResolvedColumnRef::Kind::CteResultColumn)
       continue;
+    if (ref.dict_column != NULL) continue;
     if (ref.cte_def_idx >= m_cte_scopes.size()) continue;
     QueryScope* cs = m_cte_scopes[ref.cte_def_idx];
-    if (cs == NULL || cs->column_map == NULL) continue;
+    if (cs == NULL || cs->resolved_columns == NULL) continue;
 
     const Outputs* o = ref.cte_output;
     if (o == NULL) continue;
 
     if (o->type == Outputs::Type::COLUMN) {
       Uint32 src_col_idx = o->column.col_idx;
-      const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
-      if (src_col != NULL) {
-        scope.column_map[col_idx] = src_col;
-        ref.dict_column = src_col;
-      }
+      const QueryScope::ResolvedColumnRef& src_ref =
+          cs->resolved_columns[src_col_idx];
+      if (src_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn)
+        ref.dict_column = src_ref.dict_column;
     } else if (o->type == Outputs::Type::AGGREGATE) {
       // MIN/MAX preserve source type; SUM/COUNT synthesize numeric
-      // (charset-irrelevant) — only plumb MIN/MAX here.
+      // (charset-irrelevant) — only plumb MIN/MAX metadata here.
       TokenKind fun = o->aggregate.fun;
       if (fun != T_MIN && fun != T_MAX) continue;
       AggregationAPICompiler::Expr* arg = o->aggregate.arg;
       if (arg == NULL || !arg->isLoad()) continue;
       Uint32 src_col_idx = arg->getLoadIdx();
-      const NdbDictionary::Column* src_col = cs->column_map[src_col_idx];
-      if (src_col != NULL) {
-        scope.column_map[col_idx] = src_col;
-        ref.dict_column = src_col;
-      }
+      const QueryScope::ResolvedColumnRef& src_ref =
+          cs->resolved_columns[src_col_idx];
+      if (src_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn)
+        ref.dict_column = src_ref.dict_column;
     }
   }
 }
