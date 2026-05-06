@@ -4,7 +4,7 @@
  */
 
 /*
- * RONDB-1056 Phase 1 — copy-and-patch JIT engine.
+ * RONDB-1056 Phase 2 — copy-and-patch JIT engine, cross-arch.
  *
  * Two-pass compile:
  *   Pass 1: walk the bytecode, accumulate the per-pc byte offset
@@ -19,9 +19,17 @@
  *               next stencil is patched directly without going
  *               through the queue)
  *
- * Phase 1 only runs on x86_64. Other archs return NULL with errno
- * set; jit_arena.h's macOS-x86_64 #error guarantees we never reach
- * this on the unsupported platform.
+ * Phase 2 supports both x86_64 (relocation-driven 32-bit operand
+ * holes; `mov reg32, imm32` patch sites) and aarch64 (magic-byte
+ * holes; movz/movk/movk/movk chains where each of the 4 instructions
+ * carries one imm16 slice). The generated headers
+ * (stencils_x86_64.h, stencils_arm64.h) contain the per-arch byte
+ * arrays + Hole tables.
+ *
+ * The engine is arch-uniform at the high level — same Pass 1 / Pass 2
+ * structure, same fixup queue. Arch differences are encapsulated in
+ * three inline helpers: kPreamble[] bytes, patch_operand(), and
+ * patch_branch_disp().
  */
 
 #include "jit1.h"
@@ -32,57 +40,42 @@
 #include <string.h>
 #include <time.h>
 
-#if !defined(__x86_64__)
-/* Phase 1 is x86_64 only. The aarch64 stencils need a different
- * hole-encoding strategy because extern symbol references compile
- * to GOT-indirect on AArch64, not inline immediates. Phase 2 lands
- * the cross-arch extractor.
- *
- * We still compile the file on other architectures (so the engine
- * API symbols exist and the interpreter-only test target builds)
- * but jit1_compile always returns NULL with errno=ENOTSUP and the
- * other entry points return safe defaults. */
-
-struct Jit1Prog { int unused; };
-
-Jit1Prog *jit1_compile(NdbJitArena *arena,
-                       const Program *prog,
-                       Jit1Timing *out_timing) {
-  (void)arena;
-  (void)prog;
-  if (out_timing) memset(out_timing, 0, sizeof(*out_timing));
-  errno = ENOTSUP;
-  return NULL;
-}
-
-JitEntry jit1_entry(const Jit1Prog *prog) {
-  (void)prog;
-  return NULL;
-}
-
-size_t jit1_emitted_size(const Jit1Prog *prog) {
-  (void)prog;
-  return 0;
-}
-
-#else  /* __x86_64__ */
-
-#include "stencils_x86_64.h"
+#if defined(__x86_64__)
+#  include "stencils_x86_64.h"
+#elif defined(__aarch64__)
+#  include "stencils_arm64.h"
+#else
+#  error "RONDB-1056 jit1: unsupported architecture"
+#endif
 
 /* ------------------------------------------------------------------ */
-/* x86_64 entry preamble: bridges from the regular C calling          */
-/* convention (state pointer in rdi) into the preserve_none           */
-/* calling convention used internally by the stencil chain (state    */
-/* pointer in r12). Saves the caller's r12 so the regular ABI's      */
-/* callee-saved contract is honoured on return.                       */
+/* Per-arch preamble.                                                 */
 /*                                                                    */
-/*   00: 41 54        push r12                                        */
-/*   02: 49 89 fc     mov  r12, rdi                                   */
+/* The preamble bridges the public JitEntry calling convention        */
+/* (regular C ABI) into the preserve_none convention used inside the  */
+/* stencil chain. It saves whatever caller-saved registers the        */
+/* preserve_none ABI repurposes, then loads the state pointer into    */
+/* the preserve_none "first-int-arg" register.                        */
 /*                                                                    */
-/* The matching `pop r12; ret` is in the op_skip and op_exit stencil */
-/* bytes (see stencils_x86_64.h).                                     */
+/* The matching teardown is in op_skip / op_exit, whose stencils are  */
+/* overridden by the extractor with the engine-required terminator    */
+/* bytes (kX86Terminator / kArm64Terminator in extract_stencils.c).   */
 /* ------------------------------------------------------------------ */
+
+#if defined(__x86_64__)
+/*   00: 41 54        push r12        ; save caller's r12
+ *   02: 49 89 fc     mov  r12, rdi   ; r12 = state (preserve_none arg slot) */
 static const uint8_t kPreamble[] = { 0x41, 0x54, 0x49, 0x89, 0xfc };
+
+#elif defined(__aarch64__)
+/*   00: a9bf7bf4     stp  x20, x30, [sp, #-16]!  ; save x20 + LR
+ *   04: aa0003f4     mov  x20, x0               ; x20 = state */
+static const uint8_t kPreamble[] = {
+  0xf4, 0x7b, 0xbf, 0xa9,
+  0xf4, 0x03, 0x00, 0xaa,
+};
+#endif
+
 #define PREAMBLE_SIZE ((uint32_t)sizeof(kPreamble))
 
 /* ------------------------------------------------------------------ */
@@ -95,7 +88,8 @@ static const uint8_t kPreamble[] = { 0x41, 0x54, 0x49, 0x89, 0xfc };
 typedef struct {
   uint16_t target_pc;        /* bytecode pc of the branch target */
   uint32_t patch_off;        /* byte offset in the arena blob where the
-                                4-byte rel32 displacement starts */
+                                branch instruction (x86_64: rel32 disp;
+                                aarch64: full b imm26 word) starts */
 } Fixup;
 
 /* Phase 1 hard limits. The 30-op program has 1 branch; we size
@@ -111,6 +105,35 @@ struct Jit1Prog {
 /* Pure helpers — no arena, no state.                                 */
 /* ------------------------------------------------------------------ */
 
+/* Read the operand value to bake into a hole, given the kind and
+ * the current Op. Returns the i64 value; arch helpers narrow as
+ * needed. */
+static inline int64_t hole_value_from_op(uint8_t kind, const Op *op) {
+  switch (kind) {
+    case HK_OP_A:   return (int64_t)op->a;
+    case HK_OP_B:   return (int64_t)op->b;
+    case HK_OP_C:   return (int64_t)op->c;
+    case HK_OP_IMM: return op->imm;
+    default:        return 0;   /* branch holes handled separately */
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Per-arch hole-patching helpers.                                    */
+/*                                                                    */
+/* On x86_64 each operand hole is independent — patch a 32-bit LE     */
+/* value at the hole's byte offset. `slot` is unused.                 */
+/*                                                                    */
+/* On aarch64 each operand hole is one of four movz/movk imm16        */
+/* slots. `slot` ∈ {0,1,2,3} selects which 16 bits of the value get   */
+/* emitted at this site. The engine increments `slot_counter[kind]`   */
+/* per hole within a stencil so the four entries with the same kind   */
+/* receive slot=0,1,2,3 in byte-offset order (which matches clang's   */
+/* movz-then-3×movk emission order within a chain).                   */
+/* ------------------------------------------------------------------ */
+
+#if defined(__x86_64__)
+
 /* Write a 4-byte little-endian value at `dst`. */
 static inline void put_u32_le(uint8_t *dst, uint32_t v) {
   dst[0] = (uint8_t)(v       & 0xff);
@@ -119,17 +142,64 @@ static inline void put_u32_le(uint8_t *dst, uint32_t v) {
   dst[3] = (uint8_t)((v >> 24) & 0xff);
 }
 
-/* Read the operand value to bake into a hole, given the kind and
- * the current Op. Returns the i32 value; the caller widths it. */
-static inline int32_t hole_value_from_op(uint8_t kind, const Op *op) {
-  switch (kind) {
-    case HK_OP_A:   return (int32_t)op->a;
-    case HK_OP_B:   return (int32_t)op->b;
-    case HK_OP_C:   return (int32_t)op->c;
-    case HK_OP_IMM: return (int32_t)op->imm;
-    default:        return 0;   /* branch holes handled separately */
-  }
+static inline void patch_operand(uint8_t *site, uint8_t slot, int64_t value) {
+  (void)slot;
+  /* Phase 1+2 x86_64 stencils use 32-bit operand sites: `mov reg32,
+   * imm32` (zero-extended for register-index holes), `mov [...], imm32`
+   * (sign-extended for HK_OP_IMM in op_load_const_int's qword store).
+   * We narrow to int32 — out-of-range immediates would surprise the
+   * engine but are out of scope for the Phase 1 microbench's value
+   * domain. */
+  put_u32_le(site, (uint32_t)(int32_t)value);
 }
+
+/* x86_64 PC-relative-32 is relative to the END of the rel32 field
+ * (i.e., next instruction). disp = target_off - patch_site_off - 4. */
+static inline void patch_branch_disp(uint8_t *site, int32_t byte_disp) {
+  put_u32_le(site, (uint32_t)(byte_disp - 4));
+}
+
+#elif defined(__aarch64__)
+
+/* Read/modify/write 4 LE bytes at `site` using the (mask, value)
+ * idiom common to imm16 / imm26 patching. */
+static inline void rmw_insn_word(uint8_t *site, uint32_t mask_clear, uint32_t bits_set) {
+  uint32_t w = (uint32_t)site[0]            |
+               ((uint32_t)site[1] << 8)     |
+               ((uint32_t)site[2] << 16)    |
+               ((uint32_t)site[3] << 24);
+  w = (w & ~mask_clear) | (bits_set & mask_clear);
+  site[0] = (uint8_t)(w & 0xff);
+  site[1] = (uint8_t)((w >> 8)  & 0xff);
+  site[2] = (uint8_t)((w >> 16) & 0xff);
+  site[3] = (uint8_t)((w >> 24) & 0xff);
+}
+
+/* aarch64 movz/movk imm16 lives at instruction bits 5..20.
+ * `slot` selects which 16-bit slice of `value` to bake in:
+ *   slot=0 → bits 0..15, slot=1 → bits 16..31, ... */
+static inline void patch_operand(uint8_t *site, uint8_t slot, int64_t value) {
+  uint16_t imm16 = (uint16_t)((uint64_t)value >> ((uint32_t)slot * 16u));
+  rmw_insn_word(site,
+                (uint32_t)0xffff << 5,
+                (uint32_t)imm16  << 5);
+}
+
+/* aarch64 b imm26 displacement is in 4-byte units, signed, relative
+ * to the start of the b instruction (PC of that instruction). */
+static inline void patch_branch_disp(uint8_t *site, int32_t byte_disp) {
+  /* Arithmetic shift — preserve sign. The mask + final cast handle
+   * out-of-range values harmlessly: a 26-bit truncation flips a
+   * forward branch into a backward one, but our Phase 1+2 forward-
+   * only programs are well under ±128 MB, so this is purely
+   * defensive. */
+  int32_t disp_words = byte_disp >> 2;
+  rmw_insn_word(site,
+                (uint32_t)0x03ffffff,
+                (uint32_t)disp_words);
+}
+
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Per-phase timing helpers.                                          */
@@ -169,7 +239,7 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
   /* Pass 1: walk bytecode, compute per-pc byte offsets, total size.  */
   /*                                                                  */
   /* Layout of the emitted blob:                                      */
-  /*   [PREAMBLE_SIZE bytes: push r12; mov r12, rdi]                  */
+  /*   [PREAMBLE_SIZE bytes — bridges C ABI -> preserve_none ABI]     */
   /*   [stencil for pc=0]                                             */
   /*   [stencil for pc=1]                                             */
   /*   ...                                                            */
@@ -225,6 +295,11 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
   Fixup fixups[J1_MAX_FIXUPS];
   uint8_t n_fixups = 0;
 
+  /* Per-kind slot counter — incremented per operand hole within a
+   * stencil. On aarch64 this drives the four-instruction movz/movk
+   * chain's slot selection; on x86_64 it stays at 0 and is unused. */
+  uint8_t slot_counter[HK_KIND_MAX + 1];
+
   for (uint16_t pc = 0; pc < prog->n_ops; ++pc) {
     const Op *op = &prog->ops[pc];
     const Stencil *st = &g_stencils[op->kind];
@@ -233,6 +308,9 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
 
     /* memcpy stencil bytes. */
     memcpy(blob_rw + this_off, st->bytes, st->n_bytes);
+
+    /* Reset the slot counter for this stencil. */
+    memset(slot_counter, 0, sizeof(slot_counter));
 
     /* Patch each hole. */
     for (uint8_t h = 0; h < st->n_holes; ++h) {
@@ -244,18 +322,16 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
         case HK_OP_B:
         case HK_OP_C:
         case HK_OP_IMM: {
-          int32_t v = hole_value_from_op(hole->kind, op);
-          /* All Phase 1 operand holes are 4-byte. */
-          put_u32_le(patch, (uint32_t)v);
+          int64_t v = hole_value_from_op(hole->kind, op);
+          uint8_t slot = slot_counter[hole->kind]++;
+          patch_operand(patch, slot, v);
           break;
         }
         case HK_BRANCH_FALL: {
-          /* Fall-through goes to the immediately-following stencil.
-           * Displacement = next_pc_offset - patch_site - 4
-           * (PC-relative-32 references "next instruction"). */
+          /* Fall-through goes to the immediately-following stencil. */
           uint32_t patch_site_off = this_off + hole->byte_offset;
-          int32_t  disp = (int32_t)next_off - (int32_t)patch_site_off - 4;
-          put_u32_le(patch, (uint32_t)disp);
+          int32_t  byte_disp = (int32_t)next_off - (int32_t)patch_site_off;
+          patch_branch_disp(patch, byte_disp);
           break;
         }
         case HK_BRANCH_TAKE: {
@@ -273,7 +349,9 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
             .target_pc = op->c,
             .patch_off = this_off + hole->byte_offset,
           };
-          /* Leave the patch site as zeros for now; resolved below. */
+          /* Leave the patch site bytes as the stencil emitted; the
+           * displacement field will be cleared + filled by
+           * patch_branch_disp during the drain. */
           break;
         }
         default:
@@ -283,14 +361,14 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
     }
 
     /* Drain any fixups targeting this newly-emitted pc. The branch
-     * stencil emits its taken-fixup *before* this drain runs (above),
-     * but its target_pc is op->c > pc, so it won't drain here. Drains
-     * happen when we reach pc == target_pc later. */
+     * stencil's HK_BRANCH_TAKE queues its fixup *before* this drain
+     * runs (above), but its target_pc is op->c > pc, so it won't drain
+     * here. Drains happen when we reach pc == target_pc later. */
     for (uint8_t f = 0; f < n_fixups;) {
       if (fixups[f].target_pc == pc) {
         uint32_t patch_site_off = fixups[f].patch_off;
-        int32_t  disp = (int32_t)this_off - (int32_t)patch_site_off - 4;
-        put_u32_le(blob_rw + patch_site_off, (uint32_t)disp);
+        int32_t  byte_disp = (int32_t)this_off - (int32_t)patch_site_off;
+        patch_branch_disp(blob_rw + patch_site_off, byte_disp);
         /* Remove by swap-with-last. */
         fixups[f] = fixups[--n_fixups];
       } else {
@@ -350,5 +428,3 @@ JitEntry jit1_entry(const Jit1Prog *prog) {
 size_t jit1_emitted_size(const Jit1Prog *prog) {
   return prog ? prog->emitted : 0;
 }
-
-#endif /* __x86_64__ */

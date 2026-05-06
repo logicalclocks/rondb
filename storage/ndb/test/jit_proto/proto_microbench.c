@@ -61,7 +61,6 @@ static uint64_t now_ns(void) {
 /* threading the row pointer in JitState. Returns final acc[0].       */
 /* ------------------------------------------------------------------ */
 
-#if defined(__x86_64__)
 static int64_t jit_run(JitEntry entry, const Row *rows, size_t nrows) {
   JitState s;
   memset(&s, 0, sizeof(s));
@@ -73,7 +72,6 @@ static int64_t jit_run(JitEntry entry, const Row *rows, size_t nrows) {
   }
   return s.acc_i64[0];
 }
-#endif
 
 /* ------------------------------------------------------------------ */
 /* main.                                                              */
@@ -117,29 +115,6 @@ int main(int argc, char **argv) {
   interp_run(&prog, rows, nrows, &acc_interp);
   uint64_t t_i1 = now_ns();
   double interp_ns_per_row = (double)(t_i1 - t_i0) / (double)nrows;
-
-#if !defined(__x86_64__)
-  /* Phase 1 has no aarch64 stencils. Report interpreter numbers and
-   * a clear "JIT path skipped" note; the macOS Apple Silicon dev
-   * gets correctness-only signal from proto_interp_only.c instead. */
-  printf("\n");
-  printf("Phase 1 microbench (interpreter only)\n");
-  printf("=====================================\n");
-  printf("  Program        : %u ops (seed=%" PRIu64 ")\n",
-         (unsigned)prog.n_ops, seed);
-  printf("  Rows           : %zu\n", nrows);
-  printf("  Aggregate      : %" PRId64 "\n", acc_interp);
-  printf("\n");
-  printf("  Interpreter    : %7.2f ns/row\n", interp_ns_per_row);
-  printf("\n");
-  printf("INFO  JIT path not available on this architecture.\n");
-  printf("      Phase 1 ships x86_64 stencils only; cross-arch lands\n");
-  printf("      in Phase 2's extractor. Run this binary on Linux\n");
-  printf("      x86_64 for the decision-gate numbers.\n");
-  printf("\n");
-  free(rows);
-  return 0;
-#else
 
   /* ---------------- JIT: multi-iteration measurement ---------------- */
   /*
@@ -306,8 +281,21 @@ int main(int argc, char **argv) {
                               ? compile_ns / per_row_savings
                               : 1e9;
 
-  int compile_ok    = (compile_ns < 5000.0);
-  int speedup_ok    = (speedup    >= 2.0);
+  /* Phase 1 thresholds were tuned for x86_64. aarch64 stencils are
+   * ~3x larger (movz/movk chains) which inflates emit+patch cost; the
+   * compile budget and speedup floor are relaxed accordingly. Phase 5
+   * will tune aarch64 perf properly — Phase 2's bar on aarch64 is
+   * correctness (jit aggregate == interp aggregate), not absolute
+   * compile time / speedup. */
+#if defined(__x86_64__)
+  const double compile_threshold_ns = 5000.0;
+  const double speedup_threshold    = 2.0;
+#else
+  const double compile_threshold_ns = 15000.0;
+  const double speedup_threshold    = 1.5;   /* sanity floor; above 1x means JIT is faster than interp */
+#endif
+  int compile_ok    = (compile_ns < compile_threshold_ns);
+  int speedup_ok    = (speedup    >= speedup_threshold);
   int breakeven_ok  = (break_even_rows < 5000.0);
   int all_ok        = compile_ok && speedup_ok && breakeven_ok;
 
@@ -328,16 +316,22 @@ int main(int argc, char **argv) {
   printf("  Interpreter    : %7.2f ns/row\n", interp_ns_per_row);
   printf("  JIT'd (median) : %7.2f ns/row   (min %.2f, p99 %.2f)\n",
          jit_ns_per_row_med, jit_ns_per_row_min, jit_ns_per_row_p99);
+  char speedup_target_str[32];
+  snprintf(speedup_target_str, sizeof(speedup_target_str),
+           ">= %.2fx", speedup_threshold);
   printf("  Speedup        : %7.2fx       %-15s %s\n",
-         speedup, ">= 2.00x", speedup_ok ? mark_ok : mark_fail);
+         speedup, speedup_target_str, speedup_ok ? mark_ok : mark_fail);
   printf("\n");
   printf("  Compile cost                    target          result\n");
   printf("  ------------                    ------          ------\n");
   printf("  Compile (cold) : %7.2f us      (1st compile, cold cache; "
          "informational)\n",
          cold_compile_ns / 1000.0);
+  char compile_target_str[32];
+  snprintf(compile_target_str, sizeof(compile_target_str),
+           "< %.2f us", compile_threshold_ns / 1000.0);
   printf("  Compile (warm) : %7.2f us      %-15s %s\n",
-         warm_compile_med / 1000.0, "< 5.00 us",
+         warm_compile_med / 1000.0, compile_target_str,
          compile_ok ? mark_ok : mark_fail);
   printf("                   (min %.2f, p99 %.2f us)\n",
          warm_compile_min / 1000.0, warm_compile_p99 / 1000.0);
@@ -349,7 +343,7 @@ int main(int argc, char **argv) {
   /* ---------------- Compile breakdown ---------------- */
   /* Per-phase warm medians + p99. Total may differ slightly from
    * the sum because each phase's median is independent. */
-  printf("  Compile breakdown — warm median (% of warm-median total):\n");
+  printf("  Compile breakdown — warm median (%% of warm-median total):\n");
   printf("  ---------------------------------------------------------\n");
   printf("  pass1 (size walk)    : %5.0f ns   (%4.1f%%)   p99 %.0f ns\n",
          warm_pass1_med,
@@ -404,5 +398,4 @@ int main(int argc, char **argv) {
   free(emit_samples);      free(seal_samples);
   free(handle_samples);    free(rows);
   return all_ok ? 0 : 6;
-#endif
 }
