@@ -241,7 +241,7 @@ g
 === Test 9: SELECT no FROM with grouped CTE qualifier — must reject ===
 This query has no aggregate expression, so it is not an aggregate query.
 Currently, RonSQL only supports aggregate queries and projection-only
-SELECTs over supported CTE shapes (Phase E.3/I.8/I.11).  See
+SELECTs over supported CTE shapes (Phase E.3/I.8/I.11/I.12).  See
 ronsql_join_phase7.md for the
 broader non-aggregate roadmap.
 Error handling: RPE
