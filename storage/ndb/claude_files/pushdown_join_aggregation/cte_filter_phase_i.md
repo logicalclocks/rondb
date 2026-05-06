@@ -466,23 +466,30 @@ collection, resolved CTE bodies in declaration order, preserved the
 legacy emit maps as compatibility output, fixed HAVING-only aggregate
 resolution, and added `ronsql_cte_name_resolution` MTR coverage.
 
-#### I.24 — Emit from resolved column descriptors (M)
+#### I.24 — Emit from resolved column descriptors (M) — shipped
 
 Detailed plan: `cte_filter_phase_i24.md`.
 
-I.23 made name resolution scope-aware, but emit still consumes the old
+I.23 made name resolution scope-aware, but emit still consumed the old
 parallel arrays: `column_attrId_map`, `column_map`, and
-`column_table_idx`.  These arrays are now populated from the scoped
-resolver, but they remain a lossy interface: CTE result columns,
+`column_table_idx`.  Those arrays were populated from the scoped
+resolver, but they remained a lossy interface: CTE result columns,
 stored-table columns, alias-only HAVING references, and unresolved
-sentinels are distinguished by implicit conventions.
+sentinels were distinguished by implicit conventions.
 
-I.24 should introduce explicit `ResolvedColumnRef` descriptors on each
-`QueryScope` and make them the authoritative emit contract.  During the
-transition, the legacy arrays remain as compatibility outputs derived
-from the descriptors.  Convert metadata-only helpers first, then filter
-emit, aggregation emit, and pass-through result routing.  This is a
-refactoring / hardening phase, not a feature-expansion phase.
+I.24 introduced `ResolvedColumnRef` descriptors on each `QueryScope`
+and made them the authoritative emit contract.  Migration ran in 21
+commits between `855ec891694` (plan) and `7e0f33b7890` (legacy-array
+removal), with `cf188857098` introducing the descriptor type.  Each
+emit surface was migrated incrementally — CTE metadata helpers,
+filter emit, aggregation loads, pass-through routing, CASE condition
+emit, single-table aggregation, embedded filter loads, linked
+projections, subquery aggregation, aggregate validation, CTE source
+emit, column ownership, WHERE classification, result metadata, CTE
+metadata, and index-bound metadata — followed by validation in
+`e8a2e00686a` and the legacy-array removal.  I.11's kernel-topology
+coverage commit `3ca4f897af3` landed on top of the migrated emit and
+exercised the new descriptor path end-to-end.
 
 ## Recommended next-pick heuristic
 

@@ -2,19 +2,39 @@
 
 ## Status
 
-**Planned.**  This phase follows Phase I.23.  I.23 fixed scoped name
-resolution for CTE bodies and the main SELECT, but most emit paths still
-consume the legacy resolver outputs:
+**Shipped.**  The descriptor migration ran in 21 commits between
+`855ec891694` (plan) and `7e0f33b7890` (legacy-array removal), with
+`cf188857098` introducing the descriptor type itself.  Each emit
+surface (CTE metadata helpers, filter emit, aggregation loads,
+pass-through routing, CASE condition emit, single-table
+aggregation, embedded filter loads, linked projections, subquery
+aggregation, aggregate validation, CTE source emit, column
+ownership, WHERE classification, result metadata, CTE metadata,
+index bound metadata) was migrated incrementally to the
+`ResolvedColumnRef` descriptor contract before the validation
+commit `e8a2e00686a` and the legacy arrays
+(`column_attrId_map` / `column_map` / `column_table_idx`) were
+removed.
+
+I.11's kernel-topology coverage commit `3ca4f897af3` landed on top
+of the migrated emit and exercised the new descriptor path
+end-to-end.
+
+The original plan body follows.
+
+Phase context (preserved): I.23 fixed scoped name resolution for
+CTE bodies and the main SELECT, but most emit paths still consumed
+the legacy resolver outputs:
 
 - `QueryScope::column_attrId_map[col_idx]`;
 - `QueryScope::column_map[col_idx]`;
 - `QueryScope::column_table_idx[col_idx]`.
 
-Those arrays are currently populated by the scoped resolver, so the
-behaviour is correct again.  However, they are still a lossy emit
+Those arrays were populated by the scoped resolver, so the
+behaviour was correct.  However, they were a lossy emit
 interface: a CTE result column, a stored-table column, an alias-only
-HAVING reference, and an unresolved sentinel are all represented by a
-mix of array entries and implicit conventions.  I.24 should make the
+HAVING reference, and an unresolved sentinel were all represented by
+a mix of array entries and implicit conventions.  I.24 made the
 resolved column descriptor the authoritative emit contract.
 
 ## Problem

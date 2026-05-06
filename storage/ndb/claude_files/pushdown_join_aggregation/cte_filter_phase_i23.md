@@ -2,13 +2,27 @@
 
 ## Status
 
-**Planned.**  This phase follows the aborted Phase I.11 implementation
-attempt.  I.11 exposed that RonSQL's current CTE name handling is too
-global: internal table aliases and columns referenced inside one CTE
-can leak into later scopes, while CTE result columns sometimes lose the
-metadata needed to build virtual tables or resolve join operands.
+**Shipped** in `ffae6a9627a`.  Added scoped per-SELECT column
+collection, resolved CTE bodies in declaration order with only stored
+tables plus already-published CTE result interfaces visible, published
+only each CTE name and exposed result columns to later scopes, rejected
+ambiguous unqualified names across stored tables and visible CTEs,
+preserved the legacy emit maps as compatibility output, fixed
+HAVING-only aggregate resolution, and added `ronsql_cte_name_resolution`
+MTR coverage.  I.24 (`cf188857098` … `7e0f33b7890`) followed and made
+the resolved column descriptor the authoritative emit contract,
+removing the legacy compatibility arrays.  I.11's kernel-topology
+coverage in `3ca4f897af3` then resumed on top of the new resolver +
+descriptor model.
 
-I.23 is a prerequisite for returning to I.11 and for any later phase
+The original plan body follows.
+
+Phase context (preserved): the aborted Phase I.11 implementation
+attempt exposed that RonSQL's CTE name handling was too global —
+internal table aliases and columns referenced inside one CTE could
+leak into later scopes, while CTE result columns sometimes lost the
+metadata needed to build virtual tables or resolve join operands.
+I.23 was a prerequisite for returning to I.11 and for any later phase
 that composes nested CTEs with normal stored tables.
 
 ## Problem
