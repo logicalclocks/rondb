@@ -107,7 +107,66 @@ k	hi
 200	800
 
 
-=== Test 5: chained CTE with MIN(MAX(decimal_col)) ===
+=== Test 6: DECIMAL(18,0) signed boundary accepted ===
+== Query ==
+WITH stats AS (SELECT grp AS k, MIN(v) AS lo, MAX(v) AS hi
+FROM dec_signed_ok GROUP BY grp)
+SELECT k, lo, hi FROM stats;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT grp AS k, MIN(v) AS lo, MAX(v) AS hi
+FROM dec_signed_ok GROUP BY grp)
+SELECT k, lo, hi FROM stats|
+k	lo	hi
+10	-999999999999999999	999999999999999999
+20	7	7
+
+
+=== Test 7: DECIMAL(19,0) UNSIGNED boundary accepted ===
+== Query ==
+WITH stats AS (SELECT grp AS k, MIN(v) AS lo, MAX(v) AS hi
+FROM dec_unsigned_ok GROUP BY grp)
+SELECT k, lo, hi FROM stats;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT grp AS k, MIN(v) AS lo, MAX(v) AS hi
+FROM dec_unsigned_ok GROUP BY grp)
+SELECT k, lo, hi FROM stats|
+k	lo	hi
+10	0	9999999999999999999
+20	42	42
+
+
+=== Test 8: DECIMAL(19,0) signed MIN/MAX rejected ===
+Error handling: RPE
+ronsql_cli caught exception: MIN/MAX over scale-zero DECIMAL wider than the 64-bit integer range is not yet supported.  Full DECIMAL precision preservation requires a wider aggregate-result representation.
+
+
+=== Test 9: DECIMAL(20,0) UNSIGNED MIN/MAX rejected ===
+Error handling: RPE
+ronsql_cli caught exception: MIN/MAX over scale-zero DECIMAL wider than the 64-bit integer range is not yet supported.  Full DECIMAL precision preservation requires a wider aggregate-result representation.
+
+
+=== Test 10: chained unsafe DECIMAL MIN/MAX rejected ===
+Error handling: RPE
+ronsql_cli caught exception: MIN/MAX over scale-zero DECIMAL wider than the 64-bit integer range is not yet supported.  Full DECIMAL precision preservation requires a wider aggregate-result representation.
+
+
+=== Test 11: chained CTE with MIN(MAX(decimal_col)) ===
 == Query ==
 WITH a AS (SELECT o_grp AS k, MAX(o_amt0) AS hi
 FROM dec_orders GROUP BY o_grp),

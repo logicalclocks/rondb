@@ -2500,6 +2500,23 @@ RonSQLPreparer::select_cte_body_minmax_index(QueryScope& scope,
 }
 
 bool
+RonSQLPreparer::decimal_minmax_fits_64bit(
+    NdbDictionary::Column::Type type,
+    Int32 precision,
+    Int32 scale)
+{
+  if (type == NdbDictionary::Column::Decimal)
+  {
+    return scale > 0 || precision <= 18;
+  }
+  if (type == NdbDictionary::Column::Decimalunsigned)
+  {
+    return scale > 0 || precision <= 19;
+  }
+  return true;
+}
+
+bool
 RonSQLPreparer::minmax_index_source_type_supported(
     const NdbDictionary::Column* col)
 {
@@ -2519,9 +2536,10 @@ RonSQLPreparer::minmax_index_source_type_supported(
   case NdbDictionary::Column::Double:
     return true;
   case NdbDictionary::Column::Decimal:
-    return col->getScale() > 0 || col->getPrecision() <= 18;
   case NdbDictionary::Column::Decimalunsigned:
-    return col->getScale() > 0 || col->getPrecision() <= 19;
+    return decimal_minmax_fits_64bit(col->getType(),
+                                     col->getPrecision(),
+                                     col->getScale());
   default:
     return false;
   }
@@ -6470,9 +6488,11 @@ RonSQLPreparer::resolve_chained_column_type(
     NdbDictionary::Column::Type& out_type,
     Uint32& out_length,
     const void*& out_cs,
-    Int32& out_scale)
+    Int32& out_scale,
+    Int32& out_precision)
 {
   out_scale = 0;
+  out_precision = 0;
   // Direct real-table column: column_map already resolved.
   if (scope.column_map != NULL) {
     const NdbDictionary::Column* src = scope.column_map[col_idx];
@@ -6481,6 +6501,7 @@ RonSQLPreparer::resolve_chained_column_type(
       out_length = src->getLength();
       out_cs = src->getCharset();
       out_scale = src->getScale();
+      out_precision = src->getPrecision();
       return true;
     }
   }
@@ -6507,7 +6528,7 @@ RonSQLPreparer::resolve_chained_column_type(
   if (o->type == Outputs::Type::COLUMN) {
     return resolve_chained_column_type(*cs, o->column.col_idx,
                                         out_type, out_length, out_cs,
-                                        out_scale);
+                                        out_scale, out_precision);
   }
   if (o->type == Outputs::Type::AGGREGATE) {
     TokenKind fun = o->aggregate.fun;
@@ -6515,6 +6536,8 @@ RonSQLPreparer::resolve_chained_column_type(
       out_type = NdbDictionary::Column::Bigunsigned;
       out_length = 1;
       out_cs = NULL;
+      out_scale = 0;
+      out_precision = 0;
       return true;
     }
     AggregationAPICompiler::Expr* arg = o->aggregate.arg;
@@ -6523,9 +6546,10 @@ RonSQLPreparer::resolve_chained_column_type(
     Uint32 arg_length;
     const void* arg_cs;
     Int32 arg_scale = 0;
+    Int32 arg_precision = 0;
     if (!resolve_chained_column_type(*cs, arg->getLoadIdx(),
                                       arg_type, arg_length, arg_cs,
-                                      arg_scale))
+                                      arg_scale, arg_precision))
       return false;
     if (fun == T_SUM) {
       switch (arg_type) {
@@ -6535,18 +6559,21 @@ RonSQLPreparer::resolve_chained_column_type(
         case NdbDictionary::Column::Int:
         case NdbDictionary::Column::Bigint:
           out_type = NdbDictionary::Column::Bigint;
-          out_length = 1; out_cs = NULL; return true;
+          out_length = 1; out_cs = NULL;
+          out_scale = 0; out_precision = 0; return true;
         case NdbDictionary::Column::Tinyunsigned:
         case NdbDictionary::Column::Smallunsigned:
         case NdbDictionary::Column::Mediumunsigned:
         case NdbDictionary::Column::Unsigned:
         case NdbDictionary::Column::Bigunsigned:
           out_type = NdbDictionary::Column::Bigunsigned;
-          out_length = 1; out_cs = NULL; return true;
+          out_length = 1; out_cs = NULL;
+          out_scale = 0; out_precision = 0; return true;
         case NdbDictionary::Column::Float:
         case NdbDictionary::Column::Double:
           out_type = NdbDictionary::Column::Double;
-          out_length = 1; out_cs = NULL; return true;
+          out_length = 1; out_cs = NULL;
+          out_scale = 0; out_precision = 0; return true;
         default:
           return false;
       }
@@ -6560,18 +6587,21 @@ RonSQLPreparer::resolve_chained_column_type(
         case NdbDictionary::Column::Int:
         case NdbDictionary::Column::Bigint:
           out_type = NdbDictionary::Column::Bigint;
-          out_length = 1; out_cs = NULL; return true;
+          out_length = 1; out_cs = NULL;
+          out_scale = 0; out_precision = 0; return true;
         case NdbDictionary::Column::Tinyunsigned:
         case NdbDictionary::Column::Smallunsigned:
         case NdbDictionary::Column::Mediumunsigned:
         case NdbDictionary::Column::Unsigned:
         case NdbDictionary::Column::Bigunsigned:
           out_type = NdbDictionary::Column::Bigunsigned;
-          out_length = 1; out_cs = NULL; return true;
+          out_length = 1; out_cs = NULL;
+          out_scale = 0; out_precision = 0; return true;
         case NdbDictionary::Column::Float:
         case NdbDictionary::Column::Double:
           out_type = NdbDictionary::Column::Double;
-          out_length = 1; out_cs = NULL; return true;
+          out_length = 1; out_cs = NULL;
+          out_scale = 0; out_precision = 0; return true;
         case NdbDictionary::Column::Decimal:
         case NdbDictionary::Column::Decimalunsigned:
           // Phase I.6 F.1: kernel `AggInterpreter::AlignedType`
@@ -6580,6 +6610,12 @@ RonSQLPreparer::resolve_chained_column_type(
           // RonSQL's virt-table column type matches what the kernel
           // emits, allowing the inline-type CTE filter opcode to
           // accept the result.
+          require_prm(
+              decimal_minmax_fits_64bit(arg_type, arg_precision, arg_scale),
+              "MIN/MAX over scale-zero DECIMAL wider than the 64-bit "
+              "integer range is not yet supported.  Full DECIMAL "
+              "precision preservation requires a wider aggregate-result "
+              "representation.");
           if (arg_scale == 0) {
             out_type = (arg_type == NdbDictionary::Column::Decimalunsigned)
                        ? NdbDictionary::Column::Bigunsigned
@@ -6589,12 +6625,15 @@ RonSQLPreparer::resolve_chained_column_type(
           }
           out_length = 1;
           out_cs = NULL;
+          out_scale = 0;
+          out_precision = 0;
           return true;
         default:
           out_type = arg_type;
           out_length = arg_length;
           out_cs = arg_cs;
           out_scale = arg_scale;
+          out_precision = arg_precision;
           return true;
       }
     }
@@ -6674,9 +6713,10 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
         Uint32 rlen = 1;
         const void* rcs = NULL;
         Int32 rscale = 0;
+        Int32 rprecision = 0;
         require_prm(
             resolve_chained_column_type(*cte_scope, col_idx,
-                                         rt, rlen, rcs, rscale),
+                                         rt, rlen, rcs, rscale, rprecision),
             "CTE output column has no resolved source type.");
         derived_type = rt;
         derived_length = rlen;
@@ -6695,10 +6735,11 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
           Uint32 src_length = 1;
           const void* src_cs = NULL;
           Int32 src_scale = 0;
+          Int32 src_precision = 0;
           require_prm(
               resolve_chained_column_type(*cte_scope, src_col_idx,
                                            st, src_length, src_cs,
-                                           src_scale),
+                                           src_scale, src_precision),
               "CTE aggregate references unresolved source column.");
           if (fun == T_SUM) {
             switch (st) {
@@ -6770,6 +6811,12 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
               // outputs.  User-visible result type follows the
               // widening (no DECIMAL precision preservation —
               // already lossy in the kernel today).
+              require_prm(
+                  decimal_minmax_fits_64bit(st, src_precision, src_scale),
+                  "MIN/MAX over scale-zero DECIMAL wider than the 64-bit "
+                  "integer range is not yet supported.  Full DECIMAL "
+                  "precision preservation requires a wider "
+                  "aggregate-result representation.");
               if (src_scale == 0) {
                 derived_type = (st == NdbDictionary::Column::Decimalunsigned)
                                ? NdbDictionary::Column::Bigunsigned

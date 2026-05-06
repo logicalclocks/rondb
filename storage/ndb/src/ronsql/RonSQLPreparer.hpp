@@ -397,6 +397,10 @@ private:
                                     ConditionalExpression* where_ce);
   bool load_cte_body_indexes(QueryScope& scope,
                              const NdbDictionary::Table* tab);
+  static bool decimal_minmax_fits_64bit(
+      NdbDictionary::Column::Type type,
+      Int32 precision,
+      Int32 scale);
   static bool minmax_index_source_type_supported(
       const NdbDictionary::Column* col);
   void select_cte_body_minmax_index(QueryScope& scope,
@@ -426,7 +430,8 @@ private:
                                     NdbDictionary::Column::Type& out_type,
                                     Uint32& out_length,
                                     const void*& out_cs,
-                                    Int32& out_scale);
+                                    Int32& out_scale,
+                                    Int32& out_precision);
   void analyze_subqueries();
   void analyze_subqueries_ce(ConditionalExpression* ce);
   void analyze_select_subqueries();

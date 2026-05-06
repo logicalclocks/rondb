@@ -29,6 +29,10 @@ call mtr.add_suppression("Participant timeout");
 #       inline-type opcode (was the headline rejection).
 #   5.  Chained CTE: MIN(MIN(...)) walks resolve_chained_column_type
 #       through a predecessor CTE's already-widened type.
+#   6.  Safe DECIMAL(18,0) signed and DECIMAL(19,0) unsigned
+#       boundaries are accepted.
+#   7.  Unsafe scale-zero DECIMAL declarations are rejected at
+#       prepare time before kernel execution.
 
 --let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
@@ -45,6 +49,34 @@ CREATE TABLE dec_orders (
   PRIMARY KEY USING HASH (o_id)
 ) ENGINE=NDB;
 
+CREATE TABLE dec_signed_ok (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  v   DECIMAL(18,0) NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE dec_unsigned_ok (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  v   DECIMAL(19,0) UNSIGNED NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE dec_signed_bad (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  v   DECIMAL(19,0) NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE dec_unsigned_bad (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  v   DECIMAL(20,0) UNSIGNED NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
 # DECIMAL(10,2) values intentionally avoid trailing zeros in the
 # second decimal so the F.1 widening to DOUBLE produces text
 # output identical to MySQL's DECIMAL formatting.  DOUBLE drops
@@ -59,6 +91,26 @@ INSERT INTO dec_orders VALUES
   (3, 200,  300,  300.75,  300),
   (4, 200,  800,  800.13,  800),
   (5, 300,  400,  400.99,  400);
+
+INSERT INTO dec_signed_ok VALUES
+  (1, 10, -999999999999999999),
+  (2, 10,  999999999999999999),
+  (3, 20,                   7);
+
+INSERT INTO dec_unsigned_ok VALUES
+  (1, 10,                   0),
+  (2, 10, 9999999999999999999),
+  (3, 20,                  42);
+
+# Values are deliberately small.  I.22 rejects by declaration range,
+# not by sampling stored values that happen to fit in 64 bits.
+INSERT INTO dec_signed_bad VALUES
+  (1, 10, 1),
+  (2, 10, 2);
+
+INSERT INTO dec_unsigned_bad VALUES
+  (1, 10, 1),
+  (2, 10, 2);
 
 --enable_warnings
 --enable_query_log
@@ -151,7 +203,64 @@ SELECT k, hi FROM stats WHERE hi > 600|
 
 --echo
 --echo
---echo === Test 5: chained CTE with MIN(MAX(decimal_col)) ===
+--echo === Test 6: DECIMAL(18,0) signed boundary accepted ===
+
+let $QUERY=
+WITH stats AS (SELECT grp AS k, MIN(v) AS lo, MAX(v) AS hi
+                FROM dec_signed_ok GROUP BY grp)
+SELECT k, lo, hi FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT grp AS k, MIN(v) AS lo, MAX(v) AS hi
+                FROM dec_signed_ok GROUP BY grp)
+SELECT k, lo, hi FROM stats|
+
+--echo
+--echo
+--echo === Test 7: DECIMAL(19,0) UNSIGNED boundary accepted ===
+
+let $QUERY=
+WITH stats AS (SELECT grp AS k, MIN(v) AS lo, MAX(v) AS hi
+                FROM dec_unsigned_ok GROUP BY grp)
+SELECT k, lo, hi FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT grp AS k, MIN(v) AS lo, MAX(v) AS hi
+                FROM dec_unsigned_ok GROUP BY grp)
+SELECT k, lo, hi FROM stats|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 8: DECIMAL(19,0) signed MIN/MAX rejected ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH stats AS (SELECT grp AS k, MAX(v) AS hi FROM dec_signed_bad GROUP BY grp) SELECT k, hi FROM stats;' 2>&1
+
+--echo
+--echo
+--echo === Test 9: DECIMAL(20,0) UNSIGNED MIN/MAX rejected ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH stats AS (SELECT grp AS k, MAX(v) AS hi FROM dec_unsigned_bad GROUP BY grp) SELECT k, hi FROM stats;' 2>&1
+
+--echo
+--echo
+--echo === Test 10: chained unsafe DECIMAL MIN/MAX rejected ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT grp AS k, MAX(v) AS hi FROM dec_signed_bad GROUP BY grp), b AS (SELECT MIN(a.hi) AS m FROM a) SELECT m FROM b;' 2>&1
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 11: chained CTE with MIN(MAX(decimal_col)) ===
 
 # Outer CTE references inner CTE's MAX(decimal) output.  Walks
 # resolve_chained_column_type through the already-widened BIGINT
@@ -176,4 +285,8 @@ DELIMITER ;|
 
 --disable_query_log
 DROP TABLE dec_orders;
+DROP TABLE dec_signed_ok;
+DROP TABLE dec_unsigned_ok;
+DROP TABLE dec_signed_bad;
+DROP TABLE dec_unsigned_bad;
 --enable_query_log
