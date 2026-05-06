@@ -151,6 +151,9 @@ QueryPlanner::plan(
         ? JoinOp::LEFT_OUTER : JoinOp::INNER;
     childOp.num_low_bounds = 0;
     childOp.num_high_bounds = 0;
+    childOp.type = JoinOp::TABLE_SCAN;
+    childOp.table = NULL;
+    childOp.index = NULL;
     childOp.cte_def = NULL;
     childOp.cte_def_idx = 0;
 

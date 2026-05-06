@@ -2,7 +2,7 @@
 
 ## Status
 
-**Planned.**  Test-driven phase.  The original I.11 catalogue entry
+**Shipped.**  Test-driven phase.  The original I.11 catalogue entry
 mapped to testCteNdbApi.cpp Test 20 (cross-join of two scalar CTEs),
 but Test 20's shape was already shipped end-to-end by Phase I.17
 (`8609cad17f4`).  This phase repurposes I.11 to cover the kernel
@@ -372,10 +372,31 @@ sorts result rows by default.  ORDER BY support remains outside I.11.
   shipped, with any deferred-shape follow-ups linked.
 - I.16's catalogue entry left unchanged.
 
+## Findings
+
+All five I.11 shapes now pass as positive MySQL-vs-RonSQL coverage in
+`ronsql_cte_kernel_t12_t16`.
+
+- Test 12 passes: `lookupCte` can be used inside a CTE materialisation
+  body with a real-table child.
+- Test 13 needed a narrow parse-time non-aggregate gate extension for
+  projection-only real-table-root join chains with complete-key CTE
+  lookups.
+- Test 14 passes: CTE materialisation bodies can contain an internal
+  `lookupCte` node.
+- Test 15 passes as regression coverage for aggregation over a
+  `scanCte` root.
+- Test 16 passes after fixing `QueryPlanner` to initialise child
+  `JoinOp` fields before CTE-vs-physical-table dispatch; without this,
+  a physical child could be misclassified as a CTE during scoped
+  resolution.
+
+No I.11 shape is deferred to a follow-up phase.
+
 ## Implementation checklist
 
 1. Write the MTR `.test` file with the five SQL shapes and the
-   shared fixture.
+   shared fixture.  **Done:** `ronsql_cte_kernel_t12_t16.test`.
 2. Run unrecorded:
    ```bash
    cd debug_build && make -j$(sysctl -n hw.ncpu) ronsql_cli rdrs2
@@ -384,18 +405,20 @@ sorts result rows by default.  ORDER BY support remains outside I.11.
    ```
 3. Triage failures: append a "Findings" subsection to this plan
    noting which shapes pass / fail / are deferred to follow-ups.
+   **Done:** all five shapes are positive coverage.
 4. For each fix-in-I.11 shape, make the smallest possible RonSQL
    change to make the SQL match MySQL, tested against the
    recorded MTR baseline.
 5. Re-run with `--record` to capture the result file.
+   **Done:** `ronsql_cte_kernel_t12_t16.result`.
 6. Run the broader suites:
    ```bash
    ./mtr --suite=ronsql
    ./mtr --suite=ndb_push_agg
    ```
 7. Update `cte_filter_phase_i.md` (the catalogue): repoint the
-   I.11 entry to Tests 12–16 and mark shipped.
+   I.11 entry to Tests 12–16 and mark shipped.  **Done.**
 8. Update
    `storage/ndb/claude_files/pushdown_join_aggregation/CLAUDE.md`
-   with an I.11 entry below I.10's.
+   with an I.11 entry below I.10's.  **Done.**
 9. Commit per the per-phase cadence used on this branch.

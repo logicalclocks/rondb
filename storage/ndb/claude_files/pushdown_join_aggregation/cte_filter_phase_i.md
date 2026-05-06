@@ -220,15 +220,23 @@ pushdown nor LIMIT pushdown to CTE bodies.  Significant work;
 unblock requires the LIMIT/ORDER-BY phase first (cf. Phase 7 /
 step 45d in `ronsql_join_phase7.md`).
 
-#### I.11 — Cross-join of two scalar CTEs (`FROM a, b`) (M)
+#### I.11 — RonSQL coverage of testCteNdbApi Tests 12-16 (M) — shipped
 
-testCteNdbApi Test 20.  RonSQL's parser doesn't accept the
-comma-join syntax (`ronsql_join.md` line 76: "CROSS JOIN — inner
-join only for now").  Adding `,`-join is parser-only if the
-planner can already cross-join via INNER JOIN with no
-condition.  Check the planner's behaviour with
-`a INNER JOIN b ON 1=1` first; if that works, MTR coverage alone
-might suffice.  If the planner rejects, this is a planner phase.
+The original I.11 catalogue entry mapped to Test 20, but the scalar
+CTE cross-join shape shipped in Phase I.17.  I.11 is now repointed to
+the kernel CTE topology shapes still missing SQL-level RonSQL coverage:
+
+- Test 12: `lookupCte` as CTE materialisation root + child;
+- Test 13: `lookupCte` as main-query internal node;
+- Test 14: `lookupCte` as CTE materialisation internal node;
+- Test 15: `scanCte` as main-query aggregate leaf;
+- Test 16: `scanCte` as CTE materialisation root non-leaf.
+
+See `cte_filter_phase_i11.md`.  All five shapes are positive
+MySQL-vs-RonSQL coverage in `ronsql_cte_kernel_t12_t16`.  The phase
+also fixed a `QueryPlanner` child-op initialisation gap where a
+physical child could be misclassified as a CTE during scoped
+resolution.
 
 #### I.12 — CTE_SCAN as a LEFT JOIN inner side (L)
 

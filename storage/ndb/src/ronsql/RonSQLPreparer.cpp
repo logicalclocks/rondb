@@ -556,31 +556,81 @@ RonSQLPreparer::parse()
           (from_is_cte && all_column_outputs && !has_groupby &&
            !has_having && !has_orderby && !has_limit && !has_joins);
       // Phase I.8: FROM <real_table> JOIN <cte> ON ...
-      // (testCteNdbApi.cpp Test 17 shape).  Initial cut accepts
-      // exactly one join entry whose target name resolves to a CTE.
-      // Broader join shapes (multi-table, FROM <cte> JOIN <real>)
-      // each ship as their own follow-up phase.
-      bool single_cte_join_to_real_root = false;
+      // (testCteNdbApi.cpp Test 17 shape).  Phase I.11 extends this
+      // gate to the conservative Test 13 class: projection-only
+      // left-to-right INNER join chains from a real-table root, with
+      // complete-key CTE_LOOKUP joins and no ORDER/GROUP/HAVING/LIMIT.
+      bool cte_lookup_join_chain_to_real_root = false;
       if (!from_is_cte && all_column_outputs && !has_groupby &&
-          !has_having && !has_orderby && !has_limit && has_joins &&
-          m_context.ast_root.joins->next == NULL) {
-        const LexCString& jname = m_context.ast_root.joins->table.name;
-        for (const CteDefinition* cte = m_context.ast_root.cte_list;
-             cte != NULL; cte = cte->next) {
-          if (jname.str != NULL &&
-              cte->name.len == jname.len &&
-              strncmp(cte->name.str, jname.str, jname.len) == 0) {
-            single_cte_join_to_real_root = true;
+          !has_having && !has_orderby && !has_limit && has_joins) {
+        cte_lookup_join_chain_to_real_root = true;
+        bool found_cte_join = false;
+        LexCString visible_aliases[MAX_SPJ_TREE_NODES];
+        Uint32 num_visible_aliases = 0;
+        visible_aliases[num_visible_aliases++] =
+            m_context.ast_root.root_table->alias;
+        for (const JoinClause* join = m_context.ast_root.joins;
+             join != NULL; join = join->next) {
+          if (num_visible_aliases >= MAX_SPJ_TREE_NODES ||
+              join->join_type != JoinClause::INNER_JOIN ||
+              join->conditions == NULL) {
+            cte_lookup_join_chain_to_real_root = false;
             break;
           }
+          const LexCString& join_alias = join->table.alias;
+          for (const JoinCondition* jc = join->conditions;
+               jc != NULL; jc = jc->next) {
+            if (!(jc->child_table == join_alias)) {
+              cte_lookup_join_chain_to_real_root = false;
+              break;
+            }
+            bool parent_seen = false;
+            for (Uint32 a = 0; a < num_visible_aliases; a++) {
+              if (jc->parent_table == visible_aliases[a]) {
+                parent_seen = true;
+                break;
+              }
+            }
+            if (!parent_seen) {
+              cte_lookup_join_chain_to_real_root = false;
+              break;
+            }
+          }
+          if (!cte_lookup_join_chain_to_real_root) break;
+          const CteDefinition* cte = find_cte_definition(join->table.name);
+          if (cte != NULL) {
+            LexCString child_names[MAX_JOIN_KEY_COLS];
+            Uint32 num_keys = 0;
+            for (const JoinCondition* jc = join->conditions;
+                 jc != NULL; jc = jc->next) {
+              if (num_keys >= MAX_JOIN_KEY_COLS) {
+                cte_lookup_join_chain_to_real_root = false;
+                break;
+              }
+              child_names[num_keys++] = jc->child_column;
+            }
+            if (!cte_lookup_join_chain_to_real_root) break;
+            CteKeyCoverageResult coverage;
+            if (!cte_key_coverage(cte, child_names, num_keys, coverage) ||
+                (coverage.state != CteKeyCoverage::ExactOrdered &&
+                 coverage.state != CteKeyCoverage::ExactPermuted)) {
+              cte_lookup_join_chain_to_real_root = false;
+              break;
+            }
+            found_cte_join = true;
+          }
+          visible_aliases[num_visible_aliases++] = join_alias;
         }
+        cte_lookup_join_chain_to_real_root =
+            cte_lookup_join_chain_to_real_root && found_cte_join;
       }
-      if (!projection_only_cte_scan && !single_cte_join_to_real_root) {
+      if (!projection_only_cte_scan && !cte_lookup_join_chain_to_real_root) {
         ndbrequire(m_conf.err_stream != NULL);
         std::basic_ostream<char>& err = *m_conf.err_stream;
         err << "This query has no aggregate expression, so it is not an aggregate query.\n"
                "Currently, RonSQL only supports aggregate queries and projection-only\n"
-               "SELECTs over a CTE (Phase E.3).  See ronsql_join_phase7.md for the\n"
+               "SELECTs over supported CTE shapes (Phase E.3/I.8/I.11).  See\n"
+               "ronsql_join_phase7.md for the\n"
                "broader non-aggregate roadmap.\n";
         throw RonSQLPermanentError("Not an aggregate query.");
       }
@@ -4028,6 +4078,7 @@ RonSQLPreparer::resolve_columns_for_scope(QueryScope& scope,
         JoinOp& op = plan.ops[t];
         if (op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) {
           const CteDefinition* cte = op.cte_def;
+          require_prm(cte != NULL, "CTE op has no CTE definition.");
           Uint32 cte_col_idx = 0;
           for (const Outputs* o = cte->stmt->outputs; o;
                o = o->next, cte_col_idx++) {
