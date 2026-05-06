@@ -93,6 +93,23 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_BLT_A",    HK_OP_A          },
   { "HOLE_BLT_B",    HK_OP_B          },
   { "HOLE_BLT_TGT",  HK_BRANCH_TAKE   },
+  /* Phase 3 branch-comparison siblings — same hole shape as
+   * BLT, one entry per opcode for operand A, B, and target. */
+  { "HOLE_BLE_A",    HK_OP_A          },
+  { "HOLE_BLE_B",    HK_OP_B          },
+  { "HOLE_BLE_TGT",  HK_BRANCH_TAKE   },
+  { "HOLE_BEQ_A",    HK_OP_A          },
+  { "HOLE_BEQ_B",    HK_OP_B          },
+  { "HOLE_BEQ_TGT",  HK_BRANCH_TAKE   },
+  { "HOLE_BGT_A",    HK_OP_A          },
+  { "HOLE_BGT_B",    HK_OP_B          },
+  { "HOLE_BGT_TGT",  HK_BRANCH_TAKE   },
+  { "HOLE_BGE_A",    HK_OP_A          },
+  { "HOLE_BGE_B",    HK_OP_B          },
+  { "HOLE_BGE_TGT",  HK_BRANCH_TAKE   },
+  { "HOLE_BNE_A",    HK_OP_A          },
+  { "HOLE_BNE_B",    HK_OP_B          },
+  { "HOLE_BNE_TGT",  HK_BRANCH_TAKE   },
 };
 static const size_t kHoleSymbolTableLen =
     sizeof(kHoleSymbolTable) / sizeof(kHoleSymbolTable[0]);
@@ -146,6 +163,24 @@ static const size_t kHoleSymbolTableLen =
 /* MAGIC_BLT_TGT is not a magic-byte hole on aarch64 either —
  * branch targets use B/CALL26 relocations on aarch64. */
 
+/* Phase 3 branch-comparison siblings. Generated via
+ *   sha256("RONDB-1056-Phase3-magic-v1|" + name)[0:8]
+ * interpreted as little-endian uint64. All four 16-bit slots of
+ * each magic are nonzero, so clang emits a full 4-instruction
+ * movz+3×movk chain rather than a shorter form. */
+#define MAGIC_BLE_A       0xce20d1d961ff7bfdull
+#define MAGIC_BLE_B       0xf05552ec3a63703dull
+#define MAGIC_BEQ_A       0xefb196d6735077c0ull
+#define MAGIC_BEQ_B       0xf3e097cab9f3f700ull
+#define MAGIC_BGT_A       0xeec8b413284d098eull
+#define MAGIC_BGT_B       0x4780763aac046a98ull
+#define MAGIC_BGE_A       0x7a8707912973aac3ull
+#define MAGIC_BGE_B       0xf9ea82077d8aae88ull
+#define MAGIC_BNE_A       0x6914f2c388141a47ull
+#define MAGIC_BNE_B       0xe3406ccf859c6a83ull
+/* MAGIC_B<XX>_TGT — same as BLT_TGT, no aarch64 magic; targets
+ * resolve via R_AARCH64_CALL26 / JUMP26 relocations. */
+
 /* For the magic-byte scan, the extractor needs a (magic_value,
  * hole_kind) table. We use the same entries as the symbol table
  * above, mapped to magic constants. This is for aarch64 only. */
@@ -170,6 +205,17 @@ static const HoleMagicEntry kHoleMagicTable[] = {
   { MAGIC_SUM_SRC,  HK_OP_B,        "MAGIC_SUM_SRC"  },
   { MAGIC_BLT_A,    HK_OP_A,        "MAGIC_BLT_A"    },
   { MAGIC_BLT_B,    HK_OP_B,        "MAGIC_BLT_B"    },
+  /* Phase 3 branch-comparison siblings. */
+  { MAGIC_BLE_A,    HK_OP_A,        "MAGIC_BLE_A"    },
+  { MAGIC_BLE_B,    HK_OP_B,        "MAGIC_BLE_B"    },
+  { MAGIC_BEQ_A,    HK_OP_A,        "MAGIC_BEQ_A"    },
+  { MAGIC_BEQ_B,    HK_OP_B,        "MAGIC_BEQ_B"    },
+  { MAGIC_BGT_A,    HK_OP_A,        "MAGIC_BGT_A"    },
+  { MAGIC_BGT_B,    HK_OP_B,        "MAGIC_BGT_B"    },
+  { MAGIC_BGE_A,    HK_OP_A,        "MAGIC_BGE_A"    },
+  { MAGIC_BGE_B,    HK_OP_B,        "MAGIC_BGE_B"    },
+  { MAGIC_BNE_A,    HK_OP_A,        "MAGIC_BNE_A"    },
+  { MAGIC_BNE_B,    HK_OP_B,        "MAGIC_BNE_B"    },
 };
 static const size_t kHoleMagicTableLen =
     sizeof(kHoleMagicTable) / sizeof(kHoleMagicTable[0]);

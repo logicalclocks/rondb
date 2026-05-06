@@ -70,6 +70,46 @@ void interp_run(const Program *prog,
           }
           break;
 
+        case OP_BRANCH_LE_INT_INT:
+          if (s.regs_i64[op->a] <= s.regs_i64[op->b]) {
+            pc = op->c;
+          } else {
+            ++pc;
+          }
+          break;
+
+        case OP_BRANCH_EQ_INT_INT:
+          if (s.regs_i64[op->a] == s.regs_i64[op->b]) {
+            pc = op->c;
+          } else {
+            ++pc;
+          }
+          break;
+
+        case OP_BRANCH_GT_INT_INT:
+          if (s.regs_i64[op->a] > s.regs_i64[op->b]) {
+            pc = op->c;
+          } else {
+            ++pc;
+          }
+          break;
+
+        case OP_BRANCH_GE_INT_INT:
+          if (s.regs_i64[op->a] >= s.regs_i64[op->b]) {
+            pc = op->c;
+          } else {
+            ++pc;
+          }
+          break;
+
+        case OP_BRANCH_NE_INT_INT:
+          if (s.regs_i64[op->a] != s.regs_i64[op->b]) {
+            pc = op->c;
+          } else {
+            ++pc;
+          }
+          break;
+
         case OP_SKIP:
           /* Forward jump to row_end — represented here by exiting
            * the per-row pc loop. */

@@ -121,6 +121,11 @@ const char *bc_op_name(uint8_t kind) {
     case OP_ADD_INT_INT:       return "add_int_int";
     case OP_SUM_BIGINT:        return "sum_bigint";
     case OP_BRANCH_LT_INT_INT: return "branch_lt_int_int";
+    case OP_BRANCH_LE_INT_INT: return "branch_le_int_int";
+    case OP_BRANCH_EQ_INT_INT: return "branch_eq_int_int";
+    case OP_BRANCH_GT_INT_INT: return "branch_gt_int_int";
+    case OP_BRANCH_GE_INT_INT: return "branch_ge_int_int";
+    case OP_BRANCH_NE_INT_INT: return "branch_ne_int_int";
     case OP_SKIP:              return "skip";
     case OP_EXIT:              return "exit";
     default:                   return "?";

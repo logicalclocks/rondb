@@ -238,13 +238,10 @@ const Jit1AdmitError *jit1_last_admit_error(void) {
   return &g_last_admit;
 }
 
-/* True for any opcode whose stencil has an HK_BRANCH_TAKE hole —
- * i.e., a forward branch whose target is op->c. Phase 3 starts with
- * branch_lt_int_int; siblings (eq/le/gt/ge/ne) get appended here as
- * Day 2 PM lands them. */
-static inline int op_is_branch(uint8_t kind) {
-  return kind == OP_BRANCH_LT_INT_INT;
-}
+/* Branch-class opcodes have an HK_BRANCH_TAKE hole and an op->c
+ * forward target. The predicate lives in bytecode1.h so the
+ * interpreter, builder, and JIT engine all consult the same source
+ * of truth. */
 
 static Jit1AdmitReason admit_program(const Program *prog) {
   if (prog->n_ops == 0) {
@@ -276,7 +273,7 @@ static Jit1AdmitReason admit_program(const Program *prog) {
       };
       return JIT_ADMIT_UNSUPPORTED_OP;
     }
-    if (op_is_branch(kind)) {
+    if (bc_op_is_branch(kind)) {
       if (op->c <= pc) {
         g_last_admit = (Jit1AdmitError){
           .reason           = JIT_ADMIT_BACKWARD_BRANCH,

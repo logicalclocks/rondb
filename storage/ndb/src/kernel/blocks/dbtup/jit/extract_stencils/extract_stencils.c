@@ -425,14 +425,18 @@ static ExtractedStencil extract_one_x86(
 
     uint16_t local_off = (uint16_t)(r->r_offset - lo);
 
-    /* Branch stencil: jge to `next` is the fall-through fixup;
-     * jmp to HOLE_BLT_TGT is the taken-branch fixup. */
+    /* Branch stencil: a PLT32 relocation against `next` is the
+     * fall-through fixup. A PLT32 against any HOLE_*_TGT symbol is
+     * the taken-branch fixup — its kind comes from the symbol table
+     * (HK_BRANCH_TAKE) rather than being hardcoded to BLT, so new
+     * branch opcodes light up with no extractor change required. */
     if (policy == TAIL_KEEP_ALL) {
       if (type == R_X86_64_PLT32 && strcmp(tname, "next") == 0) {
         add_hole(&out.holes, local_off, HK_BRANCH_FALL, 4);
         continue;
       }
-      if (type == R_X86_64_PLT32 && strcmp(tname, "HOLE_BLT_TGT") == 0) {
+      uint8_t lookup_kind = lookup_hole_kind(tname);
+      if (type == R_X86_64_PLT32 && lookup_kind == HK_BRANCH_TAKE) {
         add_hole(&out.holes, local_off, HK_BRANCH_TAKE, 4);
         continue;
       }
@@ -567,8 +571,9 @@ static ExtractedStencil extract_one_arm64(
         add_hole(&out.holes, local_off, HK_BRANCH_FALL, 4);
         continue;
       }
+      uint8_t lookup_kind = lookup_hole_kind(tname);
       if ((type == R_AARCH64_CALL26 || type == R_AARCH64_JUMP26) &&
-          strcmp(tname, "HOLE_BLT_TGT") == 0) {
+          lookup_kind == HK_BRANCH_TAKE) {
         add_hole(&out.holes, local_off, HK_BRANCH_TAKE, 4);
         continue;
       }
@@ -681,6 +686,11 @@ static const OpkindMap kOpkindMap[] = {
   { "op_add_int_int",         "OP_ADD_INT_INT"        },
   { "op_sum_bigint",          "OP_SUM_BIGINT"         },
   { "op_branch_lt_int_int",   "OP_BRANCH_LT_INT_INT"  },
+  { "op_branch_le_int_int",   "OP_BRANCH_LE_INT_INT"  },
+  { "op_branch_eq_int_int",   "OP_BRANCH_EQ_INT_INT"  },
+  { "op_branch_gt_int_int",   "OP_BRANCH_GT_INT_INT"  },
+  { "op_branch_ge_int_int",   "OP_BRANCH_GE_INT_INT"  },
+  { "op_branch_ne_int_int",   "OP_BRANCH_NE_INT_INT"  },
   { "op_skip",                "OP_SKIP"               },
   { "op_exit",                "OP_EXIT"               },
 };

@@ -112,6 +112,17 @@ static const struct {
   { "MAGIC_SUM_SRC",  "op_sum_bigint"         },
   { "MAGIC_BLT_A",    "op_branch_lt_int_int"  },
   { "MAGIC_BLT_B",    "op_branch_lt_int_int"  },
+  /* Phase 3 branch-comparison siblings — same layout as BLT. */
+  { "MAGIC_BLE_A",    "op_branch_le_int_int"  },
+  { "MAGIC_BLE_B",    "op_branch_le_int_int"  },
+  { "MAGIC_BEQ_A",    "op_branch_eq_int_int"  },
+  { "MAGIC_BEQ_B",    "op_branch_eq_int_int"  },
+  { "MAGIC_BGT_A",    "op_branch_gt_int_int"  },
+  { "MAGIC_BGT_B",    "op_branch_gt_int_int"  },
+  { "MAGIC_BGE_A",    "op_branch_ge_int_int"  },
+  { "MAGIC_BGE_B",    "op_branch_ge_int_int"  },
+  { "MAGIC_BNE_A",    "op_branch_ne_int_int"  },
+  { "MAGIC_BNE_B",    "op_branch_ne_int_int"  },
 };
 static const size_t kMagicToStencilLen =
     sizeof(kMagicToStencil) / sizeof(kMagicToStencil[0]);

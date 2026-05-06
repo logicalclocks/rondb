@@ -74,10 +74,34 @@ typedef enum {
   OP_ADD_INT_INT        = 4,
   OP_SUM_BIGINT         = 5,
   OP_BRANCH_LT_INT_INT  = 6,
-  OP_SKIP               = 7,
-  OP_EXIT               = 8,
+  /* Phase 3 branch-comparison siblings — same operand layout as
+   * BRANCH_LT_INT_INT (a=lhs, b=rhs, c=target_pc). Inserted before
+   * OP_SKIP / OP_EXIT to keep the existing kind values stable. */
+  OP_BRANCH_LE_INT_INT  = 7,
+  OP_BRANCH_EQ_INT_INT  = 8,
+  OP_BRANCH_GT_INT_INT  = 9,
+  OP_BRANCH_GE_INT_INT  = 10,
+  OP_BRANCH_NE_INT_INT  = 11,
+  OP_SKIP               = 12,
+  OP_EXIT               = 13,
   OP_KIND_MAX           = OP_EXIT
 } OpKind;
+
+/* Inline predicate — true for any opcode that takes a forward branch
+ * via op->c. Phase 3 set is the six BRANCH_*_INT_INT siblings. */
+static inline int bc_op_is_branch(uint8_t kind) {
+  switch (kind) {
+    case OP_BRANCH_LT_INT_INT:
+    case OP_BRANCH_LE_INT_INT:
+    case OP_BRANCH_EQ_INT_INT:
+    case OP_BRANCH_GT_INT_INT:
+    case OP_BRANCH_GE_INT_INT:
+    case OP_BRANCH_NE_INT_INT:
+      return 1;
+    default:
+      return 0;
+  }
+}
 
 typedef struct {
   uint8_t  kind;       /* OpKind */

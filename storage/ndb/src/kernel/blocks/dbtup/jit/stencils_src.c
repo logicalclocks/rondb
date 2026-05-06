@@ -184,6 +184,66 @@ STENCIL op_branch_lt_int_int(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* op_branch_*_int_int — comparison siblings (Phase 3).               */
+/*                                                                    */
+/* Identical structure to op_branch_lt_int_int with the comparison    */
+/* operator flipped. Same hole shape (HK_OP_A, HK_OP_B for operands;  */
+/* HK_BRANCH_FALL for the fall-through; HK_BRANCH_TAKE for the taken  */
+/* tail-call). The extractor handles them identically — no extractor */
+/* changes required.                                                  */
+/* ------------------------------------------------------------------ */
+
+DECLARE_HOLE(BLE_A);
+DECLARE_HOLE(BLE_B);
+extern __attribute__((preserve_none)) void HOLE_BLE_TGT(JitState *);
+STENCIL op_branch_le_int_int(JitState *s) {
+  if (s->regs_i64[HOLE(BLE_A)] <= s->regs_i64[HOLE(BLE_B)]) {
+    [[clang::musttail]] return HOLE_BLE_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
+DECLARE_HOLE(BEQ_A);
+DECLARE_HOLE(BEQ_B);
+extern __attribute__((preserve_none)) void HOLE_BEQ_TGT(JitState *);
+STENCIL op_branch_eq_int_int(JitState *s) {
+  if (s->regs_i64[HOLE(BEQ_A)] == s->regs_i64[HOLE(BEQ_B)]) {
+    [[clang::musttail]] return HOLE_BEQ_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
+DECLARE_HOLE(BGT_A);
+DECLARE_HOLE(BGT_B);
+extern __attribute__((preserve_none)) void HOLE_BGT_TGT(JitState *);
+STENCIL op_branch_gt_int_int(JitState *s) {
+  if (s->regs_i64[HOLE(BGT_A)] > s->regs_i64[HOLE(BGT_B)]) {
+    [[clang::musttail]] return HOLE_BGT_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
+DECLARE_HOLE(BGE_A);
+DECLARE_HOLE(BGE_B);
+extern __attribute__((preserve_none)) void HOLE_BGE_TGT(JitState *);
+STENCIL op_branch_ge_int_int(JitState *s) {
+  if (s->regs_i64[HOLE(BGE_A)] >= s->regs_i64[HOLE(BGE_B)]) {
+    [[clang::musttail]] return HOLE_BGE_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
+DECLARE_HOLE(BNE_A);
+DECLARE_HOLE(BNE_B);
+extern __attribute__((preserve_none)) void HOLE_BNE_TGT(JitState *);
+STENCIL op_branch_ne_int_int(JitState *s) {
+  if (s->regs_i64[HOLE(BNE_A)] != s->regs_i64[HOLE(BNE_B)]) {
+    [[clang::musttail]] return HOLE_BNE_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* op_skip / op_exit : row terminators.                               */
 /*                                                                    */
 /* Bare returns; the extractor overrides the bytes entirely with      */
@@ -214,6 +274,11 @@ const StencilTailFn g_stencil_anchor[] = {
     op_add_int_int,
     op_sum_bigint,
     op_branch_lt_int_int,
+    op_branch_le_int_int,
+    op_branch_eq_int_int,
+    op_branch_gt_int_int,
+    op_branch_ge_int_int,
+    op_branch_ne_int_int,
     op_skip,
     op_exit,
 };
