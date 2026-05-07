@@ -152,6 +152,7 @@ storage/ndb/claude_files/compiled_interpreter/
 | 4 | DBTUP thin-slice integration | **YES** | 4-5 d |
 | 4.5 | Narrow-hole encoding (aarch64 single-MOVZ for register-index holes) | no | 3-4 d |
 | 4.6 | Inline-asm immediate constraint (eliminate volatile spill/reload) | no | 2-3 d |
+| 4.7 | Addressing-mode fold + narrow LoadConst variants | no | 5-6 d |
 | 5 | Hot-opcode lowering, full set + embedded normal-interp branches | no | 6-8 d |
 | 6 | Cross-branch always-JIT test integration | no | 2-3 d |
 | 7 | `SCAN_FRAGREQ` scan-filter path | no | 4-5 d |
@@ -949,6 +950,79 @@ opcode coverage still unrepresentative for end-to-end queries.
 **Effort.** 2 days actual (Day 0 spike + Day 1 helper swap +
 Day 2 verification + Day 4 docs; Day 3 was unused — nothing
 surprised).
+
+## 10.7. Phase 4.7 — Addressing-mode fold + narrow LoadConst (aarch64)
+
+**Status: shipped.** See `phase_4_7_addr_mode.md` for the
+results doc. Final commit: `d224f4b71f2` (Day 4 — uint32/int32
+LoadConst variants and 2-slot chain detection). All Phase 4
+unit tests, microbench differential, drift check, and
+`rondb_jit_canary` MTR PASS.
+
+**Goal.** Two complementary aarch64 optimisations:
+1. Replace the `movz wN, #idx; ldr/str xT, [base, xN, lsl #3]`
+   register-file access pattern with a single
+   `ldr/str xT, [base, #(idx*8)]` whose imm12 field is patched
+   at JIT compile time. Eliminates one MOVZ per memory access.
+2. Add four bridge-routed LoadConst variants
+   (`uint16/int16/uint32/int32`) so the bridge picks the
+   smallest-fitting stencil per literal range — most NDB query
+   literals are small non-negative integers and route to the
+   8 B uint16 form.
+
+**What shipped.**
+
+- 34 new 12-bit fold magics in `hole_kinds.h` +
+  `kHoleFoldMagicTable[]` + new fold symbol-table entries.
+  `HoleMagicEntry` gained `chain_len` field so the chain
+  detector can match both 4-slot X-form chains (LCI_VAL int64)
+  and 2-slot W-form chains (LCI32/LCU32 const values).
+- Three inline-asm helpers (`aarch64_load_reg_/_acc_/_col_` +
+  store counterparts) with `"n"` immediate constraints, each
+  using a different base register for `regs_i64` / `acc_i64` /
+  `row_cols_i64`. New `aarch64_hole32_` for the 2-slot W-form
+  chain. Source-level macros: `HOLE_LOAD_REG/STORE_REG/...`,
+  `HOLE_32`.
+- 13 of 14 existing stencils flipped from
+  `regs_i64[HOLE_NARROW(...)]` to the imm12 fold pattern.
+  `op_load_col_ndb` keeps narrow MOVZ for its helper-arg
+  holes (no array indexing → no fold benefit).
+- Extractor pass-4 walks LDR/STR (immediate, X-form), matching
+  imm12 against fold table; emits `width=1` Hole entries.
+  Pass-2 chain detector relaxed: sf-agnostic mask plus
+  `chain_len`-aware match.
+- Audit mirror (`count_fold_matches_arm64` +
+  `kFoldMagicToStencil[]` with `expected_count` per entry —
+  `SUM_SLOT_FOLD = 2` for the load+store accumulator pattern).
+- `jit1.c` patcher gained a `width=1` branch that writes bits
+  21..10 of the LDR/STR instruction.
+- 4 new OpKind values + bridge dispatch in `ndb_jit_bridge.c`
+  picking the smallest-fitting LoadConst variant per literal
+  value range.
+
+**Headline numbers.** Existing-set stencil bytes:
+408 B (4.6) → 296 B (4.7), -27 %. Cumulative vs Phase 4
+baseline: 1112 → 296, **-73 %**.
+
+| New LoadConst variant | Size |
+|---|---:|
+| op_load_const_uint16 |  8 B |
+| op_load_const_int16  | 12 B |
+| op_load_const_uint32 | 12 B |
+| op_load_const_int32  | 16 B |
+
+For positive small literals (the common case), JIT-emitted
+LoadConst drops from 20 B → 8 B (60 %). 30-op microbench
+program: 684 B → 436 B (-36 %). Speedup 2.13× → 2.52×.
+
+x86_64 stencils byte-identical for existing opcodes (the new
+LoadConst variants are added, but the existing ones don't
+shift). Phase 1 microbench VERDICT continues to PASS.
+
+`bench_q12_dbtc` perf gate stays deferred to Phase 5 — narrow
+opcode coverage still unrepresentative for end-to-end queries.
+
+**Effort.** 5 days actual (Day 0 spike + Days 1-5).
 
 ## 11. Phase 5 — Hot-opcode lowering, full set + embedded normal-interp branches
 
