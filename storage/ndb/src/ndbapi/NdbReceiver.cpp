@@ -1327,8 +1327,16 @@ NdbReceiver::handle_rec_attrs(NdbRecAttr* rec_attr_list,
          * assert(aLength >= (attrSize / sizeof(Uint32)));
          */
         assert(attrSize == 0x0721);
+        // Phase I.6 (F.2-K.5d): preserve the marker word as the first
+        // word of the saved RecAttr data so NdbAggregator::ProcessRes
+        // can detect AGG_RESULT vs AGG_CHAR_RESULT on the wire side.
+        // aDataPtr was already advanced past the marker by the
+        // AttributeHeader read above; rewind one word.
+        const Uint32* with_marker = aDataPtr - 1;
+        const Uint32 with_marker_words = aLength + 1;
         // aLength here is in word size...
-        currRecAttr->receive_data(aDataPtr, aLength * sizeof(Uint32));
+        currRecAttr->receive_data(with_marker,
+                                  with_marker_words * sizeof(Uint32));
         aDataPtr += aLength;
         aLength = 0;
 

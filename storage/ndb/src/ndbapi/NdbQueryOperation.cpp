@@ -1897,13 +1897,13 @@ int NdbQueryImpl::processAggResults() {
 
     /**
      * Kernel sends [AttributeHeader, n_gb_cols|n_agg_results, ...].
-     * NdbAggregator::ProcessRes() expects data starting from the
-     * n_gb_cols|n_agg_results word, so skip the first word
-     * (AttributeHeader).
+     * Phase I.6 (F.2-K.5d): NdbAggregator::ProcessRes now reads the
+     * marker word (AGG_RESULT vs AGG_CHAR_RESULT) itself, so pass
+     * the buffer including the marker.
      */
     if (batchLen > 1) {
       m_aggregator->ProcessRes(
-          const_cast<char *>(reinterpret_cast<const char *>(batchData + 1)));
+          const_cast<char *>(reinterpret_cast<const char *>(batchData)));
     }
   }
   m_aggregator->PrepareResults();

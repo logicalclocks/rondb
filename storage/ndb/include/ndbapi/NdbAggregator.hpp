@@ -378,6 +378,22 @@ class NdbAggregator {
   Uint32 agg_ops_[MAX_AGG_N_RESULTS];
   std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* gb_map_;
 
+  // Phase I.6 (F.2-K.5d): for AGG_CHAR_RESULT wire results, walk the
+  // appended string-payload region and replace each string slot's
+  // val_ptr (zero on the wire) with a freshly-allocated local buffer
+  // mirroring the kernel layout `[Uint16 payload_len][Uint16
+  // capacity][prefix+payload]`.  The buffer is owned by the
+  // aggregator and freed by freeStringSlots when the slot's group
+  // is released (destructor).
+  static void resolveStringSlots(AggResItem* slots, Uint32 n_slots,
+                                  const char* appended_region);
+
+  // Phase I.6 (F.2-K.5d): release string val_ptr buffers attached to
+  // a slot array (scalar agg_results_ or one group's AggResItem
+  // array within an agg_rec block).  Cheap no-op for non-string
+  // slots and null string slots.
+  static void freeStringSlots(AggResItem* slots, Uint32 n_slots);
+
   bool finalized_;
   bool finished_;
   Uint32 curr_prog_pos_;
