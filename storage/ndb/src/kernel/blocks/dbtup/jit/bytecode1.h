@@ -154,9 +154,12 @@ static inline int bc_op_is_branch(uint8_t kind) {
 
 typedef struct {
   uint8_t  kind;       /* OpKind */
-  uint8_t  a;          /* register or accumulator slot */
-  uint8_t  b;          /* register, column index, or unused */
-  uint8_t  c;          /* register or branch target pc */
+  uint8_t  a;          /* register or accumulator slot (≤ BC_MAX_REGS) */
+  uint16_t b;          /* register, column/attr id, or unused.
+                        * 16-bit so it can carry NDB column/attr IDs
+                        * including PSEUDO_FLAG (0x8000+). */
+  uint16_t c;          /* register, column id, or branch target pc.
+                        * 16-bit for the same reason as b. */
   int64_t  imm;        /* immediate (load_const_int) — 0 otherwise */
 } Op;
 

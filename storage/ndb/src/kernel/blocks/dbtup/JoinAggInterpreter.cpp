@@ -972,6 +972,26 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
                              m_n_agg_results);
   }
 
+#ifdef ERROR_INSERT
+  /* ERROR_INSERT 4060: makes JIT-fallback fatal. The MTR test
+   * sets it before queries that MUST run on the JIT path; if
+   * admission rejected the program (or m_jit_entry isn't set
+   * for any other reason), we abort here instead of silently
+   * falling through to the interpreter. Lets a test confirm
+   * "did this query actually JIT?" without needing a separate
+   * stats counter. Compiled out in release builds. */
+  if (block_tup->jit_error_inserted(4060)) {
+    g_eventLogger->error(
+        "ERROR_INSERT 4060: aggregation program reached the "
+        "interpreter loop instead of the JIT path "
+        "(m_jit_entry=%p, m_n_gb_cols=%u). Aborting per test "
+        "directive — the failing program was expected to admit "
+        "+ compile.",
+        m_jit_entry, m_n_gb_cols);
+    abort();
+  }
+#endif
+
   Uint32 col_index;
   Uint32 value;
   DataType type;

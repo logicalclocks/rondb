@@ -2828,6 +2828,24 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     Uint32 bc_off = lp.m_agg_prog_start_pos;
     if (bc_off < lp.m_agg_program_len) {
       Uint32 bc_words = lp.m_agg_program_len - bc_off;
+#ifdef DEBUG_JIT
+      /* Always dump the full program so we have the structural
+       * context for either path (admit or reject). */
+      g_eventLogger->info(
+          "[RONDB-1056] key=%u program: header=%u words, "
+          "body=%u words, total=%u words",
+          key, (unsigned)bc_off, (unsigned)bc_words,
+          (unsigned)lp.m_agg_program_len);
+      for (Uint32 i = 0; i < lp.m_agg_program_len; i++) {
+        const char *region = (i < bc_off) ? "hdr" : "bc";
+        Uint32 w = lp.m_agg_program[i];
+        g_eventLogger->info(
+            "[RONDB-1056]   prog[%u] (%s%u) = 0x%08x  top6=%u",
+            i, region,
+            (i < bc_off) ? i : i - bc_off,
+            w, (w >> 26));
+      }
+#endif
       Program p;
       JitBridgeError berr;
       JitBridgeReason brc =
@@ -2850,11 +2868,37 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                     (unsigned)aerr->offending_kind));
         }
       } else {
+        Uint32 ow = (berr.offending_word < bc_words)
+                       ? (lp.m_agg_program + bc_off)[berr.offending_word]
+                       : 0u;
         DEB_JIT(("[RONDB-1056] JIT bridge rejected key=%u "
-                  "reason=%d word=%u op=%u — interpreter fallback",
+                  "reason=%d word=%u op=%u value=0x%08x "
+                  "— interpreter fallback",
                   key, (int)brc,
                   (unsigned)berr.offending_word,
-                  (unsigned)berr.offending_op));
+                  (unsigned)berr.offending_op,
+                  ow));
+#ifdef DEBUG_JIT
+        /* Dump the whole program (header + body) so we can see
+         * the structural context of the rejection. Useful when
+         * the offending word looks bogus and we suspect either
+         * an NDB-side compiler bug or a buffer-overwrite. */
+        g_eventLogger->info(
+            "[RONDB-1056]   header (%u words):", (unsigned)bc_off);
+        for (Uint32 i = 0; i < bc_off; i++) {
+          g_eventLogger->info("[RONDB-1056]     hdr[%u] = 0x%08x",
+                                i, lp.m_agg_program[i]);
+        }
+        g_eventLogger->info(
+            "[RONDB-1056]   body (%u words from offset %u):",
+            (unsigned)bc_words, (unsigned)bc_off);
+        for (Uint32 i = 0; i < bc_words; i++) {
+          Uint32 w = (lp.m_agg_program + bc_off)[i];
+          g_eventLogger->info(
+              "[RONDB-1056]     bc[%u] = 0x%08x  top6=%u",
+              i, w, (w >> 26));
+        }
+#endif
       }
     }
   } else if (m_jit_arena == nullptr) {

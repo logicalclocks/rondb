@@ -354,12 +354,16 @@ static void test_embedded_backward_reject(void) {
                    /*offending_op=*/EMB_BRANCH_ATTR_EQ_NULL);
 }
 
-/* T14: attr_id > 255 — must reject (Phase 5.0 narrow scope). */
+/* T14: attr_id ≥ 4096 must reject. Real schema columns are
+ * 0..4095. Higher encodings are LINKED attributes (0x8000..0xFBFF)
+ * or PSEUDO columns (0xFC00..0xFFFF) — both Phase 5.x scope.
+ * 0x8000 (LINKED-attr base, what NDB emits in real join queries)
+ * is the realistic test value. */
 static void test_embedded_attr_oor_reject(void) {
   uint32_t prog[4] = {
     enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
     enc_emb_branch_attr_null(EMB_BRANCH_ATTR_EQ_NULL, /*offset=*/2),
-    enc_emb_attr_id(/*attrId=*/1024),       /* exceeds 255 */
+    enc_emb_attr_id(/*attrId=*/0x8000),    /* LINKED-attr flag */
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
   assert_rejected("T14 embedded_attr_oor_reject", prog, 4,

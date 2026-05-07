@@ -33,6 +33,16 @@ if (!$join_pushdown) {
   --skip ndb_join_pushdown must be enabled
 }
 
+# NOTE: ERROR_INSERT 4060 (JIT-fallback-is-fatal) intentionally
+# NOT activated here. This canary's `WHERE c1 IS NULL` queries
+# emit kOpLoadCol with col_id 0x8000 (LINKED-attr access) which
+# Phase 5.1a's bridge correctly REJECTS — falling back to the
+# NDB interpreter, which produces the right answer. Activating
+# 4060 would abort the data node because the program legitimately
+# can't JIT yet. Phase 5.x will plumb LINKED-attr support through
+# new cold-call helpers, at which point this test should re-enable
+# 4060 and start asserting that the JIT path is actually taken.
+
 --echo # Tables: BIGINT columns including a nullable c1.
 CREATE TABLE t (
   pk BIGINT NOT NULL,
@@ -91,5 +101,9 @@ SELECT COUNT(*)
 --echo ############################################################
 --echo # Cleanup
 --echo ############################################################
+
+# (No ERROR_INSERT clear needed — see note at the top about why
+# 4060 is not activated for this canary in Phase 5.1a.)
+
 DROP TABLE t;
 DROP TABLE p;

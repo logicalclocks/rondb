@@ -3447,6 +3447,17 @@ private:
                                      Uint32 *dest,
                                      Uint32 dest_words);
 
+#ifdef ERROR_INSERT
+  /* Wrapper around ERROR_INSERTED so external collaborators
+   * (notably JoinAggInterpreter, which is friend but not a
+   * block) can probe cerrorInsert without macro-scope tricks.
+   * Only defined in ERROR_INSERT builds — release callers must
+   * guard their use accordingly. */
+  bool jit_error_inserted(Uint32 code) const {
+    return ERROR_INSERTED(code);
+  }
+#endif
+
   // Read only PK attributes, without AttributeHeader.
   // Optinally xfrm'ing the key in preparation for hash
   int readKeyAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
