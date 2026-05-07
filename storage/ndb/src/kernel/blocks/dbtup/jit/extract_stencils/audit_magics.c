@@ -128,6 +128,8 @@ static const struct {
   /* Phase 5.0 cold-call branch attr_id holes. */
   { "MAGIC_BAEN_ATTR_NARROW", "op_branch_attr_eq_null"    },
   { "MAGIC_BANN_ATTR_NARROW", "op_branch_attr_ne_null"    },
+  /* Phase 5.1a: position hole for op_load_linked_to_mem. */
+  { "MAGIC_LLM_POS_NARROW",   "op_load_linked_to_mem"     },
 };
 static const size_t kNarrowMagicToStencilLen =
     sizeof(kNarrowMagicToStencil) / sizeof(kNarrowMagicToStencil[0]);
@@ -239,7 +241,7 @@ static const char *expected_stencil_for_fold(const char *magic_name,
 /* the identifier, then read hex bytes (`0xXX`) until `}`.            */
 /* ------------------------------------------------------------------ */
 
-#define MAX_STENCILS         24
+#define MAX_STENCILS         32
 #define MAX_STENCIL_BYTES  2048
 #define MAX_NAME_LEN         64
 

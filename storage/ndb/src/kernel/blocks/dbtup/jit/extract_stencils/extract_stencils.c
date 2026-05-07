@@ -845,6 +845,9 @@ static const OpkindMap kOpkindMap[] = {
   { "op_load_const_int32",    "OP_LOAD_CONST_INT32"   },
   { "op_branch_attr_eq_null", "OP_BRANCH_ATTR_EQ_NULL" },
   { "op_branch_attr_ne_null", "OP_BRANCH_ATTR_NE_NULL" },
+  { "op_load_linked_to_mem",  "OP_LOAD_LINKED_TO_MEM"  },
+  { "op_branch_linked_eq_null", "OP_BRANCH_LINKED_EQ_NULL" },
+  { "op_branch_linked_ne_null", "OP_BRANCH_LINKED_NE_NULL" },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 
@@ -985,7 +988,7 @@ int main(int argc, char **argv) {
   TextRelas    relas    = parse_text_relas(&blob, &sections);
 
   /* Walk symbols in order, extract each op_*. */
-  ExtractedStencil stencils[24];
+  ExtractedStencil stencils[32];
   size_t n_stencils = 0;
   for (size_t i = 0; i < symbols.n_syms; ++i) {
     const Elf64_Sym *sym = &symbols.syms[i];

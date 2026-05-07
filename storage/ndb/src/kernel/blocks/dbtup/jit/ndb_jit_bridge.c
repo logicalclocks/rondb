@@ -117,6 +117,12 @@
 #define BR_EMB_EXIT_OK_LAST         22
 #define BR_EMB_BRANCH_ATTR_EQ_NULL  24
 #define BR_EMB_BRANCH_ATTR_NE_NULL  25
+/* Phase 5.1a: READ_LINKED_TO_MEM populates cheapMemory[0] from the
+ * preceding-table-row's linked-attr buffer. Subsequent
+ * BRANCH_LINKED_*_NULL instructions inspect that. */
+#define BR_EMB_READ_LINKED_TO_MEM   39
+#define BR_EMB_BRANCH_LINKED_EQ_NULL 41
+#define BR_EMB_BRANCH_LINKED_NE_NULL 42
 
 /* Phase 5.0 cap: embedded blocks ≥ 256 words reject. Larger blocks
  * are statistically rare in real queries and Phase 5.1+ can extend
@@ -288,6 +294,79 @@ static JitBridgeReason translate_embedded_block(
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
         emb_pc += 2;
+        break;
+      }
+
+      case BR_EMB_READ_LINKED_TO_MEM: {
+        /* Phase 5.1a: 1-word instruction. position is in bits
+         * 16..23 of word 0 (8-bit field — sufficient for NDB's
+         * linked-attr buffer position range). Translates to
+         * OP_LOAD_LINKED_TO_MEM (a pure cold-call stencil — no
+         * branch). */
+        uint32_t position = (inst >> 16) & 0xFFu;
+        if (position > 255) {
+          /* Defensive — the bit-field is already 8-bit. */
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_REG_OUT_OF_RANGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        if (!emit_op(out_prog, OP_LOAD_LINKED_TO_MEM, /*a=*/0,
+                     (uint8_t)position, /*c=*/0, 0)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        emb_pc += 1;
+        break;
+      }
+
+      case BR_EMB_BRANCH_LINKED_EQ_NULL:
+      case BR_EMB_BRANCH_LINKED_NE_NULL: {
+        /* Phase 5.1a: 1-word instruction. branch_offset in bits
+         * 30..16, direction in bit 31. No operand word — the
+         * cheapMemory[0] state from the preceding
+         * READ_LINKED_TO_MEM is implicit. */
+        uint32_t direction = inst >> 31;
+        if (direction != 0) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_EMBEDDED_BACKWARD;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_EMBEDDED_BACKWARD;
+        }
+        uint32_t branch_length = (inst >> 16) & 0x7FFFu;
+        uint32_t target_emb_pc = emb_pc + branch_length;
+        if (target_emb_pc >= emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        uint8_t out_kind =
+            (emb_op == BR_EMB_BRANCH_LINKED_EQ_NULL)
+                ? OP_BRANCH_LINKED_EQ_NULL
+                : OP_BRANCH_LINKED_NE_NULL;
+        uint8_t c_marker =
+            (uint8_t)(target_emb_pc | BR_EMB_TARGET_FIXUP_BIT);
+        if (!emit_op(out_prog, out_kind, /*a=*/0, /*b=*/0,
+                     c_marker, 0)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        emb_pc += 1;
         break;
       }
 

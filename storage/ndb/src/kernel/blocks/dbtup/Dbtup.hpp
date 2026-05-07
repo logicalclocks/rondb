@@ -3425,6 +3425,26 @@ private:
     return -(int)req_struct->errorCode;
   }
 
+  /* Walk req_struct->m_linked_attr_data, find the Nth entry, and
+   * copy AttributeHeader + data into `dest` (typically
+   * cheapMemory[0]). Linked-buffer format per entry:
+   *   [tableId, schemaVersion, AttrHeader, data...]
+   * If the buffer is null or position is out of range, writes a
+   * NULL AttributeHeader at dest[0]. Used by both the NDB
+   * interpreter's handleReadLinkedToMem and the JIT helper
+   * ndb_jit_h_read_linked_to_mem so the two paths share one
+   * source of truth. */
+  static void readLinkedToMemBuffer(const Uint32 *linked,
+                                     Uint32 linked_len,
+                                     Uint32 position,
+                                     Uint32 *dest);
+
+  // Read only PK attributes, without AttributeHeader.
+  // Optinally xfrm'ing the key in preparation for hash
+  int readKeyAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
+                        Uint32 inBufLen, Uint32 *outBuffer, Uint32 TmaxRead,
+                        bool xfrmFlag);
+
   int setInputParameters(KeyReqStruct *req_struct,
                          Uint32 *inBuffer,
                          Uint32 inBufLen);

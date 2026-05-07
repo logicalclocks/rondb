@@ -117,7 +117,16 @@ typedef enum {
    * one helper; eq/ne discrimination via the want_null flag. */
   OP_BRANCH_ATTR_EQ_NULL = 21,
   OP_BRANCH_ATTR_NE_NULL = 22,
-  OP_KIND_MAX           = OP_BRANCH_ATTR_NE_NULL
+  /* Phase 5.1a: linked-column variants. READ_LINKED_TO_MEM is a
+   * cold-call (no branch) that populates ctx->block_tup->cheapMemory[0]
+   * from the linked-attr buffer. BRANCH_LINKED_EQ/NE_NULL is a 3-hole
+   * cold-call branch that null-checks cheapMemory[0]'s AttributeHeader.
+   * Operand layout (LOAD_LINKED): b=position (≤255). Branch variants:
+   * a/b unused, c=branch target pc; eq/ne via want_null flag. */
+  OP_LOAD_LINKED_TO_MEM   = 23,
+  OP_BRANCH_LINKED_EQ_NULL = 24,
+  OP_BRANCH_LINKED_NE_NULL = 25,
+  OP_KIND_MAX           = OP_BRANCH_LINKED_NE_NULL
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

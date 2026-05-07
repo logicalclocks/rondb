@@ -1076,6 +1076,41 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
   return totalLen;
 }
 
+/* Phase 5.1a: shared linked-attr buffer walk used by both the NDB
+ * interpreter's READ_LINKED_TO_MEM handler and the JIT cold-call
+ * helper ndb_jit_h_read_linked_to_mem. Single source of truth so
+ * the two paths can't drift on the buffer layout. */
+void Dbtup::readLinkedToMemBuffer(const Uint32 *linked,
+                                    Uint32 linked_len,
+                                    Uint32 position,
+                                    Uint32 *dest) {
+  if (unlikely(linked == nullptr)) {
+    AttributeHeader null_ah(0, 0);
+    dest[0] = null_ah.m_value;
+    return;
+  }
+
+  const Uint32 *p = linked;
+  const Uint32 *p_end = linked + linked_len;
+  Uint32 pos_count = 0;
+  while (p < p_end) {
+    if (pos_count == position) break;
+    p += 2;  // skip tableId, schemaVersion
+    p += 1 + AttributeHeader::getDataSize(*p);
+    pos_count++;
+  }
+  if (unlikely(p >= p_end)) {
+    AttributeHeader null_ah(0, 0);
+    dest[0] = null_ah.m_value;
+    return;
+  }
+
+  // Skip tableId and schemaVersion, copy AttrHeader + data
+  p += 2;
+  Uint32 words = 1 + AttributeHeader::getDataSize(*p);
+  memcpy(dest, p, words * sizeof(Uint32));
+}
+
 void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
   jam();
 
@@ -7411,43 +7446,17 @@ struct Dbtup::InterpreterContext {
   }
 
   /* READ_LINKED_TO_MEM — read a linked (parent-table) column value from
-   * req_struct->m_linked_attr_data into cheapMemory[0]. Format of the
-   * linked buffer: [tableId, schemaVersion, AttrHeader, data...] per entry.
-   * Position (bits 16..23) selects the Nth entry. If linked data is
-   * unavailable or out-of-bounds, writes a NULL AttributeHeader at offset 0. */
+   * req_struct->m_linked_attr_data into cheapMemory[0]. The actual
+   * buffer walk lives in Dbtup::readLinkedToMemBuffer (see Dbtup.hpp)
+   * so the JIT cold-call helper ndb_jit_h_read_linked_to_mem can
+   * share it — single source of truth for both paths. */
   static inline int handleReadLinkedToMem(InterpreterContext& ctx) {
     ctx.RnoOfInstructions += 3;
     Uint32 position = (ctx.theInstruction >> 16) & 0xFF;
-
-    const Uint32* linked = ctx.req_struct->m_linked_attr_data;
-    Uint32 linked_len = ctx.req_struct->m_linked_attr_len;
-    Uint32* memory_ptr = (Uint32*)&ctx.TheapMemoryChar[0];
-
-    if (unlikely(linked == nullptr)) {
-      AttributeHeader null_ah(0, 0);
-      memory_ptr[0] = null_ah.m_value;
-      return INTERP_CONTINUE;
-    }
-
-    const Uint32* p = linked;
-    const Uint32* p_end = linked + linked_len;
-    Uint32 pos_count = 0;
-    while (p < p_end) {
-      if (pos_count == position) break;
-      p += 2;  // skip tableId, schemaVersion
-      p += 1 + AttributeHeader::getDataSize(*p);
-      pos_count++;
-    }
-    if (unlikely(p >= p_end)) {
-      AttributeHeader null_ah(0, 0);
-      memory_ptr[0] = null_ah.m_value;
-      return INTERP_CONTINUE;
-    }
-
-    // Skip tableId and schemaVersion, copy AttrHeader + data
-    p += 2;
-    Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-    memcpy(memory_ptr, p, words * sizeof(Uint32));
+    Dbtup::readLinkedToMemBuffer(ctx.req_struct->m_linked_attr_data,
+                                  ctx.req_struct->m_linked_attr_len,
+                                  position,
+                                  (Uint32*)&ctx.TheapMemoryChar[0]);
     return INTERP_CONTINUE;
   }
 

@@ -138,6 +138,49 @@ ndb_jit_h_branch_attr_null(JitState *s,
   return (is_null == (want_null != 0)) ? 1 : 0;
 }
 
+/* ndb_jit_h_read_linked_to_mem — Phase 5.1a cold-call helper.
+ *
+ * Used by op_load_linked_to_mem to populate
+ * ctx->block_tup->cheapMemory[0] from the row's linked-attr buffer
+ * at the patched position. Delegates to Dbtup::readLinkedToMemBuffer
+ * so the buffer-walk logic is shared one-to-one with NDB's
+ * interpreter READ_LINKED_TO_MEM handler — no drift risk. */
+extern "C" void
+ndb_jit_h_read_linked_to_mem(JitState *s, uint32_t position) {
+  auto *ctx = static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->block_tup == nullptr ||
+      ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_read_linked_to_mem: JitState.ctx is malformed "
+        "(position=%u)", position);
+    abort();
+  }
+  /* Routes through JoinAggInterpreter::readLinkedToMemForJit since
+   * Dbtup::cheapMemory is private — JoinAggInterpreter is friend of
+   * Dbtup so it can reach the buffer + the static walk routine. */
+  ctx->agg->readLinkedToMemForJit(ctx->block_tup, ctx->req_struct,
+                                    position);
+}
+
+/* ndb_jit_h_branch_linked_null — Phase 5.1a cold-call branch helper.
+ *
+ * Returns 1 to take the branch, 0 to fall through. Both
+ * op_branch_linked_eq_null (want_null=1) and op_branch_linked_ne_null
+ * (want_null=0) share this helper. Inspects the AttributeHeader at
+ * cheapMemory[0] which a preceding op_load_linked_to_mem populated. */
+extern "C" int
+ndb_jit_h_branch_linked_null(JitState *s, uint32_t want_null) {
+  auto *ctx = static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->block_tup == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_branch_linked_null: JitState.ctx is malformed");
+    abort();
+  }
+  AttributeHeader ah(ctx->agg->cheapMemoryHeaderForJit(ctx->block_tup));
+  bool is_null = ah.isNULL();
+  return (is_null == (want_null != 0)) ? 1 : 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Helper registration.                                               */
 /* ------------------------------------------------------------------ */
@@ -152,6 +195,10 @@ extern "C" void dbtup_jit_register_helpers(void) {
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col));
   jit1_register_helper("ndb_jit_h_branch_attr_null",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_attr_null));
+  jit1_register_helper("ndb_jit_h_read_linked_to_mem",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_read_linked_to_mem));
+  jit1_register_helper("ndb_jit_h_branch_linked_null",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_linked_null));
 }
 
 /* ------------------------------------------------------------------ */

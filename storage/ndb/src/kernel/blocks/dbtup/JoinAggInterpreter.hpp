@@ -115,6 +115,25 @@ class JoinAggInterpreter : public AggInterpreterBase {
                                       read_buf, buf_words);
   }
 
+  /* Phase 5.1a: friend-accessor wrappers for Dbtup's cheapMemory.
+   * JoinAggInterpreter is friend of Dbtup so we can reach the
+   * private buffer + the static helper readLinkedToMemBuffer.
+   * The JIT helpers call these via ctx->agg->... (using the same
+   * null-this convention Phase 4 established for
+   * readAttributeForJit). */
+  void readLinkedToMemForJit(Dbtup *block_tup,
+                              Dbtup::KeyReqStruct *req_struct,
+                              Uint32 position) {
+    Dbtup::readLinkedToMemBuffer(req_struct->m_linked_attr_data,
+                                  req_struct->m_linked_attr_len,
+                                  position,
+                                  &block_tup->cheapMemory[0]);
+  }
+
+  Uint32 cheapMemoryHeaderForJit(Dbtup *block_tup) {
+    return block_tup->cheapMemory[0];
+  }
+
   Int32 processRecWithLinkedAttrs(
       Dbtup* block_tup,
       Dbtup::KeyReqStruct* req_struct,

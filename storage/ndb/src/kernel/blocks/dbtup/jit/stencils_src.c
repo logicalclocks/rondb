@@ -614,6 +614,48 @@ STENCIL op_branch_attr_ne_null(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* op_load_linked_to_mem (Phase 5.1a)                                 */
+/*                                                                    */
+/* Cold-call (no branch) — populates ctx->block_tup->cheapMemory[0]   */
+/* from the row's linked-attr buffer at the patched position. The     */
+/* helper delegates to NDB's existing READ_LINKED_TO_MEM logic.       */
+/* ------------------------------------------------------------------ */
+extern void ndb_jit_h_read_linked_to_mem(JitState *s, uint32_t position);
+
+DECLARE_NARROW_HOLE(LLM_POS);
+STENCIL op_load_linked_to_mem(JitState *s) {
+  ndb_jit_h_read_linked_to_mem(s, (uint32_t)HOLE_NARROW(LLM_POS));
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
+/* op_branch_linked_eq_null / op_branch_linked_ne_null (Phase 5.1a)   */
+/*                                                                    */
+/* Cold-call branches that null-check the AttributeHeader at          */
+/* cheapMemory[0] (populated by a preceding op_load_linked_to_mem).   */
+/* No per-row attr_id operand — the bridge ensures the preceding      */
+/* LOAD_LINKED instruction set up the right entry. Both variants      */
+/* share one helper via runtime want_null (eq=1, ne=0).               */
+/* ------------------------------------------------------------------ */
+extern int ndb_jit_h_branch_linked_null(JitState *s, uint32_t want_null);
+
+extern __attribute__((preserve_none)) void HOLE_BLEN_TGT(JitState *);
+STENCIL op_branch_linked_eq_null(JitState *s) {
+  if (ndb_jit_h_branch_linked_null(s, /*want_null=*/1)) {
+    [[clang::musttail]] return HOLE_BLEN_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
+extern __attribute__((preserve_none)) void HOLE_BLNN_TGT(JitState *);
+STENCIL op_branch_linked_ne_null(JitState *s) {
+  if (ndb_jit_h_branch_linked_null(s, /*want_null=*/0)) {
+    [[clang::musttail]] return HOLE_BLNN_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* op_skip / op_exit : row terminators.                               */
 /*                                                                    */
 /* Bare returns; the extractor overrides the bytes entirely with      */
@@ -660,4 +702,7 @@ const StencilTailFn g_stencil_anchor[] = {
     op_load_const_int32,
     op_branch_attr_eq_null,
     op_branch_attr_ne_null,
+    op_load_linked_to_mem,
+    op_branch_linked_eq_null,
+    op_branch_linked_ne_null,
 };

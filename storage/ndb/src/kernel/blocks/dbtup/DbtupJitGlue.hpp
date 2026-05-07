@@ -96,6 +96,23 @@ void ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg);
 int ndb_jit_h_branch_attr_null(JitState *s, uint32_t attr_id,
                                  uint32_t want_null);
 
+/* ndb_jit_h_read_linked_to_mem — Phase 5.1a cold-call helper.
+ *
+ * Populates ctx->block_tup->cheapMemory[0] from the row's linked-
+ * attr buffer at the patched position. Delegates to
+ * Dbtup::readLinkedToMemBuffer (shared with NDB's READ_LINKED_TO_MEM
+ * interpreter handler). Subsequent op_branch_linked_*_null
+ * instructions inspect cheapMemory[0]. */
+void ndb_jit_h_read_linked_to_mem(JitState *s, uint32_t position);
+
+/* ndb_jit_h_branch_linked_null — Phase 5.1a cold-call branch helper.
+ *
+ * Returns 1 to take the branch, 0 to fall through. Inspects the
+ * AttributeHeader at ctx->block_tup->cheapMemory[0] (populated by
+ * a preceding op_load_linked_to_mem). want_null=1 for the eq
+ * variant, 0 for ne — both stencils share this one helper. */
+int ndb_jit_h_branch_linked_null(JitState *s, uint32_t want_null);
+
 /* Register every Phase 4 cold-call helper with the JIT engine.
  * Call once at engine init (Dbtup ctor / block-init path).
  * Idempotent — re-registering the same fn is a no-op. */
