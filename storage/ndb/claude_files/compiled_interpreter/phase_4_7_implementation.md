@@ -9,12 +9,22 @@ complementary optimisations on aarch64:
    encodes the register index directly into the LDR/STR imm12
    field. Eliminates one MOVZ per memory access — typically 1-3
    instructions per stencil.
-2. **Narrow `LoadConst` variants.** Add `op_load_const_int16`
-   (1 MOVZ for the 16-bit constant) and `op_load_const_int32`
-   (MOVZ + MOVK for the 32-bit constant), bridge-routed when the
-   admission walk sees the constant fits. The current single
-   `op_load_const_int` carries a full 4-instruction wide chain
-   for any constant, even when the value would fit in a w-reg.
+2. **Narrow `LoadConst` variants.** Add four bridge-routed
+   variants:
+   - `op_load_const_uint16` (1 MOVZ + STR, **8 B**) for
+     `[0, 65535]`
+   - `op_load_const_int16` (MOVZ + SXTH + STR, **12 B**) for
+     `[-32768, -1]` (covers the negative-int16 gap that uint16
+     can't reach)
+   - `op_load_const_uint32` (MOVZ + MOVK + STR, **12 B**) for
+     `[0, 4294967295]`
+   - `op_load_const_int32` (MOVZ + MOVK + SXTW + STR, **16 B**)
+     for negatives `[INT32_MIN, -32769]`
+   The existing `op_load_const_int` (now effectively the
+   `int64` fallback at **20 B**) handles values that don't fit
+   any of the above. Most NDB query literals are small
+   non-negative integers and will route to the **8 B uint16**
+   stencil — the common-case win.
 
 Aarch64-only; x86_64 stencils unchanged. Branch:
 `RONDB-1056-compiled-interpreter`.
@@ -31,8 +41,10 @@ Aarch64-only; x86_64 stencils unchanged. Branch:
 | op_sum_bigint         | 28 B | **16 B** |
 | op_branch_*           | 32 B | **20 B** |
 | op_load_const_int (i64) | 24 B | **20 B** (still has wide-chain) |
-| op_load_const_int32 (new) | — | **12 B** |
-| op_load_const_int16 (new) | — | **8 B**  |
+| op_load_const_int32 (new)  | — | **16 B** |
+| op_load_const_uint32 (new) | — | **12 B** |
+| op_load_const_int16 (new)  | — | **12 B** |
+| op_load_const_uint16 (new) | — | **8 B**  |
 | op_load_col_ndb       | 28 B | **20 B** |
 
 **Cumulative trajectory** (stencil-set bytes excluding the new
@@ -59,6 +71,80 @@ many in 16).
 
 Same posture as Phase 4.5 / 4.6 — concrete experiments first.
 The spike fits in ~½ day.
+
+> **Day 0 spike resolutions (2026-05-07).** All six items
+> resolved via `/tmp/phase47_spike.c` compiled with the pinned
+> upstream clang 20.1.8 + a magic-collision Python pass.
+>
+> **Findings & adjustments to the design:**
+>
+> 1. **`"n"` works for LDR/STR offset** (I1). Spike emitted
+>    `ldr x8, [x20, #0x5090]` and `str x8, [x20, #0x29b8]` with
+>    the byte-offset values exactly as written in the C source.
+>    The encoded imm12 = byte_offset / 8 sits at bits 21..10.
+>    LDR mask `0xFFC00000` → `0xF9400000`; STR mask →
+>    `0xF9000000`.
+>
+> 2. **12-bit magic space is workable** (I2). 32 candidate
+>    fold magics generated from
+>    `sha256("RONDB-1056-Phase4_7-fold-magic-v1|" + name +
+>    optional_counter)[0:12-bit]` produced exactly 1 collision
+>    (`MINUS_B_FOLD` ↔ `ADD_A_FOLD` at `0x767`). Salt-rotation
+>    via `#counter` suffix on collision resolved it in 1
+>    retry. Final 32-magic set documented inline.
+>
+> 3. **Fold + narrow detection no-conflict** (I3). A fold-only
+>    stencil emits zero MOVZ instructions; the narrow audit
+>    finds 0 matches. No false positives.
+>
+> 4. **Bridge sees the constant** (I4). `ndb_jit_bridge.c:183`
+>    reads `int64_t value` directly from the bytecode stream
+>    inside `BR_kOpLoadConst` before calling `emit_op` — adding
+>    the variant dispatch is ~5 lines.
+>
+> 5. **2-slot chain emits W-form (32-bit) MOVZ+MOVK** (I5),
+>    encoding `0x52800000 / 0x72800000`, NOT the X-form
+>    `0xD2/0xF2` that the existing pass-2 chain detector
+>    targets. Same situation as Phase 4.5's narrow MOVZ. Pass-2
+>    needs sf-agnostic mask relaxation (mask `0x7F800000` → match
+>    `0x52800000` for MOVZ / `0x72800000` for MOVK), plus a
+>    `chain_len` field per magic so the detector emits Hole
+>    entries when the right number of slots are seen (2 for
+>    int32 chain, 4 for the int64 wide chain).
+>
+> 6. **Width=1 patcher math is straightforward** (I6). Mask
+>    `0xFFFu << 10` (= `0x3FFC00`), shift the operand value
+>    left by 10. Verified by hand against the AArch64 ARM ARM.
+>
+> **Sign-extension surprise** (not in the original ★ list).
+> `(int64_t)(int16_t)v` and `(int64_t)(int32_t)v` casts emit a
+> `sxth x8, w8` / `sxtw x8, w8` instruction (4 bytes each), so
+> the LCI16/LCI32 stencils are 4 bytes larger than the
+> optimistic estimate. Updated predictions:
+> - `op_load_const_int16`: **12 B** post-strip (was 8 B in the
+>   plan)
+> - `op_load_const_int32`: **16 B** post-strip (was 12 B)
+>
+> The `sxth` / `sxtw` is unavoidable for correct sign-extension
+> across the int16 / int32 ranges (MOVZ is unsigned-only).
+> Still much smaller than the int64 form's 20 B.
+>
+> **Spike disassembly** (representative):
+>
+> | Spike stencil | Pre-strip | Post-strip | Phase 4.6 | Saving |
+> |---|---:|---:|---:|---:|
+> | s1_mov_fold (mov + imm12)         | 12 B |  8 B | 16 B | −50 % |
+> | s2_add_fold (add + imm12 ×3)      | 20 B | 16 B | 28 B | −43 % |
+> | s3_lci16 (movz + sxth + str)      | 16 B | 12 B | n/a (new) | — |
+> | s4_lci32 (movz + movk + sxtw + str) | 20 B | 16 B | n/a (new) | — |
+> | s5_lcu16 (movz + str)             | 12 B |  8 B | n/a (new) | — |
+> | s6_lcu32 (movz + movk + str)      | 16 B | 12 B | n/a (new) | — |
+>
+> The unsigned variants drop the `sxth` / `sxtw` because the
+> W-form MOVZ (and MOVZ+MOVK) already zero-fills the upper bits
+> of the X-register — exactly what an unsigned constant needs.
+> Saves 4 B per LoadConst stencil for non-negative values, the
+> common case in NDB query literals.
 
 ### ★ Investigate I1 — clang accepts `"n"` constraint for LDR/STR imm offset
 
@@ -391,27 +477,36 @@ write 16-bit slices to bits 5..20 of consecutive MOVZ/MOVK.
 
 ## 7. Bridge / admission
 
-`JitBridge::admit_op` for `kOpLoadConstBigint` inspects the
-constant value:
+`ndb_jit_bridge.c` for `BR_kOpLoadConst` inspects the constant
+value and picks the smallest-fitting variant. Smallest-first
+order so each fast path exits early:
 
 ```c
-case kOpLoadConstBigint: {
-  int64_t v = read_const_from_bytecode(...);
-  if ((int64_t)(int16_t)v == v) {
-    op->kind = OP_LOAD_CONST_INT16;
-    op->imm  = v;
-  } else if ((int64_t)(int32_t)v == v) {
-    op->kind = OP_LOAD_CONST_INT32;
-    op->imm  = v;
+case BR_kOpLoadConst: {
+  /* ... existing parsing of reg_index + value ... */
+  OpKind kind;
+  if (0 <= value && value <= 0xFFFFLL) {
+    kind = OP_LOAD_CONST_UINT16;          /*  8 B */
+  } else if (-32768 <= value && value <= -1) {
+    kind = OP_LOAD_CONST_INT16;           /* 12 B (negative int16 only) */
+  } else if (0 <= value && value <= 0xFFFFFFFFLL) {
+    kind = OP_LOAD_CONST_UINT32;          /* 12 B */
+  } else if ((int64_t)(int32_t)value == value) {
+    kind = OP_LOAD_CONST_INT32;           /* 16 B (negative int32) */
   } else {
-    op->kind = OP_LOAD_CONST_INT;
-    op->imm  = v;
+    kind = OP_LOAD_CONST_INT;             /* 20 B (full int64) */
   }
+  if (!emit_op(out_prog, kind, reg_index, 0, 0, value)) { ... }
   break;
 }
 ```
 
-The two new OpKind values land at the next free slots in
+Note the second arm checks `-32768 ≤ v ≤ -1` (not the full
+int16 range), since values in `[0, 32767]` are already handled
+by the cheaper UINT16 path above. Same logic for INT32 — only
+negatives hit it after the UINT32 branch covers `[0, 2³²−1]`.
+
+The four new OpKind values land at the next free slots in
 `bytecode1.h`. Existing `OP_LOAD_CONST_INT` keeps its number
 (append-only invariant).
 
@@ -425,9 +520,12 @@ The two new OpKind values land at the next free slots in
 `op_sum_bigint`, `op_branch_lt/le/eq/gt/ge/ne_int_int`,
 `op_load_col_ndb`.
 
-**Add** (2 new stencils):
+**Add** (4 new stencils):
 
-`op_load_const_int16`, `op_load_const_int32`.
+`op_load_const_uint16` (8 B), `op_load_const_int16` (12 B),
+`op_load_const_uint32` (12 B), `op_load_const_int32` (16 B).
+The existing `op_load_const_int` becomes the int64 fallback at
+20 B (unchanged from Phase 4.6).
 
 ## 9. Day breakdown
 
@@ -449,21 +547,29 @@ fold pattern. regen-stencils, audit PASS, run all unit tests +
 microbench differential. Cumulative byte total should drop from
 ~390 B to ~240 B.
 
-**Day 3 (~4h) — `op_load_const_int16` + bridge dispatch.**
-- Add `HOLE_NARROW`-based stencil for int16.
-- Add OP_LOAD_CONST_INT16 to bytecode1.h, kOpkindMap.
-- Bridge dispatch: route kOpLoadConstBigint to int16 when the
-  constant fits.
-- Bridge unit test for the dispatch logic.
+**Day 3 (~4h) — narrow LoadConst variants (uint16, int16) +
+bridge dispatch.**
+- Add `op_load_const_uint16` (no sxth) and
+  `op_load_const_int16` (with sxth) stencils.
+- Add OP_LOAD_CONST_UINT16, OP_LOAD_CONST_INT16 to bytecode1.h,
+  kOpkindMap.
+- Bridge dispatch: smallest-fitting variant per range table
+  (uint16 first, then int16 for `[-32768, -1]`).
+- Bridge unit test for the dispatch logic (asserts each value
+  routes to the expected variant).
 - regen-stencils PASS, microbench validation.
 
-**Day 4 (~4h) — `op_load_const_int32` + 2-slot chain detection.**
+**Day 4 (~4h) — wider LoadConst variants (uint32, int32) +
+2-slot chain detection.**
 - Add `HOLE_32` helper.
-- Extend pass-2 chain detector with `chain_len` field.
-- Add the 32-slot magic + audit entry.
-- Add `op_load_const_int32` stencil, OP_LOAD_CONST_INT32 to
-  bytecode1.h, kOpkindMap.
-- Bridge dispatch route to int32.
+- Extend pass-2 chain detector with sf-agnostic mask
+  (`0x7F800000`) AND a `chain_len` field per magic, so 2-slot
+  W-form chains are detected alongside 4-slot X-form chains.
+- Add the 32-slot magics + audit entries.
+- Add `op_load_const_uint32` (no sxtw) and
+  `op_load_const_int32` (with sxtw) stencils.
+- Add OP_LOAD_CONST_UINT32, OP_LOAD_CONST_INT32 to bytecode1.h,
+  kOpkindMap. Bridge dispatch routes to them.
 - regen-stencils PASS, microbench validation.
 
 **Day 5 (~3h) — drift check, MTR, `phase_4_7_addr_mode.md`
