@@ -843,6 +843,8 @@ static const OpkindMap kOpkindMap[] = {
   { "op_load_const_int16",    "OP_LOAD_CONST_INT16"   },
   { "op_load_const_uint32",   "OP_LOAD_CONST_UINT32"  },
   { "op_load_const_int32",    "OP_LOAD_CONST_INT32"   },
+  { "op_branch_attr_eq_null", "OP_BRANCH_ATTR_EQ_NULL" },
+  { "op_branch_attr_ne_null", "OP_BRANCH_ATTR_NE_NULL" },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 

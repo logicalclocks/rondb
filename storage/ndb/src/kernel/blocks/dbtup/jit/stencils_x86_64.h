@@ -235,6 +235,32 @@ static const Hole holes_op_load_const_int32[] = {
   { .byte_offset = 8, .kind = HK_OP_A, .width = 4 },
 };
 
+/* op_branch_attr_eq_null — 35 bytes, 4 holes */
+static const uint8_t bytes_op_branch_attr_eq_null[] = {
+  0x50, 0xbe, 0x00, 0x00, 0x00, 0x00, 0x4c, 0x89, 0xe7, 0xba, 0x01, 0x00,
+  0x00, 0x00, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x85, 0xc0, 0x74, 0x06, 0x58,
+  0xe9, 0x00, 0x00, 0x00, 0x00, 0x58, 0xe9, 0x00, 0x00, 0x00, 0x00, 
+};
+static const Hole holes_op_branch_attr_eq_null[] = {
+  { .byte_offset = 2, .kind = HK_OP_B, .width = 4 },
+  { .byte_offset = 15, .kind = HK_COLDCALL, .width = 4, .helper_name = "ndb_jit_h_branch_attr_null" },
+  { .byte_offset = 25, .kind = HK_BRANCH_TAKE, .width = 4 },
+  { .byte_offset = 31, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
+/* op_branch_attr_ne_null — 32 bytes, 4 holes */
+static const uint8_t bytes_op_branch_attr_ne_null[] = {
+  0x50, 0xbe, 0x00, 0x00, 0x00, 0x00, 0x4c, 0x89, 0xe7, 0x31, 0xd2, 0xe8,
+  0x00, 0x00, 0x00, 0x00, 0x85, 0xc0, 0x74, 0x06, 0x58, 0xe9, 0x00, 0x00,
+  0x00, 0x00, 0x58, 0xe9, 0x00, 0x00, 0x00, 0x00, 
+};
+static const Hole holes_op_branch_attr_ne_null[] = {
+  { .byte_offset = 2, .kind = HK_OP_B, .width = 4 },
+  { .byte_offset = 12, .kind = HK_COLDCALL, .width = 4, .helper_name = "ndb_jit_h_branch_attr_null" },
+  { .byte_offset = 22, .kind = HK_BRANCH_TAKE, .width = 4 },
+  { .byte_offset = 28, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
 #define STENCIL_(name) \
   { .bytes = bytes_##name, \
     .n_bytes = (uint16_t)sizeof(bytes_##name), \
@@ -268,6 +294,8 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_LOAD_CONST_INT16] = STENCIL_(op_load_const_int16),
   [OP_LOAD_CONST_UINT32] = STENCIL_(op_load_const_uint32),
   [OP_LOAD_CONST_INT32] = STENCIL_(op_load_const_int32),
+  [OP_BRANCH_ATTR_EQ_NULL] = STENCIL_(op_branch_attr_eq_null),
+  [OP_BRANCH_ATTR_NE_NULL] = STENCIL_(op_branch_attr_ne_null),
 };
 
 #endif /* NDB_JIT_STENCILS_X86_64_H */

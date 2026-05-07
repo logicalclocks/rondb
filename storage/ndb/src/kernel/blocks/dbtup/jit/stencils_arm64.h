@@ -237,6 +237,34 @@ static const Hole holes_op_load_const_int32[] = {
   { .byte_offset = 12, .kind = HK_OP_A, .width = 1 },
 };
 
+/* op_branch_attr_eq_null — 44 bytes, 4 holes */
+static const uint8_t bytes_op_branch_attr_eq_null[] = {
+  0xfd, 0x7b, 0xbf, 0xa9, 0x81, 0x68, 0x8c, 0x52, 0xe0, 0x03, 0x14, 0xaa,
+  0x22, 0x00, 0x80, 0x52, 0xfd, 0x03, 0x00, 0x91, 0x00, 0x00, 0x00, 0x94,
+  0x60, 0x00, 0x00, 0x34, 0xfd, 0x7b, 0xc1, 0xa8, 0x00, 0x00, 0x00, 0x14,
+  0xfd, 0x7b, 0xc1, 0xa8, 0x00, 0x00, 0x00, 0x14, 
+};
+static const Hole holes_op_branch_attr_eq_null[] = {
+  { .byte_offset = 4, .kind = HK_OP_B, .width = 2 },
+  { .byte_offset = 20, .kind = HK_COLDCALL, .width = 4, .helper_name = "ndb_jit_h_branch_attr_null" },
+  { .byte_offset = 32, .kind = HK_BRANCH_TAKE, .width = 4 },
+  { .byte_offset = 40, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
+/* op_branch_attr_ne_null — 44 bytes, 4 holes */
+static const uint8_t bytes_op_branch_attr_ne_null[] = {
+  0xfd, 0x7b, 0xbf, 0xa9, 0xe1, 0x57, 0x96, 0x52, 0xe0, 0x03, 0x14, 0xaa,
+  0xe2, 0x03, 0x1f, 0x2a, 0xfd, 0x03, 0x00, 0x91, 0x00, 0x00, 0x00, 0x94,
+  0x60, 0x00, 0x00, 0x34, 0xfd, 0x7b, 0xc1, 0xa8, 0x00, 0x00, 0x00, 0x14,
+  0xfd, 0x7b, 0xc1, 0xa8, 0x00, 0x00, 0x00, 0x14, 
+};
+static const Hole holes_op_branch_attr_ne_null[] = {
+  { .byte_offset = 4, .kind = HK_OP_B, .width = 2 },
+  { .byte_offset = 20, .kind = HK_COLDCALL, .width = 4, .helper_name = "ndb_jit_h_branch_attr_null" },
+  { .byte_offset = 32, .kind = HK_BRANCH_TAKE, .width = 4 },
+  { .byte_offset = 40, .kind = HK_BRANCH_FALL, .width = 4 },
+};
+
 #define STENCIL_(name) \
   { .bytes = bytes_##name, \
     .n_bytes = (uint16_t)sizeof(bytes_##name), \
@@ -270,6 +298,8 @@ static const Stencil g_stencils[OP_KIND_MAX + 1] = {
   [OP_LOAD_CONST_INT16] = STENCIL_(op_load_const_int16),
   [OP_LOAD_CONST_UINT32] = STENCIL_(op_load_const_uint32),
   [OP_LOAD_CONST_INT32] = STENCIL_(op_load_const_int32),
+  [OP_BRANCH_ATTR_EQ_NULL] = STENCIL_(op_branch_attr_eq_null),
+  [OP_BRANCH_ATTR_NE_NULL] = STENCIL_(op_branch_attr_ne_null),
 };
 
 #endif /* NDB_JIT_STENCILS_ARM64_H */

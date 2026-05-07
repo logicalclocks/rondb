@@ -569,6 +569,51 @@ STENCIL op_load_const_int32(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* op_branch_attr_eq_null / op_branch_attr_ne_null                    */
+/*                                                                    */
+/* Phase 5.0 cold-call branches translated from the embedded NDB     */
+/* normal-interpreter's BRANCH_ATTR_EQ_NULL / BRANCH_ATTR_NE_NULL    */
+/* opcodes. The 3-hole pattern combines:                             */
+/*   - 1× HK_OP_B narrow MOVZ for attr_id (8-bit, ≤255).            */
+/*   - 1× HK_COLDCALL bl/call for the helper.                       */
+/*   - 1× HK_BRANCH_TAKE for the taken-musttail to HOLE_*_TGT.      */
+/*   - 1× implicit trailing tail to next_ (HK_BRANCH_FALL,           */
+/*     stripped by extractor as for hot branches).                   */
+/*                                                                    */
+/* Both variants share one helper (ndb_jit_h_branch_attr_null) with  */
+/* a runtime want_null flag — eq=1, ne=0. The helper reads the       */
+/* attribute via the existing readAttributeForJit path, checks       */
+/* AttributeHeader::isNULL(), and returns 1 if the row should take   */
+/* the branch (filter says "skip this row" via the embedded          */
+/* EXIT_REFUSE landing pad), 0 to fall through.                      */
+/* ------------------------------------------------------------------ */
+extern int ndb_jit_h_branch_attr_null(JitState *s,
+                                       uint32_t attr_id,
+                                       uint32_t want_null);
+
+DECLARE_NARROW_HOLE(BAEN_ATTR);
+extern __attribute__((preserve_none)) void HOLE_BAEN_TGT(JitState *);
+STENCIL op_branch_attr_eq_null(JitState *s) {
+  if (ndb_jit_h_branch_attr_null(s,
+                                  (uint32_t)HOLE_NARROW(BAEN_ATTR),
+                                  /*want_null=*/1)) {
+    [[clang::musttail]] return HOLE_BAEN_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
+DECLARE_NARROW_HOLE(BANN_ATTR);
+extern __attribute__((preserve_none)) void HOLE_BANN_TGT(JitState *);
+STENCIL op_branch_attr_ne_null(JitState *s) {
+  if (ndb_jit_h_branch_attr_null(s,
+                                  (uint32_t)HOLE_NARROW(BANN_ATTR),
+                                  /*want_null=*/0)) {
+    [[clang::musttail]] return HOLE_BANN_TGT(s);
+  }
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* op_skip / op_exit : row terminators.                               */
 /*                                                                    */
 /* Bare returns; the extractor overrides the bytes entirely with      */
@@ -613,4 +658,6 @@ const StencilTailFn g_stencil_anchor[] = {
     op_load_const_int16,
     op_load_const_uint32,
     op_load_const_int32,
+    op_branch_attr_eq_null,
+    op_branch_attr_ne_null,
 };

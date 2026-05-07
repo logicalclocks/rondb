@@ -121,10 +121,13 @@ static const struct {
    * argument holes stay on the narrow-MOVZ path. Plus the new
    * LoadConst const-value holes — the const value rides in a
    * narrow MOVZ while the dst register index uses imm12 fold. */
-  { "MAGIC_LCN_COL_NARROW",   "op_load_col_ndb"       },
-  { "MAGIC_LCN_DST_NARROW",   "op_load_col_ndb"       },
-  { "MAGIC_LCU16_VAL_NARROW", "op_load_const_uint16"  },
-  { "MAGIC_LCI16_VAL_NARROW", "op_load_const_int16"   },
+  { "MAGIC_LCN_COL_NARROW",   "op_load_col_ndb"           },
+  { "MAGIC_LCN_DST_NARROW",   "op_load_col_ndb"           },
+  { "MAGIC_LCU16_VAL_NARROW", "op_load_const_uint16"      },
+  { "MAGIC_LCI16_VAL_NARROW", "op_load_const_int16"       },
+  /* Phase 5.0 cold-call branch attr_id holes. */
+  { "MAGIC_BAEN_ATTR_NARROW", "op_branch_attr_eq_null"    },
+  { "MAGIC_BANN_ATTR_NARROW", "op_branch_attr_ne_null"    },
 };
 static const size_t kNarrowMagicToStencilLen =
     sizeof(kNarrowMagicToStencil) / sizeof(kNarrowMagicToStencil[0]);

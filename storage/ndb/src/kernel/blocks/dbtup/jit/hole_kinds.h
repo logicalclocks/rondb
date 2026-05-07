@@ -148,6 +148,11 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_LCU32_VAL", HK_OP_IMM       },
   { "HOLE_LCI32_DST", HK_OP_A         },
   { "HOLE_LCI32_VAL", HK_OP_IMM       },
+  /* Phase 5.0 cold-call branch attr_id holes + branch targets. */
+  { "HOLE_BAEN_ATTR", HK_OP_B         },
+  { "HOLE_BAEN_TGT",  HK_BRANCH_TAKE  },
+  { "HOLE_BANN_ATTR", HK_OP_B         },
+  { "HOLE_BANN_TGT",  HK_BRANCH_TAKE  },
 };
 static const size_t kHoleSymbolTableLen =
     sizeof(kHoleSymbolTable) / sizeof(kHoleSymbolTable[0]);
@@ -287,6 +292,10 @@ static const size_t kHoleSymbolTableLen =
  * 16-bit immediate; the destination index is an imm12 fold). */
 #define MAGIC_LCI16_VAL_NARROW    0xe8c3u
 #define MAGIC_LCU16_VAL_NARROW    0x27fdu
+/* Phase 5.0 cold-call branch attr_id holes (narrow MOVZ).
+ * BAEN = BRANCH_ATTR_EQ_NULL, BANN = BRANCH_ATTR_NE_NULL. */
+#define MAGIC_BAEN_ATTR_NARROW    0x6344u
+#define MAGIC_BANN_ATTR_NARROW    0xb2bfu
 
 /* Phase 4.7 32-bit LoadConst const-value magics. Encoded as a
  * 2-instruction MOVZ + MOVK chain in W-form (instruction prefix
@@ -405,6 +414,10 @@ static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
    * index uses imm12 fold via kHoleFoldMagicTable. */
   { MAGIC_LCI16_VAL_NARROW, HK_OP_IMM, "MAGIC_LCI16_VAL_NARROW" },
   { MAGIC_LCU16_VAL_NARROW, HK_OP_IMM, "MAGIC_LCU16_VAL_NARROW" },
+  /* Phase 5.0 cold-call branch attr_id — HK_OP_B (the bridge puts
+   * attrId in op->b). */
+  { MAGIC_BAEN_ATTR_NARROW, HK_OP_B,  "MAGIC_BAEN_ATTR_NARROW" },
+  { MAGIC_BANN_ATTR_NARROW, HK_OP_B,  "MAGIC_BANN_ATTR_NARROW" },
 };
 static const size_t kHoleNarrowMagicTableLen =
     sizeof(kHoleNarrowMagicTable) / sizeof(kHoleNarrowMagicTable[0]);
