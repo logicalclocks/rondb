@@ -1,25 +1,31 @@
 # RONDB-1056 Phase 4 — DBTUP thin-slice integration (results)
 
-**Status: shipped, partial.** The cold-call mechanism, the
-bytecode bridge, the per-node compile site in `DblqhProxy`, the
-per-row dispatch in `JoinAggInterpreter`, and the first cold-call
-helper (`ndb_jit_h_load_col`) all land. ndbmtd builds and links
-cleanly with the JIT path wired through. Static / unit-level
-testing covers the full mechanism end-to-end at the JIT layer.
+**Status: shipped.** The cold-call mechanism, the bytecode bridge,
+the per-node compile site in `DblqhProxy`, the per-row dispatch in
+`JoinAggInterpreter`, and the first cold-call helper
+(`ndb_jit_h_load_col`) all land. ndbmtd builds and links cleanly
+with the JIT path wired through. Static / unit-level testing
+covers the mechanism end-to-end at the JIT layer, and the MTR
+canary `rondb_jit_canary` exercises the full path — RonSQL
+planner → JOIN_AGG_SETUP_REQ → bridge + admission → JIT compile
+→ runtime cold-call into NDB's readAttributes — through real SQL
+queries against real NDB tables.
 
-The **MTR canary** that exercises the path through real SQL has
-been **deferred** to Phase 4.5 / future work. Reasoning: routing
-a real query through `JOIN_AGG_SETUP_REQ` with bytecode that
-Phase 4 admission accepts requires RonSQL-planner cooperation
-that's outside the scope of this branch — most realistic
-aggregation queries use embedded interpreter blocks
-(`kOpEmbeddedInterp`) for nullability / filter logic, which
-admission rejects. A canary needs either a hand-crafted bytecode
-injected via internal API, or a planner-side hint that emits
-admission-clean bytecode. Either is a separate work item.
+The MTR canary surfaced one bug during first-run: a per-thread vs
+per-arena state mismatch in the JIT arena's macOS write-protect
+toggle. When `jit1_compile` ran on a different thread than the
+arena's creator, the arena's global `jit_write_enabled` flag
+short-circuited the per-thread `pthread_jit_write_protect_np(0)`
+call, leaving the calling thread in write-protected state. The
+first write through the unified MAP_JIT mapping faulted SIGBUS.
+Fix: arena_alloc on macOS now unconditionally re-enables write on
+the calling thread, regardless of the global flag. Idempotent;
+one extra syscall per compile.
 
 Branch: `RONDB-1056-compiled-interpreter`. Final commit at
-writing: `6b783a02ff0`.
+writing: `9fec407dd1a` (the SIGBUS fix); shipped state is the
+state of the branch as of that commit + all preceding Phase 4
+work.
 
 ## Outcome
 
@@ -32,16 +38,23 @@ writing: `6b783a02ff0`.
 | `bridge_tests` 10/10 PASS | ✓ |
 | `coldcall_tests` 5/5 PASS | ✓ |
 | `proto_microbench` (regression) PASS | ✓ |
-| MTR canary running real SQL through the full path | **deferred** |
-| `bench_q12_dbtc` informational speedup | **deferred** (depends on MTR) |
+| MTR canary `rondb_jit_canary` running real SQL through the full path | ✓ |
+| `bench_q12_dbtc` informational speedup | deferred to Phase 5 |
 
-The cold-call infrastructure is verified to work end-to-end at
-the JIT layer (coldcall_tests T1-T5). The DBTUP-side helper
-(`DbtupJitGlue::ndb_jit_h_load_col`) is verified to build and
-link via ndbmtd. The unverified gap is at the boundary between
-those two: a real query routing through `JOIN_AGG_SETUP_REQ`
-with admission-clean bytecode that exercises the helper for real
-column reads.
+The MTR canary validates the boundary that the unit tests can't
+reach by themselves: a real query routing through
+`JOIN_AGG_SETUP_REQ`, admission accepting the bytecode (Q1-Q3 in
+the canary's set), the JIT'd code calling `ndb_jit_h_load_col`,
+and that helper calling NDB's real `readAttributes` on real DBTUP
+row buffers. Q4 (WHERE-bearing) exercises the fallback path —
+admission rejects (kOpEmbeddedInterp), the interpreter handles
+every row, results match.
+
+The `bench_q12_dbtc` informational speedup gate stays deferred
+to Phase 5 — Phase 4's bytecode coverage (no embedded interp,
+no nullable, no division) is too narrow for q12 to be a
+representative measurement. Once Phase 5 expands coverage,
+q12 becomes meaningful.
 
 ## What shipped
 
@@ -213,8 +226,8 @@ hardening).
 | `coldcall_tests` 5/5 PASS | ✓ |
 | `proto_microbench` regression PASS | ✓ |
 | `ndbmtd` builds + links cleanly | ✓ |
-| Per-program-dispatch invariant unit test | **deferred** (impl re-checks per row; branch predictor folds it; production callers don't flip) |
-| Canary MTR test PASS with JIT on/off | **deferred** to Phase 4.5 |
-| Fallback MTR test (admission rejects, interp runs) | **deferred** to Phase 4.5 |
-| No new MTR failures | **deferred** to Phase 4.5 |
-| `bench_q12_dbtc` informational speedup | **deferred** to Phase 4.5 |
+| Canary MTR test `rondb_jit_canary` PASS | ✓ — Q1-Q3 admission-accept; Q4 admission-reject + interp fallback; all four queries produce correct results |
+| Fallback MTR test (admission rejects, interp runs) | ✓ — Q4 of `rondb_jit_canary` is the fallback case |
+| Per-program-dispatch invariant unit test | deferred (impl re-checks `m_jit_entry` per row; branch predictor folds it; production callers don't flip mid-program — Phase 5 can codify if the invariant ever becomes load-bearing) |
+| No new MTR failures across `testJoinAgg` family | deferred — broader regression sweep belongs in Phase 5 alongside the wider opcode coverage |
+| `bench_q12_dbtc` informational speedup | deferred to Phase 5 — Phase 4's narrow coverage (no embedded interp, no nullable, no division) is unrepresentative |

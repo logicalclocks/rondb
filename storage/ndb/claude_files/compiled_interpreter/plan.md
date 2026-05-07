@@ -608,19 +608,21 @@ the JIT and matches interpreted output bit-for-bit.
 
 ## 10. Phase 4 — DBTUP thin-slice integration
 
-**Status: shipped (partial).** See `phase_4_setup_integration.md`
-for the results doc. The cold-call mechanism, bytecode bridge,
-per-node compile site, per-row dispatch, and first cold-call
-helper (`ndb_jit_h_load_col`) all land. ndbmtd builds and links
-cleanly with the JIT path wired through. Static / unit-level
-testing covers the mechanism end-to-end at the JIT layer
-(coldcall_tests 5/5 PASS, plus ~38 cases across extractor /
-admission / bridge / microbench). The MTR canary that exercises
-the path through real SQL is deferred to Phase 4.5 / future
-because most aggregation queries use kOpEmbeddedInterp blocks
-that admission rejects — a canary needs RonSQL-side cooperation
-to emit admission-clean bytecode. Final commit at writing:
-`6b783a02ff0`.
+**Status: shipped.** See `phase_4_setup_integration.md` for the
+results doc. The cold-call mechanism, bytecode bridge, per-node
+compile site, per-row dispatch, first cold-call helper
+(`ndb_jit_h_load_col`), and an MTR canary that exercises the
+full path with real SQL all land. ndbmtd builds and links
+cleanly with the JIT path wired through. ~43 unit-test cases
+PASS across extractor / admission / bridge / coldcall /
+microbench, plus the `rondb_jit_canary` MTR test runs four
+representative query shapes including a fallback case. Final
+commit at canary-pass: `9fec407dd1a` (the SIGBUS fix that made
+the canary green).
+
+`bench_q12_dbtc` perf gate stays deferred to Phase 5 — Phase 4's
+narrow coverage (no embedded interp, no nullable, no division)
+is unrepresentative for end-to-end query benchmarks.
 
 **Goal.** Wire the JIT into the proxy-level `JOIN_AGG_SETUP_REQ`
 handler so that each aggregation program is compiled **once per data
