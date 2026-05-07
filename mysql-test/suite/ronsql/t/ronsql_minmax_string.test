@@ -23,16 +23,17 @@ CREATE TABLE str_minmax (
   grp INT NOT NULL,
   v VARCHAR(20),
   c CHAR(8),
+  lv VARCHAR(300),
   PRIMARY KEY USING HASH (id)
 ) ENGINE=NDB;
 
 INSERT INTO str_minmax VALUES
-  (1, 10, 'delta', 'dd'),
-  (2, 10, 'alpha', 'aa'),
-  (3, 10, NULL,    NULL),
-  (4, 20, 'echo',  'ee'),
-  (5, 20, 'bravo', 'bb'),
-  (6, 30, NULL,    NULL);
+  (1, 10, 'delta', 'dd', 'long-delta'),
+  (2, 10, 'alpha', 'aa', 'long-alpha'),
+  (3, 10, NULL,    NULL, NULL),
+  (4, 20, 'echo',  'ee', 'long-echo'),
+  (5, 20, '',      'bb', ''),
+  (6, 30, NULL,    NULL, NULL);
 
 --enable_warnings
 --enable_query_log
@@ -41,27 +42,30 @@ DELIMITER |;
 
 --echo
 --echo
---echo === Test 1: scalar MIN/MAX over VARCHAR and CHAR ===
+--echo === Test 1: scalar MIN/MAX over VARCHAR, CHAR and Longvarchar ===
 
 let $QUERY=
 SELECT MIN(v) AS min_v, MAX(v) AS max_v,
-       MIN(c) AS min_c, MAX(c) AS max_c
+       MIN(c) AS min_c, MAX(c) AS max_c,
+       MIN(lv) AS min_lv, MAX(lv) AS max_lv
 FROM str_minmax;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
 --sorted_result
 SELECT MIN(v) AS min_v, MAX(v) AS max_v,
-       MIN(c) AS min_c, MAX(c) AS max_c
+       MIN(c) AS min_c, MAX(c) AS max_c,
+       MIN(lv) AS min_lv, MAX(lv) AS max_lv
 FROM str_minmax|
 
 --echo
 --echo
---echo === Test 2: grouped MIN/MAX over VARCHAR and CHAR ===
+--echo === Test 2: grouped MIN/MAX over VARCHAR, CHAR and Longvarchar ===
 
 let $QUERY=
 SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v,
-       MIN(c) AS min_c, MAX(c) AS max_c
+       MIN(c) AS min_c, MAX(c) AS max_c,
+       MIN(lv) AS min_lv, MAX(lv) AS max_lv
 FROM str_minmax
 GROUP BY grp;|
 --source suite/ronsql/include/ronsql_compare.inc
@@ -69,7 +73,8 @@ GROUP BY grp;|
 --echo == Expected result ==
 --sorted_result
 SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v,
-       MIN(c) AS min_c, MAX(c) AS max_c
+       MIN(c) AS min_c, MAX(c) AS max_c,
+       MIN(lv) AS min_lv, MAX(lv) AS max_lv
 FROM str_minmax
 GROUP BY grp|
 

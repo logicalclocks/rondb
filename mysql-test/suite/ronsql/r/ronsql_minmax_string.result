@@ -5,10 +5,11 @@ call mtr.add_suppression("Participant timeout");
 
 
 
-=== Test 1: scalar MIN/MAX over VARCHAR and CHAR ===
+=== Test 1: scalar MIN/MAX over VARCHAR, CHAR and Longvarchar ===
 == Query ==
 SELECT MIN(v) AS min_v, MAX(v) AS max_v,
-MIN(c) AS min_c, MAX(c) AS max_c
+MIN(c) AS min_c, MAX(c) AS max_c,
+MIN(lv) AS min_lv, MAX(lv) AS max_lv
 FROM str_minmax;
 
 Number of output lines, including header: 2
@@ -20,16 +21,18 @@ Number of output lines, including header: 2
 
 == Expected result ==
 SELECT MIN(v) AS min_v, MAX(v) AS max_v,
-MIN(c) AS min_c, MAX(c) AS max_c
+MIN(c) AS min_c, MAX(c) AS max_c,
+MIN(lv) AS min_lv, MAX(lv) AS max_lv
 FROM str_minmax|
-min_v	max_v	min_c	max_c
-alpha	echo	aa	ee
+min_v	max_v	min_c	max_c	min_lv	max_lv
+	echo	aa	ee		long-echo
 
 
-=== Test 2: grouped MIN/MAX over VARCHAR and CHAR ===
+=== Test 2: grouped MIN/MAX over VARCHAR, CHAR and Longvarchar ===
 == Query ==
 SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v,
-MIN(c) AS min_c, MAX(c) AS max_c
+MIN(c) AS min_c, MAX(c) AS max_c,
+MIN(lv) AS min_lv, MAX(lv) AS max_lv
 FROM str_minmax
 GROUP BY grp;
 
@@ -42,13 +45,14 @@ Number of output lines, including header: 4
 
 == Expected result ==
 SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v,
-MIN(c) AS min_c, MAX(c) AS max_c
+MIN(c) AS min_c, MAX(c) AS max_c,
+MIN(lv) AS min_lv, MAX(lv) AS max_lv
 FROM str_minmax
 GROUP BY grp|
-grp	min_v	max_v	min_c	max_c
-10	alpha	delta	aa	dd
-20	bravo	echo	bb	ee
-30	NULL	NULL	NULL	NULL
+grp	min_v	max_v	min_c	max_c	min_lv	max_lv
+10	alpha	delta	aa	dd	long-alpha	long-delta
+20		echo	bb	ee		long-echo
+30	NULL	NULL	NULL	NULL	NULL	NULL
 
 === Cleanup ===
 DROP TABLE str_minmax;

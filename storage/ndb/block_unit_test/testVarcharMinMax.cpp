@@ -23,23 +23,26 @@
  * state, F.2-K.4) + the AGG_CHAR_RESULT wire format (F.2-K.5) +
  * NdbAggregator API parse + Result::data_str (F.2-K.5d-1, K.5d-3).
  *
- * Single-table scalar aggregation only — no joins, no GROUP BY, no
- * CTE.  This is the simplest path that touches the new wire format
- * end-to-end.  GROUP BY and CTE_LOOKUP-fed string MIN/MAX have wider
+ * Single-table scalar and GROUP BY aggregation only — no joins and no
+ * CTE.  These are the simplest paths that touch the new wire format
+ * end-to-end.  Join and CTE_LOOKUP-fed string MIN/MAX have wider
  * surfaces (linked-attr string format, CTE delivery substitution)
- * tracked under the F.4 follow-up plan.
+ * tracked by follow-up coverage.
  *
  * Schema (created by this test):
  *   vctest_t (
  *     id INT NOT NULL PRIMARY KEY,
  *     grp INT NOT NULL,
  *     vname VARCHAR(20) NOT NULL,
- *     cname CHAR(8) NOT NULL
+ *     cname CHAR(8) NOT NULL,
+ *     lname VARCHAR(300) NOT NULL
  *   ) ENGINE=NDB
  *
  * Test rows: 'Alice'/'A1', 'Bob'/'B2', 'Charlie'/'C3', 'Dave'/'D4',
- * 'Eve'/'E5'.  MIN(vname)='Alice', MAX(vname)='Eve';
- * MIN(cname)='A1', MAX(cname)='E5'.
+ * 'Eve'/'E5' plus 260-byte Longvarchar payloads.
+ * MIN(vname)='Alice', MAX(vname)='Eve';
+ * MIN(cname)='A1', MAX(cname)='E5';
+ * MIN(lname)=260 x 'a', MAX(lname)=260 x 'z'.
  */
 
 #include <ndb_global.h>
@@ -87,15 +90,16 @@ static int setupSchema(MYSQL *conn) {
         "  id INT NOT NULL PRIMARY KEY,"
         "  grp INT NOT NULL,"
         "  vname VARCHAR(20) NOT NULL,"
-        "  cname CHAR(8) NOT NULL"
+        "  cname CHAR(8) NOT NULL,"
+        "  lname VARCHAR(300) NOT NULL"
         ") ENGINE=NDB") != 0) return -1;
   if (runQuery(conn,
         "INSERT INTO vctest_t VALUES "
-        "  (1, 1, 'Alice',   'A1'),"
-        "  (2, 1, 'Bob',     'B2'),"
-        "  (3, 2, 'Charlie', 'C3'),"
-        "  (4, 2, 'Dave',    'D4'),"
-        "  (5, 2, 'Eve',     'E5')") != 0) return -1;
+        "  (1, 1, 'Alice',   'A1', REPEAT('z', 260)),"
+        "  (2, 1, 'Bob',     'B2', REPEAT('a', 260)),"
+        "  (3, 2, 'Charlie', 'C3', REPEAT('m', 260)),"
+        "  (4, 2, 'Dave',    'D4', REPEAT('n', 260)),"
+        "  (5, 2, 'Eve',     'E5', REPEAT('e', 260))") != 0) return -1;
   return 0;
 }
 
@@ -130,6 +134,11 @@ static int verifyString(const char *label, NdbAggregator::Result &result,
   return 0;
 }
 
+static void fillExpectedLong(char *buf, char ch) {
+  memset(buf, ch, 260);
+  buf[260] = 0;
+}
+
 static int runScalarTest(Ndb *ndb) {
   V("\n=== Test: scalar MIN/MAX over VARCHAR + CHAR ===\n");
 
@@ -142,8 +151,14 @@ static int runScalarTest(Ndb *ndb) {
   }
   const NdbDictionary::Column *vnameCol = tab->getColumn("vname");
   const NdbDictionary::Column *cnameCol = tab->getColumn("cname");
-  if (vnameCol == nullptr || cnameCol == nullptr) {
+  const NdbDictionary::Column *lnameCol = tab->getColumn("lname");
+  if (vnameCol == nullptr || cnameCol == nullptr || lnameCol == nullptr) {
     fprintf(stderr, "Column lookup failed\n");
+    return -1;
+  }
+  if (lnameCol->getType() != NdbDictionary::Column::Longvarchar) {
+    fprintf(stderr, "FAIL scalar: lname is type %d, expected Longvarchar\n",
+            (int)lnameCol->getType());
     return -1;
   }
 
@@ -156,6 +171,8 @@ static int runScalarTest(Ndb *ndb) {
    *   agg[1] = MAX(vname)   -> 'Eve'
    *   agg[2] = MIN(cname)   -> 'A1'
    *   agg[3] = MAX(cname)   -> 'E5'
+   *   agg[4] = MIN(lname)   -> 260 x 'a'
+   *   agg[5] = MAX(lname)   -> 260 x 'z'
    */
   NdbAggregator agg(tab);
   if (!agg.LoadColumn(vnameCol->getAttrId(), 0) ||
@@ -164,6 +181,9 @@ static int runScalarTest(Ndb *ndb) {
       !agg.LoadColumn(cnameCol->getAttrId(), 1) ||
       !agg.Min(2, 1) ||
       !agg.Max(3, 1) ||
+      !agg.LoadColumn(lnameCol->getAttrId(), 2) ||
+      !agg.Min(4, 2) ||
+      !agg.Max(5, 2) ||
       !agg.Finalize()) {
     fprintf(stderr, "Aggregation program build failed: %s\n",
             agg.GetError().err_msg_);
@@ -220,13 +240,21 @@ static int runScalarTest(Ndb *ndb) {
     NdbAggregator::Result maxV = rec.FetchAggregationResult();
     NdbAggregator::Result minC = rec.FetchAggregationResult();
     NdbAggregator::Result maxC = rec.FetchAggregationResult();
+    NdbAggregator::Result minL = rec.FetchAggregationResult();
+    NdbAggregator::Result maxL = rec.FetchAggregationResult();
+    char expectedA[261];
+    char expectedZ[261];
+    fillExpectedLong(expectedA, 'a');
+    fillExpectedLong(expectedZ, 'z');
     if (verifyString("MIN(vname)", minV, "Alice") != 0) failures++;
     if (verifyString("MAX(vname)", maxV, "Eve")   != 0) failures++;
     if (verifyString("MIN(cname)", minC, "A1")    != 0) failures++;
     if (verifyString("MAX(cname)", maxC, "E5")    != 0) failures++;
+    if (verifyString("MIN(lname)", minL, expectedA) != 0) failures++;
+    if (verifyString("MAX(lname)", maxL, expectedZ) != 0) failures++;
     NdbAggregator::Result end = rec.FetchAggregationResult();
     if (!end.end()) {
-      fprintf(stderr, "FAIL scalar: expected end after 4 aggregate slots\n");
+      fprintf(stderr, "FAIL scalar: expected end after 6 aggregate slots\n");
       failures++;
     }
   }
@@ -346,8 +374,8 @@ static int runGroupByTest(Ndb *ndb) {
   return failures == 0 ? 0 : -1;
 }
 
-static int runBuilderRejectTest(Ndb *ndb) {
-  V("\n=== Test: builder rejects SUM over string register ===\n");
+static int runLongvarcharGroupByTest(Ndb *ndb) {
+  V("\n=== Test: GROUP BY MIN/MAX over Longvarchar ===\n");
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable("vctest_t");
@@ -358,16 +386,135 @@ static int runBuilderRejectTest(Ndb *ndb) {
   }
 
   NdbAggregator agg(tab);
-  if (!agg.LoadColumn("vname", 0)) {
-    fprintf(stderr, "LoadColumn(vname) unexpectedly failed: %s\n",
+  if (!agg.GroupBy("grp") ||
+      !agg.LoadColumn("lname", 0) ||
+      !agg.Min(0, 0) ||
+      !agg.Max(1, 0) ||
+      !agg.Finalize()) {
+    fprintf(stderr, "Longvarchar GROUP BY program build failed: %s\n",
             agg.GetError().err_msg_);
     return -1;
   }
-  if (agg.Sum(0, 0)) {
-    fprintf(stderr, "FAIL builder: SUM(VARCHAR) unexpectedly succeeded\n");
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    fprintf(stderr, "startTransaction failed: %s\n",
+            ndb->getNdbError().message);
     return -1;
   }
-  V("  OK  SUM(VARCHAR) rejected: %s\n", agg.GetError().err_msg_);
+  NdbScanOperation *scan = trans->getNdbScanOperation(tab);
+  if (scan == nullptr) {
+    fprintf(stderr, "getNdbScanOperation failed: %s\n",
+            trans->getNdbError().message);
+    trans->close();
+    return -1;
+  }
+  if (scan->readTuples(NdbOperation::LM_CommittedRead) != 0) {
+    fprintf(stderr, "readTuples failed: %s\n",
+            trans->getNdbError().message);
+    trans->close();
+    return -1;
+  }
+  if (scan->setAggregationCode(&agg) != 0) {
+    fprintf(stderr, "setAggregationCode failed: %s\n",
+            trans->getNdbError().message);
+    trans->close();
+    return -1;
+  }
+  if (scan->DoAggregation() != 0) {
+    fprintf(stderr, "DoAggregation failed: %s\n",
+            trans->getNdbError().message);
+    trans->close();
+    return -1;
+  }
+
+  char expectedA[261];
+  char expectedE[261];
+  char expectedN[261];
+  char expectedZ[261];
+  fillExpectedLong(expectedA, 'a');
+  fillExpectedLong(expectedE, 'e');
+  fillExpectedLong(expectedN, 'n');
+  fillExpectedLong(expectedZ, 'z');
+
+  int failures = 0;
+  bool seenGrp1 = false;
+  bool seenGrp2 = false;
+  while (true) {
+    NdbAggregator::ResultRecord rec = agg.FetchResultRecord();
+    if (rec.end()) break;
+
+    NdbAggregator::Column grp = rec.FetchGroupbyColumn();
+    if (grp.is_null()) {
+      fprintf(stderr, "FAIL long group: GROUP BY column is NULL\n");
+      failures++;
+      continue;
+    }
+    Int32 groupNo = grp.data_int32();
+
+    NdbAggregator::Result minL = rec.FetchAggregationResult();
+    NdbAggregator::Result maxL = rec.FetchAggregationResult();
+    NdbAggregator::Result end = rec.FetchAggregationResult();
+    if (!end.end()) {
+      fprintf(stderr,
+              "FAIL long group %d: expected end after 2 aggregate slots\n",
+              groupNo);
+      failures++;
+    }
+
+    if (groupNo == 1) {
+      seenGrp1 = true;
+      if (verifyString("grp1 MIN(lname)", minL, expectedA) != 0) failures++;
+      if (verifyString("grp1 MAX(lname)", maxL, expectedZ) != 0) failures++;
+    } else if (groupNo == 2) {
+      seenGrp2 = true;
+      if (verifyString("grp2 MIN(lname)", minL, expectedE) != 0) failures++;
+      if (verifyString("grp2 MAX(lname)", maxL, expectedN) != 0) failures++;
+    } else {
+      fprintf(stderr, "FAIL long group: unexpected group %d\n", groupNo);
+      failures++;
+    }
+  }
+
+  if (!seenGrp1 || !seenGrp2) {
+    fprintf(stderr,
+            "FAIL long group: missing expected groups, seen 1=%d 2=%d\n",
+            seenGrp1, seenGrp2);
+    failures++;
+  }
+
+  trans->close();
+  return failures == 0 ? 0 : -1;
+}
+
+static int runBuilderRejectTest(Ndb *ndb) {
+  V("\n=== Test: builder rejects SUM over string registers ===\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("vctest_t");
+  const NdbDictionary::Table *tab = dict->getTable("vctest_t");
+  if (tab == nullptr) {
+    fprintf(stderr, "Cannot find vctest_t: %s\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const char *columns[] = {"vname", "cname", "lname"};
+  const char *labels[] = {"VARCHAR", "CHAR", "Longvarchar"};
+  for (Uint32 i = 0; i < 3; i++) {
+    NdbAggregator agg(tab);
+    if (!agg.LoadColumn(columns[i], 0)) {
+      fprintf(stderr, "LoadColumn(%s) unexpectedly failed: %s\n",
+              columns[i], agg.GetError().err_msg_);
+      return -1;
+    }
+    if (agg.Sum(0, 0)) {
+      fprintf(stderr, "FAIL builder: SUM(%s) unexpectedly succeeded\n",
+              labels[i]);
+      return -1;
+    }
+    V("  OK  SUM(%s) rejected: %s\n",
+      labels[i], agg.GetError().err_msg_);
+  }
   return 0;
 }
 
@@ -450,6 +597,7 @@ int main(int argc, char **argv) {
       }
       if (runScalarTest(&ndb) != 0) result = 1;
       if (runGroupByTest(&ndb) != 0) result = 1;
+      if (runLongvarcharGroupByTest(&ndb) != 0) result = 1;
       if (runBuilderRejectTest(&ndb) != 0) result = 1;
     }
 
