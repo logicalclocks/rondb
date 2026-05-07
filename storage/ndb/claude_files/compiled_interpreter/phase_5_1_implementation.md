@@ -331,6 +331,12 @@ If a sub-phase blocks:
 
 - Phase 5.0 results doc: `phase_5_0_embedded_calls.md`.
 - Phase 5 broader plan: `phase_5_implementation.md` §4-§7.
+- Phase 5.1 next debugging and deterministic NDB API test plan:
+  `phase_5_1_debug_test_strategy.md`.
+- Phase 5.1 accumulator correctness follow-up:
+  `phase_5_1_row_accumulated.md`.
+- Phase 5.1 overflow parity follow-up:
+  `phase_5_1_overflow_parity.md`.
 - NDB embedded interpreter: `Interpreter.hpp`,
   `DbtupExecQuery.cpp`, `JoinAggInterpreter.cpp`.
 - Phase 5.0 bridge translation: `ndb_jit_bridge.c`'s
