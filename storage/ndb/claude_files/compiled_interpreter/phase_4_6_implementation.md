@@ -48,6 +48,41 @@ Phase 4.6 should drop it again to roughly 3-4 µs.
 Same posture as Phase 4.5 — concrete experiments first, then
 implementation. The spike fits in ~½ day.
 
+> **Day 0 spike resolutions (2026-05-07).** All six items
+> resolved via `/tmp/phase46_spike.c` compiled with the pinned
+> upstream clang 20.1.8 and disassembled. Two adjustments
+> required vs the initial design:
+>
+> 1. The narrow `"n"` constraint **must mask the magic to
+>    `& 0xFFFFu`** in the constraint expression — otherwise
+>    clang's asm formatter prints the value as a signed int and
+>    rejects magics with the high 16-bit bit set (e.g.,
+>    `0xfc24` was being printed as `-988`). The wide chain
+>    already does this masking per slice. The narrow helper
+>    parameter type changes from `uint16_t` to `uint32_t` so the
+>    masking expression compiles cleanly.
+> 2. The narrow helper **must return `uint64_t`, not `uint16_t`**
+>    — otherwise clang emits a redundant
+>    `and rN, rN, #0xffff` after each MOVZ to "honor" the
+>    16-bit return type. With `uint64_t` return, clang trusts
+>    the MOVZ zero-extension and drops the AND. (MOVZ in the
+>    W-form encoding `0x52800000` zero-fills the upper 32 bits
+>    of the X-register; subsequent uses index into a 64-bit
+>    array slot using the X-register, which is exactly what we
+>    want.)
+>
+> Headline numbers from the spike (post-strip):
+>
+> | Spike stencil | Post-strip | Phase 4.5 | Saving |
+> |---|---:|---:|---:|
+> | s1_load_const  | 24 B | 44 B | −45 % |
+> | s2_mov         | 16 B | 40 B | −60 % |
+> | s3_add         | 28 B | 60 B | −53 % |
+> | s4_branch_lt   | 28 B | 56 B | −50 % |
+> | s5_load_col_ndb| 28 B | 52 B | −46 % |
+>
+> Predicted full stencil-set saving: ~50 % off Phase 4.5 bytes.
+
 ### ★ Investigate I1 — `"n"` constraint accepts our magic constants
 
 The `"n"` constraint is *integer immediate, must fit machine
@@ -208,7 +243,7 @@ static inline uint16_t aarch64_hole_narrow_(uint16_t magic) {
 }
 ```
 
-**Phase 4.6:**
+**Phase 4.6** (post-spike form):
 
 ```c
 __attribute__((always_inline))
@@ -229,12 +264,18 @@ static inline uint64_t aarch64_hole_(uint64_t magic) {
 }
 
 __attribute__((always_inline))
-static inline uint16_t aarch64_hole_narrow_(uint16_t magic) {
-  uint16_t v;
+static inline uint64_t aarch64_hole_narrow_(uint32_t magic) {
+  /* Parameter is uint32_t (not uint16_t) so the `& 0xFFFFu` mask
+   * in the constraint expression compiles without sign-formatting
+   * trouble. Return is uint64_t so clang trusts the MOVZ zero-
+   * extension and skips emitting `and rN, rN, #0xffff`. The
+   * caller's `HOLE_NARROW(name)` macro feeds the magic constant
+   * directly. */
+  uint64_t v;
   __asm__ volatile (
     "movz %w[out], %[m]"
     : [out] "=r" (v)
-    : [m]   "n"  (magic)
+    : [m]   "n"  (magic & 0xFFFFu)
   );
   return v;
 }
