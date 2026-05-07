@@ -486,6 +486,39 @@ STENCIL op_load_col_ndb(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* op_load_const_uint16 / op_load_const_int16                         */
+/*                                                                    */
+/* Phase 4.7 narrow LoadConst variants. The bridge picks the          */
+/* smallest-fitting variant per constant value:                       */
+/*   value ∈ [0,    65535]  → op_load_const_uint16  ( 8 B post-strip) */
+/*   value ∈ [-32768,  -1]  → op_load_const_int16   (12 B post-strip) */
+/*                                                                    */
+/* uint16 form: MOVZ + STR (no sign-extend; W-form MOVZ zero-fills    */
+/*              the upper 48 bits of the X-register).                 */
+/* int16 form:  MOVZ + SXTH + STR (sign-extend the 16-bit signed      */
+/*              value before storing to int64 regs_i64 slot).         */
+/*                                                                    */
+/* The destination register index uses the imm12 fold pattern (one    */
+/* STR with patched imm12). The const value uses the existing narrow- */
+/* MOVZ pattern (one MOVZ with patched imm16 carrying the bit         */
+/* pattern of the 16-bit value).                                      */
+/* ------------------------------------------------------------------ */
+DECLARE_FOLD_HOLE(LCU16_DST);
+DECLARE_NARROW_HOLE(LCU16_VAL);
+STENCIL op_load_const_uint16(JitState *s) {
+  HOLE_STORE_REG(LCU16_DST, s, (int64_t)HOLE_NARROW(LCU16_VAL));
+  TAIL_NEXT(s);
+}
+
+DECLARE_FOLD_HOLE(LCI16_DST);
+DECLARE_NARROW_HOLE(LCI16_VAL);
+STENCIL op_load_const_int16(JitState *s) {
+  HOLE_STORE_REG(LCI16_DST, s,
+                 (int64_t)(int16_t)HOLE_NARROW(LCI16_VAL));
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* op_skip / op_exit : row terminators.                               */
 /*                                                                    */
 /* Bare returns; the extractor overrides the bytes entirely with      */
@@ -526,4 +559,6 @@ const StencilTailFn g_stencil_anchor[] = {
     op_minus_int_int,
     op_mul_int_int,
     op_load_col_ndb,
+    op_load_const_uint16,
+    op_load_const_int16,
 };

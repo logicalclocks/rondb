@@ -181,7 +181,20 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
         int64_t value = read_int64_le(ndb_prog, pos + 1);
-        if (!emit_op(out_prog, OP_LOAD_CONST_INT, reg_index, 0, 0, value)) {
+        /* Phase 4.7: dispatch to the smallest-fitting LoadConst
+         * variant. Smallest first so each fast path exits early.
+         * Most NDB query literals are small non-negative integers
+         * and route to the 8 B uint16 stencil. */
+        OpKind kind;
+        if (value >= 0 && value <= 0xFFFFLL) {
+          kind = OP_LOAD_CONST_UINT16;        /*  8 B */
+        } else if (value >= -32768 && value <= -1) {
+          kind = OP_LOAD_CONST_INT16;         /* 12 B (negative-only) */
+        } else {
+          /* (Day 4 will insert UINT32 + INT32 variants here.) */
+          kind = OP_LOAD_CONST_INT;           /* 20 B fallback */
+        }
+        if (!emit_op(out_prog, kind, reg_index, 0, 0, value)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }

@@ -830,6 +830,8 @@ static const OpkindMap kOpkindMap[] = {
   { "op_minus_int_int",       "OP_MINUS_INT_INT"      },
   { "op_mul_int_int",         "OP_MUL_INT_INT"        },
   { "op_load_col_ndb",        "OP_LOAD_COL_NDB"       },
+  { "op_load_const_uint16",   "OP_LOAD_CONST_UINT16"  },
+  { "op_load_const_int16",    "OP_LOAD_CONST_INT16"   },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 
@@ -970,7 +972,7 @@ int main(int argc, char **argv) {
   TextRelas    relas    = parse_text_relas(&blob, &sections);
 
   /* Walk symbols in order, extract each op_*. */
-  ExtractedStencil stencils[16];
+  ExtractedStencil stencils[24];
   size_t n_stencils = 0;
   for (size_t i = 0; i < symbols.n_syms; ++i) {
     const Elf64_Sym *sym = &symbols.syms[i];

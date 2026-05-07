@@ -103,7 +103,13 @@ typedef enum {
    * Operand layout: a=dst_reg, c=col_id (16-bit, fits in op->c
    * after Phase 4's ≤255 col_id restriction). */
   OP_LOAD_COL_NDB       = 16,
-  OP_KIND_MAX           = OP_LOAD_COL_NDB
+  /* Phase 4.7 narrow LoadConst variants. The bridge picks the
+   * smallest-fitting variant per constant value. Operand layout:
+   * a=dst_reg, imm=constant value (the patcher writes only the
+   * 16-bit MOVZ slice). */
+  OP_LOAD_CONST_UINT16  = 17,   /* 0..65535,  MOVZ + STR (8 B) */
+  OP_LOAD_CONST_INT16   = 18,   /* -32768..-1, MOVZ + SXTH + STR (12 B) */
+  OP_KIND_MAX           = OP_LOAD_CONST_INT16
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

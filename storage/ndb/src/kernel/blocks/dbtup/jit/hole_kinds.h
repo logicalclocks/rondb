@@ -138,6 +138,11 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_MUL_DST",   HK_OP_A         },
   { "HOLE_MUL_A",     HK_OP_B         },
   { "HOLE_MUL_B",     HK_OP_C         },
+  /* Phase 4.7 narrow LoadConst variants. */
+  { "HOLE_LCU16_DST", HK_OP_A         },
+  { "HOLE_LCU16_VAL", HK_OP_IMM       },
+  { "HOLE_LCI16_DST", HK_OP_A         },
+  { "HOLE_LCI16_VAL", HK_OP_IMM       },
 };
 static const size_t kHoleSymbolTableLen =
     sizeof(kHoleSymbolTable) / sizeof(kHoleSymbolTable[0]);
@@ -273,6 +278,10 @@ static const size_t kHoleSymbolTableLen =
 #define MAGIC_BNE_B_NARROW        0xa048u
 #define MAGIC_LCN_COL_NARROW      0x08f7u
 #define MAGIC_LCN_DST_NARROW      0x1f53u
+/* Phase 4.7 LoadConst const-value holes (narrow MOVZ for the
+ * 16-bit immediate; the destination index is an imm12 fold). */
+#define MAGIC_LCI16_VAL_NARROW    0xe8c3u
+#define MAGIC_LCU16_VAL_NARROW    0x27fdu
 
 /* ------------------------------------------------------------------ */
 /* Phase 4.7 imm12-fold magics (aarch64-only).                        */
@@ -372,6 +381,11 @@ static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
    * array indices, so fold doesn't apply. */
   { MAGIC_LCN_COL_NARROW,   HK_OP_C,  "MAGIC_LCN_COL_NARROW"   },
   { MAGIC_LCN_DST_NARROW,   HK_OP_A,  "MAGIC_LCN_DST_NARROW"   },
+  /* Phase 4.7 LoadConst const-value holes — HK_OP_IMM, narrow
+   * because the value fits in 16 bits. The destination register
+   * index uses imm12 fold via kHoleFoldMagicTable. */
+  { MAGIC_LCI16_VAL_NARROW, HK_OP_IMM, "MAGIC_LCI16_VAL_NARROW" },
+  { MAGIC_LCU16_VAL_NARROW, HK_OP_IMM, "MAGIC_LCU16_VAL_NARROW" },
 };
 static const size_t kHoleNarrowMagicTableLen =
     sizeof(kHoleNarrowMagicTable) / sizeof(kHoleNarrowMagicTable[0]);

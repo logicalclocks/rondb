@@ -116,9 +116,13 @@ static const struct {
 } kNarrowMagicToStencil[] = {
   /* Phase 4.7: 28 of 30 narrow magics migrated to imm12 fold (see
    * kFoldMagicToStencil below). Only op_load_col_ndb's helper-
-   * argument holes stay on the narrow-MOVZ path. */
+   * argument holes stay on the narrow-MOVZ path. Plus the new
+   * LoadConst const-value holes — the const value rides in a
+   * narrow MOVZ while the dst register index uses imm12 fold. */
   { "MAGIC_LCN_COL_NARROW",   "op_load_col_ndb"       },
   { "MAGIC_LCN_DST_NARROW",   "op_load_col_ndb"       },
+  { "MAGIC_LCU16_VAL_NARROW", "op_load_const_uint16"  },
+  { "MAGIC_LCI16_VAL_NARROW", "op_load_const_int16"   },
 };
 static const size_t kNarrowMagicToStencilLen =
     sizeof(kNarrowMagicToStencil) / sizeof(kNarrowMagicToStencil[0]);
@@ -200,6 +204,9 @@ static const struct {
   { "MAGIC_BGE_B_FOLD",       "op_branch_ge_int_int",  1 },
   { "MAGIC_BNE_A_FOLD",       "op_branch_ne_int_int",  1 },
   { "MAGIC_BNE_B_FOLD",       "op_branch_ne_int_int",  1 },
+  /* Phase 4.7 LoadConst variant destinations. */
+  { "MAGIC_LCU16_DST_FOLD",   "op_load_const_uint16",  1 },
+  { "MAGIC_LCI16_DST_FOLD",   "op_load_const_int16",   1 },
 };
 static const size_t kFoldMagicToStencilLen =
     sizeof(kFoldMagicToStencil) / sizeof(kFoldMagicToStencil[0]);
@@ -225,7 +232,7 @@ static const char *expected_stencil_for_fold(const char *magic_name,
 /* the identifier, then read hex bytes (`0xXX`) until `}`.            */
 /* ------------------------------------------------------------------ */
 
-#define MAX_STENCILS         16
+#define MAX_STENCILS         24
 #define MAX_STENCIL_BYTES  2048
 #define MAX_NAME_LEN         64
 
