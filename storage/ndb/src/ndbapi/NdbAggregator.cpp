@@ -320,8 +320,9 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         agg_rec = new char[gb_cols_len + agg_res_len];
         memcpy(agg_rec, reinterpret_cast<const char*>(&data_buf[parse_pos]),
             gb_cols_len + agg_res_len);
+        const Uint32 agg_array_len = n_agg_results * sizeof(AggResItem);
         GBHashEntry new_entry{agg_rec, gb_cols_len};
-        GBHashEntry new_aggs{agg_rec + gb_cols_len, agg_res_len};
+        GBHashEntry new_aggs{agg_rec + gb_cols_len, agg_array_len};
 
         // Phase I.6 (F.2-K.5d): replace each string slot's wire
         // val_ptr (zero) with a freshly-allocated local buffer
@@ -330,8 +331,7 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         // bytes live in the per-slot allocation.
         if (wire_has_strings) {
           AggResItem* slots = reinterpret_cast<AggResItem*>(new_aggs.ptr);
-          const Uint32 array_bytes = n_agg_results * sizeof(AggResItem);
-          const char* appended = new_aggs.ptr + array_bytes;
+          const char* appended = new_aggs.ptr + agg_array_len;
           resolveStringSlots(slots, n_agg_results, appended);
         }
 
@@ -351,7 +351,7 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
 
         gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
               new_entry, new_aggs));
-        agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + agg_res_len);
+        agg_res_ptr = reinterpret_cast<AggResItem*>(new_aggs.ptr);
       }
       DEB_TRACE();
 
@@ -363,6 +363,15 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
              agg_res_len == n_agg_results * sizeof(AggResItem));
       const AggResItem* res = reinterpret_cast<const AggResItem*>(
                            &data_buf[parse_pos + (gb_cols_len >> 2)]);
+      AggResItem local_res[MAX_AGG_N_RESULTS];
+      if (need_merge && wire_has_strings) {
+        memcpy(local_res, res, n_agg_results * sizeof(AggResItem));
+        const Uint32 agg_array_len = n_agg_results * sizeof(AggResItem);
+        const char* appended =
+            reinterpret_cast<const char*>(res) + agg_array_len;
+        resolveStringSlots(local_res, n_agg_results, appended);
+        res = local_res;
+      }
       if (need_merge) {
         DEB_TRACE();
         for (Uint32 i = 0; i < n_agg_results; i++) {
@@ -464,6 +473,18 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
                 DEB_TRACE();
                 assert(0);
                 break;
+            }
+          }
+        }
+        if (wire_has_strings) {
+          for (Uint32 i = 0; i < n_agg_results; i++) {
+            Uint32 t = local_res[i].type;
+            if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+                 t == NDB_TYPE_LONGVARCHAR) &&
+                local_res[i].value.val_ptr != nullptr &&
+                local_res[i].value.val_ptr !=
+                    agg_res_ptr[i].value.val_ptr) {
+              delete[] static_cast<char*>(local_res[i].value.val_ptr);
             }
           }
         }

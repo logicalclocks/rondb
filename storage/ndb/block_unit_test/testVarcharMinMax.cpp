@@ -32,6 +32,7 @@
  * Schema (created by this test):
  *   vctest_t (
  *     id INT NOT NULL PRIMARY KEY,
+ *     grp INT NOT NULL,
  *     vname VARCHAR(20) NOT NULL,
  *     cname CHAR(8) NOT NULL
  *   ) ENGINE=NDB
@@ -84,6 +85,7 @@ static int setupSchema(MYSQL *conn) {
   if (runQuery(conn,
         "CREATE TABLE vctest_t ("
         "  id INT NOT NULL PRIMARY KEY,"
+        "  grp INT NOT NULL,"
         "  vname VARCHAR(20) NOT NULL,"
         "  cname CHAR(8) NOT NULL"
         ") ENGINE=NDB"
@@ -93,11 +95,11 @@ static int setupSchema(MYSQL *conn) {
         " PARTITION BY KEY() PARTITIONS 1") != 0) return -1;
   if (runQuery(conn,
         "INSERT INTO vctest_t VALUES "
-        "  (1, 'Alice',   'A1'),"
-        "  (2, 'Bob',     'B2'),"
-        "  (3, 'Charlie', 'C3'),"
-        "  (4, 'Dave',    'D4'),"
-        "  (5, 'Eve',     'E5')") != 0) return -1;
+        "  (1, 1, 'Alice',   'A1'),"
+        "  (2, 1, 'Bob',     'B2'),"
+        "  (3, 2, 'Charlie', 'C3'),"
+        "  (4, 2, 'Dave',    'D4'),"
+        "  (5, 2, 'Eve',     'E5')") != 0) return -1;
   return 0;
 }
 
@@ -132,7 +134,7 @@ static int verifyString(const char *label, NdbAggregator::Result &result,
   return 0;
 }
 
-static int runTest(Ndb *ndb) {
+static int runScalarTest(Ndb *ndb) {
   V("\n=== Test: scalar MIN/MAX over VARCHAR + CHAR ===\n");
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
@@ -161,9 +163,9 @@ static int runTest(Ndb *ndb) {
    */
   NdbAggregator agg(tab);
   if (!agg.LoadColumn(vnameCol->getAttrId(), 0) ||
-      !agg.LoadColumn(cnameCol->getAttrId(), 1) ||
       !agg.Min(0, 0) ||
       !agg.Max(1, 0) ||
+      !agg.LoadColumn(cnameCol->getAttrId(), 1) ||
       !agg.Min(2, 1) ||
       !agg.Max(3, 1) ||
       !agg.Finalize()) {
@@ -226,6 +228,122 @@ static int runTest(Ndb *ndb) {
     if (verifyString("MAX(vname)", maxV, "Eve")   != 0) failures++;
     if (verifyString("MIN(cname)", minC, "A1")    != 0) failures++;
     if (verifyString("MAX(cname)", maxC, "E5")    != 0) failures++;
+    NdbAggregator::Result end = rec.FetchAggregationResult();
+    if (!end.end()) {
+      fprintf(stderr, "FAIL scalar: expected end after 4 aggregate slots\n");
+      failures++;
+    }
+  }
+
+  trans->close();
+  return failures == 0 ? 0 : -1;
+}
+
+static int runGroupByTest(Ndb *ndb) {
+  V("\n=== Test: GROUP BY MIN/MAX over VARCHAR + CHAR ===\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("vctest_t");
+  const NdbDictionary::Table *tab = dict->getTable("vctest_t");
+  if (tab == nullptr) {
+    fprintf(stderr, "Cannot find vctest_t: %s\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  NdbAggregator agg(tab);
+  if (!agg.GroupBy("grp") ||
+      !agg.LoadColumn("vname", 0) ||
+      !agg.Min(0, 0) ||
+      !agg.Max(1, 0) ||
+      !agg.LoadColumn("cname", 1) ||
+      !agg.Min(2, 1) ||
+      !agg.Max(3, 1) ||
+      !agg.Finalize()) {
+    fprintf(stderr, "GROUP BY aggregation program build failed: %s\n",
+            agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    fprintf(stderr, "startTransaction failed: %s\n",
+            ndb->getNdbError().message);
+    return -1;
+  }
+  NdbScanOperation *scan = trans->getNdbScanOperation(tab);
+  if (scan == nullptr) {
+    fprintf(stderr, "getNdbScanOperation failed: %s\n",
+            trans->getNdbError().message);
+    trans->close();
+    return -1;
+  }
+  if (scan->readTuples(NdbOperation::LM_CommittedRead) != 0) {
+    fprintf(stderr, "readTuples failed: %s\n",
+            trans->getNdbError().message);
+    trans->close();
+    return -1;
+  }
+  if (scan->setAggregationCode(&agg) != 0) {
+    fprintf(stderr, "setAggregationCode failed: %s\n",
+            trans->getNdbError().message);
+    trans->close();
+    return -1;
+  }
+  if (scan->DoAggregation() != 0) {
+    fprintf(stderr, "DoAggregation failed: %s\n",
+            trans->getNdbError().message);
+    trans->close();
+    return -1;
+  }
+
+  int failures = 0;
+  bool seenGrp1 = false;
+  bool seenGrp2 = false;
+  while (true) {
+    NdbAggregator::ResultRecord rec = agg.FetchResultRecord();
+    if (rec.end()) break;
+
+    NdbAggregator::Column grp = rec.FetchGroupbyColumn();
+    if (grp.is_null()) {
+      fprintf(stderr, "FAIL group: GROUP BY column is NULL\n");
+      failures++;
+      continue;
+    }
+    Int32 groupNo = grp.data_int32();
+
+    NdbAggregator::Result minV = rec.FetchAggregationResult();
+    NdbAggregator::Result maxV = rec.FetchAggregationResult();
+    NdbAggregator::Result minC = rec.FetchAggregationResult();
+    NdbAggregator::Result maxC = rec.FetchAggregationResult();
+    NdbAggregator::Result end = rec.FetchAggregationResult();
+    if (!end.end()) {
+      fprintf(stderr, "FAIL group %d: expected end after 4 aggregate slots\n",
+              groupNo);
+      failures++;
+    }
+
+    if (groupNo == 1) {
+      seenGrp1 = true;
+      if (verifyString("grp1 MIN(vname)", minV, "Alice") != 0) failures++;
+      if (verifyString("grp1 MAX(vname)", maxV, "Bob")   != 0) failures++;
+      if (verifyString("grp1 MIN(cname)", minC, "A1")    != 0) failures++;
+      if (verifyString("grp1 MAX(cname)", maxC, "B2")    != 0) failures++;
+    } else if (groupNo == 2) {
+      seenGrp2 = true;
+      if (verifyString("grp2 MIN(vname)", minV, "Charlie") != 0) failures++;
+      if (verifyString("grp2 MAX(vname)", maxV, "Eve")     != 0) failures++;
+      if (verifyString("grp2 MIN(cname)", minC, "C3")      != 0) failures++;
+      if (verifyString("grp2 MAX(cname)", maxC, "E5")      != 0) failures++;
+    } else {
+      fprintf(stderr, "FAIL group: unexpected group %d\n", groupNo);
+      failures++;
+    }
+  }
+
+  if (!seenGrp1 || !seenGrp2) {
+    fprintf(stderr, "FAIL group: missing expected groups, seen 1=%d 2=%d\n",
+            seenGrp1, seenGrp2);
+    failures++;
   }
 
   trans->close();
@@ -309,7 +427,8 @@ int main(int argc, char **argv) {
         ndb_end(0);
         return 1;
       }
-      if (runTest(&ndb) != 0) result = 1;
+      if (runScalarTest(&ndb) != 0) result = 1;
+      if (runGroupByTest(&ndb) != 0) result = 1;
     }
 
     dropSchema(mysqlConn);
