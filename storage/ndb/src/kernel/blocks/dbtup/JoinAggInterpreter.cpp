@@ -1444,6 +1444,15 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
             sr.declared_size = static_cast<Uint16>(declared);
             sr.charset = cs;
             m_registers[reg_index].value.val_int64 = 0;
+            // See AggInterpreter.cpp for rationale — bump
+            // m_attr_read_pos past the string so the next kOpLoadCol
+            // doesn't clobber the captured ptr.
+            {
+              const Uint32 string_bytes = prefix + payload_len;
+              const Uint32 words_consumed = 1 /*AttributeHeader*/ +
+                                            ((string_bytes + 3) >> 2);
+              m_attr_read_pos += words_consumed;
+            }
             break;
           }
           default:

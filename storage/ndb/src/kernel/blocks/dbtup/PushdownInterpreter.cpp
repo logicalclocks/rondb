@@ -64,6 +64,16 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
                    type == NDB_TYPE_DECIMALUNSIGNED) {
           reg_types[reg_index] = NDB_TYPE_UNDEFINED;
           exec_pos++;
+        } else if (type == NDB_TYPE_CHAR ||
+                   type == NDB_TYPE_VARCHAR ||
+                   type == NDB_TYPE_LONGVARCHAR) {
+          // Phase I.6 (F.2-K.4): keep strings out of the BIGINT
+          // track — the type-specialised kOpMaxBigint / kOpMinBigint
+          // variants only handle numeric AggResItem values.  Leaving
+          // the type as UNDEFINED means kOpMax / kOpMin stay generic
+          // and dispatch on m_registers[reg].type at runtime to
+          // route strings into minMaxString.
+          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
         } else {
           reg_types[reg_index] = NDB_TYPE_BIGINT;
         }

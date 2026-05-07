@@ -1,0 +1,4 @@
+--source include/have_ndb.inc
+
+--echo Running testVarcharMinMax
+--exec $NDB_PUSH_AGG_DIR/testVarcharMinMax -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

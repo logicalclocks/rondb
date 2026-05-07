@@ -376,6 +376,14 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
             agg_res_ptr[i] = res[i];
             continue;
           }
+          // Phase I.6 (F.2-K.5d-1): preserve the first-source winner
+          // for string MIN/MAX slots — multi-source merge requires
+          // charset-aware compare and lands in K.5d-2.
+          if (res[i].type == NDB_TYPE_CHAR ||
+              res[i].type == NDB_TYPE_VARCHAR ||
+              res[i].type == NDB_TYPE_LONGVARCHAR) {
+            continue;
+          }
           if (res[i].is_null) {
             DEB_TRACE();
             continue;
@@ -527,10 +535,18 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
 
     for (Uint32 i = 0; i < n_agg_results; i++) {
       DEB_TRACE();
+      // Phase I.6 (F.2-K.5d-1): allow CHAR / VARCHAR / Longvarchar
+      // through the per-slot type check.  Multi-source merge for
+      // strings (charset-aware compare) is K.5d-2.
+      const bool is_string_type =
+          (res[i].type == NDB_TYPE_CHAR ||
+           res[i].type == NDB_TYPE_VARCHAR ||
+           res[i].type == NDB_TYPE_LONGVARCHAR);
       assert((((res[i].type == NDB_TYPE_BIGINT &&
               (res[i].is_unsigned == agg_res_ptr[i].is_unsigned ||
                agg_res_ptr[i].is_null)) ||
-              res[i].type == NDB_TYPE_DOUBLE) &&
+              res[i].type == NDB_TYPE_DOUBLE ||
+              is_string_type) &&
               res[i].type == agg_res_ptr[i].type) ||
               agg_res_ptr[i].type == NDB_TYPE_UNDEFINED ||
               (res[i].type == NDB_TYPE_UNDEFINED &&
@@ -540,6 +556,10 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
       } else if (agg_res_ptr[i].is_null) {
         DEB_TRACE();
         agg_res_ptr[i] = res[i];
+      } else if (is_string_type) {
+        // K.5d-1: preserve first-source winner.  Multi-source string
+        // MIN/MAX merge is K.5d-2.
+        DEB_TRACE();
       } else {
         DEB_TRACE();
         agg_res_ptr[i].type = res[i].type;
@@ -649,6 +669,14 @@ bool NdbAggregator::TypeSupported(NdbDictionary::Column::Type type) {
     case NdbDictionary::Column::Double:
     case NdbDictionary::Column::Decimal:
     case NdbDictionary::Column::Decimalunsigned:
+    // Phase I.6 (F.2 + F.3): kernel-side MIN/MAX over CHAR / VARCHAR /
+    // Longvarchar is wired via the AggResItem.value.val_ptr per-(group,
+    // slot) state and the AGG_CHAR_RESULT wire format.  LoadColumn /
+    // Max / Min on these types are accepted; LoadColumn-then-Sum is
+    // still a kernel-side error (no Sum-over-string semantics).
+    case NdbDictionary::Column::Char:
+    case NdbDictionary::Column::Varchar:
+    case NdbDictionary::Column::Longvarchar:
       return true;
     default:
       return false;

@@ -1716,6 +1716,18 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             sr.declared_size = static_cast<Uint16>(declared);
             sr.charset = cs;
             m_registers[reg_index].value.val_int64 = 0;
+            // Advance m_attr_read_pos past the AttributeHeader + string
+            // bytes so the next kOpLoadCol doesn't overwrite the
+            // captured ptr.  Numeric paths leave m_attr_read_pos at 0
+            // (they extract into the register's 8-byte union and the
+            // buffer is then disposable); strings need the buffer to
+            // stay live until kOpMax / kOpMin runs minMaxString.
+            {
+              const Uint32 string_bytes = prefix + payload_len;
+              const Uint32 words_consumed = 1 /*AttributeHeader*/ +
+                                            ((string_bytes + 3) >> 2);
+              m_attr_read_pos += words_consumed;
+            }
             break;
           }
           default:
