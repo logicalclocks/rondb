@@ -1,0 +1,95 @@
+--source include/have_ndb.inc
+
+# RONDB-1056 Phase 5.0 — embedded interpreter canary.
+#
+# Drives a join-aggregation query that includes a WHERE clause
+# Phase 5.0's bridge can JIT-compile via the embedded normal-
+# interpreter path. Specifically, Phase 5.0 admits:
+#
+#   - BRANCH_ATTR_EQ_NULL / BRANCH_ATTR_NE_NULL  (cold-call helper)
+#   - EXIT_OK / EXIT_OK_LAST                     (no-op fall through)
+#   - EXIT_REFUSE                                (early row exit)
+#
+# Anything else inside an embedded block rejects the whole program
+# and falls back to the normal interpreter (correctness preserved
+# but no JIT speed-up).
+#
+# This test exercises `WHERE col IS NULL` and `WHERE col IS NOT NULL`
+# patterns, which the SQL planner translates to BRANCH_ATTR_*_NULL
+# inside the embedded interp block of the SUM aggregation program.
+#
+# Validation strategy: each query has a deterministic expected
+# result derivable by hand from the test data. If the JIT path is
+# wrong (filter mis-applied, accumulator not skipped on EXIT_REFUSE,
+# branch target mis-routed), the SUM diverges from the expected
+# value.
+
+--echo ############################################################
+--echo # RONDB-1056 Phase 5.0 embedded JIT canary
+--echo ############################################################
+
+--let $join_pushdown = `SELECT @@ndb_join_pushdown`
+if (!$join_pushdown) {
+  --skip ndb_join_pushdown must be enabled
+}
+
+--echo # Tables: BIGINT columns including a nullable c1.
+CREATE TABLE t (
+  pk BIGINT NOT NULL,
+  c1 BIGINT,
+  c2 BIGINT NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+CREATE TABLE p (
+  pk BIGINT NOT NULL,
+  cnt BIGINT NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+--echo # Load test data — 6 rows; c1 NULL on rows 2 and 5 only.
+INSERT INTO t VALUES
+  (1, 10,   100),
+  (2, NULL, 200),
+  (3, 30,   300),
+  (4, 40,   400),
+  (5, NULL, 500),
+  (6, 60,   600);
+INSERT INTO p VALUES
+  (1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1);
+
+SET ndb_join_pushdown_aggregate=ON;
+
+--echo ############################################################
+--echo # Q1: SUM(t.c2) over rows where t.c1 IS NULL.
+--echo #     Embedded block carries BRANCH_ATTR_NE_NULL (skip if
+--echo #     c1 not null) → JIT'd via op_branch_attr_ne_null.
+--echo #     Expected: t2.c2 for pk in {2, 5} = 200 + 500 = 700.
+--echo ############################################################
+SELECT SUM(t.c2)
+  FROM p JOIN t ON t.pk = p.pk
+ WHERE t.c1 IS NULL;
+
+--echo ############################################################
+--echo # Q2: SUM(t.c2) over rows where t.c1 IS NOT NULL.
+--echo #     Embedded block carries BRANCH_ATTR_EQ_NULL (skip if
+--echo #     c1 is null) → JIT'd via op_branch_attr_eq_null.
+--echo #     Expected: t2.c2 for pk in {1, 3, 4, 6} = 100+300+400+600 = 1400.
+--echo ############################################################
+SELECT SUM(t.c2)
+  FROM p JOIN t ON t.pk = p.pk
+ WHERE t.c1 IS NOT NULL;
+
+--echo ############################################################
+--echo # Q3: COUNT(*) — common simple case for IS NULL.
+--echo #     Expected: 2 rows have t.c1 IS NULL (pk 2 and 5).
+--echo ############################################################
+SELECT COUNT(*)
+  FROM p JOIN t ON t.pk = p.pk
+ WHERE t.c1 IS NULL;
+
+--echo ############################################################
+--echo # Cleanup
+--echo ############################################################
+DROP TABLE t;
+DROP TABLE p;
