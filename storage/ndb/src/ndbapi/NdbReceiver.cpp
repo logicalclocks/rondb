@@ -1105,7 +1105,9 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
 
   const AttributeHeader agg_checker_ah(*aDataPtr);
   if (aLength > 0 &&
-      agg_checker_ah.getAttributeId() == AttributeHeader::AGG_RESULT) {
+      (agg_checker_ah.getAttributeId() == AttributeHeader::AGG_RESULT ||
+       agg_checker_ah.getAttributeId() ==
+           AttributeHeader::AGG_CHAR_RESULT)) {
 #if defined(PA_CHECK) && !defined(NDEBUG)
     /*
      * PA related
@@ -1116,8 +1118,17 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
     const Uint32* data_buf = aDataPtr;
 
     AttributeHeader agg_checker_ah(data_buf[parse_pos++]);
-    assert(agg_checker_ah.getAttributeId() == AttributeHeader::AGG_RESULT &&
+    const Uint32 marker_id = agg_checker_ah.getAttributeId();
+    assert((marker_id == AttributeHeader::AGG_RESULT ||
+            marker_id == AttributeHeader::AGG_CHAR_RESULT) &&
         agg_checker_ah.getByteSize() == 0x0721);
+    // Phase I.6 (F.2-K.5): AGG_CHAR_RESULT carries an appended
+    // string-payload region per group; the per-group val length
+    // declared in the group header word covers both the AggResItem
+    // array and the appended region, so advance by that length
+    // rather than n_agg_results * sizeof(AggResItem).
+    const bool wire_has_strings =
+        (marker_id == AttributeHeader::AGG_CHAR_RESULT);
     Uint32 n_gb_cols = data_buf[parse_pos] >> 16;
     Uint32 n_agg_results = data_buf[parse_pos++] & 0xFFFF;
     Uint32 n_res_items = data_buf[parse_pos++];
@@ -1126,6 +1137,8 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
       for (Uint32 i = 0; i < n_res_items; i++) {
         Uint32 gb_cols_len = data_buf[parse_pos] >> 16;
         Uint32 agg_res_len = data_buf[parse_pos++] & 0xFFFF;
+        const Uint32 group_val_end =
+            parse_pos + ((gb_cols_len + agg_res_len) >> 2);
         Uint32 len = 0;
         for (Uint32 j = 0; j < n_gb_cols; j++) {
           AttributeHeader ah(data_buf[parse_pos++]);
@@ -1134,7 +1147,12 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
             len += sizeof(AttributeHeader) + ah.getDataSize() * sizeof (Int32);
             if (j == n_gb_cols - 1) {
               len += sizeof(AggResItem) * n_agg_results;
-              assert(gb_cols_len + agg_res_len == len);
+              // Numeric-only path: gb_cols_len + agg_res_len exactly
+              // matches the AttributeHeader+keys + AggResItem array.
+              // AGG_CHAR_RESULT path: agg_res_len includes appended
+              // string payload, so the equality no longer holds.
+              assert(wire_has_strings ||
+                     gb_cols_len + agg_res_len == len);
             }
           }
           parse_pos += ah.getDataSize();
@@ -1142,14 +1160,20 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
         for (Uint32 i = 0; i < n_agg_results; i++) {
           parse_pos += (sizeof(AggResItem) >> 2);
         }
+        // Skip any appended string-payload region (AGG_CHAR_RESULT).
+        assert(parse_pos <= group_val_end);
+        parse_pos = group_val_end;
       }
     } else {
       Uint32 gb_cols_len = data_buf[parse_pos] >> 16;
-      [[maybe_unused]] Uint32 agg_res_len = data_buf[parse_pos++] & 0xFFFF;
+      [[maybe_unused]] Uint32 agg_res_len =
+          data_buf[parse_pos++] & 0xFFFF;
       assert(gb_cols_len == 0);
-      for (Uint32 i = 0; i < n_agg_results; i++) {
-          parse_pos += (sizeof(AggResItem) >> 2);
-      }
+      // Numeric-only: agg_res_len == n_agg_results * 16.
+      // AGG_CHAR_RESULT: agg_res_len includes appended payload.
+      assert(wire_has_strings ||
+             agg_res_len == n_agg_results * sizeof(AggResItem));
+      parse_pos += (agg_res_len >> 2);
     }
     assert(parse_pos == aLength);
 #endif // PA_CHECK && !NDEBUG
@@ -1287,9 +1311,14 @@ NdbReceiver::handle_rec_attrs(NdbRecAttr* rec_attr_list,
     aLength--;
 
     {
-      if (attrId == AttributeHeader::AGG_RESULT) {
+      if (attrId == AttributeHeader::AGG_RESULT ||
+          attrId == AttributeHeader::AGG_CHAR_RESULT) {
         // PA related
-        // Only 1 NdbRecAttr per aggregation result
+        // Only 1 NdbRecAttr per aggregation result.  The API-side
+        // RecAttr is always registered as AGG_RESULT (canonical
+        // aggregation marker — see NdbRecAttr::setup); the wire
+        // marker may be either AGG_RESULT or, for results with
+        // string MIN/MAX slots, AGG_CHAR_RESULT (Phase I.6 F.2-K.5).
         assert(currRecAttr->theNext == nullptr &&
                currRecAttr->theAttrId == AttributeHeader::AGG_RESULT);
         /*
