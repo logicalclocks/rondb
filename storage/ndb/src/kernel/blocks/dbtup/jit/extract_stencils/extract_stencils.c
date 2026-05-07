@@ -759,6 +759,45 @@ static ExtractedStencil extract_one_arm64(
     }
   }
 
+  /* Pass 4 (Phase 4.7): LDR/STR imm12 fold holes.
+   *
+   * Walk every 4-byte instruction; for each LDR/STR (immediate,
+   * unsigned offset, X-form) extract the imm12 field at bits
+   * 21..10 and look it up in kHoleFoldMagicTable. Matches emit a
+   * Hole entry with width=1 — a marker for the engine patcher's
+   * imm12-write path (the operand value goes into bits 21..10
+   * of the LDR/STR instruction at the recorded byte offset).
+   *
+   *   LDR Xt, [Xn, #imm12]: 0xFFC00000 -> 0xF9400000
+   *   STR Xt, [Xn, #imm12]: 0xFFC00000 -> 0xF9000000
+   *
+   * The mask deliberately excludes the per-Rt/Rn bits — pass-4
+   * doesn't care which registers an LDR/STR uses, only its
+   * imm12. */
+  for (uint16_t off = 0; off + 4 <= out.n_bytes; off += 4) {
+    const uint8_t *p = out.bytes + off;
+    uint32_t insn = (uint32_t)p[0]        |
+                    ((uint32_t)p[1] << 8) |
+                    ((uint32_t)p[2] << 16)|
+                    ((uint32_t)p[3] << 24);
+
+    int is_ldr_imm = (insn & 0xFFC00000) == 0xF9400000;
+    int is_str_imm = (insn & 0xFFC00000) == 0xF9000000;
+    if (!is_ldr_imm && !is_str_imm) continue;
+
+    uint16_t imm12 = (uint16_t)((insn >> 10) & 0xFFFu);
+
+    for (size_t k = 0; k < kHoleFoldMagicTableLen; ++k) {
+      if (kHoleFoldMagicTable[k].magic == imm12) {
+        uint8_t kind = kHoleFoldMagicTable[k].kind;
+        /* width=1 marks an imm12-fold hole: operand value goes
+         * into bits 21..10 of the LDR/STR at this offset. */
+        add_hole(&out.holes, off, kind, 1);
+        break;
+      }
+    }
+  }
+
   qsort(out.holes.holes, out.holes.n_holes, sizeof(Hole), hole_cmp);
   return out;
 }

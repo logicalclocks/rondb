@@ -173,6 +173,41 @@ static const char *expected_stencil_for_narrow(const char *magic_name) {
       magic_name);
 }
 
+/* Phase 4.7: fold magics declared by stencils. Each appears as a
+ * single LDR/STR (immediate, X-form) imm12 at bits 21..10 in its
+ * declaring stencil and zero times in any other stencil.
+ *
+ * Day 1 lands the infrastructure with this table EMPTY — fold
+ * magics are pre-declared in hole_kinds.h but not yet referenced
+ * by any stencil. Day 2 starts populating this table as stencils
+ * migrate to the fold pattern.
+ *
+ * Note: unlike kNarrowMagicToStencil, this table is allowed to be
+ * smaller than the underlying kHoleFoldMagicTable[]. Magics in the
+ * latter without an entry here are inert — the audit's fold pass
+ * skips them (no expectation = no check). */
+static const struct {
+  const char *magic_name;
+  const char *stencil_name;
+} kFoldMagicToStencil[] = {
+  /* (none yet — Day 2+ migration adds entries) */
+  { NULL, NULL }    /* sentinel; the length-1 array form keeps C happy */
+};
+static const size_t kFoldMagicToStencilLen =
+    /* count actual entries (excluding the {NULL,NULL} sentinel). */
+    (sizeof(kFoldMagicToStencil) / sizeof(kFoldMagicToStencil[0])) - 1;
+
+static const char *expected_stencil_for_fold(const char *magic_name) {
+  for (size_t i = 0; i < kFoldMagicToStencilLen; ++i) {
+    if (strcmp(kFoldMagicToStencil[i].magic_name, magic_name) == 0) {
+      return kFoldMagicToStencil[i].stencil_name;
+    }
+  }
+  /* Returning NULL signals "no stencil currently declares this
+   * fold magic" — caller treats as "expected 0× everywhere". */
+  return NULL;
+}
+
 /* ------------------------------------------------------------------ */
 /* Header parsing.                                                    */
 /*                                                                    */
@@ -409,6 +444,39 @@ static int count_narrow_matches_arm64(const uint8_t *bytes,
 }
 
 /* ------------------------------------------------------------------ */
+/* aarch64: count LDR/STR (immediate, X-form) imm12 matches.          */
+/*                                                                    */
+/* Phase 4.7 fold holes: the codegen pattern collapses a              */
+/* `movz wN, #idx; ldr/str xT, [base, xN, lsl #3]` 2-instruction      */
+/* sequence into a single `ldr/str xT, [base, #(idx*8)]`. The audit   */
+/* verifies each declared fold magic appears as exactly one such      */
+/* LDR/STR imm12 in its declaring stencil and zero times elsewhere.   */
+/*                                                                    */
+/*   LDR Xt, [Xn, #imm12]: mask 0xFFC00000 -> match 0xF9400000        */
+/*   STR Xt, [Xn, #imm12]: mask 0xFFC00000 -> match 0xF9000000        */
+/* ------------------------------------------------------------------ */
+
+static int count_fold_matches_arm64(const uint8_t *bytes,
+                                     size_t n_bytes,
+                                     uint16_t magic) {
+  int count = 0;
+  for (size_t off = 0; off + 4 <= n_bytes; off += 4) {
+    uint32_t insn = (uint32_t)bytes[off]            |
+                    ((uint32_t)bytes[off + 1] << 8) |
+                    ((uint32_t)bytes[off + 2] << 16)|
+                    ((uint32_t)bytes[off + 3] << 24);
+
+    int is_ldr_imm = (insn & 0xFFC00000) == 0xF9400000;
+    int is_str_imm = (insn & 0xFFC00000) == 0xF9000000;
+    if (!is_ldr_imm && !is_str_imm) continue;
+
+    uint16_t imm12 = (uint16_t)((insn >> 10) & 0xFFFu);
+    if (imm12 == magic) count++;
+  }
+  return count;
+}
+
+/* ------------------------------------------------------------------ */
 /* x86_64: count 8-byte little-endian literal occurrences of `magic`. */
 /*                                                                    */
 /* Slides an 8-byte window across the stencil's bytes. With high-     */
@@ -561,6 +629,40 @@ int main(int argc, char **argv) {
         } else if (count > 0) {
           fprintf(stderr,
                   "  ok: %s found %dx in %s (narrow MOVZ, expected)\n",
+                  m->name, count, stencils[i].name);
+        }
+      }
+    }
+  }
+
+  /* Phase 4.7 fold magics: aarch64-only check. Each declared
+   * fold magic must appear as exactly one LDR/STR (immediate,
+   * X-form) imm12 in its declaring stencil and zero times in any
+   * other stencil. Fold magics WITHOUT a kFoldMagicToStencil[]
+   * entry are inert (no expectation, no check) — the table fills
+   * in as Day 2+ migrates stencils. */
+  if (is_arm64) {
+    for (size_t k = 0; k < kHoleFoldMagicTableLen; ++k) {
+      const HoleFoldMagicEntry *m = &kHoleFoldMagicTable[k];
+      const char *expected_in = expected_stencil_for_fold(m->name);
+      if (expected_in == NULL) continue;   /* no stencil yet — skip */
+
+      for (size_t i = 0; i < n_stencils; ++i) {
+        int count = count_fold_matches_arm64(stencils[i].bytes,
+                                              stencils[i].n_bytes,
+                                              m->magic);
+        int expected =
+            (strcmp(stencils[i].name, expected_in) == 0) ? 1 : 0;
+
+        if (count != expected) {
+          fprintf(stderr,
+                  "  VIOLATION: %s in %s: expected %d, found %d "
+                  "(fold imm12)\n",
+                  m->name, stencils[i].name, expected, count);
+          errors++;
+        } else if (count > 0) {
+          fprintf(stderr,
+                  "  ok: %s found %dx in %s (fold imm12, expected)\n",
                   m->name, count, stencils[i].name);
         }
       }

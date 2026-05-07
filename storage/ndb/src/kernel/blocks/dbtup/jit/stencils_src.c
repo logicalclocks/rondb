@@ -92,15 +92,23 @@ typedef __attribute__((preserve_none)) void (*StencilTailFn)(JitState *);
 #if defined(__x86_64__)
 #  define DECLARE_HOLE(name)         extern uint64_t HOLE_##name
 #  define DECLARE_NARROW_HOLE(name)  DECLARE_HOLE(name)
+#  define DECLARE_FOLD_HOLE(name)    DECLARE_HOLE(name)
 #  define HOLE(name)                 ((uint64_t)(uintptr_t)&HOLE_##name)
-/* On x86_64, narrow holes share the same extern symbol +
+/* On x86_64, narrow / fold holes share the same extern symbol +
  * R_X86_64_32 relocation pattern as wide holes. The 32-bit
  * immediate is wide enough for any operand value already; no
- * compaction is possible. HOLE_NARROW is a thin alias. */
+ * compaction is possible. HOLE_NARROW / HOLE_LOAD_REG /
+ * HOLE_STORE_REG fall back to the same `regs_i64[HOLE(...)]`
+ * idiom — clang lowers the index into rip-relative addressing. */
 #  define HOLE_NARROW(name)          HOLE(name)
+#  define HOLE_LOAD_REG(name, state)  \
+      ((state)->regs_i64[HOLE(name)])
+#  define HOLE_STORE_REG(name, state, value)  \
+      ((state)->regs_i64[HOLE(name)] = (value))
 #elif defined(__aarch64__)
 #  define DECLARE_HOLE(name)         /* nothing — magic constant from hole_kinds.h */
 #  define DECLARE_NARROW_HOLE(name)  /* nothing — same */
+#  define DECLARE_FOLD_HOLE(name)    /* nothing — same */
 
 /* Phase 4.6: inline asm with `"n"` immediate constraint. The
  * older Phase 4.5 form used `volatile uint{16,64}_t v = magic;
@@ -157,8 +165,58 @@ static inline uint64_t aarch64_hole_narrow_(uint32_t magic) {
   return v;
 }
 
+/* Phase 4.7: imm12-fold helpers for register-file LDR / STR.
+ *
+ * Replaces the `regs_i64[HOLE_NARROW(idx)]` two-instruction
+ * pattern (MOVZ + indexed-LDR/STR) with a single LDR/STR
+ * (immediate, unsigned offset, X-form) whose imm12 field
+ * carries the patched register index. Saves one MOVZ per
+ * memory access — typically 1-3 instructions per stencil.
+ *
+ * The magic in the source is a *byte offset* (= magic_idx * 8).
+ * The assembler divides by 8 to encode imm12 = magic_idx into
+ * bits 21..10 of the LDR/STR. The extractor's pass-4 walker
+ * scans LDR/STR instructions and matches imm12 against
+ * kHoleFoldMagicTable; the patcher rewrites bits 21..10 with
+ * the operand value at JIT compile time.
+ *
+ * The `& 0x7FF8u` constraint mask keeps the value within the
+ * imm12 range (12 bits × scale 8 = 32760 max byte offset). */
+__attribute__((always_inline))
+__attribute__((unused))   /* used once stencils migrate in Day 2+ */
+static inline int64_t aarch64_load_reg_(uint32_t magic_byte_off,
+                                         const JitState *state) {
+  int64_t v;
+  __asm__ volatile (
+    "ldr %[out], [%[base], %[off]]"
+    : [out] "=r" (v)
+    : [base] "r"  (state),
+      [off]  "n"  (magic_byte_off & 0x7FF8u)
+  );
+  return v;
+}
+
+__attribute__((always_inline))
+__attribute__((unused))
+static inline void aarch64_store_reg_(uint32_t magic_byte_off,
+                                       JitState *state,
+                                       int64_t value) {
+  __asm__ volatile (
+    "str %[v], [%[base], %[off]]"
+    :
+    : [v]    "r"  (value),
+      [base] "r"  (state),
+      [off]  "n"  (magic_byte_off & 0x7FF8u)
+    : "memory"
+  );
+}
+
 #  define HOLE(name)         aarch64_hole_(MAGIC_##name)
 #  define HOLE_NARROW(name)  aarch64_hole_narrow_(MAGIC_##name##_NARROW)
+#  define HOLE_LOAD_REG(name, state)         \
+      aarch64_load_reg_(MAGIC_##name##_FOLD * 8u, (state))
+#  define HOLE_STORE_REG(name, state, value) \
+      aarch64_store_reg_(MAGIC_##name##_FOLD * 8u, (state), (value))
 #else
 #  error "unsupported architecture for stencil source"
 #endif

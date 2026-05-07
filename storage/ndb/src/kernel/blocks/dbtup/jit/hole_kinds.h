@@ -274,6 +274,58 @@ static const size_t kHoleSymbolTableLen =
 #define MAGIC_LCN_COL_NARROW      0x08f7u
 #define MAGIC_LCN_DST_NARROW      0x1f53u
 
+/* ------------------------------------------------------------------ */
+/* Phase 4.7 imm12-fold magics (aarch64-only).                        */
+/*                                                                    */
+/* These get encoded into the imm12 field (bits 21..10) of an LDR or  */
+/* STR (immediate, unsigned offset, X-form). Source-level macros pass */
+/* the magic as a byte offset (= magic_idx * 8) and the assembler     */
+/* divides by 8 to encode imm12 = magic_idx. The extractor's pass-4   */
+/* walk and the audit's fold scan both match against imm12 directly.  */
+/*                                                                    */
+/* Generated via                                                      */
+/*   sha256("RONDB-1056-Phase4_7-fold-magic-v1|" + name +             */
+/*          optional_#counter)[0:12-bit]                              */
+/* Counter is rotated on collision (max 1 retry observed in spike).   */
+/*                                                                    */
+/* APPEND-ONLY: never reuse a value or rename. New entries land at    */
+/* the bottom; the v1 salt regenerates deterministically.             */
+/* ------------------------------------------------------------------ */
+#define MAGIC_MV_DST_FOLD        0xce9u
+#define MAGIC_MV_SRC_FOLD        0x858u
+#define MAGIC_LCI_DST_FOLD       0x156u
+#define MAGIC_LRC_DST_FOLD       0x99au
+#define MAGIC_LRC_COL_FOLD       0xeedu
+#define MAGIC_ADD_DST_FOLD       0x974u
+#define MAGIC_ADD_A_FOLD         0x767u
+#define MAGIC_ADD_B_FOLD         0x522u
+#define MAGIC_MINUS_DST_FOLD     0x078u
+#define MAGIC_MINUS_A_FOLD       0x2d1u
+#define MAGIC_MINUS_B_FOLD       0x029u  /* salt-rotated, retry=1 */
+#define MAGIC_MUL_DST_FOLD       0x208u
+#define MAGIC_MUL_A_FOLD         0xf35u
+#define MAGIC_MUL_B_FOLD         0x5c6u
+#define MAGIC_SUM_SLOT_FOLD      0x08cu
+#define MAGIC_SUM_SRC_FOLD       0x6f0u
+#define MAGIC_BLT_A_FOLD         0x707u
+#define MAGIC_BLT_B_FOLD         0x4f2u
+#define MAGIC_BLE_A_FOLD         0xa92u
+#define MAGIC_BLE_B_FOLD         0xe68u
+#define MAGIC_BEQ_A_FOLD         0xc4bu
+#define MAGIC_BEQ_B_FOLD         0xfbdu
+#define MAGIC_BGT_A_FOLD         0x4bbu
+#define MAGIC_BGT_B_FOLD         0x242u
+#define MAGIC_BGE_A_FOLD         0x494u
+#define MAGIC_BGE_B_FOLD         0x86fu
+#define MAGIC_BNE_A_FOLD         0x1efu
+#define MAGIC_BNE_B_FOLD         0xe2eu
+#define MAGIC_LCN_COL_FOLD       0x336u
+#define MAGIC_LCN_DST_FOLD       0xa9bu
+#define MAGIC_LCI16_DST_FOLD     0x37eu
+#define MAGIC_LCU16_DST_FOLD     0xa6bu
+#define MAGIC_LCI32_DST_FOLD     0x938u
+#define MAGIC_LCU32_DST_FOLD     0x064u  /* salt-rotated, retry=1 */
+
 /* For the magic-byte scan, the extractor needs a (magic_value,
  * hole_kind) table. We use the same entries as the symbol table
  * above, mapped to magic constants. This is for aarch64 only. */
@@ -350,6 +402,66 @@ static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
 };
 static const size_t kHoleNarrowMagicTableLen =
     sizeof(kHoleNarrowMagicTable) / sizeof(kHoleNarrowMagicTable[0]);
+
+/* ------------------------------------------------------------------ */
+/* Phase 4.7 imm12-fold table — LDR/STR fold holes on aarch64.        */
+/*                                                                    */
+/* The extractor's pass-4 fold walk and the audit's fold scan both    */
+/* consult this table. Magic values are 12-bit; the kind is the same  */
+/* as kHoleMagicTable (HK_OP_A/B/C/IMM); width is implicitly 1 (the   */
+/* operand value occupies the imm12 field of one LDR/STR instruction, */
+/* 4 bytes per hole). Patcher writes bits 21..10.                     */
+/*                                                                    */
+/* All 34 fold magics are pre-declared here (Day 1) but the actual    */
+/* kFoldMagicToStencil[] mapping in audit_magics.c starts empty and   */
+/* is populated as stencils migrate. Entries here without a stencil   */
+/* mapping are inert — the audit's pass loop skips them.              */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+  uint16_t    magic;
+  uint8_t     kind;
+  const char *name;
+} HoleFoldMagicEntry;
+
+static const HoleFoldMagicEntry kHoleFoldMagicTable[] = {
+  { MAGIC_MV_DST_FOLD,        HK_OP_A,  "MAGIC_MV_DST_FOLD"        },
+  { MAGIC_MV_SRC_FOLD,        HK_OP_B,  "MAGIC_MV_SRC_FOLD"        },
+  { MAGIC_LCI_DST_FOLD,       HK_OP_A,  "MAGIC_LCI_DST_FOLD"       },
+  { MAGIC_LRC_DST_FOLD,       HK_OP_A,  "MAGIC_LRC_DST_FOLD"       },
+  { MAGIC_LRC_COL_FOLD,       HK_OP_B,  "MAGIC_LRC_COL_FOLD"       },
+  { MAGIC_ADD_DST_FOLD,       HK_OP_A,  "MAGIC_ADD_DST_FOLD"       },
+  { MAGIC_ADD_A_FOLD,         HK_OP_B,  "MAGIC_ADD_A_FOLD"         },
+  { MAGIC_ADD_B_FOLD,         HK_OP_C,  "MAGIC_ADD_B_FOLD"         },
+  { MAGIC_MINUS_DST_FOLD,     HK_OP_A,  "MAGIC_MINUS_DST_FOLD"     },
+  { MAGIC_MINUS_A_FOLD,       HK_OP_B,  "MAGIC_MINUS_A_FOLD"       },
+  { MAGIC_MINUS_B_FOLD,       HK_OP_C,  "MAGIC_MINUS_B_FOLD"       },
+  { MAGIC_MUL_DST_FOLD,       HK_OP_A,  "MAGIC_MUL_DST_FOLD"       },
+  { MAGIC_MUL_A_FOLD,         HK_OP_B,  "MAGIC_MUL_A_FOLD"         },
+  { MAGIC_MUL_B_FOLD,         HK_OP_C,  "MAGIC_MUL_B_FOLD"         },
+  { MAGIC_SUM_SLOT_FOLD,      HK_OP_A,  "MAGIC_SUM_SLOT_FOLD"      },
+  { MAGIC_SUM_SRC_FOLD,       HK_OP_B,  "MAGIC_SUM_SRC_FOLD"       },
+  { MAGIC_BLT_A_FOLD,         HK_OP_A,  "MAGIC_BLT_A_FOLD"         },
+  { MAGIC_BLT_B_FOLD,         HK_OP_B,  "MAGIC_BLT_B_FOLD"         },
+  { MAGIC_BLE_A_FOLD,         HK_OP_A,  "MAGIC_BLE_A_FOLD"         },
+  { MAGIC_BLE_B_FOLD,         HK_OP_B,  "MAGIC_BLE_B_FOLD"         },
+  { MAGIC_BEQ_A_FOLD,         HK_OP_A,  "MAGIC_BEQ_A_FOLD"         },
+  { MAGIC_BEQ_B_FOLD,         HK_OP_B,  "MAGIC_BEQ_B_FOLD"         },
+  { MAGIC_BGT_A_FOLD,         HK_OP_A,  "MAGIC_BGT_A_FOLD"         },
+  { MAGIC_BGT_B_FOLD,         HK_OP_B,  "MAGIC_BGT_B_FOLD"         },
+  { MAGIC_BGE_A_FOLD,         HK_OP_A,  "MAGIC_BGE_A_FOLD"         },
+  { MAGIC_BGE_B_FOLD,         HK_OP_B,  "MAGIC_BGE_B_FOLD"         },
+  { MAGIC_BNE_A_FOLD,         HK_OP_A,  "MAGIC_BNE_A_FOLD"         },
+  { MAGIC_BNE_B_FOLD,         HK_OP_B,  "MAGIC_BNE_B_FOLD"         },
+  { MAGIC_LCN_COL_FOLD,       HK_OP_C,  "MAGIC_LCN_COL_FOLD"       },
+  { MAGIC_LCN_DST_FOLD,       HK_OP_A,  "MAGIC_LCN_DST_FOLD"       },
+  { MAGIC_LCI16_DST_FOLD,     HK_OP_A,  "MAGIC_LCI16_DST_FOLD"     },
+  { MAGIC_LCU16_DST_FOLD,     HK_OP_A,  "MAGIC_LCU16_DST_FOLD"     },
+  { MAGIC_LCI32_DST_FOLD,     HK_OP_A,  "MAGIC_LCI32_DST_FOLD"     },
+  { MAGIC_LCU32_DST_FOLD,     HK_OP_A,  "MAGIC_LCU32_DST_FOLD"     },
+};
+static const size_t kHoleFoldMagicTableLen =
+    sizeof(kHoleFoldMagicTable) / sizeof(kHoleFoldMagicTable[0]);
 #endif /* NDB_JIT_HOLE_KINDS_NO_TABLE */
 
 #ifdef __cplusplus

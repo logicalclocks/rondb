@@ -468,20 +468,38 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
         case HK_OP_C:
         case HK_OP_IMM: {
           int64_t v = hole_value_from_op(hole->kind, op);
-          /* Phase 4.5: width=2 marks an aarch64 narrow MOVZ hole.
-           * The instruction encodes only bits 0..15 (slot=0), so we
-           * skip slot_counter — that way wide chains and narrow
-           * MOVZ for the same kind can coexist within one stencil
-           * without throwing the chain's slot index off. The bottom
-           * 16 bits of `v` are the only part the narrow encoding
-           * carries; the operand domain (register index 0..255 or
-           * column number) fits comfortably. */
+          /* width discriminator (aarch64 only — x86_64 always
+           * has width=4 from the existing relocation path):
+           *   width=1: Phase 4.7 LDR/STR imm12 fold. Operand
+           *            value goes into bits 21..10 of one
+           *            LDR/STR instruction. Slot counter
+           *            untouched.
+           *   width=2: Phase 4.5 narrow MOVZ. slot=0, slot
+           *            counter untouched.
+           *   width=4: wide chain. slot=0..3 via slot_counter. */
+#if defined(__aarch64__)
+          if (hole->width == 1) {
+            /* Phase 4.7 imm12 fold. */
+            rmw_insn_word(patch,
+                          (uint32_t)0xFFFu << 10,
+                          ((uint32_t)(int32_t)v & 0xFFFu) << 10);
+          } else if (hole->width == 2) {
+            patch_operand(patch, 0, v);
+          } else {
+            uint8_t slot = slot_counter[hole->kind]++;
+            patch_operand(patch, slot, v);
+          }
+#else  /* x86_64 */
+          (void)0; /* width is always 4 on x86_64; the
+                    * patch_operand call below handles all
+                    * Phase 4-era operand holes uniformly. */
           if (hole->width == 2) {
             patch_operand(patch, 0, v);
           } else {
             uint8_t slot = slot_counter[hole->kind]++;
             patch_operand(patch, slot, v);
           }
+#endif
           break;
         }
         case HK_BRANCH_FALL: {
