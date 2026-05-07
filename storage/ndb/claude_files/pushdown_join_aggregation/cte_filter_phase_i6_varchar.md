@@ -2,10 +2,45 @@
 
 ## Status
 
-**Planned.**  Sub-phases F.2 + F.3 of the I.6 plan
+**F.2 done; F.3 next.**  Sub-phases F.2 + F.3 of the I.6 plan
 (`cte_filter_minmax_strings_plan.md`).  F.1 (DECIMAL widening)
 shipped in `354f2f811f0`.  This doc takes the F.2 / F.3 sketch from
 that plan to actionable, file-anchored per-commit work.
+
+**Shipped on `RONDB-1050-cte-filter`:**
+| Commit | Phase | Scope |
+|--------|-------|-------|
+| `4ac5821af5b` | plan | this document |
+| `c081f0bd1bf` | F.2-K.1+K.2+K.3 | sidecar storage + TypeSupported / AlignedType arms + extended StringResult shape |
+| `fe2e3011595` | F.2-K.4 | per-(group, slot) val_ptr execution: m_register_string_data scratch, kOpLoadCol arms, minMaxString, kOpMax/kOpMin dispatch, group-eviction free, thread_id plumbing |
+| `f3d1abe8711` | F.2-K.5a | AGG_CHAR_RESULT marker (0xFF02) + hasStringSlots / stringPayloadSize / encodeStringPayload helpers |
+| `614d13081ed` | F.2-K.5b | 8 kernel emit sites branch on hasStringSlots — append per-group string-payload region |
+| `8ae43d0e53f` | F.2-K.5c | NdbReceiver recognizes both markers; PA_CHECK validation walks AGG_CHAR_RESULT correctly |
+| `6c652f50256` | F.2-K.5d-1 | NdbAggregator parses AGG_CHAR_RESULT (single-source single-node); resolveStringSlots / freeStringSlots; destructor cleanup |
+| `879c76004a7` | F.2-K.5d-3 | `NdbAggregator::Result::data_str(Uint32* len)` API |
+
+**Open within F.2:**
+
+- **F.2-K.5d-2** (deferred): API-side merge for string MIN/MAX when
+  both `agg_res_ptr[i]` and `res[i]` are non-null (cross-node
+  redistribute / multi-source).  Today the merge loop's per-slot
+  type assertion at `NdbAggregator.cpp:508-515` only allows
+  BIGINT/DOUBLE; the kOpMax / kOpMin switch arms similarly assume
+  numeric.  K.5d-2 ports kernel `minMaxString` to the API side
+  (compare via `NdbSqlUtil::getType(typeId).m_cmp`, resize-on-grow
+  with `new`/`delete`) and widens the assertions and switch arms.
+  Single-node F.3 testing does not exercise this path; can land
+  alongside multi-node test coverage.
+
+**Next:**
+
+- **F.3-R.1** — virt-table type passthrough for string MIN/MAX in
+  `build_cte_virtual_tables` (RonSQLPreparer.cpp:5293-5336).
+- **F.3-R.2** — accept string virt-types in
+  `emit_cte_lookup_filter` (RonSQLPreparer.cpp:5713-5736).
+- **F.3 MTR** — first end-to-end test that actually emits a string
+  MIN/MAX program; first chance to validate that F.2 + F.3 produce
+  correct results.
 
 ## Scope decisions
 
