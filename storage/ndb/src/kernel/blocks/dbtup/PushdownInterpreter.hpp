@@ -35,6 +35,38 @@ enum class PushdownType : Uint32 {
   VECTOR_SEARCH = 1
 };
 
+struct CHARSET_INFO;
+
+/**
+ * StringResult — sidecar storage for per-slot string MIN/MAX results.
+ *
+ * Used by AggInterpreter and JoinAggInterpreter to hold the running
+ * winner of a MIN/MAX over CHAR / VARCHAR / Longvarchar.  The buffer
+ * at *ptr stores [length_prefix][payload] in the wire format of the
+ * source column type, sized to a multiple of 16 bytes; `length` is
+ * the payload length (excluding any prefix); `size` is the allocated
+ * capacity.  Backed by lc_ndbd_pool_malloc / free.
+ *
+ * `prefix_bytes` is 1 for VARCHAR, 2 for Longvarchar, 0 for CHAR.
+ * `declared_size` is CHAR's fixed width (used for space-padding on
+ * emit) or VARCHAR/Longvarchar's max byte length.  `charset` is the
+ * column's collation, populated on the first row that touches the
+ * slot via the existing AttributeOffset::getCharsetFlag /
+ * tablePtrP->charsetArray[] path.  All four metadata fields are
+ * stable across rows once captured — avoids re-walking the
+ * AttributeDescriptor for every row.
+ *
+ * See cte_filter_phase_i6_varchar.md (Phase I.6 finish, F.2).
+ */
+struct StringResult {
+  char* ptr;
+  Uint16 length;
+  Uint16 size;
+  Uint16 prefix_bytes;
+  Uint16 declared_size;
+  const CHARSET_INFO* charset;
+};
+
 class PushdownInterpreter {
  public:
   PushdownInterpreter(PushdownType type, Uint32 prog_len,

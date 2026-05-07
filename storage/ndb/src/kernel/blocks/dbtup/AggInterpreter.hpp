@@ -58,13 +58,16 @@ class AggInterpreter : public PushdownInterpreter {
     m_processed_rows(0),
     m_result_size(0),
     m_gb_cmp_inited(false),
-    m_alloc_len(0) {
+    m_alloc_len(0),
+    m_string_results(nullptr) {
       memset(m_decimal_buf, 0, sizeof(decimal_digit_t) * DECIMAL_BUFF_LENGTH);
       m_decimal.buf = m_decimal_buf;
       m_decimal.len = DECIMAL_BUFF_LENGTH;
       memset(m_attr_read_buf, 0, sizeof(m_attr_read_buf));
   }
-  ~AggInterpreter() override {}
+  ~AggInterpreter() override {
+    release_string_results();
+  }
 
   bool OptimizeProgram();
 
@@ -120,6 +123,16 @@ class AggInterpreter : public PushdownInterpreter {
   // Inline bump allocator
   char* MemAlloc(Uint32 len);
   Uint32 m_alloc_len;
+
+  // Phase I.6 (F.2): per-slot string MIN/MAX sidecar.  Lazily
+  // allocated (via lc_ndbd_pool_malloc) on the first row that
+  // populates a string-typed slot; sized to m_n_agg_results
+  // entries.  Stays nullptr for programs with no string MIN/MAX,
+  // so non-string queries pay zero memory cost.  Freed via
+  // release_string_results() in the destructor — entries' own
+  // ptrs are freed first, then the array itself.
+  StringResult* m_string_results;
+  void release_string_results();
 
   // All buffers inline — no separate allocation needed
   Uint32 m_attr_read_buf[ATTR_READ_BUF_WORD_SIZE];       //  8,192 B

@@ -71,12 +71,14 @@ class JoinAggInterpreter : public PushdownInterpreter {
     m_xfrm_buf(nullptr), m_xfrm_buf_len(0),
     m_prog_buf(nullptr), m_gb_cols_buf(nullptr),
     m_agg_results_buf(nullptr), m_gb_map_buf(nullptr),
-    m_buf_block(nullptr) {
+    m_buf_block(nullptr),
+    m_string_results(nullptr) {
       memset(m_decimal_buf, 0, sizeof(decimal_digit_t) * DECIMAL_BUFF_LENGTH);
       m_decimal.buf = m_decimal_buf;
       m_decimal.len = DECIMAL_BUFF_LENGTH;
   }
   ~JoinAggInterpreter() override {
+    release_string_results();
     freeAllChunks();
     if (m_xfrm_buf != nullptr) {
       lc_ndbd_pool_free(m_xfrm_buf);
@@ -297,6 +299,15 @@ class JoinAggInterpreter : public PushdownInterpreter {
 
   // Single allocation block for all dynamically allocated buffers above.
   void* m_buf_block;
+
+  // Phase I.6 (F.2): per-slot string MIN/MAX sidecar.  Lazily
+  // allocated (via lc_ndbd_pool_malloc) on the first row that
+  // populates a string-typed slot; sized to m_n_agg_results
+  // entries.  Stays nullptr for programs with no string MIN/MAX,
+  // so non-string queries pay zero memory cost.  Freed via
+  // release_string_results() in the destructor.
+  StringResult* m_string_results;
+  void release_string_results();
 };
 
 static_assert(sizeof(JoinAggInterpreter) <= MEM_CHUNK_SIZE,

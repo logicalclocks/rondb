@@ -388,6 +388,15 @@ static bool TypeSupported(DataType type) {
 
     case NDB_TYPE_DECIMAL:
     case NDB_TYPE_DECIMALUNSIGNED:
+
+    // Phase I.6 (F.2): MIN/MAX over CHAR / VARCHAR / Longvarchar.
+    // Sum is rejected separately (see Sum()).  Count is
+    // type-agnostic and works for any column type.  String
+    // value handling lives in MinString / MaxString and the
+    // m_string_results sidecar — see cte_filter_phase_i6_varchar.md.
+    case NDB_TYPE_CHAR:
+    case NDB_TYPE_VARCHAR:
+    case NDB_TYPE_LONGVARCHAR:
       return true;
     default:
       return false;
@@ -431,6 +440,13 @@ static DataType AlignedType(DataType type, int scale) {
     case NDB_TYPE_DECIMAL:
     case NDB_TYPE_DECIMALUNSIGNED:
       return scale == 0 ? NDB_TYPE_BIGINT : NDB_TYPE_DOUBLE;
+
+    // Phase I.6 (F.2): string MIN/MAX preserves the source type —
+    // wire format stays as the source's [length_prefix][payload].
+    case NDB_TYPE_CHAR:
+    case NDB_TYPE_VARCHAR:
+    case NDB_TYPE_LONGVARCHAR:
+      return type;
     default:
       assert(0);
   }
@@ -2149,4 +2165,21 @@ char* AggInterpreter::MemAlloc(Uint32 len) {
   char* ptr = &(m_mem_buf[m_alloc_len]);
   m_alloc_len += len;
   return ptr;
+}
+
+// Phase I.6 (F.2): release per-slot string MIN/MAX state.  Called
+// only from the destructor.  Each slot's payload buffer is freed
+// individually, then the sidecar array itself.  No post-free
+// clearing — the array's storage is released alongside the
+// instance, and the slot fields are not read after this returns.
+void AggInterpreter::release_string_results() {
+  if (m_string_results == nullptr) {
+    return;
+  }
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    if (m_string_results[i].ptr != nullptr) {
+      lc_ndbd_pool_free(m_string_results[i].ptr);
+    }
+  }
+  lc_ndbd_pool_free(m_string_results);
 }
