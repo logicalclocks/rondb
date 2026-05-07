@@ -951,7 +951,9 @@ bool JoinAggInterpreter::OptimizeProgram() {
  * ProcessRec for join aggregation — includes linked attribute resolution
  */
 Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
-        Dbtup::KeyReqStruct* req_struct) {
+        Dbtup::KeyReqStruct* req_struct,
+        Uint32 thread_id) {
+  m_current_thread_id = thread_id;
   if (!m_inited) {
     g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: not inited");
     return ZAGG_OTHER_ERROR;
@@ -1399,6 +1401,51 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
               else return ZAGG_DECIMAL_CONV_ERROR;
             }
           break;
+          case NDB_TYPE_CHAR:
+          case NDB_TYPE_VARCHAR:
+          case NDB_TYPE_LONGVARCHAR: {
+            // Phase I.6 (F.2-K.4b): see AggInterpreter.cpp for the
+            // pattern.  Linked-attr string columns (attrDescriptor ==
+            // nullptr) are not yet supported — they require encoding
+            // charset and prefix bytes in the linked-attr metadata.
+            if (attrDescriptor == nullptr) {
+              return ZAGG_LOAD_COL_WRONG_TYPE;
+            }
+            const Uint32 TattrDesc1 = attrDescriptor[0];
+            const Uint32 TattrDesc2 = attrDescriptor[1];
+            const CHARSET_INFO* cs = nullptr;
+            if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
+              const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+              cs = req_struct->tablePtrP->charsetArray[pos];
+            }
+            const Uint32 declared =
+                AttributeDescriptor::getSizeInBytes(TattrDesc1);
+            const Uint16 prefix =
+                (type == NDB_TYPE_CHAR) ? 0 :
+                (type == NDB_TYPE_VARCHAR) ? 1 : 2;
+            char* base = reinterpret_cast<char*>(
+                &m_attr_read_buf[m_attr_read_pos + 1]);
+            Uint16 payload_len;
+            if (type == NDB_TYPE_CHAR) {
+              payload_len = static_cast<Uint16>(declared);
+            } else if (type == NDB_TYPE_VARCHAR) {
+              payload_len = static_cast<Uint16>(
+                  static_cast<Uint8>(base[0]));
+            } else {
+              payload_len = static_cast<Uint16>(
+                  static_cast<Uint8>(base[0]) |
+                  (static_cast<Uint16>(static_cast<Uint8>(base[1])) << 8));
+            }
+            StringResult& sr = m_register_string_data[reg_index];
+            sr.ptr = base;
+            sr.length = payload_len;
+            sr.size = 0;
+            sr.prefix_bytes = prefix;
+            sr.declared_size = static_cast<Uint16>(declared);
+            sr.charset = cs;
+            m_registers[reg_index].value.val_int64 = 0;
+            break;
+          }
           default:
             return ZAGG_LOAD_COL_WRONG_TYPE;
         }
@@ -1459,12 +1506,28 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpMax:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
-        ret = Max(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
+        if (m_registers[reg_index].type == NDB_TYPE_CHAR ||
+            m_registers[reg_index].type == NDB_TYPE_VARCHAR ||
+            m_registers[reg_index].type == NDB_TYPE_LONGVARCHAR) {
+          ret = minMaxString(reg_index, agg_index, agg_res_ptr,
+                             /*is_max=*/true);
+        } else {
+          ret = Max(m_registers[reg_index], &agg_res_ptr[agg_index],
+                    debug_print);
+        }
         break;
       case kOpMin:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
-        ret = Min(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
+        if (m_registers[reg_index].type == NDB_TYPE_CHAR ||
+            m_registers[reg_index].type == NDB_TYPE_VARCHAR ||
+            m_registers[reg_index].type == NDB_TYPE_LONGVARCHAR) {
+          ret = minMaxString(reg_index, agg_index, agg_res_ptr,
+                             /*is_max=*/false);
+        } else {
+          ret = Min(m_registers[reg_index], &agg_res_ptr[agg_index],
+                    debug_print);
+        }
         break;
       case kOpCount:
         reg_index = (value & 0x000F0000) >> 16;
@@ -1573,6 +1636,7 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
     Dbtup::KeyReqStruct* req_struct,
     const Uint32* linked_attr_data,
     Uint32 linked_attr_len,
+    Uint32 thread_id,
     const LeafProgram* leaf) {
   std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
   if (m_use_mutex) lock.lock();
@@ -1595,7 +1659,7 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
     m_null_local_columns = true;
   }
 
-  Int32 ret = ProcessRec(block_tup, req_struct);
+  Int32 ret = ProcessRec(block_tup, req_struct, thread_id);
 
   m_null_local_columns = false;
   m_linked_attr_data = nullptr;
@@ -1648,6 +1712,11 @@ Int32 JoinAggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
   m_result_size -= (key_len + v_len);
   m_n_groups--;
 
+  // Phase I.6 (F.2-K.4e): release per-(group, slot) string winner
+  // buffers before the group leaves the local hash table.  K.5
+  // wire-format emit has already substituted payload into the
+  // outbound packet above, so val_ptr is safe to free here.
+  freeGroupStringSlots(reinterpret_cast<AggResItem*>(data_ptr + key_len));
   m_gb_map->erase(data_ptr, key_len);
   freeGroupData(data_ptr);
 
@@ -2168,6 +2237,7 @@ void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup) {
 Int32 JoinAggInterpreter::processNullExtendedRow(
     const Uint32* linked_attr_data,
     Uint32 linked_attr_len,
+    Uint32 thread_id,
     const LeafProgram* leaf) {
   std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
   if (m_use_mutex) lock.lock();
@@ -2183,7 +2253,7 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
   m_linked_attr_len = linked_attr_len;
   m_null_local_columns = true;
 
-  Int32 ret = ProcessRec(nullptr, nullptr);
+  Int32 ret = ProcessRec(nullptr, nullptr, thread_id);
 
   m_null_local_columns = false;
   m_linked_attr_data = nullptr;
@@ -2306,19 +2376,153 @@ void JoinAggInterpreter::freeAllChunks() {
   m_total_chunk_bytes = 0;
 }
 
-// Phase I.6 (F.2): release per-slot string MIN/MAX state.  Called
-// only from the destructor.  Each slot's payload buffer is freed
-// individually, then the sidecar array itself.  No post-free
-// clearing — the array's storage is released alongside the
-// instance.
+// Phase I.6 (F.2): release string MIN/MAX state.  Per-(group, slot)
+// winner buffers live in AggResItem.value.val_ptr inside m_gb_map's
+// group entries (or m_agg_results for the no-GROUP-BY scalar case);
+// walk both and free any non-null val_ptr whose slot type is one of
+// the string types.  Then free the slot-level metadata array.
+// Called only from the destructor.
 void JoinAggInterpreter::release_string_results() {
   if (m_string_results == nullptr) {
     return;
   }
-  for (Uint32 i = 0; i < m_n_agg_results; i++) {
-    if (m_string_results[i].ptr != nullptr) {
-      lc_ndbd_pool_free(m_string_results[i].ptr);
+  // Scalar (no-GROUP-BY) group lives in m_agg_results directly.
+  if (m_agg_results != nullptr) {
+    for (Uint32 i = 0; i < m_n_agg_results; i++) {
+      DataType t = m_agg_results[i].type;
+      if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+           t == NDB_TYPE_LONGVARCHAR) &&
+          m_agg_results[i].value.val_ptr != nullptr) {
+        lc_ndbd_pool_free(m_agg_results[i].value.val_ptr);
+      }
+    }
+  }
+  // GROUP BY case: walk every group still in m_gb_map.
+  if (m_gb_map != nullptr) {
+    for (auto iter = m_gb_map->begin(); iter.valid(); m_gb_map->next(iter)) {
+      Uint32 key_len = iter.keyLen();
+      AggResItem* slots = reinterpret_cast<AggResItem*>(
+          iter.data() + key_len);
+      for (Uint32 i = 0; i < m_n_agg_results; i++) {
+        DataType t = slots[i].type;
+        if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+             t == NDB_TYPE_LONGVARCHAR) &&
+            slots[i].value.val_ptr != nullptr) {
+          lc_ndbd_pool_free(slots[i].value.val_ptr);
+        }
+      }
     }
   }
   lc_ndbd_pool_free(m_string_results);
+}
+
+// Phase I.6 (F.2-K.4e): release one group's string val_ptr buffers.
+// Called from evictOneGroup after the group is packed into the
+// outbound buffer.  Cheap no-op when no string MIN/MAX is in this
+// program.
+void JoinAggInterpreter::freeGroupStringSlots(AggResItem* slots) {
+  if (m_string_results == nullptr) {
+    return;
+  }
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    DataType t = slots[i].type;
+    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+         t == NDB_TYPE_LONGVARCHAR) &&
+        slots[i].value.val_ptr != nullptr) {
+      lc_ndbd_pool_free(slots[i].value.val_ptr);
+      slots[i].value.val_ptr = nullptr;
+    }
+  }
+}
+
+// Phase I.6 (F.2-K.4c): per-(group, slot) MIN/MAX string update.
+// See AggInterpreter::minMaxString for layout and contract — this
+// is the parallel implementation for the join interpreter.
+Int32 JoinAggInterpreter::minMaxString(Uint32 reg_index, Uint32 agg_index,
+                                        AggResItem* agg_res_ptr,
+                                        bool is_max) {
+  const Register& src_reg = m_registers[reg_index];
+  if (src_reg.is_null) {
+    return 0;
+  }
+  if (m_string_results == nullptr) {
+    Uint32 nbytes = m_n_agg_results * sizeof(StringResult);
+    m_string_results = static_cast<StringResult*>(
+        lc_ndbd_pool_malloc(nbytes, RG_QUERY_MEMORY,
+                            m_current_thread_id, true));
+    if (m_string_results == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+  }
+  const StringResult& src = m_register_string_data[reg_index];
+  StringResult& slot = m_string_results[agg_index];
+  if (slot.declared_size == 0) {
+    slot.charset = src.charset;
+    slot.prefix_bytes = src.prefix_bytes;
+    slot.declared_size = src.declared_size;
+  }
+  AggResItem& dst = agg_res_ptr[agg_index];
+  const Uint32 needed_payload = src.prefix_bytes + src.length;
+  Uint32 alloc_size = (4 + needed_payload + 15) & ~15U;
+  if (alloc_size < 16) alloc_size = 16;
+
+  if (dst.value.val_ptr == nullptr) {
+    char* buf = static_cast<char*>(
+        lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
+                            m_current_thread_id, false));
+    if (buf == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    Uint16* hdr = reinterpret_cast<Uint16*>(buf);
+    hdr[0] = src.length;
+    hdr[1] = static_cast<Uint16>(alloc_size - 4);
+    if (needed_payload > 0) {
+      memcpy(buf + 4, src.ptr, needed_payload);
+    }
+    dst.type = src_reg.type;
+    dst.value.val_ptr = buf;
+    dst.is_unsigned = false;
+    dst.is_null = false;
+    return 0;
+  }
+
+  char* old_buf = static_cast<char*>(dst.value.val_ptr);
+  const Uint16* old_hdr = reinterpret_cast<const Uint16*>(old_buf);
+  const Uint16 old_payload_len = old_hdr[0];
+  const Uint16 old_capacity = old_hdr[1];
+  const unsigned n_new = src.prefix_bytes + src.length;
+  const unsigned n_old = slot.prefix_bytes + old_payload_len;
+  const void* v_new = src.ptr;
+  const void* v_old = old_buf + 4;
+  const Uint32 type_id =
+      (slot.prefix_bytes == 0) ? NDB_TYPE_CHAR :
+      (slot.prefix_bytes == 1) ? NDB_TYPE_VARCHAR : NDB_TYPE_LONGVARCHAR;
+  const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(type_id);
+  int cmp = (*sqlType.m_cmp)(slot.charset, v_new, n_new, v_old, n_old);
+  const bool replace = is_max ? (cmp > 0) : (cmp < 0);
+  if (!replace) return 0;
+
+  if (needed_payload <= old_capacity) {
+    Uint16* h = reinterpret_cast<Uint16*>(old_buf);
+    h[0] = src.length;
+    if (needed_payload > 0) {
+      memcpy(old_buf + 4, src.ptr, needed_payload);
+    }
+  } else {
+    char* new_buf = static_cast<char*>(
+        lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
+                            m_current_thread_id, false));
+    if (new_buf == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    Uint16* h = reinterpret_cast<Uint16*>(new_buf);
+    h[0] = src.length;
+    h[1] = static_cast<Uint16>(alloc_size - 4);
+    if (needed_payload > 0) {
+      memcpy(new_buf + 4, src.ptr, needed_payload);
+    }
+    dst.value.val_ptr = new_buf;
+    lc_ndbd_pool_free(old_buf);
+  }
+  return 0;
 }

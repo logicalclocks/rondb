@@ -99,11 +99,13 @@ class JoinAggInterpreter : public PushdownInterpreter {
       Dbtup::KeyReqStruct* req_struct,
       const Uint32* linked_attr_data,
       Uint32 linked_attr_len,
+      Uint32 thread_id,
       const struct LeafProgram* leaf = nullptr);
   Int32 finalizeResults();
   Int32 processNullExtendedRow(
       const Uint32* linked_attr_data,
       Uint32 linked_attr_len,
+      Uint32 thread_id,
       const struct LeafProgram* leaf = nullptr);
 
   Int32 getResultData(Uint32* buffer, Uint32 buffer_size,
@@ -220,11 +222,37 @@ class JoinAggInterpreter : public PushdownInterpreter {
   void freeAllChunks();
 
  private:
-  Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
+  Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
+                   Uint32 thread_id);
+
+  // Phase I.6 (F.2-K.4): running thread id for the in-flight ProcessRec
+  // call.  Set on entry to processRecWithLinkedAttrs /
+  // processNullExtendedRow and consumed by MaxString / MinString
+  // helpers when allocating per-(group, slot) string buffers via
+  // val_ptr.  See AggInterpreter.hpp for the same field's rationale.
+  Uint32 m_current_thread_id = 0;
+
+  // Phase I.6 (F.2-K.4c): per-(group, slot) string MIN/MAX update.
+  // Same contract as AggInterpreter::minMaxString — see that header.
+  // Returns 0 on success, ZAGG_ALLOC_MEM_FAILED on OOM.
+  Int32 minMaxString(Uint32 reg_index, Uint32 agg_index,
+                     AggResItem* agg_res_ptr, bool is_max);
+
+  // Phase I.6 (F.2-K.4e): free per-(group, slot) string winner
+  // buffers for one group's AggResItem array.  Called from
+  // evictOneGroup so per-group val_ptr buffers are released when
+  // the group is shipped out of the local hash table.  No-op when
+  // no string slots are present.
+  void freeGroupStringSlots(AggResItem* slots);
 
   Uint32* m_prog;
   Uint32 m_cur_pos;
   Register m_registers[kRegTotal];
+
+  // Phase I.6 (F.2-K.4a): per-register string scratch.  See the
+  // matching field on AggInterpreter for purpose; populated by
+  // kOpLoadCol's CHAR/VARCHAR/Longvarchar arms.  192 B inline.
+  StringResult m_register_string_data[kRegTotal];
 
   Uint32 m_n_gb_cols;
   Uint32* m_gb_cols;

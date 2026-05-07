@@ -15277,7 +15277,7 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
 
 retry:
   Int32 ret = interp->processNullExtendedRow(linked_data, linked_len,
-                                              leaf);
+                                              getThreadId(), leaf);
   if (ret == AGG_EVICT_NEEDED) {
     sendEvictedAggGroup(signal, interp, state);
     goto retry;
@@ -18586,7 +18586,8 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   JoinAggInterpreter *interp = getJoinAggInterpreter(state);
 
 retry:
-  Int32 ret = interp->processNullExtendedRow(cattrInfoBuffer, linked_len);
+  Int32 ret = interp->processNullExtendedRow(cattrInfoBuffer, linked_len,
+                                              getThreadId());
   if (ret == AGG_EVICT_NEEDED) {
     sendEvictedAggGroup(signal, interp, state);
     goto retry;
@@ -19200,7 +19201,7 @@ void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
 retry_agg:
   aggReq.no_exec_instructions = 0;
   Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-      c_tup, &aggReq, linkedBuf, linkedPos, leaf);
+      c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
   if (aggRet == AGG_EVICT_NEEDED) {
     jam();
     if (unlikely(targetState->m_cte_mode)) {
@@ -19908,7 +19909,7 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
     retry_agg_scan:
       aggReq.no_exec_instructions = 0;
       Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-          c_tup, &aggReq, linkedBuf, linkedPos, leaf);
+          c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
       if (aggRet == AGG_EVICT_NEEDED) {
         jam();
         if (unlikely(targetState->m_cte_mode)) {
@@ -20017,7 +20018,7 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
     aggReq.last_row = false;
 
     Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-        c_tup, &aggReq, linkedBuf, linkedPos, leaf);
+        c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
     if (unlikely(aggRet != 0 && aggRet != AGG_EVICT_NEEDED)) {
       jam();
       releaseCteScanIterState(aggFeedStateI);
@@ -20038,7 +20039,7 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
       /* Retry after eviction */
       aggReq.no_exec_instructions = 0;
       aggRet = targetInterp->processRecWithLinkedAttrs(
-          c_tup, &aggReq, linkedBuf, linkedPos, leaf);
+          c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
       if (unlikely(aggRet != 0)) {
         jam();
         releaseCteScanIterState(aggFeedStateI);
