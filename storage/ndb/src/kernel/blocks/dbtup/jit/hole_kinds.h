@@ -226,6 +226,54 @@ static const size_t kHoleSymbolTableLen =
 #define MAGIC_LCN_COL     0xffdc6affeafb85ccull
 #define MAGIC_LCN_DST     0x398f52beccc0b5c5ull
 
+/* ------------------------------------------------------------------ */
+/* Phase 4.5 narrow operand magics (aarch64-only).                    */
+/*                                                                    */
+/* For HK_OP_A/B/C holes carrying ≤8-bit values (register indices,    */
+/* slot indices, col_id ≤ 255), we use a single movz Rd, #imm16       */
+/* instruction (4 bytes) instead of the 16-byte movz+3×movk chain.    */
+/* Saves 12 bytes per narrow hole on aarch64. HK_OP_IMM stays wide    */
+/* (carries int64). x86_64 is unaffected — keeps `mov reg32, imm32`. */
+/*                                                                    */
+/* Generated via                                                      */
+/*   sha256("RONDB-1056-Phase4_5-narrow-magic-v1|" + name)[0:2]      */
+/* interpreted as little-endian uint16. Verified collision-free       */
+/* across all 30 narrow-eligible holes during the I2 spike.           */
+/*                                                                    */
+/* APPEND-ONLY: never reuse a value or rename. New entries land at    */
+/* the bottom; the v1 salt regenerates deterministically.             */
+/* ------------------------------------------------------------------ */
+#define MAGIC_LCI_DST_NARROW      0xfc24u
+#define MAGIC_LRC_DST_NARROW      0x0c6du
+#define MAGIC_LRC_COL_NARROW      0xa616u
+#define MAGIC_MV_DST_NARROW       0xd0ecu
+#define MAGIC_MV_SRC_NARROW       0xbbaeu
+#define MAGIC_ADD_DST_NARROW      0x12ebu
+#define MAGIC_ADD_A_NARROW        0x7bd9u
+#define MAGIC_ADD_B_NARROW        0x95d5u
+#define MAGIC_MINUS_DST_NARROW    0x70dfu
+#define MAGIC_MINUS_A_NARROW      0x2c65u
+#define MAGIC_MINUS_B_NARROW      0x129bu
+#define MAGIC_MUL_DST_NARROW      0xdac5u
+#define MAGIC_MUL_A_NARROW        0xc4bdu
+#define MAGIC_MUL_B_NARROW        0x71bcu
+#define MAGIC_SUM_SLOT_NARROW     0x0d96u
+#define MAGIC_SUM_SRC_NARROW      0xf31fu
+#define MAGIC_BLT_A_NARROW        0xf437u
+#define MAGIC_BLT_B_NARROW        0x6d7au
+#define MAGIC_BLE_A_NARROW        0x1dc5u
+#define MAGIC_BLE_B_NARROW        0xe486u
+#define MAGIC_BEQ_A_NARROW        0x74aeu
+#define MAGIC_BEQ_B_NARROW        0x8e83u
+#define MAGIC_BGT_A_NARROW        0x1a92u
+#define MAGIC_BGT_B_NARROW        0xabddu
+#define MAGIC_BGE_A_NARROW        0x16e9u
+#define MAGIC_BGE_B_NARROW        0xab1eu
+#define MAGIC_BNE_A_NARROW        0x8e91u
+#define MAGIC_BNE_B_NARROW        0xa048u
+#define MAGIC_LCN_COL_NARROW      0x08f7u
+#define MAGIC_LCN_DST_NARROW      0x1f53u
+
 /* For the magic-byte scan, the extractor needs a (magic_value,
  * hole_kind) table. We use the same entries as the symbol table
  * above, mapped to magic constants. This is for aarch64 only. */

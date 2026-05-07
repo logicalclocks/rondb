@@ -90,10 +90,17 @@ typedef __attribute__((preserve_none)) void (*StencilTailFn)(JitState *);
 /* ------------------------------------------------------------------ */
 
 #if defined(__x86_64__)
-#  define DECLARE_HOLE(name)  extern uint64_t HOLE_##name
-#  define HOLE(name)          ((uint64_t)(uintptr_t)&HOLE_##name)
+#  define DECLARE_HOLE(name)         extern uint64_t HOLE_##name
+#  define DECLARE_NARROW_HOLE(name)  DECLARE_HOLE(name)
+#  define HOLE(name)                 ((uint64_t)(uintptr_t)&HOLE_##name)
+/* On x86_64, narrow holes share the same extern symbol +
+ * R_X86_64_32 relocation pattern as wide holes. The 32-bit
+ * immediate is wide enough for any operand value already; no
+ * compaction is possible. HOLE_NARROW is a thin alias. */
+#  define HOLE_NARROW(name)          HOLE(name)
 #elif defined(__aarch64__)
-#  define DECLARE_HOLE(name)  /* nothing — magic constant from hole_kinds.h */
+#  define DECLARE_HOLE(name)         /* nothing — magic constant from hole_kinds.h */
+#  define DECLARE_NARROW_HOLE(name)  /* nothing — same */
 
 /* The volatile load forces clang to actually materialise the
  * constant via a movz/movk chain; without volatile, it would
@@ -105,38 +112,60 @@ static inline uint64_t aarch64_hole_(uint64_t magic) {
   volatile uint64_t v = magic;
   return v;
 }
-#  define HOLE(name)          aarch64_hole_(MAGIC_##name)
+
+/* Phase 4.5 narrow-hole helper. clang lowers a `volatile
+ * uint16_t = magic; return v;` to a single 4-byte movz Rd,
+ * #imm16 instruction (verified by the I1 spike). Saves 12
+ * bytes per hole vs the full 4-instruction chain. Used for
+ * HK_OP_A/B/C holes whose value fits in 8 bits (register
+ * indices, slot indices, col_id ≤ 255). HK_OP_IMM stays
+ * wide via HOLE(). */
+__attribute__((always_inline))
+static inline uint16_t aarch64_hole_narrow_(uint16_t magic) {
+  volatile uint16_t v = magic;
+  return v;
+}
+
+#  define HOLE(name)         aarch64_hole_(MAGIC_##name)
+#  define HOLE_NARROW(name)  aarch64_hole_narrow_(MAGIC_##name##_NARROW)
 #else
 #  error "unsupported architecture for stencil source"
 #endif
 
 /* ------------------------------------------------------------------ */
 /* op_load_const_int : regs_i64[DST] = VAL                            */
+/*                                                                    */
+/* Phase 4.5: LCI_DST is a register index (≤8 bits) — narrow hole.    */
+/* LCI_VAL is the int64 immediate value — stays wide.                 */
 /* ------------------------------------------------------------------ */
-DECLARE_HOLE(LCI_DST);
+DECLARE_NARROW_HOLE(LCI_DST);
 DECLARE_HOLE(LCI_VAL);
 STENCIL op_load_const_int(JitState *s) {
-  s->regs_i64[HOLE(LCI_DST)] = (int64_t)HOLE(LCI_VAL);
+  s->regs_i64[HOLE_NARROW(LCI_DST)] = (int64_t)HOLE(LCI_VAL);
   TAIL_NEXT(s);
 }
 
 /* ------------------------------------------------------------------ */
 /* op_load_col_int : regs_i64[DST] = row_cols_i64[COL]                */
+/*                                                                    */
+/* Phase 4.5: both holes are indices (≤8 bits) — narrow.              */
 /* ------------------------------------------------------------------ */
-DECLARE_HOLE(LRC_DST);
-DECLARE_HOLE(LRC_COL);
+DECLARE_NARROW_HOLE(LRC_DST);
+DECLARE_NARROW_HOLE(LRC_COL);
 STENCIL op_load_col_int(JitState *s) {
-  s->regs_i64[HOLE(LRC_DST)] = s->row_cols_i64[HOLE(LRC_COL)];
+  s->regs_i64[HOLE_NARROW(LRC_DST)] = s->row_cols_i64[HOLE_NARROW(LRC_COL)];
   TAIL_NEXT(s);
 }
 
 /* ------------------------------------------------------------------ */
 /* op_mov_int_int : regs_i64[DST] = regs_i64[SRC]                     */
+/*                                                                    */
+/* Phase 4.5: both holes are register indices — narrow.               */
 /* ------------------------------------------------------------------ */
-DECLARE_HOLE(MV_DST);
-DECLARE_HOLE(MV_SRC);
+DECLARE_NARROW_HOLE(MV_DST);
+DECLARE_NARROW_HOLE(MV_SRC);
 STENCIL op_mov_int_int(JitState *s) {
-  s->regs_i64[HOLE(MV_DST)] = s->regs_i64[HOLE(MV_SRC)];
+  s->regs_i64[HOLE_NARROW(MV_DST)] = s->regs_i64[HOLE_NARROW(MV_SRC)];
   TAIL_NEXT(s);
 }
 
