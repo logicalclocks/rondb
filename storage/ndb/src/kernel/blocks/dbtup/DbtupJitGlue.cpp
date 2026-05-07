@@ -82,6 +82,62 @@ ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
       sint8korr(reinterpret_cast<char *>(&read_buf[1]));
 }
 
+/* ndb_jit_h_branch_attr_null — Phase 5.0 cold-call branch helper.
+ *
+ * Used by both op_branch_attr_eq_null (want_null=1) and
+ * op_branch_attr_ne_null (want_null=0). Reads the column's
+ * AttributeHeader via the same readAttributeForJit path as
+ * ndb_jit_h_load_col, checks isNULL(), and returns:
+ *   1 → take the branch (e.g., for IS NULL: column is null AND
+ *       want_null=1, so the embedded EXIT_REFUSE landing pad —
+ *       sorry actually the semantics are flipped: see the bridge
+ *       — `WHERE c IS NULL` emits BRANCH_ATTR_NE_NULL +offset to
+ *       EXIT_REFUSE, so taking the branch here means rejecting
+ *       the row).
+ *   0 → fall through.
+ *
+ * Lifetime: ctx is stack-local in dbtup_jit_invoke; this helper
+ * runs synchronously inside that invocation, so ctx is always
+ * valid. */
+extern "C" int
+ndb_jit_h_branch_attr_null(JitState *s,
+                            uint32_t attr_id,
+                            uint32_t want_null) {
+  auto *ctx = static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->block_tup == nullptr ||
+      ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_branch_attr_null: JitState.ctx is malformed "
+        "(attr_id=%u)", attr_id);
+    abort();
+  }
+
+  /* Read just the AttributeHeader; the value bytes that follow
+   * don't matter for a null check. 4 words still gives breathing
+   * room for the readAttributes path's worst-case header
+   * size. */
+  Uint32 read_buf[4];
+  int ret = ctx->agg->readAttributeForJit(ctx->block_tup,
+                                            ctx->req_struct,
+                                            attr_id, read_buf,
+                                            sizeof(read_buf) /
+                                                sizeof(Uint32));
+  if (ret < 0) {
+    /* Column read failed — same Phase 4 policy: panic. Phase 5+
+     * wires this into JoinAggInterpreter's error path so a row
+     * can be skipped cleanly. */
+    g_eventLogger->error(
+        "ndb_jit_h_branch_attr_null: readAttributes failed for "
+        "attr_id=%u (rc=%d)", attr_id, ret);
+    abort();
+  }
+
+  AttributeHeader *header =
+      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
+  bool is_null = header->isNULL();
+  return (is_null == (want_null != 0)) ? 1 : 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Helper registration.                                               */
 /* ------------------------------------------------------------------ */
@@ -90,11 +146,12 @@ extern "C" void dbtup_jit_register_helpers(void) {
   /* The cast through (void(*)(void)) is safe — the helper-registry
    * stores generic JitHelperFn pointers and the engine's
    * HK_COLDCALL patcher only uses the function's address, not its
-   * signature. The stencil source's extern declaration of
-   * ndb_jit_h_load_col is what enforces the call ABI at codegen
-   * time. */
+   * signature. The stencil source's extern declarations are what
+   * enforce the call ABI at codegen time. */
   jit1_register_helper("ndb_jit_h_load_col",
                         reinterpret_cast<JitHelperFn>(&ndb_jit_h_load_col));
+  jit1_register_helper("ndb_jit_h_branch_attr_null",
+                        reinterpret_cast<JitHelperFn>(&ndb_jit_h_branch_attr_null));
 }
 
 /* ------------------------------------------------------------------ */

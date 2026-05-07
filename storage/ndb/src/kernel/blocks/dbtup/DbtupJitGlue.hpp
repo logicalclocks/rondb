@@ -84,6 +84,18 @@ extern "C" {
  * Phase 5 wires proper error propagation for. */
 void ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg);
 
+/* ndb_jit_h_branch_attr_null — Phase 5.0 cold-call branch helper.
+ *
+ * Used by op_branch_attr_eq_null (want_null=1) and
+ * op_branch_attr_ne_null (want_null=0) — embedded normal-
+ * interpreter BRANCH_ATTR_*_NULL opcodes lowered to JIT.
+ *
+ * Returns 1 to take the branch, 0 to fall through. The caller
+ * stencil branches on the int return value via cbz / test rax,
+ * rax. */
+int ndb_jit_h_branch_attr_null(JitState *s, uint32_t attr_id,
+                                 uint32_t want_null);
+
 /* Register every Phase 4 cold-call helper with the JIT engine.
  * Call once at engine init (Dbtup ctor / block-init path).
  * Idempotent — re-registering the same fn is a no-op. */
