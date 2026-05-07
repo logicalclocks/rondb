@@ -172,21 +172,21 @@ STENCIL op_mov_int_int(JitState *s) {
 /* ------------------------------------------------------------------ */
 /* op_add_int_int : regs_i64[DST] = regs_i64[A] + regs_i64[B]         */
 /* ------------------------------------------------------------------ */
-DECLARE_HOLE(ADD_DST);
-DECLARE_HOLE(ADD_A);
-DECLARE_HOLE(ADD_B);
+DECLARE_NARROW_HOLE(ADD_DST);
+DECLARE_NARROW_HOLE(ADD_A);
+DECLARE_NARROW_HOLE(ADD_B);
 STENCIL op_add_int_int(JitState *s) {
-  s->regs_i64[HOLE(ADD_DST)] = s->regs_i64[HOLE(ADD_A)] + s->regs_i64[HOLE(ADD_B)];
+  s->regs_i64[HOLE_NARROW(ADD_DST)] = s->regs_i64[HOLE_NARROW(ADD_A)] + s->regs_i64[HOLE_NARROW(ADD_B)];
   TAIL_NEXT(s);
 }
 
 /* ------------------------------------------------------------------ */
 /* op_sum_bigint : acc_i64[SLOT] += regs_i64[SRC]                     */
 /* ------------------------------------------------------------------ */
-DECLARE_HOLE(SUM_SLOT);
-DECLARE_HOLE(SUM_SRC);
+DECLARE_NARROW_HOLE(SUM_SLOT);
+DECLARE_NARROW_HOLE(SUM_SRC);
 STENCIL op_sum_bigint(JitState *s) {
-  s->acc_i64[HOLE(SUM_SLOT)] += s->regs_i64[HOLE(SUM_SRC)];
+  s->acc_i64[HOLE_NARROW(SUM_SLOT)] += s->regs_i64[HOLE_NARROW(SUM_SRC)];
   TAIL_NEXT(s);
 }
 
@@ -202,11 +202,11 @@ STENCIL op_sum_bigint(JitState *s) {
 /* R_AARCH64_CALL26 on aarch64) which the extractor records as        */
 /* HK_BRANCH_TAKE. The patcher rewrites the displacement at JIT time. */
 /* ------------------------------------------------------------------ */
-DECLARE_HOLE(BLT_A);
-DECLARE_HOLE(BLT_B);
+DECLARE_NARROW_HOLE(BLT_A);
+DECLARE_NARROW_HOLE(BLT_B);
 extern __attribute__((preserve_none)) void HOLE_BLT_TGT(JitState *);
 STENCIL op_branch_lt_int_int(JitState *s) {
-  if (s->regs_i64[HOLE(BLT_A)] < s->regs_i64[HOLE(BLT_B)]) {
+  if (s->regs_i64[HOLE_NARROW(BLT_A)] < s->regs_i64[HOLE_NARROW(BLT_B)]) {
     [[clang::musttail]] return HOLE_BLT_TGT(s);
   }
   TAIL_NEXT(s);
@@ -222,51 +222,51 @@ STENCIL op_branch_lt_int_int(JitState *s) {
 /* changes required.                                                  */
 /* ------------------------------------------------------------------ */
 
-DECLARE_HOLE(BLE_A);
-DECLARE_HOLE(BLE_B);
+DECLARE_NARROW_HOLE(BLE_A);
+DECLARE_NARROW_HOLE(BLE_B);
 extern __attribute__((preserve_none)) void HOLE_BLE_TGT(JitState *);
 STENCIL op_branch_le_int_int(JitState *s) {
-  if (s->regs_i64[HOLE(BLE_A)] <= s->regs_i64[HOLE(BLE_B)]) {
+  if (s->regs_i64[HOLE_NARROW(BLE_A)] <= s->regs_i64[HOLE_NARROW(BLE_B)]) {
     [[clang::musttail]] return HOLE_BLE_TGT(s);
   }
   TAIL_NEXT(s);
 }
 
-DECLARE_HOLE(BEQ_A);
-DECLARE_HOLE(BEQ_B);
+DECLARE_NARROW_HOLE(BEQ_A);
+DECLARE_NARROW_HOLE(BEQ_B);
 extern __attribute__((preserve_none)) void HOLE_BEQ_TGT(JitState *);
 STENCIL op_branch_eq_int_int(JitState *s) {
-  if (s->regs_i64[HOLE(BEQ_A)] == s->regs_i64[HOLE(BEQ_B)]) {
+  if (s->regs_i64[HOLE_NARROW(BEQ_A)] == s->regs_i64[HOLE_NARROW(BEQ_B)]) {
     [[clang::musttail]] return HOLE_BEQ_TGT(s);
   }
   TAIL_NEXT(s);
 }
 
-DECLARE_HOLE(BGT_A);
-DECLARE_HOLE(BGT_B);
+DECLARE_NARROW_HOLE(BGT_A);
+DECLARE_NARROW_HOLE(BGT_B);
 extern __attribute__((preserve_none)) void HOLE_BGT_TGT(JitState *);
 STENCIL op_branch_gt_int_int(JitState *s) {
-  if (s->regs_i64[HOLE(BGT_A)] > s->regs_i64[HOLE(BGT_B)]) {
+  if (s->regs_i64[HOLE_NARROW(BGT_A)] > s->regs_i64[HOLE_NARROW(BGT_B)]) {
     [[clang::musttail]] return HOLE_BGT_TGT(s);
   }
   TAIL_NEXT(s);
 }
 
-DECLARE_HOLE(BGE_A);
-DECLARE_HOLE(BGE_B);
+DECLARE_NARROW_HOLE(BGE_A);
+DECLARE_NARROW_HOLE(BGE_B);
 extern __attribute__((preserve_none)) void HOLE_BGE_TGT(JitState *);
 STENCIL op_branch_ge_int_int(JitState *s) {
-  if (s->regs_i64[HOLE(BGE_A)] >= s->regs_i64[HOLE(BGE_B)]) {
+  if (s->regs_i64[HOLE_NARROW(BGE_A)] >= s->regs_i64[HOLE_NARROW(BGE_B)]) {
     [[clang::musttail]] return HOLE_BGE_TGT(s);
   }
   TAIL_NEXT(s);
 }
 
-DECLARE_HOLE(BNE_A);
-DECLARE_HOLE(BNE_B);
+DECLARE_NARROW_HOLE(BNE_A);
+DECLARE_NARROW_HOLE(BNE_B);
 extern __attribute__((preserve_none)) void HOLE_BNE_TGT(JitState *);
 STENCIL op_branch_ne_int_int(JitState *s) {
-  if (s->regs_i64[HOLE(BNE_A)] != s->regs_i64[HOLE(BNE_B)]) {
+  if (s->regs_i64[HOLE_NARROW(BNE_A)] != s->regs_i64[HOLE_NARROW(BNE_B)]) {
     [[clang::musttail]] return HOLE_BNE_TGT(s);
   }
   TAIL_NEXT(s);
@@ -281,19 +281,19 @@ STENCIL op_branch_ne_int_int(JitState *s) {
 /* kOpMulBigint to these.                                             */
 /* ------------------------------------------------------------------ */
 
-DECLARE_HOLE(MINUS_DST);
-DECLARE_HOLE(MINUS_A);
-DECLARE_HOLE(MINUS_B);
+DECLARE_NARROW_HOLE(MINUS_DST);
+DECLARE_NARROW_HOLE(MINUS_A);
+DECLARE_NARROW_HOLE(MINUS_B);
 STENCIL op_minus_int_int(JitState *s) {
-  s->regs_i64[HOLE(MINUS_DST)] = s->regs_i64[HOLE(MINUS_A)] - s->regs_i64[HOLE(MINUS_B)];
+  s->regs_i64[HOLE_NARROW(MINUS_DST)] = s->regs_i64[HOLE_NARROW(MINUS_A)] - s->regs_i64[HOLE_NARROW(MINUS_B)];
   TAIL_NEXT(s);
 }
 
-DECLARE_HOLE(MUL_DST);
-DECLARE_HOLE(MUL_A);
-DECLARE_HOLE(MUL_B);
+DECLARE_NARROW_HOLE(MUL_DST);
+DECLARE_NARROW_HOLE(MUL_A);
+DECLARE_NARROW_HOLE(MUL_B);
 STENCIL op_mul_int_int(JitState *s) {
-  s->regs_i64[HOLE(MUL_DST)] = s->regs_i64[HOLE(MUL_A)] * s->regs_i64[HOLE(MUL_B)];
+  s->regs_i64[HOLE_NARROW(MUL_DST)] = s->regs_i64[HOLE_NARROW(MUL_A)] * s->regs_i64[HOLE_NARROW(MUL_B)];
   TAIL_NEXT(s);
 }
 
@@ -320,11 +320,11 @@ STENCIL op_mul_int_int(JitState *s) {
 /*   Symbol name "ndb_jit_h_load_col" resolves through                */
 /*   jit1_lookup_helper().                                            */
 /* ------------------------------------------------------------------ */
-DECLARE_HOLE(LCN_COL);
-DECLARE_HOLE(LCN_DST);
+DECLARE_NARROW_HOLE(LCN_COL);
+DECLARE_NARROW_HOLE(LCN_DST);
 extern void ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg);
 STENCIL op_load_col_ndb(JitState *s) {
-  ndb_jit_h_load_col(s, (uint32_t)HOLE(LCN_COL), (uint32_t)HOLE(LCN_DST));
+  ndb_jit_h_load_col(s, (uint32_t)HOLE_NARROW(LCN_COL), (uint32_t)HOLE_NARROW(LCN_DST));
   TAIL_NEXT(s);
 }
 

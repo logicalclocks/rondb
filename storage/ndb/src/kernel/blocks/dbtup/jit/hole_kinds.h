@@ -285,39 +285,11 @@ typedef struct {
 } HoleMagicEntry;
 
 static const HoleMagicEntry kHoleMagicTable[] = {
-  /* MAGIC_LCI_DST removed in Phase 4.5 — now MAGIC_LCI_DST_NARROW
-   * (single MOVZ); see kHoleNarrowMagicTable below. */
+  /* Phase 4.5 Day 4: only HK_OP_IMM (load_const_int's int64 immediate)
+   * still uses the wide 4-instruction movz/movk chain. All register-
+   * index and column-id holes migrated to single-MOVZ narrow encoding;
+   * see kHoleNarrowMagicTable below. */
   { MAGIC_LCI_VAL,  HK_OP_IMM,      "MAGIC_LCI_VAL"  },
-  /* MAGIC_LRC_DST / MAGIC_LRC_COL similarly migrated to narrow. */
-  /* MAGIC_MV_DST / MAGIC_MV_SRC similarly migrated to narrow. */
-  { MAGIC_ADD_DST,  HK_OP_A,        "MAGIC_ADD_DST"  },
-  { MAGIC_ADD_A,    HK_OP_B,        "MAGIC_ADD_A"    },
-  { MAGIC_ADD_B,    HK_OP_C,        "MAGIC_ADD_B"    },
-  { MAGIC_SUM_SLOT, HK_OP_A,        "MAGIC_SUM_SLOT" },
-  { MAGIC_SUM_SRC,  HK_OP_B,        "MAGIC_SUM_SRC"  },
-  { MAGIC_BLT_A,    HK_OP_A,        "MAGIC_BLT_A"    },
-  { MAGIC_BLT_B,    HK_OP_B,        "MAGIC_BLT_B"    },
-  /* Phase 3 branch-comparison siblings. */
-  { MAGIC_BLE_A,    HK_OP_A,        "MAGIC_BLE_A"    },
-  { MAGIC_BLE_B,    HK_OP_B,        "MAGIC_BLE_B"    },
-  { MAGIC_BEQ_A,    HK_OP_A,        "MAGIC_BEQ_A"    },
-  { MAGIC_BEQ_B,    HK_OP_B,        "MAGIC_BEQ_B"    },
-  { MAGIC_BGT_A,    HK_OP_A,        "MAGIC_BGT_A"    },
-  { MAGIC_BGT_B,    HK_OP_B,        "MAGIC_BGT_B"    },
-  { MAGIC_BGE_A,    HK_OP_A,        "MAGIC_BGE_A"    },
-  { MAGIC_BGE_B,    HK_OP_B,        "MAGIC_BGE_B"    },
-  { MAGIC_BNE_A,    HK_OP_A,        "MAGIC_BNE_A"    },
-  { MAGIC_BNE_B,    HK_OP_B,        "MAGIC_BNE_B"    },
-  /* Phase 4 hot-arithmetic siblings. */
-  { MAGIC_MINUS_DST, HK_OP_A,       "MAGIC_MINUS_DST" },
-  { MAGIC_MINUS_A,   HK_OP_B,       "MAGIC_MINUS_A"   },
-  { MAGIC_MINUS_B,   HK_OP_C,       "MAGIC_MINUS_B"   },
-  { MAGIC_MUL_DST,   HK_OP_A,       "MAGIC_MUL_DST"   },
-  { MAGIC_MUL_A,     HK_OP_B,       "MAGIC_MUL_A"     },
-  { MAGIC_MUL_B,     HK_OP_C,       "MAGIC_MUL_B"     },
-  /* Phase 4 cold-call operand magics. */
-  { MAGIC_LCN_COL,   HK_OP_C,       "MAGIC_LCN_COL"   },
-  { MAGIC_LCN_DST,   HK_OP_A,       "MAGIC_LCN_DST"   },
 };
 static const size_t kHoleMagicTableLen =
     sizeof(kHoleMagicTable) / sizeof(kHoleMagicTable[0]);
@@ -342,13 +314,39 @@ typedef struct {
 
 static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
   /* Phase 4.5 Day 1 smoke set. */
-  { MAGIC_LCI_DST_NARROW,  HK_OP_A,  "MAGIC_LCI_DST_NARROW"  },
-  { MAGIC_LRC_DST_NARROW,  HK_OP_A,  "MAGIC_LRC_DST_NARROW"  },
-  { MAGIC_LRC_COL_NARROW,  HK_OP_B,  "MAGIC_LRC_COL_NARROW"  },
-  { MAGIC_MV_DST_NARROW,   HK_OP_A,  "MAGIC_MV_DST_NARROW"   },
-  { MAGIC_MV_SRC_NARROW,   HK_OP_B,  "MAGIC_MV_SRC_NARROW"   },
-  /* Day 3 will append the remaining 25 entries as the rest of the
-   * stencils migrate. */
+  { MAGIC_LCI_DST_NARROW,   HK_OP_A,  "MAGIC_LCI_DST_NARROW"   },
+  { MAGIC_LRC_DST_NARROW,   HK_OP_A,  "MAGIC_LRC_DST_NARROW"   },
+  { MAGIC_LRC_COL_NARROW,   HK_OP_B,  "MAGIC_LRC_COL_NARROW"   },
+  { MAGIC_MV_DST_NARROW,    HK_OP_A,  "MAGIC_MV_DST_NARROW"    },
+  { MAGIC_MV_SRC_NARROW,    HK_OP_B,  "MAGIC_MV_SRC_NARROW"    },
+  /* Day 4: hot arithmetic. */
+  { MAGIC_ADD_DST_NARROW,   HK_OP_A,  "MAGIC_ADD_DST_NARROW"   },
+  { MAGIC_ADD_A_NARROW,     HK_OP_B,  "MAGIC_ADD_A_NARROW"     },
+  { MAGIC_ADD_B_NARROW,     HK_OP_C,  "MAGIC_ADD_B_NARROW"     },
+  { MAGIC_MINUS_DST_NARROW, HK_OP_A,  "MAGIC_MINUS_DST_NARROW" },
+  { MAGIC_MINUS_A_NARROW,   HK_OP_B,  "MAGIC_MINUS_A_NARROW"   },
+  { MAGIC_MINUS_B_NARROW,   HK_OP_C,  "MAGIC_MINUS_B_NARROW"   },
+  { MAGIC_MUL_DST_NARROW,   HK_OP_A,  "MAGIC_MUL_DST_NARROW"   },
+  { MAGIC_MUL_A_NARROW,     HK_OP_B,  "MAGIC_MUL_A_NARROW"     },
+  { MAGIC_MUL_B_NARROW,     HK_OP_C,  "MAGIC_MUL_B_NARROW"     },
+  { MAGIC_SUM_SLOT_NARROW,  HK_OP_A,  "MAGIC_SUM_SLOT_NARROW"  },
+  { MAGIC_SUM_SRC_NARROW,   HK_OP_B,  "MAGIC_SUM_SRC_NARROW"   },
+  /* Day 4: 6 branch-comparison siblings. */
+  { MAGIC_BLT_A_NARROW,     HK_OP_A,  "MAGIC_BLT_A_NARROW"     },
+  { MAGIC_BLT_B_NARROW,     HK_OP_B,  "MAGIC_BLT_B_NARROW"     },
+  { MAGIC_BLE_A_NARROW,     HK_OP_A,  "MAGIC_BLE_A_NARROW"     },
+  { MAGIC_BLE_B_NARROW,     HK_OP_B,  "MAGIC_BLE_B_NARROW"     },
+  { MAGIC_BEQ_A_NARROW,     HK_OP_A,  "MAGIC_BEQ_A_NARROW"     },
+  { MAGIC_BEQ_B_NARROW,     HK_OP_B,  "MAGIC_BEQ_B_NARROW"     },
+  { MAGIC_BGT_A_NARROW,     HK_OP_A,  "MAGIC_BGT_A_NARROW"     },
+  { MAGIC_BGT_B_NARROW,     HK_OP_B,  "MAGIC_BGT_B_NARROW"     },
+  { MAGIC_BGE_A_NARROW,     HK_OP_A,  "MAGIC_BGE_A_NARROW"     },
+  { MAGIC_BGE_B_NARROW,     HK_OP_B,  "MAGIC_BGE_B_NARROW"     },
+  { MAGIC_BNE_A_NARROW,     HK_OP_A,  "MAGIC_BNE_A_NARROW"     },
+  { MAGIC_BNE_B_NARROW,     HK_OP_B,  "MAGIC_BNE_B_NARROW"     },
+  /* Day 4: cold-call op_load_col_ndb. */
+  { MAGIC_LCN_COL_NARROW,   HK_OP_C,  "MAGIC_LCN_COL_NARROW"   },
+  { MAGIC_LCN_DST_NARROW,   HK_OP_A,  "MAGIC_LCN_DST_NARROW"   },
 };
 static const size_t kHoleNarrowMagicTableLen =
     sizeof(kHoleNarrowMagicTable) / sizeof(kHoleNarrowMagicTable[0]);

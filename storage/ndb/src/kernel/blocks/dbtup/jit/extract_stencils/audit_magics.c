@@ -99,38 +99,10 @@ static const struct {
   const char *magic_name;
   const char *stencil_name;
 } kMagicToStencil[] = {
-  /* Phase 4.5: LCI_DST / LRC_DST / LRC_COL / MV_DST / MV_SRC have
-   * migrated from wide to narrow encoding — their entries now live
-   * in kNarrowMagicToStencil[] below. Wide entries removed. */
+  /* Phase 4.5 Day 4: only HK_OP_IMM still uses the wide chain.
+   * All register-index and column-id operand magics migrated to
+   * kNarrowMagicToStencil[] below. */
   { "MAGIC_LCI_VAL",  "op_load_const_int"     },
-  { "MAGIC_ADD_DST",  "op_add_int_int"        },
-  { "MAGIC_ADD_A",    "op_add_int_int"        },
-  { "MAGIC_ADD_B",    "op_add_int_int"        },
-  { "MAGIC_SUM_SLOT", "op_sum_bigint"         },
-  { "MAGIC_SUM_SRC",  "op_sum_bigint"         },
-  { "MAGIC_BLT_A",    "op_branch_lt_int_int"  },
-  { "MAGIC_BLT_B",    "op_branch_lt_int_int"  },
-  /* Phase 3 branch-comparison siblings — same layout as BLT. */
-  { "MAGIC_BLE_A",    "op_branch_le_int_int"  },
-  { "MAGIC_BLE_B",    "op_branch_le_int_int"  },
-  { "MAGIC_BEQ_A",    "op_branch_eq_int_int"  },
-  { "MAGIC_BEQ_B",    "op_branch_eq_int_int"  },
-  { "MAGIC_BGT_A",    "op_branch_gt_int_int"  },
-  { "MAGIC_BGT_B",    "op_branch_gt_int_int"  },
-  { "MAGIC_BGE_A",    "op_branch_ge_int_int"  },
-  { "MAGIC_BGE_B",    "op_branch_ge_int_int"  },
-  { "MAGIC_BNE_A",    "op_branch_ne_int_int"  },
-  { "MAGIC_BNE_B",    "op_branch_ne_int_int"  },
-  /* Phase 4 hot-arithmetic siblings. */
-  { "MAGIC_MINUS_DST", "op_minus_int_int"     },
-  { "MAGIC_MINUS_A",   "op_minus_int_int"     },
-  { "MAGIC_MINUS_B",   "op_minus_int_int"     },
-  { "MAGIC_MUL_DST",   "op_mul_int_int"       },
-  { "MAGIC_MUL_A",     "op_mul_int_int"       },
-  { "MAGIC_MUL_B",     "op_mul_int_int"       },
-  /* Phase 4 cold-call op_load_col_ndb operand magics. */
-  { "MAGIC_LCN_COL",   "op_load_col_ndb"      },
-  { "MAGIC_LCN_DST",   "op_load_col_ndb"      },
 };
 static const size_t kMagicToStencilLen =
     sizeof(kMagicToStencil) / sizeof(kMagicToStencil[0]);
@@ -142,11 +114,40 @@ static const struct {
   const char *magic_name;
   const char *stencil_name;
 } kNarrowMagicToStencil[] = {
-  { "MAGIC_LCI_DST_NARROW", "op_load_const_int" },
-  { "MAGIC_LRC_DST_NARROW", "op_load_col_int"   },
-  { "MAGIC_LRC_COL_NARROW", "op_load_col_int"   },
-  { "MAGIC_MV_DST_NARROW",  "op_mov_int_int"    },
-  { "MAGIC_MV_SRC_NARROW",  "op_mov_int_int"    },
+  /* Day 1 smoke set. */
+  { "MAGIC_LCI_DST_NARROW",   "op_load_const_int"     },
+  { "MAGIC_LRC_DST_NARROW",   "op_load_col_int"       },
+  { "MAGIC_LRC_COL_NARROW",   "op_load_col_int"       },
+  { "MAGIC_MV_DST_NARROW",    "op_mov_int_int"        },
+  { "MAGIC_MV_SRC_NARROW",    "op_mov_int_int"        },
+  /* Day 4: hot arithmetic. */
+  { "MAGIC_ADD_DST_NARROW",   "op_add_int_int"        },
+  { "MAGIC_ADD_A_NARROW",     "op_add_int_int"        },
+  { "MAGIC_ADD_B_NARROW",     "op_add_int_int"        },
+  { "MAGIC_MINUS_DST_NARROW", "op_minus_int_int"      },
+  { "MAGIC_MINUS_A_NARROW",   "op_minus_int_int"      },
+  { "MAGIC_MINUS_B_NARROW",   "op_minus_int_int"      },
+  { "MAGIC_MUL_DST_NARROW",   "op_mul_int_int"        },
+  { "MAGIC_MUL_A_NARROW",     "op_mul_int_int"        },
+  { "MAGIC_MUL_B_NARROW",     "op_mul_int_int"        },
+  { "MAGIC_SUM_SLOT_NARROW",  "op_sum_bigint"         },
+  { "MAGIC_SUM_SRC_NARROW",   "op_sum_bigint"         },
+  /* Day 4: branch-comparison siblings. */
+  { "MAGIC_BLT_A_NARROW",     "op_branch_lt_int_int"  },
+  { "MAGIC_BLT_B_NARROW",     "op_branch_lt_int_int"  },
+  { "MAGIC_BLE_A_NARROW",     "op_branch_le_int_int"  },
+  { "MAGIC_BLE_B_NARROW",     "op_branch_le_int_int"  },
+  { "MAGIC_BEQ_A_NARROW",     "op_branch_eq_int_int"  },
+  { "MAGIC_BEQ_B_NARROW",     "op_branch_eq_int_int"  },
+  { "MAGIC_BGT_A_NARROW",     "op_branch_gt_int_int"  },
+  { "MAGIC_BGT_B_NARROW",     "op_branch_gt_int_int"  },
+  { "MAGIC_BGE_A_NARROW",     "op_branch_ge_int_int"  },
+  { "MAGIC_BGE_B_NARROW",     "op_branch_ge_int_int"  },
+  { "MAGIC_BNE_A_NARROW",     "op_branch_ne_int_int"  },
+  { "MAGIC_BNE_B_NARROW",     "op_branch_ne_int_int"  },
+  /* Day 4: cold-call op_load_col_ndb. */
+  { "MAGIC_LCN_COL_NARROW",   "op_load_col_ndb"       },
+  { "MAGIC_LCN_DST_NARROW",   "op_load_col_ndb"       },
 };
 static const size_t kNarrowMagicToStencilLen =
     sizeof(kNarrowMagicToStencil) / sizeof(kNarrowMagicToStencil[0]);
