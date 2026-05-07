@@ -21,9 +21,8 @@ encodings.
 
 ## ★ Items still to investigate (before coding starts)
 
-These need empirical or design work before Phase 4.5 day-1
-implementation can begin. Each is a directive for the planning
-spike that precedes the implementation work.
+**Update**: all six items resolved by the spike on 2026-05-07.
+Findings recorded inline below. Implementation can proceed.
 
 ### ★ Investigate I1 — clang codegen for narrow `volatile` reads
 
@@ -54,6 +53,21 @@ uint16_t` works, proceed with 16-bit. If not, fall back to 32-bit
 (2-instruction movz+movk chain, still 8 bytes shorter than the
 4-instruction full chain).
 
+**Resolved (spike 2026-05-07):** **16-bit pattern works.** Clang
+emits a single `mov w8, #imm16` (4-byte MOVZ, raw bytes
+`52 9X XX XX` with the magic in bits 5-20). Per-hole structure:
+1× movz (4) + 1× strh spill (4) + 1× ldrh reload (4) = 12 bytes
+of "hole encoding" per narrow hole. Wide pattern (current) is
+4× movz/movk (16) + 1× str spill (4) + 1× ldr reload (4) = 24
+bytes per hole. Savings: **12 bytes per narrow hole**. Stack
+sub/add pair (8 bytes) is per-function, not per-hole — clang
+shares it across all volatile expansions in a stencil.
+
+8-bit cast variant (`(uint8_t)v` from a `volatile uint16_t`)
+is **rejected** — clang emits the same 4-byte MOVZ plus an
+extra `and x8, x8, #0xff` masking instruction. Net 8 bytes per
+hole, worse than just using `uint16_t` directly.
+
 ### ★ Investigate I2 — magic-collision space at 16-bit width
 
 **Question:** with ~30 narrow magics packed into 65,536 possible
@@ -82,6 +96,15 @@ regen attempts, fall back to 32-bit.
 **Output:** chosen width (16 or 32 bits) with documented
 collision-rate measurement. The plan below tentatively assumes
 16-bit; flip if I2 says otherwise.
+
+**Resolved (spike 2026-05-07):** **16-bit width chosen.**
+Salt `RONDB-1056-Phase4_5-narrow-magic-v1` produces 30/30
+collision-free magics across all narrow-eligible holes. Salt v2
+hit 1 collision (BGE_B / BNE_B) out of 30 — confirms the
+~0.7% birthday-bound is real but salts v1/v3/v4/v5 all came
+out clean. No zero-low-byte values (which might trip a
+clang-encoding-shortening edge case). Use v1 salt; if a future
+addition causes a v1 collision, bump to a later salt.
 
 ### ★ Investigate I3 — narrow-hole detection vs existing chain detection
 
@@ -114,6 +137,18 @@ drop the narrow hole.
 assumes (2) two-pass walk — cleanest separation, no constraints
 on magic generation.
 
+**Resolved (spike 2026-05-07):** **two-pass walk chosen.** The
+existing chain detector already RESETS register tracking on
+each movz it sees (per `extract_one_arm64`'s pass-2 logic at
+the `is_movz` branch). So a narrow movz on register Rd that
+ISN'T followed by 3 movks naturally clears Rd's chain state
+without polluting subsequent wide-chain detection on Rd. Pass
+2 of the extractor walks all instructions and, for each movz
+NOT marked as a chain participant by pass 1, looks up its
+imm16 in the narrow magic table. Disjoint magic spaces (★ I2
+guarantees uniqueness within narrow set) plus pass-1
+exclusivity guarantees no double-matching.
+
 ### ★ Investigate I4 — Hole struct layout
 
 **Question:** add a `width=2` semantic to existing `HK_OP_*`
@@ -140,6 +175,14 @@ hot path. (2) is more boilerplate but cleaner switch dispatch.
 **Output:** chosen layout. Plan below tentatively assumes (1)
 reuse kind + vary width. Flip if I4 says otherwise.
 
+**Resolved (spike 2026-05-07):** **reuse-kind-vary-width chosen.**
+The engine patcher's HK_OP_A/B/C cases gain a single `if
+(width == 2)` branch on aarch64 (no-op on x86_64 — width is
+always 4 there). Existing 4-Hole-per-chain logic stays for
+width=4. Audit table grows with narrow magic entries but
+keeps the same structure. Less surface area than introducing
+new HoleKind values.
+
 ### ★ Investigate I5 — x86_64 narrow path worth doing?
 
 **Question:** on x86_64, we currently use `mov reg32, imm32`
@@ -165,6 +208,9 @@ x86_64 is a tangential add-on.
 assumes **no** — Phase 4.5 stays aarch64-only. x86_64 keeps the
 existing `mov reg32, imm32` pattern.
 
+**Resolved (spike 2026-05-07):** **no — aarch64-only.**
+Tentative answer holds. x86_64 narrow path is out of scope.
+
 ### ★ Investigate I6 — narrow hole admissibility per opcode
 
 **Question:** which existing operand holes can safely become
@@ -188,6 +234,11 @@ chains) and are unaffected by Phase 4.5.
 **Output:** confirmed narrow-eligible kinds: HK_OP_A, HK_OP_B,
 HK_OP_C. HK_OP_IMM keeps the wide chain. Phase 4.5's stencil
 source updates only affect A/B/C holes.
+
+**Resolved (spike 2026-05-07):** confirmed. 30 narrow-eligible
+holes across the 13 existing stencils, all carrying ≤8-bit
+values (register/slot indices, col_id ≤ 255). HK_OP_IMM (full
+int64) stays wide.
 
 ## 1. Scope
 
