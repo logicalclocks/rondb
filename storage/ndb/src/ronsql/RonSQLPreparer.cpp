@@ -6860,7 +6860,23 @@ RonSQLPreparer::resolve_chained_column_type(
           out_scale = 0;
           out_precision = 0;
           return true;
+        case NdbDictionary::Column::Char:
+        case NdbDictionary::Column::Varchar:
+        case NdbDictionary::Column::Longvarchar:
+          // Phase I.6 F.2: kernel-side MIN/MAX over CHAR / VARCHAR /
+          // Longvarchar is wired (per-(group, slot) val_ptr +
+          // AGG_CHAR_RESULT wire marker).  Mirror the
+          // build_cte_virtual_tables decision here so chained CTE
+          // layers see the same type, length, and charset.
+          out_type = arg_type;
+          out_length = arg_length;
+          out_cs = arg_cs;
+          out_scale = arg_scale;
+          out_precision = arg_precision;
+          return true;
         default:
+          // Other non-numeric source types: best-effort passthrough
+          // (see build_cte_virtual_tables for the same caveat).
           out_type = arg_type;
           out_length = arg_length;
           out_cs = arg_cs;
@@ -7058,12 +7074,31 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
               }
               derived_length = 1;
               break;
+            case NdbDictionary::Column::Char:
+            case NdbDictionary::Column::Varchar:
+            case NdbDictionary::Column::Longvarchar:
+              // Phase I.6 F.2: kernel computes per-(group, slot)
+              // string MIN/MAX via AggResItem.value.val_ptr (see
+              // cte_filter_phase_i6_varchar.md, K.4) and ships
+              // the result via the AGG_CHAR_RESULT wire marker
+              // (K.5).  Preserve the source column's type, length,
+              // and charset so the virt-table descriptor matches
+              // exactly what the kernel produces.  F.3-R.2 will
+              // also accept these virt-types in the inline-type
+              // filter opcode.
+              derived_type = st;
+              derived_length = src_length;
+              derived_cs = src_cs;
+              break;
             default:
-              // Non-numeric source (CHAR/VARCHAR/etc.): preserve
-              // source metadata.  Filter pushdown on these shapes
-              // still rejects (see emit_cte_lookup_filter), but the
-              // pass-through aggregator path is unaffected.
-              // Kernel-side string aggregation is the F.2 follow-up.
+              // Other non-numeric source types (Date / Time /
+              // Timestamp / Bit / Binary / Blob / Text / etc.):
+              // best-effort passthrough — kernel-side TypeSupported
+              // on these is not yet implemented, so MIN/MAX over
+              // them is not actually supported end-to-end.  Kept
+              // here for the rare case that a passthrough
+              // aggregator path consumes a virt column without
+              // going through MIN/MAX execution.
               derived_type = st;
               derived_length = src_length;
               derived_cs = src_cs;
