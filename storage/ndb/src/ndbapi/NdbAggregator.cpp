@@ -122,6 +122,8 @@ NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
     memset(agg_ops_, kOpUnknown, MAX_AGGREGATION_OP_SIZE * 4);
     vec_result_final_.clear();
     memset(gb_columns_, 0, sizeof(gb_columns_));
+    memset(reg_columns_, 0, sizeof(reg_columns_));
+    memset(agg_columns_, 0, sizeof(agg_columns_));
 }
 
 NdbAggregator::~NdbAggregator() {
@@ -154,7 +156,9 @@ NdbAggregator::~NdbAggregator() {
 void NdbAggregator::initForResults(const Uint32 *programBuffer,
                                    Uint32 programLen,
                                    const NdbDictionary::Column *const *gbColumns,
-                                   Uint32 nGbColumns) {
+                                   Uint32 nGbColumns,
+                                   const NdbDictionary::Column *const *aggColumns,
+                                   Uint32 nAggColumns) {
   assert(programLen >= PROGRAM_HEADER_SIZE);
   // Word 1: (n_gb_cols << 16) | n_agg_results
   n_gb_cols_ = programBuffer[1] >> 16;
@@ -181,6 +185,13 @@ void NdbAggregator::initForResults(const Uint32 *programBuffer,
   if (gbColumns != nullptr) {
     for (Uint32 i = 0; i < nGbColumns && i < MAX_AGG_N_GROUPBY_COLS; i++) {
       gb_columns_[i] = gbColumns[i];
+    }
+  }
+  memset(reg_columns_, 0, sizeof(reg_columns_));
+  memset(agg_columns_, 0, sizeof(agg_columns_));
+  if (aggColumns != nullptr) {
+    for (Uint32 i = 0; i < nAggColumns && i < MAX_AGG_N_RESULTS; i++) {
+      agg_columns_[i] = aggColumns[i];
     }
   }
 
@@ -239,6 +250,66 @@ void NdbAggregator::freeStringSlots(AggResItem* slots, Uint32 n_slots) {
         slots[i].value.val_ptr != nullptr) {
       delete[] static_cast<char*>(slots[i].value.val_ptr);
     }
+  }
+}
+
+bool NdbAggregator::isStringType(Uint32 type) const {
+  return type == NDB_TYPE_CHAR ||
+         type == NDB_TYPE_VARCHAR ||
+         type == NDB_TYPE_LONGVARCHAR;
+}
+
+void NdbAggregator::clearStringSlot(AggResItem *slot) const {
+  if (slot != nullptr && isStringType(slot->type) &&
+      slot->value.val_ptr != nullptr) {
+    delete[] static_cast<char*>(slot->value.val_ptr);
+    slot->value.val_ptr = nullptr;
+  }
+}
+
+void NdbAggregator::assignStringSlot(AggResItem *dst,
+                                     const AggResItem *src) const {
+  clearStringSlot(dst);
+  *dst = *src;
+}
+
+int NdbAggregator::compareStringSlots(const AggResItem *lhs,
+                                      const AggResItem *rhs,
+                                      Uint32 agg_id) const {
+  const NdbDictionary::Column *col =
+      (agg_id < MAX_AGG_N_RESULTS) ? agg_columns_[agg_id] : nullptr;
+  assert(col != nullptr);
+  const char *lhs_buf = static_cast<const char*>(lhs->value.val_ptr);
+  const char *rhs_buf = static_cast<const char*>(rhs->value.val_ptr);
+  const Uint16 lhs_payload_len =
+      *reinterpret_cast<const Uint16*>(lhs_buf);
+  const Uint16 rhs_payload_len =
+      *reinterpret_cast<const Uint16*>(rhs_buf);
+  const Uint32 prefix = (lhs->type == NDB_TYPE_CHAR) ? 0 :
+                        (lhs->type == NDB_TYPE_VARCHAR) ? 1 : 2;
+  const Uint32 lhs_len = prefix + lhs_payload_len;
+  const Uint32 rhs_len = prefix + rhs_payload_len;
+  const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(lhs->type);
+  return (*sqlType.m_cmp)(col->getCharset(),
+                          lhs_buf + 4, lhs_len,
+                          rhs_buf + 4, rhs_len);
+}
+
+void NdbAggregator::mergeStringSlot(AggResItem *dst,
+                                    const AggResItem *src,
+                                    Uint32 agg_id) {
+  if (src->type == NDB_TYPE_UNDEFINED || src->is_null) {
+    return;
+  }
+  if (dst->type == NDB_TYPE_UNDEFINED || dst->is_null) {
+    assignStringSlot(dst, src);
+    return;
+  }
+  const int cmp = compareStringSlots(src, dst, agg_id);
+  const bool replace =
+      (agg_ops_[agg_id] == kOpMax) ? (cmp > 0) : (cmp < 0);
+  if (replace) {
+    assignStringSlot(dst, src);
   }
 }
 
@@ -357,8 +428,7 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
 
       // For AGG_CHAR_RESULT, agg_res_len includes the appended
       // string-payload region; the array is still n_agg_results × 16
-      // bytes at the start.  Multi-source merge of string slots is
-      // K.5d-2 territory; for now just point res at the array head.
+      // bytes at the start.
       assert(wire_has_strings ||
              agg_res_len == n_agg_results * sizeof(AggResItem));
       const AggResItem* res = reinterpret_cast<const AggResItem*>(
@@ -381,16 +451,12 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
           if (res[i].type == NDB_TYPE_UNDEFINED) {
             continue;
           }
-          if (agg_res_ptr[i].type == NDB_TYPE_UNDEFINED) {
-            agg_res_ptr[i] = res[i];
+          if (isStringType(res[i].type)) {
+            mergeStringSlot(&agg_res_ptr[i], &res[i], i);
             continue;
           }
-          // Phase I.6 (F.2-K.5d-1): preserve the first-source winner
-          // for string MIN/MAX slots — multi-source merge requires
-          // charset-aware compare and lands in K.5d-2.
-          if (res[i].type == NDB_TYPE_CHAR ||
-              res[i].type == NDB_TYPE_VARCHAR ||
-              res[i].type == NDB_TYPE_LONGVARCHAR) {
+          if (agg_res_ptr[i].type == NDB_TYPE_UNDEFINED) {
+            agg_res_ptr[i] = res[i];
             continue;
           }
           if (res[i].is_null) {
@@ -556,9 +622,8 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
 
     for (Uint32 i = 0; i < n_agg_results; i++) {
       DEB_TRACE();
-      // Phase I.6 (F.2-K.5d-1): allow CHAR / VARCHAR / Longvarchar
-      // through the per-slot type check.  Multi-source merge for
-      // strings (charset-aware compare) is K.5d-2.
+      // Phase I.6: allow CHAR / VARCHAR / Longvarchar through the
+      // per-slot type check and merge them with charset-aware compare.
       const bool is_string_type =
           (res[i].type == NDB_TYPE_CHAR ||
            res[i].type == NDB_TYPE_VARCHAR ||
@@ -572,15 +637,13 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
               agg_res_ptr[i].type == NDB_TYPE_UNDEFINED ||
               (res[i].type == NDB_TYPE_UNDEFINED &&
                n_gb_cols == 0));
-      if (res[i].is_null) {
+      if (is_string_type) {
+        mergeStringSlot(&agg_res_ptr[i], &res[i], i);
+      } else if (res[i].is_null) {
         DEB_TRACE();
       } else if (agg_res_ptr[i].is_null) {
         DEB_TRACE();
         agg_res_ptr[i] = res[i];
-      } else if (is_string_type) {
-        // K.5d-1: preserve first-source winner.  Multi-source string
-        // MIN/MAX merge is K.5d-2.
-        DEB_TRACE();
       } else {
         DEB_TRACE();
         agg_res_ptr[i].type = res[i].type;
@@ -734,6 +797,7 @@ bool NdbAggregator::LoadColumn(const char* name, Uint32 reg_id) {
     (type & 0x1F) << 21 |
     (reg_id & 0x0F) << 16 |
     col_id;
+  reg_columns_[reg_id] = col;
 
   /*
    * For decimal, use 1 more byte to take precision/scale
@@ -778,6 +842,7 @@ bool NdbAggregator::LoadColumn(Int32 col_id, Uint32 reg_id) {
     (type & 0x1F) << 21 |
     (reg_id & 0x0F) << 16 |
     col_id;
+  reg_columns_[reg_id] = col;
   /*
    * For decimal, use 1 more byte to take precision/scale
    * info.
@@ -818,6 +883,7 @@ bool NdbAggregator::LoadLinkedColumn(Uint32 position, Uint32 reg_id,
     (type & 0x1F) << 21 |
     (reg_id & 0x0F) << 16 |
     col_id;
+  reg_columns_[reg_id] = col;
 
   if (type == NdbDictionary::Column::Decimal ||
       type == NdbDictionary::Column::Decimalunsigned) {
@@ -1003,6 +1069,7 @@ bool NdbAggregator::Max(Uint32 agg_id, Uint32 reg_id) {
     agg_id;
 
   agg_ops_[agg_id] = kOpMax;
+  agg_columns_[agg_id] = reg_columns_[reg_id];
   n_agg_results_++;
 
   return true;
@@ -1019,6 +1086,7 @@ bool NdbAggregator::Min(Uint32 agg_id, Uint32 reg_id) {
     agg_id;
 
   agg_ops_[agg_id] = kOpMin;
+  agg_columns_[agg_id] = reg_columns_[reg_id];
   n_agg_results_++;
 
   return true;

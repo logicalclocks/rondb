@@ -658,6 +658,7 @@ NdbQueryOptionsImpl::~NdbQueryOptionsImpl() {
   delete m_interpretedCode;
   delete[] m_aggProgramBuffer;
   delete[] m_aggGbColumns;
+  delete[] m_aggColumns;
 }
 
 NdbQueryOptionsImpl::NdbQueryOptionsImpl(const NdbQueryOptionsImpl &src)
@@ -674,6 +675,7 @@ NdbQueryOptionsImpl::NdbQueryOptionsImpl(const NdbQueryOptionsImpl &src)
       m_aggDiskColumns(src.m_aggDiskColumns),
       m_aggTable(src.m_aggTable),
       m_aggGbColumns(nullptr),
+      m_aggColumns(nullptr),
       m_linkedProjection(src.m_linkedProjection),
       m_maxRows(src.m_maxRows) {
   if (src.m_interpretedCode != nullptr) {
@@ -694,6 +696,17 @@ NdbQueryOptionsImpl::NdbQueryOptionsImpl(const NdbQueryOptionsImpl &src)
     if (likely(m_aggGbColumns != nullptr)) {
       memcpy(m_aggGbColumns, src.m_aggGbColumns,
              src.m_aggNGroupByCols * sizeof(const NdbDictionary::Column *));
+    }
+  }
+  if (src.m_aggColumns != nullptr) {
+    const Uint32 nAggResults =
+        src.m_aggProgramBuffer != nullptr ? (src.m_aggProgramBuffer[1] & 0xFFFF) : 0;
+    if (nAggResults > 0) {
+      m_aggColumns = new const NdbDictionary::Column *[nAggResults];
+      if (likely(m_aggColumns != nullptr)) {
+        memcpy(m_aggColumns, src.m_aggColumns,
+               nAggResults * sizeof(const NdbDictionary::Column *));
+      }
     }
   }
 }
@@ -767,6 +780,17 @@ int NdbQueryOptionsImpl::copyAggregation(const NdbAggregator &src) {
     }
     memcpy(m_aggGbColumns, src.gb_columns(),
            m_aggNGroupByCols * sizeof(const NdbDictionary::Column *));
+  }
+  const Uint32 nAggResults = src.buffer()[1] & 0xFFFF;
+  delete[] m_aggColumns;
+  m_aggColumns = nullptr;
+  if (nAggResults > 0) {
+    m_aggColumns = new const NdbDictionary::Column *[nAggResults];
+    if (unlikely(m_aggColumns == nullptr)) {
+      return Err_MemoryAlloc;
+    }
+    memcpy(m_aggColumns, src.agg_columns(),
+           nAggResults * sizeof(const NdbDictionary::Column *));
   }
   return 0;
 }

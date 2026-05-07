@@ -3493,7 +3493,9 @@ int NdbQueryImpl::prepareAggregation() {
     const Uint32 progLen = firstOpts->getAggProgramLen();
     m_aggregator->initForResults(progBuf, progLen,
                                  firstOpts->getAggGbColumns(),
-                                 firstOpts->getAggNGroupByCols());
+                                 firstOpts->getAggNGroupByCols(),
+                                 firstOpts->getAggColumns(),
+                                 progBuf[1] & 0xFFFF);
   } else {
     // Multi-leaf: build combined result program with total n_agg_results
     // and all agg instructions from all leaves (with adjusted slot indices).
@@ -3545,6 +3547,12 @@ int NdbQueryImpl::prepareAggregation() {
            nGbCols * sizeof(Uint32));
 
     // Copy instructions from all leaves, adjusting agg slot indices
+    const NdbDictionary::Column **combinedAggColumns =
+        new const NdbDictionary::Column *[totalAggResults];
+    if (combinedAggColumns == nullptr) {
+      delete[] combinedProg;
+      return Err_MemoryAlloc;
+    }
     Uint32 pos = HEADER_SIZE + nGbCols;
     Uint32 accOffset = 0;
     for (Uint32 leaf = 0; leaf < numLeaves; leaf++) {
@@ -3559,13 +3567,24 @@ int NdbQueryImpl::prepareAggregation() {
         }
         combinedProg[pos++] = word;
       }
+      const Uint32 leafOpNo = getQueryDef().getAggregateLeafOpNo(leaf);
+      const NdbQueryOperationDefImpl &leafDef =
+          getQueryDef().getQueryOperation(leafOpNo);
+      const NdbQueryOptionsImpl &leafOpts = leafDef.getOptions();
+      memcpy(combinedAggColumns + accOffset,
+             leafOpts.getAggColumns(),
+             leafInstrs[leaf].nResults *
+                 sizeof(const NdbDictionary::Column *));
       accOffset += leafInstrs[leaf].nResults;
     }
     assert(pos == combinedLen);
 
     m_aggregator->initForResults(combinedProg, combinedLen,
                                  firstOpts->getAggGbColumns(),
-                                 firstOpts->getAggNGroupByCols());
+                                 firstOpts->getAggNGroupByCols(),
+                                 combinedAggColumns,
+                                 totalAggResults);
+    delete[] combinedAggColumns;
     delete[] combinedProg;
   }
   return 0;

@@ -282,10 +282,15 @@ class NdbAggregator {
    */
   void initForResults(const Uint32 *programBuffer, Uint32 programLen,
                       const NdbDictionary::Column *const *gbColumns = nullptr,
-                      Uint32 nGbColumns = 0);
+                      Uint32 nGbColumns = 0,
+                      const NdbDictionary::Column *const *aggColumns = nullptr,
+                      Uint32 nAggColumns = 0);
 
   const NdbDictionary::Column *const *gb_columns() const {
     return gb_columns_;
+  }
+  const NdbDictionary::Column *const *agg_columns() const {
+    return agg_columns_;
   }
 
   Int32 ProcessRes(char* buf);
@@ -379,6 +384,15 @@ class NdbAggregator {
 
  private:
   bool TypeSupported(NdbDictionary::Column::Type type);
+  bool isStringType(Uint32 type) const;
+  void clearStringSlot(AggResItem *slot) const;
+  void assignStringSlot(AggResItem *dst, const AggResItem *src) const;
+  int compareStringSlots(const AggResItem *lhs,
+                         const AggResItem *rhs,
+                         Uint32 agg_id) const;
+  void mergeStringSlot(AggResItem *dst,
+                       const AggResItem *src,
+                       Uint32 agg_id);
   const NdbTableImpl* table_impl_;
   Uint32 buffer_[MAX_VEC_SEARCH_PROGRAM_WORD_SIZE];
 
@@ -389,6 +403,8 @@ class NdbAggregator {
    * side and transferred through NdbQueryOptions to the result-side
    * aggregator via initForResults(). */
   const NdbDictionary::Column *gb_columns_[MAX_AGG_N_GROUPBY_COLS];
+  const NdbDictionary::Column *reg_columns_[kRegTotal];
+  const NdbDictionary::Column *agg_columns_[MAX_AGG_N_RESULTS];
 
   Uint32 n_gb_cols_;
   Uint32 gb_col_ids_[MAX_AGG_N_GROUPBY_COLS];

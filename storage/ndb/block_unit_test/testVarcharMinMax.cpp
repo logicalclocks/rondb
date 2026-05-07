@@ -88,11 +88,7 @@ static int setupSchema(MYSQL *conn) {
         "  grp INT NOT NULL,"
         "  vname VARCHAR(20) NOT NULL,"
         "  cname CHAR(8) NOT NULL"
-        ") ENGINE=NDB"
-        // Phase I.6 K.5d-1 covers single-source merge only — force
-        // one partition so the API only sees one ProcessRes call;
-        // multi-source string merge lands as K.5d-2.
-        " PARTITION BY KEY() PARTITIONS 1") != 0) return -1;
+        ") ENGINE=NDB") != 0) return -1;
   if (runQuery(conn,
         "INSERT INTO vctest_t VALUES "
         "  (1, 1, 'Alice',   'A1'),"
