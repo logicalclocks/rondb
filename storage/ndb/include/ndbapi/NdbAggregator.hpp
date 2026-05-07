@@ -189,6 +189,26 @@ class NdbAggregator {
       return data_.val_double;
     }
 
+    // Phase I.6 (F.2-K.5d-3): payload of a string MIN/MAX result.
+    // Decodes the local val_ptr buffer set up by NdbAggregator's
+    // resolveStringSlots: `[Uint16 payload_len][Uint16 capacity]
+    // [prefix_bytes + payload]`.  Returns a pointer to the payload
+    // bytes (past the wire-format prefix) and writes the payload
+    // length to *payload_len.  Valid only when type() is one of
+    // Char / Varchar / Longvarchar AND is_null() is false.
+    const char* data_str(Uint32* payload_len) {
+      const char* buf = static_cast<const char*>(data_.val_ptr);
+      const Uint16 plen = *reinterpret_cast<const Uint16*>(buf);
+      const Uint32 prefix =
+          (type_ == NdbDictionary::Column::Char)        ? 0
+        : (type_ == NdbDictionary::Column::Varchar)     ? 1
+        : 2;  // Longvarchar
+      if (payload_len != nullptr) {
+        *payload_len = plen;
+      }
+      return buf + 4 + prefix;
+    }
+
    private:
     NdbDictionary::Column::Type type_;
     bool is_null_;
