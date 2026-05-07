@@ -7535,19 +7535,27 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     } else if (o->type == Outputs::Type::AGGREGATE) {
       TokenKind fun = o->aggregate.fun;
       if (fun == T_MIN || fun == T_MAX) {
-        // Numeric MIN/MAX has been widened to Bigint/Bigunsigned/Double
-        // by build_cte_virtual_tables — those share the 8-byte
-        // AggResItem.value wire format with SUM/COUNT and dispatch
-        // through the same inline-type opcode. Non-numeric MIN/MAX
-        // (CHAR/VARCHAR/DECIMAL) keeps its source type, which the
-        // inline opcode can't encode as a 8-byte slot — reject those.
+        // Numeric MIN/MAX has been widened to Bigint/Bigunsigned/
+        // Double by build_cte_virtual_tables — those share the
+        // 8-byte AggResItem.value wire format with SUM/COUNT and
+        // dispatch through the same inline-type opcode.
+        // Phase I.6 F.3-R.2: CHAR / VARCHAR / Longvarchar MIN/MAX
+        // results are now produced by the kernel via the
+        // AGG_CHAR_RESULT wire path — accept them too.  The inline
+        // opcode emit below derives the correct columnSize and
+        // csNumber from the virt-table column for these types.
         NdbDictionary::Column::Type vt = vtcol->getType();
         require_prm(vt == NdbDictionary::Column::Bigint ||
                     vt == NdbDictionary::Column::Bigunsigned ||
-                    vt == NdbDictionary::Column::Double,
-                    "CTE_LOOKUP filter on MIN/MAX of non-numeric source "
-                    "(CHAR/VARCHAR/DECIMAL) not yet supported — would "
-                    "need wide AggResItem encoding in the kernel.");
+                    vt == NdbDictionary::Column::Double ||
+                    vt == NdbDictionary::Column::Char ||
+                    vt == NdbDictionary::Column::Varchar ||
+                    vt == NdbDictionary::Column::Longvarchar,
+                    "CTE_LOOKUP filter on MIN/MAX of this column type "
+                    "not yet supported.  Numeric (BIGINT / DOUBLE) and "
+                    "CHAR / VARCHAR / Longvarchar are accepted; DECIMAL "
+                    "MIN/MAX outputs go through the BIGINT/DOUBLE "
+                    "widening path (Phase I.6 F.1).");
       } else {
         require_prm(fun == T_SUM || fun == T_COUNT,
                     "CTE_LOOKUP filter on aggregate output: only SUM, "
@@ -7584,15 +7592,29 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     // SQL operator that should still REJECT".
     int rc = -1;
     if (use_inline_path) {
-      // SUM / COUNT aggregate results are written into the linked
-      // buffer as fixed 8-byte values regardless of source type
-      // (Dblqh::buildCteLinkedBuffer Step 3 — AggResItem.value:
-      // Uint64).  typeId comes from the synthetic virt-table column
-      // (correctly set by build_cte_virtual_tables).  No charset
-      // since SUM / COUNT produce numeric results only.
+      // SUM / COUNT and numeric MIN/MAX results are written into the
+      // linked buffer as fixed 8-byte values regardless of source
+      // type (Dblqh::buildCteLinkedBuffer Step 3 — AggResItem.value:
+      // Uint64).  Phase I.6 F.3-R.2: CHAR / VARCHAR / Longvarchar
+      // MIN/MAX results carry the source column's declared length
+      // and charset on the wire; derive columnSize and csNumber
+      // from the virt-table column (set up by
+      // build_cte_virtual_tables / F.3-R.1).  Phase D's
+      // branch_linked_inline_* opcode family already handles
+      // variable column size + charset.
       const Uint32 inline_typeId = (Uint32)vtcol->getType();
-      const Uint32 inline_columnSize = 8;
-      const Uint32 inline_csNumber = 0;
+      const NdbDictionary::Column::Type vt = vtcol->getType();
+      Uint32 inline_columnSize = 8;
+      Uint32 inline_csNumber = 0;
+      if (vt == NdbDictionary::Column::Char ||
+          vt == NdbDictionary::Column::Varchar ||
+          vt == NdbDictionary::Column::Longvarchar) {
+        inline_columnSize = (Uint32)vtcol->getLength();
+        // getCharsetNumber dereferences the impl charset; use the
+        // public accessor so RonSQLPreparer.cpp doesn't need the
+        // full CHARSET_INFO definition.
+        inline_csNumber = (Uint32)vtcol->getCharsetNumber();
+      }
       switch (eff_op) {
       case T_EQUALS:
         rc = code.branch_linked_inline_ne(position, inline_typeId,
