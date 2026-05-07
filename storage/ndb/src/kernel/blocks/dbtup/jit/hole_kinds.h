@@ -365,38 +365,11 @@ typedef struct {
 } HoleNarrowMagicEntry;
 
 static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
-  /* Phase 4.5 Day 1 smoke set. */
-  { MAGIC_LCI_DST_NARROW,   HK_OP_A,  "MAGIC_LCI_DST_NARROW"   },
-  { MAGIC_LRC_DST_NARROW,   HK_OP_A,  "MAGIC_LRC_DST_NARROW"   },
-  { MAGIC_LRC_COL_NARROW,   HK_OP_B,  "MAGIC_LRC_COL_NARROW"   },
-  { MAGIC_MV_DST_NARROW,    HK_OP_A,  "MAGIC_MV_DST_NARROW"    },
-  { MAGIC_MV_SRC_NARROW,    HK_OP_B,  "MAGIC_MV_SRC_NARROW"    },
-  /* Day 4: hot arithmetic. */
-  { MAGIC_ADD_DST_NARROW,   HK_OP_A,  "MAGIC_ADD_DST_NARROW"   },
-  { MAGIC_ADD_A_NARROW,     HK_OP_B,  "MAGIC_ADD_A_NARROW"     },
-  { MAGIC_ADD_B_NARROW,     HK_OP_C,  "MAGIC_ADD_B_NARROW"     },
-  { MAGIC_MINUS_DST_NARROW, HK_OP_A,  "MAGIC_MINUS_DST_NARROW" },
-  { MAGIC_MINUS_A_NARROW,   HK_OP_B,  "MAGIC_MINUS_A_NARROW"   },
-  { MAGIC_MINUS_B_NARROW,   HK_OP_C,  "MAGIC_MINUS_B_NARROW"   },
-  { MAGIC_MUL_DST_NARROW,   HK_OP_A,  "MAGIC_MUL_DST_NARROW"   },
-  { MAGIC_MUL_A_NARROW,     HK_OP_B,  "MAGIC_MUL_A_NARROW"     },
-  { MAGIC_MUL_B_NARROW,     HK_OP_C,  "MAGIC_MUL_B_NARROW"     },
-  { MAGIC_SUM_SLOT_NARROW,  HK_OP_A,  "MAGIC_SUM_SLOT_NARROW"  },
-  { MAGIC_SUM_SRC_NARROW,   HK_OP_B,  "MAGIC_SUM_SRC_NARROW"   },
-  /* Day 4: 6 branch-comparison siblings. */
-  { MAGIC_BLT_A_NARROW,     HK_OP_A,  "MAGIC_BLT_A_NARROW"     },
-  { MAGIC_BLT_B_NARROW,     HK_OP_B,  "MAGIC_BLT_B_NARROW"     },
-  { MAGIC_BLE_A_NARROW,     HK_OP_A,  "MAGIC_BLE_A_NARROW"     },
-  { MAGIC_BLE_B_NARROW,     HK_OP_B,  "MAGIC_BLE_B_NARROW"     },
-  { MAGIC_BEQ_A_NARROW,     HK_OP_A,  "MAGIC_BEQ_A_NARROW"     },
-  { MAGIC_BEQ_B_NARROW,     HK_OP_B,  "MAGIC_BEQ_B_NARROW"     },
-  { MAGIC_BGT_A_NARROW,     HK_OP_A,  "MAGIC_BGT_A_NARROW"     },
-  { MAGIC_BGT_B_NARROW,     HK_OP_B,  "MAGIC_BGT_B_NARROW"     },
-  { MAGIC_BGE_A_NARROW,     HK_OP_A,  "MAGIC_BGE_A_NARROW"     },
-  { MAGIC_BGE_B_NARROW,     HK_OP_B,  "MAGIC_BGE_B_NARROW"     },
-  { MAGIC_BNE_A_NARROW,     HK_OP_A,  "MAGIC_BNE_A_NARROW"     },
-  { MAGIC_BNE_B_NARROW,     HK_OP_B,  "MAGIC_BNE_B_NARROW"     },
-  /* Day 4: cold-call op_load_col_ndb. */
+  /* Phase 4.7: 28 of the original 30 narrow magics migrated to
+   * imm12 fold (kHoleFoldMagicTable below). Only op_load_col_ndb's
+   * cold-call helper-argument holes (LCN_COL, LCN_DST) remain on
+   * the narrow-MOVZ path — they're scalar arguments to bl, not
+   * array indices, so fold doesn't apply. */
   { MAGIC_LCN_COL_NARROW,   HK_OP_C,  "MAGIC_LCN_COL_NARROW"   },
   { MAGIC_LCN_DST_NARROW,   HK_OP_A,  "MAGIC_LCN_DST_NARROW"   },
 };

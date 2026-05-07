@@ -105,6 +105,12 @@ typedef __attribute__((preserve_none)) void (*StencilTailFn)(JitState *);
       ((state)->regs_i64[HOLE(name)])
 #  define HOLE_STORE_REG(name, state, value)  \
       ((state)->regs_i64[HOLE(name)] = (value))
+#  define HOLE_LOAD_ACC(name, state)  \
+      ((state)->acc_i64[HOLE(name)])
+#  define HOLE_STORE_ACC(name, state, value)  \
+      ((state)->acc_i64[HOLE(name)] = (value))
+#  define HOLE_LOAD_COL(name, state)  \
+      ((state)->row_cols_i64[HOLE(name)])
 #elif defined(__aarch64__)
 #  define DECLARE_HOLE(name)         /* nothing — magic constant from hole_kinds.h */
 #  define DECLARE_NARROW_HOLE(name)  /* nothing — same */
@@ -211,12 +217,70 @@ static inline void aarch64_store_reg_(uint32_t magic_byte_off,
   );
 }
 
+/* acc_i64[] variants. acc_i64 lives at offset 64 within JitState
+ * (after regs_i64[BC_MAX_REGS=8]). To keep the imm12 hole carrying
+ * just the slot index (not slot + array_base / 8), we pass
+ * state->acc_i64 as the base register — clang emits an
+ * `add x_base, x20, #64` once per stencil and reuses it for both
+ * load and store via the imm12 fold. */
+__attribute__((always_inline))
+__attribute__((unused))
+static inline int64_t aarch64_load_acc_(uint32_t magic_byte_off,
+                                         JitState *state) {
+  int64_t v;
+  __asm__ volatile (
+    "ldr %[out], [%[base], %[off]]"
+    : [out] "=r" (v)
+    : [base] "r"  (state->acc_i64),
+      [off]  "n"  (magic_byte_off & 0x7FF8u)
+  );
+  return v;
+}
+
+__attribute__((always_inline))
+__attribute__((unused))
+static inline void aarch64_store_acc_(uint32_t magic_byte_off,
+                                       JitState *state,
+                                       int64_t value) {
+  __asm__ volatile (
+    "str %[v], [%[base], %[off]]"
+    :
+    : [v]    "r"  (value),
+      [base] "r"  (state->acc_i64),
+      [off]  "n"  (magic_byte_off & 0x7FF8u)
+    : "memory"
+  );
+}
+
+/* row_cols_i64 variant. row_cols_i64 is a *pointer* member of
+ * JitState (offset 96), not an embedded array — clang loads the
+ * pointer once into a register, then uses it as the imm12 base. */
+__attribute__((always_inline))
+__attribute__((unused))
+static inline int64_t aarch64_load_col_(uint32_t magic_byte_off,
+                                         const JitState *state) {
+  int64_t v;
+  __asm__ volatile (
+    "ldr %[out], [%[base], %[off]]"
+    : [out] "=r" (v)
+    : [base] "r"  (state->row_cols_i64),
+      [off]  "n"  (magic_byte_off & 0x7FF8u)
+  );
+  return v;
+}
+
 #  define HOLE(name)         aarch64_hole_(MAGIC_##name)
 #  define HOLE_NARROW(name)  aarch64_hole_narrow_(MAGIC_##name##_NARROW)
 #  define HOLE_LOAD_REG(name, state)         \
       aarch64_load_reg_(MAGIC_##name##_FOLD * 8u, (state))
 #  define HOLE_STORE_REG(name, state, value) \
       aarch64_store_reg_(MAGIC_##name##_FOLD * 8u, (state), (value))
+#  define HOLE_LOAD_ACC(name, state)         \
+      aarch64_load_acc_(MAGIC_##name##_FOLD * 8u, (state))
+#  define HOLE_STORE_ACC(name, state, value) \
+      aarch64_store_acc_(MAGIC_##name##_FOLD * 8u, (state), (value))
+#  define HOLE_LOAD_COL(name, state)         \
+      aarch64_load_col_(MAGIC_##name##_FOLD * 8u, (state))
 #else
 #  error "unsupported architecture for stencil source"
 #endif
@@ -227,10 +291,10 @@ static inline void aarch64_store_reg_(uint32_t magic_byte_off,
 /* Phase 4.5: LCI_DST is a register index (≤8 bits) — narrow hole.    */
 /* LCI_VAL is the int64 immediate value — stays wide.                 */
 /* ------------------------------------------------------------------ */
-DECLARE_NARROW_HOLE(LCI_DST);
+DECLARE_FOLD_HOLE(LCI_DST);
 DECLARE_HOLE(LCI_VAL);
 STENCIL op_load_const_int(JitState *s) {
-  s->regs_i64[HOLE_NARROW(LCI_DST)] = (int64_t)HOLE(LCI_VAL);
+  HOLE_STORE_REG(LCI_DST, s, (int64_t)HOLE(LCI_VAL));
   TAIL_NEXT(s);
 }
 
@@ -239,10 +303,10 @@ STENCIL op_load_const_int(JitState *s) {
 /*                                                                    */
 /* Phase 4.5: both holes are indices (≤8 bits) — narrow.              */
 /* ------------------------------------------------------------------ */
-DECLARE_NARROW_HOLE(LRC_DST);
-DECLARE_NARROW_HOLE(LRC_COL);
+DECLARE_FOLD_HOLE(LRC_DST);
+DECLARE_FOLD_HOLE(LRC_COL);
 STENCIL op_load_col_int(JitState *s) {
-  s->regs_i64[HOLE_NARROW(LRC_DST)] = s->row_cols_i64[HOLE_NARROW(LRC_COL)];
+  HOLE_STORE_REG(LRC_DST, s, HOLE_LOAD_COL(LRC_COL, s));
   TAIL_NEXT(s);
 }
 
@@ -251,31 +315,33 @@ STENCIL op_load_col_int(JitState *s) {
 /*                                                                    */
 /* Phase 4.5: both holes are register indices — narrow.               */
 /* ------------------------------------------------------------------ */
-DECLARE_NARROW_HOLE(MV_DST);
-DECLARE_NARROW_HOLE(MV_SRC);
+DECLARE_FOLD_HOLE(MV_DST);
+DECLARE_FOLD_HOLE(MV_SRC);
 STENCIL op_mov_int_int(JitState *s) {
-  s->regs_i64[HOLE_NARROW(MV_DST)] = s->regs_i64[HOLE_NARROW(MV_SRC)];
+  HOLE_STORE_REG(MV_DST, s, HOLE_LOAD_REG(MV_SRC, s));
   TAIL_NEXT(s);
 }
 
 /* ------------------------------------------------------------------ */
 /* op_add_int_int : regs_i64[DST] = regs_i64[A] + regs_i64[B]         */
 /* ------------------------------------------------------------------ */
-DECLARE_NARROW_HOLE(ADD_DST);
-DECLARE_NARROW_HOLE(ADD_A);
-DECLARE_NARROW_HOLE(ADD_B);
+DECLARE_FOLD_HOLE(ADD_DST);
+DECLARE_FOLD_HOLE(ADD_A);
+DECLARE_FOLD_HOLE(ADD_B);
 STENCIL op_add_int_int(JitState *s) {
-  s->regs_i64[HOLE_NARROW(ADD_DST)] = s->regs_i64[HOLE_NARROW(ADD_A)] + s->regs_i64[HOLE_NARROW(ADD_B)];
+  HOLE_STORE_REG(ADD_DST, s,
+                 HOLE_LOAD_REG(ADD_A, s) + HOLE_LOAD_REG(ADD_B, s));
   TAIL_NEXT(s);
 }
 
 /* ------------------------------------------------------------------ */
 /* op_sum_bigint : acc_i64[SLOT] += regs_i64[SRC]                     */
 /* ------------------------------------------------------------------ */
-DECLARE_NARROW_HOLE(SUM_SLOT);
-DECLARE_NARROW_HOLE(SUM_SRC);
+DECLARE_FOLD_HOLE(SUM_SLOT);
+DECLARE_FOLD_HOLE(SUM_SRC);
 STENCIL op_sum_bigint(JitState *s) {
-  s->acc_i64[HOLE_NARROW(SUM_SLOT)] += s->regs_i64[HOLE_NARROW(SUM_SRC)];
+  HOLE_STORE_ACC(SUM_SLOT, s,
+                 HOLE_LOAD_ACC(SUM_SLOT, s) + HOLE_LOAD_REG(SUM_SRC, s));
   TAIL_NEXT(s);
 }
 
@@ -291,11 +357,11 @@ STENCIL op_sum_bigint(JitState *s) {
 /* R_AARCH64_CALL26 on aarch64) which the extractor records as        */
 /* HK_BRANCH_TAKE. The patcher rewrites the displacement at JIT time. */
 /* ------------------------------------------------------------------ */
-DECLARE_NARROW_HOLE(BLT_A);
-DECLARE_NARROW_HOLE(BLT_B);
+DECLARE_FOLD_HOLE(BLT_A);
+DECLARE_FOLD_HOLE(BLT_B);
 extern __attribute__((preserve_none)) void HOLE_BLT_TGT(JitState *);
 STENCIL op_branch_lt_int_int(JitState *s) {
-  if (s->regs_i64[HOLE_NARROW(BLT_A)] < s->regs_i64[HOLE_NARROW(BLT_B)]) {
+  if (HOLE_LOAD_REG(BLT_A, s) < HOLE_LOAD_REG(BLT_B, s)) {
     [[clang::musttail]] return HOLE_BLT_TGT(s);
   }
   TAIL_NEXT(s);
@@ -311,51 +377,51 @@ STENCIL op_branch_lt_int_int(JitState *s) {
 /* changes required.                                                  */
 /* ------------------------------------------------------------------ */
 
-DECLARE_NARROW_HOLE(BLE_A);
-DECLARE_NARROW_HOLE(BLE_B);
+DECLARE_FOLD_HOLE(BLE_A);
+DECLARE_FOLD_HOLE(BLE_B);
 extern __attribute__((preserve_none)) void HOLE_BLE_TGT(JitState *);
 STENCIL op_branch_le_int_int(JitState *s) {
-  if (s->regs_i64[HOLE_NARROW(BLE_A)] <= s->regs_i64[HOLE_NARROW(BLE_B)]) {
+  if (HOLE_LOAD_REG(BLE_A, s) <= HOLE_LOAD_REG(BLE_B, s)) {
     [[clang::musttail]] return HOLE_BLE_TGT(s);
   }
   TAIL_NEXT(s);
 }
 
-DECLARE_NARROW_HOLE(BEQ_A);
-DECLARE_NARROW_HOLE(BEQ_B);
+DECLARE_FOLD_HOLE(BEQ_A);
+DECLARE_FOLD_HOLE(BEQ_B);
 extern __attribute__((preserve_none)) void HOLE_BEQ_TGT(JitState *);
 STENCIL op_branch_eq_int_int(JitState *s) {
-  if (s->regs_i64[HOLE_NARROW(BEQ_A)] == s->regs_i64[HOLE_NARROW(BEQ_B)]) {
+  if (HOLE_LOAD_REG(BEQ_A, s) == HOLE_LOAD_REG(BEQ_B, s)) {
     [[clang::musttail]] return HOLE_BEQ_TGT(s);
   }
   TAIL_NEXT(s);
 }
 
-DECLARE_NARROW_HOLE(BGT_A);
-DECLARE_NARROW_HOLE(BGT_B);
+DECLARE_FOLD_HOLE(BGT_A);
+DECLARE_FOLD_HOLE(BGT_B);
 extern __attribute__((preserve_none)) void HOLE_BGT_TGT(JitState *);
 STENCIL op_branch_gt_int_int(JitState *s) {
-  if (s->regs_i64[HOLE_NARROW(BGT_A)] > s->regs_i64[HOLE_NARROW(BGT_B)]) {
+  if (HOLE_LOAD_REG(BGT_A, s) > HOLE_LOAD_REG(BGT_B, s)) {
     [[clang::musttail]] return HOLE_BGT_TGT(s);
   }
   TAIL_NEXT(s);
 }
 
-DECLARE_NARROW_HOLE(BGE_A);
-DECLARE_NARROW_HOLE(BGE_B);
+DECLARE_FOLD_HOLE(BGE_A);
+DECLARE_FOLD_HOLE(BGE_B);
 extern __attribute__((preserve_none)) void HOLE_BGE_TGT(JitState *);
 STENCIL op_branch_ge_int_int(JitState *s) {
-  if (s->regs_i64[HOLE_NARROW(BGE_A)] >= s->regs_i64[HOLE_NARROW(BGE_B)]) {
+  if (HOLE_LOAD_REG(BGE_A, s) >= HOLE_LOAD_REG(BGE_B, s)) {
     [[clang::musttail]] return HOLE_BGE_TGT(s);
   }
   TAIL_NEXT(s);
 }
 
-DECLARE_NARROW_HOLE(BNE_A);
-DECLARE_NARROW_HOLE(BNE_B);
+DECLARE_FOLD_HOLE(BNE_A);
+DECLARE_FOLD_HOLE(BNE_B);
 extern __attribute__((preserve_none)) void HOLE_BNE_TGT(JitState *);
 STENCIL op_branch_ne_int_int(JitState *s) {
-  if (s->regs_i64[HOLE_NARROW(BNE_A)] != s->regs_i64[HOLE_NARROW(BNE_B)]) {
+  if (HOLE_LOAD_REG(BNE_A, s) != HOLE_LOAD_REG(BNE_B, s)) {
     [[clang::musttail]] return HOLE_BNE_TGT(s);
   }
   TAIL_NEXT(s);
@@ -370,19 +436,21 @@ STENCIL op_branch_ne_int_int(JitState *s) {
 /* kOpMulBigint to these.                                             */
 /* ------------------------------------------------------------------ */
 
-DECLARE_NARROW_HOLE(MINUS_DST);
-DECLARE_NARROW_HOLE(MINUS_A);
-DECLARE_NARROW_HOLE(MINUS_B);
+DECLARE_FOLD_HOLE(MINUS_DST);
+DECLARE_FOLD_HOLE(MINUS_A);
+DECLARE_FOLD_HOLE(MINUS_B);
 STENCIL op_minus_int_int(JitState *s) {
-  s->regs_i64[HOLE_NARROW(MINUS_DST)] = s->regs_i64[HOLE_NARROW(MINUS_A)] - s->regs_i64[HOLE_NARROW(MINUS_B)];
+  HOLE_STORE_REG(MINUS_DST, s,
+                 HOLE_LOAD_REG(MINUS_A, s) - HOLE_LOAD_REG(MINUS_B, s));
   TAIL_NEXT(s);
 }
 
-DECLARE_NARROW_HOLE(MUL_DST);
-DECLARE_NARROW_HOLE(MUL_A);
-DECLARE_NARROW_HOLE(MUL_B);
+DECLARE_FOLD_HOLE(MUL_DST);
+DECLARE_FOLD_HOLE(MUL_A);
+DECLARE_FOLD_HOLE(MUL_B);
 STENCIL op_mul_int_int(JitState *s) {
-  s->regs_i64[HOLE_NARROW(MUL_DST)] = s->regs_i64[HOLE_NARROW(MUL_A)] * s->regs_i64[HOLE_NARROW(MUL_B)];
+  HOLE_STORE_REG(MUL_DST, s,
+                 HOLE_LOAD_REG(MUL_A, s) * HOLE_LOAD_REG(MUL_B, s));
   TAIL_NEXT(s);
 }
 

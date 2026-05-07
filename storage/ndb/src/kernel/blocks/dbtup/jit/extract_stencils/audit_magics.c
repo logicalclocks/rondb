@@ -114,38 +114,9 @@ static const struct {
   const char *magic_name;
   const char *stencil_name;
 } kNarrowMagicToStencil[] = {
-  /* Day 1 smoke set. */
-  { "MAGIC_LCI_DST_NARROW",   "op_load_const_int"     },
-  { "MAGIC_LRC_DST_NARROW",   "op_load_col_int"       },
-  { "MAGIC_LRC_COL_NARROW",   "op_load_col_int"       },
-  { "MAGIC_MV_DST_NARROW",    "op_mov_int_int"        },
-  { "MAGIC_MV_SRC_NARROW",    "op_mov_int_int"        },
-  /* Day 4: hot arithmetic. */
-  { "MAGIC_ADD_DST_NARROW",   "op_add_int_int"        },
-  { "MAGIC_ADD_A_NARROW",     "op_add_int_int"        },
-  { "MAGIC_ADD_B_NARROW",     "op_add_int_int"        },
-  { "MAGIC_MINUS_DST_NARROW", "op_minus_int_int"      },
-  { "MAGIC_MINUS_A_NARROW",   "op_minus_int_int"      },
-  { "MAGIC_MINUS_B_NARROW",   "op_minus_int_int"      },
-  { "MAGIC_MUL_DST_NARROW",   "op_mul_int_int"        },
-  { "MAGIC_MUL_A_NARROW",     "op_mul_int_int"        },
-  { "MAGIC_MUL_B_NARROW",     "op_mul_int_int"        },
-  { "MAGIC_SUM_SLOT_NARROW",  "op_sum_bigint"         },
-  { "MAGIC_SUM_SRC_NARROW",   "op_sum_bigint"         },
-  /* Day 4: branch-comparison siblings. */
-  { "MAGIC_BLT_A_NARROW",     "op_branch_lt_int_int"  },
-  { "MAGIC_BLT_B_NARROW",     "op_branch_lt_int_int"  },
-  { "MAGIC_BLE_A_NARROW",     "op_branch_le_int_int"  },
-  { "MAGIC_BLE_B_NARROW",     "op_branch_le_int_int"  },
-  { "MAGIC_BEQ_A_NARROW",     "op_branch_eq_int_int"  },
-  { "MAGIC_BEQ_B_NARROW",     "op_branch_eq_int_int"  },
-  { "MAGIC_BGT_A_NARROW",     "op_branch_gt_int_int"  },
-  { "MAGIC_BGT_B_NARROW",     "op_branch_gt_int_int"  },
-  { "MAGIC_BGE_A_NARROW",     "op_branch_ge_int_int"  },
-  { "MAGIC_BGE_B_NARROW",     "op_branch_ge_int_int"  },
-  { "MAGIC_BNE_A_NARROW",     "op_branch_ne_int_int"  },
-  { "MAGIC_BNE_B_NARROW",     "op_branch_ne_int_int"  },
-  /* Day 4: cold-call op_load_col_ndb. */
+  /* Phase 4.7: 28 of 30 narrow magics migrated to imm12 fold (see
+   * kFoldMagicToStencil below). Only op_load_col_ndb's helper-
+   * argument holes stay on the narrow-MOVZ path. */
   { "MAGIC_LCN_COL_NARROW",   "op_load_col_ndb"       },
   { "MAGIC_LCN_DST_NARROW",   "op_load_col_ndb"       },
 };
@@ -189,22 +160,61 @@ static const char *expected_stencil_for_narrow(const char *magic_name) {
 static const struct {
   const char *magic_name;
   const char *stencil_name;
+  int         expected_count;   /* usually 1; >1 for slots that are
+                                 * read AND written within one stencil
+                                 * (e.g., accumulator-update sites). */
 } kFoldMagicToStencil[] = {
-  /* (none yet — Day 2+ migration adds entries) */
-  { NULL, NULL }    /* sentinel; the length-1 array form keeps C happy */
+  /* Phase 4.7 Day 2: 28 of the 30 narrow holes migrated to the
+   * imm12 fold pattern. op_load_col_ndb's LCN_COL/LCN_DST stay
+   * narrow because they're scalar arguments to a helper bl call,
+   * not array indices.
+   *
+   * expected_count > 1: SUM_SLOT_FOLD is loaded AND stored within
+   * op_sum_bigint (acc_i64[slot] += regs_i64[src]) — both LDR and
+   * STR carry the magic, both get patched with op->a at JIT time. */
+  { "MAGIC_MV_DST_FOLD",      "op_mov_int_int",        1 },
+  { "MAGIC_MV_SRC_FOLD",      "op_mov_int_int",        1 },
+  { "MAGIC_LCI_DST_FOLD",     "op_load_const_int",     1 },
+  { "MAGIC_LRC_DST_FOLD",     "op_load_col_int",       1 },
+  { "MAGIC_LRC_COL_FOLD",     "op_load_col_int",       1 },
+  { "MAGIC_ADD_DST_FOLD",     "op_add_int_int",        1 },
+  { "MAGIC_ADD_A_FOLD",       "op_add_int_int",        1 },
+  { "MAGIC_ADD_B_FOLD",       "op_add_int_int",        1 },
+  { "MAGIC_MINUS_DST_FOLD",   "op_minus_int_int",      1 },
+  { "MAGIC_MINUS_A_FOLD",     "op_minus_int_int",      1 },
+  { "MAGIC_MINUS_B_FOLD",     "op_minus_int_int",      1 },
+  { "MAGIC_MUL_DST_FOLD",     "op_mul_int_int",        1 },
+  { "MAGIC_MUL_A_FOLD",       "op_mul_int_int",        1 },
+  { "MAGIC_MUL_B_FOLD",       "op_mul_int_int",        1 },
+  { "MAGIC_SUM_SLOT_FOLD",    "op_sum_bigint",         2 },  /* L+S */
+  { "MAGIC_SUM_SRC_FOLD",     "op_sum_bigint",         1 },
+  { "MAGIC_BLT_A_FOLD",       "op_branch_lt_int_int",  1 },
+  { "MAGIC_BLT_B_FOLD",       "op_branch_lt_int_int",  1 },
+  { "MAGIC_BLE_A_FOLD",       "op_branch_le_int_int",  1 },
+  { "MAGIC_BLE_B_FOLD",       "op_branch_le_int_int",  1 },
+  { "MAGIC_BEQ_A_FOLD",       "op_branch_eq_int_int",  1 },
+  { "MAGIC_BEQ_B_FOLD",       "op_branch_eq_int_int",  1 },
+  { "MAGIC_BGT_A_FOLD",       "op_branch_gt_int_int",  1 },
+  { "MAGIC_BGT_B_FOLD",       "op_branch_gt_int_int",  1 },
+  { "MAGIC_BGE_A_FOLD",       "op_branch_ge_int_int",  1 },
+  { "MAGIC_BGE_B_FOLD",       "op_branch_ge_int_int",  1 },
+  { "MAGIC_BNE_A_FOLD",       "op_branch_ne_int_int",  1 },
+  { "MAGIC_BNE_B_FOLD",       "op_branch_ne_int_int",  1 },
 };
 static const size_t kFoldMagicToStencilLen =
-    /* count actual entries (excluding the {NULL,NULL} sentinel). */
-    (sizeof(kFoldMagicToStencil) / sizeof(kFoldMagicToStencil[0])) - 1;
+    sizeof(kFoldMagicToStencil) / sizeof(kFoldMagicToStencil[0]);
 
-static const char *expected_stencil_for_fold(const char *magic_name) {
+static const char *expected_stencil_for_fold(const char *magic_name,
+                                               int *out_count) {
   for (size_t i = 0; i < kFoldMagicToStencilLen; ++i) {
     if (strcmp(kFoldMagicToStencil[i].magic_name, magic_name) == 0) {
+      if (out_count != NULL) *out_count = kFoldMagicToStencil[i].expected_count;
       return kFoldMagicToStencil[i].stencil_name;
     }
   }
   /* Returning NULL signals "no stencil currently declares this
    * fold magic" — caller treats as "expected 0× everywhere". */
+  if (out_count != NULL) *out_count = 0;
   return NULL;
 }
 
@@ -644,7 +654,9 @@ int main(int argc, char **argv) {
   if (is_arm64) {
     for (size_t k = 0; k < kHoleFoldMagicTableLen; ++k) {
       const HoleFoldMagicEntry *m = &kHoleFoldMagicTable[k];
-      const char *expected_in = expected_stencil_for_fold(m->name);
+      int expected_count_in_decl = 0;
+      const char *expected_in =
+          expected_stencil_for_fold(m->name, &expected_count_in_decl);
       if (expected_in == NULL) continue;   /* no stencil yet — skip */
 
       for (size_t i = 0; i < n_stencils; ++i) {
@@ -652,7 +664,9 @@ int main(int argc, char **argv) {
                                               stencils[i].n_bytes,
                                               m->magic);
         int expected =
-            (strcmp(stencils[i].name, expected_in) == 0) ? 1 : 0;
+            (strcmp(stencils[i].name, expected_in) == 0)
+                ? expected_count_in_decl
+                : 0;
 
         if (count != expected) {
           fprintf(stderr,
