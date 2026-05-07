@@ -468,8 +468,20 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
         case HK_OP_C:
         case HK_OP_IMM: {
           int64_t v = hole_value_from_op(hole->kind, op);
-          uint8_t slot = slot_counter[hole->kind]++;
-          patch_operand(patch, slot, v);
+          /* Phase 4.5: width=2 marks an aarch64 narrow MOVZ hole.
+           * The instruction encodes only bits 0..15 (slot=0), so we
+           * skip slot_counter — that way wide chains and narrow
+           * MOVZ for the same kind can coexist within one stencil
+           * without throwing the chain's slot index off. The bottom
+           * 16 bits of `v` are the only part the narrow encoding
+           * carries; the operand domain (register index 0..255 or
+           * column number) fits comfortably. */
+          if (hole->width == 2) {
+            patch_operand(patch, 0, v);
+          } else {
+            uint8_t slot = slot_counter[hole->kind]++;
+            patch_operand(patch, slot, v);
+          }
           break;
         }
         case HK_BRANCH_FALL: {
