@@ -18770,16 +18770,31 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
 
     const Uint32 n_agg_results = interp->n_agg_results();
     const Uint32 agg_bytes = n_agg_results * sizeof(AggResItem);
-    const Uint32 agg_words = agg_bytes >> 2;
+    // Phase I.6 (F.2-K.5): switch to AGG_CHAR_RESULT and append a
+    // string-payload region after the AggResItem array when at
+    // least one string MIN/MAX slot has been touched.
+    const bool has_strings = interp->hasStringSlots();
+    const Uint32 marker = has_strings
+        ? AttributeHeader::AGG_CHAR_RESULT
+        : AttributeHeader::AGG_RESULT;
+    const AggResItem* scalar_slots = interp->agg_results();
+    const Uint32 payload_bytes =
+        has_strings ? interp->stringPayloadSize(scalar_slots) : 0;
+    const Uint32 v_len_total = agg_bytes + payload_bytes;
+    const Uint32 v_words_total = v_len_total >> 2;
     Uint32 *buf = &cevictBuffer[0];
-    ndbrequire(4 + agg_words <= sizeof(cevictBuffer) / sizeof(Uint32));
+    ndbrequire(4 + v_words_total <= sizeof(cevictBuffer) / sizeof(Uint32));
     Uint32 pos = 0;
-    buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+    buf[pos++] = marker << 16 | 0x0721;
     buf[pos++] = 0 << 16 | n_agg_results;
     buf[pos++] = 0;
-    buf[pos++] = 0 << 16 | agg_bytes;
-    memcpy(&buf[pos], interp->agg_results(), agg_bytes);
-    pos += agg_words;
+    buf[pos++] = 0 << 16 | v_len_total;
+    memcpy(&buf[pos], scalar_slots, agg_bytes);
+    if (payload_bytes > 0) {
+      interp->encodeStringPayload(scalar_slots, reinterpret_cast<char*>(
+          &buf[pos + (agg_bytes >> 2)]));
+    }
+    pos += v_words_total;
 
     TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
     transIdAI->connectPtr = state->m_receiverIds[0];
@@ -18841,7 +18856,13 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
 
   const Uint32 n_gb_cols = interp->n_gb_cols();
   const Uint32 n_agg_results = interp->n_agg_results();
-  const Uint32 v_len = interp->val_len();
+  const Uint32 v_len_base = interp->val_len();
+  // Phase I.6 (F.2-K.5): pick AGG_RESULT or AGG_CHAR_RESULT once;
+  // per-group val_len grows by stringPayloadSize(slots).
+  const bool has_strings = interp->hasStringSlots();
+  const Uint32 marker = has_strings
+      ? AttributeHeader::AGG_CHAR_RESULT
+      : AttributeHeader::AGG_RESULT;
   JoinGBHashTable *gb_map = interp->gb_map_mutable();
   Uint32 batch_count = 0;
   Uint32 batch_signal_bytes = 0;
@@ -18850,15 +18871,24 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
     for (auto iter = gb_map->begin(); iter.valid();) {
       jam();
       const Uint32 key_len = iter.keyLen();
-      const Uint32 data_words = (key_len + v_len) >> 2;
+      AggResItem* slots = reinterpret_cast<AggResItem*>(
+          iter.data() + key_len);
+      const Uint32 payload_bytes =
+          has_strings ? interp->stringPayloadSize(slots) : 0;
+      const Uint32 v_len_total = v_len_base + payload_bytes;
+      const Uint32 data_words = (key_len + v_len_total) >> 2;
       Uint32 *buf = &cevictBuffer[0];
       ndbrequire(4 + data_words <= sizeof(cevictBuffer) / sizeof(Uint32));
       Uint32 pos = 0;
-      buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+      buf[pos++] = marker << 16 | 0x0721;
       buf[pos++] = n_gb_cols << 16 | n_agg_results;
       buf[pos++] = 1;
-      buf[pos++] = key_len << 16 | v_len;
-      memcpy(&buf[pos], iter.data(), key_len + v_len);
+      buf[pos++] = key_len << 16 | v_len_total;
+      memcpy(&buf[pos], iter.data(), key_len + v_len_base);
+      if (payload_bytes > 0) {
+        interp->encodeStringPayload(slots, reinterpret_cast<char*>(
+            &buf[pos + ((key_len + v_len_base) >> 2)]));
+      }
       pos += data_words;
 
       TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();

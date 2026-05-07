@@ -1691,8 +1691,17 @@ Int32 JoinAggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
   target->group_list = *reinterpret_cast<char**>(raw);
   Uint32 key_len = *reinterpret_cast<Uint32*>(raw + 2 * sizeof(char*));
   char* data_ptr = raw + GROUP_LINK_OVERHEAD;
-  Uint32 v_len = val_len();
-  const Uint32 data_words = (key_len + v_len) >> 2;
+  Uint32 v_len_base = val_len();
+  AggResItem* slots = reinterpret_cast<AggResItem*>(data_ptr + key_len);
+  // Phase I.6 (F.2-K.5): include any appended string-payload region
+  // in the wire-size budget; switch marker to AGG_CHAR_RESULT.
+  const bool has_strings = hasStringSlots();
+  const Uint32 marker = has_strings
+      ? AttributeHeader::AGG_CHAR_RESULT
+      : AttributeHeader::AGG_RESULT;
+  const Uint32 payload_bytes = has_strings ? stringPayloadSize(slots) : 0;
+  const Uint32 v_len_total = v_len_base + payload_bytes;
+  const Uint32 data_words = (key_len + v_len_total) >> 2;
   const Uint32 total_words = 4 + data_words;
 
   if (total_words > buf_words) {
@@ -1700,23 +1709,27 @@ Int32 JoinAggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
   }
 
   Uint32 pos = 0;
-  buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+  buf[pos++] = marker << 16 | 0x0721;
   buf[pos++] = m_n_gb_cols << 16 | m_n_agg_results;
   buf[pos++] = 1;
-  buf[pos++] = key_len << 16 | v_len;
-  memcpy(&buf[pos], data_ptr, key_len + v_len);
+  buf[pos++] = key_len << 16 | v_len_total;
+  memcpy(&buf[pos], data_ptr, key_len + v_len_base);
+  if (payload_bytes > 0) {
+    encodeStringPayload(slots, reinterpret_cast<char*>(
+        &buf[pos + ((key_len + v_len_base) >> 2)]));
+  }
   pos += data_words;
 
   *words_written = pos;
 
-  m_result_size -= (key_len + v_len);
+  m_result_size -= (key_len + v_len_base);
   m_n_groups--;
 
   // Phase I.6 (F.2-K.4e): release per-(group, slot) string winner
   // buffers before the group leaves the local hash table.  K.5
   // wire-format emit has already substituted payload into the
   // outbound packet above, so val_ptr is safe to free here.
-  freeGroupStringSlots(reinterpret_cast<AggResItem*>(data_ptr + key_len));
+  freeGroupStringSlots(slots);
   m_gb_map->erase(data_ptr, key_len);
   freeGroupData(data_ptr);
 
@@ -1733,6 +1746,13 @@ Int32 JoinAggInterpreter::getResultData(Uint32* buffer, Uint32 buffer_size,
   assert(m_n_gb_cols < 0xFFFF);
   assert(m_n_agg_results < 0xFFFF);
 
+  // Phase I.6 (F.2-K.5): switch marker when any string slot is
+  // present so the receiver knows to expect an appended string-
+  // payload region per group.
+  const bool has_strings = hasStringSlots();
+  const Uint32 marker = has_strings
+      ? AttributeHeader::AGG_CHAR_RESULT
+      : AttributeHeader::AGG_RESULT;
   if (m_n_gb_cols) {
     if (m_gb_map == nullptr || m_gb_map->empty()) {
       if (3 * sizeof(Uint32) > buffer_size) {
@@ -1749,36 +1769,53 @@ Int32 JoinAggInterpreter::getResultData(Uint32* buffer, Uint32 buffer_size,
       *bytes_written = 0;
       return -1;
     }
-    buffer[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+    buffer[pos++] = marker << 16 | 0x0721;
     buffer[pos++] = m_n_gb_cols << 16 | m_n_agg_results;
-    const Uint32 v_len = val_len();
+    const Uint32 v_len_base = val_len();
     buffer[pos++] = m_gb_map->size();
     for (auto iter = m_gb_map->begin(); iter.valid(); m_gb_map->next(iter)) {
       Uint32 key_len = iter.keyLen();
+      AggResItem* slots = reinterpret_cast<AggResItem*>(
+          iter.data() + key_len);
+      const Uint32 payload_bytes =
+          has_strings ? stringPayloadSize(slots) : 0;
+      const Uint32 v_len_total = v_len_base + payload_bytes;
       assert(key_len % 4 == 0 && key_len < 0xFFFF);
-      assert(v_len % 4 == 0 && v_len < 0xFFFF);
-      Uint32 data_words = (key_len + v_len) >> 2;
+      assert(v_len_total % 4 == 0 && v_len_total < 0xFFFF);
+      Uint32 data_words = (key_len + v_len_total) >> 2;
       if ((pos + 1 + data_words) * sizeof(Uint32) > buffer_size) {
         *bytes_written = 0;
         return -1;
       }
-      buffer[pos++] = key_len << 16 | v_len;
-      MEMCOPY_NO_WORDS(&buffer[pos], iter.data(), data_words);
+      buffer[pos++] = key_len << 16 | v_len_total;
+      MEMCOPY_NO_WORDS(&buffer[pos], iter.data(),
+                       (key_len + v_len_base) >> 2);
+      if (payload_bytes > 0) {
+        encodeStringPayload(slots, reinterpret_cast<char*>(
+            &buffer[pos + ((key_len + v_len_base) >> 2)]));
+      }
       pos += data_words;
     }
   } else {
-    Uint32 agg_bytes = m_n_agg_results * sizeof(AggResItem);
-    Uint32 agg_words = agg_bytes >> 2;
-    if ((4 + agg_words) * sizeof(Uint32) > buffer_size) {
+    const Uint32 agg_bytes = m_n_agg_results * sizeof(AggResItem);
+    const Uint32 payload_bytes =
+        has_strings ? stringPayloadSize(m_agg_results) : 0;
+    const Uint32 v_len_total = agg_bytes + payload_bytes;
+    const Uint32 v_words_total = v_len_total >> 2;
+    if ((4 + v_words_total) * sizeof(Uint32) > buffer_size) {
       *bytes_written = 0;
       return -1;
     }
-    buffer[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+    buffer[pos++] = marker << 16 | 0x0721;
     buffer[pos++] = m_n_gb_cols << 16 | m_n_agg_results;
     buffer[pos++] = 0;
-    buffer[pos++] = 0 << 16 | agg_bytes;
-    MEMCOPY_NO_WORDS(&buffer[pos], m_agg_results, agg_words);
-    pos += agg_words;
+    buffer[pos++] = 0 << 16 | v_len_total;
+    MEMCOPY_NO_WORDS(&buffer[pos], m_agg_results, agg_bytes >> 2);
+    if (payload_bytes > 0) {
+      encodeStringPayload(m_agg_results, reinterpret_cast<char*>(
+          &buffer[pos + (agg_bytes >> 2)]));
+    }
+    pos += v_words_total;
   }
 
   *bytes_written = pos * sizeof(Uint32);

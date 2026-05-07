@@ -2062,26 +2062,45 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
   assert(m_n_gb_cols < 0xFFFF);
   assert(m_n_agg_results < 0xFFFF);
 
+  // Phase I.6 (F.2-K.5): when at least one string MIN/MAX slot has
+  // been touched, switch the wire marker to AGG_CHAR_RESULT and
+  // append a per-group string-payload region after the AggResItem
+  // array.  Numeric-only queries continue to emit AGG_RESULT
+  // unchanged.  Per-group val_len grows by stringPayloadSize(slots).
+  // Mixed numeric+string queries: numeric slots keep their existing
+  // AggResItem encoding; only string slots contribute to the
+  // appended region.
+  const bool has_strings = hasStringSlots();
+  const Uint32 marker = has_strings
+      ? AttributeHeader::AGG_CHAR_RESULT
+      : AttributeHeader::AGG_RESULT;
   if (m_n_gb_cols) {
-    data_buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+    data_buf[pos++] = marker << 16 | 0x0721;
     data_buf[pos++] = m_n_gb_cols << 16 | m_n_agg_results;
     Uint32 n_groups_pos = pos++;
-    const Uint32 v_len = val_len();
+    const Uint32 v_len_base = val_len();
     Uint32 n_groups = 0;
     for (auto iter = m_gb_map->begin(); iter != m_gb_map->end();) {
       Uint32 key_len = iter->first.len;
+      AggResItem* slots = reinterpret_cast<AggResItem*>(iter->second.ptr);
+      Uint32 payload_bytes = has_strings ? stringPayloadSize(slots) : 0;
+      Uint32 v_len_total = v_len_base + payload_bytes;
       assert(key_len % 4 == 0 && key_len < 0xFFFF);
-      assert(v_len % 4 == 0 && v_len < 0xFFFF);
-      data_buf[pos++] = key_len << 16 | v_len;
+      assert(v_len_total % 4 == 0 && v_len_total < 0xFFFF);
+      data_buf[pos++] = key_len << 16 | v_len_total;
       MEMCOPY_NO_WORDS(&data_buf[pos], iter->first.ptr,
           key_len >> 2);
-      MEMCOPY_NO_WORDS(&data_buf[pos + (key_len >> 2)], iter->second.ptr,
-          v_len >> 2);
-      pos += ((key_len + v_len) >> 2);
-      // Phase I.6 (F.2-K.4e): wire-format emit (F.2-K.5) has already
-      // consumed any string val_ptr above; free per-group buffers
-      // before erasing the map entry.
-      freeGroupStringSlots(reinterpret_cast<AggResItem*>(iter->second.ptr));
+      MEMCOPY_NO_WORDS(&data_buf[pos + (key_len >> 2)], slots,
+          v_len_base >> 2);
+      if (payload_bytes > 0) {
+        encodeStringPayload(slots, reinterpret_cast<char*>(
+            &data_buf[pos + ((key_len + v_len_base) >> 2)]));
+      }
+      pos += ((key_len + v_len_total) >> 2);
+      // Phase I.6 (F.2-K.4e): per-group string val_ptr buffers have
+      // been substituted into the wire payload above and are no
+      // longer needed locally — free before erasing the map entry.
+      freeGroupStringSlots(slots);
       iter = m_gb_map->erase(iter);
       n_groups++;
     }
@@ -2089,14 +2108,21 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
     m_alloc_len = 0;
     m_result_size = 0;
   } else {
-    data_buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+    const Uint32 v_len_base = m_n_agg_results * sizeof(AggResItem);
+    const Uint32 payload_bytes =
+        has_strings ? stringPayloadSize(m_agg_results) : 0;
+    const Uint32 v_len_total = v_len_base + payload_bytes;
+    data_buf[pos++] = marker << 16 | 0x0721;
     data_buf[pos++] = m_n_gb_cols << 16 | m_n_agg_results;
     data_buf[pos++] = 0;
-    data_buf[pos++] = 0 << 16 | (m_n_agg_results * sizeof(AggResItem));
+    data_buf[pos++] = 0 << 16 | v_len_total;
     assert(m_gb_map == nullptr);
-    MEMCOPY_NO_WORDS(&data_buf[pos], m_agg_results,
-        (m_n_agg_results * sizeof(AggResItem)) >> 2);
-    pos += ((m_n_agg_results * sizeof(AggResItem)) >> 2);
+    MEMCOPY_NO_WORDS(&data_buf[pos], m_agg_results, v_len_base >> 2);
+    if (payload_bytes > 0) {
+      encodeStringPayload(m_agg_results, reinterpret_cast<char*>(
+          &data_buf[pos + (v_len_base >> 2)]));
+    }
+    pos += (v_len_total >> 2);
   }
 
 #if defined(PA_CHECK) && !defined(NDEBUG)
@@ -2109,8 +2135,12 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
 
   while (parse_pos < data_len) {
     AttributeHeader agg_checker_ah(data_buf[parse_pos++]);
-    assert(agg_checker_ah.getAttributeId() == AttributeHeader::AGG_RESULT &&
+    const Uint32 marker_id = agg_checker_ah.getAttributeId();
+    assert((marker_id == AttributeHeader::AGG_RESULT ||
+            marker_id == AttributeHeader::AGG_CHAR_RESULT) &&
            agg_checker_ah.getByteSize() == 0x0721);
+    const bool wire_has_strings =
+        (marker_id == AttributeHeader::AGG_CHAR_RESULT);
     Uint32 n_gb_cols = data_buf[parse_pos] >> 16;
     Uint32 n_agg_results = data_buf[parse_pos++] & 0xFFFF;
     Uint32 n_res_items = data_buf[parse_pos++];
@@ -2125,6 +2155,12 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
         // remove compile warnings
         (void)gb_cols_len;
         (void)agg_res_len;
+        // For AGG_CHAR_RESULT, agg_res_len includes the appended
+        // string-payload region past the AggResItem array.  Capture
+        // the absolute end position so we can skip the appended
+        // region after walking the per-slot AggResItem entries.
+        const Uint32 group_val_end =
+            parse_pos + ((gb_cols_len + agg_res_len) >> 2);
         for (Uint32 j = 0; j < n_gb_cols; j++) {
           AttributeHeader ah(data_buf[parse_pos++]);
           // sprintf(log_buf,
@@ -2157,6 +2193,10 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
           // sprintf(log_buf + strlen(log_buf), ")");
           parse_pos += (sizeof(AggResItem) >> 2);
         }
+        // After the AggResItem array, skip any appended string
+        // payload region (only present for AGG_CHAR_RESULT).
+        assert(parse_pos <= group_val_end);
+        parse_pos = group_val_end;
         // g_eventLogger->info("%s", log_buf);
       }
     } else {
@@ -2166,7 +2206,11 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
       Uint32 gb_cols_len = data_buf[parse_pos] >> 16;
       Uint32 agg_res_len = data_buf[parse_pos++] & 0xFFFF;
       assert(gb_cols_len == 0);
-      assert(agg_res_len == m_n_agg_results * sizeof(AggResItem));
+      // Numeric-only path: agg_res_len exactly fits the AggResItem
+      // array.  AGG_CHAR_RESULT path: includes the appended
+      // string-payload region; advance by the declared length.
+      assert(wire_has_strings ||
+             agg_res_len == m_n_agg_results * sizeof(AggResItem));
       parse_pos += (agg_res_len >> 2);
     }
   }
