@@ -161,8 +161,10 @@ Tests:
   `SELECT MAX(varchar_col)`, `SELECT MIN(char_col)`, and
   `SELECT MAX(char_col)`.
 - Add grouped RonSQL string MIN/MAX result tests.
-- Add CTE tests where a string MIN/MAX result is selected directly and
-  where it is re-aggregated by an outer query.
+- Defer CTE string MIN/MAX consumption tests to S.6.  Re-aggregating a
+  string CTE result currently exercises the wider CTE virtual-table
+  string aggregate path and can hang instead of failing cleanly; S.5 is
+  scoped to the RonSQL aggregate result printer itself.
 
 ## Phase I.6-S.6: Complete type and surface coverage
 

@@ -26,6 +26,7 @@
 #include <limits>
 #include <cmath>
 #include <iomanip>
+#include <string>
 #include "m_string.h"
 #include "ResultPrinter.hpp"
 #include "RonSQLParser.y.hpp"
@@ -218,7 +219,9 @@ ResultPrinter::validate_orderby_columns()
         spec.kind = OrderbySpec::Kind::AGGREGATE;
         spec.agg_result_idx = agg_idx;
         spec.ascending = ob->ascending;
-        spec.charset = NULL;
+        spec.charset = out->type == Outputs::Type::AGGREGATE
+            ? aggregate_arg_charset(out)
+            : NULL;
         m_orderby_specs.push(spec);
       }
     }
@@ -455,6 +458,7 @@ ResultPrinter::compile()
         Cmd cmd;
         cmd.type = Cmd::Type::PRINT_AGGREGATE;
         cmd.print_aggregate.reg_a = o->aggregate.agg_index;
+        cmd.print_aggregate.charset = aggregate_arg_charset(o);
         m_program.push(cmd);
         break;
       }
@@ -793,27 +797,7 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
     case Cmd::Type::PRINT_AGGREGATE:
       {
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
-        if(result.is_null())
-        {
-          out << m_null_representation;
-          break;
-        }
-        switch (result.type())
-        {
-        case NdbDictionary::Column::Bigint:
-          out << result.data_int64();
-          break;
-        case NdbDictionary::Column::Bigunsigned:
-          out << result.data_uint64();
-          break;
-        case NdbDictionary::Column::Double:
-          print_float_or_double(out, result.data_double());
-          break;
-        case NdbDictionary::Column::Undefined:
-          bug("Unexpected undefined data type in aggregation result.");
-        default:
-          bug("Unexpected data type in aggregation result.");
-        }
+        print_aggregate_result(out, result, cmd.print_aggregate.charset);
       }
       break;
     case Cmd::Type::PRINT_AVG:
@@ -895,6 +879,49 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
       case NdbDictionary::Column::Double:
         cmp = (res_a.data_double() < res_b.data_double()) ? -1 :
               (res_a.data_double() > res_b.data_double()) ? 1 : 0;
+        break;
+      case NdbDictionary::Column::Char:
+      case NdbDictionary::Column::Varchar:
+      case NdbDictionary::Column::Longvarchar:
+        {
+          require_sch(spec.charset != nullptr,
+                      "Could not find charset for string aggregation result");
+          Uint32 len_a = 0;
+          Uint32 len_b = 0;
+          const char* data_a = res_a.data_str(&len_a);
+          const char* data_b = res_b.data_str(&len_b);
+          Uint32 prefix = res_a.type() == NdbDictionary::Column::Char ? 0 :
+                          res_a.type() == NdbDictionary::Column::Varchar ? 1 :
+                          2;
+          std::string raw_a;
+          std::string raw_b;
+          if (prefix != 0)
+          {
+            raw_a.resize(prefix + len_a);
+            raw_b.resize(prefix + len_b);
+            if (prefix == 1)
+            {
+              raw_a[0] = static_cast<char>(len_a);
+              raw_b[0] = static_cast<char>(len_b);
+            }
+            else
+            {
+              raw_a[0] = static_cast<char>(len_a & 0xff);
+              raw_a[1] = static_cast<char>((len_a >> 8) & 0xff);
+              raw_b[0] = static_cast<char>(len_b & 0xff);
+              raw_b[1] = static_cast<char>((len_b >> 8) & 0xff);
+            }
+            memcpy(&raw_a[prefix], data_a, len_a);
+            memcpy(&raw_b[prefix], data_b, len_b);
+            data_a = raw_a.data();
+            data_b = raw_b.data();
+          }
+          const NdbSqlUtil::Type& sqlType =
+              NdbSqlUtil::getType(static_cast<Uint32>(res_a.type()));
+          cmp = (*sqlType.m_cmp)(spec.charset,
+                                 data_a, prefix + len_a,
+                                 data_b, prefix + len_b);
+        }
         break;
       default:
         // Fallback: compare as int64
@@ -1551,28 +1578,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
     case Cmd::Type::PRINT_AGGREGATE:
       {
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
-        if(result.is_null())
-        {
-          out << m_null_representation;
-          break;
-        }
-        // todo conform format for sum(int) to mysql CLI
-        switch (result.type())
-        {
-        case NdbDictionary::Column::Bigint:
-          out << result.data_int64();
-          break;
-        case NdbDictionary::Column::Bigunsigned:
-          out << result.data_uint64();
-          break;
-        case NdbDictionary::Column::Double:
-          print_float_or_double(out, result.data_double());
-          break;
-        case NdbDictionary::Column::Undefined:
-          bug("Unexpected undefined data type in aggregation result.");
-        default:
-          bug("Unexpected data type in aggregation result.");
-        }
+        print_aggregate_result(out, result, cmd.print_aggregate.charset);
       }
       break;
     case Cmd::Type::PRINT_AVG:
@@ -1903,6 +1909,74 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value)
   ndbrequire(len > 0 && buffer[len] == 0);
   out << buffer;
   return;
+}
+
+CHARSET_INFO*
+ResultPrinter::aggregate_arg_charset(const Outputs* out) const
+{
+  if (out == NULL || out->type != Outputs::Type::AGGREGATE)
+    return NULL;
+  if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX)
+    return NULL;
+  AggregationAPICompiler::Expr* arg = out->aggregate.arg;
+  if (arg == NULL || !arg->isLoad())
+    return NULL;
+  Uint32 col_idx = arg->getLoadIdx();
+  if (m_column_names == NULL || col_idx >= m_column_names->size())
+    return NULL;
+  if (m_column_metadata == NULL ||
+      !m_column_metadata[col_idx].has_metadata)
+  {
+    return NULL;
+  }
+  return m_column_metadata[col_idx].charset;
+}
+
+void
+ResultPrinter::print_aggregate_result(std::ostream& out,
+                                      NdbAggregator::Result result,
+                                      CHARSET_INFO* charset)
+{
+  if (result.is_null())
+  {
+    out << m_null_representation;
+    return;
+  }
+
+  switch (result.type())
+  {
+  case NdbDictionary::Column::Bigint:
+    out << result.data_int64();
+    break;
+  case NdbDictionary::Column::Bigunsigned:
+    out << result.data_uint64();
+    break;
+  case NdbDictionary::Column::Double:
+    print_float_or_double(out, result.data_double());
+    break;
+  case NdbDictionary::Column::Char:
+  case NdbDictionary::Column::Varchar:
+  case NdbDictionary::Column::Longvarchar:
+    {
+      require_sch(charset != nullptr,
+                  "Could not find charset for string aggregation result");
+      Uint32 payload_len = 0;
+      const char* payload = result.data_str(&payload_len);
+      out << m_quote;
+      print_string(out,
+                   LexString{payload, payload_len},
+                   charset,
+                   m_json_output,
+                   m_utf8_output || m_tsv_output,
+                   result.type() == NdbDictionary::Column::Char);
+      out << m_quote;
+    }
+    break;
+  case NdbDictionary::Column::Undefined:
+    bug("Unexpected undefined data type in aggregation result.");
+  default:
+    bug("Unexpected data type in aggregation result.");
+  }
 }
 
 inline static double

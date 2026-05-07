@@ -91,6 +91,7 @@ private:
       struct
       {
         Uint32 reg_a;
+        CHARSET_INFO* charset;
       } print_aggregate;
       struct
       {
@@ -154,6 +155,10 @@ private:
   void print_result_ordered(NdbAggregator* aggregator,
                             std::basic_ostream<char>* out_stream);
   void print_float_or_double(std::ostream& out, double value);
+  void print_aggregate_result(std::ostream& out,
+                              NdbAggregator::Result result,
+                              CHARSET_INFO* charset);
+  CHARSET_INFO* aggregate_arg_charset(const Outputs* out) const;
   bool evaluate_having(const ConditionalExpression* expr);
   double evaluate_having_value(const ConditionalExpression* expr);
   void scan_having_max_agg(const ConditionalExpression* expr,

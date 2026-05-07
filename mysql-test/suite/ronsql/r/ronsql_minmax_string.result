@@ -1,0 +1,54 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for string MIN/MAX printer tests ===
+
+
+
+=== Test 1: scalar MIN/MAX over VARCHAR and CHAR ===
+== Query ==
+SELECT MIN(v) AS min_v, MAX(v) AS max_v,
+MIN(c) AS min_c, MAX(c) AS max_c
+FROM str_minmax;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT MIN(v) AS min_v, MAX(v) AS max_v,
+MIN(c) AS min_c, MAX(c) AS max_c
+FROM str_minmax|
+min_v	max_v	min_c	max_c
+alpha	echo	aa	ee
+
+
+=== Test 2: grouped MIN/MAX over VARCHAR and CHAR ===
+== Query ==
+SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v,
+MIN(c) AS min_c, MAX(c) AS max_c
+FROM str_minmax
+GROUP BY grp;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v,
+MIN(c) AS min_c, MAX(c) AS max_c
+FROM str_minmax
+GROUP BY grp|
+grp	min_v	max_v	min_c	max_c
+10	alpha	delta	aa	dd
+20	bravo	echo	bb	ee
+30	NULL	NULL	NULL	NULL
+
+=== Cleanup ===
+DROP TABLE str_minmax;

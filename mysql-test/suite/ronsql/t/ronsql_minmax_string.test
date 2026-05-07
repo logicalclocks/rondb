@@ -1,0 +1,81 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.6-S.5: direct RonSQL printing of string MIN/MAX aggregate
+# results.  CTE string aggregate consumption is covered separately
+# because re-aggregating a CTE string result exercises a wider path.
+
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for string MIN/MAX printer tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE str_minmax (
+  id INT NOT NULL,
+  grp INT NOT NULL,
+  v VARCHAR(20),
+  c CHAR(8),
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+INSERT INTO str_minmax VALUES
+  (1, 10, 'delta', 'dd'),
+  (2, 10, 'alpha', 'aa'),
+  (3, 10, NULL,    NULL),
+  (4, 20, 'echo',  'ee'),
+  (5, 20, 'bravo', 'bb'),
+  (6, 30, NULL,    NULL);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: scalar MIN/MAX over VARCHAR and CHAR ===
+
+let $QUERY=
+SELECT MIN(v) AS min_v, MAX(v) AS max_v,
+       MIN(c) AS min_c, MAX(c) AS max_c
+FROM str_minmax;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT MIN(v) AS min_v, MAX(v) AS max_v,
+       MIN(c) AS min_c, MAX(c) AS max_c
+FROM str_minmax|
+
+--echo
+--echo
+--echo === Test 2: grouped MIN/MAX over VARCHAR and CHAR ===
+
+let $QUERY=
+SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v,
+       MIN(c) AS min_c, MAX(c) AS max_c
+FROM str_minmax
+GROUP BY grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v,
+       MIN(c) AS min_c, MAX(c) AS max_c
+FROM str_minmax
+GROUP BY grp|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+DROP TABLE str_minmax;
