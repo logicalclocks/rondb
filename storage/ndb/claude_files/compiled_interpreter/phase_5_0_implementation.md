@@ -45,6 +45,68 @@ follow incrementally.
 
 ## ★ Items to investigate (before coding starts)
 
+> **Day 0 spike resolutions (2026-05-07).** All six items
+> resolved.
+>
+> 1. **NDB encoding for BRANCH_ATTR_EQ_NULL** (I1):
+>    2-word instruction. Word 0 = `theInstruction`: bits 31..26
+>    opcode (=24), bit 31 direction (0=forward), bits 30..16 =
+>    `TbranchLength` (15-bit). Word 1 = operand: bits 31..16 =
+>    attrId (via `getBranchCol_AttrId`). Forward branch target =
+>    `pc + TbranchLength`. NE_NULL is opcode=25 with identical
+>    layout. Walked via
+>    `Interpreter::getInstructionPreProcessingInfo` returning
+>    `op + 2`.
+>
+> 2. **readAttributes null-flag access** (I2): Phase 4's
+>    `readAttributeForJit` already writes the AttributeHeader
+>    to the buffer's first word; helpers can call
+>    `header->isNULL()` directly. **No new wrapper needed.**
+>
+> 3. **Op layout for new branches** (I3): Use OpKind to
+>    discriminate eq vs ne. Layout: `kind ∈ {OP_BRANCH_ATTR_
+>    EQ_NULL, OP_BRANCH_ATTR_NE_NULL}; a = 0; b = attrId
+>    (8-bit, ≤255 — same restriction as op_load_col_ndb);
+>    c = branch target pc`. Two stencils sharing one helper
+>    via `want_null` parameter inversion.
+>
+> 4. **3-hole pattern compilation shape** (I4): Spike
+>    `/tmp/phase50_spike.c` compiled cleanly. The bytes:
+>    ```
+>    stp x29, x30, [sp, #-16]!     ; bl-frame prologue
+>    movz w1, #attr_magic           ; HK_OP_B narrow MOVZ
+>    mov  x0, x20                   ; state ptr
+>    mov  w2, #want_null            ; eq=1 / ne=0
+>    mov  x29, sp
+>    bl   ndb_jit_h_branch_attr_null  ; HK_COLDCALL
+>    cbz  w0, fall_label
+>    ldp  x29, x30, [sp], #16
+>    b    HOLE_BAEN_TGT             ; HK_BRANCH_TAKE
+>    ldp  x29, x30, [sp], #16
+>    b    next_                     ; trailing tail (stripped)
+>    ```
+>    11 instructions = 44 B pre-strip, 40 B post-strip.
+>    Relocations confirmed: 1× `R_AARCH64_CALL26` (helper),
+>    2× `R_AARCH64_JUMP26` (taken + trailing). Existing
+>    HK_COLDCALL + HK_BRANCH_TAKE infrastructure handles both
+>    directly — no extractor changes required.
+>
+> 5. **prog_buf plumbing** (I5): straightforward — add a
+>    `const Uint32 *prog_buf;` field to `dbtup_jit_call_ctx`
+>    and extend the `dbtup_jit_invoke` signature. **Deferred
+>    to Phase 5.1** when the first helper that reads it lands;
+>    BRANCH_ATTR_EQ_NULL doesn't need it.
+>
+> 6. **MTR test feasibility** (I6): Partially resolved.
+>    `NdbScanFilter::IS_NULL` maps to `branch_col_eq_null` →
+>    `BRANCH_ATTR_EQ_NULL`. Whether the join-pushdown path
+>    feeding `kOpEmbeddedInterp` uses NdbScanFilter (vs an
+>    alternate code path) is unclear without a run. **Day 1
+>    admission walk will surface any surprises** — if the
+>    canary's WHERE clause produces unsupported embedded
+>    opcodes, the bridge gracefully rejects and we fall back
+>    to interp until those opcodes get admitted in 5.1+.
+
 ### ★ Investigate I1 — the actual NDB embedded-block layout
 
 Phase 5 plan §7 sketches it but hasn't been verified. The Day 0
