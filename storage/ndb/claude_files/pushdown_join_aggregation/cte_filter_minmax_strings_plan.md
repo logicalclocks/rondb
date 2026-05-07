@@ -2,15 +2,24 @@
 
 ## Status
 
-**F.1 shipped.**  F.2 + F.3 remain plan-only.  F.1 is the cheap
-RonSQL-only DECIMAL widening; F.2 and F.3 add genuinely new
-kernel capability and should only be tackled if a concrete use
-case appears.
+**Historical umbrella plan.**  F.1 shipped first as the cheap
+RonSQL-only DECIMAL widening.  F.2 / F.3 / S.1-S.6 have since been
+developed in the dedicated Phase I.6 string MIN/MAX plans:
+
+- `cte_filter_phase_i6_varchar.md`
+- `cte_filter_phase_i6_string_minmax_fixups.md`
+- `cte_filter_phase_i6_string_minmax_f4.md`
+
+Use those newer files as the source of truth for current work.
+This document is kept as background context and for the original
+DECIMAL/string split.  The remaining VARCHAR / Longvarchar CTE
+delivery issues are tracked in F.4.
 
 | Commit | Scope |
 |--------|-------|
 | `354f2f811f0` | F.1 implementation: `resolve_chained_column_type` gains an `Int32& out_scale` parameter; T_MIN/T_MAX branch widens DECIMAL → BIGINT (scale==0) / Bigunsigned / DOUBLE (scale>0) mirroring the kernel's `AlignedType`.  `build_cte_virtual_tables` MIN/MAX branch applies the same widening so the virt-table column type matches the kernel's wire format and the inline-type CTE filter opcode accepts DECIMAL outputs |
 | `82678211aff` + `7889daac005` + `d812019e9a4` + `974931810fb` | MTR — new `ronsql_cte_decimal.test` covers DECIMAL(N,0) MIN/MAX → BIGINT, DECIMAL UNSIGNED → Bigunsigned, DECIMAL(N,2) → DOUBLE, WHERE filter on the widened output (inline-type pushdown), and chained-CTE MIN(MAX(decimal)) walking through `resolve_chained_column_type` recursion |
+| later Phase I.6 commits | F.2 / F.3 and S.1-S.6 implemented kernel string MIN/MAX support, RonSQL accept/render paths, and the first VARCHAR / Longvarchar hardening batches.  See the dedicated Phase I.6 plan documents above for exact scope and remaining work |
 
 ## Context
 
@@ -144,7 +153,9 @@ Two wrinkles:
 
 ## Sub-phase F.2 — kernel-side MIN/MAX over CHAR / VARCHAR
 
-**Scope: kernel.  Significant.  Independent of F.3.**
+**Status: superseded by dedicated Phase I.6 string MIN/MAX plans.**
+The original outline below is historical and does not reflect all
+fixups already shipped in S.1-S.6.
 
 ### What's needed
 
@@ -218,7 +229,10 @@ needs to branch on `accumulators[i].type` for string types.
 
 ## Sub-phase F.3 — RonSQL CTE filter on string MIN/MAX outputs
 
-**Scope: RonSQL.  Depends on F.2.**
+**Status: superseded by dedicated Phase I.6 string MIN/MAX plans.**
+The current remaining work is not the RonSQL accept-list itself, but
+the F.4 kernel delivery paths for string aggregate payloads through
+CTE materialisation, linked attrs, and redistribution.
 
 ### Approach
 

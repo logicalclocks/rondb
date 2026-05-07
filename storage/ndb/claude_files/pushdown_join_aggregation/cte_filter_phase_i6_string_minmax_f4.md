@@ -16,6 +16,13 @@ materialisation paths cannot consume string MIN/MAX outputs:
   both ship `accumulators[i].value` as 8 raw bytes per aggregate
   slot.  For string slots that's `val_ptr` — meaningless on any
   consumer.
+- Several scalar / legacy CTE_SCAN and CTE aggregation-feed paths
+  still write `AttributeHeader(..., 8); memcpy(..., &item.value, 8)`
+  directly instead of going through the shared helpers.
+- CTE redistribution (`JOIN_AGG_REDISTRIBUTE_REQ`) ships raw
+  `AggResItem[]` arrays across nodes.  For string slots this also
+  ships `val_ptr` bits unless F.4 adds substitution / decode or a
+  deliberate prepare-time/runtime rejection.
 
 Symptom: queries of the form
 `WITH cte AS (... MIN/MAX(string) ...) SELECT ... FROM cte JOIN ...`
@@ -42,6 +49,9 @@ The kernel just needs to:
 2. Decode that payload on the receiver side (linked-attr load) and
    feed it into the existing `m_register_string_data[reg]` scratch
    slot the F.2-K.4b local-table arm uses.
+3. Route every CTE output / feed / redistribution writer through a
+   common string-aware helper, or explicitly reject string slots on
+   paths that remain unsupported.
 
 ## Sub-phase outline
 
@@ -71,9 +81,13 @@ with:
   capacity]`; the bytes at `buf + 4` are `[prefix + payload]`.
 - Compute `byte_size = prefix_bytes + payload_len`; `prefix_bytes`
   derived from type (0 / 1 / 2).
-- Emit `encodeWord0(type, byte_size)` and
-  `encodeWord1(slot.charset->number)` — `slot.charset` is on
-  `interp->m_string_results[i]` so the helper already has access.
+- Emit `encodeWord0(type, maxBytes)` and
+  `encodeWord1(slot.charset->number)` — `slot.charset` and
+  `slot.declared_size` are on `interp->m_string_results[i]` so the
+  helper already has access.  `maxBytes` must be the virtual
+  column's declared/max byte size, not the current row's runtime
+  `byte_size`; the following `AttributeHeader` carries the runtime
+  byte size.
 - `AttributeHeader::init(&outBuf[linkedPos], attrId, byte_size)`.
 - `memcpy(&outBuf[linkedPos + 1], buf + 4, byte_size)`.
 - Advance `linkedPos` by `1 + ((byte_size + 3) >> 2)` words.
@@ -84,6 +98,25 @@ The `interp` parameter already carries the `JoinAggInterpreter`
 reference, so the helper can reach `interp->m_string_results[i]`
 directly via a public accessor (or a new `slot_charset(i)` /
 `slot_prefix_bytes(i)` getter).
+
+Implementation shape:
+
+- Add a small helper in `DblqhMain.cpp` that emits one aggregate slot
+  into a CTE linked-attr buffer:
+  ```cpp
+  bool emitCteLinkedAggSlot(const JoinAggInterpreter* interp,
+                            const AggResItem& item,
+                            Uint32 aggIdx,
+                            Uint32 attrId,
+                            Uint32* outBuf,
+                            Uint32& linkedPos,
+                            Uint32 maxWords);
+  ```
+- Numeric slots keep the existing `maxBytes=8`, `csNumber=0`,
+  `attrSize=8` behaviour.
+- String slots use metadata accessors on `JoinAggInterpreter`
+  (`string_slot_info(i)` or equivalent) to obtain prefix bytes,
+  declared/max bytes, and charset.
 
 Files: `DblqhMain.cpp`, `JoinAggInterpreter.hpp` (new accessors).
 
@@ -108,6 +141,25 @@ shared helper, so all three benefit.
 
 Files: `DblqhMain.cpp`.
 
+### F.4-K.2b — Replace remaining fixed-8-byte CTE emit paths
+
+After K.1 and K.2, remove or guard every other direct CTE writer
+that still assumes aggregate results are 8 bytes:
+
+- scalar CTE_SCAN aggregation feed builds linked attrs directly in
+  `DblqhMain.cpp` around the `n_gb_cols()==0` agg-feed path;
+- CTE_SCAN legacy/no-AttrInfo grouped output path writes raw
+  aggregate columns;
+- CTE_SCAN legacy/no-AttrInfo scalar output path writes raw
+  aggregate columns.
+
+Preferred fix: route each path through the same helpers introduced
+by K.1/K.2 so scalar/grouped and AttrInfo/no-AttrInfo paths behave
+identically.  If any legacy path cannot be converted cleanly, add an
+explicit string-slot rejection before it can emit `val_ptr` bytes.
+
+Files: `DblqhMain.cpp`.
+
 ### F.4-K.3 — Accept linked-attr strings in `JoinAggInterpreter::kOpLoadCol`
 
 `JoinAggInterpreter::kOpLoadCol` (`JoinAggInterpreter.cpp` ~line
@@ -124,14 +176,15 @@ path is rejected for strings.  Replace with the linked-attr decoder
 pattern already used by `JoinAggInterpreter::initGBTypes` (lines
 2131-2133, 2246-2248):
 
-- The two header words BEFORE the `AttributeHeader` have already
-  been consumed by the linked-attr buffer walker before `kOpLoadCol`
-  runs (see the surrounding code at JoinAggInterpreter.cpp:1233-
-  1276).  The walker captures `word0` and `word1` and exposes them
-  alongside the `AttributeHeader`.  K.3 needs to thread those two
-  words into the kOpLoadCol arm so the string code can decode
-  `csNumber` from `word1` and look up the charset:
+- The two header words BEFORE the `AttributeHeader` currently get
+  skipped by the linked-attr buffer walker (`p += 2`) before
+  `kOpLoadCol` copies the `AttributeHeader` and payload.  K.3 must
+  save `word0` and `word1` before that skip and thread them into the
+  string arm so the code can decode type metadata and charset:
   ```cpp
+  Uint32 word0 = p[0];
+  Uint32 word1 = p[1];
+  Uint32 maxBytes = CteLinkedAttr::decodeMaxBytes(word0);
   Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
   const CHARSET_INFO* cs = (csNumber > 0 && csNumber < NDB_ARRAY_SIZE(all_charsets))
       ? all_charsets[csNumber] : nullptr;
@@ -139,13 +192,42 @@ pattern already used by `JoinAggInterpreter::initGBTypes` (lines
 - `prefix_bytes` derived from `type` (0 / 1 / 2) as in the local
   arm.
 - Read `payload_len` from the `[prefix]` byte(s) at the start of
-  the data segment, just like the local arm does today.
+  the data segment for VARCHAR / Longvarchar.  For linked CHAR
+  there is no `attrDescriptor`, so use the `AttributeHeader`
+  runtime byte size (and the decoded `maxBytes` as declared size)
+  instead of `AttributeDescriptor::getSizeInBytes`.
 - Populate `m_register_string_data[reg]` exactly the way the local
   arm does — same `StringResult` shape, same `m_attr_read_pos`
   bump.
 
 Files: `JoinAggInterpreter.cpp`, possibly `JoinAggInterpreter.hpp`
 if the walker needs a small refactor to surface `word0` / `word1`.
+
+### F.4-K.3b — Handle CTE redistribution of string aggregate slots
+
+CTE redistribution currently sends raw `AggResItem[]` sections:
+
+- scalar redistribution sends `interp->agg_results()` directly;
+- grouped redistribution sends `data + keyLen` directly;
+- the receiver calls `mergeOneGroup()` / `mergeScalarAccumulators()`
+  over that raw array.
+
+For string slots, raw arrays contain sender-local `val_ptr` values.
+F.4 must either:
+
+1. extend redistribution payloads with AGG_CHAR_RESULT-style appended
+   string payload data and teach `mergeOneGroup()` /
+   `mergeScalarAccumulators()` to resolve those slots into local
+   buffers before merge; or
+2. add a clear runtime / prepare-time rejection for string MIN/MAX CTE
+   materialisation when redistribution can occur.
+
+Preferred fix is option 1 so multi-node / multi-LDM string CTEs match
+numeric CTE semantics.  Keep this as its own subphase because it is
+independent of linked-attr decoding and protects cluster-wide CTE
+materialisation, not just local feed paths.
+
+Files: `DblqhMain.cpp`, `JoinAggInterpreter.{hpp,cpp}`.
 
 ### F.4-K.4 — Audit linked-attr stream consumers for fixed-8-byte assumptions
 
@@ -160,6 +242,10 @@ relied on the 8-byte aggregate-slot invariant needs an audit:
 - `JoinAggInterpreter::initGBTypes` and friends — already CTE-
   marker-aware (the existing string-typed GB column path).  No
   change expected, but spot-check after K.3.
+- all `memcpy(..., &item.value, 8)` sites in CTE_LOOKUP /
+  CTE_SCAN / CTE aggregation-feed / redistribution code.  No direct
+  writer should remain reachable for string slots after K.2b and
+  K.3b.
 
 Files: audit only, code change only if regressions surface.
 
@@ -177,6 +263,11 @@ body and consuming it via:
    format).
 4. CTE_SCAN delivery (validates F.4-K.2's shared helper for the
    scan path).
+5. Scalar CTE_SCAN and grouped CTE_SCAN legacy/no-AttrInfo paths if
+   still reachable after K.2b.
+6. Multi-fragment / multi-node redistribution where the string MIN
+   and MAX winners are produced on different fragments (validates
+   F.4-K.3b).
 
 File: `storage/ndb/block_unit_test/testCteNdbApiVarcharMinMax.cpp`
 (or extend `testCteNdbApi.cpp` with new test functions).
@@ -206,12 +297,16 @@ isolation:
 2. **F.4-K.2** — `emitCteGroupOutput` substitution.  Direct CTE-
    delivery-to-API queries that pass-through a string MIN/MAX
    become testable.
-3. **F.4-K.3** — `kOpLoadCol` linked-attr string arm.  Combined
+3. **F.4-K.2b** — replace remaining direct fixed-8-byte CTE emit
+   paths or guard them.
+4. **F.4-K.3** — `kOpLoadCol` linked-attr string arm.  Combined
    with K.1, downstream re-aggregation and filter evaluation work.
-4. **F.4-K.4** — audit; should be a no-op if K.1-K.3 are correct.
-5. **F.4-K.5** — block tests that exercise each of K.1, K.2, K.3
-   in isolation.
-6. **F.4-R.1** — RonSQL MTR coverage.
+5. **F.4-K.3b** — redistribution payload substitution / decode, or
+   explicit rejection if support is deferred.
+6. **F.4-K.4** — audit; should be a no-op if K.1-K.3b are correct.
+7. **F.4-K.5** — block tests that exercise each of K.1, K.2,
+   K.2b, K.3, and K.3b in isolation.
+8. **F.4-R.1** — RonSQL MTR coverage.
 
 ## Open design questions
 
@@ -244,7 +339,8 @@ isolation:
 - `WITH cte AS (... MIN/MAX(string) ...) SELECT cte.s FROM cte
   WHERE cte.s = 'literal'` filters correctly.
 - The `ronsql_cte_minmax_string.test` placeholder runs end-to-end.
-- `testCteNdbApiVarcharMinMax` (or equivalent) covers all four
-  surfaces in F.4-K.5 against multi-fragment partitioning.
+- `testCteNdbApiVarcharMinMax` (or equivalent) covers all delivery
+  surfaces in F.4-K.5, including legacy/no-AttrInfo paths and
+  multi-fragment redistribution.
 - No regression in `testCteNdbApi`, `testCteNdbApiFilter`,
   `testCteNdbApiOuterJoin`.
