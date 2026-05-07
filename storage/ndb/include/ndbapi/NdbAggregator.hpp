@@ -54,6 +54,7 @@ enum NdbAggregatorError {
   kErrTooManyGroupbyCols,
   kErrEmptyAggResult,
   kErrTooManyAggResult,
+  kErrUnsupportedStringOperation,
   kErrMaxErrno
 };
 
@@ -71,6 +72,7 @@ static AggregationError g_errors_[] = {
   {kErrTooManyGroupbyCols, "Number of group by columns should be less than 128"},
   {kErrEmptyAggResult, "Empty aggregation"},
   {kErrTooManyAggResult, "Number of aggregation results should be less than 256"},
+  {kErrUnsupportedStringOperation, "String columns are only supported for MIN/MAX"},
   {kErrMaxErrno, ""}
 };
 
@@ -405,6 +407,7 @@ class NdbAggregator {
   const NdbDictionary::Column *gb_columns_[MAX_AGG_N_GROUPBY_COLS];
   const NdbDictionary::Column *reg_columns_[kRegTotal];
   const NdbDictionary::Column *agg_columns_[MAX_AGG_N_RESULTS];
+  Uint32 reg_types_[kRegTotal];
 
   Uint32 n_gb_cols_;
   Uint32 gb_col_ids_[MAX_AGG_N_GROUPBY_COLS];

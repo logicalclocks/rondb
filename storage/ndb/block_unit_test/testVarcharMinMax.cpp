@@ -346,6 +346,31 @@ static int runGroupByTest(Ndb *ndb) {
   return failures == 0 ? 0 : -1;
 }
 
+static int runBuilderRejectTest(Ndb *ndb) {
+  V("\n=== Test: builder rejects SUM over string register ===\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("vctest_t");
+  const NdbDictionary::Table *tab = dict->getTable("vctest_t");
+  if (tab == nullptr) {
+    fprintf(stderr, "Cannot find vctest_t: %s\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  NdbAggregator agg(tab);
+  if (!agg.LoadColumn("vname", 0)) {
+    fprintf(stderr, "LoadColumn(vname) unexpectedly failed: %s\n",
+            agg.GetError().err_msg_);
+    return -1;
+  }
+  if (agg.Sum(0, 0)) {
+    fprintf(stderr, "FAIL builder: SUM(VARCHAR) unexpectedly succeeded\n");
+    return -1;
+  }
+  V("  OK  SUM(VARCHAR) rejected: %s\n", agg.GetError().err_msg_);
+  return 0;
+}
+
 static void usage(const char *prog) {
   fprintf(stderr,
           "Usage: %s [options]\n"
@@ -425,6 +450,7 @@ int main(int argc, char **argv) {
       }
       if (runScalarTest(&ndb) != 0) result = 1;
       if (runGroupByTest(&ndb) != 0) result = 1;
+      if (runBuilderRejectTest(&ndb) != 0) result = 1;
     }
 
     dropSchema(mysqlConn);

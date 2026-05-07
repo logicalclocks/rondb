@@ -124,6 +124,7 @@ NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
     memset(gb_columns_, 0, sizeof(gb_columns_));
     memset(reg_columns_, 0, sizeof(reg_columns_));
     memset(agg_columns_, 0, sizeof(agg_columns_));
+    memset(reg_types_, NDB_TYPE_UNDEFINED, sizeof(reg_types_));
 }
 
 NdbAggregator::~NdbAggregator() {
@@ -189,6 +190,7 @@ void NdbAggregator::initForResults(const Uint32 *programBuffer,
   }
   memset(reg_columns_, 0, sizeof(reg_columns_));
   memset(agg_columns_, 0, sizeof(agg_columns_));
+  memset(reg_types_, NDB_TYPE_UNDEFINED, sizeof(reg_types_));
   if (aggColumns != nullptr) {
     for (Uint32 i = 0; i < nAggColumns && i < MAX_AGG_N_RESULTS; i++) {
       agg_columns_[i] = aggColumns[i];
@@ -798,6 +800,7 @@ bool NdbAggregator::LoadColumn(const char* name, Uint32 reg_id) {
     (reg_id & 0x0F) << 16 |
     col_id;
   reg_columns_[reg_id] = col;
+  reg_types_[reg_id] = type;
 
   /*
    * For decimal, use 1 more byte to take precision/scale
@@ -843,6 +846,7 @@ bool NdbAggregator::LoadColumn(Int32 col_id, Uint32 reg_id) {
     (reg_id & 0x0F) << 16 |
     col_id;
   reg_columns_[reg_id] = col;
+  reg_types_[reg_id] = type;
   /*
    * For decimal, use 1 more byte to take precision/scale
    * info.
@@ -884,6 +888,7 @@ bool NdbAggregator::LoadLinkedColumn(Uint32 position, Uint32 reg_id,
     (reg_id & 0x0F) << 16 |
     col_id;
   reg_columns_[reg_id] = col;
+  reg_types_[reg_id] = type;
 
   if (type == NdbDictionary::Column::Decimal ||
       type == NdbDictionary::Column::Decimalunsigned) {
@@ -906,6 +911,8 @@ bool NdbAggregator::LoadUint64(Uint64 value, Uint32 reg_id) {
   int8store(reinterpret_cast<char*>(&buffer_[curr_prog_pos_]),
               value);
   curr_prog_pos_ += 2;
+  reg_columns_[reg_id] = nullptr;
+  reg_types_[reg_id] = NDB_TYPE_BIGUNSIGNED;
   return true;
 }
 
@@ -918,6 +925,8 @@ bool NdbAggregator::LoadInt64(Int64 value, Uint32 reg_id) {
   int8store(reinterpret_cast<char*>(&buffer_[curr_prog_pos_]),
               value);
   curr_prog_pos_ += 2;
+  reg_columns_[reg_id] = nullptr;
+  reg_types_[reg_id] = NDB_TYPE_BIGINT;
   return true;
 }
 
@@ -930,6 +939,8 @@ bool NdbAggregator::LoadDouble(double value, Uint32 reg_id) {
   float8store(reinterpret_cast<char*>(&buffer_[curr_prog_pos_]),
               value);
   curr_prog_pos_ += 2;
+  reg_columns_[reg_id] = nullptr;
+  reg_types_[reg_id] = NDB_TYPE_DOUBLE;
   return true;
 }
 
@@ -950,6 +961,8 @@ bool NdbAggregator::Mov(Uint32 reg_1, Uint32 reg_2) {
     (kOpMov) << 26 |
     (reg_1 & 0x0F) << 12 |
     (reg_2 & 0x0F) << 8;
+  reg_columns_[reg_1] = reg_columns_[reg_2];
+  reg_types_[reg_1] = reg_types_[reg_2];
 
   return true;
 }
@@ -1044,6 +1057,10 @@ bool NdbAggregator::CheckAggAndReg(Uint32 agg_id, Uint32 reg_id) {
 
 bool NdbAggregator::Sum(Uint32 agg_id, Uint32 reg_id) {
   if (!CheckAggAndReg(agg_id, reg_id)) {
+    return false;
+  }
+  if (isStringType(reg_types_[reg_id])) {
+    SetError(kErrUnsupportedStringOperation);
     return false;
   }
 
