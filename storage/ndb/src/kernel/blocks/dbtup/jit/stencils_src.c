@@ -102,27 +102,58 @@ typedef __attribute__((preserve_none)) void (*StencilTailFn)(JitState *);
 #  define DECLARE_HOLE(name)         /* nothing — magic constant from hole_kinds.h */
 #  define DECLARE_NARROW_HOLE(name)  /* nothing — same */
 
-/* The volatile load forces clang to actually materialise the
- * constant via a movz/movk chain; without volatile, it would
- * constant-fold and we'd have nothing to patch. Inlining is
- * essential — we want the chain inline at the use site, not
- * hidden behind a function call. */
+/* Phase 4.6: inline asm with `"n"` immediate constraint. The
+ * older Phase 4.5 form used `volatile uint{16,64}_t v = magic;
+ * return v;` to force clang to materialise the constant — but
+ * that *also* forced a STR/LDR (or STRH/LDRH) round-trip via a
+ * stack slot, which in turn required a `sub sp / add sp`
+ * stack-frame pair. The volatile semantics are stronger than we
+ * need.
+ *
+ * `__asm__ volatile` pins the side effect to its lexical
+ * position (clang doesn't CSE two HOLE() calls to the same
+ * magic) without demanding a memory round-trip. `=r` lets clang
+ * pick any free register; `"n"` substitutes the magic as a
+ * compile-time integer immediate directly into the asm string.
+ * Net effect: the MOVZ chain bytes are byte-identical to Phase
+ * 4.5, but the surrounding spill/reload + prologue/epilogue
+ * disappear. ~50% byte saving across the stencil set.
+ *
+ * See phase_4_6_implementation.md for the spike findings,
+ * including the two adjustments below (mask `& 0xFFFFu` per
+ * slice; uint64_t return on the narrow helper). */
 __attribute__((always_inline))
 static inline uint64_t aarch64_hole_(uint64_t magic) {
-  volatile uint64_t v = magic;
+  uint64_t v;
+  __asm__ volatile (
+    "movz %[out], %[a]\n\t"
+    "movk %[out], %[b], lsl #16\n\t"
+    "movk %[out], %[c], lsl #32\n\t"
+    "movk %[out], %[d], lsl #48"
+    : [out] "=r" (v)
+    : [a] "n" ( magic        & 0xFFFFu),
+      [b] "n" ((magic >> 16) & 0xFFFFu),
+      [c] "n" ((magic >> 32) & 0xFFFFu),
+      [d] "n" ((magic >> 48) & 0xFFFFu)
+  );
   return v;
 }
 
-/* Phase 4.5 narrow-hole helper. clang lowers a `volatile
- * uint16_t = magic; return v;` to a single 4-byte movz Rd,
- * #imm16 instruction (verified by the I1 spike). Saves 12
- * bytes per hole vs the full 4-instruction chain. Used for
- * HK_OP_A/B/C holes whose value fits in 8 bits (register
- * indices, slot indices, col_id ≤ 255). HK_OP_IMM stays
- * wide via HOLE(). */
+/* Narrow helper — single MOVZ. Parameter is uint32_t (not
+ * uint16_t) so the `& 0xFFFFu` constraint expression compiles
+ * without sign-formatting issues; magics with the high bit set
+ * (e.g., 0xfc24) would otherwise be printed as signed integers
+ * and rejected. Return is uint64_t so clang trusts the MOVZ
+ * zero-extension and doesn't emit a redundant
+ * `and rN, rN, #0xffff` after each MOVZ. */
 __attribute__((always_inline))
-static inline uint16_t aarch64_hole_narrow_(uint16_t magic) {
-  volatile uint16_t v = magic;
+static inline uint64_t aarch64_hole_narrow_(uint32_t magic) {
+  uint64_t v;
+  __asm__ volatile (
+    "movz %w[out], %[m]"
+    : [out] "=r" (v)
+    : [m]   "n"  (magic & 0xFFFFu)
+  );
   return v;
 }
 
