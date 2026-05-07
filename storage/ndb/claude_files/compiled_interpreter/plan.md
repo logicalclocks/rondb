@@ -151,6 +151,7 @@ storage/ndb/claude_files/compiled_interpreter/
 | 3 | Forward-jump fixups + branch handling | no | 2-3 d |
 | 4 | DBTUP thin-slice integration | **YES** | 4-5 d |
 | 4.5 | Narrow-hole encoding (aarch64 single-MOVZ for register-index holes) | no | 3-4 d |
+| 4.6 | Inline-asm immediate constraint (eliminate volatile spill/reload) | no | 2-3 d |
 | 5 | Hot-opcode lowering, full set + embedded normal-interp branches | no | 6-8 d |
 | 6 | Cross-branch always-JIT test integration | no | 2-3 d |
 | 7 | `SCAN_FRAGREQ` scan-filter path | no | 4-5 d |
@@ -903,6 +904,51 @@ reason as Phase 4 (narrow opcode coverage is unrepresentative for
 end-to-end queries).
 
 **Effort.** 3-4 days actual (Day 0 spike + Days 1-5).
+
+## 10.6. Phase 4.6 — Inline-asm immediate constraint (aarch64)
+
+**Status: shipped.** See `phase_4_6_inline_asm.md` for the
+results doc. Final commit: `005e9f0be70` (the Day 1 helper
+swap). All Phase 4 unit tests, microbench differential, drift
+check, and `rondb_jit_canary` MTR PASS.
+
+**Goal.** Eliminate the volatile-driven STR/LDR (or STRH/LDRH)
+spill-reload that surrounds each hole on aarch64, plus the
+`sub sp / add sp` stack-frame pair that exists only to back the
+spill slot. The MOVZ chain bytes themselves are byte-identical
+to Phase 4.5 — only the surroundings shrink.
+
+**What shipped.** Two-helper change to `stencils_src.c`:
+replace the Phase 4.5 `volatile uint{16,64}_t v = magic; return
+v;` body with `__asm__ volatile` carrying a `"n"` (compile-time
+integer immediate) constraint. Two design adjustments resolved
+during the Day 0 spike:
+- The narrow constraint expression must mask the magic to
+  `& 0xFFFFu` — clang's asm formatter prints high-bit-set values
+  as signed and rejects them otherwise.
+- The narrow helper returns `uint64_t`, not `uint16_t` — to
+  prevent clang emitting a redundant `and rN, rN, #0xffff` after
+  each MOVZ.
+
+Every stencil that uses `HOLE()` / `HOLE_NARROW()` inherits the
+new codegen automatically. Zero stencil bodies were touched.
+Engine, extractor, audit, hole_kinds.h, bridge, admission all
+unchanged.
+
+**Headline numbers.** Stencil-set bytes 1112 → 392 (−65 % vs
+Phase 4 baseline, −47 % vs Phase 4.5). 30-op microbench program:
+1412 → 684 emitted bytes (−52 % vs Phase 4.5, −68 % vs Phase 4).
+Per-row JIT dispatch: 24.8 ns → 10.1 ns (icache-density win
+because the spill/reload + prologue ran every row, not just at
+compile time). **Phase 1 microbench VERDICT: PASS for the first
+time** — speedup 2.13×, break-even 355 rows, warm compile 4.0 µs.
+
+`bench_q12_dbtc` perf gate stays deferred to Phase 5 — narrow
+opcode coverage still unrepresentative for end-to-end queries.
+
+**Effort.** 2 days actual (Day 0 spike + Day 1 helper swap +
+Day 2 verification + Day 4 docs; Day 3 was unused — nothing
+surprised).
 
 ## 11. Phase 5 — Hot-opcode lowering, full set + embedded normal-interp branches
 
