@@ -150,6 +150,7 @@ storage/ndb/claude_files/compiled_interpreter/
 | 2 | Extractor tool + clang build pipeline | no | 4-5 d |
 | 3 | Forward-jump fixups + branch handling | no | 2-3 d |
 | 4 | DBTUP thin-slice integration | **YES** | 4-5 d |
+| 4.5 | Narrow-hole encoding (aarch64 single-MOVZ for register-index holes) | no | 3-4 d |
 | 5 | Hot-opcode lowering, full set + embedded normal-interp branches | no | 6-8 d |
 | 6 | Cross-branch always-JIT test integration | no | 2-3 d |
 | 7 | `SCAN_FRAGREQ` scan-filter path | no | 4-5 d |
@@ -858,6 +859,50 @@ icache contents). Fix in this phase before continuing to Phase 5;
 the issues compound as more stencils land.
 
 **Effort.** 4-5 days.
+
+## 10.5. Phase 4.5 — Narrow-hole encoding (aarch64)
+
+**Status: shipped.** See `phase_4_5_narrow_holes.md` for the
+results doc. Final commit: `90854d9a63c` (the Day 4 rollout). The
+plan and audit infrastructure carries forward to Phase 5
+unchanged.
+
+**Goal.** Cut aarch64 stencil bytes by collapsing the 4-instruction
+movz/movk chain used for register-index and column-id holes
+(`HK_OP_A/B/C` carrying ≤16-bit values) down to a single MOVZ
+instruction. Saves 12 bytes per such hole. x86_64 unaffected.
+
+**What shipped.**
+
+- 30 new 16-bit `MAGIC_*_NARROW` constants in `hole_kinds.h` +
+  `kHoleNarrowMagicTable[]`.
+- `HOLE_NARROW(name)` source-level macro (always-inline
+  `volatile uint16_t = magic; return v;`) in `stencils_src.c`.
+- Extractor pass-3 narrow-MOVZ detection (after the existing
+  wide-chain pass-2). Emits Hole entries with `width=2` for the
+  single-instruction encoding.
+- Audit narrow scan (`count_narrow_matches_arm64` +
+  `kNarrowMagicToStencil[]`) in `audit_magics.c`. sf-agnostic mask
+  `0x7F800000 / 0x52800000` so both 64-bit (`0xD2…`) and 32-bit
+  (`0x52…`) MOVZ forms count.
+- `jit1.c` patcher branches on `width == 2`: forces `slot = 0`,
+  skips `slot_counter[kind]++`. The patch-byte sequence itself
+  is unchanged — the existing `patch_operand` already writes
+  bits 0..15 of the operand to imm16 when slot is 0.
+- 14 stencils converted (all opcodes except `op_skip`, `op_exit`,
+  and `HK_OP_IMM` in `op_load_const_int`).
+
+**Headline numbers.** 30-op microbench program: 2164 → 1412
+emitted bytes (−35 %). Cold first-compile: 17.5 µs → 5.2 µs
+(−3.4×). Warm-median compile flat (dominated by arena seal +
+JIT-write toggles, not byte volume). x86_64 stencils byte-
+identical to Phase 4.
+
+`bench_q12_dbtc` perf gate stays deferred to Phase 5 — same
+reason as Phase 4 (narrow opcode coverage is unrepresentative for
+end-to-end queries).
+
+**Effort.** 3-4 days actual (Day 0 spike + Days 1-5).
 
 ## 11. Phase 5 — Hot-opcode lowering, full set + embedded normal-interp branches
 
