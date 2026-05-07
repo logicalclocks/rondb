@@ -2435,6 +2435,59 @@ void JoinAggInterpreter::freeGroupStringSlots(AggResItem* slots) {
   }
 }
 
+// Phase I.6 (F.2-K.5): see AggInterpreter::stringPayloadSize for
+// the contract — this is the parallel implementation.
+Uint32 JoinAggInterpreter::stringPayloadSize(
+    const AggResItem* slots) const {
+  if (m_string_results == nullptr) {
+    return 0;
+  }
+  Uint32 total = 0;
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    DataType t = slots[i].type;
+    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+         t == NDB_TYPE_LONGVARCHAR) &&
+        !slots[i].is_null && slots[i].value.val_ptr != nullptr) {
+      const char* buf = static_cast<const char*>(slots[i].value.val_ptr);
+      const Uint16 payload_len = *reinterpret_cast<const Uint16*>(buf);
+      const Uint32 prefix = m_string_results[i].prefix_bytes;
+      const Uint32 byte_size = prefix + payload_len;
+      total += sizeof(Uint32);
+      total += (byte_size + 3) & ~3U;
+    }
+  }
+  return total;
+}
+
+Uint32 JoinAggInterpreter::encodeStringPayload(const AggResItem* slots,
+                                                char* dst) const {
+  if (m_string_results == nullptr) {
+    return 0;
+  }
+  char* p = dst;
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    DataType t = slots[i].type;
+    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+         t == NDB_TYPE_LONGVARCHAR) &&
+        !slots[i].is_null && slots[i].value.val_ptr != nullptr) {
+      const char* buf = static_cast<const char*>(slots[i].value.val_ptr);
+      const Uint16 payload_len = *reinterpret_cast<const Uint16*>(buf);
+      const Uint32 prefix = m_string_results[i].prefix_bytes;
+      const Uint32 byte_size = prefix + payload_len;
+      *reinterpret_cast<Uint32*>(p) = byte_size;
+      p += sizeof(Uint32);
+      memcpy(p, buf + 4, byte_size);
+      p += byte_size;
+      const Uint32 pad = ((byte_size + 3) & ~3U) - byte_size;
+      if (pad > 0) {
+        memset(p, 0, pad);
+        p += pad;
+      }
+    }
+  }
+  return static_cast<Uint32>(p - dst);
+}
+
 // Phase I.6 (F.2-K.4c): per-(group, slot) MIN/MAX string update.
 // See AggInterpreter::minMaxString for layout and contract — this
 // is the parallel implementation for the join interpreter.

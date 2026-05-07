@@ -168,6 +168,30 @@ class AggInterpreter : public PushdownInterpreter {
   // emit (Phase I.6 F.2-K.5) consumes val_ptr before this runs.
   void freeGroupStringSlots(AggResItem* slots);
 
+ public:
+  // Phase I.6 (F.2-K.5): true when at least one string MIN/MAX slot
+  // has been touched in this interpreter — equivalently, when
+  // m_string_results has been lazy-allocated.  Drives marker
+  // selection at emit time: AGG_CHAR_RESULT when true, AGG_RESULT
+  // otherwise.
+  bool hasStringSlots() const { return m_string_results != nullptr; }
+
+  // Phase I.6 (F.2-K.5): bytes the appended string-payload region
+  // for one group will occupy on the wire.  For each slot whose
+  // type is CHAR / VARCHAR / Longvarchar AND is non-null, contributes
+  // 4 bytes (Uint32 byte_size) plus a Uint32-padded copy of the
+  // [prefix + payload] bytes from the slot's val_ptr buffer.
+  // Slots whose type is non-string or whose value is null contribute
+  // zero bytes.
+  Uint32 stringPayloadSize(const AggResItem* slots) const;
+
+  // Phase I.6 (F.2-K.5): write one group's appended string-payload
+  // region into `dst`.  Layout mirrors the size returned by
+  // stringPayloadSize.  Returns total bytes written.  `dst` must
+  // have at least stringPayloadSize(slots) bytes available.
+  Uint32 encodeStringPayload(const AggResItem* slots, char* dst) const;
+ private:
+
   // Phase I.6 (F.2-K.4): running thread id for the in-flight ProcessRec
   // call.  AggInterpreter is constructed once on the LDM thread that
   // creates it but ProcessRec runs from whichever thread executes the

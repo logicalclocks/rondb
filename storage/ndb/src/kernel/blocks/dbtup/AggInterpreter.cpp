@@ -2286,6 +2286,63 @@ void AggInterpreter::freeGroupStringSlots(AggResItem* slots) {
   }
 }
 
+// Phase I.6 (F.2-K.5): bytes that one group's appended
+// string-payload region will consume on the wire.  Walks the slot
+// array, summing the size contribution of each string slot:
+// `[Uint32 byte_size][prefix+payload, Uint32-padded]`.  Non-string
+// slots and null string slots contribute zero bytes.
+Uint32 AggInterpreter::stringPayloadSize(const AggResItem* slots) const {
+  if (m_string_results == nullptr) {
+    return 0;
+  }
+  Uint32 total = 0;
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    DataType t = slots[i].type;
+    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+         t == NDB_TYPE_LONGVARCHAR) &&
+        !slots[i].is_null && slots[i].value.val_ptr != nullptr) {
+      const char* buf = static_cast<const char*>(slots[i].value.val_ptr);
+      const Uint16 payload_len = *reinterpret_cast<const Uint16*>(buf);
+      const Uint32 prefix = m_string_results[i].prefix_bytes;
+      const Uint32 byte_size = prefix + payload_len;
+      total += sizeof(Uint32);                            // byte_size header
+      total += (byte_size + 3) & ~3U;                     // payload + padding
+    }
+  }
+  return total;
+}
+
+// Phase I.6 (F.2-K.5): write one group's appended string-payload
+// region into `dst`.  Caller must size `dst` from stringPayloadSize.
+Uint32 AggInterpreter::encodeStringPayload(const AggResItem* slots,
+                                            char* dst) const {
+  if (m_string_results == nullptr) {
+    return 0;
+  }
+  char* p = dst;
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    DataType t = slots[i].type;
+    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+         t == NDB_TYPE_LONGVARCHAR) &&
+        !slots[i].is_null && slots[i].value.val_ptr != nullptr) {
+      const char* buf = static_cast<const char*>(slots[i].value.val_ptr);
+      const Uint16 payload_len = *reinterpret_cast<const Uint16*>(buf);
+      const Uint32 prefix = m_string_results[i].prefix_bytes;
+      const Uint32 byte_size = prefix + payload_len;
+      *reinterpret_cast<Uint32*>(p) = byte_size;
+      p += sizeof(Uint32);
+      memcpy(p, buf + 4, byte_size);
+      p += byte_size;
+      const Uint32 pad = ((byte_size + 3) & ~3U) - byte_size;
+      if (pad > 0) {
+        memset(p, 0, pad);
+        p += pad;
+      }
+    }
+  }
+  return static_cast<Uint32>(p - dst);
+}
+
 // Phase I.6 (F.2-K.4c): per-(group, slot) MIN/MAX string update.
 // See header for layout and contract.
 Int32 AggInterpreter::minMaxString(Uint32 reg_index, Uint32 agg_index,

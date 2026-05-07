@@ -245,6 +245,13 @@ class JoinAggInterpreter : public PushdownInterpreter {
   // no string slots are present.
   void freeGroupStringSlots(AggResItem* slots);
 
+ public:
+  // Phase I.6 (F.2-K.5): see AggInterpreter for the contract.
+  bool hasStringSlots() const { return m_string_results != nullptr; }
+  Uint32 stringPayloadSize(const AggResItem* slots) const;
+  Uint32 encodeStringPayload(const AggResItem* slots, char* dst) const;
+ private:
+
   Uint32* m_prog;
   Uint32 m_cur_pos;
   Register m_registers[kRegTotal];
