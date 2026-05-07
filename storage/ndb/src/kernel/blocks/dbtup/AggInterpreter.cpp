@@ -1726,6 +1726,14 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
               const Uint32 string_bytes = prefix + payload_len;
               const Uint32 words_consumed = 1 /*AttributeHeader*/ +
                                             ((string_bytes + 3) >> 2);
+              if (unlikely(m_attr_read_pos + words_consumed >
+                           g_attr_read_buf_len_)) {
+                g_eventLogger->debug("AggInterpreter::ProcessRec "
+                    "ZAGG_OTHER_ERROR: string attr buffer overflow "
+                    "pos=%u words=%u buf_words=%u",
+                    m_attr_read_pos, words_consumed, g_attr_read_buf_len_);
+                return ZAGG_OTHER_ERROR;
+              }
               m_attr_read_pos += words_consumed;
             }
             break;
