@@ -2,7 +2,7 @@
 
 ## Status
 
-**F.2 done; F.3 next.**  Sub-phases F.2 + F.3 of the I.6 plan
+**F.2 + F.3 + S.1-S.6 hardening shipped for scalar / grouped scan-aggregation surfaces.**  Join-aggregation linked-attr strings and CTE delivery substitution remain gated as F.4.  Sub-phases F.2 + F.3 of the I.6 plan
 (`cte_filter_minmax_strings_plan.md`).  F.1 (DECIMAL widening)
 shipped in `354f2f811f0`.  This doc takes the F.2 / F.3 sketch from
 that plan to actionable, file-anchored per-commit work.
@@ -19,28 +19,29 @@ that plan to actionable, file-anchored per-commit work.
 | `6c652f50256` | F.2-K.5d-1 | NdbAggregator parses AGG_CHAR_RESULT (single-source single-node); resolveStringSlots / freeStringSlots; destructor cleanup |
 | `879c76004a7` | F.2-K.5d-3 | `NdbAggregator::Result::data_str(Uint32* len)` API |
 
-**Open within F.2:**
+**S.1 - S.6 hardening sweep shipped on top of F.2 + F.3:**
 
-- **F.2-K.5d-2** (deferred): API-side merge for string MIN/MAX when
-  both `agg_res_ptr[i]` and `res[i]` are non-null (cross-node
-  redistribute / multi-source).  Today the merge loop's per-slot
-  type assertion at `NdbAggregator.cpp:508-515` only allows
-  BIGINT/DOUBLE; the kOpMax / kOpMin switch arms similarly assume
-  numeric.  K.5d-2 ports kernel `minMaxString` to the API side
-  (compare via `NdbSqlUtil::getType(typeId).m_cmp`, resize-on-grow
-  with `new`/`delete`) and widens the assertions and switch arms.
-  Single-node F.3 testing does not exercise this path; can land
-  alongside multi-node test coverage.
+| Commit | Phase | Scope |
+|--------|-------|-------|
+| `5e6d1aa4eab` | F.3-R.1 | RonSQL CTE virt-table type passthrough for string MIN/MAX |
+| `4d3d0e6dcba` | F.3-R.2 | `emit_cte_lookup_filter` accepts string virt-types |
+| `9efdc033e9c` | initial test path | Plan B: kernel optimizer no longer rewrites string `kOpMax`/`kOpMin` to BIGINT variants; AggInterpreter / JoinAggInterpreter / NdbAggregator API tolerant of string types; first single-partition `testVarcharMinMax` block test + MTR wrapper |
+| `d96e01add1d` | S.1 grouped ownership | Grouped string slots resolved before insert/merge; `ResultRecord::result_records_.len` matches public AggResItem array length; ownership symmetric across paths |
+| `47841e2ca5e` | S.2 multi-source merge | Real charset-aware string MIN/MAX merge on the API side via `NdbSqlUtil::getType(...).m_cmp`; deep-copy of winners into API-owned memory; replaced buffers freed; multi-partition test no longer single-partition pinned |
+| `7f1ced100f2` | S.3 scratch guard | `m_attr_read_pos` bounds check before advancing; clean interpreter-level error on overflow |
+| `81d1832a099` | S.4 builder validation | API rejects unsupported string operations (e.g. `SUM(string)`) at finalize with `kErrUnsupportedStringOperation` |
+| `a8db55676b7` | S.5 RonSQL printing | RonSQL `ResultPrinter` renders string aggregate results via `Result::data_str()`; `ronsql_minmax_string.test` |
+| `09e5a8b90cd` | S.6 coverage | CHAR padding, VARCHAR varying lengths, Longvarchar payloads, NULL handling, scalar + grouped surfaces, multi-partition merge in `testVarcharMinMax` and `ronsql_minmax_string` |
 
-**Next:**
+Detailed sub-phase plan with anchors and rationale: `cte_filter_phase_i6_string_minmax_fixups.md`.
 
-- **F.3-R.1** — virt-table type passthrough for string MIN/MAX in
-  `build_cte_virtual_tables` (RonSQLPreparer.cpp:5293-5336).
-- **F.3-R.2** — accept string virt-types in
-  `emit_cte_lookup_filter` (RonSQLPreparer.cpp:5713-5736).
-- **F.3 MTR** — first end-to-end test that actually emits a string
-  MIN/MAX program; first chance to validate that F.2 + F.3 produce
-  correct results.
+**Open follow-ups (out of F.2 / F.3 scope, tracked under F.4):**
+
+- **Join aggregation linked-attr strings** — `JoinAggInterpreter::kOpLoadCol` rejects linked-attr string columns (`attrDescriptor == nullptr` arm).  Charset and prefix bytes need to be encoded in the linked-attr stream before MIN/MAX over a CTE string output can feed a downstream aggregator.
+- **CTE_LOOKUP / CTE_SCAN delivery substitution** — `Dblqh::cteLookupEmitResult` and the CTE feed paths `memcpy(..., 8)` per AggResItem; for string slots they ship `val_ptr` bits.  Needs per-slot type-aware substitution applied to the CTE delivery path (analogous to AGG_CHAR_RESULT for the API drain).
+- **CTE materialisation chain end-to-end** — Once the two above are wired, `WITH cte AS (... MIN/MAX(string) ...) SELECT ... FROM cte JOIN ...` becomes testable end-to-end; today this hangs or fails with `ZCTE_LOOKUP_OUTPUT_OVERFLOW`.
+
+These are tracked under the F.4 plan doc (`cte_filter_phase_i6_string_minmax_f4.md`, to be written when work starts).
 
 ## Scope decisions
 
