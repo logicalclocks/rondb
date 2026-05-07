@@ -153,6 +153,7 @@ storage/ndb/claude_files/compiled_interpreter/
 | 4.5 | Narrow-hole encoding (aarch64 single-MOVZ for register-index holes) | no | 3-4 d |
 | 4.6 | Inline-asm immediate constraint (eliminate volatile spill/reload) | no | 2-3 d |
 | 4.7 | Addressing-mode fold + narrow LoadConst variants | no | 5-6 d |
+| 5.0 | Embedded interpreter calls (BRANCH_ATTR_*_NULL) | no | 4-5 d |
 | 5 | Hot-opcode lowering, full set + embedded normal-interp branches | no | 6-8 d |
 | 6 | Cross-branch always-JIT test integration | no | 2-3 d |
 | 7 | `SCAN_FRAGREQ` scan-filter path | no | 4-5 d |
@@ -1021,6 +1022,62 @@ shift). Phase 1 microbench VERDICT continues to PASS.
 
 `bench_q12_dbtc` perf gate stays deferred to Phase 5 — narrow
 opcode coverage still unrepresentative for end-to-end queries.
+
+**Effort.** 5 days actual (Day 0 spike + Days 1-5).
+
+## 10.8. Phase 5.0 — Embedded interpreter calls (first slice)
+
+**Status: shipped.** See `phase_5_0_embedded_calls.md` for the
+results doc. Final commit: `f7d29ab017b` (the Day 4 MTR canary).
+All Phase 4 unit tests + microbench differential + drift check +
+both `rondb_jit_canary` and the new `rondb_jit_embedded_canary`
+MTR tests PASS.
+
+**Goal.** Land the first slice of Phase 5: end-to-end JIT
+compilation of aggregation programs that contain an embedded
+normal-interpreter `WHERE` filter using `IS NULL` /
+`IS NOT NULL` patterns. Establishes the 3-hole cold-call branch
+pattern (HK_COLDCALL + HK_BRANCH_TAKE + HK_BRANCH_FALL) and the
+embedded-block bridge translation infrastructure for
+subsequent Phase 5.x slices.
+
+**What shipped.**
+
+- Bridge admission walk recurses into `kOpEmbeddedInterp`
+  blocks (no longer a flat reject). Translates a narrow
+  embedded-opcode set to flat JIT Op records:
+  `BRANCH_ATTR_EQ_NULL` / `BRANCH_ATTR_NE_NULL` →
+  `OP_BRANCH_ATTR_*_NULL`; `EXIT_REFUSE` → `OP_EXIT`;
+  `EXIT_OK` / `EXIT_OK_LAST` → no Op (fall through).
+- Two new OpKinds (`OP_BRANCH_ATTR_EQ_NULL = 21`,
+  `OP_BRANCH_ATTR_NE_NULL = 22`).
+- Two new stencils (`op_branch_attr_eq/ne_null`, 44 B post-
+  strip) using the 3-hole pattern. **No new extractor or
+  patcher infrastructure** — Phase 3's HK_BRANCH_TAKE +
+  HK_BRANCH_FALL machinery and Phase 4's HK_COLDCALL machinery
+  already existed; the novelty is just combining them.
+- New cold-call helper `ndb_jit_h_branch_attr_null` in
+  DbtupJitGlue. Both stencils share it via a runtime
+  `want_null` flag (eq=1, ne=0). Reuses Phase 4's
+  `readAttributeForJit` friend wrapper without changes.
+- New MTR test `rondb_jit_embedded_canary` covering Q1 (SUM
+  with IS NULL), Q2 (SUM with IS NOT NULL), Q3 (COUNT with
+  IS NULL).
+
+`bench_q12_dbtc` perf gate stays deferred to subsequent Phase
+5.x — narrow opcode coverage still doesn't cover end-to-end
+queries.
+
+**Headline numbers.** Two new aarch64 stencils at 44 B each.
+2 new narrow magics. 5 new bridge-test cases (T11-T15).
+Existing stencil bytes byte-identical to Phase 4.7. The MTR
+canary's three queries return correct results
+(700 / 1400 / 2) — verifiable by hand.
+
+**Caveat:** correctness verified end-to-end; *whether* the JIT
+path was actually taken (vs a silent fallback) is observable
+only via code inspection of admission. Phase 5.x can add a
+DUMP-based JIT-vs-interp counter to close that gap.
 
 **Effort.** 5 days actual (Day 0 spike + Days 1-5).
 
