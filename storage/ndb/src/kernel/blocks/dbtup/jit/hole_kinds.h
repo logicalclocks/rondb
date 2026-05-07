@@ -143,6 +143,11 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_LCU16_VAL", HK_OP_IMM       },
   { "HOLE_LCI16_DST", HK_OP_A         },
   { "HOLE_LCI16_VAL", HK_OP_IMM       },
+  /* Phase 4.7 32-bit LoadConst variants. */
+  { "HOLE_LCU32_DST", HK_OP_A         },
+  { "HOLE_LCU32_VAL", HK_OP_IMM       },
+  { "HOLE_LCI32_DST", HK_OP_A         },
+  { "HOLE_LCI32_VAL", HK_OP_IMM       },
 };
 static const size_t kHoleSymbolTableLen =
     sizeof(kHoleSymbolTable) / sizeof(kHoleSymbolTable[0]);
@@ -283,6 +288,16 @@ static const size_t kHoleSymbolTableLen =
 #define MAGIC_LCI16_VAL_NARROW    0xe8c3u
 #define MAGIC_LCU16_VAL_NARROW    0x27fdu
 
+/* Phase 4.7 32-bit LoadConst const-value magics. Encoded as a
+ * 2-instruction MOVZ + MOVK chain in W-form (instruction prefix
+ * 0x52800000 / 0x72800000). Both 16-bit halves are non-zero so
+ * clang emits a full 2-slot chain rather than collapsing to a
+ * single MOVZ. Generated via
+ *   sha256("RONDB-1056-Phase4_7-32slot-magic-v1|" + name)[0:32]
+ * with regeneration if either half is zero. */
+#define MAGIC_LCI32_VAL_32        0x796dc99au
+#define MAGIC_LCU32_VAL_32        0x8c4c7f76u
+
 /* ------------------------------------------------------------------ */
 /* Phase 4.7 imm12-fold magics (aarch64-only).                        */
 /*                                                                    */
@@ -342,15 +357,19 @@ static const size_t kHoleSymbolTableLen =
 typedef struct {
   uint64_t magic;
   uint8_t  kind;
+  uint8_t  chain_len;   /* slots filled by the chain — 4 for X-form
+                         * 64-bit chains (LCI_VAL); 2 for W-form
+                         * 32-bit chains (Phase 4.7 LCI32/LCU32). */
   const char *name;     /* informational, used in diagnostics */
 } HoleMagicEntry;
 
 static const HoleMagicEntry kHoleMagicTable[] = {
-  /* Phase 4.5 Day 4: only HK_OP_IMM (load_const_int's int64 immediate)
-   * still uses the wide 4-instruction movz/movk chain. All register-
-   * index and column-id holes migrated to single-MOVZ narrow encoding;
-   * see kHoleNarrowMagicTable below. */
-  { MAGIC_LCI_VAL,  HK_OP_IMM,      "MAGIC_LCI_VAL"  },
+  /* Phase 4.5 Day 4: HK_OP_IMM int64 wide chain (X-form, 4 slots). */
+  { MAGIC_LCI_VAL,    HK_OP_IMM, 4, "MAGIC_LCI_VAL"     },
+  /* Phase 4.7: 2-slot W-form chains for the 32-bit LoadConst variants.
+   * Same kHoleMagicTable, distinguished by chain_len. */
+  { MAGIC_LCI32_VAL_32, HK_OP_IMM, 2, "MAGIC_LCI32_VAL_32" },
+  { MAGIC_LCU32_VAL_32, HK_OP_IMM, 2, "MAGIC_LCU32_VAL_32" },
 };
 static const size_t kHoleMagicTableLen =
     sizeof(kHoleMagicTable) / sizeof(kHoleMagicTable[0]);

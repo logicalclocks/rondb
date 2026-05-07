@@ -649,13 +649,17 @@ static ExtractedStencil extract_one_arm64(
                     ((uint32_t)p[2] << 16)|
                     ((uint32_t)p[3] << 24);
 
-    /* Decode movz / movk / movn (64-bit form, sf=1).
-     *   movz: 1 10 100101 hw imm16 Rd  → bits 31..23 == 0b110100101
-     *   movk: 1 11 100101 hw imm16 Rd  → bits 31..23 == 0b111100101
-     *   movn: 1 00 100101 hw imm16 Rd  → bits 31..23 == 0b100100101 */
-    int is_movz = (insn & 0xFF800000) == 0xD2800000;
-    int is_movk = (insn & 0xFF800000) == 0xF2800000;
-    int is_movn = (insn & 0xFF800000) == 0x92800000;
+    /* Decode movz / movk / movn — sf-agnostic (Phase 4.7).
+     *   X-form (sf=1): 0xD2800000 movz / 0xF2800000 movk / 0x92800000 movn
+     *   W-form (sf=0): 0x52800000 movz / 0x72800000 movk
+     * Mask 0x7F800000 ignores bit 31 so both forms match. The
+     * extractor accumulates the imm16 slices into a 64-bit value
+     * regardless of width — chain_len in the magic table tells
+     * us which target value to expect (4 for X-form 64-bit, 2 for
+     * W-form 32-bit). */
+    int is_movz = (insn & 0x7F800000) == 0x52800000;
+    int is_movk = (insn & 0x7F800000) == 0x72800000;
+    int is_movn = (insn & 0xFF800000) == 0x92800000;  /* X-form only */
 
     if (is_movn) {
       /* movn-based chain: we lack movz/movk slot offsets to patch
@@ -688,21 +692,26 @@ static ExtractedStencil extract_one_arm64(
       reg_slot_off[Rd][hw] = off;
     }
 
-    if (reg_slot_seen[Rd] == 0xF) {
-      /* All four slots seen — try to match against the magic table. */
-      for (size_t k = 0; k < kHoleMagicTableLen; ++k) {
-        if (kHoleMagicTable[k].magic == reg_value[Rd]) {
-          uint8_t kind = kHoleMagicTable[k].kind;
-          for (int s = 0; s < 4; ++s) {
-            add_hole(&out.holes, reg_slot_off[Rd][s], kind, 4);
-          }
-          /* Reset to avoid double-matching if the same chain
-           * recurs via additional movks later. */
-          reg_slot_seen[Rd] = 0;
-          reg_value[Rd]     = 0;
-          break;
-        }
+    /* Chain-length-aware match. After each MOVZ/MOVK we look for
+     * any magic whose value AND chain_len match the accumulated
+     * register state:
+     *   chain_len=4 → expect slot_seen == 0xF  (all 4 slots)
+     *   chain_len=2 → expect slot_seen == 0x3  (slots 0+1 only)
+     * Add holes for the slots actually observed. */
+    for (size_t k = 0; k < kHoleMagicTableLen; ++k) {
+      const HoleMagicEntry *me = &kHoleMagicTable[k];
+      uint8_t  expect_mask =
+          (me->chain_len == 2) ? 0x3 : 0xF;
+      if (reg_slot_seen[Rd] != expect_mask) continue;
+      if (me->magic != reg_value[Rd])       continue;
+
+      for (uint8_t s = 0; s < me->chain_len; ++s) {
+        add_hole(&out.holes, reg_slot_off[Rd][s], me->kind, 4);
       }
+      /* Reset to avoid double-matching if the same chain recurs. */
+      reg_slot_seen[Rd] = 0;
+      reg_value[Rd]     = 0;
+      break;
     }
   }
 
@@ -832,6 +841,8 @@ static const OpkindMap kOpkindMap[] = {
   { "op_load_col_ndb",        "OP_LOAD_COL_NDB"       },
   { "op_load_const_uint16",   "OP_LOAD_CONST_UINT16"  },
   { "op_load_const_int16",    "OP_LOAD_CONST_INT16"   },
+  { "op_load_const_uint32",   "OP_LOAD_CONST_UINT32"  },
+  { "op_load_const_int32",    "OP_LOAD_CONST_INT32"   },
 };
 static const size_t kOpkindMapLen = sizeof(kOpkindMap) / sizeof(kOpkindMap[0]);
 

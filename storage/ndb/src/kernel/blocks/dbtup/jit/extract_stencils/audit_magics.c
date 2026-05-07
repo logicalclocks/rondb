@@ -99,10 +99,12 @@ static const struct {
   const char *magic_name;
   const char *stencil_name;
 } kMagicToStencil[] = {
-  /* Phase 4.5 Day 4: only HK_OP_IMM still uses the wide chain.
-   * All register-index and column-id operand magics migrated to
-   * kNarrowMagicToStencil[] below. */
-  { "MAGIC_LCI_VAL",  "op_load_const_int"     },
+  /* Phase 4.5 Day 4: HK_OP_IMM only — int64 wide chain (LCI_VAL).
+   * Phase 4.7: 32-bit chain magics are also HK_OP_IMM but go via
+   * kHoleMagicTable's chain_len=2 entries. */
+  { "MAGIC_LCI_VAL",      "op_load_const_int"     },
+  { "MAGIC_LCI32_VAL_32", "op_load_const_int32"   },
+  { "MAGIC_LCU32_VAL_32", "op_load_const_uint32"  },
 };
 static const size_t kMagicToStencilLen =
     sizeof(kMagicToStencil) / sizeof(kMagicToStencil[0]);
@@ -207,6 +209,8 @@ static const struct {
   /* Phase 4.7 LoadConst variant destinations. */
   { "MAGIC_LCU16_DST_FOLD",   "op_load_const_uint16",  1 },
   { "MAGIC_LCI16_DST_FOLD",   "op_load_const_int16",   1 },
+  { "MAGIC_LCU32_DST_FOLD",   "op_load_const_uint32",  1 },
+  { "MAGIC_LCI32_DST_FOLD",   "op_load_const_int32",   1 },
 };
 static const size_t kFoldMagicToStencilLen =
     sizeof(kFoldMagicToStencil) / sizeof(kFoldMagicToStencil[0]);
@@ -349,7 +353,8 @@ static size_t parse_header(const char *path,
 
 static int count_chain_matches_arm64(const uint8_t *bytes,
                                       size_t n_bytes,
-                                      uint64_t magic) {
+                                      uint64_t magic,
+                                      uint8_t  expect_chain_len) {
   int count = 0;
   uint64_t reg_value[32];
   uint8_t  reg_slot_seen[32];
@@ -357,6 +362,7 @@ static int count_chain_matches_arm64(const uint8_t *bytes,
     reg_value[i]     = 0;
     reg_slot_seen[i] = 0;
   }
+  uint8_t expect_mask = (expect_chain_len == 2) ? 0x3 : 0xF;
 
   for (size_t off = 0; off + 4 <= n_bytes; off += 4) {
     uint32_t insn = (uint32_t)bytes[off]            |
@@ -364,8 +370,12 @@ static int count_chain_matches_arm64(const uint8_t *bytes,
                     ((uint32_t)bytes[off + 2] << 16)|
                     ((uint32_t)bytes[off + 3] << 24);
 
-    int is_movz = (insn & 0xFF800000) == 0xD2800000;
-    int is_movk = (insn & 0xFF800000) == 0xF2800000;
+    /* Phase 4.7: sf-agnostic decode (mask 0x7F800000) so X-form
+     * (0xD2/F2 prefix) and W-form (0x52/72 prefix) MOVZ/MOVK both
+     * count. movn stays X-form-only — clang doesn't choose it for
+     * the W-form 32-bit chains we care about. */
+    int is_movz = (insn & 0x7F800000) == 0x52800000;
+    int is_movk = (insn & 0x7F800000) == 0x72800000;
     int is_movn = (insn & 0xFF800000) == 0x92800000;
 
     if (is_movn) {
@@ -390,7 +400,7 @@ static int count_chain_matches_arm64(const uint8_t *bytes,
       reg_slot_seen[Rd] |= (uint8_t)(1u << hw);
     }
 
-    if (reg_slot_seen[Rd] == 0xF && reg_value[Rd] == magic) {
+    if (reg_slot_seen[Rd] == expect_mask && reg_value[Rd] == magic) {
       count++;
       reg_slot_seen[Rd] = 0;
       reg_value[Rd]     = 0;
@@ -599,7 +609,8 @@ int main(int argc, char **argv) {
       if (is_arm64) {
         count = count_chain_matches_arm64(stencils[i].bytes,
                                           stencils[i].n_bytes,
-                                          m->magic);
+                                          m->magic,
+                                          m->chain_len);
       } else {
         count = count_literal_matches_x86(stencils[i].bytes,
                                           stencils[i].n_bytes,

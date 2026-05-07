@@ -101,6 +101,7 @@ typedef __attribute__((preserve_none)) void (*StencilTailFn)(JitState *);
  * HOLE_STORE_REG fall back to the same `regs_i64[HOLE(...)]`
  * idiom — clang lowers the index into rip-relative addressing. */
 #  define HOLE_NARROW(name)          HOLE(name)
+#  define HOLE_32(name)              HOLE(name)
 #  define HOLE_LOAD_REG(name, state)  \
       ((state)->regs_i64[HOLE(name)])
 #  define HOLE_STORE_REG(name, state, value)  \
@@ -167,6 +168,27 @@ static inline uint64_t aarch64_hole_narrow_(uint32_t magic) {
     "movz %w[out], %[m]"
     : [out] "=r" (v)
     : [m]   "n"  (magic & 0xFFFFu)
+  );
+  return v;
+}
+
+/* Phase 4.7 32-bit chain helper — 2-slot W-form MOVZ + MOVK.
+ * Used by op_load_const_uint32 / op_load_const_int32. The magic
+ * is a 32-bit value with both 16-bit halves non-zero so clang
+ * emits a full 2-slot chain (rather than collapsing to MOVZ + 0
+ * if the upper half is zero). The extractor's pass-2 detector
+ * recognizes the 2-slot W-form chain via the chain_len=2 entry
+ * in kHoleMagicTable. */
+__attribute__((always_inline))
+__attribute__((unused))
+static inline uint64_t aarch64_hole32_(uint32_t magic) {
+  uint64_t v;
+  __asm__ volatile (
+    "movz %w[out], %[a]\n\t"
+    "movk %w[out], %[b], lsl #16"
+    : [out] "=r" (v)
+    : [a] "n" ( magic        & 0xFFFFu),
+      [b] "n" ((magic >> 16) & 0xFFFFu)
   );
   return v;
 }
@@ -271,6 +293,7 @@ static inline int64_t aarch64_load_col_(uint32_t magic_byte_off,
 
 #  define HOLE(name)         aarch64_hole_(MAGIC_##name)
 #  define HOLE_NARROW(name)  aarch64_hole_narrow_(MAGIC_##name##_NARROW)
+#  define HOLE_32(name)      aarch64_hole32_(MAGIC_##name##_32)
 #  define HOLE_LOAD_REG(name, state)         \
       aarch64_load_reg_(MAGIC_##name##_FOLD * 8u, (state))
 #  define HOLE_STORE_REG(name, state, value) \
@@ -519,6 +542,33 @@ STENCIL op_load_const_int16(JitState *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* op_load_const_uint32 / op_load_const_int32                         */
+/*                                                                    */
+/* Phase 4.7 wider LoadConst variants. Bridge dispatch:               */
+/*   value ∈ [0, 2^32-1]            → op_load_const_uint32 (12 B)    */
+/*   value ∈ [INT32_MIN, -32769]    → op_load_const_int32  (16 B)    */
+/*                                                                    */
+/* uint32 form: MOVZ + MOVK + STR (no sign-extend; W-form 2-slot      */
+/*              chain zero-fills upper 32 bits of the X-register).    */
+/* int32 form:  MOVZ + MOVK + SXTW + STR (sign-extend the 32-bit      */
+/*              signed value to int64 before storing).                */
+/* ------------------------------------------------------------------ */
+DECLARE_FOLD_HOLE(LCU32_DST);
+DECLARE_HOLE(LCU32_VAL);
+STENCIL op_load_const_uint32(JitState *s) {
+  HOLE_STORE_REG(LCU32_DST, s, (int64_t)HOLE_32(LCU32_VAL));
+  TAIL_NEXT(s);
+}
+
+DECLARE_FOLD_HOLE(LCI32_DST);
+DECLARE_HOLE(LCI32_VAL);
+STENCIL op_load_const_int32(JitState *s) {
+  HOLE_STORE_REG(LCI32_DST, s,
+                 (int64_t)(int32_t)HOLE_32(LCI32_VAL));
+  TAIL_NEXT(s);
+}
+
+/* ------------------------------------------------------------------ */
 /* op_skip / op_exit : row terminators.                               */
 /*                                                                    */
 /* Bare returns; the extractor overrides the bytes entirely with      */
@@ -561,4 +611,6 @@ const StencilTailFn g_stencil_anchor[] = {
     op_load_col_ndb,
     op_load_const_uint16,
     op_load_const_int16,
+    op_load_const_uint32,
+    op_load_const_int32,
 };

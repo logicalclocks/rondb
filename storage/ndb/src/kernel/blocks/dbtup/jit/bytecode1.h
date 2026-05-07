@@ -107,9 +107,11 @@ typedef enum {
    * smallest-fitting variant per constant value. Operand layout:
    * a=dst_reg, imm=constant value (the patcher writes only the
    * 16-bit MOVZ slice). */
-  OP_LOAD_CONST_UINT16  = 17,   /* 0..65535,  MOVZ + STR (8 B) */
-  OP_LOAD_CONST_INT16   = 18,   /* -32768..-1, MOVZ + SXTH + STR (12 B) */
-  OP_KIND_MAX           = OP_LOAD_CONST_INT16
+  OP_LOAD_CONST_UINT16  = 17,   /* 0..65535,        MOVZ + STR        ( 8 B) */
+  OP_LOAD_CONST_INT16   = 18,   /* -32768..-1,      MOVZ + SXTH + STR (12 B) */
+  OP_LOAD_CONST_UINT32  = 19,   /* 0..2^32-1,       MOVZ+MOVK + STR   (12 B) */
+  OP_LOAD_CONST_INT32   = 20,   /* INT32_MIN..-2^15-1, +SXTW           (16 B) */
+  OP_KIND_MAX           = OP_LOAD_CONST_INT32
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch

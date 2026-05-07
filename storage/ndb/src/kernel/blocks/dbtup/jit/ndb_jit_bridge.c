@@ -190,9 +190,12 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
           kind = OP_LOAD_CONST_UINT16;        /*  8 B */
         } else if (value >= -32768 && value <= -1) {
           kind = OP_LOAD_CONST_INT16;         /* 12 B (negative-only) */
+        } else if (value >= 0 && value <= 0xFFFFFFFFLL) {
+          kind = OP_LOAD_CONST_UINT32;        /* 12 B */
+        } else if ((int64_t)(int32_t)value == value) {
+          kind = OP_LOAD_CONST_INT32;         /* 16 B (negative int32) */
         } else {
-          /* (Day 4 will insert UINT32 + INT32 variants here.) */
-          kind = OP_LOAD_CONST_INT;           /* 20 B fallback */
+          kind = OP_LOAD_CONST_INT;           /* 20 B (full int64) */
         }
         if (!emit_op(out_prog, kind, reg_index, 0, 0, value)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
