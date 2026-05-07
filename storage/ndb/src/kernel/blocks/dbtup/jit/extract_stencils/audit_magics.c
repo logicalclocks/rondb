@@ -99,12 +99,10 @@ static const struct {
   const char *magic_name;
   const char *stencil_name;
 } kMagicToStencil[] = {
-  { "MAGIC_LCI_DST",  "op_load_const_int"     },
+  /* Phase 4.5: LCI_DST / LRC_DST / LRC_COL / MV_DST / MV_SRC have
+   * migrated from wide to narrow encoding — their entries now live
+   * in kNarrowMagicToStencil[] below. Wide entries removed. */
   { "MAGIC_LCI_VAL",  "op_load_const_int"     },
-  { "MAGIC_LRC_DST",  "op_load_col_int"       },
-  { "MAGIC_LRC_COL",  "op_load_col_int"       },
-  { "MAGIC_MV_DST",   "op_mov_int_int"        },
-  { "MAGIC_MV_SRC",   "op_mov_int_int"        },
   { "MAGIC_ADD_DST",  "op_add_int_int"        },
   { "MAGIC_ADD_A",    "op_add_int_int"        },
   { "MAGIC_ADD_B",    "op_add_int_int"        },
@@ -137,6 +135,22 @@ static const struct {
 static const size_t kMagicToStencilLen =
     sizeof(kMagicToStencil) / sizeof(kMagicToStencil[0]);
 
+/* Phase 4.5: narrow magics declared by stencils. Each appears as a
+ * single-MOVZ (hw=0) instruction in its declaring stencil and zero
+ * times in any other stencil. */
+static const struct {
+  const char *magic_name;
+  const char *stencil_name;
+} kNarrowMagicToStencil[] = {
+  { "MAGIC_LCI_DST_NARROW", "op_load_const_int" },
+  { "MAGIC_LRC_DST_NARROW", "op_load_col_int"   },
+  { "MAGIC_LRC_COL_NARROW", "op_load_col_int"   },
+  { "MAGIC_MV_DST_NARROW",  "op_mov_int_int"    },
+  { "MAGIC_MV_SRC_NARROW",  "op_mov_int_int"    },
+};
+static const size_t kNarrowMagicToStencilLen =
+    sizeof(kNarrowMagicToStencil) / sizeof(kNarrowMagicToStencil[0]);
+
 static const char *expected_stencil_for(const char *magic_name) {
   for (size_t i = 0; i < kMagicToStencilLen; ++i) {
     if (strcmp(kMagicToStencil[i].magic_name, magic_name) == 0) {
@@ -145,6 +159,17 @@ static const char *expected_stencil_for(const char *magic_name) {
   }
   die("magic %s missing from kMagicToStencil[] — add an entry "
       "before declaring a new MAGIC_* in hole_kinds.h", magic_name);
+}
+
+static const char *expected_stencil_for_narrow(const char *magic_name) {
+  for (size_t i = 0; i < kNarrowMagicToStencilLen; ++i) {
+    if (strcmp(kNarrowMagicToStencil[i].magic_name, magic_name) == 0) {
+      return kNarrowMagicToStencil[i].stencil_name;
+    }
+  }
+  die("narrow magic %s missing from kNarrowMagicToStencil[] — add "
+      "an entry before declaring a new MAGIC_*_NARROW in hole_kinds.h",
+      magic_name);
 }
 
 /* ------------------------------------------------------------------ */
@@ -322,6 +347,67 @@ static int count_chain_matches_arm64(const uint8_t *bytes,
 }
 
 /* ------------------------------------------------------------------ */
+/* aarch64: count single-MOVZ instructions encoding `magic` in slot 0.*/
+/*                                                                    */
+/* Phase 4.5 narrow holes: the codegen pattern collapses a 64-bit     */
+/* 4-instruction movz/movk chain into a single MOVZ (hw=0) carrying   */
+/* a 16-bit immediate. The audit must verify that each declared       */
+/* narrow magic appears as exactly one such MOVZ in its declaring     */
+/* stencil and zero times in every other stencil.                     */
+/*                                                                    */
+/* We deliberately ignore movz instructions that are part of a        */
+/* longer chain — those are caught by count_chain_matches_arm64.      */
+/* A narrow MOVZ is identified as: hw==0 AND no immediately following */
+/* MOVK targeting the same Rd. (In practice: the volatile-store/load  */
+/* pattern emits a single MOVZ then a STRH/LDRH, so there is no       */
+/* trailing MOVK on Rd.)                                              */
+/*                                                                    */
+/* sf-agnostic: clang lowers `volatile uint16_t v = magic; return v;` */
+/* to a 32-bit MOVZ (0x52800000) since uint16_t fits in a w-reg —    */
+/* NOT the 64-bit MOVZ (0xD2800000) used for the wide chain pattern.  */
+/* Mask 0x7F800000 / 0x52800000 accepts both forms; mask              */
+/* 0x7F800000 / 0x72800000 likewise for the trailing-MOVK guard.      */
+/* ------------------------------------------------------------------ */
+
+static int count_narrow_matches_arm64(const uint8_t *bytes,
+                                       size_t n_bytes,
+                                       uint16_t magic) {
+  int count = 0;
+  for (size_t off = 0; off + 4 <= n_bytes; off += 4) {
+    uint32_t insn = (uint32_t)bytes[off]            |
+                    ((uint32_t)bytes[off + 1] << 8) |
+                    ((uint32_t)bytes[off + 2] << 16)|
+                    ((uint32_t)bytes[off + 3] << 24);
+
+    int is_movz = (insn & 0x7F800000) == 0x52800000;
+    if (!is_movz) continue;
+
+    uint32_t hw    = (insn >> 21) & 0x3;
+    uint32_t imm16 = (insn >> 5)  & 0xFFFF;
+    uint32_t Rd    = insn & 0x1F;
+
+    if (hw != 0)             continue;
+    if (imm16 != magic)      continue;
+
+    /* Reject if the next instruction is a MOVK targeting the same Rd
+     * — that would mean we're looking at the head of a wide chain,
+     * not a standalone narrow MOVZ. */
+    if (off + 8 <= n_bytes) {
+      uint32_t next = (uint32_t)bytes[off + 4]            |
+                      ((uint32_t)bytes[off + 5] << 8)     |
+                      ((uint32_t)bytes[off + 6] << 16)    |
+                      ((uint32_t)bytes[off + 7] << 24);
+      int next_is_movk = (next & 0x7F800000) == 0x72800000;
+      uint32_t next_Rd = next & 0x1F;
+      if (next_is_movk && next_Rd == Rd) continue;
+    }
+
+    count++;
+  }
+  return count;
+}
+
+/* ------------------------------------------------------------------ */
 /* x86_64: count 8-byte little-endian literal occurrences of `magic`. */
 /*                                                                    */
 /* Slides an 8-byte window across the stencil's bytes. With high-     */
@@ -345,6 +431,10 @@ static int count_literal_matches_x86(const uint8_t *bytes,
   }
   return count;
 }
+
+/* Narrow magics have no x86_64 audit: they are an aarch64-only
+ * codegen pattern, and a 16-bit literal scan on x86 has too high a
+ * collision rate (~n_bytes / 65536) to be a useful check. */
 
 /* ------------------------------------------------------------------ */
 /* main.                                                              */
@@ -377,8 +467,11 @@ int main(int argc, char **argv) {
   for (size_t k = 0; k < kHoleMagicTableLen; ++k) {
     (void)expected_stencil_for(kHoleMagicTable[k].name);  /* dies on miss */
   }
+  for (size_t k = 0; k < kHoleNarrowMagicTableLen; ++k) {
+    (void)expected_stencil_for_narrow(kHoleNarrowMagicTable[k].name);
+  }
 
-  /* Cross-check: every stencil declared as a target by the map
+  /* Cross-check: every stencil declared as a target by either map
    * actually appears in the parsed header. */
   for (size_t i = 0; i < kMagicToStencilLen; ++i) {
     int found = 0;
@@ -391,6 +484,22 @@ int main(int argc, char **argv) {
     if (!found && is_arm64) {
       die("expected stencil %s (declared by magic %s) not present in header",
           kMagicToStencil[i].stencil_name, kMagicToStencil[i].magic_name);
+    }
+  }
+  for (size_t i = 0; i < kNarrowMagicToStencilLen; ++i) {
+    int found = 0;
+    for (size_t j = 0; j < n_stencils; ++j) {
+      if (strcmp(stencils[j].name,
+                 kNarrowMagicToStencil[i].stencil_name) == 0) {
+        found = 1;
+        break;
+      }
+    }
+    if (!found && is_arm64) {
+      die("expected stencil %s (declared by narrow magic %s) not "
+          "present in header",
+          kNarrowMagicToStencil[i].stencil_name,
+          kNarrowMagicToStencil[i].magic_name);
     }
   }
 
@@ -423,6 +532,36 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "  ok: %s found %dx in %s (expected)\n",
                 m->name, count, stencils[i].name);
+      }
+    }
+  }
+
+  /* Phase 4.5 narrow magics: aarch64-only check. Each declared
+   * narrow magic must appear as a single MOVZ (hw=0) in its
+   * declaring stencil and zero times in any other stencil. */
+  if (is_arm64) {
+    for (size_t k = 0; k < kHoleNarrowMagicTableLen; ++k) {
+      const HoleNarrowMagicEntry *m = &kHoleNarrowMagicTable[k];
+      const char *expected_in = expected_stencil_for_narrow(m->name);
+
+      for (size_t i = 0; i < n_stencils; ++i) {
+        int count = count_narrow_matches_arm64(stencils[i].bytes,
+                                                stencils[i].n_bytes,
+                                                m->magic);
+        int expected =
+            (strcmp(stencils[i].name, expected_in) == 0) ? 1 : 0;
+
+        if (count != expected) {
+          fprintf(stderr,
+                  "  VIOLATION: %s in %s: expected %d, found %d "
+                  "(narrow MOVZ)\n",
+                  m->name, stencils[i].name, expected, count);
+          errors++;
+        } else if (count > 0) {
+          fprintf(stderr,
+                  "  ok: %s found %dx in %s (narrow MOVZ, expected)\n",
+                  m->name, count, stencils[i].name);
+        }
       }
     }
   }

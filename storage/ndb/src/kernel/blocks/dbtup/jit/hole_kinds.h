@@ -285,12 +285,11 @@ typedef struct {
 } HoleMagicEntry;
 
 static const HoleMagicEntry kHoleMagicTable[] = {
-  { MAGIC_LCI_DST,  HK_OP_A,        "MAGIC_LCI_DST"  },
+  /* MAGIC_LCI_DST removed in Phase 4.5 — now MAGIC_LCI_DST_NARROW
+   * (single MOVZ); see kHoleNarrowMagicTable below. */
   { MAGIC_LCI_VAL,  HK_OP_IMM,      "MAGIC_LCI_VAL"  },
-  { MAGIC_LRC_DST,  HK_OP_A,        "MAGIC_LRC_DST"  },
-  { MAGIC_LRC_COL,  HK_OP_B,        "MAGIC_LRC_COL"  },
-  { MAGIC_MV_DST,   HK_OP_A,        "MAGIC_MV_DST"   },
-  { MAGIC_MV_SRC,   HK_OP_B,        "MAGIC_MV_SRC"   },
+  /* MAGIC_LRC_DST / MAGIC_LRC_COL similarly migrated to narrow. */
+  /* MAGIC_MV_DST / MAGIC_MV_SRC similarly migrated to narrow. */
   { MAGIC_ADD_DST,  HK_OP_A,        "MAGIC_ADD_DST"  },
   { MAGIC_ADD_A,    HK_OP_B,        "MAGIC_ADD_A"    },
   { MAGIC_ADD_B,    HK_OP_C,        "MAGIC_ADD_B"    },
@@ -322,6 +321,37 @@ static const HoleMagicEntry kHoleMagicTable[] = {
 };
 static const size_t kHoleMagicTableLen =
     sizeof(kHoleMagicTable) / sizeof(kHoleMagicTable[0]);
+
+/* ------------------------------------------------------------------ */
+/* Phase 4.5 narrow-magic table — single-MOVZ holes on aarch64.       */
+/*                                                                    */
+/* The extractor's pass-3 narrow walk and the audit's narrow scan     */
+/* both consult this table. Magic values are 16-bit; the kind /       */
+/* width interpretation is the same as for kHoleMagicTable except     */
+/* width is implicitly 2 (single MOVZ instruction, 4 bytes per hole). */
+/*                                                                    */
+/* Append-only: new entries land at the bottom as more stencils       */
+/* migrate from the wide chain pattern to single-MOVZ.                */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+  uint16_t    magic;
+  uint8_t     kind;
+  const char *name;        /* informational, used in diagnostics */
+} HoleNarrowMagicEntry;
+
+static const HoleNarrowMagicEntry kHoleNarrowMagicTable[] = {
+  /* Phase 4.5 Day 1 smoke set. */
+  { MAGIC_LCI_DST_NARROW,  HK_OP_A,  "MAGIC_LCI_DST_NARROW"  },
+  { MAGIC_LRC_DST_NARROW,  HK_OP_A,  "MAGIC_LRC_DST_NARROW"  },
+  { MAGIC_LRC_COL_NARROW,  HK_OP_B,  "MAGIC_LRC_COL_NARROW"  },
+  { MAGIC_MV_DST_NARROW,   HK_OP_A,  "MAGIC_MV_DST_NARROW"   },
+  { MAGIC_MV_SRC_NARROW,   HK_OP_B,  "MAGIC_MV_SRC_NARROW"   },
+  /* Day 3 will append the remaining 25 entries as the rest of the
+   * stencils migrate. */
+};
+static const size_t kHoleNarrowMagicTableLen =
+    sizeof(kHoleNarrowMagicTable) / sizeof(kHoleNarrowMagicTable[0]);
 #endif /* NDB_JIT_HOLE_KINDS_NO_TABLE */
 
 #ifdef __cplusplus

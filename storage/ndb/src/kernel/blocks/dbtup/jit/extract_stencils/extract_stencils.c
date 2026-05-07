@@ -706,6 +706,59 @@ static ExtractedStencil extract_one_arm64(
     }
   }
 
+  /* Pass 3 (Phase 4.5): narrow-MOVZ holes.
+   *
+   * Each entry in kHoleNarrowMagicTable encodes a single MOVZ
+   * (hw=0) instruction carrying the low 16 bits of an operand.
+   * Walk the bytes again — for each MOVZ with hw=0, look up imm16
+   * in the narrow table. To avoid catching the head of a wide
+   * chain that pass-2 already claimed (or that fell through the
+   * 0xF check), require that the next instruction is NOT a MOVK
+   * targeting the same Rd. The audit uses the identical guard.
+   *
+   * sf-agnostic: clang lowers `volatile uint16_t v = magic; return v;`
+   * to a 32-bit MOVZ (0x52800000) since uint16_t fits in a w-reg —
+   * NOT the 64-bit MOVZ (0xD2800000) used for the wide chain pattern.
+   * Mask 0x7F800000 / 0x52800000 accepts both forms. */
+  for (uint16_t off = 0; off + 4 <= out.n_bytes; off += 4) {
+    const uint8_t *p = out.bytes + off;
+    uint32_t insn = (uint32_t)p[0]        |
+                    ((uint32_t)p[1] << 8) |
+                    ((uint32_t)p[2] << 16)|
+                    ((uint32_t)p[3] << 24);
+
+    int is_movz = (insn & 0x7F800000) == 0x52800000;
+    if (!is_movz) continue;
+
+    uint32_t hw    = (insn >> 21) & 0x3;
+    uint32_t imm16 = (insn >> 5)  & 0xFFFF;
+    uint32_t Rd    = insn & 0x1F;
+    if (hw != 0) continue;
+
+    if (off + 8 <= out.n_bytes) {
+      const uint8_t *q = out.bytes + off + 4;
+      uint32_t next = (uint32_t)q[0]        |
+                      ((uint32_t)q[1] << 8) |
+                      ((uint32_t)q[2] << 16)|
+                      ((uint32_t)q[3] << 24);
+      int next_is_movk = (next & 0x7F800000) == 0x72800000;
+      uint32_t next_Rd = next & 0x1F;
+      if (next_is_movk && next_Rd == Rd) continue;
+    }
+
+    for (size_t k = 0; k < kHoleNarrowMagicTableLen; ++k) {
+      if (kHoleNarrowMagicTable[k].magic == imm16) {
+        uint8_t kind = kHoleNarrowMagicTable[k].kind;
+        /* width=2 marks a narrow MOVZ hole: only the bottom 16
+         * bits of the operand value are baked in, and the engine's
+         * slot counter for `kind` advances by exactly one (matches
+         * patch_operand's slot=0 path naturally). */
+        add_hole(&out.holes, off, kind, 2);
+        break;
+      }
+    }
+  }
+
   qsort(out.holes.holes, out.holes.n_holes, sizeof(Hole), hole_cmp);
   return out;
 }
