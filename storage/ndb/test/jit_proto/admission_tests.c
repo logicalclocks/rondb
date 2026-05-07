@@ -209,6 +209,39 @@ static void build_branch_oor_gt(Program *p) {
   p->ops[2] = (Op){ .kind = OP_EXIT };
 }
 
+/* Cold-call null-check branches must also pass admission target
+ * validation — their stencils carry HK_BRANCH_TAKE so a malformed
+ * op->c would fault during patching otherwise. One builder per
+ * kind, all using backward (op.c < pc) which the simplest reject
+ * shape. */
+static void build_backward_branch_attr_eq(Program *p) {
+  memset(p, 0, sizeof(*p));
+  p->n_ops = 2;
+  p->ops[0] = (Op){ .kind = OP_BRANCH_ATTR_EQ_NULL, .a = 0, .b = /*attr*/0, .c = 0 };
+  p->ops[1] = (Op){ .kind = OP_EXIT };
+}
+
+static void build_backward_branch_attr_ne(Program *p) {
+  memset(p, 0, sizeof(*p));
+  p->n_ops = 2;
+  p->ops[0] = (Op){ .kind = OP_BRANCH_ATTR_NE_NULL, .a = 0, .b = /*attr*/0, .c = 0 };
+  p->ops[1] = (Op){ .kind = OP_EXIT };
+}
+
+static void build_backward_branch_linked_eq(Program *p) {
+  memset(p, 0, sizeof(*p));
+  p->n_ops = 2;
+  p->ops[0] = (Op){ .kind = OP_BRANCH_LINKED_EQ_NULL, .c = 0 };
+  p->ops[1] = (Op){ .kind = OP_EXIT };
+}
+
+static void build_backward_branch_linked_ne(Program *p) {
+  memset(p, 0, sizeof(*p));
+  p->n_ops = 2;
+  p->ops[0] = (Op){ .kind = OP_BRANCH_LINKED_NE_NULL, .c = 0 };
+  p->ops[1] = (Op){ .kind = OP_EXIT };
+}
+
 /* Op with kind=0 (admission rejects). */
 static void build_invalid_kind_zero(Program *p) {
   memset(p, 0, sizeof(*p));
@@ -332,6 +365,42 @@ static void test_branch_oor_gt(NdbJitArena *arena) {
                    /*pc=*/1, /*target=*/99, /*kind=*/OP_BRANCH_LT_INT_INT);
 }
 
+static void test_backward_branch_attr_eq(NdbJitArena *arena) {
+  Program p;
+  build_backward_branch_attr_eq(&p);
+  assert_rejected(arena, &p, "T13 backward_branch_attr_eq",
+                   JIT_ADMIT_BACKWARD_BRANCH,
+                   /*pc=*/0, /*target=*/0,
+                   /*kind=*/OP_BRANCH_ATTR_EQ_NULL);
+}
+
+static void test_backward_branch_attr_ne(NdbJitArena *arena) {
+  Program p;
+  build_backward_branch_attr_ne(&p);
+  assert_rejected(arena, &p, "T14 backward_branch_attr_ne",
+                   JIT_ADMIT_BACKWARD_BRANCH,
+                   /*pc=*/0, /*target=*/0,
+                   /*kind=*/OP_BRANCH_ATTR_NE_NULL);
+}
+
+static void test_backward_branch_linked_eq(NdbJitArena *arena) {
+  Program p;
+  build_backward_branch_linked_eq(&p);
+  assert_rejected(arena, &p, "T15 backward_branch_linked_eq",
+                   JIT_ADMIT_BACKWARD_BRANCH,
+                   /*pc=*/0, /*target=*/0,
+                   /*kind=*/OP_BRANCH_LINKED_EQ_NULL);
+}
+
+static void test_backward_branch_linked_ne(NdbJitArena *arena) {
+  Program p;
+  build_backward_branch_linked_ne(&p);
+  assert_rejected(arena, &p, "T16 backward_branch_linked_ne",
+                   JIT_ADMIT_BACKWARD_BRANCH,
+                   /*pc=*/0, /*target=*/0,
+                   /*kind=*/OP_BRANCH_LINKED_NE_NULL);
+}
+
 /* The expensive one: prove a reject doesn't grow the arena. We need
  * a fresh arena for this so the "before" reading is the empty-arena
  * baseline (a previous accept would muddy it). */
@@ -392,6 +461,10 @@ int main(void) {
   test_backward_branch(arena);
   test_branch_oor_eq(arena);
   test_branch_oor_gt(arena);
+  test_backward_branch_attr_eq(arena);
+  test_backward_branch_attr_ne(arena);
+  test_backward_branch_linked_eq(arena);
+  test_backward_branch_linked_ne(arena);
 
   ndb_jit_arena_destroy(arena);
 

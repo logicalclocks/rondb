@@ -34,8 +34,8 @@ ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
    * dispatch path is broken — fail fast. ndbrequire requires a
    * JAM context only available inside blocks, so we use direct
    * null-checks + abort here. */
-  if (ctx == nullptr || ctx->block_tup == nullptr ||
-      ctx->req_struct == nullptr) {
+  if (ctx == nullptr || ctx->agg == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
     g_eventLogger->error(
         "ndb_jit_h_load_col: JitState.ctx is malformed (col_id=%u)",
         col_id);
@@ -104,8 +104,8 @@ ndb_jit_h_branch_attr_null(JitState *s,
                             uint32_t attr_id,
                             uint32_t want_null) {
   auto *ctx = static_cast<dbtup_jit_call_ctx *>(s->ctx);
-  if (ctx == nullptr || ctx->block_tup == nullptr ||
-      ctx->req_struct == nullptr) {
+  if (ctx == nullptr || ctx->agg == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
     g_eventLogger->error(
         "ndb_jit_h_branch_attr_null: JitState.ctx is malformed "
         "(attr_id=%u)", attr_id);
@@ -148,8 +148,8 @@ ndb_jit_h_branch_attr_null(JitState *s,
 extern "C" void
 ndb_jit_h_read_linked_to_mem(JitState *s, uint32_t position) {
   auto *ctx = static_cast<dbtup_jit_call_ctx *>(s->ctx);
-  if (ctx == nullptr || ctx->block_tup == nullptr ||
-      ctx->req_struct == nullptr) {
+  if (ctx == nullptr || ctx->agg == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
     g_eventLogger->error(
         "ndb_jit_h_read_linked_to_mem: JitState.ctx is malformed "
         "(position=%u)", position);
@@ -171,7 +171,8 @@ ndb_jit_h_read_linked_to_mem(JitState *s, uint32_t position) {
 extern "C" int
 ndb_jit_h_branch_linked_null(JitState *s, uint32_t want_null) {
   auto *ctx = static_cast<dbtup_jit_call_ctx *>(s->ctx);
-  if (ctx == nullptr || ctx->block_tup == nullptr) {
+  if (ctx == nullptr || ctx->agg == nullptr ||
+      ctx->block_tup == nullptr) {
     g_eventLogger->error(
         "ndb_jit_h_branch_linked_null: JitState.ctx is malformed");
     abort();
@@ -205,7 +206,7 @@ extern "C" void dbtup_jit_register_helpers(void) {
 /* Per-row dispatch.                                                  */
 /* ------------------------------------------------------------------ */
 
-Int32 dbtup_jit_invoke(JoinAggInterpreter * /*agg*/,
+Int32 dbtup_jit_invoke(JoinAggInterpreter *agg,
                        Dbtup *block_tup,
                        Dbtup::KeyReqStruct *req_struct,
                        JitEntry            entry_fn,
@@ -215,7 +216,7 @@ Int32 dbtup_jit_invoke(JoinAggInterpreter * /*agg*/,
    * at this; helpers consult it during the JIT'd code's execution
    * and never retain pointers into it. */
   dbtup_jit_call_ctx ctx;
-  ctx.agg        = nullptr;   /* unused on Phase 4's cold-call path */
+  ctx.agg        = agg;
   ctx.block_tup  = block_tup;
   ctx.req_struct = req_struct;
 

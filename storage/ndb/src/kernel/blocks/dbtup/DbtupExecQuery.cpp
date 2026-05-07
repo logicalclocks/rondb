@@ -1079,35 +1079,79 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
 /* Phase 5.1a: shared linked-attr buffer walk used by both the NDB
  * interpreter's READ_LINKED_TO_MEM handler and the JIT cold-call
  * helper ndb_jit_h_read_linked_to_mem. Single source of truth so
- * the two paths can't drift on the buffer layout. */
+ * the two paths can't drift on the buffer layout.
+ *
+ * Hardened against malformed input: every header dereference is
+ * preceded by a bounds check; the final payload copy is bounded
+ * by both source extent and destination capacity. Any failure
+ * writes a NULL AttributeHeader and returns — same observable
+ * behavior as a missing entry. */
 void Dbtup::readLinkedToMemBuffer(const Uint32 *linked,
                                     Uint32 linked_len,
                                     Uint32 position,
-                                    Uint32 *dest) {
+                                    Uint32 *dest,
+                                    Uint32 dest_words) {
+  /* Helper: write a NULL AttributeHeader at dest[0] if there's
+   * room, and return. Caller is expected to provide dest_words ≥ 1
+   * so this branch is always safe in the well-behaved case;
+   * defensively skip the write if not. */
+  auto write_null_ah = [&]() {
+    if (likely(dest_words >= 1)) {
+      AttributeHeader null_ah(0, 0);
+      dest[0] = null_ah.m_value;
+    }
+  };
+
   if (unlikely(linked == nullptr)) {
-    AttributeHeader null_ah(0, 0);
-    dest[0] = null_ah.m_value;
+    write_null_ah();
     return;
   }
 
   const Uint32 *p = linked;
   const Uint32 *p_end = linked + linked_len;
   Uint32 pos_count = 0;
-  while (p < p_end) {
-    if (pos_count == position) break;
-    p += 2;  // skip tableId, schemaVersion
-    p += 1 + AttributeHeader::getDataSize(*p);
+  /* Skip-loop walks past entries 0..position-1. Each entry is
+   * { tableId, schemaVersion, AttrHeader, data... } — minimum 3
+   * words. Validate p+2 is in-range BEFORE dereferencing *(p+2)
+   * for the AttrHeader-derived size. */
+  while (pos_count < position) {
+    if (unlikely(p + 2 >= p_end)) {
+      /* Truncated entry — no AttrHeader word to read. */
+      write_null_ah();
+      return;
+    }
+    Uint32 entry_words = 2 + 1 + AttributeHeader::getDataSize(p[2]);
+    if (unlikely(entry_words < 3) ||
+        unlikely(p + entry_words > p_end)) {
+      /* Underflowed (impossible with the +3 base, but defensive
+       * against signed-arith assumptions) or entry payload runs
+       * past the buffer. */
+      write_null_ah();
+      return;
+    }
+    p += entry_words;
     pos_count++;
   }
-  if (unlikely(p >= p_end)) {
-    AttributeHeader null_ah(0, 0);
-    dest[0] = null_ah.m_value;
+
+  /* p now points at the requested entry's tableId. Validate the
+   * AttrHeader is in-range. */
+  if (unlikely(p + 2 >= p_end)) {
+    write_null_ah();
     return;
   }
 
-  // Skip tableId and schemaVersion, copy AttrHeader + data
+  /* Skip tableId + schemaVersion. The remaining bytes are
+   * { AttrHeader, data... }. */
   p += 2;
   Uint32 words = 1 + AttributeHeader::getDataSize(*p);
+  if (unlikely(words < 1) ||
+      unlikely(p + words > p_end) ||
+      unlikely(words > dest_words)) {
+    /* Source overrun OR destination overflow. Either is a
+     * caller / data bug — fail closed with NULL AH. */
+    write_null_ah();
+    return;
+  }
   memcpy(dest, p, words * sizeof(Uint32));
 }
 
@@ -7453,10 +7497,16 @@ struct Dbtup::InterpreterContext {
   static inline int handleReadLinkedToMem(InterpreterContext& ctx) {
     ctx.RnoOfInstructions += 3;
     Uint32 position = (ctx.theInstruction >> 16) & 0xFF;
+    /* Destination capacity = ZATTR_BUFFER_SIZE Uint32 words.
+     * TheapMemoryChar points at &cheapMemory[0] which is sized
+     * ZATTR_BUFFER_SIZE + 16; the +16 is structural padding so
+     * the conservative bound for caller-visible writes is
+     * ZATTR_BUFFER_SIZE. */
     Dbtup::readLinkedToMemBuffer(ctx.req_struct->m_linked_attr_data,
                                   ctx.req_struct->m_linked_attr_len,
                                   position,
-                                  (Uint32*)&ctx.TheapMemoryChar[0]);
+                                  (Uint32*)&ctx.TheapMemoryChar[0],
+                                  ZATTR_BUFFER_SIZE);
     return INTERP_CONTINUE;
   }
 

@@ -130,7 +130,10 @@ typedef enum {
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch
- * via op->c. Phase 3 set is the six BRANCH_*_INT_INT siblings. */
+ * via op->c. Includes the six BRANCH_*_INT_INT siblings (Phase 3) and
+ * the four cold-call null-check branches (Phase 5.0/5.1a) whose
+ * stencils carry an HK_BRANCH_TAKE hole. Admission validates op->c
+ * is forward-and-in-range for every kind listed here. */
 static inline int bc_op_is_branch(uint8_t kind) {
   switch (kind) {
     case OP_BRANCH_LT_INT_INT:
@@ -139,6 +142,10 @@ static inline int bc_op_is_branch(uint8_t kind) {
     case OP_BRANCH_GT_INT_INT:
     case OP_BRANCH_GE_INT_INT:
     case OP_BRANCH_NE_INT_INT:
+    case OP_BRANCH_ATTR_EQ_NULL:
+    case OP_BRANCH_ATTR_NE_NULL:
+    case OP_BRANCH_LINKED_EQ_NULL:
+    case OP_BRANCH_LINKED_NE_NULL:
       return 1;
     default:
       return 0;

@@ -124,10 +124,15 @@ class JoinAggInterpreter : public AggInterpreterBase {
   void readLinkedToMemForJit(Dbtup *block_tup,
                               Dbtup::KeyReqStruct *req_struct,
                               Uint32 position) {
+    /* Destination capacity = ZATTR_BUFFER_SIZE words. cheapMemory
+     * is sized ZATTR_BUFFER_SIZE + 16; the +16 is structural
+     * padding so the conservative bound matches the interpreter
+     * caller in DbtupExecQuery.cpp. */
     Dbtup::readLinkedToMemBuffer(req_struct->m_linked_attr_data,
                                   req_struct->m_linked_attr_len,
                                   position,
-                                  &block_tup->cheapMemory[0]);
+                                  &block_tup->cheapMemory[0],
+                                  ZATTR_BUFFER_SIZE);
   }
 
   Uint32 cheapMemoryHeaderForJit(Dbtup *block_tup) {

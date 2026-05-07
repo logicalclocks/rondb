@@ -370,12 +370,12 @@ static void test_embedded_attr_oor_reject(void) {
 
 /* T15: embedded block too large — must reject. */
 static void test_embedded_too_large_reject(void) {
-  /* Allocate 257 words of embedded body (exceeds BR_EMB_MAX_LEN=256).
+  /* Allocate 1025 words of embedded body (exceeds BR_EMB_MAX_LEN=1024).
    * The bridge rejects before scanning the body, so word values
    * don't matter. */
-  static uint32_t prog[1 + 257];
+  static uint32_t prog[1 + 1025];
   memset(prog, 0, sizeof(prog));
-  prog[0] = enc_op(kOpEmbeddedInterp, /*emb_len=*/257);
+  prog[0] = enc_op(kOpEmbeddedInterp, /*emb_len=*/1025);
   assert_rejected("T15 embedded_too_large_reject",
                    prog, sizeof(prog) / sizeof(prog[0]),
                    JIT_BRIDGE_EMBEDDED_TOO_LARGE,

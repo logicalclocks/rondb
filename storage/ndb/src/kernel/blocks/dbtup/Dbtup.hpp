@@ -3429,15 +3429,23 @@ private:
    * copy AttributeHeader + data into `dest` (typically
    * cheapMemory[0]). Linked-buffer format per entry:
    *   [tableId, schemaVersion, AttrHeader, data...]
-   * If the buffer is null or position is out of range, writes a
-   * NULL AttributeHeader at dest[0]. Used by both the NDB
-   * interpreter's handleReadLinkedToMem and the JIT helper
-   * ndb_jit_h_read_linked_to_mem so the two paths share one
-   * source of truth. */
+   *
+   * Defensive against malformed input: validates each entry's
+   * header word and payload length is within `linked_len`, and
+   * the destination copy is bounded by `dest_words`. On any
+   * malformation (truncated entry, out-of-range position, oversized
+   * payload, null buffer), writes a NULL AttributeHeader at dest[0]
+   * and returns. dest_words must be ≥ 1 for the NULL-AH fallback
+   * to be safe.
+   *
+   * Used by both the NDB interpreter's handleReadLinkedToMem and
+   * the JIT helper ndb_jit_h_read_linked_to_mem so the two paths
+   * share one source of truth. */
   static void readLinkedToMemBuffer(const Uint32 *linked,
                                      Uint32 linked_len,
                                      Uint32 position,
-                                     Uint32 *dest);
+                                     Uint32 *dest,
+                                     Uint32 dest_words);
 
   // Read only PK attributes, without AttributeHeader.
   // Optinally xfrm'ing the key in preparation for hash

@@ -124,10 +124,12 @@
 #define BR_EMB_BRANCH_LINKED_EQ_NULL 41
 #define BR_EMB_BRANCH_LINKED_NE_NULL 42
 
-/* Phase 5.0 cap: embedded blocks ≥ 256 words reject. Larger blocks
- * are statistically rare in real queries and Phase 5.1+ can extend
- * the per-block emb_pc tracking (currently 8-bit indexable). */
-#define BR_EMB_MAX_LEN              256
+/* Cap on embedded-block length. Larger blocks reject and the program
+ * falls back to the interpreter. The cap bounds two stack arrays:
+ * `emb_pc_to_op_idx[BR_EMB_MAX_LEN]` (1 byte/entry — output Op index
+ * for each embedded pc) and the per-branch fixup machinery, both
+ * sized at compile time. */
+#define BR_EMB_MAX_LEN              1024
 
 /* ------------------------------------------------------------------ */
 /* Helpers.                                                           */
@@ -188,8 +190,11 @@ static inline int emit_op(Program *out, uint8_t kind,
 /* pc) with the corresponding output Op index.                        */
 /* ------------------------------------------------------------------ */
 
-/* Marker stored in op->c for branches whose target needs fixup. */
-#define BR_EMB_TARGET_FIXUP_BIT 0x80
+/* Sentinel for `pending_target_emb_pc[]` slots that don't need
+ * fixup (i.e., the emitted Op is not a branch from this embedded
+ * block). 0xFFFF can never be a real emb_pc because BR_EMB_MAX_LEN
+ * is 1024. */
+#define BR_EMB_NO_PENDING_FIXUP     0xFFFFu
 
 static JitBridgeReason translate_embedded_block(
     const uint32_t *emb_prog, uint32_t emb_len,
@@ -212,9 +217,25 @@ static JitBridgeReason translate_embedded_block(
   /* emb_pc → out_op_idx mapping. Initialised to 0xFF (= "no op
    * emitted at this pc" — happens for embedded-pcs strictly inside
    * a multi-word instruction's body, and for EXIT_OK which emits no
-   * Op). */
+   * Op). The stored value is bounded by BC_MAX_OPS so 1 byte is
+   * enough; the array is indexed by emb_pc so it scales with
+   * BR_EMB_MAX_LEN. */
   uint8_t emb_pc_to_op_idx[BR_EMB_MAX_LEN];
   memset(emb_pc_to_op_idx, 0xFF, sizeof(emb_pc_to_op_idx));
+
+  /* Side-array carrying the target embedded-pc for each Op this
+   * block emits. Indexed by absolute output Op index (0..n_ops-1).
+   * Slots set to BR_EMB_NO_PENDING_FIXUP for non-branch Ops or Ops
+   * emitted before this block — pass 2 ignores those. We store the
+   * full uint16_t emb_pc instead of stuffing it into op->c, so
+   * target pcs ≥ 128 don't collide with any reserved bit (bug fixed
+   * 2026-05: prior code OR'd 0x80 into op->c, losing bit 7 for any
+   * target_emb_pc ≥ 128). */
+  uint16_t pending_target_emb_pc[BC_MAX_OPS];
+  for (uint16_t i = 0; i < BC_MAX_OPS; ++i) {
+    pending_target_emb_pc[i] = BR_EMB_NO_PENDING_FIXUP;
+  }
+  uint16_t first_op_idx_at_entry = (uint16_t)out_prog->n_ops;
 
   /* Pass 1: linear walk, emit Ops with target_emb_pc in c. */
   uint32_t emb_pc = 0;
@@ -279,13 +300,13 @@ static JitBridgeReason translate_embedded_block(
             (emb_op == BR_EMB_BRANCH_ATTR_EQ_NULL)
                 ? OP_BRANCH_ATTR_EQ_NULL
                 : OP_BRANCH_ATTR_NE_NULL;
-        /* Stash target_emb_pc in c with the FIXUP bit set so the
-         * pass-2 walk knows to remap it. The fixup bit is
-         * dropped after remap. */
-        uint8_t c_marker =
-            (uint8_t)(target_emb_pc | BR_EMB_TARGET_FIXUP_BIT);
+        /* Record the target_emb_pc in the side-array indexed by
+         * the Op's absolute output index. Pass 2 will remap to the
+         * final output Op index. op->c is left at 0 here — it gets
+         * populated in pass 2. */
+        pending_target_emb_pc[out_op_idx] = (uint16_t)target_emb_pc;
         if (!emit_op(out_prog, out_kind, /*a=*/0,
-                     (uint8_t)attr_id, c_marker, 0)) {
+                     (uint8_t)attr_id, /*c=*/0, 0)) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
             out_err->offending_word = outer_word_pos + 1 + emb_pc;
@@ -355,10 +376,9 @@ static JitBridgeReason translate_embedded_block(
             (emb_op == BR_EMB_BRANCH_LINKED_EQ_NULL)
                 ? OP_BRANCH_LINKED_EQ_NULL
                 : OP_BRANCH_LINKED_NE_NULL;
-        uint8_t c_marker =
-            (uint8_t)(target_emb_pc | BR_EMB_TARGET_FIXUP_BIT);
+        pending_target_emb_pc[out_op_idx] = (uint16_t)target_emb_pc;
         if (!emit_op(out_prog, out_kind, /*a=*/0, /*b=*/0,
-                     c_marker, 0)) {
+                     /*c=*/0, 0)) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
             out_err->offending_word = outer_word_pos + 1 + emb_pc;
@@ -408,22 +428,12 @@ static JitBridgeReason translate_embedded_block(
     }
   }
 
-  /* Pass 2: fix up branch targets. Walk the Ops we emitted in this
-   * call and remap c (target_emb_pc) → out_op_idx. The
-   * BR_EMB_TARGET_FIXUP_BIT distinguishes a fixup-pending c from a
-   * legitimate c value; we strip it on remap. */
-  uint16_t embedded_block_first_op_idx = 0;
-  /* (We could record the first-op-idx-of-this-embedded-block at
-   * entry; for Phase 5.0 the embedded block is always emitted
-   * starting at the call site, but a defensive walk over all newly-
-   * added Ops works too — let pass 1's caller pass us
-   * out_prog->n_ops at entry.) */
-  (void)embedded_block_first_op_idx;
-  for (uint16_t i = 0; i < out_prog->n_ops; ++i) {
-    Op *op = &out_prog->ops[i];
-    if (!(op->c & BR_EMB_TARGET_FIXUP_BIT)) continue;
-    uint32_t target_emb_pc =
-        (uint32_t)(op->c & ~(uint8_t)BR_EMB_TARGET_FIXUP_BIT);
+  /* Pass 2: fix up branch targets. Only walk Ops emitted by THIS
+   * embedded block (i.e., from first_op_idx_at_entry to n_ops).
+   * pending_target_emb_pc[] tells us which slots need fixup. */
+  for (uint16_t i = first_op_idx_at_entry; i < out_prog->n_ops; ++i) {
+    uint16_t target_emb_pc = pending_target_emb_pc[i];
+    if (target_emb_pc == BR_EMB_NO_PENDING_FIXUP) continue;
     if (target_emb_pc >= emb_len) {
       /* Caught at admission, but defensive. */
       if (out_err) {
@@ -452,7 +462,7 @@ static JitBridgeReason translate_embedded_block(
       }
       return JIT_BRIDGE_UNSUPPORTED_OP;
     }
-    op->c = target_op_idx;
+    out_prog->ops[i].c = target_op_idx;
   }
   return JIT_BRIDGE_OK;
 }
