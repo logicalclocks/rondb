@@ -106,6 +106,24 @@
 #define BR_NDB_TYPE_BIGINT  9
 
 /* ------------------------------------------------------------------ */
+/* Embedded-interpreter opcodes (mirror of                            */
+/* storage/ndb/include/kernel/Interpreter.hpp constants — Phase 5.0   */
+/* admits only a small subset).                                       */
+/* ------------------------------------------------------------------ */
+
+#define BR_EMB_BRANCH                3   /* unconditional forward jump */
+#define BR_EMB_EXIT_OK               5
+#define BR_EMB_EXIT_REFUSE           6
+#define BR_EMB_EXIT_OK_LAST         22
+#define BR_EMB_BRANCH_ATTR_EQ_NULL  24
+#define BR_EMB_BRANCH_ATTR_NE_NULL  25
+
+/* Phase 5.0 cap: embedded blocks ≥ 256 words reject. Larger blocks
+ * are statistically rare in real queries and Phase 5.1+ can extend
+ * the per-block emb_pc tracking (currently 8-bit indexable). */
+#define BR_EMB_MAX_LEN              256
+
+/* ------------------------------------------------------------------ */
 /* Helpers.                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -139,6 +157,225 @@ static inline int emit_op(Program *out, uint8_t kind,
   op->c    = c;
   op->imm  = imm;
   return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Embedded normal-interpreter block translation (Phase 5.0).         */
+/*                                                                    */
+/* Walks the inner NDB-bytecode words emitted after kOpEmbeddedInterp's*/
+/* header word. Phase 5.0 admits a very narrow opcode set:             */
+/*                                                                    */
+/*   BRANCH_ATTR_EQ_NULL  → OP_BRANCH_ATTR_EQ_NULL                    */
+/*   BRANCH_ATTR_NE_NULL  → OP_BRANCH_ATTR_NE_NULL                    */
+/*   EXIT_OK / EXIT_OK_LAST → no Op (fall through to outer program)   */
+/*   EXIT_REFUSE          → OP_EXIT (early-terminate the JIT'd row)   */
+/*                                                                    */
+/* Every other embedded opcode rejects the WHOLE program. The         */
+/* admission contract: if Phase 5.0 can't handle every opcode in the  */
+/* embedded block, it doesn't try to handle any — partial coverage    */
+/* would be unsafe (we'd silently miss filter conditions).            */
+/*                                                                    */
+/* Branch target translation: the embedded block has its own pc-      */
+/* space (0..emb_len-1). We track each instruction's output Op index  */
+/* in emb_pc_to_op_idx[]. After the linear walk, a fixup pass walks   */
+/* the emitted Ops and replaces their temporary `c` (= target embedded*/
+/* pc) with the corresponding output Op index.                        */
+/* ------------------------------------------------------------------ */
+
+/* Marker stored in op->c for branches whose target needs fixup. */
+#define BR_EMB_TARGET_FIXUP_BIT 0x80
+
+static JitBridgeReason translate_embedded_block(
+    const uint32_t *emb_prog, uint32_t emb_len,
+    Program *out_prog, JitBridgeError *out_err,
+    uint32_t outer_word_pos /* for error reporting */) {
+
+  if (emb_len == 0) {
+    /* Empty embedded block — equivalent to "always pass". */
+    return JIT_BRIDGE_OK;
+  }
+  if (emb_len > BR_EMB_MAX_LEN) {
+    if (out_err) {
+      out_err->reason         = JIT_BRIDGE_EMBEDDED_TOO_LARGE;
+      out_err->offending_word = outer_word_pos;
+      out_err->offending_op   = BR_kOpEmbeddedInterp;
+    }
+    return JIT_BRIDGE_EMBEDDED_TOO_LARGE;
+  }
+
+  /* emb_pc → out_op_idx mapping. Initialised to 0xFF (= "no op
+   * emitted at this pc" — happens for embedded-pcs strictly inside
+   * a multi-word instruction's body, and for EXIT_OK which emits no
+   * Op). */
+  uint8_t emb_pc_to_op_idx[BR_EMB_MAX_LEN];
+  memset(emb_pc_to_op_idx, 0xFF, sizeof(emb_pc_to_op_idx));
+
+  /* Pass 1: linear walk, emit Ops with target_emb_pc in c. */
+  uint32_t emb_pc = 0;
+  while (emb_pc < emb_len) {
+    uint32_t inst = emb_prog[emb_pc];
+    /* NDB normal-interpreter opcode encoding (different from the
+     * aggregation interpreter's bits 31..26 layout): bits 5..0 +
+     * (bit 15 << 6), per Interpreter::getOpCode. Branch direction
+     * and length stay at bit 31 and bits 30..16. */
+    uint8_t  emb_op = (uint8_t)((inst & 0x3Fu) |
+                                (((inst >> 15) & 0x1u) << 6));
+    uint8_t  out_op_idx = (uint8_t)out_prog->n_ops;
+
+    emb_pc_to_op_idx[emb_pc] = out_op_idx;
+
+    switch (emb_op) {
+      case BR_EMB_BRANCH_ATTR_EQ_NULL:
+      case BR_EMB_BRANCH_ATTR_NE_NULL: {
+        /* 2-word instruction. Word 0 has branch_offset in
+         * bits 30..16; bit 31 = direction (0=forward; we
+         * reject backward). Word 1 has attrId in bits 31..16. */
+        if (emb_pc + 2 > emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        uint32_t direction = inst >> 31;
+        if (direction != 0) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_EMBEDDED_BACKWARD;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_EMBEDDED_BACKWARD;
+        }
+        uint32_t branch_length = (inst >> 16) & 0x7FFFu;
+        uint32_t target_emb_pc = emb_pc + branch_length;
+        if (target_emb_pc >= emb_len) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+        uint32_t inst2 = emb_prog[emb_pc + 1];
+        uint32_t attr_id = (inst2 >> 16) & 0xFFFFu;
+        if (attr_id > 255) {
+          /* Phase 5.0 narrow scope — same restriction as
+           * op_load_col_ndb. attr_ids ≥ 256 reject the program. */
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_REG_OUT_OF_RANGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc + 1;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        uint8_t out_kind =
+            (emb_op == BR_EMB_BRANCH_ATTR_EQ_NULL)
+                ? OP_BRANCH_ATTR_EQ_NULL
+                : OP_BRANCH_ATTR_NE_NULL;
+        /* Stash target_emb_pc in c with the FIXUP bit set so the
+         * pass-2 walk knows to remap it. The fixup bit is
+         * dropped after remap. */
+        uint8_t c_marker =
+            (uint8_t)(target_emb_pc | BR_EMB_TARGET_FIXUP_BIT);
+        if (!emit_op(out_prog, out_kind, /*a=*/0,
+                     (uint8_t)attr_id, c_marker, 0)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        emb_pc += 2;
+        break;
+      }
+
+      case BR_EMB_EXIT_OK:
+      case BR_EMB_EXIT_OK_LAST: {
+        /* Phase 5.0: EXIT_OK = "row passes the filter" =
+         * fall through to outer program's accumulator updates.
+         * Emit no Op. The mapping entry stays at 0xFF — but
+         * since no later branch can target this pc (we're at a
+         * fall-through point), that's fine. */
+        emb_pc += 1;
+        break;
+      }
+
+      case BR_EMB_EXIT_REFUSE: {
+        /* Phase 5.0: EXIT_REFUSE = "row rejected" = early-
+         * terminate the JIT'd function (skip accumulators).
+         * OP_EXIT's stencil is the function-return sequence,
+         * so executing it stops row processing immediately. */
+        if (!emit_op(out_prog, OP_EXIT, 0, 0, 0, 0)) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_PROG_TOO_LARGE;
+        }
+        emb_pc += 1;
+        break;
+      }
+
+      default:
+        if (out_err) {
+          out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+          out_err->offending_word = outer_word_pos + 1 + emb_pc;
+          out_err->offending_op   = emb_op;
+        }
+        return JIT_BRIDGE_UNSUPPORTED_OP;
+    }
+  }
+
+  /* Pass 2: fix up branch targets. Walk the Ops we emitted in this
+   * call and remap c (target_emb_pc) → out_op_idx. The
+   * BR_EMB_TARGET_FIXUP_BIT distinguishes a fixup-pending c from a
+   * legitimate c value; we strip it on remap. */
+  uint16_t embedded_block_first_op_idx = 0;
+  /* (We could record the first-op-idx-of-this-embedded-block at
+   * entry; for Phase 5.0 the embedded block is always emitted
+   * starting at the call site, but a defensive walk over all newly-
+   * added Ops works too — let pass 1's caller pass us
+   * out_prog->n_ops at entry.) */
+  (void)embedded_block_first_op_idx;
+  for (uint16_t i = 0; i < out_prog->n_ops; ++i) {
+    Op *op = &out_prog->ops[i];
+    if (!(op->c & BR_EMB_TARGET_FIXUP_BIT)) continue;
+    uint32_t target_emb_pc =
+        (uint32_t)(op->c & ~(uint8_t)BR_EMB_TARGET_FIXUP_BIT);
+    if (target_emb_pc >= emb_len) {
+      /* Caught at admission, but defensive. */
+      if (out_err) {
+        out_err->reason         = JIT_BRIDGE_MALFORMED;
+        out_err->offending_word = outer_word_pos;
+        out_err->offending_op   = BR_kOpEmbeddedInterp;
+      }
+      return JIT_BRIDGE_MALFORMED;
+    }
+    uint8_t target_op_idx = emb_pc_to_op_idx[target_emb_pc];
+    if (target_op_idx == 0xFF) {
+      /* Branch into a non-emitted pc (e.g., the unused EXIT_OK
+       * slot). For Phase 5.0 we treat this as "fall-through to
+       * outer program" — the target becomes the next Op the
+       * outer translation emits after returning from the
+       * embedded block. We can't know that index yet, so set
+       * c to 0 and the JIT engine treats this as a fall-through
+       * via the trailing tail. */
+      /* TODO Phase 5.1: handle this more cleanly. For Phase
+       * 5.0's narrow scope (BRANCH_ATTR_NE_NULL → EXIT_REFUSE)
+       * this case shouldn't arise. Reject defensively. */
+      if (out_err) {
+        out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+        out_err->offending_word = outer_word_pos;
+        out_err->offending_op   = BR_kOpEmbeddedInterp;
+      }
+      return JIT_BRIDGE_UNSUPPORTED_OP;
+    }
+    op->c = target_op_idx;
+  }
+  return JIT_BRIDGE_OK;
 }
 
 /* ------------------------------------------------------------------ */
@@ -295,10 +532,26 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
         break;
       }
 
-      /* Everything else — including kOpEmbeddedInterp, kOpDiv*,
-       * kOpMod, all double / max / min / count variants, generic
-       * untyped kOpPlus / kOpSum, kOpSetRegNull, kOpSkip — is
-       * unsupported in Phase 4. Reject the entire program. */
+      case BR_kOpEmbeddedInterp: {
+        /* Phase 5.0: recurse into the embedded block. Header word
+         * has emb_len in low 16 bits; emb_len words of NDB normal-
+         * interpreter bytecode follow. */
+        uint32_t emb_len = word & 0xFFFFu;
+        if (pos + 1 + emb_len > n_words) {
+          set_err(out_err, JIT_BRIDGE_MALFORMED, this_pos, op);
+          return JIT_BRIDGE_MALFORMED;
+        }
+        JitBridgeReason rc = translate_embedded_block(
+            ndb_prog + pos + 1, emb_len, out_prog, out_err, this_pos);
+        if (rc != JIT_BRIDGE_OK) return rc;
+        pos += 1 + emb_len;
+        break;
+      }
+
+      /* Everything else — kOpDiv*, kOpMod, all double / max / min /
+       * count variants, generic untyped kOpPlus / kOpSum,
+       * kOpSetRegNull, kOpSkip — is unsupported. Reject the entire
+       * program. */
       default:
         set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
         return JIT_BRIDGE_UNSUPPORTED_OP;

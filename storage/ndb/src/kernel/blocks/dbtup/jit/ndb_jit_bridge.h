@@ -57,6 +57,8 @@ typedef enum {
   JIT_BRIDGE_PROG_TOO_LARGE  = 3,   /* > BC_MAX_OPS instructions translated */
   JIT_BRIDGE_MALFORMED       = 4,   /* truncated word stream */
   JIT_BRIDGE_REG_OUT_OF_RANGE = 5,  /* register index ≥ BC_MAX_REGS */
+  JIT_BRIDGE_EMBEDDED_TOO_LARGE = 6,/* embedded block exceeds Phase 5.0 cap */
+  JIT_BRIDGE_EMBEDDED_BACKWARD = 7, /* embedded block has a backward branch */
 } JitBridgeReason;
 
 typedef struct {

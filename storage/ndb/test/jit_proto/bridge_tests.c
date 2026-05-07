@@ -226,11 +226,19 @@ static void test_load_const_accept(void) {
   mark_pass("T4 load_const_accept");
 }
 
-/* T5: kOpEmbeddedInterp — must reject. */
+/* T5: kOpEmbeddedInterp with an unsupported embedded opcode —
+ * must reject. Phase 5.0 admits BRANCH_ATTR_EQ/NE_NULL + EXIT_OK
+ * + EXIT_REFUSE only; opcode 0 (kOpUnknown) inside the embedded
+ * block must reject the program. */
 static void test_embedded_interp_reject(void) {
-  uint32_t prog[1] = { enc_op(kOpEmbeddedInterp, 0) };
-  assert_rejected("T5 embedded_interp_reject", prog, 1,
-                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpEmbeddedInterp);
+  /* emb header word + 1 embedded word = unsupported opcode 0. */
+  uint32_t prog[2] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/1),
+    0u,                                /* embedded opcode 0 — bogus */
+  };
+  assert_rejected("T5 embedded_interp_reject", prog, 2,
+                   JIT_BRIDGE_UNSUPPORTED_OP, /*offending_word=*/1,
+                   /*offending_op=*/0);
 }
 
 /* T6: kOpDiv — must reject (no division support in Phase 4). */
@@ -274,6 +282,107 @@ static void test_set_reg_null_reject(void) {
                    JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpSetRegNull);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 5.0 — embedded interpreter call admission.                   */
+/* ------------------------------------------------------------------ */
+
+/* NDB normal-interpreter opcodes (mirror of Interpreter.hpp). */
+#define EMB_BRANCH_ATTR_EQ_NULL  24
+#define EMB_BRANCH_ATTR_NE_NULL  25
+#define EMB_EXIT_REFUSE           6
+
+/* Encode an embedded NDB normal-interpreter instruction.
+ * Opcode encoding (different from the aggregation interpreter):
+ *   bits 5..0 = opcode low 6 bits
+ *   bit 15    = opcode bit 6
+ * Branch encoding (BRANCH_ATTR_EQ_NULL etc.):
+ *   bit 31         = direction (0=forward)
+ *   bits 30..16    = branch_length
+ *   word 1 (next): attrId in bits 31..16 */
+static uint32_t enc_emb_op_word(uint32_t op, uint32_t lower) {
+  return (op & 0x3Fu) | (((op >> 6) & 0x1u) << 15) | lower;
+}
+static uint32_t enc_emb_branch_attr_null(uint32_t op, uint32_t branch_length) {
+  /* Direction bit cleared (forward); branch_length in bits 30..16. */
+  return enc_emb_op_word(op, (branch_length & 0x7FFFu) << 16);
+}
+static uint32_t enc_emb_attr_id(uint32_t attrId) {
+  return (attrId & 0xFFFFu) << 16;
+}
+
+/* T11: empty embedded block — should accept (no embedded ops emitted,
+ * outer prog gets just the trailing OP_EXIT). */
+static void test_embedded_empty_accept(void) {
+  uint32_t prog[1] = { enc_op(kOpEmbeddedInterp, /*emb_len=*/0) };
+  assert_accepted("T11 embedded_empty_accept", prog, 1,
+                   /*expected_n_ops=*/1);   /* just OP_EXIT */
+}
+
+/* T12: minimal `WHERE col IS NULL` shape:
+ *   embedded block:
+ *     0: BRANCH_ATTR_NE_NULL +2  (skip to EXIT_REFUSE)
+ *     1:   (operand word — attrId)
+ *     2: EXIT_REFUSE             (skip row)
+ *     -- fall-through after embedded block: row passes
+ * Expected: 2 JIT Ops (BRANCH_ATTR_NE_NULL + OP_EXIT) + trailing OP_EXIT
+ *           = 3 total. The branch's c field points at the EXIT op. */
+static void test_embedded_attr_ne_null_accept(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_NE_NULL, /*offset=*/2),
+    enc_emb_attr_id(/*attrId=*/1),
+    /* EXIT_REFUSE = single-word opcode in the embedded space. */
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_accepted("T12 embedded_attr_ne_null_accept", prog, 4,
+                   /*expected_n_ops=*/3);
+}
+
+/* T13: backward branch in embedded block — must reject.
+ * Direction bit (bit 31 of word 0) = 1. */
+static void test_embedded_backward_reject(void) {
+  uint32_t prog[3] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+    /* opcode (low 6 bits + bit 15) | direction<<31 | branch_length<<16. */
+    enc_emb_op_word(EMB_BRANCH_ATTR_EQ_NULL,
+                    (1u << 31) | (1u << 16)),
+    enc_emb_attr_id(/*attrId=*/1),
+  };
+  assert_rejected("T13 embedded_backward_reject", prog, 3,
+                   JIT_BRIDGE_EMBEDDED_BACKWARD,
+                   /*offending_word=*/1,
+                   /*offending_op=*/EMB_BRANCH_ATTR_EQ_NULL);
+}
+
+/* T14: attr_id > 255 — must reject (Phase 5.0 narrow scope). */
+static void test_embedded_attr_oor_reject(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_EQ_NULL, /*offset=*/2),
+    enc_emb_attr_id(/*attrId=*/1024),       /* exceeds 255 */
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_rejected("T14 embedded_attr_oor_reject", prog, 4,
+                   JIT_BRIDGE_REG_OUT_OF_RANGE,
+                   /*offending_word=*/2,
+                   /*offending_op=*/EMB_BRANCH_ATTR_EQ_NULL);
+}
+
+/* T15: embedded block too large — must reject. */
+static void test_embedded_too_large_reject(void) {
+  /* Allocate 257 words of embedded body (exceeds BR_EMB_MAX_LEN=256).
+   * The bridge rejects before scanning the body, so word values
+   * don't matter. */
+  static uint32_t prog[1 + 257];
+  memset(prog, 0, sizeof(prog));
+  prog[0] = enc_op(kOpEmbeddedInterp, /*emb_len=*/257);
+  assert_rejected("T15 embedded_too_large_reject",
+                   prog, sizeof(prog) / sizeof(prog[0]),
+                   JIT_BRIDGE_EMBEDDED_TOO_LARGE,
+                   /*offending_word=*/0,
+                   /*offending_op=*/kOpEmbeddedInterp);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -288,6 +397,11 @@ int main(void) {
   test_load_const_truncated_reject();
   test_reg_oor_reject();
   test_set_reg_null_reject();
+  test_embedded_empty_accept();
+  test_embedded_attr_ne_null_accept();
+  test_embedded_backward_reject();
+  test_embedded_attr_oor_reject();
+  test_embedded_too_large_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

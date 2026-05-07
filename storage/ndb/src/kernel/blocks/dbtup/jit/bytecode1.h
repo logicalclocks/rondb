@@ -111,7 +111,13 @@ typedef enum {
   OP_LOAD_CONST_INT16   = 18,   /* -32768..-1,      MOVZ + SXTH + STR (12 B) */
   OP_LOAD_CONST_UINT32  = 19,   /* 0..2^32-1,       MOVZ+MOVK + STR   (12 B) */
   OP_LOAD_CONST_INT32   = 20,   /* INT32_MIN..-2^15-1, +SXTW           (16 B) */
-  OP_KIND_MAX           = OP_LOAD_CONST_INT32
+  /* Phase 5.0 cold-call branches from embedded normal-interpreter
+   * blocks. Operand layout: a=0 (unused); b=attr_id (≤255);
+   * c=branch target pc (after bridge fixup). Two variants share
+   * one helper; eq/ne discrimination via the want_null flag. */
+  OP_BRANCH_ATTR_EQ_NULL = 21,
+  OP_BRANCH_ATTR_NE_NULL = 22,
+  OP_KIND_MAX           = OP_BRANCH_ATTR_NE_NULL
 } OpKind;
 
 /* Inline predicate — true for any opcode that takes a forward branch
