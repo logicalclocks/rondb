@@ -7400,6 +7400,13 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                   "comparisons are not yet supported — cast in the CTE "
                   "body or use a constant-vs-column comparison.");
 
+      require_prm(code.branch_linked_isnull(pos_l, fail_label) == 0,
+                  "CTE_LOOKUP filter col-vs-col: failed to emit left "
+                  "NULL guard.");
+      require_prm(code.branch_linked_isnull(pos_r, fail_label) == 0,
+                  "CTE_LOOKUP filter col-vs-col: failed to emit right "
+                  "NULL guard.");
+
       // Stage left into cheapMemory, copy to R1; stage right, copy to
       // R2; signed reg-vs-reg branch with the inverted operator so we
       // jump to fail_label when the SQL predicate is FALSE.  Data
@@ -7585,6 +7592,10 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     }
 
     raw_value rv = encode_constant(const_side, vtcol);
+
+    require_prm(code.branch_linked_isnull(position, fail_label) == 0,
+                "CTE_LOOKUP filter: failed to emit comparison NULL "
+                "guard.");
 
     // Canonicalise the operator so we can think of it as "col OP const".
     TokenKind eff_op = atom->op;

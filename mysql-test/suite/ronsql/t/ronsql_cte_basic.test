@@ -625,11 +625,9 @@ GROUP BY sums.k|
 --echo
 --echo === Test 20 (H.3): VARCHAR GB key + WHERE filter on it ===
 
-# Query contains a SQL single-quoted string literal.  ronsql_compare.inc's
-# QUERY-via-`-e` path mishandles embedded single quotes (shell breaks the
-# outer quoting).  Use the QUERY_FILE path instead — file content is read
-# with redirection, no shell escaping in play.  Same pattern as
-# `Short VARCHAR filter` in ronsql_basic.test.
+# Query contains a SQL single-quoted string literal.  Keep this case on
+# the QUERY_FILE path so both compare-helper entry points continue to
+# have string-literal coverage.
 
 --let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
 --write_file $QUERY_FILE

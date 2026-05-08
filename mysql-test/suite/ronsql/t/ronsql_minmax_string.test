@@ -139,14 +139,16 @@ JOIN str_groups AS g ON g.grp = s.grp|
 --echo
 --echo === Test 5: filter on string CTE output ===
 
-let $QUERY=
+--let QUERY_FILE=$MYSQL_TMP_DIR/ronsql-minmax-string-test5.sql
+--write_file $QUERY_FILE
 WITH s AS (
 SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v
 FROM str_minmax
 GROUP BY grp)
 SELECT grp, min_v, max_v
 FROM s
-WHERE min_v IS NOT NULL;|
+WHERE min_v < 'beta';
+EOF
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -157,7 +159,7 @@ FROM str_minmax
 GROUP BY grp)
 SELECT grp, min_v, max_v
 FROM s
-WHERE min_v IS NOT NULL|
+WHERE min_v < 'beta'|
 
 DELIMITER ;|
 

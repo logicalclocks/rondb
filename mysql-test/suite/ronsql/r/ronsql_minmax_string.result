@@ -125,7 +125,7 @@ FROM str_minmax
 GROUP BY grp)
 SELECT grp, min_v, max_v
 FROM s
-WHERE min_v IS NOT NULL;
+WHERE min_v < 'beta';
 
 Number of output lines, including header: 3
 
@@ -141,7 +141,7 @@ FROM str_minmax
 GROUP BY grp)
 SELECT grp, min_v, max_v
 FROM s
-WHERE min_v IS NOT NULL|
+WHERE min_v < 'beta'|
 grp	min_v	max_v
 10	alpha	delta
 20		echo
