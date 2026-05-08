@@ -559,6 +559,37 @@ static void test_embedded_linked_backward_reject(void) {
                    /*offending_op=*/EMB_BRANCH_LINKED_EQ_NULL);
 }
 
+/* T23: local-attribute branch target outside the embedded block must
+ * reject before any JIT admission/patching can see the malformed
+ * target. */
+static void test_embedded_attr_target_oor_reject(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_EQ_NULL, /*offset=*/3),
+    enc_emb_attr_id(/*attrId=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_rejected("T23 embedded_attr_target_oor_reject", prog, 4,
+                   JIT_BRIDGE_MALFORMED,
+                   /*offending_word=*/1,
+                   /*offending_op=*/EMB_BRANCH_ATTR_EQ_NULL);
+}
+
+/* T24: linked-null branch target outside the embedded block must
+ * reject with the same malformed-program reason. */
+static void test_embedded_linked_target_oor_reject(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_read_linked_to_mem(/*position=*/0),
+    enc_emb_branch_linked_null(EMB_BRANCH_LINKED_NE_NULL, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_rejected("T24 embedded_linked_target_oor_reject", prog, 4,
+                   JIT_BRIDGE_MALFORMED,
+                   /*offending_word=*/2,
+                   /*offending_op=*/EMB_BRANCH_LINKED_NE_NULL);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -585,6 +616,8 @@ int main(void) {
   test_embedded_linked_ne_null_accept();
   test_embedded_linked_eq_null_accept();
   test_embedded_linked_backward_reject();
+  test_embedded_attr_target_oor_reject();
+  test_embedded_linked_target_oor_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;
