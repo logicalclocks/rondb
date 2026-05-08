@@ -59,6 +59,7 @@
  * state. It produces a Program; the caller chains to jit1_compile.
  */
 
+#define NDB_JIT_BRIDGE_TESTING 1
 #include "ndb_jit_bridge.h"
 
 #include <stdio.h>
@@ -131,6 +132,7 @@
  * for each embedded pc) and the per-branch fixup machinery, both
  * sized at compile time. */
 #define BR_EMB_MAX_LEN              1024
+#define BR_MAX_LOCAL_ATTR_ID        4095
 
 /* ------------------------------------------------------------------ */
 /* Helpers.                                                           */
@@ -326,7 +328,7 @@ static inline int64_t read_int64_le(const uint32_t *prog, uint32_t pos) {
 /* Append an Op to out_prog, returning 1 on success, 0 if the
  * program is full. */
 static inline int emit_op(Program *out, uint8_t kind,
-                          uint8_t a, uint8_t b, uint8_t c, int64_t imm) {
+                          uint8_t a, uint16_t b, uint16_t c, int64_t imm) {
   if (out->n_ops >= BC_MAX_OPS) return 0;
   Op *op = &out->ops[out->n_ops++];
   op->kind = kind;
@@ -468,9 +470,11 @@ static JitBridgeReason translate_embedded_block(
         }
         uint32_t inst2 = emb_prog[emb_pc + 1];
         uint32_t attr_id = (inst2 >> 16) & 0xFFFFu;
-        if (attr_id > 255) {
-          /* Phase 5.0 narrow scope — same restriction as
-           * op_load_col_ndb. attr_ids ≥ 256 reject the program. */
+        if (attr_id > BR_MAX_LOCAL_ATTR_ID) {
+          /* Phase 5.0 narrow scope: BRANCH_ATTR_*_NULL reads local
+           * table columns only. Linked attributes are handled by
+           * READ_LINKED_TO_MEM + BRANCH_LINKED_*_NULL, and pseudo
+           * columns are outside this lowering. */
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_REG_OUT_OF_RANGE;
             out_err->offending_word = outer_word_pos + 1 + emb_pc + 1;
@@ -488,7 +492,7 @@ static JitBridgeReason translate_embedded_block(
          * populated in pass 2. */
         pending_target_emb_pc[out_op_idx] = (uint16_t)target_emb_pc;
         if (!emit_op(out_prog, out_kind, /*a=*/0,
-                     (uint8_t)attr_id, /*c=*/0, 0)) {
+                     (uint16_t)attr_id, /*c=*/0, 0)) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_PROG_TOO_LARGE;
             out_err->offending_word = outer_word_pos + 1 + emb_pc;
@@ -647,6 +651,22 @@ static JitBridgeReason translate_embedded_block(
     out_prog->ops[i].c = target_op_idx;
   }
   return JIT_BRIDGE_OK;
+}
+
+JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
+    const uint32_t *emb_prog,
+    uint32_t       emb_len,
+    Program       *out_prog,
+    JitBridgeError *out_err,
+    uint32_t       outer_word_pos) {
+  memset(out_prog, 0, sizeof(*out_prog));
+  if (out_err != NULL) {
+    out_err->reason = JIT_BRIDGE_OK;
+    out_err->offending_word = 0;
+    out_err->offending_op = 0;
+  }
+  return translate_embedded_block(emb_prog, emb_len, out_prog, out_err,
+                                  outer_word_pos);
 }
 
 /* ------------------------------------------------------------------ */

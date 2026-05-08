@@ -89,6 +89,15 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
                                           Program       *out_prog,
                                           JitBridgeError *out_err);
 
+#ifdef NDB_JIT_BRIDGE_TESTING
+JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
+    const uint32_t *emb_prog,
+    uint32_t       emb_len,
+    Program       *out_prog,
+    JitBridgeError *out_err,
+    uint32_t       outer_word_pos);
+#endif
+
 /* Diagnostic helpers shared by DBLQH setup logging and unit tests.
  * The dump functions emit one already-formatted line per callback
  * invocation; callers decide whether that goes to g_eventLogger,
