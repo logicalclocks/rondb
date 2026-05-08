@@ -45,6 +45,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__GNUC__) && !defined(__clang__)
+#define JIT_PROTO_PRINTF_ATTR(fmt_pos, arg_pos) \
+  __attribute__((format(gnu_printf, fmt_pos, arg_pos)))
+#else
+#define JIT_PROTO_PRINTF_ATTR(fmt_pos, arg_pos) \
+  __attribute__((format(printf, fmt_pos, arg_pos)))
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Harness state.                                                     */
 /* ------------------------------------------------------------------ */
@@ -57,6 +65,8 @@ static void mark_pass(const char *name) {
   n_pass++;
 }
 
+static void mark_fail(const char *name, const char *fmt, ...)
+    JIT_PROTO_PRINTF_ATTR(2, 3);
 static void mark_fail(const char *name, const char *fmt, ...) {
   printf("  FAIL  %s — ", name);
   va_list ap;
