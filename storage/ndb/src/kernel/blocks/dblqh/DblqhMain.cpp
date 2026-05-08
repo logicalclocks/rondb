@@ -19064,6 +19064,56 @@ emitCteLinkedAggSlot(const JoinAggInterpreter *interp,
   return true;
 }
 
+static bool
+emitCteOutputAggSlot(const JoinAggInterpreter *interp,
+                     const AggResItem &item,
+                     Uint32 aggIdx,
+                     Uint32 attrId,
+                     Uint32 *outBuf,
+                     Uint32 &outPos,
+                     Uint32 maxWords) {
+  Uint32 typeId = item.type;
+  if (typeId == NDB_TYPE_UNDEFINED) typeId = NDB_TYPE_BIGINT;
+
+  if (item.is_null) {
+    if (outPos + 1 > maxWords) {
+      return false;
+    }
+    AttributeHeader::init(&outBuf[outPos], attrId, 0);
+    outPos += 1;
+    return true;
+  }
+
+  if (isStringAggType(typeId)) {
+    const StringResult *stringResults = interp->string_results();
+    if (stringResults == nullptr || item.value.val_ptr == nullptr) {
+      return false;
+    }
+
+    const StringResult &slot = stringResults[aggIdx];
+    const char *buf = static_cast<const char*>(item.value.val_ptr);
+    const Uint16 payloadLen = *reinterpret_cast<const Uint16*>(buf);
+    const Uint32 byteSize = slot.prefix_bytes + payloadLen;
+    const Uint32 dataWords = (byteSize + 3) >> 2;
+    if (outPos + 1 + dataWords > maxWords) {
+      return false;
+    }
+    AttributeHeader::init(&outBuf[outPos], attrId, byteSize);
+    memset(&outBuf[outPos + 1], 0, dataWords * sizeof(Uint32));
+    memcpy(&outBuf[outPos + 1], buf + 4, byteSize);
+    outPos += 1 + dataWords;
+    return true;
+  }
+
+  if (outPos + 3 > maxWords) {
+    return false;
+  }
+  AttributeHeader::init(&outBuf[outPos], attrId, 8);
+  memcpy(&outBuf[outPos + 1], &item.value, 8);
+  outPos += 3;
+  return true;
+}
+
 /**
  * buildCteLinkedBuffer — assemble linked_attr_data for a CTE group row.
  *
@@ -19335,6 +19385,7 @@ retry_agg:
  */
 Int32 Dblqh::emitCteGroupOutput(Signal *signal,
                                  const CteOutputParams &params,
+                                 const JoinAggInterpreter *interp,
                                  const char *groupData, Uint32 keyLen,
                                  const Uint32 *finalR, Uint32 finalRLen,
                                  Uint32 n_gb_cols, Uint32 n_agg_results,
@@ -19433,26 +19484,14 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
         outPos += 1;
       }
     } else if (attrId < n_gb_cols + n_agg_results) {
-      /* Aggregate result — convert AggResItem to column data (8 bytes) */
+      /* Aggregate result — convert AggResItem to column data. */
       jam();
       const Uint32 aggIdx = attrId - n_gb_cols;
       const AggResItem &item = accumulators[aggIdx];
-
-      if (item.is_null) {
-        if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) {
-          jam();
-          return -1;
-        }
-        AttributeHeader::init(&outBuf[outPos], attrId, 0);
-        outPos += 1;
-      } else {
-        if (unlikely(outPos + 3 > ZATTR_BUFFER_SIZE)) {
-          jam();
-          return -1;
-        }
-        AttributeHeader::init(&outBuf[outPos], attrId, 8);
-        memcpy(&outBuf[outPos + 1], &item.value, 8);
-        outPos += 3;
+      if (!emitCteOutputAggSlot(interp, item, aggIdx, attrId,
+                                outBuf, outPos, ZATTR_BUFFER_SIZE)) {
+        jam();
+        return -1;
       }
     } else {
       /* Unknown attribute ID — write NULL */
@@ -19511,7 +19550,8 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
 
   Uint32 *outBuf = cevictBuffer;
   const Uint32 *finalR = &cinBuf[finalRStart];
-  Int32 outPos = emitCteGroupOutput(signal, params, groupData, req.keyLen,
+  Int32 outPos = emitCteGroupOutput(signal, params, interp,
+                                    groupData, req.keyLen,
                                     finalR, finalRLen,
                                     n_gb_cols, n_agg_results,
                                     accumulators, outBuf);
@@ -20287,7 +20327,8 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         params.corrRootRcvr = req.resultData;
         params.useFlushAiFromFinalR = false;
 
-        Int32 outPos = emitCteGroupOutput(signal, params, groupData, keyLen,
+        Int32 outPos = emitCteGroupOutput(signal, params, interp,
+                                          groupData, keyLen,
                                           finalR, finalRLen,
                                           n_gb_cols, n_agg_results,
                                           accumulators, outBuf);
@@ -20403,7 +20444,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       params.corrRootRcvr = req.resultData;
       params.useFlushAiFromFinalR = false;
 
-      Int32 outPos = emitCteGroupOutput(signal, params,
+      Int32 outPos = emitCteGroupOutput(signal, params, interp,
                                         nullptr, 0,
                                         finalR, finalRLen,
                                         0, n_agg_results,

@@ -3410,6 +3410,7 @@ private:
   };
   Int32 emitCteGroupOutput(Signal* signal,
                            const CteOutputParams &params,
+                           const JoinAggInterpreter *interp,
                            const char *groupData, Uint32 keyLen,
                            const Uint32 *finalR, Uint32 finalRLen,
                            Uint32 n_gb_cols, Uint32 n_agg_results,
