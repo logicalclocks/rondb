@@ -284,8 +284,8 @@ static void test_embedded_interp_reject(void) {
     0u,                                /* embedded opcode 0 — bogus */
   };
   assert_rejected("T7 embedded_interp_reject", prog, 2,
-                   JIT_BRIDGE_UNSUPPORTED_OP, /*offending_word=*/1,
-                   /*offending_op=*/0);
+                   JIT_BRIDGE_UNSUPPORTED_OP, /*offending_word=*/0,
+                   /*offending_op=*/kOpEmbeddedInterp);
 }
 
 /* T8: kOpDiv — must reject (no division support in Phase 4). */
@@ -369,12 +369,13 @@ static uint32_t enc_emb_read_linked_to_mem(uint32_t position) {
                          (position & 0xFFu) << 16);
 }
 
-/* T13: empty embedded block — should accept (no embedded ops emitted,
- * outer prog gets just the trailing OP_EXIT). */
+/* T13: embedded blocks currently fall back. The JIT per-row ABI has no
+ * row-reject signal yet, so compiling EXIT_REFUSE filters would return
+ * rows that the SQL layer's pushed_cond recheck rejects. */
 static void test_embedded_empty_accept(void) {
   uint32_t prog[1] = { enc_op(kOpEmbeddedInterp, /*emb_len=*/0) };
-  assert_accepted("T13 embedded_empty_accept", prog, 1,
-                   /*expected_n_ops=*/1);   /* just OP_EXIT */
+  assert_rejected("T13 embedded_empty_reject", prog, 1,
+                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpEmbeddedInterp);
 }
 
 /* T14: minimal `WHERE col IS NULL` shape:
@@ -393,8 +394,8 @@ static void test_embedded_attr_ne_null_accept(void) {
     /* EXIT_REFUSE = single-word opcode in the embedded space. */
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
-  assert_accepted("T14 embedded_attr_ne_null_accept", prog, 4,
-                   /*expected_n_ops=*/3);
+  assert_rejected("T14 embedded_attr_ne_null_reject", prog, 4,
+                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpEmbeddedInterp);
 }
 
 /* T15: backward branch in embedded block — must reject.
@@ -408,9 +409,7 @@ static void test_embedded_backward_reject(void) {
     enc_emb_attr_id(/*attrId=*/1),
   };
   assert_rejected("T15 embedded_backward_reject", prog, 3,
-                   JIT_BRIDGE_EMBEDDED_BACKWARD,
-                   /*offending_word=*/1,
-                   /*offending_op=*/EMB_BRANCH_ATTR_EQ_NULL);
+                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpEmbeddedInterp);
 }
 
 /* T16/T17: embedded BRANCH_ATTR_*_NULL has the same current 8-bit
@@ -422,24 +421,8 @@ static void test_embedded_attr_255_accept(void) {
     enc_emb_attr_id(/*attrId=*/255),
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
-  Program p;
-  JitBridgeError err;
-  JitBridgeReason r = ndb_jit_bridge_translate(prog, 4, &p, &err);
-  if (r != JIT_BRIDGE_OK) {
-    mark_fail("T16 embedded_attr_255_accept",
-              "expected OK, got reason=%d (offending_word=%u op=%u)",
-              r, err.offending_word, err.offending_op);
-    return;
-  }
-  if (p.n_ops != 3 ||
-      p.ops[0].kind != OP_BRANCH_ATTR_EQ_NULL ||
-      p.ops[0].b != 255 ||
-      p.ops[0].c != 1) {
-    mark_fail("T16 embedded_attr_255_accept",
-              "unexpected translated branch op");
-    return;
-  }
-  mark_pass("T16 embedded_attr_255_accept");
+  assert_rejected("T16 embedded_attr_255_reject", prog, 4,
+                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpEmbeddedInterp);
 }
 
 static void test_embedded_attr_256_reject(void) {
@@ -450,9 +433,7 @@ static void test_embedded_attr_256_reject(void) {
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
   assert_rejected("T17 embedded_attr_256_reject", prog, 4,
-                   JIT_BRIDGE_REG_OUT_OF_RANGE,
-                   /*offending_word=*/2,
-                   /*offending_op=*/EMB_BRANCH_ATTR_EQ_NULL);
+                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpEmbeddedInterp);
 }
 
 /* T18: embedded BRANCH_ATTR_*_NULL must reject linked-flag attr ids
@@ -465,9 +446,7 @@ static void test_embedded_attr_linked_flag_reject(void) {
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
   assert_rejected("T18 embedded_attr_linked_flag_reject", prog, 4,
-                   JIT_BRIDGE_REG_OUT_OF_RANGE,
-                   /*offending_word=*/2,
-                   /*offending_op=*/EMB_BRANCH_ATTR_EQ_NULL);
+                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpEmbeddedInterp);
 }
 
 /* T19: embedded block too large — must reject. */
@@ -480,9 +459,7 @@ static void test_embedded_too_large_reject(void) {
   prog[0] = enc_op(kOpEmbeddedInterp, /*emb_len=*/1025);
   assert_rejected("T19 embedded_too_large_reject",
                    prog, sizeof(prog) / sizeof(prog[0]),
-                   JIT_BRIDGE_EMBEDDED_TOO_LARGE,
-                   /*offending_word=*/0,
-                   /*offending_op=*/kOpEmbeddedInterp);
+                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpEmbeddedInterp);
 }
 
 /* T20: Phase 5.1a linked null-check shape:
@@ -500,27 +477,8 @@ static void test_embedded_linked_ne_null_accept(void) {
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
 
-  Program p;
-  JitBridgeError err;
-  JitBridgeReason r = ndb_jit_bridge_translate(prog, 4, &p, &err);
-  if (r != JIT_BRIDGE_OK) {
-    mark_fail("T20 embedded_linked_ne_null_accept",
-              "expected OK, got reason=%d (offending_word=%u op=%u)",
-              r, err.offending_word, err.offending_op);
-    return;
-  }
-  if (p.n_ops != 4 ||
-      p.ops[0].kind != OP_LOAD_LINKED_TO_MEM ||
-      p.ops[0].b != 0 ||
-      p.ops[1].kind != OP_BRANCH_LINKED_NE_NULL ||
-      p.ops[1].c != 2 ||
-      p.ops[2].kind != OP_EXIT ||
-      p.ops[3].kind != OP_EXIT) {
-    mark_fail("T20 embedded_linked_ne_null_accept",
-              "unexpected translated program");
-    return;
-  }
-  mark_pass("T20 embedded_linked_ne_null_accept");
+  assert_rejected("T20 embedded_linked_ne_null_reject", prog, 4,
+                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpEmbeddedInterp);
 }
 
 /* T21: Phase 5.1a linked EQ-null branch accept path. */
@@ -532,27 +490,8 @@ static void test_embedded_linked_eq_null_accept(void) {
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
 
-  Program p;
-  JitBridgeError err;
-  JitBridgeReason r = ndb_jit_bridge_translate(prog, 4, &p, &err);
-  if (r != JIT_BRIDGE_OK) {
-    mark_fail("T21 embedded_linked_eq_null_accept",
-              "expected OK, got reason=%d (offending_word=%u op=%u)",
-              r, err.offending_word, err.offending_op);
-    return;
-  }
-  if (p.n_ops != 4 ||
-      p.ops[0].kind != OP_LOAD_LINKED_TO_MEM ||
-      p.ops[0].b != 255 ||
-      p.ops[1].kind != OP_BRANCH_LINKED_EQ_NULL ||
-      p.ops[1].c != 2 ||
-      p.ops[2].kind != OP_EXIT ||
-      p.ops[3].kind != OP_EXIT) {
-    mark_fail("T21 embedded_linked_eq_null_accept",
-              "unexpected translated program");
-    return;
-  }
-  mark_pass("T21 embedded_linked_eq_null_accept");
+  assert_rejected("T21 embedded_linked_eq_null_reject", prog, 4,
+                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpEmbeddedInterp);
 }
 
 /* T22: linked null-check backward branch must reject. */
@@ -564,9 +503,7 @@ static void test_embedded_linked_backward_reject(void) {
                     (1u << 31) | (1u << 16)),
   };
   assert_rejected("T22 embedded_linked_backward_reject", prog, 3,
-                   JIT_BRIDGE_EMBEDDED_BACKWARD,
-                   /*offending_word=*/2,
-                   /*offending_op=*/EMB_BRANCH_LINKED_EQ_NULL);
+                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpEmbeddedInterp);
 }
 
 /* T23: local-attribute branch target outside the embedded block must
@@ -580,9 +517,7 @@ static void test_embedded_attr_target_oor_reject(void) {
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
   assert_rejected("T23 embedded_attr_target_oor_reject", prog, 4,
-                   JIT_BRIDGE_MALFORMED,
-                   /*offending_word=*/1,
-                   /*offending_op=*/EMB_BRANCH_ATTR_EQ_NULL);
+                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpEmbeddedInterp);
 }
 
 /* T24: linked-null branch target outside the embedded block must
@@ -595,9 +530,7 @@ static void test_embedded_linked_target_oor_reject(void) {
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
   assert_rejected("T24 embedded_linked_target_oor_reject", prog, 4,
-                   JIT_BRIDGE_MALFORMED,
-                   /*offending_word=*/2,
-                   /*offending_op=*/EMB_BRANCH_LINKED_NE_NULL);
+                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpEmbeddedInterp);
 }
 
 int main(void) {

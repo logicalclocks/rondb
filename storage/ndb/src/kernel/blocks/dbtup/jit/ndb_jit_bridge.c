@@ -337,6 +337,18 @@ static inline int emit_op(Program *out, uint8_t kind,
   return 1;
 }
 
+static inline int embedded_filters_enabled(void) {
+  /* A compiled program currently has a void per-row ABI. OP_EXIT only
+   * returns from the JIT entry, after which dbtup_jit_invoke() reports
+   * success and writes accumulators back. That cannot express the
+   * normal interpreter's EXIT_REFUSE "reject this scan row" contract.
+   *
+   * Until JitState/dbtup_jit_invoke grows an explicit row-reject signal,
+   * embedded normal-interpreter filter blocks must fall back to the
+   * interpreter. */
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Embedded normal-interpreter block translation (Phase 5.0).         */
 /*                                                                    */
@@ -792,6 +804,10 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
       }
 
       case BR_kOpEmbeddedInterp: {
+        if (!embedded_filters_enabled()) {
+          set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
         /* Phase 5.0: recurse into the embedded block. Header word
          * has emb_len in low 16 bits; emb_len words of NDB normal-
          * interpreter bytecode follow. */
