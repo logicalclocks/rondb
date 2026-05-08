@@ -656,13 +656,15 @@ testSumGroupBy(Ndb *ndb, MYSQL *conn,
 /* ------------------------------------------------------------------ */
 
 static int
-testCountSum(Ndb *ndb, MYSQL *conn, Int64 expectedCount, Int64 expectedSum)
+testCountSumInternal(Ndb *ndb, MYSQL *conn, Int64 expectedCount,
+                     Int64 expectedSum, const char *testName,
+                     const char *okSuffix)
 {
-  printf("Test 2: COUNT(*), SUM(amount) ... ");
+  printf("%s ... ", testName);
   fflush(stdout);
 
   /* First verify expected results via MySQL */
-  if (verifyScalarWithMysql(conn, "Test 2",
+  if (verifyScalarWithMysql(conn, testName,
         "SELECT COUNT(*), SUM(amount) FROM jagg_parent "
         "JOIN jagg_child ON jagg_child.parent_id = jagg_parent.id",
         {expectedCount, expectedSum}) != 0) {
@@ -670,7 +672,9 @@ testCountSum(Ndb *ndb, MYSQL *conn, Int64 expectedCount, Int64 expectedSum)
     return -1;
   }
 
-  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(PARENT_TABLE);
+  dict->invalidateTable(CHILD_TABLE);
   const NdbDictionary::Table *parentTab = dict->getTable(PARENT_TABLE);
   const NdbDictionary::Table *childTab = dict->getTable(CHILD_TABLE);
   if (parentTab == nullptr || childTab == nullptr) {
@@ -789,8 +793,163 @@ testCountSum(Ndb *ndb, MYSQL *conn, Int64 expectedCount, Int64 expectedSum)
     return -1;
   }
 
-  printf("OK (count=%lld, sum=%lld)\n",
-         (long long)actualCount, (long long)actualSum);
+  printf("OK %s\n", okSuffix);
+  return 0;
+}
+
+static int
+testCountSum(Ndb *ndb, MYSQL *conn, Int64 expectedCount, Int64 expectedSum)
+{
+  char okSuffix[64];
+  snprintf(okSuffix, sizeof(okSuffix), "(count=%lld, sum=%lld)",
+           (long long)expectedCount, (long long)expectedSum);
+  return testCountSumInternal(ndb, conn, expectedCount, expectedSum,
+                              "Test 2: COUNT(*), SUM(amount)",
+                              okSuffix);
+}
+
+static int
+testJitMustCompileSum(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter,
+                      Int64 expectedSum)
+{
+  const char *testName = "Test 24: JIT must compile SUM local attr";
+  printf("%s ... ", testName);
+  fflush(stdout);
+
+  if (verifyScalarWithMysql(conn, testName,
+        "SELECT SUM(amount) FROM jagg_parent "
+        "JOIN jagg_child ON jagg_child.parent_id = jagg_parent.id",
+        {expectedSum}) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(PARENT_TABLE);
+  dict->invalidateTable(CHILD_TABLE);
+  const NdbDictionary::Table *parentTab = dict->getTable(PARENT_TABLE);
+  const NdbDictionary::Table *childTab = dict->getTable(CHILD_TABLE);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup)\n");
+    return -1;
+  }
+
+  NdbAggregator agg(childTab);
+  if (!agg.LoadColumn("amount", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  if (restarter.insertErrorInAllNodes(4060) != 0) {
+    printf("FAILED (insertErrorInAllNodes(4060))\n");
+    return -1;
+  }
+  bool mustCompileSet = true;
+  auto clearMustCompile = [&]() {
+    if (mustCompileSet) {
+      restarter.insertErrorInAllNodes(0);
+      mustCompileSet = false;
+      V("  ERROR_INSERT cleared\n");
+    }
+  };
+  V("\n  ERROR_INSERT 4060 set (JIT fallback is fatal)\n");
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"),
+    nullptr
+  };
+
+  NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
+  opts.setAggregation(agg);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    clearMustCompile();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: error %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    clearMustCompile();
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  clearMustCompile();
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result record)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+  Int64 actualSum = sumRes.data_int64();
+
+  NdbAggregator::ResultRecord rec2 = resultAgg->FetchResultRecord();
+  if (!rec2.end()) {
+    printf("FAILED (expected single record for non-GROUP-BY, got more)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (actualSum != expectedSum) {
+    printf("FAILED (SUM: expected %lld, got %lld)\n",
+           (long long)expectedSum, (long long)actualSum);
+    return -1;
+  }
+
+  printf("OK (sum=%lld, JIT required)\n", (long long)expectedSum);
   return 0;
 }
 
@@ -5869,6 +6028,7 @@ fakeOkLineForErrorInsertTest(int testNum)
     case 19: return "Test 19: Multi-fragment + eviction 5126 (2000 rows, 16 frags) ... OK (20 groups, multi-fragment eviction merge verified)";
     case 20: return "Test 20: SETUP_REF error handling (ERROR_INSERT 5125) ... OK (SETUP_REF handled, cleanup verified)";
     case 22: return "Test 22: COMPLETE_REF error handling (ERROR_INSERT 5124) ... OK (COMPLETE_REF handled, cleanup verified)";
+    case 24: return "Test 24: JIT must compile SUM local attr ... OK (sum=1500, JIT required)";
     default: return nullptr;
   }
 }
@@ -6328,6 +6488,17 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropTest18Tables(conn);
+        }
+        /* Test 24: JIT must compile local-attribute SUM */
+        if (shouldRun(24)) {
+          NdbRestarter restarter(connectString);
+          if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
+            if (testJitMustCompileSum(&ndb, conn, restarter, 1500) != 0)
+              exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTestTables(conn);
         }
 
         /* Test 24: aggregate lookup-rooted query def rejected */
