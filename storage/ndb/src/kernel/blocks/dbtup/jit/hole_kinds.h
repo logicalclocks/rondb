@@ -102,6 +102,7 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   /* op_sum_bigint */
   { "HOLE_SUM_SLOT", HK_OP_A   },
   { "HOLE_SUM_SRC",  HK_OP_B   },
+  { "HOLE_SUM_RESULT", HK_OP_C },
   /* op_branch_lt_int_int */
   { "HOLE_BLT_A",    HK_OP_A          },
   { "HOLE_BLT_B",    HK_OP_B          },
@@ -348,6 +349,7 @@ static const size_t kHoleSymbolTableLen =
 #define MAGIC_MUL_B_FOLD         0x5c6u
 #define MAGIC_SUM_SLOT_FOLD      0x08cu
 #define MAGIC_SUM_SRC_FOLD       0x6f0u
+#define MAGIC_SUM_RESULT_FOLD    0xb47u
 #define MAGIC_BLT_A_FOLD         0x707u
 #define MAGIC_BLT_B_FOLD         0x4f2u
 #define MAGIC_BLE_A_FOLD         0xa92u
@@ -470,6 +472,7 @@ static const HoleFoldMagicEntry kHoleFoldMagicTable[] = {
   { MAGIC_MUL_B_FOLD,         HK_OP_C,  "MAGIC_MUL_B_FOLD"         },
   { MAGIC_SUM_SLOT_FOLD,      HK_OP_A,  "MAGIC_SUM_SLOT_FOLD"      },
   { MAGIC_SUM_SRC_FOLD,       HK_OP_B,  "MAGIC_SUM_SRC_FOLD"       },
+  { MAGIC_SUM_RESULT_FOLD,    HK_OP_C,  "MAGIC_SUM_RESULT_FOLD"    },
   { MAGIC_BLT_A_FOLD,         HK_OP_A,  "MAGIC_BLT_A_FOLD"         },
   { MAGIC_BLT_B_FOLD,         HK_OP_B,  "MAGIC_BLT_B_FOLD"         },
   { MAGIC_BLE_A_FOLD,         HK_OP_A,  "MAGIC_BLE_A_FOLD"         },

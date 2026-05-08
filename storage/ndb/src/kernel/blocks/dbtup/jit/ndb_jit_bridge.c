@@ -686,6 +686,7 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
   }
 
   uint32_t pos = 0;
+  uint16_t agg_result_index = 0;
   while (pos < n_words) {
     uint32_t word = ndb_prog[pos];
     uint8_t  op   = (uint8_t)((word & 0xFC000000u) >> 26);
@@ -810,15 +811,17 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
       case BR_kOpSumBigint: {
         uint8_t  reg_index = (uint8_t)((word >> 16) & 0x0Fu);
         uint16_t agg_index = (uint16_t)(word & 0xFFFFu);
-        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS) {
+        if (reg_index >= BC_MAX_REGS || agg_index >= BC_MAX_ACCS ||
+            agg_result_index >= BC_MAX_ACCS) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
         if (!emit_op(out_prog, OP_SUM_BIGINT,
-                     (uint8_t)agg_index, reg_index, 0, 0)) {
+                     (uint8_t)agg_index, reg_index, agg_result_index, 0)) {
           set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
           return JIT_BRIDGE_PROG_TOO_LARGE;
         }
+        agg_result_index++;
         pos += 1;
         break;
       }

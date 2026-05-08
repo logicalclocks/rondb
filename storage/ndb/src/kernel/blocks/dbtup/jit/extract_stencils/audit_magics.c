@@ -199,6 +199,7 @@ static const struct {
   { "MAGIC_MUL_B_FOLD",       "op_mul_int_int",        1 },
   { "MAGIC_SUM_SLOT_FOLD",    "op_sum_bigint",         2 },  /* L+S */
   { "MAGIC_SUM_SRC_FOLD",     "op_sum_bigint",         1 },
+  { "MAGIC_SUM_RESULT_FOLD",  "op_sum_bigint",         1 },
   { "MAGIC_BLT_A_FOLD",       "op_branch_lt_int_int",  1 },
   { "MAGIC_BLT_B_FOLD",       "op_branch_lt_int_int",  1 },
   { "MAGIC_BLE_A_FOLD",       "op_branch_le_int_int",  1 },

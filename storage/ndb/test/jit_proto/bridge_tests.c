@@ -737,6 +737,34 @@ static void test_embedded_direct_attr_pseudo_reject(void) {
                            2, EMB_BRANCH_ATTR_EQ_NULL);
 }
 
+static void test_sum_result_indexes_accept(void) {
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+    enc_sum(/*reg=*/1, /*agg=*/1),
+  };
+
+  Program p;
+  JitBridgeError err;
+  JitBridgeReason r = ndb_jit_bridge_translate(prog, 4, &p, &err);
+  if (r != JIT_BRIDGE_OK) {
+    mark_fail("T34 sum_result_indexes_accept",
+              "expected OK, got reason=%d", r);
+    return;
+  }
+  if (p.n_ops != 5) {
+    mark_fail("T34 sum_result_indexes_accept",
+              "n_ops=%u, want 5", (unsigned)p.n_ops);
+    return;
+  }
+  if (!expect_op_field("T34 sum_result_indexes_accept", &p, 2,
+                       "c", p.ops[2].c, 0)) return;
+  if (!expect_op_field("T34 sum_result_indexes_accept", &p, 3,
+                       "c", p.ops[3].c, 1)) return;
+  mark_pass("T34 sum_result_indexes_accept");
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -774,6 +802,7 @@ int main(void) {
   test_embedded_direct_attr_linked_flag_reject();
   test_embedded_direct_attr_linked_last_reject();
   test_embedded_direct_attr_pseudo_reject();
+  test_sum_result_indexes_accept();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

@@ -72,6 +72,8 @@ typedef enum {
   OP_LOAD_COL_INT       = 2,
   OP_MOV_INT_INT        = 3,
   OP_ADD_INT_INT        = 4,
+  /* Operand layout: a=accumulator slot, b=source register,
+   * c=aggregation-result index. */
   OP_SUM_BIGINT         = 5,
   OP_BRANCH_LT_INT_INT  = 6,
   /* Phase 3 branch-comparison siblings — same operand layout as

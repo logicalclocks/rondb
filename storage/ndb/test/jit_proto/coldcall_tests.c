@@ -110,8 +110,8 @@ static void build_load_col_then_sum(Program *p, uint8_t col_id) {
   p->n_ops = 3;
   /* OP_LOAD_COL_NDB layout: a = dst register, c = col_id. */
   p->ops[0] = (Op){ .kind = OP_LOAD_COL_NDB, .a = 0, .c = col_id };
-  /* OP_SUM_BIGINT layout: a = acc slot, b = src register. */
-  p->ops[1] = (Op){ .kind = OP_SUM_BIGINT, .a = 0, .b = 0 };
+  /* OP_SUM_BIGINT layout: a = acc slot, b = src register, c = result index. */
+  p->ops[1] = (Op){ .kind = OP_SUM_BIGINT, .a = 0, .b = 0, .c = 0 };
   p->ops[2] = (Op){ .kind = OP_EXIT };
 }
 
@@ -188,6 +188,9 @@ static void test_single_row(void) {
     mark_fail("T2 single_row",
               "acc[0]=%" PRId64 ", want 70 (col_id 7 * 10)",
               s.acc_i64[0]);
+  } else if (s.value_updated[0] != 1) {
+    mark_fail("T2 single_row",
+              "value_updated[0]=%" PRIu64 ", want 1", s.value_updated[0]);
   } else {
     mark_pass("T2 single_row");
   }
@@ -220,6 +223,7 @@ static void test_multi_row(void) {
   for (int i = 0; i < 100; ++i) {
     /* Per-row: clear regs but carry acc. */
     memset(s.regs_i64, 0, sizeof(s.regs_i64));
+    memset(s.value_updated, 0, sizeof(s.value_updated));
     entry(&s);
   }
 
@@ -229,6 +233,9 @@ static void test_multi_row(void) {
     mark_fail("T3 multi_row",
               "acc[0]=%" PRId64 ", want %d (100 rows * 40/row)",
               s.acc_i64[0], 100 * 40);
+  } else if (s.value_updated[0] != 1) {
+    mark_fail("T3 multi_row",
+              "value_updated[0]=%" PRIu64 ", want 1", s.value_updated[0]);
   } else {
     mark_pass("T3 multi_row");
   }
@@ -256,7 +263,7 @@ static void test_coldcall_plus_arith(void) {
   p.ops[0] = (Op){ .kind = OP_LOAD_COL_NDB, .a = 0, .c = 5 };
   p.ops[1] = (Op){ .kind = OP_LOAD_COL_NDB, .a = 1, .c = 7 };
   p.ops[2] = (Op){ .kind = OP_ADD_INT_INT,  .a = 2, .b = 0, .c = 1 };
-  p.ops[3] = (Op){ .kind = OP_SUM_BIGINT,   .a = 0, .b = 2 };
+  p.ops[3] = (Op){ .kind = OP_SUM_BIGINT,   .a = 0, .b = 2, .c = 0 };
   p.ops[4] = (Op){ .kind = OP_EXIT };
 
   Jit1Prog *jp = jit1_compile(arena, &p, NULL);
@@ -281,13 +288,94 @@ static void test_coldcall_plus_arith(void) {
     mark_fail("T4 coldcall_plus_arith",
               "acc[0]=%" PRId64 ", want 120 (50 + 70)",
               s.acc_i64[0]);
+  } else if (s.value_updated[0] != 1) {
+    mark_fail("T4 coldcall_plus_arith",
+              "value_updated[0]=%" PRIu64 ", want 1", s.value_updated[0]);
   } else {
     mark_pass("T4 coldcall_plus_arith");
   }
   ndb_jit_arena_destroy(arena);
 }
 
-/* T5: registry idempotency + miss.
+/* T5: aggregation result update index is independent of the accumulator
+ * slot operand. This matches DBTUP writeback, which is ordered by result
+ * value rather than by whatever temporary slot the program used. */
+static void test_sum_marks_result_index(void) {
+  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 2;
+  p.ops[0] = (Op){ .kind = OP_SUM_BIGINT, .a = 0, .b = 1, .c = 2 };
+  p.ops[1] = (Op){ .kind = OP_EXIT };
+
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail("T5 sum_marks_result_index",
+              "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.regs_i64[1] = 17;
+  entry(&s);
+
+  if (s.acc_i64[0] != 17) {
+    mark_fail("T5 sum_marks_result_index",
+              "acc[0]=%" PRId64 ", want 17", s.acc_i64[0]);
+  } else if (s.value_updated[0] != 0 || s.value_updated[1] != 0 ||
+             s.value_updated[2] != 1 || s.value_updated[3] != 0) {
+    mark_fail("T5 sum_marks_result_index",
+              "updated={%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64
+              "}, want {0,0,1,0}",
+              s.value_updated[0], s.value_updated[1],
+              s.value_updated[2], s.value_updated[3]);
+  } else {
+    mark_pass("T5 sum_marks_result_index");
+  }
+  ndb_jit_arena_destroy(arena);
+}
+
+/* T6: a row that exits before any aggregate opcode must not mark any
+ * result value as updated. */
+static void test_exit_does_not_mark_result(void) {
+  NdbJitArena *arena = ndb_jit_arena_create(64 * 1024);
+
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 1;
+  p.ops[0] = (Op){ .kind = OP_EXIT };
+
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail("T6 exit_does_not_mark_result",
+              "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_arena_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  entry(&s);
+
+  for (uint32_t i = 0; i < BC_MAX_ACCS; i++) {
+    if (s.value_updated[i] != 0) {
+      mark_fail("T6 exit_does_not_mark_result",
+                "value_updated[%u]=%" PRIu64 ", want 0",
+                i, s.value_updated[i]);
+      ndb_jit_arena_destroy(arena);
+      return;
+    }
+  }
+  mark_pass("T6 exit_does_not_mark_result");
+  ndb_jit_arena_destroy(arena);
+}
+
+/* T7: registry idempotency + miss.
  *
  * Re-register the same helper under the same name → no-op (rc=0).
  * Lookup an unregistered helper → NULL. */
@@ -295,22 +383,22 @@ static void test_registry_basics(void) {
   /* Same helper, same name — should succeed. */
   if (jit1_register_helper("ndb_jit_h_load_col",
                             (JitHelperFn)&mock_load_col) != 0) {
-    mark_fail("T5 registry_basics",
+    mark_fail("T7 registry_basics",
               "re-register same name+fn returned non-zero");
     return;
   }
   if (jit1_lookup_helper("does_not_exist") != NULL) {
-    mark_fail("T5 registry_basics",
+    mark_fail("T7 registry_basics",
               "lookup of unregistered name returned non-NULL");
     return;
   }
   if (jit1_lookup_helper("ndb_jit_h_load_col") !=
       (JitHelperFn)&mock_load_col) {
-    mark_fail("T5 registry_basics",
+    mark_fail("T7 registry_basics",
               "lookup of registered name returned wrong fn");
     return;
   }
-  mark_pass("T5 registry_basics");
+  mark_pass("T7 registry_basics");
 }
 
 /* ------------------------------------------------------------------ */
@@ -334,6 +422,8 @@ int main(void) {
   test_single_row();
   test_multi_row();
   test_coldcall_plus_arith();
+  test_sum_marks_result_index();
+  test_exit_does_not_mark_result();
   test_registry_basics();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);

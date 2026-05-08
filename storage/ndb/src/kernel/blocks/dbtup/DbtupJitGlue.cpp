@@ -336,14 +336,16 @@ Int32 dbtup_jit_invoke(JoinAggInterpreter *agg,
   }
 #endif
 
-  /* Write accumulators back. The metadata fields (type,
-   * is_unsigned, is_null) are set even on first row so downstream
-   * result-emit code sees the right shape. */
+  /* Write accumulators back only for aggregate results updated by this
+   * row. Rejected rows leave NULL metadata intact for SUM/MIN/MAX
+   * semantics over an empty input. */
   for (Uint32 i = 0; i < n_agg_results; i++) {
-    agg_res_ptr[i].type        = NDB_TYPE_BIGINT;
-    agg_res_ptr[i].is_unsigned = false;
-    agg_res_ptr[i].is_null     = false;
-    agg_res_ptr[i].value.val_int64 = s.acc_i64[i];
+    if (s.value_updated[i] != 0) {
+      agg_res_ptr[i].type        = NDB_TYPE_BIGINT;
+      agg_res_ptr[i].is_unsigned = false;
+      agg_res_ptr[i].is_null     = false;
+      agg_res_ptr[i].value.val_int64 = s.acc_i64[i];
+    }
   }
 
   return 0;
