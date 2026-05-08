@@ -290,6 +290,9 @@ static void test_set_reg_null_reject(void) {
 #define EMB_BRANCH_ATTR_EQ_NULL  24
 #define EMB_BRANCH_ATTR_NE_NULL  25
 #define EMB_EXIT_REFUSE           6
+#define EMB_READ_LINKED_TO_MEM   39
+#define EMB_BRANCH_LINKED_EQ_NULL 41
+#define EMB_BRANCH_LINKED_NE_NULL 42
 
 /* Encode an embedded NDB normal-interpreter instruction.
  * Opcode encoding (different from the aggregation interpreter):
@@ -306,8 +309,17 @@ static uint32_t enc_emb_branch_attr_null(uint32_t op, uint32_t branch_length) {
   /* Direction bit cleared (forward); branch_length in bits 30..16. */
   return enc_emb_op_word(op, (branch_length & 0x7FFFu) << 16);
 }
+static uint32_t enc_emb_branch_linked_null(uint32_t op,
+                                           uint32_t branch_length) {
+  /* Direction bit cleared (forward); branch_length in bits 30..16. */
+  return enc_emb_op_word(op, (branch_length & 0x7FFFu) << 16);
+}
 static uint32_t enc_emb_attr_id(uint32_t attrId) {
   return (attrId & 0xFFFFu) << 16;
+}
+static uint32_t enc_emb_read_linked_to_mem(uint32_t position) {
+  return enc_emb_op_word(EMB_READ_LINKED_TO_MEM,
+                         (position & 0xFFu) << 16);
 }
 
 /* T11: empty embedded block — should accept (no embedded ops emitted,
@@ -387,6 +399,58 @@ static void test_embedded_too_large_reject(void) {
                    /*offending_op=*/kOpEmbeddedInterp);
 }
 
+/* T16: Phase 5.1a linked null-check shape:
+ *   embedded block:
+ *     0: READ_LINKED_TO_MEM position 0
+ *     1: BRANCH_LINKED_NE_NULL +1  (skip to EXIT_REFUSE)
+ *     2: EXIT_REFUSE               (skip row)
+ * Expected: LOAD_LINKED_TO_MEM, BRANCH_LINKED_NE_NULL, OP_EXIT,
+ * trailing OP_EXIT. */
+static void test_embedded_linked_ne_null_accept(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_read_linked_to_mem(/*position=*/0),
+    enc_emb_branch_linked_null(EMB_BRANCH_LINKED_NE_NULL, /*offset=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+
+  Program p;
+  JitBridgeError err;
+  JitBridgeReason r = ndb_jit_bridge_translate(prog, 4, &p, &err);
+  if (r != JIT_BRIDGE_OK) {
+    mark_fail("T16 embedded_linked_ne_null_accept",
+              "expected OK, got reason=%d (offending_word=%u op=%u)",
+              r, err.offending_word, err.offending_op);
+    return;
+  }
+  if (p.n_ops != 4 ||
+      p.ops[0].kind != OP_LOAD_LINKED_TO_MEM ||
+      p.ops[0].b != 0 ||
+      p.ops[1].kind != OP_BRANCH_LINKED_NE_NULL ||
+      p.ops[1].c != 2 ||
+      p.ops[2].kind != OP_EXIT ||
+      p.ops[3].kind != OP_EXIT) {
+    mark_fail("T16 embedded_linked_ne_null_accept",
+              "unexpected translated program");
+    return;
+  }
+  mark_pass("T16 embedded_linked_ne_null_accept");
+}
+
+/* T17: linked null-check backward branch must reject. */
+static void test_embedded_linked_backward_reject(void) {
+  uint32_t prog[3] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+    enc_emb_read_linked_to_mem(/*position=*/0),
+    enc_emb_op_word(EMB_BRANCH_LINKED_EQ_NULL,
+                    (1u << 31) | (1u << 16)),
+  };
+  assert_rejected("T17 embedded_linked_backward_reject", prog, 3,
+                   JIT_BRIDGE_EMBEDDED_BACKWARD,
+                   /*offending_word=*/2,
+                   /*offending_op=*/EMB_BRANCH_LINKED_EQ_NULL);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -406,6 +470,8 @@ int main(void) {
   test_embedded_backward_reject();
   test_embedded_attr_oor_reject();
   test_embedded_too_large_reject();
+  test_embedded_linked_ne_null_accept();
+  test_embedded_linked_backward_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

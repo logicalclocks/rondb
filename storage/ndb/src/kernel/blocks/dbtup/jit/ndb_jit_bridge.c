@@ -61,6 +61,7 @@
 
 #include "ndb_jit_bridge.h"
 
+#include <stdio.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
@@ -142,6 +143,175 @@ static inline void set_err(JitBridgeError *err,
   err->reason         = r;
   err->offending_word = off;
   err->offending_op   = op;
+}
+
+const char *ndb_jit_bridge_reason_name(JitBridgeReason reason) {
+  switch (reason) {
+    case JIT_BRIDGE_OK:
+      return "ok";
+    case JIT_BRIDGE_UNSUPPORTED_OP:
+      return "unsupported_op";
+    case JIT_BRIDGE_NON_BIGINT:
+      return "non_bigint";
+    case JIT_BRIDGE_PROG_TOO_LARGE:
+      return "prog_too_large";
+    case JIT_BRIDGE_MALFORMED:
+      return "malformed";
+    case JIT_BRIDGE_REG_OUT_OF_RANGE:
+      return "reg_out_of_range";
+    case JIT_BRIDGE_EMBEDDED_TOO_LARGE:
+      return "embedded_too_large";
+    case JIT_BRIDGE_EMBEDDED_BACKWARD:
+      return "embedded_backward";
+    default:
+      return "unknown";
+  }
+}
+
+const char *ndb_jit_bridge_agg_op_name(uint32_t op) {
+  switch (op) {
+    case BR_kOpUnknown:        return "kOpUnknown";
+    case BR_kOpPlus:           return "kOpPlus";
+    case BR_kOpMinus:          return "kOpMinus";
+    case BR_kOpMul:            return "kOpMul";
+    case BR_kOpDiv:            return "kOpDiv";
+    case BR_kOpDivInt:         return "kOpDivInt";
+    case BR_kOpMod:            return "kOpMod";
+    case BR_kOpLoadCol:        return "kOpLoadCol";
+    case BR_kOpLoadConst:      return "kOpLoadConst";
+    case BR_kOpMov:            return "kOpMov";
+    case BR_kOpSum:            return "kOpSum";
+    case BR_kOpMax:            return "kOpMax";
+    case BR_kOpMin:            return "kOpMin";
+    case BR_kOpCount:          return "kOpCount";
+    case BR_kOpSumBigint:      return "kOpSumBigint";
+    case BR_kOpSumDouble:      return "kOpSumDouble";
+    case BR_kOpMaxBigint:      return "kOpMaxBigint";
+    case BR_kOpMaxDouble:      return "kOpMaxDouble";
+    case BR_kOpMinBigint:      return "kOpMinBigint";
+    case BR_kOpMinDouble:      return "kOpMinDouble";
+    case BR_kOpPlusBigint:     return "kOpPlusBigint";
+    case BR_kOpPlusDouble:     return "kOpPlusDouble";
+    case BR_kOpMinusBigint:    return "kOpMinusBigint";
+    case BR_kOpMinusDouble:    return "kOpMinusDouble";
+    case BR_kOpMulBigint:      return "kOpMulBigint";
+    case BR_kOpMulDouble:      return "kOpMulDouble";
+    case BR_kOpDivDouble:      return "kOpDivDouble";
+    case BR_kOpDivIntBigint:   return "kOpDivIntBigint";
+    case BR_kOpEmbeddedInterp: return "kOpEmbeddedInterp";
+    case BR_kOpSkip:           return "kOpSkip";
+    case BR_kOpSetRegNull:     return "kOpSetRegNull";
+    default:                   return "kOp?";
+  }
+}
+
+const char *ndb_jit_bridge_emb_op_name(uint32_t op) {
+  switch (op) {
+    case BR_EMB_BRANCH:                return "BRANCH";
+    case BR_EMB_EXIT_OK:               return "EXIT_OK";
+    case BR_EMB_EXIT_REFUSE:           return "EXIT_REFUSE";
+    case BR_EMB_EXIT_OK_LAST:          return "EXIT_OK_LAST";
+    case BR_EMB_BRANCH_ATTR_EQ_NULL:   return "BRANCH_ATTR_EQ_NULL";
+    case BR_EMB_BRANCH_ATTR_NE_NULL:   return "BRANCH_ATTR_NE_NULL";
+    case BR_EMB_READ_LINKED_TO_MEM:    return "READ_LINKED_TO_MEM";
+    case BR_EMB_BRANCH_LINKED_EQ_NULL: return "BRANCH_LINKED_EQ_NULL";
+    case BR_EMB_BRANCH_LINKED_NE_NULL: return "BRANCH_LINKED_NE_NULL";
+    default:                           return "EMB_OP?";
+  }
+}
+
+const char *ndb_jit_bridge_jit_op_name(uint8_t kind) {
+  switch (kind) {
+    case OP_LOAD_CONST_INT:       return "load_const_int";
+    case OP_LOAD_COL_INT:         return "load_col_int";
+    case OP_MOV_INT_INT:          return "mov_int_int";
+    case OP_ADD_INT_INT:          return "add_int_int";
+    case OP_SUM_BIGINT:           return "sum_bigint";
+    case OP_BRANCH_LT_INT_INT:    return "branch_lt_int_int";
+    case OP_BRANCH_LE_INT_INT:    return "branch_le_int_int";
+    case OP_BRANCH_EQ_INT_INT:    return "branch_eq_int_int";
+    case OP_BRANCH_GT_INT_INT:    return "branch_gt_int_int";
+    case OP_BRANCH_GE_INT_INT:    return "branch_ge_int_int";
+    case OP_BRANCH_NE_INT_INT:    return "branch_ne_int_int";
+    case OP_SKIP:                 return "skip";
+    case OP_EXIT:                 return "exit";
+    case OP_MINUS_INT_INT:        return "minus_int_int";
+    case OP_MUL_INT_INT:          return "mul_int_int";
+    case OP_LOAD_COL_NDB:         return "load_col_ndb";
+    case OP_LOAD_CONST_UINT16:    return "load_const_uint16";
+    case OP_LOAD_CONST_INT16:     return "load_const_int16";
+    case OP_LOAD_CONST_UINT32:    return "load_const_uint32";
+    case OP_LOAD_CONST_INT32:     return "load_const_int32";
+    case OP_BRANCH_ATTR_EQ_NULL:  return "branch_attr_eq_null";
+    case OP_BRANCH_ATTR_NE_NULL:  return "branch_attr_ne_null";
+    case OP_LOAD_LINKED_TO_MEM:   return "load_linked_to_mem";
+    case OP_BRANCH_LINKED_EQ_NULL:return "branch_linked_eq_null";
+    case OP_BRANCH_LINKED_NE_NULL:return "branch_linked_ne_null";
+    default:                      return "jit_op?";
+  }
+}
+
+static void dump_line(NdbJitBridgeDumpFn dump, void *ctx,
+                      const char *line) {
+  if (dump != NULL) {
+    dump(ctx, line);
+  }
+}
+
+void ndb_jit_bridge_dump_input(const uint32_t *header,
+                               uint32_t       header_words,
+                               const uint32_t *body,
+                               uint32_t       body_words,
+                               NdbJitBridgeDumpFn dump,
+                               void          *ctx) {
+  char line[192];
+  snprintf(line, sizeof(line),
+           "[RONDB-1056] agg program: header=%u body=%u total=%u words",
+           (unsigned)header_words, (unsigned)body_words,
+           (unsigned)(header_words + body_words));
+  dump_line(dump, ctx, line);
+
+  for (uint32_t i = 0; i < header_words; i++) {
+    uint32_t w = header != NULL ? header[i] : 0;
+    snprintf(line, sizeof(line),
+             "[RONDB-1056]   hdr[%u] = 0x%08x",
+             (unsigned)i, (unsigned)w);
+    dump_line(dump, ctx, line);
+  }
+
+  for (uint32_t i = 0; i < body_words; i++) {
+    uint32_t w = body != NULL ? body[i] : 0;
+    uint32_t op = (w & 0xFC000000u) >> 26;
+    snprintf(line, sizeof(line),
+             "[RONDB-1056]   bc[%u] = 0x%08x  top6=%u  %s",
+             (unsigned)i, (unsigned)w, (unsigned)op,
+             ndb_jit_bridge_agg_op_name(op));
+    dump_line(dump, ctx, line);
+  }
+}
+
+void ndb_jit_bridge_dump_program(const Program *prog,
+                                 NdbJitBridgeDumpFn dump,
+                                 void *ctx) {
+  char line[192];
+  if (prog == NULL) {
+    dump_line(dump, ctx, "[RONDB-1056] jit program: <null>");
+    return;
+  }
+
+  snprintf(line, sizeof(line),
+           "[RONDB-1056] jit program: %u ops", (unsigned)prog->n_ops);
+  dump_line(dump, ctx, line);
+
+  for (uint16_t pc = 0; pc < prog->n_ops; pc++) {
+    const Op *op = &prog->ops[pc];
+    snprintf(line, sizeof(line),
+             "[RONDB-1056]   op[%u] %-24s kind=%u a=%u b=%u c=%u imm=%lld",
+             (unsigned)pc, ndb_jit_bridge_jit_op_name(op->kind),
+             (unsigned)op->kind, (unsigned)op->a, (unsigned)op->b,
+             (unsigned)op->c, (long long)op->imm);
+    dump_line(dump, ctx, line);
+  }
 }
 
 /* sint8korr equivalent: read 8 little-endian bytes as int64.

@@ -980,12 +980,12 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
    * falling through to the interpreter. Lets a test confirm
    * "did this query actually JIT?" without needing a separate
    * stats counter. Compiled out in release builds. */
-  if (block_tup->jit_error_inserted(4060)) {
+  if (block_tup != nullptr && block_tup->jit_error_inserted(4060)) {
     g_eventLogger->error(
         "ERROR_INSERT 4060: aggregation program reached the "
         "interpreter loop instead of the JIT path "
         "(m_jit_entry=%p, m_n_gb_cols=%u). Aborting per test "
-        "directive — the failing program was expected to admit "
+        "directive - the failing program was expected to admit "
         "+ compile.",
         m_jit_entry, m_n_gb_cols);
     abort();

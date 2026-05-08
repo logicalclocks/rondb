@@ -26,13 +26,11 @@
  * uint32_t* array; NDB types like `Register` or `Uint32` are not
  * referenced.
  *
- * Phase 4 narrow coverage: 7 type-specialised NDB opcodes are
- * supported (LoadConst-bigint, LoadCol-bigint, Mov, Plus/Minus/Mul-
- * bigint, SumBigint), plus implicit program-end → OP_EXIT.
- * Everything else (including kOpEmbeddedInterp, kOpDiv*, kOpMod,
- * kOpSkip, all double / max / min / count variants, generic
- * kOpPlus / kOpSum without type specialisation, kOpSetRegNull)
- * returns JIT_BRIDGE_UNSUPPORTED_OP. Phase 5 expands.
+ * Current coverage: type-specialised bigint hot ops from Phase 4
+ * plus the Phase 5 embedded NULL-check subset
+ * (BRANCH_ATTR_*_NULL, READ_LINKED_TO_MEM, BRANCH_LINKED_*_NULL,
+ * EXIT_OK, EXIT_REFUSE). Everything else returns
+ * JIT_BRIDGE_UNSUPPORTED_OP.
  */
 
 #ifndef NDB_JIT_BRIDGE_H
@@ -90,6 +88,28 @@ JitBridgeReason ndb_jit_bridge_translate(const uint32_t *ndb_prog,
                                           uint32_t       n_words,
                                           Program       *out_prog,
                                           JitBridgeError *out_err);
+
+/* Diagnostic helpers shared by DBLQH setup logging and unit tests.
+ * The dump functions emit one already-formatted line per callback
+ * invocation; callers decide whether that goes to g_eventLogger,
+ * stdout, or a test failure buffer. */
+typedef void (*NdbJitBridgeDumpFn)(void *ctx, const char *line);
+
+const char *ndb_jit_bridge_reason_name(JitBridgeReason reason);
+const char *ndb_jit_bridge_agg_op_name(uint32_t op);
+const char *ndb_jit_bridge_emb_op_name(uint32_t op);
+const char *ndb_jit_bridge_jit_op_name(uint8_t kind);
+
+void ndb_jit_bridge_dump_input(const uint32_t *header,
+                               uint32_t       header_words,
+                               const uint32_t *body,
+                               uint32_t       body_words,
+                               NdbJitBridgeDumpFn dump,
+                               void          *ctx);
+
+void ndb_jit_bridge_dump_program(const Program *prog,
+                                 NdbJitBridgeDumpFn dump,
+                                 void *ctx);
 
 #ifdef __cplusplus
 }

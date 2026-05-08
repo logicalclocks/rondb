@@ -83,6 +83,10 @@ std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
 #define DEB_JIT(arglist) do { } while (0)
 #endif
 
+static void ndb_jit_event_logger(void *, const char *line) {
+  g_eventLogger->info("%s", line);
+}
+
 #ifdef DEBUG_EXEC_SR
 #define DEB_EXEC_SR(arglist)     \
   do {                           \
@@ -2822,36 +2826,35 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
    * Bytecode handed to the bridge starts at lp.m_agg_program +
    * lp.m_agg_prog_start_pos (header words 0..7+n_gb_cols precede
    * the actual aggregation instructions). */
+#ifdef ERROR_INSERT
+  const bool dump_jit_program = ERROR_INSERTED(4061);
+  const bool fatal_compile_failure = ERROR_INSERTED(4062);
+#else
+  const bool dump_jit_program = false;
+  const bool fatal_compile_failure = false;
+#endif
   if (m_jit_arena != nullptr && state->m_num_leaves == 1) {
     jam();
     LeafProgram &lp = state->m_leaf_programs[0];
     Uint32 bc_off = lp.m_agg_prog_start_pos;
     if (bc_off < lp.m_agg_program_len) {
       Uint32 bc_words = lp.m_agg_program_len - bc_off;
-#ifdef DEBUG_JIT
-      /* Always dump the full program so we have the structural
-       * context for either path (admit or reject). */
-      g_eventLogger->info(
-          "[RONDB-1056] key=%u program: header=%u words, "
-          "body=%u words, total=%u words",
-          key, (unsigned)bc_off, (unsigned)bc_words,
-          (unsigned)lp.m_agg_program_len);
-      for (Uint32 i = 0; i < lp.m_agg_program_len; i++) {
-        const char *region = (i < bc_off) ? "hdr" : "bc";
-        Uint32 w = lp.m_agg_program[i];
-        g_eventLogger->info(
-            "[RONDB-1056]   prog[%u] (%s%u) = 0x%08x  top6=%u",
-            i, region,
-            (i < bc_off) ? i : i - bc_off,
-            w, (w >> 26));
+      if (dump_jit_program) {
+        g_eventLogger->info("[RONDB-1056] ERROR_INSERT 4061: "
+                            "dumping JIT setup for key=%u", key);
+        ndb_jit_bridge_dump_input(lp.m_agg_program, bc_off,
+                                  lp.m_agg_program + bc_off, bc_words,
+                                  ndb_jit_event_logger, nullptr);
       }
-#endif
       Program p;
       JitBridgeError berr;
       JitBridgeReason brc =
           ndb_jit_bridge_translate(lp.m_agg_program + bc_off,
                                     bc_words, &p, &berr);
       if (brc == JIT_BRIDGE_OK) {
+        if (dump_jit_program) {
+          ndb_jit_bridge_dump_program(&p, ndb_jit_event_logger, nullptr);
+        }
         Jit1Prog *jp = jit1_compile(m_jit_arena, &p, /*timing=*/nullptr);
         if (jp != nullptr) {
           lp.m_jit_prog  = jp;
@@ -2862,52 +2865,82 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         } else {
           const Jit1AdmitError *aerr = jit1_last_admit_error();
           DEB_JIT(("[RONDB-1056] JIT admission rejected key=%u "
-                    "reason=%d pc=%u kind=%u — interpreter fallback",
+                    "reason=%d pc=%u target=%u kind=%u (%s) - "
+                    "interpreter fallback",
                     key, (int)aerr->reason,
                     (unsigned)aerr->offending_pc,
-                    (unsigned)aerr->offending_kind));
+                    (unsigned)aerr->offending_target,
+                    (unsigned)aerr->offending_kind,
+                    ndb_jit_bridge_jit_op_name(aerr->offending_kind)));
+          if (fatal_compile_failure) {
+            g_eventLogger->error(
+                "ERROR_INSERT 4062: JIT admission rejected key=%u "
+                "reason=%d pc=%u target=%u kind=%u (%s). Aborting.",
+                key, (int)aerr->reason,
+                (unsigned)aerr->offending_pc,
+                (unsigned)aerr->offending_target,
+                (unsigned)aerr->offending_kind,
+                ndb_jit_bridge_jit_op_name(aerr->offending_kind));
+            abort();
+          }
         }
       } else {
         Uint32 ow = (berr.offending_word < bc_words)
                        ? (lp.m_agg_program + bc_off)[berr.offending_word]
                        : 0u;
         DEB_JIT(("[RONDB-1056] JIT bridge rejected key=%u "
-                  "reason=%d word=%u op=%u value=0x%08x "
-                  "— interpreter fallback",
+                  "reason=%d (%s) word=%u op=%u (%s) value=0x%08x "
+                  "- interpreter fallback",
                   key, (int)brc,
+                  ndb_jit_bridge_reason_name(brc),
                   (unsigned)berr.offending_word,
                   (unsigned)berr.offending_op,
+                  ndb_jit_bridge_agg_op_name(berr.offending_op),
                   ow));
-#ifdef DEBUG_JIT
-        /* Dump the whole program (header + body) so we can see
-         * the structural context of the rejection. Useful when
-         * the offending word looks bogus and we suspect either
-         * an NDB-side compiler bug or a buffer-overwrite. */
-        g_eventLogger->info(
-            "[RONDB-1056]   header (%u words):", (unsigned)bc_off);
-        for (Uint32 i = 0; i < bc_off; i++) {
-          g_eventLogger->info("[RONDB-1056]     hdr[%u] = 0x%08x",
-                                i, lp.m_agg_program[i]);
+        if (fatal_compile_failure) {
+          if (!dump_jit_program) {
+            ndb_jit_bridge_dump_input(lp.m_agg_program, bc_off,
+                                      lp.m_agg_program + bc_off, bc_words,
+                                      ndb_jit_event_logger, nullptr);
+          }
+          g_eventLogger->error(
+              "ERROR_INSERT 4062: JIT bridge rejected key=%u "
+              "reason=%d (%s) word=%u op=%u (%s) value=0x%08x. Aborting.",
+              key, (int)brc, ndb_jit_bridge_reason_name(brc),
+              (unsigned)berr.offending_word,
+              (unsigned)berr.offending_op,
+              ndb_jit_bridge_agg_op_name(berr.offending_op),
+              ow);
+          abort();
         }
-        g_eventLogger->info(
-            "[RONDB-1056]   body (%u words from offset %u):",
-            (unsigned)bc_words, (unsigned)bc_off);
-        for (Uint32 i = 0; i < bc_words; i++) {
-          Uint32 w = (lp.m_agg_program + bc_off)[i];
-          g_eventLogger->info(
-              "[RONDB-1056]     bc[%u] = 0x%08x  top6=%u",
-              i, w, (w >> 26));
-        }
-#endif
       }
+    } else if (fatal_compile_failure) {
+      g_eventLogger->error(
+          "ERROR_INSERT 4062: JIT setup found no aggregation bytecode "
+          "for key=%u (start=%u len=%u). Aborting.",
+          key, (unsigned)bc_off, (unsigned)lp.m_agg_program_len);
+      abort();
     }
   } else if (m_jit_arena == nullptr) {
     DEB_JIT(("[RONDB-1056] JIT disabled (arena unavailable) "
               "key=%u — interpreter fallback", key));
+    if (fatal_compile_failure) {
+      g_eventLogger->error(
+          "ERROR_INSERT 4062: JIT arena unavailable for key=%u. Aborting.",
+          key);
+      abort();
+    }
   } else {
     DEB_JIT(("[RONDB-1056] JIT skipped (multi-leaf, %u leaves) "
               "key=%u — interpreter fallback",
               state->m_num_leaves, key));
+    if (fatal_compile_failure) {
+      g_eventLogger->error(
+          "ERROR_INSERT 4062: JIT skipped for multi-leaf setup "
+          "(%u leaves) key=%u. Aborting.",
+          state->m_num_leaves, key);
+      abort();
+    }
   }
 
   // Allocate JoinAggInterpreter(s) based on strategy.
