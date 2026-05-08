@@ -2,10 +2,23 @@
 
 ## Status
 
-**Planned.**  Builds on F.2 + F.3 + S.1-S.6 hardening (see
+**Shipped.**  Builds on F.2 + F.3 + S.1-S.6 hardening (see
 `cte_filter_phase_i6_varchar.md` and
-`cte_filter_phase_i6_string_minmax_fixups.md`).  Without F.4, CTE
-materialisation paths cannot consume string MIN/MAX outputs:
+`cte_filter_phase_i6_string_minmax_fixups.md`).  F.4 landed in
+the following commits:
+
+| Commit | Scope |
+| ------ | ----- |
+| `d4daff87868` | F.4-K.1: string payload substitution in `buildCteLinkedBuffer` |
+| `d81398cc3b0` | F.4-K.2/K.2b: string payload substitution in CTE output emit paths |
+| `ab317963b85` | string pushed MIN/MAX merge support used by downstream paths |
+| `0fe84bc5fbf` | F.4-K.3: linked string aggregate column loads |
+| `c37d3a01a95` | F.4-K.3b: redistribution of string CTE aggregate slots |
+| `06dfa8c7928` | F.4-R.1: RonSQL string CTE MIN/MAX coverage |
+| `e5f99a52a13` | F.4-K.5: block-level CTE delivery and linked-attr aggregation coverage |
+
+Before F.4, CTE materialisation paths could not consume string
+MIN/MAX outputs:
 
 - `JoinAggInterpreter::kOpLoadCol` linked-attr arm rejects strings
   (`attrDescriptor == nullptr` branch returns
@@ -24,9 +37,9 @@ materialisation paths cannot consume string MIN/MAX outputs:
   ships `val_ptr` bits unless F.4 adds substitution / decode or a
   deliberate prepare-time/runtime rejection.
 
-Symptom: queries of the form
+The historical symptom was that queries of the form
 `WITH cte AS (... MIN/MAX(string) ...) SELECT ... FROM cte JOIN ...`
-hang behind retried `ZCTE_LOOKUP_OUTPUT_OVERFLOW` errors today.
+could hang behind retried `ZCTE_LOOKUP_OUTPUT_OVERFLOW` errors.
 
 ## Goal
 
