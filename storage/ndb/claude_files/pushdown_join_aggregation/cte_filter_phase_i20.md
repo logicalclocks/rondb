@@ -2,8 +2,9 @@
 
 ## Status
 
-**Planned.**  This phase follows review of the shipped Phase I.16
-partial-key CTE join work and runs alongside Phase I.21's scalar-CTE
+**Shipped** in `c3e050b1e17` ("RONDB-1050: implement Phase I.20 CTE
+key coverage").  This phase followed review of the shipped Phase I.16
+partial-key CTE join work and landed alongside Phase I.21's scalar-CTE
 guardrails.
 
 I.16a added a clean guard for joined `CTE_LOOKUP` operations whose

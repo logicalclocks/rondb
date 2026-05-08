@@ -1,5 +1,13 @@
 # Phase I.10 — Scalar `MIN(col)` / `MAX(col)` CTE via DESC/ASC index + `maxRows=1`
 
+## Status
+
+**Shipped** in `2c5f5813f46` ("RONDB-1050: implement Phase I.10
+MIN/MAX index CTE").  RonSQL detects scalar `MIN` / `MAX` CTE bodies
+over a direct NOT NULL indexed column, emits an ordered index scan with
+`maxRows=1`, and falls back to the baseline materialisation path for
+unsupported shapes.
+
 ## Kernel reference
 
 `testCteNdbApi.cpp` Test 19 (`testMaxValWithDescScanIndex`,

@@ -2,8 +2,9 @@
 
 ## Status
 
-**Planned.**  This phase follows review of the shipped Phase I.17
-scalar aggregate CTE work.
+**Shipped** in `622b9cf82c3` ("RONDB-1050: implement Phase I.21
+scalar CTE guards").  This phase follows review of the shipped Phase
+I.17 scalar aggregate CTE work.
 
 Phase I.17 added the user-visible scalar CTE shapes needed for
 watermark queries:

@@ -2,7 +2,9 @@
 
 ## Status
 
-Plan-only. Builds on Phase D / D2 / I.1 (`emit_cte_lookup_filter`).
+**Shipped** in `86cc9500c07` ("RONDB-1050: Phase I.2 - top-level
+OR / DNF in CTE_LOOKUP filter").  Builds on Phase D / D2 / I.1
+(`emit_cte_lookup_filter`).
 
 ## Scope
 

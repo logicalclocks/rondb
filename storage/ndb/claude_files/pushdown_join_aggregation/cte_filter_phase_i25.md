@@ -2,7 +2,8 @@
 
 ## Status
 
-Planned follow-up after Phase I.6 F.4 string MIN/MAX delivery.
+Moved to Phase N final wrap-up.  This document preserves the detailed
+problem analysis; `cte_filter_phase_n.md` is the active execution plan.
 
 During `ronsql_minmax_string` coverage expansion we temporarily
 narrowed two queries so the F.4 tests could focus on the string CTE

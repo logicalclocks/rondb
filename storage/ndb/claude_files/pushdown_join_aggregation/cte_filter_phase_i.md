@@ -2,13 +2,11 @@
 
 ## Status
 
-**Catalogue only.**  This phase enumerates capabilities exercised by
-`storage/ndb/block_unit_test/testCteNdbApi*.cpp` that RonSQL today
-cannot reach from SQL.  Each item is described at the level of "what
-it is, where it's tested at the NDB-API layer, what would need to
-change in RonSQL".  Detailed implementation planning is deferred —
-each item below is a candidate for its own per-phase doc when
-prioritised.
+**Historical catalogue.**  Most items in this phase have shipped as
+dedicated sub-phases.  The remaining wrap-up items are moved to Phase N
+(`cte_filter_phase_n.md`): I.25, I.13, I.14, and I.15.  This document
+is retained as the index of what was covered and where the detailed
+phase docs live.
 
 ## Why this catalogue
 
@@ -27,19 +25,13 @@ multi-layer (RonSQL + maybe NDB-API tweaks).
 
 ### Filter grammar on CTE outputs
 
-#### I.1 — `IS NULL` / `IS NOT NULL` on CTE column or agg output  (S/M)
+#### I.1 — `IS NULL` / `IS NOT NULL` on CTE column or agg output  (S/M) — shipped
 
-`emit_cte_lookup_filter` (`RonSQLPreparer.cpp:5606-5612`) accepts
-only the six binary comparisons (`= != < <= > >=`).  The kernel's
-jump-table interpreter handles null semantics through the inline
-branch family.  Adding `T_IS NULL` would extend the conjunct
-walker and emit a single `branch_linked_inline_eq` against a
-NULL-tagged constant (or a dedicated `branch_linked_*_isnull`
-opcode if the encoding doesn't already support it).
-
-NDB-API analogue: testCteNdbApiFilter uses null-mask checks in its
-filter programs but no dedicated test exercises `IS NULL` from
-the SQL surface today.
+Detailed plan: `cte_filter_phase_i1.md`.  INNER-join CTE output
+`IS NULL` / `IS NOT NULL` shipped in `bfb012e627c`.  The later Phase K
+kernel + RonSQL anti-join work (`cte_filter_phase_k.md`) closed the
+LEFT JOIN RHS `WHERE cte_col IS NULL` case that I.1 deliberately
+rejected.
 
 #### I.2 — OR conjuncts at top level on CTE output (M)
 
@@ -201,24 +193,19 @@ Out of scope (each its own follow-up): `FROM cte JOIN real_table`
 direction, multi-CTE joins in projection-only queries, ORDER BY /
 LIMIT in no-aggregate.
 
-#### I.9 — `scanIndex` inside CTE materialization subtree (M)
+#### I.9 — `scanIndex` inside CTE materialization subtree (M) — shipped
 
-testCteNdbApi Test 18.  CTE bodies in RonSQL today use scan/lookup
-on the source table or `scanCte` for chained CTEs; the body's root
-goes through the same dispatch as the main query, but real-world
-CTE bodies often want an index-bounded scan when the body has a
-WHERE on an indexed column.  Verify whether the body's
-`emit_root_op` recursion picks `scanIndex` and add MTR if so;
-otherwise this is a planner gap.
+Detailed plan: `cte_filter_phase_i9.md`.  CTE bodies with WHERE
+bounds on an ordered indexed column now plan as `INDEX_SCAN + bounds`
+instead of `TABLE_SCAN + interpreted filter`.  MTR coverage:
+`ronsql_cte_index_body.test`.
 
-#### I.10 — Scalar CTE + `MAX(val)` via DESC index + `LIMIT 1` (L)
+#### I.10 — Scalar CTE + `MAX(val)` via DESC/ASC index + `maxRows=1` (L) — shipped
 
-testCteNdbApi Test 19.  Optimisation: a `MAX` over an indexed
-column can be rewritten as `ORDER BY col DESC LIMIT 1`, avoiding
-the hash-aggregation pass entirely.  RonSQL has neither ORDER BY
-pushdown nor LIMIT pushdown to CTE bodies.  Significant work;
-unblock requires the LIMIT/ORDER-BY phase first (cf. Phase 7 /
-step 45d in `ronsql_join_phase7.md`).
+Detailed plan: `cte_filter_phase_i10.md`.  Shipped in `2c5f5813f46`.
+RonSQL detects scalar `MIN` / `MAX` CTE bodies over a direct NOT NULL
+indexed column and emits ordered index scan + `maxRows=1`; unsupported
+shapes fall back to the baseline materialisation path.
 
 #### I.11 — RonSQL coverage of testCteNdbApi Tests 12-16 (M) — shipped
 
@@ -273,28 +260,28 @@ MTR coverage: `mysql-test/suite/ronsql/t/ronsql_cte_outer_join.test`
 
 ### Batch / pacing controls
 
-#### I.13 — `setBatchSize` from SQL (S/M)
+#### I.13 — `setBatchSize` from SQL (S/M) — moved to Phase N
 
 testCteNdbApiFilter Test 15.  No SQL surface today.  Pure
 performance/tuning; could expose via a SET statement or a
 session variable but value is low until users hit batch-size
-issues from SQL.
+issues from SQL.  Final wrap-up tracking moved to `cte_filter_phase_n.md`.
 
-#### I.14 — Early close of a CTE scan (S)
+#### I.14 — Early close of a CTE scan (S) — moved to Phase N
 
 testCteNdbApiFilter Test 16.  RonSQL drains all rows.  Could be
 exposed via LIMIT once that lands; until then, mostly an internal
 optimisation hook (`query->close()` mid-drain when LIMIT N is
-satisfied).  Bundle with LIMIT phase.
+satisfied).  Final wrap-up tracking moved to `cte_filter_phase_n.md`.
 
 ### Result delivery
 
-#### I.15 — Multi-fragment / multi-data-node CTE behaviour (M)
+#### I.15 — Multi-fragment / multi-data-node CTE behaviour (M) — moved to Phase N
 
 `m_fragsPerWorker` interactions with CTE_SCAN: testCteNdbApi has
 fragment-level coverage; MTR cluster config is single-node so this
-is hard to exercise.  Capture as a known coverage gap; rely on
-block tests.
+is hard to exercise.  Final wrap-up tracking moved to
+`cte_filter_phase_n.md`.
 
 #### I.16 — Partial-key joins to multi-key CTEs (M/L)
 
@@ -383,12 +370,13 @@ normal embedded interpreter, or equivalent typed register metadata, so
 signed `TINYINT` / `SMALLINT` / `MEDIUMINT` / `INT` leaf operands are
 sign-extended before `BRANCH_*_REG_REG`.
 
-#### I.19 — CASE literal normalisation and INT boundary fixes (S/M)
+#### I.19 — CASE literal normalisation and INT boundary fixes (S/M) — shipped
 
 Detailed plan: `cte_filter_phase_i19.md`.
 
-Review of the Phase I.5 v3b float-literal CASE work found three
-follow-ups in the embedded CASE col-vs-const path:
+Shipped in `eb041c0884e`.  Review of the Phase I.5 v3b float-literal
+CASE work found three follow-ups in the embedded CASE col-vs-const
+path:
 
 - CASE atoms should be simplified as whole comparisons before side
   resolution, matching the normal WHERE path.  Today v3b only
@@ -403,17 +391,18 @@ follow-ups in the embedded CASE col-vs-const path:
   the query uses DOUBLE.  Add explicit leaf FLOAT, leaf DOUBLE,
   literal-on-left, and INT boundary tests.
 
-#### I.20 — CTE lookup key coverage and rewrite validation (M)
+#### I.20 — CTE lookup key coverage and rewrite validation (M) — shipped
 
 Detailed plan: `cte_filter_phase_i20.md`.
 
-Review of Phase I.16 found that the partial-key guard and rewrite use
+Shipped in `c3e050b1e17`.  Review of Phase I.16 found that the
+partial-key guard and rewrite use
 join-key count as a proxy for virtual CTE key coverage.  That is not
 strong enough: full-count joins can still bind the wrong CTE output
 columns or bind the right key columns in the wrong order relative to
 the CTE `GROUP BY`-derived virtual PK.
 
-This phase should add a shared helper that derives the ordered virtual
+This phase added a shared helper that derives the ordered virtual
 CTE PK columns and classifies a join as exact ordered, reorderable,
 partial, or wrong-column.  `CTE_LOOKUP` emission should accept only
 valid key coverage, reordering keys to virtual-PK order if feasible or
@@ -421,11 +410,11 @@ rejecting clearly.  The I.16 root rewrite should use the same helper
 and should also verify that the matched partial-key CTE join references
 the original root alias before demoting the original root under the CTE.
 
-#### I.21 — Scalar CTE semantic guardrails after I.17 (M)
+#### I.21 — Scalar CTE semantic guardrails after I.17 (M) — shipped
 
 Detailed plan: `cte_filter_phase_i21.md`.
 
-Review of the shipped Phase I.17 scalar CTE work found that the
+Shipped in `622b9cf82c3`.  Review of the shipped Phase I.17 scalar CTE work found that the
 first-output-as-PK workaround needed for scalar CTE child lookup can
 leak into normal SQL semantics.  Root scalar CTE queries with `WHERE`
 predicates can be incorrectly considered full-PK lookups even though
@@ -434,7 +423,7 @@ truth.  The same structural key can also make nullable aggregate
 outputs such as `MAX()` over empty input look non-nullable in virtual
 table metadata.
 
-I.21 should keep the scalar dummy-key mechanism local to the scalar
+I.21 keeps the scalar dummy-key mechanism local to the scalar
 cross-join implementation: root lookup optimisation should remain
 limited to grouped CTEs with real `GROUP BY`-derived keys, scalar
 aggregate output nullability must stay user-visible, and top-level
@@ -442,11 +431,11 @@ aggregate output nullability must stay user-visible, and top-level
 to proven scalar-CTE expressions so ordinary row-wise table queries
 cannot silently become aggregate queries.
 
-#### I.22 — DECIMAL MIN/MAX 64-bit range guard (S/M)
+#### I.22 — DECIMAL MIN/MAX 64-bit range guard (S/M) — shipped
 
 Detailed plan: `cte_filter_phase_i22.md`.
 
-Review of Phase I.6 F.1 found that RonSQL now accepts all
+Shipped in `e461c0c96ec`.  Review of Phase I.6 F.1 found that RonSQL now accepts all
 scale-zero DECIMAL `MIN` / `MAX` outputs by widening the CTE virtual
 type to `BIGINT` / `BIGUNSIGNED`, but the kernel conversion path still
 uses `decimal2longlong()` / `decimal2ulonglong()`.  Declarations such
@@ -454,7 +443,7 @@ as signed `DECIMAL(19,0)` or unsigned `DECIMAL(20,0)` can contain
 valid MySQL values outside the 64-bit target range and can therefore
 fail at execution with a DBTUP decimal conversion overflow.
 
-I.22 should add a prepare-time guard for scale-zero DECIMAL `MIN` /
+I.22 added a prepare-time guard for scale-zero DECIMAL `MIN` /
 `MAX`: accept signed precision up to 18 and unsigned precision up to
 19, reject wider declarations clearly, and add MTR coverage for both
 safe boundaries and rejected unsafe declarations.  Full arbitrary
@@ -516,9 +505,10 @@ metadata, and index-bound metadata — followed by validation in
 coverage commit `3ca4f897af3` landed on top of the migrated emit and
 exercised the new descriptor path end-to-end.
 
-#### I.25 — Deferred string CTE query failures from F.4 coverage (M)
+#### I.25 — Deferred string CTE query failures from F.4 coverage (M) — moved to Phase N
 
-Detailed plan: `cte_filter_phase_i25.md`.
+Detailed plan: `cte_filter_phase_i25.md`; final wrap-up tracking moved
+to `cte_filter_phase_n.md`.
 
 Phase I.6 F.4 string MIN/MAX testing exposed two extra failures that
 should not be solved by weakening the final coverage.  First, a CTE
@@ -547,30 +537,26 @@ signed/unsigned integers, floats, DECIMAL widening, strings, date/time
 types where exposed, and NULL semantics, with clear prepare-time
 rejections for families that remain unsupported.
 
-## Recommended next-pick heuristic
+## Final wrap-up
 
-When picking the next post-Phase-H feature work, sort the items
-above by:
-1. **User-visible impact** — does anyone hit the rejection in real
-   queries?  I.1, I.2, I.4 are the most user-visible (filter
-   grammar and CASE).
-2. **Effort/value ratio** — small RonSQL-only items first (I.1,
-   I.13).
-3. **Dependency chain** — I.10 / I.14 want LIMIT/ORDER-BY to land
-   first; I.12 wants kernel work first.
+The remaining active catalogue items have been moved to Phase N
+(`cte_filter_phase_n.md`):
 
-When a candidate is chosen, write its detailed per-phase doc as
-`cte_filter_phase_<id>.md` (or under a fresh letter if it's
-substantial), then update this catalogue's status for the entry
-to "in progress" / "shipped".
+- I.25 string CTE query failures and CTE output comparison matrix;
+- I.13 SQL-facing batch-size control decision;
+- I.14 early close / LIMIT interaction decision;
+- I.15 multi-fragment / multi-node CTE behaviour coverage.
+
+After Phase N is completed or explicitly defers its decision items,
+RONDB-1050 can be wrapped up from this catalogue's point of view.
 
 ## Relationship to other docs
 
 - Phase H (`cte_filter_phase_h{1,2,3}.md`) covers MTR coverage of
   things RonSQL **does** support today.
-- This doc (Phase I) lists things RonSQL **doesn't** support that
-  the NDB-API stack already does.
+- This doc (Phase I) is the historical catalogue of RonSQL feature
+  gaps against the NDB-API stack.  Active final work is in Phase N.
 - `cte_filter_minmax_strings_plan.md` (I.6 / Phase F) is the only
   catalogue entry already broken into sub-phase plans.
-- `ronsql_join_phase7.md` step 45 covers general non-aggregate
-  query support — overlaps with I.10 / I.14.
+- `ronsql_join_phase7.md` step 45 covers broader general
+  non-aggregate query support outside this RONDB-1050 wrap-up.

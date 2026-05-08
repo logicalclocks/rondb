@@ -2,12 +2,12 @@
 
 ## Status
 
-**Planned.**  This phase follows the review of the Phase I.5 v3b
-commits.  v3b made float / double column-vs-literal CASE atoms work by
-loading the literal with `LOAD_DOUBLE_CONST` and comparing through
-typed registers.  The review found three follow-ups that should be
-handled together because they all sit on the same embedded CASE
-col-vs-const path.
+**Shipped** in `eb041c0884e` ("RONDB-1050: implement Phase I.19 CASE
+literal fixes").  The implementation follows the review of the Phase
+I.5 v3b commits: whole embedded CASE atoms are simplified before side
+resolution, signed integer literal boundaries are corrected, and the
+MTR coverage covers literal-left, negative FLOAT / DOUBLE literals,
+and signed boundary cases.
 
 ## Scope
 

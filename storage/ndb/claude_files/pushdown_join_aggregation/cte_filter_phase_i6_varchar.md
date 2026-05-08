@@ -2,7 +2,7 @@
 
 ## Status
 
-**F.2 + F.3 + S.1-S.6 hardening shipped for scalar / grouped scan-aggregation surfaces.**  Join-aggregation linked-attr strings and CTE delivery substitution remain gated as F.4.  Sub-phases F.2 + F.3 of the I.6 plan
+**F.2 + F.3 + S.1-S.6 hardening shipped for scalar / grouped scan-aggregation surfaces; F.4 shipped for CTE delivery + linked-attr strings.**  Sub-phases F.2 + F.3 of the I.6 plan
 (`cte_filter_minmax_strings_plan.md`).  F.1 (DECIMAL widening)
 shipped in `354f2f811f0`.  This doc takes the F.2 / F.3 sketch from
 that plan to actionable, file-anchored per-commit work.
@@ -35,13 +35,15 @@ that plan to actionable, file-anchored per-commit work.
 
 Detailed sub-phase plan with anchors and rationale: `cte_filter_phase_i6_string_minmax_fixups.md`.
 
-**Open follow-ups (out of F.2 / F.3 scope, tracked under F.4):**
+**F.4 follow-ups now shipped:**
 
-- **Join aggregation linked-attr strings** — `JoinAggInterpreter::kOpLoadCol` rejects linked-attr string columns (`attrDescriptor == nullptr` arm).  Charset and prefix bytes need to be encoded in the linked-attr stream before MIN/MAX over a CTE string output can feed a downstream aggregator.
-- **CTE_LOOKUP / CTE_SCAN delivery substitution** — `Dblqh::cteLookupEmitResult` and the CTE feed paths `memcpy(..., 8)` per AggResItem; for string slots they ship `val_ptr` bits.  Needs per-slot type-aware substitution applied to the CTE delivery path (analogous to AGG_CHAR_RESULT for the API drain).
-- **CTE materialisation chain end-to-end** — Once the two above are wired, `WITH cte AS (... MIN/MAX(string) ...) SELECT ... FROM cte JOIN ...` becomes testable end-to-end; today this hangs or fails with `ZCTE_LOOKUP_OUTPUT_OVERFLOW`.
+- **Join aggregation linked-attr strings** — F.4 removed the `JoinAggInterpreter::kOpLoadCol` linked-attr string rejection and decodes charset / prefix metadata from the linked-attr stream.
+- **CTE_LOOKUP / CTE_SCAN delivery substitution** — F.4 replaced fixed 8-byte `AggResItem` emission for string slots with per-slot payload substitution.
+- **CTE materialisation chain end-to-end** — F.4 added block and RonSQL coverage for CTE string MIN/MAX delivery and linked-attr aggregation.
 
-These are tracked under the F.4 plan doc (`cte_filter_phase_i6_string_minmax_f4.md`, to be written when work starts).
+These are closed under `cte_filter_phase_i6_string_minmax_f4.md`.
+Residual string CTE query follow-ups are tracked by Phase N via
+`cte_filter_phase_i25.md`.
 
 ## Scope decisions
 

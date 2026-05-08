@@ -2,8 +2,9 @@
 
 ## Status
 
-**Planned.**  This phase follows review of the shipped Phase I.6 F.1
-DECIMAL widening work.
+**Shipped** in `e461c0c96ec` ("RONDB-1050: implement Phase I.22
+decimal guard").  This phase follows review of the shipped Phase I.6
+F.1 DECIMAL widening work.
 
 F.1 made RonSQL's CTE virtual-table type derivation match the current
 kernel aggregation representation for `MIN` / `MAX` over DECIMAL:

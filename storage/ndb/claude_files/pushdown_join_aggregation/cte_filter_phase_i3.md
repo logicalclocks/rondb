@@ -2,8 +2,10 @@
 
 ## Status
 
-Plan-only. Builds on Phase I.1 / I.2 (`emit_cte_lookup_filter` already
-walks atoms in DNF and accepts column-vs-constant + IS [NOT] NULL).
+**Shipped** in `8f8a8104a81` ("RONDB-1050: Phase I.3 -
+column-vs-column on CTE_LOOKUP (Bigint-only)").  Builds on Phase
+I.1 / I.2 (`emit_cte_lookup_filter` already walks atoms in DNF and
+accepts column-vs-constant + IS [NOT] NULL).
 
 ## Scope
 
