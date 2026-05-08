@@ -2043,6 +2043,55 @@ static Int32 mergeAccumulators(AggResItem* dst, AggResItem* src,
   return 0;
 }
 
+static Int32 decodeRedistributionStringSlots(
+    AggResItem* slots,
+    Uint32 n_agg_results,
+    const char* appended,
+    Uint32 appended_len,
+    const StringResult* string_results,
+    Uint32 thread_id) {
+  const char* p = appended;
+  const char* end = appended + appended_len;
+  for (Uint32 i = 0; i < n_agg_results; i++) {
+    if (!isStringAggType(slots[i].type) ||
+        slots[i].is_null ||
+        slots[i].value.val_ptr == nullptr) {
+      continue;
+    }
+    if (p + sizeof(Uint32) > end) {
+      return ZAGG_OTHER_ERROR;
+    }
+    const Uint32 byte_size = *reinterpret_cast<const Uint32*>(p);
+    p += sizeof(Uint32);
+    const Uint32 padded = (byte_size + 3) & ~3U;
+    if (p + padded > end) {
+      return ZAGG_OTHER_ERROR;
+    }
+    const Uint32 prefix = (string_results != nullptr) ?
+        string_results[i].prefix_bytes : stringPrefixBytes(slots[i].type);
+    if (byte_size < prefix) {
+      return ZAGG_OTHER_ERROR;
+    }
+    const Uint32 payload_len = byte_size - prefix;
+    Uint32 alloc_size = (4 + byte_size + 15) & ~15U;
+    if (alloc_size < 16) alloc_size = 16;
+    char* dst_buf = static_cast<char*>(
+        lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY, thread_id, false));
+    if (dst_buf == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    Uint16* hdr = reinterpret_cast<Uint16*>(dst_buf);
+    hdr[0] = static_cast<Uint16>(payload_len);
+    hdr[1] = static_cast<Uint16>(alloc_size - 4);
+    if (byte_size > 0) {
+      memcpy(dst_buf + 4, p, byte_size);
+    }
+    slots[i].value.val_ptr = dst_buf;
+    p += padded;
+  }
+  return 0;
+}
+
 static void extractAggOps(const Uint32* prog, Uint32 prog_len,
                           Uint32 agg_prog_start_pos,
                           Uint8* agg_ops, Uint32 n_agg_results) {
@@ -2202,7 +2251,30 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
   }
 
   const Uint32 v_len = val_len();
-  (void)accLen;  /* accLen should equal v_len */
+  if (accLen < v_len) return -1;
+  const Uint32 payload_len = accLen - v_len;
+  AggResItem local_items[MAX_AGG_N_RESULTS];
+  const AggResItem* src_const_items =
+      reinterpret_cast<const AggResItem*>(accumulators);
+  if (payload_len > 0) {
+    if (m_n_agg_results > MAX_AGG_N_RESULTS) return -1;
+    memcpy(local_items, src_const_items, v_len);
+    Int32 ret = ensureStringResultsFromRedistribution(
+        local_items, accumulators + v_len, payload_len);
+    if (ret != 0) {
+      return ret;
+    }
+    ret = decodeRedistributionStringSlots(
+        local_items, m_n_agg_results, accumulators + v_len, payload_len,
+        m_string_results, m_thread_id);
+    if (ret != 0) {
+      for (Uint32 i = 0; i < m_n_agg_results; i++) {
+        freeStringAggSlot(&local_items[i]);
+      }
+      return ret;
+    }
+    src_const_items = local_items;
+  }
 
   /* Look up key in local hash table */
   char* found = m_gb_map->find(key, keyLen);
@@ -2211,14 +2283,22 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
     /* Key exists — merge accumulators */
     AggResItem *my_items =
       reinterpret_cast<AggResItem *>(found + keyLen);
-    AggResItem *src_items =
-      const_cast<AggResItem*>(
-          reinterpret_cast<const AggResItem *>(accumulators));
+    AggResItem *src_items = const_cast<AggResItem*>(src_const_items);
     Int32 ret = mergeAccumulators(my_items, src_items, m_n_agg_results,
                                   m_cached_agg_ops, m_string_results,
                                   m_thread_id, false);
     if (ret != 0) {
+      if (payload_len > 0) {
+        for (Uint32 i = 0; i < m_n_agg_results; i++) {
+          freeStringAggSlot(&local_items[i]);
+        }
+      }
       return ret;
+    }
+    if (payload_len > 0) {
+      for (Uint32 i = 0; i < m_n_agg_results; i++) {
+        freeStringAggSlot(&local_items[i]);
+      }
     }
   } else {
     /* New key — allocate and insert */
@@ -2226,13 +2306,46 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
     if (new_group == nullptr) return -1;  /* Memory allocation failure */
 
     memcpy(new_group, key, keyLen);
-    memcpy(new_group + keyLen, accumulators, v_len);
+    if (payload_len > 0) {
+      AggResItem* dst_items = reinterpret_cast<AggResItem*>(
+          new_group + keyLen);
+      memcpy(dst_items, src_const_items, v_len);
+      for (Uint32 i = 0; i < m_n_agg_results; i++) {
+        if (isStringAggType(dst_items[i].type) &&
+            !dst_items[i].is_null &&
+            dst_items[i].value.val_ptr != nullptr) {
+          dst_items[i].value.val_ptr = nullptr;
+          Int32 ret = copyStringAggSlot(&dst_items[i], &src_const_items[i],
+                                        m_string_results, i, m_thread_id);
+          if (ret != 0) {
+            for (Uint32 j = 0; j < m_n_agg_results; j++) {
+              freeStringAggSlot(&dst_items[j]);
+            }
+            freeGroupData(new_group);
+            for (Uint32 j = 0; j < m_n_agg_results; j++) {
+              freeStringAggSlot(&local_items[j]);
+            }
+            return ret;
+          }
+        }
+      }
+      for (Uint32 i = 0; i < m_n_agg_results; i++) {
+        freeStringAggSlot(&local_items[i]);
+      }
+    } else {
+      memcpy(new_group + keyLen, accumulators, v_len);
+    }
 
     m_gb_map->insert(new_group, keyLen);
     m_n_groups = m_gb_map->size();
     m_result_size += keyLen + v_len;
   }
   return 0;
+}
+
+Uint32 JoinAggInterpreter::redistributionValueLen(
+    const AggResItem* slots) const {
+  return val_len() + (hasStringSlots() ? stringPayloadSize(slots) : 0);
 }
 
 Int32 JoinAggInterpreter::mergeScalarAccumulators(const char* accumulators,
@@ -2247,14 +2360,41 @@ Int32 JoinAggInterpreter::mergeScalarAccumulators(const char* accumulators,
   }
 
   const Uint32 v_len = val_len();
-  if (accLen != v_len) return -1;
+  if (accLen < v_len) return -1;
 
-  AggResItem* src_items =
-      const_cast<AggResItem*>(reinterpret_cast<const AggResItem*>(
-          accumulators));
-  return mergeAccumulators(m_agg_results, src_items, m_n_agg_results,
-                           m_cached_agg_ops, m_string_results,
-                           m_thread_id, false);
+  const Uint32 payload_len = accLen - v_len;
+  AggResItem local_items[MAX_AGG_N_RESULTS];
+  const AggResItem* src_const_items =
+      reinterpret_cast<const AggResItem*>(accumulators);
+  if (payload_len > 0) {
+    if (m_n_agg_results > MAX_AGG_N_RESULTS) return -1;
+    memcpy(local_items, src_const_items, v_len);
+    Int32 ret = ensureStringResultsFromRedistribution(
+        local_items, accumulators + v_len, payload_len);
+    if (ret != 0) {
+      return ret;
+    }
+    ret = decodeRedistributionStringSlots(
+        local_items, m_n_agg_results, accumulators + v_len, payload_len,
+        m_string_results, m_thread_id);
+    if (ret != 0) {
+      for (Uint32 i = 0; i < m_n_agg_results; i++) {
+        freeStringAggSlot(&local_items[i]);
+      }
+      return ret;
+    }
+    src_const_items = local_items;
+  }
+  AggResItem* src_items = const_cast<AggResItem*>(src_const_items);
+  Int32 ret = mergeAccumulators(m_agg_results, src_items, m_n_agg_results,
+                                m_cached_agg_ops, m_string_results,
+                                m_thread_id, false);
+  if (payload_len > 0) {
+    for (Uint32 i = 0; i < m_n_agg_results; i++) {
+      freeStringAggSlot(&local_items[i]);
+    }
+  }
+  return ret;
 }
 
 Int32 JoinAggInterpreter::initGBTypes(Dbtup* block_tup,
@@ -2678,6 +2818,51 @@ Int32 JoinAggInterpreter::ensureStringResultsFrom(
     m_string_results[i].ptr = nullptr;
     m_string_results[i].length = 0;
     m_string_results[i].size = 0;
+  }
+  return 0;
+}
+
+Int32 JoinAggInterpreter::ensureStringResultsFromRedistribution(
+    const AggResItem* slots,
+    const char* appended,
+    Uint32 appended_len) {
+  if (m_string_results != nullptr) {
+    return 0;
+  }
+  const Uint32 nbytes = m_n_agg_results * sizeof(StringResult);
+  m_string_results = static_cast<StringResult*>(
+      lc_ndbd_pool_malloc(nbytes, RG_QUERY_MEMORY, m_thread_id, true));
+  if (m_string_results == nullptr) {
+    return ZAGG_ALLOC_MEM_FAILED;
+  }
+  const char* p = appended;
+  const char* end = appended + appended_len;
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    if (!isStringAggType(slots[i].type) ||
+        slots[i].is_null ||
+        slots[i].value.val_ptr == nullptr) {
+      continue;
+    }
+    if (p + sizeof(Uint32) > end) {
+      return ZAGG_OTHER_ERROR;
+    }
+    const Uint32 byte_size = *reinterpret_cast<const Uint32*>(p);
+    p += sizeof(Uint32);
+    const Uint32 prefix = stringPrefixBytes(slots[i].type);
+    if (byte_size < prefix) {
+      return ZAGG_OTHER_ERROR;
+    }
+    StringResult& sr = m_string_results[i];
+    sr.ptr = nullptr;
+    sr.length = 0;
+    sr.size = 0;
+    sr.prefix_bytes = static_cast<Uint16>(prefix);
+    sr.declared_size = static_cast<Uint16>(byte_size - prefix);
+    sr.charset = nullptr;
+    p += (byte_size + 3) & ~3U;
+    if (p > end) {
+      return ZAGG_OTHER_ERROR;
+    }
   }
   return 0;
 }

@@ -169,6 +169,7 @@ class JoinAggInterpreter : public PushdownInterpreter {
    */
   Int32 mergeOneGroup(const char* key, Uint32 keyLen,
                       const char* accumulators, Uint32 accLen);
+  Uint32 redistributionValueLen(const AggResItem* slots) const;
 
   /**
    * Phase I.17e: merge an inbound scalar accumulator payload into this
@@ -238,6 +239,9 @@ class JoinAggInterpreter : public PushdownInterpreter {
   Int32 minMaxString(Uint32 reg_index, Uint32 agg_index,
                      AggResItem* agg_res_ptr, bool is_max);
   Int32 ensureStringResultsFrom(const StringResult* source);
+  Int32 ensureStringResultsFromRedistribution(const AggResItem* slots,
+                                              const char* appended,
+                                              Uint32 appended_len);
 
   // Phase I.6 (F.2-K.4e): free per-(group, slot) string winner
   // buffers for one group's AggResItem array.  Called from

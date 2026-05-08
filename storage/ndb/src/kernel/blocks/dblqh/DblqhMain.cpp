@@ -20825,8 +20825,8 @@ void Dblqh::sendScalarRedistributeReq(Signal* signal,
                                        JoinAggregationState* state,
                                        JoinAggInterpreter* interp,
                                        Uint32 ownerNode) {
-  const Uint32 valLen = interp->val_len();
   const AggResItem* accumulators = interp->agg_results();
+  const Uint32 valLen = interp->redistributionValueLen(accumulators);
 
   const Uint32 dstKey = state->m_cte_remote_aggKeys[ownerNode];
   const Uint32 dstOwner = state->m_cte_remote_ownerInstances[ownerNode];
@@ -20850,7 +20850,14 @@ void Dblqh::sendScalarRedistributeReq(Signal* signal,
   LinearSectionPtr lsp[2];
   lsp[0].p = &dummyKey;
   lsp[0].sz = 1;
-  lsp[1].p = reinterpret_cast<const Uint32*>(accumulators);
+  Uint32 valueBuf[ZATTR_BUFFER_SIZE];
+  ndbrequire(((valLen + 3) >> 2) <= ZATTR_BUFFER_SIZE);
+  memcpy(valueBuf, accumulators, interp->val_len());
+  if (interp->hasStringSlots()) {
+    interp->encodeStringPayload(accumulators, reinterpret_cast<char*>(
+        valueBuf + ((interp->val_len() + 3) >> 2)));
+  }
+  lsp[1].p = valueBuf;
   lsp[1].sz = (valLen + 3) >> 2;
 
   BlockReference remoteRef = numberToRef(DBLQH, dstOwner, ownerNode);
@@ -20956,7 +20963,9 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       jam();
       const char *data = reinterpret_cast<const char *>(iter.data());
       const Uint32 keyLen = iter.keyLen();
-      const Uint32 valLen = interp->val_len();
+      const AggResItem* slots = reinterpret_cast<const AggResItem*>(
+          data + keyLen);
+      const Uint32 valLen = interp->redistributionValueLen(slots);
 
       /* Determine hash owner (type-aware for complex character sets) */
       Uint64 h = interp->hashGroupKey(data, keyLen);
@@ -21004,7 +21013,14 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       LinearSectionPtr lsp[3];
       lsp[0].p = reinterpret_cast<const Uint32 *>(data);
       lsp[0].sz = (keyLen + 3) >> 2;
-      lsp[1].p = reinterpret_cast<const Uint32 *>(data + keyLen);
+      Uint32 valueBuf[ZATTR_BUFFER_SIZE];
+      ndbrequire(((valLen + 3) >> 2) <= ZATTR_BUFFER_SIZE);
+      memcpy(valueBuf, data + keyLen, interp->val_len());
+      if (interp->hasStringSlots()) {
+        interp->encodeStringPayload(slots, reinterpret_cast<char*>(
+            valueBuf + ((interp->val_len() + 3) >> 2)));
+      }
+      lsp[1].p = valueBuf;
       lsp[1].sz = (valLen + 3) >> 2;
 
       BlockReference remoteRef = numberToRef(DBLQH, dstOwner, ownerNode);
