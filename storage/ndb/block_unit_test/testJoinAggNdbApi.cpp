@@ -953,6 +953,178 @@ testJitMustCompileSum(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter,
   return 0;
 }
 
+static Uint32
+encEmbeddedOp(Uint32 op, Uint32 lower)
+{
+  return (op & 0x3Fu) | (((op >> 6) & 0x1u) << 15) | lower;
+}
+
+static Uint32
+encEmbeddedBranchAttrNull(Uint32 op, Uint32 branchLength)
+{
+  return encEmbeddedOp(op, (branchLength & 0x7FFFu) << 16);
+}
+
+static Uint32
+encEmbeddedAttrId(Uint32 attrId)
+{
+  return (attrId & 0xFFFFu) << 16;
+}
+
+static int
+testJitAllRejectedSumNull(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+{
+  printf("Test 24: JIT all-rejected SUM returns NULL ... ");
+  fflush(stdout);
+
+  if (mysql_query(conn,
+        "SELECT SUM(amount) FROM jagg_child WHERE amount IS NULL") != 0) {
+    printf("FAILED (MySQL verification: %s)\n", mysql_error(conn));
+    return -1;
+  }
+  {
+    MYSQL_RES *result = mysql_store_result(conn);
+    MYSQL_ROW row = result == nullptr ? nullptr : mysql_fetch_row(result);
+    const bool mysqlNull = (row != nullptr && row[0] == nullptr);
+    if (result != nullptr) mysql_free_result(result);
+    if (!mysqlNull) {
+      printf("FAILED (MySQL verification: expected NULL)\n");
+      return -1;
+    }
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CHILD_TABLE);
+  const NdbDictionary::Table *childTab = dict->getTable(CHILD_TABLE);
+  if (childTab == nullptr) {
+    printf("FAILED (table lookup)\n");
+    return -1;
+  }
+
+  const NdbDictionary::Column *amountCol = childTab->getColumn("amount");
+  if (amountCol == nullptr) {
+    printf("FAILED (column lookup)\n");
+    return -1;
+  }
+
+  const Uint32 amountAttrId = amountCol->getColumnNo();
+  NdbAggregator agg(childTab);
+  if (!agg.EmbeddedInterp(4) ||
+      !agg.EmitEmbeddedWord(encEmbeddedBranchAttrNull(25, 3)) ||
+      !agg.EmitEmbeddedWord(encEmbeddedAttrId(amountAttrId)) ||
+      !agg.EmitEmbeddedWord(encEmbeddedOp(18, 0)) ||
+      !agg.EmitEmbeddedWord(encEmbeddedOp(6, 0)) ||
+      !agg.LoadColumn("amount", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  if (restarter.insertErrorInAllNodes(4060) != 0) {
+    printf("FAILED (insertErrorInAllNodes(4060))\n");
+    return -1;
+  }
+  bool mustCompileSet = true;
+  auto clearMustCompile = [&]() {
+    if (mustCompileSet) {
+      restarter.insertErrorInAllNodes(0);
+      mustCompileSet = false;
+      V("  ERROR_INSERT cleared\n");
+    }
+  };
+
+  NdbQueryOptions opts;
+  opts.setAggregation(agg);
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *scanOp =
+      qb->scanTable(childTab, &opts);
+  if (scanOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    clearMustCompile();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: error %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    clearMustCompile();
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  clearMustCompile();
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result record)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+  const bool isNull = sumRes.is_null();
+  const Int64 actualSum = isNull ? 0 : sumRes.data_int64();
+
+  NdbAggregator::ResultRecord rec2 = resultAgg->FetchResultRecord();
+  if (!rec2.end()) {
+    printf("FAILED (expected single record for non-GROUP-BY, got more)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (!isNull) {
+    printf("FAILED (expected SUM NULL, got %lld)\n",
+           (long long)actualSum);
+    return -1;
+  }
+
+  printf("OK (sum=NULL, JIT required)\n");
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Test 3: Multiple groups with SUM and COUNT                          */
 /*                                                                     */
@@ -6028,6 +6200,7 @@ fakeOkLineForErrorInsertTest(int testNum)
     case 19: return "Test 19: Multi-fragment + eviction 5126 (2000 rows, 16 frags) ... OK (20 groups, multi-fragment eviction merge verified)";
     case 20: return "Test 20: SETUP_REF error handling (ERROR_INSERT 5125) ... OK (SETUP_REF handled, cleanup verified)";
     case 22: return "Test 22: COMPLETE_REF error handling (ERROR_INSERT 5124) ... OK (COMPLETE_REF handled, cleanup verified)";
+    case 23: return "Test 23: JIT must compile SUM local attr ... OK (sum=1500, JIT required)";
     case 24: return "Test 24: JIT must compile SUM local attr ... OK (sum=1500, JIT required)";
     default: return nullptr;
   }
@@ -6505,6 +6678,17 @@ int main(int argc, char **argv)
         if (shouldRun(24)) {
           if (createTestTables(conn) == 0) {
             if (testLookupRootAggRejected(&ndb) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTestTables(conn);
+        }
+        /* Test 25: JIT all-rejected SUM preserves NULL result */
+        if (shouldRun(25)) {
+          NdbRestarter restarter(connectString);
+          if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
+            if (testJitAllRejectedSumNull(&ndb, conn, restarter) != 0)
+              exitCode = 1;
           } else {
             exitCode = 1;
           }

@@ -340,15 +340,10 @@ static inline int emit_op(Program *out, uint8_t kind,
 }
 
 static inline int embedded_filters_enabled(void) {
-  /* A compiled program currently has a void per-row ABI. OP_EXIT only
-   * returns from the JIT entry, after which dbtup_jit_invoke() reports
-   * success and writes accumulators back. That cannot express the
-   * normal interpreter's EXIT_REFUSE "reject this scan row" contract.
-   *
-   * Until JitState/dbtup_jit_invoke grows an explicit row-reject signal,
-   * embedded normal-interpreter filter blocks must fall back to the
-   * interpreter. */
-  return 0;
+  /* EXIT_REFUSE lowers to OP_EXIT, which returns before accumulator
+   * opcodes can set JitState::value_updated[]. DbtupJitGlue writeback
+   * preserves NULL metadata for aggregate results not updated by a row. */
+  return 1;
 }
 
 /* ------------------------------------------------------------------ */
