@@ -27,7 +27,9 @@
  * Linux; it is not a standalone translation unit.
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
