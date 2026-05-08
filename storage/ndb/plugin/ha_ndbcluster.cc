@@ -3508,8 +3508,13 @@ inline int ha_ndbcluster::next_result(uchar *buf) {
   } else if (m_active_query) {
     res = fetch_next_pushed();
     if (res == NdbQuery::NextResult_gotRow) {
-      // In aggregate mode, rows are pre-aggregated results — the pushed
-      // condition was already applied during the scan, not re-evaluable here.
+      /*
+        In aggregate mode, rows are pre-aggregated results — the pushed
+        condition was already applied during the scan, not re-evaluable here.
+
+        Pushed aggregate results are synthetic SQL rows, not table rows.
+        The scan filter has already been applied while draining the query.
+      */
       assert(m_pushed_agg_mode || pushed_cond == nullptr ||
              const_cast<Item *>(pushed_cond)->val_int());
       return 0;  // Found a row
