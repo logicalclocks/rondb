@@ -139,6 +139,22 @@ class JoinAggInterpreter : public AggInterpreterBase {
     return block_tup->cheapMemory[0];
   }
 
+#ifdef ERROR_INSERT
+  bool jitTraceEnabledForJit(Dbtup *block_tup,
+                             Uint32 *trace_limit) const {
+    if (block_tup == nullptr ||
+        !block_tup->jit_error_inserted(4063)) {
+      return false;
+    }
+    Uint32 limit = block_tup->jit_error_insert_extra();
+    if (limit == 0) {
+      limit = 16;
+    }
+    *trace_limit = limit;
+    return true;
+  }
+#endif
+
   Int32 processRecWithLinkedAttrs(
       Dbtup* block_tup,
       Dbtup::KeyReqStruct* req_struct,

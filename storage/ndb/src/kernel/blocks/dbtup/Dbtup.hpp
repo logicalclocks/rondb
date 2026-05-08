@@ -3456,6 +3456,10 @@ private:
   bool jit_error_inserted(Uint32 code) const {
     return ERROR_INSERTED(code);
   }
+
+  Uint32 jit_error_insert_extra() const {
+    return ERROR_INSERT_EXTRA;
+  }
 #endif
 
   // Read only PK attributes, without AttributeHeader.

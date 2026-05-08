@@ -66,6 +66,11 @@ struct dbtup_jit_call_ctx {
   JoinAggInterpreter *agg;          /* the interpreter instance */
   Dbtup              *block_tup;    /* DBTUP block context for readAttributes */
   Dbtup::KeyReqStruct *req_struct;  /* row position / linked-attr context */
+#ifdef ERROR_INSERT
+  bool                trace_enabled;
+  Uint32              trace_row_no;
+  Uint32              trace_limit;
+#endif
 };
 
 extern "C" {

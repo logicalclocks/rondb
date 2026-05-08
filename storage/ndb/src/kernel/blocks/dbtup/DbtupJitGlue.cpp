@@ -23,6 +23,38 @@
 
 #include <cstring>
 
+#ifdef ERROR_INSERT
+static bool dbtup_jit_trace_start(JoinAggInterpreter *agg,
+                                  Dbtup *block_tup,
+                                  Uint32 *row_no,
+                                  Uint32 *limit) {
+  if (agg == nullptr ||
+      !agg->jitTraceEnabledForJit(block_tup, limit)) {
+    return false;
+  }
+  Uint64 processed = agg->processed_rows();
+  Uint32 current = processed > ~Uint32(0)
+                     ? ~Uint32(0)
+                     : static_cast<Uint32>(processed);
+  if (current > *limit) {
+    return false;
+  }
+  *row_no = current;
+  return true;
+}
+
+static void dbtup_jit_trace_accs(const char *stage,
+                                 Uint32 row_no,
+                                 const int64_t *accs,
+                                 Uint32 n_accs) {
+  for (Uint32 i = 0; i < n_accs; i++) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u %s acc[%u]=%lld",
+        row_no, stage, i, (long long)accs[i]);
+  }
+}
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Cold-call helpers.                                                 */
 /* ------------------------------------------------------------------ */
@@ -80,6 +112,16 @@ ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
   /* Decode the BIGINT value (8 bytes, little-endian). */
   s->regs_i64[dst_reg] =
       sint8korr(reinterpret_cast<char *>(&read_buf[1]));
+
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=load_col col=%u dst=r%u "
+        "value=%lld",
+        ctx->trace_row_no, col_id, dst_reg,
+        (long long)s->regs_i64[dst_reg]);
+  }
+#endif
 }
 
 /* ndb_jit_h_branch_attr_null — Phase 5.0 cold-call branch helper.
@@ -135,7 +177,17 @@ ndb_jit_h_branch_attr_null(JitState *s,
   AttributeHeader *header =
       reinterpret_cast<AttributeHeader *>(&read_buf[0]);
   bool is_null = header->isNULL();
-  return (is_null == (want_null != 0)) ? 1 : 0;
+  int take_branch = (is_null == (want_null != 0)) ? 1 : 0;
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=branch_attr_null attr=%u "
+        "want_null=%u is_null=%u take=%u",
+        ctx->trace_row_no, attr_id, want_null, is_null ? 1 : 0,
+        take_branch);
+  }
+#endif
+  return take_branch;
 }
 
 /* ndb_jit_h_read_linked_to_mem — Phase 5.1a cold-call helper.
@@ -160,6 +212,16 @@ ndb_jit_h_read_linked_to_mem(JitState *s, uint32_t position) {
    * Dbtup so it can reach the buffer + the static walk routine. */
   ctx->agg->readLinkedToMemForJit(ctx->block_tup, ctx->req_struct,
                                     position);
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    AttributeHeader ah(ctx->agg->cheapMemoryHeaderForJit(ctx->block_tup));
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=read_linked_to_mem "
+        "position=%u is_null=%u bytes=%u",
+        ctx->trace_row_no, position, ah.isNULL() ? 1 : 0,
+        ah.getByteSize());
+  }
+#endif
 }
 
 /* ndb_jit_h_branch_linked_null — Phase 5.1a cold-call branch helper.
@@ -179,7 +241,17 @@ ndb_jit_h_branch_linked_null(JitState *s, uint32_t want_null) {
   }
   AttributeHeader ah(ctx->agg->cheapMemoryHeaderForJit(ctx->block_tup));
   bool is_null = ah.isNULL();
-  return (is_null == (want_null != 0)) ? 1 : 0;
+  int take_branch = (is_null == (want_null != 0)) ? 1 : 0;
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=branch_linked_null "
+        "want_null=%u is_null=%u take=%u",
+        ctx->trace_row_no, want_null, is_null ? 1 : 0,
+        take_branch);
+  }
+#endif
+  return take_branch;
 }
 
 /* ------------------------------------------------------------------ */
@@ -219,6 +291,11 @@ Int32 dbtup_jit_invoke(JoinAggInterpreter *agg,
   ctx.agg        = agg;
   ctx.block_tup  = block_tup;
   ctx.req_struct = req_struct;
+#ifdef ERROR_INSERT
+  ctx.trace_enabled = dbtup_jit_trace_start(agg, block_tup,
+                                            &ctx.trace_row_no,
+                                            &ctx.trace_limit);
+#endif
 
   JitState s;
   std::memset(&s, 0, sizeof(s));
@@ -232,8 +309,32 @@ Int32 dbtup_jit_invoke(JoinAggInterpreter *agg,
     s.acc_i64[i] = agg_res_ptr[i].value.val_int64;
   }
 
+#ifdef ERROR_INSERT
+  if (ctx.trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u/%u jit invoke entry=%p "
+        "n_agg_results=%u",
+        ctx.trace_row_no, ctx.trace_limit,
+        reinterpret_cast<void *>(entry_fn), n_agg_results);
+    dbtup_jit_trace_accs("before", ctx.trace_row_no,
+                         s.acc_i64, n_agg_results);
+  }
+#endif
+
   /* Run the JIT'd program. */
   entry_fn(&s);
+
+#ifdef ERROR_INSERT
+  if (ctx.trace_enabled) {
+    dbtup_jit_trace_accs("after", ctx.trace_row_no,
+                         s.acc_i64, n_agg_results);
+    for (Uint32 i = 0; i < BC_MAX_REGS; i++) {
+      g_eventLogger->info(
+          "ERROR_INSERT 4063: row=%u after reg[%u]=%lld",
+          ctx.trace_row_no, i, (long long)s.regs_i64[i]);
+    }
+  }
+#endif
 
   /* Write accumulators back. The metadata fields (type,
    * is_unsigned, is_null) are set even on first row so downstream
