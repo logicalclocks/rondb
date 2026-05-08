@@ -64,9 +64,21 @@
 /* ------------------------------------------------------------------ */
 
 #if defined(__x86_64__)
-/*   00: 41 54        push r12        ; save caller's r12
- *   02: 49 89 fc     mov  r12, rdi   ; r12 = state (preserve_none arg slot) */
-static const uint8_t kPreamble[] = { 0x41, 0x54, 0x49, 0x89, 0xfc };
+/*   00: 41 54           push r12          ; save caller's r12
+ *   02: 48 83 ec 08     sub  rsp, 8       ; stencil-entry stack parity
+ *   06: 49 89 fc        mov  r12, rdi     ; r12 = state
+ *
+ * A regular SysV C call enters with rsp%16 == 8. The first push would
+ * make stencil entry rsp%16 == 0, but clang-generated cold-call
+ * stencils assume ordinary function-entry parity and push once before
+ * calling C helpers. Keep stencil entry at rsp%16 == 8 so those helper
+ * calls are aligned. op_skip/op_exit undo this with add rsp,8; pop r12;
+ * ret. */
+static const uint8_t kPreamble[] = {
+  0x41, 0x54,
+  0x48, 0x83, 0xec, 0x08,
+  0x49, 0x89, 0xfc
+};
 
 #elif defined(__aarch64__)
 /*   00: a9bf7bf4     stp  x20, x30, [sp, #-16]!  ; save x20 + LR

@@ -300,10 +300,15 @@ static TailPolicy classify_tail(const char *name) {
   return TAIL_STRIP_TAIL;
 }
 
-/* x86_64 hand-coded terminator: pop r12; ret. Engine-required —
- * matches the preamble (push r12; mov r12, rdi) emitted at offset 0
- * of every compiled program. See jit1.c kPreamble[]. */
-static const uint8_t kX86Terminator[]  = { 0x41, 0x5c, 0xc3 };
+/* x86_64 hand-coded terminator: add rsp,8; pop r12; ret.
+ * Engine-required — matches the preamble (push r12; sub rsp,8;
+ * mov r12, rdi) emitted at offset 0 of every compiled program.
+ * See jit1.c kPreamble[]. */
+static const uint8_t kX86Terminator[]  = {
+  0x48, 0x83, 0xc4, 0x08,
+  0x41, 0x5c,
+  0xc3
+};
 
 /* aarch64 hand-coded terminator: ldp x20, x30, [sp], #16 ; ret.
  *

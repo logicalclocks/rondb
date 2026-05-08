@@ -150,14 +150,14 @@ static const Hole holes_op_branch_ne_int_int[] = {
   { .byte_offset = 25, .kind = HK_BRANCH_TAKE, .width = 4 },
 };
 
-/* op_skip — 3 bytes, 0 holes */
+/* op_skip — 7 bytes, 0 holes */
 static const uint8_t bytes_op_skip[] = {
-  0x41, 0x5c, 0xc3, 
+  0x48, 0x83, 0xc4, 0x08, 0x41, 0x5c, 0xc3,
 };
 
-/* op_exit — 3 bytes, 0 holes */
+/* op_exit — 7 bytes, 0 holes */
 static const uint8_t bytes_op_exit[] = {
-  0x41, 0x5c, 0xc3, 
+  0x48, 0x83, 0xc4, 0x08, 0x41, 0x5c, 0xc3,
 };
 
 /* op_minus_int_int — 27 bytes, 3 holes */

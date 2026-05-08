@@ -47,17 +47,18 @@ typedef struct JitState {
  *
  * REGULAR x86_64 calling convention: state pointer in rdi.
  *
- * The compiled blob's first 5 bytes are a `push r12; mov r12, rdi`
+ * The compiled blob starts with a `push r12; sub rsp,8; mov r12,rdi`
  * preamble emitted by jit1_compile. The preamble:
  *   - saves the caller's r12 (callee-saved in regular ABI),
+ *   - keeps the stack parity that clang's extracted cold-call
+ *     stencils expect before they call regular C helpers,
  *   - moves rdi into r12 so the stencils — which use r12 internally
  *     under their preserve_none calling convention — find the state
  *     pointer where they expect.
  *
- * Every row terminator (op_exit, op_skip) is overridden to `pop r12;
- * ret` (3 bytes) so the caller's r12 is restored on the way out
- * before returning, honouring the regular ABI's callee-saved
- * contract.
+ * Every row terminator (op_exit, op_skip) is overridden to
+ * `add rsp,8; pop r12; ret` so the caller's stack and r12 are restored
+ * on the way out, honouring the regular ABI.
  *
  * This decouples the C call site from clang's preserve_none
  * attribute propagation, which has shown to be unreliable in some
