@@ -1105,6 +1105,9 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
   Uint32 reg_index2;
   Uint32 agg_index;
   const Uint32* attrDescriptor = nullptr;
+  Uint32 linked_word0 = 0;
+  Uint32 linked_word1 = 0;
+  bool linked_cte_attr = false;
 
   Int32 decimal_info = 0;
   Int32 precision = 0;
@@ -1228,6 +1231,9 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         type = (value & 0x03E00000) >> 21;
         is_unsigned = IsUnsigned(type);
         reg_index = (value & 0x000F0000) >> 16;
+        linked_word0 = 0;
+        linked_word1 = 0;
+        linked_cte_attr = false;
         {
           Uint32 col_id_raw = value & 0x0000FFFF;
           if ((col_id_raw & 0x8000) != 0 && m_linked_attr_data != nullptr) {
@@ -1247,6 +1253,9 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
                   "(linked_len=%u)", position, m_linked_attr_len);
               return ZAGG_OTHER_ERROR;
             }
+            linked_word0 = p[0];
+            linked_word1 = p[1];
+            linked_cte_attr = CteLinkedAttr::isCteMarker(linked_word0);
             p += 2;
             Uint32 words = 1 + AttributeHeader::getDataSize(*p);
             memcpy(m_attr_read_buf + m_attr_read_pos, p, words * sizeof(Uint32));
@@ -1405,21 +1414,34 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
           case NDB_TYPE_VARCHAR:
           case NDB_TYPE_LONGVARCHAR: {
             // Phase I.6 (F.2-K.4b): see AggInterpreter.cpp for the
-            // pattern.  Linked-attr string columns (attrDescriptor ==
-            // nullptr) are not yet supported — they require encoding
-            // charset and prefix bytes in the linked-attr metadata.
-            if (attrDescriptor == nullptr) {
+            // local-table pattern.  Phase I.6 F.4-K.3 adds the CTE
+            // linked-attr path, where type metadata is carried in the
+            // two linked-attr header words before AttributeHeader.
+            const CHARSET_INFO* cs = nullptr;
+            Uint32 declared = 0;
+            if (attrDescriptor != nullptr) {
+              const Uint32 TattrDesc1 = attrDescriptor[0];
+              const Uint32 TattrDesc2 = attrDescriptor[1];
+              if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
+                const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+                cs = req_struct->tablePtrP->charsetArray[pos];
+              }
+              declared = AttributeDescriptor::getSizeInBytes(TattrDesc1);
+            } else if (linked_cte_attr) {
+              const Uint32 linked_type = CteLinkedAttr::decodeTypeId(
+                  linked_word0);
+              if (linked_type != type) {
+                return ZAGG_LOAD_COL_WRONG_TYPE;
+              }
+              declared = CteLinkedAttr::decodeMaxBytes(linked_word0);
+              const Uint32 csNumber = CteLinkedAttr::decodeCsNumber(
+                  linked_word1);
+              if (csNumber != 0) {
+                cs = all_charsets[csNumber];
+              }
+            } else {
               return ZAGG_LOAD_COL_WRONG_TYPE;
             }
-            const Uint32 TattrDesc1 = attrDescriptor[0];
-            const Uint32 TattrDesc2 = attrDescriptor[1];
-            const CHARSET_INFO* cs = nullptr;
-            if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
-              const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
-              cs = req_struct->tablePtrP->charsetArray[pos];
-            }
-            const Uint32 declared =
-                AttributeDescriptor::getSizeInBytes(TattrDesc1);
             const Uint16 prefix =
                 (type == NDB_TYPE_CHAR) ? 0 :
                 (type == NDB_TYPE_VARCHAR) ? 1 : 2;
@@ -1427,7 +1449,9 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
                 &m_attr_read_buf[m_attr_read_pos + 1]);
             Uint16 payload_len;
             if (type == NDB_TYPE_CHAR) {
-              payload_len = static_cast<Uint16>(declared);
+              payload_len = static_cast<Uint16>(
+                  attrDescriptor != nullptr ? declared :
+                  header->getByteSize());
             } else if (type == NDB_TYPE_VARCHAR) {
               payload_len = static_cast<Uint16>(
                   static_cast<Uint8>(base[0]));
