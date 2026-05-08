@@ -50,6 +50,8 @@
 #include <NdbApi.hpp>
 #include <NdbAggregator.hpp>
 #include <ndbapi/NdbAggregationCommon.hpp>
+#include "NdbQueryBuilder.hpp"
+#include "NdbQueryOperation.hpp"
 
 #include <mysql.h>
 
@@ -84,6 +86,8 @@ static int runQuery(MYSQL *conn, const char *sql) {
 }
 
 static int setupSchema(MYSQL *conn) {
+  if (runQuery(conn, "DROP TABLE IF EXISTS vctest_virt") != 0) return -1;
+  if (runQuery(conn, "DROP TABLE IF EXISTS vctest_groups") != 0) return -1;
   if (runQuery(conn, "DROP TABLE IF EXISTS vctest_t") != 0) return -1;
   if (runQuery(conn,
         "CREATE TABLE vctest_t ("
@@ -94,16 +98,30 @@ static int setupSchema(MYSQL *conn) {
         "  lname VARCHAR(300) NOT NULL"
         ") ENGINE=NDB") != 0) return -1;
   if (runQuery(conn,
+        "CREATE TABLE vctest_groups ("
+        "  grp INT NOT NULL PRIMARY KEY"
+        ") ENGINE=NDB") != 0) return -1;
+  if (runQuery(conn,
+        "CREATE TABLE vctest_virt ("
+        "  grp INT NOT NULL PRIMARY KEY,"
+        "  min_v VARCHAR(20),"
+        "  max_v VARCHAR(20)"
+        ") ENGINE=NDB") != 0) return -1;
+  if (runQuery(conn,
         "INSERT INTO vctest_t VALUES "
         "  (1, 1, 'Alice',   'A1', REPEAT('z', 260)),"
         "  (2, 1, 'Bob',     'B2', REPEAT('a', 260)),"
         "  (3, 2, 'Charlie', 'C3', REPEAT('m', 260)),"
         "  (4, 2, 'Dave',    'D4', REPEAT('n', 260)),"
         "  (5, 2, 'Eve',     'E5', REPEAT('e', 260))") != 0) return -1;
+  if (runQuery(conn,
+        "INSERT INTO vctest_groups VALUES (1), (2)") != 0) return -1;
   return 0;
 }
 
 static void dropSchema(MYSQL *conn) {
+  runQuery(conn, "DROP TABLE IF EXISTS vctest_virt");
+  runQuery(conn, "DROP TABLE IF EXISTS vctest_groups");
   runQuery(conn, "DROP TABLE IF EXISTS vctest_t");
 }
 
@@ -137,6 +155,61 @@ static int verifyString(const char *label, NdbAggregator::Result &result,
 static void fillExpectedLong(char *buf, char ch) {
   memset(buf, ch, 260);
   buf[260] = 0;
+}
+
+static int verifyVarcharRecAttr(const char *label, const NdbRecAttr *attr,
+                                const char *expected) {
+  if (attr == nullptr) {
+    fprintf(stderr, "FAIL %s: missing NdbRecAttr\n", label);
+    return -1;
+  }
+  if (attr->isNULL()) {
+    fprintf(stderr, "FAIL %s: value is NULL, expected '%s'\n",
+            label, expected);
+    return -1;
+  }
+  const unsigned char *raw =
+      reinterpret_cast<const unsigned char *>(attr->aRef());
+  const Uint32 len = raw[0];
+  const char *payload = reinterpret_cast<const char *>(raw + 1);
+  const Uint32 expected_len = (Uint32)strlen(expected);
+  if (len != expected_len || memcmp(payload, expected, expected_len) != 0) {
+    fprintf(stderr, "FAIL %s: got '%.*s' (len=%u), expected '%s'\n",
+            label, (int)len, payload, len, expected);
+    return -1;
+  }
+  V("  OK  %s = '%s'\n", label, expected);
+  return 0;
+}
+
+static int buildStringCte(NdbQueryBuilder *qb,
+                          const NdbDictionary::Table *srcTab,
+                          NdbAggregator &cteAgg) {
+  qb->beginCteSubtree(0);
+  const NdbQueryTableScanOperationDef *cteScan = qb->scanTable(srcTab);
+  if (cteScan == nullptr) {
+    fprintf(stderr, "CTE scan build failed: %s\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteKey[] = {
+      qb->linkedValue(cteScan, "id"), nullptr
+  };
+  NdbQueryOptions cteLeafOpts;
+  cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLeafOpts.setAggregation(cteAgg);
+  if (qb->readTuple(srcTab, cteKey, &cteLeafOpts) == nullptr) {
+    fprintf(stderr, "CTE leaf build failed: %s\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, srcTab, cteAgg) != 0) {
+    fprintf(stderr, "defineCte failed: %s\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  return 0;
 }
 
 static int runScalarTest(Ndb *ndb) {
@@ -487,6 +560,263 @@ static int runLongvarcharGroupByTest(Ndb *ndb) {
   return failures == 0 ? 0 : -1;
 }
 
+static int runCteScanStringDeliveryTest(Ndb *ndb) {
+  V("\n=== Test: CTE_SCAN delivery of string MIN/MAX ===\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("vctest_t");
+  dict->invalidateTable("vctest_virt");
+  const NdbDictionary::Table *srcTab = dict->getTable("vctest_t");
+  const NdbDictionary::Table *virtTab = dict->getTable("vctest_virt");
+  if (srcTab == nullptr || virtTab == nullptr) {
+    fprintf(stderr, "Cannot find CTE string test tables: %s\n",
+            dict->getNdbError().message);
+    return -1;
+  }
+
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") ||
+      !cteAgg.LoadColumn("vname", 0) ||
+      !cteAgg.Min(0, 0) ||
+      !cteAgg.Max(1, 0) ||
+      !cteAgg.Finalize()) {
+    fprintf(stderr, "CTE string aggregation build failed: %s\n",
+            cteAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    fprintf(stderr, "NdbQueryBuilder::create failed\n");
+    return -1;
+  }
+  if (buildStringCte(qb, srcTab, cteAgg) != 0) return -1;
+  if (qb->scanCte(0, 3, virtTab) == nullptr) {
+    fprintf(stderr, "scanCte build failed: %s\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    fprintf(stderr, "prepare failed: %s\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    fprintf(stderr, "startTransaction failed: %s\n",
+            ndb->getNdbError().message);
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    fprintf(stderr, "createQuery failed: %s\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainOp = query->getQueryOperation(mainOpNo);
+  NdbRecAttr *grpAttr = nullptr;
+  NdbRecAttr *minAttr = nullptr;
+  NdbRecAttr *maxAttr = nullptr;
+  if (mainOp != nullptr) {
+    grpAttr = mainOp->getValue("grp");
+    minAttr = mainOp->getValue("min_v");
+    maxAttr = mainOp->getValue("max_v");
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    fprintf(stderr, "execute failed: %s\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  bool seenGrp1 = false;
+  bool seenGrp2 = false;
+  int failures = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    if (grpAttr == nullptr || grpAttr->isNULL()) {
+      fprintf(stderr, "FAIL CTE_SCAN: missing grp\n");
+      failures++;
+      continue;
+    }
+    const Int32 grp = grpAttr->int32_value();
+    if (grp == 1) {
+      seenGrp1 = true;
+      if (verifyVarcharRecAttr("cte grp1 MIN(vname)", minAttr,
+                               "Alice") != 0) failures++;
+      if (verifyVarcharRecAttr("cte grp1 MAX(vname)", maxAttr,
+                               "Bob") != 0) failures++;
+    } else if (grp == 2) {
+      seenGrp2 = true;
+      if (verifyVarcharRecAttr("cte grp2 MIN(vname)", minAttr,
+                               "Charlie") != 0) failures++;
+      if (verifyVarcharRecAttr("cte grp2 MAX(vname)", maxAttr,
+                               "Eve") != 0) failures++;
+    } else {
+      fprintf(stderr, "FAIL CTE_SCAN: unexpected group %d\n", grp);
+      failures++;
+    }
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    fprintf(stderr, "nextResult failed: %s\n", query->getNdbError().message);
+    failures++;
+  }
+  if (!seenGrp1 || !seenGrp2) {
+    fprintf(stderr, "FAIL CTE_SCAN: missing groups, seen 1=%d 2=%d\n",
+            seenGrp1, seenGrp2);
+    failures++;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+  return failures == 0 ? 0 : -1;
+}
+
+static int runCteLookupStringAggFeedTest(Ndb *ndb) {
+  V("\n=== Test: CTE_LOOKUP feeds string MIN/MAX aggregation ===\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("vctest_t");
+  dict->invalidateTable("vctest_groups");
+  dict->invalidateTable("vctest_virt");
+  const NdbDictionary::Table *srcTab = dict->getTable("vctest_t");
+  const NdbDictionary::Table *groupTab = dict->getTable("vctest_groups");
+  const NdbDictionary::Table *virtTab = dict->getTable("vctest_virt");
+  if (srcTab == nullptr || groupTab == nullptr || virtTab == nullptr) {
+    fprintf(stderr, "Cannot find CTE lookup string test tables: %s\n",
+            dict->getNdbError().message);
+    return -1;
+  }
+
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.GroupBy("grp") ||
+      !cteAgg.LoadColumn("vname", 0) ||
+      !cteAgg.Min(0, 0) ||
+      !cteAgg.Max(1, 0) ||
+      !cteAgg.Finalize()) {
+    fprintf(stderr, "CTE string aggregation build failed: %s\n",
+            cteAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  const NdbDictionary::Column *minCol = virtTab->getColumn("min_v");
+  const NdbDictionary::Column *maxCol = virtTab->getColumn("max_v");
+  if (minCol == nullptr || maxCol == nullptr) {
+    fprintf(stderr, "Virtual string column lookup failed\n");
+    return -1;
+  }
+
+  NdbAggregator mainAgg(virtTab);
+  if (!mainAgg.LoadLinkedColumn(1, 0, minCol) ||
+      !mainAgg.Min(0, 0) ||
+      !mainAgg.LoadLinkedColumn(2, 1, maxCol) ||
+      !mainAgg.Max(1, 1) ||
+      !mainAgg.Finalize()) {
+    fprintf(stderr, "Main string aggregation build failed: %s\n",
+            mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    fprintf(stderr, "NdbQueryBuilder::create failed\n");
+    return -1;
+  }
+  if (buildStringCte(qb, srcTab, cteAgg) != 0) return -1;
+
+  const NdbQueryTableScanOperationDef *mainScan = qb->scanTable(groupTab);
+  if (mainScan == nullptr) {
+    fprintf(stderr, "main scan build failed: %s\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteKey[] = {
+      qb->linkedValue(mainScan, "grp"), nullptr
+  };
+  NdbQueryOptions lookupOpts;
+  lookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  lookupOpts.setAggregation(mainAgg);
+  if (qb->lookupCte(0, 3, virtTab, cteKey, &lookupOpts) == nullptr) {
+    fprintf(stderr, "lookupCte build failed: %s\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    fprintf(stderr, "prepare failed: %s\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    fprintf(stderr, "startTransaction failed: %s\n",
+            ndb->getNdbError().message);
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    fprintf(stderr, "createQuery failed: %s\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    fprintf(stderr, "execute failed: %s\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  int failures = 0;
+  if (outcome == NdbQuery::NextResult_error) {
+    fprintf(stderr, "nextResult failed: %s\n", query->getNdbError().message);
+    failures++;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    fprintf(stderr, "FAIL CTE_LOOKUP agg feed: missing result aggregator\n");
+    failures++;
+  } else {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) {
+      fprintf(stderr, "FAIL CTE_LOOKUP agg feed: no result rows\n");
+      failures++;
+    } else {
+      NdbAggregator::Result minV = rec.FetchAggregationResult();
+      NdbAggregator::Result maxV = rec.FetchAggregationResult();
+      if (verifyString("linked CTE MIN(min_v)", minV, "Alice") != 0) {
+        failures++;
+      }
+      if (verifyString("linked CTE MAX(max_v)", maxV, "Eve") != 0) {
+        failures++;
+      }
+    }
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+  return failures == 0 ? 0 : -1;
+}
+
 static int runBuilderRejectTest(Ndb *ndb) {
   V("\n=== Test: builder rejects SUM over string registers ===\n");
 
@@ -598,6 +928,8 @@ int main(int argc, char **argv) {
       if (runScalarTest(&ndb) != 0) result = 1;
       if (runGroupByTest(&ndb) != 0) result = 1;
       if (runLongvarcharGroupByTest(&ndb) != 0) result = 1;
+      if (runCteScanStringDeliveryTest(&ndb) != 0) result = 1;
+      if (runCteLookupStringAggFeedTest(&ndb) != 0) result = 1;
       if (runBuilderRejectTest(&ndb) != 0) result = 1;
     }
 
