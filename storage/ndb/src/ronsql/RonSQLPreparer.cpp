@@ -7202,10 +7202,24 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
           mut_impl.m_orgAttrSize = 6;
           mut_impl.m_arraySize = 1;
           break;
+        case NdbDictionary::Column::Char:
+          mut_impl.m_attrSize = 1;
+          mut_impl.m_orgAttrSize = 3;
+          mut_impl.m_arraySize = mut_col->getLength();
+          break;
+        case NdbDictionary::Column::Varchar:
+          mut_impl.m_attrSize = 1;
+          mut_impl.m_orgAttrSize = 3;
+          mut_impl.m_arraySize = 1 + mut_col->getLength();
+          break;
+        case NdbDictionary::Column::Longvarchar:
+          mut_impl.m_attrSize = 1;
+          mut_impl.m_orgAttrSize = 3;
+          mut_impl.m_arraySize = 2 + mut_col->getLength();
+          break;
         default:
-          // CHAR / VARCHAR / DECIMAL etc.: existing scanCte path
-          // tolerated 0; lookupCte path with such PK types is not
-          // exercised yet by RonSQL.
+          // DECIMAL etc.: existing scanCte path tolerated 0; lookupCte
+          // path with such PK types is not exercised yet by RonSQL.
           break;
         }
       }

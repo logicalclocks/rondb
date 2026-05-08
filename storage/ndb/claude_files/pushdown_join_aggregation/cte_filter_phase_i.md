@@ -516,6 +516,37 @@ metadata, and index-bound metadata — followed by validation in
 coverage commit `3ca4f897af3` landed on top of the migrated emit and
 exercised the new descriptor path end-to-end.
 
+#### I.25 — Deferred string CTE query failures from F.4 coverage (M)
+
+Detailed plan: `cte_filter_phase_i25.md`.
+
+Phase I.6 F.4 string MIN/MAX testing exposed two extra failures that
+should not be solved by weakening the final coverage.  First, a CTE
+string MIN/MAX output re-aggregated through a join back to the same
+table on a non-unique ordered index (`s JOIN str_minmax ON
+str_minmax.grp = s.grp`) produced `NULL, NULL` after the index was
+added, while the narrower primary-key helper-table variant worked.
+This needs a focused fix for the CTE-root to ordered-index child
+topology or linked-projection positioning in that topology.
+
+Second, the intended predicate `WHERE min_v < 'beta'` exposed two
+separate issues: the MTR compare helper passes queries through a
+single-quoted `mysql -e '...'` shell command, so SQL single quotes
+break the MySQL baseline invocation; replacing the literal with
+double quotes avoids the shell problem but RonSQL currently rejects
+double-quoted string literals.  I.25 should make the compare path
+safe for single-quoted SQL literals, clarify/support the parser
+semantics for string literals, and restore the literal predicate
+regression.  The attempted workaround `WHERE min_v < max_v` is also
+currently rejected because CTE_LOOKUP filter col-vs-col comparisons
+are limited to signed BIGINT; string col-vs-col predicate support is
+therefore included in I.25 as a separate regression.  I.25 should
+cover this as a general CTE output comparison matrix rather than a
+single string case: col-vs-col, const-vs-col, and col-vs-const across
+signed/unsigned integers, floats, DECIMAL widening, strings, date/time
+types where exposed, and NULL semantics, with clear prepare-time
+rejections for families that remain unsupported.
+
 ## Recommended next-pick heuristic
 
 When picking the next post-Phase-H feature work, sort the items
