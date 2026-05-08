@@ -248,6 +248,7 @@ class JoinAggInterpreter : public PushdownInterpreter {
  public:
   // Phase I.6 (F.2-K.5): see AggInterpreter for the contract.
   bool hasStringSlots() const { return m_string_results != nullptr; }
+  const StringResult* string_results() const { return m_string_results; }
   Uint32 stringPayloadSize(const AggResItem* slots) const;
   Uint32 encodeStringPayload(const AggResItem* slots, char* dst) const;
  private:

@@ -19002,6 +19002,68 @@ void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
                       senderRef, senderData, requestId);
 }
 
+static inline bool
+isStringAggType(Uint32 typeId) {
+  return typeId == NDB_TYPE_CHAR ||
+         typeId == NDB_TYPE_VARCHAR ||
+         typeId == NDB_TYPE_LONGVARCHAR;
+}
+
+static bool
+emitCteLinkedAggSlot(const JoinAggInterpreter *interp,
+                     const AggResItem &item,
+                     Uint32 aggIdx,
+                     Uint32 attrId,
+                     Uint32 *outBuf,
+                     Uint32 &linkedPos,
+                     Uint32 maxWords) {
+  Uint32 typeId = item.type;
+  if (typeId == NDB_TYPE_UNDEFINED) typeId = NDB_TYPE_BIGINT;
+
+  if (isStringAggType(typeId) && !item.is_null) {
+    const StringResult *stringResults = interp->string_results();
+    if (stringResults == nullptr || item.value.val_ptr == nullptr) {
+      return false;
+    }
+
+    const StringResult &slot = stringResults[aggIdx];
+    const char *buf = static_cast<const char*>(item.value.val_ptr);
+    const Uint16 payloadLen = *reinterpret_cast<const Uint16*>(buf);
+    const Uint32 byteSize = slot.prefix_bytes + payloadLen;
+    const Uint32 dataWords = (byteSize + 3) >> 2;
+    Uint32 csNumber = 0;
+    if (slot.charset != nullptr) csNumber = slot.charset->number;
+
+    if (linkedPos + 3 + dataWords > maxWords) {
+      return false;
+    }
+    outBuf[linkedPos++] =
+        CteLinkedAttr::encodeWord0(typeId, slot.declared_size);
+    outBuf[linkedPos++] = CteLinkedAttr::encodeWord1(csNumber);
+    AttributeHeader::init(&outBuf[linkedPos], attrId, byteSize);
+    memset(&outBuf[linkedPos + 1], 0, dataWords * sizeof(Uint32));
+    memcpy(&outBuf[linkedPos + 1], buf + 4, byteSize);
+    linkedPos += 1 + dataWords;
+    return true;
+  }
+
+  const Uint32 dataWords = item.is_null ? 0 : 2;
+  if (linkedPos + 3 + dataWords > maxWords) {
+    return false;
+  }
+  outBuf[linkedPos++] = CteLinkedAttr::encodeWord0(typeId, 8);
+  outBuf[linkedPos++] = CteLinkedAttr::encodeWord1(0);
+  if (item.is_null) {
+    AttributeHeader::init(&outBuf[linkedPos], attrId, 0);
+    linkedPos += 1;
+  } else {
+    AttributeHeader::init(&outBuf[linkedPos], attrId, 8);
+    memcpy(&outBuf[linkedPos + 1], &item.value, 8);
+    linkedPos += 3;
+  }
+  return true;
+}
+
 /**
  * buildCteLinkedBuffer — assemble linked_attr_data for a CTE group row.
  *
@@ -19017,11 +19079,13 @@ void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
  *   2. GROUP BY key columns from groupData (each entry is a standalone
  *      AttrHeader + payload).  Type info from the source aggregator's
  *      m_gb_types[i].
- *   3. Aggregate result columns: 8-byte values per AggResItem, or a
- *      zero-length AttrHeader when the accumulator is NULL.  Aggregate
- *      result types follow the well-known widening rules; we emit the
- *      runtime AggResItem.type when set, falling back to BIGINT (8B)
- *      when undefined (all-null group).
+ *   3. Aggregate result columns: numeric values are emitted from the
+ *      8-byte AggResItem.value union; CHAR/VARCHAR/Longvarchar MIN/MAX
+ *      values are emitted from the val_ptr sidecar payload.  NULL
+ *      accumulators use a zero-length AttrHeader.  Aggregate result
+ *      types follow the well-known widening rules; we emit the runtime
+ *      AggResItem.type when set, falling back to BIGINT (8B) when
+ *      undefined (all-null group).
  *
  * Writes up to ZATTR_BUFFER_SIZE words; overflow is ndbrequire-fatal.
  * lenOut receives the word count written.
@@ -19094,25 +19158,18 @@ void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
     gbIdx++;
   }
 
-  /* Step 3: Aggregate result columns.  All accumulators are 8-byte
+  /* Step 3: Aggregate result columns.  Numeric accumulators are 8-byte
    * AggResItem.value slots (BIGINT/BIGUNSIGNED/DOUBLE per widening
-   * rules); emit the runtime type when set.  Charset is N/A. */
+   * rules).  String MIN/MAX slots store the winning value in val_ptr;
+   * emit the actual string payload so downstream CTE consumers see a
+   * normal virtual column value instead of the local buffer pointer. */
   const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
       groupData + keyLen);
   for (Uint32 i = 0; i < n_agg_results; i++) {
     const Uint32 attrId = n_gb_cols + i;
-    Uint32 typeId = accumulators[i].type;
-    if (typeId == NDB_TYPE_UNDEFINED) typeId = NDB_TYPE_BIGINT;
-    outBuf[linkedPos++] = CteLinkedAttr::encodeWord0(typeId, 8);
-    outBuf[linkedPos++] = CteLinkedAttr::encodeWord1(0);
-    if (accumulators[i].is_null) {
-      AttributeHeader::init(&outBuf[linkedPos], attrId, 0);
-      linkedPos += 1;
-    } else {
-      AttributeHeader::init(&outBuf[linkedPos], attrId, 8);
-      memcpy(&outBuf[linkedPos + 1], &accumulators[i].value, 8);
-      linkedPos += 3;
-    }
+    bool ok = emitCteLinkedAggSlot(interp, accumulators[i], i, attrId,
+                                   outBuf, linkedPos, ZATTR_BUFFER_SIZE);
+    ndbrequire(ok);
   }
 
   *lenOut = linkedPos;
