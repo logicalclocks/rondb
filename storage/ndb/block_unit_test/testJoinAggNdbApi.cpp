@@ -978,7 +978,9 @@ testJitAllRejectedSumNull(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   fflush(stdout);
 
   if (mysql_query(conn,
-        "SELECT SUM(amount) FROM jagg_child WHERE amount IS NULL") != 0) {
+        "SELECT SUM(jagg_child.amount) FROM jagg_parent "
+        "JOIN jagg_child ON jagg_child.parent_id = jagg_parent.id "
+        "WHERE jagg_child.amount IS NULL") != 0) {
     printf("FAILED (MySQL verification: %s)\n", mysql_error(conn));
     return -1;
   }
@@ -994,9 +996,11 @@ testJitAllRejectedSumNull(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   }
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(PARENT_TABLE);
   dict->invalidateTable(CHILD_TABLE);
+  const NdbDictionary::Table *parentTab = dict->getTable(PARENT_TABLE);
   const NdbDictionary::Table *childTab = dict->getTable(CHILD_TABLE);
-  if (childTab == nullptr) {
+  if (parentTab == nullptr || childTab == nullptr) {
     printf("FAILED (table lookup)\n");
     return -1;
   }
@@ -1034,14 +1038,21 @@ testJitAllRejectedSumNull(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
     }
   };
 
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"),
+    nullptr
+  };
+
   NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
   opts.setAggregation(agg);
 
-  NdbQueryBuilder *qb = NdbQueryBuilder::create();
-  const NdbQueryTableScanOperationDef *scanOp =
-      qb->scanTable(childTab, &opts);
-  if (scanOp == nullptr) {
-    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
     clearMustCompile();
     qb->destroy();
     return -1;
