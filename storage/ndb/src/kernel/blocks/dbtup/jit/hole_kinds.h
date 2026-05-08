@@ -38,9 +38,10 @@ typedef enum {
   HK_BRANCH_FALL    = 5,   /* PC-rel disp from patch site to next stencil */
   HK_BRANCH_TAKE    = 6,   /* PC-rel disp from patch site to op.c bytecode pc */
   /* Phase 4 RONDB-1056: HK_COLDCALL — call site for an extern C++
-   * helper (e.g., ndb_jit_h_load_col). Engine resolves the
-   * helper's address at compile time via the helper registry
-   * (jit1_lookup_helper) and patches the PC-rel displacement.
+   * helper (e.g., ndb_jit_h_load_col). Engine resolves the helper's
+   * address at compile time via the helper registry. x86_64 stencils
+   * carry an absolute 64-bit call target; aarch64 stencils carry the
+   * PC-relative BL displacement.
    * The Hole's helper_name field carries the symbol name to
    * resolve. */
   HK_COLDCALL       = 7,
@@ -54,11 +55,11 @@ typedef enum {
 typedef struct {
   uint16_t    byte_offset;  /* into the stencil's bytes_*[] array */
   uint8_t     kind;         /* HoleKind */
-  uint8_t     width;        /* 4 (x86_64 32-bit) or 8 (aarch64 64-bit chain) */
+  uint8_t     width;        /* 4-byte patch, 8-byte absolute call target,
+                             * or 8-byte aarch64 MOVZ/MOVK chain. */
   /* Helper symbol name — meaningful only when kind == HK_COLDCALL.
    * NULL for every other hole kind. The engine resolves this
-   * through jit1_lookup_helper at compile time and patches the
-   * call site with the helper's PC-relative displacement. */
+   * through jit1_lookup_helper at compile time. */
   const char *helper_name;
 } Hole;
 
@@ -106,10 +107,8 @@ static const HoleSymbolEntry kHoleSymbolTable[] = {
   { "HOLE_BLT_B",    HK_OP_B          },
   { "HOLE_BLT_TGT",  HK_BRANCH_TAKE   },
   /* Phase 4 op_load_col_ndb — cold-call shape. The two operand
-   * holes are inline mov-imm32 patches; HOLE_HELPER_LOAD_COL is
-   * the cold-call PLT32 / CALL26 patch site (kind=HK_COLDCALL,
-   * helper_name="ndb_jit_h_load_col"). The extractor records the
-   * helper symbol name from the relocation; this table only
+   * holes are inline immediate patches. The extractor records helper
+   * call holes directly from ndb_jit_h_* relocations; this table only
    * lists the operand holes here. */
   { "HOLE_LCN_COL",  HK_OP_C          },   /* col_id (16-bit, fits in op->c) */
   { "HOLE_LCN_DST",  HK_OP_A          },   /* dst register slot */

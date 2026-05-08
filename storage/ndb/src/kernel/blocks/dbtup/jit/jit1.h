@@ -144,8 +144,9 @@ size_t jit1_emitted_size(const Jit1Prog *prog);
 /* etc.) are too complex to inline as pure stencils — their stencils  */
 /* emit a regular C function call to an extern helper, then continue  */
 /* with TAIL_NEXT. The engine's compile-time patcher resolves the    */
-/* helper's address through this registry and writes a PC-relative    */
-/* displacement at the call site (HK_COLDCALL hole).                  */
+/* helper's address through this registry and writes the call target  */
+/* at the HK_COLDCALL hole (absolute on x86_64, PC-relative on        */
+/* aarch64).                                                         */
 /*                                                                    */
 /* Registration is one-shot at engine init (e.g., from                */
 /* DbtupJitGlue::dbtup_jit_register_helpers). Call before any         */

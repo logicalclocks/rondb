@@ -495,8 +495,9 @@ STENCIL op_mul_int_int(JitState *s) {
 /*   HOLE(LCN_DST) — dst register slot (uint32_t passed to helper)    */
 /*                                                                    */
 /* Cold-call hole:                                                    */
-/*   The `call` / `bl` instruction's PC-rel32 / imm26 displacement    */
-/*   is patched at JIT compile time via the helper registry.          */
+/*   The helper call target is patched at JIT compile time via the    */
+/*   helper registry. The x86_64 extractor expands clang's rel32 call */
+/*   into an absolute indirect call; aarch64 keeps a BL displacement. */
 /*   Symbol name "ndb_jit_h_load_col" resolves through                */
 /*   jit1_lookup_helper().                                            */
 /* ------------------------------------------------------------------ */

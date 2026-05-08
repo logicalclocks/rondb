@@ -155,6 +155,11 @@ static inline void put_u32_le(uint8_t *dst, uint32_t v) {
   dst[3] = (uint8_t)((v >> 24) & 0xff);
 }
 
+static inline void put_u64_le(uint8_t *dst, uint64_t v) {
+  put_u32_le(dst, (uint32_t)(v & 0xffffffffu));
+  put_u32_le(dst + 4, (uint32_t)(v >> 32));
+}
+
 static inline void patch_operand(uint8_t *site, uint8_t slot, int64_t value) {
   (void)slot;
   /* Phase 1+2 x86_64 stencils use 32-bit operand sites: `mov reg32,
@@ -522,19 +527,12 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
           break;
         }
         case HK_COLDCALL: {
-          /* Phase 4 RONDB-1056: PC-relative call to an extern
-           * helper. The helper lives outside the JIT arena (in the
-           * main binary's .text), so the displacement must be
-           * computed using the patch site's eventual RX address —
-           * NOT its RW address — because the CPU executes from the
-           * RX mapping. ndb_jit_arena_exec_addr translates without
-           * sealing.
-           *
-           * Range concern: x86_64 call rel32 covers ±2GB, aarch64
-           * bl imm26 covers ±128MB. Both should comfortably fit
-           * within ndbmtd's address space; if a future huge-binary
-           * configuration overflows, the engine could fall back to
-           * indirect-call codegen (Phase 5 hardening). */
+          /* Phase 4 RONDB-1056: call to an extern helper. On x86_64
+           * the extractor expands helper calls to an absolute
+           * movabs/call sequence. On aarch64, the helper lives outside
+           * the JIT arena, so the PC-relative displacement must be
+           * computed using the patch site's eventual RX address, not
+           * its RW address. */
           if (hole->helper_name == NULL) {
             errno = EINVAL;   /* extractor bug — HK_COLDCALL without name */
             return NULL;
@@ -544,6 +542,20 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
             errno = ENOENT;   /* helper not registered before compile */
             return NULL;
           }
+#if defined(__x86_64__)
+          if (hole->width == 8) {
+            /* x86_64 cold-call stencils use:
+             *   movabs rax, imm64
+             *   call   rax
+             *
+             * Linux can map the RX arena far away from the main
+             * executable, so a rel32 call is not generally safe. */
+            put_u64_le(patch, (uint64_t)(uintptr_t)helper);
+          } else {
+            errno = EINVAL;
+            return NULL;
+          }
+#else
           uint32_t patch_site_off = this_off + hole->byte_offset;
           const void *rx_site =
               ndb_jit_arena_exec_addr(arena, blob_rw + patch_site_off);
@@ -553,10 +565,8 @@ Jit1Prog *jit1_compile(NdbJitArena *arena,
           }
           int64_t byte_disp = (int64_t)(intptr_t)helper -
                                (int64_t)(uintptr_t)rx_site;
-          /* patch_branch_disp on x86_64 writes (disp - 4) for
-           * next-instruction-relative; on aarch64 writes
-           * (disp >> 2) packed into imm26. Both arch-correct here. */
           patch_branch_disp(patch, (int32_t)byte_disp);
+#endif
           break;
         }
         case HK_BRANCH_TAKE: {

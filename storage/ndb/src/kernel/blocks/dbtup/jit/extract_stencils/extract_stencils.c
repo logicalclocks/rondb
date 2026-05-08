@@ -372,6 +372,89 @@ static int hole_cmp(const void *a, const void *b) {
   return (int)ha->byte_offset - (int)hb->byte_offset;
 }
 
+/* Linux can map generated code more than +/-2GB from helper symbols.
+ * x86_64 stencils therefore do not keep clang's emitted `call rel32`
+ * for cold helpers. During extraction, rewrite each
+ *
+ *   e8 <rel32>
+ *
+ * into
+ *
+ *   48 b8 <imm64>    movabs rax, imm64
+ *   ff d0            call   rax
+ *
+ * and move the HK_COLDCALL hole to the imm64 field. */
+static void expand_x86_coldcalls(ExtractedStencil *out) {
+  uint16_t call_opcode_offs[MAX_HOLES_PER_STENCIL];
+  uint8_t n_calls = 0;
+
+  for (uint8_t i = 0; i < out->holes.n_holes; ++i) {
+    const Hole *h = &out->holes.holes[i];
+    if (h->kind != HK_COLDCALL) continue;
+    if (h->byte_offset == 0 || h->byte_offset + 4 > out->n_bytes) {
+      die("%s: cold-call relocation offset %u is out of range",
+          out->name, h->byte_offset);
+    }
+    uint16_t opcode_off = (uint16_t)(h->byte_offset - 1);
+    if (out->bytes[opcode_off] != 0xe8) {
+      die("%s: expected 0xe8 (call rel32) before cold-call reloc, got 0x%02x",
+          out->name, out->bytes[opcode_off]);
+    }
+    call_opcode_offs[n_calls++] = opcode_off;
+  }
+  if (n_calls == 0) return;
+
+  uint16_t new_n_bytes = (uint16_t)(out->n_bytes + (uint16_t)n_calls * 7);
+  uint8_t *expanded = (uint8_t *)malloc(new_n_bytes);
+  if (expanded == NULL) {
+    die("oom expanding x86 cold-call stencil %s", out->name);
+  }
+
+  uint16_t old_off = 0;
+  uint16_t new_off = 0;
+  for (uint8_t i = 0; i < n_calls; ++i) {
+    uint16_t opcode_off = call_opcode_offs[i];
+    uint16_t chunk = (uint16_t)(opcode_off - old_off);
+    memcpy(expanded + new_off, out->bytes + old_off, chunk);
+    new_off = (uint16_t)(new_off + chunk);
+
+    expanded[new_off++] = 0x48;
+    expanded[new_off++] = 0xb8;
+    memset(expanded + new_off, 0, 8);
+    new_off = (uint16_t)(new_off + 8);
+    expanded[new_off++] = 0xff;
+    expanded[new_off++] = 0xd0;
+
+    old_off = (uint16_t)(opcode_off + 5);
+  }
+  memcpy(expanded + new_off, out->bytes + old_off, out->n_bytes - old_off);
+
+  for (uint8_t h = 0; h < out->holes.n_holes; ++h) {
+    uint16_t old_hole_off = out->holes.holes[h].byte_offset;
+    uint16_t shift = 0;
+
+    for (uint8_t i = 0; i < n_calls; ++i) {
+      uint16_t opcode_off = call_opcode_offs[i];
+      if (out->holes.holes[h].kind == HK_COLDCALL &&
+          old_hole_off == opcode_off + 1) {
+        out->holes.holes[h].byte_offset = (uint16_t)(old_hole_off + shift + 1);
+        out->holes.holes[h].width = 8;
+        goto next_hole;
+      }
+      if (old_hole_off >= opcode_off + 5) {
+        shift = (uint16_t)(shift + 7);
+      }
+    }
+    out->holes.holes[h].byte_offset = (uint16_t)(old_hole_off + shift);
+
+next_hole:
+    ;
+  }
+
+  out->bytes = expanded;
+  out->n_bytes = new_n_bytes;
+}
+
 /* Extract one op_* symbol from the ELF: capture byte range, walk
  * relocations, classify, strip / override per TailPolicy. */
 static ExtractedStencil extract_one_x86(
@@ -470,10 +553,9 @@ static ExtractedStencil extract_one_x86(
     }
 
     /* Phase 4 cold-call: PLT32 against an ndb_jit_h_* helper symbol.
-     * The patch site is the 4-byte rel32 displacement of the
-     * `call rel32` (e8 ?? ?? ?? ??) instruction. Allowed in any
-     * tail policy — cold-call stencils are TAIL_STRIP_TAIL (the
-     * trailing tail-call to `next` is stripped as usual). */
+     * Clang emits `call rel32`; after relocation discovery we expand
+     * it to `movabs rax, imm64; call rax` so runtime patching is not
+     * limited by rel32 range. */
     if (type == R_X86_64_PLT32 && is_jit_helper_symbol(tname)) {
       add_coldcall_hole(&out.holes, local_off, 4, tname);
       continue;
@@ -498,6 +580,7 @@ static ExtractedStencil extract_one_x86(
 
   /* Sort holes deterministically. */
   qsort(out.holes.holes, out.holes.n_holes, sizeof(Hole), hole_cmp);
+  expand_x86_coldcalls(&out);
   return out;
 }
 
@@ -910,9 +993,10 @@ static void emit_header(FILE *out,
             s->name, (unsigned)s->n_bytes, (unsigned)s->holes.n_holes);
     fprintf(out, "static const uint8_t bytes_%s[] = {\n  ", s->name);
     for (uint16_t j = 0; j < s->n_bytes; ++j) {
-      fprintf(out, "0x%02x,%s",
-              s->bytes[j],
-              ((j + 1) % 12 == 0) ? "\n  " : " ");
+      fprintf(out, "0x%02x,", s->bytes[j]);
+      if (j + 1 < s->n_bytes) {
+        fprintf(out, "%s", ((j + 1) % 12 == 0) ? "\n  " : " ");
+      }
     }
     fprintf(out, "\n};\n");
     if (s->holes.n_holes > 0) {
