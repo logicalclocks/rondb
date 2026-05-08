@@ -1013,10 +1013,9 @@ testJitAllRejectedSumNull(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 
   const Uint32 amountAttrId = amountCol->getColumnNo();
   NdbAggregator agg(childTab);
-  if (!agg.EmbeddedInterp(4) ||
-      !agg.EmitEmbeddedWord(encEmbeddedBranchAttrNull(25, 3)) ||
+  if (!agg.EmbeddedInterp(3) ||
+      !agg.EmitEmbeddedWord(encEmbeddedBranchAttrNull(25, 2)) ||
       !agg.EmitEmbeddedWord(encEmbeddedAttrId(amountAttrId)) ||
-      !agg.EmitEmbeddedWord(encEmbeddedOp(18, 0)) ||
       !agg.EmitEmbeddedWord(encEmbeddedOp(6, 0)) ||
       !agg.LoadColumn("amount", 0) ||
       !agg.Sum(0, 0) ||
