@@ -1,0 +1,61 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# RONDB-1056 Phase 5.1 test-strategy canary.
+#
+# ERROR_INSERT 4060 makes fallback to the aggregation interpreter fatal.
+# Keep this test to shapes that are expected to compile today:
+#   - single-leaf pushed aggregation
+#   - no GROUP BY
+#   - BIGINT NOT NULL child-local columns only
+#   - no embedded filter block
+
+--echo ############################################################
+--echo # RONDB-1056 JIT must-compile canary
+--echo ############################################################
+
+--let $join_pushdown = `SELECT @@ndb_join_pushdown`
+if (!$join_pushdown)
+{
+  --skip ndb_join_pushdown must be enabled
+}
+
+CREATE TABLE t1 (
+  pk    BIGINT NOT NULL,
+  c1    BIGINT NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+CREATE TABLE t2 (
+  pk    BIGINT NOT NULL,
+  c2    BIGINT NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50);
+INSERT INTO t2 VALUES (1, 100), (2, 200), (3, 300), (4, 400), (5, 500);
+
+SET ndb_join_pushdown_aggregate=ON;
+
+--echo # Q1: SUM over one child column must compile and run through JIT.
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(t2.c2)
+  FROM t1 JOIN t2 ON t2.pk = t1.pk;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # Q2: SUM over child-local bigint plus must compile and run through JIT.
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(t2.c2 + t2.pk)
+  FROM t1 JOIN t2 ON t2.pk = t1.pk;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # Q3: SUM over child-local plus, minus and mul must compile and run through JIT.
+--exec $NDB_MGM -e "all error 4060" >> $NDB_TOOLS_OUTPUT
+SELECT SUM(t2.c2 - t2.pk + t2.pk * 0)
+  FROM t1 JOIN t2 ON t2.pk = t1.pk;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+DROP TABLE t2;
+DROP TABLE t1;
+
+--remove_file $NDB_TOOLS_OUTPUT

@@ -226,7 +226,44 @@ static void test_load_const_accept(void) {
   mark_pass("T4 load_const_accept");
 }
 
-/* T5: kOpEmbeddedInterp with an unsupported embedded opcode —
+/* T5: kOpLoadCol still has the Phase 5.1a narrow column-id policy.
+ * The largest admitted value is 255; larger column ids must fall
+ * back until the stencil holes and bridge operands are widened end to
+ * end. */
+static void test_load_col_255_accept(void) {
+  uint32_t prog[2] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/255),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+
+  Program p;
+  JitBridgeError err;
+  JitBridgeReason r = ndb_jit_bridge_translate(prog, 2, &p, &err);
+  if (r != JIT_BRIDGE_OK) {
+    mark_fail("T5 load_col_255_accept",
+              "expected OK, got reason=%d (offending_word=%u op=%u)",
+              r, err.offending_word, err.offending_op);
+    return;
+  }
+  if (p.n_ops != 3 ||
+      p.ops[0].kind != OP_LOAD_COL_NDB ||
+      p.ops[0].c != 255) {
+    mark_fail("T5 load_col_255_accept",
+              "unexpected translated column op");
+    return;
+  }
+  mark_pass("T5 load_col_255_accept");
+}
+
+static void test_load_col_256_reject(void) {
+  uint32_t prog[1] = {
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/256),
+  };
+  assert_rejected("T6 load_col_256_reject", prog, 1,
+                   JIT_BRIDGE_REG_OUT_OF_RANGE, 0, kOpLoadCol);
+}
+
+/* T7: kOpEmbeddedInterp with an unsupported embedded opcode —
  * must reject. Phase 5.0 admits BRANCH_ATTR_EQ/NE_NULL + EXIT_OK
  * + EXIT_REFUSE only; opcode 0 (kOpUnknown) inside the embedded
  * block must reject the program. */
@@ -236,49 +273,49 @@ static void test_embedded_interp_reject(void) {
     enc_op(kOpEmbeddedInterp, /*emb_len=*/1),
     0u,                                /* embedded opcode 0 — bogus */
   };
-  assert_rejected("T5 embedded_interp_reject", prog, 2,
+  assert_rejected("T7 embedded_interp_reject", prog, 2,
                    JIT_BRIDGE_UNSUPPORTED_OP, /*offending_word=*/1,
                    /*offending_op=*/0);
 }
 
-/* T6: kOpDiv — must reject (no division support in Phase 4). */
+/* T8: kOpDiv — must reject (no division support in Phase 4). */
 static void test_div_reject(void) {
   uint32_t prog[1] = { enc_2reg(kOpDiv, 0, 1) };
-  assert_rejected("T6 div_reject", prog, 1,
+  assert_rejected("T8 div_reject", prog, 1,
                    JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpDiv);
 }
 
-/* T7: kOpLoadConst with NDB_TYPE_DOUBLE — must reject (non-bigint). */
+/* T9: kOpLoadConst with NDB_TYPE_DOUBLE — must reject (non-bigint). */
 static void test_load_const_double_reject(void) {
   uint32_t prog[3] = {
     enc_load_const(NDB_TYPE_DOUBLE, 0),
     0x00000000u, 0x40000000u,   /* doesn't matter */
   };
-  assert_rejected("T7 load_const_double_reject", prog, 3,
+  assert_rejected("T9 load_const_double_reject", prog, 3,
                    JIT_BRIDGE_NON_BIGINT, 0, kOpLoadConst);
 }
 
-/* T8: kOpLoadConst truncated — only 1 word where 3 are needed. */
+/* T10: kOpLoadConst truncated — only 1 word where 3 are needed. */
 static void test_load_const_truncated_reject(void) {
   uint32_t prog[1] = { enc_load_const(NDB_TYPE_BIGINT, 0) };
-  assert_rejected("T8 load_const_truncated_reject", prog, 1,
+  assert_rejected("T10 load_const_truncated_reject", prog, 1,
                    JIT_BRIDGE_MALFORMED, 0, kOpLoadConst);
 }
 
-/* T9: register index out of range. */
+/* T11: register index out of range. */
 static void test_reg_oor_reject(void) {
   /* BC_MAX_REGS is 8; reg index 9 is out of range. */
   uint32_t prog[1] = {
     enc_load_col(NDB_TYPE_BIGINT, /*reg=*/9, /*col=*/0)
   };
-  assert_rejected("T9 reg_oor_reject", prog, 1,
+  assert_rejected("T11 reg_oor_reject", prog, 1,
                    JIT_BRIDGE_REG_OUT_OF_RANGE, 0, kOpLoadCol);
 }
 
-/* T10: kOpSetRegNull — Phase 4 doesn't admit nullable handling. */
+/* T12: kOpSetRegNull — Phase 4 doesn't admit nullable handling. */
 static void test_set_reg_null_reject(void) {
   uint32_t prog[1] = { enc_op(kOpSetRegNull, 0) };
-  assert_rejected("T10 set_reg_null_reject", prog, 1,
+  assert_rejected("T12 set_reg_null_reject", prog, 1,
                    JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpSetRegNull);
 }
 
@@ -322,15 +359,15 @@ static uint32_t enc_emb_read_linked_to_mem(uint32_t position) {
                          (position & 0xFFu) << 16);
 }
 
-/* T11: empty embedded block — should accept (no embedded ops emitted,
+/* T13: empty embedded block — should accept (no embedded ops emitted,
  * outer prog gets just the trailing OP_EXIT). */
 static void test_embedded_empty_accept(void) {
   uint32_t prog[1] = { enc_op(kOpEmbeddedInterp, /*emb_len=*/0) };
-  assert_accepted("T11 embedded_empty_accept", prog, 1,
+  assert_accepted("T13 embedded_empty_accept", prog, 1,
                    /*expected_n_ops=*/1);   /* just OP_EXIT */
 }
 
-/* T12: minimal `WHERE col IS NULL` shape:
+/* T14: minimal `WHERE col IS NULL` shape:
  *   embedded block:
  *     0: BRANCH_ATTR_NE_NULL +2  (skip to EXIT_REFUSE)
  *     1:   (operand word — attrId)
@@ -346,11 +383,11 @@ static void test_embedded_attr_ne_null_accept(void) {
     /* EXIT_REFUSE = single-word opcode in the embedded space. */
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
-  assert_accepted("T12 embedded_attr_ne_null_accept", prog, 4,
+  assert_accepted("T14 embedded_attr_ne_null_accept", prog, 4,
                    /*expected_n_ops=*/3);
 }
 
-/* T13: backward branch in embedded block — must reject.
+/* T15: backward branch in embedded block — must reject.
  * Direction bit (bit 31 of word 0) = 1. */
 static void test_embedded_backward_reject(void) {
   uint32_t prog[3] = {
@@ -360,31 +397,70 @@ static void test_embedded_backward_reject(void) {
                     (1u << 31) | (1u << 16)),
     enc_emb_attr_id(/*attrId=*/1),
   };
-  assert_rejected("T13 embedded_backward_reject", prog, 3,
+  assert_rejected("T15 embedded_backward_reject", prog, 3,
                    JIT_BRIDGE_EMBEDDED_BACKWARD,
                    /*offending_word=*/1,
                    /*offending_op=*/EMB_BRANCH_ATTR_EQ_NULL);
 }
 
-/* T14: attr_id ≥ 4096 must reject. Real schema columns are
- * 0..4095. Higher encodings are LINKED attributes (0x8000..0xFBFF)
- * or PSEUDO columns (0xFC00..0xFFFF) — both Phase 5.x scope.
- * 0x8000 (LINKED-attr base, what NDB emits in real join queries)
- * is the realistic test value. */
-static void test_embedded_attr_oor_reject(void) {
+/* T16/T17: embedded BRANCH_ATTR_*_NULL has the same current 8-bit
+ * attr-id policy as kOpLoadCol. */
+static void test_embedded_attr_255_accept(void) {
   uint32_t prog[4] = {
     enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
     enc_emb_branch_attr_null(EMB_BRANCH_ATTR_EQ_NULL, /*offset=*/2),
-    enc_emb_attr_id(/*attrId=*/0x8000),    /* LINKED-attr flag */
+    enc_emb_attr_id(/*attrId=*/255),
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
-  assert_rejected("T14 embedded_attr_oor_reject", prog, 4,
+  Program p;
+  JitBridgeError err;
+  JitBridgeReason r = ndb_jit_bridge_translate(prog, 4, &p, &err);
+  if (r != JIT_BRIDGE_OK) {
+    mark_fail("T16 embedded_attr_255_accept",
+              "expected OK, got reason=%d (offending_word=%u op=%u)",
+              r, err.offending_word, err.offending_op);
+    return;
+  }
+  if (p.n_ops != 3 ||
+      p.ops[0].kind != OP_BRANCH_ATTR_EQ_NULL ||
+      p.ops[0].b != 255 ||
+      p.ops[0].c != 1) {
+    mark_fail("T16 embedded_attr_255_accept",
+              "unexpected translated branch op");
+    return;
+  }
+  mark_pass("T16 embedded_attr_255_accept");
+}
+
+static void test_embedded_attr_256_reject(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_EQ_NULL, /*offset=*/2),
+    enc_emb_attr_id(/*attrId=*/256),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_rejected("T17 embedded_attr_256_reject", prog, 4,
                    JIT_BRIDGE_REG_OUT_OF_RANGE,
                    /*offending_word=*/2,
                    /*offending_op=*/EMB_BRANCH_ATTR_EQ_NULL);
 }
 
-/* T15: embedded block too large — must reject. */
+/* T18: embedded BRANCH_ATTR_*_NULL must reject linked-flag attr ids
+ * under the current local-attribute-only policy. */
+static void test_embedded_attr_linked_flag_reject(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_EQ_NULL, /*offset=*/2),
+    enc_emb_attr_id(/*attrId=*/0x8000),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_rejected("T18 embedded_attr_linked_flag_reject", prog, 4,
+                   JIT_BRIDGE_REG_OUT_OF_RANGE,
+                   /*offending_word=*/2,
+                   /*offending_op=*/EMB_BRANCH_ATTR_EQ_NULL);
+}
+
+/* T19: embedded block too large — must reject. */
 static void test_embedded_too_large_reject(void) {
   /* Allocate 1025 words of embedded body (exceeds BR_EMB_MAX_LEN=1024).
    * The bridge rejects before scanning the body, so word values
@@ -392,14 +468,14 @@ static void test_embedded_too_large_reject(void) {
   static uint32_t prog[1 + 1025];
   memset(prog, 0, sizeof(prog));
   prog[0] = enc_op(kOpEmbeddedInterp, /*emb_len=*/1025);
-  assert_rejected("T15 embedded_too_large_reject",
+  assert_rejected("T19 embedded_too_large_reject",
                    prog, sizeof(prog) / sizeof(prog[0]),
                    JIT_BRIDGE_EMBEDDED_TOO_LARGE,
                    /*offending_word=*/0,
                    /*offending_op=*/kOpEmbeddedInterp);
 }
 
-/* T16: Phase 5.1a linked null-check shape:
+/* T20: Phase 5.1a linked null-check shape:
  *   embedded block:
  *     0: READ_LINKED_TO_MEM position 0
  *     1: BRANCH_LINKED_NE_NULL +1  (skip to EXIT_REFUSE)
@@ -418,7 +494,7 @@ static void test_embedded_linked_ne_null_accept(void) {
   JitBridgeError err;
   JitBridgeReason r = ndb_jit_bridge_translate(prog, 4, &p, &err);
   if (r != JIT_BRIDGE_OK) {
-    mark_fail("T16 embedded_linked_ne_null_accept",
+    mark_fail("T20 embedded_linked_ne_null_accept",
               "expected OK, got reason=%d (offending_word=%u op=%u)",
               r, err.offending_word, err.offending_op);
     return;
@@ -430,14 +506,46 @@ static void test_embedded_linked_ne_null_accept(void) {
       p.ops[1].c != 2 ||
       p.ops[2].kind != OP_EXIT ||
       p.ops[3].kind != OP_EXIT) {
-    mark_fail("T16 embedded_linked_ne_null_accept",
+    mark_fail("T20 embedded_linked_ne_null_accept",
               "unexpected translated program");
     return;
   }
-  mark_pass("T16 embedded_linked_ne_null_accept");
+  mark_pass("T20 embedded_linked_ne_null_accept");
 }
 
-/* T17: linked null-check backward branch must reject. */
+/* T21: Phase 5.1a linked EQ-null branch accept path. */
+static void test_embedded_linked_eq_null_accept(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_read_linked_to_mem(/*position=*/255),
+    enc_emb_branch_linked_null(EMB_BRANCH_LINKED_EQ_NULL, /*offset=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+
+  Program p;
+  JitBridgeError err;
+  JitBridgeReason r = ndb_jit_bridge_translate(prog, 4, &p, &err);
+  if (r != JIT_BRIDGE_OK) {
+    mark_fail("T21 embedded_linked_eq_null_accept",
+              "expected OK, got reason=%d (offending_word=%u op=%u)",
+              r, err.offending_word, err.offending_op);
+    return;
+  }
+  if (p.n_ops != 4 ||
+      p.ops[0].kind != OP_LOAD_LINKED_TO_MEM ||
+      p.ops[0].b != 255 ||
+      p.ops[1].kind != OP_BRANCH_LINKED_EQ_NULL ||
+      p.ops[1].c != 2 ||
+      p.ops[2].kind != OP_EXIT ||
+      p.ops[3].kind != OP_EXIT) {
+    mark_fail("T21 embedded_linked_eq_null_accept",
+              "unexpected translated program");
+    return;
+  }
+  mark_pass("T21 embedded_linked_eq_null_accept");
+}
+
+/* T22: linked null-check backward branch must reject. */
 static void test_embedded_linked_backward_reject(void) {
   uint32_t prog[3] = {
     enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
@@ -445,7 +553,7 @@ static void test_embedded_linked_backward_reject(void) {
     enc_emb_op_word(EMB_BRANCH_LINKED_EQ_NULL,
                     (1u << 31) | (1u << 16)),
   };
-  assert_rejected("T17 embedded_linked_backward_reject", prog, 3,
+  assert_rejected("T22 embedded_linked_backward_reject", prog, 3,
                    JIT_BRIDGE_EMBEDDED_BACKWARD,
                    /*offending_word=*/2,
                    /*offending_op=*/EMB_BRANCH_LINKED_EQ_NULL);
@@ -459,6 +567,8 @@ int main(void) {
   test_simple_sum_accept();
   test_arithmetic_battery_accept();
   test_load_const_accept();
+  test_load_col_255_accept();
+  test_load_col_256_reject();
   test_embedded_interp_reject();
   test_div_reject();
   test_load_const_double_reject();
@@ -468,9 +578,12 @@ int main(void) {
   test_embedded_empty_accept();
   test_embedded_attr_ne_null_accept();
   test_embedded_backward_reject();
-  test_embedded_attr_oor_reject();
+  test_embedded_attr_255_accept();
+  test_embedded_attr_256_reject();
+  test_embedded_attr_linked_flag_reject();
   test_embedded_too_large_reject();
   test_embedded_linked_ne_null_accept();
+  test_embedded_linked_eq_null_accept();
   test_embedded_linked_backward_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
