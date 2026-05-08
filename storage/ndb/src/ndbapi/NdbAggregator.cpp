@@ -308,8 +308,10 @@ void NdbAggregator::mergeStringSlot(AggResItem *dst,
     return;
   }
   const int cmp = compareStringSlots(src, dst, agg_id);
-  const bool replace =
-      (agg_ops_[agg_id] == kOpMax) ? (cmp > 0) : (cmp < 0);
+  const Uint32 op = agg_ops_[agg_id];
+  const bool isMax =
+      op == kOpMax || op == kOpMaxBigint || op == kOpMaxDouble;
+  const bool replace = isMax ? (cmp > 0) : (cmp < 0);
   if (replace) {
     assignStringSlot(dst, src);
   }

@@ -1839,12 +1839,136 @@ Int32 JoinAggInterpreter::getResultData(Uint32* buffer, Uint32 buffer_size,
   return 0;
 }
 
-static void mergeAccumulators(AggResItem* dst, const AggResItem* src,
-                              Uint32 n_agg_results,
-                              const Uint8* agg_ops) {
+static bool isStringAggType(DataType type) {
+  return type == NDB_TYPE_CHAR ||
+         type == NDB_TYPE_VARCHAR ||
+         type == NDB_TYPE_LONGVARCHAR;
+}
+
+static Uint32 stringPrefixBytes(DataType type) {
+  return type == NDB_TYPE_CHAR ? 0 :
+         type == NDB_TYPE_VARCHAR ? 1 : 2;
+}
+
+static bool isMaxAggOp(Uint8 op) {
+  return op == kOpMax || op == kOpMaxBigint || op == kOpMaxDouble;
+}
+
+static void freeStringAggSlot(AggResItem* slot) {
+  if (isStringAggType(slot->type) && slot->value.val_ptr != nullptr) {
+    lc_ndbd_pool_free(slot->value.val_ptr);
+    slot->value.val_ptr = nullptr;
+  }
+}
+
+static Int32 copyStringAggSlot(AggResItem* dst,
+                               const AggResItem* src,
+                               const StringResult* string_results,
+                               Uint32 agg_index,
+                               Uint32 thread_id) {
+  const char* src_buf = static_cast<const char*>(src->value.val_ptr);
+  if (src_buf == nullptr) {
+    return ZAGG_OTHER_ERROR;
+  }
+  const Uint16 payload_len = *reinterpret_cast<const Uint16*>(src_buf);
+  const Uint32 prefix = (string_results != nullptr) ?
+      string_results[agg_index].prefix_bytes : stringPrefixBytes(src->type);
+  const Uint32 byte_size = prefix + payload_len;
+  Uint32 alloc_size = (4 + byte_size + 15) & ~15U;
+  if (alloc_size < 16) alloc_size = 16;
+  char* dst_buf = static_cast<char*>(
+      lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY, thread_id, false));
+  if (dst_buf == nullptr) {
+    return ZAGG_ALLOC_MEM_FAILED;
+  }
+  Uint16* hdr = reinterpret_cast<Uint16*>(dst_buf);
+  hdr[0] = payload_len;
+  hdr[1] = static_cast<Uint16>(alloc_size - 4);
+  if (byte_size > 0) {
+    memcpy(dst_buf + 4, src_buf + 4, byte_size);
+  }
+  *dst = *src;
+  dst->value.val_ptr = dst_buf;
+  return 0;
+}
+
+static Int32 assignStringAggSlot(AggResItem* dst,
+                                 AggResItem* src,
+                                 const StringResult* string_results,
+                                 Uint32 agg_index,
+                                 Uint32 thread_id,
+                                 bool move_src) {
+  freeStringAggSlot(dst);
+  if (move_src) {
+    *dst = *src;
+    src->value.val_ptr = nullptr;
+    src->is_null = true;
+    src->type = NDB_TYPE_UNDEFINED;
+    return 0;
+  }
+  return copyStringAggSlot(dst, src, string_results, agg_index, thread_id);
+}
+
+static Int32 mergeStringAccumulator(AggResItem* dst,
+                                    AggResItem* src,
+                                    const StringResult* string_results,
+                                    Uint32 agg_index,
+                                    Uint8 op,
+                                    Uint32 thread_id,
+                                    bool move_src) {
+  if (src->type == NDB_TYPE_UNDEFINED || src->is_null) {
+    return 0;
+  }
+  if (dst->type == NDB_TYPE_UNDEFINED || dst->is_null) {
+    return assignStringAggSlot(dst, src, string_results, agg_index,
+                               thread_id, move_src);
+  }
+  const char* src_buf = static_cast<const char*>(src->value.val_ptr);
+  const char* dst_buf = static_cast<const char*>(dst->value.val_ptr);
+  if (src_buf == nullptr || dst_buf == nullptr) {
+    return ZAGG_OTHER_ERROR;
+  }
+  const Uint16 src_payload_len = *reinterpret_cast<const Uint16*>(src_buf);
+  const Uint16 dst_payload_len = *reinterpret_cast<const Uint16*>(dst_buf);
+  const Uint32 prefix = (string_results != nullptr) ?
+      string_results[agg_index].prefix_bytes : stringPrefixBytes(src->type);
+  const Uint32 src_len = prefix + src_payload_len;
+  const Uint32 dst_len = prefix + dst_payload_len;
+  const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(src->type);
+  const CHARSET_INFO* charset = (string_results != nullptr) ?
+      string_results[agg_index].charset : nullptr;
+  const int cmp = (*sqlType.m_cmp)(charset,
+                                   src_buf + 4, src_len,
+                                   dst_buf + 4, dst_len);
+  const bool replace = isMaxAggOp(op) ? (cmp > 0) : (cmp < 0);
+  if (!replace) {
+    return 0;
+  }
+  return assignStringAggSlot(dst, src, string_results, agg_index,
+                             thread_id, move_src);
+}
+
+static Int32 mergeAccumulators(AggResItem* dst, AggResItem* src,
+                               Uint32 n_agg_results,
+                               const Uint8* agg_ops,
+                               const StringResult* string_results,
+                               Uint32 thread_id,
+                               bool move_src_strings) {
   for (Uint32 i = 0; i < n_agg_results; i++) {
     if (src[i].type == NDB_TYPE_UNDEFINED) continue;
-    if (dst[i].type == NDB_TYPE_UNDEFINED) { dst[i] = src[i]; continue; }
+    if (isStringAggType(src[i].type)) {
+      Int32 ret = mergeStringAccumulator(&dst[i], &src[i],
+                                         string_results, i, agg_ops[i],
+                                         thread_id, move_src_strings);
+      if (ret != 0) {
+        return ret;
+      }
+      continue;
+    }
+    if (dst[i].type == NDB_TYPE_UNDEFINED) {
+      dst[i] = src[i];
+      continue;
+    }
     if (src[i].is_null) continue;
     if (dst[i].is_null) { dst[i] = src[i]; continue; }
     switch (agg_ops[i]) {
@@ -1892,6 +2016,7 @@ static void mergeAccumulators(AggResItem* dst, const AggResItem* src,
         break;
     }
   }
+  return 0;
 }
 
 static void extractAggOps(const Uint32* prog, Uint32 prog_len,
@@ -1939,6 +2064,10 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
   assert(other != nullptr);
   assert(m_n_agg_results == other->m_n_agg_results);
 
+  if (ensureStringResultsFrom(other->m_string_results) != 0) {
+    return 0;
+  }
+
   if (!m_agg_ops_cached) {
     extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
                   m_cached_agg_ops, m_n_agg_results);
@@ -1947,8 +2076,14 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
 
   if (m_n_gb_cols == 0) {
     if (other->m_agg_results != nullptr) {
-      mergeAccumulators(m_agg_results, other->m_agg_results,
-                        m_n_agg_results, m_cached_agg_ops);
+      Int32 ret = mergeAccumulators(m_agg_results, other->m_agg_results,
+                                    m_n_agg_results, m_cached_agg_ops,
+                                    m_string_results, m_thread_id, true);
+      if (ret != 0) {
+        g_eventLogger->debug("mergeFrom scalar accumulator merge failed: %d",
+                             ret);
+        return 0;
+      }
     }
     m_processed_rows += other->m_processed_rows;
     DEB_CTE(("(0x%p)->m_processed_rows = %llu, other: 0x%p, cols=0",
@@ -1975,12 +2110,19 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
 
       char* my_data = m_gb_map->findInBucket(b, other_data, other_key_len);
       if (my_data != nullptr) {
-        const AggResItem *other_items =
-          reinterpret_cast<const AggResItem *>(other_data + other_key_len);
+        AggResItem *other_items =
+          reinterpret_cast<AggResItem *>(other_data + other_key_len);
         AggResItem *my_items =
           reinterpret_cast<AggResItem *>(my_data + other_key_len);
-        mergeAccumulators(my_items, other_items, m_n_agg_results,
-                          m_cached_agg_ops);
+        Int32 ret = mergeAccumulators(my_items, other_items, m_n_agg_results,
+                                      m_cached_agg_ops, m_string_results,
+                                      m_thread_id, true);
+        if (ret != 0) {
+          g_eventLogger->debug("mergeFrom group accumulator merge failed: %d",
+                               ret);
+          other->freeGroupData(other_data);
+          return 0;
+        }
         other->freeGroupData(other_data);
       } else {
         m_gb_map->insertRaw(other_data);
@@ -2045,9 +2187,15 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
     /* Key exists — merge accumulators */
     AggResItem *my_items =
       reinterpret_cast<AggResItem *>(found + keyLen);
-    const AggResItem *src_items =
-      reinterpret_cast<const AggResItem *>(accumulators);
-    mergeAccumulators(my_items, src_items, m_n_agg_results, m_cached_agg_ops);
+    AggResItem *src_items =
+      const_cast<AggResItem*>(
+          reinterpret_cast<const AggResItem *>(accumulators));
+    Int32 ret = mergeAccumulators(my_items, src_items, m_n_agg_results,
+                                  m_cached_agg_ops, m_string_results,
+                                  m_thread_id, false);
+    if (ret != 0) {
+      return ret;
+    }
   } else {
     /* New key — allocate and insert */
     char *new_group = allocGroupData(keyLen + v_len, keyLen);
@@ -2077,11 +2225,12 @@ Int32 JoinAggInterpreter::mergeScalarAccumulators(const char* accumulators,
   const Uint32 v_len = val_len();
   if (accLen != v_len) return -1;
 
-  const AggResItem* src_items =
-      reinterpret_cast<const AggResItem*>(accumulators);
-  mergeAccumulators(m_agg_results, src_items, m_n_agg_results,
-                    m_cached_agg_ops);
-  return 0;
+  AggResItem* src_items =
+      const_cast<AggResItem*>(reinterpret_cast<const AggResItem*>(
+          accumulators));
+  return mergeAccumulators(m_agg_results, src_items, m_n_agg_results,
+                           m_cached_agg_ops, m_string_results,
+                           m_thread_id, false);
 }
 
 Int32 JoinAggInterpreter::initGBTypes(Dbtup* block_tup,
@@ -2487,6 +2636,26 @@ void JoinAggInterpreter::freeGroupStringSlots(AggResItem* slots) {
       slots[i].value.val_ptr = nullptr;
     }
   }
+}
+
+Int32 JoinAggInterpreter::ensureStringResultsFrom(
+    const StringResult* source) {
+  if (m_string_results != nullptr || source == nullptr) {
+    return 0;
+  }
+  const Uint32 nbytes = m_n_agg_results * sizeof(StringResult);
+  m_string_results = static_cast<StringResult*>(
+      lc_ndbd_pool_malloc(nbytes, RG_QUERY_MEMORY, m_thread_id, true));
+  if (m_string_results == nullptr) {
+    return ZAGG_ALLOC_MEM_FAILED;
+  }
+  memcpy(m_string_results, source, nbytes);
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    m_string_results[i].ptr = nullptr;
+    m_string_results[i].length = 0;
+    m_string_results[i].size = 0;
+  }
+  return 0;
 }
 
 // Phase I.6 (F.2-K.5): see AggInterpreter::stringPayloadSize for

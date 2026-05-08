@@ -20093,7 +20093,6 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
      * Build linked_attr_data and feed into target aggregator once.
      */
     jam();
-    const Uint32 src_n_agg_results = interp->n_agg_results();
     const AggResItem *accumulators = interp->agg_results();
 
     /* Scalar filter gate — single synthetic group from agg_results(). */
@@ -20113,70 +20112,60 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
       /* Single scalar group rejected — groupsSent stays 0, fall
        * through to CTE_SCAN_CONF with EndOfData + numRows=0. */
     } else {
-    Uint32 *linkedBuf = cevictBuffer;
-    Uint32 linkedPos = 0;
+      Uint32 *linkedBuf = cevictBuffer;
+      Uint32 linkedPos = 0;
 
-    /* No group-by key columns — go straight to aggregate results */
-    for (Uint32 i = 0; i < src_n_agg_results; i++) {
-      const Uint32 attrId = i;  /* n_gb_cols==0, so attrId == i */
-      linkedBuf[linkedPos++] = 0;  // tableId
-      linkedBuf[linkedPos++] = 0;  // schemaVersion
-      if (accumulators[i].is_null) {
-        AttributeHeader::init(&linkedBuf[linkedPos], attrId, 0);
-        linkedPos += 1;
-      } else {
-        AttributeHeader::init(&linkedBuf[linkedPos], attrId, 8);
-        memcpy(&linkedBuf[linkedPos + 1], &accumulators[i].value, 8);
-        linkedPos += 3;
+      buildCteLinkedBuffer(interp,
+                           reinterpret_cast<const char *>(accumulators),
+                           /*keyLen=*/0, nullptr, 0,
+                           linkedBuf, &linkedPos);
+
+      const LeafProgram *leaf = nullptr;
+      if (targetState->m_num_leaves > 1) {
+        ndbrequire(targetLeafIndex < targetState->m_num_leaves);
+        leaf = &targetState->m_leaf_programs[targetLeafIndex];
       }
-    }
 
-    const LeafProgram *leaf = nullptr;
-    if (targetState->m_num_leaves > 1) {
-      ndbrequire(targetLeafIndex < targetState->m_num_leaves);
-      leaf = &targetState->m_leaf_programs[targetLeafIndex];
-    }
-
-    Dbtup::KeyReqStruct aggReq(c_tup);
-    aggReq.signal = signal;
-    aggReq.read_length = 0;
-    aggReq.no_exec_instructions = 0;
-    aggReq.log_size = 0;
-    aggReq.last_row = false;
-
-    Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-        c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
-    if (unlikely(aggRet != 0 && aggRet != AGG_EVICT_NEEDED)) {
-      jam();
-      releaseCteScanIterState(aggFeedStateI);
-      sendCteScanRef(signal, senderRef, senderData,
-                     ZCTE_LOOKUP_OUTPUT_OVERFLOW);
-      return;
-    }
-    if (aggRet == AGG_EVICT_NEEDED) {
-      jam();
-      if (unlikely(targetState->m_cte_mode)) {
-        jam();
-        releaseCteScanIterState(aggFeedStateI);
-        sendCteScanRef(signal, senderRef, senderData,
-                       ZCTE_EVICT_IN_CTE_LEAF);
-        return;
-      }
-      sendEvictedAggGroup(signal, targetInterp, targetState);
-      /* Retry after eviction */
+      Dbtup::KeyReqStruct aggReq(c_tup);
+      aggReq.signal = signal;
+      aggReq.read_length = 0;
       aggReq.no_exec_instructions = 0;
-      aggRet = targetInterp->processRecWithLinkedAttrs(
+      aggReq.log_size = 0;
+      aggReq.last_row = false;
+
+      Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
           c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
-      if (unlikely(aggRet != 0)) {
+      if (unlikely(aggRet != 0 && aggRet != AGG_EVICT_NEEDED)) {
         jam();
         releaseCteScanIterState(aggFeedStateI);
         sendCteScanRef(signal, senderRef, senderData,
                        ZCTE_LOOKUP_OUTPUT_OVERFLOW);
         return;
       }
-    }
-    targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
-    groupsSent = 1;
+      if (aggRet == AGG_EVICT_NEEDED) {
+        jam();
+        if (unlikely(targetState->m_cte_mode)) {
+          jam();
+          releaseCteScanIterState(aggFeedStateI);
+          sendCteScanRef(signal, senderRef, senderData,
+                         ZCTE_EVICT_IN_CTE_LEAF);
+          return;
+        }
+        sendEvictedAggGroup(signal, targetInterp, targetState);
+        /* Retry after eviction */
+        aggReq.no_exec_instructions = 0;
+        aggRet = targetInterp->processRecWithLinkedAttrs(
+            c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
+        if (unlikely(aggRet != 0)) {
+          jam();
+          releaseCteScanIterState(aggFeedStateI);
+          sendCteScanRef(signal, senderRef, senderData,
+                         ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+          return;
+        }
+      }
+      targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+      groupsSent = 1;
     }  /* else branch of scalar filter gate */
   }
 
@@ -20359,25 +20348,27 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         memcpy(&outBuf[outPos], groupData, keyLen);
         outPos += keyWords;
 
+        bool emitOk = true;
         for (Uint32 a = 0; a < n_agg_results; a++) {
           const AggResItem &item = accumulators[a];
-          if (item.is_null) {
-            if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) break;
-            AttributeHeader::init(&outBuf[outPos], n_gb_cols + a, 0);
-            outPos += 1;
-          } else {
-            if (unlikely(outPos + 3 > ZATTR_BUFFER_SIZE)) break;
-            AttributeHeader::init(&outBuf[outPos], n_gb_cols + a, 8);
-            memcpy(&outBuf[outPos + 1], &item.value, 8);
-            outPos += 3;
+          if (!emitCteOutputAggSlot(interp, item, a, n_gb_cols + a,
+                                    outBuf, outPos, ZATTR_BUFFER_SIZE)) {
+            emitOk = false;
+            break;
           }
         }
 
-        if (likely(outPos + 2 <= ZATTR_BUFFER_SIZE)) {
+        if (likely(emitOk && outPos + 2 <= ZATTR_BUFFER_SIZE)) {
           AttributeHeader::init(&outBuf[outPos],
                                 AttributeHeader::CORR_FACTOR32, 4);
           outBuf[outPos + 1] = groupIdx;
           outPos += 2;
+        } else {
+          jam();
+          releaseCteScanIterState(scanIterI);
+          sendCteScanRef(signal, req.senderRef, req.senderData,
+                         ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+          return;
         }
 
         TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
@@ -20464,16 +20455,21 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
     } else {
       /* Legacy path: emit agg columns + CORR_FACTOR32 */
       Uint32 outPos = 0;
+      bool emitOk = true;
       for (Uint32 a = 0; a < n_agg_results; a++) {
         const AggResItem &item = accumulators[a];
-        if (item.is_null) {
-          AttributeHeader::init(&outBuf[outPos], a, 0);
-          outPos += 1;
-        } else {
-          AttributeHeader::init(&outBuf[outPos], a, 8);
-          memcpy(&outBuf[outPos + 1], &item.value, 8);
-          outPos += 3;
+        if (!emitCteOutputAggSlot(interp, item, a, a,
+                                  outBuf, outPos, ZATTR_BUFFER_SIZE)) {
+          emitOk = false;
+          break;
         }
+      }
+      if (!emitOk || outPos + 2 > ZATTR_BUFFER_SIZE) {
+        jam();
+        releaseCteScanIterState(scanIterI);
+        sendCteScanRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+        return;
       }
       AttributeHeader::init(&outBuf[outPos],
                             AttributeHeader::CORR_FACTOR32, 4);

@@ -237,6 +237,7 @@ class JoinAggInterpreter : public PushdownInterpreter {
   // Returns 0 on success, ZAGG_ALLOC_MEM_FAILED on OOM.
   Int32 minMaxString(Uint32 reg_index, Uint32 agg_index,
                      AggResItem* agg_res_ptr, bool is_max);
+  Int32 ensureStringResultsFrom(const StringResult* source);
 
   // Phase I.6 (F.2-K.4e): free per-(group, slot) string winner
   // buffers for one group's AggResItem array.  Called from
