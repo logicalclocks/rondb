@@ -2,9 +2,9 @@
 
 ## Status
 
-**Planned final phase.**  Phase N collects the remaining Phase I
-catalogue items that are still worth closing before wrapping up
-RONDB-1050:
+**Completed final wrap-up phase.**  Phase N collected the remaining
+Phase I catalogue items that were still worth closing before wrapping
+up RONDB-1050:
 
 - I.25: deferred string CTE query failures from F.4 coverage;
 - I.13: SQL-facing batch-size control, or an explicit decision that it
@@ -121,16 +121,35 @@ Until then the supported coverage split is:
 
 Source item: I.14.
 
-RonSQL currently drains CTE scans.  Phase N should close this as either:
+Decision: defer RonSQL LIMIT-aware early close to broader LIMIT /
+ORDER BY pushdown work.
+
+The kernel and NDB API path already have explicit early-close coverage:
+`testCteNdbApiFilter` has a CTE_SCAN root test that reads part of a
+large CTE result and then closes the query before exhausting it.  That
+is the right level for proving that the CTE scan iterator and kernel
+state can be cleaned up when the API closes early.
+
+RonSQL currently drains CTE scans.  Adding a RonSQL-only close shortcut
+without a supported SQL LIMIT path would be an internal optimisation
+with no stable user-facing contract.  It also risks coupling this CTE
+work to incomplete ORDER BY / LIMIT semantics: for unordered result
+sets, LIMIT can stop early, but for ORDER BY, DISTINCT, or future
+projection-only extensions the executor may still need to materialise
+or sort before applying LIMIT.
+
+The alternatives considered were:
 
 1. a LIMIT-aware early close implementation for CTE main-root scans,
    including `query->close()` / kernel cleanup coverage; or
-2. a documented deferral tied to the broader RonSQL LIMIT / ORDER BY
+2. a documented deferral tied to broader RonSQL LIMIT / ORDER BY
    pushdown work.
 
-If implemented, verify that early close releases CTE scan iterator
-state and aggregation state cleanly.  The test should include a CTE
-result larger than one API batch so the close path is observable.
+Phase N chooses option 2.  If this is implemented later, it should be
+done as part of general RonSQL LIMIT handling and must verify that
+early close releases CTE scan iterator state and aggregation state
+cleanly.  The SQL test should include a CTE result larger than one API
+batch so the close path is observable.
 
 ## N.4 - Multi-fragment / multi-node CTE behaviour
 
@@ -165,8 +184,7 @@ Required outcome:
 2. N.1a and N.1c next; both touch real string CTE behaviour.
 3. N.4 coverage audit before final wrap-up, because it should mostly
    be verification and documentation.
-4. N.2 is closed as an explicit deferral.  N.3 remains as the final
-   implement-or-defer decision.
+4. N.2 and N.3 are closed as explicit deferrals.
 
 ## Completion criteria
 
@@ -176,8 +194,9 @@ Required outcome:
 - Batch-size SQL surface is deliberately deferred; NDB API
   `setBatchSize` remains covered by block tests and RonSQL uses default
   batch sizing.
-- Early-close / LIMIT interaction is either implemented with tests or
-  deliberately deferred.
+- Early-close / LIMIT interaction is deliberately deferred to broader
+  RonSQL LIMIT / ORDER BY pushdown work; kernel/API early close remains
+  covered by block tests.
 - Multi-fragment / multi-node coverage is either represented in MTR or
   documented against block/full-suite tests.
 - `cte_filter_phase_i.md`, `CLAUDE.md`, and this document agree that

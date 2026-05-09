@@ -14,16 +14,13 @@ notes and stale document-status cleanup.
 Source: `cte_filter_phase_n.md`, `cte_filter_phase_i.md`,
 `cte_filter_phase_i25.md`.
 
-Phase N is the active final wrap-up plan.  It contains the remaining
-items that should be completed or explicitly deferred before closing
-RONDB-1050:
+Phase N is the final wrap-up plan.  Its RONDB-1050 items have been
+completed or explicitly deferred:
 
 - N.1: restore and fix the deferred string CTE query shapes from F.4:
   string CTE output joined to a non-unique ordered-index table,
   quote-safe compare helper for SQL text containing single-quoted
   literals, and the CTE output comparison matrix.
-- N.3: decide whether CTE scans get LIMIT / early-close handling now,
-  or document deferral to broader LIMIT / ORDER BY pushdown work.
 
 Completed / closed items:
 
@@ -33,6 +30,9 @@ Completed / closed items:
 - N.4: multi-fragment / multi-node CTE coverage is documented in
   `cte_filter_phase_n4_coverage_audit.md`; no additional single-node
   MTR was added.
+- N.3: RonSQL LIMIT-aware early close is deliberately deferred to
+  broader LIMIT / ORDER BY pushdown work.  Kernel/API early close is
+  covered by `testCteNdbApiFilter`.
 
 ## P1 - Real deferred capabilities mentioned by plans
 
