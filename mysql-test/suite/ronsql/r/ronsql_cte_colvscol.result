@@ -184,7 +184,118 @@ k	SUM(stats.gross)
 100	120
 
 
-=== Test 6: rejection — Bigunsigned col-vs-col (COUNT result) ===
+=== Test 6: const-vs-col signed Bigint (literal-left mirror) ===
+== Query ==
+WITH stats AS (
+SELECT o_custkey AS k,
+SUM(o_amt) AS gross
+FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE 100 < stats.gross
+GROUP BY stats.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (
+SELECT o_custkey AS k,
+SUM(o_amt) AS gross
+FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE 100 < stats.gross
+GROUP BY stats.k|
+k	SUM(stats.gross)
+100	120
+
+
+=== Test 7: col-vs-const string MIN output ===
+== Query ==
+WITH stats AS (
+  SELECT c_id AS k,
+         MIN(c_name) AS first_name,
+         MAX(c_name) AS last_name
+  FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.first_name < 'Charlie'
+GROUP BY stats.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (
+SELECT c_id AS k,
+MIN(c_name) AS first_name,
+MAX(c_name) AS last_name
+FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.first_name < 'Charlie'
+GROUP BY stats.k|
+k	SUM(stats.k)
+100	100
+200	200
+
+
+=== Test 8: const-vs-col string MIN output ===
+== Query ==
+WITH stats AS (
+  SELECT c_id AS k,
+         MIN(c_name) AS first_name,
+         MAX(c_name) AS last_name
+  FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE 'Charlie' > stats.first_name
+GROUP BY stats.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (
+SELECT c_id AS k,
+MIN(c_name) AS first_name,
+MAX(c_name) AS last_name
+FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE 'Charlie' > stats.first_name
+GROUP BY stats.k|
+k	SUM(stats.k)
+100	100
+200	200
+
+
+=== Test 9: rejection — Bigunsigned col-vs-col (COUNT result) ===
+Expected error: both columns must resolve to Bigint
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: both columns must resolve to Bigint (signed 64-bit).  Bigunsigned, mixed-width, float, decimal, and string col-vs-col comparisons are not yet supported — cast in the CTE body or use a constant-vs-column comparison.
+
+
+=== Test 10: rejection — string col-vs-col (MIN vs MAX) ===
 Expected error: both columns must resolve to Bigint
 Error handling: RPE
 ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: both columns must resolve to Bigint (signed 64-bit).  Bigunsigned, mixed-width, float, decimal, and string col-vs-col comparisons are not yet supported — cast in the CTE body or use a constant-vs-column comparison.
