@@ -1,6 +1,6 @@
 # CTE TODO - unfinished and deferred plan items
 
-Last reviewed: 2026-05-08.
+Last reviewed: 2026-05-09.
 
 This file consolidates plan items that still appear unfinished after
 reviewing the planning documents in this directory.  It intentionally
@@ -22,13 +22,17 @@ RONDB-1050:
   string CTE output joined to a non-unique ordered-index table,
   quote-safe compare helper for SQL text containing single-quoted
   literals, and the CTE output comparison matrix.
-- N.2: decide whether RonSQL gets a SQL-facing CTE batch-size control,
-  or document that batch-size tuning remains NDB-API-only.
 - N.3: decide whether CTE scans get LIMIT / early-close handling now,
   or document deferral to broader LIMIT / ORDER BY pushdown work.
-- N.4: audit multi-fragment / multi-node CTE coverage and either add
-  reliable SQL-level coverage or document the block/full-suite coverage
-  that represents it.
+
+Completed / closed items:
+
+- N.2: SQL-facing CTE batch-size control is deliberately deferred.
+  Batch-size tuning remains NDB-API-only for RONDB-1050; RonSQL MTR
+  covers default multi-batch behaviour.
+- N.4: multi-fragment / multi-node CTE coverage is documented in
+  `cte_filter_phase_n4_coverage_audit.md`; no additional single-node
+  MTR was added.
 
 ## P1 - Real deferred capabilities mentioned by plans
 

@@ -85,18 +85,37 @@ silently coerce unsupported types to BIGINT.
 
 Source item: I.13.
 
-`testCteNdbApiFilter` covers `setBatchSize` at the NDB API layer, but
-RonSQL has no SQL surface today.  Phase N should choose one of two
-outcomes:
+Decision: defer SQL-level batch-size control.  Batch-size tuning
+remains an NDB API feature for RONDB-1050.
+
+`testCteNdbApiFilter` covers `setBatchSize` at the NDB API layer, and
+`ronsql_cte_multi_batch.test` covers SQL-visible multi-batch execution
+with the normal RonSQL defaults.  RonSQL has no SQL surface today for
+setting per-query CTE scan batch size, and Phase N should not introduce
+a new user-visible knob without a clear operational contract.
+
+The rejected alternatives were:
 
 1. Add a session/system variable or documented hint that controls the
    NDB query batch size for RonSQL CTE scans and add a small MTR test;
-2. explicitly defer the SQL surface and document that batch-size
-   tuning remains NDB-API-only for RONDB-1050.
+2. add an internal test-only SQL hint.
 
-Do not add a user-visible knob unless there is a clear operational use
-case and the setting can be threaded through consistently for CTE_SCAN
-and CTE_LOOKUP driven plans.
+Both alternatives are deferred.  A real SQL surface would have to say
+whether it applies to CTE_SCAN roots only, CTE_LOOKUP-driven plans,
+real-table children under CTE parents, ordinary pushed joins, or all
+NdbQuery scans.  A test-only SQL hint would add parser and preparer
+surface area solely for coverage that is already available through the
+NDB API block tests.
+
+If users later need this operationally, implement it as a general
+RonSQL/NdbQuery scan tuning feature, not as a CTE-only special case.
+Until then the supported coverage split is:
+
+- NDB API tests verify explicit small-batch behaviour with
+  `setBatchSize`;
+- RonSQL MTR tests verify correct multi-batch behaviour under the
+  default batch size;
+- no SQL-facing batch-size tuning is advertised for RONDB-1050.
 
 ## N.3 - Early close / LIMIT interaction for CTE scans
 
@@ -146,17 +165,17 @@ Required outcome:
 2. N.1a and N.1c next; both touch real string CTE behaviour.
 3. N.4 coverage audit before final wrap-up, because it should mostly
    be verification and documentation.
-4. N.2 and N.3 last as explicit implement-or-defer decisions.  If the
-   decision is deferral, update this document and the catalogue with a
-   clear reason rather than leaving them as ambiguous TODOs.
+4. N.2 is closed as an explicit deferral.  N.3 remains as the final
+   implement-or-defer decision.
 
 ## Completion criteria
 
 - `ronsql.ronsql_minmax_string` includes the restored non-unique-index
   string CTE aggregation shape and the string-literal predicate.
 - CTE output comparisons have an explicit accepted/rejected matrix.
-- Batch-size SQL surface is either implemented with tests or
-  deliberately deferred.
+- Batch-size SQL surface is deliberately deferred; NDB API
+  `setBatchSize` remains covered by block tests and RonSQL uses default
+  batch sizing.
 - Early-close / LIMIT interaction is either implemented with tests or
   deliberately deferred.
 - Multi-fragment / multi-node coverage is either represented in MTR or
