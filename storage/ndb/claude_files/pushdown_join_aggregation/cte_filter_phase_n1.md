@@ -1,29 +1,38 @@
-# Phase N.1 — Make `scanCte` a first-class join root with arbitrary children
+# Phase N.1 — Make `scanCte` work as parent of ordered-index children
 
 ## Status
 
 **Plan, not yet implemented.**  Phase N.1 is the first sub-phase of
 the wrap-up phase scoped in `cte_filter_phase_n.md`.  Originally
 narrow ("fix Test 4 string-CTE re-aggregation"); widened after
-triage to its real scope: complete the architectural symmetry that
-makes `scanCte` behave like any other join root.
+triage to its real scope: support `scanCte` as the parent of an
+ordered-index child where the index bound is derived from CTE result
+columns.
 
 ## The principle
 
-`scanTable`, `scanIndex`, and `readTuple` already function as
-join roots that accept *any* child operation type
-(`readTuple`, `lookupCte`, `scanIndex`, `scanCte` chained, ...).
-`scanCte` should have the same property: a query that selects
-`FROM cte JOIN <anything>` should pick whatever access method is
-optimal for the child without the engine caring that the parent
-happens to be a CTE.  Today that symmetry is incomplete and the
-gap surfaces as either silent wrong answers or NDB-API build
-errors.  This phase closes the gap.
+`scanCte` already works as a root for direct projection and for
+some child operations, notably PK lookup children.  The remaining
+gap exposed here is the ordered-index child shape:
 
-**Explicit non-goal:** an AST rewrite that swaps the join order to
-avoid the unsupported shape is rejected as a fix.  Rewrites of that
-form mask the capability gap and lock the planner into permanent
-contortions.  The fix is to support the shape, not to avoid it.
+```sql
+FROM cte AS s
+JOIN real_table AS t ON t.indexed_col = s.result_col
+```
+
+where the planner chooses `scanIndex` for `t` and the ordered-index
+bound is a linked value from the CTE parent.  Today that shape can
+produce silent wrong answers or NDB-API build errors.  This phase
+closes that gap without changing the join order to avoid it.
+
+**Explicit non-goals:**
+
+- An AST rewrite that swaps the join order to avoid the unsupported
+  shape.  Rewrites of that form mask the capability gap and lock the
+  planner into permanent contortions.
+- `scanTable` child support.  A table-scan child with a CTE-dependent
+  join predicate needs linked filter execution, not ordered-index
+  bound construction, and belongs in a later phase.
 
 ## Failing query
 
@@ -43,6 +52,26 @@ JOIN str_minmax AS t ON t.grp = s.grp;
 secondary index, not the PK.  Expected `('', 'echo')`; actual
 `(NULL, NULL)`.
 
+Additional triage narrows the failure:
+
+- Direct CTE re-aggregation without a child works:
+  `FROM s` returns `('', 'echo')`.
+- CTE re-aggregation through a helper table with a PK on `grp` works:
+  `FROM s JOIN str_groups AS g ON g.grp = s.grp` returns
+  `('', 'echo')`.
+- The failing ordered-index child still fails with a single parent
+  row (`WHERE s.grp = 10`) and with `WHERE s.grp IN (10, 20)`, so the
+  current evidence does not point to multi-range parameter advancement
+  as the primary cause.
+- Replacing string MIN/MAX with a numeric CTE aggregate such as
+  `SUM(s.sum_id)` through the same ordered-index child returns `NULL`,
+  so the failure is not string-specific.
+- `COUNT(s.min_v)` and `COUNT(s.max_v)` through the failing shape
+  return `NULL`, and grouped variants can return no rows.  The first
+  diagnostic step must establish whether the child produces zero rows,
+  whether linked CTE values are missing at the aggregation leaf, or
+  both.
+
 ## Symptom matrix (before N.1)
 
 Reference helper: `str_groups (grp INT NOT NULL,
@@ -57,17 +86,17 @@ PRIMARY KEY USING HASH (grp))` (PK on `grp`, single row per grp).
 | G (numeric outer agg) | `MIN(s.c), MAX(s.c) FROM s_num JOIN ...` | `CTE_SCAN` + `INDEX_SCAN` | build error |
 | COUNT(*) | `COUNT(*) FROM s JOIN ... ON t.grp = s.grp` | `CTE_SCAN` + `INDEX_SCAN` | build error |
 
-The single shape that builds (Test 4) is silent because its outer
-SELECT references no `t.*` columns, so the API operand-binding
-that fails for F/G/COUNT does not fire — but the OUTER aggregator's
-per-fragment receivers report `m_processed_rows = 0` for every
-fragment (kernel logs).  Result: `MIN`/`MAX` over an empty multiset
-= `(NULL, NULL)`.
+The shape that builds (Test 4) is silent because the final aggregate
+sees no non-NULL linked values and finalises as `MIN`/`MAX` over an
+empty multiset.  Earlier kernel logs showed per-fragment receivers
+with `m_processed_rows = 0`, but N.1 must reproduce this in a focused
+block test before deciding whether the child scan produces no rows or
+linked CTE values fail to reach the aggregation leaf.
 
-Both behaviours are the same underlying gap: `scanCte` parent +
-non-PK real-table child is unimplemented.  The build errors are an
-honest "rejected at API"; the silent NULL is just a flavour where
-the rejection slips through and runtime quietly produces nothing.
+Both behaviours are symptoms of the same unsupported ordered-index
+child shape, but the exact failure points may differ.  Treat the
+build errors and silent NULLs as related evidence, not as proven
+identical code paths.
 
 ## Architecture today
 
@@ -79,9 +108,9 @@ the rejection slips through and runtime quietly produces nothing.
 | `scanTable` real-table | `readTuple` real-table (PK linked) | every join test ever |
 | `scanCte` | `readTuple` real-table (PK linked) | testCteNdbApi.cpp Test 16; testCteNdbApiOuterJoin.cpp Test 6 |
 | `scanCte` | `lookupCte` (chained CTE) | Phase E.2 |
-| `scanCte` | **`scanIndex` real-table (linked bound)** | **broken — N.1A target** |
-| `scanCte` | **`scanTable` real-table** | **broken — N.1A target** |
-| `scanCte` | **`readTuple` real-table via UNIQUE_LOOKUP (non-PK unique idx)** | **untested — verify under N.1A** |
+| `scanCte` | **`scanIndex` real-table (linked bound)** | **broken — N.1 target** |
+| `scanCte` | `scanTable` real-table | out of N.1 scope; needs linked filter execution |
+| `scanCte` | `readTuple` real-table via UNIQUE_LOOKUP (non-PK unique idx) | verify as adjacent regression |
 
 ### Why the working shapes work
 
@@ -98,34 +127,29 @@ the rejection slips through and runtime quietly produces nothing.
 
 ### Why the broken shapes break
 
-`scanCte` parent + `scanIndex` child fails for two reasons (one at
-build, one at runtime):
+The exact root cause is not yet proven.  Two symptoms are known:
 
-1. **API operand binding** (`NdbQueryBuilder.cpp`).  When
-   `linkedValue(scanCteOp, virtCol)` is supplied as a bound key to
-   `qb->scanIndex(...)`, operand binding rejects the linked operand
-   because the binding logic is wired only for real-table parents'
-   tuple payloads.  The exact failure point is in
-   `bindOperand` triggered from `scanIndex` operand attachment;
-   the symptom is `qb->scanIndex` returning `nullptr`, surfacing
-   as the generic *Failed to create child operation* at
-   `RonSQLPreparer.cpp:8021`.
+1. Some `scanCte` parent + ordered-index child variants fail during
+   NDB-API operation creation with *Failed to create child operation*.
+   This must be reproduced at block-test level and traced to the
+   exact failing condition.  Do not assume broad API rejection of
+   CTE-sourced linked operands: current code inspection shows
+   `linkedValue(scanCteOp, attr)` resolves against the CTE virtual
+   table, and `NdbLinkedOperandImpl::bindOperand()` checks column type
+   metadata plus `linkWithParent()`, not "real table only".
 
-2. **DBSPJ bound-key construction**
-   (`DbspjMain.cpp::scanFrag_build` /
-   `scanFrag_parent_row`).  Even if the API allowed the operand,
-   DBSPJ's `m_keyPattern` for `scanIndex` is constructed assuming a
-   real-table parent's tuple descriptor.  The pattern that should
-   reach `appendColToSection` for a CTE-virt-col bound is not
-   emitted by `scanFrag_build` for CTE parents.
+2. Other variants build but silently produce NULL or no rows.  The
+   working helper-PK query proves linked CTE aggregate values can be
+   read correctly when the child is a PK lookup.  The failing
+   ordered-index query therefore needs diagnostics around the
+   `scanIndex` child: are no child rows produced, are parent CTE
+   linked values unavailable at the aggregation leaf, or are ordered
+   index bounds malformed?
 
-For the silent-NULL case (Test 4), the API path differs: the outer
-SELECT touches no `t.*` columns, so no linked projection from `t`
-is bound through the API operand path that rejects.  But the OUTER
-aggregator's program still expects rows from the join leaf, which
-is `scanIndex t` — and `scanIndex t` produces zero rows because
-the bound construction never wires up the CTE-virt-col path.  The
-outer aggregator finalises over an empty input.
+The build-error variants and silent-NULL variants may have the same
+underlying cause, but that is not yet established.  N.1 must start
+with diagnostics that separate row production from linked-value
+delivery.
 
 ### What is *already* in place from Phase E.1K
 
@@ -141,14 +165,20 @@ side of CTE-virt-col linked attrs:
 - F.4-K.1 / K.2 / K.2b substitute string payload bytes for
   `accumulators[i].value` at the DBLQH delivery sites.
 
-What E.1K did *not* cover — and what N.1 needs to add — is the
-**bound-key path**.  That path uses `appendColToSection` (no
-table-meta prefix), so it does *not* reuse the inline-marker
-infrastructure, but it *does* need the kernel to know which
-column-offset to read out of a CTE row buffer.  `cte_scan_build`
-already populates `m_offset[]` for CTE virt-cols (this is what makes
-the working `readTuple` PK-linked case succeed); the missing piece
-is plumbing the same offset through into the scanIndex bound.
+What E.1K did *not* validate — and what N.1 needs to validate or fix
+— is the **ordered-index bound path**.  Current NDB-API serialisation
+for a linked `scanIndex` bound emits:
+
+- the bound type as data; then
+- `QueryPattern::attrInfo(linkedColIx)`.
+
+That is intentional.  Ordered-index bounds require
+`BoundType + AttributeHeader + payload`; `scanFrag_fixupBound()`
+renumbers the AttributeHeader attribute id to the ordered-index key
+position.  Replacing this with `P_COL` would strip the
+AttributeHeader and break scanIndex bounds.  If N.1 needs to adjust
+DBSPJ expansion, it must preserve the existing AH-bearing
+`P_ATTRINFO` bound format.
 
 ## What N.1 must change
 
@@ -156,55 +186,45 @@ The work is at three layers, in order of dependency.
 
 ### Layer 1 — NDB API (`NdbQueryBuilder.cpp`)
 
-`qb->scanIndex(idx, op.table, &bound, &opts)` must accept linked
-bound operands whose source is a `scanCte` op def.  Specific
-changes (line numbers from current tip; verify at implementation):
+First reproduce the build-error variants at NDB-API block-test level
+and identify the exact rejecting condition.  If `qb->scanIndex(idx,
+op.table, &bound, &opts)` rejects a linked bound whose source is a
+`scanCte` op def, fix that specific condition only.
 
-- `NdbQueryOperationDefImpl::bindOperand` (or its index-scan
-  variant): allow the linked operand's parent to be of kind
-  `scanCte` / `lookupCte`.  Today it's narrowly typed for
-  real-table parents.
-- The implicit parent that an `NdbLinkedOperand` points at must
-  resolve through `setParent` correctly when source is CTE.  Phase
-  E.1 and E.1K already exercise this for the `readTuple` PK path;
-  extend the same plumbing to the index-scan bound path.
-- A new `m_isCteParentBound` bit (or repurposed
-  `m_isCteEmbedded`) on `NdbQueryIndexScanOperationDefImpl` so
-  serialisation can flag the case for DBSPJ.
-- `NdbQueryBuilderImpl::serialize` emits the right
-  `QN_ScanIndexParameters` tree-node bits when the bound has any
-  CTE-sourced linked operand.
+Do not add broad "CTE parent bound" flags until proven necessary.
+The current serialised pattern for linked ordered-index bounds
+already contains `P_PARENT` plus `P_ATTRINFO` through the existing
+linked operand machinery.  A new `QN_ScanIndexParameters` bit is only
+justified if diagnostics prove DBSPJ cannot distinguish the case from
+the existing serialised pattern.
 
-Mirror the same in `qb->readTuple(idx, op.table, ...)` for
-`UNIQUE_LOOKUP` children of CTE parents.  And in `qb->scanTable`
-for the no-bound table-scan case.
+Adjacent verification:
 
-The build-error path becomes a clean success — the operand binds,
-the op def is non-NULL, `RonSQLPreparer.cpp:8021` no longer fires
-for these shapes.
+- `qb->readTuple(idx, op.table, ...)` for UNIQUE_LOOKUP children of
+  CTE parents should be checked as a regression guard, but it is not
+  the primary N.1 target.
+- `qb->scanTable` is out of N.1 scope; it needs linked filters, not
+  ordered-index bound construction.
 
 ### Layer 2 — DBSPJ (`DbspjMain.cpp`)
 
-`scanFrag_build` (around line 10208 today) parses the new
-tree-node bits and constructs `m_keyPattern` for the CTE-bound
-case:
+Validate the existing expansion path before changing it.  For linked
+ordered-index bounds, the current `m_keyPattern` should expand from
+the parent row using the AH-bearing `P_ATTRINFO` format, and
+`scanFrag_fixupBound()` should then rewrite the AttributeHeader ids
+to ordered-index key positions.
 
-- For each linked-bound column, emit a pattern token of the form
-  `P_PARENT(levels) + P_COL(virtColIdx)` that, when expanded by
-  `expand` at `scanFrag_parent_row`, reads the column raw value
-  from the CTE parent row via `appendColToSection`.
-- The CTE parent's `m_offset[]` is already correct
-  (`cte_scan_build` populates it), so the existing
-  `appendColToSection` reads the right bytes without a CTE-marker
-  prefix (bound keys are raw bytes, not ATTRINFO).
-- For multi-column virt-PK CTEs, emit one P_PARENT/P_COL pair per
-  bound column, in virt-PK order.
+If the diagnostics show that expansion from a CTE parent row is wrong,
+fix the expansion or row-access bug while preserving:
 
-`scanFrag_parent_row` (line 11103) needs no new logic — it already
-calls `expand(keyPtrI, pattern, rowRef, hasNull)`.  With the
-correct pattern, `expand` walks to the CTE parent and
-`appendColToSection` reads the bound bytes.  The `hasNull` path is
-unchanged.
+- `BoundType + AttributeHeader + payload` in the bound section.
+- `P_ATTRINFO` for linked scanIndex bound values.
+- `scanFrag_fixupBound()` as the place that maps table column ids to
+  ordered-index key positions.
+
+Do not convert scanIndex bound construction to `P_COL`; that format
+is suitable for raw key bytes in PK lookup paths, not ordered-index
+bounds.
 
 ### Layer 3 — DBLQH / DBTUP
 
@@ -260,7 +280,7 @@ strings post-F.4-K.3.  Numeric handling is older and unaffected.
 
 ### Step N.1.1 — Failing block-test in NDB-API
 
-Before touching any production code, add a *failing* block test to
+Before touching production code, add diagnostic block tests to
 `storage/ndb/block_unit_test/testCteNdbApi.cpp` (or a dedicated
 new `testCteNdbApiCteScanRoot.cpp`) reproducing the broken shape
 end-to-end at the NDB-API level:
@@ -269,46 +289,58 @@ end-to-end at the NDB-API level:
 - Outer scan: `qb->scanCte(...)`.
 - Outer child: `qb->scanIndex(idx_grp_on_real_t, real_t, &bound, ...)`
   with `bound` linked to `s.grp`.
-- OUTER aggregator on the child leaf, reading linked CTE-virt-cols
-  (mix numeric `s.grp` + string `s.min_v`).
-- Multiple variants: INNER join only at first; LEFT_OUTER and ANTI
-  variants explicitly skipped (separate sub-phases if needed).
+- Diagnostics that separate child row production from linked CTE
+  value delivery:
+  `COUNT(t.id)`, `SUM(t.id)`, `COUNT(s.grp)`, `SUM(s.grp)`,
+  and string `MIN(s.min_v)` / `MAX(s.max_v)`.
+- A single-parent-row variant equivalent to `WHERE s.grp = 10`.
+- A multi-parent-row variant equivalent to `WHERE s.grp IN (10,20)`.
+- Numeric CTE linked values as well as string CTE linked values.
+- INNER join only at first; LEFT_OUTER and ANTI variants explicitly
+  skipped (separate sub-phases if needed).
 
-This test fails today and is the gating fixture.  Land it first as
-"reproduces N.1 gap" (commented `#if 0` or with an explicit
-`expectedToFail` annotation), unfence as the layers below land.
+These tests are the gating fixtures.  Their first purpose is to
+answer: does the scanIndex child produce no rows, are CTE linked
+values missing at the aggregation leaf, or both?
 
-### Step N.1.2 — API: accept CTE-sourced linked operand on scanIndex bound
+### Step N.1.2 — API: reproduce and fix exact scanIndex build errors
 
 `storage/ndb/src/ndbapi/NdbQueryBuilder.cpp`.  Edits centred on
 the operand-binding path triggered from `scanIndex` /
-`NdbQueryIndexBound` construction.  Mirror the existing
-`readTuple`-with-CTE-parent acceptance.  Add the
-`m_isCteParentBound` flag on the index-scan op def for serialisation.
+`NdbQueryIndexBound` construction, but only after Step N.1.1 has
+identified the precise rejection.  Fix the smallest failing condition
+rather than adding a broad CTE-parent mode.
 
-Make the same change for `qb->readTuple` UNIQUE_LOOKUP variant
-and `qb->scanTable` (no-bound) for CTE parents.
+Do not introduce a new `m_isCteParentBound` flag unless the block
+test proves the existing `P_PARENT` / `P_ATTRINFO` serialisation is
+insufficient.
 
-Verify by re-running the Step N.1.1 block test: now the build no
-longer fails, but the query still returns wrong results (zero rows
-or NULLs) because DBSPJ doesn't yet construct the bound correctly.
+Verify by re-running the Step N.1.1 block tests.  If the build errors
+are gone but NULL/no-row results remain, continue to Step N.1.3.  If
+all diagnostic variants pass after the API fix, keep Step N.1.3 as
+code inspection plus regression validation only.
 
-### Step N.1.3 — DBSPJ: scanFrag_build emits CTE-aware key pattern
+### Step N.1.3 — DBSPJ: validate or fix scanIndex bound expansion
 
 `storage/ndb/src/kernel/blocks/dbspj/DbspjMain.cpp`.  In
-`scanFrag_build`, when parsing `QN_ScanIndexParameters` that has
-the CTE-bound flag, walk linked-key columns and emit per-column
-pattern tokens that resolve through `appendColToSection` from the
-CTE parent row.
+`scanFrag_build` / `scanFrag_parent_row`, validate that linked
+ordered-index bounds expand from a `scanCte` parent row using
+`BoundType + P_ATTRINFO`, and that `scanFrag_fixupBound()` sees valid
+AttributeHeaders to renumber.
 
 Care points:
-- Multi-column virt-PK: one pair per column, in virt-PK order.
+- Multi-column ordered-index bounds: one bound entry per indexed
+  column, in index-bound order.
 - `hasNull` semantics: a NULL CTE-virt-col bound key should bail
   out the same way it does for real-table parents (the existing
   `if (hasNull)` arm in `scanFrag_parent_row`).
 - `T_PRUNE_PATTERN` interaction: not exercised by current CTE
   tests; verify whether prune patterns are constructible from CTE
   virt-cols — likely deferred / rejected at Layer 1.
+- `scanCopyAttrinfo` must not be changed as part of this phase.
+  Its stored parameter length is also used to locate the `0x0721`
+  pushdown interpreter program; the earlier experimental change did
+  not fix the issue and risks unrelated regressions.
 
 After this step, the Step N.1.1 block test produces correct rows
 for INNER join shapes.
@@ -345,10 +377,9 @@ Augment `mysql-test/suite/ronsql/t/ronsql_minmax_string.test`:
   string-specific.
 - **Test 4-count-star** — `COUNT(*) FROM s JOIN t ON ...`; covers
   the COUNT variant.
-- **Test 4-table-scan-child** — variant where `t` has *no* useful
-  index for the join column; planner picks `TABLE_SCAN` child
-  rather than `INDEX_SCAN`.  Same enablement should cover this
-  shape.
+- **Test 4-single-parent** — same ordered-index child with
+  `WHERE s.grp = 10`; prevents misdiagnosing the issue as only
+  multi-range parameter advancement.
 - **Test 4-chained** — a chained CTE that re-aggregates an earlier
   CTE through a non-PK join.
 
@@ -391,13 +422,14 @@ or new `testCteNdbApiCteScanRoot.cpp`:
 
 | Test | Shape | Asserts |
 |---|---|---|
-| 1 | scanCte + scanIndex child + outer scalar agg (numeric) | rows produced, agg correct |
-| 2 | scanCte + scanIndex child + outer scalar agg (string) | string MIN/MAX correct |
-| 3 | scanCte + scanIndex child + outer GB on CTE col | grouped agg correct |
-| 4 | scanCte + scanTable child (no useful index) + outer agg | rows produced, agg correct |
-| 5 | scanCte + readTuple via UNIQUE_LOOKUP (non-PK unique idx) child + outer agg | should already work; regression guard |
-| 6 | Multi-fragment / multi-node redistribute on the new shape | result independent of partition layout |
-| 7 | Multi-column virt-PK CTE + scanIndex child binding all virt-PK columns | full bound construction |
+| 1 | scanCte + scanIndex child + `COUNT(t.id)`, `SUM(t.id)` | child row production is correct |
+| 2 | scanCte + scanIndex child + `COUNT(s.grp)`, `SUM(s.grp)` | linked CTE numeric values reach the leaf |
+| 3 | scanCte + scanIndex child + string `MIN(s.min_v)`, `MAX(s.max_v)` | linked CTE string values reach the leaf |
+| 4 | scanCte + scanIndex child + outer GB on CTE col | grouped agg correct |
+| 5 | scanCte + scanIndex child + single-parent `WHERE s.grp = 10` | single range works |
+| 6 | scanCte + readTuple via UNIQUE_LOOKUP (non-PK unique idx) child + outer agg | should already work; regression guard |
+| 7 | Multi-fragment / multi-node redistribute on the new shape | result independent of partition layout |
+| 8 | Multi-column ordered-index bound from CTE columns | full bound construction |
 
 MTR additions in `ronsql_minmax_string.test` per Step N.1.6.
 
@@ -416,21 +448,25 @@ testVarcharMinMax -c <cs> -m <mp>
 
 ## Risks
 
-1. **Multi-column virt-PK CTEs.**  Existing CTE_LOOKUP path covers
-   multi-key joins; the new scanIndex-bound path needs to do the
-   same.  N.1.3 must emit one pattern pair per virt-PK column.
-2. **Charset / type widening on the bound column.**  Bound bytes
+1. **Ordered-index bound format.**  Accidentally converting linked
+   scanIndex bounds from `P_ATTRINFO` to `P_COL` would strip the
+   AttributeHeader needed by `scanFrag_fixupBound()`.  This would
+   risk regressions in ordinary ordered-index scans.
+2. **Multi-column ordered-index bounds.**  Existing CTE_LOOKUP path
+   covers multi-key joins; the new scanIndex-bound path needs to do
+   the same for one bound entry per index column.
+3. **Charset / type widening on the bound column.**  Bound bytes
    are raw values; charset doesn't matter for INT virt-PK cols.
    For non-INT virt-PK joins (rarer), confirm Phase D2's widening
    logic at the API operand-binding layer.
-3. **Phase outer-join 3 boundary.**  N.1 covers `scanCte` as
+4. **Phase outer-join 3 boundary.**  N.1 covers `scanCte` as
    parent (any join type that's not on the LEFT-side disallow
    list).  Do not let N.1 reopen `CTE_SCAN as outer-join *child*`.
-4. **`hasNull` bailout** on CTE-virt-col bound.  The existing
+5. **`hasNull` bailout** on CTE-virt-col bound.  The existing
    `scanFrag_parent_row` `hasNull` path emits null injection for
    outer-join leaves and bails for inner.  Should work
    transparently with CTE bound bytes; verify with a NULL grp test.
-5. **No new wire format.**  AGG_RESULT / AGG_CHAR_RESULT unchanged.
+6. **No new wire format.**  AGG_RESULT / AGG_CHAR_RESULT unchanged.
    E.1K's CTE-marker encoding unchanged.  All N.1 work is at the
    bound-key construction layer, which uses raw bytes (no marker).
 
@@ -439,8 +475,9 @@ testVarcharMinMax -c <cs> -m <mp>
 - `storage/ndb/src/ndbapi/NdbQueryBuilder.cpp`,
   `NdbQueryBuilderImpl.hpp` — operand binding + serialisation
   (Steps N.1.2).
-- `storage/ndb/src/ndbapi/NdbQueryOperationDef*.{cpp,hpp}` — flag
-  on index-scan op def.
+- `storage/ndb/src/ndbapi/NdbQueryOperationDef*.{cpp,hpp}` —
+  possible index-scan op-def metadata only if diagnostics prove a new
+  marker is required.
 - `storage/ndb/src/kernel/blocks/dbspj/DbspjMain.cpp` —
   `scanFrag_build` key pattern emission (Step N.1.3),
   `scanFrag_parent_row` (no edit expected).
@@ -472,6 +509,9 @@ testVarcharMinMax -c <cs> -m <mp>
 - Test 5 (`WHERE min_v < 'beta'`).  String-literal parser +
   MTR-quote-safe-compare track is orthogonal; ride a separate
   sub-phase (N.1.2 or Phase N follow-up).
+- `scanCte` parent + `scanTable` child with a non-indexed join
+  predicate.  That needs linked filter execution and is not fixed by
+  ordered-index bound support.
 - Comparison matrix across all types (signed / unsigned / float /
   DECIMAL / date / time) — broader I.25 catalogue, not the
   capability-gap closure N.1 targets.
@@ -489,16 +529,15 @@ testVarcharMinMax -c <cs> -m <mp>
 
 ## Open questions for execution
 
-1. Are there tree-node bits available on `QN_ScanIndexParameters`
-   for the CTE-bound flag, or does it need a new bit allocated and
-   versioned?  (Likely a free bit; check `Sections.hpp` /
-   `QueryTree.hpp` at implementation time.)
-2. Does the existing `m_isCteEmbedded` flag suffice, or is a new
-   `m_hasCteParentBound` needed?  Decide during N.1.2.
-3. Should `qb->scanTable` (no-bound table-scan child of CTE
-   parent) be enabled in the same set of changes as `scanIndex`,
-   or split as a follow-up?  Recommend same set — it's mostly the
-   acceptance change at Layer 1; no key pattern at Layer 2.
+1. Is any new tree-node bit needed at all, or is the existing
+   `P_PARENT` / `P_ATTRINFO` linked-bound serialisation already
+   sufficient once the CTE parent row is handled correctly?
+2. Does the build-error variant fail in NDB-API operand binding,
+   parent linkage, index-bound serialisation, or later DBSPJ build?
+   Step N.1.1 must answer this before production changes.
+3. Do the silent-NULL variants produce zero child rows, or do they
+   produce child rows with missing linked CTE values at the outer
+   aggregation leaf?
 4. Do any RDRS-specific paths need to know about the new shape,
    or is the change kernel + NDB-API only?  Verify during N.1.6
    MTR coverage.
