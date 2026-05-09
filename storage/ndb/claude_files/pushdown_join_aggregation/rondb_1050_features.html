@@ -1,0 +1,1924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RONDB-1050: CTE and Pushdown Join Aggregation - Feature Reference</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --surface3: #1e2a4a;
+    --accent: #e94560;
+    --accent2: #533483;
+    --text: #eee;
+    --text-dim: #aaa;
+    --text-dimmer: #777;
+    --green: #4ecca3;
+    --yellow: #f0c040;
+    --blue: #4ea8de;
+    --orange: #f4845f;
+    --purple: #b388ff;
+    --pink: #f48fb1;
+    --cyan: #80deea;
+    --border: #334;
+    --border-strong: #556;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 0;
+  }
+  .page {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 40px 32px 80px;
+  }
+  header.title {
+    border-bottom: 2px solid var(--accent);
+    padding-bottom: 18px;
+    margin-bottom: 32px;
+  }
+  header.title h1 {
+    color: var(--accent);
+    font-size: 30px;
+    letter-spacing: -0.01em;
+  }
+  header.title .subtitle {
+    color: var(--text-dim);
+    font-size: 15px;
+    margin-top: 6px;
+  }
+  header.title .meta {
+    color: var(--text-dimmer);
+    font-size: 13px;
+    margin-top: 4px;
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  nav.toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 24px;
+    margin: 24px 0 40px;
+    columns: 2;
+    column-gap: 28px;
+  }
+  nav.toc h2 {
+    color: var(--cyan);
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 10px;
+    column-span: all;
+  }
+  nav.toc ol {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  nav.toc li {
+    padding: 2px 0;
+    font-size: 14px;
+    break-inside: avoid;
+  }
+  nav.toc li.lvl2 { padding-left: 18px; color: var(--text-dim); font-size: 13px; }
+  nav.toc a { color: var(--blue); text-decoration: none; }
+  nav.toc a:hover { color: var(--cyan); text-decoration: underline; }
+  h2 {
+    color: var(--accent);
+    font-size: 24px;
+    margin: 56px 0 14px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 {
+    color: var(--yellow);
+    font-size: 18px;
+    margin: 28px 0 10px;
+  }
+  h4 {
+    color: var(--cyan);
+    font-size: 15px;
+    margin: 18px 0 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  p { margin: 8px 0 14px; }
+  ul, ol { margin: 8px 0 14px 22px; }
+  li { margin: 3px 0; }
+  code {
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    background: var(--surface);
+    color: var(--cyan);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--blue);
+    border-radius: 4px;
+    padding: 14px 18px;
+    margin: 12px 0;
+    overflow-x: auto;
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text);
+  }
+  pre code {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    font-size: inherit;
+  }
+  .kw    { color: #ff6b9d; }
+  .id    { color: var(--text); }
+  .lit   { color: var(--green); }
+  .com   { color: var(--text-dimmer); font-style: italic; }
+  .fn    { color: var(--purple); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  th, td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th {
+    background: var(--surface);
+    color: var(--cyan);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+  }
+  tr:nth-child(even) td { background: var(--surface3); }
+  .tag {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    margin-right: 6px;
+    background: var(--surface2);
+    color: var(--cyan);
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  .tag.shipped { background: #1f3d2e; color: var(--green); }
+  .tag.deferred { background: #3d2f1f; color: var(--orange); }
+  .tag.rejected { background: #3d1f1f; color: var(--accent); }
+  .query {
+    background: var(--surface3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 18px 0 24px;
+    padding: 16px 20px 18px;
+  }
+  .query .qhdr {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .query .qid {
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 14px;
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    min-width: 36px;
+  }
+  .query .qttl {
+    color: var(--yellow);
+    font-size: 16px;
+    font-weight: 600;
+    flex-grow: 1;
+  }
+  .query .qsource {
+    color: var(--text-dimmer);
+    font-size: 12px;
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  .query p { margin: 6px 0 10px; }
+  .query ul { margin-bottom: 6px; }
+  .query .demo-label {
+    color: var(--text-dim);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 10px 0 4px;
+  }
+  figure {
+    margin: 24px 0;
+    text-align: center;
+  }
+  figure svg {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    max-width: 100%;
+  }
+  figcaption {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin-top: 8px;
+    font-style: italic;
+  }
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--yellow);
+    border-radius: 4px;
+    padding: 12px 18px;
+    margin: 16px 0;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+  .callout.warn { border-left-color: var(--orange); }
+  .callout.note { border-left-color: var(--blue); }
+  .callout strong { color: var(--text); }
+  .twocol {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    margin: 14px 0;
+  }
+  .twocol .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+  }
+  .twocol .card h4 {
+    margin-top: 0;
+  }
+  footer {
+    margin-top: 80px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+    color: var(--text-dimmer);
+    font-size: 13px;
+    text-align: center;
+  }
+  /* SVG text helpers */
+  svg .lbl { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px; fill: var(--text); }
+  svg .lbl-sm { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 11px; fill: var(--text-dim); }
+  svg .lbl-mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12px; fill: var(--text); }
+  svg .lbl-mono-sm { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 10px; fill: var(--text-dim); }
+  svg .ttl { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; font-weight: 700; fill: var(--cyan); }
+  @media (max-width: 760px) {
+    nav.toc { columns: 1; }
+    .twocol { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="title">
+  <h1>RONDB-1050: CTE and Pushdown Join Aggregation</h1>
+  <div class="subtitle">Feature reference for NDB-API users and RonSQL users</div>
+  <div class="meta">Branch RONDB-1050-cte-filter &middot; baseline commit a85ac5611af1 &middot; Phases A through N</div>
+</header>
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#sec-1">1. Introduction</a></li>
+    <li class="lvl2"><a href="#sec-1-1">1.1 What RONDB-1050 delivers</a></li>
+    <li class="lvl2"><a href="#sec-1-2">1.2 Reading guide</a></li>
+    <li class="lvl2"><a href="#sec-1-3">1.3 Conventions</a></li>
+    <li><a href="#sec-2">2. Architecture</a></li>
+    <li class="lvl2"><a href="#sec-2-1">2.1 The four-layer stack</a></li>
+    <li class="lvl2"><a href="#sec-2-2">2.2 Signal flow and lifecycle</a></li>
+    <li class="lvl2"><a href="#sec-2-3">2.3 Aggregation engine</a></li>
+    <li class="lvl2"><a href="#sec-2-4">2.4 CTE materialisation buffer</a></li>
+    <li class="lvl2"><a href="#sec-2-5">2.5 Three interpreters unified</a></li>
+    <li><a href="#sec-3">3. Feature catalogue (Q1-Q30)</a></li>
+    <li class="lvl2"><a href="#sec-3-1">3.1 Direct aggregation (no CTE)</a></li>
+    <li class="lvl2"><a href="#sec-3-2">3.2 Scalar CTE</a></li>
+    <li class="lvl2"><a href="#sec-3-3">3.3 Grouped CTE</a></li>
+    <li class="lvl2"><a href="#sec-3-4">3.4 CTE as main-query root</a></li>
+    <li class="lvl2"><a href="#sec-3-5">3.5 CTE as joined child / chained</a></li>
+    <li class="lvl2"><a href="#sec-3-6">3.6 Outer-join CTEs</a></li>
+    <li class="lvl2"><a href="#sec-3-7">3.7 Filter pushdown</a></li>
+    <li class="lvl2"><a href="#sec-3-8">3.8 Type widening</a></li>
+    <li class="lvl2"><a href="#sec-3-9">3.9 String MIN/MAX</a></li>
+    <li class="lvl2"><a href="#sec-3-10">3.10 Multi-batch streaming</a></li>
+    <li class="lvl2"><a href="#sec-3-11">3.11 Robustness shapes</a></li>
+    <li><a href="#sec-4">4. Out of scope / not yet covered</a></li>
+    <li class="lvl2"><a href="#sec-4-1">4.1 Phase N deferrals</a></li>
+    <li class="lvl2"><a href="#sec-4-2">4.2 Hard-rejected shapes</a></li>
+    <li class="lvl2"><a href="#sec-4-3">4.3 Layered but not fully surfaced</a></li>
+    <li><a href="#sec-5">5. Appendix</a></li>
+    <li class="lvl2"><a href="#sec-5-1">5.1 NDB-API block test inventory</a></li>
+    <li class="lvl2"><a href="#sec-5-2">5.2 RonSQL MTR test inventory</a></li>
+    <li class="lvl2"><a href="#sec-5-3">5.3 Phase timeline</a></li>
+    <li class="lvl2"><a href="#sec-5-4">5.4 Glossary</a></li>
+  </ol>
+</nav>
+
+<!-- =======================================================================
+     SECTION 1: INTRODUCTION
+     ======================================================================= -->
+<section id="sec-1">
+<h2>1. Introduction</h2>
+
+<h3 id="sec-1-1">1.1 What RONDB-1050 delivers</h3>
+<p>
+RONDB-1050 is the body of work that turned the pushdown join aggregation foundation
+shipped in RONDB-733 into a complete <strong>Common Table Expression</strong> (CTE)
+materialisation and filter pushdown stack. Where RONDB-733 made it possible to push
+<code>SUM</code> / <code>COUNT</code> / <code>MIN</code> / <code>MAX</code> through
+multi-table joins down to data nodes, RONDB-1050 adds the ability to:
+</p>
+<ul>
+  <li>Materialise a CTE on the data nodes (no API round trip per row) and consume
+      it as either a <em>lookup</em> on its synthetic primary key or a <em>scan</em>
+      from any side of an outer or inner join, including as the main-query root.</li>
+  <li>Push <code>WHERE</code> filters into the CTE consumer using a CTE-safe subset
+      of NDB's interpreted code: comparison operators, <code>IS NULL</code>,
+      <code>OR</code> / DNF, column-vs-column, <code>CASE</code>,
+      <code>GREATEST</code> / <code>LEAST</code> with NULL propagation, and inline
+      type metadata for synthesised aggregate columns.</li>
+  <li>Aggregate <em>strings</em> (<code>CHAR</code>, <code>VARCHAR</code>,
+      <code>Longvarchar</code>) with <code>MIN</code> / <code>MAX</code>, including
+      a new wire format (<code>AGG_CHAR_RESULT</code>, marker <code>0xFF02</code>)
+      and a charset-aware multi-source merge on the API side.</li>
+  <li>Widen <code>DECIMAL</code> aggregates to <code>BIGINT</code> /
+      <code>BIGINT UNSIGNED</code> / <code>DOUBLE</code> based on precision and
+      scale, and treat normal-interpreter registers as typed (Option B retrofit) so
+      mixed-type comparisons round-trip correctly.</li>
+  <li>Optimise scalar <code>MIN(col)</code> / <code>MAX(col)</code> into an ordered
+      index scan with <code>maxRows = 1</code>, and use <code>scanIndex</code>
+      inside a CTE body when the WHERE has bounded predicates.</li>
+  <li>Stream large CTE results back to the API with <code>SCAN_NEXTREQ</code> flow
+      control, including state-lifetime guarantees across batches.</li>
+  <li>Handle <code>LEFT JOIN</code> with NULL injection on unmatched rows, promote
+      <code>LEFT</code> to <code>INNER</code> when the WHERE rejects NULL on the
+      RHS (Phase J), and promote <code>WHERE col IS NULL</code> on a LEFT JOIN's
+      RHS to an ANTI-JOIN (Phase K).</li>
+  <li>Resolve CTE and stored-table names with proper scoping in declaration order
+      (Phase I.23), with a hardened <code>JOIN_AGG_COMPLETE</code> lifecycle
+      (Phase L) and a unified jump-table interpreter (Phase M).</li>
+</ul>
+
+<h3 id="sec-1-2">1.2 Reading guide</h3>
+<p>
+The doc is organised so you can read it linearly or jump to a feature. Section 2
+(<a href="#sec-2">Architecture</a>) explains how the pieces fit together. Section 3
+(<a href="#sec-3">Feature catalogue</a>) is a series of 30 worked-example queries
+grouped by capability; each query notes the phase that delivered it and the test
+file you can read for more shapes. Section 4 (<a href="#sec-4">Out of scope</a>)
+lists what is <em>deliberately not supported</em> in this release, distinguishing
+items deferred to a future phase from shapes that are permanently rejected at
+prepare time.
+</p>
+<p>
+Examples are drawn from the in-tree test suites &mdash; the NDB-API block tests in
+<code>storage/ndb/block_unit_test/</code> and the RonSQL MTR tests in
+<code>mysql-test/suite/ronsql/</code>. They are not the only supported shapes, but
+they are the exact shapes that have a passing test, so they are guaranteed to
+work.
+</p>
+
+<h3 id="sec-1-3">1.3 Conventions</h3>
+<ul>
+  <li><strong>Phase tags</strong> in square pills point to in-tree plan
+      documents under
+      <code>storage/ndb/claude_files/pushdown_join_aggregation/</code>.</li>
+  <li><strong>NDB-API</strong> means
+      <code>NdbQueryBuilder</code> / <code>NdbAggregator</code> /
+      <code>NdbInterpretedCode</code>.</li>
+  <li><strong>RonSQL</strong> means the embedded SQL preparer / executor used by
+      <code>ronsql_cli</code> and the RDRS REST surface, not the full MySQL
+      handler. MySQL handler integration is out of scope for this document.</li>
+  <li><code>scanCte</code> and <code>lookupCte</code> are the NDB-API operations
+      that read from a materialised CTE; <code>CTE_SCAN</code> and
+      <code>CTE_LOOKUP</code> are the corresponding planner / kernel op types.</li>
+  <li>Where a query depends on a particular kernel feature, the phase tag points
+      to the doc that explains the kernel-side implementation; where it depends on
+      a RonSQL feature, the phase tag points to the doc covering the RonSQL emit
+      logic. Sometimes both apply.</li>
+</ul>
+</section>
+
+<!-- =======================================================================
+     SECTION 2: ARCHITECTURE  (will be inserted by next Edit)
+     ======================================================================= -->
+<section id="sec-2">
+<h2>2. Architecture</h2>
+<p>
+RONDB-1050 spans four layers: a kernel block layer that physically materialises
+CTEs and aggregates rows, an NDB API surface that exposes <code>scanCte</code>,
+<code>lookupCte</code>, and <code>NdbAggregator</code> to library users, a
+RonSQL parser / preparer that compiles SQL into NDB-API calls, and a test layer
+of NDB-API block tests and RonSQL MTR tests. The kernel layer itself is split
+across DBTC (transaction coordinator), DBSPJ (pushed-join coordinator), and
+DBLQH / DBTUP (per-LDM data + aggregation engine). The diagrams below trace the
+signal flow, the aggregation engine ownership model, the CTE result wire format,
+and the unified jump-table interpreter.
+</p>
+
+<h3 id="sec-2-1">2.1 The four-layer stack</h3>
+<p>
+A user SQL statement enters the RonSQL preparer; the preparer plans CTE bodies,
+synthesises virtual <code>NdbDictionary::Table</code> objects for the
+materialised CTEs, builds an NDB query tree using <code>NdbQueryBuilder</code>,
+attaches an <code>NdbAggregator</code> to each aggregating leaf, and assembles
+<code>NdbInterpretedCode</code> programs for filters and per-row CASE
+expressions. The resulting query tree is sent to a data node, where DBTC opens
+the transaction, DBSPJ orchestrates the pushed join, and DBLQH executes scan or
+key operations against DBTUP, with <code>AggInterpreter</code> running on each
+participating LDM thread.
+</p>
+
+<figure>
+<svg viewBox="0 0 740 460" width="740" height="460" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4ea8de"/>
+    </marker>
+  </defs>
+  <text x="370" y="22" text-anchor="middle" class="ttl">Four-layer stack</text>
+
+  <!-- Layer 1: RonSQL -->
+  <rect x="60" y="50" width="540" height="64" rx="8" fill="#16213e" stroke="#4ea8de" stroke-width="2"/>
+  <text x="330" y="78" text-anchor="middle" class="lbl" style="font-weight:600;fill:#80deea">RonSQL parser and preparer</text>
+  <text x="330" y="96" text-anchor="middle" class="lbl-sm">RonSQLPreparer.cpp - planner, CTE scoping, virt-table synthesis, emit</text>
+
+  <!-- arrow -->
+  <line x1="330" y1="114" x2="330" y2="138" stroke="#4ea8de" stroke-width="1.5" marker-end="url(#arr1)"/>
+
+  <!-- Layer 2: NDB API -->
+  <rect x="60" y="146" width="540" height="64" rx="8" fill="#16213e" stroke="#4ea8de" stroke-width="2"/>
+  <text x="330" y="174" text-anchor="middle" class="lbl" style="font-weight:600;fill:#80deea">NDB API</text>
+  <text x="330" y="192" text-anchor="middle" class="lbl-sm">NdbQueryBuilder - scanCte / lookupCte / NdbAggregator / NdbInterpretedCode</text>
+
+  <!-- arrow -->
+  <line x1="330" y1="210" x2="330" y2="234" stroke="#4ea8de" stroke-width="1.5" marker-end="url(#arr1)"/>
+
+  <!-- Layer 3: Kernel - shown as 4 sub-boxes -->
+  <rect x="60" y="242" width="540" height="120" rx="8" fill="#0f3460" stroke="#4ea8de" stroke-width="2"/>
+  <text x="330" y="262" text-anchor="middle" class="lbl" style="font-weight:600;fill:#80deea">Kernel blocks</text>
+  <rect x="76" y="276" width="120" height="76" rx="4" fill="#1e2a4a" stroke="#334"/>
+  <text x="136" y="298" text-anchor="middle" class="lbl">DBTC</text>
+  <text x="136" y="316" text-anchor="middle" class="lbl-sm">tx coordinator</text>
+  <text x="136" y="332" text-anchor="middle" class="lbl-sm">SETUP/COMPLETE</text>
+  <text x="136" y="346" text-anchor="middle" class="lbl-sm">/RELEASE issuer</text>
+
+  <rect x="208" y="276" width="120" height="76" rx="4" fill="#1e2a4a" stroke="#334"/>
+  <text x="268" y="298" text-anchor="middle" class="lbl">DBSPJ</text>
+  <text x="268" y="316" text-anchor="middle" class="lbl-sm">pushed-join</text>
+  <text x="268" y="332" text-anchor="middle" class="lbl-sm">orchestrator</text>
+  <text x="268" y="346" text-anchor="middle" class="lbl-sm">query tree exec</text>
+
+  <rect x="340" y="276" width="120" height="76" rx="4" fill="#1e2a4a" stroke="#334"/>
+  <text x="400" y="298" text-anchor="middle" class="lbl">DBLQH</text>
+  <text x="400" y="316" text-anchor="middle" class="lbl-sm">scan/key exec</text>
+  <text x="400" y="332" text-anchor="middle" class="lbl-sm">JoinAggState</text>
+  <text x="400" y="346" text-anchor="middle" class="lbl-sm">CTE materialise</text>
+
+  <rect x="472" y="276" width="120" height="76" rx="4" fill="#1e2a4a" stroke="#334"/>
+  <text x="532" y="298" text-anchor="middle" class="lbl">DBTUP</text>
+  <text x="532" y="316" text-anchor="middle" class="lbl-sm">tuple access</text>
+  <text x="532" y="332" text-anchor="middle" class="lbl-sm">AggInterpreter</text>
+  <text x="532" y="346" text-anchor="middle" class="lbl-sm">handleJoinAggRow</text>
+
+  <!-- arrow back up -->
+  <line x1="630" y1="270" x2="630" y2="174" stroke="#4ea8de" stroke-width="1.5" stroke-dasharray="3,3"/>
+  <text x="640" y="220" class="lbl-sm">results</text>
+
+  <!-- Layer 4: Tests, side-by-side -->
+  <rect x="60" y="386" width="260" height="56" rx="8" fill="#16213e" stroke="#4ecca3" stroke-width="1.5"/>
+  <text x="190" y="408" text-anchor="middle" class="lbl" style="font-weight:600;fill:#4ecca3">NDB-API block tests</text>
+  <text x="190" y="426" text-anchor="middle" class="lbl-sm">testCteNdbApi*, testJoinAgg*, etc.</text>
+
+  <rect x="340" y="386" width="260" height="56" rx="8" fill="#16213e" stroke="#4ecca3" stroke-width="1.5"/>
+  <text x="470" y="408" text-anchor="middle" class="lbl" style="font-weight:600;fill:#4ecca3">RonSQL MTR tests</text>
+  <text x="470" y="426" text-anchor="middle" class="lbl-sm">mysql-test/suite/ronsql/t/*.test</text>
+</svg>
+<figcaption>D1. The four layers of RONDB-1050. Tests at the bottom validate both the NDB-API surface (block tests) and the full SQL surface (MTR tests).</figcaption>
+</figure>
+
+<h3 id="sec-2-2">2.2 Signal flow and the JOIN_AGG lifecycle</h3>
+<p>
+Pushdown join aggregation uses three signal pairs &mdash;
+<code>JOIN_AGG_SETUP</code>, <code>JOIN_AGG_COMPLETE</code>, and
+<code>JOIN_AGG_RELEASE</code> &mdash; to bracket the per-batch lifecycle of a
+<code>JoinAggregationState</code> seized from DblqhProxy's transient pool.
+SETUP creates the per-LDM aggregator handles before any rows arrive; COMPLETE
+finalises and merges per-LDM state for delivery; RELEASE cleans up after the
+API has consumed results. Phase L hardened idempotency on COMPLETE so retried
+or stale signals never produce duplicates.
+</p>
+<figure>
+<svg viewBox="0 0 760 520" width="760" height="520" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#f4845f"/>
+    </marker>
+    <marker id="arr2g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4ecca3"/>
+    </marker>
+    <marker id="arr2y" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#f0c040"/>
+    </marker>
+  </defs>
+  <text x="380" y="22" text-anchor="middle" class="ttl">Signal flow with JOIN_AGG lifecycle</text>
+
+  <!-- Lane headers -->
+  <rect x="40" y="40" width="160" height="32" rx="4" fill="#0f3460"/>
+  <text x="120" y="60" text-anchor="middle" class="lbl">API client</text>
+  <rect x="220" y="40" width="160" height="32" rx="4" fill="#0f3460"/>
+  <text x="300" y="60" text-anchor="middle" class="lbl">DBTC</text>
+  <rect x="400" y="40" width="160" height="32" rx="4" fill="#0f3460"/>
+  <text x="480" y="60" text-anchor="middle" class="lbl">DBSPJ</text>
+  <rect x="580" y="40" width="160" height="32" rx="4" fill="#0f3460"/>
+  <text x="660" y="60" text-anchor="middle" class="lbl">DBLQH / DBTUP</text>
+
+  <!-- Lane lines -->
+  <line x1="120" y1="76" x2="120" y2="500" stroke="#334" stroke-width="1"/>
+  <line x1="300" y1="76" x2="300" y2="500" stroke="#334" stroke-width="1"/>
+  <line x1="480" y1="76" x2="480" y2="500" stroke="#334" stroke-width="1"/>
+  <line x1="660" y1="76" x2="660" y2="500" stroke="#334" stroke-width="1"/>
+
+  <!-- 1. SCAN_TABREQ -->
+  <line x1="120" y1="100" x2="296" y2="100" stroke="#4ea8de" stroke-width="1.5" marker-end="url(#arr2g)" stroke="#4ecca3"/>
+  <text x="208" y="94" text-anchor="middle" class="lbl-mono-sm">SCAN_TABREQ (with agg flag)</text>
+
+  <!-- 2. JOIN_AGG_SETUP_REQ -->
+  <line x1="300" y1="135" x2="656" y2="135" stroke="#f4845f" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <text x="478" y="129" text-anchor="middle" class="lbl-mono-sm" style="fill:#f4845f">JOIN_AGG_SETUP_REQ (DblqhProxy)</text>
+  <text x="660" y="153" text-anchor="middle" class="lbl-sm">seize JoinAggregationState</text>
+
+  <!-- 3. JOIN_AGG_SETUP_CONF -->
+  <line x1="660" y1="172" x2="304" y2="172" stroke="#f4845f" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arr2)"/>
+  <text x="478" y="166" text-anchor="middle" class="lbl-mono-sm" style="fill:#f4845f">JOIN_AGG_SETUP_CONF</text>
+
+  <!-- 4. SCAN_FRAGREQ to DBSPJ -->
+  <line x1="300" y1="205" x2="476" y2="205" stroke="#4ea8de" stroke-width="1.5" marker-end="url(#arr2g)" stroke="#4ecca3"/>
+  <text x="388" y="199" text-anchor="middle" class="lbl-mono-sm">SCAN_FRAGREQ</text>
+
+  <!-- 5. SCAN_FRAGREQ to DBLQH (per fragment) -->
+  <line x1="480" y1="232" x2="656" y2="232" stroke="#4ea8de" stroke-width="1.5" marker-end="url(#arr2g)" stroke="#4ecca3"/>
+  <text x="568" y="226" text-anchor="middle" class="lbl-mono-sm">SCAN_FRAGREQ (per frag)</text>
+  <text x="660" y="250" text-anchor="middle" class="lbl-sm">handleJoinAggRow per row</text>
+  <text x="660" y="264" text-anchor="middle" class="lbl-sm">AggInterpreter accumulates</text>
+
+  <!-- 6. SCAN_FRAGCONF -->
+  <line x1="660" y1="285" x2="484" y2="285" stroke="#4ea8de" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arr2g)" stroke="#4ecca3"/>
+  <text x="568" y="279" text-anchor="middle" class="lbl-mono-sm">SCAN_FRAGCONF</text>
+
+  <!-- 7. JOIN_AGG_COMPLETE_REQ -->
+  <line x1="480" y1="320" x2="656" y2="320" stroke="#f0c040" stroke-width="1.5" marker-end="url(#arr2y)"/>
+  <text x="568" y="314" text-anchor="middle" class="lbl-mono-sm" style="fill:#f0c040">JOIN_AGG_COMPLETE_REQ</text>
+  <text x="660" y="338" text-anchor="middle" class="lbl-sm">redistribute, merge, finalize</text>
+
+  <!-- 8. TRANSID_AI (results) -->
+  <line x1="660" y1="365" x2="124" y2="365" stroke="#4ecca3" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arr2g)"/>
+  <text x="392" y="359" text-anchor="middle" class="lbl-mono-sm" style="fill:#4ecca3">TRANSID_AI (AGG_RESULT / AGG_CHAR_RESULT)</text>
+
+  <!-- 9. SCAN_TABCONF -->
+  <line x1="300" y1="400" x2="124" y2="400" stroke="#4ea8de" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arr2g)" stroke="#4ecca3"/>
+  <text x="212" y="394" text-anchor="middle" class="lbl-mono-sm">SCAN_TABCONF</text>
+
+  <!-- 10. JOIN_AGG_RELEASE_REQ -->
+  <line x1="480" y1="430" x2="656" y2="430" stroke="#f4845f" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <text x="568" y="424" text-anchor="middle" class="lbl-mono-sm" style="fill:#f4845f">JOIN_AGG_RELEASE_REQ</text>
+  <text x="660" y="448" text-anchor="middle" class="lbl-sm">release JoinAggregationState</text>
+
+  <!-- legend -->
+  <rect x="40" y="475" width="14" height="3" fill="#f4845f"/>
+  <text x="60" y="479" class="lbl-sm">SETUP / RELEASE</text>
+  <rect x="170" y="475" width="14" height="3" fill="#f0c040"/>
+  <text x="190" y="479" class="lbl-sm">COMPLETE</text>
+  <rect x="270" y="475" width="14" height="3" fill="#4ecca3"/>
+  <text x="290" y="479" class="lbl-sm">scan / data flow</text>
+  <line x1="395" y1="476" x2="425" y2="476" stroke="#4ecca3" stroke-width="2" stroke-dasharray="3,3"/>
+  <text x="430" y="479" class="lbl-sm">response</text>
+</svg>
+<figcaption>D2. The full lifecycle from SCAN_TABREQ to JOIN_AGG_RELEASE_REQ. Setup and Release bracket the JoinAggregationState; Complete is where per-LDM merge happens. Phase L made Complete idempotent.</figcaption>
+</figure>
+
+<h3 id="sec-2-3">2.3 Aggregation engine</h3>
+<p>
+Aggregation runs on every LDM thread that hosts a fragment of the bottom-most
+scanned table. Each LDM owns its own <code>AggInterpreter</code>; rows are
+intercepted at <code>DbtupExecQuery::handleJoinAggRow()</code> after the WHERE
+filter passes and before <code>sendReadAttrinfo</code>. There are two
+concurrency strategies: <em>mutex-based</em> (one shared interpreter, group
+locks) and <em>mutex-free</em> (per-LDM interpreter, merged at Complete time).
+The mutex-free strategy dominates for join aggregation; per-LDM state is
+shipped to the LDM co-located with the requesting DBTC instance via
+<code>JOIN_AGG_REDISTRIBUTE_REQ</code> for final merge before delivery.
+</p>
+<figure>
+<svg viewBox="0 0 720 380" width="720" height="380" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b388ff"/>
+    </marker>
+  </defs>
+  <text x="360" y="22" text-anchor="middle" class="ttl">Aggregation engine: per-LDM execution + redistribute</text>
+
+  <!-- DBTC owner box -->
+  <rect x="280" y="50" width="160" height="56" rx="6" fill="#533483" stroke="#b388ff" stroke-width="2"/>
+  <text x="360" y="74" text-anchor="middle" class="lbl" style="font-weight:600">DBTC</text>
+  <text x="360" y="92" text-anchor="middle" class="lbl-sm" style="fill:#eee">owner of redistribute target</text>
+
+  <!-- Owner-LDM (final merge) box -->
+  <rect x="280" y="138" width="160" height="56" rx="6" fill="#0f3460" stroke="#4ecca3" stroke-width="2"/>
+  <text x="360" y="162" text-anchor="middle" class="lbl" style="font-weight:600;fill:#4ecca3">Owner LDM</text>
+  <text x="360" y="180" text-anchor="middle" class="lbl-sm">final merge + TRANSID_AI</text>
+
+  <!-- LDM 0 -->
+  <rect x="60" y="240" width="180" height="84" rx="6" fill="#1e2a4a" stroke="#334"/>
+  <text x="150" y="262" text-anchor="middle" class="lbl">LDM 0</text>
+  <text x="150" y="280" text-anchor="middle" class="lbl-sm">AggInterpreter</text>
+  <text x="150" y="296" text-anchor="middle" class="lbl-mono-sm">handleJoinAggRow()</text>
+  <text x="150" y="312" text-anchor="middle" class="lbl-sm">per-group state</text>
+
+  <!-- LDM 1 -->
+  <rect x="270" y="240" width="180" height="84" rx="6" fill="#1e2a4a" stroke="#334"/>
+  <text x="360" y="262" text-anchor="middle" class="lbl">LDM 1</text>
+  <text x="360" y="280" text-anchor="middle" class="lbl-sm">AggInterpreter</text>
+  <text x="360" y="296" text-anchor="middle" class="lbl-mono-sm">handleJoinAggRow()</text>
+  <text x="360" y="312" text-anchor="middle" class="lbl-sm">per-group state</text>
+
+  <!-- LDM N -->
+  <rect x="480" y="240" width="180" height="84" rx="6" fill="#1e2a4a" stroke="#334"/>
+  <text x="570" y="262" text-anchor="middle" class="lbl">LDM N</text>
+  <text x="570" y="280" text-anchor="middle" class="lbl-sm">AggInterpreter</text>
+  <text x="570" y="296" text-anchor="middle" class="lbl-mono-sm">handleJoinAggRow()</text>
+  <text x="570" y="312" text-anchor="middle" class="lbl-sm">per-group state</text>
+
+  <!-- Redistribute arrows: each LDM up to owner -->
+  <line x1="150" y1="240" x2="320" y2="194" stroke="#b388ff" stroke-width="1.5" marker-end="url(#arr3)"/>
+  <line x1="360" y1="240" x2="360" y2="194" stroke="#b388ff" stroke-width="1.5" marker-end="url(#arr3)"/>
+  <line x1="570" y1="240" x2="400" y2="194" stroke="#b388ff" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+  <text x="220" y="220" text-anchor="middle" class="lbl-mono-sm" style="fill:#b388ff">REDISTRIBUTE_REQ</text>
+  <text x="500" y="220" text-anchor="middle" class="lbl-mono-sm" style="fill:#b388ff">REDISTRIBUTE_REQ</text>
+
+  <!-- Owner LDM up to DBTC -->
+  <line x1="360" y1="138" x2="360" y2="110" stroke="#f0c040" stroke-width="1.5" stroke-dasharray="3,3"/>
+  <text x="450" y="125" class="lbl-mono-sm" style="fill:#f0c040">JOIN_AGG_COMPLETE_CONF</text>
+
+  <!-- footer note -->
+  <text x="360" y="356" text-anchor="middle" class="lbl-sm">Each LDM accumulates locally; one LDM (co-located with DBTC) merges and replies.</text>
+</svg>
+<figcaption>D3. The mutex-free aggregation model. Phase L made the redistribute path idempotent and route-stable so retried COMPLETE_REQ signals cannot double-merge.</figcaption>
+</figure>
+
+<h3 id="sec-2-4">2.4 CTE materialisation buffer</h3>
+<p>
+A CTE result row is delivered to consumers as a kernel-built buffer with three
+sections: <em>parent linked projections</em> at the head (so child operations
+can read parent columns from a fixed offset),
+<em>GROUP BY keys</em> with a <code>[tableId=0, schemaVersion=0]</code> prefix
+identifying them as virtual-table columns, and
+<em>aggregate result items</em>. For numeric-only aggregate slots the result is
+delivered as <code>AGG_RESULT</code>: an array of fixed 16-byte
+<code>AggResItem</code> structs. When any aggregate slot is a string
+<code>MIN</code> or <code>MAX</code>, the same array is delivered as
+<code>AGG_CHAR_RESULT</code> (marker <code>0xFF02</code>) with an appended
+per-group string-payload region after the array. The numeric encoding is
+unchanged; only string slots use the appended region.
+</p>
+<figure>
+<svg viewBox="0 0 760 320" width="760" height="320" xmlns="http://www.w3.org/2000/svg">
+  <text x="380" y="22" text-anchor="middle" class="ttl">CTE result wire formats</text>
+
+  <!-- Left: AGG_RESULT -->
+  <text x="180" y="55" text-anchor="middle" class="lbl" style="font-weight:600;fill:#80deea">AGG_RESULT (numeric only)</text>
+
+  <rect x="40" y="70" width="280" height="36" rx="4" fill="#1e2a4a" stroke="#4ea8de"/>
+  <text x="180" y="92" text-anchor="middle" class="lbl-mono-sm">marker word + AGG_RESULT id</text>
+
+  <rect x="40" y="114" width="280" height="36" rx="4" fill="#0f3460" stroke="#4ea8de"/>
+  <text x="180" y="136" text-anchor="middle" class="lbl-mono-sm">AggResItem [0]  (16 B)</text>
+
+  <rect x="40" y="158" width="280" height="36" rx="4" fill="#0f3460" stroke="#4ea8de"/>
+  <text x="180" y="180" text-anchor="middle" class="lbl-mono-sm">AggResItem [1]  (16 B)</text>
+
+  <rect x="40" y="202" width="280" height="36" rx="4" fill="#0f3460" stroke="#4ea8de"/>
+  <text x="180" y="224" text-anchor="middle" class="lbl-mono-sm">AggResItem [N-1] (16 B)</text>
+
+  <text x="180" y="262" text-anchor="middle" class="lbl-sm">value field holds raw 64-bit numeric</text>
+
+  <!-- Right: AGG_CHAR_RESULT -->
+  <text x="580" y="55" text-anchor="middle" class="lbl" style="font-weight:600;fill:#80deea">AGG_CHAR_RESULT (with strings)</text>
+
+  <rect x="440" y="70" width="280" height="36" rx="4" fill="#1e2a4a" stroke="#e94560"/>
+  <text x="580" y="92" text-anchor="middle" class="lbl-mono-sm">marker word + 0xFF02</text>
+
+  <rect x="440" y="114" width="280" height="36" rx="4" fill="#0f3460" stroke="#e94560"/>
+  <text x="580" y="132" text-anchor="middle" class="lbl-mono-sm">AggResItem [0..N-1]</text>
+  <text x="580" y="146" text-anchor="middle" class="lbl-mono-sm" style="fill:#aaa">val_ptr unused (zero) on string slots</text>
+
+  <rect x="440" y="158" width="280" height="36" rx="4" fill="#16213e" stroke="#e94560" stroke-dasharray="3,3"/>
+  <text x="580" y="180" text-anchor="middle" class="lbl-mono-sm" style="fill:#f0c040">[Uint32 byte_size][prefix + payload]</text>
+
+  <rect x="440" y="202" width="280" height="36" rx="4" fill="#16213e" stroke="#e94560" stroke-dasharray="3,3"/>
+  <text x="580" y="224" text-anchor="middle" class="lbl-mono-sm" style="fill:#f0c040">... per string slot, Uint32-padded</text>
+
+  <text x="580" y="262" text-anchor="middle" class="lbl-sm">prefix = 0/1/2 B for CHAR / VARCHAR / Longvarchar</text>
+  <text x="580" y="278" text-anchor="middle" class="lbl-sm">numeric slots in array unchanged</text>
+
+  <!-- separator -->
+  <line x1="380" y1="60" x2="380" y2="290" stroke="#334" stroke-width="1" stroke-dasharray="3,3"/>
+</svg>
+<figcaption>D4. <code>AGG_RESULT</code> versus <code>AGG_CHAR_RESULT</code>. The numeric encoding is byte-for-byte unchanged; string MIN / MAX added an appended region rather than changing the existing 16-byte struct.</figcaption>
+</figure>
+
+<h3 id="sec-2-5">2.5 Three interpreters unified</h3>
+<p>
+RonDB's interpreted code originally came in three flavours: the normal
+NDB-API interpreter, the aggregation interpreter inside <code>AggInterpreter</code>,
+and the CTE-safe filter interpreter that runs inside <code>scanCte</code> /
+<code>lookupCte</code>. Phase A introduced a single jump-table dispatch
+(<code>s_cte_filter_handlers</code>); Phase C reused it for aggregation; Phase
+M removed the last aggregation-specific control-flow opcode by emitting an
+embedded normal-interpreter compare. Today all three flavours dispatch through
+the same handler table, with per-call flags such as
+<code>IFLAG_DISALLOW_BACKWARD_JUMPS</code> selecting the safe subset.
+</p>
+<figure>
+<svg viewBox="0 0 720 400" width="720" height="400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#80deea"/>
+    </marker>
+  </defs>
+  <text x="360" y="22" text-anchor="middle" class="ttl">Three interpreters, one jump table</text>
+
+  <!-- Three caller boxes around a central jump table -->
+  <!-- Filter interpreter (top-left) -->
+  <rect x="40" y="60" width="200" height="64" rx="6" fill="#16213e" stroke="#4ea8de" stroke-width="1.5"/>
+  <text x="140" y="84" text-anchor="middle" class="lbl" style="font-weight:600;fill:#4ea8de">CTE filter interpreter</text>
+  <text x="140" y="102" text-anchor="middle" class="lbl-sm">scanCte / lookupCte WHERE</text>
+  <text x="140" y="116" text-anchor="middle" class="lbl-mono-sm">IFLAG_DISALLOW_BACKWARD_JUMPS</text>
+
+  <!-- Aggregation interpreter (top-right) -->
+  <rect x="480" y="60" width="200" height="64" rx="6" fill="#16213e" stroke="#f4845f" stroke-width="1.5"/>
+  <text x="580" y="84" text-anchor="middle" class="lbl" style="font-weight:600;fill:#f4845f">AggInterpreter</text>
+  <text x="580" y="102" text-anchor="middle" class="lbl-sm">SUM/COUNT/MIN/MAX over rows</text>
+  <text x="580" y="116" text-anchor="middle" class="lbl-mono-sm">handleJoinAggRow per row</text>
+
+  <!-- Embedded normal interp (bottom) -->
+  <rect x="260" y="290" width="200" height="64" rx="6" fill="#16213e" stroke="#b388ff" stroke-width="1.5"/>
+  <text x="360" y="314" text-anchor="middle" class="lbl" style="font-weight:600;fill:#b388ff">Embedded normal interp</text>
+  <text x="360" y="332" text-anchor="middle" class="lbl-sm">CASE / GREATEST / LEAST inside agg</text>
+  <text x="360" y="346" text-anchor="middle" class="lbl-mono-sm">Phase M pair-op rewrite</text>
+
+  <!-- Central jump table -->
+  <rect x="220" y="160" width="280" height="100" rx="8" fill="#0f3460" stroke="#80deea" stroke-width="2"/>
+  <text x="360" y="184" text-anchor="middle" class="lbl" style="font-weight:600;fill:#80deea">jump table dispatch</text>
+  <text x="360" y="204" text-anchor="middle" class="lbl-sm">s_cte_filter_handlers / aggregation table</text>
+  <text x="360" y="222" text-anchor="middle" class="lbl-mono-sm">handler[op] != nullptr ? call : reject</text>
+  <text x="360" y="244" text-anchor="middle" class="lbl-sm" style="fill:#4ecca3">supported opcodes execute</text>
+
+  <!-- arrows from each caller to central -->
+  <line x1="180" y1="124" x2="280" y2="160" stroke="#80deea" stroke-width="1.5" marker-end="url(#arr5)"/>
+  <line x1="540" y1="124" x2="440" y2="160" stroke="#80deea" stroke-width="1.5" marker-end="url(#arr5)"/>
+  <line x1="360" y1="290" x2="360" y2="262" stroke="#80deea" stroke-width="1.5" marker-end="url(#arr5)"/>
+
+  <!-- legend -->
+  <text x="360" y="382" text-anchor="middle" class="lbl-sm">Unsupported opcodes are nullptr slots in the table; programs are validated at construction time.</text>
+</svg>
+<figcaption>D5. After Phase M the three callers share one dispatch table. The CTE-safe subset uses the table with <code>IFLAG_DISALLOW_BACKWARD_JUMPS</code>; aggregation uses the same table with full opcode coverage.</figcaption>
+</figure>
+</section>
+
+<!-- =======================================================================
+     SECTION 3: FEATURE CATALOGUE  (will be inserted by next Edit)
+     ======================================================================= -->
+<section id="sec-3">
+<h2>3. Feature catalogue (Q1-Q30)</h2>
+<p>
+Each example below is a real query shape exercised by the in-tree test suite.
+The SQL is shown in RonSQL form (the same surface RDRS exposes), but every
+shape is also expressible directly through the NDB API
+(<code>NdbQueryBuilder</code> + <code>NdbAggregator</code>). Phase tags point
+to the <code>storage/ndb/claude_files/pushdown_join_aggregation/</code> plan
+docs. Test-file references at the end of each example point to where the
+shape is regression-tested.
+</p>
+
+<h3 id="sec-3-1">3.1 Direct aggregation over real tables (no CTE)</h3>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q1</span>
+    <span class="qttl">Three-way INNER JOIN, GROUP BY on root, SUM on leaf</span>
+    <span class="tag shipped">RONDB-733 base</span>
+  </div>
+  <p>The original pushdown join aggregation shape: a join chain whose root
+  carries the GROUP BY key and whose leaf carries the aggregated column.
+  DBSPJ ships rows through the chain inside the data nodes; only one row per
+  group is returned to the API.</p>
+  <pre><code><span class="kw">SELECT</span> c.c_region, <span class="fn">SUM</span>(l.l_quantity)
+<span class="kw">FROM</span> customer <span class="kw">AS</span> c
+<span class="kw">JOIN</span> orders <span class="kw">AS</span> o <span class="kw">ON</span> o.o_custkey = c.c_id
+<span class="kw">JOIN</span> lineitem <span class="kw">AS</span> l <span class="kw">ON</span> l.l_orderkey = o.o_id
+<span class="kw">GROUP BY</span> c.c_region;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Linked-attribute propagation: <code>c.c_region</code> reaches the leaf as a kernel-level linked column for GROUP BY hashing.</li>
+    <li>Per-LDM aggregation, redistribute, owner-LDM merge before delivery.</li>
+    <li>One <code>JoinAggregationState</code> spans the whole batch.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_join_agg.test</code>; <code>storage/ndb/block_unit_test/testJoinAggNdbApi.cpp</code></p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q2</span>
+    <span class="qttl">Multi-batch aggregation with high-cardinality GROUP BY</span>
+    <span class="tag shipped">RONDB-733 / Phase L</span>
+  </div>
+  <p>When the result set has more groups than fit in one batch, DBSPJ pages results back to the API with <code>SCAN_NEXTREQ</code>; <code>JoinAggregationState</code> survives across batches and Phase L hardened the COMPLETE protocol so retried signals are idempotent.</p>
+  <pre><code><span class="kw">SELECT</span> o.o_id, <span class="fn">COUNT</span>(*), <span class="fn">SUM</span>(l.l_amt)
+<span class="kw">FROM</span> orders <span class="kw">AS</span> o
+<span class="kw">JOIN</span> lineitem <span class="kw">AS</span> l <span class="kw">ON</span> l.l_orderkey = o.o_id
+<span class="kw">GROUP BY</span> o.o_id;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Batched delivery via <code>SCAN_NEXTREQ</code>.</li>
+    <li>Eviction policies (testJoinAggNdbApi maxGroups stress).</li>
+    <li>Phase L idempotency on retried <code>JOIN_AGG_COMPLETE_REQ</code>.</li>
+  </ul>
+  <p class="qsource">Source: <code>storage/ndb/block_unit_test/testJoinAggNdbApi.cpp</code> tests 13-19</p>
+</div>
+
+<h3 id="sec-3-2">3.2 Scalar CTE</h3>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q3</span>
+    <span class="qttl">Scalar MAX from a CTE</span>
+    <span class="tag shipped">Phase I.17</span>
+  </div>
+  <p>A CTE body whose SELECT contains only aggregate outputs and no GROUP BY produces a single-row materialised result. Phase I.17 wired this shape end-to-end including the per-node redistribute that ships the lone row to the DBTC-co-located owner LDM.</p>
+  <pre><code><span class="kw">WITH</span> s <span class="kw">AS</span> (<span class="kw">SELECT</span> <span class="fn">MAX</span>(v) <span class="kw">AS</span> m <span class="kw">FROM</span> scalar_t)
+<span class="kw">SELECT</span> m <span class="kw">FROM</span> s;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Scalar materialisation with a synthetic single-row virtual table.</li>
+    <li>Owner-only emission via <code>cteScanShouldEmitScalar()</code>.</li>
+    <li>Top-level wrap of an aggregate function around the SELECT list.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_scalar.test</code></p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q4</span>
+    <span class="qttl">Cross-join two scalar CTEs with top-level GREATEST</span>
+    <span class="tag shipped">Phase I.17 / I.21</span>
+  </div>
+  <p>Two scalar CTEs joined as a comma cross-product produces a one-row result. Phase I.17 added the dummy-key <code>lookupCte</code> pattern so a 1-PK virtual table can be looked up without a real key. Phase I.21 added guardrails so this implicit-aggregate wrap stays scoped to scalar CTE expressions.</p>
+  <pre><code><span class="kw">WITH</span> lo <span class="kw">AS</span> (<span class="kw">SELECT</span> <span class="fn">MIN</span>(v) <span class="kw">AS</span> lo <span class="kw">FROM</span> scalar_t),
+     hi <span class="kw">AS</span> (<span class="kw">SELECT</span> <span class="fn">MAX</span>(v) <span class="kw">AS</span> hi <span class="kw">FROM</span> scalar_t)
+<span class="kw">SELECT</span> <span class="fn">GREATEST</span>(lo.lo, hi.hi) <span class="kw">FROM</span> lo, hi;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Cross-join (comma) of two scalar CTEs as the watermark shape from testCteNdbApi Test 20.</li>
+    <li>Implicit MAX-wrap of <code>GREATEST</code> at the top level (Phase I.21 keeps this restricted to scalar CTE chains).</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_scalar.test</code> Test 6</p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q5</span>
+    <span class="qttl">Scalar MIN/MAX optimised to ordered index + LIMIT 1</span>
+    <span class="tag shipped">Phase I.10</span>
+  </div>
+  <p>If the scalar CTE body's only output is <code>MIN(col)</code> or <code>MAX(col)</code> over a NOT NULL indexed column, the planner emits an ASC / DESC ordered <code>scanIndex</code> with <code>maxRows = 1</code> instead of the full hash-aggregate path.</p>
+  <pre><code><span class="kw">WITH</span> top <span class="kw">AS</span> (<span class="kw">SELECT</span> <span class="fn">MAX</span>(amt) <span class="kw">AS</span> m <span class="kw">FROM</span> orders)
+<span class="kw">SELECT</span> m <span class="kw">FROM</span> top;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Index-path optimisation: kernel reads one row instead of the entire fragment.</li>
+    <li>Falls back to baseline materialisation if the column is nullable, unindexed, or the body is not a clean MIN/MAX.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_minmax_index.test</code></p>
+</div>
+
+<h3 id="sec-3-3">3.3 Grouped CTE</h3>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q6</span>
+    <span class="qttl">Single-table grouped MIN/MAX/SUM/COUNT</span>
+    <span class="tag shipped">Phase B / D</span>
+  </div>
+  <p>The base grouped-CTE shape: GROUP BY on a real-table column, four aggregate slots. The result is materialised as a kernel-side virtual table that the main query can scan or look up.</p>
+  <pre><code><span class="kw">WITH</span> sums <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> o_custkey <span class="kw">AS</span> k,
+         <span class="fn">MIN</span>(o_amt) <span class="kw">AS</span> lo,
+         <span class="fn">MAX</span>(o_amt) <span class="kw">AS</span> hi,
+         <span class="fn">SUM</span>(o_amt) <span class="kw">AS</span> total,
+         <span class="fn">COUNT</span>(*)   <span class="kw">AS</span> cnt
+  <span class="kw">FROM</span> cte_orders
+  <span class="kw">GROUP BY</span> o_custkey)
+<span class="kw">SELECT</span> k, lo, hi, total, cnt <span class="kw">FROM</span> sums;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Grouped CTE materialisation with multiple aggregate slots in one program.</li>
+    <li>Phase D inline-type opcode used when the main query filters on aggregate output.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_basic.test</code></p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q7</span>
+    <span class="qttl">CTE body with two-table JOIN + GROUP BY, re-aggregated in main</span>
+    <span class="tag shipped">Phase D / I.7</span>
+  </div>
+  <p>The classic shape that motivated this whole project. The CTE materialises per-customer revenue from a join inside its body; the main query joins the materialised CTE to <code>cte_customer</code> and re-aggregates. Two GROUP BY layers, one materialisation cut.</p>
+  <pre><code><span class="kw">WITH</span> revenue <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> o.o_custkey <span class="kw">AS</span> k, <span class="fn">SUM</span>(l.l_price) <span class="kw">AS</span> r
+  <span class="kw">FROM</span> cte_orders <span class="kw">AS</span> o
+  <span class="kw">JOIN</span> cte_lineitem <span class="kw">AS</span> l <span class="kw">ON</span> l.l_custkey = o.o_custkey
+  <span class="kw">GROUP BY</span> o.o_custkey)
+<span class="kw">SELECT</span> revenue.k, <span class="fn">SUM</span>(revenue.r)
+<span class="kw">FROM</span> cte_customer <span class="kw">AS</span> c
+<span class="kw">JOIN</span> revenue <span class="kw">ON</span> revenue.k = c.c_id
+<span class="kw">GROUP BY</span> revenue.k;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Two-table CTE body with linked-attribute SUM at the leaf.</li>
+    <li>CTE_LOOKUP from main query to materialised virtual table by virtual PK <code>k</code>.</li>
+    <li>Re-aggregation on the main side of the join.</li>
+  </ul>
+<figure>
+<svg viewBox="0 0 720 360" width="720" height="360" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4ea8de"/>
+    </marker>
+  </defs>
+  <text x="360" y="22" text-anchor="middle" class="ttl">Q7 plan: CTE body materialise then re-aggregate</text>
+
+  <!-- CTE body (left side, dashed border) -->
+  <rect x="40" y="60" width="280" height="240" rx="8" fill="none" stroke="#f0c040" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <text x="180" y="80" text-anchor="middle" class="lbl-sm" style="fill:#f0c040">CTE body: revenue</text>
+
+  <rect x="60" y="100" width="120" height="50" rx="4" fill="#1e2a4a" stroke="#4ea8de"/>
+  <text x="120" y="120" text-anchor="middle" class="lbl">cte_orders o</text>
+  <text x="120" y="138" text-anchor="middle" class="lbl-sm">scanTable</text>
+
+  <rect x="200" y="100" width="120" height="50" rx="4" fill="#1e2a4a" stroke="#4ea8de"/>
+  <text x="260" y="120" text-anchor="middle" class="lbl">cte_lineitem l</text>
+  <text x="260" y="138" text-anchor="middle" class="lbl-sm">scanIndex on l_custkey</text>
+
+  <rect x="100" y="180" width="160" height="44" rx="4" fill="#0f3460" stroke="#f4845f" stroke-width="1.5"/>
+  <text x="180" y="200" text-anchor="middle" class="lbl">JoinAggInterpreter</text>
+  <text x="180" y="216" text-anchor="middle" class="lbl-sm">SUM(l.l_price) GROUP BY o.o_custkey</text>
+
+  <rect x="100" y="240" width="160" height="44" rx="4" fill="#533483" stroke="#b388ff" stroke-width="1.5"/>
+  <text x="180" y="260" text-anchor="middle" class="lbl" style="fill:#fff">virtual table</text>
+  <text x="180" y="276" text-anchor="middle" class="lbl-sm" style="fill:#eee">k (virt PK), r (BIGINT)</text>
+
+  <line x1="120" y1="150" x2="160" y2="178" stroke="#4ea8de" stroke-width="1.5" marker-end="url(#arr6)"/>
+  <line x1="260" y1="150" x2="200" y2="178" stroke="#4ea8de" stroke-width="1.5" marker-end="url(#arr6)"/>
+  <line x1="180" y1="224" x2="180" y2="238" stroke="#b388ff" stroke-width="1.5" marker-end="url(#arr6)"/>
+
+  <!-- Main query (right) -->
+  <rect x="400" y="60" width="280" height="240" rx="8" fill="none" stroke="#4ecca3" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <text x="540" y="80" text-anchor="middle" class="lbl-sm" style="fill:#4ecca3">Main query</text>
+
+  <rect x="420" y="100" width="120" height="50" rx="4" fill="#1e2a4a" stroke="#4ecca3"/>
+  <text x="480" y="120" text-anchor="middle" class="lbl">cte_customer c</text>
+  <text x="480" y="138" text-anchor="middle" class="lbl-sm">scanTable (root)</text>
+
+  <rect x="560" y="100" width="120" height="50" rx="4" fill="#533483" stroke="#b388ff" stroke-width="1.5"/>
+  <text x="620" y="120" text-anchor="middle" class="lbl" style="fill:#fff">revenue</text>
+  <text x="620" y="138" text-anchor="middle" class="lbl-sm" style="fill:#eee">lookupCte by k = c.c_id</text>
+
+  <rect x="460" y="180" width="160" height="44" rx="4" fill="#0f3460" stroke="#f4845f" stroke-width="1.5"/>
+  <text x="540" y="200" text-anchor="middle" class="lbl">JoinAggInterpreter</text>
+  <text x="540" y="216" text-anchor="middle" class="lbl-sm">SUM(revenue.r) GROUP BY revenue.k</text>
+
+  <rect x="480" y="240" width="120" height="44" rx="4" fill="#16213e" stroke="#4ecca3" stroke-width="1.5"/>
+  <text x="540" y="260" text-anchor="middle" class="lbl">TRANSID_AI</text>
+  <text x="540" y="276" text-anchor="middle" class="lbl-sm">to API</text>
+
+  <line x1="540" y1="150" x2="500" y2="178" stroke="#4ea8de" stroke-width="1.5" marker-end="url(#arr6)"/>
+  <line x1="620" y1="150" x2="580" y2="178" stroke="#4ea8de" stroke-width="1.5" marker-end="url(#arr6)"/>
+  <line x1="540" y1="224" x2="540" y2="238" stroke="#4ecca3" stroke-width="1.5" marker-end="url(#arr6)"/>
+
+  <!-- materialise cut (arrow between sides) -->
+  <line x1="260" y1="262" x2="600" y2="125" stroke="#b388ff" stroke-width="1" stroke-dasharray="3,3"/>
+  <text x="430" y="320" text-anchor="middle" class="lbl-sm" style="fill:#b388ff">main side reads materialised CTE rows by virtual-PK lookup</text>
+</svg>
+<figcaption>D6. Q7 splits into two pushed sub-plans: the CTE body (yellow dashed) materialises a virtual table on the data nodes; the main query (green dashed) joins the customer table to that virtual table and re-aggregates.</figcaption>
+</figure>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_basic.test</code> Test 2</p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q8</span>
+    <span class="qttl">CTE body with scanIndex and WHERE bounds</span>
+    <span class="tag shipped">Phase I.9</span>
+  </div>
+  <p>If a CTE body has WHERE predicates that match an ordered indexed column, the planner emits <code>scanIndex</code> with key bounds instead of <code>scanTable</code> + interpreted-code filter. Residual conjuncts still go through the filter path.</p>
+  <pre><code><span class="kw">WITH</span> q4_orders <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> o_custkey <span class="kw">AS</span> k, <span class="fn">SUM</span>(o_amt) <span class="kw">AS</span> t
+  <span class="kw">FROM</span> cte_orders
+  <span class="kw">WHERE</span> o_orderdate &gt;= 20250101
+    <span class="kw">AND</span> o_orderdate &lt;= 20250331
+  <span class="kw">GROUP BY</span> o_custkey)
+<span class="kw">SELECT</span> k, t <span class="kw">FROM</span> q4_orders;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Index-path scan inside a CTE body, replacing a full-fragment scan.</li>
+    <li>Residual <code>WHERE</code> predicates demoted to interpreted-code filter.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_index_body.test</code></p>
+</div>
+
+<h3 id="sec-3-4">3.4 CTE as main-query root</h3>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q9</span>
+    <span class="qttl">lookupCte as main-query root with PK constant</span>
+    <span class="tag shipped">Phase I.7</span>
+  </div>
+  <p>When the main query is <code>SELECT ... FROM cte WHERE pk = const</code> with all virtual-PK columns equality-bound, the planner emits <code>qb-&gt;lookupCte()</code> as the root operation. Phase I.7 added the prepare-time WHERE walk that detects this shape; partial-key / no-WHERE cases fall back to <code>scanCte</code> + inline filter.</p>
+  <pre><code><span class="kw">WITH</span> sums <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> o_custkey <span class="kw">AS</span> k, <span class="fn">SUM</span>(o_amt) <span class="kw">AS</span> t
+  <span class="kw">FROM</span> cte_orders <span class="kw">GROUP BY</span> o_custkey)
+<span class="kw">SELECT</span> k, t <span class="kw">FROM</span> sums <span class="kw">WHERE</span> k = 100;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Hash lookup on the synthetic virt PK with no WHERE residual.</li>
+    <li>Typed <code>constValue</code> dispatch for synthetic columns (<code>m_attrSize</code> uninitialised on raw <code>NdbDictionary::Column</code>).</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_root_lookup.test</code>; testCteNdbApi.cpp Test 11</p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q10</span>
+    <span class="qttl">scanCte as main-query root, projection-only</span>
+    <span class="tag shipped">Phase E.1 / E.3</span>
+  </div>
+  <p>The <code>scanCte</code> root path exists for SELECTs without aggregation that read every CTE row. Phase E.1 added the kernel handshake; E.3 covers projection-only main queries.</p>
+  <pre><code><span class="kw">WITH</span> sums <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> o_custkey <span class="kw">AS</span> k, <span class="fn">SUM</span>(o_amt) <span class="kw">AS</span> t
+  <span class="kw">FROM</span> cte_orders <span class="kw">GROUP BY</span> o_custkey)
+<span class="kw">SELECT</span> k, t <span class="kw">FROM</span> sums <span class="kw">ORDER BY</span> k;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li><code>scanCte</code> as the root operation of the main query tree.</li>
+    <li>Multi-batch SCAN_NEXTREQ correctness when the materialised result is large.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_scan.test</code></p>
+</div>
+
+<h3 id="sec-3-5">3.5 CTE as joined child / chained CTEs</h3>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q11</span>
+    <span class="qttl">Real-table root + CTE_LOOKUP child (non-aggregating)</span>
+    <span class="tag shipped">Phase I.8</span>
+  </div>
+  <p>Projection-only join from a real-table root to a CTE child. The main query has no aggregation, so the result is row-by-row pass-through after the CTE_LOOKUP fans out per parent key.</p>
+  <pre><code><span class="kw">WITH</span> sums <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> o_custkey <span class="kw">AS</span> k, <span class="fn">SUM</span>(o_amt) <span class="kw">AS</span> t
+  <span class="kw">FROM</span> cte_orders <span class="kw">GROUP BY</span> o_custkey)
+<span class="kw">SELECT</span> c.c_id, c.c_name, sums.t
+<span class="kw">FROM</span> cte_customer <span class="kw">AS</span> c
+<span class="kw">JOIN</span> sums <span class="kw">ON</span> sums.k = c.c_id;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Pass-through drain: the receiver buffer pre-registers all virt-table cols in <code>attrId</code> order.</li>
+    <li>TSV header deferred to first row to keep empty-result behaviour matching the mysql client baseline.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_pk_join.test</code>; testCteNdbApi.cpp Test 17</p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q12</span>
+    <span class="qttl">Chained CTEs: c0 feeds c1 feeds the main query</span>
+    <span class="tag shipped">Phase E.2 / L</span>
+  </div>
+  <p>CTEs can reference earlier CTEs in declaration order. Each link adds another GROUP BY layer of linked-attribute aggregation; the planner resolves names with declaration-order scoping (Phase I.23).</p>
+  <pre><code><span class="kw">WITH</span> c0 <span class="kw">AS</span> (
+       <span class="kw">SELECT</span> grp <span class="kw">AS</span> g, <span class="fn">SUM</span>(val) <span class="kw">AS</span> s0
+       <span class="kw">FROM</span> t <span class="kw">GROUP BY</span> grp),
+     c1 <span class="kw">AS</span> (
+       <span class="kw">SELECT</span> g, <span class="fn">SUM</span>(c0.s0) <span class="kw">AS</span> s1
+       <span class="kw">FROM</span> c0 <span class="kw">GROUP BY</span> g)
+<span class="kw">SELECT</span> g, <span class="fn">SUM</span>(c1.s1) <span class="kw">FROM</span> c1 <span class="kw">GROUP BY</span> g;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Sequential CTE dependency through a chain of virtual tables.</li>
+    <li>Phase L's per-record correlation across chained pushed batches.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_chained.test</code></p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q13</span>
+    <span class="qttl">Cross-CTE join via dummy-key lookupCte</span>
+    <span class="tag shipped">Phase I.17 / I.21</span>
+  </div>
+  <p>Two scalar CTEs cross-joined: implemented as a 1-PK virtual-table <code>lookupCte</code> with a constant dummy key. Phase I.21 keeps this dummy-key shape scoped to scalar CTE child lookups so it doesn't leak into normal queries.</p>
+  <pre><code><span class="kw">WITH</span> a <span class="kw">AS</span> (<span class="kw">SELECT</span> <span class="fn">SUM</span>(x) <span class="kw">AS</span> sx <span class="kw">FROM</span> t1),
+     b <span class="kw">AS</span> (<span class="kw">SELECT</span> <span class="fn">SUM</span>(y) <span class="kw">AS</span> sy <span class="kw">FROM</span> t2)
+<span class="kw">SELECT</span> a.sx, b.sy <span class="kw">FROM</span> a, b;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>NdbQueryBuilder dummy-key lookupCte (testCteNdbApi.cpp Test 20 pattern).</li>
+    <li><code>setParent</code> on a scalar virtual table to express the cross-product as a join.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_scalar.test</code></p>
+</div>
+
+<h3 id="sec-3-6">3.6 Outer-join CTEs</h3>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q14</span>
+    <span class="qttl">Real-table LEFT JOIN CTE with NULL injection</span>
+    <span class="tag shipped">outer-join 1 / 5</span>
+  </div>
+  <p>Customers without matching orders still produce a row, with NULLs where the CTE columns would go. The kernel injects a virt-table NULL row at agg-feed time when <code>NdbQueryOperation::isRowNULL()</code> reports the unmatched marker.</p>
+  <pre><code><span class="kw">WITH</span> sums <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> o_custkey <span class="kw">AS</span> k, <span class="fn">SUM</span>(o_amt) <span class="kw">AS</span> t
+  <span class="kw">FROM</span> cte_orders <span class="kw">GROUP BY</span> o_custkey)
+<span class="kw">SELECT</span> c.c_id, c.c_name, sums.t
+<span class="kw">FROM</span> cte_customer <span class="kw">AS</span> c
+<span class="kw">LEFT JOIN</span> sums <span class="kw">ON</span> sums.k = c.c_id;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>CTE_LOOKUP outer-join child with kernel NULL injection (Phase 1 / Phase 5).</li>
+    <li>Pass-through drain substitutes NULL into a transient <code>effective_attrs[]</code> when isRowNULL is true.</li>
+  </ul>
+<figure>
+<svg viewBox="0 0 720 320" width="720" height="320" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4ea8de"/>
+    </marker>
+  </defs>
+  <text x="360" y="22" text-anchor="middle" class="ttl">Q14: LEFT JOIN with NULL injection</text>
+
+  <!-- Customer rows (left) -->
+  <rect x="40" y="60" width="180" height="60" rx="6" fill="#1e2a4a" stroke="#4ea8de"/>
+  <text x="130" y="84" text-anchor="middle" class="lbl">cte_customer c</text>
+  <text x="130" y="102" text-anchor="middle" class="lbl-sm">scanTable (LEFT side)</text>
+
+  <!-- sums CTE (right) -->
+  <rect x="500" y="60" width="180" height="60" rx="6" fill="#533483" stroke="#b388ff"/>
+  <text x="590" y="84" text-anchor="middle" class="lbl" style="fill:#fff">sums (CTE)</text>
+  <text x="590" y="102" text-anchor="middle" class="lbl-sm" style="fill:#eee">lookupCte by k = c.c_id</text>
+
+  <!-- Per-row arrow -->
+  <line x1="220" y1="90" x2="496" y2="90" stroke="#4ea8de" stroke-width="1.5" marker-end="url(#arr7)"/>
+  <text x="358" y="80" text-anchor="middle" class="lbl-mono-sm">per row: setParent(c.c_id)</text>
+
+  <!-- Match path -->
+  <rect x="40" y="160" width="640" height="44" rx="6" fill="#0f3460" stroke="#4ecca3"/>
+  <text x="60" y="180" class="lbl-sm" style="fill:#4ecca3">match:</text>
+  <text x="120" y="180" class="lbl-mono-sm">(c.c_id, c.c_name, sums.t)</text>
+  <text x="60" y="196" class="lbl-sm">aggregator agg-feed sees real CTE row, contributes to outer aggregate</text>
+
+  <!-- No-match path -->
+  <rect x="40" y="216" width="640" height="44" rx="6" fill="#3d2f1f" stroke="#f4845f"/>
+  <text x="60" y="236" class="lbl-sm" style="fill:#f4845f">no match:</text>
+  <text x="138" y="236" class="lbl-mono-sm">(c.c_id, c.c_name, NULL)</text>
+  <text x="60" y="252" class="lbl-sm">isRowNULL() true; kernel injects NULL slot before agg-feed</text>
+
+  <line x1="358" y1="120" x2="358" y2="158" stroke="#4ecca3" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="358" y1="120" x2="358" y2="214" stroke="#f4845f" stroke-width="1" stroke-dasharray="3,3"/>
+  <text x="368" y="142" class="lbl-sm" style="fill:#aaa">branch on lookup result</text>
+</svg>
+<figcaption>D7. The matched and unmatched paths through the LEFT JOIN. The kernel handles both uniformly: matched rows go straight into agg-feed; unmatched rows have NULL substituted before agg-feed sees them.</figcaption>
+</figure>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_outer_join.test</code> Tests 2/5/6</p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q15</span>
+    <span class="qttl">scanCte LEFT JOIN real-table</span>
+    <span class="tag shipped">outer-join 2</span>
+  </div>
+  <p>The CTE is the LEFT side and a real table is the RIGHT side. Phase 2 of the outer-join sub-plan validated this shape against testCteNdbApiOuterJoin Test 1.</p>
+  <pre><code><span class="kw">WITH</span> sums <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> o_custkey <span class="kw">AS</span> k, <span class="fn">SUM</span>(o_amt) <span class="kw">AS</span> t
+  <span class="kw">FROM</span> cte_orders <span class="kw">GROUP BY</span> o_custkey)
+<span class="kw">SELECT</span> sums.k, sums.t, c.c_name
+<span class="kw">FROM</span> sums
+<span class="kw">LEFT JOIN</span> cte_customer <span class="kw">AS</span> c <span class="kw">ON</span> c.c_id = sums.k;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li><code>scanCte</code> as outer-join LEFT-side parent.</li>
+    <li>Real-table child <code>readTuple</code> returning NULL where unmatched.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_outer_join.test</code> Test 1</p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q16</span>
+    <span class="qttl">LEFT-to-INNER promotion when WHERE rejects NULL on RHS</span>
+    <span class="tag shipped">Phase J</span>
+  </div>
+  <p>If a LEFT JOIN's WHERE clause rejects NULL on the optional side, the join is semantically inner. RonSQL promotes <code>LEFT_OUTER_JOIN</code> to <code>INNER_JOIN</code> at plan time so the kernel takes the cheaper path.</p>
+  <pre><code><span class="kw">SELECT</span> c.c_id, sums.t
+<span class="kw">FROM</span> cte_customer <span class="kw">AS</span> c
+<span class="kw">LEFT JOIN</span> sums <span class="kw">ON</span> sums.k = c.c_id
+<span class="kw">WHERE</span> sums.t &gt; 0;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Plan-time rewrite: WHERE forbids NULL on <code>sums.t</code> so the LEFT semantics are redundant.</li>
+    <li>Inner-join machinery faster than the outer-join path.</li>
+  </ul>
+  <p class="qsource">Source: phase doc <code>cte_filter_phase_j.md</code></p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q17</span>
+    <span class="qttl">ANTI-JOIN promotion: WHERE col IS NULL on LEFT JOIN RHS</span>
+    <span class="tag shipped">Phase K</span>
+  </div>
+  <p>The dual of Q16: when the WHERE explicitly requires the RHS to be NULL, the planner promotes the LEFT JOIN to an ANTI-JOIN, returning only LHS rows that have no match. The kernel's <code>routeCteLookup</code> ANTI flag is preserved through forwarding (the &quot;route flag-stripping gotcha&quot; resolved in Phase K).</p>
+  <pre><code><span class="kw">SELECT</span> c.c_id, c.c_name
+<span class="kw">FROM</span> cte_customer <span class="kw">AS</span> c
+<span class="kw">LEFT JOIN</span> sums <span class="kw">ON</span> sums.k = c.c_id
+<span class="kw">WHERE</span> sums.k <span class="kw">IS NULL</span>;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Customers with no orders, expressed via the standard "anti-pattern" SQL.</li>
+    <li>Phase K's <code>ANTI_JOIN_FLAG</code> end-to-end through the route forwarder.</li>
+  </ul>
+  <p class="qsource">Source: phase doc <code>cte_filter_phase_k.md</code></p>
+</div>
+
+<h3 id="sec-3-7">3.7 Filter pushdown</h3>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q18</span>
+    <span class="qttl">Inline-type WHERE on aggregate output</span>
+    <span class="tag shipped">Phase D / D2</span>
+  </div>
+  <p>The CTE_LOOKUP filter compares an aggregate-output column without a real <code>AttributeDescriptor</code>. The type travels in the program word itself (<code>BRANCH_MEM_OP_ARG_INLINE_TYPE</code>); Phase D2 widened the encoding to MIN/MAX virt types (Bigint / Bigunsigned / Double).</p>
+  <pre><code><span class="kw">WITH</span> sums <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> o_custkey <span class="kw">AS</span> k, <span class="fn">SUM</span>(o_amt) <span class="kw">AS</span> t
+  <span class="kw">FROM</span> cte_orders <span class="kw">GROUP BY</span> o_custkey)
+<span class="kw">SELECT</span> k, t <span class="kw">FROM</span> sums <span class="kw">WHERE</span> t &gt; 1000;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Per-CTE-row filter on a synthesised column without a kernel descriptor.</li>
+    <li>Inline type encoding allows the receiver to compare correctly.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_basic.test</code> Test 9</p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q19</span>
+    <span class="qttl">OR / DNF on CTE_LOOKUP</span>
+    <span class="tag shipped">Phase I.2</span>
+  </div>
+  <p>Top-level OR is pushed down via DNF expansion: the WHERE is rewritten into disjunctive normal form and emitted as a series of branch-on-match instructions in the CTE filter program.</p>
+  <pre><code><span class="kw">WITH</span> sums <span class="kw">AS</span> (...)
+<span class="kw">SELECT</span> sums.k, sums.t
+<span class="kw">FROM</span> cte_customer <span class="kw">AS</span> c
+<span class="kw">JOIN</span> sums <span class="kw">ON</span> sums.k = c.c_id
+<span class="kw">WHERE</span> sums.k = 100 <span class="kw">OR</span> sums.k = 300;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Disjunction handled in the kernel's interpreted-code filter.</li>
+    <li>Not expanded into multiple round trips on the API side.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_or.test</code></p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q20</span>
+    <span class="qttl">Column-vs-column on CTE_LOOKUP</span>
+    <span class="tag shipped">Phase I.3</span>
+  </div>
+  <p>A WHERE that compares two columns of the CTE row (or a CTE column to a parent linked column) instead of a column to a constant. Phase I.3 added a 1-line NdbInterpretedCode API for the col-vs-col Bigint compare.</p>
+  <pre><code><span class="kw">SELECT</span> sums.k, sums.t
+<span class="kw">FROM</span> cte_customer <span class="kw">AS</span> c
+<span class="kw">JOIN</span> sums <span class="kw">ON</span> sums.k = c.c_id
+<span class="kw">WHERE</span> sums.t &gt; c.c_credit_limit;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Two virt-column registers compared in-kernel.</li>
+    <li>Bigint-only in this phase; sub-Bigint widening is Phase I.5 v5 / I.18.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_colvscol.test</code></p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q21</span>
+    <span class="qttl">CASE referencing a CTE column</span>
+    <span class="tag shipped">Phase I.4</span>
+  </div>
+  <p>A CASE expression in a WHERE clause whose conditions reference CTE columns. Phase I.4 routed CASE-condition emit through <code>simplify_ce</code> so it normalises like any other expression.</p>
+  <pre><code><span class="kw">SELECT</span> sums.k, sums.t
+<span class="kw">FROM</span> cte_customer <span class="kw">AS</span> c
+<span class="kw">JOIN</span> sums <span class="kw">ON</span> sums.k = c.c_id
+<span class="kw">WHERE</span> <span class="kw">CASE WHEN</span> sums.t &gt; 1000 <span class="kw">THEN</span> c.c_id <span class="kw">ELSE</span> 0 <span class="kw">END</span> &gt; 0;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>CASE inside CTE filter, evaluated per row in the kernel.</li>
+    <li>Phase I.19 added boundary-fix coverage for literal normalisation in CASE atoms.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_case.test</code></p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q22</span>
+    <span class="qttl">GREATEST / LEAST n-ary with NULL propagation</span>
+    <span class="tag shipped">I.5 v2b / v7</span>
+  </div>
+  <p>n-ary <code>GREATEST</code> / <code>LEAST</code> compile to SVM pair-ops (Phase I.5 v2b). With nullable operands, expression-local NULL propagation makes only the immediately-following aggregate skip the row (Phase I.5 v7 + new <code>kOpSetRegNull</code>).</p>
+  <pre><code><span class="kw">WITH</span> bounds <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> c_id, <span class="fn">GREATEST</span>(c_a, c_b, c_c) <span class="kw">AS</span> g
+  <span class="kw">FROM</span> v6_t)
+<span class="kw">SELECT</span> c_id, g <span class="kw">FROM</span> bounds;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>SVM-style multi-arg lowering via embedded normal-interpreter compares.</li>
+    <li>Localised NULL skip: COUNT(*) / SUM elsewhere in the program still update.</li>
+  </ul>
+  <p class="qsource">Source: <code>ronsql_cte_greatest_least_v2b.test</code>, <code>ronsql_cte_greatest_least_v4.test</code></p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q23</span>
+    <span class="qttl">IS NULL on aggregate output</span>
+    <span class="tag shipped">Phase I.1</span>
+  </div>
+  <p>A WHERE that filters on whether an aggregate output is NULL. Phase I.1 added IS NULL / IS NOT NULL recognition in the CTE filter and the inline-type opcode encoding.</p>
+  <pre><code><span class="kw">WITH</span> sums <span class="kw">AS</span> (...)
+<span class="kw">SELECT</span> c.c_id
+<span class="kw">FROM</span> cte_customer <span class="kw">AS</span> c
+<span class="kw">LEFT JOIN</span> sums <span class="kw">ON</span> sums.k = c.c_id
+<span class="kw">WHERE</span> sums.t <span class="kw">IS NULL</span>;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>NULL-aware filter on a synthesised aggregate column.</li>
+    <li>When combined with LEFT JOIN, frequently promoted to ANTI-JOIN (Phase K).</li>
+  </ul>
+  <p class="qsource">Source: phase doc <code>cte_filter_phase_i1.md</code></p>
+</div>
+
+<h3 id="sec-3-8">3.8 Type widening and typed registers</h3>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q24</span>
+    <span class="qttl">DECIMAL widening in MIN / MAX (with range guard)</span>
+    <span class="tag shipped">I.6 F.1 / I.22</span>
+  </div>
+  <p>DECIMAL(N,0) widens to BIGINT or BIGINT UNSIGNED; DECIMAL(N,S&gt;0) widens to DOUBLE. Phase I.22 rejects scale-zero DECIMALs whose precision exceeds the kernel's 64-bit target (signed precision &gt; 18 or unsigned precision &gt; 19).</p>
+  <pre><code><span class="kw">WITH</span> stats <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> o_grp <span class="kw">AS</span> k,
+         <span class="fn">MIN</span>(o_amt0) <span class="kw">AS</span> lo,   <span class="com">-- DECIMAL(10,0) -&gt; BIGINT</span>
+         <span class="fn">MAX</span>(o_amt2) <span class="kw">AS</span> hi    <span class="com">-- DECIMAL(10,2) -&gt; DOUBLE</span>
+  <span class="kw">FROM</span> dec_orders <span class="kw">GROUP BY</span> o_grp)
+<span class="kw">SELECT</span> k, lo, hi <span class="kw">FROM</span> stats;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Per-column widening decision based on precision and scale.</li>
+    <li>Inline-type filter accepts the widened types.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_decimal.test</code></p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q25</span>
+    <span class="qttl">Mixed-type compare with sign extension and BIGINT UNSIGNED beyond INT64_MAX</span>
+    <span class="tag shipped">Phase I.18</span>
+  </div>
+  <p>Phase I.18 retrofitted normal-interpreter registers to hold a NULL flag, an UNSIGNED flag, a FLOAT flag, and a 64-bit value (Option B). All eight integer widths sign-extend correctly, and BIGINT UNSIGNED &gt; INT64_MAX no longer aliases to a negative comparison.</p>
+  <pre><code><span class="kw">WITH</span> bounds <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> c.c_id,
+         <span class="kw">CASE WHEN</span> c.c_int8 &gt; o.o_uint64
+              <span class="kw">THEN</span> c.c_int8 <span class="kw">ELSE</span> o.o_uint64 <span class="kw">END</span> <span class="kw">AS</span> mx
+  <span class="kw">FROM</span> v5_customer <span class="kw">AS</span> c
+  <span class="kw">JOIN</span> v5_orders <span class="kw">AS</span> o <span class="kw">ON</span> o.o_custkey = c.c_id)
+<span class="kw">SELECT</span> c.c_id, <span class="fn">MAX</span>(bounds.mx)
+<span class="kw">FROM</span> v5_customer <span class="kw">AS</span> c
+<span class="kw">LEFT JOIN</span> bounds <span class="kw">ON</span> bounds.c_id = c.c_id
+<span class="kw">GROUP BY</span> c.c_id;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>Typed register compare: int8 vs uint64 lifted to a correct cross-sign Bigint compare.</li>
+    <li>FLOAT / DOUBLE arms use the same typed-register pipeline.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_greatest_least_v5.test</code></p>
+</div>
+
+<h3 id="sec-3-9">3.9 String MIN/MAX</h3>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q26</span>
+    <span class="qttl">Scalar VARCHAR MIN / MAX</span>
+    <span class="tag shipped">I.6 F.2</span>
+  </div>
+  <p>Single-row aggregation over a VARCHAR column. The kernel keeps per-(group, slot) state via <code>AggResItem.value.val_ptr</code>; the API receives <code>AGG_CHAR_RESULT</code> and exposes the bytes via <code>NdbAggregator::Result::data_str(Uint32* len)</code>.</p>
+  <pre><code><span class="kw">SELECT</span> <span class="fn">MIN</span>(v) <span class="kw">AS</span> lo, <span class="fn">MAX</span>(v) <span class="kw">AS</span> hi
+<span class="kw">FROM</span> str_t;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li><code>AGG_CHAR_RESULT</code> wire format end-to-end.</li>
+    <li>RonSQL <code>ResultPrinter</code> dispatches on aggregate output type (Phase I.6 S.5).</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_minmax_string.test</code>; <code>storage/ndb/block_unit_test/testVarcharMinMax.cpp</code></p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q27</span>
+    <span class="qttl">Grouped CHAR MIN / MAX with multi-partition merge</span>
+    <span class="tag shipped">I.6 S.1 / S.2</span>
+  </div>
+  <p>Multi-partition tables produce per-fragment partial winners; the API merges them charset-aware (no "first source wins" shortcut) using <code>NdbSqlUtil::getType(typeId).m_cmp</code>. Phase S.1 ensured the grouped public result length is exactly <code>n_agg_results &times; sizeof(AggResItem)</code> regardless of appended payload bytes.</p>
+  <pre><code><span class="kw">SELECT</span> grp,
+       <span class="fn">MIN</span>(c) <span class="kw">AS</span> lo, <span class="fn">MAX</span>(c) <span class="kw">AS</span> hi
+<span class="kw">FROM</span> str_minmax_char
+<span class="kw">GROUP BY</span> grp;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>CHAR space padding handled correctly.</li>
+    <li>Charset-aware merge across multiple partitions.</li>
+    <li>Deep-copy of winner into API-owned memory; replaced buffers freed.</li>
+  </ul>
+  <p class="qsource">Source: <code>storage/ndb/block_unit_test/testVarcharMinMax.cpp</code> grouped section</p>
+</div>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q28</span>
+    <span class="qttl">String CTE re-aggregation through linked-attr strings</span>
+    <span class="tag shipped">I.6 F.4</span>
+  </div>
+  <p>A CTE materialises per-group string MIN / MAX; the main query joins to that CTE and re-aggregates the strings. Phase I.6 F.4 substituted the kernel's CTE delivery (<code>buildCteLinkedBuffer</code>, <code>emitCteGroupOutput</code>) and the <code>JoinAggInterpreter::kOpLoadCol</code> linked-attr arm so string payload bytes are shipped instead of <code>val_ptr</code> bits.</p>
+  <pre><code><span class="kw">WITH</span> s <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> grp, <span class="fn">MIN</span>(v) <span class="kw">AS</span> min_v, <span class="fn">MAX</span>(v) <span class="kw">AS</span> max_v
+  <span class="kw">FROM</span> str_minmax
+  <span class="kw">GROUP BY</span> grp)
+<span class="kw">SELECT</span> <span class="fn">MIN</span>(s.min_v), <span class="fn">MAX</span>(s.max_v)
+<span class="kw">FROM</span> s
+<span class="kw">JOIN</span> str_groups <span class="kw">AS</span> g <span class="kw">ON</span> g.grp = s.grp;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>String aggregate slots flowing as linked attrs into a downstream <code>AggInterpreter</code>.</li>
+    <li>The CTE delivery path no longer ships kernel-local pointers in place of payload.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_minmax_string.test</code> Test 4</p>
+</div>
+
+<h3 id="sec-3-10">3.10 Multi-batch streaming</h3>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q29</span>
+    <span class="qttl">Large CTE result paced by SCAN_NEXTREQ</span>
+    <span class="tag shipped">NEXTREQ 1-4</span>
+  </div>
+  <p>The CTE-NEXTREQ sub-plan made <code>scanCte</code> root queries pageable: continuation plumbing (Phase 1), flow control (Phase 2), state lifetime audit across pauses (Phase 3), block tests (Phase 4).</p>
+  <pre><code><span class="kw">WITH</span> sums <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> o_custkey <span class="kw">AS</span> k, <span class="fn">SUM</span>(o_amt) <span class="kw">AS</span> t
+  <span class="kw">FROM</span> cte_orders_big <span class="kw">GROUP BY</span> o_custkey)
+<span class="kw">SELECT</span> k, t <span class="kw">FROM</span> sums <span class="kw">ORDER BY</span> k;</code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li><code>scanCte</code> emits batches; the API requests more via <code>SCAN_NEXTREQ</code>.</li>
+    <li>CTE state survives pauses without leaking memory.</li>
+  </ul>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_multi_batch.test</code>; testCteNdbApiFilter multi-batch tests</p>
+</div>
+
+<h3 id="sec-3-11">3.11 Robustness shapes</h3>
+
+<div class="query">
+  <div class="qhdr">
+    <span class="qid">Q30</span>
+    <span class="qttl">Partial-key join to multi-key CTE with AST rewrite</span>
+    <span class="tag shipped">I.16 / I.20</span>
+  </div>
+  <p>If a join binds fewer key columns than the multi-key CTE's virtual PK requires, <code>emit_child_ops</code> would otherwise reject. Phase I.16 introduced an AST rewrite that, where possible, swaps the CTE to root with the original parent demoted to a child, recovering a valid plan; Phase I.20 tightened the coverage check from a count to an ordered virt-PK match and added rewrite validation.</p>
+  <pre><code><span class="kw">WITH</span> mk_cte <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> g_a, g_b, <span class="fn">SUM</span>(amt) <span class="kw">AS</span> t
+  <span class="kw">FROM</span> mk_t
+  <span class="kw">GROUP BY</span> g_a, g_b)
+<span class="kw">SELECT</span> p.p_id, mk_cte.t
+<span class="kw">FROM</span> parent <span class="kw">AS</span> p
+<span class="kw">JOIN</span> mk_cte <span class="kw">ON</span> mk_cte.g_a = p.p_a;
+<span class="com">-- only 1 of 2 virt-PK columns bound; rewrite puts mk_cte at root</span></code></pre>
+  <div class="demo-label">Demonstrates</div>
+  <ul>
+    <li>AST rewrite at <code>load_join</code> that restructures the join order at parse time.</li>
+    <li>Coexists with <code>LEFT_OUTER</code> joins elsewhere in the chain.</li>
+    <li>If the rewrite cannot apply (full-count but wrong-column shape, partial coverage that breaks PK ordering), the planner rejects with a clear permanent error.</li>
+  </ul>
+<figure>
+<svg viewBox="0 0 760 350" width="760" height="350" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4ea8de"/>
+    </marker>
+  </defs>
+  <text x="380" y="22" text-anchor="middle" class="ttl">D8. Phase I.16 partial-key rewrite</text>
+
+  <!-- LEFT side: before -->
+  <text x="180" y="55" text-anchor="middle" class="lbl-sm" style="fill:#f4845f">Before rewrite (rejected)</text>
+  <rect x="40" y="70" width="280" height="240" rx="8" fill="none" stroke="#f4845f" stroke-width="1.5" stroke-dasharray="6,4"/>
+
+  <rect x="100" y="90" width="160" height="50" rx="4" fill="#1e2a4a" stroke="#4ea8de"/>
+  <text x="180" y="110" text-anchor="middle" class="lbl">parent p (root)</text>
+  <text x="180" y="128" text-anchor="middle" class="lbl-sm">scanTable</text>
+
+  <rect x="100" y="180" width="160" height="50" rx="4" fill="#533483" stroke="#b388ff"/>
+  <text x="180" y="200" text-anchor="middle" class="lbl" style="fill:#fff">mk_cte (child)</text>
+  <text x="180" y="218" text-anchor="middle" class="lbl-sm" style="fill:#eee">lookupCte by (g_a, g_b)</text>
+
+  <line x1="180" y1="140" x2="180" y2="178" stroke="#4ea8de" stroke-width="1.5" marker-end="url(#arr8)"/>
+
+  <rect x="60" y="250" width="240" height="42" rx="4" fill="#3d2f1f" stroke="#f4845f"/>
+  <text x="180" y="268" text-anchor="middle" class="lbl-sm" style="fill:#f4845f">only g_a bound; g_b unbound</text>
+  <text x="180" y="284" text-anchor="middle" class="lbl-mono-sm" style="fill:#f4845f">emit_child_ops would reject</text>
+
+  <!-- ARROW between sides -->
+  <text x="380" y="180" text-anchor="middle" class="lbl-sm" style="fill:#f0c040">rewrite</text>
+  <line x1="335" y1="190" x2="425" y2="190" stroke="#f0c040" stroke-width="2" marker-end="url(#arr8)"/>
+
+  <!-- RIGHT side: after -->
+  <text x="580" y="55" text-anchor="middle" class="lbl-sm" style="fill:#4ecca3">After rewrite</text>
+  <rect x="440" y="70" width="280" height="240" rx="8" fill="none" stroke="#4ecca3" stroke-width="1.5" stroke-dasharray="6,4"/>
+
+  <rect x="500" y="90" width="160" height="50" rx="4" fill="#533483" stroke="#b388ff"/>
+  <text x="580" y="110" text-anchor="middle" class="lbl" style="fill:#fff">mk_cte (root)</text>
+  <text x="580" y="128" text-anchor="middle" class="lbl-sm" style="fill:#eee">scanCte (full virt PK)</text>
+
+  <rect x="500" y="180" width="160" height="50" rx="4" fill="#1e2a4a" stroke="#4ea8de"/>
+  <text x="580" y="200" text-anchor="middle" class="lbl">parent p (child)</text>
+  <text x="580" y="218" text-anchor="middle" class="lbl-sm">readTuple by p_a = g_a</text>
+
+  <line x1="580" y1="140" x2="580" y2="178" stroke="#4ea8de" stroke-width="1.5" marker-end="url(#arr8)"/>
+
+  <rect x="460" y="250" width="240" height="42" rx="4" fill="#1f3d2e" stroke="#4ecca3"/>
+  <text x="580" y="268" text-anchor="middle" class="lbl-sm" style="fill:#4ecca3">CTE walked once at root</text>
+  <text x="580" y="284" text-anchor="middle" class="lbl-mono-sm" style="fill:#4ecca3">parent looked up by p_a</text>
+</svg>
+<figcaption>D8. The rewrite swaps parent and CTE roles. The CTE is scanned once and its rows drive the outer table by primary key; what was a partial-key join becomes a complete-key scan plus a real-table lookup.</figcaption>
+</figure>
+  <p class="qsource">Source: <code>mysql-test/suite/ronsql/t/ronsql_cte_partial_key.test</code></p>
+</div>
+</section>
+
+<!-- =======================================================================
+     SECTION 4: OUT OF SCOPE / NOT YET COVERED
+     ======================================================================= -->
+<section id="sec-4">
+<h2>4. Out of scope / not yet covered</h2>
+<p>
+This section lists the things RONDB-1050 <em>does not</em> support, so that users
+of the NDB API and RonSQL surfaces know exactly where the boundary sits. It is
+split into three groups: items <em>deferred</em> to Phase N or later, shapes that
+are <em>permanently rejected</em> at prepare or build time, and capabilities that
+work in some layers but are not yet wired through every layer.
+</p>
+
+<h3 id="sec-4-1">4.1 Phase N deferrals</h3>
+<p>
+Phase N (the wrap-up phase, see
+<code>cte_filter_phase_n.md</code>) closes or explicitly defers the last items
+left from the I.13 / I.14 / I.15 / I.25 catalogue. Items below are tracked but
+not necessarily landing as part of this release.
+</p>
+<table>
+  <thead><tr><th style="width:18%">Item</th><th>What is missing</th><th>Where it bites</th></tr></thead>
+  <tbody>
+  <tr>
+    <td><span class="tag deferred">I.13</span> SQL-side batch-size</td>
+    <td>The NDB API <code>setBatchSize</code> exists for CTE scans, but there is no
+        RonSQL-facing knob to pass it through. RonSQL relies on the engine default.</td>
+    <td>Tuning large CTE result streams from SQL today requires editing the
+        <code>RonSQLPreparer</code> default rather than per-statement override.</td>
+  </tr>
+  <tr>
+    <td><span class="tag deferred">I.14</span> Early close / LIMIT</td>
+    <td>Behaviour of <code>LIMIT</code> applied to a CTE-rooted query: kernel
+        cleanup on early <code>query-&gt;close()</code>, lifetime of the CTE
+        materialised state when the consumer stops fetching.</td>
+    <td>A query like <code>SELECT * FROM cte LIMIT 5</code> works, but only the
+        materialise-everything-then-take-5 path is exercised. LIMIT is not pushed
+        into the CTE producer.</td>
+  </tr>
+  <tr>
+    <td><span class="tag deferred">I.15</span> Multi-fragment / multi-node MTR</td>
+    <td>Block tests
+        (<code>testJoinAggNdbApi</code>, <code>testCtePhase6</code>) cover
+        multi-fragment and multi-node CTE redistribute paths; the RonSQL MTR
+        suite is single-fragment dominated. Phase N decides whether to add the
+        MTR matrix or accept the block-test coverage.</td>
+    <td>RonSQL coverage of partition redistribute is shallower than NDB-API
+        coverage. The kernel paths are exercised; the SQL surface is not.</td>
+  </tr>
+  <tr>
+    <td><span class="tag deferred">I.25</span> String CTE matrix</td>
+    <td>A re-aggregation of string CTE <code>MIN</code> / <code>MAX</code>
+        through a CTE-root joined to a non-unique ordered-index child returned
+        <code>NULL,NULL</code> when first surfaced. The intended
+        <code>WHERE min_v &lt; 'beta'</code> shape needs MTR-quote-safe compare
+        and clarified RonSQL string-literal parser semantics. Also tracked: a
+        comparison matrix across signed / unsigned int, FLOAT, DECIMAL widening,
+        strings, exposed date / time types and NULL semantics.</td>
+    <td>String-CTE consumer correctness on indexed-non-unique join shapes; SQL
+        literal-vs-column compare ergonomics.</td>
+  </tr>
+  </tbody>
+</table>
+
+<h3 id="sec-4-2">4.2 Hard-rejected shapes</h3>
+<p>
+The following shapes are rejected at prepare or build time with a clear error.
+They are not bugs &mdash; they are conscious scope boundaries.
+</p>
+<table>
+  <thead><tr><th style="width:24%">Shape</th><th>Reason</th><th>Where</th></tr></thead>
+  <tbody>
+  <tr>
+    <td><span class="tag rejected">I.22</span> DECIMAL &gt; 18 (signed) or &gt; 19 (unsigned) MIN/MAX</td>
+    <td>The kernel's <code>decimal2longlong</code> / <code>decimal2ulonglong</code>
+        target a 64-bit integer; precisions beyond those bounds cannot be
+        represented losslessly. Phase I.22 added a prepare-time guard.
+        Arbitrary-precision DECIMAL preservation is out of scope.</td>
+    <td>RonSQL emit; clear error rather than silent overflow.</td>
+  </tr>
+  <tr>
+    <td><span class="tag rejected">outer-join 3</span> <code>CTE_SCAN</code> as outer-join child</td>
+    <td>Would require an unkeyed scan executed once per parent row (a cross-join
+        shape). Dropped at the kernel level in
+        <code>cte_outer_join_phase_3.md</code>; the RonSQL Phase G defensive
+        rejection is preserved.</td>
+    <td>NDB API and RonSQL.</td>
+  </tr>
+  <tr>
+    <td><span class="tag rejected">I.16 / I.20</span> Partial-key joins lacking ordered virt-PK coverage</td>
+    <td>A join into a multi-key CTE must bind the virtual-PK columns in order.
+        Phase I.16 added an AST rewrite to put the multi-key CTE at root when
+        possible; Phase I.20 tightened the coverage check from a count to an
+        ordered match.</td>
+    <td>RonSQL emit; rejected with a clear permanent error.</td>
+  </tr>
+  <tr>
+    <td><span class="tag rejected">core</span> Correlated CTE_SCAN</td>
+    <td>A CTE that depends on a per-row value from the enclosing query is not
+        supported. <code>g_CteScanOpInfo.parent_row == 0</code>.</td>
+    <td>Both surfaces.</td>
+  </tr>
+  <tr>
+    <td><span class="tag rejected">core</span> Recursive CTEs</td>
+    <td>The classic <code>WITH RECURSIVE</code> form is not supported; CTEs are
+        materialised once per query.</td>
+    <td>RonSQL parser rejects.</td>
+  </tr>
+  <tr>
+    <td><span class="tag rejected">core</span> UNION inside a CTE body</td>
+    <td>CTE bodies are single SELECT blocks. UNION / UNION ALL are not part of
+        the parser surface.</td>
+    <td>RonSQL parser rejects.</td>
+  </tr>
+  <tr>
+    <td><span class="tag rejected">core</span> DISTINCT in aggregation</td>
+    <td><code>SUM(DISTINCT ...)</code>, <code>COUNT(DISTINCT ...)</code> are not
+        supported by the pushdown aggregator.</td>
+    <td>RonSQL emit; NDB-API <code>NdbAggregator</code> has no DISTINCT primitive.</td>
+  </tr>
+  <tr>
+    <td><span class="tag rejected">I.6 S.4</span> SUM / arithmetic over strings</td>
+    <td>Only <code>MIN</code> and <code>MAX</code> are defined for string
+        registers. <code>SUM(varchar_col)</code> etc. are rejected at finalise
+        time with <code>kErrUnsupportedStringOperation</code>.</td>
+    <td>NDB-API <code>NdbAggregator</code> finalize.</td>
+  </tr>
+  <tr>
+    <td><span class="tag rejected">core</span> CASE / GREATEST on string aggregate output</td>
+    <td>Inline-type filter pushdown widens <code>BRANCH_MEM_OP_ARG_INLINE_TYPE</code>
+        for numeric aggregate outputs; widening to string aggregate outputs is
+        not in this release. <code>WHERE CASE WHEN min_str &lt; 'x' THEN ... END</code>
+        is rejected.</td>
+    <td>RonSQL emit gates this shape; the kernel does not yet have the
+        comparator wiring.</td>
+  </tr>
+  </tbody>
+</table>
+
+<h3 id="sec-4-3">4.3 Layered but not fully surfaced</h3>
+<p>
+These capabilities work at one layer but are not exposed through every higher
+layer yet.
+</p>
+<ul>
+  <li><strong>NDB API <code>setBatchSize</code> for CTE scans</strong> &mdash;
+      works at the API; not surfaced to RonSQL (Phase N I.13).</li>
+  <li><strong>Multi-fragment / multi-node CTE redistribute</strong> &mdash;
+      exercised by NDB-API block tests; RonSQL MTR coverage is single-fragment
+      dominated (Phase N I.15).</li>
+  <li><strong>RonSQL EXPLAIN</strong> &mdash; understands and prints the major op
+      kinds (<code>CTE_SCAN</code>, <code>CTE_LOOKUP</code>, INDEX_SCAN, INNER /
+      LEFT_OUTER / ANTI_JOIN), but is not a full plan inspector and does not yet
+      expose every per-op detail.</li>
+  <li><strong>EXPLAIN ANALYZE</strong> with measured rows / batches: not
+      implemented for CTE shapes.</li>
+</ul>
+</section>
+
+<!-- =======================================================================
+     SECTION 5: APPENDIX
+     ======================================================================= -->
+<section id="sec-5">
+<h2>5. Appendix</h2>
+
+<h3 id="sec-5-1">5.1 NDB-API block test inventory</h3>
+<p>
+Block tests live under <code>storage/ndb/block_unit_test/</code>. Build from
+the configured build directory and run with
+<code>-c &lt;connect_string&gt; -m &lt;mysql_port&gt;</code>.
+</p>
+<table>
+  <thead><tr><th>Test binary</th><th>Coverage</th></tr></thead>
+  <tbody>
+  <tr><td><code>testCteNdbApi.cpp</code></td><td>21 tests &mdash; CTE materialise, lookupCte / scanCte as root or child, chained CTEs, scalar MIN/MAX via DESC index + LIMIT 1, scalar cross-join, embedded CASE in body</td></tr>
+  <tr><td><code>testCteNdbApiFilter.cpp</code></td><td>23 tests &mdash; WHERE filters on CTE virtual tables, branch_linked_*, IS NULL, OR / DNF, multi-batch boundaries, batch LIMIT</td></tr>
+  <tr><td><code>testCteNdbApiOuterJoin.cpp</code></td><td>6 tests &mdash; scanCte INNER / LEFT JOIN; lookupCte LEFT JOIN; aggregate on outer-joined CTE child; LEFT JOIN agg-feed NULL injection</td></tr>
+  <tr><td><code>testCteLookup.cpp</code></td><td>CTE hash-table lookup lifecycle, key-not-found responses, hash aggregation</td></tr>
+  <tr><td><code>testCtePhase6.cpp</code></td><td>Full CTE lifecycle, multi-node redistribute, all aggregate types over real columns</td></tr>
+  <tr><td><code>testCteDbtc.cpp</code></td><td>DBTC&rarr;DBSPJ&rarr;DBLQH orchestration for CTE</td></tr>
+  <tr><td><code>testJoinAgg.cpp</code></td><td>Direct DBLQH signal-level JOIN_AGG; SUM / COUNT / MIN / MAX with GROUP BY, eviction, mutex-free</td></tr>
+  <tr><td><code>testJoinAggNdbApi.cpp</code></td><td>22 tests &mdash; NdbQueryBuilder integration, 2-4 way joins, composite keys, NULL handling, multi-fragment, eviction stress, error handling</td></tr>
+  <tr><td><code>testJoinAggIdempotency.cpp</code></td><td>Chained CTE per-record correlation, phase-number drop on stale CONFs (Phase L)</td></tr>
+  <tr><td><code>testJoinAggScanScan.cpp</code></td><td>SCAN_SCAN aggregation merge</td></tr>
+  <tr><td><code>testJoinAggSpj.cpp</code></td><td>DBSPJ integration, query tree execution, linked-attribute propagation</td></tr>
+  <tr><td><code>testOuterJoinAgg.cpp</code></td><td>2-way LEFT JOIN aggregation</td></tr>
+  <tr><td><code>testOuterJoinAggNdbApi.cpp</code></td><td>NdbQueryBuilder outer-join aggregation API tests</td></tr>
+  <tr><td><code>testMultiOuterJoinAggNdbApi.cpp</code></td><td>Chained outer joins, 3-way LEFT, 4-way LEFT+INNER mixes</td></tr>
+  <tr><td><code>testCaseAgg.cpp</code></td><td>Embedded interpreter CASE in aggregation (kOpEmbeddedInterp + kOpSkip)</td></tr>
+  <tr><td><code>testVarcharMinMax.cpp</code></td><td>Phase I.6 F.2 / F.3 / S.1-S.6 string MIN/MAX (CHAR / VARCHAR / Longvarchar), AGG_CHAR_RESULT delivery</td></tr>
+  <tr><td><code>benchJoinAgg.cpp</code></td><td>TPC-H Q12 two-table pushdown</td></tr>
+  <tr><td><code>bench_q12_dbtc.cpp</code></td><td>TPC-H Q12 through DBTC&rarr;DBSPJ&rarr;DBLQH</td></tr>
+  <tr><td><code>bench_q12_tpch.cpp</code></td><td>TPC-H Q12 direct DBLQH baseline</td></tr>
+  <tr><td><code>bench_q9_dbtc.cpp</code></td><td>TPC-H Q9 6-table linear join with arithmetic</td></tr>
+  <tr><td><code>bench_q9_ndbapi.cpp</code></td><td>TPC-H Q9 via NdbQueryBuilder API</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec-5-2">5.2 RonSQL MTR test inventory</h3>
+<p>
+RonSQL tests live under <code>mysql-test/suite/ronsql/t/</code> and are run
+through <code>./mtr --suite=ronsql [test_name]</code>.
+</p>
+<table>
+  <thead><tr><th>Test file</th><th>Phase</th><th>Coverage</th></tr></thead>
+  <tbody>
+  <tr><td><code>ronsql_join_agg.test</code></td><td>RONDB-733 base</td><td>Direct join aggregation, 3-way chains, GROUP BY on root / middle / leaf</td></tr>
+  <tr><td><code>ronsql_cte_basic.test</code></td><td>A, B, C, D</td><td>Direct agg, scalar / grouped CTE, two independent CTEs, LEFT JOIN with CTE</td></tr>
+  <tr><td><code>ronsql_cte_chained.test</code></td><td>L (D1-D4)</td><td>Chained / sibling CTEs, skewed joins, empty intermediates</td></tr>
+  <tr><td><code>ronsql_cte_scan.test</code></td><td>E.3</td><td>CTE_SCAN projection-only main query</td></tr>
+  <tr><td><code>ronsql_cte_root_lookup.test</code></td><td>I.7</td><td>lookupCte as root</td></tr>
+  <tr><td><code>ronsql_cte_pk_join.test</code></td><td>I.8</td><td>readTuple root + CTE_LOOKUP child</td></tr>
+  <tr><td><code>ronsql_cte_index_body.test</code></td><td>I.9</td><td>scanIndex inside CTE body with WHERE bounds</td></tr>
+  <tr><td><code>ronsql_cte_minmax_index.test</code></td><td>I.10</td><td>Scalar MIN / MAX via ordered index + LIMIT 1</td></tr>
+  <tr><td><code>ronsql_cte_kernel_t12_t16.test</code></td><td>I.11</td><td>Coverage matching testCteNdbApi Tests 12-16</td></tr>
+  <tr><td><code>ronsql_cte_outer_join.test</code></td><td>I.12</td><td>scanCte / lookupCte LEFT JOIN; NULL-injection through aggregate</td></tr>
+  <tr><td><code>ronsql_cte_or.test</code></td><td>I.2</td><td>OR / DNF in CTE_LOOKUP filter</td></tr>
+  <tr><td><code>ronsql_cte_colvscol.test</code></td><td>I.3</td><td>Column-vs-column on CTE_LOOKUP (Bigint)</td></tr>
+  <tr><td><code>ronsql_cte_case.test</code></td><td>I.4</td><td>CASE condition referencing CTE column</td></tr>
+  <tr><td><code>ronsql_cte_greatest_least.test</code></td><td>I.5 v1</td><td>GREATEST / LEAST baseline (2-arg)</td></tr>
+  <tr><td><code>ronsql_cte_greatest_least_v2a.test</code></td><td>I.5 v2a</td><td>Col-vs-col atoms in embedded CASE</td></tr>
+  <tr><td><code>ronsql_cte_greatest_least_v2b.test</code></td><td>I.5 v2b</td><td>n-ary GREATEST / LEAST via SVM extension</td></tr>
+  <tr><td><code>ronsql_cte_greatest_least_v4.test</code></td><td>I.5 v4 / v7</td><td>NULL propagation in GREATEST / LEAST</td></tr>
+  <tr><td><code>ronsql_cte_greatest_least_v5.test</code></td><td>I.5 v5 / I.18</td><td>Typed linked-column register loads; sub-Bigint sign extension</td></tr>
+  <tr><td><code>ronsql_cte_greatest_least_v6.test</code></td><td>I.5 v6</td><td>Linked-vs-linked GREATEST / LEAST</td></tr>
+  <tr><td><code>ronsql_cte_partial_key.test</code></td><td>I.16</td><td>Partial-key joins to multi-key CTEs with AST rewrites</td></tr>
+  <tr><td><code>ronsql_cte_scalar.test</code></td><td>I.17</td><td>Scalar CTE bodies; cross-CTE join with top-level GREATEST wrap</td></tr>
+  <tr><td><code>ronsql_cte_decimal.test</code></td><td>I.6 F.1</td><td>DECIMAL widening to BIGINT / DOUBLE in MIN / MAX</td></tr>
+  <tr><td><code>ronsql_cte_name_resolution.test</code></td><td>I.23</td><td>Scoped name resolution; CTE body vs main visibility</td></tr>
+  <tr><td><code>ronsql_minmax_string.test</code></td><td>I.6 S.5</td><td>VARCHAR / CHAR / Longvarchar MIN / MAX printing; CTE re-aggregation</td></tr>
+  <tr><td><code>ronsql_cte_multi_batch.test</code></td><td>NEXTREQ 1-4</td><td>CTE scans paced by SCAN_NEXTREQ</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec-5-3">5.3 Phase timeline</h3>
+<table>
+  <thead><tr><th>Phase</th><th>Status</th><th>Scope</th><th>In-tree doc</th></tr></thead>
+  <tbody>
+  <tr><td>A</td><td><span class="tag shipped">shipped</span></td><td>CTE_LOOKUP filter; jump-table interpreter foundation</td><td><code>cte_filter_phase_a.md</code></td></tr>
+  <tr><td>B</td><td><span class="tag shipped">shipped</span></td><td>CTE_SCAN root filter</td><td><code>cte_filter_phase_b.md</code></td></tr>
+  <tr><td>C</td><td><span class="tag shipped">shipped</span></td><td>AggInterpreter retrofitted to jump-table; backward-jump guard</td><td><code>cte_filter_phase_c.md</code></td></tr>
+  <tr><td>D</td><td><span class="tag shipped">shipped</span></td><td>Inline-type opcode (BRANCH_MEM_OP_ARG_INLINE_TYPE) for CTE virt-cols</td><td><code>cte_filter_phase_d.md</code></td></tr>
+  <tr><td>D2</td><td><span class="tag shipped">shipped</span></td><td>MIN / MAX virt-type widening</td><td><code>cte_filter_phase_d2.md</code></td></tr>
+  <tr><td>E.1 / E.1K / E.2 / E.3</td><td><span class="tag shipped">shipped</span></td><td>scanCte as main-query root; kernel virt-col linked-attr; chained CTEs; projection-only main SELECT</td><td><code>cte_filter_phase_e1*.md</code>, <code>cte_filter_phase_e2.md</code>, <code>cte_filter_phase_e3.md</code></td></tr>
+  <tr><td>I.1</td><td><span class="tag shipped">shipped</span></td><td>IS NULL / IS NOT NULL on CTE column or aggregate</td><td><code>cte_filter_phase_i1.md</code></td></tr>
+  <tr><td>I.2</td><td><span class="tag shipped">shipped</span></td><td>OR / DNF in CTE_LOOKUP filter</td><td><code>cte_filter_phase_i2.md</code></td></tr>
+  <tr><td>I.3</td><td><span class="tag shipped">shipped</span></td><td>Column-vs-column on CTE_LOOKUP (Bigint)</td><td><code>cte_filter_phase_i3.md</code></td></tr>
+  <tr><td>I.4</td><td><span class="tag shipped">shipped</span></td><td>CASE condition referencing CTE column</td><td><code>cte_filter_phase_i4.md</code></td></tr>
+  <tr><td>I.5 v1-v7</td><td><span class="tag shipped">shipped</span></td><td>GREATEST / LEAST n-ary, SVM ops, typed registers, NULL propagation</td><td><code>cte_filter_phase_i5*.md</code></td></tr>
+  <tr><td>I.6 F.1</td><td><span class="tag shipped">shipped</span></td><td>DECIMAL &rarr; BIGINT / DOUBLE widening in MIN / MAX</td><td><code>cte_filter_minmax_strings_plan.md</code></td></tr>
+  <tr><td>I.6 F.2 / F.3 / F.4</td><td><span class="tag shipped">shipped</span></td><td>String MIN / MAX kernel + API + RonSQL; AGG_CHAR_RESULT wire format; CTE delivery substitution</td><td><code>cte_filter_phase_i6_varchar.md</code>, <code>cte_filter_phase_i6_string_minmax_f4.md</code></td></tr>
+  <tr><td>I.6 S.1-S.6</td><td><span class="tag shipped">shipped</span></td><td>Hardening: ownership, charset-aware merge, scratch guard, builder validation, RonSQL print, coverage</td><td><code>cte_filter_phase_i6_string_minmax_fixups.md</code></td></tr>
+  <tr><td>I.7</td><td><span class="tag shipped">shipped</span></td><td>lookupCte as main-query root</td><td><code>cte_filter_phase_i.md</code></td></tr>
+  <tr><td>I.8</td><td><span class="tag shipped">shipped</span></td><td>Non-aggregating join queries with CTE child</td><td><code>cte_filter_phase_i8.md</code></td></tr>
+  <tr><td>I.9</td><td><span class="tag shipped">shipped</span></td><td>scanIndex inside CTE body</td><td><code>cte_filter_phase_i9.md</code></td></tr>
+  <tr><td>I.10</td><td><span class="tag shipped">shipped</span></td><td>Scalar MIN / MAX via ordered index + maxRows = 1</td><td><code>cte_filter_phase_i10.md</code></td></tr>
+  <tr><td>I.11 / I.12</td><td><span class="tag shipped">shipped</span></td><td>RonSQL coverage of testCteNdbApi Tests 12-16 / outer-join Tests 1/2/3/5/6</td><td><code>cte_filter_phase_i11.md</code>, <code>cte_filter_phase_i12.md</code></td></tr>
+  <tr><td>I.16 / I.20</td><td><span class="tag shipped">shipped</span></td><td>Partial-key joins to multi-key CTEs; ordered virt-PK coverage</td><td><code>cte_filter_phase_i16.md</code>, <code>cte_filter_phase_i20.md</code></td></tr>
+  <tr><td>I.17 / I.21</td><td><span class="tag shipped">shipped</span></td><td>Scalar aggregate CTEs end-to-end; semantic guardrails</td><td><code>cte_filter_phase_i17.md</code>, <code>cte_filter_phase_i21.md</code></td></tr>
+  <tr><td>I.18 / I.19</td><td><span class="tag shipped">shipped</span></td><td>Typed normal-interpreter registers (Option B); CASE literal normalisation</td><td><code>cte_filter_phase_i18.md</code>, <code>cte_filter_phase_i19.md</code></td></tr>
+  <tr><td>I.22</td><td><span class="tag shipped">shipped</span></td><td>DECIMAL precision range guard for MIN / MAX</td><td><code>cte_filter_phase_i22.md</code></td></tr>
+  <tr><td>I.23</td><td><span class="tag shipped">shipped</span></td><td>Scoped CTE / stored-table name resolution</td><td><code>cte_filter_phase_i23.md</code></td></tr>
+  <tr><td>I.24</td><td><span class="tag shipped">shipped</span></td><td>Migration from legacy parallel arrays to per-scope ResolvedColumnRef</td><td><code>cte_filter_phase_i24.md</code></td></tr>
+  <tr><td>J / K</td><td><span class="tag shipped">shipped</span></td><td>LEFT-to-INNER promotion; ANTI_JOIN promotion</td><td><code>cte_filter_phase_j.md</code>, <code>cte_filter_phase_k.md</code></td></tr>
+  <tr><td>L</td><td><span class="tag shipped">shipped</span></td><td>JOIN_AGG_COMPLETE robustness, idempotency, single-owner routing</td><td><code>cte_filter_phase_l.md</code></td></tr>
+  <tr><td>M</td><td><span class="tag shipped">shipped</span></td><td>Aggregation BranchReg removed; embedded normal-interpreter pair-op rewrite</td><td><code>cte_filter_phase_m.md</code></td></tr>
+  <tr><td>NEXTREQ 1-4</td><td><span class="tag shipped">shipped</span></td><td>SCAN_NEXTREQ flow control for CTE main-SELECTs</td><td><code>cte_nextreq_plan.md</code></td></tr>
+  <tr><td>OUTER-JOIN 1-5</td><td><span class="tag shipped">shipped</span></td><td>CTE outer-join shapes (CTE_LOOKUP child, scanCte parent, agg-feed NULL injection)</td><td><code>cte_outer_join_plan.md</code></td></tr>
+  <tr><td>N</td><td><span class="tag deferred">open / deferred</span></td><td>Wrap-up: I.13 / I.14 / I.15 / I.25 catalogue (see &sect;4.1)</td><td><code>cte_filter_phase_n.md</code></td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec-5-4">5.4 Glossary</h3>
+<dl>
+  <dt><code>CTE_LOOKUP</code> / <code>CTE_SCAN</code></dt>
+  <dd>Planner / kernel op-types for consuming a materialised CTE by primary-key lookup or by scanning the materialised result. Map to <code>lookupCte()</code> and <code>scanCte()</code> in NdbQueryBuilder.</dd>
+
+  <dt><code>AggInterpreter</code></dt>
+  <dd>The DBTUP-resident aggregation engine that walks rows, evaluates aggregate functions, and stores per-group state. Lives in <code>storage/ndb/src/kernel/blocks/dbtup/AggInterpreter.cpp</code>.</dd>
+
+  <dt><code>JoinAggInterpreter</code></dt>
+  <dd>The variant of <code>AggInterpreter</code> used inside a pushdown join, with linked-attribute support and per-LDM ownership of intermediate state.</dd>
+
+  <dt><code>JoinAggregationState</code></dt>
+  <dd>The shared state struct seized from a transient pool in DblqhProxy, holding per-LDM AggInterpreter handles, GB-key hash maps, eviction policy, and request correlation.</dd>
+
+  <dt>Linked attributes</dt>
+  <dd>Output columns from a parent operation that the child operation reads through the kernel's shared per-row buffer (<code>buildLinkedBuffer</code>). For CTE materialisations, parent linked-projection bytes lead the buffer.</dd>
+
+  <dt><code>AGG_RESULT</code> / <code>AGG_CHAR_RESULT</code></dt>
+  <dd>Wire-format markers for kernel-to-API aggregation result delivery. <code>AGG_RESULT</code> is the original numeric-only encoding; <code>AGG_CHAR_RESULT</code> (marker <code>0xFF02</code>, Phase I.6 F.2) prepends to the AggResItem array a per-group string-payload region, used when any slot is a string MIN / MAX.</dd>
+
+  <dt>Virt PK / virtual table</dt>
+  <dd>The synthetic <code>NdbDictionary::Table</code> RonSQL builds for each CTE: column types and primary-key marker bits, but <em>no</em> real attrSize / kernel descriptor. Consumers must route through aggregator-style delivery rather than the rowsize-based path (see <code>project_synthetic_virt_table_gotcha.md</code>).</dd>
+
+  <dt>Redistribute</dt>
+  <dd>The DBLQH&rarr;DBLQH signal exchange that ships per-LDM aggregate state to a single owner (the LDM co-located with DBTC) for final merge before delivery to the API.</dd>
+
+  <dt>Inline-type filter (BRANCH_MEM_OP_ARG_INLINE_TYPE)</dt>
+  <dd>An NdbInterpretedCode opcode added in Phase D so a CTE consumer can compare an aggregate-output column without an <code>AttributeDescriptor</code>: the type is encoded in the program word itself.</dd>
+
+  <dt>Pushdown filter interpreter / 3rd interpreter</dt>
+  <dd>The CTE-safe subset of the NDB interpreter used to evaluate WHERE filters inside <code>scanCte</code> / <code>lookupCte</code>. Backward jumps disabled (<code>IFLAG_DISALLOW_BACKWARD_JUMPS</code>); tuple-access opcodes unsupported. Phase M unified it with the aggregation interpreter behind the same jump table.</dd>
+</dl>
+
+</section>
+
+<footer>
+  Generated for branch <code>RONDB-1050-cte-filter</code> (RonDB).
+  See <code>storage/ndb/claude_files/pushdown_join_aggregation/CLAUDE.md</code>
+  for the canonical phase catalogue.
+</footer>
+
+</div>
+</body>
+</html>
