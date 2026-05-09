@@ -79,6 +79,36 @@ Before adding work here, verify the current RonSQL tests and accepted
 shape guards, because several of the original I.8 follow-ups were
 closed by later phases.
 
+### Filters on scanTable / scanIndex children
+
+Source: 2026-05-09 investigation of main SELECT
+`CTE_SCAN -> scanTable` / `CTE_SCAN -> scanIndex` filter support.
+
+RonSQL can already attach table-local WHERE predicates to some scan
+operations, and `emit_child_ops()` has a filter path for non-CTE_LOOKUP
+children.  The coverage and support are incomplete for scan children
+under a CTE_SCAN parent:
+
+- residual filters on `scanIndex` children should be explicitly
+  supported and tested for table-local predicates such as
+  `WHERE child.col > const`;
+- linked-column filters on `scanIndex` children should be supported
+  where the predicate compares the child row to an ancestor/CTE column,
+  e.g. `WHERE child.val > cte.total`, either as extra index bounds
+  where possible or as interpreted-code filters using linked columns;
+- true `scanTable` children need a design decision in the NDB API /
+  kernel path, because `scanTable()` currently has no linked bound and
+  is not a normal dependent child operation.  Supporting
+  `CTE_SCAN -> scanTable` by filter would require a safe way to express
+  linked-column predicates against the child scan, not just a RonSQL
+  emit change;
+- both table-local and linked-column filters need tests for main SELECT
+  CTE_SCAN parents and for ordinary real-table parents so the behaviour
+  is not CTE-specific by accident.
+
+This should be handled as a separate follow-up phase.  It is not part
+of the completed RONDB-1050 Phase N wrap-up.
+
 ### CTE_SCAN as an outer-join child
 
 Source: `next_steps.md`, `cte_outer_join_phase_3.md`,
