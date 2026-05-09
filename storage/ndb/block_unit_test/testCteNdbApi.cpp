@@ -141,6 +141,11 @@ createTestTables(MYSQL *conn)
       "CREATE INDEX idx_cte_src_val ON cte_src(val) USING BTREE") != 0)
     return -1;
 
+  /* Ordered index on grp for scanCte parent + scanIndex child tests. */
+  if (sqlExec(conn,
+      "CREATE INDEX idx_cte_src_grp ON cte_src(grp) USING BTREE") != 0)
+    return -1;
+
   return 0;
 }
 
@@ -5913,6 +5918,255 @@ testGreatestViaCaseAgg(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 22: scanCte parent + scanIndex child with linked bound         */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   WITH cte0 AS (SELECT grp, SUM(val) AS total                       */
+/*                 FROM cte_src GROUP BY grp)                          */
+/*   SELECT COUNT(t.pk), SUM(t.pk), SUM(t.val),                        */
+/*          COUNT(cte0.grp), SUM(cte0.grp)                              */
+/*   FROM cte0                                                         */
+/*   JOIN cte_src AS t ON t.grp = cte0.grp;                            */
+/*                                                                     */
+/* Why this test:                                                      */
+/*   Phase N.1 diagnostic for scanCte as parent of an ordered-index    */
+/*   child.  The child is scanIndex(idx_cte_src_grp) and its equality  */
+/*   bound is linkedValue(scanCte,"grp").  The aggregate reads both    */
+/*   child-table columns and the linked CTE parent column so the result*/
+/*   distinguishes child row production from linked-value delivery.    */
+/* ------------------------------------------------------------------ */
+
+static int
+testScanCteParentScanIndexChild(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 22: scanCte parent + scanIndex child ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  dict->invalidateTable(VIRTUAL_TABLE);
+  dict->invalidateIndex("idx_cte_src_grp", SRC_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(VIRTUAL_TABLE);
+  const NdbDictionary::Index *grpIdx =
+      dict->getIndex("idx_cte_src_grp", SRC_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+  if (grpIdx == nullptr) {
+    printf("FAILED (index lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = virtTab->getColumn("grp");
+  if (grpCol == nullptr) {
+    printf("FAILED (column lookup: grp)\n");
+    return -1;
+  }
+
+  /* CTE 0: GROUP BY grp, SUM(val). */
+  NdbAggregator cte0Agg(srcTab);
+  if (!cte0Agg.GroupBy("grp") ||
+      !cte0Agg.LoadColumn("val", 0) ||
+      !cte0Agg.Sum(0, 0) ||
+      !cte0Agg.Finalize()) {
+    printf("FAILED (cte0Agg: %s)\n", cte0Agg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Aggregate on the scanIndex child leaf.  Registers:
+   *   r0 = t.pk, r1 = t.val, r2 = linked cte0.grp.
+   */
+  NdbAggregator mainAgg(srcTab);
+  if (!mainAgg.LoadColumn("pk", 0) ||
+      !mainAgg.LoadColumn("val", 1) ||
+      !mainAgg.LoadLinkedColumn(0, 2, grpCol) ||
+      !mainAgg.Count(0, 0) ||
+      !mainAgg.Sum(1, 0) ||
+      !mainAgg.Sum(2, 1) ||
+      !mainAgg.Count(3, 2) ||
+      !mainAgg.Sum(4, 2) ||
+      !mainAgg.Finalize()) {
+    printf("FAILED (mainAgg: %s)\n", mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (create)\n");
+    return -1;
+  }
+
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      printf("FAILED (CTE scan: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte0Agg);
+    if (qb->readTuple(srcTab, key, &opts) == nullptr) {
+      printf("FAILED (CTE leaf: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+  }
+  qb->endCteSubtree();
+
+  if (qb->defineCte(0, srcTab, cte0Agg, /*depMask=*/0) != 0) {
+    printf("FAILED (defineCte 0: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryCteScanOperationDef *mainScanCte =
+      qb->scanCte(0, 2, virtTab);
+  if (mainScanCte == nullptr) {
+    printf("FAILED (main scanCte: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbLinkedOperand *linkedGrp = qb->linkedValue(mainScanCte, "grp");
+  if (linkedGrp == nullptr) {
+    printf("FAILED (linkedValue grp: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryOperand *childBound[] = {
+    linkedGrp, nullptr
+  };
+  NdbQueryIndexBound grpBound(childBound);
+
+  NdbQueryOptions childOpts;
+  childOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  childOpts.setAggregation(mainAgg);
+  childOpts.addLinkedProjection(linkedGrp);
+
+  const NdbQueryIndexScanOperationDef *childScan =
+      qb->scanIndex(grpIdx, srcTab, &grpBound, &childOpts);
+  if (childScan == nullptr) {
+    printf("FAILED (child scanIndex: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  V("\n  Query prepared: %u operations\n", queryDef->getNoOfOperations());
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction)\n");
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    const NdbError &tErr = trans->getNdbError();
+    const NdbError &qErr = query->getNdbError();
+    printf("FAILED (execute: trans err %d: %s, query err %d: %s)\n",
+           tErr.code, tErr.message, qErr.code, qErr.message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *agg = query->getAggregator();
+  if (agg == nullptr) {
+    printf("FAILED (getAggregator)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  agg->PrepareResults();
+  NdbAggregator::ResultRecord rec = agg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result rows)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::Result countPkRes = rec.FetchAggregationResult();
+  NdbAggregator::Result sumPkRes = rec.FetchAggregationResult();
+  NdbAggregator::Result sumValRes = rec.FetchAggregationResult();
+  NdbAggregator::Result countLinkedRes = rec.FetchAggregationResult();
+  NdbAggregator::Result sumLinkedRes = rec.FetchAggregationResult();
+
+  const bool anyNull =
+      countPkRes.is_null() || sumPkRes.is_null() || sumValRes.is_null() ||
+      countLinkedRes.is_null() || sumLinkedRes.is_null();
+  const Int64 countPk = countPkRes.is_null() ? -1 : countPkRes.data_int64();
+  const Int64 sumPk = sumPkRes.is_null() ? -1 : sumPkRes.data_int64();
+  const Int64 sumVal = sumValRes.is_null() ? -1 : sumValRes.data_int64();
+  const Int64 countLinked =
+      countLinkedRes.is_null() ? -1 : countLinkedRes.data_int64();
+  const Int64 sumLinked =
+      sumLinkedRes.is_null() ? -1 : sumLinkedRes.data_int64();
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  V("  Result: countPk=%lld sumPk=%lld sumVal=%lld "
+    "countLinked=%lld sumLinked=%lld null=%d\n",
+    (long long)countPk, (long long)sumPk, (long long)sumVal,
+    (long long)countLinked, (long long)sumLinked, anyNull ? 1 : 0);
+
+  if (!anyNull && countPk == 5 && sumPk == 15 && sumVal == 150 &&
+      countLinked == 5 && sumLinked == 9) {
+    printf("OK (rows=%lld, sumPk=%lld, sumVal=%lld, sumLinked=%lld)\n",
+           (long long)countPk, (long long)sumPk, (long long)sumVal,
+           (long long)sumLinked);
+    return 0;
+  }
+
+  printf("FAILED (expected rows=5 sumPk=15 sumVal=150 countLinked=5 "
+         "sumLinked=9, got rows=%lld sumPk=%lld sumVal=%lld "
+         "countLinked=%lld sumLinked=%lld null=%d)\n",
+         (long long)countPk, (long long)sumPk, (long long)sumVal,
+         (long long)countLinked, (long long)sumLinked, anyNull ? 1 : 0);
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -5943,6 +6197,7 @@ static const TestEntry g_tests[] = {
     { 19, testMaxValWithDescScanIndex },
     { 20, testCrossJoinTwoScalarCtes },
     { 21, testGreatestViaCaseAgg },
+    { 22, testScanCteParentScanIndexChild },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
@@ -5964,7 +6219,7 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       printf("Usage: %s -c <connect_string> -m <mysql_port> [-v] "
              "[--only N]\n", argv[0]);
-      printf("  --only N    run only test number N (1..21)\n");
+      printf("  --only N    run only test number N (1..22)\n");
       return 0;
     }
   }
@@ -5975,7 +6230,7 @@ int main(int argc, char **argv)
       if (g_tests[i].number == onlyTest) { found = true; break; }
     }
     if (!found) {
-      fprintf(stderr, "No such test: %d (valid: 1..21)\n", onlyTest);
+      fprintf(stderr, "No such test: %d (valid: 1..22)\n", onlyTest);
       return 1;
     }
   }

@@ -81,6 +81,11 @@
  * so it's split out from DEBUG_CTE and defaulted OFF. Enable only
  * when debugging a specific CTE build/flag routing issue. */
 //#define DEBUG_CTE_BUILD 1
+/* DEBUG_CTE_INDEX: ordered-index child diagnostics for CTE parents.
+ * Logs bound expansion, fixup, stored range count, and SCAN_FRAGREQ
+ * send state.  Enable when debugging scanCte parent + scanIndex child
+ * paths such as Phase N.1. */
+#define DEBUG_CTE_INDEX 1
 #endif
 
 #ifdef DEBUG_CTE
@@ -119,6 +124,13 @@
   do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_CTE_BUILD(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_CTE_INDEX
+#define DEB_CTE_INDEX(arglist) \
+  do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CTE_INDEX(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_TRANSID_AI
@@ -7151,6 +7163,7 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
       requestPtr.p->m_cteScansComplete++;
     }
+    handleTreeNodeComplete(signal, requestPtr, treeNodePtr);
     return;
   }
 
@@ -7453,6 +7466,7 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
     if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
       requestPtr.p->m_cteScansComplete++;
     }
+    handleTreeNodeComplete(signal, requestPtr, treeNodePtr);
   } else {
     DEB_CTE(("(%u) execCTE_SCAN_CONF: NOT completing node=%u",
              instance(), treeNodePtr.p->m_node_no));
@@ -11242,6 +11256,29 @@ void Dbspj::scanFrag_parent_row(Signal *signal, Ptr<Request> requestPtr,
         jam();
         break;
       }
+#ifdef DEBUG_CTE_INDEX
+      {
+        Uint32 keyWords = 0;
+        if (keyPtrI != RNIL) {
+          SegmentedSectionPtr keyPtr;
+          getSection(keyPtr, keyPtrI);
+          keyWords = keyPtr.sz;
+        }
+        DEB_CTE_INDEX((
+            "(%u)DBSPJ cte-index parent_row expanded reqPtrI=%u node=%u "
+            "corr=0x%x keyPtrI=%u keyWords=%u hasNull=%u aggLeaf=%u "
+            "inner=%u",
+            instance(),
+            requestPtr.i,
+            treeNodePtr.p->m_node_no,
+            rowRef.m_src_correlation,
+            keyPtrI,
+            keyWords,
+            hasNull ? 1 : 0,
+            (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) ? 1 : 0,
+            (treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) ? 1 : 0));
+      }
+#endif
       if (hasNull) {
         jam();
         DEBUG("Key contain NULL values, ignoring it");
@@ -11312,8 +11349,29 @@ void Dbspj::scanFrag_parent_row(Signal *signal, Ptr<Request> requestPtr,
       scanFrag_fixupBound(keyPtrI, fixupCorr);
 
       SectionReader key(keyPtrI, getSectionSegmentPool());
+      DEB_CTE_INDEX((
+          "(%u)DBSPJ cte-index parent_row fixed reqPtrI=%u node=%u "
+          "corr=0x%x fixupCorr=0x%x keyWords=%u rangeCntBefore=%u "
+          "frag=%u",
+          instance(),
+          requestPtr.i,
+          treeNodePtr.p->m_node_no,
+          rowRef.m_src_correlation,
+          fixupCorr,
+          key.getSize(),
+          fragPtr.p->m_rangeCnt,
+          fragPtr.p->m_fragId));
       err = appendReaderToSection(fragPtr.p->m_rangePtrI, key, key.getSize());
       fragPtr.p->m_rangeCnt++;
+      DEB_CTE_INDEX((
+          "(%u)DBSPJ cte-index parent_row stored reqPtrI=%u node=%u "
+          "rangeCntAfter=%u rangePtrI=%u err=%u",
+          instance(),
+          requestPtr.i,
+          treeNodePtr.p->m_node_no,
+          fragPtr.p->m_rangeCnt,
+          fragPtr.p->m_rangePtrI,
+          err));
       releaseSection(keyPtrI);
       if (unlikely(err != 0)) {
         jam();
@@ -11390,12 +11448,21 @@ void Dbspj::scanFrag_fixupBound(Uint32 ptrI, Uint32 corrVal) {
    */
   SectionReader r0(ptrI, getSectionSegmentPool());
   const Uint32 boundsz = r0.getSize();
+  DEB_CTE_INDEX(("(%u)DBSPJ cte-index fixupBound begin ptrI=%u "
+                 "boundsz=%u corrVal=0x%x",
+                 instance(), ptrI, boundsz, corrVal));
 
   Uint32 tmp;
   ndbrequire(r0.peekWord(&tmp));
+#ifdef DEBUG_CTE_INDEX
+  const Uint32 firstWordBefore = tmp;
+#endif
   ndbassert((corrVal & 0xFFFF) < MaxCorrelationId);
   tmp |= (boundsz << 16) | ((corrVal & 0xFFF) << 4);
   ndbrequire(r0.updateWord(tmp));
+  DEB_CTE_INDEX(("(%u)DBSPJ cte-index fixupBound firstWord "
+                 "before=0x%x after=0x%x",
+                 instance(), firstWordBefore, tmp));
   // Renumber attribute ids in bound entries.
   // Each entry is: BoundType(1) + AttributeHeader(1) + Data(len32).
   // For EQ bounds (BoundEQ=4), one entry per column → id advances.
@@ -11423,6 +11490,10 @@ void Dbspj::scanFrag_fixupBound(Uint32 ptrI, Uint32 corrVal) {
     const Uint32 len = ah.getByteSize();
     AttributeHeader::init(&tmp, thisId, len);
     ndbrequire(r0.updateWord(tmp));
+    DEB_CTE_INDEX(("(%u)DBSPJ cte-index fixupBound entry "
+                   "boundType=%u oldAh=0x%x oldAttr=%u len=%u newAttr=%u",
+                   instance(), boundType, ah.m_value,
+                   AttributeHeader::getAttributeId(ah.m_value), len, thisId));
     len32 = (len + 3) >> 2;
     // Step past data to next BoundType, and read it
     if (!r0.step(1 + len32)) break;  // Past AttributeHeader + data
@@ -12043,6 +12114,21 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
           fragPtr.p->m_keysSent = fragWithRangePtr.p->m_rangeCnt;
           data.m_keysToSend -= fragPtr.p->m_keysSent;
         }
+        DEB_CTE_INDEX((
+            "(%u)DBSPJ cte-index scanFrag_send range select reqPtrI=%u "
+            "node=%u frag=%u prune=%u sourceFrag=%u rangeCnt=%u "
+            "rangePtrI=%u keyInfoPtrI=%u keysSent=%u keysToSendLeft=%u",
+            instance(),
+            requestPtr.i,
+            treeNodePtr.p->m_node_no,
+            fragPtr.p->m_fragId,
+            prune ? 1 : 0,
+            fragWithRangePtr.p->m_fragId,
+            fragWithRangePtr.p->m_rangeCnt,
+            fragWithRangePtr.p->m_rangePtrI,
+            keyInfoPtrI,
+            fragPtr.p->m_keysSent,
+            data.m_keysToSend));
         /**
          * 'releaseAtSend' is set above based on the keyInfo lifetime.
          * Copy the attrInfo (comment above) whenever needed.
