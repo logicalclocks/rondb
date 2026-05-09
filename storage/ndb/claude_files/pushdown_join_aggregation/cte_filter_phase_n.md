@@ -117,20 +117,27 @@ result larger than one API batch so the close path is observable.
 
 Source item: I.15.
 
+Coverage audit: `cte_filter_phase_n4_coverage_audit.md`.
+
 The block tests cover fragment-level and multi-node behaviour better
-than ordinary MTR, but RONDB-1050 wrap-up should still record what is
-covered and what is not.
+than ordinary MTR.  The audit records that no new normal MTR case is
+needed for this item: existing MTR tests cover SQL-visible multi-batch
+and chained-CTE behaviour, while fragment ownership, CTE_SCAN /
+CTE_LOOKUP operator roles, indexed children, scalar redistribution, and
+early close are covered by block/NDB API tests and full-suite
+multi-node runs.
 
 Required outcome:
 
 - list the block tests that exercise multi-fragment / multi-node CTE
   materialisation, CTE_SCAN, CTE_LOOKUP, redistribution, and scalar
-  CTE redistribution;
+  CTE redistribution: done in the N.4 audit;
 - add a RonSQL MTR case only if it can reliably run under the existing
-  suite configuration;
+  suite configuration: not added, because the existing MTR coverage is
+  already sufficient for SQL-visible behaviour;
 - otherwise document that SQL-level multi-node coverage is represented
   by block/unit tests and full-suite multi-node runs, not by a normal
-  single-node MTR test.
+  single-node MTR test: done in the N.4 audit.
 
 ## Suggested order
 
