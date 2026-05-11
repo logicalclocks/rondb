@@ -254,7 +254,9 @@ private:
     MinMaxKind body_minmax_kind = MinMaxKind::NONE;
 
     QueryScope(ArenaMalloc* amalloc)
-      : cross_table_where_filters(amalloc),
+      : join_plan(),
+        join_where_ce(),
+        cross_table_where_filters(amalloc),
         body_indexes(amalloc),
         body_toplevel_conditions(amalloc),
         body_scan_config_candidates(amalloc) {}
