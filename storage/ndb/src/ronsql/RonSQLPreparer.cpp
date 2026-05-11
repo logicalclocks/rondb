@@ -8135,13 +8135,85 @@ RonSQLPreparer::unload_schema() {
     DEB_TRACE();
     return false;
   }
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const char* db = ndb->getDatabaseName();
+
+  struct IndexName {
+    std::string index;
+    std::string table;
+  };
+  std::vector<std::string> table_names;
+  std::vector<IndexName> index_names;
+  auto add_table_name = [&table_names](const char* name) {
+    if (name == NULL || name[0] == '\0') return;
+    std::string s(name);
+    bool seen =
+      std::find(table_names.begin(), table_names.end(), s) !=
+      table_names.end();
+    if (!seen) {
+      table_names.push_back(std::move(s));
+    }
+  };
+  auto add_table = [&add_table_name](const NdbDictionary::Table* table) {
+    if (table != NULL) add_table_name(table->getName());
+  };
+  auto add_index = [&index_names](const NdbDictionary::Index* index,
+    const char* table_name) {
+    if (index == NULL || table_name == NULL || table_name[0] == '\0')
+      return;
+    std::string idx(index->getName());
+    std::string tab(table_name);
+    for (const IndexName& seen : index_names) {
+      if (seen.index == idx && seen.table == tab) return;
+    }
+    index_names.push_back({std::move(idx), std::move(tab)});
+  };
+  auto add_scope = [&add_table, &add_index](const QueryScope& scope) {
+    add_table(scope.table);
+    for (Uint32 i = 0; i < scope.body_indexes.size(); i++) {
+      const char* table_name = NULL;
+      if (scope.table != NULL) table_name = scope.table->getName();
+      add_index(scope.body_indexes[i], table_name);
+    }
+    for (Uint32 i = 0; i < scope.join_plan.num_ops; i++) {
+      const JoinOp& op = scope.join_plan.ops[i];
+      add_table(op.table);
+      const char* table_name = op.table != NULL ? op.table->getName() : NULL;
+      add_index(op.index, table_name);
+    }
+  };
+  add_scope(m_main_scope);
+  for (Uint32 i = 0; i < m_indexes.size(); i++) {
+    const char* table_name = NULL;
+    if (m_main_scope.table != NULL)
+      table_name = m_main_scope.table->getName();
+    add_index(m_indexes[i], table_name);
+  }
+  for (Uint32 i = 0; i < m_cte_scopes.size(); i++) {
+    if (m_cte_scopes[i] != NULL) add_scope(*m_cte_scopes[i]);
+  }
+  auto invalidate_collected_schema = [&]() {
+    for (const IndexName& name : index_names) {
+      dict->invalidateIndex(name.index.c_str(), name.table.c_str());
+    }
+    for (const std::string& name : table_names) {
+      if (m_conf.schema_cache != NULL && db != NULL) m_conf.schema_cache->invalidate(db, name);
+      dict->invalidateTable(name.c_str());
+    }
+  };
+#define RETURN_UNLOAD_SCHEMA(value) \
+  do {                              \
+    invalidate_collected_schema();  \
+    return (value);                 \
+  } while (0)
+
   // CTE-root queries leave m_main_scope.table NULL — there's no
   // single physical table to invalidate, and any underlying CTE-body
   // tables go through their own scopes. Treat as "no schema change
   // detected" so the caller falls back to a permanent error.
   if (m_main_scope.table == NULL) {
     DEB_TRACE();
-    return false;
+    RETURN_UNLOAD_SCHEMA(false);
   }
   // Save table object ID and version
   typedef std::pair<int, int> Idver;
@@ -8151,7 +8223,6 @@ RonSQLPreparer::unload_schema() {
   bool table_idver_mismatch = false;
   const Uint32 old_indexes_count = DBG(m_indexes.size());
   Idver* old_indexes_idver = m_amalloc->alloc_exc<Idver>(old_indexes_count);
-  NdbDictionary::Dictionary *dict = ndb->getDictionary();
   bool some_old_indexes_not_retrieved = false;
   for (Uint32 i = 0; i < old_indexes_count; i++) {
     DEB_TRACE();
@@ -8179,7 +8250,7 @@ RonSQLPreparer::unload_schema() {
     // determined an inconsistency. This inconsistency should go away next time
     // we load metadata, and this is checked in RonSQLPreparer::load().
     DEB_TRACE();
-    return true;
+    RETURN_UNLOAD_SCHEMA(true);
   }
   // Reload table
   const NdbDictionary::Table* new_table =
@@ -8188,7 +8259,7 @@ RonSQLPreparer::unload_schema() {
     // We don't need to reload indexes, since we have already determined a
     // schema change.
     DEB_TRACE();
-    return true;
+    RETURN_UNLOAD_SCHEMA(true);
   }
   require_prm(DBG(new_table->getObjectStatus()) ==
               NdbDictionary::Object::Status::Retrieved,
@@ -8199,7 +8270,7 @@ RonSQLPreparer::unload_schema() {
     // We don't need to reload indexes, since we have already determined a
     // schema change.
     DEB_TRACE();
-    return true;
+    RETURN_UNLOAD_SCHEMA(true);
   }
   // Reload indexes
   // Match logic in load(): Load online ordered indexes
@@ -8228,7 +8299,7 @@ RonSQLPreparer::unload_schema() {
     if (new_indexes_count >= old_indexes_count) {
       // Number of indexes changed, so a schema change must have occurred.
       DEB_TRACE();
-      return true;
+      RETURN_UNLOAD_SCHEMA(true);
     }
     new_indexes_idver[new_indexes_count++] = {
       DBG(new_index->getObjectId()),
@@ -8243,7 +8314,7 @@ RonSQLPreparer::unload_schema() {
   if (new_indexes_count != old_indexes_count) {
     // Number of indexes changed, so a schema change must have occurred.
     DEB_TRACE();
-    return true;
+    RETURN_UNLOAD_SCHEMA(true);
   }
   std::sort(new_indexes_idver, new_indexes_idver + new_indexes_count);
   for (Uint32 i = 0; i < new_indexes_count; i++) {
@@ -8251,11 +8322,12 @@ RonSQLPreparer::unload_schema() {
       // Object ID or version changed for this index, so a schema change
       // must have occurred.
       DEB_TRACE();
-      return true;
+      RETURN_UNLOAD_SCHEMA(true);
     }
   }
   DEB_TRACE();
-  return some_old_indexes_not_retrieved;
+  RETURN_UNLOAD_SCHEMA(some_old_indexes_not_retrieved);
+#undef RETURN_UNLOAD_SCHEMA
 }
 
 constexpr const char* filter_fail = "Failed to apply filter.";
