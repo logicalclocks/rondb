@@ -44,6 +44,12 @@ typedef void* yyscan_t;
 typedef struct yy_buffer_state *YY_BUFFER_STATE;
 struct yy_buffer_state;
 
+// NdbQueryBuilder.hpp is an internal (src-side) header, not pulled in via
+// <NdbApi.hpp>, so forward-declare the handful of types we reference from
+// this header. Full definitions are included in RonSQLPreparer.cpp.
+class NdbQueryBuilder;
+class NdbQueryOperationDef;
+
 struct LexLocation
 {
   char* begin = NULL;
@@ -54,6 +60,14 @@ struct raw_value
 {
   const void* val = NULL;
   size_t len = 0;
+};
+
+// Phase I.5 v2b: linked list of operands for an n-ary GREATEST / LEAST.
+// Built bottom-up by the parser via mk_arg_list / append_arg_list.
+struct ArithExprList
+{
+  AggregationAPICompiler::Expr* head;
+  ArithExprList* next;
 };
 
 /*
@@ -122,8 +136,30 @@ public:
     ArenaMalloc* get_allocator();
     Uint32 column_name_to_idx(LexCString);
     Uint32 qualified_column_name_to_idx(LexCString table, LexCString column);
+    // Phase I.5 v2b — n-ary GREATEST / LEAST.  Operands are folded
+    // left-associative into a chain of Greatest2 / Least2 SVM ops.
+    // Each operand must be a Load (column ref) or LoadConstantInteger.
+    // At least one column operand required.  Nullable column operands
+    // rejected post-resolution via m_greatest_least_pair_loads.
+    AggregationAPICompiler::Expr* lower_greatest_least_nary(
+        struct ArithExprList* args,
+        bool is_greatest);
+    // Build a two-element list (the smallest the n-ary grammar
+    // accepts).
+    struct ArithExprList* mk_arg_list(
+        AggregationAPICompiler::Expr* a,
+        AggregationAPICompiler::Expr* b);
+    // Append one operand at the end of an existing list, in source
+    // order.  Returns the same list head.
+    struct ArithExprList* append_arg_list(
+        struct ArithExprList* list,
+        AggregationAPICompiler::Expr* x);
     void enter_subquery();
-    void leave_subquery();
+    // Returns the AggregationAPICompiler that was active inside the
+    // subquery/CTE body just exited (or NULL if none was created because
+    // the body had no aggregate expressions). Callers save the pointer on
+    // the corresponding SelectStatement before the next subquery begins.
+    AggregationAPICompiler* leave_subquery();
     SelectStatement ast_root;
   };
 private:
@@ -144,24 +180,88 @@ private:
   DynamicArray<LexCString> m_column_qualifiers; /* table qualifier per col_idx */
   DynamicArray<bool> m_col_is_inner; /* true for columns from inner subqueries */
   DynamicArray<bool> m_col_is_alias; /* true for ORDER BY alias references */
-  NdbAttrId* m_column_attrId_map = NULL;
-  const NdbDictionary::Column** m_column_map = NULL;
-  Uint32* m_column_table_idx = NULL;
   const NdbDictionary::Dictionary* m_dict = NULL;
-  const NdbDictionary::Table* m_table = NULL;
-  JoinPlan m_join_plan;
-  ConditionalExpression* m_join_where_ce[MAX_SPJ_TREE_NODES];
 
   // Cross-table WHERE filters (e.g., WHERE l.price > o.min_price).
   // These reference columns from two different tables and cannot be
   // pushed as scan filters.  For aggregation queries, they are compiled
-  // into BranchReg conditional aggregation instructions.
+  // into embedded normal-interpreter predicates before aggregate updates.
   struct CrossTableFilter {
     ConditionalExpression* ce;
     Uint32 child_table_idx;   // table index of the "inner" side
     Uint32 parent_table_idx;  // table index of the "outer" side
   };
-  DynamicArray<CrossTableFilter> m_cross_table_where_filters;
+
+  // Forward decl so QueryScope can carry a chosen scan config pointer.
+  // Phase I.9: CTE bodies need per-scope scan-config state; the existing
+  // m_scan_config_candidates / m_scan_config / m_indexes fields belong
+  // to the main query and would corrupt across CTEs if reused.
+  class ScanConfig;
+
+  // QueryScope groups the per-join-plan state that the planner, filter
+  // compiler and NdbQueryBuilder emit path all read. One instance per
+  // query body — the outer SELECT uses m_main_scope; CTE bodies carry
+  // their own scopes so they can be planned and emitted independently.
+  struct QueryScope {
+    struct ResolvedColumnRef {
+      enum class Kind : uint8_t {
+        Unresolved = 0,
+        StoredColumn,
+        CteResultColumn,
+        AliasOnly
+      };
+
+      Kind kind = Kind::Unresolved;
+      Uint32 join_op_idx = 0;
+
+      // StoredColumn
+      NdbAttrId attr_id = -1;
+      const NdbDictionary::Column* dict_column = NULL;
+
+      // CteResultColumn
+      Uint32 cte_def_idx = 0;
+      Uint32 cte_result_idx = 0;
+      const Outputs* cte_output = NULL;
+    };
+
+    enum class MinMaxKind : uint8_t {
+      NONE = 0,
+      MIN_ASC,
+      MAX_DESC
+    };
+
+    JoinPlan join_plan;
+    ConditionalExpression* join_where_ce[MAX_SPJ_TREE_NODES];
+    DynamicArray<CrossTableFilter> cross_table_where_filters;
+
+    ResolvedColumnRef* resolved_columns = NULL;
+    const NdbDictionary::Table* table = NULL;
+    AggregationAPICompiler* agg = NULL;
+
+    // Phase I.9: per-CTE-body scan-config state.  `body_indexes`,
+    // `body_toplevel_conditions`, and `body_scan_config_candidates`
+    // mirror the main-query members `m_indexes`,
+    // `m_toplevel_conditions`, and `m_scan_config_candidates`, but
+    // scoped to this CTE body so multi-CTE queries don't trample
+    // each other.  `body_scan_config` is the chosen candidate
+    // (NULL for the main scope or for CTE bodies where no useful
+    // index was found, in which case the body falls back to the
+    // existing TABLE_SCAN single-op self-join branch).
+    DynamicArray<const NdbDictionary::Index*> body_indexes;
+    DynamicArray<ConditionalExpression*> body_toplevel_conditions;
+    DynamicArray<ScanConfig> body_scan_config_candidates;
+    ScanConfig* body_scan_config = NULL;
+    MinMaxKind body_minmax_kind = MinMaxKind::NONE;
+
+    QueryScope(ArenaMalloc* amalloc)
+      : join_plan(),
+        join_where_ce(),
+        cross_table_where_filters(amalloc),
+        body_indexes(amalloc),
+        body_toplevel_conditions(amalloc),
+        body_scan_config_candidates(amalloc) {}
+  };
+  QueryScope m_main_scope;
 
   DynamicArray<const NdbDictionary::Index*> m_indexes;
   NdbTransaction* m_trans = NULL;
@@ -182,11 +282,29 @@ private:
     // An estimate of how performant the scan configuration will be.
     int goodness = 0;
   };
+  enum class CteKeyCoverage {
+    ExactOrdered,
+    ExactPermuted,
+    Partial,
+    WrongColumns,
+    ScalarDummy
+  };
+  struct CteKeyCoverageResult {
+    CteKeyCoverage state = CteKeyCoverage::WrongColumns;
+    int pk_index_for_key[MAX_JOIN_KEY_COLS];
+    bool pk_covered[MAX_JOIN_KEY_COLS];
+    Uint32 num_keys = 0;
+    Uint32 num_pk_cols = 0;
+    Uint32 first_wrong_key = 0;
+    Uint32 first_missing_pk = 0;
+  };
   DynamicArray<ConditionalExpression*> m_toplevel_conditions;
+  // Phase I.5 v2b: column-Load Expr nodes that appeared as direct
+  // operands of an n-ary GREATEST / LEAST.  Validated at compile()
+  // time against the appropriate scope's resolved descriptors.
+  DynamicArray<AggregationAPICompiler::Expr*> m_greatest_least_pair_loads;
   DynamicArray<ScanConfig> m_scan_config_candidates;
   ScanConfig* m_scan_config = NULL;
-
-  AggregationAPICompiler* m_agg = NULL;
 
   // SELECT-list subquery aggregation (multi-leaf pushdown)
   struct SelectSubqueryLeaf {
@@ -230,6 +348,18 @@ private:
   };
   DynamicArray<SubqueryInfo> m_subquery_infos;
   bool m_has_subqueries = false;
+  bool m_has_ctes = false;
+  // True for aggregating queries (the only ones RonSQL fully supports).
+  // Set to false in parse() for the narrow projection-only-over-CTE_SCAN
+  // shape that Phase E.3 enables — drives the pass-through delivery
+  // path in execute_join() and skips ResultPrinter::compile() (which
+  // requires every SELECT-list column to appear in GROUP BY).
+  bool m_is_aggregate_query = true;
+
+  // One QueryScope per CTE in ast_root.cte_list, in declaration order.
+  // Pointers because QueryScope holds a DynamicArray — non-trivially-copyable.
+  // Allocated from m_amalloc (arena), so no explicit delete is needed.
+  DynamicArray<QueryScope*> m_cte_scopes;
 
   ResultPrinter* m_resultprinter = NULL;
   LexCString column_idx_to_name(uint);
@@ -246,11 +376,95 @@ private:
   void load();
   void load_single_table();
   void load_join();
-  void classify_where_by_table();
+  /* Phase I.17h: synthesise a FROM clause from qualified column refs
+   * to scalar CTEs when the parser produced a NULL root_table.  No-op
+   * when an explicit FROM was given. */
+  void synthesize_from_for_scalar_ctes();
+  const CteDefinition* find_cte_definition(const LexCString& name) const;
+  bool cte_key_coverage(const CteDefinition* cte,
+                        const LexCString* bound_cte_side_names,
+                        Uint32 num_keys,
+                        CteKeyCoverageResult& out) const;
+  bool cte_key_coverage(const CteDefinition* cte,
+                        const char* const* bound_cte_side_names,
+                        Uint32 num_keys,
+                        CteKeyCoverageResult& out) const;
+  bool join_conditions_reference_only_parent(
+      const JoinCondition* conditions,
+      const LexCString& parent_alias) const;
+  void reorder_cte_join_conditions_to_pk_order(
+      JoinClause* join,
+      const CteKeyCoverageResult& r);
+  void normalize_cte_join_key_order();
+  Int32 classify_ce_table_resolved(const QueryScope& scope,
+                                   ConditionalExpression* ce) const;
+  void classify_where_by_table(QueryScope& scope,
+                                ConditionalExpression* where_ce);
+  void promote_left_to_inner_for_where(QueryScope& scope);
+  static bool is_anti_join_promotable(const QueryScope& scope,
+                                       Uint32 op_idx,
+                                       const ConditionalExpression* ce);
   void assign_cross_table_index_bounds();
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();
+  // Phase I.9: per-CTE-body version of the scan-config selection
+  // pipeline.  Loads the body's source-table indexes, walks the
+  // body's WHERE for top-level AND conjuncts, scores candidate
+  // index plans, and (if a usable ordered index is found) flips
+  // the planner's first JoinOp from TABLE_SCAN to INDEX_SCAN.
+  // Bound vs residual filter routing lives in
+  // `scope.body_scan_config->condition_handling_map`.
+  void select_cte_body_scan_config(QueryScope& scope,
+                                    ConditionalExpression* where_ce);
+  bool load_cte_body_indexes(QueryScope& scope,
+                             const NdbDictionary::Table* tab);
+  static bool decimal_minmax_fits_64bit(
+      NdbDictionary::Column::Type type,
+      Int32 precision,
+      Int32 scale);
+  static bool minmax_index_source_type_supported(
+      const NdbDictionary::Column* col);
+  void select_cte_body_minmax_index(QueryScope& scope,
+                                     const CteDefinition* cte);
+  void analyze_ctes();
+  void build_cte_scopes();
+  bool* collect_scope_column_refs(const SelectStatement& stmt);
+  void mark_scope_column_ref(bool* refs, Uint32 col_idx) const;
+  void mark_scope_column_refs_ce(bool* refs,
+                                 const ConditionalExpression* ce) const;
+  void mark_scope_column_refs_expr(
+      bool* refs,
+      const AggregationAPICompiler::Expr* expr) const;
+  void resolve_columns_for_scope(QueryScope& scope,
+                                 const SelectStatement& stmt,
+                                 bool main_scope);
+  void resolve_columns_for_cte_scope(QueryScope& scope,
+                                     const SelectStatement& stmt);
+  void resolve_cte_output_columns();
+  void resolve_cte_output_columns_for_scope(QueryScope& scope);
+  /**
+   * Reject CTE shapes the kernel/SPJ doesn't currently support.
+   * Defensive tripwire — see cte_filter_phase_g.md.  Today only
+   * blocks CTE_SCAN-as-outer-join-child (which the planner doesn't
+   * emit, so this never fires from SQL — but a planner regression
+   * would surface here as a clean error instead of a runtime crash).
+   */
+  void validate_cte_execution_shapes();
+  /**
+   * Resolve the (NdbDictionary::Column::Type, length, charset) tuple
+   * for a column reference in `scope`, walking through chained CTE
+   * output descriptors.  Mirrors the aggregate widening rules in
+   * build_cte_virtual_tables so derived types stay consistent across
+   * CTE chain layers.
+   * Returns true on success.  Caller raises a clear error on false.
+   */
+  bool resolve_chained_column_type(QueryScope& scope, Uint32 col_idx,
+                                    NdbDictionary::Column::Type& out_type,
+                                    Uint32& out_length,
+                                    const void*& out_cs,
+                                    Int32& out_scale,
+                                    Int32& out_precision);
   void analyze_subqueries();
   void analyze_subqueries_ce(ConditionalExpression* ce);
   void analyze_select_subqueries();
@@ -260,6 +474,7 @@ private:
   void decorrelate_scalar();
   void compile();
   void build_agg_linked_projections();
+  void build_cte_linked_projections();
   void determine_explain();
   bool unload_schema();
   void handle_ronsql_exception(std::exception_ptr eptr);
@@ -273,16 +488,47 @@ private:
   void substitute_subquery_results();
   void substitute_subquery_results_ce(ConditionalExpression** ce_ptr);
   void execute_join();
+  // Pass-through row delivery for projection-only main SELECTs.
+  // Originally Phase E.3 (single CTE_SCAN root); generalized in
+  // Phase I.8 to multi-op shapes.  Each output column is routed through
+  // resolved descriptors; CTE refs use the virt-table descriptor and
+  // real-table refs use the stored dictionary column descriptor.
+  // Caller passes the prepared NdbQuery* and the per-op
+  // cteVirtualTables array (NULL entries for non-CTE ops).
+  void execute_passthrough_drain(class NdbQuery* query,
+                                 NdbDictionary::Table** cteVirtualTables);
+  // Returns true iff the query routes through the multi-op join path:
+  // either AST joins are present, or the FROM root names a CTE alias
+  // (which forces QueryPlanner to produce a CTE_SCAN root op and the
+  // emit/execute path to use the multi-op infrastructure).
+  bool is_join_query() const;
+  void emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
+                    const NdbQueryOperationDef** opDefs,
+                    NdbAggregator* singleAgg = nullptr,
+                    NdbDictionary::Table** cteVirtualTables = nullptr);
+  void build_cte_virtual_tables(const JoinPlan& plan,
+                                NdbDictionary::Table** out);
+  void emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
+                      const NdbQueryOperationDef** opDefs,
+                      NdbAggregator* singleAgg,
+                      NdbAggregator** leafAggs,
+                      NdbDictionary::Table** cteVirtualTables);
+  void emit_cte_lookup_filter(NdbInterpretedCode& code,
+                              QueryScope& scope,
+                              Uint32 op_idx,
+                              NdbDictionary::Table* virtTab,
+                              struct ConditionalExpression* where_ce);
   void collect_pk_equalities(struct ConditionalExpression* ce,
                              const NdbDictionary::Table* table,
                              struct ConditionalExpression* pk_const[]);
   void apply_filter_top_level(NdbScanFilter* filter);
-  void apply_filter(NdbScanFilter* filter, struct ConditionalExpression* ce);
-  void apply_filter_cmp(NdbScanFilter* filter,
+  void apply_filter(NdbScanFilter* filter, QueryScope& scope,
+                    struct ConditionalExpression* ce);
+  void apply_filter_cmp(NdbScanFilter* filter, QueryScope& scope,
                         NdbScanFilter::BinaryCondition cond,
                         struct ConditionalExpression* left,
                         struct ConditionalExpression* right);
-  void apply_filter_like(NdbScanFilter* filter,
+  void apply_filter_like(NdbScanFilter* filter, QueryScope& scope,
                          NdbScanFilter::BinaryCondition cond,
                          struct ConditionalExpression* left,
                          struct ConditionalExpression* right);
@@ -291,14 +537,77 @@ private:
   struct ConditionalExpression* simplify_ce(struct ConditionalExpression* ce,
                                             int maxdepth);
   void programAggregator(NdbAggregator* aggregator);
-  void programAggregator_join(NdbAggregator* aggregator);
-  Uint32 filter_expr_word_count(struct ConditionalExpression* ce);
-  void emit_filter_expr(NdbAggregator* agg,
-                        struct ConditionalExpression* ce,
-                        Uint32 leaf_idx, Uint32 reg, Uint32 tmp_reg);
+  void programAggregator_join(QueryScope& scope, SelectStatement& stmt,
+                              NdbAggregator* aggregator,
+                              NdbDictionary::Table* const* cteVirtualTables
+                                  = NULL);
+  Uint32 embedded_filter_expr_word_count(QueryScope& scope,
+                                         struct ConditionalExpression* ce,
+                                         Uint32 leaf_idx);
+  void emit_embedded_filter_expr(NdbAggregator* agg, QueryScope& scope,
+                                 struct ConditionalExpression* ce,
+                                 Uint32 leaf_idx, Uint32 reg, Uint32 tmp_reg);
+  void generate_embedded_filter_condition(NdbAggregator* aggregator,
+                                          QueryScope& scope,
+                                          struct ConditionalExpression* ce,
+                                          Uint32 true_output,
+                                          Uint32 false_output,
+                                          Uint32 leaf_idx);
   void generate_embedded_condition(NdbAggregator* aggregator,
+                                   QueryScope& scope,
                                    struct ConditionalExpression* ce,
-                                   Uint32 then_arm_raw_size);
+                                   Uint32 then_arm_raw_size,
+                                   NdbDictionary::Table* const*
+                                       cteVirtualTables,
+                                   bool use_custom_outputs = false,
+                                   Uint32 first_exit_output = 0,
+                                   Uint32 second_exit_output = 0,
+                                   Uint32 agg_leaf_idx_override = 0xFFFFFFFF);
+  const NdbDictionary::Column* resolve_case_condition_column(
+      QueryScope& scope,
+      struct ConditionalExpression* col_side,
+      NdbDictionary::Table* const* cteVirtualTables);
+  // Phase I.5 v2b: walk m_greatest_least_pair_loads and reject any
+  // unsupported column operand.  Run at compile() time, after column
+  // resolution has populated each scope's descriptors.
+  void validate_greatest_least_pair_loads();
+  // Phase I.21: top-level GREATEST / LEAST is implemented as an
+  // implicit MAX over a scalar expression and is only valid for scalar
+  // CTE outputs.  Ordinary table columns need a real SELECT-level
+  // expression evaluator, not this aggregate wrapper.
+  void validate_implicit_scalar_pair_ops();
+  bool is_scalar_cte_qualifier(const LexCString& qualifier) const;
+  void validate_implicit_scalar_pair_op_expr(
+      AggregationAPICompiler::Expr* expr) const;
+  // Phase I.5 v4: emit the kernel program for one Greatest2 / Least2
+  // pair-op.  Expands to either a 14-word embedded normal-interpreter
+  // program (NULL-test on each operand -> SetRegNull, otherwise
+  // BRANCH_(GE|LE)_REG_REG to choose output 0/1) or a 9-word body
+  // (no NULL test).  The nullable path appends Mov + Skip +
+  // SetRegNull; the non-null path appends only Mov.  The embedded
+  // program output selects the expression-local path without stopping
+  // unrelated aggregate updates.
+  void emit_pair_op_embedded(NdbAggregator* aggregator,
+                             Uint32 dest,
+                             Uint32 src,
+                             bool is_greatest,
+                             bool needs_null_check);
+  // Phase I.5 v4 fast path: walk a Greatest2 / Least2 Expr tree and
+  // return true iff any leaf Load reaches a nullable column or an
+  // unresolved CTE virtual column (where nullability isn't known at
+  // compile time).  Used by `prepare_pair_op_null_check_cache` to
+  // populate the AggregationAPICompiler's per-program-index decision
+  // cache.
+  bool compute_pair_op_needs_null_check(
+      const QueryScope& scope,
+      AggregationAPICompiler::Expr* expr) const;
+  // Fill scope.agg->m_pair_op_needs_null_check (one entry per
+  // m_program slot; only meaningful at pair-op slots) before any
+  // raw_word_size or pair-op emission consumes it.  Idempotent.
+  void prepare_pair_op_null_check_cache(QueryScope& scope);
+  void require_cte_case_condition_column_output(QueryScope& scope,
+                                                Uint32 op_idx,
+                                                Uint32 cidx);
   void print_result_json(NdbAggregator* aggregator);
   void print();
   void print(struct ConditionalExpression* ce,

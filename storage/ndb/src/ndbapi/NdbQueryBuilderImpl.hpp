@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2011, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -288,11 +289,14 @@ class NdbQueryOptionsImpl {
         m_aggDiskColumns(false),
         m_aggTable(nullptr),
         m_aggGbColumns(nullptr),
-        m_linkedProjection(0) {}
+        m_aggColumns(nullptr),
+        m_linkedProjection(0),
+        m_maxRows(0) {}
   NdbQueryOptionsImpl(const NdbQueryOptionsImpl &);
   ~NdbQueryOptionsImpl();
 
   NdbQueryOptions::ScanOrdering getOrdering() const { return m_scanOrder; }
+  Uint32 getMaxRows() const { return m_maxRows; }
 
   bool hasAggregation() const { return m_aggProgramBuffer != nullptr; }
   const Uint32 *getAggProgramBuffer() const { return m_aggProgramBuffer; }
@@ -302,6 +306,9 @@ class NdbQueryOptionsImpl {
   const NdbTableImpl *getAggTable() const { return m_aggTable; }
   const NdbDictionary::Column *const *getAggGbColumns() const {
     return m_aggGbColumns;
+  }
+  const NdbDictionary::Column *const *getAggColumns() const {
+    return m_aggColumns;
   }
   const Vector<const NdbLinkedOperandImpl *> &getLinkedProjection() const {
     return m_linkedProjection;
@@ -326,9 +333,14 @@ class NdbQueryOptionsImpl {
   // Dynamically allocated array of n_gb_cols pointers, deep-copied
   // from NdbAggregator::gb_columns() during copyAggregation().
   const NdbDictionary::Column **m_aggGbColumns;
+  const NdbDictionary::Column **m_aggColumns;
 
   // Linked operands for parent column projection in aggregation
   Vector<const NdbLinkedOperandImpl *> m_linkedProjection;
+
+  // Per-fragment row limit (0 = unlimited). When > 0, DBSPJ closes
+  // the fragment scan after this many rows instead of requesting more.
+  Uint32 m_maxRows;
 
   /**
    * Assign NdbInterpretedCode by taking a deep copy of 'src'
@@ -354,6 +366,8 @@ class NdbQueryOperationDefImpl {
   friend class NdbQueryOperationImpl;
   friend class NdbQueryDefImpl;
   friend class NdbQueryImpl;
+  friend class NdbQueryBuilder;
+  friend class NdbQueryBuilderImpl;
 
  public:
   struct IndexBound {  // Limiting 'bound ' definition for indexScan
@@ -424,6 +438,8 @@ class NdbQueryOperationDefImpl {
   bool isAggregateLeaf() const { return m_isAggregateLeaf; }
 
   bool isQueryAggregation() const { return m_queryHasAggregation; }
+
+  bool isCteEmbedded() const { return m_isCteEmbedded; }
 
   const NdbQueryOptionsImpl &getOptions() const { return m_options; }
 
@@ -555,6 +571,9 @@ class NdbQueryOperationDefImpl {
   /** True if the enclosing query has aggregation (set before serialization).*/
   bool m_queryHasAggregation;
 
+  /** True if this operation is embedded inside a CTE subtree. */
+  bool m_isCteEmbedded;
+
  private:
   bool isChildOf(const NdbQueryOperationDefImpl *parentOp) const;
 
@@ -685,15 +704,40 @@ class NdbQueryDefImpl {
   friend class NdbQueryDef;
 
  public:
+  /** CTE definition info for the KeyInfo agg section. */
+  struct CteDefInfo {
+    Uint32 cteId;
+    Uint32 tableId;
+    Uint32 schemaVersion;
+    Uint64 depMask;
+    Uint32 flags;
+    Vector<Uint32> aggProgram;
+  };
+
   explicit NdbQueryDefImpl(const Ndb *ndb,
                            const Vector<NdbQueryOperationDefImpl *> &operations,
                            const Vector<NdbQueryOperandImpl *> &operands,
+                           const Vector<CteDefInfo> &cteDefs,
                            int &error);
   ~NdbQueryDefImpl();
 
-  // Entire query is a scan iff root operation is scan.
-  // May change in the future as we implement more complicated SPJ operations.
-  bool isScanQuery() const { return m_operations[0]->isScanOperation(); }
+  // A query is treated as scan-type when:
+  //   (a) the main query root is a scan, OR
+  //   (b) the query contains some CTE
+  // Case (b) forces SCAN_TABREQ so CTE SETUP / aggStateKeys /
+  // RT_CTE_PHASE machinery runs.  DBSPJ short-circuits the main
+  // query on all but rootFragId == 0 for CTE_LOOKUP_REQ and
+  // rootFragId < numDataNodes for CTE_SCAN_REQ to avoid duplicating
+  // the result across fragments.
+  //
+  // Real-table PK/UniqueIndex main roots without CTEs stay as TCKEYREQ
+  bool isScanQuery() const {
+    /* Queries with CTEs always use the scan protocol (SCAN_TABREQ)
+     * because CTE materialization requires multi-phase coordination
+     * by DBTC, even when the main query root is a lookup (lookupCte). */
+    if (m_cteDefs.size() > 0) return true;
+    return m_operations[0]->isScanOperation();
+  }
 
   NdbQueryDef::QueryType getQueryType() const;
 
@@ -727,6 +771,13 @@ class NdbQueryDefImpl {
   Vector<NdbQueryOperandImpl *> m_operands;
   Uint32Buffer m_serializedDef;
 
+  Vector<CteDefInfo> m_cteDefs;
+
+ public:
+  Uint32 getNumCtes() const { return m_cteDefs.size(); }
+  const CteDefInfo &getCteDef(Uint32 i) const { return m_cteDefs[i]; }
+
+ private:
   bool m_hasAggregation;
   Vector<Uint32> m_aggregateLeafOpNos;
 };  // class NdbQueryDefImpl
@@ -785,6 +836,15 @@ class NdbQueryBuilderImpl {
   Uint32 m_paramCnt;
   /** True if there was an error that prevents further use of this object.*/
   bool m_hasError;
+
+  /** CTE definitions (transferred to NdbQueryDefImpl in prepare()). */
+  Vector<NdbQueryDefImpl::CteDefInfo> m_cteDefs;
+
+  /** CTE subtree tracking for beginCteSubtree()/endCteSubtree(). */
+  bool m_inCteSubtree;
+  Uint32 m_cteSubtreeStartOpIdx;  // Index in m_operations where subtree starts
+  Uint32 m_currentCteId;
+  Uint32 m_completedCteSubtrees;  // Count of completed CTE subtrees
 };  // class NdbQueryBuilderImpl
 
 //////////////////////////////////////////////

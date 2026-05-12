@@ -1,0 +1,360 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Same convention as ronsql_cte_basic.test: skip ronsql_cli (which doesn't
+# refresh dictionary cache for join queries) and rely on RDRS comparison.
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for CTE scan tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE cte_orders (
+  o_id INT NOT NULL,
+  o_custkey INT NOT NULL,
+  o_amt INT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_o_custkey ON cte_orders (o_custkey);
+
+CREATE TABLE cte_customer (
+  c_id INT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  c_region INT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+INSERT INTO cte_customer VALUES
+  (100, 'Alice',   1),
+  (200, 'Bob',     1),
+  (300, 'Charlie', 2),
+  (400, 'Dave',    2);
+
+INSERT INTO cte_orders VALUES
+  (1, 100, 50),
+  (2, 100, 75),
+  (3, 200, 40),
+  (4, 200, 60),
+  (5, 300, 90);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+# Phase E.1 — scanCte as main-query root.  All tests use main-query
+# aggregation; pure pass-through (SELECT k, t FROM cte) is rejected
+# by RonSQL's "Not an aggregate query" check today and is deferred
+# to a separate Phase E.3.
+
+--echo
+--echo === Test 1 (E.1): main GB on CTE_SCAN root col + agg ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums GROUP BY k|
+
+--echo
+--echo
+--echo === Test 2 (E.1): WHERE on CTE_SCAN root agg output ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t > 50 GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t > 50 GROUP BY k|
+
+--echo
+--echo
+--echo === Test 3 (E.1): WHERE on CTE_SCAN root GB column ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE k = 200 GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE k = 200 GROUP BY k|
+
+# Reinstated for Phase E.1K: CTE_SCAN root + real-table child + main
+# aggregator on the child leaf.  Exercises DBSPJ's appendFromParent
+# CTE-marker writer plus initGBTypes inline-type decoder
+# (cte_filter_phase_e1k.md).
+--echo
+--echo
+--echo === Test (E.1K): CTE_SCAN root + real-table child + agg ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT s.k, SUM(s.t)
+FROM sums AS s JOIN cte_customer AS c ON c.c_id = s.k
+GROUP BY s.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT s.k, SUM(s.t)
+FROM sums AS s JOIN cte_customer AS c ON c.c_id = s.k
+GROUP BY s.k|
+
+--echo
+--echo
+--echo === Test 4 (E.1): main agg over CTE_SCAN root, no GB (single row) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT SUM(t) AS gt FROM sums;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT SUM(t) AS gt FROM sums|
+
+# Phase E.2 — chained CTEs (CTE-of-CTE).  The second CTE's body has
+# CTE_SCAN reading the first CTE.  Drives the per-CTE-loop refactor
+# in RonSQLPreparer.cpp (build_cte_virtual_tables hoisted before
+# aggregator anchor; CTE_SCAN single-op branch via emit_root_op;
+# defineCte srcTab from predecessor virt table).
+
+--echo
+--echo
+--echo === Test 7 (E.2): basic chained CTEs (b reads a, both with GB) ===
+
+let $QUERY=
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS s
+  FROM cte_orders GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS s
+  FROM cte_orders GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k|
+
+--echo
+--echo
+--echo === Test 8 (E.2): chained CTE feeding a real-table join in outer SELECT ===
+
+let $QUERY=
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS s
+  FROM cte_orders GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT b.k, SUM(b.m)
+FROM b JOIN cte_customer AS c ON c.c_id = b.k
+GROUP BY b.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS s
+  FROM cte_orders GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a GROUP BY k)
+SELECT b.k, SUM(b.m)
+FROM b JOIN cte_customer AS c ON c.c_id = b.k
+GROUP BY b.k|
+
+--echo
+--echo
+--echo === Test 9 (E.2): chained CTE with WHERE filter on the intermediate ===
+
+let $QUERY=
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS s
+  FROM cte_orders GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a WHERE s > 100 GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH a AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS s
+  FROM cte_orders GROUP BY o_custkey),
+     b AS (
+  SELECT k, MAX(s) AS m
+  FROM a WHERE s > 100 GROUP BY k)
+SELECT k, SUM(m) FROM b GROUP BY k|
+
+# Phase E.3 — projection-only main SELECT over a CTE_SCAN root.  No
+# main-query aggregation; rows flow from scanCte directly to the
+# result printer's pass-through path.
+
+--echo
+--echo
+--echo === Test 10 (E.3): projection-only over a CTE_SCAN root ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, t FROM sums;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, t FROM sums|
+
+--echo
+--echo
+--echo === Test 11 (E.3): projection-only with WHERE on CTE output ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, t FROM sums WHERE t > 100;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, t FROM sums WHERE t > 100|
+
+# Phase H.1 — filter operator + conjunct matrix on CTE_SCAN root.
+# Mirrors the CTE_LOOKUP coverage in ronsql_cte_basic.test Tests
+# 15-18 for the CTE_SCAN code path.
+
+--echo
+--echo
+--echo === Test 12a (H.1): != on CTE_SCAN agg output ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t != 100 GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t != 100 GROUP BY k|
+
+--echo
+--echo
+--echo === Test 12b (H.1): <= on CTE_SCAN agg output ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t <= 100 GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t <= 100 GROUP BY k|
+
+--echo
+--echo
+--echo === Test 13 (H.1): multi-conjunct AND on CTE_SCAN root ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE k > 100 AND t < 200 GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE k > 100 AND t < 200 GROUP BY k|
+
+--echo
+--echo
+--echo === Test 14 (H.1): all-reject filter on CTE_SCAN ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t > 1000000 GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT k, SUM(t) FROM sums WHERE t > 1000000 GROUP BY k|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+DROP TABLE cte_customer;
+DROP TABLE cte_orders;

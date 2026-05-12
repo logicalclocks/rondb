@@ -1,4 +1,9 @@
 --source include/have_ndb.inc
+# Requires DUMP LqhSkipTcNodeCheck (2359) so an API-node signal sender can
+# drive LQHKEYREQ directly. That DUMP is only effective in debug builds
+# (VM_TRACE / ERROR_INSERT); in production the check fires and LQHKEYREF
+# errorCode=1223 (ZNODE_SHUTDOWN_IN_PROGRESS) aborts the benchmark.
+--source include/have_ndb_debug.inc
 
 --echo Running benchJoinAgg
 --exec $NDB_PUSH_AGG_DIR/benchJoinAgg -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --orders 4000 --iterations 1

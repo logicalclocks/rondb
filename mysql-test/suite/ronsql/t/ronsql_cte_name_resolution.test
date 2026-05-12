@@ -1,0 +1,148 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.23 — scoped name resolution for CTE bodies and main SELECT.
+#
+# The key invariant is that each CTE body sees stored tables plus already
+# published CTE result columns, while later scopes see only the CTE name
+# and its exposed result columns. Internal aliases from a CTE body must
+# not leak into later CTEs or the main SELECT.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE nr_base (
+  id  INT NOT NULL,
+  k   INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_nr_base_k ON nr_base (k);
+
+CREATE TABLE nr_other (
+  id  INT NOT NULL,
+  k   INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_nr_other_k ON nr_other (k);
+
+INSERT INTO nr_base VALUES
+  (1, 10, 5),
+  (2, 10, 7),
+  (3, 20, 11),
+  (4, 30, 13);
+
+INSERT INTO nr_other VALUES
+  (1, 10, 100),
+  (2, 20, 200),
+  (3, 30, 300);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: chained CTE sees prior exposed result names ===
+
+let $QUERY=
+WITH c0 AS (
+  SELECT k AS k, SUM(val) AS s
+  FROM nr_base GROUP BY k),
+     c1 AS (
+  SELECT c0.k AS k, SUM(c0.s) AS ss
+  FROM c0 GROUP BY c0.k)
+SELECT c1.k, SUM(c1.ss) AS total
+FROM c1
+GROUP BY c1.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH c0 AS (
+  SELECT k AS k, SUM(val) AS s
+  FROM nr_base GROUP BY k),
+     c1 AS (
+  SELECT c0.k AS k, SUM(c0.s) AS ss
+  FROM c0 GROUP BY c0.k)
+SELECT c1.k, SUM(c1.ss) AS total
+FROM c1
+GROUP BY c1.k|
+
+--echo
+--echo
+--echo === Test 2: qualified stored-table and CTE names disambiguate duplicate k ===
+
+let $QUERY=
+WITH c0 AS (
+  SELECT k AS k, SUM(val) AS s
+  FROM nr_base GROUP BY k)
+SELECT c0.k, SUM(o.val) AS total
+FROM nr_other AS o
+JOIN c0 ON c0.k = o.k
+GROUP BY c0.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH c0 AS (
+  SELECT k AS k, SUM(val) AS s
+  FROM nr_base GROUP BY k)
+SELECT c0.k, SUM(o.val) AS total
+FROM nr_other AS o
+JOIN c0 ON c0.k = o.k
+GROUP BY c0.k|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 3: main SELECT cannot reference CTE body internal alias ===
+--echo Expected error: Unknown table alias
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c0 AS (SELECT b.k AS k, SUM(b.val) AS s FROM nr_base AS b GROUP BY b.k) SELECT b.k, SUM(c0.s) FROM c0 GROUP BY b.k;' 2>&1
+
+--echo
+--echo
+--echo === Test 4: later CTE cannot reference prior CTE body internal alias ===
+--echo Expected error: Unknown table alias
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c0 AS (SELECT b.k AS k, SUM(b.val) AS s FROM nr_base AS b GROUP BY b.k), c1 AS (SELECT b.k AS k, SUM(c0.s) AS ss FROM c0 GROUP BY b.k) SELECT c1.k, SUM(c1.ss) FROM c1 GROUP BY c1.k;' 2>&1
+
+--echo
+--echo
+--echo === Test 5: unqualified duplicate name across stored table and CTE is ambiguous ===
+--echo Expected error: Ambiguous column
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c0 AS (SELECT k AS k, SUM(val) AS s FROM nr_base GROUP BY k) SELECT k, SUM(o.val) FROM c0 JOIN nr_other AS o ON o.k = c0.k GROUP BY k;' 2>&1
+
+--echo
+--echo
+--echo === Test 6: CTE cannot reference a future CTE ===
+--echo Expected error: Table not found
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c0 AS (SELECT c1.k AS k, SUM(c1.s) AS ss FROM c1 GROUP BY c1.k), c1 AS (SELECT k AS k, SUM(val) AS s FROM nr_base GROUP BY k) SELECT c0.k, SUM(c0.ss) FROM c0 GROUP BY c0.k;' 2>&1
+
+--echo
+--echo
+--echo === Test 7: qualified name cannot reference non-exposed CTE result ===
+--echo Expected error: Column not found
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c0 AS (SELECT k AS k, SUM(val) AS s FROM nr_base GROUP BY k) SELECT c0.val, SUM(c0.s) FROM c0 GROUP BY c0.val;' 2>&1
+
+--echo
+--echo === Cleanup ===
+
+DROP TABLE nr_other;
+DROP TABLE nr_base;

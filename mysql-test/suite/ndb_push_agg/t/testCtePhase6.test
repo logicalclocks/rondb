@@ -1,0 +1,5 @@
+--source include/have_ndb.inc
+--source include/have_debug.inc
+
+--echo Running testCtePhase6
+--exec $NDB_PUSH_AGG_DIR/testCtePhase6 -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

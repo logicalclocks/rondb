@@ -1,6 +1,8 @@
 --source include/have_ndb.inc
+--disable_warnings
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
+--enable_warnings
 
 --echo Regression tests for bugs found during development of pushdown aggregation and
 --echo RonSQL.

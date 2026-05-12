@@ -1,0 +1,131 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for CTE linked-vs-linked GREATEST / LEAST tests ===
+
+
+
+=== Test 1: SUM(GREATEST(pairs.k, pairs.amt)) — linked-vs-linked CTE columns ===
+== Query ==
+WITH pairs AS (
+SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id, SUM(GREATEST(pairs.k, pairs.amt)) AS gmax
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pairs AS (
+SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id, SUM(GREATEST(pairs.k, pairs.amt)) AS gmax
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k|
+c_id	gmax
+100	200
+200	400
+300	300
+
+
+=== Test 2: SUM(LEAST(pairs.k, pairs.amt)) — LEAST mirror ===
+== Query ==
+WITH pairs AS (
+SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id, SUM(LEAST(pairs.k, pairs.amt)) AS lmin
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pairs AS (
+SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id, SUM(LEAST(pairs.k, pairs.amt)) AS lmin
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k|
+c_id	lmin
+100	125
+200	100
+300	90
+
+
+=== Test 3: n=3 chain — GREATEST(pairs.k, pairs.amt, c.c_floor) ===
+== Query ==
+WITH pairs AS (
+SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id,
+SUM(GREATEST(pairs.k, pairs.amt, c.c_floor)) AS gmax
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pairs AS (
+SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id,
+SUM(GREATEST(pairs.k, pairs.amt, c.c_floor)) AS gmax
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k|
+c_id	gmax
+100	200
+200	400
+300	300
+
+
+=== Test 4: GREATEST against a CTE aggregate output and a CTE column ===
+== Query ==
+WITH pairs AS (
+SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id, SUM(GREATEST(pairs.amt, pairs.cnt)) AS g
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pairs AS (
+SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT pairs.k AS c_id, SUM(GREATEST(pairs.amt, pairs.cnt)) AS g
+FROM pairs
+JOIN cte_customer AS c ON c.c_id = pairs.k
+GROUP BY pairs.k|
+c_id	g
+100	125
+200	100
+300	90

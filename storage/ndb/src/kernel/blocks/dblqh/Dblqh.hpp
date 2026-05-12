@@ -48,6 +48,8 @@
 #include <signaldata/CopyActive.hpp>
 #include <signaldata/CopyFrag.hpp>
 #include <signaldata/CreateTab.hpp>
+#include <signaldata/CteLookup.hpp>
+#include <signaldata/CteScan.hpp>
 #include <signaldata/DropTab.hpp>
 #include <signaldata/FsOpenReq.hpp>
 #include <signaldata/LCP.hpp>
@@ -55,6 +57,7 @@
 #include <signaldata/LqhKey.hpp>
 #include <signaldata/LqhTransConf.hpp>
 #include <signaldata/NodeRecoveryStatusRep.hpp>
+#include "NdbAggregationCommon.hpp"
 #include "kernel/DblqhState.hpp"
 
 // primary key is stored in TUP
@@ -357,6 +360,9 @@ class FsReadWriteReq;
 #define ZUPDATE_CPU_USAGE 44
 #define ZCONTINUE_JOIN_AGG_SEND 45
 #define ZCONTINUE_JOIN_AGG_MERGE 46
+#define ZCONTINUE_JOIN_AGG_REDISTRIBUTE 47
+#define ZCONTINUE_CTE_REDIST_DRAIN 48
+#define ZCONTINUE_CTE_SCAN_AGG_FEED 49
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -470,6 +476,9 @@ class FsReadWriteReq;
 /* Node failure error code — same value as DBTC's ZNODEFAIL_BEFORE_COMMIT */
 #define ZNODEFAIL_BEFORE_COMMIT 286
 
+/* CONTINUEB code used by DblqhProxy (outside DBLQH_C) */
+#define ZCONTINUE_FREE_REDIST_PAGES 49
+
 /* Join aggregation error codes (outside DBLQH_C for DblqhProxy) */
 #define ZJOIN_AGG_STATE_ALLOC_FAILED       1250
 #define ZJOIN_AGG_STATE_NOT_FOUND          1251
@@ -484,6 +493,12 @@ class FsReadWriteReq;
 #define ZJOIN_AGG_MATCH_RANGE_OVERFLOW     1260
 #define ZJOIN_AGG_INVALID_SECTION_COUNT    1261
 #define ZATTRINFO_TOO_LARGE                1262
+#define ZCTE_LOOKUP_GROUP_NOT_FOUND        1263
+#define ZCTE_LOOKUP_STATE_NOT_READY        1264
+#define ZCTE_LOOKUP_ATTRINFO_MALFORMED     1265
+#define ZCTE_LOOKUP_OUTPUT_OVERFLOW        1266
+#define ZCTE_EVICT_IN_CTE_LEAF             1267
+#define ZCTE_LOOKUP_FILTER_ERROR           1268
 
 /**
  * @class dblqh
@@ -3330,6 +3345,123 @@ private:
   void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
   void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
+  void execCTE_LOOKUP_REQ(Signal* signal);
+  bool routeCteLookup(Signal* signal,
+                      const JoinAggregationState *state,
+                      const JoinAggInterpreter *interp,
+                      const Uint32 *keyBuf, Uint32 keySectionSz,
+                      const Uint32 *cinBuf, Uint32 attrInfoLen,
+                      const CteLookupReq *req);
+  /* Assemble linked_attr_data for a CTE group row into outBuf.  Layout:
+   * [optional parent linked columns from AttrInfo subroutine section]
+   * followed by [GROUP BY key columns] and [aggregate result columns].
+   * Each entry is [tableId=0][schemaVersion=0][AttrHeader][data...].
+   * Shared by cteLookupAggFeed (downstream agg feed) and the filter
+   * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation). */
+  void buildCteLinkedBuffer(const JoinAggInterpreter *interp,
+                            const char *groupData, Uint32 keyLen,
+                            const Uint32 *attrInfoBuf, Uint32 attrInfoLen,
+                            Uint32 *outBuf, Uint32 *lenOut);
+
+  /* Outcome of a CTE filter program applied to one virtual group. */
+  enum CteFilterResult {
+    CTE_FILTER_ACCEPT = 0,
+    CTE_FILTER_REJECT = 1,
+    CTE_FILTER_ERROR  = -1
+  };
+
+  /* Run a CTE filter program against a single virtual group row.
+   * Short-circuits for the legacy single-ExitOK stub (interpretLen<=1)
+   * and returns CTE_FILTER_ACCEPT without touching the interpreter.
+   * Otherwise builds the linked-attr buffer via buildCteLinkedBuffer
+   * into cevictBuffer and invokes Dbtup::interpreterFilterCte.
+   * Shared between execCTE_LOOKUP_REQ, cteScanAggFeed, and
+   * cteScanEmitResults — keep the semantics consistent across all
+   * three sites. */
+  CteFilterResult runCteFilter(Signal *signal,
+                               const JoinAggInterpreter *interp,
+                               const char *groupData, Uint32 keyLen,
+                               const Uint32 *cinBuf, Uint32 attrInfoLen);
+
+  void cteLookupAggFeed(Signal* signal, const CteLookupReq &req,
+                        const JoinAggInterpreter *interp,
+                        const char *groupData,
+                        const Uint32 *attrInfoBuf,
+                        Uint32 attrInfoLen);
+  void cteLookupEmitResult(Signal* signal, const CteLookupReq &req,
+                           const JoinAggregationState *state,
+                           const JoinAggInterpreter *interp,
+                           const char *groupData,
+                           const Uint32 *cinBuf, Uint32 attrInfoLen);
+
+  /**
+   * Parameters for emitCteGroupOutput — captures the per-caller differences
+   * between CTE_LOOKUP and CTE_SCAN when walking a final-read section.
+   */
+  struct CteOutputParams {
+    Uint32 transId[2];      // Transaction ID for TRANSID_AI
+    Uint32 flushRef;        // FLUSH_AI target block reference
+    Uint32 flushData;       // FLUSH_AI connect ptr
+    Uint32 residualRef;     // Where to send residual output (after FLUSH_AI)
+    Uint32 residualData;    // Connect ptr for residual
+    Uint32 correlation;     // CORR_FACTOR32/64 tuple correlation value
+    Uint32 corrRootRcvr;    // CORR_FACTOR64 root receiver ID
+    bool useFlushAiFromFinalR;  // true: read flushRef/Data from finalR section
+  };
+  Int32 emitCteGroupOutput(Signal* signal,
+                           const CteOutputParams &params,
+                           const JoinAggInterpreter *interp,
+                           const char *groupData, Uint32 keyLen,
+                           const Uint32 *finalR, Uint32 finalRLen,
+                           Uint32 n_gb_cols, Uint32 n_agg_results,
+                           const AggResItem *accumulators,
+                           Uint32 *outBuf);
+
+  void sendCteLookupRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
+                        Uint32 errorCode, Uint32 correlation,
+                        SectionHandle *handle = nullptr);
+  void execCTE_SCAN_REQ(Signal* signal);
+  /* cinBuf + attrInfoLen carry the AttrInfo section needed to run a
+   * CTE filter program per group.  On the initial CTE_SCAN_REQ the
+   * caller passes the AttrInfo bound into the incoming signal; on a
+   * CONTINUEB resumption within the agg-feed path they are
+   * (nullptr, 0) — see runCteFilter's short-circuit. */
+  /* Release a CteScanIterState pool record and, if populated, free
+   * the cinBufOverflow filter buffer allocated via lc_ndbd_pool_malloc.
+   * Safe to call with stateI == RNIL (no-op). */
+  void releaseCteScanIterState(Uint32 stateI);
+
+  void cteScanAggFeed(Signal* signal, Uint32 aggStateKey,
+                      Uint32 senderRef, Uint32 senderData,
+                      Uint32 joinAggStateKey,
+                      Uint32 iterBucket, const char *iterRaw,
+                      Uint32 groupsSent,
+                      const Uint32 *cinBuf, Uint32 attrInfoLen,
+                      Uint32 aggFeedStateI);
+  void cteScanEmitResults(Signal* signal, const CteScanReq &req,
+                          JoinAggInterpreter *interp,
+                          const Uint32 *finalR, Uint32 finalRLen,
+                          bool haveFinalR, Uint32 scanIterI,
+                          const Uint32 *cinBuf, Uint32 attrInfoLen);
+  bool cteScanShouldEmitScalar(const CteScanReq &req,
+                                const JoinAggInterpreter *interp);
+  void sendScalarRedistributeReq(Signal* signal,
+                                  JoinAggregationState* state,
+                                  JoinAggInterpreter* interp,
+                                  Uint32 ownerNode);
+  void sendCteScanRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
+                      Uint32 errorCode, SectionHandle *handle = nullptr);
+  void execJOIN_AGG_REDISTRIBUTE_REQ(Signal* signal);
+  void execJOIN_AGG_REDISTRIBUTE_CONF(Signal* signal);
+  void execJOIN_AGG_REDISTRIBUTE_REF(Signal* signal);
+  void execJOIN_AGG_FINAL_REP(Signal* signal);
+  void continueJoinAggRedistribute(Signal* signal, Uint32 aggStateKey);
+  void continueRedistQueueDrain(Signal* signal, Uint32 aggStateKey);
+  void processRedistQueue(Signal* signal, JoinAggregationState* state,
+                          Uint32 aggStateKey);
+  void checkCteReady(Signal* signal, JoinAggregationState* state);
+  void abortCteRedistribution(Signal* signal, JoinAggregationState* state,
+                               Uint32 errorCode);
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
                               Uint32 senderRef);
   void continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
@@ -5014,7 +5146,48 @@ public:
   void sendPoolShrink(Uint32 pool_index);
   void shrinkTransientPools(Uint32 pool_index);
 
-  static const Uint32 c_transient_pool_count = 5;
+  /* Per-scan iteration state for CTE_SCAN_REQ.  Allocated on the first
+   * batch, released on EndOfData.
+   *
+   *   - Non-agg (emit) path: pool i-value round-trips through DBSPJ
+   *     (CONF.scanIterI -> REQ.scanIterI) so each concurrent scan has
+   *     its own state.  attrInfoLen stays 0 in this path because
+   *     every CTE_SCAN_REQ re-carries its own AttrInfo section.
+   *
+   *   - Agg-feed path: CONTINUEB (self-signal) can't carry sections,
+   *     so the user's filter program has to survive on the server
+   *     across batches.  On the first call we copy cinBuf into
+   *     cinBufInline (or lc_ndbd_pool_malloc'd cinBufOverflow for
+   *     programs larger than the inline cap) and pass the pool
+   *     i-value through CONTINUEB; continuations resolve the state
+   *     and reuse the copy.
+   *
+   * cinBuf() returns whichever buffer is populated.  Release always
+   * frees cinBufOverflow via lc_ndbd_pool_free() if set. */
+  static constexpr Uint32 CTE_SCAN_FILTER_INLINE_WORDS = 64;
+  struct CteScanIterState {
+    static constexpr Uint32 TYPE_ID = RT_DBLQH_CTE_SCAN_ITER;
+    Uint32 m_magic;
+
+    CteScanIterState() : m_magic(Magic::make(TYPE_ID)) {}
+
+    Uint32  iterBucket;      // Hash table iterator: bucket index
+    char   *iterRaw;         // Hash table iterator: raw entry pointer
+    Uint32  groupsSent;      // Groups sent so far (for CORR_FACTOR ID)
+    Uint32  attrInfoLen;     // Words of filter data (0 = no filter)
+    Uint32  cinBufInline[CTE_SCAN_FILTER_INLINE_WORDS];
+    Uint32 *cinBufOverflow;  // nullptr if attrInfoLen fits inline
+    Uint32  nextPool;
+
+    const Uint32 *cinBuf() const {
+      return cinBufOverflow != nullptr ? cinBufOverflow : cinBufInline;
+    }
+  };
+  static constexpr Uint32 DBLQH_CTE_SCAN_ITER_TRANSIENT_POOL_INDEX = 5;
+  typedef TransientPool<CteScanIterState> CteScanIterState_pool;
+  CteScanIterState_pool c_cteScanIterStatePool;
+
+  static const Uint32 c_transient_pool_count = 6;
   TransientFastSlotPool* c_transient_pools[c_transient_pool_count];
   Bitmask<1> c_transient_pools_shrinking;
 

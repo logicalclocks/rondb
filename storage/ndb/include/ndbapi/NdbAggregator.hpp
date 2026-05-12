@@ -54,6 +54,7 @@ enum NdbAggregatorError {
   kErrTooManyGroupbyCols,
   kErrEmptyAggResult,
   kErrTooManyAggResult,
+  kErrUnsupportedStringOperation,
   kErrMaxErrno
 };
 
@@ -71,6 +72,7 @@ static AggregationError g_errors_[] = {
   {kErrTooManyGroupbyCols, "Number of group by columns should be less than 128"},
   {kErrEmptyAggResult, "Empty aggregation"},
   {kErrTooManyAggResult, "Number of aggregation results should be less than 256"},
+  {kErrUnsupportedStringOperation, "String columns are only supported for MIN/MAX"},
   {kErrMaxErrno, ""}
 };
 
@@ -189,6 +191,26 @@ class NdbAggregator {
       return data_.val_double;
     }
 
+    // Phase I.6 (F.2-K.5d-3): payload of a string MIN/MAX result.
+    // Decodes the local val_ptr buffer set up by NdbAggregator's
+    // resolveStringSlots: `[Uint16 payload_len][Uint16 capacity]
+    // [prefix_bytes + payload]`.  Returns a pointer to the payload
+    // bytes (past the wire-format prefix) and writes the payload
+    // length to *payload_len.  Valid only when type() is one of
+    // Char / Varchar / Longvarchar AND is_null() is false.
+    const char* data_str(Uint32* payload_len) {
+      const char* buf = static_cast<const char*>(data_.val_ptr);
+      const Uint16 plen = *reinterpret_cast<const Uint16*>(buf);
+      const Uint32 prefix =
+          (type_ == NdbDictionary::Column::Char)        ? 0
+        : (type_ == NdbDictionary::Column::Varchar)     ? 1
+        : 2;  // Longvarchar
+      if (payload_len != nullptr) {
+        *payload_len = plen;
+      }
+      return buf + 4 + prefix;
+    }
+
    private:
     NdbDictionary::Column::Type type_;
     bool is_null_;
@@ -262,10 +284,15 @@ class NdbAggregator {
    */
   void initForResults(const Uint32 *programBuffer, Uint32 programLen,
                       const NdbDictionary::Column *const *gbColumns = nullptr,
-                      Uint32 nGbColumns = 0);
+                      Uint32 nGbColumns = 0,
+                      const NdbDictionary::Column *const *aggColumns = nullptr,
+                      Uint32 nAggColumns = 0);
 
   const NdbDictionary::Column *const *gb_columns() const {
     return gb_columns_;
+  }
+  const NdbDictionary::Column *const *agg_columns() const {
+    return agg_columns_;
   }
 
   Int32 ProcessRes(char* buf);
@@ -298,19 +325,8 @@ class NdbAggregator {
   bool EmbeddedInterp(Uint32 embedded_length);
   bool EmitEmbeddedWord(Uint32 word);
   bool Skip(Uint32 skip_count);
+  bool SetRegNull(Uint32 reg_id);
   bool RepeatAgg(Uint32 agg_id, Uint32 reg_id);
-
-  // Register-to-register comparison with conditional skip.
-  // Skips skip_count instructions if the condition is true.
-  // Used for cross-table inner filters: load outer column into reg_a
-  // via LoadLinkedColumn, inner column into reg_b via LoadColumn,
-  // then BranchRegXx to skip aggregation when filter doesn't match.
-  bool BranchRegLt(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
-  bool BranchRegLe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
-  bool BranchRegGt(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
-  bool BranchRegGe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
-  bool BranchRegEq(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
-  bool BranchRegNe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count);
 
   bool Finalize();
 
@@ -370,6 +386,15 @@ class NdbAggregator {
 
  private:
   bool TypeSupported(NdbDictionary::Column::Type type);
+  bool isStringType(Uint32 type) const;
+  void clearStringSlot(AggResItem *slot) const;
+  void assignStringSlot(AggResItem *dst, const AggResItem *src) const;
+  int compareStringSlots(const AggResItem *lhs,
+                         const AggResItem *rhs,
+                         Uint32 agg_id) const;
+  void mergeStringSlot(AggResItem *dst,
+                       const AggResItem *src,
+                       Uint32 agg_id);
   const NdbTableImpl* table_impl_;
   Uint32 buffer_[MAX_VEC_SEARCH_PROGRAM_WORD_SIZE];
 
@@ -380,6 +405,9 @@ class NdbAggregator {
    * side and transferred through NdbQueryOptions to the result-side
    * aggregator via initForResults(). */
   const NdbDictionary::Column *gb_columns_[MAX_AGG_N_GROUPBY_COLS];
+  const NdbDictionary::Column *reg_columns_[kRegTotal];
+  const NdbDictionary::Column *agg_columns_[MAX_AGG_N_RESULTS];
+  Uint32 reg_types_[kRegTotal];
 
   Uint32 n_gb_cols_;
   Uint32 gb_col_ids_[MAX_AGG_N_GROUPBY_COLS];
@@ -388,6 +416,22 @@ class NdbAggregator {
   AggResItem* agg_results_;
   Uint32 agg_ops_[MAX_AGG_N_RESULTS];
   std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* gb_map_;
+
+  // Phase I.6 (F.2-K.5d): for AGG_CHAR_RESULT wire results, walk the
+  // appended string-payload region and replace each string slot's
+  // val_ptr (zero on the wire) with a freshly-allocated local buffer
+  // mirroring the kernel layout `[Uint16 payload_len][Uint16
+  // capacity][prefix+payload]`.  The buffer is owned by the
+  // aggregator and freed by freeStringSlots when the slot's group
+  // is released (destructor).
+  static void resolveStringSlots(AggResItem* slots, Uint32 n_slots,
+                                  const char* appended_region);
+
+  // Phase I.6 (F.2-K.5d): release string val_ptr buffers attached to
+  // a slot array (scalar agg_results_ or one group's AggResItem
+  // array within an agg_rec block).  Cheap no-op for non-string
+  // slots and null string slots.
+  static void freeStringSlots(AggResItem* slots, Uint32 n_slots);
 
   bool finalized_;
   bool finished_;

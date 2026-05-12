@@ -122,12 +122,22 @@ NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
     memset(agg_ops_, kOpUnknown, MAX_AGGREGATION_OP_SIZE * 4);
     vec_result_final_.clear();
     memset(gb_columns_, 0, sizeof(gb_columns_));
+    memset(reg_columns_, 0, sizeof(reg_columns_));
+    memset(agg_columns_, 0, sizeof(agg_columns_));
+    memset(reg_types_, NDB_TYPE_UNDEFINED, sizeof(reg_types_));
 }
 
 NdbAggregator::~NdbAggregator() {
+  // Phase I.6 (F.2-K.5d): release any string MIN/MAX val_ptr buffers
+  // owned by this aggregator before tearing down the slot arrays.
+  if (agg_results_ != nullptr) {
+    freeStringSlots(agg_results_, n_agg_results_);
+  }
   delete[] agg_results_;
   if (gb_map_) {
     for (auto iter = gb_map_->begin(); iter != gb_map_->end(); iter++) {
+      AggResItem* slots = reinterpret_cast<AggResItem*>(iter->second.ptr);
+      freeStringSlots(slots, n_agg_results_);
       delete[] iter->first.ptr;
     }
     delete gb_map_;
@@ -147,7 +157,9 @@ NdbAggregator::~NdbAggregator() {
 void NdbAggregator::initForResults(const Uint32 *programBuffer,
                                    Uint32 programLen,
                                    const NdbDictionary::Column *const *gbColumns,
-                                   Uint32 nGbColumns) {
+                                   Uint32 nGbColumns,
+                                   const NdbDictionary::Column *const *aggColumns,
+                                   Uint32 nAggColumns) {
   assert(programLen >= PROGRAM_HEADER_SIZE);
   // Word 1: (n_gb_cols << 16) | n_agg_results
   n_gb_cols_ = programBuffer[1] >> 16;
@@ -176,6 +188,14 @@ void NdbAggregator::initForResults(const Uint32 *programBuffer,
       gb_columns_[i] = gbColumns[i];
     }
   }
+  memset(reg_columns_, 0, sizeof(reg_columns_));
+  memset(agg_columns_, 0, sizeof(agg_columns_));
+  memset(reg_types_, NDB_TYPE_UNDEFINED, sizeof(reg_types_));
+  if (aggColumns != nullptr) {
+    for (Uint32 i = 0; i < nAggColumns && i < MAX_AGG_N_RESULTS; i++) {
+      agg_columns_[i] = aggColumns[i];
+    }
+  }
 
   // Parse instructions to extract agg_ops for COUNT null→0 fixup.
   // Instructions start at PROGRAM_HEADER_SIZE + n_gb_cols_.
@@ -194,6 +214,107 @@ void NdbAggregator::initForResults(const Uint32 *programBuffer,
   }
 
   finalized_ = true;
+}
+
+void NdbAggregator::resolveStringSlots(AggResItem* slots, Uint32 n_slots,
+                                        const char* appended_region) {
+  const char* p = appended_region;
+  for (Uint32 i = 0; i < n_slots; i++) {
+    Uint32 t = slots[i].type;
+    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+         t == NDB_TYPE_LONGVARCHAR) && !slots[i].is_null) {
+      const Uint32 byte_size = *reinterpret_cast<const Uint32*>(p);
+      p += sizeof(Uint32);
+      const Uint32 prefix = (t == NDB_TYPE_CHAR) ? 0
+                          : (t == NDB_TYPE_VARCHAR) ? 1 : 2;
+      // Mirror the kernel layout so data_str() can decode the same
+      // way: [Uint16 payload_len][Uint16 capacity][prefix+payload],
+      // total alloc rounded to a multiple of 16 (min 16).
+      Uint32 alloc_size = (4 + byte_size + 15) & ~15U;
+      if (alloc_size < 16) alloc_size = 16;
+      char* dst = new char[alloc_size];
+      Uint16* hdr = reinterpret_cast<Uint16*>(dst);
+      hdr[0] = static_cast<Uint16>(byte_size - prefix);  // payload_len
+      hdr[1] = static_cast<Uint16>(alloc_size - 4);      // capacity
+      memcpy(dst + 4, p, byte_size);
+      slots[i].value.val_ptr = dst;
+      // Advance past the Uint32-padded payload.
+      p += (byte_size + 3) & ~3U;
+    }
+  }
+}
+
+void NdbAggregator::freeStringSlots(AggResItem* slots, Uint32 n_slots) {
+  for (Uint32 i = 0; i < n_slots; i++) {
+    Uint32 t = slots[i].type;
+    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+         t == NDB_TYPE_LONGVARCHAR) &&
+        slots[i].value.val_ptr != nullptr) {
+      delete[] static_cast<char*>(slots[i].value.val_ptr);
+    }
+  }
+}
+
+bool NdbAggregator::isStringType(Uint32 type) const {
+  return type == NDB_TYPE_CHAR ||
+         type == NDB_TYPE_VARCHAR ||
+         type == NDB_TYPE_LONGVARCHAR;
+}
+
+void NdbAggregator::clearStringSlot(AggResItem *slot) const {
+  if (slot != nullptr && isStringType(slot->type) &&
+      slot->value.val_ptr != nullptr) {
+    delete[] static_cast<char*>(slot->value.val_ptr);
+    slot->value.val_ptr = nullptr;
+  }
+}
+
+void NdbAggregator::assignStringSlot(AggResItem *dst,
+                                     const AggResItem *src) const {
+  clearStringSlot(dst);
+  *dst = *src;
+}
+
+int NdbAggregator::compareStringSlots(const AggResItem *lhs,
+                                      const AggResItem *rhs,
+                                      Uint32 agg_id) const {
+  const NdbDictionary::Column *col =
+      (agg_id < MAX_AGG_N_RESULTS) ? agg_columns_[agg_id] : nullptr;
+  assert(col != nullptr);
+  const char *lhs_buf = static_cast<const char*>(lhs->value.val_ptr);
+  const char *rhs_buf = static_cast<const char*>(rhs->value.val_ptr);
+  const Uint16 lhs_payload_len =
+      *reinterpret_cast<const Uint16*>(lhs_buf);
+  const Uint16 rhs_payload_len =
+      *reinterpret_cast<const Uint16*>(rhs_buf);
+  const Uint32 prefix = (lhs->type == NDB_TYPE_CHAR) ? 0 :
+                        (lhs->type == NDB_TYPE_VARCHAR) ? 1 : 2;
+  const Uint32 lhs_len = prefix + lhs_payload_len;
+  const Uint32 rhs_len = prefix + rhs_payload_len;
+  const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(lhs->type);
+  return (*sqlType.m_cmp)(col->getCharset(),
+                          lhs_buf + 4, lhs_len,
+                          rhs_buf + 4, rhs_len);
+}
+
+void NdbAggregator::mergeStringSlot(AggResItem *dst,
+                                    const AggResItem *src,
+                                    Uint32 agg_id) {
+  if (src->type == NDB_TYPE_UNDEFINED || src->is_null) {
+    return;
+  }
+  if (dst->type == NDB_TYPE_UNDEFINED || dst->is_null) {
+    assignStringSlot(dst, src);
+    return;
+  }
+  const int cmp = compareStringSlots(src, dst, agg_id);
+  const Uint32 op = agg_ops_[agg_id];
+  const bool isMax =
+      op == kOpMax || op == kOpMaxBigint || op == kOpMaxDouble;
+  const bool replace = isMax ? (cmp > 0) : (cmp < 0);
+  if (replace) {
+    assignStringSlot(dst, src);
+  }
 }
 
 Int32 NdbAggregator::ProcessRes(char* buf) {
@@ -223,6 +344,18 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
   assert(buf != nullptr);
   Uint32 parse_pos = 0;
   const Uint32* data_buf = (const Uint32*)buf;
+
+  // Phase I.6 (F.2-K.5d): peek the marker word.  AGG_RESULT means
+  // raw AggResItem arrays (today's format).  AGG_CHAR_RESULT means
+  // each per-group AggResItem array is followed by an appended
+  // string-payload region; resolve those into local val_ptr buffers
+  // before the merge code reads slot values.
+  AttributeHeader marker_ah(data_buf[parse_pos++]);
+  const Uint32 marker_id = marker_ah.getAttributeId();
+  assert(marker_id == AttributeHeader::AGG_RESULT ||
+         marker_id == AttributeHeader::AGG_CHAR_RESULT);
+  const bool wire_has_strings =
+      (marker_id == AttributeHeader::AGG_CHAR_RESULT);
 
   Uint32 n_gb_cols = data_buf[parse_pos] >> 16;
   Uint32 n_agg_results = data_buf[parse_pos++] & 0xFFFF;
@@ -255,12 +388,27 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         //     header->getDataSize(), header->isNULL());
         need_merge = true;
       } else {
-        assert(n_agg_results * sizeof(AggResItem) == agg_res_len);
+        // For AGG_CHAR_RESULT, agg_res_len includes both the
+        // AggResItem array and the appended string-payload region.
+        assert(wire_has_strings ||
+               n_agg_results * sizeof(AggResItem) == agg_res_len);
         agg_rec = new char[gb_cols_len + agg_res_len];
         memcpy(agg_rec, reinterpret_cast<const char*>(&data_buf[parse_pos]),
             gb_cols_len + agg_res_len);
+        const Uint32 agg_array_len = n_agg_results * sizeof(AggResItem);
         GBHashEntry new_entry{agg_rec, gb_cols_len};
-        GBHashEntry new_aggs{agg_rec + gb_cols_len, agg_res_len};
+        GBHashEntry new_aggs{agg_rec + gb_cols_len, agg_array_len};
+
+        // Phase I.6 (F.2-K.5d): replace each string slot's wire
+        // val_ptr (zero) with a freshly-allocated local buffer
+        // mirroring the kernel layout.  The appended region within
+        // agg_rec is read once and then unused — the live winner
+        // bytes live in the per-slot allocation.
+        if (wire_has_strings) {
+          AggResItem* slots = reinterpret_cast<AggResItem*>(new_aggs.ptr);
+          const char* appended = new_aggs.ptr + agg_array_len;
+          resolveStringSlots(slots, n_agg_results, appended);
+        }
 
         // RONDB-831: COUNT() over zero rows should result in 0, not NULL.
         // Therefore, replace NULLs/UNDEFINED with 0 for all COUNT results.
@@ -278,13 +426,26 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
 
         gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
               new_entry, new_aggs));
-        agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + agg_res_len);
+        agg_res_ptr = reinterpret_cast<AggResItem*>(new_aggs.ptr);
       }
       DEB_TRACE();
 
-      assert(agg_res_len == n_agg_results * sizeof(AggResItem));
+      // For AGG_CHAR_RESULT, agg_res_len includes the appended
+      // string-payload region; the array is still n_agg_results × 16
+      // bytes at the start.
+      assert(wire_has_strings ||
+             agg_res_len == n_agg_results * sizeof(AggResItem));
       const AggResItem* res = reinterpret_cast<const AggResItem*>(
                            &data_buf[parse_pos + (gb_cols_len >> 2)]);
+      AggResItem local_res[MAX_AGG_N_RESULTS];
+      if (need_merge && wire_has_strings) {
+        memcpy(local_res, res, n_agg_results * sizeof(AggResItem));
+        const Uint32 agg_array_len = n_agg_results * sizeof(AggResItem);
+        const char* appended =
+            reinterpret_cast<const char*>(res) + agg_array_len;
+        resolveStringSlots(local_res, n_agg_results, appended);
+        res = local_res;
+      }
       if (need_merge) {
         DEB_TRACE();
         for (Uint32 i = 0; i < n_agg_results; i++) {
@@ -292,6 +453,10 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
           // Handle NDB_TYPE_UNDEFINED and NULL cases before merging.
           // Mirrors kernel mergeAccumulators() logic.
           if (res[i].type == NDB_TYPE_UNDEFINED) {
+            continue;
+          }
+          if (isStringType(res[i].type)) {
+            mergeStringSlot(&agg_res_ptr[i], &res[i], i);
             continue;
           }
           if (agg_res_ptr[i].type == NDB_TYPE_UNDEFINED) {
@@ -381,6 +546,18 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
             }
           }
         }
+        if (wire_has_strings) {
+          for (Uint32 i = 0; i < n_agg_results; i++) {
+            Uint32 t = local_res[i].type;
+            if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+                 t == NDB_TYPE_LONGVARCHAR) &&
+                local_res[i].value.val_ptr != nullptr &&
+                local_res[i].value.val_ptr !=
+                    agg_res_ptr[i].value.val_ptr) {
+              delete[] static_cast<char*>(local_res[i].value.val_ptr);
+            }
+          }
+        }
       }
 #if defined(PA_CHECK) && !defined(NDEBUG)
       {
@@ -420,22 +597,53 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
     assert(gb_cols_len == 0);
     // Get rid of warning in release-binary
     (void)gb_cols_len;
-    assert(agg_res_len == n_agg_results_ * sizeof(AggResItem));
+    // For AGG_CHAR_RESULT, agg_res_len includes the appended
+    // string-payload region after the AggResItem array.
+    assert(wire_has_strings ||
+           agg_res_len == n_agg_results_ * sizeof(AggResItem));
     assert(agg_results_ != nullptr);
     AggResItem* agg_res_ptr = agg_results_;
     const AggResItem* res = reinterpret_cast<const AggResItem*>(
                          &data_buf[parse_pos/* + (gb_cols_len >> 2)*/]);
+
+    // Phase I.6 (F.2-K.5d): for AGG_CHAR_RESULT, deep-copy res to a
+    // local buffer and fix up each string slot's val_ptr (zero on
+    // the wire) to point to a freshly-allocated local buffer.  The
+    // first-contribution merge step (`agg_res_ptr[i] = res[i]` when
+    // agg_res_ptr is_null/UNDEFINED) then transfers ownership of the
+    // val_ptr to agg_results_; any val_ptrs that were not transferred
+    // are released after the loop.  Multi-source string MIN/MAX
+    // merge (when both sides are non-null) is K.5d-2.
+    AggResItem local_res[MAX_AGG_N_RESULTS];
+    if (wire_has_strings) {
+      memcpy(local_res, res, n_agg_results_ * sizeof(AggResItem));
+      const Uint32 array_bytes = n_agg_results_ * sizeof(AggResItem);
+      const char* appended =
+          reinterpret_cast<const char*>(res) + array_bytes;
+      resolveStringSlots(local_res, n_agg_results_, appended);
+      res = local_res;
+    }
+
     for (Uint32 i = 0; i < n_agg_results; i++) {
       DEB_TRACE();
+      // Phase I.6: allow CHAR / VARCHAR / Longvarchar through the
+      // per-slot type check and merge them with charset-aware compare.
+      const bool is_string_type =
+          (res[i].type == NDB_TYPE_CHAR ||
+           res[i].type == NDB_TYPE_VARCHAR ||
+           res[i].type == NDB_TYPE_LONGVARCHAR);
       assert((((res[i].type == NDB_TYPE_BIGINT &&
               (res[i].is_unsigned == agg_res_ptr[i].is_unsigned ||
                agg_res_ptr[i].is_null)) ||
-              res[i].type == NDB_TYPE_DOUBLE) &&
+              res[i].type == NDB_TYPE_DOUBLE ||
+              is_string_type) &&
               res[i].type == agg_res_ptr[i].type) ||
               agg_res_ptr[i].type == NDB_TYPE_UNDEFINED ||
               (res[i].type == NDB_TYPE_UNDEFINED &&
                n_gb_cols == 0));
-      if (res[i].is_null) {
+      if (is_string_type) {
+        mergeStringSlot(&agg_res_ptr[i], &res[i], i);
+      } else if (res[i].is_null) {
         DEB_TRACE();
       } else if (agg_res_ptr[i].is_null) {
         DEB_TRACE();
@@ -509,6 +717,23 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         }
       }
     }
+    // Phase I.6 (F.2-K.5d): release any string val_ptr buffers in
+    // local_res that were not transferred into agg_results_.  A
+    // first-contribution slot has its val_ptr handed off via
+    // `agg_res_ptr[i] = res[i]`; for those, the pointers compare
+    // equal and we keep them.
+    if (wire_has_strings) {
+      for (Uint32 i = 0; i < n_agg_results; i++) {
+        Uint32 t = local_res[i].type;
+        if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+             t == NDB_TYPE_LONGVARCHAR) &&
+            local_res[i].value.val_ptr != nullptr &&
+            local_res[i].value.val_ptr !=
+                agg_res_ptr[i].value.val_ptr) {
+          delete[] static_cast<char*>(local_res[i].value.val_ptr);
+        }
+      }
+    }
     DEB_TRACE();
     parse_pos += ((/*gb_cols_len + */agg_res_len) >> 2);
   }
@@ -532,6 +757,14 @@ bool NdbAggregator::TypeSupported(NdbDictionary::Column::Type type) {
     case NdbDictionary::Column::Double:
     case NdbDictionary::Column::Decimal:
     case NdbDictionary::Column::Decimalunsigned:
+    // Phase I.6 (F.2 + F.3): kernel-side MIN/MAX over CHAR / VARCHAR /
+    // Longvarchar is wired via the AggResItem.value.val_ptr per-(group,
+    // slot) state and the AGG_CHAR_RESULT wire format.  LoadColumn /
+    // Max / Min on these types are accepted; LoadColumn-then-Sum is
+    // still a kernel-side error (no Sum-over-string semantics).
+    case NdbDictionary::Column::Char:
+    case NdbDictionary::Column::Varchar:
+    case NdbDictionary::Column::Longvarchar:
       return true;
     default:
       return false;
@@ -568,6 +801,8 @@ bool NdbAggregator::LoadColumn(const char* name, Uint32 reg_id) {
     (type & 0x1F) << 21 |
     (reg_id & 0x0F) << 16 |
     col_id;
+  reg_columns_[reg_id] = col;
+  reg_types_[reg_id] = type;
 
   /*
    * For decimal, use 1 more byte to take precision/scale
@@ -612,6 +847,8 @@ bool NdbAggregator::LoadColumn(Int32 col_id, Uint32 reg_id) {
     (type & 0x1F) << 21 |
     (reg_id & 0x0F) << 16 |
     col_id;
+  reg_columns_[reg_id] = col;
+  reg_types_[reg_id] = type;
   /*
    * For decimal, use 1 more byte to take precision/scale
    * info.
@@ -652,6 +889,8 @@ bool NdbAggregator::LoadLinkedColumn(Uint32 position, Uint32 reg_id,
     (type & 0x1F) << 21 |
     (reg_id & 0x0F) << 16 |
     col_id;
+  reg_columns_[reg_id] = col;
+  reg_types_[reg_id] = type;
 
   if (type == NdbDictionary::Column::Decimal ||
       type == NdbDictionary::Column::Decimalunsigned) {
@@ -674,6 +913,8 @@ bool NdbAggregator::LoadUint64(Uint64 value, Uint32 reg_id) {
   int8store(reinterpret_cast<char*>(&buffer_[curr_prog_pos_]),
               value);
   curr_prog_pos_ += 2;
+  reg_columns_[reg_id] = nullptr;
+  reg_types_[reg_id] = NDB_TYPE_BIGUNSIGNED;
   return true;
 }
 
@@ -686,6 +927,8 @@ bool NdbAggregator::LoadInt64(Int64 value, Uint32 reg_id) {
   int8store(reinterpret_cast<char*>(&buffer_[curr_prog_pos_]),
               value);
   curr_prog_pos_ += 2;
+  reg_columns_[reg_id] = nullptr;
+  reg_types_[reg_id] = NDB_TYPE_BIGINT;
   return true;
 }
 
@@ -698,6 +941,8 @@ bool NdbAggregator::LoadDouble(double value, Uint32 reg_id) {
   float8store(reinterpret_cast<char*>(&buffer_[curr_prog_pos_]),
               value);
   curr_prog_pos_ += 2;
+  reg_columns_[reg_id] = nullptr;
+  reg_types_[reg_id] = NDB_TYPE_DOUBLE;
   return true;
 }
 
@@ -718,6 +963,8 @@ bool NdbAggregator::Mov(Uint32 reg_1, Uint32 reg_2) {
     (kOpMov) << 26 |
     (reg_1 & 0x0F) << 12 |
     (reg_2 & 0x0F) << 8;
+  reg_columns_[reg_1] = reg_columns_[reg_2];
+  reg_types_[reg_1] = reg_types_[reg_2];
 
   return true;
 }
@@ -814,6 +1061,10 @@ bool NdbAggregator::Sum(Uint32 agg_id, Uint32 reg_id) {
   if (!CheckAggAndReg(agg_id, reg_id)) {
     return false;
   }
+  if (isStringType(reg_types_[reg_id])) {
+    SetError(kErrUnsupportedStringOperation);
+    return false;
+  }
 
   buffer_[curr_prog_pos_++] =
     (kOpSum) << 26 |
@@ -837,6 +1088,7 @@ bool NdbAggregator::Max(Uint32 agg_id, Uint32 reg_id) {
     agg_id;
 
   agg_ops_[agg_id] = kOpMax;
+  agg_columns_[agg_id] = reg_columns_[reg_id];
   n_agg_results_++;
 
   return true;
@@ -853,6 +1105,7 @@ bool NdbAggregator::Min(Uint32 agg_id, Uint32 reg_id) {
     agg_id;
 
   agg_ops_[agg_id] = kOpMin;
+  agg_columns_[agg_id] = reg_columns_[reg_id];
   n_agg_results_++;
 
   return true;
@@ -920,11 +1173,13 @@ bool NdbAggregator::GroupBy(Int32 col_id) {
     SetError(kErrInvalidColumnId);
     return false;
   }
-  NdbDictionary::Column::Type type = col->getType();
-  if (type == NdbDictionary::Column::Blob ||
-      type == NdbDictionary::Column::Text) {
-    SetError(kErrUnSupportedColumn);
-    return false;
+  if (col != nullptr) {
+    NdbDictionary::Column::Type type = col->getType();
+    if (type == NdbDictionary::Column::Blob ||
+        type == NdbDictionary::Column::Text) {
+      SetError(kErrUnSupportedColumn);
+      return false;
+    }
   }
 
   buffer_[curr_prog_pos_++] = col_id << 16;
@@ -984,45 +1239,13 @@ bool NdbAggregator::Skip(Uint32 skip_count) {
   return true;
 }
 
-bool NdbAggregator::BranchRegLt(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count) {
+bool NdbAggregator::SetRegNull(Uint32 reg_id) {
+  if (reg_id >= kRegTotal) {
+    SetError(kErrInvalidRegNo);
+    return false;
+  }
   buffer_[curr_prog_pos_++] =
-      (kOpBranchRegLt << 26) | ((reg_a & 0x0F) << 20) |
-      ((reg_b & 0x0F) << 16) | (skip_count & 0xFFFF);
-  return true;
-}
-
-bool NdbAggregator::BranchRegLe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count) {
-  buffer_[curr_prog_pos_++] =
-      (kOpBranchRegLe << 26) | ((reg_a & 0x0F) << 20) |
-      ((reg_b & 0x0F) << 16) | (skip_count & 0xFFFF);
-  return true;
-}
-
-bool NdbAggregator::BranchRegGt(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count) {
-  buffer_[curr_prog_pos_++] =
-      (kOpBranchRegGt << 26) | ((reg_a & 0x0F) << 20) |
-      ((reg_b & 0x0F) << 16) | (skip_count & 0xFFFF);
-  return true;
-}
-
-bool NdbAggregator::BranchRegGe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count) {
-  buffer_[curr_prog_pos_++] =
-      (kOpBranchRegGe << 26) | ((reg_a & 0x0F) << 20) |
-      ((reg_b & 0x0F) << 16) | (skip_count & 0xFFFF);
-  return true;
-}
-
-bool NdbAggregator::BranchRegEq(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count) {
-  buffer_[curr_prog_pos_++] =
-      (kOpBranchRegEq << 26) | ((reg_a & 0x0F) << 20) |
-      ((reg_b & 0x0F) << 16) | (skip_count & 0xFFFF);
-  return true;
-}
-
-bool NdbAggregator::BranchRegNe(Uint32 reg_a, Uint32 reg_b, Uint32 skip_count) {
-  buffer_[curr_prog_pos_++] =
-      (kOpBranchRegNe << 26) | ((reg_a & 0x0F) << 20) |
-      ((reg_b & 0x0F) << 16) | (skip_count & 0xFFFF);
+      (kOpSetRegNull << 26) | ((reg_id & 0x0F) << 16);
   return true;
 }
 

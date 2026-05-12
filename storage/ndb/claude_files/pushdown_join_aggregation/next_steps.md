@@ -476,3 +476,25 @@ JOIN reviews r ON VECTOR_SEARCH(r.embedding, p.query_vector, 10);
 For very large joins (millions of leaf rows), the 32-bit rowsExamined
 counter may overflow. Extend SCAN_FRAGCONF with version-gated
 SignalLength_v3 carrying the upper 32 bits.
+
+### 6. CTE outer-join remaining shapes (Priority: Low)
+
+One outer-join shape remains deferred from the CTE outer-join branch
+(`cte_outer_join_plan.md`):
+
+**6a. CTE_LOOKUP agg-feed NULL injection.** SHIPPED in commit
+`47d81b43903` (Phase 5 / `cte_outer_join_phase_5.md`). The REF-time
+injection approach taken there is simpler than the
+`T_BUFFER_MATCH` + match-bit-sweep approach originally sketched here:
+each `CTE_LOOKUP_REF(GROUP_NOT_FOUND)` uniquely identifies one
+unmatched parent via the correlation already echoed in the REF
+signal (Phase 1 extension), so we only need
+`T_BUFFER_ROW | T_BUFFER_MAP` on the scan ancestor + one
+`getBufferedRow` + `sendJoinAggNullRow` call per REF. Verified by
+Test 5 in `testCteNdbApiOuterJoin.cpp`.
+
+**6b. CTE_SCAN as outer-join child.**
+Rare SQL shape (cross-join + NULL-fill-if-empty). Dropped from this
+branch; design notes in `cte_outer_join_phase_3.md`. Requires a new
+`cte_scan_parent_row` handler, per-parent state tracking, and a
+per-scan match-bit sweep.

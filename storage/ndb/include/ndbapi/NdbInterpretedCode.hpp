@@ -207,6 +207,9 @@ class NdbInterpretedCode {
   int load_const_u16(Uint32 RegDest, Uint32 Constant);
   int load_const_u32(Uint32 RegDest, Uint32 Constant);
   int load_const_u64(Uint32 RegDest, Uint64 Constant);
+  /* Phase I.18: load IEEE-754 double immediate, marks register
+   * REG_TYPE_DOUBLE.  3-word instruction (opcode + 2 data words). */
+  int load_double_const(Uint32 RegDest, double Constant);
   /**
    * Load operation type into a register
    * -----------------------------------
@@ -610,6 +613,13 @@ class NdbInterpretedCode {
   int write_uint32_reg_to_mem_reg(Uint32 RegSource, Uint32 RegOffset);
   int write_int64_reg_to_mem_reg(Uint32 RegSource, Uint32 RegOffset);
 
+  /* Type-agnostic 8-byte register-to-memory write (Phase I.18).
+   * Strict-typed writers above reject non-matching source types;
+   * this opcode copies the register's 64-bit slot verbatim regardless
+   * of REG_TYPE_INT / REG_TYPE_UINT / REG_TYPE_DOUBLE.  NULL source
+   * is rejected at runtime. */
+  int write_reg_to_mem_any_const(Uint32 RegSource, Uint16 memory_offset);
+
   /**
    * Library functions
    */
@@ -868,6 +878,149 @@ class NdbInterpretedCode {
 
   int branch_col_eq_null(Uint32 attrId, Uint32 label);
   int branch_col_ne_null(Uint32 attrId, Uint32 label);
+
+  /* Conditional branches on a linked (virtual) column for CTE filters.
+   * Used by filters attached to lookupCte() / scanCte() operations,
+   * where the filtered "row" is the CTE's projected columns
+   * materialised in the interpreter's linked-attr buffer rather than
+   * a real stored tuple.
+   *
+   * Emits a two-instruction sequence:
+   *   READ_LINKED_TO_MEM  — loads entry `position` of the linked-attr
+   *                         buffer into the interpreter's memory.
+   *   BRANCH_MEM_OP_ARG   — compares memory against the inline `val`
+   *                         using the source column's
+   *                         type/charset, branching to `label` on
+   *                         the chosen predicate.
+   *
+   * `position` is the zero-based index in the linked-attr buffer
+   * constructed by DBLQH (see Dblqh::buildCteLinkedBuffer): for a
+   * CTE lookup/scan used as the root of a query the layout is
+   *   [GROUP BY key columns ...] [aggregate result columns ...]
+   * so position = attrId of the virtual CTE column.
+   *
+   * `sourceTable` and `sourceAttrId` identify the source column used
+   * for server-side type/charset lookup: the CTE's source table +
+   * underlying attrId for GB keys / aggregate results, or the parent
+   * table + attrId for a linked parent-row column.
+   *
+   * Inequality branches follow the project-wide inverted-semantics
+   * convention (see CLAUDE.md):
+   *   branch_linked_mem_le branches when col >= val
+   *   branch_linked_mem_ge branches when col <= val
+   *   branch_linked_mem_lt branches when col >  val
+   *   branch_linked_mem_gt branches when col <  val
+   * Equality (eq / ne) is NOT inverted.
+   */
+  int branch_linked_mem_eq(Uint32 position,
+                           const NdbDictionary::Table *sourceTable,
+                           Uint32 sourceAttrId,
+                           const void *val, Uint32 len, Uint32 label);
+  int branch_linked_mem_ne(Uint32 position,
+                           const NdbDictionary::Table *sourceTable,
+                           Uint32 sourceAttrId,
+                           const void *val, Uint32 len, Uint32 label);
+  int branch_linked_mem_lt(Uint32 position,
+                           const NdbDictionary::Table *sourceTable,
+                           Uint32 sourceAttrId,
+                           const void *val, Uint32 len, Uint32 label);
+  int branch_linked_mem_le(Uint32 position,
+                           const NdbDictionary::Table *sourceTable,
+                           Uint32 sourceAttrId,
+                           const void *val, Uint32 len, Uint32 label);
+  int branch_linked_mem_gt(Uint32 position,
+                           const NdbDictionary::Table *sourceTable,
+                           Uint32 sourceAttrId,
+                           const void *val, Uint32 len, Uint32 label);
+  int branch_linked_mem_ge(Uint32 position,
+                           const NdbDictionary::Table *sourceTable,
+                           Uint32 sourceAttrId,
+                           const void *val, Uint32 len, Uint32 label);
+
+  /*
+   * branch_linked_inline_*: like branch_linked_mem_* but the source
+   * column descriptor is encoded inline in the program rather than
+   * indirected through a registered NDB tableId.  Required when the
+   * compared column is synthesized — e.g. an aggregate result that
+   * does not correspond to any real NDB-registered column.
+   *
+   * Caller passes type info explicitly:
+   *   typeId — an NdbDictionary::Column::Type cast to Uint32.
+   *   columnSizeBytes — the on-wire size of one entry in the linked
+   *     buffer at this position (matches what
+   *     AttributeDescriptor::getSizeInBytes would return on a real
+   *     column).  For 8-byte aggregate results pass 8; for VARCHAR
+   *     include the 1-or-2-byte length prefix.  Must fit in 16 bits.
+   *   csNumber — CHARSET_INFO::number for charset-bearing types,
+   *     0 otherwise.  Must fit in 16 bits.
+   *
+   * Explicit args (rather than an NdbDictionary::Column*) because
+   * synthetic in-memory columns built via setType+setLength leave
+   * m_attrSize at 0, so getSizeInBytes() returns 0 on them — making
+   * a column-descriptor-based API silently broken for the use case
+   * this opcode exists for.
+   *
+   * Server-side: the new opcode BRANCH_MEM_OP_ARG_INLINE_TYPE
+   * resolves the type via NdbSqlUtil::getType(typeId) and the
+   * charset via all_charsets[csNumber] (the kernel charset registry
+   * populated by Dbdict / DbtupMeta), bypassing tablerec[] entirely.
+   *
+   * v1 supports numeric and CHAR/VARCHAR types; rejects DECIMAL
+   * (precision/scale not yet encoded inline) and BLOB/TEXT.
+   *
+   * Inequality semantics follow the project-wide inverted convention
+   * (branch_linked_inline_le branches when col >= val, etc.) — same
+   * as the branch_linked_mem_* family above.
+   */
+  int branch_linked_inline_eq(Uint32 position, Uint32 typeId,
+                              Uint32 columnSizeBytes, Uint32 csNumber,
+                              const void *val, Uint32 len, Uint32 label);
+  int branch_linked_inline_ne(Uint32 position, Uint32 typeId,
+                              Uint32 columnSizeBytes, Uint32 csNumber,
+                              const void *val, Uint32 len, Uint32 label);
+  int branch_linked_inline_lt(Uint32 position, Uint32 typeId,
+                              Uint32 columnSizeBytes, Uint32 csNumber,
+                              const void *val, Uint32 len, Uint32 label);
+  int branch_linked_inline_le(Uint32 position, Uint32 typeId,
+                              Uint32 columnSizeBytes, Uint32 csNumber,
+                              const void *val, Uint32 len, Uint32 label);
+  int branch_linked_inline_gt(Uint32 position, Uint32 typeId,
+                              Uint32 columnSizeBytes, Uint32 csNumber,
+                              const void *val, Uint32 len, Uint32 label);
+  int branch_linked_inline_ge(Uint32 position, Uint32 typeId,
+                              Uint32 columnSizeBytes, Uint32 csNumber,
+                              const void *val, Uint32 len, Uint32 label);
+
+  /*
+   * branch_linked_isnull / branch_linked_isnotnull: branch based on
+   * the AttributeHeader.isNULL() flag of the linked column at
+   * `position` in the linked-attr buffer.  Used by CTE filter mode
+   * for `WHERE col IS NULL` / `WHERE col IS NOT NULL`.  Linked
+   * counterparts of branch_col_eq_null / branch_col_ne_null.
+   *
+   * Emits a 2-instruction sequence:
+   *   READ_LINKED_TO_MEM  — load the entry's AH at position into
+   *                         cheapMemory[0].
+   *   BRANCH_LINKED_EQ_NULL or BRANCH_LINKED_NE_NULL — single-word
+   *                         branch examining the loaded AH's
+   *                         isNULL flag.
+   *
+   * No type info needed — the check is purely on the NULL flag.
+   */
+  int branch_linked_isnull(Uint32 position, Uint32 label);
+  int branch_linked_isnotnull(Uint32 position, Uint32 label);
+
+  /*
+   * Standalone READ_LINKED_TO_MEM emit.  Most callers should reach
+   * for branch_linked_mem_* / branch_linked_inline_* /
+   * branch_linked_isnull which package this with a follow-up branch.
+   * Phase I.3 (column-vs-column on CTE_LOOKUP) needs the load on its
+   * own so two linked-attr buffer entries can be successively staged
+   * in cheapMemory and read into registers via
+   * read_int64_to_reg_const before a register-vs-register branch.
+   * Returns 0 on success, -1 on overflow.
+   */
+  int read_linked_to_mem(Uint32 position);
 
   /*
    * Variants comparing an Attribute from this table with a parameter
@@ -1330,6 +1483,14 @@ class NdbInterpretedCode {
                      Uint32 len, Uint32 label);
   int branch_col_col(Uint32 branch_type, Uint32 attrId1, Uint32 attrId2,
                      Uint32 label);
+  int branch_linked_mem_val(Uint32 branch_type, Uint32 position,
+                            const NdbDictionary::Table *sourceTable,
+                            Uint32 sourceAttrId, const void *val,
+                            Uint32 len, Uint32 label);
+  int branch_linked_inline_val(Uint32 branch_type, Uint32 position,
+                               Uint32 typeId, Uint32 columnSizeBytes,
+                               Uint32 csNumber, const void *val,
+                               Uint32 len, Uint32 label);
   int branch_col_param(Uint32 branch_type, Uint32 attrId, Uint32 paramId,
                        Uint32 label);
   int getInfo(Uint32 number, CodeMetaInfo &info) const;

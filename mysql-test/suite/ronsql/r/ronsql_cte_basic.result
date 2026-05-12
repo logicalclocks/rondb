@@ -1,0 +1,984 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for CTE basic tests ===
+
+
+
+=== Test 1: CTE as main aggregation leaf (A0 shape) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+200	100
+300	90
+
+
+=== Test 2: Multi-table CTE body, main agg on CTE leaf (A0) ===
+== Query ==
+WITH revenue AS (
+SELECT o.o_custkey AS k, SUM(l.l_price) AS r
+FROM cte_orders AS o JOIN cte_lineitem AS l ON l.l_custkey = o.o_custkey
+GROUP BY o.o_custkey)
+SELECT revenue.k, SUM(revenue.r)
+FROM cte_customer AS c
+JOIN revenue ON revenue.k = c.c_id
+GROUP BY revenue.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH revenue AS (
+SELECT o.o_custkey AS k, SUM(l.l_price) AS r
+FROM cte_orders AS o JOIN cte_lineitem AS l ON l.l_custkey = o.o_custkey
+GROUP BY o.o_custkey)
+SELECT revenue.k, SUM(revenue.r)
+FROM cte_customer AS c
+JOIN revenue ON revenue.k = c.c_id
+GROUP BY revenue.k|
+k	SUM(revenue.r)
+100	60
+200	140
+300	110
+
+
+=== Test 3: CTE with MIN + MAX aggregates ===
+== Query ==
+WITH bounds AS (
+SELECT o_custkey AS k, MIN(o_amt) AS mn, MAX(o_amt) AS mx
+FROM cte_orders GROUP BY o_custkey)
+SELECT bounds.k, SUM(bounds.mn), SUM(bounds.mx)
+FROM cte_customer AS c
+JOIN bounds ON bounds.k = c.c_id
+GROUP BY bounds.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH bounds AS (
+SELECT o_custkey AS k, MIN(o_amt) AS mn, MAX(o_amt) AS mx
+FROM cte_orders GROUP BY o_custkey)
+SELECT bounds.k, SUM(bounds.mn), SUM(bounds.mx)
+FROM cte_customer AS c
+JOIN bounds ON bounds.k = c.c_id
+GROUP BY bounds.k|
+k	SUM(bounds.mn)	SUM(bounds.mx)
+100	50	75
+200	40	60
+300	90	90
+
+
+=== Test 4: CTE with COUNT aggregate ===
+== Query ==
+WITH cnt AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM cte_orders GROUP BY o_custkey)
+SELECT cnt.k, SUM(cnt.n)
+FROM cte_customer AS c
+JOIN cnt ON cnt.k = c.c_id
+GROUP BY cnt.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cnt AS (
+SELECT o_custkey AS k, COUNT(*) AS n
+FROM cte_orders GROUP BY o_custkey)
+SELECT cnt.k, SUM(cnt.n)
+FROM cte_customer AS c
+JOIN cnt ON cnt.k = c.c_id
+GROUP BY cnt.k|
+k	SUM(cnt.n)
+100	2
+200	2
+300	1
+
+
+=== Test 5 (B.2a): Two independent CTEs in one query ===
+== Query ==
+WITH
+sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey),
+cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+GROUP BY sums.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH
+sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey),
+cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+GROUP BY sums.k|
+k	SUM(sums.t)	SUM(cnt.n)
+100	125	2
+200	100	2
+300	90	1
+
+
+=== Test 6 (B.2b): WHERE inside CTE body (pre-GROUP BY filter) ===
+== Query ==
+WITH big_orders AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders
+WHERE o_amt > 50
+GROUP BY o_custkey)
+SELECT big_orders.k, SUM(big_orders.t)
+FROM cte_customer AS c
+JOIN big_orders ON big_orders.k = c.c_id
+GROUP BY big_orders.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH big_orders AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders
+WHERE o_amt > 50
+GROUP BY o_custkey)
+SELECT big_orders.k, SUM(big_orders.t)
+FROM cte_customer AS c
+JOIN big_orders ON big_orders.k = c.c_id
+GROUP BY big_orders.k|
+k	SUM(big_orders.t)
+100	75
+200	60
+300	90
+
+
+=== Test 7 (B.2c): VARCHAR GROUP BY column in CTE body ===
+== Query ==
+WITH by_code AS (
+SELECT r_code AS rcode, COUNT(*) AS n
+FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+GROUP BY by_code.rcode;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH by_code AS (
+SELECT r_code AS rcode, COUNT(*) AS n
+FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+GROUP BY by_code.rcode|
+rcode	SUM(by_code.n)
+UK	4
+US	4
+
+
+=== Test 8 (B.2d): COUNT(*) alongside SUM(cte.col) in main ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, COUNT(*), SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, COUNT(*), SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+k	COUNT(*)	SUM(sums.t)
+100	1	125
+200	1	100
+300	1	90
+
+
+=== Test 9 (C): WHERE on CTE_LOOKUP column (main-query filter pushdown) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k > 100
+GROUP BY sums.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k > 100
+GROUP BY sums.k|
+k	SUM(sums.t)
+200	100
+300	90
+
+
+=== Test 10 (D): LEFT JOIN with CTE — NULL injection on unmatched ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+200	100
+300	90
+NULL	NULL
+
+
+=== Test 11 (D-followup): WHERE on aggregate CTE output (inline-type opcode) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 100
+GROUP BY sums.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 100
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+
+
+=== Test 12 (D2): WHERE on MAX aggregate output (widened virt-type) ===
+== Query ==
+WITH maxes AS (
+SELECT o_custkey AS k, MAX(o_amt) AS mx
+FROM cte_orders GROUP BY o_custkey)
+SELECT maxes.k, SUM(maxes.mx)
+FROM cte_customer AS c
+JOIN maxes ON maxes.k = c.c_id
+WHERE maxes.mx > 70
+GROUP BY maxes.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH maxes AS (
+SELECT o_custkey AS k, MAX(o_amt) AS mx
+FROM cte_orders GROUP BY o_custkey)
+SELECT maxes.k, SUM(maxes.mx)
+FROM cte_customer AS c
+JOIN maxes ON maxes.k = c.c_id
+WHERE maxes.mx > 70
+GROUP BY maxes.k|
+k	SUM(maxes.mx)
+100	75
+300	90
+
+
+=== Test 13 (P-GB): main GROUP BY parent-table column over CTE agg leaf ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_region, SUM(sums.t)
+FROM cte_customer AS c JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_region;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_region, SUM(sums.t)
+FROM cte_customer AS c JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_region|
+c_region	SUM(sums.t)
+1	225
+2	90
+
+
+=== Test 14 (P-GB): same as 13 but LEFT JOIN (NULL-injected unmatched parent) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_region, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_region;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_region, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_region|
+c_region	SUM(sums.t)
+1	225
+2	90
+
+
+=== Test 15 (H.1): != on CTE_LOOKUP key ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100
+GROUP BY sums.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100
+GROUP BY sums.k|
+k	SUM(sums.t)
+200	100
+300	90
+
+
+=== Test 16a (H.1): <= on CTE_LOOKUP agg output ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t <= 100
+GROUP BY sums.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t <= 100
+GROUP BY sums.k|
+k	SUM(sums.t)
+200	100
+300	90
+
+
+=== Test 16b (H.1): >= on CTE_LOOKUP agg output ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t >= 100
+GROUP BY sums.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t >= 100
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+200	100
+
+
+=== Test 17 (H.1): multi-conjunct AND on CTE_LOOKUP output ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k >= 100 AND sums.t > 100
+GROUP BY sums.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k >= 100 AND sums.t > 100
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+
+
+=== Test 18 (H.1): all-reject filter on CTE_LOOKUP ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 1000000
+GROUP BY sums.k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 1000000
+GROUP BY sums.k|
+k	SUM(sums.t)
+
+
+=== Test 19 (H.3): multi-CTE filter isolation ===
+== Query ==
+WITH
+sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey),
+cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+WHERE sums.t > 90 AND cnt.n > 1
+GROUP BY sums.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH
+sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey),
+cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+WHERE sums.t > 90 AND cnt.n > 1
+GROUP BY sums.k|
+k	SUM(sums.t)	SUM(cnt.n)
+100	125	2
+200	100	2
+
+
+=== Test 20 (H.3): VARCHAR GB key + WHERE filter on it ===
+== Query ==
+WITH by_code AS (
+  SELECT r_code AS rcode, COUNT(*) AS n
+  FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+WHERE by_code.rcode = 'US'
+GROUP BY by_code.rcode;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH by_code AS (
+SELECT r_code AS rcode, COUNT(*) AS n
+FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+WHERE by_code.rcode = 'US'
+GROUP BY by_code.rcode|
+rcode	SUM(by_code.n)
+US	4
+
+
+=== Test 21 (H.3): empty CTE ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders WHERE o_custkey = 999999 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders WHERE o_custkey = 999999 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+k	SUM(sums.t)
+
+
+=== Test 22 (H.3): single-row CTE ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders WHERE o_id = 5 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders WHERE o_id = 5 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+k	SUM(sums.t)
+300	90
+
+
+=== Test 23 (J): LEFT JOIN + WHERE on aggregate output (promotes to INNER) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 50
+GROUP BY sums.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 50
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+200	100
+300	90
+
+
+=== Test 24 (J): LEFT JOIN + WHERE on CTE GB key (promotes to INNER) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100
+GROUP BY sums.k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100
+GROUP BY sums.k|
+k	SUM(sums.t)
+200	100
+300	90
+
+
+=== Test 25 (J): two LEFT JOINs, WHERE on only one (per-op promotion) ===
+== Query ==
+WITH
+sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey),
+cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+LEFT JOIN sums ON sums.k = c.c_id
+LEFT JOIN cnt  ON cnt.k  = c.c_id
+WHERE sums.t > 50
+GROUP BY sums.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH
+sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey),
+cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+LEFT JOIN sums ON sums.k = c.c_id
+LEFT JOIN cnt  ON cnt.k  = c.c_id
+WHERE sums.t > 50
+GROUP BY sums.k|
+k	SUM(sums.t)	SUM(cnt.n)
+100	125	2
+200	100	2
+300	90	1
+
+
+=== Test 26 (I.1): INNER JOIN + WHERE cte.k IS NOT NULL (always-true) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k IS NOT NULL
+GROUP BY sums.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k IS NOT NULL
+GROUP BY sums.k|
+k	SUM(sums.t)
+100	125
+200	100
+300	90
+
+
+=== Test 27 (I.1): INNER JOIN + WHERE cte.t IS NULL (always-false on matched) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL
+GROUP BY sums.k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL
+GROUP BY sums.k|
+k	SUM(sums.t)
+
+
+=== Test 28 (K): LEFT JOIN + WHERE cte.t IS NULL on SUM (anti-join) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL
+GROUP BY c.c_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL
+GROUP BY c.c_id|
+c_id	SUM(sums.t)
+400	NULL
+
+
+=== Test 29 (K): LEFT JOIN + WHERE cte.k IS NULL on GB key (anti-join) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.k IS NULL
+GROUP BY c.c_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.k IS NULL
+GROUP BY c.c_id|
+c_id	SUM(sums.t)
+400	NULL
+
+
+=== Test 30 (K): LEFT JOIN + AND of two IS NULL conjuncts (anti-join) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL AND sums.k IS NULL
+GROUP BY c.c_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL AND sums.k IS NULL
+GROUP BY c.c_id|
+c_id	SUM(sums.t)
+400	NULL
+
+=== Cleanup ===
+DROP TABLE cte_lineitem;
+DROP TABLE cte_customer;
+DROP TABLE cte_orders;
+DROP TABLE cte_regions;

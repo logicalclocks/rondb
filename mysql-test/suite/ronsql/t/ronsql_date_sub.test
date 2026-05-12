@@ -1,6 +1,12 @@
 --source include/have_ndb.inc
+# Suppress transient NDB schema-distribution warnings that occasionally
+# leak into the SQL warning list (independent of mtr.add_suppression,
+# which only suppresses error-log output).  See CLAUDE.md note on
+# "NDB schema distribution timeouts can cause spurious MTR failures".
+--disable_warnings
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
+--enable_warnings
 
 --disable_query_log
 

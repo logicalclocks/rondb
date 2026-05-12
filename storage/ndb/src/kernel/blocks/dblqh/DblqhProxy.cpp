@@ -28,6 +28,9 @@
 #include "JoinAggregationState.hpp"
 #include "dbtup/JoinAggInterpreter.hpp"
 
+// Static definition for node failure counter
+std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
+
 #include <signaldata/DbspjErr.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/ExecFragReq.hpp>
@@ -197,6 +200,8 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
                &DblqhProxy::execJOIN_AGG_RELEASE_REQ);
   addRecSignal(GSN_JOIN_AGG_NODE_FAIL_REP,
                &DblqhProxy::execJOIN_AGG_NODE_FAIL_REP);
+  addRecSignal(GSN_CONTINUEB,
+               &DblqhProxy::execCONTINUEB);
 }
 
 DblqhProxy::~DblqhProxy() {}
@@ -2303,6 +2308,15 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
         }
         lc_ndbd_pool_free(state->m_per_thread_interpreters);
       }
+      // Free any redistribution queue pages
+      {
+        auto *page = state->m_redist_page_head;
+        while (page != nullptr) {
+          auto *next = page->next;
+          lc_ndbd_pool_free(page);
+          page = next;
+        }
+      }
       releaseJoinAggState(aggStateKey);
     }
   }
@@ -2313,6 +2327,7 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
   ref->requestId = requestId;
   ref->errorCode = errorCode;
   ref->errorLine = errorLine;
+  ref->cteIndex = RNIL;
   sendSignal(senderRef, GSN_JOIN_AGG_SETUP_REF,
              signal, JoinAggSetupRef::SignalLength, JBB);
 }
@@ -2355,7 +2370,9 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   JoinAggregationState *state = getJoinAggState(key);
   ndbrequire(state != nullptr);
 
-  // Initialize runtime counters (TransientPool::seize doesn't call constructor)
+  // Initialize all fields (ArrayPool::seize doesn't call constructor).
+  // Every field in JoinAggregationState must be set here to avoid
+  // stale values from a previous pool occupant.
   state->m_outstanding_ops.store(0);
   state->m_completed_ops.store(0);
   state->m_failed_ops.store(0);
@@ -2372,6 +2389,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_total_agg_results = 0;
   state->m_all_programs_buf = nullptr;
   state->m_outer_join_agg_scan = false;
+  state->m_apiRef = 0;
+  state->m_memory_budget_pages = 0;
+  state->m_creation_time = 0;
+  state->m_last_activity_time = 0;
+  state->m_redist_page_head = nullptr;
 
   // Populate immutable identification fields
   state->m_transid[0] = req->transid[0];
@@ -2385,14 +2407,74 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_resultData = req->resultData;
   state->m_routeRef = req->routeRef;
 
-  // Concurrency strategy
-  if (req->concurrencyStrategy ==
+  // Concurrency strategy (CTE_MODE_FLAG in upper bit)
+  const Uint32 strategy = req->concurrencyStrategy;
+  state->m_cte_mode =
+      (strategy & JoinAggSetupReq::CTE_MODE_FLAG) != 0;
+  state->m_cte_index = req->cteIndex;
+  if ((strategy & ~JoinAggSetupReq::CTE_MODE_FLAG) ==
       JoinAggSetupReq::STRATEGY_MUTEX_FREE) {
     state->m_strategy = JoinAggregationState::MUTEX_FREE;
   } else {
     state->m_strategy = JoinAggregationState::MUTEX_BASED;
   }
   state->m_num_threads = globalData.ndbMtQueryWorkers;
+
+  /* Phase L (E.1): pin all subsequent COMPLETE work for this
+   * aggregation (and, for CTE mode, REDISTRIBUTE / FINAL_REP too) to
+   * a single LDM worker on this node.  Senders address the owner
+   * with numberToRef(DBLQH, m_owner_instance, ownNode) so concurrent
+   * multi-LDM access of the aggregation state is impossible by
+   * construction.  Applied to both main-SELECT and CTE aggregation
+   * — same routing rule, single source of truth.  Echoed in
+   * JOIN_AGG_SETUP_CONF so DBTC routes without duplicating
+   * worker-count math.  Use LDM worker count (not query worker
+   * count) since the owner is a DBLQH instance.
+   * See cte_filter_phase_l.md. */
+  {
+    Uint32 workers = globalData.ndbMtLqhWorkers;
+    if (workers == 0) workers = 1;
+    state->m_owner_instance = (key % workers) + 1;
+  }
+
+  // CTE mode: initialize CTE-specific fields and build node list.
+  // Non-CTE queries never touch these fields so they can be skipped.
+  if (state->m_cte_mode) {
+    jam();
+    memset(state->m_cte_remote_ownerInstances, 0,
+           sizeof(state->m_cte_remote_ownerInstances));
+    state->m_cte_waiting_conf = false;
+    state->m_cte_redist_batch_bytes = 0;
+    state->m_cte_complete_senderRef = 0;
+    state->m_cte_complete_senderData = 0;
+    state->m_cte_complete_requestId = 0;
+    state->m_cteScan_transId[0] = 0;
+    state->m_cteScan_transId[1] = 0;
+    state->m_cteScan_groupsSent = 0;
+    state->m_cteScan_iterBucket = 0;
+    state->m_cteScan_iterRaw = nullptr;
+    state->m_redist_page_ptr = nullptr;
+    state->m_redist_page_remaining = 0;
+    state->m_redist_queue_head = nullptr;
+    state->m_redist_queue_tail = nullptr;
+    state->m_redist_queue_count = 0;
+    state->m_cte_num_nodes = 0;
+    state->m_cte_redistribution_done = false;
+    for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
+      jamDebug();
+      jamDataDebug(i);
+      if (getNodeInfo(i).m_connected &&
+          getNodeInfo(i).m_type == NodeInfo::DB) {
+        jamDebug();
+        jamDataDebug(i);
+        state->m_cte_node_list[state->m_cte_num_nodes] = i;
+        state->m_cte_num_nodes++;
+      }
+    }
+    state->m_cte_node_fail_count =
+        JoinAggregationState::s_node_fail_count.load();
+    state->m_cte_nodes_finalized.clear();
+  }
 
   // Expected operations
   state->m_total_ops_expected = req->expectedOpCount;
@@ -2576,6 +2658,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   for (Uint32 i = 0; i < state->m_num_leaves; i++) {
     jam();
     LeafProgram &lp = state->m_leaf_programs[i];
+    jamDataDebug(lp.m_agg_program_len);
+    jamDataDebug(lp.m_agg_prog_start_pos);
     PushdownInterpreter::OptimizeProgramBuffer(
         lp.m_agg_program, lp.m_agg_program_len, lp.m_agg_prog_start_pos);
   }
@@ -2605,6 +2689,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                     state->m_num_leaves);
     }
     interp->setUseMutex(true);
+    interp->setCteMode(state->m_cte_mode);
     interp->initChunkAllocator(getThreadId(), budget_pages, available_pages);
     state->m_agg_interpreter = interp;
   } else {
@@ -2647,6 +2732,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         interp->cacheMultiLeafAggOps(state->m_leaf_programs,
                                       state->m_num_leaves);
       }
+      interp->setCteMode(state->m_cte_mode);
       interp->initChunkAllocator(getThreadId(), per_thread_budget,
                                    available_pages);
       arr[i] = interp;
@@ -2677,6 +2763,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   conf->senderData = senderData;
   conf->requestId = requestId;
   conf->aggStateKey = key;
+  conf->cteIndex = state->m_cte_index;
+  /* Phase L (E.1): owner instance is meaningful for both main-SELECT
+   * and CTE aggregation — DBTC routes every JOIN_AGG_COMPLETE_REQ
+   * (and, for CTE, every cross-LDM signal) to this owner. */
+  conf->ownerInstance = state->m_owner_instance;
   sendSignal(senderRef, GSN_JOIN_AGG_SETUP_CONF,
              signal, JoinAggSetupConf::SignalLength, JBB);
 }
@@ -2739,10 +2830,13 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
       state->m_per_thread_interpreters = nullptr;
     }
 
-    // Release the pool record
-    releaseJoinAggState(aggStateKey);
+    // Clear queue pointers — entries live in pages being freed below
+    state->m_redist_queue_head = nullptr;
+    state->m_redist_queue_tail = nullptr;
+    state->m_redist_queue_count = 0;
   }
 
+  // Send CONF before page cleanup — caller need not wait
   if (!noReply) {
     jam();
     JoinAggReleaseConf *conf =
@@ -2752,6 +2846,17 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
     conf->requestId = requestId;
     sendSignal(senderRef, GSN_JOIN_AGG_RELEASE_CONF,
                signal, JoinAggReleaseConf::SignalLength, JBB);
+  }
+
+  // Free redistribution pages in batches, then release pool record.
+  // State must stay alive until all pages are freed.
+  if (state != nullptr && state->m_redist_page_head != nullptr) {
+    jam();
+    signal->theData[0] = ZCONTINUE_FREE_REDIST_PAGES;
+    signal->theData[1] = aggStateKey;
+    continueFreeRedistPages(signal, aggStateKey);
+  } else if (state != nullptr) {
+    releaseJoinAggState(aggStateKey);
   }
 }
 
@@ -2792,6 +2897,63 @@ DblqhProxy::execJOIN_AGG_NODE_FAIL_REP(Signal *signal) {
                  JoinAggReleaseReq::SignalLength, JBB);
     }
   }
+}
+
+static const Uint32 REDIST_PAGES_PER_FREE_BATCH = 256;
+
+void
+DblqhProxy::execCONTINUEB(Signal *signal) {
+  jamEntry();
+  switch (signal->theData[0]) {
+    case ZCONTINUE_FREE_REDIST_PAGES:
+      jam();
+      continueFreeRedistPages(signal, signal->theData[1]);
+      break;
+    default:
+      ndbabort();
+  }
+}
+
+/**
+ * continueFreeRedistPages — free redistribution pages in batches.
+ * Frees up to REDIST_PAGES_PER_FREE_BATCH pages per invocation.
+ * If more pages remain, schedules a CONTINUEB to continue later.
+ * When all pages are freed, releases the pool record.
+ *
+ * CONTINUEB signal format:
+ *   theData[0] = ZCONTINUE_FREE_REDIST_PAGES
+ *   theData[1] = aggStateKey
+ */
+void
+DblqhProxy::continueFreeRedistPages(Signal *signal, Uint32 aggStateKey) {
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (state == nullptr) {
+    jam();
+    return;
+  }
+
+  auto *page = state->m_redist_page_head;
+  Uint32 count = 0;
+  while (page != nullptr && count < REDIST_PAGES_PER_FREE_BATCH) {
+    jam();
+    auto *next = page->next;
+    lc_ndbd_pool_free(page);
+    page = next;
+    count++;
+  }
+  state->m_redist_page_head = page;
+
+  if (page != nullptr) {
+    /* More pages remain — schedule continuation */
+    jam();
+    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+    return;
+  }
+
+  /* All pages freed — release pool record */
+  state->m_redist_page_ptr = nullptr;
+  state->m_redist_page_remaining = 0;
+  releaseJoinAggState(aggStateKey);
 }
 
 BLOCK_FUNCTIONS(DblqhProxy)

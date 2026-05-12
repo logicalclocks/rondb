@@ -766,6 +766,7 @@ sendSetupReq(SignalSender &ss, Uint32 nodeId,
   req->resultRef = ss.getOwnRef();
   req->resultData = FAKE_SENDER_DATA;
   req->routeRef = ss.getOwnRef();
+  req->cteIndex = RNIL;
 
   ssig.set(ss, 0, DBLQH, GSN_JOIN_AGG_SETUP_REQ,
            JoinAggSetupReq::SignalLength);
@@ -982,6 +983,7 @@ parseTransIdAI(const SimpleSignal *sig, AggResult &result)
   return 0;
 }
 
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 /*
  * Wait for SCAN_FRAGCONF, handling interleaved TRANSID_AI signals
  * from evicted groups during the scan phase.
@@ -1028,6 +1030,7 @@ waitForScanConfWithEviction(SignalSender &ss, Uint32 /*fragId*/,
     }
   }
 }
+#endif  /* VM_TRACE || ERROR_INSERT */
 
 /*
  * Extract the Int64 sum value from an AggResItem in the result bytes.
@@ -1691,6 +1694,7 @@ testHighCardinalityGroupBy(Ndb * /*ndb*/, SignalSender &ss,
 /* ------------------------------------------------------------------ */
 /* Test 4: Eviction via ERROR_INSERT 5116                              */
 /* ------------------------------------------------------------------ */
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 
 static int
 testEviction(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
@@ -1840,6 +1844,8 @@ testEviction(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   }
   return failures > 0 ? -1 : 0;
 }
+
+#endif  /* VM_TRACE || ERROR_INSERT */
 
 /* ------------------------------------------------------------------ */
 /* Test 5: LQHKEYREQ with join aggregation                            */
@@ -3348,6 +3354,7 @@ testNoGroupByMutexFree(Ndb * /*ndb*/, SignalSender &ss,
 /* ------------------------------------------------------------------ */
 /* Test 18: Eviction with MUTEX_FREE strategy                          */
 /* ------------------------------------------------------------------ */
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 
 static int
 testEvictionMutexFree(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
@@ -3477,6 +3484,8 @@ testEvictionMutexFree(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   }
   return failures > 0 ? -1 : 0;
 }
+
+#endif  /* VM_TRACE || ERROR_INSERT */
 
 /* ------------------------------------------------------------------ */
 /* Test 19: COMPLETE_REF error — invalid aggStateKey                   */
@@ -3801,16 +3810,25 @@ int main(int argc, char **argv)
 
       if (testHighCardinalityGroupBy(&ndb, ss, meta, MANY_ROWS) != 0)
         result = 1;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
       if (testEviction(&ndb, ss, meta, MANY_ROWS, restarter) != 0)
         result = 1;
+#else
+      printf("Test 4: SKIPPED (production build, ERROR_INSERT unavailable)\n");
+      (void)restarter;
+#endif
       if (testFlowControl(&ndb, ss, meta, MANY_ROWS) != 0)
         result = 1;
       if (testCountMergeMutexFree(&ndb, ss, meta, MANY_ROWS) != 0)
         result = 1;
       if (testNoGroupByMutexFree(&ndb, ss, meta, MANY_ROWS) != 0)
         result = 1;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
       if (testEvictionMutexFree(&ndb, ss, meta, MANY_ROWS, restarter) != 0)
         result = 1;
+#else
+      printf("Test 18: SKIPPED (production build, ERROR_INSERT unavailable)\n");
+#endif
 
       ss.unlock();
     }

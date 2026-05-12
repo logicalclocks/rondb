@@ -1,6 +1,8 @@
 --source include/have_ndb.inc
+--disable_warnings
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
+--enable_warnings
 
 --let RAND_SEED=42
 --let NUM_ROWS=10000

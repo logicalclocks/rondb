@@ -1,0 +1,281 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.5 v1: GREATEST / LEAST regression coverage.
+# v1 originally lowered 2-arg GREATEST/LEAST to a CaseExpr; v2b
+# replaced that lowering with a Greatest2/Least2 SVM op (see
+# cte_filter_phase_i5_v2b.md), so this file now functions as a
+# regression check that the v1 query shapes still produce correct
+# output through the new SVM path.  n>2 and distinct-column shapes
+# (originally deferred to v2) are covered by
+# ronsql_cte_greatest_least_v2a.test (col-vs-col atoms in explicit
+# CASE) and ronsql_cte_greatest_least_v2b.test (n-ary GREATEST/LEAST).
+# Test 10 still exercises the nullable-column rejection (now via
+# validate_greatest_least_pair_loads instead of the old CE tracker).
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for GREATEST / LEAST tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE cte_orders (
+  o_id INT NOT NULL,
+  o_custkey INT NOT NULL,
+  o_amt INT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_o_custkey ON cte_orders (o_custkey);
+
+CREATE TABLE cte_customer (
+  c_id INT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  c_region INT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+INSERT INTO cte_customer VALUES
+  (100, 'Alice',   1),
+  (200, 'Bob',     1),
+  (300, 'Charlie', 2),
+  (400, 'Dave',    2);
+
+INSERT INTO cte_orders VALUES
+  (1, 100, 50),
+  (2, 100, 75),
+  (3, 200, 40),
+  (4, 200, 60),
+  (5, 300, 90);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: GREATEST(col, const) on CTE-column projection ===
+
+# sums.t is a CTE AGGREGATE output; sums.k is a CTE COLUMN projection.
+# GREATEST(sums.k, 150) lowers to CASE WHEN sums.k >= 150 THEN sums.k
+# ELSE 150 END — exercises both the I.4 CTE-column path and the new
+# inequality support in generate_embedded_condition.
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.k, 150)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.k, 150)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;|
+
+--echo
+--echo
+--echo === Test 2: GREATEST(const, col) — col on RHS ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(150, sums.k)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(150, sums.k)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 3: LEAST(col, const) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(LEAST(sums.k, 250)) AS lmin
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(LEAST(sums.k, 250)) AS lmin
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 4: LEAST(const, col) — col on RHS ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(LEAST(250, sums.k)) AS lmin
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(LEAST(250, sums.k)) AS lmin
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 5: GREATEST on parent-table column ===
+
+# c.c_region is a parent-table column (non-CTE leaf).  Generates the
+# BRANCH_MEM_OP_ARG embedded-condition path, not BRANCH_MEM_OP_ARG_INLINE_TYPE.
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(c.c_region, 1)) AS rsum
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(c.c_region, 1)) AS rsum
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 6: LEAST + GREATEST both in one query ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id,
+       SUM(GREATEST(sums.k, 200)) AS gmax,
+       SUM(LEAST(sums.k, 200)) AS lmin
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id,
+       SUM(GREATEST(sums.k, 200)) AS gmax,
+       SUM(LEAST(sums.k, 200)) AS lmin
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 7: regression — existing CASE inequality still works ===
+
+# `c.c_region < 2` exercises the lifted-inequality path on a
+# parent-table column; pre-I.5 this would have hit the
+# `=`/`!=`-only ndbrequire and crashed.
+let $QUERY=
+SELECT c.c_id, SUM(CASE WHEN c.c_region < 2 THEN o.o_amt ELSE 0 END)
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id, SUM(CASE WHEN c.c_region < 2 THEN o.o_amt ELSE 0 END)
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 10: nullable column operand — NULL propagation (v4) ===
+
+# Phase I.5 v4 lifted the v1 / v2b nullable-column rejection.  The
+# pair-op embedded program now writes AGG_EMBEDDED_INTERP_STOP_PROGRAM
+# whenever any operand register is NULL, so the aggregation
+# interpreter abandons the row and SUM skips it — matching MySQL
+# semantics for `SUM(GREATEST(NULL, 5))`.  Detailed v4 coverage lives
+# in `ronsql_cte_greatest_least_v4.test`; this case is the v1 → v4
+# regression marker.
+
+--disable_query_log
+CREATE TABLE cte_nullable (
+  n_id INT NOT NULL,
+  n_val BIGINT NULL,
+  PRIMARY KEY USING HASH (n_id)
+) ENGINE=NDB;
+
+INSERT INTO cte_nullable VALUES
+  (1, 10),
+  (2, NULL);
+--enable_query_log
+
+DELIMITER |;
+
+let $QUERY=
+SELECT SUM(GREATEST(n_val, 5)) AS gmax FROM cte_nullable;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(GREATEST(n_val, 5)) AS gmax FROM cte_nullable|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE cte_nullable;
+DROP TABLE cte_orders;
+DROP TABLE cte_customer;
+--enable_query_log

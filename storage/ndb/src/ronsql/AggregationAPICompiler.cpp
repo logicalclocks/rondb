@@ -42,13 +42,29 @@ AggregationAPICompiler::AggregationAPICompiler
   m_aggs(amalloc),
   m_constants(amalloc),
   m_cases(amalloc),
-  m_program(amalloc)
+  m_program(amalloc),
+  m_pair_op_program_exprs(amalloc),
+  m_pair_op_needs_null_check(amalloc)
 {}
 
 AggregationAPICompiler::Status
 AggregationAPICompiler::getStatus()
 {
   return m_status;
+}
+
+bool
+AggregationAPICompiler::owns_expr(AggregationAPICompiler_Expr* e)
+{
+  return m_exprs.has_item(e);
+}
+
+void
+AggregationAPICompiler::for_each_expr(
+    std::function<void(const AggregationAPICompiler_Expr*)> fn) const
+{
+  for (Uint32 i = 0; i < m_exprs.size(); i++)
+    fn(&m_exprs[i]);
 }
 
 #define require_status(name) ndbrequire(m_status == Status::name)
@@ -169,6 +185,12 @@ AggregationAPICompiler::new_expr(ExprOp op,
     Int64 result = 0;
     switch (op)
     {
+    case ExprOp::Greatest2:
+      result = (arg1 >= arg2) ? arg1 : arg2;
+      break;
+    case ExprOp::Least2:
+      result = (arg1 <= arg2) ? arg1 : arg2;
+      break;
     case ExprOp::Add:
       if (int64_add_overflow(arg1, arg2)) {
         m_err << "Overflow when attempting to fold constant expression (" << arg1 << " + " << arg2 << ").\n";
@@ -404,6 +426,7 @@ AggregationAPICompiler::svm_execute(AggregationAPICompiler::Instr* instr,
     r[dest]=r[src];
     break;
   FORALL_ARITHMETIC_OPS(OPERATOR_CASE)
+  FORALL_PAIR_OPS(OPERATOR_CASE)
   FORALL_AGGS(AGG_CASE)
   case SVMInstrType::EmbeddedInterp:
     break;
@@ -536,6 +559,7 @@ AggregationAPICompiler::compile(AggExpr* agg, Uint32 idx)
     emb_instr.dest = case_idx;
     emb_instr.src = 0;
     m_program.push(emb_instr);
+    m_pair_op_program_exprs.push(NULL);
 
     // THEN arm
     m_cases[case_idx].then_start = m_program.size();
@@ -550,6 +574,7 @@ AggregationAPICompiler::compile(AggExpr* agg, Uint32 idx)
     skip_instr.dest = 0;
     skip_instr.src = 0;
     m_program.push(skip_instr);
+    m_pair_op_program_exprs.push(NULL);
 
     // ELSE arm
     m_cases[case_idx].else_start = m_program.size();
@@ -731,6 +756,11 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
   ndbrequire(m_locked[src] >= 1);
   m_locked[src]--;
   pushInstr(expr->op, dest, src, is_first_compilation);
+  // Phase I.5 v4 fast path: tag the just-pushed pair-op slot with its
+  // Expr* so RonSQLPreparer can introspect operand nullability later.
+  if (expr->op == ExprOp::Greatest2 || expr->op == ExprOp::Least2) {
+    m_pair_op_program_exprs.last_item() = expr;
+  }
   ndbrequire(r[dest] == expr);
   *reg = dest;
   return true;
@@ -828,6 +858,11 @@ AggregationAPICompiler::pushInstr(SVMInstrType type,
   instr.dest = dest;
   instr.src = src;
   m_program.push(instr);
+  // Phase I.5 v4 fast path: keep the parallel pair-op-Expr array in
+  // lock-step with m_program.  Default NULL; the compile() pair-op
+  // site overwrites the just-pushed slot.  DCE rebuilds the parallel
+  // array via the same overwrite step.
+  m_pair_op_program_exprs.push(NULL);
   svm_execute(&m_program.last_item(), is_first_compilation);
 }
 
@@ -864,6 +899,7 @@ AggregationAPICompiler::pushInstr(ExprOp op,
   switch (op)
   {
     FORALL_ARITHMETIC_OPS(OP_CASE)
+    FORALL_PAIR_OPS(OP_CASE)
     default:
       // Unknown operation
       abort();
@@ -940,6 +976,7 @@ AggregationAPICompiler::dead_code_elimination()
       }
       break;
     FORALL_ARITHMETIC_OPS(OPERATOR_CASE)
+    FORALL_PAIR_OPS(OPERATOR_CASE)
     FORALL_AGGS(AGG_CASE)
     case SVMInstrType::AggRepeat:
       ndbrequire(dest < m_aggs.size());
@@ -970,7 +1007,9 @@ AggregationAPICompiler::dead_code_elimination()
   if (dead_code_found)
   {
     DynamicArray<Instr> old_program = m_program;
+    DynamicArray<Expr*> old_pair_op_exprs = m_pair_op_program_exprs;
     m_program.truncate();
+    m_pair_op_program_exprs.truncate();
     svm_init();
     for (Uint32 i=0; i<old_program.size(); i++)
     {
@@ -978,6 +1017,8 @@ AggregationAPICompiler::dead_code_elimination()
       {
         Instr instr = old_program[i];
         pushInstr(instr.type, instr.dest, instr.src, false);
+        // Carry over the pair-op Expr tag from the old slot.
+        m_pair_op_program_exprs.last_item() = old_pair_op_exprs[i];
       }
     }
   }
@@ -1078,6 +1119,24 @@ AggregationAPICompiler::print(Expr* expr)
     m_out << m_constants[expr->idx].int_64;
     return;
   }
+  if (expr->op == AggregationAPICompiler::ExprOp::Greatest2)
+  {
+    m_out << "GREATEST(";
+    print(expr->left);
+    m_out << ", ";
+    print(expr->right);
+    m_out << ')';
+    return;
+  }
+  if (expr->op == AggregationAPICompiler::ExprOp::Least2)
+  {
+    m_out << "LEAST(";
+    print(expr->left);
+    m_out << ", ";
+    print(expr->right);
+    m_out << ')';
+    return;
+  }
   m_out << '(';
   print(expr->left);
   switch (expr->op)
@@ -1133,6 +1192,8 @@ AggregationAPICompiler::print(Instr* instr)
   static const char* relstr_Div = "/";
   static const char* relstr_DivInt = "DIV";
   static const char* relstr_Rem = "%";
+  static const char* relstr_Greatest2 = "GREATEST";
+  static const char* relstr_Least2 = "LEAST";
   static const char* ucasestr_Sum = "SUM";
   static const char* ucasestr_Min = "MIN";
   static const char* ucasestr_Max = "MAX";
@@ -1156,6 +1217,7 @@ AggregationAPICompiler::print(Instr* instr)
     print(r[src]);
     break;
   FORALL_ARITHMETIC_OPS(OPERATOR_CASE)
+  FORALL_PAIR_OPS(OPERATOR_CASE)
   FORALL_AGGS(AGG_CASE)
   case SVMInstrType::AggRepeat:
     ndbrequire(dest < m_aggs.size());
@@ -1187,8 +1249,26 @@ AggregationAPICompiler::raw_word_size(Uint32 start, Uint32 end)
   Uint32 count = 0;
   for (Uint32 i = start; i < end; i++)
   {
-    if (m_program[i].type == SVMInstrType::LoadConstantInteger)
+    SVMInstrType t = m_program[i].type;
+    if (t == SVMInstrType::LoadConstantInteger)
       count += 3;
+    else if (t == SVMInstrType::Greatest2 || t == SVMInstrType::Least2)
+    {
+      // Phase I.5 v7: pair-op expands to EmbeddedInterp(N-word
+      // body) plus expression-local control.  The nullable path uses
+      // a 14-word embedded body followed by Mov + Skip + SetRegNull
+      // (18 words total including the EmbeddedInterp header).  The
+      // static-non-nullable fast path remains the 9-word body + Mov
+      // (11 words total).  The decision is precomputed by
+      // RonSQLPreparer::prepare_pair_op_null_check_cache; if the
+      // cache hasn't been filled yet (raw_word_size called before
+      // that runs), default to the conservative nullable body.
+      bool needs_null_check =
+          (i < m_pair_op_needs_null_check.size())
+            ? m_pair_op_needs_null_check[i]
+            : true;
+      count += needs_null_check ? 18 : 11;
+    }
     else
       count += 1;
   }

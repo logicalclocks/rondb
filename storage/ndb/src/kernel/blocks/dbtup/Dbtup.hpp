@@ -195,6 +195,7 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZCALL_ERROR 890
 #define ZSHIFT_OPERAND_ERROR 891
 #define ZUNSUPPORTED_BRANCH 892
+#define ZBACKWARD_JUMP_NOT_ALLOWED 893
 
 #define ZSTORED_TOO_MUCH_ATTRINFO_ERROR 874
 
@@ -307,6 +308,7 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 class Dbtux;
 class AggInterpreter;
 class JoinAggInterpreter;
+struct Register;
 
 class Dbtup : public SimulatedBlock {
   friend class DbtupProxy;
@@ -2884,6 +2886,114 @@ private:
                          Uint32 TmainProgLen, Uint32 *subroutineProg,
                          Uint32 TsubroutineLen, Uint32 *tmpArea,
                          Uint32 tmpAreaSz);
+
+public:
+  /**
+   * InterpreterContext — nested struct defined in DbtupExecQuery.cpp.
+   *
+   * Holds references to the loop-local state of interpreterNextLab so
+   * that the extracted case handlers (static member functions of this
+   * nested struct) can access interpreter state uniformly. Being a
+   * nested type of Dbtup, the struct's static members can access
+   * Dbtup's private members (brancher, tupkeyErrorLab, TUPKEY_abort, …)
+   * via the ctx.tup pointer — from C++11 onwards, nested classes have
+   * the same access rights as other members of the enclosing class.
+   *
+   * Declared public so that InterpreterHandler function-pointer typedef
+   * and the dispatch tables in DbtupExecQuery.cpp can name the type.
+   */
+  struct InterpreterContext;
+
+  /* Handler function-pointer type for the jump-table interpreter.
+   * Defined here (not just in DbtupExecQuery.cpp) so interpreter
+   * method signatures on Dbtup can name it. */
+  typedef int (*InterpreterHandler)(InterpreterContext &ctx);
+
+  /* INTERPRETER_FILTER_REJECT is returned by interpreterJumpTable in
+   * IFLAG_REJECT_RETURNS_NEG mode when a row fails its WHERE clause
+   * (EXIT_REFUSE in filter mode).  Picked far below any 16-bit error
+   * code range so it can never collide with a handler's -error_code
+   * return. */
+  static constexpr int INTERPRETER_FILTER_REJECT = -0x7FFFFFFF;
+
+  /* Mode flags for interpreterJumpTable.
+   *
+   *   IFLAG_REJECT_RETURNS_NEG — EXIT_REFUSE returns
+   *       INTERPRETER_FILTER_REJECT instead of aborting the tuple
+   *       operation (which has no meaning when running against a
+   *       synthetic CTE row).  Implicit in the CTE filter path.
+   *
+   *   IFLAG_DISALLOW_BACKWARD_JUMPS — after every handler dispatch,
+   *       check that the new TprogramCounter is not less than the
+   *       pre-dispatch value; violations set
+   *       ZBACKWARD_JUMP_NOT_ALLOWED and return -1.  Combined with a
+   *       handler table that omits CALL / RETURN, this makes the
+   *       program provably terminating — so the 16000-instruction
+   *       fuse is dropped in this mode for the aggregation
+   *       interpreter's embedded programs.
+   */
+  enum InterpreterJumpTableFlags {
+    IFLAG_REJECT_RETURNS_NEG       = 0x1,
+    IFLAG_DISALLOW_BACKWARD_JUMPS  = 0x2,
+  };
+
+  /**
+   * interpreterJumpTable — run an interpreter program via a
+   * caller-supplied function-pointer dispatch table.
+   *
+   * Three call sites, each with its own handler table and mode
+   * flags:
+   *   1. CTE filter (execCTE_LOOKUP_REQ, cteScanAggFeed,
+   *      cteScanEmitResults) — table s_cte_filter_handlers +
+   *      IFLAG_REJECT_RETURNS_NEG.  Wrapper:
+   *      Dbtup::interpreterFilterCte.
+   *   2. Aggregation interpreter embedded programs
+   *      (AggInterpreter::ProcessRec) — table s_agg_interp_handlers +
+   *      IFLAG_DISALLOW_BACKWARD_JUMPS.
+   *
+   * Return values:
+   *   >= 0                          — ACCEPT / normal exit
+   *   INTERPRETER_FILTER_REJECT     — filter REJECT (requires
+   *                                   IFLAG_REJECT_RETURNS_NEG;
+   *                                   produced by handleExitRefuseCte)
+   *   -1                            — interpreter error (terrorCode set)
+   *
+   * Caller is responsible for setting up req_struct with
+   * m_linked_attr_data, m_linked_attr_len, no_exec_instructions = 0,
+   * log_size = 0 before calling.
+   */
+  int interpreterJumpTable(Signal *signal, KeyReqStruct *req_struct,
+                           Uint32 *mainProgram, Uint32 TmainProgLen,
+                           Uint32 *subroutineProg, Uint32 TsubroutineLen,
+                           Uint32 *tmpArea, Uint32 tmpAreaSz,
+                           const InterpreterHandler *handlerTable,
+                           Uint32 flags,
+                           const Register *aggRegisters = nullptr);
+
+  /* Thin wrapper preserved for the CTE filter call sites from
+   * Phase A/B.  Calls interpreterJumpTable with s_cte_filter_handlers
+   * and IFLAG_REJECT_RETURNS_NEG. */
+  int interpreterFilterCte(Signal *signal, KeyReqStruct *req_struct,
+                           Uint32 *mainProgram, Uint32 TmainProgLen,
+                           Uint32 *subroutineProg, Uint32 TsubroutineLen,
+                           Uint32 *tmpArea, Uint32 tmpAreaSz);
+
+  /* Run an aggregation-interpreter embedded user-bytecode program
+   * (the WHERE / CASE predicate compiled into an aggregation tree,
+   * invoked from AggInterpreter::ProcessRec's kOpEmbeddedInterp
+   * case).  Dispatches via the aggregation handler table with
+   * IFLAG_DISALLOW_BACKWARD_JUMPS — programs are forward-only and
+   * use no CALL/RETURN, so they terminate by construction and the
+   * loop runs without the 16000-instruction fuse. */
+  int interpreterAggEmbedded(Signal *signal, KeyReqStruct *req_struct,
+                             Uint32 *mainProgram, Uint32 TmainProgLen,
+                             Uint32 *tmpArea, Uint32 tmpAreaSz);
+  int interpreterAggEmbedded(Signal *signal, KeyReqStruct *req_struct,
+                             Uint32 *mainProgram, Uint32 TmainProgLen,
+                             Uint32 *tmpArea, Uint32 tmpAreaSz,
+                             const Register *aggRegisters);
+
+private:
 
   const Uint32 *lookupInterpreterParameter(Uint32 paramNo,
                                            const Uint32 *subptr) const;

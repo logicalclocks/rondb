@@ -3112,6 +3112,11 @@ bool Item_sum_hybrid::get_time(MYSQL_TIME *ltime) {
 
 String *Item_sum_hybrid::val_str(String *str) {
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    if (null_value) return nullptr;
+    if (m_pushed_is_string) return &m_pushed_value_string;
+  }
   if (m_is_window_function) {
     if (wf_common_init()) return error_str();
     if (m_optimize ? compute() : add()) return error_str();
@@ -3390,7 +3395,11 @@ void Item_sum_hybrid::reset_field() {
       result_field->set_null();
     } else {
       result_field->set_notnull();
-      if (m_pushed_is_double) {
+      if (m_pushed_is_string) {
+        result_field->store(m_pushed_value_string.ptr(),
+                            m_pushed_value_string.length(),
+                            m_pushed_value_string.charset());
+      } else if (m_pushed_is_double) {
         result_field->store(m_pushed_value_double);
       } else {
         result_field->store(m_pushed_value_int, unsigned_flag);

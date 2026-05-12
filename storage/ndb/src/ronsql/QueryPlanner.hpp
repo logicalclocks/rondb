@@ -40,14 +40,25 @@ static const Uint32 MAX_LINKED_PROJS = 16;
 
 struct JoinOp
 {
-  enum Type { TABLE_SCAN, INDEX_SCAN, PK_LOOKUP, UNIQUE_LOOKUP };
+  enum Type { TABLE_SCAN, INDEX_SCAN, PK_LOOKUP, UNIQUE_LOOKUP, CTE_LOOKUP,
+              CTE_SCAN };
   enum MatchType { INNER, LEFT_OUTER, SEMI_JOIN, ANTI_JOIN };
   Type type;
   MatchType match_type;
-  const NdbDictionary::Table *table;
+  const NdbDictionary::Table *table;  // NULL for CTE_LOOKUP
   const NdbDictionary::Index *index;
   LexCString alias;
   Uint32 parent_op_idx;
+  // Tree parent in the SPJ query tree. Normally equals parent_op_idx (the
+  // op whose column provides this op's join key — also used as the key-
+  // source for linkedValue). They diverge when CTE_LOOKUP siblings are
+  // chained in the main query: the key source stays on the original join
+  // parent (e.g. the real-table root), while the tree parent is set to the
+  // previous CTE_LOOKUP so the main aggregator (on the deepest CTE_LOOKUP)
+  // can read all other CTE outputs as ancestor-linked projections. See
+  // testCrossJoinTwoScalarCtes / testGreatestViaCaseAgg for the canonical
+  // chained-CTE-LOOKUP topology.
+  Uint32 tree_parent_op_idx;
   bool is_root;
   const char *child_key_col_names[MAX_JOIN_KEY_COLS];
   const char *parent_key_col_names[MAX_JOIN_KEY_COLS];
@@ -65,6 +76,10 @@ struct JoinOp
   Uint32 num_low_bounds;
   RangeBound high_bounds[MAX_JOIN_KEY_COLS];
   Uint32 num_high_bounds;
+
+  // CTE-specific fields (valid when type == CTE_LOOKUP)
+  CteDefinition *cte_def;  // Pointer to CTE definition AST node
+  Uint32 cte_def_idx;      // Index of CTE in cte_list (0-based)
 };
 
 struct JoinPlan
@@ -95,7 +110,8 @@ public:
       std::basic_ostream<char> &err,
       JoinPlan &plan,
       RdrsSchemaCache *cache = nullptr,
-      const char *database = nullptr);
+      const char *database = nullptr,
+      const CteDefinition *cte_list = nullptr);
 
   static const NdbDictionary::Index *
   findOrderedIndex(const NdbDictionary::Dictionary *dict,

@@ -27,6 +27,7 @@
 #include "NdbQueryOperation.hpp"
 #include <ndb_global.h>
 #include <NdbAggregator.hpp>
+#include <NdbAggregationCommon.hpp>
 #include <NdbDictionary.hpp>
 #include <NdbIndexScanOperation.hpp>
 #include "API.hpp"
@@ -60,6 +61,13 @@
  */
 #ifdef VM_TRACE
 //#define DEBUG_JOIN_AGG_TRACE 1
+//#define DEBUG_CTE_API 1
+#endif
+
+#ifdef DEBUG_CTE_API
+#define DEB_CTE_API(...) fprintf(stderr, "[CTE_API] " __VA_ARGS__)
+#else
+#define DEB_CTE_API(...) do {} while(0)
 #endif
 
 #ifdef DEBUG_JOIN_AGG_TRACE
@@ -119,6 +127,7 @@ static const int Err_DifferentTabForKeyRecAndAttrRec = 4287;
 static const int Err_KeyIsNULL = 4316;
 static const int Err_FinaliseNotCalled = 4519;
 static const int Err_InterpretedCodeWrongTab = 4524;
+static const int Err_OutstandingResultsMismatch = 4117;
 
 /**
  * Set NdbQueryOperationImpl::m_parallelism to this value to indicate that
@@ -239,6 +248,7 @@ class NdbWorker {
   static void clear(NdbWorker *frags, Uint32 noOfWorkers);
 
   Uint32 getWorkerNo() const { return m_workerNo; }
+  Uint32 rootOpNo() const { return m_rootOpNo; }
 
   /**
    * Prepare for receiving another batch of results.
@@ -256,13 +266,22 @@ class NdbWorker {
 
   void setReceivedMore();  // Need mutex lock
 
-  void incrOutstandingResults(Int32 delta) {
+  bool incrOutstandingResults(Int32 delta) {
     if (traceSignals) {
       ndbout << "incrOutstandingResults: " << m_outstandingResults
              << ", with: " << delta << endl;
     }
     m_outstandingResults += delta;
-    assert(!(m_confReceived && m_outstandingResults < 0));
+    if (unlikely(m_confReceived && m_outstandingResults < 0)) {
+      // Data node sent more results than reported in SCAN_TABCONF.
+      // Return error instead of continuing with corrupt state.
+      ndbout << "ERROR: outstanding results mismatch: "
+             << m_outstandingResults << " after delta=" << delta
+             << ", confReceived=true" << endl;
+      assert(false);
+      return false;
+    }
+    return true;
   }
 
   void throwRemainingResults() {
@@ -355,6 +374,9 @@ class NdbWorker {
 
   /** Number of this worker result set as assigned by ::init().*/
   Uint32 m_workerNo;
+
+  /** Root operation number (cached from query, 0 for non-CTE). */
+  Uint32 m_rootOpNo;
 
   /** For processing results originating from worker (Array of).*/
   NdbResultStream *m_resultStreams;
@@ -1574,6 +1596,7 @@ NdbWorker *NdbWorker::receiverIdLookup(NdbWorker *workers, Uint32 noOfWorkers,
 NdbWorker::NdbWorker()
     : m_query(nullptr),
       m_workerNo(voidWorkerNo),
+      m_rootOpNo(0),
       m_resultStreams(nullptr),
       m_pendingRequests(0),
       m_availResultSets(0),
@@ -1594,6 +1617,7 @@ void NdbWorker::init(NdbQueryImpl &query, Uint32 workerNo) {
   assert(m_workerNo == voidWorkerNo);
   m_query = &query;
   m_workerNo = workerNo;
+  m_rootOpNo = query.getRootStreamOpNo();
 
   m_resultStreams = reinterpret_cast<NdbResultStream *>(
       query.getResultStreamAlloc().allocObjMem(query.getNoOfOperations()));
@@ -1602,7 +1626,13 @@ void NdbWorker::init(NdbQueryImpl &query, Uint32 workerNo) {
   for (unsigned opNo = 0; opNo < query.getNoOfOperations(); opNo++) {
     NdbQueryOperationImpl &op = query.getQueryOperation(opNo);
     new (&m_resultStreams[opNo]) NdbResultStream(op, *this);
-    m_resultStreams[opNo].prepare();
+    // CTE subtree containers and CTE-embedded ops don't receive
+    // rows via the NDB API — skip receiver buffer allocation.
+    const NdbQueryOperationDefImpl &def = op.getQueryOperationDef();
+    if (def.getType() != NdbQueryOperationDef::CteSubtree &&
+        !def.isCteEmbedded()) {
+      m_resultStreams[opNo].prepare();
+    }
   }
 }
 
@@ -1719,7 +1749,8 @@ void NdbWorker::grabNextResultSet()  // Need mutex
   assert(m_pendingRequests > 0);
   m_pendingRequests--;
 
-  NdbResultStream &rootStream = getResultStream(0);
+  const Uint32 rootOp = rootOpNo();
+  NdbResultStream &rootStream = getResultStream(rootOp);
   rootStream.prepareResultSet(m_preparedReceiveSet, m_activeScans);
 
   /* Position at the first (sorted?) row available from this worker.
@@ -1732,8 +1763,9 @@ void NdbWorker::setConfReceived(Uint32 tcPtrI) {
      message. For a scan, there should only be one SCAN_TABCONF per
      worker result set.
   */
-  assert(!getResultStream(0).isScanQuery() || !m_confReceived);
-  getResultStream(0).getReceiver().m_tcPtrI = tcPtrI;
+  const Uint32 rootOp = rootOpNo();
+  assert(!getResultStream(rootOp).isScanQuery() || !m_confReceived);
+  getResultStream(rootOp).getReceiver().m_tcPtrI = tcPtrI;
   m_confReceived = true;
 }
 
@@ -1741,7 +1773,9 @@ bool NdbWorker::finalBatchReceived() const {
   return m_confReceived && getReceiverTcPtrI() == RNIL;
 }
 
-bool NdbWorker::isEmpty() const { return getResultStream(0).isEmpty(); }
+bool NdbWorker::isEmpty() const {
+  return getResultStream(rootOpNo()).isEmpty();
+}
 
 /**
  * SPJ requests are identified by the receiver-id of the
@@ -1752,11 +1786,11 @@ bool NdbWorker::isEmpty() const { return getResultStream(0).isEmpty(); }
  * We provide some convenient accessors for fetching this info
  */
 Uint32 NdbWorker::getReceiverId() const {
-  return getResultStream(0).getReceiver().getId();
+  return getResultStream(rootOpNo()).getReceiver().getId();
 }
 
 Uint32 NdbWorker::getReceiverTcPtrI() const {
-  return getResultStream(0).getReceiver().m_tcPtrI;
+  return getResultStream(rootOpNo()).getReceiver().m_tcPtrI;
 }
 
 ///////////////////////////////////////////
@@ -1863,13 +1897,13 @@ int NdbQueryImpl::processAggResults() {
 
     /**
      * Kernel sends [AttributeHeader, n_gb_cols|n_agg_results, ...].
-     * NdbAggregator::ProcessRes() expects data starting from the
-     * n_gb_cols|n_agg_results word, so skip the first word
-     * (AttributeHeader).
+     * Phase I.6 (F.2-K.5d): NdbAggregator::ProcessRes now reads the
+     * marker word (AGG_RESULT vs AGG_CHAR_RESULT) itself, so pass
+     * the buffer including the marker.
      */
     if (batchLen > 1) {
       m_aggregator->ProcessRes(
-          const_cast<char *>(reinterpret_cast<const char *>(batchData + 1)));
+          const_cast<char *>(reinterpret_cast<const char *>(batchData)));
     }
   }
   m_aggregator->PrepareResults();
@@ -2194,6 +2228,7 @@ NdbQueryImpl::NdbQueryImpl(NdbTransaction &trans,
       m_operations(nullptr),
       m_countOperations(0),
       m_globalCursor(0),
+      m_rootOpNo(0),
       m_pendingWorkers(0),
       m_workerCount(0),
       m_fragsPerWorker(0),
@@ -2523,7 +2558,7 @@ int NdbQueryImpl::setBound(const NdbRecord *key_record,
 int NdbQueryImpl::getRangeNo() const {
   const NdbWorker *worker = m_applFrags.getCurrent();
   if (worker != nullptr) {
-    const int range_no = worker->getResultStream(0).getCurrentRangeNo();
+    const int range_no = worker->getResultStream(m_rootOpNo).getCurrentRangeNo();
     if (range_no >= 0) return range_no;
     assert(!needRangeNo());
   }
@@ -2576,16 +2611,29 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextResult(bool fetchAllowed,
 
   while (m_state != EndOfData)  // Or likely:  return when 'gotRow'
   {
+    DEB_CTE_API("nextResult: cursor=%u state=%d rootOpNo=%u\n",
+                m_globalCursor, (int)m_state, getRootOpNo());
     NdbQuery::NextResultOutcome res =
         getQueryOperation(m_globalCursor).nextResult(fetchAllowed, forceSend);
+
+    DEB_CTE_API("nextResult: cursor=%u res=%d\n", m_globalCursor, (int)res);
 
     if (unlikely(res == NdbQuery::NextResult_error))
       return res;
 
     else if (res == NdbQuery::NextResult_scanComplete) {
-      if (m_globalCursor == 0)  // Completed reading all results from root
+      if (m_globalCursor <= getRootOpNo())  // Completed reading all from root
         break;
-      m_globalCursor--;  // Get 'next' from  ancestor
+      m_globalCursor--;  // Get 'next' from ancestor
+      // Skip CTE-embedded operations when walking back
+      while (m_globalCursor > getRootOpNo()) {
+        const NdbQueryOperationDefImpl &d =
+            getQueryOperation(m_globalCursor).getQueryOperationDef();
+        if (d.getType() != NdbQueryOperationDef::CteSubtree &&
+            !d.isCteEmbedded())
+          break;
+        m_globalCursor--;
+      }
     }
 
     else if (res == NdbQuery::NextResult_gotRow) {
@@ -2595,6 +2643,12 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextResult(bool fetchAllowed,
       //
       for (uint child = m_globalCursor + 1; child < getNoOfOperations();
            child++) {
+        // Skip CTE-embedded operations in the result iteration
+        const NdbQueryOperationDefImpl &cDef =
+            getQueryOperation(child).getQueryOperationDef();
+        if (cDef.getType() == NdbQueryOperationDef::CteSubtree ||
+            cDef.isCteEmbedded())
+          continue;
         res = getQueryOperation(child).firstResult();
         if (unlikely(res == NdbQuery::NextResult_error))
           return res;
@@ -2636,6 +2690,7 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextRootResult(bool fetchAllowed,
        * complete (under mutex protection), or block until data
        * previously requested arrives.
        */
+      DEB_CTE_API("nextRootResult: awaitMoreResults (blocking)\n");
       const FetchResult fetchResult = awaitMoreResults(forceSend);
       switch (fetchResult) {
         case FetchResult_ok:  // OK - got data wo/ error
@@ -2672,7 +2727,7 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextRootResult(bool fetchAllowed,
           assert(false);
       }
     } else {
-      worker->getResultStream(0).nextResult();  // Consume current
+      worker->getResultStream(m_rootOpNo).nextResult();  // Consume current
       m_applFrags.reorganize();                 // Calculate new current
       // ::reorganize(). may update 'current' worker.
       worker = m_applFrags.getCurrent();
@@ -2694,7 +2749,8 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextRootResult(bool fetchAllowed,
     }
 
     if (worker != nullptr) {
-      if (unlikely(getRoot().fetchRow(worker->getResultStream(0)) == -1))
+      if (unlikely(getRoot().fetchRow(
+              worker->getResultStream(m_rootOpNo)) == -1))
         return NdbQuery::NextResult_error;
       return NdbQuery::NextResult_gotRow;
     }
@@ -2960,7 +3016,10 @@ bool NdbQueryImpl::execTCKEYCONF() {
 
   // We will get 1 + #leaf-nodes TCKEYCONF for a lookup...
   worker.setConfReceived(RNIL);
-  worker.incrOutstandingResults(-1);
+  if (unlikely(!worker.incrOutstandingResults(-1))) {
+    setFetchTerminated(Err_OutstandingResultsMismatch, false);
+    return false;
+  }
 
   bool ret = false;
   if (worker.isFragBatchComplete()) {
@@ -2970,7 +3029,7 @@ bool NdbQueryImpl::execTCKEYCONF() {
   if (traceSignals) {
     ndbout << "NdbQueryImpl::execTCKEYCONF(): returns:" << ret
            << ", m_pendingWorkers=" << m_pendingWorkers << ", rootStream= {"
-           << worker.getResultStream(0) << "}" << endl;
+           << worker.getResultStream(m_rootOpNo) << "}" << endl;
   }
   return ret;
 }  // NdbQueryImpl::execTCKEYCONF
@@ -2980,6 +3039,63 @@ void NdbQueryImpl::execCLOSE_SCAN_REP(int errorCode, bool needClose) {
     ndbout << "NdbQueryImpl::execCLOSE_SCAN_REP()" << endl;
   }
   setFetchTerminated(errorCode, needClose);
+}
+
+NdbQueryOperationImpl &NdbQueryImpl::getRoot() const {
+  for (Uint32 i = 0; i < m_countOperations; i++) {
+    const NdbQueryOperationDefImpl &def =
+        m_operations[i].getQueryOperationDef();
+    if (def.getType() != NdbQueryOperationDef::CteSubtree &&
+        !def.isCteEmbedded()) {
+      return m_operations[i];
+    }
+  }
+  return m_operations[0];
+}
+
+Uint32 NdbQueryImpl::getRootOpNo() const {
+  for (Uint32 i = 0; i < m_countOperations; i++) {
+    const NdbQueryOperationDefImpl &def =
+        m_operations[i].getQueryOperationDef();
+    if (def.getType() != NdbQueryOperationDef::CteSubtree &&
+        !def.isCteEmbedded()) {
+      return def.getOpNo();
+    }
+  }
+  return 0;
+}
+
+const NdbTableImpl &NdbQueryImpl::getFragRoutingTable() const {
+  const NdbQueryOperationDefImpl &rootDef =
+      getRoot().getQueryOperationDef();
+  const NdbTableImpl *table =
+      rootDef.getIndex() ? rootDef.getIndex()->getIndexTable()
+                         : &rootDef.getTable();
+  // lookupCte: not a scan operation at all → no table.
+  // scanCte over synthetic virt table: scan op but FragmentCount==0.
+  // In both cases, fall back to the first CTE-embedded scan's table —
+  // that's the real source whose fragment topology DBTC needs to
+  // route SCAN_FRAGREQ correctly.  scanCte over a registered virt
+  // table (existing testCteNdbApi pattern) has FragmentCount > 0
+  // and the fallback is skipped.
+  const bool rootIsCteScan =
+      (rootDef.getType() == NdbQueryOperationDef::CteScan);
+  const bool needOverride =
+      !rootDef.isScanOperation() ||
+      (rootIsCteScan &&
+       static_cast<const NdbDictionary::Table &>(*table)
+           .getFragmentCount() == 0);
+  if (needOverride) {
+    for (Uint32 i = 0; i < m_countOperations; i++) {
+      const NdbQueryOperationDefImpl &opDef =
+          m_operations[i].getQueryOperationDef();
+      if (opDef.isCteEmbedded() && opDef.isScanOperation()) {
+        table = &opDef.getTable();
+        break;
+      }
+    }
+  }
+  return *table;
 }
 
 int NdbQueryImpl::prepareSend() {
@@ -2998,11 +3114,29 @@ int NdbQueryImpl::prepareSend() {
   //
   Uint32 rootFragments;
   if (getQueryDef().isScanQuery()) {
-    const NdbQueryOperationImpl &rootOp = getRoot();
+    NdbQueryOperationImpl &rootOp = getRoot();
     const NdbDictionary::Table &rootTable =
-        rootOp.getQueryOperationDef().getTable();
+        static_cast<const NdbDictionary::Table &>(getFragRoutingTable());
+
+    /* For CTE compound queries the root scan is not op[0] — CTE subtree
+     * containers precede it. The constructor initializes m_parallelism
+     * based on opNo==0, giving the actual root Parallelism_adaptive
+     * instead of Parallelism_max. This must be corrected so that
+     * SFP_PARALLEL is set in the scan parameters, ensuring DBSPJ starts
+     * all fragments immediately rather than using adaptive parallelism
+     * (which would stall waiting for SCAN_NEXTREQ that the API won't
+     * send until all fragments report). */
+    if (rootOp.m_parallelism == Parallelism_adaptive &&
+        rootOp.getQueryOperationDef().getOpNo() != 0) {
+      rootOp.m_parallelism = Parallelism_max;
+    }
 
     rootFragments = rootTable.getFragmentCount();
+    DEB_CTE_API("prepareSend: rootOpNo=%u rootFragments=%u parallelism=0x%x "
+                "hasAgg=%d numOps=%u\n",
+                rootOp.getQueryOperationDef().getOpNo(),
+                rootFragments, rootOp.m_parallelism,
+                m_hasAggregation, getNoOfOperations());
     if (rootFragments == 0) {
       // No fragments - should never happen
       setErrorCode(QRY_TABLE_HAVE_NO_FRAGMENTS);
@@ -3112,8 +3246,13 @@ int NdbQueryImpl::prepareSend() {
   }
 
   // Some preparation for later batchsize calculations pr. (sub) scan
+  DEB_CTE_API("prepareSend: before calculateBatchedRows, "
+              "workerCount=%u fragsPerWorker=%u\n",
+              m_workerCount, m_fragsPerWorker);
   getRoot().calculateBatchedRows(nullptr);
   getRoot().setBatchedRows(1);
+  DEB_CTE_API("prepareSend: after calculateBatchedRows, "
+              "rootMaxBatchRows=%u\n", getRoot().getMaxBatchRows());
 
   /**
    * Calculate total amount of row buffer space for all operations and
@@ -3132,6 +3271,10 @@ int NdbQueryImpl::prepareSend() {
     opBuffSize += op.getRowSize();  // Unpacked row from buffers
     totalBuffSize += opBuffSize;
   }
+  DEB_CTE_API("prepareSend: totalBuffSize=%u rootFragments=%u "
+              "allocating=%u\n",
+              totalBuffSize, rootFragments,
+              rootFragments * totalBuffSize);
   m_rowBufferAlloc.init(rootFragments * totalBuffSize);
 
   if (getQueryDef().isScanQuery()) {
@@ -3151,6 +3294,9 @@ int NdbQueryImpl::prepareSend() {
    * Will also cause a ResultStream object containing a
    * NdbReceiver to be constructed for each operation in QueryTree
    */
+  // Compute root op number before worker init (workers cache it)
+  m_rootOpNo = getRootOpNo();
+
   m_workers = new NdbWorker[m_workerCount];
   if (m_workers == nullptr) {
     setErrorCode(Err_MemoryAlloc);
@@ -3196,6 +3342,10 @@ int NdbQueryImpl::prepareSend() {
 
   if (getQueryDef().isScanQuery()) {
     NdbWorker::buildReceiverIdMap(m_workers, m_workerCount);
+    for (Uint32 w = 0; w < m_workerCount; w++) {
+      DEB_CTE_API("prepareSend: worker[%u] receiverId=0x%x\n",
+                  w, m_workers[w].getReceiverId());
+    }
   }
 
   // Aggregation setup (RONDB-733)
@@ -3217,6 +3367,11 @@ int NdbQueryImpl::prepareSend() {
 
   assert(m_pendingWorkers == 0);
   m_state = Prepared;
+
+  // For CTE queries, set cursor to main root (skip CTE ops)
+  m_rootOpNo = getRootOpNo();
+  m_globalCursor = m_rootOpNo;
+
   return 0;
 }  // NdbQueryImpl::prepareSend
 
@@ -3226,82 +3381,128 @@ int NdbQueryImpl::prepareSend() {
  * aggregation program for Section 2, and create NdbAggregator.
  */
 int NdbQueryImpl::prepareAggregation() {
-  assert(getQueryDef().isScanQuery());
+  // Aggregation is supported for both scan queries (scanCte main root)
+  // and lookup queries (lookupCte main root with CTE-only aggregation).
   const Uint32 numLeaves = getQueryDef().getNumAggregateLeaves();
-  assert(numLeaves >= 1);
+  const Uint32 numCtes = getQueryDef().getNumCtes();
+
+  DEB_CTE_API("prepareAggregation: numLeaves=%u numCtes=%u "
+              "numOps=%u workerCount=%u\n",
+              numLeaves, numCtes,
+              getQueryDef().getNoOfOperations(), m_workerCount);
+
+  // Must have either aggregate leaves or CTEs (or both)
+  if (unlikely(numLeaves == 0 && numCtes == 0)) {
+    setErrorCode(QRY_WRONG_OPERATION_TYPE);
+    return -1;
+  }
   if (unlikely(numLeaves > NDB_SPJ_MAX_TREE_NODES)) {
     setErrorCode(QRY_WRONG_OPERATION_TYPE);
     return -1;
   }
 
-  // Use first leaf for GROUP BY column info and table reference
-  const Uint32 firstLeafOpNo = getQueryDef().getAggregateLeafOpNo(0);
-  const NdbQueryOperationDefImpl &firstLeafDef =
-      getQueryDef().getQueryOperation(firstLeafOpNo);
-  const NdbQueryOptionsImpl &firstOpts = firstLeafDef.getOptions();
+  const NdbQueryOptionsImpl *firstOpts = nullptr;
+  if (numLeaves > 0) {
+    // Use first leaf for GROUP BY column info and table reference
+    const Uint32 firstLeafOpNo = getQueryDef().getAggregateLeafOpNo(0);
+    const NdbQueryOperationDefImpl &firstLeafDef =
+        getQueryDef().getQueryOperation(firstLeafOpNo);
+    firstOpts = &firstLeafDef.getOptions();
 
-  // Section header: (0x0722 << 16) | numLeaves
-  // Then per leaf: [progLen, program words...]
-  // 0x0722 distinguishes from old flat format (0x0721 magic).
-  m_aggProgram.append((0x0722 << 16) | numLeaves);
-  for (Uint32 leaf = 0; leaf < numLeaves; leaf++) {
-    const Uint32 leafOpNo = getQueryDef().getAggregateLeafOpNo(leaf);
-    const NdbQueryOperationDefImpl &leafDef =
-        getQueryDef().getQueryOperation(leafOpNo);
-    const NdbQueryOptionsImpl &leafOpts = leafDef.getOptions();
-    const Uint32 *progBuf = leafOpts.getAggProgramBuffer();
-    const Uint32 progLen = leafOpts.getAggProgramLen();
-    assert(progBuf != nullptr && progLen > 0);
-    m_aggProgram.append(progLen);
-    for (Uint32 i = 0; i < progLen; i++) {
-      m_aggProgram.append(progBuf[i]);
+    // Section header: (0x0722 << 16) | numLeaves
+    // Then per leaf: [progLen, program words...]
+    m_aggProgram.append((0x0722 << 16) | numLeaves);
+    for (Uint32 leaf = 0; leaf < numLeaves; leaf++) {
+      const Uint32 leafOpNo = getQueryDef().getAggregateLeafOpNo(leaf);
+      const NdbQueryOperationDefImpl &leafDef =
+          getQueryDef().getQueryOperation(leafOpNo);
+      const NdbQueryOptionsImpl &leafOpts = leafDef.getOptions();
+      const Uint32 *progBuf = leafOpts.getAggProgramBuffer();
+      const Uint32 progLen = leafOpts.getAggProgramLen();
+      assert(progBuf != nullptr && progLen > 0);
+      m_aggProgram.append(progLen);
+      for (Uint32 i = 0; i < progLen; i++) {
+        m_aggProgram.append(progBuf[i]);
+      }
     }
   }
+  // No main agg program when numLeaves==0 — CTE_DEFS_MARKER
+  // immediately follows aggReceiverId in the KeyInfo section.
+
+  // Append CTE definitions if present
+  if (numCtes > 0) {
+    m_aggProgram.append(CTE_DEFS_MARKER);
+    m_aggProgram.append(numCtes);
+    for (Uint32 c = 0; c < numCtes; c++) {
+      const NdbQueryDefImpl::CteDefInfo &cte = getQueryDef().getCteDef(c);
+      m_aggProgram.append(cte.tableId);
+      m_aggProgram.append(cte.schemaVersion);
+      m_aggProgram.append((Uint32)(cte.depMask & 0xFFFFFFFF));  // lo
+      m_aggProgram.append((Uint32)(cte.depMask >> 32));          // hi
+      m_aggProgram.append(cte.flags);
+      m_aggProgram.append(cte.aggProgram.size());
+      for (Uint32 i = 0; i < cte.aggProgram.size(); i++) {
+        m_aggProgram.append(cte.aggProgram[i]);
+      }
+    }
+  }
+
+  DEB_CTE_API("prepareAggregation: aggProgram built, %u words\n",
+              m_aggProgram.getSize());
+
   if (unlikely(m_aggProgram.isMemoryExhausted())) {
     setErrorCode(Err_MemoryAlloc);
     return -1;
   }
 
-  // Allocate NdbReceiver objects for aggregation results.
-  // Use m_workerCount receivers — one per SPJ worker gives good
-  // hash distribution for group routing.
-  Ndb *const ndb = m_transaction.getNdb();
-  m_numAggReceivers = m_workerCount;
-  m_aggReceivers = new NdbReceiver *[m_numAggReceivers];
-  if (unlikely(m_aggReceivers == nullptr)) {
-    setErrorCode(Err_MemoryAlloc);
-    return -1;
-  }
-  for (Uint32 i = 0; i < m_numAggReceivers; i++) {
-    NdbReceiver *rec = ndb->getNdbScanRec();
-    if (unlikely(rec == nullptr)) {
+  // Allocate NdbReceiver objects and NdbAggregator only when the
+  // main query has aggregate leaves. CTE-only queries (no main agg)
+  // use standard scan receivers for CTE_LOOKUP result rows.
+  if (numLeaves > 0) {
+    // Use m_workerCount receivers — one per SPJ worker gives good
+    // hash distribution for group routing.
+    Ndb *const ndb = m_transaction.getNdb();
+    m_numAggReceivers = m_workerCount;
+    m_aggReceivers = new NdbReceiver *[m_numAggReceivers];
+    if (unlikely(m_aggReceivers == nullptr)) {
       setErrorCode(Err_MemoryAlloc);
       return -1;
     }
-    rec->init(NdbReceiver::NDB_AGG_RECEIVER, this);
-    m_aggReceivers[i] = rec;
+    for (Uint32 i = 0; i < m_numAggReceivers; i++) {
+      NdbReceiver *rec = ndb->getNdbScanRec();
+      if (unlikely(rec == nullptr)) {
+        setErrorCode(Err_MemoryAlloc);
+        return -1;
+      }
+      rec->init(NdbReceiver::NDB_AGG_RECEIVER, this);
+      m_aggReceivers[i] = rec;
+    }
+
+    // Create NdbAggregator for result collection.
+    const NdbTableImpl *aggTable = firstOpts->getAggTable();
+    assert(aggTable != nullptr);
+    m_aggregator = new NdbAggregator(aggTable->m_facade);
   }
 
-  // Create NdbAggregator for result collection.
-  // Use the table from the first aggregate leaf operation.
-  const NdbTableImpl *aggTable = firstOpts.getAggTable();
-  assert(aggTable != nullptr);
-  m_aggregator = new NdbAggregator(aggTable->m_facade);
-
-  if (numLeaves == 1) {
+  if (numLeaves == 0) {
+    // CTE-only query: no main aggregation, no aggregator init needed.
+    // The m_aggProgram contains only CTE definitions.
+  } else if (numLeaves == 1) {
     // Single-leaf: initialize directly from program
-    const Uint32 *progBuf = firstOpts.getAggProgramBuffer();
-    const Uint32 progLen = firstOpts.getAggProgramLen();
+    const Uint32 *progBuf = firstOpts->getAggProgramBuffer();
+    const Uint32 progLen = firstOpts->getAggProgramLen();
     m_aggregator->initForResults(progBuf, progLen,
-                                 firstOpts.getAggGbColumns(),
-                                 firstOpts.getAggNGroupByCols());
+                                 firstOpts->getAggGbColumns(),
+                                 firstOpts->getAggNGroupByCols(),
+                                 firstOpts->getAggColumns(),
+                                 progBuf[1] & 0xFFFF);
   } else {
     // Multi-leaf: build combined result program with total n_agg_results
     // and all agg instructions from all leaves (with adjusted slot indices).
     // Program format: [header(8), gb_cols..., instructions...]
     // Header word 1: (n_gb_cols << 16) | n_agg_results_total
     const Uint32 HEADER_SIZE = 8;
-    const Uint32 *firstProg = firstOpts.getAggProgramBuffer();
+    const Uint32 *firstProg = firstOpts->getAggProgramBuffer();
     const Uint32 nGbCols = firstProg[1] >> 16;
 
     // Calculate total n_agg_results and collect all instructions
@@ -3346,6 +3547,12 @@ int NdbQueryImpl::prepareAggregation() {
            nGbCols * sizeof(Uint32));
 
     // Copy instructions from all leaves, adjusting agg slot indices
+    const NdbDictionary::Column **combinedAggColumns =
+        new const NdbDictionary::Column *[totalAggResults];
+    if (combinedAggColumns == nullptr) {
+      delete[] combinedProg;
+      return Err_MemoryAlloc;
+    }
     Uint32 pos = HEADER_SIZE + nGbCols;
     Uint32 accOffset = 0;
     for (Uint32 leaf = 0; leaf < numLeaves; leaf++) {
@@ -3360,13 +3567,24 @@ int NdbQueryImpl::prepareAggregation() {
         }
         combinedProg[pos++] = word;
       }
+      const Uint32 leafOpNo = getQueryDef().getAggregateLeafOpNo(leaf);
+      const NdbQueryOperationDefImpl &leafDef =
+          getQueryDef().getQueryOperation(leafOpNo);
+      const NdbQueryOptionsImpl &leafOpts = leafDef.getOptions();
+      memcpy(combinedAggColumns + accOffset,
+             leafOpts.getAggColumns(),
+             leafInstrs[leaf].nResults *
+                 sizeof(const NdbDictionary::Column *));
       accOffset += leafInstrs[leaf].nResults;
     }
     assert(pos == combinedLen);
 
     m_aggregator->initForResults(combinedProg, combinedLen,
-                                 firstOpts.getAggGbColumns(),
-                                 firstOpts.getAggNGroupByCols());
+                                 firstOpts->getAggGbColumns(),
+                                 firstOpts->getAggNGroupByCols(),
+                                 combinedAggColumns,
+                                 totalAggResults);
+    delete[] combinedAggColumns;
     delete[] combinedProg;
   }
   return 0;
@@ -3579,9 +3797,15 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
 
   const NdbQueryOperationImpl &root = getRoot();
   const NdbQueryOperationDefImpl &rootDef = root.getQueryOperationDef();
-  const NdbTableImpl *const rootTable =
-      rootDef.getIndex() ? rootDef.getIndex()->getIndexTable()
-                         : &rootDef.getTable();
+  /* For CTE queries where the main root is a lookup (lookupCte) or
+   * a scanCte over a synthetic virt table, getFragRoutingTable falls
+   * back to the CTE base scan table so DBTC can route fragments
+   * correctly via DIH.  Otherwise it's the root op's own table. */
+  const NdbTableImpl *rootTable =
+      getQueryDef().isScanQuery()
+          ? &getFragRoutingTable()
+          : (rootDef.getIndex() ? rootDef.getIndex()->getIndexTable()
+                                : &rootDef.getTable());
 
   Uint32 tTableId = rootTable->m_id;
   Uint32 tSchemaVersion = rootTable->m_version;
@@ -3590,7 +3814,7 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
     m_workers[i].prepareNextReceiveSet();
   }
 
-  if (rootDef.isScanOperation()) {
+  if (rootDef.isScanOperation() || getQueryDef().isScanQuery()) {
     Uint32 scan_flags = 0;  // TODO: Specify with ScanOptions::SO_SCANFLAGS
 
     // The number of acc-scans are limited therefore use tup-scans instead.
@@ -3742,13 +3966,19 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
     Uint32Buffer combinedAggSec2;
     if (m_hasAggregation) {
       assert(m_aggProgram.getSize() > 0);
-      assert(m_numAggReceivers > 0);
       const Uint32 boundsLen = m_keyInfo.getSize();
       combinedAggSec2.append(boundsLen);
       if (boundsLen > 0) {
         combinedAggSec2.append(m_keyInfo);
       }
-      combinedAggSec2.append(m_aggReceivers[0]->getId());
+      // aggReceiverId: use first agg receiver if main query has
+      // aggregation, else use 0 (CTE-only queries — DBTC uses this
+      // for result routing but CTE results go to hash tables, not API).
+      if (m_numAggReceivers > 0) {
+        combinedAggSec2.append(m_aggReceivers[0]->getId());
+      } else {
+        combinedAggSec2.append(Uint32(0));
+      }
       combinedAggSec2.append(m_aggProgram);
       assert(!combinedAggSec2.isMemoryExhausted());
     }
@@ -4372,9 +4602,10 @@ int NdbQueryImpl::OrderedFragSet::compare(const NdbWorker &worker1,
   }
 
   /* Neither stream is empty so we must compare records.*/
+  const Uint32 rootOp = worker1.rootOpNo();
   return compare_ndbrecord(
-      &worker1.getResultStream(0).getReceiver(),
-      &worker2.getResultStream(0).getReceiver(), m_keyRecord, m_resultRecord,
+      &worker1.getResultStream(rootOp).getReceiver(),
+      &worker2.getResultStream(rootOp).getReceiver(), m_keyRecord, m_resultRecord,
       m_resultMask, m_ordering == NdbQueryOptions::ScanOrdering_descending,
       false);
 }
@@ -4973,7 +5204,7 @@ Uint32 NdbQueryOperationImpl ::calculateBatchedRows(
      * determined.
      */
     const Uint32 rootFragments =
-        getRoot().getQueryOperationDef().getTable().getFragmentCount();
+        getQuery().getFragRoutingTable().getFragmentCount();
     Uint32 batchByteSize;
     /**
      * myClosestScan->m_maxBatchRows may be zero to indicate that we
@@ -4983,10 +5214,18 @@ Uint32 NdbQueryOperationImpl ::calculateBatchedRows(
      * values to set, or cap, #rows / #bytes in batch for *each fragment*.
      */
     maxBatchRows = myClosestScan->m_maxBatchRows;
+    /* Use rootFragments as parallelism for both Parallelism_max and
+     * Parallelism_adaptive. The latter is the default for scan ops
+     * that are not op[0] (e.g. root scans displaced by CTE subtrees).
+     * Passing the sentinel value directly would divide batch_byte_size
+     * by ~4 billion, producing zero. */
+    const Uint32 rootPar = getRoot().m_parallelism;
+    const Uint32 effectivePar =
+        (rootPar == Parallelism_max || rootPar == Parallelism_adaptive)
+            ? rootFragments
+            : rootPar;
     NdbReceiver::calculate_batch_size(*ndb.theImpl,
-                                      getRoot().m_parallelism == Parallelism_max
-                                          ? rootFragments
-                                          : getRoot().m_parallelism,
+                                      effectivePar,
                                       maxBatchRows,
                                       batchByteSize,
                                       MAX_PARALLEL_OP_PER_SCAN_SPJ);
@@ -5041,6 +5280,14 @@ void NdbQueryOperationImpl::setBatchedRows(Uint32 batchedRows) {
 int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
                                            const QueryNode *&queryNode) {
   const NdbQueryOperationDefImpl &def = getQueryOperationDef();
+#ifdef DEBUG_CTE_API
+  const Uint32 entrySize = attrInfo.getSize();
+  DEB_CTE_API("prepareAttrInfo: op[%u] type=%d treeOp=%u treeLen=%u "
+              "attrInfoPos=%u\n",
+              def.getInternalOpNo(), (int)def.getType(),
+              QueryNode::getOpType(queryNode->len),
+              QueryNode::getLength(queryNode->len), entrySize);
+#endif
 
   /**
    * Serialize parameters referred by this NdbQueryOperation.
@@ -5117,6 +5364,16 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
       assert(def.isScanOperation() && def.getOpNo() == 0);
       attrInfo.alloc(QN_ScanFragParameters_v1::NodeSize);
       break;
+    case QueryNodeParameters::QN_CTE_SUBTREE:
+      attrInfo.alloc(QN_CteSubtreeParameters::NodeSize);
+      break;
+    case QueryNodeParameters::QN_CTE_LOOKUP:
+      attrInfo.alloc(QN_CteLookupParameters::NodeSize);
+      break;
+    case QueryNodeParameters::QN_CTE_SCAN:
+      assert(def.isScanOperation());
+      attrInfo.alloc(QN_CteScanParameters::NodeSize);
+      break;
     default:
       assert(false);
   }
@@ -5158,10 +5415,20 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
     // not through the normal row projection path).
     // has children (intermediate node providing linked attributes).
     if (getNoOfChildOperations() == 0 && !def.isAggregateLeaf() &&
-        !def.isQueryAggregation()) {
+        !def.isQueryAggregation() &&
+        def.getType() != NdbQueryOperationDef::CteSubtree &&
+        def.getType() != NdbQueryOperationDef::CteLookup &&
+        !def.isCteEmbedded()) {
       return QRY_EMPTY_PROJECTION;
     }
-  } else {
+  } else if (def.getType() != NdbQueryOperationDef::CteLookup &&
+             def.getType() != NdbQueryOperationDef::CteScan) {
+    /* Standard projection: serialize real table column reads.
+     * CTE_LOOKUP and CTE_SCAN use virtual column IDs (0, 1, ...) added
+     * directly in the QN_CTE_* switch cases below — skip real column
+     * projection so the serialization order
+     * (PI_ATTR_INTERPRET before PI_ATTR_LIST) matches what parseDA
+     * expects. */
     requestInfo |= DABits::PI_ATTR_LIST;
     const int error = serializeProject(attrInfo);
     if (unlikely(error)) {
@@ -5194,9 +5461,17 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
           reinterpret_cast<QN_ScanFragParameters *>(attrInfo.addr(startPos));
       if (unlikely(param == nullptr)) return Err_MemoryAlloc;
 
-      const Uint32 fragsPerWorker = getQuery().m_fragsPerWorker;
-      const Uint32 batchRows = getMaxBatchRows() * fragsPerWorker;
-      const Uint32 batchByteSize = getMaxBatchBytes() * fragsPerWorker;
+      Uint32 batchRows, batchByteSize;
+      if (def.isCteEmbedded()) {
+        // CTE-embedded scans: use fixed defaults since API-side batch
+        // computation doesn't apply (DBSPJ handles the scan internally).
+        batchRows = 256;
+        batchByteSize = 65536;
+      } else {
+        const Uint32 fragsPerWorker = getQuery().m_fragsPerWorker;
+        batchRows = getMaxBatchRows() * fragsPerWorker;
+        batchByteSize = getMaxBatchBytes() * fragsPerWorker;
+      }
       assert(batchRows <= batchByteSize);
       assert(m_parallelism == Parallelism_max ||
              m_parallelism == Parallelism_adaptive);
@@ -5207,9 +5482,19 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
         requestInfo |= QN_ScanFragParameters::SFP_PRUNE_PARAMS;
       }
       if (getOrdering() != NdbQueryOptions::ScanOrdering_unordered) {
-        requestInfo |= QN_ScanFragParameters::SFP_SORTED_ORDER;
-        // Only supported for root yet.
-        assert(this == &getRoot());
+        if (def.isCteEmbedded()) {
+          // CTE-embedded scans: pass descending flag via SFP_DESCENDING
+          // so DBSPJ sets DescendingFlag on the SCAN_FRAGREQ to DBLQH.
+          // SFP_SORTED_ORDER is not used here (it triggers SPJ merge-sort
+          // which is root-only and not needed for CTE materialization).
+          if (getOrdering() == NdbQueryOptions::ScanOrdering_descending) {
+            requestInfo |= QN_ScanFragParameters::SFP_DESCENDING;
+          }
+        } else {
+          requestInfo |= QN_ScanFragParameters::SFP_SORTED_ORDER;
+          // Only supported for root yet.
+          assert(this == &getRoot());
+        }
       }
 
       param->requestInfo = requestInfo;
@@ -5218,7 +5503,7 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
       param->batch_size_bytes = batchByteSize;
       param->unused0 = 0;  // Future
       param->unused1 = 0;
-      param->unused2 = 0;
+      param->maxRows = def.getOptions().getMaxRows();
       QueryNodeParameters::setOpLen(param->len, paramType, length);
       break;
     }
@@ -5266,9 +5551,114 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
       QueryNodeParameters::setOpLen(param->len, paramType, length);
       break;
     }
+    case QueryNodeParameters::QN_CTE_SUBTREE: {
+      QN_CteSubtreeParameters *param =
+          reinterpret_cast<QN_CteSubtreeParameters *>(attrInfo.addr(startPos));
+      if (unlikely(param == nullptr)) return Err_MemoryAlloc;
+      param->requestInfo = 0;
+      param->resultData = getIdOfReceiver();
+      QueryNodeParameters::setOpLen(param->len, paramType, length);
+      break;
+    }
+    case QueryNodeParameters::QN_CTE_LOOKUP: {
+      /* CTE_LOOKUP needs PI_ATTR_INTERPRET (ExitOK or user filter) and
+       * PI_ATTR_LIST (virtual column reads) so DBSPJ builds proper
+       * AttrInfo with FLUSH_AI for CTE_LOOKUP_REQ result delivery.
+       * Read numResultCols from the serialized QN_CteLookupNode. */
+      {
+        const QN_CteLookupNode *cteNode =
+            reinterpret_cast<const QN_CteLookupNode *>(queryNode);
+        const Uint32 numCols = cteNode->numResultCols;
+
+        /* PI_ATTR_INTERPRET: when the user attached a WHERE-clause
+         * filter via setInterpretedCode(), prepareInterpretedCode()
+         * above already emitted [prog_len, user_program...] and set
+         * the PI_ATTR_INTERPRET flag.  Appending another [1, ExitOK]
+         * stub here would concatenate a second interpreter header and
+         * produce a malformed AttrInfo section.  Only emit the stub
+         * when no user program is present. */
+        if (!hasInterpretedCode()) {
+          requestInfo |= DABits::PI_ATTR_INTERPRET;
+          Uint32 interpHeader = (0u << 16) | 1u;  // sub_len=0, prog_len=1
+          attrInfo.append(interpHeader);
+          attrInfo.append(Uint32(18));  // Interpreter::ExitOK = 18
+        }
+
+        // PI_ATTR_LIST: virtual column reads + CORR_FACTOR64.
+        // CORR_FACTOR must be in the user projection (before FLUSH_AI)
+        // so it's included in the TRANSID_AI sent to the API. DBSPJ's
+        // parseDA adds FLUSH_AI after PI_ATTR_LIST for scan queries.
+        requestInfo |= DABits::PI_ATTR_LIST;
+        attrInfo.append(numCols + 1);  // virtual cols + CORR_FACTOR
+        for (Uint32 c = 0; c < numCols; c++) {
+          attrInfo.append(c << 16);  // AttributeHeader(attrId=c, size=0)
+        }
+        attrInfo.append(AttributeHeader::CORR_FACTOR64 << 16);
+      }
+
+      /* Resolve param pointer AFTER all appends — appends may
+       * reallocate the buffer, invalidating earlier pointers. */
+      QN_CteLookupParameters *param =
+          reinterpret_cast<QN_CteLookupParameters *>(attrInfo.addr(startPos));
+      if (unlikely(param == nullptr)) return Err_MemoryAlloc;
+      param->requestInfo = requestInfo;
+      param->resultData = getIdOfReceiver();
+      length = attrInfo.getSize() - startPos;
+      QueryNodeParameters::setOpLen(param->len, paramType, length);
+      break;
+    }
+    case QueryNodeParameters::QN_CTE_SCAN: {
+      /* CTE_SCAN needs the same PI_ATTR_INTERPRET (ExitOK or user
+       * filter) + PI_ATTR_LIST (virtual column reads) setup as
+       * CTE_LOOKUP so DBSPJ builds the proper AttrInfo for delivering
+       * scanned CTE rows. Read numResultCols from the serialized
+       * QN_CteScanNode. */
+      {
+        const QN_CteScanNode *cteNode =
+            reinterpret_cast<const QN_CteScanNode *>(queryNode);
+        const Uint32 numCols = cteNode->numResultCols;
+
+        /* See QN_CTE_LOOKUP case above: only emit the ExitOK stub when
+         * the user has not attached their own filter program; otherwise
+         * prepareInterpretedCode() above has already written the user
+         * program and appending another header produces a malformed
+         * AttrInfo section. */
+        if (!hasInterpretedCode()) {
+          requestInfo |= DABits::PI_ATTR_INTERPRET;
+          Uint32 interpHeader = (0u << 16) | 1u;  // sub_len=0, prog_len=1
+          attrInfo.append(interpHeader);
+          attrInfo.append(Uint32(18));  // Interpreter::ExitOK = 18
+        }
+
+        // PI_ATTR_LIST: virtual column reads + CORR_FACTOR64.
+        requestInfo |= DABits::PI_ATTR_LIST;
+        attrInfo.append(numCols + 1);  // virtual cols + CORR_FACTOR
+        for (Uint32 c = 0; c < numCols; c++) {
+          attrInfo.append(c << 16);  // AttributeHeader(attrId=c, size=0)
+        }
+        attrInfo.append(AttributeHeader::CORR_FACTOR64 << 16);
+      }
+
+      /* Resolve param pointer AFTER all appends — appends may
+       * reallocate the buffer, invalidating earlier pointers. */
+      QN_CteScanParameters *param =
+          reinterpret_cast<QN_CteScanParameters *>(attrInfo.addr(startPos));
+      if (unlikely(param == nullptr)) return Err_MemoryAlloc;
+      param->requestInfo = requestInfo;
+      param->resultData = getIdOfReceiver();
+      length = attrInfo.getSize() - startPos;
+      QueryNodeParameters::setOpLen(param->len, paramType, length);
+      break;
+    }
     default:
       assert(false);
   }
+  DEB_CTE_API("prepareAttrInfo: op[%u] param header: [0]=0x%08x "
+              "[1]=0x%08x [2]=0x%08x\n",
+              def.getInternalOpNo(),
+              attrInfo.get(startPos),
+              attrInfo.get(startPos + 1),
+              attrInfo.get(startPos + 2));
 
 #ifdef __TRACE_SERIALIZATION
   ndbout << "Serialized params for node " << getInternalOpNo() << " : ";
@@ -5283,6 +5673,11 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
   // Parameter values was appended to AttrInfo, shrink param buffer
   // to reduce memory footprint.
   m_params.releaseExtend();
+
+  DEB_CTE_API("prepareAttrInfo: op[%u] done, wrote %u param words "
+              "(attrInfo now %u)\n",
+              def.getInternalOpNo(), attrInfo.getSize() - entrySize,
+              attrInfo.getSize());
 
   queryNode = QueryNode::nextQueryNode(queryNode);
   return 0;
@@ -5537,9 +5932,19 @@ bool NdbQueryOperationImpl::execTRANSID_AI(const Uint32 *ptr, Uint32 len) {
   TupleCorrelation tupleCorrelation;
   NdbWorker *worker = m_queryImpl.m_workers;
 
+  DEB_CTE_API("execTRANSID_AI: opNo=%u type=%d len=%u "
+              "workerCount=%u\n",
+              m_operationDef.getOpNo(),
+              (int)m_operationDef.getType(),
+              len, m_queryImpl.getWorkerCount());
+
   if (getQueryDef().isScanQuery()) {
     const CorrelationData correlData(ptr, len);
     const Uint32 receiverId = correlData.getRootReceiverId();
+
+    DEB_CTE_API("execTRANSID_AI: corr receiverId=0x%x "
+                "lastWord=0x%x secondLastWord=0x%x\n",
+                receiverId, ptr[len-1], len >= 2 ? ptr[len-2] : 0);
 
     /** receiverId holds the Id of the receiver of the corresponding stream
      * of the root operation. We can thus find the correct worker
@@ -5548,6 +5953,11 @@ bool NdbQueryOperationImpl::execTRANSID_AI(const Uint32 *ptr, Uint32 len) {
     worker = NdbWorker::receiverIdLookup(
         m_queryImpl.m_workers, m_queryImpl.getWorkerCount(), receiverId);
     if (unlikely(worker == nullptr)) {
+      DEB_CTE_API("execTRANSID_AI: FAILED receiverIdLookup! "
+                  "receiverId=0x%x, expected root receiverId=0x%x\n",
+                  receiverId,
+                  m_queryImpl.getWorkerCount() > 0
+                  ? m_queryImpl.m_workers[0].getReceiverId() : 0);
       assert(false);
       return false;
     }
@@ -5567,7 +5977,10 @@ bool NdbQueryOperationImpl::execTRANSID_AI(const Uint32 *ptr, Uint32 len) {
 
   // Process result values.
   worker->getResultStream(*this).execTRANSID_AI(ptr, len, tupleCorrelation);
-  worker->incrOutstandingResults(-1);
+  if (unlikely(!worker->incrOutstandingResults(-1))) {
+    m_queryImpl.setFetchTerminated(Err_OutstandingResultsMismatch, false);
+    return false;
+  }
 
   bool ret = false;
   if (worker->isFragBatchComplete()) {
@@ -5630,7 +6043,10 @@ bool NdbQueryOperationImpl::execTRANSID_AI(const Uint32 *ptr,
   if (!aSignal->isLastFragment()) {
     DBUG_RETURN(false);
   }
-  worker->incrOutstandingResults(-1);
+  if (unlikely(!worker->incrOutstandingResults(-1))) {
+    m_queryImpl.setFetchTerminated(Err_OutstandingResultsMismatch, false);
+    DBUG_RETURN(false);
+  }
 
   bool ret = false;
   if (worker->isFragBatchComplete()) {
@@ -5696,7 +6112,10 @@ bool NdbQueryOperationImpl::execTCKEYREF(const NdbApiSignal *aSignal) {
       if (getNoOfChildOperations() > 0) {
         cnt += getNoOfLeafOperations();
       }
-      worker.incrOutstandingResults(-Int32(cnt));
+      if (unlikely(!worker.incrOutstandingResults(-Int32(cnt)))) {
+        m_queryImpl.setFetchTerminated(Err_OutstandingResultsMismatch, false);
+        return false;
+      }
       break;
     }
     default:                           // 'Hard error':
@@ -5719,16 +6138,22 @@ bool NdbQueryOperationImpl::execSCAN_TABCONF(Uint32 tcPtrI, Uint32 rowCount,
                                              Uint32 moreMask, Uint32 activeMask,
                                              const NdbReceiver *receiver) {
   DBUG_ENTER("NdbQueryOperationImpl::execSCAN_TABCONF");
+  DEB_CTE_API("execSCAN_TABCONF: recvId=0x%x tcPtrI=0x%x rowCount=%u "
+              "moreMask=0x%x activeMask=0x%x workerCount=%u\n",
+              receiver->getId(), tcPtrI, rowCount, moreMask, activeMask,
+              m_queryImpl.getWorkerCount());
   assert((tcPtrI == RNIL && moreMask == 0) ||
          (tcPtrI != RNIL && moreMask != 0));
   assert(checkMagicNumber());
   // For now, only the root operation may be a scan.
   assert(&getRoot() == this);
-  assert(m_operationDef.isScanOperation());
+  assert(m_operationDef.isScanOperation() || getQuery().getQueryDef().isScanQuery());
 
   NdbWorker *worker = NdbWorker::receiverIdLookup(
       m_queryImpl.m_workers, m_queryImpl.getWorkerCount(), receiver->getId());
   if (unlikely(worker == nullptr)) {
+    DEB_CTE_API("execSCAN_TABCONF: FAILED receiverIdLookup recvId=0x%x\n",
+                receiver->getId());
     assert(false);
     DBUG_RETURN(false);
   }
@@ -5744,10 +6169,22 @@ bool NdbQueryOperationImpl::execSCAN_TABCONF(Uint32 tcPtrI, Uint32 rowCount,
   // Prepare for SCAN_NEXTREQ, tcPtrI==RNIL, moreMask==0 -> EOF
   worker->setConfReceived(tcPtrI);
   worker->setRemainingSubScans(moreMask, activeMask);
-  worker->incrOutstandingResults(rowCount);
+  if (unlikely(!worker->incrOutstandingResults(rowCount))) {
+    DEB_CTE_API("execSCAN_TABCONF: OutstandingResultsMismatch worker=%u "
+                "recvId=0x%x rowCount=%u\n",
+                worker->getWorkerNo(), receiver->getId(), rowCount);
+    m_queryImpl.setFetchTerminated(Err_OutstandingResultsMismatch, false);
+    DBUG_RETURN(false);
+  }
 
+  const bool fragComplete = worker->isFragBatchComplete();
+  DEB_CTE_API("execSCAN_TABCONF: worker=%u recvId=0x%x rowCount=%u "
+              "fragComplete=%d pendingWorkers=%u finalWorkers=%u\n",
+              worker->getWorkerNo(), receiver->getId(), rowCount,
+              (int)fragComplete, m_queryImpl.m_pendingWorkers,
+              m_queryImpl.m_finalWorkers);
   bool ret = false;
-  if (worker->isFragBatchComplete()) {
+  if (fragComplete) {
     /* This fragment is now complete */
     ret = m_queryImpl.handleBatchComplete(*worker);
   }
@@ -5927,6 +6364,13 @@ Uint32 NdbQueryOperationImpl::getRowSize() const {
 }
 
 Uint32 NdbQueryOperationImpl::getMaxBatchBytes() const {
+  // CTE subtree containers and CTE-embedded ops don't need API-side
+  // row buffers. Their batch parameters in prepareAttrInfo use fixed
+  // defaults. DBSPJ handles their buffer allocation internally.
+  if (m_operationDef.getType() == NdbQueryOperationDef::CteSubtree ||
+      m_operationDef.isCteEmbedded()) {
+    return 0;
+  }
   // Check if batch buffer size has been computed yet.
   if (m_maxBatchBytes == 0) {
     Uint32 batchRows = getMaxBatchRows();
@@ -5937,7 +6381,7 @@ Uint32 NdbQueryOperationImpl::getMaxBatchBytes() const {
     assert(m_resultBufferSize == 0);
 
     const Uint32 rootFragments =
-        getRoot().getQueryOperationDef().getTable().getFragmentCount();
+        getQuery().getFragRoutingTable().getFragmentCount();
 
     if (m_operationDef.isScanOperation()) {
       const Ndb *const ndb = getQuery().getNdbTransaction().getNdb();
@@ -5987,6 +6431,14 @@ Uint32 NdbQueryOperationImpl::getMaxBatchBytes() const {
       // the tiny API buffer (no getValue columns). Restore to the value
       // from calculate_batch_size() so config BatchByteSize takes effect.
       m_maxBatchBytes = batchByteSize;
+    }
+
+    // Ensure m_maxBatchBytes is non-zero after calculation to prevent
+    // re-entry into this block.  For lookup operations batchByteSize
+    // is 0 (no scan batch sizing), but m_resultBufferSize was already
+    // computed — re-entry would trigger the assert(m_resultBufferSize==0).
+    if (m_maxBatchBytes == 0) {
+      m_maxBatchBytes = m_resultBufferSize > 0 ? m_resultBufferSize : 1;
     }
   }
 

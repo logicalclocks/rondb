@@ -1,0 +1,76 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+
+=== Test 1: PK lookup on real table + INNER JOIN to single-PK CTE ===
+== Query ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM pkj_orders GROUP BY o_grp)
+SELECT o.o_id, o.o_grp, o.o_amt, s.total
+FROM pkj_orders AS o JOIN stats AS s ON s.k = o.o_grp
+WHERE o.o_id = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM pkj_orders GROUP BY o_grp)
+SELECT o.o_id, o.o_grp, o.o_amt, s.total
+FROM pkj_orders AS o JOIN stats AS s ON s.k = o.o_grp
+WHERE o.o_id = 2|
+o_id	o_grp	o_amt	total
+2	100	60	110
+
+
+=== Test 2: same as 1 but with WHERE in the CTE body ===
+== Query ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM pkj_orders WHERE o_amt >= 50 GROUP BY o_grp)
+SELECT o.o_id, o.o_grp, o.o_amt, s.total
+FROM pkj_orders AS o JOIN stats AS s ON s.k = o.o_grp
+WHERE o.o_id = 4;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM pkj_orders WHERE o_amt >= 50 GROUP BY o_grp)
+SELECT o.o_id, o.o_grp, o.o_amt, s.total
+FROM pkj_orders AS o JOIN stats AS s ON s.k = o.o_grp
+WHERE o.o_id = 4|
+o_id	o_grp	o_amt	total
+4	200	70	70
+
+
+=== Test 3: PK lookup with no matching real-table row ===
+== Query ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM pkj_orders GROUP BY o_grp)
+SELECT o.o_id, o.o_grp, o.o_amt, s.total
+FROM pkj_orders AS o JOIN stats AS s ON s.k = o.o_grp
+WHERE o.o_id = 99;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM pkj_orders GROUP BY o_grp)
+SELECT o.o_id, o.o_grp, o.o_amt, s.total
+FROM pkj_orders AS o JOIN stats AS s ON s.k = o.o_grp
+WHERE o.o_id = 99|
+o_id	o_grp	o_amt	total

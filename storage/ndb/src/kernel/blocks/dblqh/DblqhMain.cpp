@@ -47,6 +47,8 @@
 #include <signaldata/GCP.hpp>
 #include <signaldata/DbspjErr.hpp>
 #include <signaldata/JoinAgg.hpp>
+#include <signaldata/CteLookup.hpp>
+#include <signaldata/CteScan.hpp>
 #include "JoinAggregationState.hpp"
 #include <signaldata/LqhFrag.hpp>
 #include <signaldata/LqhKey.hpp>
@@ -113,6 +115,7 @@
 #include "../dbtup/JoinAggInterpreter.hpp"
 #include "../dbtup/PushdownInterpreter.hpp"
 #include "../dbtup/VecSearchInterpreter.hpp"
+#include <CteLinkedAttr.hpp>
 
 /**
  * overload handling...
@@ -166,6 +169,13 @@
 //#define DEBUG_INDEX_BUILD 1
 //#define DEBUG_JOIN_AGG 1
 #define DEBUG_MATCH 1
+#define DEBUG_CTE 1
+#endif
+
+#ifdef DEBUG_CTE
+#define DEB_CTE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CTE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_JOIN_AGG
@@ -1083,6 +1093,40 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     continueJoinAggSend(signal, data0, data1, data2,
                         signal->theData[4], signal->theData[5],
                         signal->theData[6]);
+    return;
+  }
+  case ZCONTINUE_JOIN_AGG_REDISTRIBUTE:
+  {
+    jam();
+    continueJoinAggRedistribute(signal, data0);
+    return;
+  }
+  case ZCONTINUE_CTE_REDIST_DRAIN:
+  {
+    jam();
+    continueRedistQueueDrain(signal, data0);
+    return;
+  }
+  case ZCONTINUE_CTE_SCAN_AGG_FEED:
+  {
+    jam();
+    const char *rawPtr = reinterpret_cast<const char *>(
+        (uintptr_t)signal->theData[6] |
+        ((uintptr_t)signal->theData[7] << 32));
+    /* CONTINUEB can't carry sections.  The filter (if any) is
+     * retained in a CteScanIterState pool record whose i-value is
+     * carried through theData[9]; cteScanAggFeed resolves it at the
+     * top of the function, so we pass nullptr for cinBuf. */
+    cteScanAggFeed(signal,
+                   signal->theData[1],   // aggStateKey
+                   signal->theData[2],   // senderRef
+                   signal->theData[3],   // senderData
+                   signal->theData[4],   // joinAggStateKey
+                   signal->theData[5],   // iterBucket
+                   rawPtr,               // iterRaw
+                   signal->theData[8],   // groupsSent
+                   nullptr, 0,           // cinBuf, attrInfoLen
+                   signal->theData[9]);  // aggFeedStateI (RNIL if none)
     return;
   }
   case ZRESUME_BLOCKED_COPY_FRAGMENT:
@@ -2705,6 +2749,12 @@ void Dblqh::send_CONTINUEB_all(Signal *signal, Uint32 continueb_case) {
 // and execute direct to local DICT to get everything at once
 void Dblqh::execCREATE_TAB_REQ(Signal *signal) {
   CreateTabReq *req = (CreateTabReq *)signal->getDataPtr();
+  /* Bit 31 of tableId is reserved as the CTE virt-column marker in
+   * the linked-attr buffer encoding (CteLinkedAttr.hpp).  Real NDB
+   * tableIds fit in 31 bits trivially; defend the invariant at table
+   * creation so a future tableId allocator change can't silently
+   * collide with the marker. */
+  ndbrequire(req->tableId < CteLinkedAttr::MARKER_BIT);
   tabptr.i = req->tableId;
   ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
 
@@ -15144,7 +15194,7 @@ void Dblqh::sendEvictedAggGroup(Signal *signal,
     Uint32 key_len = cevictBuffer[3] >> 16;
     const char *key_data = reinterpret_cast<const char*>(&cevictBuffer[4]);
     transIdAI->connectPtr =
-        state->selectReceiverData(key_data, key_len);
+        state->selectReceiverData(interp->hashGroupKey(key_data, key_len));
   }
   transIdAI->transId[0] = state->m_transid[0];
   transIdAI->transId[1] = state->m_transid[1];
@@ -15227,7 +15277,7 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
 
 retry:
   Int32 ret = interp->processNullExtendedRow(linked_data, linked_len,
-                                              leaf);
+                                              getThreadId(), leaf);
   if (ret == AGG_EVICT_NEEDED) {
     sendEvictedAggGroup(signal, interp, state);
     goto retry;
@@ -15849,6 +15899,10 @@ void Dblqh::sendTCKEYREF(Signal *signal, Uint32 ref, Uint32 routeRef,
  *  LQH has completed failure handling.
  * ************************************************************************>> */
 void Dblqh::execNODE_FAILREP(Signal *signal) {
+  /* Increment global node failure counter for CTE redistribution abort checks */
+  JoinAggregationState::s_node_fail_count.fetch_add(1,
+      std::memory_order_relaxed);
+
   UintR TfoundNodes = 0;
   UintR TnoOfNodes;
   UintR Tdata[ABS_MAX_NDB_NODES];
@@ -18255,6 +18309,10 @@ void Dblqh::send_scan_fragref(Signal *signal, Uint32 transid1, Uint32 transid2,
 
 void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   jamEntry();
+  if (unlikely(!assembleFragments(signal))) {
+    jam();
+    return;
+  }
   const JoinAggCompleteReq *req =
     (const JoinAggCompleteReq *)signal->getDataPtr();
 
@@ -18307,11 +18365,102 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
       gbSize = interp->gb_map_mutable()->size();
     DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ:"
                   " aggStateKey=%u strategy=%u num_threads=%u"
-                  " gb_map_size=%u completed_ops=%u",
+                  " gb_map_size=%u completed_ops=%u cte_mode=%u",
                   getThreadId(), aggStateKey, state->m_strategy,
                   state->m_num_threads, gbSize,
-                  state->m_completed_ops.load()));
+                  state->m_completed_ops.load(),
+                  state->m_cte_mode));
   }
+
+  /* Phase L (E.1): owner-instance check.  DBTC routes every
+   * JOIN_AGG_COMPLETE_REQ to numberToRef(DBLQH, m_owner_instance,
+   * nodeId) — landing on any other LDM instance means the routing
+   * has regressed and the rest of Phase L's idempotency guarantees
+   * (which assume single-owner serialization) no longer hold. */
+  ndbassert(state->m_owner_instance == instance());
+
+  /* Phase L (A): duplicate-REQ guard.  A second JOIN_AGG_COMPLETE_REQ
+   * for an aggregation already past SETUP_COMPLETE would clobber state
+   * (m_max_batch_rows, m_cte_remote_aggKeys[], m_state) and re-enter
+   * the merge / redistribution pipeline that the first REQ already
+   * started.  Once we observe m_state != SETUP_COMPLETE the work has
+   * begun (or finished) — the only correct action is to drop.  Every
+   * Phase L commit retains this invariant.  See cte_filter_phase_l.md.
+   *
+   * ndbassert in debug builds so any path that re-fires the REQ is
+   * caught loudly; the silent return is the production-build safety
+   * net. */
+  {
+    JoinAggregationState::State curState = state->m_state.load();
+    if (curState != JoinAggregationState::SETUP_COMPLETE) {
+      jam();
+      DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ: aggStateKey=%u "
+                    "state=%u != SETUP_COMPLETE — drop duplicate REQ",
+                    getThreadId(), aggStateKey, (Uint32)curState));
+      ndbassert(false);
+      SectionHandle handle(this, signal);
+      releaseSections(handle);
+      return;
+    }
+  }
+
+  /* Read per-node aggStateKeys section (required for CTE mode).
+   * Format: [nodeId1, aggKey1, nodeId2, aggKey2, ...] */
+  SectionHandle handle(this, signal);
+  if (state->m_cte_mode) {
+    jam();
+    if (handle.m_cnt == 0) {
+      jam();
+      releaseSections(handle);
+      JoinAggCompleteRef *ref =
+        (JoinAggCompleteRef *)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->senderData = senderData;
+      ref->requestId = requestId;
+      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+      ref->errorLine = __LINE__;
+      sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+                 signal, JoinAggCompleteRef::SignalLength, JBB);
+      return;
+    }
+    SegmentedSectionPtr ptr;
+    ndbrequire(handle.getSection(ptr,
+                                 JoinAggCompleteReq::AggKeysSectionNum));
+    /* Phase L (E.1): triples instead of pairs.
+     * Format: [nodeId, aggKey, ownerInstance, ...] */
+    Uint32 tripleBuf[3 * ABS_MAX_NDB_NODES];
+    if (unlikely(ptr.sz > 3 * MAX_NDB_NODES)) {
+      jam();
+      releaseSections(handle);
+      JoinAggCompleteRef *ref =
+        (JoinAggCompleteRef *)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->senderData = senderData;
+      ref->requestId = requestId;
+      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+      ref->errorLine = __LINE__;
+      sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+                 signal, JoinAggCompleteRef::SignalLength, JBB);
+      return;
+    }
+    copy(tripleBuf, ptr);
+    memset(state->m_cte_remote_aggKeys, 0,
+           sizeof(state->m_cte_remote_aggKeys));
+    memset(state->m_cte_remote_ownerInstances, 0,
+           sizeof(state->m_cte_remote_ownerInstances));
+    for (Uint32 i = 0; i + 2 < ptr.sz; i += 3) {
+      Uint32 nd = tripleBuf[i];
+      Uint32 key = tripleBuf[i + 1];
+      Uint32 owner = tripleBuf[i + 2];
+      ndbrequire(nd < ABS_MAX_NDB_NODES);
+      state->m_cte_remote_aggKeys[nd] = key;
+      state->m_cte_remote_ownerInstances[nd] = owner;
+    }
+    DEB_CTE(("(%u) COMPLETE_REQ: stored %u aggKey triples",
+             instance(), ptr.sz / 3));
+  }
+  releaseSections(handle);
+
   state->m_max_batch_rows = maxBatchRows;
   state->m_state.store(JoinAggregationState::FINALIZING);
 
@@ -18437,7 +18586,8 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   JoinAggInterpreter *interp = getJoinAggInterpreter(state);
 
 retry:
-  Int32 ret = interp->processNullExtendedRow(cattrInfoBuffer, linked_len);
+  Int32 ret = interp->processNullExtendedRow(cattrInfoBuffer, linked_len,
+                                              getThreadId());
   if (ret == AGG_EVICT_NEEDED) {
     sendEvictedAggGroup(signal, interp, state);
     goto retry;
@@ -18511,11 +18661,88 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
   /*
    * Merge complete (or MUTEX_BASED — no merge needed).
    * Select the result interpreter, finalize, and start sending.
+   *
+   * Phase L (A): a stale CONTINUEB(ZCONTINUE_JOIN_AGG_MERGE) re-entry
+   * after the merge already finished would re-store SENDING_RESULTS
+   * and then re-fire either the single-node CTE_READY CONF or the
+   * CTE_REDISTRIBUTING transition.  Guard the post-merge tail so it
+   * runs exactly once per aggregation.  See cte_filter_phase_l.md.
    */
+  {
+    JoinAggregationState::State curState = state->m_state.load();
+    if (curState != JoinAggregationState::FINALIZING) {
+      jam();
+      DEB_JOIN_AGG(("(%u)DBLQH continueJoinAggMerge tail: aggStateKey=%u "
+                    "state=%u != FINALIZING — drop stale continuation",
+                    getThreadId(), aggStateKey, (Uint32)curState));
+      ndbassert(false);
+      return;
+    }
+  }
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   interp->finalizeResults();
 
   state->m_state.store(JoinAggregationState::SENDING_RESULTS);
+
+  if (state->m_cte_mode) {
+    jam();
+#ifdef DEBUG_CTE
+    {
+      Uint32 gbSz = 0;
+      if (interp->gb_map_mutable() != nullptr)
+        gbSz = interp->gb_map_mutable()->size();
+      DEB_CTE(("(%u) CTE COMPLETE: aggStateKey=%u cte_num_nodes=%u "
+               "gb_map_size=%u processed_rows=%llu",
+               instance(), aggStateKey, state->m_cte_num_nodes, gbSz,
+               (unsigned long long)interp->processed_rows()));
+    }
+#endif
+    if (state->m_cte_num_nodes <= 1) {
+      /* Single node — no redistribution needed */
+      jam();
+      DEB_CTE(("(%u) CTE COMPLETE: single node — skip redistribution",
+               instance()));
+      state->m_state.store(JoinAggregationState::CTE_READY);
+      JoinAggCompleteConf *conf =
+        (JoinAggCompleteConf *)signal->getDataPtrSend();
+      conf->senderRef = reference();
+      conf->senderData = senderData;
+      conf->requestId = requestId;
+      conf->numResultRows = 0;
+      conf->resultBytes = 0;
+      sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
+                 signal, JoinAggCompleteConf::SignalLength, JBB);
+    } else {
+      /* Multi-node — save sender info, drain queue, verify nodes, redistribute */
+      jam();
+      DEB_CTE(("(%u) CTE COMPLETE: multi-node redistribution starting, "
+               "aggStateKey=%u cte_num_nodes=%u",
+               instance(), aggStateKey, state->m_cte_num_nodes));
+      state->m_cte_complete_senderRef = senderRef;
+      state->m_cte_complete_senderData = senderData;
+      state->m_cte_complete_requestId = requestId;
+
+      /* Check for node failure since SETUP */
+      if (JoinAggregationState::s_node_fail_count.load(
+              std::memory_order_relaxed) != state->m_cte_node_fail_count) {
+        jam();
+        abortCteRedistribution(signal, state, ZJOIN_AGG_STATE_NOT_FOUND);
+        return;
+      }
+
+      /* Drain queued groups that arrived during finalization */
+      processRedistQueue(signal, state, aggStateKey);
+      if (state->m_state.load() == JoinAggregationState::ERROR) {
+        jam();
+        return;  /* processRedistQueue hit an error */
+      }
+
+      state->m_state.store(JoinAggregationState::CTE_REDISTRIBUTING);
+      state->m_cte_redist_batch_bytes = 0;
+      continueJoinAggRedistribute(signal, aggStateKey);
+    }
+    return;
+  }
 
   const Uint32 n_gb_cols = interp->n_gb_cols();
 
@@ -18543,16 +18770,31 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
 
     const Uint32 n_agg_results = interp->n_agg_results();
     const Uint32 agg_bytes = n_agg_results * sizeof(AggResItem);
-    const Uint32 agg_words = agg_bytes >> 2;
+    // Phase I.6 (F.2-K.5): switch to AGG_CHAR_RESULT and append a
+    // string-payload region after the AggResItem array when at
+    // least one string MIN/MAX slot has been touched.
+    const bool has_strings = interp->hasStringSlots();
+    const Uint32 marker = has_strings
+        ? AttributeHeader::AGG_CHAR_RESULT
+        : AttributeHeader::AGG_RESULT;
+    const AggResItem* scalar_slots = interp->agg_results();
+    const Uint32 payload_bytes =
+        has_strings ? interp->stringPayloadSize(scalar_slots) : 0;
+    const Uint32 v_len_total = agg_bytes + payload_bytes;
+    const Uint32 v_words_total = v_len_total >> 2;
     Uint32 *buf = &cevictBuffer[0];
-    ndbrequire(4 + agg_words <= sizeof(cevictBuffer) / sizeof(Uint32));
+    ndbrequire(4 + v_words_total <= sizeof(cevictBuffer) / sizeof(Uint32));
     Uint32 pos = 0;
-    buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+    buf[pos++] = marker << 16 | 0x0721;
     buf[pos++] = 0 << 16 | n_agg_results;
     buf[pos++] = 0;
-    buf[pos++] = 0 << 16 | agg_bytes;
-    memcpy(&buf[pos], interp->agg_results(), agg_bytes);
-    pos += agg_words;
+    buf[pos++] = 0 << 16 | v_len_total;
+    memcpy(&buf[pos], scalar_slots, agg_bytes);
+    if (payload_bytes > 0) {
+      interp->encodeStringPayload(scalar_slots, reinterpret_cast<char*>(
+          &buf[pos + (agg_bytes >> 2)]));
+    }
+    pos += v_words_total;
 
     TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
     transIdAI->connectPtr = state->m_receiverIds[0];
@@ -18614,7 +18856,13 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
 
   const Uint32 n_gb_cols = interp->n_gb_cols();
   const Uint32 n_agg_results = interp->n_agg_results();
-  const Uint32 v_len = interp->val_len();
+  const Uint32 v_len_base = interp->val_len();
+  // Phase I.6 (F.2-K.5): pick AGG_RESULT or AGG_CHAR_RESULT once;
+  // per-group val_len grows by stringPayloadSize(slots).
+  const bool has_strings = interp->hasStringSlots();
+  const Uint32 marker = has_strings
+      ? AttributeHeader::AGG_CHAR_RESULT
+      : AttributeHeader::AGG_RESULT;
   JoinGBHashTable *gb_map = interp->gb_map_mutable();
   Uint32 batch_count = 0;
   Uint32 batch_signal_bytes = 0;
@@ -18623,22 +18871,31 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
     for (auto iter = gb_map->begin(); iter.valid();) {
       jam();
       const Uint32 key_len = iter.keyLen();
-      const Uint32 data_words = (key_len + v_len) >> 2;
+      AggResItem* slots = reinterpret_cast<AggResItem*>(
+          iter.data() + key_len);
+      const Uint32 payload_bytes =
+          has_strings ? interp->stringPayloadSize(slots) : 0;
+      const Uint32 v_len_total = v_len_base + payload_bytes;
+      const Uint32 data_words = (key_len + v_len_total) >> 2;
       Uint32 *buf = &cevictBuffer[0];
       ndbrequire(4 + data_words <= sizeof(cevictBuffer) / sizeof(Uint32));
       Uint32 pos = 0;
-      buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+      buf[pos++] = marker << 16 | 0x0721;
       buf[pos++] = n_gb_cols << 16 | n_agg_results;
       buf[pos++] = 1;
-      buf[pos++] = key_len << 16 | v_len;
-      memcpy(&buf[pos], iter.data(), key_len + v_len);
+      buf[pos++] = key_len << 16 | v_len_total;
+      memcpy(&buf[pos], iter.data(), key_len + v_len_base);
+      if (payload_bytes > 0) {
+        interp->encodeStringPayload(slots, reinterpret_cast<char*>(
+            &buf[pos + ((key_len + v_len_base) >> 2)]));
+      }
       pos += data_words;
 
       TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
       {
         const char *key_data = reinterpret_cast<const char*>(iter.data());
         transIdAI->connectPtr =
-            state->selectReceiverData(key_data, key_len);
+            state->selectReceiverData(interp->hashGroupKey(key_data, key_len));
       }
       transIdAI->transId[0] = state->m_transid[0];
       transIdAI->transId[1] = state->m_transid[1];
@@ -18743,6 +19000,2430 @@ void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
   continueJoinAggSend(signal, aggStateKey,
                       state->m_rows_sent, 0,
                       senderRef, senderData, requestId);
+}
+
+static inline bool
+isStringAggType(Uint32 typeId) {
+  return typeId == NDB_TYPE_CHAR ||
+         typeId == NDB_TYPE_VARCHAR ||
+         typeId == NDB_TYPE_LONGVARCHAR;
+}
+
+static bool
+emitCteLinkedAggSlot(const JoinAggInterpreter *interp,
+                     const AggResItem &item,
+                     Uint32 aggIdx,
+                     Uint32 attrId,
+                     Uint32 *outBuf,
+                     Uint32 &linkedPos,
+                     Uint32 maxWords) {
+  Uint32 typeId = item.type;
+  if (typeId == NDB_TYPE_UNDEFINED) typeId = NDB_TYPE_BIGINT;
+
+  if (isStringAggType(typeId) && !item.is_null) {
+    const StringResult *stringResults = interp->string_results();
+    if (stringResults == nullptr || item.value.val_ptr == nullptr) {
+      return false;
+    }
+
+    const StringResult &slot = stringResults[aggIdx];
+    const char *buf = static_cast<const char*>(item.value.val_ptr);
+    const Uint16 payloadLen = *reinterpret_cast<const Uint16*>(buf);
+    const Uint32 byteSize = slot.prefix_bytes + payloadLen;
+    const Uint32 dataWords = (byteSize + 3) >> 2;
+    Uint32 csNumber = 0;
+    if (slot.charset != nullptr) csNumber = slot.charset->number;
+
+    if (linkedPos + 3 + dataWords > maxWords) {
+      return false;
+    }
+    outBuf[linkedPos++] =
+        CteLinkedAttr::encodeWord0(typeId, slot.declared_size);
+    outBuf[linkedPos++] = CteLinkedAttr::encodeWord1(csNumber);
+    AttributeHeader::init(&outBuf[linkedPos], attrId, byteSize);
+    memset(&outBuf[linkedPos + 1], 0, dataWords * sizeof(Uint32));
+    memcpy(&outBuf[linkedPos + 1], buf + 4, byteSize);
+    linkedPos += 1 + dataWords;
+    return true;
+  }
+
+  const Uint32 dataWords = item.is_null ? 0 : 2;
+  if (linkedPos + 3 + dataWords > maxWords) {
+    return false;
+  }
+  outBuf[linkedPos++] = CteLinkedAttr::encodeWord0(typeId, 8);
+  outBuf[linkedPos++] = CteLinkedAttr::encodeWord1(0);
+  if (item.is_null) {
+    AttributeHeader::init(&outBuf[linkedPos], attrId, 0);
+    linkedPos += 1;
+  } else {
+    AttributeHeader::init(&outBuf[linkedPos], attrId, 8);
+    memcpy(&outBuf[linkedPos + 1], &item.value, 8);
+    linkedPos += 3;
+  }
+  return true;
+}
+
+static bool
+emitCteOutputAggSlot(const JoinAggInterpreter *interp,
+                     const AggResItem &item,
+                     Uint32 aggIdx,
+                     Uint32 attrId,
+                     Uint32 *outBuf,
+                     Uint32 &outPos,
+                     Uint32 maxWords) {
+  Uint32 typeId = item.type;
+  if (typeId == NDB_TYPE_UNDEFINED) typeId = NDB_TYPE_BIGINT;
+
+  if (item.is_null) {
+    if (outPos + 1 > maxWords) {
+      return false;
+    }
+    AttributeHeader::init(&outBuf[outPos], attrId, 0);
+    outPos += 1;
+    return true;
+  }
+
+  if (isStringAggType(typeId)) {
+    const StringResult *stringResults = interp->string_results();
+    if (stringResults == nullptr || item.value.val_ptr == nullptr) {
+      return false;
+    }
+
+    const StringResult &slot = stringResults[aggIdx];
+    const char *buf = static_cast<const char*>(item.value.val_ptr);
+    const Uint16 payloadLen = *reinterpret_cast<const Uint16*>(buf);
+    const Uint32 byteSize = slot.prefix_bytes + payloadLen;
+    const Uint32 dataWords = (byteSize + 3) >> 2;
+    if (outPos + 1 + dataWords > maxWords) {
+      return false;
+    }
+    AttributeHeader::init(&outBuf[outPos], attrId, byteSize);
+    memset(&outBuf[outPos + 1], 0, dataWords * sizeof(Uint32));
+    memcpy(&outBuf[outPos + 1], buf + 4, byteSize);
+    outPos += 1 + dataWords;
+    return true;
+  }
+
+  if (outPos + 3 > maxWords) {
+    return false;
+  }
+  AttributeHeader::init(&outBuf[outPos], attrId, 8);
+  memcpy(&outBuf[outPos + 1], &item.value, 8);
+  outPos += 3;
+  return true;
+}
+
+/**
+ * buildCteLinkedBuffer — assemble linked_attr_data for a CTE group row.
+ *
+ * Layout per entry (CTE virt-column inline encoding,
+ * CteLinkedAttr.hpp): [word0 = MARKER | typeId | maxBytes]
+ *                     [word1 = csNumber | flags] [AttrHeader] [data...]
+ *
+ *   1. (optional) parent linked columns from AttrInfo subroutine section
+ *      when attrInfoBuf is present and its subLen > 1.  These are already
+ *      tagged by DBSPJ's appendFromParent — either real-table
+ *      [tableId][schemaVersion] or CTE-marker entries — and are
+ *      copied through verbatim.
+ *   2. GROUP BY key columns from groupData (each entry is a standalone
+ *      AttrHeader + payload).  Type info from the source aggregator's
+ *      m_gb_types[i].
+ *   3. Aggregate result columns: numeric values are emitted from the
+ *      8-byte AggResItem.value union; CHAR/VARCHAR/Longvarchar MIN/MAX
+ *      values are emitted from the val_ptr sidecar payload.  NULL
+ *      accumulators use a zero-length AttrHeader.  Aggregate result
+ *      types follow the well-known widening rules; we emit the runtime
+ *      AggResItem.type when set, falling back to BIGINT (8B) when
+ *      undefined (all-null group).
+ *
+ * Writes up to ZATTR_BUFFER_SIZE words; overflow is ndbrequire-fatal.
+ * lenOut receives the word count written.
+ *
+ * Shared between cteLookupAggFeed (downstream agg feed) and the filter
+ * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation pre-emit).
+ */
+void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
+                                 const char *groupData, Uint32 keyLen,
+                                 const Uint32 *attrInfoBuf,
+                                 Uint32 attrInfoLen,
+                                 Uint32 *outBuf, Uint32 *lenOut) {
+  const Uint32 n_gb_cols = interp->n_gb_cols();
+  const Uint32 n_agg_results = interp->n_agg_results();
+  Uint32 linkedPos = 0;
+
+  /* Step 1: Prepend parent linked columns from AttrInfo subroutine section.
+   * These are expanded by DBSPJ from the parent row's linked projection
+   * (same format as LQHKEYREQ interpreter subroutine section). */
+  if (attrInfoBuf != nullptr && attrInfoLen >= 5) {
+    jam();
+    const Uint32 initReadLen = attrInfoBuf[0];
+    const Uint32 interpretLen = attrInfoBuf[1];
+    const Uint32 finalUpdateLen = attrInfoBuf[2];
+    const Uint32 finalReadLen = attrInfoBuf[3];
+    const Uint32 subLen = attrInfoBuf[4];
+
+    if (subLen > 1) {
+      jam();
+      const Uint32 subStart = 5 + initReadLen + interpretLen +
+                              finalUpdateLen + finalReadLen;
+      /* Skip the paramLen word (same as prepareAndHandleJoinAggRow) */
+      const Uint32 *parentLinked = &attrInfoBuf[subStart + 1];
+      const Uint32 parentLinkedLen = subLen - 1;
+
+      ndbrequire(linkedPos + parentLinkedLen < ZATTR_BUFFER_SIZE);
+      memcpy(&outBuf[linkedPos], parentLinked,
+             parentLinkedLen * sizeof(Uint32));
+      linkedPos += parentLinkedLen;
+    }
+  }
+
+  /* Resolve per-GB-column type info from the source aggregator.
+   * gb_types() returns nullptr if initGBTypes hasn't run yet — but
+   * any group we read from the hash map must have been processed,
+   * which guarantees init.  Defensive null-check stays for safety. */
+  const GBColTypeInfo *gbTypes = interp->gb_types();
+
+  /* Step 2: GROUP BY key columns from the group row */
+  const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
+  const Uint32 keyWords = keyLen >> 2;
+  Uint32 kp = 0;
+  Uint32 gbIdx = 0;
+  while (kp < keyWords) {
+    Uint32 typeId = 0;
+    Uint32 maxBytes = 0;
+    Uint32 csNumber = 0;
+    if (gbTypes != nullptr && gbIdx < n_gb_cols) {
+      typeId = gbTypes[gbIdx].typeId;
+      maxBytes = gbTypes[gbIdx].maxBytes;
+      if (gbTypes[gbIdx].cs != nullptr) csNumber = gbTypes[gbIdx].cs->number;
+    }
+    outBuf[linkedPos++] = CteLinkedAttr::encodeWord0(typeId, maxBytes);
+    outBuf[linkedPos++] = CteLinkedAttr::encodeWord1(csNumber);
+    Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+    Uint32 words = 1 + dataSize;
+    memcpy(&outBuf[linkedPos], &keyData[kp], words * sizeof(Uint32));
+    linkedPos += words;
+    kp += words;
+    gbIdx++;
+  }
+
+  /* Step 3: Aggregate result columns.  Numeric accumulators are 8-byte
+   * AggResItem.value slots (BIGINT/BIGUNSIGNED/DOUBLE per widening
+   * rules).  String MIN/MAX slots store the winning value in val_ptr;
+   * emit the actual string payload so downstream CTE consumers see a
+   * normal virtual column value instead of the local buffer pointer. */
+  const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
+      groupData + keyLen);
+  for (Uint32 i = 0; i < n_agg_results; i++) {
+    const Uint32 attrId = n_gb_cols + i;
+    bool ok = emitCteLinkedAggSlot(interp, accumulators[i], i, attrId,
+                                   outBuf, linkedPos, ZATTR_BUFFER_SIZE);
+    ndbrequire(ok);
+  }
+
+  *lenOut = linkedPos;
+}
+
+/**
+ * runCteFilter — evaluate the WHERE-clause interpreter program (if the
+ * client supplied a non-trivial one) against a single CTE virtual
+ * group row.  Shared between CTE_LOOKUP_REQ and CTE_SCAN_REQ so the
+ * accept / reject / error semantics stay consistent across both.
+ *
+ * The AttrInfo section's 5-word header is laid out as
+ *   [0]=initReadLen [1]=interpretLen [2]=finalUpdateLen
+ *   [3]=finalReadLen [4]=subLen
+ * and DBSPJ's parseDA for PI_ATTR_INTERPRET puts the user program in
+ * the INTERPRET region — so the filter length is cinBuf[1] and the
+ * program starts at cinBuf[5 + initReadLen].  A legacy stub is just a
+ * single ExitOK (interpretLen == 1), short-circuited for zero overhead
+ * so existing callers (no client filter) incur no cost.
+ */
+Dblqh::CteFilterResult
+Dblqh::runCteFilter(Signal *signal,
+                    const JoinAggInterpreter *interp,
+                    const char *groupData, Uint32 keyLen,
+                    const Uint32 *cinBuf, Uint32 attrInfoLen) {
+  if (attrInfoLen < 5 || cinBuf[1] <= 1) return CTE_FILTER_ACCEPT;
+
+  jam();
+  const Uint32 initReadLen  = cinBuf[0];
+  const Uint32 interpretLen = cinBuf[1];
+  const Uint32 programStart = 5 + initReadLen;
+  ndbrequire(programStart + interpretLen <= attrInfoLen);
+
+  Uint32 linkedLen = 0;
+  buildCteLinkedBuffer(interp, groupData, keyLen,
+                       cinBuf, attrInfoLen, cevictBuffer, &linkedLen);
+
+  Dbtup::KeyReqStruct filterReqStruct(c_tup);
+  filterReqStruct.m_linked_attr_data  = cevictBuffer;
+  filterReqStruct.m_linked_attr_len   = linkedLen;
+  filterReqStruct.no_exec_instructions = 0;
+  filterReqStruct.log_size            = 0;
+  filterReqStruct.last_row            = false;
+
+  Uint32 tmpArea[32];   /* unused by accepted CTE filter opcodes */
+  const int rc = c_tup->interpreterFilterCte(
+      signal, &filterReqStruct,
+      const_cast<Uint32 *>(cinBuf + programStart), interpretLen,
+      nullptr, 0,
+      tmpArea, sizeof(tmpArea) / sizeof(Uint32));
+
+  if (rc == Dbtup::INTERPRETER_FILTER_REJECT) {
+    jam();
+    return CTE_FILTER_REJECT;
+  }
+  if (unlikely(rc < 0)) {
+    jam();
+    DEB_CTE(("(%u) CTE filter execution error rc=%d", instance(), rc));
+    return CTE_FILTER_ERROR;
+  }
+  return CTE_FILTER_ACCEPT;
+}
+
+/**
+ * cteLookupAggFeed — CTE_LOOKUP result feeds into another JoinAggInterpreter
+ * (CTE-to-CTE dependency or CTE_LOOKUP as main aggregate leaf).
+ * Builds linked_attr_data from the group's key + accumulators and inserts
+ * it via processRecWithLinkedAttrs().  Sends CONF on success, REF on error.
+ */
+void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
+                              const JoinAggInterpreter *interp,
+                              const char *groupData,
+                              const Uint32 *attrInfoBuf,
+                              Uint32 attrInfoLen) {
+  const Uint32 targetBaseKey =
+      JoinAggregationState::decodeBaseKey(req.joinAggStateKey);
+  const Uint32 targetLeafIndex =
+      JoinAggregationState::decodeLeafIndex(req.joinAggStateKey);
+
+  JoinAggregationState *targetState = getJoinAggState(targetBaseKey);
+  if (unlikely(targetState == nullptr)) {
+    jam();
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZCTE_LOOKUP_STATE_NOT_READY, req.correlation);
+    return;
+  }
+
+  JoinAggInterpreter *targetInterp = getJoinAggInterpreter(targetState);
+  ndbrequire(targetInterp != nullptr);
+
+  Uint32 *linkedBuf = cevictBuffer;
+  Uint32 linkedPos = 0;
+  buildCteLinkedBuffer(interp, groupData, req.keyLen,
+                       attrInfoBuf, attrInfoLen,
+                       linkedBuf, &linkedPos);
+
+  DEB_CTE(("(%u) cteLookupAggFeed: built linked buffer (%u words)",
+           instance(), linkedPos));
+
+  const LeafProgram *leaf = nullptr;
+  if (targetState->m_num_leaves > 1) {
+    ndbrequire(targetLeafIndex < targetState->m_num_leaves);
+    leaf = &targetState->m_leaf_programs[targetLeafIndex];
+  }
+
+  DEB_CTE(("(%u) CTE_LOOKUP agg feed: targetKey=%u leafIdx=%u "
+           "linkedWords=%u",
+           instance(), targetBaseKey, targetLeafIndex, linkedPos));
+
+  Dbtup::KeyReqStruct aggReq(c_tup);
+  aggReq.signal = signal;
+  aggReq.read_length = 0;
+  aggReq.log_size = 0;
+  aggReq.last_row = false;
+
+retry_agg:
+  aggReq.no_exec_instructions = 0;
+  Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
+      c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
+  if (aggRet == AGG_EVICT_NEEDED) {
+    jam();
+    if (unlikely(targetState->m_cte_mode)) {
+      /* Eviction is not supported for CTE materialization targets —
+       * the CTE hash table must hold all groups. */
+      jam();
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       ZCTE_EVICT_IN_CTE_LEAF, req.correlation);
+      return;
+    }
+    sendEvictedAggGroup(signal, targetInterp, targetState);
+    goto retry_agg;
+  }
+  if (unlikely(aggRet != 0)) {
+    jam();
+    g_eventLogger->info("(%u) CTE_LOOKUP agg feed FAILED: aggRet=%d "
+        "targetKey=%u leafIdx=%u linkedWords=%u n_gb=%u n_agg=%u "
+        "processed_rows=%llu inited=%d",
+        instance(), aggRet, targetBaseKey, targetLeafIndex,
+        linkedPos, targetInterp->n_gb_cols(),
+        targetInterp->n_agg_results(),
+        (unsigned long long)targetInterp->processed_rows(),
+        targetInterp->inited() ? 1 : 0);
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZCTE_LOOKUP_OUTPUT_OVERFLOW, req.correlation);
+    return;
+  }
+
+  targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+
+  /* Send CONF only — no TRANSID_AI sent to API or DBSPJ */
+  CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = req.senderData;
+  sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
+             signal, CteLookupConf::SignalLength, JBB);
+}
+
+/**
+ * emitCteGroupOutput — walk the final-read section for one CTE group,
+ * writing virtual columns (GROUP BY keys, aggregates, CORR_FACTOR) into
+ * outBuf.  Sends TRANSID_AI at FLUSH_AI points.  Returns the residual
+ * outPos (bytes remaining after last FLUSH_AI), or -1 on output overflow.
+ */
+Int32 Dblqh::emitCteGroupOutput(Signal *signal,
+                                 const CteOutputParams &params,
+                                 const JoinAggInterpreter *interp,
+                                 const char *groupData, Uint32 keyLen,
+                                 const Uint32 *finalR, Uint32 finalRLen,
+                                 Uint32 n_gb_cols, Uint32 n_agg_results,
+                                 const AggResItem *accumulators,
+                                 Uint32 *outBuf) {
+  Uint32 outPos = 0;
+  Uint32 pos = 0;
+  while (pos < finalRLen) {
+    const Uint32 word = finalR[pos];
+    const Uint32 attrId = AttributeHeader::getAttributeId(word);
+
+    if (attrId == AttributeHeader::FLUSH_AI) {
+      jam();
+      if (unlikely(pos + 3 >= finalRLen)) break;
+
+      Uint32 fRef = params.flushRef;
+      Uint32 fData = params.flushData;
+      if (params.useFlushAiFromFinalR) {
+        fRef = finalR[pos + 1];
+        fData = finalR[pos + 2];
+      }
+
+      if (outPos > 0) {
+        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+        transIdAI->connectPtr = fData;
+        transIdAI->transId[0] = params.transId[0];
+        transIdAI->transId[1] = params.transId[1];
+
+        LinearSectionPtr lsp[3];
+        lsp[0].p = outBuf;
+        lsp[0].sz = outPos;
+        sendSignal(fRef, GSN_TRANSID_AI, signal,
+                   TransIdAI::HeaderLength, JBB, lsp, 1);
+        outPos = 0;
+      }
+      pos += 4;
+      continue;
+    }
+
+    if (attrId == AttributeHeader::CORR_FACTOR32) {
+      jam();
+      if (unlikely(outPos + 2 > ZATTR_BUFFER_SIZE)) {
+        jam();
+        return -1;
+      }
+      AttributeHeader::init(&outBuf[outPos], attrId, 4);
+      outBuf[outPos + 1] = params.correlation;
+      outPos += 2;
+      pos += 1;
+      continue;
+    }
+    if (attrId == AttributeHeader::CORR_FACTOR64) {
+      jam();
+      if (unlikely(outPos + 3 > ZATTR_BUFFER_SIZE)) {
+        jam();
+        return -1;
+      }
+      AttributeHeader::init(&outBuf[outPos], attrId, 8);
+      outBuf[outPos + 1] = params.correlation;
+      outBuf[outPos + 2] = params.corrRootRcvr;
+      outPos += 3;
+      pos += 1;
+      continue;
+    }
+
+    /* Regular virtual column read */
+    if (attrId < n_gb_cols) {
+      /* GROUP BY key column — walk key data to the N-th entry */
+      jam();
+      const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
+      const Uint32 keyWords = keyLen >> 2;
+      Uint32 kp = 0;
+      Uint32 colIdx = 0;
+      while (kp < keyWords && colIdx < attrId) {
+        Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+        kp += 1 + dataSize;
+        colIdx++;
+      }
+      if (kp < keyWords) {
+        Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+        Uint32 words = 1 + dataSize;
+        if (unlikely(outPos + words > ZATTR_BUFFER_SIZE)) {
+          jam();
+          return -1;
+        }
+        AttributeHeader::init(&outBuf[outPos], attrId, dataSize * 4);
+        memcpy(&outBuf[outPos + 1], &keyData[kp + 1],
+               dataSize * sizeof(Uint32));
+        outPos += words;
+      } else {
+        if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) {
+          jam();
+          return -1;
+        }
+        AttributeHeader::init(&outBuf[outPos], attrId, 0);
+        outPos += 1;
+      }
+    } else if (attrId < n_gb_cols + n_agg_results) {
+      /* Aggregate result — convert AggResItem to column data. */
+      jam();
+      const Uint32 aggIdx = attrId - n_gb_cols;
+      const AggResItem &item = accumulators[aggIdx];
+      if (!emitCteOutputAggSlot(interp, item, aggIdx, attrId,
+                                outBuf, outPos, ZATTR_BUFFER_SIZE)) {
+        jam();
+        return -1;
+      }
+    } else {
+      /* Unknown attribute ID — write NULL */
+      jam();
+      if (unlikely(outPos + 1 > ZATTR_BUFFER_SIZE)) {
+        jam();
+        return -1;
+      }
+      AttributeHeader::init(&outBuf[outPos], attrId, 0);
+      outPos += 1;
+    }
+    pos += 1;
+  }
+  return (Int32)outPos;
+}
+
+/**
+ * cteLookupEmitResult — process AttrInfo final-read section for a found CTE
+ * group, emit TRANSID_AI output, and send CTE_LOOKUP_CONF.
+ */
+void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
+                                 const JoinAggregationState *state,
+                                 const JoinAggInterpreter *interp,
+                                 const char *groupData,
+                                 const Uint32 *cinBuf, Uint32 attrInfoLen) {
+  const Uint32 n_gb_cols = interp->n_gb_cols();
+  const Uint32 n_agg_results = interp->n_agg_results();
+  const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
+      groupData + req.keyLen);
+
+  /* Parse 5-word AttrInfo header and skip to final-read section */
+  const Uint32 initReadLen = cinBuf[0];
+  const Uint32 execRegionLen = cinBuf[1];
+  const Uint32 finalUpdateLen = cinBuf[2];
+  const Uint32 finalRLen = cinBuf[3];
+
+  const Uint32 finalRStart = 5 + initReadLen + execRegionLen + finalUpdateLen;
+  if (unlikely(finalRStart + finalRLen > attrInfoLen || finalRLen < 2)) {
+    jam();
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZCTE_LOOKUP_ATTRINFO_MALFORMED, req.correlation);
+    return;
+  }
+
+  /* CTE_LOOKUP reads FLUSH_AI ref/data from the finalR section itself */
+  CteOutputParams params;
+  params.transId[0] = state->m_transid[0];
+  params.transId[1] = state->m_transid[1];
+  params.flushRef = 0;
+  params.flushData = 0;
+  params.residualRef = req.senderRef;
+  params.residualData = req.senderData;
+  params.correlation = req.correlation;
+  params.corrRootRcvr = req.resultData;
+  params.useFlushAiFromFinalR = true;
+
+  Uint32 *outBuf = cevictBuffer;
+  const Uint32 *finalR = &cinBuf[finalRStart];
+  Int32 outPos = emitCteGroupOutput(signal, params, interp,
+                                    groupData, req.keyLen,
+                                    finalR, finalRLen,
+                                    n_gb_cols, n_agg_results,
+                                    accumulators, outBuf);
+  if (outPos < 0) {
+    jam();
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZCTE_LOOKUP_OUTPUT_OVERFLOW, req.correlation);
+    return;
+  }
+
+  /* Send any remaining output as TRANSID_AI to the original sender (DBSPJ) */
+  if (outPos > 0) {
+    DEB_CTE(("(%u) CTE_LOOKUP residual: outPos=%d → senderRef=0x%x "
+             "connectPtr=0x%x",
+             instance(), outPos, req.senderRef, req.senderData));
+    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+    transIdAI->connectPtr = req.senderData;
+    transIdAI->transId[0] = state->m_transid[0];
+    transIdAI->transId[1] = state->m_transid[1];
+
+    LinearSectionPtr lsp[3];
+    lsp[0].p = outBuf;
+    lsp[0].sz = (Uint32)outPos;
+    sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
+               TransIdAI::HeaderLength, JBB, lsp, 1);
+  }
+
+  DEB_CTE(("(%u) CTE_LOOKUP_CONF → senderRef=0x%x senderData=0x%x",
+           instance(), req.senderRef, req.senderData));
+  CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = req.senderData;
+  sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
+             signal, CteLookupConf::SignalLength, JBB);
+}
+
+/**
+ * routeCteLookup — forward CTE_LOOKUP_REQ to the remote node that owns the
+ * hash bucket for this key.  Returns true if forwarded, false if the local
+ * node owns the key (caller should send NOT_FOUND REF).
+ */
+bool Dblqh::routeCteLookup(Signal *signal,
+                            const JoinAggregationState *state,
+                            const JoinAggInterpreter *interp,
+                            const Uint32 *keyBuf, Uint32 keySectionSz,
+                            const Uint32 *cinBuf, Uint32 attrInfoLen,
+                            const CteLookupReq *req) {
+  const Uint32 keyLen = req->keyLen;
+  Uint64 h = interp->hashGroupKey(
+      reinterpret_cast<const char *>(keyBuf), keyLen);
+  Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
+  Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
+  if (ownerNode == getOwnNodeId()) {
+    jam();
+    return false;
+  }
+  jam();
+  Uint32 remoteAggKey = state->m_cte_remote_aggKeys[ownerNode];
+  DEB_CTE(("(%u) CTE_LOOKUP: forwarding to node %u aggKey=%u "
+           "(hash=0x%llx ownerIdx=%u)",
+           instance(), ownerNode, remoteAggKey,
+           (unsigned long long)h, ownerIdx));
+
+  /* Signal data is already populated from the incoming REQ — just
+   * update the two fields that differ for the forwarded request.
+   * Clear ROUTE_FLAG so the remote DBLQH doesn't try to forward again,
+   * but preserve every other flag (notably CTE_LOOKUP_ANTI_JOIN_FLAG,
+   * which the remote owner needs to suppress agg feed on matches). */
+  CteLookupReq *fwd = (CteLookupReq *)signal->getDataPtrSend();
+  fwd->aggStateKey = remoteAggKey;
+  fwd->flags = req->flags & ~CteLookupReq::CTE_LOOKUP_ROUTE_FLAG;
+
+  SectionHandle fwdHandle(this);
+  Uint32 keyPtrI = RNIL;
+  ndbrequire(appendToSection(keyPtrI, keyBuf, keySectionSz));
+  fwdHandle.m_ptr[CteLookupReq::KeySectionNum].i = keyPtrI;
+  {
+    SegmentedSectionPtr p;
+    getSection(p, keyPtrI);
+    fwdHandle.m_ptr[CteLookupReq::KeySectionNum] = p;
+  }
+  fwdHandle.m_cnt = 1;
+
+  if (attrInfoLen > 0) {
+    Uint32 aiPtrI = RNIL;
+    ndbrequire(appendToSection(aiPtrI, cinBuf, attrInfoLen));
+    fwdHandle.m_ptr[CteLookupReq::AttrInfoSectionNum].i = aiPtrI;
+    {
+      SegmentedSectionPtr p;
+      getSection(p, aiPtrI);
+      fwdHandle.m_ptr[CteLookupReq::AttrInfoSectionNum] = p;
+    }
+    fwdHandle.m_cnt = 2;
+  }
+
+  Uint32 ref = numberToRef(DBLQH, 1, ownerNode);
+  sendSignal(ref, GSN_CTE_LOOKUP_REQ, signal,
+             CteLookupReq::SignalLength, JBB, &fwdHandle);
+  return true;
+}
+
+void Dblqh::sendCteLookupRef(Signal *signal, Uint32 senderRef,
+                             Uint32 senderData, Uint32 errorCode,
+                             Uint32 correlation,
+                             SectionHandle *handle) {
+  if (handle != nullptr) {
+    jam();
+    releaseSections(*handle);
+  }
+  jam();
+  CteLookupRef *ref = (CteLookupRef *)signal->getDataPtrSend();
+  ref->senderRef = reference();
+  ref->senderData = senderData;
+  ref->errorCode = errorCode;
+  ref->correlation = correlation;
+  sendSignal(senderRef, GSN_CTE_LOOKUP_REF,
+             signal, CteLookupRef::SignalLength, JBB);
+}
+
+void Dblqh::sendCteScanRef(Signal *signal, Uint32 senderRef,
+                            Uint32 senderData, Uint32 errorCode,
+                            SectionHandle *handle) {
+  if (handle != nullptr) {
+    jam();
+    releaseSections(*handle);
+  }
+  jam();
+  CteScanRef *ref = (CteScanRef *)signal->getDataPtrSend();
+  ref->senderRef = reference();
+  ref->senderData = senderData;
+  ref->errorCode = errorCode;
+  sendSignal(senderRef, GSN_CTE_SCAN_REF,
+             signal, CteScanRef::SignalLength, JBB);
+}
+
+/**
+ * CTE_LOOKUP_REQ — look up a single group in a materialized CTE hash table.
+ *
+ * Signal sections:
+ *   Section 0 (KeySectionNum): Lookup key (AttributeHeader-encoded GROUP BY cols)
+ *   Section 1 (AttrInfoSectionNum): AttrInfo with 5-word interpreter header,
+ *             column reads, FLUSH_AI, CORR_FACTOR — same protocol as LQHKEYREQ.
+ *
+ * Virtual column mapping (IDs 0..N-1):
+ *   0..K-1   = GROUP BY key columns (AttributeHeader-encoded in hash table key)
+ *   K..N-1   = Aggregate result columns (AggResItem in hash table value)
+ *
+ * Uses c_tup->cinBuffer for AttrInfo input, c_tup->coutBuffer for output.
+ */
+void Dblqh::execCTE_LOOKUP_REQ(Signal *signal) {
+  jamEntry();
+  if (unlikely(!assembleFragments(signal))) {
+    jam();
+    return;
+  }
+
+  const CteLookupReq req =
+      *(const CteLookupReq *)signal->getDataPtr();
+
+  DEB_CTE(("(%u) execCTE_LOOKUP_REQ: aggStateKey=%u keyLen=%u "
+           "senderRef=0x%x senderData=0x%x resultRef=0x%x "
+           "resultData=0x%x routeRef=0x%x corr=0x%x joinAgg=%u flags=0x%x",
+           instance(), req.aggStateKey, req.keyLen,
+           req.senderRef, req.senderData, req.resultRef,
+           req.resultData, req.routeRef, req.correlation,
+           req.joinAggStateKey, req.flags));
+
+  /* Release incoming signal sections early so all error paths are safe.
+   * We copy the section data into local buffers before releasing. */
+  SectionHandle handle(this, signal);
+
+  JoinAggregationState *state = getJoinAggState(req.aggStateKey);
+  if (unlikely(state == nullptr)) {
+    jam();
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZJOIN_AGG_STATE_NOT_FOUND, req.correlation, &handle);
+    return;
+  }
+
+  if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
+    jam();
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZCTE_LOOKUP_STATE_NOT_READY, req.correlation, &handle);
+    return;
+  }
+
+  /* Section 0: lookup key */
+  SegmentedSectionPtr keySection;
+  ndbrequire(handle.getSection(keySection, CteLookupReq::KeySectionNum));
+  Uint32 keyBuf[MAX_KEY_SIZE_IN_WORDS + 1];
+  if (unlikely(keySection.sz > MAX_KEY_SIZE_IN_WORDS)) {
+    jam();
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZATTRINFO_TOO_LARGE, req.correlation, &handle);
+    return;
+  }
+  copy(keyBuf, keySection);
+
+  /* Section 1: AttrInfo → copy into cattrInfoBuffer */
+  Uint32 *cinBuf = cattrInfoBuffer;
+  Uint32 attrInfoLen = 0;
+  SegmentedSectionPtr attrInfoSection;
+  if (handle.getSection(attrInfoSection, CteLookupReq::AttrInfoSectionNum)) {
+    if (unlikely(attrInfoSection.sz > ZATTR_BUFFER_SIZE)) {
+      jam();
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       ZATTRINFO_TOO_LARGE, req.correlation, &handle);
+      return;
+    }
+    copy(cinBuf, attrInfoSection);
+    attrInfoLen = attrInfoSection.sz;
+  }
+
+  releaseSections(handle);
+
+  /* Validate minimum AttrInfo — only for non-agg path (FLUSH_AI to API).
+   * The agg-feed path (joinAggStateKey != RNIL) doesn't use AttrInfo;
+   * it builds linked_attr_data directly from the CTE hash table. */
+  if (req.joinAggStateKey == RNIL && unlikely(attrInfoLen < 8)) {
+    jam();
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZCTE_LOOKUP_ATTRINFO_MALFORMED, req.correlation);
+    return;
+  }
+
+  /* Hash table lookup */
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  ndbrequire(interp != nullptr);
+
+  DEB_CTE(("(%u) CTE_LOOKUP hash table: aggStateKey=%u state=%u "
+           "n_gb_cols=%u n_agg_results=%u processed_rows=%llu",
+           instance(), req.aggStateKey,
+           (Uint32)state->m_state.load(),
+           interp->n_gb_cols(), interp->n_agg_results(),
+           (unsigned long long)interp->processed_rows()));
+
+  /* Normalize each GB column's AttributeHeader attrId to its position
+   * (0..N-1) so the lookup key matches the normalized stored keys in
+   * the CTE hash table. DBSPJ builds keys from constants (attrId=0)
+   * or linkedValues (source attrId), so incoming keys are inconsistent.
+   * Matches the insertion-time normalization in JoinAggInterpreter
+   * when m_cte_mode is set. Preserves byteSize + NULL bit (low 16). */
+  {
+    const Uint32 n_gb_cols = interp->n_gb_cols();
+    const Uint32 keyWords = (req.keyLen + 3) >> 2;
+    Uint32 kp = 0;
+    for (Uint32 i = 0; i < n_gb_cols && kp < keyWords; i++) {
+      Uint32 dataSize = AttributeHeader::getDataSize(keyBuf[kp]);
+      keyBuf[kp] = (i << 16) | (keyBuf[kp] & 0x0000FFFF);
+      kp += 1 + dataSize;
+    }
+  }
+
+  const char *groupData;
+  if (interp->n_gb_cols() == 0) {
+    /**
+     * Scalar aggregate CTE (no GROUP BY): results are in m_agg_results
+     * directly (gb_map is nullptr). Return the scalar result regardless
+     * of the lookup key.  The key is a dummy constant provided by the
+     * NdbQueryBuilder for cross-join support.
+     */
+    jam();
+    if (interp->processed_rows() == 0) {
+      jam();
+      /* Empty table — no result to return */
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_GROUP_NOT_FOUND, req.correlation);
+      return;
+    }
+    groupData = reinterpret_cast<const char *>(interp->agg_results());
+    /* Override keyLen to 0 so cteLookupEmitResult computes
+     * accumulators = groupData + 0 = m_agg_results correctly. */
+    const_cast<CteLookupReq &>(req).keyLen = 0;
+  } else {
+    groupData = interp->lookupGroup(
+        reinterpret_cast<const char *>(keyBuf), req.keyLen);
+  }
+
+  DEB_CTE(("(%u) CTE_LOOKUP: key[0]=0x%x keyLen=%u → %s",
+           instance(), keyBuf[0], req.keyLen,
+           groupData ? "FOUND" : "NOT_FOUND"));
+
+  if (groupData == nullptr) {
+    jam();
+    /* If ROUTE_FLAG is set and the key hashes to a remote node,
+     * forward the request there instead of returning NOT_FOUND. */
+    if ((req.flags & CteLookupReq::CTE_LOOKUP_ROUTE_FLAG) &&
+        state->m_cte_num_nodes > 1 &&
+        routeCteLookup(signal, state, interp,
+                       keyBuf, keySection.sz,
+                       cinBuf, attrInfoLen, &req)) {
+      jam();
+      return;
+    }
+    /* Genuine not-found (local owner or no ROUTE_FLAG) */
+    jam();
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZCTE_LOOKUP_GROUP_NOT_FOUND, req.correlation);
+    return;
+  }
+
+  /* Filter gate — see runCteFilter for the semantics.  A reject maps
+   * to ZCTE_LOOKUP_GROUP_NOT_FOUND so DBSPJ's LEFT-JOIN machinery
+   * synthesises a NULL row; execution error -> ZCTE_LOOKUP_FILTER_ERROR. */
+  {
+    const CteFilterResult fr = runCteFilter(signal, interp, groupData,
+                                             req.keyLen, cinBuf, attrInfoLen);
+    if (fr == CTE_FILTER_REJECT) {
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_GROUP_NOT_FOUND, req.correlation);
+      return;
+    }
+    if (fr == CTE_FILTER_ERROR) {
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_FILTER_ERROR, req.correlation);
+      return;
+    }
+    /* CTE_FILTER_ACCEPT: fall through to the emit / agg-feed path. */
+  }
+
+  /* Aggregation feed path: result feeds into another JoinAggInterpreter */
+  if (req.joinAggStateKey != RNIL) {
+    jam();
+    /* Anti-join: a matched row should NOT reach the aggregator —
+     * the user's WHERE col IS NULL filter wants only NULL-injected
+     * unmatched parents to contribute.  Send bare CONF so DBSPJ's
+     * m_outstanding accounting drains; the unmatched-parent path
+     * (DBSPJ JOIN_AGG_NULL_ROW_REQ) is unchanged.  See
+     * cte_filter_phase_k.md. */
+    if (req.flags & CteLookupReq::CTE_LOOKUP_ANTI_JOIN_FLAG) {
+      jam();
+      CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
+      conf->senderRef = reference();
+      conf->senderData = req.senderData;
+      sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
+                 signal, CteLookupConf::SignalLength, JBB);
+      return;
+    }
+    cteLookupAggFeed(signal, req, interp, groupData,
+                     attrInfoLen > 0 ? cinBuf : nullptr, attrInfoLen);
+    return;
+  }
+
+  /* Group found — emit TRANSID_AI result + CTE_LOOKUP_CONF */
+  jam();
+  cteLookupEmitResult(signal, req, state, interp, groupData,
+                      cinBuf, attrInfoLen);
+}
+
+static const Uint32 CTE_SCAN_AGG_FEED_BATCH = 256;
+
+/**
+ * cteScanAggFeed — scan CTE hash table and feed each group into another
+ * JoinAggInterpreter (CTE-2-reads-CTE-1 materialization).
+ * Processes up to CTE_SCAN_AGG_FEED_BATCH groups per invocation, then
+ * yields via CONTINUEB.  Sends CTE_SCAN_CONF only when all groups are done.
+ *
+ * Called from execCTE_SCAN_REQ (initial: groupsSent=0, iterRaw=nullptr)
+ * and execCONTINUEB (resume: all state from signal data).
+ * No per-scan state is stored on JoinAggregationState — the CTE hash
+ * table is read-only and may be scanned concurrently by multiple DBSPJ
+ * instances.
+ */
+void Dblqh::releaseCteScanIterState(Uint32 stateI) {
+  if (stateI == RNIL) return;
+  Ptr<CteScanIterState> ptr;
+  ptr.i = stateI;
+  ndbrequire(c_cteScanIterStatePool.getValidPtr(ptr));
+  if (ptr.p->cinBufOverflow != nullptr) {
+    lc_ndbd_pool_free(ptr.p->cinBufOverflow);
+    ptr.p->cinBufOverflow = nullptr;
+  }
+  c_cteScanIterStatePool.release(ptr);
+}
+
+void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
+                            Uint32 senderRef, Uint32 senderData,
+                            Uint32 joinAggStateKey,
+                            Uint32 iterBucket, const char *iterRaw,
+                            Uint32 groupsSent,
+                            const Uint32 *cinBuf, Uint32 attrInfoLen,
+                            Uint32 aggFeedStateI) {
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  ndbrequire(state != nullptr);
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  ndbrequire(interp != nullptr);
+
+  /* Resolve filter program: when aggFeedStateI is set (any batch after
+   * the first, or the first batch if the caller seized state up
+   * front), its cinBufCopy is the authoritative filter source.  On a
+   * first call without state (no filter or filter couldn't be seized
+   * for overflow reasons), use the passed-in cinBuf. */
+  const Uint32 *effCinBuf = cinBuf;
+  Uint32 effAttrInfoLen = attrInfoLen;
+  if (aggFeedStateI != RNIL) {
+    jam();
+    Ptr<CteScanIterState> ptr;
+    ptr.i = aggFeedStateI;
+    ndbrequire(c_cteScanIterStatePool.getValidPtr(ptr));
+    effCinBuf = ptr.p->cinBuf();
+    effAttrInfoLen = ptr.p->attrInfoLen;
+  }
+
+  const Uint32 targetBaseKey =
+      JoinAggregationState::decodeBaseKey(joinAggStateKey);
+  const Uint32 targetLeafIndex =
+      JoinAggregationState::decodeLeafIndex(joinAggStateKey);
+
+  JoinAggregationState *targetState = getJoinAggState(targetBaseKey);
+  if (unlikely(targetState == nullptr)) {
+    jam();
+    releaseCteScanIterState(aggFeedStateI);
+    sendCteScanRef(signal, senderRef, senderData,
+                   ZJOIN_AGG_STATE_NOT_FOUND);
+    return;
+  }
+  JoinAggInterpreter *targetInterp = getJoinAggInterpreter(targetState);
+  ndbrequire(targetInterp != nullptr);
+
+  const LeafProgram *leaf = nullptr;
+  if (targetState->m_num_leaves > 1) {
+    ndbrequire(targetLeafIndex < targetState->m_num_leaves);
+    leaf = &targetState->m_leaf_programs[targetLeafIndex];
+  }
+
+  auto *gb_map = interp->gb_map_mutable();
+  Uint32 rowsThisBatch = 0;
+  bool endOfData = true;
+  if (gb_map != nullptr && !gb_map->empty()) {
+    jam();
+
+    /* Resume from saved iterator position (O(1)), or begin() on first call */
+    auto iter = (groupsSent == 0)
+        ? gb_map->begin()
+        : gb_map->iteratorAt(iterBucket, const_cast<char *>(iterRaw));
+
+    for (; iter.valid(); gb_map->next(iter)) {
+      if (rowsThisBatch >= CTE_SCAN_AGG_FEED_BATCH) {
+        jam();
+        endOfData = false;
+        break;
+      }
+      jam();
+      const char *groupData = reinterpret_cast<const char *>(iter.data());
+      const Uint32 keyLen = iter.keyLen();
+
+      /* Per-group filter gate.  effCinBuf resolves to the active
+       * filter across both first-batch and CONTINUEB resumption
+       * paths (see top of function).  On reject, skip this group
+       * without side effects. */
+      const CteFilterResult fr = runCteFilter(
+          signal, interp, groupData, keyLen, effCinBuf, effAttrInfoLen);
+      if (fr == CTE_FILTER_REJECT) {
+        jam();
+        continue;
+      }
+      if (fr == CTE_FILTER_ERROR) {
+        jam();
+        releaseCteScanIterState(aggFeedStateI);
+        sendCteScanRef(signal, senderRef, senderData,
+                       ZCTE_LOOKUP_FILTER_ERROR);
+        return;
+      }
+
+      /* Build linked_attr_data via the shared CTE writer so the
+       * inline CTE virt-column encoding (CteLinkedAttr.hpp) stays
+       * consistent with cteLookupAggFeed.  No parent linked columns
+       * for cteScanAggFeed (it's a hash-walk feed, not a per-row
+       * CTE_LOOKUP), so the attrInfoBuf args are nullptr/0. */
+      Uint32 *linkedBuf = cevictBuffer;
+      Uint32 linkedPos = 0;
+      buildCteLinkedBuffer(interp, groupData, keyLen,
+                            nullptr, 0,
+                            linkedBuf, &linkedPos);
+
+      Dbtup::KeyReqStruct aggReq(c_tup);
+      aggReq.signal = signal;
+      aggReq.read_length = 0;
+      aggReq.log_size = 0;
+      aggReq.last_row = false;
+
+    retry_agg_scan:
+      aggReq.no_exec_instructions = 0;
+      Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
+          c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
+      if (aggRet == AGG_EVICT_NEEDED) {
+        jam();
+        if (unlikely(targetState->m_cte_mode)) {
+          /* Eviction is not supported for CTE materialization targets */
+          jam();
+          releaseCteScanIterState(aggFeedStateI);
+          sendCteScanRef(signal, senderRef, senderData,
+                         ZCTE_EVICT_IN_CTE_LEAF);
+          return;
+        }
+        sendEvictedAggGroup(signal, targetInterp, targetState);
+        goto retry_agg_scan;
+      }
+      if (unlikely(aggRet != 0)) {
+        jam();
+        g_eventLogger->info("(%u) CTE_SCAN agg feed FAILED: aggRet=%d "
+            "targetKey=%u leafIdx=%u linkedWords=%u",
+            instance(), aggRet, targetBaseKey, targetLeafIndex,
+            linkedPos);
+        releaseCteScanIterState(aggFeedStateI);
+        sendCteScanRef(signal, senderRef, senderData,
+                       ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+        return;
+      }
+      targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+      rowsThisBatch++;
+      groupsSent++;
+    }
+
+    if (!endOfData && iter.valid()) {
+      /* Yield — schedule continuation via CONTINUEB.
+       * All scan state is carried in signal data so the CTE hash table
+       * remains read-only (multiple DBSPJ instances may scan concurrently). */
+      jam();
+      const char *rawPtr = iter.raw();
+      signal->theData[0] = ZCONTINUE_CTE_SCAN_AGG_FEED;
+      signal->theData[1] = aggStateKey;
+      signal->theData[2] = senderRef;
+      signal->theData[3] = senderData;
+      signal->theData[4] = joinAggStateKey;
+      signal->theData[5] = iter.bucket();
+      signal->theData[6] = (Uint32)(uintptr_t)rawPtr;
+      signal->theData[7] = (Uint32)((uintptr_t)rawPtr >> 32);
+      signal->theData[8] = groupsSent;
+      signal->theData[9] = aggFeedStateI;   // filter survives CONTINUEB
+      sendSignal(reference(), GSN_CONTINUEB, signal, 10, JBB);
+      return;
+    }
+  } else if (interp->n_gb_cols() == 0 &&
+             interp->processed_rows() > 0 &&
+             groupsSent == 0) {
+    /**
+     * Scalar aggregate (no GROUP BY): single result in m_agg_results.
+     * Build linked_attr_data and feed into target aggregator once.
+     */
+    jam();
+    const AggResItem *accumulators = interp->agg_results();
+
+    /* Scalar filter gate — single synthetic group from agg_results(). */
+    const CteFilterResult fr = runCteFilter(
+        signal, interp,
+        reinterpret_cast<const char *>(accumulators),
+        /*keyLen=*/0, effCinBuf, effAttrInfoLen);
+    if (fr == CTE_FILTER_ERROR) {
+      jam();
+      releaseCteScanIterState(aggFeedStateI);
+      sendCteScanRef(signal, senderRef, senderData,
+                     ZCTE_LOOKUP_FILTER_ERROR);
+      return;
+    }
+    if (fr == CTE_FILTER_REJECT) {
+      jam();
+      /* Single scalar group rejected — groupsSent stays 0, fall
+       * through to CTE_SCAN_CONF with EndOfData + numRows=0. */
+    } else {
+      Uint32 *linkedBuf = cevictBuffer;
+      Uint32 linkedPos = 0;
+
+      buildCteLinkedBuffer(interp,
+                           reinterpret_cast<const char *>(accumulators),
+                           /*keyLen=*/0, nullptr, 0,
+                           linkedBuf, &linkedPos);
+
+      const LeafProgram *leaf = nullptr;
+      if (targetState->m_num_leaves > 1) {
+        ndbrequire(targetLeafIndex < targetState->m_num_leaves);
+        leaf = &targetState->m_leaf_programs[targetLeafIndex];
+      }
+
+      Dbtup::KeyReqStruct aggReq(c_tup);
+      aggReq.signal = signal;
+      aggReq.read_length = 0;
+      aggReq.no_exec_instructions = 0;
+      aggReq.log_size = 0;
+      aggReq.last_row = false;
+
+      Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
+          c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
+      if (unlikely(aggRet != 0 && aggRet != AGG_EVICT_NEEDED)) {
+        jam();
+        releaseCteScanIterState(aggFeedStateI);
+        sendCteScanRef(signal, senderRef, senderData,
+                       ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+        return;
+      }
+      if (aggRet == AGG_EVICT_NEEDED) {
+        jam();
+        if (unlikely(targetState->m_cte_mode)) {
+          jam();
+          releaseCteScanIterState(aggFeedStateI);
+          sendCteScanRef(signal, senderRef, senderData,
+                         ZCTE_EVICT_IN_CTE_LEAF);
+          return;
+        }
+        sendEvictedAggGroup(signal, targetInterp, targetState);
+        /* Retry after eviction */
+        aggReq.no_exec_instructions = 0;
+        aggRet = targetInterp->processRecWithLinkedAttrs(
+            c_tup, &aggReq, linkedBuf, linkedPos, getThreadId(), leaf);
+        if (unlikely(aggRet != 0)) {
+          jam();
+          releaseCteScanIterState(aggFeedStateI);
+          sendCteScanRef(signal, senderRef, senderData,
+                         ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+          return;
+        }
+      }
+      targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+      groupsSent = 1;
+    }  /* else branch of scalar filter gate */
+  }
+
+  /* All groups processed — release the per-scan filter state (if any)
+   * and send CTE_SCAN_CONF with EndOfData. */
+  releaseCteScanIterState(aggFeedStateI);
+  CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = senderData;
+  conf->numRows = groupsSent;
+  conf->flags = CteScanConf::EndOfData;
+  conf->scanIterI = RNIL;
+  sendSignal(senderRef, GSN_CTE_SCAN_CONF,
+             signal, CteScanConf::SignalLength, JBB);
+}
+
+/**
+ * cteScanEmitResults — iterate CTE hash table groups and emit TRANSID_AI
+ * output to the API/DBSPJ.  Uses emitCteGroupOutput for the AttrInfo-driven
+ * path or a legacy raw-column path.  Sends CTE_SCAN_CONF when done.
+ *
+ * Iteration state is kept in a heap-allocated CteScanIterState, returned
+ * to DBSPJ in CTE_SCAN_CONF and passed back in the next CTE_SCAN_REQ.
+ * This allows concurrent scans by multiple DBSPJ instances on the same
+ * read-only CTE hash table.
+ */
+/**
+ * cteScanShouldEmitScalar — Phase I.17e single-emitter rule for
+ * scalar (no GROUP BY) CTE results.
+ *
+ * After Phase I.17e's continueJoinAggRedistribute scalar branch
+ * runs, the data node co-located with DBTC holds the cluster-wide
+ * merged m_agg_results — every other node has shipped its
+ * contribution via JOIN_AGG_REDISTRIBUTE_REQ and its local
+ * accumulators are no longer the source of truth.  The emit gate
+ * therefore reduces to: is this node DBTC's node?
+ *
+ * For empty-input scalar (no peer ever fed data), the owner's
+ * accumulators stay at the JoinAggInterpreter::Init defaults:
+ * is_null = true for SUM / MIN / MAX, value = 0 with is_null =
+ * false for COUNT (pre-zeroed in Init via the kOpCount walk).
+ * That state cleanly emits one row matching MySQL scalar
+ * aggregate semantics.
+ */
+bool Dblqh::cteScanShouldEmitScalar(const CteScanReq &req,
+                                     const JoinAggInterpreter *interp) {
+  (void)interp;  /* gate is purely positional now */
+  JoinAggregationState *state = getJoinAggState(req.aggStateKey);
+  if (state == nullptr) {
+    return false;
+  }
+  return refToNode(state->m_senderRef) == getOwnNodeId();
+}
+
+void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
+                                JoinAggInterpreter *interp,
+                                const Uint32 *finalR, Uint32 finalRLen,
+                                bool haveFinalR, Uint32 scanIterI,
+                                const Uint32 *cinBuf, Uint32 attrInfoLen) {
+  /* Recover iteration state from pool or start fresh.
+   * We work on a stack-local copy; a pool record is only seized
+   * if we need to pause for a continuation batch. */
+  CteScanIterState localState;
+  if (scanIterI != RNIL) {
+    jam();
+    Ptr<CteScanIterState> ptr;
+    ptr.i = scanIterI;
+    if (unlikely(!c_cteScanIterStatePool.getValidPtr(ptr))) {
+      jam();
+      sendCteScanRef(signal, req.senderRef, req.senderData,
+                     ZJOIN_AGG_STATE_NOT_FOUND);
+      return;
+    }
+    localState = *ptr.p;
+  } else {
+    localState.iterBucket = 0;
+    localState.iterRaw = nullptr;
+    localState.groupsSent = 0;
+    localState.attrInfoLen = 0;          // emit path doesn't cache filter
+    localState.cinBufOverflow = nullptr;
+  }
+  CteScanIterState *scanState = &localState;
+
+  auto *gb_map = interp->gb_map_mutable();
+  Uint32 numRowsSent = 0;
+  bool endOfData = true;
+
+  if (gb_map != nullptr && !gb_map->empty()) {
+    jam();
+    const Uint32 n_gb_cols = interp->n_gb_cols();
+    const Uint32 n_agg_results = interp->n_agg_results();
+
+    /* Resume from saved iterator position (O(1)) */
+    Uint32 groupIdx = scanState->groupsSent;
+    auto iter = (groupIdx == 0)
+        ? gb_map->begin()
+        : gb_map->iteratorAt(scanState->iterBucket,
+                             scanState->iterRaw);
+
+    for (; iter.valid(); gb_map->next(iter)) {
+      /* Batch limit reached — pause for next CTE_SCAN_REQ */
+      if (numRowsSent >= req.batchSize) {
+        jam();
+        endOfData = false;
+        break;
+      }
+
+      jam();
+      const char *groupData = reinterpret_cast<const char *>(iter.data());
+      const Uint32 keyLen = iter.keyLen();
+      const AggResItem *accumulators = reinterpret_cast<const AggResItem *>(
+          groupData + keyLen);
+
+      /* Per-group filter gate.  Unlike cteScanAggFeed, every
+       * cteScanEmitResults invocation (first REQ or continuation
+       * REQ) carries its own AttrInfo, so the filter applies in
+       * all batches. */
+      const CteFilterResult fr = runCteFilter(
+          signal, interp, groupData, keyLen, cinBuf, attrInfoLen);
+      if (fr == CTE_FILTER_REJECT) {
+        jam();
+        groupIdx++;
+        continue;
+      }
+      if (fr == CTE_FILTER_ERROR) {
+        jam();
+        /* Leak-free early exit: free any CteScanIterState pool record
+         * we inherited from a prior continuation — there will be no
+         * more CONFs driving the normal release path. */
+        releaseCteScanIterState(scanIterI);
+        sendCteScanRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_FILTER_ERROR);
+        return;
+      }
+
+      Uint32 *outBuf = cevictBuffer;
+
+      if (haveFinalR) {
+        /* AttrInfo-driven path: walk final-read section via shared helper */
+        CteOutputParams params;
+        params.transId[0] = req.transId1;
+        params.transId[1] = req.transId2;
+        params.flushRef = req.resultRef;
+        params.flushData = req.resultData;
+        params.residualRef = req.senderRef;
+        params.residualData = req.senderData;
+        params.correlation = groupIdx;
+        params.corrRootRcvr = req.resultData;
+        params.useFlushAiFromFinalR = false;
+
+        Int32 outPos = emitCteGroupOutput(signal, params, interp,
+                                          groupData, keyLen,
+                                          finalR, finalRLen,
+                                          n_gb_cols, n_agg_results,
+                                          accumulators, outBuf);
+        /* Residual (e.g. CORR_FACTOR after FLUSH_AI) goes to DBSPJ */
+        if (outPos > 0) {
+          TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+          transIdAI->connectPtr = req.senderData;
+          transIdAI->transId[0] = req.transId1;
+          transIdAI->transId[1] = req.transId2;
+
+          LinearSectionPtr lsp[3];
+          lsp[0].p = outBuf;
+          lsp[0].sz = (Uint32)outPos;
+          sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
+                     TransIdAI::HeaderLength, JBB, lsp, 1);
+        }
+      } else {
+        /* Legacy path (no AttrInfo section): emit raw key + agg columns +
+         * CORR_FACTOR32 to senderRef.  Used by nested CTE_SCAN within
+         * aggregation trees (the feed target has no user projection). */
+        Uint32 outPos = 0;
+        const Uint32 keyWords = keyLen >> 2;
+        if (unlikely(outPos + keyWords > ZATTR_BUFFER_SIZE)) {
+          jam();
+          groupIdx++;
+          continue;
+        }
+        memcpy(&outBuf[outPos], groupData, keyLen);
+        outPos += keyWords;
+
+        bool emitOk = true;
+        for (Uint32 a = 0; a < n_agg_results; a++) {
+          const AggResItem &item = accumulators[a];
+          if (!emitCteOutputAggSlot(interp, item, a, n_gb_cols + a,
+                                    outBuf, outPos, ZATTR_BUFFER_SIZE)) {
+            emitOk = false;
+            break;
+          }
+        }
+
+        if (likely(emitOk && outPos + 2 <= ZATTR_BUFFER_SIZE)) {
+          AttributeHeader::init(&outBuf[outPos],
+                                AttributeHeader::CORR_FACTOR32, 4);
+          outBuf[outPos + 1] = groupIdx;
+          outPos += 2;
+        } else {
+          jam();
+          releaseCteScanIterState(scanIterI);
+          sendCteScanRef(signal, req.senderRef, req.senderData,
+                         ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+          return;
+        }
+
+        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+        transIdAI->connectPtr = req.senderData;
+        transIdAI->transId[0] = req.transId1;
+        transIdAI->transId[1] = req.transId2;
+
+        LinearSectionPtr lsp[3];
+        lsp[0].p = outBuf;
+        lsp[0].sz = outPos;
+        sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
+                   TransIdAI::HeaderLength, JBB, lsp, 1);
+      }
+
+      numRowsSent++;
+      groupIdx++;
+    }
+
+    /* Save resume position for next batch */
+    scanState->groupsSent = groupIdx;
+    if (!endOfData && iter.valid()) {
+      scanState->iterBucket = iter.bucket();
+      scanState->iterRaw = iter.raw();
+    }
+  } else if (interp->n_gb_cols() == 0 &&
+             scanState->groupsSent == 0 &&
+             cteScanShouldEmitScalar(req, interp)) {
+    /**
+     * Scalar aggregate (no GROUP BY): single result in m_agg_results.
+     * gb_map is nullptr for n_gb_cols==0 — results go directly to
+     * m_agg_results during aggregation.  cteScanShouldEmitScalar
+     * picks the single emitter — see Phase I.17.
+     */
+    jam();
+    const Uint32 n_agg_results = interp->n_agg_results();
+    const AggResItem *accumulators = interp->agg_results();
+    Uint32 *outBuf = cevictBuffer;
+
+    /* Scalar filter gate — one synthetic group from agg_results(). */
+    const CteFilterResult fr = runCteFilter(
+        signal, interp,
+        reinterpret_cast<const char *>(accumulators),
+        /*keyLen=*/0, cinBuf, attrInfoLen);
+    if (fr == CTE_FILTER_ERROR) {
+      jam();
+      releaseCteScanIterState(scanIterI);
+      sendCteScanRef(signal, req.senderRef, req.senderData,
+                     ZCTE_LOOKUP_FILTER_ERROR);
+      return;
+    }
+    if (fr == CTE_FILTER_REJECT) {
+      jam();
+      /* Scalar group rejected — numRowsSent stays 0.  Fall through
+       * to CTE_SCAN_CONF with EndOfData + numRows=0. */
+    } else if (haveFinalR) {
+      CteOutputParams params;
+      params.transId[0] = req.transId1;
+      params.transId[1] = req.transId2;
+      params.flushRef = req.resultRef;
+      params.flushData = req.resultData;
+      params.residualRef = req.senderRef;
+      params.residualData = req.senderData;
+      params.correlation = 0;
+      params.corrRootRcvr = req.resultData;
+      params.useFlushAiFromFinalR = false;
+
+      Int32 outPos = emitCteGroupOutput(signal, params, interp,
+                                        nullptr, 0,
+                                        finalR, finalRLen,
+                                        0, n_agg_results,
+                                        accumulators, outBuf);
+      if (outPos > 0) {
+        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+        transIdAI->connectPtr = req.senderData;
+        transIdAI->transId[0] = req.transId1;
+        transIdAI->transId[1] = req.transId2;
+
+        LinearSectionPtr lsp[3];
+        lsp[0].p = outBuf;
+        lsp[0].sz = (Uint32)outPos;
+        sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
+                   TransIdAI::HeaderLength, JBB, lsp, 1);
+      }
+    } else {
+      /* Legacy path: emit agg columns + CORR_FACTOR32 */
+      Uint32 outPos = 0;
+      bool emitOk = true;
+      for (Uint32 a = 0; a < n_agg_results; a++) {
+        const AggResItem &item = accumulators[a];
+        if (!emitCteOutputAggSlot(interp, item, a, a,
+                                  outBuf, outPos, ZATTR_BUFFER_SIZE)) {
+          emitOk = false;
+          break;
+        }
+      }
+      if (!emitOk || outPos + 2 > ZATTR_BUFFER_SIZE) {
+        jam();
+        releaseCteScanIterState(scanIterI);
+        sendCteScanRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+        return;
+      }
+      AttributeHeader::init(&outBuf[outPos],
+                            AttributeHeader::CORR_FACTOR32, 4);
+      outBuf[outPos + 1] = 0;
+      outPos += 2;
+
+      TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+      transIdAI->connectPtr = req.senderData;
+      transIdAI->transId[0] = req.transId1;
+      transIdAI->transId[1] = req.transId2;
+
+      LinearSectionPtr lsp[3];
+      lsp[0].p = outBuf;
+      lsp[0].sz = outPos;
+      sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
+                 TransIdAI::HeaderLength, JBB, lsp, 1);
+    }
+    numRowsSent = 1;
+    scanState->groupsSent = 1;
+  }
+
+  /* Send CTE_SCAN_CONF */
+  CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = req.senderData;
+  conf->numRows = numRowsSent;
+  if (endOfData) {
+    jam();
+    conf->flags = CteScanConf::EndOfData;
+    conf->scanIterI = RNIL;
+    /* Release pool record if we had one from a previous continuation.
+     * The helper also frees a cinBufOverflow buffer if one was set —
+     * safe even for the emit path where overflow is never populated. */
+    releaseCteScanIterState(scanIterI);
+  } else {
+    jam();
+    conf->flags = 0;
+    /* Seize pool record for continuation (or reuse existing) */
+    Ptr<CteScanIterState> ptr;
+    if (scanIterI != RNIL) {
+      jam();
+      ptr.i = scanIterI;
+      ndbrequire(c_cteScanIterStatePool.getValidPtr(ptr));
+    } else {
+      jam();
+      if (unlikely(!c_cteScanIterStatePool.seize(ptr))) {
+        jam();
+        sendCteScanRef(signal, req.senderRef, req.senderData,
+                       ZJOIN_AGG_STATE_ALLOC_FAILED);
+        return;
+      }
+    }
+    *ptr.p = localState;
+    conf->scanIterI = ptr.i;
+  }
+  sendSignal(req.senderRef, GSN_CTE_SCAN_CONF,
+             signal, CteScanConf::SignalLength, JBB);
+}
+
+/**
+ * CTE_SCAN_REQ — scan groups from a materialized CTE hash table.
+ *
+ * Iterates JoinAggregationState's hash table, resuming from a saved
+ * iterator position (m_cteScan_iterBucket/iterRaw) for O(1) resume.
+ * Sends up to batchSize groups as TRANSID_AI.  Sends CTE_SCAN_CONF
+ * with EndOfData when all groups have been sent.
+ *
+ * Iteration state is stored in JoinAggregationState so it persists
+ * across batches.  Each CTE_SCAN_REQ either starts a new scan
+ * (groupsSent == 0) or continues from the saved position.
+ */
+void Dblqh::execCTE_SCAN_REQ(Signal *signal) {
+  jamEntry();
+  if (unlikely(!assembleFragments(signal))) {
+    jam();
+    return;
+  }
+
+  const CteScanReq req =
+      *(const CteScanReq *)signal->getDataPtr();
+
+  /* Release incoming signal sections early so all error paths are safe.
+   * We copy the AttrInfo section into a local buffer before releasing. */
+  SectionHandle handle(this, signal);
+
+  /* Close REQ: DBSPJ is aborting or closing the scan and asks DBLQH to
+   * free the pool record for req.scanIterI.  Runs before any
+   * JoinAggregationState lookups so a dying request can still clean
+   * up even if the state itself is being torn down concurrently.
+   * Round-trips with an EndOfData CONF so DBSPJ's normal m_outstanding
+   * accounting drains and the tree node can transition TN_INACTIVE
+   * via execCTE_SCAN_CONF. */
+  if (signal->getLength() >= CteScanReq::SignalLengthClose &&
+      (req.flags & CteScanReq::CloseFlag) != 0) {
+    jam();
+    releaseSections(handle);
+    if (req.scanIterI != RNIL) {
+      jam();
+      releaseCteScanIterState(req.scanIterI);
+    }
+    CteScanConf *conf = (CteScanConf *)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = req.senderData;
+    conf->numRows = 0;
+    conf->flags = CteScanConf::EndOfData;
+    conf->scanIterI = RNIL;
+    sendSignal(req.senderRef, GSN_CTE_SCAN_CONF, signal,
+               CteScanConf::SignalLength, JBB);
+    return;
+  }
+
+  JoinAggregationState *state = getJoinAggState(req.aggStateKey);
+  if (unlikely(state == nullptr)) {
+    jam();
+    sendCteScanRef(signal, req.senderRef, req.senderData,
+                   ZJOIN_AGG_STATE_NOT_FOUND, &handle);
+    return;
+  }
+
+  if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
+    jam();
+    sendCteScanRef(signal, req.senderRef, req.senderData,
+                   ZCTE_LOOKUP_STATE_NOT_READY, &handle);
+    return;
+  }
+
+  /* Optional AttrInfo section: 5-word header + interpreted program.
+   * When present the final-read section drives per-group TRANSID_AI
+   * formatting and FLUSH_AI routing (mirroring CTE_LOOKUP_REQ). */
+  Uint32 *cinBuf = cattrInfoBuffer;
+  Uint32 attrInfoLen = 0;
+  SegmentedSectionPtr attrInfoSection;
+  if (handle.getSection(attrInfoSection, CteScanReq::AttrInfoSectionNum)) {
+    if (unlikely(attrInfoSection.sz > ZATTR_BUFFER_SIZE)) {
+      jam();
+      sendCteScanRef(signal, req.senderRef, req.senderData,
+                     ZATTRINFO_TOO_LARGE, &handle);
+      return;
+    }
+    copy(cinBuf, attrInfoSection);
+    attrInfoLen = attrInfoSection.sz;
+  }
+  releaseSections(handle);
+
+  /* Parse 5-word AttrInfo header and locate final-read section.
+   * Header: [initReadLen, execRegionLen, finalUpdateLen, finalRLen, rsubLen].
+   * The final-read section starts after the header + init-read + exec + final-update. */
+  const Uint32 *finalR = nullptr;
+  Uint32 finalRLen = 0;
+  bool haveFinalR = false;
+  /* Use the per-fragment FLUSH_AI target from the CTE_SCAN_REQ direct
+   * fields.  parseDA's section was built once with the API's common
+   * (worker[0]) receiverId, so its FLUSH_AI words can NOT be trusted —
+   * each fragment's request carries its own resultRef/resultData
+   * (= per-worker API receiverId) in the signal header instead. */
+  if (attrInfoLen >= 5) {
+    const Uint32 initReadLen = cinBuf[0];
+    const Uint32 execRegionLen = cinBuf[1];
+    const Uint32 finalUpdateLen = cinBuf[2];
+    const Uint32 fr = cinBuf[3];
+    const Uint32 finalRStart = 5 + initReadLen + execRegionLen + finalUpdateLen;
+    if (finalRStart + fr <= attrInfoLen) {
+      finalR = &cinBuf[finalRStart];
+      finalRLen = fr;
+      haveFinalR = (fr > 0);
+    }
+  }
+
+  /* Save transId for this scan (first or continuation) — used when
+   * sending TRANSID_AI back to the API and to validate continuation
+   * REQs belong to the same transaction. */
+  state->m_cteScan_transId[0] = req.transId1;
+  state->m_cteScan_transId[1] = req.transId2;
+
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  ndbrequire(interp != nullptr);
+
+  /* Aggregation feed path: scanned groups feed into another interpreter.
+   * If the client attached a non-trivial filter program, seize a
+   * CteScanIterState to copy it into — CONTINUEB self-signals can't
+   * carry sections, so the server needs its own retained copy that
+   * survives across batches.  Filter programs that exceed
+   * CTE_SCAN_FILTER_INLINE_WORDS spill into a lc_ndbd_pool_malloc'd
+   * overflow buffer; allocation failures fall back to first-batch-only
+   * filtering (logged via DEB_CTE). */
+  if (req.joinAggStateKey != RNIL) {
+    jam();
+    Uint32 aggFeedStateI = RNIL;
+    if (attrInfoLen >= 5 && cinBuf[1] > 1) {
+      jam();
+      Ptr<CteScanIterState> ptr;
+      if (likely(c_cteScanIterStatePool.seize(ptr))) {
+        ptr.p->iterBucket = 0;
+        ptr.p->iterRaw = nullptr;
+        ptr.p->groupsSent = 0;
+        ptr.p->attrInfoLen = attrInfoLen;
+        ptr.p->cinBufOverflow = nullptr;
+        if (attrInfoLen <= CTE_SCAN_FILTER_INLINE_WORDS) {
+          memcpy(ptr.p->cinBufInline, cinBuf, attrInfoLen * sizeof(Uint32));
+        } else {
+          jam();
+          Uint32 *overflow = (Uint32 *)lc_ndbd_pool_malloc(
+              attrInfoLen * sizeof(Uint32), RG_QUERY_MEMORY,
+              getThreadId(), false);
+          if (overflow != nullptr) {
+            memcpy(overflow, cinBuf, attrInfoLen * sizeof(Uint32));
+            ptr.p->cinBufOverflow = overflow;
+          } else {
+            /* Overflow allocation failed — release the state and fall
+             * back to first-batch-only filtering by passing cinBuf
+             * inline.  Logged so we can spot it in production. */
+            jam();
+            DEB_CTE(("(%u) CTE_SCAN filter overflow alloc failed, "
+                     "falling back to first-batch filter only "
+                     "(filterLen=%u)",
+                     instance(), attrInfoLen));
+            c_cteScanIterStatePool.release(ptr);
+            ptr.i = RNIL;
+          }
+        }
+        aggFeedStateI = ptr.i;
+      } else {
+        jam();
+        DEB_CTE(("(%u) CTE_SCAN filter state seize failed, "
+                 "falling back to first-batch filter only", instance()));
+      }
+    }
+    cteScanAggFeed(signal, req.aggStateKey, req.senderRef, req.senderData,
+                   req.joinAggStateKey,
+                   0, nullptr, 0,
+                   attrInfoLen > 0 ? cinBuf : nullptr, attrInfoLen,
+                   aggFeedStateI);
+    return;
+  }
+
+  /* Extract scanIterI while signal is still intact.
+   * First CTE_SCAN_REQ (SignalLength=9) has no scanIterI field. */
+  const Uint32 scanIterI =
+      (signal->getLength() >= CteScanReq::SignalLengthContinue)
+      ? req.scanIterI : RNIL;
+
+  /* Non-agg path: emit groups as TRANSID_AI to API/DBSPJ */
+  cteScanEmitResults(signal, req, interp, finalR, finalRLen,
+                     haveFinalR, scanIterI,
+                     attrInfoLen > 0 ? cinBuf : nullptr, attrInfoLen);
+}
+
+/* ------------------------------------------------------------------ */
+/* CTE hash redistribution — multi-node                                */
+/* ------------------------------------------------------------------ */
+
+static const Uint32 REDIST_GROUPS_PER_BATCH = 256;
+static const Uint32 REDIST_MAX_BATCH_BYTES = 64 * 1024;
+
+/**
+ * redistAlloc — bump-allocate from the state's page-based allocator.
+ * Allocates 32KB pages and sub-allocates entries within them.
+ * Returns nullptr on allocation failure.
+ */
+static void *
+redistAlloc(JoinAggregationState *state, Uint32 bytes, Uint32 threadId) {
+  /* Align to 8 bytes for safe struct access */
+  bytes = (bytes + 7) & ~7u;
+  if (bytes > state->m_redist_page_remaining) {
+    Uint32 pageBytes = JoinAggregationState::REDIST_PAGE_SIZE;
+    if (bytes + sizeof(JoinAggregationState::RedistPage) > pageBytes) {
+      /* Oversized entry — allocate exact page */
+      pageBytes = bytes + sizeof(JoinAggregationState::RedistPage);
+    }
+    auto *page = (JoinAggregationState::RedistPage *)lc_ndbd_pool_malloc(
+        pageBytes, RG_QUERY_MEMORY, threadId, false);
+    if (page == nullptr) return nullptr;
+    page->next = state->m_redist_page_head;
+    state->m_redist_page_head = page;
+    state->m_redist_page_ptr =
+        reinterpret_cast<char *>(page) +
+        sizeof(JoinAggregationState::RedistPage);
+    state->m_redist_page_remaining =
+        pageBytes - sizeof(JoinAggregationState::RedistPage);
+  }
+  void *ptr = state->m_redist_page_ptr;
+  state->m_redist_page_ptr += bytes;
+  state->m_redist_page_remaining -= bytes;
+  return ptr;
+}
+
+static const Uint32 REDIST_PAGES_PER_FREE_BATCH = 256;
+
+/**
+ * freeRedistPagesBatch — free up to REDIST_PAGES_PER_FREE_BATCH pages.
+ * Returns true if all pages have been freed, false if more remain.
+ * Caller is responsible for scheduling CONTINUEB to the proxy block
+ * if more pages remain.
+ */
+static bool
+freeRedistPagesBatch(JoinAggregationState *state) {
+  auto *page = state->m_redist_page_head;
+  Uint32 count = 0;
+  while (page != nullptr && count < REDIST_PAGES_PER_FREE_BATCH) {
+    auto *next = page->next;
+    lc_ndbd_pool_free(page);
+    page = next;
+    count++;
+  }
+  state->m_redist_page_head = page;
+
+  if (page == nullptr) {
+    state->m_redist_page_ptr = nullptr;
+    state->m_redist_page_remaining = 0;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Abort CTE redistribution — send COMPLETE_REF and set ERROR state.
+ */
+void Dblqh::abortCteRedistribution(Signal *signal,
+                                    JoinAggregationState *state,
+                                    Uint32 errorCode) {
+  jam();
+  state->m_state.store(JoinAggregationState::ERROR);
+  JoinAggCompleteRef *ref =
+    (JoinAggCompleteRef *)signal->getDataPtrSend();
+  ref->senderRef = reference();
+  ref->senderData = state->m_cte_complete_senderData;
+  ref->requestId = state->m_cte_complete_requestId;
+  ref->errorCode = errorCode;
+  ref->errorLine = __LINE__;
+  sendSignal(state->m_cte_complete_senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+             signal, JoinAggCompleteRef::SignalLength, JBB);
+}
+
+/**
+ * continueJoinAggRedistribute — iterate hash table, send non-local groups
+ * to their hash-owner nodes via JOIN_AGG_REDISTRIBUTE_REQ.
+ * Yields via CONTINUEB after batch limit. Pauses on NEED_CONF for flow control.
+ */
+/**
+ * Phase I.17e: package this node's scalar (no GROUP BY)
+ * accumulators and ship them to the DBTC-co-located owner via
+ * JOIN_AGG_REDISTRIBUTE_REQ with keyLen == 0.  The owner's
+ * execJOIN_AGG_REDISTRIBUTE_REQ dispatches keyLen == 0 to
+ * JoinAggInterpreter::mergeScalarAccumulators which folds the
+ * inbound payload into its own m_agg_results.  After all
+ * non-owner nodes finish sending, the owner has the cluster-wide
+ * merged scalar result and is the sole emitter for CTE_SCAN.
+ *
+ * Section 0 (KeySectionNum) is intentionally empty for scalar.
+ * Section 1 (ValueSectionNum) carries the AggResItem array.
+ */
+void Dblqh::sendScalarRedistributeReq(Signal* signal,
+                                       JoinAggregationState* state,
+                                       JoinAggInterpreter* interp,
+                                       Uint32 ownerNode) {
+  const AggResItem* accumulators = interp->agg_results();
+  const Uint32 valLen = interp->redistributionValueLen(accumulators);
+
+  const Uint32 dstKey = state->m_cte_remote_aggKeys[ownerNode];
+  const Uint32 dstOwner = state->m_cte_remote_ownerInstances[ownerNode];
+  ndbrequire(dstOwner > 0);
+
+  JoinAggRedistributeReq* req =
+      (JoinAggRedistributeReq*)signal->getDataPtrSend();
+  req->aggStateKey = dstKey;
+  req->keyLen = 0;
+  req->valueLen = valLen;
+  /* No NEED_CONF: scalar payload is a single small message; flow
+   * control via batch bytes is irrelevant here. */
+  req->requestInfo = 0;
+
+  /* Two sections required by the existing receive code.  Section 0
+   * (KeySectionNum) carries a single dummy word for scalar; the
+   * receiver inspects req->keyLen == 0 and ignores the dummy.
+   * Sending a real word avoids any 0-size-section quirks in the
+   * NDB transporter / fragmentation layer. */
+  Uint32 dummyKey = 0;
+  LinearSectionPtr lsp[2];
+  lsp[0].p = &dummyKey;
+  lsp[0].sz = 1;
+  Uint32 valueBuf[ZATTR_BUFFER_SIZE];
+  ndbrequire(((valLen + 3) >> 2) <= ZATTR_BUFFER_SIZE);
+  memcpy(valueBuf, accumulators, interp->val_len());
+  if (interp->hasStringSlots()) {
+    interp->encodeStringPayload(accumulators, reinterpret_cast<char*>(
+        valueBuf + ((interp->val_len() + 3) >> 2)));
+  }
+  lsp[1].p = valueBuf;
+  lsp[1].sz = (valLen + 3) >> 2;
+
+  BlockReference remoteRef = numberToRef(DBLQH, dstOwner, ownerNode);
+  sendBatchedFragmentedSignal(remoteRef,
+                               GSN_JOIN_AGG_REDISTRIBUTE_REQ, signal,
+                               JoinAggRedistributeReq::SignalLength,
+                               JBB, lsp, 2);
+
+  DEB_CTE(("(%u) CTE REDIST: scalar payload sent to ownerNode=%u "
+           "dstKey=%u dstOwner=%u valLen=%u",
+           instance(), ownerNode, dstKey, dstOwner, valLen));
+}
+
+void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  ndbrequire(state != nullptr);
+
+  /* Phase L (E.1): redistribution runs on the owner LDM only. */
+  ndbassert(state->m_owner_instance == instance());
+
+  /* Phase L (B): idempotency guards.
+   *
+   * Stale CONTINUEBs or REDISTRIBUTE_CONFs can re-enter this function
+   * after redistribution has already finished.  Without the guards, the
+   * now-empty gb_map falls through to redistribution_done, re-broadcasts
+   * FINAL_REPs to every remote node (which then re-trigger their own
+   * checkCteReady → propagate the duplicate-CONF bug), and re-calls
+   * checkCteReady locally.  Either condition means "redistribution is
+   * past us"; the only correct action is to drop the entry.
+   *
+   * ndbassert in debug builds so any such re-entry is caught loudly and
+   * the originating path can be removed.  See cte_filter_phase_l.md. */
+  if (state->m_state.load() != JoinAggregationState::CTE_REDISTRIBUTING) {
+    jam();
+    DEB_CTE(("(%u) continueJoinAggRedistribute: state=%u != "
+             "CTE_REDISTRIBUTING — skip stale continuation",
+             instance(), (Uint32)state->m_state.load()));
+    ndbassert(false);
+    return;
+  }
+  if (state->m_cte_redistribution_done) {
+    jam();
+    DEB_CTE(("(%u) continueJoinAggRedistribute: already done — skip "
+             "duplicate entry", instance()));
+    ndbassert(false);
+    return;
+  }
+
+  /* Check for node failure since SETUP */
+  if (JoinAggregationState::s_node_fail_count.load(
+          std::memory_order_relaxed) != state->m_cte_node_fail_count) {
+    jam();
+    abortCteRedistribution(signal, state, ZJOIN_AGG_STATE_NOT_FOUND);
+    return;
+  }
+
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  ndbrequire(interp != nullptr);
+
+  JoinGBHashTable *gb_map = interp->gb_map_mutable();
+  if (gb_map == nullptr) {
+    /* Phase I.17e: scalar (no GROUP BY) — every node ships its
+     * m_agg_results to the DBTC-co-located owner.  The owner skips
+     * the send and waits for inbound REDISTRIBUTE_REQs from peers.
+     * After redistribution completes, only the owner's interpreter
+     * holds the cluster-wide merged scalar result; the
+     * cteScanEmitResults gate then trivially picks it. */
+    jam();
+    if (interp->n_gb_cols() == 0) {
+      Uint32 ownerNode = refToNode(state->m_senderRef);
+      if (ownerNode != getOwnNodeId()) {
+        jam();
+        sendScalarRedistributeReq(signal, state, interp, ownerNode);
+      } else {
+        jam();
+        DEB_CTE(("(%u) CTE REDIST: scalar — this node is owner "
+                 "(DBTC node=%u), waiting for peers", instance(),
+                 ownerNode));
+      }
+    } else {
+      DEB_CTE(("(%u) CTE REDIST: gb_map nullptr but n_gb_cols=%u — "
+               "unexpected, treating as no-op", instance(),
+               interp->n_gb_cols()));
+    }
+    goto redistribution_done;
+  }
+  if (gb_map->size() == 0) {
+    jam();
+    DEB_CTE(("(%u) CTE REDIST: empty gb_map, nothing to redistribute",
+             instance()));
+    goto redistribution_done;
+  }
+
+  DEB_CTE(("(%u) CTE REDIST: aggStateKey=%u gb_map_size=%u ownNode=%u",
+           instance(), aggStateKey, gb_map->size(), getOwnNodeId()));
+
+  {
+    const Uint32 ownNodeId = getOwnNodeId();
+    Uint32 batch_count = 0;
+    Uint32 batch_bytes = state->m_cte_redist_batch_bytes;
+
+    for (auto iter = gb_map->begin(); iter.valid();) {
+      jam();
+      const char *data = reinterpret_cast<const char *>(iter.data());
+      const Uint32 keyLen = iter.keyLen();
+      const AggResItem* slots = reinterpret_cast<const AggResItem*>(
+          data + keyLen);
+      const Uint32 valLen = interp->redistributionValueLen(slots);
+
+      /* Determine hash owner (type-aware for complex character sets) */
+      Uint64 h = interp->hashGroupKey(data, keyLen);
+      Uint32 ownerIdx = static_cast<Uint32>(h) % state->m_cte_num_nodes;
+      Uint32 ownerNode = state->m_cte_node_list[ownerIdx];
+
+#ifdef DEBUG_CTE
+      {
+        const Uint32 *kw = reinterpret_cast<const Uint32 *>(data);
+        DEB_CTE(("(%u) CTE REDIST: hash=0x%llx ownerIdx=%u ownerNode=%u "
+                 "keyLen=%u valLen=%u %s key[0]=0x%x key[1]=0x%x",
+                 instance(), (unsigned long long)h, ownerIdx, ownerNode,
+                 keyLen, valLen,
+                 ownerNode == ownNodeId ? "LOCAL" : "REMOTE",
+                 kw[0], keyLen > 4 ? kw[1] : 0));
+      }
+#endif
+
+      if (ownerNode == ownNodeId) {
+        jam();
+        gb_map->next(iter);
+        continue;
+      }
+
+      /* Calculate signal size */
+      Uint32 sigBytes = (((keyLen + 3) >> 2) + ((valLen + 3) >> 2) +
+                         JoinAggRedistributeReq::SignalLength) * sizeof(Uint32);
+      bool needConf = (batch_bytes + sigBytes >= REDIST_MAX_BATCH_BYTES);
+
+      /* Send REDISTRIBUTE_REQ to owner.  Phase L (E.1): address it
+       * to the destination's owner LDM and the destination's local
+       * aggStateKey, not to instance 1 + our own key.  Both come
+       * from the COMPLETE_REQ aggKey-triples section, populated at
+       * the top of execJOIN_AGG_COMPLETE_REQ. */
+      const Uint32 dstKey = state->m_cte_remote_aggKeys[ownerNode];
+      const Uint32 dstOwner = state->m_cte_remote_ownerInstances[ownerNode];
+      ndbrequire(dstOwner > 0);
+      JoinAggRedistributeReq *req =
+        (JoinAggRedistributeReq *)signal->getDataPtrSend();
+      req->aggStateKey = dstKey;
+      req->keyLen = keyLen;
+      req->valueLen = valLen;
+      req->requestInfo = needConf ? JoinAggRedistributeReq::RI_NEED_CONF : 0;
+
+      LinearSectionPtr lsp[3];
+      lsp[0].p = reinterpret_cast<const Uint32 *>(data);
+      lsp[0].sz = (keyLen + 3) >> 2;
+      Uint32 valueBuf[ZATTR_BUFFER_SIZE];
+      ndbrequire(((valLen + 3) >> 2) <= ZATTR_BUFFER_SIZE);
+      memcpy(valueBuf, data + keyLen, interp->val_len());
+      if (interp->hasStringSlots()) {
+        interp->encodeStringPayload(slots, reinterpret_cast<char*>(
+            valueBuf + ((interp->val_len() + 3) >> 2)));
+      }
+      lsp[1].p = valueBuf;
+      lsp[1].sz = (valLen + 3) >> 2;
+
+      BlockReference remoteRef = numberToRef(DBLQH, dstOwner, ownerNode);
+      sendBatchedFragmentedSignal(remoteRef,
+                                  GSN_JOIN_AGG_REDISTRIBUTE_REQ, signal,
+                                  JoinAggRedistributeReq::SignalLength,
+                                  JBB, lsp, 2);
+
+      gb_map->eraseAndNext(iter);
+      batch_count++;
+      batch_bytes += sigBytes;
+
+      if (needConf) {
+        /* Pause — wait for CONF before continuing */
+        jam();
+        state->m_cte_waiting_conf = true;
+        state->m_cte_redist_batch_bytes = 0;
+        return;
+      }
+
+      if (batch_count >= REDIST_GROUPS_PER_BATCH) {
+        /* Yield via CONTINUEB (local scheduling fairness) */
+        jam();
+        state->m_cte_redist_batch_bytes = batch_bytes;
+        signal->theData[0] = ZCONTINUE_JOIN_AGG_REDISTRIBUTE;
+        signal->theData[1] = aggStateKey;
+        sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+        return;
+      }
+    }
+  }
+
+redistribution_done:
+  /* All local groups processed — send FINAL_REP to all other nodes.
+   * Phase L (E.1): address each FINAL_REP to the destination's owner
+   * LDM and the destination's local aggStateKey, mirroring the
+   * REDISTRIBUTE_REQ routing.  The receiver's checkCteReady runs on
+   * the same LDM that owns its CTE state. */
+  {
+    const Uint32 ownNodeId = getOwnNodeId();
+    for (Uint32 i = 0; i < state->m_cte_num_nodes; i++) {
+      const Uint32 dstNode = state->m_cte_node_list[i];
+      if (dstNode != ownNodeId) {
+        jam();
+        const Uint32 dstKey = state->m_cte_remote_aggKeys[dstNode];
+        const Uint32 dstOwner = state->m_cte_remote_ownerInstances[dstNode];
+        ndbrequire(dstOwner > 0);
+        JoinAggFinalRep *rep =
+          (JoinAggFinalRep *)signal->getDataPtrSend();
+        rep->aggStateKey = dstKey;
+        rep->senderNodeId = ownNodeId;
+
+        BlockReference remoteRef = numberToRef(DBLQH, dstOwner, dstNode);
+        sendSignal(remoteRef, GSN_JOIN_AGG_FINAL_REP, signal,
+                   JoinAggFinalRep::SignalLength, JBB);
+      }
+    }
+    state->m_cte_redistribution_done = true;
+    state->m_cte_redist_batch_bytes = 0;
+    checkCteReady(signal, state);
+  }
+}
+
+/**
+ * execJOIN_AGG_REDISTRIBUTE_REQ — receive a group row from another node.
+ * Merge into local hash table or queue if still finalizing.
+ *
+ * Phase L (E.1): senders address this signal to the destination's
+ * owner LDM (numberToRef(DBLQH, dstOwner, dstNode)).  Only the owner
+ * mutates the aggregation state, so no mutex is needed.
+ */
+void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
+  jamEntry();
+  if (unlikely(!assembleFragments(signal))) {
+    jam();
+    return;
+  }
+
+  const JoinAggRedistributeReq *req =
+    (const JoinAggRedistributeReq *)signal->getDataPtr();
+  const Uint32 aggStateKey = req->aggStateKey;
+  const Uint32 keyLen = req->keyLen;
+  const Uint32 valueLen = req->valueLen;
+  const bool needConf =
+      (req->requestInfo & JoinAggRedistributeReq::RI_NEED_CONF) != 0;
+
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (unlikely(state == nullptr)) {
+    jam();
+    SectionHandle handle(this, signal);
+    releaseSections(handle);
+    return;  /* State gone — query already aborted */
+  }
+
+  /* Phase L (E.1): senders address REDISTRIBUTE_REQ to the
+   * destination's owner LDM via numberToRef(DBLQH, dstOwner, dstNode). */
+  ndbassert(state->m_owner_instance == instance());
+
+  SectionHandle handle(this, signal);
+
+  SegmentedSectionPtr keySection, valueSection;
+  ndbrequire(handle.getSection(keySection,
+                               JoinAggRedistributeReq::KeySectionNum));
+  ndbrequire(handle.getSection(valueSection,
+                               JoinAggRedistributeReq::ValueSectionNum));
+
+  Uint32 keyBuf[MAX_KEY_SIZE_IN_WORDS + 1];
+  Uint32 *valBuf = cattrInfoBuffer;
+  ndbrequire(keySection.sz <= MAX_KEY_SIZE_IN_WORDS);
+  ndbrequire(valueSection.sz <= ZATTR_BUFFER_SIZE);
+  copy(keyBuf, keySection);
+  copy(valBuf, valueSection);
+  releaseSections(handle);
+
+  /* Send CONF immediately if requested so the sender can resume
+   * without waiting for our merge to complete. */
+  if (needConf) {
+    jam();
+    JoinAggRedistributeConf *conf =
+      (JoinAggRedistributeConf *)signal->getDataPtrSend();
+    conf->aggStateKey = aggStateKey;
+    conf->senderNodeId = getOwnNodeId();
+    sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_CONF,
+               signal, JoinAggRedistributeConf::SignalLength, JBB);
+  }
+
+  JoinAggregationState::State curState = state->m_state.load();
+
+  /* If in ERROR state, send REF */
+  if (curState == JoinAggregationState::ERROR ||
+      curState == JoinAggregationState::NODE_FAIL_ABORT) {
+    jam();
+    JoinAggRedistributeRef *ref =
+      (JoinAggRedistributeRef *)signal->getDataPtrSend();
+    ref->aggStateKey = aggStateKey;
+    ref->senderNodeId = getOwnNodeId();
+    ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+    sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_REF,
+               signal, JoinAggRedistributeRef::SignalLength, JBB);
+    return;
+  }
+
+  /* If still finalizing, queue for later using page-based allocator */
+  if (curState == JoinAggregationState::FINALIZING ||
+      curState == JoinAggregationState::SENDING_RESULTS) {
+    jam();
+    Uint32 keyWords = (keyLen + 3) >> 2;
+    Uint32 valWords = (valueLen + 3) >> 2;
+    Uint32 allocBytes = sizeof(JoinAggregationState::RedistQueueEntry) -
+                        sizeof(Uint32) +  /* subtract data[1] placeholder */
+                        (keyWords + valWords) * sizeof(Uint32);
+    auto *entry = (JoinAggregationState::RedistQueueEntry *)
+        redistAlloc(state, allocBytes, getThreadId());
+    if (unlikely(entry == nullptr)) {
+      jam();
+      abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+      /* Send REF to sender so it aborts too */
+      JoinAggRedistributeRef *ref =
+        (JoinAggRedistributeRef *)signal->getDataPtrSend();
+      ref->aggStateKey = aggStateKey;
+      ref->senderNodeId = getOwnNodeId();
+      ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+      sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_REF,
+                 signal, JoinAggRedistributeRef::SignalLength, JBB);
+      return;
+    }
+    entry->next = nullptr;
+    entry->keyLen = keyLen;
+    entry->valueLen = valueLen;
+    memcpy(entry->data, keyBuf, keySection.sz);
+    memcpy(entry->data + keyWords, valBuf, valueSection.sz);
+    if (state->m_redist_queue_tail != nullptr)
+      state->m_redist_queue_tail->next = entry;
+    else
+      state->m_redist_queue_head = entry;
+    state->m_redist_queue_tail = entry;
+    state->m_redist_queue_count++;
+    return;
+  }
+  /* Process immediately: merge into local hash table */
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  ndbrequire(interp != nullptr);
+
+  Int32 ret = interp->mergeOneGroup(
+      reinterpret_cast<const char *>(keyBuf), keyLen,
+      reinterpret_cast<const char *>(valBuf), valueLen);
+  if (unlikely(ret != 0)) {
+    jam();
+    abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+    JoinAggRedistributeRef *ref =
+      (JoinAggRedistributeRef *)signal->getDataPtrSend();
+    ref->aggStateKey = aggStateKey;
+    ref->senderNodeId = getOwnNodeId();
+    ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+    sendSignal(signal->getSendersBlockRef(), GSN_JOIN_AGG_REDISTRIBUTE_REF,
+               signal, JoinAggRedistributeRef::SignalLength, JBB);
+    return;
+  }
+}
+
+/**
+ * execJOIN_AGG_REDISTRIBUTE_CONF — sender resumes redistribution.
+ */
+void Dblqh::execJOIN_AGG_REDISTRIBUTE_CONF(Signal *signal) {
+  jamEntry();
+  const JoinAggRedistributeConf *conf =
+    (const JoinAggRedistributeConf *)signal->getDataPtr();
+  const Uint32 aggStateKey = conf->aggStateKey;
+
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (unlikely(state == nullptr)) {
+    jam();
+    return;
+  }
+
+  /* Phase L (E.1): the CONF returns to the LDM that sent the
+   * REDISTRIBUTE_REQ, which is the owner LDM for this state. */
+  ndbassert(state->m_owner_instance == instance());
+
+  state->m_cte_waiting_conf = false;
+  continueJoinAggRedistribute(signal, aggStateKey);
+}
+
+/**
+ * execJOIN_AGG_REDISTRIBUTE_REF — remote node failed, abort redistribution.
+ */
+void Dblqh::execJOIN_AGG_REDISTRIBUTE_REF(Signal *signal) {
+  jamEntry();
+  const JoinAggRedistributeRef *ref =
+    (const JoinAggRedistributeRef *)signal->getDataPtr();
+  const Uint32 aggStateKey = ref->aggStateKey;
+
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (unlikely(state == nullptr)) {
+    jam();
+    return;
+  }
+
+  /* Phase L (E.1): same as the CONF path — the REF returns to the
+   * owner LDM that sent the original REDISTRIBUTE_REQ. */
+  ndbassert(state->m_owner_instance == instance());
+
+  abortCteRedistribution(signal, state, ref->errorCode);
+}
+
+/**
+ * processRedistQueue — drain queued REDISTRIBUTE_REQ groups.
+ * Uses CONTINUEB to yield after 256 entries.
+ * Queue entries are page-allocated, so individual frees are not needed;
+ * all pages are freed in bulk when the queue is fully drained.
+ *
+ * CONF was already sent by execJOIN_AGG_REDISTRIBUTE_REQ before queueing,
+ * so no CONF handling is needed here.
+ *
+ * Phase L (E.1): owner-routing guarantees only the owner LDM enqueues
+ * to and drains this queue, so no mutex is needed.
+ */
+void Dblqh::processRedistQueue(Signal *signal,
+                                JoinAggregationState *state,
+                                Uint32 aggStateKey) {
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  ndbrequire(interp != nullptr);
+
+  Uint32 count = 0;
+  auto *entry = state->m_redist_queue_head;
+  while (entry != nullptr) {
+    jam();
+    Uint32 keyWords = (entry->keyLen + 3) >> 2;
+    Int32 ret = interp->mergeOneGroup(
+        reinterpret_cast<const char *>(entry->data), entry->keyLen,
+        reinterpret_cast<const char *>(entry->data + keyWords),
+        entry->valueLen);
+    if (unlikely(ret != 0)) {
+      jam();
+      abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+      return;
+    }
+
+    entry = entry->next;
+    count++;
+
+    if (count >= REDIST_GROUPS_PER_BATCH) {
+      /* Yield — update head and schedule continuation */
+      jam();
+      state->m_redist_queue_head = entry;
+      if (entry == nullptr) state->m_redist_queue_tail = nullptr;
+      state->m_redist_queue_count -= count;
+      signal->theData[0] = ZCONTINUE_CTE_REDIST_DRAIN;
+      signal->theData[1] = aggStateKey;
+      sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+      return;
+    }
+  }
+
+  /* Queue fully drained — free pages in batches */
+  state->m_redist_queue_head = nullptr;
+  state->m_redist_queue_tail = nullptr;
+  state->m_redist_queue_count = 0;
+  if (!freeRedistPagesBatch(state)) {
+    /* More pages remain — delegate to proxy block */
+    jam();
+    signal->theData[0] = ZCONTINUE_FREE_REDIST_PAGES;
+    signal->theData[1] = aggStateKey;
+    sendSignal(DBLQH_REF, GSN_CONTINUEB, signal, 2, JBB);
+  }
+}
+
+/**
+ * continueRedistQueueDrain — CONTINUEB handler for queue drain batching.
+ */
+void Dblqh::continueRedistQueueDrain(Signal *signal, Uint32 aggStateKey) {
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  ndbrequire(state != nullptr);
+
+  if (state->m_redist_queue_head != nullptr) {
+    jam();
+    processRedistQueue(signal, state, aggStateKey);
+  }
+  /* After queue is drained, the COMPLETE path in continueJoinAggMerge
+   * continues with redistribution. But since we're called via CONTINUEB,
+   * redistribution was already started — nothing more to do here. */
+}
+
+/**
+ * execJOIN_AGG_FINAL_REP — a remote node finished sending its groups.
+ */
+void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
+  jamEntry();
+  const JoinAggFinalRep *rep =
+    (const JoinAggFinalRep *)signal->getDataPtr();
+  const Uint32 aggStateKey = rep->aggStateKey;
+  const Uint32 senderNodeId = rep->senderNodeId;
+
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (unlikely(state == nullptr)) {
+    jam();
+    return;
+  }
+
+  /* Phase L (E.1): senders address FINAL_REP to the destination's
+   * owner LDM via numberToRef(DBLQH, dstOwner, dstNode). */
+  ndbassert(state->m_owner_instance == instance());
+
+  state->m_cte_nodes_finalized.set(senderNodeId);
+  checkCteReady(signal, state);
+}
+
+/**
+ * checkCteReady — transition to CTE_READY if all redistribution is done.
+ *
+ * Phase L (A): both preconditions are sticky — m_cte_redistribution_done
+ * stays true and m_cte_nodes_finalized bits stay set after the CONF is
+ * sent.  Re-entry from a late FINAL_REP, a stale CONTINUEB, or
+ * continueJoinAggRedistribute being called twice would otherwise re-fire
+ * the COMPLETE_CONF.  Guard with the terminal state to make the function
+ * idempotent.  ndbassert in debug builds so any such re-entry is caught
+ * loudly and the originating path can be removed; the silent return is
+ * the production-build safety net.  See cte_filter_phase_l.md.
+ */
+void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
+  /* Phase L (E.1): all callers — continueJoinAggRedistribute,
+   * execJOIN_AGG_FINAL_REP — are already pinned to the owner LDM, so
+   * this assertion just confirms the chain hasn't been broken. */
+  ndbassert(state->m_owner_instance == instance());
+  if (state->m_state.load() == JoinAggregationState::CTE_READY) {
+    jam();
+    DEB_CTE(("(%u) checkCteReady: already CTE_READY — skip duplicate CONF",
+             instance()));
+    ndbassert(false);
+    return;
+  }
+  DEB_CTE(("(%u) checkCteReady: redistribution_done=%u",
+           instance(), state->m_cte_redistribution_done));
+  if (!state->m_cte_redistribution_done) {
+    jam();
+    return;
+  }
+
+  const Uint32 ownNodeId = getOwnNodeId();
+  for (Uint32 i = 0; i < state->m_cte_num_nodes; i++) {
+    if (state->m_cte_node_list[i] != ownNodeId &&
+        !state->m_cte_nodes_finalized.get(state->m_cte_node_list[i])) {
+      jam();
+      DEB_CTE(("(%u) checkCteReady: waiting for node %u",
+               instance(), state->m_cte_node_list[i]));
+      return;
+    }
+  }
+
+  /* All done — transition to CTE_READY and send COMPLETE_CONF */
+  jam();
+  DEB_CTE(("(%u) checkCteReady: all nodes done → CTE_READY", instance()));
+  state->m_state.store(JoinAggregationState::CTE_READY);
+
+  JoinAggCompleteConf *conf =
+    (JoinAggCompleteConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = state->m_cte_complete_senderData;
+  conf->requestId = state->m_cte_complete_requestId;
+  conf->numResultRows = 0;
+  conf->resultBytes = 0;
+  sendSignal(state->m_cte_complete_senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
+             signal, JoinAggCompleteConf::SignalLength, JBB);
 }
 
 void Dblqh::execSCAN_FRAGREQ(Signal *signal) {

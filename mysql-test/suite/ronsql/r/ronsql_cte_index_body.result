@@ -1,0 +1,99 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+
+=== Test 1: CTE body with equality bound on indexed column ===
+== Query ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM ix_orders WHERE o_grp = 200 GROUP BY o_grp)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM ix_orders WHERE o_grp = 200 GROUP BY o_grp)
+SELECT k, total FROM stats|
+k	total
+200	100
+
+
+=== Test 2: CTE body with double-bounded range on indexed column ===
+== Query ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM ix_orders
+WHERE o_grp >= 200 AND o_grp <= 300
+GROUP BY o_grp)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM ix_orders
+WHERE o_grp >= 200 AND o_grp <= 300
+GROUP BY o_grp)
+SELECT k, total FROM stats|
+k	total
+200	100
+300	130
+
+
+=== Test 3: half-open index bound + residual filter on another column ===
+== Query ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM ix_orders
+WHERE o_grp > 200 AND o_amt > 30
+GROUP BY o_grp)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM ix_orders
+WHERE o_grp > 200 AND o_amt > 30
+GROUP BY o_grp)
+SELECT k, total FROM stats|
+k	total
+300	130
+400	80
+
+
+=== Test 4: CTE body with no WHERE — TABLE_SCAN regression ===
+== Query ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM ix_orders GROUP BY o_grp)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH stats AS (SELECT o_grp AS k, SUM(o_amt) AS total
+FROM ix_orders GROUP BY o_grp)
+SELECT k, total FROM stats|
+k	total
+100	110
+200	100
+300	130
+400	90

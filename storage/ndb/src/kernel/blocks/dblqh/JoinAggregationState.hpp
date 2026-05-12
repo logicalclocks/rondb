@@ -28,7 +28,8 @@
 #include <atomic>
 #include <ndb_types.h>
 #include <kernel_types.h>
-#include <util/rondb_hash.hpp>
+#include <kernel/NodeBitmask.hpp>
+#include <kernel/ndb_limits.h>
 
 #define JAM_FILE_ID 447
 
@@ -109,14 +110,16 @@ struct JoinAggregationState {
   //------------------------------------------------------------------
   enum State : Uint32 {
     IDLE = 0,
-    SETUP_COMPLETE = 1,    // Ready to receive operations
-    FINALIZING = 3,        // All ops done, preparing results
-    SENDING_RESULTS = 4,   // Sending results to API
-    COMPLETED = 5,         // All results sent
+    SETUP_COMPLETE = 1,      // Ready to receive operations
+    FINALIZING = 3,          // All ops done, preparing results
+    SENDING_RESULTS = 4,     // Sending results to API
+    COMPLETED = 5,           // All results sent
     ERROR = 6,
     ABORTING = 7,
-    WAITING_SEND_CONF = 8,  // Paused at batch limit, waiting for SEND_CONF
-    NODE_FAIL_ABORT = 9     // DBTC node failed, scans closed, awaiting release
+    WAITING_SEND_CONF = 8,   // Paused at batch limit, waiting for SEND_CONF
+    NODE_FAIL_ABORT = 9,     // DBTC node failed, scans closed, awaiting release
+    CTE_REDISTRIBUTING = 10, // Sending groups to hash-owner nodes
+    CTE_READY = 11           // Distributed hash table ready for CTE lookups
   };
 
   //------------------------------------------------------------------
@@ -199,10 +202,9 @@ struct JoinAggregationState {
   Uint32 *m_receiverIds;         // Receiver IDs array (ndbd_malloc'd)
   Uint32 m_numReceiverIds;       // Count of receiver IDs
 
-  Uint32 selectReceiverData(const char *key, Uint32 key_len) const {
+  Uint32 selectReceiverData(Uint64 hash) const {
     if (m_numReceiverIds <= 1) return m_receiverIds[0];
-    Uint64 h = rondb_xxhash_std(key, key_len);
-    return m_receiverIds[static_cast<Uint32>(h) % m_numReceiverIds];
+    return m_receiverIds[static_cast<Uint32>(hash) % m_numReceiverIds];
   }
 
   //------------------------------------------------------------------
@@ -211,6 +213,94 @@ struct JoinAggregationState {
   // attached to SCAN_FRAGCONF on close). No shared state needed.
   //------------------------------------------------------------------
   bool m_outer_join_agg_scan;
+
+  //------------------------------------------------------------------
+  // CTE Materialization Mode
+  // When m_cte_mode is true, COMPLETE skips the send-and-erase phase.
+  // Instead, the hash table stays alive for point lookups via
+  // CTE_LOOKUP_REQ, and group rows are redistributed across nodes
+  // so each group lives on exactly one node (its hash-partition owner).
+  //------------------------------------------------------------------
+  bool m_cte_mode;                          // True if this is a CTE materialization
+  Uint32 m_cte_index;                       // CTE index from SETUP_REQ (RNIL for main agg)
+  NdbNodeBitmask m_cte_nodes_finalized;     // Bitmask of nodes that sent FINAL_REP
+                                            // (prevents duplicate FINAL from same node)
+
+  // CTE node distribution (set at SETUP, immutable after)
+  Uint32 m_cte_node_list[MAX_DATA_NODE_ID]; // Live data node IDs at setup time
+  Uint32 m_cte_num_nodes;                   // Number of live data nodes
+  Uint32 m_cte_remote_aggKeys[ABS_MAX_NDB_NODES]; // Per-node aggStateKeys (indexed by nodeId)
+
+  // Phase L (E.1): owning LDM instance on this node for every signal
+  // that mutates this aggregation's COMPLETE / (CTE-only) REDISTRIBUTE
+  // / FINAL_REP state.  Applies to both main-SELECT and CTE
+  // aggregation: a stable owner per aggStateKey gives DBTC and remote
+  // DBLQHs a single routing target and removes any need for cross-LDM
+  // synchronisation on the aggregation state.  Computed at SETUP as
+  // (aggStateKey % lqhWorkersOnNode) + 1 and echoed in SETUP_CONF.
+  // Eliminates the multi-LDM race that motivates Phase L.  See
+  // cte_filter_phase_l.md.
+  Uint32 m_owner_instance;
+  // Per-node owner instance for remote nodes — populated from
+  // SETUP_CONFs collected by the originating DBSPJ-driver node and
+  // distributed back via the COMPLETE_REQ aggKey-pairs section.  Zero
+  // means "unknown / not applicable".  CTE-only — main aggregation
+  // never sends to remote DBLQHs.
+  Uint32 m_cte_remote_ownerInstances[ABS_MAX_NDB_NODES];
+
+  bool m_cte_redistribution_done;           // This node finished sending
+  bool m_cte_waiting_conf;                  // Paused waiting for REDISTRIBUTE_CONF
+  Uint32 m_cte_redist_batch_bytes;          // Bytes sent in current batch (flow control)
+  Uint32 m_cte_node_fail_count;             // Snapshot of s_node_fail_count at SETUP
+
+  // Global node failure counter — incremented by execNODE_FAILREP.
+  // Each CTE state snapshots this at SETUP and checks it hasn't changed
+  // before and during redistribution. If changed, the query is aborted.
+  static std::atomic<Uint32> s_node_fail_count;
+
+  //------------------------------------------------------------------
+  // Page-based allocator for redistribution queue entries.
+  // Allocates 32KB pages and bump-allocates entries within them,
+  // avoiding per-entry malloc overhead. Pages are freed in bulk
+  // when the queue is drained or the state is released.
+  //------------------------------------------------------------------
+  static constexpr Uint32 REDIST_PAGE_SIZE = 32768;
+  struct RedistPage {
+    RedistPage *next;    // Linked list of allocated pages
+  };
+  RedistPage *m_redist_page_head;   // First allocated page
+  char *m_redist_page_ptr;          // Current allocation pointer within page
+  Uint32 m_redist_page_remaining;   // Bytes remaining in current page
+
+  // Queue for REDISTRIBUTE_REQ groups arriving before local finalization.
+  // Stored as a singly-linked list of variable-size entries allocated from
+  // the page allocator above. Processed after local merge/finalize completes.
+  struct RedistQueueEntry {
+    RedistQueueEntry *next;
+    Uint32 keyLen;        // Key length in bytes
+    Uint32 valueLen;      // Accumulator data length in bytes
+    Uint32 data[1];       // Variable: [key_data (keyLen bytes)] [value_data (valueLen bytes)]
+  };
+  RedistQueueEntry *m_redist_queue_head;
+  RedistQueueEntry *m_redist_queue_tail;
+  Uint32 m_redist_queue_count;
+
+  // Sender info saved from COMPLETE_REQ for sending COMPLETE_CONF after redistribution
+  Uint32 m_cte_complete_senderRef;
+  Uint32 m_cte_complete_senderData;
+  Uint32 m_cte_complete_requestId;
+
+  //------------------------------------------------------------------
+  // CTE Scan State (for CTE_SCAN_REQ iteration)
+  // Tracks scan position so DBLQH can resume between batches.
+  // DBSPJ guarantees only one CTE_SCAN_REQ per DBLQH per query (via
+  // the rootFragId < numDataNodes skip in cte_scan_start), so no
+  // sender-claim guard is needed here.
+  //------------------------------------------------------------------
+  Uint32 m_cteScan_transId[2];        // Transaction ID for TRANSID_AI
+  Uint32 m_cteScan_groupsSent;        // Groups sent so far (for CORR_FACTOR ID)
+  Uint32 m_cteScan_iterBucket;        // Saved iterator: bucket index
+  char  *m_cteScan_iterRaw;           // Saved iterator: raw entry pointer
 
   //------------------------------------------------------------------
   // State Machine (atomic — checked by any thread, set single-threaded)
@@ -258,6 +348,25 @@ struct JoinAggregationState {
     m_receiverIds(nullptr),
     m_numReceiverIds(0),
     m_outer_join_agg_scan(false),
+    m_cte_mode(false),
+    m_cte_num_nodes(0),
+    m_owner_instance(0),
+    m_cte_redistribution_done(false),
+    m_cte_waiting_conf(false),
+    m_cte_redist_batch_bytes(0),
+    m_cte_node_fail_count(0),
+    m_redist_page_head(nullptr),
+    m_redist_page_ptr(nullptr),
+    m_redist_page_remaining(0),
+    m_redist_queue_head(nullptr),
+    m_redist_queue_tail(nullptr),
+    m_redist_queue_count(0),
+    m_cte_complete_senderRef(0),
+    m_cte_complete_senderData(0),
+    m_cte_complete_requestId(0),
+    m_cteScan_groupsSent(0),
+    m_cteScan_iterBucket(0),
+    m_cteScan_iterRaw(nullptr),
     m_state(IDLE),
     m_error_code(0),
     m_key(RNIL),
@@ -268,7 +377,8 @@ struct JoinAggregationState {
     m_transid[1] = 0;
   }
 
-  ~JoinAggregationState() {}
+  ~JoinAggregationState() {
+  }
 
   //------------------------------------------------------------------
   // aggStateKey encoding: upper 8 bits = leaf index, lower 24 bits = base key.

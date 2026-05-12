@@ -57,6 +57,7 @@
 #include "../dbtux/Dbtux.hpp"
 #include <my_byteorder.h>
 #include <climits>
+#include <cmath>
 
 #define JAM_FILE_ID 422
 
@@ -5200,7 +5201,7 @@ int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
 
 retry:
   Int32 ret = interp->processRecWithLinkedAttrs(
-      this, req_struct, linked_data, linked_len, leaf);
+      this, req_struct, linked_data, linked_len, getThreadId(), leaf);
   if (ret == AGG_EVICT_NEEDED) {
     c_lqh->sendEvictedAggGroup(req_struct->signal, interp, state);
     evict_count++;
@@ -5539,7 +5540,8 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         bool vec_update_candidate = false;
         int ret = 0;
         if (scan_rec_ptr->m_agg_interpreter != nullptr) {
-          ret = scan_rec_ptr->m_agg_interpreter->ProcessRec(this, req_struct);
+          ret = scan_rec_ptr->m_agg_interpreter->ProcessRec(this, req_struct,
+                                                            getThreadId());
         } else {
           ret = scan_rec_ptr->m_vs_interpreter->ProcessRec(this, req_struct,
                                                          &vec_update_candidate);
@@ -5752,6 +5754,4211 @@ const Uint32 *Dbtup::lookupInterpreterParameter(Uint32 paramNo,
 #define MAX_HEAP_OFFSET 65535
 #define NULL_INDICATOR 0
 #define NOT_NULL_INDICATOR 1
+
+/* ============================================================
+ * Interpreter handler infrastructure (Phase A)
+ *
+ * The NDB interpreter's main loop (interpreterNextLab) has ~117 case
+ * handlers in a large switch statement. To enable alternative dispatch
+ * modes (e.g. CTE filter mode for CTE_LOOKUP_REQ / CTE_SCAN_REQ, which
+ * run the interpreter against a virtual row with no backing DBTUP tuple),
+ * each case body is extracted into a static inline handler function
+ * taking an InterpreterContext& parameter.
+ *
+ * The main interpreter's switch still dispatches directly to these
+ * handlers (inlined by the compiler — identical hot-path performance).
+ * Alternative modes (interpreterFilterCte) use a function pointer table
+ * that can selectively override handlers for instructions that are
+ * unsafe without a real tuple (EXIT_REFUSE → return reject sentinel,
+ * READ_ATTR_INTO_REG → return error, etc.).
+ *
+ * InterpreterContext and its handler methods are a nested struct of
+ * Dbtup. Being a nested type, its members have access to Dbtup private
+ * methods (brancher, tupkeyErrorLab, TUPKEY_abort, readAttributes, …)
+ * via the ctx.tup pointer — C++11 and later give nested classes the
+ * same access rights as other members of the enclosing class.
+ * ============================================================ */
+
+/* Handler return value convention (all handlers return int):
+ *     0  (INTERP_CONTINUE)     — continue to next instruction
+ *     1  (INTERP_EXIT)         — EXIT_OK / EXIT_OK_LAST — caller returns
+ *                                req_struct->log_size. EXIT_OK_LAST sets
+ *                                req_struct->last_row before returning.
+ *    -(error_code)              — error: handler returns -ERROR_CODE (e.g.
+ *                                -ZREGISTER_INIT_ERROR = -878). The main
+ *                                interpreter dispatch macro wraps this in
+ *                                TUPKEY_abort(req_struct, -_rc) which sets
+ *                                terrorCode, records jam, calls
+ *                                tupkeyErrorLab, and returns -1.
+ *                                The CTE filter dispatch sets terrorCode
+ *                                directly without calling tupkeyErrorLab.
+ *    INTERPRETER_FILTER_REJECT  — EXIT_REFUSE in CTE filter mode (only
+ *                                returned by the CTE filter table's
+ *                                handleExitRefuseCte override). Propagated
+ *                                to the caller of interpreterFilterCte.
+ *
+ * Handlers use thrjamDebug(ctx.tup->jamBuffer()) for jam tracing since
+ * static member functions don't have `this` bound to Dbtup.
+ */
+static constexpr int INTERP_CONTINUE = 0;
+static constexpr int INTERP_EXIT = 1;
+
+/* Maximum opcode value: 0-63 for primary opcodes, 64-127 for
+ * OVERFLOW_OPCODE variants (primary + 64). See Interpreter.hpp. */
+static constexpr Uint32 INTERP_HANDLER_TABLE_SIZE = 128;
+
+/* InterpreterContext — nested struct of Dbtup.
+ *
+ * Holds references to the loop-local state of interpreterNextLab so
+ * that the extracted case handlers can access interpreter state
+ * uniformly. Constructed once at the top of the interpreter loop via
+ * aggregate initialization; references are bound to the caller's
+ * locals. Handlers modify state via the context — updates propagate
+ * to the loop locals automatically.
+ */
+struct Dbtup::InterpreterContext {
+  Dbtup* tup;                       // block pointer (for member-fn calls)
+  Signal* signal;                   // signal (for tupkeyErrorLab)
+  Dbtup::KeyReqStruct* req_struct;
+
+  // Current program state — bound to loop locals by reference
+  Uint32*& TcurrentProgram;         // may be swapped to subroutineProg
+  Uint32& TcurrentSize;             // program length of current program
+  Uint32& TprogramCounter;          // position in current program
+
+  // Current instruction decoded (updated by loop each iteration)
+  Uint32& theInstruction;
+  Uint32& theRegister;              // getReg1(theInstruction) << 2
+
+  // Register buffer: 32 words = 8 registers (4 words each)
+  Uint32* TregMemBuffer;            // pointer to caller's array[32]
+  Uint32* TstackMemBuffer;          // pointer to caller's array[32]
+  Uint32& RstackPtr;                // CALL/RETURN stack pointer
+
+  // Heap memory (cheapMemory)
+  char* TheapMemoryChar;
+
+  // Loop instruction count (bound to req_struct->no_exec_instructions)
+  Uint32& RnoOfInstructions;
+
+  // Cache for BRANCH_ATTR_OP_* (last attrId read, avoids re-read)
+  Uint32& tmpHabitant;
+
+  // Main program — needed by RETURN to restore when stack becomes empty
+  Uint32* mainProgram;
+  Uint32 TmainProgLen;
+
+  // Subroutine program (for CALL/RETURN, and parameter lookup)
+  Uint32* subroutineProg;
+  Uint32 TsubroutineLen;
+
+  // Temp area for BRANCH_ATTR_OP_* attr reads
+  Uint32* tmpArea;
+  Uint32 tmpAreaSz;
+
+  // Aggregation register import source.  Only set for aggregation
+  // embedded interpreter calls; normal interpreter and CTE filters keep NULL.
+  const Register* aggRegisters;
+
+  /* ============================================================
+   * Phase A handlers — extracted case bodies
+   *
+   * Each handler below is a static member function of InterpreterContext
+   * reflecting the body of one case in the original interpreterNextLab
+   * switch statement. The main switch calls these handlers (inlined by
+   * the compiler, identical hot-path performance). Alternative dispatch
+   * modes (e.g. CTE filter) reference these via function pointer tables.
+   *
+   * As a nested type of Dbtup, these handlers can access Dbtup private
+   * members (brancher, tupkeyErrorLab, TUPKEY_abort, etc.) via the
+   * ctx.tup pointer.
+   *
+   * Extraction progresses in batches of ~10 handlers.
+   * ============================================================ */
+
+  /* --- Batch 1 --- constant loads, simple branches, exits */
+
+  /* LOAD_CONST_NULL — set register to NULL */
+  static inline int handleLoadConstNull(InterpreterContext& ctx) {
+    ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
+    return INTERP_CONTINUE;
+  }
+
+  /* LOAD_CONST16 — load 16-bit immediate from instruction word into register */
+  static inline int handleLoadConst16(InterpreterContext& ctx) {
+    *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = ctx.theInstruction >> 16;
+    ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
+    return INTERP_CONTINUE;
+  }
+
+  /* LOAD_CONST32 — load 32-bit constant from next program word */
+  static inline int handleLoadConst32(InterpreterContext& ctx) {
+    ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
+    *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+      *(ctx.TcurrentProgram + ctx.TprogramCounter);
+    ctx.TprogramCounter++;
+    return INTERP_CONTINUE;
+  }
+
+  /* LOAD_CONST64 — load 64-bit constant from next two program words */
+  static inline int handleLoadConst64(InterpreterContext& ctx) {
+    ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
+    ctx.TregMemBuffer[ctx.theRegister + 2] =
+      *(ctx.TcurrentProgram + ctx.TprogramCounter++);
+    ctx.TregMemBuffer[ctx.theRegister + 3] =
+      *(ctx.TcurrentProgram + ctx.TprogramCounter++);
+    return INTERP_CONTINUE;
+  }
+
+  /* LOAD_DOUBLE_CONST — Phase I.18: load IEEE-754 double immediate
+   * from the next two program words into a register, marking it
+   * REG_TYPE_DOUBLE.  Counterpart of LOAD_CONST64 for floats; signed
+   * Int64 constants stay on LOAD_CONST64.  The two program words are
+   * laid out low-word-first, matching LOAD_CONST64 — producers should
+   * memcpy the double's 8-byte bit pattern into a Uint32[2] when
+   * emitting the program. */
+  static inline int handleLoadDoubleConst(InterpreterContext& ctx) {
+    ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
+    ctx.TregMemBuffer[ctx.theRegister + 2] =
+      *(ctx.TcurrentProgram + ctx.TprogramCounter++);
+    ctx.TregMemBuffer[ctx.theRegister + 3] =
+      *(ctx.TcurrentProgram + ctx.TprogramCounter++);
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH — unconditional branch */
+  static inline int handleBranch(InterpreterContext& ctx) {
+    ctx.TprogramCounter =
+        ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_REG_EQ_NULL — branch if register is NULL */
+  static inline int handleBranchRegEqNull(InterpreterContext& ctx) {
+    if (ctx.TregMemBuffer[ctx.theRegister] != NULL_INDICATOR) {
+      thrjamDebug(ctx.tup->jamBuffer());
+    } else {
+      thrjamDebug(ctx.tup->jamBuffer());
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_REG_NE_NULL — branch if register is NOT NULL */
+  static inline int handleBranchRegNeNull(InterpreterContext& ctx) {
+    if (ctx.TregMemBuffer[ctx.theRegister] == NULL_INDICATOR) {
+      thrjamDebug(ctx.tup->jamBuffer());
+    } else {
+      thrjamDebug(ctx.tup->jamBuffer());
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* EXIT_OK — normal exit from interpreter program */
+  static inline int handleExitOk(InterpreterContext& /*ctx*/) {
+    return INTERP_EXIT;
+  }
+
+  /* EXIT_OK_LAST — exit and mark this as the last row in the result set */
+  static inline int handleExitOkLast(InterpreterContext& ctx) {
+    ctx.req_struct->last_row = true;
+    return INTERP_EXIT;
+  }
+
+  /* EXIT_REFUSE — reject this row (scan filter rejection).
+   * Returns the negative of the client-supplied error code (which lives
+   * in the upper 16 bits of the instruction). The main-interpreter
+   * INTERP_DISPATCH macro wraps this in TUPKEY_abort, which records jam,
+   * sets terrorCode, and calls tupkeyErrorLab. The CTE filter dispatch
+   * table overrides this opcode with handleExitRefuseCte which returns
+   * INTERPRETER_FILTER_REJECT so the caller can skip the row without
+   * touching tuple state. */
+  static inline int handleExitRefuse(InterpreterContext& ctx) {
+    return -static_cast<int>(ctx.theInstruction >> 16);
+  }
+
+  /* --- Batch 2 --- register comparison branches (reg-reg and reg-const) */
+
+  /* Phase I.18: type-aware register-vs-register three-way comparison.
+   * Returns -1 / 0 / 1 by analogy with `memcmp`.  Both operands must
+   * be non-NULL (caller checks via `(leftType & rightType) != 0`).
+   *
+   * Type-word layout from Interpreter.hpp:
+   *   byte 0 = NOT_NULL flag (always 1 for non-NULL operands here)
+   *   byte 1 = UNSIGNED flag
+   *   byte 2 = FLOAT flag
+   *
+   * Single-byte loads keep the dispatch cheap on most CPUs. */
+  static inline int compareTypedRegs(Uint32 leftType, Uint64 leftBits,
+                                     Uint32 rightType, Uint64 rightBits) {
+    const Uint8* lw = reinterpret_cast<const Uint8*>(&leftType);
+    const Uint8* rw = reinterpret_cast<const Uint8*>(&rightType);
+    bool leftFloat  = lw[2] != 0;
+    bool rightFloat = rw[2] != 0;
+    if (unlikely(leftFloat || rightFloat)) {
+      double l;
+      double r;
+      if (leftFloat) {
+        memcpy(&l, &leftBits, 8);
+      } else if (lw[1] != 0) {
+        l = static_cast<double>(leftBits);
+      } else {
+        l = static_cast<double>(static_cast<Int64>(leftBits));
+      }
+      if (rightFloat) {
+        memcpy(&r, &rightBits, 8);
+      } else if (rw[1] != 0) {
+        r = static_cast<double>(rightBits);
+      } else {
+        r = static_cast<double>(static_cast<Int64>(rightBits));
+      }
+      return (l < r) ? -1 : (l > r) ? 1 : 0;
+    }
+    bool leftUnsigned  = lw[1] != 0;
+    bool rightUnsigned = rw[1] != 0;
+    if (likely(leftUnsigned == rightUnsigned)) {
+      if (leftUnsigned) {
+        return (leftBits < rightBits) ? -1 :
+               (leftBits > rightBits) ?  1 : 0;
+      }
+      Int64 ls = static_cast<Int64>(leftBits);
+      Int64 rs = static_cast<Int64>(rightBits);
+      return (ls < rs) ? -1 : (ls > rs) ? 1 : 0;
+    }
+    /* Mixed signed / unsigned: a negative signed operand is strictly
+     * less than any unsigned operand.  Otherwise both fit non-negative
+     * in Uint64 so the unsigned comparison is exact. */
+    if (leftUnsigned) {
+      if (static_cast<Int64>(rightBits) < 0) return 1;
+      return (leftBits < rightBits) ? -1 :
+             (leftBits > rightBits) ?  1 : 0;
+    }
+    if (static_cast<Int64>(leftBits) < 0) return -1;
+    return (leftBits < rightBits) ? -1 :
+           (leftBits > rightBits) ?  1 : 0;
+  }
+
+  /* Phase I.18: type-aware register arithmetic.  Op is one of
+   * '+' '-' '*' '/' '%'.  Promotion rules:
+   *
+   *   - either operand FLOAT  → double arithmetic, result REG_TYPE_DOUBLE.
+   *     Div/Mod by 0.0 returns -ZDIV_BY_ZERO_ERROR.
+   *   - else either UNSIGNED  → exact mixed signed/unsigned integer
+   *     arithmetic.  Negative results are tagged REG_TYPE_INT when
+   *     they fit Int64; non-negative results are tagged REG_TYPE_UINT
+   *     when they fit Uint64.  Add/Sub/Mul reject overflow.  Div/Mod
+   *     by 0 rejected.
+   *   - else both signed      → Int64 arithmetic, result REG_TYPE_INT.
+   *     Add/Sub/Mul reject overflow.  Div/Mod reject divide-by-zero
+   *     and the LLONG_MIN / -1 signed-overflow case.
+   *
+   * Returns 0 on success, negative error code on failure. */
+  static inline int applyTypedArith(char op,
+                                     Uint32 leftType, Uint64 leftBits,
+                                     Uint32 rightType, Uint64 rightBits,
+                                     Uint32* resultType,
+                                     Uint64* resultBits) {
+    const Uint8* lw = reinterpret_cast<const Uint8*>(&leftType);
+    const Uint8* rw = reinterpret_cast<const Uint8*>(&rightType);
+    bool leftFloat  = lw[2] != 0;
+    bool rightFloat = rw[2] != 0;
+    if (unlikely(leftFloat || rightFloat)) {
+      double l;
+      double r;
+      if (leftFloat) {
+        memcpy(&l, &leftBits, 8);
+      } else if (lw[1] != 0) {
+        l = static_cast<double>(leftBits);
+      } else {
+        l = static_cast<double>(static_cast<Int64>(leftBits));
+      }
+      if (rightFloat) {
+        memcpy(&r, &rightBits, 8);
+      } else if (rw[1] != 0) {
+        r = static_cast<double>(rightBits);
+      } else {
+        r = static_cast<double>(static_cast<Int64>(rightBits));
+      }
+      double res;
+      switch (op) {
+        case '+': res = l + r; break;
+        case '-': res = l - r; break;
+        case '*': res = l * r; break;
+        case '/':
+          if (r == 0.0) return -ZDIV_BY_ZERO_ERROR;
+          res = l / r;
+          break;
+        case '%':
+          if (r == 0.0) return -ZDIV_BY_ZERO_ERROR;
+          res = std::fmod(l, r);
+          break;
+        default: return -ZCALC_OVERFLOW_ERROR;
+      }
+      *resultType = Interpreter::REG_TYPE_DOUBLE;
+      memcpy(resultBits, &res, 8);
+      return 0;
+    }
+    bool leftUnsigned  = lw[1] != 0;
+    bool rightUnsigned = rw[1] != 0;
+    if (leftUnsigned || rightUnsigned) {
+      __int128 l = leftUnsigned
+          ? static_cast<__int128>(leftBits)
+          : static_cast<__int128>(static_cast<Int64>(leftBits));
+      __int128 r = rightUnsigned
+          ? static_cast<__int128>(rightBits)
+          : static_cast<__int128>(static_cast<Int64>(rightBits));
+      __int128 res;
+      switch (op) {
+        case '+':
+          res = l + r;
+          break;
+        case '-':
+          res = l - r;
+          break;
+        case '*':
+          res = l * r;
+          break;
+        case '/':
+          if (r == 0) return -ZDIV_BY_ZERO_ERROR;
+          res = l / r;
+          break;
+        case '%':
+          if (r == 0) return -ZDIV_BY_ZERO_ERROR;
+          res = l % r;
+          break;
+        default: return -ZCALC_OVERFLOW_ERROR;
+      }
+      if (res < 0) {
+        if (unlikely(leftUnsigned && rightUnsigned)) {
+          return -ZCALC_OVERFLOW_ERROR;
+        }
+        if (unlikely(res < static_cast<__int128>(LLONG_MIN))) {
+          return -ZCALC_OVERFLOW_ERROR;
+        }
+        *resultType = Interpreter::REG_TYPE_INT;
+        *resultBits = static_cast<Uint64>(static_cast<Int64>(res));
+      } else {
+        if (unlikely(static_cast<unsigned __int128>(res) >
+                     static_cast<unsigned __int128>(UINT64_MAX))) {
+          return -ZCALC_OVERFLOW_ERROR;
+        }
+        *resultType = Interpreter::REG_TYPE_UINT;
+        *resultBits = static_cast<Uint64>(res);
+      }
+      return 0;
+    }
+    /* Both signed integer. */
+    Int64 l = static_cast<Int64>(leftBits);
+    Int64 r = static_cast<Int64>(rightBits);
+    Int64 res;
+    switch (op) {
+      case '+':
+        if (unlikely((r >= 0 && LLONG_MAX - r < l) ||
+                     (r <  0 && LLONG_MIN - r > l))) {
+          return -ZCALC_OVERFLOW_ERROR;
+        }
+        res = l + r;
+        break;
+      case '-':
+        if (unlikely((r >= 0 && LLONG_MIN + r > l) ||
+                     (r <  0 && LLONG_MAX + r < l))) {
+          return -ZCALC_OVERFLOW_ERROR;
+        }
+        res = l - r;
+        break;
+      case '*':
+      {
+        __int128 wide =
+            static_cast<__int128>(l) * static_cast<__int128>(r);
+        if (unlikely(wide > static_cast<__int128>(LLONG_MAX) ||
+                     wide < static_cast<__int128>(LLONG_MIN))) {
+          return -ZCALC_OVERFLOW_ERROR;
+        }
+        res = static_cast<Int64>(wide);
+        break;
+      }
+      case '/':
+        if (r == 0) return -ZDIV_BY_ZERO_ERROR;
+        if (unlikely(l == LLONG_MIN && r == -1)) {
+          return -ZCALC_OVERFLOW_ERROR;
+        }
+        res = l / r;
+        break;
+      case '%':
+        if (r == 0) return -ZDIV_BY_ZERO_ERROR;
+        if (unlikely(l == LLONG_MIN && r == -1)) {
+          return -ZCALC_OVERFLOW_ERROR;
+        }
+        res = l % r;
+        break;
+      default: return -ZCALC_OVERFLOW_ERROR;
+    }
+    *resultType = Interpreter::REG_TYPE_INT;
+    *resultBits = static_cast<Uint64>(res);
+    return 0;
+  }
+
+  /* Phase I.18: type-aware register bitwise / shift operations.
+   * Op is one of:
+   *   '&' '|' '^'  bitwise (binary)
+   *   '~'          bitwise NOT (unary; rightBits is ignored)
+   *   'L' 'R'      left / right shift (rightBits is shift count)
+   *
+   * Float operands rejected (returns -ZREGISTER_INIT_ERROR).  Result
+   * type is REG_TYPE_UINT iff either operand is unsigned (matches
+   * MySQL bitwise-promotion rules); RSHIFT on a signed operand is
+   * arithmetic shift (sign-fill).  Shift count must be 0..63;
+   * out-of-range returns -ZSHIFT_OPERAND_ERROR. */
+  static inline int applyTypedBitwise(char op,
+                                       Uint32 leftType, Uint64 leftBits,
+                                       Uint32 rightType, Uint64 rightBits,
+                                       Uint32* resultType,
+                                       Uint64* resultBits) {
+    const Uint8* lw = reinterpret_cast<const Uint8*>(&leftType);
+    const Uint8* rw = reinterpret_cast<const Uint8*>(&rightType);
+    if (unlikely(lw[2] != 0 || rw[2] != 0)) {
+      return -ZREGISTER_INIT_ERROR;  /* bitwise / shift on float */
+    }
+    bool resultUnsigned = (lw[1] != 0) || (rw[1] != 0);
+    Uint64 res;
+    switch (op) {
+      case '&': res = leftBits & rightBits; break;
+      case '|': res = leftBits | rightBits; break;
+      case '^': res = leftBits ^ rightBits; break;
+      case '~':
+        res = ~leftBits;
+        /* Unary: inherit the source's signedness. */
+        resultUnsigned = (lw[1] != 0);
+        break;
+      case 'L': {
+        Int64 shift = static_cast<Int64>(rightBits);
+        if (unlikely(shift < 0 || shift >= 64)) {
+          return -ZSHIFT_OPERAND_ERROR;
+        }
+        res = leftBits << shift;
+        break;
+      }
+      case 'R': {
+        Int64 shift = static_cast<Int64>(rightBits);
+        if (unlikely(shift < 0 || shift >= 64)) {
+          return -ZSHIFT_OPERAND_ERROR;
+        }
+        /* Logical shift for unsigned, arithmetic shift for signed. */
+        if (resultUnsigned) {
+          res = leftBits >> shift;
+        } else {
+          res = static_cast<Uint64>(static_cast<Int64>(leftBits) >> shift);
+        }
+        break;
+      }
+      default:
+        return -ZREGISTER_INIT_ERROR;
+    }
+    *resultType = resultUnsigned ? Interpreter::REG_TYPE_UINT
+                                 : Interpreter::REG_TYPE_INT;
+    *resultBits = res;
+    return 0;
+  }
+
+  /* Phase I.18: returns true iff the register's type word marks a
+   * floating-point value (byte 2 of the type word is non-zero).
+   * Used by write-back handlers that reject float operands until the
+   * float-to-integer coercion semantics are designed. */
+  static inline bool reg_is_float(Uint32 typeWord) {
+    return reinterpret_cast<const Uint8*>(&typeWord)[2] != 0;
+  }
+
+  /* Phase I.18: type-aware register-vs-immediate-const comparison.
+   * The immediate is the 6-bit constant in bits 9..14 of the
+   * instruction word (range 0..63), always non-negative — it always
+   * fits in Int64, Uint64, and double identically. */
+  static inline int compareTypedRegConst(Uint32 leftType, Uint64 leftBits,
+                                         Uint32 rightConst) {
+    const Uint8* lw = reinterpret_cast<const Uint8*>(&leftType);
+    if (unlikely(lw[2] != 0)) {
+      double l;
+      memcpy(&l, &leftBits, 8);
+      double r = static_cast<double>(rightConst);
+      return (l < r) ? -1 : (l > r) ? 1 : 0;
+    }
+    if (lw[1] != 0) {
+      Uint64 r = static_cast<Uint64>(rightConst);
+      return (leftBits < r) ? -1 : (leftBits > r) ? 1 : 0;
+    }
+    Int64 ls = static_cast<Int64>(leftBits);
+    Int64 rs = static_cast<Int64>(rightConst);
+    return (ls < rs) ? -1 : (ls > rs) ? 1 : 0;
+  }
+
+  /* BRANCH_EQ_REG_REG — branch if reg == reg2 (both non-null)
+   *
+   * Phase I.18: type-aware compare via compareTypedRegs.  Existing
+   * "both signed integer" pair cases fall through to the same
+   * Int64 comparison as before; mixed signed / unsigned and
+   * float-bearing operands now compare correctly. */
+  static inline int handleBranchEqRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    if (unlikely((TrightType & TleftType) == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    if (compareTypedRegs(TleftType, leftBits, TrightType, rightBits) == 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_NE_REG_REG — branch if reg != reg2 */
+  static inline int handleBranchNeRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    if (unlikely((TrightType & TleftType) == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    if (compareTypedRegs(TleftType, leftBits, TrightType, rightBits) != 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_LT_REG_REG — branch if reg < reg2 (type-aware) */
+  static inline int handleBranchLtRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    if (unlikely((TrightType & TleftType) == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    if (compareTypedRegs(TleftType, leftBits, TrightType, rightBits) < 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_LE_REG_REG — branch if reg <= reg2 (type-aware) */
+  static inline int handleBranchLeRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    if (unlikely((TrightType & TleftType) == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    if (compareTypedRegs(TleftType, leftBits, TrightType, rightBits) <= 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_GT_REG_REG — branch if reg > reg2 (type-aware) */
+  static inline int handleBranchGtRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    if (unlikely((TrightType & TleftType) == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    if (compareTypedRegs(TleftType, leftBits, TrightType, rightBits) > 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_GE_REG_REG — branch if reg >= reg2 (type-aware) */
+  static inline int handleBranchGeRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    if (unlikely((TrightType & TleftType) == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    if (compareTypedRegs(TleftType, leftBits, TrightType, rightBits) >= 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_EQ_REG_CONST — branch if reg == 6-bit immediate
+   *
+   * Phase I.18: type-aware compare via compareTypedRegConst.  The
+   * 6-bit immediate is always non-negative (range 0..63) so it
+   * fits identically in Int64 / Uint64 / double; only the
+   * register's type word affects the comparison. */
+  static inline int handleBranchEqRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 rightConst = (ctx.theInstruction >> 9) & 0x3F;
+    if (compareTypedRegConst(TleftType, leftBits, rightConst) == 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_NE_REG_CONST — branch if reg != 6-bit immediate */
+  static inline int handleBranchNeRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 rightConst = (ctx.theInstruction >> 9) & 0x3F;
+    if (compareTypedRegConst(TleftType, leftBits, rightConst) != 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_LT_REG_CONST — branch if reg < 6-bit immediate (type-aware) */
+  static inline int handleBranchLtRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 rightConst = (ctx.theInstruction >> 9) & 0x3F;
+    if (compareTypedRegConst(TleftType, leftBits, rightConst) < 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_LE_REG_CONST — branch if reg <= 6-bit immediate (type-aware) */
+  static inline int handleBranchLeRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 rightConst = (ctx.theInstruction >> 9) & 0x3F;
+    if (compareTypedRegConst(TleftType, leftBits, rightConst) <= 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* --- Batch 3 --- remaining reg-const branches, subroutine, memory, arithmetic */
+
+  /* BRANCH_GT_REG_CONST — branch if reg > 6-bit immediate (type-aware) */
+  static inline int handleBranchGtRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 rightConst = (ctx.theInstruction >> 9) & 0x3F;
+    if (compareTypedRegConst(TleftType, leftBits, rightConst) > 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_GE_REG_CONST — branch if reg >= 6-bit immediate (type-aware) */
+  static inline int handleBranchGeRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 rightConst = (ctx.theInstruction >> 9) & 0x3F;
+    if (compareTypedRegConst(TleftType, leftBits, rightConst) >= 0) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* CALL — push return address, jump to subroutine */
+  static inline int handleCall(InterpreterContext& ctx) {
+    ctx.RstackPtr++;
+    if (ctx.RstackPtr < 32) {
+      ctx.TstackMemBuffer[ctx.RstackPtr] = ctx.TprogramCounter;
+      ctx.TprogramCounter = ctx.theInstruction >> 16;
+      if (ctx.TprogramCounter < ctx.TsubroutineLen) {
+        ctx.TcurrentProgram = ctx.subroutineProg;
+        ctx.TcurrentSize = ctx.TsubroutineLen;
+      } else {
+        return -ZCALL_ERROR;
+      }
+    } else {
+      return -ZSTACK_OVERFLOW_ERROR;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* RETURN — pop return address, resume caller (or main program) */
+  static inline int handleReturn(InterpreterContext& ctx) {
+    if (ctx.RstackPtr > 0) {
+      ctx.TprogramCounter = ctx.TstackMemBuffer[ctx.RstackPtr];
+      ctx.RstackPtr--;
+      if (ctx.RstackPtr == 0) {
+        thrjamDebug(ctx.tup->jamBuffer());
+        /* Back to the main program */
+        ctx.TcurrentProgram = ctx.mainProgram;
+        ctx.TcurrentSize = ctx.TmainProgLen;
+      }
+    } else {
+      return -ZSTACK_UNDERFLOW_ERROR;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* NOT_REG_REG — bitwise NOT of register
+   *
+   * Phase I.18: type-aware via applyTypedBitwise.  Float operand
+   * rejected; result inherits the source's signedness. */
+  static inline int handleNotRegReg(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('~', TleftType, leftBits,
+                               TleftType, 0,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* BZERO_MEM — zero a range of heap memory */
+  static inline int handleBzeroMem(InterpreterContext& ctx) {
+    Uint32 registerOffsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 registerSize = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Int64 Toffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Int64 Tsize = *(Int64*)(ctx.TregMemBuffer + registerSize + 2);
+    Uint32 registerSizeType = ctx.TregMemBuffer[registerSize];
+    if (unlikely(registerOffsetType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(registerSizeType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Int64 Tend = Toffset + Tsize;
+    if (Toffset < 0 || Tsize < 0 || Tend > MAX_HEAP_OFFSET) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    Uint32* memory_ptr = (Uint32*)&ctx.TheapMemoryChar[Toffset];
+    memset(memory_ptr, 0, Tsize);
+    return INTERP_CONTINUE;
+  }
+
+  /* LOAD_CONST_MEM — copy inline constant bytes into heap memory */
+  static inline int handleLoadConstMem(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 1;  // A bit heavier instruction
+    Uint32 registerDestSize = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 registerOffsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 Tsize = ctx.theInstruction >> 16;
+    Uint32 words = (Tsize + 3) / 4;
+    Int64 Toffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    if (unlikely(registerOffsetType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(((Toffset + Int64(words << 2)) > MAX_HEAP_OFFSET) ||
+                 (Toffset < Int64(0)))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (unlikely(Tsize > (MAX_VAR_SIZE_IN_WORDS * 4))) {
+      return -ZLOAD_MEM_TOO_BIG_ERROR;
+    }
+    ctx.TregMemBuffer[registerDestSize] = NOT_NULL_INDICATOR;
+    *(Int64*)(ctx.TregMemBuffer + registerDestSize + 2) = (Int64)Tsize;
+    Uint32* memory_ptr = (Uint32*)&ctx.TheapMemoryChar[Toffset];
+    memcpy(memory_ptr, &ctx.TcurrentProgram[ctx.TprogramCounter], Tsize);
+    ctx.TprogramCounter += words;
+    return INTERP_CONTINUE;
+  }
+
+  /* ADD_REG_REG — destReg = reg + reg2 (uses Reg4 as dest, legacy)
+   *
+   * Phase I.18: type-aware via applyTypedArith. */
+  static inline int handleAddRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    Uint32 TdestRegister = Interpreter::getReg4(ctx.theInstruction) << 2;
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedArith('+', TleftType, leftBits,
+                             TrightType, rightBits,
+                             &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* SUB_REG_REG — destReg = reg - reg2 (uses Reg4 as dest, legacy) */
+  static inline int handleSubRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    Uint32 TdestRegister = Interpreter::getReg4(ctx.theInstruction) << 2;
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedArith('-', TleftType, leftBits,
+                             TrightType, rightBits,
+                             &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* MUL_REG_REG — destReg = reg * reg2 */
+  static inline int handleMulRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedArith('*', TleftType, leftBits,
+                             TrightType, rightBits,
+                             &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* --- Batch 4 --- arithmetic and shift ops (reg-const and remaining reg-reg) */
+
+  /* ADD_REG_CONST — destReg = reg + 16-bit immediate
+   *
+   * Phase I.18: the instruction's 16-bit immediate is treated as a
+   * signed Int64 (matches existing behaviour) and supplied to
+   * applyTypedArith as a REG_TYPE_INT operand.  The register's type
+   * word still drives the result type. */
+  static inline int handleAddRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Int64 rhs = static_cast<Int64>(ctx.theInstruction >> 16);
+    Uint64 rightBits = static_cast<Uint64>(rhs);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedArith('+', TleftType, leftBits,
+                             Interpreter::REG_TYPE_INT, rightBits,
+                             &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* SUB_REG_CONST — destReg = reg - 16-bit immediate */
+  static inline int handleSubRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Int64 rhs = static_cast<Int64>(ctx.theInstruction >> 16);
+    Uint64 rightBits = static_cast<Uint64>(rhs);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedArith('-', TleftType, leftBits,
+                             Interpreter::REG_TYPE_INT, rightBits,
+                             &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* MUL_REG_CONST — destReg = reg * 16-bit immediate */
+  static inline int handleMulRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Int64 rhs = static_cast<Int64>(ctx.theInstruction >> 16);
+    Uint64 rightBits = static_cast<Uint64>(rhs);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedArith('*', TleftType, leftBits,
+                             Interpreter::REG_TYPE_INT, rightBits,
+                             &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* DIV_REG_CONST — destReg = reg / 16-bit immediate (with div-by-zero check) */
+  static inline int handleDivRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Int64 rhs = static_cast<Int64>(ctx.theInstruction >> 16);
+    Uint64 rightBits = static_cast<Uint64>(rhs);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedArith('/', TleftType, leftBits,
+                             Interpreter::REG_TYPE_INT, rightBits,
+                             &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* DIV_REG_REG — destReg = reg / reg2 (with div-by-zero check) */
+  static inline int handleDivRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedArith('/', TleftType, leftBits,
+                             TrightType, rightBits,
+                             &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* LSHIFT_REG_CONST — destReg = reg << 16-bit immediate (shift < 64) */
+  static inline int handleLshiftRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits = static_cast<Uint64>(ctx.theInstruction >> 16);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('L', TleftType, leftBits,
+                               Interpreter::REG_TYPE_INT, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* LSHIFT_REG_REG — destReg = reg << reg2 (shift < 64) */
+  static inline int handleLshiftRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('L', TleftType, leftBits,
+                               TrightType, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* RSHIFT_REG_CONST — destReg = reg >> 16-bit immediate (shift < 64) */
+  static inline int handleRshiftRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits = static_cast<Uint64>(ctx.theInstruction >> 16);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('R', TleftType, leftBits,
+                               Interpreter::REG_TYPE_INT, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* RSHIFT_REG_REG — destReg = reg >> reg2 (shift < 64) */
+  static inline int handleRshiftRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('R', TleftType, leftBits,
+                               TrightType, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* AND_REG_CONST — destReg = reg & 16-bit immediate */
+  static inline int handleAndRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits = static_cast<Uint64>(ctx.theInstruction >> 16);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('&', TleftType, leftBits,
+                               Interpreter::REG_TYPE_INT, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* --- Batch 5 --- remaining logical/arithmetic + attr-null branches + linked read */
+
+  /* AND_REG_REG — destReg = reg & reg2 */
+  static inline int handleAndRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('&', TleftType, leftBits,
+                               TrightType, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* OR_REG_CONST — destReg = reg | 16-bit immediate */
+  static inline int handleOrRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits = static_cast<Uint64>(ctx.theInstruction >> 16);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('|', TleftType, leftBits,
+                               Interpreter::REG_TYPE_INT, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* OR_REG_REG — destReg = reg | reg2 */
+  static inline int handleOrRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('|', TleftType, leftBits,
+                               TrightType, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* XOR_REG_CONST — destReg = reg ^ 16-bit immediate */
+  static inline int handleXorRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits = static_cast<Uint64>(ctx.theInstruction >> 16);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('^', TleftType, leftBits,
+                               Interpreter::REG_TYPE_INT, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* XOR_REG_REG — destReg = reg ^ reg2 */
+  static inline int handleXorRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedBitwise('^', TleftType, leftBits,
+                               TrightType, rightBits,
+                               &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* MOD_REG_CONST — destReg = reg % 16-bit immediate (with div-by-zero check) */
+  static inline int handleModRegConst(InterpreterContext& ctx) {
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely(TleftType == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Int64 rhs = static_cast<Int64>(ctx.theInstruction >> 16);
+    Uint64 rightBits = static_cast<Uint64>(rhs);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedArith('%', TleftType, leftBits,
+                             Interpreter::REG_TYPE_INT, rightBits,
+                             &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* MOD_REG_REG — destReg = reg % reg2 (with div-by-zero check) */
+  static inline int handleModRegReg(InterpreterContext& ctx) {
+    Uint32 TrightRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TleftType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TrightType = ctx.TregMemBuffer[TrightRegister];
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    if (unlikely((TleftType & TrightType) == NULL_INDICATOR)) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[TdestRegister + 2] = 0;
+      ctx.TregMemBuffer[TdestRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    Uint64 leftBits =
+        *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint64 rightBits =
+        *(Uint64*)(ctx.TregMemBuffer + TrightRegister + 2);
+    Uint32 resultType;
+    Uint64 resultBits;
+    int rc = applyTypedArith('%', TleftType, leftBits,
+                             TrightType, rightBits,
+                             &resultType, &resultBits);
+    if (unlikely(rc != 0)) return rc;
+    ctx.TregMemBuffer[TdestRegister] = resultType;
+    *(Uint64*)(ctx.TregMemBuffer + TdestRegister + 2) = resultBits;
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_LINKED_TO_MEM — read a linked (parent-table) column value from
+   * req_struct->m_linked_attr_data into cheapMemory[0]. Format of the
+   * linked buffer: [tableId, schemaVersion, AttrHeader, data...] per entry.
+   * Position (bits 16..23) selects the Nth entry. If linked data is
+   * unavailable or out-of-bounds, writes a NULL AttributeHeader at offset 0. */
+  static inline int handleReadLinkedToMem(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3;
+    Uint32 position = (ctx.theInstruction >> 16) & 0xFF;
+
+    const Uint32* linked = ctx.req_struct->m_linked_attr_data;
+    Uint32 linked_len = ctx.req_struct->m_linked_attr_len;
+    Uint32* memory_ptr = (Uint32*)&ctx.TheapMemoryChar[0];
+
+    if (unlikely(linked == nullptr)) {
+      AttributeHeader null_ah(0, 0);
+      memory_ptr[0] = null_ah.m_value;
+      return INTERP_CONTINUE;
+    }
+
+    const Uint32* p = linked;
+    const Uint32* p_end = linked + linked_len;
+    Uint32 pos_count = 0;
+    while (p < p_end) {
+      if (pos_count == position) break;
+      p += 2;  // skip tableId, schemaVersion
+      p += 1 + AttributeHeader::getDataSize(*p);
+      pos_count++;
+    }
+    if (unlikely(p >= p_end)) {
+      AttributeHeader null_ah(0, 0);
+      memory_ptr[0] = null_ah.m_value;
+      return INTERP_CONTINUE;
+    }
+
+    // Skip tableId and schemaVersion, copy AttrHeader + data
+    p += 2;
+    Uint32 words = 1 + AttributeHeader::getDataSize(*p);
+    memcpy(memory_ptr, p, words * sizeof(Uint32));
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_ATTR_EQ_NULL — branch if tuple attribute is NULL */
+  static inline int handleBranchAttrEqNull(InterpreterContext& ctx) {
+    Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
+    Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
+
+    if (ctx.tmpHabitant != attrId) {
+      Int32 TnoDataR = ctx.tup->readAttributes(
+          ctx.req_struct, &attrId, 1, ctx.tmpArea, ctx.tmpAreaSz);
+      if (unlikely(TnoDataR < 0)) {
+        thrjam(ctx.tup->jamBuffer());
+        return TnoDataR;  /* already negative of error code */
+      }
+      ctx.tmpHabitant = attrId;
+    }
+
+    AttributeHeader ah(ctx.tmpArea[0]);
+    if (ah.isNULL()) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    } else {
+      ctx.TprogramCounter++;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_LINKED_EQ_NULL — branch if linked column at the most
+   * recent READ_LINKED_TO_MEM position is NULL.  Examines the
+   * AttributeHeader at cheapMemory[0]. */
+  static inline int handleBranchLinkedEqNull(InterpreterContext& ctx) {
+    const Uint32* memory_ptr = (const Uint32*)&ctx.TheapMemoryChar[0];
+    AttributeHeader ah(memory_ptr[0]);
+    if (ah.isNULL()) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_LINKED_NE_NULL — branch if linked column at the most
+   * recent READ_LINKED_TO_MEM position is NOT NULL. */
+  static inline int handleBranchLinkedNeNull(InterpreterContext& ctx) {
+    const Uint32* memory_ptr = (const Uint32*)&ctx.TheapMemoryChar[0];
+    AttributeHeader ah(memory_ptr[0]);
+    if (!ah.isNULL()) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_ATTR_NE_NULL — branch if tuple attribute is NOT NULL */
+  static inline int handleBranchAttrNeNull(InterpreterContext& ctx) {
+    Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
+    Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
+
+    if (ctx.tmpHabitant != attrId) {
+      Int32 TnoDataR = ctx.tup->readAttributes(
+          ctx.req_struct, &attrId, 1, ctx.tmpArea, ctx.tmpAreaSz);
+      if (unlikely(TnoDataR < 0)) {
+        thrjam(ctx.tup->jamBuffer());
+        return TnoDataR;  /* already negative of error code */
+      }
+      ctx.tmpHabitant = attrId;
+    }
+
+    AttributeHeader ah(ctx.tmpArea[0]);
+    if (ah.isNULL()) {
+      ctx.TprogramCounter++;
+    } else {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* --- Batch 6 --- memory read/write ops (size-prefixed loads/stores) */
+
+  /* READ_UINT8_MEM_TO_REG — read 1 byte from heap offset (immediate) */
+  static inline int handleReadUint8MemToReg(InterpreterContext& ctx) {
+    Uint32 memoryOffset = ctx.theInstruction >> 16;
+    if (unlikely(memoryOffset > MAX_HEAP_OFFSET)) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    Uint8 value = ctx.TheapMemoryChar[memoryOffset];
+    /* Phase I.18: type-aware register write.  Source is unsigned so
+     * register acquires REG_TYPE_UINT; payload zero-extended to 64
+     * bits via Uint64 store. */
+    ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+    *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = (Uint64)value;
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_UINT16_MEM_TO_REG — read 2 bytes from heap offset (immediate) */
+  static inline int handleReadUint16MemToReg(InterpreterContext& ctx) {
+    Uint32 memoryOffset = ctx.theInstruction >> 16;
+    Uint16 value;
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&value, &ctx.TheapMemoryChar[memoryOffset], 2);
+    /* Phase I.18: REG_TYPE_UINT.  See handleReadUint8MemToReg. */
+    ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+    *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = (Uint64)value;
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_UINT32_MEM_TO_REG — read 4 bytes from heap offset (immediate) */
+  static inline int handleReadUint32MemToReg(InterpreterContext& ctx) {
+    Uint32 memoryOffset = ctx.theInstruction >> 16;
+    Uint32 value;
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 3))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&value, &ctx.TheapMemoryChar[memoryOffset], 4);
+    /* Phase I.18: REG_TYPE_UINT.  See handleReadUint8MemToReg. */
+    ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+    *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = (Uint64)value;
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_INT64_MEM_TO_REG — read 8 bytes from heap offset (immediate) */
+  static inline int handleReadInt64MemToReg(InterpreterContext& ctx) {
+    Uint32 memoryOffset = ctx.theInstruction >> 16;
+    Int64 value;
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&value, &ctx.TheapMemoryChar[memoryOffset], 8);
+    ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
+    *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = value;
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_UINT8_REG_TO_REG — read 1 byte from heap offset stored in register */
+  static inline int handleReadUint8RegToReg(InterpreterContext& ctx) {
+    Uint32 memoryOffsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 destRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    if (unlikely(memoryOffsetType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 0))) {
+      thrjam(ctx.tup->jamBuffer());
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    Uint8 value = ctx.TheapMemoryChar[memoryOffset];
+    /* Phase I.18: REG_TYPE_UINT on the destination. */
+    *(Uint64*)(ctx.TregMemBuffer + destRegister + 2) = (Uint64)value;
+    ctx.TregMemBuffer[destRegister] = Interpreter::REG_TYPE_UINT;
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_UINT16_REG_TO_REG — read 2 bytes from heap offset stored in register */
+  static inline int handleReadUint16RegToReg(InterpreterContext& ctx) {
+    Uint32 memoryOffsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 destRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint16 value;
+    if (unlikely(memoryOffsetType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1))) {
+      thrjam(ctx.tup->jamBuffer());
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&value, &ctx.TheapMemoryChar[memoryOffset], 2);
+    /* Phase I.18: REG_TYPE_UINT on the destination. */
+    *(Uint64*)(ctx.TregMemBuffer + destRegister + 2) = (Uint64)value;
+    ctx.TregMemBuffer[destRegister] = Interpreter::REG_TYPE_UINT;
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_UINT32_REG_TO_REG — read 4 bytes from heap offset stored in register */
+  static inline int handleReadUint32RegToReg(InterpreterContext& ctx) {
+    Uint32 memoryOffsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 destRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 value;
+    if (unlikely(memoryOffsetType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 3))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&value, &ctx.TheapMemoryChar[memoryOffset], 4);
+    /* Phase I.18: REG_TYPE_UINT on the destination. */
+    *(Uint64*)(ctx.TregMemBuffer + destRegister + 2) = (Uint64)value;
+    ctx.TregMemBuffer[destRegister] = Interpreter::REG_TYPE_UINT;
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_INT64_REG_TO_REG — read 8 bytes from heap offset stored in register */
+  static inline int handleReadInt64RegToReg(InterpreterContext& ctx) {
+    Uint32 memoryOffsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 destRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Int64 value;
+    if (unlikely(memoryOffsetType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&value, &ctx.TheapMemoryChar[memoryOffset], 8);
+    *(Int64*)(ctx.TregMemBuffer + destRegister + 2) = value;
+    ctx.TregMemBuffer[destRegister] = NOT_NULL_INDICATOR;
+    return INTERP_CONTINUE;
+  }
+
+  /* WRITE_UINT8_REG_TO_MEM — write 1 byte from register to heap (immediate)
+   *
+   * Phase I.18: strict typing.  The opcode names UINT8, so the source
+   * register must be REG_TYPE_UINT (rejects NULL, signed, and float
+   * sources alike).  Use WRITE_REG_TO_MEM_ANY for type-agnostic
+   * 8-byte memory writes. */
+  static inline int handleWriteUint8RegToMem(InterpreterContext& ctx) {
+    Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 memoryOffset = ctx.theInstruction >> 16;
+    Uint64 Tvalue = *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint8 val = (Uint8)Tvalue;
+    if (unlikely(TregType != Interpreter::REG_TYPE_UINT)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 0))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&ctx.TheapMemoryChar[memoryOffset], &val, 1);
+    return INTERP_CONTINUE;
+  }
+
+  /* WRITE_UINT16_REG_TO_MEM — write 2 bytes from register to heap (immediate) */
+  static inline int handleWriteUint16RegToMem(InterpreterContext& ctx) {
+    Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 memoryOffset = ctx.theInstruction >> 16;
+    Uint64 Tvalue = *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint16 val = (Uint16)Tvalue;
+    if (unlikely(TregType != Interpreter::REG_TYPE_UINT)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&ctx.TheapMemoryChar[memoryOffset], &val, 2);
+    return INTERP_CONTINUE;
+  }
+
+  /* --- Batch 7 --- remaining memory writes + I/O + size-convert */
+
+  /* WRITE_UINT32_REG_TO_MEM — write 4 bytes from register to heap (immediate) */
+  static inline int handleWriteUint32RegToMem(InterpreterContext& ctx) {
+    Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 memoryOffset = ctx.theInstruction >> 16;
+    Uint64 Tvalue = *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 val = (Uint32)Tvalue;
+    if (unlikely(TregType != Interpreter::REG_TYPE_UINT)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 3))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&ctx.TheapMemoryChar[memoryOffset], &val, 4);
+    return INTERP_CONTINUE;
+  }
+
+  /* WRITE_INT64_REG_TO_MEM — write 8 bytes from register to heap (immediate)
+   *
+   * Phase I.18: strict typing.  Source register must be REG_TYPE_INT
+   * (signed Int64).  Unsigned / float / NULL sources rejected — use
+   * WRITE_REG_TO_MEM_ANY for type-agnostic 8-byte writes. */
+  static inline int handleWriteInt64RegToMem(InterpreterContext& ctx) {
+    Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 memoryOffset = ctx.theInstruction >> 16;
+    Int64 Tvalue = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    if (unlikely(TregType != Interpreter::REG_TYPE_INT)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&ctx.TheapMemoryChar[memoryOffset], &Tvalue, 8);
+    return INTERP_CONTINUE;
+  }
+
+  /* WRITE_REG_TO_MEM_ANY — type-agnostic 8-byte register-to-heap
+   * write (immediate offset).
+   *
+   * Phase I.18: copies the register's slots 2-3 verbatim (8 bytes)
+   * regardless of source type — Int64, Uint64, and IEEE-754 double
+   * already share a 64-bit canonical bit pattern in the register.
+   * Only NULL source is rejected.  Producers that need to spill a
+   * non-matching width through a typed-named opcode can switch to
+   * this opcode instead. */
+  static inline int handleWriteRegToMemAny(InterpreterContext& ctx) {
+    Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 memoryOffset = ctx.theInstruction >> 16;
+    if (unlikely(TregType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&ctx.TheapMemoryChar[memoryOffset],
+           ctx.TregMemBuffer + ctx.theRegister + 2,
+           8);
+    return INTERP_CONTINUE;
+  }
+
+  /* WRITE_UINT8_REG_TO_REG — write 1 byte from register to heap, offset in register
+   *
+   * Phase I.18: strict typing.  Source value register must be
+   * REG_TYPE_UINT.  Memory-offset register must be non-NULL and
+   * non-float (signed or unsigned offset both fine). */
+  static inline int handleWriteUint8RegToReg(InterpreterContext& ctx) {
+    Uint32 registerOffset = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 memoryOffsetType = ctx.TregMemBuffer[registerOffset];
+    Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + registerOffset + 2);
+    Uint64 Tvalue = *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint8 val = (Uint8)Tvalue;
+    if (unlikely(TregType != Interpreter::REG_TYPE_UINT ||
+                 memoryOffsetType == NULL_INDICATOR ||
+                 reg_is_float(memoryOffsetType))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&ctx.TheapMemoryChar[memoryOffset], &val, 1);
+    return INTERP_CONTINUE;
+  }
+
+  /* WRITE_UINT16_REG_TO_REG — write 2 bytes from register, offset in register */
+  static inline int handleWriteUint16RegToReg(InterpreterContext& ctx) {
+    Uint32 registerOffset = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
+    Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + registerOffset + 2);
+    Uint32 memoryOffsetType = ctx.TregMemBuffer[registerOffset];
+    Uint64 Tvalue = *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint16 val = (Uint16)Tvalue;
+    if (unlikely(TregType != Interpreter::REG_TYPE_UINT ||
+                 memoryOffsetType == NULL_INDICATOR ||
+                 reg_is_float(memoryOffsetType))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&ctx.TheapMemoryChar[memoryOffset], &val, 2);
+    return INTERP_CONTINUE;
+  }
+
+  /* WRITE_UINT32_REG_TO_REG — write 4 bytes from register, offset in register */
+  static inline int handleWriteUint32RegToReg(InterpreterContext& ctx) {
+    Uint32 registerOffset = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 memoryOffsetType = ctx.TregMemBuffer[registerOffset];
+    Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + registerOffset + 2);
+    Uint64 Tvalue = *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 val = (Uint32)Tvalue;
+    if (unlikely(TregType != Interpreter::REG_TYPE_UINT ||
+                 memoryOffsetType == NULL_INDICATOR ||
+                 reg_is_float(memoryOffsetType))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&ctx.TheapMemoryChar[memoryOffset], &val, 4);
+    return INTERP_CONTINUE;
+  }
+
+  /* WRITE_INT64_REG_TO_REG — write 8 bytes from register, offset in register
+   *
+   * Phase I.18: strict typing.  Source value register must be
+   * REG_TYPE_INT.  Memory-offset register must be non-NULL and
+   * non-float. */
+  static inline int handleWriteInt64RegToReg(InterpreterContext& ctx) {
+    Uint32 registerOffset = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 memoryOffsetType = ctx.TregMemBuffer[registerOffset];
+    Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + registerOffset + 2);
+    Int64 Tvalue = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    if (unlikely(TregType != Interpreter::REG_TYPE_INT ||
+                 memoryOffsetType == NULL_INDICATOR ||
+                 reg_is_float(memoryOffsetType))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    memcpy(&ctx.TheapMemoryChar[memoryOffset], &Tvalue, 8);
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_INTERPRETER_INPUT — load value from an interpreter input slot
+   *
+   * Phase I.18: producer.  Interpreter input slots are opaque 8-byte
+   * values; mark the destination register as REG_TYPE_INT (signed
+   * Int64 is the historical default and bit-identical to
+   * NOT_NULL_INDICATOR). */
+  static inline int handleReadInterpreterInput(InterpreterContext& ctx) {
+    Uint32 inputInx = ctx.theInstruction >> 16;
+    Int64* value_ptr = (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    if (unlikely(inputInx >= AttributeHeader::MaxInterpreterInputIndex)) {
+      return -ZINPUT_OUTPUT_INDEX_ERROR;
+    }
+    memcpy(value_ptr, &ctx.tup->m_interpreter_input[inputInx], 8);
+    ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
+    return INTERP_CONTINUE;
+  }
+
+  /* WRITE_INTERPRETER_OUTPUT — store register into an interpreter output slot
+   *
+   * Phase I.18: type-agnostic writer (interpreter outputs hold any
+   * 64-bit value).  Reject float and NULL; signed and unsigned both
+   * fine. */
+  static inline int handleWriteInterpreterOutput(InterpreterContext& ctx) {
+    Uint32 valueType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 outputInx = ctx.theInstruction >> 16;
+    Int64* value_ptr = (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    if (unlikely(valueType == NULL_INDICATOR || reg_is_float(valueType))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(outputInx >= AttributeHeader::MaxInterpreterOutputIndex)) {
+      return -ZINPUT_OUTPUT_INDEX_ERROR;
+    }
+    outputInx *= 2;
+    memcpy(&ctx.tup->c_interpreter_output[outputInx], value_ptr, 8);
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_AGG_REG_TO_REG — aggregation-embedded-only register import */
+  static inline int handleReadAggRegToReg(InterpreterContext& ctx) {
+    if (ctx.aggRegisters == nullptr) {
+      return -ZNO_INSTRUCTION_ERROR;
+    }
+    Uint32 aggReg = ctx.theInstruction >> 16;
+    if (unlikely(aggReg >= kRegTotal)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    const Register& src = ctx.aggRegisters[aggReg];
+    if (src.is_null) {
+      ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[ctx.theRegister + 2] = 0;
+      ctx.TregMemBuffer[ctx.theRegister + 3] = 0;
+      return INTERP_CONTINUE;
+    }
+    if (src.type == NDB_TYPE_DOUBLE) {
+      ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
+      memcpy(ctx.TregMemBuffer + ctx.theRegister + 2,
+             &src.value.val_double,
+             8);
+      return INTERP_CONTINUE;
+    }
+    if (unlikely(src.type != NDB_TYPE_BIGINT)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    /* Phase I.18: carry signedness through to the normal interpreter
+     * register's type word. */
+    ctx.TregMemBuffer[ctx.theRegister] =
+        src.is_unsigned ? Interpreter::REG_TYPE_UINT
+                        : Interpreter::REG_TYPE_INT;
+    if (src.is_unsigned) {
+      *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+          src.value.val_uint64;
+    } else {
+      *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+          src.value.val_int64;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_LINKED_COLUMN_TO_REG (Phase I.5 v5) — type-aware
+   * linked-attr-buffer load.  Walks the linked buffer to the
+   * requested 8-bit position, reads the AttributeHeader, and
+   * decodes the value into a normal interpreter register according
+   * to the supplied 8-bit NDB_TYPE_* code.  Replaces the existing
+   * READ_LINKED_TO_MEM + READ_*_MEM_TO_REG_CONST sequence for the
+   * integer family and adds correct sign extension for signed
+   * sub-64-bit widths.
+   *
+   * Encoding: bits 6..8 dest reg, bits 16..23 position, bits
+   * 24..31 NDB column type.  See Interpreter.hpp.
+   *
+   * Supported types: Tinyint, Tinyunsigned, Smallint,
+   * Smallunsigned, Mediumint, Mediumunsigned, Int, Unsigned,
+   * Bigint, Bigunsigned.  Other type codes return
+   * -ZNO_INSTRUCTION_ERROR. */
+  static inline int handleReadLinkedColumnToReg(InterpreterContext& ctx) {
+    Uint32 position = (ctx.theInstruction >> 16) & 0xFF;
+    Uint32 type     = (ctx.theInstruction >> 24) & 0xFF;
+
+    /* Walk the linked-attr buffer to the requested position.  Same
+     * loop shape as handleReadLinkedToMem (per-entry layout is
+     * tableId, schemaVersion, AttrHeader, data). */
+    const Uint32* linked = ctx.req_struct->m_linked_attr_data;
+    Uint32 linked_len = ctx.req_struct->m_linked_attr_len;
+    if (unlikely(linked == nullptr)) {
+      ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
+      return INTERP_CONTINUE;
+    }
+    const Uint32* p = linked;
+    const Uint32* p_end = linked + linked_len;
+    Uint32 pos_count = 0;
+    while (p < p_end) {
+      if (pos_count == position) break;
+      p += 2;  /* skip tableId, schemaVersion */
+      p += 1 + AttributeHeader::getDataSize(*p);
+      pos_count++;
+    }
+    if (unlikely(p >= p_end)) {
+      ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
+      return INTERP_CONTINUE;
+    }
+
+    /* Skip tableId and schemaVersion. */
+    p += 2;
+
+    /* Inspect the AttributeHeader. */
+    AttributeHeader ah(*p);
+    if (ah.isNULL()) {
+      ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
+      return INTERP_CONTINUE;
+    }
+
+    /* Decode the value.  Data starts immediately after the
+     * AttrHeader word, so &p[1] is the first data byte boundary
+     * (aligned to a Uint32 word). */
+    const char* data = reinterpret_cast<const char*>(p + 1);
+    Int64 sval = 0;
+    Uint64 uval = 0;
+    bool is_unsigned = false;
+    switch (type) {
+      case NDB_TYPE_TINYINT:
+        sval = *reinterpret_cast<const Int8*>(data);
+        break;
+      case NDB_TYPE_TINYUNSIGNED:
+        uval = *reinterpret_cast<const Uint8*>(data);
+        is_unsigned = true;
+        break;
+      case NDB_TYPE_SMALLINT:
+        sval = sint2korr(data);
+        break;
+      case NDB_TYPE_SMALLUNSIGNED:
+        uval = uint2korr(data);
+        is_unsigned = true;
+        break;
+      case NDB_TYPE_MEDIUMINT:
+        sval = sint3korr(data);
+        break;
+      case NDB_TYPE_MEDIUMUNSIGNED:
+        uval = uint3korr(data);
+        is_unsigned = true;
+        break;
+      case NDB_TYPE_INT:
+        sval = sint4korr(data);
+        break;
+      case NDB_TYPE_UNSIGNED:
+        uval = uint4korr(data);
+        is_unsigned = true;
+        break;
+      case NDB_TYPE_BIGINT:
+        memcpy(&sval, data, 8);
+        break;
+      case NDB_TYPE_BIGUNSIGNED:
+        memcpy(&uval, data, 8);
+        is_unsigned = true;
+        break;
+      case NDB_TYPE_FLOAT: {
+        /* Phase I.5 v3: load 4-byte FLOAT, widen to double, tag
+         * REG_TYPE_DOUBLE.  Early-return because the unified tail
+         * below would mis-tag this as REG_TYPE_INT. */
+        float fval;
+        memcpy(&fval, data, 4);
+        double dval = static_cast<double>(fval);
+        ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
+        memcpy(ctx.TregMemBuffer + ctx.theRegister + 2, &dval, 8);
+        return INTERP_CONTINUE;
+      }
+      case NDB_TYPE_DOUBLE:
+        ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
+        memcpy(ctx.TregMemBuffer + ctx.theRegister + 2, data, 8);
+        return INTERP_CONTINUE;
+      default:
+        return -ZNO_INSTRUCTION_ERROR;
+    }
+
+    /* Phase I.18: tag the register's type word so consumers know
+     * whether the payload is signed or unsigned. */
+    ctx.TregMemBuffer[ctx.theRegister] =
+        is_unsigned ? Interpreter::REG_TYPE_UINT
+                    : Interpreter::REG_TYPE_INT;
+    if (is_unsigned) {
+      *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = uval;
+    } else {
+      *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = sval;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* CONVERT_SIZE — decode 2-byte little-endian length into destination register
+   *
+   * Phase I.18: source register is a memory offset (signed or
+   * unsigned integer; reject float and NULL).  Destination is a
+   * non-negative size value tagged REG_TYPE_INT. */
+  static inline int handleConvertSize(InterpreterContext& ctx) {
+    Uint32 offsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TdestRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    if (unlikely(offsetType == NULL_INDICATOR || reg_is_float(offsetType))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1) || memoryOffset < 0)) {
+      thrjam(ctx.tup->jamBuffer());
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    Uint32 low_byte = ctx.TheapMemoryChar[memoryOffset];
+    Uint32 high_byte = ctx.TheapMemoryChar[memoryOffset + 1];
+    Uint32 size_read = low_byte + (256 * high_byte);
+    *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = (Int64)size_read;
+    ctx.TregMemBuffer[TdestRegister] = Interpreter::REG_TYPE_INT;
+    return INTERP_CONTINUE;
+  }
+
+  /* WRITE_SIZE_MEM — encode 2-byte little-endian length from register to heap */
+  static inline int handleWriteSizeMem(InterpreterContext& ctx) {
+    Uint32 TsizeRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 offsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 sizeType = ctx.TregMemBuffer[TsizeRegister];
+    Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    if (unlikely(offsetType == NULL_INDICATOR || sizeType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1) || memoryOffset < 0)) {
+      thrjam(ctx.tup->jamBuffer());
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    Int64 size = *(Int64*)(ctx.TregMemBuffer + TsizeRegister + 2);
+    if (unlikely(size <= 0 || size >= (MAX_VAR_SIZE_IN_WORDS * 4))) {
+      return -ZPARTIAL_READ_ERROR;
+    }
+    Uint32 low_byte = size & 255;
+    Uint32 high_byte = size >> 8;
+    ctx.TheapMemoryChar[memoryOffset] = low_byte;
+    ctx.TheapMemoryChar[memoryOffset + 1] = high_byte;
+    return INTERP_CONTINUE;
+  }
+
+  /* --- Batch 8 --- attribute read/write ops and string conversion */
+
+  /* LOAD_OP_TYPE — load current operation type (INSERT/UPDATE/DELETE/…) */
+  static inline int handleLoadOpType(InterpreterContext& ctx) {
+    Uint32 op_type = ctx.req_struct->operPtrP->op_type;
+    ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
+    *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) = op_type & 7;
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_ATTR_INTO_REG — read tuple attribute into register
+   *
+   * Phase I.18: type-aware register write.  After readAttributes
+   * returns the raw column data, the column descriptor is consulted
+   * to apply correct sign extension on signed sub-Bigint integers,
+   * and to tag the register with REG_TYPE_INT / REG_TYPE_UINT /
+   * REG_TYPE_DOUBLE depending on the source type.  Pre-I.18 the
+   * handler implicitly zero-extended every 32-bit data word into
+   * the Int64 payload, which silently produced wrong values for
+   * signed TINYINT / SMALLINT / MEDIUMINT / INT columns containing
+   * negative values (this was the bug surfaced by the I.5 v5 MTR
+   * fixture). */
+  static inline int handleReadAttrIntoReg(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3;  // A bit heavier instruction
+    Uint32 theAttrinfo = (ctx.theInstruction & 0xFFFF0000);
+    int TnoDataRW = ctx.tup->readAttributes(
+        ctx.req_struct, &theAttrinfo, (Uint32)1,
+        &ctx.TregMemBuffer[ctx.theRegister], (Uint32)3);
+    if (TnoDataRW == 2) {
+      // 32-bit cell read.  TregMemBuffer[theRegister + 1] holds the
+      // raw column data word (after the AttrHeader at slot 0).
+      // Inspect the column descriptor to know how wide the actual
+      // value is and whether it is signed.
+      thrjamDebug(ctx.tup->jamBuffer());
+      Uint32 attrId = theAttrinfo >> 16;
+      const Uint32 attrDescIndex = attrId * ZAD_SIZE;
+      Uint32 attrDesc1 =
+          ctx.req_struct->tablePtrP->tabDescriptor[attrDescIndex];
+      Uint32 typeId = AttributeDescriptor::getType(attrDesc1);
+      const char* dataPtr =
+          reinterpret_cast<const char*>(
+              &ctx.TregMemBuffer[ctx.theRegister + 1]);
+      switch (typeId) {
+        case NDB_TYPE_TINYINT:
+          *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Int64)*reinterpret_cast<const Int8*>(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
+          break;
+        case NDB_TYPE_TINYUNSIGNED:
+          *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Uint64)*reinterpret_cast<const Uint8*>(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+          break;
+        case NDB_TYPE_SMALLINT:
+          *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Int64)(Int16)sint2korr(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
+          break;
+        case NDB_TYPE_SMALLUNSIGNED:
+          *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Uint64)uint2korr(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+          break;
+        case NDB_TYPE_MEDIUMINT:
+          *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Int64)sint3korr(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
+          break;
+        case NDB_TYPE_MEDIUMUNSIGNED:
+          *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Uint64)uint3korr(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+          break;
+        case NDB_TYPE_INT:
+          *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Int64)sint4korr(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
+          break;
+        case NDB_TYPE_UNSIGNED:
+          *(Uint64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              (Uint64)uint4korr(dataPtr);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+          break;
+        case NDB_TYPE_FLOAT: {
+          // Single-precision float in 4 bytes.  Promote to double
+          // and store as REG_TYPE_DOUBLE.
+          float fval;
+          memcpy(&fval, dataPtr, 4);
+          double dval = (double)fval;
+          memcpy(ctx.TregMemBuffer + ctx.theRegister + 2, &dval, 8);
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
+          break;
+        }
+        default:
+          // Unknown / unsupported type for typed register loading
+          // — preserve the historical zero-extension behaviour and
+          // mark the register as a default signed integer so
+          // callers that don't care about typed semantics keep
+          // working.
+          *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
+              ctx.TregMemBuffer[ctx.theRegister + 1];
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
+          break;
+      }
+    } else if (TnoDataRW == 3) {
+      // 64-bit cell read.  Two data words at slots 1 and 2 — repack
+      // into the canonical Int64 / Uint64 / double layout in slots
+      // 2-3.
+      thrjamDebug(ctx.tup->jamBuffer());
+      Uint32 lowWord  = ctx.TregMemBuffer[ctx.theRegister + 1];
+      Uint32 highWord = ctx.TregMemBuffer[ctx.theRegister + 2];
+      ctx.TregMemBuffer[ctx.theRegister + 2] = lowWord;
+      ctx.TregMemBuffer[ctx.theRegister + 3] = highWord;
+      Uint32 attrId = theAttrinfo >> 16;
+      const Uint32 attrDescIndex = attrId * ZAD_SIZE;
+      Uint32 attrDesc1 =
+          ctx.req_struct->tablePtrP->tabDescriptor[attrDescIndex];
+      Uint32 typeId = AttributeDescriptor::getType(attrDesc1);
+      switch (typeId) {
+        case NDB_TYPE_BIGUNSIGNED:
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_UINT;
+          break;
+        case NDB_TYPE_DOUBLE:
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
+          break;
+        case NDB_TYPE_BIGINT:
+        default:
+          // Bigint and any other 8-byte source defaults to signed
+          // Int64.
+          ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
+          break;
+      }
+    } else if (TnoDataRW == 1) {
+      // NULL value
+      thrjamDebug(ctx.tup->jamBuffer());
+      ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
+      ctx.TregMemBuffer[ctx.theRegister + 2] = 0;
+      ctx.TregMemBuffer[ctx.theRegister + 3] = 0;
+    } else if (TnoDataRW < 0) {
+      thrjamDebug(ctx.tup->jamBuffer());
+      return TnoDataRW;  /* already negative of error code */
+    } else {
+      // Any other value is an unexpected read result — same as ndbabort()
+      // but with an explicit block pointer (free function has no `this`).
+      jamNoBlock();
+      ctx.tup->progError(__LINE__, NDBD_EXIT_PRGERR, __FILE__, "");
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_MEM_OP_ARG — like BRANCH_ATTR_OP_ARG but reads column data from
+   * heap memory (placed there by READ_LINKED_TO_MEM) instead of calling
+   * readAttributes(). Uses tableId + schemaVersion from the instruction
+   * stream to look up the parent table descriptor for type/charset info.
+   *
+   * Layout: [opcode+cond, attrId|argLen, tableId, schemaVer, data...]
+   *
+   * This is THE critical instruction for CTE filter mode — CTE rows are
+   * loaded into heap memory as linked-attribute data and compared with
+   * literal constants via this instruction. */
+  static inline int handleBranchMemOpArg(InterpreterContext& ctx) {
+    thrjamDebug(ctx.tup->jamBuffer());
+    const Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
+    Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2);
+    Uint32 argLen = Interpreter::getBranchCol_Len(ins2);
+    Uint32 tableId = ctx.TcurrentProgram[ctx.TprogramCounter + 1];
+    Uint32 schemaVersion = ctx.TcurrentProgram[ctx.TprogramCounter + 2];
+
+    // Look up the parent table by tableId for type/charset info.
+    // Validate table exists, is DEFINED, and schemaVersion matches
+    // (via DBLQH's table record which tracks schema versions).
+    if (unlikely(tableId >= ctx.tup->cnoOfTablerec)) {
+      thrjam(ctx.tup->jamBuffer());
+      return -40;
+    }
+    Tablerec* parentTablePtrP = &ctx.tup->tablerec[tableId];
+    if (unlikely(parentTablePtrP->tableStatus != DEFINED)) {
+      thrjam(ctx.tup->jamBuffer());
+      return -40;
+    }
+    if (unlikely(tableId >= ctx.tup->c_lqh->ctabrecFileSize ||
+                 ctx.tup->c_lqh->tablerec[tableId].schemaVersion !=
+                     schemaVersion)) {
+      thrjam(ctx.tup->jamBuffer());
+      return -40;
+    }
+
+    // Read column data from heap (written by READ_LINKED_TO_MEM)
+    const Uint32* memData = (const Uint32*)&ctx.TheapMemoryChar[0];
+    const AttributeHeader ah(memData[0]);
+
+    // Get type info from the parent table's descriptor
+    const Uint32* attrDescriptor =
+        parentTablePtrP->tabDescriptor + (attrId * ZAD_SIZE);
+    const Uint32 TattrDesc1 = attrDescriptor[0];
+    const Uint32 TattrDesc2 = attrDescriptor[1];
+    const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
+    const CHARSET_INFO* cs = nullptr;
+    if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
+      const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+      cs = parentTablePtrP->charsetArray[pos];
+    }
+    const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(typeId);
+
+    Uint32 attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
+    const char* s1 = (const char*)&memData[1];
+    // Inline constant starts after word 0 (ins2) + word 1 (tableId) +
+    // word 2 (schemaVersion)
+    const char* s2 = (const char*)&ctx.TcurrentProgram[ctx.TprogramCounter + 3];
+    const Uint32 step = argLen;
+
+    const bool r1_null = ah.isNULL();
+    const bool r2_null = (argLen == 0);
+
+    if (r1_null || r2_null) {
+      const Uint32 nullSemantics =
+          Interpreter::getNullSemantics(ctx.theInstruction);
+      if (nullSemantics == Interpreter::IF_NULL_BREAK_OUT) {
+        ctx.TprogramCounter =
+            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+        return INTERP_CONTINUE;
+      }
+      if (nullSemantics == Interpreter::IF_NULL_CONTINUE) {
+        // Skip: 1(ins2) + 2(tableId,schemaVer) + data words
+        const Uint32 tmp = ((step + 3) >> 2) + 3;
+        ctx.TprogramCounter += tmp;
+        return INTERP_CONTINUE;
+      }
+    }
+
+    const Uint32 cond = Interpreter::getBinaryCondition(ctx.theInstruction);
+    int res1;
+    if (r1_null || r2_null) {
+      res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
+    } else {
+      if (unlikely(sqlType.m_cmp == 0)) {
+        return -40;
+      }
+      res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+    }
+
+    bool res = false;
+    switch (cond) {
+      case Interpreter::EQ: res = (res1 == 0); break;
+      case Interpreter::NE: res = (res1 != 0); break;
+      case Interpreter::LT: res = (res1 > 0); break;   // inverted
+      case Interpreter::LE: res = (res1 >= 0); break;
+      case Interpreter::GT: res = (res1 < 0); break;
+      case Interpreter::GE: res = (res1 <= 0); break;
+      default: break;
+    }
+
+    if (res) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    } else {
+      // Skip: 1(ins2) + 2(tableId,schemaVer) + data words
+      Uint32 tmp = ((step + 3) >> 2) + 3;
+      ctx.TprogramCounter += tmp;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_MEM_OP_ARG_INLINE_TYPE — like BRANCH_MEM_OP_ARG, but the
+   * column descriptor (type, length, charset) is encoded inline in
+   * the program rather than looked up via tableId+schemaVersion in
+   * tablerec[]. Used by the CTE filter interpreter to compare against
+   * synthesized aggregate result values for which no real registered
+   * NDB column exists (e.g. SUM produces Bigint; the synthetic CTE
+   * virt table is not registered in DBTUP).
+   *
+   * Layout: [opcode+cond, typeId|argLen, columnSizeBytes<<16|csNumber,
+   *          data...]
+   */
+  static inline int handleBranchMemOpArgInlineType(InterpreterContext& ctx) {
+    thrjamDebug(ctx.tup->jamBuffer());
+    const Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
+    const Uint32 typeId = Interpreter::getBranchCol_AttrId(ins2);
+    const Uint32 argLen = Interpreter::getBranchCol_Len(ins2);
+    const Uint32 meta   = ctx.TcurrentProgram[ctx.TprogramCounter + 1];
+    const Uint32 attrLen  = (meta >> 16) & 0xFFFF;
+    const Uint32 csNumber = meta & 0xFFFF;
+
+    const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(typeId);
+    if (unlikely(sqlType.m_cmp == 0)) {
+      thrjam(ctx.tup->jamBuffer());
+      return -40;
+    }
+
+    const CHARSET_INFO* cs = nullptr;
+    if (csNumber != 0) {
+      if (unlikely(csNumber >= MY_ALL_CHARSETS_SIZE)) {
+        thrjam(ctx.tup->jamBuffer());
+        return -40;
+      }
+      cs = all_charsets[csNumber];
+      if (unlikely(cs == nullptr)) {
+        thrjam(ctx.tup->jamBuffer());
+        return -40;
+      }
+    }
+
+    // Read column data from heap (written by READ_LINKED_TO_MEM)
+    const Uint32* memData = (const Uint32*)&ctx.TheapMemoryChar[0];
+    const AttributeHeader ah(memData[0]);
+    const char* s1 = (const char*)&memData[1];
+    // Inline constant starts after word 0 (ins2) + word 1 (meta)
+    const char* s2 = (const char*)&ctx.TcurrentProgram[ctx.TprogramCounter + 2];
+    const Uint32 step = argLen;
+
+    const bool r1_null = ah.isNULL();
+    const bool r2_null = (argLen == 0);
+
+    if (r1_null || r2_null) {
+      const Uint32 nullSemantics =
+          Interpreter::getNullSemantics(ctx.theInstruction);
+      if (nullSemantics == Interpreter::IF_NULL_BREAK_OUT) {
+        ctx.TprogramCounter =
+            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+        return INTERP_CONTINUE;
+      }
+      if (nullSemantics == Interpreter::IF_NULL_CONTINUE) {
+        // Skip: 1(ins2) + 1(meta) + data words
+        const Uint32 tmp = ((step + 3) >> 2) + 2;
+        ctx.TprogramCounter += tmp;
+        return INTERP_CONTINUE;
+      }
+    }
+
+    const Uint32 cond = Interpreter::getBinaryCondition(ctx.theInstruction);
+    int res1;
+    if (r1_null || r2_null) {
+      res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
+    } else {
+      res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+    }
+
+    bool res = false;
+    switch (cond) {
+      case Interpreter::EQ: res = (res1 == 0); break;
+      case Interpreter::NE: res = (res1 != 0); break;
+      case Interpreter::LT: res = (res1 > 0); break;   // inverted
+      case Interpreter::LE: res = (res1 >= 0); break;
+      case Interpreter::GT: res = (res1 < 0); break;
+      case Interpreter::GE: res = (res1 <= 0); break;
+      default: break;
+    }
+
+    if (res) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    } else {
+      // Skip: 1(ins2) + 1(meta) + data words
+      Uint32 tmp = ((step + 3) >> 2) + 2;
+      ctx.TprogramCounter += tmp;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* WRITE_ATTR_FROM_REG — write register value to tuple attribute */
+  static inline int handleWriteAttrFromReg(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3;  // A bit heavier instruction
+    Uint32 TattrId = ctx.theInstruction >> 16;
+    Uint32 TattrDescrIndex = (TattrId * ZAD_SIZE);
+    Uint32 TregType = ctx.TregMemBuffer[ctx.theRegister];
+    thrjamDebug(ctx.tup->jamBuffer());
+    thrjamDataDebug(ctx.tup->jamBuffer(), TattrId);
+
+    if (unlikely(TattrId >= ctx.req_struct->tablePtrP->m_no_of_attributes)) {
+      return -ZATTRIBUTE_ID_ERROR;
+    }
+    /* Phase I.18: column write is type-agnostic on signed/unsigned
+     * integers (the in-register bit pattern is the canonical
+     * representation), but reject float-typed registers until
+     * float-to-integer column-coercion semantics are designed. */
+    if (unlikely(reg_is_float(TregType))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    Uint32 TattrDesc1 =
+        ctx.req_struct->tablePtrP->tabDescriptor[TattrDescrIndex];
+    Uint32 TattrNoOfWords = AttributeDescriptor::getSizeInWords(TattrDesc1);
+    Uint32 Toptype = ctx.req_struct->operPtrP->op_type;
+    Uint32 TdataForUpdate[3];
+    Uint32 Tlen;
+
+    AttributeHeader ah(TattrId, TattrNoOfWords << 2);
+    TdataForUpdate[0] = ah.m_value;
+    TdataForUpdate[1] = ctx.TregMemBuffer[ctx.theRegister + 2];
+    TdataForUpdate[2] = ctx.TregMemBuffer[ctx.theRegister + 3];
+    Tlen = TattrNoOfWords + 1;
+    if (Toptype == ZUPDATE || Toptype == ZINSERT) {
+      if (TattrNoOfWords <= 2) {
+        if (TattrNoOfWords == 1) {
+          thrjamDebug(ctx.tup->jamBuffer());
+          Int64* tmp = new (&ctx.TregMemBuffer[ctx.theRegister + 2]) Int64;
+          TdataForUpdate[1] = Uint32(*tmp);
+          TdataForUpdate[2] = 0;
+        }
+        if (TregType == NULL_INDICATOR) {
+          thrjamDebug(ctx.tup->jamBuffer());
+          ah.setNULL();
+          TdataForUpdate[0] = ah.m_value;
+          Tlen = 1;
+        }
+        int TnoDataRW = ctx.tup->updateAttributes(
+            ctx.req_struct, &TdataForUpdate[0], Tlen);
+        if (TnoDataRW < 0) {
+          return TnoDataRW;  /* already negative of error code */
+        }
+      } else {
+        return -ZREGISTER_INIT_ERROR;
+      }
+    } else {
+      return -ZTRY_TO_UPDATE_ERROR;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* WRITE_ATTR_FROM_MEM — write heap memory content to tuple attribute */
+  static inline int handleWriteAttrFromMem(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3;
+    Uint32 attrId = ctx.theInstruction >> 16;
+    thrjamDebug(ctx.tup->jamBuffer());
+    thrjamDataDebug(ctx.tup->jamBuffer(), attrId);
+    Uint32 attrDescrIndex = (attrId * ZAD_SIZE);
+    Uint32 TsizeRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TregOffsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TregSizeType = ctx.TregMemBuffer[TsizeRegister];
+    Int64 Toffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Int64 Tsize = *(Int64*)(ctx.TregMemBuffer + TsizeRegister + 2);
+    Uint32 Toptype = ctx.req_struct->operPtrP->op_type;
+
+    if (unlikely(attrId >= ctx.req_struct->tablePtrP->m_no_of_attributes)) {
+      return -ZATTRIBUTE_ID_ERROR;
+    }
+    Uint32 attrDesc1 = ctx.req_struct->tablePtrP->tabDescriptor[attrDescrIndex];
+    Uint32 attrNoOfBytes = AttributeDescriptor::getSizeInBytes(attrDesc1);
+    if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                 (TregSizeType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(((Toffset + Tsize) > MAX_HEAP_OFFSET) ||
+                 ((Toffset & 3) != 0) || (Toffset < 0))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (unlikely((Tsize < 0) || (Tsize > attrNoOfBytes))) {
+      return -ZWRITE_SIZE_TOO_BIG_ERROR;
+    }
+    if (unlikely(Toptype != ZUPDATE && Toptype != ZINSERT)) {
+      return -ZTRY_TO_UPDATE_ERROR;
+    }
+    AttributeHeader ah(attrId, Tsize);
+    Uint32* memory_ptr = (Uint32*)&ctx.TheapMemoryChar[Toffset];
+    Uint32 words = 1 + (Tsize + 3) / 4;
+    memory_ptr[0] = ah.m_value;
+    int TnoDataRW = ctx.tup->updateAttributes(ctx.req_struct, memory_ptr, words);
+    if (TnoDataRW < 0) {
+      return TnoDataRW;  /* already negative of error code */
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* WRITE_PARTIAL_ATTR_FROM_MEM — partial update of a var-length column */
+  static inline int handleWritePartialAttrFromMem(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3;
+    Uint32 attrId = ctx.theInstruction >> 16;
+    Uint32 TsizeRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TstartPosRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    Uint32 attrDescrIndex = (attrId * ZAD_SIZE);
+    Uint32 TregOffsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TregSizeType = ctx.TregMemBuffer[TsizeRegister];
+    Uint32 TstartPosType = ctx.TregMemBuffer[TstartPosRegister];
+    Int64 Toffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Int64 Tsize = *(Int64*)(ctx.TregMemBuffer + TsizeRegister + 2);
+    Int64 TstartPos = *(Int64*)(ctx.TregMemBuffer + TstartPosRegister + 2);
+    Uint32 Toptype = ctx.req_struct->operPtrP->op_type;
+
+    if (unlikely(attrId >= ctx.req_struct->tablePtrP->m_no_of_attributes)) {
+      return -ZATTRIBUTE_ID_ERROR;
+    }
+    Uint32 attrDesc1 = ctx.req_struct->tablePtrP->tabDescriptor[attrDescrIndex];
+    Uint32 attrNoOfBytes = AttributeDescriptor::getSizeInBytes(attrDesc1);
+    Uint32 array = AttributeDescriptor::getArrayType(attrDesc1);
+    if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                 (TregSizeType == NULL_INDICATOR ||
+                  (TstartPosType == NULL_INDICATOR)))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(((Toffset + Tsize) > MAX_HEAP_OFFSET) ||
+                 ((Toffset & Int64(3)) != 0) || (Toffset < Int64(0)))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (array != NDB_ARRAYTYPE_MEDIUM_VAR && array != NDB_ARRAYTYPE_SHORT_VAR) {
+      return -ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR;
+    }
+    if (unlikely((Tsize < Int64(0)) ||
+                 ((Tsize + TstartPos) > Int64(attrNoOfBytes)))) {
+      return -ZWRITE_SIZE_TOO_BIG_ERROR;
+    }
+    if (unlikely(Tsize == Int64(0))) {
+      return -ZAPPEND_NULL_ERROR;
+    }
+    if (unlikely(Toptype != ZUPDATE && Toptype != ZINSERT)) {
+      return -ZTRY_TO_UPDATE_ERROR;
+    }
+    AttributeHeader ah(AttributeHeader::SET_PARTIAL_COLUMN, Tsize);
+    Uint32 extended_header = attrId + (TstartPos << 16);
+    Uint32* memory_ptr = (Uint32*)&ctx.TheapMemoryChar[Toffset];
+    Uint32 words = 2 + (Tsize + 3) / 4;
+    memory_ptr[0] = ah.m_value;
+    memory_ptr[1] = extended_header;
+    int TnoDataRW = ctx.tup->updateAttributes(ctx.req_struct, memory_ptr, words);
+    if (TnoDataRW < 0) {
+      return TnoDataRW;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* APPEND_ATTR_FROM_MEM — append heap memory to a var-length column */
+  static inline int handleAppendAttrFromMem(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3;
+    Uint32 attrId = ctx.theInstruction >> 16;
+    Uint32 TsizeRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 attrDescrIndex = (attrId * ZAD_SIZE);
+    Uint32 TregOffsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 TregSizeType = ctx.TregMemBuffer[TsizeRegister];
+    Int64 Toffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Int64 Tsize = *(Int64*)(ctx.TregMemBuffer + TsizeRegister + 2);
+    Uint32 Toptype = ctx.req_struct->operPtrP->op_type;
+
+    if (unlikely(attrId >= ctx.req_struct->tablePtrP->m_no_of_attributes)) {
+      return -ZATTRIBUTE_ID_ERROR;
+    }
+    Uint32 attrDesc1 = ctx.req_struct->tablePtrP->tabDescriptor[attrDescrIndex];
+    Uint32 attrNoOfBytes = AttributeDescriptor::getSizeInBytes(attrDesc1);
+    Uint32 array = AttributeDescriptor::getArrayType(attrDesc1);
+    if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                 (TregSizeType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(((Toffset + Tsize) > MAX_HEAP_OFFSET) ||
+                 ((Toffset & Int64(3)) != 0) || (Toffset < Int64(0)))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (array != NDB_ARRAYTYPE_MEDIUM_VAR && array != NDB_ARRAYTYPE_SHORT_VAR) {
+      return -ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR;
+    }
+    if (unlikely((Tsize < Int64(0)) || (Tsize > Int64(attrNoOfBytes)))) {
+      return -ZWRITE_SIZE_TOO_BIG_ERROR;
+    }
+    if (unlikely(Tsize == Int64(0))) {
+      return -ZAPPEND_NULL_ERROR;
+    }
+    if (unlikely(Toptype != ZUPDATE)) {
+      return -ZTRY_TO_UPDATE_ERROR;
+    }
+    AttributeHeader ah(AttributeHeader::APPEND_COLUMN, Tsize);
+    Uint32 extended_header = attrId;
+    Uint32* memory_ptr = (Uint32*)&ctx.TheapMemoryChar[Toffset];
+    Uint32 words = 2 + (Tsize + 3) / 4;
+    memory_ptr[0] = ah.m_value;
+    memory_ptr[1] = extended_header;
+    int TnoDataRW = ctx.tup->updateAttributes(ctx.req_struct, memory_ptr, words);
+    if (TnoDataRW < 0) {
+      return TnoDataRW;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_PARTIAL_ATTR_TO_MEM — partial read of a var-length column to heap */
+  static inline int handleReadPartialAttrToMem(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3;
+    Uint32 ToffsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Int64 Toffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TposRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 TsizeRegister = Interpreter::getReg4(ctx.theInstruction) << 2;
+    Uint32 TposType = ctx.TregMemBuffer[TposRegister];
+    Uint32 TsizeType = ctx.TregMemBuffer[TsizeRegister];
+    if (unlikely((ToffsetType == NULL_INDICATOR) ||
+                 (TposType == NULL_INDICATOR) ||
+                 (TsizeType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(Toffset < 0 ||
+                 (Toffset > ((HEAP_MEMORY_SIZE_DWORDS * 8) -
+                             (MAX_VAR_SIZE_IN_WORDS * 4))) ||
+                 ((Toffset & Int64(3)) != 0))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    Uint32 memory_offset = Uint32(Toffset);
+    Int64 Tpos = *(Int64*)(ctx.TregMemBuffer + TposRegister + 2);
+    if (unlikely(Tpos < 0 || Tpos >= (MAX_VAR_SIZE_IN_WORDS * 4))) {
+      return -ZPARTIAL_READ_ERROR;
+    }
+    Uint32 read_pos = (Uint32)Tpos;
+    Int64 Tsize = *(Int64*)(ctx.TregMemBuffer + TsizeRegister + 2);
+    if (unlikely(Tsize <= 0 || Tsize >= (MAX_VAR_SIZE_IN_WORDS * 4))) {
+      return -ZPARTIAL_READ_ERROR;
+    }
+    Uint32 read_size = (Uint32)Tsize;
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    Uint32 TattrId = ctx.theInstruction >> 19;
+    AttributeHeader ah(TattrId, 0);
+    ah.setPartialReadWriteFlag();
+    Uint32 TdataForRead[2];
+    TdataForRead[0] = ah.m_value;
+    TdataForRead[1] = read_size | read_pos << 16;
+    int TnoDataRW = ctx.tup->readAttributes(
+        ctx.req_struct, &TdataForRead[0], (Uint32)2,
+        (Uint32*)&ctx.TheapMemoryChar[memory_offset], (Uint32)MAX_VAR_SIZE_IN_WORDS);
+    if (TnoDataRW < 0) {
+      thrjamDebug(ctx.tup->jamBuffer());
+      return TnoDataRW;
+    }
+    Uint32* memory_ptr = (Uint32*)&ctx.TheapMemoryChar[memory_offset];
+    Uint32 header = *memory_ptr;
+    AttributeHeader ah_read(header);
+    if (ah_read.isNULL()) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+    } else {
+      Uint32 read_len = ah_read.getByteSize();
+      *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = read_len;
+      ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* READ_ATTR_TO_MEM — read an attribute into heap memory */
+  static inline int handleReadAttrToMem(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3;
+    Uint32 ToffsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Int64 Toffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TdestRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    Uint32 TattrId = ctx.theInstruction >> 16;
+    Uint32 theAttrinfo = (TattrId << 16);
+    if (unlikely(ToffsetType == NULL_INDICATOR)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(Toffset < 0 ||
+                 (Toffset > ((HEAP_MEMORY_SIZE_DWORDS * 8) -
+                             (MAX_VAR_SIZE_IN_WORDS * 4))) ||
+                 ((Toffset & Int64(3)) != 0))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    Uint32 memory_offset = Uint32(Toffset);
+    int TnoDataRW = ctx.tup->readAttributes(
+        ctx.req_struct, &theAttrinfo, (Uint32)1,
+        (Uint32*)&ctx.TheapMemoryChar[memory_offset], (Uint32)MAX_VAR_SIZE_IN_WORDS);
+    if (TnoDataRW < 0) {
+      thrjamDebug(ctx.tup->jamBuffer());
+      return TnoDataRW;
+    }
+    Uint32* memory_ptr = (Uint32*)&ctx.TheapMemoryChar[memory_offset];
+    Uint32 header = *memory_ptr;
+    AttributeHeader ah(header);
+    if (ah.isNULL()) {
+      ctx.TregMemBuffer[TdestRegister] = NULL_INDICATOR;
+    } else {
+      Uint32 read_len = ah.getByteSize();
+      *(Int64*)(ctx.TregMemBuffer + TdestRegister + 2) = read_len;
+      ctx.TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* STR_TO_INT64 — parse a string in heap memory to 64-bit integer */
+  static inline int handleStrToInt64(InterpreterContext& ctx) {
+    Uint32 offsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 sizeReg = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 destValReg = Interpreter::getReg3(ctx.theInstruction) << 2;
+    Uint32 sizeType = ctx.TregMemBuffer[sizeReg];
+    Int64 memoryOffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Int64 size = *(Int64*)(ctx.TregMemBuffer + sizeReg + 2);
+    if (unlikely((offsetType == NULL_INDICATOR) ||
+                 (sizeType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(size > MAX_LONG_LONG_STRING)) {
+      return -ZLONG_LONG_STRING_TOO_LONG;
+    }
+    if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - size) || (memoryOffset < 0))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    {
+      char local_heap[MAX_LONG_LONG_STRING + 1];
+      char* memory_start = &ctx.TheapMemoryChar[memoryOffset];
+      memcpy(&local_heap[0], memory_start, size);
+      char* memory_end = &local_heap[size];
+      memory_end[0] = 0;
+      char* end_ptr = nullptr;
+      errno = 0;
+      Int64 val = strtoll(&local_heap[0], &end_ptr, 10);
+      if (unlikely(errno == EINVAL || errno == ERANGE ||
+                   end_ptr != memory_end)) {
+        return -ZINVALID_LONG_LONG_STRING;
+      }
+      *(Int64*)(ctx.TregMemBuffer + destValReg + 2) = val;
+      ctx.TregMemBuffer[destValReg] = NOT_NULL_INDICATOR;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* INT64_TO_STR — format a 64-bit integer as a string in heap memory */
+  static inline int handleInt64ToStr(InterpreterContext& ctx) {
+    Uint32 offsetType = ctx.TregMemBuffer[ctx.theRegister];
+    Uint32 valueReg = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Uint32 destSizeReg = Interpreter::getReg3(ctx.theInstruction) << 2;
+    Uint32 valueType = ctx.TregMemBuffer[valueReg];
+    Int64 memOffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Int64 value = *(Int64*)(ctx.TregMemBuffer + valueReg + 2);
+    if (unlikely((offsetType == NULL_INDICATOR) ||
+                 (valueType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (unlikely(memOffset > (MAX_HEAP_OFFSET - MAX_LONG_LONG_STRING) ||
+                 (memOffset < 0))) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    int size = snprintf(&ctx.TheapMemoryChar[memOffset],
+                        MAX_LONG_LONG_STRING, "%lld", value);
+    if (size <= 0) {
+      return -ZCONVERT_LONG_LONG_TO_STRING_ERROR;
+    }
+    *(Int64*)(ctx.TregMemBuffer + destSizeReg + 2) = size;
+    ctx.TregMemBuffer[destSizeReg] = NOT_NULL_INDICATOR;
+    return INTERP_CONTINUE;
+  }
+
+  /* BRANCH_ATTR_OP (ARG/PARAM/ATTR + OVERFLOW variants) — branch on an
+   * attribute-vs-value/parameter/attribute comparison. Shared body for six
+   * case labels that differ only in how the second operand is obtained. */
+  static inline int handleBranchAttrOp(InterpreterContext& ctx) {
+    const Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
+    Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
+    const Uint32 opCode =
+        Interpreter::getOpCode(ctx.theInstruction) % OVERFLOW_OPCODE;
+
+    if (ctx.tmpHabitant != attrId) {
+      Int32 TnoDataR = ctx.tup->readAttributes(
+          ctx.req_struct, &attrId, 1, ctx.tmpArea, ctx.tmpAreaSz);
+      if (unlikely(TnoDataR < 0)) {
+        thrjam(ctx.tup->jamBuffer());
+        return TnoDataR;  /* already negative */
+      }
+      ctx.tmpHabitant = attrId;
+    }
+
+    // get type
+    attrId >>= 16;
+    const Uint32* attrDescriptor = ctx.req_struct->tablePtrP->tabDescriptor +
+                                    (attrId * ZAD_SIZE);
+    const Uint32 TattrDesc1 = attrDescriptor[0];
+    const Uint32 TattrDesc2 = attrDescriptor[1];
+    const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
+    const CHARSET_INFO* cs = nullptr;
+    if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
+      const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+      cs = ctx.req_struct->tablePtrP->charsetArray[pos];
+    }
+    const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(typeId);
+
+    // get data for 1st argument, always an ATTR.
+    const AttributeHeader ah(ctx.tmpArea[0]);
+    const char* s1 = (char*)&ctx.tmpArea[1];
+    Uint32 attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
+    if (unlikely(typeId == NDB_TYPE_BIT)) {
+      Uint32 bitFieldAttrLen =
+          (AttributeDescriptor::getArraySize(TattrDesc1) + 7) / 8;
+      attrLen = bitFieldAttrLen;
+    }
+
+    // 2'nd argument, literal, parameter or another attribute
+    Uint32 argLen = 0;
+    Uint32 step = 0;
+    const char* s2 = nullptr;
+
+    if (likely(opCode == Interpreter::BRANCH_ATTR_OP_ARG)) {
+      thrjamDebug(ctx.tup->jamBuffer());
+      argLen = Interpreter::getBranchCol_Len(ins2);
+      step = argLen;
+      s2 = (char*)&ctx.TcurrentProgram[ctx.TprogramCounter + 1];
+    } else if (opCode == Interpreter::BRANCH_ATTR_OP_PARAM) {
+      thrjamDebug(ctx.tup->jamBuffer());
+      assert(ctx.req_struct != nullptr);
+      assert(ctx.req_struct->operPtrP != nullptr);
+      const Uint32 paramNo = Interpreter::getBranchCol_ParamNo(ins2);
+      const Uint32* paramPos = ctx.subroutineProg;
+      const Uint32* paramptr =
+          ctx.tup->lookupInterpreterParameter(paramNo, paramPos);
+      if (unlikely(paramptr == nullptr)) {
+        thrjam(ctx.tup->jamBuffer());
+        return -99;  // TODO — unclear error code
+      }
+      argLen = AttributeHeader::getByteSize(*paramptr);
+      step = 0;
+      s2 = (char*)(paramptr + 1);
+    } else if (opCode == Interpreter::BRANCH_ATTR_OP_ATTR) {
+      thrjamDebug(ctx.tup->jamBuffer());
+      Uint32 attr2Id = Interpreter::getBranchCol_AttrId2(ins2) << 16;
+
+      // Attr2 to be read into tmpArea[] after Attr1.
+      const Uint32 firstAttrWords = attrLen + 1;
+      assert(ctx.tmpAreaSz >= 2 * firstAttrWords);
+      Int32 TnoDataR = ctx.tup->readAttributes(
+          ctx.req_struct, &attr2Id, 1, &ctx.tmpArea[firstAttrWords],
+          ctx.tmpAreaSz - firstAttrWords);
+      if (unlikely(TnoDataR < 0)) {
+        thrjam(ctx.tup->jamBuffer());
+        return TnoDataR;  /* already negative */
+      }
+
+      const AttributeHeader ah2(ctx.tmpArea[firstAttrWords]);
+      if (!ah2.isNULL()) {
+        attr2Id >>= 16;
+        const Uint32* attr2Descriptor =
+            ctx.req_struct->tablePtrP->tabDescriptor + (attr2Id * ZAD_SIZE);
+        const Uint32 Tattr2Desc1 = attr2Descriptor[0];
+        const Uint32 type2Id = AttributeDescriptor::getType(Tattr2Desc1);
+
+        argLen = AttributeDescriptor::getSizeInBytes(Tattr2Desc1);
+        if (unlikely(type2Id == NDB_TYPE_BIT)) {
+          Uint32 bitFieldAttrLen =
+              (AttributeDescriptor::getArraySize(Tattr2Desc1) + 7) / 8;
+          argLen = bitFieldAttrLen;
+        }
+        s2 = (char*)&ctx.tmpArea[firstAttrWords + 1];
+      }
+      step = 0;
+    }
+
+    // Evaluate
+    const bool r1_null = ah.isNULL();
+    const bool r2_null = argLen == 0;
+    if (r1_null || r2_null) {
+      // There are NULL-valued operands, check the NullSemantics
+      const Uint32 nullSemantics =
+          Interpreter::getNullSemantics(ctx.theInstruction);
+      if (nullSemantics == Interpreter::IF_NULL_BREAK_OUT) {
+        ctx.TprogramCounter =
+            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+        return INTERP_CONTINUE;
+      }
+      if (nullSemantics == Interpreter::IF_NULL_CONTINUE) {
+        const Uint32 tmp = ((step + 3) >> 2) + 1;
+        ctx.TprogramCounter += tmp;
+        return INTERP_CONTINUE;
+      }
+    }
+
+    const Uint32 cond = Interpreter::getBinaryCondition(ctx.theInstruction);
+    int res1;
+    if (cond <= Interpreter::GE) {
+      /* Inequality - EQ, NE, LT, LE, GT, GE */
+      if (r1_null || r2_null) {
+        res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
+      } else {
+        thrjamDebug(ctx.tup->jamBuffer());
+        if (unlikely(sqlType.m_cmp == 0)) {
+          return -40;
+        }
+        res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+      }
+    } else {
+      if ((cond == Interpreter::LIKE) ||
+          (cond == Interpreter::NOT_LIKE)) {
+        if (r1_null || r2_null) {
+          res1 = r1_null && r2_null ? 0 : -1;
+        } else {
+          thrjam(ctx.tup->jamBuffer());
+          if (unlikely(sqlType.m_like == 0)) {
+            return -40;
+          }
+          res1 = (*sqlType.m_like)(cs, s1, attrLen, s2, argLen);
+        }
+      } else {
+        /* AND_XX_MASK condition */
+        assert(cond <= Interpreter::AND_NE_ZERO);
+        if (unlikely(sqlType.m_mask == 0)) {
+          return -40;
+        }
+        if (r1_null || r2_null) {
+          res1 = 1;
+        } else {
+          bool cmpZero = (cond == Interpreter::AND_EQ_ZERO) ||
+                         (cond == Interpreter::AND_NE_ZERO);
+          res1 = (*sqlType.m_mask)(s1, attrLen, s2, argLen, cmpZero);
+        }
+      }
+    }
+
+    int res = 0;
+    switch ((Interpreter::BinaryCondition)cond) {
+      case Interpreter::EQ:       res = (res1 == 0); break;
+      case Interpreter::NE:       res = (res1 != 0); break;
+      case Interpreter::LT:       res = (res1 > 0); break;   // inverted
+      case Interpreter::LE:       res = (res1 >= 0); break;
+      case Interpreter::GT:       res = (res1 < 0); break;
+      case Interpreter::GE:       res = (res1 <= 0); break;
+      case Interpreter::LIKE:     res = (res1 == 0); break;
+      case Interpreter::NOT_LIKE: res = (res1 == 1); break;
+      case Interpreter::AND_EQ_MASK: res = (res1 == 0); break;
+      case Interpreter::AND_NE_MASK: res = (res1 != 0); break;
+      case Interpreter::AND_EQ_ZERO: res = (res1 == 0); break;
+      case Interpreter::AND_NE_ZERO: res = (res1 != 0); break;
+    }
+
+    if (res) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    } else {
+      Uint32 tmp = ((step + 3) >> 2) + 1;
+      ctx.TprogramCounter += tmp;
+    }
+    return INTERP_CONTINUE;
+  }
+
+
+  /* --- Batch 10 --- search interval, binary search, string/array ops (extraction complete) */
+
+  /* SEARCH_INTERVAL_64 — binary search in sorted Uint64 array of interval ranges */
+  static inline int handleSearchInterval64(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3; //A bit heavier instruction
+    /**
+     * This instruction does a binary search in a sorted array of
+     * ranges. This means that each pair of numbers represents a
+     * range. Thus input have an even number of elements in the
+     * array.
+     *
+     * By using binary search with smaller or equal we get the result
+     * that returning an even number means that the number is within
+     * one of the ranges and odd numbers and NULL values means that
+     * the value was not in a range.
+     *
+     * Input:
+     *   Register 1:
+     *     The number we are looking for
+     *   Register 2:
+     *     The offset in memory where sorted Uint64 array is stored
+     *   Register 3:
+     *     The number of elements in the array
+     *   Enum 5:
+     *     0: Left open and Right closed interval
+     *     1: Left closed and Right open interval
+     * Output:
+     *   Register 4:
+     *     The position of the found element
+     *     NULL if no element found
+     *
+     */
+    Int64 Tordinal = * (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TregOrdinalType = ctx.TregMemBuffer[ctx.theRegister];
+
+    Uint32 ToffsetRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Int64 Toffset = * (Int64*)(ctx.TregMemBuffer + ToffsetRegister + 2);
+    Uint32 TregOffsetType = ctx.TregMemBuffer[ToffsetRegister];
+
+    Uint32 TnumElemsRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    Int64 TnumElems = * (Int64*)(ctx.TregMemBuffer + TnumElemsRegister + 2);
+    Uint32 TregNumElemsType = ctx.TregMemBuffer[TnumElemsRegister];
+
+    Uint32 TretElemsRegister = Interpreter::getReg4(ctx.theInstruction) << 2;
+    Int64 end_pos = Toffset + (8 * TnumElems);
+    Uint32 TleftOpen = Interpreter::enum5(ctx.theInstruction);
+
+    if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                 (TregOrdinalType == NULL_INDICATOR) ||
+                 (TregNumElemsType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (Tordinal < 0) {
+      return -ZWRONG_INPUT_TO_BINARY_SEARCH;
+    }
+    if (TleftOpen > 1) {
+      return -ZNO_SUCH_SEARCH_INTERVAL_METHOD;
+    }
+    Uint32 ret;
+    Uint64 ordinal = Uint64(Tordinal);
+    if (TleftOpen == 0) {
+      ret = binary_uint64_search_smaller(ordinal,
+                                         &ctx.TheapMemoryChar[Toffset],
+                                         TnumElems,
+                                         true,
+                                         true);
+      if (ret == RET_NULL || ((ret & 1) == 1)) {
+        ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+      } else {
+        ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+        *(Int64*)(ctx.TregMemBuffer + TretElemsRegister + 2) = ret;
+      }
+    } else {
+      ret = binary_uint64_search_larger(ordinal,
+                                        &ctx.TheapMemoryChar[Toffset],
+                                        TnumElems,
+                                        true,
+                                        true);
+      if ((ret & 1) == 0) {
+        ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+      } else {
+        ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+        *(Int64*)(ctx.TregMemBuffer + TretElemsRegister + 2) = ret - 1;
+      }
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* SEARCH_INTERVAL_32 — binary search in sorted Uint32 array of interval ranges */
+  static inline int handleSearchInterval32(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3; //A bit heavier instruction
+    /* This is the 32-bit version of SEARCH_INTERVAL_64 */
+    Int64 Tordinal = * (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TregOrdinalType = ctx.TregMemBuffer[ctx.theRegister];
+
+    Uint32 ToffsetRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Int64 Toffset = * (Int64*)(ctx.TregMemBuffer + ToffsetRegister + 2);
+    Uint32 TregOffsetType = ctx.TregMemBuffer[ToffsetRegister];
+
+    Uint32 TnumElemsRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    Int64 TnumElems = * (Int64*)(ctx.TregMemBuffer + TnumElemsRegister + 2);
+    Uint32 TregNumElemsType = ctx.TregMemBuffer[TnumElemsRegister];
+
+    Uint32 TretElemsRegister = Interpreter::getReg4(ctx.theInstruction) << 2;
+    Int64 end_pos = Toffset + (4 * TnumElems);
+    Uint32 TleftOpen = Interpreter::enum5(ctx.theInstruction);
+
+    if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                 (TregOrdinalType == NULL_INDICATOR) ||
+                 (TregNumElemsType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (Tordinal < 0 ||
+        Tordinal > Int64(std::numeric_limits<Uint32>::max())) {
+      return -ZWRONG_INPUT_TO_BINARY_SEARCH;
+    }
+    if (TleftOpen > 1) {
+      return -ZNO_SUCH_SEARCH_INTERVAL_METHOD;
+    }
+    Uint32 ret;
+    Uint32 ordinal = Uint32(Tordinal);
+    if (TleftOpen == 0) {
+      ret = binary_uint32_search_smaller(ordinal,
+                                         &ctx.TheapMemoryChar[Toffset],
+                                         TnumElems,
+                                         true,
+                                         true);
+      if (ret == RET_NULL || ((ret & 1) == 1)) {
+        ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+      } else {
+        ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+        *(Int64*)(ctx.TregMemBuffer + TretElemsRegister + 2) = ret;
+      }
+    } else {
+      ret = binary_uint32_search_larger(ordinal,
+                                        &ctx.TheapMemoryChar[Toffset],
+                                        TnumElems,
+                                        true,
+                                        true);
+      if ((ret & 1) == 0) {
+        ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+      } else {
+        ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+        *(Int64*)(ctx.TregMemBuffer + TretElemsRegister + 2) = ret - 1;
+      }
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* SEARCH_INTERVAL_16 — binary search in sorted Uint16 array of interval ranges */
+  static inline int handleSearchInterval16(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3; //A bit heavier instruction
+    /* This is the 16-bit version of SEARCH_INTERVAL_64 */
+    Int64 Tordinal = * (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TregOrdinalType = ctx.TregMemBuffer[ctx.theRegister];
+
+    Uint32 ToffsetRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Int64 Toffset = * (Int64*)(ctx.TregMemBuffer + ToffsetRegister + 2);
+    Uint32 TregOffsetType = ctx.TregMemBuffer[ToffsetRegister];
+
+    Uint32 TnumElemsRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    Int64 TnumElems = * (Int64*)(ctx.TregMemBuffer + TnumElemsRegister + 2);
+    Uint32 TregNumElemsType = ctx.TregMemBuffer[TnumElemsRegister];
+
+    Uint32 TretElemsRegister = Interpreter::getReg4(ctx.theInstruction) << 2;
+    Int64 end_pos = Toffset + (2 * TnumElems);
+    Uint32 TleftOpen = Interpreter::enum5(ctx.theInstruction);
+
+    if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                 (TregOrdinalType == NULL_INDICATOR) ||
+                 (TregNumElemsType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (Tordinal < 0 ||
+        Tordinal > Int64(std::numeric_limits<Uint16>::max())) {
+      return -ZWRONG_INPUT_TO_BINARY_SEARCH;
+    }
+    if (TleftOpen > 1) {
+      return -ZNO_SUCH_SEARCH_INTERVAL_METHOD;
+    }
+    Uint32 ret;
+    Uint16 ordinal = Uint16(Tordinal);
+    if (TleftOpen == 0) {
+      ret = binary_uint16_search_smaller(ordinal,
+                                         &ctx.TheapMemoryChar[Toffset],
+                                         TnumElems,
+                                         true,
+                                         true);
+      if (ret == RET_NULL || ((ret & 1) == 1)) {
+        ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+      } else {
+        ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+        *(Int64*)(ctx.TregMemBuffer + TretElemsRegister + 2) = ret;
+      }
+    } else {
+      ret = binary_uint16_search_larger(ordinal,
+                                        &ctx.TheapMemoryChar[Toffset],
+                                        TnumElems,
+                                        true,
+                                        true);
+      if ((ret & 1) == 0) {
+        ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+      } else {
+        ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+        *(Int64*)(ctx.TregMemBuffer + TretElemsRegister + 2) = ret - 1;
+      }
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* SEARCH_INTERVAL_ODD — binary search in sorted array of arbitrary-size interval ranges */
+  static inline int handleSearchIntervalOdd(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3; //A bit heavier instruction
+    /* This is the odd number version of SEARCH_INTERVAL_64 */
+    Int64 Tordinal = * (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TregOrdinalType = ctx.TregMemBuffer[ctx.theRegister];
+
+    Uint32 ToffsetRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Int64 Toffset = * (Int64*)(ctx.TregMemBuffer + ToffsetRegister + 2);
+    Uint32 TregOffsetType = ctx.TregMemBuffer[ToffsetRegister];
+
+    Uint32 TnumElemsRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    Int64 TnumElems = * (Int64*)(ctx.TregMemBuffer + TnumElemsRegister + 2);
+    Uint32 TregNumElemsType = ctx.TregMemBuffer[TnumElemsRegister];
+
+    Uint32 TretElemsRegister = Interpreter::getReg4(ctx.theInstruction) << 2;
+    Uint32 TleftOpen = Interpreter::enum5(ctx.theInstruction);
+    Uint32 TnumberSize = Interpreter::enum6(ctx.theInstruction);
+    Int64 end_pos = Toffset + (TnumberSize * TnumElems);
+
+    if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                 (TregOrdinalType == NULL_INDICATOR) ||
+                 (TregNumElemsType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (TnumberSize != 1 &&
+        TnumberSize != 3 &&
+        TnumberSize != 5 &&
+        TnumberSize != 6) {
+      return -ZNO_SUCH_NUMBER_SIZE_SUPPORTED;
+    }
+    Uint64 max_number = (Uint64(1) << (Uint64(TnumberSize * 8))) - 1;
+    if (Tordinal < 0 ||
+        Tordinal > Int64(max_number)) {
+      return -ZWRONG_INPUT_TO_BINARY_SEARCH;
+    }
+    if (TleftOpen > 1) {
+      return -ZNO_SUCH_SEARCH_INTERVAL_METHOD;
+    }
+    Uint32 ret;
+    Uint64 ordinal = Uint64(Tordinal);
+    if (TleftOpen == 0) {
+      ret = binary_odd_search_smaller(ordinal,
+                                      &ctx.TheapMemoryChar[Toffset],
+                                      TnumElems,
+                                      TnumberSize,
+                                      true,
+                                      true);
+      if (ret == RET_NULL || ((ret & 1) == 1)) {
+        ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+      } else {
+        ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+        *(Int64*)(ctx.TregMemBuffer + TretElemsRegister + 2) = ret;
+      }
+    } else {
+      ret = binary_odd_search_larger(ordinal,
+                                     &ctx.TheapMemoryChar[Toffset],
+                                     TnumElems,
+                                     TnumberSize,
+                                     true,
+                                     true);
+      if ((ret & 1) == 0) {
+        ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+      } else {
+        ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+        *(Int64*)(ctx.TregMemBuffer + TretElemsRegister + 2) = ret - 1;
+      }
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BINARY_SEARCH_64 — binary search in sorted Uint64 array */
+  static inline int handleBinarySearch64(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3; //A bit heavier instruction
+    /**
+     * Input:
+     *   Register 1:
+     *     The number we are looking for
+     *   Register 2:
+     *     The offset in memory where sorted Uint64 array is stored
+     *   Register 3:
+     *     The number of elements in the array
+     *   Enum 5:
+     *     0 means exact match only
+     *     1 means search for nearest that is smaller
+     *       Another name for this is that it is a rank query.
+     *       This query will never return NULL.
+     *     2 means search for nearest that is larger or equal
+     *       This query finds the successor element.
+     *       This query will never return NULL.
+     *     3 means search for nearest that is smaller or equal
+     *     4 means search for nearest that is larger or equal
+     * Output:
+     *   Register 4:
+     *     The position of the found element
+     *     NULL if no element found
+     *
+     */
+    Int64 Tordinal = * (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TregOrdinalType = ctx.TregMemBuffer[ctx.theRegister];
+
+    Uint32 ToffsetRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Int64 Toffset = * (Int64*)(ctx.TregMemBuffer + ToffsetRegister + 2);
+    Uint32 TregOffsetType = ctx.TregMemBuffer[ToffsetRegister];
+
+    Uint32 TnumElemsRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    Int64 TnumElems = * (Int64*)(ctx.TregMemBuffer + TnumElemsRegister + 2);
+    Uint32 TregNumElemsType = ctx.TregMemBuffer[TnumElemsRegister];
+
+    Uint32 TretElemsRegister = Interpreter::getReg4(ctx.theInstruction) << 2;
+    Uint32 TexactMatch = Interpreter::enum5(ctx.theInstruction);
+    Int64 end_pos = Toffset + (8 * TnumElems);
+
+    if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                 (TregOrdinalType == NULL_INDICATOR) ||
+                 (TregNumElemsType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (Tordinal < 0) {
+      return -ZWRONG_INPUT_TO_BINARY_SEARCH;
+    }
+    Uint32 ret;
+    Uint64 ordinal = Uint64(Tordinal);
+    switch (TexactMatch) {
+    case EQUAL_MATCH: {
+      ret = binary_uint64_search_exact(ordinal,
+                                       &ctx.TheapMemoryChar[Toffset],
+                                       TnumElems);
+      break;
+    }
+    case SMALLER_MATCH: {
+      ret = binary_uint64_search_smaller(ordinal,
+                                         &ctx.TheapMemoryChar[Toffset],
+                                         TnumElems,
+                                         false,
+                                         false);
+      break;
+    }
+    case LARGER_MATCH: {
+      ret = binary_uint64_search_larger(ordinal,
+                                        &ctx.TheapMemoryChar[Toffset],
+                                        TnumElems,
+                                        false,
+                                        false);
+      break;
+    }
+    case SMALLER_EQUAL_MATCH: {
+      ret = binary_uint64_search_smaller(ordinal,
+                                         &ctx.TheapMemoryChar[Toffset],
+                                         TnumElems,
+                                         true,
+                                         false);
+      break;
+    }
+    case LARGER_EQUAL_MATCH: {
+      ret = binary_uint64_search_larger(ordinal,
+                                        &ctx.TheapMemoryChar[Toffset],
+                                        TnumElems,
+                                        true,
+                                        false);
+      break;
+    }
+    default: {
+      return -ZNO_SUCH_BINARY_SEARCH_METHOD;
+    }
+    }
+    if (ret == RET_NULL) {
+      ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+    } else {
+      ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+      *(Int64*)(ctx.TregMemBuffer + TretElemsRegister + 2) = ret;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BINARY_SEARCH_32 — binary search in sorted Uint32 array */
+  static inline int handleBinarySearch32(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3; //A bit heavier instruction
+    /* See BINARY_SEARCH_64, this is the 32-bit version */
+    Int64 Tordinal = * (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TregOrdinalType = ctx.TregMemBuffer[ctx.theRegister];
+
+    Uint32 ToffsetRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Int64 Toffset = * (Int64*)(ctx.TregMemBuffer + ToffsetRegister + 2);
+    Uint32 TregOffsetType = ctx.TregMemBuffer[ToffsetRegister];
+
+    Uint32 TnumElemsRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    Int64 TnumElems = * (Int64*)(ctx.TregMemBuffer + TnumElemsRegister + 2);
+    Uint32 TregNumElemsType = ctx.TregMemBuffer[TnumElemsRegister];
+
+    Uint32 TretElemsRegister = Interpreter::getReg4(ctx.theInstruction) << 2;
+    Uint32 TexactMatch = Interpreter::enum5(ctx.theInstruction);
+    Int64 end_pos = Toffset + (4 * TnumElems);
+
+    if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                 (TregOrdinalType == NULL_INDICATOR) ||
+                 (TregNumElemsType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (TexactMatch > LARGER_EQUAL_MATCH) {
+      return -ZNO_SUCH_BINARY_SEARCH_METHOD;
+    }
+    if (Tordinal < 0 ||
+        Tordinal > Int64(std::numeric_limits<Uint32>::max())) {
+      return -ZWRONG_INPUT_TO_BINARY_SEARCH;
+    }
+    Uint32 ordinal = Uint32(Tordinal);
+    Uint32 ret;
+    switch (TexactMatch) {
+    case EQUAL_MATCH: {
+      ret = binary_uint32_search_exact(ordinal,
+                                       &ctx.TheapMemoryChar[Toffset],
+                                       TnumElems);
+      break;
+    }
+    case SMALLER_MATCH: {
+      ret = binary_uint32_search_smaller(ordinal,
+                                         &ctx.TheapMemoryChar[Toffset],
+                                         TnumElems,
+                                         false,
+                                         false);
+      break;
+    }
+    case LARGER_MATCH: {
+      ret = binary_uint32_search_larger(ordinal,
+                                        &ctx.TheapMemoryChar[Toffset],
+                                        TnumElems,
+                                        false,
+                                        false);
+      break;
+    }
+    case SMALLER_EQUAL_MATCH: {
+      ret = binary_uint32_search_smaller(ordinal,
+                                         &ctx.TheapMemoryChar[Toffset],
+                                         TnumElems,
+                                         true,
+                                         false);
+      break;
+    }
+    case LARGER_EQUAL_MATCH: {
+      ret = binary_uint32_search_larger(ordinal,
+                                        &ctx.TheapMemoryChar[Toffset],
+                                        TnumElems,
+                                        true,
+                                        false);
+      break;
+    }
+    default: {
+      return -ZNO_SUCH_BINARY_SEARCH_METHOD;
+    }
+    }
+    if (ret == RET_NULL) {
+      ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+    } else {
+      ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+      *(Int64*)(ctx.TregMemBuffer + TretElemsRegister + 2) = ret;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BINARY_SEARCH_16 — binary search in sorted Uint16 array */
+  static inline int handleBinarySearch16(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3; //A bit heavier instruction
+    /* See BINARY_SEARCH_64, this is the 16-bit version */
+    Int64 Tordinal = * (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TregOrdinalType = ctx.TregMemBuffer[ctx.theRegister];
+
+    Uint32 ToffsetRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Int64 Toffset = * (Int64*)(ctx.TregMemBuffer + ToffsetRegister + 2);
+    Uint32 TregOffsetType = ctx.TregMemBuffer[ToffsetRegister];
+
+    Uint32 TnumElemsRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    Int64 TnumElems = * (Int64*)(ctx.TregMemBuffer + TnumElemsRegister + 2);
+    Uint32 TregNumElemsType = ctx.TregMemBuffer[TnumElemsRegister];
+
+    Uint32 TretElemsRegister = Interpreter::getReg4(ctx.theInstruction) << 2;
+    Uint32 TexactMatch = Interpreter::enum5(ctx.theInstruction);
+    Int64 end_pos = Toffset + (2 * TnumElems);
+
+    if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                 (TregOrdinalType == NULL_INDICATOR) ||
+                 (TregNumElemsType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (Tordinal < 0 ||
+        Tordinal > Int64(std::numeric_limits<Uint16>::max())) {
+      return -ZWRONG_INPUT_TO_BINARY_SEARCH;
+    }
+    Uint16 ordinal = Uint16(Tordinal);
+    Uint32 ret;
+    switch (TexactMatch) {
+    case EQUAL_MATCH: {
+      ret = binary_uint16_search_exact(ordinal,
+                                       &ctx.TheapMemoryChar[Toffset],
+                                       TnumElems);
+      break;
+    }
+    case SMALLER_MATCH: {
+      ret = binary_uint16_search_smaller(ordinal,
+                                         &ctx.TheapMemoryChar[Toffset],
+                                         TnumElems,
+                                         false,
+                                         false);
+      break;
+    }
+    case LARGER_MATCH: {
+      ret = binary_uint16_search_larger(ordinal,
+                                        &ctx.TheapMemoryChar[Toffset],
+                                        TnumElems,
+                                        false,
+                                        false);
+      break;
+    }
+    case SMALLER_EQUAL_MATCH: {
+      ret = binary_uint16_search_smaller(ordinal,
+                                         &ctx.TheapMemoryChar[Toffset],
+                                         TnumElems,
+                                         true,
+                                         false);
+      break;
+    }
+    case LARGER_EQUAL_MATCH: {
+      ret = binary_uint16_search_larger(ordinal,
+                                        &ctx.TheapMemoryChar[Toffset],
+                                        TnumElems,
+                                        true,
+                                        false);
+      break;
+    }
+    default: {
+      return -ZNO_SUCH_BINARY_SEARCH_METHOD;
+    }
+    }
+    if (ret == RET_NULL) {
+      ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+    } else {
+      ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+      *(Int64*)(ctx.TregMemBuffer + TretElemsRegister + 2) = ret;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* BINARY_SEARCH_ODD — binary search in sorted array of arbitrary-size elements */
+  static inline int handleBinarySearchOdd(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3; //A bit heavier instruction
+    /* See BINARY_SEARCH_64, this is the odd number version version */
+    Int64 Tordinal = * (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TregOrdinalType = ctx.TregMemBuffer[ctx.theRegister];
+
+    Uint32 ToffsetRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Int64 Toffset = * (Int64*)(ctx.TregMemBuffer + ToffsetRegister + 2);
+    Uint32 TregOffsetType = ctx.TregMemBuffer[ToffsetRegister];
+
+    Uint32 TnumElemsRegister = Interpreter::getReg3(ctx.theInstruction) << 2;
+    Int64 TnumElems = * (Int64*)(ctx.TregMemBuffer + TnumElemsRegister + 2);
+    Uint32 TregNumElemsType = ctx.TregMemBuffer[TnumElemsRegister];
+
+    Uint32 TretElemsRegister = Interpreter::getReg4(ctx.theInstruction) << 2;
+    Uint32 TexactMatch = Interpreter::enum5(ctx.theInstruction);
+    Uint32 TnumberSize = Interpreter::enum6(ctx.theInstruction);
+    Int64 end_pos = Toffset + (TnumberSize * TnumElems);
+
+    if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                 (TregOrdinalType == NULL_INDICATOR) ||
+                 (TregNumElemsType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (TnumberSize != 1 &&
+        TnumberSize != 3 &&
+        TnumberSize != 5 &&
+        TnumberSize != 6) {
+      return -ZNO_SUCH_NUMBER_SIZE_SUPPORTED;
+    }
+    Uint64 max_number = (Uint64(1) << (Uint64(TnumberSize * 8))) - 1;
+    if (Tordinal < 0 ||
+        Tordinal > Int64(max_number)) {
+      return -ZWRONG_INPUT_TO_BINARY_SEARCH;
+    }
+    Uint64 ordinal = Uint64(Tordinal);
+    Uint32 ret;
+#ifdef TRACE_INTERPRETER
+    g_eventLogger->info("ctx.theInstruction: %x, TexactMatch: %u, "
+                        "Tordinal: %llu, Toffset: %lld, TnumElems: %lld, "
+                        "TnumberSize: %u",
+     ctx.theInstruction,
+     TexactMatch,
+     Tordinal,
+     Toffset,
+     TnumElems,
+     TnumberSize);
+#endif
+    switch (TexactMatch) {
+    case EQUAL_MATCH: {
+      ret = binary_odd_search_exact(ordinal,
+                                    &ctx.TheapMemoryChar[Toffset],
+                                    TnumElems,
+                                    TnumberSize);
+      break;
+    }
+    case SMALLER_MATCH: {
+      ret = binary_odd_search_smaller(ordinal,
+                                      &ctx.TheapMemoryChar[Toffset],
+                                      TnumElems,
+                                      TnumberSize,
+                                      false,
+                                      false);
+      break;
+    }
+    case LARGER_MATCH: {
+      ret = binary_odd_search_larger(ordinal,
+                                     &ctx.TheapMemoryChar[Toffset],
+                                     TnumElems,
+                                     TnumberSize,
+                                     false,
+                                     false);
+      break;
+    }
+    case SMALLER_EQUAL_MATCH: {
+      ret = binary_odd_search_smaller(ordinal,
+                                      &ctx.TheapMemoryChar[Toffset],
+                                      TnumElems,
+                                      TnumberSize,
+                                      true,
+                                      false);
+      break;
+    }
+    case LARGER_EQUAL_MATCH: {
+      ret = binary_odd_search_larger(ordinal,
+                                     &ctx.TheapMemoryChar[Toffset],
+                                     TnumElems,
+                                     TnumberSize,
+                                     true,
+                                     false);
+      break;
+    }
+    default: {
+      return -ZNO_SUCH_BINARY_SEARCH_METHOD;
+    }
+    }
+    if (ret == RET_NULL) {
+      ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+    } else {
+      ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+      *(Int64*)(ctx.TregMemBuffer + TretElemsRegister + 2) = ret;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* STRING_SEARCH — search for a substring in heap memory */
+  static inline int handleStringSearch(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3; //A bit heavier instruction
+    Int64 ToffsetString = * (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TregoffsetStringType = ctx.TregMemBuffer[ctx.theRegister];
+
+    Uint32 TstringLenRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Int64 TstringLen = *(Int64*)(ctx.TregMemBuffer + TstringLenRegister + 2);
+    Uint32 TregstringLenType = ctx.TregMemBuffer[TstringLenRegister];
+
+    Uint32 ToffsetSearchRegister =
+      Interpreter::getReg3(ctx.theInstruction) << 2;
+    Int64 ToffsetSearch =
+      *(Int64*)(ctx.TregMemBuffer + ToffsetSearchRegister + 2);
+    Uint32 ToffsetSearchType = ctx.TregMemBuffer[ToffsetSearchRegister];
+
+    Uint32 TsearchLenRegister = Interpreter::getReg4(ctx.theInstruction) << 2;
+    Int64 TsearchLen = *(Int64*)(ctx.TregMemBuffer + TsearchLenRegister + 2);
+    Uint32 TregsearchLenType = ctx.TregMemBuffer[TsearchLenRegister];
+
+    Uint32 TretRegister = Interpreter::getReg5(ctx.theInstruction) << 2;
+
+    if (unlikely((TregoffsetStringType == NULL_INDICATOR) ||
+                 (TregstringLenType == NULL_INDICATOR) ||
+                 (ToffsetSearchType == NULL_INDICATOR) ||
+                 (TregsearchLenType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (ToffsetString < 0 ||
+        ToffsetSearch < 0 ||
+        TsearchLen < 0 ||
+        TstringLen < 0 ||
+        (ToffsetString + TstringLen) > MAX_HEAP_OFFSET ||
+        (ToffsetSearch + TsearchLen) > MAX_HEAP_OFFSET) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    Uint32 ret;
+    ret = string_search(&ctx.TheapMemoryChar[ToffsetSearch],
+                        TsearchLen,
+                        &ctx.TheapMemoryChar[ToffsetString],
+                        TstringLen);
+    if (ret == RET_NULL) {
+      ctx.TregMemBuffer[TretRegister] = NULL_INDICATOR;
+    } else {
+      ctx.TregMemBuffer[TretRegister] = NOT_NULL_INDICATOR;
+      *(Int64*)(ctx.TregMemBuffer + TretRegister + 2) = ret;
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* QSORT — quicksort a range in heap memory */
+  static inline int handleQsort(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3; //A bit heavier instruction
+    /**
+     * This instruction sorts an array of unsigned integers of a
+     * given size. The size can be 1,2,4,5,6 and 8 bytes.
+     *
+     * Input:
+     *  Reg1: Offset of memory to be sorted
+     *  Reg2: Number of elements in array to be sorted
+     *  Enum5: Number size in bytes
+     */
+    Int64 Toffset = * (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TregoffsetType = ctx.TregMemBuffer[ctx.theRegister];
+
+    Uint32 TnumElemsRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Int64 TnumElems = *(Int64*)(ctx.TregMemBuffer + TnumElemsRegister + 2);
+    Uint32 TregnumElemsType = ctx.TregMemBuffer[TnumElemsRegister];
+
+    Uint32 TnumberSize = Interpreter::enum5(ctx.theInstruction);
+
+    if (unlikely((TregoffsetType == NULL_INDICATOR) ||
+                 (TregnumElemsType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (Toffset < 0 ||
+        TnumElems < 0 ||
+        (Toffset + (TnumberSize * TnumElems)) > MAX_HEAP_OFFSET) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (TnumberSize != 1 &&
+        TnumberSize != 2 &&
+        TnumberSize != 3 &&
+        TnumberSize != 4 &&
+        TnumberSize != 5 &&
+        TnumberSize != 6 &&
+        TnumberSize != 8) {
+      return -ZNO_SUCH_NUMBER_SIZE_SUPPORTED;
+    }
+    qsort_instr(&ctx.TheapMemoryChar[Toffset],
+                TnumElems,
+                TnumberSize);
+    return INTERP_CONTINUE;
+  }
+
+  /* COMPRESS_NUM_ARRAY — remove duplicates from a sorted numeric array */
+  static inline int handleCompressNumArray(InterpreterContext& ctx) {
+    ctx.RnoOfInstructions += 3; //A bit heavier instruction
+    /**
+     * This instruction takes as input an array of Uint32 or Uint64
+     * and converts it into a smaller array of 3, 5 or 6 bytes stored
+     * in little-endian format. This can be used in combination with
+     * binary search of odd sizes and similarly for search intervals.
+     *
+     * Input:
+     *  Reg1: Offset of memory to be sorted
+     *  Reg2: Number of elements in array to be sorted
+     *  Enum5: Number size in bytes of input data (4 or 8)
+     *  Enum6: Number size in bytes of output data (3, 5 or 6)
+     */
+    Int64 Toffset = * (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
+    Uint32 TregoffsetType = ctx.TregMemBuffer[ctx.theRegister];
+
+    Uint32 TnumElemsRegister = Interpreter::getReg2(ctx.theInstruction) << 2;
+    Int64 TnumElems = *(Int64*)(ctx.TregMemBuffer + TnumElemsRegister + 2);
+    Uint32 TregnumElemsType = ctx.TregMemBuffer[TnumElemsRegister];
+
+    Uint32 TnumberSizeIn = Interpreter::enum5(ctx.theInstruction);
+    Uint32 TnumberSizeOut = Interpreter::enum6(ctx.theInstruction);
+
+#ifdef TRACE_INTERPRETER
+    g_eventLogger->info("Toffset: %lld, TnumElems: %lld, "
+                        "TnumberSizeIn: %u, TnumberSizeOut: %u, "
+                        "ctx.theInstruction: %x",
+      Toffset,
+      TnumElems,
+      TnumberSizeIn,
+      TnumberSizeOut,
+      ctx.theInstruction);
+#endif
+    if (unlikely((TregoffsetType == NULL_INDICATOR) ||
+                 (TregnumElemsType == NULL_INDICATOR))) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    if (Toffset < 0 ||
+        TnumElems < 0 ||
+        (Toffset + (TnumberSizeIn * TnumElems)) > MAX_HEAP_OFFSET) {
+      return -ZMEMORY_OFFSET_ERROR;
+    }
+    if (!((TnumberSizeIn == 4 && TnumberSizeOut == 3) ||
+          (TnumberSizeIn == 8 &&
+           (TnumberSizeOut == 5 || TnumberSizeOut == 6)))) {
+      return -ZNO_SUCH_NUMBER_SIZE_SUPPORTED;
+    }
+    if (TnumberSizeIn == 4) {
+      compress_num32_array(&ctx.TheapMemoryChar[Toffset],
+                           TnumElems,
+                           TnumberSizeOut);
+    } else {
+      compress_num64_array(&ctx.TheapMemoryChar[Toffset],
+                           TnumElems,
+                           TnumberSizeOut);
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* SPECIAL_INSTR — extension opcode dispatched on secondary opcode */
+  static inline int handleSpecialInstr(InterpreterContext& ctx) {
+    Uint32 extended_instruction = ctx.theInstruction >> 16;
+    switch (extended_instruction)
+    {
+      default:
+      {
+#ifdef TRACE_INTERPRETER
+        g_eventLogger->info("(%u) Extended Instruction %u doesn't exist",
+                            instance(),
+                            extended_instruction);
+#endif
+	      return -ZNO_INSTRUCTION_ERROR;
+      }
+    }
+    return INTERP_CONTINUE;
+  }
+
+  /* ============================================================
+   * CTE filter mode handlers — override specific behaviour
+   * for interpreterFilterCte.
+   * ============================================================ */
+
+  /* EXIT_REFUSE override: return filter-reject sentinel rather than
+   * calling tupkeyErrorLab (which dereferences operPtrP — CTE rows
+   * have no Operationrec). */
+  static inline int handleExitRefuseCte(InterpreterContext& /* ctx */) {
+    return Dbtup::INTERPRETER_FILTER_REJECT;
+  }
+
+  /* Unsupported instruction in CTE filter mode: the instruction
+   * depends on real-tuple state (operPtrP / tablePtrP / readAttributes).
+   * Return a clean error without touching tuple state. */
+  static inline int handleUnsupportedCte(InterpreterContext& ctx) {
+    ctx.tup->terrorCode = ZNO_INSTRUCTION_ERROR;
+    return -1;
+  }
+
+  /* Default handler slot for opcodes that haven't been extracted yet
+   * (or aren't wired up). Should never be reached from the main
+   * interpreter's switch path — it's only used as the default fill
+   * for the dispatch tables. */
+  static inline int handleTableNotPopulated(InterpreterContext& ctx) {
+    ctx.tup->terrorCode = ZNO_INSTRUCTION_ERROR;
+    return -1;
+  }
+};
+
+/* Handler signature — declared in Dbtup.hpp as Dbtup::InterpreterHandler
+ * so method signatures on Dbtup can name it; re-alias file-scope here
+ * for the local dispatch tables and INTERP_DISPATCH macro. */
+using InterpreterHandler = Dbtup::InterpreterHandler;
+
+/* ------------------------------------------------------------------
+ * s_cte_filter_handlers — dispatch table for interpreterFilterCte.
+ *
+ * Indexed by opcode [0..INTERP_HANDLER_TABLE_SIZE).  A nullptr slot
+ * means the opcode is not accepted in CTE filter mode; the dispatch
+ * loop detects it and raises ZNO_INSTRUCTION_ERROR.  EXIT_REFUSE is
+ * redirected to handleExitRefuseCte so a user-visible filter reject
+ * returns INTERPRETER_FILTER_REJECT rather than aborting the tuple
+ * operation (CTE rows have no operPtrP to abort against).
+ *
+ * Opcode values come from Interpreter.hpp:60-248.  The low range
+ * (0..63) is the primary opcode; the high range (64..127) is the
+ * _CONST / overflow variant (opcode + OVERFLOW_OPCODE=64).  We must
+ * list all 128 slots positionally because array designated
+ * initialisers are a C99 extension outside the C++20 standard; GCC
+ * 12 accepts them only with a warning flag.
+ *
+ * Accepted ops: constant loads, register arithmetic/bitwise, all
+ * register branches, heap R/W on the register-indirect mem buffers,
+ * EXIT_OK / EXIT_OK_LAST / CALL / RETURN, and the two CTE-critical
+ * opcodes BRANCH_MEM_OP_ARG / READ_LINKED_TO_MEM that compare and
+ * load linked (virtual-column) data from m_linked_attr_data.
+ *
+ * Rejected ops: everything that reads or writes a real tuple
+ * attribute (READ_ATTR_INTO_REG, WRITE_ATTR_FROM_REG / _FROM_MEM,
+ * APPEND, WRITE_PARTIAL, READ_ATTR_TO_MEM, the BRANCH_ATTR_* family,
+ * LOAD_OP_TYPE, READ/WRITE_INTERPRETER_INPUT/OUTPUT); all the
+ * BINARY_SEARCH / SEARCH_INTERVAL / STRING_SEARCH / QSORT /
+ * COMPRESS_NUM_ARRAY / SPECIAL_INSTR instructions.
+ * ------------------------------------------------------------------ */
+static const InterpreterHandler
+s_cte_filter_handlers[INTERP_HANDLER_TABLE_SIZE] = {
+  /*   0  (unused)                */ nullptr,
+  /*   1  READ_ATTR_INTO_REG      */ nullptr,
+  /*   2  WRITE_ATTR_FROM_REG     */ nullptr,
+  /*   3  LOAD_CONST_NULL         */ &Dbtup::InterpreterContext::handleLoadConstNull,
+  /*   4  LOAD_CONST16            */ &Dbtup::InterpreterContext::handleLoadConst16,
+  /*   5  LOAD_CONST32            */ &Dbtup::InterpreterContext::handleLoadConst32,
+  /*   6  LOAD_CONST64            */ &Dbtup::InterpreterContext::handleLoadConst64,
+  /*   7  ADD_REG_REG             */ &Dbtup::InterpreterContext::handleAddRegReg,
+  /*   8  SUB_REG_REG             */ &Dbtup::InterpreterContext::handleSubRegReg,
+  /*   9  BRANCH                  */ &Dbtup::InterpreterContext::handleBranch,
+  /*  10  BRANCH_REG_EQ_NULL      */ &Dbtup::InterpreterContext::handleBranchRegEqNull,
+  /*  11  BRANCH_REG_NE_NULL      */ &Dbtup::InterpreterContext::handleBranchRegNeNull,
+  /*  12  BRANCH_EQ_REG_REG       */ &Dbtup::InterpreterContext::handleBranchEqRegReg,
+  /*  13  BRANCH_NE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchNeRegReg,
+  /*  14  BRANCH_LT_REG_REG       */ &Dbtup::InterpreterContext::handleBranchLtRegReg,
+  /*  15  BRANCH_LE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchLeRegReg,
+  /*  16  BRANCH_GT_REG_REG       */ &Dbtup::InterpreterContext::handleBranchGtRegReg,
+  /*  17  BRANCH_GE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchGeRegReg,
+  /*  18  EXIT_OK                 */ &Dbtup::InterpreterContext::handleExitOk,
+  /*  19  EXIT_REFUSE  (OVERRIDE) */ &Dbtup::InterpreterContext::handleExitRefuseCte,
+  /*  20  CALL                    */ &Dbtup::InterpreterContext::handleCall,
+  /*  21  RETURN                  */ &Dbtup::InterpreterContext::handleReturn,
+  /*  22  EXIT_OK_LAST            */ &Dbtup::InterpreterContext::handleExitOkLast,
+  /*  23  BRANCH_ATTR_OP_ARG      */ nullptr,
+  /*  24  BRANCH_ATTR_EQ_NULL     */ nullptr,
+  /*  25  BRANCH_ATTR_NE_NULL     */ nullptr,
+  /*  26  BRANCH_ATTR_OP_PARAM    */ nullptr,
+  /*  27  BRANCH_ATTR_OP_ATTR     */ nullptr,
+  /*  28  LSHIFT_REG_REG          */ &Dbtup::InterpreterContext::handleLshiftRegReg,
+  /*  29  RSHIFT_REG_REG          */ &Dbtup::InterpreterContext::handleRshiftRegReg,
+  /*  30  MUL_REG_REG             */ &Dbtup::InterpreterContext::handleMulRegReg,
+  /*  31  DIV_REG_REG             */ &Dbtup::InterpreterContext::handleDivRegReg,
+  /*  32  AND_REG_REG             */ &Dbtup::InterpreterContext::handleAndRegReg,
+  /*  33  OR_REG_REG              */ &Dbtup::InterpreterContext::handleOrRegReg,
+  /*  34  XOR_REG_REG             */ &Dbtup::InterpreterContext::handleXorRegReg,
+  /*  35  MOD_REG_REG             */ &Dbtup::InterpreterContext::handleModRegReg,
+  /*  36  NOT_REG_REG             */ &Dbtup::InterpreterContext::handleNotRegReg,
+  /*  37  STR_TO_INT64            */ &Dbtup::InterpreterContext::handleStrToInt64,
+  /*  38  BRANCH_MEM_OP_ARG       */ &Dbtup::InterpreterContext::handleBranchMemOpArg,
+  /*  39  READ_LINKED_TO_MEM      */ &Dbtup::InterpreterContext::handleReadLinkedToMem,
+  /*  40  BRANCH_MEM_OP_ARG_INLINE_TYPE */ &Dbtup::InterpreterContext::handleBranchMemOpArgInlineType,
+  /*  41  BRANCH_LINKED_EQ_NULL   */ &Dbtup::InterpreterContext::handleBranchLinkedEqNull,
+  /*  42  BRANCH_LINKED_NE_NULL   */ &Dbtup::InterpreterContext::handleBranchLinkedNeNull,
+  /*  43  READ_AGG_REG_TO_REG     */ nullptr,
+  /*  44  READ_LINKED_COLUMN_TO_REG */ &Dbtup::InterpreterContext::handleReadLinkedColumnToReg,
+  /*  45  LOAD_DOUBLE_CONST       */ &Dbtup::InterpreterContext::handleLoadDoubleConst,
+  /*  46  (unused)                */ nullptr,
+  /*  47  READ_PARTIAL_ATTR_TO_MEM*/ nullptr,
+  /*  48  READ_ATTR_TO_MEM        */ nullptr,
+  /*  49  READ_UINT8_MEM_TO_REG   */ &Dbtup::InterpreterContext::handleReadUint8MemToReg,
+  /*  50  READ_UINT16_MEM_TO_REG  */ &Dbtup::InterpreterContext::handleReadUint16MemToReg,
+  /*  51  READ_UINT32_MEM_TO_REG  */ &Dbtup::InterpreterContext::handleReadUint32MemToReg,
+  /*  52  READ_INT64_MEM_TO_REG   */ &Dbtup::InterpreterContext::handleReadInt64MemToReg,
+  /*  53  WRITE_UINT8_REG_TO_MEM  */ &Dbtup::InterpreterContext::handleWriteUint8RegToMem,
+  /*  54  WRITE_UINT16_REG_TO_MEM */ &Dbtup::InterpreterContext::handleWriteUint16RegToMem,
+  /*  55  WRITE_UINT32_REG_TO_MEM */ &Dbtup::InterpreterContext::handleWriteUint32RegToMem,
+  /*  56  WRITE_INT64_REG_TO_MEM  */ &Dbtup::InterpreterContext::handleWriteInt64RegToMem,
+  /*  57  WRITE_ATTR_FROM_MEM     */ nullptr,
+  /*  58  APPEND_ATTR_FROM_MEM    */ nullptr,
+  /*  59  LOAD_CONST_MEM          */ &Dbtup::InterpreterContext::handleLoadConstMem,
+  /*  60  CONVERT_SIZE            */ &Dbtup::InterpreterContext::handleConvertSize,
+  /*  61  LOAD_OP_TYPE            */ nullptr,
+  /*  62  WRITE_REG_TO_MEM_ANY    */ &Dbtup::InterpreterContext::handleWriteRegToMemAny,
+  /*  63  SPECIAL_INSTR           */ nullptr,
+
+  /* --- overflow range 64..127 (opcode + OVERFLOW_OPCODE=64) ----- */
+  /*  64  (unused)                */ nullptr,
+  /*  65  BINARY_SEARCH_64        */ nullptr,
+  /*  66  BINARY_SEARCH_32        */ nullptr,
+  /*  67  BINARY_SEARCH_16        */ nullptr,
+  /*  68  BINARY_SEARCH_ODD       */ nullptr,
+  /*  69  SEARCH_INTERVAL_64      */ nullptr,
+  /*  70  SEARCH_INTERVAL_32      */ nullptr,
+  /*  71  ADD_REG_CONST           */ &Dbtup::InterpreterContext::handleAddRegConst,
+  /*  72  SUB_REG_CONST           */ &Dbtup::InterpreterContext::handleSubRegConst,
+  /*  73  SEARCH_INTERVAL_16      */ nullptr,
+  /*  74  SEARCH_INTERVAL_ODD     */ nullptr,
+  /*  75  STRING_SEARCH           */ nullptr,
+  /*  76  BRANCH_EQ_REG_CONST     */ &Dbtup::InterpreterContext::handleBranchEqRegConst,
+  /*  77  BRANCH_NE_REG_CONST     */ &Dbtup::InterpreterContext::handleBranchNeRegConst,
+  /*  78  BRANCH_LT_REG_CONST     */ &Dbtup::InterpreterContext::handleBranchLtRegConst,
+  /*  79  BRANCH_LE_REG_CONST     */ &Dbtup::InterpreterContext::handleBranchLeRegConst,
+  /*  80  BRANCH_GT_REG_CONST     */ &Dbtup::InterpreterContext::handleBranchGtRegConst,
+  /*  81  BRANCH_GE_REG_CONST     */ &Dbtup::InterpreterContext::handleBranchGeRegConst,
+  /*  82  QSORT                   */ nullptr,
+  /*  83  COMPRESS_NUM_ARRAY      */ nullptr,
+  /*  84  (unused)                */ nullptr,
+  /*  85  (unused)                */ nullptr,
+  /*  86  (unused)                */ nullptr,
+  /*  87  (unused)                */ nullptr,
+  /*  88  (unused)                */ nullptr,
+  /*  89  (unused)                */ nullptr,
+  /*  90  (unused)                */ nullptr,
+  /*  91  (unused)                */ nullptr,
+  /*  92  LSHIFT_REG_CONST        */ &Dbtup::InterpreterContext::handleLshiftRegConst,
+  /*  93  RSHIFT_REG_CONST        */ &Dbtup::InterpreterContext::handleRshiftRegConst,
+  /*  94  MUL_REG_CONST           */ &Dbtup::InterpreterContext::handleMulRegConst,
+  /*  95  DIV_REG_CONST           */ &Dbtup::InterpreterContext::handleDivRegConst,
+  /*  96  AND_REG_CONST           */ &Dbtup::InterpreterContext::handleAndRegConst,
+  /*  97  OR_REG_CONST            */ &Dbtup::InterpreterContext::handleOrRegConst,
+  /*  98  XOR_REG_CONST           */ &Dbtup::InterpreterContext::handleXorRegConst,
+  /*  99  MOD_REG_CONST           */ &Dbtup::InterpreterContext::handleModRegConst,
+  /* 100  (NOT_REG_REG overflow)  */ nullptr,
+  /* 101  INT64_TO_STR            */ &Dbtup::InterpreterContext::handleInt64ToStr,
+  /* 102  (unused)                */ nullptr,
+  /* 103  (unused)                */ nullptr,
+  /* 104  (unused)                */ nullptr,
+  /* 105  (unused)                */ nullptr,
+  /* 106  (unused)                */ nullptr,
+  /* 107  (unused)                */ nullptr,
+  /* 108  (unused)                */ nullptr,
+  /* 109  (unused)                */ nullptr,
+  /* 110  (unused)                */ nullptr,
+  /* 111  (unused)                */ nullptr,
+  /* 112  (unused)                */ nullptr,
+  /* 113  READ_UINT8_REG_TO_REG   */ &Dbtup::InterpreterContext::handleReadUint8RegToReg,
+  /* 114  READ_UINT16_REG_TO_REG  */ &Dbtup::InterpreterContext::handleReadUint16RegToReg,
+  /* 115  READ_UINT32_REG_TO_REG  */ &Dbtup::InterpreterContext::handleReadUint32RegToReg,
+  /* 116  READ_INT64_REG_TO_REG   */ &Dbtup::InterpreterContext::handleReadInt64RegToReg,
+  /* 117  WRITE_UINT8_REG_TO_REG  */ &Dbtup::InterpreterContext::handleWriteUint8RegToReg,
+  /* 118  WRITE_UINT16_REG_TO_REG */ &Dbtup::InterpreterContext::handleWriteUint16RegToReg,
+  /* 119  WRITE_UINT32_REG_TO_REG */ &Dbtup::InterpreterContext::handleWriteUint32RegToReg,
+  /* 120  WRITE_INT64_REG_TO_REG  */ &Dbtup::InterpreterContext::handleWriteInt64RegToReg,
+  /* 121  READ_INTERPRETER_INPUT  */ nullptr,
+  /* 122  WRITE_PARTIAL_ATTR_FROM_MEM */ nullptr,
+  /* 123  WRITE_INTERPRETER_OUTPUT*/ nullptr,
+  /* 124  WRITE_SIZE_MEM          */ &Dbtup::InterpreterContext::handleWriteSizeMem,
+  /* 125  BZERO_MEM               */ &Dbtup::InterpreterContext::handleBzeroMem,
+  /* 126  (unused)                */ nullptr,
+  /* 127  (unused)                */ nullptr,
+};
+
+/* ------------------------------------------------------------------
+ * s_agg_interp_handlers — dispatch table for the aggregation
+ * interpreter's embedded user-bytecode programs (WHERE / CASE
+ * predicates inside an aggregation tree).  Consumed by
+ * AggInterpreter::ProcessRec via Dbtup::interpreterJumpTable with
+ * IFLAG_DISALLOW_BACKWARD_JUMPS.
+ *
+ * Accepted set mirrors the aggregation embedded-program validators.
+ * Runs against a REAL tuple so it can include READ_ATTR_INTO_REG and
+ * BRANCH_ATTR_*.  Join aggregation also supplies linked-attribute data,
+ * so BRANCH_MEM_OP_ARG and BRANCH_MEM_OP_ARG_INLINE_TYPE are accepted
+ * for CASE predicates over parent-table or CTE-linked columns.  This
+ * differs from s_cte_filter_handlers, which must nullptr real tuple
+ * attribute handlers because a CTE virtual row has no operPtrP /
+ * tablePtrP.
+ *
+ * Deliberately omits CALL / RETURN (opcodes 20/21): combined with
+ * IFLAG_DISALLOW_BACKWARD_JUMPS and forward-only branches this makes
+ * every program provably terminating and lets the interpreter drop
+ * its 16000-instruction fuse in this mode.  Do NOT add CALL/RETURN
+ * here without also revisiting the fuse in interpreterJumpTable.
+ * ------------------------------------------------------------------ */
+static const InterpreterHandler
+s_agg_interp_handlers[INTERP_HANDLER_TABLE_SIZE] = {
+  /*   0  (unused)                */ nullptr,
+  /*   1  READ_ATTR_INTO_REG      */ &Dbtup::InterpreterContext::handleReadAttrIntoReg,
+  /*   2  WRITE_ATTR_FROM_REG     */ nullptr,
+  /*   3  LOAD_CONST_NULL         */ &Dbtup::InterpreterContext::handleLoadConstNull,
+  /*   4  LOAD_CONST16            */ &Dbtup::InterpreterContext::handleLoadConst16,
+  /*   5  LOAD_CONST32            */ &Dbtup::InterpreterContext::handleLoadConst32,
+  /*   6  LOAD_CONST64            */ &Dbtup::InterpreterContext::handleLoadConst64,
+  /*   7  ADD_REG_REG             */ &Dbtup::InterpreterContext::handleAddRegReg,
+  /*   8  SUB_REG_REG             */ &Dbtup::InterpreterContext::handleSubRegReg,
+  /*   9  BRANCH                  */ &Dbtup::InterpreterContext::handleBranch,
+  /*  10  BRANCH_REG_EQ_NULL      */ &Dbtup::InterpreterContext::handleBranchRegEqNull,
+  /*  11  BRANCH_REG_NE_NULL      */ &Dbtup::InterpreterContext::handleBranchRegNeNull,
+  /*  12  BRANCH_EQ_REG_REG       */ &Dbtup::InterpreterContext::handleBranchEqRegReg,
+  /*  13  BRANCH_NE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchNeRegReg,
+  /*  14  BRANCH_LT_REG_REG       */ &Dbtup::InterpreterContext::handleBranchLtRegReg,
+  /*  15  BRANCH_LE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchLeRegReg,
+  /*  16  BRANCH_GT_REG_REG       */ &Dbtup::InterpreterContext::handleBranchGtRegReg,
+  /*  17  BRANCH_GE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchGeRegReg,
+  /*  18  EXIT_OK                 */ &Dbtup::InterpreterContext::handleExitOk,
+  /*  19  EXIT_REFUSE             */ nullptr,
+  /*  20  CALL                    */ nullptr,  /* termination proof */
+  /*  21  RETURN                  */ nullptr,  /* termination proof */
+  /*  22  EXIT_OK_LAST            */ nullptr,
+  /*  23  BRANCH_ATTR_OP_ARG      */ &Dbtup::InterpreterContext::handleBranchAttrOp,
+  /*  24  BRANCH_ATTR_EQ_NULL     */ &Dbtup::InterpreterContext::handleBranchAttrEqNull,
+  /*  25  BRANCH_ATTR_NE_NULL     */ &Dbtup::InterpreterContext::handleBranchAttrNeNull,
+  /*  26  BRANCH_ATTR_OP_PARAM    */ nullptr,
+  /*  27  BRANCH_ATTR_OP_ATTR     */ nullptr,
+  /*  28  LSHIFT_REG_REG          */ nullptr,
+  /*  29  RSHIFT_REG_REG          */ nullptr,
+  /*  30  MUL_REG_REG             */ &Dbtup::InterpreterContext::handleMulRegReg,
+  /*  31  DIV_REG_REG             */ nullptr,
+  /*  32  AND_REG_REG             */ nullptr,
+  /*  33  OR_REG_REG              */ nullptr,
+  /*  34  XOR_REG_REG             */ nullptr,
+  /*  35  MOD_REG_REG             */ nullptr,
+  /*  36  NOT_REG_REG             */ nullptr,
+  /*  37  STR_TO_INT64            */ nullptr,
+  /*  38  BRANCH_MEM_OP_ARG       */ &Dbtup::InterpreterContext::handleBranchMemOpArg,
+  /*  39  READ_LINKED_TO_MEM      */ &Dbtup::InterpreterContext::handleReadLinkedToMem,
+  /*  40  BRANCH_MEM_OP_ARG_INLINE_TYPE */ &Dbtup::InterpreterContext::handleBranchMemOpArgInlineType,
+  /*  41  BRANCH_LINKED_EQ_NULL   */ nullptr,
+  /*  42  BRANCH_LINKED_NE_NULL   */ nullptr,
+  /*  43  READ_AGG_REG_TO_REG     */ &Dbtup::InterpreterContext::handleReadAggRegToReg,
+  /*  44  READ_LINKED_COLUMN_TO_REG */ &Dbtup::InterpreterContext::handleReadLinkedColumnToReg,
+  /*  45  LOAD_DOUBLE_CONST       */ &Dbtup::InterpreterContext::handleLoadDoubleConst,
+  /*  46  (unused)                */ nullptr,
+  /*  47  READ_PARTIAL_ATTR_TO_MEM*/ nullptr,
+  /*  48  READ_ATTR_TO_MEM        */ nullptr,
+  /*  49  READ_UINT8_MEM_TO_REG   */ &Dbtup::InterpreterContext::handleReadUint8MemToReg,
+  /*  50  READ_UINT16_MEM_TO_REG  */ &Dbtup::InterpreterContext::handleReadUint16MemToReg,
+  /*  51  READ_UINT32_MEM_TO_REG  */ &Dbtup::InterpreterContext::handleReadUint32MemToReg,
+  /*  52  READ_INT64_MEM_TO_REG   */ &Dbtup::InterpreterContext::handleReadInt64MemToReg,
+  /*  53  WRITE_UINT8_REG_TO_MEM  */ nullptr,
+  /*  54  WRITE_UINT16_REG_TO_MEM */ nullptr,
+  /*  55  WRITE_UINT32_REG_TO_MEM */ nullptr,
+  /*  56  WRITE_INT64_REG_TO_MEM  */ nullptr,
+  /*  57  WRITE_ATTR_FROM_MEM     */ nullptr,
+  /*  58  APPEND_ATTR_FROM_MEM    */ nullptr,
+  /*  59  LOAD_CONST_MEM          */ nullptr,
+  /*  60  CONVERT_SIZE            */ nullptr,
+  /*  61  LOAD_OP_TYPE            */ nullptr,
+  /*  62  WRITE_REG_TO_MEM_ANY    */ nullptr,
+  /*  63  SPECIAL_INSTR           */ nullptr,
+
+  /* --- overflow range 64..127 — all rejected in agg mode ---------- */
+  /*  64  (unused)                */ nullptr,
+  /*  65  BINARY_SEARCH_64        */ nullptr,
+  /*  66  BINARY_SEARCH_32        */ nullptr,
+  /*  67  BINARY_SEARCH_16        */ nullptr,
+  /*  68  BINARY_SEARCH_ODD       */ nullptr,
+  /*  69  SEARCH_INTERVAL_64      */ nullptr,
+  /*  70  SEARCH_INTERVAL_32      */ nullptr,
+  /*  71  ADD_REG_CONST           */ nullptr,
+  /*  72  SUB_REG_CONST           */ nullptr,
+  /*  73  SEARCH_INTERVAL_16      */ nullptr,
+  /*  74  SEARCH_INTERVAL_ODD     */ nullptr,
+  /*  75  STRING_SEARCH           */ nullptr,
+  /*  76  BRANCH_EQ_REG_CONST     */ nullptr,
+  /*  77  BRANCH_NE_REG_CONST     */ nullptr,
+  /*  78  BRANCH_LT_REG_CONST     */ nullptr,
+  /*  79  BRANCH_LE_REG_CONST     */ nullptr,
+  /*  80  BRANCH_GT_REG_CONST     */ nullptr,
+  /*  81  BRANCH_GE_REG_CONST     */ nullptr,
+  /*  82  QSORT                   */ nullptr,
+  /*  83  COMPRESS_NUM_ARRAY      */ nullptr,
+  /*  84  (unused)                */ nullptr,
+  /*  85  (unused)                */ nullptr,
+  /*  86  (unused)                */ nullptr,
+  /*  87  (unused)                */ nullptr,
+  /*  88  (unused)                */ nullptr,
+  /*  89  (unused)                */ nullptr,
+  /*  90  (unused)                */ nullptr,
+  /*  91  (unused)                */ nullptr,
+  /*  92  LSHIFT_REG_CONST        */ nullptr,
+  /*  93  RSHIFT_REG_CONST        */ nullptr,
+  /*  94  MUL_REG_CONST           */ nullptr,
+  /*  95  DIV_REG_CONST           */ nullptr,
+  /*  96  AND_REG_CONST           */ nullptr,
+  /*  97  OR_REG_CONST            */ nullptr,
+  /*  98  XOR_REG_CONST           */ nullptr,
+  /*  99  MOD_REG_CONST           */ nullptr,
+  /* 100  (NOT_REG_REG overflow)  */ nullptr,
+  /* 101  INT64_TO_STR            */ nullptr,
+  /* 102..112 (unused)            */ nullptr, nullptr, nullptr, nullptr,
+                                    nullptr, nullptr, nullptr, nullptr,
+                                    nullptr, nullptr, nullptr,
+  /* 113  READ_UINT8_REG_TO_REG   */ nullptr,
+  /* 114  READ_UINT16_REG_TO_REG  */ nullptr,
+  /* 115  READ_UINT32_REG_TO_REG  */ nullptr,
+  /* 116  READ_INT64_REG_TO_REG   */ nullptr,
+  /* 117  WRITE_UINT8_REG_TO_REG  */ nullptr,
+  /* 118  WRITE_UINT16_REG_TO_REG */ nullptr,
+  /* 119  WRITE_UINT32_REG_TO_REG */ nullptr,
+  /* 120  WRITE_INT64_REG_TO_REG  */ nullptr,
+  /* 121  READ_INTERPRETER_INPUT  */ nullptr,
+  /* 122  WRITE_PARTIAL_ATTR_FROM_MEM */ nullptr,
+  /* 123  WRITE_INTERPRETER_OUTPUT*/ &Dbtup::InterpreterContext::handleWriteInterpreterOutput,
+  /* 124  WRITE_SIZE_MEM          */ nullptr,
+  /* 125  BZERO_MEM               */ nullptr,
+  /* 126  (unused)                */ nullptr,
+  /* 127  (unused)                */ nullptr,
+};
+
 int Dbtup::interpreterNextLab(Signal* signal,
                               KeyReqStruct* req_struct,
                               Uint32* mainProgram,
@@ -5794,6 +10001,60 @@ int Dbtup::interpreterNextLab(Signal* signal,
   TregMemBuffer[24] = NULL_INDICATOR;
   TregMemBuffer[28] = NULL_INDICATOR;
   Uint32 tmpHabitant = ~0;
+
+  /* ---------------------------------------------------------------- */
+  /* Build the InterpreterContext — references bind to the locals
+   * above so extracted handler functions can read and mutate the
+   * interpreter state just like the inline switch-case bodies used to.
+   * Handlers are inlined back into the dispatch switch below, so the
+   * resulting code is identical to the previous inline version.    */
+  /* ---------------------------------------------------------------- */
+  InterpreterContext ctx{
+    this,                /* tup */
+    signal,
+    req_struct,
+    TcurrentProgram,     /* Uint32*&  — program pointer, may swap on CALL */
+    TcurrentSize,        /* Uint32&                                      */
+    TprogramCounter,     /* Uint32&                                      */
+    theInstruction,      /* Uint32&                                      */
+    theRegister,         /* Uint32&                                      */
+    &TregMemBuffer[0],   /* Uint32*  — array base                        */
+    &TstackMemBuffer[0], /* Uint32*  — array base                        */
+    RstackPtr,           /* Uint32&                                      */
+    TheapMemoryChar,     /* char*                                        */
+    RnoOfInstructions,   /* Uint32&  — bound to req_struct field         */
+    tmpHabitant,         /* Uint32&                                      */
+    mainProgram,         /* Uint32*  — immutable, for RETURN to restore  */
+    TmainProgLen,        /* Uint32                                       */
+    subroutineProg,      /* Uint32*                                      */
+    TsubroutineLen,      /* Uint32                                       */
+    tmpArea,             /* Uint32*                                      */
+    tmpAreaSz,           /* Uint32                                       */
+    nullptr,             /* const Register*                              */
+  };
+
+  /* Macro to dispatch a switch case to an extracted handler function.
+   * The macro simply assigns the handler result to the loop-local _rc
+   * variable. The return-value interpretation happens ONCE, after the
+   * switch statement, avoiding the code duplication of inlining the
+   * error/exit checks at every case label. The compiler still inlines
+   * the handler (it is static inline in the same TU) so the resulting
+   * code at each call site is just the inlined handler body plus a
+   * store to _rc — and the post-switch check runs at most once per
+   * loop iteration.
+   *
+   * Usage:
+   *   case X:
+   *     INTERP_DISPATCH(handleX);
+   *     break;
+   *
+   * Handler return values interpreted after the switch:
+   *   0 (INTERP_CONTINUE) → continue loop
+   *   1 (INTERP_EXIT)      → return req_struct->log_size
+   *   < 0                   → error: TUPKEY_abort(req_struct, -_rc)
+   */
+#define INTERP_DISPATCH(handler) \
+  _rc = InterpreterContext::handler(ctx)
 
 #ifdef TRACE_INTERPRETER
   g_eventLogger->info("(%u)Program size: %u", instance(), TcurrentSize);
@@ -5845,3020 +10106,323 @@ int Dbtup::interpreterNextLab(Signal* signal,
       Uint32 opCode = Interpreter::getOpCode(theInstruction);
       jamDebug();
       jamDataDebug(opCode);
+      int _rc = INTERP_CONTINUE;
       switch (opCode) {
         case Interpreter::LOAD_OP_TYPE:
-        {
-          Uint32 op_type = req_struct->operPtrP->op_type;
-	  TregMemBuffer[theRegister] = NOT_NULL_INDICATOR;
-	  * (Int64*)(TregMemBuffer+theRegister+2) = op_type & 7;
-	  break;
-        }
+          INTERP_DISPATCH(handleLoadOpType);
+          break;
         case Interpreter::READ_ATTR_INTO_REG:
-          RnoOfInstructions += 3; //A bit heavier instruction
-          /* ---------------------------------------------------------------- */
-          // Read an attribute from the tuple into a register.
-          // While reading an attribute we allow the attribute to be an array
-          // as long as it fits in the 64 bits of the register.
-          /* ---------------------------------------------------------------- */
-          {
-            Uint32 theAttrinfo = (theInstruction & 0xFFFF0000);
-
-            int TnoDataRW =
-                readAttributes(req_struct, &theAttrinfo, (Uint32)1,
-                               &TregMemBuffer[theRegister], (Uint32)3);
-            if (TnoDataRW == 2) {
-              /* -------------------------------------------------------------
-               */
-              // Two words read means that we get the instruction plus one 32
-              // word read. Thus we set the register to be a 32 bit register.
-              /* -------------------------------------------------------------
-               */
-              jamDebug();
-              TregMemBuffer[theRegister] = NOT_NULL_INDICATOR;
-              // arithmetic conversion if big-endian
-              *(Int64 *)(TregMemBuffer + theRegister + 2) =
-                  TregMemBuffer[theRegister + 1];
-            } else if (TnoDataRW == 3) {
-              /* -------------------------------------------------------------
-               */
-              // Three words read means that we get the instruction plus two
-              // 32 words read. Thus we set the register to be a 64 bit
-              // register.
-              /* -------------------------------------------------------------
-               */
-              jamDebug();
-              TregMemBuffer[theRegister] = NOT_NULL_INDICATOR;
-              TregMemBuffer[theRegister + 3] = TregMemBuffer[theRegister + 2];
-              TregMemBuffer[theRegister + 2] = TregMemBuffer[theRegister + 1];
-            } else if (TnoDataRW == 1) {
-              /* -------------------------------------------------------------
-               */
-              // One word read means that we must have read a NULL value. We set
-              // the register to indicate a NULL value.
-              /* -------------------------------------------------------------
-               */
-              jamDebug();
-              TregMemBuffer[theRegister] = NULL_INDICATOR;
-              TregMemBuffer[theRegister + 2] = 0;
-              TregMemBuffer[theRegister + 3] = 0;
-            } else if (TnoDataRW < 0) {
-              jamDebug();
-              terrorCode = Uint32(-TnoDataRW);
-              tupkeyErrorLab(req_struct);
-              return -1;
-            } else {
-              /* -------------------------------------------------------------
-               */
-              // Any other return value from the read attribute here is not
-              // allowed and will lead to a system crash.
-              /* -------------------------------------------------------------
-               */
-              ndbabort();
-            }
-            break;
-          }
-
+          INTERP_DISPATCH(handleReadAttrIntoReg);
+          break;
         case Interpreter::WRITE_ATTR_FROM_REG:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          Uint32 TattrId = theInstruction >> 16;
-          Uint32 TattrDescrIndex = (TattrId * ZAD_SIZE);
-          Uint32 TregType= TregMemBuffer[theRegister];
-          jamDebug();
-          jamDataDebug(TattrId);
-
-          if (unlikely(TattrId >= req_struct->tablePtrP->m_no_of_attributes)) {
-            return TUPKEY_abort(req_struct, ZATTRIBUTE_ID_ERROR);
-          }
-          Uint32 TattrDesc1 =
-            req_struct->tablePtrP->tabDescriptor[TattrDescrIndex];
-          /* --------------------------------------------------------------- */
-          // Calculate the number of words of this attribute.
-          // We allow writes into arrays as long as they fit into the 64 bit
-          // register size.
-          /* --------------------------------------------------------------- */
-          Uint32 TattrNoOfWords = AttributeDescriptor::getSizeInWords(TattrDesc1);
-          Uint32 Toptype = req_struct->operPtrP->op_type;
-          Uint32 TdataForUpdate[3];
-          Uint32 Tlen;
-
-          AttributeHeader ah(TattrId, TattrNoOfWords << 2);
-          TdataForUpdate[0] = ah.m_value;
-          TdataForUpdate[1] = TregMemBuffer[theRegister + 2];
-          TdataForUpdate[2] = TregMemBuffer[theRegister + 3];
-          Tlen = TattrNoOfWords + 1;
-          if (Toptype == ZUPDATE || Toptype == ZINSERT) {
-            if (TattrNoOfWords <= 2) {
-              if (TattrNoOfWords == 1) {
-                // arithmetic conversion if big-endian
-                jamDebug();
-                Int64 * tmp = new (&TregMemBuffer[theRegister + 2]) Int64;
-                TdataForUpdate[1] = Uint32(* tmp);
-                TdataForUpdate[2] = 0;
-              }
-              if (TregType == NULL_INDICATOR) {
-                /* --------------------------------------------------------- */
-                // Write a NULL value into the attribute
-                /* --------------------------------------------------------- */
-                jamDebug();
-                ah.setNULL();
-                TdataForUpdate[0] = ah.m_value;
-                Tlen = 1;
-              }
-              int TnoDataRW= updateAttributes(req_struct,
-                &TdataForUpdate[0],
-                Tlen);
-              if (TnoDataRW < 0) {
-                terrorCode = Uint32(-TnoDataRW);
-                tupkeyErrorLab(req_struct);
-                return -1;
-              }
-            } else {
-              return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZTRY_TO_UPDATE_ERROR);
-          }
+          INTERP_DISPATCH(handleWriteAttrFromReg);
           break;
-        }
         case Interpreter::WRITE_ATTR_FROM_MEM:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          Uint32 attrId = theInstruction >> 16;
-          jamDebug();
-          jamDataDebug(attrId);
-          Uint32 attrDescrIndex = (attrId * ZAD_SIZE);
-          Uint32 TsizeRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TregOffsetType = TregMemBuffer[theRegister];
-          Uint32 TregSizeType = TregMemBuffer[TsizeRegister];
-          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tsize = * (Int64*)(TregMemBuffer + TsizeRegister + 2);
-          Uint32 Toptype = req_struct->operPtrP->op_type;
-
-          if (unlikely(attrId >= req_struct->tablePtrP->m_no_of_attributes)) {
-            return TUPKEY_abort(req_struct, ZATTRIBUTE_ID_ERROR);
-          }
-          Uint32 attrDesc1 =
-            req_struct->tablePtrP->tabDescriptor[attrDescrIndex];
-          Uint32 attrNoOfBytes = AttributeDescriptor::getSizeInBytes(attrDesc1);
-          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
-                       (TregSizeType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(((Toffset + Tsize) > MAX_HEAP_OFFSET) ||
-                        ((Toffset & 3) != 0) ||
-                        (Toffset < 0))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          if (unlikely((Tsize < 0) ||
-                       (Tsize > attrNoOfBytes))) {
-            return TUPKEY_abort(req_struct, ZWRITE_SIZE_TOO_BIG_ERROR);
-          }
-          if (unlikely(Toptype != ZUPDATE && Toptype != ZINSERT)) {
-            return TUPKEY_abort(req_struct, ZTRY_TO_UPDATE_ERROR);
-          }
-          /**
-           * Tsize == 0 means writing a NULL value into the column and
-           * AttributeHeader interprets size == 0 as NULL.
-           */
-          AttributeHeader ah(attrId, Tsize);
-          Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[Toffset];
-          Uint32 words = 1 + (Tsize + 3) / 4;
-          memory_ptr[0] = ah.m_value;
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info(
-            "(%u)WRITE_ATTR_FROM_MEM: Toffset: %lld, Tsize: %lld,"
-            " words: %u, max_var_size: %u",
-            instance(), Toffset, Tsize, words, attrNoOfBytes);
-#endif
-          int TnoDataRW = updateAttributes(req_struct,
-                                           memory_ptr,
-                                           words);
-          if (TnoDataRW < 0) {
-            terrorCode = Uint32(-TnoDataRW);
-            tupkeyErrorLab(req_struct);
-            return -1;
-          }
+          INTERP_DISPATCH(handleWriteAttrFromMem);
           break;
-        }
         case Interpreter::WRITE_PARTIAL_ATTR_FROM_MEM:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          Uint32 attrId = theInstruction >> 16;
-          Uint32 TsizeRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TstartPosRegister = Interpreter::getReg3(theInstruction) << 2;
-          Uint32 attrDescrIndex = (attrId * ZAD_SIZE);
-          Uint32 TregOffsetType = TregMemBuffer[theRegister];
-          Uint32 TregSizeType = TregMemBuffer[TsizeRegister];
-          Uint32 TstartPosType = TregMemBuffer[TstartPosRegister];
-          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tsize = * (Int64*)(TregMemBuffer + TsizeRegister + 2);
-          Int64 TstartPos = * (Int64*)(TregMemBuffer + TstartPosRegister + 2);
-          Uint32 Toptype = req_struct->operPtrP->op_type;
-
-          if (unlikely(attrId >= req_struct->tablePtrP->m_no_of_attributes)) {
-            return TUPKEY_abort(req_struct, ZATTRIBUTE_ID_ERROR);
-          }
-          Uint32 attrDesc1 =
-            req_struct->tablePtrP->tabDescriptor[attrDescrIndex];
-          Uint32 attrNoOfBytes = AttributeDescriptor::getSizeInBytes(attrDesc1);
-          Uint32 array = AttributeDescriptor::getArrayType(attrDesc1);
-          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
-                       (TregSizeType == NULL_INDICATOR ||
-                       (TstartPosType == NULL_INDICATOR)))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(((Toffset + Tsize) > MAX_HEAP_OFFSET) ||
-                        ((Toffset & Int64(3)) != 0) ||
-                        (Toffset < Int64(0)))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          if (array != NDB_ARRAYTYPE_MEDIUM_VAR &&
-              array != NDB_ARRAYTYPE_SHORT_VAR) {
-            return TUPKEY_abort(req_struct, ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR);
-          }
-          if (unlikely((Tsize < Int64(0)) ||
-                       ((Tsize + TstartPos) >
-                         Int64(attrNoOfBytes)))) {
-            return TUPKEY_abort(req_struct, ZWRITE_SIZE_TOO_BIG_ERROR);
-          }
-          /**
-           * Set partial of a column is only allowed with non-NULL, it doesn't
-           * make sense to append NULL to a column.
-           */
-          if (unlikely(Tsize == Int64(0))) {
-            return TUPKEY_abort(req_struct, ZAPPEND_NULL_ERROR);
-          }
-          if (unlikely(Toptype != ZUPDATE && Toptype != ZINSERT)) {
-            return TUPKEY_abort(req_struct, ZTRY_TO_UPDATE_ERROR);
-          }
-          AttributeHeader ah(AttributeHeader::SET_PARTIAL_COLUMN, Tsize);
-          Uint32 extended_header = attrId + (TstartPos << 16);
-          Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[Toffset];
-          Uint32 words = 2 + (Tsize + 3) / 4;
-          memory_ptr[0] = ah.m_value;
-          memory_ptr[1] = extended_header;
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info(
-            "(%u)WRITE_PARTIAL_ATTR_MEM: Toffset: %lld, Tsize: %lld,"
-            " words: %u, max_var_size: %u",
-            instance(), Toffset, Tsize, words, attrNoOfBytes);
-#endif
-          int TnoDataRW = updateAttributes(req_struct,
-                                           memory_ptr,
-                                           words);
-          if (TnoDataRW < 0) {
-            terrorCode = Uint32(-TnoDataRW);
-            tupkeyErrorLab(req_struct);
-            return -1;
-          }
+          INTERP_DISPATCH(handleWritePartialAttrFromMem);
           break;
-        }
         case Interpreter::APPEND_ATTR_FROM_MEM:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          Uint32 attrId = theInstruction >> 16;
-          Uint32 TsizeRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 attrDescrIndex = (attrId * ZAD_SIZE);
-          Uint32 TregOffsetType = TregMemBuffer[theRegister];
-          Uint32 TregSizeType = TregMemBuffer[TsizeRegister];
-          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tsize = * (Int64*)(TregMemBuffer + TsizeRegister + 2);
-          Uint32 Toptype = req_struct->operPtrP->op_type;
-
-          if (unlikely(attrId >= req_struct->tablePtrP->m_no_of_attributes)) {
-            return TUPKEY_abort(req_struct, ZATTRIBUTE_ID_ERROR);
-          }
-          Uint32 attrDesc1 =
-            req_struct->tablePtrP->tabDescriptor[attrDescrIndex];
-          Uint32 attrNoOfBytes = AttributeDescriptor::getSizeInBytes(attrDesc1);
-          Uint32 array = AttributeDescriptor::getArrayType(attrDesc1);
-          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
-                       (TregSizeType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(((Toffset + Tsize) > MAX_HEAP_OFFSET) ||
-                        ((Toffset & Int64(3)) != 0) ||
-                        (Toffset < Int64(0)))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          if (array != NDB_ARRAYTYPE_MEDIUM_VAR &&
-              array != NDB_ARRAYTYPE_SHORT_VAR) {
-            return TUPKEY_abort(req_struct, ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR);
-          }
-          if (unlikely((Tsize < Int64(0)) ||
-                       (Tsize > Int64(attrNoOfBytes)))) {
-            return TUPKEY_abort(req_struct, ZWRITE_SIZE_TOO_BIG_ERROR);
-          }
-          /**
-           * Append to a column is only allowed with non-NULL, it doesn't
-           * make sense to append NULL to a column.
-           */
-          if (unlikely(Tsize == Int64(0))) {
-            return TUPKEY_abort(req_struct, ZAPPEND_NULL_ERROR);
-          }
-          if (unlikely(Toptype != ZUPDATE)) {
-            return TUPKEY_abort(req_struct, ZTRY_TO_UPDATE_ERROR);
-          }
-          AttributeHeader ah(AttributeHeader::APPEND_COLUMN, Tsize);
-          Uint32 extended_header = attrId;
-          Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[Toffset];
-          Uint32 words = 2 + (Tsize + 3) / 4;
-          memory_ptr[0] = ah.m_value;
-          memory_ptr[1] = extended_header;
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info(
-            "(%u)APPEND_ATTR_MEM: Toffset: %lld, Tsize: %lld,"
-            " words: %u, max_var_size: %u",
-            instance(), Toffset, Tsize, words, attrNoOfBytes);
-#endif
-          int TnoDataRW = updateAttributes(req_struct,
-                                           memory_ptr,
-                                           words);
-          if (TnoDataRW < 0) {
-            terrorCode = Uint32(-TnoDataRW);
-            tupkeyErrorLab(req_struct);
-            return -1;
-          }
+          INTERP_DISPATCH(handleAppendAttrFromMem);
           break;
-        }
 
         case Interpreter::READ_PARTIAL_ATTR_TO_MEM:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          Uint32 ToffsetType = TregMemBuffer[theRegister];
-          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TposRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TsizeRegister = Interpreter::getReg4(theInstruction) << 2;
-          Uint32 TposType = TregMemBuffer[TposRegister];
-          Uint32 TsizeType = TregMemBuffer[TsizeRegister];
-          if (unlikely((ToffsetType == NULL_INDICATOR) ||
-                       (TposType == NULL_INDICATOR) ||
-                       (TsizeType == NULL_INDICATOR))) {
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)Reg %u or %u or %u NULL, LINE: %u",
-                                instance(),
-                                theRegister >> 2,
-                                TposRegister >> 2,
-                                TsizeRegister >> 2,
-                                __LINE__);
-#endif
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(Toffset < 0 ||
-                       (Toffset > ((HEAP_MEMORY_SIZE_DWORDS * 8) -
-                        (MAX_VAR_SIZE_IN_WORDS * 4))) ||
-                       ((Toffset & Int64(3)) != 0))) {
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)Offset %lld isn't ok, %u",
-                                instance(), Toffset, __LINE__);
-#endif
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          Uint32 memory_offset = Uint32(Toffset);
-          Int64 Tpos = * (Int64*)(TregMemBuffer + TposRegister + 2);
-          if (unlikely(Tpos < 0 || Tpos >= (MAX_VAR_SIZE_IN_WORDS * 4))) {
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)Pos %lld isn't ok, %u",
-                                instance(), Tpos, __LINE__);
-#endif
-            return TUPKEY_abort(req_struct, ZPARTIAL_READ_ERROR);
-          }
-          Uint32 read_pos = (Uint32)Tpos;
-          Int64 Tsize = * (Int64*)(TregMemBuffer + TsizeRegister + 2);
-          if (unlikely(Tsize <= 0 || Tsize >= (MAX_VAR_SIZE_IN_WORDS * 4))) {
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)Size %lld isn't ok, %u",
-                                instance(), Tsize, __LINE__);
-#endif
-            return TUPKEY_abort(req_struct, ZPARTIAL_READ_ERROR);
-          }
-          Uint32 read_size = (Uint32)Tsize;
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          Uint32 TattrId = theInstruction >> 19;
-          AttributeHeader ah(TattrId, 0);
-          ah.setPartialReadWriteFlag();
-          Uint32 TdataForRead[2];
-          TdataForRead[0] = ah.m_value;
-          TdataForRead[1] = read_size | read_pos << 16;
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info("(%u)Partial read of attribute %u, line: %u",
-                              instance(), TattrId, __LINE__);
-#endif
-          int TnoDataRW= readAttributes(req_struct,
-                                       &TdataForRead[0],
-                                       (Uint32)2,
-                                       (Uint32*)&TheapMemoryChar[memory_offset],
-                                       (Uint32)MAX_VAR_SIZE_IN_WORDS);
-          if (TnoDataRW < 0) {
-            jamDebug();
-            terrorCode = Uint32(-TnoDataRW);
-            tupkeyErrorLab(req_struct);
-            return -1;
-          }
-          Uint32 *memory_ptr = (Uint32*)&TheapMemoryChar[memory_offset];
-          Uint32 header = *memory_ptr;
-          AttributeHeader ah_read(header);
-          if (ah_read.isNULL()) {
-            TregMemBuffer[TdestRegister]= NULL_INDICATOR;
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)READ_PARTIAL_ATTR_TO_MEM: NULL",
-                                instance());
-#endif
-          } else {
-            Uint32 read_len = ah_read.getByteSize();
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = read_len;
-            TregMemBuffer[TdestRegister]= NOT_NULL_INDICATOR;
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)READ_PARTIAL_ATTR_TO_MEM:"
-                                " Len: %u, offset: %u",
-                                instance(),
-                                read_len,
-                                memory_offset);
-#endif
-          }
-          break; 
-        }
-
-        case Interpreter::READ_ATTR_TO_MEM:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          Uint32 ToffsetType = TregMemBuffer[theRegister];
-          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-	  Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-
-          Uint32 TattrId = theInstruction >> 16;
-          Uint32 theAttrinfo = (TattrId << 16);
-          if (unlikely((ToffsetType == NULL_INDICATOR))) {
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)Reg %u NULL, LINE: %u",
-                                instance(),
-                                theRegister >> 2,
-                                __LINE__);
-#endif
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(Toffset < 0 ||
-                       (Toffset > ((HEAP_MEMORY_SIZE_DWORDS * 8) -
-                        (MAX_VAR_SIZE_IN_WORDS * 4))) ||
-                       ((Toffset & Int64(3)) != 0))) {
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)Offset %lld isn't ok, %u",
-                                instance(),
-                                Toffset,
-                                __LINE__);
-#endif
-	    return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          Uint32 memory_offset = Uint32(Toffset);
-          int TnoDataRW= readAttributes(req_struct,
-                                       &theAttrinfo,
-                                       (Uint32)1,
-                                       (Uint32*)&TheapMemoryChar[memory_offset],
-                                       (Uint32)MAX_VAR_SIZE_IN_WORDS);
-          if (TnoDataRW < 0) {
-            jamDebug();
-            terrorCode = Uint32(-TnoDataRW);
-            tupkeyErrorLab(req_struct);
-            return -1;
-          }
-          Uint32 *memory_ptr = (Uint32*)&TheapMemoryChar[memory_offset];
-          Uint32 header = *memory_ptr;
-          AttributeHeader ah(header);
-          if (ah.isNULL()) {
-            TregMemBuffer[TdestRegister]= NULL_INDICATOR;
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)READ_ATTR_TO_MEM: NULL", instance());
-#endif
-          } else {
-            Uint32 read_len = ah.getByteSize();
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = read_len;
-            TregMemBuffer[TdestRegister]= NOT_NULL_INDICATOR;
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)READ_ATTR_TO_MEM: Len: %u",
-                                instance(), read_len);
-#endif
-          }
+          INTERP_DISPATCH(handleReadPartialAttrToMem);
           break;
-        }
+        case Interpreter::READ_ATTR_TO_MEM:
+          INTERP_DISPATCH(handleReadAttrToMem);
+          break;
 
         case Interpreter::READ_LINKED_TO_MEM:
-        {
-          /**
-           * Read a linked (parent-table) column from
-           * req_struct->m_linked_attr_data into cheapMemory[0].
-           * The linked buffer format is:
-           *   [tableId, schemaVersion, AttrHeader, data...] per entry.
-           * Position (bits 16..23) selects the Nth entry.
-           */
-          RnoOfInstructions += 3;
-          Uint32 position = (theInstruction >> 16) & 0xFF;
-
-          const Uint32* linked = req_struct->m_linked_attr_data;
-          Uint32 linked_len = req_struct->m_linked_attr_len;
-          Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[0];
-
-          if (unlikely(linked == nullptr)) {
-            // No linked data — write NULL AttributeHeader
-            AttributeHeader null_ah(0, 0);
-            memory_ptr[0] = null_ah.m_value;
-            break;
-          }
-
-          // Walk to the Nth entry: [tableId, schemaVersion, AttrHeader, data..]
-          const Uint32* p = linked;
-          const Uint32* p_end = linked + linked_len;
-          Uint32 pos_count = 0;
-          while (p < p_end) {
-            if (pos_count == position) break;
-            p += 2;  // skip tableId, schemaVersion
-            p += 1 + AttributeHeader::getDataSize(*p);
-            pos_count++;
-          }
-          if (unlikely(p >= p_end)) {
-            AttributeHeader null_ah(0, 0);
-            memory_ptr[0] = null_ah.m_value;
-            break;
-          }
-
-          // Skip tableId and schemaVersion, copy AttrHeader + data
-          p += 2;
-          Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-          memcpy(memory_ptr, p, words * sizeof(Uint32));
+          INTERP_DISPATCH(handleReadLinkedToMem);
           break;
-        }
+        case Interpreter::READ_AGG_REG_TO_REG:
+          INTERP_DISPATCH(handleReadAggRegToReg);
+          break;
+        case Interpreter::READ_LINKED_COLUMN_TO_REG:
+          INTERP_DISPATCH(handleReadLinkedColumnToReg);
+          break;
 
         case Interpreter::READ_INTERPRETER_INPUT:
-        {
-          /**
-           * Read content of an input register to a register.
-           */
-          Uint32 inputInx = theInstruction >> 16;
-	  Int64 *value_ptr = (Int64*)(TregMemBuffer + theRegister + 2);
-          if (unlikely(inputInx >= AttributeHeader::MaxInterpreterInputIndex)) {
-	    return TUPKEY_abort(req_struct, ZINPUT_OUTPUT_INDEX_ERROR);
-          }
-          memcpy(value_ptr, &m_interpreter_input[inputInx], 8);
-          TregMemBuffer[theRegister]= NOT_NULL_INDICATOR;
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info("(%u)read_interpreter_input[%u] = %lld, reg: %u",
-                              instance(),
-                              inputInx,
-                              *value_ptr,
-                              theRegister);
-#endif
+          INTERP_DISPATCH(handleReadInterpreterInput);
           break;
-        }
-
         case Interpreter::WRITE_INTERPRETER_OUTPUT:
-        {
-          /**
-           * Write content of a register to an output register.
-           * Can be read later with a read of a pseudo code.
-           */
-          Uint32 valueType = TregMemBuffer[theRegister];
-          Uint32 outputInx = theInstruction >> 16;
-	  Int64 *value_ptr = (Int64*)(TregMemBuffer + theRegister + 2);
-          if (unlikely((valueType == NULL_INDICATOR))) {
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)Reg %u NULL, LINE: %u",
-                                instance(),
-                                theRegister >> 2,
-                                __LINE__);
-#endif
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(outputInx >= AttributeHeader::MaxInterpreterOutputIndex)) {
-	    return TUPKEY_abort(req_struct, ZINPUT_OUTPUT_INDEX_ERROR);
-          }
-          outputInx *= 2;
-          memcpy(&c_interpreter_output[outputInx], value_ptr, 8);
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info("(%u)write_interpreter_output[%u] = %lld",
-                              instance(),
-                              outputInx/2,
-                              *value_ptr);
-#endif
+          INTERP_DISPATCH(handleWriteInterpreterOutput);
           break;
-        }
         case Interpreter::CONVERT_SIZE:
-        {
-          /**
-           * theRegister contains the memory offset of the two bytes
-           * to be read.
-           * tDestRegister is the register that will have the size
-           * that is read and converted.
-           */
-          Uint32 offsetType = TregMemBuffer[theRegister];
-	  Int64 memoryOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TdestRegister = Interpreter::getReg2(theInstruction) << 2;
-          if (unlikely((offsetType == NULL_INDICATOR))) {
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)Reg %u NULL, LINE: %u",
-                                instance(),
-                                theRegister >> 2,
-                                __LINE__);
-#endif
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1) ||
-                      (memoryOffset < 0))) {
-            jam();
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          Uint32 low_byte = TheapMemoryChar[memoryOffset];
-          Uint32 high_byte = TheapMemoryChar[memoryOffset + 1];
-          Uint32 size_read = low_byte + (256 * high_byte);
-	  * (Int64*)(TregMemBuffer+TdestRegister+2)= (Int64)size_read;
-	  TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info("(%u)convert_size: low_byte: %u, high_byte: %u,"
-                              " offset: %lld, size_read: %u",
-                              instance(),
-                              low_byte,
-                              high_byte,
-                              memoryOffset,
-                              size_read);
-#endif
+          INTERP_DISPATCH(handleConvertSize);
           break;
-        }
         case Interpreter::WRITE_SIZE_MEM:
-        {
-          /**
-           * theRegister contains the memory offset of the two bytes
-           * to be written.
-           * tDestRegister is the register that will have the size
-           * that is read and converted.
-           */
-          Uint32 TsizeRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 offsetType = TregMemBuffer[theRegister];
-          Uint32 sizeType = TregMemBuffer[TsizeRegister];
-	  Int64 memoryOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          if (unlikely((offsetType == NULL_INDICATOR) ||
-                       (sizeType == NULL_INDICATOR))) {
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1) ||
-                      (memoryOffset < 0))) {
-            jam();
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-	  Int64 size = * (Int64*)(TregMemBuffer + TsizeRegister + 2);
-          if (unlikely(size <= 0 || size >= (MAX_VAR_SIZE_IN_WORDS * 4))) {
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)Size %lld isn't ok, %u",
-              instance(), size, __LINE__);
-#endif
-            return TUPKEY_abort(req_struct, ZPARTIAL_READ_ERROR);
-          }
-          Uint32 low_byte = size & 255;
-          Uint32 high_byte = size >> 8;
-          TheapMemoryChar[memoryOffset] = low_byte;
-          TheapMemoryChar[memoryOffset + 1] = high_byte;
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info("(%u)write_size_mem: low_byte: %u, high_byte: %u,"
-                              " offset: %lld",
-                              instance(),
-                              low_byte,
-                              high_byte,
-                              memoryOffset);
-#endif
+          INTERP_DISPATCH(handleWriteSizeMem);
           break;
-        }
         case Interpreter::READ_UINT8_MEM_TO_REG:
-        {
-          Uint32 memoryOffset = theInstruction >> 16;
-          if (unlikely(memoryOffset > MAX_HEAP_OFFSET)) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          Uint8 value = TheapMemoryChar[memoryOffset];
-	  TregMemBuffer[theRegister] = NOT_NULL_INDICATOR;
-	  * (Int64*)(TregMemBuffer+theRegister+2) = (Int64)value;
+          INTERP_DISPATCH(handleReadUint8MemToReg);
           break;
-        }
         case Interpreter::READ_UINT16_MEM_TO_REG:
-        {
-          Uint32 memoryOffset = theInstruction >> 16;
-          Uint16 value;
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&value, &TheapMemoryChar[memoryOffset], 2);
-	  TregMemBuffer[theRegister] = NOT_NULL_INDICATOR;
-	  * (Int64*)(TregMemBuffer+theRegister+2) = (Int64)value;
+          INTERP_DISPATCH(handleReadUint16MemToReg);
           break;
-        }
         case Interpreter::READ_UINT32_MEM_TO_REG:
-        {
-          Uint32 memoryOffset = theInstruction >> 16;
-          Uint32 value;
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 3))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&value, &TheapMemoryChar[memoryOffset], 4);
-	  TregMemBuffer[theRegister] = NOT_NULL_INDICATOR;
-	  * (Int64*)(TregMemBuffer+theRegister+2) = (Int64)value;
+          INTERP_DISPATCH(handleReadUint32MemToReg);
           break;
-        }
         case Interpreter::READ_INT64_MEM_TO_REG:
-        {
-          Uint32 memoryOffset = theInstruction >> 16;
-          Int64 value;
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&value, &TheapMemoryChar[memoryOffset], 8);
-	  TregMemBuffer[theRegister] = NOT_NULL_INDICATOR;
-	  * (Int64*)(TregMemBuffer+theRegister+2) = value;
+          INTERP_DISPATCH(handleReadInt64MemToReg);
           break;
-        }
         case Interpreter::READ_UINT8_REG_TO_REG:
-        {
-	  Uint32 memoryOffsetType= TregMemBuffer[theRegister];
-	  Int64 memoryOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 destRegister = Interpreter::getReg2(theInstruction) << 2;
-	  if (unlikely(memoryOffsetType == NULL_INDICATOR)) {
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 0))) {
-            jam();
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          Uint8 value = TheapMemoryChar[memoryOffset];
-	  * (Int64*)(TregMemBuffer+destRegister+2) = (Int64)value;
-	  TregMemBuffer[destRegister] = NOT_NULL_INDICATOR;
+          INTERP_DISPATCH(handleReadUint8RegToReg);
           break;
-        }
-
         case Interpreter::READ_UINT16_REG_TO_REG:
-        {
-	  Uint32 memoryOffsetType = TregMemBuffer[theRegister];
-	  Int64 memoryOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 destRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint16 value;
-	  if (unlikely(memoryOffsetType == NULL_INDICATOR)) {
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1))) {
-            jam();
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&value, &TheapMemoryChar[memoryOffset], 2);
-	  * (Int64*)(TregMemBuffer+destRegister+2) = (Int64)value;
-	  TregMemBuffer[destRegister] = NOT_NULL_INDICATOR;
+          INTERP_DISPATCH(handleReadUint16RegToReg);
           break;
-        }
         case Interpreter::READ_UINT32_REG_TO_REG:
-        {
-	  Uint32 memoryOffsetType = TregMemBuffer[theRegister];
-	  Int64 memoryOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 destRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 value;
-	  if (unlikely(memoryOffsetType == NULL_INDICATOR)) {
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 3))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&value, &TheapMemoryChar[memoryOffset], 4);
-	  * (Int64*)(TregMemBuffer+destRegister+2) = (Int64)value;
-	  TregMemBuffer[destRegister] = NOT_NULL_INDICATOR;
+          INTERP_DISPATCH(handleReadUint32RegToReg);
           break;
-        }
         case Interpreter::READ_INT64_REG_TO_REG:
-        {
-	  Uint32 memoryOffsetType = TregMemBuffer[theRegister];
-	  Int64 memoryOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 destRegister = Interpreter::getReg2(theInstruction) << 2;
-          Int64 value;
-	  if (unlikely(memoryOffsetType == NULL_INDICATOR)) {
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&value, &TheapMemoryChar[memoryOffset], 8);
-	  * (Int64*)(TregMemBuffer+destRegister+2) = value;
-	  TregMemBuffer[destRegister] = NOT_NULL_INDICATOR;
+          INTERP_DISPATCH(handleReadInt64RegToReg);
           break;
-        }
         case Interpreter::WRITE_UINT8_REG_TO_MEM:
-        {
-          Uint32 TregType = TregMemBuffer[theRegister];
-          Uint32 memoryOffset = theInstruction >> 16;
-	  Int64 Tvalue = * (Int64*)(TregMemBuffer+theRegister+2);
-          Uint8 val = (Uint8)Tvalue;
-	  if (unlikely(TregType == NULL_INDICATOR)) {
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 0))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&TheapMemoryChar[memoryOffset], &val, 1);
+          INTERP_DISPATCH(handleWriteUint8RegToMem);
           break;
-        }
         case Interpreter::WRITE_UINT16_REG_TO_MEM:
-        {
-          Uint32 TregType = TregMemBuffer[theRegister];
-          Uint32 memoryOffset = theInstruction >> 16;
-	  Int64 Tvalue = * (Int64*)(TregMemBuffer+theRegister+2);
-          Uint16 val = (Uint16)Tvalue;
-	  if (unlikely(TregType == NULL_INDICATOR)) {
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&TheapMemoryChar[memoryOffset], &val, 2);
+          INTERP_DISPATCH(handleWriteUint16RegToMem);
           break;
-        }
         case Interpreter::WRITE_UINT32_REG_TO_MEM:
-        {
-          Uint32 TregType = TregMemBuffer[theRegister];
-          Uint32 memoryOffset = theInstruction >> 16;
-	  Int64 Tvalue = * (Int64*)(TregMemBuffer+theRegister+2);
-          Uint32 val = (Uint32)Tvalue;
-	  if (unlikely(TregType == NULL_INDICATOR)) {
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 3))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&TheapMemoryChar[memoryOffset], &val, 4);
+          INTERP_DISPATCH(handleWriteUint32RegToMem);
           break;
-        }
         case Interpreter::WRITE_INT64_REG_TO_MEM:
-        {
-          Uint32 TregType = TregMemBuffer[theRegister];
-          Uint32 memoryOffset = theInstruction >> 16;
-	  Int64 Tvalue = * (Int64*)(TregMemBuffer+theRegister+2);
-	  if (unlikely(TregType == NULL_INDICATOR)) {
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&TheapMemoryChar[memoryOffset], &Tvalue, 8);
+          INTERP_DISPATCH(handleWriteInt64RegToMem);
           break;
-        }
+        case Interpreter::WRITE_REG_TO_MEM_ANY:
+          INTERP_DISPATCH(handleWriteRegToMemAny);
+          break;
         case Interpreter::WRITE_UINT8_REG_TO_REG:
-        {
-          Uint32 registerOffset = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TregType = TregMemBuffer[theRegister];
-	  Uint32 memoryOffsetType = TregMemBuffer[registerOffset];
-	  Int64 memoryOffset = * (Int64*)(TregMemBuffer + registerOffset + 2);
-	  Int64 Tvalue = * (Int64*)(TregMemBuffer+theRegister+2);
-          Uint8 val = (Uint8)Tvalue;
-	  if (unlikely(TregType == NULL_INDICATOR ||
-                       memoryOffsetType == NULL_INDICATOR)) {
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&TheapMemoryChar[memoryOffset], &val, 1);
+          INTERP_DISPATCH(handleWriteUint8RegToReg);
           break;
-        }
         case Interpreter::WRITE_UINT16_REG_TO_REG:
-        {
-          Uint32 registerOffset = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TregType = TregMemBuffer[theRegister];
-	  Int64 memoryOffset = * (Int64*)(TregMemBuffer + registerOffset + 2);
-	  Uint32 memoryOffsetType = TregMemBuffer[registerOffset];
-	  Int64 Tvalue = * (Int64*)(TregMemBuffer+theRegister+2);
-          Uint16 val = (Uint16)Tvalue;
-	  if (unlikely(TregType == NULL_INDICATOR ||
-                       memoryOffsetType == NULL_INDICATOR)) {
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7)))
-          {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&TheapMemoryChar[memoryOffset], &val, 2);
+          INTERP_DISPATCH(handleWriteUint16RegToReg);
           break;
-        }
         case Interpreter::WRITE_UINT32_REG_TO_REG:
-        {
-          Uint32 registerOffset = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TregType = TregMemBuffer[theRegister];
-	  Uint32 memoryOffsetType = TregMemBuffer[registerOffset];
-	  Int64 memoryOffset = * (Int64*)(TregMemBuffer + registerOffset + 2);
-	  Int64 Tvalue = * (Int64*)(TregMemBuffer+theRegister+2);
-          Uint32 val = (Uint32)Tvalue;
-	  if (unlikely(TregType == NULL_INDICATOR ||
-                       memoryOffsetType == NULL_INDICATOR)) {
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&TheapMemoryChar[memoryOffset], &val, 4);
+          INTERP_DISPATCH(handleWriteUint32RegToReg);
           break;
-        }
         case Interpreter::WRITE_INT64_REG_TO_REG:
-        {
-          Uint32 registerOffset = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TregType= TregMemBuffer[theRegister];
-	  Uint32 memoryOffsetType= TregMemBuffer[registerOffset];
-	  Int64 memoryOffset = * (Int64*)(TregMemBuffer + registerOffset + 2);
-	  Int64 Tvalue = * (Int64*)(TregMemBuffer+theRegister+2);
-	  if (unlikely(TregType == NULL_INDICATOR ||
-                       memoryOffsetType == NULL_INDICATOR)) {
-	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 7))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          memcpy(&TheapMemoryChar[memoryOffset], &Tvalue, 8);
+          INTERP_DISPATCH(handleWriteInt64RegToReg);
           break;
-        }
         case Interpreter::LOAD_CONST_NULL:
-        {
-	  TregMemBuffer[theRegister] = NULL_INDICATOR;
-	  break;
-        }
+          INTERP_DISPATCH(handleLoadConstNull);
+          break;
         case Interpreter::LOAD_CONST16:
-        {
-	  * (Int64*)(TregMemBuffer+theRegister+2) = theInstruction >> 16;
-	  TregMemBuffer[theRegister] = NOT_NULL_INDICATOR;
-	  break;
-        }
+          INTERP_DISPATCH(handleLoadConst16);
+          break;
         case Interpreter::LOAD_CONST32:
-        {
-	  TregMemBuffer[theRegister] = NOT_NULL_INDICATOR;
-	  * (Int64*)(TregMemBuffer+theRegister+2) = * 
-	    (TcurrentProgram+TprogramCounter);
-	  TprogramCounter++;
-	  break;
-        }
+          INTERP_DISPATCH(handleLoadConst32);
+          break;
         case Interpreter::LOAD_CONST64:
-        {
-	  TregMemBuffer[theRegister] = NOT_NULL_INDICATOR;
-          TregMemBuffer[theRegister + 2 ] = * (TcurrentProgram +
-                                               TprogramCounter++);
-          TregMemBuffer[theRegister + 3 ] = * (TcurrentProgram +
-                                               TprogramCounter++);
-	  break;
-        }
+          INTERP_DISPATCH(handleLoadConst64);
+          break;
+        case Interpreter::LOAD_DOUBLE_CONST:
+          INTERP_DISPATCH(handleLoadDoubleConst);
+          break;
         case Interpreter::BZERO_MEM:
-        {
-          Uint32 registerOffsetType = TregMemBuffer[theRegister];
-          Uint32 registerSize = Interpreter::getReg2(theInstruction) << 2;
-          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tsize = * (Int64*)(TregMemBuffer + registerSize + 2);
-          Uint32 registerSizeType = TregMemBuffer[registerSize];
-          if (unlikely(registerOffsetType == NULL_INDICATOR)) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(registerSizeType == NULL_INDICATOR)) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          Int64 Tend = Toffset + Tsize;
-          if (Toffset < 0 || Tsize < 0 || Tend > MAX_HEAP_OFFSET) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[Toffset];
-          memset(memory_ptr, 0, Tsize);
+          INTERP_DISPATCH(handleBzeroMem);
           break;
-        }
         case Interpreter::LOAD_CONST_MEM:
-        {
-          RnoOfInstructions += 1; //A bit heavier instruction
-          Uint32 registerDestSize = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 registerOffsetType = TregMemBuffer[theRegister];
-          Uint32 Tsize = theInstruction >> 16;
-          Uint32 words = (Tsize + 3) / 4;
-          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          if (unlikely(registerOffsetType == NULL_INDICATOR)) {
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)Line %u, Register init error",
-                                instance(),
-                                __LINE__);
-#endif
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(((Toffset + Int64(words << 2)) > MAX_HEAP_OFFSET) ||
-                        (Toffset < Int64(0)))) {
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)Line %u, Offset error: %lld",
-                                instance(),
-                                __LINE__,
-                                Toffset);
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-#endif
-          }
-          if (unlikely(Tsize > (MAX_VAR_SIZE_IN_WORDS * 4))) {
-#ifdef TRACE_INTERPRETER
-            g_eventLogger->info("(%u)Line %u, Size error: %u",
-                                instance(),
-                                __LINE__,
-                                Tsize);
-#endif
-            return TUPKEY_abort(req_struct, ZLOAD_MEM_TOO_BIG_ERROR);
-          }
-	  TregMemBuffer[registerDestSize] = NOT_NULL_INDICATOR;
-	  * (Int64*)(TregMemBuffer+registerDestSize+2) = (Int64)Tsize;
-          Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[Toffset];
-          memcpy(memory_ptr,
-                 &TcurrentProgram[TprogramCounter],
-                 Tsize);
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info("(%u) offset: %lld, word: %x, Tsize: %u",
-            instance(), Toffset, memory_ptr[0], Tsize);
-#endif
-          TprogramCounter += words;
-	  break;
-        }
+          INTERP_DISPATCH(handleLoadConstMem);
+          break;
         case Interpreter::STR_TO_INT64:
-        {
-          Uint32 offsetType = TregMemBuffer[theRegister];
-          Uint32 sizeReg = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 destValReg = Interpreter::getReg3(theInstruction) << 2;
-          Uint32 sizeType = TregMemBuffer[sizeReg];
-          Int64 memoryOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 size = * (Int64*)(TregMemBuffer + sizeReg + 2);
-          if (unlikely((offsetType == NULL_INDICATOR) ||
-                       (sizeType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(size > MAX_LONG_LONG_STRING)) {
-            return TUPKEY_abort(req_struct, ZLONG_LONG_STRING_TOO_LONG);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - size) ||
-                       (memoryOffset < 0))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          {
-            char local_heap[MAX_LONG_LONG_STRING + 1];
-            char *memory_start = &TheapMemoryChar[memoryOffset];
-            memcpy(&local_heap[0], memory_start, size);
-            char *memory_end = &local_heap[size];
-            /**
-             * The byte after the array is uninitialised at this point, set it
-             * to 0 to avoid going into undefined territory.
-             * We use a local array to avoid writing into the heap in
-             * area possibly used by someone else.
-             */
-            memory_end[0] = 0;
-            char *end_ptr = nullptr;
-            errno = 0;
-            Int64 val = strtoll(&local_heap[0],
-                                &end_ptr,
-                                10);
-            if (unlikely(errno == EINVAL ||
-                         errno == ERANGE ||
-                         end_ptr != memory_end)) {
-              return TUPKEY_abort(req_struct, ZINVALID_LONG_LONG_STRING);
-            }
-            * (Int64*)(TregMemBuffer+destValReg + 2) = val;
-            TregMemBuffer[destValReg] = NOT_NULL_INDICATOR;
-          }
+          INTERP_DISPATCH(handleStrToInt64);
           break;
-        }
         case Interpreter::INT64_TO_STR:
-        {
-          Uint32 offsetType = TregMemBuffer[theRegister];
-          Uint32 valueReg = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 destSizeReg = Interpreter::getReg3(theInstruction) << 2;
-          Uint32 valueType = TregMemBuffer[valueReg];
-          Int64 memOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 value = * (Int64*)(TregMemBuffer + valueReg + 2);
-          if (unlikely((offsetType == NULL_INDICATOR) ||
-                       (valueType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memOffset > (MAX_HEAP_OFFSET - MAX_LONG_LONG_STRING) ||
-                       (memOffset < 0))) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          int size = snprintf(&TheapMemoryChar[memOffset],
-                              MAX_LONG_LONG_STRING,
-                              "%lld",
-                              value);
-          if (size <= 0) {
-            return TUPKEY_abort(req_struct, ZCONVERT_LONG_LONG_TO_STRING_ERROR);
-          }
-          * (Int64*)(TregMemBuffer+destSizeReg + 2) = size;
-          TregMemBuffer[destSizeReg] = NOT_NULL_INDICATOR;
+          INTERP_DISPATCH(handleInt64ToStr);
           break;
-        }
         case Interpreter::ADD_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tright0 = (Int64)(theInstruction >> 16);
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely(TleftType != NULL_INDICATOR)) {
-            Uint64 Tdest0 = Tleft0 + Tright0;
-            TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-            if (unlikely((Tright0 >= 0 && LLONG_MAX - Tright0 < Tleft0) ||
-                         (Tright0 < 0 && LLONG_MIN - Tright0 > Tleft0))) {
-              return TUPKEY_abort(req_struct, ZCALC_OVERFLOW_ERROR);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleAddRegConst);
           break;
-        }
         case Interpreter::ADD_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          //Backwards compatability, use Reg4
-          Uint32 TdestRegister = Interpreter::getReg4(theInstruction) << 2;
-          if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-            Uint64 Tdest0 = Tleft0 + Tright0;
-            TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-            if (unlikely((Tright0 >= 0 && LLONG_MAX - Tright0 < Tleft0) ||
-                         (Tright0 < 0 && LLONG_MIN - Tright0 > Tleft0))) {
-              return TUPKEY_abort(req_struct, ZCALC_OVERFLOW_ERROR);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleAddRegReg);
           break;
-        }
         case Interpreter::SUB_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = (Int64)(theInstruction >> 16);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely(TleftType != NULL_INDICATOR)) {
-            Uint64 Tdest0 = Tleft0 - Tright0;
-            TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-            if (unlikely((Tright0 >= 0 && LLONG_MIN + Tright0 > Tleft0) ||
-                         (Tright0 < 0 && LLONG_MAX + Tright0 < Tleft0))) {
-              return TUPKEY_abort(req_struct, ZCALC_OVERFLOW_ERROR);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleSubRegConst);
           break;
-        }
         case Interpreter::SUB_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          //Backwards compatability, use Reg4
-          Uint32 TdestRegister = Interpreter::getReg4(theInstruction) << 2;
-          if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-            Int64 Tdest0 = Tleft0 - Tright0;
-            TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-            if (unlikely((Tright0 >= 0 && LLONG_MIN + Tright0 > Tleft0) ||
-                         (Tright0 < 0 && LLONG_MAX + Tright0 < Tleft0))) {
-              return TUPKEY_abort(req_struct, ZCALC_OVERFLOW_ERROR);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleSubRegReg);
           break;
-        }
         case Interpreter::LSHIFT_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = (Int64)(theInstruction >> 16);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely(TleftType != NULL_INDICATOR)) {
-            if (likely(Tright0 <= 64 && Tright0 >= 0)) {
-              Uint64 Tdest0 = Tleft0 << Tright0;
-              TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-              * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-            } else {
-              return TUPKEY_abort(req_struct, ZSHIFT_OPERAND_ERROR);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleLshiftRegConst);
           break;
-        }
         case Interpreter::LSHIFT_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-            if (likely(Tright0 <= 64 && Tright0 >= 0)) {
-              Uint64 Tdest0 = Tleft0 << Tright0;
-              TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-              * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-            } else {
-              return TUPKEY_abort(req_struct, ZSHIFT_OPERAND_ERROR);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleLshiftRegReg);
           break;
-        }
         case Interpreter::RSHIFT_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = (Int64)(theInstruction >> 16);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely(TleftType != NULL_INDICATOR)) {
-            if (likely(Tright0 <= 64 && Tright0 >= 0)) {
-              Uint64 Tdest0 = Tleft0 >> Tright0;
-              TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-              * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-            } else {
-              return TUPKEY_abort(req_struct, ZSHIFT_OPERAND_ERROR);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleRshiftRegConst);
           break;
-        }
         case Interpreter::RSHIFT_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-            if (likely(Tright0 <= 64 && Tright0 >= 0)) {
-              Uint64 Tdest0 = Tleft0 >> Tright0;
-              TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-              * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-            } else {
-              return TUPKEY_abort(req_struct, ZSHIFT_OPERAND_ERROR);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleRshiftRegReg);
           break;
-        }
         case Interpreter::MUL_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tright0 = (Int64)(theInstruction >> 16);
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely(TleftType != NULL_INDICATOR)) {
-            Uint64 Tdest0 = Tleft0 * Tright0;
-            TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleMulRegConst);
           break;
-        }
         case Interpreter::MUL_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-            Uint64 Tdest0 = Tleft0 * Tright0;
-            TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleMulRegReg);
           break;
-        }
         case Interpreter::DIV_REG_CONST:
-        {
-          Uint32 TleftType= TregMemBuffer[theRegister];
-          Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0= (Int64)(theInstruction >> 16);
-          Uint32 TdestRegister= Interpreter::getReg3(theInstruction) << 2;
-          if (likely(TleftType != NULL_INDICATOR)) {
-            if (likely(Tright0 != 0)) {
-              Uint64 Tdest0= Tleft0 / Tright0;
-              TregMemBuffer[TdestRegister]= NOT_NULL_INDICATOR;
-              * (Int64*)(TregMemBuffer+TdestRegister+2)= Tdest0;
-            } else {
-              return TUPKEY_abort(req_struct, ZDIV_BY_ZERO_ERROR);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleDivRegConst);
           break;
-        }
         case Interpreter::DIV_REG_REG:
-        {
-          Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType= TregMemBuffer[theRegister];
-          Uint32 TrightType= TregMemBuffer[TrightRegister];
-          Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          Uint32 TdestRegister= Interpreter::getReg3(theInstruction) << 2;
-          if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-            if (likely(Tright0 != 0)) {
-              Uint64 Tdest0= Tleft0 / Tright0;
-              TregMemBuffer[TdestRegister]= NOT_NULL_INDICATOR;
-              * (Int64*)(TregMemBuffer+TdestRegister+2)= Tdest0;
-            } else {
-              return TUPKEY_abort(req_struct, ZDIV_BY_ZERO_ERROR);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleDivRegReg);
           break;
-        }
         case Interpreter::AND_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = (Int64)(theInstruction >> 16);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely(TleftType != NULL_INDICATOR)) {
-            Uint64 Tdest0 = Tleft0 & Tright0;
-            TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleAndRegConst);
           break;
-        }
         case Interpreter::AND_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-            Uint64 Tdest0 = Tleft0 & Tright0;
-            TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleAndRegReg);
           break;
-        }
         case Interpreter::OR_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = (Int64)(theInstruction >> 16);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely(TleftType != NULL_INDICATOR)) {
-            Uint64 Tdest0 = Tleft0 | Tright0;
-            TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleOrRegConst);
           break;
-        }
         case Interpreter::OR_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-            Uint64 Tdest0 = Tleft0 | Tright0;
-            TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleOrRegReg);
           break;
-        }
         case Interpreter::XOR_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = (Int64)(theInstruction >> 16);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely(TleftType != NULL_INDICATOR)) {
-            Uint64 Tdest0 = Tleft0 ^ Tright0;
-            TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleXorRegConst);
           break;
-        }
         case Interpreter::XOR_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-            Uint64 Tdest0 = Tleft0 ^ Tright0;
-            TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleXorRegReg);
           break;
-        }
         case Interpreter::MOD_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = (Int64)(theInstruction >> 16);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely(TleftType != NULL_INDICATOR)) {
-            if (likely(Tright0 != 0)) {
-              Uint64 Tdest0 = Tleft0 % Tright0;
-              TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-              * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-            } else {
-              return TUPKEY_abort(req_struct, ZDIV_BY_ZERO_ERROR);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleModRegConst);
           break;
-        }
         case Interpreter::MOD_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely((TleftType & TrightType) != NULL_INDICATOR)) {
-            if (likely(Tright0 != 0)) {
-              Uint64 Tdest0 = Tleft0 % Tright0;
-              TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-              * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-            } else {
-              return TUPKEY_abort(req_struct, ZDIV_BY_ZERO_ERROR);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleModRegReg);
           break;
-        }
         case Interpreter::NOT_REG_REG:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
-          if (likely(TleftType != NULL_INDICATOR)) {
-            Uint64 Tdest0 = ~Tleft0;
-            TregMemBuffer[TdestRegister] = NOT_NULL_INDICATOR;
-            * (Int64*)(TregMemBuffer+TdestRegister+2) = Tdest0;
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleNotRegReg);
           break;
-        }
         case Interpreter::BRANCH:
-        {
-	  TprogramCounter = brancher(theInstruction, TprogramCounter);
-	  break;
-        }
+          INTERP_DISPATCH(handleBranch);
+          break;
         case Interpreter::BRANCH_REG_EQ_NULL:
-        {
-	  if (TregMemBuffer[theRegister] != NULL_INDICATOR) {
-	    jamDebug();
-	  } else {
-	    jamDebug();
-	    TprogramCounter = brancher(theInstruction, TprogramCounter);
-	  }
-	  break;
-        }
+          INTERP_DISPATCH(handleBranchRegEqNull);
+          break;
         case Interpreter::BRANCH_REG_NE_NULL:
-        {
-	  if (TregMemBuffer[theRegister] == NULL_INDICATOR) {
-	    jamDebug();
-	  } else {
-	    jamDebug();
-	    TprogramCounter= brancher(theInstruction, TprogramCounter);
-	  }
-	  break;
-        }
+          INTERP_DISPATCH(handleBranchRegNeNull);
+          break;
         case Interpreter::BRANCH_EQ_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          if ((TrightType & TleftType) != NULL_INDICATOR) {
-            if (Tleft0 == Tright0) {
-              TprogramCounter = brancher(theInstruction, TprogramCounter);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleBranchEqRegReg);
           break;
-        }
         case Interpreter::BRANCH_NE_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          if ((TrightType & TleftType) != NULL_INDICATOR) {
-            if (Tleft0 != Tright0) {
-              TprogramCounter = brancher(theInstruction, TprogramCounter);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleBranchNeRegReg);
           break;
-        }
         case Interpreter::BRANCH_LT_REG_REG:
-        {
-          Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType= TregMemBuffer[theRegister];
-          Uint32 TrightType= TregMemBuffer[TrightRegister];
-          Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          if ((TrightType & TleftType) != NULL_INDICATOR) {
-            if (Tleft0 < Tright0) {
-              TprogramCounter= brancher(theInstruction, TprogramCounter);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleBranchLtRegReg);
           break;
-        }
         case Interpreter::BRANCH_LE_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          if ((TrightType & TleftType) != NULL_INDICATOR) {
-            if (Tleft0 <= Tright0) {
-              TprogramCounter = brancher(theInstruction, TprogramCounter);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleBranchLeRegReg);
           break;
-        }
         case Interpreter::BRANCH_GT_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          if ((TrightType & TleftType) != NULL_INDICATOR) {
-            if (Tleft0 > Tright0) {
-              TprogramCounter = brancher(theInstruction, TprogramCounter);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleBranchGtRegReg);
           break;
-        }
         case Interpreter::BRANCH_GE_REG_REG:
-        {
-          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Uint32 TrightType = TregMemBuffer[TrightRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = * (Int64*)(TregMemBuffer + TrightRegister + 2);
-          if ((TrightType & TleftType) != NULL_INDICATOR) {
-            if (Tleft0 >= Tright0) {
-              TprogramCounter = brancher(theInstruction, TprogramCounter);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleBranchGeRegReg);
           break;
-        }
         case Interpreter::BRANCH_EQ_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = Int64(((theInstruction >> 9) & 0x3F));
-          if (TleftType != NULL_INDICATOR) {
-            if (Tleft0 == Tright0) {
-              TprogramCounter = brancher(theInstruction, TprogramCounter);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleBranchEqRegConst);
           break;
-        }
         case Interpreter::BRANCH_NE_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = Int64(((theInstruction >> 9) & 0x3F));
-          if (TleftType != NULL_INDICATOR) {
-            if (Tleft0 != Tright0) {
-              TprogramCounter = brancher(theInstruction, TprogramCounter);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleBranchNeRegConst);
           break;
-        }
         case Interpreter::BRANCH_LT_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = Int64(((theInstruction >> 9) & 0x3F));
-          if (TleftType != NULL_INDICATOR) {
-            if (Tleft0 < Tright0) {
-              TprogramCounter = brancher(theInstruction, TprogramCounter);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleBranchLtRegConst);
           break;
-        }
         case Interpreter::BRANCH_LE_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = Int64(((theInstruction >> 9) & 0x3F));
-          if (TleftType != NULL_INDICATOR) {
-            if (Tleft0 <= Tright0) {
-              TprogramCounter = brancher(theInstruction, TprogramCounter);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleBranchLeRegConst);
           break;
-        }
         case Interpreter::BRANCH_GT_REG_CONST:
-        {
-          Uint32 TleftType = TregMemBuffer[theRegister];
-          Int64 Tleft0 = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = Int64(((theInstruction >> 9) & 0x3F));
-          if (TleftType != NULL_INDICATOR) {
-            if (Tleft0 > Tright0) {
-              TprogramCounter = brancher(theInstruction, TprogramCounter);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleBranchGtRegConst);
           break;
-        }
         case Interpreter::BRANCH_GE_REG_CONST:
-        {
-          Uint32 TleftType= TregMemBuffer[theRegister];
-          Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-          Int64 Tright0 = Int64(((theInstruction >> 9) & 0x3F));
-          if (TleftType != NULL_INDICATOR) {
-            if (Tleft0 >= Tright0) {
-              TprogramCounter= brancher(theInstruction, TprogramCounter);
-            }
-          } else {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
+          INTERP_DISPATCH(handleBranchGeRegConst);
           break;
-        }
         case Interpreter::BRANCH_ATTR_OP_ATTR:
         case Interpreter::BRANCH_ATTR_OP_ATTR + OVERFLOW_OPCODE:
         case Interpreter::BRANCH_ATTR_OP_ARG:
         case Interpreter::BRANCH_ATTR_OP_ARG + OVERFLOW_OPCODE:
         case Interpreter::BRANCH_ATTR_OP_PARAM:
-        case Interpreter::BRANCH_ATTR_OP_PARAM + OVERFLOW_OPCODE: {
-          const Uint32 ins2 = TcurrentProgram[TprogramCounter];
-          Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
-          const Uint32 opCode =
-            Interpreter::getOpCode(theInstruction) % OVERFLOW_OPCODE;
-
-          if (tmpHabitant != attrId) {
-            Int32 TnoDataR =
-                readAttributes(req_struct, &attrId, 1, tmpArea, tmpAreaSz);
-
-            if (unlikely(TnoDataR < 0)) {
-              jam();
-              terrorCode = Uint32(-TnoDataR);
-              tupkeyErrorLab(req_struct);
-              return -1;
-            }
-            tmpHabitant = attrId;
-          }
-
-          // get type
-          attrId >>= 16;
-          const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
-            (attrId * ZAD_SIZE);
-          const Uint32 TattrDesc1 = attrDescriptor[0];
-          const Uint32 TattrDesc2 = attrDescriptor[1];
-          const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
-          const CHARSET_INFO *cs = nullptr;
-          if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
-            const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
-            cs = req_struct->tablePtrP->charsetArray[pos];
-          }
-          const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(typeId);
-
-          // get data for 1st argument, always an ATTR.
-          const AttributeHeader ah(tmpArea[0]);
-          const char *s1 = (char *)&tmpArea[1];
-          // fixed length in 5.0
-          Uint32 attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
-          if (unlikely(typeId == NDB_TYPE_BIT)) {
-            /* Size in bytes for bit fields can be incorrect due to
-             * rounding down
-             */
-            Uint32 bitFieldAttrLen =
-                (AttributeDescriptor::getArraySize(TattrDesc1) + 7) / 8;
-            attrLen = bitFieldAttrLen;
-          }
-
-          // 2'nd argument, literal, parameter or another attribute
-          Uint32 argLen = 0;
-          Uint32 step = 0;
-          const char *s2 = nullptr;
-
-          if (likely(opCode == Interpreter::BRANCH_ATTR_OP_ARG)) {
-            // Compare ATTR with a literal value given by interpreter code
-            jamDebug();
-            argLen = Interpreter::getBranchCol_Len(ins2);
-            step = argLen;
-            s2 = (char *)&TcurrentProgram[TprogramCounter + 1];
-          } else if (opCode == Interpreter::BRANCH_ATTR_OP_PARAM) {
-            // Compare ATTR with a parameter
-            jamDebug();
-            ndbassert(req_struct != nullptr);
-            ndbassert(req_struct->operPtrP != nullptr);
-
-            const Uint32 paramNo = Interpreter::getBranchCol_ParamNo(ins2);
-            const Uint32 *paramPos = subroutineProg;
-            const Uint32 *paramptr =
-                lookupInterpreterParameter(paramNo, paramPos);
-            if (unlikely(paramptr == nullptr)) {
-              jam();
-              terrorCode = 99;  // TODO
-              tupkeyErrorLab(req_struct);
-              return -1;
-            }
-
-            argLen = AttributeHeader::getByteSize(*paramptr);
-            step = 0;
-            s2 = (char *)(paramptr + 1);
-          } else if (opCode == Interpreter::BRANCH_ATTR_OP_ATTR) {
-            // Compare ATTR with another ATTR
-            jamDebug();
-            Uint32 attr2Id = Interpreter::getBranchCol_AttrId2(ins2) << 16;
-
-            // Attr2 to be read into tmpArea[] after Attr1.
-            const Uint32 firstAttrWords = attrLen + 1;
-            assert(tmpAreaSz >= 2 * firstAttrWords);
-            Int32 TnoDataR = readAttributes(req_struct, &attr2Id, 1,
-                                            &tmpArea[firstAttrWords],
-                                            tmpAreaSz - firstAttrWords);
-            if (unlikely(TnoDataR < 0)) {
-              jam();
-              terrorCode = Uint32(-TnoDataR);
-              tupkeyErrorLab(req_struct);
-              return -1;
-            }
-
-            const AttributeHeader ah2(tmpArea[firstAttrWords]);
-            if (!ah2.isNULL()) {
-              // Get type
-              attr2Id >>= 16;
-              const Uint32* attr2Descriptor = req_struct->tablePtrP->tabDescriptor +
-                (attr2Id * ZAD_SIZE);
-              const Uint32 Tattr2Desc1 = attr2Descriptor[0];
-              const Uint32 type2Id = AttributeDescriptor::getType(Tattr2Desc1);
-
-              argLen = AttributeDescriptor::getSizeInBytes(Tattr2Desc1);
-              if (unlikely(type2Id == NDB_TYPE_BIT)) {
-                /* Size in bytes for bit fields can be incorrect due to
-                 * rounding down
-                 */
-                Uint32 bitFieldAttrLen =
-                    (AttributeDescriptor::getArraySize(Tattr2Desc1) + 7) / 8;
-                argLen = bitFieldAttrLen;
-              }
-              s2 = (char *)&tmpArea[firstAttrWords + 1];
-            }
-            step = 0;
-          }  //! ah2.isNULL()
-
-          // Evaluate
-          const bool r1_null = ah.isNULL();
-          const bool r2_null = argLen == 0;
-          if (r1_null || r2_null) {
-            // There are NULL-valued operands, check the NullSemantics
-            const Uint32 nullSemantics =
-                Interpreter::getNullSemantics(theInstruction);
-            if (nullSemantics == Interpreter::IF_NULL_BREAK_OUT) {
-              // Branch out of AND conjunction
-              TprogramCounter = brancher(theInstruction, TprogramCounter);
-              break;
-            }
-            if (nullSemantics == Interpreter::IF_NULL_CONTINUE) {
-              // Ignore NULL in OR conjunction,  -> next instruction
-              const Uint32 tmp = ((step + 3) >> 2) + 1;
-              TprogramCounter += tmp;
-              break;
-            }
-          }
-
-          const Uint32 cond = Interpreter::getBinaryCondition(theInstruction);
-          int res1;
-          if (cond <= Interpreter::GE) {
-            /* Inequality - EQ, NE, LT, LE, GT, GE */
-            if (r1_null || r2_null) {
-              // NULL==NULL and NULL<not-NULL
-              res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
-            } else {
-              jamDebug();
-              if (unlikely(sqlType.m_cmp == 0)) {
-                return TUPKEY_abort(req_struct, 40);
-              }
-              res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
-            }
-          } else {
-            if ((cond == Interpreter::LIKE) ||
-                (cond == Interpreter::NOT_LIKE)) {
-              if (r1_null || r2_null) {
-                // NULL like NULL is true (has no practical use)
-                res1 = r1_null && r2_null ? 0 : -1;
-              } else {
-                jam();
-                if (unlikely(sqlType.m_like == 0)) {
-                  return TUPKEY_abort(req_struct, 40);
-                }
-                res1 = (*sqlType.m_like)(cs, s1, attrLen, s2, argLen);
-              }
-            } else {
-              /* AND_XX_MASK condition */
-              ndbassert(cond <= Interpreter::AND_NE_ZERO);
-              if (unlikely(sqlType.m_mask == 0)) {
-                return TUPKEY_abort(req_struct, 40);
-              }
-              /* If either arg is NULL, we say COL AND MASK
-               * NE_ZERO and NE_MASK.
-               */
-              if (r1_null || r2_null) {
-                res1 = 1;
-              } else {
-                bool cmpZero = (cond == Interpreter::AND_EQ_ZERO) ||
-                               (cond == Interpreter::AND_NE_ZERO);
-
-                res1 = (*sqlType.m_mask)(s1, attrLen, s2, argLen, cmpZero);
-              }
-            }
-          }
-
-          int res = 0;
-          switch ((Interpreter::BinaryCondition)cond) {
-            case Interpreter::EQ:
-              res = (res1 == 0);
-              break;
-            case Interpreter::NE:
-              res = (res1 != 0);
-              break;
-            // note the condition is backwards
-            case Interpreter::LT:
-              res = (res1 > 0);
-              break;
-            case Interpreter::LE:
-              res = (res1 >= 0);
-              break;
-            case Interpreter::GT:
-              res = (res1 < 0);
-              break;
-            case Interpreter::GE:
-              res = (res1 <= 0);
-              break;
-            case Interpreter::LIKE:
-              res = (res1 == 0);
-              break;
-            case Interpreter::NOT_LIKE:
-              res = (res1 == 1);
-              break;
-            case Interpreter::AND_EQ_MASK:
-              res = (res1 == 0);
-              break;
-            case Interpreter::AND_NE_MASK:
-              res = (res1 != 0);
-              break;
-            case Interpreter::AND_EQ_ZERO:
-              res = (res1 == 0);
-              break;
-            case Interpreter::AND_NE_ZERO:
-              res = (res1 != 0);
-              break;
-              // XXX handle invalid value
-          }
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info(
-              "(%u)cond=%u attr(%d)='%.*s'(%d) str='%.*s'(%d) res1=%d res=%d",
-              instance(), cond, attrId >> 16, attrLen, s1, attrLen, argLen, s2,
-              argLen, res1, res);
-#endif
-          if (res)
-            TprogramCounter = brancher(theInstruction, TprogramCounter);
-          else {
-            Uint32 tmp = ((step + 3) >> 2) + 1;
-            TprogramCounter += tmp;
-          }
+        case Interpreter::BRANCH_ATTR_OP_PARAM + OVERFLOW_OPCODE:
+          INTERP_DISPATCH(handleBranchAttrOp);
           break;
-        }
 
         case Interpreter::BRANCH_MEM_OP_ARG:
-        {
-          /**
-           * Like BRANCH_ATTR_OP_ARG but reads column data from
-           * cheapMemory[0] (placed there by READ_LINKED_TO_MEM) instead
-           * of calling readAttributes(). Uses tableId + schemaVersion
-           * from words 2-3 to look up the correct (parent) table
-           * descriptor for type/charset info.
-           *
-           * Layout: [opcode+cond, attrId|argLen, tableId, schemaVer, data...]
-           */
-          jamDebug();
-          const Uint32 ins2 = TcurrentProgram[TprogramCounter];
-          Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2);
-          Uint32 argLen = Interpreter::getBranchCol_Len(ins2);
-          Uint32 tableId = TcurrentProgram[TprogramCounter + 1];
-          Uint32 schemaVersion = TcurrentProgram[TprogramCounter + 2];
-
-          // Look up the parent table by tableId for type/charset info.
-          // Validate table exists, is DEFINED, and schemaVersion matches
-          // (via DBLQH's table record which tracks schema versions).
-          if (unlikely(tableId >= cnoOfTablerec)) {
-            jam();
-            return TUPKEY_abort(req_struct, 40);
-          }
-          Tablerec* parentTablePtrP = &tablerec[tableId];
-          if (unlikely(parentTablePtrP->tableStatus != DEFINED)) {
-            jam();
-            return TUPKEY_abort(req_struct, 40);
-          }
-          if (unlikely(tableId >= c_lqh->ctabrecFileSize ||
-                       c_lqh->tablerec[tableId].schemaVersion !=
-                           schemaVersion)) {
-            jam();
-            return TUPKEY_abort(req_struct, 40);
-          }
-
-          // Read column data from cheapMemory[0] (written by READ_LINKED_TO_MEM)
-          const Uint32* memData = (const Uint32*)&TheapMemoryChar[0];
-          const AttributeHeader ah(memData[0]);
-
-          // Get type info from the parent table's descriptor
-          const Uint32* attrDescriptor = parentTablePtrP->tabDescriptor +
-              (attrId * ZAD_SIZE);
-          const Uint32 TattrDesc1 = attrDescriptor[0];
-          const Uint32 TattrDesc2 = attrDescriptor[1];
-          const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
-          const CHARSET_INFO* cs = nullptr;
-          if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
-            const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
-            cs = parentTablePtrP->charsetArray[pos];
-          }
-          const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(typeId);
-
-          Uint32 attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
-          const char* s1 = (const char*)&memData[1];
-          // Inline constant starts after word 0 (ins2) + word 1 (tableId) +
-          // word 2 (schemaVersion)
-          const char* s2 = (const char*)&TcurrentProgram[TprogramCounter + 3];
-          const Uint32 step = argLen;
-
-          const bool r1_null = ah.isNULL();
-          const bool r2_null = (argLen == 0);
-
-          if (r1_null || r2_null) {
-            const Uint32 nullSemantics =
-                Interpreter::getNullSemantics(theInstruction);
-            if (nullSemantics == Interpreter::IF_NULL_BREAK_OUT) {
-              TprogramCounter = brancher(theInstruction, TprogramCounter);
-              break;
-            }
-            if (nullSemantics == Interpreter::IF_NULL_CONTINUE) {
-              // Skip: 1(ins2) + 2(tableId,schemaVer) + data words
-              const Uint32 tmp = ((step + 3) >> 2) + 3;
-              TprogramCounter += tmp;
-              break;
-            }
-          }
-
-          const Uint32 cond = Interpreter::getBinaryCondition(theInstruction);
-          int res1;
-          if (r1_null || r2_null) {
-            res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
-          } else {
-            if (unlikely(sqlType.m_cmp == 0)) {
-              return TUPKEY_abort(req_struct, 40);
-            }
-            res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
-          }
-
-          bool res = false;
-          switch (cond) {
-          case Interpreter::EQ: res = (res1 == 0); break;
-          case Interpreter::NE: res = (res1 != 0); break;
-          case Interpreter::LT: res = (res1 > 0); break;  // inverted
-          case Interpreter::LE: res = (res1 >= 0); break;
-          case Interpreter::GT: res = (res1 < 0); break;
-          case Interpreter::GE: res = (res1 <= 0); break;
-          default: break;
-          }
-
-          if (res) {
-            TprogramCounter = brancher(theInstruction, TprogramCounter);
-          } else {
-            // Skip: 1(ins2) + 2(tableId,schemaVer) + data words
-            Uint32 tmp = ((step + 3) >> 2) + 3;
-            TprogramCounter += tmp;
-          }
+          INTERP_DISPATCH(handleBranchMemOpArg);
           break;
-        }
-
-        case Interpreter::BRANCH_ATTR_EQ_NULL: {
-          Uint32 ins2 = TcurrentProgram[TprogramCounter];
-          Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
-
-          if (tmpHabitant != attrId) {
-            Int32 TnoDataR =
-                readAttributes(req_struct, &attrId, 1, tmpArea, tmpAreaSz);
-
-            if (unlikely(TnoDataR < 0)) {
-              jam();
-              terrorCode = Uint32(-TnoDataR);
-              tupkeyErrorLab(req_struct);
-              return -1;
-            }
-            tmpHabitant = attrId;
-          }
-
-          AttributeHeader ah(tmpArea[0]);
-          if (ah.isNULL()) {
-            TprogramCounter = brancher(theInstruction, TprogramCounter);
-          } else {
-            TprogramCounter++;
-          }
+        case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE:
+          INTERP_DISPATCH(handleBranchMemOpArgInlineType);
           break;
-        }
 
-        case Interpreter::BRANCH_ATTR_NE_NULL: {
-          Uint32 ins2 = TcurrentProgram[TprogramCounter];
-          Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
-
-          if (tmpHabitant != attrId) {
-            Int32 TnoDataR =
-                readAttributes(req_struct, &attrId, 1, tmpArea, tmpAreaSz);
-
-            if (unlikely(TnoDataR < 0)) {
-              jam();
-              terrorCode = Uint32(-TnoDataR);
-              tupkeyErrorLab(req_struct);
-              return -1;
-            }
-            tmpHabitant = attrId;
-          }
-
-          AttributeHeader ah(tmpArea[0]);
-          if (ah.isNULL()) {
-            TprogramCounter++;
-          } else {
-            TprogramCounter = brancher(theInstruction, TprogramCounter);
-          }
+        case Interpreter::BRANCH_ATTR_EQ_NULL:
+          INTERP_DISPATCH(handleBranchAttrEqNull);
           break;
-        }
+        case Interpreter::BRANCH_ATTR_NE_NULL:
+          INTERP_DISPATCH(handleBranchAttrNeNull);
+          break;
+        case Interpreter::BRANCH_LINKED_EQ_NULL:
+          INTERP_DISPATCH(handleBranchLinkedEqNull);
+          break;
+        case Interpreter::BRANCH_LINKED_NE_NULL:
+          INTERP_DISPATCH(handleBranchLinkedNeNull);
+          break;
         case Interpreter::EXIT_OK:
-        {
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info("(%u) - exit_ok, log_size: %u",
-                              instance(), req_struct->log_size);
-#endif
-	  return req_struct->log_size;
-        }
+          INTERP_DISPATCH(handleExitOk);
+          break;  /* unreachable — handler returns INTERP_EXIT */
         case Interpreter::EXIT_OK_LAST:
-        {
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info("(%u) - exit_ok_last, log_size: %u",
-                              instance(), req_struct->log_size);
-#endif
-	  req_struct->last_row = true;
-	  return req_struct->log_size;
-        }
+          INTERP_DISPATCH(handleExitOkLast);
+          break;  /* unreachable — handler returns INTERP_EXIT */
         case Interpreter::EXIT_REFUSE:
-        {
-          /**
-           * This is a very common exit path, particularly
-           * for scans. It simply means that the row didn't
-           * fulfil the search condition.
-           */
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info("(%u) - exit_nok", instance());
-#endif
-	  terrorCode = theInstruction >> 16;
-          tupkeyErrorLab(req_struct);
-          return -1;
-        }
+          /* This is a very common exit path, particularly for scans —
+           * the row did not fulfil the search condition. */
+          INTERP_DISPATCH(handleExitRefuse);
+          break;  /* unreachable — handler returns -1 */
         case Interpreter::CALL:
-        {
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info(
-            "(%u) - call addr=%u, subroutine len=%u ret addr=%u",
-              instance(), theInstruction >> 16, TsubroutineLen,
-              TprogramCounter);
-#endif
-	  RstackPtr++;
-	  if (RstackPtr < 32) {
-            TstackMemBuffer[RstackPtr]= TprogramCounter;
-            TprogramCounter= theInstruction >> 16;
-	    if (TprogramCounter < TsubroutineLen) {
-	      TcurrentProgram= subroutineProg;
-	      TcurrentSize= TsubroutineLen;
-	    } else {
-	      return TUPKEY_abort(req_struct, ZCALL_ERROR);
-	    }
-	  } else {
-	    return TUPKEY_abort(req_struct, ZSTACK_OVERFLOW_ERROR);
-	  }
-	  break;
-        }
-        case Interpreter::RETURN:
-        {
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info("(%u) - return to %u from stack level %u",
-            instance(), TstackMemBuffer[RstackPtr], RstackPtr);
-#endif
-	  if (RstackPtr > 0) {
-	    TprogramCounter = TstackMemBuffer[RstackPtr];
-	    RstackPtr--;
-	    if (RstackPtr == 0) {
-	      jamDebug();
-	      /* ------------------------------------------------------------- */
-	      // We are back to the main program.
-	      /* ------------------------------------------------------------- */
-	      TcurrentProgram = mainProgram;
-	      TcurrentSize = TmainProgLen;
-	    }
-	  } else {
-	    return TUPKEY_abort(req_struct, ZSTACK_UNDERFLOW_ERROR);
-	  }
-	  break;
-        }
-        case Interpreter::SEARCH_INTERVAL_64:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          /**
-           * This instruction does a binary search in a sorted array of
-           * ranges. This means that each pair of numbers represents a
-           * range. Thus input have an even number of elements in the
-           * array.
-           *
-           * By using binary search with smaller or equal we get the result
-           * that returning an even number means that the number is within
-           * one of the ranges and odd numbers and NULL values means that
-           * the value was not in a range.
-           *
-           * Input:
-           *   Register 1:
-           *     The number we are looking for
-           *   Register 2:
-           *     The offset in memory where sorted Uint64 array is stored
-           *   Register 3:
-           *     The number of elements in the array
-           *   Enum 5:
-           *     0: Left open and Right closed interval
-           *     1: Left closed and Right open interval
-           * Output:
-           *   Register 4:
-           *     The position of the found element
-           *     NULL if no element found
-           *
-           */
-          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
-
-          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
-          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
-          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
-
-          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
-          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
-          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
-
-          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
-          Int64 end_pos = Toffset + (8 * TnumElems);
-          Uint32 TleftOpen = Interpreter::enum5(theInstruction);
-
-          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
-                       (TregOrdinalType == NULL_INDICATOR) ||
-                       (TregNumElemsType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          if (Tordinal < 0) {
-            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
-          }
-          if (TleftOpen > 1) {
-            return TUPKEY_abort(req_struct, ZNO_SUCH_SEARCH_INTERVAL_METHOD);
-          }
-          Uint32 ret;
-          Uint64 ordinal = Uint64(Tordinal);
-          if (TleftOpen == 0) {
-            ret = binary_uint64_search_smaller(ordinal,
-                                               &TheapMemoryChar[Toffset],
-                                               TnumElems,
-                                               true,
-                                               true);
-            if (ret == RET_NULL || ((ret & 1) == 1)) {
-              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
-            } else {
-              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
-            }
-          } else {
-            ret = binary_uint64_search_larger(ordinal,
-                                              &TheapMemoryChar[Toffset],
-                                              TnumElems,
-                                              true,
-                                              true);
-            if ((ret & 1) == 0) {
-              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
-            } else {
-              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret - 1;
-            }
-          }
-	  break;
-        }
-        case Interpreter::SEARCH_INTERVAL_32:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          /* This is the 32-bit version of SEARCH_INTERVAL_64 */
-          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
-
-          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
-          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
-          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
-
-          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
-          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
-          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
-
-          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
-          Int64 end_pos = Toffset + (4 * TnumElems);
-          Uint32 TleftOpen = Interpreter::enum5(theInstruction);
-
-          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
-                       (TregOrdinalType == NULL_INDICATOR) ||
-                       (TregNumElemsType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          if (Tordinal < 0 ||
-              Tordinal > Int64(std::numeric_limits<Uint32>::max())) {
-            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
-          }
-          if (TleftOpen > 1) {
-            return TUPKEY_abort(req_struct, ZNO_SUCH_SEARCH_INTERVAL_METHOD);
-          }
-          Uint32 ret;
-          Uint32 ordinal = Uint32(Tordinal);
-          if (TleftOpen == 0) {
-            ret = binary_uint32_search_smaller(ordinal,
-                                               &TheapMemoryChar[Toffset],
-                                               TnumElems,
-                                               true,
-                                               true);
-            if (ret == RET_NULL || ((ret & 1) == 1)) {
-              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
-            } else {
-              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
-            }
-          } else {
-            ret = binary_uint32_search_larger(ordinal,
-                                              &TheapMemoryChar[Toffset],
-                                              TnumElems,
-                                              true,
-                                              true);
-            if ((ret & 1) == 0) {
-              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
-            } else {
-              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret - 1;
-            }
-          }
-	  break;
-        }
-        case Interpreter::SEARCH_INTERVAL_16:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          /* This is the 16-bit version of SEARCH_INTERVAL_64 */
-          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
-
-          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
-          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
-          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
-
-          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
-          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
-          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
-
-          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
-          Int64 end_pos = Toffset + (2 * TnumElems);
-          Uint32 TleftOpen = Interpreter::enum5(theInstruction);
-
-          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
-                       (TregOrdinalType == NULL_INDICATOR) ||
-                       (TregNumElemsType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          if (Tordinal < 0 ||
-              Tordinal > Int64(std::numeric_limits<Uint16>::max())) {
-            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
-          }
-          if (TleftOpen > 1) {
-            return TUPKEY_abort(req_struct, ZNO_SUCH_SEARCH_INTERVAL_METHOD);
-          }
-          Uint32 ret;
-          Uint16 ordinal = Uint16(Tordinal);
-          if (TleftOpen == 0) {
-            ret = binary_uint16_search_smaller(ordinal,
-                                               &TheapMemoryChar[Toffset],
-                                               TnumElems,
-                                               true,
-                                               true);
-            if (ret == RET_NULL || ((ret & 1) == 1)) {
-              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
-            } else {
-              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
-            }
-          } else {
-            ret = binary_uint16_search_larger(ordinal,
-                                              &TheapMemoryChar[Toffset],
-                                              TnumElems,
-                                              true,
-                                              true);
-            if ((ret & 1) == 0) {
-              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
-            } else {
-              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret - 1;
-            }
-          }
-	  break;
-        }
-        case Interpreter::SEARCH_INTERVAL_ODD:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          /* This is the odd number version of SEARCH_INTERVAL_64 */
-          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
-
-          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
-          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
-          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
-
-          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
-          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
-          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
-
-          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
-          Uint32 TleftOpen = Interpreter::enum5(theInstruction);
-          Uint32 TnumberSize = Interpreter::enum6(theInstruction);
-          Int64 end_pos = Toffset + (TnumberSize * TnumElems);
-
-          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
-                       (TregOrdinalType == NULL_INDICATOR) ||
-                       (TregNumElemsType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          if (TnumberSize != 1 &&
-              TnumberSize != 3 &&
-              TnumberSize != 5 &&
-              TnumberSize != 6) {
-            return TUPKEY_abort(req_struct, ZNO_SUCH_NUMBER_SIZE_SUPPORTED);
-          }
-          Uint64 max_number = (Uint64(1) << (Uint64(TnumberSize * 8))) - 1;
-          if (Tordinal < 0 ||
-              Tordinal > Int64(max_number)) {
-            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
-          }
-          if (TleftOpen > 1) {
-            return TUPKEY_abort(req_struct, ZNO_SUCH_SEARCH_INTERVAL_METHOD);
-          }
-          Uint32 ret;
-          Uint64 ordinal = Uint64(Tordinal);
-          if (TleftOpen == 0) {
-            ret = binary_odd_search_smaller(ordinal,
-                                            &TheapMemoryChar[Toffset],
-                                            TnumElems,
-                                            TnumberSize,
-                                            true,
-                                            true);
-            if (ret == RET_NULL || ((ret & 1) == 1)) {
-              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
-            } else {
-              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
-            }
-          } else {
-            ret = binary_odd_search_larger(ordinal,
-                                           &TheapMemoryChar[Toffset],
-                                           TnumElems,
-                                           TnumberSize,
-                                           true,
-                                           true);
-            if ((ret & 1) == 0) {
-              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
-            } else {
-              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret - 1;
-            }
-          }
-	  break;
-        }
-        case Interpreter::BINARY_SEARCH_64:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          /**
-           * Input:
-           *   Register 1:
-           *     The number we are looking for
-           *   Register 2:
-           *     The offset in memory where sorted Uint64 array is stored
-           *   Register 3:
-           *     The number of elements in the array
-           *   Enum 5:
-           *     0 means exact match only
-           *     1 means search for nearest that is smaller
-           *       Another name for this is that it is a rank query.
-           *       This query will never return NULL.
-           *     2 means search for nearest that is larger or equal
-           *       This query finds the successor element.
-           *       This query will never return NULL.
-           *     3 means search for nearest that is smaller or equal
-           *     4 means search for nearest that is larger or equal
-           * Output:
-           *   Register 4:
-           *     The position of the found element
-           *     NULL if no element found
-           *
-           */
-          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
-
-          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
-          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
-          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
-
-          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
-          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
-          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
-
-          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
-          Uint32 TexactMatch = Interpreter::enum5(theInstruction);
-          Int64 end_pos = Toffset + (8 * TnumElems);
-
-          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
-                       (TregOrdinalType == NULL_INDICATOR) ||
-                       (TregNumElemsType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          if (Tordinal < 0) {
-            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
-          }
-          Uint32 ret;
-          Uint64 ordinal = Uint64(Tordinal);
-          switch (TexactMatch) {
-          case EQUAL_MATCH: {
-            ret = binary_uint64_search_exact(ordinal,
-                                             &TheapMemoryChar[Toffset],
-                                             TnumElems);
-            break;
-          }
-          case SMALLER_MATCH: {
-            ret = binary_uint64_search_smaller(ordinal,
-                                               &TheapMemoryChar[Toffset],
-                                               TnumElems,
-                                               false,
-                                               false);
-            break;
-          }
-          case LARGER_MATCH: {
-            ret = binary_uint64_search_larger(ordinal,
-                                              &TheapMemoryChar[Toffset],
-                                              TnumElems,
-                                              false,
-                                              false);
-            break;
-          }
-          case SMALLER_EQUAL_MATCH: {
-            ret = binary_uint64_search_smaller(ordinal,
-                                               &TheapMemoryChar[Toffset],
-                                               TnumElems,
-                                               true,
-                                               false);
-            break;
-          }
-          case LARGER_EQUAL_MATCH: {
-            ret = binary_uint64_search_larger(ordinal,
-                                              &TheapMemoryChar[Toffset],
-                                              TnumElems,
-                                              true,
-                                              false);
-            break;
-          }
-          default: {
-            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
-          }
-          }
-          if (ret == RET_NULL) {
-            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
-          } else {
-            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
-          }
-	  break;
-        }
-        case Interpreter::BINARY_SEARCH_32:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          /* See BINARY_SEARCH_64, this is the 32-bit version */
-          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
-
-          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
-          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
-          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
-
-          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
-          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
-          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
-
-          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
-          Uint32 TexactMatch = Interpreter::enum5(theInstruction);
-          Int64 end_pos = Toffset + (4 * TnumElems);
-
-          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
-                       (TregOrdinalType == NULL_INDICATOR) ||
-                       (TregNumElemsType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          if (TexactMatch > LARGER_EQUAL_MATCH) {
-            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
-          }
-          if (Tordinal < 0 ||
-              Tordinal > Int64(std::numeric_limits<Uint32>::max())) {
-            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
-          }
-          Uint32 ordinal = Uint32(Tordinal);
-          Uint32 ret;
-          switch (TexactMatch) {
-          case EQUAL_MATCH: {
-            ret = binary_uint32_search_exact(ordinal,
-                                             &TheapMemoryChar[Toffset],
-                                             TnumElems);
-            break;
-          }
-          case SMALLER_MATCH: {
-            ret = binary_uint32_search_smaller(ordinal,
-                                               &TheapMemoryChar[Toffset],
-                                               TnumElems,
-                                               false,
-                                               false);
-            break;
-          }
-          case LARGER_MATCH: {
-            ret = binary_uint32_search_larger(ordinal,
-                                              &TheapMemoryChar[Toffset],
-                                              TnumElems,
-                                              false,
-                                              false);
-            break;
-          }
-          case SMALLER_EQUAL_MATCH: {
-            ret = binary_uint32_search_smaller(ordinal,
-                                               &TheapMemoryChar[Toffset],
-                                               TnumElems,
-                                               true,
-                                               false);
-            break;
-          }
-          case LARGER_EQUAL_MATCH: {
-            ret = binary_uint32_search_larger(ordinal,
-                                              &TheapMemoryChar[Toffset],
-                                              TnumElems,
-                                              true,
-                                              false);
-            break;
-          }
-          default: {
-            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
-          }
-          }
-          if (ret == RET_NULL) {
-            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
-          } else {
-            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
-          }
-	  break;
-        }
-        case Interpreter::BINARY_SEARCH_16:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          /* See BINARY_SEARCH_64, this is the 16-bit version */
-          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
-
-          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
-          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
-          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
-
-          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
-          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
-          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
-
-          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
-          Uint32 TexactMatch = Interpreter::enum5(theInstruction);
-          Int64 end_pos = Toffset + (2 * TnumElems);
-
-          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
-                       (TregOrdinalType == NULL_INDICATOR) ||
-                       (TregNumElemsType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          if (Tordinal < 0 ||
-              Tordinal > Int64(std::numeric_limits<Uint16>::max())) {
-            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
-          }
-          Uint16 ordinal = Uint16(Tordinal);
-          Uint32 ret;
-          switch (TexactMatch) {
-          case EQUAL_MATCH: {
-            ret = binary_uint16_search_exact(ordinal,
-                                             &TheapMemoryChar[Toffset],
-                                             TnumElems);
-            break;
-          }
-          case SMALLER_MATCH: {
-            ret = binary_uint16_search_smaller(ordinal,
-                                               &TheapMemoryChar[Toffset],
-                                               TnumElems,
-                                               false,
-                                               false);
-            break;
-          }
-          case LARGER_MATCH: {
-            ret = binary_uint16_search_larger(ordinal,
-                                              &TheapMemoryChar[Toffset],
-                                              TnumElems,
-                                              false,
-                                              false);
-            break;
-          }
-          case SMALLER_EQUAL_MATCH: {
-            ret = binary_uint16_search_smaller(ordinal,
-                                               &TheapMemoryChar[Toffset],
-                                               TnumElems,
-                                               true,
-                                               false);
-            break;
-          }
-          case LARGER_EQUAL_MATCH: {
-            ret = binary_uint16_search_larger(ordinal,
-                                              &TheapMemoryChar[Toffset],
-                                              TnumElems,
-                                              true,
-                                              false);
-            break;
-          }
-          default: {
-            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
-          }
-          }
-          if (ret == RET_NULL) {
-            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
-          } else {
-            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
-          }
-	  break;
-        }
-        case Interpreter::BINARY_SEARCH_ODD:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          /* See BINARY_SEARCH_64, this is the odd number version version */
-          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
-
-          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
-          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
-          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
-
-          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
-          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
-          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
-
-          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
-          Uint32 TexactMatch = Interpreter::enum5(theInstruction);
-          Uint32 TnumberSize = Interpreter::enum6(theInstruction);
-          Int64 end_pos = Toffset + (TnumberSize * TnumElems);
-
-          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
-                       (TregOrdinalType == NULL_INDICATOR) ||
-                       (TregNumElemsType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          if (TnumberSize != 1 &&
-              TnumberSize != 3 &&
-              TnumberSize != 5 &&
-              TnumberSize != 6) {
-            return TUPKEY_abort(req_struct, ZNO_SUCH_NUMBER_SIZE_SUPPORTED);
-          }
-          Uint64 max_number = (Uint64(1) << (Uint64(TnumberSize * 8))) - 1;
-          if (Tordinal < 0 ||
-              Tordinal > Int64(max_number)) {
-            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
-          }
-          Uint64 ordinal = Uint64(Tordinal);
-          Uint32 ret;
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info("theInstruction: %x, TexactMatch: %u, "
-                              "Tordinal: %llu, Toffset: %lld, TnumElems: %lld, "
-                              "TnumberSize: %u",
-           theInstruction,
-           TexactMatch,
-           Tordinal,
-           Toffset,
-           TnumElems,
-           TnumberSize);
-#endif
-          switch (TexactMatch) {
-          case EQUAL_MATCH: {
-            ret = binary_odd_search_exact(ordinal,
-                                          &TheapMemoryChar[Toffset],
-                                          TnumElems,
-                                          TnumberSize);
-            break;
-          }
-          case SMALLER_MATCH: {
-            ret = binary_odd_search_smaller(ordinal,
-                                            &TheapMemoryChar[Toffset],
-                                            TnumElems,
-                                            TnumberSize,
-                                            false,
-                                            false);
-            break;
-          }
-          case LARGER_MATCH: {
-            ret = binary_odd_search_larger(ordinal,
-                                           &TheapMemoryChar[Toffset],
-                                           TnumElems,
-                                           TnumberSize,
-                                           false,
-                                           false);
-            break;
-          }
-          case SMALLER_EQUAL_MATCH: {
-            ret = binary_odd_search_smaller(ordinal,
-                                            &TheapMemoryChar[Toffset],
-                                            TnumElems,
-                                            TnumberSize,
-                                            true,
-                                            false);
-            break;
-          }
-          case LARGER_EQUAL_MATCH: {
-            ret = binary_odd_search_larger(ordinal,
-                                           &TheapMemoryChar[Toffset],
-                                           TnumElems,
-                                           TnumberSize,
-                                           true,
-                                           false);
-            break;
-          }
-          default: {
-            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
-          }
-          }
-          if (ret == RET_NULL) {
-            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
-          } else {
-            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
-          }
-	  break;
-        }
-        case Interpreter::STRING_SEARCH:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          Int64 ToffsetString = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TregoffsetStringType = TregMemBuffer[theRegister];
-
-          Uint32 TstringLenRegister = Interpreter::getReg2(theInstruction) << 2;
-          Int64 TstringLen = *(Int64*)(TregMemBuffer + TstringLenRegister + 2);
-          Uint32 TregstringLenType = TregMemBuffer[TstringLenRegister];
-
-          Uint32 ToffsetSearchRegister =
-            Interpreter::getReg3(theInstruction) << 2;
-          Int64 ToffsetSearch =
-            *(Int64*)(TregMemBuffer + ToffsetSearchRegister + 2);
-          Uint32 ToffsetSearchType = TregMemBuffer[ToffsetSearchRegister];
-
-          Uint32 TsearchLenRegister = Interpreter::getReg4(theInstruction) << 2;
-          Int64 TsearchLen = *(Int64*)(TregMemBuffer + TsearchLenRegister + 2);
-          Uint32 TregsearchLenType = TregMemBuffer[TsearchLenRegister];
-
-          Uint32 TretRegister = Interpreter::getReg5(theInstruction) << 2;
-
-          if (unlikely((TregoffsetStringType == NULL_INDICATOR) ||
-                       (TregstringLenType == NULL_INDICATOR) ||
-                       (ToffsetSearchType == NULL_INDICATOR) ||
-                       (TregsearchLenType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (ToffsetString < 0 ||
-              ToffsetSearch < 0 ||
-              TsearchLen < 0 ||
-              TstringLen < 0 ||
-              (ToffsetString + TstringLen) > MAX_HEAP_OFFSET ||
-              (ToffsetSearch + TsearchLen) > MAX_HEAP_OFFSET) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          Uint32 ret;
-          ret = string_search(&TheapMemoryChar[ToffsetSearch],
-                              TsearchLen,
-                              &TheapMemoryChar[ToffsetString],
-                              TstringLen);
-          if (ret == RET_NULL) {
-            TregMemBuffer[TretRegister] = NULL_INDICATOR;
-          } else {
-            TregMemBuffer[TretRegister] = NOT_NULL_INDICATOR;
-            *(Int64*)(TregMemBuffer + TretRegister + 2) = ret;
-          }
-	  break;
-        }
-        case Interpreter::QSORT:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          /**
-           * This instruction sorts an array of unsigned integers of a
-           * given size. The size can be 1,2,4,5,6 and 8 bytes.
-           *
-           * Input:
-           *  Reg1: Offset of memory to be sorted
-           *  Reg2: Number of elements in array to be sorted
-           *  Enum5: Number size in bytes
-           */
-          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TregoffsetType = TregMemBuffer[theRegister];
-
-          Uint32 TnumElemsRegister = Interpreter::getReg2(theInstruction) << 2;
-          Int64 TnumElems = *(Int64*)(TregMemBuffer + TnumElemsRegister + 2);
-          Uint32 TregnumElemsType = TregMemBuffer[TnumElemsRegister];
-
-          Uint32 TnumberSize = Interpreter::enum5(theInstruction);
-
-          if (unlikely((TregoffsetType == NULL_INDICATOR) ||
-                       (TregnumElemsType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (Toffset < 0 ||
-              TnumElems < 0 ||
-              (Toffset + (TnumberSize * TnumElems)) > MAX_HEAP_OFFSET) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          if (TnumberSize != 1 &&
-              TnumberSize != 2 &&
-              TnumberSize != 3 &&
-              TnumberSize != 4 &&
-              TnumberSize != 5 &&
-              TnumberSize != 6 &&
-              TnumberSize != 8) {
-            return TUPKEY_abort(req_struct, ZNO_SUCH_NUMBER_SIZE_SUPPORTED);
-          }
-          qsort_instr(&TheapMemoryChar[Toffset],
-                      TnumElems,
-                      TnumberSize);
-	  break;
-        }
-        case Interpreter::COMPRESS_NUM_ARRAY:
-        {
-          RnoOfInstructions += 3; //A bit heavier instruction
-          /**
-           * This instruction takes as input an array of Uint32 or Uint64
-           * and converts it into a smaller array of 3, 5 or 6 bytes stored
-           * in little-endian format. This can be used in combination with
-           * binary search of odd sizes and similarly for search intervals.
-           *
-           * Input:
-           *  Reg1: Offset of memory to be sorted
-           *  Reg2: Number of elements in array to be sorted
-           *  Enum5: Number size in bytes of input data (4 or 8)
-           *  Enum6: Number size in bytes of output data (3, 5 or 6)
-           */
-          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-          Uint32 TregoffsetType = TregMemBuffer[theRegister];
-
-          Uint32 TnumElemsRegister = Interpreter::getReg2(theInstruction) << 2;
-          Int64 TnumElems = *(Int64*)(TregMemBuffer + TnumElemsRegister + 2);
-          Uint32 TregnumElemsType = TregMemBuffer[TnumElemsRegister];
-
-          Uint32 TnumberSizeIn = Interpreter::enum5(theInstruction);
-          Uint32 TnumberSizeOut = Interpreter::enum6(theInstruction);
-
-#ifdef TRACE_INTERPRETER
-          g_eventLogger->info("Toffset: %lld, TnumElems: %lld, "
-                              "TnumberSizeIn: %u, TnumberSizeOut: %u, "
-                              "theInstruction: %x",
-            Toffset,
-            TnumElems,
-            TnumberSizeIn,
-            TnumberSizeOut,
-            theInstruction);
-#endif
-          if (unlikely((TregoffsetType == NULL_INDICATOR) ||
-                       (TregnumElemsType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (Toffset < 0 ||
-              TnumElems < 0 ||
-              (Toffset + (TnumberSizeIn * TnumElems)) > MAX_HEAP_OFFSET) {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          if (!((TnumberSizeIn == 4 && TnumberSizeOut == 3) ||
-                (TnumberSizeIn == 8 &&
-                 (TnumberSizeOut == 5 || TnumberSizeOut == 6)))) {
-            return TUPKEY_abort(req_struct, ZNO_SUCH_NUMBER_SIZE_SUPPORTED);
-          }
-          if (TnumberSizeIn == 4) {
-            compress_num32_array(&TheapMemoryChar[Toffset],
-                                 TnumElems,
-                                 TnumberSizeOut);
-          } else {
-            compress_num64_array(&TheapMemoryChar[Toffset],
-                                 TnumElems,
-                                 TnumberSizeOut);
-          }
-	  break;
-        }
-        case Interpreter::SPECIAL_INSTR:
-        {
-          Uint32 extended_instruction = theInstruction >> 16;
-          switch (extended_instruction)
-          {
-            default:
-            {
-#ifdef TRACE_INTERPRETER
-              g_eventLogger->info("(%u) Extended Instruction %u doesn't exist",
-                                  instance(),
-                                  extended_instruction);
-#endif
-	      return TUPKEY_abort(req_struct, ZNO_INSTRUCTION_ERROR);
-            }
-          }
+          INTERP_DISPATCH(handleCall);
           break;
-        }
+        case Interpreter::RETURN:
+          INTERP_DISPATCH(handleReturn);
+          break;
+        case Interpreter::SEARCH_INTERVAL_64:
+          INTERP_DISPATCH(handleSearchInterval64);
+          break;
+        case Interpreter::SEARCH_INTERVAL_32:
+          INTERP_DISPATCH(handleSearchInterval32);
+          break;
+        case Interpreter::SEARCH_INTERVAL_16:
+          INTERP_DISPATCH(handleSearchInterval16);
+          break;
+        case Interpreter::SEARCH_INTERVAL_ODD:
+          INTERP_DISPATCH(handleSearchIntervalOdd);
+          break;
+        case Interpreter::BINARY_SEARCH_64:
+          INTERP_DISPATCH(handleBinarySearch64);
+          break;
+        case Interpreter::BINARY_SEARCH_32:
+          INTERP_DISPATCH(handleBinarySearch32);
+          break;
+        case Interpreter::BINARY_SEARCH_16:
+          INTERP_DISPATCH(handleBinarySearch16);
+          break;
+        case Interpreter::BINARY_SEARCH_ODD:
+          INTERP_DISPATCH(handleBinarySearchOdd);
+          break;
+        case Interpreter::STRING_SEARCH:
+          INTERP_DISPATCH(handleStringSearch);
+          break;
+        case Interpreter::QSORT:
+          INTERP_DISPATCH(handleQsort);
+          break;
+        case Interpreter::COMPRESS_NUM_ARRAY:
+          INTERP_DISPATCH(handleCompressNumArray);
+          break;
+        case Interpreter::SPECIAL_INSTR:
+          INTERP_DISPATCH(handleSpecialInstr);
+          break;
         default:
 #ifdef TRACE_INTERPRETER
           g_eventLogger->info("(%u) Instruction with opCode %u doesn't exist",
@@ -8867,11 +10431,225 @@ int Dbtup::interpreterNextLab(Signal* signal,
 #endif
 	  return TUPKEY_abort(req_struct, ZNO_INSTRUCTION_ERROR);
       }
+      /* Handler return-value interpretation — done ONCE after the switch
+       * instead of inlined at every case via the INTERP_DISPATCH macro.
+       *
+       *   INTERP_CONTINUE (0) — fall through to the next loop iteration
+       *   INTERP_EXIT     (1) — EXIT_OK / EXIT_OK_LAST: return log_size
+       *   _rc < 0             — error: _rc is -(error_code). TUPKEY_abort
+       *                         records jam, sets terrorCode, calls
+       *                         tupkeyErrorLab, returns -1.
+       */
+      if (unlikely(_rc != INTERP_CONTINUE)) {
+        if (_rc == INTERP_EXIT) return req_struct->log_size;
+        return TUPKEY_abort(req_struct, -_rc);
+      }
     } else {
       return TUPKEY_abort(req_struct, ZOUTSIDE_OF_PROGRAM_ERROR);
     }
   }
   return TUPKEY_abort(req_struct, ZTOO_MANY_INSTRUCTIONS_ERROR);
+}
+
+/**
+ * interpreterJumpTable — third interpreter, dispatched via a
+ * caller-supplied function-pointer table and mode flags.
+ *
+ * Used by two distinct call sites:
+ *   1. CTE filter (execCTE_LOOKUP_REQ, cteScanAggFeed,
+ *      cteScanEmitResults) via the Dbtup::interpreterFilterCte
+ *      wrapper.  Table: s_cte_filter_handlers.  Flag:
+ *      IFLAG_REJECT_RETURNS_NEG so EXIT_REFUSE surfaces as
+ *      INTERPRETER_FILTER_REJECT rather than aborting a synthetic
+ *      CTE row.
+ *   2. Aggregation interpreter embedded programs
+ *      (AggInterpreter::ProcessRec) — future Phase C.3.  Table:
+ *      s_agg_interp_handlers.  Flag: IFLAG_DISALLOW_BACKWARD_JUMPS
+ *      so programs are provably terminating (no CALL/RETURN in the
+ *      table + forward-only branches) — the 16000-instruction fuse
+ *      is dropped in that mode.
+ *
+ * The locals + InterpreterContext aggregate init mirror
+ * interpreterNextLab line-for-line so the extracted handlers see
+ * an identical execution environment.  The only difference is the
+ * dispatch: handlerTable[opCode] instead of the big switch.
+ *
+ * Return values:
+ *   >= 0                          — normal exit / accept
+ *   INTERPRETER_FILTER_REJECT     — filter reject (IFLAG_REJECT_RETURNS_NEG)
+ *   -1                            — interpreter error (terrorCode set)
+ */
+int Dbtup::interpreterJumpTable(Signal* signal,
+                                KeyReqStruct* req_struct,
+                                Uint32* mainProgram,
+                                Uint32 TmainProgLen,
+                                Uint32* subroutineProg,
+                                Uint32 TsubroutineLen,
+                                Uint32* tmpArea,
+                                Uint32 tmpAreaSz,
+                                const InterpreterHandler *handlerTable,
+                                Uint32 flags,
+                                const Register *aggRegisters)
+{
+  Uint32 theRegister;
+  Uint32 theInstruction;
+  Uint32 TprogramCounter = 0;
+  Uint32 *TcurrentProgram = mainProgram;
+  Uint32 TcurrentSize = TmainProgLen;
+  Uint32 RstackPtr = 0;
+  char *TheapMemoryChar;
+  union {
+    Uint32 TregMemBuffer[32];
+    Uint64 align[16];
+  };
+  (void)align;  // kill warning
+  Uint32 TstackMemBuffer[32];
+
+  TheapMemoryChar = (char*)&cheapMemory[0];
+
+  Uint32 &RnoOfInstructions = req_struct->no_exec_instructions;
+  ndbassert(RnoOfInstructions == 0);
+  /* Initialise 8 registers to NULL, as interpreterNextLab does. */
+  TregMemBuffer[0]  = NULL_INDICATOR;
+  TregMemBuffer[4]  = NULL_INDICATOR;
+  TregMemBuffer[8]  = NULL_INDICATOR;
+  TregMemBuffer[12] = NULL_INDICATOR;
+  TregMemBuffer[16] = NULL_INDICATOR;
+  TregMemBuffer[20] = NULL_INDICATOR;
+  TregMemBuffer[24] = NULL_INDICATOR;
+  TregMemBuffer[28] = NULL_INDICATOR;
+  Uint32 tmpHabitant = ~0;
+
+  InterpreterContext ctx{
+    this,                /* tup */
+    signal,
+    req_struct,
+    TcurrentProgram,     /* Uint32*&  — program pointer, may swap on CALL */
+    TcurrentSize,        /* Uint32&                                      */
+    TprogramCounter,     /* Uint32&                                      */
+    theInstruction,      /* Uint32&                                      */
+    theRegister,         /* Uint32&                                      */
+    &TregMemBuffer[0],   /* Uint32*  — array base                        */
+    &TstackMemBuffer[0], /* Uint32*  — array base                        */
+    RstackPtr,           /* Uint32&                                      */
+    TheapMemoryChar,     /* char*                                        */
+    RnoOfInstructions,   /* Uint32&  — bound to req_struct field         */
+    tmpHabitant,         /* Uint32&                                      */
+    mainProgram,         /* Uint32*  — immutable, for RETURN to restore  */
+    TmainProgLen,        /* Uint32                                       */
+    subroutineProg,      /* Uint32*                                      */
+    TsubroutineLen,      /* Uint32                                       */
+    tmpArea,             /* Uint32*                                      */
+    tmpAreaSz,           /* Uint32                                       */
+    aggRegisters,        /* const Register*                              */
+  };
+
+  const bool noBackJumps = (flags & IFLAG_DISALLOW_BACKWARD_JUMPS) != 0;
+  /* Instruction fuse only applies when backward jumps are allowed —
+   * without them, every handler dispatch moves the PC strictly
+   * forward and the program is provably terminating. */
+  while (noBackJumps || RnoOfInstructions < 16000) {
+    if (TprogramCounter < TcurrentSize) {
+      RnoOfInstructions++;
+      theInstruction = TcurrentProgram[TprogramCounter];
+      theRegister    = Interpreter::getReg1(theInstruction) << 2;
+      const Uint32 prevPC = TprogramCounter;
+      TprogramCounter++;
+      const Uint32 opCode = Interpreter::getOpCode(theInstruction);
+      const InterpreterHandler h = handlerTable[opCode];
+      if (unlikely(h == nullptr)) {
+        jam();
+        terrorCode = ZNO_INSTRUCTION_ERROR;
+        return -1;
+      }
+      jamDebug();
+      jamDataDebug(opCode);
+      const int _rc = h(ctx);
+      if (likely(_rc == INTERP_CONTINUE)) {
+        if (noBackJumps && unlikely(TprogramCounter < prevPC)) {
+          jam();
+          terrorCode = ZBACKWARD_JUMP_NOT_ALLOWED;
+          return -1;
+        }
+        continue;
+      }
+      if (_rc == INTERP_EXIT) return 0;                    /* accept  */
+      if (_rc == Dbtup::INTERPRETER_FILTER_REJECT) {
+        return _rc;                                        /* reject  */
+      }
+      /* Handler error: it either set terrorCode directly and returned
+       * -1, or returned -(error_code) without setting it.  Mirror the
+       * TUPKEY_abort path used by interpreterNextLab: derive
+       * terrorCode from -_rc when the handler hasn't already set one. */
+      if (_rc < -1 && terrorCode == 0) {
+        terrorCode = (Uint32)(-_rc);
+      }
+      return -1;
+    } else {
+      jam();
+      terrorCode = ZOUTSIDE_OF_PROGRAM_ERROR;
+      return -1;
+    }
+  }
+  jam();
+  terrorCode = ZTOO_MANY_INSTRUCTIONS_ERROR;
+  return -1;
+}
+
+/**
+ * interpreterFilterCte — thin wrapper for Phase A/B callers that
+ * dispatches via s_cte_filter_handlers with IFLAG_REJECT_RETURNS_NEG.
+ */
+int Dbtup::interpreterFilterCte(Signal* signal,
+                                KeyReqStruct* req_struct,
+                                Uint32* mainProgram,
+                                Uint32 TmainProgLen,
+                                Uint32* subroutineProg,
+                                Uint32 TsubroutineLen,
+                                Uint32* tmpArea,
+                                Uint32 tmpAreaSz)
+{
+  return interpreterJumpTable(signal, req_struct,
+                              mainProgram, TmainProgLen,
+                              subroutineProg, TsubroutineLen,
+                              tmpArea, tmpAreaSz,
+                              s_cte_filter_handlers,
+                              IFLAG_REJECT_RETURNS_NEG);
+}
+
+/**
+ * interpreterAggEmbedded — Phase C.3 entry point for
+ * AggInterpreter::ProcessRec's kOpEmbeddedInterp case.  Dispatches
+ * the user's embedded program via s_agg_interp_handlers with
+ * IFLAG_DISALLOW_BACKWARD_JUMPS — terminating by construction, so
+ * the 16000-instruction fuse is off in this mode.
+ */
+int Dbtup::interpreterAggEmbedded(Signal* signal,
+                                  KeyReqStruct* req_struct,
+                                  Uint32* mainProgram,
+                                  Uint32 TmainProgLen,
+                                  Uint32* tmpArea,
+                                  Uint32 tmpAreaSz)
+{
+  return interpreterAggEmbedded(signal, req_struct, mainProgram, TmainProgLen,
+                                tmpArea, tmpAreaSz, nullptr);
+}
+
+int Dbtup::interpreterAggEmbedded(Signal* signal,
+                                  KeyReqStruct* req_struct,
+                                  Uint32* mainProgram,
+                                  Uint32 TmainProgLen,
+                                  Uint32* tmpArea,
+                                  Uint32 tmpAreaSz,
+                                  const Register *aggRegisters)
+{
+  return interpreterJumpTable(signal, req_struct,
+                              mainProgram, TmainProgLen,
+                              nullptr, 0,
+                              tmpArea, tmpAreaSz,
+                              s_agg_interp_handlers,
+                              IFLAG_DISALLOW_BACKWARD_JUMPS,
+                              aggRegisters);
 }
 
 /**

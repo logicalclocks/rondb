@@ -31,11 +31,12 @@
 #define JAM_FILE_ID 564
 
 struct JoinAggSetupReq {
-  static constexpr Uint32 SignalLength = 11;
+  static constexpr Uint32 SignalLength = 12;
   static constexpr Uint32 AggProgramSectionNum = 0;
   static constexpr Uint32 ReceiverIdsSectionNum = 1;
   static constexpr Uint32 STRATEGY_MUTEX_BASED = 0;
   static constexpr Uint32 STRATEGY_MUTEX_FREE = 1;
+  static constexpr Uint32 CTE_MODE_FLAG = 0x80000000;  // OR into concurrencyStrategy
 
   Uint32 senderRef;
   Uint32 senderData;
@@ -47,25 +48,38 @@ struct JoinAggSetupReq {
   Uint32 resultRef;
   Uint32 resultData;
   Uint32 routeRef;
+  Uint32 cteIndex;  // CTE index (0..MAX_CTES-1) or RNIL for main aggregation.
+                     // Echoed back in SETUP_CONF/REF so DBTC can route the response.
   // Long section 0: Aggregation program
   // Long section 1: Receiver IDs for hash-partitioned aggregation results
 };
 
 struct JoinAggSetupConf {
-  static constexpr Uint32 SignalLength = 4;
+  static constexpr Uint32 SignalLength = 6;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
   Uint32 aggStateKey;     // Pool index for O(1) lookup
+  Uint32 cteIndex;        // Echoed from SETUP_REQ
+  Uint32 ownerInstance;   // Phase L (E.1): single LDM thread on this node
+                          // that owns every signal mutating this
+                          // aggregation's COMPLETE state — and, for CTE
+                          // mode, REDISTRIBUTE / FINAL_REP too.  Applies
+                          // to both main-SELECT and CTE aggregation:
+                          // DBTC must address every JOIN_AGG_COMPLETE_REQ
+                          // to numberToRef(DBLQH, ownerInstance, ownNode)
+                          // so concurrent multi-LDM access is impossible
+                          // by construction.  See cte_filter_phase_l.md.
 };
 
 struct JoinAggSetupRef {
-  static constexpr Uint32 SignalLength = 5;
+  static constexpr Uint32 SignalLength = 6;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
   Uint32 errorCode;
   Uint32 errorLine;
+  Uint32 cteIndex;        // Echoed from SETUP_REQ
 };
 
 struct JoinAggCompleteReq {
@@ -76,6 +90,11 @@ struct JoinAggCompleteReq {
   Uint32 transid[2];
   Uint32 aggStateKey;
   Uint32 maxBatchRows;
+
+  // Optional section: per-node aggStateKeys for CTE lookup forwarding.
+  // Format: [nodeId1, aggKey1, ownerInstance1, ...] triples.
+  // Sent only for CTE COMPLETE (cte_mode), not for main agg COMPLETE.
+  enum { AggKeysSectionNum = 0 };
 };
 
 struct JoinAggCompleteConf {
@@ -172,6 +191,62 @@ struct JoinAggNullRowRef {
   Uint32 treeNodePtrI;
   Uint32 errorCode;
   Uint32 errorLine;
+};
+
+/**
+ * JOIN_AGG_REDISTRIBUTE_REQ — send a group row to its hash-owner node
+ * during CTE materialization with flow control.
+ * The receiving node merges the incoming accumulators with its local state
+ * (or inserts a new group if the key doesn't exist locally).
+ * If RI_NEED_CONF is set, receiver sends REDISTRIBUTE_CONF when processed.
+ *
+ * Long section 0: key_data (GROUP BY key, AttributeHeader-encoded)
+ * Long section 1: accumulator_data (AggResItem array)
+ */
+struct JoinAggRedistributeReq {
+  static constexpr Uint32 SignalLength = 4;
+  Uint32 aggStateKey;     // Destination JoinAggregationState on receiving node
+  Uint32 keyLen;          // Group key length in bytes
+  Uint32 valueLen;        // Accumulator data length in bytes
+  Uint32 requestInfo;     // Flags (RI_NEED_CONF)
+
+  enum { KeySectionNum = 0, ValueSectionNum = 1 };
+  enum RequestInfoBits { RI_NEED_CONF = 0x1 };
+};
+
+/**
+ * JOIN_AGG_REDISTRIBUTE_CONF — receiver acknowledges a batch of
+ * redistributed groups. Sent when RI_NEED_CONF was set in the last
+ * REDISTRIBUTE_REQ of the batch, providing flow control.
+ */
+struct JoinAggRedistributeConf {
+  static constexpr Uint32 SignalLength = 2;
+  Uint32 aggStateKey;
+  Uint32 senderNodeId;    // Node that processed the group(s)
+};
+
+/**
+ * JOIN_AGG_REDISTRIBUTE_REF — receiver failed to process a group
+ * (e.g., memory allocation failure). Tells the sender to abort
+ * redistribution and send COMPLETE_REF.
+ */
+struct JoinAggRedistributeRef {
+  static constexpr Uint32 SignalLength = 3;
+  Uint32 aggStateKey;
+  Uint32 senderNodeId;
+  Uint32 errorCode;
+};
+
+/**
+ * JOIN_AGG_FINAL_REP — fire-and-forget report that a node has finished
+ * sending all its REDISTRIBUTE_REQ messages for a CTE materialization.
+ * When all participating nodes have sent FINAL_REP, the CTE transitions
+ * to CTE_READY and can serve CTE_LOOKUP_REQ.
+ */
+struct JoinAggFinalRep {
+  static constexpr Uint32 SignalLength = 2;
+  Uint32 aggStateKey;     // JoinAggregationState pool index
+  Uint32 senderNodeId;    // Which node finished redistribution
 };
 
 #undef JAM_FILE_ID

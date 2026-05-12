@@ -1,0 +1,170 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.6-S.5: direct RonSQL printing of string MIN/MAX aggregate
+# results.  CTE string aggregate consumption is covered separately
+# because re-aggregating a CTE string result exercises a wider path.
+
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for string MIN/MAX printer tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE str_minmax (
+  id INT NOT NULL,
+  grp INT NOT NULL,
+  v VARCHAR(20),
+  c CHAR(8),
+  lv VARCHAR(300),
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE str_groups (
+  grp INT NOT NULL,
+  PRIMARY KEY USING HASH (grp)
+) ENGINE=NDB;
+
+INSERT INTO str_minmax VALUES
+  (1, 10, 'delta', 'dd', 'long-delta'),
+  (2, 10, 'alpha', 'aa', 'long-alpha'),
+  (3, 10, NULL,    NULL, NULL),
+  (4, 20, 'echo',  'ee', 'long-echo'),
+  (5, 20, '',      'bb', ''),
+  (6, 30, NULL,    NULL, NULL);
+
+INSERT INTO str_groups VALUES (10), (20), (30);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: scalar MIN/MAX over VARCHAR, CHAR and Longvarchar ===
+
+let $QUERY=
+SELECT MIN(v) AS min_v, MAX(v) AS max_v,
+       MIN(c) AS min_c, MAX(c) AS max_c,
+       MIN(lv) AS min_lv, MAX(lv) AS max_lv
+FROM str_minmax;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT MIN(v) AS min_v, MAX(v) AS max_v,
+       MIN(c) AS min_c, MAX(c) AS max_c,
+       MIN(lv) AS min_lv, MAX(lv) AS max_lv
+FROM str_minmax|
+
+--echo
+--echo
+--echo === Test 2: grouped MIN/MAX over VARCHAR, CHAR and Longvarchar ===
+
+let $QUERY=
+SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v,
+       MIN(c) AS min_c, MAX(c) AS max_c,
+       MIN(lv) AS min_lv, MAX(lv) AS max_lv
+FROM str_minmax
+GROUP BY grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v,
+       MIN(c) AS min_c, MAX(c) AS max_c,
+       MIN(lv) AS min_lv, MAX(lv) AS max_lv
+FROM str_minmax
+GROUP BY grp|
+
+--echo
+--echo
+--echo === Test 3: grouped CTE direct projection over string MIN/MAX ===
+
+let $QUERY=
+WITH s AS (
+SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v,
+       MIN(c) AS min_c, MAX(c) AS max_c,
+       MIN(lv) AS min_lv, MAX(lv) AS max_lv
+FROM str_minmax
+GROUP BY grp)
+SELECT grp, min_v, max_v, min_c, max_c, min_lv, max_lv
+FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (
+SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v,
+       MIN(c) AS min_c, MAX(c) AS max_c,
+       MIN(lv) AS min_lv, MAX(lv) AS max_lv
+FROM str_minmax
+GROUP BY grp)
+SELECT grp, min_v, max_v, min_c, max_c, min_lv, max_lv
+FROM s|
+
+--echo
+--echo
+--echo === Test 4: re-aggregate string CTE output through linked attrs ===
+
+let $QUERY=
+WITH s AS (
+SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v
+FROM str_minmax
+GROUP BY grp)
+SELECT MIN(s.min_v) AS min_v, MAX(s.max_v) AS max_v
+FROM s
+JOIN str_groups AS g ON g.grp = s.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (
+SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v
+FROM str_minmax
+GROUP BY grp)
+SELECT MIN(s.min_v) AS min_v, MAX(s.max_v) AS max_v
+FROM s
+JOIN str_groups AS g ON g.grp = s.grp|
+
+--echo
+--echo
+--echo === Test 5: filter on string CTE output ===
+
+--let QUERY_FILE=$MYSQL_TMP_DIR/ronsql-minmax-string-test5.sql
+--write_file $QUERY_FILE
+WITH s AS (
+SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v
+FROM str_minmax
+GROUP BY grp)
+SELECT grp, min_v, max_v
+FROM s
+WHERE min_v < 'beta';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (
+SELECT grp, MIN(v) AS min_v, MAX(v) AS max_v
+FROM str_minmax
+GROUP BY grp)
+SELECT grp, min_v, max_v
+FROM s
+WHERE min_v < 'beta'|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+DROP TABLE str_minmax;
+DROP TABLE str_groups;

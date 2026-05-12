@@ -1,0 +1,327 @@
+Phase M.1 BranchReg inventory and guard checklist
+=================================================
+
+Status
+------
+
+Started after commit 6ce7ff30263
+  RONDB-1050: add Phase M BranchReg cleanup plan
+
+Phase I.5 v2b is already committed at 959d45a20ce, so v2b is part of
+the committed baseline that Phase M must correct.
+
+Architectural rule for Phase M
+------------------------------
+
+Aggregation programs must not contain BranchReg control flow.
+
+Filtering happens before aggregation.  Any predicate that needs branch
+logic must use the normal interpreter / filter execution path.  CASE-like
+conditional value selection in aggregation uses kOpEmbeddedInterp, not
+aggregation-program BranchReg opcodes.
+
+Implementation note:
+  It is acceptable to extend kOpEmbeddedInterp so the embedded normal
+  interpreter can return a special "stop aggregation program for this
+  row" code.  This can be simpler than moving every remaining
+  cross-table predicate into a separate filter program, and it does not
+  duplicate branch semantics because comparison and branching still live
+  in the normal interpreter.
+
+Inventory command
+-----------------
+
+Run from repository root:
+
+  rg -n "BranchReg(Lt|Le|Gt|Ge|Eq|Ne)|kOpBranchReg|FORALL_PAIR_OPS|Greatest2|Least2" \
+    storage/ndb/include \
+    storage/ndb/src \
+    storage/ndb/block_unit_test \
+    mysql-test/suite/ronsql/t \
+    storage/ndb/claude_files/pushdown_join_aggregation
+
+Production emitters that must be removed or rewritten
+-----------------------------------------------------
+
+1. RonSQL select-subquery cross-table filter fallback
+
+   File:
+     storage/ndb/src/ronsql/RonSQLPreparer.cpp
+
+   Current area:
+     Around the merged select-subquery leaf aggregator setup.
+
+   Current shape:
+     LoadLinkedColumn(outer)
+     LoadColumn(inner)
+     BranchReg* to skip LoadColumn + aggregate instruction
+
+   Current BranchReg calls:
+     BranchRegLe
+     BranchRegLt
+     BranchRegGe
+     BranchRegGt
+     BranchRegNe
+     BranchRegEq
+
+   This is the original RONDB-1044 pattern and must move to normal
+   filter execution, or to kOpEmbeddedInterp with a normal-interpreter
+   predicate that can stop the aggregation program for this row.
+
+2. RonSQL join aggregation cross-table WHERE fallback
+
+   File:
+     storage/ndb/src/ronsql/RonSQLPreparer.cpp
+
+   Current area:
+     programAggregator_join(), around the cross_table_where_filters
+     handling.
+
+   Current shape:
+     Remaining cross-table filters are emitted as BranchReg conditional
+     aggregation.  A hidden sentinel COUNT accumulator is appended so
+     result handling can suppress groups where every row skipped the
+     aggregate block.
+
+   Current BranchReg calls:
+     BranchRegLe
+     BranchRegLt
+     BranchRegGe
+     BranchRegGt
+     BranchRegNe
+     BranchRegEq
+
+   The OR fallback also combines BranchReg with Skip to emulate boolean
+   control flow inside the aggregation program.  This must be replaced
+   by normal interpreter execution, either as a normal filter program or
+   as a kOpEmbeddedInterp stop-program predicate.
+
+3. RonSQL SVM GREATEST / LEAST pair-op lowering
+
+   Files:
+     storage/ndb/src/ronsql/RonSQLPreparer.cpp
+     storage/ndb/src/ronsql/AggregationAPICompiler.hpp
+     storage/ndb/src/ronsql/AggregationAPICompiler.cpp
+     storage/ndb/src/ronsql/RonSQLPreparer.hpp
+
+   Current SVM operations:
+     Greatest2
+     Least2
+     FORALL_PAIR_OPS
+
+   Current lowering:
+     Greatest2 expands to BranchRegGe + Mov.
+     Least2 expands to BranchRegLe + Mov.
+
+   This is committed Phase I.5 v2b work.  It must be redesigned before
+   Phase I continues.  The likely replacement is embedded-interpreter
+   CASE lowering or a later normal-interpreter value-selection opcode,
+   not aggregation BranchReg.
+
+Interpreter and API support that must be removed or blocked
+-----------------------------------------------------------
+
+1. Public NDB API
+
+   Files:
+     storage/ndb/include/ndbapi/NdbAggregator.hpp
+     storage/ndb/src/ndbapi/NdbAggregator.cpp
+
+   Current public methods:
+     BranchRegLt
+     BranchRegLe
+     BranchRegGt
+     BranchRegGe
+     BranchRegEq
+     BranchRegNe
+
+   Preferred Phase M end state:
+     Remove these methods.  If API compatibility requires a transition,
+     make them fail cleanly and leave no RonSQL production use.
+
+2. Aggregation opcode enum
+
+   File:
+     storage/ndb/include/ndbapi/NdbAggregationCommon.hpp
+
+   Current opcodes:
+     kOpBranchRegLt
+     kOpBranchRegLe
+     kOpBranchRegGt
+     kOpBranchRegGe
+     kOpBranchRegEq
+     kOpBranchRegNe
+
+   Preferred Phase M end state:
+     Remove these opcodes from the aggregation program format after all
+     emitters and tests are rewritten.
+
+3. Aggregation interpreter handlers
+
+   Files:
+     storage/ndb/src/kernel/blocks/dbtup/AggInterpreter.cpp
+     storage/ndb/src/kernel/blocks/dbtup/JoinAggInterpreter.cpp
+     storage/ndb/src/kernel/blocks/dbtup/PushdownInterpreter.cpp
+
+   Current areas:
+     AggInterpreter has runtime handlers for kOpBranchReg*.
+     JoinAggInterpreter validates/preprocesses/executes kOpBranchReg*.
+     PushdownInterpreter classifies kOpBranchReg* during preprocessing.
+
+   Preferred Phase M end state:
+     No aggregation interpreter variant accepts or executes BranchReg.
+
+Normal interpreter BranchRegEqNull / BranchRegNeNull
+----------------------------------------------------
+
+These hits are not part of the aggregation BranchReg problem:
+
+  storage/ndb/src/kernel/blocks/dbtup/DbtupExecQuery.cpp
+  storage/ndb/claude_files/pushdown_join_aggregation/cte_filter_phase_a.md
+  storage/ndb/claude_files/pushdown_join_aggregation/cte_filter_phase_c.md
+
+They belong to the normal DBTUP interpreter and should not be removed as
+part of Phase M unless a separate review proves they are obsolete.
+
+Tests to rewrite or drop
+------------------------
+
+1. NDB API direct BranchReg test
+
+   File:
+     storage/ndb/block_unit_test/testCteNdbApi.cpp
+
+   Current test:
+     Test 21, "GREATEST(MAX, MIN) via CASE in aggregation"
+
+   Current API use:
+     mainAgg.BranchRegGe(0, 1, 1)
+     mainAgg.Mov(0, 1)
+
+   Required Phase M action:
+     Rewrite through embedded interpreter if the use case remains valid,
+     or remove the test if it only covers the obsolete BranchReg API.
+
+2. RonSQL subquery aggregation extension tests
+
+   File:
+     mysql-test/suite/ronsql/t/ronsql_subquery_agg_ext.test
+
+   Current comments and expected behavior cover the original RONDB-1044
+   cross-table filter fallback, including K4, M2, M4, M7 and related
+   shapes.
+
+   Required Phase M action:
+     Keep semantic coverage, but update the implementation and comments
+     so the tests exercise normal filter execution rather than BranchReg
+     conditional aggregation.
+
+3. RonSQL GREATEST / LEAST v2b tests
+
+   File:
+     mysql-test/suite/ronsql/t/ronsql_cte_greatest_least_v2b.test
+
+   Current comments explicitly describe Greatest2 / Least2 expansion to
+   BranchRegGe + Mov or BranchRegLe + Mov.
+
+   Required Phase M action:
+     Drop, rewrite, or defer v2b tests until GREATEST / LEAST no longer
+     depends on aggregation BranchReg.
+
+Documentation to update or mark obsolete
+----------------------------------------
+
+Files with BranchReg, Greatest2, Least2, or FORALL_PAIR_OPS references:
+
+  storage/ndb/claude_files/pushdown_join_aggregation/CLAUDE.md
+  storage/ndb/claude_files/pushdown_join_aggregation/cte_filter_phase_i.md
+  storage/ndb/claude_files/pushdown_join_aggregation/cte_filter_phase_i4.md
+  storage/ndb/claude_files/pushdown_join_aggregation/cte_filter_phase_i5.md
+  storage/ndb/claude_files/pushdown_join_aggregation/cte_filter_phase_i5_v2.md
+  storage/ndb/claude_files/pushdown_join_aggregation/cte_filter_phase_i5_v2b.md
+  storage/ndb/claude_files/pushdown_join_aggregation/cte_filter_phase_m.md
+  storage/ndb/claude_files/pushdown_join_aggregation/j4_execution_flow.html
+  storage/ndb/claude_files/pushdown_join_aggregation/ronsql_index_join_analysis.html
+
+Required Phase M action:
+  The Phase M plan can keep historical references.  Older design docs
+  should be marked obsolete where they describe aggregation BranchReg as
+  an intended implementation model.
+
+First-use history
+-----------------
+
+Known introducing commits:
+
+  07f33d72cfe
+    Cross-table inner filters via BranchReg conditional aggregation
+    (RONDB-1044)
+
+  290f24b82e8
+    Add BranchRegEq/Ne opcodes for cross-table EQ/NE filters
+    (RONDB-1044)
+
+  959d45a20ce
+    RONDB-1050: Phase I.5 v2b -- n-ary GREATEST / LEAST via SVM
+    extension
+
+Phase M.1 guard checklist
+-------------------------
+
+Progress after M.1
+------------------
+
+Implemented the common kOpEmbeddedInterp stop-program result:
+
+  AGG_EMBEDDED_INTERP_STOP_PROGRAM
+
+Both aggregation interpreter variants now treat that embedded output as
+"stop this row's aggregation program".  RonSQL select-subquery
+cross-table filters have been moved from NdbAggregator::BranchReg* to
+the embedded normal-interpreter condition generator, using a local skip
+offset when the per-subquery predicate is false.  They do not use the
+stop-program result because a merged leaf may contain multiple subquery
+aggregate slots.
+
+Remaining production RonSQL BranchReg emitters:
+
+  [x] Phase I.5 v2b Greatest2 / Least2 lowering.
+  [x] Join aggregation cross-table WHERE fallback in programAggregator_join().
+
+The join aggregation fallback now emits embedded normal-interpreter
+predicates and uses AGG_EMBEDDED_INTERP_STOP_PROGRAM when a row fails a
+remaining cross-table WHERE filter.  The replacement covers the existing
+integer column / integer constant / + / - / * expression shapes and the
+OR / AND atom flattening used by cross_table_where_filters.  MUL_REG_REG
+was enabled in the aggregation embedded-interpreter handler table so this
+path is available in the aggregation interpreter variants.
+
+The v2b Greatest2 / Least2 pair-op lowering now emits an embedded
+normal-interpreter comparison.  The embedded program imports the relevant
+aggregation registers through READ_AGG_REG_TO_REG, compares them with the
+normal BRANCH_*_REG_REG opcodes, and returns a one-instruction skip over
+Mov when the destination register should be kept.
+
+At this point, RonSQL production code no longer calls
+NdbAggregator::BranchReg*.  testCteNdbApi Test 21 has also been moved
+from BranchRegGe to the embedded compare path.
+
+The public NDB API BranchReg* methods, the kOpBranchReg* aggregation
+opcodes and the aggregation interpreter compatibility handlers have been
+removed.  The remaining non-documentation BranchReg hits are
+BranchRegEqNull / BranchRegNeNull in the normal DBTUP interpreter; those
+are not aggregation opcodes.
+
+Before Phase M is considered complete, rerun the inventory command and
+verify:
+
+  [x] No RonSQL production path calls NdbAggregator::BranchReg*.
+  [x] No AggregationAPICompiler SVM op lowers to BranchReg*.
+  [x] No aggregation interpreter variant accepts kOpBranchReg*.
+  [x] No direct NDB API test uses BranchReg* as a required feature.
+  [ ] RonSQL cross-table filter tests still cover the same SQL semantics.
+  [ ] CASE aggregation tests still use kOpEmbeddedInterp for conditional
+      value selection.
+  [ ] Remaining BranchReg references are either normal-interpreter
+      BranchRegEqNull / BranchRegNeNull, Phase M documentation, or
+      explicitly obsolete historical notes.

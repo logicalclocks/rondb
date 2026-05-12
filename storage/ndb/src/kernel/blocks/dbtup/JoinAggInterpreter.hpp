@@ -61,7 +61,7 @@ class JoinAggInterpreter : public PushdownInterpreter {
     m_result_size(0),
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
     m_null_local_columns(false),
-    m_use_mutex(false), m_max_groups(0),
+    m_use_mutex(false), m_max_groups(0), m_cte_mode(false),
     m_chunks(nullptr), m_chunks_tail(nullptr),
     m_current_chunk(nullptr), m_total_chunk_bytes(0),
     m_memory_budget(0), m_budget_increment(0),
@@ -71,12 +71,14 @@ class JoinAggInterpreter : public PushdownInterpreter {
     m_xfrm_buf(nullptr), m_xfrm_buf_len(0),
     m_prog_buf(nullptr), m_gb_cols_buf(nullptr),
     m_agg_results_buf(nullptr), m_gb_map_buf(nullptr),
-    m_buf_block(nullptr) {
+    m_buf_block(nullptr),
+    m_string_results(nullptr) {
       memset(m_decimal_buf, 0, sizeof(decimal_digit_t) * DECIMAL_BUFF_LENGTH);
       m_decimal.buf = m_decimal_buf;
       m_decimal.len = DECIMAL_BUFF_LENGTH;
   }
   ~JoinAggInterpreter() override {
+    release_string_results();
     freeAllChunks();
     if (m_xfrm_buf != nullptr) {
       lc_ndbd_pool_free(m_xfrm_buf);
@@ -97,11 +99,13 @@ class JoinAggInterpreter : public PushdownInterpreter {
       Dbtup::KeyReqStruct* req_struct,
       const Uint32* linked_attr_data,
       Uint32 linked_attr_len,
+      Uint32 thread_id,
       const struct LeafProgram* leaf = nullptr);
   Int32 finalizeResults();
   Int32 processNullExtendedRow(
       const Uint32* linked_attr_data,
       Uint32 linked_attr_len,
+      Uint32 thread_id,
       const struct LeafProgram* leaf = nullptr);
 
   Int32 getResultData(Uint32* buffer, Uint32 buffer_size,
@@ -117,13 +121,82 @@ class JoinAggInterpreter : public PushdownInterpreter {
   Uint32 val_len() const {
     return m_n_agg_results * sizeof(AggResItem);
   }
+  /**
+   * Compute the full Uint64 distribution hash for a GROUP BY key.
+   * When character set columns are present, uses per-column normalization
+   * via hashKeyFull. Otherwise uses rondb_xxhash_std on raw key bytes,
+   * which is consistent with DBSPJ's CTE_LOOKUP routing hash.
+   */
+  Uint64 hashGroupKey(const char* key, Uint32 keyLen) const {
+    if (m_gb_types_inited) {
+      for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+        if (m_gb_types[i].cs != nullptr) {
+          return m_gb_map->hashKeyFull(key, keyLen);
+        }
+      }
+    }
+    return rondb_xxhash_std(key, keyLen);
+  }
   Uint32 n_gb_cols() const { return m_n_gb_cols; }
   Uint32 n_agg_results() const { return m_n_agg_results; }
   const AggResItem* agg_results() const { return m_agg_results; }
   Uint64 processed_rows() const { return m_processed_rows; }
+  /* Per-column GROUP BY type info, populated by initGBTypes on first
+   * processed row.  Returns nullptr until initialized.  Used by
+   * Dblqh::buildCteLinkedBuffer / cteScanAggFeed to encode CTE
+   * virt-column markers in linked-attr entries (cte_filter_phase_e1k.md). */
+  const GBColTypeInfo* gb_types() const {
+    return m_gb_types_inited ? m_gb_types : nullptr;
+  }
+
+  /**
+   * Look up a single group by key in the hash table.
+   * Returns pointer to group data (key + accumulators) or nullptr if not found.
+   * The returned pointer points past the 24-byte group link header.
+   * Layout: [key_data (keyLen bytes)] [accumulator_data (val_len() bytes)]
+   */
+  const char* lookupGroup(const char* key, Uint32 keyLen) const {
+    return m_gb_map ? m_gb_map->find(key, keyLen) : nullptr;
+  }
+
+  /**
+   * Merge a single incoming group into the hash table.
+   * If the key exists locally, merges accumulators using cached agg ops.
+   * If the key is new, inserts a new group with the incoming data.
+   * For Phase I.17e scalar (no GROUP BY) redistribute, callers can pass
+   * keyLen == 0 and the call dispatches to mergeScalarAccumulators.
+   * Returns 0 on success, negative on error (e.g., memory allocation failure).
+   */
+  Int32 mergeOneGroup(const char* key, Uint32 keyLen,
+                      const char* accumulators, Uint32 accLen);
+  Uint32 redistributionValueLen(const AggResItem* slots) const;
+
+  /**
+   * Phase I.17e: merge an inbound scalar accumulator payload into this
+   * interpreter's m_agg_results.  Used by execJOIN_AGG_REDISTRIBUTE_REQ
+   * for n_gb_cols == 0 CTE materialization, where every node packages
+   * its local m_agg_results and ships it to the DBTC-co-located owner
+   * node.  The owner repeatedly calls this method (one call per
+   * non-owner peer) to fold every node's contribution into its own
+   * accumulators.  Returns 0 on success, negative on error.
+   */
+  Int32 mergeScalarAccumulators(const char* accumulators, Uint32 accLen);
+
   void setUseMutex(bool v) { m_use_mutex = v; }
   void setMaxGroups(Uint32 v) { m_max_groups = v; }
   Uint32 maxGroups() const { return m_max_groups; }
+
+  /**
+   * CTE mode: rewrite each stored GROUP BY column's AttributeHeader
+   * attrId to the column's position (0..N-1) before hash insert.
+   *
+   * Why: DBSPJ builds CTE_LOOKUP keys with virtual CTE attrIds (0..N-1),
+   * but rows read from the source table carry source attrIds (e.g.
+   * attrId=1 for "grp"). Without normalization, the raw-byte hash and
+   * memcmp of the stored key diverge from the lookup key, so
+   * CTE_LOOKUP_REQ and cross-node hash routing fail to find the group.
+   */
+  void setCteMode(bool v) { m_cte_mode = v; }
 
   /**
    * Multi-leaf aggregation support.
@@ -150,11 +223,49 @@ class JoinAggInterpreter : public PushdownInterpreter {
   void freeAllChunks();
 
  private:
-  Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
+  Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
+                   Uint32 thread_id);
+
+  // Phase I.6 (F.2-K.4): running thread id for the in-flight ProcessRec
+  // call.  Set on entry to processRecWithLinkedAttrs /
+  // processNullExtendedRow and consumed by MaxString / MinString
+  // helpers when allocating per-(group, slot) string buffers via
+  // val_ptr.  See AggInterpreter.hpp for the same field's rationale.
+  Uint32 m_current_thread_id = 0;
+
+  // Phase I.6 (F.2-K.4c): per-(group, slot) string MIN/MAX update.
+  // Same contract as AggInterpreter::minMaxString — see that header.
+  // Returns 0 on success, ZAGG_ALLOC_MEM_FAILED on OOM.
+  Int32 minMaxString(Uint32 reg_index, Uint32 agg_index,
+                     AggResItem* agg_res_ptr, bool is_max);
+  Int32 ensureStringResultsFrom(const StringResult* source);
+  Int32 ensureStringResultsFromRedistribution(const AggResItem* slots,
+                                              const char* appended,
+                                              Uint32 appended_len);
+
+  // Phase I.6 (F.2-K.4e): free per-(group, slot) string winner
+  // buffers for one group's AggResItem array.  Called from
+  // evictOneGroup so per-group val_ptr buffers are released when
+  // the group is shipped out of the local hash table.  No-op when
+  // no string slots are present.
+  void freeGroupStringSlots(AggResItem* slots);
+
+ public:
+  // Phase I.6 (F.2-K.5): see AggInterpreter for the contract.
+  bool hasStringSlots() const { return m_string_results != nullptr; }
+  const StringResult* string_results() const { return m_string_results; }
+  Uint32 stringPayloadSize(const AggResItem* slots) const;
+  Uint32 encodeStringPayload(const AggResItem* slots, char* dst) const;
+ private:
 
   Uint32* m_prog;
   Uint32 m_cur_pos;
   Register m_registers[kRegTotal];
+
+  // Phase I.6 (F.2-K.4a): per-register string scratch.  See the
+  // matching field on AggInterpreter for purpose; populated by
+  // kOpLoadCol's CHAR/VARCHAR/Longvarchar arms.  192 B inline.
+  StringResult m_register_string_data[kRegTotal];
 
   Uint32 m_n_gb_cols;
   Uint32* m_gb_cols;
@@ -194,6 +305,7 @@ class JoinAggInterpreter : public PushdownInterpreter {
   // limit, processRecWithLinkedAttrs returns AGG_EVICT_NEEDED so the
   // caller can evict a group before retrying.
   Uint32 m_max_groups;                // 0 = unlimited
+  bool m_cte_mode;                    // see setCteMode()
 
   // Chunk-based allocator for group data.
   MemChunk* m_chunks;
@@ -228,6 +340,15 @@ class JoinAggInterpreter : public PushdownInterpreter {
 
   // Single allocation block for all dynamically allocated buffers above.
   void* m_buf_block;
+
+  // Phase I.6 (F.2): per-slot string MIN/MAX sidecar.  Lazily
+  // allocated (via lc_ndbd_pool_malloc) on the first row that
+  // populates a string-typed slot; sized to m_n_agg_results
+  // entries.  Stays nullptr for programs with no string MIN/MAX,
+  // so non-string queries pay zero memory cost.  Freed via
+  // release_string_results() in the destructor.
+  StringResult* m_string_results;
+  void release_string_results();
 };
 
 static_assert(sizeof(JoinAggInterpreter) <= MEM_CHUNK_SIZE,

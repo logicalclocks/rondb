@@ -38,6 +38,54 @@ class Interpreter {
  public:
   inline static Uint32 mod4(Uint32 len) { return len + ((4 - (len & 3)) & 3); }
 
+  /*
+   * Register type word (Phase I.18)
+   *
+   * Each interpreter register is laid out as 4 Uint32 slots:
+   *
+   *   slot 0   type word (one byte per flag)
+   *   slot 1   reserved / scratch (used by READ_ATTR_INTO_REG for the
+   *            AttributeHeader during the attribute-into-reg path)
+   *   slots 2-3   64-bit value (Int64, Uint64, or double bit pattern)
+   *
+   * The type word encodes one flag per byte so most CPUs can read or
+   * write each flag with a single-byte load/store and avoid shift /
+   * mask sequences:
+   *
+   *   byte 0 (bits  0.. 7)   NOT_NULL byte    1 = value, 0 = NULL
+   *   byte 1 (bits  8..15)   UNSIGNED byte    1 = unsigned integer
+   *   byte 2 (bits 16..23)   FLOAT byte       1 = double-precision float
+   *   byte 3 (bits 24..31)   reserved (always 0 today)
+   *
+   * Resulting slot 0 Uint32 values:
+   *
+   *   REG_TYPE_NULL    0x00000000   (== legacy NULL_INDICATOR)
+   *   REG_TYPE_INT     0x00000001   (== legacy NOT_NULL_INDICATOR — signed Int64)
+   *   REG_TYPE_UINT    0x00000101   (unsigned Uint64)
+   *   REG_TYPE_DOUBLE  0x00010001   (IEEE-754 double in 8 bytes)
+   *
+   * Properties preserved by this encoding:
+   *
+   *   - `slot == 0`            → NULL  (matches legacy NULL_INDICATOR)
+   *   - `slot != 0`            → non-NULL (every non-NULL encoding has byte 0 set)
+   *   - `(left & right) != 0`  → both operands are non-NULL
+   *
+   * The legacy NULL_INDICATOR / NOT_NULL_INDICATOR macros remain
+   * bit-identical to REG_TYPE_NULL / REG_TYPE_INT so producers that
+   * already write a signed Int64 stay correct without changes.
+   * Unsigned and floating-point producers must explicitly write
+   * REG_TYPE_UINT / REG_TYPE_DOUBLE.
+   */
+  static constexpr Uint32 REG_TW_NOT_NULL_BYTE = 0;
+  static constexpr Uint32 REG_TW_UNSIGNED_BYTE = 1;
+  static constexpr Uint32 REG_TW_FLOAT_BYTE    = 2;
+  static constexpr Uint32 REG_TW_RESERVED_BYTE = 3;
+
+  static constexpr Uint32 REG_TYPE_NULL   = 0x00000000u;
+  static constexpr Uint32 REG_TYPE_INT    = 0x00000001u;
+  static constexpr Uint32 REG_TYPE_UINT   = 0x00000101u;
+  static constexpr Uint32 REG_TYPE_DOUBLE = 0x00010001u;
+
   /**
    * General Mnemonic format
    *
@@ -196,7 +244,104 @@ class Interpreter {
   static constexpr Uint32 READ_LINKED_TO_MEM = 39;
   /* Overflow constant 39 free */
 
-  /* 40-46 free, both of them */
+  /**
+   * BRANCH_MEM_OP_ARG_INLINE_TYPE: Like BRANCH_MEM_OP_ARG but carries
+   * type/length/charset info inline rather than indirecting through
+   * tablerec[tableId]. Used by CTE filter mode to compare against
+   * synthesized aggregate result values (SUM produces Bigint, COUNT
+   * produces Bigunsigned) for which no real registered NDB column
+   * descriptor exists.
+   *
+   * Word layout:
+   *   Word 0: opcode | cond | null_semantics | branch_offset
+   *           (same shape as BranchMem)
+   *   Word 1: (typeId << 16) | arg_byte_len
+   *           typeId is an NdbDictionary::Column::Type value (fits in
+   *           ~5 bits, comfortably inside the 16-bit field).
+   *           arg_byte_len is the inline constant length in bytes.
+   *   Word 2: (columnSizeBytes << 16) | csNumber
+   *           columnSizeBytes — full on-wire size of the column data
+   *             in m_linked_attr_data[position] (matches what
+   *             AttributeDescriptor::getSizeInBytes returns for a
+   *             registered column). For VARCHAR includes the
+   *             1-or-2-byte length prefix.
+   *           csNumber — CHARSET_INFO::number for charset-bearing
+   *             types, 0 otherwise. Resolved server-side via
+   *             all_charsets[csNumber] (the kernel-wide registry
+   *             that Dbdict / DbtupMeta populate as tables load).
+   *           Both fit in 16 bits comfortably (max VARCHAR is
+   *           65537 bytes including 2-byte prefix; MySQL charset
+   *           numbers are well under 1024).
+   *   Words 3..N: inline constant data, padded to whole words.
+   */
+  static constexpr Uint32 BRANCH_MEM_OP_ARG_INLINE_TYPE = 40;
+  /* Overflow constant 40 free */
+
+  /**
+   * BRANCH_LINKED_EQ_NULL / BRANCH_LINKED_NE_NULL: Branch based on
+   * the AttributeHeader.isNULL() flag of the entry already loaded
+   * into cheapMemory[0] by READ_LINKED_TO_MEM.  Linked counterparts
+   * of BRANCH_ATTR_EQ_NULL / BRANCH_ATTR_NE_NULL — used by CTE
+   * filter mode for `WHERE col IS NULL` / `WHERE col IS NOT NULL`
+   * on a CTE column or aggregate output.
+   *
+   * Word layout (single word):
+   *   opcode | branch_offset
+   *   No operand word — the position is implicit from the
+   *   immediately-preceding READ_LINKED_TO_MEM.
+   */
+  static constexpr Uint32 BRANCH_LINKED_EQ_NULL = 41;
+  /* Overflow constant 41 free */
+
+  static constexpr Uint32 BRANCH_LINKED_NE_NULL = 42;
+  /* Overflow constant 42 free */
+
+  /*
+   * READ_AGG_REG_TO_REG: aggregation-embedded-only instruction.
+   * Copies an aggregation interpreter register into a normal interpreter
+   * register.  Not available in normal interpreted code or CTE filters.
+   *
+   * Encoding: READ_AGG_REG_TO_REG | (agg_reg << 16) | (interp_reg << 6)
+   */
+  static constexpr Uint32 READ_AGG_REG_TO_REG = 43;
+
+  /*
+   * READ_LINKED_COLUMN_TO_REG: type-aware linked-attr-buffer load
+   * (Phase I.5 v5).  Walks the linked buffer to the requested
+   * position, reads the AttributeHeader, and decodes the value into
+   * a normal interpreter register.  Replaces the two-word
+   * READ_LINKED_TO_MEM + READ_*_MEM_TO_REG_CONST sequence for the
+   * integer family and adds correct sign extension for signed
+   * sub-64-bit widths.
+   *
+   * Encoding: READ_LINKED_COLUMN_TO_REG
+   *           | (RegDest << 6)        // bits  6.. 8 (3 bits)
+   *           | (Position << 16)      // bits 16..23 (8 bits)
+   *           | (NdbColumnType << 24) // bits 24..31 (8 bits)
+   *
+   * Supported NdbColumnType values: Tinyint, Tinyunsigned, Smallint,
+   * Smallunsigned, Mediumint, Mediumunsigned, Int, Unsigned, Bigint,
+   * Bigunsigned.  Any other type code is rejected at runtime with
+   * ZNO_INSTRUCTION_ERROR.
+   *
+   * NULL handling: if the linked-attr buffer is missing, the
+   * position is out of range, or the AttributeHeader marks the
+   * column NULL, the destination register's NULL_INDICATOR slot is
+   * set so the existing BRANCH_REG_EQ_NULL / BRANCH_REG_NE_NULL
+   * branches behave consistently with READ_AGG_REG_TO_REG.
+   */
+  static constexpr Uint32 READ_LINKED_COLUMN_TO_REG = 44;
+  /* Overflow constant 44 free */
+
+  /* LOAD_DOUBLE_CONST — Phase I.18: load an IEEE-754 double immediate
+   * (encoded as two program words after the opcode word) into a
+   * register, marking it REG_TYPE_DOUBLE.  Counterpart of LOAD_CONST64
+   * (slot 6) for the floating-point family.  Signed-Int64 constants
+   * stay on LOAD_CONST64 — its existing semantics (NOT_NULL_INDICATOR
+   * == REG_TYPE_INT) match the new typed convention. */
+  static constexpr Uint32 LOAD_DOUBLE_CONST = 45;
+  /* Overflow constant 45 free */
+  /* 46 free, both of them */
   static constexpr Uint32 READ_PARTIAL_ATTR_TO_MEM = 47;
   /* Overflow constant 47 free */
   static constexpr Uint32 READ_ATTR_TO_MEM = 48;
@@ -244,7 +389,15 @@ class Interpreter {
   static constexpr Uint32 LOAD_OP_TYPE = 61;
   static constexpr Uint32 BZERO_MEM =
                           LOAD_OP_TYPE + OVERFLOW_OPCODE;
-  /* 62 free, both of them */
+  /* WRITE_REG_TO_MEM_ANY — Phase I.18: 8-byte memcpy from register
+   * slots 2-3 to heap memory regardless of source type.  Strict-typed
+   * writers (WRITE_UINT8/16/32_REG_TO_MEM, WRITE_INT64_REG_TO_MEM)
+   * reject non-matching source types; this opcode is the type-agnostic
+   * escape hatch for producers that need to spill any non-NULL
+   * register (signed Int64, Uint64, IEEE-754 double — the bit pattern
+   * is already canonical 64-bit) to memory.  Rejects NULL only. */
+  static constexpr Uint32 WRITE_REG_TO_MEM_ANY = 62;
+  /* Overflow constant 62 free */
   static constexpr Uint32 SPECIAL_INSTR = 63;
 
   /**
@@ -277,6 +430,7 @@ class Interpreter {
   static Uint32 LoadConst16(Uint32 Register, Uint32 Value);
   static Uint32 LoadConst32(Uint32 Register); // Value in next word
   static Uint32 LoadConst64(Uint32 Register); // Value in next 2 words
+  static Uint32 LoadDoubleConst(Uint32 Register); // IEEE-754 double in next 2 words
   static Uint32 LoadConstMem(Uint32 RegMemoryOffset,
                              Uint32 RegSize,
                              Uint16 ConstantSize); //Value in words after
@@ -373,6 +527,16 @@ class Interpreter {
 
   static Uint32 ReadInterpreterInput(Uint32 RegValue, Uint32 InputIndex);
   static Uint32 WriteInterpreterOutput(Uint32 RegValue, Uint32 OutputIndex);
+  static Uint32 ReadAggRegIntoReg(Uint32 AggReg, Uint32 RegDest);
+  // Phase I.5 v5: emit READ_LINKED_COLUMN_TO_REG.  Position is the
+  // linked-attr-buffer position (8-bit); NdbColumnType is the
+  // NDB_TYPE_* code for the source column.  Range-checked to the
+  // integer family (Tinyint .. Bigunsigned) by the kernel handler at
+  // runtime; the encoder accepts any 8-bit type code so the same
+  // helper can be reused if the type set widens later.
+  static Uint32 ReadLinkedColumnIntoReg(Uint32 RegDest,
+                                        Uint32 Position,
+                                        Uint32 NdbColumnType);
   static Uint32 ReadUint8FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
   static Uint32 ReadUint16FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
   static Uint32 ReadUint32FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
@@ -392,6 +556,12 @@ class Interpreter {
   static Uint32 WriteUint16RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset);
   static Uint32 WriteUint32RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset);
   static Uint32 WriteInt64RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset);
+
+  /* Phase I.18: type-agnostic 8-byte register-to-memory write
+   * (immediate offset).  Source register may be any non-NULL type
+   * (signed Int64, Uint64, IEEE-754 double); the in-register bit
+   * pattern is copied verbatim. */
+  static Uint32 WriteRegToMemAnyConst(Uint32 SrcReg, Uint16 Constant);
 
   static Uint32 BranchConstant(Uint32 Inst, Uint32 Reg1, Uint16 Constant);
   static Uint32 Branch(Uint32 Inst, Uint32 Reg1, Uint32 Reg2);
@@ -618,6 +788,10 @@ inline Uint32 Interpreter::LoadConst32(Uint32 Register) {
 
 inline Uint32 Interpreter::LoadConst64(Uint32 Register) {
   return (Register << 6) + LOAD_CONST64;
+}
+
+inline Uint32 Interpreter::LoadDoubleConst(Uint32 Register) {
+  return (Register << 6) + LOAD_DOUBLE_CONST;
 }
 
 inline Uint32
@@ -1012,6 +1186,21 @@ Interpreter::WriteInterpreterOutput(Uint32 RegValue,
 }
 
 inline Uint32
+Interpreter::ReadAggRegIntoReg(Uint32 AggReg, Uint32 RegDest) {
+  return (AggReg << 16) + (RegDest << 6) + READ_AGG_REG_TO_REG;
+}
+
+inline Uint32
+Interpreter::ReadLinkedColumnIntoReg(Uint32 RegDest,
+                                     Uint32 Position,
+                                     Uint32 NdbColumnType) {
+  return ((NdbColumnType & 0xFF) << 24)
+       | ((Position & 0xFF) << 16)
+       | (RegDest << 6)
+       | READ_LINKED_COLUMN_TO_REG;
+}
+
+inline Uint32
 Interpreter::ReadUint8FromMemIntoRegConst(Uint32 Dcoleg, Uint16 Constant) {
   return (Dcoleg << 6) + (Constant << 16) + READ_UINT8_MEM_TO_REG;
 }
@@ -1122,6 +1311,11 @@ Interpreter::WriteInt64RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset) {
          (RegOffset << 9) +
          (1 << 15) +
          WRITE_INT64_REG_TO_MEM;
+}
+
+inline Uint32
+Interpreter::WriteRegToMemAnyConst(Uint32 SrcReg, Uint16 Constant) {
+  return (SrcReg << 6) + (Constant << 16) + WRITE_REG_TO_MEM_ANY;
 }
 
 
@@ -1261,6 +1455,7 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
     case LOAD_CONST32:
       return op + 2;
     case LOAD_CONST64:
+    case LOAD_DOUBLE_CONST:
       return op + 3;
     case LOAD_CONST_MEM:
     {
@@ -1295,6 +1490,8 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
     case READ_PARTIAL_ATTR_TO_MEM:
     case READ_ATTR_TO_MEM:
     case READ_LINKED_TO_MEM:
+    case READ_AGG_REG_TO_REG:
+    case READ_LINKED_COLUMN_TO_REG:
 
     case BINARY_SEARCH_64:
     case BINARY_SEARCH_32:
@@ -1319,6 +1516,7 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
     case WRITE_UINT16_REG_TO_MEM:
     case WRITE_UINT32_REG_TO_MEM:
     case WRITE_INT64_REG_TO_MEM:
+    case WRITE_REG_TO_MEM_ANY:
 
     case READ_UINT8_REG_TO_REG:
     case READ_UINT16_REG_TO_REG:
@@ -1370,6 +1568,17 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
       Uint32 wordLength = (byteLength + 3) >> 2;
       return op + 4 + wordLength;  // +4: opcode, attrId/len, tableId, schemaVer
     }
+    case BRANCH_MEM_OP_ARG_INLINE_TYPE:
+    {
+      /* Like BRANCH_MEM_OP_ARG but the tableId+schemaVer indirection
+       * is replaced by a single word packing columnSizeBytes (high
+       * 16) and csNumber (low 16) — see opcode declaration.
+       */
+      processing = LABEL_ADDRESS_REPLACEMENT;
+      Uint32 byteLength = getBranchCol_Len(*(op + 1));
+      Uint32 wordLength = (byteLength + 3) >> 2;
+      return op + 3 + wordLength;  // +3: opcode, typeId/len, packed-meta
+    }
     case BRANCH_ATTR_OP_PARAM:
     case BRANCH_ATTR_OP_ATTR:
     case (BRANCH_ATTR_OP_PARAM + OVERFLOW_OPCODE):
@@ -1385,6 +1594,13 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
     case BRANCH_ATTR_NE_NULL:
       processing = LABEL_ADDRESS_REPLACEMENT;
       return op + 2;
+    case BRANCH_LINKED_EQ_NULL:
+    case BRANCH_LINKED_NE_NULL:
+      /* Single-word branch — no operand.  Position implicit from
+       * the immediately-preceding READ_LINKED_TO_MEM.
+       */
+      processing = LABEL_ADDRESS_REPLACEMENT;
+      return op + 1;
     case EXIT_OK:
     case EXIT_OK_LAST:
     case EXIT_REFUSE:

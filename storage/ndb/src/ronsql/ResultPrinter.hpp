@@ -35,13 +35,21 @@
 
 class ResultPrinter
 {
+public:
+  struct ColumnMetadata {
+    CHARSET_INFO* charset;
+    int precision;
+    int scale;
+    bool has_metadata;
+  };
+
 private:
 
   // Configuration provided to constructor
   ArenaMalloc* m_amalloc;
   struct SelectStatement* m_query;
   DynamicArray<LexCString>* m_column_names;
-  const NdbDictionary::Column** m_column_map;
+  const ColumnMetadata* m_column_metadata;
   RonSQLExecParams::OutputFormat m_output_format;
   std::basic_ostream<char>* m_err;
 
@@ -83,6 +91,7 @@ private:
       struct
       {
         Uint32 reg_a;
+        CHARSET_INFO* charset;
       } print_aggregate;
       struct
       {
@@ -146,6 +155,10 @@ private:
   void print_result_ordered(NdbAggregator* aggregator,
                             std::basic_ostream<char>* out_stream);
   void print_float_or_double(std::ostream& out, double value);
+  void print_aggregate_result(std::ostream& out,
+                              NdbAggregator::Result result,
+                              CHARSET_INFO* charset);
+  CHARSET_INFO* aggregate_arg_charset(const Outputs* out) const;
   bool evaluate_having(const ConditionalExpression* expr);
   double evaluate_having_value(const ConditionalExpression* expr);
   void scan_having_max_agg(const ConditionalExpression* expr,
@@ -154,12 +167,34 @@ public:
   ResultPrinter(ArenaMalloc* amalloc,
                 struct SelectStatement* query,
                 DynamicArray<LexCString>* column_names,
-                const NdbDictionary::Column** column_map,
+                const ColumnMetadata* column_metadata,
                 RonSQLExecParams::OutputFormat output_format,
                 std::basic_ostream<char>* err);
+  // Phase E.3 pass-through constructor for projection-only main SELECTs
+  // over a CTE_SCAN root.  Skips compile()/optimize() (which require
+  // every COLUMN output to be in GROUP BY); only sets up the output-format
+  // helpers used by print_passthrough_*.
+  ResultPrinter(ArenaMalloc* amalloc,
+                struct SelectStatement* query,
+                DynamicArray<LexCString>* column_names,
+                RonSQLExecParams::OutputFormat output_format,
+                std::basic_ostream<char>* err,
+                bool /*passthrough_marker*/);
   void print_result(NdbAggregator* aggregator,
                     std::basic_ostream<char>* out_stream);
+  void print_passthrough_header(const class NdbRecAttr* const* attrs,
+                                Uint32 num_cols,
+                                std::basic_ostream<char>* out_stream);
+  void print_passthrough_row(const class NdbRecAttr* const* attrs,
+                             Uint32 num_cols,
+                             bool is_first_row,
+                             std::basic_ostream<char>* out_stream);
+  void print_passthrough_finish(std::basic_ostream<char>* out_stream);
   void explain(std::basic_ostream<char>* out_stream);
+private:
+  void setup_output_format();
+  void print_passthrough_value(std::ostream& out,
+                               const class NdbRecAttr* attr);
 };
 
 #endif

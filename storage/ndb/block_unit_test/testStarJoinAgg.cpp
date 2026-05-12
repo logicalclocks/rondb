@@ -491,7 +491,8 @@ sendMultiLeafSetupReq(SignalSender &ss, Uint32 nodeId,
                       const std::vector<Uint32> &multiLeafSection,
                       const TableMeta &meta,
                       Uint32 strategy,
-                      Uint32 &aggStateKeyOut)
+                      Uint32 &aggStateKeyOut,
+                      Uint32 &ownerInstanceOut)
 {
   V("\n--- JOIN_AGG_SETUP_REQ (multi-leaf) -> node %u ---\n", nodeId);
 
@@ -510,6 +511,7 @@ sendMultiLeafSetupReq(SignalSender &ss, Uint32 nodeId,
   req->resultRef = ss.getOwnRef();
   req->resultData = FAKE_SENDER_DATA;
   req->routeRef = ss.getOwnRef();
+  req->cteIndex = RNIL;
 
   ssig.set(ss, 0, DBLQH, GSN_JOIN_AGG_SETUP_REQ,
            JoinAggSetupReq::SignalLength);
@@ -534,7 +536,12 @@ sendMultiLeafSetupReq(SignalSender &ss, Uint32 nodeId,
     const JoinAggSetupConf *conf =
       reinterpret_cast<const JoinAggSetupConf *>(resp->getDataPtr());
     aggStateKeyOut = conf->aggStateKey;
-    V("SETUP_CONF: aggStateKey=%u\n", aggStateKeyOut);
+    /* Phase L (E.1): owner LDM instance for routing every subsequent
+     * JOIN_AGG_COMPLETE_REQ — must be addressed to numberToBlock(
+     * DBLQH, ownerInstance) on the same nodeId. */
+    ownerInstanceOut = conf->ownerInstance;
+    V("SETUP_CONF: aggStateKey=%u ownerInstance=%u\n",
+      aggStateKeyOut, ownerInstanceOut);
     return 0;
   } else if (gsn == GSN_JOIN_AGG_SETUP_REF) {
     const JoinAggSetupRef *ref =
@@ -770,9 +777,11 @@ extractGroupKey(const std::vector<Uint8> &key)
 static int
 sendCompleteReq(SignalSender &ss, Uint32 nodeId,
                 Uint32 aggStateKey,
+                Uint32 ownerInstance,
                 Uint32 maxBatchRows)
 {
-  V("\n--- JOIN_AGG_COMPLETE_REQ -> node %u ---\n", nodeId);
+  V("\n--- JOIN_AGG_COMPLETE_REQ -> node %u inst %u ---\n",
+    nodeId, ownerInstance);
 
   SimpleSignal ssig;
   JoinAggCompleteReq *req =
@@ -786,7 +795,10 @@ sendCompleteReq(SignalSender &ss, Uint32 nodeId,
   req->aggStateKey = aggStateKey;
   req->maxBatchRows = maxBatchRows;
 
-  Uint16 recBlock = numberToBlock(DBLQH, 1);
+  /* Phase L (E.1): COMPLETE_REQ must reach the owner LDM for the
+   * aggStateKey's state, not instance 1.  Owner came back in
+   * SETUP_CONF; reproduce it here. */
+  Uint16 recBlock = numberToBlock(DBLQH, ownerInstance);
   ssig.set(ss, 0, recBlock, GSN_JOIN_AGG_COMPLETE_REQ,
            JoinAggCompleteReq::SignalLength);
 
@@ -1032,13 +1044,16 @@ test_2leaf_sum_count(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
 
   /* 1. Setup on all data nodes */
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendMultiLeafSetupReq(ss, nd, multiLeafSection, meta,
                               JoinAggSetupReq::STRATEGY_MUTEX_BASED,
-                              key) != 0)
+                              key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   /* 2. Scan all fragments TWICE — once per leaf */
@@ -1068,7 +1083,8 @@ test_2leaf_sum_count(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0)
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd],
+                        ownerInstances[nd], 1000) != 0)
       return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0)
       return -1;
@@ -1162,13 +1178,16 @@ test_2leaf_no_groupby(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
 
   /* 1. Setup */
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendMultiLeafSetupReq(ss, nd, multiLeafSection, meta,
                               JoinAggSetupReq::STRATEGY_MUTEX_BASED,
-                              key) != 0)
+                              key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   /* 2. Scan all fragments twice (once per leaf) */
@@ -1198,7 +1217,8 @@ test_2leaf_no_groupby(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0)
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd],
+                        ownerInstances[nd], 1000) != 0)
       return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0)
       return -1;
@@ -1290,13 +1310,16 @@ test_single_leaf_compat(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
 
   /* 1. Setup */
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendMultiLeafSetupReq(ss, nd, multiLeafSection, meta,
                               JoinAggSetupReq::STRATEGY_MUTEX_BASED,
-                              key) != 0)
+                              key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   /* 2. Scan all fragments once with leaf index 0 */
@@ -1323,7 +1346,8 @@ test_single_leaf_compat(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0)
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd],
+                        ownerInstances[nd], 1000) != 0)
       return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0)
       return -1;

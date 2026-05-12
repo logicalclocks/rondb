@@ -1,0 +1,310 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.17 — scalar aggregate CTE bodies (no GROUP BY).
+#
+# A CTE body with aggregate outputs and no GROUP BY clause is now
+# accepted as a one-row virtual table.  The materialization side
+# (kernel AggInterpreter, non-groupby mode) already returns
+# exactly one row including for empty input — so MAX over an
+# empty input returns NULL, COUNT returns 0, etc.  The CTE is
+# planned as a CTE_SCAN root.
+#
+# Coverage:
+#   1. Single scalar CTE: SELECT MAX from a CTE with no GROUP BY.
+#   2. Scalar CTE over empty input — MAX returns NULL.
+#   3. Scalar CTE COUNT(*) over empty input returns 0.
+#   4. Scalar CTE with multiple aggregates (MIN + MAX + SUM +
+#      COUNT) projected together.
+#   5. Negative test: CTE with non-aggregate column and no
+#      GROUP BY still rejected (kept distinct from the empty-CTE
+#      case).
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE scalar_t (
+  id     INT NOT NULL,
+  v      BIGINT NOT NULL,
+  region BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+INSERT INTO scalar_t VALUES
+  (1, 10,   1),
+  (2, 50,   1),
+  (3, 30,   2),
+  (4, 100,  2),
+  (5, 20,   3);
+
+CREATE TABLE scalar_empty (
+  id INT NOT NULL,
+  v  BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: scalar MAX over a populated table ===
+
+# WITH s AS (SELECT MAX(v) AS m FROM scalar_t) SELECT m FROM s;
+# Plan: CTE_SCAN root; CTE body materializes one row with m=100.
+let $QUERY=
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s|
+
+--echo
+--echo
+--echo === Test 2: scalar MAX over empty input — returns NULL ===
+
+# scalar_empty has 0 rows.  Per MySQL scalar aggregate semantics,
+# MAX over empty input is NULL — exactly one row emitted.
+let $QUERY=
+WITH s AS (SELECT MAX(v) AS m FROM scalar_empty)
+SELECT m FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT MAX(v) AS m FROM scalar_empty)
+SELECT m FROM s|
+
+--echo
+--echo
+--echo === Test 3: scalar COUNT(*) over empty input — returns 0 ===
+
+# COUNT(*) is the canonical "always emit a row" aggregate.  The
+# scalar path must surface 0, not zero rows.
+let $QUERY=
+WITH s AS (SELECT COUNT(*) AS n FROM scalar_empty)
+SELECT n FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT COUNT(*) AS n FROM scalar_empty)
+SELECT n FROM s|
+
+--echo
+--echo
+--echo === Test 4: scalar CTE with MIN + MAX + SUM + COUNT ===
+
+# Multiple aggregate outputs, populated input.  Confirms the
+# scalar virt table carries multiple non-PK columns and the
+# main-query SELECT projects all of them.
+let $QUERY=
+WITH s AS (SELECT MIN(v) AS lo, MAX(v) AS hi,
+                  SUM(v) AS total, COUNT(*) AS n
+           FROM scalar_t)
+SELECT lo, hi, total, n FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT MIN(v) AS lo, MAX(v) AS hi,
+                  SUM(v) AS total, COUNT(*) AS n
+           FROM scalar_t)
+SELECT lo, hi, total, n FROM s|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 5: CTE with non-aggregate column and no GROUP BY — must reject ===
+
+# Distinct from Test 1's scalar shape: this CTE projects v as a
+# plain column (no aggregate over it) without GROUP BY.  RonSQL
+# doesn't pass-through CTE bodies, so this is rejected with a
+# clear error.
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH s AS (SELECT v, MAX(v) AS m FROM scalar_t) SELECT v, m FROM s;' 2>&1
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 6: cross-join of two scalar CTEs (comma form), top-level GREATEST ===
+
+# Watermark-style shape — the query the I.17 plan motivated.  Two
+# scalar CTEs each compute one value; FROM cte_a, cte_b is the
+# comma cross-join syntax.  GREATEST is wrapped in implicit MAX
+# at the parser level.  emit_child_ops uses the testCteNdbApi.cpp
+# Test 20 pattern for the cross-join child: lookupCte with a
+# dummy constValue key + setParent, since for a scalar CTE the
+# kernel ignores the key and returns the materialised single row.
+let $QUERY=
+WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
+     min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
+SELECT GREATEST(max_v.hi, min_v.lo) AS biggest FROM max_v, min_v;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
+     min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
+SELECT GREATEST(max_v.hi, min_v.lo) AS biggest FROM max_v, min_v|
+
+--echo
+--echo
+--echo === Test 7: cross-join of two scalar CTEs, top-level LEAST ===
+
+# Same shape as Test 6 with LEAST instead of GREATEST.
+let $QUERY=
+WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
+     min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
+SELECT LEAST(max_v.hi, min_v.lo) AS smallest FROM max_v, min_v;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t),
+     min_v AS (SELECT MIN(v) AS lo FROM scalar_t)
+SELECT LEAST(max_v.hi, min_v.lo) AS smallest FROM max_v, min_v|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 8: SELECT with no FROM — auto-synthesised cross-join ===
+
+# Phase I.17h: the watermark shape without an explicit FROM.
+# RonSQL walks every qualified column reference, finds max_v and
+# min_v as scalar CTE qualifiers, and synthesises a comma
+# cross-join FROM automatically.  MySQL doesn't accept this
+# spelling, so this is a RonSQL-only behavioural test recorded
+# directly via ronsql_cli.
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t), min_v AS (SELECT MIN(v) AS lo FROM scalar_t) SELECT GREATEST(max_v.hi, min_v.lo) AS biggest;' 2>&1
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 10: scalar CTE root WHERE equality false returns no rows ===
+
+# Phase I.21: scalar CTE roots with WHERE must not use the I.7
+# key-covered lookup shortcut, which bypassed the predicate.  They
+# use scalar lookup with the dummy key plus interpreted code so the
+# kernel still evaluates the filter.
+let $QUERY=
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s WHERE m = 999;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s WHERE m = 999|
+
+--echo
+--echo
+--echo === Test 11: scalar CTE root WHERE equality true returns row ===
+
+let $QUERY=
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s WHERE m = 100;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s WHERE m = 100|
+
+--echo
+--echo
+--echo === Test 12: scalar CTE root WHERE range false returns no rows ===
+
+let $QUERY=
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s WHERE m < 100;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT MAX(v) AS m FROM scalar_t)
+SELECT m FROM s WHERE m < 100|
+
+--echo
+--echo
+--echo === Test 13: nullable first scalar output survives top-level GREATEST ===
+
+# The first scalar output is a structural dummy PK in the virtual
+# table, but the user-visible aggregate value is still nullable.
+let $QUERY=
+WITH s AS (SELECT MAX(v) AS m FROM scalar_empty),
+     n AS (SELECT COUNT(*) AS rows_seen FROM scalar_t)
+SELECT GREATEST(s.m, n.rows_seen) AS g FROM s, n;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT MAX(v) AS m FROM scalar_empty),
+     n AS (SELECT COUNT(*) AS rows_seen FROM scalar_t)
+SELECT GREATEST(s.m, n.rows_seen) AS g FROM s, n|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 14: top-level GREATEST over ordinary table column rejects ===
+
+# The implicit top-level GREATEST/LEAST aggregate wrapper is only
+# valid for scalar CTE output columns.  Ordinary table columns need
+# an explicit aggregate or future SELECT-level expression evaluation.
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT GREATEST(v, 1) AS g FROM scalar_t;' 2>&1
+
+--echo
+--echo
+--echo === Test 15: grouped top-level GREATEST over ordinary column rejects ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT region, GREATEST(v, 1) AS g FROM scalar_t GROUP BY region;' 2>&1
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 16: explicit aggregate over GREATEST remains accepted ===
+
+let $QUERY=
+SELECT MAX(GREATEST(v, 1)) AS g FROM scalar_t;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT MAX(GREATEST(v, 1)) AS g FROM scalar_t|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 9: SELECT no FROM with grouped CTE qualifier — must reject ===
+
+# I.17h's synthesis only accepts scalar (no-GROUP-BY) CTEs.  A
+# qualifier referencing a grouped CTE is rejected with a clear
+# message naming the scalar-CTE-only constraint.
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH g AS (SELECT region AS r, COUNT(*) AS c FROM scalar_t GROUP BY region) SELECT g.c AS x;' 2>&1
+
+--disable_query_log
+DROP TABLE scalar_t;
+DROP TABLE scalar_empty;
+--enable_query_log

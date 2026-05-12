@@ -1,0 +1,212 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.5 v2a: column-vs-column atoms in embedded CASE conditions.
+# Unlocks GREATEST/LEAST over two distinct columns and multi-column
+# CASE conditions like `WHEN col_a > col_b`.  Bigint-only on each
+# side; CTE-leaf columns rejected for col-vs-col (deferred to I.5
+# v5).  Generates READ_*-into-register loads + BRANCH_*_REG_REG.
+# Per-atom self-contained loads: each atom emits its own
+# READ_LINKED_TO_MEM(s), so a CASE with mixed-LHS atoms is now
+# correct (fixes a latent v1 bug as well).
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for col-vs-col CASE / GREATEST tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE cte_orders (
+  o_id INT NOT NULL,
+  o_custkey BIGINT NOT NULL,
+  o_amt BIGINT NOT NULL,
+  o_disc BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_o_custkey ON cte_orders (o_custkey);
+
+CREATE TABLE cte_customer (
+  c_id BIGINT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  c_region BIGINT NOT NULL,
+  c_floor   BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+INSERT INTO cte_customer VALUES
+  (100, 'Alice',   1, 50),
+  (200, 'Bob',     1, 60),
+  (300, 'Charlie', 2, 100),
+  (400, 'Dave',    2, 120);
+
+INSERT INTO cte_orders VALUES
+  (1, 100, 50,  10),
+  (2, 100, 75,  20),
+  (3, 200, 40,  5),
+  (4, 200, 60,  15),
+  (5, 300, 90,  30);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: GREATEST over two distinct parent-table columns ===
+
+# Both columns are leaf-table BIGINT NOT NULL.  Lowers to
+# CASE WHEN c.c_region >= c.c_floor THEN c.c_region ELSE c.c_floor END
+# Emit shape: READ_ATTR_INTO_REG(R1) + READ_ATTR_INTO_REG(R2) +
+#             BRANCH_GE_REG_REG(R2, R1, label).
+let $QUERY=
+SELECT c.c_id, SUM(GREATEST(c.c_region, c.c_floor)) AS gmax
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id, SUM(GREATEST(c.c_region, c.c_floor)) AS gmax
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 2: LEAST over two distinct parent-table columns ===
+
+let $QUERY=
+SELECT c.c_id, SUM(LEAST(c.c_region, c.c_floor)) AS lmin
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id, SUM(LEAST(c.c_region, c.c_floor)) AS lmin
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 3: multi-column CASE condition with > (col-vs-col) ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_region > c.c_floor THEN c.c_region ELSE 0 END) AS s
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_region > c.c_floor THEN c.c_region ELSE 0 END) AS s
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 4: multi-column CASE with <= ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_region <= c.c_floor THEN c.c_floor ELSE 0 END) AS s
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_region <= c.c_floor THEN c.c_floor ELSE 0 END) AS s
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 5: multi-column CASE with = ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_region = c.c_floor THEN 1 ELSE 0 END) AS eq_count
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_region = c.c_floor THEN 1 ELSE 0 END) AS eq_count
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 6: regression — same-column GREATEST still works ===
+
+# GREATEST(c.c_region, c.c_region) collapses to c.c_region per the
+# v1 same-column degenerate branch in lower_greatest_least.
+let $QUERY=
+SELECT c.c_id, SUM(GREATEST(c.c_region, c.c_region)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id, SUM(GREATEST(c.c_region, c.c_region)) AS g
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 7: regression — v1 col-vs-const still works ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, MAX(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.k, 150)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, MAX(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(GREATEST(sums.k, 150)) AS gmax
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE cte_orders;
+DROP TABLE cte_customer;
+--enable_query_log

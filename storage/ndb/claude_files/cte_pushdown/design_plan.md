@@ -498,6 +498,28 @@ DBSPJ
 - Memory limits for hash tables (eviction / spill to disk)
 - Non-aligned GROUP BY support (merge phase between materialization and lookup)
 
+### Step 10: Extended CTE Operations (future)
+
+These extensions are not required for the core feature store use case but are
+natural generalizations of the CTE infrastructure:
+
+1. **CTE_SCAN in main query**: The main SELECT can use a CTE as its root table
+   (scan over the full materialized CTE result). This enables queries like
+   `SELECT * FROM purchase_agg WHERE cnt > 5` where the CTE is the driving
+   table, not just a joined lookup target.
+
+2. **Aggregation on top of CTEs**: The main SELECT can have its own GROUP BY
+   and aggregate functions over CTE results. For example, aggregating across
+   multiple CTE outputs: `SELECT country, SUM(p.total) FROM ... GROUP BY country`.
+   The CTE materializes per-user aggregates, then the main query re-aggregates
+   by country.
+
+3. **Filters and aggregation on CTE_LOOKUP/CTE_SCAN nodes**: CTE result nodes
+   in the main query tree can carry their own scan filters and aggregation
+   programs, just like regular table nodes. This allows filtering CTE results
+   (e.g., `WHERE p.cnt > 10`) and further aggregation without a second query
+   round-trip.
+
 ---
 
 ## Key Design Decisions

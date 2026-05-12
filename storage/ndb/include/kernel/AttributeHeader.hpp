@@ -109,6 +109,15 @@ class AttributeHeader {
   // Aggregation result "columns"
   static constexpr Uint32 AGG_RESULT = 0xFF00;
   static constexpr Uint32 VEC_DISTANCE = 0xFF01;
+  // Phase I.6 (F.2-K.5): marker for aggregation results that include
+  // at least one CHAR / VARCHAR / Longvarchar MIN/MAX slot.  Same
+  // wire framing as AGG_RESULT for the AggResItem array, but each
+  // group's bytes carry an appended string-payload region after the
+  // array.  Selected by the kernel (AggInterpreter /
+  // JoinAggInterpreter) when hasStringSlots() is true; numeric-only
+  // queries continue to emit AGG_RESULT.  See cte_filter_phase_i6
+  // _varchar.md.
+  static constexpr Uint32 AGG_CHAR_RESULT = 0xFF02;
 
   static constexpr Uint32 READ_INTERPRETER_OUTPUT_FIRST = 0xFFB0;
   static constexpr Uint32 READ_INTERPRETER_OUTPUT_LAST = 0xFFBF;

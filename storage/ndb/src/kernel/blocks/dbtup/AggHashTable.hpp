@@ -87,6 +87,8 @@ class GBHashTable {
     Uint32 keyLen() const {
       return *reinterpret_cast<Uint32*>(m_raw + KEY_LEN_OFFSET);
     }
+    Uint32 bucket() const { return m_bucket; }
+    char* raw() const { return m_raw; }
   };
 
   GBHashTable()
@@ -154,6 +156,16 @@ class GBHashTable {
       }
     }
     return Iterator(self, m_bucket_count, nullptr, nullptr);
+  }
+
+  /**
+   * Construct an iterator at a saved position (bucket + raw pointer).
+   * Used for CTE scan resume — the hash table must be immutable between
+   * the save and restore. Does not support eraseAndNext() since
+   * m_prev_link is not reconstructed.
+   */
+  Iterator iteratorAt(Uint32 bucket, char* raw) {
+    return Iterator(this, bucket, nullptr, raw);
   }
 
   void next(Iterator& it) const {
@@ -228,6 +240,7 @@ class GBHashTable {
     m_xfrm_buf_len = xfrm_buf_len;
   }
 
+  Uint64 hashKeyFull(const char* key, Uint32 len) const;
   Uint32 hashKey(const char* key, Uint32 len) const;
   char* findInBucket(Uint32 b, const char* key, Uint32 key_len) const;
 
@@ -257,11 +270,19 @@ using JoinGBHashTable = GBHashTable<JOIN_AGG_HASH_BUCKET_COUNT>;
  * Template definitions for hashKey and findInBucket.
  * Must be in the header since the class is a template.
  */
+/**
+ * hashKeyFull — compute the full Uint64 hash of a GROUP BY key.
+ *
+ * For keys with complex character sets, normalizes each column via
+ * strnxfrm_hash before hashing. For binary/simple types, hashes raw bytes.
+ * This full hash is used for distribution (node selection, receiver routing)
+ * where the bucket mask must not be applied.
+ */
 template<Uint32 BUCKET_COUNT>
-Uint32 GBHashTable<BUCKET_COUNT>::hashKey(const char* key, Uint32 len) const {
+Uint64 GBHashTable<BUCKET_COUNT>::hashKeyFull(const char* key,
+                                              Uint32 len) const {
   if (m_col_types == nullptr) {
-    Uint64 h = rondb_xxhash_std(key, len);
-    return static_cast<Uint32>(h) & m_bucket_mask;
+    return rondb_xxhash_std(key, len);
   }
 
   // Type-aware path: hash column-by-column
@@ -290,15 +311,32 @@ Uint32 GBHashTable<BUCKET_COUNT>::hashKey(const char* key, Uint32 len) const {
         hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
       }
     } else {
-      // Non-collation or NULL: hash raw [AH + data] bytes
-      Uint32 colWords = 1 + dataSize;
-      Uint64 colHash = rondb_xxhash_std(reinterpret_cast<const char*>(p),
-                                        colWords * sizeof(Uint32));
-      hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+      // Non-collation or NULL: hash the data bytes only (skip AH).
+      // findInBucket also compares only p+1 (the value portion), so
+      // the attrId in the AH must not contribute to the hash — otherwise
+      // a lookup key produced against a different table (e.g. scanCte
+      // feeding a pushdown-joined lookupCte via a virtual table) would
+      // hash to a different bucket than the stored key even though the
+      // value bytes are identical.
+      if (dataSize > 0) {
+        Uint32 byteSize = ah.getByteSize();
+        Uint64 colHash = rondb_xxhash_std(
+            reinterpret_cast<const char*>(p + 1), byteSize);
+        hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+      } else {
+        // NULL column: fold a fixed sentinel to keep NULLs distinguishable.
+        Uint64 colHash = 0xDEADBEEFDEADBEEFULL;
+        hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+      }
     }
     p += 1 + dataSize;
   }
-  return static_cast<Uint32>(hash) & m_bucket_mask;
+  return hash;
+}
+
+template<Uint32 BUCKET_COUNT>
+Uint32 GBHashTable<BUCKET_COUNT>::hashKey(const char* key, Uint32 len) const {
+  return static_cast<Uint32>(hashKeyFull(key, len)) & m_bucket_mask;
 }
 
 template<Uint32 BUCKET_COUNT>

@@ -1,0 +1,154 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+
+=== Test 12: lookupCte as CTE materialisation root + child ===
+== Query ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM cte_src GROUP BY grp),
+cte1 AS (SELECT s.grp AS grp, SUM(s.val) AS total
+FROM cte0
+JOIN cte_src AS s ON s.pk = cte0.k
+WHERE cte0.k = 1
+GROUP BY s.grp)
+SELECT grp, total FROM cte1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM cte_src GROUP BY grp),
+cte1 AS (SELECT s.grp AS grp, SUM(s.val) AS total
+FROM cte0
+JOIN cte_src AS s ON s.pk = cte0.k
+WHERE cte0.k = 1
+GROUP BY s.grp)
+SELECT grp, total FROM cte1|
+grp	total
+1	10
+
+
+=== Test 13: lookupCte as main-query internal node ===
+== Query ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM cte_src GROUP BY grp)
+SELECT m.pk AS pk, m.grp AS grp, cte0.k AS c_grp,
+cte0.total AS total, s2.pk AS s2_pk, s2.val AS val
+FROM cte_src AS m
+JOIN cte0 ON cte0.k = m.grp
+JOIN cte_src AS s2 ON s2.pk = cte0.k;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM cte_src GROUP BY grp)
+SELECT m.pk AS pk, m.grp AS grp, cte0.k AS c_grp,
+cte0.total AS total, s2.pk AS s2_pk, s2.val AS val
+FROM cte_src AS m
+JOIN cte0 ON cte0.k = m.grp
+JOIN cte_src AS s2 ON s2.pk = cte0.k|
+pk	grp	c_grp	total	s2_pk	val
+1	1	1	30	1	10
+2	1	1	30	1	10
+3	2	2	70	2	20
+4	2	2	70	2	20
+5	3	3	50	3	30
+
+
+=== Test 14: lookupCte as CTE materialisation internal node ===
+== Query ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM cte_src GROUP BY grp),
+cte1 AS (SELECT s2.grp AS grp, SUM(s2.val) AS total
+FROM cte_src AS s1
+JOIN cte0 ON cte0.k = s1.grp
+JOIN cte_src AS s2 ON s2.pk = cte0.k
+GROUP BY s2.grp)
+SELECT grp, total FROM cte1;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM cte_src GROUP BY grp),
+cte1 AS (SELECT s2.grp AS grp, SUM(s2.val) AS total
+FROM cte_src AS s1
+JOIN cte0 ON cte0.k = s1.grp
+JOIN cte_src AS s2 ON s2.pk = cte0.k
+GROUP BY s2.grp)
+SELECT grp, total FROM cte1|
+grp	total
+1	60
+2	30
+
+
+=== Test 15: scanCte as main-query aggregate leaf ===
+== Query ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM cte_src GROUP BY grp)
+SELECT COUNT(*) AS cnt, SUM(cte0.total) AS s
+FROM cte0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM cte_src GROUP BY grp)
+SELECT COUNT(*) AS cnt, SUM(cte0.total) AS s
+FROM cte0|
+cnt	s
+3	150
+
+
+=== Test 16: scanCte as CTE materialisation root non-leaf ===
+== Query ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM cte_src GROUP BY grp),
+cte1 AS (SELECT s.grp AS grp, SUM(s.val) AS total
+FROM cte0
+JOIN cte_src AS s ON s.pk = cte0.k
+GROUP BY s.grp)
+SELECT grp, total FROM cte1;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM cte_src GROUP BY grp),
+cte1 AS (SELECT s.grp AS grp, SUM(s.val) AS total
+FROM cte0
+JOIN cte_src AS s ON s.pk = cte0.k
+GROUP BY s.grp)
+SELECT grp, total FROM cte1|
+grp	total
+1	30
+2	30
+
+
+=== Cleanup ===

@@ -110,6 +110,7 @@ struct Outputs
       TokenKind fun;
       AggregationAPICompiler_Expr* arg;
       Uint32 agg_index;
+      bool implicit_scalar_pair_op;
     } aggregate;
     struct
     {
@@ -229,9 +230,13 @@ struct JoinClause
   struct JoinClause *next;
 };
 
+struct CteDefinition;
+class AggregationAPICompiler;
+
 struct SelectStatement
 {
   bool do_explain = false;
+  CteDefinition* cte_list = NULL;  // Linked list of CTE definitions (WITH clause)
   Outputs* outputs = NULL;
   LexCString table = LexCString{NULL, 0};
   TableRef *root_table = NULL;
@@ -246,6 +251,19 @@ struct SelectStatement
                                 // rows pass the filter and must be suppressed.
   char* sql_begin = NULL;  // Start of inner query SQL (points into original buffer)
   char* sql_end = NULL;    // End of inner query SQL
+
+  // Aggregator program compiled while parsing this SELECT body. Populated
+  // by the cte_def / subquery grammar actions via the value returned from
+  // Context::leave_subquery(). The main query's aggregator lives on
+  // QueryScope::agg and is not stored here.
+  AggregationAPICompiler* agg = NULL;
+};
+
+struct CteDefinition
+{
+  LexCString name;              // CTE alias (e.g., "purchase_agg")
+  SelectStatement* stmt;        // The CTE's SELECT statement
+  struct CteDefinition* next;   // Linked list
 };
 
 struct SubqueryResult {

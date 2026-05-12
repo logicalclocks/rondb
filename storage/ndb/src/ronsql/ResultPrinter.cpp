@@ -26,6 +26,7 @@
 #include <limits>
 #include <cmath>
 #include <iomanip>
+#include <string>
 #include "m_string.h"
 #include "ResultPrinter.hpp"
 #include "RonSQLParser.y.hpp"
@@ -88,13 +89,13 @@ require_sch(bool condition, const char* msg)
 ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
                              struct SelectStatement* query,
                              DynamicArray<LexCString>* column_names,
-                             const NdbDictionary::Column** column_map,
+                             const ColumnMetadata* column_metadata,
                              RonSQLExecParams::OutputFormat output_format,
                              std::basic_ostream<char>* err):
   m_amalloc(amalloc),
   m_query(query),
   m_column_names(column_names),
-  m_column_map(column_map),
+  m_column_metadata(column_metadata),
   m_output_format(output_format),
   m_err(err),
   m_program(amalloc),
@@ -124,6 +125,32 @@ ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
   assert(err != NULL);
   compile();
   optimize();
+}
+
+ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
+                             struct SelectStatement* query,
+                             DynamicArray<LexCString>* column_names,
+                             RonSQLExecParams::OutputFormat output_format,
+                             std::basic_ostream<char>* err,
+                             bool /*passthrough_marker*/):
+  m_amalloc(amalloc),
+  m_query(query),
+  m_column_names(column_names),
+  m_column_metadata(NULL),
+  m_output_format(output_format),
+  m_err(err),
+  m_program(amalloc),
+  m_groupby_cols(amalloc),
+  m_outputs(amalloc),
+  m_col_idx_groupby_map(amalloc),
+  m_orderby_specs(amalloc),
+  m_has_orderby(false)
+{
+  assert(amalloc != NULL);
+  assert(query != NULL);
+  assert(column_names != NULL);
+  assert(err != NULL);
+  setup_output_format();
 }
 
 void
@@ -156,8 +183,9 @@ ResultPrinter::validate_orderby_columns()
               m_col_idx_groupby_map.push(0);
             m_col_idx_groupby_map[col_idx] = i;
             CHARSET_INFO* charset = NULL;
-            if (m_column_map != NULL)
-              charset = m_column_map[col_idx]->getCharset();
+            if (m_column_metadata != NULL &&
+                m_column_metadata[col_idx].has_metadata)
+              charset = m_column_metadata[col_idx].charset;
             OrderbySpec spec;
             spec.kind = OrderbySpec::Kind::GROUPBY_COL;
             spec.groupby_idx = i;
@@ -191,7 +219,9 @@ ResultPrinter::validate_orderby_columns()
         spec.kind = OrderbySpec::Kind::AGGREGATE;
         spec.agg_result_idx = agg_idx;
         spec.ascending = ob->ascending;
-        spec.charset = NULL;
+        spec.charset = out->type == Outputs::Type::AGGREGATE
+            ? aggregate_arg_charset(out)
+            : NULL;
         m_orderby_specs.push(spec);
       }
     }
@@ -208,8 +238,9 @@ ResultPrinter::validate_orderby_columns()
             m_col_idx_groupby_map.push(0);
           m_col_idx_groupby_map[col_idx] = i;
           CHARSET_INFO* charset = NULL;
-          if (m_column_map != NULL)
-            charset = m_column_map[col_idx]->getCharset();
+          if (m_column_metadata != NULL &&
+              m_column_metadata[col_idx].has_metadata)
+            charset = m_column_metadata[col_idx].charset;
           OrderbySpec spec;
           spec.kind = OrderbySpec::Kind::GROUPBY_COL;
           spec.groupby_idx = i;
@@ -348,43 +379,7 @@ ResultPrinter::compile()
     m_program.push(cmd);
   }
   m_print_start_idx = m_program.size();
-  switch (m_output_format)
-  {
-  case RonSQLExecParams::OutputFormat::TEXT:
-    m_json_output = false;
-    m_utf8_output = true;
-    m_tsv_output = true;
-    m_tsv_headers = true;
-    m_quote = "";
-    m_null_representation = LexString{"NULL", 4};
-    break;
-  case RonSQLExecParams::OutputFormat::TEXT_NOHEADER:
-    m_json_output = false;
-    m_utf8_output = true;
-    m_tsv_output = true;
-    m_tsv_headers = false;
-    m_quote = "";
-    m_null_representation = LexString{"NULL", 4};
-    break;
-  case RonSQLExecParams::OutputFormat::JSON:
-    m_json_output = true;
-    m_utf8_output = true;
-    m_tsv_output = false;
-    m_tsv_headers = false;
-    m_quote = "\"";
-    m_null_representation = LexString{"null", 4};
-    break;
-  case RonSQLExecParams::OutputFormat::JSON_ASCII:
-    m_json_output = true;
-    m_utf8_output = false;
-    m_tsv_output = false;
-    m_tsv_headers = false;
-    m_quote = "\"";
-    m_null_representation = LexString{"null", 4};
-    break;
-  default:
-    abort();
-  }
+  setup_output_format();
   for (Uint32 i = 0; i < m_outputs.size(); i++)
   {
     {
@@ -432,11 +427,13 @@ ResultPrinter::compile()
         CHARSET_INFO* charset;
         int precision;
         int scale;
-        if (m_column_map != NULL) {
-          const NdbDictionary::Column* col = m_column_map[o->column.col_idx];
-          charset = col->getCharset();
-          precision = col->getPrecision();
-          scale = col->getScale();
+        if (m_column_metadata != NULL &&
+            m_column_metadata[o->column.col_idx].has_metadata) {
+          const ColumnMetadata& meta =
+              m_column_metadata[o->column.col_idx];
+          charset = meta.charset;
+          precision = meta.precision;
+          scale = meta.scale;
         } else {
           // During EXPLAIN SELECT without access to ndb we still need to
           // compile, but these values won't be used.
@@ -461,6 +458,7 @@ ResultPrinter::compile()
         Cmd cmd;
         cmd.type = Cmd::Type::PRINT_AGGREGATE;
         cmd.print_aggregate.reg_a = o->aggregate.agg_index;
+        cmd.print_aggregate.charset = aggregate_arg_charset(o);
         m_program.push(cmd);
         break;
       }
@@ -799,27 +797,7 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
     case Cmd::Type::PRINT_AGGREGATE:
       {
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
-        if(result.is_null())
-        {
-          out << m_null_representation;
-          break;
-        }
-        switch (result.type())
-        {
-        case NdbDictionary::Column::Bigint:
-          out << result.data_int64();
-          break;
-        case NdbDictionary::Column::Bigunsigned:
-          out << result.data_uint64();
-          break;
-        case NdbDictionary::Column::Double:
-          print_float_or_double(out, result.data_double());
-          break;
-        case NdbDictionary::Column::Undefined:
-          bug("Unexpected undefined data type in aggregation result.");
-        default:
-          bug("Unexpected data type in aggregation result.");
-        }
+        print_aggregate_result(out, result, cmd.print_aggregate.charset);
       }
       break;
     case Cmd::Type::PRINT_AVG:
@@ -901,6 +879,49 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
       case NdbDictionary::Column::Double:
         cmp = (res_a.data_double() < res_b.data_double()) ? -1 :
               (res_a.data_double() > res_b.data_double()) ? 1 : 0;
+        break;
+      case NdbDictionary::Column::Char:
+      case NdbDictionary::Column::Varchar:
+      case NdbDictionary::Column::Longvarchar:
+        {
+          require_sch(spec.charset != nullptr,
+                      "Could not find charset for string aggregation result");
+          Uint32 len_a = 0;
+          Uint32 len_b = 0;
+          const char* data_a = res_a.data_str(&len_a);
+          const char* data_b = res_b.data_str(&len_b);
+          Uint32 prefix = res_a.type() == NdbDictionary::Column::Char ? 0 :
+                          res_a.type() == NdbDictionary::Column::Varchar ? 1 :
+                          2;
+          std::string raw_a;
+          std::string raw_b;
+          if (prefix != 0)
+          {
+            raw_a.resize(prefix + len_a);
+            raw_b.resize(prefix + len_b);
+            if (prefix == 1)
+            {
+              raw_a[0] = static_cast<char>(len_a);
+              raw_b[0] = static_cast<char>(len_b);
+            }
+            else
+            {
+              raw_a[0] = static_cast<char>(len_a & 0xff);
+              raw_a[1] = static_cast<char>((len_a >> 8) & 0xff);
+              raw_b[0] = static_cast<char>(len_b & 0xff);
+              raw_b[1] = static_cast<char>((len_b >> 8) & 0xff);
+            }
+            memcpy(&raw_a[prefix], data_a, len_a);
+            memcpy(&raw_b[prefix], data_b, len_b);
+            data_a = raw_a.data();
+            data_b = raw_b.data();
+          }
+          const NdbSqlUtil::Type& sqlType =
+              NdbSqlUtil::getType(static_cast<Uint32>(res_a.type()));
+          cmp = (*sqlType.m_cmp)(spec.charset,
+                                 data_a, prefix + len_a,
+                                 data_b, prefix + len_b);
+        }
         break;
       default:
         // Fallback: compare as int64
@@ -1025,6 +1046,212 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
   {
     DEB_TRACE();
     abort();
+  }
+}
+
+void
+ResultPrinter::setup_output_format()
+{
+  switch (m_output_format)
+  {
+  case RonSQLExecParams::OutputFormat::TEXT:
+    m_json_output = false;
+    m_utf8_output = true;
+    m_tsv_output = true;
+    m_tsv_headers = true;
+    m_quote = "";
+    m_null_representation = LexString{"NULL", 4};
+    break;
+  case RonSQLExecParams::OutputFormat::TEXT_NOHEADER:
+    m_json_output = false;
+    m_utf8_output = true;
+    m_tsv_output = true;
+    m_tsv_headers = false;
+    m_quote = "";
+    m_null_representation = LexString{"NULL", 4};
+    break;
+  case RonSQLExecParams::OutputFormat::JSON:
+    m_json_output = true;
+    m_utf8_output = true;
+    m_tsv_output = false;
+    m_tsv_headers = false;
+    m_quote = "\"";
+    m_null_representation = LexString{"null", 4};
+    break;
+  case RonSQLExecParams::OutputFormat::JSON_ASCII:
+    m_json_output = true;
+    m_utf8_output = false;
+    m_tsv_output = false;
+    m_tsv_headers = false;
+    m_quote = "\"";
+    m_null_representation = LexString{"null", 4};
+    break;
+  default:
+    abort();
+  }
+}
+
+// Phase E.3 + I.12 helpers: format a single NdbRecAttr value for the
+// projection-only pass-through path.  Mirrors the type cases the
+// aggregator path handles in print_record (see Column::data_*) but
+// reads directly from NdbRecAttr instead of NdbAggregator::Column.
+// Phase E.3's original supported set was integer, float, double — the
+// types build_cte_virtual_tables emits from SUM/COUNT/MIN/MAX.  Phase
+// I.12 extends the set to CHAR / VARCHAR / Longvarchar so projection-
+// only queries that select a real-table string column alongside CTE
+// columns (testCteNdbApiOuterJoin.cpp Test 1 etc.) work.
+void
+ResultPrinter::print_passthrough_value(std::ostream& out,
+                                       const NdbRecAttr* attr)
+{
+  if (attr == NULL || attr->isNULL() == 1) {
+    out << m_null_representation;
+    return;
+  }
+  NdbDictionary::Column::Type t = attr->getType();
+  switch (t) {
+  case NdbDictionary::Column::Tinyint:
+    out << (int)attr->int8_value(); break;
+  case NdbDictionary::Column::Tinyunsigned:
+    out << (unsigned)attr->u_8_value(); break;
+  case NdbDictionary::Column::Smallint:
+    out << (int)attr->short_value(); break;
+  case NdbDictionary::Column::Smallunsigned:
+    out << (unsigned)attr->u_short_value(); break;
+  case NdbDictionary::Column::Mediumint:
+    out << (int)attr->medium_value(); break;
+  case NdbDictionary::Column::Mediumunsigned:
+    out << (unsigned)attr->u_medium_value(); break;
+  case NdbDictionary::Column::Int:
+    out << (int)attr->int32_value(); break;
+  case NdbDictionary::Column::Unsigned:
+    out << (unsigned)attr->u_32_value(); break;
+  case NdbDictionary::Column::Bigint:
+    out << (long long)attr->int64_value(); break;
+  case NdbDictionary::Column::Bigunsigned:
+    out << (unsigned long long)attr->u_64_value(); break;
+  case NdbDictionary::Column::Float:
+    print_float_or_double(out, (double)attr->float_value()); break;
+  case NdbDictionary::Column::Double:
+    print_float_or_double(out, attr->double_value()); break;
+  case NdbDictionary::Column::Char:
+    {
+      const NdbDictionary::Column* col = attr->getColumn();
+      require_sch(col != nullptr, "NULL column on CHAR NdbRecAttr");
+      CHARSET_INFO* charset = col->getCharset();
+      require_sch(charset != nullptr, "Could not find charset for CHAR column");
+      LexString content = LexString{ attr->aRef(), (size_t)col->getSizeInBytes() };
+      if (m_json_output) {
+        out << '"';
+        print_string(out, content, charset, true, m_utf8_output, true);
+        out << '"';
+      } else if (m_tsv_output) {
+        print_string(out, content, charset, false, true, true);
+      } else {
+        abort();
+      }
+      break;
+    }
+  case NdbDictionary::Column::Varchar:
+  case NdbDictionary::Column::Longvarchar:
+    {
+      const NdbDictionary::Column* col = attr->getColumn();
+      require_sch(col != nullptr, "NULL column on VARCHAR NdbRecAttr");
+      CHARSET_INFO* charset = col->getCharset();
+      require_sch(charset != nullptr, "Could not find charset for VARCHAR column");
+      const char* data = attr->aRef();
+      LexString content;
+      if (t == NdbDictionary::Column::Varchar) {
+        content = LexString{ &data[1],
+                             (size_t)(unsigned char)data[0] };
+      } else {
+        content = LexString{ &data[2],
+                             (size_t)(unsigned char)data[0] |
+                             (((size_t)(unsigned char)data[1]) << 8) };
+      }
+      out << m_quote;
+      print_string(out,
+                   content,
+                   charset,
+                   m_json_output,
+                   m_utf8_output || m_tsv_output,
+                   false);
+      out << m_quote;
+      break;
+    }
+  default:
+    // Other types would need format-specific handling matching
+    // print_record (DATE/TIMESTAMP, DECIMAL, BIT, BLOB, BINARY).
+    // Add as needed when a query exercises them.
+    throw RonSQLPermanentError(
+        "Unsupported column type in projection-only CTE_SCAN result.");
+  }
+}
+
+void
+ResultPrinter::print_passthrough_header(const NdbRecAttr* const* /*attrs*/,
+                                         Uint32 num_cols,
+                                         std::basic_ostream<char>* out_stream)
+{
+  assert(out_stream != NULL);
+  std::ostream& out = *out_stream;
+  if (m_json_output) {
+    out << '[';
+    return;
+  }
+  if (m_tsv_output && m_tsv_headers) {
+    Outputs* o = m_query->outputs;
+    for (Uint32 i = 0; i < num_cols; i++) {
+      if (i > 0) out << '\t';
+      assert(o != NULL);
+      out << o->output_name;
+      o = o->next;
+    }
+    out << '\n';
+  }
+}
+
+void
+ResultPrinter::print_passthrough_row(const NdbRecAttr* const* attrs,
+                                      Uint32 num_cols,
+                                      bool is_first_row,
+                                      std::basic_ostream<char>* out_stream)
+{
+  assert(out_stream != NULL);
+  std::ostream& out = *out_stream;
+  if (m_json_output) {
+    if (!is_first_row) out << ',';
+    out << '{';
+    Outputs* o = m_query->outputs;
+    for (Uint32 i = 0; i < num_cols; i++) {
+      assert(o != NULL);
+      if (i > 0) out << ',';
+      out << '"' << o->output_name << "\":";
+      // Numbers print without quotes; strings/temporals would need
+      // quoting once supported (see print_passthrough_value's default
+      // branch — currently rejects).
+      print_passthrough_value(out, attrs[i]);
+      o = o->next;
+    }
+    out << '}';
+    return;
+  }
+  if (m_tsv_output) {
+    for (Uint32 i = 0; i < num_cols; i++) {
+      if (i > 0) out << '\t';
+      print_passthrough_value(out, attrs[i]);
+    }
+    out << '\n';
+  }
+}
+
+void
+ResultPrinter::print_passthrough_finish(std::basic_ostream<char>* out_stream)
+{
+  assert(out_stream != NULL);
+  std::ostream& out = *out_stream;
+  if (m_json_output) {
+    out << "]\n";
   }
 }
 
@@ -1351,28 +1578,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
     case Cmd::Type::PRINT_AGGREGATE:
       {
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
-        if(result.is_null())
-        {
-          out << m_null_representation;
-          break;
-        }
-        // todo conform format for sum(int) to mysql CLI
-        switch (result.type())
-        {
-        case NdbDictionary::Column::Bigint:
-          out << result.data_int64();
-          break;
-        case NdbDictionary::Column::Bigunsigned:
-          out << result.data_uint64();
-          break;
-        case NdbDictionary::Column::Double:
-          print_float_or_double(out, result.data_double());
-          break;
-        case NdbDictionary::Column::Undefined:
-          bug("Unexpected undefined data type in aggregation result.");
-        default:
-          bug("Unexpected data type in aggregation result.");
-        }
+        print_aggregate_result(out, result, cmd.print_aggregate.charset);
       }
       break;
     case Cmd::Type::PRINT_AVG:
@@ -1703,6 +1909,74 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value)
   ndbrequire(len > 0 && buffer[len] == 0);
   out << buffer;
   return;
+}
+
+CHARSET_INFO*
+ResultPrinter::aggregate_arg_charset(const Outputs* out) const
+{
+  if (out == NULL || out->type != Outputs::Type::AGGREGATE)
+    return NULL;
+  if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX)
+    return NULL;
+  AggregationAPICompiler::Expr* arg = out->aggregate.arg;
+  if (arg == NULL || !arg->isLoad())
+    return NULL;
+  Uint32 col_idx = arg->getLoadIdx();
+  if (m_column_names == NULL || col_idx >= m_column_names->size())
+    return NULL;
+  if (m_column_metadata == NULL ||
+      !m_column_metadata[col_idx].has_metadata)
+  {
+    return NULL;
+  }
+  return m_column_metadata[col_idx].charset;
+}
+
+void
+ResultPrinter::print_aggregate_result(std::ostream& out,
+                                      NdbAggregator::Result result,
+                                      CHARSET_INFO* charset)
+{
+  if (result.is_null())
+  {
+    out << m_null_representation;
+    return;
+  }
+
+  switch (result.type())
+  {
+  case NdbDictionary::Column::Bigint:
+    out << result.data_int64();
+    break;
+  case NdbDictionary::Column::Bigunsigned:
+    out << result.data_uint64();
+    break;
+  case NdbDictionary::Column::Double:
+    print_float_or_double(out, result.data_double());
+    break;
+  case NdbDictionary::Column::Char:
+  case NdbDictionary::Column::Varchar:
+  case NdbDictionary::Column::Longvarchar:
+    {
+      require_sch(charset != nullptr,
+                  "Could not find charset for string aggregation result");
+      Uint32 payload_len = 0;
+      const char* payload = result.data_str(&payload_len);
+      out << m_quote;
+      print_string(out,
+                   LexString{payload, payload_len},
+                   charset,
+                   m_json_output,
+                   m_utf8_output || m_tsv_output,
+                   result.type() == NdbDictionary::Column::Char);
+      out << m_quote;
+    }
+    break;
+  case NdbDictionary::Column::Undefined:
+    bug("Unexpected undefined data type in aggregation result.");
+  default:
+    bug("Unexpected data type in aggregation result.");
+  }
 }
 
 inline static double

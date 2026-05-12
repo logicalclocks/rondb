@@ -44,6 +44,13 @@
   X(Div) \
   X(DivInt) \
   X(Rem)
+// Pair-ops are value-producing binary ops shaped like arithmetic ops at the
+// SVM level. Each one emits an embedded normal-interpreter comparison that
+// imports aggregation registers and conditionally skips a Mov. Used to lower
+// n-ary GREATEST / LEAST.
+#define FORALL_PAIR_OPS(X) \
+  X(Greatest2) \
+  X(Least2)
 #define FORALL_AGGS(X) \
   X(Sum) \
   X(Min) \
@@ -54,6 +61,7 @@
   X(LoadConstantInteger) \
   X(Mov) \
   FORALL_ARITHMETIC_OPS(X) \
+  FORALL_PAIR_OPS(X) \
   FORALL_AGGS(X)
 
 // This class is called AggregationAPICompiler::Expr everywhere except in
@@ -67,6 +75,7 @@ class AggregationAPICompiler_Expr
     Load,
     LoadConstantInt,
     FORALL_ARITHMETIC_OPS(ARITHMETIC_ENUM)
+    FORALL_PAIR_OPS(ARITHMETIC_ENUM)
     Case,
   };
 #undef ARITHMETIC_ENUM
@@ -74,7 +83,15 @@ class AggregationAPICompiler_Expr
   friend class AggregationAPICompiler;
 public:
   bool isLoad() const { return op == ExprOp::Load; }
+  bool isLoadConstantInt() const { return op == ExprOp::LoadConstantInt; }
+  bool isGreatest2() const { return op == ExprOp::Greatest2; }
+  bool isLeast2() const { return op == ExprOp::Least2; }
+  bool isCase() const { return op == ExprOp::Case; }
   Uint32 getLoadIdx() const { return idx; }
+  Uint32 getConstantIdx() const { return idx; }
+  AggregationAPICompiler_Expr* getLeft() const { return left; }
+  AggregationAPICompiler_Expr* getRight() const { return right; }
+  ConditionalExpression* getCaseCondition() const { return case_condition; }
 private:
   ExprOp op; // Binary operation or Load
   Expr* left = NULL; // Left argument to binary operation
@@ -111,6 +128,12 @@ public:
     FAILED,
   };
   Status getStatus();
+  // Phase I.5 v2b: lets RonSQLPreparer identify which compiler owns a
+  // given Expr* (for cross-scope tracking of GREATEST / LEAST
+  // operands).
+  bool owns_expr(class AggregationAPICompiler_Expr* e);
+  void for_each_expr(
+      std::function<void(const AggregationAPICompiler_Expr*)> fn) const;
 private:
   std::basic_ostream<char>& m_out;
   std::basic_ostream<char>& m_err;
@@ -159,6 +182,7 @@ public:
                                                expr_y); \
   }
   FORALL_ARITHMETIC_OPS(DEFINE_ARITH_FUNC)
+  FORALL_PAIR_OPS(DEFINE_ARITH_FUNC)
 #undef DEFINE_ARITH_FUNC
   // Aggregation operations
 #define DEFINE_AGG_FUNC(OP) \
@@ -214,6 +238,18 @@ public:
   // Aggregation Compiler:
 public:
   DynamicArray<Instr> m_program;
+  // Phase I.5 v4 fast path: parallel to m_program.  Slot i holds the
+  // Greatest2 / Least2 Expr* for instruction i if that instruction is
+  // a pair-op, NULL otherwise.  Used by RonSQLPreparer to compute
+  // per-pair-op nullability and elide the BRANCH_REG_EQ_NULL words
+  // when both operands are statically non-nullable.
+  DynamicArray<Expr*> m_pair_op_program_exprs;
+  // Per-program-index needs_null_check decision (filled by
+  // RonSQLPreparer at the start of programAggregator before any
+  // raw_word_size queries fire).  true = emit the nullable 18-word
+  // expansion, false = emit the 9-word embedded body + Mov fast path.
+  // Only meaningful at indices where m_program[i] is a pair-op.
+  DynamicArray<bool> m_pair_op_needs_null_check;
 private:
   Uint32 m_locked[REGS];
 public:

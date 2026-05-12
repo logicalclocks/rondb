@@ -1,0 +1,936 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# ronsql_cli does not properly refresh NDB dictionary cache for join queries,
+# so the CTE tests (which all involve joins) rely on the RDRS comparison
+# only, matching the convention in ronsql_join_agg.test.
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for CTE basic tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE cte_orders (
+  o_id INT NOT NULL,
+  o_custkey INT NOT NULL,
+  o_amt INT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_o_custkey ON cte_orders (o_custkey);
+
+CREATE TABLE cte_customer (
+  c_id INT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  c_region INT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+CREATE TABLE cte_lineitem (
+  l_id INT NOT NULL,
+  l_custkey INT NOT NULL,
+  l_price INT NOT NULL,
+  PRIMARY KEY USING HASH (l_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_l_custkey ON cte_lineitem (l_custkey);
+
+INSERT INTO cte_customer VALUES
+  (100, 'Alice',   1),
+  (200, 'Bob',     1),
+  (300, 'Charlie', 2),
+  (400, 'Dave',    2);
+
+INSERT INTO cte_orders VALUES
+  (1, 100, 50),
+  (2, 100, 75),
+  (3, 200, 40),
+  (4, 200, 60),
+  (5, 300, 90);
+
+INSERT INTO cte_lineitem VALUES
+  (1, 100, 10),
+  (2, 100, 20),
+  (3, 200, 30),
+  (4, 200, 40),
+  (5, 300, 50),
+  (6, 300, 60);
+
+CREATE TABLE cte_regions (
+  r_id INT NOT NULL,
+  r_code VARCHAR(8) NOT NULL,
+  PRIMARY KEY USING HASH (r_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_r_code ON cte_regions (r_code);
+
+INSERT INTO cte_regions VALUES
+  (1, 'US'),
+  (2, 'US'),
+  (3, 'UK'),
+  (4, 'UK');
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+# Note on GROUP BY column choice:
+#   These Phase B tests GROUP BY a CTE-output column rather than a
+#   parent-table column. The DBLQH CTE_LOOKUP agg-feed linked buffer uses
+#   two different on-wire formats — LQHKEYREQ subroutine format for parent
+#   projections, [tableId][schemaVersion][AttrHeader][data] format for the
+#   CTE's own GB keys and agg results — but JoinAggInterpreter::initGBTypes
+#   walks the buffer assuming only the latter format. Mixing a parent-table
+#   GROUP BY column (local) with a CTE-output aggregate (linked) therefore
+#   mis-aligns on step-1 entries. A future phase covers this shape.
+
+--echo
+--echo
+--echo === Test 1: CTE as main aggregation leaf (A0 shape) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 2: Multi-table CTE body, main agg on CTE leaf (A0) ===
+
+let $QUERY=
+WITH revenue AS (
+  SELECT o.o_custkey AS k, SUM(l.l_price) AS r
+  FROM cte_orders AS o JOIN cte_lineitem AS l ON l.l_custkey = o.o_custkey
+  GROUP BY o.o_custkey)
+SELECT revenue.k, SUM(revenue.r)
+FROM cte_customer AS c
+JOIN revenue ON revenue.k = c.c_id
+GROUP BY revenue.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH revenue AS (
+  SELECT o.o_custkey AS k, SUM(l.l_price) AS r
+  FROM cte_orders AS o JOIN cte_lineitem AS l ON l.l_custkey = o.o_custkey
+  GROUP BY o.o_custkey)
+SELECT revenue.k, SUM(revenue.r)
+FROM cte_customer AS c
+JOIN revenue ON revenue.k = c.c_id
+GROUP BY revenue.k|
+
+--echo
+--echo
+--echo === Test 3: CTE with MIN + MAX aggregates ===
+
+let $QUERY=
+WITH bounds AS (
+  SELECT o_custkey AS k, MIN(o_amt) AS mn, MAX(o_amt) AS mx
+  FROM cte_orders GROUP BY o_custkey)
+SELECT bounds.k, SUM(bounds.mn), SUM(bounds.mx)
+FROM cte_customer AS c
+JOIN bounds ON bounds.k = c.c_id
+GROUP BY bounds.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH bounds AS (
+  SELECT o_custkey AS k, MIN(o_amt) AS mn, MAX(o_amt) AS mx
+  FROM cte_orders GROUP BY o_custkey)
+SELECT bounds.k, SUM(bounds.mn), SUM(bounds.mx)
+FROM cte_customer AS c
+JOIN bounds ON bounds.k = c.c_id
+GROUP BY bounds.k|
+
+--echo
+--echo
+--echo === Test 4: CTE with COUNT aggregate ===
+
+let $QUERY=
+WITH cnt AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM cte_orders GROUP BY o_custkey)
+SELECT cnt.k, SUM(cnt.n)
+FROM cte_customer AS c
+JOIN cnt ON cnt.k = c.c_id
+GROUP BY cnt.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH cnt AS (
+  SELECT o_custkey AS k, COUNT(*) AS n
+  FROM cte_orders GROUP BY o_custkey)
+SELECT cnt.k, SUM(cnt.n)
+FROM cte_customer AS c
+JOIN cnt ON cnt.k = c.c_id
+GROUP BY cnt.k|
+
+--echo
+--echo
+--echo === Test 5 (B.2a): Two independent CTEs in one query ===
+
+let $QUERY=
+WITH
+  sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+           FROM cte_orders GROUP BY o_custkey),
+  cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+           FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH
+  sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+           FROM cte_orders GROUP BY o_custkey),
+  cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+           FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 6 (B.2b): WHERE inside CTE body (pre-GROUP BY filter) ===
+
+let $QUERY=
+WITH big_orders AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders
+  WHERE o_amt > 50
+  GROUP BY o_custkey)
+SELECT big_orders.k, SUM(big_orders.t)
+FROM cte_customer AS c
+JOIN big_orders ON big_orders.k = c.c_id
+GROUP BY big_orders.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH big_orders AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders
+  WHERE o_amt > 50
+  GROUP BY o_custkey)
+SELECT big_orders.k, SUM(big_orders.t)
+FROM cte_customer AS c
+JOIN big_orders ON big_orders.k = c.c_id
+GROUP BY big_orders.k|
+
+--echo
+--echo
+--echo === Test 7 (B.2c): VARCHAR GROUP BY column in CTE body ===
+
+let $QUERY=
+WITH by_code AS (
+  SELECT r_code AS rcode, COUNT(*) AS n
+  FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+GROUP BY by_code.rcode;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH by_code AS (
+  SELECT r_code AS rcode, COUNT(*) AS n
+  FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+GROUP BY by_code.rcode|
+
+--echo
+--echo
+--echo === Test 8 (B.2d): COUNT(*) alongside SUM(cte.col) in main ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, COUNT(*), SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, COUNT(*), SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 9 (C): WHERE on CTE_LOOKUP column (main-query filter pushdown) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k > 100
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k > 100
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 10 (D): LEFT JOIN with CTE — NULL injection on unmatched ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 11 (D-followup): WHERE on aggregate CTE output (inline-type opcode) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 100
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 100
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 12 (D2): WHERE on MAX aggregate output (widened virt-type) ===
+
+let $QUERY=
+WITH maxes AS (
+  SELECT o_custkey AS k, MAX(o_amt) AS mx
+  FROM cte_orders GROUP BY o_custkey)
+SELECT maxes.k, SUM(maxes.mx)
+FROM cte_customer AS c
+JOIN maxes ON maxes.k = c.c_id
+WHERE maxes.mx > 70
+GROUP BY maxes.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH maxes AS (
+  SELECT o_custkey AS k, MAX(o_amt) AS mx
+  FROM cte_orders GROUP BY o_custkey)
+SELECT maxes.k, SUM(maxes.mx)
+FROM cte_customer AS c
+JOIN maxes ON maxes.k = c.c_id
+WHERE maxes.mx > 70
+GROUP BY maxes.k|
+
+# Phase P-GB — verification.  Earlier branch state flagged a buffer-format
+# mismatch that would SEGV on parent-table GROUP BY over a CTE agg leaf.
+# That mismatch was incidentally fixed by Phase E.1K's writer-side rework
+# (DBSPJ now writes a uniform 2-word [tableId][schemaVersion] / CTE-marker
+# prefix for every linked entry, and the reader already discriminates via
+# the marker bit).  These tests exercise the previously-untested shape.
+
+--echo
+--echo
+--echo === Test 13 (P-GB): main GROUP BY parent-table column over CTE agg leaf ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_region, SUM(sums.t)
+FROM cte_customer AS c JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_region, SUM(sums.t)
+FROM cte_customer AS c JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_region|
+
+--echo
+--echo
+--echo === Test 14 (P-GB): same as 13 but LEFT JOIN (NULL-injected unmatched parent) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_region, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_region, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_region|
+
+# Phase H.1 — filter operator + conjunct matrix.  emit_cte_lookup_filter
+# accepts six operators (= != < <= > >=) and any number of top-level
+# AND conjuncts; H.1 covers the SQL surface for the operators not yet
+# exercised by Tests 9 / 11 / 12.
+
+--echo
+--echo
+--echo === Test 15 (H.1): != on CTE_LOOKUP key ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 16a (H.1): <= on CTE_LOOKUP agg output ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t <= 100
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t <= 100
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 16b (H.1): >= on CTE_LOOKUP agg output ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t >= 100
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t >= 100
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 17 (H.1): multi-conjunct AND on CTE_LOOKUP output ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k >= 100 AND sums.t > 100
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k >= 100 AND sums.t > 100
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 18 (H.1): all-reject filter on CTE_LOOKUP ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 1000000
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 1000000
+GROUP BY sums.k|
+
+# Phase H.3 — reachable edge cases.  Multi-CTE filter isolation,
+# VARCHAR GB key with WHERE, LEFT JOIN with surviving filter, empty
+# CTE, single-row CTE.  These shapes were exercised at the NDB-API
+# level by testCteNdbApiFilter and testCteNdbApiOuterJoin but not
+# from SQL.
+
+--echo
+--echo
+--echo === Test 19 (H.3): multi-CTE filter isolation ===
+
+let $QUERY=
+WITH
+  sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+           FROM cte_orders GROUP BY o_custkey),
+  cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+           FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+WHERE sums.t > 90 AND cnt.n > 1
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH
+  sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+           FROM cte_orders GROUP BY o_custkey),
+  cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+           FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+JOIN cnt  ON cnt.k  = c.c_id
+WHERE sums.t > 90 AND cnt.n > 1
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 20 (H.3): VARCHAR GB key + WHERE filter on it ===
+
+# Query contains a SQL single-quoted string literal.  Keep this case on
+# the QUERY_FILE path so both compare-helper entry points continue to
+# have string-literal coverage.
+
+--let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
+--write_file $QUERY_FILE
+WITH by_code AS (
+  SELECT r_code AS rcode, COUNT(*) AS n
+  FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+WHERE by_code.rcode = 'US'
+GROUP BY by_code.rcode;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH by_code AS (
+  SELECT r_code AS rcode, COUNT(*) AS n
+  FROM cte_regions GROUP BY r_code)
+SELECT by_code.rcode, SUM(by_code.n)
+FROM cte_regions AS r
+JOIN by_code ON by_code.rcode = r.r_code
+WHERE by_code.rcode = 'US'
+GROUP BY by_code.rcode|
+
+--echo
+--echo
+--echo === Test 21 (H.3): empty CTE ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders WHERE o_custkey = 999999 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders WHERE o_custkey = 999999 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 22 (H.3): single-row CTE ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders WHERE o_id = 5 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders WHERE o_id = 5 GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY sums.k|
+
+# Phase J — LEFT-to-INNER promotion when WHERE rejects NULL on the
+# RHS column.  Standard MySQL optimizer rule; before this fix, the
+# WHERE pushed down to CTE_LOOKUP didn't see NULL-injected rows and
+# RonSQL diverged from MySQL.  See cte_filter_phase_j.md.
+
+--echo
+--echo
+--echo === Test 23 (J): LEFT JOIN + WHERE on aggregate output (promotes to INNER) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 50
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t > 50
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 24 (J): LEFT JOIN + WHERE on CTE GB key (promotes to INNER) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.k != 100
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 25 (J): two LEFT JOINs, WHERE on only one (per-op promotion) ===
+
+let $QUERY=
+WITH
+  sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+           FROM cte_orders GROUP BY o_custkey),
+  cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+           FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+LEFT JOIN sums ON sums.k = c.c_id
+LEFT JOIN cnt  ON cnt.k  = c.c_id
+WHERE sums.t > 50
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH
+  sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t
+           FROM cte_orders GROUP BY o_custkey),
+  cnt  AS (SELECT o_custkey AS k, COUNT(*) AS n
+           FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t), SUM(cnt.n)
+FROM cte_customer AS c
+LEFT JOIN sums ON sums.k = c.c_id
+LEFT JOIN cnt  ON cnt.k  = c.c_id
+WHERE sums.t > 50
+GROUP BY sums.k|
+
+# Phase I.1 — IS NULL / IS NOT NULL on CTE column or aggregate output.
+# Exercises the new BRANCH_LINKED_EQ_NULL / BRANCH_LINKED_NE_NULL
+# kernel opcodes via emit_cte_lookup_filter.  Test 28 also verifies
+# Phase J's promotion gate correctly defers when WHERE is
+# null-preserving (so the LEFT JOIN survives and unmatched rows
+# pass through).  See cte_filter_phase_i1.md.
+
+--echo
+--echo
+--echo === Test 26 (I.1): INNER JOIN + WHERE cte.k IS NOT NULL (always-true) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k IS NOT NULL
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.k IS NOT NULL
+GROUP BY sums.k|
+
+--echo
+--echo
+--echo === Test 27 (I.1): INNER JOIN + WHERE cte.t IS NULL (always-false on matched) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL
+GROUP BY sums.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT sums.k, SUM(sums.t)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL
+GROUP BY sums.k|
+
+# Phase K — ANTI_JOIN for `WHERE col IS NULL` on LEFT JOIN's RHS
+# where the CTE column is provably non-NULL on the matched path
+# (GB key, SUM, COUNT).  Promotes the LEFT_OUTER op to ANTI_JOIN;
+# emit_child_ops emits setMatchType(MatchNullOnly), DBSPJ marks the
+# CTE_LOOKUP_REQ with CTE_LOOKUP_ANTI_JOIN_FLAG, DBLQH suppresses
+# the agg feed on matched rows.  Only NULL-injected unmatched
+# parents reach the aggregator.  See cte_filter_phase_k.md.
+
+--echo
+--echo
+--echo === Test 28 (K): LEFT JOIN + WHERE cte.t IS NULL on SUM (anti-join) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 29 (K): LEFT JOIN + WHERE cte.k IS NULL on GB key (anti-join) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.k IS NULL
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.k IS NULL
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 30 (K): LEFT JOIN + AND of two IS NULL conjuncts (anti-join) ===
+
+let $QUERY=
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL AND sums.k IS NULL
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH sums AS (
+  SELECT o_custkey AS k, SUM(o_amt) AS t
+  FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(sums.t)
+FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
+WHERE sums.t IS NULL AND sums.k IS NULL
+GROUP BY c.c_id|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+DROP TABLE cte_lineitem;
+DROP TABLE cte_customer;
+DROP TABLE cte_orders;
+DROP TABLE cte_regions;

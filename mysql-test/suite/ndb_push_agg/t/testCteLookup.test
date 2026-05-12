@@ -1,0 +1,4 @@
+--source include/have_ndb.inc
+
+--echo Running testCteLookup
+--exec $NDB_PUSH_AGG_DIR/testCteLookup -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

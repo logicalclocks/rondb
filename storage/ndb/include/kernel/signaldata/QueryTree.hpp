@@ -43,6 +43,9 @@ struct QueryNode  // Effectively used as a base class for QN_xxxNode
     QN_SCAN_FRAG_v1 = 0x2,   // deprecated
     QN_SCAN_INDEX_v1 = 0x3,  // deprecated
     QN_SCAN_FRAG = 0x4,      // Replaces both SCAN_*_v1's above
+    QN_CTE_SUBTREE = 0x6,    // Container for CTE materialization sub-tree
+    QN_CTE_LOOKUP = 0x7,     // Lookup into materialized CTE hash table
+    QN_CTE_SCAN = 0x8,       // Scan all groups from materialized CTE hash table
     QN_END = 0
   };
 
@@ -74,6 +77,9 @@ struct QueryNodeParameters  // Effectively used as a base class for
     QN_SCAN_FRAG_v1 = 0x2,   // deprecated
     QN_SCAN_INDEX_v1 = 0x3,  // deprecated
     QN_SCAN_FRAG = 0x4,      // Replaces both SCAN_*_v1's above
+    QN_CTE_SUBTREE = 0x6,    // Container for CTE materialization sub-tree
+    QN_CTE_LOOKUP = 0x7,     // Lookup into materialized CTE hash table
+    QN_CTE_SCAN = 0x8,       // Scan all groups from materialized CTE hash table
     QN_END = 0
   };
 
@@ -411,7 +417,7 @@ struct QN_ScanFragParameters {
 
   Uint32 unused0;  // Future
   Uint32 unused1;
-  Uint32 unused2;
+  Uint32 maxRows;  // Per-fragment row limit (0 = unlimited)
 
   static constexpr Uint32 NodeSize = 8;
 
@@ -435,12 +441,114 @@ struct QN_ScanFragParameters {
      */
     SFP_SORTED_ORDER = 0x40000,
 
+    /**
+     * Scan in descending index order.  Used for CTE materialization
+     * scans where the descending flag cannot be passed via ScanTabReq
+     * (which is root-only).  DBSPJ sets DescendingFlag on the
+     * SCAN_FRAGREQ sent to DBLQH.
+     */
+    SFP_DESCENDING = 0x80000,
+
     SFP_END = 0
   };
 
   /**
    * See DABits::ParamInfoBits
    */
+  Uint32 optional[1];
+};
+
+/**
+ * Container node wrapping an embedded CTE materialization sub-tree.
+ * Contains standard QN_SCAN_FRAG / QN_LOOKUP nodes that form the CTE's
+ * own scan+aggregate tree. Results are materialized into a hash table
+ * keyed by GROUP BY columns. (Used by DBSPJ in Step 4+)
+ */
+struct QN_CteSubtreeNode  // Is a QueryNode subclass
+{
+  Uint32 len;           // (totalLength << 16) | QN_CTE_SUBTREE
+  Uint32 requestInfo;   // RequestInfoBits flags
+  Uint32 cteId;         // Unique CTE identifier (0-based index)
+  Uint32 numNodes;      // Number of embedded standard nodes following
+  static constexpr Uint32 NodeSize = 4;
+
+  enum RequestInfoBits {
+    CTE_SINGLE_ROW = 0x1  // CTE produces exactly one row (no GROUP BY)
+  };
+
+  Uint32 optional[1];   // Embedded QueryNode structures follow
+};
+
+/**
+ * Parameters for QN_CteSubtreeNode (placeholder for future use).
+ */
+struct QN_CteSubtreeParameters  // Is a QueryNodeParameters subclass
+{
+  Uint32 len;
+  Uint32 requestInfo;
+  Uint32 resultData;  // Unused for CTE subtrees
+  static constexpr Uint32 NodeSize = 3;
+
+  Uint32 optional[1];
+};
+
+/**
+ * Lookup node for querying a materialized CTE hash table.
+ * Same layout as QN_LookupNode but uses cteId instead of tableId
+ * and numResultCols instead of tableVersion.
+ * The optional part follows the same format: parent list, key pattern.
+ */
+struct QN_CteLookupNode  // Is a QueryNode subclass
+{
+  Uint32 len;           // (length << 16) | QN_CTE_LOOKUP
+  Uint32 requestInfo;   // DABits::NodeInfoBits flags
+  Uint32 cteId;         // Which CTE to look up (matches CteSubtreeNode::cteId)
+  Uint32 numResultCols; // Number of result columns from CTE aggregation
+  static constexpr Uint32 NodeSize = 4;
+
+  Uint32 optional[1];   // Parent list, key pattern (same format as QN_LookupNode)
+};
+
+/**
+ * Parameters for QN_CteLookupNode.
+ */
+struct QN_CteLookupParameters  // Is a QueryNodeParameters subclass
+{
+  Uint32 len;
+  Uint32 requestInfo;
+  Uint32 resultData;  // Api connect ptr
+  static constexpr Uint32 NodeSize = 3;
+
+  Uint32 optional[1];
+};
+
+/**
+ * Scan node for iterating all groups from a materialized CTE hash table.
+ * Used when a CTE reads from an earlier CTE (CTE-to-CTE dependency).
+ * Each group becomes a row with GROUP BY columns + aggregate results.
+ * cteId references the source CTE whose hash table is scanned.
+ */
+struct QN_CteScanNode  // Is a QueryNode subclass
+{
+  Uint32 len;           // (length << 16) | QN_CTE_SCAN
+  Uint32 requestInfo;   // DABits::NodeInfoBits flags
+  Uint32 cteId;         // Which CTE's hash table to scan
+  Uint32 numResultCols; // GROUP BY cols + aggregate result cols
+  static constexpr Uint32 NodeSize = 4;
+
+  Uint32 optional[1];   // NI_LINKED_ATTR etc. (same format as scan nodes)
+};
+
+/**
+ * Parameters for QN_CteScanNode.
+ */
+struct QN_CteScanParameters  // Is a QueryNodeParameters subclass
+{
+  Uint32 len;
+  Uint32 requestInfo;
+  Uint32 resultData;      // Api connect ptr
+  static constexpr Uint32 NodeSize = 3;
+
   Uint32 optional[1];
 };
 

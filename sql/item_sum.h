@@ -806,8 +806,10 @@ class Item_sum : public Item_func {
   bool m_pushed_aggregate{false};
   int64_t m_pushed_value_int{0};
   double m_pushed_value_double{0.0};
+  String m_pushed_value_string;
   bool m_pushed_null{false};
   bool m_pushed_is_double{false};
+  bool m_pushed_is_string{false};
   // For AVG pushdown: store raw SUM and COUNT so reset_field() can write
   // the integer SUM (which fits f_scale=0) and the real COUNT, letting
   // Item_avg_field::val_decimal() do the division with prec_increment.
@@ -818,6 +820,7 @@ class Item_sum : public Item_func {
     m_pushed_aggregate = true;
     m_pushed_value_int = val;
     m_pushed_is_double = false;
+    m_pushed_is_string = false;
     m_pushed_null = false;
     null_value = false;
   }
@@ -825,6 +828,16 @@ class Item_sum : public Item_func {
     m_pushed_aggregate = true;
     m_pushed_value_double = val;
     m_pushed_is_double = true;
+    m_pushed_is_string = false;
+    m_pushed_null = false;
+    null_value = false;
+  }
+  void set_pushed_value_string(const char *ptr, size_t len,
+                               const CHARSET_INFO *cs) {
+    m_pushed_aggregate = true;
+    m_pushed_value_string.copy(ptr, len, cs);
+    m_pushed_is_double = false;
+    m_pushed_is_string = true;
     m_pushed_null = false;
     null_value = false;
   }
@@ -840,6 +853,7 @@ class Item_sum : public Item_func {
     m_pushed_value_int = sum_int;
     m_pushed_avg_count = count;
     m_pushed_is_double = false;
+    m_pushed_is_string = false;
     m_pushed_null = false;
     null_value = false;
   }
@@ -848,12 +862,14 @@ class Item_sum : public Item_func {
     m_pushed_value_double = sum_dbl;
     m_pushed_avg_count = count;
     m_pushed_is_double = true;
+    m_pushed_is_string = false;
     m_pushed_null = false;
     null_value = false;
   }
   void set_pushed_null() {
     m_pushed_aggregate = true;
     m_pushed_null = true;
+    m_pushed_is_string = false;
     null_value = true;
   }
   bool is_pushed_aggregate() const { return m_pushed_aggregate; }

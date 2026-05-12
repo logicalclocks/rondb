@@ -1,0 +1,107 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+
+=== Test 1: chained CTE sees prior exposed result names ===
+== Query ==
+WITH c0 AS (
+SELECT k AS k, SUM(val) AS s
+FROM nr_base GROUP BY k),
+c1 AS (
+SELECT c0.k AS k, SUM(c0.s) AS ss
+FROM c0 GROUP BY c0.k)
+SELECT c1.k, SUM(c1.ss) AS total
+FROM c1
+GROUP BY c1.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c0 AS (
+SELECT k AS k, SUM(val) AS s
+FROM nr_base GROUP BY k),
+c1 AS (
+SELECT c0.k AS k, SUM(c0.s) AS ss
+FROM c0 GROUP BY c0.k)
+SELECT c1.k, SUM(c1.ss) AS total
+FROM c1
+GROUP BY c1.k|
+k	total
+10	12
+20	11
+30	13
+
+
+=== Test 2: qualified stored-table and CTE names disambiguate duplicate k ===
+== Query ==
+WITH c0 AS (
+SELECT k AS k, SUM(val) AS s
+FROM nr_base GROUP BY k)
+SELECT c0.k, SUM(o.val) AS total
+FROM nr_other AS o
+JOIN c0 ON c0.k = o.k
+GROUP BY c0.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c0 AS (
+SELECT k AS k, SUM(val) AS s
+FROM nr_base GROUP BY k)
+SELECT c0.k, SUM(o.val) AS total
+FROM nr_other AS o
+JOIN c0 ON c0.k = o.k
+GROUP BY c0.k|
+k	total
+10	100
+20	200
+30	300
+
+
+=== Test 3: main SELECT cannot reference CTE body internal alias ===
+Expected error: Unknown table alias
+Unknown table or CTE alias 'b' in column 'b.k'.
+Error handling: RPE
+ronsql_cli caught exception: Unknown table alias.
+
+
+=== Test 4: later CTE cannot reference prior CTE body internal alias ===
+Expected error: Unknown table alias
+Unknown table or CTE alias 'b' in column 'b.k'.
+Error handling: RPE
+ronsql_cli caught exception: Unknown table alias.
+
+
+=== Test 5: unqualified duplicate name across stored table and CTE is ambiguous ===
+Expected error: Ambiguous column
+Ambiguous column 'k' found in multiple tables or CTEs. Use 'table.column' syntax.
+Error handling: RPE
+ronsql_cli caught exception: Ambiguous column.
+
+
+=== Test 6: CTE cannot reference a future CTE ===
+Expected error: Table not found
+Table 'c1' not found.
+Error handling: RPE
+ronsql_cli caught exception: Table not found.
+
+
+=== Test 7: qualified name cannot reference non-exposed CTE result ===
+Expected error: Column not found
+Column 'c0.val' not found in table or CTE 'c0'.
+Error handling: RPE
+ronsql_cli caught exception: Column not found.
+
+=== Cleanup ===
+DROP TABLE nr_other;
+DROP TABLE nr_base;

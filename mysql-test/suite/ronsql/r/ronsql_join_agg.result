@@ -1062,7 +1062,7 @@ ronsql_cli caught exception: ORDER BY column not in GROUP BY clause.
 
 === Test 52: Error — unknown table alias ===
 Expected error: Unknown table alias
-Unknown table alias 'x' in column 'x.o_custkey'.
+Unknown table or CTE alias 'x' in column 'x.o_custkey'.
 Error handling: RPE
 ronsql_cli caught exception: Unknown table alias.
 
@@ -1233,7 +1233,7 @@ Charlie	75
 
 === Test 60: Error — ORDER BY unknown alias (not retryable) ===
 Expected error: Column not found
-Column 'nonexistent' not found in any joined table.
+Column 'nonexistent' not found in any visible table or CTE.
 Error handling: RPE
 ronsql_cli caught exception: Column not found.
 

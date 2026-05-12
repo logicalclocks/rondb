@@ -383,7 +383,7 @@ const NdbQueryOperationDef *HugoQueryBuilder::createOp(
         op.m_op = builder.scanIndex(oi.m_index, oi.m_table, &bounds);
         break;
       }
-      case NdbQueryOperationDef::UniqueIndexAccess:
+      case NdbQueryOperationDef::UniqueIndexAccess: {
         int opNo = 0;
         NdbQueryOperand *operands[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
         for (unsigned a = 0; a < oi.m_index->getNoOfColumns(); a++) {
@@ -392,6 +392,11 @@ const NdbQueryOperationDef *HugoQueryBuilder::createOp(
         operands[opNo] = 0;
         op.m_op = builder.readTuple(oi.m_index, oi.m_table, operands);
         break;
+      }
+      case NdbQueryOperationDef::CteLookup:
+      case NdbQueryOperationDef::CteScan:
+      case NdbQueryOperationDef::CteSubtree:
+        break;  // Not used in HugoQueryBuilder
     }
   } else {
   loop:
@@ -470,6 +475,10 @@ const NdbQueryOperationDef *HugoQueryBuilder::createOp(
         }
         break;
       }
+      case NdbQueryOperationDef::CteLookup:
+      case NdbQueryOperationDef::CteScan:
+      case NdbQueryOperationDef::CteSubtree:
+        break;  // Not used in HugoQueryBuilder
     }
   }
 

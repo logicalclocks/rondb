@@ -1,0 +1,161 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.10: scalar MIN/MAX CTE bodies can use a full ordered
+# index scan with ASC/DESC ordering and maxRows=1 when the aggregate
+# argument is a direct NOT NULL indexed column.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/ronsql-minmax-index-explain.out
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE ix_minmax (
+  id           INT NOT NULL,
+  grp          BIGINT NOT NULL,
+  val          BIGINT NOT NULL,
+  no_idx       BIGINT NOT NULL,
+  nullable_val BIGINT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_val (val),
+  INDEX idx_nullable_val (nullable_val)
+) ENGINE=NDB;
+
+INSERT INTO ix_minmax VALUES
+  (1, 100, 50, 500, NULL),
+  (2, 100, 60, 600, 10),
+  (3, 200, 30, 300, 70),
+  (4, 200, 70, 700, NULL),
+  (5, 300, 40, 400, 20),
+  (6, 300, 90, 900, 60),
+  (7, 400, 10, 100, NULL),
+  (8, 400, 80, 800, 50);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: scalar MAX over NOT NULL indexed column ===
+
+let $QUERY=
+WITH mx AS (SELECT MAX(val) AS m FROM ix_minmax)
+SELECT m FROM mx;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=
+WITH mx AS (SELECT MAX(val) AS m FROM ix_minmax)
+SELECT m FROM mx;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using idx_val [I.10 MAX_DESC maxRows=1]' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo == Expected result ==
+--sorted_result
+WITH mx AS (SELECT MAX(val) AS m FROM ix_minmax)
+SELECT m FROM mx|
+
+--echo
+--echo
+--echo === Test 2: scalar MIN over NOT NULL indexed column ===
+
+let $QUERY=
+WITH mn AS (SELECT MIN(val) AS m FROM ix_minmax)
+SELECT m FROM mn;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=
+WITH mn AS (SELECT MIN(val) AS m FROM ix_minmax)
+SELECT m FROM mn;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using idx_val [I.10 MIN_ASC maxRows=1]' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo == Expected result ==
+--sorted_result
+WITH mn AS (SELECT MIN(val) AS m FROM ix_minmax)
+SELECT m FROM mn|
+
+--echo
+--echo
+--echo === Test 3: scalar MAX without ordered index falls back ===
+
+let $QUERY=
+WITH mx AS (SELECT MAX(no_idx) AS m FROM ix_minmax)
+SELECT m FROM mx;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=
+WITH mx AS (SELECT MAX(no_idx) AS m FROM ix_minmax)
+SELECT m FROM mx;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: TABLE_SCAN' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo == Expected result ==
+--sorted_result
+WITH mx AS (SELECT MAX(no_idx) AS m FROM ix_minmax)
+SELECT m FROM mx|
+
+--echo
+--echo
+--echo === Test 4: grouped MAX is not an I.10 scalar body ===
+
+let $QUERY=
+WITH mx AS (SELECT grp AS g, MAX(val) AS m
+            FROM ix_minmax GROUP BY grp)
+SELECT g, m FROM mx;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH mx AS (SELECT grp AS g, MAX(val) AS m
+            FROM ix_minmax GROUP BY grp)
+SELECT g, m FROM mx|
+
+--echo
+--echo
+--echo === Test 5: two scalar MIN/MAX CTEs compose through cross join ===
+
+let $QUERY=
+WITH mx AS (SELECT MAX(val) AS max_v FROM ix_minmax),
+     mn AS (SELECT MIN(val) AS min_v FROM ix_minmax)
+SELECT SUM(max_v) AS max_v, SUM(min_v) AS min_v FROM mx, mn;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH mx AS (SELECT MAX(val) AS max_v FROM ix_minmax),
+     mn AS (SELECT MIN(val) AS min_v FROM ix_minmax)
+SELECT SUM(max_v) AS max_v, SUM(min_v) AS min_v FROM mx, mn|
+
+--echo
+--echo
+--echo === Test 6: nullable indexed column stays on safe fallback path ===
+
+let $QUERY=
+WITH mx AS (SELECT MAX(nullable_val) AS m FROM ix_minmax)
+SELECT m FROM mx;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=
+WITH mx AS (SELECT MAX(nullable_val) AS m FROM ix_minmax)
+SELECT m FROM mx;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: TABLE_SCAN' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo == Expected result ==
+--sorted_result
+WITH mx AS (SELECT MAX(nullable_val) AS m FROM ix_minmax)
+SELECT m FROM mx|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE ix_minmax;
+--enable_query_log

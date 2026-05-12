@@ -471,6 +471,12 @@ ErrorBundle ErrorCodes[] = {
   { 1260, DMEC, IE, "Join aggregation match range overflow" },
   { 1261, DMEC, IE, "Join aggregation section count error" },
   { 1262, DMEC, IE, "Attrinfo too large" },
+  { 1263, DMEC, IE, "CTE lookup group not found" },
+  { 1264, DMEC, IE, "CTE lookup state not ready" },
+  { 1265, DMEC, IE, "CTE lookup attrinfo malformed" },
+  { 1266, DMEC, IE, "CTE lookup output buffer overflow" },
+  { 1267, DMEC, IE, "CTE evict in CTE materialization leaf" },
+  { 1268, DMEC, IE, "CTE lookup filter execution error" },
 
   /**
    * Application error
@@ -1101,6 +1107,11 @@ ErrorBundle ErrorCodes[] = {
   //  "Outer joined scans need FirstInner/Upper to be specified" },
   { QRY_NEST_NOT_SUPPORTED, DMEC, AE,
     "FirstInner/Upper has to be an ancestor or a sibling" },
+  { QRY_TABLE_HAVE_NO_FRAGMENTS, DMEC, AE,
+    "Query root table has no fragments — virtual / synthetic CTE table "
+    "missing fragment routing override" },
+  { QRY_BAD_FRAGMENT_DATA, DMEC, AE,
+    "Query root table fragment has no nodes" },
 
   /*
    * Management server error codes

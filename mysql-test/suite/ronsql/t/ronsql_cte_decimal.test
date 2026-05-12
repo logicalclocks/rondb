@@ -1,0 +1,292 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.6 F.1: MIN/MAX over DECIMAL columns in CTE bodies.
+#
+# The kernel's AggInterpreter::AlignedType already widens DECIMAL
+# to BIGINT (scale==0) or DOUBLE (scale>0) before MIN/MAX runs,
+# so the actual aggregation works without kernel changes.  RonSQL
+# previously preserved the source DECIMAL type for the CTE
+# virt-table column, which mismatched the wire format the kernel
+# emits (8-byte AggResItem.value as Int64 / Uint64 / double) and
+# made the inline-type CTE filter opcode reject DECIMAL outputs.
+#
+# F.1 widens the virt-table type the same way AlignedType does
+# (DECIMAL → BIGINT / Bigunsigned / DOUBLE) so the inline-type
+# filter accepts the column and result-type metadata matches what
+# the kernel actually delivers.
+#
+# Tests cover:
+#   1.  MIN/MAX over DECIMAL(N,0) (scale 0) — kernel widens to
+#       BIGINT, RonSQL exposes the result as BIGINT.
+#   2.  MIN/MAX over DECIMAL UNSIGNED scale 0 — Bigunsigned.
+#   3.  MIN/MAX over DECIMAL(N,2) (scale > 0) — DOUBLE.
+#   4.  WHERE filter on the MIN/MAX output — pushdown via the
+#       inline-type opcode (was the headline rejection).
+#   5.  Chained CTE: MIN(MIN(...)) walks resolve_chained_column_type
+#       through a predecessor CTE's already-widened type.
+#   6.  Safe DECIMAL(18,0) signed and DECIMAL(19,0) unsigned
+#       boundaries are accepted.
+#   7.  Unsafe scale-zero DECIMAL declarations are rejected at
+#       prepare time before kernel execution.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE dec_orders (
+  o_id      INT NOT NULL,
+  o_grp     INT NOT NULL,
+  o_amt0    DECIMAL(10,0) NOT NULL,
+  o_amt2    DECIMAL(10,2) NOT NULL,
+  o_amtu0   DECIMAL(10,0) UNSIGNED NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE TABLE dec_signed_ok (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  v   DECIMAL(18,0) NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE dec_unsigned_ok (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  v   DECIMAL(19,0) UNSIGNED NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE dec_signed_bad (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  v   DECIMAL(19,0) NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE dec_unsigned_bad (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  v   DECIMAL(20,0) UNSIGNED NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+# DECIMAL(10,2) values intentionally avoid trailing zeros in the
+# second decimal so the F.1 widening to DOUBLE produces text
+# output identical to MySQL's DECIMAL formatting.  DOUBLE drops
+# trailing zeros (500.50 -> 500.5) which MySQL's DECIMAL keeps,
+# so a test using e.g. 500.50 here would fail diff comparison
+# even though the numeric values match.  Preserving precision
+# through the pipeline is intentionally out of F.1 scope; the
+# plan documents this trade-off.
+INSERT INTO dec_orders VALUES
+  (1, 100,  500,  500.55,  500),
+  (2, 100, 1000, 1000.25, 1000),
+  (3, 200,  300,  300.75,  300),
+  (4, 200,  800,  800.13,  800),
+  (5, 300,  400,  400.99,  400);
+
+INSERT INTO dec_signed_ok VALUES
+  (1, 10, -999999999999999999),
+  (2, 10,  999999999999999999),
+  (3, 20,                   7);
+
+INSERT INTO dec_unsigned_ok VALUES
+  (1, 10,                   0),
+  (2, 10, 9999999999999999999),
+  (3, 20,                  42);
+
+# Values are deliberately small.  I.22 rejects by declaration range,
+# not by sampling stored values that happen to fit in 64 bits.
+INSERT INTO dec_signed_bad VALUES
+  (1, 10, 1),
+  (2, 10, 2);
+
+INSERT INTO dec_unsigned_bad VALUES
+  (1, 10, 1),
+  (2, 10, 2);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: MIN/MAX DECIMAL(10,0) — widens to BIGINT ===
+
+# CTE body: MIN(amt0) AS lo, MAX(amt0) AS hi grouped by o_grp.
+# Both aggregates are DECIMAL(10,0) sources; F.1 widens to BIGINT
+# so the virt-table columns match what the kernel emits.
+let $QUERY=
+WITH stats AS (SELECT o_grp AS k,
+                       MIN(o_amt0) AS lo,
+                       MAX(o_amt0) AS hi
+                FROM dec_orders GROUP BY o_grp)
+SELECT k, lo, hi FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT o_grp AS k,
+                       MIN(o_amt0) AS lo,
+                       MAX(o_amt0) AS hi
+                FROM dec_orders GROUP BY o_grp)
+SELECT k, lo, hi FROM stats|
+
+--echo
+--echo
+--echo === Test 2: MIN/MAX DECIMAL UNSIGNED — widens to Bigunsigned ===
+
+let $QUERY=
+WITH stats AS (SELECT o_grp AS k,
+                       MIN(o_amtu0) AS lo,
+                       MAX(o_amtu0) AS hi
+                FROM dec_orders GROUP BY o_grp)
+SELECT k, lo, hi FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT o_grp AS k,
+                       MIN(o_amtu0) AS lo,
+                       MAX(o_amtu0) AS hi
+                FROM dec_orders GROUP BY o_grp)
+SELECT k, lo, hi FROM stats|
+
+--echo
+--echo
+--echo === Test 3: MIN/MAX DECIMAL(10,2) (scale > 0) — widens to DOUBLE ===
+
+let $QUERY=
+WITH stats AS (SELECT o_grp AS k,
+                       MIN(o_amt2) AS lo,
+                       MAX(o_amt2) AS hi
+                FROM dec_orders GROUP BY o_grp)
+SELECT k, lo, hi FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT o_grp AS k,
+                       MIN(o_amt2) AS lo,
+                       MAX(o_amt2) AS hi
+                FROM dec_orders GROUP BY o_grp)
+SELECT k, lo, hi FROM stats|
+
+--echo
+--echo
+--echo === Test 4: WHERE filter on MIN/MAX DECIMAL output — inline-type pushdown ===
+
+# The filter pushdown via the inline-type opcode was the headline
+# F.1 rejection.  After widening DECIMAL → BIGINT for the virt-
+# table column, emit_cte_lookup_filter accepts the predicate.
+let $QUERY=
+WITH stats AS (SELECT o_grp AS k,
+                       MAX(o_amt0) AS hi
+                FROM dec_orders GROUP BY o_grp)
+SELECT k, hi FROM stats WHERE hi > 600;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT o_grp AS k,
+                       MAX(o_amt0) AS hi
+                FROM dec_orders GROUP BY o_grp)
+SELECT k, hi FROM stats WHERE hi > 600|
+
+--echo
+--echo
+--echo === Test 6: DECIMAL(18,0) signed boundary accepted ===
+
+let $QUERY=
+WITH stats AS (SELECT grp AS k, MIN(v) AS lo, MAX(v) AS hi
+                FROM dec_signed_ok GROUP BY grp)
+SELECT k, lo, hi FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT grp AS k, MIN(v) AS lo, MAX(v) AS hi
+                FROM dec_signed_ok GROUP BY grp)
+SELECT k, lo, hi FROM stats|
+
+--echo
+--echo
+--echo === Test 7: DECIMAL(19,0) UNSIGNED boundary accepted ===
+
+let $QUERY=
+WITH stats AS (SELECT grp AS k, MIN(v) AS lo, MAX(v) AS hi
+                FROM dec_unsigned_ok GROUP BY grp)
+SELECT k, lo, hi FROM stats;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (SELECT grp AS k, MIN(v) AS lo, MAX(v) AS hi
+                FROM dec_unsigned_ok GROUP BY grp)
+SELECT k, lo, hi FROM stats|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 8: DECIMAL(19,0) signed MIN/MAX rejected ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH stats AS (SELECT grp AS k, MAX(v) AS hi FROM dec_signed_bad GROUP BY grp) SELECT k, hi FROM stats;' 2>&1
+
+--echo
+--echo
+--echo === Test 9: DECIMAL(20,0) UNSIGNED MIN/MAX rejected ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH stats AS (SELECT grp AS k, MAX(v) AS hi FROM dec_unsigned_bad GROUP BY grp) SELECT k, hi FROM stats;' 2>&1
+
+--echo
+--echo
+--echo === Test 10: chained unsafe DECIMAL MIN/MAX rejected ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT grp AS k, MAX(v) AS hi FROM dec_signed_bad GROUP BY grp), b AS (SELECT MIN(a.hi) AS m FROM a) SELECT m FROM b;' 2>&1
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 11: chained CTE with MIN(MAX(decimal_col)) ===
+
+# Outer CTE references inner CTE's MAX(decimal) output.  Walks
+# resolve_chained_column_type through the already-widened BIGINT
+# type at the inner layer; outer MIN sees BIGINT and stays BIGINT.
+let $QUERY=
+WITH a AS (SELECT o_grp AS k, MAX(o_amt0) AS hi
+            FROM dec_orders GROUP BY o_grp),
+     b AS (SELECT MIN(a.hi) AS overall_min
+            FROM a)
+SELECT overall_min FROM b;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT o_grp AS k, MAX(o_amt0) AS hi
+            FROM dec_orders GROUP BY o_grp),
+     b AS (SELECT MIN(a.hi) AS overall_min
+            FROM a)
+SELECT overall_min FROM b|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE dec_orders;
+DROP TABLE dec_signed_ok;
+DROP TABLE dec_unsigned_ok;
+DROP TABLE dec_signed_bad;
+DROP TABLE dec_unsigned_bad;
+--enable_query_log

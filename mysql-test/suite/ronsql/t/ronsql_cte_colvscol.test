@@ -1,0 +1,324 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.3: column-vs-column on CTE_LOOKUP output.
+# Two CTE columns from the same lookup, both Bigint (signed 64-bit).
+# Codegen: READ_LINKED_TO_MEM + READ_INT64_MEM_TO_REG twice, then
+# BRANCH_<inv>_REG_REG.  All opcodes already accepted by
+# s_cte_filter_handlers — no kernel change.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for CTE col-vs-col tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE cte_orders (
+  o_id INT NOT NULL,
+  o_custkey INT NOT NULL,
+  o_amt INT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_o_custkey ON cte_orders (o_custkey);
+
+CREATE TABLE cte_customer (
+  c_id INT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+INSERT INTO cte_customer VALUES
+  (100, 'Alice'),
+  (200, 'Bob'),
+  (300, 'Charlie');
+
+INSERT INTO cte_orders VALUES
+  (1, 100, 50),
+  (2, 100, 70),
+  (3, 200, 40),
+  (4, 200, 40),
+  (5, 300, 90);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: col-vs-col `>` between two Bigint aggregates (SUM > MIN) ===
+
+let $QUERY=
+WITH stats AS (
+  SELECT o_custkey AS k,
+         SUM(o_amt) AS gross,
+         MIN(o_amt) AS lo,
+         MAX(o_amt) AS hi
+  FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.gross > stats.lo
+GROUP BY stats.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (
+  SELECT o_custkey AS k,
+         SUM(o_amt) AS gross,
+         MIN(o_amt) AS lo,
+         MAX(o_amt) AS hi
+  FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.gross > stats.lo
+GROUP BY stats.k|
+
+--echo
+--echo
+--echo === Test 2: col-vs-col `!=` (MIN != MAX) ===
+
+let $QUERY=
+WITH stats AS (
+  SELECT o_custkey AS k,
+         SUM(o_amt) AS gross,
+         MIN(o_amt) AS lo,
+         MAX(o_amt) AS hi
+  FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.lo != stats.hi
+GROUP BY stats.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (
+  SELECT o_custkey AS k,
+         SUM(o_amt) AS gross,
+         MIN(o_amt) AS lo,
+         MAX(o_amt) AS hi
+  FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.lo != stats.hi
+GROUP BY stats.k|
+
+--echo
+--echo
+--echo === Test 3: col-vs-col `<` (MIN < MAX, always true on multi-row groups) ===
+
+let $QUERY=
+WITH stats AS (
+  SELECT o_custkey AS k,
+         MIN(o_amt) AS lo,
+         MAX(o_amt) AS hi
+  FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.lo)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.lo < stats.hi
+GROUP BY stats.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (
+  SELECT o_custkey AS k,
+         MIN(o_amt) AS lo,
+         MAX(o_amt) AS hi
+  FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.lo)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.lo < stats.hi
+GROUP BY stats.k|
+
+--echo
+--echo
+--echo === Test 4: DNF — col-vs-col OR col-vs-const ===
+
+let $QUERY=
+WITH stats AS (
+  SELECT o_custkey AS k,
+         SUM(o_amt) AS gross,
+         MIN(o_amt) AS lo
+  FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.gross = stats.lo OR stats.k = 100
+GROUP BY stats.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (
+  SELECT o_custkey AS k,
+         SUM(o_amt) AS gross,
+         MIN(o_amt) AS lo
+  FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.gross = stats.lo OR stats.k = 100
+GROUP BY stats.k|
+
+--echo
+--echo
+--echo === Test 5: regression — col-vs-const (I.2 path, unchanged) ===
+
+let $QUERY=
+WITH stats AS (
+  SELECT o_custkey AS k,
+         SUM(o_amt) AS gross
+  FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.gross > 100
+GROUP BY stats.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (
+  SELECT o_custkey AS k,
+         SUM(o_amt) AS gross
+  FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.gross > 100
+GROUP BY stats.k|
+
+--echo
+--echo
+--echo === Test 6: const-vs-col signed Bigint (literal-left mirror) ===
+
+let $QUERY=
+WITH stats AS (
+  SELECT o_custkey AS k,
+         SUM(o_amt) AS gross
+  FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE 100 < stats.gross
+GROUP BY stats.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (
+  SELECT o_custkey AS k,
+         SUM(o_amt) AS gross
+  FROM cte_orders GROUP BY o_custkey)
+SELECT stats.k, SUM(stats.gross)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE 100 < stats.gross
+GROUP BY stats.k|
+
+--echo
+--echo
+--echo === Test 7: col-vs-const string MIN output ===
+
+--let QUERY_FILE=$MYSQL_TMP_DIR/ronsql-cte-colvscol-test7.sql
+--write_file $QUERY_FILE
+WITH stats AS (
+  SELECT c_id AS k,
+         MIN(c_name) AS first_name,
+         MAX(c_name) AS last_name
+  FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.first_name < 'Charlie'
+GROUP BY stats.k;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (
+  SELECT c_id AS k,
+         MIN(c_name) AS first_name,
+         MAX(c_name) AS last_name
+  FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE stats.first_name < 'Charlie'
+GROUP BY stats.k|
+
+--echo
+--echo
+--echo === Test 8: const-vs-col string MIN output ===
+
+--let QUERY_FILE=$MYSQL_TMP_DIR/ronsql-cte-colvscol-test8.sql
+--write_file $QUERY_FILE
+WITH stats AS (
+  SELECT c_id AS k,
+         MIN(c_name) AS first_name,
+         MAX(c_name) AS last_name
+  FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE 'Charlie' > stats.first_name
+GROUP BY stats.k;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH stats AS (
+  SELECT c_id AS k,
+         MIN(c_name) AS first_name,
+         MAX(c_name) AS last_name
+  FROM cte_customer GROUP BY c_id)
+SELECT stats.k, SUM(stats.k)
+FROM cte_customer AS c
+JOIN stats ON stats.k = c.c_id
+WHERE 'Charlie' > stats.first_name
+GROUP BY stats.k|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 9: rejection — Bigunsigned col-vs-col (COUNT result) ===
+--echo Expected error: both columns must resolve to Bigint
+
+# COUNT(*) yields Bigunsigned per build_cte_virtual_tables; SUM over a
+# signed source yields Bigint.  col-vs-col across the two trips the
+# Phase I.3 Bigint-only guard.
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH stats AS (SELECT o_custkey AS k, SUM(o_amt) AS gross, COUNT(*) AS cnt FROM cte_orders GROUP BY o_custkey) SELECT stats.k, SUM(stats.gross) FROM cte_customer AS c JOIN stats ON stats.k = c.c_id WHERE stats.gross > stats.cnt GROUP BY stats.k;' 2>&1
+
+--echo
+--echo
+--echo === Test 10: rejection — string col-vs-col (MIN vs MAX) ===
+--echo Expected error: both columns must resolve to Bigint
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH stats AS (SELECT c_id AS k, MIN(c_name) AS first_name, MAX(c_name) AS last_name FROM cte_customer GROUP BY c_id) SELECT stats.k, SUM(stats.k) FROM cte_customer AS c JOIN stats ON stats.k = c.c_id WHERE stats.first_name < stats.last_name GROUP BY stats.k;' 2>&1
+
+--disable_query_log
+DROP TABLE cte_orders;
+DROP TABLE cte_customer;
+--enable_query_log

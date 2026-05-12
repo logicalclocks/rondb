@@ -37,7 +37,7 @@
  * version there signal may be sent. The signal number must remain reserved and
  * handled by receiver until that version is no longer supported.
  */
-const GlobalSignalNumber MAX_GSN = 965;
+const GlobalSignalNumber MAX_GSN = 978;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -1300,5 +1300,22 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_JOIN_AGG_NULL_ROW_REQ       962
 #define GSN_JOIN_AGG_NULL_ROW_CONF      963
 #define GSN_JOIN_AGG_NULL_ROW_REF       964
-/* 965 unused — formerly GSN_JOIN_AGG_MATCH_CONF */
+/* CTE hash table lookup and redistribution signals */
+#define GSN_CTE_LOOKUP_REQ              965
+#define GSN_CTE_LOOKUP_CONF             966
+#define GSN_CTE_LOOKUP_REF              967
+#define GSN_JOIN_AGG_REDISTRIBUTE_REQ   968
+#define GSN_JOIN_AGG_FINAL_REP          969
+#define GSN_JOIN_AGG_REDISTRIBUTE_CONF  970
+#define GSN_JOIN_AGG_REDISTRIBUTE_REF   971
+/* CTE scan orchestration signals (DBSPJ ↔ DBTC) */
+#define GSN_CTE_SCAN_COMPLETE_REP       972
+#define GSN_CTE_START_MAIN_REQ          973
+/* CTE multi-phase orchestration (for CTE-to-CTE dependencies) */
+#define GSN_CTE_PHASE_COMPLETE_REP      974
+#define GSN_CTE_PHASE_START_REQ         975
+/* CTE hash table scan (DBSPJ → DBLQH, scan all groups from materialized CTE) */
+#define GSN_CTE_SCAN_REQ                976
+#define GSN_CTE_SCAN_CONF               977
+#define GSN_CTE_SCAN_REF                978
 #endif

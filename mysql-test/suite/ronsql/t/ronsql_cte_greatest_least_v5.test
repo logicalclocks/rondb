@@ -1,0 +1,812 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.5 v5: typed linked-column register loads.  Replaces the
+# v2a embedded CASE col-vs-col linked-side emission
+# (READ_LINKED_TO_MEM + READ_*_MEM_TO_REG_CONST(reg, 4), which
+# zero-extended signed sub-Bigint linked operands) with a single
+# one-word READ_LINKED_COLUMN_TO_REG opcode that decodes by NDB
+# type and applies correct sign extension.
+#
+# Scope: every NDB integer width on the LINKED side (the parent
+# table in a CTE_LOOKUP / join shape).
+#
+# Phase I.18 follow-up (Tests 8-11): leaf-side sub-Bigint coverage.
+# Pre-I.18 the leaf side went through READ_ATTR_INTO_REG, which
+# zero-extended sub-Bigint signed values (the v5 doc called this
+# out as a pre-existing limitation).  Phase I.18's batch 2
+# replaced READ_ATTR_INTO_REG with a descriptor-driven dispatch
+# using sint*korr / uint*korr per column type.  v5_orders now
+# carries TINYINT / SMALLINT / MEDIUMINT / INT signed columns with
+# negative values, and Tests 8-11 read them on the leaf side of
+# col-vs-col CASE conditions.
+#
+# Phase I.18 follow-up (Tests 12-13): BIGINT UNSIGNED with values
+# > INT64_MAX on either side of a col-vs-col compare.  Exercises
+# Phase I.18 batch 1's compareTypedRegs mixed-compare path: the
+# "if signed operand is negative, signed < unsigned" short-circuit
+# was added precisely so a Uint64 > INT64_MAX value can be
+# compared against a signed BIGINT without bit-pattern aliasing.
+# v5_customer.c_biguns row 200 = 9_500_000_000_000_000_000 and
+# v5_orders.o_biguns row 3 = 9_223_372_036_854_775_900 — both
+# above INT64_MAX (9_223_372_036_854_775_807).
+#
+# Phase I.5 v3a (Tests 14-17): float / double operands in
+# col-vs-col CASE.  Kernel handleReadLinkedColumnToReg gained
+# NDB_TYPE_FLOAT / NDB_TYPE_DOUBLE arms (32b86c5052d); RonSQL's
+# can_load_typed_reg whitelist accepts them (c44f0fe928b);
+# compareTypedRegs already promotes mixed int/float operands to
+# double.  v5_customer/orders carry FLOAT and DOUBLE columns;
+# Tests 14-17 cover float-vs-float and float-vs-int on both sides.
+#
+# Phase I.5 v3b (Tests 18-20): float column vs numeric literal in
+# CASE.  RonSQL's generate_embedded_condition now lowers the
+# col-vs-const-float shape to register compare via
+# LOAD_DOUBLE_CONST (Option A), reusing v3a's BRANCH_*_REG_REG
+# path.  No new kernel work.  Tests cover both leaf-side and
+# linked-side float columns, with both T_FLOAT (1.5) and T_INT
+# (60) literal RHS forms.
+#
+# GREATEST / LEAST n-ary lowering through v2b's pair-op SVM path
+# is unaffected by this phase (it goes through LoadColumn /
+# LoadLinkedColumn at the aggregator-program level, which already
+# widens via AlignedType).
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for typed linked register-load tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE v5_orders (
+  o_id        INT NOT NULL,
+  o_custkey   BIGINT NOT NULL,
+  o_amt       BIGINT NOT NULL,
+  o_threshold BIGINT NOT NULL,
+  o_tinyint   TINYINT NOT NULL,
+  o_smallint  SMALLINT NOT NULL,
+  o_mediumint MEDIUMINT NOT NULL,
+  o_int       INT NOT NULL,
+  o_biguns    BIGINT UNSIGNED NOT NULL,
+  o_float     FLOAT NOT NULL,
+  o_double    DOUBLE NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_v5_o_custkey ON v5_orders (o_custkey);
+
+CREATE TABLE v5_customer (
+  c_id        BIGINT NOT NULL,
+  c_threshold BIGINT NOT NULL,
+  c_tinyint   TINYINT NOT NULL,
+  c_smallint  SMALLINT NOT NULL,
+  c_mediumint MEDIUMINT NOT NULL,
+  c_int       INT NOT NULL,
+  c_unsigned  INT UNSIGNED NOT NULL,
+  c_biguns    BIGINT UNSIGNED NOT NULL,
+  c_float     FLOAT NOT NULL,
+  c_double    DOUBLE NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+CREATE TABLE v5_bound_orders (
+  o_id        INT NOT NULL,
+  o_custkey   BIGINT NOT NULL,
+  o_tinyint   TINYINT NOT NULL,
+  o_smallint  SMALLINT NOT NULL,
+  o_mediumint MEDIUMINT NOT NULL,
+  o_int       INT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_v5_bound_o_custkey ON v5_bound_orders (o_custkey);
+
+CREATE TABLE v5_bound_customer (
+  c_id        BIGINT NOT NULL,
+  c_tinyint   TINYINT NOT NULL,
+  c_smallint  SMALLINT NOT NULL,
+  c_mediumint MEDIUMINT NOT NULL,
+  c_int       INT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+# Fixture mixes positive and negative values across every signed
+# width so the sign-extension path is exercised on every linked
+# read.
+INSERT INTO v5_customer VALUES
+  (100, 50,  -10,  -1000,  -100000,  -1000000,  4000000000,                  100,    1.5,    -2.5),
+  (200, 60,    5,    500,    50000,    500000,  3000000000,  9500000000000000000,  -50.25,   100.125),
+  (300, 100,  20,  20000,   500000,  20000000,  1000000000,                 5000,  1000.0, 99999.5);
+
+# Phase I.18: leaf-side sub-Bigint columns carry negatives spanning
+# every signed width (incl. width minimums) so post-I.18 sign-extension
+# in handleReadAttrIntoReg is exercised directly.  o_biguns carries a
+# value > INT64_MAX in row 3 to cover the unsigned-vs-signed mixed
+# compare path (Phase I.18 batch 1's compareTypedRegs).
+INSERT INTO v5_orders VALUES
+  (1, 100,  80,   30,  -50,    -1000,    -100000,    -1000000,                  200,   3.5,    7.25),
+  (2, 100,  40,    5,   60,      600,      60000,      600000,                 1000,  -7.0,   42.0),
+  (3, 200,  90,   75, -127,   -32768,   -8388608, -2147483648,  9223372036854775900,  0.5, -100.5),
+  (4, 300,  70,   18,   10,      100,       1000,       10000,                   50, 250.0, 1234.5);
+
+INSERT INTO v5_bound_customer VALUES
+  (10, -128, -32768, -8388608, -2147483648),
+  (20,   -5,    -50,     -500,       -5000);
+
+INSERT INTO v5_bound_orders VALUES
+  (10, 10, -128, -32768, -8388608, -2147483648),
+  (20, 20,   -5,    -50,     -500,       -5000);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: TINYINT signed linked vs BIGINT leaf — negative linked values ===
+
+# c.c_tinyint covers -10, 5, 20.  o.o_threshold is BIGINT.  Tests
+# sign extension of negative TINYINT on the linked side.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_tinyint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_tinyint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 2: SMALLINT signed linked vs BIGINT leaf — negative linked values ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_smallint <= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_smallint <= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 3: MEDIUMINT linked — pre-v5 was rejected, now accepted ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_mediumint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_mediumint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 4: INT signed linked vs BIGINT leaf — negative linked values ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_int >= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_int >= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 5: INT UNSIGNED linked — large unsigned linked values ===
+
+# c.c_unsigned holds values up to 4_000_000_000, beyond INT range.
+# Verifies zero-extension on the linked UNSIGNED side; leaf is
+# BIGINT (which DBTUP loads correctly).
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_unsigned > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_unsigned > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 6: GREATEST(c.c_smallint, o.o_threshold) — pair-op path regression ===
+
+# v2b's pair-op path uses LoadColumn / LoadLinkedColumn at the
+# aggregator-program level (already type-aware via AlignedType), so
+# this case worked pre-v5 too.  Regression marker that v5's
+# embedded-CASE migration didn't disturb pair-op emission.
+let $QUERY=
+SELECT c.c_id, SUM(GREATEST(c.c_smallint, o.o_threshold)) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id, SUM(GREATEST(c.c_smallint, o.o_threshold)) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 7: explicit CASE col-vs-col SMALLINT linked vs BIGINT leaf (v2a path) ===
+
+# Goes through generate_embedded_condition's col-vs-col path — the
+# path v5 actually rewrote.  Linked SMALLINT now decodes
+# sign-extended via READ_LINKED_COLUMN_TO_REG.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_smallint >= o.o_threshold THEN o.o_amt
+                ELSE 0 END) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_smallint >= o.o_threshold THEN o.o_amt
+                ELSE 0 END) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 8: TINYINT signed leaf negative — Phase I.18 leaf path ===
+
+# Pre-I.18: o.o_tinyint = -50 read via READ_ATTR_INTO_REG would be
+# zero-extended to 206, so c.c_threshold (50) > 206 → FALSE.  Post-I.18
+# handleReadAttrIntoReg dispatches by NDB type and uses sint8korr,
+# so 50 > -50 → TRUE.  RonSQL output must match MySQL's reference.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_threshold > o.o_tinyint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_threshold > o.o_tinyint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 9: SMALLINT signed leaf negative — Phase I.18 leaf path ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_threshold > o.o_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_threshold > o.o_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 10: MEDIUMINT signed leaf negative — Phase I.18 leaf path ===
+
+# Width that uses sint3korr — 24-bit storage, sign-extending the high
+# bit is the easiest case to get wrong.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_threshold > o.o_mediumint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_threshold > o.o_mediumint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 11: INT signed leaf, INT_MIN — leaf-on-left of comparator ===
+
+# Mirrors Test 8-10 with the leaf operand on the LEFT of the binary
+# comparator.  Row 3's o_int = -2147483648 (INT_MIN) is the boundary
+# value where wrong sign extension produces 2147483648 (Uint32 read
+# as Int64).
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_int < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_int < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 12: BIGINT UNSIGNED linked > INT64_MAX vs BIGINT leaf ===
+
+# c.c_biguns row 200 = 9_500_000_000_000_000_000 (> INT64_MAX
+# 9_223_372_036_854_775_807).  Pre-I.18: BRANCH_*_REG_REG compared
+# both registers as Int64 regardless of the load's type — the
+# unsigned linked value would be reinterpreted as a negative Int64
+# (~ -8.9e18), making c.c_biguns < o.o_threshold trivially true.
+# Post-I.18 batch 1's compareTypedRegs handles the mixed
+# unsigned-vs-signed compare via the "if signed is negative,
+# signed < unsigned" short-circuit, so the comparison correctly
+# treats c.c_biguns as Uint64.  All-zero result expected; a buggy
+# kernel would return 1 for the >INT64_MAX row.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_biguns < o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_biguns < o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 13: BIGINT UNSIGNED leaf > INT64_MAX vs BIGINT linked ===
+
+# Mirror of Test 12 with the unsigned operand on the LEAF side
+# (read via READ_ATTR_INTO_REG, batch 2's Bigunsigned arm — slot 0
+# = REG_TYPE_UINT, slots 2-3 = Uint64).  Row 3's o.o_biguns =
+# 9_223_372_036_854_775_900 (> INT64_MAX).  Same compareTypedRegs
+# mixed-compare path; expected output 0 across the board.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_biguns < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_biguns < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 14: linked DOUBLE vs leaf DOUBLE — both sides float ===
+
+# Both sides DOUBLE.  Linked: handleReadLinkedColumnToReg's
+# NDB_TYPE_DOUBLE arm (memcpy 8 bytes, mark REG_TYPE_DOUBLE).
+# Leaf: handleReadAttrIntoReg's Float/Double arm (Phase I.18
+# batch 2).  Compare: compareTypedRegs same-type fast path on
+# REG_TYPE_DOUBLE.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_double > o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_double > o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 15: linked FLOAT vs leaf BIGINT — mixed int/float ===
+
+# Linked: NDB_TYPE_FLOAT arm widens to double, marks REG_TYPE_DOUBLE.
+# Leaf: BIGINT (REG_TYPE_INT).  compareTypedRegs detects float
+# on either side and promotes both operands to double for the
+# comparison.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_float < o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_float < o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 16: linked DOUBLE > BIGINT linked — int/float mix on linked side ===
+
+# Both linked.  c.c_double (DOUBLE → REG_TYPE_DOUBLE) compared
+# against c.c_threshold (BIGINT → REG_TYPE_INT).  Same int/float
+# promotion as Test 15 but with both operands on the linked side.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_double > c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_double > c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 17: leaf FLOAT vs linked BIGINT — float-on-LEFT, int-on-RIGHT ===
+
+# Leaf-side FLOAT via handleReadAttrIntoReg's Float arm
+# (Phase I.18 batch 2).  Linked: BIGINT (REG_TYPE_INT).  Same
+# mixed promotion in compareTypedRegs.  Coverage of float-on-LEAF
+# specifically — Tests 14 / 15 / 16 had float on linked or both.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_float < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_float < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 18: leaf DOUBLE vs T_FLOAT literal — double column, fractional const ===
+
+# Leaf-side DOUBLE column compared to a fractional literal.  Pre-v3b
+# this was rejected at codegen ("integer-only").  v3b emits 5 words:
+# READ_ATTR_INTO_REG(R1) + LoadDoubleConst(R2) + 2 data + BRANCH_GT_REG_REG.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_double > 100.0 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_double > 100.0 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 19: linked FLOAT vs T_INT literal — int promotes to double ===
+
+# Linked-side FLOAT (READ_LINKED_COLUMN_TO_REG NDB_TYPE_FLOAT arm)
+# compared against an integer literal.  v3b's pre-pass detects
+# T_INT RHS, promotes to double via static_cast, and emits
+# LoadDoubleConst with the promoted value.  c.c_float values:
+# 1.5, -50.25, 1000.0.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_float >= 0 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_float >= 0 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 20: leaf DOUBLE vs negative T_FLOAT literal ===
+
+# Negative fractional literal (parser folds T_NEGATIVE into the
+# constant_float.dbl with a negative sign).  Exercises the
+# constant_float.dbl read path in the v3b pre-pass.
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_double < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_double < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 21: literal-left leaf DOUBLE comparison ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN 100.0 < o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN 100.0 < o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 22: literal-left linked FLOAT comparison ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN 0 <= c.c_float THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN 0 <= c.c_float THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 23: OR with literal-left leaf DOUBLE atom ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN (100.0 < o.o_double OR c.c_float < 0)
+                THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN (100.0 < o.o_double OR c.c_float < 0)
+                THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 24: leaf FLOAT vs negative T_FLOAT literal ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_float < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_float < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 25: linked FLOAT vs negative T_INT literal ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_float > -1 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_float > -1 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 26: literal-left linked SMALLINT signed comparison ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN -1 > c.c_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN -1 > c.c_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 27: leaf signed minimum literals accepted ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+       SUM(CASE WHEN o.o_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+       SUM(CASE WHEN o.o_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+       SUM(CASE WHEN o.o_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN o.o_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+       SUM(CASE WHEN o.o_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+       SUM(CASE WHEN o.o_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+       SUM(CASE WHEN o.o_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 28: linked signed minimum literals accepted ===
+
+let $QUERY=
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+       SUM(CASE WHEN c.c_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+       SUM(CASE WHEN c.c_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+       SUM(CASE WHEN c.c_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_id,
+       SUM(CASE WHEN c.c_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+       SUM(CASE WHEN c.c_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+       SUM(CASE WHEN c.c_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+       SUM(CASE WHEN c.c_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 29: signed positive overflow literals rejected ===
+--echo Expected error: signed integer literal out of range
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c.c_id, SUM(CASE WHEN o.o_tinyint = 128 THEN 1 ELSE 0 END) AS s FROM v5_bound_customer AS c JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id GROUP BY c.c_id;' 2>&1
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c.c_id, SUM(CASE WHEN o.o_smallint = 32768 THEN 1 ELSE 0 END) AS s FROM v5_bound_customer AS c JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id GROUP BY c.c_id;' 2>&1
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c.c_id, SUM(CASE WHEN o.o_mediumint = 8388608 THEN 1 ELSE 0 END) AS s FROM v5_bound_customer AS c JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id GROUP BY c.c_id;' 2>&1
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c.c_id, SUM(CASE WHEN o.o_int = 2147483648 THEN 1 ELSE 0 END) AS s FROM v5_bound_customer AS c JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id GROUP BY c.c_id;' 2>&1
+
+--disable_query_log
+DROP TABLE v5_bound_orders;
+DROP TABLE v5_bound_customer;
+DROP TABLE v5_orders;
+DROP TABLE v5_customer;
+--enable_query_log

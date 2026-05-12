@@ -254,6 +254,19 @@ class NdbQueryOptions {
    */
   int addLinkedProjection(const NdbLinkedOperand *operand);
 
+  /**
+   * Set a per-fragment row limit for this scan operation.
+   * When maxRows > 0 and the scan has delivered that many rows from a
+   * fragment, DBSPJ closes the fragment scan early instead of requesting
+   * more rows. This enables the MIN/MAX index optimization: an ordered
+   * index scan (descending for MAX, ascending for MIN) only needs 1 row
+   * per fragment.
+   *
+   * @param maxRows Maximum rows per fragment (0 = unlimited, the default).
+   * @return 0 if ok, -1 in case of error.
+   */
+  int setMaxRows(Uint32 maxRows);
+
   int setParameters(const NdbQueryOperand *const parameters[]);
 
   const NdbQueryOptionsImpl &getImpl() const;
@@ -280,7 +293,10 @@ class NdbQueryOperationDef  // Base class for all operation definitions
     PrimaryKeyAccess,   ///< Read using pk
     UniqueIndexAccess,  ///< Read using unique index
     TableScan,          ///< Full table scan
-    OrderedIndexScan    ///< Ordered index scan, optionally w/ bounds
+    OrderedIndexScan,   ///< Ordered index scan, optionally w/ bounds
+    CteLookup,          ///< Lookup into materialized CTE hash table
+    CteScan,            ///< Scan all groups from materialized CTE hash table
+    CteSubtree          ///< Container for CTE materialization sub-tree
   };
 
   static const char *getTypeName(Type type);
@@ -313,6 +329,7 @@ class NdbQueryOperationDef  // Base class for all operation definitions
 
  protected:
   // Enforce object creation through NdbQueryBuilder factory
+  friend class NdbQueryCteSubtreeOperationDefImpl;  // CTE subtree container
   explicit NdbQueryOperationDef(NdbQueryOperationDefImpl &impl);
   ~NdbQueryOperationDef();
 
@@ -326,18 +343,20 @@ class NdbQueryOperationDef  // Base class for all operation definitions
 
 class NdbQueryLookupOperationDef : public NdbQueryOperationDef {
  public:
- private:
-  // Enforce object creation through NdbQueryBuilder factory
-  friend class NdbQueryLookupOperationDefImpl;
+ protected:
+  // Protected to allow subclassing (e.g., NdbQueryCteLookupOperationDef)
   explicit NdbQueryLookupOperationDef(NdbQueryOperationDefImpl &impl);
   ~NdbQueryLookupOperationDef();
+ private:
+  friend class NdbQueryLookupOperationDefImpl;
 };  // class NdbQueryLookupOperationDef
 
 class NdbQueryScanOperationDef
     : public NdbQueryOperationDef  // Base class for scans
 {
  protected:
-  // Enforce object creation through NdbQueryBuilder factory
+  // Enforce object creation through NdbQueryBuilder factory.
+  // Protected (not private) so NdbQueryCteScanOperationDef can subclass.
   explicit NdbQueryScanOperationDef(NdbQueryOperationDefImpl &impl);
   ~NdbQueryScanOperationDef();
 };  // class NdbQueryScanOperationDef
@@ -358,6 +377,24 @@ class NdbQueryIndexScanOperationDef : public NdbQueryScanOperationDef {
   explicit NdbQueryIndexScanOperationDef(NdbQueryOperationDefImpl &impl);
   ~NdbQueryIndexScanOperationDef();
 };  // class NdbQueryIndexScanOperationDef
+
+class NdbQueryCteLookupOperationDef : public NdbQueryLookupOperationDef {
+ private:
+  // Enforce object creation through NdbQueryBuilder factory
+  friend class NdbQueryCteLookupOperationDefImpl;
+  explicit NdbQueryCteLookupOperationDef(NdbQueryOperationDefImpl &impl)
+      : NdbQueryLookupOperationDef(impl) {}
+  ~NdbQueryCteLookupOperationDef() {}
+};  // class NdbQueryCteLookupOperationDef
+
+class NdbQueryCteScanOperationDef : public NdbQueryScanOperationDef {
+ private:
+  // Enforce object creation through NdbQueryBuilder factory
+  friend class NdbQueryCteScanOperationDefImpl;
+  explicit NdbQueryCteScanOperationDef(NdbQueryOperationDefImpl &impl)
+      : NdbQueryScanOperationDef(impl) {}
+  ~NdbQueryCteScanOperationDef() {}
+};  // class NdbQueryCteScanOperationDef
 
 /**
  * class NdbQueryIndexBound is an argument container for defining
@@ -522,6 +559,84 @@ class NdbQueryBuilder {
       const NdbDictionary::Index *, const NdbDictionary::Table *,
       const NdbQueryIndexBound *bound = nullptr,
       const NdbQueryOptions *options = nullptr, const char *ident = nullptr);
+
+  /**
+   * Create a CTE lookup operation that looks up a key in a materialized
+   * CTE hash table. The virtualTable parameter is a dummy NDB table whose
+   * PK columns match the CTE's GROUP BY key column types.
+   * @param cteId         CTE identifier (0-based index into CTE list)
+   * @param numResultCols Number of result columns from the CTE aggregation
+   * @param virtualTable  Dummy table whose PK matches CTE GROUP BY key types
+   * @param keys          Linked key values from parent operation
+   * @param options       Optional query options (match type, etc.)
+   * @param ident         Optional name for this operation
+   */
+  const NdbQueryCteLookupOperationDef *lookupCte(
+      Uint32 cteId, Uint32 numResultCols,
+      const NdbDictionary::Table *virtualTable,
+      const NdbQueryOperand *const keys[],
+      const NdbQueryOptions *options = nullptr, const char *ident = nullptr);
+
+  /**
+   * Create a CTE scan operation that scans all groups from a
+   * materialized CTE hash table. The virtualTable parameter is a
+   * dummy NDB table whose columns match the CTE's result columns
+   * (GROUP BY columns + aggregate result columns).
+   *
+   * A scanCte may appear as the root of a main query ("SELECT * FROM
+   * cte0") or as the root of a dependent CTE subtree (CTE-to-CTE
+   * full scan, complementing lookupCte which is the point-lookup
+   * variant). Children may be attached via linkedValue from this
+   * scan — each scanned CTE row then drives the children as a
+   * pushdown join outer.
+   *
+   * @param cteId         CTE identifier (0-based index into CTE list)
+   * @param numResultCols Number of result columns from the CTE aggregation
+   * @param virtualTable  Dummy table whose columns match CTE result types
+   * @param options       Optional query options (aggregation, etc.)
+   * @param ident         Optional name for this operation
+   */
+  const NdbQueryCteScanOperationDef *scanCte(
+      Uint32 cteId, Uint32 numResultCols,
+      const NdbDictionary::Table *virtualTable,
+      const NdbQueryOptions *options = nullptr, const char *ident = nullptr);
+
+  /**
+   * @name CTE Subtree Definition
+   * @{
+   */
+
+  /**
+   * Begin a CTE materialization subtree. All operations added after
+   * this call until endCteSubtree() belong to this CTE's
+   * materialization (typically a scan + lookup self-join).
+   *
+   * @param cteId  CTE identifier (0-based, sequential)
+   * @return Operation definition for the subtree container, or nullptr on error
+   */
+  const NdbQueryOperationDef *beginCteSubtree(Uint32 cteId);
+
+  /**
+   * End the current CTE subtree. Sets numNodes on the subtree container.
+   */
+  void endCteSubtree();
+
+  /**
+   * Register a CTE definition with its aggregation program.
+   * The CTE definition is appended to the KeyInfo section as
+   * CTE_DEFS_MARKER + CTE metadata during query execution.
+   *
+   * @param cteId        CTE identifier (must match a beginCteSubtree cteId)
+   * @param sourceTable  Table scanned during CTE materialization
+   * @param aggProgram   Aggregation program (GROUP BY + aggregations)
+   * @param depMask      Dependency bitmask (bit N = depends on CTE N)
+   * @param flags        CTE flags (e.g. CTE_SINGLE_ROW)
+   * @return 0 on success, error code on failure
+   */
+  int defineCte(Uint32 cteId,
+                const NdbDictionary::Table *sourceTable,
+                const NdbAggregator &aggProgram,
+                Uint64 depMask = 0, Uint32 flags = 0);
 
   /**
    * @name Error Handling

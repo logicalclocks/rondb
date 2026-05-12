@@ -450,6 +450,11 @@ class Dbspj : public SimulatedBlock {
 
     TreeNodeBitMask m_scans;  // TreeNodes doing scans
 
+    // CTE subtree context: set by cte_subtree_build(), consumed by build loop.
+    // When m_cteSubtreeRemaining > 0, the next N nodes belong to this CTE.
+    Uint32 m_cteSubtreeRemaining;  // Embedded nodes remaining in current CTE
+    Uint32 m_cteSubtreeCteId;      // CTE identifier for current subtree
+
     // Used for resolving dependencies
     Ptr<TreeNode> m_node_list[NDB_SPJ_MAX_TREE_NODES];
   };
@@ -630,6 +635,113 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_lqhKeyReq[LqhKeyReq::FixedSignalLength + 4];
   };
 
+  /**
+   * Data stored per CTE lookup TreeNode.
+   * CTE lookups query a materialized CTE hash table instead of LQH.
+   */
+  struct CteLookupData {
+    Uint32 m_cteId;           // CTE identifier (matches CteSubtreeNode::cteId)
+    Uint32 m_numResultCols;   // Number of result columns from CTE aggregation
+    Uint32 m_outstanding;     // Outstanding lookup requests
+    Uint32 m_pendingCount;    // Parent rows queued while CTE is materializing
+    Uint32 m_api_resultRef;   // FLUSH_AI target: API block reference
+    Uint32 m_api_resultData;  // FLUSH_AI connect ptr: API receiver ID
+    /* Per-column inline type info (2 words/col, encoded per
+     * CteLinkedAttr.hpp) carried in the QueryTree.  Used by
+     * appendFromParent / emitNullAttrinfo when this CTE op is the
+     * source of a linked-attr column for a downstream operation.
+     * lc_ndbd_pool_malloc'd in cte_lookup_build, freed in
+     * cleanup_common.  nullptr when m_numResultCols == 0. */
+    Uint32 *m_virtTypeInfo;
+  };
+
+  /**
+   * Data stored per CTE subtree container TreeNode.
+   * The CTE subtree is a lightweight container that marks the boundary
+   * of an embedded CTE scan sub-tree in the compound query.
+   */
+  struct CteSubtreeData {
+    Uint32 m_cteId;           // CTE identifier (0-based)
+    Uint32 m_numNodes;        // Number of embedded standard nodes
+  };
+
+  /**
+   * Data stored per QN_CTE_SCAN TreeNode — scans all groups from an
+   * earlier CTE's materialized hash table.
+   */
+  struct CteScanData {
+    Uint32 m_cteId;           // Source CTE to scan
+    Uint32 m_numResultCols;   // GROUP BY + aggregate result columns
+    Uint32 m_aggStateKey;     // DBLQH aggStateKey for the source CTE
+    Uint32 m_outstanding;     // Outstanding CTE_SCAN_REQ (0 or 1)
+    Uint32 m_rowsReceived;    // TRANSID_AI signals received so far
+    Uint32 m_rowsExpecting;   // Rows from CTE_SCAN_CONF numRows
+    Uint32 m_batchSize;       // Max groups per batch
+    bool m_endOfData;         // All groups sent by DBLQH
+    Uint32 m_api_resultRef;   // FLUSH_AI target: API block reference
+                              // (saved at build time from ctx.m_resultRef)
+    Uint32 m_joinAggStateKey; // RNIL for non-agg-feed scans (rows go to
+                              // API/DBSPJ via TRANSID_AI); else encoded
+                              // [baseKey,leafIdx] for the target
+                              // JoinAggInterpreter (CTE-2-reads-CTE-1).
+                              // Computed once in cte_scan_start, reused
+                              // by continuation REQs in execCTE_SCAN_CONF.
+
+    /* Per-source-node scan iterator state for multi-batch continuation.
+     * Each DBLQH node that participates in this CTE_SCAN gets a slot
+     * allocated on its first REQ; subsequent CONFs update m_scanIterI,
+     * and continuation REQs echo it back as CteScanReq::scanIterI so
+     * DBLQH can resume from the saved CteScanIterState pool record
+     * (O(1) hash-bucket resume instead of restarting from bucket 0).
+     * Slots are compact: m_numNodeSlots in [0, MAX_CTE_SCAN_NODE_SLOTS]. */
+    struct NodeSlot {
+      Uint32 m_sourceNodeId;   // DBLQH nodeId this slot tracks
+      Uint32 m_scanIterI;      // CteScanIterState pool i-value; RNIL on
+                               // first REQ and after EndOfData CONF
+      bool m_endOfData;        // Final CONF seen from this node
+      bool m_close_pending;    // Set by cte_scan_abort on slots with an
+                               // in-flight REQ; the CONF handler fires
+                               // a close REQ for the CONF's scanIterI
+                               // when RS_ABORTING is observed.
+    };
+    /* Single-node scans use slot[0]; m_cteScanAllNodes fan-out uses
+     * one slot per participating node.  Sized to cover every possible
+     * data node in the cluster (ABS_MAX_NDB_NODES = 145). */
+    static constexpr Uint32 MAX_CTE_SCAN_NODE_SLOTS = ABS_MAX_NDB_NODES;
+    NodeSlot m_nodeSlots[MAX_CTE_SCAN_NODE_SLOTS];
+    Uint32 m_numNodeSlots;
+
+    /* Per-column inline type info (2 words/col, encoded per
+     * CteLinkedAttr.hpp).  Same role as CteLookupData::m_virtTypeInfo
+     * — see comment there. */
+    Uint32 *m_virtTypeInfo;
+  };
+
+  /**
+   * CTE materialization state tracked per CTE sub-tree in a compound query.
+   * Each CTE progresses: NOT_STARTED → MATERIALIZING → READY (or FAILED).
+   * CTE_LOOKUP nodes check this state to decide whether to send a lookup
+   * request immediately or queue it for later.
+   */
+  struct CteContext {
+    enum State {
+      CTE_NOT_STARTED = 0,    // CTE scan not yet triggered
+      CTE_MATERIALIZING = 1,  // CTE scan in progress, hash table building
+      CTE_READY = 2,          // Hash table complete, lookups can proceed
+      CTE_FAILED = 3          // CTE scan failed
+    };
+    Uint64 m_depMask;         // Bitmask: bit c set = depends on cteId c
+    Uint32 m_cteId;           // CTE identifier (0-based)
+    Uint32 m_state;           // CteContext::State
+    Uint32 m_numResultCols;   // Number of aggregate result columns
+    Uint32 m_scanTreeNodeNo;  // Tree node number of the CTE's scan node
+    Uint32 m_phase;           // Execution phase (0 = no deps)
+    Uint32 m_flags;           // Bit 0 = CTE_SINGLE_ROW
+    Uint32 m_cachedRowPtrI;   // RNIL or section with cached row
+    Uint32 m_cachedRowLen;    // Word count of cached row
+    Uint32 m_singleNodeId;    // Node where single-row CTE lives
+  };
+
   struct ScanFragHandle {
     enum SFH_State {
       SFH_NOT_STARTED = 0,
@@ -783,6 +895,13 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_totalBytes;
 
     /**
+     * Per-fragment row limit. When > 0, close the fragment scan after
+     * this many rows instead of sending SCAN_NEXTREQ. Used for
+     * MIN/MAX index optimization (maxRows=1).
+     */
+    Uint32 m_maxRows;
+
+    /**
      * Non-pruned firstMatch may save their original range and param's
      * before removeMatchedKeys()
      */
@@ -818,6 +937,7 @@ class Dbspj : public SimulatedBlock {
           m_completedRows(0),
           m_totalRows(0),
           m_totalBytes(0),
+          m_maxRows(0),
           m_rangeCntSave(0),
           m_rangePtrISave(RNIL),
           m_paramPtrISave(RNIL),
@@ -879,6 +999,7 @@ class Dbspj : public SimulatedBlock {
           m_state(TN_BUILDING),
           m_parentPtrI(RNIL),
           m_agg_leaf_index(0),
+          m_cteId(RNIL),
           m_requestPtrI(request),
           m_ancestors(),
           m_coverage(),
@@ -904,9 +1025,15 @@ class Dbspj : public SimulatedBlock {
       m_send.m_attrInfoPtrI = RNIL;
     }
 
-    // TreeNode represent either a 'lookup' or 'scan' operation
-    bool isLookup() const { return (m_info == &g_LookupOpInfo); }
-    bool isScan() const { return (m_info != &g_LookupOpInfo); }
+    // TreeNode represent either a 'lookup' or 'scan' operation.
+    // CTE subtree containers are lightweight and treated as lookups.
+    bool isLookup() const {
+      return (m_info == &g_LookupOpInfo ||
+              m_info == &g_CteLookupOpInfo ||
+              m_info == &g_CteSubtreeOpInfo) &&
+             m_info != &g_CteScanOpInfo;
+    }
+    bool isScan() const { return !isLookup(); }
 
     const Uint32 m_magic;
     const struct OpInfo *m_info;
@@ -1102,6 +1229,25 @@ class Dbspj : public SimulatedBlock {
        */
       T_NULL_ROW_DEFERRED_RESTART = 0x8000000,
 
+      /**
+       * This scan node belongs to a CTE materialization sub-tree.
+       * scanFrag_send() uses CTE aggStateKey instead of the main one.
+       * When all fragments complete, CTE completion is reported to DBTC.
+       */
+      T_CTE_SCAN = 0x10000000,
+
+      /**
+       * Part A: the enclosing CTE subtree feeds its aggregator
+       * indirectly — via a nested CTE_LOOKUP leaf whose result rows
+       * (not the base scan rows) are what populate the CTE's hash
+       * table. The base scan marked with this bit must NOT set
+       * JoinAggFlag on its SCAN_FRAGREQ; its rows come back to DBSPJ
+       * as plain TRANSID_AI and drive cte_lookup_parent_row / cte_lookup_send
+       * for each scanned row. The CTE_LOOKUP leaf carries the real
+       * agg feed via joinAggStateKey.
+       */
+      T_CTE_INDIRECT_FEED = 0x20000000,
+
       // End marker...
       T_END = 0
     };
@@ -1128,6 +1274,7 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_batch_size;
     Uint32 m_parentPtrI;
     Uint32 m_agg_leaf_index;   // Multi-leaf: 0..255, encoded in aggStateKey
+    Uint32 m_cteId;            // CTE identifier when T_CTE_SCAN, else RNIL
     const Uint32 m_requestPtrI;
 
     /**
@@ -1217,6 +1364,9 @@ class Dbspj : public SimulatedBlock {
     union {
       LookupData m_lookup_data;
       ScanFragData m_scanFrag_data;
+      CteLookupData m_cteLookup_data;
+      CteSubtreeData m_cteSubtree_data;
+      CteScanData m_cteScan_data;
     };
 
     struct {
@@ -1278,7 +1428,8 @@ class Dbspj : public SimulatedBlock {
       ,
       RT_AGGREGATE = 0x80  // Request contains aggregation (only leaf sends to API)
       ,
-      RT_AGG_ANCESTOR_MATCH = 0x100  // Match tracking for intermediate agg ancestors
+      RT_AGG_ANCESTOR_MATCH = 0x100,  // Match tracking for intermediate agg ancestors
+      RT_CTE_PHASE = 0x200    // CTE materialization scans in progress
     };
 
     enum RequestState {
@@ -1323,6 +1474,23 @@ class Dbspj : public SimulatedBlock {
     Uint32 *m_aggStateKeys;      // Dynamically allocated [MAX_NDB_NODES]
     NdbNodeBitmask m_aggNodes;
     NDB_TICKS m_lastHbrepTicks;  // Last time SCAN_HBREP was sent during JoinAgg bypass
+
+    // CTE tracking — compound queries with CTE sub-trees.
+    // Dynamically allocated via lc_ndbd_pool_malloc on first CTE registration.
+    CteContext *m_cteContexts;
+    Uint32 m_numCtes;       // Number of CTE contexts registered (0 if no CTEs)
+    Uint32 m_ctesReady;     // Count of CTEs that reached CTE_READY state
+    Uint32 m_cteScansComplete; // Count of CTE scans fully completed
+    Uint32 m_cteCurrentPhase;  // CTE phase being executed (0 = first)
+    Uint32 m_ctePhaseCount;    // Total CTE execution phases
+    bool m_cteScanAllNodes;    // CTE_SCAN must send to all nodes (instances < nodes)
+    /**
+     * Per-CTE per-node aggStateKeys.  Flat array indexed as
+     * [cteIndex * MAX_NDB_NODES + nodeId].  Dynamically allocated
+     * when CTE keys are parsed from the aggKeys section.
+     */
+    Uint32 *m_cteAggStateKeys;
+
     ArenaHead m_arena;
 
 #ifdef SPJ_TRACE_TIME
@@ -1479,6 +1647,12 @@ class Dbspj : public SimulatedBlock {
 
   NdbNodeBitmask c_alive_nodes;
 
+  // Sorted list of data node IDs — used for CTE hash-based routing.
+  // Built in execSTTOR phase 4, updated in execNODE_FAILREP.
+  Uint32 m_dataNodeList[ABS_MAX_NDB_NODES];
+  Uint32 m_numDataNodes;
+  void buildDataNodeList();
+
   void do_init(Request *, const LqhKeyReq *, Uint32 senderRef);
   void store_lookup(Ptr<Request>);
   void handle_early_lqhkey_ref(Signal *, const LqhKeyReq *, Uint32 err);
@@ -1605,6 +1779,23 @@ class Dbspj : public SimulatedBlock {
   Uint32 appendAttrinfoWithTableMeta(Uint32 &dst, const RowPtr::Row &row,
                                      Uint32 col, Uint32 tableId,
                                      Uint32 schemaVersion, bool &hasNull);
+  /**
+   * Emit a CTE virt-column linked-attr entry: 2-word inline type info
+   * (CteLinkedAttr.hpp encoding) followed by the column's
+   * AttributeHeader + data.  Used in place of
+   * appendAttrinfoWithTableMeta when the source TreeNode is a CTE op
+   * (m_primaryTableId == 0).  See cte_filter_phase_e1k.md for design.
+   */
+  Uint32 appendCteAttrinfoWithVirtMeta(Uint32 &dst, const RowPtr::Row &row,
+                                        Uint32 col, Ptr<TreeNode> srcNode,
+                                        bool &hasNull);
+  /**
+   * Resolve (virtTypeInfo, numResultCols) for a CTE op TreeNode.
+   * Asserts the TreeNode is a CTE op (CteScan or CteLookup).
+   */
+  void cteVirtTypeInfo(Ptr<TreeNode> srcNode,
+                        const Uint32 *&virtInfoOut,
+                        Uint32 &numColsOut) const;
   Uint32 appendDataToSection(Uint32 &ptrI, Local_pattern_store &,
                              Local_pattern_store::ConstDataBufferIterator &,
                              Uint32 len, bool &hasNull);
@@ -1614,11 +1805,19 @@ class Dbspj : public SimulatedBlock {
                           bool addTableMeta = false,
                           Uint32 parentLevelAdjust = 0,
                           Uint64 nullNodes = 0);
+  /**
+   * Emit a NULL attribute entry.  When addTableMeta is true, prepend
+   * the per-entry 2-word header: zeros for a real-table NULL,
+   * CteLinkedAttr::MARKER_BIT for a CTE virt-column NULL (cteOrigin =
+   * true).  See cte_filter_phase_e1k.md.
+   */
   Uint32 emitNullAttrinfo(Uint32 &dst, Uint32 attrId,
-                          bool &hasNull, bool addTableMeta);
+                          bool &hasNull, bool addTableMeta,
+                          bool cteOrigin = true);
   Uint32 emitNullFromParent(Uint32 &dst, Local_pattern_store &,
                              Local_pattern_store::ConstDataBufferIterator &,
-                             bool &hasNull, bool addTableMeta);
+                             bool &hasNull, bool addTableMeta,
+                             bool cteOrigin = true);
   Uint32 expand(Uint32 &ptrI, Local_pattern_store &p, const RowPtr &r,
                 bool &hasNull, bool addTableMeta = false,
                 Uint32 parentLevelAdjust = 0,
@@ -1685,6 +1884,95 @@ class Dbspj : public SimulatedBlock {
                         const Ptr<TreeNode> treeNodePtr);
   void lookup_dumpNode(const Ptr<Request> requestPtr,
                        const Ptr<TreeNode> treeNodePtr);
+
+  /**
+   * CTE Lookup — looks up rows in a materialized CTE hash table
+   */
+  static const OpInfo g_CteLookupOpInfo;
+  Uint32 cte_lookup_build(Build_context &, Ptr<Request>, const QueryNode *,
+                          const QueryNodeParameters *);
+  void cte_lookup_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  void cte_lookup_countSignal(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 cnt);
+  void cte_lookup_parent_row(Signal *, Ptr<Request>, Ptr<TreeNode>, const RowPtr &);
+  void cte_lookup_serve_cached_row(Signal *, Ptr<Request>,
+                                   Ptr<TreeNode>, const CteContext &);
+  void cte_lookup_send(Signal *, Ptr<Request>, Ptr<TreeNode>,
+                       const RowPtr &);
+  void execCTE_LOOKUP_CONF(Signal *);
+  void execCTE_LOOKUP_REF(Signal *);
+  void cte_lookup_cleanup(Ptr<Request>, Ptr<TreeNode>);
+  bool cte_lookup_checkNode(const Ptr<Request>, const Ptr<TreeNode>);
+  void cte_lookup_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
+
+  /**
+   * CTE Subtree — container for CTE materialization scan sub-tree
+   */
+  static const OpInfo g_CteSubtreeOpInfo;
+  Uint32 cte_subtree_build(Build_context &, Ptr<Request>, const QueryNode *,
+                           const QueryNodeParameters *);
+  void cte_subtree_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  void cte_subtree_cleanup(Ptr<Request>, Ptr<TreeNode>);
+  bool cte_subtree_checkNode(const Ptr<Request>, const Ptr<TreeNode>);
+  void cte_subtree_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
+
+  /**
+   * CTE Scan — scan all groups from a materialized CTE hash table
+   */
+  static const OpInfo g_CteScanOpInfo;
+  Uint32 cte_scan_build(Build_context &, Ptr<Request>, const QueryNode *,
+                        const QueryNodeParameters *);
+  void cte_scan_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  void cte_scan_countSignal(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 cnt);
+  void cte_scan_execSCAN_NEXTREQ(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  void execCTE_SCAN_CONF(Signal *);
+  void execCTE_SCAN_REF(Signal *);
+  void cte_scan_cleanup(Ptr<Request>, Ptr<TreeNode>);
+  bool cte_scan_checkNode(const Ptr<Request>, const Ptr<TreeNode>);
+  void cte_scan_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
+
+  /* Build and send a CTE_SCAN_REQ to the DBLQH on sourceNodeId.
+   * scanIterI == RNIL produces a first REQ (SignalLength = 9); any
+   * other value produces a continuation (SignalLengthContinue = 10)
+   * that echoes the scanIterI from a prior CTE_SCAN_CONF.  Duplicates
+   * the AttrInfo section so the caller's copy is preserved for the
+   * next batch.  Increments data.m_outstanding on success. */
+  void cte_scan_sendReq(Signal *signal, Ptr<Request> requestPtr,
+                        Ptr<TreeNode> treeNodePtr,
+                        Uint32 sourceNodeId, Uint32 aggStateKey,
+                        Uint32 joinAggStateKey, Uint32 scanIterI);
+
+  /* Round-trip close REQ: tells DBLQH to free the CteScanIterState
+   * pool record for scanIterI and reply with an EndOfData CONF.
+   * Bumps data.m_outstanding and requestPtr.m_outstanding so the
+   * close CONF drains them via the normal execCTE_SCAN_CONF path. */
+  void cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
+                             Ptr<TreeNode> treeNodePtr,
+                             Uint32 sourceNodeId, Uint32 scanIterI);
+
+  /* Abort handler: tears down any CteScanIterState pool records held
+   * by DBLQH for open slots (scanIterI != RNIL, !m_endOfData). */
+  void cte_scan_abort(Signal *, Ptr<Request>, Ptr<TreeNode>);
+
+  /* Shared congestion-resume helper: if any tree node is suspended
+   * and m_outstanding has dropped to MildlyCongestedLimit or below,
+   * resume one suspended node's deferred operations.  Caller passes
+   * its own TreeNode so the helper can try that node's scanAncestor
+   * first for cache friendliness. */
+  void maybeResumeCongestedNodes(Signal *signal, Ptr<Request> requestPtr,
+                                 Ptr<TreeNode> treeNodePtr);
+
+  /* Return the NodeSlot for sourceNodeId, allocating a new one if
+   * none exists.  Returns nullptr if all slots are in use (should
+   * never happen: ABS_MAX_NDB_NODES slots are available). */
+  CteScanData::NodeSlot *cte_scan_findOrAddNodeSlot(
+      CteScanData &data, Uint32 sourceNodeId);
+
+  /**
+   * CTE orchestration signals
+   */
+  void execCTE_START_MAIN_REQ(Signal *);
+  void execCTE_PHASE_START_REQ(Signal *);
+  void handleCtePhaseComplete(Signal *, Ptr<Request>);
 
   /**
    * ScanFrag

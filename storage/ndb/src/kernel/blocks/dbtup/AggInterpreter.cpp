@@ -148,17 +148,26 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
 #endif // DEBUG_VS_INTERP
 
 /**
- * validateEmbeddedProgram — validate an embedded old-interpreter program
- * at Init() time ("compile" step).
+ * validateEmbeddedProgram — sanity-check an embedded program at
+ * Init() time ("compile" step).
+ *
+ * Phase C simplification: the opcode whitelist and the forward-only
+ * branch-direction check are gone — those are now enforced at
+ * runtime by s_agg_interp_handlers (nullptr slots raise
+ * ZNO_INSTRUCTION_ERROR) and IFLAG_DISALLOW_BACKWARD_JUMPS (raises
+ * ZBACKWARD_JUMP_NOT_ALLOWED).  Keeping those checks here would be
+ * a second source of truth that could drift; keep only the
+ * structural bounds check on branch targets so a malformed program
+ * doesn't pass Init with a garbage offset that would later confuse
+ * the runtime.
  *
  * Walks the instruction stream and checks:
- * 1. All opcodes are in the allowed whitelist (no CALL, RETURN, EXIT_REFUSE,
- *    WRITE_ATTR, heap memory ops)
- * 2. All branch offsets are forward-only (bit 31 = 0)
- * 3. All branch targets fall within the embedded program bounds
- * 4. Instruction lengths computed via getInstructionPreProcessingInfo are valid
+ *   1. Each instruction has a well-defined length
+ *      (getInstructionPreProcessingInfo returns non-null).
+ *   2. Branch targets (forward or otherwise) fall within the
+ *      embedded program bounds.
  *
- * Returns true if the program is safe to execute in interpreterNextLab.
+ * Returns true if the program is structurally valid.
  */
 bool AggInterpreter::validateEmbeddedProgram(
     const Uint32* emb_prog, Uint32 emb_len) {
@@ -167,48 +176,9 @@ bool AggInterpreter::validateEmbeddedProgram(
     Uint32 instr = emb_prog[pc];
     Uint32 opCode = Interpreter::getOpCode(instr);
 
-    /* Check opcode whitelist */
-    switch (opCode) {
-      /* Load/store register operations */
-      case Interpreter::READ_ATTR_INTO_REG:
-      case Interpreter::LOAD_CONST_NULL:
-      case Interpreter::LOAD_CONST16:
-      case Interpreter::LOAD_CONST32:
-      case Interpreter::LOAD_CONST64:
-      /* Arithmetic */
-      case Interpreter::ADD_REG_REG:
-      case Interpreter::SUB_REG_REG:
-      /* Unconditional branch */
-      case Interpreter::BRANCH:
-      /* Null-check branches */
-      case Interpreter::BRANCH_REG_EQ_NULL:
-      case Interpreter::BRANCH_REG_NE_NULL:
-      /* Register comparison branches */
-      case Interpreter::BRANCH_EQ_REG_REG:
-      case Interpreter::BRANCH_NE_REG_REG:
-      case Interpreter::BRANCH_LT_REG_REG:
-      case Interpreter::BRANCH_LE_REG_REG:
-      case Interpreter::BRANCH_GT_REG_REG:
-      case Interpreter::BRANCH_GE_REG_REG:
-      /* Exit */
-      case Interpreter::EXIT_OK:
-      /* Column comparison branches */
-      case Interpreter::BRANCH_ATTR_OP_ARG:
-      case Interpreter::BRANCH_ATTR_EQ_NULL:
-      case Interpreter::BRANCH_ATTR_NE_NULL:
-      /* Output for skip_offset communication */
-      case Interpreter::WRITE_INTERPRETER_OUTPUT:
-        break;  /* Allowed */
-
-      default:
-        g_eventLogger->warning(
-            "validateEmbeddedProgram: forbidden opcode %u at pc=%u",
-            opCode, pc);
-        return false;
-    }
-
-    /* Validate branch targets: forward-only, within bounds */
-    bool is_branch = false;
+    /* Bounds-check branch targets.  Direction is left to the runtime
+     * backward-jump guard; here we only care that the target doesn't
+     * leave the program. */
     switch (opCode) {
       case Interpreter::BRANCH:
       case Interpreter::BRANCH_REG_EQ_NULL:
@@ -222,31 +192,23 @@ bool AggInterpreter::validateEmbeddedProgram(
       case Interpreter::BRANCH_ATTR_OP_ARG:
       case Interpreter::BRANCH_ATTR_EQ_NULL:
       case Interpreter::BRANCH_ATTR_NE_NULL:
-        is_branch = true;
+      case Interpreter::BRANCH_MEM_OP_ARG:
+      case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE: {
+        Uint32 offset = (instr >> 16) & 0x7FFF;
+        Uint32 target = pc + offset;
+        if (target >= emb_len) {
+          g_eventLogger->warning(
+              "validateEmbeddedProgram: branch target %u out of bounds "
+              "(emb_len=%u) at pc=%u", target, emb_len, pc);
+          return false;
+        }
         break;
+      }
       default:
         break;
     }
 
-    if (is_branch) {
-      Uint32 direction = instr >> 31;
-      if (direction != 0) {
-        g_eventLogger->warning(
-            "validateEmbeddedProgram: backward branch at pc=%u", pc);
-        return false;
-      }
-      Uint32 offset = (instr >> 16) & 0x7FFF;
-      /* Target = pc + offset (brancher logic: TprogramCounter-- then + offset) */
-      Uint32 target = pc + offset;
-      if (target >= emb_len) {
-        g_eventLogger->warning(
-            "validateEmbeddedProgram: branch target %u out of bounds "
-            "(emb_len=%u) at pc=%u", target, emb_len, pc);
-        return false;
-      }
-    }
-
-    /* Advance to next instruction using getInstructionPreProcessingInfo */
+    /* Advance via getInstructionPreProcessingInfo. */
     Interpreter::InstructionPreProcessing processing;
     Uint32* next = Interpreter::getInstructionPreProcessingInfo(
         const_cast<Uint32*>(&emb_prog[pc]), processing);
@@ -426,6 +388,15 @@ static bool TypeSupported(DataType type) {
 
     case NDB_TYPE_DECIMAL:
     case NDB_TYPE_DECIMALUNSIGNED:
+
+    // Phase I.6 (F.2): MIN/MAX over CHAR / VARCHAR / Longvarchar.
+    // Sum is rejected separately (see Sum()).  Count is
+    // type-agnostic and works for any column type.  String
+    // value handling lives in MinString / MaxString and the
+    // m_string_results sidecar — see cte_filter_phase_i6_varchar.md.
+    case NDB_TYPE_CHAR:
+    case NDB_TYPE_VARCHAR:
+    case NDB_TYPE_LONGVARCHAR:
       return true;
     default:
       return false;
@@ -469,6 +440,13 @@ static DataType AlignedType(DataType type, int scale) {
     case NDB_TYPE_DECIMAL:
     case NDB_TYPE_DECIMALUNSIGNED:
       return scale == 0 ? NDB_TYPE_BIGINT : NDB_TYPE_DOUBLE;
+
+    // Phase I.6 (F.2): string MIN/MAX preserves the source type —
+    // wire format stays as the source's [length_prefix][payload].
+    case NDB_TYPE_CHAR:
+    case NDB_TYPE_VARCHAR:
+    case NDB_TYPE_LONGVARCHAR:
+      return type;
     default:
       assert(0);
   }
@@ -1146,7 +1124,9 @@ static Int32 Count(const Register& a, AggResItem* res, bool print) {
  *          Others returned by readAttributes
  */
 Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
-        Dbtup::KeyReqStruct* req_struct) {
+        Dbtup::KeyReqStruct* req_struct,
+        Uint32 thread_id) {
+  m_current_thread_id = thread_id;
   if (!m_inited || req_struct->read_length != 0) {
     g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR at entry: "
             "inited=%d, read_length=%u",
@@ -1694,6 +1674,70 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 #endif // DEBUG_PA_INTERP
           break;
 
+          case NDB_TYPE_CHAR:
+          case NDB_TYPE_VARCHAR:
+          case NDB_TYPE_LONGVARCHAR: {
+            // Phase I.6 (F.2-K.4b): stash a read-only view into
+            // m_attr_read_buf for a subsequent kOpMin / kOpMax to
+            // compare and copy without re-walking the AttributeDescriptor.
+            // The register's val_int64 is unused on the string path —
+            // dispatch goes through m_registers[reg].type to the
+            // MaxString / MinString helpers.
+            const Uint32 TattrDesc1 = attrDescriptor[0];
+            const Uint32 TattrDesc2 = attrDescriptor[1];
+            const CHARSET_INFO* cs = nullptr;
+            if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
+              const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+              cs = req_struct->tablePtrP->charsetArray[pos];
+            }
+            const Uint32 declared =
+                AttributeDescriptor::getSizeInBytes(TattrDesc1);
+            const Uint16 prefix =
+                (type == NDB_TYPE_CHAR) ? 0 :
+                (type == NDB_TYPE_VARCHAR) ? 1 : 2;
+            char* base = reinterpret_cast<char*>(
+                &m_attr_read_buf[m_attr_read_pos + 1]);
+            Uint16 payload_len;
+            if (type == NDB_TYPE_CHAR) {
+              payload_len = static_cast<Uint16>(declared);
+            } else if (type == NDB_TYPE_VARCHAR) {
+              payload_len = static_cast<Uint16>(
+                  static_cast<Uint8>(base[0]));
+            } else {
+              payload_len = static_cast<Uint16>(
+                  static_cast<Uint8>(base[0]) |
+                  (static_cast<Uint16>(static_cast<Uint8>(base[1])) << 8));
+            }
+            StringResult& sr = m_register_string_data[reg_index];
+            sr.ptr = base;
+            sr.length = payload_len;
+            sr.size = 0;
+            sr.prefix_bytes = prefix;
+            sr.declared_size = static_cast<Uint16>(declared);
+            sr.charset = cs;
+            m_registers[reg_index].value.val_int64 = 0;
+            // Advance m_attr_read_pos past the AttributeHeader + string
+            // bytes so the next kOpLoadCol doesn't overwrite the
+            // captured ptr.  Numeric paths leave m_attr_read_pos at 0
+            // (they extract into the register's 8-byte union and the
+            // buffer is then disposable); strings need the buffer to
+            // stay live until kOpMax / kOpMin runs minMaxString.
+            {
+              const Uint32 string_bytes = prefix + payload_len;
+              const Uint32 words_consumed = 1 /*AttributeHeader*/ +
+                                            ((string_bytes + 3) >> 2);
+              if (unlikely(m_attr_read_pos + words_consumed >
+                           g_attr_read_buf_len_)) {
+                g_eventLogger->debug("AggInterpreter::ProcessRec "
+                    "ZAGG_OTHER_ERROR: string attr buffer overflow "
+                    "pos=%u words=%u buf_words=%u",
+                    m_attr_read_pos, words_consumed, g_attr_read_buf_len_);
+                return ZAGG_OTHER_ERROR;
+              }
+              m_attr_read_pos += words_consumed;
+            }
+            break;
+          }
           default:
             return ZAGG_LOAD_COL_WRONG_TYPE;
         }
@@ -1751,6 +1795,18 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
                         "Move [%u]->[%u]",
                         reg_index2, reg_index);
         break;
+
+      case kOpSetRegNull:
+        reg_index = (value & 0x000F0000) >> 16;
+        if (m_registers[reg_index].type == NDB_TYPE_UNDEFINED) {
+          m_registers[reg_index].type = NDB_TYPE_BIGINT;
+          m_registers[reg_index].is_unsigned = false;
+          m_registers[reg_index].value.val_int64 = 0;
+        }
+        m_registers[reg_index].is_null = true;
+        PA_INTERP_TRACE(m_frag_id, "SetRegNull[%u]", reg_index);
+        break;
+
       case kOpSum:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
@@ -1764,14 +1820,28 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpMax:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
-
-        ret = Max(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
+        if (m_registers[reg_index].type == NDB_TYPE_CHAR ||
+            m_registers[reg_index].type == NDB_TYPE_VARCHAR ||
+            m_registers[reg_index].type == NDB_TYPE_LONGVARCHAR) {
+          ret = minMaxString(reg_index, agg_index, agg_res_ptr,
+                             /*is_max=*/true);
+        } else {
+          ret = Max(m_registers[reg_index], &agg_res_ptr[agg_index],
+                    debug_print);
+        }
         break;
       case kOpMin:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
-
-        ret = Min(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
+        if (m_registers[reg_index].type == NDB_TYPE_CHAR ||
+            m_registers[reg_index].type == NDB_TYPE_VARCHAR ||
+            m_registers[reg_index].type == NDB_TYPE_LONGVARCHAR) {
+          ret = minMaxString(reg_index, agg_index, agg_res_ptr,
+                             /*is_max=*/false);
+        } else {
+          ret = Min(m_registers[reg_index], &agg_res_ptr[agg_index],
+                    debug_print);
+        }
         break;
       case kOpCount:
         reg_index = (value & 0x000F0000) >> 16;
@@ -1834,49 +1904,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         break;
       }
 
-      case kOpBranchRegLt:
-      case kOpBranchRegLe:
-      case kOpBranchRegGt:
-      case kOpBranchRegGe:
-      case kOpBranchRegEq:
-      case kOpBranchRegNe:
-      {
-        Uint32 ra = (value >> 20) & 0x0F;
-        Uint32 rb = (value >> 16) & 0x0F;
-        Uint32 skip_count = value & 0xFFFF;
-        double va = 0, vb = 0;
-        if (m_registers[ra].type == NDB_TYPE_BIGINT) {
-          va = m_registers[ra].is_unsigned
-              ? (double)m_registers[ra].value.val_uint64
-              : (double)m_registers[ra].value.val_int64;
-        } else if (m_registers[ra].type == NDB_TYPE_DOUBLE) {
-          va = m_registers[ra].value.val_double;
-        }
-        if (m_registers[rb].type == NDB_TYPE_BIGINT) {
-          vb = m_registers[rb].is_unsigned
-              ? (double)m_registers[rb].value.val_uint64
-              : (double)m_registers[rb].value.val_int64;
-        } else if (m_registers[rb].type == NDB_TYPE_DOUBLE) {
-          vb = m_registers[rb].value.val_double;
-        }
-        bool do_skip = false;
-        if (m_registers[ra].is_null || m_registers[rb].is_null) {
-          do_skip = true;
-        } else {
-          switch (op) {
-          case kOpBranchRegLt: do_skip = (va < vb); break;
-          case kOpBranchRegLe: do_skip = (va <= vb); break;
-          case kOpBranchRegGt: do_skip = (va > vb); break;
-          case kOpBranchRegGe: do_skip = (va >= vb); break;
-          case kOpBranchRegEq: do_skip = (va == vb); break;
-          case kOpBranchRegNe: do_skip = (va != vb); break;
-          default: break;
-          }
-        }
-        if (do_skip) exec_pos += skip_count;
-        break;
-      }
-
       case kOpEmbeddedInterp:
       {
         Uint32 emb_len = value & 0xFFFF;
@@ -1887,18 +1914,29 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           return ZAGG_OTHER_ERROR;
         }
 
-        /* Save and reset instruction counter (interpreterNextLab asserts 0) */
+        /* Save and reset instruction counter (interpreterJumpTable
+         * asserts it is 0 on entry). */
         Uint32 saved_instr_count = req_struct->no_exec_instructions;
         req_struct->no_exec_instructions = 0;
 
-        /* Local output buffer — avoids corrupting outer interpreter coutBuffer */
+        /* Local tmp buffer — unused by the accepted agg-interp opcodes
+         * (handleBranchAttrOp reads via readAttributes into tmpArea),
+         * but sized for safety in case handlers use it. */
         Uint32 local_tmpArea[16];
 
-        int rc = block_tup->interpreterNextLab(
+        /* Phase C.3: delegate the embedded user bytecode to the
+         * generalised jump-table interpreter with the aggregation
+         * handler table and a backward-jump guard.  The old path
+         * called interpreterNextLab, which also accepted opcodes the
+         * agg-interp whitelist rejects — the new dispatch raises
+         * ZNO_INSTRUCTION_ERROR for any non-whitelisted opcode at
+         * runtime, so the invariants AggInterpreter relies on hold by
+         * construction. */
+        int rc = block_tup->interpreterAggEmbedded(
             req_struct->signal, req_struct,
             &m_prog[exec_pos], emb_len,   /* main program = embedded portion */
-            nullptr, 0,                   /* no subroutines */
-            local_tmpArea, 16);
+            local_tmpArea, 16,
+            m_registers);
 
         req_struct->no_exec_instructions = saved_instr_count;
 
@@ -1908,7 +1946,11 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
         /* Read skip_offset written by WRITE_INTERPRETER_OUTPUT in embedded prog */
         Uint32 skip_offset = block_tup->c_interpreter_output[0];
-        exec_pos += emb_len + skip_offset;
+        if (skip_offset == AGG_EMBEDDED_INTERP_STOP_PROGRAM) {
+          exec_pos = m_prog_len;
+        } else {
+          exec_pos += emb_len + skip_offset;
+        }
         break;
       }
 
@@ -2040,22 +2082,45 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
   assert(m_n_gb_cols < 0xFFFF);
   assert(m_n_agg_results < 0xFFFF);
 
+  // Phase I.6 (F.2-K.5): when at least one string MIN/MAX slot has
+  // been touched, switch the wire marker to AGG_CHAR_RESULT and
+  // append a per-group string-payload region after the AggResItem
+  // array.  Numeric-only queries continue to emit AGG_RESULT
+  // unchanged.  Per-group val_len grows by stringPayloadSize(slots).
+  // Mixed numeric+string queries: numeric slots keep their existing
+  // AggResItem encoding; only string slots contribute to the
+  // appended region.
+  const bool has_strings = hasStringSlots();
+  const Uint32 marker = has_strings
+      ? AttributeHeader::AGG_CHAR_RESULT
+      : AttributeHeader::AGG_RESULT;
   if (m_n_gb_cols) {
-    data_buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+    data_buf[pos++] = marker << 16 | 0x0721;
     data_buf[pos++] = m_n_gb_cols << 16 | m_n_agg_results;
     Uint32 n_groups_pos = pos++;
-    const Uint32 v_len = val_len();
+    const Uint32 v_len_base = val_len();
     Uint32 n_groups = 0;
     for (auto iter = m_gb_map->begin(); iter != m_gb_map->end();) {
       Uint32 key_len = iter->first.len;
+      AggResItem* slots = reinterpret_cast<AggResItem*>(iter->second.ptr);
+      Uint32 payload_bytes = has_strings ? stringPayloadSize(slots) : 0;
+      Uint32 v_len_total = v_len_base + payload_bytes;
       assert(key_len % 4 == 0 && key_len < 0xFFFF);
-      assert(v_len % 4 == 0 && v_len < 0xFFFF);
-      data_buf[pos++] = key_len << 16 | v_len;
+      assert(v_len_total % 4 == 0 && v_len_total < 0xFFFF);
+      data_buf[pos++] = key_len << 16 | v_len_total;
       MEMCOPY_NO_WORDS(&data_buf[pos], iter->first.ptr,
           key_len >> 2);
-      MEMCOPY_NO_WORDS(&data_buf[pos + (key_len >> 2)], iter->second.ptr,
-          v_len >> 2);
-      pos += ((key_len + v_len) >> 2);
+      MEMCOPY_NO_WORDS(&data_buf[pos + (key_len >> 2)], slots,
+          v_len_base >> 2);
+      if (payload_bytes > 0) {
+        encodeStringPayload(slots, reinterpret_cast<char*>(
+            &data_buf[pos + ((key_len + v_len_base) >> 2)]));
+      }
+      pos += ((key_len + v_len_total) >> 2);
+      // Phase I.6 (F.2-K.4e): per-group string val_ptr buffers have
+      // been substituted into the wire payload above and are no
+      // longer needed locally — free before erasing the map entry.
+      freeGroupStringSlots(slots);
       iter = m_gb_map->erase(iter);
       n_groups++;
     }
@@ -2063,14 +2128,21 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
     m_alloc_len = 0;
     m_result_size = 0;
   } else {
-    data_buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+    const Uint32 v_len_base = m_n_agg_results * sizeof(AggResItem);
+    const Uint32 payload_bytes =
+        has_strings ? stringPayloadSize(m_agg_results) : 0;
+    const Uint32 v_len_total = v_len_base + payload_bytes;
+    data_buf[pos++] = marker << 16 | 0x0721;
     data_buf[pos++] = m_n_gb_cols << 16 | m_n_agg_results;
     data_buf[pos++] = 0;
-    data_buf[pos++] = 0 << 16 | (m_n_agg_results * sizeof(AggResItem));
+    data_buf[pos++] = 0 << 16 | v_len_total;
     assert(m_gb_map == nullptr);
-    MEMCOPY_NO_WORDS(&data_buf[pos], m_agg_results,
-        (m_n_agg_results * sizeof(AggResItem)) >> 2);
-    pos += ((m_n_agg_results * sizeof(AggResItem)) >> 2);
+    MEMCOPY_NO_WORDS(&data_buf[pos], m_agg_results, v_len_base >> 2);
+    if (payload_bytes > 0) {
+      encodeStringPayload(m_agg_results, reinterpret_cast<char*>(
+          &data_buf[pos + (v_len_base >> 2)]));
+    }
+    pos += (v_len_total >> 2);
   }
 
 #if defined(PA_CHECK) && !defined(NDEBUG)
@@ -2083,8 +2155,12 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
 
   while (parse_pos < data_len) {
     AttributeHeader agg_checker_ah(data_buf[parse_pos++]);
-    assert(agg_checker_ah.getAttributeId() == AttributeHeader::AGG_RESULT &&
+    const Uint32 marker_id = agg_checker_ah.getAttributeId();
+    assert((marker_id == AttributeHeader::AGG_RESULT ||
+            marker_id == AttributeHeader::AGG_CHAR_RESULT) &&
            agg_checker_ah.getByteSize() == 0x0721);
+    const bool wire_has_strings =
+        (marker_id == AttributeHeader::AGG_CHAR_RESULT);
     Uint32 n_gb_cols = data_buf[parse_pos] >> 16;
     Uint32 n_agg_results = data_buf[parse_pos++] & 0xFFFF;
     Uint32 n_res_items = data_buf[parse_pos++];
@@ -2099,6 +2175,12 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
         // remove compile warnings
         (void)gb_cols_len;
         (void)agg_res_len;
+        // For AGG_CHAR_RESULT, agg_res_len includes the appended
+        // string-payload region past the AggResItem array.  Capture
+        // the absolute end position so we can skip the appended
+        // region after walking the per-slot AggResItem entries.
+        const Uint32 group_val_end =
+            parse_pos + ((gb_cols_len + agg_res_len) >> 2);
         for (Uint32 j = 0; j < n_gb_cols; j++) {
           AttributeHeader ah(data_buf[parse_pos++]);
           // sprintf(log_buf,
@@ -2131,6 +2213,10 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
           // sprintf(log_buf + strlen(log_buf), ")");
           parse_pos += (sizeof(AggResItem) >> 2);
         }
+        // After the AggResItem array, skip any appended string
+        // payload region (only present for AGG_CHAR_RESULT).
+        assert(parse_pos <= group_val_end);
+        parse_pos = group_val_end;
         // g_eventLogger->info("%s", log_buf);
       }
     } else {
@@ -2140,7 +2226,11 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
       Uint32 gb_cols_len = data_buf[parse_pos] >> 16;
       Uint32 agg_res_len = data_buf[parse_pos++] & 0xFFFF;
       assert(gb_cols_len == 0);
-      assert(agg_res_len == m_n_agg_results * sizeof(AggResItem));
+      // Numeric-only path: agg_res_len exactly fits the AggResItem
+      // array.  AGG_CHAR_RESULT path: includes the appended
+      // string-payload region; advance by the declared length.
+      assert(wire_has_strings ||
+             agg_res_len == m_n_agg_results * sizeof(AggResItem));
       parse_pos += (agg_res_len >> 2);
     }
   }
@@ -2203,4 +2293,210 @@ char* AggInterpreter::MemAlloc(Uint32 len) {
   char* ptr = &(m_mem_buf[m_alloc_len]);
   m_alloc_len += len;
   return ptr;
+}
+
+// Phase I.6 (F.2): release string MIN/MAX state.  Per-(group, slot)
+// winner buffers live in AggResItem.value.val_ptr inside m_gb_map's
+// group entries (or m_agg_results for the no-GROUP-BY scalar case);
+// walk both and free any non-null val_ptr whose slot type is one of
+// the string types.  Then free the slot-level metadata array.
+// Called only from the destructor — no post-free pointer clearing.
+void AggInterpreter::release_string_results() {
+  if (m_string_results == nullptr) {
+    return;
+  }
+  // Scalar (no-GROUP-BY) group lives in m_agg_results directly.
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    DataType t = m_agg_results[i].type;
+    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+         t == NDB_TYPE_LONGVARCHAR) &&
+        m_agg_results[i].value.val_ptr != nullptr) {
+      lc_ndbd_pool_free(m_agg_results[i].value.val_ptr);
+    }
+  }
+  // GROUP BY case: walk every group still in m_gb_map.
+  if (m_gb_map != nullptr) {
+    for (auto& entry : *m_gb_map) {
+      AggResItem* slots = reinterpret_cast<AggResItem*>(entry.second.ptr);
+      for (Uint32 i = 0; i < m_n_agg_results; i++) {
+        DataType t = slots[i].type;
+        if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+             t == NDB_TYPE_LONGVARCHAR) &&
+            slots[i].value.val_ptr != nullptr) {
+          lc_ndbd_pool_free(slots[i].value.val_ptr);
+        }
+      }
+    }
+  }
+  lc_ndbd_pool_free(m_string_results);
+}
+
+// Phase I.6 (F.2-K.4e): release one group's string val_ptr buffers.
+// Called from the drain loop after wire-format emit has consumed the
+// payload.  Cheap no-op when m_string_results is unallocated (i.e.
+// no string MIN/MAX in this program).
+void AggInterpreter::freeGroupStringSlots(AggResItem* slots) {
+  if (m_string_results == nullptr) {
+    return;
+  }
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    DataType t = slots[i].type;
+    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+         t == NDB_TYPE_LONGVARCHAR) &&
+        slots[i].value.val_ptr != nullptr) {
+      lc_ndbd_pool_free(slots[i].value.val_ptr);
+      slots[i].value.val_ptr = nullptr;
+    }
+  }
+}
+
+// Phase I.6 (F.2-K.5): bytes that one group's appended
+// string-payload region will consume on the wire.  Walks the slot
+// array, summing the size contribution of each string slot:
+// `[Uint32 byte_size][prefix+payload, Uint32-padded]`.  Non-string
+// slots and null string slots contribute zero bytes.
+Uint32 AggInterpreter::stringPayloadSize(const AggResItem* slots) const {
+  if (m_string_results == nullptr) {
+    return 0;
+  }
+  Uint32 total = 0;
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    DataType t = slots[i].type;
+    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+         t == NDB_TYPE_LONGVARCHAR) &&
+        !slots[i].is_null && slots[i].value.val_ptr != nullptr) {
+      const char* buf = static_cast<const char*>(slots[i].value.val_ptr);
+      const Uint16 payload_len = *reinterpret_cast<const Uint16*>(buf);
+      const Uint32 prefix = m_string_results[i].prefix_bytes;
+      const Uint32 byte_size = prefix + payload_len;
+      total += sizeof(Uint32);                            // byte_size header
+      total += (byte_size + 3) & ~3U;                     // payload + padding
+    }
+  }
+  return total;
+}
+
+// Phase I.6 (F.2-K.5): write one group's appended string-payload
+// region into `dst`.  Caller must size `dst` from stringPayloadSize.
+Uint32 AggInterpreter::encodeStringPayload(const AggResItem* slots,
+                                            char* dst) const {
+  if (m_string_results == nullptr) {
+    return 0;
+  }
+  char* p = dst;
+  for (Uint32 i = 0; i < m_n_agg_results; i++) {
+    DataType t = slots[i].type;
+    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+         t == NDB_TYPE_LONGVARCHAR) &&
+        !slots[i].is_null && slots[i].value.val_ptr != nullptr) {
+      const char* buf = static_cast<const char*>(slots[i].value.val_ptr);
+      const Uint16 payload_len = *reinterpret_cast<const Uint16*>(buf);
+      const Uint32 prefix = m_string_results[i].prefix_bytes;
+      const Uint32 byte_size = prefix + payload_len;
+      *reinterpret_cast<Uint32*>(p) = byte_size;
+      p += sizeof(Uint32);
+      memcpy(p, buf + 4, byte_size);
+      p += byte_size;
+      const Uint32 pad = ((byte_size + 3) & ~3U) - byte_size;
+      if (pad > 0) {
+        memset(p, 0, pad);
+        p += pad;
+      }
+    }
+  }
+  return static_cast<Uint32>(p - dst);
+}
+
+// Phase I.6 (F.2-K.4c): per-(group, slot) MIN/MAX string update.
+// See header for layout and contract.
+Int32 AggInterpreter::minMaxString(Uint32 reg_index, Uint32 agg_index,
+                                    AggResItem* agg_res_ptr,
+                                    bool is_max) {
+  const Register& src_reg = m_registers[reg_index];
+  if (src_reg.is_null) {
+    return 0;
+  }
+  // Lazy-allocate the slot metadata array on the first string
+  // MIN/MAX touch — non-string queries pay zero memory cost.
+  if (m_string_results == nullptr) {
+    Uint32 nbytes = m_n_agg_results * sizeof(StringResult);
+    m_string_results = static_cast<StringResult*>(
+        lc_ndbd_pool_malloc(nbytes, RG_QUERY_MEMORY,
+                            m_current_thread_id, true));
+    if (m_string_results == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+  }
+  const StringResult& src = m_register_string_data[reg_index];
+  StringResult& slot = m_string_results[agg_index];
+  if (slot.declared_size == 0) {
+    slot.charset = src.charset;
+    slot.prefix_bytes = src.prefix_bytes;
+    slot.declared_size = src.declared_size;
+  }
+  AggResItem& dst = agg_res_ptr[agg_index];
+  const Uint32 needed_payload = src.prefix_bytes + src.length;
+  Uint32 alloc_size = (4 + needed_payload + 15) & ~15U;
+  if (alloc_size < 16) alloc_size = 16;
+
+  if (dst.value.val_ptr == nullptr) {
+    char* buf = static_cast<char*>(
+        lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
+                            m_current_thread_id, false));
+    if (buf == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    Uint16* hdr = reinterpret_cast<Uint16*>(buf);
+    hdr[0] = src.length;
+    hdr[1] = static_cast<Uint16>(alloc_size - 4);
+    if (needed_payload > 0) {
+      memcpy(buf + 4, src.ptr, needed_payload);
+    }
+    dst.type = src_reg.type;
+    dst.value.val_ptr = buf;
+    dst.is_unsigned = false;
+    dst.is_null = false;
+    return 0;
+  }
+
+  char* old_buf = static_cast<char*>(dst.value.val_ptr);
+  const Uint16* old_hdr = reinterpret_cast<const Uint16*>(old_buf);
+  const Uint16 old_payload_len = old_hdr[0];
+  const Uint16 old_capacity = old_hdr[1];
+  const unsigned n_new = src.prefix_bytes + src.length;
+  const unsigned n_old = slot.prefix_bytes + old_payload_len;
+  const void* v_new = src.ptr;
+  const void* v_old = old_buf + 4;
+  const Uint32 type_id =
+      (slot.prefix_bytes == 0) ? NDB_TYPE_CHAR :
+      (slot.prefix_bytes == 1) ? NDB_TYPE_VARCHAR : NDB_TYPE_LONGVARCHAR;
+  const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(type_id);
+  int cmp = (*sqlType.m_cmp)(slot.charset, v_new, n_new, v_old, n_old);
+  const bool replace = is_max ? (cmp > 0) : (cmp < 0);
+  if (!replace) return 0;
+
+  if (needed_payload <= old_capacity) {
+    Uint16* h = reinterpret_cast<Uint16*>(old_buf);
+    h[0] = src.length;
+    if (needed_payload > 0) {
+      memcpy(old_buf + 4, src.ptr, needed_payload);
+    }
+  } else {
+    // Allocate-then-free order keeps the existing winner intact on OOM.
+    char* new_buf = static_cast<char*>(
+        lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
+                            m_current_thread_id, false));
+    if (new_buf == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    Uint16* h = reinterpret_cast<Uint16*>(new_buf);
+    h[0] = src.length;
+    h[1] = static_cast<Uint16>(alloc_size - 4);
+    if (needed_payload > 0) {
+      memcpy(new_buf + 4, src.ptr, needed_payload);
+    }
+    dst.value.val_ptr = new_buf;
+    lc_ndbd_pool_free(old_buf);
+  }
+  return 0;
 }

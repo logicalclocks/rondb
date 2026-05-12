@@ -163,6 +163,9 @@ class NdbQueryImpl {
 
   NdbTransaction &getNdbTransaction() const { return m_transaction; }
 
+  /** Root operation number for result stream access (0 for non-CTE). */
+  Uint32 getRootStreamOpNo() const { return m_rootOpNo; }
+
   const NdbError &getNdbError() const;
 
   void setErrorCode(int aErrorCode);
@@ -484,6 +487,12 @@ class NdbQueryImpl {
    */
   Uint32 m_globalCursor;
 
+  /** Operation number of the main query root (0 for non-CTE queries,
+   *  skips CteSubtree/CteEmbedded ops for CTE queries).
+   *  Cached from getRootOpNo() during prepareSend to avoid repeated loops.
+   */
+  Uint32 m_rootOpNo;
+
   /** Number of SPJ workers not yet completed within the current batch.
    *  Only access w/ PollGuard mutex as it is also updated by receiver thread
    */
@@ -645,7 +654,23 @@ class NdbQueryImpl {
 
   const NdbQuery &getInterface() const { return m_interface; }
 
-  NdbQueryOperationImpl &getRoot() const { return getQueryOperation(0U); }
+  /** Get the main query root operation.
+   *  For CTE queries, skips CTE subtree containers and CTE-embedded ops.
+   */
+  NdbQueryOperationImpl &getRoot() const;
+
+  /** Get the opNo of the main query root (0 for non-CTE queries). */
+  Uint32 getRootOpNo() const;
+
+  /** Get the table that drives DBTC fragment routing for this query.
+   *  Normally that's the root operation's table, but for queries
+   *  whose root cannot drive routing on its own — lookupCte (no
+   *  table at all) or scanCte over a synthetic in-memory virt
+   *  table (FragmentCount == 0) — falls back to the first
+   *  CTE-embedded scan's table, which has the real fragment
+   *  topology DBTC needs.  Used by SCAN_TABREQ tableId selection,
+   *  prepareSend fragment counting, and per-op batch sizing. */
+  const NdbTableImpl &getFragRoutingTable() const;
 
   /** A complete batch has been received for a given SPJ-worker result.
    *  Update whatever required before the appl. is allowed to navigate

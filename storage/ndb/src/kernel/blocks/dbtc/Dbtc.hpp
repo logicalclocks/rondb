@@ -1919,7 +1919,8 @@ class Dbtc : public SimulatedBlock {
       CLOSING_SCAN = 5,
       WAIT_JOIN_AGG_SETUP = 6,
       WAIT_JOIN_AGG_COMPLETE = 7,
-      WAIT_JOIN_AGG_RELEASE = 8
+      WAIT_JOIN_AGG_RELEASE = 8,
+      WAIT_CTE_COMPLETE = 9
     };
 
     // State of this scan
@@ -2007,6 +2008,7 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_aggReceiverId;  // API-side NdbReceiver ID for agg results
     Uint32 m_aggNodesOutstanding;
     bool m_joinAgg;
+    bool m_hasMainAggProgram;      // True if main query has an agg program
     bool m_aggPhaseFailed;         // Error received during current agg phase
     Uint32 m_aggErrorCode;         // Error code from first failure
 
@@ -2015,17 +2017,140 @@ class Dbtc : public SimulatedBlock {
      * lc_ndbd_pool_malloc only for JoinAgg queries to avoid ~620
      * bytes overhead in every ScanRecord. Sized to MAX_NDB_NODES
      * (the runtime cluster max) rather than ABS_MAX_NDB_NODES.
+     *
+     * Phase L (E.1): m_aggOwnerInstances stores the LDM instance on
+     * each remote node that owns COMPLETE / (CTE-only) REDISTRIBUTE
+     * / FINAL_REP for the per-node aggStateKey at the same index.
+     * Echoed in JOIN_AGG_SETUP_CONF, used to address subsequent
+     * COMPLETE_REQs.  Same shape as m_aggStateKeys[]; both arrays
+     * live in the tail buffer allocated alongside this struct.  See
+     * cte_filter_phase_l.md.
      */
     struct JoinAggNodeState {
       NdbNodeBitmask m_aggNodes;
       NdbNodeBitmask m_aggNodesPending;
+      Uint32 *m_aggOwnerInstances;  // Points into tail buffer:
+                                    //   &m_aggStateKeys[maxNodes]
       Uint32 m_aggStateKeys[];  // Flexible array member, sized at allocation
     };
     JoinAggNodeState *m_joinAggNodes;  // nullptr when not JoinAgg
+
+    // CTE materialization state — dynamically allocated when m_numCtes > 0.
+    // m_cteInfos and m_cteAggNodeState are a single contiguous allocation:
+    //   [CteInfo * numCtes] [JoinAggNodeState* * numCtes]
+    // Freed via lc_ndbd_pool_free(m_cteInfos).
+
+    struct CteInfo {
+      Uint64 depMask;           // Bitmask: bit c set = depends on cteId c
+      Uint32 tableId;
+      Uint32 schemaVersion;
+      Uint32 aggProgramPtrI;    // Section ptr to this CTE's agg program
+      Uint32 phase;             // Execution phase (0 = no deps, computed)
+      Uint32 m_flags;           // Bit 0 = CTE_SINGLE_ROW (no GROUP BY)
+    };
+
+    Uint32 m_numCtes;               // Number of CTE definitions (0 if no CTEs)
+    Uint32 m_ctePhaseCount;         // Total CTE execution phases
+    Uint32 m_cteCurrentPhase;       // Phase being waited on
+    CteInfo *m_cteInfos;            // nullptr when m_numCtes == 0
+    JoinAggNodeState **m_cteAggNodeState;  // nullptr when m_numCtes == 0
+    Uint32 m_cteSetupOutstanding;    // SETUP_CONFs still pending for CTEs
+
+    // CTE COMPLETE coordination (Step 3)
+    Uint32 m_cteScanReportsExpected;  // DBSPJ instances that will report
+    Uint32 m_cteScanReportsReceived;  // CTE_SCAN_COMPLETE_REPs received
+
+    // Phase L (C): per-aggregation completion records.  Singly-linked
+    // list of AggCompleteRecord owned by this scan.  Records cover both
+    // CTE materialization completion (KIND_CTE) and main-query
+    // aggregation completion (KIND_MAIN); each is identified by an
+    // encoded requestId carried in every JOIN_AGG_COMPLETE_REQ and
+    // echoed in CONF/REF.  Stale or duplicate replies are detected by
+    // record-state mismatch and dropped silently.
+    //
+    // Phase coordination is handled inline: only one CTE phase is
+    // active per scan at a time, and m_cteCurrentPhase is the
+    // discriminator that drops stale CTE_PHASE_COMPLETE_REPs in
+    // execCTE_PHASE_COMPLETE_REP (C.2).  See cte_filter_phase_l.md.
+    Uint32 m_aggRecordsHead;       // RNIL or first AggCompleteRecord
+    Uint32 m_aggRecordsCount;      // Total live records on this scan
+    Uint32 m_mainAggRecI;          // Main-SELECT aggregation record, RNIL if none
+    Uint32 m_ctePhaseRemaining;    // Records in current CTE phase not yet
+                                   // complete — phase-advance trigger
   };
   typedef Ptr<ScanRecord> ScanRecordPtr;
   typedef TransientPool<ScanRecord> ScanRecord_pool;
   static constexpr Uint32 DBTC_SCAN_RECORD_TRANSIENT_POOL_INDEX = 10;
+
+  /**
+   * Phase L (C): unified aggregation-completion record.
+   *
+   * One record per JOIN_AGG_COMPLETE_REQ wave: per CTE in a phase
+   * for KIND_CTE, or one for the whole main-SELECT aggregation for
+   * KIND_MAIN.  DBTC encodes the record's pool index into the REQ's
+   * requestId field; DBLQH echoes it untouched in CONF/REF.  When
+   * the reply arrives DBTC decodes the requestId, looks up the
+   * record, and decrements its per-record m_outstanding — instead
+   * of sharing one counter across phases / CTEs / kind as the
+   * legacy scan-level counters did.  Stale or duplicate replies are
+   * detected by record-state mismatch and dropped silently.
+   *
+   * The m_aggStateKeys[] array indexes by senderNodeId so DBTC can
+   * verify the reply's aggStateKey matches what we sent.
+   *
+   * See cte_filter_phase_l.md.
+   */
+  struct AggCompleteRecord {
+    static constexpr Uint32 TYPE_ID = RT_DBTC_AGG_COMPLETE_RECORD;
+    AggCompleteRecord() : m_magic(Magic::make(TYPE_ID)) {}
+
+    Uint32 m_magic;
+    Uint32 nextPool;
+    Uint32 m_nextI;                              // singly-linked, RNIL = tail
+    Uint32 m_scanPtrI;                           // owning ScanRecord
+    enum Kind {
+      KIND_MAIN = 0,
+      KIND_CTE = 1
+    } m_kind;
+    Uint32 m_cteIndex;                           // CTE index, RNIL for KIND_MAIN
+    Uint32 m_phase;                              // CTE phase, RNIL for KIND_MAIN
+    Uint32 m_aggStateKeys[ABS_MAX_NDB_NODES];    // per-node aggKey we sent
+    NdbNodeBitmask m_aggNodesPending;            // CONFs still expected
+    Uint32 m_outstanding;                        // |m_aggNodesPending|
+    enum State {
+      REC_IDLE = 0,
+      REC_WAIT_COMPLETE = 1,
+      REC_COMPLETE = 2,
+      REC_FAILED = 3
+    } m_state;
+    Uint32 m_errorCode;
+  };
+  typedef Ptr<AggCompleteRecord> AggCompleteRecordPtr;
+  typedef TransientPool<AggCompleteRecord> AggCompleteRecord_pool;
+  static constexpr Uint32
+      DBTC_AGG_COMPLETE_RECORD_TRANSIENT_POOL_INDEX = 15;
+
+  /**
+   * Phase L (C): requestId encoding for JOIN_AGG_COMPLETE_REQ.
+   *
+   * Top bit set = AggCompleteRecord pool index in the lower 31 bits.
+   * Top bit clear = legacy free-form requestId (e.g. scanApiRec).
+   *
+   * Distinguishes Phase-L records from any pre-Phase-L sender that
+   * still uses the field as a free-form correlation token.  A pool
+   * index of 31 bits accommodates up to ~2 billion records — the
+   * pool is sized far below this in practice.
+   */
+  static constexpr Uint32 AGG_COMPLETE_REQ_ID_TAG = 0x80000000;
+  static Uint32 makeAggCompleteRequestId(Uint32 recI) {
+    return AGG_COMPLETE_REQ_ID_TAG | recI;
+  }
+  static bool isAggCompleteRequestId(Uint32 reqId) {
+    return (reqId & AGG_COMPLETE_REQ_ID_TAG) != 0;
+  }
+  static Uint32 decodeAggCompleteRequestId(Uint32 reqId) {
+    return reqId & ~AGG_COMPLETE_REQ_ID_TAG;
+  }
 
   /*************************************************************************>*/
   /*                     GLOBAL CHECKPOINT INFORMATION RECORD                */
@@ -2126,8 +2251,8 @@ class Dbtc : public SimulatedBlock {
   void execTC_SCHVERREQ(Signal *signal);
   void execTAB_COMMITREQ(Signal *signal);
   void execSCAN_TABREQ(Signal *signal);
-  void parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
-                           Uint32 keyLen);
+  int parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
+                          SectionHandle &handle, Uint32 keyLen);
   void releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr);
   void execSCAN_TABINFO(Signal *signal);
   void execSCAN_FRAGCONF(Signal *signal);
@@ -2138,6 +2263,23 @@ class Dbtc : public SimulatedBlock {
   void execJOIN_AGG_COMPLETE_REF(Signal *signal);
   void execJOIN_AGG_RELEASE_CONF(Signal *signal);
   void execJOIN_AGG_SEND_REQ(Signal *signal);
+  void execCTE_SCAN_COMPLETE_REP(Signal *signal);
+  void execCTE_PHASE_COMPLETE_REP(Signal *signal);
+  void sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
+                                    Uint32 phase);
+
+  /* Phase L (C): allocate / look up / release aggregation completion
+   * records.  Records are linked into ScanRecord::m_aggRecordsHead and
+   * survive across phase boundaries so late or duplicate
+   * JOIN_AGG_COMPLETE_CONFs can be deduplicated by record-state lookup. */
+  bool seizeAggCompleteRecord(AggCompleteRecordPtr &recPtr,
+                              ScanRecordPtr scanptr);
+  bool getValidAggCompleteRecord(AggCompleteRecordPtr &recPtr);
+  void releaseAggCompleteRecords(ScanRecordPtr scanptr);
+  void cteAdvancePhase(Signal *signal, ScanRecordPtr scanptr);
+  void sendCtePhaseStartReqs(Signal *signal, ScanRecordPtr scanptr,
+                              Uint32 phase);
+  void sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr);
   void execREAD_CONFIG_REQ(Signal *signal);
   void execLQH_TRANSCONF(Signal *signal);
   void execCOMPLETECONF(Signal *signal);
@@ -2844,6 +2986,11 @@ class Dbtc : public SimulatedBlock {
   RSS_AP_SNAPSHOT(c_scan_frag_pool);
   ScanFragRecPtr scanFragptr;
 
+  /* Phase L (C): per-aggregation completion records.  See
+   * AggCompleteRecord declaration above for lifecycle. */
+  AggCompleteRecord_pool c_aggCompleteRecordPool;
+  RSS_AP_SNAPSHOT(c_aggCompleteRecordPool);
+
   BlockReference cndbcntrblockref;
   BlockInstance cspjInstanceRR;  // SPJ instance round-robin counter
 
@@ -2932,7 +3079,7 @@ class Dbtc : public SimulatedBlock {
   CommitAckMarker_hash m_commitAckMarkerHash;
   RSS_AP_SNAPSHOT(m_commitAckMarkerPool);
   
-  static const Uint32 c_transient_pool_count = 15;
+  static const Uint32 c_transient_pool_count = 16;
   TransientFastSlotPool* c_transient_pools[c_transient_pool_count];
   Bitmask<1> c_transient_pools_shrinking;
 

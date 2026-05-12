@@ -1,0 +1,785 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for typed linked register-load tests ===
+
+
+
+=== Test 1: TINYINT signed linked vs BIGINT leaf — negative linked values ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_tinyint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_tinyint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	0
+300	1
+
+
+=== Test 2: SMALLINT signed linked vs BIGINT leaf — negative linked values ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_smallint <= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_smallint <= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	0
+300	0
+
+
+=== Test 3: MEDIUMINT linked — pre-v5 was rejected, now accepted ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_mediumint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_mediumint > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	1
+300	1
+
+
+=== Test 4: INT signed linked vs BIGINT leaf — negative linked values ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_int >= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_int >= o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	1
+300	1
+
+
+=== Test 5: INT UNSIGNED linked — large unsigned linked values ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_unsigned > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_unsigned > o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	1
+300	1
+
+
+=== Test 6: GREATEST(c.c_smallint, o.o_threshold) — pair-op path regression ===
+== Query ==
+SELECT c.c_id, SUM(GREATEST(c.c_smallint, o.o_threshold)) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id, SUM(GREATEST(c.c_smallint, o.o_threshold)) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	g
+100	35
+200	500
+300	20000
+
+
+=== Test 7: explicit CASE col-vs-col SMALLINT linked vs BIGINT leaf (v2a path) ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_smallint >= o.o_threshold THEN o.o_amt
+ELSE 0 END) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_smallint >= o.o_threshold THEN o.o_amt
+ELSE 0 END) AS g
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	g
+100	0
+200	90
+300	70
+
+
+=== Test 8: TINYINT signed leaf negative — Phase I.18 leaf path ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_threshold > o.o_tinyint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_threshold > o.o_tinyint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	1
+200	1
+300	1
+
+
+=== Test 9: SMALLINT signed leaf negative — Phase I.18 leaf path ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_threshold > o.o_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_threshold > o.o_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	1
+200	1
+300	0
+
+
+=== Test 10: MEDIUMINT signed leaf negative — Phase I.18 leaf path ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_threshold > o.o_mediumint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_threshold > o.o_mediumint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	1
+200	1
+300	0
+
+
+=== Test 11: INT signed leaf, INT_MIN — leaf-on-left of comparator ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_int < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_int < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	1
+200	1
+300	0
+
+
+=== Test 12: BIGINT UNSIGNED linked > INT64_MAX vs BIGINT leaf ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_biguns < o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_biguns < o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	0
+300	0
+
+
+=== Test 13: BIGINT UNSIGNED leaf > INT64_MAX vs BIGINT linked ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_biguns < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_biguns < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	0
+300	1
+
+
+=== Test 14: linked DOUBLE vs leaf DOUBLE — both sides float ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_double > o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_double > o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	1
+300	1
+
+
+=== Test 15: linked FLOAT vs leaf BIGINT — mixed int/float ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_float < o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_float < o.o_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	1
+300	0
+
+
+=== Test 16: linked DOUBLE > BIGINT linked — int/float mix on linked side ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_double > c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_double > c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	1
+300	1
+
+
+=== Test 17: leaf FLOAT vs linked BIGINT — float-on-LEFT, int-on-RIGHT ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_float < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_float < c.c_threshold THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	1
+300	0
+
+
+=== Test 18: leaf DOUBLE vs T_FLOAT literal — double column, fractional const ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_double > 100.0 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_double > 100.0 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	0
+300	1
+
+
+=== Test 19: linked FLOAT vs T_INT literal — int promotes to double ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_float >= 0 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_float >= 0 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	0
+300	1
+
+
+=== Test 20: leaf DOUBLE vs negative T_FLOAT literal ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_double < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_double < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	1
+300	0
+
+
+=== Test 21: literal-left leaf DOUBLE comparison ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN 100.0 < o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN 100.0 < o.o_double THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	0
+300	1
+
+
+=== Test 22: literal-left linked FLOAT comparison ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN 0 <= c.c_float THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN 0 <= c.c_float THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	0
+300	1
+
+
+=== Test 23: OR with literal-left leaf DOUBLE atom ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN (100.0 < o.o_double OR c.c_float < 0)
+THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN (100.0 < o.o_double OR c.c_float < 0)
+THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	1
+300	1
+
+
+=== Test 24: leaf FLOAT vs negative T_FLOAT literal ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_float < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_float < -50.5 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	0
+200	0
+300	0
+
+
+=== Test 25: linked FLOAT vs negative T_INT literal ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_float > -1 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_float > -1 THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	0
+300	1
+
+
+=== Test 26: literal-left linked SMALLINT signed comparison ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN -1 > c.c_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN -1 > c.c_smallint THEN 1 ELSE 0 END) AS s
+FROM v5_customer AS c
+JOIN v5_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	s
+100	2
+200	0
+300	0
+
+
+=== Test 27: leaf signed minimum literals accepted ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+SUM(CASE WHEN o.o_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+SUM(CASE WHEN o.o_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+SUM(CASE WHEN o.o_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN o.o_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+SUM(CASE WHEN o.o_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+SUM(CASE WHEN o.o_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+SUM(CASE WHEN o.o_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	tiny_s	small_s	med_s	int_s
+10	1	1	1	1
+20	0	0	0	0
+
+
+=== Test 28: linked signed minimum literals accepted ===
+== Query ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+SUM(CASE WHEN c.c_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+SUM(CASE WHEN c.c_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+SUM(CASE WHEN c.c_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id,
+SUM(CASE WHEN c.c_tinyint = -128 THEN 1 ELSE 0 END) AS tiny_s,
+SUM(CASE WHEN c.c_smallint = -32768 THEN 1 ELSE 0 END) AS small_s,
+SUM(CASE WHEN c.c_mediumint = -8388608 THEN 1 ELSE 0 END) AS med_s,
+SUM(CASE WHEN c.c_int = -2147483648 THEN 1 ELSE 0 END) AS int_s
+FROM v5_bound_customer AS c
+JOIN v5_bound_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	tiny_s	small_s	med_s	int_s
+10	1	1	1	1
+20	0	0	0	0
+
+
+=== Test 29: signed positive overflow literals rejected ===
+Expected error: signed integer literal out of range
+Error handling: RMS->RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+Error handling: RMS->RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+Error handling: RMS->RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+Error handling: RMS->RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.

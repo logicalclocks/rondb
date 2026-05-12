@@ -1,0 +1,293 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Phase I.16: partial-key joins to multi-key CTEs.
+#
+# A CTE whose body has GROUP BY (k, amt) materializes a two-column
+# virtual primary key.  Joining to such a CTE on only one key would
+# previously return the opaque "Failed to create child operation"
+# error from NdbQueryBuilder.
+#
+# Phase I.16a (shipped, 4e6f96dc5ae) added a RonSQL-side guard in
+# emit_child_ops that throws a clear permanent error.
+#
+# Phase I.16b (shipped, 9fcbf1e8352) added an AST rewrite for the
+# simple two-table inner-join shape: the multi-key CTE becomes
+# the joined root and the original parent becomes a child.
+#
+# Phase I.16c (shipped, 8fd075b7ad9) extends I.16b to handle the
+# multi-key CTE appearing anywhere in an N-table join chain, and
+# coexists with LEFT_OUTER joins ELSEWHERE in the chain.  The
+# multikey-CTE-join itself must still be INNER (Tests 2 and 5
+# verify LEFT_OUTER on the CTE join stays on the I.16a path).
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE cte_orders (
+  o_id INT NOT NULL,
+  o_custkey BIGINT NOT NULL,
+  o_amt BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_o_custkey ON cte_orders (o_custkey);
+
+CREATE TABLE cte_customer (
+  c_id BIGINT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  c_region BIGINT NOT NULL,
+  c_amt BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+CREATE TABLE cte_region (
+  r_id BIGINT NOT NULL,
+  r_name VARCHAR(20) NOT NULL,
+  PRIMARY KEY USING HASH (r_id)
+) ENGINE=NDB;
+
+INSERT INTO cte_customer VALUES
+  (100, 'Alice', 1, 50),
+  (200, 'Bob', 1, 40),
+  (300, 'Charlie', 2, 90);
+
+INSERT INTO cte_region VALUES
+  (1, 'North'),
+  (2, 'South'),
+  (3, 'East');
+
+INSERT INTO cte_orders VALUES
+  (1, 100, 50),
+  (2, 100, 75),
+  (3, 200, 40),
+  (4, 200, 60),
+  (5, 300, 90);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: full CTE key in virtual PK order — CTE_LOOKUP ===
+
+let $QUERY=
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id AND pairs.amt = c.c_amt
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id AND pairs.amt = c.c_amt
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 2: full CTE key in reversed predicate order — reordered ===
+
+let $QUERY=
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.amt = c.c_amt AND pairs.k = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.amt = c.c_amt AND pairs.k = c.c_id
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 3: full CTE key plus residual CTE-output WHERE ===
+
+let $QUERY=
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id AND pairs.amt = c.c_amt
+WHERE pairs.cnt > 0
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id AND pairs.amt = c.c_amt
+WHERE pairs.cnt > 0
+GROUP BY c.c_id|
+
+--echo
+--echo
+--echo === Test 4: partial CTE key (1 of 2), inner join — auto-rewritten to CTE_SCAN root ===
+
+# Two-column GROUP BY → virt PK is (k, amt).  Join binds only k.
+# Pre-I.16b: rejected by I.16a guard.  Post-I.16b: AST rewrite
+# swaps `pairs` to root and `c` to PK_LOOKUP child; planner
+# produces CTE_SCAN root + PK_LOOKUP child.  Result must match
+# MySQL's reference exactly (same per-row aggregation by c.c_id).
+let $QUERY=
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id
+GROUP BY c.c_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id
+GROUP BY c.c_id|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 5: partial CTE key, LEFT JOIN on the CTE itself — still I.16a rejects ===
+
+# LEFT_OUTER on the multikey-CTE-join stays outside I.16c's
+# rewrite (semantics of unmatched rows would shift).  Falls
+# through to the I.16a clean-reject path.
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt FROM cte_orders GROUP BY o_custkey, o_amt) SELECT c.c_id, SUM(pairs.cnt) AS s FROM cte_customer AS c LEFT JOIN pairs ON pairs.k = c.c_id GROUP BY c.c_id;' 2>&1
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 6: 3-table inner chain with multikey CTE in the middle ===
+
+# I.16c: scan walks joins, finds the partial-key CTE in joins[0],
+# moves it to root, demotes c into joins[0].  The downstream
+# join to cte_region (parent = c) keeps its alias-based parent
+# reference and resolves cleanly.
+let $QUERY=
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, r.r_name, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id
+JOIN cte_region AS r ON r.r_id = c.c_region
+GROUP BY c.c_id, r.r_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, r.r_name, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id
+JOIN cte_region AS r ON r.r_id = c.c_region
+GROUP BY c.c_id, r.r_name|
+
+--echo
+--echo
+--echo === Test 7: rewrite coexists with LEFT JOIN elsewhere in the chain ===
+
+# Multikey-CTE-join is INNER (rewrite proceeds).  The LEFT JOIN
+# to cte_region (a real-table outer join NOT involving the CTE)
+# keeps its outer-join semantics post-rewrite — every (c, pairs)
+# match is preserved even when c.c_region has no matching r row.
+# Row 200 / Bob has c_region=1 (matched).  Row 300 / Charlie has
+# c_region=2 (matched).  c_region 99 wouldn't match — verified
+# by an extra customer below.
+let $QUERY=
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, r.r_name, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id
+LEFT JOIN cte_region AS r ON r.r_id = c.c_region
+GROUP BY c.c_id, r.r_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, r.r_name, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN pairs ON pairs.k = c.c_id
+LEFT JOIN cte_region AS r ON r.r_id = c.c_region
+GROUP BY c.c_id, r.r_name|
+
+--echo
+--echo
+--echo === Test 8: multikey CTE not in joins[0] — found later in the chain ===
+
+# pairs is the SECOND join target (after cte_region).  I.16c's
+# walk finds it regardless of position in the joins list.
+let $QUERY=
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, r.r_name, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN cte_region AS r ON r.r_id = c.c_region
+JOIN pairs ON pairs.k = c.c_id
+GROUP BY c.c_id, r.r_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt
+               FROM cte_orders GROUP BY o_custkey, o_amt)
+SELECT c.c_id, r.r_name, SUM(pairs.cnt) AS s
+FROM cte_customer AS c
+JOIN cte_region AS r ON r.r_id = c.c_region
+JOIN pairs ON pairs.k = c.c_id
+GROUP BY c.c_id, r.r_name|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 9: full key count but wrong CTE output column — rejected ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt FROM cte_orders GROUP BY o_custkey, o_amt) SELECT c.c_id, SUM(pairs.cnt) AS s FROM cte_customer AS c JOIN pairs ON pairs.k = c.c_id AND pairs.cnt = c.c_region GROUP BY c.c_id;' 2>&1
+
+--echo
+--echo
+--echo === Test 10: partial-key CTE join to non-root parent — rejected ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH pairs AS (SELECT o_custkey AS k, o_amt AS amt, COUNT(*) AS cnt FROM cte_orders GROUP BY o_custkey, o_amt) SELECT c.c_id, r.r_name, SUM(pairs.cnt) AS s FROM cte_customer AS c JOIN cte_region AS r ON r.r_id = c.c_region JOIN pairs ON pairs.k = r.r_id GROUP BY c.c_id, r.r_name;' 2>&1
+
+--disable_query_log
+DROP TABLE cte_orders;
+DROP TABLE cte_customer;
+DROP TABLE cte_region;
+--enable_query_log

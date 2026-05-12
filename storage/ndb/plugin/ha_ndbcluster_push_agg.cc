@@ -1702,6 +1702,15 @@ static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
           case NdbDictionary::Column::Double:
             (*func)->set_pushed_value_double(res.data_double());
             break;
+          case NdbDictionary::Column::Char:
+          case NdbDictionary::Column::Varchar:
+          case NdbDictionary::Column::Longvarchar: {
+            Uint32 len = 0;
+            const char *ptr = res.data_str(&len);
+            (*func)->set_pushed_value_string(ptr, len,
+                                             (*func)->collation.collation);
+            break;
+          }
           default:
             return HA_ERR_INTERNAL_ERROR;
         }

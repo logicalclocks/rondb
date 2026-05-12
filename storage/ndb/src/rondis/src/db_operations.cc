@@ -276,7 +276,7 @@ int prepare_simple_delete_row(std::string *response,
 
   Uint32 database_id = key_storage->m_get_ctrl->m_database_id;
   Uint32 code_buffer[64];
-  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer));
+  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer) / sizeof(code_buffer[0]));
   int ret_code = simple_delete_key_row_code(response, code, tab);
   if (ret_code != 0) {
     return RONDB_INTERNAL_ERROR;
@@ -616,7 +616,7 @@ int write_data_to_key_op(std::string *response,
   set_length(&key_row.value_start[0], this_value_len);
 
   Uint32 code_buffer[64];
-  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer));
+  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer) / sizeof(code_buffer[0]));
   int ret_code = 0;
   if (commit_flag) {
     ret_code = write_key_row_commit(response, code, tab, key_store);
@@ -1023,7 +1023,7 @@ void incr_decr_key_row(std::string *response,
   key_row->expiry_date = -1;
 
   Uint32 code_buffer[128];
-  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer));
+  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer) / sizeof(code_buffer[0]));
   if (initNdbCodeIncrDecr(response,
                           &code,
                           tab,
@@ -1205,7 +1205,7 @@ void execute_set_range_simple(std::string *response,
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
 
   Uint32 code_buffer[64];
-  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer));
+  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer) / sizeof(code_buffer[0]));
   int ret_code = simple_write_key_row_setrange(code,
                                                tab,
                                                key_store,
@@ -1281,7 +1281,7 @@ int write_key_row_setrange(std::string *response,
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
 
   Uint32 code_buffer[64];
-  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer));
+  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer) / sizeof(code_buffer[0]));
   int ret_code = write_key_row_setrange_int(code,
                                             tab,
                                             key_store,
@@ -1367,7 +1367,7 @@ int write_value_row_setrange(std::string *response,
     return -1;
   }
   Uint32 code_buffer[64];
-  NdbInterpretedCode code(value_tab, &code_buffer[0], sizeof(code_buffer));
+  NdbInterpretedCode code(value_tab, &code_buffer[0], sizeof(code_buffer) / sizeof(code_buffer[0]));
   int ret_code = write_value_row_setrange_int(code,
                                               value_tab,
                                               start_zero_index,

@@ -76,7 +76,10 @@
 #include <signaldata/TransIdAI.hpp>
 #include <signaldata/TrigAttrInfo.hpp>
 #include <signaldata/SetDomainId.hpp>
+#include <signaldata/CteScan.hpp>
 #include <signaldata/JoinAgg.hpp>
+#include <signaldata/QueryTree.hpp>
+#include "NdbAggregationCommon.hpp"
 
 #include <AttributeDescriptor.hpp>
 #include <AttributeHeader.hpp>
@@ -146,10 +149,10 @@
 //#define DEBUG_RATE_QUEUE_DROP 1
 //#define DEBUG_QUOTA_ABORT 1
 //#define DEBUG_TRACK_EXEC_FLAG 1
-//#define DEBUG_SCAN_MANY 1
+#define DEBUG_SCAN_MANY 1
 //#define DEBUG_RATE_OVERFLOW 1
-//#define DEBUG_CONT_SCAN 1
-//#define DEBUG_JOIN_AGG_TRACE 1
+#define DEBUG_CONT_SCAN 1
+#define DEBUG_JOIN_AGG_TRACE 1
 #endif
 
 #ifdef DEBUG_JOIN_AGG_TRACE
@@ -2476,10 +2479,13 @@ void Dbtc::handleSignalStateProblem(Signal *signal,
 
     if (acrOwnerNodeId == signalNodeId) {
       jam();
-#ifdef VM_TRACE
-      dump_scan_state(apiConnectptr);
-      ndbassert(false);
-#endif
+      /* API sent a signal for its own connection in wrong state.
+       * Log and return — do not crash the data node for API misbehavior. */
+      g_eventLogger->warning(
+          "TC %u : ACR %u owner node %u sent signal in wrong state %u "
+          "(context %u) — ignoring",
+          instance(), apiConnectptr.i, signalNodeId,
+          apiConnectptr.p->apiConnectstate, context);
       return;
     }
 
@@ -16089,7 +16095,18 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     scanptr.p->scanAttrInfoPtr = handle.m_ptr[ScanTabReq::AttrInfoSectionNum].i;
     if (ScanTabReq::getJoinAggFlag(ri) && keyLen) {
       jam();
-      parseJoinAggKeyInfo(scanptr, handle, keyLen);
+      /* parseJoinAggKeyInfo handles errors internally via
+       * abortScanLab (sends SCAN_TABREF and releases the scan).
+       * Returns -1 on error — caller must not access scanptr
+       * after that since the scan record is freed. */
+      scanptr.p->scanState = ScanRecord::WAIT_JOIN_AGG_SETUP;
+      transP->apiScanRec = scanptr.i;
+      if (parseJoinAggKeyInfo(signal, scanptr, handle, keyLen) != 0) {
+        jam();
+        handle.clear();
+        return;
+      }
+      scanptr.p->scanState = ScanRecord::RUNNING;
     } else if (keyLen) {
       jamDebug();
       scanptr.p->scanKeyInfoPtr = handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i;
@@ -16301,10 +16318,24 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_aggKeysSectionPtrI = RNIL;
   scanptr.p->m_aggReceiverId = RNIL;
   scanptr.p->m_joinAgg = false;
+  scanptr.p->m_hasMainAggProgram = false;
   scanptr.p->m_aggPhaseFailed = false;
   scanptr.p->m_aggErrorCode = 0;
   scanptr.p->m_aggNodesOutstanding = 0;
   scanptr.p->m_joinAggNodes = nullptr;
+  scanptr.p->m_numCtes = 0;
+  scanptr.p->m_ctePhaseCount = 0;
+  scanptr.p->m_cteCurrentPhase = 0;
+  scanptr.p->m_cteSetupOutstanding = 0;
+  scanptr.p->m_cteScanReportsExpected = 0;
+  scanptr.p->m_cteScanReportsReceived = 0;
+  scanptr.p->m_cteInfos = nullptr;
+  scanptr.p->m_cteAggNodeState = nullptr;
+  /* Phase L (C): per-aggregation completion bookkeeping. */
+  scanptr.p->m_aggRecordsHead = RNIL;
+  scanptr.p->m_aggRecordsCount = 0;
+  scanptr.p->m_mainAggRecI = RNIL;
+  scanptr.p->m_ctePhaseRemaining = 0;
 
   DEB_SCAN_MANY(("(%u) SCAN_TABREQ, batch_size: %u",
     instance(), scanptr.p->batch_size_rows));
@@ -16627,6 +16658,17 @@ void Dbtc::execDIH_SCAN_TAB_CONF(Signal *signal, ScanRecordPtr scanptr,
     tfragCount = 1;
   }
   ndbassert(scanptr.p->scanNextFragId == 0);
+
+  /* CTE compound queries require one DBSPJ instance per fragment.
+   * Check the original scanParallel (from API) against the actual
+   * fragment count before overriding. */
+  if (unlikely(scanptr.p->m_numCtes > 0 &&
+               scanptr.p->scanParallel < tfragCount)) {
+    jam();
+    abortScanLab(signal, scanptr, ZINVALID_KEY, true,
+                 apiConnectptr);
+    return;
+  }
 
   scanptr.p->scanParallel = tfragCount;
   scanptr.p->scanNoFrag = tfragCount;
@@ -16964,6 +17006,9 @@ void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
   }
 
   releaseJoinAggResources(signal, scanPtr);
+  /* Phase L (C): drop the per-aggregation completion records.  Cheap
+   * when the list is empty (non-JoinAgg queries). */
+  releaseAggCompleteRecords(scanPtr);
 
   ndbrequire(scanPtr.p->m_running_scan_frags.isEmpty());
   ndbrequire(scanPtr.p->m_queued_scan_frags.isEmpty());
@@ -17791,7 +17836,20 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
                  status));
   if (scanptr.p->m_queued_count > /** Min */ 0) {
     jamDebug();
-    sendScanTabConf(signal, scanptr, apiConnectptr);
+    /* During CTE phase, suppress SCAN_TABCONF entirely — CTE scans
+     * don't participate in the fragment delivery lifecycle. */
+    if (scanptr.p->m_numCtes > 0 &&
+        scanptr.p->m_cteCurrentPhase < scanptr.p->m_ctePhaseCount) {
+      jam();
+      DEB_JOIN_AGG(("(%u) execSCAN_FRAGCONF: suppress "
+                    "SCAN_TABCONF during CTE phase",
+                    instance()));
+    } else {
+      /* For JoinAgg queries, sendScanTabConf does fragment list
+       * management but suppresses the actual signal to API
+       * until all fragments are done (EndOfData path). */
+      sendScanTabConf(signal, scanptr, apiConnectptr);
+    }
   }
 }  // Dbtc::execSCAN_FRAGCONF()
 
@@ -17821,6 +17879,9 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
     warningHandlerLab(signal, __LINE__);
     return;
   }  // if
+
+  DEB_JOIN_AGG(("(%u) ApiRecPtr: %u, stopScan: %u",
+    instance(), apiConnectptr.i, stopScan));
 
   /**
    * Check transid
@@ -18743,6 +18804,12 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
   scanFragP.p->startFragTimer(ctcTimer);
   scanFragP.p->m_start_ticks = getHighResTimer();
   updateBuddyTimer(apiConnectptr);
+
+  // Track how many DBSPJ instances will send CTE_SCAN_COMPLETE_REP
+  if (scanP->m_numCtes > 0) {
+    jamDebug();
+    scanP->m_cteScanReportsExpected++;
+  }
   return true;
 }  // Dbtc::sendScanFragReq()
 
@@ -18904,6 +18971,25 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
       jam();
     }
   }
+  /* For CTE JoinAgg queries with a main aggregation program, suppress
+   * intermediate SCAN_TABCONFs.  Results are delivered via the aggregation
+   * engine (JOIN_AGG_COMPLETE), so the API does not need per-fragment
+   * SCAN_TABCONFs.  m_hasMainAggProgram is used instead of checking
+   * m_aggProgramPtrI because the section is released during SETUP_CONF.
+   *
+   * CTE_LOOKUP queries (no main agg) still need SCAN_TABCONFs for
+   * flow control of the main scan. */
+  if (scanPtr.p->m_joinAgg && !release &&
+      scanPtr.p->m_numCtes > 0 &&
+      scanPtr.p->m_hasMainAggProgram) {
+    jam();
+    DEB_JOIN_AGG(("(%u) sendScanTabConf: suppress "
+                  "intermediate SCAN_TABCONF for CTE JoinAgg",
+                  instance()));
+    scanPtr.p->m_queued_count = 0;
+    return;
+  }
+
   if (refToNode(ref) != getOwnNodeId())
   {
     signal->m_send_wakeups++;
@@ -28390,20 +28476,33 @@ void Dbtc::debug_db_no_queue(DatabaseRecordPtr databaseRecordPtr,
  *   Remaining words:     aggregation program
  * Splits bounds from agg program into separate scan record fields.
  */
-void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
-                               Uint32 keyLen) {
+int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
+                              SectionHandle &handle, Uint32 keyLen) {
   scanptr.p->m_joinAgg = true;
   scanptr.p->scanKeyInfoPtr = RNIL;
   scanptr.p->m_aggProgramPtrI = RNIL;
 
-  /* Allocate per-node join agg state sized to MAX_NDB_NODES */
+  /* Allocate per-node join agg state sized to MAX_NDB_NODES.
+   * Phase L (E.1): tail buffer holds two parallel arrays —
+   *   [0 .. maxNodes-1]          : m_aggStateKeys
+   *   [maxNodes .. 2*maxNodes-1] : m_aggOwnerInstances
+   * m_aggOwnerInstances points at the second half. */
   const Uint32 maxNodes = MAX_NDB_NODES;
   const size_t allocSize = sizeof(ScanRecord::JoinAggNodeState) +
-                           maxNodes * sizeof(Uint32);
+                           2 * maxNodes * sizeof(Uint32);
   auto *aggNodes = (ScanRecord::JoinAggNodeState *)
-      lc_ndbd_pool_malloc(allocSize, RG_TRANSACTION_MEMORY,
+      lc_ndbd_pool_malloc(allocSize, RG_QUERY_MEMORY,
                           getThreadId(), true);
-  ndbrequire(aggNodes != nullptr);
+  if (unlikely(aggNodes == nullptr)) {
+    jam();
+    ApiConnectRecordPtr apiConnectptr;
+    apiConnectptr.i = scanptr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiConnectptr);
+    abortScanLab(signal, scanptr, ZGET_ATTRBUF_ERROR, true,
+                 apiConnectptr);
+    return -1;
+  }
+  aggNodes->m_aggOwnerInstances = &aggNodes->m_aggStateKeys[maxNodes];
   scanptr.p->m_joinAggNodes = aggNodes;
 
   SectionReader reader(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i,
@@ -28413,6 +28512,7 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
   ndbrequire(2 + boundsLen <= keyLen);  // +2 for boundsLen word + receiverId
 
   if (boundsLen > 0) {
+    jam();
     /* Extract bounds into scanKeyInfoPtr */
     Uint32 remaining = boundsLen;
     while (remaining > 0) {
@@ -28428,19 +28528,170 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
   /* Extract aggReceiverId */
   ndbrequire(reader.getWord(&scanptr.p->m_aggReceiverId));
 
-  /* Remaining words = aggregation program */
-  const Uint32 aggLen = keyLen - 2 - boundsLen;
-  if (aggLen > 0) {
-    Uint32 remaining = aggLen;
-    while (remaining > 0) {
-      const Uint32 *readPtr;
-      Uint32 actualLen;
-      ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
-      ndbrequire(appendToSection(scanptr.p->m_aggProgramPtrI,
-                                   readPtr, actualLen));
-      remaining -= actualLen;
+  /* Remaining words = aggregation program + optional CTE definitions.
+   * The main agg program is self-describing: word[0] = (magic << 16) | progLen.
+   * After the main agg program, optional CTE definitions follow:
+   *   [numCtes]
+   *   For each CTE: [tableId] [schemaVersion] [cteAggProgramLen] [cteAggProg...]
+   */
+  const Uint32 totalRemaining = keyLen - 2 - boundsLen;
+  Uint32 consumed = 0;
+
+  /* Linearize remaining KeyInfo data into a stack buffer for
+   * easier parsing of agg program + optional CTE definitions. */
+  static constexpr Uint32 MAX_AGG_SECTION_WORDS = 8192;
+  if (totalRemaining > 0) {
+    if (unlikely(totalRemaining > MAX_AGG_SECTION_WORDS)) {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = scanptr.p->scanApiRec;
+      c_apiConnectRecordPool.getPtr(apiConnectptr);
+      abortScanLab(signal, scanptr, ZINVALID_KEY, true,
+                   apiConnectptr);
+      return -1;
     }
-  }
+    Uint32 linBuf[MAX_AGG_SECTION_WORDS];
+    {
+      Uint32 remaining = totalRemaining;
+      Uint32 pos = 0;
+      while (remaining > 0) {
+        const Uint32 *readPtr;
+        Uint32 actualLen;
+        ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
+        memcpy(linBuf + pos, readPtr, actualLen * sizeof(Uint32));
+        pos += actualLen;
+        remaining -= actualLen;
+      }
+    }
+
+    /* Determine agg program length from format:
+     *   0x0721: old flat — word[0] & 0xFFFF = progLen
+     *   0x0722: multi-leaf — walk per-leaf entries
+     *   Other: treat word[0] & 0xFFFF as progLen
+     */
+    Uint32 magic = linBuf[0] >> 16;
+    Uint32 mainAggLen;
+    if (magic == 0x0722) {
+      Uint32 numLeaves = linBuf[0] & 0xFFFF;
+      mainAggLen = 1; // wrapper word
+      for (Uint32 i = 0; i < numLeaves; i++) {
+        if (unlikely(mainAggLen >= totalRemaining)) break;
+        Uint32 leafLen = linBuf[mainAggLen];
+        mainAggLen += 1 + leafLen;
+      }
+    } else {
+      mainAggLen = linBuf[0] & 0xFFFF;
+    }
+    if (mainAggLen > 0 && mainAggLen <= totalRemaining) {
+      ndbrequire(appendToSection(scanptr.p->m_aggProgramPtrI,
+                                 linBuf, mainAggLen));
+      scanptr.p->m_hasMainAggProgram = true;
+      consumed = mainAggLen;
+    }
+
+    /* Parse CTE definitions from the linearized buffer if more
+     * data remains after the agg program and starts with the
+     * CTE marker (defined in NdbAggregationCommon.hpp). */
+    if (consumed < totalRemaining &&
+        linBuf[consumed] == CTE_DEFS_MARKER) {
+      consumed++; // skip marker
+      Uint32 numCtes = linBuf[consumed];
+      consumed++;
+    if (unlikely(numCtes > 64)) {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = scanptr.p->scanApiRec;
+      c_apiConnectRecordPool.getPtr(apiConnectptr);
+      abortScanLab(signal, scanptr, ZINVALID_KEY, true, apiConnectptr);
+      return -1;
+    }
+    scanptr.p->m_numCtes = numCtes;
+
+    /* Allocate CteInfo + pointer array as single block.
+     * Skip allocation when numCtes == 0 (no CTEs defined) —
+     * lc_ndbd_pool_malloc(0) returns nullptr. */
+    if (numCtes > 0) {
+      const size_t infoSize = numCtes * sizeof(ScanRecord::CteInfo);
+      const size_t ptrSize = numCtes * sizeof(ScanRecord::JoinAggNodeState *);
+      char *mem = (char *)lc_ndbd_pool_malloc(
+          infoSize + ptrSize, RG_QUERY_MEMORY, getThreadId(), true);
+      if (unlikely(mem == nullptr)) {
+        jam();
+        scanptr.p->m_numCtes = 0;
+        ApiConnectRecordPtr apiConnectptr;
+        apiConnectptr.i = scanptr.p->scanApiRec;
+        c_apiConnectRecordPool.getPtr(apiConnectptr);
+        abortScanLab(signal, scanptr, ZGET_ATTRBUF_ERROR, true, apiConnectptr);
+        return -1;
+      }
+      scanptr.p->m_cteInfos = (ScanRecord::CteInfo *)mem;
+      scanptr.p->m_cteAggNodeState =
+          (ScanRecord::JoinAggNodeState **)(mem + infoSize);
+      for (Uint32 c = 0; c < numCtes; c++) {
+        scanptr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
+        scanptr.p->m_cteInfos[c].depMask = 0;
+        scanptr.p->m_cteInfos[c].phase = 0;
+        scanptr.p->m_cteInfos[c].m_flags = 0;
+        scanptr.p->m_cteAggNodeState[c] = nullptr;
+      }
+    } // if (numCtes > 0)
+
+    for (Uint32 c = 0; c < numCtes; c++) {
+      ndbrequire(consumed + 6 <= totalRemaining);
+      scanptr.p->m_cteInfos[c].tableId = linBuf[consumed++];
+      scanptr.p->m_cteInfos[c].schemaVersion = linBuf[consumed++];
+      {
+        Uint32 lo = linBuf[consumed++];
+        Uint32 hi = linBuf[consumed++];
+        scanptr.p->m_cteInfos[c].depMask = (Uint64(hi) << 32) | lo;
+      }
+      scanptr.p->m_cteInfos[c].m_flags = linBuf[consumed++];
+      Uint32 cteProgLen = linBuf[consumed++];
+
+      scanptr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
+      if (cteProgLen > 0) {
+        ndbrequire(consumed + cteProgLen <= totalRemaining);
+        ndbrequire(appendToSection(
+            scanptr.p->m_cteInfos[c].aggProgramPtrI,
+            linBuf + consumed, cteProgLen));
+        consumed += cteProgLen;
+      }
+    }
+
+    /* Compute execution phases from dependency masks.
+     * phase[c] = 0 if depMask[c] == 0
+     * phase[c] = 1 + max(phase[d] for each bit d set in depMask[c])
+     */
+    Uint32 maxPhase = 0;
+    for (Uint32 c = 0; c < numCtes; c++) {
+      Uint64 depMask = scanptr.p->m_cteInfos[c].depMask;
+      Uint32 phase = 0;
+      if (depMask != 0) {
+        for (Uint32 d = 0; d < numCtes; d++) {
+          if (depMask & (Uint64(1) << d)) {
+            Uint32 depPhase = scanptr.p->m_cteInfos[d].phase;
+            if (depPhase + 1 > phase) {
+              phase = depPhase + 1;
+            }
+          }
+        }
+      }
+      scanptr.p->m_cteInfos[c].phase = phase;
+      if (phase > maxPhase) maxPhase = phase;
+    }
+    scanptr.p->m_ctePhaseCount = maxPhase + 1;
+    } // if (CTE_DEFS_MARKER)
+    else if (consumed < totalRemaining) {
+      /* Unconsumed trailing data that is not a CTE_DEFS_MARKER.
+       * Reject — malformed KeyInfo section. */
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = scanptr.p->scanApiRec;
+      c_apiConnectRecordPool.getPtr(apiConnectptr);
+      abortScanLab(signal, scanptr, ZINVALID_KEY, true, apiConnectptr);
+      return -1;
+    }
+  } // if (totalRemaining > 0)
 
   /* Release original combined section */
   releaseSection(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i);
@@ -28450,12 +28701,16 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
 #ifdef DEBUG_JOIN_AGG_TRACE
   DEB_JOIN_AGG(("(%u)DBTC parseJoinAggKeyInfo: boundsLen=%u"
                  " aggReceiverId=0x%x aggProgramPtrI=0x%x"
-                 " total_keyLen=%u",
+                 " total_keyLen=%u totalRemaining=%u consumed=%u"
+                 " numCtes=%u",
                  instance(),
                  boundsLen,
                  scanptr.p->m_aggReceiverId,
                  scanptr.p->m_aggProgramPtrI,
-                 keyLen));
+                 keyLen,
+                 totalRemaining,
+                 consumed,
+                 scanptr.p->m_numCtes));
   /* Dump aggProgram contents */
   if (scanptr.p->m_aggProgramPtrI != RNIL) {
     SegmentedSectionPtr aggPtr;
@@ -28480,6 +28735,7 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
     }
   }
 #endif
+  return 0;
 }
 
 /**
@@ -28523,6 +28779,9 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
         req->transid[1] = apiPtr.p->transid[1];
         req->aggStateKey = aggNodes->m_aggStateKeys[nodeId];
         req->noReply = 1;
+        DEB_JOIN_AGG(("(%u)DBTC releaseJoinAgg RELEASE_REQ: "
+                       "nodeId=%u aggStateKey=%u main (fire-and-forget)",
+                       instance(), nodeId, req->aggStateKey));
         Uint32 ref = numberToRef(DBLQH, nodeId);
         sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
                    JoinAggReleaseReq::SignalLength, JBB);
@@ -28531,6 +28790,53 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
     lc_ndbd_pool_free(aggNodes);
     scanPtr.p->m_joinAggNodes = nullptr;
   }
+
+  /* Release CTE resources */
+  for (Uint32 c = 0; c < scanPtr.p->m_numCtes; c++) {
+    if (scanPtr.p->m_cteInfos[c].aggProgramPtrI != RNIL) {
+      releaseSection(scanPtr.p->m_cteInfos[c].aggProgramPtrI);
+      scanPtr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
+    }
+    if (scanPtr.p->m_cteAggNodeState[c] != nullptr) {
+      auto *cteNodes = scanPtr.p->m_cteAggNodeState[c];
+      /* Send fire-and-forget RELEASE_REQ for CTE agg states */
+      if (!cteNodes->m_aggNodes.isclear()) {
+        ApiConnectRecordPtr apiPtr;
+        apiPtr.i = scanPtr.p->scanApiRec;
+        c_apiConnectRecordPool.getPtr(apiPtr);
+        NdbNodeBitmask nodes = cteNodes->m_aggNodes;
+        cteNodes->m_aggNodes.clear();
+        for (Uint32 nodeId = nodes.find_first();
+             nodeId != NdbNodeBitmask::NotFound;
+             nodeId = nodes.find_next(nodeId + 1)) {
+          if (!getNodeInfo(nodeId).m_connected) continue;
+          JoinAggReleaseReq *req =
+              (JoinAggReleaseReq *)signal->getDataPtrSend();
+          req->senderRef = reference();
+          req->senderData = scanPtr.i;
+          req->requestId = scanPtr.p->scanApiRec;
+          req->transid[0] = apiPtr.p->transid[0];
+          req->transid[1] = apiPtr.p->transid[1];
+          req->aggStateKey = cteNodes->m_aggStateKeys[nodeId];
+          req->noReply = 1;
+          DEB_JOIN_AGG(("(%u)DBTC releaseJoinAgg RELEASE_REQ: "
+                         "nodeId=%u aggStateKey=%u CTE[%u] (fire-and-forget)",
+                         instance(), nodeId, req->aggStateKey, c));
+          Uint32 ref = numberToRef(DBLQH, nodeId);
+          sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
+                     JoinAggReleaseReq::SignalLength, JBB);
+        }
+      }
+      lc_ndbd_pool_free(cteNodes);
+      scanPtr.p->m_cteAggNodeState[c] = nullptr;
+    }
+  }
+  if (scanPtr.p->m_cteInfos != nullptr) {
+    lc_ndbd_pool_free(scanPtr.p->m_cteInfos);
+    scanPtr.p->m_cteInfos = nullptr;
+    scanPtr.p->m_cteAggNodeState = nullptr;  // same allocation block
+  }
+  scanPtr.p->m_numCtes = 0;
 }
 
 /**
@@ -28605,64 +28911,207 @@ bool Dbtc::handleJoinAggNodeFailure(Signal *signal, ScanRecordPtr scanptr,
 
 void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
                                 ApiConnectRecordPtr apiConnectptr) {
+  DEB_JOIN_AGG(("(%u)DBTC sendJoinAggSetupReqs: scanPtr.i=%u "
+                "numCtes=%u",
+                instance(), scanptr.i,
+                scanptr.p->m_numCtes));
   scanptr.p->m_joinAggNodes->m_aggNodes.clear();
   scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
   scanptr.p->m_aggPhaseFailed = false;
   scanptr.p->m_aggErrorCode = 0;
 
-  for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
-    if (!getNodeInfo(nodeId).m_connected) continue;
-    if (getNodeInfo(nodeId).m_type != NodeInfo::DB) continue;
+  /* Main query aggregation setup — only if a main agg program exists.
+   * CTE-only queries (no main aggregation) skip this loop. */
+  if (scanptr.p->m_aggProgramPtrI != RNIL) {
+    jam();
+    for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
+      if (!getNodeInfo(nodeId).m_connected) continue;
+      if (getNodeInfo(nodeId).m_type != NodeInfo::DB) continue;
 
-    JoinAggSetupReq *req = (JoinAggSetupReq *)signal->getDataPtrSend();
-    req->senderRef = reference();
-    req->senderData = scanptr.i;
-    req->requestId = scanptr.p->scanApiRec;
-    req->transid[0] = apiConnectptr.p->transid[0];
-    req->transid[1] = apiConnectptr.p->transid[1];
-    req->tableId = scanptr.p->scanTableref;
-    req->expectedOpCount = 0;
-    req->concurrencyStrategy = JoinAggSetupReq::STRATEGY_MUTEX_FREE;
-    req->resultRef = apiConnectptr.p->ndbapiBlockref;
-    req->resultData = scanptr.p->m_aggReceiverId;
-    req->routeRef = reference();
+      JoinAggSetupReq *req = (JoinAggSetupReq *)signal->getDataPtrSend();
+      req->senderRef = reference();
+      req->senderData = scanptr.i;
+      req->requestId = scanptr.p->scanApiRec;
+      req->transid[0] = apiConnectptr.p->transid[0];
+      req->transid[1] = apiConnectptr.p->transid[1];
+      req->tableId = scanptr.p->scanTableref;
+      req->expectedOpCount = 0;
+      req->concurrencyStrategy = JoinAggSetupReq::STRATEGY_MUTEX_FREE;
+      req->resultRef = apiConnectptr.p->ndbapiBlockref;
+      req->resultData = scanptr.p->m_aggReceiverId;
+      req->routeRef = reference();
+      req->cteIndex = RNIL;  // Main aggregation, not a CTE
 
-    SectionHandle handle(this);
-    Uint32 aggPtrI = RNIL;
-    ndbrequire(dupSection(aggPtrI, scanptr.p->m_aggProgramPtrI));
-    getSection(handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum], aggPtrI);
+      SectionHandle handle(this);
+      Uint32 aggPtrI = RNIL;
+      ndbrequire(dupSection(aggPtrI, scanptr.p->m_aggProgramPtrI));
+      getSection(handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum], aggPtrI);
 
-    Uint32 rcvPtrI = RNIL;
-    ndbrequire(scanptr.p->m_aggReceiverId != RNIL);
-    Uint32 rcvId = scanptr.p->m_aggReceiverId;
-    ndbrequire(appendToSection(rcvPtrI, &rcvId, 1));
-    getSection(handle.m_ptr[JoinAggSetupReq::ReceiverIdsSectionNum], rcvPtrI);
-    handle.m_cnt = 2;
+      Uint32 rcvPtrI = RNIL;
+      ndbrequire(scanptr.p->m_aggReceiverId != RNIL);
+      Uint32 rcvId = scanptr.p->m_aggReceiverId;
+      ndbrequire(appendToSection(rcvPtrI, &rcvId, 1));
+      getSection(handle.m_ptr[JoinAggSetupReq::ReceiverIdsSectionNum], rcvPtrI);
+      handle.m_cnt = 2;
 
 #ifdef DEBUG_JOIN_AGG_TRACE
-    DEB_JOIN_AGG(("(%u)DBTC sendJoinAggSetupReq → node %u: "
-                   "resultRef=0x%x resultData=0x%x "
-                   "aggProgLen=%u aggReceiverId=0x%x",
-                   instance(),
-                   nodeId,
-                   req->resultRef,
-                   req->resultData,
-                   handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum].sz,
-                   scanptr.p->m_aggReceiverId));
+      DEB_JOIN_AGG(("(%u)DBTC sendJoinAggSetupReq → node %u: "
+                     "resultRef=0x%x resultData=0x%x "
+                     "aggProgLen=%u aggReceiverId=0x%x",
+                     instance(),
+                     nodeId,
+                     req->resultRef,
+                     req->resultData,
+                     handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum].sz,
+                     scanptr.p->m_aggReceiverId));
 #endif
-    Uint32 ref = numberToRef(DBLQH, nodeId);
-    sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,
-               JoinAggSetupReq::SignalLength, JBB, &handle);
-    scanptr.p->m_joinAggNodes->m_aggNodes.set(nodeId);
-    scanptr.p->m_joinAggNodes->m_aggNodesPending.set(nodeId);
-    scanptr.p->m_aggNodesOutstanding++;
+      Uint32 ref = numberToRef(DBLQH, nodeId);
+      sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,
+                 JoinAggSetupReq::SignalLength, JBB, &handle);
+      scanptr.p->m_joinAggNodes->m_aggNodes.set(nodeId);
+      scanptr.p->m_joinAggNodes->m_aggNodesPending.set(nodeId);
+      scanptr.p->m_aggNodesOutstanding++;
+    }
   }
 
-  if (scanptr.p->m_aggNodesOutstanding == 0) {
+  /* Send CTE SETUP requests (CTE_MODE_FLAG) for each CTE to each node */
+  if (scanptr.p->m_numCtes > 0) {
+    jam();
+    const Uint32 maxNodes = MAX_NDB_NODES;
+    for (Uint32 c = 0; c < scanptr.p->m_numCtes; c++) {
+      /* Allocate per-CTE JoinAggNodeState.  Phase L (E.1): tail
+       * holds keys + owner instances back-to-back; same layout as
+       * the main-aggregation allocation. */
+      const size_t allocSize = sizeof(ScanRecord::JoinAggNodeState) +
+                               2 * maxNodes * sizeof(Uint32);
+      auto *cteNodes = (ScanRecord::JoinAggNodeState *)
+          lc_ndbd_pool_malloc(allocSize, RG_QUERY_MEMORY,
+                              getThreadId(), true);
+      if (unlikely(cteNodes == nullptr)) {
+        jam();
+        scanptr.p->m_aggPhaseFailed = true;
+        scanptr.p->m_aggErrorCode = ZGET_ATTRBUF_ERROR;
+        break;
+      }
+      cteNodes->m_aggNodes.clear();
+      cteNodes->m_aggNodesPending.clear();
+      cteNodes->m_aggOwnerInstances = &cteNodes->m_aggStateKeys[maxNodes];
+      memset(cteNodes->m_aggStateKeys, 0, 2 * maxNodes * sizeof(Uint32));
+      scanptr.p->m_cteAggNodeState[c] = cteNodes;
+
+      /* For single-row CTEs: send SETUP to one node only (round-robin).
+       * For normal CTEs: send to all connected DB nodes. */
+      const bool singleRow =
+          (scanptr.p->m_cteInfos[c].m_flags &
+           QN_CteSubtreeNode::CTE_SINGLE_ROW) != 0;
+
+      for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
+        if (!getNodeInfo(nodeId).m_connected) continue;
+        if (getNodeInfo(nodeId).m_type != NodeInfo::DB) continue;
+
+        if (singleRow && !cteNodes->m_aggNodes.isclear()) {
+          /* Single-row CTE: already sent to one node, skip the rest */
+          break;
+        }
+
+        JoinAggSetupReq *req = (JoinAggSetupReq *)signal->getDataPtrSend();
+        req->senderRef = reference();
+        req->senderData = scanptr.i;
+        req->requestId = scanptr.p->scanApiRec;
+        req->transid[0] = apiConnectptr.p->transid[0];
+        req->transid[1] = apiConnectptr.p->transid[1];
+        req->tableId = scanptr.p->m_cteInfos[c].tableId;
+        req->expectedOpCount = 0;
+        req->concurrencyStrategy =
+            JoinAggSetupReq::STRATEGY_MUTEX_BASED |
+            JoinAggSetupReq::CTE_MODE_FLAG;
+        req->resultRef = apiConnectptr.p->ndbapiBlockref;
+        req->resultData = scanptr.p->m_aggReceiverId;
+        req->routeRef = reference();
+        req->cteIndex = c;  // CTE index so CONF handler can route response
+
+        SectionHandle handle(this);
+        Uint32 aggPtrI = RNIL;
+        ndbrequire(dupSection(aggPtrI,
+                              scanptr.p->m_cteInfos[c].aggProgramPtrI));
+        getSection(handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum],
+                   aggPtrI);
+
+        Uint32 rcvPtrI = RNIL;
+        Uint32 rcvId = scanptr.p->m_aggReceiverId;
+        ndbrequire(appendToSection(rcvPtrI, &rcvId, 1));
+        getSection(handle.m_ptr[JoinAggSetupReq::ReceiverIdsSectionNum],
+                   rcvPtrI);
+        handle.m_cnt = 2;
+
+        Uint32 ref = numberToRef(DBLQH, nodeId);
+        sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,
+                   JoinAggSetupReq::SignalLength, JBB, &handle);
+        cteNodes->m_aggNodes.set(nodeId);
+        cteNodes->m_aggNodesPending.set(nodeId);
+        scanptr.p->m_cteSetupOutstanding++;
+      }
+    }
+  }
+
+  if (scanptr.p->m_aggNodesOutstanding == 0 &&
+      scanptr.p->m_cteSetupOutstanding == 0) {
     jam();
     abortScanLab(signal, scanptr, ZGET_DATAREC_ERROR, true, apiConnectptr);
   }
+}
+
+/* Phase L (C): allocate a fresh AggCompleteRecord, link it into the
+ * scan's record list, and return the pointer.  Pool exhaustion is
+ * surfaced as a hard failure to the caller. */
+bool Dbtc::seizeAggCompleteRecord(AggCompleteRecordPtr &recPtr,
+                                   ScanRecordPtr scanptr) {
+  if (unlikely(!c_aggCompleteRecordPool.seize(recPtr))) {
+    jam();
+    return false;
+  }
+  recPtr.p->m_nextI = scanptr.p->m_aggRecordsHead;
+  recPtr.p->m_scanPtrI = scanptr.i;
+  recPtr.p->m_kind = AggCompleteRecord::KIND_CTE;  // caller may overwrite
+  recPtr.p->m_cteIndex = RNIL;
+  recPtr.p->m_phase = RNIL;
+  memset(recPtr.p->m_aggStateKeys, 0, sizeof(recPtr.p->m_aggStateKeys));
+  recPtr.p->m_aggNodesPending.clear();
+  recPtr.p->m_outstanding = 0;
+  recPtr.p->m_state = AggCompleteRecord::REC_IDLE;
+  recPtr.p->m_errorCode = 0;
+  scanptr.p->m_aggRecordsHead = recPtr.i;
+  scanptr.p->m_aggRecordsCount++;
+  return true;
+}
+
+/* Phase L (C): validate a pool index that came from the wire.  A
+ * stale or malformed requestId is reported via false return so the
+ * caller can drop the signal. */
+bool Dbtc::getValidAggCompleteRecord(AggCompleteRecordPtr &recPtr) {
+  return c_aggCompleteRecordPool.getValidPtr(recPtr);
+}
+
+/* Phase L (C): walk the scan's AggCompleteRecord list and return
+ * every record to the pool.  Called from scan teardown (success and
+ * abort paths).  Cheap when the list is empty (non-JoinAgg
+ * queries). */
+void Dbtc::releaseAggCompleteRecords(ScanRecordPtr scanptr) {
+  Uint32 i = scanptr.p->m_aggRecordsHead;
+  while (i != RNIL) {
+    AggCompleteRecordPtr recPtr;
+    recPtr.i = i;
+    ndbrequire(c_aggCompleteRecordPool.getValidPtr(recPtr));
+    i = recPtr.p->m_nextI;
+    c_aggCompleteRecordPool.release(recPtr);
+  }
+  checkPoolShrinkNeed(DBTC_AGG_COMPLETE_RECORD_TRANSIENT_POOL_INDEX,
+                      c_aggCompleteRecordPool);
+  scanptr.p->m_aggRecordsHead = RNIL;
+  scanptr.p->m_aggRecordsCount = 0;
+  scanptr.p->m_mainAggRecI = RNIL;
+  scanptr.p->m_ctePhaseRemaining = 0;
 }
 
 void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
@@ -28674,24 +29123,63 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
   scanptr.i = conf->senderData;
   scanRecordPool.getPtr(scanptr);
 
+  DEB_JOIN_AGG(("(%u)DBTC execJOIN_AGG_SETUP_CONF: "
+                "scanPtr.i=%u cteIndex=%u aggStateKey=%u "
+                "nodeId=%u",
+                instance(), scanptr.i,
+                conf->cteIndex, conf->aggStateKey,
+                refToNode(signal->getSendersBlockRef())));
+
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_SETUP);
 
-  Uint32 nodeId = refToNode(conf->senderRef);
-  scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId] = conf->aggStateKey;
-  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
-  scanptr.p->m_aggNodesOutstanding--;
+  const Uint32 nodeId = refToNode(conf->senderRef);
+  const Uint32 cteIndex = conf->cteIndex;
 
-  /**
-   * The agg program has been sent to all data nodes and is no longer
-   * needed in DBTC. Release the section memory early rather than
-   * keeping it until releaseScanResources().
-   */
-  if (scanptr.p->m_aggProgramPtrI != RNIL) {
-    releaseSection(scanptr.p->m_aggProgramPtrI);
-    scanptr.p->m_aggProgramPtrI = RNIL;
+  if (cteIndex != RNIL) {
+    /* CTE SETUP_CONF — store aggStateKey + owner instance in per-CTE
+     * node state.  Phase L (E.1): owner instance is the LDM worker on
+     * `nodeId` that owns every subsequent COMPLETE / REDISTRIBUTE /
+     * FINAL_REP for this aggregation. */
+    jam();
+    ndbrequire(cteIndex < scanptr.p->m_numCtes);
+    auto *cteNodes = scanptr.p->m_cteAggNodeState[cteIndex];
+    ndbrequire(cteNodes != nullptr);
+    cteNodes->m_aggStateKeys[nodeId] = conf->aggStateKey;
+    cteNodes->m_aggOwnerInstances[nodeId] = conf->ownerInstance;
+    cteNodes->m_aggNodesPending.clear(nodeId);
+    scanptr.p->m_cteSetupOutstanding--;
+
+    /* Release CTE agg program section once all nodes received it */
+    if (scanptr.p->m_cteInfos[cteIndex].aggProgramPtrI != RNIL &&
+        cteNodes->m_aggNodesPending.isclear()) {
+      releaseSection(scanptr.p->m_cteInfos[cteIndex].aggProgramPtrI);
+      scanptr.p->m_cteInfos[cteIndex].aggProgramPtrI = RNIL;
+    }
+  } else {
+    /* Main aggregation SETUP_CONF.  Phase L (E.1): same owner-routing
+     * rule as CTE — store the owner LDM instance for every node so
+     * subsequent COMPLETE_REQ / RELEASE_REQ are addressed to it. */
+    jam();
+    scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId] = conf->aggStateKey;
+    scanptr.p->m_joinAggNodes->m_aggOwnerInstances[nodeId] =
+        conf->ownerInstance;
+    scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
+    scanptr.p->m_aggNodesOutstanding--;
+
+    /**
+     * The agg program has been sent to all data nodes and is no longer
+     * needed in DBTC. Release the section memory early rather than
+     * keeping it until releaseScanResources().
+     */
+    if (scanptr.p->m_aggProgramPtrI != RNIL) {
+      releaseSection(scanptr.p->m_aggProgramPtrI);
+      scanptr.p->m_aggProgramPtrI = RNIL;
+    }
   }
 
-  if (scanptr.p->m_aggNodesOutstanding == 0) {
+  /* Check if ALL setup responses received (main + all CTEs) */
+  if (scanptr.p->m_aggNodesOutstanding == 0 &&
+      scanptr.p->m_cteSetupOutstanding == 0) {
     jam();
 
     if (scanptr.p->m_aggPhaseFailed) {
@@ -28716,7 +29204,25 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
       return;
     }
 
-    Uint32 keyData[ABS_MAX_NDB_NODES * 2];
+    /* Pack main aggStateKeys: [nodeId, aggStateKey] pairs */
+    static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
+    const Uint32 maxNodes = MAX_NDB_NODES;
+    const Uint32 numCtes = scanptr.p->m_numCtes;
+    /* Per CTE: cteId(1) + depMask(2) + flags(1) + phase(1)
+     *           + nodeCount(1) + nodes(maxNodes*2) */
+    const Uint32 keyDataSize = maxNodes * 2 + 3 +
+        numCtes * (6 + maxNodes * 2);
+    Uint32 *keyData = (Uint32 *)lc_ndbd_pool_malloc(
+        keyDataSize * sizeof(Uint32), RG_QUERY_MEMORY,
+        getThreadId(), true);
+    if (unlikely(keyData == nullptr)) {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = scanptr.p->scanApiRec;
+      c_apiConnectRecordPool.getPtr(apiConnectptr);
+      abortScanLab(signal, scanptr, ZGET_ATTRBUF_ERROR, true, apiConnectptr);
+      return;
+    }
     Uint32 idx = 0;
     NdbNodeBitmask nodes = scanptr.p->m_joinAggNodes->m_aggNodes;
     for (Uint32 nid = nodes.find_first();
@@ -28725,9 +29231,67 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
       keyData[idx++] = nid;
       keyData[idx++] = scanptr.p->m_joinAggNodes->m_aggStateKeys[nid];
     }
+
+    /* Append CTE aggStateKeys if any CTEs were set up */
+    if (scanptr.p->m_numCtes > 0) {
+      jam();
+      keyData[idx++] = CTE_KEYS_MARKER;
+      keyData[idx++] = scanptr.p->m_numCtes;
+
+      /* Compute CTE scan coverage flag: if DBSPJ instances (scanNoFrag)
+       * cover all CTE nodes, local-only CTE_SCAN is sufficient.
+       * Otherwise DBSPJ must send CTE_SCAN_REQ to all CTE nodes. */
+      {
+        Uint32 cteNodeCount = 0;
+        auto *firstCteNodes = scanptr.p->m_cteAggNodeState[0];
+        if (firstCteNodes != nullptr) {
+          NdbNodeBitmask cNodes = firstCteNodes->m_aggNodes;
+          for (Uint32 nid = cNodes.find_first();
+               nid != NdbNodeBitmask::NotFound;
+               nid = cNodes.find_next(nid + 1)) {
+            cteNodeCount++;
+          }
+        }
+        Uint32 cteFlags = 0;
+        if (scanptr.p->scanNoFrag < cteNodeCount) {
+          cteFlags |= 0x1;  /* CTE_SCAN_ALL_NODES */
+        }
+        keyData[idx++] = cteFlags;
+      }
+
+      for (Uint32 c = 0; c < scanptr.p->m_numCtes; c++) {
+        auto *cteNodes = scanptr.p->m_cteAggNodeState[c];
+        ndbrequire(cteNodes != nullptr);
+        keyData[idx++] = c;  /* cteId */
+        {
+          Uint64 depMask = scanptr.p->m_cteInfos[c].depMask;
+          keyData[idx++] = (Uint32)(depMask & 0xFFFFFFFF);
+          keyData[idx++] = (Uint32)(depMask >> 32);
+        }
+        keyData[idx++] = scanptr.p->m_cteInfos[c].m_flags;
+        keyData[idx++] = scanptr.p->m_cteInfos[c].phase;
+        /* Count nodes for this CTE */
+        Uint32 cteNodeCount = 0;
+        NdbNodeBitmask cNodes = cteNodes->m_aggNodes;
+        for (Uint32 nid = cNodes.find_first();
+             nid != NdbNodeBitmask::NotFound;
+             nid = cNodes.find_next(nid + 1)) {
+          cteNodeCount++;
+        }
+        keyData[idx++] = cteNodeCount;
+        for (Uint32 nid = cNodes.find_first();
+             nid != NdbNodeBitmask::NotFound;
+             nid = cNodes.find_next(nid + 1)) {
+          keyData[idx++] = nid;
+          keyData[idx++] = cteNodes->m_aggStateKeys[nid];
+        }
+      }
+    }
+
     scanptr.p->m_aggKeysSectionPtrI = RNIL;
     ndbrequire(appendToSection(
         scanptr.p->m_aggKeysSectionPtrI, keyData, idx));
+    lc_ndbd_pool_free(keyData);
 
     scanptr.p->scanState = ScanRecord::RUNNING;
     ApiConnectRecordPtr apiConnectptr;
@@ -28785,24 +29349,106 @@ void Dbtc::execJOIN_AGG_SETUP_REF(Signal *signal) {
   }
 }
 
+/* Phase L (C): unified JOIN_AGG_COMPLETE_CONF handler.
+ *
+ * Decode the record id from `requestId`, look up the
+ * AggCompleteRecord, validate scan/node/aggKey/state, then drop the
+ * pending bit and decrement m_outstanding.  When the record's
+ * outstanding hits 0:
+ *   - KIND_CTE: --m_ctePhaseRemaining; if 0, advance to next phase /
+ *               main query.
+ *   - KIND_MAIN: send the JOIN_AGG_RELEASE_REQs.
+ *
+ * Stale or duplicate replies are caught and dropped silently — by
+ * record-id mismatch (record already released), by record state
+ * (already complete or failed), by senderData mismatch (different
+ * scan), by aggStateKey mismatch (wrong key for that node), or by
+ * cleared pending bit (CONF for already-counted node).  Each drop
+ * site logs under DEB_JOIN_AGG so a real protocol regression is
+ * still diagnosable from production logs.  See cte_filter_phase_l.md.
+ */
 void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
   jamEntry();
   const JoinAggCompleteConf *conf =
       (const JoinAggCompleteConf *)signal->getDataPtr();
+  const Uint32 senderNodeId = refToNode(conf->senderRef);
+
+  if (unlikely(!isAggCompleteRequestId(conf->requestId))) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop COMPLETE_CONF: untagged requestId=0x%x",
+                  instance(), conf->requestId));
+    return;
+  }
+
+  AggCompleteRecordPtr rec;
+  rec.i = decodeAggCompleteRequestId(conf->requestId);
+  if (unlikely(!getValidAggCompleteRecord(rec))) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop COMPLETE_CONF: stale recI=%u",
+                  instance(), rec.i));
+    return;
+  }
+  if (rec.p->m_state != AggCompleteRecord::REC_WAIT_COMPLETE) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop COMPLETE_CONF: recI=%u state=%u",
+                  instance(), rec.i, (Uint32)rec.p->m_state));
+    return;
+  }
 
   ScanRecordPtr scanptr;
-  scanptr.i = conf->senderData;
-  scanRecordPool.getPtr(scanptr);
-
-  ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_COMPLETE);
-
-  Uint32 nodeId = refToNode(conf->senderRef);
-  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
-  scanptr.p->m_aggNodesOutstanding--;
-
-  if (scanptr.p->m_aggNodesOutstanding == 0) {
+  scanptr.i = rec.p->m_scanPtrI;
+  if (unlikely(!scanRecordPool.getValidPtr(scanptr) ||
+               conf->senderData != scanptr.i)) {
     jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop COMPLETE_CONF: scan mismatch recI=%u",
+                  instance(), rec.i));
+    return;
+  }
+  if (unlikely(senderNodeId >= ABS_MAX_NDB_NODES ||
+               !rec.p->m_aggNodesPending.get(senderNodeId))) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop COMPLETE_CONF: duplicate node=%u recI=%u",
+                  instance(), senderNodeId, rec.i));
+    return;
+  }
 
+  rec.p->m_aggNodesPending.clear(senderNodeId);
+  ndbrequire(rec.p->m_outstanding > 0);
+  rec.p->m_outstanding--;
+  /* Phase L commit 5: m_cteCompleteOutstanding retired (replaced by
+   * m_ctePhaseRemaining + per-record state).  Main-aggregation legacy
+   * counters (m_aggNodesOutstanding / m_aggNodesPending) are still
+   * mirrored here so the deferred node-failure path keeps a consistent
+   * view; they are reset by sendJoinAggReleaseReqs before reuse. */
+  if (rec.p->m_kind == AggCompleteRecord::KIND_MAIN) {
+    ndbrequire(scanptr.p->m_aggNodesOutstanding > 0);
+    scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(senderNodeId);
+    scanptr.p->m_aggNodesOutstanding--;
+  }
+
+  DEB_JOIN_AGG(("(%u)DBTC execJOIN_AGG_COMPLETE_CONF: recI=%u kind=%u "
+                "nodeId=%u outstanding=%u",
+                instance(), rec.i, (Uint32)rec.p->m_kind,
+                senderNodeId, rec.p->m_outstanding));
+
+  if (rec.p->m_outstanding != 0) return;
+
+  rec.p->m_state = AggCompleteRecord::REC_COMPLETE;
+  if (rec.p->m_kind == AggCompleteRecord::KIND_CTE) {
+    jam();
+    ndbrequire(scanptr.p->m_ctePhaseRemaining > 0);
+    scanptr.p->m_ctePhaseRemaining--;
+    if (scanptr.p->m_ctePhaseRemaining == 0) {
+      jam();
+      if (scanptr.p->m_aggPhaseFailed) {
+        jam();
+        scanptr.p->m_aggPhaseFailed = false;
+        // TODO: propagate CTE error to API
+      }
+      cteAdvancePhase(signal, scanptr);
+    }
+  } else {
+    jam();
     if (scanptr.p->m_aggPhaseFailed) {
       jam();
       scanptr.p->m_aggPhaseFailed = false;
@@ -28811,34 +29457,94 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
   }
 }
 
+/* Phase L (C): unified JOIN_AGG_COMPLETE_REF handler.  Same lookup
+ * pattern as the CONF handler; on success records the per-record
+ * failure state and bubbles up to the kind-specific abort path. */
 void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
   jamEntry();
   const JoinAggCompleteRef *ref =
       (const JoinAggCompleteRef *)signal->getDataPtr();
+  const Uint32 senderNodeId = refToNode(ref->senderRef);
+
+  if (unlikely(!isAggCompleteRequestId(ref->requestId))) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop COMPLETE_REF: untagged requestId=0x%x",
+                  instance(), ref->requestId));
+    return;
+  }
+
+  AggCompleteRecordPtr rec;
+  rec.i = decodeAggCompleteRequestId(ref->requestId);
+  if (unlikely(!getValidAggCompleteRecord(rec))) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop COMPLETE_REF: stale recI=%u",
+                  instance(), rec.i));
+    return;
+  }
+  if (rec.p->m_state != AggCompleteRecord::REC_WAIT_COMPLETE) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop COMPLETE_REF: recI=%u state=%u",
+                  instance(), rec.i, (Uint32)rec.p->m_state));
+    return;
+  }
 
   ScanRecordPtr scanptr;
-  scanptr.i = ref->senderData;
-  scanRecordPool.getPtr(scanptr);
+  scanptr.i = rec.p->m_scanPtrI;
+  if (unlikely(!scanRecordPool.getValidPtr(scanptr) ||
+               ref->senderData != scanptr.i)) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop COMPLETE_REF: scan mismatch recI=%u",
+                  instance(), rec.i));
+    return;
+  }
+  if (unlikely(senderNodeId >= ABS_MAX_NDB_NODES ||
+               !rec.p->m_aggNodesPending.get(senderNodeId))) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop COMPLETE_REF: duplicate node=%u recI=%u",
+                  instance(), senderNodeId, rec.i));
+    return;
+  }
 
-  ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_COMPLETE);
+  rec.p->m_aggNodesPending.clear(senderNodeId);
+  ndbrequire(rec.p->m_outstanding > 0);
+  rec.p->m_outstanding--;
+  if (rec.p->m_errorCode == 0) rec.p->m_errorCode = ref->errorCode;
 
-  Uint32 nodeId = refToNode(ref->senderRef);
-  /**
-   * Do NOT clear nodeId from m_aggNodes here — the agg state was
-   * successfully created during SETUP and still exists on that node.
-   * It must remain in m_aggNodes so sendJoinAggReleaseReqs sends
-   * RELEASE_REQ to free it.
-   */
-  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
-  scanptr.p->m_aggNodesOutstanding--;
-
+  /* Phase L commit 5: same as the CONF path — m_cteCompleteOutstanding
+   * is retired; main-aggregation legacy counters keep their mirror
+   * write for the deferred node-failure path.  Note we still do NOT
+   * clear nodeId from m_aggNodes — RELEASE_REQ must reach the node
+   * because SETUP succeeded there. */
+  if (rec.p->m_kind == AggCompleteRecord::KIND_MAIN) {
+    ndbrequire(scanptr.p->m_aggNodesOutstanding > 0);
+    scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(senderNodeId);
+    scanptr.p->m_aggNodesOutstanding--;
+  }
   if (!scanptr.p->m_aggPhaseFailed) {
     jam();
     scanptr.p->m_aggPhaseFailed = true;
     scanptr.p->m_aggErrorCode = ref->errorCode;
   }
 
-  if (scanptr.p->m_aggNodesOutstanding == 0) {
+  DEB_JOIN_AGG(("(%u)DBTC execJOIN_AGG_COMPLETE_REF: recI=%u kind=%u "
+                "nodeId=%u outstanding=%u err=%u",
+                instance(), rec.i, (Uint32)rec.p->m_kind,
+                senderNodeId, rec.p->m_outstanding, ref->errorCode));
+
+  if (rec.p->m_outstanding != 0) return;
+
+  rec.p->m_state = AggCompleteRecord::REC_FAILED;
+  if (rec.p->m_kind == AggCompleteRecord::KIND_CTE) {
+    jam();
+    ndbrequire(scanptr.p->m_ctePhaseRemaining > 0);
+    scanptr.p->m_ctePhaseRemaining--;
+    if (scanptr.p->m_ctePhaseRemaining == 0) {
+      jam();
+      // Even on failure, start main query so it can report error
+      scanptr.p->m_aggPhaseFailed = false;
+      sendCteStartMainReqs(signal, scanptr);
+    }
+  } else {
     jam();
     scanptr.p->m_aggPhaseFailed = false;
     sendJoinAggReleaseReqs(signal, scanptr);
@@ -28853,6 +29559,12 @@ void Dbtc::execJOIN_AGG_RELEASE_CONF(Signal *signal) {
   ScanRecordPtr scanptr;
   scanptr.i = conf->senderData;
   scanRecordPool.getPtr(scanptr);
+
+  DEB_JOIN_AGG(("(%u)DBTC execJOIN_AGG_RELEASE_CONF: "
+                "scanPtr.i=%u nodeId=%u outstanding=%u",
+                instance(), scanptr.i,
+                refToNode(conf->senderRef),
+                scanptr.p->m_aggNodesOutstanding));
 
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_RELEASE);
 
@@ -28884,6 +29596,375 @@ void Dbtc::execJOIN_AGG_SEND_REQ(Signal *signal) {
              JoinAggSendConf::SignalLength, JBB);
 }
 
+/**
+ * CTE_PHASE_COMPLETE_REP — DBSPJ reports that all CTE scans for a
+ * specific execution phase have completed on that DBSPJ instance.
+ *
+ * DBTC tracks these per phase from all DBSPJ instances.  When all
+ * report, DBTC redistributes that phase's CTEs and either advances
+ * to the next phase or starts the main query.
+ *
+ * Also handles the legacy CTE_SCAN_COMPLETE_REP (phase=0 implicit)
+ * for backward compatibility during rolling upgrades.
+ */
+void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
+  jamEntry();
+  const CtePhaseCompleteRep *rep =
+      reinterpret_cast<const CtePhaseCompleteRep *>(signal->getDataPtr());
+
+  ScanFragRecPtr scanFragPtr;
+  scanFragPtr.i = rep->senderData;
+  if (unlikely(!c_scan_frag_pool.getValidPtr(scanFragPtr))) {
+    jam();
+    return;
+  }
+
+  ScanRecordPtr scanptr;
+  scanptr.i = scanFragPtr.p->scanRec;
+  scanRecordPool.getPtr(scanptr);
+
+  /* A late CTE_PHASE_COMPLETE_REP can arrive after the scan has
+   * timed out or been aborted (scanState != RUNNING).  Ignore it
+   * rather than crashing — the scan is already being cleaned up. */
+  if (unlikely(scanptr.p->scanState != ScanRecord::RUNNING)) {
+    jam();
+    return;
+  }
+  ndbrequire(scanptr.p->m_numCtes > 0);
+
+  /* Phase L (C.2): drop stale phase reports.  After cteAdvancePhase
+   * resets m_cteScanReportsReceived for the next phase and sets
+   * scanState back to RUNNING, a late REP from a *previous* phase
+   * could otherwise be counted as a current-phase report and
+   * trigger a premature advance.  Phase number is the discriminator.
+   * ndbassert in debug builds so the originating duplicate path is
+   * caught loudly; the silent return is the production safety net. */
+  if (unlikely(rep->phase != scanptr.p->m_cteCurrentPhase)) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBTC drop CTE_PHASE_COMPLETE_REP: phase=%u "
+                  "current=%u scanPtr.i=%u",
+                  instance(), rep->phase,
+                  scanptr.p->m_cteCurrentPhase, scanptr.i));
+    ndbassert(false);
+    return;
+  }
+
+  scanptr.p->m_cteScanReportsReceived++;
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+  DEB_JOIN_AGG(("(%u)DBTC execCTE_PHASE_COMPLETE_REP: scanPtr.i=%u "
+                "phase=%u received=%u expected=%u",
+                instance(), scanptr.i, rep->phase,
+                scanptr.p->m_cteScanReportsReceived,
+                scanptr.p->m_cteScanReportsExpected));
+#endif
+
+  if (scanptr.p->m_cteScanReportsReceived ==
+      scanptr.p->m_cteScanReportsExpected) {
+    jam();
+    /**
+     * All DBSPJ instances completed this CTE phase.
+     * Redistribute this phase's CTEs.
+     */
+    scanptr.p->scanState = ScanRecord::WAIT_CTE_COMPLETE;
+    scanptr.p->m_aggPhaseFailed = false;
+    scanptr.p->m_aggErrorCode = 0;
+    sendCteCompleteReqsForPhase(signal, scanptr,
+                                scanptr.p->m_cteCurrentPhase);
+  }
+}
+
+/**
+ * Legacy handler — translate CTE_SCAN_COMPLETE_REP to phase-aware path.
+ */
+void Dbtc::execCTE_SCAN_COMPLETE_REP(Signal *signal) {
+  jamEntry();
+  const CteScanCompleteRep *rep =
+      reinterpret_cast<const CteScanCompleteRep *>(signal->getDataPtr());
+
+  /* Build a CtePhaseCompleteRep with phase=current */
+  CtePhaseCompleteRep *phaseRep =
+      reinterpret_cast<CtePhaseCompleteRep *>(signal->getDataPtrSend());
+  phaseRep->senderRef = rep->senderRef;
+  phaseRep->senderData = rep->senderData;
+
+  ScanFragRecPtr scanFragPtr;
+  scanFragPtr.i = rep->senderData;
+  if (unlikely(!c_scan_frag_pool.getValidPtr(scanFragPtr))) {
+    jam();
+    return;
+  }
+  ScanRecordPtr scanptr;
+  scanptr.i = scanFragPtr.p->scanRec;
+  scanRecordPool.getPtr(scanptr);
+  phaseRep->phase = scanptr.p->m_cteCurrentPhase;
+
+  execCTE_PHASE_COMPLETE_REP(signal);
+}
+
+/**
+ * Send JOIN_AGG_COMPLETE_REQ for CTEs in the specified phase.
+ * This triggers hash table redistribution on multi-node clusters.
+ */
+void Dbtc::sendCteCompleteReqsForPhase(Signal *signal, ScanRecordPtr scanptr,
+                                        Uint32 phase) {
+  /* Phase L (C): authoritative per-phase counter.  Drives
+   * cteAdvancePhase together with per-record m_state. */
+  scanptr.p->m_ctePhaseRemaining = 0;
+
+  ApiConnectRecordPtr apiPtr;
+  apiPtr.i = scanptr.p->scanApiRec;
+  c_apiConnectRecordPool.getPtr(apiPtr);
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+  DEB_JOIN_AGG(("(%u)DBTC sendCteCompleteReqsForPhase: scanPtr.i=%u "
+                 "phase=%u numCtes=%u",
+                 instance(), scanptr.i, phase, scanptr.p->m_numCtes));
+#endif
+
+  for (Uint32 c = 0; c < scanptr.p->m_numCtes; c++) {
+    /* Only redistribute CTEs belonging to this phase */
+    if (scanptr.p->m_cteInfos[c].phase != phase) continue;
+
+    /* Single-row CTEs: skip redistribution — only one node has data */
+    if (scanptr.p->m_cteInfos[c].m_flags &
+        QN_CteSubtreeNode::CTE_SINGLE_ROW) {
+      jam();
+      continue;
+    }
+
+    auto *cteNodes = scanptr.p->m_cteAggNodeState[c];
+    if (cteNodes == nullptr) continue;
+
+    NdbNodeBitmask nodes = cteNodes->m_aggNodes;
+    cteNodes->m_aggNodesPending.clear();
+
+    /* Build per-node aggStateKey + owner-instance map.  Used by:
+     *   - CTE_LOOKUP forwarding (aggKey)
+     *   - Phase L (E.1) cross-node REDISTRIBUTE_REQ / FINAL_REP
+     *     routing (owner instance) — every receiver must address its
+     *     destination's owning LDM, not instance 1, so the destination's
+     *     CTE state is mutated by exactly one thread.
+     * Format: [nodeId1, aggKey1, owner1, nodeId2, aggKey2, owner2, ...]
+     * — triples instead of pairs. */
+    Uint32 aggKeysBuf[3 * ABS_MAX_NDB_NODES];
+    Uint32 aggKeysLen = 0;
+    for (Uint32 n = nodes.find_first();
+         n != NdbNodeBitmask::NotFound;
+         n = nodes.find_next(n + 1)) {
+      if (getNodeInfo(n).m_connected) {
+        aggKeysBuf[aggKeysLen++] = n;
+        aggKeysBuf[aggKeysLen++] = cteNodes->m_aggStateKeys[n];
+        aggKeysBuf[aggKeysLen++] = cteNodes->m_aggOwnerInstances[n];
+      }
+    }
+
+    /* Phase L (C): one AggCompleteRecord per CTE per phase.  Tracks
+     * the connected-node bitmask so duplicate / stale CONFs are
+     * detected by lookup-miss + bitmask check rather than crashing
+     * the node.  Allocate before sending any REQ so the encoded
+     * requestId is available. */
+    AggCompleteRecordPtr cteRec;
+    if (unlikely(!seizeAggCompleteRecord(cteRec, scanptr))) {
+      jam();
+      scanptr.p->m_aggPhaseFailed = true;
+      scanptr.p->m_aggErrorCode = ZGET_ATTRBUF_ERROR;
+      continue;
+    }
+    cteRec.p->m_kind = AggCompleteRecord::KIND_CTE;
+    cteRec.p->m_cteIndex = c;
+    cteRec.p->m_phase = phase;
+    cteRec.p->m_state = AggCompleteRecord::REC_WAIT_COMPLETE;
+
+    for (Uint32 nodeId = nodes.find_first();
+         nodeId != NdbNodeBitmask::NotFound;
+         nodeId = nodes.find_next(nodeId + 1)) {
+      if (!getNodeInfo(nodeId).m_connected) {
+        jam();
+        cteNodes->m_aggNodes.clear(nodeId);
+        if (!scanptr.p->m_aggPhaseFailed) {
+          scanptr.p->m_aggPhaseFailed = true;
+          scanptr.p->m_aggErrorCode = ZNODEFAIL_BEFORE_COMMIT;
+        }
+        continue;
+      }
+      /* Phase L (C): record the per-node aggKey we sent so a stale
+       * CONF from a different aggKey can be detected at reply time. */
+      ndbrequire(nodeId < ABS_MAX_NDB_NODES);
+      cteRec.p->m_aggStateKeys[nodeId] = cteNodes->m_aggStateKeys[nodeId];
+      cteRec.p->m_aggNodesPending.set(nodeId);
+      cteRec.p->m_outstanding++;
+
+      JoinAggCompleteReq *req =
+          (JoinAggCompleteReq *)signal->getDataPtrSend();
+      req->senderRef = reference();
+      req->senderData = scanptr.i;
+      /* Phase L (C): requestId encodes the AggCompleteRecord pool
+       * index.  DBLQH echoes it untouched in CONF/REF.  Replaces the
+       * legacy free-form scanApiRec correlation. */
+      req->requestId = makeAggCompleteRequestId(cteRec.i);
+      req->transid[0] = apiPtr.p->transid[0];
+      req->transid[1] = apiPtr.p->transid[1];
+      req->aggStateKey = cteNodes->m_aggStateKeys[nodeId];
+      req->maxBatchRows = 256;
+      DEB_JOIN_AGG(("(%u) send JOIN_AGG_COMPLETE_REQ aggKey=%u node=%u "
+                    "recI=%u",
+        instance(), cteNodes->m_aggStateKeys[nodeId], nodeId, cteRec.i));
+
+      /* Phase L (E.1): route every CTE COMPLETE_REQ to the LDM owner
+       * returned in JOIN_AGG_SETUP_CONF.  Owner is per-node, computed
+       * at SETUP from (aggStateKey % lqhWorkersOnNode) + 1.  Replaces
+       * the previous round-robin-on-local-node + V_QUERY fallback so
+       * concurrent multi-LDM access of the aggregation state is
+       * impossible by construction.  See cte_filter_phase_l.md. */
+      const Uint32 owner = cteNodes->m_aggOwnerInstances[nodeId];
+      ndbrequire(owner > 0);
+      const BlockReference ref = numberToRef(DBLQH, owner, nodeId);
+      LinearSectionPtr lsp[1];
+      lsp[0].p = aggKeysBuf;
+      lsp[0].sz = aggKeysLen;
+      sendSignal(ref, GSN_JOIN_AGG_COMPLETE_REQ, signal,
+                 JoinAggCompleteReq::SignalLength, JBB, lsp, 1);
+      cteNodes->m_aggNodesPending.set(nodeId);
+    }
+    if (cteRec.p->m_outstanding == 0) {
+      /* No reachable nodes for this CTE — record is dead-on-arrival.
+       * Mark complete so phase advance isn't blocked by it. */
+      jam();
+      cteRec.p->m_state = AggCompleteRecord::REC_COMPLETE;
+    } else {
+      scanptr.p->m_ctePhaseRemaining++;
+    }
+  }
+
+  if (scanptr.p->m_ctePhaseRemaining == 0) {
+    jam();
+    /**
+     * No CTEs in this phase have pending records (all dead or no CTE
+     * state).  Advance to next phase or start main query.
+     */
+    cteAdvancePhase(signal, scanptr);
+  }
+}
+
+/**
+ * Advance to the next CTE phase or start the main query.
+ * Called after redistribution for the current phase completes.
+ */
+void Dbtc::cteAdvancePhase(Signal *signal, ScanRecordPtr scanptr) {
+  Uint32 nextPhase = scanptr.p->m_cteCurrentPhase + 1;
+  if (nextPhase < scanptr.p->m_ctePhaseCount) {
+    jam();
+    /**
+     * More CTE phases remain.  Reset per-phase counters and send
+     * CTE_PHASE_START_REQ to all DBSPJ instances to start the next phase.
+     */
+    scanptr.p->m_cteCurrentPhase = nextPhase;
+    scanptr.p->m_cteScanReportsReceived = 0;
+    scanptr.p->scanState = ScanRecord::RUNNING;
+    sendCtePhaseStartReqs(signal, scanptr, nextPhase);
+  } else {
+    jam();
+    /* All CTE phases complete — start the main query. */
+    sendCteStartMainReqs(signal, scanptr);
+  }
+}
+
+/**
+ * Send CTE_PHASE_START_REQ to all DBSPJ instances for the given phase.
+ */
+void Dbtc::sendCtePhaseStartReqs(Signal *signal, ScanRecordPtr scanptr,
+                                  Uint32 phase) {
+  ApiConnectRecordPtr apiPtr;
+  apiPtr.i = scanptr.p->scanApiRec;
+  c_apiConnectRecordPool.getPtr(apiPtr);
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+  DEB_JOIN_AGG(("(%u)DBTC sendCtePhaseStartReqs: scanPtr.i=%u phase=%u",
+                 instance(), scanptr.i, phase));
+#endif
+
+  CtePhaseStartReq *req =
+      reinterpret_cast<CtePhaseStartReq *>(signal->getDataPtrSend());
+  req->senderRef = reference();
+  req->transId1 = apiPtr.p->transid[0];
+  req->transId2 = apiPtr.p->transid[1];
+  req->phase = phase;
+
+  Local_ScanFragRec_dllist running(c_scan_frag_pool,
+                                   scanptr.p->m_running_scan_frags);
+  ScanFragRecPtr fragPtr;
+  for (running.first(fragPtr); !fragPtr.isNull(); running.next(fragPtr)) {
+    jam();
+    req->senderData = fragPtr.i;
+    sendSignal(fragPtr.p->lqhBlockref, GSN_CTE_PHASE_START_REQ,
+               signal, CtePhaseStartReq::SignalLength, JBB);
+  }
+
+  Local_ScanFragRec_dllist queued(c_scan_frag_pool,
+                                  scanptr.p->m_queued_scan_frags);
+  for (queued.first(fragPtr); !fragPtr.isNull(); queued.next(fragPtr)) {
+    jam();
+    req->senderData = fragPtr.i;
+    sendSignal(fragPtr.p->lqhBlockref, GSN_CTE_PHASE_START_REQ,
+               signal, CtePhaseStartReq::SignalLength, JBB);
+  }
+}
+
+/**
+ * Send CTE_START_MAIN_REQ to all DBSPJ instances that received
+ * SCAN_FRAGREQ for this compound query.  DBSPJ transitions CTEs
+ * to READY and starts the main query root node.
+ */
+void Dbtc::sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr) {
+  ApiConnectRecordPtr apiPtr;
+  apiPtr.i = scanptr.p->scanApiRec;
+  c_apiConnectRecordPool.getPtr(apiPtr);
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+  DEB_JOIN_AGG(("(%u)DBTC sendCteStartMainReqs: scanPtr.i=%u",
+                 instance(), scanptr.i));
+#endif
+
+  /**
+   * Iterate through all ScanFragRecs (running + queued + delivered)
+   * and send CTE_START_MAIN_REQ to each DBSPJ instance.
+   * The senderData carries the ScanFragRec.i which DBSPJ stored
+   * as its Request.m_senderData for hash lookup.
+   */
+  CteStartMainReq *req =
+      reinterpret_cast<CteStartMainReq *>(signal->getDataPtrSend());
+  req->senderRef = reference();
+  req->transId1 = apiPtr.p->transid[0];
+  req->transId2 = apiPtr.p->transid[1];
+
+  Local_ScanFragRec_dllist running(c_scan_frag_pool,
+                                   scanptr.p->m_running_scan_frags);
+  ScanFragRecPtr fragPtr;
+  for (running.first(fragPtr); !fragPtr.isNull(); running.next(fragPtr)) {
+    jam();
+    req->senderData = fragPtr.i;
+    sendSignal(fragPtr.p->lqhBlockref, GSN_CTE_START_MAIN_REQ,
+               signal, CteStartMainReq::SignalLength, JBB);
+  }
+
+  // Also check queued list (fragments not yet started)
+  Local_ScanFragRec_dllist queued(c_scan_frag_pool,
+                                  scanptr.p->m_queued_scan_frags);
+  for (queued.first(fragPtr); !fragPtr.isNull(); queued.next(fragPtr)) {
+    jam();
+    req->senderData = fragPtr.i;
+    sendSignal(fragPtr.p->lqhBlockref, GSN_CTE_START_MAIN_REQ,
+               signal, CteStartMainReq::SignalLength, JBB);
+  }
+
+  // Mark CTE phase as complete and transition to RUNNING for
+  // the main query. m_cteCurrentPhase = m_ctePhaseCount signals
+  // that SCAN_TABCONFs should now go to the API.
+  scanptr.p->m_cteCurrentPhase = scanptr.p->m_ctePhaseCount;
+  scanptr.p->scanState = ScanRecord::RUNNING;
+}
+
 void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
   scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
@@ -28896,6 +29977,25 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
   DEB_JOIN_AGG(("(%u)DBTC sendJoinAggCompleteReqs: scanPtr.i=%u",
                  instance(), scanptr.i));
 #endif
+
+  /* Phase L (C): one AggCompleteRecord covers the whole main-SELECT
+   * aggregation completion.  Encoded in every COMPLETE_REQ's
+   * requestId so DBTC's reply path can dedupe stale / duplicate
+   * CONFs against per-record m_aggNodesPending. */
+  AggCompleteRecordPtr mainRec;
+  if (unlikely(!seizeAggCompleteRecord(mainRec, scanptr))) {
+    jam();
+    scanptr.p->m_aggPhaseFailed = true;
+    scanptr.p->m_aggErrorCode = ZGET_ATTRBUF_ERROR;
+    sendJoinAggReleaseReqs(signal, scanptr);
+    return;
+  }
+  mainRec.p->m_kind = AggCompleteRecord::KIND_MAIN;
+  mainRec.p->m_cteIndex = RNIL;
+  mainRec.p->m_phase = RNIL;
+  mainRec.p->m_state = AggCompleteRecord::REC_WAIT_COMPLETE;
+  scanptr.p->m_mainAggRecI = mainRec.i;
+
   NdbNodeBitmask nodes = scanptr.p->m_joinAggNodes->m_aggNodes;
   for (Uint32 nodeId = nodes.find_first();
        nodeId != NdbNodeBitmask::NotFound;
@@ -28913,29 +30013,37 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
       }
       continue;
     }
+    /* Phase L (C): record per-node aggKey for stale-CONF detection. */
+    ndbrequire(nodeId < ABS_MAX_NDB_NODES);
+    mainRec.p->m_aggStateKeys[nodeId] =
+        scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId];
+    mainRec.p->m_aggNodesPending.set(nodeId);
+    mainRec.p->m_outstanding++;
+
     JoinAggCompleteReq *req =
         (JoinAggCompleteReq *)signal->getDataPtrSend();
     req->senderRef = reference();
     req->senderData = scanptr.i;
-    req->requestId = scanptr.p->scanApiRec;
+    /* Phase L (C): requestId encodes the AggCompleteRecord pool index. */
+    req->requestId = makeAggCompleteRequestId(mainRec.i);
     req->transid[0] = apiPtr.p->transid[0];
     req->transid[1] = apiPtr.p->transid[1];
     req->aggStateKey = scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId];
     req->maxBatchRows = 256;
+    DEB_JOIN_AGG(("(%u)DBTC send JOIN_AGG_COMPLETE_REQ: "
+                  "nodeId=%u aggStateKey=%u scanPtr.i=%u recI=%u",
+                  instance(), nodeId,
+                  req->aggStateKey, scanptr.i, mainRec.i));
 
-    HostRecordPtr Thostptr;
-    Thostptr.i = nodeId;
-    ptrCheckGuard(Thostptr, MAX_NDB_NODES, hostRecord);
-
-    Uint32 instance = Thostptr.p->m_round_robin_instance++;
-    if (instance >= getNodeInfo(nodeId).m_lqh_workers) {
-      jam();
-      Thostptr.p->m_round_robin_instance = 1;
-    }
-    Uint32 ref = numberToRef(V_QUERY, 1, nodeId);
-    if (nodeId == getOwnNodeId()) {
-      ref = get_scan_fragreq_ref(&m_distribution_handle, instance);
-    }
+    /* Phase L (E.1): main aggregation routes to the LDM owner returned
+     * in JOIN_AGG_SETUP_CONF, same rule as the CTE COMPLETE path.
+     * Eliminates the previous round-robin / V_QUERY fallback that let
+     * stale or duplicate signals land on a different LDM than the one
+     * holding the aggregation state. */
+    const Uint32 owner =
+        scanptr.p->m_joinAggNodes->m_aggOwnerInstances[nodeId];
+    ndbrequire(owner > 0);
+    const BlockReference ref = numberToRef(DBLQH, owner, nodeId);
     sendSignal(ref, GSN_JOIN_AGG_COMPLETE_REQ, signal,
                JoinAggCompleteReq::SignalLength, JBB);
     scanptr.p->m_joinAggNodes->m_aggNodesPending.set(nodeId);
@@ -28952,6 +30060,9 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
 }
 
 void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
+  DEB_JOIN_AGG(("(%u)DBTC sendJoinAggReleaseReqs: "
+                "scanPtr.i=%u",
+                instance(), scanptr.i));
   scanptr.p->scanState = ScanRecord::WAIT_JOIN_AGG_RELEASE;
   scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
@@ -28983,6 +30094,9 @@ void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
     req->aggStateKey = scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId];
     req->noReply = 0;
 
+    DEB_JOIN_AGG(("(%u)DBTC send JOIN_AGG_RELEASE_REQ: "
+                   "nodeId=%u aggStateKey=%u main scanPtr.i=%u",
+                   instance(), nodeId, req->aggStateKey, scanptr.i));
     Uint32 ref = numberToRef(DBLQH, nodeId);
     sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
                JoinAggReleaseReq::SignalLength, JBB);

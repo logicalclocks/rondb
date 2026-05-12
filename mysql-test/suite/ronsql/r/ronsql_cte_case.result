@@ -1,0 +1,164 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for CTE CASE tests ===
+
+
+
+=== Test 1: CASE with parent-table condition + CTE THEN arm (baseline) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(CASE WHEN c.c_region = 1 THEN sums.t ELSE 0 END)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(CASE WHEN c.c_region = 1 THEN sums.t ELSE 0 END)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+c_id	SUM(CASE WHEN c.c_region = 1 THEN sums.t ELSE 0 END)
+100	125
+200	100
+300	0
+
+
+=== Test 2: CASE with CTE-column condition (the I.4 fix) ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(CASE WHEN sums.k = 100 THEN sums.t ELSE 0 END)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(CASE WHEN sums.k = 100 THEN sums.t ELSE 0 END)
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+c_id	SUM(CASE WHEN sums.k = 100 THEN sums.t ELSE 0 END)
+100	125
+200	0
+300	0
+
+
+=== Test 3: CASE with multi-atom OR over CTE column ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(CASE WHEN sums.k = 100 OR sums.k = 200
+THEN sums.t ELSE 0 END) AS case_sum
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(CASE WHEN sums.k = 100 OR sums.k = 200
+THEN sums.t ELSE 0 END) AS case_sum
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+c_id	case_sum
+100	125
+200	100
+300	0
+
+
+=== Test 4: CASE with multi-atom AND over CTE column ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(CASE WHEN sums.k != 100 AND sums.k != 200
+THEN sums.t ELSE 0 END) AS case_sum
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(CASE WHEN sums.k != 100 AND sums.k != 200
+THEN sums.t ELSE 0 END) AS case_sum
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id|
+c_id	case_sum
+100	0
+200	0
+300	90
+
+
+=== Test 5: regression — non-CTE CASE shape unchanged ===
+== Query ==
+SELECT c.c_id, SUM(CASE WHEN c.c_region = 1 THEN o.o_amt ELSE 0 END)
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_id, SUM(CASE WHEN c.c_region = 1 THEN o.o_amt ELSE 0 END)
+FROM cte_customer AS c
+JOIN cte_orders AS o ON o.o_custkey = c.c_id
+GROUP BY c.c_id|
+c_id	SUM(CASE WHEN c.c_region = 1 THEN o.o_amt ELSE 0 END)
+100	125
+200	100
+300	0
+
+
+=== Test 6: rejection — CASE condition on CTE aggregate output ===
+Expected error: CTE aggregate output in CASE condition not yet supported
+Error handling: RPE
+ronsql_cli caught exception: CASE condition referencing a CTE aggregate output is not yet supported; reference a CTE column projection instead, or move the predicate into the CTE body's WHERE clause.
