@@ -1,0 +1,72 @@
+# ttl_blob_scan_replica.test
+#
+# Regression test for DBTC sendDihGetNodesLab ndbrequire crash on
+# TTL + BLOB + READ_BACKUP|FULLY_REPLICATED scans.
+#
+# Trigger path:
+#   ha_ndbcluster opens an autocommit scan with LM_CommittedRead.
+#   The BLOB column in the read set causes NdbBlob::atPrepareNdbRecord
+#   to upgrade the scan lock to LM_Read (holdlock=1) and to call
+#   setReadCommittedBase() (rcb=1).  The TTL replica-routing block in
+#   sendDihGetNodesLab accepts (rcb=1, op_count=0) via its outer if,
+#   then the inner ndbrequire used to require "no lock at all", which
+#   the legitimate blob-upgrade case violated -- crashing the data
+#   node that picked up the scan.
+#
+# Two table shapes reach the replica-routing branch.
+
+--source include/have_ndb.inc
+
+###############################################################################
+--echo #
+--echo # Variant A: TTL + READ_BACKUP + BLOB
+--echo #
+###############################################################################
+
+--disable_warnings
+DROP TABLE IF EXISTS test.ttl_rb_blob;
+--enable_warnings
+
+CREATE TABLE test.ttl_rb_blob (
+    id   INT NOT NULL PRIMARY KEY,
+    ts   TIMESTAMP NOT NULL,
+    data BLOB
+) ENGINE=NDB
+  COMMENT="NDB_TABLE=READ_BACKUP=1,TTL=3600@ts";
+
+# Wait for schema propagation
+sleep 3;
+
+INSERT INTO test.ttl_rb_blob VALUES
+    (1, NOW(), REPEAT('x', 128)),
+    (2, NOW(), REPEAT('y', 128));
+
+# Autocommit SELECT of the BLOB column triggers NdbBlob lock upgrade.
+--sorted_result
+SELECT id, LENGTH(data) AS dlen FROM test.ttl_rb_blob;
+
+DROP TABLE test.ttl_rb_blob;
+
+###############################################################################
+--echo #
+--echo # Variant B: TTL + FULLY_REPLICATED + BLOB
+--echo #
+###############################################################################
+
+CREATE TABLE test.ttl_fr_blob (
+    id   INT NOT NULL PRIMARY KEY,
+    ts   TIMESTAMP NOT NULL,
+    data BLOB
+) ENGINE=NDB
+  COMMENT="NDB_TABLE=FULLY_REPLICATED=1,TTL=3600@ts";
+
+sleep 3;
+
+INSERT INTO test.ttl_fr_blob VALUES
+    (1, NOW(), REPEAT('x', 128)),
+    (2, NOW(), REPEAT('y', 128));
+
+--sorted_result
+SELECT id, LENGTH(data) AS dlen FROM test.ttl_fr_blob;
+
+DROP TABLE test.ttl_fr_blob;
