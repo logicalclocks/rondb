@@ -1825,11 +1825,11 @@ static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
 void ndb_clear_pushed_agg_state(ndb_pushed_builder_ctx &builder) {
   for (uint i = 0; i < builder.m_table_count; i++) {
     const TABLE *tab = builder.m_tables[i].get_table();
-    if (tab != nullptr) {
-      auto *h = down_cast<ha_ndbcluster *>(tab->file);
-      h->m_pushed_agg_mode = false;
-      h->m_agg_join = nullptr;
-    }
+    if (tab == nullptr) continue;
+    auto *h = dynamic_cast<ha_ndbcluster *>(tab->file);
+    if (h == nullptr) continue;
+    h->m_pushed_agg_mode = false;
+    h->m_agg_join = nullptr;
   }
 }
 
