@@ -8028,6 +8028,40 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
     default:
       abort();
     }
+    if (opDefs[i] == NULL) {
+      // NdbQueryBuilder errors live on qb, not on m_trans / ndb, so the
+      // generic SRE handler would otherwise print "Success 0, No error".
+      // Surface the builder error here so test logs pinpoint which
+      // returnErrIf in qb->{readTuple,scanIndex,lookupCte,scanCte} fired.
+      const NdbError& qb_err = qb->getNdbError();
+      std::basic_ostream<char>& errout = *m_conf.err_stream;
+      const char* type_name = "?";
+      switch (op.type) {
+      case JoinOp::PK_LOOKUP:     type_name = "PK_LOOKUP"; break;
+      case JoinOp::UNIQUE_LOOKUP: type_name = "UNIQUE_LOOKUP"; break;
+      case JoinOp::INDEX_SCAN:    type_name = "INDEX_SCAN"; break;
+      case JoinOp::CTE_LOOKUP:    type_name = "CTE_LOOKUP"; break;
+      case JoinOp::CTE_SCAN:      type_name = "CTE_SCAN"; break;
+      default:                    type_name = "TABLE_SCAN"; break;
+      }
+      errout << "emit_child_ops: child op " << i << " (" << type_name
+             << ", alias='" << op.alias.c_str()
+             << "', num_key_cols=" << op.num_key_cols
+             << ", num_low_bounds=" << op.num_low_bounds
+             << ", num_high_bounds=" << op.num_high_bounds
+             << ", parent_op=" << op.parent_op_idx
+             << ") returned NULL;"
+             << " qb error code=" << qb_err.code
+             << " status=" << (int)qb_err.status
+             << " class=" << (int)qb_err.classification;
+      if (qb_err.message != NULL) {
+        errout << " message=" << qb_err.message;
+      }
+      if (qb_err.details != NULL) {
+        errout << " details=" << qb_err.details;
+      }
+      errout << std::endl;
+    }
     require_run(opDefs[i] != NULL, "Failed to create child operation.");
   }
 }
