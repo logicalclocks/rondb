@@ -4,6 +4,27 @@
 
 --source include/have_ndb.inc
 
+# Suppress benign "Failed to acquire MDL for db" errors from the schema
+# distribution participant.  At the end of this include we run DROP
+# DATABASE directly on both mysqld.1.1 and mysqld.2.1 (to avoid waiting
+# for schema distribution propagation, see comment near the second
+# cleanup block below).  When the direct DROP on one server races the
+# participant action triggered by the OTHER server's DROP, the
+# participant's MDL_INTENTION_EXCLUSIVE request can time out against
+# the MDL_EXCLUSIVE held by the direct DROP — logged as MY-010865.
+# Either path ends with the database dropped, so the error is benign;
+# only intermittent on Linux where scheduling can serialize the two
+# cleanup connections in the racey order.
+--disable_query_log
+--disable_warnings
+call mtr.add_suppression("Failed to acquire MDL for db");
+--connect(rdrs2_suppress_server2, 127.0.0.1, root, , test, $MASTER_MYPORT1)
+call mtr.add_suppression("Failed to acquire MDL for db");
+--disconnect rdrs2_suppress_server2
+--connection default
+--enable_warnings
+--enable_query_log
+
 perl END_OF_PERL;
 
 use strict;
