@@ -6156,9 +6156,19 @@ RonSQLPreparer::execute_join()
       std::basic_ostream<char>& errout = *m_conf.err_stream;
       errout << "Join query failed: " << err.message
              << " (code " << err.code << ")" << std::endl;
+      const NdbError::Classification classification = err.classification;
       query->close();
       queryDef->destroy();
       qb->destroy();
+      // Schema errors (e.g. WrongSchemaVersion 20021 from DBSPJ after a
+      // concurrent DDL) must invalidate the cached dictionary before retry,
+      // otherwise every retry resends the same stale schema version.  Route
+      // through RonSQLMaybeStaleSchema so handle_ronsql_exception calls
+      // unload_schema(); the next attempt's RonSQLPreparer load() then
+      // fetches the fresh schema.
+      if (classification == NdbError::SchemaError) {
+        throw RonSQLMaybeStaleSchema("Join query execution failed.");
+      }
       throw RonSQLRetryableError("Join query execution failed.");
     }
 
