@@ -2929,7 +2929,6 @@ testRejectTooManyNodes(Ndb *ndb, MYSQL * /*conn*/)
 static int onlyTest = 0;
 static int skipTest = 0;
 
-#if !defined(VM_TRACE) && !defined(ERROR_INSERT)
 /* Tests that require ERROR_INSERT support in the data node.
  * In production builds we print the same OK line a successful debug run
  * would produce so MTR .result stays authoritative — a real FAIL in debug
