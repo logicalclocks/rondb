@@ -18372,12 +18372,22 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
                   state->m_cte_mode));
   }
 
-  /* Phase L (E.1): owner-instance check.  DBTC routes every
+  /* Phase L (E.1): owner-instance check.  DBTC should route every
    * JOIN_AGG_COMPLETE_REQ to numberToRef(DBLQH, m_owner_instance,
-   * nodeId) — landing on any other LDM instance means the routing
-   * has regressed and the rest of Phase L's idempotency guarantees
-   * (which assume single-owner serialization) no longer hold. */
-  ndbassert(state->m_owner_instance == instance());
+   * nodeId).  If an old sender or raw SignalSender test still lands on
+   * another LDM instance, forward the request to the recorded owner
+   * instead of processing it here.  This preserves the single-owner
+   * serialization invariant and avoids crashing debug nodes on a
+   * recoverable routing miss. */
+  if (state->m_owner_instance != instance()) {
+    jam();
+    SectionHandle handle(this, signal);
+    BlockReference ownerRef =
+      numberToRef(DBLQH, state->m_owner_instance, getOwnNodeId());
+    sendSignal(ownerRef, GSN_JOIN_AGG_COMPLETE_REQ, signal,
+	       JoinAggCompleteReq::SignalLength, JBB, &handle);
+    return;
+  }
 
   /* Phase L (A): duplicate-REQ guard.  A second JOIN_AGG_COMPLETE_REQ
    * for an aggregation already past SETUP_COMPLETE would clobber state
