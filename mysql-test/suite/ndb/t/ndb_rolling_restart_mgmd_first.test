@@ -1,0 +1,158 @@
+###############################################################################
+# ndb_rolling_restart_mgmd_first
+#
+# Restart the entire cluster one node at a time in the order recommended
+# for production rolling upgrades:
+#
+#   1. ndb_mgmd      (rank-1 arbitrator)
+#   2. ndbd #1       (data node)
+#   3. ndbd #2       (data node)
+#   4. mysqld #1     (API)
+#   5. mysqld #2     (API)
+#
+# Validates that:
+#   - The mgmd's startup gate (wait_until_arbitrator) does not deadlock
+#     when ArbitrationRankWait is configured (5000 ms here so the test
+#     does not need the 60 s default).
+#   - The cluster stays available between node restarts: each step is
+#     followed by a SELECT on an NDB table.
+###############################################################################
+--source include/have_ndb.inc
+
+--echo # Initial cluster state
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30);
+SELECT COUNT(*) AS initial_count FROM t1;
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 1/5: restart ndb_mgmd
+--echo # ------------------------------------------------------------------
+# First ask MTR to keep the mgmd stopped.  The STOP command returns before
+# the old mgmd process has fully exited, and issuing the next data-node
+# restart while that process is still draining can make ndb_mgm report
+# "Illegal reply from server" even though the restart was initiated.
+--write_file $MYSQLTEST_VARDIR/tmp/cluster_config.ndb_mgmd.1.1.expect
+wait
+EOF
+
+--exec $NDB_MGM -e "$NDB_MGMD_NODEID stop" > /dev/null 2>&1
+
+# Give the old mgmd time to finish shutdown.  Its shutdown waits on idle MGM
+# sessions and can take up to ~30 s (SOCKET_TIMEOUT in Services.hpp); this
+# matches the sequencing used by ndb_arbitration_rank_wait.
+--sleep 45
+
+# Now tell MTR to restart the mgmd.  Use restart:--config-change so MTR skips
+# ndb_mgmd_wait_started, which does ndb_waiter --no-contact and only succeeds
+# on cold start (data nodes in NO_CONTACT).  In a warm cluster restart the
+# data nodes stay STARTED so that wait would loop indefinitely.  Config hasn't
+# actually changed, so the --reload is a no-op.
+--remove_file $MYSQLTEST_VARDIR/tmp/cluster_config.ndb_mgmd.1.1.expect
+--write_file $MYSQLTEST_VARDIR/tmp/cluster_config.ndb_mgmd.1.1.expect
+restart:--config-change
+EOF
+
+# Wait for MTR to process the restart directive and remove the expect file.
+--perl
+  use strict;
+  my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+  my $expect_file = "$vardir/tmp/cluster_config.ndb_mgmd.1.1.expect";
+  my $timeout = 120;
+  my $start = time();
+  while (-f $expect_file) {
+    if (time() - $start > $timeout) {
+      die "Timeout waiting for MTR to process .expect file";
+    }
+    select(undef, undef, undef, 0.5);
+  }
+EOF
+
+# Wait until an ordinary MGM client command succeeds.  Data-node bootstrap and
+# config commands are allowed while wait_until_arbitrator() is running, but
+# `show` is rejected until the startup gate opens.
+--perl
+  use strict;
+  my $ndb_mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+  my $timeout = 120;
+  my $start = time();
+  while (system("$ndb_mgm -e \"show\" >/dev/null 2>&1") != 0) {
+    if (time() - $start > $timeout) {
+      die "Timeout waiting for ndb_mgm show to succeed";
+    }
+    select(undef, undef, undef, 0.5);
+  }
+EOF
+
+# Then verify the data nodes are still STARTED.
+--exec $NDB_WAITER --timeout=120 > /dev/null 2>&1
+
+SELECT COUNT(*) AS after_mgmd_restart FROM t1;
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 2/5: restart ndbd node $NDB_NDBD_1_NODEID
+--echo # ------------------------------------------------------------------
+--let $ndb_node_id= $NDB_NDBD_1_NODEID
+--source suite/ndb/include/restart_node.inc
+SELECT COUNT(*) AS after_ndbd1_restart FROM t1;
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 3/5: restart ndbd node $NDB_NDBD_2_NODEID
+--echo # ------------------------------------------------------------------
+--let $ndb_node_id= $NDB_NDBD_2_NODEID
+--source suite/ndb/include/restart_node.inc
+SELECT COUNT(*) AS after_ndbd2_restart FROM t1;
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 4/5: restart mysqld #1
+--echo # ------------------------------------------------------------------
+--let $mysqld_name= mysqld.1.1
+--source include/restart_mysqld.inc
+SELECT COUNT(*) AS after_mysqld1_restart FROM t1;
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 5/5: restart mysqld #2
+--echo # ------------------------------------------------------------------
+--connect(mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT1)
+--connection mysqld2
+--let $mysqld_name= mysqld.2.1
+--source include/restart_mysqld.inc
+SELECT COUNT(*) AS after_mysqld2_restart FROM t1;
+--disconnect mysqld2
+--connection default
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # All five nodes have been restarted; verify cluster is healthy
+--echo # ------------------------------------------------------------------
+INSERT INTO t1 VALUES (4, 40);
+SELECT COUNT(*) AS final_count FROM t1;
+DROP TABLE t1;
+
+--echo
+--echo # Verify the mgmd's startup gate ran (info log line from
+--echo # wait_until_arbitrator).  Either the success or timeout-fallback
+--echo # path is acceptable; both prove the warm-restart gate executed.
+--let $assert_text= mgmd startup gate ran during restart
+--let $assert_file= $MYSQLTEST_VARDIR/mysql_cluster.1/ndb_mgmd.1/ndb_mgmd.log
+--let $assert_select= (Became arbitrator, opening MGM client port|Did not become arbitrator within .* ms, opening MGM client port anyway)
+--let $assert_count_condition= >= 1
+--let $assert_only_after= Shutdown complete
+--source include/assert_grep.inc
+
+--disable_query_log ONCE
+CALL mtr.add_suppression("cluster disconnect");
+--disable_query_log ONCE
+CALL mtr.add_suppression("Got NDB error");
+
+# Clean up the config.ini that MTR generated for --config-change so the
+# post-test check-testcase doesn't see a leftover file in var/tmp.
+--remove_file $MYSQLTEST_VARDIR/tmp/ndb_config.ini
+
+# Force a full restart for the next test since the mgmd was restarted in
+# --config-file mode and may not match the my.cnf-based config flow.
+--source include/force_restart.inc

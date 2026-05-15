@@ -1,0 +1,175 @@
+###############################################################################
+# ndb_arbitration_rank_wait
+#
+# Verifies the RONDB-1058 arbitrator-selection behaviour:
+#
+#   1. While the rank-1 ndb_mgmd is up it is the arbitrator.
+#   2. When the mgmd goes away the president waits ArbitrationRankWait ms
+#      (5000 in this test, default 60000) before falling back to the rank-2
+#      mysqld arbitrator.
+#   3. When the mgmd comes back QMGR demotes the rank-2 arbitrator and
+#      promotes the mgmd again via handleArbitApiPromotion().
+#
+# Verification strategy: only events that come through reportArbitEvent
+# (NDB_LE_ArbitState) are logged on the data nodes themselves and therefore
+# survive an mgmd outage.  Custom infoEvent() messages emitted while the
+# mgmd is down are lost (the cluster log is fed by the mgmd's event
+# subscription), so we deliberately rely on:
+#
+#   - "Started arbitrator node <id> [ticket=...]" written to ndbd.log
+#     each time a new arbitrator is installed.
+#   - "Lost arbitrator node <id> - process exit"   in ndbd.log when the
+#     mgmd dies.
+#
+# All assertions therefore run after the mgmd has been restarted and the
+# cluster waiter confirms everything is back online.
+###############################################################################
+--source include/have_ndb.inc
+
+--echo # Sanity: cluster is up
+CREATE TABLE t1 (a INT PRIMARY KEY) ENGINE=NDB;
+INSERT INTO t1 VALUES (1);
+SELECT * FROM t1;
+
+--let $cluster_log= $MYSQLTEST_VARDIR/mysql_cluster.1/ndb_mgmd.1/ndb_3_cluster.log
+--let $mgmd_out_log= $MYSQLTEST_VARDIR/mysql_cluster.1/ndb_mgmd.1/ndb_mgmd.log
+--let $ndbd1_log= $MYSQLTEST_VARDIR/mysql_cluster.1/ndbd.1/ndbd.log
+--let $ndbd2_log= $MYSQLTEST_VARDIR/mysql_cluster.1/ndbd.2/ndbd.log
+
+--echo # The rank-1 mgmd (node 3) is the initial arbitrator
+--let $assert_text= initial mgmd arbitrator visible in data node 1 log
+--let $assert_file= $ndbd1_log
+--let $assert_select= Started arbitrator node 3 \[ticket=
+--let $assert_count_condition= >= 1
+--source include/assert_grep.inc
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 1: stop ndb_mgmd, ask MTR to wait before restarting
+--echo # ------------------------------------------------------------------
+--write_file $MYSQLTEST_VARDIR/tmp/cluster_config.ndb_mgmd.1.1.expect
+wait
+EOF
+
+--exec $NDB_MGM -e "$NDB_MGMD_NODEID stop" > /dev/null 2>&1
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 2: sleep long enough for:
+--echo #   - the mgmd to actually exit (its shutdown waits on idle MGM
+--echo #     sessions and can take up to ~30 s, see SOCKET_TIMEOUT in
+--echo #     Services.hpp), AND
+--echo #   - the QMGR rank-1 wait (ArbitrationRankWait=5000) to expire,
+--echo #     promoting the rank-2 mysqld to arbitrator, AND
+--echo #   - the PREP/START handshake to complete.
+--echo # 45 s gives ample slack and keeps the test deterministic.
+--echo # ------------------------------------------------------------------
+--sleep 45
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 3: tell MTR to restart ndb_mgmd and wait for the restart to
+--echo #         actually happen (the expect file is removed by MTR once
+--echo #         it has launched the new mgmd).
+--echo # ------------------------------------------------------------------
+# Replace the "wait" expect file with a restart directive so MTR brings
+# the mgmd back.  --write_file refuses to overwrite, so remove first.
+#
+# We use "restart:--config-change" rather than plain "restart:" because
+# MTR's ndb_mgmd_start() calls ndb_mgmd_wait_started() after a plain
+# restart, and that wait polls `ndb_waiter --no-contact` which expects
+# the data nodes to be in NO_CONTACT state -- a cold-start condition
+# that never holds in a warm-restart scenario, so MTR would loop
+# indefinitely.  --config-change pushes "--config-file=..." into the
+# extra-opts list, which makes mysql-test-run.pl skip that wait
+# (see mtr's "Skip the wait when using --config-file" comment).  Our
+# config hasn't actually changed, so the --reload is a no-op.
+--remove_file $MYSQLTEST_VARDIR/tmp/cluster_config.ndb_mgmd.1.1.expect
+--write_file $MYSQLTEST_VARDIR/tmp/cluster_config.ndb_mgmd.1.1.expect
+restart:--config-change
+EOF
+
+# Poll for the expect file to be removed -- means MTR has processed the
+# restart directive and started the new mgmd (pattern lifted from
+# include/ndb_mgmd_restart_reload.inc).
+--perl
+  use strict;
+  my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+  my $expect_file = "$vardir/tmp/cluster_config.ndb_mgmd.1.1.expect";
+  my $timeout = 120;
+  my $start = time();
+  while (-f $expect_file) {
+    if (time() - $start > $timeout) {
+      die "Timeout waiting for MTR to process .expect file";
+    }
+    select(undef, undef, undef, 0.5);
+  }
+EOF
+
+--echo # Now wait for the cluster (mgmd + data nodes) to be fully ready.
+--exec $NDB_WAITER --timeout=120 > /dev/null 2>&1
+
+--echo # Settle: give the data-node logs a moment to record the
+--echo # post-promotion "Started arbitrator node 3" event.
+--sleep 3
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 4: verify the full arbitrator-handoff trail
+--echo # ------------------------------------------------------------------
+
+--echo # The rank-2 mysqld must have become arbitrator while mgmd was down
+--let $assert_text= rank-2 mysqld became arbitrator (data node 1 log)
+--let $assert_file= $ndbd1_log
+--let $assert_select= Started arbitrator node $NDB_MYSQLD_RANK2_NODEID \[ticket=
+--let $assert_count_condition= >= 1
+--source include/assert_grep.inc
+
+--echo # Rank-2 fallback line is written locally via g_eventLogger so
+--echo # operators see it in ndbd.log even when the mgmd was down.
+--let $assert_text= rank-2 fallback info logged locally on data node 1
+--let $assert_file= $ndbd1_log
+--let $assert_select= Arbitrator picked from rank 2 \(node $NDB_MYSQLD_RANK2_NODEID\) after waiting 5000 ms for rank 1
+--let $assert_count_condition= >= 1
+--source include/assert_grep.inc
+
+--echo # And mgmd (node 3) became arbitrator a second time after restart
+--let $assert_text= mgmd resumed arbitration after restart (data node 1 log)
+--let $assert_file= $ndbd1_log
+--let $assert_select= Started arbitrator node 3 \[ticket=
+--let $assert_count_condition= >= 2
+--source include/assert_grep.inc
+
+--echo # Demotion of the rank-2 arbitrator is now reported as a state
+--echo # transition (ApiDemoted) and lands in the data-node log.
+--let $assert_text= rank-2 arbitrator demotion logged on data node 1
+--let $assert_file= $ndbd1_log
+--let $assert_select= Lost arbitrator node $NDB_MYSQLD_RANK2_NODEID - demoted by rank 1 promotion
+--let $assert_count_condition= >= 1
+--source include/assert_grep.inc
+
+--echo # mgmd's startup gate ran on at least one of the two startups
+--let $assert_text= wait_until_arbitrator log line in mgmd output
+--let $assert_file= $mgmd_out_log
+--let $assert_select= (Waiting up to .* ms to become arbitrator|Became arbitrator, opening MGM client port|Did not become arbitrator within .* ms|No data nodes connected within .* ms, treating as cold start)
+--let $assert_count_condition= >= 1
+--source include/assert_grep.inc
+
+DROP TABLE t1;
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Suppress expected warnings from the deliberate mgmd outage
+--echo # ------------------------------------------------------------------
+--disable_query_log ONCE
+CALL mtr.add_suppression("cluster disconnect");
+--disable_query_log ONCE
+CALL mtr.add_suppression("Got NDB error");
+
+# Clean up the config.ini that MTR generated for --config-change so the
+# post-test check-testcase doesn't see a leftover file in var/tmp.
+--remove_file $MYSQLTEST_VARDIR/tmp/ndb_config.ini
+
+# Force a full restart for the next test since the mgmd was restarted in
+# --config-file mode and may not match the my.cnf-based config flow.
+--source include/force_restart.inc

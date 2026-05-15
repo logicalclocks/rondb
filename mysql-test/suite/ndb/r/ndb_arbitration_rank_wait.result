@@ -1,0 +1,53 @@
+# Sanity: cluster is up
+CREATE TABLE t1 (a INT PRIMARY KEY) ENGINE=NDB;
+INSERT INTO t1 VALUES (1);
+SELECT * FROM t1;
+a
+1
+# The rank-1 mgmd (node 3) is the initial arbitrator
+include/assert_grep.inc [initial mgmd arbitrator visible in data node 1 log]
+
+# ------------------------------------------------------------------
+# Step 1: stop ndb_mgmd, ask MTR to wait before restarting
+# ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# Step 2: sleep long enough for:
+#   - the mgmd to actually exit (its shutdown waits on idle MGM
+#     sessions and can take up to ~30 s, see SOCKET_TIMEOUT in
+#     Services.hpp), AND
+#   - the QMGR rank-1 wait (ArbitrationRankWait=5000) to expire,
+#     promoting the rank-2 mysqld to arbitrator, AND
+#   - the PREP/START handshake to complete.
+# 45 s gives ample slack and keeps the test deterministic.
+# ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# Step 3: tell MTR to restart ndb_mgmd and wait for the restart to
+#         actually happen (the expect file is removed by MTR once
+#         it has launched the new mgmd).
+# ------------------------------------------------------------------
+# Now wait for the cluster (mgmd + data nodes) to be fully ready.
+# Settle: give the data-node logs a moment to record the
+# post-promotion "Started arbitrator node 3" event.
+
+# ------------------------------------------------------------------
+# Step 4: verify the full arbitrator-handoff trail
+# ------------------------------------------------------------------
+# The rank-2 mysqld must have become arbitrator while mgmd was down
+include/assert_grep.inc [rank-2 mysqld became arbitrator (data node 1 log)]
+# Rank-2 fallback line is written locally via g_eventLogger so
+# operators see it in ndbd.log even when the mgmd was down.
+include/assert_grep.inc [rank-2 fallback info logged locally on data node 1]
+# And mgmd (node 3) became arbitrator a second time after restart
+include/assert_grep.inc [mgmd resumed arbitration after restart (data node 1 log)]
+# Demotion of the rank-2 arbitrator is now reported as a state
+# transition (ApiDemoted) and lands in the data-node log.
+include/assert_grep.inc [rank-2 arbitrator demotion logged on data node 1]
+# mgmd's startup gate ran on at least one of the two startups
+include/assert_grep.inc [wait_until_arbitrator log line in mgmd output]
+DROP TABLE t1;
+
+# ------------------------------------------------------------------
+# Suppress expected warnings from the deliberate mgmd outage
+# ------------------------------------------------------------------
