@@ -2144,9 +2144,26 @@ void ArbitMgr::threadMain() {
 
 void ArbitMgr::threadStart(ArbitSignal &aSignal) {
   theStartReq = aSignal;
-  sendStartConf(theStartReq, ArbitCode::ApiStart);
   theState = StateStarted;
   theInputTimeout = 1000;
+  sendStartConf(theStartReq, ArbitCode::ApiStart);
+  /*
+   * Qmgr sends ARBIT_STARTREQ only after the ARBIT_PREP2 round has
+   * completed: the president has sent the selected arbitrator node and
+   * ticket to every current data node and received ARBIT_PREPCONF from
+   * all of them.  At this point all data nodes in that arbitration view
+   * agree on who the arbitrator is.
+   *
+   * With two data nodes, the remaining ordering is still safe.  If the
+   * president fails after sending ARBIT_STARTREQ, it had already made the
+   * decision and distributed it during PREP2.  If the non-president fails
+   * before the president reaches ARBIT_RUN, the president will finish the
+   * START phase as soon as this ARBIT_STARTCONF arrives; that transition
+   * does not depend on the non-president.  Therefore this is the right
+   * local point to report that the mgmd arbitrator is active and ready for
+   * any later ARBIT_CHOOSEREQ.
+   */
+  m_active_arbitrator.store(true, std::memory_order_release);
 }
 
 void ArbitMgr::threadChoose(ArbitSignal &aSignal) {
