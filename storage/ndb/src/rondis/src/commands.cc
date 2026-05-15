@@ -2870,6 +2870,10 @@ void rondb_mset(Ndb *ndb,
     key_storage[i].m_key_str = key_str;
     key_storage[i].m_key_len = key_len;
 
+    if (argv[arg_index_val].size() > REDIS_MAX_VALUE_LEN) {
+      assign_generic_err_to_response(response, REDIS_VALUE_TOO_LARGE);
+      return;
+    }
     // todo fix memory handling for m_value_ptr
     key_storage[i].m_value_ptr = (char*)malloc(argv[arg_index_val].size() + 1);
     if (key_storage[i].m_value_ptr == nullptr) {
