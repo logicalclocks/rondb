@@ -478,9 +478,17 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
   const Uint32 max_payload = slot_size - (Uint32)RDMA_MSG_HEADER_BYTES;
 
   /*
-   * Drain loop. Each iteration tries to fill exactly one slot. We bail
-   * out as soon as we run out of credits, free slots, or send-buffer
-   * data beyond what we have already staged.
+   * Drain loop. Each iteration tries to fill exactly one slot with
+   * whole Protocol6 messages. We bail out as soon as we run out of
+   * credits, free slots, or send-buffer data beyond what we have
+   * already staged. Messages are never split across two RDMA recv
+   * slots, because the receiver's unpacker (TransporterRegistry::
+   * unpack -> Packer::unpack_one) can only consume complete Protocol6
+   * messages from a contiguous buffer, and a single recv slot is
+   * what get_next_read() exposes as a contiguous buffer to the
+   * unpacker. The TCP transporter side-steps this because its
+   * receive buffer is a contiguous ring; RDMA cannot share that
+   * shortcut.
    */
   while (m_send_slots_in_flight < m_queue_depth && m_peer_recv_credits > 0) {
     /* Pull iovec descriptors describing the send buffer's pending data. */
@@ -493,22 +501,26 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
     }
 
     /*
-     * Skip past bytes already staged into in-flight slots. We have
-     * not called iovec_data_sent() for those yet, so fetch returns
-     * them again on every call until the corresponding completions
-     * arrive.
+     * Skip past bytes already staged into in-flight slots. After the
+     * signal-aligned packing below, m_bytes_in_flight is always a
+     * sum of whole-signal byte counts, so the cursor lands cleanly
+     * on a signal boundary. We have not called iovec_data_sent() for
+     * those bytes yet, so fetch returns them again on every call
+     * until the corresponding completions arrive.
      */
     Uint32 skip = m_bytes_in_flight;
-    Uint32 first_iov = 0;
-    while (first_iov < n_iov && skip >= iov[first_iov].iov_len) {
-      skip -= iov[first_iov].iov_len;
-      first_iov++;
+    Uint32 cursor_iov = 0;
+    while (cursor_iov < n_iov && skip >= iov[cursor_iov].iov_len) {
+      skip -= iov[cursor_iov].iov_len;
+      cursor_iov++;
     }
-    if (first_iov >= n_iov) {
+    if (cursor_iov >= n_iov) {
       /* All currently visible bytes are already in flight. Nothing to
        * post until the next completion arrives. */
       break;
     }
+    /* Byte offset within iov[cursor_iov] of the next unsent signal. */
+    Uint32 cursor_off = skip;
 
     /* Find a free slot. */
     const Uint32 slot = find_free_send_slot();
@@ -523,27 +535,118 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
     char *payload_dst = slot_buf + RDMA_MSG_HEADER_BYTES;
     Uint32 payload_len = 0;
 
-    /* Copy bytes out of the iovec into the slot payload, starting at
-     * the partial offset captured in `skip`. */
-    if (skip > 0) {
-      const Uint32 take = iov[first_iov].iov_len - skip;
-      const Uint32 copy = (take > max_payload) ? max_payload : take;
+    /*
+     * Pack only *complete* Protocol6 messages into the slot. The
+     * upper-layer send buffer guarantees that each iovec entry is a
+     * sequence of whole Protocol6 messages: SendBufferPage / thr_send_page
+     * allocate a fresh page whenever a message will not fit in the
+     * current one, and MAX_SEND_MESSAGE_BYTESIZE <= page max_bytes().
+     * Therefore peeking the next message's word1 only ever needs to
+     * read 4 bytes within the current iovec entry; if those 4 bytes
+     * are not available, the iovec has been fully consumed for this
+     * slot and we post what we have.
+     *
+     * If the upcoming message would exceed the remaining slot room
+     * we stop and post the slot as-is, leaving the remaining bytes
+     * in the upper-layer send buffer for the next slot. This is the
+     * invariant that prevents a Protocol6 message from being split
+     * across two RDMA receive slots, which is what wedged the scan
+     * receive path on the receiver side.
+     */
+    while (payload_len < max_payload && cursor_iov < n_iov) {
+      const Uint32 iov_remaining =
+          (Uint32)iov[cursor_iov].iov_len - cursor_off;
+      if (iov_remaining == 0) {
+        /* Reached end of this iov entry; move to next. */
+        cursor_iov++;
+        cursor_off = 0;
+        continue;
+      }
+      if (iov_remaining < (Uint32)sizeof(Uint32)) {
+        /*
+         * Fewer than 4 bytes left in this iov to peek word1. The
+         * upper-layer invariant says signals do not straddle pages,
+         * so a non-zero sub-4-byte remainder would indicate buffer
+         * corruption or a signal split across iovecs. Refuse to post
+         * any further bytes this round; the next doSend() will fetch
+         * a fresh iovec batch after completions arrive.
+         */
+        g_eventLogger->error(
+            "RDMA[node %u->%u]: send buffer iov entry %u has %u bytes"
+            " left, expected a full Protocol6 header; bailing this"
+            " round",
+            (unsigned)localNodeId, (unsigned)remoteNodeId, cursor_iov,
+            iov_remaining);
+        break;
+      }
+      /*
+       * Read word1 of the next Protocol6 message. Packer writes the
+       * header in host byte order; both sender and receiver use
+       * Protocol6::getMessageLength() on the host-endian word1 to
+       * extract the length.
+       */
+      Uint32 word1;
+      std::memcpy(&word1,
+                  (const char *)iov[cursor_iov].iov_base + cursor_off,
+                  sizeof(word1));
+      const Uint32 msg_len_bytes =
+          (Uint32)Protocol6::getMessageLength(word1) * 4u;
+      if (msg_len_bytes < (Uint32)sizeof(Uint32) ||
+          msg_len_bytes > (Uint32)MAX_SEND_MESSAGE_BYTESIZE) {
+        /*
+         * Corrupt buffer or signal larger than the protocol allows.
+         * Surfacing this is fatal for the link; otherwise we would
+         * silently wedge or send garbage.
+         */
+        g_eventLogger->error(
+            "RDMA[node %u->%u]: invalid Protocol6 message length %u "
+            "in send buffer (word1=0x%08x); disconnecting",
+            (unsigned)localNodeId, (unsigned)remoteNodeId, msg_len_bytes,
+            word1);
+        m_stats.qp_fatal_events++;
+        report_error(TE_RDMA_QP_ERROR,
+                     "invalid Protocol6 length in send buffer");
+        start_disconnecting(EBADMSG, /*send_source=*/true);
+        return false;
+      }
+      if (msg_len_bytes > iov_remaining) {
+        /*
+         * The full message is not yet within the current iovec
+         * batch. This can only happen if IOV_BATCH was too small
+         * to expose the page that holds this message; bail and let
+         * the next doSend() pull more iovecs. Because pages cannot
+         * span signals, this situation also implies cursor_off == 0,
+         * but we do not assert it here so a misbehaving upper layer
+         * cannot escalate to abort().
+         */
+        break;
+      }
+      if (payload_len + msg_len_bytes > max_payload) {
+        /*
+         * Next message doesn't fit in this slot's remaining room.
+         * Post what we have; the next slot will carry this message.
+         * This is the key invariant for the receive side.
+         */
+        break;
+      }
       std::memcpy(payload_dst,
-                  (const char *)iov[first_iov].iov_base + skip, copy);
-      payload_dst += copy;
-      payload_len += copy;
-      first_iov++;
-    }
-    for (Uint32 i = first_iov; i < n_iov && payload_len < max_payload; i++) {
-      const Uint32 take = iov[i].iov_len;
-      const Uint32 room = max_payload - payload_len;
-      const Uint32 copy = (take > room) ? room : take;
-      std::memcpy(payload_dst, iov[i].iov_base, copy);
-      payload_dst += copy;
-      payload_len += copy;
+                  (const char *)iov[cursor_iov].iov_base + cursor_off,
+                  msg_len_bytes);
+      payload_dst += msg_len_bytes;
+      payload_len += msg_len_bytes;
+      cursor_off += msg_len_bytes;
+      if (cursor_off == iov[cursor_iov].iov_len) {
+        cursor_iov++;
+        cursor_off = 0;
+      }
     }
     if (payload_len == 0) {
-      /* Nothing more to send right now. */
+      /*
+       * Either we caught up to in-flight bytes, or the next message
+       * is not yet fully visible in the iovec batch, or (handled
+       * earlier) the next message is larger than the slot. In every
+       * case there is nothing useful to post this round.
+       */
       break;
     }
 
