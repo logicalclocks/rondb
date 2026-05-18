@@ -44,6 +44,10 @@
 #include "SHM_Transporter.hpp"
 #endif
 
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+#include "RDMA_Transporter.hpp"
+#endif
+
 #include "InputStream.hpp"
 #include "NdbMutex.h"
 #include "NdbOut.hpp"
@@ -324,12 +328,14 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
       nTransporters(0),
       nTCPTransporters(0),
       nSHMTransporters(0),
+      nRDMATransporters(0),
       connectBackoffMaxTime(0),
       m_transp_count(1),
       m_total_max_send_buffer(0) {
   if (receiveHandle != nullptr) {
     receiveHandle->nTCPTransporters = 0;
     receiveHandle->nSHMTransporters = 0;
+    receiveHandle->nRDMATransporters = 0;
   }
   DBUG_ENTER("TransporterRegistry::TransporterRegistry");
 
@@ -337,6 +343,10 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
   theTCPTransporters = new TCP_Transporter *[maxTransporters];
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
   theSHMTransporters = new SHM_Transporter *[maxTransporters];
+#endif
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+  /* Allocate RDMA transporter array with the same capacity as the others. */
+  theRDMATransporters = new RDMA_Transporter *[maxTransporters];
 #endif
   theTransporterTypes = new TransporterType[MAX_NODES];
   theNodeIdTransporters = new Transporter *[MAX_NODES];
@@ -381,6 +391,9 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
     theTCPTransporters[i] = nullptr;
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
     theSHMTransporters[i] = nullptr;
+#endif
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+    theRDMATransporters[i] = nullptr;
 #endif
   }
   theMultiTransporterMutex = NdbMutex_Create();
@@ -437,6 +450,9 @@ TransporterRegistry::~TransporterRegistry() {
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
   delete[] theSHMTransporters;
 #endif
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+  delete[] theRDMATransporters;
+#endif
   delete[] theTransporterTypes;
   delete[] theNodeIdTransporters;
   delete[] theNodeIdMultiTransporters;
@@ -470,6 +486,7 @@ void TransporterRegistry::removeAll() {
   nTransporters = 0;
   nTCPTransporters = 0;
   nSHMTransporters = 0;
+  nRDMATransporters = 0;
 }
 
 void
@@ -508,6 +525,7 @@ bool TransporterRegistry::init(NodeId nodeId) {
 bool TransporterRegistry::init(TransporterReceiveHandle &recvhandle) {
   recvhandle.nTCPTransporters = nTCPTransporters;
   recvhandle.nSHMTransporters = nSHMTransporters;
+  recvhandle.nRDMATransporters = nRDMATransporters;
   return recvhandle.init(maxTransporters);
 }
 
@@ -847,6 +865,8 @@ bool TransporterRegistry::configureTransporter(
       return createTCPTransporter(config);
     case tt_SHM_TRANSPORTER:
       return createSHMTransporter(config);
+    case tt_RDMA_TRANSPORTER:
+      return createRDMATransporter(config);
     default:
       abort();
       break;
@@ -957,6 +977,61 @@ bool TransporterRegistry::createSHMTransporter(TransporterConfiguration *config
   DBUG_RETURN(true);
 #else
   ndbout_c("Shared memory transporters not supported on Windows");
+  return false;
+#endif
+}
+
+/**
+ * createRDMATransporter() creates a single RDMA_Transporter instance and
+ * installs it into the registry's bookkeeping arrays. The actual verbs
+ * resource creation is deferred to the transporter's initTransporter() and
+ * connect_*() methods; this function does not touch libibverbs.
+ *
+ * Returns false (without aborting) when:
+ *   - NDB_RDMA_TRANSPORTER_SUPPORTED is not defined (binary built without
+ *     RDMA support);
+ *   - allocation of the new transporter fails;
+ *   - initTransporter() fails.
+ *
+ * Caller (configureTransporter) is responsible for ensuring config->type ==
+ * tt_RDMA_TRANSPORTER and that no transporter already exists for the
+ * remote node.
+ */
+bool TransporterRegistry::createRDMATransporter(
+    TransporterConfiguration *config [[maybe_unused]]) {
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+  DBUG_ENTER("TransporterRegistry::createTransporter RDMA");
+
+  /* Don't use index 0, special use case for extra transporters */
+  config->transporterIndex = nTransporters + 1;
+
+  /* Match SHM_Transporter style: tolerate (impossible) NULL return from
+   * non-throwing new just as the rest of the registry does. Any verbs-level
+   * failure is detected and reported by initTransporter() below. */
+  RDMA_Transporter *t = new RDMA_Transporter(*this, config);
+  if (t == nullptr) return false;
+
+  if (!t->initTransporter()) {
+    delete t;
+    return false;
+  }
+
+  // Put the transporter in the transporter arrays
+  nTransporters++;
+  allTransporters[nTransporters] = t;
+  theRDMATransporters[nRDMATransporters] = t;
+  theNodeIdTransporters[t->getRemoteNodeId()] = t;
+  theTransporterTypes[t->getRemoteNodeId()] = tt_RDMA_TRANSPORTER;
+  performStates[nTransporters] = DISCONNECTED;
+
+  nRDMATransporters++;
+  m_total_max_send_buffer += t->get_max_send_buffer();
+
+  DBUG_RETURN(true);
+#else
+  g_eventLogger->info(
+      "RDMA transporter requested but binary was not compiled with "
+      "WITH_NDB_RDMA");
   return false;
 #endif
 }
@@ -1462,6 +1537,41 @@ Uint32 TransporterRegistry::poll_SHM(TransporterReceiveHandle &recvdata
   return retVal;
 }
 
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+Uint32 TransporterRegistry::poll_RDMA(TransporterReceiveHandle &recvdata,
+                                      bool &any_connected) {
+  assert((receiveHandle == &recvdata) || (receiveHandle == nullptr));
+
+  Uint32 retVal = 0;
+  any_connected = false;
+  for (Uint32 i = 0; i < recvdata.nRDMATransporters; i++) {
+    RDMA_Transporter *t = theRDMATransporters[i];
+    if (t == nullptr) continue;
+    const TrpId trp_id = t->getTransporterIndex();
+    if (!recvdata.m_transporters.get(trp_id)) continue;
+    if (!is_connected(trp_id)) continue;
+#if defined(VM_TRACE) || !defined(NDEBUG) || defined(ERROR_INSERT)
+    require(t->isConnected());
+#endif
+    any_connected = true;
+
+    /*
+     * Drain the recv CQ into the per-slot ready queue. A fatal CQ
+     * error here calls start_disconnecting() inside the transporter
+     * and returns -1; we treat that as "no new data" so the receive
+     * loop continues to other transporters.
+     */
+    const int reaped = t->reap_recv_completions(recvdata);
+    (void)reaped;
+    if (t->has_received_data()) {
+      recvdata.m_read_transporters.set(trp_id);
+      retVal = 1;
+    }
+  }
+  return retVal;
+}
+#endif
+
 Uint32 TransporterRegistry::spin_check_transporters(
     TransporterReceiveHandle &recvdata [[maybe_unused]]) {
   Uint32 res = 0;
@@ -1680,6 +1790,19 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
     }
     bool any_connected = false;
     int res = poll_SHM(recvdata, any_connected);
+    retVal |= res;
+  }
+#endif
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+  if (recvdata.nRDMATransporters > 0) {
+    /*
+     * RDMA transporters have no socket-level epoll event for incoming
+     * data; instead we poll the recv CQs here at the same point in
+     * the loop SHM is polled. The completion-channel/eventfd wakeup
+     * is left for a future milestone; this poll is purely best-effort.
+     */
+    bool any_connected = false;
+    int res = poll_RDMA(recvdata, any_connected);
     retVal |= res;
   }
 #endif
@@ -2190,6 +2313,54 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
           require(false);
         }
       }
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+      else if (t->getTransporterType() == tt_RDMA_TRANSPORTER)
+      {
+        /*
+         * RDMA primary dispatch.
+         *
+         * Unlike TCP/SHM, there is no socket-level epoll event for an
+         * incoming RDMA SEND; pollReceive() drained the recv CQ for us
+         * via poll_RDMA() and set m_read_transporters when payload
+         * slots became ready. We still call reap_recv_completions()
+         * once here to pick up any completions that arrived between
+         * pollReceive and now, which is cheap when the CQ is empty.
+         *
+         * Slot consumption is exact-match: get_next_read() yields the
+         * head slot's remaining payload, unpack() consumes some bytes
+         * (possibly 0 if the job buffer is full), and
+         * consume_received_bytes() either advances the slot's
+         * read_offset or pops the slot and re-posts the underlying
+         * ibv_recv_wr. We stop the inner loop on any of:
+         *   - the ready queue is drained,
+         *   - unpack() returned 0 (cannot make further progress),
+         *   - stopReceiving was signalled by the upper layer.
+         */
+        RDMA_Transporter *t_rdma = (RDMA_Transporter *)t;
+        const int reaped = t_rdma->reap_recv_completions(recvdata);
+        (void)reaped;  /* error path already calls start_disconnecting */
+        while (t_rdma->has_received_data())
+        {
+          const void *cptr = nullptr;
+          Uint32 len_bytes = 0;
+          t_rdma->get_next_read(&cptr, &len_bytes);
+          if (cptr == nullptr || len_bytes == 0) break;
+          /* The slot buffer is owned by the transporter (non-const
+           * void * m_recv_buf); the const on get_next_read is purely
+           * defensive. unpack() does not modify the payload bytes. */
+          Uint32 *ptr =
+              const_cast<Uint32 *>(static_cast<const Uint32 *>(cptr));
+          const Uint32 szUsed = unpack(recvdata, ptr, len_bytes, node_id,
+                                       trp_id, stopReceiving);
+          if (szUsed == 0) break;
+          t_rdma->consume_received_bytes(szUsed);
+          received_data = true;
+          rec_bytes += szUsed;
+          if (stopReceiving) break;
+        }
+        hasdata = t_rdma->has_received_data();
+      }
+#endif
       else
       {
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
@@ -2247,7 +2418,21 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
           t_tcp->updateReceiveDataPtr(szUsed);
           hasdata = t_tcp->hasReceiveData();
         }
-      } else {
+      }
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+      else if (t->getTransporterType() == tt_RDMA_TRANSPORTER) {
+        /*
+         * RDMA secondary dispatch.
+         *
+         * The primary dispatch above already drained the slot ready
+         * queue synchronously. There is no separate "receive buffer"
+         * for RDMA to inspect a second time the way TCP/SHM have, so
+         * this branch is intentionally a no-op. hasdata was already
+         * set from the primary dispatch.
+         */
+      }
+#endif
+      else {
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
         require(t->getTransporterType() == tt_SHM_TRANSPORTER);
         SHM_Transporter *t_shm = (SHM_Transporter *)t;
@@ -3237,6 +3422,7 @@ Uint32 TransporterRegistry::update_connections(
   }
   recvdata.nTCPTransporters = nTCPTransporters;
   recvdata.nSHMTransporters = nSHMTransporters;
+  recvdata.nRDMATransporters = nRDMATransporters;
   recvdata.m_spintime = MIN(spintime, max_spintime);
   return spintime;  // Inform caller of spintime calculated on this level
 }

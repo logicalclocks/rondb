@@ -140,6 +140,11 @@ class TransporterReceiveHandle : public TransporterReceiveData {
 #endif
   Uint32 nTCPTransporters;
   Uint32 nSHMTransporters;
+  /*
+   * RDMA transporter count mirrored from the TransporterRegistry. Always
+   * zero unless the binary is built with NDB_RDMA_TRANSPORTER_SUPPORTED.
+   */
+  Uint32 nRDMATransporters;
   bool m_has_extra_wakeup_socket;
   ndb_socket_t m_extra_wakeup_sockets[2];
 };

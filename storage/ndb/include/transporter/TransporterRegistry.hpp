@@ -94,6 +94,9 @@ static const char *performStateString[] = {
 class Transporter;
 class TCP_Transporter;
 class SHM_Transporter;
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+class RDMA_Transporter;
+#endif
 class Multi_Transporter;
 
 class TransporterRegistry;
@@ -434,6 +437,15 @@ class TransporterRegistry {
  private:
   bool createTCPTransporter(TransporterConfiguration *config);
   bool createSHMTransporter(TransporterConfiguration *config);
+  /*
+   * Create an RDMA transporter from a parsed TransporterConfiguration.
+   *
+   * Only succeeds when the binary is compiled with
+   * NDB_RDMA_TRANSPORTER_SUPPORTED. When the macro is not defined the
+   * function returns false without modifying any registry state, so
+   * IPC parsing can fail gracefully without abort().
+   */
+  bool createRDMATransporter(TransporterConfiguration *config);
 
  public:
   bool createMultiTransporter(NodeId node_id, Uint32 num_trps);
@@ -605,6 +617,12 @@ private:
   Uint32 nTransporters;
   Uint32 nTCPTransporters;
   Uint32 nSHMTransporters;
+  /*
+   * Number of RDMA transporters currently registered. Always present so
+   * we can statically validate ABI between RDMA-on and RDMA-off builds.
+   * Value remains zero when NDB_RDMA_TRANSPORTER_SUPPORTED is not defined.
+   */
+  Uint32 nRDMATransporters;
   TlsKeyManager m_tls_keys;
   int m_mgm_tls_req;
 
@@ -625,6 +643,14 @@ private:
   TCP_Transporter **theTCPTransporters;
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
   SHM_Transporter **theSHMTransporters;
+#endif
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+  /*
+   * Array indexed in registration order containing the RDMA transporters
+   * created via createRDMATransporter(). Owned by TransporterRegistry and
+   * destroyed alongside the other transporter arrays in removeAll().
+   */
+  RDMA_Transporter **theRDMATransporters;
 #endif
 
   /**
@@ -700,6 +726,16 @@ private:
   Uint32 poll_SHM(TransporterReceiveHandle &, bool &any_connected);
   Uint32 poll_SHM(TransporterReceiveHandle &, NDB_TICKS start_time,
                   Uint32 micros_to_poll);
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+  /*
+   * Reap completions on every CQ owned by an RDMA transporter assigned to
+   * this receive handle. Sets m_read_transporters bits for transporters
+   * that ended up with payload bytes ready for the unpacker. Returns 1 if
+   * any transporter has data, 0 otherwise. any_connected is set to true
+   * if at least one RDMA link is in the CONNECTED state.
+   */
+  Uint32 poll_RDMA(TransporterReceiveHandle &, bool &any_connected);
+#endif
   Uint32 check_TCP(TransporterReceiveHandle &, Uint32 timeoutMillis);
   Uint32 spin_check_transporters(TransporterReceiveHandle &);
 
