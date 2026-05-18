@@ -887,6 +887,13 @@ bool TransporterRegistry::createMultiTransporter(NodeId node_id,
           new SHM_Transporter(*this, shm_trp);
     }
 #endif
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+    else if (type == tt_RDMA_TRANSPORTER) {
+      const RDMA_Transporter *rdma_trp = (RDMA_Transporter *)base_trp;
+      new_trp = theRDMATransporters[nRDMATransporters++] =
+          new RDMA_Transporter(*this, rdma_trp);
+    }
+#endif
     else {
       require(false);
     }
