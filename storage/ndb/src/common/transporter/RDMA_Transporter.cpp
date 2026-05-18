@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <new>
 #include <EventLogger.hpp>
 
@@ -233,6 +234,8 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_qp(nullptr),
       m_send_mr(nullptr),
       m_recv_mr(nullptr),
+      m_recv_comp_channel(nullptr),
+      m_recv_comp_events_pending(0),
       m_send_buf(nullptr),
       m_recv_buf(nullptr),
       m_effective_inline_threshold(0),
@@ -280,6 +283,8 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_qp(nullptr),
       m_send_mr(nullptr),
       m_recv_mr(nullptr),
+      m_recv_comp_channel(nullptr),
+      m_recv_comp_events_pending(0),
       m_send_buf(nullptr),
       m_recv_buf(nullptr),
       m_effective_inline_threshold(0),
@@ -860,6 +865,76 @@ bool RDMA_Transporter::post_credit_only_locked() {
   return true;
 }
 
+int RDMA_Transporter::get_recv_comp_channel_fd() const {
+  /* Reflect the channel-fd accessor used by the registry to add this
+   * transporter to the recv thread's epoll set. Returns -1 when the
+   * channel is not currently allocated, which is the safe sentinel
+   * for "do not add". */
+  if (m_recv_comp_channel == nullptr) return -1;
+  return m_recv_comp_channel->fd;
+}
+
+void RDMA_Transporter::handle_recv_comp_event() {
+  /*
+   * Drain every event currently sitting on the non-blocking comp
+   * channel fd. Each ibv_get_cq_event() call returns one event; we
+   * ack each one individually (cheap and simple), and break out of
+   * the loop on EAGAIN.
+   *
+   * Defends against a torn-down channel (m_recv_comp_channel may be
+   * NULL if release_verbs_resources() ran between epoll firing and
+   * us being scheduled). In that case, the kernel has already
+   * auto-removed the now-closed fd from epoll; we just return.
+   *
+   * Note: we deliberately do NOT call ibv_poll_cq() here. The
+   * registry's existing performReceive() path already calls
+   * reap_recv_completions() for any transporter whose
+   * m_read_transporters bit was set, and that is the function that
+   * also re-arms the CQ on exit. Splitting drain (here) and poll
+   * (there) keeps the recv-thread structure unchanged.
+   */
+  if (m_recv_comp_channel == nullptr || m_recv_cq == nullptr) return;
+  struct ibv_cq *ev_cq = nullptr;
+  void *ev_ctx = nullptr;
+  while (ibv_get_cq_event(m_recv_comp_channel, &ev_cq, &ev_ctx) == 0) {
+    /* Defensive: a comp channel only ever associates with the recv
+     * CQ in our setup, but the verbs API allows multiplexing in
+     * principle. Skip events targeting other CQs (cannot happen
+     * here, but staying robust is cheap). */
+    if (ev_cq == m_recv_cq) {
+      ibv_ack_cq_events(m_recv_cq, 1u);
+    }
+  }
+  /* EAGAIN is the expected termination condition for the non-blocking
+   * fd; any other errno is treated as transient because we cannot
+   * recover here without tearing the link down, and the recv CQ
+   * polling path will surface fatal errors on its own. */
+}
+
+void RDMA_Transporter::arm_recv_cq() {
+  /*
+   * Request a one-shot notification for the next CQE that lands on
+   * the recv CQ. Idempotent against the verbs API in the sense that
+   * calling arm twice in succession is permitted (the second call
+   * collapses into the same outstanding arm).
+   *
+   * No-op when the CQ has not been created yet (allocation failed
+   * early in connect) or has already been destroyed (release path
+   * sneaked in). A failure here is logged but not fatal: if the
+   * arm fails the wakeup path is degraded but the recv-thread
+   * pollReceive cadence still drains CQEs at its existing rate.
+   */
+  if (m_recv_cq == nullptr) return;
+  const int rc = ibv_req_notify_cq(m_recv_cq, /*solicited_only=*/0);
+  if (rc != 0) {
+    g_eventLogger->error(
+        "RDMA[node %u->%u]: ibv_req_notify_cq failed (rc=%d errno=%d %s); "
+        "recv wakeup degraded to pollReceive cadence",
+        (unsigned)localNodeId, (unsigned)remoteNodeId, rc, errno,
+        std::strerror(errno));
+  }
+}
+
 void RDMA_Transporter::recv_thread_emit_credit_only() {
   /*
    * Fast-path lock-free check: the receive thread runs this for every
@@ -981,6 +1056,8 @@ bool RDMA_Transporter::allocate_verbs_resources() {
   require(m_qp == nullptr);
   require(m_send_mr == nullptr);
   require(m_recv_mr == nullptr);
+  require(m_recv_comp_channel == nullptr);
+  require(m_recv_comp_events_pending == 0);
   require(m_send_buf == nullptr);
   require(m_recv_buf == nullptr);
 
@@ -1081,7 +1158,16 @@ bool RDMA_Transporter::allocate_verbs_resources() {
 
   /* Step 4: Completion Queues. We size each CQ at 2 * queue_depth so a
    * receive WC backlog cannot starve send completions, even when the
-   * future receive path lazily reaps WCs. */
+   * future receive path lazily reaps WCs.
+   *
+   * The recv CQ is created with a dedicated completion channel
+   * (m_recv_comp_channel) so the HCA can wake the receive thread via
+   * an eventfd-style fd when a CQE lands. We set the channel fd to
+   * non-blocking immediately after creation so the recv-thread can
+   * drain ibv_get_cq_event() without ever blocking inside the
+   * registry's check_TCP loop. The send CQ keeps its old null-channel
+   * shape because doSend()'s drive path is fully poll-driven (we
+   * never sleep waiting for our own send completions). */
   m_send_cq = ibv_create_cq(m_verbs_ctx, (int)(m_queue_depth * 2),
                             /*cq_context=*/nullptr, /*channel=*/nullptr,
                             /*comp_vector=*/0);
@@ -1091,8 +1177,33 @@ bool RDMA_Transporter::allocate_verbs_resources() {
     release_verbs_resources();
     return false;
   }
+  m_recv_comp_channel = ibv_create_comp_channel(m_verbs_ctx);
+  if (m_recv_comp_channel == nullptr) {
+    g_eventLogger->error(
+        "RDMA: ibv_create_comp_channel(recv) failed (errno=%d %s)", errno,
+        std::strerror(errno));
+    release_verbs_resources();
+    return false;
+  }
+  /* Set the channel fd to non-blocking so handle_recv_comp_event() can
+   * drain it with a tight ibv_get_cq_event() loop and break out cleanly
+   * on EAGAIN. fcntl failures here would silently leave the fd
+   * blocking, which would deadlock the recv thread the first time we
+   * tried to drain an empty channel, so treat the failure as fatal. */
+  {
+    const int fl = fcntl(m_recv_comp_channel->fd, F_GETFL);
+    if (fl < 0 ||
+        fcntl(m_recv_comp_channel->fd, F_SETFL, fl | O_NONBLOCK) < 0) {
+      g_eventLogger->error(
+          "RDMA: failed to set comp_channel fd %d to O_NONBLOCK "
+          "(errno=%d %s)",
+          m_recv_comp_channel->fd, errno, std::strerror(errno));
+      release_verbs_resources();
+      return false;
+    }
+  }
   m_recv_cq = ibv_create_cq(m_verbs_ctx, (int)(m_queue_depth * 2),
-                            /*cq_context=*/nullptr, /*channel=*/nullptr,
+                            /*cq_context=*/nullptr, m_recv_comp_channel,
                             /*comp_vector=*/0);
   if (m_recv_cq == nullptr) {
     g_eventLogger->error("RDMA: ibv_create_cq(recv) failed (errno=%d %s)",
@@ -1205,14 +1316,38 @@ void RDMA_Transporter::release_verbs_resources() {
    * its return value because there is nothing meaningful we can do in
    * the failure case beyond logging, and we already log allocation
    * failures elsewhere.
-   */
+   *
+   * Important: ibv_destroy_cq blocks while there are unacked CQ events
+   * outstanding. handle_recv_comp_event() normally acks each event as
+   * it drains, but if we tear down mid-flight (e.g. release after a
+   * fatal CQ poll failure) some events may still be unacked. Drain
+   * any residual events and ack them in one batched call before we
+   * destroy the recv CQ -- the call is a no-op when nothing is
+   * pending. Skip the drain if the comp channel was never set up
+   * (allocate failed early). */
   if (m_qp != nullptr) {
     ibv_destroy_qp(m_qp);
     m_qp = nullptr;
   }
   if (m_recv_cq != nullptr) {
+    if (m_recv_comp_channel != nullptr) {
+      struct ibv_cq *ev_cq = nullptr;
+      void *ev_ctx = nullptr;
+      while (ibv_get_cq_event(m_recv_comp_channel, &ev_cq, &ev_ctx) == 0) {
+        m_recv_comp_events_pending++;
+      }
+      if (m_recv_comp_events_pending > 0) {
+        ibv_ack_cq_events(m_recv_cq,
+                          (unsigned)m_recv_comp_events_pending);
+        m_recv_comp_events_pending = 0;
+      }
+    }
     ibv_destroy_cq(m_recv_cq);
     m_recv_cq = nullptr;
+  }
+  if (m_recv_comp_channel != nullptr) {
+    ibv_destroy_comp_channel(m_recv_comp_channel);
+    m_recv_comp_channel = nullptr;
   }
   if (m_send_cq != nullptr) {
     ibv_destroy_cq(m_send_cq);
@@ -1644,6 +1779,22 @@ int RDMA_Transporter::reap_recv_completions(
      * operators can correlate it with end-to-end latency. */
     m_stats.cq_budget_hits_recv++;
   }
+  /*
+   * Re-arm the recv CQ now that we have drained it. The arm is a
+   * one-shot: the next CQE arriving after this call will fire an
+   * event on the comp channel fd and wake the recv thread out of
+   * epoll_wait(). There is a small race window between the last
+   * ibv_poll_cq() that returned 0 above and this arm -- a CQE
+   * arriving in that window will not fire a notification because
+   * the arm came after it. We accept that as a benign source of
+   * extra latency: the registry's existing poll_RDMA() cadence will
+   * pick the CQE up on the next pollReceive() pass.
+   *
+   * Skip arm on the fatal-error return paths above (which `return -1`
+   * directly without reaching this point); those have already torn
+   * the link down via start_disconnecting().
+   */
+  arm_recv_cq();
   return reaped_total;
 }
 
@@ -2105,6 +2256,15 @@ bool RDMA_Transporter::run_endpoint_exchange(const NdbSocket &socket,
   if (!post_initial_receives()) return false;
   if (!qp_transition_to_rtr(&peer_rec)) return false;
   if (!qp_transition_to_rts(local_psn)) return false;
+
+  /*
+   * Initial arm on the recv CQ: now that the QP is at RTS and the
+   * receive queue is fully posted, request a notification for the
+   * first inbound CQE so the recv thread wakes promptly when the
+   * peer starts sending. Every subsequent reap_recv_completions()
+   * pass re-arms at its tail.
+   */
+  arm_recv_cq();
 
   /*
    * Seed credit accounting from the peer's record. The peer advertised
