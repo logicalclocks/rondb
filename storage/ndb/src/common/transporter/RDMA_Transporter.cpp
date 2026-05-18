@@ -735,6 +735,11 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
    * us looks low (m_peer_recv_credits below queue_depth/4), because
    * if both sides are running low we want to refresh aggressively
    * to avoid a mutual-stall deadlock.
+   *
+   * The actual WR build / post lives in post_credit_only_locked() so
+   * the receive-thread credit emission path (recv_thread_emit_credit_only)
+   * can reuse the exact same wire encoding and bookkeeping under the
+   * send lock.
    */
   const Uint32 credit_threshold =
       m_queue_depth > 1 ? (m_queue_depth / 2) : 1u;
@@ -744,67 +749,8 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
       (m_pending_credit_grant >= credit_threshold) ||
       (m_pending_credit_grant > 0 &&
        m_peer_recv_credits < low_credit_threshold);
-  if (needs_refill && m_send_slots_in_flight < m_queue_depth &&
-      m_peer_recv_credits > 0) {
-    const Uint32 slot = find_free_send_slot();
-    if (slot != UINT32_MAX) {
-      char *const slot_buf =
-          (char *)m_send_buf + (size_t)slot * (size_t)slot_size;
-      const Uint16 credit_delta = (m_pending_credit_grant > 0xFFFFu)
-                                      ? (Uint16)0xFFFFu
-                                      : (Uint16)m_pending_credit_grant;
-      encode_msg_header(slot_buf, /*payload_len=*/0u, m_local_send_seq,
-                        m_local_recv_seq, credit_delta,
-                        RDMA_MSG_FLAG_CREDIT_ONLY);
-
-      struct ibv_sge sge;
-      std::memset(&sge, 0, sizeof(sge));
-      sge.addr = (uintptr_t)slot_buf;
-      sge.length = (Uint32)RDMA_MSG_HEADER_BYTES;
-      sge.lkey = m_send_mr->lkey;
-
-      struct ibv_send_wr wr;
-      std::memset(&wr, 0, sizeof(wr));
-      wr.wr_id = (uint64_t)slot;
-      wr.sg_list = &sge;
-      wr.num_sge = 1;
-      wr.opcode = IBV_WR_SEND;
-      wr.send_flags = IBV_SEND_SIGNALED;
-      const bool credit_inline_used =
-          (sge.length <= m_effective_inline_threshold);
-      if (credit_inline_used) {
-        wr.send_flags |= IBV_SEND_INLINE;
-      }
-
-      struct ibv_send_wr *bad = nullptr;
-      const int rc = ibv_post_send(m_qp, &wr, &bad);
-      if (rc != 0) {
-        g_eventLogger->error(
-            "RDMA[node %u->%u]: ibv_post_send(CREDIT_ONLY) failed (rc=%d "
-            "errno=%d %s); disconnecting",
-            (unsigned)localNodeId, (unsigned)remoteNodeId, rc, errno,
-            std::strerror(errno));
-        m_stats.qp_fatal_events++;
-        report_error(TE_RDMA_QP_ERROR, "ibv_post_send(CREDIT_ONLY) failed");
-        start_disconnecting(rc, /*send_source=*/true);
-        return false;
-      }
-
-      /*
-       * Commit state. bytes_consumed stays at 0 so reap_send_completions
-       * does not call iovec_data_sent() (there are no upper-layer bytes
-       * tied to this WR). m_bytes_in_flight is also unchanged.
-       */
-      m_send_slots[slot].bytes_consumed = 0;
-      m_send_slots[slot].in_flight = true;
-      m_send_slots_in_flight++;
-      m_local_send_seq++;
-      m_peer_recv_credits--;
-      m_pending_credit_grant = 0;
-      m_stats.send_credit_only_out++;
-      m_stats.send_posted++;
-      if (credit_inline_used) m_stats.send_inline++;
-    }
+  if (needs_refill) {
+    (void)post_credit_only_locked();
   }
 
   /*
@@ -822,6 +768,148 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
   /* Tell the caller whether more work is outstanding. The registry
    * loop will keep polling us if any of these conditions hold. */
   return m_send_slots_in_flight > 0;
+}
+
+bool RDMA_Transporter::post_credit_only_locked() {
+  /*
+   * Single-source-of-truth helper for building and posting a zero-
+   * payload CREDIT_ONLY WR. Callers (doSend() on the send thread,
+   * recv_thread_emit_credit_only() on the receive thread) must hold
+   * the per-transporter send lock, because we mutate the same shared
+   * state doSend() touches and ibv_post_send() must be serialized
+   * against itself on the same QP.
+   *
+   * Preconditions are checked here so callers can be minimal: we no-op
+   * when the link is not yet live, the pending grant is zero, no free
+   * slot exists, or the peer has not granted us any send credit.
+   *
+   * Bookkeeping update mirrors the previous in-line block that used
+   * to live in doSend(); see the rationale comments above the caller
+   * in doSend() for the threshold/policy discussion.
+   */
+  if (m_qp == nullptr || m_send_slots == nullptr ||
+      m_send_buf == nullptr || m_send_mr == nullptr) {
+    return false;
+  }
+  if (m_pending_credit_grant == 0) return false;
+  if (m_send_slots_in_flight >= m_queue_depth) return false;
+  if (m_peer_recv_credits == 0) return false;
+
+  const Uint32 slot_size = send_slot_size_or_zero();
+  if (slot_size == 0) return false;
+
+  const Uint32 slot = find_free_send_slot();
+  if (slot == UINT32_MAX) return false;
+
+  char *const slot_buf =
+      (char *)m_send_buf + (size_t)slot * (size_t)slot_size;
+  const Uint16 credit_delta = (m_pending_credit_grant > 0xFFFFu)
+                                  ? (Uint16)0xFFFFu
+                                  : (Uint16)m_pending_credit_grant;
+  encode_msg_header(slot_buf, /*payload_len=*/0u, m_local_send_seq,
+                    m_local_recv_seq, credit_delta,
+                    RDMA_MSG_FLAG_CREDIT_ONLY);
+
+  struct ibv_sge sge;
+  std::memset(&sge, 0, sizeof(sge));
+  sge.addr = (uintptr_t)slot_buf;
+  sge.length = (Uint32)RDMA_MSG_HEADER_BYTES;
+  sge.lkey = m_send_mr->lkey;
+
+  struct ibv_send_wr wr;
+  std::memset(&wr, 0, sizeof(wr));
+  wr.wr_id = (uint64_t)slot;
+  wr.sg_list = &sge;
+  wr.num_sge = 1;
+  wr.opcode = IBV_WR_SEND;
+  wr.send_flags = IBV_SEND_SIGNALED;
+  const bool credit_inline_used =
+      (sge.length <= m_effective_inline_threshold);
+  if (credit_inline_used) {
+    wr.send_flags |= IBV_SEND_INLINE;
+  }
+
+  struct ibv_send_wr *bad = nullptr;
+  const int rc = ibv_post_send(m_qp, &wr, &bad);
+  if (rc != 0) {
+    g_eventLogger->error(
+        "RDMA[node %u->%u]: ibv_post_send(CREDIT_ONLY) failed (rc=%d "
+        "errno=%d %s); disconnecting",
+        (unsigned)localNodeId, (unsigned)remoteNodeId, rc, errno,
+        std::strerror(errno));
+    m_stats.qp_fatal_events++;
+    report_error(TE_RDMA_QP_ERROR, "ibv_post_send(CREDIT_ONLY) failed");
+    start_disconnecting(rc, /*send_source=*/true);
+    return false;
+  }
+
+  /*
+   * Commit state. bytes_consumed stays at 0 so reap_send_completions
+   * does not call iovec_data_sent() (there are no upper-layer bytes
+   * tied to this WR). m_bytes_in_flight is also unchanged.
+   */
+  m_send_slots[slot].bytes_consumed = 0;
+  m_send_slots[slot].in_flight = true;
+  m_send_slots_in_flight++;
+  m_local_send_seq++;
+  m_peer_recv_credits--;
+  m_pending_credit_grant = 0;
+  m_stats.send_credit_only_out++;
+  m_stats.send_posted++;
+  if (credit_inline_used) m_stats.send_inline++;
+  return true;
+}
+
+void RDMA_Transporter::recv_thread_emit_credit_only() {
+  /*
+   * Fast-path lock-free check: the receive thread runs this for every
+   * RDMA transporter on every performReceive() iteration; the
+   * overwhelming common case is a zero or below-threshold pending
+   * grant, and we must not pay the cost of a lock acquisition for
+   * those calls.
+   *
+   * The lock-free read of m_pending_credit_grant races with doSend()'s
+   * updates under the send lock, but the race is benign: a torn read
+   * still falls in [0, UINT32_MAX], we re-validate the value under
+   * the lock inside post_credit_only_locked(), and a missed emit is
+   * naturally recovered on the next receive batch.
+   */
+  if (m_pending_credit_grant == 0) return;
+  const Uint32 threshold = m_queue_depth > 1 ? (m_queue_depth / 2) : 1u;
+  if (m_pending_credit_grant < threshold) return;
+
+  /*
+   * Acquire the per-transporter send lock. This serializes us against
+   * doSend() on this transporter -- and only this transporter, since
+   * the lock is keyed by m_transporter_index. The receive thread
+   * already holds the global receive lock (per trp.txt), which is
+   * compatible with the send lock because the send thread never
+   * takes the global receive lock; no deadlock cycle exists.
+   */
+  lock_send_transporter();
+  /*
+   * Reap any pending send completions before posting so credit-only
+   * slots we emitted on previous receive batches (or that doSend()
+   * left in flight) are recycled. Without this the recv-thread emit
+   * path could monotonically consume slots up to queue_depth and
+   * then stop being able to refresh credits.
+   */
+  if (reap_send_completions() < 0) {
+    /* Fatal CQ error path already invoked start_disconnecting(). */
+    unlock_send_transporter();
+    return;
+  }
+  if (post_credit_only_locked()) {
+    /*
+     * Separate counter so operators can verify the new path is
+     * actually firing on clones that previously only had inbound
+     * traffic. The cumulative count is also reflected in
+     * send_credit_only_out, which post_credit_only_locked()
+     * already bumped.
+     */
+    m_stats.send_credit_only_recv_path++;
+  }
+  unlock_send_transporter();
 }
 
 bool RDMA_Transporter::send_is_possible(int /*timeout_millisec*/) const {
@@ -1815,7 +1903,8 @@ void RDMA_Transporter::log_stats() const {
   g_eventLogger->info(
       "RDMA[node %u->%u]: stats reconnects=%llu "
       "send_posted=%llu send_ok=%llu send_err=%llu send_inline=%llu "
-      "send_credit_only_out=%llu send_credit_stalls=%llu copied_send=%llu "
+      "send_credit_only_out=%llu send_credit_only_recv_path=%llu "
+      "send_credit_stalls=%llu copied_send=%llu "
       "recv_posted=%llu recv_ok=%llu recv_err=%llu recv_credit_only_in=%llu "
       "copied_recv=%llu bytes_sent=%llu bytes_received=%llu "
       "cq_polls_send=%llu cq_polls_recv=%llu "
@@ -1828,6 +1917,7 @@ void RDMA_Transporter::log_stats() const {
       (unsigned long long)m_stats.send_completion_errors,
       (unsigned long long)m_stats.send_inline,
       (unsigned long long)m_stats.send_credit_only_out,
+      (unsigned long long)m_stats.send_credit_only_recv_path,
       (unsigned long long)m_stats.send_credit_stalls,
       (unsigned long long)m_stats.copied_send_bytes,
       (unsigned long long)m_stats.recv_posted,
