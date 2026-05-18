@@ -963,41 +963,79 @@ void RDMA_Transporter::recv_thread_emit_credit_only() {
    */
   lock_send_transporter();
   /*
-   * Do NOT call reap_send_completions() from this (recv-thread)
-   * context. reap_send_completions() invokes iovec_data_sent() ->
-   * trp_callback::bytes_sent() for every freed data WR, and
-   * trp_callback::bytes_sent() in mt.cpp releases the freed pages
-   * back into a thread_local_pool<thr_send_page> -- either the
-   * block thread's m_send_buffer_pool, or a dedicated send
-   * thread's pool obtained via g_send_threads->get_send_buffer_pool().
-   * thread_local_pool is, by design, only safe to mutate from
-   * its owner thread: its internal free-list bookkeeping is
-   * protected by thread affinity, NOT by the per-transporter
-   * m_send_lock that we hold here. Touching it from the recv
-   * thread races with the owner thread's own pool operations
-   * (which it performs on a different transporter's send_buffer
-   * but the SAME pool) and ultimately segfaults inside
-   * trp_callback::bytes_sent -> ::bytes_sent -> release_list.
-   * This was observed on cli-142 in start phase 5 SR copy as
-   * soon as the validate_msg_header upper-bound fix
-   * (0a5514bc037) let real inbound bulk-copy traffic reach this
-   * code path.
+   * Reap policy on the recv-thread emit path.
    *
-   * The original concern that motivated the reap call (recv-thread
-   * emit path monotonically consuming send slots) does not occur
-   * in practice: every credit-only WR we post here generates a
-   * send CQE that the send thread will reap on its next pass
-   * through doSend() -> reap_send_completions(), which is the
-   * thread-correct context for invoking trp_callback::bytes_sent.
-   * The send thread iterates every transporter every cycle, so
-   * even a purely inbound-traffic transporter still gets its
-   * own send slots recycled in a bounded number of send-thread
-   * iterations. If no slot happens to be free on the current
-   * pass, post_credit_only_locked() already no-ops via its
-   * built-in (m_send_slots_in_flight >= m_queue_depth) early
-   * return; the missed emit is recovered on the next receive
-   * batch with zero additional state.
+   * Background. reap_send_completions() invokes iovec_data_sent() ->
+   * trp_callback::bytes_sent() for every freed slot whose
+   * bytes_consumed > 0. trp_callback::bytes_sent() in mt.cpp:
+   *   1) asserts(sb->m_send_thread != NO_SEND_THREAD) -- which fires
+   *      whenever the caller is not running through a performSend()
+   *      path that explicitly sets sb->m_send_thread (forceSend(),
+   *      try_send(), do_send()); and
+   *   2) calls release_list() -> thread_local_pool::release_local()
+   *      on the owner block thread's or send thread's
+   *      thread_local_pool<thr_send_page>. release_local() mutates
+   *      m_free and m_freelist without any lock; the per-transporter
+   *      m_send_lock that we hold here does NOT protect that
+   *      thread_local_pool, since the pool is shared across all
+   *      transporters that the owning thread services. Touching it
+   *      from the recv thread races with the owner thread's own
+   *      pool ops and crashes (this was the SIGSEGV stack on
+   *      cli-142, May 2026:
+   *      trp_callback::bytes_sent ->
+   *      reap_send_completions [clone .part.0] ->
+   *      recv_thread_emit_credit_only ->
+   *      TransporterRegistry::performReceive).
+   *
+   * Safety guard. We only reap when m_bytes_in_flight == 0. The
+   * class invariant
+   *     m_bytes_in_flight == sum over slots of bytes_consumed
+   * is maintained by doSend() (which does m_bytes_in_flight +=
+   * payload_len when posting a data WR with bytes_consumed =
+   * payload_len > 0) and by reap_send_completions() (which does
+   * m_bytes_in_flight -= bytes when freeing). post_credit_only_locked()
+   * uses bytes_consumed = 0 and leaves m_bytes_in_flight unchanged.
+   * Therefore m_bytes_in_flight == 0 implies every in-flight slot has
+   * bytes_consumed == 0 (only CREDIT_ONLY WRs). For those slots
+   * reap_send_completions() never enters its
+   *     if (bytes > 0) iovec_data_sent((int)bytes);
+   * branch, so trp_callback::bytes_sent() is not called and the
+   * unsafe path described above cannot fire.
+   *
+   * The read of m_bytes_in_flight is safe under the send lock: no
+   * other thread can post a data WR or reap while we hold the lock,
+   * so the value is stable for the duration of the (m_bytes_in_flight
+   * == 0)-guarded reap.
+   *
+   * Why we still need the reap here. In ndbmtd the send thread
+   * iterates only m_pending_send_trps[] (mt.cpp do_send), populated
+   * by register_pending_send() when a block thread enqueues outbound
+   * data for a transporter. A clone that never has any block thread
+   * enqueue outbound data is never visited by the send thread.
+   * Without our recv-thread reap, the CREDIT_ONLY slots we post
+   * here (and from the doSend-side refill path on other clones)
+   * accumulate up to m_queue_depth, post_credit_only_locked() then
+   * starts returning false, m_pending_credit_grant cannot drain,
+   * peer's m_peer_recv_credits against us drains to zero, peer
+   * stops sending, our inbound stalls. This was the GCP_COMMIT-lag
+   * symptom reproduced after the Phase F rolling restart
+   * (NDB-274/NDB-286 in pnfs-mds, mgmd GCP Monitor 10-152s lag,
+   * SignalCounter m_count=1 stuck against the peer).
+   *
+   * Outbound-active clones (m_bytes_in_flight > 0) are NOT visited
+   * here: the block thread that posted those bytes already added the
+   * trp to its pending-send mask, so the send thread will revisit
+   * doSend() in a bounded number of cycles and reap on the
+   * thread-correct context. Skipping here is therefore not a stall
+   * source for those clones.
    */
+  if (m_bytes_in_flight == 0) {
+    if (reap_send_completions() < 0) {
+      /* Fatal CQ error: start_disconnecting() already called. */
+      unlock_send_transporter();
+      return;
+    }
+  }
   if (post_credit_only_locked()) {
     /*
      * Separate counter so operators can verify the new path is
