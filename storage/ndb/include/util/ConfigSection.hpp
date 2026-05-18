@@ -357,7 +357,14 @@ static const Uint32 MGM_NODE_TYPE = 2;
 
 static const Uint32 TCP_TYPE = 0;
 static const Uint32 SHM_TYPE = 1;
-static const Uint32 RDMA_TYPE = 2;
+/* RDMA_TYPE must match CONNECTION_TYPE_RDMA (== 4) from
+ * mgmapi_config_parameters.h. SectionType for a [rdma] section is
+ * stored on the wire as this value, and ConfigInfo's CI_SECTION entry
+ * for "RDMA" carries CONNECTION_TYPE_RDMA as its _default field; the
+ * two MUST agree or createSection() will reject the type with
+ * WRONG_COMM_TYPE. Values 2 and 3 are reserved for the deprecated SCI
+ * transporter (CONNECTION_TYPE_SCI = 3) and intentionally skipped. */
+static const Uint32 RDMA_TYPE = 4;
 
 static const Uint32 CONF_SYSTEM_TYPE = 1000;
 #endif
