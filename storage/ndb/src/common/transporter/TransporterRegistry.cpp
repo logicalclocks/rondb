@@ -265,7 +265,43 @@ bool TransporterReceiveData::epoll_add(Transporter *t [[maybe_unused]]) {
     event_poll.events = EPOLLIN;
     ret_val =
         epoll_ctl(m_epoll_fd, op, ndb_socket_get_native(sock_fd), &event_poll);
-    if (likely(!ret_val)) goto ok;
+    if (likely(!ret_val)) {
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+      /*
+       * For RDMA transporters, also add the recv completion-channel fd
+       * to the same epoll set so an incoming CQE wakes the recv thread
+       * out of epoll_wait. The event data is OR'd with
+       * RDMA_COMP_CHANNEL_BIT so check_TCP() can tell comp-channel
+       * events apart from control-socket events on the same TrpId and
+       * route them through RDMA_Transporter::handle_recv_comp_event
+       * instead of the existing TCP/SHM "socket has data" path.
+       *
+       * Failure here is non-fatal: the link still functions, just
+       * without the wakeup optimisation -- the recv thread continues
+       * to drain CQEs via the existing poll_RDMA() cadence in
+       * pollReceive().
+       */
+      if (t->getTransporterType() == tt_RDMA_TRANSPORTER) {
+        RDMA_Transporter *rdma_t = static_cast<RDMA_Transporter *>(t);
+        const int channel_fd = rdma_t->get_recv_comp_channel_fd();
+        if (channel_fd >= 0) {
+          struct epoll_event ch_event;
+          memset(&ch_event, 0, sizeof(ch_event));
+          ch_event.data.u32 = trp_id | RDMA_COMP_CHANNEL_BIT;
+          ch_event.events = EPOLLIN;
+          if (epoll_ctl(m_epoll_fd, EPOLL_CTL_ADD, channel_fd,
+                        &ch_event) != 0) {
+            const int e = errno;
+            g_eventLogger->warning(
+                "RDMA: failed to register comp channel fd %d for trp:%u in "
+                "epoll (errno=%d %s); falling back to pollReceive cadence",
+                channel_fd, trp_id, e, strerror(e));
+          }
+        }
+      }
+#endif
+      goto ok;
+    }
     error = errno;
     const int node_id = t->getRemoteNodeId();
     if (error != ENOMEM) {
@@ -1455,7 +1491,14 @@ TransporterRegistry::check_TCP(TransporterReceiveHandle& recvdata,
 
     // Handle the received epoll events
     for (int i = 0; i < tcpReadSelectReply; i++) {
-      const TrpId trpid = recvdata.m_epoll_events[i].data.u32;
+      const uint32_t raw = recvdata.m_epoll_events[i].data.u32;
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+      const bool is_rdma_comp = (raw & RDMA_COMP_CHANNEL_BIT) != 0u;
+      const TrpId trpid =
+          static_cast<TrpId>(raw & ~RDMA_COMP_CHANNEL_BIT);
+#else
+      const TrpId trpid = raw;
+#endif
       /**
        * check that it's assigned to "us"
        */
@@ -1463,6 +1506,17 @@ TransporterRegistry::check_TCP(TransporterReceiveHandle& recvdata,
 
       // Note that EPOLLHUP is delivered even if not listened to.
       if (recvdata.m_epoll_events[i].events & EPOLLHUP) {
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+        if (is_rdma_comp) {
+          /* Comp-channel HUP fires when the channel fd is closed by
+           * release_verbs_resources() during disconnect. The kernel
+           * has already auto-removed the fd from epoll at close
+           * time, so there is nothing to do here. The link teardown
+           * is driven by the control socket's HUP on the same
+           * trp_id, which will be processed separately. */
+          continue;
+        }
+#endif
         // Stop listening to events from 'sock_fd'
         ndb_socket_t sock_fd = allTransporters[trpid]->getSocket();
         epoll_ctl(recvdata.m_epoll_fd, EPOLL_CTL_DEL,
@@ -1471,6 +1525,26 @@ TransporterRegistry::check_TCP(TransporterReceiveHandle& recvdata,
           trpid));
         start_disconnecting(trpid);
       } else if (recvdata.m_epoll_events[i].events & EPOLLIN) {
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+        if (is_rdma_comp) {
+          /* Comp-channel wake: drain and ack the events on the
+           * channel so the fd stops being readable, then mark the
+           * transporter so performReceive()'s RDMA branch will call
+           * reap_recv_completions and process the CQEs.
+           *
+           * Note we deliberately do NOT set m_recv_socket_transporters
+           * here: there is no socket payload to read; the wakeup
+           * pertains to the recv CQ only. */
+          Transporter *t = allTransporters[trpid];
+          if (likely(t != nullptr &&
+                     t->getTransporterType() == tt_RDMA_TRANSPORTER)) {
+            static_cast<RDMA_Transporter *>(t)->handle_recv_comp_event();
+          }
+          recvdata.m_read_transporters.set(trpid);
+          retVal++;
+          continue;
+        }
+#endif
         recvdata.m_read_transporters.set(trpid);
         recvdata.m_recv_socket_transporters.set(trpid);
         retVal++;
