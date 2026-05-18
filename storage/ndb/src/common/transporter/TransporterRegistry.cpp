@@ -2699,6 +2699,23 @@ extern "C" void *run_start_clients_C(void *me) {
  * parts and synchronice the switch to the MultiTransporter
  */
 void TransporterRegistry::start_connecting(TrpId trp_id) {
+  /**
+   * Defensive: callers (e.g. Trpman::execOPEN_COMORD) may invoke this with
+   * a trp_id of 0 if get_the_only_base_trp() returned no transporter for
+   * a node, or with a trp_id whose allTransporters slot is null because
+   * the configuration didn't generate a transporter for the pair (this is
+   * the case if e.g. an unsupported [rdma] section caused
+   * add_node_connections to suppress the auto-generated TCP fallback and
+   * the RDMA section itself was then skipped by saveInConfigValues).
+   * Reject the request rather than dereferencing a NULL pointer.
+   */
+  if (unlikely(trp_id == 0 || trp_id >= maxTransporters ||
+               allTransporters[trp_id] == nullptr)) {
+    g_eventLogger->warning(
+        "start_connecting(trp:%u): no transporter for this id, ignoring",
+        trp_id);
+    return;
+  }
   switch (performStates[trp_id]) {
     case DISCONNECTED:
       break;
