@@ -1928,14 +1928,24 @@ bool RDMA_Transporter::validate_msg_header(
         "RDMA: control-flag msg has non-zero payload_len=%u", payload_len);
     return false;
   }
-  /* Payload bytes must fit in (available - header) and within the upper
-   * Protocol6 receive limit. */
-  if (payload_len > (Uint32)MAX_RECV_MESSAGE_BYTESIZE) {
-    g_eventLogger->error(
-        "RDMA: msg payload_len=%u exceeds MAX_RECV_MESSAGE_BYTESIZE=%u",
-        payload_len, (unsigned)MAX_RECV_MESSAGE_BYTESIZE);
-    return false;
-  }
+  /*
+   * Payload bytes must fit in (available - header), where `available` is
+   * the WC byte_len for the slot the HCA filled. The HCA can never write
+   * more than one full receive slot, so this implicitly caps payload_len
+   * to slot_size - header.
+   *
+   * Historically this function also rejected payload_len greater than
+   * MAX_RECV_MESSAGE_BYTESIZE (the per-Protocol6-message limit). That
+   * was a leftover from before the Gate-3 sender-side packing: doSend()
+   * now legitimately packs MULTIPLE complete Protocol6 messages into a
+   * single RDMA payload, up to slot_size - header, so a single payload
+   * can be larger than one Protocol6 message. The per-message size
+   * limit still applies, but it is enforced by Packer::unpack_one()
+   * inside the upper layer where it has the actual signal boundary;
+   * checking it here would falsely reject legitimate bulk-copy bursts
+   * (the symptom: "payload_len=64740 exceeds MAX_RECV_MESSAGE_BYTESIZE"
+   * during "Copying of dictionary information" in start phase 5).
+   */
   if ((size_t)payload_len + (size_t)RDMA_MSG_HEADER_BYTES > available) {
     g_eventLogger->error(
         "RDMA: msg payload_len=%u + header=%u exceeds available=%zu",
@@ -2394,7 +2404,8 @@ bool RDMA_Transporter::qp_transition_to_rts(Uint32 local_psn) {
  *   - Rejection of bad magic, bad version, bad header_len, and
  *     unknown flag bits.
  *   - Rejection of CREDIT_ONLY/HEARTBEAT messages carrying a payload.
- *   - Rejection of payload_len that exceeds MAX_RECV_MESSAGE_BYTESIZE.
+ *   - Acceptance of payload_len greater than MAX_RECV_MESSAGE_BYTESIZE
+ *     when `available` is large enough (multi-Protocol6 packed slot).
  *   - Rejection of buffers shorter than the fixed header.
  *   - Rejection of payload_len + header_len exceeding `available`.
  *   - Acceptance of an exact-fit `available`.
@@ -2572,14 +2583,25 @@ TAPTEST(RDMA_Transporter) {
       buf, (size_t)RDMA_MSG_HEADER_BYTES + 4u, nullptr, nullptr, nullptr,
       nullptr, nullptr));
 
-  /* payload_len exceeding the protocol-level maximum must be rejected. */
+  /* A payload_len greater than the single-Protocol6-message limit is
+   * now LEGAL at the RDMA layer because doSend() packs multiple
+   * complete Protocol6 messages per slot. The per-message limit is
+   * enforced inside Packer::unpack_one(), not here. Verify that a
+   * payload_len of MAX_RECV_MESSAGE_BYTESIZE+1 is accepted when
+   * `available` is large enough. */
   RDMA_Transporter::encode_msg_header(
       buf, /*payload=*/(Uint32)MAX_RECV_MESSAGE_BYTESIZE + 1u,
       /*send_seq=*/0u, /*ack_seq=*/0u, /*credit_delta=*/0u, /*flags=*/0u);
-  OK(!RDMA_Transporter::validate_msg_header(
+  /* Allocate a heap buffer large enough; the on-stack buf[64] is
+   * insufficient to back this `available` value, but validate_msg_header
+   * only reads the header bytes plus checks the numeric `available`
+   * parameter, so it does not actually dereference past the header. */
+  Uint32 got_big_payload = 0;
+  OK(RDMA_Transporter::validate_msg_header(
       buf,
       (size_t)RDMA_MSG_HEADER_BYTES + (size_t)MAX_RECV_MESSAGE_BYTESIZE + 1u,
-      nullptr, nullptr, nullptr, nullptr, nullptr));
+      &got_big_payload, nullptr, nullptr, nullptr, nullptr));
+  OK(got_big_payload == (Uint32)MAX_RECV_MESSAGE_BYTESIZE + 1u);
 
   /* available < header_len: short buffer must fail before the
    * validator dereferences any field. */
