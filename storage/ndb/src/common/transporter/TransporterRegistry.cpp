@@ -2368,6 +2368,24 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
           if (stopReceiving) break;
         }
         hasdata = t_rdma->has_received_data();
+        /*
+         * Opportunistic CREDIT_ONLY emission from the receive thread.
+         *
+         * Multi-transporter clones that only carry inbound traffic
+         * never have doSend() invoked, so the credit-refill path that
+         * lives in doSend() never fires for them. Without an emit
+         * here, the peer's outbound credit pool against us would
+         * drain to zero and the inbound direction would stall under
+         * benchmark load (the GCP_COMMIT-lag / NDB-274 / NDB-286
+         * pattern). recv_thread_emit_credit_only() is a fast lock-
+         * free no-op when the pending grant is below the half-queue
+         * threshold; otherwise it takes the per-transporter send
+         * lock to safely post a zero-payload CREDIT_ONLY WR. The
+         * send lock is per-transporter and the send thread never
+         * takes the global receive lock, so this cannot deadlock
+         * against doSend() on any transporter.
+         */
+        t_rdma->recv_thread_emit_credit_only();
       }
 #endif
       else
