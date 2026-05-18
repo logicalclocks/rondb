@@ -299,11 +299,19 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_recv_queue_tail(0),
       m_recv_queue_count(0) {
   /*
-   * Multi-transporter cloning is not yet supported for RDMA. Abort so the
-   * registry's switch-to-multi path cannot silently create a partially
-   * configured transporter.
+   * Gate-3 multi-transporter clone:
+   *   - All tuning state (queue depth, buffers, retry counters, device
+   *     name, etc.) is copied from `other`.
+   *   - Verbs handles (m_verbs_ctx/m_pd/m_send_cq/m_recv_cq/m_qp/MRs)
+   *     and per-slot bookkeeping arrays start out NULL; the connect
+   *     path will allocate fresh ones for this clone (its own QP, its
+   *     own MRs) just like the base transporter.
+   *
+   * Each clone is fully independent at the verbs level, sharing only
+   * the ibv_device identity through configuration. The registry adds
+   * the clone to m_node_multi_transporters and the Multi_Transporter
+   * wrapper drives parallel doSend()/poll_RDMA() across all clones.
    */
-  require(false);
 }
 
 RDMA_Transporter::~RDMA_Transporter() {
