@@ -716,6 +716,98 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
   }
 
   /*
+   * CREDIT_ONLY refill: if the receiver has accumulated enough credit
+   * grants to give back to the peer but the main loop above had no
+   * outgoing data to piggy-back them on, post an explicit zero-payload
+   * CREDIT_ONLY message. Without this, an asymmetric multi-transporter
+   * clone (e.g. one that mostly carries inbound GCP_COMMIT to this
+   * node) will accumulate pending grants forever and the peer's
+   * m_peer_recv_credits will drain to zero, stalling further sends in
+   * that direction. The GCP_COMMIT lag pattern we observed under
+   * benchmark load (m_count=1 against the peer with no qp_fatal/RNR
+   * markers) is the visible symptom.
+   *
+   * Threshold: emit when pending grants reach half the queue depth.
+   * This amortizes the WR cost across many real grants while keeping
+   * enough headroom that the peer never sees fewer than queue_depth/2
+   * credits even in pathological cases. We additionally fire when
+   * pending grants exceed 0 and the peer's own credit pool against
+   * us looks low (m_peer_recv_credits below queue_depth/4), because
+   * if both sides are running low we want to refresh aggressively
+   * to avoid a mutual-stall deadlock.
+   */
+  const Uint32 credit_threshold =
+      m_queue_depth > 1 ? (m_queue_depth / 2) : 1u;
+  const Uint32 low_credit_threshold =
+      m_queue_depth > 3 ? (m_queue_depth / 4) : 1u;
+  const bool needs_refill =
+      (m_pending_credit_grant >= credit_threshold) ||
+      (m_pending_credit_grant > 0 &&
+       m_peer_recv_credits < low_credit_threshold);
+  if (needs_refill && m_send_slots_in_flight < m_queue_depth &&
+      m_peer_recv_credits > 0) {
+    const Uint32 slot = find_free_send_slot();
+    if (slot != UINT32_MAX) {
+      char *const slot_buf =
+          (char *)m_send_buf + (size_t)slot * (size_t)slot_size;
+      const Uint16 credit_delta = (m_pending_credit_grant > 0xFFFFu)
+                                      ? (Uint16)0xFFFFu
+                                      : (Uint16)m_pending_credit_grant;
+      encode_msg_header(slot_buf, /*payload_len=*/0u, m_local_send_seq,
+                        m_local_recv_seq, credit_delta,
+                        RDMA_MSG_FLAG_CREDIT_ONLY);
+
+      struct ibv_sge sge;
+      std::memset(&sge, 0, sizeof(sge));
+      sge.addr = (uintptr_t)slot_buf;
+      sge.length = (Uint32)RDMA_MSG_HEADER_BYTES;
+      sge.lkey = m_send_mr->lkey;
+
+      struct ibv_send_wr wr;
+      std::memset(&wr, 0, sizeof(wr));
+      wr.wr_id = (uint64_t)slot;
+      wr.sg_list = &sge;
+      wr.num_sge = 1;
+      wr.opcode = IBV_WR_SEND;
+      wr.send_flags = IBV_SEND_SIGNALED;
+      const bool credit_inline_used =
+          (sge.length <= m_effective_inline_threshold);
+      if (credit_inline_used) {
+        wr.send_flags |= IBV_SEND_INLINE;
+      }
+
+      struct ibv_send_wr *bad = nullptr;
+      const int rc = ibv_post_send(m_qp, &wr, &bad);
+      if (rc != 0) {
+        g_eventLogger->error(
+            "RDMA[node %u->%u]: ibv_post_send(CREDIT_ONLY) failed (rc=%d "
+            "errno=%d %s); disconnecting",
+            (unsigned)localNodeId, (unsigned)remoteNodeId, rc, errno,
+            std::strerror(errno));
+        m_stats.qp_fatal_events++;
+        report_error(TE_RDMA_QP_ERROR, "ibv_post_send(CREDIT_ONLY) failed");
+        start_disconnecting(rc, /*send_source=*/true);
+        return false;
+      }
+
+      /*
+       * Commit state. bytes_consumed stays at 0 so reap_send_completions
+       * does not call iovec_data_sent() (there are no upper-layer bytes
+       * tied to this WR). m_bytes_in_flight is also unchanged.
+       */
+      m_send_slots[slot].bytes_consumed = 0;
+      m_send_slots[slot].in_flight = true;
+      m_send_slots_in_flight++;
+      m_local_send_seq++;
+      m_peer_recv_credits--;
+      m_pending_credit_grant = 0;
+      m_stats.send_credit_only_out++;
+      m_stats.send_posted++;
+      if (credit_inline_used) m_stats.send_inline++;
+    }
+  }
+
+  /*
    * If the loop exited because the peer-credit pool is empty while we
    * still have free slots, this is a credit-bound stall. Note we do
    * not differentiate "no data to send" from "data to send but no
