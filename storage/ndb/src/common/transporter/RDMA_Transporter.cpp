@@ -344,47 +344,67 @@ bool RDMA_Transporter::configure_derived(
 
 bool RDMA_Transporter::connect_server_impl(NdbSocket &&socket) {
   /*
-   * Gate-1 server-side handshake:
+   * Gate-3 server-side connect:
    *   1. Allocate verbs resources (PD/CQ/QP/MR).
    *   2. Run the endpoint exchange and drive the QP through INIT->RTR->RTS.
-   *   3. Release verbs resources, close the control socket, and refuse the
-   *      link. We deliberately return false because the data path is not
-   *      implemented yet; this preserves Gate-1 safety while still
-   *      exercising the entire setup state machine end-to-end.
+   *   3. On success, KEEP the verbs resources alive and return true so
+   *      that the registry promotes the transporter to CONNECTED and
+   *      the existing milestone-7/8/9 send/recv plumbing (doSend(),
+   *      poll_RDMA(), performReceive() RDMA arm, reap_recv_completions(),
+   *      etc.) begins carrying signals over the QP.
    *
-   * Note: we do NOT call report_error() here. The registry treats any
-   * queued error during CONNECTING state as "unexpected" (see
-   * update_connections() which asserts in debug builds), and the fabric
-   * error -- if any -- is already surfaced via g_eventLogger inside
-   * allocate_verbs_resources() / run_endpoint_exchange().
+   * On any failure we release everything and return false; the registry's
+   * reconnect loop will retry. The control socket is closed in either
+   * direction once endpoint exchange completes -- after RTS, all further
+   * traffic flows over ibverbs.
    */
-  if (allocate_verbs_resources()) {
-    if (run_endpoint_exchange(socket, "server")) {
-      log_negotiated_attributes();
-      g_eventLogger->info(
-          "RDMA[node %u->%u]: server-side QP reached RTS; data path not yet "
-          "implemented, refusing link",
-          (unsigned)localNodeId, (unsigned)remoteNodeId);
-    }
-    release_verbs_resources();
+  if (!allocate_verbs_resources()) {
+    socket.close();
+    return false;
   }
-  socket.close();
-  return false;
+  if (!run_endpoint_exchange(socket, "server")) {
+    release_verbs_resources();
+    socket.close();
+    return false;
+  }
+  log_negotiated_attributes();
+  g_eventLogger->info(
+      "RDMA[node %u->%u]: server-side QP reached RTS; data path live",
+      (unsigned)localNodeId, (unsigned)remoteNodeId);
+  /* The control socket is no longer needed for data; all signal traffic
+   * now flows over the QP. But the base Transporter contract requires
+   * a valid fd in theSocket so the registry's epoll_add() succeeds in
+   * report_connect() and isReleased() returns false until
+   * releaseAfterDisconnect() runs. The socket sits idle (non-blocking)
+   * and only contributes EPOLLHUP if the peer tears down, which we want
+   * as a fast-fail signal for link death. SO_KEEPALIVE lets the kernel
+   * notice silent peer death on its own. */
+  set_get(socket.ndb_socket(), SOL_SOCKET, SO_KEEPALIVE, "SO_KEEPALIVE", 1);
+  socket.set_nonblocking(true);
+  theSocket = std::move(socket);
+  return true;
 }
 
 bool RDMA_Transporter::connect_client_impl(NdbSocket &&socket) {
-  if (allocate_verbs_resources()) {
-    if (run_endpoint_exchange(socket, "client")) {
-      log_negotiated_attributes();
-      g_eventLogger->info(
-          "RDMA[node %u->%u]: client-side QP reached RTS; data path not yet "
-          "implemented, refusing link",
-          (unsigned)localNodeId, (unsigned)remoteNodeId);
-    }
-    release_verbs_resources();
+  /* Gate-3 client-side connect -- see connect_server_impl for the full
+   * lifecycle. */
+  if (!allocate_verbs_resources()) {
+    socket.close();
+    return false;
   }
-  socket.close();
-  return false;
+  if (!run_endpoint_exchange(socket, "client")) {
+    release_verbs_resources();
+    socket.close();
+    return false;
+  }
+  log_negotiated_attributes();
+  g_eventLogger->info(
+      "RDMA[node %u->%u]: client-side QP reached RTS; data path live",
+      (unsigned)localNodeId, (unsigned)remoteNodeId);
+  set_get(socket.ndb_socket(), SOL_SOCKET, SO_KEEPALIVE, "SO_KEEPALIVE", 1);
+  socket.set_nonblocking(true);
+  theSocket = std::move(socket);
+  return true;
 }
 
 void RDMA_Transporter::disconnectImpl() {
