@@ -305,6 +305,15 @@ bool ConfigObject::get(ConfigSection *curr_section, Uint32 key,
 
 bool ConfigObject::put(Uint32 key, Uint32 val) {
   // g_eventLogger->info("put(%u, %u)", key, val);
+  if (unlikely(m_curr_cfg_section == nullptr)) {
+    /* Defensive: a previous createSection() failure (e.g. for an
+     * unsupported connection type like RDMA on a binary that has the
+     * RDMA ConfigInfo entries but does not yet wire them through
+     * ConfigObject) left no current section. Reject the put rather
+     * than dereferencing a NULL pointer. */
+    m_error_code = SET_NOT_REAL_SECTION_ERROR;
+    return false;
+  }
   ConfigSection::Entry entry;
   entry.m_key = key;
   entry.m_type = ConfigSection::IntTypeId;
@@ -314,6 +323,10 @@ bool ConfigObject::put(Uint32 key, Uint32 val) {
 
 bool ConfigObject::put64(Uint32 key, Uint64 val) {
   // g_eventLogger->info("put(%u, %llu)", key, val);
+  if (unlikely(m_curr_cfg_section == nullptr)) {
+    m_error_code = SET_NOT_REAL_SECTION_ERROR;
+    return false;
+  }
   ConfigSection::Entry entry;
   entry.m_key = key;
   entry.m_type = ConfigSection::Int64TypeId;
@@ -323,6 +336,10 @@ bool ConfigObject::put64(Uint32 key, Uint64 val) {
 
 bool ConfigObject::put(Uint32 key, const char *str) {
   // g_eventLogger->info("put(%u, %s)", key, str);
+  if (unlikely(m_curr_cfg_section == nullptr)) {
+    m_error_code = SET_NOT_REAL_SECTION_ERROR;
+    return false;
+  }
   ConfigSection::Entry entry;
   entry.m_key = key;
   entry.m_type = ConfigSection::StringTypeId;
