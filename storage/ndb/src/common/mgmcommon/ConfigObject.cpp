@@ -161,6 +161,14 @@ ConfigObject *ConfigObject::copy_current(ConfigSection *curr_section) const {
       }
       break;
     }
+    case ConfigSection::RdmaTypeId: {
+      new_co->m_num_comm_sections = 1;
+      new_co->m_comm_sections.push_back(new_cs);
+      /* No m_rdma_default_section is shipped on the wire; RDMA sections
+       * carry all their keys inline (see ConfigSection::get_default_section).
+       */
+      break;
+    }
     case ConfigSection::SystemSectionId: {
       new_co->m_system_section = new_cs;
       break;
@@ -207,6 +215,9 @@ bool ConfigObject::createSection(Uint32 section_type, Uint32 type) {
       cs->set_config_section_type(ConfigSection::CommSection);
     } else if (type == SHM_TYPE) {
       cs->set_section_type(ConfigSection::ShmTypeId);
+      cs->set_config_section_type(ConfigSection::CommSection);
+    } else if (type == RDMA_TYPE) {
+      cs->set_section_type(ConfigSection::RdmaTypeId);
       cs->set_config_section_type(ConfigSection::CommSection);
     } else {
       DEB_MALLOC(("delete(%u) => %p", __LINE__, cs));
@@ -300,6 +311,11 @@ bool ConfigObject::get(ConfigSection *curr_section, Uint32 key,
     return true;
   }
   ConfigSection *cs = curr_section->get_default_section();
+  if (cs == nullptr) {
+    /* RDMA sections do not have a per-type default section; the key was
+     * not found in this section. */
+    return false;
+  }
   return cs->get(key, entry);
 }
 
@@ -726,6 +742,11 @@ void ConfigObject::create_default_sections() {
         shm_default_keys &= keys;
         break;
       }
+      case ConfigSection::RdmaTypeId: {
+        /* RDMA sections have no per-type default section in the wire
+         * format. Keys are carried inline on each RDMA section. */
+        break;
+      }
       case ConfigSection::SystemSectionId: {
         /* Only one system section, so no need of a default */
         break;
@@ -796,6 +817,11 @@ void ConfigObject::create_default_sections() {
         }
         DEB_UNPACK_V1(("Handle SHM section %u", i));
         current->handle_default_section(m_shm_default_section);
+        break;
+      }
+      case ConfigSection::RdmaTypeId: {
+        /* No per-type default section for RDMA on the wire. Each RDMA
+         * section carries its keys inline so no default merge happens. */
         break;
       }
       case ConfigSection::SystemSectionId: {
@@ -1426,7 +1452,8 @@ bool ConfigObject::build_arrays(bool only_sort) {
           break;
         }
         case ConfigSection::TcpTypeId:
-        case ConfigSection::ShmTypeId: {
+        case ConfigSection::ShmTypeId:
+        case ConfigSection::RdmaTypeId: {
           num_comm_sections++;
           m_comm_sections.push_back(section);
           break;

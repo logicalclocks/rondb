@@ -56,7 +56,8 @@ class ConfigSection {
     MgmNodeTypeId = 3,
     TcpTypeId = 4,
     ShmTypeId = 5,
-    SystemSectionId = 6
+    SystemSectionId = 6,
+    RdmaTypeId = 7
   };
 
   class Entry {
@@ -356,6 +357,7 @@ static const Uint32 MGM_NODE_TYPE = 2;
 
 static const Uint32 TCP_TYPE = 0;
 static const Uint32 SHM_TYPE = 1;
+static const Uint32 RDMA_TYPE = 2;
 
 static const Uint32 CONF_SYSTEM_TYPE = 1000;
 #endif
