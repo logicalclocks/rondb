@@ -384,6 +384,14 @@ ConfigSection *ConfigSection::get_default_section() const {
     case ShmTypeId: {
       return m_cfg_object->m_shm_default_section;
     }
+    case RdmaTypeId: {
+      /* RDMA sections are wire-compatible with the v2 binary format that
+       * still ships 5 default sections (DataNode/Api/Mgm/Tcp/Shm). RDMA
+       * sections are stored as Comm sections but carry all their keys
+       * inline; callers must NULL-check this result.
+       */
+      return nullptr;
+    }
     default: {
       require(false);
       break;
@@ -413,6 +421,10 @@ Uint32 ConfigSection::get_section_type_value() {
     }
     case ShmTypeId: {
       val = SHM_TYPE;
+      break;
+    }
+    case RdmaTypeId: {
+      val = RDMA_TYPE;
       break;
     }
     case SystemSectionId: {
@@ -460,9 +472,15 @@ Uint32 ConfigSection::get_v1_length() const {
    * we will use the value from the section. We will move to the next
    * key in an appropriate manner.
    */
-  while (default_inx < default_section->m_num_entries ||
+  /* For RDMA sections get_default_section() returns nullptr (no per-type
+   * default section is shipped on the wire). Treat that as an empty
+   * default section so the v1 length computation still merges correctly.
+   */
+  const Uint32 default_num_entries =
+      (default_section != nullptr) ? default_section->m_num_entries : 0;
+  while (default_inx < default_num_entries ||
          my_inx < m_num_entries) {
-    if ((default_inx >= default_section->m_num_entries) ||
+    if ((default_inx >= default_num_entries) ||
         ((my_inx < m_num_entries) &&
          (sorted_entries[my_inx]->m_key <
           default_section->m_entry_array[default_inx]->m_key)))
@@ -481,8 +499,7 @@ Uint32 ConfigSection::get_v1_length() const {
       default_inx++;
     }
   }
-  require(my_inx == m_num_entries &&
-          default_inx == default_section->m_num_entries);
+  require(my_inx == m_num_entries && default_inx == default_num_entries);
   /**
    * Add two more entries for type of section and parent.
    */
@@ -505,10 +522,15 @@ void ConfigSection::create_v1_section(Uint32 **v1_ptr, Uint32 section_id) {
    * Both this section and the default section is sorted in key
    * key order and the array is packed such that there are no
    * holes in the array.
+   *
+   * For RDMA sections get_default_section() returns nullptr (no per-type
+   * default section); treat it as empty so each RDMA section carries all
+   * its keys inline in v1.
    */
-  while (default_inx < default_section->m_num_entries ||
-         my_inx < m_num_entries) {
-    if ((default_inx >= default_section->m_num_entries) ||
+  const Uint32 default_num_entries =
+      (default_section != nullptr) ? default_section->m_num_entries : 0;
+  while (default_inx < default_num_entries || my_inx < m_num_entries) {
+    if ((default_inx >= default_num_entries) ||
         ((my_inx < m_num_entries) &&
          (sorted_entries[my_inx]->m_key <
           default_section->m_entry_array[default_inx]->m_key))) {
@@ -528,8 +550,7 @@ void ConfigSection::create_v1_section(Uint32 **v1_ptr, Uint32 section_id) {
       default_inx++;
     }
   }
-  require(my_inx == m_num_entries &&
-          default_inx == default_section->m_num_entries);
+  require(my_inx == m_num_entries && default_inx == default_num_entries);
   {
     /**
      * Add type of section and parent (== 0) to be in accordance
@@ -614,6 +635,8 @@ bool ConfigSection::set_section_type(Entry &entry) {
       m_section_type = TcpTypeId;
     } else if (type == SHM_TYPE) {
       m_section_type = ShmTypeId;
+    } else if (type == RDMA_TYPE) {
+      m_section_type = RdmaTypeId;
     } else {
       m_cfg_object->m_error_code = WRONG_COMM_TYPE;
       return false;
@@ -636,7 +659,8 @@ void ConfigSection::set_config_section_type() {
       break;
     }
     case TcpTypeId:
-    case ShmTypeId: {
+    case ShmTypeId:
+    case RdmaTypeId: {
       m_config_section_type = CommSection;
       break;
     }
@@ -755,7 +779,8 @@ void ConfigSection::verify_section() {
       break;
     }
     case ConfigSection::TcpTypeId:
-    case ConfigSection::ShmTypeId: {
+    case ConfigSection::ShmTypeId:
+    case ConfigSection::RdmaTypeId: {
       require(m_config_section_type == CommSection);
       Entry *entry1 = find_key(CONFIG_FIRST_NODE_ID);
       Entry *entry2 = find_key(CONFIG_SECOND_NODE_ID);
@@ -786,7 +811,8 @@ void ConfigSection::set_node_id_from_keys() {
       break;
     }
     case ConfigSection::TcpTypeId:
-    case ConfigSection::ShmTypeId: {
+    case ConfigSection::ShmTypeId:
+    case ConfigSection::RdmaTypeId: {
       Entry *entry1 = find_key(CONFIG_FIRST_NODE_ID);
       require(entry1 != nullptr && entry1->m_type == IntTypeId);
       Entry *entry2 = find_key(CONFIG_SECOND_NODE_ID);
@@ -1035,7 +1061,8 @@ bool ConfigSection::unpack_comm_section(const Uint32 **data) {
   unpack_section_header(data, header_len, num_entries);
   switch (m_section_type) {
     case TcpTypeId:
-    case ShmTypeId: {
+    case ShmTypeId:
+    case RdmaTypeId: {
       break;
     }
     default: {
