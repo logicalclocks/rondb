@@ -4310,7 +4310,18 @@ static bool saveInConfigValues(InitConfigFileParser::Context &ctx,
     ctx.m_userProperties.get("$Section", id, &no);
     ctx.m_userProperties.put("$Section", id, no + 1, true);
 
-    ctx.m_configValues.createSection(id, typeVal);
+    if (!ctx.m_configValues.createSection(id, typeVal)) {
+      /* createSection() can fail for connection types not yet wired
+       * through ConfigObject (e.g. RDMA on a build that has the
+       * ConfigInfo entries but the ConfigObject/ConfigSection layer
+       * still only knows TCP and SHM). Skip the section rather than
+       * letting the next put() NULL-deref m_curr_cfg_section. */
+      ndbout_c("skipping section %s: createSection(%u, %u) failed, "
+               "error_code=%d",
+               ctx.fname, id, typeVal,
+               ctx.m_configValues.get_error_code());
+      break;
+    }
     Properties::Iterator it(ctx.m_currentSection);
     for (const char *n = it.first(); n != nullptr; n = it.next()) {
       const Properties *info;
