@@ -963,17 +963,41 @@ void RDMA_Transporter::recv_thread_emit_credit_only() {
    */
   lock_send_transporter();
   /*
-   * Reap any pending send completions before posting so credit-only
-   * slots we emitted on previous receive batches (or that doSend()
-   * left in flight) are recycled. Without this the recv-thread emit
-   * path could monotonically consume slots up to queue_depth and
-   * then stop being able to refresh credits.
+   * Do NOT call reap_send_completions() from this (recv-thread)
+   * context. reap_send_completions() invokes iovec_data_sent() ->
+   * trp_callback::bytes_sent() for every freed data WR, and
+   * trp_callback::bytes_sent() in mt.cpp releases the freed pages
+   * back into a thread_local_pool<thr_send_page> -- either the
+   * block thread's m_send_buffer_pool, or a dedicated send
+   * thread's pool obtained via g_send_threads->get_send_buffer_pool().
+   * thread_local_pool is, by design, only safe to mutate from
+   * its owner thread: its internal free-list bookkeeping is
+   * protected by thread affinity, NOT by the per-transporter
+   * m_send_lock that we hold here. Touching it from the recv
+   * thread races with the owner thread's own pool operations
+   * (which it performs on a different transporter's send_buffer
+   * but the SAME pool) and ultimately segfaults inside
+   * trp_callback::bytes_sent -> ::bytes_sent -> release_list.
+   * This was observed on cli-142 in start phase 5 SR copy as
+   * soon as the validate_msg_header upper-bound fix
+   * (0a5514bc037) let real inbound bulk-copy traffic reach this
+   * code path.
+   *
+   * The original concern that motivated the reap call (recv-thread
+   * emit path monotonically consuming send slots) does not occur
+   * in practice: every credit-only WR we post here generates a
+   * send CQE that the send thread will reap on its next pass
+   * through doSend() -> reap_send_completions(), which is the
+   * thread-correct context for invoking trp_callback::bytes_sent.
+   * The send thread iterates every transporter every cycle, so
+   * even a purely inbound-traffic transporter still gets its
+   * own send slots recycled in a bounded number of send-thread
+   * iterations. If no slot happens to be free on the current
+   * pass, post_credit_only_locked() already no-ops via its
+   * built-in (m_send_slots_in_flight >= m_queue_depth) early
+   * return; the missed emit is recovered on the next receive
+   * batch with zero additional state.
    */
-  if (reap_send_completions() < 0) {
-    /* Fatal CQ error path already invoked start_disconnecting(). */
-    unlock_send_transporter();
-    return;
-  }
   if (post_credit_only_locked()) {
     /*
      * Separate counter so operators can verify the new path is
