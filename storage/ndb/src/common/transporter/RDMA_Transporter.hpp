@@ -43,6 +43,22 @@ struct ibv_pd;
 struct ibv_cq;
 struct ibv_qp;
 struct ibv_mr;
+struct ibv_comp_channel;
+
+/*
+ * Routing bit OR'd into the `data.u32` field of epoll events that were
+ * registered for an RDMA recv completion-channel fd (as opposed to the
+ * normal control-socket fd, which carries a bare transporter index).
+ *
+ * Picked as the high bit of u32 because TrpId values are bounded by
+ * MAX_NTRANSPORTERS (a few thousand at most), so the bit is always
+ * free for tagging. TransporterRegistry::check_TCP unmasks the bit
+ * to recover the underlying TrpId and routes the event accordingly:
+ * comp-channel events go through RDMA_Transporter::handle_recv_comp_event()
+ * and mark m_read_transporters; socket events keep the existing
+ * TCP/SHM-style dispatch.
+ */
+static constexpr uint32_t RDMA_COMP_CHANNEL_BIT = 0x80000000u;
 
 /*
  * --------------------------------------------------------------------------
@@ -437,6 +453,50 @@ class RDMA_Transporter : public Transporter {
    */
   void recv_thread_emit_credit_only();
 
+  /*
+   * --------------------------------------------------------------------------
+   *  Receive completion-channel integration (wakeup mechanism)
+   * --------------------------------------------------------------------------
+   *
+   * The recv CQ is bound to m_recv_comp_channel at allocate_verbs_resources()
+   * time. The channel's fd is added to the receive thread's epoll set by
+   * TransporterReceiveData::epoll_add(); when the HCA delivers a completion
+   * the fd becomes readable and the receive thread wakes out of epoll_wait().
+   * The standard arm-vs-fire race is handled by arm_recv_cq(), called at the
+   * tail of every reap_recv_completions() pass so an arm is always in place
+   * before the recv thread re-enters epoll_wait().
+   *
+   * Without this wakeup the recv thread would only notice incoming RDMA
+   * data at the next epoll_wait timeout in check_TCP(), which bounds
+   * RDMA receive latency below by that timeout. See RonDB transporter
+   * notes (src/common/transporter/trp.txt) for the equivalent SHM-side
+   * wakeup discussion -- this is the verbs-native counterpart.
+   *
+   * get_recv_comp_channel_fd()
+   *   Returns the (non-blocking) underlying fd so the registry can add
+   *   it to its epoll set. Returns -1 when the channel has not been
+   *   allocated yet (transporter is disconnected).
+   *
+   * handle_recv_comp_event()
+   *   Drains and acknowledges all pending events on the comp channel
+   *   (ibv_get_cq_event + ibv_ack_cq_events). Does NOT call
+   *   ibv_poll_cq itself; the registry drives polling via the
+   *   existing reap_recv_completions path. Safe to call from the
+   *   receive thread when the channel fd has fired in epoll. Defends
+   *   against the channel having been torn down concurrently by
+   *   release_verbs_resources().
+   *
+   * arm_recv_cq()
+   *   Calls ibv_req_notify_cq(m_recv_cq, solicited_only=0) so the
+   *   next CQE generates an event on the channel fd. A failure here
+   *   is logged but non-fatal -- the recv path still polls the CQ
+   *   at the existing pollReceive cadence, just without the wakeup
+   *   optimization.
+   */
+  int get_recv_comp_channel_fd() const;
+  void handle_recv_comp_event();
+  void arm_recv_cq();
+
  private:
 
   /*
@@ -520,7 +580,20 @@ class RDMA_Transporter : public Transporter {
    * Verbs resources owned by this transporter. All NULL until a
    * successful allocate_verbs_resources() call. Destruction order in
    * release_verbs_resources() must be the reverse of construction:
-   * QP -> CQs -> MRs -> staging buffers -> PD -> device context.
+   * QP -> CQs (recv first, while comp channel still alive) ->
+   * comp channel -> MRs -> staging buffers -> PD -> device context.
+   *
+   * m_recv_comp_channel is bound to m_recv_cq so the HCA can deliver
+   * a wakeup event whenever an incoming CQE lands on the recv CQ.
+   * Its fd is registered with the receive thread's epoll set by the
+   * registry; see the wakeup helpers above.
+   *
+   * m_recv_comp_events_pending tracks events received via
+   * ibv_get_cq_event() that we still need to ack. We ack each event
+   * individually inside handle_recv_comp_event(), so this normally
+   * stays at 0; it exists as a defensive backstop so
+   * release_verbs_resources() can drain residual acks before
+   * destroying the CQ (ibv_destroy_cq blocks on unacked events).
    */
   struct ibv_context *m_verbs_ctx;
   struct ibv_pd *m_pd;
@@ -529,6 +602,8 @@ class RDMA_Transporter : public Transporter {
   struct ibv_qp *m_qp;
   struct ibv_mr *m_send_mr;
   struct ibv_mr *m_recv_mr;
+  struct ibv_comp_channel *m_recv_comp_channel;
+  Uint64 m_recv_comp_events_pending;
 
   /*
    * Owned, page-aligned staging buffers registered with the HCA. Freed
