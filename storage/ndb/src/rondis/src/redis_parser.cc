@@ -210,6 +210,7 @@ int RedisParser::GetNextNum(int pos, long* value) {
   long ret_val = strtol(start_ptr, &end_ptr, 10);
   if (end_ptr != calc_end_ptr || errno == ERANGE || errno == EINVAL)
     return -1; // Failed
+  if (ret_val < 0) return -1; // reject negative lengths/counts
   *value = ret_val;
   return 0; // Success
 }
