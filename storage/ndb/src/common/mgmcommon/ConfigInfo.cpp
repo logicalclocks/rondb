@@ -78,7 +78,7 @@ const char *ConfigInfo::m_sectionNames[] = {"SYSTEM",  "COMPUTER",
 
                                             API_TOKEN, MGM_TOKEN,  DB_TOKEN,
 
-                                            "TCP",     "SHM"};
+                                            "TCP",     "SHM",     "RDMA"};
 const int ConfigInfo::m_noOfSectionNames =
     sizeof(m_sectionNames) / sizeof(char *);
 
@@ -132,9 +132,11 @@ const ConfigInfo::SectionRule ConfigInfo::m_SectionRules[] = {
 
     {"TCP", checkConnectionSupport, nullptr},
     {"SHM", checkConnectionSupport, nullptr},
+    {"RDMA", checkConnectionSupport, nullptr},
 
     {"TCP", transformConnection, nullptr},
     {"SHM", transformConnection, nullptr},
+    {"RDMA", transformConnection, nullptr},
 
     {DB_TOKEN, fixNodeHostname, nullptr},
     {API_TOKEN, fixNodeHostname, nullptr},
@@ -144,9 +146,12 @@ const ConfigInfo::SectionRule ConfigInfo::m_SectionRules[] = {
     {"TCP", fixNodeId, "NodeId2"},
     {"SHM", fixNodeId, "NodeId1"},
     {"SHM", fixNodeId, "NodeId2"},
+    {"RDMA", fixNodeId, "NodeId1"},
+    {"RDMA", fixNodeId, "NodeId2"},
 
     {"TCP", uniqueConnection, "TCP"},
     {"SHM", uniqueConnection, "SHM"},
+    {"RDMA", uniqueConnection, "RDMA"},
 
     {"TCP", fixHostname, "HostName1"},
     {"TCP", fixHostname, "HostName2"},
@@ -154,9 +159,12 @@ const ConfigInfo::SectionRule ConfigInfo::m_SectionRules[] = {
     {"SHM", fixHostname, "HostName2"},
     {"SHM", fixHostname, "HostName1"},
     {"SHM", fixHostname, "HostName2"},
+    {"RDMA", fixHostname, "HostName1"},
+    {"RDMA", fixHostname, "HostName2"},
 
     {"TCP", fixPortNumber, nullptr},  // has to come after fixHostName
     {"SHM", fixPortNumber, nullptr},  // has to come after fixHostName
+    {"RDMA", fixPortNumber, nullptr}, // has to come after fixHostName
 
     {"*", applyDefaultValues, "user"},
     {"*", fixDeprecated, nullptr},
@@ -179,6 +187,7 @@ const ConfigInfo::SectionRule ConfigInfo::m_SectionRules[] = {
 
     {"TCP", checkConnectionConstraints, nullptr},
     {"SHM", checkConnectionConstraints, nullptr},
+    {"RDMA", checkConnectionConstraints, nullptr},
 
     {"*", checkMandatory, nullptr}};
 const int ConfigInfo::m_NoOfRules =
@@ -2196,6 +2205,119 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      false, ConfigInfo::CI_INT, "2M", "64K", STR_VALUE(MAX_INT_RNIL)},
 
     /****************************************************************************
+     * RDMA (RonDB native verbs transporter, opt-in, DB-DB only)
+     ***************************************************************************/
+    {CFG_SECTION_CONNECTION, "RDMA", "RDMA", "Connection section",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_SECTION,
+     CONNECTION_TYPE_RDMA},
+
+    {CFG_CONNECTION_HOSTNAME_1, "HostName1", "RDMA",
+     "Name/IP of computer on one side of the connection", ConfigInfo::CI_USED,
+     false, ConfigInfo::CI_STRING, nullptr, nullptr, nullptr},
+
+    {CFG_CONNECTION_HOSTNAME_2, "HostName2", "RDMA",
+     "Name/IP of computer on one side of the connection", ConfigInfo::CI_USED,
+     false, ConfigInfo::CI_STRING, nullptr, nullptr, nullptr},
+
+    {CFG_CONNECTION_SERVER_PORT, "PortNumber", "RDMA",
+     "PortNumber used by data nodes for the RDMA control socket",
+     ConfigInfo::CI_INTERNAL, false, ConfigInfo::CI_INT, "0", "0",
+     STR_VALUE(MAX_PORT_NO)},
+
+    {CFG_CONNECTION_NODE_1, "NodeId1", "RDMA",
+     "Id of data node on one side of the connection",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_STRING, MANDATORY, nullptr,
+     nullptr},
+
+    {CFG_CONNECTION_NODE_2, "NodeId2", "RDMA",
+     "Id of data node on one side of the connection",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_STRING, MANDATORY, nullptr,
+     nullptr},
+
+    {CFG_CONNECTION_GROUP, "Group", "RDMA", "", ConfigInfo::CI_USED, false,
+     ConfigInfo::CI_INT, "45", "0", "200"},
+
+    {CFG_CONNECTION_NODE_ID_SERVER, "NodeIdServer", "RDMA", "",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, MANDATORY, "1", "63"},
+
+    {CFG_CONNECTION_SEND_SIGNAL_ID, "SendSignalId", "RDMA",
+     "Sends id in each signal. Used in trace files.",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL, "true", "false", "true"},
+
+    {CFG_CONNECTION_CHECKSUM, "Checksum", "RDMA",
+     "If checksum is enabled, all signals between nodes are checked for errors",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL, "true", "false", "true"},
+
+    {CFG_CONNECTION_PRESEND_CHECKSUM, "PreSendChecksum", "RDMA",
+     "If PreSendChecksum AND Checksum are enabled, pre-send checksum checks "
+     "are done, and all signals between nodes are checked for errors",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL, "false", "false", "true"},
+
+    {CFG_CONNECTION_OVERLOAD, "OverloadLimit", "RDMA",
+     "Number of unsent bytes that must be in the send buffer before the\n"
+     "connection is considered overloaded",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0",
+     STR_VALUE(MAX_INT_RNIL)},
+
+    {CFG_CONNECTION_NODE_1_SYSTEM, "NodeId1_System", "RDMA",
+     "System for node 1 in connection", ConfigInfo::CI_INTERNAL, false,
+     ConfigInfo::CI_STRING, nullptr, nullptr, nullptr},
+
+    {CFG_CONNECTION_NODE_2_SYSTEM, "NodeId2_System", "RDMA",
+     "System for node 2 in connection", ConfigInfo::CI_INTERNAL, false,
+     ConfigInfo::CI_STRING, nullptr, nullptr, nullptr},
+
+    {CFG_RDMA_SEND_BUFFER_SIZE, "RdmaSendBufferMemory", "RDMA",
+     "Bytes of registered staging memory for outbound RDMA SEND WRs",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "2M", "256K",
+     STR_VALUE(MAX_INT_RNIL)},
+
+    {CFG_RDMA_RECV_BUFFER_SIZE, "RdmaRecvBufferMemory", "RDMA",
+     "Bytes of registered staging memory for inbound RDMA RECV WRs",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "2M", "256K",
+     STR_VALUE(MAX_INT_RNIL)},
+
+    {CFG_RDMA_QUEUE_DEPTH, "RdmaQueueDepth", "RDMA",
+     "Send/receive WR queue depth for the QP",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "64", "16", "4096"},
+
+    {CFG_RDMA_INLINE_THRESHOLD, "RdmaInlineThreshold", "RDMA",
+     "Payload size below which RDMA SEND uses inline data",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "256", "0", "4096"},
+
+    {CFG_RDMA_COMPLETION_POLL_BUDGET, "RdmaCompletionPollBudget", "RDMA",
+     "Max completion work entries reaped per poll call",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "32", "1", "4096"},
+
+    {CFG_RDMA_SPINTIME, "RdmaSpintime", "RDMA",
+     "Microseconds to spin polling the RDMA CQ before going to sleep",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "2000"},
+
+    {CFG_RDMA_DEVICE_NAME, "RdmaDevice", "RDMA",
+     "ibverbs device name. Empty string selects the first available device",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_STRING, "", nullptr, nullptr},
+
+    {CFG_RDMA_PORT, "RdmaPort", "RDMA",
+     "HCA physical port number",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "1", "1", "4"},
+
+    {CFG_RDMA_GID_INDEX, "RdmaGidIndex", "RDMA",
+     "GID table index for RoCE",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "255"},
+
+    {CFG_RDMA_TRAFFIC_CLASS, "RdmaTrafficClass", "RDMA",
+     "DSCP-style traffic class for the QP",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "255"},
+
+    {CFG_RDMA_RETRY_COUNT, "RdmaRetryCount", "RDMA",
+     "QP retry count",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "7", "0", "7"},
+
+    {CFG_RDMA_RNR_RETRY_COUNT, "RdmaRnrRetryCount", "RDMA",
+     "QP RNR retry count. RNR retry exhaustion disconnects the link.",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "7", "0", "7"},
+
+    /****************************************************************************
      * SCI (Deprecated now)
      ***************************************************************************/
     {CFG_SECTION_CONNECTION, "SCI", "SCI", "SCI not supported",
@@ -2705,6 +2827,9 @@ const char *ConfigInfo::sectionName(Uint32 section_type, Uint32 type) const {
         case CONNECTION_TYPE_SHM:
           return "SHM";
           break;
+        case CONNECTION_TYPE_RDMA:
+          return "RDMA";
+          break;
         default:
           assert(false);
           break;
@@ -2720,9 +2845,10 @@ const char *ConfigInfo::sectionName(Uint32 section_type, Uint32 type) const {
 }
 
 const ConfigInfo::AliasPair section2PrimaryKeys[] = {
-    {API_TOKEN, "NodeId"},      {DB_TOKEN, "NodeId"},
-    {MGM_TOKEN, "NodeId"},      {"TCP", "NodeId1,NodeId2"},
-    {"SHM", "NodeId1,NodeId2"}, {nullptr, nullptr}};
+    {API_TOKEN, "NodeId"},       {DB_TOKEN, "NodeId"},
+    {MGM_TOKEN, "NodeId"},       {"TCP", "NodeId1,NodeId2"},
+    {"SHM", "NodeId1,NodeId2"},  {"RDMA", "NodeId1,NodeId2"},
+    {nullptr, nullptr}};
 
 static const char *sectionPrimaryKeys(const char *name) {
   for (int i = 0; section2PrimaryKeys[i].name != nullptr; i++)
@@ -3309,6 +3435,10 @@ bool checkConnectionSupport(InitConfigFileParser::Context &ctx, const char *) {
     // always enabled
   } else if (native_strcasecmp("SHM", ctx.fname) == 0) {
     // always enabled
+  } else if (native_strcasecmp("RDMA", ctx.fname) == 0) {
+#ifndef NDB_RDMA_TRANSPORTER_SUPPORTED
+    error = 1;
+#endif
   }
 
   if (error) {
