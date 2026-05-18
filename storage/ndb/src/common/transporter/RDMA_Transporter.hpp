@@ -394,6 +394,52 @@ class RDMA_Transporter : public Transporter {
   Uint32 find_free_send_slot();
 
   /*
+   * Build and post a single zero-payload CREDIT_ONLY WR using the
+   * current pending credit grant. Callers must hold the send-side
+   * lock (see Transporter::lock_send_transporter) because this method
+   * mutates m_send_slots / m_send_slots_in_flight / m_local_send_seq /
+   * m_peer_recv_credits / m_pending_credit_grant and calls
+   * ibv_post_send, which the verbs API requires to be serialized
+   * against other posts on the same QP.
+   *
+   * Returns true iff a WR was successfully posted. Returns false when
+   * preconditions are not met (no pending grant, no free slot, no
+   * peer credits, geometry/verbs not live) or when ibv_post_send
+   * itself failed; in the latter case the link is already in the
+   * disconnect protocol.
+   */
+  bool post_credit_only_locked();
+
+ public:
+  /*
+   * Opportunistic CREDIT_ONLY emission triggered by the receive
+   * thread.
+   *
+   * Multi-transporter clones that mostly carry inbound traffic never
+   * have doSend() called on them under benchmark load, so the only
+   * credit-refill path in doSend() never fires for those clones.
+   * Without this hook the peer's outbound credit pool against us
+   * drains to zero and the inbound direction stalls, which is the
+   * GCP_COMMIT-lag / NDB-274 / NDB-286 pattern we observed.
+   *
+   * The receive thread therefore calls this method at the tail of
+   * each recv batch. The method does a lock-free fast check on the
+   * pending grant counter; if the half-queue-depth threshold has
+   * been crossed it acquires the per-transporter send lock, reaps
+   * outstanding send completions to free slots that may have been
+   * occupied by previous CREDIT_ONLY emissions, and emits one
+   * zero-payload CREDIT_ONLY WR via post_credit_only_locked().
+   *
+   * No-op when no grant is pending, when the threshold is not yet
+   * met, or when verbs state is not live. Never blocks for more than
+   * the duration of a single doSend() invocation on the same
+   * transporter.
+   */
+  void recv_thread_emit_credit_only();
+
+ private:
+
+  /*
    * --- Receive-side helpers (Milestone 8) ---
    *
    * allocate_recv_slot_state() / release_recv_slot_state() manage the
@@ -629,6 +675,11 @@ class RDMA_Transporter : public Transporter {
     Uint64 send_completion_errors = 0;
     Uint64 send_inline = 0;
     Uint64 send_credit_only_out = 0;
+    /* Subset of send_credit_only_out attributed to the receive thread
+     * emit path (recv_thread_emit_credit_only). Separately tracked so
+     * operators can verify the new path is active on clones that have
+     * mostly inbound traffic. */
+    Uint64 send_credit_only_recv_path = 0;
     Uint64 send_credit_stalls = 0;
     Uint64 copied_send_bytes = 0;
     /* --- recv path --- */
