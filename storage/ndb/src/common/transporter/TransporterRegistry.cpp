@@ -223,28 +223,32 @@ TransporterReceiveData::TransporterReceiveData()
 }
 
 bool TransporterReceiveData::init(unsigned maxTransporters) {
-  maxTransporters += 1; /* wakeup socket */
+  if (maxTransporters > ((~0U - 2U) / 2U)) {
+    return false;
+  }
+  const unsigned max_poll_sockets = maxTransporters + 2U;
+  const unsigned max_epoll_events = (maxTransporters * 2U) + 2U;
   m_spintime = 0;
   m_total_spintime = 0;
   assert(m_bad_data_transporters.isclear());
 #if defined(HAVE_EPOLL_CREATE)
-  m_epoll_fd = epoll_create(maxTransporters);
+  m_epoll_fd = epoll_create(max_epoll_events);
   if (m_epoll_fd == -1) {
     perror("epoll_create failed... falling back to poll()!");
     goto fallback;
   }
-  m_epoll_events = new struct epoll_event[maxTransporters];
+  m_epoll_events = new struct epoll_event[max_epoll_events];
   if (m_epoll_events == nullptr) {
     perror("Failed to alloc epoll-array... falling back to select!");
     close(m_epoll_fd);
     m_epoll_fd = -1;
     goto fallback;
   }
-  memset(m_epoll_events, 0, maxTransporters * sizeof(struct epoll_event));
+  memset(m_epoll_events, 0, max_epoll_events * sizeof(struct epoll_event));
   return true;
 fallback:
 #endif
-  return m_socket_poller.set_max_count(maxTransporters);
+  return m_socket_poller.set_max_count(max_poll_sockets);
 }
 
 bool TransporterReceiveData::epoll_add(Transporter *t [[maybe_unused]]) {
@@ -1484,10 +1488,17 @@ TransporterRegistry::check_TCP(TransporterReceiveHandle& recvdata,
   if (likely(recvdata.m_epoll_fd != -1)) {
     int tcpReadSelectReply = 0;
     Uint32 num_trps = nTCPTransporters + nSHMTransporters +
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+                      (2 * nRDMATransporters) +
+#endif
                       (m_has_extra_wakeup_socket ? 1 : 0) +
                       (recvdata.m_has_extra_wakeup_socket ? 1 : 0);
 
-    assert(num_trps <= (nTCPTransporters + nSHMTransporters + 1));
+    assert(num_trps <= (nTCPTransporters + nSHMTransporters +
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+                        (2 * nRDMATransporters) +
+#endif
+                        2));
 
     if (num_trps) {
       tcpReadSelectReply =
@@ -1879,10 +1890,9 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
 #ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
   if (recvdata.nRDMATransporters > 0) {
     /*
-     * RDMA transporters have no socket-level epoll event for incoming
-     * data; instead we poll the recv CQs here at the same point in
-     * the loop SHM is polled. The completion-channel/eventfd wakeup
-     * is left for a future milestone; this poll is purely best-effort.
+     * RDMA transporters use recv-CQ polling here and, when epoll is
+     * available, completion-channel fd events from check_TCP() mark the
+     * corresponding transporter readable so this pass runs promptly.
      */
     bool any_connected = false;
     int res = poll_RDMA(recvdata, any_connected);
@@ -2410,11 +2420,15 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
          * pollReceive and now, which is cheap when the CQ is empty.
          *
          * Slot consumption is exact-match: get_next_read() yields the
-         * head slot's remaining payload, unpack() consumes some bytes
+         * head slot's remaining payload directly from the parked HCA
+         * recv slot in m_recv_buf, unpack() consumes some bytes
          * (possibly 0 if the job buffer is full), and
          * consume_received_bytes() either advances the slot's
-         * read_offset or pops the slot and re-posts the underlying
-         * ibv_recv_wr. We stop the inner loop on any of:
+         * read_offset or, on full drain, re-posts the same recv WR,
+         * grants one credit back to the peer, and pops the slot off
+         * the ready queue. The slot is therefore owned exclusively
+         * by the upper layer between its WC arrival and the consume
+         * completion. We stop the inner loop on any of:
          *   - the ready queue is drained,
          *   - unpack() returned 0 (cannot make further progress),
          *   - stopReceiving was signalled by the upper layer.
