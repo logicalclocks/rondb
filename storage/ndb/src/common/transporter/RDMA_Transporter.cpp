@@ -30,9 +30,20 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fcntl.h>
 #include <new>
 #include <EventLogger.hpp>
+
+/*
+ * Heartbeat cadence for the periodic log_stats() emission driven by
+ * maybe_log_stats_heartbeat(). 10 seconds is short enough to be
+ * useful for diagnosing GCP-lag / NDB-274 cycles (which fire every
+ * ~15-18s) without flooding the journal in steady state.
+ */
+static constexpr Uint64 RDMA_STATS_HEARTBEAT_NS =
+    10ULL * 1000ULL * 1000ULL * 1000ULL;
+
 
 /*
  * libibverbs is required at link time when NDB_RDMA_TRANSPORTER_SUPPORTED is
@@ -146,12 +157,52 @@ static bool rdma_send_full(const NdbSocket &socket, const void *buf,
  * PSN sequences across reconnects.
  */
 static uint32_t rdma_pick_initial_psn(const struct ibv_qp *qp) {
-  static uint32_t s_psn_counter = 0;
+  static std::atomic<uint32_t> s_psn_counter(0);
   /* Treat the QP pointer as an opaque mixing value. We only use the
    * low 24 bits because that is all the IB PSN field carries. */
   const uintptr_t mix = reinterpret_cast<uintptr_t>(qp);
-  const uint32_t bumped = ++s_psn_counter;
+  const uint32_t bumped =
+      s_psn_counter.fetch_add(1, std::memory_order_relaxed) + 1;
   return ((uint32_t)mix ^ bumped) & 0x00FFFFFFu;
+}
+
+static bool rdma_device_name_equal(const char *lhs, const char *rhs) {
+  const bool lhs_empty = (lhs == nullptr || lhs[0] == '\0');
+  const bool rhs_empty = (rhs == nullptr || rhs[0] == '\0');
+  if (lhs_empty || rhs_empty) return lhs_empty == rhs_empty;
+  return std::strcmp(lhs, rhs) == 0;
+}
+
+static Uint32 rdma_overload_limit(const TransporterConfiguration *conf) {
+  return (conf->rdma.overloadLimit ? conf->rdma.overloadLimit
+                                   : conf->rdma.sendBufferSize * 4 / 5);
+}
+
+static bool rdma_gid_is_zero(const uint8_t gid[16]) {
+  for (unsigned i = 0; i < 16; i++) {
+    if (gid[i] != 0) return false;
+  }
+  return true;
+}
+
+static const char *rdma_link_layer_name(uint8_t link_layer) {
+  switch (link_layer) {
+    case IBV_LINK_LAYER_INFINIBAND:
+      return "IB";
+    case IBV_LINK_LAYER_ETHERNET:
+      return "RoCE";
+    default:
+      return "unknown";
+  }
+}
+
+static void rdma_format_gid(const uint8_t gid[16], char *dst, size_t dst_len) {
+  std::snprintf(dst, dst_len,
+                "%02x%02x:%02x%02x:%02x%02x:%02x%02x:"
+                "%02x%02x:%02x%02x:%02x%02x:%02x%02x",
+                gid[0], gid[1], gid[2], gid[3], gid[4], gid[5], gid[6],
+                gid[7], gid[8], gid[9], gid[10], gid[11], gid[12], gid[13],
+                gid[14], gid[15]);
 }
 
 /*
@@ -238,6 +289,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_recv_comp_events_pending(0),
       m_send_buf(nullptr),
       m_recv_buf(nullptr),
+      m_app_buf(nullptr),
       m_effective_inline_threshold(0),
       m_local_send_seq(0),
       m_local_recv_seq(0),
@@ -247,13 +299,17 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_local_recv_posted(0),
       m_send_slots(nullptr),
       m_send_slots_in_flight(0),
-      m_bytes_in_flight(0),
       m_next_send_slot(0),
       m_recv_slots(nullptr),
       m_recv_ready_queue(nullptr),
       m_recv_queue_head(0),
       m_recv_queue_tail(0),
-      m_recv_queue_count(0) {}
+      m_recv_queue_count(0) {
+  /* m_last_stats_log_ns gets its 0 default from the in-class
+   * initializer in RDMA_Transporter.hpp. */
+  m_overload_limit = rdma_overload_limit(config);
+  m_slowdown_limit = m_overload_limit * 6 / 10;
+}
 
 RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
                                    const RDMA_Transporter *other)
@@ -287,6 +343,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_recv_comp_events_pending(0),
       m_send_buf(nullptr),
       m_recv_buf(nullptr),
+      m_app_buf(nullptr),
       m_effective_inline_threshold(0),
       m_local_send_seq(0),
       m_local_recv_seq(0),
@@ -296,13 +353,14 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_local_recv_posted(0),
       m_send_slots(nullptr),
       m_send_slots_in_flight(0),
-      m_bytes_in_flight(0),
       m_next_send_slot(0),
       m_recv_slots(nullptr),
       m_recv_ready_queue(nullptr),
       m_recv_queue_head(0),
       m_recv_queue_tail(0),
       m_recv_queue_count(0) {
+  /* m_last_stats_log_ns gets its 0 default from the in-class
+   * initializer in RDMA_Transporter.hpp. */
   /*
    * Gate-3 multi-transporter clone:
    *   - All tuning state (queue depth, buffers, retry counters, device
@@ -317,6 +375,8 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
    * the clone to m_node_multi_transporters and the Multi_Transporter
    * wrapper drives parallel doSend()/poll_RDMA() across all clones.
    */
+  m_overload_limit = other->m_overload_limit;
+  m_slowdown_limit = other->m_slowdown_limit;
 }
 
 RDMA_Transporter::~RDMA_Transporter() {
@@ -342,16 +402,23 @@ bool RDMA_Transporter::initTransporter() {
 
 bool RDMA_Transporter::configure_derived(
     const TransporterConfiguration *conf) {
-  /*
-   * Accept any reconfigure attempt whose RDMA tunables match what we were
-   * constructed with. The skeleton has no live verbs state to mutate, so
-   * we only need to ensure later code paths do not assume different sizes.
-   */
   if (conf == nullptr) return false;
   if (conf->type != tt_RDMA_TRANSPORTER) return false;
   if (conf->rdma.sendBufferSize != m_send_buffer_size) return false;
   if (conf->rdma.recvBufferSize != m_recv_buffer_size) return false;
   if (conf->rdma.queueDepth != m_queue_depth) return false;
+  if (conf->rdma.inlineThreshold != m_inline_threshold) return false;
+  if (conf->rdma.completionPollBudget != m_completion_poll_budget) return false;
+  if (conf->rdma.spintime != m_spintime) return false;
+  if (conf->rdma.rdmaPort != m_rdma_port) return false;
+  if (conf->rdma.gidIndex != m_gid_index) return false;
+  if (conf->rdma.trafficClass != m_traffic_class) return false;
+  if (conf->rdma.retryCount != m_retry_count) return false;
+  if (conf->rdma.rnrRetryCount != m_rnr_retry_count) return false;
+  if (!rdma_device_name_equal(conf->rdma.deviceName, m_device_name)) {
+    return false;
+  }
+  if (rdma_overload_limit(conf) != m_overload_limit) return false;
   return true;
 }
 
@@ -422,11 +489,11 @@ bool RDMA_Transporter::connect_client_impl(NdbSocket &&socket) {
 
 void RDMA_Transporter::disconnectImpl() {
   /*
-   * No live verbs activity yet, but release any resources that a future
-   * connect path may have allocated. The call is a cheap no-op when
-   * nothing has been allocated.
+   * Match TCP's sequencing: disconnect the control socket now so the
+   * registry can observe link death, but keep verbs resources alive
+   * until releaseAfterDisconnect() when send buffers are already disabled.
    */
-  release_verbs_resources();
+  Transporter::disconnectImpl();
 }
 
 void RDMA_Transporter::releaseAfterDisconnect() {
@@ -446,23 +513,24 @@ void RDMA_Transporter::resetBuffers() {
 
 bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
   /*
-   * Milestone-7 send path. Note that under Gate 1 the connect path
-   * still refuses the link, so this function is never reached from the
-   * registry's performSend(); the implementation exists so unit tests
-   * (and later Gate 2) can exercise it directly.
+   * Native RDMA send path. Once endpoint exchange has driven the QP to
+   * RTS, the registry reaches this through performSend() just like the
+   * TCP and SHM transporters.
    *
    * Sequence:
    *   1. Reap completions for previously posted sends. This frees
-   *      slots and calls iovec_data_sent() for the bytes that the
-   *      peer has now reliably received.
+   *      staging slots and updates wire byte counters.
    *   2. While we have remote credits and a free slot, fetch iovec
-   *      bytes from the send buffer, skip past anything we have
-   *      already staged into in-flight slots, build a framed message,
-   *      and post one IBV_WR_SEND.
+   *      bytes from the send buffer, copy complete Protocol6 messages
+   *      into a registered staging slot, post one IBV_WR_SEND, and
+   *      release those upper-layer send-buffer bytes immediately after
+   *      the successful post.
    *
    * Return value follows the existing transporter convention: true if
-   * there are still bytes to push (more work to do later), false if
-   * the buffer is drained and all in-flight WRs are reaped.
+   * there are still upper-layer bytes to push (more work to do later),
+   * false if no send-buffer bytes are pending. In-flight RDMA WRs by
+   * themselves are not send-scheduler work once their payload has been
+   * copied into the registered staging buffer.
    */
   if (m_qp == nullptr || m_send_slots == nullptr) {
     /* Connect path has not allocated verbs resources yet. Nothing to
@@ -485,9 +553,8 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
   /*
    * Drain loop. Each iteration tries to fill exactly one slot with
    * whole Protocol6 messages. We bail out as soon as we run out of
-   * credits, free slots, or send-buffer data beyond what we have
-   * already staged. Messages are never split across two RDMA recv
-   * slots, because the receiver's unpacker (TransporterRegistry::
+   * credits, free slots, or send-buffer data. Messages are never split
+   * across two RDMA recv slots, because the receiver's unpacker (TransporterRegistry::
    * unpack -> Packer::unpack_one) can only consume complete Protocol6
    * messages from a contiguous buffer, and a single recv slot is
    * what get_next_read() exposes as a contiguous buffer to the
@@ -495,37 +562,34 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
    * receive buffer is a contiguous ring; RDMA cannot share that
    * shortcut.
    */
-  while (m_send_slots_in_flight < m_queue_depth && m_peer_recv_credits > 0) {
+  bool send_buffer_may_have_more = false;
+  if (m_send_slots_in_flight.load(std::memory_order_relaxed) >=
+          m_queue_depth ||
+      m_peer_recv_credits.load(std::memory_order_acquire) == 0) {
+    struct iovec iov[1];
+    send_buffer_may_have_more = (fetch_send_iovec_data(iov, 1) > 0);
+  }
+
+  while (m_send_slots_in_flight.load(std::memory_order_relaxed) <
+             m_queue_depth &&
+         m_peer_recv_credits.load(std::memory_order_acquire) > 0) {
     /* Pull iovec descriptors describing the send buffer's pending data. */
     constexpr Uint32 IOV_BATCH = 8;
     struct iovec iov[IOV_BATCH];
     const Uint32 n_iov = fetch_send_iovec_data(iov, IOV_BATCH);
     if (n_iov == 0) {
-      /* Send buffer is empty (or our skip ate it all). */
+      /* Send buffer is empty. */
+      send_buffer_may_have_more = false;
       break;
     }
 
     /*
-     * Skip past bytes already staged into in-flight slots. After the
-     * signal-aligned packing below, m_bytes_in_flight is always a
-     * sum of whole-signal byte counts, so the cursor lands cleanly
-     * on a signal boundary. We have not called iovec_data_sent() for
-     * those bytes yet, so fetch returns them again on every call
-     * until the corresponding completions arrive.
+     * The send-buffer cursor always starts at the first unsent byte:
+     * after a successful post we immediately call iovec_data_sent()
+     * because the payload has already been copied into m_send_buf.
      */
-    Uint32 skip = m_bytes_in_flight;
     Uint32 cursor_iov = 0;
-    while (cursor_iov < n_iov && skip >= iov[cursor_iov].iov_len) {
-      skip -= iov[cursor_iov].iov_len;
-      cursor_iov++;
-    }
-    if (cursor_iov >= n_iov) {
-      /* All currently visible bytes are already in flight. Nothing to
-       * post until the next completion arrives. */
-      break;
-    }
-    /* Byte offset within iov[cursor_iov] of the next unsent signal. */
-    Uint32 cursor_off = skip;
+    Uint32 cursor_off = 0;
 
     /* Find a free slot. */
     const Uint32 slot = find_free_send_slot();
@@ -590,6 +654,7 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
        * Protocol6::getMessageLength() on the host-endian word1 to
        * extract the length.
        */
+      send_buffer_may_have_more = true;
       Uint32 word1;
       std::memcpy(&word1,
                   (const char *)iov[cursor_iov].iov_base + cursor_off,
@@ -608,7 +673,7 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
             "in send buffer (word1=0x%08x); disconnecting",
             (unsigned)localNodeId, (unsigned)remoteNodeId, msg_len_bytes,
             word1);
-        m_stats.qp_fatal_events++;
+        m_stats.qp_fatal_events.fetch_add(1u, std::memory_order_relaxed);
         report_error(TE_RDMA_QP_ERROR,
                      "invalid Protocol6 length in send buffer");
         start_disconnecting(EBADMSG, /*send_source=*/true);
@@ -647,21 +712,36 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
     }
     if (payload_len == 0) {
       /*
-       * Either we caught up to in-flight bytes, or the next message
-       * is not yet fully visible in the iovec batch, or (handled
-       * earlier) the next message is larger than the slot. In every
-       * case there is nothing useful to post this round.
+       * Either the next message is not yet fully visible in the iovec
+       * batch, or (handled earlier) the next message is larger than
+       * the slot. In every case there is still send-buffer data, but
+       * nothing useful to post this round.
        */
       break;
     }
+    send_buffer_may_have_more =
+        (cursor_iov < n_iov) || (n_iov == IOV_BATCH);
 
     /* Build the framing header. We piggyback the pending ack and
-     * credit grant on this SEND. */
-    const Uint16 credit_delta = (m_pending_credit_grant > 0xFFFFu)
+     * credit grant on this SEND. Use atomic exchange so a concurrent
+     * increment from reap_recv_completions() (which may run on the
+     * receive thread without the send lock) cannot be silently
+     * dropped between read and clear. The claimed value is rolled
+     * back via fetch_add() on any post failure below. */
+    const Uint32 claimed_grant =
+        m_pending_credit_grant.exchange(0, std::memory_order_acq_rel);
+    const Uint16 credit_delta = (claimed_grant > 0xFFFFu)
                                     ? (Uint16)0xFFFFu
-                                    : (Uint16)m_pending_credit_grant;
+                                    : (Uint16)claimed_grant;
+    /*
+     * m_local_recv_seq is incremented on the receive thread; relaxed
+     * load is sufficient here because the ack_seq we stamp is an
+     * advisory hint to the peer rather than a synchronizer.
+     */
+    const Uint32 ack_seq_snapshot =
+        m_local_recv_seq.load(std::memory_order_relaxed);
     encode_msg_header(slot_buf, payload_len, m_local_send_seq,
-                      m_local_recv_seq, credit_delta, /*flags=*/0u);
+                      ack_seq_snapshot, credit_delta, /*flags=*/0u);
 
     /* Post the WR. */
     struct ibv_sge sge;
@@ -690,34 +770,47 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
     struct ibv_send_wr *bad = nullptr;
     const int rc = ibv_post_send(m_qp, &wr, &bad);
     if (rc != 0) {
+      /*
+       * Roll back the claimed credit grant. The atomic fetch_add()
+       * keeps any concurrent increment from the receive thread that
+       * landed after our exchange().
+       */
+      if (claimed_grant > 0) {
+        m_pending_credit_grant.fetch_add(claimed_grant,
+                                         std::memory_order_acq_rel);
+      }
       g_eventLogger->error(
           "RDMA[node %u->%u]: ibv_post_send failed (rc=%d errno=%d %s); "
           "disconnecting",
           (unsigned)localNodeId, (unsigned)remoteNodeId, rc, errno,
           std::strerror(errno));
-      m_stats.qp_fatal_events++;
+      m_stats.qp_fatal_events.fetch_add(1u, std::memory_order_relaxed);
       report_error(TE_RDMA_QP_ERROR, "ibv_post_send failed");
       start_disconnecting(rc, /*send_source=*/true);
       return false;
     }
 
-    /* Commit state changes only after a successful post. The
-     * iovec_data_sent() call is deferred until the completion arrives;
-     * see reap_send_completions(). */
-    m_send_slots[slot].bytes_consumed = payload_len;
+    /* Commit state changes only after a successful post. The payload
+     * now lives in m_send_buf, so the upper-layer send buffer can be
+     * released immediately; the completion path only frees this staging
+     * slot and updates wire byte counters. */
+    m_send_slots[slot].payload_len = payload_len;
     m_send_slots[slot].in_flight = true;
-    m_send_slots_in_flight++;
-    m_bytes_in_flight += payload_len;
+    m_send_slots_in_flight.fetch_add(1u, std::memory_order_relaxed);
     m_local_send_seq++;
-    m_peer_recv_credits--;
-    /* We just transmitted whatever credits we had queued. */
-    m_pending_credit_grant = 0;
+    /* One credit consumed against the peer's RQ. fetch_sub() is
+     * race-free because only the send-lock owner ever decrements;
+     * the receive thread only increments via credit_delta. */
+    m_peer_recv_credits.fetch_sub(1u, std::memory_order_acq_rel);
+    iovec_data_sent((int)payload_len);
 
     /* Observability bumps: count this WR as posted, optionally as an
      * inline send, and record the staged payload bytes. */
-    m_stats.send_posted++;
-    if (inline_used) m_stats.send_inline++;
-    m_stats.copied_send_bytes += payload_len;
+    m_stats.send_posted.fetch_add(1u, std::memory_order_relaxed);
+    if (inline_used)
+      m_stats.send_inline.fetch_add(1u, std::memory_order_relaxed);
+    m_stats.copied_send_bytes.fetch_add((Uint64)payload_len,
+                                        std::memory_order_relaxed);
   }
 
   /*
@@ -750,10 +843,13 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
       m_queue_depth > 1 ? (m_queue_depth / 2) : 1u;
   const Uint32 low_credit_threshold =
       m_queue_depth > 3 ? (m_queue_depth / 4) : 1u;
+  const Uint32 pending_now =
+      m_pending_credit_grant.load(std::memory_order_acquire);
+  const Uint32 peer_credits_now =
+      m_peer_recv_credits.load(std::memory_order_acquire);
   const bool needs_refill =
-      (m_pending_credit_grant >= credit_threshold) ||
-      (m_pending_credit_grant > 0 &&
-       m_peer_recv_credits < low_credit_threshold);
+      (pending_now >= credit_threshold) ||
+      (pending_now > 0 && peer_credits_now < low_credit_threshold);
   if (needs_refill) {
     (void)post_credit_only_locked();
   }
@@ -766,13 +862,21 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
    * there are bytes pending, so the over-counting in idle periods is
    * acceptable for an operator-facing diagnostic.
    */
-  if (m_peer_recv_credits == 0 && m_send_slots_in_flight < m_queue_depth) {
-    m_stats.send_credit_stalls++;
+  if (m_peer_recv_credits.load(std::memory_order_acquire) == 0 &&
+      m_send_slots_in_flight.load(std::memory_order_relaxed) <
+          m_queue_depth) {
+    m_stats.send_credit_stalls.fetch_add(1u, std::memory_order_relaxed);
   }
 
-  /* Tell the caller whether more work is outstanding. The registry
-   * loop will keep polling us if any of these conditions hold. */
-  return m_send_slots_in_flight > 0;
+  /* Periodic stats heartbeat for diagnostic visibility. Bounded to
+   * one log line per RDMA_STATS_HEARTBEAT_NS window so this never
+   * floods the event log under load. */
+  maybe_log_stats_heartbeat();
+
+  /* Tell the caller whether more upper-layer send work is outstanding.
+   * In-flight WR completions are reaped by the next doSend() or by the
+   * receive-thread credit path before it needs a slot. */
+  return send_buffer_may_have_more;
 }
 
 bool RDMA_Transporter::post_credit_only_locked() {
@@ -785,8 +889,12 @@ bool RDMA_Transporter::post_credit_only_locked() {
    * against itself on the same QP.
    *
    * Preconditions are checked here so callers can be minimal: we no-op
-   * when the link is not yet live, the pending grant is zero, no free
-   * slot exists, or the peer has not granted us any send credit.
+   * when the link is not yet live, the pending grant is zero, or no free
+   * send slot exists. If the normal peer data-credit pool is empty, the
+   * message is flagged with RDMA_MSG_FLAG_CONTROL_RESERVE and uses the
+   * peer's unadvertised reserved control receive slot instead of a data
+   * credit. This is what prevents mutual credit-return deadlock when
+   * both peers have consumed all advertised DATA credits.
    *
    * Bookkeeping update mirrors the previous in-line block that used
    * to live in doSend(); see the rationale comments above the caller
@@ -796,9 +904,14 @@ bool RDMA_Transporter::post_credit_only_locked() {
       m_send_buf == nullptr || m_send_mr == nullptr) {
     return false;
   }
-  if (m_pending_credit_grant == 0) return false;
-  if (m_send_slots_in_flight >= m_queue_depth) return false;
-  if (m_peer_recv_credits == 0) return false;
+  if (m_pending_credit_grant.load(std::memory_order_acquire) == 0)
+    return false;
+  if (m_send_slots_in_flight.load(std::memory_order_relaxed) >=
+      m_queue_depth)
+    return false;
+  const Uint32 peer_credits_snapshot =
+      m_peer_recv_credits.load(std::memory_order_acquire);
+  const bool use_control_reserve = (peer_credits_snapshot == 0);
 
   const Uint32 slot_size = send_slot_size_or_zero();
   if (slot_size == 0) return false;
@@ -808,12 +921,35 @@ bool RDMA_Transporter::post_credit_only_locked() {
 
   char *const slot_buf =
       (char *)m_send_buf + (size_t)slot * (size_t)slot_size;
-  const Uint16 credit_delta = (m_pending_credit_grant > 0xFFFFu)
+  /*
+   * Atomic exchange to claim the pending grant. Any concurrent
+   * receive-side increment that lands after this returns the value
+   * into the next emit slot rather than being lost. The full value
+   * is restored via fetch_add() on a post failure below.
+   */
+  const Uint32 claimed_grant =
+      m_pending_credit_grant.exchange(0, std::memory_order_acq_rel);
+  if (claimed_grant == 0) {
+    /* Another emitter (doSend / parallel recv-thread call) already
+     * shipped the pending grant. Nothing to do here. */
+    return false;
+  }
+  const Uint16 credit_delta = (claimed_grant > 0xFFFFu)
                                   ? (Uint16)0xFFFFu
-                                  : (Uint16)m_pending_credit_grant;
+                                  : (Uint16)claimed_grant;
+  /*
+   * Snapshot m_local_recv_seq with a relaxed load -- the receive
+   * thread bumps it under the receive lock; ack_seq is advisory and
+   * doesn't synchronize anything in our protocol.
+   */
+  const Uint32 ack_seq_snapshot =
+      m_local_recv_seq.load(std::memory_order_relaxed);
+  Uint8 flags = RDMA_MSG_FLAG_CREDIT_ONLY;
+  if (use_control_reserve) {
+    flags |= RDMA_MSG_FLAG_CONTROL_RESERVE;
+  }
   encode_msg_header(slot_buf, /*payload_len=*/0u, m_local_send_seq,
-                    m_local_recv_seq, credit_delta,
-                    RDMA_MSG_FLAG_CREDIT_ONLY);
+                    ack_seq_snapshot, credit_delta, flags);
 
   struct ibv_sge sge;
   std::memset(&sge, 0, sizeof(sge));
@@ -837,31 +973,36 @@ bool RDMA_Transporter::post_credit_only_locked() {
   struct ibv_send_wr *bad = nullptr;
   const int rc = ibv_post_send(m_qp, &wr, &bad);
   if (rc != 0) {
+    /* Restore the claimed credit grant so subsequent emits can
+     * retry shipping it. */
+    m_pending_credit_grant.fetch_add(claimed_grant,
+                                     std::memory_order_acq_rel);
     g_eventLogger->error(
         "RDMA[node %u->%u]: ibv_post_send(CREDIT_ONLY) failed (rc=%d "
         "errno=%d %s); disconnecting",
         (unsigned)localNodeId, (unsigned)remoteNodeId, rc, errno,
         std::strerror(errno));
-    m_stats.qp_fatal_events++;
+    m_stats.qp_fatal_events.fetch_add(1u, std::memory_order_relaxed);
     report_error(TE_RDMA_QP_ERROR, "ibv_post_send(CREDIT_ONLY) failed");
     start_disconnecting(rc, /*send_source=*/true);
     return false;
   }
 
   /*
-   * Commit state. bytes_consumed stays at 0 so reap_send_completions
-   * does not call iovec_data_sent() (there are no upper-layer bytes
-   * tied to this WR). m_bytes_in_flight is also unchanged.
+   * Commit state. CREDIT_ONLY has no payload and no upper-layer
+   * send-buffer bytes tied to this WR.
    */
-  m_send_slots[slot].bytes_consumed = 0;
+  m_send_slots[slot].payload_len = 0;
   m_send_slots[slot].in_flight = true;
-  m_send_slots_in_flight++;
+  m_send_slots_in_flight.fetch_add(1u, std::memory_order_relaxed);
   m_local_send_seq++;
-  m_peer_recv_credits--;
-  m_pending_credit_grant = 0;
-  m_stats.send_credit_only_out++;
-  m_stats.send_posted++;
-  if (credit_inline_used) m_stats.send_inline++;
+  if (!use_control_reserve) {
+    m_peer_recv_credits.fetch_sub(1u, std::memory_order_acq_rel);
+  }
+  m_stats.send_credit_only_out.fetch_add(1u, std::memory_order_relaxed);
+  m_stats.send_posted.fetch_add(1u, std::memory_order_relaxed);
+  if (credit_inline_used)
+    m_stats.send_inline.fetch_add(1u, std::memory_order_relaxed);
   return true;
 }
 
@@ -948,10 +1089,20 @@ void RDMA_Transporter::recv_thread_emit_credit_only() {
    * still falls in [0, UINT32_MAX], we re-validate the value under
    * the lock inside post_credit_only_locked(), and a missed emit is
    * naturally recovered on the next receive batch.
+   *
+   * A more aggressive "emit on any pending credit" cadence was tried in
+   * this lab on 2026-05-19 and triggered fresh code=274/code=286 with
+   * RDMA recv WC flush errors within ~5 minutes of rollout. A
+   * subsequent 2 ms rate-limited timer variant still produced
+   * IBV_WC_RETRY_EXC_ERR on multi-transporter clones under mdtest load.
+   * Keep this path threshold-driven; the reserved control receive lane
+   * below solves the zero-credit return deadlock without turning credit
+   * emission into a high-rate timer.
    */
-  if (m_pending_credit_grant == 0) return;
+  if (m_pending_credit_grant.load(std::memory_order_acquire) == 0) return;
   const Uint32 threshold = m_queue_depth > 1 ? (m_queue_depth / 2) : 1u;
-  if (m_pending_credit_grant < threshold) return;
+  if (m_pending_credit_grant.load(std::memory_order_acquire) < threshold)
+    return;
 
   /*
    * Acquire the per-transporter send lock. This serializes us against
@@ -965,47 +1116,12 @@ void RDMA_Transporter::recv_thread_emit_credit_only() {
   /*
    * Reap policy on the recv-thread emit path.
    *
-   * Background. reap_send_completions() invokes iovec_data_sent() ->
-   * trp_callback::bytes_sent() for every freed slot whose
-   * bytes_consumed > 0. trp_callback::bytes_sent() in mt.cpp:
-   *   1) asserts(sb->m_send_thread != NO_SEND_THREAD) -- which fires
-   *      whenever the caller is not running through a performSend()
-   *      path that explicitly sets sb->m_send_thread (forceSend(),
-   *      try_send(), do_send()); and
-   *   2) calls release_list() -> thread_local_pool::release_local()
-   *      on the owner block thread's or send thread's
-   *      thread_local_pool<thr_send_page>. release_local() mutates
-   *      m_free and m_freelist without any lock; the per-transporter
-   *      m_send_lock that we hold here does NOT protect that
-   *      thread_local_pool, since the pool is shared across all
-   *      transporters that the owning thread services. Touching it
-   *      from the recv thread races with the owner thread's own
-   *      pool ops and crashes (this was the SIGSEGV stack on
-   *      cli-142, May 2026:
-   *      trp_callback::bytes_sent ->
-   *      reap_send_completions [clone .part.0] ->
-   *      recv_thread_emit_credit_only ->
-   *      TransporterRegistry::performReceive).
-   *
-   * Safety guard. We only reap when m_bytes_in_flight == 0. The
-   * class invariant
-   *     m_bytes_in_flight == sum over slots of bytes_consumed
-   * is maintained by doSend() (which does m_bytes_in_flight +=
-   * payload_len when posting a data WR with bytes_consumed =
-   * payload_len > 0) and by reap_send_completions() (which does
-   * m_bytes_in_flight -= bytes when freeing). post_credit_only_locked()
-   * uses bytes_consumed = 0 and leaves m_bytes_in_flight unchanged.
-   * Therefore m_bytes_in_flight == 0 implies every in-flight slot has
-   * bytes_consumed == 0 (only CREDIT_ONLY WRs). For those slots
-   * reap_send_completions() never enters its
-   *     if (bytes > 0) iovec_data_sent((int)bytes);
-   * branch, so trp_callback::bytes_sent() is not called and the
-   * unsafe path described above cannot fire.
-   *
-   * The read of m_bytes_in_flight is safe under the send lock: no
-   * other thread can post a data WR or reap while we hold the lock,
-   * so the value is stable for the duration of the (m_bytes_in_flight
-   * == 0)-guarded reap.
+   * reap_send_completions() no longer calls iovec_data_sent(): data WRs
+   * release upper-layer send buffers immediately after their payload is
+   * copied into m_send_buf and ibv_post_send() succeeds. Therefore the
+   * receive thread can safely reap both DATA and CREDIT_ONLY completions
+   * while holding the per-transporter send lock; it only frees RDMA
+   * staging slots and updates counters.
    *
    * Why we still need the reap here. In ndbmtd the send thread
    * iterates only m_pending_send_trps[] (mt.cpp do_send), populated
@@ -1022,19 +1138,13 @@ void RDMA_Transporter::recv_thread_emit_credit_only() {
    * (NDB-274/NDB-286 in pnfs-mds, mgmd GCP Monitor 10-152s lag,
    * SignalCounter m_count=1 stuck against the peer).
    *
-   * Outbound-active clones (m_bytes_in_flight > 0) are NOT visited
-   * here: the block thread that posted those bytes already added the
-   * trp to its pending-send mask, so the send thread will revisit
-   * doSend() in a bounded number of cycles and reap on the
-   * thread-correct context. Skipping here is therefore not a stall
-   * source for those clones.
+   * Reaping here also frees slots for outbound-active clones whose
+   * send scheduler has no remaining upper-layer data to push.
    */
-  if (m_bytes_in_flight == 0) {
-    if (reap_send_completions() < 0) {
-      /* Fatal CQ error: start_disconnecting() already called. */
-      unlock_send_transporter();
-      return;
-    }
+  if (reap_send_completions() < 0) {
+    /* Fatal CQ error: start_disconnecting() already called. */
+    unlock_send_transporter();
+    return;
   }
   if (post_credit_only_locked()) {
     /*
@@ -1044,7 +1154,8 @@ void RDMA_Transporter::recv_thread_emit_credit_only() {
      * send_credit_only_out, which post_credit_only_locked()
      * already bumped.
      */
-    m_stats.send_credit_only_recv_path++;
+    m_stats.send_credit_only_recv_path.fetch_add(1u,
+                                                 std::memory_order_relaxed);
   }
   unlock_send_transporter();
 }
@@ -1058,8 +1169,10 @@ bool RDMA_Transporter::send_is_possible(int /*timeout_millisec*/) const {
    * caller already implements its own sleep loop.
    */
   if (m_qp == nullptr || m_send_slots == nullptr) return false;
-  if (m_send_slots_in_flight >= m_queue_depth) return false;
-  if (m_peer_recv_credits == 0) return false;
+  if (m_send_slots_in_flight.load(std::memory_order_relaxed) >=
+      m_queue_depth)
+    return false;
+  if (m_peer_recv_credits.load(std::memory_order_acquire) == 0) return false;
   return true;
 }
 
@@ -1108,7 +1221,7 @@ bool RDMA_Transporter::allocate_verbs_resources() {
    * counter. Note: an abort() inside one of the require()s is treated
    * as a programming error, not a counted event.
    */
-  m_stats.reconnect_attempts++;
+  m_stats.reconnect_attempts.fetch_add(1u, std::memory_order_relaxed);
 
   /* Sanity-check that we are starting from a clean slate. */
   require(m_verbs_ctx == nullptr);
@@ -1122,6 +1235,7 @@ bool RDMA_Transporter::allocate_verbs_resources() {
   require(m_recv_comp_events_pending == 0);
   require(m_send_buf == nullptr);
   require(m_recv_buf == nullptr);
+  require(m_app_buf == nullptr);
 
   /* Step 1: device discovery & open. */
   int num_devices = 0;
@@ -1136,7 +1250,28 @@ bool RDMA_Transporter::allocate_verbs_resources() {
 
   struct ibv_device *selected = nullptr;
   if (m_device_name == nullptr) {
-    /* No name configured: pick the first device. */
+    /*
+     * No device name configured. On a host with a single HCA this is
+     * deterministic. On a multi-HCA host (common for RoCE deployments
+     * with separate management / storage / fabric NICs), "first
+     * available" is ambiguous: the kernel-reported order is not
+     * stable across reboots and may pick a NIC that is not on the
+     * cluster's RDMA fabric, producing silent link timeouts or
+     * IBV_WC_RETRY_EXC_ERR under load.
+     *
+     * Refuse implicit selection on multi-HCA hosts. Picking the first
+     * kernel-reported device is not stable enough for production RDMA
+     * fabrics and can silently bind the transporter to the wrong NIC.
+     */
+    if (num_devices > 1) {
+      g_eventLogger->error(
+          "RDMA[node %u->%u]: RdmaDevice not configured but host has "
+          "%d HCAs. Set RdmaDevice in config to pin to the cluster "
+          "fabric NIC; refusing ambiguous first-available selection.",
+          (unsigned)localNodeId, (unsigned)remoteNodeId, num_devices);
+      ibv_free_device_list(dev_list);
+      return false;
+    }
     selected = dev_list[0];
   } else {
     for (int i = 0; i < num_devices && dev_list[i] != nullptr; i++) {
@@ -1220,7 +1355,8 @@ bool RDMA_Transporter::allocate_verbs_resources() {
 
   /* Step 4: Completion Queues. We size each CQ at 2 * queue_depth so a
    * receive WC backlog cannot starve send completions, even when the
-   * future receive path lazily reaps WCs.
+   * receive path parks completed data slots until the upper layer drains
+   * them.
    *
    * The recv CQ is created with a dedicated completion channel
    * (m_recv_comp_channel) so the HCA can wake the receive thread via
@@ -1287,6 +1423,22 @@ bool RDMA_Transporter::allocate_verbs_resources() {
   if (m_recv_buf == nullptr) {
     g_eventLogger->error(
         "RDMA: failed to allocate %u bytes of recv staging memory",
+        m_recv_buffer_size);
+    release_verbs_resources();
+    return false;
+  }
+  /*
+   * Allocate the reserved application-visible recv buffer. The current
+   * safe slot-ownership rule keeps the HCA slot parked in m_recv_buf
+   * until consume_received_bytes() finishes draining it, so the data
+   * path no longer copies payload into m_app_buf. The allocation is
+   * preserved as scaffolding for a future decoupled app-buffer pool;
+   * see the m_app_buf comment in RDMA_Transporter.hpp for context.
+   */
+  m_app_buf = rdma_aligned_alloc(m_recv_buffer_size);
+  if (m_app_buf == nullptr) {
+    g_eventLogger->error(
+        "RDMA: failed to allocate %u bytes of app-readable recv mirror",
         m_recv_buffer_size);
     release_verbs_resources();
     return false;
@@ -1366,10 +1518,15 @@ void RDMA_Transporter::release_verbs_resources() {
    * counter being non-zero so the destructor on an unused transporter
    * does not produce noise. log_stats() never mutates state.
    */
-  if (m_stats.send_posted != 0 || m_stats.recv_completions_ok != 0 ||
-      m_stats.recv_credit_only_in != 0 || m_stats.send_completion_errors != 0 ||
-      m_stats.recv_completion_errors != 0 ||
-      m_stats.reconnect_attempts != 0) {
+  /* Snapshot the cross-thread counters with relaxed loads to decide
+   * whether to emit a final summary line. The values do not need to be
+   * mutually consistent, only "non-zero somewhere". */
+  if (m_stats.send_posted.load(std::memory_order_relaxed) != 0 ||
+      m_stats.recv_completions_ok.load(std::memory_order_relaxed) != 0 ||
+      m_stats.recv_credit_only_in.load(std::memory_order_relaxed) != 0 ||
+      m_stats.send_completion_errors.load(std::memory_order_relaxed) != 0 ||
+      m_stats.recv_completion_errors.load(std::memory_order_relaxed) != 0 ||
+      m_stats.reconnect_attempts.load(std::memory_order_relaxed) != 0) {
     log_stats();
   }
 
@@ -1427,6 +1584,10 @@ void RDMA_Transporter::release_verbs_resources() {
     std::free(m_recv_buf);
     m_recv_buf = nullptr;
   }
+  if (m_app_buf != nullptr) {
+    std::free(m_app_buf);
+    m_app_buf = nullptr;
+  }
   if (m_send_buf != nullptr) {
     std::free(m_send_buf);
     m_send_buf = nullptr;
@@ -1456,17 +1617,25 @@ void RDMA_Transporter::reset_wire_state() {
    * received SEND.
    */
   m_local_send_seq = 0;
-  m_local_recv_seq = 0;
   m_peer_ack_seq = 0;
-  m_peer_recv_credits = 0;
-  m_pending_credit_grant = 0;
-  m_local_recv_posted = 0;
-  m_send_slots_in_flight = 0;
-  m_bytes_in_flight = 0;
+  /*
+   * Atomic stores: reset_wire_state() runs in the post-disconnect path
+   * where the per-transporter send lock is held and no other thread is
+   * touching these fields, but using .store() keeps the intent explicit
+   * and avoids the operator=() overload that would otherwise emit a
+   * full memory barrier for what is logically a single-threaded reset.
+   */
+  m_local_recv_seq.store(0, std::memory_order_relaxed);
+  m_peer_recv_credits.store(0, std::memory_order_relaxed);
+  m_pending_credit_grant.store(0, std::memory_order_relaxed);
+  m_local_recv_posted.store(0, std::memory_order_relaxed);
+  m_wire_bytes_sent.store(0, std::memory_order_relaxed);
+  m_wire_bytes_received.store(0, std::memory_order_relaxed);
+  m_send_slots_in_flight.store(0u, std::memory_order_relaxed);
   m_next_send_slot = 0;
   m_recv_queue_head = 0;
   m_recv_queue_tail = 0;
-  m_recv_queue_count = 0;
+  m_recv_queue_count.store(0u, std::memory_order_relaxed);
 }
 
 Uint32 RDMA_Transporter::send_slot_size_or_zero() const {
@@ -1503,11 +1672,10 @@ bool RDMA_Transporter::allocate_send_slot_state() {
     return false;
   }
   for (Uint32 i = 0; i < m_queue_depth; i++) {
-    m_send_slots[i].bytes_consumed = 0;
+    m_send_slots[i].payload_len = 0;
     m_send_slots[i].in_flight = false;
   }
-  m_send_slots_in_flight = 0;
-  m_bytes_in_flight = 0;
+  m_send_slots_in_flight.store(0u, std::memory_order_relaxed);
   m_next_send_slot = 0;
   return true;
 }
@@ -1515,8 +1683,7 @@ bool RDMA_Transporter::allocate_send_slot_state() {
 void RDMA_Transporter::release_send_slot_state() {
   delete[] m_send_slots;
   m_send_slots = nullptr;
-  m_send_slots_in_flight = 0;
-  m_bytes_in_flight = 0;
+  m_send_slots_in_flight.store(0u, std::memory_order_relaxed);
   m_next_send_slot = 0;
 }
 
@@ -1552,14 +1719,14 @@ int RDMA_Transporter::reap_send_completions() {
 
   while (remaining > 0) {
     const int take = (remaining > (Uint32)CHUNK) ? CHUNK : (int)remaining;
-    m_stats.cq_polls_send++;
+    m_stats.cq_polls_send.fetch_add(1u, std::memory_order_relaxed);
     const int n = ibv_poll_cq(m_send_cq, take, wc);
     if (n < 0) {
       g_eventLogger->error(
           "RDMA[node %u->%u]: ibv_poll_cq(send) returned %d (errno=%d %s)",
           (unsigned)localNodeId, (unsigned)remoteNodeId, n, errno,
           std::strerror(errno));
-      m_stats.qp_fatal_events++;
+      m_stats.qp_fatal_events.fetch_add(1u, std::memory_order_relaxed);
       report_error(TE_RDMA_CQ_ERROR, "ibv_poll_cq(send) returned error");
       start_disconnecting(n, /*send_source=*/true);
       return -1;
@@ -1575,7 +1742,7 @@ int RDMA_Transporter::reap_send_completions() {
             (unsigned)localNodeId, (unsigned)remoteNodeId,
             (unsigned long long)wc[i].wr_id, m_queue_depth,
             slot < m_queue_depth ? m_send_slots[slot].in_flight : 0u);
-        m_stats.qp_fatal_events++;
+        m_stats.qp_fatal_events.fetch_add(1u, std::memory_order_relaxed);
         report_error(TE_RDMA_CQ_ERROR, "stale send completion wr_id");
         start_disconnecting(EINVAL, /*send_source=*/true);
         return -1;
@@ -1594,11 +1761,13 @@ int RDMA_Transporter::reap_send_completions() {
          * send_completion_errors; specific statuses also contribute to
          * the targeted RNR / retry counters. They are NOT mutually
          * exclusive on purpose. */
-        m_stats.send_completion_errors++;
+        m_stats.send_completion_errors.fetch_add(
+            1u, std::memory_order_relaxed);
         if (wc[i].status == IBV_WC_RNR_RETRY_EXC_ERR) {
-          m_stats.rnr_events++;
+          m_stats.rnr_events.fetch_add(1u, std::memory_order_relaxed);
         } else if (wc[i].status == IBV_WC_RETRY_EXC_ERR) {
-          m_stats.retry_exceeded_events++;
+          m_stats.retry_exceeded_events.fetch_add(
+              1u, std::memory_order_relaxed);
         }
         g_eventLogger->error(
             "RDMA[node %u->%u]: send WC failure wr_id=%u status=%d (%s)",
@@ -1611,21 +1780,20 @@ int RDMA_Transporter::reap_send_completions() {
 
       /* Success: free the slot and release the bytes back to the
        * send-buffer accounting. */
-      const Uint32 bytes = m_send_slots[slot].bytes_consumed;
+      const Uint32 payload_len = m_send_slots[slot].payload_len;
       m_send_slots[slot].in_flight = false;
-      m_send_slots[slot].bytes_consumed = 0;
-      require(m_send_slots_in_flight > 0);
-      m_send_slots_in_flight--;
-      require(m_bytes_in_flight >= bytes);
-      m_bytes_in_flight -= bytes;
-      if (bytes > 0) {
-        iovec_data_sent((int)bytes);
-      }
+      m_send_slots[slot].payload_len = 0;
+      require(m_send_slots_in_flight.load(std::memory_order_relaxed) > 0);
+      m_send_slots_in_flight.fetch_sub(1u, std::memory_order_relaxed);
       /* Bookkeeping: the wire bytes consumed by the HCA equal the
        * header plus the staged payload. Match the TCP convention of
        * tracking total bytes successfully transmitted. */
-      m_bytes_sent += (Uint64)RDMA_MSG_HEADER_BYTES + (Uint64)bytes;
-      m_stats.send_completions_ok++;
+      const Uint64 wire_bytes =
+          (Uint64)RDMA_MSG_HEADER_BYTES + (Uint64)payload_len;
+      m_bytes_sent += wire_bytes;
+      m_wire_bytes_sent.fetch_add(wire_bytes, std::memory_order_relaxed);
+      m_stats.send_completions_ok.fetch_add(1u,
+                                            std::memory_order_relaxed);
       reaped_total++;
     }
 
@@ -1638,7 +1806,7 @@ int RDMA_Transporter::reap_send_completions() {
      * be completions ready in the CQ. Surface this so operators can
      * tune RdmaCompletionPollBudget against observed budget hits.
      */
-    m_stats.cq_budget_hits_send++;
+    m_stats.cq_budget_hits_send.fetch_add(1u, std::memory_order_relaxed);
   }
   return reaped_total;
 }
@@ -1662,7 +1830,7 @@ bool RDMA_Transporter::allocate_recv_slot_state() {
   }
   m_recv_queue_head = 0;
   m_recv_queue_tail = 0;
-  m_recv_queue_count = 0;
+  m_recv_queue_count.store(0u, std::memory_order_relaxed);
   return true;
 }
 
@@ -1673,7 +1841,7 @@ void RDMA_Transporter::release_recv_slot_state() {
   m_recv_ready_queue = nullptr;
   m_recv_queue_head = 0;
   m_recv_queue_tail = 0;
-  m_recv_queue_count = 0;
+  m_recv_queue_count.store(0u, std::memory_order_relaxed);
 }
 
 int RDMA_Transporter::reap_recv_completions(
@@ -1695,15 +1863,42 @@ int RDMA_Transporter::reap_recv_completions(
   if (slot_size == 0) return -1; /* geometry error already logged */
 
   while (remaining > 0) {
-    const int take = (remaining > (Uint32)CHUNK) ? CHUNK : (int)remaining;
-    m_stats.cq_polls_recv++;
+    /*
+     * Receive ready-queue backpressure under the safe slot-ownership
+     * rule. Each data-message WC pops a WR off the RQ and parks the
+     * slot in m_recv_ready_queue until consume_received_bytes() drains
+     * it and re-posts the same WR. The ready queue therefore caps the
+     * total number of unposted data slots, so when it is full we must
+     * not poll the CQ further -- doing so could surface another data
+     * WC for a slot we have no room to enqueue. The QP's RNR retry
+     * (rnr_retry=7 + min_rnr_timer=16) keeps the sender retrying
+     * harmlessly until the unpacker drains a slot here, at which
+     * point consume_received_bytes() reposts the slot and credit.
+     */
+    if (m_recv_queue_count.load(std::memory_order_relaxed) >= m_queue_depth) {
+      /*
+       * Ready queue is fully parked. Skip this poll round; the next
+       * pollReceive() pass (after the unpacker has consumed at least
+       * one slot via consume_received_bytes) will resume reaping.
+       */
+      break;
+    }
+    const Uint32 ready_capacity =
+        m_queue_depth -
+        m_recv_queue_count.load(std::memory_order_relaxed);
+    const Uint32 budget_limit =
+        (remaining > (Uint32)CHUNK) ? (Uint32)CHUNK : remaining;
+    const Uint32 take_u = (ready_capacity < budget_limit) ? ready_capacity
+                                                          : budget_limit;
+    const int take = (int)take_u;
+    m_stats.cq_polls_recv.fetch_add(1u, std::memory_order_relaxed);
     const int n = ibv_poll_cq(m_recv_cq, take, wc);
     if (n < 0) {
       g_eventLogger->error(
           "RDMA[node %u->%u]: ibv_poll_cq(recv) returned %d (errno=%d %s)",
           (unsigned)localNodeId, (unsigned)remoteNodeId, n, errno,
           std::strerror(errno));
-      m_stats.qp_fatal_events++;
+      m_stats.qp_fatal_events.fetch_add(1u, std::memory_order_relaxed);
       report_error(TE_RDMA_CQ_ERROR, "ibv_poll_cq(recv) returned error");
       start_disconnecting(n, /*send_source=*/false);
       return -1;
@@ -1717,7 +1912,7 @@ int RDMA_Transporter::reap_recv_completions(
             "RDMA[node %u->%u]: recv WC wr_id=%llu out of range (qd=%u)",
             (unsigned)localNodeId, (unsigned)remoteNodeId,
             (unsigned long long)wc[i].wr_id, m_queue_depth);
-        m_stats.qp_fatal_events++;
+        m_stats.qp_fatal_events.fetch_add(1u, std::memory_order_relaxed);
         report_error(TE_RDMA_CQ_ERROR, "recv WC wr_id out of range");
         start_disconnecting(EINVAL, /*send_source=*/false);
         return -1;
@@ -1732,11 +1927,13 @@ int RDMA_Transporter::reap_recv_completions(
         /* Symmetric with the send path: every recv WC error increments
          * recv_completion_errors; RNR / retry-exc statuses also count
          * in their dedicated buckets. */
-        m_stats.recv_completion_errors++;
+        m_stats.recv_completion_errors.fetch_add(
+            1u, std::memory_order_relaxed);
         if (wc[i].status == IBV_WC_RNR_RETRY_EXC_ERR) {
-          m_stats.rnr_events++;
+          m_stats.rnr_events.fetch_add(1u, std::memory_order_relaxed);
         } else if (wc[i].status == IBV_WC_RETRY_EXC_ERR) {
-          m_stats.retry_exceeded_events++;
+          m_stats.retry_exceeded_events.fetch_add(
+              1u, std::memory_order_relaxed);
         }
         g_eventLogger->error(
             "RDMA[node %u->%u]: recv WC failure wr_id=%u status=%d (%s)",
@@ -1752,6 +1949,8 @@ int RDMA_Transporter::reap_recv_completions(
        * matches the TCP convention of m_bytes_received tracking on-
        * the-wire bytes rather than just signal bytes. */
       m_bytes_received += (Uint64)wc[i].byte_len;
+      m_wire_bytes_received.fetch_add((Uint64)wc[i].byte_len,
+                                      std::memory_order_relaxed);
 
       /* The peer wrote wc[i].byte_len bytes into our slot, which is
        * header + payload. Validate the header before exposing it. */
@@ -1772,25 +1971,55 @@ int RDMA_Transporter::reap_recv_completions(
       /* Enforce strict in-order delivery. RC SEND/RECV on a single QP
        * is in-order by spec, but mismatched seqs would indicate a
        * coding error or memory corruption that we should not paper
-       * over. */
-      if (peer_seq != m_local_recv_seq) {
+       * over. Relaxed load is fine: the receive thread is the only
+       * writer, so the value we see here is what we wrote last.
+       */
+      const Uint32 expected_seq =
+          m_local_recv_seq.load(std::memory_order_relaxed);
+      if (peer_seq != expected_seq) {
         g_eventLogger->error(
             "RDMA[node %u->%u]: out-of-order recv seq %u (expected %u)",
             (unsigned)localNodeId, (unsigned)remoteNodeId, peer_seq,
-            m_local_recv_seq);
+            expected_seq);
         report_error(TE_RDMA_INVALID_HEADER, "RDMA recv seq mismatch");
         start_disconnecting(EPROTO, /*send_source=*/false);
         return -1;
       }
-      m_local_recv_seq++;
+      /* Release ordering on the store pairs with the relaxed load on
+       * the send thread, ensuring any data the receive thread published
+       * is visible to a send thread that observes the new seq. */
+      m_local_recv_seq.store(expected_seq + 1u,
+                             std::memory_order_release);
       m_peer_ack_seq = peer_ack;
 
-      /* Apply credit_delta to our pool of peer-recv credits. Cap the
-       * sum at UINT32_MAX to avoid overflow on pathological streams
-       * (which would also fail the protocol contract). */
+      /*
+       * Apply credit_delta to our pool of peer-recv credits. The send
+       * lock is NOT held here (we run on the receive thread), but the
+       * counter is std::atomic and only ever incremented by us; the
+       * send path only decrements. A torn read against a concurrent
+       * decrement is impossible because std::atomic guarantees
+       * single-instruction visibility, so the fetch_add() is safe.
+       *
+       * Saturate at UINT32_MAX to defend against pathological
+       * streams. The unsigned-wrap check uses the value we observed
+       * BEFORE the add; if the result would wrap, we issue a
+       * compare_exchange to clamp to UINT32_MAX.
+       */
       if (credit_delta > 0) {
-        const Uint32 sum = m_peer_recv_credits + (Uint32)credit_delta;
-        m_peer_recv_credits = (sum < m_peer_recv_credits) ? UINT32_MAX : sum;
+        const Uint32 add = (Uint32)credit_delta;
+        Uint32 prev =
+            m_peer_recv_credits.load(std::memory_order_acquire);
+        while (true) {
+          const Uint32 next = (prev > UINT32_MAX - add) ? UINT32_MAX
+                                                       : prev + add;
+          if (m_peer_recv_credits.compare_exchange_weak(
+                  prev, next, std::memory_order_acq_rel,
+                  std::memory_order_acquire)) {
+            break;
+          }
+          /* prev was updated by compare_exchange_weak with the actual
+           * current value; retry. */
+        }
       }
 
       /* Heartbeat: notify the receive handle that we saw traffic from
@@ -1804,32 +2033,68 @@ int RDMA_Transporter::reap_recv_completions(
       if ((flags & (RDMA_MSG_FLAG_CREDIT_ONLY | RDMA_MSG_FLAG_HEARTBEAT)) !=
               0 ||
           payload_len == 0) {
-        require(m_local_recv_posted > 0);
-        m_local_recv_posted--;
+        require(m_local_recv_posted.load(std::memory_order_relaxed) > 0);
+        m_local_recv_posted.fetch_sub(1u, std::memory_order_relaxed);
         if (!post_one_receive(slot)) {
-          m_stats.qp_fatal_events++;
+          m_stats.qp_fatal_events.fetch_add(1u,
+                                            std::memory_order_relaxed);
           report_error(TE_RDMA_QP_ERROR, "failed to re-post recv slot");
           start_disconnecting(errno, /*send_source=*/false);
           return -1;
         }
-        m_local_recv_posted++;
-        /* Granting one credit back to the peer for the slot we just
-         * recycled. */
-        if (m_pending_credit_grant < 0xFFFFu) m_pending_credit_grant++;
-        m_stats.recv_credit_only_in++;
+        m_local_recv_posted.fetch_add(1u, std::memory_order_relaxed);
+        /*
+         * Grant one DATA credit back to the peer for a recycled normal
+         * control slot. Reserved-control CREDIT_ONLY messages used the
+         * unadvertised receive slot, so reposting that slot only restores
+         * the reserve and must not inflate the peer's data-credit pool.
+         */
+        const bool used_control_reserve =
+            (flags & RDMA_MSG_FLAG_CONTROL_RESERVE) != 0;
+        if (!used_control_reserve &&
+            m_pending_credit_grant.load(std::memory_order_acquire) <
+                0xFFFFu) {
+          m_pending_credit_grant.fetch_add(1u,
+                                           std::memory_order_acq_rel);
+        }
+        m_stats.recv_credit_only_in.fetch_add(1u,
+                                              std::memory_order_relaxed);
         reaped_total++;
         continue;
       }
 
-      /* Normal data message: park the slot in the ready queue and let
-       * the unpacker consume it later. */
+      /* Normal data message: park the receive slot for the upper-
+       * layer unpacker without copying the payload elsewhere and
+       * without re-posting the underlying WR. The WC just dequeued
+       * the WR from the RQ, so m_local_recv_posted decreases by one;
+       * consume_received_bytes() re-posts the slot and grants the
+       * peer one credit after the unpacker has finished reading
+       * every byte. This safe slot-ownership rule prevents the HCA
+       * from landing a new SEND in the same m_recv_buf slot before
+       * the upper layer has finished consuming the previous one,
+       * which was the source of the earlier app-buffer overwrite
+       * hazard. The trade-off is that a slow upper layer can keep
+       * data slots parked longer; the QP's infinite RNR retry plus
+       * the ready-queue backpressure above turn that into clean
+       * sender stalls rather than data corruption.
+       */
+      require(m_local_recv_posted.load(std::memory_order_relaxed) > 0);
+      m_local_recv_posted.fetch_sub(1u, std::memory_order_relaxed);
+
+      /* Park the slot in the ready queue: the unpacker drains it
+       * via get_next_read() / consume_received_bytes() directly from
+       * the parked m_recv_buf slot. The capacity check above
+       * guarantees space; this assertion documents the invariant
+       * for code readers. */
       m_recv_slots[slot].payload_len = payload_len;
       m_recv_slots[slot].read_offset = 0;
-      require(m_recv_queue_count < m_queue_depth);
+      require(m_recv_queue_count.load(std::memory_order_relaxed) <
+              m_queue_depth);
       m_recv_ready_queue[m_recv_queue_tail] = slot;
       m_recv_queue_tail = (m_recv_queue_tail + 1) % m_queue_depth;
-      m_recv_queue_count++;
-      m_stats.recv_completions_ok++;
+      m_recv_queue_count.fetch_add(1u, std::memory_order_relaxed);
+      m_stats.recv_completions_ok.fetch_add(1u,
+                                            std::memory_order_relaxed);
       reaped_total++;
     }
 
@@ -1839,7 +2104,7 @@ int RDMA_Transporter::reap_recv_completions(
   if (remaining == 0 && reaped_total > 0) {
     /* Mirror reap_send_completions: surface budget exhaustion so
      * operators can correlate it with end-to-end latency. */
-    m_stats.cq_budget_hits_recv++;
+    m_stats.cq_budget_hits_recv.fetch_add(1u, std::memory_order_relaxed);
   }
   /*
    * Re-arm the recv CQ now that we have drained it. The arm is a
@@ -1857,17 +2122,20 @@ int RDMA_Transporter::reap_recv_completions(
    * the link down via start_disconnecting().
    */
   arm_recv_cq();
+  /* Periodic stats heartbeat from the recv side too, so transporters
+   * that carry only inbound traffic still emit periodic snapshots. */
+  maybe_log_stats_heartbeat();
   return reaped_total;
 }
 
 bool RDMA_Transporter::has_received_data() const {
-  return m_recv_queue_count > 0;
+  return m_recv_queue_count.load(std::memory_order_relaxed) > 0;
 }
 
 void RDMA_Transporter::get_next_read(const void **out_ptr,
                                      Uint32 *out_len) const {
-  if (m_recv_queue_count == 0 || m_recv_slots == nullptr ||
-      m_recv_buf == nullptr) {
+  if (m_recv_queue_count.load(std::memory_order_relaxed) == 0 ||
+      m_recv_slots == nullptr || m_recv_buf == nullptr) {
     if (out_ptr) *out_ptr = nullptr;
     if (out_len) *out_len = 0;
     return;
@@ -1883,7 +2151,11 @@ void RDMA_Transporter::get_next_read(const void **out_ptr,
   const Uint32 slot = m_recv_ready_queue[m_recv_queue_head];
   const rdma_recv_slot &st = m_recv_slots[slot];
   /* The slot layout is [header][payload]; the unpacker only ever sees
-   * payload bytes. */
+   * payload bytes. The payload still lives in the parked m_recv_buf
+   * slot: under the safe slot-ownership rule the slot is NOT re-posted
+   * to the HCA until consume_received_bytes() finishes draining it,
+   * so the HCA cannot land a new SEND into the same buffer behind our
+   * back. */
   const char *base = (const char *)m_recv_buf + (size_t)slot * slot_size +
                      RDMA_MSG_HEADER_BYTES;
   if (out_ptr) *out_ptr = base + st.read_offset;
@@ -1891,7 +2163,8 @@ void RDMA_Transporter::get_next_read(const void **out_ptr,
 }
 
 void RDMA_Transporter::consume_received_bytes(Uint32 n) {
-  if (n == 0 || m_recv_queue_count == 0) return;
+  if (n == 0 || m_recv_queue_count.load(std::memory_order_relaxed) == 0)
+    return;
   const Uint32 slot = m_recv_ready_queue[m_recv_queue_head];
   rdma_recv_slot &st = m_recv_slots[slot];
   require(st.read_offset + n <= st.payload_len);
@@ -1899,29 +2172,42 @@ void RDMA_Transporter::consume_received_bytes(Uint32 n) {
   /* Account bytes successfully handed to the upper layer regardless of
    * whether this consume completes the slot or just advances within
    * it. */
-  m_stats.copied_recv_bytes += (Uint64)n;
+  m_stats.copied_recv_bytes.fetch_add((Uint64)n,
+                                      std::memory_order_relaxed);
   if (st.read_offset < st.payload_len) {
     /* Partial unpack; head stays parked at this slot. */
     return;
   }
-  /* Slot fully drained: pop it off the queue and re-post the
-   * underlying ibv_recv_wr. Grant one credit back to the peer. */
+  /* Slot fully drained from the application's point of view. The
+   * underlying recv WR has NOT been re-posted yet: under the safe
+   * slot-ownership rule the slot is parked in m_recv_buf for the
+   * duration of the consume so the HCA cannot overwrite the payload
+   * we just handed to the upper layer. Re-post the same slot now and
+   * grant the corresponding credit back to the peer; on repost
+   * failure surface a fatal QP error and start the disconnect path
+   * (the slot will be recycled by QP destroy). */
   st.payload_len = 0;
   st.read_offset = 0;
-  m_recv_queue_head = (m_recv_queue_head + 1) % m_queue_depth;
-  m_recv_queue_count--;
-  require(m_local_recv_posted > 0);
-  m_local_recv_posted--;
   if (!post_one_receive(slot)) {
-    /* Re-post failure is fatal for the link; the next reap on the
-     * recv CQ will observe the failure too, but we surface it here
-     * eagerly. */
-    report_error(TE_RDMA_QP_ERROR, "failed to re-post drained recv slot");
+    m_stats.qp_fatal_events.fetch_add(1u, std::memory_order_relaxed);
+    report_error(TE_RDMA_QP_ERROR,
+                 "failed to re-post recv slot at consume time");
     start_disconnecting(errno, /*send_source=*/false);
     return;
   }
-  m_local_recv_posted++;
-  if (m_pending_credit_grant < 0xFFFFu) m_pending_credit_grant++;
+  m_local_recv_posted.fetch_add(1u, std::memory_order_relaxed);
+  /* Grant one credit back to the peer for the recycled slot. The
+   * 0xFFFE clamp prevents the counter from saturating in the
+   * pathological case of a peer that never acks our grants; the
+   * credit_delta field on the wire is Uint16. fetch_add() is safe
+   * against the send path's exchange() because credit grants only
+   * ever flow up from here and only ever flow down from the send
+   * path. */
+  if (m_pending_credit_grant.load(std::memory_order_acquire) < 0xFFFFu) {
+    m_pending_credit_grant.fetch_add(1u, std::memory_order_acq_rel);
+  }
+  m_recv_queue_head = (m_recv_queue_head + 1) % m_queue_depth;
+  m_recv_queue_count.fetch_sub(1u, std::memory_order_relaxed);
 }
 
 void RDMA_Transporter::encode_msg_header(void *buf, Uint32 payload_len,
@@ -1980,6 +2266,13 @@ bool RDMA_Transporter::validate_msg_header(
   if ((hdr->flags & ~RDMA_MSG_FLAG_ALL_KNOWN) != 0) {
     g_eventLogger->error("RDMA: msg flags 0x%02x contain unknown bits",
                          (unsigned)hdr->flags);
+    return false;
+  }
+  if ((hdr->flags & RDMA_MSG_FLAG_CONTROL_RESERVE) != 0 &&
+      (hdr->flags & RDMA_MSG_FLAG_CREDIT_ONLY) == 0) {
+    g_eventLogger->error(
+        "RDMA: CONTROL_RESERVE flag without CREDIT_ONLY (flags=0x%02x)",
+        (unsigned)hdr->flags);
     return false;
   }
   /* Credit-only / heartbeat must not carry payload bytes. */
@@ -2084,7 +2377,7 @@ bool RDMA_Transporter::post_one_receive(Uint32 slot_idx) {
         rc, errno, std::strerror(errno));
     return false;
   }
-  m_stats.recv_posted++;
+  m_stats.recv_posted.fetch_add(1u, std::memory_order_relaxed);
   return true;
 }
 
@@ -2097,7 +2390,7 @@ bool RDMA_Transporter::post_initial_receives() {
    */
   if (recv_slot_size_or_zero() == 0) return false;
 
-  require(m_local_recv_posted == 0);
+  require(m_local_recv_posted.load(std::memory_order_relaxed) == 0);
   for (Uint32 i = 0; i < m_queue_depth; i++) {
     if (!post_one_receive(i)) {
       g_eventLogger->error(
@@ -2106,7 +2399,7 @@ bool RDMA_Transporter::post_initial_receives() {
           i, m_queue_depth);
       return false;
     }
-    m_local_recv_posted++;
+    m_local_recv_posted.fetch_add(1u, std::memory_order_relaxed);
   }
   return true;
 }
@@ -2119,43 +2412,111 @@ void RDMA_Transporter::log_stats() const {
    * not reorder without updating downstream parsers (none yet, but a
    * stable layout is cheap insurance).
    *
-   * m_bytes_sent / m_bytes_received come from the base Transporter
-   * and are updated by the reap paths in this class, so they are
-   * surfaced here too for one-stop diagnostics.
+   * RDMA-local atomic byte counters mirror the base Transporter byte
+   * counters. We log the atomic mirrors so this function can run from
+   * either send or receive context without cross-thread reading the
+   * base class's plain Uint64 fields.
    */
   g_eventLogger->info(
-      "RDMA[node %u->%u]: stats reconnects=%llu "
+      "RDMA[node %u->%u trp_id=%u inst=%u active=%u recv_thread=%u]: "
+      "stats reconnects=%llu peer_credits=%u pending_grant=%u "
+      "send_in_flight=%u recv_posted_now=%u recv_ready=%u "
       "send_posted=%llu send_ok=%llu send_err=%llu send_inline=%llu "
       "send_credit_only_out=%llu send_credit_only_recv_path=%llu "
-      "send_credit_stalls=%llu copied_send=%llu "
+      "send_credit_only_timer=%llu send_credit_stalls=%llu copied_send=%llu "
       "recv_posted=%llu recv_ok=%llu recv_err=%llu recv_credit_only_in=%llu "
       "copied_recv=%llu bytes_sent=%llu bytes_received=%llu "
       "cq_polls_send=%llu cq_polls_recv=%llu "
       "cq_budget_hits_send=%llu cq_budget_hits_recv=%llu "
       "rnr=%llu retry_exceeded=%llu qp_fatal=%llu",
       (unsigned)localNodeId, (unsigned)remoteNodeId,
-      (unsigned long long)m_stats.reconnect_attempts,
-      (unsigned long long)m_stats.send_posted,
-      (unsigned long long)m_stats.send_completions_ok,
-      (unsigned long long)m_stats.send_completion_errors,
-      (unsigned long long)m_stats.send_inline,
-      (unsigned long long)m_stats.send_credit_only_out,
-      (unsigned long long)m_stats.send_credit_only_recv_path,
-      (unsigned long long)m_stats.send_credit_stalls,
-      (unsigned long long)m_stats.copied_send_bytes,
-      (unsigned long long)m_stats.recv_posted,
-      (unsigned long long)m_stats.recv_completions_ok,
-      (unsigned long long)m_stats.recv_completion_errors,
-      (unsigned long long)m_stats.recv_credit_only_in,
-      (unsigned long long)m_stats.copied_recv_bytes,
-      (unsigned long long)m_bytes_sent, (unsigned long long)m_bytes_received,
-      (unsigned long long)m_stats.cq_polls_send,
-      (unsigned long long)m_stats.cq_polls_recv,
-      (unsigned long long)m_stats.cq_budget_hits_send,
-      (unsigned long long)m_stats.cq_budget_hits_recv,
-      (unsigned long long)m_stats.rnr_events,
-      (unsigned long long)m_stats.retry_exceeded_events,
-      (unsigned long long)m_stats.qp_fatal_events);
+      (unsigned)getTransporterIndex(), (unsigned)m_multi_transporter_instance,
+      (unsigned)m_is_active, (unsigned)m_recv_thread_idx,
+      (unsigned long long)m_stats.reconnect_attempts.load(
+          std::memory_order_relaxed),
+      (unsigned)m_peer_recv_credits.load(std::memory_order_acquire),
+      (unsigned)m_pending_credit_grant.load(std::memory_order_acquire),
+      (unsigned)m_send_slots_in_flight.load(std::memory_order_relaxed),
+      (unsigned)m_local_recv_posted.load(std::memory_order_relaxed),
+      (unsigned)m_recv_queue_count.load(std::memory_order_relaxed),
+      (unsigned long long)m_stats.send_posted.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.send_completions_ok.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.send_completion_errors.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.send_inline.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.send_credit_only_out.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.send_credit_only_recv_path.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.send_credit_only_timer.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.send_credit_stalls.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.copied_send_bytes.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.recv_posted.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.recv_completions_ok.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.recv_completion_errors.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.recv_credit_only_in.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.copied_recv_bytes.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_wire_bytes_sent.load(std::memory_order_relaxed),
+      (unsigned long long)m_wire_bytes_received.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.cq_polls_send.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.cq_polls_recv.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.cq_budget_hits_send.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.cq_budget_hits_recv.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.rnr_events.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.retry_exceeded_events.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.qp_fatal_events.load(
+          std::memory_order_relaxed));
+}
+
+void RDMA_Transporter::maybe_log_stats_heartbeat() {
+  /*
+   * Read the monotonic clock. CLOCK_MONOTONIC is unaffected by wall-
+   * clock jumps (NTP step, DST), which is what we want for an interval
+   * timer. clock_gettime() is a vDSO call on Linux and costs ~10 ns,
+   * so it is cheap enough to call on every doSend() / reap_recv_
+   * completions() invocation without measurable overhead.
+   */
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    /* clock_gettime should not fail with CLOCK_MONOTONIC on Linux,
+     * but if it does we simply skip the heartbeat this round. The
+     * next call will retry. */
+    return;
+  }
+  const Uint64 now_ns =
+      (Uint64)ts.tv_sec * 1000ULL * 1000ULL * 1000ULL + (Uint64)ts.tv_nsec;
+
+  /*
+   * Relaxed load is sufficient: this field is purely an interval
+   * guard, not a synchronizer for other state. A torn read between
+   * the send and receive threads could at worst cause an extra log
+   * line; correctness is not affected.
+   */
+  const Uint64 last_ns =
+      m_last_stats_log_ns.load(std::memory_order_relaxed);
+  if (last_ns != 0 && (now_ns - last_ns) < RDMA_STATS_HEARTBEAT_NS) {
+    return;
+  }
+  log_stats();
+  m_last_stats_log_ns.store(now_ns, std::memory_order_relaxed);
 }
 
 void RDMA_Transporter::log_negotiated_attributes() const {
@@ -2245,11 +2606,12 @@ bool RDMA_Transporter::run_endpoint_exchange(const NdbSocket &socket,
   local_rec.link_layer = (uint8_t)port_attr.link_layer;
   local_rec.max_inline = htonl(m_effective_inline_threshold);
   local_rec.queue_depth = htonl(m_queue_depth);
-  /* Initial receive credits we grant the peer equals our queue depth
-   * minus 1 (one slot is held back for the credit-only message that
-   * the Gate-2 credit protocol will use). For Gate-1 we just advertise
-   * the full queue depth so the peer has accurate sizing info. */
-  local_rec.recv_credits = htonl(m_queue_depth);
+  /* Advertise only DATA credits. One posted receive is intentionally
+   * left unadvertised as the reserved control lane, so CREDIT_ONLY can
+   * still return credits when both peers have consumed all DATA credits. */
+  const Uint32 advertised_data_credits =
+      (m_queue_depth > 0) ? (m_queue_depth - 1u) : 0u;
+  local_rec.recv_credits = htonl(advertised_data_credits);
 
   /* Step 1+2: simultaneous send/recv. We send first then read; the
    * peer does the same, so both ends progress without a deadlock. */
@@ -2305,6 +2667,37 @@ bool RDMA_Transporter::run_endpoint_exchange(const NdbSocket &socket,
     return false;
   }
 
+  /*
+   * Fail fast when the link is RoCE and either side advertised
+   * an all-zero GID. A zero GID indicates the gid_index points at an
+   * unconfigured slot (typical when the operator picked a default
+   * RdmaGidIndex that does not match the routable IPv4/IPv6 GID for
+   * the cluster's RoCE VLAN). Packets cannot be routed reliably, which
+   * surfaces under load as IBV_WC_RETRY_EXC_ERR / silent stalls.
+   */
+  if (peer_rec.link_layer == IBV_LINK_LAYER_ETHERNET) {
+    char local_gid_str[64];
+    char peer_gid_str[64];
+    rdma_format_gid(local_rec.gid, local_gid_str, sizeof(local_gid_str));
+    rdma_format_gid(peer_rec.gid, peer_gid_str, sizeof(peer_gid_str));
+    if (rdma_gid_is_zero(local_rec.gid) || rdma_gid_is_zero(peer_rec.gid)) {
+      g_eventLogger->error(
+          "RDMA[%s,node %u->%u]: RoCE endpoint exchange advertised zero "
+          "GID (local=%s idx=%u, peer=%s idx=%u). Verify RdmaGidIndex "
+          "points at a routable GID for the cluster fabric.",
+          side, (unsigned)localNodeId, (unsigned)remoteNodeId,
+          local_gid_str, m_gid_index, peer_gid_str,
+          (unsigned)peer_rec.gid_index);
+      return false;
+    } else {
+      g_eventLogger->info(
+          "RDMA[%s,node %u->%u]: RoCE GIDs local=%s idx=%u peer=%s idx=%u",
+          side, (unsigned)localNodeId, (unsigned)remoteNodeId,
+          local_gid_str, m_gid_index, peer_gid_str,
+          (unsigned)peer_rec.gid_index);
+    }
+  }
+
   /* MTU negotiation: use the smaller of the two. This matters because
    * an asymmetric MTU configuration would otherwise cause silent drops
    * at the fabric level. We mutate peer_rec.mtu in place so
@@ -2342,23 +2735,31 @@ bool RDMA_Transporter::run_endpoint_exchange(const NdbSocket &socket,
    * Seed credit accounting from the peer's record. The peer advertised
    * how many receive slots it has posted on its end, which equals the
    * number of in-flight SENDs we are allowed to issue before we must
-   * stall.
+   * stall. Atomic store under release ordering pairs with the acquire
+   * loads in doSend() / post_credit_only_locked() so the seed is
+   * visible before the first send attempt.
    */
-  m_peer_recv_credits = ntohl(peer_rec.recv_credits);
+  m_peer_recv_credits.store(ntohl(peer_rec.recv_credits),
+                            std::memory_order_release);
   /* We expect the peer's first SEND to carry seq 0; mirror the
-   * sender-side default. */
+   * sender-side default. Relaxed store is fine because the QP is
+   * not at RTS yet from the peer's perspective and no send thread
+   * is touching these fields. */
   m_local_send_seq = 0;
-  m_local_recv_seq = 0;
+  m_local_recv_seq.store(0, std::memory_order_relaxed);
   m_peer_ack_seq = 0;
 
+
   g_eventLogger->info(
-      "RDMA[%s,node %u->%u]: handshake OK: local_qpn=%u peer_qpn=%u "
+      "RDMA[%s,node %u->%u]: handshake OK: link=%s local_qpn=%u peer_qpn=%u "
       "local_psn=%u peer_psn=%u mtu=%uB recv_posted=%u credits_from_peer=%u",
       side, (unsigned)localNodeId, (unsigned)remoteNodeId,
+      rdma_link_layer_name(peer_rec.link_layer),
       (unsigned)m_qp->qp_num, (unsigned)ntohl(peer_rec.qp_num),
       (unsigned)local_psn, (unsigned)ntohl(peer_rec.psn),
-      rdma_mtu_to_bytes((enum ibv_mtu)peer_rec.mtu), m_local_recv_posted,
-      m_peer_recv_credits);
+      rdma_mtu_to_bytes((enum ibv_mtu)peer_rec.mtu),
+      (unsigned)m_local_recv_posted.load(std::memory_order_relaxed),
+      (unsigned)m_peer_recv_credits.load(std::memory_order_acquire));
   return true;
 }
 
@@ -2395,7 +2796,18 @@ bool RDMA_Transporter::qp_transition_to_rtr(const void *peer_record) {
   attr.dest_qp_num = ntohl(peer->qp_num);
   attr.rq_psn = ntohl(peer->psn);
   attr.max_dest_rd_atomic = 0;  /* no READ/ATOMIC on this QP */
-  attr.min_rnr_timer = 12;      /* ~0.64 ms; conservative IB default */
+  /*
+   * 16 == ~1.28 ms minimum RNR NAK timer. Doubled from the previous
+   * default of 12 (~0.64 ms) to give the sender's HCA more time to
+   * wait for a transient RQ-empty window on this side before
+   * generating an RNR NAK. Combined with qp_transition_to_rts()
+   * forcing rnr_retry=7 (infinite retries), this means a sender
+   * never escalates a transient slow-drain into IBV_WC_RETRY_EXC_ERR;
+   * it will keep retrying until our RQ has a posted slot again. Receive
+   * slots are deliberately parked until the upper layer consumes them,
+   * so this provides the backstop for legitimate slow-drain windows.
+   */
+  attr.min_rnr_timer = 16;      /* ~1.28 ms */
 
   /* Address handle: for RoCE we rely on GID-based addressing; for IB
    * we use the LID. We set both fields so the verbs provider can pick
@@ -2434,7 +2846,22 @@ bool RDMA_Transporter::qp_transition_to_rts(Uint32 local_psn) {
   attr.qp_state = IBV_QPS_RTS;
   attr.timeout = 14;       /* ~67ms ack timeout, IB-typical */
   attr.retry_cnt = (uint8_t)m_retry_count;
-  attr.rnr_retry = (uint8_t)m_rnr_retry_count;
+  /*
+   * Force rnr_retry to 7, the IB-spec sentinel for "infinite RNR
+   * retries". This guarantees that a transient peer RQ-empty window
+   * never escalates to IBV_WC_RETRY_EXC_ERR -- the HCA will keep
+   * retrying every min_rnr_timer until the peer's RQ accepts the
+   * SEND. Receive slots are re-posted only after the upper layer drains
+   * the parked payload, so the infinite retry is a safety net for
+   * legitimate application-side backpressure.
+   *
+   * The configured m_rnr_retry_count is ignored on purpose: lower
+   * values were shown on 2026-05-19 to produce status=12
+   * (transport retry counter exceeded) on multi-transporter clones
+   * during mdtest load even with the credit-return-timer mechanism
+   * active.
+   */
+  attr.rnr_retry = 7;
   attr.sq_psn = local_psn;
   attr.max_rd_atomic = 0;  /* no outgoing READ/ATOMIC */
 
@@ -2461,11 +2888,13 @@ bool RDMA_Transporter::qp_transition_to_rts(Uint32 local_psn) {
  *
  * Coverage:
  *   - Round-trip encode/decode with a variety of field values
- *     (zeros, max u32/u16, CREDIT_ONLY, HEARTBEAT, max payload).
+ *     (zeros, max u32/u16, CREDIT_ONLY, HEARTBEAT, control-reserve,
+ *     max payload).
  *   - Network byte-order layout assertions on the raw bytes.
  *   - Rejection of bad magic, bad version, bad header_len, and
  *     unknown flag bits.
  *   - Rejection of CREDIT_ONLY/HEARTBEAT messages carrying a payload.
+ *   - Rejection of CONTROL_RESERVE without CREDIT_ONLY.
  *   - Acceptance of payload_len greater than MAX_RECV_MESSAGE_BYTESIZE
  *     when `available` is large enough (multi-Protocol6 packed slot).
  *   - Rejection of buffers shorter than the fixed header.
@@ -2556,7 +2985,7 @@ TAPTEST(RDMA_Transporter) {
   /* ----- Round-trip cases -----
    * Exercise the encode/decode pair over a representative set of
    * field values: all-zero, peak u32/u16, CREDIT_ONLY, HEARTBEAT,
-   * and a payload that is exactly at MAX_RECV_MESSAGE_BYTESIZE. */
+   * CONTROL_RESERVE, and a payload exactly at MAX_RECV_MESSAGE_BYTESIZE. */
   rdma_test_round_trip(/*payload=*/0u, /*send_seq=*/0u, /*ack_seq=*/0u,
                        /*credit_delta=*/0u, /*flags=*/0u);
   rdma_test_round_trip(/*payload=*/0x100u, /*send_seq=*/0x12345678u,
@@ -2565,6 +2994,10 @@ TAPTEST(RDMA_Transporter) {
   rdma_test_round_trip(/*payload=*/0u, /*send_seq=*/1u, /*ack_seq=*/2u,
                        /*credit_delta=*/3u,
                        /*flags=*/RDMA_MSG_FLAG_CREDIT_ONLY);
+  rdma_test_round_trip(/*payload=*/0u, /*send_seq=*/3u, /*ack_seq=*/4u,
+                       /*credit_delta=*/5u,
+                       /*flags=*/RDMA_MSG_FLAG_CREDIT_ONLY |
+                           RDMA_MSG_FLAG_CONTROL_RESERVE);
   rdma_test_round_trip(/*payload=*/0u, /*send_seq=*/0xFFFFFFFFu,
                        /*ack_seq=*/0xFFFFFFFFu,
                        /*credit_delta=*/0xFFFFu,
@@ -2641,6 +3074,21 @@ TAPTEST(RDMA_Transporter) {
   RDMA_Transporter::encode_msg_header(buf, /*payload=*/4u, /*send_seq=*/0u,
                                       /*ack_seq=*/0u, /*credit_delta=*/0u,
                                       RDMA_MSG_FLAG_HEARTBEAT);
+  OK(!RDMA_Transporter::validate_msg_header(
+      buf, (size_t)RDMA_MSG_HEADER_BYTES + 4u, nullptr, nullptr, nullptr,
+      nullptr, nullptr));
+
+  RDMA_Transporter::encode_msg_header(buf, /*payload=*/0u, /*send_seq=*/0u,
+                                      /*ack_seq=*/0u, /*credit_delta=*/0u,
+                                      RDMA_MSG_FLAG_CONTROL_RESERVE);
+  OK(!RDMA_Transporter::validate_msg_header(
+      buf, (size_t)RDMA_MSG_HEADER_BYTES, nullptr, nullptr, nullptr,
+      nullptr, nullptr));
+
+  RDMA_Transporter::encode_msg_header(
+      buf, /*payload=*/4u, /*send_seq=*/0u, /*ack_seq=*/0u,
+      /*credit_delta=*/0u,
+      RDMA_MSG_FLAG_CREDIT_ONLY | RDMA_MSG_FLAG_CONTROL_RESERVE);
   OK(!RDMA_Transporter::validate_msg_header(
       buf, (size_t)RDMA_MSG_HEADER_BYTES + 4u, nullptr, nullptr, nullptr,
       nullptr, nullptr));

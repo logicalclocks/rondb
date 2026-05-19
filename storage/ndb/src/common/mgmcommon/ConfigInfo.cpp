@@ -2314,7 +2314,14 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "7", "0", "7"},
 
     {CFG_RDMA_RNR_RETRY_COUNT, "RdmaRnrRetryCount", "RDMA",
-     "QP RNR retry count. RNR retry exhaustion disconnects the link.",
+     "QP RNR retry count. Currently the implementation forces the QP "
+     "to rnr_retry=7 (infinite retries) at RTS transition regardless of "
+     "this setting; lower values were shown under mdtest load to "
+     "produce transport-retry-exhausted (status=12) events on multi-"
+     "transporter clones. The value is still validated against the "
+     "0..7 IB range and is preserved in the configuration so future "
+     "releases can re-enable the user-configurable behavior, but it "
+     "does not currently change runtime behavior.",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "7", "0", "7"},
 
     /****************************************************************************
