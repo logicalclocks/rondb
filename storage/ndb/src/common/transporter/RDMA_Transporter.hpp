@@ -27,6 +27,7 @@
  * registry can compile-gate its references with a single guard.
  */
 #ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+#include <atomic>
 
 #include <cstdint>
 
@@ -87,11 +88,16 @@ static constexpr uint16_t RDMA_MSG_HEADER_BYTES = 24u;
  *  RDMA_MSG_FLAG_HEARTBEAT     sender is asserting liveness; payload_len
  *                              is 0. Reserved for future use; receiver
  *                              currently treats it like CREDIT_ONLY.
+ *  RDMA_MSG_FLAG_CONTROL_RESERVE
+ *                              CREDIT_ONLY used the reserved control
+ *                              receive slot, not a normal data credit.
  */
 static constexpr uint8_t RDMA_MSG_FLAG_CREDIT_ONLY = 0x01u;
 static constexpr uint8_t RDMA_MSG_FLAG_HEARTBEAT = 0x02u;
+static constexpr uint8_t RDMA_MSG_FLAG_CONTROL_RESERVE = 0x04u;
 static constexpr uint8_t RDMA_MSG_FLAG_ALL_KNOWN =
-    RDMA_MSG_FLAG_CREDIT_ONLY | RDMA_MSG_FLAG_HEARTBEAT;
+    RDMA_MSG_FLAG_CREDIT_ONLY | RDMA_MSG_FLAG_HEARTBEAT |
+    RDMA_MSG_FLAG_CONTROL_RESERVE;
 
 struct __attribute__((packed)) rdma_msg_header_v1 {
   uint32_t magic;        /* network order, must == RDMA_MSG_MAGIC */
@@ -109,30 +115,29 @@ static_assert(sizeof(rdma_msg_header_v1) == RDMA_MSG_HEADER_BYTES,
 
 /**
  * @class RDMA_Transporter
- * @brief Gate-1 implementation of the native RonDB RDMA transporter.
+ * @brief Native RonDB reliable-connected RDMA SEND/RECV transporter.
  *
  * Status:
- *   - Compiles cleanly under both `-DWITH_NDB_RDMA=ON` and OFF.
- *   - On the ON side, every connect attempt exercises the verbs
- *     lifecycle (device open, PD/CQ/QP/MR allocation), logs the
- *     negotiated attributes, and then releases the resources and
- *     refuses the link. The wire protocol, QP transitions to RTR/RTS,
- *     and the data path are still TODO (Milestones 5-8).
+ *   - Allocates verbs resources lazily during connect.
+ *   - Exchanges endpoint metadata over the authenticated control socket.
+ *   - Drives the QP to RTS and carries Protocol6 signal bytes over
+ *     one-sided-local SEND/RECV work requests.
  *
  * Verbs ownership:
  *   - allocate_verbs_resources() acquires the device context, PD, two
  *     CQs, one RC QP, and two MRs/buffers.
  *   - release_verbs_resources() is idempotent and tears resources down
- *     in the reverse order. It is called from disconnectImpl(),
- *     releaseAfterDisconnect(), resetBuffers(), the destructor, and on
- *     every failure path inside allocate_verbs_resources() itself.
+ *     in the reverse order. It is called from releaseAfterDisconnect(),
+ *     resetBuffers(), the destructor, and on every failure path inside
+ *     allocate_verbs_resources() itself.
  *
  * Threading:
- *   - All verbs operations happen on the thread that drives the
- *     connect/disconnect protocol (start_clients_thread or the
- *     receive-thread, depending on side). The class does not start
- *     background work and the resource members are not protected by
- *     mutexes; callers must serialize allocate/release.
+ *   - Send posting and send-CQ reaping are serialized by the
+ *     per-transporter send lock.
+ *   - Receive-CQ reaping, ready-queue mutation, and slot consumption
+ *     run on the assigned receive thread.
+ *   - Cross-thread diagnostic fields are atomic; non-atomic slot state
+ *     is owned by one side according to those locks.
  */
 class RDMA_Transporter : public Transporter {
   /*
@@ -163,8 +168,8 @@ class RDMA_Transporter : public Transporter {
   /**
    * Copy-construct an additional transporter for multi-transporter support.
    *
-   * Currently unimplemented for RDMA; calling it is a runtime error so
-   * Multi_Transporter cannot accidentally create RDMA secondaries.
+   * The clone receives fresh verbs resources on connect while copying
+   * the immutable RDMA tuning configuration from the source transporter.
    */
   RDMA_Transporter(TransporterRegistry &reg, const RDMA_Transporter *other);
 
@@ -178,8 +183,8 @@ class RDMA_Transporter : public Transporter {
   bool initTransporter() override;
 
   /**
-   * Required by Transporter. Returns false unconditionally and reports
-   * TE_RDMA_NOT_SUPPORTED so the registry tears the link down.
+   * Drain the upper-layer send buffer into registered RDMA SEND slots
+   * while peer receive credits and local send slots are available.
    */
   bool doSend(bool need_wakeup = true) override;
 
@@ -200,38 +205,37 @@ class RDMA_Transporter : public Transporter {
   bool configure_derived(const TransporterConfiguration *conf) override;
 
   /**
-   * Connect callbacks. Gate 1 still refuses every connect attempt, but it
-   * now exercises the verbs lifecycle: on entry both methods attempt to
-   * allocate PD/CQ/QP/MR; on success the negotiated attributes are logged
-   * via g_eventLogger->info() and the resources are released. On failure
-   * the underlying ibverbs error is logged with g_eventLogger->error()
-   * inside allocate_verbs_resources(). Both paths then close the control
-   * socket and return false so the registry leaves the link DISCONNECTED.
-   * Note: we deliberately avoid calling report_error() during CONNECTING
-   * state because the registry treats queued errors at that point as
-   * unexpected (see update_connections()).
+   * Connect callbacks allocate verbs resources, exchange endpoint records
+   * over the control socket, post initial receives, and transition the QP
+   * through INIT/RTR/RTS. On failure the caller tears the partial state
+   * down and leaves the transporter disconnected.
    */
   bool connect_server_impl(NdbSocket &&socket) override;
   bool connect_client_impl(NdbSocket &&socket) override;
 
   /**
    * Disconnect callback. Releases any verbs resources still owned by
-   * this transporter. Safe to invoke when no resources are held.
+   * this transporter's control socket state, but deliberately leaves
+   * verbs resources intact until releaseAfterDisconnect() when send
+   * buffers are already disabled and the receive side has stopped using
+   * the transporter.
    */
   void disconnectImpl() override;
 
   /**
    * Final cleanup hook called once the transporter is DISCONNECTED.
-   * Closes the control socket (via the base) and ensures verbs resources
-   * are released exactly once, even if disconnectImpl() did not run.
+   * Ensures verbs resources are released only after the registry has
+   * disabled send buffers and cleared receive-side state, then closes
+   * the control socket via the base implementation.
    */
   void releaseAfterDisconnect() override;
 
  private:
   /**
-   * Send-side hooks required by Transporter. They short-circuit to "not
-   * possible" / "limit reached = false" so the registry never tries to
-   * push bytes through this skeleton.
+   * Send-side hooks required by Transporter. send_is_possible() reports
+   * whether a normal DATA SEND can currently be posted; CREDIT_ONLY may
+   * still use the reserved control receive slot when data credits are
+   * exhausted.
    */
   bool send_is_possible(int timeout_millisec) const override;
   bool send_limit_reached(int bufsize) override;
@@ -274,19 +278,18 @@ class RDMA_Transporter : public Transporter {
   void log_negotiated_attributes() const;
 
   /**
-   * run_endpoint_exchange() implements the symmetric Gate-1 handshake
+   * run_endpoint_exchange() implements the symmetric endpoint handshake
    * over the already-authenticated control socket:
    *   1. Send our local endpoint record (QPN, PSN, GID, MTU, ...).
    *   2. Read the peer endpoint record with a finite timeout.
-   *   3. Validate version, MTU compatibility, and inline-data cap.
+   *   3. Validate version, link layer, RoCE GIDs, and MTU compatibility.
    *   4. Transition the QP through INIT, RTR (using peer info), and
    *      RTS (using our own initial PSN).
    *
    * All ibv_modify_qp() failures and protocol mismatches are surfaced
    * via g_eventLogger->error() and cause this method to return false.
    * On false the caller must release verbs resources; on true the QP
-   * is at IBV_QPS_RTS and ready to post WRs (data path comes in later
-   * milestones).
+   * is at IBV_QPS_RTS and ready to post WRs.
    *
    * @param socket  the authenticated control socket (borrowed; this
    *                method does not take ownership).
@@ -337,7 +340,7 @@ class RDMA_Transporter : public Transporter {
    * `available` parameter is the total number of bytes currently in
    * the receive slot (header plus possible payload); the function
    * rejects records whose declared payload_len would overflow
-   * `available - sizeof(header)` or exceed MAX_RECV_MESSAGE_BYTESIZE.
+   * `available - sizeof(header)`.
    * Returns true on success and writes the decoded fields through the
    * output pointers; returns false on validation failure (the output
    * pointers are left undefined).
@@ -392,10 +395,12 @@ class RDMA_Transporter : public Transporter {
   /*
    * Reap any send completions waiting on m_send_cq, bounded by the
    * configured m_completion_poll_budget. For each successful WC, free
-   * the corresponding slot and call iovec_data_sent() with the byte
-   * count we owe to the send buffer. For any WC.status != SUCCESS,
-   * surface a transporter error (TE_RDMA_CQ_ERROR/TE_RDMA_RETRY_EXHAUSTED)
-   * and start the disconnect protocol from the send-side source.
+   * the corresponding staging slot. Upper-layer send-buffer bytes were
+   * already released immediately after a successful ibv_post_send(),
+   * because the data has been copied into m_send_buf by then. For any
+   * WC.status != SUCCESS, surface a transporter error
+   * (TE_RDMA_CQ_ERROR/TE_RDMA_RETRY_EXHAUSTED) and start the disconnect
+   * protocol from the send-side source.
    *
    * Returns the number of completions reaped (0 means "CQ was empty"),
    * or -1 on a fatal CQ error.
@@ -419,10 +424,11 @@ class RDMA_Transporter : public Transporter {
    * against other posts on the same QP.
    *
    * Returns true iff a WR was successfully posted. Returns false when
-   * preconditions are not met (no pending grant, no free slot, no
-   * peer credits, geometry/verbs not live) or when ibv_post_send
-   * itself failed; in the latter case the link is already in the
-   * disconnect protocol.
+   * preconditions are not met (no pending grant, no free slot, or
+   * geometry/verbs not live) or when ibv_post_send itself failed; in
+   * the latter case the link is already in the disconnect protocol.
+   * When normal DATA credits are exhausted, the helper may use the
+   * peer's reserved control receive slot instead of failing.
    */
   bool post_credit_only_locked();
 
@@ -439,7 +445,7 @@ class RDMA_Transporter : public Transporter {
    * GCP_COMMIT-lag / NDB-274 / NDB-286 pattern we observed.
    *
    * The receive thread therefore calls this method at the tail of
-   * each recv batch. The method does a lock-free fast check on the
+   * each recv batch. The method does an atomic fast check on the
    * pending grant counter; if the half-queue-depth threshold has
    * been crossed it acquires the per-transporter send lock, reaps
    * outstanding send completions to free slots that may have been
@@ -526,12 +532,18 @@ class RDMA_Transporter : public Transporter {
   int reap_recv_completions(class TransporterReceiveHandle &recvdata);
 
   /*
-   * Public-facing accessors used by the (future) registry receive
-   * path. has_received_data() returns whether any slot in the ready
-   * queue still has un-consumed bytes. get_next_read() yields the
-   * next contiguous byte run for the unpacker; *out_len is 0 when no
-   * data is available. consume_received_bytes() advances the read
-   * offset and re-posts the slot when it is fully drained.
+   * Public-facing accessors used by the registry receive path.
+   * has_received_data() returns whether any slot in the ready queue
+   * still has un-consumed bytes. get_next_read() yields the next
+   * contiguous byte run for the unpacker directly from the parked HCA
+   * receive slot in m_recv_buf; *out_len is 0 when no data is
+   * available. consume_received_bytes() advances the read offset and,
+   * once the unpacker has fully drained the slot, re-posts the
+   * underlying ibv_recv_wr to the RQ and grants one credit back to
+   * the peer before popping the slot off the ready queue. The data
+   * slot is therefore owned exclusively by the upper layer between
+   * its WC arrival and the consume completion, which closes the
+   * earlier app-buffer overwrite hazard.
    */
   bool has_received_data() const;
   void get_next_read(const void **out_ptr, Uint32 *out_len) const;
@@ -552,6 +564,21 @@ class RDMA_Transporter : public Transporter {
    * tolerates partial/uninitialized verbs handles.
    */
   void log_stats() const;
+
+  /*
+   * Periodic stats heartbeat. Called from doSend() (send thread) and
+   * reap_recv_completions() (recv thread). If at least
+   * RDMA_STATS_HEARTBEAT_NS have elapsed since the previous emission
+   * for this transporter, calls log_stats() and bumps the timestamp.
+   * Cheap: a single clock_gettime + 64-bit compare on the fast path.
+   *
+   * The two callers race on m_last_stats_log_ns, but the race is
+   * benign: a torn 64-bit read on a misaligned value cannot happen
+   * because rdma_stats keeps the field 8-byte aligned, and even if
+   * both threads decide to emit in the same window we just get a
+   * single duplicated line. No state correctness is affected.
+   */
+  void maybe_log_stats_heartbeat();
 
   /*
    * Cached RDMA-specific configuration, copied out of TransporterConfiguration
@@ -608,9 +635,27 @@ class RDMA_Transporter : public Transporter {
   /*
    * Owned, page-aligned staging buffers registered with the HCA. Freed
    * with std::free() after the corresponding MR is deregistered.
+   *
+   * m_app_buf is a reserved second recv-side buffer of the same shape
+   * as m_recv_buf, also page-aligned and NOT registered with the HCA.
+   * It was originally introduced as an application-visible mirror so
+   * the data path could re-post the HCA slot at WC time. That design
+   * had a structural overwrite hazard: the HCA could land a second
+   * SEND into the same slot before the upper layer had drained the
+   * previous payload, corrupting the Protocol6 byte stream.
+   *
+   * The current safe slot-ownership rule keeps the HCA slot parked in
+   * m_recv_buf until consume_received_bytes() finishes draining it,
+   * and the unpacker reads payload bytes directly from m_recv_buf.
+   * m_app_buf is therefore unused by the data path today but is left
+   * allocated as scaffolding for a future decoupled app-buffer pool
+   * that would restore WC-time repost throughput without the overwrite
+   * hazard. CREDIT_ONLY / HEARTBEAT control messages never expose an
+   * app-visible generation and continue to repost at WC time.
    */
   void *m_send_buf;
   void *m_recv_buf;
+  void *m_app_buf;
 
   /*
    * Negotiated inline-data cap. The configured m_inline_threshold may be
@@ -627,13 +672,23 @@ class RDMA_Transporter : public Transporter {
    * 0x80000000" trick to handle wrap correctly.
    *
    *  m_local_send_seq      next seq number we will stamp on an outgoing
-   *                        SEND.
+   *                        SEND. Only mutated under the send lock; non-
+   *                        atomic.
    *  m_local_recv_seq      next seq number we expect from the peer; any
    *                        SEND with seq != this value is a protocol
    *                        violation and disconnects the link.
+   *                        Incremented by the receive thread but read
+   *                        on the send thread when stamping ack_seq on
+   *                        outgoing messages -- declared std::atomic so
+   *                        cross-thread access is not a C++ data race.
+   *                        The send thread uses memory_order_relaxed
+   *                        because ack_seq is an advisory hint, not a
+   *                        protocol invariant.
    *  m_peer_ack_seq        most recent seq the peer has acknowledged in
    *                        a header.ack_seq field; used to free outbound
-   *                        send slots in Milestone 7.
+   *                        send slots in Milestone 7. Only mutated under
+   *                        the receive lock; not currently read on the
+   *                        send thread, so non-atomic is sufficient.
    *  m_peer_recv_credits   credits we currently hold against the peer's
    *                        receive queue. Decremented by 1 for every
    *                        SEND we post. When 0 we must stall sending
@@ -645,23 +700,43 @@ class RDMA_Transporter : public Transporter {
    *                        outbound SEND, or generates a CREDIT_ONLY
    *                        message if it grows beyond half of the
    *                        local queue depth.
+   *
+   * Credit-state mutations are serialized by the per-transporter send
+   * lock shared with performSend()/recv_thread_emit_credit_only().
+   * These two fields are atomic only so fast-path checks and stats
+   * logging can read them without introducing a C++ data race.
    *  m_local_recv_posted   how many receive WRs are currently posted to
    *                        the RQ. Must equal m_queue_depth right after
-   *                        post_initial_receives() succeeds.
+   *                        post_initial_receives() succeeds. Read in
+   *                        log_stats() from the opposite thread, so the
+   *                        field is std::atomic to keep the diagnostic
+   *                        snapshot well-defined under C++; the actual
+   *                        mutation happens on the receive thread and
+   *                        uses memory_order_relaxed.
    */
   Uint32 m_local_send_seq;
-  Uint32 m_local_recv_seq;
+  std::atomic<Uint32> m_local_recv_seq;
   Uint32 m_peer_ack_seq;
-  Uint32 m_peer_recv_credits;
-  Uint32 m_pending_credit_grant;
-  Uint32 m_local_recv_posted;
+  std::atomic<Uint32> m_peer_recv_credits;
+  std::atomic<Uint32> m_pending_credit_grant;
+  std::atomic<Uint32> m_local_recv_posted;
+  /*
+   * RDMA-local wire byte counters mirrored from the base Transporter
+   * counters. The base fields stay plain Uint64 for TCP/SHM ABI
+   * compatibility, but log_stats() runs from both send and receive
+   * contexts, so it reads these atomics instead of cross-thread
+   * reading m_bytes_sent / m_bytes_received directly.
+   */
+  std::atomic<Uint64> m_wire_bytes_sent{0};
+  std::atomic<Uint64> m_wire_bytes_received{0};
 
   /*
    * Per send-slot bookkeeping. The verbs WR completion only tells us
    * which slot completed (via wr_id), so we keep a parallel array of
-   * slot state here. `bytes_consumed` is the count of payload bytes we
-   * staged into this slot from the send buffer; we owe exactly that
-   * many bytes to iovec_data_sent() once the slot's WR completes.
+   * slot state here. `payload_len` is the count of payload bytes staged
+   * into this registered slot; it is used for byte counters when the WR
+   * completes. The upper-layer send buffer is released immediately after
+   * a successful post, not at completion time.
    *
    * m_send_slots is heap-allocated with m_queue_depth entries during
    * allocate_verbs_resources() and freed during
@@ -670,18 +745,20 @@ class RDMA_Transporter : public Transporter {
    * header.
    */
   struct rdma_send_slot {
-    Uint32 bytes_consumed;
+    Uint32 payload_len;
     bool in_flight;
   };
   rdma_send_slot *m_send_slots;
-  Uint32 m_send_slots_in_flight;
   /*
-   * Total payload bytes currently staged in in-flight slots. Used by
-   * doSend() to skip past bytes we have already copied out of the
-   * send buffer (we cannot call iovec_data_sent() until the
-   * corresponding completion arrives).
+   * Count of send WRs currently posted on the QP. Mutated only on the
+   * send thread under the per-transporter send lock; read on the
+   * receive thread from log_stats() and from
+   * recv_thread_emit_credit_only() (the latter also takes the send
+   * lock before reading). std::atomic<Uint32> with relaxed ordering
+   * makes the diagnostic cross-thread read well-defined under C++
+   * without changing send-side semantics.
    */
-  Uint32 m_bytes_in_flight;
+  std::atomic<Uint32> m_send_slots_in_flight;
   /*
    * Round-robin allocation hint for find_free_send_slot(). Just a
    * starting index; the loop always tries all slots.
@@ -715,7 +792,13 @@ class RDMA_Transporter : public Transporter {
   Uint32 *m_recv_ready_queue;
   Uint32 m_recv_queue_head;
   Uint32 m_recv_queue_tail;
-  Uint32 m_recv_queue_count;
+  /*
+   * Mutated only on the receive thread (under the global recv lock).
+   * Read on the send thread from log_stats(). std::atomic<Uint32>
+   * with relaxed ordering keeps the cross-thread diagnostic read
+   * well-defined; the receive-side mutations remain single-threaded.
+   */
+  std::atomic<Uint32> m_recv_queue_count;
 
   /*
    * --------------------------------------------------------------------------
@@ -743,38 +826,68 @@ class RDMA_Transporter : public Transporter {
    *           and reconnect attempts.
    *  - flow:  send-side credit stalls observed by doSend().
    */
+  /*
+   * Counters are std::atomic<Uint64> because log_stats() may run on
+   * either the send thread (from doSend()) or the receive thread (from
+   * reap_recv_completions()) and reads counters owned by the other
+   * thread. fetch_add(1, memory_order_relaxed) on x86_64 compiles to a
+   * single LOCK XADD, which is well under 10 ns on the lab data nodes
+   * and is therefore acceptable on the hot path. The relaxed ordering
+   * is correct for monotonic counters: we do not use these values to
+   * synchronize access to anything else.
+   */
   struct rdma_stats {
     /* --- send path --- */
-    Uint64 send_posted = 0;
-    Uint64 send_completions_ok = 0;
-    Uint64 send_completion_errors = 0;
-    Uint64 send_inline = 0;
-    Uint64 send_credit_only_out = 0;
+    std::atomic<Uint64> send_posted{0};
+    std::atomic<Uint64> send_completions_ok{0};
+    std::atomic<Uint64> send_completion_errors{0};
+    std::atomic<Uint64> send_inline{0};
+    std::atomic<Uint64> send_credit_only_out{0};
     /* Subset of send_credit_only_out attributed to the receive thread
      * emit path (recv_thread_emit_credit_only). Separately tracked so
      * operators can verify the new path is active on clones that have
      * mostly inbound traffic. */
-    Uint64 send_credit_only_recv_path = 0;
-    Uint64 send_credit_stalls = 0;
-    Uint64 copied_send_bytes = 0;
+    std::atomic<Uint64> send_credit_only_recv_path{0};
+    /* Reserved for log-format compatibility with older diagnostic
+     * parsers. The timer-based CREDIT_ONLY path was reverted and this
+     * counter currently remains 0. */
+    std::atomic<Uint64> send_credit_only_timer{0};
+    std::atomic<Uint64> send_credit_stalls{0};
+    std::atomic<Uint64> copied_send_bytes{0};
     /* --- recv path --- */
-    Uint64 recv_posted = 0;
-    Uint64 recv_completions_ok = 0;
-    Uint64 recv_completion_errors = 0;
-    Uint64 recv_credit_only_in = 0;
-    Uint64 copied_recv_bytes = 0;
+    std::atomic<Uint64> recv_posted{0};
+    std::atomic<Uint64> recv_completions_ok{0};
+    std::atomic<Uint64> recv_completion_errors{0};
+    std::atomic<Uint64> recv_credit_only_in{0};
+    std::atomic<Uint64> copied_recv_bytes{0};
     /* --- CQ polling --- */
-    Uint64 cq_polls_send = 0;
-    Uint64 cq_polls_recv = 0;
-    Uint64 cq_budget_hits_send = 0;
-    Uint64 cq_budget_hits_recv = 0;
+    std::atomic<Uint64> cq_polls_send{0};
+    std::atomic<Uint64> cq_polls_recv{0};
+    std::atomic<Uint64> cq_budget_hits_send{0};
+    std::atomic<Uint64> cq_budget_hits_recv{0};
     /* --- link-level error events --- */
-    Uint64 rnr_events = 0;
-    Uint64 retry_exceeded_events = 0;
-    Uint64 qp_fatal_events = 0;
-    Uint64 reconnect_attempts = 0;
+    std::atomic<Uint64> rnr_events{0};
+    std::atomic<Uint64> retry_exceeded_events{0};
+    std::atomic<Uint64> qp_fatal_events{0};
+    std::atomic<Uint64> reconnect_attempts{0};
   };
   rdma_stats m_stats;
+
+  /*
+   * Monotonic-clock nanoseconds of the last log_stats() heartbeat
+   * emission for this transporter. 0 means "never emitted yet"; the
+   * first heartbeat check after that always emits and updates the
+   * stamp. Gated to RDMA_STATS_HEARTBEAT_NS so the journal sees one
+   * line per transporter per 10s window at most.
+   *
+   * Declared std::atomic because both doSend() (send thread) and
+   * reap_recv_completions() (receive thread) call
+   * maybe_log_stats_heartbeat() and race on this field. memory_order_
+   * relaxed is sufficient: the field is purely an interval guard, not
+   * a synchronizer for any other state.
+   */
+  std::atomic<Uint64> m_last_stats_log_ns{0};
+
 };
 
 #endif /* NDB_RDMA_TRANSPORTER_SUPPORTED */
