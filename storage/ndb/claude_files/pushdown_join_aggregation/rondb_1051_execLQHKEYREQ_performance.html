@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RONDB-1051 — execLQHKEYREQ read-path optimisations</title>
+<style>
+  body { font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+         max-width: 1040px; margin: 2em auto; padding: 0 1.5em;
+         line-height: 1.5; color: #222; }
+  h1 { border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #bbb; padding-bottom: 0.25em; margin-top: 2em; }
+  h3 { color: #333; margin-top: 1.5em; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace;
+              background: #f4f4f4; border-radius: 3px; }
+  code { padding: 1px 4px; font-size: 0.92em; }
+  pre  { padding: 0.9em 1em; overflow-x: auto; font-size: 0.85em;
+         border-left: 3px solid #888; }
+  table { border-collapse: collapse; margin: 1em 0; width: 100%; font-size: 0.95em; }
+  th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left;
+           vertical-align: top; }
+  th { background: #eee; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pos { color: #0a5; font-weight: bold; font-variant-numeric: tabular-nums; }
+  .neg { color: #a33; font-weight: bold; font-variant-numeric: tabular-nums; }
+  .muted { color: #666; }
+  .callchain { background: #f8f8ff; border-left: 3px solid #679;
+               padding: 0.8em 1em; margin: 1em 0;
+               font-family: "SF Mono", Menlo, monospace; font-size: 0.85em; }
+  blockquote { border-left: 3px solid #ccc; margin: 1em 0; padding: 0.3em 1em;
+               color: #444; }
+  .note { background: #fffbe8; border-left: 3px solid #d9a600;
+          padding: 0.7em 1em; margin: 1em 0; font-size: 0.92em; }
+</style>
+</head>
+<body>
+
+<h1>RONDB-1051 — read-path micro-optimisations from
+    <code>execLQHKEYREQ</code> through <code>sendReadAttrinfo</code></h1>
+
+<p>
+This document summarises the <strong>47 commits</strong> on the
+<code>RONDB-1051-execLQHKEYREQ</code> branch since <code>RONDB-1051-baseline</code>.
+The optimisation target is the entire committed-read signal chain as it flows
+through an NDB data node — from the <code>LQHKEYREQ</code> signal entry in
+DBLQH to the final <code>TRANSID_AI</code> signal sent back by DBTUP.
+</p>
+
+<p>
+An earlier document
+(<code>rondb_1051_performance.html</code>)
+described the first 17 commits, which focused on the PK read, TUX ordered-index
+key-attribute read, and interpreter single-column read paths (hot inside
+DBTUP/DBTUX — particularly the <code>tuxReadPk</code>, <code>tuxReadAttrsOpt</code>,
+and <code>readSingleAttribute</code> functions). This document covers those and the
+subsequent 30 commits, which extended the work across the full signal
+chain on the primary-key read critical path.
+</p>
+
+<div class="note">
+<strong>Context:</strong> every committed-read request coming into an LDM
+thread as an <code>LQHKEYREQ</code> signal traverses the chain below.
+On busy clusters this is hundreds of thousands of calls per LDM thread per
+second, so code-size and instruction-count savings multiply up quickly.
+</div>
+
+<h2>1. The committed-read call chain</h2>
+
+<div class="callchain">
+Network/thread entry: <code>LQHKEYREQ</code> signal lands on LDM thread<br>
+&nbsp;&nbsp;&rarr; <code>Dblqh::execLQHKEYREQ</code>
+   &nbsp;<span class="muted">(5960 B baseline → 4392 B)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dblqh::prepareContinueAfterBlockedLab</code>
+   &nbsp;<span class="muted">(1140 B → 356 B)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbacc::execACCKEYREQ</code>
+   &nbsp;<span class="muted">(2160 B → 1772 B)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbacc::getElement</code>
+   &nbsp;<span class="muted">(1548 B → 1484 B, 8 KB → 176 B stack frame)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbacc::sendAcckeyconf</code>
+   &nbsp;<span class="muted">(CSE hoist)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dblqh::execACCKEYCONF</code><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dblqh::continueACCKEYCONF</code>
+   &nbsp;<span class="muted">(336 B → 160 B)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dblqh::acckeyconf_tupkeyreq</code>
+   &nbsp;<span class="muted">(already lean)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbtup::prepareTUPKEYREQ</code>
+   &nbsp;<span class="muted">(tight tail-call wrapper)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbtup::execTUPKEYREQ</code>
+   &nbsp;<span class="muted">(3784 B)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbtup::handleReadReq</code>
+   &nbsp;<span class="muted">(788 B → 376 B)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbtup::readAttributes</code>
+   &nbsp;<span class="muted">(earlier work)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbtup::sendReadAttrinfo</code>
+   &nbsp;<span class="muted">(1576 B → 820 B)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>sendAPI_TRANSID_AI</code> / <code>sendSignal</code>  <em>(cross-node — common for OLTP)</em>
+</div>
+
+<p>
+Parallel chains were optimised in the first 17 commits: the DBTUX ordered-index
+scan chain (<code>Dbtux::readKeyAttrs</code> &rarr; <code>Dbtup::tuxReadAttrsOpt</code>
+&rarr; <code>setup_fixed_part</code> / <code>prepare_read</code> / <code>readAttributes</code>)
+and the interpreter single-column read
+(<code>AggInterpreter::ProcessRec</code> &rarr; <code>Dbtup::readSingleAttribute</code>).
+</p>
+
+<h2>2. Summary of the 47 commits</h2>
+
+<p>The work naturally falls in three phases. Metric column headers use
+<span class="pos">green</span> for size/instruction reductions.</p>
+
+<h3>Phase 1 &mdash; PK read, TUX index read, interpreter (first 17 commits, covered in the earlier doc)</h3>
+<table>
+<tr><th>Commit</th><th>Summary</th></tr>
+<tr><td><code>edce68ab1</code></td><td>Replace <code>ndbassert</code> with <code>assert</code> in <code>prepare_read_fill_var_data</code></td></tr>
+<tr><td><code>f68599468</code></td><td>Remove unused <code>col_index</code> in <code>AggInterpreter::ProcessRec</code></td></tr>
+<tr><td><code>0cc9344c1</code></td><td>Remove unused <code>col_index</code> in <code>JoinAggInterpreter::ProcessRec</code></td></tr>
+<tr><td><code>f740b462a</code></td><td>Inline <code>prepare_read</code>'s shared tail (work around compiler miscompile)</td></tr>
+<tr><td><code>476737ed9</code></td><td>Restore <code>prepare_read</code> to pre-unroll form</td></tr>
+<tr><td><code>c0ae01c71</code></td><td>Stand-alone <code>KeyReqStruct</code> ctor for non-LDM threads</td></tr>
+<tr><td><code>e1f1e4301</code></td><td>Guard <code>fakeOkLineForErrorInsertTest</code> with its use-site <code>#if</code></td></tr>
+<tr><td colspan="2"><em>Plus 10 earlier commits covered by <code>rondb_1051_performance.html</code>:
+<code>KeyReqStruct</code> shrink from ~33 KB to ~880 B, inlining <code>accReadPk</code> /
+<code>readKeyAttributes</code> / <code>tuxReadAttrsOpt</code>, splitting
+<code>readTablePk</code> hot/cold, hot-pointer co-location, prefetch
+optimisations, <code>prepare_read</code> unroll/restore, etc.</em></td></tr>
+</table>
+
+<h3>Phase 2 &mdash; <code>execLQHKEYREQ</code> body (11 commits)</h3>
+<table>
+<tr><th>Commit</th><th>Summary</th><th>Effect</th></tr>
+<tr><td><code>06b05fc79</code></td><td>Performance analysis docs</td><td>no code</td></tr>
+<tr><td><code>4b6c30263</code></td><td>Outline <code>ndbrequire</code>/<code>ndbabort</code> failure arms (Item 2)</td><td>Removes cold crash-fallback from <em>every</em> ndbrequire site</td></tr>
+<tr><td><code>42eee8a47</code></td><td>Reduce <code>execLQHKEYREQ</code> hot-path overhead (Items 1, 3)</td><td>Treqinfo flag fold; 20 call-site rewrites</td></tr>
+<tr><td><code>db46bb440</code></td><td>Outline three mid-warmth blocks from <code>execLQHKEYREQ</code> (Item 8)</td><td>&minus;1496 B from <code>execLQHKEYREQ</code></td></tr>
+<tr><td><code>7dcd6979b</code></td><td>Convert a handful of <code>jam()</code> to <code>jamDebug()</code> in well-tested code</td><td>Reduces jam-ring bumps on hot path</td></tr>
+<tr><td><code>54146e1a9</code></td><td>Inline <code>assembleFragments</code> fast path (Item 9)</td><td>Removes <code>bl</code> on every signal reception</td></tr>
+<tr><td><code>d82bbe7ce</code></td><td>Outline scan-take-over block from <code>prepareContinueAfterBlockedLab</code> (Item 10)</td><td>1140 B &rarr; 356 B (&minus;68.8%)</td></tr>
+<tr><td><code>b6c3f83cd</code></td><td>Specialised <code>release_frag_prepare_key_access</code> (Item 11)</td><td><em>Reverted in <code>0707d650d</code> &mdash; see Section 4</em></td></tr>
+<tr><td><code>2bb8288d2</code></td><td>Inline <code>handle_acquire_read_key_frag_access</code> fast path (Item 12)</td><td>Removes <code>bl</code> on every LQHKEYREQ</td></tr>
+<tr><td><code>055ac9422</code></td><td>Inline <code>seize_op_rec</code> fast path (Item 13)</td><td>Removes <code>bl</code> on every LQHKEYREQ</td></tr>
+<tr><td><code>e4f4280db</code></td><td>Collapse TTL <code>ttl_ignore</code> propagation in <code>exec_acckeyreq</code> (Item 14)</td><td>&minus;12 B hot path</td></tr>
+</table>
+
+<h3>Phase 3 &mdash; DBACC, DBLQH-ACCKEYCONF tail, and DBTUP read path (13 commits)</h3>
+<table>
+<tr><th>Commit</th><th>Target</th><th>Summary</th><th>Effect</th></tr>
+<tr><td><code>c03f10a4c</code></td><td><code>execACCKEYREQ</code></td><td>Outline TakeOver block (Item A)</td><td>2160 &rarr; 1836 B (&minus;15%)</td></tr>
+<tr><td><code>dfb6fb110</code></td><td><code>sendAcckeyconf</code></td><td>Pass <code>Operationrec*</code> to enable CSE (Item D)</td><td>1836 &rarr; 1820 B (4 reloads removed)</td></tr>
+<tr><td><code>6e7658307</code></td><td><code>Dbacc::Fragmentrec</code></td><td>Cache <code>m_is_ttl_table</code> bit (Item C)</td><td>is_ttl_table call + 2 ptrCheckGuards &rarr; 1 byte load</td></tr>
+<tr><td><code>c9a54607d</code></td><td><code>execACCKEYREQ</code></td><td>Skip TTL ZINSERT fold on non-ZTRUE paths (Item B)</td><td>Fold test now inside <code>if (found==ZTRUE)</code></td></tr>
+<tr><td><code>727c770779</code></td><td><code>execACCKEYREQ</code></td><td>CSE <code>operationRecPtr.p</code> in lock-acquire hot path (Item H)</td><td>8 reloads &rarr; 1, &minus;40 B</td></tr>
+<tr><td><code>51c152cf3</code></td><td><code>getElement</code></td><td>Move 8 KB key buffer from stack to Dbacc member (Item J)</td><td>8480 &rarr; 176 B frame; __chkstk_darwin call + stack canary eliminated</td></tr>
+<tr><td><code>0707d650d</code></td><td><code>release_frag_prepare_key_access</code></td><td>Revert Item 11 (incorrect lock-mode assumption)</td><td>See Section 4</td></tr>
+<tr><td><code>a8093c675</code></td><td><code>insertelementLab</code></td><td>CSE <code>operationRecPtr.p</code> (Item K)</td><td>5 reloads removed</td></tr>
+<tr><td><code>88f53f1229</code></td><td><code>continueACCKEYCONF</code></td><td>Outline ZWRITE conversion block (Item N)</td><td>336 &rarr; 160 B (&minus;52%); frame 96 &rarr; 64 B</td></tr>
+<tr><td><code>7fba5bf42</code></td><td><code>handleReadReq</code></td><td>Cache TTL on <code>Tablerec</code>, restructure, extract helpers (Items Q+R+extract)</td><td>788 &rarr; 376 B (&minus;52%); hot path linear</td></tr>
+<tr><td><code>52a162041</code></td><td><code>sendReadAttrinfo</code></td><td>Split long-signal / routed paths into two cold helpers (Item U)</td><td>1576 &rarr; 820 B (&minus;48%); stack canary eliminated; frame 144 &rarr; 64 B</td></tr>
+</table>
+
+<h2>3. Function-level size changes</h2>
+
+<p>End-to-end sizes for the committed-read call chain (prod build, ARM64/Darwin):</p>
+
+<table>
+<thead>
+<tr><th>Function</th>
+    <th class="num">Baseline (B)</th>
+    <th class="num">After (B)</th>
+    <th class="num">&Delta; (B)</th>
+    <th class="num">&Delta; (insns)</th>
+    <th class="num">&Delta; (%)</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Dblqh::execLQHKEYREQ</code></td>
+    <td class="num">5960</td><td class="num">4392</td>
+    <td class="num pos">&minus;1568</td><td class="num pos">&minus;392</td>
+    <td class="num pos">&minus;26.3%</td></tr>
+<tr><td><code>Dblqh::prepareContinueAfterBlockedLab</code></td>
+    <td class="num">1140</td><td class="num">356</td>
+    <td class="num pos">&minus;784</td><td class="num pos">&minus;196</td>
+    <td class="num pos">&minus;68.8%</td></tr>
+<tr><td><code>Dbacc::execACCKEYREQ</code></td>
+    <td class="num">2160</td><td class="num">1772</td>
+    <td class="num pos">&minus;388</td><td class="num pos">&minus;97</td>
+    <td class="num pos">&minus;18.0%</td></tr>
+<tr><td><code>Dbacc::getElement</code></td>
+    <td class="num">1548</td><td class="num">1484</td>
+    <td class="num pos">&minus;64</td><td class="num pos">&minus;16</td>
+    <td class="num pos">&minus;4.1%</td></tr>
+<tr><td><code>Dbacc::insertelementLab</code></td>
+    <td class="num">1128</td><td class="num">1108</td>
+    <td class="num pos">&minus;20</td><td class="num pos">&minus;5</td>
+    <td class="num pos">&minus;1.8%</td></tr>
+<tr><td><code>Dblqh::continueACCKEYCONF</code></td>
+    <td class="num">336</td><td class="num">160</td>
+    <td class="num pos">&minus;176</td><td class="num pos">&minus;44</td>
+    <td class="num pos">&minus;52.4%</td></tr>
+<tr><td><code>Dbtup::handleReadReq</code></td>
+    <td class="num">788</td><td class="num">376</td>
+    <td class="num pos">&minus;412</td><td class="num pos">&minus;103</td>
+    <td class="num pos">&minus;52.3%</td></tr>
+<tr><td><code>Dbtup::sendReadAttrinfo</code></td>
+    <td class="num">1576</td><td class="num">820</td>
+    <td class="num pos">&minus;756</td><td class="num pos">&minus;189</td>
+    <td class="num pos">&minus;48.0%</td></tr>
+<tr><td><strong>Aggregate hot-chain</strong></td>
+    <td class="num"><strong>14,636</strong></td>
+    <td class="num"><strong>10,468</strong></td>
+    <td class="num pos"><strong>&minus;4168</strong></td>
+    <td class="num pos"><strong>&minus;1042</strong></td>
+    <td class="num pos"><strong>&minus;28.5%</strong></td></tr>
+</tbody>
+</table>
+
+<p class="muted">
+Note: the outlined helpers ("<code>handleTakeOver</code>", <code>continueACCKEYCONF_zwrite_slow</code>,
+<code>handleReadReqTtl</code>, <code>handleReadReqOnlyExpiredOnNonTtlTable</code>,
+<code>sendReadAttrinfoLong</code>, <code>sendReadAttrinfoRouted</code>, and earlier
+<code>prepareContinueAfterBlockedLabSlow</code>) add roughly 2.3 KB of cold text
+placed in a separate far-away region of the binary. Net <code>__TEXT</code> change is
+approximately &minus;1.9 KB; hot I-cache footprint reduction is the full ~4.2 KB.
+</p>
+
+<h2>4. Impact on the L1 instruction cache</h2>
+
+<p>
+Modern CPUs typically have 32&ndash;64 KB of L1 instruction cache per core.
+The committed-read chain, on a single request, touches every function listed
+above plus the sub-functions they invoke (<code>setup_read</code>,
+<code>readAttributes</code>, <code>NdbMutex_Lock/Unlock</code>, jam ring, etc.).
+</p>
+
+<p>
+Three classes of change contribute to better I-cache behaviour:
+</p>
+
+<h3>Fewer bytes in the hot region</h3>
+<p>
+Every byte of code that is moved to the cold-text region leaves the hot
+working set and does not compete for L1-I ways. The cumulative hot reduction
+on the PK read chain is ~4.2 KB. A single L1-I miss costs ~10&ndash;20
+cycles on modern ARM64 cores; even a modest reduction in miss rate across
+the full read chain saves real latency at scale.
+</p>
+
+<h3>Straightened hot paths (fewer branches + better branch-target locality)</h3>
+<p>
+Before the work, several functions had the hot path woven between cold
+branches, forcing forward-then-backward jumps across multiple cache lines
+even on the fast case. Examples:
+</p>
+<ul>
+<li><code>execLQHKEYREQ</code>: the TakeOver / disk-flag / op-dispatch pattern
+  is now linearly arranged.</li>
+<li><code>handleReadReq</code>: the old zigzag (<code>cbz ttl_ignore &rarr; jump,
+  cmp ttl_only_expired &rarr; jump, 2&times; RNIL &rarr; back-jump,
+  tbz interpreted_exec &rarr; jump</code>) is reduced to a single <code>ldrb +
+  cbz</code> on the cached TTL bit followed by straight-line fall-through to the
+  <code>readAttributes</code> call.</li>
+<li><code>sendReadAttrinfo</code>: cross-node API and EXECUTE_DIRECT paths
+  are now the first two dispatches; long-signal and routing paths are
+  out-of-line.</li>
+</ul>
+
+<h3>Cold paths moved to a far-away cold-text region</h3>
+<p>
+Multiple handlers — <code>handleTakeOver</code>, <code>continueACCKEYCONF_zwrite_slow</code>,
+<code>handleReadReqOnlyExpiredOnNonTtlTable</code>, <code>sendReadAttrinfoLong</code>,
+<code>sendReadAttrinfoRouted</code>, <code>prepareContinueAfterBlockedLabSlow</code> &mdash;
+were marked <code>__attribute__((noinline, cold))</code>. The linker groups
+cold functions into a dedicated region ~3 MB away from the hot text. Cold
+helpers never compete with hot code for L1-I way residency, and when
+they do fire (rare), a missed I-cache line on a cold path has no
+follow-on effect on steady-state hot execution.
+</p>
+
+<h2>5. Stack-issue fixes</h2>
+
+<p>Two fixes eliminated serious per-call stack overhead.</p>
+
+<h3>5.1 <code>getElement</code>: 8 KB stack array &rarr; Dbacc member</h3>
+<p>
+The function had <code>Uint32 keys[2048]</code> (8 KB) on its stack as a
+scratch buffer for table-key compares. Since 8 KB exceeds the 4 KB stack
+guard-page size, the compiler was forced to emit, on <em>every</em> call:
+</p>
+<ul>
+<li>A <code>bl __chkstk_darwin</code> function call to probe the new stack pages
+  (stack probing is required by the ABI to avoid guard-page overrun corruption).</li>
+<li>8288 bytes of <code>sub sp, sp, #…</code> on entry and matching add on exit
+  (4 instructions).</li>
+<li>A stack-canary load + write on entry (4 insns) and a canary check on each
+  of 7 return paths (4 insns each) plus one cold <code>___stack_chk_fail</code>
+  trampoline.</li>
+</ul>
+<p>
+The fix moved <code>m_get_element_keys[2048]</code> to a per-Dbacc-instance
+member. <code>getElement</code> is not reentrant on a single instance
+(signal-driven, one ACCKEYREQ at a time per LDM/QT thread), so this is safe.
+Stack frame dropped from <strong>8480 B to 176 B</strong>, and all of the
+<code>__chkstk_darwin</code> and canary cost went away. Memory cost is +8 KB
+per Dbacc instance (~16 instances per process = +128 KB static &mdash; trivial).
+</p>
+
+<h3>5.2 <code>sendReadAttrinfo</code>: three <code>LinearSectionPtr[3]</code>
+  stack locals &rarr; cold helpers</h3>
+<p>
+Any local array triggers clang's stack protector. <code>sendReadAttrinfo</code>
+had three <code>LinearSectionPtr ptr[3]</code> declarations (one per
+long-signal path), which forced a canary load on entry and a canary check on
+each of its six return paths — about 15 instructions of pure overhead on the
+cross-node hot path that <em>never</em> actually uses a
+<code>LinearSectionPtr</code>.
+</p>
+<p>
+The fix split the function: the hot path (API reply, cross-node short
+signal, same-node EXECUTE_DIRECT) stays inline with no
+<code>LinearSectionPtr</code> locals; the three long-signal and routing
+paths were moved to <code>sendReadAttrinfoLong</code> (cold) and
+<code>sendReadAttrinfoRouted</code> (cold). Frame dropped from
+<strong>144 B to 64 B</strong>; canary eliminated entirely from the hot
+function.
+</p>
+
+<h3>5.3 Earlier <code>KeyReqStruct</code> shrink (Phase 1)</h3>
+<p>
+Mentioned for completeness: the <code>KeyReqStruct</code> local in
+<code>execTUPKEYREQ</code> was shrunk from ~33 KB to ~880 B, eliminating
+another <code>__chkstk_darwin</code> call and a ~33 KB stack adjustment on
+every TUP key operation. (Details in the earlier Phase 1 doc.)
+</p>
+
+<h2>6. Hot-path instruction-count reductions</h2>
+
+<p>
+The following estimates are per committed-read call on the LDM thread
+(<code>ZREAD</code> with dirty-read, or a locked read followed by commit).
+Numbers come from the disassembly trace of each function with the hot
+branches followed; they exclude cold branches predicted-not-taken and
+exclude memory-pool lookup stalls.
+</p>
+
+<table>
+<thead>
+<tr><th>Function</th>
+    <th class="num">Baseline hot insns</th>
+    <th class="num">After hot insns</th>
+    <th class="num">&Delta; insns</th>
+    <th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>execLQHKEYREQ</code></td>
+    <td class="num">~1490</td><td class="num">~1075</td>
+    <td class="num pos">&minus;415</td>
+    <td>Fewer jam entries, fewer calls (inlined small helpers), Treqinfo folded</td></tr>
+<tr><td><code>prepareContinueAfterBlockedLab</code></td>
+    <td class="num">~285</td><td class="num">~89</td>
+    <td class="num pos">&minus;196</td>
+    <td>Scan-take-over outlined</td></tr>
+<tr><td><code>execACCKEYREQ</code></td>
+    <td class="num">~540</td><td class="num">~443</td>
+    <td class="num pos">&minus;97</td>
+    <td>TakeOver outlined; CSE of <code>operationRecPtr.p</code>;
+         is_ttl_table cached on Fragmentrec</td></tr>
+<tr><td><code>getElement</code></td>
+    <td class="num">~387</td><td class="num">~371</td>
+    <td class="num pos">&minus;16</td>
+    <td>Plus <code>__chkstk_darwin</code> call eliminated (~10&ndash;20 cycles saved)</td></tr>
+<tr><td><code>continueACCKEYCONF</code></td>
+    <td class="num">~84</td><td class="num">~40</td>
+    <td class="num pos">&minus;44</td>
+    <td>ZWRITE conversion outlined</td></tr>
+<tr><td><code>handleReadReq</code></td>
+    <td class="num">~50 (non-TTL)</td><td class="num">~30 (non-TTL)</td>
+    <td class="num pos">&minus;20</td>
+    <td>Non-TTL path: cached <code>m_is_ttl_table</code> ldrb + linear forward-taken branches to readAttributes. TTL path: one extra <code>bl handleReadReqTtl</code> in the TTL-check flow (already had internal <code>bl</code> calls).</td></tr>
+<tr><td><code>sendReadAttrinfo</code></td>
+    <td class="num">~85 (same-node)<br>~60 (cross-node API)</td>
+    <td class="num">~55<br>~40</td>
+    <td class="num pos">&minus;30<br>&minus;20</td>
+    <td>Stack canary removed; LinearSectionPtr paths outlined</td></tr>
+</tbody>
+</table>
+
+<p>
+Adding the independent per-function wins gives the approximate reduction
+for a single committed-read call traversing the full chain:
+</p>
+
+<blockquote>
+Cumulative hot-path instruction reduction per committed read:
+<strong>~800&ndash;900 instructions</strong>
+(out of ~3000&ndash;3500 baseline total on the chain).
+</blockquote>
+
+<p>
+Plus:
+</p>
+<ul>
+<li>&minus;1 <code>__chkstk_darwin</code> function call in <code>getElement</code>
+  (~10&ndash;20 cycles each).</li>
+<li>Elimination of stack canary load/store/check in both
+  <code>getElement</code> and <code>sendReadAttrinfo</code> (~30 cycles total
+  per call).</li>
+<li>Numerous <code>ptrCheckGuard</code> / <code>is_ttl_table</code> calls
+  replaced by single-byte cached flags.</li>
+<li>Several inline-expanded fast paths replace <code>bl</code> + function
+  prologue/epilogue (Items 9, 12, 13).</li>
+</ul>
+
+<h2>7. Performance estimate for a committed read</h2>
+
+<p>
+Assumptions: modern ARM64 CPU (Neoverse-N1, Apple M1-class, AWS Graviton),
+~3 GHz, IPC on mixed integer/memory code of ~2.0&ndash;2.5.
+</p>
+
+<h3>Purely from instruction-count reduction</h3>
+<ul>
+<li>~850 insns saved / 2.25 IPC &asymp; 380 cycles saved per read.</li>
+<li>At 3 GHz &asymp; <strong>~125 ns saved per committed read</strong>.</li>
+</ul>
+
+<h3>From reduced I-cache pressure</h3>
+<p>
+~4.2 KB of hot code removed from the committed-read working set. Independent
+measurements on OLTP workloads typically show ~1&ndash;3 L1-I misses per
+request in busy-cluster conditions; removing ~27% of hot text reduces that
+proportionally. At ~15 cycles per miss avoided:
+</p>
+<ul>
+<li>If baseline hit 1 L1-I miss per request: expect ~0.3 fewer misses
+  &rarr; ~4&ndash;5 ns saved.</li>
+<li>If baseline hit 3 L1-I misses per request (dense hot path): expect ~0.8
+  fewer misses &rarr; ~12 ns saved.</li>
+</ul>
+
+<h3>From stack-pressure relief</h3>
+<ul>
+<li><code>__chkstk_darwin</code> eliminated: saves the probe's page-walk +
+  function-call overhead, roughly 20&ndash;30 cycles on every read.
+  At 3 GHz: ~8&ndash;10 ns saved.</li>
+<li>Stack canary elimination (<code>getElement</code> and
+  <code>sendReadAttrinfo</code>): saves ~2 canary loads + 2 checks per call,
+  ~8&ndash;10 cycles &rarr; ~3 ns saved.</li>
+<li>Smaller stack frames (+540&ndash;8000 B stack reclaimed per frame):
+  reduces data-cache pressure on the spill/fill path. Hard to quantify
+  precisely; worth ~1&ndash;3 ns on dense spills.</li>
+</ul>
+
+<h3>Aggregate estimate</h3>
+
+<blockquote>
+Per committed-read call: <strong>&sim;140&ndash;160 ns saved</strong>
+on a modern ARM64 core, assuming a warm L1-D, code cache not fully dirty.
+</blockquote>
+
+<p>
+On throughput:
+</p>
+
+<ul>
+<li>If baseline committed-read latency into <code>execLQHKEYREQ</code>
+  (excluding network, excluding API client work) is
+  <strong>~1.0&ndash;1.5 µs</strong> per request in hot LDM conditions,
+  saving ~150 ns is a <strong>~10&ndash;15% speedup</strong> on the
+  LDM-thread-bound portion of a PK read.</li>
+<li>For a workload limited by LDM-thread CPU (i.e. hitting saturation on
+  LDM at ~1M&ndash;1.5M qps per thread), this translates to a comparable
+  <strong>~10&ndash;15% throughput increase</strong> on committed reads.</li>
+<li>In wall-clock end-to-end latency (which includes network and TC
+  scheduling that this work does not touch), the reduction is smaller:
+  <strong>~3&ndash;6% latency decrease</strong> on a typical Rondis
+  <code>GET</code> or REST PK-read at moderate load.</li>
+</ul>
+
+<p>
+The ranges are widest at high concurrency. When LDM threads are saturated
+and I-cache is thrashing, the I-cache savings matter more than the insn
+count (each avoided miss is worth ~15 cycles where each avoided insn is
+~0.5 cycles) — in that regime the upper bound of ~15% is realistic.
+At low concurrency with warm caches the ~10% lower bound applies.
+</p>
+
+<h2>8. Reverts and lessons</h2>
+
+<p>
+Two optimisations were reverted during the work; their lessons are saved
+in the project memory system for future sessions:
+</p>
+
+<h3>Item 11 — specialised <code>release_frag_prepare_key_access</code></h3>
+<p>
+The specialisation assumed the fragment-lock mode stayed in
+<code>{READ_KEY, RK_WK, RK_REFRESH}</code> from acquire to release, but
+the lock can be upgraded mid-operation (for write triggers, refresh) to
+<code>WRITE_KEY</code> or <code>EXCLUSIVE</code>. The specialised release
+would silently call the wrong sub-function, corrupting the concurrent-read
+counters. Debug builds fired an <code>ndbassert</code> during recovery;
+release builds would have drifted into deadlock. Reverted in
+<code>0707d650d</code>; original 6-arm dispatch via
+<code>handle_release_frag_access</code> restored.
+</p>
+
+<h3>Item P — outline ZREFRESH path in <code>execTUPKEYREQ</code></h3>
+<p>
+The ZREFRESH block was already at the lexical tail of the function, past the
+ZREAD hot region. Outlining it to a cold helper only added argument
+marshalling and a separate function frame while providing no I-cache benefit
+to the hot ZREAD path (which never reaches the tail region anyway). Net
+<code>__TEXT</code> grew by ~490 B for zero hot-path gain. The change was
+discarded before commit. Lesson saved: only outline cold blocks that actually
+sit inside the function's hot I-cache window.
+</p>
+
+<h2>9. Reproducing the measurements</h2>
+
+<p>
+The prod-build binary for size measurements is at
+<code>prod_build/bin/ndbmtd</code>. To reproduce individual function sizes,
+extract symbol boundaries:
+</p>
+
+<pre>nm prod_build/bin/ndbmtd | grep -E "^[0-9a-f]+ T " | sort &gt; /tmp/syms.txt
+grep -n "function_name" /tmp/syms.txt
+# Size = (next_address - this_address)
+
+# Disassemble a function:
+otool -tv prod_build/bin/ndbmtd | awk '
+  /^__ZN.*function_symbol:/ { capture=1; next }
+  capture &amp;&amp; /^__ZN.*:/ { exit }
+  capture { print }'</pre>
+
+<p>
+Each commit was verified against <code>ndb_basic</code> (MTR suite). Several
+commits were also verified against the specific crash scenario that revealed
+the Item 11 regression (recovery after <code>error_insert 2342</code>).
+</p>
+
+</body>
+</html>

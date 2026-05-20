@@ -1027,14 +1027,16 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
               m_attr_read_buf + m_attr_read_pos);
           m_attr_read_pos += 1;
         } else {
-          int ret = block_tup->readAttributes(req_struct, &(m_gb_cols[i]), 1,
-                        m_attr_read_buf + m_attr_read_pos, g_attr_read_buf_len_ - m_attr_read_pos);
+          int ret = block_tup->readSingleAttribute(
+              req_struct, m_gb_cols[i] >> 16,
+              m_attr_read_buf + m_attr_read_pos,
+              g_attr_read_buf_len_ - m_attr_read_pos);
           if (ret < 0) {
             DEB_AGG(("read group by column error: %d", ret));
             return -ret;
           }
           header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
-          m_attr_read_pos += (1 + header->getDataSize());
+          m_attr_read_pos += Uint32(ret);
         }
       }
     }
@@ -1097,7 +1099,6 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     agg_res_ptr = m_agg_results + m_acc_offset;
   }
 
-  Uint32 col_index;
   Uint32 value;
   DataType type;
   bool is_unsigned;
@@ -1269,17 +1270,18 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
                   m_attr_read_buf + m_attr_read_pos);
               attrDescriptor = nullptr;
             } else {
-              col_index = col_id_raw << 16;
-              ret = block_tup->readAttributes(req_struct, &(col_index), 1,
-                        m_attr_read_buf + m_attr_read_pos, g_attr_read_buf_len_ - m_attr_read_pos);
+              ret = block_tup->readSingleAttribute(
+                  req_struct, col_id_raw,
+                  m_attr_read_buf + m_attr_read_pos,
+                  g_attr_read_buf_len_ - m_attr_read_pos);
               if (ret < 0) {
                 DEB_AGG(("read column error: %d", ret));
                 return -ret;
               }
               header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
-              attrDescriptor = req_struct->tablePtrP->tabDescriptor +
-                  (((col_index) >> 16) * ZAD_SIZE);
-              assert(header->getAttributeId() == (col_index >> 16));
+              attrDescriptor =
+                  req_struct->tablePtrP->tabDescriptor + (col_id_raw * ZAD_SIZE);
+              assert(header->getAttributeId() == col_id_raw);
               assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
             }
           }

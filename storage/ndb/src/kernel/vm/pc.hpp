@@ -375,19 +375,49 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
   } while (0)
 #endif
 
-#define ndbrequireErr(check, error)               \
-  if (likely(check)) {                            \
-  } else {                                        \
-    jamNoBlock();                                 \
-    progError(__LINE__, error, __FILE__, #check); \
+// Outlined cold failure helpers for ndbrequire / ndbabort. Defined in
+// SimulatedBlock.cpp. Take the caller's JAM_FILE_ID + __LINE__ only;
+// the helper looks up the file name via jamFileNames[file_id] so
+// __FILE__ is not passed, and the check expression is not passed
+// either (recoverable from the source at file:line).
+//
+// Trade-off vs the old inline expansion: ErrorReporter::handleError
+// is called directly, bypassing SimulatedBlock::progError. The crash
+// log loses the block-name prefix, magic-status bits, and the failed
+// check expression string. File name, line number, and error code are
+// preserved; that is sufficient to locate the failing call.
+// ndbrequire_fail: for the common ndbrequire(check) path. Always uses
+// NDBD_EXIT_NDBREQUIRE, so the error code is not passed — one less arg
+// setup at every one of ~6500 kernel-wide call sites.
+[[noreturn]] void ndbrequire_fail(Uint32 caller_file_id, int line)
+    __attribute__((cold, noinline));
+// ndbrequire_err_fail: for the rare ndbrequireErr(check, custom_code)
+// path (~4 kernel-wide sites today, all in cold startup code).
+[[noreturn]] void ndbrequire_err_fail(Uint32 caller_file_id,
+                                      int line, int code)
+    __attribute__((cold, noinline));
+[[noreturn]] void ndbabort_fail(Uint32 caller_file_id, int line)
+    __attribute__((cold, noinline));
+
+// Use the same if/else{} shape as the pre-outlining macro so existing
+// call sites that lack a trailing semicolon still parse (the old
+// expansion ended in a brace, not in `while (false)`), and so that
+// dangling-else in unbraced `if` chains is avoided.
+#define ndbrequire(check)                       \
+  if (likely(check)) {                          \
+  } else {                                      \
+    ndbrequire_fail(JAM_FILE_ID, __LINE__);     \
   }
 
-#define ndbrequire(check) ndbrequireErr(check, NDBD_EXIT_NDBREQUIRE)
+#define ndbrequireErr(check, error)                        \
+  if (likely(check)) {                                     \
+  } else {                                                 \
+    ndbrequire_err_fail(JAM_FILE_ID, __LINE__, (error));   \
+  }
 
-#define ndbabort()                                       \
-  do {                                                   \
-    jamNoBlock();                                        \
-    progError(__LINE__, NDBD_EXIT_PRGERR, __FILE__, ""); \
+#define ndbabort()                              \
+  do {                                          \
+    ndbabort_fail(JAM_FILE_ID, __LINE__);       \
   } while (false)
 
 #define CRASH_INSERTION(errorType)                         \

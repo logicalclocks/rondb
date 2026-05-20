@@ -42,6 +42,16 @@
 
 #include <EventLogger.hpp>
 
+/*
+ * Dummy scratch bound by the stand-alone KeyReqStruct(EmulatedJamBuffer*)
+ * ctor. The tuxReadAttrs / tuxReadAttrsOpt read path never touches
+ * changeMask or var_pos_array, so these exist only to give the reference
+ * members something valid to bind to.
+ */
+AttributeMask Dbtup::KeyReqStruct::s_dummy_changeMask;
+Uint16 Dbtup::KeyReqStruct::s_dummy_var_pos_array
+    [2][2 * MAX_ATTRIBUTES_IN_TABLE + 1];
+
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 // #define DEBUG_INDEX_BUILD 1
 #endif
@@ -138,7 +148,7 @@ int Dbtup::tuxReadAttrsCurr(EmulatedJamBuffer *jamBuf, const Uint32 *attrIds,
 
   // search for tuple version if not original
   Operationrec tmpOp;
-  KeyReqStruct req_struct(jamBuf);
+  KeyReqStruct req_struct(this);
   req_struct.m_lqh = c_lqh;
   req_struct.tablePtrP = tablePtrP;
   req_struct.fragPtrP = fragPtrP;
@@ -148,40 +158,6 @@ int Dbtup::tuxReadAttrsCurr(EmulatedJamBuffer *jamBuf, const Uint32 *attrIds,
   setup_fixed_part(&req_struct, &tmpOp, tablePtrP);
 
   return tuxReadAttrsCommon(req_struct, attrIds, numAttrs, dataOut, tupVersion);
-}
-
-/**
- * This method can be called from MT-build of
- * ordered indexes.
- */
-int Dbtup::tuxReadAttrsOpt(EmulatedJamBuffer *jamBuf, Uint32 *fragPtrP,
-                           Uint32 *tablePtrP, Uint32 pageId, Uint32 pageIndex,
-                           Uint32 tupVersion, const Uint32 *attrIds,
-                           Uint32 numAttrs, Uint32 *dataOut) {
-  thrjamEntryDebug(jamBuf);
-  // search for tuple version if not original
-
-  KeyReqStruct req_struct(jamBuf);
-  Operationrec tmpOp;
-  tmpOp.m_tuple_location.m_page_no= pageId;
-  tmpOp.m_tuple_location.m_page_idx= pageIndex;
-  tmpOp.op_type = ZREAD; // valgrind
-  setup_fixed_tuple_ref(&req_struct,
-                        &tmpOp,
-                        (Tablerec*)tablePtrP);
-
-  req_struct.m_lqh = c_lqh;
-  req_struct.tablePtrP = (Tablerec*)tablePtrP;
-  req_struct.fragPtrP = (Fragrecord*)fragPtrP;
-
-  setup_fixed_part(&req_struct,
-                   &tmpOp,
-                   (Tablerec*)tablePtrP);
-  return tuxReadAttrsCommon(req_struct,
-                            attrIds,
-                            numAttrs,
-                            dataOut,
-                            tupVersion);
 }
 
 int Dbtup::tuxReadAttrsCommon(KeyReqStruct &req_struct, const Uint32 *attrIds,
@@ -237,7 +213,8 @@ int Dbtup::tuxReadPk(Uint32 *fragPtrP_input, Uint32 *tablePtrP_input,
   tmpOp.m_tuple_location.m_page_no = pageId;
   tmpOp.m_tuple_location.m_page_idx = pageIndex;
 
-  KeyReqStruct req_struct(this);
+  // Use the PK-read-path ctor: skips init of fields unused by tuxReadPk.
+  KeyReqStruct req_struct(this, KeyReqStruct::SimpleReadTag{});
   req_struct.m_lqh = c_lqh;
   req_struct.tablePtrP = tablePtrP;
   req_struct.fragPtrP = fragPtrP;
@@ -320,16 +297,80 @@ int Dbtup::tuxReadPk(Uint32 *fragPtrP_input, Uint32 *tablePtrP_input,
     ndbrequire(opPtr.p->m_copy_tuple_location != nullptr);
     req_struct.m_tuple_ptr = get_copy_tuple(opPtr.p->m_copy_tuple_location);
   }
-  prepare_read(&req_struct, tablePtrP, false);
-    
-  const Uint32* attrIds = tablePtrP->readKeyArray;
-  const Uint32 numAttrs= tablePtrP->noOfKeyAttr;
-  // read pk attributes from original tuple
+  /*
+   * When every PK column is fixed-size and non-dynamic (the overwhelmingly
+   * common case: INT/BIGINT/fixed-CHAR PKs), prepare_read's only effect on
+   * this path is setting is_expanded=false and m_disk_ptr=nullptr — neither
+   * is consumed by the fixed-size read functions below or by the GCI append.
+   * Skip the call entirely and assign the minimum state at the call site.
+   */
+  if (likely(tablePtrP->m_pk_all_fixed)) {
+    req_struct.is_expanded = false;
+    req_struct.m_disk_ptr = nullptr;
+  } else {
+    prepare_read(&req_struct, tablePtrP, false);
+  }
 
-  // do it
-  ret = readKeyAttributes(&req_struct, attrIds, numAttrs, dataOut, ZNIL,
-                          xfrmFlag);
-  // done
+  const Uint32* attrIds = tablePtrP->readKeyArray;
+  const Uint32 numAttrs = tablePtrP->noOfKeyAttr;
+
+  /*
+   * Inlined body of the former Dbtup::readKeyAttributes() — its only caller.
+   * Simplified compared to readAttributes(): PK attributes are never pseudo,
+   * never Bit-typed, never partial reads, and the output is written without
+   * AttributeHeader so that the result is directly usable by cmp_key(),
+   * xfrm_key_hash() and md5_hash(). maxRead is ZNIL (unlimited).
+   */
+  {
+    AttributeHeader ahOutDummy;
+    const Uint32 *attr_descr = req_struct.attr_descr;
+    const Uint32 numAttributes = tablePtrP->m_no_of_attributes;
+    Uint8 *outBuffer = (Uint8 *)dataOut;
+
+    req_struct.out_buf_index = 0;
+    req_struct.out_buf_bits = 0;
+    req_struct.partial_size = 0;
+    req_struct.max_read = 4 * ZNIL;
+    req_struct.xfrm_flag = xfrmFlag;
+    thrjamDebug(req_struct.jamBuffer);
+
+    ret = 0;
+    for (Uint32 inBufIndex = 0; inBufIndex < numAttrs; inBufIndex++) {
+      thrjamDebug(req_struct.jamBuffer);
+      // pad32(x, 0) simplifies to ((x + 3) & ~3). out_buf_bits is 0 for PK
+      // reads — asserted below after the read function returns.
+      Uint32 tmpAttrBufIndex = (req_struct.out_buf_index + 3) & ~Uint32(3);
+      req_struct.out_buf_index = tmpAttrBufIndex;
+      AttributeHeader ahIn(attrIds[inBufIndex]);
+      Uint32 attributeId = ahIn.getAttributeId();
+      if (unlikely(attributeId >= numAttributes)) {
+        thrjam(req_struct.jamBuffer);
+        ret = -ZATTRIBUTE_ID_ERROR;
+        break;
+      }
+      Uint32 descr_index = attributeId * ZAD_SIZE;
+      Uint32 attrDescriptor = attr_descr[descr_index];
+      Uint32 attrDes2 = attr_descr[descr_index + 1];
+      Uint64 attrDes = (Uint64(attrDes2) << 32) + Uint64(attrDescriptor);
+      ReadFunction f = tablePtrP->readFunctionArray[attributeId];
+      thrjamLineDebug(req_struct.jamBuffer, attributeId);
+      if (unlikely(!(*f)(outBuffer, &req_struct, &ahOutDummy, attrDes))) {
+        ndbassert(!(attributeId & AttributeHeader::PSEUDO));
+        thrjam(req_struct.jamBuffer);
+        ret = -(int)req_struct.errorCode;
+        break;
+      }
+      // PK columns are never pseudo and never Bit-typed
+      ndbassert(AttributeDescriptor::getPrimaryKey(attrDescriptor));
+      ndbassert(req_struct.out_buf_bits == 0);
+    }
+    if (likely(ret == 0)) {
+      thrjamDebug(req_struct.jamBuffer);
+      ndbassert(req_struct.out_buf_bits == 0);
+      ret = (((req_struct.out_buf_index + 3) & ~Uint32(3)) >> 2);
+    }
+  }
+
   if (unlikely(ret < 0)) {
     jam();
     return ret;
@@ -339,17 +380,6 @@ int Dbtup::tuxReadPk(Uint32 *fragPtrP_input, Uint32 *tablePtrP_input,
   } else {
     dataOut[ret] = 0;
   }
-  return ret;
-}
-
-int Dbtup::accReadPk(Uint32 fragPageId, Uint32 pageIndex, Uint32 *dataOut,
-                     bool xfrmFlag) {
-  jamEntryDebug();
-  // get real page id and tuple offset
-  Uint32 pageId = getRealpid(prepare_fragptr.p, fragPageId);
-  // use TUX routine - optimize later
-  int ret = tuxReadPk((Uint32 *)prepare_fragptr.p, (Uint32 *)prepare_tabptr.p,
-                      pageId, pageIndex, dataOut, xfrmFlag);
   return ret;
 }
 
@@ -457,6 +487,12 @@ Dbtup::tuxReadAttrs(EmulatedJamBuffer * jamBuf,
   // search for tuple version if not original
 
   Operationrec tmpOp;
+  /*
+   * Stand-alone ctor: this function may be invoked from an AsyncIoThread
+   * (Dbtux::mt_buildIndexFragment → readKeyAttrs path) where
+   * `this->jamBuffer()` would be the LDM thread's jam. Use the caller's
+   * jamBuf, which is the running thread's TLS jam.
+   */
   KeyReqStruct req_struct(jamBuf);
 
   tmpOp.m_tuple_location.m_page_no = pageId;

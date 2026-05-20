@@ -751,6 +751,7 @@ void Dbtup::checkDeferredTriggersDuringPrepare(KeyReqStruct *req_struct,
                                                TupTriggerData_list &triggerList,
                                                Operationrec *const regOperPtr,
                                                bool disk) {
+  ndbassert(!req_struct->uses_dummy_scratch());
   jam();
   TriggerPtr trigPtr;
   bool ret = triggerList.first(trigPtr);
@@ -1032,6 +1033,7 @@ static bool is_constraint(const Dbtup::TupTriggerData *trigPtr) {
 void Dbtup::fireImmediateTriggers(KeyReqStruct *req_struct,
                                   TupTriggerData_list &triggerList,
                                   Operationrec *const regOperPtr, bool disk) {
+  ndbassert(!req_struct->uses_dummy_scratch());
   TriggerPtr trigPtr;
   bool ret = triggerList.first(trigPtr);
   while (ret) {
@@ -1742,6 +1744,7 @@ bool Dbtup::readTriggerInfo(TupTriggerData *const trigPtr,
                             Uint32 *const afterBuffer, Uint32 &noAfterWords,
                             Uint32 *const beforeBuffer, Uint32 &noBeforeWords,
                             bool disk) {
+  ndbassert(!req_struct->uses_dummy_scratch());
   noAfterWords = 0;
   noBeforeWords = 0;
   Uint32 readBuffer[MAX_ATTRIBUTES_IN_TABLE];

@@ -5700,6 +5700,139 @@ void Dblqh::LQHKEY_error(Signal *signal, int errortype,
   reset_curr_ldm();
 }  // Dblqh::LQHKEY_error()
 
+// Outlined cold helpers used by execLQHKEYREQ. Each records the
+// original caller's __LINE__ in the jam ring, then forwards to the
+// existing error function. Marked cold+noinline so the compiler keeps
+// these bytes out of execLQHKEYREQ's hot body.
+void Dblqh::earlyKeyReqAbort_releasing(Signal *signal,
+                                       const LqhKeyReq *lqhKeyReq,
+                                       Uint32 errCode,
+                                       Uint16 callerLine,
+                                       SectionHandle &handle,
+                                       TcConnectionrecPtr tcConnectptr) {
+  jamLine(callerLine);
+  releaseSections(handle);
+  earlyKeyReqAbort(signal, lqhKeyReq, errCode, tcConnectptr);
+}
+
+void Dblqh::earlyKeyReqAbort_simple(Signal *signal,
+                                    const LqhKeyReq *lqhKeyReq,
+                                    Uint32 errCode,
+                                    Uint16 callerLine,
+                                    TcConnectionrecPtr tcConnectptr) {
+  jamLine(callerLine);
+  earlyKeyReqAbort(signal, lqhKeyReq, errCode, tcConnectptr);
+}
+
+void Dblqh::LQHKEY_abort_cold(Signal *signal, int errortype,
+                              Uint16 callerLine,
+                              TcConnectionrecPtr tcConnectptr) {
+  jamLine(callerLine);
+  LQHKEY_abort(signal, errortype, tcConnectptr);
+}
+
+void Dblqh::LQHKEY_error_cold(Signal *signal, int errortype,
+                              Uint16 callerLine,
+                              TcConnectionrecPtr tcConnectptr) {
+  jamLine(callerLine);
+  LQHKEY_error(signal, errortype, tcConnectptr);
+}
+
+// Outlined mid-warmth helpers (declared in Dblqh.hpp). These were
+// inlined at fixed positions inside execLQHKEYREQ's body; moving
+// them behind a `bl` keeps the hot body tight without changing
+// semantics. See claude_files/execLQHKEYREQ_performance/results.md.
+
+void Dblqh::insertIntoTransactionHash(TcConnectionrecPtr tcConnectptr) {
+  TcConnectionrec *const regTcPtr = tcConnectptr.p;
+  jamDebug();
+  TcConnectionrecPtr localNextTcConnectptr;
+  const Uint32 hashIndex = getHashIndex(regTcPtr);
+  NDB_PREFETCH_WRITE(&m_curr_lqh->ctransidHash[hashIndex]);
+  jamDebug();
+  jamDataDebug(Uint16(hashIndex));
+  jamDataDebug(Uint16(m_curr_lqh->instance()));
+  Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
+  regTcPtr->prevHashRec = RNIL;
+  regTcPtr->hashIndex = hashIndex;
+  NdbMutex_Lock(&m_curr_lqh->transaction_hash_mutex[mutexIndex]);
+#if defined VM_TRACE || defined ERROR_INSERT
+  jamLineDebug(Uint16(m_curr_lqh->trans_hash_mutex_counter[mutexIndex]));
+  m_curr_lqh->trans_hash_mutex_counter[mutexIndex]++;
+#endif
+  localNextTcConnectptr.i = m_curr_lqh->ctransidHash[hashIndex];
+  m_curr_lqh->ctransidHash[hashIndex] = tcConnectptr.i;
+  if (unlikely(localNextTcConnectptr.i != RNIL)) {
+    jamDebug();
+    ndbrequire(m_curr_lqh->tcConnect_pool.getValidPtr(localNextTcConnectptr));
+    /* Check that no equal element exists */
+    ndbrequire(!checkTransaction(localNextTcConnectptr,
+                                 regTcPtr->tcHashKeyHi, regTcPtr, true));
+    ndbassert(localNextTcConnectptr.p->prevHashRec == RNIL);
+    localNextTcConnectptr.p->prevHashRec = tcConnectptr.i;
+  }
+  regTcPtr->nextHashRec = localNextTcConnectptr.i;
+  NdbMutex_Unlock(&m_curr_lqh->transaction_hash_mutex[mutexIndex]);
+}
+
+Uint32 Dblqh::findOrSeizeCommitAckMarker(Uint32 transid1, Uint32 transid2,
+                                         Uint32 apiRef, Uint32 apiOprec,
+                                         Uint32 tcRef, Uint32 opPtrI) {
+  struct CommitAckMarker check;
+  CommitAckMarkerPtr markerPtr;
+  jamDebug();
+  check.transid1 = transid1;
+  check.transid2 = transid2;
+
+  if (m_commitAckMarkerHash.find(markerPtr, check)) {
+    /*
+     * A commit ack marker was already placed here for this transaction.
+     * Bump the reference count so we don't remove it prematurely.
+     */
+    ndbrequire(markerPtr.p->in_hash == true);
+    ndbrequire(markerPtr.p->reference_count > 0);
+    markerPtr.p->reference_count++;
+#ifdef MARKER_TRACE
+    g_eventLogger->info("Inc marker[%.8x %.8x] op: %u ref: %u",
+                        markerPtr.p->transid1, markerPtr.p->transid2,
+                        opPtrI, markerPtr.p->reference_count);
+#endif
+    return markerPtr.i;
+  }
+  if (ERROR_INSERTED(5082) ||
+      unlikely(!m_commitAckMarkerPool.seize(markerPtr))) {
+    return RNIL;  // caller issues ZNO_FREE_MARKER_RECORDS_ERROR abort
+  }
+  markerPtr.p->transid1 = transid1;
+  markerPtr.p->transid2 = transid2;
+  markerPtr.p->apiRef = apiRef;
+  markerPtr.p->apiOprec = apiOprec;
+  markerPtr.p->tcRef = tcRef;
+  markerPtr.p->reference_count = 1;
+  markerPtr.p->in_hash = true;
+  markerPtr.p->removed_by_fail_api = false;
+  m_commitAckMarkerHash.add(markerPtr);
+#ifdef MARKER_TRACE
+  g_eventLogger->info("%u Add marker[%.8x %.8x] op: %u", instance(),
+                      markerPtr.p->transid1, markerPtr.p->transid2, opPtrI);
+#else
+  (void)opPtrI;
+#endif
+  return markerPtr.i;
+}
+
+bool Dblqh::transporter_overloaded_detailed(Signal *signal,
+                                            const LqhKeyReq *lqhKeyReq) {
+  // Reached only when the Item-7 cached m_any_overloaded flag is true.
+  // A stale cache (flag true, mask now clear) is handled by the
+  // early-out in isclear(); costs one 64-word scan and returns false.
+  const NodeBitmask &all = globalTransporterRegistry.get_status_overloaded();
+  if (all.isclear()) {
+    return false;
+  }
+  return checkTransporterOverloaded(signal, all, lqhKeyReq);
+}
+
 void Dblqh::execLQHKEYREF(Signal *signal) {
   jamEntry();
   TcConnectionrecPtr tcConnectptr;
@@ -6871,41 +7004,17 @@ inline static void prefetch_op_record_4(Uint32 *op_ptr) {
   NDB_PREFETCH_WRITE(op_ptr + 64);
 }
 
-bool
-Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr,
-                    bool use_lock,
-                    BlockReference tcRef,
-                    EmulatedJamBuffer *jamBuf)
-{
-  /* Cannot use jam here, called from other thread */
-  if (ERROR_INSERTED(5031))
-  {
-    thrjam(jamBuf);
-    return false;
-  }
+// Slow path for TC-connect-record seize. Called from the inline fast
+// path in Dblqh.hpp when ctcNumFreeShared == 0 (or ERROR_INSERT is
+// active). Preconditions:
+//   - If use_lock is true: lock_alloc_operation() has been taken.
+//   - If use_lock is false: no lock held.
+// Postcondition: lock released (if use_lock) in every return path.
+bool Dblqh::seize_op_rec_slow(TcConnectionrecPtr& tcConnectptr,
+                              bool use_lock,
+                              BlockReference tcRef,
+                              EmulatedJamBuffer *jamBuf) {
   TcConnectionrecPtr opPtr;
-  if (use_lock)
-  {
-    lock_alloc_operation();
-  }
-  if (ctcNumFreeShared > 0 &&
-      (!ERROR_INSERTED(5031)) &&
-      (!ERROR_INSERTED(5099)))
-  {
-    thrjamDebug(jamBuf);
-#ifdef CONNECT_DEBUG
-    ctcNumUseShared++;
-#endif
-    seizeTcrec(tcConnectptr,
-               tcRef,
-               ctcNumFreeShared,
-               cfirstfreeTcConrecShared);
-    if (use_lock)
-    {
-      unlock_alloc_operation();
-    }
-    return true;
-  }
 #ifdef CONNECT_DEBUG
   ctcNumUseTM++;
 #endif
@@ -8225,22 +8334,12 @@ got_lock:
   jam();
 }
 
-void Dblqh::handle_acquire_read_key_frag_access(Fragrecord *fragPtrP,
-                                                bool hold_lock,
-                                                bool check_exclusive_waiters) {
-  m_read_key_frag_access++;
-  ndbrequire(!DictTabInfo::isOrderedIndex(fragPtrP->tableType));
-  if (!hold_lock) {
-    NdbMutex_Lock(&fragPtrP->frag_mutex);
-    DEB_FRAGMENT_LOCK(fragPtrP);
-  }
-  if (is_read_key_condition_ready(fragPtrP, check_exclusive_waiters)) {
-    fragPtrP->m_concurrent_read_key_count++;
-    DEB_FRAGMENT_LOCK(fragPtrP);
-    NdbMutex_Unlock(&fragPtrP->frag_mutex);
-    jamDebug();
-    return;
-  }
+// Contended slow path for read-key lock acquisition. Called from the
+// inline fast path in Dblqh.hpp when the initial condition check fails.
+// Precondition: fragPtrP->frag_mutex IS held on entry.
+// Postcondition: mutex released, m_concurrent_read_key_count incremented.
+void Dblqh::handle_acquire_read_key_frag_access_contended(
+    Fragrecord *fragPtrP, bool check_exclusive_waiters) {
   NDB_TICKS start_spin_time;
   NDB_TICKS now;
   (void)now;
@@ -8921,7 +9020,7 @@ void Dblqh::handle_release_exclusive_frag_access(Fragrecord *fragPtrP) {
 /* ------------------------------------------------------------------------- */
 void Dblqh::execLQHKEYREQ(Signal *signal) {
   if (unlikely(!assembleFragments(signal))) {
-    jam();
+    jamDebug();
     return;
   }
   UintR sig0, sig1, sig2, sig3, sig4;
@@ -8932,18 +9031,19 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   TcConnectionrecPtr tcConnectptr;
   tcConnectptr.i = RNIL;
   ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-  {
-    const NodeBitmask &all = globalTransporterRegistry.get_status_overloaded();
-    if (unlikely(!all.isclear())) {
-      if (checkTransporterOverloaded(signal, all, lqhKeyReq)) {
-        /* Overloaded, reject new work */
-        jam();
-        releaseSections(handle);
-        earlyKeyReqAbort(signal, lqhKeyReq, ZTRANSPORTER_OVERLOADED_ERROR,
-                         tcConnectptr);
-        return;
-      }
-    }
+  // Cached single-byte load instead of a 64-word NodeBitmask scan.
+  // The cache is maintained by TransporterRegistry::set_status_overloaded.
+  // When it is true we fall into the cold-text helper which does the
+  // detailed scan + dispatch decision. A stale false here is harmless:
+  // the next LQHKEYREQ's observation of the cache reaches the
+  // authoritative decision.
+  if (unlikely(globalTransporterRegistry.any_overloaded()) &&
+      transporter_overloaded_detailed(signal, lqhKeyReq)) {
+    /* Overloaded, reject new work */
+    earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                               ZTRANSPORTER_OVERLOADED_ERROR,
+                               __LINE__, handle, tcConnectptr);
+    return;
   }
 
   const UintR Treqinfo = lqhKeyReq->requestInfo;
@@ -8977,10 +9077,9 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
       (ERROR_INSERTED(5104) && LqhKeyReq::getOperation(Treqinfo) == ZINSERT) ||
       (ERROR_INSERTED(5105) && LqhKeyReq::getOperation(Treqinfo) == ZUPDATE) ||
       ERROR_INSERTED(5098)) {
-    jam();
-    releaseSections(handle);
-    earlyKeyReqAbort(signal, lqhKeyReq, ZTRANSPORTER_OVERLOADED_ERROR,
-                     tcConnectptr);
+    earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                               ZTRANSPORTER_OVERLOADED_ERROR,
+                               __LINE__, handle, tcConnectptr);
     return;
   }
 
@@ -8999,12 +9098,12 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     {
       if (likely(LqhKeyReq::getDirtyFlag(Treqinfo)))
       {
-        jam();
+        jamDebug();
         use_lock = false;
       }
       else
       {
-        jam();
+        jamDebug();
         /**
          * We are performing a non-dirty operation in a Query thread, this means
          * that we need to acquire an operation record from the LDM block owning
@@ -9021,7 +9120,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
         }
         else
         {
-          jam();
+          jamDebug();
         }
         m_curr_lqh = lqh;
         c_acc->m_curr_acc = lqh->c_acc;
@@ -9036,9 +9135,9 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
                                   jamBuffer());
     if (unlikely(!succ))
     {
-      jam();
-      releaseSections(handle);
-      earlyKeyReqAbort(signal, lqhKeyReq, ZNO_TC_CONNECT_ERROR, tcConnectptr);
+      earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                                 ZNO_TC_CONNECT_ERROR,
+                                 __LINE__, handle, tcConnectptr);
       return;
     }
     m_tc_connect_ptr = tcConnectptr;
@@ -9060,7 +9159,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   }
   if(ERROR_INSERTED(5038) && 
      refToNode(signal->getSendersBlockRef()) != getOwnNodeId()){
-    jam();
+    jamDebug();
     releaseSections(handle);
     SET_ERROR_INSERT_VALUE(5039);
     reset_curr_ldm();
@@ -9106,14 +9205,13 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   const Uint8 op = LqhKeyReq::getOperation(Treqinfo);
   if (ERROR_INSERTED(5080) ||
       (unlikely((op == ZREAD || op == ZREAD_EX) && !getAllowRead()))) {
-    jam();
     if (ERROR_INSERTED(5080))
     {
       g_eventLogger->info("Error due to ERROR_INSERT 5080");
     }
-    releaseSections(handle);
-    earlyKeyReqAbort(signal, lqhKeyReq, ZNODE_SHUTDOWN_IN_PROGRESS,
-                     tcConnectptr);
+    earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                               ZNODE_SHUTDOWN_IN_PROGRESS,
+                               __LINE__, handle, tcConnectptr);
     return;
   }
 
@@ -9124,14 +9222,13 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
 #endif
                ))
   {
-    jam();
     if (ERROR_INSERTED(5081))
     {
       g_eventLogger->info("Error due to ERROR_INSERT 5081");
     }
-    releaseSections(handle);
-    earlyKeyReqAbort(signal, lqhKeyReq, ZNODE_SHUTDOWN_IN_PROGRESS,
-                     tcConnectptr);
+    earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                               ZNODE_SHUTDOWN_IN_PROGRESS,
+                               __LINE__, handle, tcConnectptr);
     return;
   }
 
@@ -9174,52 +9271,15 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->applOprec = sig4;
 
   if (LqhKeyReq::getMarkerFlag(Treqinfo)) {
-    struct CommitAckMarker check;
-    CommitAckMarkerPtr markerPtr;
-    jamDebug();
-    check.transid1 = regTcPtr->transid[0];
-    check.transid2 = regTcPtr->transid[1];
-
-    if (m_commitAckMarkerHash.find(markerPtr, check)) {
-      /*
-        A commit ack marker was already placed here for this transaction.
-        We increase the reference count to ensure we don't remove the
-        commit ack marker prematurely.
-      */
-      ndbrequire(markerPtr.p->in_hash == true);
-      ndbrequire(markerPtr.p->reference_count > 0);
-      markerPtr.p->reference_count++;
-#ifdef MARKER_TRACE
-      g_eventLogger->info("Inc marker[%.8x %.8x] op: %u ref: %u",
-                          markerPtr.p->transid1, markerPtr.p->transid2,
-                          tcConnectptr.i, markerPtr.p->reference_count);
-#endif
-    } else {
-      if (ERROR_INSERTED(5082) ||
-          unlikely(!m_commitAckMarkerPool.seize(markerPtr))) {
-        jam();
-        releaseSections(handle);
-        earlyKeyReqAbort(signal, lqhKeyReq, ZNO_FREE_MARKER_RECORDS_ERROR,
-                         tcConnectptr);
-        return;
-      }
-      markerPtr.p->transid1 = sig1;
-      markerPtr.p->transid2 = sig2;
-      markerPtr.p->apiRef = sig3;
-      markerPtr.p->apiOprec = sig4;
-      markerPtr.p->tcRef = tcRef;
-      markerPtr.p->reference_count = 1;
-      markerPtr.p->in_hash = true;
-      markerPtr.p->removed_by_fail_api = false;
-      m_commitAckMarkerHash.add(markerPtr);
-
-#ifdef MARKER_TRACE
-      g_eventLogger->info("%u Add marker[%.8x %.8x] op: %u", instance(),
-                          markerPtr.p->transid1, markerPtr.p->transid2,
-                          tcConnectptr.i);
-#endif
+    const Uint32 markerI = findOrSeizeCommitAckMarker(
+        sig1, sig2, sig3, sig4, tcRef, tcConnectptr.i);
+    if (unlikely(markerI == RNIL)) {
+      earlyKeyReqAbort_releasing(signal, lqhKeyReq,
+                                 ZNO_FREE_MARKER_RECORDS_ERROR,
+                                 __LINE__, handle, tcConnectptr);
+      return;
     }
-    regTcPtr->commitAckMarker = markerPtr.i;
+    regTcPtr->commitAckMarker = markerI;
   }
 
   regTcPtr->reqinfo = Treqinfo;
@@ -9257,12 +9317,8 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
                              :  // lockType not relevant for unlock req
                              (Operation_t)op;
   }
-  if (LqhKeyReq::getReplicaApplierFlag(Treqinfo)) {
-    /* Check sender version before processing - older versions sent junk */
-    if (likely(senderVersion >= NDBD_RATE_LIMIT_VERSION)) {
-      regTcPtr->m_flags |= TcConnectionrec::OP_REPLICA_APPLIER;
-    }
-  }
+  // ReplicaApplier handled in the folded add_flags OR below (needs a
+  // senderVersion-cutover guard; older versions sent junk in this bit).
   if (LqhKeyReq::getNoWaitFlag(Treqinfo)) {
     /* Check sender version before processing - older versions sent junk */
     if (likely(senderVersion >= NDBD_NOWAIT_KEYREQ)) {
@@ -9325,29 +9381,35 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   }
 
   regTcPtr->m_fire_trig_pass = 0;
-  Uint32 Tdeferred = LqhKeyReq::getDeferredConstraints(Treqinfo);
-  if (Tdeferred) {
-    regTcPtr->m_flags |= TcConnectionrec::OP_DEFERRED_CONSTRAINTS;
-  }
-
-  Uint32 TdisableFk = LqhKeyReq::getDisableFkConstraints(Treqinfo);
-  if (TdisableFk) {
-    regTcPtr->m_flags |= TcConnectionrec::OP_DISABLE_FK;
-  }
-
-  Uint32 TnormalProtocolFlag = LqhKeyReq::getNormalProtocolFlag(Treqinfo);
-  if (TnormalProtocolFlag) {
-    /**
-     * Only set normal protocol flag if long request.
-     * As above, short lqhKeyReq ai-length in-signal overlaps the bit.
-     * bug#14702377
-     */
-    regTcPtr->m_flags |= TcConnectionrec::OP_NORMAL_PROTOCOL;
-  }
-
-  if (LqhKeyReq::getNoTriggersFlag(Treqinfo)) {
-    regTcPtr->m_flags |= TcConnectionrec::OP_NO_TRIGGERS;
-  }
+  /*
+   * Fold five independent boolean flag tests into one m_flags OR.
+   * Each ternary lowers to a bit-test + select into a scratch register;
+   * clang ORs them and issues a single ldr/orr/str triple at the end,
+   * instead of five separate tbz/ldr/orr/str RMWs of m_flags.
+   *
+   * NormalProtocol note (bug#14702377): only set when this is a long
+   * request. As elsewhere, short lqhKeyReq ai-length in-signal overlaps
+   * the bit, but the surrounding flow guarantees we only reach this
+   * point on the long path.
+   *
+   * ReplicaApplier is guarded by a senderVersion cutover — older
+   * senders put junk in the bit position; treat as zero when the
+   * sender is too old.
+   */
+  const bool can_replica_applier =
+      (senderVersion >= NDBD_RATE_LIMIT_VERSION);
+  const Uint32 add_flags =
+      (LqhKeyReq::getDeferredConstraints(Treqinfo)
+           ? TcConnectionrec::OP_DEFERRED_CONSTRAINTS : 0) |
+      (LqhKeyReq::getDisableFkConstraints(Treqinfo)
+           ? TcConnectionrec::OP_DISABLE_FK : 0) |
+      (LqhKeyReq::getNormalProtocolFlag(Treqinfo)
+           ? TcConnectionrec::OP_NORMAL_PROTOCOL : 0) |
+      (LqhKeyReq::getNoTriggersFlag(Treqinfo)
+           ? TcConnectionrec::OP_NO_TRIGGERS : 0) |
+      ((can_replica_applier && LqhKeyReq::getReplicaApplierFlag(Treqinfo))
+           ? TcConnectionrec::OP_REPLICA_APPLIER : 0);
+  regTcPtr->m_flags |= add_flags;
 
   UintR TitcKeyLen = 0;
 
@@ -9381,7 +9443,8 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
      */
     handle.clear();
     if (totalAttrInfoLen > ZATTR_BUFFER_SIZE) {
-      earlyKeyReqAbort(signal, lqhKeyReq, ZATTRINFO_TOO_LARGE, tcConnectptr);
+      earlyKeyReqAbort_simple(signal, lqhKeyReq, ZATTRINFO_TOO_LARGE,
+                              __LINE__, tcConnectptr);
       return;
     }
   } else {
@@ -9392,10 +9455,10 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
      * This is used by COPY Fragment and Restore fragment.
      */
     if (refToMain(senderRef) == DBSPJ) {
-      jam();
       ndbassert(!LqhKeyReq::getNrCopyFlag(Treqinfo));
       /* Reply with NO_TUPLE_FOUND */
-      earlyKeyReqAbort(signal, lqhKeyReq, ZNO_TUPLE_FOUND, tcConnectptr);
+      earlyKeyReqAbort_simple(signal, lqhKeyReq, ZNO_TUPLE_FOUND,
+                              __LINE__, tcConnectptr);
       return;
     }
     jamDebug();
@@ -9406,7 +9469,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     regTcPtr->primKeyLen = 0;
 
     if (unlikely(!LqhKeyReq::getNrCopyFlag(Treqinfo))) {
-      LQHKEY_error(signal, 3, tcConnectptr);
+      LQHKEY_error_cold(signal, 3, __LINE__, tcConnectptr);
       return;
     }  // if
   }
@@ -9424,9 +9487,10 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   /* If gci_hi provided, take it and set gci_lo to max value
    * Otherwise, it will be decided by TUP at commit time as normal
    */
-  regTcPtr->gci_hi = LqhKeyReq::getGCIFlag(Treqinfo) ? sig2 : sig3;
-  regTcPtr->gci_lo = LqhKeyReq::getGCIFlag(Treqinfo) ? ~Uint32(0) : 0;
-  nextPos += LqhKeyReq::getGCIFlag(Treqinfo);
+  const Uint32 gci_flag = LqhKeyReq::getGCIFlag(Treqinfo);
+  regTcPtr->gci_hi = gci_flag ? sig2 : sig3;
+  regTcPtr->gci_lo = gci_flag ? ~Uint32(0) : 0;
+  nextPos += gci_flag;
 
   if (LqhKeyReq::getJoinAggFlag(attrLenFlags)) {
     jam();
@@ -9438,9 +9502,9 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
                 regTcPtr->m_join_agg_state_key));
     if (aggState != nullptr &&
         !getNodeInfo(refToNode(aggState->m_senderRef)).m_connected) {
-      jam();
-      earlyKeyReqAbort(signal, lqhKeyReq,
-                        ZNODEFAIL_BEFORE_COMMIT, tcConnectptr);
+      earlyKeyReqAbort_simple(signal, lqhKeyReq,
+                              ZNODEFAIL_BEFORE_COMMIT,
+                              __LINE__, tcConnectptr);
       return;
     }
     regTcPtr->m_outer_join_agg =
@@ -9465,7 +9529,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   if (unlikely((LqhKeyReq::FixedSignalLength + nextPos) !=
                signal->length())) {
     g_eventLogger->info("nextPos: %u, siglen: %u", nextPos, signal->length());
-    LQHKEY_error(signal, 2, tcConnectptr);
+    LQHKEY_error_cold(signal, 2, __LINE__, tcConnectptr);
     return;
   }  // if
   UintR TseqNoReplica = regTcPtr->seqNoReplica;
@@ -9479,11 +9543,11 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
       regTcPtr->nextSeqNoReplica = TseqNoReplica + 1;
       if (unlikely((regTcPtr->nextReplica == 0) ||
                    (regTcPtr->nextReplica == cownNodeid))) {
-        LQHKEY_error(signal, 0, tcConnectptr);
+        LQHKEY_error_cold(signal, 0, __LINE__, tcConnectptr);
         return;
       }  // if
     } else {
-      LQHKEY_error(signal, 4, tcConnectptr);
+      LQHKEY_error_cold(signal, 4, __LINE__, tcConnectptr);
       return;
     }  // if
   }    // if
@@ -9500,39 +9564,8 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
    */
   if (regTcPtr->dirtyOp == ZFALSE)  // Transactional operation
   {
-    jamDebug();
-    TcConnectionrecPtr localNextTcConnectptr;
-    const Uint32 hashIndex = getHashIndex(regTcPtr);
-    NDB_PREFETCH_WRITE(&m_curr_lqh->ctransidHash[hashIndex]);
-    jamDebug();
-    jamDataDebug(Uint16(hashIndex));
-    jamDataDebug(Uint16(m_curr_lqh->instance()));
-    Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
-    regTcPtr->prevHashRec = RNIL;
-    regTcPtr->hashIndex = hashIndex;
-    NdbMutex_Lock(&m_curr_lqh->transaction_hash_mutex[mutexIndex]);
-#if defined VM_TRACE || defined ERROR_INSERT
-    jamLineDebug(Uint16(m_curr_lqh->trans_hash_mutex_counter[mutexIndex]));
-    m_curr_lqh->trans_hash_mutex_counter[mutexIndex]++;
-#endif
-    localNextTcConnectptr.i = m_curr_lqh->ctransidHash[hashIndex];
-    m_curr_lqh->ctransidHash[hashIndex] = tcConnectptr.i;
-    if (unlikely(localNextTcConnectptr.i != RNIL))
-    {
-      jamDebug();
-      ndbrequire(m_curr_lqh->tcConnect_pool.
-                 getValidPtr(localNextTcConnectptr));
-      /* Check that no equal element exists */
-      ndbrequire(!checkTransaction(localNextTcConnectptr,
-                                   regTcPtr->tcHashKeyHi,
-                                   regTcPtr,
-                                   true));
-      ndbassert(localNextTcConnectptr.p->prevHashRec == RNIL);
-      localNextTcConnectptr.p->prevHashRec = tcConnectptr.i;
-    }//if
-    regTcPtr->nextHashRec = localNextTcConnectptr.i;
-    NdbMutex_Unlock(&m_curr_lqh->transaction_hash_mutex[mutexIndex]);
-  }//if
+    insertIntoTransactionHash(tcConnectptr);
+  }
   /**
    * Up until this point in execLQHKEYREQ all we have done is setting up
    * data structures that are local to this thread. Now we are ready to
@@ -9547,21 +9580,20 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
      */
     Uint32 instanceNo = getInstanceNoCanFail(tabptr.i, regTcPtr->fragmentid);
     if (unlikely(instanceNo == RNIL)) {
-      jam();
-      LQHKEY_abort(signal, 5, tcConnectptr);
+      LQHKEY_abort_cold(signal, 5, __LINE__, tcConnectptr);
       return;
     }
     regTcPtr->ldmInstance = instanceNo;
     setup_query_thread_for_key_access(instanceNo);
   }
   if (unlikely(tabptr.i >= ctabrecFileSize)) {
-    LQHKEY_error(signal, 5, tcConnectptr);
+    LQHKEY_error_cold(signal, 5, __LINE__, tcConnectptr);
     return;
   }  // if
   ptrAss(tabptr, tablerec);
   if (unlikely(table_version_major_lqhkeyreq(tabptr.p->schemaVersion) !=
                table_version_major_lqhkeyreq(schemaVersion))) {
-    LQHKEY_abort(signal, 5, tcConnectptr);
+    LQHKEY_abort_cold(signal, 5, __LINE__, tcConnectptr);
     return;
   }
 
@@ -9569,16 +9601,19 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     if (check_tabstate(signal, tabptr.p, op, tcConnectptr)) return;
   }
   if (unlikely(!getFragmentrec(regTcPtr->fragmentid))) {
-    LQHKEY_abort(signal, 6, tcConnectptr);
+    LQHKEY_abort_cold(signal, 6, __LINE__, tcConnectptr);
     return;
   }//if
   regTcPtr->tableref = tabptr.i;
   regTcPtr->m_disk_table = tabptr.p->m_disk_table;
   Uint32 senderBlockNo = refToMain(signal->senderBlockRef());
-  if (senderBlockNo == getRESTORE())
+  // Both of the original branches did the same update; merged.
+  // m_disk_table is a 0/1 bool (Uint8), so `&= !flag` either clears
+  // (when flag is set) or is a no-op (when flag is unset).
+  if (senderBlockNo == getRESTORE() ||
+      op == ZREAD || op == ZREAD_EX || op == ZUPDATE) {
     regTcPtr->m_disk_table &= !LqhKeyReq::getNoDiskFlag(Treqinfo);
-  else if (op == ZREAD || op == ZREAD_EX || op == ZUPDATE)
-    regTcPtr->m_disk_table &= !LqhKeyReq::getNoDiskFlag(Treqinfo);
+  }
 
   if (op == ZREAD || op == ZREAD_EX || op == ZUNLOCK) {
     tabptr.p->usageCountR++;
@@ -9684,7 +9719,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   LogPartRecord *logPart = fragptr.p->m_log_part_ptr_p;
   tfragDistKey = fragptr.p->fragDistributionKey;
   if (fragptr.p->fragStatus == Fragrecord::ACTIVE_CREATION) {
-    jam();
+    jamDebug();
     /**
      * Starting node in active creation mode, we set activeCreat to
      * either AC_IGNORED (before first copy row arrived, or to
@@ -9846,10 +9881,10 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
       tmp = -tmp;
       if (unlikely((tmp <= (MAX_REPLICAS - 1)) || (tfragDistKey == 0)))
       {
-        LQHKEY_abort(signal, 0, tcConnectptr);
+        LQHKEY_abort_cold(signal, 0, __LINE__, tcConnectptr);
         return;
       }//if
-      LQHKEY_error(signal, 1, tcConnectptr);
+      LQHKEY_error_cold(signal, 1, __LINE__, tcConnectptr);
       return;
     }
     /**
@@ -9943,7 +9978,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
       {
         DEB_QUOTAS(("(%u) Transaction aborted due to quota exceeded",
           instance()));
-        LQHKEY_abort(signal, 7, tcConnectptr);
+        LQHKEY_abort_cold(signal, 7, __LINE__, tcConnectptr);
         return;
       }
       /* Disk quota checked before allocating new extent */
@@ -10000,174 +10035,18 @@ void Dblqh::prepareContinueAfterBlockedLab(
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
   Uint32 activeCreat = regTcPtr->activeCreat;
   if (regTcPtr->operation == ZUNLOCK) {
-    jam();
+    jamDebug();
     ndbassert(!m_is_in_query_thread);
     handleUserUnlockRequest(signal, tcConnectptr);
     return;
   }
 
-  if (unlikely(regTcPtr->indTakeOver == ZTRUE))
-  {
-    /**
-     * When Take Over requests are executed in the Query threads we have the
-     * following issues to handle:
-     *
-     * 1) We must find the scan record
-     * 2) We must find the operation record in DBACC
-     * 3) When we found the scan record the record must not be removed while
-     *    we use it.
-     * 4) When we found the operation record in DBACC the record must not
-     *    be removed while we are using it.
-     *
-     * We find the scan record using the hash table in the variable
-     * c_scanTakeOverHash. This means that this hash table is read from the
-     * query threads, but only written from the LDM threads.
-     *
-     * This means that we need to use a mutex to access the hash table from
-     * query threads.
-     *
-     * To understand the concurrency issue for Take Over requests we must
-     * understand when they occur. The scan protocol relies on that the
-     * take over request comes after sending SCAN_FRAGCONF to DBTC which
-     * in return sends SCAN_TABCONF to the NDB API. The NDB API can then
-     * send TCKEYREQ with the Take Over flag set and some scan information
-     * used to find the correct scan record and DBACC operation record.
-     *
-     * Thus we cannot receive LQHKEYREQ when we are currently scanning.
-     * The scan state we set after sending SCAN_FRAGCONF is
-     * WAIT_SCAN_NEXTREQ. This is the only state in which it is allowed
-     * to receive a LQHKEYREQ with Take Over flag set.
-     *
-     * In this state the only signal we can receive to continue the scan
-     * is SCAN_NEXTREQ. The normal protocol cannot send such a signal
-     * while we are performing a Take Over operation. However a timeout
-     * in DBTC, or a timeout in DBLQH can lead to a close of the scan
-     * even when we are allowed to receive LQHKEYREQ with the Take Over
-     * flag set. Thus we need to find a protection for this.
-     *
-     * When an LQHKEYREQ with Take Over flag set is received we need to
-     * lock the mutex in the Query threads to access the hash table
-     * in c_scanTakeOverHash and to access scanState on the scan record.
-     * If the scan record is found in the hash table and it is in the
-     * state WAIT_SCAN_NEXTREQ then we can proceed with the LQHKEYREQ
-     * execution. However we must do something to block SCAN_NEXTREQ
-     * from proceeding in this case. This protection is only required
-     * if we are executing in the query thread. No such protection is
-     * required for Take Over operations arriving in LDM threads since
-     * in this case we are serialised compared to the SCAN operation.
-     *
-     * Given that the LQHKEYREQ will execute without any real-time breaks
-     * during the take over process, we only need to wait until this
-     * LQHKEYREQ has completed before any SCAN_NEXTREQ can proceed (or
-     * timeout actions in DBLQH).
-     *
-     * We need to make sure that the setting of scanState to
-     * WAIT_SCAN_NEXTREQ in LDM thread must be seen by the Query thread.
-     * There are two ways to do this, we can either use a mutex when
-     * setting scanState. The other option is to use a memory barrier
-     * right before setting scanState and immediately after setting it.
-     * Thus either a mutex lock or 2 calls to wmb() (we only need a
-     * write memory barrier if we use a read memory barrier in the Query
-     * thread. However the query thread reads scanState under mutex
-     * protection which implies a memory barrier. So no need to add more
-     * memory barriers here.
-     *
-     * When we receive a close scan request either from timeout or from
-     * SCAN_NEXTREQ we need to perform the following:
-     * 1) Wait until any ongoing LQHKEYREQ in Query thread is completed
-     *
-     *    This is accomplished by incrementing scanPtrP->m_takeOverRefCount
-     *    before taking over the lock from the scan operation. When
-     *    starting this takeover, we don't want another thread to remove the
-     *    scan in the short time while we are taking over the lock.
-     *    This is checked in closeScanRequestLab.
-     *
-     *    The m_takeOverRefCount is protected by the take over hash mutex.
-     *    This means that it is incremented with a lock, also the first
-     *    check of the counter must be protected. However when discovering
-     *    that the counter is > 0 the only thing that can bring it to 0 is
-     *    that the lock take over is completed. There is no need to protect
-     *    this with a mutex. Also no need to protect the decrement of the
-     *    counter. Before starting the check of the counter we changed the
-     *    state of the scan to ensure that no more incremements to the
-     *    counter can happen. Thus we are only waiting for active LQHKEYREQ
-     *    take overs to complete their take over action before we proceed.
-     *    Once the take over is complete the operation is independent of
-     *    the scan operation, thus no need for more checks.
-     *    
-     * 2) Change scanState to ensure that no more Take Over operations
-     * are accepted for this scan.
-     *
-     * So what we need to do are the following actions:
-     * 1) Here we need to perform the following for Query threads
-     *    - Lock mutex covering take over hash
-     *    - Check that scanState == WAIT_SCAN_NEXTREQ (also for LDM threads)
-     *    - Increment refCount indicating an LQHKEYREQ take over is active
-     *    - Decrement refCount when done with the LQHKEYREQ request
-     * 2) While sending SCAN_FRAGCONF we need to use 2 memory barriers while
-     *    setting scanState to WAIT_SCAN_NEXTREQ.
-     * 3) When receiving SCAN_NEXTREQ(close) or timeout of scan request we
-     *    need to acquire mutex and set scanState to new state indicating
-     *    that we are closing. After releasing mutex we loop waiting for
-     *    refCount to be 0 (usually happen immediately). After this we
-     *    complete the close of the scan request.
-     */
-    jam();
-    Uint32 ttcScanOp = KeyInfo20::getScanOp(regTcPtr->tcScanInfo);
-    scanptr.i = RNIL;
-    if (m_is_query_block)
-    {
-      m_curr_lqh->lock_take_over_hash();
-    }
-    {
-      ScanRecord key;
-      key.scanNumber = KeyInfo20::getScanNo(regTcPtr->tcScanInfo);
-      key.fragPtrI = fragptr.i;
-      m_curr_lqh->c_scanTakeOverHash.find(scanptr, key);
-#ifdef TRACE_SCAN_TAKEOVER
-      if(scanptr.i == RNIL)
-        g_eventLogger->info("not finding (%d %lld)", key.scanNumber,
-                            key.fragPtrI);
-#endif
-    }
-    if (unlikely((scanptr.i == RNIL) ||
-        ((scanptr.p->scanState != ScanRecord::WAIT_SCAN_NEXTREQ) &&
-         (!LqhKeyReq::getUtilFlag(regTcPtr->reqinfo)))))
-    {
-      /**
-       * NDB API applications cannot start a take over operation until
-       * they have received SCAN_TABCONF. DBUTIL can since it starts
-       * the take over operation immediately on receiving a TRANSID_AI
-       * signal. To ensure that this works ok we ensure that DBUTIL
-       * always use an LDM thread for the take over operations.
-       *
-       * Thus only NDB API users will get access to the query threads.
-       */
-      jam();
-      if (m_is_query_block)
-      {
-        m_curr_lqh->unlock_take_over_hash();
-      }
-      takeOverErrorLab(signal, tcConnectptr);
-      return;
-    }//if
-    regTcPtr->accOpPtr = get_acc_ptr_from_scan_record(scanptr.p,
-                                                      ttcScanOp,
-                                                      true);
-    if (unlikely(regTcPtr->accOpPtr == RNIL))
-    {
-      jam();
-      if (m_is_query_block)
-      {
-        m_curr_lqh->unlock_take_over_hash();
-      }
-      takeOverErrorLab(signal, tcConnectptr);
-      return;
-    }//if
-    if (m_is_query_block)
-    {
-      scanptr.p->m_takeOverRefCount++;
-      m_curr_lqh->unlock_take_over_hash();
+  if (unlikely(regTcPtr->indTakeOver == ZTRUE)) {
+    // Scan take-over is rare and heavy (hash lookup, query-thread
+    // mutex, ScanRecord + refcount management). Keep it out of this
+    // function's hot body. See prepareScanTakeOverOnKeyReq below.
+    if (!prepareScanTakeOverOnKeyReq(signal, tcConnectptr)) {
+      return;  // takeOverErrorLab has been called
     }
   }
 /*-------------------------------------------------------------------*/
@@ -10227,7 +10106,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
     }
     else
     {
-      jam();
+      jamDebug();
       /**
        * Delete by ROWID from RESTORE
        */
@@ -10246,7 +10125,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
      * need to be careful with all variants of how we deal with syncing
      * this starting fragment with the live fragment.
      */
-    jam();
+    jamDebug();
     ndbassert(!m_is_query_block);
     ndbrequire(!regTcPtr->indTakeOver);
     regTcPtr->totSendlenAi = regTcPtr->totReclenAi;
@@ -10259,7 +10138,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
      * but to the other nodes we will act as if we have applied the
      * changes.
      */
-    jam();
+    jamDebug();
     ndbassert(!m_is_query_block);
     ndbrequire(!regTcPtr->indTakeOver);
     ndbassert(activeCreat == Fragrecord::AC_IGNORED);
@@ -10275,12 +10154,186 @@ void Dblqh::prepareContinueAfterBlockedLab(
   }
 }
 
+// Scan take-over setup on LQHKEYREQ. Only called when
+// regTcPtr->indTakeOver == ZTRUE (rare) — the path after an NDB API
+// has received SCAN_TABCONF and issues a keyed op that reuses the
+// scan's lock. Moved out of prepareContinueAfterBlockedLab because
+// it accounts for roughly two thirds of that function's size while
+// firing on a small fraction of traffic.
+//
+// Returns false if the take-over was rejected (takeOverErrorLab
+// already called — caller must return). Returns true when the
+// caller should continue into the normal dispatch.
+//
+// See the long design comment preserved below for concurrency notes
+// on query-thread take-over, the take-over hash mutex and
+// m_takeOverRefCount semantics.
+bool Dblqh::prepareScanTakeOverOnKeyReq(Signal *signal,
+                                        TcConnectionrecPtr tcConnectptr) {
+  /**
+   * When Take Over requests are executed in the Query threads we have the
+   * following issues to handle:
+   *
+   * 1) We must find the scan record
+   * 2) We must find the operation record in DBACC
+   * 3) When we found the scan record the record must not be removed while
+   *    we use it.
+   * 4) When we found the operation record in DBACC the record must not
+   *    be removed while we are using it.
+   *
+   * We find the scan record using the hash table in the variable
+   * c_scanTakeOverHash. This means that this hash table is read from the
+   * query threads, but only written from the LDM threads.
+   *
+   * This means that we need to use a mutex to access the hash table from
+   * query threads.
+   *
+   * To understand the concurrency issue for Take Over requests we must
+   * understand when they occur. The scan protocol relies on that the
+   * take over request comes after sending SCAN_FRAGCONF to DBTC which
+   * in return sends SCAN_TABCONF to the NDB API. The NDB API can then
+   * send TCKEYREQ with the Take Over flag set and some scan information
+   * used to find the correct scan record and DBACC operation record.
+   *
+   * Thus we cannot receive LQHKEYREQ when we are currently scanning.
+   * The scan state we set after sending SCAN_FRAGCONF is
+   * WAIT_SCAN_NEXTREQ. This is the only state in which it is allowed
+   * to receive a LQHKEYREQ with Take Over flag set.
+   *
+   * In this state the only signal we can receive to continue the scan
+   * is SCAN_NEXTREQ. The normal protocol cannot send such a signal
+   * while we are performing a Take Over operation. However a timeout
+   * in DBTC, or a timeout in DBLQH can lead to a close of the scan
+   * even when we are allowed to receive LQHKEYREQ with the Take Over
+   * flag set. Thus we need to find a protection for this.
+   *
+   * When an LQHKEYREQ with Take Over flag set is received we need to
+   * lock the mutex in the Query threads to access the hash table
+   * in c_scanTakeOverHash and to access scanState on the scan record.
+   * If the scan record is found in the hash table and it is in the
+   * state WAIT_SCAN_NEXTREQ then we can proceed with the LQHKEYREQ
+   * execution. However we must do something to block SCAN_NEXTREQ
+   * from proceeding in this case. This protection is only required
+   * if we are executing in the query thread. No such protection is
+   * required for Take Over operations arriving in LDM threads since
+   * in this case we are serialised compared to the SCAN operation.
+   *
+   * Given that the LQHKEYREQ will execute without any real-time breaks
+   * during the take over process, we only need to wait until this
+   * LQHKEYREQ has completed before any SCAN_NEXTREQ can proceed (or
+   * timeout actions in DBLQH).
+   *
+   * We need to make sure that the setting of scanState to
+   * WAIT_SCAN_NEXTREQ in LDM thread must be seen by the Query thread.
+   * There are two ways to do this, we can either use a mutex when
+   * setting scanState. The other option is to use a memory barrier
+   * right before setting scanState and immediately after setting it.
+   * Thus either a mutex lock or 2 calls to wmb() (we only need a
+   * write memory barrier if we use a read memory barrier in the Query
+   * thread. However the query thread reads scanState under mutex
+   * protection which implies a memory barrier. So no need to add more
+   * memory barriers here.
+   *
+   * When we receive a close scan request either from timeout or from
+   * SCAN_NEXTREQ we need to perform the following:
+   * 1) Wait until any ongoing LQHKEYREQ in Query thread is completed
+   *
+   *    This is accomplished by incrementing scanPtrP->m_takeOverRefCount
+   *    before taking over the lock from the scan operation. When
+   *    starting this takeover, we don't want another thread to remove the
+   *    scan in the short time while we are taking over the lock.
+   *    This is checked in closeScanRequestLab.
+   *
+   *    The m_takeOverRefCount is protected by the take over hash mutex.
+   *    This means that it is incremented with a lock, also the first
+   *    check of the counter must be protected. However when discovering
+   *    that the counter is > 0 the only thing that can bring it to 0 is
+   *    that the lock take over is completed. There is no need to protect
+   *    this with a mutex. Also no need to protect the decrement of the
+   *    counter. Before starting the check of the counter we changed the
+   *    state of the scan to ensure that no more incremements to the
+   *    counter can happen. Thus we are only waiting for active LQHKEYREQ
+   *    take overs to complete their take over action before we proceed.
+   *    Once the take over is complete the operation is independent of
+   *    the scan operation, thus no need for more checks.
+   *
+   * 2) Change scanState to ensure that no more Take Over operations
+   * are accepted for this scan.
+   *
+   * So what we need to do are the following actions:
+   * 1) Here we need to perform the following for Query threads
+   *    - Lock mutex covering take over hash
+   *    - Check that scanState == WAIT_SCAN_NEXTREQ (also for LDM threads)
+   *    - Increment refCount indicating an LQHKEYREQ take over is active
+   *    - Decrement refCount when done with the LQHKEYREQ request
+   * 2) While sending SCAN_FRAGCONF we need to use 2 memory barriers while
+   *    setting scanState to WAIT_SCAN_NEXTREQ.
+   * 3) When receiving SCAN_NEXTREQ(close) or timeout of scan request we
+   *    need to acquire mutex and set scanState to new state indicating
+   *    that we are closing. After releasing mutex we loop waiting for
+   *    refCount to be 0 (usually happen immediately). After this we
+   *    complete the close of the scan request.
+   */
+  TcConnectionrec *const regTcPtr = tcConnectptr.p;
+  jamDebug();
+  const Uint32 ttcScanOp = KeyInfo20::getScanOp(regTcPtr->tcScanInfo);
+  scanptr.i = RNIL;
+  if (m_is_query_block) {
+    m_curr_lqh->lock_take_over_hash();
+  }
+  {
+    ScanRecord key;
+    key.scanNumber = KeyInfo20::getScanNo(regTcPtr->tcScanInfo);
+    key.fragPtrI = fragptr.i;
+    m_curr_lqh->c_scanTakeOverHash.find(scanptr, key);
+#ifdef TRACE_SCAN_TAKEOVER
+    if (scanptr.i == RNIL)
+      g_eventLogger->info("not finding (%d %lld)", key.scanNumber,
+                          key.fragPtrI);
+#endif
+  }
+  if (unlikely((scanptr.i == RNIL) ||
+               ((scanptr.p->scanState != ScanRecord::WAIT_SCAN_NEXTREQ) &&
+                (!LqhKeyReq::getUtilFlag(regTcPtr->reqinfo))))) {
+    /**
+     * NDB API applications cannot start a take over operation until
+     * they have received SCAN_TABCONF. DBUTIL can since it starts
+     * the take over operation immediately on receiving a TRANSID_AI
+     * signal. To ensure that this works ok we ensure that DBUTIL
+     * always use an LDM thread for the take over operations.
+     *
+     * Thus only NDB API users will get access to the query threads.
+     */
+    jamDebug();
+    if (m_is_query_block) {
+      m_curr_lqh->unlock_take_over_hash();
+    }
+    takeOverErrorLab(signal, tcConnectptr);
+    return false;
+  }
+  regTcPtr->accOpPtr =
+      get_acc_ptr_from_scan_record(scanptr.p, ttcScanOp, true);
+  if (unlikely(regTcPtr->accOpPtr == RNIL)) {
+    jamDebug();
+    if (m_is_query_block) {
+      m_curr_lqh->unlock_take_over_hash();
+    }
+    takeOverErrorLab(signal, tcConnectptr);
+    return false;
+  }
+  if (m_is_query_block) {
+    scanptr.p->m_takeOverRefCount++;
+    m_curr_lqh->unlock_take_over_hash();
+  }
+  return true;
+}
+
 void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
   /* ************ */
   /*  ACCKEYREQ < */
   /* ************ */
   prefetch_op_record_3((Uint32 *)regTcPtr.p->accConnectPtrP);
-  jam();
+  jamDebug();
   {
     Uint32 taccreq = 0;
     taccreq = AccKeyReq::setOperation(taccreq, regTcPtr.p->operation);
@@ -10350,7 +10403,20 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
     }
     /*
      * TTL related
+     *
+     * Only one combination actually changes state: not-yet-marked
+     * on our side AND ACCKEYCONF reports ttl_ignore == 1 → set to 1.
+     * The other combinations are either already correct or are
+     * intentional "keep current" outcomes by design.
+     *
+     * In debug builds (TTL_DEBUG) we keep the full 3-way chain to
+     * emit the per-arm trace messages the TTL author relies on for
+     * state-transition diagnostics. In prod builds TTL_RONDB_TRACE
+     * expands to {} and the 3-way chain would compile to several
+     * empty-arm branches plus one store; gate the whole chain on
+     * the same macro so prod sees only the single effective `if`.
      */
+#ifdef TTL_DEBUG
     if (regTcPtr.p->ttl_ignore && signal->theData[5] != 1) {
       TTL_RONDB_TRACE(regTcPtr.p->tableref, "Dblqh::execACCKEYCONF[1], ttl_ignore in "
                       "ACCKEYCONF is 0 but the related "
@@ -10379,6 +10445,11 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
                     "table id: %u",
                     regTcPtr.p->ttl_ignore,
                     regTcPtr.p->tableref);
+#else
+    if (!regTcPtr.p->ttl_ignore && signal->theData[5] == 1) {
+      regTcPtr.p->ttl_ignore = 1;
+    }
+#endif
     jamDebug();
     continueACCKEYCONF(signal, signal->theData[3], signal->theData[4],
                        regTcPtr);
@@ -10406,7 +10477,6 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
 }  // Dblqh::prepareContinueAfterBlockedLab()
 
 void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
-  jam();
   Uint64 fragPtr = fragptr.p->tupFragptr;
   Uint32 op = regTcPtr.p->operation;
 
@@ -10428,6 +10498,7 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
     exec_acckeyreq(signal, regTcPtr);
     return;
   }
+  jam();
 
   /* Signal header was counted for when receiving LQHKEYREQ */
   Fragrecord::UsageStat& useStat = fragptr.p->m_useStat;
@@ -10498,12 +10569,13 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
          *   We are performing DELETE by ROWID and the row id had an already
          *   existing, we need to delete the row in this position.
          */
-        jam();
-        if (TRACENR_FLAG) TRACENR(" performing DELETE key: " << dst[0] << endl);
 
         if (refToMain(regTcPtr.p->tcBlockref) == getRESTORE()) {
           jam();
           c_restore->delete_by_rowid_succ(regTcPtr.p->tcOprec);
+        } else {
+          jam();
+        if (TRACENR_FLAG) TRACENR(" performing DELETE key: " << dst[0] << endl);
         }
         DEB_LCP_RESTORE(("(%u)tab(%u,%u) row(%u,%u), set GCI = %u", instance(),
                          regTcPtr.p->tableref, regTcPtr.p->fragmentid,
@@ -10529,11 +10601,12 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
          * We are performing a DELETE by ROWID and there was no row at this
          * row id. We set the correct GCI in this row id.
          */
-        jam();
         if (TRACENR_FLAG) TRACENR(" UPDATE_GCI" << endl);
         if (refToMain(regTcPtr.p->tcBlockref) == getRESTORE()) {
           jam();
           c_restore->delete_by_rowid_fail(regTcPtr.p->tcOprec);
+        } else {
+          jam();
         }
         c_tup->nr_update_gci(fragPtr, &regTcPtr.p->m_row_id, regTcPtr.p->gci_hi,
                              false);
@@ -10561,6 +10634,9 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
       jam();
       nr_copy_delete_row(signal, regTcPtr, &regTcPtr.p->m_row_id, len);
     }
+    else {
+      jam();
+    }
     /**
      * 2) Delete specified row at different rowid (if exists)
      * It is technically possible that a row with the same primary key
@@ -10575,7 +10651,6 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      * placed should have a higher row id since the copy process goes from
      * low row ids to higher row ids.
      */
-    jam();
     nr_copy_delete_row(signal, regTcPtr, 0, 0);
     if (TRACENR_FLAG) TRACENR(" RUN INSERT" << endl);
     goto run;
@@ -10640,12 +10715,13 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
        */
       jam();
       nr_copy_delete_row(signal, regTcPtr, &regTcPtr.p->m_row_id, len);
+    } else {
+      jam();
     }
 
     /**
      * 2) Delete specified row at different rowid (if exists)
      */
-    jam();
     nr_copy_delete_row(signal, regTcPtr, 0, 0);
     if (TRACENR_FLAG) TRACENR(" RUN op: " << op << endl);
     goto run;
@@ -11619,6 +11695,59 @@ void Dblqh::execACCKEYCONF(Signal *signal) {
   release_frag_access(fragptr.p);
 }
 
+void Dblqh::continueACCKEYCONF_zwrite_slow(Signal *signal,
+                                           TcConnectionrec *regTcPtr) {
+  /*
+   * TTL related
+   * [TTL Replication ZWRITE to replicas]
+   * Before developing TTL. The code here seems to convert operation
+   * from ZWRITE to real operation and update to regTcPtr->operation on
+   * primary node. So that then in Dblqh::packLqhkeyreqLab() to replicate
+   * this operation to replica, the operation would be the real one(replicas
+   * will never receive ZWRITE
+   *
+   * BUT NOW. In TTL situation, we need to send ZWRITE to replicas because
+   * ZWRITE won't need to check TTL when do the update but normal ZUPDATE will do.
+   * If we send ZUPDATE to replica, replica may be failed to apply this
+   * operation because of the already existing row has expired.
+   * Like this situation:
+   * on a TTL table, we do that:
+   * 1. replace into TTL_TABLE values(xxx,...);
+   * 2. wait until this row expired
+   * 3. replace into TTL_TABLE values(xxx,...);
+   * If we don't send ZWRITE to replica, then in the 3rd step, the replica
+   * won't be successed because of trying to update on an expired row.
+   * So, I keep this convert and will convert it back in the later steps in
+   * Dblqh::packLqhkeyreqLab()
+   *
+   * NOTICE: regTcPtr->seqNoReplica == 0 means it's on primary fragment.
+   *
+   * NOTICE: the replica here is RonDB cluster replica fragment, not the
+   * Binlog slaves
+   */
+  ndbassert((is_ttl_table(regTcPtr->tableref) ||
+            regTcPtr->seqNoReplica == 0) ||
+            regTcPtr->dirtyOp ||
+            regTcPtr->activeCreat == Fragrecord::AC_NR_COPY);
+  Uint32 op = signal->theData[1];
+  Uint32 requestInfo = regTcPtr->reqinfo;
+  if (likely(op == ZINSERT || op == ZUPDATE)) {
+    jam();
+    regTcPtr->operation = op;
+  } else {
+    jam();
+    warningEvent("Converting %d to ZUPDATE", op);
+    op = regTcPtr->operation = ZUPDATE;
+  }
+  if (regTcPtr->seqNoReplica == 0) {
+    jam();
+    requestInfo &=
+        ~(LqhKeyReq::RI_OPERATION_MASK << LqhKeyReq::RI_OPERATION_SHIFT);
+    LqhKeyReq::setOperation(requestInfo, op);
+    regTcPtr->reqinfo = requestInfo;
+  }
+}
+
 void Dblqh::continueACCKEYCONF(Signal *signal, Uint32 localKey1,
                                Uint32 localKey2,
                                const TcConnectionrecPtr tcConnectptr) {
@@ -11631,64 +11760,9 @@ void Dblqh::continueACCKEYCONF(Signal *signal, Uint32 localKey1,
    * IS NEEDED SINCE TWO SCHEMA VERSIONS CAN BE ACTIVE SIMULTANEOUSLY ON A
    * TABLE.
    * ----------------------------------------------------------------------- */
-  /*
-   * TTL related
-   * TODO (Zhao)
-   * Check this if path. Maybe we need to do operation converting
-   *
-   */
   if (unlikely(regTcPtr->operation == ZWRITE)) {
-    /*
-     * TTL related
-     * [TTL Replication ZWRITE to replicas]
-     * Before developing TTL. The code here seems to convert operation
-     * from ZWRITE to real operation and update to regTcPtr->operation on
-     * primary node. So that then in Dblqh::packLqhkeyreqLab() to replicate
-     * this operation to replica, the operation would be the real one(replicas
-     * will never receive ZWRITE
-     *
-     * BUT NOW. In TTL situation, we need to send ZWRITE to replicas because
-     * ZWRITE won't need to check TTL when do the update but normal ZUPDATE will do.
-     * If we send ZUPDATE to replica, replica may be failed to apply this
-     * operation because of the already existing row has expired.
-     * Like this situation:
-     * on a TTL table, we do that:
-     * 1. replace into TTL_TABLE values(xxx,...);
-     * 2. wait until this row expired
-     * 3. replace into TTL_TABLE values(xxx,...);
-     * If we don't send ZWRITE to replica, then in the 3rd step, the replica
-     * won't be successed because of trying to update on an expired row.
-     * So, I keep this convert and will convert it back in the later steps in
-     * Dblqh::packLqhkeyreqLab()
-     *
-     * NOTICE: regTcPtr->seqNoReplica == 0 means it's on primary fragment.
-     *
-     * NOTICE: the replica here is RonDB cluster replica fragment, not the
-     * Binlog slaves
-     */
-
-    ndbassert((is_ttl_table(regTcPtr->tableref) ||
-              regTcPtr->seqNoReplica == 0) ||
-              regTcPtr->dirtyOp ||
-              regTcPtr->activeCreat == Fragrecord::AC_NR_COPY);
-    Uint32 op = signal->theData[1];
-    Uint32 requestInfo = regTcPtr->reqinfo;
-    if (likely(op == ZINSERT || op == ZUPDATE)) {
-      jam();
-      regTcPtr->operation = op;
-    } else {
-      jam();
-      warningEvent("Converting %d to ZUPDATE", op);
-      op = regTcPtr->operation = ZUPDATE;
-    }
-    if (regTcPtr->seqNoReplica == 0) {
-      jam();
-      requestInfo &=
-          ~(LqhKeyReq::RI_OPERATION_MASK << LqhKeyReq::RI_OPERATION_SHIFT);
-      LqhKeyReq::setOperation(requestInfo, op);
-      regTcPtr->reqinfo = requestInfo;
-    }
-  }  // if
+    continueACCKEYCONF_zwrite_slow(signal, regTcPtr);
+  }
 
   /* ------------------------------------------------------------------------
    * IT IS NOW TIME TO CONTACT THE TUPLE MANAGER. THE TUPLE MANAGER NEEDS THE

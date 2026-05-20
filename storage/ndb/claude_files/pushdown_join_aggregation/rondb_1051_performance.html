@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RONDB-1051 — Hot-path micro-optimizations for PK read and TUX index-key read</title>
+<style>
+  body { font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+         max-width: 960px; margin: 2em auto; padding: 0 1.5em;
+         line-height: 1.5; color: #222; }
+  h1 { border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #bbb; padding-bottom: 0.25em; margin-top: 2em; }
+  h3 { color: #333; margin-top: 1.5em; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace;
+              background: #f4f4f4; border-radius: 3px; }
+  code { padding: 1px 4px; font-size: 0.92em; }
+  pre  { padding: 0.9em 1em; overflow-x: auto; font-size: 0.85em;
+         border-left: 3px solid #888; }
+  table { border-collapse: collapse; margin: 1em 0; width: 100%; font-size: 0.95em; }
+  th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left;
+           vertical-align: top; }
+  th { background: #eee; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .muted { color: #666; }
+  .good { color: #0a5; font-weight: bold; }
+  blockquote { border-left: 3px solid #ccc; margin: 1em 0; padding: 0.3em 1em;
+               color: #444; }
+  .callchain { background: #f8f8ff; border-left: 3px solid #679;
+               padding: 0.8em 1em; margin: 1em 0;
+               font-family: "SF Mono", Menlo, monospace; font-size: 0.85em; }
+</style>
+</head>
+<body>
+
+<h1>RONDB-1051 — Hot-path micro-optimizations for PK read, TUX index-key read, and interpreter single-column reads</h1>
+
+<p>
+This document describes the 17 commits making up the <code>RONDB-1051</code>
+performance work. The changes target three of the most heavily executed
+code paths in an NDB data node: the <strong>primary-key lookup path</strong>
+(DBACC &rarr; DBTUP), the <strong>TUX ordered-index key-attribute read
+path</strong> (DBTUX &rarr; DBTUP), and the <strong>interpreter
+single-column read path</strong> used by aggregation and vector search.
+All three are traversed on every <code>LQHKEYREQ</code>, every
+ordered-index scan step, and every per-row aggregation feed, so
+small instruction-level savings are multiplied by a huge call frequency.
+</p>
+
+<h2>Why these functions matter</h2>
+
+<h3>Primary-key lookup path</h3>
+<div class="callchain">
+LQHKEYREQ / ACCKEYREQ<br>
+&nbsp;&nbsp;&rarr; <code>Dbacc::execACCKEYREQ</code><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbacc::readTablePk</code> &nbsp;<span class="muted">(per PK hit)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbtup::accReadPk</code><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbtup::tuxReadPk</code><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>readFunctionArray[attrId]</code> <span class="muted">(per PK column)</span>
+</div>
+<p>
+This chain runs for every PK read that hits the NDB hash index — essentially
+every single-row <code>SELECT</code>/<code>UPDATE</code>/<code>DELETE</code>,
+every Rondis <code>GET</code>/<code>SET</code>, every REST PK-read, every
+pushed-down join row. On busy clusters this is hundreds of thousands of
+calls per LDM thread per second.
+</p>
+
+<h3>TUX ordered-index key-attribute read path</h3>
+<div class="callchain">
+SCAN_FRAGREQ (index scan)<br>
+&nbsp;&nbsp;&rarr; <code>Dbtux::scanNext</code> / <code>Dbtux::findNext</code><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbtux::readKeyAttrs</code> &nbsp;<span class="muted">(per scanned row, per comparison)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbtup::tuxReadAttrsOpt</code><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>setup_fixed_part</code>, <code>prepare_read</code>, <code>readAttributes</code>
+</div>
+<p>
+<code>Dbtux::readKeyAttrs</code> is called to fetch the key columns of a
+row for ordered-index comparisons during lookups, range scans, and
+pushed-down join probes. Every scanned row goes through it; the
+cumulative overhead on large range scans dominates.
+</p>
+
+<h3>Interpreter single-column read path</h3>
+<div class="callchain">
+SCAN_FRAGREQ (scan with aggregation) / interpreter dispatch<br>
+&nbsp;&nbsp;&rarr; <code>AggInterpreter::ProcessRec</code> / <code>JoinAggInterpreter::ProcessRec</code> / <code>VecSearchInterpreter::ProcessRec</code><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>Dbtup::readSingleAttribute</code> &nbsp;<span class="muted">(per row &times; per group-by / aggregate / vector column)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <code>readFunctionArray[attrId](...)</code> <span class="muted">(per column)</span>
+</div>
+<p>
+Aggregation and vector-search interpreters read one column at a time in
+very tight per-row loops. On a scan of N rows with G group-by columns
+and A aggregate inputs, this is roughly <code>N &times; (G + A)</code>
+single-column reads per fragment per scan &mdash; potentially millions
+per query.
+</p>
+
+<h2>Summary of the 17 commits</h2>
+
+<table>
+<thead><tr>
+  <th>#</th>
+  <th>Commit</th>
+  <th>Description</th>
+</tr></thead>
+<tbody>
+<tr><td>1</td><td><code>9f6b6794cb9</code></td>
+    <td><b>Shrink KeyReqStruct from ~33 KB to ~880 B.</b> Moved two large
+    scratch buffers (<code>changeMask</code> AttributeMask and
+    <code>var_pos_array</code>) out of the per-signal struct into
+    per-Dbtup-instance scratch memory, bound by C++ references. Stack
+    footprint per signal drops by <b>~32 KB</b>. The two default ctors
+    were rewritten to bind the references and poison the remainder
+    under <code>VM_TRACE</code>/<code>ERROR_INSERT</code>.</td></tr>
+
+<tr><td>2</td><td><code>9d8d02ba44e</code></td>
+    <td><b>Inline readKeyAttributes into tuxReadPk.</b> The only caller
+    of <code>Dbtup::readKeyAttributes</code> was <code>tuxReadPk</code>.
+    Inlining removes 1 bl and lets the compiler see the full loop for
+    better register allocation. <code>readKeyAttributes</code> deleted
+    from <code>DbtupRoutines.cpp</code>.</td></tr>
+
+<tr><td>3</td><td><code>ba365f11c69</code></td>
+    <td><b>Inline accReadPk into Dbtup.hpp.</b> Moves the tiny
+    <code>accReadPk</code> body into the header so <code>Dbacc::
+    readTablePk</code> can see through the cross-TU call and elide the
+    bl. Caller sees a direct call to <code>tuxReadPk</code>.</td></tr>
+
+<tr><td>4</td><td><code>242a7a623fd</code></td>
+    <td><b>Split readTablePk hot path inline, cold path out-of-line.</b>
+    The deleted-tuple / retry branch was extracted to a separate
+    <code>readTablePkTupleDeletedSlow</code> function. The hot path
+    becomes a short leaf that the compiler happily inlines into
+    <code>execACCKEYREQ</code>.</td></tr>
+
+<tr><td>5</td><td><code>51062ca9a3e</code></td>
+    <td><b>Skip prepare_read in tuxReadPk for fixed-only PKs.</b> Most
+    production tables have all-fixed-size PKs. <code>setUpKeyArray</code>
+    now computes <code>m_pk_all_fixed</code>, and <code>tuxReadPk</code>
+    guards <code>prepare_read</code> behind that flag — eliminating a
+    large function call for the common case.</td></tr>
+
+<tr><td>6</td><td><code>db657e297f4</code></td>
+    <td><b>Force readTablePk inlining with ALWAYS_INLINE.</b> The
+    compiler's size heuristic kept refusing to inline the post-split
+    hot path. <code>ALWAYS_INLINE</code> overrides, eliminating the
+    last bl from the PK read path.</td></tr>
+
+<tr><td>7</td><td><code>d54850c68df</code></td>
+    <td><b>Co-locate prepare_fragptr and prepare_tabptr.</b> Placed the
+    two Ptr fields adjacent in <code>Dbtup</code> so a single 16-byte
+    load (<code>ldp</code>) can fetch both hot pointers at once.</td></tr>
+
+<tr><td>8</td><td><code>17172551281</code></td>
+    <td><b>Hoist prepare_*ptr.p into locals in accReadPk.</b> Prevents
+    repeated reloads of <code>prepare_fragptr.p</code> and
+    <code>prepare_tabptr.p</code> through the subsequent bl, saving
+    redundant memory reads.</td></tr>
+
+<tr><td>9</td><td><code>4193353e850</code></td>
+    <td><b>Hoist Dbtup hot-pointer group into one cache line, low
+    offset.</b> Moved <code>c_page_map_pool_ptr</code>,
+    <code>prepare_fragptr</code>, <code>prepare_tabptr</code> to the
+    top of the class, alignas(64). Offsets moved from 0x10500 range
+    (out of <code>ldr</code> scaled-immediate range) to 0x5f00/0x5f08/
+    0x5f18 — all reachable in a single instruction, all on one 64-byte
+    cache line.</td></tr>
+
+<tr><td>10</td><td><code>e03ca47e20d</code></td>
+    <td><b>Prefetch tuple cache lines before tuxReadPk.</b> In
+    <code>accReadPk</code>, issue <code>prfm pldl1keep</code> for the
+    tuple (line 0 and line 1, +64 bytes) as soon as the page pointer
+    is computed. Overlaps DRAM latency with the <code>bl</code> to
+    <code>tuxReadPk</code> and its prologue.</td></tr>
+
+<tr><td>11</td><td><code>fd0a13e50a3</code></td>
+    <td><b>Fast-init KeyReqStruct ctor for the tuxReadPk path.</b>
+    Added a tag-based ctor (<code>PkReadTag</code>) that skips the
+    default-init of fields never read on the PK path
+    (<code>m_when</code>, <code>m_deferred_constraints</code>,
+    <code>m_disable_fk_checks</code>, <code>ttl_purge_window_size</code>,
+    <code>m_use_corr_factor</code>, <code>m_linked_attr_data/_len</code>).
+    Saves ~7 stack stores per call.</td></tr>
+
+<tr><td>12</td><td><code>4fbaeb5fa2a</code></td>
+    <td><b>Inline tuxReadAttrsOpt fast path into Dbtux::readKeyAttrs.</b>
+    Moved <code>Dbtup::tuxReadAttrsOpt</code> into <code>Dbtup.hpp</code>
+    with <code>ALWAYS_INLINE</code>. Folded the fast path of
+    <code>tuxReadAttrsCommon</code> into it: when the tuple version
+    matches, go straight to <code>prepare_read + readAttributes</code>
+    with no extra bl; version-mismatch (cold) keeps calling
+    <code>tuxReadAttrsCommon</code>.</td></tr>
+
+<tr><td>13</td><td><code>7a054afec1e</code></td>
+    <td><b>Reuse fast-init KeyReqStruct ctor on the tuxReadAttrsOpt
+    path.</b> Renamed <code>PkReadTag</code> to
+    <code>SimpleReadTag</code> and applied it to <code>tuxReadAttrsOpt</code>.
+    The audited-safe skipped fields are identical (same simple-read
+    contract). ~7 more prologue stores gone from
+    <code>Dbtux::readKeyAttrs</code>.</td></tr>
+
+<tr><td>14</td><td><code>38cdca316eb</code></td>
+    <td><b>Prefetch 2nd tuple cache line in setup_fixed_tuple_ref.</b>
+    Most rows span two cache lines; the first attribute read in
+    <code>readAttributes</code> would otherwise stall on DRAM.
+    <code>NDB_PREFETCH_READ(ptr + 16)</code> benefits every caller
+    going through <code>setup_fixed_tuple_ref</code>.</td></tr>
+
+<tr><td>15</td><td><code>82c6e45d0ea</code></td>
+    <td><b>Drop tmpOp Operationrec from tuxReadAttrsOpt fast path.</b>
+    Added <code>setup_fixed_tuple_ref_simple_read</code> (takes
+    <code>Local_key*</code>) and <code>setup_fixed_part_simple_read</code>
+    (drops the unused Operationrec* argument). Caller builds a 2-word
+    Local_key instead of a full Operationrec. Drops ~0x70 B of stack and
+    ~10 wasteful init stores. <code>bl setup_fixed_part</code> is
+    gone — inlined.</td></tr>
+
+<tr><td>16</td><td><code>ea2a2f16b25</code></td>
+    <td><b>Manually unroll the prepare_read two-iteration loop.</b>
+    Clang would not unroll the two-iteration <code>for(ind=0..2)</code>
+    loop (body size over heuristic). The two iterations shared almost
+    no code, so every call paid for four ind-counter constants
+    (w5=1, w6=0x38, w7=0xa, w10=1), two <code>madd</code> offset
+    computations per iter, and an <code>if (ind == DD)</code> kept
+    live. Rewrote as two explicit blocks with a shared
+    <code>ALWAYS_INLINE</code> tail (<code>prepare_read_fill_var_data</code>).
+    DD locals declared after the disk==false early return so the hot
+    path (disk=false) doesn't pay for them.</td></tr>
+
+<tr><td>17</td><td><code>fd59662390c</code></td>
+    <td><b>Add readSingleAttribute fast path for interpreter hot loops.</b>
+    AggInterpreter, JoinAggInterpreter, and VecSearchInterpreter all read
+    one column at a time via <code>readAttributes</code> &mdash; carrying
+    ~30&nbsp;instructions per call of overhead that is structurally
+    wasted for a 1-attr read (outer while-loop, inBuffer encode/decode,
+    pad32 alignment, partial-read state, PSEUDO branch, cross-TU bl).
+    Added <code>Dbtup::readSingleAttribute</code> as
+    <code>ALWAYS_INLINE</code> in <code>Dbtup.hpp</code> next to
+    <code>readAttributes</code>. Migrated 5 call sites; each also drops
+    the caller-side <code>attrId &lt;&lt; 16</code> encode step. Fully
+    inlined in the binary &mdash; no standalone symbol, no
+    <code>bl readAttributes</code> remaining in AggInterpreter.</td></tr>
+</tbody>
+</table>
+
+<h2>Detailed instruction estimate — PK read path (readTablePk)</h2>
+
+<p>
+Scenario: single-column PK, fixed-only key (<code>m_pk_all_fixed == true</code>),
+<code>disk == false</code>, tuple alive — the overwhelmingly common case in
+production. Counts are per <strong>one</strong> PK read call, from the
+point <code>Dbacc::execACCKEYREQ</code> invokes <code>readTablePk</code>
+to the point it returns. Numbers are estimates derived from the
+disassembled binary plus the sizes of the constituent pieces.
+</p>
+
+<h3>Before RONDB-1051</h3>
+
+<table>
+<thead><tr><th>Component</th>
+           <th class="num">Instructions</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>execACCKEYREQ</code> call-site arg marshalling + <code>bl readTablePk</code></td>
+    <td class="num">~6</td><td>arg regs, branch-and-link</td></tr>
+<tr><td><code>Dbacc::readTablePk</code> prologue + epilogue</td>
+    <td class="num">~10</td><td>stp/ldp, sub/add sp</td></tr>
+<tr><td><code>Dbacc::readTablePk</code> body: state validation, localkey extract, error dispatch</td>
+    <td class="num">~14</td><td>includes deleted-tuple check, now moved to slow path</td></tr>
+<tr><td>Cross-TU <code>bl c_tup-&gt;accReadPk</code> + arg setup</td>
+    <td class="num">~6</td><td>separate TU — compiler can't inline</td></tr>
+<tr><td><code>Dbtup::accReadPk</code> prologue + epilogue</td>
+    <td class="num">~6</td><td></td></tr>
+<tr><td><code>Dbtup::accReadPk</code> body: <code>getRealpid</code> (DynArr256 one-level lookup)</td>
+    <td class="num">~15</td><td>indirect page-map resolution</td></tr>
+<tr><td>Cross-TU <code>bl tuxReadPk</code> + arg setup</td>
+    <td class="num">~6</td><td></td></tr>
+<tr><td><code>Dbtup::tuxReadPk</code> prologue + epilogue</td>
+    <td class="num">~10</td><td>larger frame — KRS + tmpOp on stack</td></tr>
+<tr><td>KeyReqStruct default constructor body (stack init)</td>
+    <td class="num">~18</td><td>incl. m_when, m_deferred_constraints, ttl, corr_factor, linked-attr</td></tr>
+<tr><td>Operationrec <code>tmpOp</code> stack init</td>
+    <td class="num">~10</td><td>m_magic, bitfield q0, op_type, sentinel halfwords</td></tr>
+<tr><td><code>setup_fixed_tuple_ref</code> (inline) + 1 prefetch</td>
+    <td class="num">~8</td><td>get_ptr + m_page_ptr/m_tuple_ptr stores</td></tr>
+<tr><td><code>bl setup_fixed_part</code> + body</td>
+    <td class="num">~11</td><td>cross-TU: bl + 4 frame + 7 body</td></tr>
+<tr><td><code>bl prepare_read</code> + body (always called — no skip)</td>
+    <td class="num">~30</td><td>disk=false, no var part: shortest hot path through the loop, incl. ind-counter scaffolding</td></tr>
+<tr><td><code>bl readKeyAttributes</code> + body (single-column PK, fixed read)</td>
+    <td class="num">~45</td><td>cross-TU bl + prologue + ~30 body instructions for 1 attr</td></tr>
+<tr><td><b>Total (before)</b></td>
+    <td class="num"><b>~195 instructions</b></td>
+    <td>plus 4 cross-TU bl frame transitions</td></tr>
+</tbody>
+</table>
+
+<h3>After RONDB-1051</h3>
+
+<table>
+<thead><tr><th>Component</th>
+           <th class="num">Instructions</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Inlined <code>readTablePk</code> hot path at <code>execACCKEYREQ</code></td>
+    <td class="num">~8</td><td>ALWAYS_INLINE — no bl, no frame</td></tr>
+<tr><td>Inlined <code>accReadPk</code> + 2 <code>prfm</code> tuple prefetches</td>
+    <td class="num">~12</td><td>2 prfm added, but bl+frame gone</td></tr>
+<tr><td>Inlined <code>getRealpid</code> (DynArr256 one-level lookup)</td>
+    <td class="num">~12</td><td>same DynArr256 work, now inlined</td></tr>
+<tr><td>Inlined <code>tuxReadPk</code> hot path</td>
+    <td class="num">~4</td><td>bl + frame gone</td></tr>
+<tr><td>KeyReqStruct <code>SimpleReadTag</code> constructor</td>
+    <td class="num">~11</td><td>skips 7 fields vs. default ctor</td></tr>
+<tr><td>Operationrec <code>tmpOp</code> stack init (still present on PK path)</td>
+    <td class="num">~10</td><td>not yet dropped (future work)</td></tr>
+<tr><td><code>setup_fixed_tuple_ref</code> + 2 prefetches</td>
+    <td class="num">~9</td><td>prefetch line 1 added for free</td></tr>
+<tr><td><code>setup_fixed_part</code> (now called out-of-line — unchanged)</td>
+    <td class="num">~11</td><td></td></tr>
+<tr><td><b><code>prepare_read</code> — SKIPPED for <code>m_pk_all_fixed</code> tables</b></td>
+    <td class="num good"><b>0</b></td>
+    <td class="good">fixed-only PKs skip the whole function</td></tr>
+<tr><td>Inlined <code>readKeyAttributes</code> body (1-column PK)</td>
+    <td class="num">~30</td><td>bl + frame + trampoline gone; body identical</td></tr>
+<tr><td><b>Total (after)</b></td>
+    <td class="num"><b>~107 instructions</b></td>
+    <td>0 cross-TU bls on the hot path</td></tr>
+</tbody>
+</table>
+
+<h3>Summary</h3>
+
+<table>
+<thead><tr><th>Metric</th>
+           <th class="num">Before</th>
+           <th class="num">After</th>
+           <th class="num">Delta</th></tr></thead>
+<tbody>
+<tr><td>Instructions executed per call (hot case)</td>
+    <td class="num">~195</td>
+    <td class="num">~107</td>
+    <td class="num good">&minus;88 (&minus;45%)</td></tr>
+<tr><td>Cross-TU <code>bl</code> on hot path</td>
+    <td class="num">4</td>
+    <td class="num">0</td>
+    <td class="num good">&minus;4</td></tr>
+<tr><td>Function frames entered</td>
+    <td class="num">4</td>
+    <td class="num">1 (caller only)</td>
+    <td class="num good">&minus;3 prologue/epilogue pairs</td></tr>
+<tr><td>Memory-latency prefetches on tuple</td>
+    <td class="num">0</td>
+    <td class="num">2</td>
+    <td class="num good">DRAM stall hidden</td></tr>
+<tr><td>Stack frame, KeyReqStruct-related</td>
+    <td class="num">~33 KB</td>
+    <td class="num">~880 B</td>
+    <td class="num good">&minus;32 KB</td></tr>
+</tbody>
+</table>
+
+<p>
+<b>Where the savings come from:</b>
+</p>
+<ul>
+  <li><b>&minus;30 instr</b> — <code>prepare_read</code> skipped for
+      fixed-only PKs (the overwhelmingly common case)</li>
+  <li><b>&minus;30 instr</b> — three out-of-line calls collapse to
+      inlines: <code>readTablePk</code>, <code>accReadPk</code>,
+      <code>tuxReadPk</code>. Each eliminates ~6&nbsp;instr of frame +
+      arg marshalling + bl + ret.</li>
+  <li><b>&minus;15 instr</b> — cross-TU bl to <code>readKeyAttributes</code>
+      removed (inlined into <code>tuxReadPk</code>).</li>
+  <li><b>&minus;7 instr</b> — <code>SimpleReadTag</code> KRS
+      constructor skips seven default-init stores.</li>
+  <li><b>&minus;3 instr</b> — Dbtup hot-pointer group co-located;
+      single-<code>ldr</code> reachable at low offset; pointer
+      re-reload eliminated in <code>accReadPk</code>.</li>
+  <li><b>+2 instr</b> — two <code>prfm</code> tuple prefetches
+      added. Tradeoff: 2&nbsp;instr cost, hides potentially hundreds
+      of cycles of DRAM latency.</li>
+</ul>
+
+<p>
+Note: the saving grows linearly with PK column count (each column still
+goes through the read function dispatch), but the <em>framework</em>
+portion — the ~90&nbsp;instructions of bl / frame / KRS-init overhead
+— is fixed per call. That is why the percentage saving is largest on
+single-column PKs and the absolute saving is largest on all PKs.
+</p>
+
+<h2>Per-function impact</h2>
+
+<h3>Dbtux::readKeyAttrs (TUX index-key read, Uint32* overload)</h3>
+
+<p>Current measured instruction counts (from prod <code>ndbmtd</code>
+disassembly):</p>
+
+<table>
+<thead><tr><th>Metric</th><th class="num">Before RONDB-1051</th>
+           <th class="num">After</th><th class="num">Delta</th></tr></thead>
+<tbody>
+<tr><td>Hot-path executed instructions <span class="muted">(incl. the out-of-line <code>tuxReadAttrsOpt</code> body)</span></td>
+    <td class="num">~100</td><td class="num">~50</td><td class="num good">-50&nbsp;(-50%)</td></tr>
+<tr><td>bl calls on hot path <span class="muted">(excl. the 3 big callees)</span></td>
+    <td class="num">3</td><td class="num">0</td><td class="num good">-3</td></tr>
+<tr><td>Stack frame size</td>
+    <td class="num">0x260 (608&nbsp;B)</td><td class="num">0x1f0 (496&nbsp;B)</td><td class="num good">-112&nbsp;B</td></tr>
+<tr><td>Callee-saved register pairs</td>
+    <td class="num">5</td><td class="num">4</td><td class="num good">-1&nbsp;pair (-2 stp, -2 ldp)</td></tr>
+<tr><td>Prefetch instructions on tuple</td>
+    <td class="num">1</td><td class="num">2</td><td class="num good">+1 (covers 2-line tuples)</td></tr>
+</tbody>
+</table>
+
+<p>
+The remaining hot <code>bl</code>s are the three unavoidable big callees
+(<code>prepare_read</code>, <code>readAttributes</code>, and the cold
+<code>tuxReadAttrsCommon</code> — only reached on tuple-version mismatch).
+The <code>bl</code>s to <code>setup_fixed_part</code> and the out-of-line
+<code>tuxReadAttrsOpt</code> trampoline are gone.
+</p>
+
+<h3>PK read path (Dbacc::readTablePk &rarr; Dbtup::accReadPk &rarr; Dbtup::tuxReadPk)</h3>
+
+<table>
+<thead><tr><th>Metric</th><th class="num">Before RONDB-1051</th>
+           <th class="num">After</th><th class="num">Delta</th></tr></thead>
+<tbody>
+<tr><td>bl chain depth on hot path</td>
+    <td class="num">3+ bls</td><td class="num">0-1&nbsp;bl</td><td class="num good">up to -3 bls</td></tr>
+<tr><td>Redundant Dbtup field reloads</td>
+    <td class="num">multiple</td><td class="num">1&nbsp;ldp&nbsp;(16&nbsp;B)</td><td class="num good">co-located pointers</td></tr>
+<tr><td>Dbtup hot-pointer offsets</td>
+    <td class="num">0x10500+</td><td class="num">0x5f00-0x5f18</td><td class="num good">scaled-imm reachable</td></tr>
+<tr><td>prepare_read called for fixed-only PKs</td>
+    <td class="num">yes</td><td class="num">no</td><td class="num good">entire call skipped</td></tr>
+<tr><td>Cold path <code>readTablePkTupleDeletedSlow</code></td>
+    <td class="num">n/a</td><td class="num">143&nbsp;instr (out-of-line)</td><td class="muted">factored out</td></tr>
+<tr><td>Tuple line-0 &amp; line-1 prefetch</td>
+    <td class="num">no</td><td class="num">yes (2&times;&nbsp;prfm)</td><td class="num good">DRAM latency hidden</td></tr>
+</tbody>
+</table>
+
+<h3>Interpreter single-column read path (readSingleAttribute)</h3>
+
+<p>
+Per one-column interpreter read (<code>AggInterpreter</code>,
+<code>JoinAggInterpreter</code>, <code>VecSearchInterpreter</code>):
+</p>
+
+<table>
+<thead><tr><th>Component</th>
+           <th class="num">Before</th>
+           <th class="num">After</th>
+           <th class="num">Delta</th></tr></thead>
+<tbody>
+<tr><td>Cross-TU <code>bl readAttributes</code> + frame prologue/epilogue</td>
+    <td class="num">~10</td><td class="num">0</td>
+    <td class="num good">&minus;10</td></tr>
+<tr><td>Outer <code>while (inBufIndex &lt; inBufLen)</code> setup + final length check</td>
+    <td class="num">~4</td><td class="num">0</td>
+    <td class="num good">&minus;4</td></tr>
+<tr><td>Encode attrId into inBuffer word + re-extract via <code>AttributeHeader ahIn</code></td>
+    <td class="num">~3</td><td class="num">0</td>
+    <td class="num good">&minus;3</td></tr>
+<tr><td><code>pad32(out_buf_index, out_buf_bits)</code> alignment (always 0)</td>
+    <td class="num">~3</td><td class="num">0</td>
+    <td class="num good">&minus;3</td></tr>
+<tr><td><code>attributeId &lt; numAttributes</code> guard (audited precondition)</td>
+    <td class="num">~2</td><td class="num">0</td>
+    <td class="num good">&minus;2</td></tr>
+<tr><td><code>getPartialReadWriteFlag()</code> branch + partial_size state</td>
+    <td class="num">~3</td><td class="num">0</td>
+    <td class="num good">&minus;3</td></tr>
+<tr><td>Post-read <code>partial_size != 0</code> + <code>vec_max_rec_size</code> checks</td>
+    <td class="num">~3</td><td class="num">0</td>
+    <td class="num good">&minus;3</td></tr>
+<tr><td>Loop back-edge, final pad32 return shift</td>
+    <td class="num">~4</td><td class="num">0</td>
+    <td class="num good">&minus;4</td></tr>
+<tr><td>Actual read work (descr load, header init, ReadFunction dispatch)</td>
+    <td class="num">~8</td><td class="num">~8</td>
+    <td class="num muted">unchanged</td></tr>
+<tr><td><b>Total per call</b></td>
+    <td class="num"><b>~40</b></td><td class="num"><b>~8</b></td>
+    <td class="num good"><b>&minus;32 (&minus;80%)</b></td></tr>
+</tbody>
+</table>
+
+<p>
+<b>Scaled impact:</b> for a scan aggregating N rows with (G group-by
+columns + A aggregate inputs) single-column reads per row, the saving
+is <code>~30 &times; N &times; (G+A)</code> instructions. A 1M-row scan
+with 5 column reads per row saves roughly <b>150M instructions</b> on
+the interpreter read path alone.
+</p>
+
+<h3>Global — KeyReqStruct</h3>
+
+<table>
+<thead><tr><th>Metric</th><th class="num">Before</th>
+           <th class="num">After</th><th class="num">Delta</th></tr></thead>
+<tbody>
+<tr><td>Stack footprint per KRS instance</td>
+    <td class="num">~33&nbsp;KB</td><td class="num">~880&nbsp;B</td>
+    <td class="num good">&minus;32&nbsp;KB</td></tr>
+<tr><td>VM_TRACE poison coverage</td>
+    <td class="num">partial</td><td class="num">full (via poison_debug helper)</td>
+    <td class="num good">improved safety</td></tr>
+</tbody>
+</table>
+
+<p>
+Because <code>KeyReqStruct</code> is constructed on the stack for every
+signal in the LDM/TUP hot path, the 32&nbsp;KB reduction per instance is
+the largest single change in the set. It significantly reduces stack-cache
+pressure and makes the struct fit comfortably in 1&ndash;2 cache lines for
+the fields actually touched by most signal handlers.
+</p>
+
+<h2>Aggregate source-code size impact</h2>
+
+<p>
+Ten files in <code>storage/ndb/</code> are touched across the 17
+commits. Source-level delta:
+</p>
+
+<table>
+<thead><tr><th>File</th><th class="num">+lines</th><th class="num">&minus;lines</th></tr></thead>
+<tbody>
+<tr><td><code>dbtup/Dbtup.hpp</code></td><td class="num">+408</td><td class="num">&nbsp;</td></tr>
+<tr><td><code>dbtup/DbtupExecQuery.cpp</code></td><td class="num">+180</td><td class="num">&minus;178&nbsp;(prepare_read unroll)</td></tr>
+<tr><td><code>dbacc/DbaccMain.cpp</code></td><td class="num">+149</td><td class="num">&nbsp;</td></tr>
+<tr><td><code>dbtup/DbtupIndex.cpp</code></td><td class="num">+132</td><td class="num">&nbsp;</td></tr>
+<tr><td><code>dbtup/DbtupRoutines.cpp</code></td><td class="num">&nbsp;</td><td class="num">&minus;77&nbsp;(body deleted — inlined)</td></tr>
+<tr><td><code>dbtup/AggInterpreter.cpp</code></td><td class="num">+11</td><td class="num">&minus;11&nbsp;(readSingleAttribute migration)</td></tr>
+<tr><td><code>dbtup/JoinAggInterpreter.cpp</code></td><td class="num">+11</td><td class="num">&minus;10&nbsp;(readSingleAttribute migration)</td></tr>
+<tr><td><code>dbacc/Dbacc.hpp</code></td><td class="num">+9</td><td class="num">&nbsp;</td></tr>
+<tr><td><code>dbtup/DbtupMeta.cpp</code></td><td class="num">+8</td><td class="num">&nbsp;</td></tr>
+<tr><td><code>dbtup/VecSearchInterpreter.cpp</code></td><td class="num">+5</td><td class="num">&minus;4&nbsp;(readSingleAttribute migration)</td></tr>
+<tr><td><b>Total</b></td><td class="num"><b>+726</b></td><td class="num"><b>&minus;467</b></td></tr>
+</tbody>
+</table>
+
+<p>
+Net <b>+259 lines</b>. The additions are almost entirely:
+</p>
+<ul>
+  <li>doc comments explaining the audit behind each fast-path shortcut,</li>
+  <li>inline function bodies moved into the header,</li>
+  <li>small tag structs + constructor overloads,</li>
+  <li>a debug <code>poison_debug()</code> helper to preserve VM_TRACE
+      0xF3-fill behaviour despite the reference-member trick.</li>
+</ul>
+
+<h3>Binary-size impact</h3>
+
+<p>
+The per-callsite inlining (particularly <code>accReadPk</code>,
+<code>readTablePk</code>, <code>tuxReadAttrsOpt</code>) moves bodies into
+each caller. On paper this grows the text segment, but in practice the
+effect on <code>ndbmtd</code> size is small — the functions are small
+and each has only a few hot callers. The <b>deletion</b> of
+<code>readKeyAttributes</code> (77 lines) and the <b>extraction</b> of
+<code>readTablePkTupleDeletedSlow</code> (143 cold instructions now
+out-of-line) offset some of the inlining growth.
+</p>
+
+<p>
+The <code>prod_build</code> <code>ndbmtd</code> binary at HEAD contains:
+</p>
+<ul>
+  <li><code>Dbtux::readKeyAttrs</code> (Uint32* overload): <b>110 instructions total</b> including bounds checks, error paths, and assertions. Hot path is ~50 instructions.</li>
+  <li><code>Dbtup::tuxReadPk</code>: 270 instructions (includes the inlined <code>readKeyAttributes</code> body).</li>
+  <li><code>Dbacc::readTablePkTupleDeletedSlow</code>: 143 instructions (cold path, out-of-line).</li>
+  <li><code>Dbtup::tuxReadAttrsCommon</code>: 128 instructions (cold, only called on tuple-version mismatch).</li>
+</ul>
+
+<h2>Why these savings compound</h2>
+
+<p>
+The PK-read path is the dominant micro-operation in an NDB LDM thread.
+An LDM thread on a modern server processes on the order of 10<sup>5</sup>
+– 10<sup>6</sup> <code>LQHKEYREQ</code>s per second; each one goes through
+<code>execACCKEYREQ</code> &rarr; <code>readTablePk</code> &rarr;
+<code>accReadPk</code> &rarr; <code>tuxReadPk</code>. Every instruction
+removed from that chain is paid back a million times a second per
+thread.
+</p>
+
+<p>
+The TUX key-attr read path scales with rows scanned. A single range scan
+touching a million rows invokes <code>Dbtux::readKeyAttrs</code> at least
+a million times — often more, for comparison during binary search in the
+index tree. The 50-instruction reduction there translates directly into
+reduced per-row CPU on every index scan.
+</p>
+
+<h2>Defensive measures kept intact</h2>
+
+<ul>
+  <li>All <code>VM_TRACE</code>/<code>ERROR_INSERT</code> assertions are
+      preserved; the <code>poison_debug()</code> helper fills formerly
+      implicitly-initialised KeyReqStruct fields with 0xF3 so any stray
+      read in a debug build still surfaces as corruption, not stack
+      garbage.</li>
+  <li>The cold paths (version mismatch, deleted tuple) remain fully
+      exercised by the existing <code>testJoinAgg*</code>,
+      <code>testCteNdbApi</code>, and <code>rondis</code> test
+      suites.</li>
+  <li>Every fast-path shortcut (skipped KRS fields, skipped
+      <code>prepare_read</code>, dropped <code>Operationrec*</code>
+      argument) is documented in the header with the audit explaining
+      why each skipped field is not read on the relevant path.</li>
+</ul>
+
+<h2>Author notes</h2>
+
+<p>
+All 15 commits are on branch <code>RONDB-1051-performance</code>, rooted
+at <code>cb9b2b188bd</code> (<code>26.04-main</code>). Every commit builds
+cleanly in both <code>debug_build</code> (<code>VM_TRACE</code> +
+<code>ERROR_INSERT</code>) and <code>prod_build</code> configurations,
+and each was verified against the <code>ndbmtd</code> disassembly to
+confirm the expected codegen change was realised.
+</p>
+
+</body>
+</html>

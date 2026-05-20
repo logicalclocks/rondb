@@ -94,6 +94,10 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
   return (Uint32 *)(((UintPtr(ptr) + 3) >> 2) << 2);
 }
 
+// Visible to all TUs that include Dbtup.hpp because it is referenced by
+// the inline readSingleAttribute fast path below.
+#define ZATTRIBUTE_ID_ERROR 879
+
 #ifdef DBTUP_C
 
 /*
@@ -183,7 +187,6 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZOUTSIDE_OF_PROGRAM_ERROR 876
 #define ZMEMORY_OFFSET_ERROR 877
 #define ZREGISTER_INIT_ERROR 878
-#define ZATTRIBUTE_ID_ERROR 879
 #define ZTRY_TO_READ_TOO_MUCH_ERROR 880
 #define ZTOTAL_LEN_ERROR 882
 #define ZAPPEND_COLUMN_ERROR 883
@@ -329,11 +332,39 @@ class Dbtup : public SimulatedBlock {
   typedef Tup_fixsize_page Fix_page;
   typedef Tup_varsize_page Var_page;
 
+ public:
+  // Forward declarations so the hot-pointer group below can live at a low
+  // offset within Dbtup and be reached with a single immediate-offset ldr
+  // (offsets must be < 0x8000 for scaled 8-byte loads); the full definitions
+  // follow later in this header. Access must match the definitions (public).
+  struct Fragrecord;
+  struct Tablerec;
+
+  typedef Ptr64<Fragrecord> FragrecordPtr;
+  typedef Ptr<Tablerec> TablerecPtr;
+
+ private:
   Uint32 m_acc_block;
   Uint32 m_tup_block;
   Uint32 m_lqh_block;
   Uint32 m_tux_block;
   Uint32 m_backup_block;
+
+  /*
+   * Hot-pointer group consumed together on every TUP operation entry
+   * (readTablePk path: c_page_map_pool_ptr used by getRealpid;
+   * prepare_fragptr/prepare_tabptr passed to tuxReadPk). alignas(64) aligns
+   * the group to a cache-line boundary; all three pointers fit within the
+   * first 40 bytes of the 64-byte line (one fetch covers everything). Placed
+   * near the top of Dbtup so the offset stays within the scaled-immediate
+   * range for ldr, avoiding a precomputed base-add at every call site.
+   */
+ public:
+  alignas(64) DynArr256Pool *c_page_map_pool_ptr;
+
+ private:
+  FragrecordPtr prepare_fragptr;
+  TablerecPtr prepare_tabptr;
 
  public:
   bool m_is_query_block;
@@ -616,7 +647,7 @@ struct Fragoperrec {
   void releaseScanOp(ScanOpPtr &scanPtr);
 
   struct Tuple_header;
-  struct Fragrecord;
+  // Fragrecord forward-declared near the top of this class.
 
   Uint32 prepare_lcp_scan_page(ScanOp &scan, Local_key &key, Uint32 *next_ptr,
                                Uint32 *prev_ptr);
@@ -694,7 +725,7 @@ struct Fragoperrec {
   typedef DLHashTable<Extent_info_pool> Extent_info_hash;
   typedef SLCList<Extent_info_pool, IA_Fragment> Fragment_extent_list;
   typedef LocalSLCList<Extent_info_pool, IA_Fragment> Local_fragment_extent_list;
-  struct Tablerec;
+  // Tablerec forward-declared near the top of this class.
   struct Disk_alloc_info {
     Disk_alloc_info() {}
     Disk_alloc_info(const Tablerec* tabPtrP, 
@@ -895,12 +926,14 @@ struct Fragrecord {
       }
     }
   };
-  typedef Ptr64<Fragrecord> FragrecordPtr;
+  // FragrecordPtr typedef moved to the top of this class.
   typedef RecordPool64<RWPool64<Fragrecord> > Fragment_pool;
   Fragment_pool c_fragment_pool;
   RSS_OP_COUNTER(cnoOfAllocatedFragrec);
   RSS_OP_SNAPSHOT(cnoOfAllocatedFragrec);
-  FragrecordPtr prepare_fragptr;
+  // prepare_fragptr lives alongside prepare_tabptr further down so they share
+  // a single cache line; both are read back-to-back on the hash-compare hot
+  // path (Dbacc::readTablePk → accReadPk → tuxReadPk).
 
   void acquire_frag_page_map_mutex(Fragrecord *fragPtrP,
                                    EmulatedJamBuffer *jamBuf)
@@ -1353,7 +1386,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
           deferredDeleteTriggers(triggerPool),
           tuxCustomTriggers(triggerPool),
           m_ttl_sec(RNIL),
-          m_ttl_col_no(RNIL) {}
+          m_ttl_col_no(RNIL),
+          m_is_ttl_table(0) {}
 
     AttributeMask notNullAttributeMask;
     AttributeMask blobAttributeMask;
@@ -1435,7 +1469,16 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
 
     bool m_allow_use_spare;
 
-    bool need_expand() const { 
+    /*
+     * True iff every attribute listed in readKeyArray is fixed-size and
+     * non-dynamic. Computed once in setUpKeyArray. Lets PK-read paths
+     * (tuxReadPk) skip the prepare_read call entirely: prepare_read's only
+     * effect on such reads is setting is_expanded and m_disk_ptr, which are
+     * cheaper to assign at the call site.
+     */
+    bool m_pk_all_fixed;
+
+    bool need_expand() const {
       return m_no_of_attributes > m_attributes[MM].m_no_of_fixsize;
     }
 
@@ -1545,6 +1588,11 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
      */
     Uint32 m_ttl_sec;
     Uint32 m_ttl_col_no;
+    // Cached: non-zero iff (m_ttl_sec != RNIL && m_ttl_col_no != RNIL).
+    // Set whenever m_ttl_sec / m_ttl_col_no are updated. Lets hot-path
+    // is_ttl_table() be a single byte load + branch instead of two
+    // Uint32 compares.
+    Uint8 m_is_ttl_table;
   };
   Uint32 m_read_ctl_file_data[BackupFormat::LCP_CTL_FILE_BUFFER_SIZE_IN_WORDS];
   /*
@@ -1621,7 +1669,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
   Extent_info_hash c_extent_hash;
   Page_request_pool c_page_request_pool;
 
-  typedef Ptr<Tablerec> TablerecPtr;
+  // TablerecPtr typedef moved to the top of this class.
 
   struct storedProc {
     static constexpr Uint32 TYPE_ID = RT_DBTUP_STORED_PROCEDURE;
@@ -2020,39 +2068,18 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
   };
 
   struct KeyReqStruct {
-    KeyReqStruct(EmulatedJamBuffer *_jamBuffer, When when) : changeMask() {
-#if defined VM_TRACE || defined ERROR_INSERT
-      std::memset(this, 0xf3, sizeof(*this));
-#endif
-      jamBuffer = _jamBuffer;
-      m_when = when;
-      m_deferred_constraints = true;
-      m_disable_fk_checks = false;
-      m_tuple_ptr = NULL;
-      ttl_purge_window_size = 0;
-      m_use_corr_factor = 0;
-      m_linked_attr_data = nullptr;
-      m_linked_attr_len = 0;
-    }
-
-    KeyReqStruct(EmulatedJamBuffer *_jamBuffer) : changeMask(false) {
-#if defined VM_TRACE || defined ERROR_INSERT
-      std::memset(this, 0xf3, sizeof(*this));
-#endif
-      jamBuffer = _jamBuffer;
-      m_when = KRS_PREPARE;
-      m_deferred_constraints = true;
-      m_disable_fk_checks = false;
-      ttl_purge_window_size = 0;
-      m_use_corr_factor = 0;
-      m_linked_attr_data = nullptr;
-      m_linked_attr_len = 0;
-    }
-
-    KeyReqStruct(Dbtup *tup) : changeMask(false) {
-#if defined VM_TRACE || defined ERROR_INSERT
-      std::memset(this, 0xf3, sizeof(*this));
-#endif
+    /*
+     * changeMask and var_pos_array are references bound to per-Dbtup-instance
+     * scratch buffers. The reference members sit at the very start of the
+     * struct; the debug poison starts at &tablePtrP and covers everything
+     * after them, so the references themselves are never corrupted. The
+     * scratch buffers on the owning Dbtup instance are poisoned separately
+     * to catch reads of uninitialised changeMask / var_pos_array state.
+     */
+    KeyReqStruct(Dbtup *tup)
+        : changeMask(tup->m_changeMask_scratch),
+          var_pos_array(tup->m_var_pos_scratch) {
+      poison_debug(tup);
       jamBuffer = tup->jamBuffer();
       m_when = KRS_PREPARE;
       m_deferred_constraints = true;
@@ -2064,10 +2091,11 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_linked_attr_len = 0;
     }
 
-    KeyReqStruct(Dbtup *tup, When when) : changeMask() {
-#if defined VM_TRACE || defined ERROR_INSERT
-      std::memset(this, 0xf3, sizeof(*this));
-#endif
+    KeyReqStruct(Dbtup *tup, When when)
+        : changeMask(tup->m_changeMask_scratch),
+          var_pos_array(tup->m_var_pos_scratch) {
+      poison_debug(tup);
+      changeMask.clear();
       jamBuffer = tup->jamBuffer();
       m_when = when;
       m_deferred_constraints = true;
@@ -2079,6 +2107,126 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_linked_attr_data = nullptr;
       m_linked_attr_len = 0;
     }
+
+    /*
+     * Tag for the simple-read ctor overload below. Used to pick the
+     * fast-init variant of KeyReqStruct that is safe for simple attribute
+     * reads:
+     *   - Dbtup::tuxReadPk    (ACC PK fetch)
+     *   - Dbtup::tuxReadAttrsOpt (TUX index-key attr fetch)
+     */
+    struct SimpleReadTag {};
+
+    /*
+     * Fast constructor for the simple-read paths (tuxReadPk, tuxReadAttrsOpt).
+     * It deliberately omits the default-init of fields that are never read on
+     * those paths, trading a handful of ctor stores for correctness
+     * constrained by the simple-read contract. Audited-safe omissions
+     * (release-build state is stack-garbage; VM_TRACE/ERROR_INSERT
+     * poison_debug fills them with 0xf3):
+     *
+     *   m_when                 - only read by DbtupTrigger.cpp
+     *   m_deferred_constraints - only read by DbtupTrigger.cpp
+     *   m_disable_fk_checks    - only read by DbtupTrigger.cpp
+     *   ttl_purge_window_size  - only read by checkTTL (execTUPKEYREQ path)
+     *   m_use_corr_factor      - only read when dispatching CORR_FACTOR*
+     *                            pseudo-columns (scan-buffer path)
+     *   m_linked_attr_data/len - only read by JoinAggInterpreter READ_LINKED
+     *
+     * jamBuffer and m_dbtup_ptr are still set: the former is used by every
+     * read function; the latter is reached by handle_partial_read, which is
+     * unreachable on these simple-read paths (partial_size==0) but kept for
+     * safety.
+     */
+    KeyReqStruct(Dbtup *tup, SimpleReadTag)
+        : changeMask(tup->m_changeMask_scratch),
+          var_pos_array(tup->m_var_pos_scratch) {
+      poison_debug(tup);
+      jamBuffer = tup->jamBuffer();
+      m_dbtup_ptr = tup;
+    }
+
+    /*
+     * Stand-alone constructor for call paths that run OUTSIDE an LDM/query
+     * thread and therefore cannot legitimately use the caller's Dbtup
+     * instance (its jamBuffer belongs to the LDM thread and its scratch
+     * buffers are not safe to share across threads). Currently used by
+     * Dbtup::tuxReadAttrs / tuxReadAttrsOpt, which can be invoked from
+     * Dbtux::mt_buildIndexFragment running on an AsyncIoThread.
+     *
+     * changeMask / var_pos_array bind to TU-level dummies defined in
+     * DbtupIndex.cpp. The read path from these two entry points does NOT
+     * touch either field (audited Apr 2026: all writers/readers live in
+     * update / trigger / expand_tuple / shrink_tuple code). If that
+     * invariant ever changes, this ctor must switch to caller-supplied
+     * stack storage for those two fields.
+     */
+    KeyReqStruct(EmulatedJamBuffer *_jamBuffer)
+        : changeMask(s_dummy_changeMask),
+          var_pos_array(s_dummy_var_pos_array) {
+      poison_debug_self();
+      jamBuffer = _jamBuffer;
+      m_when = KRS_PREPARE;
+      m_deferred_constraints = true;
+      m_disable_fk_checks = false;
+      ttl_purge_window_size = 0;
+      m_use_corr_factor = 0;
+      m_linked_attr_data = nullptr;
+      m_linked_attr_len = 0;
+    }
+
+   private:
+    /*
+     * Poison struct members and scratch buffers in debug builds so that any
+     * read of a field before it is explicitly initialised surfaces as 0xf3
+     * bytes rather than whatever remained from the previous operation.
+     * In release builds this compiles to nothing.
+     */
+    inline void poison_debug(Dbtup *tup) {
+      poison_debug_self();
+#if defined VM_TRACE || defined ERROR_INSERT
+      std::memset(&tup->m_var_pos_scratch, 0xf3,
+                  sizeof(tup->m_var_pos_scratch));
+      std::memset(&tup->m_changeMask_scratch, 0xf3,
+                  sizeof(tup->m_changeMask_scratch));
+#else
+      (void)tup;
+#endif
+    }
+
+    /*
+     * Poison just this struct's non-reference members (from &tablePtrP to
+     * end). Used by the stand-alone ctor that has no Dbtup to poison
+     * scratch buffers on.
+     */
+    inline void poison_debug_self() {
+#if defined VM_TRACE || defined ERROR_INSERT
+      char *poison_begin = reinterpret_cast<char *>(&tablePtrP);
+      char *poison_end = reinterpret_cast<char *>(this) + sizeof(*this);
+      std::memset(poison_begin, 0xf3, poison_end - poison_begin);
+#endif
+    }
+
+    /*
+     * Dummy scratch for the stand-alone ctor. Never read on the
+     * tuxReadAttrs path; exists only so the two reference members have
+     * something valid to bind to.
+     */
+    static AttributeMask s_dummy_changeMask;
+    static Uint16 s_dummy_var_pos_array[2][2 * MAX_ATTRIBUTES_IN_TABLE + 1];
+
+   public:
+    /*
+     * True iff this KeyReqStruct was built via the stand-alone ctor and
+     * therefore has changeMask / var_pos_array bound to the shared dummy
+     * buffers. Readers of either field must ndbassert(!uses_dummy_scratch())
+     * to catch a regression that routes a tuxReadAttrs-path struct into
+     * update / trigger / expand / shrink code.
+     */
+    inline bool uses_dummy_scratch() const {
+      return &changeMask == &s_dummy_changeMask;
+    }
+
 
     /**
      * These variables are used as temporary storage during execution of the
@@ -2099,6 +2247,15 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
      * contains the real allocated lengths whereas the tuple contains
      * the length of attribute stored.
      */
+
+    /*
+     * Reference members bound to per-Dbtup-instance scratch buffers. Placed at
+     * the very beginning of the struct so the debug memset(0xf3) can poison
+     * the rest of the struct by starting at &tablePtrP without touching these
+     * reference slots (memset would otherwise corrupt them).
+     */
+    AttributeMask &changeMask;
+    Uint16 (&var_pos_array)[2][2 * MAX_ATTRIBUTES_IN_TABLE + 1];
 
     Tablerec *tablePtrP;
     Fragrecord *fragPtrP;
@@ -2215,8 +2372,6 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
      * A bitmap where a set bit means that the operation has
      * supplied a value for this column
      */
-    AttributeMask changeMask;
-    Uint16 var_pos_array[2][2 * MAX_ATTRIBUTES_IN_TABLE + 1];
     OperationrecPtr prevOpPtr;
     Dblqh *m_lqh;
 
@@ -2321,15 +2476,55 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
                    const Uint32* attrIds,
                    Uint32 numAttrs,
                    Uint32* dataOut);
-  int tuxReadAttrsOpt(EmulatedJamBuffer*,
-                      Uint32* fragPtrP,
-                      Uint32* tablePtrP,
-                      Uint32 pageId,
-                      Uint32 pageOffset,
-                      Uint32 tupVersion,
-                      const Uint32* attrIds,
-                      Uint32 numAttrs,
-                      Uint32* dataOut);
+  /**
+   * Called from MT-build of ordered indexes. Inlined here so the single
+   * caller (Dbtux::readKeyAttrs) can avoid the cross-TU bl and argument
+   * marshalling.
+   */
+  ALWAYS_INLINE int tuxReadAttrsOpt(EmulatedJamBuffer *jamBuf, Uint32 *fragPtrP,
+                             Uint32 *tablePtrP, Uint32 pageId,
+                             Uint32 pageIndex, Uint32 tupVersion,
+                             const Uint32 *attrIds, Uint32 numAttrs,
+                             Uint32 *dataOut) {
+    thrjamEntryDebug(jamBuf);
+    /*
+     * Use the stand-alone ctor: mt_buildIndexFragment calls this on an
+     * AsyncIoThread, where `this->jamBuffer()` would be the LDM thread's
+     * jam (wrong thread). jamBuf is the running thread's TLS jam.
+     */
+    KeyReqStruct req_struct(jamBuf);
+    Tablerec *regTabPtr = (Tablerec *)tablePtrP;
+    /*
+     * Build a Local_key on the stack rather than a full Operationrec.
+     * The *_simple_read setup helpers only need the tuple location;
+     * that avoids ~0x70 bytes of tmpOp stack + ~8 wasted init stores
+     * (m_magic, bitfield q0, op_type bits, sentinel halfwords). File no.
+     * is not touched by get_ptr on this path.
+     */
+    Local_key tuple_loc;
+    tuple_loc.m_page_no = pageId;
+    tuple_loc.m_page_idx = pageIndex;
+
+    setup_fixed_tuple_ref_simple_read(&req_struct, &tuple_loc, regTabPtr);
+    req_struct.m_lqh = c_lqh;
+    req_struct.tablePtrP = regTabPtr;
+    req_struct.fragPtrP = (Fragrecord *)fragPtrP;
+    setup_fixed_part_simple_read(&req_struct, regTabPtr);
+
+    /*
+     * Fast path: tuple version matches what the caller expects, so skip the
+     * operation-list walk and go straight to prepare_read + readAttributes.
+     * The slow path (version mismatch, requiring a walk of the operation
+     * chain to locate the right copy-tuple) stays out-of-line in
+     * tuxReadAttrsCommon so the common case doesn't pay for it.
+     */
+    if (likely(req_struct.m_tuple_ptr->get_tuple_version() == tupVersion)) {
+      prepare_read(&req_struct, req_struct.tablePtrP, false);
+      return readAttributes(&req_struct, attrIds, numAttrs, dataOut, ZNIL);
+    }
+    return tuxReadAttrsCommon(req_struct, attrIds, numAttrs, dataOut,
+                              tupVersion);
+  }
   int tuxReadAttrsCurr(EmulatedJamBuffer*,
                        const Uint32* attrIds,
                        Uint32 numAttrs,
@@ -2353,9 +2548,53 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
    * ACC reads primary key without headers into an array of words.  At
    * this point in ACC deconstruction, ACC still uses logical references
    * to fragment and tuple.
+   *
+   * Defined inline so cross-block callers (Dbacc::readTablePk,
+   * Dblqh) merge the fragPageId→real pageId translation and the
+   * tuxReadPk call at the caller site, eliminating the trampoline frame.
    */
-  int accReadPk(Uint32 fragPageId, Uint32 pageIndex, Uint32 *dataOut,
-                bool xfrmFlag);
+  inline int accReadPk(Uint32 fragPageId, Uint32 pageIndex, Uint32 *dataOut,
+                       bool xfrmFlag) {
+    jamEntryDebug();
+    // Cache the two prepare_* pointers in locals so the compiler can keep
+    // them in callee-saved registers across the getRealpid call instead of
+    // reloading prepare_fragptr.p from Dbtup's memory afterwards. Both
+    // pointers are stable for the duration of the operation.
+    Fragrecord *const fragPtrP = prepare_fragptr.p;
+    Tablerec *const tabPtrP = prepare_tabptr.p;
+    Uint32 pageId = getRealpid(fragPtrP, fragPageId);
+
+    /*
+     * Issue speculative prefetches of the tuple's first two cache lines
+     * (the first holds m_header_bits and the start of the fixed part; the
+     * second holds further fixed columns — most tuples span at least two
+     * lines). These run in parallel with the bl to tuxReadPk, its prologue
+     * (~13 register saves) and the KeyReqStruct init (~15 stores), hiding
+     * tuple-miss latency on cold rows. Bounds are not re-checked here;
+     * tuxReadPk does the real check and a stray prefetch has no side
+     * effects.
+     *
+     *   tuple_data = (Uint32 *)memBase
+     *              + pageId * (32 KB / 4)
+     *              + Tup_fixsize_page::HEADER_WORDS
+     *              + pageIndex
+     * which matches what tuxReadPk's get_ptr expands to internally. The
+     * second prefetch adds one cache line (16 Uint32s = 64 B).
+     */
+    {
+      static constexpr Uint32 PAGE_WORDS = 8192;  // 32 KB page as Uint32s
+      static constexpr Uint32 HEADER_WORDS = 32;  // Tup_fixsize_page header
+      static constexpr Uint32 CL_WORDS = 16;      // 64 B cache line
+      const Uint32 *memBase = (const Uint32 *)c_page_pool.getArrayPtr();
+      const Uint32 *tuple_data =
+          memBase + pageId * PAGE_WORDS + HEADER_WORDS + pageIndex;
+      NDB_PREFETCH_READ(const_cast<Uint32 *>(tuple_data));
+      NDB_PREFETCH_READ(const_cast<Uint32 *>(tuple_data + CL_WORDS));
+    }
+
+    return tuxReadPk((Uint32 *)fragPtrP, (Uint32 *)tabPtrP, pageId, pageIndex,
+                     dataOut, xfrmFlag);
+  }
 
   inline Uint32 get_tuple_operation_ptr_i() {
     Tuple_header *tuple_ptr = (Tuple_header *)prepare_tuple_ptr;
@@ -3005,6 +3244,26 @@ private:
   //------------------------------------------------------------------
   void sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
                         Uint32 TnoOfData);
+  // Cold helpers for the paths in sendReadAttrinfo that need a local
+  // LinearSectionPtr[3]. Outlined to keep the array off the hot path
+  // so the compiler does not emit a stack canary in sendReadAttrinfo.
+  // Split by !connectedToNode vs connectedToNode — the two cases
+  // share no state and splitting them lets each helper take only the
+  // args it actually needs.
+
+  // Disconnected-node path: route via TRANSID_AI_R through TC.
+  void sendReadAttrinfoRouted(Signal *signal, KeyReqStruct *req_struct,
+                              Uint32 ToutBufIndex,
+                              BlockReference recBlockref,
+                              BlockReference routeBlockref)
+      __attribute__((noinline, cold));
+  // Connected-node long-signal path: cross-node DN or same-node
+  // (not same-instance EXECUTE_DIRECT).
+  void sendReadAttrinfoLong(Signal *signal, KeyReqStruct *req_struct,
+                            Uint32 ToutBufIndex,
+                            BlockReference recBlockref,
+                            Uint32 nodeId)
+      __attribute__((noinline, cold));
   int handleJoinAggRow(KeyReqStruct *req_struct,
                        const Uint32 *linked_data, Uint32 linked_len);
   int prepareAndHandleJoinAggRow(KeyReqStruct *req_struct, Uint32 RsubLen);
@@ -3039,11 +3298,72 @@ private:
                      Uint32 inBufLen, Uint32 *outBuffer, Uint32 TmaxRead,
                      Uint32* max_vec_rec_size = nullptr);
 
-  // Read only PK attributes, without AttributeHeader.
-  // Optinally xfrm'ing the key in preparation for hash
-  int readKeyAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
-                        Uint32 inBufLen, Uint32 *outBuffer, Uint32 TmaxRead,
-                        bool xfrmFlag);
+  /*
+   * Fast-path single-attribute read for interpreter hot loops
+   * (AggInterpreter / JoinAggInterpreter group-by fetch + agg feed,
+   * VecSearchInterpreter column fetch). Skips the loop bookkeeping,
+   * PSEUDO-attr dispatch, partial-read handling, and the cross-TU bl
+   * that readAttributes carries on every invocation.
+   *
+   * Preconditions (caller guarantees):
+   *   - attrId is a real column id, NOT an AttributeHeader::PSEUDO attr
+   *   - attrId < req_struct->tablePtrP->m_no_of_attributes
+   *   - outBuf is Uint32-aligned with at least maxWords words space
+   *   - req_struct has been set up by setup_fixed_part + prepare_read
+   *     (attr_descr, tablePtrP, m_tuple_ptr, check_offset[], m_var_data[]
+   *     all populated) — same contract as readAttributes
+   *   - caller never requests a partial read
+   *
+   * Returns: words written (>= 1, including the AttributeHeader), or
+   *          a negative error code on failure. -ZATTRIBUTE_ID_ERROR is
+   *          returned in release builds for an attrId that violates
+   *          the PSEUDO/range preconditions; debug builds catch the
+   *          violation earlier via ndbassert. A wrong attrId would
+   *          otherwise index past attr_descr and dispatch through a
+   *          stale function pointer, so the runtime check is required
+   *          for production safety.
+   *
+   * NOTE: If future edits to readAttributes introduce new invariant
+   * setup for the ReadFunction dispatch, the same setup must be
+   * replicated here — grep for "readAttributes" to find both.
+   */
+  ALWAYS_INLINE int readSingleAttribute(KeyReqStruct *req_struct,
+                                        Uint32 attrId, Uint32 *outBuf,
+                                        Uint32 maxWords) {
+    ndbassert(!(attrId & AttributeHeader::PSEUDO));
+    ndbassert(attrId < req_struct->tablePtrP->m_no_of_attributes);
+    if (unlikely((attrId & AttributeHeader::PSEUDO) ||
+                 attrId >= req_struct->tablePtrP->m_no_of_attributes)) {
+      thrjam(req_struct->jamBuffer);
+      return -ZATTRIBUTE_ID_ERROR;
+    }
+
+    req_struct->out_buf_index = 0;
+    req_struct->out_buf_bits = 0;
+    req_struct->partial_size = 0;
+    req_struct->max_read = 4 * maxWords;
+    req_struct->xfrm_flag = false;
+
+    const Uint32 *attr_descr = req_struct->attr_descr;
+    const Uint32 descrIdx = attrId * ZAD_SIZE;
+    const Uint32 attrDes1 = attr_descr[descrIdx];
+    const Uint32 attrDes2 = attr_descr[descrIdx + 1];
+    const Uint64 attrDes =
+        (Uint64(attrDes2) << 32) | Uint64(attrDes1);
+
+    AttributeHeader::init(outBuf, attrId, 0);
+    AttributeHeader *ahOut = (AttributeHeader *)outBuf;
+    req_struct->out_buf_index = 4;  // header consumed; read funcs add size
+
+    Tablerec *const regTabPtr = req_struct->tablePtrP;
+    ReadFunction f = regTabPtr->readFunctionArray[attrId];
+    Uint8 *outBuffer = (Uint8 *)outBuf;
+
+    if (likely((*f)(outBuffer, req_struct, ahOut, attrDes))) {
+      return 1 + ahOut->getDataSize();
+    }
+    return -(int)req_struct->errorCode;
+  }
 
   int setInputParameters(KeyReqStruct *req_struct,
                          Uint32 *inBuffer,
@@ -3719,8 +4039,13 @@ public:
   void setup_fixed_tuple_ref_opt(KeyReqStruct *req_struct);
   void setup_fixed_tuple_ref(KeyReqStruct *req_struct, Operationrec *regOperPtr,
                              Tablerec *regTabPtr);
+  void setup_fixed_tuple_ref_simple_read(KeyReqStruct *req_struct,
+                                         const Local_key *tuple_loc,
+                                         Tablerec *regTabPtr);
   void setup_fixed_part(KeyReqStruct *req_struct, Operationrec *regOperPtr,
                         Tablerec *regTabPtr);
+  void setup_fixed_part_simple_read(KeyReqStruct *req_struct,
+                                    Tablerec *regTabPtr);
 
   void send_TUPKEYREF(const KeyReqStruct *req_struct);
   void early_tupkey_error(KeyReqStruct *);
@@ -4073,10 +4398,6 @@ private:
   RSS_OP_COUNTER(cnoOfFreeFragoprec);
   RSS_OP_SNAPSHOT(cnoOfFreeFragoprec);
 
-public:
-  DynArr256Pool *c_page_map_pool_ptr;
-
- private:
   /*
    * DefaultValuesFragment is a normal struct Fragrecord.
    * It is TUP block-variable.
@@ -4110,7 +4431,17 @@ public:
  private:
   RSS_OP_COUNTER(cnoOfFreeTabDescrRec);
   RSS_OP_SNAPSHOT(cnoOfFreeTabDescrRec);
-  TablerecPtr prepare_tabptr;
+  // c_page_map_pool_ptr, prepare_fragptr, prepare_tabptr are at the top of
+  // this class for low-offset access on the PK-read hot path.
+
+  /*
+   * Per-instance scratch used by KeyReqStruct so the struct itself does not
+   * have to carry these large arrays on the stack. TUP signal handling is
+   * serialized within an Dbtup instance (one instance per LDM / query
+   * thread), so these scratch buffers are not accessed reentrantly.
+   */
+  Uint16 m_var_pos_scratch[2][2 * MAX_ATTRIBUTES_IN_TABLE + 1];
+  AttributeMask m_changeMask_scratch;
 
   TablerecPtr m_curr_tabptr;
   FragrecordPtr m_curr_fragptr;
@@ -4639,8 +4970,27 @@ public:
 
   bool is_ttl_table(Tablerec* tabptr) {
     ndbassert(tabptr != nullptr);
-    return (tabptr->m_ttl_sec != RNIL && tabptr->m_ttl_col_no != RNIL);
+    return tabptr->m_is_ttl_table != 0;
   }
+
+  /**
+   * TTL-aware row filter for handleReadReq. Only called when the
+   * table is a TTL table (caller checks is_ttl_table first). Returns
+   * 0 if the caller should continue to the read path; returns -1 if
+   * the row is expired / only_expired-filtered and the caller must
+   * propagate -1 to its caller (terrorCode set, tupkeyErrorLab called).
+   */
+  int handleReadReqTtl(Signal *signal,
+                       Operationrec *regOperPtr,
+                       Tablerec *regTabPtr,
+                       KeyReqStruct *req_struct);
+  /**
+   * Rare error path: client sent ttl_only_expired for a non-TTL
+   * table. Always returns -1. Marked cold/noinline so its body does
+   * not sit in handleReadReq's hot text.
+   */
+  int handleReadReqOnlyExpiredOnNonTtlTable(KeyReqStruct *req_struct)
+      __attribute__((noinline, cold));
 
   bool is_ttl_table(Uint32 table_id) {
     TablerecPtr tablePtr;
@@ -4790,9 +5140,59 @@ inline void Dbtup::setup_fixed_tuple_ref(KeyReqStruct *req_struct,
                                          Tablerec *regTabPtr) {
   PagePtr page_ptr;
   Uint32 *ptr = get_ptr(&page_ptr, &regOperPtr->m_tuple_location, regTabPtr);
+  /*
+   * Prefetch the first two cache lines of the tuple. Most rows span at
+   * least two lines, and even when they don't the second prfm is benign
+   * (bandwidth-cheap, same 4KB page). These issue in parallel with the
+   * subsequent prepare_read / readAttributes work so the first attribute
+   * loads don't stall on DRAM.
+   */
   NDB_PREFETCH_READ(ptr);
+  NDB_PREFETCH_READ(ptr + 16);
   req_struct->m_page_ptr = page_ptr;
   req_struct->m_tuple_ptr = (Tuple_header *)ptr;
+}
+
+/*
+ * Simple-read variant of setup_fixed_tuple_ref. Takes a Local_key
+ * directly rather than fishing it out of an Operationrec, so callers on
+ * the simple-read fast paths (tuxReadPk, tuxReadAttrsOpt) can skip
+ * allocating a scratch Operationrec on the stack (sizeof ~0x70 + ~8
+ * wasted init stores for m_magic / bitfield / op_type sentinel).
+ * ALWAYS_INLINE so the bl disappears from the hot path.
+ *
+ * Kept logically adjacent to setup_fixed_tuple_ref so any future change
+ * to one is visible to the other.
+ */
+ALWAYS_INLINE void Dbtup::setup_fixed_tuple_ref_simple_read(
+    KeyReqStruct *req_struct, const Local_key *tuple_loc,
+    Tablerec *regTabPtr) {
+  PagePtr page_ptr;
+  Uint32 *ptr = get_ptr(&page_ptr, tuple_loc, regTabPtr);
+  NDB_PREFETCH_READ(ptr);
+  NDB_PREFETCH_READ(ptr + 16);
+  req_struct->m_page_ptr = page_ptr;
+  req_struct->m_tuple_ptr = (Tuple_header *)ptr;
+}
+
+/*
+ * Simple-read variant of setup_fixed_part. The only thing
+ * setup_fixed_part reads out of its regOperPtr argument is an
+ * ndbassert on op_type; in prod there is no reference to it at all.
+ * Dropping the argument (and the bl) lets tuxReadAttrsOpt reach
+ * readAttributes with no intervening call.
+ *
+ * Kept logically adjacent to the out-of-line setup_fixed_part (which
+ * lives in DbtupExecQuery.cpp) — if that function's body changes, the
+ * grep will land here too.
+ */
+ALWAYS_INLINE void Dbtup::setup_fixed_part_simple_read(
+    KeyReqStruct *req_struct, Tablerec *regTabPtr) {
+  Uint32 *tab_descr = regTabPtr->tabDescriptor;
+  NDB_PREFETCH_READ((char *)tab_descr);
+  req_struct->check_offset[MM] = regTabPtr->get_check_offset(MM);
+  req_struct->check_offset[DD] = regTabPtr->get_check_offset(DD);
+  req_struct->attr_descr = tab_descr;
 }
 
 inline Dbtup::TransState Dbtup::get_trans_state(Operationrec *regOperPtr) {

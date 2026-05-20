@@ -3570,6 +3570,18 @@ private:
   void updatePackedList(Signal* signal, HostRecord * ahostptr, Uint16 hostId);
   void LQHKEY_abort(Signal* signal, int errortype, TcConnectionrecPtr);
   void LQHKEY_error(Signal* signal, int errortype, TcConnectionrecPtr);
+
+  // Outlined cold helpers used by execLQHKEYREQ; jamLine(callerLine) so
+  // the jam ring records the original call site. Keeps the hot-path
+  // function body free of error-return epilogues.
+  void LQHKEY_abort_cold(Signal *signal, int errortype,
+                         Uint16 callerLine,
+                         TcConnectionrecPtr tcConnectptr)
+      __attribute__((cold, noinline));
+  void LQHKEY_error_cold(Signal *signal, int errortype,
+                         Uint16 callerLine,
+                         TcConnectionrecPtr tcConnectptr)
+      __attribute__((cold, noinline));
   void nextRecordCopy(Signal* signal, TcConnectionrecPtr);
   Uint32 calculateHash(Uint32 tableId,
                        const Uint32* src,
@@ -3912,6 +3924,9 @@ private:
   void continueAfterReceivingAllAiLab(Signal *signal, TcConnectionrecPtr);
   void continueACCKEYCONF(Signal *signal, Uint32 localKey1, Uint32 localKey2,
                           TcConnectionrecPtr);
+  void continueACCKEYCONF_zwrite_slow(Signal *signal,
+                                      TcConnectionrec *regTcPtr)
+      __attribute__((noinline, cold));
   void continueACCKEYREF(Signal *signal, TcConnectionrecPtr, Uint32 errorCode);
   void abortStateHandlerLab(Signal *signal, TcConnectionrecPtr);
   void writeAttrinfoLab(Signal *signal, const TcConnectionrec *,
@@ -3933,6 +3948,46 @@ private:
                                   const class LqhKeyReq *req);
   void earlyKeyReqAbort(Signal *signal, const class LqhKeyReq *lqhKeyReq,
                         Uint32 errorCode, TcConnectionrecPtr);
+  // See LQHKEY_abort_cold above.
+  void earlyKeyReqAbort_releasing(Signal *signal,
+                                  const class LqhKeyReq *lqhKeyReq,
+                                  Uint32 errCode,
+                                  Uint16 callerLine,
+                                  SectionHandle &handle,
+                                  TcConnectionrecPtr tcConnectptr)
+      __attribute__((cold, noinline));
+  void earlyKeyReqAbort_simple(Signal *signal,
+                               const class LqhKeyReq *lqhKeyReq,
+                               Uint32 errCode,
+                               Uint16 callerLine,
+                               TcConnectionrecPtr tcConnectptr)
+      __attribute__((cold, noinline));
+
+  // Outlined mid-warmth helpers called from execLQHKEYREQ. These
+  // fire on specific request shapes only (tx-hash on !dirtyOp,
+  // marker setup on getMarkerFlag, detailed overload only when the
+  // Item-7 cached flag says true), so they do not belong inline in
+  // the hot body.
+  void insertIntoTransactionHash(TcConnectionrecPtr tcConnectptr)
+      __attribute__((noinline));
+  Uint32 findOrSeizeCommitAckMarker(Uint32 transid1, Uint32 transid2,
+                                    Uint32 apiRef, Uint32 apiOprec,
+                                    Uint32 tcRef,
+                                    Uint32 opPtrI)
+      __attribute__((noinline));
+  bool transporter_overloaded_detailed(Signal *signal,
+                                       const class LqhKeyReq *lqhKeyReq)
+      __attribute__((cold, noinline));
+
+  // Scan take-over setup on LQHKEYREQ. Only called when
+  // regTcPtr->indTakeOver == ZTRUE (rare; only after a scan has
+  // produced SCAN_TABCONF and the API issues a TCKEYREQ reusing
+  // the scan's lock). Returns false if take-over was rejected
+  // (takeOverErrorLab was already called — caller must return).
+  bool prepareScanTakeOverOnKeyReq(Signal *signal,
+                                   TcConnectionrecPtr tcConnectptr)
+      __attribute__((noinline));
+
   void logLqhkeyrefLab(Signal *signal, TcConnectionrecPtr, Uint32 errorCode);
   void closeCopyLab(Signal *signal, TcConnectionrec *);
   void commitReplyLab(Signal *signal, TcConnectionrec *);
@@ -5272,10 +5327,18 @@ public:
   Uint32 getRESTORE() { return m_restore_block; }
   bool check_expand_shrink_ongoing(Uint32, Uint32);
 private:
+  // Fast path is inline below (in header). Slow path — full
+  // tcConnect_pool.seize + ACC/TUP seize with error unwinds — lives
+  // out-of-line in DblqhMain.cpp as seize_op_rec_slow.
   bool seize_op_rec(TcConnectionrecPtr &tcConnectptr,
                     bool use_lock,
                     BlockReference tcRef,
                     EmulatedJamBuffer *jamBuf);
+  bool seize_op_rec_slow(TcConnectionrecPtr &tcConnectptr,
+                         bool use_lock,
+                         BlockReference tcRef,
+                         EmulatedJamBuffer *jamBuf)
+      __attribute__((noinline));
   void release_op_rec(TcConnectionrecPtr tcConnectptr);
   void send_scan_fragref(Signal *, Uint32, Uint32, Uint32, Uint32, Uint32);
   void init_release_scanrec(ScanRecord *);
@@ -5350,8 +5413,15 @@ private:
   void handle_release_frag_access(Fragrecord *fragPtrP);
 
   void handle_acquire_scan_frag_access(Fragrecord *fragPtrP);
+
+  // Fast path is inline below (in header) — it is the hot path for every
+  // LQHKEYREQ. The contended slow path (spin + NdbCondition_Wait) is kept
+  // out-of-line since it fires only under lock contention.
   void handle_acquire_read_key_frag_access(Fragrecord *fragPtrP, bool hold_lock,
                                            bool check_exclusive_waiters);
+  void handle_acquire_read_key_frag_access_contended(
+      Fragrecord *fragPtrP, bool check_exclusive_waiters)
+      __attribute__((noinline));
   void handle_acquire_write_key_frag_access(Fragrecord *fragPtrP,
                                             bool hold_lock);
   void handle_acquire_exclusive_frag_access(Fragrecord *fragPtrP,
@@ -5854,6 +5924,69 @@ inline bool Dblqh::is_read_key_condition_ready(Fragrecord *fragPtrP,
     return false;
   }
   return true;
+}
+
+// Fast path for read-key lock acquisition. The contended slow path
+// (spin + NdbCondition_Wait) is out-of-line in DblqhMain.cpp; see
+// handle_acquire_read_key_frag_access_contended.
+//
+// Uncontended case (~99% of LQHKEYREQs): update stat counter, grab
+// mutex if caller did not already hold it, check condition, bump
+// m_concurrent_read_key_count, release mutex, return. No stack frame
+// or callee-save register spill needed in the inlined version —
+// those costs used to be paid on every signal.
+inline void Dblqh::handle_acquire_read_key_frag_access(
+    Fragrecord *fragPtrP, bool hold_lock, bool check_exclusive_waiters) {
+  m_read_key_frag_access++;
+  ndbrequire(!DictTabInfo::isOrderedIndex(fragPtrP->tableType));
+  if (!hold_lock) {
+    NdbMutex_Lock(&fragPtrP->frag_mutex);
+    DEB_FRAGMENT_LOCK(fragPtrP);
+  }
+  if (likely(is_read_key_condition_ready(fragPtrP, check_exclusive_waiters))) {
+    fragPtrP->m_concurrent_read_key_count++;
+    DEB_FRAGMENT_LOCK(fragPtrP);
+    NdbMutex_Unlock(&fragPtrP->frag_mutex);
+    jamDebug();
+    return;
+  }
+  // Slow path assumes the mutex is held and the condition is not yet
+  // satisfied. It spins, condition-waits, and releases the mutex before
+  // returning with m_concurrent_read_key_count bumped.
+  handle_acquire_read_key_frag_access_contended(fragPtrP,
+                                                check_exclusive_waiters);
+}
+
+// Fast path for TC-connect-record seize. Uncontended case — shared
+// free-record pool is nonempty — is inlined at the two callers
+// (execLQHKEYREQ's query-thread / low-free branch, and
+// execSCAN_FRAGREQ). The slow pool-seize + ACC/TUP seize with
+// error-unwind paths live out-of-line in seize_op_rec_slow.
+inline bool Dblqh::seize_op_rec(TcConnectionrecPtr &tcConnectptr,
+                                 bool use_lock,
+                                 BlockReference tcRef,
+                                 EmulatedJamBuffer *jamBuf) {
+  /* Cannot use jam here, called from other thread */
+  if (ERROR_INSERTED(5031)) {
+    thrjam(jamBuf);
+    return false;
+  }
+  if (use_lock) {
+    lock_alloc_operation();
+  }
+  if (likely(ctcNumFreeShared > 0 && !ERROR_INSERTED(5099))) {
+    thrjamDebug(jamBuf);
+#ifdef CONNECT_DEBUG
+    ctcNumUseShared++;
+#endif
+    seizeTcrec(tcConnectptr, tcRef, ctcNumFreeShared,
+               cfirstfreeTcConrecShared);
+    if (use_lock) {
+      unlock_alloc_operation();
+    }
+    return true;
+  }
+  return seize_op_rec_slow(tcConnectptr, use_lock, tcRef, jamBuf);
 }
 
 inline bool Dblqh::is_write_key_condition_ready(Fragrecord *fragPtrP) {
