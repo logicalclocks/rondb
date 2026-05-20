@@ -150,8 +150,19 @@ class MgmtSrvr : private ConfigSubscriber, public trp_client {
   bool start_mgm_service(const Config *);
   bool connect_to_self(void);
   bool is_node_active();
+  /*
+   * Block normal MGM clients until this ndb_mgmd has accepted the
+   * arbitrator role and sent ARBIT_STARTCONF back to Qmgr, or until
+   * ArbitrationRankWait ms have elapsed.  Returns true in either
+   * case; startup is never aborted by this gate.
+   */
+  bool wait_until_arbitrator();
 
  public:
+  bool is_arbitrator_startup_gate_enabled() const {
+    return m_arbitrator_startup_gate_enabled.load();
+  }
+
   NodeId getOwnNodeId() const { return _ownNodeId; }
   NodeId get_max_node_id();
 
@@ -487,6 +498,7 @@ private:
   int m_client_tls_req;       // TLS requirement level as MGM client ...
   bool m_require_tls{false};  // ... and as MGM server.
   bool m_require_cert{false};
+  std::atomic<bool> m_arbitrator_startup_gate_enabled{false};
 
   struct ssl_ctx_st *ssl_ctx() {
     return theFacade->get_registry()->getTlsKeyManager()->ctx();

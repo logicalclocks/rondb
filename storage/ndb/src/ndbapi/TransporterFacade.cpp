@@ -3698,6 +3698,39 @@ void TransporterFacade::ext_doConnect(NodeId aNodeId) {
   theClusterMgr->unlock();
 }
 
+bool TransporterFacade::ext_isArbitratorActive() const {
+  if (theClusterMgr == nullptr) return false;
+  if (theClusterMgr->theArbitMgr == nullptr) return false;
+  return theClusterMgr->theArbitMgr->isActiveArbitrator();
+}
+
+bool TransporterFacade::ext_hasUnsupportedDbNode() const {
+  if (theClusterMgr == nullptr) return false;
+  for (NodeId n = 1; n < ABS_MAX_NDB_NODES; n++) {
+    const trp_node &node = theClusterMgr->theNodes[n];
+    if (!node.defined) continue;
+    if (node.m_info.m_type != NodeInfo::DB) continue;
+    if (!node.is_connected()) continue;
+    /* m_version is 0 until the data node has reported it via API_REGCONF. */
+    if (node.m_info.m_version == 0) continue;
+    if (!ndbd_support_arbitration_rank_wait(node.m_info.m_version)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool TransporterFacade::ext_hasConnectedDbNode() const {
+  if (theClusterMgr == nullptr) return false;
+  for (NodeId n = 1; n < ABS_MAX_NDB_NODES; n++) {
+    const trp_node &node = theClusterMgr->theNodes[n];
+    if (!node.defined) continue;
+    if (node.m_info.m_type != NodeInfo::DB) continue;
+    if (node.is_connected()) return true;
+  }
+  return false;
+}
+
 bool TransporterFacade::setupWakeup() {
   /* Ask TransporterRegistry to setup wakeup sockets */
   bool rc;

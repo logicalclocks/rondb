@@ -75,6 +75,7 @@
 #define CFG_DB_GCP_INTERVAL           121
 #define CFG_DB_ARBIT_TIMEOUT          122
 #define CFG_DB_ARBIT_METHOD           142
+#define CFG_DB_ARBIT_RANK_WAIT        143
 
 #define CFG_DB_WATCHDOG_INTERVAL      123
 #define CFG_DB_STOP_ON_ERROR          124

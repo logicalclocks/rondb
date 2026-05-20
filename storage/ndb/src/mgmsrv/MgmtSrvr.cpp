@@ -394,6 +394,122 @@ MgmtSrvr::is_node_active()
   return (bool)is_active;
 }
 
+bool MgmtSrvr::wait_until_arbitrator() {
+  DBUG_ENTER("MgmtSrvr::wait_until_arbitrator");
+
+  /* This mgmd's own ArbitrationRank: 0 means it cannot be arbitrator. */
+  unsigned rank = 0;
+  {
+    ConfigIter iter(m_local_config, CFG_SECTION_NODE);
+    require(iter.find(CFG_NODE_ID, _ownNodeId) == 0);
+    iter.get(CFG_NODE_ARBIT_RANK, &rank);
+  }
+  if (rank == 0) {
+    DBUG_RETURN(true);
+  }
+
+  /*
+   * DB-section parameters (cluster-wide).  Read from the first DB
+   * section found; all DB sections carry the same values.
+   */
+  unsigned arbitMethod = ARBIT_METHOD_DEFAULT;
+  unsigned rankWait = 60000;
+  {
+    ConfigIter iter(m_local_config, CFG_SECTION_NODE);
+    for (iter.first(); iter.valid(); iter.next()) {
+      unsigned type = 0;
+      if (iter.get(CFG_TYPE_OF_SECTION, &type) != 0) continue;
+      if (type != NODE_TYPE_DB) continue;
+      iter.get(CFG_DB_ARBIT_METHOD, &arbitMethod);
+      iter.get(CFG_DB_ARBIT_RANK_WAIT, &rankWait);
+      break;
+    }
+  }
+
+  if (arbitMethod != ARBIT_METHOD_DEFAULT) {
+    /* Disabled / WaitExternal: no arbit thread to wait for. */
+    DBUG_RETURN(true);
+  }
+  if (rankWait == 0) {
+    /* Feature disabled by config. */
+    DBUG_RETURN(true);
+  }
+
+  g_eventLogger->info(
+      "Waiting up to %u ms to become arbitrator before opening MGM client "
+      "port",
+      rankWait);
+
+  /*
+   * Single wait loop with two early-exit paths:
+   *
+   *   - Cold-start detection: if no data node has connected within
+   *     kColdStartMs there is nothing to wait for; this happens when
+   *     the mgmd is started before any ndbd process, e.g. in the
+   *     k8s/helm boot sequence.  Skipping avoids the long pointless
+   *     wait the user reported.
+   *
+   *   - Upgrade short-wait: if a connected data node lacks the
+   *     ArbitrationRankWait code path, it will pick a rank-2
+   *     arbitrator immediately regardless of the new wait, so cap
+   *     the wait at kUpgradeWait ms.
+   *
+   *   - Success path: ArbitMgr entered the started state and sent
+   *     ARBIT_STARTCONF back to Qmgr.
+   *
+   *   - Timeout fallback: open the MGM client port after rankWait ms
+   *     even if nothing else happened.  Logged as a warning.
+   *
+   * kColdStartMs is generous enough that the transporter has time
+   * to re-establish to existing data nodes on a warm restart (where
+   * a "Shutdown complete" message is typically followed within ~1 s
+   * by reconnection attempts from the data nodes).
+   */
+  const Uint32 kColdStartMs = 3000;
+  const Uint32 kUpgradeWait = 2000;
+  Uint32 effectiveWait = rankWait;
+  bool upgrade_logged = false;
+  bool db_seen = false;
+
+  const NDB_TICKS start = NdbTick_getCurrentTicks();
+  while (true) {
+    if (theFacade != nullptr && theFacade->ext_isArbitratorActive()) {
+      g_eventLogger->info("Became arbitrator, opening MGM client port");
+      DBUG_RETURN(true);
+    }
+    if (!db_seen && theFacade != nullptr &&
+        theFacade->ext_hasConnectedDbNode()) {
+      db_seen = true;
+    }
+    if (!upgrade_logged && effectiveWait > kUpgradeWait &&
+        theFacade != nullptr && theFacade->ext_hasUnsupportedDbNode()) {
+      effectiveWait = kUpgradeWait;
+      upgrade_logged = true;
+      g_eventLogger->info(
+          "Detected data node without ArbitrationRankWait support, "
+          "shortening arbitrator wait to %u ms",
+          kUpgradeWait);
+    }
+    const NDB_TICKS now = NdbTick_getCurrentTicks();
+    const Uint64 elapsed = NdbTick_Elapsed(start, now).milliSec();
+    if (!db_seen && elapsed >= kColdStartMs) {
+      g_eventLogger->info(
+          "No data nodes connected within %u ms, treating as cold start "
+          "and skipping arbitrator wait",
+          kColdStartMs);
+      DBUG_RETURN(true);
+    }
+    if (elapsed >= effectiveWait) {
+      g_eventLogger->warning(
+          "Did not become arbitrator within %u ms, opening MGM client port "
+          "anyway",
+          effectiveWait);
+      DBUG_RETURN(true);
+    }
+    NdbSleep_MilliSleep(100);
+  }
+}
+
 bool MgmtSrvr::start_transporter(const Config *config) {
   DBUG_ENTER("MgmtSrvr::start_transporter");
 
@@ -598,9 +714,19 @@ bool MgmtSrvr::start() {
     DBUG_RETURN(false);
   }
 
+  /*
+   * Open the MGM service before the arbitrator gate so data nodes can
+   * allocate node ids, fetch config, and establish transporter connections.
+   * While this flag is set, MgmApiSession rejects ordinary MGM client
+   * commands so readiness probes such as `ndb_mgm -e show` still fail until
+   * arbitration has settled.
+   */
+  m_arbitrator_startup_gate_enabled.store(true);
+
   /* Start mgm service */
   if (!start_mgm_service(m_local_config))
   {
+    m_arbitrator_startup_gate_enabled.store(false);
     g_eventLogger->error("Failed to start management service!");
     DBUG_RETURN(false);
   }
@@ -611,15 +737,28 @@ bool MgmtSrvr::start() {
 
   /* Use local MGM port for TransporterRegistry */
   if (!connect_to_self()) {
+    m_arbitrator_startup_gate_enabled.store(false);
     g_eventLogger->error("Failed to connect to ourself!");
     DBUG_RETURN(false);
   }
 
   /* Start config manager */
   if (!m_config_manager->start()) {
+    m_arbitrator_startup_gate_enabled.store(false);
     g_eventLogger->error("Failed to start ConfigManager");
     DBUG_RETURN(false);
   }
+
+  /*
+   * Keep ordinary MGM clients gated until the kernel has assigned this mgmd
+   * the arbitrator role, or ArbitrationRankWait expires.
+   * Keeps `ndb_mgm -e show` (the Helm readiness probe) failing until
+   * arbitration is settled, so data nodes that wait on the probe do
+   * not race ahead and pick a rank-2 fallback arbitrator.  Always
+   * returns true: a timeout here is logged but does not fail startup.
+   */
+  (void)wait_until_arbitrator();
+  m_arbitrator_startup_gate_enabled.store(false);
 
   /* Loglevel thread */
   assert(_isStopThread == false);

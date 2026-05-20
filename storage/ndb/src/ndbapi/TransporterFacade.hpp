@@ -145,6 +145,31 @@ class TransporterFacade : public TransporterCallback,
   bool ext_isConnected(NodeId aNodeId);
   void ext_doConnect(NodeId aNodeId);
 
+  /*
+   * True once this node has accepted the arbitrator role from the
+   * kernel and sent ARBIT_STARTCONF back to Qmgr.  Used by
+   * MgmtSrvr::start() to gate opening the MGM client port behind
+   * successful arbitration.
+   */
+  bool ext_isArbitratorActive() const;
+
+  /*
+   * True if any data node that has reported its version to this MGM
+   * is older than the introduction of ArbitrationRankWait.  Used by
+   * MgmtSrvr::wait_until_arbitrator() to shorten the startup gate
+   * during mixed-version upgrades, since old data nodes will pick a
+   * rank-2 arbitrator immediately regardless of the new wait.
+   */
+  bool ext_hasUnsupportedDbNode() const;
+
+  /*
+   * True if at least one data node is currently connected to this
+   * MGM via the transporter.  Used by MgmtSrvr::wait_until_arbitrator()
+   * to distinguish a cold cluster start (mgmd starts before any
+   * data node) from a warm restart (data nodes already running).
+   */
+  bool ext_hasConnectedDbNode() const;
+
   // Is node available for running transactions
  private:
   bool get_node_alive(NodeId nodeId) const;
