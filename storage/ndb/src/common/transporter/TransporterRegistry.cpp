@@ -603,6 +603,21 @@ TransporterRegistry::set_hostname(Uint32 nodeId,
     }
   }
 #endif
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+  for (Uint32 i = 0; i < nRDMATransporters; i++)
+  {
+    if (theRDMATransporters[i]->remoteNodeId == nodeId)
+    {
+      DEBUG_FPRINTF((stderr,
+        "set_hostname(Node %u) = %s on RDMA trp: %u, trp: %u\n",
+                    nodeId,
+                    new_hostname,
+                    i,
+                    theRDMATransporters[i]->getTransporterIndex()));
+      theRDMATransporters[i]->set_hostname(new_hostname);
+    }
+  }
+#endif
 }
 
 bool TransporterRegistry::init_tls(const char *searchPath, int nodeType,
@@ -1669,9 +1684,8 @@ Uint32 TransporterRegistry::poll_RDMA(TransporterReceiveHandle &recvdata,
 Uint32 TransporterRegistry::spin_check_transporters(
     TransporterReceiveHandle &recvdata [[maybe_unused]]) {
   Uint32 res = 0;
-#ifdef NDB_SHM_TRANSPORTER_SUPPORTED
+#if defined(NDB_SHM_TRANSPORTER_SUPPORTED) || defined(NDB_RDMA_TRANSPORTER_SUPPORTED)
   Uint64 micros_passed = 0;
-  bool any_connected = false;
   Uint64 spintime = Uint64(recvdata.m_spintime);
 
   if (spintime == 0) {
@@ -1679,11 +1693,28 @@ Uint32 TransporterRegistry::spin_check_transporters(
   }
   NDB_TICKS start = NdbTick_getCurrentTicks();
   do {
+    bool any_connected = false;
+#ifdef NDB_SHM_TRANSPORTER_SUPPORTED
+    bool shm_connected = false;
+    res = poll_SHM(recvdata, shm_connected);
+    any_connected = any_connected || shm_connected;
+    if (res) break;
+#endif
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+    bool rdma_connected = false;
+    res = poll_RDMA(recvdata, rdma_connected);
+    any_connected = any_connected || rdma_connected;
+    if (res) break;
+#endif
+    if (!any_connected)
     {
-      res = poll_SHM(recvdata, any_connected);
-      if (res || !any_connected) break;
+      /*
+       * If no spin-capable transporter is connected there is no reason to
+       * continue spinning. TCP is still polled by the normal pollReceive()
+       * path when no SHM/RDMA spintime is active.
+       */
+      break;
     }
-    if (res || !any_connected) break;
     res = check_TCP(recvdata, 0);
     if (res) break;
 #ifdef NDB_HAVE_CPU_PAUSE
@@ -1701,6 +1732,7 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
                                         TransporterReceiveHandle &recvdata
                                         [[maybe_unused]]) {
   bool sleep_state_set [[maybe_unused]] = false;
+  bool spin_checked [[maybe_unused]] = false;
   assert((receiveHandle == &recvdata) || (receiveHandle == nullptr));
 
   Uint32 retVal = 0;
@@ -1744,7 +1776,7 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
    * data in the communication buffer. It is initialised to
    * m_has_data_transporters, all transporters in
    * m_recv_socket_transporters is then added and finally we also
-   * add any shared memory transporters that have data buffered
+   * add any spin-capable transporters that have data buffered
    * and waiting to be retrieved.
    *
    * Thus when a bit in m_read_transporters is set we will unpack
@@ -1755,7 +1787,7 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
    * on the received data as soon as possible. This means that
    * there can be many loops in pollReceive/performReceive before
    * all transporters have been read. We won't poll any
-   * shared memory transporters or call epoll_wait until we have
+   * spin-capable transporters or call epoll_wait until we have
    * handled all transporters from the previous iteration started
    * by a pollReceive.
    *
@@ -1767,7 +1799,7 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
    * clear m_has_data_transporters
    * Retrieve new m_recv_socket_transporters by polling sockets
    * using poll/epoll_wait.
-   * Check all shared memory transporters, any one that has data
+   * Check all spin-capable transporters, any one that has data
    * buffered will set a bit in m_read_transporters.
    *
    * When a new iteration is started, the normal situation is
@@ -1834,10 +1866,8 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
       /**
        * We are preparing to wait for socket events. We will start by
        * polling for a configurable amount of microseconds before we
-       * go to sleep. We will check both shared memory transporters and
-       * TCP transporters in this period. We will check shared memory
-       * transporter four times and then check TCP transporters in a
-       * loop.
+       * go to sleep. We will check spin-capable transporters and
+       * TCP transporters in this period.
        *
        * After this polling period, if we are still waiting for data
        * we will prepare to go to sleep by informing the other side
@@ -1851,6 +1881,7 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
        * that can be woken up by incoming data or a wakeup byte
        * sent to SHM transporter.
        */
+      spin_checked = true;
       res = spin_check_transporters(recvdata);
       if (res) {
         retVal |= res;
@@ -1869,6 +1900,16 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
           timeOutMillis = 0;
         }
       }
+    }
+  }
+#endif
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+  if (!spin_checked && timeOutMillis > 0 &&
+      recvdata.nRDMATransporters > 0 && recvdata.m_spintime > 0) {
+    int res = spin_check_transporters(recvdata);
+    if (res) {
+      retVal |= res;
+      timeOutMillis = 0;
     }
   }
 #endif
@@ -3531,6 +3572,11 @@ Uint32 TransporterRegistry::update_connections(
         if (t->getTransporterType() == tt_SHM_TRANSPORTER) {
           SHM_Transporter *shm_trp = (SHM_Transporter *)t;
           spintime = MAX(spintime, shm_trp->get_spintime());
+        }
+#endif
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+        if (t->getTransporterType() == tt_RDMA_TRANSPORTER) {
+          spintime = MAX(spintime, t->get_spintime());
         }
 #endif
         /**
