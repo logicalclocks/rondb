@@ -94,10 +94,17 @@ func ConverJSONtToSQL(database string, table string, query *api.IndexScanQuery, 
 	}
 
 	if query.Index != nil && query.Index.Order != "" {
+		// SQL `ORDER BY a, b DESC` means `a ASC, b DESC` — DESC only binds to
+		// the immediately preceding column. NDB's SF_Descending applies to
+		// every key column, so we must repeat the direction per column to
+		// stay consistent.
+		direction := strings.ToUpper(query.Index.Order)
+		clauses := make([]string, len(query.Index.KeyColumns))
+		for i, col := range query.Index.KeyColumns {
+			clauses[i] = col + " " + direction
+		}
 		sqlBuilder.WriteString(" ORDER BY ")
-		sqlBuilder.WriteString(strings.Join(query.Index.KeyColumns, ", "))
-		sqlBuilder.WriteString(" ")
-		sqlBuilder.WriteString(strings.ToUpper(query.Index.Order))
+		sqlBuilder.WriteString(strings.Join(clauses, ", "))
 	}
 
 	if query.Limit >= 0 {
