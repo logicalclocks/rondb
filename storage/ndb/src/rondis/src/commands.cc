@@ -543,7 +543,11 @@ static int del_complex_rows(Ndb *ndb,
                  "current_finished_in_loop: %u\n",
       get_ctrl->m_num_keys_outstanding, current_finished_in_loop));
     if (ret_code != 0) return 1;
-    assert(finished > 0);
+    // sendPollNdb returns 0 when its 100ms poll times out before any
+    // transaction completes - legitimate under lock contention (the
+    // loop simply re-polls). Only -1 signals an error, so the bound
+    // is >= 0, matching every other execute_ndb caller.
+    assert(finished >= 0);
   } while (current_finished_in_loop < num_complex_deletes);
   return 0;
 }
