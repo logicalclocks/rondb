@@ -58,6 +58,7 @@ static int _timeout = 120;  // Seconds
 static const char *_wait_nodes = 0;
 static const char *_nowait_nodes = 0;
 static NdbNodeBitmask nowait_nodes_bitmask;
+static NdbNodeBitmask inactive_nodes_bitmask;
 static int _verbose = 1;
 
 static TlsKeyManager tlsKeyManager;
@@ -84,10 +85,10 @@ static struct my_option my_long_options[] = {
      nullptr, GET_BOOL, NO_ARG, 0, 0, 0, nullptr, 0, nullptr},
     {"timeout", 't', "Timeout to wait in seconds", &_timeout, nullptr, nullptr,
      GET_INT, REQUIRED_ARG, 120, 0, 0, nullptr, 0, nullptr},
-    {"wait-nodes", 'w', "Node ids to wait on, e.g. '1,2-4'", &_wait_nodes,
+    {"wait-nodes", 'w', "Node ids to wait on, e.g. '1,2-4' (only wait for active data nodes among the specified)", &_wait_nodes,
      nullptr, nullptr, GET_STR, REQUIRED_ARG, 0, 0, 0, nullptr, 0, nullptr},
     {"nowait-nodes", NDB_OPT_NOSHORT,
-     "Nodes that will not be waited for, e.g. '2,3,4-7'", &_nowait_nodes,
+     "Nodes that will not be waited for, e.g. '2,3,4-7' (wait for all active data nodes not specified)", &_nowait_nodes,
      nullptr, nullptr, GET_STR, REQUIRED_ARG, 0, 0, 0, nullptr, 0, nullptr},
     {"allow-partial-start", NDB_OPT_NOSHORT,
      "Wait for cluster started, allow partial start",
@@ -106,7 +107,7 @@ void catch_signal(int signum)
 #include "../src/common/util/parse_mask.hpp"
 
 static bool
-set_inactive_nodes_as_nowait(NdbMgmHandle mgmsrv)
+update_inactive_nodes_bitmask(NdbMgmHandle mgmsrv)
 {
   int ret;
   ndb_mgm_configuration * conf = ndb_mgm_get_configuration(mgmsrv,0);
@@ -115,6 +116,7 @@ set_inactive_nodes_as_nowait(NdbMgmHandle mgmsrv)
     ndbout_c("Could not get configuration from MGM Server, exiting");
     return false;
   }
+  inactive_nodes_bitmask.clear();
   ConfigValues::Iterator iter(conf->m_config_values);
   for (Uint32 i = 0; i < MAX_NODES; i++)
   {
@@ -149,7 +151,7 @@ set_inactive_nodes_as_nowait(NdbMgmHandle mgmsrv)
       if (!is_active)
       {
         ndbout_c("Node %u: INACTIVE", nodeId);
-        nowait_nodes_bitmask.set(nodeId);
+        inactive_nodes_bitmask.set(nodeId);
       }
     }
     iter.closeSection();
@@ -279,7 +281,9 @@ int getStatus() {
     node = &status->node_states[i];
     switch (node->node_type) {
       case NDB_MGM_NODE_TYPE_NDB:
-        if (!nowait_nodes_bitmask.get(node->node_id)) ndbNodes.push_back(*node);
+        if (!nowait_nodes_bitmask.get(node->node_id) &&
+            !inactive_nodes_bitmask.get(node->node_id))
+          ndbNodes.push_back(*node);
         break;
       case NDB_MGM_NODE_TYPE_MGM:
         /* Don't care about MGM nodes */
@@ -383,11 +387,6 @@ int waitClusterStatus(const char *_addr, const ndb_mgm_node_status _status) {
     return -3;
   }
 
-  if (!set_inactive_nodes_as_nowait(handle))
-  {
-    MGMERR(handle);
-    exit(-1);
-  }
   int attempts = 0;
   int resetAttempts = 0;
   const int MAX_RESET_ATTEMPTS = 10;
@@ -442,6 +441,11 @@ int waitClusterStatus(const char *_addr, const ndb_mgm_node_status _status) {
     }
 
     if (attempts > 0) NdbSleep_MilliSleep(100);
+    if (!update_inactive_nodes_bitmask(handle))
+    {
+      MGMERR(handle);
+      exit(-1);
+    }
     int retval = getStatus();
     if (retval == -3) {
       ndberr << "Connection to "
