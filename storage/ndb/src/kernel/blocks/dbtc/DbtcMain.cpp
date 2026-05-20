@@ -16649,7 +16649,14 @@ void Dbtc::sendDihGetNodesLab(Signal *signal, ScanRecordPtr scanptr,
                     buddyApiPtr.i, op_count);
     if (!ttl_table || (ttl_table && (read_back || fully_replicated) &&
         (rc || rcb) && op_count == 0)) {
-      ndbrequire(!ttl_table || (!lockmode && !holdlock));
+      /*
+       * NdbBlob::atPrepareNdbRecord legitimately reaches here with rcb=1
+       * and holdlock=1: the user asked for LM_CommittedRead/LM_SimpleRead,
+       * NDB upgraded to LM_Read for blob-read atomicity only.  Same policy
+       * as the non-TTL READ_BACKUP branch in sendDihGetNodeReq below.
+       * Genuine user-requested locks (rcb=0) still trip the assertion.
+       */
+      ndbrequire(!ttl_table || rcb || (!lockmode && !holdlock));
       ttl_can_go_to_replica = true;
     }
   }

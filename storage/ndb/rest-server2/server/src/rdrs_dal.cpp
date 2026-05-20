@@ -1910,7 +1910,10 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
     }
 
     if (index_params.order != IndexScanParams::Order::NO_ORDER) {
-      scan_flags |= NdbScanOperation::SF_OrderBy;
+      // SF_OrderByFull (vs SF_OrderBy) lets NDB auto-add the index key columns
+      // into the result mask, so callers can list only the columns they want
+      // in readColumns without hitting NDB error 4341.
+      scan_flags |= NdbScanOperation::SF_OrderByFull;
       if (index_params.order == IndexScanParams::Order::DESC) {
         scan_flags |= NdbScanOperation::SF_Descending;
       }
