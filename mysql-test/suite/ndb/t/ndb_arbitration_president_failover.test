@@ -1,0 +1,167 @@
+###############################################################################
+# ndb_arbitration_president_failover
+#
+# Verifies the RONDB-1058 arbitration ordering when the rank-1 mgmd is down
+# long enough for the rank-2 mysqld to become arbitrator, and the president
+# data node then fails before the mgmd is restarted.
+#
+# Sequence:
+#   1. Stop ndb_mgmd and keep it stopped.
+#   2. Sleep long enough for the rank-2 mysqld to become arbitrator.
+#   3. Kill data node 1, the president in this 2-data-node setup.
+#   4. Restart ndb_mgmd.
+#   5. Let data node 1 restart.
+#   6. Stop data node 2.
+#   7. Start data node 2.
+###############################################################################
+--source include/have_ndb.inc
+
+--let $ndbd1_log= $MYSQLTEST_VARDIR/mysql_cluster.1/ndbd.1/ndbd.log
+--let $mgmd_log= $MYSQLTEST_VARDIR/mysql_cluster.1/ndb_mgmd.1/ndb_mgmd.log
+
+--echo # Sanity: cluster is up
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30);
+SELECT COUNT(*) AS initial_count FROM t1;
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 1/7: stop ndb_mgmd and ask MTR to keep it stopped
+--echo # ------------------------------------------------------------------
+--write_file $MYSQLTEST_VARDIR/tmp/cluster_config.ndb_mgmd.1.1.expect
+wait
+EOF
+
+--exec $NDB_MGM -e "$NDB_MGMD_NODEID stop" > /dev/null 2>&1
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 2/7: wait for rank-2 mysqld arbitrator takeover
+--echo # ------------------------------------------------------------------
+# The old mgmd shutdown can spend up to ~30 s waiting on idle sessions.
+# Add the 5 s ArbitrationRankWait window and slack for PREP/START.
+--sleep 45
+
+--let $assert_text= rank-2 mysqld became arbitrator before president kill
+--let $assert_file= $ndbd1_log
+--let $assert_select= Started arbitrator node $NDB_MYSQLD_RANK2_NODEID \[ticket=
+--let $assert_count_condition= >= 1
+--source include/assert_grep.inc
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 3/7: kill president data node $NDB_NDBD_1_NODEID
+--echo # ------------------------------------------------------------------
+# MTR does not have an .expect restart path for ndbd processes.  Kill the
+# data-node child, not the MTR-monitored angel.  StopOnError=0 keeps the
+# angel alive; it will reconnect and restart the child once mgmd is back.
+--perl
+  use strict;
+  my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+  my $log = "$vardir/mysql_cluster.1/ndbd.1/ndbd.log";
+  open(my $fh, '<', $log) or die "open $log: $!";
+  my $pid;
+  while (my $line = <$fh>) {
+    if ($line =~ /Wrote data node PID: (\d+) into pidfile/ ||
+        $line =~ /Angel pid: \d+ started child: (\d+)/) {
+      $pid = $1;
+    }
+  }
+  close($fh);
+  die "Could not find data-node child PID in $log" unless $pid;
+  kill 'KILL', $pid or die "Failed to kill data-node child $pid: $!";
+  my $start = time();
+  while (kill 0, $pid) {
+    die "Timeout waiting for data-node child $pid to exit"
+      if time() - $start > 60;
+    select(undef, undef, undef, 0.5);
+  }
+EOF
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 4/7: restart ndb_mgmd
+--echo # ------------------------------------------------------------------
+--remove_file $MYSQLTEST_VARDIR/tmp/cluster_config.ndb_mgmd.1.1.expect
+--write_file $MYSQLTEST_VARDIR/tmp/cluster_config.ndb_mgmd.1.1.expect
+restart:--config-change
+EOF
+
+# Wait for MTR to process the restart directive and remove the expect file.
+--perl
+  use strict;
+  my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+  my $expect_file = "$vardir/tmp/cluster_config.ndb_mgmd.1.1.expect";
+  my $timeout = 120;
+  my $start = time();
+  while (-f $expect_file) {
+    die "Timeout waiting for MTR to process .expect file"
+      if time() - $start > $timeout;
+    select(undef, undef, undef, 0.5);
+  }
+EOF
+
+# Wait until ordinary MGM commands are accepted again.  During the startup
+# arbitration gate, data-node bootstrap commands are allowed but `show` is not.
+--perl
+  use strict;
+  my $ndb_mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+  my $timeout = 120;
+  my $start = time();
+  while (system("$ndb_mgm -e \"show\" >/dev/null 2>&1") != 0) {
+    die "Timeout waiting for ndb_mgm show to succeed"
+      if time() - $start > $timeout;
+    select(undef, undef, undef, 0.5);
+  }
+EOF
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 5/7: wait for data node $NDB_NDBD_1_NODEID to restart
+--echo # ------------------------------------------------------------------
+--exec $NDB_WAITER --wait-nodes=$NDB_NDBD_1_NODEID --timeout=180 > /dev/null 2>&1
+SELECT COUNT(*) AS after_node1_restart FROM t1;
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 6/7: stop data node $NDB_NDBD_2_NODEID
+--echo # ------------------------------------------------------------------
+--exec $NDB_MGM -e "$NDB_NDBD_2_NODEID restart -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --wait-nodes=$NDB_NDBD_2_NODEID --not-started --timeout=120 >> $NDB_TOOLS_OUTPUT
+SELECT COUNT(*) AS after_node2_stop FROM t1;
+
+--echo
+--echo # ------------------------------------------------------------------
+--echo # Step 7/7: start data node $NDB_NDBD_2_NODEID
+--echo # ------------------------------------------------------------------
+--exec $NDB_MGM -e "$NDB_NDBD_2_NODEID start" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --timeout=180 >> $NDB_TOOLS_OUTPUT
+SELECT COUNT(*) AS final_count FROM t1;
+
+DROP TABLE t1;
+
+--echo
+--echo # Verify the mgmd startup gate ran during the restart
+--let $assert_text= mgmd startup gate ran after president failure
+--let $assert_file= $mgmd_log
+--let $assert_select= (Became arbitrator, opening MGM client port|Did not become arbitrator within .* ms, opening MGM client port anyway)
+--let $assert_count_condition= >= 1
+--let $assert_only_after= Shutdown complete
+--source include/assert_grep.inc
+
+--disable_query_log ONCE
+CALL mtr.add_suppression("cluster disconnect");
+--disable_query_log ONCE
+CALL mtr.add_suppression("Got NDB error");
+--disable_query_log ONCE
+CALL mtr.add_suppression("Node .* missed heartbeat");
+--disable_query_log ONCE
+CALL mtr.add_suppression("Node .* declared dead");
+
+# Clean up the config.ini that MTR generated for --config-change so the
+# post-test check-testcase doesn't see a leftover file in var/tmp.
+--remove_file $MYSQLTEST_VARDIR/tmp/ndb_config.ini
+
+# Force a full restart for the next test since the mgmd was restarted in
+# --config-file mode and a data node was killed directly.
+--source include/force_restart.inc

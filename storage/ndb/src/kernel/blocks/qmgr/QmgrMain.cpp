@@ -3125,6 +3125,7 @@ void Qmgr::initData(Signal *signal) {
   Uint32 hbDBDB = 1500;
   Uint32 arbitTimeout = 1000;
   Uint32 arbitMethod = ARBIT_METHOD_DEFAULT;
+  Uint32 arbitRankWait = 60000;
   Uint32 ccInterval = 0;
   c_restartPartialTimeout = 30000;
   c_restartPartitionedTimeout = Uint32(~0);
@@ -3134,6 +3135,7 @@ void Qmgr::initData(Signal *signal) {
   ndb_mgm_get_int_parameter(p, CFG_DB_HEARTBEAT_INTERVAL, &hbDBDB);
   ndb_mgm_get_int_parameter(p, CFG_DB_ARBIT_TIMEOUT, &arbitTimeout);
   ndb_mgm_get_int_parameter(p, CFG_DB_ARBIT_METHOD, &arbitMethod);
+  ndb_mgm_get_int_parameter(p, CFG_DB_ARBIT_RANK_WAIT, &arbitRankWait);
   ndb_mgm_get_int_parameter(p, CFG_DB_START_PARTIAL_TIMEOUT,
                             &c_restartPartialTimeout);
   ndb_mgm_get_int_parameter(p, CFG_DB_START_PARTITION_TIMEOUT,
@@ -3168,6 +3170,8 @@ void Qmgr::initData(Signal *signal) {
 
   arbitRec.method = (ArbitRec::Method)arbitMethod;
   arbitRec.state = ARBIT_NULL;  // start state for all nodes
+  arbitRec.rankWait = arbitRankWait;
+  arbitRec.findStartTime = NdbTick_getCurrentTicks();
   DEB_ARBIT(("Arbit state = ARBIT_INIT init"));
   arbitRec.apiMask[0].clear();  // prepare for ARBIT_CFG
 
@@ -5411,6 +5415,40 @@ void Qmgr::handleEnableComApiRegreq(Signal *signal, Uint32 node) {
     jam();
     apiNodePtr.p->phase = ZAPI_ACTIVE;
     sendApiRegConf(signal, node);
+    /*
+     * If the cluster has fallen back to a rank-2 arbitrator (because
+     * no rank-1 candidate was active when stateArbitFind() ran out of
+     * patience), and the API node that just became ZAPI_ACTIVE is a
+     * rank-1 candidate (typically ndb_mgmd), the president demotes the
+     * current rank-2 arbitrator and triggers a re-election so the new
+     * rank-1 candidate is picked.  This is the counterpart to the
+     * mgmd-side startup gate in MgmtSrvr::start(): without it, a slow
+     * mgmd would always miss its arbitrator-assignment window and fall
+     * back through the timeout path.
+     *
+     * We will also promote the MGM server even if the current arbitrator
+     * is Rank 1 and an API node. So promotion happens when a higher
+     * ranking node comes around, If the MGM server is the starting node
+     * and it has Rank 1 it will be promoted except when the current
+     * arbitrator is also a MGM server.
+     *
+     * The default in RonDB is to run with a single MGM server.
+     */
+    if (cpresident == getOwnNodeId() &&
+        arbitRec.method == ArbitRec::METHOD_DEFAULT &&
+        arbitRec.state == ARBIT_RUN &&
+        arbitRec.node != 0 &&
+        arbitRec.apiMask[1].get(node)) {
+      jam();
+      NodeInfo::NodeType current_arbitration_type =
+        getNodeInfo(arbitRec.node).getType();
+      if ((arbitRec.apiMask[2].get(arbitRec.node) ||
+          (current_arbitration_type == NODE_TYPE_API &&
+           type == NODE_TYPE_MGM))) {
+        jam();
+        handleArbitApiPromotion(signal);
+      }
+    }
   }
   jam();
   /**
@@ -7054,6 +7092,54 @@ void Qmgr::handleArbitApiFail(Signal *signal, Uint16 nodeId) {
 }
 
 /**
+ * Handle promotion of a rank-1 arbitrator candidate.  Called by the
+ * president when an API node becomes ZAPI_ACTIVE while the current
+ * arbitrator is a rank-2 fallback.  Tells the rank-2 arbitrator to
+ * stop and re-runs the FIND -> PREP1 -> PREP2 -> START sequence so
+ * the new rank-1 candidate takes over.  The mgmd-side startup gate
+ * in MgmtSrvr::start() exits its wait loop once ArbitMgr::doStart()
+ * is invoked again on the newly elected mgmd.
+ */
+void Qmgr::handleArbitApiPromotion(Signal *signal) {
+  jam();
+  ndbrequire(cpresident == getOwnNodeId());
+  ndbrequire(arbitRec.method == ArbitRec::METHOD_DEFAULT);
+  ndbrequire(arbitRec.state == ARBIT_RUN);
+  ndbrequire(arbitRec.node != 0);
+
+  /*
+   * Tell the current rank-2 arbitrator to stop its thread so it does
+   * not keep responding to ARBIT_CHOOSEREQ with a stale ticket.  Even
+   * if the message is lost, mismatched tickets at the new arbitrator
+   * round will reject any stray CHOOSE attempts.
+   */
+  BlockReference blockRef = calcApiClusterMgrBlockRef(arbitRec.node);
+  ArbitSignalData *sd = (ArbitSignalData *)&signal->theData[0];
+  sd->sender = getOwnNodeId();
+  sd->code = 0;
+  sd->node = arbitRec.node;
+  sd->ticket = arbitRec.ticket;
+  sd->mask.clear();
+  sendSignal(blockRef, GSN_ARBIT_STOPORD, signal,
+             ArbitSignalData::SignalLength, JBB);
+
+  /*
+   * Report the demotion as an arbitrator-state transition so it lands
+   * in every data node's local log (via reportArbitEvent) as well as
+   * the cluster log.  Operators see:
+   *   "Lost arbitrator node N - demoted by rank 1 promotion [state=6]"
+   */
+  arbitRec.code = ArbitCode::ApiDemoted;
+  reportArbitEvent(signal, NDB_LE_ArbitState);
+
+  arbitRec.node = 0;
+  arbitRec.state = ARBIT_INIT;
+  DEB_ARBIT(("Arbit state = ARBIT_INIT from RUN (rank 1 promotion)"));
+  arbitRec.newstate = true;
+  startArbitThread(signal);
+}
+
+/**
  * Handle NDB node add.  Ignore if arbitration thread not yet
  * started.  If PREP is not ready, go back to INIT.  Otherwise
  * the new node gets arbitrator and ticket once we reach RUN state.
@@ -7401,6 +7487,7 @@ void Qmgr::stateArbitFind(Signal *signal) {
     CRASH_INSERTION((Uint32)910 + arbitRec.state);
 
     arbitRec.code = 0;
+    arbitRec.findStartTime = NdbTick_getCurrentTicks();
     arbitRec.newstate = false;
   }
 
@@ -7418,23 +7505,78 @@ void Qmgr::stateArbitFind(Signal *signal) {
 
     case ArbitRec::METHOD_DEFAULT: {
       NodeRecPtr aPtr;
-      // Select the best available API node as arbitrator
-      for (unsigned rank = 1; rank <= 2; rank++) {
+      const unsigned stop = NodeBitmask::NotFound;
+
+      /*
+       * Always prefer a rank-1 arbitrator candidate (e.g. ndb_mgmd).
+       * If none is currently ZAPI_ACTIVE, ArbitrationRankWait controls
+       * how long we wait for one to appear before falling back to
+       * rank 2.  rankWait == 0 disables the wait and preserves the
+       * pre-RONDB-1058 behaviour of picking rank 2 immediately.
+       */
+      jam();
+      aPtr.i = 0;
+      while ((aPtr.i = arbitRec.apiMask[1].find(aPtr.i + 1)) != stop) {
         jam();
-        aPtr.i = 0;
-        const unsigned stop = NodeBitmask::NotFound;
-        while ((aPtr.i = arbitRec.apiMask[rank].find(aPtr.i + 1)) != stop) {
+        ptrAss(aPtr, nodeRec);
+        if (aPtr.p->phase != ZAPI_ACTIVE) continue;
+        ndbrequire(c_connectedNodes.get(aPtr.i));
+        arbitRec.node = aPtr.i;
+        arbitRec.state = ARBIT_PREP1;
+        DEB_ARBIT(("2:Arbit state = ARBIT_PREP1"));
+        arbitRec.newstate = true;
+        stateArbitPrep(signal);
+        return;
+      }
+
+      /*
+       * No rank-1 candidate active.  If the wait window has not yet
+       * elapsed, return without selecting so runArbitThread() will
+       * re-enter stateArbitFind() on the next CONTINUEB tick.
+       */
+      if (!arbitRec.rankWaitExpired()) {
+        jam();
+        if (arbitRec.getTimediff() > getArbitTimeout()) {
           jam();
-          ptrAss(aPtr, nodeRec);
-          if (aPtr.p->phase != ZAPI_ACTIVE) continue;
-          ndbrequire(c_connectedNodes.get(aPtr.i));
-          arbitRec.node = aPtr.i;
-          arbitRec.state = ARBIT_PREP1;
-          DEB_ARBIT(("2:Arbit state = ARBIT_PREP1"));
-          arbitRec.newstate = true;
-          stateArbitPrep(signal);
-          return;
+          warningEvent(
+              "Waiting up to %u ms for a rank 1 arbitrator (e.g. ndb_mgmd)",
+              arbitRec.rankWait);
+          arbitRec.setTimestamp();
         }
+        return;
+      }
+
+      /* Wait expired (or feature disabled): allow rank-2 fallback. */
+      jam();
+      aPtr.i = 0;
+      while ((aPtr.i = arbitRec.apiMask[2].find(aPtr.i + 1)) != stop) {
+        jam();
+        ptrAss(aPtr, nodeRec);
+        if (aPtr.p->phase != ZAPI_ACTIVE) continue;
+        ndbrequire(c_connectedNodes.get(aPtr.i));
+        arbitRec.node = aPtr.i;
+        arbitRec.state = ARBIT_PREP1;
+        DEB_ARBIT(("3:Arbit state = ARBIT_PREP1 (rank 2 fallback)"));
+        arbitRec.newstate = true;
+        if (arbitRec.rankWait > 0) {
+          jam();
+          /*
+           * Log both via infoEvent (cluster log / subscribers) and via
+           * g_eventLogger->info (local data-node log).  The local log
+           * line survives a mgmd outage and gives operators a full
+           * trail of arbitrator transitions in ndbd.log.
+           */
+          infoEvent(
+              "Arbitrator picked from rank 2 (node %u) after waiting %u ms "
+              "for rank 1",
+              (unsigned)arbitRec.node, arbitRec.rankWait);
+          g_eventLogger->info(
+              "Arbitrator picked from rank 2 (node %u) after waiting %u ms "
+              "for rank 1",
+              (unsigned)arbitRec.node, arbitRec.rankWait);
+        }
+        stateArbitPrep(signal);
+        return;
       }
 
       /* If the president cannot find a suitable arbitrator then

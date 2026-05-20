@@ -419,6 +419,15 @@ class Qmgr : public SimulatedBlock {
     Uint32 timeout;           // timeout for CHOOSE state
     NDB_TICKS timestamp;      // timestamp for checking timeouts
 
+    /*
+     * Time to wait for a rank-1 arbitrator (e.g. ndb_mgmd) to become
+     * ZAPI_ACTIVE before falling back to a rank-2 candidate.  0 disables
+     * the wait and restores the pre-RONDB-1058 behaviour of picking
+     * rank 2 immediately when no rank 1 is currently available.
+     */
+    Uint32 rankWait;             // from CFG_DB_ARBIT_RANK_WAIT (ms)
+    NDB_TICKS findStartTime;     // when current ARBIT_FIND state began
+
     inline bool match(ArbitSignalData *sd) {
       return node == sd->node && ticket.match(sd->ticket);
     }
@@ -428,6 +437,12 @@ class Qmgr : public SimulatedBlock {
     inline Uint64 getTimediff() {
       const NDB_TICKS now = NdbTick_getCurrentTicks();
       return NdbTick_Elapsed(timestamp, now).milliSec();
+    }
+
+    inline bool rankWaitExpired() const {
+      if (rankWait == 0) return true;
+      const NDB_TICKS now = NdbTick_getCurrentTicks();
+      return NdbTick_Elapsed(findStartTime, now).milliSec() >= rankWait;
     }
   };
 
@@ -698,6 +713,7 @@ class Qmgr : public SimulatedBlock {
   // Interface to arbitration module
   void handleArbitStart(Signal *signal);
   void handleArbitApiFail(Signal *signal, Uint16 nodeId);
+  void handleArbitApiPromotion(Signal *signal);
   void handleArbitNdbAdd(Signal *signal, Uint16 nodeId);
   void handleArbitCheck(Signal *signal);
 
