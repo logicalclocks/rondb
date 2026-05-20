@@ -212,14 +212,24 @@ close_finished_transactions(KeyStorage *key_storage,
                             Uint32 loop_count,
                             Uint32 current_index) {
   for (Uint32 i = 0; i < loop_count; i++) {
+    // Index every field with inx, not i: they differ for MGET batches
+    // past the first MAX_PARALLEL_KEY_OPS keys (current_index != 0).
     Uint32 inx = current_index + i;
     if (key_storage[inx].m_close_flag) {
       DEB_DEL_CMD(("Close finished transaction from key: %u\n",
-        key_storage[i].m_index));
+        key_storage[inx].m_index));
       assert(get_ctrl->m_num_transactions > 0);
       get_ctrl->m_num_transactions--;
-      get_ctrl->m_ndb->closeTransaction(key_storage[i].m_trans);
-      key_storage[i].m_trans = nullptr;
+      get_ctrl->m_ndb->closeTransaction(key_storage[inx].m_trans);
+      key_storage[inx].m_trans = nullptr;
+      // Clear m_close_flag now that the transaction is closed.
+      // rondb_get_func sweeps the simple-path batch here and then
+      // sweeps every key again at the end; leaving the flag set makes
+      // the second sweep re-close an already-closed key, underflowing
+      // m_num_transactions and double-closing a nulled m_trans. A key
+      // the complex path re-opens gets the flag set again by its
+      // callback, so the final sweep still closes that transaction.
+      key_storage[inx].m_close_flag = false;
     }
   }
 }
