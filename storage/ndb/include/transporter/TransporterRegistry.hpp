@@ -199,7 +199,7 @@ struct TransporterReceiveData {
   Uint32 m_stop_trp_id;
   /**
    * Spintime calculated as maximum of currently connected transporters.
-   * Only applies to shared memory transporters.
+   * Applies to transporters that support bounded receive-side spin polling.
    */
   Uint32 m_spintime;
 
