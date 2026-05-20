@@ -402,16 +402,29 @@ GROUP BY o_year
 ORDER BY o_year;
 ```
 
-### Future: Outer Join Aggregation Support (Priority: Low)
+### Phase 21: Outer Join Aggregation Pushdown at MySQL Handler (Priority: High)
 
-To support aggregation with outer joins, DBSPJ would need to participate in
-the aggregation when it produces NULL-extended rows for unmatched outer joins:
-- When LQHKEYREF arrives for an outer-joined lookup, DBSPJ must inject a
-  NULL-extended row into the aggregation engine (either at DBSPJ level or by
-  forwarding to DBLQH with a special "null row" marker)
-- Requires architectural changes to the aggregation protocol
-- The outer join restriction (Phase 14) is already implemented — this would
-  lift that restriction
+**Status: IN PROGRESS**
+
+The entire data node stack (DBLQH, DBSPJ, NDB API) already supports outer join
+aggregation — DBSPJ tracks matched/unmatched parents and injects null-extended
+rows via JOIN_AGG_NULL_ROW_REQ/CONF. The `testOuterJoinAggNdbApi` suite has
+17 tests covering scan-lookup, scan-scan, COUNT(*) vs COUNT(col), multi-batch.
+
+**What's implemented:**
+- `ndb_join_pushdown_aggregate_outer_join` THDVAR (default OFF) gates the feature
+- `ndb_push_aggregation()` accepts `allow_outer_join` parameter
+- Semi-join and anti-join remain rejected (not yet supported at data node level)
+- `build_query()` in `ha_ndbcluster_push.cc` already handles outer join nest
+  metadata (setFirstInnerJoin, setUpperJoin, MatchAll default) — no changes needed
+
+**What's needed:**
+- MTR tests: update Test 35 (LEFT JOIN now pushable when enabled), add
+  Tests 36-44 covering COUNT(*), COUNT(col), SUM, implicit agg, HAVING,
+  ORDER BY+LIMIT, 3-way join, multi-batch
+- Verify AccessPath surgery works for outer join NLJs
+- Verify chain topology reordering preserves outer join nest structure
+- Test with multi-node configuration in `ndb_push_agg_dist` suite
 
 ### Test Suite Fixes: Non-Deterministic Result Order (Priority: Medium)
 

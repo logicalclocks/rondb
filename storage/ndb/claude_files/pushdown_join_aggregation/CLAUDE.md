@@ -87,6 +87,8 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
   features (Phases A–H + Phase P-GB). Phase A + A0 + B.1 landed; Phase B.2
   next. Portable copy of the plan-mode file — use this to resume the
   session on another machine.
+- `where_filter_analysis.md` — WHERE filter + pushed aggregation bug analysis (3 bugs, AccessPath tree shapes, condition push pipeline)
+- `where_filter_analysis.html` — Visual version with SVG diagrams
 
 ### Key Source Files
 - `DblqhMain.cpp` — Signal handlers for JOIN_AGG_SETUP/COMPLETE/RELEASE, scan processing, sendScanFragConf

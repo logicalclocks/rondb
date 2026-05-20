@@ -6156,9 +6156,19 @@ RonSQLPreparer::execute_join()
       std::basic_ostream<char>& errout = *m_conf.err_stream;
       errout << "Join query failed: " << err.message
              << " (code " << err.code << ")" << std::endl;
+      const NdbError::Classification classification = err.classification;
       query->close();
       queryDef->destroy();
       qb->destroy();
+      // Schema errors (e.g. WrongSchemaVersion 20021 from DBSPJ after a
+      // concurrent DDL) must invalidate the cached dictionary before retry,
+      // otherwise every retry resends the same stale schema version.  Route
+      // through RonSQLMaybeStaleSchema so handle_ronsql_exception calls
+      // unload_schema(); the next attempt's RonSQLPreparer load() then
+      // fetches the fresh schema.
+      if (classification == NdbError::SchemaError) {
+        throw RonSQLMaybeStaleSchema("Join query execution failed.");
+      }
       throw RonSQLRetryableError("Join query execution failed.");
     }
 
@@ -8017,6 +8027,24 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
     }
     default:
       abort();
+    }
+    if (opDefs[i] == NULL) {
+      // NdbQueryBuilder reports QRY_UNRELATED_INDEX when the index's
+      // recorded m_table_id / m_table_version disagree with the table's
+      // current ObjectId / ObjectVersion — a stale-index condition that
+      // arises after a concurrent DROP INDEX / CREATE INDEX on a joined
+      // child table, when the dict cache holds a stale index against a
+      // freshly reloaded table.  The builder classifies it as
+      // ApplicationError (not SchemaError), so the generic SRE handler
+      // would treat it as permanent and skip retry.  Route through
+      // RonSQLMaybeStaleSchema so handle_ronsql_exception calls
+      // unload_schema(); if the schema actually changed, the next retry's
+      // RonSQLPreparer.load() picks up consistent table + index objects.
+      const NdbError& qb_err = qb->getNdbError();
+      if (qb_err.code == 4809 /* QRY_UNRELATED_INDEX */) {
+        throw RonSQLMaybeStaleSchema("Failed to create child operation"
+                                     " (index/table version mismatch).");
+      }
     }
     require_run(opDefs[i] != NULL, "Failed to create child operation.");
   }

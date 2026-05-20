@@ -747,7 +747,8 @@ sendSetupReq(SignalSender &ss, Uint32 nodeId,
              const std::vector<Uint32> &aggProgram,
              const TableMeta &meta,
              Uint32 strategy,
-             Uint32 &aggStateKeyOut)
+             Uint32 &aggStateKeyOut,
+             Uint32 &ownerInstanceOut)
 {
   V("\n--- JOIN_AGG_SETUP_REQ → node %u ---\n", nodeId);
 
@@ -791,7 +792,12 @@ sendSetupReq(SignalSender &ss, Uint32 nodeId,
     const JoinAggSetupConf *conf =
       reinterpret_cast<const JoinAggSetupConf *>(resp->getDataPtr());
     aggStateKeyOut = conf->aggStateKey;
-    V("SETUP_CONF: aggStateKey=%u\n", aggStateKeyOut);
+    /* Phase L (E.1): owner LDM instance for routing every subsequent
+     * JOIN_AGG_COMPLETE_REQ — must be addressed to numberToBlock(
+     * DBLQH, ownerInstance) on the same nodeId. */
+    ownerInstanceOut = conf->ownerInstance;
+    V("SETUP_CONF: aggStateKey=%u ownerInstance=%u\n",
+      aggStateKeyOut, ownerInstanceOut);
     return 0;
   } else if (gsn == GSN_JOIN_AGG_SETUP_REF) {
     const JoinAggSetupRef *ref =
@@ -1100,9 +1106,11 @@ extractGroupKey(const std::vector<Uint8> &key)
 static int
 sendCompleteReq(SignalSender &ss, Uint32 nodeId,
                 Uint32 aggStateKey,
+                Uint32 ownerInstance,
                 Uint32 maxBatchRows)
 {
-  V("\n--- JOIN_AGG_COMPLETE_REQ → node %u ---\n", nodeId);
+  V("\n--- JOIN_AGG_COMPLETE_REQ → node %u, LDM %u ---\n",
+    nodeId, ownerInstance);
 
   SimpleSignal ssig;
   JoinAggCompleteReq *req =
@@ -1116,8 +1124,11 @@ sendCompleteReq(SignalSender &ss, Uint32 nodeId,
   req->aggStateKey = aggStateKey;
   req->maxBatchRows = maxBatchRows;
 
-  /* COMPLETE_REQ is handled by Dblqh instance 1 (not the proxy) */
-  Uint16 recBlock = numberToBlock(DBLQH, 1);
+  /* Phase L (E.1): COMPLETE_REQ must be routed to the owner LDM
+   * instance reported in SETUP_CONF — DBLQH asserts
+   * state->m_owner_instance == instance().  Multi-LDM nodes can pick
+   * any instance via (aggStateKey % workers) + 1. */
+  Uint16 recBlock = numberToBlock(DBLQH, ownerInstance);
   ssig.set(ss, 0, recBlock, GSN_JOIN_AGG_COMPLETE_REQ,
            JoinAggCompleteReq::SignalLength);
 
@@ -1366,13 +1377,16 @@ testSumGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
 
   /* 1. Setup on all data nodes */
   std::map<Uint32, Uint32> aggStateKeys;  /* nodeId → aggStateKey */
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
                      JoinAggSetupReq::STRATEGY_MUTEX_BASED,
-                     key) != 0)
+                     key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   /* 2. Scan all fragments */
@@ -1399,7 +1413,7 @@ testSumGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0)
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0)
       return -1;
 
     if (receiveResults(ss, allResults, totalGroups) != 0)
@@ -1486,13 +1500,16 @@ testCountSumNoGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
 
   /* 1. Setup on all data nodes */
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
                      JoinAggSetupReq::STRATEGY_MUTEX_BASED,
-                     key) != 0)
+                     key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   /* 2. Scan all fragments */
@@ -1519,7 +1536,7 @@ testCountSumNoGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0)
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0)
       return -1;
 
     if (receiveResults(ss, allResults, totalGroups) != 0)
@@ -1605,13 +1622,16 @@ testHighCardinalityGroupBy(Ndb * /*ndb*/, SignalSender &ss,
 
   /* 1. Setup on all data nodes — MUTEX_FREE strategy */
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
                      JoinAggSetupReq::STRATEGY_MUTEX_FREE,
-                     key) != 0)
+                     key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   /* 2. Scan all fragments */
@@ -1634,7 +1654,7 @@ testHighCardinalityGroupBy(Ndb * /*ndb*/, SignalSender &ss,
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0)
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0)
       return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0)
       return -1;
@@ -1717,15 +1737,18 @@ testEviction(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
 
   /* 1. Setup on all data nodes */
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
                      JoinAggSetupReq::STRATEGY_MUTEX_BASED,
-                     key) != 0) {
+                     key, owner) != 0) {
       restarter.insertErrorInAllNodes(0);
       return -1;
     }
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   /* 2. Scan all fragments — expect interleaved TRANSID_AI (evictions) */
@@ -1757,7 +1780,7 @@ testEviction(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   std::vector<AggResult> finalResults;
   Uint32 finalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) {
       restarter.insertErrorInAllNodes(0);
       return -1;
     }
@@ -1985,13 +2008,16 @@ testLqhKeyReq(Ndb *ndb, SignalSender &ss, const TableMeta &meta,
 
   /* 1. Setup on all data nodes */
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
                      JoinAggSetupReq::STRATEGY_MUTEX_BASED,
-                     key) != 0)
+                     key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   /* 2. Send LQHKEYREQ for each key value */
@@ -2080,7 +2106,7 @@ testLqhKeyReq(Ndb *ndb, SignalSender &ss, const TableMeta &meta,
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0)
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0)
       return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0)
       return -1;
@@ -2154,12 +2180,15 @@ testMaxGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   auto aggProg = buildAggProgram_MaxGroupBy(meta.attrIdA, meta.attrIdB);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -2174,7 +2203,7 @@ testMaxGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
   }
   for (Uint32 nd : uniqueNodes) {
@@ -2244,12 +2273,15 @@ testMinGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   auto aggProg = buildAggProgram_MinGroupBy(meta.attrIdA, meta.attrIdB);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -2264,7 +2296,7 @@ testMinGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
   }
   for (Uint32 nd : uniqueNodes) {
@@ -2333,12 +2365,15 @@ testMaxMinNoGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   auto aggProg = buildAggProgram_CountMaxMin(meta.attrIdB);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -2353,7 +2388,7 @@ testMaxMinNoGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
   }
   for (Uint32 nd : uniqueNodes) {
@@ -2449,12 +2484,15 @@ testEmptyTable(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   auto aggProg = buildAggProgram_CountSum(meta.attrIdB);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -2473,7 +2511,7 @@ testEmptyTable(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
   }
   for (Uint32 nd : uniqueNodes) {
@@ -2543,12 +2581,15 @@ testMultiRowPerGroup(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdB, meta.attrIdC);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -2563,7 +2604,7 @@ testMultiRowPerGroup(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
   }
   for (Uint32 nd : uniqueNodes) {
@@ -2633,12 +2674,15 @@ testAllAggsGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   auto aggProg = buildAggProgram_AllAggsGroupBy(meta.attrIdB, meta.attrIdC);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -2653,7 +2697,7 @@ testAllAggsGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
   }
   for (Uint32 nd : uniqueNodes) {
@@ -2821,12 +2865,15 @@ testFlowControl(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -2843,7 +2890,7 @@ testFlowControl(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   Uint32 totalGroups = 0;
   Uint32 totalSendReqs = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 2) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 2) != 0) return -1;
     Uint32 sendReqs = 0;
     if (receiveResultsSmallBatch(ss, allResults, totalGroups,
                                   2, sendReqs) != 0)
@@ -2921,12 +2968,15 @@ testSingleRow(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   auto aggProg = buildAggProgram_CountSum(meta.attrIdB);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -2941,7 +2991,7 @@ testSingleRow(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
   }
   for (Uint32 nd : uniqueNodes) {
@@ -3002,12 +3052,15 @@ testNegativeValues(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   auto aggProg = buildAggProgram_CountMaxMin(meta.attrIdB);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -3022,7 +3075,7 @@ testNegativeValues(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
   }
   for (Uint32 nd : uniqueNodes) {
@@ -3102,12 +3155,15 @@ testMutexFreeMultiRowGroup(Ndb * /*ndb*/, SignalSender &ss,
   auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdB, meta.attrIdC);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_FREE, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_FREE, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -3122,7 +3178,7 @@ testMutexFreeMultiRowGroup(Ndb * /*ndb*/, SignalSender &ss,
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
   }
   for (Uint32 nd : uniqueNodes) {
@@ -3192,12 +3248,15 @@ testCountMergeMutexFree(Ndb * /*ndb*/, SignalSender &ss,
   auto aggProg = buildAggProgram_CountGroupBy(meta.attrIdA, meta.attrIdB);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_FREE, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_FREE, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -3212,7 +3271,7 @@ testCountMergeMutexFree(Ndb * /*ndb*/, SignalSender &ss,
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
   }
   for (Uint32 nd : uniqueNodes) {
@@ -3282,12 +3341,15 @@ testNoGroupByMutexFree(Ndb * /*ndb*/, SignalSender &ss,
   auto aggProg = buildAggProgram_CountSum(meta.attrIdB);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_FREE, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_FREE, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -3302,7 +3364,7 @@ testNoGroupByMutexFree(Ndb * /*ndb*/, SignalSender &ss,
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
   }
   for (Uint32 nd : uniqueNodes) {
@@ -3374,14 +3436,17 @@ testEvictionMutexFree(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_FREE, key) != 0) {
+                     JoinAggSetupReq::STRATEGY_MUTEX_FREE, key, owner) != 0) {
       restarter.insertErrorInAllNodes(0);
       return -1;
     }
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -3407,7 +3472,7 @@ testEvictionMutexFree(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   std::vector<AggResult> finalResults;
   Uint32 finalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) {
       restarter.insertErrorInAllNodes(0);
       return -1;
     }
@@ -3572,12 +3637,15 @@ testRowsExamined(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   auto aggProg = buildAggProgram_CountSum(meta.attrIdB);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();
@@ -3615,7 +3683,7 @@ testRowsExamined(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   std::vector<AggResult> allResults;
   Uint32 totalGroups = 0;
   for (Uint32 nd : uniqueNodes) {
-    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], ownerInstances[nd], 1000) != 0) return -1;
     if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
   }
   for (Uint32 nd : uniqueNodes) {
@@ -3655,12 +3723,15 @@ testReleaseWithoutComplete(Ndb * /*ndb*/, SignalSender &ss,
   auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
 
   std::map<Uint32, Uint32> aggStateKeys;
+  std::map<Uint32, Uint32> ownerInstances;  /* nodeId → ownerInstance */
   for (Uint32 nd : uniqueNodes) {
     Uint32 key = 0;
+    Uint32 owner = 0;
     if (sendSetupReq(ss, nd, aggProg, meta,
-                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key, owner) != 0)
       return -1;
     aggStateKeys[nd] = key;
+    ownerInstances[nd] = owner;
   }
 
   auto attrInfo = buildAttrInfo();

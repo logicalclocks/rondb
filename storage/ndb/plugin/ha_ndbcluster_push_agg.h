@@ -52,6 +52,22 @@ class NdbQueryOptions;
 class NdbScanOperation;
 
 /**
+ * Check whether there is a non-pushable FILTER between the root AccessPath
+ * and the table-scan / index-lookup leaf nodes.  Such a filter applies a
+ * per-row condition that must be evaluated BEFORE aggregation.  When NDB
+ * returns pre-aggregated results, there is no opportunity for MySQL to
+ * evaluate per-row filters, so aggregation cannot be pushed.
+ *
+ * A FILTER whose condition references only the child table's columns is
+ * considered pushable (handled by prep_cond_push / build_cond_push) and
+ * does not block aggregation.  All other FILTERs (multi-table, subquery)
+ * block aggregation pushdown.
+ *
+ * @return true if a non-pushable filter was found, false if safe to push
+ */
+bool ndb_has_unpushable_filter_for_aggregate(const AccessPath *path);
+
+/**
  * Entry point for aggregation pushdown.
  * Called from ndbcluster_push_to_engine() after make_pushed_join() succeeds.
  *
@@ -62,7 +78,8 @@ class NdbScanOperation;
  * @return true if aggregation was pushed, false otherwise
  */
 bool ndb_push_aggregation(THD *thd, const JOIN *join,
-                          ndb_pushed_builder_ctx &builder);
+                          ndb_pushed_builder_ctx &builder,
+                          bool allow_outer_join);
 
 /**
  * Apply aggregation options to the leaf table during build_query().
@@ -103,6 +120,15 @@ AccessPath *strip_pushed_child_nljs(AccessPath *path);
  *         NextResult_scanComplete when done, or error code
  */
 int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler);
+
+/**
+ * Clear m_pushed_agg_mode on all handlers in the builder.
+ * Called before (re-)setting aggregation mode to ensure that
+ * previous push_to_engine() calls (which may have set
+ * m_pushed_agg_mode on a handler that is now a child in a
+ * wider pushed join) do not leave stale state.
+ */
+void ndb_clear_pushed_agg_state(ndb_pushed_builder_ctx &builder);
 
 /**
  * Detect whether a single-table aggregate query can be pushed.

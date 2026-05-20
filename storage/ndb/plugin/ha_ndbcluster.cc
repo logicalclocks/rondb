@@ -379,6 +379,15 @@ static MYSQL_THDVAR_BOOL(join_pushdown_aggregate, /* name */
                          false    /* default */
 );
 
+static MYSQL_THDVAR_BOOL(join_pushdown_aggregate_outer_join, /* name */
+                         PLUGIN_VAR_OPCMDARG,
+                         "Enable pushing down of aggregation for pushed joins "
+                         "involving outer joins to datanodes",
+                         nullptr, /* check func. */
+                         nullptr, /* update func. */
+                         false    /* default */
+);
+
 static MYSQL_THDVAR_BOOL(
     pushdown_aggregate, /* name */
     PLUGIN_VAR_OPCMDARG,
@@ -3486,7 +3495,9 @@ inline int ha_ndbcluster::next_result(uchar *buf) {
   } else if (m_active_query) {
     res = fetch_next_pushed();
     if (res == NdbQuery::NextResult_gotRow) {
-      assert(pushed_cond == nullptr ||
+      // In aggregate mode, rows are pre-aggregated results — the pushed
+      // condition was already applied during the scan, not re-evaluable here.
+      assert(m_pushed_agg_mode || pushed_cond == nullptr ||
              const_cast<Item *>(pushed_cond)->val_int());
       return 0;  // Found a row
     } else if (res == NdbQuery::NextResult_scanComplete) {
@@ -14834,6 +14845,10 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
           // (the walker would skip the lambda for the replaced node itself).
           fixup_pushed_access_paths(thd, subpath, join, filter,
                                     has_pushed_aggregation);
+          // After fixup, FILTERs may have been eliminated in-place,
+          // exposing NLJs that need stripping.
+          child = strip_pushed_child_nljs(subpath);
+          *subpath = *child;
           return true;  // Already walked children
         }
 #ifndef NDEBUG
@@ -14860,6 +14875,11 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
           // is processed by accept_pushed_conditions.
           fixup_pushed_access_paths(thd, sub, join, filter,
                                     has_pushed_aggregation);
+          // After fixup, FILTERs may have been eliminated in-place,
+          // exposing NLJs that need stripping.
+          sub = strip_pushed_child_nljs(
+              subpath->temptable_aggregate().subquery_path);
+          subpath->temptable_aggregate().subquery_path = sub;
           return true;  // Already walked children
         }
 #ifndef NDEBUG
@@ -14949,9 +14969,18 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
   }
 
   // Check if aggregation can also be pushed for a fully-pushed join.
+  // Reject if there's a non-pushable FILTER anywhere between the root
+  // AccessPath and the leaf table accesses.  Such filters apply per-row
+  // conditions that must be evaluated before aggregation — impossible when
+  // NDB returns pre-aggregated results.  Fully-pushed filters (which will
+  // be eliminated by fixup_pushed_access_paths) are safe and allowed.
   bool has_pushed_aggregation = false;
-  if (THDVAR(thd, join_pushdown_aggregate)) {
-    has_pushed_aggregation = ndb_push_aggregation(thd, join, pushed_builder);
+  if (THDVAR(thd, join_pushdown_aggregate) &&
+      !ndb_has_unpushable_filter_for_aggregate(root_path)) {
+    const bool allow_outer_join =
+        THDVAR(thd, join_pushdown_aggregate_outer_join);
+    has_pushed_aggregation =
+        ndb_push_aggregation(thd, join, pushed_builder, allow_outer_join);
   }
 
   // Check if single-table aggregation can be pushed.
@@ -14959,6 +14988,11 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
     has_pushed_aggregation =
         ndb_push_single_table_aggregation(thd, join, pushed_builder);
   }
+  // Clear m_pushed_agg_mode on all builder tables — a previous
+  // push_to_engine call may have set it on a handler that is now a
+  // child in a wider pushed join (push_to_engine is called multiple
+  // times with different table subsets as the optimizer explores plans).
+  ndb_clear_pushed_agg_state(pushed_builder);
   if (has_pushed_aggregation) {
     auto *root_handler = down_cast<ha_ndbcluster *>(
         pushed_builder.m_tables[0].get_table()->file);
@@ -19348,6 +19382,7 @@ static SYS_VAR *system_variables[] = {
     MYSQL_SYSVAR(deferred_constraints),
     MYSQL_SYSVAR(join_pushdown),
     MYSQL_SYSVAR(join_pushdown_aggregate),
+    MYSQL_SYSVAR(join_pushdown_aggregate_outer_join),
     MYSQL_SYSVAR(pushdown_aggregate),
     MYSQL_SYSVAR(log_exclusive_reads),
     MYSQL_SYSVAR(read_backup),

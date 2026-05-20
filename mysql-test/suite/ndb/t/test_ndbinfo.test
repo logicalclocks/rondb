@@ -1,5 +1,5 @@
 --source include/have_ndb.inc
 
 let NDBAPITEST_NAME=testNdbinfo;
+let NDBAPITEST_CLEANUP_QUERY=DROP DATABASE IF EXISTS TEST_DB;
 --source suite/ndb/include/run_ndbapitest.inc
-

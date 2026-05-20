@@ -61,6 +61,22 @@ static uint find_table_index(const pushed_table *tables, uint table_count,
                              const TABLE *mysql_table);
 
 /**
+ * Unwrap transparent AccessPath nodes (FILTER, etc.) to find the
+ * underlying basic table path.  GetBasicTable() only handles leaf
+ * path types — this helper looks through wrapper nodes first.
+ */
+static const TABLE *get_inner_table(const AccessPath *path) {
+  while (path != nullptr) {
+    if (path->type == AccessPath::FILTER) {
+      path = path->filter().child;
+    } else {
+      return GetBasicTable(path);
+    }
+  }
+  return nullptr;
+}
+
+/**
  * When aggregation is pushed, walk down through NESTED_LOOP_JOINs whose
  * inner side is a pushed-join child and return the outermost 'outer' path
  * that is not such a join — i.e., the root table scan.
@@ -68,7 +84,7 @@ static uint find_table_index(const pushed_table *tables, uint table_count,
 AccessPath *strip_pushed_child_nljs(AccessPath *path) {
   while (path->type == AccessPath::NESTED_LOOP_JOIN) {
     const TABLE *inner_table =
-        GetBasicTable(path->nested_loop_join().inner);
+        get_inner_table(path->nested_loop_join().inner);
     if (inner_table != nullptr &&
         inner_table->file->member_of_pushed_join() != nullptr &&
         inner_table->file->member_of_pushed_join() != inner_table) {
@@ -364,6 +380,7 @@ static bool emit_expr(Item *item, const NdbDictionary::Table *ndb_table,
       if (ctx != nullptr) {
         const uint tab_idx = find_table_index(ctx->tables, ctx->table_count,
                                               fi->field->table);
+        if (tab_idx >= ctx->table_count) return false;
         if (tab_idx != ctx->leaf_tab_no) {
           // Parent-table column: use LoadLinkedColumn.
           const int col_id = fi->field->field_index();
@@ -1083,6 +1100,7 @@ static bool emit_field_load(const Item_field *field_item,
                             AggBuildContext &ctx) {
   const uint tab_idx = find_table_index(ctx.tables, ctx.table_count,
                                         field_item->field->table);
+  if (tab_idx >= ctx.table_count) return false;
   const int col_id = field_item->field->field_index();
   if (tab_idx != ctx.leaf_tab_no) {
     // Parent-table column: use LoadLinkedColumn.
@@ -1138,6 +1156,11 @@ static NdbAggregator *ndb_build_aggregation_program(
     const int col_id = field_item->field->field_index();
     const uint tab_idx =
         find_table_index(tables, table_count, field_item->field->table);
+    if (tab_idx >= table_count) {
+      // GROUP BY column references a table not in the builder scope.
+      delete agg;
+      return nullptr;
+    }
     if (tab_idx == leaf_tab_no) {
       // Leaf table column — direct GROUP BY.
       if (!agg->GroupBy(col_id)) {
@@ -1351,14 +1374,75 @@ void ndb_apply_aggregation_options(ndb_pushed_builder_ctx &builder,
   }
 }
 
+bool ndb_has_unpushable_filter_for_aggregate(const AccessPath *path) {
+  while (path != nullptr) {
+    switch (path->type) {
+      case AccessPath::FILTER: {
+        // A FILTER whose condition references only the child table's columns
+        // is pushable to NDB (handled by prep_cond_push / build_cond_push)
+        // and will be eliminated by fixup_pushed_access_paths.
+        // Multi-table or subquery conditions cannot be pushed and block
+        // aggregation pushdown.
+        const AccessPath *child = path->filter().child;
+        const TABLE *table = GetBasicTable(child);
+        if (table != nullptr && path->filter().condition != nullptr) {
+          const table_map used = path->filter().condition->used_tables();
+          const table_map this_table = table->pos_in_table_list->map();
+          if ((used & ~this_table) == 0) {
+            // Condition only references this table — pushable. Skip filter.
+            path = child;
+            break;
+          }
+        }
+        // Non-pushable or multi-table filter — blocks aggregation.
+        return true;
+      }
+      case AccessPath::TEMPTABLE_AGGREGATE:
+        path = path->temptable_aggregate().subquery_path;
+        break;
+      case AccessPath::AGGREGATE:
+        path = path->aggregate().child;
+        break;
+      case AccessPath::SORT:
+        path = path->sort().child;
+        break;
+      case AccessPath::NESTED_LOOP_JOIN:
+        if (ndb_has_unpushable_filter_for_aggregate(
+                path->nested_loop_join().inner)) {
+          return true;
+        }
+        path = path->nested_loop_join().outer;
+        break;
+      case AccessPath::TABLE_SCAN:
+      case AccessPath::INDEX_SCAN:
+      case AccessPath::REF:
+      case AccessPath::EQ_REF:
+      case AccessPath::PUSHED_JOIN_REF:
+      case AccessPath::INDEX_RANGE_SCAN:
+        return false;  // Reached leaf — no blocking filter
+      default:
+        return false;
+    }
+  }
+  return false;
+}
+
 bool ndb_push_aggregation(THD *, const JOIN *join,
-                          ndb_pushed_builder_ctx &builder) {
-  // All tables in the builder must be part of a pushed join.
-  // If any table is not pushed, MySQL still needs raw rows for joining.
+                          ndb_pushed_builder_ctx &builder,
+                          bool allow_outer_join) {
+  // All tables in the builder must be part of the same pushed join.
+  // If any table is not pushed, or belongs to a different pushed join,
+  // MySQL still needs raw rows for joining.
+  const TABLE *root_table = nullptr;
   for (uint i = 0; i < builder.m_table_count; i++) {
     const TABLE *tab = builder.m_tables[i].get_table();
     if (tab == nullptr || tab->file->member_of_pushed_join() == nullptr) {
       return false;
+    }
+    if (root_table == nullptr) {
+      root_table = tab->file->member_of_pushed_join();
+    } else if (tab->file->member_of_pushed_join() != root_table) {
+      return false;  // Different pushed joins — can't aggregate across them.
     }
   }
 
@@ -1366,24 +1450,41 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
     return false;
   }
 
-  // Reject aggregation with outer/anti/semi joins.
-  // Aggregation runs in DBLQH on the leaf table via handleJoinAggRow.
-  // For outer joins, when the inner-side table has no match, DBSPJ produces
-  // a NULL-extended row at the coordinator level that DBLQH never sees.
-  // This causes incorrect COUNT(*) and missing groups.
+  // Reject aggregation with semi/anti joins (not yet supported).
+  // Outer joins are supported when allow_outer_join is true:
+  // DBSPJ tracks matched/unmatched parents and injects null-extended rows
+  // into the aggregation engine via JOIN_AGG_NULL_ROW_REQ/CONF.
   {
     const pushed_table &root = builder.m_tables[0];
     for (uint i = 1; i < builder.m_table_count; i++) {
       if (!builder.m_join_scope.contain(i)) continue;
       const pushed_table &tab = builder.m_tables[i];
-      if (tab.isOuterJoined(root) || tab.isSemiJoined(root) ||
-          tab.isAntiJoined(root)) {
+      if (tab.isSemiJoined(root) || tab.isAntiJoined(root)) {
         DBUG_PRINT("info",
-                   ("ndb_push_aggregation: table %u has outer/semi/anti join "
+                   ("ndb_push_aggregation: table %u has semi/anti join "
                     "— cannot push aggregation",
                     i));
         return false;
       }
+      if (!allow_outer_join && tab.isOuterJoined(root)) {
+        DBUG_PRINT("info",
+                   ("ndb_push_aggregation: table %u has outer join "
+                    "— ndb_join_pushdown_aggregate_outer_join is OFF",
+                    i));
+        return false;
+      }
+    }
+  }
+
+  // Reject if any table has a non-pushable remainder condition.
+  // Such conditions must be evaluated by MySQL on individual rows BEFORE
+  // aggregation, which is impossible when NDB returns aggregated results.
+  for (uint i = 0; i < builder.m_table_count; i++) {
+    const TABLE *tab = builder.m_tables[i].get_table();
+    if (tab == nullptr) continue;
+    const auto *h = down_cast<const ha_ndbcluster *>(tab->file);
+    if (h->m_cond.m_remainder_cond != nullptr) {
+      return false;
     }
   }
 
@@ -1721,7 +1822,24 @@ static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
   return NdbQuery::NextResult_gotRow;
 }
 
+void ndb_clear_pushed_agg_state(ndb_pushed_builder_ctx &builder) {
+  for (uint i = 0; i < builder.m_table_count; i++) {
+    const TABLE *tab = builder.m_tables[i].get_table();
+    if (tab == nullptr) continue;
+    auto *h = dynamic_cast<ha_ndbcluster *>(tab->file);
+    if (h == nullptr) continue;
+    h->m_pushed_agg_mode = false;
+    h->m_agg_join = nullptr;
+  }
+}
+
 int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler) {
+  if (handler->m_active_query == nullptr) {
+    // Safety: should not reach here on a child handler (m_pushed_agg_mode
+    // should only be set on the root).  Return end-of-file to avoid crash.
+    assert(false);
+    return HA_ERR_END_OF_FILE;
+  }
   NdbAggregator *agg = handler->m_active_query->getAggregator();
   if (agg == nullptr) {
     return HA_ERR_INTERNAL_ERROR;
