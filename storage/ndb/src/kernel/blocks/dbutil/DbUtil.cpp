@@ -1812,25 +1812,28 @@ void DbUtil::hardcodedPrepare(Signal *signal, Uint32 SYSTAB_0) {
   /**
    * Prepare SequenceCurrVal (READ)
    */
-  Uint32 keyLen = 1;
   {
     PreparedOperationPtr ptr;
     ndbrequire(c_preparedOperationPool.seizeId(ptr, 0));
     ptr.p->tckey.attrLen = 1;
     ptr.p->rsLen = 3;
-    ptr.p->tckeyLen = TcKeyReq::StaticLength + keyLen + ptr.p->tckey.attrLen;
+    ptr.p->tckeyLen = TcKeyReq::StaticLength;
     ptr.p->keyDataPos = TcKeyReq::StaticLength;
     ptr.p->tckey.tableId = SYSTAB_0;
     Uint32 requestInfo = 0;
     TcKeyReq::setAbortOption(requestInfo, TcKeyReq::CommitIfFailFree);
     TcKeyReq::setOperationType(requestInfo, ZREAD);
     TcKeyReq::setKeyLength(requestInfo, 1);
-    TcKeyReq::setAIInTcKeyReq(requestInfo, 1);
+    TcKeyReq::setAIInTcKeyReq(requestInfo, 0);
     ptr.p->tckey.requestInfo = requestInfo;
     ptr.p->tckey.tableSchemaVersion = 1;
 
-    // This is actually attr data
-    AttributeHeader::init(&ptr.p->tckey.distrGroupHashValue, 1, 0);
+    {  // AttrInfo
+      ndbrequire(ptr.p->attrInfo.seize(1));
+      AttrInfoBuffer::DataBufferIterator it;
+      ptr.p->attrInfo.first(it);
+      AttributeHeader::init(it.data, 1, 0);
+    }
 
     ndbrequire(ptr.p->rsInfo.seize(1));
     ResultSetInfoBuffer::DataBufferIterator it;
@@ -1845,7 +1848,7 @@ void DbUtil::hardcodedPrepare(Signal *signal, Uint32 SYSTAB_0) {
     PreparedOperationPtr ptr;
     ndbrequire(c_preparedOperationPool.seizeId(ptr, 1));
     ptr.p->rsLen = 3;
-    ptr.p->tckeyLen = TcKeyReq::StaticLength + keyLen + 5;
+    ptr.p->tckeyLen = TcKeyReq::StaticLength;
     ptr.p->keyDataPos = TcKeyReq::StaticLength;
     ptr.p->tckey.attrLen = 11;
     ptr.p->tckey.tableId = SYSTAB_0;
@@ -1853,24 +1856,25 @@ void DbUtil::hardcodedPrepare(Signal *signal, Uint32 SYSTAB_0) {
     TcKeyReq::setAbortOption(requestInfo, TcKeyReq::CommitIfFailFree);
     TcKeyReq::setOperationType(requestInfo, ZUPDATE);
     TcKeyReq::setKeyLength(requestInfo, 1);
-    TcKeyReq::setAIInTcKeyReq(requestInfo, 5);
+    TcKeyReq::setAIInTcKeyReq(requestInfo, 0);
     TcKeyReq::setInterpretedFlag(requestInfo, 1);
     ptr.p->tckey.requestInfo = requestInfo;
     ptr.p->tckey.tableSchemaVersion = 1;
 
-    // Signal is packed, which is why attrInfo is at distrGroupHashValue
-    // position
-    Uint32 *attrInfo = &ptr.p->tckey.distrGroupHashValue;
-    attrInfo[0] = 0;  // IntialReadSize
-    attrInfo[1] = 5;  // InterpretedSize
-    attrInfo[2] = 0;  // FinalUpdateSize
-    attrInfo[3] = 1;  // FinalReadSize
-    attrInfo[4] = 0;  // SubroutineSize
-
     {  // AttrInfo
-      ndbrequire(ptr.p->attrInfo.seize(6));
+      ndbrequire(ptr.p->attrInfo.seize(11));
       AttrInfoBuffer::DataBufferIterator it;
       ptr.p->attrInfo.first(it);
+      *it.data = 0;  // IntialReadSize
+      ndbrequire(ptr.p->attrInfo.next(it));
+      *it.data = 5;  // InterpretedSize
+      ndbrequire(ptr.p->attrInfo.next(it));
+      *it.data = 0;  // FinalUpdateSize
+      ndbrequire(ptr.p->attrInfo.next(it));
+      *it.data = 1;  // FinalReadSize
+      ndbrequire(ptr.p->attrInfo.next(it));
+      *it.data = 0;  // SubroutineSize
+      ndbrequire(ptr.p->attrInfo.next(it));
       *it.data = Interpreter::Read(1, 6);
       ndbrequire(ptr.p->attrInfo.next(it));
       *it.data = Interpreter::LoadConst16(7, 1);
@@ -1920,7 +1924,7 @@ void DbUtil::hardcodedPrepare(Signal *signal, Uint32 SYSTAB_0) {
     PreparedOperationPtr ptr;
     ndbrequire(c_preparedOperationPool.seizeId(ptr, 3));
     ptr.p->rsLen = 0;
-    ptr.p->tckeyLen = TcKeyReq::StaticLength + keyLen + 5;
+    ptr.p->tckeyLen = TcKeyReq::StaticLength;
     ptr.p->keyDataPos = TcKeyReq::StaticLength;
     ptr.p->tckey.attrLen = 9;
     ptr.p->tckey.tableId = SYSTAB_0;
@@ -1928,17 +1932,25 @@ void DbUtil::hardcodedPrepare(Signal *signal, Uint32 SYSTAB_0) {
     TcKeyReq::setAbortOption(requestInfo, TcKeyReq::CommitIfFailFree);
     TcKeyReq::setOperationType(requestInfo, ZUPDATE);
     TcKeyReq::setKeyLength(requestInfo, 1);
-    TcKeyReq::setAIInTcKeyReq(requestInfo, 5);
+    TcKeyReq::setAIInTcKeyReq(requestInfo, 0);
     TcKeyReq::setInterpretedFlag(requestInfo, 1);
     ptr.p->tckey.requestInfo = requestInfo;
     ptr.p->tckey.tableSchemaVersion = 1;
 
-    Uint32 *attrInfo = &ptr.p->tckey.distrGroupHashValue;
-    attrInfo[0] = 0;  // IntialReadSize
-    attrInfo[1] = 4;  // InterpretedSize
-    attrInfo[2] = 0;  // FinalUpdateSize
-    attrInfo[3] = 0;  // FinalReadSize
-    attrInfo[4] = 0;  // SubroutineSize
+    {  // AttrInfo
+      ndbrequire(ptr.p->attrInfo.seize(5));
+      AttrInfoBuffer::DataBufferIterator it;
+      ptr.p->attrInfo.first(it);
+      *it.data = 0;  // IntialReadSize
+      ndbrequire(ptr.p->attrInfo.next(it));
+      *it.data = 4;  // InterpretedSize
+      ndbrequire(ptr.p->attrInfo.next(it));
+      *it.data = 0;  // FinalUpdateSize
+      ndbrequire(ptr.p->attrInfo.next(it));
+      *it.data = 0;  // FinalReadSize
+      ndbrequire(ptr.p->attrInfo.next(it));
+      *it.data = 0;  // SubroutineSize
+    }
   }
 
   connectTc(signal);
@@ -2421,99 +2433,57 @@ void DbUtil::runOperation(Signal *signal, TransactionPtr &transPtr,
   op->attrInfo.print_header(stdout);
 #endif
 
-  Uint32 attrLen = pop->attrInfo.getSize() + op->attrInfo.getSize();
-  Uint32 keyLen = op->keyInfo.getSize();
-  tcKey->attrLen = attrLen + TcKeyReq::getAIInTcKeyReq(tcKey->requestInfo);
-  TcKeyReq::setKeyLength(tcKey->requestInfo, keyLen);
+  tcKey->attrLen = 0;
+  TcKeyReq::setKeyLength(tcKey->requestInfo, 0);
+  TcKeyReq::setAIInTcKeyReq(tcKey->requestInfo, 0);
 
-  /**
-   * Key Info
-   */
-  // KeyInfoBuffer::DataBufferIterator kit;
+  SectionHandle sections(this);
+  Uint32 keyInfoSectionI = RNIL;
+  Uint32 attrInfoSectionI = RNIL;
+
+  ndbrequire(appendKeyInfoToSection(keyInfoSectionI, op->keyInfo));
+  ndbrequire(keyInfoSectionI != RNIL);
+
+  ndbrequire(appendAttrInfoToSection(attrInfoSectionI, pop->attrInfo));
+  ndbrequire(appendAttrInfoToSection(attrInfoSectionI, op->attrInfo));
+
+  sections.m_ptr[TcKeyReq::KeyInfoSectionNum].i = keyInfoSectionI;
+  sections.m_cnt = 1;
+  if (attrInfoSectionI != RNIL) {
+    sections.m_ptr[TcKeyReq::AttrInfoSectionNum].i = attrInfoSectionI;
+    sections.m_cnt = 2;
+  }
+  getSections(sections.m_cnt, sections.m_ptr);
+
+#if 0  // def EVENT_DEBUG
+  printf("DbUtil::runOperation: sendSignal(DBTC_REF, GSN_TCKEYREQ, signal, %d , JBB)\n", pop->keyDataPos);
+  printTCKEYREQ(stdout, signal->getDataPtr(), pop->keyDataPos,0);
+#endif
+  sendSignal(transPtr.p->connectRef, GSN_TCKEYREQ, signal, pop->keyDataPos, JBB, &sections);
+}
+
+bool DbUtil::appendKeyInfoToSection(Uint32 &sectionI, const KeyInfoBuffer &keyBuf) {
   KeyInfoIterator kit;
-  op->keyInfo.first(kit);
-  Uint32 *keyDst = ((Uint32 *)tcKey) + pop->keyDataPos;
-  for (Uint32 i = 0; i < 8 && kit.curr.i != RNIL; i++, op->keyInfo.next(kit)) {
-    keyDst[i] = *kit.data;
-  }
-  // ndbout << "*** 7 ***" << endl;
-  // printTCKEYREQ(stdout, signal->getDataPtrSend(),
-  //		pop->tckeyLenInBytes >> 2, 0);
-
-#if 0  // def EVENT_DEBUG
-  printf("DbUtil::runOperation: sendSignal(DBTC_REF, GSN_TCKEYREQ, signal, %d , JBB)\n",  pop->tckeyLenInBytes >> 2);
-  printTCKEYREQ(stdout, signal->getDataPtr(), pop->tckeyLenInBytes >> 2,0);
-#endif
-  const Uint32 keyInTckeyReq = MIN(keyLen, TcKeyReq::MaxKeyInfo);
-  const Uint32 aiInTckeyReq =
-      TcKeyReq::getAIInTcKeyReq(tcKey->requestInfo);
-  Uint32 sigLen = pop->keyDataPos + keyInTckeyReq + aiInTckeyReq;
-  sendSignal(transPtr.p->connectRef, GSN_TCKEYREQ, signal, sigLen, JBB);
-
-  /**
-   * More the 8 words of key info not implemented
-   */
-  // ndbrequire(kit.curr.i == RNIL); // Yes it is
-
-  /**
-   * KeyInfo
-   */
-  KeyInfo *keyInfo = (KeyInfo *)signal->getDataPtrSend();
-  keyInfo->connectPtr = transPtr.p->connectPtr;
-  keyInfo->transId[0] = transPtr.p->transId[0];
-  keyInfo->transId[1] = transPtr.p->transId[1];
-  sendKeyInfo(signal, transPtr.p->connectRef, keyInfo, op->keyInfo, kit);
-
-  /**
-   * AttrInfo
-   */
-  AttrInfo *attrInfo = (AttrInfo *)signal->getDataPtrSend();
-  attrInfo->connectPtr = transPtr.p->connectPtr;
-  attrInfo->transId[0] = transPtr.p->transId[0];
-  attrInfo->transId[1] = transPtr.p->transId[1];
-
-  AttrInfoIterator ait;
-  pop->attrInfo.first(ait);
-  sendAttrInfo(signal, transPtr.p->connectRef, attrInfo, pop->attrInfo, ait);
-
-  op->attrInfo.first(ait);
-  sendAttrInfo(signal, transPtr.p->connectRef, attrInfo, op->attrInfo, ait);
-}
-
-void DbUtil::sendKeyInfo(Signal *signal, Uint32 tcRef, KeyInfo *keyInfo,
-                         const KeyInfoBuffer &keyBuf, KeyInfoIterator &kit) {
+  keyBuf.first(kit);
   while (kit.curr.i != RNIL) {
-    Uint32 *keyDst = keyInfo->keyData;
-    Uint32 keyDataLen = 0;
-    for (Uint32 i = 0; i < KeyInfo::DataLength && kit.curr.i != RNIL;
-         i++, keyBuf.next(kit)) {
-      keyDst[i] = *kit.data;
-      keyDataLen++;
+    if (!appendToSection(sectionI, kit.data, 1)) {
+      return false;
     }
-#if 0  // def EVENT_DEBUG
-    printf("DbUtil::sendKeyInfo: sendSignal(DBTC_REF, GSN_KEYINFO, signal, %d , JBB)\n", KeyInfo::HeaderLength + keyDataLen);
-#endif
-    sendSignal(tcRef, GSN_KEYINFO, signal, KeyInfo::HeaderLength + keyDataLen,
-               JBB);
+    keyBuf.next(kit);
   }
+  return true;
 }
 
-void DbUtil::sendAttrInfo(Signal *signal, Uint32 tcRef, AttrInfo *attrInfo,
-                          const AttrInfoBuffer &attrBuf,
-                          AttrInfoIterator &ait) {
+bool DbUtil::appendAttrInfoToSection(Uint32 &sectionI, const AttrInfoBuffer &attrBuf) {
+  AttrInfoIterator ait;
+  attrBuf.first(ait);
   while (ait.curr.i != RNIL) {
-    Uint32 *attrDst = attrInfo->attrData;
-    Uint32 i = 0;
-    for (i = 0; i < AttrInfo::DataLength && ait.curr.i != RNIL;
-         i++, attrBuf.next(ait)) {
-      attrDst[i] = *ait.data;
+    if (!appendToSection(sectionI, ait.data, 1)) {
+      return false;
     }
-#if 0  // def EVENT_DEBUG
-    printf("DbUtil::sendAttrInfo: sendSignal(DBTC_REF, GSN_ATTRINFO,"
-           " signal, %d , JBB)\n", AttrInfo::HeaderLength + i);
-#endif
-    sendSignal(tcRef, GSN_ATTRINFO, signal, AttrInfo::HeaderLength + i, JBB);
+    attrBuf.next(ait);
   }
+  return true;
 }
 
 void DbUtil::getTransId(Transaction *transP) {

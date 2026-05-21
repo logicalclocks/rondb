@@ -430,10 +430,8 @@ class DbUtil : public SimulatedBlock {
   void initResultSet(ResultSetBuffer &, const ResultSetInfoBuffer &);
   void runTransaction(Signal *signal, TransactionPtr);
   void runOperation(Signal *signal, TransactionPtr &, OperationPtr &, Uint32);
-  void sendKeyInfo(Signal *signal, Uint32 ref, KeyInfo *keyInfo,
-                   const KeyInfoBuffer &keyBuf, KeyInfoIterator &kit);
-  void sendAttrInfo(Signal *, Uint32 ref, AttrInfo *attrInfo,
-                    const AttrInfoBuffer &, AttrInfoIterator &ait);
+  bool appendKeyInfoToSection(Uint32 &sectionI, const KeyInfoBuffer &keyBuf);
+  bool appendAttrInfoToSection(Uint32 &sectionI, const AttrInfoBuffer &attrBuf);
   int getResultSet(Signal *signal, const Transaction *transP,
                    struct LinearSectionPtr sectionsPtr[]);
   void finishTransaction(Signal *, TransactionPtr);
