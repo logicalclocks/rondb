@@ -41,6 +41,7 @@ KEY="test_key_$KEY_SUFFIX"
 function check_set() {
     local key="$1"
     local value="$2"
+    local context="${3:-}"
 
     # SET the value in Redis
     if [[ -f "$value" ]]; then
@@ -52,9 +53,10 @@ EOF
         set_output=$(redis-cli SET "$key" "$value")
     fi
 
-    #echo $set_output
     if [[ $set_output == ERR* ]]; then
         echo "FAIL: Could not SET $key with given value" >&2
+        echo "      context: ${context:-none}; value length: ${#value}" >&2
+        echo "      redis-cli reply: $set_output" >&2
         exit 1
     fi
 }
@@ -294,8 +296,14 @@ run_client() {
     for ((i=1; i<=$NUM_ITERATIONS; i++)); do
         # Generate a unique key for each client and iteration
         local test_value=$(generate_random_chars 50000)
-        check_set "$key" "$test_value" > /dev/null
-        redis-cli DEL "$key" > /dev/null
+        check_set "$key" "$test_value" "client $client iter $i/$NUM_ITERATIONS" > /dev/null
+        local del_output
+        del_output=$(redis-cli DEL "$key")
+        if [[ $del_output == ERR* ]]; then
+            echo "FAIL: Could not DEL $key (client $client iter $i/$NUM_ITERATIONS)" >&2
+            echo "      redis-cli reply: $del_output" >&2
+            exit 1
+        fi
 #       echo "PASS ($i/$NUM_ITERATIONS): client $client with key $key"
     done
 }
