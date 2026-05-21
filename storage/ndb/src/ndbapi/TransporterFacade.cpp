@@ -1604,6 +1604,11 @@ void TransporterFacade::set_up_node_active_in_send_buffers(
   {
     theTransporterRegistry->get_trps_for_node(theOwnId, trp_ids, num_ids,
                                               MAX_NODE_GROUP_TRANSPORTERS);
+    /*
+     * NDB API nodes own exactly one self transporter. MultiTransporter is a
+     * data-node scaling mechanism, so explicit API-to-DB RDMA links keep the
+     * same single-transporter invariant as TCP/SHM API links.
+     */
     assert(num_ids == 1);
     assert(trp_ids[0] > 0);
     theOwnTrpId = trp_ids[0];
@@ -1621,6 +1626,11 @@ void TransporterFacade::set_up_node_active_in_send_buffers(
     remoteNodeId = (nodeId == nodeId1 ? nodeId2 : nodeId1);
     theTransporterRegistry->get_trps_for_node(remoteNodeId, trp_ids, num_ids,
                                               MAX_NODE_GROUP_TRANSPORTERS);
+    /*
+     * The API facade maps one send buffer to each configured remote node.
+     * API-to-DB RDMA is explicit but still uses the generic client-side
+     * single transporter path.
+     */
     assert(num_ids == 1);
     b = m_send_buffers + trp_ids[0];
     b->m_node_active = true;
