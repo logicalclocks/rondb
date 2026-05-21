@@ -437,6 +437,15 @@ static void test_rdma_api_db_connections(void) {
   ndbout_c("test_rdma_api_db_connections");
   Config *c = create_config(
       "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndbd]", "NodeId=2", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=1",
+      "NodeId2=2", NULL);
+  CHECK(c);
+  delete c;
+
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
       "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
       "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=10",
       "NodeId2=1", NULL);
