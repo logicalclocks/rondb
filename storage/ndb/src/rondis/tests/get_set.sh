@@ -50,7 +50,12 @@ SET $key $(< "$value")
 EOF
 )
     else
-        set_output=$(redis-cli SET "$key" "$value")
+        # Feed the command on stdin, not argv: a large value would
+        # exceed Linux's MAX_ARG_STRLEN (128 KiB per argv argument) and
+        # make execve fail with E2BIG (shell exit 126). The value is
+        # double-quoted so redis-cli's inline parser keeps an empty
+        # value as an empty argument. Matches mget_mset.sh.
+        set_output=$(printf 'SET %s "%s"\n' "$key" "$value" | redis-cli)
     fi
 
     if [[ $set_output == ERR* ]]; then
