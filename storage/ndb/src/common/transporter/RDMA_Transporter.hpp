@@ -746,7 +746,22 @@ class RDMA_Transporter : public Transporter {
    */
   struct rdma_send_slot {
     Uint32 payload_len;
-    bool in_flight;
+    /*
+     * in_flight is mutated by find_free_send_slot() (which claims a slot
+     * via compare_exchange) and by reap_send_completions() (which releases
+     * a slot after the WC arrives). On the API side these two paths can
+     * run concurrently with recv_thread_emit_credit_only() reaching
+     * post_credit_only_locked() -> find_free_send_slot(), which is not
+     * serialized against doSend() by any caller-side send lock. Without
+     * atomic semantics two callers could observe the same slot as free,
+     * both encode headers into slot_buf, and one of the resulting SGEs
+     * would carry a payload_len that disagrees with the actual SEND
+     * sge.length on the wire -- the receiver rejects with
+     * TE_RDMA_INVALID_HEADER. std::atomic<bool> with acq_rel CAS in
+     * find_free_send_slot() and release store in reap_send_completions()
+     * gives strict slot ownership without changing the lock contract.
+     */
+    std::atomic<bool> in_flight;
   };
   rdma_send_slot *m_send_slots;
   /*

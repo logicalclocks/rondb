@@ -779,6 +779,11 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
         m_pending_credit_grant.fetch_add(claimed_grant,
                                          std::memory_order_acq_rel);
       }
+      /*
+       * find_free_send_slot() claimed this slot via CAS; release it
+       * here so it can be reused after the disconnect/reconnect cycle.
+       */
+      m_send_slots[slot].in_flight.store(false, std::memory_order_release);
       g_eventLogger->error(
           "RDMA[node %u->%u]: ibv_post_send failed (rc=%d errno=%d %s); "
           "disconnecting",
@@ -793,9 +798,9 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
     /* Commit state changes only after a successful post. The payload
      * now lives in m_send_buf, so the upper-layer send buffer can be
      * released immediately; the completion path only frees this staging
-     * slot and updates wire byte counters. */
+     * slot and updates wire byte counters. The slot's in_flight flag
+     * was already set to true by find_free_send_slot()'s CAS. */
     m_send_slots[slot].payload_len = payload_len;
-    m_send_slots[slot].in_flight = true;
     m_send_slots_in_flight.fetch_add(1u, std::memory_order_relaxed);
     m_local_send_seq++;
     /* One credit consumed against the peer's RQ. fetch_sub() is
@@ -977,6 +982,11 @@ bool RDMA_Transporter::post_credit_only_locked() {
      * retry shipping it. */
     m_pending_credit_grant.fetch_add(claimed_grant,
                                      std::memory_order_acq_rel);
+    /*
+     * find_free_send_slot() claimed this slot via CAS; release it
+     * here so a subsequent caller can reuse the slot.
+     */
+    m_send_slots[slot].in_flight.store(false, std::memory_order_release);
     g_eventLogger->error(
         "RDMA[node %u->%u]: ibv_post_send(CREDIT_ONLY) failed (rc=%d "
         "errno=%d %s); disconnecting",
@@ -990,10 +1000,10 @@ bool RDMA_Transporter::post_credit_only_locked() {
 
   /*
    * Commit state. CREDIT_ONLY has no payload and no upper-layer
-   * send-buffer bytes tied to this WR.
+   * send-buffer bytes tied to this WR. The slot's in_flight flag was
+   * already set to true by find_free_send_slot()'s CAS.
    */
   m_send_slots[slot].payload_len = 0;
-  m_send_slots[slot].in_flight = true;
   m_send_slots_in_flight.fetch_add(1u, std::memory_order_relaxed);
   m_local_send_seq++;
   if (!use_control_reserve) {
@@ -1673,7 +1683,7 @@ bool RDMA_Transporter::allocate_send_slot_state() {
   }
   for (Uint32 i = 0; i < m_queue_depth; i++) {
     m_send_slots[i].payload_len = 0;
-    m_send_slots[i].in_flight = false;
+    m_send_slots[i].in_flight.store(false, std::memory_order_relaxed);
   }
   m_send_slots_in_flight.store(0u, std::memory_order_relaxed);
   m_next_send_slot = 0;
@@ -1689,12 +1699,25 @@ void RDMA_Transporter::release_send_slot_state() {
 
 Uint32 RDMA_Transporter::find_free_send_slot() {
   if (m_send_slots == nullptr || m_queue_depth == 0) return UINT32_MAX;
-  /* Linear scan starting from the round-robin hint. Worst case we touch
+  /*
+   * Linear scan starting from the round-robin hint. Worst case we touch
    * every slot once; for queue depths up to a few thousand this is
-   * faster than maintaining a separate free-list. */
+   * faster than maintaining a separate free-list.
+   *
+   * Claim ownership via compare_exchange so two concurrent callers
+   * (e.g. doSend on a client thread and recv_thread_emit_credit_only
+   * on the receive thread on the API side) cannot both win the same
+   * slot. The acq_rel ordering makes the prior payload writes inside
+   * the slot buffer happen-before the next acquirer's encode_msg_header
+   * call. Caller is responsible for rolling the flag back to false if
+   * the subsequent ibv_post_send fails.
+   */
   for (Uint32 step = 0; step < m_queue_depth; step++) {
     const Uint32 idx = (m_next_send_slot + step) % m_queue_depth;
-    if (!m_send_slots[idx].in_flight) {
+    bool expected = false;
+    if (m_send_slots[idx].in_flight.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel,
+            std::memory_order_relaxed)) {
       m_next_send_slot = (idx + 1) % m_queue_depth;
       return idx;
     }
@@ -1735,13 +1758,19 @@ int RDMA_Transporter::reap_send_completions() {
 
     for (int i = 0; i < n; i++) {
       const Uint32 slot = (Uint32)wc[i].wr_id;
-      if (slot >= m_queue_depth || !m_send_slots[slot].in_flight) {
+      if (slot >= m_queue_depth ||
+          !m_send_slots[slot].in_flight.load(std::memory_order_acquire)) {
+        const unsigned in_flight_now =
+            (slot < m_queue_depth)
+                ? (unsigned)m_send_slots[slot].in_flight.load(
+                      std::memory_order_relaxed)
+                : 0u;
         g_eventLogger->error(
             "RDMA[node %u->%u]: stale send WC wr_id=%llu (queue_depth=%u, "
             "in_flight=%u)",
             (unsigned)localNodeId, (unsigned)remoteNodeId,
             (unsigned long long)wc[i].wr_id, m_queue_depth,
-            slot < m_queue_depth ? m_send_slots[slot].in_flight : 0u);
+            in_flight_now);
         m_stats.qp_fatal_events.fetch_add(1u, std::memory_order_relaxed);
         report_error(TE_RDMA_CQ_ERROR, "stale send completion wr_id");
         start_disconnecting(EINVAL, /*send_source=*/true);
@@ -1781,8 +1810,8 @@ int RDMA_Transporter::reap_send_completions() {
       /* Success: free the slot and release the bytes back to the
        * send-buffer accounting. */
       const Uint32 payload_len = m_send_slots[slot].payload_len;
-      m_send_slots[slot].in_flight = false;
       m_send_slots[slot].payload_len = 0;
+      m_send_slots[slot].in_flight.store(false, std::memory_order_release);
       require(m_send_slots_in_flight.load(std::memory_order_relaxed) > 0);
       m_send_slots_in_flight.fetch_sub(1u, std::memory_order_relaxed);
       /* Bookkeeping: the wire bytes consumed by the HCA equal the
