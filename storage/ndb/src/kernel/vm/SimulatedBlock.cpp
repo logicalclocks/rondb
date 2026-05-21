@@ -3115,27 +3115,16 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
           return false;
         }
         Uint32 sectionPtrI = sectionPtr[i];
-        if (likely(fragPtr.p->m_sectionPtrI[sectionNo] != RNIL)) {
+        if (fragPtr.p->m_sectionPtrI[sectionNo] != RNIL) {
           linkSegments(fragPtr.p->m_sectionPtrI[sectionNo], sectionPtrI);
         } else {
           /**
-           * New section appearing in subsequent fragment that wasn't
-           * in the first fragment. This is unexpected — reject it.
+           * A section may legitimately first appear in a later
+           * fragment: the fragmented-signal sender ships sections
+           * sequentially, so an earlier fragment need not carry every
+           * section. Record it (original NDB behaviour).
            */
-          jam();
-          g_eventLogger->warning(
-              "Block %u: New section %u in later fragment from node %u",
-              theNumber, sectionNo, refToNode(senderRef));
-          for (Uint32 j = i; j < secs; j++) releaseSection(sectionPtr[j]);
-          for (Uint32 s = 0; s < 3; s++) {
-            if (fragPtr.p->m_sectionPtrI[s] != RNIL) {
-              releaseSection(fragPtr.p->m_sectionPtrI[s]);
-              fragPtr.p->m_sectionPtrI[s] = RNIL;
-            }
-          }
-          signal->header.m_fragmentInfo = 0;
-          signal->header.m_noOfSections = 0;
-          return false;
+          fragPtr.p->m_sectionPtrI[sectionNo] = sectionPtrI;
         }
       }
 
