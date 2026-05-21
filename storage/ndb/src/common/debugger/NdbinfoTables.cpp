@@ -142,7 +142,7 @@ DECLARE_NDBINFO_TABLE(TRANSPORTER_DETAILS, 19) = {
      {"sendbuffer_max_alloc_bytes", Ndbinfo::Number64,
       "SendBuffer historical max bytes allocated"},
 
-     {"type", Ndbinfo::Number, "Transporter type"}}};
+     {"type", Ndbinfo::Number, "Transporter type: 1=TCP, 3=SHM, 4=RDMA"}}};
 
 DECLARE_NDBINFO_TABLE(TRANSPORTERS, 12) = {
     {"transporters", 12, 0,

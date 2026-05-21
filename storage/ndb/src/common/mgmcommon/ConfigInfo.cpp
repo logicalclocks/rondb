@@ -2159,7 +2159,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      false, ConfigInfo::CI_INT, "2M", "64K", STR_VALUE(MAX_INT_RNIL)},
 
     /****************************************************************************
-     * RDMA (RonDB native verbs transporter, opt-in, DB-DB only)
+     * RDMA (RonDB native verbs transporter, opt-in, DB-DB/API-DB)
      ***************************************************************************/
     {CFG_SECTION_CONNECTION, "RDMA", "RDMA", "Connection section",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_SECTION,
@@ -2179,12 +2179,12 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      STR_VALUE(MAX_PORT_NO)},
 
     {CFG_CONNECTION_NODE_1, "NodeId1", "RDMA",
-     "Id of data node on one side of the connection",
+     "Id of DB or API node on one side of the connection",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_STRING, MANDATORY, nullptr,
      nullptr},
 
     {CFG_CONNECTION_NODE_2, "NodeId2", "RDMA",
-     "Id of data node on one side of the connection",
+     "Id of DB or API node on one side of the connection",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_STRING, MANDATORY, nullptr,
      nullptr},
 
@@ -4090,6 +4090,35 @@ static bool checkConnectionConstraints(InitConfigFileParser::Context &ctx,
   const char *type2;
   require(node1->get("Type", &type1));
   require(node2->get("Type", &type2));
+
+  if (native_strcasecmp(ctx.fname, "RDMA") == 0) {
+    const bool node1_db = strcmp(type1, DB_TOKEN) == 0;
+    const bool node2_db = strcmp(type2, DB_TOKEN) == 0;
+    const bool node1_api = strcmp(type1, API_TOKEN) == 0;
+    const bool node2_api = strcmp(type2, API_TOKEN) == 0;
+    const bool has_mgm =
+        strcmp(type1, MGM_TOKEN) == 0 || strcmp(type2, MGM_TOKEN) == 0;
+
+    if ((node1_db && node2_db) || (node1_db && node2_api) ||
+        (node1_api && node2_db)) {
+      return true;
+    }
+
+    if (has_mgm) {
+      ctx.reportError(
+          "RDMA connections involving MGM nodes are not supported: "
+          "node %d (%s) and node %d (%s)"
+          " - [%s] starting at line: %d",
+          id1, type1, id2, type2, ctx.fname, ctx.m_sectionLineno);
+    } else {
+      ctx.reportError(
+          "RDMA connections require DB-DB or API-DB endpoints: "
+          "node %d (%s) and node %d (%s)"
+          " - [%s] starting at line: %d",
+          id1, type1, id2, type2, ctx.fname, ctx.m_sectionLineno);
+    }
+    return false;
+  }
 
   /**
    * Report error if the following are true

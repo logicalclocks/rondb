@@ -426,6 +426,66 @@ static void test_hostname_mycnf(void) {
   }
 }
 
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+static bool same_node_pair(Uint32 node_id1, Uint32 node_id2, Uint32 expected1,
+                           Uint32 expected2) {
+  return (node_id1 == expected1 && node_id2 == expected2) ||
+         (node_id1 == expected2 && node_id2 == expected1);
+}
+
+static void test_rdma_api_db_connections(void) {
+  ndbout_c("test_rdma_api_db_connections");
+  Config *c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=10",
+      "NodeId2=1", NULL);
+  CHECK(c);
+
+  Uint32 rdma_api_db_connections = 0;
+  Uint32 tcp_shm_api_db_connections = 0;
+  ConfigIter iter(c, CFG_SECTION_CONNECTION);
+  for (; iter.valid(); iter.next()) {
+    Uint32 section_type = 0;
+    Uint32 node_id1 = 0;
+    Uint32 node_id2 = 0;
+    CHECK(iter.get(CFG_TYPE_OF_SECTION, &section_type) == 0);
+    CHECK(iter.get(CFG_CONNECTION_NODE_1, &node_id1) == 0);
+    CHECK(iter.get(CFG_CONNECTION_NODE_2, &node_id2) == 0);
+    if (!same_node_pair(node_id1, node_id2, 1, 10)) continue;
+
+    if (section_type == CONNECTION_TYPE_RDMA) {
+      Uint32 node_id_server = 0;
+      CHECK(iter.get(CFG_CONNECTION_NODE_ID_SERVER, &node_id_server) == 0);
+      CHECK(node_id_server == 1);
+      rdma_api_db_connections++;
+    } else if (section_type == CONNECTION_TYPE_TCP ||
+               section_type == CONNECTION_TYPE_SHM) {
+      tcp_shm_api_db_connections++;
+    }
+  }
+  CHECK(rdma_api_db_connections == 1);
+  CHECK(tcp_shm_api_db_connections == 0);
+
+  delete c;
+
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[mysqld]", "NodeId=11",
+      "HostName=localhost", "[rdma]", "NodeId1=10", "NodeId2=11",
+      NULL);
+  CHECK(c == NULL);
+
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=20",
+      "NodeId2=1", NULL);
+  CHECK(c == NULL);
+}
+#endif
+
 #include <NdbTap.hpp>
 
 #include <EventLogger.hpp>
@@ -440,6 +500,9 @@ TAPTEST(MgmConfig) {
   checksum_config();
   test_param_values();
   test_hostname_mycnf();
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+  test_rdma_api_db_connections();
+#endif
   if (false) print_restart_info();
   test_config_v1_with_dyn_ports();
   ndb_end(0);
