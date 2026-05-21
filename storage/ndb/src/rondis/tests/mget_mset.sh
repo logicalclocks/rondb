@@ -223,4 +223,15 @@ run_client() {
     done
 }
 
+echo "Testing multi-value rows in parallel..."
+for ((client=1; client<=5; client++)); do
+    run_client $client "${KEY}:parallel_key" &
+    pids[$client]=$!
+done
+
+for pid in ${pids[*]}; do
+    wait $pid
+done
+echo "PASS: All parallel clients completed."
+
 echo "All tests completed."
