@@ -23,12 +23,14 @@
 # This script provides a minimal, fully scripted alternative:
 #   1. CMake configure with WITH_NDB_RDMA=ON and WITH_UNIT_TESTS=OFF.
 #   2. Build the convenience libraries the test links against.
-#   3. Recompile RDMA_Transporter.cpp with -DTEST_RDMA_TRANSPORTER.
-#   4. Compile the mytap tap.cc framework.
-#   5. Compile a single-file stub object providing the kernel-only
+#   3. Build the existing ndbclient_static_link_test target to prove
+#      an RDMA-enabled NDB API client still links.
+#   4. Recompile RDMA_Transporter.cpp with -DTEST_RDMA_TRANSPORTER.
+#   5. Compile the mytap tap.cc framework.
+#   6. Compile a single-file stub object providing the kernel-only
 #      symbols pulled in transitively by ndbtransport but never
 #      exercised by the wire-format test.
-#   6. Link the test binary and run it with TAP output.
+#   7. Link the test binary and run it with TAP output.
 #
 # When WITH_UNIT_TESTS=ON becomes viable (e.g. after the server-deps
 # situation is fixed upstream, or in a build that includes the server)
@@ -78,7 +80,7 @@ cmake "${REPO_ROOT}" \
   >/dev/null
 
 # Step 2: Build the convenience libraries the test links against. The
-# RDMA_Transporter.cpp source itself is rebuilt from scratch in step 3
+# RDMA_Transporter.cpp source itself is rebuilt from scratch in step 4
 # with -DTEST_RDMA_TRANSPORTER; everything else comes out of the
 # regular archives.
 echo "==> Building support libraries"
@@ -93,7 +95,10 @@ make -j"${JOBS}" \
   ndbtrace \
   >/dev/null
 
-# Step 3: Recompile RDMA_Transporter.cpp with the test gate defined.
+echo "==> Building NDB API static link check"
+make -j"${JOBS}" ndbclient_static_link_test >/dev/null
+
+# Step 4: Recompile RDMA_Transporter.cpp with the test gate defined.
 #
 # The compile flags are kept aligned with the per-target flags.make
 # that CMake generated for ndbtransport_objlib. If you add a new
@@ -124,7 +129,7 @@ g++ -c -std=c++20 -g -DTEST_RDMA_TRANSPORTER \
   "${REPO_ROOT}/storage/ndb/src/common/transporter/RDMA_Transporter.cpp" \
   -o "${TEST_DIR}/RDMA_Transporter-t.o"
 
-# Step 4: Compile the mytap TAP framework.
+# Step 5: Compile the mytap TAP framework.
 echo "==> Compiling mytap/tap.cc"
 g++ -c -std=c++20 -g -DHAVE_NDB_CONFIG_H \
   "-I${BUILD_DIR}/include" \
@@ -133,7 +138,7 @@ g++ -c -std=c++20 -g -DHAVE_NDB_CONFIG_H \
   "${REPO_ROOT}/unittest/mytap/tap.cc" \
   -o "${TEST_DIR}/tap.o"
 
-# Step 5: Build a tiny stubs object for kernel-only symbols pulled in
+# Step 6: Build a tiny stubs object for kernel-only symbols pulled in
 # transitively by Packer.cpp::pack<SegmentedSectionArg> but never
 # reached by the wire-format test. The stub aborts on call so any
 # accidental dependency in future tests fails loud and fast.
@@ -162,7 +167,7 @@ bool copy(unsigned int *& /*dst*/, SectionSegmentPool & /*pool*/,
 CPP_EOF
 g++ -c -std=c++20 -g "${STUBS_SRC}" -o "${TEST_DIR}/stubs.o"
 
-# Step 6: Link the test binary. --start-group/--end-group resolves
+# Step 7: Link the test binary. --start-group/--end-group resolves
 # the cyclic references between ndbgeneral, ndbmgmcommon, and
 # ndbtrace in the convenience-library set.
 echo "==> Linking RDMA_Transporter-t"
@@ -189,7 +194,7 @@ g++ -g -o "${TEST_BIN}" \
   -Wl,--end-group \
   -libverbs -lssl -lcrypto -lpthread -ldl -lm -lrt
 
-# Step 7: Run the binary and surface the TAP plan/result lines.
+# Step 8: Run the binary and surface the TAP plan/result lines.
 echo "==> Running RDMA_Transporter-t"
 echo "----------------------------------------"
 "${TEST_BIN}"
