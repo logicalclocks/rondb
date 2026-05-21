@@ -65,7 +65,12 @@ EOF
 
 if ($NDBAPITEST_CLEANUP_QUERY != '')
 {
+  # Best-effort cleanup: a query such as DROP DATABASE IF EXISTS emits
+  # a Note when the object is absent, which would make the .result
+  # depend on whether the test program happened to leave it behind.
+  --disable_warnings
   eval $NDBAPITEST_CLEANUP_QUERY;
+  --enable_warnings
 }
 
 --source $MYSQLTEST_VARDIR/tmp/run_ndbapitest_result.inc
