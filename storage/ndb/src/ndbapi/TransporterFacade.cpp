@@ -1463,6 +1463,11 @@ void TransporterFacade::external_poll(Uint32 wait_time) {
     }
 
     if (res > 0) {
+      /*
+       * RDMA, TCP, and SHM receive through the same registry dispatch here.
+       * API-to-DB RDMA does not need API-specific receive handling; the
+       * transporter selected by the configured connection type owns doReceive().
+       */
       theTransporterRegistry->performReceive();
       break;
     }
@@ -1609,8 +1614,8 @@ void TransporterFacade::set_up_node_active_in_send_buffers(
      * data-node scaling mechanism, so explicit API-to-DB RDMA links keep the
      * same single-transporter invariant as TCP/SHM API links.
      */
-    assert(num_ids == 1);
-    assert(trp_ids[0] > 0);
+    require(num_ids == 1);
+    require(trp_ids[0] > 0);
     theOwnTrpId = trp_ids[0];
   }
 
@@ -1631,7 +1636,8 @@ void TransporterFacade::set_up_node_active_in_send_buffers(
      * API-to-DB RDMA is explicit but still uses the generic client-side
      * single transporter path.
      */
-    assert(num_ids == 1);
+    require(num_ids == 1);
+    require(trp_ids[0] > 0);
     b = m_send_buffers + trp_ids[0];
     b->m_node_active = true;
     m_active_trps.set(trp_ids[0]);

@@ -2225,12 +2225,14 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      STR_VALUE(MAX_PORT_NO)},
 
     {CFG_CONNECTION_NODE_1, "NodeId1", "RDMA",
-     "Id of DB or API node on one side of the connection",
+     "Id of node (" DB_TOKEN_PRINT " or " API_TOKEN_PRINT
+     ") on one side of the connection",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_STRING, MANDATORY, nullptr,
      nullptr},
 
     {CFG_CONNECTION_NODE_2, "NodeId2", "RDMA",
-     "Id of DB or API node on one side of the connection",
+     "Id of node (" DB_TOKEN_PRINT " or " API_TOKEN_PRINT
+     ") on one side of the connection",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_STRING, MANDATORY, nullptr,
      nullptr},
 
