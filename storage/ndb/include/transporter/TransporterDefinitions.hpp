@@ -50,8 +50,8 @@ enum TransporterType {
   tt_TCP_TRANSPORTER = 1,
   tt_SHM_TRANSPORTER = 3,
   /**
-   * Native RonDB RDMA transporter (RC SEND/RECV) for DB-DB inter-replica
-   * traffic. Only available when NDB_RDMA_TRANSPORTER_SUPPORTED is defined.
+   * Native RonDB RDMA transporter (RC SEND/RECV) for explicit DB-DB and
+   * API-DB traffic. Only available when NDB_RDMA_TRANSPORTER_SUPPORTED is defined.
    * Values 1 and 3 are preserved for wire/log compatibility with TCP/SHM.
    */
   tt_RDMA_TRANSPORTER = 4
