@@ -53,7 +53,9 @@ EOF
         # MAX_ARG_STRLEN (128 KiB). Exceeding it makes execve fail with
         # E2BIG, so the shell aborts with exit 126 before redis-cli even
         # starts (macOS has no per-argument limit, hence Linux-only).
-        mset_output=$(printf 'MSET %s %s %s %s\n' \
+        # The value is double-quoted so redis-cli's inline parser keeps
+        # an empty value as an empty argument instead of dropping it.
+        mset_output=$(printf 'MSET %s "%s" %s "%s"\n' \
             "$key:0" "$value" "$key:1" "$value" | redis-cli)
     fi
 

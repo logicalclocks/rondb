@@ -50,7 +50,13 @@ HSET $HASH_KEY $field $(< "$value")
 EOF
 )
     else
-        set_output=$(redis-cli HSET "$HASH_KEY" "$field" "$value")
+        # Feed the command on stdin, not argv: a large value would
+        # exceed Linux's MAX_ARG_STRLEN (128 KiB per argv argument) and
+        # make execve fail with E2BIG (shell exit 126). The value is
+        # double-quoted so redis-cli's inline parser keeps an empty
+        # value as an empty argument. Matches mget_mset.sh.
+        set_output=$(printf 'HSET %s %s "%s"\n' \
+            "$HASH_KEY" "$field" "$value" | redis-cli)
     fi
 
     echo $set_output
