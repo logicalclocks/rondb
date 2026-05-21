@@ -144,7 +144,12 @@ static void verify_rdma_connection(ConfigValues::ConstIterator &iter,
                                    Uint32 expected_node1,
                                    Uint32 expected_node2,
                                    const char *expected_host1,
-                                   const char *expected_host2) {
+                                   const char *expected_host2,
+                                   Uint32 expected_server_port,
+                                   Uint32 expected_node_id_server,
+                                   Uint32 expected_send_signal_id,
+                                   Uint32 expected_checksum,
+                                   Uint32 expected_presend_checksum) {
   Uint32 value = 0;
   const char *string_value = nullptr;
 
@@ -159,15 +164,15 @@ static void verify_rdma_connection(ConfigValues::ConstIterator &iter,
   require(iter.get(CFG_CONNECTION_HOSTNAME_2, &string_value));
   require(strcmp(string_value, expected_host2) == 0);
   require(iter.get(CFG_CONNECTION_SERVER_PORT, &value));
-  require(value == 0);
+  require(value == expected_server_port);
   require(iter.get(CFG_CONNECTION_NODE_ID_SERVER, &value));
-  require(value == 1);
+  require(value == expected_node_id_server);
   require(iter.get(CFG_CONNECTION_SEND_SIGNAL_ID, &value));
-  require(value == 1);
+  require(value == expected_send_signal_id);
   require(iter.get(CFG_CONNECTION_CHECKSUM, &value));
-  require(value == 1);
+  require(value == expected_checksum);
   require(iter.get(CFG_CONNECTION_PRESEND_CHECKSUM, &value));
-  require(value == 0);
+  require(value == expected_presend_checksum);
   require(iter.get(CFG_RDMA_SEND_BUFFER_SIZE, &value));
   require(value == 2 * 1024 * 1024);
   require(iter.get(CFG_RDMA_RECV_BUFFER_SIZE, &value));
@@ -211,11 +216,12 @@ static void verify_rdma_config(const ConfigValues &cfg) {
 
   require(iter.openSection(CONFIG_SECTION_CONNECTION, 0));
   verify_rdma_connection(iter, 1, 2, "db1.example.com",
-                         "db2-new.example.com");
+                         "db2-new.example.com", 0, 1, 1, 1, 0);
   iter.closeSection();
 
   require(iter.openSection(CONFIG_SECTION_CONNECTION, 1));
-  verify_rdma_connection(iter, 10, 1, "api.example.com", "db1.example.com");
+  verify_rdma_connection(iter, 10, 1, "api.example.com", "db1.example.com", 0,
+                         1, 1, 1, 0);
   iter.closeSection();
 }
 
