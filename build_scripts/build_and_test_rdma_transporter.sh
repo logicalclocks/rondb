@@ -96,6 +96,8 @@ make -j"${JOBS}" \
   >/dev/null
 
 echo "==> Building NDB API static link check"
+# This target is intentionally build-only; it proves linkage for an
+# RDMA-enabled NDB API client without exercising client runtime semantics.
 make -j"${JOBS}" ndbclient_static_link_test >/dev/null
 
 # Step 4: Recompile RDMA_Transporter.cpp with the test gate defined.

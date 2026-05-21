@@ -435,6 +435,7 @@ static bool same_node_pair(Uint32 node_id1, Uint32 node_id2, Uint32 expected1,
 
 static void test_rdma_api_db_connections(void) {
   ndbout_c("test_rdma_api_db_connections");
+  // DB-DB positive.
   Config *c = create_config(
       "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
       "[ndbd]", "NodeId=2", "HostName=localhost", "NoOfReplicas=1",
@@ -443,7 +444,7 @@ static void test_rdma_api_db_connections(void) {
       "NodeId2=2", NULL);
   CHECK(c);
   delete c;
-
+  // API-DB positive.
   c = create_config(
       "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
       "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
@@ -477,7 +478,7 @@ static void test_rdma_api_db_connections(void) {
   CHECK(tcp_shm_api_db_connections == 0);
 
   delete c;
-
+  // API-API negative.
   c = create_config(
       "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
       "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
@@ -486,6 +487,7 @@ static void test_rdma_api_db_connections(void) {
       NULL);
   CHECK(c == NULL);
 
+  // MGM-involved negative.
   c = create_config(
       "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
       "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
