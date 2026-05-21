@@ -39,3 +39,7 @@ build
 .project
 .settings/
 
+# Warp / Oz agent state must never be committed.
+.warp/
+rules.md
+
