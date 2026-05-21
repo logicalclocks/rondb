@@ -48,7 +48,13 @@ MSET $key $(< "$value")
 EOF
 )
     else
-        mset_output=$(redis-cli MSET "$key:0" "$value" "$key:1" "$value")
+        # Feed the command on stdin, not argv: a value here can be
+        # hundreds of KB, and Linux caps a single argv argument at
+        # MAX_ARG_STRLEN (128 KiB). Exceeding it makes execve fail with
+        # E2BIG, so the shell aborts with exit 126 before redis-cli even
+        # starts (macOS has no per-argument limit, hence Linux-only).
+        mset_output=$(printf 'MSET %s %s %s %s\n' \
+            "$key:0" "$value" "$key:1" "$value" | redis-cli)
     fi
 
     if [[ $mset_output == ERR* ]]; then
