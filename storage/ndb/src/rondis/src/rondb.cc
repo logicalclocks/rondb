@@ -36,6 +36,8 @@
 #include <mutex>
 #include <mysql.h>
 #include <unistd.h>
+#include <NdbTick.h>
+#include <random>
 
 //#define DEBUG_NDB_CMD 1
 
@@ -592,6 +594,280 @@ class RondisEndPoint {
   void *metricsUpdaterObject;
 };
 
+// ---------------------------------------------------------------------
+// Temporary-error retry
+//
+// NDB does no deadlock prevention. Two concurrent operations on the
+// same key lock string_keys and hset_keys as two ops in a single
+// executeAsynch batch; the two tables lock in parallel with no defined
+// order, so the ops can cross-grab one row each and deadlock. NDB
+// breaks it by aborting a victim with a temporary error (266). The
+// aborted transaction committed nothing, so re-running the whole
+// command is safe - and real Redis never fails SET/DEL under
+// concurrency, so the client must not see the transient abort.
+// ---------------------------------------------------------------------
+
+static const Uint32 RONDB_MAX_TEMP_ERROR_RETRIES = 10;
+
+// Busy-wait an exponential-backoff slice with full jitter. The waits
+// start well under a millisecond (attempt 1: a random slice of <= 64
+// us), so a spin is cheaper and finer-grained than a syscall sleep.
+// Full jitter is load-bearing: the colliding clients deadlocked in
+// lockstep, so a fixed delay would just re-form the cycle - the random
+// spread is what de-synchronizes them.
+static void rondb_temp_error_backoff(Uint32 attempt) {
+  Uint32 cap_us = 64u << (attempt - 1);  // attempt is 1..MAX
+  if (cap_us > 4096u) {
+    cap_us = 4096u;
+  }
+  static thread_local std::mt19937 rng(std::random_device{}());
+  Uint64 wait_us = std::uniform_int_distribution<Uint32>(0, cap_us)(rng);
+  if (wait_us == 0) {
+    return;
+  }
+  const NDB_TICKS start = NdbTick_getCurrentTicks();
+  while (NdbTick_Elapsed(start, NdbTick_getCurrentTicks()).microSec() <
+         wait_us) {
+    // busy spin
+  }
+}
+
+// True when the just-finished command produced a RESP error reply
+// ('-' prefix) carrying an NDB error code classified TemporaryError.
+static bool rondb_temp_error_retryable(Ndb *ndb,
+                                       const std::string *response) {
+  if (g_last_ndb_error_code == 0 ||
+      response->empty() ||
+      (*response)[0] != '-') {
+    return false;
+  }
+  return ndb->getNdbError(g_last_ndb_error_code).status ==
+         NdbError::TemporaryError;
+}
+
+// One attempt at an NDB data command. Extracted from rondb_redis_handler
+// so the dispatcher can re-run it unchanged on a temporary NDB error.
+static void dispatch_ndb_data_command(Ndb *ndb,
+                                      const char *command,
+                                      const pink::RedisCmdArgsType &argv,
+                                      std::string *response,
+                                      int worker_id) {
+  if (strcasecmp(command, "GET") == 0) {
+    if (argv.size() == 2) {
+      rondb_get_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "MGET") == 0) {
+    if (argv.size() >= 2) {
+      rondb_mget_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "SET") == 0) {
+    if (argv.size() >= 3) {
+      rondb_set_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "MSET") == 0) {
+    if (argv.size() >= 3 && (argv.size() % 2) == 1) {
+      rondb_mset_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HGET") == 0) {
+    if (argv.size() == 3) {
+      rondb_hget_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HMGET") == 0) {
+    if (argv.size() >= 3) {
+      rondb_hmget_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HSET") == 0) {
+    if (argv.size() >= 4 && (argv.size() % 2) == 0) {
+      rondb_hset_command(ndb, argv, response, false, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HMSET") == 0) {
+    if (argv.size() >= 4 && (argv.size() % 2) == 0) {
+      rondb_hset_command(ndb, argv, response, true, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "DEL") == 0) {
+    if (argv.size() >= 2) {
+      rondb_del_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "EXISTS") == 0) {
+    if (argv.size() >= 2) {
+      rondb_exists_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "TYPE") == 0) {
+    if (argv.size() == 2) {
+      rondb_type_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "TTL") == 0) {
+    if (argv.size() == 2) {
+      rondb_ttl_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "PTTL") == 0) {
+    if (argv.size() == 2) {
+      rondb_pttl_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "EXPIRE") == 0) {
+    if (argv.size() == 3) {
+      rondb_expire_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "PEXPIRE") == 0) {
+    if (argv.size() == 3) {
+      rondb_pexpire_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "EXPIREAT") == 0) {
+    if (argv.size() == 3) {
+      rondb_expireat_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "PEXPIREAT") == 0) {
+    if (argv.size() == 3) {
+      rondb_pexpireat_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "PERSIST") == 0) {
+    if (argv.size() == 2) {
+      rondb_persist_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HDEL") == 0) {
+    if (argv.size() >= 3) {
+      rondb_hdel_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "INCR") == 0) {
+    if (argv.size() == 2) {
+      rondb_incr_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "INCRBY") == 0) {
+    if (argv.size() == 3) {
+      rondb_incrby_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "DECR") == 0) {
+    if (argv.size() == 2) {
+      rondb_decr_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "DECRBY") == 0) {
+    if (argv.size() == 3) {
+      rondb_decrby_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HINCR") == 0) {
+    if (argv.size() == 3) {
+      rondb_hincr_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HINCRBY") == 0) {
+    if (argv.size() == 4) {
+      rondb_hincrby_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HDECR") == 0) {
+    if (argv.size() == 3) {
+      rondb_hdecr_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HDECRBY") == 0) {
+    if (argv.size() == 4) {
+      rondb_hdecrby_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "STRLEN") == 0) {
+    if (argv.size() == 2) {
+      rondb_strlen_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "GETRANGE") == 0) {
+    if (argv.size() == 4) {
+      rondb_getrange_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "SETRANGE") == 0) {
+    if (argv.size() == 4) {
+      rondb_setrange_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+
+  } else {
+    unsupported_command(argv, response);
+  }
+}
+
 int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
                         std::string *response,
                         int worker_id) {
@@ -710,219 +986,25 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
         i, argv[i].c_str(), argv[i].size()));
      }
 #endif
-    if (strcasecmp(command, "GET") == 0) {
-      if (argv.size() == 2) {
-        rondb_get_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
+    // Retry the command on a temporary NDB error. Concurrent ops on one
+    // key lock string_keys + hset_keys unordered and can deadlock; NDB
+    // aborts a victim with error 266, having committed nothing, so
+    // re-running the whole command is safe. Full-jitter busy-wait
+    // backoff between attempts de-synchronizes lock-stepped clients.
+    Uint32 retry_attempt = 0;
+    for (;;) {
+      g_last_ndb_error_code = 0;
+      dispatch_ndb_data_command(ndb, command, argv, response, worker_id);
+      if (!rondb_temp_error_retryable(ndb, response) ||
+          retry_attempt >= RONDB_MAX_TEMP_ERROR_RETRIES) {
+        break;
       }
-    } else if (strcasecmp(command, "MGET") == 0) {
-      if (argv.size() >= 2) {
-        rondb_mget_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "SET") == 0) {
-      if (argv.size() >= 3) {
-        rondb_set_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "MSET") == 0) {
-      if (argv.size() >= 3 && (argv.size() % 2) == 1) {
-        rondb_mset_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HGET") == 0) {
-      if (argv.size() == 3) {
-        rondb_hget_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HMGET") == 0) {
-      if (argv.size() >= 3) {
-        rondb_hmget_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HSET") == 0) {
-      if (argv.size() >= 4 && (argv.size() % 2) == 0) {
-        rondb_hset_command(ndb, argv, response, false, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HMSET") == 0) {
-      if (argv.size() >= 4 && (argv.size() % 2) == 0) {
-        rondb_hset_command(ndb, argv, response, true, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "DEL") == 0) {
-      if (argv.size() >= 2) {
-        rondb_del_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "EXISTS") == 0) {
-      if (argv.size() >= 2) {
-        rondb_exists_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "TYPE") == 0) {
-      if (argv.size() == 2) {
-        rondb_type_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "TTL") == 0) {
-      if (argv.size() == 2) {
-        rondb_ttl_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "PTTL") == 0) {
-      if (argv.size() == 2) {
-        rondb_pttl_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "EXPIRE") == 0) {
-      if (argv.size() == 3) {
-        rondb_expire_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "PEXPIRE") == 0) {
-      if (argv.size() == 3) {
-        rondb_pexpire_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "EXPIREAT") == 0) {
-      if (argv.size() == 3) {
-        rondb_expireat_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "PEXPIREAT") == 0) {
-      if (argv.size() == 3) {
-        rondb_pexpireat_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "PERSIST") == 0) {
-      if (argv.size() == 2) {
-        rondb_persist_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HDEL") == 0) {
-      if (argv.size() >= 3) {
-        rondb_hdel_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "INCR") == 0) {
-      if (argv.size() == 2) {
-        rondb_incr_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "INCRBY") == 0) {
-      if (argv.size() == 3) {
-        rondb_incrby_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "DECR") == 0) {
-      if (argv.size() == 2) {
-        rondb_decr_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "DECRBY") == 0) {
-      if (argv.size() == 3) {
-        rondb_decrby_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HINCR") == 0) {
-      if (argv.size() == 3) {
-        rondb_hincr_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HINCRBY") == 0) {
-      if (argv.size() == 4) {
-        rondb_hincrby_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HDECR") == 0) {
-      if (argv.size() == 3) {
-        rondb_hdecr_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HDECRBY") == 0) {
-      if (argv.size() == 4) {
-        rondb_hdecrby_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "STRLEN") == 0) {
-      if (argv.size() == 2) {
-        rondb_strlen_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "GETRANGE") == 0) {
-      if (argv.size() == 4) {
-        rondb_getrange_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "SETRANGE") == 0) {
-      if (argv.size() == 4) {
-        rondb_setrange_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-
-    } else {
-      unsupported_command(argv, response);
+      retry_attempt++;
+      DEB_NDB_CMD(("Temporary NDB error %d on %s, retry %u/%u\n",
+                   g_last_ndb_error_code, command, retry_attempt,
+                   RONDB_MAX_TEMP_ERROR_RETRIES));
+      response->clear();
+      rondb_temp_error_backoff(retry_attempt);
     }
     if (ndb->getClientStat(ndb->TransStartCount) !=
         ndb->getClientStat(ndb->TransCloseCount)) {

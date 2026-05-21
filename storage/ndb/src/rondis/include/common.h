@@ -36,6 +36,12 @@
 // other.
 extern thread_local int g_dbg_worker_id;
 
+// NDB error code behind the most recent error reply written by the
+// assign_*_to_response helpers; 0 for a non-NDB error or no error.
+// rondb_redis_handler reads it to decide whether to retry a temporary
+// NDB error (e.g. 266, deadlock timeout).
+extern thread_local int g_last_ndb_error_code;
+
 // DEB_PREFIX is the leading "[w<id>] " on every DEB_* line. Each
 // DEB_* macro emits two printf calls (prefix + arglist) so existing
 // DEB_*(("text\n", arg)) call sites keep their format unchanged

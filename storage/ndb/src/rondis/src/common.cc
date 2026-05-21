@@ -35,6 +35,9 @@
 // path) so DEB_* lines emitted there carry [w-1].
 thread_local int g_dbg_worker_id = -1;
 
+// NDB error code behind the most recent error reply (see common.h).
+thread_local int g_last_ndb_error_code = 0;
+
 //#define DEBUG_ERROR 1
 
 void assign_ndb_err_to_response(
@@ -45,6 +48,7 @@ void assign_ndb_err_to_response(
     char buf[512];
     snprintf(buf, sizeof(buf), "-ERR %s; NDB(%u) %s\r\n",
       app_str, error.code, error.message);
+    g_last_ndb_error_code = error.code;
 #ifdef DEBUG_ERROR
     std::cout << buf;
 #endif
@@ -65,6 +69,7 @@ void assign_err_to_response(
     } else {
         snprintf(buf, sizeof(buf), "-ERR %s; NDB(%u)\r\n", app_str, code);
     }
+    g_last_ndb_error_code = code;
 #ifdef DEBUG_ERROR
     std::cout << buf;
 #endif
@@ -77,6 +82,8 @@ void assign_generic_err_to_response(
 {
     char buf[512];
     snprintf(buf, sizeof(buf), "-ERR %s\r\n", app_str);
+    // Non-NDB error: nothing to retry.
+    g_last_ndb_error_code = 0;
 #ifdef DEBUG_ERROR
     std::cout << buf;
 #endif
@@ -93,6 +100,8 @@ void assign_class_err_to_response(
 {
     char buf[512];
     snprintf(buf, sizeof(buf), "-%s\r\n", class_msg);
+    // Class error (WRONGTYPE, MOVED, ...): not an NDB temporary error.
+    g_last_ndb_error_code = 0;
 #ifdef DEBUG_ERROR
     std::cout << buf;
 #endif
