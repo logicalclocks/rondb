@@ -22441,6 +22441,20 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
   indexOp->indexOpId = indexOpPtr.i;
 
   // Save original signal
+  // But clear flags that should not be carried on first
+
+  /**
+   * When receiving execTCINDXREQ we need to handle getUserIdFlag
+   * properly, this means we use it to set database in TCINDXREQ,
+   * this means it need not be set again in TCKEYREQ.
+   * getScanIndFlag is not checked and can be set and cause
+   * corruption of the TCKEYREQ execution.
+   * Finally getDistributionKeyFlag can be set without checks
+   * which also needs protection against.
+   */
+  TcKeyReq::setUserIdFlag(tcIndxReq->requestInfo, 0);
+  TcKeyReq::setDistributionKeyFlag(tcIndxReq->requestInfo, 0);
+  TcKeyReq::setScanIndFlag(tcIndxReq->requestInfo, 0);
   indexOp->tcIndxReq = *tcIndxReq;
   indexOp->connectionIndex = TapiIndex;
   regApiPtr->accumulatingIndexOp = indexOp->indexOpId;
@@ -23297,6 +23311,7 @@ void Dbtc::readIndexTable(Signal *signal, ApiConnectRecordPtr transPtr,
    * TCKEYREQ is responsible for freeing the KeyInfo and
    * AttrInfo sections passed to it
    */
+
   EXECUTE_DIRECT(DBTC, GSN_TCKEYREQ, signal, TcKeyReq::StaticLength);
   jamEntry();
 
@@ -23367,11 +23382,6 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
   tcKeyReq->transId2 = regApiPtr->transid[1];
   tcKeyReq->senderData = tcIndxReq->senderData;  // Needed for TRANSID_AI to API
 
-  if (tabPtr.p->get_user_defined_partitioning()) {
-    jam();
-    tcKeyReq->scanInfo = indexOp->fragmentId;  // As read from Index table
-    TcKeyReq::setDistributionKeyFlag(tcKeyRequestInfo, 1U);
-  }
   regApiPtr->m_special_op_flags = 0;
   regApiPtr->executingIndexOp = 0;
 
@@ -23406,7 +23416,6 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
 
   TcKeyReq::setCommitFlag(tcKeyRequestInfo, 0);
   TcKeyReq::setExecuteFlag(tcKeyRequestInfo, 0);
-  tcKeyReq->requestInfo = tcKeyRequestInfo;
 
   ndbassert(TcKeyReq::getDirtyFlag(tcKeyRequestInfo) == 0);
   ndbassert(TcKeyReq::getSimpleFlag(tcKeyRequestInfo) == 0);
@@ -23451,6 +23460,14 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
     regApiPtr->immediateTriggerId = triggerId;
     regApiPtr->m_executing_trigger_ops++;
   }
+  Uint32 extra_len = 0;
+  if (tabPtr.p->get_user_defined_partitioning()) {
+    jam();
+    tcKeyReq->scanInfo = indexOp->fragmentId;  // As read from Index table
+    TcKeyReq::setDistributionKeyFlag(tcKeyRequestInfo, 1U);
+    extra_len++;
+  }
+  tcKeyReq->requestInfo = tcKeyRequestInfo;
   releaseIndexOperation(regApiPtr, indexOp);
 
   ndbassert(tc_testbit(regApiPtr->m_flags,
@@ -23459,7 +23476,10 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
   /* Execute TCKEYREQ now - it is now responsible for freeing
    * the KeyInfo and AttrInfo sections
    */
-  EXECUTE_DIRECT(DBTC, GSN_TCKEYREQ, signal, TcKeyReq::StaticLength);
+  EXECUTE_DIRECT(DBTC,
+                 GSN_TCKEYREQ,
+                 signal,
+                 TcKeyReq::StaticLength + extra_len);
   jamEntry();
 
 #ifdef ERROR_INSERT
