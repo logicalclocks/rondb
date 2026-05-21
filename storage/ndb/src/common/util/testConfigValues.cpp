@@ -213,15 +213,24 @@ static void verify_rdma_config(const ConfigValues &cfg) {
   require(iter.get(CFG_NODE_HOST, &hostname));
   require(strcmp(hostname, "db2-new.example.com") == 0);
   iter.closeSection();
+  const Uint32 dynamic_server_port = 0;
+  const Uint32 db1_node_id_server = 1;
+  const Uint32 send_signal_id_enabled = 1;
+  const Uint32 checksum_enabled = 1;
+  const Uint32 presend_checksum_disabled = 0;
 
   require(iter.openSection(CONFIG_SECTION_CONNECTION, 0));
   verify_rdma_connection(iter, 1, 2, "db1.example.com",
-                         "db2-new.example.com", 0, 1, 1, 1, 0);
+                         "db2-new.example.com", dynamic_server_port,
+                         db1_node_id_server, send_signal_id_enabled,
+                         checksum_enabled, presend_checksum_disabled);
   iter.closeSection();
 
   require(iter.openSection(CONFIG_SECTION_CONNECTION, 1));
-  verify_rdma_connection(iter, 10, 1, "api.example.com", "db1.example.com", 0,
-                         1, 1, 1, 0);
+  verify_rdma_connection(iter, 10, 1, "api.example.com", "db1.example.com",
+                         dynamic_server_port, db1_node_id_server,
+                         send_signal_id_enabled, checksum_enabled,
+                         presend_checksum_disabled);
   iter.closeSection();
 }
 
