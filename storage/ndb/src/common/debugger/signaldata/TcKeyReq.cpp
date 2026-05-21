@@ -60,6 +60,9 @@ bool printTCKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,
     if (sig->getNoDiskFlag(requestInfo)) {
       fprintf(output, " NoDisk");
     }
+    if (sig->getUserIdFlag(requestInfo)) {
+      fprintf(output, " User");
+    }
 
     UintR TcommitType = sig->getAbortOption(requestInfo);
     if (TcommitType == TcKeyReq::AbortOnError) {

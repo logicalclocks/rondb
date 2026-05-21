@@ -1901,7 +1901,7 @@ void DbUtil::hardcodedPrepare(Signal *signal, Uint32 SYSTAB_0) {
     ndbrequire(c_preparedOperationPool.seizeId(ptr, 2));
     ptr.p->tckey.attrLen = 5;
     ptr.p->rsLen = 0;
-    ptr.p->tckeyLen = TcKeyReq::StaticLength + keyLen + ptr.p->tckey.attrLen;
+    ptr.p->tckeyLen = TcKeyReq::StaticLength;
     ptr.p->keyDataPos = TcKeyReq::StaticLength;
     ptr.p->tckey.tableId = SYSTAB_0;
     Uint32 requestInfo = 0;
@@ -2444,7 +2444,10 @@ void DbUtil::runOperation(Signal *signal, TransactionPtr &transPtr,
   printf("DbUtil::runOperation: sendSignal(DBTC_REF, GSN_TCKEYREQ, signal, %d , JBB)\n",  pop->tckeyLenInBytes >> 2);
   printTCKEYREQ(stdout, signal->getDataPtr(), pop->tckeyLenInBytes >> 2,0);
 #endif
-  Uint32 sigLen = pop->tckeyLen + (keyLen > 8 ? 8 : keyLen);
+  const Uint32 keyInTckeyReq = MIN(keyLen, TcKeyReq::MaxKeyInfo);
+  const Uint32 aiInTckeyReq =
+      TcKeyReq::getAIInTcKeyReq(tcKey->requestInfo);
+  Uint32 sigLen = pop->keyDataPos + keyInTckeyReq + aiInTckeyReq;
   sendSignal(transPtr.p->connectRef, GSN_TCKEYREQ, signal, sigLen, JBB);
 
   /**

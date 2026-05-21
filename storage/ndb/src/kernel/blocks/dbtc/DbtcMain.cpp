@@ -2505,6 +2505,8 @@ void Dbtc::disconnectMaliciousNode(Signal *signal,
                                    const char *reason,
                                    int line) {
   jam();
+  ndbassert(false);
+  ndbrequire(nodeId != getOwnNodeId());
   g_eventLogger->warning(
       "TC %u : Malformed signal from node %u (type %u) at line %d: %s. "
       "Disconnecting.",
