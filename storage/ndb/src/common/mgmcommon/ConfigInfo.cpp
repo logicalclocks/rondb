@@ -2311,6 +2311,15 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "does not currently change runtime behavior.",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "7", "0", "7"},
 
+    {CFG_RDMA_POST_BATCH_MAX, "RdmaPostBatchMax", "RDMA",
+     "Maximum number of SEND WRs that doSend() may chain into a single "
+     "ibv_post_send() doorbell. The runtime additionally caps this at "
+     "the negotiated QP queue depth and at a small compile-time hard "
+     "ceiling. Has effect only when the NDB_RDMA_SEND_BATCH=on env var "
+     "opt-in is set; otherwise the chain length is forced to 1, which "
+     "is the pre-Phase-4 behavior.",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "16", "1", "256"},
+
     /****************************************************************************
      * SCI (Deprecated now)
      ***************************************************************************/

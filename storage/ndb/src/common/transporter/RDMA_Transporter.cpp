@@ -26,6 +26,7 @@
  */
 #ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
 
+#include <algorithm>
 #include <arpa/inet.h>
 #include <cstdint>
 #include <cstdlib>
@@ -716,6 +717,54 @@ static rdma_recv_path_mode_t rdma_recv_path_mode_cached() {
 }
 
 /*
+ * --------------------------------------------------------------------------
+ * Phase 4: send-batching opt-in
+ * --------------------------------------------------------------------------
+ *
+ * The data path defaults to the pre-Phase-4 behaviour of posting one
+ * SEND WR per ibv_post_send() call, with every WR signaled. Setting
+ * NDB_RDMA_SEND_BATCH=on at process start lets doSend() chain up to
+ * effective_batch_max WRs into one ibv_post_send() with only the chain
+ * tail signaled. Wire format and receive-side behaviour are unchanged
+ * either way.
+ *
+ * Mode is cached once via a Meyer's singleton so the data path pays
+ * for the lookup exactly once at the first send. Unknown values are
+ * logged and fall back to off.
+ *
+ * RDMA_SEND_CHAIN_HARD_MAX bounds the chain length regardless of the
+ * configured RdmaPostBatchMax. 64 keeps the pre-allocated scratch
+ * arrays (m_send_wr_scratch + m_send_sge_scratch +
+ * m_send_chain_slots_scratch) under ~10 KB per transporter at
+ * queue_depth=4096, while remaining large enough to amortize the
+ * doorbell cost over realistic chain sizes observed in the lab.
+ */
+static constexpr Uint32 RDMA_SEND_CHAIN_HARD_MAX = 64u;
+
+enum class rdma_send_batch_mode_t { OFF, ON };
+
+static rdma_send_batch_mode_t rdma_send_batch_mode_cached() {
+  static const rdma_send_batch_mode_t cached = []() {
+    const char *e = std::getenv("NDB_RDMA_SEND_BATCH");
+    if (e == nullptr || std::strcmp(e, "off") == 0) {
+      return rdma_send_batch_mode_t::OFF;
+    }
+    if (std::strcmp(e, "on") == 0) {
+      g_eventLogger->info(
+          "RDMA: NDB_RDMA_SEND_BATCH=on (opt-in batched-doorbell SEND "
+          "chains; wire format unchanged, selective signaling enabled)");
+      return rdma_send_batch_mode_t::ON;
+    }
+    g_eventLogger->info(
+        "RDMA: NDB_RDMA_SEND_BATCH has unrecognised value '%s'; defaulting "
+        "to off",
+        e);
+    return rdma_send_batch_mode_t::OFF;
+  }();
+  return cached;
+}
+
+/*
  * Ring region allocator. Returns the next byte offset in the ring
  * buffer for a region of `region_size` bytes, advancing
  * *cursor_inout past the allocated region. If the region does not
@@ -786,6 +835,8 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_traffic_class(config->rdma.trafficClass),
       m_retry_count(config->rdma.retryCount),
       m_rnr_retry_count(config->rdma.rnrRetryCount),
+      m_post_batch_max(config->rdma.postBatchMax ? config->rdma.postBatchMax
+                                                 : 1u),
       m_device_name(rdma_clone_device_name(config->rdma.deviceName)),
       m_verbs_ctx(nullptr),
       m_pd(nullptr),
@@ -840,6 +891,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_traffic_class(other->m_traffic_class),
       m_retry_count(other->m_retry_count),
       m_rnr_retry_count(other->m_rnr_retry_count),
+      m_post_batch_max(other->m_post_batch_max),
       m_device_name(rdma_clone_device_name(other->m_device_name)),
       m_verbs_ctx(nullptr),
       m_pd(nullptr),
@@ -924,6 +976,12 @@ bool RDMA_Transporter::configure_derived(
   if (conf->rdma.trafficClass != m_traffic_class) return false;
   if (conf->rdma.retryCount != m_retry_count) return false;
   if (conf->rdma.rnrRetryCount != m_rnr_retry_count) return false;
+  /* Phase 4: zero in the config means "defaulted upstream"; treat it as
+   * a match with the conservative runtime default of 1 chain WR. */
+  if ((conf->rdma.postBatchMax ? conf->rdma.postBatchMax : 1u) !=
+      m_post_batch_max) {
+    return false;
+  }
   if (!rdma_device_name_equal(conf->rdma.deviceName, m_device_name)) {
     return false;
   }
@@ -1029,11 +1087,19 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
    * Sequence:
    *   1. Reap completions for previously posted sends. This frees
    *      staging slots and updates wire byte counters.
-   *   2. While we have remote credits and a free slot, fetch iovec
+   *   2. While we have remote credits and free slots, fetch iovec
    *      bytes from the send buffer, copy complete Protocol6 messages
-   *      into a registered staging slot, post one IBV_WR_SEND, and
-   *      release those upper-layer send-buffer bytes immediately after
-   *      the successful post.
+   *      into one or more registered staging slots, link the slots'
+   *      WRs into a bounded chain, post the chain with a single
+   *      ibv_post_send(), and release those upper-layer send-buffer
+   *      bytes immediately after the successful post.
+   *
+   * Phase 4: the chain length is capped at
+   *     min(m_post_batch_max, m_queue_depth, RDMA_SEND_CHAIN_HARD_MAX)
+   * when NDB_RDMA_SEND_BATCH=on, and at 1 otherwise. In off-mode the
+   * chain is exactly one WR, behaving identically to pre-Phase-4. The
+   * tail WR is the only one that carries IBV_SEND_SIGNALED, and its
+   * completion retires the entire chain through retire_send_chain().
    *
    * Return value follows the existing transporter convention: true if
    * there are still upper-layer bytes to push (more work to do later),
@@ -1041,7 +1107,9 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
    * themselves are not send-scheduler work once their payload has been
    * copied into the registered staging buffer.
    */
-  if (m_qp == nullptr || m_send_slots == nullptr) {
+  if (m_qp == nullptr || m_send_slots == nullptr ||
+      m_send_wr_scratch == nullptr || m_send_sge_scratch == nullptr ||
+      m_send_chain_slots_scratch == nullptr) {
     /* Connect path has not allocated verbs resources yet. Nothing to
      * send and nothing to fail; the registry retains the bytes in its
      * send buffer for the next attempt. */
@@ -1059,17 +1127,29 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
   if (slot_size == 0) return false;
   const Uint32 max_payload = slot_size - (Uint32)RDMA_MSG_HEADER_BYTES;
 
+  /* Phase 4: compute the effective chain ceiling. In off-mode this is
+   * 1, which makes the outer chain loop equivalent to one slot per
+   * iteration. In on-mode it grows up to m_post_batch_max, capped by
+   * the QP queue depth and the compile-time hard ceiling. */
+  const Uint32 batch_ceiling =
+      (rdma_send_batch_mode_cached() == rdma_send_batch_mode_t::ON)
+          ? std::min<Uint32>(
+                std::min<Uint32>(m_post_batch_max, m_queue_depth),
+                RDMA_SEND_CHAIN_HARD_MAX)
+          : 1u;
+  const Uint32 effective_batch_max = (batch_ceiling > 0u) ? batch_ceiling : 1u;
+
   /*
-   * Drain loop. Each iteration tries to fill exactly one slot with
-   * whole Protocol6 messages. We bail out as soon as we run out of
-   * credits, free slots, or send-buffer data. Messages are never split
-   * across two RDMA recv slots, because the receiver's unpacker (TransporterRegistry::
+   * Drain loop. Each outer iteration tries to build a chain of up to
+   * effective_batch_max slots and posts the whole chain with a single
+   * ibv_post_send(). We bail out as soon as we run out of credits,
+   * free slots, or send-buffer data. Messages are never split across
+   * two RDMA recv slots, because the receiver's unpacker (TransporterRegistry::
    * unpack -> Packer::unpack_one) can only consume complete Protocol6
-   * messages from a contiguous buffer, and a single recv slot is
-   * what get_next_read() exposes as a contiguous buffer to the
-   * unpacker. The TCP transporter side-steps this because its
-   * receive buffer is a contiguous ring; RDMA cannot share that
-   * shortcut.
+   * messages from a contiguous buffer, and a single recv slot is what
+   * get_next_read() exposes as a contiguous buffer to the unpacker.
+   * The TCP transporter side-steps this because its receive buffer
+   * is a contiguous ring; RDMA cannot share that shortcut.
    */
   bool send_buffer_may_have_more = false;
   if (m_send_slots_in_flight.load(std::memory_order_relaxed) >=
@@ -1082,244 +1162,331 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
   while (m_send_slots_in_flight.load(std::memory_order_relaxed) <
              m_queue_depth &&
          m_peer_recv_credits.load(std::memory_order_acquire) > 0) {
-    /* Pull iovec descriptors describing the send buffer's pending data. */
-    constexpr Uint32 IOV_BATCH = 8;
-    struct iovec iov[IOV_BATCH];
-    const Uint32 n_iov = fetch_send_iovec_data(iov, IOV_BATCH);
-    if (n_iov == 0) {
-      /* Send buffer is empty. */
-      send_buffer_may_have_more = false;
+    /*
+     * Build a chain of up to effective_batch_max WRs. Each iteration
+     * of the inner loop reserves one slot, packs one or more
+     * complete Protocol6 messages into it, and appends one WR to the
+     * chain. Slot state is marked in_flight=true provisionally so
+     * find_free_send_slot() skips the same slot on the next
+     * iteration; on a post failure we walk chain_slots[] and roll
+     * the provisional in_flight back.
+     */
+    Uint32 chain_len = 0;
+    Uint32 chain_total_payload = 0;
+    Uint32 *const chain_slots = m_send_chain_slots_scratch;
+    struct ibv_send_wr *const wrs = m_send_wr_scratch;
+    struct ibv_sge *const sges = m_send_sge_scratch;
+    Uint32 chain_inline_count = 0;
+
+    while (chain_len < effective_batch_max &&
+           m_send_slots_in_flight.load(std::memory_order_relaxed) +
+                   chain_len <
+               m_queue_depth &&
+           m_peer_recv_credits.load(std::memory_order_acquire) >
+               chain_len) {
+      /* Pull iovec descriptors describing the send buffer's pending data.
+       * fetch_send_iovec_data() reports only bytes that have not yet
+       * been released to the send-buffer accounting, so consecutive
+       * inner-loop iterations re-observe whatever is left after
+       * the previous iteration's iovec_data_sent() would have run.
+       * In this chain-aware path we defer iovec_data_sent() until
+       * after the chain post, so we need to skip past the bytes
+       * already packed into earlier chain slots. */
+      constexpr Uint32 IOV_BATCH = 8;
+      struct iovec iov[IOV_BATCH];
+      const Uint32 n_iov = fetch_send_iovec_data(iov, IOV_BATCH);
+      if (n_iov == 0) {
+        /* Send buffer is empty. */
+        send_buffer_may_have_more = false;
+        break;
+      }
+
+      Uint32 cursor_iov = 0;
+      Uint32 cursor_off = 0;
+      /* Skip past bytes already packed into earlier slots of this
+       * chain. fetch_send_iovec_data() reports the same byte ranges
+       * on each call until iovec_data_sent() advances the cursor,
+       * which only happens after we successfully post the chain. */
+      Uint32 skip_bytes = chain_total_payload;
+      while (skip_bytes > 0 && cursor_iov < n_iov) {
+        const Uint32 iov_remaining =
+            (Uint32)iov[cursor_iov].iov_len - cursor_off;
+        if (iov_remaining == 0) {
+          cursor_iov++;
+          cursor_off = 0;
+          continue;
+        }
+        if (skip_bytes >= iov_remaining) {
+          skip_bytes -= iov_remaining;
+          cursor_iov++;
+          cursor_off = 0;
+        } else {
+          cursor_off += skip_bytes;
+          skip_bytes = 0;
+        }
+      }
+      if (cursor_iov >= n_iov) {
+        /* Already consumed everything visible in this iovec batch. */
+        send_buffer_may_have_more = (n_iov == IOV_BATCH);
+        break;
+      }
+
+      /* Find a free slot for this WR. find_free_send_slot() skips any
+       * slot that is already in_flight, which now includes the
+       * provisionally-reserved earlier slots of this chain. */
+      const Uint32 slot = find_free_send_slot();
+      if (slot == UINT32_MAX) {
+        /* Out of slots even though m_send_slots_in_flight + chain_len
+         * < queue_depth? Should not happen, but bail out safely. */
+        break;
+      }
+
+      char *const slot_buf =
+          (char *)m_send_buf + (size_t)slot * (size_t)slot_size;
+      char *payload_dst = slot_buf + RDMA_MSG_HEADER_BYTES;
+      Uint32 payload_len = 0;
+
+      /*
+       * Pack only *complete* Protocol6 messages into the slot, exactly
+       * the same way the pre-Phase-4 single-slot loop did. The
+       * receive-side invariant that prevents splitting a Protocol6
+       * message across two RDMA recv slots is unchanged.
+       */
+      while (payload_len < max_payload && cursor_iov < n_iov) {
+        const Uint32 iov_remaining =
+            (Uint32)iov[cursor_iov].iov_len - cursor_off;
+        if (iov_remaining == 0) {
+          cursor_iov++;
+          cursor_off = 0;
+          continue;
+        }
+        if (iov_remaining < (Uint32)sizeof(Uint32)) {
+          g_eventLogger->error(
+              "RDMA[node %u->%u]: send buffer iov entry %u has %u bytes"
+              " left, expected a full Protocol6 header; bailing this"
+              " round",
+              (unsigned)localNodeId, (unsigned)remoteNodeId, cursor_iov,
+              iov_remaining);
+          break;
+        }
+        send_buffer_may_have_more = true;
+        Uint32 word1;
+        std::memcpy(&word1,
+                    (const char *)iov[cursor_iov].iov_base + cursor_off,
+                    sizeof(word1));
+        const Uint32 msg_len_bytes =
+            (Uint32)Protocol6::getMessageLength(word1) * 4u;
+        if (msg_len_bytes < (Uint32)sizeof(Uint32) ||
+            msg_len_bytes > (Uint32)MAX_SEND_MESSAGE_BYTESIZE) {
+          /*
+           * Corrupt buffer or signal larger than the protocol allows.
+           * Surfacing this is fatal for the link; otherwise we would
+           * silently wedge or send garbage. Roll back chain reservation
+           * first so the slot table reflects reality before the
+           * disconnect path runs.
+           */
+          for (Uint32 c = 0; c < chain_len; c++) {
+            m_send_slots[chain_slots[c]].in_flight = false;
+            m_send_slots[chain_slots[c]].payload_len = 0;
+          }
+          g_eventLogger->error(
+              "RDMA[node %u->%u]: invalid Protocol6 message length %u "
+              "in send buffer (word1=0x%08x); disconnecting",
+              (unsigned)localNodeId, (unsigned)remoteNodeId, msg_len_bytes,
+              word1);
+          m_stats.qp_fatal_events.fetch_add(1u, std::memory_order_relaxed);
+          report_error(TE_RDMA_QP_ERROR,
+                       "invalid Protocol6 length in send buffer");
+          start_disconnecting(EBADMSG, /*send_source=*/true);
+          return false;
+        }
+        if (msg_len_bytes > iov_remaining) {
+          /* Full message not yet visible in this iovec batch. */
+          break;
+        }
+        if (payload_len + msg_len_bytes > max_payload) {
+          /* Next message does not fit in the remaining room of this
+           * slot; finish this slot and let the next chain entry pick
+           * up the message. */
+          break;
+        }
+        std::memcpy(payload_dst,
+                    (const char *)iov[cursor_iov].iov_base + cursor_off,
+                    msg_len_bytes);
+        payload_dst += msg_len_bytes;
+        payload_len += msg_len_bytes;
+        cursor_off += msg_len_bytes;
+        if (cursor_off == iov[cursor_iov].iov_len) {
+          cursor_iov++;
+          cursor_off = 0;
+        }
+      }
+      if (payload_len == 0) {
+        /* Nothing useful to add this iteration; stop chain growth. */
+        break;
+      }
+      send_buffer_may_have_more =
+          (cursor_iov < n_iov) || (n_iov == IOV_BATCH);
+
+      /*
+       * Provisionally reserve the slot so find_free_send_slot() on the
+       * next iteration skips it. payload_len is recorded so a roll-back
+       * can wipe it; chain metadata is finalised only after the post
+       * succeeds.
+       */
+      m_send_slots[slot].payload_len = payload_len;
+      m_send_slots[slot].in_flight = true;
+      m_send_slots[slot].chain_tail_slot = slot; /* placeholder */
+      m_send_slots[slot].is_signaled_tail = false; /* placeholder */
+      chain_slots[chain_len] = slot;
+
+      /* Build the WR for this slot. Non-tail headers must NOT carry a
+       * credit_delta because the tail header alone ships the chain's
+       * total credit grant. We populate the header without grant for
+       * now; the tail re-encodes its own header once the chain length
+       * is known. */
+      const Uint32 ack_seq_snapshot =
+          m_local_recv_seq.load(std::memory_order_relaxed);
+      encode_msg_header(slot_buf, payload_len,
+                        m_local_send_seq + chain_len,
+                        ack_seq_snapshot, /*credit_delta=*/0u,
+                        /*flags=*/0u);
+
+      std::memset(&sges[chain_len], 0, sizeof(sges[chain_len]));
+      sges[chain_len].addr = (uintptr_t)slot_buf;
+      sges[chain_len].length =
+          payload_len + (Uint32)RDMA_MSG_HEADER_BYTES;
+      sges[chain_len].lkey = m_send_mr->lkey;
+
+      std::memset(&wrs[chain_len], 0, sizeof(wrs[chain_len]));
+      wrs[chain_len].wr_id = (uint64_t)slot;
+      wrs[chain_len].sg_list = &sges[chain_len];
+      wrs[chain_len].num_sge = 1;
+      wrs[chain_len].opcode = IBV_WR_SEND;
+      /* Unsignaled by default; the tail's signaled flag is OR'd in
+       * below after the chain is closed. */
+      wrs[chain_len].send_flags = 0;
+      const bool inline_used =
+          (sges[chain_len].length <= m_effective_inline_threshold);
+      if (inline_used) {
+        wrs[chain_len].send_flags |= IBV_SEND_INLINE;
+        chain_inline_count++;
+      }
+      /* Link the previous WR to this one. The tail's next pointer is
+       * left nullptr by memset above. */
+      if (chain_len > 0) {
+        wrs[chain_len - 1].next = &wrs[chain_len];
+      }
+
+      chain_len++;
+      chain_total_payload += payload_len;
+    }
+
+    if (chain_len == 0) {
+      /* Nothing to post this outer iteration. */
       break;
     }
 
     /*
-     * The send-buffer cursor always starts at the first unsent byte:
-     * after a successful post we immediately call iovec_data_sent()
-     * because the payload has already been copied into m_send_buf.
+     * Stamp the tail header with the chain's credit_delta and flip the
+     * IBV_SEND_SIGNALED flag. Use atomic exchange so any concurrent
+     * receive-thread increment that lands after our exchange is
+     * preserved (and gets shipped in the next chain). The claimed
+     * value is restored via fetch_add() on a post failure.
      */
-    Uint32 cursor_iov = 0;
-    Uint32 cursor_off = 0;
-
-    /* Find a free slot. */
-    const Uint32 slot = find_free_send_slot();
-    if (slot == UINT32_MAX) {
-      /* Out of slots even though m_send_slots_in_flight < queue_depth?
-       * Should not happen, but bail out safely. */
-      break;
-    }
-
-    char *const slot_buf =
-        (char *)m_send_buf + (size_t)slot * (size_t)slot_size;
-    char *payload_dst = slot_buf + RDMA_MSG_HEADER_BYTES;
-    Uint32 payload_len = 0;
-
-    /*
-     * Pack only *complete* Protocol6 messages into the slot. The
-     * upper-layer send buffer guarantees that each iovec entry is a
-     * sequence of whole Protocol6 messages: SendBufferPage / thr_send_page
-     * allocate a fresh page whenever a message will not fit in the
-     * current one, and MAX_SEND_MESSAGE_BYTESIZE <= page max_bytes().
-     * Therefore peeking the next message's word1 only ever needs to
-     * read 4 bytes within the current iovec entry; if those 4 bytes
-     * are not available, the iovec has been fully consumed for this
-     * slot and we post what we have.
-     *
-     * If the upcoming message would exceed the remaining slot room
-     * we stop and post the slot as-is, leaving the remaining bytes
-     * in the upper-layer send buffer for the next slot. This is the
-     * invariant that prevents a Protocol6 message from being split
-     * across two RDMA receive slots, which is what wedged the scan
-     * receive path on the receiver side.
-     */
-    while (payload_len < max_payload && cursor_iov < n_iov) {
-      const Uint32 iov_remaining =
-          (Uint32)iov[cursor_iov].iov_len - cursor_off;
-      if (iov_remaining == 0) {
-        /* Reached end of this iov entry; move to next. */
-        cursor_iov++;
-        cursor_off = 0;
-        continue;
-      }
-      if (iov_remaining < (Uint32)sizeof(Uint32)) {
-        /*
-         * Fewer than 4 bytes left in this iov to peek word1. The
-         * upper-layer invariant says signals do not straddle pages,
-         * so a non-zero sub-4-byte remainder would indicate buffer
-         * corruption or a signal split across iovecs. Refuse to post
-         * any further bytes this round; the next doSend() will fetch
-         * a fresh iovec batch after completions arrive.
-         */
-        g_eventLogger->error(
-            "RDMA[node %u->%u]: send buffer iov entry %u has %u bytes"
-            " left, expected a full Protocol6 header; bailing this"
-            " round",
-            (unsigned)localNodeId, (unsigned)remoteNodeId, cursor_iov,
-            iov_remaining);
-        break;
-      }
-      /*
-       * Read word1 of the next Protocol6 message. Packer writes the
-       * header in host byte order; both sender and receiver use
-       * Protocol6::getMessageLength() on the host-endian word1 to
-       * extract the length.
-       */
-      send_buffer_may_have_more = true;
-      Uint32 word1;
-      std::memcpy(&word1,
-                  (const char *)iov[cursor_iov].iov_base + cursor_off,
-                  sizeof(word1));
-      const Uint32 msg_len_bytes =
-          (Uint32)Protocol6::getMessageLength(word1) * 4u;
-      if (msg_len_bytes < (Uint32)sizeof(Uint32) ||
-          msg_len_bytes > (Uint32)MAX_SEND_MESSAGE_BYTESIZE) {
-        /*
-         * Corrupt buffer or signal larger than the protocol allows.
-         * Surfacing this is fatal for the link; otherwise we would
-         * silently wedge or send garbage.
-         */
-        g_eventLogger->error(
-            "RDMA[node %u->%u]: invalid Protocol6 message length %u "
-            "in send buffer (word1=0x%08x); disconnecting",
-            (unsigned)localNodeId, (unsigned)remoteNodeId, msg_len_bytes,
-            word1);
-        m_stats.qp_fatal_events.fetch_add(1u, std::memory_order_relaxed);
-        report_error(TE_RDMA_QP_ERROR,
-                     "invalid Protocol6 length in send buffer");
-        start_disconnecting(EBADMSG, /*send_source=*/true);
-        return false;
-      }
-      if (msg_len_bytes > iov_remaining) {
-        /*
-         * The full message is not yet within the current iovec
-         * batch. This can only happen if IOV_BATCH was too small
-         * to expose the page that holds this message; bail and let
-         * the next doSend() pull more iovecs. Because pages cannot
-         * span signals, this situation also implies cursor_off == 0,
-         * but we do not assert it here so a misbehaving upper layer
-         * cannot escalate to abort().
-         */
-        break;
-      }
-      if (payload_len + msg_len_bytes > max_payload) {
-        /*
-         * Next message doesn't fit in this slot's remaining room.
-         * Post what we have; the next slot will carry this message.
-         * This is the key invariant for the receive side.
-         */
-        break;
-      }
-      std::memcpy(payload_dst,
-                  (const char *)iov[cursor_iov].iov_base + cursor_off,
-                  msg_len_bytes);
-      payload_dst += msg_len_bytes;
-      payload_len += msg_len_bytes;
-      cursor_off += msg_len_bytes;
-      if (cursor_off == iov[cursor_iov].iov_len) {
-        cursor_iov++;
-        cursor_off = 0;
-      }
-    }
-    if (payload_len == 0) {
-      /*
-       * Either the next message is not yet fully visible in the iovec
-       * batch, or (handled earlier) the next message is larger than
-       * the slot. In every case there is still send-buffer data, but
-       * nothing useful to post this round.
-       */
-      break;
-    }
-    send_buffer_may_have_more =
-        (cursor_iov < n_iov) || (n_iov == IOV_BATCH);
-
-    /* Build the framing header. We piggyback the pending ack and
-     * credit grant on this SEND. Use atomic exchange so a concurrent
-     * increment from reap_recv_completions() (which may run on the
-     * receive thread without the send lock) cannot be silently
-     * dropped between read and clear. The claimed value is rolled
-     * back via fetch_add() on any post failure below. */
+    const Uint32 tail_slot = chain_slots[chain_len - 1];
     const Uint32 claimed_grant =
         m_pending_credit_grant.exchange(0, std::memory_order_acq_rel);
     const Uint16 credit_delta = (claimed_grant > 0xFFFFu)
                                     ? (Uint16)0xFFFFu
                                     : (Uint16)claimed_grant;
-    /*
-     * m_local_recv_seq is incremented on the receive thread; relaxed
-     * load is sufficient here because the ack_seq we stamp is an
-     * advisory hint to the peer rather than a synchronizer.
-     */
-    const Uint32 ack_seq_snapshot =
-        m_local_recv_seq.load(std::memory_order_relaxed);
-    encode_msg_header(slot_buf, payload_len, m_local_send_seq,
-                      ack_seq_snapshot, credit_delta, /*flags=*/0u);
-
-    /* Post the WR. */
-    struct ibv_sge sge;
-    std::memset(&sge, 0, sizeof(sge));
-    sge.addr = (uintptr_t)slot_buf;
-    sge.length = payload_len + (Uint32)RDMA_MSG_HEADER_BYTES;
-    sge.lkey = m_send_mr->lkey;
-
-    struct ibv_send_wr wr;
-    std::memset(&wr, 0, sizeof(wr));
-    wr.wr_id = (uint64_t)slot;
-    wr.sg_list = &sge;
-    wr.num_sge = 1;
-    wr.opcode = IBV_WR_SEND;
-    wr.send_flags = IBV_SEND_SIGNALED;
-    /* Use inline send for small messages within the device's negotiated
-     * cap. This avoids the HCA touching pinned memory at the cost of a
-     * copy into the WR; the verbs implementation handles the actual
-     * copy at post time so SGE.addr can remain inside the registered
-     * MR. */
-    const bool inline_used = (sge.length <= m_effective_inline_threshold);
-    if (inline_used) {
-      wr.send_flags |= IBV_SEND_INLINE;
+    {
+      char *const tail_buf =
+          (char *)m_send_buf + (size_t)tail_slot * (size_t)slot_size;
+      const Uint32 ack_seq_snapshot =
+          m_local_recv_seq.load(std::memory_order_relaxed);
+      encode_msg_header(tail_buf, m_send_slots[tail_slot].payload_len,
+                        m_local_send_seq + (chain_len - 1u),
+                        ack_seq_snapshot, credit_delta, /*flags=*/0u);
     }
+    wrs[chain_len - 1].send_flags |= IBV_SEND_SIGNALED;
 
+    /* Post the chain. */
     struct ibv_send_wr *bad = nullptr;
-    const int rc = ibv_post_send(m_qp, &wr, &bad);
+    const int rc = ibv_post_send(m_qp, &wrs[0], &bad);
     if (rc != 0) {
-      /*
-       * Roll back the claimed credit grant. The atomic fetch_add()
-       * keeps any concurrent increment from the receive thread that
-       * landed after our exchange().
-       */
+      /* Roll back: restore the pending credit grant and clear the
+       * provisionally-reserved slot state. The atomic fetch_add()
+       * preserves any concurrent increment that landed after our
+       * exchange(). */
       if (claimed_grant > 0) {
         m_pending_credit_grant.fetch_add(claimed_grant,
                                          std::memory_order_acq_rel);
       }
+      for (Uint32 c = 0; c < chain_len; c++) {
+        m_send_slots[chain_slots[c]].in_flight = false;
+        m_send_slots[chain_slots[c]].payload_len = 0;
+        m_send_slots[chain_slots[c]].chain_tail_slot = 0;
+        m_send_slots[chain_slots[c]].is_signaled_tail = false;
+      }
       g_eventLogger->error(
-          "RDMA[node %u->%u]: ibv_post_send failed (rc=%d errno=%d %s); "
-          "disconnecting",
+          "RDMA[node %u->%u]: ibv_post_send failed (rc=%d errno=%d %s) "
+          "chain_len=%u; disconnecting",
           (unsigned)localNodeId, (unsigned)remoteNodeId, rc, errno,
-          std::strerror(errno));
+          std::strerror(errno), chain_len);
       m_stats.qp_fatal_events.fetch_add(1u, std::memory_order_relaxed);
       report_error(TE_RDMA_QP_ERROR, "ibv_post_send failed");
       start_disconnecting(rc, /*send_source=*/true);
       return false;
     }
 
-    /* Commit state changes only after a successful post. The payload
-     * now lives in m_send_buf, so the upper-layer send buffer can be
-     * released immediately; the completion path only frees this staging
-     * slot and updates wire byte counters. */
-    m_send_slots[slot].payload_len = payload_len;
-    m_send_slots[slot].in_flight = true;
-    m_send_slots_in_flight.fetch_add(1u, std::memory_order_relaxed);
-    m_local_send_seq++;
-    /* One credit consumed against the peer's RQ. fetch_sub() is
-     * race-free because only the send-lock owner ever decrements;
-     * the receive thread only increments via credit_delta. */
-    m_peer_recv_credits.fetch_sub(1u, std::memory_order_acq_rel);
-    iovec_data_sent((int)payload_len);
+    /*
+     * Finalize chain metadata: every slot in the chain points at the
+     * tail, only the tail is marked signaled. The pre-set in_flight
+     * stays true; the retire helper clears it when the tail's CQE
+     * arrives.
+     */
+    for (Uint32 c = 0; c < chain_len; c++) {
+      const Uint32 s = chain_slots[c];
+      m_send_slots[s].chain_tail_slot = tail_slot;
+      m_send_slots[s].is_signaled_tail = (c == chain_len - 1u);
+    }
+    /* Bump the global in-flight counter once for the whole chain. */
+    m_send_slots_in_flight.fetch_add(chain_len,
+                                     std::memory_order_relaxed);
+    /* Each chained SEND consumes one credit against the peer's RQ. */
+    m_peer_recv_credits.fetch_sub(chain_len, std::memory_order_acq_rel);
+    /* Advance the local send sequence by chain_len -- the tail header
+     * already used the last seq value above. */
+    m_local_send_seq += chain_len;
+    /* Release the staged payload bytes back to the send-buffer cursor
+     * in one shot. */
+    iovec_data_sent((int)chain_total_payload);
 
-    /* Observability bumps: count this WR as posted, optionally as an
-     * inline send, and record the staged payload bytes. */
-    m_stats.send_posted.fetch_add(1u, std::memory_order_relaxed);
-    if (inline_used)
-      m_stats.send_inline.fetch_add(1u, std::memory_order_relaxed);
-    m_stats.copied_send_bytes.fetch_add((Uint64)payload_len,
+    /* Observability bumps. */
+    m_stats.send_posted.fetch_add(chain_len,
+                                  std::memory_order_relaxed);
+    m_stats.send_inline.fetch_add((Uint64)chain_inline_count,
+                                  std::memory_order_relaxed);
+    m_stats.copied_send_bytes.fetch_add((Uint64)chain_total_payload,
                                         std::memory_order_relaxed);
+    /* Phase 4 doorbell counters. */
+    m_stats.send_doorbells.fetch_add(1u, std::memory_order_relaxed);
+    m_stats.send_signaled.fetch_add(1u, std::memory_order_relaxed);
+    m_stats.send_chain_total_wrs.fetch_add((Uint64)chain_len,
+                                           std::memory_order_relaxed);
+    /* Update the running maximum chain length via CAS so multiple
+     * sends from different threads cannot regress the watermark. */
+    {
+      Uint32 prev =
+          m_stats.send_chain_max_seen.load(std::memory_order_relaxed);
+      while (chain_len > prev &&
+             !m_stats.send_chain_max_seen.compare_exchange_weak(
+                 prev, chain_len, std::memory_order_relaxed,
+                 std::memory_order_relaxed)) {
+        /* prev was updated by compare_exchange_weak; retry. */
+      }
+    }
   }
 
   /*
@@ -1499,10 +1666,14 @@ bool RDMA_Transporter::post_credit_only_locked() {
 
   /*
    * Commit state. CREDIT_ONLY has no payload and no upper-layer
-   * send-buffer bytes tied to this WR.
+   * send-buffer bytes tied to this WR. Phase 4: this is always a
+   * single-WR chain, so chain_tail_slot is its own slot id and
+   * is_signaled_tail is true.
    */
   m_send_slots[slot].payload_len = 0;
+  m_send_slots[slot].chain_tail_slot = slot;
   m_send_slots[slot].in_flight = true;
+  m_send_slots[slot].is_signaled_tail = true;
   m_send_slots_in_flight.fetch_add(1u, std::memory_order_relaxed);
   m_local_send_seq++;
   if (!use_control_reserve) {
@@ -1512,6 +1683,19 @@ bool RDMA_Transporter::post_credit_only_locked() {
   m_stats.send_posted.fetch_add(1u, std::memory_order_relaxed);
   if (credit_inline_used)
     m_stats.send_inline.fetch_add(1u, std::memory_order_relaxed);
+  /* Phase 4: a CREDIT_ONLY post is one doorbell with one signaled WR. */
+  m_stats.send_doorbells.fetch_add(1u, std::memory_order_relaxed);
+  m_stats.send_signaled.fetch_add(1u, std::memory_order_relaxed);
+  m_stats.send_chain_total_wrs.fetch_add(1u, std::memory_order_relaxed);
+  {
+    Uint32 prev =
+        m_stats.send_chain_max_seen.load(std::memory_order_relaxed);
+    if (prev < 1u) {
+      (void)m_stats.send_chain_max_seen.compare_exchange_strong(
+          prev, 1u, std::memory_order_relaxed,
+          std::memory_order_relaxed);
+    }
+  }
   return true;
 }
 
@@ -2195,6 +2379,9 @@ bool RDMA_Transporter::allocate_send_slot_state() {
    * memory" message when the real problem is misconfigured tunables. */
   if (send_slot_size_or_zero() == 0) return false;
   require(m_send_slots == nullptr);
+  require(m_send_wr_scratch == nullptr);
+  require(m_send_sge_scratch == nullptr);
+  require(m_send_chain_slots_scratch == nullptr);
   m_send_slots = new (std::nothrow) rdma_send_slot[m_queue_depth];
   if (m_send_slots == nullptr) {
     g_eventLogger->error(
@@ -2203,7 +2390,32 @@ bool RDMA_Transporter::allocate_send_slot_state() {
   }
   for (Uint32 i = 0; i < m_queue_depth; i++) {
     m_send_slots[i].payload_len = 0;
+    m_send_slots[i].chain_tail_slot = 0;
     m_send_slots[i].in_flight = false;
+    m_send_slots[i].is_signaled_tail = false;
+  }
+  /*
+   * Phase 4: pre-allocate the chain scratch arrays at queue_depth.
+   * doSend() only ever indexes up to effective_batch_max <= queue_depth,
+   * so this gives an upper bound that is correct under every runtime
+   * configuration. Allocation failures here are fatal -- the data path
+   * cannot dispatch a chain without them in batch-on mode, and even
+   * batch-off mode uses index 0 of these scratch arrays to call
+   * ibv_post_send().
+   */
+  m_send_wr_scratch = new (std::nothrow) struct ibv_send_wr[m_queue_depth];
+  m_send_sge_scratch = new (std::nothrow) struct ibv_sge[m_queue_depth];
+  m_send_chain_slots_scratch = new (std::nothrow) Uint32[m_queue_depth];
+  if (m_send_wr_scratch == nullptr || m_send_sge_scratch == nullptr ||
+      m_send_chain_slots_scratch == nullptr) {
+    g_eventLogger->error(
+        "RDMA: failed to allocate Phase-4 chain scratch arrays "
+        "(queue_depth=%u)",
+        m_queue_depth);
+    /* release_send_slot_state() is idempotent; let it clean up the
+     * partial allocation. */
+    release_send_slot_state();
+    return false;
   }
   m_send_slots_in_flight.store(0u, std::memory_order_relaxed);
   m_next_send_slot = 0;
@@ -2213,8 +2425,49 @@ bool RDMA_Transporter::allocate_send_slot_state() {
 void RDMA_Transporter::release_send_slot_state() {
   delete[] m_send_slots;
   m_send_slots = nullptr;
+  delete[] m_send_wr_scratch;
+  m_send_wr_scratch = nullptr;
+  delete[] m_send_sge_scratch;
+  m_send_sge_scratch = nullptr;
+  delete[] m_send_chain_slots_scratch;
+  m_send_chain_slots_scratch = nullptr;
   m_send_slots_in_flight.store(0u, std::memory_order_relaxed);
   m_next_send_slot = 0;
+}
+
+/*
+ * Phase 4: retire every slot whose chain_tail_slot field equals
+ * tail_slot. See RDMA_Transporter.hpp for the contract. Static so
+ * TEST_RDMA_TRANSPORTER can exercise the retire bookkeeping without
+ * a live transporter.
+ */
+Uint32 RDMA_Transporter::retire_send_chain(rdma_send_slot *slots,
+                                           Uint32 queue_depth,
+                                           Uint32 tail_slot,
+                                           Uint32 header_bytes,
+                                           Uint64 *out_wire_bytes) {
+  require(slots != nullptr);
+  require(queue_depth > 0u);
+  require(tail_slot < queue_depth);
+  require(slots[tail_slot].in_flight);
+  require(slots[tail_slot].is_signaled_tail);
+  require(slots[tail_slot].chain_tail_slot == tail_slot);
+  Uint32 retired = 0;
+  for (Uint32 i = 0; i < queue_depth; i++) {
+    if (!slots[i].in_flight) continue;
+    if (slots[i].chain_tail_slot != tail_slot) continue;
+    const Uint32 payload_len = slots[i].payload_len;
+    if (out_wire_bytes != nullptr) {
+      *out_wire_bytes +=
+          (Uint64)header_bytes + (Uint64)payload_len;
+    }
+    slots[i].payload_len = 0;
+    slots[i].chain_tail_slot = 0;
+    slots[i].in_flight = false;
+    slots[i].is_signaled_tail = false;
+    retired++;
+  }
+  return retired;
 }
 
 Uint32 RDMA_Transporter::find_free_send_slot() {
@@ -2265,15 +2518,22 @@ int RDMA_Transporter::reap_send_completions() {
 
     for (int i = 0; i < n; i++) {
       const Uint32 slot = (Uint32)wc[i].wr_id;
-      if (slot >= m_queue_depth || !m_send_slots[slot].in_flight) {
+      if (slot >= m_queue_depth || !m_send_slots[slot].in_flight ||
+          !m_send_slots[slot].is_signaled_tail) {
+        /* Phase 4: only signaled tail slots ever fire a CQE. A CQE
+         * naming a non-tail slot indicates a verbs-provider bug or
+         * memory corruption; surface it loud rather than silently
+         * retiring something we did not signal. */
         g_eventLogger->error(
-            "RDMA[node %u->%u]: stale send WC wr_id=%llu (queue_depth=%u, "
-            "in_flight=%u)",
+            "RDMA[node %u->%u]: unexpected send WC wr_id=%llu "
+            "(queue_depth=%u, in_flight=%u, is_signaled_tail=%u)",
             (unsigned)localNodeId, (unsigned)remoteNodeId,
             (unsigned long long)wc[i].wr_id, m_queue_depth,
-            slot < m_queue_depth ? m_send_slots[slot].in_flight : 0u);
+            slot < m_queue_depth ? m_send_slots[slot].in_flight : 0u,
+            slot < m_queue_depth ? m_send_slots[slot].is_signaled_tail
+                                 : 0u);
         m_stats.qp_fatal_events.fetch_add(1u, std::memory_order_relaxed);
-        report_error(TE_RDMA_CQ_ERROR, "stale send completion wr_id");
+        report_error(TE_RDMA_CQ_ERROR, "unexpected send completion wr_id");
         start_disconnecting(EINVAL, /*send_source=*/true);
         return -1;
       }
@@ -2308,23 +2568,29 @@ int RDMA_Transporter::reap_send_completions() {
         return -1;
       }
 
-      /* Success: free the slot and release the bytes back to the
-       * send-buffer accounting. */
-      const Uint32 payload_len = m_send_slots[slot].payload_len;
-      m_send_slots[slot].in_flight = false;
-      m_send_slots[slot].payload_len = 0;
-      require(m_send_slots_in_flight.load(std::memory_order_relaxed) > 0);
-      m_send_slots_in_flight.fetch_sub(1u, std::memory_order_relaxed);
-      /* Bookkeeping: the wire bytes consumed by the HCA equal the
-       * header plus the staged payload. Match the TCP convention of
-       * tracking total bytes successfully transmitted. */
-      const Uint64 wire_bytes =
-          (Uint64)RDMA_MSG_HEADER_BYTES + (Uint64)payload_len;
-      m_bytes_sent += wire_bytes;
-      m_wire_bytes_sent.fetch_add(wire_bytes, std::memory_order_relaxed);
-      m_stats.send_completions_ok.fetch_add(1u,
+      /*
+       * Phase 4: retire every slot whose chain_tail_slot equals the
+       * signaled tail slot in this CQE. In off-mode the chain length
+       * is 1, so this retires exactly the same slot the CQE named --
+       * identical to pre-Phase-4 behaviour. In on-mode the helper
+       * retires every unsignaled WR that the tail's completion
+       * implicitly drained at the HCA.
+       */
+      Uint64 wire_bytes_in_chain = 0;
+      const Uint32 retired = retire_send_chain(
+          m_send_slots, m_queue_depth, slot,
+          (Uint32)RDMA_MSG_HEADER_BYTES, &wire_bytes_in_chain);
+      require(retired > 0u);
+      require(m_send_slots_in_flight.load(std::memory_order_relaxed) >=
+              retired);
+      m_send_slots_in_flight.fetch_sub(retired,
+                                       std::memory_order_relaxed);
+      m_bytes_sent += wire_bytes_in_chain;
+      m_wire_bytes_sent.fetch_add(wire_bytes_in_chain,
+                                  std::memory_order_relaxed);
+      m_stats.send_completions_ok.fetch_add(retired,
                                             std::memory_order_relaxed);
-      reaped_total++;
+      reaped_total += (int)retired;
     }
 
     remaining -= (Uint32)n;
@@ -3032,7 +3298,9 @@ void RDMA_Transporter::log_stats() const {
       "copied_recv=%llu bytes_sent=%llu bytes_received=%llu "
       "cq_polls_send=%llu cq_polls_recv=%llu "
       "cq_budget_hits_send=%llu cq_budget_hits_recv=%llu "
-      "rnr=%llu retry_exceeded=%llu qp_fatal=%llu",
+      "rnr=%llu retry_exceeded=%llu qp_fatal=%llu "
+      "send_doorbells=%llu send_signaled=%llu send_chain_wrs=%llu "
+      "send_chain_max=%u send_chain_avg=%.2f",
       (unsigned)localNodeId, (unsigned)remoteNodeId,
       (unsigned)getTransporterIndex(), (unsigned)m_multi_transporter_instance,
       (unsigned)m_is_active, (unsigned)m_recv_thread_idx,
@@ -3087,7 +3355,26 @@ void RDMA_Transporter::log_stats() const {
       (unsigned long long)m_stats.retry_exceeded_events.load(
           std::memory_order_relaxed),
       (unsigned long long)m_stats.qp_fatal_events.load(
-          std::memory_order_relaxed));
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.send_doorbells.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.send_signaled.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.send_chain_total_wrs.load(
+          std::memory_order_relaxed),
+      (unsigned)m_stats.send_chain_max_seen.load(
+          std::memory_order_relaxed),
+      /* Derived average WRs per doorbell. We compute it here so
+       * downstream parsers do not need to do the division themselves;
+       * a doorbell count of 0 produces 0.0 rather than NaN/inf. */
+      [this]() {
+        const Uint64 d =
+            m_stats.send_doorbells.load(std::memory_order_relaxed);
+        if (d == 0) return 0.0;
+        const Uint64 w =
+            m_stats.send_chain_total_wrs.load(std::memory_order_relaxed);
+        return (double)w / (double)d;
+      }());
 }
 
 void RDMA_Transporter::maybe_log_stats_heartbeat() {
@@ -3884,6 +4171,126 @@ TAPTEST(RDMA_Transporter) {
   OK(!meta4.was_pooled);
   OK(!meta4.was_hugepage);
   OK(meta4.mapped_bytes == 0u);
+
+  /* ----- Phase 4: send-chain retire helper tests -----
+   *
+   * retire_send_chain() is the bookkeeping primitive that lets one
+   * signaled tail completion retire every preceding unsignaled WR in
+   * the same chain. We exercise three scenarios that match the live
+   * data path:
+   *
+   *   1. A four-slot chain. Three unsignaled slots followed by a
+   *      signaled tail; the tail's CQE should retire all four slots
+   *      and report their combined wire bytes.
+   *   2. A single-slot chain. Equivalent to the pre-Phase-4 / off-mode
+   *      case; the slot points at itself as the tail.
+   *   3. Two interleaved chains. Two chains in flight at once; each
+   *      tail's CQE should retire only its own chain and leave the
+   *      other chain untouched, then a follow-up retire on the other
+   *      tail clears the remainder.
+   *
+   * The helper is static and consumes a plain rdma_send_slot* array,
+   * so we can drive it without any transporter or verbs state. */
+  using rdma_send_slot = RDMA_Transporter::rdma_send_slot;
+  {
+    /* Four-slot chain. Slots 5/6/7 are unsignaled, slot 8 is the
+     * signaled tail. payload_len values pick distinct numbers so the
+     * wire-byte tally is unambiguous. */
+    constexpr Uint32 QD = 16u;
+    constexpr Uint32 HDR = (Uint32)RDMA_MSG_HEADER_BYTES;
+    rdma_send_slot slots[QD] = {};
+    auto mark = [&](Uint32 idx, Uint32 plen, Uint32 tail, bool tail_flag) {
+      slots[idx].payload_len = plen;
+      slots[idx].chain_tail_slot = tail;
+      slots[idx].in_flight = true;
+      slots[idx].is_signaled_tail = tail_flag;
+    };
+    mark(5, 100u, 8u, false);
+    mark(6, 200u, 8u, false);
+    mark(7, 300u, 8u, false);
+    mark(8, 400u, 8u, true);
+    Uint64 wire = 0;
+    Uint32 retired =
+        RDMA_Transporter::retire_send_chain(slots, QD, /*tail=*/8u,
+                                            HDR, &wire);
+    OK(retired == 4u);
+    /* Wire bytes: 4 headers + (100+200+300+400) payload. */
+    OK(wire == (Uint64)(4u * HDR + 100u + 200u + 300u + 400u));
+    /* Every retired slot is now free and has cleared metadata. */
+    for (Uint32 s : {5u, 6u, 7u, 8u}) {
+      OK(!slots[s].in_flight);
+      OK(!slots[s].is_signaled_tail);
+      OK(slots[s].payload_len == 0u);
+      OK(slots[s].chain_tail_slot == 0u);
+    }
+  }
+  {
+    /* Single-slot chain = off-mode behavior. Slot 2 points at itself
+     * as the tail and carries the signaled flag. */
+    constexpr Uint32 QD = 8u;
+    constexpr Uint32 HDR = (Uint32)RDMA_MSG_HEADER_BYTES;
+    rdma_send_slot slots[QD] = {};
+    slots[2].payload_len = 1234u;
+    slots[2].chain_tail_slot = 2u;
+    slots[2].in_flight = true;
+    slots[2].is_signaled_tail = true;
+    Uint64 wire = 0;
+    Uint32 retired =
+        RDMA_Transporter::retire_send_chain(slots, QD, /*tail=*/2u,
+                                            HDR, &wire);
+    OK(retired == 1u);
+    OK(wire == (Uint64)(HDR + 1234u));
+    OK(!slots[2].in_flight);
+  }
+  {
+    /* Two interleaved chains. Chain A: slots 0/1/2 (tail 2). Chain
+     * B: slots 3/4 (tail 4). Retire chain B first to confirm the
+     * helper does not touch chain A's slots, then retire chain A.
+     * Both retires should clean up exactly their own slots. */
+    constexpr Uint32 QD = 8u;
+    constexpr Uint32 HDR = (Uint32)RDMA_MSG_HEADER_BYTES;
+    rdma_send_slot slots[QD] = {};
+    auto mark = [&](Uint32 idx, Uint32 plen, Uint32 tail, bool tail_flag) {
+      slots[idx].payload_len = plen;
+      slots[idx].chain_tail_slot = tail;
+      slots[idx].in_flight = true;
+      slots[idx].is_signaled_tail = tail_flag;
+    };
+    /* Chain A: 3 slots, tail 2. */
+    mark(0, 10u, 2u, false);
+    mark(1, 20u, 2u, false);
+    mark(2, 30u, 2u, true);
+    /* Chain B: 2 slots, tail 4. */
+    mark(3, 40u, 4u, false);
+    mark(4, 50u, 4u, true);
+
+    /* Retire chain B (tail 4). Should free slots 3 and 4 only. */
+    Uint64 wire_b = 0;
+    Uint32 retired_b =
+        RDMA_Transporter::retire_send_chain(slots, QD, /*tail=*/4u,
+                                            HDR, &wire_b);
+    OK(retired_b == 2u);
+    OK(wire_b == (Uint64)(2u * HDR + 40u + 50u));
+    OK(!slots[3].in_flight);
+    OK(!slots[4].in_flight);
+    /* Chain A is untouched. */
+    OK(slots[0].in_flight);
+    OK(slots[1].in_flight);
+    OK(slots[2].in_flight);
+    OK(slots[2].is_signaled_tail);
+    OK(slots[2].chain_tail_slot == 2u);
+
+    /* Retire chain A (tail 2). Should free slots 0, 1, 2. */
+    Uint64 wire_a = 0;
+    Uint32 retired_a =
+        RDMA_Transporter::retire_send_chain(slots, QD, /*tail=*/2u,
+                                            HDR, &wire_a);
+    OK(retired_a == 3u);
+    OK(wire_a == (Uint64)(3u * HDR + 10u + 20u + 30u));
+    for (Uint32 s = 0; s < QD; s++) {
+      OK(!slots[s].in_flight);
+    }
+  }
 
   return 1;  /* TAP success */
 }

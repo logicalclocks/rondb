@@ -143,6 +143,11 @@ struct TransporterConfiguration {
       Uint32 trafficClass;         // DSCP-like traffic class
       Uint32 retryCount;           // QP retry count
       Uint32 rnrRetryCount;        // QP RNR retry count
+      // Maximum number of SEND WRs the data path is allowed to chain
+      // into a single ibv_post_send doorbell. Consulted only when the
+      // NDB_RDMA_SEND_BATCH=on opt-in is set; otherwise the runtime
+      // caps the chain length at 1, which is the pre-Phase-4 behaviour.
+      Uint32 postBatchMax;
       Uint32 overloadLimit;        // Unsent bytes overload threshold
       const char *deviceName;      // ibverbs device name, NULL = first available
     } rdma;

@@ -297,6 +297,7 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
       Uint32 rdma_traffic_class = 0;
       Uint32 rdma_retry_count = 0;
       Uint32 rdma_rnr_retry_count = 0;
+      Uint32 rdma_post_batch_max = 0;
       Uint32 rdma_overload_limit = 0;
       const char *rdma_device_name = nullptr;
 
@@ -311,6 +312,15 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
       if (iter.get(CFG_RDMA_TRAFFIC_CLASS, &rdma_traffic_class)) break;
       if (iter.get(CFG_RDMA_RETRY_COUNT, &rdma_retry_count)) break;
       if (iter.get(CFG_RDMA_RNR_RETRY_COUNT, &rdma_rnr_retry_count)) break;
+      /*
+       * Phase 4: the post-batch max is optional from the ConfigInfo
+       * schema's perspective (a fresh schema always carries a default),
+       * but reading it with iter.get() lets the existing mgm-config
+       * defaulting fall through naturally. A failure here is non-fatal:
+       * the runtime caps the chain length on its own and a zero value
+       * is interpreted as "use the conservative default of 1".
+       */
+      iter.get(CFG_RDMA_POST_BATCH_MAX, &rdma_post_batch_max);
       iter.get(CFG_CONNECTION_OVERLOAD, &rdma_overload_limit);
       iter.get(CFG_RDMA_DEVICE_NAME, &rdma_device_name);
 
@@ -325,6 +335,7 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
       conf.rdma.trafficClass = rdma_traffic_class;
       conf.rdma.retryCount = rdma_retry_count;
       conf.rdma.rnrRetryCount = rdma_rnr_retry_count;
+      conf.rdma.postBatchMax = rdma_post_batch_max;
       conf.rdma.overloadLimit = rdma_overload_limit;
       conf.rdma.deviceName = rdma_device_name;
 

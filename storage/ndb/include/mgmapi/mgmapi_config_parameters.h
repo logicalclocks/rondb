@@ -387,6 +387,7 @@
 #define CFG_RDMA_TRAFFIC_CLASS        529
 #define CFG_RDMA_RETRY_COUNT          530
 #define CFG_RDMA_RNR_RETRY_COUNT      531
+#define CFG_RDMA_POST_BATCH_MAX       532
 
 /**
  * No longer used, deprecated
