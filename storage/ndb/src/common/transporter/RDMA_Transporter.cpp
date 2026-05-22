@@ -1449,6 +1449,143 @@ static inline int rdma_qp_init_access_flags() {
 
 /*
  * --------------------------------------------------------------------------
+ * Phase 10: one-sided WRITE data-path toggle and pure address helpers
+ * --------------------------------------------------------------------------
+ *
+ * NDB_RDMA_WRITE_DATA_PATH selects whether the send path runs the
+ * observability-only Phase 10 probe alongside the existing SEND chain.
+ * The probe computes the would-be remote-address, immediate-data, and
+ * peer-MR bounds for a future one-sided WRITE WR but never posts a
+ * WRITE WR and never changes any verbs state. Three values are
+ * recognised:
+ *
+ *   unset | off : do not run the probe. Default. All Phase 10
+ *                 counters stay at zero on every link.
+ *   probe       : run the probe once per chain post, gated by
+ *                 negotiated `RDMA_CAP_WRITE_SENDER` and a non-zero
+ *                 cached peer geometry plus queue depth.
+ *   on          : reserved for the future real switchover. Logged
+ *                 once at parse time and then treated as `off` in
+ *                 this phase so an early operator flip cannot
+ *                 silently change WR opcodes. A later phase will
+ *                 introduce a separate `rdma_write_data_path_mode_t`
+ *                 value when the switchover actually lands.
+ *
+ * Anything else is logged once and falls back to `off`, mirroring the
+ * other RDMA env parsers above.
+ */
+enum class rdma_write_data_path_mode_t { OFF, PROBE };
+
+static rdma_write_data_path_mode_t rdma_write_data_path_mode_cached() {
+  static const rdma_write_data_path_mode_t cached = []() {
+    const char *e = std::getenv("NDB_RDMA_WRITE_DATA_PATH");
+    if (e == nullptr || std::strcmp(e, "off") == 0) {
+      return rdma_write_data_path_mode_t::OFF;
+    }
+    if (std::strcmp(e, "probe") == 0) {
+      g_eventLogger->info(
+          "RDMA: NDB_RDMA_WRITE_DATA_PATH=probe (Phase 10 peer-WRITE "
+          "address arithmetic probe; no WR opcode change, no peer-side "
+          "state mutation)");
+      return rdma_write_data_path_mode_t::PROBE;
+    }
+    if (std::strcmp(e, "on") == 0) {
+      g_eventLogger->info(
+          "RDMA: NDB_RDMA_WRITE_DATA_PATH=on requested, but the real "
+          "one-sided WRITE switchover is not implemented in this "
+          "build; treating as off for safety");
+      return rdma_write_data_path_mode_t::OFF;
+    }
+    g_eventLogger->info(
+        "RDMA: NDB_RDMA_WRITE_DATA_PATH has unrecognised value '%s'; "
+        "defaulting to off",
+        e);
+    return rdma_write_data_path_mode_t::OFF;
+  }();
+  return cached;
+}
+
+/*
+ * Pure helpers used by the Phase 10 probe (and exercised directly by
+ * the TAP harness). All four are pure, side-effect-free, and live
+ * inside the anonymous namespace alongside the other RDMA helpers.
+ * The future one-sided WRITE switchover will reuse the same helpers
+ * when it constructs real WRITE WRs.
+ */
+
+/*
+ * Derive the peer's per-slot byte size from its full recv MR length
+ * and queue depth. Returns 0 when `peer_queue_depth` is zero (no
+ * usable geometry) so callers can branch into a `geometry_invalid`
+ * path without dividing by zero. The division is integer truncation;
+ * a peer that reports `peer_recv_bytes < peer_queue_depth` is
+ * misconfigured and the helper signals that explicitly by returning
+ * 0.
+ */
+static inline uint32_t rdma_peer_slot_size(uint32_t peer_recv_bytes,
+                                           uint32_t peer_queue_depth) {
+  if (peer_queue_depth == 0u) return 0u;
+  if (peer_recv_bytes < peer_queue_depth) return 0u;
+  return peer_recv_bytes / peer_queue_depth;
+}
+
+/*
+ * Compute the absolute virtual address of the start of peer slot
+ * `slot_idx` in the peer's recv MR. Widens both factors to uint64
+ * before multiplying so a large slot size combined with a large slot
+ * index cannot truncate. The result is NOT bounds-checked here; the
+ * caller must pass it through `rdma_peer_addr_in_recv_mr()` before
+ * using it as an `ibv_send_wr::rdma.remote_addr`.
+ */
+static inline uint64_t rdma_peer_slot_remote_addr(uint64_t peer_iova,
+                                                  uint32_t slot_idx,
+                                                  uint32_t slot_size) {
+  return peer_iova +
+         (uint64_t)slot_idx * (uint64_t)slot_size;
+}
+
+/*
+ * Bounds check: is the byte range [addr, addr + len) fully contained
+ * inside the peer's recv MR [peer_iova, peer_iova + peer_recv_bytes)?
+ * Returns false on any of:
+ *   - len == 0 (zero-length writes never reach the wire and would
+ *     hide an arithmetic bug)
+ *   - addr below peer_iova
+ *   - addr + len overflowing uint64_t
+ *   - addr + len above peer_iova + peer_recv_bytes
+ *   - peer_iova + peer_recv_bytes overflowing uint64_t
+ * The upper-bound additions are performed in uint64 and checked for
+ * overflow explicitly so the helper cannot wrap silently near
+ * UINT64_MAX. An exact-end fit (addr + len == peer_iova +
+ * peer_recv_bytes) is accepted.
+ */
+static inline bool rdma_peer_addr_in_recv_mr(uint64_t addr, uint64_t len,
+                                             uint64_t peer_iova,
+                                             uint32_t peer_recv_bytes) {
+  if (len == 0u) return false;
+  if (addr < peer_iova) return false;
+  const uint64_t addr_end = addr + len;
+  if (addr_end < addr) return false;  /* uint64 overflow */
+  const uint64_t mr_end = peer_iova + (uint64_t)peer_recv_bytes;
+  if (mr_end < peer_iova) return false;  /* uint64 overflow */
+  return addr_end <= mr_end;
+}
+
+/*
+ * Build the 32-bit immediate-data value the peer would observe on a
+ * `IBV_WC_RECV_RDMA_WITH_IMM` completion for the would-be WRITE WR
+ * targeting `slot_idx`. The current contract is the identity
+ * function: the immediate carries exactly the peer slot index. A
+ * future phase that wants to pack credit deltas or chain metadata
+ * into the immediate will update this single helper rather than
+ * scattering the encoding across the send path.
+ */
+static inline uint32_t rdma_peer_slot_imm_data(uint32_t slot_idx) {
+  return slot_idx;
+}
+
+/*
+ * --------------------------------------------------------------------------
  * Phase 6: per-PD memory-region cache probe toggle
  * --------------------------------------------------------------------------
  *
@@ -1848,6 +1985,8 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_peer_recv_rkey(0),
       m_peer_recv_iova(0),
       m_peer_recv_bytes(0),
+      m_peer_queue_depth(0),
+      m_peer_slot_cursor(0),
       m_local_send_seq(0),
       m_local_recv_seq(0),
       m_peer_ack_seq(0),
@@ -1908,6 +2047,8 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_peer_recv_rkey(0),
       m_peer_recv_iova(0),
       m_peer_recv_bytes(0),
+      m_peer_queue_depth(0),
+      m_peer_slot_cursor(0),
       m_local_send_seq(0),
       m_local_recv_seq(0),
       m_peer_ack_seq(0),
@@ -2571,6 +2712,88 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
                  prev, resident_now, std::memory_order_relaxed,
                  std::memory_order_relaxed)) {
         /* prev was updated by compare_exchange_weak; retry. */
+      }
+    }
+
+    /*
+     * Phase 10: peer-WRITE address-arithmetic probe.
+     * Observability-only. Computes the would-be `remote_addr`,
+     * `imm_data`, and peer-MR bounds for a future
+     * `IBV_WR_RDMA_WRITE_WITH_IMM` post and updates counters; no WR
+     * is built, no `ibv_post_send()` is called, no peer-side state
+     * is mutated. Gated by `NDB_RDMA_WRITE_DATA_PATH=probe`,
+     * `RDMA_CAP_WRITE_SENDER` being negotiated, and a non-zero
+     * peer geometry plus queue depth. Lives here so it runs once
+     * per successfully-posted chain (matching the Phase 6 MR-cache
+     * probe cadence) and so an operator can correlate it with
+     * existing chain-level counters.
+     */
+    if (rdma_write_data_path_mode_cached() ==
+        rdma_write_data_path_mode_t::PROBE) {
+      if ((m_negotiated_write_caps & RDMA_CAP_WRITE_SENDER) == 0u) {
+        m_stats.write_probe_skipped_no_caps.fetch_add(
+            1u, std::memory_order_relaxed);
+      } else if (m_peer_recv_rkey == 0u || m_peer_recv_bytes == 0u ||
+                 m_peer_queue_depth == 0u) {
+        m_stats.write_probe_skipped_no_geom.fetch_add(
+            1u, std::memory_order_relaxed);
+      } else {
+        const uint32_t peer_slot_size = rdma_peer_slot_size(
+            m_peer_recv_bytes, m_peer_queue_depth);
+        if (peer_slot_size == 0u) {
+          m_stats.write_probe_geometry_invalid.fetch_add(
+              1u, std::memory_order_relaxed);
+        } else {
+          const uint32_t slot_idx =
+              m_peer_slot_cursor % m_peer_queue_depth;
+          const uint64_t remote_addr = rdma_peer_slot_remote_addr(
+              m_peer_recv_iova, slot_idx, peer_slot_size);
+          /* The would-be WRITE byte length matches what a future
+           * post would copy for this chain: framing header plus
+           * payload. We probe with that combined length so the
+           * bounds helper exercises a realistic upper bound. */
+          const uint64_t probe_len =
+              (uint64_t)RDMA_MSG_HEADER_BYTES +
+              (uint64_t)chain_total_payload;
+          /* Build the would-be immediate data exactly the way a
+           * future WRITE_WITH_IMM post would. The result is unused
+           * in Phase 10 (no WR is posted); the call exists so the
+           * helper is exercised on every probe pass and so a
+           * future contract change is visible here. */
+          (void)rdma_peer_slot_imm_data(slot_idx);
+          if (!rdma_peer_addr_in_recv_mr(remote_addr, probe_len,
+                                         m_peer_recv_iova,
+                                         m_peer_recv_bytes)) {
+            m_stats.write_probe_bounds_rejected.fetch_add(
+                1u, std::memory_order_relaxed);
+            /* Still advance the cursor: re-probing the same slot
+             * on every chain post would produce a constant stream
+             * of rejections from the same arithmetic without ever
+             * exercising a different `slot_idx`. The rejection
+             * counter alone is enough to surface the problem to
+             * operators. */
+            m_peer_slot_cursor++;
+          } else {
+            m_stats.write_probe_eligible.fetch_add(
+                1u, std::memory_order_relaxed);
+            /* CAS-bump the address watermark, matching the
+             * existing `send_chain_max_seen` pattern. */
+            const Uint64 probe_end =
+                (Uint64)remote_addr + (Uint64)probe_len;
+            Uint64 prev =
+                m_stats.write_probe_address_max.load(
+                    std::memory_order_relaxed);
+            while (probe_end > prev &&
+                   !m_stats.write_probe_address_max
+                       .compare_exchange_weak(
+                           prev, probe_end,
+                           std::memory_order_relaxed,
+                           std::memory_order_relaxed)) {
+              /* prev was updated by compare_exchange_weak. */
+            }
+            m_peer_slot_cursor++;
+          }
+        }
       }
     }
   }
@@ -3489,6 +3712,15 @@ void RDMA_Transporter::release_verbs_resources() {
   m_peer_recv_rkey = 0;
   m_peer_recv_iova = 0;
   m_peer_recv_bytes = 0;
+  /*
+   * Phase 10: drop the cached peer queue depth and reset the
+   * sender-side slot cursor. The next handshake repopulates the queue
+   * depth from the v1 record, and the cursor must start at slot 0
+   * against the peer's fresh recv MR so the round-robin distribution
+   * stays well-defined.
+   */
+  m_peer_queue_depth = 0;
+  m_peer_slot_cursor = 0;
   reset_wire_state();
 }
 
@@ -3535,6 +3767,14 @@ void RDMA_Transporter::reset_wire_state() {
   m_peer_recv_rkey = 0;
   m_peer_recv_iova = 0;
   m_peer_recv_bytes = 0;
+  /*
+   * Phase 10: also drop the cached peer queue depth and slot cursor
+   * here so a future call path that only hits `reset_wire_state()`
+   * (not `release_verbs_resources()`) still ends up with the
+   * Phase 10 probe state in its connect-time default.
+   */
+  m_peer_queue_depth = 0;
+  m_peer_slot_cursor = 0;
 }
 
 Uint32 RDMA_Transporter::send_slot_size_or_zero() const {
@@ -4493,7 +4733,12 @@ void RDMA_Transporter::log_stats() const {
       "negotiated_write_caps=0x%x "
       "geom_exchanges_ok=%llu geom_exchanges_failed=%llu "
       "peer_recv_rkey=0x%x peer_recv_iova=0x%llx peer_recv_bytes=%u "
-      "recv_mr_remote_write_grants=%llu",
+      "recv_mr_remote_write_grants=%llu "
+      "peer_queue_depth=%u peer_slot_cursor=%u "
+      "write_probe_eligible=%llu write_probe_skipped_no_caps=%llu "
+      "write_probe_skipped_no_geom=%llu "
+      "write_probe_geometry_invalid=%llu "
+      "write_probe_bounds_rejected=%llu write_probe_address_max=0x%llx",
       (unsigned)localNodeId, (unsigned)remoteNodeId,
       (unsigned)getTransporterIndex(), (unsigned)m_multi_transporter_instance,
       (unsigned)m_is_active, (unsigned)m_recv_thread_idx,
@@ -4606,6 +4851,26 @@ void RDMA_Transporter::log_stats() const {
        * permission is dormant because the data path still posts
        * SEND. */
       (unsigned long long)m_stats.recv_mr_remote_write_grants.load(
+          std::memory_order_relaxed),
+      /* Phase 10: cached peer queue depth + sender-side slot cursor,
+       * followed by the observability-only WRITE probe counters.
+       * All zero in default off-mode (env unset or `off`); non-zero
+       * only when `NDB_RDMA_WRITE_DATA_PATH=probe` is active on a
+       * link that also negotiated `RDMA_CAP_WRITE_SENDER` and
+       * exchanged geometry. */
+      (unsigned)m_peer_queue_depth,
+      (unsigned)m_peer_slot_cursor,
+      (unsigned long long)m_stats.write_probe_eligible.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.write_probe_skipped_no_caps.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.write_probe_skipped_no_geom.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.write_probe_geometry_invalid.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.write_probe_bounds_rejected.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.write_probe_address_max.load(
           std::memory_order_relaxed));
 }
 
@@ -4675,17 +4940,38 @@ void RDMA_Transporter::log_negotiated_attributes() const {
   const bool qp_remote_write =
       (rdma_qp_init_access_flags() & IBV_ACCESS_REMOTE_WRITE) != 0;
 
+  /*
+   * Phase 10: report the cached peer queue depth, the derived peer
+   * per-slot size, and the active write data-path mode so an
+   * operator can see at a glance whether the Phase 10 probe is
+   * armed on this link. Off-mode prints `write_data_path=off`,
+   * probe mode prints `write_data_path=probe`. The derived slot
+   * size is the same number the probe will divide the peer MR
+   * into, so a 0 here means the probe will count
+   * `write_probe_geometry_invalid` until reconfiguration.
+   */
+  const uint32_t peer_slot_size_log =
+      rdma_peer_slot_size(m_peer_recv_bytes, m_peer_queue_depth);
+  const char *write_data_path_str =
+      (rdma_write_data_path_mode_cached() ==
+       rdma_write_data_path_mode_t::PROBE)
+          ? "probe"
+          : "off";
+
   g_eventLogger->info(
       "RDMA[node %u->%u]: verbs allocated dev=%s port=%u mtu=%uB "
       "qp_num=%u qd_send=%u qd_recv=%u max_inline=%u (requested=%u) "
       "send_buf=%uB recv_buf=%uB gid_idx=%u "
-      "recv_mr_remote_write=%s qp_remote_write=%s",
+      "recv_mr_remote_write=%s qp_remote_write=%s "
+      "peer_queue_depth=%u peer_slot_size=%u write_data_path=%s",
       (unsigned)localNodeId, (unsigned)remoteNodeId, device_str, m_rdma_port,
       rdma_mtu_to_bytes(port_attr.active_mtu), (unsigned)m_qp->qp_num,
       m_queue_depth, m_queue_depth, m_effective_inline_threshold,
       m_inline_threshold, m_send_buffer_size, m_recv_buffer_size, m_gid_index,
       recv_mr_remote_write ? "yes" : "no",
-      qp_remote_write ? "yes" : "no");
+      qp_remote_write ? "yes" : "no",
+      (unsigned)m_peer_queue_depth, (unsigned)peer_slot_size_log,
+      write_data_path_str);
 }
 
 /*
@@ -4837,6 +5123,33 @@ bool RDMA_Transporter::run_endpoint_exchange(const NdbSocket &socket,
         peer_rec.link_layer);
     return false;
   }
+
+  /*
+   * Phase 10: cache the peer's receive-queue depth from the v1
+   * record so a later sender-side probe (and eventually the WRITE
+   * switchover) can derive the peer's per-slot size by dividing
+   * `m_peer_recv_bytes` by this value. A zero queue depth is a real
+   * protocol error: the peer must keep at least one receive WR
+   * posted to make any progress at all, and we already wrote a
+   * non-zero `m_queue_depth` into our own record above. Refusing
+   * the handshake here is cheaper than tolerating a divide-by-zero
+   * branch in every Phase 10 probe pass.
+   */
+  const uint32_t peer_queue_depth = ntohl(peer_rec.queue_depth);
+  if (peer_queue_depth == 0u) {
+    g_eventLogger->error(
+        "RDMA[%s,node %u->%u]: peer endpoint record advertised "
+        "queue_depth=0, refusing handshake",
+        side, (unsigned)localNodeId, (unsigned)remoteNodeId);
+    return false;
+  }
+  m_peer_queue_depth = peer_queue_depth;
+  /* Start the slot cursor at 0 so the first probe targets peer slot
+   * 0 on a fresh link. release_verbs_resources() and
+   * reset_wire_state() both clear the cursor, so this explicit
+   * write is defensive against any future caller that pre-seeds the
+   * field. */
+  m_peer_slot_cursor = 0;
 
   /*
    * Fail fast when the link is RoCE and either side advertised
@@ -6208,6 +6521,111 @@ TAPTEST(RDMA_Transporter) {
      * the author to acknowledge the split here. */
     OK(mr_off == qp_off);
     OK(mr_adv == qp_adv);
+  }
+
+  /* ----- Phase 10: peer-WRITE address-arithmetic helper tests -----
+   *
+   * Pure-helper coverage for rdma_peer_slot_size(),
+   * rdma_peer_slot_remote_addr(), rdma_peer_addr_in_recv_mr(), and
+   * rdma_peer_slot_imm_data(). No verbs, no socket state, no env-var
+   * mutation: the helpers themselves are mode-agnostic, and the
+   * cached env wrapper rdma_write_data_path_mode_cached() is
+   * deliberately NOT exercised here for the same reason as the
+   * Phase 7/9 blocks (Meyer's singleton would bleed across tests).
+   *
+   *   1. rdma_peer_slot_size: zero/normal/degenerate inputs.
+   *   2. rdma_peer_slot_remote_addr: widened multiply, mid-range
+   *      slot indices, and the zero-base case.
+   *   3. rdma_peer_addr_in_recv_mr: containment, exact-end fit,
+   *      one-byte-over rejection, below-base rejection, and the
+   *      uint64 overflow guards on both upper bounds.
+   *   4. rdma_peer_slot_imm_data: identity contract.
+   *   5. Full-queue composition: every slot derived from a small
+   *      queue depth lands inside the peer MR, exact-end included.
+   */
+  {
+    /* (1) Slot size. */
+    OK(rdma_peer_slot_size(0u, 0u) == 0u);
+    OK(rdma_peer_slot_size(64u, 0u) == 0u);  /* div-by-zero guard */
+    OK(rdma_peer_slot_size(0u, 8u) == 0u);   /* bytes<depth -> 0 */
+    OK(rdma_peer_slot_size(7u, 8u) == 0u);   /* bytes<depth -> 0 */
+    OK(rdma_peer_slot_size(8u, 8u) == 1u);
+    OK(rdma_peer_slot_size(64u, 8u) == 8u);
+    OK(rdma_peer_slot_size(65u, 8u) == 8u);  /* integer truncation */
+    /* Realistic 4 KiB-aligned ratio: 32 MiB / 4096 = 8 KiB/slot. */
+    OK(rdma_peer_slot_size(32u * 1024u * 1024u, 4096u) ==
+       8u * 1024u);
+  }
+  {
+    /* (2) Remote-address widened arithmetic. */
+    OK(rdma_peer_slot_remote_addr(0u, 0u, 0u) == 0u);
+    OK(rdma_peer_slot_remote_addr(0u, 5u, 64u) == 5u * 64u);
+    OK(rdma_peer_slot_remote_addr(0x1000u, 5u, 64u) ==
+       0x1000u + 5u * 64u);
+    /* Widening test: 0x80000000 * 0x10 must produce 0x800000000
+     * (33 bits), not zero from a 32-bit truncated multiply. */
+    OK(rdma_peer_slot_remote_addr(0u, 0x80000000u, 0x10u) ==
+       0x800000000ull);
+    /* Large iova base plus slot offset stays within uint64. */
+    OK(rdma_peer_slot_remote_addr(0x1000000000000000ull, 16u,
+                                  4096u) ==
+       0x1000000000000000ull + 16u * 4096u);
+  }
+  {
+    /* (3) Bounds checks. */
+    constexpr uint64_t IOVA = 0x4000;
+    constexpr uint32_t BYTES = 0x1000u;
+    /* Zero length must be rejected. */
+    OK(!rdma_peer_addr_in_recv_mr(IOVA, 0u, IOVA, BYTES));
+    /* Exact-start fit at iova with len=1: accepted. */
+    OK(rdma_peer_addr_in_recv_mr(IOVA, 1u, IOVA, BYTES));
+    /* Below-base address is rejected. */
+    OK(!rdma_peer_addr_in_recv_mr(IOVA - 1u, 8u, IOVA, BYTES));
+    /* Exact-end fit: addr + len == iova + bytes. */
+    OK(rdma_peer_addr_in_recv_mr(IOVA + BYTES - 16u, 16u, IOVA,
+                                 BYTES));
+    OK(rdma_peer_addr_in_recv_mr(IOVA, BYTES, IOVA, BYTES));
+    /* One byte past the end: rejected. */
+    OK(!rdma_peer_addr_in_recv_mr(IOVA + 1u, BYTES, IOVA, BYTES));
+    /* uint64 overflow on addr + len: addr near UINT64_MAX. */
+    OK(!rdma_peer_addr_in_recv_mr(UINT64_MAX - 4u, 8u, IOVA, BYTES));
+    /* uint64 overflow on the MR upper bound: a UINT64_MAX iova
+     * combined with a non-zero peer_recv_bytes would wrap. The
+     * helper must reject without crashing. */
+    OK(!rdma_peer_addr_in_recv_mr(UINT64_MAX, 1u, UINT64_MAX, 1u));
+  }
+  {
+    /* (4) Immediate-data identity contract. */
+    OK(rdma_peer_slot_imm_data(0u) == 0u);
+    OK(rdma_peer_slot_imm_data(7u) == 7u);
+    OK(rdma_peer_slot_imm_data(0x12345678u) == 0x12345678u);
+    OK(rdma_peer_slot_imm_data(UINT32_MAX) == UINT32_MAX);
+  }
+  {
+    /* (5) Composition over a small queue depth: derive every
+     * slot address and confirm each slot's [addr, addr+slot_size)
+     * range is contained in the peer MR. The last slot exactly
+     * touches the end of the MR. */
+    constexpr uint64_t IOVA = 0x80000ull;
+    constexpr uint32_t BYTES = 1024u;
+    constexpr uint32_t DEPTH = 8u;
+    const uint32_t slot_size = rdma_peer_slot_size(BYTES, DEPTH);
+    OK(slot_size == 128u);
+    for (uint32_t i = 0; i < DEPTH; i++) {
+      const uint64_t addr =
+          rdma_peer_slot_remote_addr(IOVA, i, slot_size);
+      OK(rdma_peer_addr_in_recv_mr(addr, (uint64_t)slot_size, IOVA,
+                                   BYTES));
+      OK(addr == IOVA + (uint64_t)i * (uint64_t)slot_size);
+    }
+    /* The slot at index DEPTH would start exactly at the end of
+     * the MR; a real probe never picks it (the cursor reduces mod
+     * DEPTH), but the bounds helper must still reject a write
+     * starting there. */
+    const uint64_t past_end =
+        rdma_peer_slot_remote_addr(IOVA, DEPTH, slot_size);
+    OK(past_end == IOVA + (uint64_t)BYTES);
+    OK(!rdma_peer_addr_in_recv_mr(past_end, 1u, IOVA, BYTES));
   }
 
   return 1;  /* TAP success */
