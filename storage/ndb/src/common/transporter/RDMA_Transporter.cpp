@@ -1603,6 +1603,59 @@ static inline uint32_t rdma_peer_slot_imm_decode(uint32_t imm_data) {
 }
 
 /*
+ * Phase 12: bounds check tightened to a specific peer slot. A future
+ * `IBV_WR_RDMA_WRITE_WITH_IMM` lands in exactly one peer slot, so the
+ * probe should refuse byte ranges that fit in the peer MR but span
+ * two slots. This helper is the contract the future switchover will
+ * use to validate every `wr.rdma.remote_addr` against the peer slot
+ * it targets.
+ *
+ * Returns true iff every byte of `[addr, addr+len)` lies in
+ *   `[peer_iova + slot_idx*slot_size,
+ *     peer_iova + (slot_idx+1)*slot_size)`.
+ * Rejects on any of:
+ *   - `len == 0` (a zero-length WRITE never reaches the wire and
+ *     would hide an arithmetic bug)
+ *   - `slot_size == 0`
+ *   - `peer_queue_depth == 0`
+ *   - `slot_idx >= peer_queue_depth` (the chosen slot is outside
+ *     the peer's queue depth and would target unmapped or
+ *     adjacent-slot memory)
+ *   - uint64 overflow in either `slot_start = peer_iova +
+ *     slot_idx*slot_size` or `slot_end = slot_start + slot_size`
+ *   - uint64 overflow in `addr + len`
+ *   - `addr` below `slot_start`
+ *   - `addr_end` above `slot_end` (one-byte-over rejection)
+ * An exact-end fit (`addr_end == slot_end`) is accepted, matching
+ * the Phase 10 peer-MR helper. The widened multiply is identical
+ * to `rdma_peer_slot_remote_addr()` so the two helpers never
+ * disagree on the slot's starting byte.
+ */
+static inline bool rdma_peer_addr_in_slot(uint64_t addr, uint64_t len,
+                                          uint64_t peer_iova,
+                                          uint32_t slot_idx,
+                                          uint32_t slot_size,
+                                          uint32_t peer_queue_depth) {
+  if (len == 0u) return false;
+  if (slot_size == 0u) return false;
+  if (peer_queue_depth == 0u) return false;
+  if (slot_idx >= peer_queue_depth) return false;
+  /* slot_start = peer_iova + slot_idx * slot_size. The widened
+   * uint64 product of two uint32 factors cannot itself overflow; the
+   * add to peer_iova can, so we check for wraparound explicitly. */
+  const uint64_t slot_offset =
+      (uint64_t)slot_idx * (uint64_t)slot_size;
+  const uint64_t slot_start = peer_iova + slot_offset;
+  if (slot_start < peer_iova) return false;  /* uint64 overflow */
+  const uint64_t slot_end = slot_start + (uint64_t)slot_size;
+  if (slot_end < slot_start) return false;  /* uint64 overflow */
+  if (addr < slot_start) return false;
+  const uint64_t addr_end = addr + len;
+  if (addr_end < addr) return false;  /* uint64 overflow */
+  return addr_end <= slot_end;
+}
+
+/*
  * --------------------------------------------------------------------------
  * Phase 6: per-PD memory-region cache probe toggle
  * --------------------------------------------------------------------------
@@ -2762,40 +2815,67 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
           m_stats.write_probe_geometry_invalid.fetch_add(
               1u, std::memory_order_relaxed);
         } else {
-          const uint32_t slot_idx =
-              m_peer_slot_cursor % m_peer_queue_depth;
-          const uint64_t remote_addr = rdma_peer_slot_remote_addr(
-              m_peer_recv_iova, slot_idx, peer_slot_size);
-          /* The would-be WRITE byte length matches what a future
-           * post would copy for this chain: framing header plus
-           * payload. We probe with that combined length so the
-           * bounds helper exercises a realistic upper bound. */
-          const uint64_t probe_len =
-              (uint64_t)RDMA_MSG_HEADER_BYTES +
-              (uint64_t)chain_total_payload;
-          /* Build the would-be immediate data exactly the way a
-           * future WRITE_WITH_IMM post would. The result is unused
-           * in Phase 10 (no WR is posted); the call exists so the
-           * helper is exercised on every probe pass and so a
-           * future contract change is visible here. */
-          (void)rdma_peer_slot_imm_data(slot_idx);
-          if (!rdma_peer_addr_in_recv_mr(remote_addr, probe_len,
-                                         m_peer_recv_iova,
-                                         m_peer_recv_bytes)) {
-            m_stats.write_probe_bounds_rejected.fetch_add(
-                1u, std::memory_order_relaxed);
-            /* Still advance the cursor: re-probing the same slot
-             * on every chain post would produce a constant stream
-             * of rejections from the same arithmetic without ever
-             * exercising a different `slot_idx`. The rejection
-             * counter alone is enough to surface the problem to
-             * operators. */
-            m_peer_slot_cursor++;
-          } else {
+          /* Phase 12: per-WR probe. The Phase 10 implementation did
+           * one bounds check per chain, against the entire peer MR.
+           * That was overly permissive: a future
+           * `IBV_WR_RDMA_WRITE_WITH_IMM` lands in exactly one peer
+           * slot, so any chain that posts N WRs really targets N
+           * distinct peer slots, each carrying its own (header +
+           * per-WR payload) bytes. We iterate `chain_slots[]` and
+           * validate each WR against the specific slot it would
+           * target via `rdma_peer_addr_in_slot()`. The cursor
+           * advances by one per WR, which is the actual cadence
+           * the future switchover will use. The chain post above
+           * has already populated
+           * `m_send_slots[chain_slots[c]].payload_len` for every
+           * `c` in `[0, chain_len)`, so the per-WR length is
+           * available without recomputing from the WR scratch
+           * arrays. */
+          for (Uint32 c = 0; c < chain_len; c++) {
+            const Uint32 slot_idx =
+                m_peer_slot_cursor % m_peer_queue_depth;
+            const Uint32 wr_payload_len =
+                m_send_slots[chain_slots[c]].payload_len;
+            const uint64_t probe_len =
+                (uint64_t)RDMA_MSG_HEADER_BYTES +
+                (uint64_t)wr_payload_len;
+            const uint64_t remote_addr = rdma_peer_slot_remote_addr(
+                m_peer_recv_iova, slot_idx, peer_slot_size);
+            /* Exercise the imm-data contract on every probe pass so
+             * a future encoding change cannot silently regress one
+             * side of the encode/decode pair. The result is unused
+             * here because no WR is posted. */
+            (void)rdma_peer_slot_imm_data(slot_idx);
+            /* Defensive: a per-WR probe length above
+             * `peer_slot_size` cannot fit in one peer slot
+             * regardless of cursor choice. In a healthy build this
+             * is impossible because doSend() caps per-WR payload at
+             * `slot_size - header` on our own side and the peer
+             * derives the same slot size from its recv MR geometry;
+             * keep this counter distinct from
+             * `write_probe_bounds_rejected` so a future regression
+             * has an unambiguous diagnostic. The cursor still
+             * advances so a stuck oversized payload does not pin
+             * the probe to slot 0 forever. */
+            if (probe_len > (uint64_t)peer_slot_size) {
+              m_stats.write_probe_slot_overflow.fetch_add(
+                  1u, std::memory_order_relaxed);
+              m_peer_slot_cursor++;
+              continue;
+            }
+            if (!rdma_peer_addr_in_slot(remote_addr, probe_len,
+                                        m_peer_recv_iova, slot_idx,
+                                        peer_slot_size,
+                                        m_peer_queue_depth)) {
+              m_stats.write_probe_bounds_rejected.fetch_add(
+                  1u, std::memory_order_relaxed);
+              m_peer_slot_cursor++;
+              continue;
+            }
             m_stats.write_probe_eligible.fetch_add(
                 1u, std::memory_order_relaxed);
-            /* CAS-bump the address watermark, matching the
-             * existing `send_chain_max_seen` pattern. */
+            /* CAS-bump the address watermark, matching the existing
+             * `send_chain_max_seen` pattern. */
             const Uint64 probe_end =
                 (Uint64)remote_addr + (Uint64)probe_len;
             Uint64 prev =
@@ -4791,6 +4871,7 @@ void RDMA_Transporter::log_stats() const {
       "write_probe_skipped_no_geom=%llu "
       "write_probe_geometry_invalid=%llu "
       "write_probe_bounds_rejected=%llu write_probe_address_max=0x%llx "
+      "write_probe_slot_overflow=%llu "
       "recv_unexpected_opcode=%llu",
       (unsigned)localNodeId, (unsigned)remoteNodeId,
       (unsigned)getTransporterIndex(), (unsigned)m_multi_transporter_instance,
@@ -4924,6 +5005,13 @@ void RDMA_Transporter::log_stats() const {
       (unsigned long long)m_stats.write_probe_bounds_rejected.load(
           std::memory_order_relaxed),
       (unsigned long long)m_stats.write_probe_address_max.load(
+          std::memory_order_relaxed),
+      /* Phase 12: per-WR probe overflow counter. Bumped when a
+       * per-WR probe length (header + per-WR payload) exceeds the
+       * peer's per-slot byte size. Zero on a healthy link; non-zero
+       * indicates a regression in the chain-build invariant that
+       * caps per-WR payload at `slot_size - header`. */
+      (unsigned long long)m_stats.write_probe_slot_overflow.load(
           std::memory_order_relaxed),
       /* Phase 11: counter incremented from reap_recv_completions()
        * when a receive CQE carries an opcode other than IBV_WC_RECV.
@@ -6737,6 +6825,110 @@ TAPTEST(RDMA_Transporter) {
     for (uint32_t i = 0; i < DEPTH; i++) {
       OK(rdma_peer_slot_imm_decode(rdma_peer_slot_imm_data(i)) == i);
     }
+  }
+  /* ----- Phase 12: per-slot bounds helper -----
+   *
+   * Pure-helper coverage for rdma_peer_addr_in_slot(). The helper is
+   * a tightened cousin of the Phase 10 rdma_peer_addr_in_recv_mr():
+   * it accepts only byte ranges that fit inside one specific peer
+   * slot, not just inside the peer MR. The tests pin the
+   * acceptance/rejection edges around a representative slot,
+   * exercise the validity gates (zero length, zero slot_size, zero
+   * queue depth, slot index out of range), pin the uint64 overflow
+   * guards on the upper-bound additions, and add a composition test
+   * demonstrating the difference from the peer-MR helper: a write
+   * that fits in the peer MR but spans the boundary of two adjacent
+   * slots must be accepted by the peer-MR helper and rejected by
+   * this slot helper.
+   *
+   *   1. In-range acceptance: exact-start, mid-slot, exact-end.
+   *   2. One-byte-before / one-byte-after rejection.
+   *   3. Validity gates: len=0, slot_size=0, peer_queue_depth=0,
+   *      slot_idx >= peer_queue_depth.
+   *   4. uint64 overflow guards on slot_start, slot_end, and
+   *      addr_end.
+   *   5. Composition: a write that fits in the peer MR but spans
+   *      two slots passes the peer-MR helper and fails this one.
+   */
+  {
+    /* Fixture: a peer MR of 1024 bytes split into 8 slots of
+     * 128 bytes each. peer_iova is non-zero so we exercise the
+     * widened multiply + add. */
+    constexpr uint64_t IOVA = 0x80000ull;
+    constexpr uint32_t SLOT_SIZE = 128u;
+    constexpr uint32_t DEPTH = 8u;
+    constexpr uint32_t MID_SLOT = 3u;
+    const uint64_t mid_start = IOVA + (uint64_t)MID_SLOT * SLOT_SIZE;
+
+    /* (1) Acceptance edges within MID_SLOT. */
+    OK(rdma_peer_addr_in_slot(mid_start, 1u, IOVA, MID_SLOT,
+                              SLOT_SIZE, DEPTH));
+    OK(rdma_peer_addr_in_slot(mid_start + 32u, 16u, IOVA, MID_SLOT,
+                              SLOT_SIZE, DEPTH));
+    OK(rdma_peer_addr_in_slot(mid_start, (uint64_t)SLOT_SIZE, IOVA,
+                              MID_SLOT, SLOT_SIZE, DEPTH));
+    OK(rdma_peer_addr_in_slot(mid_start + SLOT_SIZE - 1u, 1u, IOVA,
+                              MID_SLOT, SLOT_SIZE, DEPTH));
+
+    /* (2) Rejection just outside MID_SLOT's range. */
+    OK(!rdma_peer_addr_in_slot(mid_start - 1u, 1u, IOVA, MID_SLOT,
+                               SLOT_SIZE, DEPTH));
+    OK(!rdma_peer_addr_in_slot(mid_start, (uint64_t)SLOT_SIZE + 1u,
+                               IOVA, MID_SLOT, SLOT_SIZE, DEPTH));
+    OK(!rdma_peer_addr_in_slot(mid_start + SLOT_SIZE, 1u, IOVA,
+                               MID_SLOT, SLOT_SIZE, DEPTH));
+
+    /* (3) Validity gates. */
+    OK(!rdma_peer_addr_in_slot(mid_start, 0u, IOVA, MID_SLOT,
+                               SLOT_SIZE, DEPTH));  /* len=0 */
+    OK(!rdma_peer_addr_in_slot(mid_start, 1u, IOVA, MID_SLOT,
+                               0u, DEPTH));  /* slot_size=0 */
+    OK(!rdma_peer_addr_in_slot(mid_start, 1u, IOVA, MID_SLOT,
+                               SLOT_SIZE, 0u));  /* depth=0 */
+    OK(!rdma_peer_addr_in_slot(mid_start, 1u, IOVA, DEPTH,
+                               SLOT_SIZE, DEPTH));  /* idx == depth */
+    OK(!rdma_peer_addr_in_slot(mid_start, 1u, IOVA, DEPTH + 1u,
+                               SLOT_SIZE, DEPTH));  /* idx > depth */
+
+    /* (4) uint64 overflow guards.
+     *   (a) slot_start overflow: peer_iova near UINT64_MAX combined
+     *       with a non-zero slot_idx*slot_size must reject. */
+    OK(!rdma_peer_addr_in_slot(0u, 1u, UINT64_MAX, 1u,
+                               SLOT_SIZE, DEPTH));
+    /*   (b) slot_end overflow: slot_start == UINT64_MAX, slot_size
+     *       != 0; the slot_end addition wraps. Use peer_iova
+     *       UINT64_MAX, slot_idx 0 so slot_start == UINT64_MAX. */
+    OK(!rdma_peer_addr_in_slot(UINT64_MAX, 1u, UINT64_MAX, 0u,
+                               SLOT_SIZE, DEPTH));
+    /*   (c) addr_end overflow: addr near UINT64_MAX, large len.
+     *       Use a normal slot fixture so the slot bounds themselves
+     *       are fine; the addr+len wrap must still reject. */
+    OK(!rdma_peer_addr_in_slot(UINT64_MAX - 4u, 8u, IOVA, MID_SLOT,
+                               SLOT_SIZE, DEPTH));
+
+    /* (5) Composition: a write that spans the boundary between
+     *     slots MID_SLOT and MID_SLOT+1 fits inside the peer MR
+     *     (still in [IOVA, IOVA+BYTES)) but must be rejected by
+     *     the slot helper because it does not lie entirely inside
+     *     a single slot.
+     *
+     *     The byte range starts SLOT_SIZE/2 bytes before the end of
+     *     MID_SLOT and is SLOT_SIZE bytes long, so it occupies the
+     *     last half of MID_SLOT and the first half of MID_SLOT+1. */
+    const uint64_t straddle_start =
+        mid_start + SLOT_SIZE - (SLOT_SIZE / 2u);
+    constexpr uint64_t straddle_len = (uint64_t)SLOT_SIZE;
+    constexpr uint32_t BYTES = SLOT_SIZE * DEPTH;
+    /* Sanity: the byte range really fits the peer MR. */
+    OK(rdma_peer_addr_in_recv_mr(straddle_start, straddle_len,
+                                 IOVA, BYTES));
+    /* But it does NOT fit MID_SLOT. */
+    OK(!rdma_peer_addr_in_slot(straddle_start, straddle_len, IOVA,
+                               MID_SLOT, SLOT_SIZE, DEPTH));
+    /* And it does NOT fit MID_SLOT+1 either because it starts below
+     * that slot's base. */
+    OK(!rdma_peer_addr_in_slot(straddle_start, straddle_len, IOVA,
+                               MID_SLOT + 1u, SLOT_SIZE, DEPTH));
   }
 
   return 1;  /* TAP success */
