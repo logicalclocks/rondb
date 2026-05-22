@@ -1585,6 +1585,24 @@ static inline uint32_t rdma_peer_slot_imm_data(uint32_t slot_idx) {
 }
 
 /*
+ * Phase 11: symmetric decoder for `rdma_peer_slot_imm_data`. Maps an
+ * `imm_data` value observed in a future `IBV_WC_RECV_RDMA_WITH_IMM`
+ * CQE back to the originating slot index. Identity contract today,
+ * mirroring the encoder; a future phase that packs credit-delta or
+ * chain metadata into the immediate updates both halves of the
+ * contract in lockstep. Kept as a pure file-scope inline so the TAP
+ * harness can pin the round-trip invariant
+ * `decode(encode(x)) == x` without any verbs state. This helper is
+ * not yet consumed by the data path: Phase 11 only adds a defensive
+ * opcode dispatch that rejects unexpected IMM completions; a later
+ * phase will wire the inbound consumer that actually calls this
+ * helper.
+ */
+static inline uint32_t rdma_peer_slot_imm_decode(uint32_t imm_data) {
+  return imm_data;
+}
+
+/*
  * --------------------------------------------------------------------------
  * Phase 6: per-PD memory-region cache probe toggle
  * --------------------------------------------------------------------------
@@ -4203,6 +4221,40 @@ int RDMA_Transporter::reap_recv_completions(
         return -1;
       }
 
+      /*
+       * Phase 11: defensive opcode dispatch. The current data path
+       * only knows how to consume `IBV_WC_RECV` (plain SEND/RECV).
+       * Phase 9 grants `IBV_ACCESS_REMOTE_WRITE` on the recv MR in
+       * advertise mode and Phase 8 hands the peer our rkey, so a
+       * buggy or malicious peer could already post
+       * `IBV_WR_RDMA_WRITE_WITH_IMM` at us; the resulting CQE would
+       * carry `IBV_WC_RECV_RDMA_WITH_IMM` and the bytes would land at
+       * a peer-chosen offset in `m_recv_buf` rather than at the
+       * wr_id-indexed slot. Without this guard the existing slot-
+       * arithmetic + header-validation block below would later trip
+       * on a header byte mismatch and disconnect with the misleading
+       * `TE_RDMA_INVALID_HEADER` error. Surface the right cause
+       * here: increment a dedicated counter, log the opcode plus the
+       * (unused) `imm_data` for diagnostic clarity, and disconnect
+       * with `EPROTO` so the registry's reconnect loop retries
+       * cleanly. A later phase that wires the actual IMM consumer
+       * will replace this branch with real dispatch logic. */
+      if (wc[i].opcode != IBV_WC_RECV) {
+        m_stats.recv_unexpected_opcode.fetch_add(
+            1u, std::memory_order_relaxed);
+        g_eventLogger->error(
+            "RDMA[node %u->%u]: unexpected recv WC opcode=%d "
+            "(wr_id=%u byte_len=%u imm_data=0x%08x); this build does "
+            "not yet consume IBV_WC_RECV_RDMA_WITH_IMM; disconnecting",
+            (unsigned)localNodeId, (unsigned)remoteNodeId,
+            (int)wc[i].opcode, slot, wc[i].byte_len,
+            (unsigned)wc[i].imm_data);
+        report_error(TE_RDMA_INVALID_HEADER,
+                     "unexpected recv WC opcode");
+        start_disconnecting(EPROTO, /*send_source=*/false);
+        return -1;
+      }
+
       /* Account every byte the HCA wrote into our slot, regardless of
        * whether this is a data message or a control message. This
        * matches the TCP convention of m_bytes_received tracking on-
@@ -4738,7 +4790,8 @@ void RDMA_Transporter::log_stats() const {
       "write_probe_eligible=%llu write_probe_skipped_no_caps=%llu "
       "write_probe_skipped_no_geom=%llu "
       "write_probe_geometry_invalid=%llu "
-      "write_probe_bounds_rejected=%llu write_probe_address_max=0x%llx",
+      "write_probe_bounds_rejected=%llu write_probe_address_max=0x%llx "
+      "recv_unexpected_opcode=%llu",
       (unsigned)localNodeId, (unsigned)remoteNodeId,
       (unsigned)getTransporterIndex(), (unsigned)m_multi_transporter_instance,
       (unsigned)m_is_active, (unsigned)m_recv_thread_idx,
@@ -4871,6 +4924,15 @@ void RDMA_Transporter::log_stats() const {
       (unsigned long long)m_stats.write_probe_bounds_rejected.load(
           std::memory_order_relaxed),
       (unsigned long long)m_stats.write_probe_address_max.load(
+          std::memory_order_relaxed),
+      /* Phase 11: counter incremented from reap_recv_completions()
+       * when a receive CQE carries an opcode other than IBV_WC_RECV.
+       * Off-mode and well-behaved advertise-mode peers keep this at
+       * zero; a non-zero value indicates a peer that started posting
+       * inbound one-sided WRITE before this build has a consumer for
+       * it, and the link was disconnected to surface the protocol
+       * violation. */
+      (unsigned long long)m_stats.recv_unexpected_opcode.load(
           std::memory_order_relaxed));
 }
 
@@ -6626,6 +6688,55 @@ TAPTEST(RDMA_Transporter) {
         rdma_peer_slot_remote_addr(IOVA, DEPTH, slot_size);
     OK(past_end == IOVA + (uint64_t)BYTES);
     OK(!rdma_peer_addr_in_recv_mr(past_end, 1u, IOVA, BYTES));
+  }
+
+  /* ----- Phase 11: IMM decode helper round-trip -----
+   *
+   * The decode helper is the symmetric inverse of
+   * rdma_peer_slot_imm_data() introduced in Phase 10. Both are
+   * currently identity functions; a future phase that packs credit
+   * deltas or chain metadata into the immediate value will update
+   * both halves at once and these tests will gate the change.
+   *
+   *   1. Direct identity reads on representative values.
+   *   2. Encode/decode round-trip: decode(encode(x)) == x for the
+   *      same fixture set used in the Phase 10 imm_data block.
+   *   3. Decode/encode round-trip: encode(decode(x)) == x; both
+   *      directions matter because a future encoding may mask out
+   *      bits the decoder reconstructs from elsewhere.
+   *   4. Composition over a small queue depth: every slot index
+   *      survives the round trip, mirroring the Phase 10 composition
+   *      test for the address helpers. */
+  {
+    /* (1) Direct identity. */
+    OK(rdma_peer_slot_imm_decode(0u) == 0u);
+    OK(rdma_peer_slot_imm_decode(7u) == 7u);
+    OK(rdma_peer_slot_imm_decode(0x12345678u) == 0x12345678u);
+    OK(rdma_peer_slot_imm_decode(UINT32_MAX) == UINT32_MAX);
+
+    /* (2) decode(encode(x)) == x. */
+    OK(rdma_peer_slot_imm_decode(rdma_peer_slot_imm_data(0u)) == 0u);
+    OK(rdma_peer_slot_imm_decode(rdma_peer_slot_imm_data(7u)) == 7u);
+    OK(rdma_peer_slot_imm_decode(
+           rdma_peer_slot_imm_data(0x12345678u)) == 0x12345678u);
+    OK(rdma_peer_slot_imm_decode(
+           rdma_peer_slot_imm_data(UINT32_MAX)) == UINT32_MAX);
+
+    /* (3) encode(decode(x)) == x; same fixtures viewed from the
+     * other direction. */
+    OK(rdma_peer_slot_imm_data(rdma_peer_slot_imm_decode(0u)) == 0u);
+    OK(rdma_peer_slot_imm_data(rdma_peer_slot_imm_decode(7u)) == 7u);
+    OK(rdma_peer_slot_imm_data(
+           rdma_peer_slot_imm_decode(0x12345678u)) == 0x12345678u);
+    OK(rdma_peer_slot_imm_data(
+           rdma_peer_slot_imm_decode(UINT32_MAX)) == UINT32_MAX);
+
+    /* (4) Composition over a small queue depth: pin the round-trip
+     * for every slot index a probe could pick. */
+    constexpr uint32_t DEPTH = 8u;
+    for (uint32_t i = 0; i < DEPTH; i++) {
+      OK(rdma_peer_slot_imm_decode(rdma_peer_slot_imm_data(i)) == i);
+    }
   }
 
   return 1;  /* TAP success */
