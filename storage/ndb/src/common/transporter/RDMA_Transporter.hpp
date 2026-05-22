@@ -1333,6 +1333,21 @@ class RDMA_Transporter : public Transporter {
     std::atomic<Uint64> write_probe_geometry_invalid{0};
     std::atomic<Uint64> write_probe_bounds_rejected{0};
     std::atomic<Uint64> write_probe_address_max{0};
+    /*
+     * Phase 11: count of receive completions delivered with a
+     * `wc[i].opcode` other than `IBV_WC_RECV`. The Phase 11 data
+     * path only knows how to consume `IBV_WC_RECV` (plain SEND);
+     * anything else (typically `IBV_WC_RECV_RDMA_WITH_IMM` from a
+     * peer that posted a one-sided WRITE_WITH_IMM at us) is logged
+     * once with diagnostic detail and the link is disconnected. The
+     * counter lets operators see how often this defensive branch
+     * fired across reconnects without having to grep the journal.
+     * Off-mode and well-behaved advertise-mode peers keep it at
+     * zero; a non-zero value means a peer prematurely started
+     * using inbound one-sided WRITE before this build has a
+     * consumer for it.
+     */
+    std::atomic<Uint64> recv_unexpected_opcode{0};
   };
   /*
    * Phase 2: stats counters are written from both send and receive
