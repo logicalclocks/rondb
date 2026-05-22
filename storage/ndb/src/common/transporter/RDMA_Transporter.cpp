@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -39,6 +40,10 @@
 #include <sys/mman.h>
 #include <vector>
 #include <EventLogger.hpp>
+#ifdef __linux__
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 /*
  * Heartbeat cadence for the periodic log_stats() emission driven by
@@ -614,12 +619,23 @@ class rdma_pool {
 };
 
 /*
+ * Forward declaration: rdma_buffer_acquire() calls rdma_try_bind_to_node()
+ * inside the same anonymous namespace, but the bind helper depends on the
+ * Phase 5 cached env parsers and the sysfs reader which live further down
+ * in this file (the entire Phase 5 helper block is grouped together for
+ * readability). The forward declaration lets the call site compile
+ * without reordering the helper block above the Phase 1 buffer provider.
+ */
+static void rdma_try_bind_to_node(void *ptr, size_t bytes, int numa_node);
+
+/*
  * Acquire `bytes` of zero-initialised, page-aligned memory under the
  * configured provider. Populates *meta with the provenance the matching
  * release call needs. Returns nullptr on failure (zero size or out of
  * memory) and resets *meta to its "never acquired" state.
  */
-static void *rdma_buffer_acquire(size_t bytes, rdma_buffer_meta *meta) {
+static void *rdma_buffer_acquire(size_t bytes, rdma_buffer_meta *meta,
+                                 int hca_numa_node = -1) {
   meta->was_pooled = false;
   meta->was_hugepage = false;
   meta->mapped_bytes = 0;
@@ -643,6 +659,16 @@ static void *rdma_buffer_acquire(size_t bytes, rdma_buffer_meta *meta) {
     meta->was_hugepage = was_hp;
     meta->mapped_bytes = mapped;
   }
+  /*
+   * Phase 5: best-effort NUMA bind before the first-touch memset.
+   * mbind(MPOL_BIND) updates the chunk's VMA policy; on the shared
+   * pool path the release-side madvise(MADV_DONTNEED) already dropped
+   * the previous incarnation's pages, so the upcoming memset(0)
+   * demand-faults onto the requested node. On the perclone path the
+   * chunk is freshly allocated and has no resident pages to migrate.
+   * Failures are silently fallen back inside rdma_try_bind_to_node().
+   */
+  rdma_try_bind_to_node(ptr, meta->mapped_bytes, hca_numa_node);
   std::memset(ptr, 0, bytes);
   return ptr;
 }
@@ -790,6 +816,240 @@ static Uint32 rdma_recv_ring_alloc(Uint32 region_size, Uint32 buffer_size,
   const Uint32 offset = cursor;
   *cursor_inout = cursor + region_size;
   return offset;
+}
+
+/*
+ * --------------------------------------------------------------------------
+ * Phase 5: HCA NUMA-aware buffer placement
+ * --------------------------------------------------------------------------
+ *
+ * Two opt-in toggles, both off by default, both behavior-preserving
+ * when off:
+ *
+ *   NDB_RDMA_NUMA
+ *     unset | off : current placement (first-touch by the connect
+ *                   thread, no explicit binding).
+ *     hca         : after allocating each RDMA staging buffer and
+ *                   before the first-touch memset(0), bind the
+ *                   chunk's pages to the NUMA node reported by
+ *                   `/sys/class/infiniband/<dev>/device/numa_node`.
+ *                   Unknown nodes (-1) and any mbind failure are
+ *                   logged once and silently fall back to default
+ *                   placement.
+ *
+ *   NDB_RDMA_COMP_VECTOR
+ *     unset | 0   : recv CQ uses completion vector 0 (current
+ *                   behavior; all HCA interrupts on a single MSI-X
+ *                   vector).
+ *     spread      : recv CQ uses
+ *                       (m_recv_thread_idx % dev_attr.num_comp_vectors)
+ *                   so completion interrupts for transporters owned
+ *                   by different recv threads land on different
+ *                   vectors. The send CQ keeps vector 0 because it
+ *                   has no completion channel and is poll-driven.
+ *
+ * All Phase 5 helpers are file-local: the cached env parsers, the
+ * sysfs reader for the HCA's NUMA node, the mbind wrapper, and the
+ * recv-CQ comp-vector chooser. No public API is added. mbind is
+ * invoked through `syscall(SYS_mbind, ...)` rather than the glibc
+ * wrapper because the wrapper is not universally available in
+ * libc-2.x; the syscall path also keeps the change free of any
+ * link-time dependency on libnuma.
+ */
+enum class rdma_numa_mode_t { OFF, HCA };
+
+static rdma_numa_mode_t rdma_numa_mode_cached() {
+  static const rdma_numa_mode_t cached = []() {
+    const char *e = std::getenv("NDB_RDMA_NUMA");
+    if (e == nullptr || std::strcmp(e, "off") == 0) {
+      return rdma_numa_mode_t::OFF;
+    }
+    if (std::strcmp(e, "hca") == 0) {
+      g_eventLogger->info(
+          "RDMA: NDB_RDMA_NUMA=hca (bind RDMA staging buffers to the HCA's "
+          "sysfs-reported NUMA node, best-effort)");
+      return rdma_numa_mode_t::HCA;
+    }
+    g_eventLogger->info(
+        "RDMA: NDB_RDMA_NUMA has unrecognised value '%s'; defaulting "
+        "to off",
+        e);
+    return rdma_numa_mode_t::OFF;
+  }();
+  return cached;
+}
+
+enum class rdma_comp_vector_mode_t { ZERO, SPREAD };
+
+static rdma_comp_vector_mode_t rdma_comp_vector_mode_cached() {
+  static const rdma_comp_vector_mode_t cached = []() {
+    const char *e = std::getenv("NDB_RDMA_COMP_VECTOR");
+    if (e == nullptr || std::strcmp(e, "0") == 0) {
+      return rdma_comp_vector_mode_t::ZERO;
+    }
+    if (std::strcmp(e, "spread") == 0) {
+      g_eventLogger->info(
+          "RDMA: NDB_RDMA_COMP_VECTOR=spread (recv CQ completion vector "
+          "= recv_thread_idx %% num_comp_vectors)");
+      return rdma_comp_vector_mode_t::SPREAD;
+    }
+    g_eventLogger->info(
+        "RDMA: NDB_RDMA_COMP_VECTOR has unrecognised value '%s'; defaulting "
+        "to 0",
+        e);
+    return rdma_comp_vector_mode_t::ZERO;
+  }();
+  return cached;
+}
+
+/*
+ * Read `/sys/class/infiniband/<device_name>/device/numa_node` and
+ * return its integer contents. Returns -1 for any failure (unknown
+ * device, sysfs absent, parse error, or kernel-reported "-1" meaning
+ * the platform has no NUMA topology for this PCIe slot).
+ *
+ * device_name is the libibverbs short name (e.g. "mlx5_0"). We refuse
+ * names containing '/' to avoid any chance of constructing a path
+ * that escapes the /sys/class/infiniband/ prefix.
+ *
+ * No log line on failure: the caller logs once at the buffer-bind
+ * site so the operator sees a single message rather than three.
+ */
+static int rdma_hca_numa_node(const char *device_name) {
+  if (device_name == nullptr || device_name[0] == '\0') return -1;
+  for (const char *p = device_name; *p != '\0'; p++) {
+    if (*p == '/' || *p == '\\' || *p < 0x20) return -1;
+  }
+  char path[256];
+  const int n = std::snprintf(
+      path, sizeof(path),
+      "/sys/class/infiniband/%s/device/numa_node", device_name);
+  if (n <= 0 || (size_t)n >= sizeof(path)) return -1;
+  std::FILE *f = std::fopen(path, "r");
+  if (f == nullptr) return -1;
+  char buf[32];
+  const size_t got = std::fread(buf, 1u, sizeof(buf) - 1u, f);
+  std::fclose(f);
+  if (got == 0u) return -1;
+  buf[got] = '\0';
+  /* Trim leading whitespace, then parse a signed integer. */
+  char *q = buf;
+  while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+  char *end = nullptr;
+  errno = 0;
+  const long v = std::strtol(q, &end, 10);
+  if (end == q || errno != 0) return -1;
+  /* Negative kernel value (-1) means "unknown"; treat as no binding. */
+  if (v < 0) return -1;
+  /* Sanity bound: most kernels max at MAX_NUMNODES = 1024. Anything
+   * above that almost certainly indicates a parse error. */
+  if (v >= 1024) return -1;
+  return (int)v;
+}
+
+/*
+ * One-shot info latch for mbind() failures. A failed bind is not fatal:
+ * we still memset and use the chunk; only NUMA placement is degraded.
+ * The latch keeps the journal quiet under high reconnect churn.
+ */
+static std::atomic<bool> g_rdma_mbind_fail_logged{false};
+static std::atomic<bool> g_rdma_mbind_unsupported_logged{false};
+
+/*
+ * Attempt to bind the pages backing [ptr, ptr+bytes) to `numa_node`.
+ * Non-fatal: returns without setting any error indicator and logs at
+ * most once per process lifetime on failure. A negative numa_node is
+ * the documented "no binding" signal and is a fast no-op.
+ *
+ * Implementation notes:
+ *   - We compute a page-aligned address and rounded-up length so the
+ *     mbind range covers exactly the VMA's pages.
+ *   - We use a 16-unsigned-long node mask buffer, large enough for
+ *     MAX_NUMNODES=1024 on any current Linux build.
+ *   - The mbind mode literal `MPOL_BIND = 2` matches the Linux UAPI
+ *     value. We declare it locally rather than pulling
+ *     <linux/mempolicy.h>, which is not part of every libc-headers
+ *     package and is not needed for any other functionality here.
+ *   - Glibc 2.x ships a `mbind()` wrapper but its visibility varies
+ *     across distros; the raw `syscall(SYS_mbind, ...)` path avoids
+ *     that variance.
+ */
+static void rdma_try_bind_to_node(void *ptr, size_t bytes, int numa_node) {
+  if (numa_node < 0 || ptr == nullptr || bytes == 0) return;
+#ifdef __linux__
+#ifdef SYS_mbind
+  constexpr int MPOL_BIND_LOCAL = 2; /* Linux UAPI value */
+  const long page_size = sysconf(_SC_PAGESIZE);
+  if (page_size <= 0) return;
+  const uintptr_t page_mask = (uintptr_t)(page_size - 1);
+  const uintptr_t start = (uintptr_t)ptr & ~page_mask;
+  const uintptr_t raw_end = (uintptr_t)ptr + bytes;
+  const uintptr_t end = (raw_end + page_mask) & ~page_mask;
+  if (end <= start) return;
+  /* Node mask: 16 ulongs cover 1024 nodes, more than any current Linux
+   * MAX_NUMNODES. The mbind syscall rejects out-of-range nodes via
+   * EINVAL, which we treat as a generic failure below. */
+  constexpr size_t MASK_WORDS = 16u;
+  unsigned long mask[MASK_WORDS] = {0};
+  constexpr unsigned long BITS_PER_LONG = sizeof(unsigned long) * 8u;
+  const size_t word = (size_t)((unsigned)numa_node / BITS_PER_LONG);
+  const unsigned long bit = (unsigned long)((unsigned)numa_node % BITS_PER_LONG);
+  if (word >= MASK_WORDS) return;
+  mask[word] = (1UL << bit);
+  /* maxnode is the number of bits the kernel will read from the mask;
+   * must be > numa_node. Pass the full 1024 so the mbind range covers
+   * any single node we asked for. */
+  const unsigned long maxnode = MASK_WORDS * BITS_PER_LONG;
+  const long rc = syscall(SYS_mbind, (void *)start, (size_t)(end - start),
+                          MPOL_BIND_LOCAL, mask, maxnode, 0u);
+  if (rc != 0) {
+    bool expected = false;
+    if (g_rdma_mbind_fail_logged.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel)) {
+      g_eventLogger->info(
+          "RDMA: mbind(MPOL_BIND, node=%d) on chunk %p (%zu bytes) failed "
+          "(errno=%d %s); falling back to default kernel page placement "
+          "for this and subsequent buffers",
+          numa_node, ptr, bytes, errno, std::strerror(errno));
+    }
+  }
+#else
+  (void)bytes;
+  bool expected = false;
+  if (g_rdma_mbind_unsupported_logged.compare_exchange_strong(
+          expected, true, std::memory_order_acq_rel)) {
+    g_eventLogger->info(
+        "RDMA: NDB_RDMA_NUMA=hca requested but SYS_mbind is not available; "
+        "falling back to default kernel page placement");
+  }
+#endif /* SYS_mbind */
+#else
+  (void)bytes;
+  bool expected = false;
+  if (g_rdma_mbind_unsupported_logged.compare_exchange_strong(
+          expected, true, std::memory_order_acq_rel)) {
+    g_eventLogger->info(
+        "RDMA: NDB_RDMA_NUMA=hca is Linux-only; falling back to default "
+        "page placement");
+  }
+#endif /* __linux__ */
+}
+
+/*
+ * Pick the recv-CQ completion vector for a transporter assigned to
+ * `recv_thread_idx` on a device that reports `num_comp_vectors`. The
+ * caller is responsible for already having checked
+ * `rdma_comp_vector_mode_cached()`; this helper is exposed so the
+ * TAP test can exercise the modular arithmetic and edge cases
+ * (num_comp_vectors == 0 -> 0, mode == ZERO -> 0).
+ */
+static int rdma_pick_recv_comp_vector(Uint32 recv_thread_idx,
+                                      int num_comp_vectors) {
+  if (rdma_comp_vector_mode_cached() != rdma_comp_vector_mode_t::SPREAD) {
+    return 0;
+  }
+  if (num_comp_vectors <= 0) return 0;
+  return (int)(recv_thread_idx % (Uint32)num_comp_vectors);
 }
 
 }  // namespace
@@ -2058,7 +2318,21 @@ bool RDMA_Transporter::allocate_verbs_resources() {
    * drain ibv_get_cq_event() without ever blocking inside the
    * registry's check_TCP loop. The send CQ keeps its old null-channel
    * shape because doSend()'s drive path is fully poll-driven (we
-   * never sleep waiting for our own send completions). */
+   * never sleep waiting for our own send completions).
+   *
+   * Phase 5: under NDB_RDMA_COMP_VECTOR=spread the recv CQ rotates
+   * across (m_recv_thread_idx % m_verbs_ctx->num_comp_vectors) so HCA
+   * completion interrupts can land on different MSI-X vectors when
+   * the registry has multiple receive threads. The send CQ keeps
+   * vector 0 because it carries no completion channel and is
+   * exclusively poll-driven, so its vector selection has no
+   * observable effect.
+   *
+   * Note: num_comp_vectors lives on ibv_context (not ibv_device_attr).
+   * ibv_query_device() is unrelated to this field; the count is
+   * established by ibv_open_device() and exposed directly on the
+   * context handle for every libibverbs version we support.
+   */
   m_send_cq = ibv_create_cq(m_verbs_ctx, (int)(m_queue_depth * 2),
                             /*cq_context=*/nullptr, /*channel=*/nullptr,
                             /*comp_vector=*/0);
@@ -2093,9 +2367,11 @@ bool RDMA_Transporter::allocate_verbs_resources() {
       return false;
     }
   }
+  const int recv_comp_vector = rdma_pick_recv_comp_vector(
+      m_recv_thread_idx, m_verbs_ctx->num_comp_vectors);
   m_recv_cq = ibv_create_cq(m_verbs_ctx, (int)(m_queue_depth * 2),
                             /*cq_context=*/nullptr, m_recv_comp_channel,
-                            /*comp_vector=*/0);
+                            recv_comp_vector);
   if (m_recv_cq == nullptr) {
     g_eventLogger->error("RDMA: ibv_create_cq(recv) failed (errno=%d %s)",
                          errno, std::strerror(errno));
@@ -2115,8 +2391,21 @@ bool RDMA_Transporter::allocate_verbs_resources() {
    * iova range to this transporter's PD via ibv_reg_mr() below. On
    * disconnect ibv_dereg_mr() removes the iova mapping before the
    * chunk goes back to the provider, so no two PDs ever map the same
-   * range concurrently. */
-  m_send_buf = rdma_buffer_acquire(m_send_buffer_size, &m_send_buf_meta);
+   * range concurrently.
+   *
+   * Phase 5: when NDB_RDMA_NUMA=hca is active we ask sysfs for the
+   * HCA's NUMA node and pass it to the buffer provider so the chunk's
+   * pages are bound to that node before the first-touch memset. The
+   * sysfs reader returns -1 on any failure, which the bind helper
+   * treats as "no binding" (current behavior). */
+  const int hca_numa_node =
+      (rdma_numa_mode_cached() == rdma_numa_mode_t::HCA)
+          ? rdma_hca_numa_node(
+                m_device_name ? m_device_name : ibv_get_device_name(
+                                                    m_verbs_ctx->device))
+          : -1;
+  m_send_buf = rdma_buffer_acquire(m_send_buffer_size, &m_send_buf_meta,
+                                   hca_numa_node);
   if (m_send_buf == nullptr) {
     g_eventLogger->error(
         "RDMA: failed to allocate %u bytes of send staging memory",
@@ -2124,7 +2413,8 @@ bool RDMA_Transporter::allocate_verbs_resources() {
     release_verbs_resources();
     return false;
   }
-  m_recv_buf = rdma_buffer_acquire(m_recv_buffer_size, &m_recv_buf_meta);
+  m_recv_buf = rdma_buffer_acquire(m_recv_buffer_size, &m_recv_buf_meta,
+                                   hca_numa_node);
   if (m_recv_buf == nullptr) {
     g_eventLogger->error(
         "RDMA: failed to allocate %u bytes of recv staging memory",
@@ -2140,7 +2430,8 @@ bool RDMA_Transporter::allocate_verbs_resources() {
    * preserved as scaffolding for a future decoupled app-buffer pool;
    * see the m_app_buf comment in RDMA_Transporter.hpp for context.
    */
-  m_app_buf = rdma_buffer_acquire(m_recv_buffer_size, &m_app_buf_meta);
+  m_app_buf = rdma_buffer_acquire(m_recv_buffer_size, &m_app_buf_meta,
+                                  hca_numa_node);
   if (m_app_buf == nullptr) {
     g_eventLogger->error(
         "RDMA: failed to allocate %u bytes of app-readable recv mirror",
@@ -4289,6 +4580,76 @@ TAPTEST(RDMA_Transporter) {
     OK(wire_a == (Uint64)(3u * HDR + 10u + 20u + 30u));
     for (Uint32 s = 0; s < QD; s++) {
       OK(!slots[s].in_flight);
+    }
+  }
+
+  /* ----- Phase 5: HCA NUMA + recv-CQ comp-vector helper tests -----
+   *
+   * The Phase 5 helpers are pure file-local functions; the TAP test
+   * exercises them without any verbs/HCA state. Three groups:
+   *
+   *   1. rdma_hca_numa_node(): reject invalid device names (nullptr,
+   *      empty, path-injection characters) without touching the
+   *      filesystem, and return -1 for a well-formed device name that
+   *      does not exist under /sys/class/infiniband/.
+   *   2. rdma_pick_recv_comp_vector(): modular arithmetic with edge
+   *      cases. Without NDB_RDMA_COMP_VECTOR=spread set the helper
+   *      must always return 0 regardless of thread index. The TAP
+   *      runner does not set NDB_RDMA_COMP_VECTOR, so all calls below
+   *      land in the ZERO branch; the SPREAD branch's modular math is
+   *      verified by inspection of the helper alongside the ZERO
+   *      guard which we cover here.
+   *   3. rdma_try_bind_to_node(): the negative numa_node short circuit
+   *      and the null/zero-byte short circuits must never crash. We
+   *      pass a stack buffer plus a real-but-unlikely node id (0) to
+   *      make sure a real mbind() syscall either succeeds or fails
+   *      silently without aborting the test process. */
+  {
+    /* rdma_hca_numa_node rejects every form of bad device name. */
+    OK(rdma_hca_numa_node(nullptr) == -1);
+    OK(rdma_hca_numa_node("") == -1);
+    OK(rdma_hca_numa_node("../etc/passwd") == -1);
+    OK(rdma_hca_numa_node("mlx5/0") == -1);
+    /* Control character (0x07 = BEL) below 0x20 is also refused. */
+    const char bel_name[] = {'m', 'l', 'x', 0x07, '0', '\0'};
+    OK(rdma_hca_numa_node(bel_name) == -1);
+    /* A well-formed device name that almost certainly does not exist
+     * on the build host. fopen() returns NULL -> -1. */
+    OK(rdma_hca_numa_node("rdma_phase5_no_such_device") == -1);
+  }
+
+  {
+    /* rdma_pick_recv_comp_vector defaults to ZERO mode (because the
+     * TAP test does not export NDB_RDMA_COMP_VECTOR before the cached
+     * parser is read). Cover the cached return value for a range of
+     * inputs including the UINT32_MAX edge so a future regression that
+     * changed the default to SPREAD would fail loudly here. */
+    OK(rdma_pick_recv_comp_vector(0u, 0) == 0);
+    OK(rdma_pick_recv_comp_vector(0u, 1) == 0);
+    OK(rdma_pick_recv_comp_vector(7u, 4) == 0);
+    OK(rdma_pick_recv_comp_vector(UINT32_MAX, 16) == 0);
+    OK(rdma_pick_recv_comp_vector(0u, -1) == 0);
+  }
+
+  {
+    /* rdma_try_bind_to_node short-circuits on numa_node < 0, on null
+     * ptr, and on zero bytes. None of these branches must touch the
+     * mbind syscall or read errno; they are pure no-ops. We also do
+     * one call with numa_node=0 and a small heap allocation to
+     * confirm the syscall path runs without aborting (the result is
+     * non-fatal whether mbind succeeds or fails). */
+    rdma_try_bind_to_node(nullptr, 0u, 0);
+    rdma_try_bind_to_node(nullptr, 4096u, 0);
+    char dummy[4096];
+    rdma_try_bind_to_node(dummy, sizeof(dummy), -1);
+    rdma_try_bind_to_node(dummy, 0u, 0);
+    /* Real syscall path: tolerate any outcome. The bind helper logs
+     * once on failure and never returns an error indicator. We just
+     * make sure the call itself does not crash the test binary. */
+    void *page = nullptr;
+    if (posix_memalign(&page, 4096, 4096) == 0 && page != nullptr) {
+      rdma_try_bind_to_node(page, 4096u, 0);
+      std::free(page);
     }
   }
 
