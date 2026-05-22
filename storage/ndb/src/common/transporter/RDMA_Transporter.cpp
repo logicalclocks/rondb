@@ -1052,7 +1052,344 @@ static int rdma_pick_recv_comp_vector(Uint32 recv_thread_idx,
   return (int)(recv_thread_idx % (Uint32)num_comp_vectors);
 }
 
+/*
+ * --------------------------------------------------------------------------
+ * Phase 6: per-PD memory-region cache probe toggle
+ * --------------------------------------------------------------------------
+ *
+ * NDB_RDMA_MR_CACHE selects whether doSend() probes the per-PD MR cache
+ * on every chain post. The probe is observability-only: the chain
+ * itself still references m_send_mr->lkey and the payload bytes are
+ * still copied into m_send_buf. We measure cache hit rate so a future
+ * zero-copy switchover has lab data to justify the lifetime-contract
+ * change. See the Phase 6 plan for details.
+ *
+ *   unset | off : never probe. m_mr_cache is allocated but stays
+ *                 empty for the link's lifetime.
+ *   probe       : after every successful chain post, walk the iovec
+ *                 contributions and acquire/release each contributing
+ *                 page range in m_mr_cache. Acquire failures are
+ *                 tolerated and counted.
+ */
+enum class rdma_mr_cache_mode_t { OFF, PROBE };
+
+static rdma_mr_cache_mode_t rdma_mr_cache_mode_cached() {
+  static const rdma_mr_cache_mode_t cached = []() {
+    const char *e = std::getenv("NDB_RDMA_MR_CACHE");
+    if (e == nullptr || std::strcmp(e, "off") == 0) {
+      return rdma_mr_cache_mode_t::OFF;
+    }
+    if (std::strcmp(e, "probe") == 0) {
+      g_eventLogger->info(
+          "RDMA: NDB_RDMA_MR_CACHE=probe (observability-only MR cache; "
+          "chain still memcpy's into m_send_buf)");
+      return rdma_mr_cache_mode_t::PROBE;
+    }
+    g_eventLogger->info(
+        "RDMA: NDB_RDMA_MR_CACHE has unrecognised value '%s'; defaulting "
+        "to off",
+        e);
+    return rdma_mr_cache_mode_t::OFF;
+  }();
+  return cached;
+}
+
 }  // namespace
+
+/*
+ * --------------------------------------------------------------------------
+ * Phase 6: per-PD MR cache
+ * --------------------------------------------------------------------------
+ *
+ * File-local cache of `ibv_mr` registrations over page-aligned ranges of
+ * upper-layer send-buffer memory. Defined at file scope (not in the
+ * anonymous namespace) because RDMA_Transporter.hpp forward-declares it
+ * at file scope so the transporter can hold a pointer to one.
+ *
+ * Lifetime is strictly bounded by the surrounding ibv_pd: constructed
+ * after ibv_alloc_pd() returns m_pd, torn down (drain_and_destroy +
+ * delete) before ibv_dealloc_pd(m_pd) so no cached MR can outlive the
+ * PD it was registered against.
+ *
+ * Concurrency: acquire() / release() / drain_and_destroy() take an
+ * internal std::mutex. Acquire/release are only invoked from the
+ * send-thread probe block today, so the lock is on the slow path; the
+ * data path itself is not gated on it. Refcounts are std::atomic
+ * because release() can in principle be called from a different thread
+ * than acquire() once the cache is wired into the actual zero-copy
+ * switchover; the probe path keeps acquire/release pairs on the same
+ * thread.
+ *
+ * The registrar function pointers (reg_fn / dereg_fn) are passed at
+ * construction time so the TAP test can drive the cache without
+ * libibverbs. In production they are ibv_reg_mr / ibv_dereg_mr.
+ */
+class rdma_mr_cache {
+ public:
+  /* Function-pointer types matching ibv_reg_mr / ibv_dereg_mr exactly
+   * so the production call sites can pass &ibv_reg_mr / &ibv_dereg_mr
+   * without adapter shims. The IBV_ACCESS_LOCAL_WRITE flag is the only
+   * one we use; see RDMA_Transporter::allocate_verbs_resources(). */
+  using reg_fn_t = struct ibv_mr *(*)(struct ibv_pd *, void *, size_t, int);
+  using dereg_fn_t = int (*)(struct ibv_mr *);
+
+  /* Bounded capacity. 64 entries x 64 MiB resident keeps the cache
+   * footprint at most ~4 GiB per PD (a worst-case upper bound; in
+   * practice the upper-layer send buffer is far smaller). Both caps
+   * are checked in acquire(); whichever fires first triggers LRU
+   * eviction. */
+  static constexpr size_t MAX_ENTRIES = 64;
+  static constexpr size_t MAX_BYTES = 64u * 1024u * 1024u;
+
+  struct entry {
+    uintptr_t page_start{0};
+    uintptr_t page_end{0};
+    struct ibv_mr *mr{nullptr};
+    std::atomic<Uint32> refcount{0};
+    Uint64 lru_seq{0};
+    bool pending_dereg{false};
+  };
+
+  enum class acquire_status { HIT, MISS, EVICTED, FAILURE };
+  struct acquire_result {
+    entry *e;
+    acquire_status status;
+  };
+
+  rdma_mr_cache(struct ibv_pd *pd, reg_fn_t reg_fn, dereg_fn_t dereg_fn);
+  ~rdma_mr_cache();
+
+  /* Look up an existing entry whose page range covers
+   * [vaddr, vaddr+len), or register a fresh one (possibly evicting an
+   * unpinned LRU entry). Returns {nullptr, FAILURE} on registration
+   * failure or when the cache is full of pinned entries. The returned
+   * entry carries refcount > 0 until release() is called. */
+  acquire_result acquire(const void *vaddr, size_t len);
+
+  /* Decrement the refcount. When the refcount reaches 0 and
+   * pending_dereg is set, dereg the MR and erase the entry. */
+  void release(entry *e);
+
+  /* Mark every entry for deregistration and reap any whose refcount
+   * is already 0. Called from release_verbs_resources() before
+   * ibv_dealloc_pd(); any still-pinned entries are dropped without
+   * dereg (libibverbs's PD teardown will clean them up on its way
+   * out). Logs a one-shot warning if anything was pinned. */
+  void drain_and_destroy();
+
+  /* Number of entries currently resident in the cache. Snapshot;
+   * callers should treat it as approximate when probes run
+   * concurrently. */
+  Uint32 resident_count();
+
+  /* Accessors for TAP tests. */
+  static constexpr Uint32 max_entries_for_test() { return (Uint32)MAX_ENTRIES; }
+
+ private:
+  struct ibv_pd *m_pd;
+  reg_fn_t m_reg_fn;
+  dereg_fn_t m_dereg_fn;
+  std::mutex m_lock;
+  std::vector<entry *> m_entries;
+  Uint64 m_lru_counter;
+  size_t m_page_size;
+  size_t m_resident_bytes;
+
+  /* Process-once latch so registration failures (typically
+   * RLIMIT_MEMLOCK) log one info line per process, even under heavy
+   * reconnect churn. */
+  static std::atomic<bool> g_reg_fail_logged;
+};
+
+std::atomic<bool> rdma_mr_cache::g_reg_fail_logged{false};
+
+rdma_mr_cache::rdma_mr_cache(struct ibv_pd *pd, reg_fn_t reg_fn,
+                             dereg_fn_t dereg_fn)
+    : m_pd(pd),
+      m_reg_fn(reg_fn),
+      m_dereg_fn(dereg_fn),
+      m_lru_counter(0),
+      m_resident_bytes(0) {
+  const long ps = sysconf(_SC_PAGESIZE);
+  m_page_size = (ps > 0) ? (size_t)ps : 4096u;
+  m_entries.reserve(MAX_ENTRIES);
+}
+
+rdma_mr_cache::~rdma_mr_cache() {
+  /* Idempotent; drain_and_destroy() returns immediately if already
+   * drained. */
+  drain_and_destroy();
+}
+
+rdma_mr_cache::acquire_result rdma_mr_cache::acquire(const void *vaddr,
+                                                     size_t len) {
+  if (vaddr == nullptr || len == 0 || m_reg_fn == nullptr) {
+    return {nullptr, acquire_status::FAILURE};
+  }
+  const uintptr_t addr = (uintptr_t)vaddr;
+  const uintptr_t page_mask = (uintptr_t)(m_page_size - 1u);
+  const uintptr_t req_start = addr & ~page_mask;
+  const uintptr_t req_end_raw = addr + (uintptr_t)len;
+  if (req_end_raw < addr) {
+    /* uintptr_t overflow; refuse rather than wrap. */
+    return {nullptr, acquire_status::FAILURE};
+  }
+  const uintptr_t req_end = (req_end_raw + page_mask) & ~page_mask;
+  if (req_end <= req_start) {
+    return {nullptr, acquire_status::FAILURE};
+  }
+
+  std::lock_guard<std::mutex> g(m_lock);
+
+  /* Containment lookup: an existing entry whose page range fully
+   * covers the requested range is a hit. Linear scan is fine because
+   * MAX_ENTRIES is small (64). */
+  for (entry *e : m_entries) {
+    if (e->pending_dereg) continue;
+    if (e->page_start <= req_start && e->page_end >= req_end) {
+      e->refcount.fetch_add(1, std::memory_order_acq_rel);
+      e->lru_seq = ++m_lru_counter;
+      return {e, acquire_status::HIT};
+    }
+  }
+
+  /* Miss. Evict the oldest unpinned entry while the cache is at the
+   * entry or byte cap. */
+  const size_t new_bytes = (size_t)(req_end - req_start);
+  bool evicted = false;
+  while (m_entries.size() >= MAX_ENTRIES ||
+         m_resident_bytes + new_bytes > MAX_BYTES) {
+    entry *victim = nullptr;
+    Uint64 victim_seq = UINT64_MAX;
+    for (entry *e : m_entries) {
+      if (e->pending_dereg) continue;
+      if (e->refcount.load(std::memory_order_acquire) != 0) continue;
+      if (e->lru_seq < victim_seq) {
+        victim = e;
+        victim_seq = e->lru_seq;
+      }
+    }
+    if (victim == nullptr) {
+      /* Every unpinned slot is in use; cannot make room. */
+      return {nullptr, acquire_status::FAILURE};
+    }
+    if (m_dereg_fn != nullptr && victim->mr != nullptr) {
+      (void)m_dereg_fn(victim->mr);
+      victim->mr = nullptr;
+    }
+    m_resident_bytes -= (size_t)(victim->page_end - victim->page_start);
+    auto it = std::find(m_entries.begin(), m_entries.end(), victim);
+    if (it != m_entries.end()) {
+      m_entries.erase(it);
+    }
+    delete victim;
+    evicted = true;
+  }
+
+  /* Register a fresh MR for the page-aligned range. */
+  struct ibv_mr *mr =
+      m_reg_fn(m_pd, (void *)req_start, (size_t)(req_end - req_start),
+               IBV_ACCESS_LOCAL_WRITE);
+  if (mr == nullptr) {
+    bool expected = false;
+    if (g_reg_fail_logged.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel)) {
+      g_eventLogger->info(
+          "RDMA: MR cache register failed (errno=%d %s); subsequent "
+          "probe misses will fall back silently",
+          errno, std::strerror(errno));
+    }
+    return {nullptr, acquire_status::FAILURE};
+  }
+
+  entry *e = new (std::nothrow) entry();
+  if (e == nullptr) {
+    if (m_dereg_fn != nullptr) (void)m_dereg_fn(mr);
+    return {nullptr, acquire_status::FAILURE};
+  }
+  e->page_start = req_start;
+  e->page_end = req_end;
+  e->mr = mr;
+  e->refcount.store(1u, std::memory_order_release);
+  e->lru_seq = ++m_lru_counter;
+  e->pending_dereg = false;
+  m_entries.push_back(e);
+  m_resident_bytes += new_bytes;
+
+  return {e, evicted ? acquire_status::EVICTED : acquire_status::MISS};
+}
+
+void rdma_mr_cache::release(entry *e) {
+  if (e == nullptr) return;
+  const Uint32 prev = e->refcount.fetch_sub(1, std::memory_order_acq_rel);
+  if (prev != 1u) return;
+  /* Refcount just reached 0. Check pending_dereg under the lock and
+   * reap if so. */
+  std::lock_guard<std::mutex> g(m_lock);
+  if (!e->pending_dereg) return;
+  if (m_dereg_fn != nullptr && e->mr != nullptr) {
+    (void)m_dereg_fn(e->mr);
+    e->mr = nullptr;
+  }
+  m_resident_bytes -= (size_t)(e->page_end - e->page_start);
+  auto it = std::find(m_entries.begin(), m_entries.end(), e);
+  if (it != m_entries.end()) {
+    m_entries.erase(it);
+  }
+  delete e;
+}
+
+void rdma_mr_cache::drain_and_destroy() {
+  std::lock_guard<std::mutex> g(m_lock);
+  if (m_entries.empty()) {
+    m_resident_bytes = 0;
+    return;
+  }
+  /* Two-phase drain: first mark every entry pending_dereg so any
+   * concurrent release() that sees refcount==0 will dereg through the
+   * lock. Then walk every entry and reap the ones already at
+   * refcount==0; anything still pinned would survive only if a probe
+   * is racing, which our usage forbids (release_verbs_resources()
+   * runs after the QP is destroyed). Defensive: log if anything was
+   * pinned at drain time so a misuse surfaces in the journal. */
+  for (entry *e : m_entries) {
+    e->pending_dereg = true;
+  }
+  Uint32 pinned_at_drain = 0;
+  std::vector<entry *> survivors;
+  for (entry *e : m_entries) {
+    if (e->refcount.load(std::memory_order_acquire) == 0u) {
+      if (m_dereg_fn != nullptr && e->mr != nullptr) {
+        (void)m_dereg_fn(e->mr);
+        e->mr = nullptr;
+      }
+      delete e;
+    } else {
+      pinned_at_drain++;
+      survivors.push_back(e);
+    }
+  }
+  m_entries.clear();
+  if (pinned_at_drain != 0u) {
+    g_eventLogger->info(
+        "RDMA: MR cache drained with %u entries still pinned; "
+        "libibverbs PD teardown will reap their MRs",
+        (unsigned)pinned_at_drain);
+    /* Intentionally leak the survivor entry structs: their refcounts
+     * are non-zero so something still holds the pointer. The MR
+     * itself will be cleaned up when ibv_dealloc_pd() destroys the
+     * PD it was registered against. */
+    for (entry *e : survivors) {
+      (void)e;
+    }
+  }
+  m_resident_bytes = 0;
+}
+
+Uint32 rdma_mr_cache::resident_count() {
+  std::lock_guard<std::mutex> g(m_lock);
+  return (Uint32)m_entries.size();
+}
 
 /*
  * Convert an IBV MTU enum to its byte value for logging only. The runtime
@@ -1107,6 +1444,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_recv_mr(nullptr),
       m_recv_comp_channel(nullptr),
       m_recv_comp_events_pending(0),
+      m_mr_cache(nullptr),
       m_send_buf(nullptr),
       m_recv_buf(nullptr),
       m_app_buf(nullptr),
@@ -1162,6 +1500,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_recv_mr(nullptr),
       m_recv_comp_channel(nullptr),
       m_recv_comp_events_pending(0),
+      m_mr_cache(nullptr),
       m_send_buf(nullptr),
       m_recv_buf(nullptr),
       m_app_buf(nullptr),
@@ -1419,6 +1758,24 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
     send_buffer_may_have_more = (fetch_send_iovec_data(iov, 1) > 0);
   }
 
+  /*
+   * Phase 6: probe scratch. Bounded; if a chain contributes more iovec
+   * fragments than fit here we just stop recording and accept some
+   * undercount in the telemetry. The probe is observability-only, so
+   * the truncation is benign. The probe block at the bottom of each
+   * chain post iterates this scratch and acquires/releases each
+   * recorded range in the MR cache.
+   */
+  constexpr Uint32 RDMA_PROBE_MAX = 256u;
+  struct rdma_probe_iov {
+    const void *base;
+    size_t len;
+  };
+  rdma_probe_iov probe_iov[RDMA_PROBE_MAX];
+  const bool probe_active =
+      (m_mr_cache != nullptr &&
+       rdma_mr_cache_mode_cached() == rdma_mr_cache_mode_t::PROBE);
+
   while (m_send_slots_in_flight.load(std::memory_order_relaxed) <
              m_queue_depth &&
          m_peer_recv_credits.load(std::memory_order_acquire) > 0) {
@@ -1437,6 +1794,10 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
     struct ibv_send_wr *const wrs = m_send_wr_scratch;
     struct ibv_sge *const sges = m_send_sge_scratch;
     Uint32 chain_inline_count = 0;
+    /* Phase 6: per-chain probe scratch index. Reset every outer
+     * iteration so each chain post's probe block only sees the iov
+     * contributions for that chain. */
+    Uint32 probe_iov_count = 0;
 
     while (chain_len < effective_batch_max &&
            m_send_slots_in_flight.load(std::memory_order_relaxed) +
@@ -1573,6 +1934,16 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
         std::memcpy(payload_dst,
                     (const char *)iov[cursor_iov].iov_base + cursor_off,
                     msg_len_bytes);
+        /* Phase 6: record the upper-layer source range so the probe
+         * block can ask the MR cache whether it would be a hit. Bounded
+         * by RDMA_PROBE_MAX; truncation is benign (probe is
+         * observability-only). */
+        if (probe_active && probe_iov_count < RDMA_PROBE_MAX) {
+          probe_iov[probe_iov_count].base =
+              (const char *)iov[cursor_iov].iov_base + cursor_off;
+          probe_iov[probe_iov_count].len = (size_t)msg_len_bytes;
+          probe_iov_count++;
+        }
         payload_dst += msg_len_bytes;
         payload_len += msg_len_bytes;
         cursor_off += msg_len_bytes;
@@ -1743,6 +2114,58 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
       while (chain_len > prev &&
              !m_stats.send_chain_max_seen.compare_exchange_weak(
                  prev, chain_len, std::memory_order_relaxed,
+                 std::memory_order_relaxed)) {
+        /* prev was updated by compare_exchange_weak; retry. */
+      }
+    }
+
+    /*
+     * Phase 6: probe the per-PD MR cache. Observability-only -- the
+     * chain post above still referenced m_send_mr and the bytes are
+     * already copied. We acquire each upper-layer iov range we touched
+     * during this chain (registering missing ranges with ibv_reg_mr)
+     * and immediately release the refcount. The acquire/release pair
+     * keeps the entry evictable; only the cache's bounded LRU keeps
+     * it resident. Acquire failures (registration ENOMEM, or all
+     * entries pinned) are counted but not fatal.
+     */
+    if (probe_active) {
+      for (Uint32 p = 0; p < probe_iov_count; p++) {
+        m_stats.mr_cache_acquires.fetch_add(1u,
+                                            std::memory_order_relaxed);
+        rdma_mr_cache::acquire_result r =
+            m_mr_cache->acquire(probe_iov[p].base, probe_iov[p].len);
+        switch (r.status) {
+          case rdma_mr_cache::acquire_status::HIT:
+            m_stats.mr_cache_hits.fetch_add(1u,
+                                            std::memory_order_relaxed);
+            break;
+          case rdma_mr_cache::acquire_status::MISS:
+            m_stats.mr_cache_misses.fetch_add(1u,
+                                              std::memory_order_relaxed);
+            break;
+          case rdma_mr_cache::acquire_status::EVICTED:
+            m_stats.mr_cache_misses.fetch_add(1u,
+                                              std::memory_order_relaxed);
+            m_stats.mr_cache_evictions.fetch_add(
+                1u, std::memory_order_relaxed);
+            break;
+          case rdma_mr_cache::acquire_status::FAILURE:
+            m_stats.mr_cache_failures.fetch_add(
+                1u, std::memory_order_relaxed);
+            break;
+        }
+        if (r.e != nullptr) {
+          m_mr_cache->release(r.e);
+        }
+      }
+      /* Update the resident-max watermark via CAS. */
+      const Uint32 resident_now = m_mr_cache->resident_count();
+      Uint32 prev =
+          m_stats.mr_cache_resident_max.load(std::memory_order_relaxed);
+      while (resident_now > prev &&
+             !m_stats.mr_cache_resident_max.compare_exchange_weak(
+                 prev, resident_now, std::memory_order_relaxed,
                  std::memory_order_relaxed)) {
         /* prev was updated by compare_exchange_weak; retry. */
       }
@@ -2305,6 +2728,23 @@ bool RDMA_Transporter::allocate_verbs_resources() {
     release_verbs_resources();
     return false;
   }
+  /*
+   * Phase 6: per-PD MR cache. Allocated immediately after the PD so its
+   * lifetime is strictly contained inside the PD's. release_verbs_resources()
+   * tears it down (drain_and_destroy + delete) before ibv_dealloc_pd(m_pd)
+   * so no cached MR can outlive the PD it was registered against. Off-mode
+   * (NDB_RDMA_MR_CACHE unset) leaves the cache empty for the link's
+   * lifetime; probe-mode populates it from the send-thread probe block in
+   * doSend(). Allocation failure here is non-fatal: it disables the probe
+   * path for this transporter but does not block connect. */
+  m_mr_cache =
+      new (std::nothrow) rdma_mr_cache(m_pd, &ibv_reg_mr, &ibv_dereg_mr);
+  if (m_mr_cache == nullptr) {
+    g_eventLogger->info(
+        "RDMA[node %u->%u]: failed to allocate MR cache; probe mode "
+        "will be a no-op on this link",
+        (unsigned)localNodeId, (unsigned)remoteNodeId);
+  }
 
   /* Step 4: Completion Queues. We size each CQ at 2 * queue_depth so a
    * receive WC backlog cannot starve send completions, even when the
@@ -2575,6 +3015,18 @@ void RDMA_Transporter::release_verbs_resources() {
   if (m_send_mr != nullptr) {
     ibv_dereg_mr(m_send_mr);
     m_send_mr = nullptr;
+  }
+  /*
+   * Phase 6: drain and destroy the per-PD MR cache before the buffer
+   * release path, and before ibv_dealloc_pd() below. drain_and_destroy()
+   * deregs every entry whose refcount is 0; the probe path keeps
+   * acquire/release pairs on the same thread so any entry registered
+   * during the link's lifetime is unpinned by the time we reach this
+   * point. */
+  if (m_mr_cache != nullptr) {
+    m_mr_cache->drain_and_destroy();
+    delete m_mr_cache;
+    m_mr_cache = nullptr;
   }
   /*
    * Buffer release runs AFTER ibv_dereg_mr() above, so the HCA can no
@@ -3591,7 +4043,10 @@ void RDMA_Transporter::log_stats() const {
       "cq_budget_hits_send=%llu cq_budget_hits_recv=%llu "
       "rnr=%llu retry_exceeded=%llu qp_fatal=%llu "
       "send_doorbells=%llu send_signaled=%llu send_chain_wrs=%llu "
-      "send_chain_max=%u send_chain_avg=%.2f",
+      "send_chain_max=%u send_chain_avg=%.2f "
+      "mr_cache_acquires=%llu mr_cache_hits=%llu mr_cache_misses=%llu "
+      "mr_cache_evictions=%llu mr_cache_failures=%llu "
+      "mr_cache_resident_max=%u",
       (unsigned)localNodeId, (unsigned)remoteNodeId,
       (unsigned)getTransporterIndex(), (unsigned)m_multi_transporter_instance,
       (unsigned)m_is_active, (unsigned)m_recv_thread_idx,
@@ -3665,7 +4120,21 @@ void RDMA_Transporter::log_stats() const {
         const Uint64 w =
             m_stats.send_chain_total_wrs.load(std::memory_order_relaxed);
         return (double)w / (double)d;
-      }());
+      }(),
+      /* Phase 6: per-PD MR cache probe counters. Off-mode keeps them
+       * all at zero. */
+      (unsigned long long)m_stats.mr_cache_acquires.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.mr_cache_hits.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.mr_cache_misses.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.mr_cache_evictions.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.mr_cache_failures.load(
+          std::memory_order_relaxed),
+      (unsigned)m_stats.mr_cache_resident_max.load(
+          std::memory_order_relaxed));
 }
 
 void RDMA_Transporter::maybe_log_stats_heartbeat() {
@@ -4580,6 +5049,146 @@ TAPTEST(RDMA_Transporter) {
     OK(wire_a == (Uint64)(3u * HDR + 10u + 20u + 30u));
     for (Uint32 s = 0; s < QD; s++) {
       OK(!slots[s].in_flight);
+    }
+  }
+
+  /* ----- Phase 6: MR cache state-machine tests -----
+   *
+   * The cache is exercised via fake reg/dereg function pointers so the
+   * test does not touch libibverbs at all. The fakes track call counts
+   * and allocate a heap-backed stub ibv_mr so the cache's pointer
+   * lifecycle is realistic.
+   *
+   * Coverage:
+   *   1. Acquire / release / re-acquire on the same range returns the
+   *      same entry and increments register_calls only once.
+   *   2. A request straddling two pages registers a single entry whose
+   *      range covers both pages.
+   *   3. A request fully contained inside an existing entry hits that
+   *      entry (no new register call).
+   *   4. Filling the cache to MAX_ENTRIES and then asking for a fresh
+   *      range while every entry is pinned returns FAILURE without
+   *      registering anything new (mr_cache_failures path).
+   *   5. Same as (4) but with all entries unpinned: the oldest LRU
+   *      entry is evicted and a fresh entry is registered.
+   *   6. drain_and_destroy() deregisters every entry whose refcount is
+   *      zero. */
+  {
+    static std::atomic<int> register_calls{0};
+    static std::atomic<int> dereg_calls{0};
+    auto fake_reg = +[](struct ibv_pd *, void *, size_t, int)
+        -> struct ibv_mr * {
+      register_calls.fetch_add(1);
+      struct ibv_mr *m = new (std::nothrow) struct ibv_mr();
+      if (m != nullptr) std::memset(m, 0, sizeof(*m));
+      return m;
+    };
+    auto fake_dereg = +[](struct ibv_mr *m) -> int {
+      dereg_calls.fetch_add(1);
+      delete m;
+      return 0;
+    };
+    /* Sentinel PD pointer; the cache only forwards it to fake_reg. */
+    struct ibv_pd *const fake_pd = reinterpret_cast<struct ibv_pd *>(0x1);
+
+    {
+      /* (1) Acquire / release / re-acquire returns the same entry. */
+      register_calls.store(0);
+      dereg_calls.store(0);
+      rdma_mr_cache c(fake_pd, fake_reg, fake_dereg);
+      const long ps = sysconf(_SC_PAGESIZE);
+      const size_t page = (ps > 0) ? (size_t)ps : 4096u;
+      char *buf = nullptr;
+      OK(posix_memalign((void **)&buf, page, page * 2u) == 0);
+      rdma_mr_cache::acquire_result a = c.acquire(buf, 16u);
+      OK(a.e != nullptr);
+      OK(a.status == rdma_mr_cache::acquire_status::MISS);
+      OK(register_calls.load() == 1);
+      c.release(a.e);
+      rdma_mr_cache::acquire_result b = c.acquire(buf, 16u);
+      OK(b.e == a.e);
+      OK(b.status == rdma_mr_cache::acquire_status::HIT);
+      OK(register_calls.load() == 1);
+      c.release(b.e);
+      c.drain_and_destroy();
+      OK(dereg_calls.load() == 1);
+      std::free(buf);
+    }
+
+    {
+      /* (2) Range that straddles two pages registers one entry whose
+       * page range covers both pages. */
+      register_calls.store(0);
+      dereg_calls.store(0);
+      rdma_mr_cache c(fake_pd, fake_reg, fake_dereg);
+      const long ps = sysconf(_SC_PAGESIZE);
+      const size_t page = (ps > 0) ? (size_t)ps : 4096u;
+      char *buf = nullptr;
+      OK(posix_memalign((void **)&buf, page, page * 2u) == 0);
+      /* Start 8 bytes before the page boundary and request 32 bytes,
+       * so the range covers both pages. */
+      rdma_mr_cache::acquire_result a = c.acquire(buf + page - 8u, 32u);
+      OK(a.e != nullptr);
+      OK(a.status == rdma_mr_cache::acquire_status::MISS);
+      OK(register_calls.load() == 1);
+      OK(c.resident_count() == 1u);
+      c.release(a.e);
+      /* (3) A sub-range fully inside the same two-page span is a hit. */
+      rdma_mr_cache::acquire_result b = c.acquire(buf + page, 8u);
+      OK(b.e == a.e);
+      OK(b.status == rdma_mr_cache::acquire_status::HIT);
+      OK(register_calls.load() == 1);
+      c.release(b.e);
+      c.drain_and_destroy();
+      OK(dereg_calls.load() == 1);
+      std::free(buf);
+    }
+
+    {
+      /* (4) Fill the cache and then ask for a fresh range while every
+       * entry is still pinned. Acquire must return FAILURE without
+       * registering anything new. */
+      register_calls.store(0);
+      dereg_calls.store(0);
+      rdma_mr_cache c(fake_pd, fake_reg, fake_dereg);
+      const long ps = sysconf(_SC_PAGESIZE);
+      const size_t page = (ps > 0) ? (size_t)ps : 4096u;
+      const Uint32 cap = rdma_mr_cache::max_entries_for_test();
+      char *buf = nullptr;
+      OK(posix_memalign((void **)&buf, page,
+                        page * (size_t)(cap + 1u)) == 0);
+      /* Fill cap entries, leave each pinned. */
+      std::vector<rdma_mr_cache::entry *> pinned;
+      pinned.reserve(cap);
+      for (Uint32 i = 0; i < cap; i++) {
+        rdma_mr_cache::acquire_result r = c.acquire(buf + (size_t)i * page, 8u);
+        OK(r.e != nullptr);
+        OK(r.status == rdma_mr_cache::acquire_status::MISS);
+        pinned.push_back(r.e);
+      }
+      OK((int)register_calls.load() == (int)cap);
+      /* Asking for a fresh range with everything pinned returns
+       * FAILURE; nothing new registered. */
+      rdma_mr_cache::acquire_result fail =
+          c.acquire(buf + (size_t)cap * page, 8u);
+      OK(fail.e == nullptr);
+      OK(fail.status == rdma_mr_cache::acquire_status::FAILURE);
+      OK((int)register_calls.load() == (int)cap);
+      /* Release every entry; now eviction can proceed. */
+      for (rdma_mr_cache::entry *e : pinned) c.release(e);
+      /* (5) With everything unpinned, a fresh acquire evicts the LRU. */
+      rdma_mr_cache::acquire_result ok =
+          c.acquire(buf + (size_t)cap * page, 8u);
+      OK(ok.e != nullptr);
+      OK(ok.status == rdma_mr_cache::acquire_status::EVICTED);
+      OK((int)register_calls.load() == (int)(cap + 1u));
+      OK((int)dereg_calls.load() == 1);
+      c.release(ok.e);
+      /* (6) drain_and_destroy() deregisters every remaining entry. */
+      const int before_drain = dereg_calls.load();
+      c.drain_and_destroy();
+      OK((int)dereg_calls.load() == before_drain + (int)cap);
+      std::free(buf);
     }
   }
 
