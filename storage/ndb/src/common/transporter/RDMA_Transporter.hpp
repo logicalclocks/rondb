@@ -1284,19 +1284,28 @@ class RDMA_Transporter : public Transporter {
      */
     std::atomic<Uint64> recv_mr_remote_write_grants{0};
     /*
-     * Phase 10: observability-only one-sided WRITE probe counters.
+     * Phase 10/12: observability-only one-sided WRITE probe counters.
      * The probe runs on the send thread inside `doSend()` only when
      * `NDB_RDMA_WRITE_DATA_PATH=probe`, the link negotiated
      * `RDMA_CAP_WRITE_SENDER`, and the peer geometry plus queue depth
      * are cached. No WR opcode changes, no `ibv_post_send()` of a
-     * WRITE WR, and no peer-side state mutation occur in Phase 10.
-     * The counters let an operator confirm that the address
-     * arithmetic for a future switchover would have produced a
-     * valid in-range target on every probe pass.
+     * WRITE WR, and no peer-side state mutation occur. The counters
+     * let an operator confirm that the address arithmetic for a
+     * future switchover would have produced a valid in-range target
+     * on every probe pass.
      *
-     *  write_probe_eligible          chains where every gate passed
-     *                                and the probe computed a fully
-     *                                in-range would-be WRITE.
+     * Phase 12 tightened the eligibility check from per-chain to
+     * per-WR. A chain of N WRs that all pass contributes N to
+     * `write_probe_eligible`; a chain where K WRs fail the bounds
+     * helper contributes K to `write_probe_bounds_rejected`. The
+     * per-chain skip/geometry counters keep their per-chain meaning
+     * because those gates are link-wide.
+     *
+     *  write_probe_eligible          per-WR: WRs that passed the
+     *                                per-slot bounds helper. The
+     *                                future switchover will post
+     *                                one `IBV_WR_RDMA_WRITE_WITH_IMM`
+     *                                per such WR.
      *  write_probe_skipped_no_caps   chains where the negotiated cap
      *                                bitmap did not include
      *                                `RDMA_CAP_WRITE_SENDER`.
@@ -1312,20 +1321,36 @@ class RDMA_Transporter : public Transporter {
      *                                (`peer_recv_bytes <
      *                                peer_queue_depth`, or other
      *                                division-by-zero guard).
-     *  write_probe_bounds_rejected   chains where the slot-relative
-     *                                computation overflowed or the
-     *                                would-be byte range escaped
-     *                                `[peer_iova, peer_iova +
-     *                                peer_recv_bytes)`. A non-zero
-     *                                value here is a real bug; the
-     *                                bounds helper is the same
-     *                                contract a future WRITE WR
-     *                                builder will use.
+     *  write_probe_bounds_rejected   per-WR: WRs whose computed
+     *                                `remote_addr` range escaped
+     *                                the specific peer slot it
+     *                                targeted. A non-zero value
+     *                                here is a real arithmetic
+     *                                bug; the Phase 12
+     *                                `rdma_peer_addr_in_slot()`
+     *                                helper is the same contract
+     *                                a future WRITE WR builder
+     *                                will use.
      *  write_probe_address_max       running maximum of the
      *                                would-be `remote_addr + len`
-     *                                value observed on a successful
-     *                                probe. CAS-bumped just like
+     *                                value observed across all
+     *                                successful per-WR probes.
+     *                                CAS-bumped just like
      *                                `send_chain_max_seen`.
+     *  write_probe_slot_overflow     per-WR: WRs whose probe length
+     *                                (header + per-WR payload)
+     *                                exceeded `peer_slot_size`.
+     *                                Impossible in a healthy build
+     *                                because doSend() caps per-WR
+     *                                payload at `slot_size - header`
+     *                                on our own side and the peer
+     *                                queue depth derivation matches
+     *                                this size on the other; a
+     *                                non-zero value here is a real
+     *                                regression and the counter is
+     *                                kept distinct from
+     *                                `write_probe_bounds_rejected`
+     *                                so the cause is unambiguous.
      */
     std::atomic<Uint64> write_probe_eligible{0};
     std::atomic<Uint64> write_probe_skipped_no_caps{0};
@@ -1333,6 +1358,7 @@ class RDMA_Transporter : public Transporter {
     std::atomic<Uint64> write_probe_geometry_invalid{0};
     std::atomic<Uint64> write_probe_bounds_rejected{0};
     std::atomic<Uint64> write_probe_address_max{0};
+    std::atomic<Uint64> write_probe_slot_overflow{0};
     /*
      * Phase 11: count of receive completions delivered with a
      * `wc[i].opcode` other than `IBV_WC_RECV`. The Phase 11 data
