@@ -389,6 +389,65 @@ class RDMA_Transporter : public Transporter {
                                   Uint32 *out_payload_len,
                                   Uint32 *out_send_seq, Uint32 *out_ack_seq,
                                   Uint16 *out_credit_delta, Uint8 *out_flags);
+  /*
+   * Phase 4: per send-slot bookkeeping extended with chain metadata
+   * so one signaled-tail completion can retire every preceding
+   * unsignaled slot in the same posted chain.
+   *
+   *  chain_tail_slot   slot index of the signaled tail WR whose CQE
+   *                    will eventually retire this slot. For
+   *                    pre-Phase-4 (off-mode) sends, chain_tail_slot
+   *                    equals the slot's own index, so one CQE retires
+   *                    one slot and the existing semantics are
+   *                    preserved exactly.
+   *  is_signaled_tail  true iff this slot's WR was posted with
+   *                    IBV_SEND_SIGNALED. The reaper rejects CQEs for
+   *                    slots that are not signaled tails so a verbs-
+   *                    provider bug that surfaced a stray unsignaled
+   *                    CQE would fail loud, not corrupt state.
+   *
+   * Type is exposed publicly because the static helper
+   * retire_send_chain() takes a pointer to it in its public signature
+   * so the TAP test can drive the helper without a transporter. The
+   * instance member m_send_slots remains private below.
+   */
+  struct rdma_send_slot {
+    Uint32 payload_len;
+    Uint32 chain_tail_slot;
+    bool in_flight;
+    bool is_signaled_tail;
+  };
+  /* Compile-time guard: the slot struct lives on the send-thread hot
+   * cacheline. The current layout is 4 + 4 + 1 + 1 + 2 padding = 12
+   * bytes; keeping it <= 16 bytes ensures a queue_depth of 4096 fits
+   * inside 64 KB and that future fields stay deliberate. */
+  static_assert(sizeof(rdma_send_slot) <= 16,
+                "Phase 4: rdma_send_slot must stay small to keep the "
+                "send-thread hot block compact.");
+
+  /*
+   * Phase 4: retire every slot whose chain_tail_slot field equals
+   * tail_slot. Returns the number of slots retired. The caller is
+   * expected to feed this into the wire-byte and completion-ok
+   * counters.
+   *
+   * out_wire_bytes is incremented (not assigned) with the total
+   * RDMA_MSG_HEADER_BYTES + payload_len across the retired chain so
+   * the caller can fold it into m_bytes_sent / m_wire_bytes_sent in
+   * one shot.
+   *
+   * Preconditions:
+   *   slots != nullptr, queue_depth > 0, tail_slot < queue_depth,
+   *   slots[tail_slot].in_flight && slots[tail_slot].is_signaled_tail.
+   * Violations abort the helper because they indicate a real bug
+   * (stale CQE, double-retire) the caller cannot recover from.
+   *
+   * Static so the TAP test can exercise the helper without
+   * instantiating a transporter or any verbs state.
+   */
+  static Uint32 retire_send_chain(rdma_send_slot *slots, Uint32 queue_depth,
+                                  Uint32 tail_slot, Uint32 header_bytes,
+                                  Uint64 *out_wire_bytes);
 
  private:
   /*
@@ -634,6 +693,15 @@ class RDMA_Transporter : public Transporter {
   Uint32 m_retry_count;
   Uint32 m_rnr_retry_count;
   /*
+   * Phase 4: configured upper bound on the chain length for the
+   * batched-SEND data path. The runtime additionally caps this at
+   * the QP queue depth and at RDMA_SEND_CHAIN_HARD_MAX. Has effect
+   * only when the NDB_RDMA_SEND_BATCH=on opt-in is active; otherwise
+   * the data path forces the chain length to 1, matching pre-Phase-4
+   * behaviour.
+   */
+  Uint32 m_post_batch_max;
+  /*
    * Owned copy of the configured device name. NULL means "first available".
    * Copied so the transporter doesn't depend on the lifetime of the
    * ConfigInfo string table.
@@ -811,10 +879,26 @@ class RDMA_Transporter : public Transporter {
    * than std::vector to avoid pulling additional includes into the
    * header.
    */
-  struct rdma_send_slot {
-    Uint32 payload_len;
-    bool in_flight;
-  };
+  /*
+   * Phase 4: per-slot bookkeeping is extended with chain metadata so
+   * one signaled-tail completion can retire every preceding unsignaled
+   * slot in the same posted chain.
+   *
+   *  chain_tail_slot   slot index of the signaled tail WR whose CQE
+   *                    will eventually retire this slot. For
+   *                    pre-Phase-4 (off-mode) sends, chain_tail_slot
+   *                    equals the slot's own index, so one CQE retires
+   *                    one slot and the existing semantics are
+   *                    preserved exactly.
+   *  is_signaled_tail  true iff this slot's WR was posted with
+   *                    IBV_SEND_SIGNALED. The reaper rejects CQEs for
+   *                    slots that are not signaled tails so a verbs-
+   *                    provider bug that surfaced a stray unsignaled
+   *                    CQE would fail loud, not corrupt state.
+   *
+   * The rdma_send_slot type is declared in the public helper section
+   * above because retire_send_chain() uses it in its public signature.
+   */
   /*
    * Phase 2: start of the send-thread-owned hot block. m_send_slots,
    * m_send_slots_in_flight, and m_next_send_slot are all touched on
@@ -838,6 +922,24 @@ class RDMA_Transporter : public Transporter {
    * starting index; the loop always tries all slots.
    */
   Uint32 m_next_send_slot;
+
+  /*
+   * Phase 4: pre-allocated scratch arrays used by doSend() to build a
+   * bounded chain of SEND WRs and post the whole chain with one
+   * ibv_post_send() call. Sized at queue_depth in
+   * allocate_send_slot_state(); freed by release_send_slot_state().
+   * Storing them on the transporter (rather than the stack) avoids
+   * adding queue_depth*sizeof(ibv_send_wr) of stack pressure to every
+   * doSend() call, especially under high RdmaQueueDepth.
+   *
+   * All three pointers are nullptr when verbs are not live; the
+   * data path checks them via the existing m_send_slots != nullptr
+   * guard, since slot state and scratch state are allocated and
+   * released together.
+   */
+  struct ibv_send_wr *m_send_wr_scratch = nullptr;
+  struct ibv_sge *m_send_sge_scratch = nullptr;
+  Uint32 *m_send_chain_slots_scratch = nullptr;
 
   /*
    * Per recv-slot state. payload_len is the byte count of the framed
@@ -964,6 +1066,31 @@ class RDMA_Transporter : public Transporter {
     std::atomic<Uint64> send_credit_only_timer{0};
     std::atomic<Uint64> send_credit_stalls{0};
     std::atomic<Uint64> copied_send_bytes{0};
+    /*
+     * Phase 4: doorbell / chain visibility counters.
+     *
+     *  send_doorbells         number of ibv_post_send() calls. In
+     *                         off-mode this equals send_posted; in
+     *                         on-mode it is send_posted /
+     *                         average-chain-length.
+     *  send_signaled          number of WRs that carried
+     *                         IBV_SEND_SIGNALED. In off-mode this
+     *                         equals send_posted; in on-mode it equals
+     *                         the number of chains posted.
+     *  send_chain_total_wrs   sum of chain lengths across all chains
+     *                         posted. Equivalent to send_posted today,
+     *                         tracked separately so future refactors
+     *                         that split CREDIT_ONLY out of
+     *                         send_posted don't lose the chain-size
+     *                         numerator.
+     *  send_chain_max_seen    largest chain length observed during
+     *                         this transporter's lifetime. Useful for
+     *                         tuning RdmaPostBatchMax.
+     */
+    std::atomic<Uint64> send_doorbells{0};
+    std::atomic<Uint64> send_signaled{0};
+    std::atomic<Uint64> send_chain_total_wrs{0};
+    std::atomic<Uint32> send_chain_max_seen{0};
     /* --- recv path --- */
     std::atomic<Uint64> recv_posted{0};
     std::atomic<Uint64> recv_completions_ok{0};
