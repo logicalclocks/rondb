@@ -853,6 +853,23 @@ class RDMA_Transporter : public Transporter {
     Uint32 read_offset;
   };
   /*
+   * Phase 3: per-region geometry table populated only when ring
+   * mode is selected (NDB_RDMA_RECV_PATH=ring). In slot mode this
+   * pointer is nullptr and the recv code paths fall back to
+   * arithmetic on the uniform slot size. ring_offset is the byte
+   * offset into m_recv_buf where the region starts; region_bytes
+   * is its length (one header + max-payload SEND).
+   *
+   * The descriptor table is independent of m_recv_slots: payload-
+   * state (payload_len, read_offset) stays in m_recv_slots in both
+   * modes so consume_received_bytes() and validate_msg_header()
+   * have a single source of truth.
+   */
+  struct rdma_recv_region {
+    Uint32 ring_offset;
+    Uint32 region_bytes;
+  };
+  /*
    * Phase 2: start of the recv-thread-owned hot block. The ready-queue
    * head/tail indices and m_recv_slots are touched together on every
    * reap_recv_completions() and consume_received_bytes() pass; we keep
@@ -860,6 +877,18 @@ class RDMA_Transporter : public Transporter {
    * not knock this footprint out of the recv thread's L1.
    */
   alignas(64) rdma_recv_slot *m_recv_slots;
+  /*
+   * Phase 3: ring-mode geometry. m_recv_regions is non-null iff
+   * the receive path is running in ring mode; in that case it
+   * carries one descriptor per posted recv WR (in the same index
+   * space as m_recv_slots). m_recv_ring_cursor is the byte cursor
+   * used during initial region allocation; under SEND/RECV the
+   * cursor stops advancing once all m_queue_depth regions are
+   * allocated. Both are recv-thread owned, sit on the same
+   * cacheline as m_recv_slots, and are nullptr/0 in slot mode.
+   */
+  rdma_recv_region *m_recv_regions = nullptr;
+  Uint32 m_recv_ring_cursor = 0;
 
   /*
    * FIFO ring of recv-slot indices in completion order. RC ordering

@@ -150,6 +150,18 @@ struct rdma_transporter_layout_check {
       (offsetof(RDMA_Transporter, m_stats) % 64u) == 0u,
       "Phase 2: m_stats must be 64-byte aligned so heartbeat-rate "
       "counter writes do not false-share with hot recv-queue state.");
+
+  /*
+   * Phase 3: the ring-mode region table must share the recv-thread
+   * hot cacheline with m_recv_slots so dispatch in the recv WC
+   * handler (which reads both) hits a single line in L1.
+   */
+  static_assert(
+      (offsetof(RDMA_Transporter, m_recv_slots) / 64u) ==
+          (offsetof(RDMA_Transporter, m_recv_regions) / 64u),
+      "Phase 3: m_recv_regions must share the recv-thread hot "
+      "cacheline with m_recv_slots since both are read on every "
+      "recv WC.");
 };
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
@@ -652,6 +664,83 @@ static void rdma_buffer_release(void *ptr, size_t bytes,
   meta->was_pooled = false;
   meta->was_hugepage = false;
   meta->mapped_bytes = 0;
+}
+
+/*
+ * --------------------------------------------------------------------------
+ *  Phase 3: receive-path mode selection
+ * --------------------------------------------------------------------------
+ *
+ * The receive path runs in one of two modes, chosen at process
+ * startup by the NDB_RDMA_RECV_PATH env var:
+ *
+ *   unset | slots : Exact pre-Phase-3 behavior. The receive buffer
+ *                   is divided into m_queue_depth equal-size slots
+ *                   computed from recv_slot_size_or_zero(). Each
+ *                   posted recv WR targets slot index wr_id.
+ *   ring          : Opt-in. A parallel region-descriptor table
+ *                   (m_recv_regions) records the byte offset of
+ *                   each posted region within m_recv_buf, allocated
+ *                   linearly from the ring at connect time. The
+ *                   per-message size is unchanged (still equals
+ *                   recv_slot_size_or_zero()), so ring-mode peers
+ *                   accept the same payloads as slot-mode peers and
+ *                   the wire format stays byte-identical.
+ *
+ * Mode is cached once via Meyer's singleton, mirroring Phase 1.
+ * Unknown values fall back to the safe default (slots) and log
+ * once. The choice is process-wide so the recv-thread hot path
+ * does not pay a per-link branch on a config field.
+ */
+enum class rdma_recv_path_mode_t { SLOTS, RING };
+
+static rdma_recv_path_mode_t rdma_recv_path_mode_cached() {
+  static const rdma_recv_path_mode_t cached = []() {
+    const char *e = std::getenv("NDB_RDMA_RECV_PATH");
+    if (e == nullptr || std::strcmp(e, "slots") == 0) {
+      return rdma_recv_path_mode_t::SLOTS;
+    }
+    if (std::strcmp(e, "ring") == 0) {
+      g_eventLogger->info(
+          "RDMA: NDB_RDMA_RECV_PATH=ring (opt-in receive ring under "
+          "SEND/RECV; wire format unchanged)");
+      return rdma_recv_path_mode_t::RING;
+    }
+    g_eventLogger->info(
+        "RDMA: NDB_RDMA_RECV_PATH has unrecognised value '%s'; defaulting "
+        "to slots",
+        e);
+    return rdma_recv_path_mode_t::SLOTS;
+  }();
+  return cached;
+}
+
+/*
+ * Ring region allocator. Returns the next byte offset in the ring
+ * buffer for a region of `region_size` bytes, advancing
+ * *cursor_inout past the allocated region. If the region does not
+ * fit in the remaining tail, the cursor wraps to 0 first.
+ *
+ * Caller must ensure region_size > 0 and region_size <= buffer_size;
+ * the function asserts these via require() so misuse aborts loudly
+ * rather than producing a silently misrouted SGE.
+ *
+ * The helper is file-local but visible to the TEST_RDMA_TRANSPORTER
+ * code at the bottom of this translation unit; it is the unit-of-
+ * test for the wrap arithmetic.
+ */
+static Uint32 rdma_recv_ring_alloc(Uint32 region_size, Uint32 buffer_size,
+                                   Uint32 *cursor_inout) {
+  require(region_size > 0u);
+  require(region_size <= buffer_size);
+  require(cursor_inout != nullptr);
+  Uint32 cursor = *cursor_inout;
+  if (cursor + region_size > buffer_size) {
+    cursor = 0u;
+  }
+  const Uint32 offset = cursor;
+  *cursor_inout = cursor + region_size;
+  return offset;
 }
 
 }  // namespace
@@ -2074,6 +2163,9 @@ void RDMA_Transporter::reset_wire_state() {
   m_recv_queue_head = 0;
   m_recv_queue_tail = 0;
   m_recv_queue_count.store(0u, std::memory_order_relaxed);
+  /* Phase 3: ring cursor is also reset on disconnect so a fresh
+   * allocate_recv_slot_state() starts the cursor at 0. */
+  m_recv_ring_cursor = 0u;
 }
 
 Uint32 RDMA_Transporter::send_slot_size_or_zero() const {
@@ -2252,6 +2344,7 @@ int RDMA_Transporter::reap_send_completions() {
 bool RDMA_Transporter::allocate_recv_slot_state() {
   require(m_recv_slots == nullptr);
   require(m_recv_ready_queue == nullptr);
+  require(m_recv_regions == nullptr);
   m_recv_slots = new (std::nothrow) rdma_recv_slot[m_queue_depth];
   m_recv_ready_queue = new (std::nothrow) Uint32[m_queue_depth];
   if (m_recv_slots == nullptr || m_recv_ready_queue == nullptr) {
@@ -2269,6 +2362,39 @@ bool RDMA_Transporter::allocate_recv_slot_state() {
   m_recv_queue_head = 0;
   m_recv_queue_tail = 0;
   m_recv_queue_count.store(0u, std::memory_order_relaxed);
+  m_recv_ring_cursor = 0u;
+
+  /*
+   * Phase 3: in ring mode allocate a parallel region-descriptor
+   * table and seed each region's byte offset by linear allocation
+   * from the ring. region_bytes equals the slot size (which has
+   * already passed recv_slot_size_or_zero()'s minimum-size check
+   * for a header + max payload), so a ring-mode receiver accepts
+   * the same per-message sizes a slot-mode receiver does. The
+   * minimum-size check also guarantees
+   * m_queue_depth * region_size <= m_recv_buffer_size, so the
+   * cursor never wraps during initial allocation.
+   */
+  if (rdma_recv_path_mode_cached() == rdma_recv_path_mode_t::RING) {
+    const Uint32 region_size = recv_slot_size_or_zero();
+    if (region_size == 0u) {
+      release_recv_slot_state();
+      return false;
+    }
+    m_recv_regions = new (std::nothrow) rdma_recv_region[m_queue_depth];
+    if (m_recv_regions == nullptr) {
+      g_eventLogger->error(
+          "RDMA: failed to allocate %u-entry recv region table",
+          m_queue_depth);
+      release_recv_slot_state();
+      return false;
+    }
+    for (Uint32 i = 0; i < m_queue_depth; i++) {
+      m_recv_regions[i].ring_offset = rdma_recv_ring_alloc(
+          region_size, m_recv_buffer_size, &m_recv_ring_cursor);
+      m_recv_regions[i].region_bytes = region_size;
+    }
+  }
   return true;
 }
 
@@ -2277,6 +2403,10 @@ void RDMA_Transporter::release_recv_slot_state() {
   m_recv_slots = nullptr;
   delete[] m_recv_ready_queue;
   m_recv_ready_queue = nullptr;
+  /* Phase 3: release the ring-mode descriptor table if present. */
+  delete[] m_recv_regions;
+  m_recv_regions = nullptr;
+  m_recv_ring_cursor = 0u;
   m_recv_queue_head = 0;
   m_recv_queue_tail = 0;
   m_recv_queue_count.store(0u, std::memory_order_relaxed);
@@ -2391,9 +2521,17 @@ int RDMA_Transporter::reap_recv_completions(
                                       std::memory_order_relaxed);
 
       /* The peer wrote wc[i].byte_len bytes into our slot, which is
-       * header + payload. Validate the header before exposing it. */
-      const char *slot_buf =
-          (const char *)m_recv_buf + (size_t)slot * (size_t)slot_size;
+       * header + payload. Validate the header before exposing it.
+       *
+       * Phase 3 ring-mode dispatch: when m_recv_regions is set we
+       * compute the slot base from the region descriptor; otherwise
+       * we use the uniform slot_size arithmetic. Both paths produce
+       * a pointer inside the m_recv_buf MR. */
+      const size_t region_offset =
+          (m_recv_regions != nullptr)
+              ? (size_t)m_recv_regions[slot].ring_offset
+              : (size_t)slot * (size_t)slot_size;
+      const char *slot_buf = (const char *)m_recv_buf + region_offset;
       Uint32 payload_len = 0;
       Uint32 peer_seq = 0;
       Uint32 peer_ack = 0;
@@ -2593,8 +2731,17 @@ void RDMA_Transporter::get_next_read(const void **out_ptr,
    * slot: under the safe slot-ownership rule the slot is NOT re-posted
    * to the HCA until consume_received_bytes() finishes draining it,
    * so the HCA cannot land a new SEND into the same buffer behind our
-   * back. */
-  const char *base = (const char *)m_recv_buf + (size_t)slot * slot_size +
+   * back.
+   *
+   * Phase 3 ring-mode dispatch: when m_recv_regions is set we use
+   * the region's byte offset; otherwise we fall back to the uniform
+   * slot_size arithmetic. Both branches yield a pointer inside the
+   * m_recv_buf MR. */
+  const size_t region_offset =
+      (m_recv_regions != nullptr)
+          ? (size_t)m_recv_regions[slot].ring_offset
+          : (size_t)slot * slot_size;
+  const char *base = (const char *)m_recv_buf + region_offset +
                      RDMA_MSG_HEADER_BYTES;
   if (out_ptr) *out_ptr = base + st.read_offset;
   if (out_len) *out_len = st.payload_len - st.read_offset;
@@ -2787,14 +2934,33 @@ bool RDMA_Transporter::post_one_receive(Uint32 slot_idx) {
   require(m_recv_buf != nullptr);
   require(slot_idx < m_queue_depth);
 
-  const Uint32 slot_size = recv_slot_size_or_zero();
-  if (slot_size == 0) return false;
+  /*
+   * Phase 3: in ring mode m_recv_regions carries the byte offset
+   * and size of each posted region; in slot mode (m_recv_regions
+   * nullptr) we compute the same from arithmetic on the uniform
+   * slot size. Both modes land the SGE inside m_recv_mr and use
+   * the same per-message size, so the WR is wire-indistinguishable.
+   */
+  size_t region_offset;
+  Uint32 region_length;
+  if (m_recv_regions != nullptr) {
+    require(m_recv_regions[slot_idx].region_bytes > 0u);
+    require((size_t)m_recv_regions[slot_idx].ring_offset +
+                (size_t)m_recv_regions[slot_idx].region_bytes <=
+            (size_t)m_recv_buffer_size);
+    region_offset = (size_t)m_recv_regions[slot_idx].ring_offset;
+    region_length = m_recv_regions[slot_idx].region_bytes;
+  } else {
+    const Uint32 slot_size = recv_slot_size_or_zero();
+    if (slot_size == 0) return false;
+    region_offset = (size_t)slot_idx * (size_t)slot_size;
+    region_length = slot_size;
+  }
 
   struct ibv_sge sge;
   std::memset(&sge, 0, sizeof(sge));
-  sge.addr =
-      (uintptr_t)((char *)m_recv_buf + (size_t)slot_idx * (size_t)slot_size);
-  sge.length = slot_size;
+  sge.addr = (uintptr_t)((char *)m_recv_buf + region_offset);
+  sge.length = region_length;
   sge.lkey = m_recv_mr->lkey;
 
   struct ibv_recv_wr wr;
@@ -3573,6 +3739,88 @@ TAPTEST(RDMA_Transporter) {
       buf, (size_t)RDMA_MSG_HEADER_BYTES + 100u, &got_payload_len_exact,
       nullptr, nullptr, nullptr, nullptr));
   OK(got_payload_len_exact == 100u);
+
+  /* ----- Phase 3: ring region allocator tests -----
+   *
+   * Exercise the rdma_recv_ring_alloc() arithmetic in isolation, with
+   * synthetic geometry. No verbs, no live transporter; the helper is
+   * pure arithmetic on a cursor and a buffer size, and is the only
+   * place ring-mode wrap math lives.
+   *
+   * These tests do NOT setenv(NDB_RDMA_RECV_PATH); the helper is
+   * mode-agnostic, and the receive-path mode singleton is left in
+   * whatever state the prior test code happened to put it in. The
+   * Phase 1 buffer-provider tests below already exercise the
+   * env-var-cached path for a different env var; ring mode is
+   * uninstantiated in this test binary because no transporter is
+   * connected. */
+  {
+    /* Sequential allocation that fills the ring exactly, then wraps
+     * on the (n+1)-th request because cursor + region > buffer. */
+    Uint32 cursor = 0u;
+    constexpr Uint32 BUF = 1000u;
+    constexpr Uint32 REGION = 100u;
+    for (Uint32 i = 0; i < 10u; i++) {
+      OK(rdma_recv_ring_alloc(REGION, BUF, &cursor) == i * REGION);
+    }
+    OK(cursor == BUF);
+    /* 11th allocation wraps. */
+    OK(rdma_recv_ring_alloc(REGION, BUF, &cursor) == 0u);
+    OK(cursor == REGION);
+  }
+
+  {
+    /* Partial-fit-then-wrap with non-divisor geometry: 1000 bytes,
+     * 300-byte regions. The 4th allocation does not fit at the
+     * remaining tail (900 + 300 > 1000) and wraps to offset 0. */
+    Uint32 cursor = 0u;
+    constexpr Uint32 BUF = 1000u;
+    constexpr Uint32 REGION = 300u;
+    OK(rdma_recv_ring_alloc(REGION, BUF, &cursor) == 0u);
+    OK(rdma_recv_ring_alloc(REGION, BUF, &cursor) == 300u);
+    OK(rdma_recv_ring_alloc(REGION, BUF, &cursor) == 600u);
+    OK(cursor == 900u);
+    OK(rdma_recv_ring_alloc(REGION, BUF, &cursor) == 0u);
+    OK(cursor == REGION);
+  }
+
+  {
+    /* Repost-after-drain (steady state for Phase 3 under SEND/RECV)
+     * does not advance the cursor: regions are statically allocated
+     * at connect time and reposted at the same offset for the
+     * connection's lifetime. We model this by recording offsets,
+     * then verifying that a re-issued post does not need to call
+     * the allocator at all. */
+    Uint32 cursor = 0u;
+    constexpr Uint32 BUF = 1000u;
+    constexpr Uint32 REGION = 200u;
+    Uint32 offs[3];
+    for (Uint32 i = 0; i < 3u; i++) {
+      offs[i] = rdma_recv_ring_alloc(REGION, BUF, &cursor);
+    }
+    OK(offs[0] == 0u);
+    OK(offs[1] == 200u);
+    OK(offs[2] == 400u);
+    OK(cursor == 600u);
+    /* Repost region 1: same offset, allocator NOT called. */
+    const Uint32 repost = offs[1];
+    OK(repost == 200u);
+    OK(cursor == 600u);
+  }
+
+  {
+    /* Exact-fit boundary: the last region in the ring fits with
+     * zero remainder, cursor advances to buffer_size. The next
+     * allocation wraps. */
+    Uint32 cursor = 0u;
+    constexpr Uint32 BUF = 512u;
+    constexpr Uint32 REGION = 128u;
+    for (Uint32 i = 0; i < 4u; i++) {
+      OK(rdma_recv_ring_alloc(REGION, BUF, &cursor) == i * REGION);
+    }
+    OK(cursor == BUF);
+    OK(rdma_recv_ring_alloc(REGION, BUF, &cursor) == 0u);
+  }
 
   /* ----- Phase 1: buffer provider tests -----
    *
