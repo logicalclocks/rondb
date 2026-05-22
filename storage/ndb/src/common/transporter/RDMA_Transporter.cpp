@@ -32,7 +32,11 @@
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
+#include <map>
+#include <mutex>
 #include <new>
+#include <sys/mman.h>
+#include <vector>
 #include <EventLogger.hpp>
 
 /*
@@ -221,20 +225,344 @@ static char *rdma_clone_device_name(const char *src) {
 }
 
 /*
- * Page-aligned buffer allocation backed by posix_memalign(3). Returns NULL
- * on failure. We deliberately do not use C11 aligned_alloc to avoid
- * portability problems on older glibc targets that RonDB still supports.
- * Alignment is fixed at 4 KiB which matches the host page size on every
- * platform RonDB currently targets and satisfies the alignment
- * requirements documented for ibv_reg_mr().
+ * --------------------------------------------------------------------------
+ *  Phase 1: file-local buffer provider abstraction
+ * --------------------------------------------------------------------------
+ *
+ * RDMA staging buffers are obtained through this small abstraction so we
+ * can switch between the historical per-clone allocator and a process-
+ * wide free-list pool without touching verbs lifecycle, signal ordering,
+ * or MR registration semantics. The provider populates an
+ * rdma_buffer_meta (declared publicly in RDMA_Transporter.hpp because the
+ * transporter holds one per buffer); the matching release call uses the
+ * meta to dispatch back to the original source.
+ *
+ * Two providers are available:
+ *   PERCLONE : posix_memalign(4096) on acquire, std::free on release.
+ *              Bit-for-bit identical to pre-Phase-1 behavior.
+ *   SHARED   : process-lifetime free list keyed by request size. Each
+ *              chunk is a full backing allocation (mmap or
+ *              posix_memalign), never a slice of a larger region. On
+ *              release the chunk returns to its size's free list and
+ *              madvise(MADV_DONTNEED) is issued so the next acquirer's
+ *              memset(0) demand-faults pages onto its own NUMA node
+ *              and preserves the first-touch locality of the perclone
+ *              path.
+ *
+ * Both providers can request hugepage backing via mmap MAP_HUGETLB at
+ * an explicit 2 MiB page size. On failure (typically ENOMEM when
+ * hugepages are not reserved) the allocation falls back to
+ * posix_memalign(4096) and a single info-level line is emitted per
+ * process lifetime. Pinning behavior (and therefore RLIMIT_MEMLOCK
+ * exposure) is unchanged for the fallback case.
+ *
+ * Mode selection is by environment variable to avoid touching the
+ * management config schema in this PR:
+ *   NDB_RDMA_POOL_MODE   unset | perclone   -> PERCLONE provider
+ *                         shared             -> SHARED provider
+ *   NDB_RDMA_HUGEPAGES   unset | off        -> 4 KiB pages
+ *                         best_effort        -> 2 MiB pages, fall back
+ *
+ * Threading: acquire/release run only on connect/disconnect paths and
+ * may execute concurrently across transporters. The shared pool takes
+ * a global std::mutex on every acquire/release. The cadence is at most
+ * one per transporter per reconnect; the lock is never on the data
+ * path.
+ *
+ * Why no slicing of larger regions in this PR:
+ *   ibv_reg_mr() binds an iova range to a specific PD. When a chunk
+ *   crosses transporters with different PDs across a connect/disconnect
+ *   cycle, ibv_dereg_mr() fully removes the old mapping before the chunk
+ *   returns to the free list. Each chunk is a self-contained allocation
+ *   so two PDs never map overlapping ranges concurrently. PD sharing /
+ *   MR sharing across clones is explicitly deferred.
  */
-static void *rdma_aligned_alloc(size_t bytes) {
-  void *p = nullptr;
+namespace {
+
+constexpr size_t RDMA_HUGEPAGE_SIZE = 2u * 1024u * 1024u; /* 2 MiB */
+
+enum class rdma_pool_mode_t { PERCLONE, SHARED };
+enum class rdma_hugepage_mode_t { OFF, BEST_EFFORT };
+
+static rdma_pool_mode_t rdma_pool_mode_cached() {
+  static const rdma_pool_mode_t cached = []() {
+    const char *e = std::getenv("NDB_RDMA_POOL_MODE");
+    if (e == nullptr || std::strcmp(e, "perclone") == 0) {
+      return rdma_pool_mode_t::PERCLONE;
+    }
+    if (std::strcmp(e, "shared") == 0) {
+      g_eventLogger->info(
+          "RDMA: NDB_RDMA_POOL_MODE=shared (pool-backed buffer provider)");
+      return rdma_pool_mode_t::SHARED;
+    }
+    g_eventLogger->info(
+        "RDMA: NDB_RDMA_POOL_MODE has unrecognised value '%s'; defaulting "
+        "to perclone",
+        e);
+    return rdma_pool_mode_t::PERCLONE;
+  }();
+  return cached;
+}
+
+static rdma_hugepage_mode_t rdma_hugepage_mode_cached() {
+  static const rdma_hugepage_mode_t cached = []() {
+    const char *e = std::getenv("NDB_RDMA_HUGEPAGES");
+    if (e == nullptr || std::strcmp(e, "off") == 0) {
+      return rdma_hugepage_mode_t::OFF;
+    }
+    if (std::strcmp(e, "best_effort") == 0) {
+      g_eventLogger->info(
+          "RDMA: NDB_RDMA_HUGEPAGES=best_effort (try 2 MiB hugepages, "
+          "fall back to 4 KiB on failure)");
+      return rdma_hugepage_mode_t::BEST_EFFORT;
+    }
+    g_eventLogger->info(
+        "RDMA: NDB_RDMA_HUGEPAGES has unrecognised value '%s'; defaulting "
+        "to off",
+        e);
+    return rdma_hugepage_mode_t::OFF;
+  }();
+  return cached;
+}
+
+/*
+ * Attempt a 2 MiB hugepage-backed mmap of `bytes` rounded up to the
+ * hugepage size. Returns nullptr on failure; the caller should fall
+ * back to the posix path. On success *out_mapped_bytes is the actual
+ * map length, which the matching free path needs for munmap.
+ */
+static void *rdma_try_hugepage_alloc(size_t bytes,
+                                     size_t *out_mapped_bytes) {
   if (bytes == 0) return nullptr;
+#ifdef MAP_HUGETLB
+  const size_t mask = RDMA_HUGEPAGE_SIZE - 1u;
+  const size_t mapped = (bytes + mask) & ~mask;
+  void *p = mmap(nullptr, mapped, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+  if (p == MAP_FAILED) return nullptr;
+  *out_mapped_bytes = mapped;
+  return p;
+#else
+  (void)out_mapped_bytes;
+  return nullptr;
+#endif
+}
+
+/*
+ * 4 KiB-page posix_memalign() backing. Preserves the historical
+ * allocator behavior. The +memset(0) happens later inside
+ * rdma_buffer_acquire(), so both providers share the same first-touch
+ * locality property.
+ */
+static void *rdma_posix_alloc(size_t bytes, size_t *out_mapped_bytes) {
+  if (bytes == 0) return nullptr;
+  void *p = nullptr;
   if (posix_memalign(&p, 4096, bytes) != 0) return nullptr;
-  std::memset(p, 0, bytes);
+  *out_mapped_bytes = bytes;
   return p;
 }
+
+/*
+ * Process-once latch that records the first hugepage fallback so the
+ * event log emits one line, not one per allocation under heavy
+ * connect/reconnect churn. A benign race between threads costs at most
+ * two adjacent log lines.
+ */
+static std::atomic<bool> g_rdma_hugepage_fallback_logged{false};
+
+/*
+ * Top-level allocation dispatch. Picks hugepage vs posix based on the
+ * cached env var, with one-shot logged fallback on hugepage failure.
+ * Returns nullptr only when posix_memalign also fails (out of memory).
+ */
+static void *rdma_alloc_one(size_t bytes, bool *out_was_hugepage,
+                            size_t *out_mapped_bytes) {
+  if (rdma_hugepage_mode_cached() == rdma_hugepage_mode_t::BEST_EFFORT) {
+    size_t mapped = 0;
+    void *p = rdma_try_hugepage_alloc(bytes, &mapped);
+    if (p != nullptr) {
+      *out_was_hugepage = true;
+      *out_mapped_bytes = mapped;
+      return p;
+    }
+    bool expected = false;
+    if (g_rdma_hugepage_fallback_logged.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel)) {
+      g_eventLogger->info(
+          "RDMA: 2 MiB hugepage allocation failed (errno=%d %s); falling "
+          "back to 4 KiB pages for this and subsequent buffers",
+          errno, std::strerror(errno));
+    }
+  }
+  size_t mapped = 0;
+  void *p = rdma_posix_alloc(bytes, &mapped);
+  if (p == nullptr) return nullptr;
+  *out_was_hugepage = false;
+  *out_mapped_bytes = mapped;
+  return p;
+}
+
+/*
+ * Top-level free dispatch. The provenance recorded at acquire time
+ * tells us whether to munmap or std::free the chunk.
+ */
+static void rdma_free_one(void *ptr, bool was_hugepage,
+                          size_t mapped_bytes) {
+  if (ptr == nullptr) return;
+  if (was_hugepage) {
+#ifdef MAP_HUGETLB
+    munmap(ptr, mapped_bytes);
+#else
+    /* Should not be reachable: rdma_try_hugepage_alloc returns NULL
+     * when MAP_HUGETLB is unavailable, so was_hugepage can only be
+     * true if MAP_HUGETLB existed at acquire time. Guard against
+     * future drift in compile flags. */
+    (void)mapped_bytes;
+    std::free(ptr);
+#endif
+  } else {
+    (void)mapped_bytes;
+    std::free(ptr);
+  }
+}
+
+/*
+ * Process-wide buffer pool. Free lists are keyed by the user-requested
+ * size; each chunk is one full allocation (no slicing). Chunks are
+ * never unmapped while the process is alive, so a chunk's address
+ * remains stable across acquire/release cycles: the next ibv_reg_mr()
+ * installs a fresh translation on the same virtual range against the
+ * acquiring transporter's PD.
+ */
+class rdma_pool {
+ public:
+  struct chunk {
+    void *ptr;
+    bool was_hugepage;
+    size_t mapped_bytes;
+  };
+
+  static rdma_pool &instance() {
+    static rdma_pool s_inst;
+    return s_inst;
+  }
+
+  /*
+   * Pop a chunk of the requested size from the free list, or allocate
+   * a fresh one on miss. Returns false only when a fresh allocation
+   * fails (out of memory).
+   */
+  bool acquire(size_t bytes, void **out_ptr, bool *out_was_hugepage,
+               size_t *out_mapped_bytes) {
+    {
+      std::lock_guard<std::mutex> g(m_lock);
+      auto it = m_free_lists.find(bytes);
+      if (it != m_free_lists.end() && !it->second.empty()) {
+        const chunk c = it->second.back();
+        it->second.pop_back();
+        *out_ptr = c.ptr;
+        *out_was_hugepage = c.was_hugepage;
+        *out_mapped_bytes = c.mapped_bytes;
+        return true;
+      }
+    }
+    /* Free-list miss; allocate fresh outside the lock so concurrent
+     * connects on other sizes are not blocked by a slow mmap. */
+    bool was_hp = false;
+    size_t mapped = 0;
+    void *p = rdma_alloc_one(bytes, &was_hp, &mapped);
+    if (p == nullptr) return false;
+    *out_ptr = p;
+    *out_was_hugepage = was_hp;
+    *out_mapped_bytes = mapped;
+    return true;
+  }
+
+  /*
+   * Return a chunk to its size's free list. madvise(MADV_DONTNEED)
+   * drops the underlying pages so the next acquirer's memset(0)
+   * demand-faults them onto its own NUMA node. madvise failures are
+   * logged once and non-fatal (the chunk is still reusable; only NUMA
+   * placement may suffer on reuse).
+   */
+  void release(size_t bytes, void *ptr, bool was_hugepage,
+               size_t mapped_bytes) {
+    if (ptr == nullptr) return;
+    if (madvise(ptr, mapped_bytes, MADV_DONTNEED) != 0) {
+      static std::atomic<bool> s_madvise_warn{false};
+      bool expected = false;
+      if (s_madvise_warn.compare_exchange_strong(
+              expected, true, std::memory_order_acq_rel)) {
+        g_eventLogger->info(
+            "RDMA: madvise(MADV_DONTNEED) on pool chunk %p (%zu bytes) "
+            "failed (errno=%d %s); NUMA locality may degrade on reuse",
+            ptr, mapped_bytes, errno, std::strerror(errno));
+      }
+    }
+    std::lock_guard<std::mutex> g(m_lock);
+    m_free_lists[bytes].push_back({ptr, was_hugepage, mapped_bytes});
+  }
+
+ private:
+  std::mutex m_lock;
+  std::map<size_t, std::vector<chunk>> m_free_lists;
+};
+
+/*
+ * Acquire `bytes` of zero-initialised, page-aligned memory under the
+ * configured provider. Populates *meta with the provenance the matching
+ * release call needs. Returns nullptr on failure (zero size or out of
+ * memory) and resets *meta to its "never acquired" state.
+ */
+static void *rdma_buffer_acquire(size_t bytes, rdma_buffer_meta *meta) {
+  meta->was_pooled = false;
+  meta->was_hugepage = false;
+  meta->mapped_bytes = 0;
+  if (bytes == 0) return nullptr;
+
+  void *ptr = nullptr;
+  if (rdma_pool_mode_cached() == rdma_pool_mode_t::SHARED) {
+    bool was_hp = false;
+    size_t mapped = 0;
+    if (!rdma_pool::instance().acquire(bytes, &ptr, &was_hp, &mapped)) {
+      return nullptr;
+    }
+    meta->was_pooled = true;
+    meta->was_hugepage = was_hp;
+    meta->mapped_bytes = mapped;
+  } else {
+    bool was_hp = false;
+    size_t mapped = 0;
+    ptr = rdma_alloc_one(bytes, &was_hp, &mapped);
+    if (ptr == nullptr) return nullptr;
+    meta->was_hugepage = was_hp;
+    meta->mapped_bytes = mapped;
+  }
+  std::memset(ptr, 0, bytes);
+  return ptr;
+}
+
+/*
+ * Release a buffer previously returned by rdma_buffer_acquire().
+ * `bytes` is the original request size (needed by the pool to pick the
+ * right size bucket); `meta` is the provenance recorded at acquire
+ * time. After return *meta is reset.
+ */
+static void rdma_buffer_release(void *ptr, size_t bytes,
+                                rdma_buffer_meta *meta) {
+  if (ptr == nullptr) return;
+  if (meta->was_pooled) {
+    rdma_pool::instance().release(bytes, ptr, meta->was_hugepage,
+                                  meta->mapped_bytes);
+  } else {
+    rdma_free_one(ptr, meta->was_hugepage, meta->mapped_bytes);
+  }
+  meta->was_pooled = false;
+  meta->was_hugepage = false;
+  meta->mapped_bytes = 0;
+}
+
+}  // namespace
 
 /*
  * Convert an IBV MTU enum to its byte value for logging only. The runtime
@@ -1410,8 +1738,20 @@ bool RDMA_Transporter::allocate_verbs_resources() {
     return false;
   }
 
-  /* Step 5: staging buffers + memory regions. */
-  m_send_buf = rdma_aligned_alloc(m_send_buffer_size);
+  /* Step 5: staging buffers + memory regions.
+   *
+   * Buffers come from the file-local buffer provider (Phase 1). The
+   * provider populates m_*_buf_meta so release_verbs_resources() can
+   * return the chunk to the same source. The buffer pointer itself is
+   * still page-aligned and zero-initialized, so downstream code (slot
+   * indexing, ibv_reg_mr) is unchanged.
+   *
+   * MR registration remains strictly per-clone; the chunk hands its
+   * iova range to this transporter's PD via ibv_reg_mr() below. On
+   * disconnect ibv_dereg_mr() removes the iova mapping before the
+   * chunk goes back to the provider, so no two PDs ever map the same
+   * range concurrently. */
+  m_send_buf = rdma_buffer_acquire(m_send_buffer_size, &m_send_buf_meta);
   if (m_send_buf == nullptr) {
     g_eventLogger->error(
         "RDMA: failed to allocate %u bytes of send staging memory",
@@ -1419,7 +1759,7 @@ bool RDMA_Transporter::allocate_verbs_resources() {
     release_verbs_resources();
     return false;
   }
-  m_recv_buf = rdma_aligned_alloc(m_recv_buffer_size);
+  m_recv_buf = rdma_buffer_acquire(m_recv_buffer_size, &m_recv_buf_meta);
   if (m_recv_buf == nullptr) {
     g_eventLogger->error(
         "RDMA: failed to allocate %u bytes of recv staging memory",
@@ -1435,7 +1775,7 @@ bool RDMA_Transporter::allocate_verbs_resources() {
    * preserved as scaffolding for a future decoupled app-buffer pool;
    * see the m_app_buf comment in RDMA_Transporter.hpp for context.
    */
-  m_app_buf = rdma_aligned_alloc(m_recv_buffer_size);
+  m_app_buf = rdma_buffer_acquire(m_recv_buffer_size, &m_app_buf_meta);
   if (m_app_buf == nullptr) {
     g_eventLogger->error(
         "RDMA: failed to allocate %u bytes of app-readable recv mirror",
@@ -1580,16 +1920,22 @@ void RDMA_Transporter::release_verbs_resources() {
     ibv_dereg_mr(m_send_mr);
     m_send_mr = nullptr;
   }
+  /*
+   * Buffer release runs AFTER ibv_dereg_mr() above, so the HCA can no
+   * longer touch the memory by the time the chunk goes back to its
+   * provider. The provider may return the chunk to the shared pool (in
+   * NDB_RDMA_POOL_MODE=shared) or free it outright (perclone). Either
+   * way the m_*_buf_meta provenance is consumed and reset. */
   if (m_recv_buf != nullptr) {
-    std::free(m_recv_buf);
+    rdma_buffer_release(m_recv_buf, m_recv_buffer_size, &m_recv_buf_meta);
     m_recv_buf = nullptr;
   }
   if (m_app_buf != nullptr) {
-    std::free(m_app_buf);
+    rdma_buffer_release(m_app_buf, m_recv_buffer_size, &m_app_buf_meta);
     m_app_buf = nullptr;
   }
   if (m_send_buf != nullptr) {
-    std::free(m_send_buf);
+    rdma_buffer_release(m_send_buf, m_send_buffer_size, &m_send_buf_meta);
     m_send_buf = nullptr;
   }
   if (m_pd != nullptr) {
@@ -3135,6 +3481,69 @@ TAPTEST(RDMA_Transporter) {
       buf, (size_t)RDMA_MSG_HEADER_BYTES + 100u, &got_payload_len_exact,
       nullptr, nullptr, nullptr, nullptr));
   OK(got_payload_len_exact == 100u);
+
+  /* ----- Phase 1: buffer provider tests -----
+   *
+   * The new file-local rdma_buffer_acquire() / rdma_buffer_release()
+   * helpers route through a perclone or shared-pool provider based on
+   * the NDB_RDMA_POOL_MODE env var, with optional 2 MiB hugepage
+   * backing under NDB_RDMA_HUGEPAGES. Both env vars are read exactly
+   * once via Meyer's-singleton caching, so the test must setenv()
+   * before the first call to rdma_buffer_acquire() in this binary.
+   * The wire-format tests above never touch the provider, so this
+   * ordering is safe.
+   *
+   * In CI we deliberately exercise the SHARED + best_effort hugepage
+   * combination. Most test hosts have no hugepages reserved, so the
+   * hugepage path is expected to fall back to posix_memalign; that
+   * fall-back is a code path we want covered. */
+  ::setenv("NDB_RDMA_POOL_MODE", "shared", /*overwrite=*/1);
+  ::setenv("NDB_RDMA_HUGEPAGES", "best_effort", /*overwrite=*/1);
+
+  /* Pool reuse: acquire / release / re-acquire of the same size must
+   * hand back the LIFO chunk. acquire also has to memset(0) the chunk,
+   * even on reuse, so a sentinel from a prior use never leaks across
+   * the boundary. */
+  constexpr size_t TEST_SIZE_A = 64u * 1024u;
+  rdma_buffer_meta meta1 = {};
+  void *p1 = rdma_buffer_acquire(TEST_SIZE_A, &meta1);
+  OK(p1 != nullptr);
+  OK(meta1.was_pooled);
+  /* Freshly acquired chunk is zeroed by the provider. */
+  OK(((unsigned char *)p1)[0] == 0u);
+  /* Stamp a sentinel that will be wiped on reuse. */
+  ((unsigned char *)p1)[0] = 0xABu;
+  rdma_buffer_release(p1, TEST_SIZE_A, &meta1);
+  /* Meta is cleared by release(). */
+  OK(!meta1.was_pooled);
+  OK(meta1.mapped_bytes == 0u);
+
+  rdma_buffer_meta meta2 = {};
+  void *p2 = rdma_buffer_acquire(TEST_SIZE_A, &meta2);
+  OK(p2 != nullptr);
+  OK(meta2.was_pooled);
+  OK(p2 == p1);
+  OK(((unsigned char *)p2)[0] == 0u);
+  rdma_buffer_release(p2, TEST_SIZE_A, &meta2);
+
+  /* Different sizes use different free lists; the second acquire must
+   * NOT hand back the chunk we just released to the TEST_SIZE_A
+   * bucket. */
+  constexpr size_t TEST_SIZE_B = 128u * 1024u;
+  rdma_buffer_meta meta3 = {};
+  void *p3 = rdma_buffer_acquire(TEST_SIZE_B, &meta3);
+  OK(p3 != nullptr);
+  OK(p3 != p1);
+  rdma_buffer_release(p3, TEST_SIZE_B, &meta3);
+
+  /* Zero-byte acquire is a sanity case: returns nullptr and leaves the
+   * meta in its "never acquired" state. */
+  rdma_buffer_meta meta4 = {};
+  void *p4 = rdma_buffer_acquire(0u, &meta4);
+  OK(p4 == nullptr);
+  OK(!meta4.was_pooled);
+  OK(!meta4.was_hugepage);
+  OK(meta4.mapped_bytes == 0u);
 
   return 1;  /* TAP success */
 }

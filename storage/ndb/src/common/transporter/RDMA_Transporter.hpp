@@ -28,6 +28,7 @@
  */
 #ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
 #include <atomic>
+#include <cstddef>
 
 #include <cstdint>
 
@@ -112,6 +113,32 @@ struct __attribute__((packed)) rdma_msg_header_v1 {
 };
 static_assert(sizeof(rdma_msg_header_v1) == RDMA_MSG_HEADER_BYTES,
               "rdma_msg_header_v1 must be 24 bytes on the wire");
+
+/*
+ * --------------------------------------------------------------------------
+ *  Phase 1: per-buffer provenance metadata
+ * --------------------------------------------------------------------------
+ *
+ * Each RDMA staging buffer (m_send_buf / m_recv_buf / m_app_buf) is
+ * obtained through a file-local buffer provider defined in
+ * RDMA_Transporter.cpp. Two providers exist (per-clone allocator and
+ * a process-wide free-list pool); both can optionally back chunks with
+ * 2 MiB hugepages via mmap(MAP_HUGETLB). The provider populates an
+ * rdma_buffer_meta at acquire time, and the matching release call
+ * uses the meta to dispatch back to the correct source.
+ *
+ * The struct is a trivial POD held by value inside RDMA_Transporter,
+ * so it has to live in this header. Provider implementations and the
+ * pool itself remain private to the .cpp.
+ *
+ * Default member initializers cover the "never acquired" state used
+ * during construction and immediately after release.
+ */
+struct rdma_buffer_meta {
+  bool   was_pooled   = false;
+  bool   was_hugepage = false;
+  size_t mapped_bytes = 0;
+};
 
 /**
  * @class RDMA_Transporter
@@ -656,6 +683,20 @@ class RDMA_Transporter : public Transporter {
   void *m_send_buf;
   void *m_recv_buf;
   void *m_app_buf;
+
+  /*
+   * Provenance for the three buffers above, populated by
+   * rdma_buffer_acquire() in allocate_verbs_resources() and consumed
+   * by rdma_buffer_release() in release_verbs_resources(). The meta
+   * stays valid for as long as the matching m_*_buf pointer is
+   * non-null; release resets the meta to its default "never
+   * acquired" state. Default-initialized via the in-class
+   * initializers on rdma_buffer_meta, so no constructor-list entry
+   * is needed.
+   */
+  rdma_buffer_meta m_send_buf_meta;
+  rdma_buffer_meta m_recv_buf_meta;
+  rdma_buffer_meta m_app_buf_meta;
 
   /*
    * Negotiated inline-data cap. The configured m_inline_threshold may be
