@@ -1239,6 +1239,21 @@ class RDMA_Transporter : public Transporter {
      */
     std::atomic<Uint64> geom_exchanges_ok{0};
     std::atomic<Uint64> geom_exchanges_failed{0};
+    /*
+     * Phase 9: counter incremented once per allocate_verbs_resources()
+     * pass where the receive MR was registered with
+     * IBV_ACCESS_REMOTE_WRITE (gated on NDB_RDMA_WRITE_MODE=advertise).
+     * Off-mode keeps it at zero. The QP's qp_access_flags are flipped
+     * by the same gate; this counter is the single source of truth
+     * for operators to confirm REMOTE_WRITE was granted on the MR.
+     *
+     * Granting REMOTE_WRITE in this phase is dormant: the data path
+     * still posts IBV_WR_SEND and never consumes
+     * IBV_WC_RECV_RDMA_WITH_IMM, so even when both peers advertise
+     * the link continues to use v1 SEND/RECV. A later phase replaces
+     * the WR opcode and starts using the permission for real.
+     */
+    std::atomic<Uint64> recv_mr_remote_write_grants{0};
   };
   /*
    * Phase 2: stats counters are written from both send and receive
