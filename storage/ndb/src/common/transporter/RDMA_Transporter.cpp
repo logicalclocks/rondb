@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cstdint>
+#include <endian.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -286,6 +287,158 @@ static_assert(offsetof(rdma_endpoint_v1, caps) ==
 static inline uint32_t rdma_negotiate_caps(uint32_t local_caps,
                                            uint32_t peer_caps) {
   return (local_caps & peer_caps) & RDMA_CAP_ALL_KNOWN;
+}
+
+/*
+ * --------------------------------------------------------------------------
+ * Phase 8: receive-buffer geometry exchange record
+ * --------------------------------------------------------------------------
+ *
+ * A separate, optional 32-byte record exchanged AFTER the v1 endpoint
+ * record but only when both peers agreed on at least one capability
+ * bit (m_negotiated_write_caps != 0). The record is independently
+ * versioned and magic'd so a future schema change does not need to
+ * disturb the existing rdma_endpoint_v1 layout, and so a malformed
+ * record can be rejected loudly. Default off-mode skips the round
+ * trip entirely, keeping wire traffic byte-identical to Phase 7.
+ *
+ * Field semantics:
+ *   magic       network-order RDMA_GEOM_MAGIC
+ *   version     network-order RDMA_GEOM_VERSION
+ *   header_len  network-order sizeof(rdma_endpoint_geom_v1)
+ *   rkey        network-order remote-access key for the sender's
+ *               receive MR. A later phase will pair this with the
+ *               IBV_ACCESS_REMOTE_WRITE access flag and use it to
+ *               address the peer's receive buffer in a one-sided
+ *               WRITE WR.
+ *   reserved0   must be zero on the wire
+ *   iova        big-endian 64-bit virtual base address of the
+ *               sender's receive MR (verbatim host-side value the
+ *               sender registered the MR with). Used as the iova
+ *               argument of a future ibv_post_send(WRITE).
+ *   bytes       network-order byte length of the sender's receive
+ *               MR. Used by the consumer to bounds-check WRITE
+ *               offsets against the registered range.
+ *   reserved1   must be zero on the wire
+ *
+ * The 32-byte size is asserted by static_assert below; bumping any
+ * field requires bumping RDMA_GEOM_VERSION so the validator rejects
+ * mismatched senders explicitly.
+ */
+static constexpr uint32_t RDMA_GEOM_MAGIC = 0x52444D47u; /* 'R','D','M','G' */
+static constexpr uint16_t RDMA_GEOM_VERSION = 1u;
+static constexpr uint16_t RDMA_GEOM_HEADER_BYTES = 32u;
+
+/*
+ * Conservative sanity ceiling for the peer's advertised receive-
+ * buffer length. Production RonDB recv buffers are between a few
+ * MiB and tens of MiB; anything above 1 GiB is almost certainly
+ * either a misconfiguration or a corrupt geometry record from the
+ * peer. The validator rejects records above this ceiling so a buggy
+ * peer cannot park an absurd byte length in our cached state. Bump
+ * if future builds genuinely need larger recv buffers.
+ */
+static constexpr uint32_t RDMA_GEOM_MAX_RECV_BYTES = 1u << 30; /* 1 GiB */
+
+struct __attribute__((packed)) rdma_endpoint_geom_v1 {
+  uint32_t magic;      /* network order, must == RDMA_GEOM_MAGIC */
+  uint16_t version;    /* network order, RDMA_GEOM_VERSION */
+  uint16_t header_len; /* network order, RDMA_GEOM_HEADER_BYTES */
+  uint32_t rkey;       /* network order, rkey of sender's recv MR */
+  uint32_t reserved0;  /* must be zero */
+  uint64_t iova;       /* big-endian, virtual base of sender's recv MR */
+  uint32_t bytes;      /* network order, byte length of sender's recv MR */
+  uint32_t reserved1;  /* must be zero */
+};
+static_assert(sizeof(rdma_endpoint_geom_v1) == RDMA_GEOM_HEADER_BYTES,
+              "rdma_endpoint_geom_v1 must be 32 bytes on wire");
+
+/*
+ * Pack the local receive-buffer geometry into network byte order.
+ * Zero-initializes `*rec` first so the reserved words are guaranteed
+ * zero on the wire regardless of caller state. File-scope so the
+ * TAP harness can drive it without a transporter.
+ */
+static inline void rdma_encode_geom_record(rdma_endpoint_geom_v1 *rec,
+                                           uint32_t rkey, uint64_t iova,
+                                           uint32_t bytes) {
+  std::memset(rec, 0, sizeof(*rec));
+  rec->magic = htonl(RDMA_GEOM_MAGIC);
+  rec->version = htons(RDMA_GEOM_VERSION);
+  rec->header_len = htons(RDMA_GEOM_HEADER_BYTES);
+  rec->rkey = htonl(rkey);
+  rec->iova = htobe64(iova);
+  rec->bytes = htonl(bytes);
+}
+
+/*
+ * Validate and decode a geometry record received from the peer.
+ * Returns true on success and writes the decoded fields through the
+ * output pointers (which may be null). Returns false on any of:
+ *   - bad magic / version / header_len
+ *   - non-zero reserved fields (would silently pin space we cannot
+ *     describe)
+ *   - zero rkey or zero bytes (a peer that advertised caps but then
+ *     sent a degenerate geometry record cannot be used safely)
+ *   - bytes above RDMA_GEOM_MAX_RECV_BYTES (corrupt or hostile)
+ * Rejections are logged via g_eventLogger->error() to match the
+ * existing endpoint-record validator. File-scope linkage so the TAP
+ * harness can drive it directly.
+ */
+static inline bool rdma_validate_geom_record(
+    const rdma_endpoint_geom_v1 *rec, uint32_t *out_rkey,
+    uint64_t *out_iova, uint32_t *out_bytes) {
+  const uint32_t magic = ntohl(rec->magic);
+  if (magic != RDMA_GEOM_MAGIC) {
+    g_eventLogger->error("RDMA: bad geom magic 0x%08x (want 0x%08x)",
+                         magic, RDMA_GEOM_MAGIC);
+    return false;
+  }
+  const uint16_t version = ntohs(rec->version);
+  if (version != RDMA_GEOM_VERSION) {
+    g_eventLogger->error(
+        "RDMA: incompatible geom version %u (want %u)",
+        (unsigned)version, (unsigned)RDMA_GEOM_VERSION);
+    return false;
+  }
+  const uint16_t header_len = ntohs(rec->header_len);
+  if (header_len != RDMA_GEOM_HEADER_BYTES) {
+    g_eventLogger->error(
+        "RDMA: unexpected geom header_len %u (want %u)",
+        (unsigned)header_len, (unsigned)RDMA_GEOM_HEADER_BYTES);
+    return false;
+  }
+  /* Reserved fields on the wire must be zero. The comparison against
+   * the raw network-order word is sufficient because 0 has the same
+   * representation in either byte order. */
+  if (rec->reserved0 != 0u || rec->reserved1 != 0u) {
+    g_eventLogger->error(
+        "RDMA: geom reserved fields non-zero (reserved0=0x%08x "
+        "reserved1=0x%08x)",
+        ntohl(rec->reserved0), ntohl(rec->reserved1));
+    return false;
+  }
+  const uint32_t rkey = ntohl(rec->rkey);
+  if (rkey == 0u) {
+    g_eventLogger->error("RDMA: geom rkey was zero");
+    return false;
+  }
+  const uint64_t iova = be64toh(rec->iova);
+  const uint32_t bytes = ntohl(rec->bytes);
+  if (bytes == 0u) {
+    g_eventLogger->error("RDMA: geom bytes was zero");
+    return false;
+  }
+  if (bytes > RDMA_GEOM_MAX_RECV_BYTES) {
+    g_eventLogger->error(
+        "RDMA: geom bytes=%u exceeds sanity ceiling %u",
+        bytes, RDMA_GEOM_MAX_RECV_BYTES);
+    return false;
+  }
+  if (out_rkey != nullptr) *out_rkey = rkey;
+  if (out_iova != nullptr) *out_iova = iova;
+  if (out_bytes != nullptr) *out_bytes = bytes;
+  return true;
 }
 
 /*
@@ -1631,6 +1784,9 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_app_buf(nullptr),
       m_effective_inline_threshold(0),
       m_negotiated_write_caps(0),
+      m_peer_recv_rkey(0),
+      m_peer_recv_iova(0),
+      m_peer_recv_bytes(0),
       m_local_send_seq(0),
       m_local_recv_seq(0),
       m_peer_ack_seq(0),
@@ -1688,6 +1844,9 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_app_buf(nullptr),
       m_effective_inline_threshold(0),
       m_negotiated_write_caps(0),
+      m_peer_recv_rkey(0),
+      m_peer_recv_iova(0),
+      m_peer_recv_bytes(0),
       m_local_send_seq(0),
       m_local_recv_seq(0),
       m_peer_ack_seq(0),
@@ -3241,6 +3400,16 @@ void RDMA_Transporter::release_verbs_resources() {
   release_recv_slot_state();
   m_effective_inline_threshold = 0;
   m_negotiated_write_caps = 0;
+  /*
+   * Phase 8: drop the peer's cached receive-buffer geometry. The
+   * rkey was only meaningful while the peer's MR existed; once we
+   * tear down our side of the link the peer will also re-register
+   * (with a different rkey/iova) on its next reconnect, so caching
+   * stale values would actively hide a future bug.
+   */
+  m_peer_recv_rkey = 0;
+  m_peer_recv_iova = 0;
+  m_peer_recv_bytes = 0;
   reset_wire_state();
 }
 
@@ -3277,6 +3446,16 @@ void RDMA_Transporter::reset_wire_state() {
   /* Phase 3: ring cursor is also reset on disconnect so a fresh
    * allocate_recv_slot_state() starts the cursor at 0. */
   m_recv_ring_cursor = 0u;
+  /*
+   * Phase 8: clear cached peer geometry as part of the wire-state
+   * reset path that runs from resetBuffers() / release_verbs_resources().
+   * release_verbs_resources() also clears these explicitly above for
+   * paranoia; doing it here too keeps reset_wire_state() a single,
+   * complete source of truth for connect-time defaults.
+   */
+  m_peer_recv_rkey = 0;
+  m_peer_recv_iova = 0;
+  m_peer_recv_bytes = 0;
 }
 
 Uint32 RDMA_Transporter::send_slot_size_or_zero() const {
@@ -4232,7 +4411,9 @@ void RDMA_Transporter::log_stats() const {
       "mr_cache_evictions=%llu mr_cache_failures=%llu "
       "mr_cache_resident_max=%u "
       "write_caps_advertised=%llu write_caps_negotiated=%llu "
-      "negotiated_write_caps=0x%x",
+      "negotiated_write_caps=0x%x "
+      "geom_exchanges_ok=%llu geom_exchanges_failed=%llu "
+      "peer_recv_rkey=0x%x peer_recv_iova=0x%llx peer_recv_bytes=%u",
       (unsigned)localNodeId, (unsigned)remoteNodeId,
       (unsigned)getTransporterIndex(), (unsigned)m_multi_transporter_instance,
       (unsigned)m_is_active, (unsigned)m_recv_thread_idx,
@@ -4328,7 +4509,17 @@ void RDMA_Transporter::log_stats() const {
           std::memory_order_relaxed),
       (unsigned long long)m_stats.write_caps_negotiated.load(
           std::memory_order_relaxed),
-      (unsigned)m_negotiated_write_caps);
+      (unsigned)m_negotiated_write_caps,
+      /* Phase 8: geometry-exchange counters and the cached peer
+       * recv-MR geometry. All zero in default off-mode (the exchange
+       * is gated on m_negotiated_write_caps != 0). */
+      (unsigned long long)m_stats.geom_exchanges_ok.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.geom_exchanges_failed.load(
+          std::memory_order_relaxed),
+      (unsigned)m_peer_recv_rkey,
+      (unsigned long long)m_peer_recv_iova,
+      (unsigned)m_peer_recv_bytes);
 }
 
 void RDMA_Transporter::maybe_log_stats_heartbeat() {
@@ -4606,6 +4797,80 @@ bool RDMA_Transporter::run_endpoint_exchange(const NdbSocket &socket,
   }
 
   /*
+   * Phase 8: optional receive-buffer geometry exchange. Runs only
+   * when BOTH sides advertised at least one capability bit -- the
+   * AND that produced m_negotiated_write_caps is symmetric across
+   * the link, so the decision to enter this block is identical on
+   * both ends. Old peers and off-mode peers always negotiate zero
+   * caps, so this round-trip is skipped on those links and the
+   * control-socket byte traffic is unchanged from Phase 7.
+   *
+   * On any failure (socket I/O error or malformed peer record) we
+   * abort the connect attempt: an unusable geometry advertisement
+   * is a real protocol error and the registry's reconnect loop will
+   * retry from scratch. geom_exchanges_failed is bumped so operators
+   * can see the cadence in log_stats(). On success the peer's rkey/
+   * iova/bytes are cached on the transporter for a later phase to
+   * consume; this phase still does not change any QP access flags,
+   * MR access flags, or data-path WR opcodes.
+   */
+  bool geom_exchanged = false;
+  if (m_negotiated_write_caps != 0u) {
+    /* Defensive checks: the receive MR is registered earlier in
+     * allocate_verbs_resources() before run_endpoint_exchange() is
+     * called. If a future refactor reorders these we want to fail
+     * loudly rather than send a zero rkey. */
+    require(m_recv_mr != nullptr);
+    require(m_recv_buf != nullptr);
+    require(m_recv_buffer_size > 0u);
+
+    rdma_endpoint_geom_v1 local_geom;
+    rdma_encode_geom_record(&local_geom, m_recv_mr->rkey,
+                            (uint64_t)(uintptr_t)m_recv_buf,
+                            m_recv_buffer_size);
+    if (!rdma_send_full(socket, &local_geom, sizeof(local_geom),
+                        RDMA_HANDSHAKE_TIMEOUT_MS)) {
+      g_eventLogger->error(
+          "RDMA[%s,node %u->%u]: failed to send local geometry record",
+          side, (unsigned)localNodeId, (unsigned)remoteNodeId);
+      m_stats.geom_exchanges_failed.fetch_add(1u,
+                                              std::memory_order_relaxed);
+      return false;
+    }
+
+    rdma_endpoint_geom_v1 peer_geom;
+    std::memset(&peer_geom, 0, sizeof(peer_geom));
+    if (!rdma_recv_full(socket, &peer_geom, sizeof(peer_geom),
+                        RDMA_HANDSHAKE_TIMEOUT_MS)) {
+      g_eventLogger->error(
+          "RDMA[%s,node %u->%u]: failed to read peer geometry record",
+          side, (unsigned)localNodeId, (unsigned)remoteNodeId);
+      m_stats.geom_exchanges_failed.fetch_add(1u,
+                                              std::memory_order_relaxed);
+      return false;
+    }
+
+    uint32_t peer_rkey = 0;
+    uint64_t peer_iova = 0;
+    uint32_t peer_bytes = 0;
+    if (!rdma_validate_geom_record(&peer_geom, &peer_rkey, &peer_iova,
+                                   &peer_bytes)) {
+      g_eventLogger->error(
+          "RDMA[%s,node %u->%u]: peer geometry record failed validation",
+          side, (unsigned)localNodeId, (unsigned)remoteNodeId);
+      m_stats.geom_exchanges_failed.fetch_add(1u,
+                                              std::memory_order_relaxed);
+      return false;
+    }
+
+    m_peer_recv_rkey = peer_rkey;
+    m_peer_recv_iova = peer_iova;
+    m_peer_recv_bytes = peer_bytes;
+    m_stats.geom_exchanges_ok.fetch_add(1u, std::memory_order_relaxed);
+    geom_exchanged = true;
+  }
+
+  /*
    * Step 4: QP transitions and initial-receive posting.
    *   INIT -> post_initial_receives() -> RTR -> RTS
    *
@@ -4660,6 +4925,20 @@ bool RDMA_Transporter::run_endpoint_exchange(const NdbSocket &socket,
       (unsigned)m_peer_recv_credits.load(std::memory_order_acquire),
       (unsigned)local_caps, (unsigned)peer_caps,
       (unsigned)m_negotiated_write_caps);
+  /*
+   * Phase 8: when the geometry round-trip ran successfully, emit a
+   * separate info line carrying the peer's cached recv-MR geometry.
+   * Off-mode never enters this branch, so the existing handshake log
+   * line above stays byte-stable for parsers that key on it.
+   */
+  if (geom_exchanged) {
+    g_eventLogger->info(
+        "RDMA[%s,node %u->%u]: peer geom: rkey=0x%x iova=0x%llx bytes=%u",
+        side, (unsigned)localNodeId, (unsigned)remoteNodeId,
+        (unsigned)m_peer_recv_rkey,
+        (unsigned long long)m_peer_recv_iova,
+        (unsigned)m_peer_recv_bytes);
+  }
   return true;
 }
 
@@ -5619,6 +5898,122 @@ TAPTEST(RDMA_Transporter) {
     OK(rdma_negotiate_caps(RDMA_CAP_WRITE_RECEIVER, ntohl(rec.caps)) == 0u);
     OK(rdma_negotiate_caps(RDMA_CAP_WRITE_RECEIVER | RDMA_CAP_WRITE_SENDER,
                            ntohl(rec.caps)) == 0u);
+  }
+
+  /* ----- Phase 8: geometry-record encode/validate tests -----
+   *
+   * Pure-helper coverage for rdma_encode_geom_record / rdma_validate_
+   * geom_record / rdma_endpoint_geom_v1. No verbs or socket state.
+   *
+   *   1. Wire-format byte layout: known fixture values land at exact
+   *      byte offsets in network byte order.
+   *   2. Encode/validate round trip: encoded record round-trips through
+   *      the validator and recovers the same fields.
+   *   3. Validator rejection cases: bad magic / version / header_len,
+   *      zero rkey, zero bytes, oversized bytes, non-zero reserved.
+   *      Each case starts from a well-formed record and mutates one
+   *      field so the rejection branch is unambiguous.
+   *   4. Boundary: a byte length exactly at RDMA_GEOM_MAX_RECV_BYTES
+   *      is accepted; one over is rejected. */
+  {
+    /* (1) + (2) Encode and inspect raw layout, then validate back. */
+    rdma_endpoint_geom_v1 rec;
+    std::memset(&rec, 0xAAu, sizeof(rec));  /* sentinel before encode */
+    rdma_encode_geom_record(&rec, /*rkey=*/0xCAFEBABEu,
+                            /*iova=*/0x0123456789ABCDEFull,
+                            /*bytes=*/0x12345678u);
+    OK(sizeof(rdma_endpoint_geom_v1) == RDMA_GEOM_HEADER_BYTES);
+    const uint8_t *p = reinterpret_cast<const uint8_t *>(&rec);
+    /* magic at offset 0: 'R','D','M','G'. */
+    OK(p[0] == 'R'); OK(p[1] == 'D'); OK(p[2] == 'M'); OK(p[3] == 'G');
+    /* version u16 at offset 4: 0x0001 in network order. */
+    OK(p[4] == 0x00u); OK(p[5] == 0x01u);
+    /* header_len u16 at offset 6: 32 == 0x0020 in network order. */
+    OK(p[6] == 0x00u); OK(p[7] == 0x20u);
+    /* rkey u32 at offset 8: 0xCAFEBABE. */
+    OK(p[8] == 0xCAu); OK(p[9] == 0xFEu);
+    OK(p[10] == 0xBAu); OK(p[11] == 0xBEu);
+    /* reserved0 u32 at offset 12: must be zero. */
+    OK(p[12] == 0u); OK(p[13] == 0u); OK(p[14] == 0u); OK(p[15] == 0u);
+    /* iova u64 at offset 16: 0x0123456789ABCDEF. */
+    OK(p[16] == 0x01u); OK(p[17] == 0x23u);
+    OK(p[18] == 0x45u); OK(p[19] == 0x67u);
+    OK(p[20] == 0x89u); OK(p[21] == 0xABu);
+    OK(p[22] == 0xCDu); OK(p[23] == 0xEFu);
+    /* bytes u32 at offset 24: 0x12345678. */
+    OK(p[24] == 0x12u); OK(p[25] == 0x34u);
+    OK(p[26] == 0x56u); OK(p[27] == 0x78u);
+    /* reserved1 u32 at offset 28: must be zero. */
+    OK(p[28] == 0u); OK(p[29] == 0u); OK(p[30] == 0u); OK(p[31] == 0u);
+
+    uint32_t got_rkey = 0u;
+    uint64_t got_iova = 0u;
+    uint32_t got_bytes = 0u;
+    OK(rdma_validate_geom_record(&rec, &got_rkey, &got_iova, &got_bytes));
+    OK(got_rkey == 0xCAFEBABEu);
+    OK(got_iova == 0x0123456789ABCDEFull);
+    OK(got_bytes == 0x12345678u);
+    /* nullptr out-parameters must also be accepted on a valid record. */
+    OK(rdma_validate_geom_record(&rec, nullptr, nullptr, nullptr));
+  }
+
+  {
+    /* (3) Validator rejection: bad magic. */
+    rdma_endpoint_geom_v1 rec;
+    rdma_encode_geom_record(&rec, /*rkey=*/1u, /*iova=*/1u, /*bytes=*/1u);
+    rec.magic = htonl(RDMA_GEOM_MAGIC + 1u);
+    OK(!rdma_validate_geom_record(&rec, nullptr, nullptr, nullptr));
+  }
+  {
+    /* Validator rejection: bad version. */
+    rdma_endpoint_geom_v1 rec;
+    rdma_encode_geom_record(&rec, 1u, 1u, 1u);
+    rec.version = htons(RDMA_GEOM_VERSION + 1u);
+    OK(!rdma_validate_geom_record(&rec, nullptr, nullptr, nullptr));
+  }
+  {
+    /* Validator rejection: bad header_len. */
+    rdma_endpoint_geom_v1 rec;
+    rdma_encode_geom_record(&rec, 1u, 1u, 1u);
+    rec.header_len = htons(RDMA_GEOM_HEADER_BYTES + 1u);
+    OK(!rdma_validate_geom_record(&rec, nullptr, nullptr, nullptr));
+  }
+  {
+    /* Validator rejection: zero rkey. */
+    rdma_endpoint_geom_v1 rec;
+    rdma_encode_geom_record(&rec, /*rkey=*/0u, /*iova=*/1u, /*bytes=*/1u);
+    OK(!rdma_validate_geom_record(&rec, nullptr, nullptr, nullptr));
+  }
+  {
+    /* Validator rejection: zero bytes. */
+    rdma_endpoint_geom_v1 rec;
+    rdma_encode_geom_record(&rec, /*rkey=*/1u, /*iova=*/1u, /*bytes=*/0u);
+    OK(!rdma_validate_geom_record(&rec, nullptr, nullptr, nullptr));
+  }
+  {
+    /* Validator rejection: non-zero reserved0. */
+    rdma_endpoint_geom_v1 rec;
+    rdma_encode_geom_record(&rec, 1u, 1u, 1u);
+    rec.reserved0 = htonl(0xDEADBEEFu);
+    OK(!rdma_validate_geom_record(&rec, nullptr, nullptr, nullptr));
+  }
+  {
+    /* Validator rejection: non-zero reserved1. */
+    rdma_endpoint_geom_v1 rec;
+    rdma_encode_geom_record(&rec, 1u, 1u, 1u);
+    rec.reserved1 = htonl(0xDEADBEEFu);
+    OK(!rdma_validate_geom_record(&rec, nullptr, nullptr, nullptr));
+  }
+  {
+    /* (4) Sanity-ceiling boundary: exactly RDMA_GEOM_MAX_RECV_BYTES is
+     * accepted; one over is rejected. */
+    rdma_endpoint_geom_v1 rec;
+    rdma_encode_geom_record(&rec, /*rkey=*/1u, /*iova=*/0u,
+                            /*bytes=*/RDMA_GEOM_MAX_RECV_BYTES);
+    OK(rdma_validate_geom_record(&rec, nullptr, nullptr, nullptr));
+    rdma_encode_geom_record(&rec, /*rkey=*/1u, /*iova=*/0u,
+                            /*bytes=*/RDMA_GEOM_MAX_RECV_BYTES + 1u);
+    OK(!rdma_validate_geom_record(&rec, nullptr, nullptr, nullptr));
   }
 
   return 1;  /* TAP success */
