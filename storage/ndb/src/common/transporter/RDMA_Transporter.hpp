@@ -819,6 +819,35 @@ class RDMA_Transporter : public Transporter {
   Uint32 m_negotiated_write_caps;
 
   /*
+   * Phase 8: peer receive-buffer remote-access geometry.
+   *
+   * Populated by run_endpoint_exchange() only when m_negotiated_write_caps
+   * is non-zero AND the optional rdma_endpoint_geom_v1 record was
+   * exchanged with the peer over the authenticated control socket.
+   * Stays at 0 in default off-mode (the v1 endpoint exchange runs but
+   * the geometry round-trip is skipped), so a Phase 8 binary remains
+   * byte-identical on the wire when capabilities were not negotiated.
+   *
+   *   m_peer_recv_rkey   rkey the peer would accept for one-sided
+   *                      WRITE into its receive MR. Zero means no
+   *                      geometry was exchanged on this link.
+   *   m_peer_recv_iova   virtual base address of the peer's receive
+   *                      MR (verbatim host-side value the peer
+   *                      registered with).
+   *   m_peer_recv_bytes  byte length of the peer's receive MR.
+   *
+   * This phase ONLY reads these inside log_stats(); no data-path
+   * branch consumes them. A later phase will gate IBV_ACCESS_REMOTE_
+   * WRITE and the actual WRITE WR opcode selection on the combination
+   * of m_negotiated_write_caps and this geometry. Reset to zero by
+   * reset_wire_state() and release_verbs_resources() so a reconnect
+   * re-exchanges from scratch.
+   */
+  Uint32 m_peer_recv_rkey;
+  Uint64 m_peer_recv_iova;
+  Uint32 m_peer_recv_bytes;
+
+  /*
    * Per-direction wire state. Reset by reset_wire_state(). All counters
    * use the 32-bit wraparound semantics from the wire header; comparison
    * logic that cares about ordering must use the standard "(a - b) <
@@ -1190,6 +1219,26 @@ class RDMA_Transporter : public Transporter {
      */
     std::atomic<Uint64> write_caps_advertised{0};
     std::atomic<Uint64> write_caps_negotiated{0};
+    /*
+     * Phase 8: receive-buffer geometry-exchange counters. Bumped from
+     * run_endpoint_exchange() once per handshake where the optional
+     * geometry round-trip was attempted (i.e. negotiated caps were
+     * non-zero). In default off-mode they stay at zero because the
+     * exchange is skipped.
+     *
+     *  geom_exchanges_ok      handshakes that completed the geometry
+     *                         round-trip AND validated the peer's
+     *                         record. The cached m_peer_recv_*
+     *                         fields are non-zero after one of these.
+     *  geom_exchanges_failed  handshakes that started the geometry
+     *                         round-trip but failed (socket error,
+     *                         bad magic/version/header_len, zero
+     *                         rkey/bytes, oversized bytes). The
+     *                         connect attempt itself is aborted on
+     *                         this counter incrementing.
+     */
+    std::atomic<Uint64> geom_exchanges_ok{0};
+    std::atomic<Uint64> geom_exchanges_failed{0};
   };
   /*
    * Phase 2: stats counters are written from both send and receive
