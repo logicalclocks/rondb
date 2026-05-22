@@ -208,7 +208,7 @@ components:
             **not** need to include the index key columns. The server passes
             `SF_OrderByFull` to NDB, which auto-injects the key columns into
             the kernel-side result mask while the JSON projection continues
-            to follow `readColumns`. Prior to release 25.10.7 the index key
+            to follow `readColumns`. Prior to release 25.10.8 the index key
             columns had to be listed in `readColumns` explicitly, otherwise
             NDB returned error 4341.
           items:
