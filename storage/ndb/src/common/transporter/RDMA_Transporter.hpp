@@ -46,6 +46,7 @@ struct ibv_cq;
 struct ibv_qp;
 struct ibv_mr;
 struct ibv_comp_channel;
+class rdma_mr_cache;
 
 /*
  * Routing bit OR'd into the `data.u32` field of epoll events that were
@@ -736,6 +737,20 @@ class RDMA_Transporter : public Transporter {
   struct ibv_mr *m_recv_mr;
   struct ibv_comp_channel *m_recv_comp_channel;
   Uint64 m_recv_comp_events_pending;
+  /*
+   * Phase 6: per-PD memory-region cache. NULL outside of
+   * allocate_verbs_resources()/release_verbs_resources() bounds. The
+   * cache is opt-in via NDB_RDMA_MR_CACHE=probe; in off-mode the
+   * allocation still happens but the probe path inside doSend() is
+   * skipped, so the cache stays empty. The class is defined inside
+   * RDMA_Transporter.cpp; this header only carries the pointer.
+   *
+   * Lifetime is strictly bounded by the surrounding PD: the cache is
+   * constructed after ibv_alloc_pd() returns m_pd, and torn down
+   * (drain_and_destroy + delete) before ibv_dealloc_pd(m_pd) so no
+   * cached MR can outlive the PD it was registered against.
+   */
+  rdma_mr_cache *m_mr_cache;
 
   /*
    * Owned, page-aligned staging buffers registered with the HCA. Freed
@@ -1107,6 +1122,38 @@ class RDMA_Transporter : public Transporter {
     std::atomic<Uint64> retry_exceeded_events{0};
     std::atomic<Uint64> qp_fatal_events{0};
     std::atomic<Uint64> reconnect_attempts{0};
+    /*
+     * Phase 6: per-PD MR cache probe counters. Bumped from the
+     * send-thread probe block in doSend() when
+     * NDB_RDMA_MR_CACHE=probe; in off-mode they stay at 0 and the
+     * data path never touches them.
+     *
+     *  mr_cache_acquires       total acquire() calls dispatched by
+     *                          the probe path. Equals hits + misses
+     *                          + failures.
+     *  mr_cache_hits           acquires that found an existing
+     *                          entry whose page range contained the
+     *                          request.
+     *  mr_cache_misses         acquires that registered a fresh MR
+     *                          (no eviction needed).
+     *  mr_cache_evictions      misses that evicted an existing
+     *                          unpinned LRU entry to make room.
+     *  mr_cache_failures       acquires that returned no entry
+     *                          (registration failed or the cache
+     *                          was full of pinned entries). The
+     *                          chain itself is unaffected because
+     *                          the probe is observability-only.
+     *  mr_cache_resident_max   running maximum number of resident
+     *                          entries observed at probe time;
+     *                          CAS-bumped, mirroring
+     *                          send_chain_max_seen.
+     */
+    std::atomic<Uint64> mr_cache_acquires{0};
+    std::atomic<Uint64> mr_cache_hits{0};
+    std::atomic<Uint64> mr_cache_misses{0};
+    std::atomic<Uint64> mr_cache_evictions{0};
+    std::atomic<Uint64> mr_cache_failures{0};
+    std::atomic<Uint32> mr_cache_resident_max{0};
   };
   /*
    * Phase 2: stats counters are written from both send and receive
