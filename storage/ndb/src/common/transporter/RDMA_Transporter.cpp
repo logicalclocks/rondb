@@ -65,6 +65,98 @@ extern EventLogger *g_eventLogger;
 
 /*
  * --------------------------------------------------------------------------
+ *  Phase 2: cacheline-ownership layout assertions
+ * --------------------------------------------------------------------------
+ *
+ * RDMA_Transporter is friend with this struct (see
+ * RDMA_Transporter.hpp), so the static_asserts below can read the
+ * offsets of private members. The struct is never instantiated and
+ * has no runtime cost; it exists purely to fail the build if a future
+ * edit reintroduces false sharing between the send-thread and
+ * recv-thread hot blocks or co-locates the two highest-contention
+ * cross-thread atomics on the same cacheline.
+ *
+ * The literal 64-byte cacheline width is correct on every CPU RonDB
+ * currently targets (x86_64, modern AArch64). std::hardware_
+ * destructive_interference_size is intentionally avoided here because
+ * its value is compiler-defined and varies between compilers, which
+ * makes layout invariants reproducible only across one toolchain.
+ *
+ * RDMA_Transporter inherits from Transporter (non-standard-layout),
+ * so offsetof is conditionally-supported by the standard. GCC and
+ * Clang both accept it on this code path with a defined value, but
+ * the project builds with -Werror=invalid-offsetof, so we scope-
+ * suppress only that one diagnostic around the assertion block.
+ * The build_and_test_rdma_transporter.sh script and the production
+ * CMake build are the gating verifications.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+#endif
+struct rdma_transporter_layout_check {
+  /*
+   * High-contention atomics on distinct cachelines.
+   * m_peer_recv_credits and m_pending_credit_grant are touched on
+   * every SEND (decrement) and every recycled receive slot
+   * (increment), respectively, from opposite threads. Sharing a
+   * cacheline turns every credit transition into a forced cache
+   * invalidation on the other side.
+   */
+  static_assert(
+      (offsetof(RDMA_Transporter, m_peer_recv_credits) / 64u) !=
+          (offsetof(RDMA_Transporter, m_pending_credit_grant) / 64u),
+      "Phase 2: m_peer_recv_credits and m_pending_credit_grant must "
+      "live on distinct 64-byte cachelines to avoid send/recv "
+      "false sharing on every credit transition.");
+
+  /*
+   * Send-thread-owned hot block (m_send_slots / m_send_slots_in_
+   * flight / m_next_send_slot) starts on its own cacheline, distinct
+   * from the recv-thread-owned hot block (m_recv_slots and the
+   * surrounding ready-queue state).
+   */
+  static_assert(
+      (offsetof(RDMA_Transporter, m_send_slots) / 64u) !=
+          (offsetof(RDMA_Transporter, m_recv_slots) / 64u),
+      "Phase 2: m_send_slots and m_recv_slots must live on distinct "
+      "64-byte cachelines so the send and recv threads do not "
+      "contend on a shared cacheline holding both blocks.");
+
+  /*
+   * m_send_slots starts at a 64-byte boundary. Reinforces that the
+   * alignas(64) on the field was not silently dropped if a future
+   * change adds a non-aligned member just above it.
+   */
+  static_assert(
+      (offsetof(RDMA_Transporter, m_send_slots) % 64u) == 0u,
+      "Phase 2: m_send_slots must be 64-byte aligned to anchor the "
+      "send-thread hot block.");
+
+  /*
+   * Same for m_recv_slots.
+   */
+  static_assert(
+      (offsetof(RDMA_Transporter, m_recv_slots) % 64u) == 0u,
+      "Phase 2: m_recv_slots must be 64-byte aligned to anchor the "
+      "recv-thread hot block.");
+
+  /*
+   * Stats block starts on its own cacheline. Writes from the
+   * heartbeat / hot-path stats updates do not displace recv-queue
+   * state out of the recv thread's L1.
+   */
+  static_assert(
+      (offsetof(RDMA_Transporter, m_stats) % 64u) == 0u,
+      "Phase 2: m_stats must be 64-byte aligned so heartbeat-rate "
+      "counter writes do not false-share with hot recv-queue state.");
+};
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
+/*
+ * --------------------------------------------------------------------------
  *  Endpoint wire record
  * --------------------------------------------------------------------------
  *

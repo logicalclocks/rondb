@@ -176,6 +176,16 @@ class RDMA_Transporter : public Transporter {
    */
   friend class TransporterRegistry;
 
+  /*
+   * Phase 2: layout-invariant static_asserts using offsetof live in a
+   * friend struct defined in RDMA_Transporter.cpp, so the assertions
+   * can reference private members from a context where this class is
+   * already complete. The struct is never instantiated; it exists only
+   * to host compile-time checks that lock the cacheline-ownership
+   * groups put in place below.
+   */
+  friend struct rdma_transporter_layout_check;
+
  public:
   /**
    * Construct an RDMA transporter from a fully-parsed
@@ -758,8 +768,24 @@ class RDMA_Transporter : public Transporter {
   Uint32 m_local_send_seq;
   std::atomic<Uint32> m_local_recv_seq;
   Uint32 m_peer_ack_seq;
-  std::atomic<Uint32> m_peer_recv_credits;
-  std::atomic<Uint32> m_pending_credit_grant;
+  /*
+   * Phase 2: isolate the two highest-contention cross-thread atomics
+   * onto their own cachelines.
+   *
+   * m_peer_recv_credits is decremented by the send thread on every
+   * outbound SEND and incremented by the receive thread on every
+   * credit_delta the peer ships back. m_pending_credit_grant is
+   * exchanged by the send thread when it piggybacks a credit refund
+   * and fetch_add'd by the receive thread on every recycled data
+   * slot. Co-locating them would mean every send-side decrement
+   * invalidates the receive-side write set and vice versa, producing
+   * a measurable false-sharing penalty on multi-clone DB-to-DB
+   * benchmarks. The literal 64-byte alignment matches every CPU
+   * RonDB currently targets; `std::hardware_destructive_interference_size`
+   * is intentionally avoided for portability across compilers.
+   */
+  alignas(64) std::atomic<Uint32> m_peer_recv_credits;
+  alignas(64) std::atomic<Uint32> m_pending_credit_grant;
   std::atomic<Uint32> m_local_recv_posted;
   /*
    * RDMA-local wire byte counters mirrored from the base Transporter
@@ -789,7 +815,14 @@ class RDMA_Transporter : public Transporter {
     Uint32 payload_len;
     bool in_flight;
   };
-  rdma_send_slot *m_send_slots;
+  /*
+   * Phase 2: start of the send-thread-owned hot block. m_send_slots,
+   * m_send_slots_in_flight, and m_next_send_slot are all touched on
+   * every successful ibv_post_send / send-WC reap; isolating them on
+   * their own cacheline keeps recv-thread atomics above from
+   * displacing this footprint out of the send thread's L1.
+   */
+  alignas(64) rdma_send_slot *m_send_slots;
   /*
    * Count of send WRs currently posted on the QP. Mutated only on the
    * send thread under the per-transporter send lock; read on the
@@ -819,7 +852,14 @@ class RDMA_Transporter : public Transporter {
     Uint32 payload_len;
     Uint32 read_offset;
   };
-  rdma_recv_slot *m_recv_slots;
+  /*
+   * Phase 2: start of the recv-thread-owned hot block. The ready-queue
+   * head/tail indices and m_recv_slots are touched together on every
+   * reap_recv_completions() and consume_received_bytes() pass; we keep
+   * them on their own cacheline so the send thread's writes above do
+   * not knock this footprint out of the recv thread's L1.
+   */
+  alignas(64) rdma_recv_slot *m_recv_slots;
 
   /*
    * FIFO ring of recv-slot indices in completion order. RC ordering
@@ -912,7 +952,13 @@ class RDMA_Transporter : public Transporter {
     std::atomic<Uint64> qp_fatal_events{0};
     std::atomic<Uint64> reconnect_attempts{0};
   };
-  rdma_stats m_stats;
+  /*
+   * Phase 2: stats counters are written from both send and receive
+   * threads. Keeping the whole rdma_stats block on its own cacheline
+   * group prevents heartbeat-cadence stats writes from invalidating
+   * the hot recv-queue state immediately above.
+   */
+  alignas(64) rdma_stats m_stats;
 
   /*
    * Monotonic-clock nanoseconds of the last log_stats() heartbeat
