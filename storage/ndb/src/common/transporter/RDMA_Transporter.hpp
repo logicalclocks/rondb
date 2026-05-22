@@ -848,6 +848,35 @@ class RDMA_Transporter : public Transporter {
   Uint32 m_peer_recv_bytes;
 
   /*
+   * Phase 10: peer receive-queue depth, cached from the v1 endpoint
+   * record after handshake validation, plus a sender-owned round-robin
+   * cursor over the peer's would-be receive slots.
+   *
+   * `m_peer_queue_depth` is the number of receive WRs the peer keeps
+   * posted (mirrors our own `m_queue_depth` definition on the peer
+   * side). Combined with `m_peer_recv_bytes` it lets us derive the
+   * peer's per-slot size without an extra wire-format change. Zero
+   * means we have no usable peer geometry on this link (either the
+   * Phase 8 exchange did not run or the handshake reset state has
+   * cleared the field), and the Phase 10 probe must skip.
+   *
+   * `m_peer_slot_cursor` is the next slot index the probe will target
+   * on the peer. It is read and written only on the send thread,
+   * inside `doSend()`, so no atomic is needed. It is reduced modulo
+   * `m_peer_queue_depth` at the use site, never here, so the raw
+   * counter is allowed to grow monotonically across reconnects
+   * within a process. Reset to zero by `reset_wire_state()` and
+   * `release_verbs_resources()` so a reconnect starts at slot 0
+   * against the fresh peer MR.
+   *
+   * Both fields are observability-only in Phase 10. No data-path WR
+   * is sized, addressed, or opcoded from them; the future WRITE
+   * switchover will be the first consumer.
+   */
+  Uint32 m_peer_queue_depth;
+  Uint32 m_peer_slot_cursor;
+
+  /*
    * Per-direction wire state. Reset by reset_wire_state(). All counters
    * use the 32-bit wraparound semantics from the wire header; comparison
    * logic that cares about ordering must use the standard "(a - b) <
@@ -1254,6 +1283,56 @@ class RDMA_Transporter : public Transporter {
      * the WR opcode and starts using the permission for real.
      */
     std::atomic<Uint64> recv_mr_remote_write_grants{0};
+    /*
+     * Phase 10: observability-only one-sided WRITE probe counters.
+     * The probe runs on the send thread inside `doSend()` only when
+     * `NDB_RDMA_WRITE_DATA_PATH=probe`, the link negotiated
+     * `RDMA_CAP_WRITE_SENDER`, and the peer geometry plus queue depth
+     * are cached. No WR opcode changes, no `ibv_post_send()` of a
+     * WRITE WR, and no peer-side state mutation occur in Phase 10.
+     * The counters let an operator confirm that the address
+     * arithmetic for a future switchover would have produced a
+     * valid in-range target on every probe pass.
+     *
+     *  write_probe_eligible          chains where every gate passed
+     *                                and the probe computed a fully
+     *                                in-range would-be WRITE.
+     *  write_probe_skipped_no_caps   chains where the negotiated cap
+     *                                bitmap did not include
+     *                                `RDMA_CAP_WRITE_SENDER`.
+     *  write_probe_skipped_no_geom   chains where caps were
+     *                                negotiated but `m_peer_recv_*`
+     *                                or `m_peer_queue_depth` was
+     *                                zero (Phase 8 exchange did not
+     *                                run, or the v1 record had a
+     *                                zero queue_depth).
+     *  write_probe_geometry_invalid  chains where the cached peer
+     *                                geometry was non-zero but
+     *                                produced an unusable slot size
+     *                                (`peer_recv_bytes <
+     *                                peer_queue_depth`, or other
+     *                                division-by-zero guard).
+     *  write_probe_bounds_rejected   chains where the slot-relative
+     *                                computation overflowed or the
+     *                                would-be byte range escaped
+     *                                `[peer_iova, peer_iova +
+     *                                peer_recv_bytes)`. A non-zero
+     *                                value here is a real bug; the
+     *                                bounds helper is the same
+     *                                contract a future WRITE WR
+     *                                builder will use.
+     *  write_probe_address_max       running maximum of the
+     *                                would-be `remote_addr + len`
+     *                                value observed on a successful
+     *                                probe. CAS-bumped just like
+     *                                `send_chain_max_seen`.
+     */
+    std::atomic<Uint64> write_probe_eligible{0};
+    std::atomic<Uint64> write_probe_skipped_no_caps{0};
+    std::atomic<Uint64> write_probe_skipped_no_geom{0};
+    std::atomic<Uint64> write_probe_geometry_invalid{0};
+    std::atomic<Uint64> write_probe_bounds_rejected{0};
+    std::atomic<Uint64> write_probe_address_max{0};
   };
   /*
    * Phase 2: stats counters are written from both send and receive
