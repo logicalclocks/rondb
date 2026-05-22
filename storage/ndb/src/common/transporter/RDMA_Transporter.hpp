@@ -800,6 +800,25 @@ class RDMA_Transporter : public Transporter {
   Uint32 m_effective_inline_threshold;
 
   /*
+   * Phase 7: negotiated one-sided RDMA WRITE capability bitmap for this
+   * link, computed during run_endpoint_exchange() as
+   *   m_negotiated_write_caps = (local_caps & peer_caps)
+   * where each side's caps come from `rdma_endpoint_v1::caps` (the
+   * leading word of the wire record's former `reserved` block). Bits
+   * are defined alongside RDMA_CAP_* constants in RDMA_Transporter.cpp.
+   *
+   * The default (off-mode env / pre-Phase-7 peer) leaves this at 0,
+   * which preserves v1 SEND/RECV semantics. This phase ONLY reads the
+   * field inside log_stats(); no data-path branch consumes it. Phase 8
+   * will gate the actual one-sided WRITE switchover on individual bits
+   * in this value.
+   *
+   * Reset to 0 by reset_wire_state() so a reconnect renegotiates from
+   * scratch.
+   */
+  Uint32 m_negotiated_write_caps;
+
+  /*
    * Per-direction wire state. Reset by reset_wire_state(). All counters
    * use the 32-bit wraparound semantics from the wire header; comparison
    * logic that cares about ordering must use the standard "(a - b) <
@@ -1154,6 +1173,23 @@ class RDMA_Transporter : public Transporter {
     std::atomic<Uint64> mr_cache_evictions{0};
     std::atomic<Uint64> mr_cache_failures{0};
     std::atomic<Uint32> mr_cache_resident_max{0};
+    /*
+     * Phase 7: one-sided RDMA WRITE capability-negotiation counters.
+     * Both are bumped from run_endpoint_exchange() once per successful
+     * handshake, so they capture per-process reconnect cadence too.
+     *
+     *  write_caps_advertised   handshakes where our local cap bitmap
+     *                          was non-zero (NDB_RDMA_WRITE_MODE=
+     *                          advertise plus a device that supports
+     *                          remote WRITE).
+     *  write_caps_negotiated   handshakes where the AND of our local
+     *                          caps and the peer's caps was non-zero,
+     *                          i.e. both sides were ready and Phase 8
+     *                          would have been free to switch this
+     *                          link to one-sided WRITE.
+     */
+    std::atomic<Uint64> write_caps_advertised{0};
+    std::atomic<Uint64> write_caps_negotiated{0};
   };
   /*
    * Phase 2: stats counters are written from both send and receive
