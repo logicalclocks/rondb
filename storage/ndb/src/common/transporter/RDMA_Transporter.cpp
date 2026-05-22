@@ -1388,6 +1388,67 @@ static inline uint32_t rdma_local_write_caps(
 
 /*
  * --------------------------------------------------------------------------
+ * Phase 9: receive-side IBV_ACCESS_REMOTE_WRITE permission helpers
+ * --------------------------------------------------------------------------
+ *
+ * Two pure mode-driven helpers compute the verbs access flags for the
+ * receive MR and the QP INIT transition. Both return the same bitmask
+ * today:
+ *
+ *   OFF (default): IBV_ACCESS_LOCAL_WRITE only -- byte-identical to
+ *                  the pre-Phase-9 setup. Peers cannot land an RDMA
+ *                  WRITE on our receive buffer because neither the
+ *                  MR nor the QP grants the access.
+ *   ADVERTISE    : IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE.
+ *                  Permits inbound one-sided WRITEs once the peer has
+ *                  our rkey (granted via the Phase 8 geometry
+ *                  exchange, which itself is gated on negotiated
+ *                  caps). The permission is dormant in this phase
+ *                  because nobody actually posts WRITE WRs.
+ *
+ * The helpers split a pure `*_for_mode` core (driven by the TAP
+ * harness) from a thin wrapper that consults the cached env mode,
+ * mirroring the Phase 7 testability pattern.
+ *
+ * Both helpers are static at file scope, inside the anonymous
+ * namespace block that already contains the Phase 7 helpers and the
+ * MR-cache env parser below. File-internal linkage keeps the symbol
+ * table tidy; the wrappers are called from member-function
+ * definitions later in this translation unit.
+ */
+static inline int rdma_recv_mr_access_flags_for_mode(rdma_write_mode_t mode) {
+  /* Receive MR always needs LOCAL_WRITE so ibv_post_recv() can land
+   * bytes into the buffer. ADVERTISE additionally grants REMOTE_WRITE
+   * so a peer holding our rkey can use it on a future one-sided WRITE
+   * WR; we never grant REMOTE_READ or REMOTE_ATOMIC. */
+  if (mode == rdma_write_mode_t::ADVERTISE) {
+    return IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+  }
+  return IBV_ACCESS_LOCAL_WRITE;
+}
+
+static inline int rdma_recv_mr_access_flags() {
+  return rdma_recv_mr_access_flags_for_mode(rdma_write_mode_cached());
+}
+
+static inline int rdma_qp_init_access_flags_for_mode(rdma_write_mode_t mode) {
+  /* QP INIT access flags govern what verb operations the QP will
+   * accept inbound. The bitmask matches the recv MR helper above:
+   * ADVERTISE grants REMOTE_WRITE so the peer's WRITE WR is not
+   * rejected at the QP level. Both checks (MR access AND QP access)
+   * must pass for an inbound WRITE to land. */
+  if (mode == rdma_write_mode_t::ADVERTISE) {
+    return IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+  }
+  return IBV_ACCESS_LOCAL_WRITE;
+}
+
+static inline int rdma_qp_init_access_flags() {
+  return rdma_qp_init_access_flags_for_mode(rdma_write_mode_cached());
+}
+
+/*
+ * --------------------------------------------------------------------------
  * Phase 6: per-PD memory-region cache probe toggle
  * --------------------------------------------------------------------------
  *
@@ -3222,9 +3283,11 @@ bool RDMA_Transporter::allocate_verbs_resources() {
     return false;
   }
 
-  /* LOCAL_WRITE is the minimum required for ibv_post_recv() to write
-   * incoming bytes into the buffer; we do not enable remote access
-   * because the SEND/RECV design never grants peers an rkey. */
+  /* Send MR always needs only LOCAL_WRITE: it is the source of
+   * outbound SEND payload, never the target of a remote operation,
+   * and a peer never receives an rkey for it. Granting REMOTE_WRITE
+   * here would only enlarge the attack surface without enabling
+   * anything the protocol uses. */
   m_send_mr = ibv_reg_mr(m_pd, m_send_buf, (size_t)m_send_buffer_size,
                          IBV_ACCESS_LOCAL_WRITE);
   if (m_send_mr == nullptr) {
@@ -3233,13 +3296,29 @@ bool RDMA_Transporter::allocate_verbs_resources() {
     release_verbs_resources();
     return false;
   }
+  /* Recv MR: LOCAL_WRITE is the minimum required for ibv_post_recv()
+   * to land incoming bytes. Phase 9 additionally grants
+   * IBV_ACCESS_REMOTE_WRITE when NDB_RDMA_WRITE_MODE=advertise, so a
+   * peer that received our rkey via the Phase 8 geometry exchange
+   * can post a one-sided WRITE into this MR. The permission is
+   * dormant in this phase because the data path still posts SEND;
+   * the access flag is verbs-side preparation for a later
+   * switchover. The rkey itself is only shared with peers that also
+   * advertised (negotiation AND); a peer that did not advertise
+   * cannot reach the rkey and therefore cannot exploit the
+   * permission. */
+  const int recv_mr_access = rdma_recv_mr_access_flags();
   m_recv_mr = ibv_reg_mr(m_pd, m_recv_buf, (size_t)m_recv_buffer_size,
-                         IBV_ACCESS_LOCAL_WRITE);
+                         recv_mr_access);
   if (m_recv_mr == nullptr) {
     g_eventLogger->error("RDMA: ibv_reg_mr(recv) failed (errno=%d %s)", errno,
                          std::strerror(errno));
     release_verbs_resources();
     return false;
+  }
+  if ((recv_mr_access & IBV_ACCESS_REMOTE_WRITE) != 0) {
+    m_stats.recv_mr_remote_write_grants.fetch_add(
+        1u, std::memory_order_relaxed);
   }
 
   /* Step 6: Queue Pair (RC). */
@@ -4413,7 +4492,8 @@ void RDMA_Transporter::log_stats() const {
       "write_caps_advertised=%llu write_caps_negotiated=%llu "
       "negotiated_write_caps=0x%x "
       "geom_exchanges_ok=%llu geom_exchanges_failed=%llu "
-      "peer_recv_rkey=0x%x peer_recv_iova=0x%llx peer_recv_bytes=%u",
+      "peer_recv_rkey=0x%x peer_recv_iova=0x%llx peer_recv_bytes=%u "
+      "recv_mr_remote_write_grants=%llu",
       (unsigned)localNodeId, (unsigned)remoteNodeId,
       (unsigned)getTransporterIndex(), (unsigned)m_multi_transporter_instance,
       (unsigned)m_is_active, (unsigned)m_recv_thread_idx,
@@ -4519,7 +4599,14 @@ void RDMA_Transporter::log_stats() const {
           std::memory_order_relaxed),
       (unsigned)m_peer_recv_rkey,
       (unsigned long long)m_peer_recv_iova,
-      (unsigned)m_peer_recv_bytes);
+      (unsigned)m_peer_recv_bytes,
+      /* Phase 9: recv-MR REMOTE_WRITE grant counter. Zero in default
+       * off-mode (the access flag was not granted); bumped once per
+       * successful allocate_verbs_resources() in advertise mode. The
+       * permission is dormant because the data path still posts
+       * SEND. */
+      (unsigned long long)m_stats.recv_mr_remote_write_grants.load(
+          std::memory_order_relaxed));
 }
 
 void RDMA_Transporter::maybe_log_stats_heartbeat() {
@@ -4575,14 +4662,30 @@ void RDMA_Transporter::log_negotiated_attributes() const {
   const char *device_str =
       (m_device_name != nullptr) ? m_device_name : "<first-available>";
 
+  /* Phase 9: surface the verbs access flags that govern inbound
+   * one-sided WRITEs. The two flags are computed once per process
+   * from NDB_RDMA_WRITE_MODE; for an off-mode link both are "no",
+   * for an advertise-mode link both are "yes". Per-MR/per-QP
+   * heterogeneity is not possible today, so the strings always
+   * match. We still print both fields so operators can verify the
+   * MR and QP halves of the permission independently if a future
+   * change ever splits them. */
+  const bool recv_mr_remote_write =
+      (rdma_recv_mr_access_flags() & IBV_ACCESS_REMOTE_WRITE) != 0;
+  const bool qp_remote_write =
+      (rdma_qp_init_access_flags() & IBV_ACCESS_REMOTE_WRITE) != 0;
+
   g_eventLogger->info(
       "RDMA[node %u->%u]: verbs allocated dev=%s port=%u mtu=%uB "
       "qp_num=%u qd_send=%u qd_recv=%u max_inline=%u (requested=%u) "
-      "send_buf=%uB recv_buf=%uB gid_idx=%u",
+      "send_buf=%uB recv_buf=%uB gid_idx=%u "
+      "recv_mr_remote_write=%s qp_remote_write=%s",
       (unsigned)localNodeId, (unsigned)remoteNodeId, device_str, m_rdma_port,
       rdma_mtu_to_bytes(port_attr.active_mtu), (unsigned)m_qp->qp_num,
       m_queue_depth, m_queue_depth, m_effective_inline_threshold,
-      m_inline_threshold, m_send_buffer_size, m_recv_buffer_size, m_gid_index);
+      m_inline_threshold, m_send_buffer_size, m_recv_buffer_size, m_gid_index,
+      recv_mr_remote_write ? "yes" : "no",
+      qp_remote_write ? "yes" : "no");
 }
 
 /*
@@ -4948,10 +5051,15 @@ bool RDMA_Transporter::qp_transition_to_init() {
   attr.qp_state = IBV_QPS_INIT;
   attr.pkey_index = 0;
   attr.port_num = (uint8_t)m_rdma_port;
-  /* LOCAL_WRITE is required for ibv_post_recv() to land bytes in our
-   * MR. We do not enable REMOTE_READ/WRITE/ATOMIC because the
-   * SEND/RECV-only design does not grant peers an rkey. */
-  attr.qp_access_flags = IBV_ACCESS_LOCAL_WRITE;
+  /* Phase 9: LOCAL_WRITE is always required so ibv_post_recv() can
+   * land bytes into our MR. ADVERTISE additionally grants
+   * IBV_ACCESS_REMOTE_WRITE so a peer's one-sided WRITE WR is
+   * accepted at the QP level. Phase 8 already exchanges the rkey
+   * when caps are negotiated; both peers must have the rkey AND
+   * REMOTE_WRITE granted (on the MR and the QP) for a WRITE to land,
+   * so the permission is unreachable from off-mode peers. We never
+   * grant REMOTE_READ or REMOTE_ATOMIC. */
+  attr.qp_access_flags = rdma_qp_init_access_flags();
 
   const int mask = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT |
                    IBV_QP_ACCESS_FLAGS;
@@ -6014,6 +6122,92 @@ TAPTEST(RDMA_Transporter) {
     rdma_encode_geom_record(&rec, /*rkey=*/1u, /*iova=*/0u,
                             /*bytes=*/RDMA_GEOM_MAX_RECV_BYTES + 1u);
     OK(!rdma_validate_geom_record(&rec, nullptr, nullptr, nullptr));
+  }
+
+  /* ----- Phase 9: receive-side REMOTE_WRITE access-flag helpers -----
+   *
+   * Pure-helper coverage for rdma_recv_mr_access_flags_for_mode() and
+   * rdma_qp_init_access_flags_for_mode(). No verbs, no socket state,
+   * no env-var mutation: the OFF/ADVERTISE branches are driven via
+   * the explicit-mode entry points so the test ordering does not
+   * bleed into the Meyer's singleton that backs
+   * rdma_write_mode_cached(). The cached-env wrappers
+   * rdma_recv_mr_access_flags() and rdma_qp_init_access_flags() are
+   * deliberately NOT exercised here for the same reason as the
+   * Phase 7 block.
+   *
+   *   1. OFF returns IBV_ACCESS_LOCAL_WRITE only, byte-identical to
+   *      the pre-Phase-9 setup. This is the backwards-compat
+   *      guarantee that protects existing v1 SEND/RECV links.
+   *   2. ADVERTISE returns IBV_ACCESS_LOCAL_WRITE|IBV_ACCESS_REMOTE_WRITE
+   *      on both helpers, and never escapes that mask. We do not
+   *      grant REMOTE_READ or REMOTE_ATOMIC under any mode.
+   *   3. Symmetry: the MR helper and the QP helper return the same
+   *      bitmask in both modes today; the test pins that contract
+   *      so a future asymmetry surfaces here loudly. */
+  {
+    constexpr int RW_MASK =
+        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+    const int mr_off =
+        rdma_recv_mr_access_flags_for_mode(rdma_write_mode_t::OFF);
+    const int qp_off =
+        rdma_qp_init_access_flags_for_mode(rdma_write_mode_t::OFF);
+    const int mr_adv =
+        rdma_recv_mr_access_flags_for_mode(rdma_write_mode_t::ADVERTISE);
+    const int qp_adv =
+        rdma_qp_init_access_flags_for_mode(rdma_write_mode_t::ADVERTISE);
+
+    /* (1) OFF: LOCAL_WRITE only on both helpers. The exact-equality
+     * check is the backwards-compat statement: pre-Phase-9 setup
+     * used the bare literal IBV_ACCESS_LOCAL_WRITE, so off-mode must
+     * match it byte for byte. */
+    OK(mr_off == IBV_ACCESS_LOCAL_WRITE);
+    OK(qp_off == IBV_ACCESS_LOCAL_WRITE);
+
+    /* (2) ADVERTISE: LOCAL_WRITE|REMOTE_WRITE on both helpers. */
+    OK(mr_adv == RW_MASK);
+    OK(qp_adv == RW_MASK);
+
+    /* Composition: neither helper sets any bit outside RW_MASK in
+     * either mode. The OFF cases are checked too to defend against
+     * a stray bit being ORed in by mistake on the off path. */
+    OK((mr_off & ~RW_MASK) == 0);
+    OK((qp_off & ~RW_MASK) == 0);
+    OK((mr_adv & ~RW_MASK) == 0);
+    OK((qp_adv & ~RW_MASK) == 0);
+
+    /* LOCAL_WRITE is mandatory in every mode (the receive MR cannot
+     * land bytes via ibv_post_recv() without it, and the QP needs
+     * it to accept inbound payload). */
+    OK((mr_off & IBV_ACCESS_LOCAL_WRITE) != 0);
+    OK((qp_off & IBV_ACCESS_LOCAL_WRITE) != 0);
+    OK((mr_adv & IBV_ACCESS_LOCAL_WRITE) != 0);
+    OK((qp_adv & IBV_ACCESS_LOCAL_WRITE) != 0);
+
+    /* REMOTE_WRITE is set iff ADVERTISE on both helpers. */
+    OK((mr_off & IBV_ACCESS_REMOTE_WRITE) == 0);
+    OK((qp_off & IBV_ACCESS_REMOTE_WRITE) == 0);
+    OK((mr_adv & IBV_ACCESS_REMOTE_WRITE) != 0);
+    OK((qp_adv & IBV_ACCESS_REMOTE_WRITE) != 0);
+
+    /* Security: REMOTE_READ and REMOTE_ATOMIC must never be granted
+     * by either helper under any mode. This pins the threat-model
+     * claim that an inbound one-sided WRITE is the only one-sided
+     * operation a peer can land on our recv MR/QP. */
+    OK((mr_off & IBV_ACCESS_REMOTE_READ) == 0);
+    OK((qp_off & IBV_ACCESS_REMOTE_READ) == 0);
+    OK((mr_adv & IBV_ACCESS_REMOTE_READ) == 0);
+    OK((qp_adv & IBV_ACCESS_REMOTE_READ) == 0);
+    OK((mr_off & IBV_ACCESS_REMOTE_ATOMIC) == 0);
+    OK((qp_off & IBV_ACCESS_REMOTE_ATOMIC) == 0);
+    OK((mr_adv & IBV_ACCESS_REMOTE_ATOMIC) == 0);
+    OK((qp_adv & IBV_ACCESS_REMOTE_ATOMIC) == 0);
+
+    /* (3) Symmetry between the MR helper and the QP helper under
+     * both modes. If a future change splits them, this test forces
+     * the author to acknowledge the split here. */
+    OK(mr_off == qp_off);
+    OK(mr_adv == qp_adv);
   }
 
   return 1;  /* TAP success */
