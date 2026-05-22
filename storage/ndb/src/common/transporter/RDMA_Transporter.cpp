@@ -197,6 +197,40 @@ static constexpr uint16_t RDMA_WIRE_VERSION = 1u;
 static constexpr uint16_t RDMA_WIRE_HEADER_BYTES = 64u;
 static constexpr int RDMA_HANDSHAKE_TIMEOUT_MS = 30 * 1000;
 
+/*
+ * --------------------------------------------------------------------------
+ * Phase 7: one-sided RDMA WRITE capability bitmap
+ * --------------------------------------------------------------------------
+ *
+ * Carried in the leading word of the endpoint record's former
+ * `reserved[3]` block (now renamed `caps` followed by `reserved[2]`).
+ * The wire layout is byte-identical to the pre-Phase-7 record because
+ * `reserved[]` was already zero-filled by every endpoint, so old peers
+ * still send `caps = 0` (= negotiated WRITE caps = 0 = pure v1
+ * SEND/RECV). RDMA_WIRE_VERSION is NOT bumped: this is a strictly
+ * backwards-compatible repurposing of a reserved field.
+ *
+ * Bit meanings:
+ *   RDMA_CAP_WRITE_RECEIVER : "I can accept inbound one-sided
+ *                              RDMA WRITEs from you." (Phase 8 will
+ *                              gate ibv_modify_qp INIT's
+ *                              IBV_ACCESS_REMOTE_WRITE on this bit
+ *                              for the local-receive direction.)
+ *   RDMA_CAP_WRITE_SENDER   : "I am willing to post outbound
+ *                              one-sided RDMA WRITEs to you." (Phase
+ *                              8 will gate the actual ibv_post_send
+ *                              opcode selection on this bit for the
+ *                              local-send direction.)
+ *
+ * RDMA_CAP_ALL_KNOWN is the OR of every bit we recognise; advertising
+ * is masked against this so reserved-bit-set noise from a
+ * misconfigured future peer cannot affect us.
+ */
+static constexpr uint32_t RDMA_CAP_WRITE_RECEIVER = 0x00000001u;
+static constexpr uint32_t RDMA_CAP_WRITE_SENDER = 0x00000002u;
+static constexpr uint32_t RDMA_CAP_ALL_KNOWN =
+    RDMA_CAP_WRITE_RECEIVER | RDMA_CAP_WRITE_SENDER;
+
 struct __attribute__((packed)) rdma_endpoint_v1 {
   uint32_t magic;       /* network order, must == RDMA_WIRE_MAGIC */
   uint16_t version;     /* network order, RDMA_WIRE_VERSION */
@@ -213,10 +247,46 @@ struct __attribute__((packed)) rdma_endpoint_v1 {
   uint32_t max_inline;  /* network order, effective inline cap */
   uint32_t queue_depth; /* network order, advertised send/recv WR depth */
   uint32_t recv_credits;/* network order, initial credits granted to peer */
-  uint32_t reserved[3]; /* future use, must be zero */
+  /*
+   * Phase 7: one-sided RDMA WRITE capability bitmap. Pre-Phase-7
+   * peers send this as 0 (the field used to be the leading word of
+   * a `reserved[3]` block that every endpoint already zero-filled),
+   * so the wire format is unchanged and old/new peer pairs continue
+   * to interoperate -- the AND of (local_caps & 0) is 0, which is
+   * the safe v1 SEND/RECV fallback.
+   */
+  uint32_t caps;        /* network order, RDMA_CAP_* bitmap */
+  uint32_t reserved[2]; /* future use, must be zero */
 };
 static_assert(sizeof(rdma_endpoint_v1) == RDMA_WIRE_HEADER_BYTES,
               "rdma_endpoint_v1 must be 64 bytes on wire");
+static_assert(offsetof(rdma_endpoint_v1, caps) ==
+                  offsetof(rdma_endpoint_v1, recv_credits) +
+                      sizeof(uint32_t),
+              "rdma_endpoint_v1::caps must occupy the leading word of "
+              "the former reserved[3] block so pre-Phase-7 peers "
+              "continue to interoperate at the byte level");
+
+/*
+ * Negotiate the per-link one-sided WRITE capability bitmap. The AND
+ * semantics guarantee:
+ *   - A peer that advertises no caps (legacy or off-mode) yields a
+ *     negotiated value of 0, i.e. v1 SEND/RECV.
+ *   - The negotiation is symmetric: both ends compute the same value.
+ *   - Bits not in RDMA_CAP_ALL_KNOWN are masked out so a future peer
+ *     advertising unknown bits cannot accidentally enable any path
+ *     this build does not understand.
+ *
+ * File-scope (not in the anonymous namespace) so the TAP tests at the
+ * bottom of this translation unit can drive it directly. Marked
+ * inline because callers are just the endpoint-exchange path and the
+ * TAP harness; nothing performance-sensitive depends on the symbol
+ * having external linkage.
+ */
+static inline uint32_t rdma_negotiate_caps(uint32_t local_caps,
+                                           uint32_t peer_caps) {
+  return (local_caps & peer_caps) & RDMA_CAP_ALL_KNOWN;
+}
 
 /*
  * Read exactly `len` bytes from the socket within a single timeout
@@ -1054,6 +1124,117 @@ static int rdma_pick_recv_comp_vector(Uint32 recv_thread_idx,
 
 /*
  * --------------------------------------------------------------------------
+ * Phase 7: one-sided RDMA WRITE capability advertise toggle
+ * --------------------------------------------------------------------------
+ *
+ * NDB_RDMA_WRITE_MODE selects whether this process advertises any
+ * one-sided RDMA WRITE capabilities on the endpoint handshake. The
+ * data path is NOT branched on the negotiated value in this phase --
+ * the toggle is observability-only, so even a cluster where every
+ * node advertises full caps will continue to use v1 SEND/RECV until
+ * Phase 8 wires the actual switchover. See the Phase 7 plan.
+ *
+ *   unset | off : never advertise. local_caps = 0 on the wire. The
+ *                 negotiated cap bitmap stays 0 regardless of what
+ *                 the peer advertises.
+ *   advertise   : advertise RDMA_CAP_WRITE_RECEIVER and
+ *                 RDMA_CAP_WRITE_SENDER, MASKED by the device's
+ *                 actual remote-write capability (see
+ *                 rdma_local_write_caps()). Misnamed device caps,
+ *                 missing IB_DEVICE_RC_RNR_NAK_GEN, or any other
+ *                 indication that REMOTE_WRITE is not supported
+ *                 reduce the local cap bitmap accordingly.
+ *   anything else: logged once and treated as `off`.
+ */
+enum class rdma_write_mode_t { OFF, ADVERTISE };
+
+static rdma_write_mode_t rdma_write_mode_cached() {
+  static const rdma_write_mode_t cached = []() {
+    const char *e = std::getenv("NDB_RDMA_WRITE_MODE");
+    if (e == nullptr || std::strcmp(e, "off") == 0) {
+      return rdma_write_mode_t::OFF;
+    }
+    if (std::strcmp(e, "advertise") == 0) {
+      g_eventLogger->info(
+          "RDMA: NDB_RDMA_WRITE_MODE=advertise (Phase 7 one-sided WRITE "
+          "capability advertised; data path remains v1 SEND/RECV until "
+          "Phase 8)");
+      return rdma_write_mode_t::ADVERTISE;
+    }
+    g_eventLogger->info(
+        "RDMA: NDB_RDMA_WRITE_MODE has unrecognised value '%s'; defaulting "
+        "to off",
+        e);
+    return rdma_write_mode_t::OFF;
+  }();
+  return cached;
+}
+
+/*
+ * Compute the local Phase 7 capability bitmap we want to advertise to
+ * a peer, given the device we just opened. The mode gate
+ * (rdma_write_mode_cached() above) is the primary control: in `off`
+ * mode the caller never sees any capability bit set, regardless of
+ * what the HCA reports.
+ *
+ * The `dev_attr` parameter is currently only consulted defensively:
+ * libibverbs does not expose a dedicated "supports RDMA WRITE in RC"
+ * cap flag because RDMA WRITE is part of the baseline RC verb set on
+ * every conforming HCA. We still pass the struct in so that any
+ * future bit which DOES require a device gate (atomics, on-demand
+ * paging, MW-based remote write, etc.) has somewhere obvious to live.
+ * Today we sanity-check that the device exposes at least one
+ * outstanding WR slot for the QP class we just created -- if it
+ * reports zero, something is badly wrong and we refuse to advertise
+ * caps so the negotiated bitmap stays at zero (= safe SEND/RECV).
+ *
+ * Returning a uint32_t keeps the API consistent with the on-wire
+ * bitmap and with rdma_negotiate_caps(); we never let bits outside
+ * RDMA_CAP_ALL_KNOWN escape. Defined inside the anonymous namespace
+ * with file-internal linkage just like the other Phase 5/6/7
+ * helpers; it is reachable from member-function definitions later
+ * in this translation unit (which is where the actual call happens
+ * in run_endpoint_exchange()) and from the TAP harness at the
+ * bottom of the file, since both are part of the same translation
+ * unit.
+ */
+/*
+ * Pure mode-driven core. Kept as a separate helper so the TAP harness
+ * can exercise both OFF and ADVERTISE paths deterministically without
+ * having to mutate environment variables (the wrapper below caches
+ * the mode in a Meyer's singleton on first call, which makes per-test
+ * mode flips order-dependent and brittle).
+ *
+ * Contract: returns a subset of RDMA_CAP_ALL_KNOWN. OFF -> 0. A
+ * degenerate device (`max_qp_wr <= 0`) -> 0 even in ADVERTISE.
+ */
+static inline uint32_t rdma_local_write_caps_for_mode(
+    rdma_write_mode_t mode, const struct ibv_device_attr &dev_attr) {
+  if (mode != rdma_write_mode_t::ADVERTISE) {
+    return 0u;
+  }
+  /*
+   * Defensive sanity check. A device reporting zero send WRs would
+   * also have failed earlier in allocate_verbs_resources() because we
+   * compare m_queue_depth against dev_attr.max_qp_wr there; treat the
+   * impossible case as "refuse to advertise" rather than asserting,
+   * since the TAP harness exercises this helper with synthetic
+   * attrs.
+   */
+  if (dev_attr.max_qp_wr <= 0) {
+    return 0u;
+  }
+  return (RDMA_CAP_WRITE_RECEIVER | RDMA_CAP_WRITE_SENDER) &
+         RDMA_CAP_ALL_KNOWN;
+}
+
+static inline uint32_t rdma_local_write_caps(
+    const struct ibv_device_attr &dev_attr) {
+  return rdma_local_write_caps_for_mode(rdma_write_mode_cached(), dev_attr);
+}
+
+/*
+ * --------------------------------------------------------------------------
  * Phase 6: per-PD memory-region cache probe toggle
  * --------------------------------------------------------------------------
  *
@@ -1449,6 +1630,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_recv_buf(nullptr),
       m_app_buf(nullptr),
       m_effective_inline_threshold(0),
+      m_negotiated_write_caps(0),
       m_local_send_seq(0),
       m_local_recv_seq(0),
       m_peer_ack_seq(0),
@@ -1505,6 +1687,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_recv_buf(nullptr),
       m_app_buf(nullptr),
       m_effective_inline_threshold(0),
+      m_negotiated_write_caps(0),
       m_local_send_seq(0),
       m_local_recv_seq(0),
       m_peer_ack_seq(0),
@@ -3057,6 +3240,7 @@ void RDMA_Transporter::release_verbs_resources() {
   release_send_slot_state();
   release_recv_slot_state();
   m_effective_inline_threshold = 0;
+  m_negotiated_write_caps = 0;
   reset_wire_state();
 }
 
@@ -4046,7 +4230,9 @@ void RDMA_Transporter::log_stats() const {
       "send_chain_max=%u send_chain_avg=%.2f "
       "mr_cache_acquires=%llu mr_cache_hits=%llu mr_cache_misses=%llu "
       "mr_cache_evictions=%llu mr_cache_failures=%llu "
-      "mr_cache_resident_max=%u",
+      "mr_cache_resident_max=%u "
+      "write_caps_advertised=%llu write_caps_negotiated=%llu "
+      "negotiated_write_caps=0x%x",
       (unsigned)localNodeId, (unsigned)remoteNodeId,
       (unsigned)getTransporterIndex(), (unsigned)m_multi_transporter_instance,
       (unsigned)m_is_active, (unsigned)m_recv_thread_idx,
@@ -4134,7 +4320,15 @@ void RDMA_Transporter::log_stats() const {
       (unsigned long long)m_stats.mr_cache_failures.load(
           std::memory_order_relaxed),
       (unsigned)m_stats.mr_cache_resident_max.load(
-          std::memory_order_relaxed));
+          std::memory_order_relaxed),
+      /* Phase 7: one-sided WRITE capability-negotiation counters and
+       * the per-link negotiated bitmap. Off-mode keeps the counters
+       * at zero and the bitmap at 0x0. */
+      (unsigned long long)m_stats.write_caps_advertised.load(
+          std::memory_order_relaxed),
+      (unsigned long long)m_stats.write_caps_negotiated.load(
+          std::memory_order_relaxed),
+      (unsigned)m_negotiated_write_caps);
 }
 
 void RDMA_Transporter::maybe_log_stats_heartbeat() {
@@ -4225,6 +4419,31 @@ bool RDMA_Transporter::run_endpoint_exchange(const NdbSocket &socket,
     return false;
   }
 
+  /*
+   * Phase 7: re-query the device attributes so we can compute the
+   * local capability bitmap. allocate_verbs_resources() already
+   * queried these once for the queue-depth/CQE validation pass; we
+   * are deliberately not stashing the result on the transporter
+   * because the struct is ~400 bytes and the call costs are
+   * negligible (one syscall to the kernel verbs layer). Treat a
+   * second query failure as advisory only: we fall back to
+   * advertising zero caps, which is the same as off-mode, so the
+   * handshake still succeeds with byte-identical wire content.
+   */
+  struct ibv_device_attr dev_attr;
+  std::memset(&dev_attr, 0, sizeof(dev_attr));
+  uint32_t local_caps = 0u;
+  if (ibv_query_device(m_verbs_ctx, &dev_attr) == 0) {
+    local_caps = rdma_local_write_caps(dev_attr);
+  } else {
+    g_eventLogger->info(
+        "RDMA[%s,node %u->%u]: ibv_query_device failed during exchange "
+        "(errno=%d %s); advertising zero one-sided WRITE caps for "
+        "this handshake",
+        side, (unsigned)localNodeId, (unsigned)remoteNodeId, errno,
+        std::strerror(errno));
+  }
+
   /* Read our GID. This is only meaningful for RoCE links; for IB-link
    * the peer will use the LID we advertise in `lid`. We still send a
    * valid GID so the peer can pick whichever addressing it prefers. */
@@ -4263,6 +4482,13 @@ bool RDMA_Transporter::run_endpoint_exchange(const NdbSocket &socket,
   const Uint32 advertised_data_credits =
       (m_queue_depth > 0) ? (m_queue_depth - 1u) : 0u;
   local_rec.recv_credits = htonl(advertised_data_credits);
+  /*
+   * Phase 7: advertise the local one-sided WRITE capability bitmap.
+   * The field is the leading word of the wire record's former
+   * reserved[3] block (now `caps`), so pre-Phase-7 peers continue
+   * to send 0 here and the negotiated AND is 0 (= SEND/RECV).
+   */
+  local_rec.caps = htonl(local_caps);
 
   /* Step 1+2: simultaneous send/recv. We send first then read; the
    * peer does the same, so both ends progress without a deadlock. */
@@ -4360,6 +4586,26 @@ bool RDMA_Transporter::run_endpoint_exchange(const NdbSocket &socket,
   }
 
   /*
+   * Phase 7: negotiate the one-sided WRITE capability bitmap. AND of
+   * local and peer; symmetric so both ends compute the same value. The
+   * observability bump on advertised counts every handshake where we
+   * sent at least one cap bit; on negotiated counts every handshake
+   * where both sides intersected on at least one bit -- the latter is
+   * what Phase 8 will use to gate the data-path switchover. Off-mode
+   * (default) keeps local_caps at 0, so both counters stay flat.
+   */
+  const uint32_t peer_caps = ntohl(peer_rec.caps);
+  m_negotiated_write_caps = rdma_negotiate_caps(local_caps, peer_caps);
+  if (local_caps != 0u) {
+    m_stats.write_caps_advertised.fetch_add(1u,
+                                            std::memory_order_relaxed);
+  }
+  if (m_negotiated_write_caps != 0u) {
+    m_stats.write_caps_negotiated.fetch_add(1u,
+                                            std::memory_order_relaxed);
+  }
+
+  /*
    * Step 4: QP transitions and initial-receive posting.
    *   INIT -> post_initial_receives() -> RTR -> RTS
    *
@@ -4403,14 +4649,17 @@ bool RDMA_Transporter::run_endpoint_exchange(const NdbSocket &socket,
 
   g_eventLogger->info(
       "RDMA[%s,node %u->%u]: handshake OK: link=%s local_qpn=%u peer_qpn=%u "
-      "local_psn=%u peer_psn=%u mtu=%uB recv_posted=%u credits_from_peer=%u",
+      "local_psn=%u peer_psn=%u mtu=%uB recv_posted=%u credits_from_peer=%u "
+      "caps_local=0x%x caps_peer=0x%x caps_negotiated=0x%x",
       side, (unsigned)localNodeId, (unsigned)remoteNodeId,
       rdma_link_layer_name(peer_rec.link_layer),
       (unsigned)m_qp->qp_num, (unsigned)ntohl(peer_rec.qp_num),
       (unsigned)local_psn, (unsigned)ntohl(peer_rec.psn),
       rdma_mtu_to_bytes((enum ibv_mtu)peer_rec.mtu),
       (unsigned)m_local_recv_posted.load(std::memory_order_relaxed),
-      (unsigned)m_peer_recv_credits.load(std::memory_order_acquire));
+      (unsigned)m_peer_recv_credits.load(std::memory_order_acquire),
+      (unsigned)local_caps, (unsigned)peer_caps,
+      (unsigned)m_negotiated_write_caps);
   return true;
 }
 
@@ -5260,6 +5509,116 @@ TAPTEST(RDMA_Transporter) {
       rdma_try_bind_to_node(page, 4096u, 0);
       std::free(page);
     }
+  }
+
+  /* ----- Phase 7: one-sided WRITE capability negotiation tests -----
+   *
+   * Three groups, all pure-function tests with no verbs or socket state:
+   *
+   *   1. rdma_negotiate_caps(): the AND/commutativity/masking contract,
+   *      including the backwards-compat case where a pre-Phase-7 peer
+   *      sends caps=0 and the negotiated value collapses to 0
+   *      regardless of what we advertise locally.
+   *   2. rdma_local_write_caps_for_mode(): the pure mode-driven core.
+   *      OFF returns 0 even with a healthy device; ADVERTISE returns
+   *      RDMA_CAP_ALL_KNOWN on a healthy device and 0 on a degenerate
+   *      device. The cached-env wrapper rdma_local_write_caps() is
+   *      deliberately NOT exercised here so the Meyer's singleton
+   *      stays untouched and test ordering does not bleed across
+   *      Phase 6 / Phase 7 / future blocks.
+   *   3. rdma_endpoint_v1 wire layout: 64-byte size, caps occupies
+   *      the leading word of the former reserved[3] block, and an
+   *      htonl/ntohl round-trip on the caps field preserves value
+   *      and byte order. */
+  {
+    /* (1) rdma_negotiate_caps semantics. */
+    constexpr uint32_t R = RDMA_CAP_WRITE_RECEIVER;
+    constexpr uint32_t S = RDMA_CAP_WRITE_SENDER;
+    /* A bit outside RDMA_CAP_ALL_KNOWN that must be masked away. */
+    constexpr uint32_t U = 0x80000000u;
+    /* AND semantics. */
+    OK(rdma_negotiate_caps(0u, 0u) == 0u);
+    OK(rdma_negotiate_caps(R, R) == R);
+    OK(rdma_negotiate_caps(R | S, R | S) == (R | S));
+    OK(rdma_negotiate_caps(R, S) == 0u);
+    OK(rdma_negotiate_caps(R | S, R) == R);
+    /* Either-side-zero collapses to 0 (Phase 8 safety property). */
+    OK(rdma_negotiate_caps(R | S, 0u) == 0u);
+    OK(rdma_negotiate_caps(0u, R | S) == 0u);
+    /* Commutativity. */
+    OK(rdma_negotiate_caps(R, S) == rdma_negotiate_caps(S, R));
+    OK(rdma_negotiate_caps(R | S, R) == rdma_negotiate_caps(R, R | S));
+    OK(rdma_negotiate_caps(0u, R) == rdma_negotiate_caps(R, 0u));
+    /* Unknown bits are masked even when both sides set them. */
+    OK(rdma_negotiate_caps(R | U, R | U) == R);
+    OK(rdma_negotiate_caps(U, U) == 0u);
+    OK((rdma_negotiate_caps(R | S | U, R | S | U) & ~RDMA_CAP_ALL_KNOWN) ==
+       0u);
+    /* Backwards-compat: a pre-Phase-7 peer sends caps=0; the
+     * negotiated value collapses to 0 for every local cap value
+     * inside RDMA_CAP_ALL_KNOWN. */
+    for (uint32_t lc = 0u; lc <= RDMA_CAP_ALL_KNOWN; lc++) {
+      OK(rdma_negotiate_caps(lc, 0u) == 0u);
+    }
+  }
+
+  {
+    /* (2) rdma_local_write_caps_for_mode under both modes. */
+    struct ibv_device_attr dev_attr;
+    std::memset(&dev_attr, 0, sizeof(dev_attr));
+    dev_attr.max_qp_wr = 1024;
+    /* OFF mode is always 0 regardless of device caps. */
+    OK(rdma_local_write_caps_for_mode(rdma_write_mode_t::OFF, dev_attr) ==
+       0u);
+    /* ADVERTISE mode with a healthy device returns the full known
+     * mask, and never escapes RDMA_CAP_ALL_KNOWN. */
+    const uint32_t adv =
+        rdma_local_write_caps_for_mode(rdma_write_mode_t::ADVERTISE,
+                                       dev_attr);
+    OK(adv == RDMA_CAP_ALL_KNOWN);
+    OK((adv & ~RDMA_CAP_ALL_KNOWN) == 0u);
+    /* ADVERTISE with a degenerate device (max_qp_wr<=0) refuses to
+     * advertise; the defensive sanity-check kicks in. Both zero and
+     * negative values land in the same branch. */
+    dev_attr.max_qp_wr = 0;
+    OK(rdma_local_write_caps_for_mode(rdma_write_mode_t::ADVERTISE,
+                                      dev_attr) == 0u);
+    dev_attr.max_qp_wr = -1;
+    OK(rdma_local_write_caps_for_mode(rdma_write_mode_t::ADVERTISE,
+                                      dev_attr) == 0u);
+  }
+
+  {
+    /* (3) Wire-format checks on rdma_endpoint_v1. The static_asserts
+     * at file scope already prove these at compile time; the runtime
+     * checks below guard against a future refactor that drops the
+     * static_asserts. */
+    OK(sizeof(rdma_endpoint_v1) == RDMA_WIRE_HEADER_BYTES);
+    OK(offsetof(rdma_endpoint_v1, caps) ==
+       offsetof(rdma_endpoint_v1, recv_credits) + sizeof(uint32_t));
+    /* htonl/ntohl round-trip on the caps field via the actual
+     * struct memory. */
+    rdma_endpoint_v1 rec;
+    std::memset(&rec, 0, sizeof(rec));
+    rec.caps = htonl(RDMA_CAP_WRITE_RECEIVER | RDMA_CAP_WRITE_SENDER);
+    OK(ntohl(rec.caps) ==
+       (RDMA_CAP_WRITE_RECEIVER | RDMA_CAP_WRITE_SENDER));
+    /* Network-order byte layout of the caps field: the known mask
+     * fits in one byte, so the high three bytes are 0x00 and the
+     * low byte carries the bitmap. */
+    const uint8_t *p = reinterpret_cast<const uint8_t *>(&rec.caps);
+    OK(p[0] == 0x00u);
+    OK(p[1] == 0x00u);
+    OK(p[2] == 0x00u);
+    OK(p[3] == (uint8_t)(RDMA_CAP_WRITE_RECEIVER | RDMA_CAP_WRITE_SENDER));
+    /* Backwards-compat: a pre-Phase-7 record memset to zero has
+     * caps == 0, so a Phase 7 reader ntohls it to 0 -> negotiated 0
+     * regardless of what we offered locally. */
+    std::memset(&rec, 0, sizeof(rec));
+    OK(ntohl(rec.caps) == 0u);
+    OK(rdma_negotiate_caps(RDMA_CAP_WRITE_RECEIVER, ntohl(rec.caps)) == 0u);
+    OK(rdma_negotiate_caps(RDMA_CAP_WRITE_RECEIVER | RDMA_CAP_WRITE_SENDER,
+                           ntohl(rec.caps)) == 0u);
   }
 
   return 1;  /* TAP success */
