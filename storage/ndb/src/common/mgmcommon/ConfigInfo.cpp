@@ -2254,14 +2254,29 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "System for node 2 in connection", ConfigInfo::CI_INTERNAL, false,
      ConfigInfo::CI_STRING, nullptr, nullptr, nullptr},
 
+    /*
+     * Default 4 MiB so the runtime per-slot geometry check in
+     * RDMA_Transporter::send_slot_size_or_zero() / recv_slot_size_or_zero()
+     * has room for a full max-size Protocol6 signal AND the 24-byte
+     * RDMA framing header at the default RdmaQueueDepth of 64:
+     *   4 MiB / 64 = 65536 bytes per slot, comfortably above the
+     *   required minimum of 24 + MAX_RECV_MESSAGE_BYTESIZE = 32792.
+     * The previous default of 2 MiB produced exactly 32 KiB per slot
+     * with QD=64, which is equal to MAX_*_MESSAGE_BYTESIZE and leaves
+     * zero room for the header -- the validator therefore rejected
+     * the configuration and connect_server_impl() failed in a tight
+     * reconnect loop. The schema minimum of 256K still satisfies the
+     * validator at lower queue depths, so the lower bound is
+     * unchanged.
+     */
     {CFG_RDMA_SEND_BUFFER_SIZE, "RdmaSendBufferMemory", "RDMA",
      "Bytes of registered staging memory for outbound RDMA SEND WRs",
-     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "2M", "256K",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "4M", "256K",
      STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_RDMA_RECV_BUFFER_SIZE, "RdmaRecvBufferMemory", "RDMA",
      "Bytes of registered staging memory for inbound RDMA RECV WRs",
-     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "2M", "256K",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "4M", "256K",
      STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_RDMA_QUEUE_DEPTH, "RdmaQueueDepth", "RDMA",
