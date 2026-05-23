@@ -401,6 +401,28 @@ class RDMA_Transporter : public Transporter {
    *                    equals the slot's own index, so one CQE retires
    *                    one slot and the existing semantics are
    *                    preserved exactly.
+   *  in_flight         std::atomic<bool> claimed by find_free_send_slot
+   *                    via compare_exchange and released by
+   *                    reap_send_completions / retire_send_chain. The
+   *                    atomic is restored for the gated API-to-DB
+   *                    path: on the API side find_free_send_slot can
+   *                    be reached concurrently from doSend() and from
+   *                    recv_thread_emit_credit_only() -> post_credit_
+   *                    only_locked(), without the per-transporter
+   *                    send lock serialising them. A plain bool would
+   *                    allow two callers to read the same slot as
+   *                    free and both encode headers into slot_buf,
+   *                    producing a SEND whose sge.length disagrees
+   *                    with the encoded payload_len; the receiver
+   *                    then disconnects with TE_RDMA_INVALID_HEADER.
+   *                    The CAS in find_free_send_slot plus implicit
+   *                    seq_cst operator=(bool) / operator bool() on
+   *                    the read sites give strict slot ownership
+   *                    without changing the caller-side lock
+   *                    contract. DB-DB-only deployments pay only the
+   *                    cost of a seq_cst load/store per slot
+   *                    transition (still single-instruction on
+   *                    x86_64/arm64).
    *  is_signaled_tail  true iff this slot's WR was posted with
    *                    IBV_SEND_SIGNALED. The reaper rejects CQEs for
    *                    slots that are not signaled tails so a verbs-
@@ -411,17 +433,24 @@ class RDMA_Transporter : public Transporter {
    * retire_send_chain() takes a pointer to it in its public signature
    * so the TAP test can drive the helper without a transporter. The
    * instance member m_send_slots remains private below.
+   *
+   * NB: std::atomic<bool> is not copy-constructible, which makes
+   * rdma_send_slot non-copyable too. The struct is only ever
+   * default-constructed inside an array (`new rdma_send_slot[n]`)
+   * and accessed through pointers / references, so this is fine.
    */
   struct rdma_send_slot {
     Uint32 payload_len;
     Uint32 chain_tail_slot;
-    bool in_flight;
+    std::atomic<bool> in_flight;
     bool is_signaled_tail;
   };
   /* Compile-time guard: the slot struct lives on the send-thread hot
-   * cacheline. The current layout is 4 + 4 + 1 + 1 + 2 padding = 12
-   * bytes; keeping it <= 16 bytes ensures a queue_depth of 4096 fits
-   * inside 64 KB and that future fields stay deliberate. */
+   * cacheline. The current layout is 4 + 4 + 1 (atomic<bool>) + 1 +
+   * 2 padding = 12 bytes; keeping it <= 16 bytes ensures a
+   * queue_depth of 4096 fits inside 64 KB and that future fields
+   * stay deliberate. std::atomic<bool> is lock-free and matches
+   * sizeof(bool) on every platform RonDB currently targets. */
   static_assert(sizeof(rdma_send_slot) <= 16,
                 "Phase 4: rdma_send_slot must stay small to keep the "
                 "send-thread hot block compact.");

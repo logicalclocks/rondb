@@ -113,6 +113,16 @@ static void create_rdma_config(ConfigValuesFactory &cvf) {
   require(cvf.put(CFG_RDMA_RNR_RETRY_COUNT, 7));
   cvf.closeSection();
 
+  /*
+   * Second RDMA section: API-to-DB pair with the gate explicitly
+   * enabled (AllowApiToDbRdma=1). Exercises the round-trip
+   * serialization of the new boolean ParamInfo entry alongside the
+   * existing RDMA tunables. The gate would normally be enforced
+   * during config-file parsing in ConfigInfo.cpp; here we are
+   * building a ConfigValues block directly so the validator does
+   * not run, but the v1/v2 pack/unpack helpers must still preserve
+   * the bit.
+   */
   require(cvf.createSection(CONFIG_SECTION_CONNECTION, RDMA_TYPE));
   require(cvf.put(CFG_CONNECTION_NODE_1, 10));
   require(cvf.put(CFG_CONNECTION_NODE_2, 1));
@@ -135,11 +145,19 @@ static void create_rdma_config(ConfigValuesFactory &cvf) {
   require(cvf.put(CFG_RDMA_TRAFFIC_CLASS, static_cast<Uint32>(0)));
   require(cvf.put(CFG_RDMA_RETRY_COUNT, 7));
   require(cvf.put(CFG_RDMA_RNR_RETRY_COUNT, 7));
+  require(cvf.put(CFG_RDMA_ALLOW_API_TO_DB, 1));
   cvf.closeSection();
 
   require(cvf.commit(false));
 }
 
+/*
+ * Per-section verifier used by both the DB-DB and API-DB rounds of
+ * verify_rdma_config below. expected_allow_api_db is the value the
+ * caller expects to read for CFG_RDMA_ALLOW_API_TO_DB; pass
+ * UINT32_MAX to skip the check (used by the DB-DB section which did
+ * not set the field).
+ */
 static void verify_rdma_connection(ConfigValues::ConstIterator &iter,
                                    Uint32 expected_node1,
                                    Uint32 expected_node2,
@@ -149,7 +167,8 @@ static void verify_rdma_connection(ConfigValues::ConstIterator &iter,
                                    Uint32 expected_node_id_server,
                                    Uint32 expected_send_signal_id,
                                    Uint32 expected_checksum,
-                                   Uint32 expected_presend_checksum) {
+                                   Uint32 expected_presend_checksum,
+                                   Uint32 expected_allow_api_db) {
   Uint32 value = 0;
   const char *string_value = nullptr;
 
@@ -197,6 +216,10 @@ static void verify_rdma_connection(ConfigValues::ConstIterator &iter,
   require(value == 7);
   require(iter.get(CFG_RDMA_RNR_RETRY_COUNT, &value));
   require(value == 7);
+  if (expected_allow_api_db != UINT32_MAX) {
+    require(iter.get(CFG_RDMA_ALLOW_API_TO_DB, &value));
+    require(value == expected_allow_api_db);
+  }
 }
 
 static void verify_rdma_config(const ConfigValues &cfg) {
@@ -219,18 +242,24 @@ static void verify_rdma_config(const ConfigValues &cfg) {
   const Uint32 checksum_enabled = 1;
   const Uint32 presend_checksum_disabled = 0;
 
+  /* Section 0: DB-DB. AllowApiToDbRdma is not set on this section,
+   * so the verifier skips the check via UINT32_MAX. */
   require(iter.openSection(CONFIG_SECTION_CONNECTION, 0));
   verify_rdma_connection(iter, 1, 2, "db1.example.com",
                          "db2-new.example.com", dynamic_server_port,
                          db1_node_id_server, send_signal_id_enabled,
-                         checksum_enabled, presend_checksum_disabled);
+                         checksum_enabled, presend_checksum_disabled,
+                         UINT32_MAX);
   iter.closeSection();
 
+  /* Section 1: API-DB with AllowApiToDbRdma=1. The verifier asserts
+   * the gate field is preserved across the v1/v2 pack/unpack
+   * round-trip exercised by the caller. */
   require(iter.openSection(CONFIG_SECTION_CONNECTION, 1));
   verify_rdma_connection(iter, 10, 1, "api.example.com", "db1.example.com",
                          dynamic_server_port, db1_node_id_server,
                          send_signal_id_enabled, checksum_enabled,
-                         presend_checksum_disabled);
+                         presend_checksum_disabled, 1);
   iter.closeSection();
 }
 

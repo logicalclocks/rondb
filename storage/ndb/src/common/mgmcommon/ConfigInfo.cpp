@@ -2328,6 +2328,21 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "is the pre-Phase-4 behavior.",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "16", "1", "256"},
 
+    {CFG_RDMA_ALLOW_API_TO_DB, "AllowApiToDbRdma", "RDMA",
+     "Permit API-to-DB and DB-to-API RDMA pairs on this connection. "
+     "Default false: only DB-DB pairs are accepted, matching the "
+     "safe configuration after the 2026-05-21 lab smoke-test "
+     "regression. Setting true re-enables the API-RDMA path that "
+     "was experimentally added in commit e4e668c2 and reverted in "
+     "0f607b92; operators should only flip this after verifying the "
+     "create/stat regression that prompted the revert is no longer "
+     "present in their workload. The kill-switch env var "
+     "NDB_RDMA_ALLOW_API_TO_DB=kill on the mgmd process force-"
+     "disables the API-DB path at config-parse time regardless of "
+     "this setting, so an incident response can switch off the "
+     "feature without editing the cluster config.",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL, "false", "false", "true"},
+
     /****************************************************************************
      * SCI (Deprecated now)
      ***************************************************************************/
@@ -4101,6 +4116,41 @@ static bool checkThreadConfig(InitConfigFileParser::Context &ctx,
   return true;
 }
 
+/*
+ * RDMA: kill switch for the API-to-DB pathway.
+ *
+ * Returns true iff the env var NDB_RDMA_ALLOW_API_TO_DB is set to
+ * exactly the string "kill" on the mgmd / ndb_mgmd / ndbd process
+ * parsing the config. Any other value ("" / unset / "on" / "off" /
+ * anything else) returns false, meaning the per-link
+ * AllowApiToDbRdma config option decides on its own.
+ *
+ * Cached once in a Meyer's singleton so a config that defines many
+ * [RDMA] sections pays the getenv()+strcmp() cost exactly once per
+ * process. The decision is also logged once at parse time so an
+ * operator inspecting the journal can see whether the kill switch
+ * was active for this process.
+ *
+ * Anonymous-namespace file-static keeps it scoped to ConfigInfo.cpp.
+ * This file never includes RDMA_Transporter.hpp or any libibverbs
+ * header, so the helper stays free of any verbs link-time
+ * dependency.
+ */
+static bool rdma_api_to_db_kill_switch_active() {
+  static const bool cached = []() {
+    const char *e = std::getenv("NDB_RDMA_ALLOW_API_TO_DB");
+    if (e != nullptr && std::strcmp(e, "kill") == 0) {
+      ndbout_c(
+          "RDMA: NDB_RDMA_ALLOW_API_TO_DB=kill -- the API-to-DB "
+          "pathway is force-disabled at config-parse time; per-link "
+          "AllowApiToDbRdma=true sections will still be REJECTED.");
+      return true;
+    }
+    return false;
+  }();
+  return cached;
+}
+
 /**
  * Connection rule: Check various constraints
  */
@@ -4141,6 +4191,18 @@ static bool checkConnectionConstraints(InitConfigFileParser::Context &ctx,
   require(node1->get("Type", &type1));
   require(node2->get("Type", &type2));
 
+  /*
+   * RDMA-specific endpoint validation. The RDMA transporter accepts
+   * DB-DB pairs unconditionally; API-DB and DB-API pairs are gated
+   * on the per-link `AllowApiToDbRdma` config option AND the
+   * process-wide kill-switch env var `NDB_RDMA_ALLOW_API_TO_DB=
+   * kill` not being set. MGM nodes are never valid RDMA endpoints.
+   *
+   * This block runs before the generic constraint below so the
+   * RDMA-specific error message points operators at
+   * `AllowApiToDbRdma` instead of a generic "invalid endpoint"
+   * message that would not tell them how to fix it.
+   */
   if (native_strcasecmp(ctx.fname, "RDMA") == 0) {
     const bool node1_db = strcmp(type1, DB_TOKEN) == 0;
     const bool node2_db = strcmp(type2, DB_TOKEN) == 0;
@@ -4149,9 +4211,36 @@ static bool checkConnectionConstraints(InitConfigFileParser::Context &ctx,
     const bool has_mgm =
         strcmp(type1, MGM_TOKEN) == 0 || strcmp(type2, MGM_TOKEN) == 0;
 
-    if ((node1_db && node2_db) || (node1_db && node2_api) ||
-        (node1_api && node2_db)) {
+    if (node1_db && node2_db) {
       return true;
+    }
+
+    if ((node1_db && node2_api) || (node1_api && node2_db)) {
+      Uint32 allow_api_db = 0;
+      ctx.m_currentSection->get("AllowApiToDbRdma", &allow_api_db);
+      const bool config_allows = (allow_api_db != 0);
+      const bool env_kills = rdma_api_to_db_kill_switch_active();
+      if (config_allows && !env_kills) {
+        return true;
+      }
+      if (env_kills) {
+        ctx.reportError(
+            "RDMA API-to-DB pair (node %d (%s) and node %d (%s)) "
+            "is force-disabled by NDB_RDMA_ALLOW_API_TO_DB=kill on "
+            "the parsing process; unset that env var (or set it to "
+            "anything other than \"kill\") to honour the "
+            "AllowApiToDbRdma setting"
+            " - [%s] starting at line: %d",
+            id1, type1, id2, type2, ctx.fname, ctx.m_sectionLineno);
+      } else {
+        ctx.reportError(
+            "RDMA API-to-DB pair (node %d (%s) and node %d (%s)) "
+            "is not enabled on this connection; set "
+            "AllowApiToDbRdma=1 on the [RDMA] section to opt in"
+            " - [%s] starting at line: %d",
+            id1, type1, id2, type2, ctx.fname, ctx.m_sectionLineno);
+      }
+      return false;
     }
 
     if (has_mgm) {

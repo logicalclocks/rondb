@@ -388,6 +388,15 @@
 #define CFG_RDMA_RETRY_COUNT          530
 #define CFG_RDMA_RNR_RETRY_COUNT      531
 #define CFG_RDMA_POST_BATCH_MAX       532
+/**
+ * Gate for API-to-DB RDMA pairs. Default false (only DB-DB pairs are
+ * accepted in an [RDMA] section). When true, API-DB and DB-API pairs
+ * are also accepted by the config validator. The kill-switch env var
+ * NDB_RDMA_ALLOW_API_TO_DB=kill overrides this back to false at config-
+ * parse time so an operator can force-disable the API-DB path without
+ * editing the cluster config.
+ */
+#define CFG_RDMA_ALLOW_API_TO_DB      533
 
 /**
  * No longer used, deprecated
