@@ -1,0 +1,128 @@
+RonDB RDMA transporter -- operator notes
+========================================
+
+Overview
+--------
+RonDB ships an opt-in native RDMA transporter that runs alongside the
+existing TCP and SHM transporters. It uses libibverbs (RoCE / IB) and
+exchanges queue-pair attributes (QPN, PSN, GID/LID) over the existing
+control socket before switching to verbs for the data path.
+
+The transporter supports two endpoint shapes:
+
+    DB-DB     data-node to data-node       (always permitted)
+    API-DB    mysqld/Ndb client to ndbd    (cluster-wide opt-in)
+
+MGM-involving links must use TCP; the RDMA transporter rejects them at
+config-parse time.
+
+Build
+-----
+RDMA support is compiled in only when the binary is built with:
+
+    cmake -DWITH_NDB_RDMA=ON ...
+
+Binaries built without that flag will reject any [RDMA] section in
+config.ini with a clear "binary not compiled with this connection
+support" error. TCP and SHM behaviour is unaffected.
+
+Configuration
+-------------
+[RDMA] sections look just like [TCP] / [SHM] sections and live in the
+same config.ini. The most-tuned parameters are:
+
+    RdmaSendBufferMemory       default 4M  (per QP, registered staging)
+    RdmaRecvBufferMemory       default 4M  (per QP, registered staging)
+    RdmaQueueDepth             default 64  (WRs per QP)
+    RdmaInlineThreshold        default 256 (bytes; below = inline SEND)
+    RdmaCompletionPollBudget   default 32  (CQEs reaped per poll)
+    RdmaSpintime               default 0   (us spin before sleep)
+    RdmaDevice                 default ""  (first available HCA)
+    RdmaPort                   default 1
+    RdmaGidIndex               default 0
+    RdmaTrafficClass           default 0
+    RdmaRetryCount             default 7
+    RdmaRnrRetryCount          default 7
+
+The buffer/queue-depth defaults satisfy the runtime per-slot validator
+(slot size >= 24-byte framing header + 32768-byte max signal). Going
+below the default values requires balancing the two: increasing
+RdmaQueueDepth without raising the buffer sizes will drive per-slot
+size below the minimum and refuse the configuration with a precise
+error pointing at the parameters involved.
+
+Cluster-wide gate for API-to-DB RDMA
+------------------------------------
+DB-DB RDMA is always permitted because data-node-to-data-node traffic
+benefits from RDMA on every measured workload. API-to-DB RDMA, in
+contrast, only outperforms TCP under highly concurrent client traffic;
+small-batch / latency-bound applications (for example single-threaded
+metadata clients) see little or no gain because the bottleneck is
+elsewhere (commit/GCP, TC thread CPU, application loop).
+
+To make A/B testing easy, mgmd accepts a single cluster-wide opt-in:
+
+    [SYSTEM]
+    Name = mycluster
+    AllowApiToDbRdma = true
+
+The flag defaults to false. With the default, any [RDMA] section in
+config.ini whose endpoints include an API node is rejected at
+config-parse time with:
+
+    API-to-DB RDMA is disabled cluster-wide. To enable RDMA between
+    node <api> (API) and node <db> (DB), set [SYSTEM]
+    AllowApiToDbRdma=true (the [SYSTEM] section must appear before
+    any [RDMA] section in config.ini) - [RDMA] starting at line: <n>
+
+DB-DB [RDMA] sections continue to work unchanged regardless of this
+flag.
+
+Ordering caveat
+---------------
+The gate is enforced as a per-section rule during config.ini parsing.
+The [SYSTEM] section MUST appear before any [RDMA] section in
+config.ini, otherwise the gate lookup falls back to the default
+(false) and API-DB [RDMA] sections will be rejected even when
+AllowApiToDbRdma=true is set later in the file.
+
+Operational toggle workflow
+---------------------------
+1. Edit config.ini on the mgmd host. Either:
+     - Add or change "AllowApiToDbRdma = true" in [SYSTEM], leaving
+       the API-DB [RDMA] sections in place.
+     - Or set "AllowApiToDbRdma = false" (or omit it). API-DB [RDMA]
+       sections must then be removed.
+2. Restart ndb_mgmd to load the new config.
+3. Restart the affected data nodes (and the API nodes that participate
+   in the API-DB pairs) to pick up the new transporter assignment.
+
+DB-DB RDMA links are untouched by either toggle and do not need a
+restart.
+
+Defaults summary
+----------------
+    [SYSTEM] AllowApiToDbRdma  default false
+    DB-DB RDMA                 always allowed (when [RDMA] section
+                               exists and binary has WITH_NDB_RDMA)
+    API-DB RDMA                blocked unless AllowApiToDbRdma=true
+    MGM-involved RDMA          always rejected (use TCP for MGM links)
+
+Troubleshooting
+---------------
+* "send/receive slot size <N> ... is below required minimum 32792"
+      RdmaSendBufferMemory / RdmaRecvBufferMemory divided by
+      RdmaQueueDepth must be at least 24 + 32768 = 32792 bytes. Raise
+      the buffer memory or lower the queue depth.
+
+* "API-to-DB RDMA is disabled cluster-wide"
+      Set [SYSTEM] AllowApiToDbRdma=true, placing the [SYSTEM] section
+      above any [RDMA] section. Restart ndb_mgmd.
+
+* "RDMA connections involving MGM nodes are not supported"
+      Remove the [RDMA] section for the MGM-involved pair. MGM links
+      always use TCP.
+
+* "Binary not compiled with this connection support"
+      The binary was built without -DWITH_NDB_RDMA=ON. Rebuild mgmd
+      and ndbmtd with the flag and redeploy.
