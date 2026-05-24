@@ -315,6 +315,31 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "Configuration generation number", ConfigInfo::CI_USED, false,
      ConfigInfo::CI_INT, "0", "0", STR_VALUE(MAX_INT_RNIL)},
 
+    /*
+     * Cluster-wide opt-in gate for API-to-DB RDMA transporter sections.
+     *
+     * When false (default), any [RDMA] section that pairs an API node
+     * with a DB node is rejected at config-parse time by
+     * checkConnectionConstraints(). DB-to-DB RDMA pairs are always
+     * permitted regardless of this setting.
+     *
+     * Operators flipping this on must place the [SYSTEM] section
+     * before any [RDMA] section in config.ini, because the validation
+     * runs as a per-section rule and looks the flag up out of the
+     * partially-built config tree. If [SYSTEM] has not been parsed yet
+     * when an [RDMA] API-DB section is validated, the lookup falls
+     * back to the conservative default (false) and the section is
+     * rejected with a clear error pointing at this parameter.
+     */
+    {CFG_SYS_ALLOW_API_TO_DB_RDMA, "AllowApiToDbRdma", "SYSTEM",
+     "Cluster-wide opt-in for API-to-DB RDMA transporter sections. "
+     "When false (default), [RDMA] sections naming an API node are "
+     "rejected at config-parse time. DB-to-DB RDMA is always permitted. "
+     "The [SYSTEM] section must appear before any [RDMA] section in "
+     "config.ini for this flag to take effect.",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL,
+     "false", "false", "true"},
+
     /***************************************************************************
      * DB
      ***************************************************************************/
@@ -4162,9 +4187,40 @@ static bool checkConnectionConstraints(InitConfigFileParser::Context &ctx,
     const bool has_mgm =
         strcmp(type1, MGM_TOKEN) == 0 || strcmp(type2, MGM_TOKEN) == 0;
 
-    if ((node1_db && node2_db) || (node1_db && node2_api) ||
-        (node1_api && node2_db)) {
+    // DB-DB is always allowed: this is the workload we always ship
+    // RDMA for (data-node replication / GCP / LCP traffic).
+    if (node1_db && node2_db) {
       return true;
+    }
+
+    // API-DB / DB-API requires the cluster-wide [SYSTEM]
+    // AllowApiToDbRdma flag to be true. The flag defaults to false
+    // because API-to-DB RDMA only outperforms TCP under highly
+    // concurrent client workloads; conservative deployments should
+    // not pay the verbs setup cost for application clients that see
+    // no measurable gain.
+    if ((node1_db && node2_api) || (node1_api && node2_db)) {
+      Uint32 allow_api_to_db_rdma = 0;
+      const Properties *system = nullptr;
+      // If [SYSTEM] has not been parsed yet (it appeared after this
+      // [RDMA] section in config.ini, or is absent and will be
+      // synthesised later by add_system_section), the lookup fails
+      // and allow_api_to_db_rdma stays at the default 0 (false).
+      // That is the conservative outcome.
+      if (ctx.m_config->get("SYSTEM", &system) && system != nullptr) {
+        system->get("AllowApiToDbRdma", &allow_api_to_db_rdma);
+      }
+      if (allow_api_to_db_rdma != 0) {
+        return true;
+      }
+      ctx.reportError(
+          "API-to-DB RDMA is disabled cluster-wide. To enable RDMA "
+          "between node %d (%s) and node %d (%s), set [SYSTEM] "
+          "AllowApiToDbRdma=true (the [SYSTEM] section must appear "
+          "before any [RDMA] section in config.ini) - [%s] starting "
+          "at line: %d",
+          id1, type1, id2, type2, ctx.fname, ctx.m_sectionLineno);
+      return false;
     }
 
     if (has_mgm) {

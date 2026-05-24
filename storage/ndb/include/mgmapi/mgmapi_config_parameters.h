@@ -30,6 +30,7 @@
 #define CFG_SYS_NAME                  3
 #define CFG_SYS_PRIMARY_MGM_NODE      1
 #define CFG_SYS_CONFIG_GENERATION     2
+#define CFG_SYS_ALLOW_API_TO_DB_RDMA  4
 #define CFG_SYS_PORT_BASE             8
 
 #define CFG_NODE_ID                   3
