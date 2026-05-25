@@ -1345,6 +1345,17 @@ class NdbDictionary {
      */
     bool isTTLEnabled() const;
 
+    /*
+     * Ring Buffer
+     */
+    void setRingBufferSize(Uint32 size);
+    Uint32 getRingBufferSize() const;
+    void setRingIdxColumnNo(Uint32 no);
+    Uint32 getRingIdxColumnNo() const;
+    void setRingMetaColumnNo(Uint32 no);
+    Uint32 getRingMetaColumnNo() const;
+    bool isRingBuffer() const;
+
   private:
 #ifndef DOXYGEN_SHOULD_SKIP_INTERNAL
     friend class Ndb;

@@ -173,6 +173,13 @@ class DictTabInfo {
     TTLSec = 164,
     TTLColumnNo = 165,
 
+    /*
+     * Ring Buffer
+     */
+    RingBufferSize = 166,
+    RingIdxColumnNo = 167,
+    RingMetaColumnNo = 168,
+
     TableEnd           = 999,
     
     AttributeName          = 1000, // String, Mandatory
@@ -400,6 +407,10 @@ class DictTabInfo {
 
     Uint32 TTLSec;
     Uint32 TTLColumnNo;
+
+    Uint32 RingBufferSize;
+    Uint32 RingIdxColumnNo;
+    Uint32 RingMetaColumnNo;
 
     Table() {}
     void init();

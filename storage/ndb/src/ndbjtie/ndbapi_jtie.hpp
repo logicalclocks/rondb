@@ -5365,6 +5365,70 @@ Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_getPartitionId(
 
 /*
  * Class:     com_mysql_ndbjtie_ndbapi_NdbDictionary_Table
+ * Method:    isRingBuffer
+ * Signature: ()Z
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_isRingBuffer(
+    JNIEnv *env, jobject obj) {
+  TRACE(
+      "jboolean "
+      "Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_isRingBuffer("
+      "JNIEnv *, jobject)");
+  return gcall_mfr<ttrait_c_m_n_n_NdbDictionary_Table_ct, ttrait_bool,
+                   &NdbDictionary::Table::isRingBuffer>(env, obj);
+}
+
+/*
+ * Class:     com_mysql_ndbjtie_ndbapi_NdbDictionary_Table
+ * Method:    getRingBufferSize
+ * Signature: ()I
+ */
+JNIEXPORT jint JNICALL
+Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_getRingBufferSize(
+    JNIEnv *env, jobject obj) {
+  TRACE(
+      "jint "
+      "Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_"
+      "getRingBufferSize(JNIEnv *, jobject)");
+  return gcall_mfr<ttrait_c_m_n_n_NdbDictionary_Table_ct, ttrait_Uint32,
+                   &NdbDictionary::Table::getRingBufferSize>(env, obj);
+}
+
+/*
+ * Class:     com_mysql_ndbjtie_ndbapi_NdbDictionary_Table
+ * Method:    getRingIdxColumnNo
+ * Signature: ()I
+ */
+JNIEXPORT jint JNICALL
+Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_getRingIdxColumnNo(
+    JNIEnv *env, jobject obj) {
+  TRACE(
+      "jint "
+      "Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_"
+      "getRingIdxColumnNo(JNIEnv *, jobject)");
+  return gcall_mfr<ttrait_c_m_n_n_NdbDictionary_Table_ct, ttrait_Uint32,
+                   &NdbDictionary::Table::getRingIdxColumnNo>(env, obj);
+}
+
+/*
+ * Class:     com_mysql_ndbjtie_ndbapi_NdbDictionary_Table
+ * Method:    getRingMetaColumnNo
+ * Signature: ()I
+ */
+JNIEXPORT jint JNICALL
+Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_getRingMetaColumnNo(
+    JNIEnv *env, jobject obj) {
+  TRACE(
+      "jint "
+      "Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_"
+      "getRingMetaColumnNo(JNIEnv *, jobject)");
+  return gcall_mfr<ttrait_c_m_n_n_NdbDictionary_Table_ct, ttrait_Uint32,
+                   &NdbDictionary::Table::getRingMetaColumnNo>(env, obj);
+}
+
+/*
+ * Class:     com_mysql_ndbjtie_ndbapi_NdbDictionary_Table
  * Method:    create
  * Signature: (Ljava/lang/String;)Lcom/mysql/ndbjtie/ndbapi/NdbDictionary/Table;
  */

@@ -4345,6 +4345,8 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     regCachePtr->m_noWait = TcKeyReq::getNoWaitFlag(Treqinfo);
     regCachePtr->m_ttl_ignore = TcKeyReq::getTTLIgnoreFlag(Treqinfo);
     regCachePtr->m_ttl_only_expired = TcKeyReq::getTTLOnlyExpiredFlag(Treqinfo);
+    regCachePtr->m_ring_buffer_op = TcKeyReq::getRingBufferOpFlag(Treqinfo);
+    regCachePtr->m_ring_buffer_show_meta = TcKeyReq::getRingBufferShowMetaFlag(Treqinfo);
   } else {
     TkeyLength = TcKeyReq::getKeyLength(Treqinfo);
     TattrLen = TcKeyReq::getAttrinfoLen(tcKeyReq->attrLen);
@@ -4358,6 +4360,8 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
      */
     regCachePtr->m_ttl_ignore = 0;
     regCachePtr->m_ttl_only_expired = 0;
+    regCachePtr->m_ring_buffer_op = 0;
+    regCachePtr->m_ring_buffer_show_meta = 0;
   }
   bool util_flag = ZFALSE;
   if (unlikely(refToMain(sendersBlockRef) == DBUTIL))
@@ -5608,7 +5612,7 @@ void Dbtc::packLqhkeyreq(Signal *signal, BlockReference TBRef,
 void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
                          CacheRecord *const regCachePtr,
                          ApiConnectRecord *const regApiPtr) {
-  UintR tslrAttrLen;
+  UintR tslrAttrLen = 0;
   UintR Tdata10;
   TcConnectRecord * const regTcPtr = tcConnectptr.p;
   UintR sig0, sig1, sig2, sig3, sig4, sig5, sig6;
@@ -5670,7 +5674,6 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
    * for any real purpose anymore.
    */
 
-  tslrAttrLen = 0;
   LqhKeyReq::setAttrLen(tslrAttrLen, inlineAttrLen);
   /* ---------------------------------------------------------------------- */
   // Bit16 == 0 since StoredProcedures are not yet supported.
@@ -5706,6 +5709,8 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
     (replica_applier == ApiConnectRecord::TF_REPLICA_APPLIER));
   LqhKeyReq::setTTLIgnoreFlag(Tdata10, regCachePtr->m_ttl_ignore);
   LqhKeyReq::setTTLOnlyExpiredFlag(Tdata10, regCachePtr->m_ttl_only_expired);
+  LqhKeyReq::setRingBufferOpFlag(Tdata10, regCachePtr->m_ring_buffer_op);
+  LqhKeyReq::setRingBufferShowMetaFlag(Tdata10, regCachePtr->m_ring_buffer_show_meta);
 
   LqhKeyReq::setNoTriggersFlag(
       Tdata10, !!(regTcPtr->m_special_op_flags &
@@ -5780,7 +5785,7 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
     if (databaseRecordPtr.p->m_is_user) {
       lqhKeyReq->variableData[0] = databaseRecordPtr.p->m_database_id;
       extra_index++;
-      LqhKeyReq::setUserIdFlag(lqhKeyReq->requestInfo, 1);
+      LqhKeyReq::setUserIdFlag(lqhKeyReq->attrLen, 1);
     }
   }
   lqhKeyReq->variableData[extra_index++] = sig4;
@@ -16564,6 +16569,8 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
                       ScanTabReq::getTTLOnlyExpiredFlag(ri));
   ScanFragReq::setParallelOrderedScanFlag(tmp, par_ordered_scan_flag);
   ScanFragReq::setJoinAggFlag(tmp, ScanTabReq::getJoinAggFlag(ri));
+  ScanFragReq::setRingBufferShowMetaFragFlag(tmp,
+                      ScanTabReq::getRingBufferShowMetaFlag(ri));
 
   if (unlikely(ScanTabReq::getViaSPJFlag(ri))) {
     jam();
@@ -17001,7 +17008,14 @@ void Dbtc::sendDihGetNodesLab(Signal *signal, ScanRecordPtr scanptr,
                     buddyApiPtr.i, op_count);
     if (!ttl_table || (ttl_table && (read_back || fully_replicated) &&
         (rc || rcb) && op_count == 0)) {
-      ndbrequire(!ttl_table || (!lockmode && !holdlock));
+      /*
+       * NdbBlob::atPrepareNdbRecord legitimately reaches here with rcb=1
+       * and holdlock=1: the user asked for LM_CommittedRead/LM_SimpleRead,
+       * NDB upgraded to LM_Read for blob-read atomicity only.  Same policy
+       * as the non-TTL READ_BACKUP branch in sendDihGetNodeReq below.
+       * Genuine user-requested locks (rcb=0) still trip the assertion.
+       */
+      ndbrequire(!ttl_table || rcb || (!lockmode && !holdlock));
       ttl_can_go_to_replica = true;
     }
   }

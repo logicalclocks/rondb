@@ -143,6 +143,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/ReconnectTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/RecvThreadCPUTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/ReleaseTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/RingBufferTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/ReleaseWithCacheTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/SaveTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/SchemaChangeTest.java
@@ -224,6 +225,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/NotPersistentTypes.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/NullValues.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/Order.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/model/RingBufferSensor.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/OrderLine.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/StringTypes.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/ThrowNullPointerException.java

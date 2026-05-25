@@ -95,6 +95,9 @@ DictTabInfo::TableMapping[] = {
   DTI_MAP_INT(Table, HashFunctionFlag, HashFunctionFlag),
   DTI_MAP_INT(Table, TTLSec, TTLSec),
   DTI_MAP_INT(Table, TTLColumnNo, TTLColumnNo),
+  DTI_MAP_INT(Table, RingBufferSize, RingBufferSize),
+  DTI_MAP_INT(Table, RingIdxColumnNo, RingIdxColumnNo),
+  DTI_MAP_INT(Table, RingMetaColumnNo, RingMetaColumnNo),
   DTIBREAK(AttributeName)
 };
 
@@ -216,6 +219,10 @@ void DictTabInfo::Table::init() {
 
   TTLSec = RNIL;
   TTLColumnNo = RNIL;
+
+  RingBufferSize = RNIL;
+  RingIdxColumnNo = RNIL;
+  RingMetaColumnNo = RNIL;
 }
 
 void DictTabInfo::Attribute::init() {

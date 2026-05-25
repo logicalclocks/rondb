@@ -3059,6 +3059,13 @@ void Restore::execute_operation(Signal *signal, FilePtr file_ptr, Uint32 keyLen,
   }
   LqhKeyReq::setNoDiskFlag(tmp, 1);
   LqhKeyReq::setRowidFlag(tmp, (rowid_val != 0));
+  /*
+   * Ring buffer related
+   * LCP restore writes must pass the kernel write guard for ring buffer
+   * tables. Setting this flag unconditionally is harmless for non-ring-buffer
+   * tables since the guard only checks it for ring buffer tables.
+   */
+  LqhKeyReq::setRingBufferOpFlag(tmp, 1);
   req->clientConnectPtr = (file_ptr.i + (header_type << 28));
   req->tcBlockref = reference();
   req->savePointId = 0;

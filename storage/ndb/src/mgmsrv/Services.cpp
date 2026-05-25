@@ -464,6 +464,12 @@ bool Parser<MgmApiSession>::run(Context &ctx, MgmApiSession &session,
     require(ctx.m_aliasUsed.size() == 0);  // The grammar does not use aliases
     require(cmd->function != nullptr);     // ... or CommandWithoutFunction
 
+    if (!session.isArbitratorStartupGateCommandAllowed(cmd, *p)) {
+      session.reportArbitratorStartupGateBlocked(cmd->name);
+      delete p;
+      return true;
+    }
+
     /* Authorization & Access Check */
     CmdAuth *cmdAuthLevel = static_cast<CmdAuth *>(cmd->user_value);
     int auth_result = session.checkAuth(cmdAuthLevel);
@@ -516,6 +522,56 @@ MgmApiSession::MgmApiSession(class MgmtSrvr &mgm, NdbSocket &&sock,
     m_name.assfmt("%s", sockaddr_string);
   }
   DBUG_VOID_RETURN;
+}
+
+bool MgmApiSession::isArbitratorStartupGateCommandAllowed(
+    const ParserRow<MgmApiSession> *cmd, const Properties &) const {
+  if (!m_mgmsrv.is_arbitrator_startup_gate_enabled()) {
+    return true;
+  }
+
+  const char *cmd_name = cmd->name;
+
+  /*
+   * Let bootstrap/session-management traffic through.  These commands do not
+   * make the mgmd look ready to operators, but are needed by TLS setup,
+   * connection checks, and transporter socket handoff.
+   */
+  if (strcmp(cmd_name, "start tls") == 0 ||
+      strcmp(cmd_name, "end session") == 0 ||
+      strcmp(cmd_name, "bye") == 0 ||
+      strcmp(cmd_name, "get version") == 0 ||
+      strcmp(cmd_name, "set clientversion") == 0 ||
+      strcmp(cmd_name, "check connection") == 0 ||
+      strcmp(cmd_name, "get mgmd nodeid") == 0 ||
+      strcmp(cmd_name, "transporter connect") == 0) {
+    return true;
+  }
+
+  if (strcmp(cmd_name, "get nodeid") == 0) {
+    return true;
+  }
+
+  if (strcmp(cmd_name, "get config") == 0 ||
+      strcmp(cmd_name, "get config_v2") == 0) {
+    return true;
+  }
+
+  if (strcmp(cmd_name, "set ports") == 0) {
+    return true;
+  }
+
+  return false;
+}
+
+void MgmApiSession::reportArbitratorStartupGateBlocked(const char *cmd_name) {
+  g_eventLogger->debug(
+      "%s: blocked '%s' while waiting for arbitrator selection",
+      name(), cmd_name ? cmd_name : "<NULL>");
+  m_output->println(
+      "result: Management server is waiting for arbitrator selection");
+  m_output->print("\n");
+  m_stop = true;
 }
 
 MgmApiSession::~MgmApiSession() {

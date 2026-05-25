@@ -1,0 +1,510 @@
+#
+# Setup: Create ring-buffer table with ring_size=4
+#
+CREATE TABLE test.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'ev_X');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'ev_Y');
+SELECT client_id, ring_idx, event_data FROM test.rb
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	ev_A
+1	2	ev_B
+1	3	ev_C
+2	1	ev_X
+2	2	ev_Y
+#
+# ===== UPDATE TESTS =====
+#
+#
+# Case 1: UPDATE user column on data row — allowed
+#
+UPDATE test.rb SET event_data = 'updated_A'
+    WHERE client_id = 1 AND ring_idx = 1;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	updated_A
+1	2	ev_B
+1	3	ev_C
+#
+# Case 2: UPDATE user column via scan (no ring_idx in WHERE) — allowed
+#
+UPDATE test.rb SET event_data = 'scan_update'
+    WHERE client_id = 1 AND event_data = 'ev_B';
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	updated_A
+1	2	scan_update
+1	3	ev_C
+#
+# Case 3: UPDATE ring_idx column — blocked
+#
+UPDATE test.rb SET ring_idx = 5 WHERE client_id = 1 AND ring_idx = 1;
+ERROR HY000: Table storage engine for 'Cannot update ring_idx on ring-buffer table' doesn't have this option
+#
+# Case 4: UPDATE ring_meta column — blocked
+#
+UPDATE test.rb SET ring_meta = 'bad' WHERE client_id = 1 AND ring_idx = 1;
+ERROR HY000: Table storage engine for 'Cannot update ring_meta on ring-buffer table' doesn't have this option
+#
+# Case 5: UPDATE meta row (ring_idx=0) — blocked
+# Need show_meta=ON to make the scan see the meta row
+#
+SET ndb_ring_buffer_show_meta = ON;
+UPDATE test.rb SET event_data = 'hack' WHERE client_id = 1 AND ring_idx = 0;
+ERROR HY000: Table storage engine for 'Cannot update meta row on ring-buffer table' doesn't have this option
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 6: UPDATE all data rows for a PK prefix via scan
+#
+UPDATE test.rb SET event_data = CONCAT(event_data, '_v2')
+WHERE client_id = 1;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	updated_A_v2
+1	2	scan_update_v2
+1	3	ev_C_v2
+#
+# Case 7: UPDATE with expression in SET value
+#
+UPDATE test.rb SET event_data = UPPER(event_data)
+WHERE client_id = 2 AND ring_idx = 1;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 2 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+2	1	EV_X
+2	2	ev_Y
+#
+# Case 8: UPDATE non-existent row — 0 rows affected, no error
+#
+UPDATE test.rb SET event_data = 'ghost'
+    WHERE client_id = 999 AND ring_idx = 1;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+#
+# Case 9: UPDATE ring_idx + user column together — blocked
+# (ring_idx in write_set triggers block even if user col also present)
+#
+UPDATE test.rb SET ring_idx = 9, event_data = 'sneaky'
+    WHERE client_id = 1 AND ring_idx = 1;
+ERROR HY000: Table storage engine for 'Cannot update ring_idx on ring-buffer table' doesn't have this option
+#
+# ===== DELETE TESTS =====
+#
+#
+# Case 10: DELETE with full PK prefix — allowed
+# Deletes all data rows + meta row for client_id=2
+#
+DELETE FROM test.rb WHERE client_id = 2;
+SELECT client_id, ring_idx, event_data FROM test.rb
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	updated_A_v2
+1	2	scan_update_v2
+1	3	ev_C_v2
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx FROM test.rb
+WHERE client_id = 2 AND ring_idx = 0;
+client_id	ring_idx
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 11: Re-INSERT after delete creates fresh ring
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'fresh_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'fresh_B');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 2 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+2	1	fresh_A
+2	2	fresh_B
+#
+# Case 12: DELETE individual row (ring_idx in WHERE) — blocked
+#
+DELETE FROM test.rb WHERE client_id = 1 AND ring_idx = 1;
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+#
+# Case 13: DELETE with non-PK column in WHERE — blocked
+#
+DELETE FROM test.rb WHERE client_id = 1 AND event_data = 'ev_C';
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+#
+# Case 14: DELETE without WHERE (full table) — allowed
+# Clears all data rows + meta rows for all PK prefixes
+#
+DELETE FROM test.rb;
+SELECT client_id, ring_idx, event_data FROM test.rb
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx FROM test.rb WHERE ring_idx = 0;
+client_id	ring_idx
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 15: Re-INSERT after bare DELETE creates fresh rings
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'after_clear_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'after_clear_B');
+SELECT client_id, ring_idx, event_data FROM test.rb
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	after_clear_A
+2	1	after_clear_B
+#
+# Case 16: Multi-column PK prefix DELETE
+#
+DROP TABLE test.rb;
+CREATE TABLE test.rb_multi (
+region INT NOT NULL,
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (region, client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (1, 100, 'a');
+INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (1, 100, 'b');
+INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (1, 200, 'c');
+SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
+ORDER BY region, client_id, ring_idx;
+region	client_id	ring_idx	event_data
+1	100	1	a
+1	100	2	b
+1	200	1	c
+DELETE FROM test.rb_multi WHERE region = 1 AND client_id = 100;
+SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
+ORDER BY region, client_id, ring_idx;
+region	client_id	ring_idx	event_data
+1	200	1	c
+#
+# Case 17: Partial PK prefix — allowed (deletes all client_ids in region)
+#
+INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (1, 200, 'r1c200');
+INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (2, 300, 'r2c300');
+DELETE FROM test.rb_multi WHERE region = 1;
+SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
+ORDER BY region, client_id, ring_idx;
+region	client_id	ring_idx	event_data
+2	300	1	r2c300
+#
+# Case 18: DELETE with IN() on PK column — allowed
+#
+INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (2, 400, 'r2c400');
+INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (2, 500, 'r2c500');
+DELETE FROM test.rb_multi WHERE region = 2 AND client_id IN (300, 400);
+SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
+ORDER BY region, client_id, ring_idx;
+region	client_id	ring_idx	event_data
+2	500	1	r2c500
+SET ndb_ring_buffer_show_meta = ON;
+SELECT region, client_id, ring_idx FROM test.rb_multi
+WHERE region = 2 AND client_id IN (300, 400) AND ring_idx = 0;
+region	client_id	ring_idx
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 19: DELETE with range on PK column — allowed
+#
+INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (3, 100, 'r3c100');
+INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (3, 200, 'r3c200');
+INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (3, 300, 'r3c300');
+DELETE FROM test.rb_multi WHERE region = 3 AND client_id > 100;
+SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
+WHERE region = 3 ORDER BY client_id, ring_idx;
+region	client_id	ring_idx	event_data
+3	100	1	r3c100
+#
+# Case 20: DELETE with non-PK column in WHERE — blocked
+#
+DELETE FROM test.rb_multi WHERE region = 3 AND event_data = 'r3c100';
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+#
+# Case 21: DELETE with ring_idx in WHERE — blocked
+#
+DELETE FROM test.rb_multi WHERE region = 3 AND client_id = 100 AND ring_idx = 1;
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+#
+# Case 22: DELETE non-existent prefix — allowed (0 rows, no error)
+#
+DELETE FROM test.rb_multi WHERE region = 99 AND client_id = 99;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+#
+# Case 23: DELETE + re-INSERT + DELETE cycle
+#
+DELETE FROM test.rb_multi WHERE region = 3 AND client_id = 100;
+INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (3, 100, 'cycle2_a');
+SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
+WHERE region = 3 AND client_id = 100 ORDER BY ring_idx;
+region	client_id	ring_idx	event_data
+3	100	1	cycle2_a
+DROP TABLE test.rb_multi;
+#
+# Case 24: DELETE on ring_size=1 table
+#
+CREATE TABLE test.rb1 (
+pk INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (pk, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta";
+INSERT INTO test.rb1 (pk, val) VALUES (1, 'only_slot');
+SELECT pk, ring_idx, val FROM test.rb1 ORDER BY pk, ring_idx;
+pk	ring_idx	val
+1	1	only_slot
+DELETE FROM test.rb1 WHERE pk = 1;
+SELECT pk, ring_idx, val FROM test.rb1 ORDER BY pk, ring_idx;
+pk	ring_idx	val
+SET ndb_ring_buffer_show_meta = ON;
+SELECT pk, ring_idx FROM test.rb1 WHERE pk = 1 AND ring_idx = 0;
+pk	ring_idx
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO test.rb1 (pk, val) VALUES (1, 'after_delete');
+SELECT pk, ring_idx, val FROM test.rb1 ORDER BY pk, ring_idx;
+pk	ring_idx	val
+1	1	after_delete
+DROP TABLE test.rb1;
+#
+# Case 25: DELETE on full ring (ring wrapped)
+#
+CREATE TABLE test.rb_full (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_full (id, data) VALUES (1, 'a');
+INSERT INTO test.rb_full (id, data) VALUES (1, 'b');
+INSERT INTO test.rb_full (id, data) VALUES (1, 'c');
+INSERT INTO test.rb_full (id, data) VALUES (1, 'd');
+INSERT INTO test.rb_full (id, data) VALUES (1, 'e');
+SELECT id, ring_idx, data FROM test.rb_full ORDER BY ring_idx;
+id	ring_idx	data
+1	1	d
+1	2	e
+1	3	c
+DELETE FROM test.rb_full WHERE id = 1;
+SELECT id, ring_idx, data FROM test.rb_full ORDER BY ring_idx;
+id	ring_idx	data
+INSERT INTO test.rb_full (id, data) VALUES (1, 'fresh');
+SELECT id, ring_idx, data FROM test.rb_full ORDER BY ring_idx;
+id	ring_idx	data
+1	1	fresh
+DROP TABLE test.rb_full;
+#
+# ===== ADDITIONAL UPDATE COVERAGE =====
+#
+CREATE TABLE test.rb_upd (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+INSERT INTO test.rb_upd (client_id, event_data) VALUES (1, 'a1');
+INSERT INTO test.rb_upd (client_id, event_data) VALUES (1, 'a2');
+INSERT INTO test.rb_upd (client_id, event_data) VALUES (1, 'a3');
+INSERT INTO test.rb_upd (client_id, event_data) VALUES (2, 'b1');
+INSERT INTO test.rb_upd (client_id, event_data) VALUES (2, 'b2');
+#
+# Case 26: UPDATE without WHERE — all data rows updated
+#
+UPDATE test.rb_upd SET event_data = 'blanket';
+SELECT client_id, ring_idx, event_data FROM test.rb_upd
+ORDER BY client_id, ring_idx;
+client_id	ring_idx	event_data
+1	1	blanket
+1	2	blanket
+1	3	blanket
+2	1	blanket
+2	2	blanket
+#
+# Case 27: UPDATE ring_meta + user column together — blocked
+#
+UPDATE test.rb_upd SET ring_meta = 'bad', event_data = 'sneaky'
+    WHERE client_id = 1 AND ring_idx = 1;
+ERROR HY000: Table storage engine for 'Cannot update ring_meta on ring-buffer table' doesn't have this option
+#
+# Case 28: Multiple UPDATEs on same row
+#
+UPDATE test.rb_upd SET event_data = 'multi_1' WHERE client_id = 1 AND ring_idx = 1;
+UPDATE test.rb_upd SET event_data = 'multi_2' WHERE client_id = 1 AND ring_idx = 1;
+UPDATE test.rb_upd SET event_data = 'multi_3' WHERE client_id = 1 AND ring_idx = 1;
+SELECT client_id, ring_idx, event_data FROM test.rb_upd
+WHERE client_id = 1 AND ring_idx = 1;
+client_id	ring_idx	event_data
+1	1	multi_3
+#
+# Case 29: UPDATE on wrapped ring + INSERT after UPDATE (ring integrity)
+#
+INSERT INTO test.rb_upd (client_id, event_data) VALUES (1, 'fill4');
+INSERT INTO test.rb_upd (client_id, event_data) VALUES (1, 'wrap5');
+UPDATE test.rb_upd SET event_data = 'wr_upd' WHERE client_id = 1 AND ring_idx = 3;
+SELECT client_id, ring_idx, event_data FROM test.rb_upd
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	wrap5
+1	2	blanket
+1	3	wr_upd
+1	4	fill4
+INSERT INTO test.rb_upd (client_id, event_data) VALUES (1, 'post_upd');
+SELECT client_id, ring_idx, event_data FROM test.rb_upd
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	1	wrap5
+1	2	post_upd
+1	3	wr_upd
+1	4	fill4
+DROP TABLE test.rb_upd;
+#
+# ===== ADDITIONAL DELETE COVERAGE =====
+#
+CREATE TABLE test.rb_del (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_del (id, val) VALUES (1, 'a');
+INSERT INTO test.rb_del (id, val) VALUES (2, 'b');
+INSERT INTO test.rb_del (id, val) VALUES (3, 'c');
+INSERT INTO test.rb_del (id, val) VALUES (4, 'd');
+INSERT INTO test.rb_del (id, val) VALUES (5, 'e');
+#
+# Case 30: DELETE with OR on PK columns — allowed
+#
+DELETE FROM test.rb_del WHERE id = 1 OR id = 2;
+SELECT id, ring_idx, val FROM test.rb_del ORDER BY id, ring_idx;
+id	ring_idx	val
+3	1	c
+4	1	d
+5	1	e
+#
+# Case 31: DELETE with BETWEEN on PK column — allowed
+#
+DELETE FROM test.rb_del WHERE id BETWEEN 3 AND 4;
+SELECT id, ring_idx, val FROM test.rb_del ORDER BY id, ring_idx;
+id	ring_idx	val
+5	1	e
+#
+# Case 32: DELETE with mixed PK/non-PK in OR — blocked
+#
+DELETE FROM test.rb_del WHERE id = 5 OR val = 'e';
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+#
+# Case 33: DELETE on empty table — allowed (0 rows)
+#
+DELETE FROM test.rb_del WHERE id = 5;
+DELETE FROM test.rb_del;
+DELETE FROM test.rb_del WHERE id = 999;
+SELECT id, ring_idx, val FROM test.rb_del ORDER BY id, ring_idx;
+id	ring_idx	val
+DROP TABLE test.rb_del;
+#
+# Case 34: Bare DELETE on multi-column PK table — allowed
+#
+CREATE TABLE test.rb_multi2 (
+region INT NOT NULL,
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (region, client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_multi2 (region, client_id, val) VALUES (1, 10, 'a');
+INSERT INTO test.rb_multi2 (region, client_id, val) VALUES (1, 20, 'b');
+INSERT INTO test.rb_multi2 (region, client_id, val) VALUES (2, 30, 'c');
+DELETE FROM test.rb_multi2;
+SELECT region, client_id, ring_idx, val FROM test.rb_multi2
+ORDER BY region, client_id, ring_idx;
+region	client_id	ring_idx	val
+SET ndb_ring_buffer_show_meta = ON;
+SELECT region, client_id, ring_idx FROM test.rb_multi2 WHERE ring_idx = 0;
+region	client_id	ring_idx
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO test.rb_multi2 (region, client_id, val) VALUES (1, 10, 'fresh');
+SELECT region, client_id, ring_idx, val FROM test.rb_multi2
+ORDER BY region, client_id, ring_idx;
+region	client_id	ring_idx	val
+1	10	1	fresh
+DROP TABLE test.rb_multi2;
+#
+# Case 35: UPDATE then DELETE then re-INSERT cycle on wrapped ring
+#
+CREATE TABLE test.rb_cycle (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_cycle (id, data) VALUES (1, 'a');
+INSERT INTO test.rb_cycle (id, data) VALUES (1, 'b');
+INSERT INTO test.rb_cycle (id, data) VALUES (1, 'c');
+INSERT INTO test.rb_cycle (id, data) VALUES (1, 'd');
+UPDATE test.rb_cycle SET data = 'updated' WHERE id = 1 AND ring_idx = 1;
+SELECT id, ring_idx, data FROM test.rb_cycle ORDER BY ring_idx;
+id	ring_idx	data
+1	1	updated
+1	2	b
+1	3	c
+DELETE FROM test.rb_cycle WHERE id = 1;
+SELECT id, ring_idx, data FROM test.rb_cycle ORDER BY ring_idx;
+id	ring_idx	data
+INSERT INTO test.rb_cycle (id, data) VALUES (1, 'new_a');
+INSERT INTO test.rb_cycle (id, data) VALUES (1, 'new_b');
+SELECT id, ring_idx, data FROM test.rb_cycle ORDER BY ring_idx;
+id	ring_idx	data
+1	1	new_a
+1	2	new_b
+DROP TABLE test.rb_cycle;
+#
+# Case 36: DELETE with LIMIT (high enough to cover all rows)
+#
+CREATE TABLE test.rb_limit (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_limit (id, val) VALUES (1, 'x');
+INSERT INTO test.rb_limit (id, val) VALUES (1, 'y');
+INSERT INTO test.rb_limit (id, val) VALUES (2, 'z');
+DELETE FROM test.rb_limit WHERE id = 1 LIMIT 100;
+SELECT id, ring_idx, val FROM test.rb_limit ORDER BY id, ring_idx;
+id	ring_idx	val
+2	1	z
+SET ndb_ring_buffer_show_meta = ON;
+SELECT id, ring_idx FROM test.rb_limit WHERE id = 1 AND ring_idx = 0;
+id	ring_idx
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO test.rb_limit (id, val) VALUES (1, 'after_limit');
+SELECT id, ring_idx, val FROM test.rb_limit ORDER BY id, ring_idx;
+id	ring_idx	val
+1	1	after_limit
+2	1	z
+DROP TABLE test.rb_limit;

@@ -33,6 +33,7 @@
 
 struct AlterTabReq {
   static constexpr Uint32 SignalLength = 14;
+  static constexpr Uint32 SignalLengthWithRingBuffer = 17;
 
   enum RequestType {
     AlterTablePrepare = 0,  // Prepare alter table
@@ -67,6 +68,10 @@ struct AlterTabReq {
 
   Uint32 ttlSec;
   Uint32 ttlColumnNo;
+
+  Uint32 ringBufferSize;
+  Uint32 ringIdxColumnNo;
+  Uint32 ringMetaColumnNo;
 
   SECTION(DICT_TAB_INFO = 0);
   SECTION(FRAGMENTATION = 1);

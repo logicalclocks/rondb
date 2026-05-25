@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -235,6 +235,13 @@ class LqhKeyReq {
   static UintR getTTLIgnoreFlag(const UintR &requestInfo);
   static void setTTLOnlyExpiredFlag(UintR &requestInfo, UintR val);
   static UintR getTTLOnlyExpiredFlag(const UintR &requestInfo);
+  /**
+   * Ring Buffer related
+   */
+  static void setRingBufferOpFlag(UintR &requestInfo, UintR val);
+  static UintR getRingBufferOpFlag(const UintR &requestInfo);
+  static void setRingBufferShowMetaFlag(UintR &requestInfo, UintR val);
+  static UintR getRingBufferShowMetaFlag(const UintR &requestInfo);
 
   enum RequestInfo {
     RI_KEYLEN_SHIFT = 0,
@@ -243,6 +250,7 @@ class LqhKeyReq {
     RI_NO_TRIGGERS = 1,
     RI_UTIL_SHIFT = 2,
     RI_NOWAIT_SHIFT = 3,
+    RI_RING_BUFFER_SHOW_META_SHIFT = 4,
     RI_REPLICA_APPLIER_SHIFT = 5,
 
     /*
@@ -252,7 +260,8 @@ class LqhKeyReq {
     RI_INTERPRETED_INSERT_SHIFT = 7,
     RI_TTL_ONLY_EXPIRED_SHIFT = 8,
 
-    RI_USER_ID_SHIFT = 9,
+    /* Ring Buffer related */
+    RI_RING_BUFFER_OP_SHIFT = 9,
 
     RI_LAST_REPL_SHIFT = 10,
     RI_LAST_REPL_MASK = 3,
@@ -290,6 +299,7 @@ class LqhKeyReq {
     SI_REORG_MASK = 3,
     SI_JOIN_AGG_SHIFT = 28,
     SI_OUTER_JOIN_AGG_SHIFT = 29,
+    SI_USER_ID_SHIFT = 30,
   };
 };
 
@@ -325,12 +335,11 @@ class LqhKeyReq {
  * T = no triggers            - 1  Bit (1)
  * U = Operation came from UTIL - 1 Bit (2)
  * w = NoWait flag            = 1 Bit (3)
- * Q = Query Thread Flag      = 1 Bit (4)
+ * S = Ring Buffer Show Meta  = 1 Bit (4)
  * R = Replica Applier        = 1 Bit (5)
  * L = TTL flag               = 1 Bit (6)
  * N = Interpreted Insert flag= 1 Bit (7)
  * t = TTL only expired flag  = 1 Bit (8)
- * U = User Id flag           = 1 Bit (9)
 
  * Short LQHKEYREQ :
  *             1111111111222222222233
@@ -355,11 +364,13 @@ class LqhKeyReq {
  * t = Scan take over indicator -  1 Bit (25)
  * m = Reorg value              -  2 Bit (26-27)
  * J = Join aggregation flag    -  1 Bit (28)
+ * O = Join aggregation flag    -  1 Bit (29)
+ * U = User Id flag             -  1 Bit (30)
  *
  *           1111111111222222222233
  * 01234567890123456789012345678901
  * aaaaaaaaaaaaaaaapddddddddtmmJ       (Short LQHKEYREQ)
- *                 pddddddddtmmJ       (Long LQHKEYREQ)
+ *                 pddddddddtmmJOU     (Long LQHKEYREQ)
  */
 
 inline UintR LqhKeyReq::getAttrLen(const UintR &scanData) {
@@ -592,17 +603,17 @@ inline void LqhKeyReq::setNoDiskFlag(UintR &requestInfo, UintR val) {
   requestInfo |= (val << RI_NODISK_SHIFT);
 }
 
-inline void LqhKeyReq::setUserIdFlag(UintR &requestInfo, UintR val) {
+inline void LqhKeyReq::setUserIdFlag(UintR &attrLenFlags, UintR val) {
   ASSERT_BOOL(val, "LqhKeyReq::setUserIdFlag");
-  requestInfo |= (val << RI_USER_ID_SHIFT);
+  attrLenFlags |= (val << SI_USER_ID_SHIFT);
 }
 
 inline UintR LqhKeyReq::getNoDiskFlag(const UintR &requestInfo) {
   return (requestInfo >> RI_NODISK_SHIFT) & 1;
 }
 
-inline UintR LqhKeyReq::getUserIdFlag(const UintR &requestInfo) {
-  return (requestInfo >> RI_USER_ID_SHIFT) & 1;
+inline UintR LqhKeyReq::getUserIdFlag(const UintR &attrLenFlags) {
+  return (attrLenFlags >> SI_USER_ID_SHIFT) & 1;
 }
 
 inline void LqhKeyReq::setRowidFlag(UintR &requestInfo, UintR val) {
@@ -720,6 +731,24 @@ inline void LqhKeyReq::setTTLOnlyExpiredFlag(UintR &requestInfo, UintR val){
 
 inline UintR LqhKeyReq::getTTLOnlyExpiredFlag(const UintR & requestInfo){
   return (requestInfo >> RI_TTL_ONLY_EXPIRED_SHIFT) & 1;
+}
+
+inline void LqhKeyReq::setRingBufferOpFlag(UintR &requestInfo, UintR val){
+  ASSERT_BOOL(val, "LqhKeyReq::setRingBufferOpFlag");
+  requestInfo |= (val << RI_RING_BUFFER_OP_SHIFT);
+}
+
+inline UintR LqhKeyReq::getRingBufferOpFlag(const UintR & requestInfo){
+  return (requestInfo >> RI_RING_BUFFER_OP_SHIFT) & 1;
+}
+
+inline void LqhKeyReq::setRingBufferShowMetaFlag(UintR &requestInfo, UintR val){
+  ASSERT_BOOL(val, "LqhKeyReq::setRingBufferShowMetaFlag");
+  requestInfo |= (val << RI_RING_BUFFER_SHOW_META_SHIFT);
+}
+
+inline UintR LqhKeyReq::getRingBufferShowMetaFlag(const UintR & requestInfo){
+  return (requestInfo >> RI_RING_BUFFER_SHOW_META_SHIFT) & 1;
 }
 
 inline Uint32 table_version_major_lqhkeyreq(Uint32 x) {

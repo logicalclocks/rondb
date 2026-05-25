@@ -1102,6 +1102,13 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "Default", /* Default value */
      arbit_method_typelib},
 
+    {CFG_DB_ARBIT_RANK_WAIT, "ArbitrationRankWait", DB_TOKEN,
+     "Max time (milliseconds) the president waits for a rank-1 arbitrator "
+     "candidate (e.g. ndb_mgmd) before falling back to a rank-2 candidate. "
+     "0 disables the wait (rank-2 picked immediately when no rank-1 active).",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "60000", "0",
+     STR_VALUE(MAX_INT_RNIL)},
+
     {CFG_NODE_DATADIR, "DataDir", DB_TOKEN, "Data directory for this node",
      ConfigInfo::CI_USED, CI_CHECK_WRITABLE | CI_RESTART_INITIAL,
      ConfigInfo::CI_STRING, ".", nullptr, nullptr},

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -267,6 +267,13 @@ class TcKeyReq {
   static UintR getTTLIgnoreFlag(const UintR &requestInfo);
   static void setTTLOnlyExpiredFlag(UintR &requestInfo, UintR val);
   static UintR getTTLOnlyExpiredFlag(const UintR &requestInfo);
+  /**
+   * Ring Buffer related
+   */
+  static void setRingBufferOpFlag(UintR &requestInfo, UintR val);
+  static UintR getRingBufferOpFlag(const UintR &requestInfo);
+  static void setRingBufferShowMetaFlag(UintR &requestInfo, UintR val);
+  static UintR getRingBufferShowMetaFlag(const UintR &requestInfo);
 };
 
 /**
@@ -397,12 +404,14 @@ class TcKeyReq {
  I = IgnoreTTL             - 1  Bit 26
  N = Interpreted Insert    - 1  Bit 27
  t = TTL only expired      - 1  Bit 28
- u - User Id               - 1  Bit 29
+ G = Ring Buffer Op        - 1  Bit 29
+ S = Ring Buffer Show Meta - 1  Bit 30
+ u - User Id               - 1  Bit 31
 
            1111111111222222222233
  01234567890123456789012345678901
  dnb cooop lsyyeiaaarkkkkkkkkkkkk  (Short TCKEYREQ)
- dnbvcooopqlsyyeixDfrRwBUQAINu      (Long TCKEYREQ)
+ dnbvcooopqlsyyeixDfrRwBUQAINtGSu  (Long TCKEYREQ)
 */
 
 #define TCKEY_NODISK_SHIFT (1)
@@ -445,12 +454,18 @@ class TcKeyReq {
 #define TC_REPLICA_APPLIER_SHIFT (25)
 
 #define INTERPRETED_INSERT_SHIFT (27)
-#define USER_ID_SHIFT (29)
 /*
  * TTL related
  */
 #define TC_TTL_IGNORE_SHIFT (26)
 #define TC_TTL_ONLY_EXPIRED_SHIFT (28)
+/*
+ * Ring Buffer related
+ */
+#define TC_RING_BUFFER_OP_SHIFT (29)
+#define TC_RING_BUFFER_SHOW_META_SHIFT (30)
+
+#define USER_ID_SHIFT (31)
 
 /**
  * Scan Info
@@ -850,6 +865,34 @@ UintR
 TcKeyReq::getTTLOnlyExpiredFlag(const UintR & requestInfo)
 {
   return (requestInfo >> TC_TTL_ONLY_EXPIRED_SHIFT) & 1;
+}
+
+inline
+void
+TcKeyReq::setRingBufferOpFlag(UintR & requestInfo, UintR flag){
+  ASSERT_BOOL(flag, "TcKeyReq::setRingBufferOpFlag");
+  requestInfo |= (flag << TC_RING_BUFFER_OP_SHIFT);
+}
+
+inline
+UintR
+TcKeyReq::getRingBufferOpFlag(const UintR & requestInfo)
+{
+  return (requestInfo >> TC_RING_BUFFER_OP_SHIFT) & 1;
+}
+
+inline
+void
+TcKeyReq::setRingBufferShowMetaFlag(UintR & requestInfo, UintR flag){
+  ASSERT_BOOL(flag, "TcKeyReq::setRingBufferShowMetaFlag");
+  requestInfo |= (flag << TC_RING_BUFFER_SHOW_META_SHIFT);
+}
+
+inline
+UintR
+TcKeyReq::getRingBufferShowMetaFlag(const UintR & requestInfo)
+{
+  return (requestInfo >> TC_RING_BUFFER_SHOW_META_SHIFT) & 1;
 }
 
 #undef JAM_FILE_ID

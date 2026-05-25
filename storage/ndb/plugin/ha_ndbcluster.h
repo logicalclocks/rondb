@@ -520,6 +520,8 @@ class ha_ndbcluster : public handler, public Partition_handler {
   int flush_bulk_insert(bool allow_batch = false);
   int ndb_write_row(uchar *record, bool primary_key_update,
                     bool batched_update);
+  int ndb_ring_buffer_write_row(uchar *record);
+  int flush_ring_buffer_batch();
 
   bool start_bulk_delete() override;
   int end_bulk_delete() override;
@@ -766,6 +768,26 @@ class ha_ndbcluster : public handler, public Partition_handler {
    */
   bool m_ttl_ignore;
   bool m_ttl_fk;
+
+  /*
+   * Ring buffer bulk INSERT batch state.
+   * Caches meta row state between write_row() calls to avoid redundant
+   * meta reads for rows with the same PK prefix.
+   * record[1] holds the PK prefix from the meta read result.
+   */
+  bool m_rb_batch_active{false};
+  bool m_rb_batch_meta_existed{false};
+  Uint32 m_rb_batch_next_pos{0};
+  Uint32 m_rb_batch_count{0};
+  Uint64 m_rb_batch_total_inserts{0};
+
+  /*
+   * Ring buffer DELETE permission flag.
+   * Set true by ndbcluster_push_to_engine() when DELETE WHERE clause
+   * covers all PK-prefix columns with equalities. Default false (deny).
+   * Reset at start of each statement.
+   */
+  bool m_ring_buffer_delete_allowed{false};
 };
 
 bool is_cluster_failure_code(int error);

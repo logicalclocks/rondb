@@ -1,5 +1,5 @@
 # Copyright (c) 2008, 2025, Oracle and/or its affiliates.
-# Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
+# Copyright (c) 2022, 2026, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -50,6 +50,7 @@ IF(NOT WITHOUT_SERVER)
     plugin/ha_ndbcluster_cond.cc
     plugin/ha_ndbcluster_push.cc
     plugin/ha_ndbcluster_push_agg.cc
+    plugin/ha_ndbcluster_ring_buffer.cc
     plugin/ha_ndbcluster_connection.cc
     plugin/ha_ndbcluster_binlog.cc
     plugin/ha_ndb_index_stat.cc

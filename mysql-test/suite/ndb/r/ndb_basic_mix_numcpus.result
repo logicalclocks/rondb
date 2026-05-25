@@ -206,6 +206,7 @@ ndb_replica_batch_size	#
 ndb_replica_blob_write_batch_bytes	#
 ndb_report_thresh_binlog_epoch_slip	#
 ndb_report_thresh_binlog_mem_usage	#
+ndb_ring_buffer_show_meta	#
 ndb_row_checksum	#
 ndb_schema_dist_lock_wait_timeout	#
 ndb_schema_dist_timeout	#

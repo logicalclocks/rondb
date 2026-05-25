@@ -272,6 +272,10 @@ public class NdbDictionary extends Wrapper
         boolean getRowGCIIndicator() /*_const_*/;
         boolean getRowChecksumIndicator() /*_const_*/;
         int/*_Uint32_*/ getPartitionId(int/*_Uint32_*/ hashvalue) /*_const_*/;
+        boolean isRingBuffer() /*_const_*/;
+        int/*_Uint32_*/ getRingBufferSize() /*_const_*/;
+        int/*_Uint32_*/ getRingIdxColumnNo() /*_const_*/;
+        int/*_Uint32_*/ getRingMetaColumnNo() /*_const_*/;
     }
     static public class Table extends Object implements TableConst
     {
@@ -311,6 +315,10 @@ public class NdbDictionary extends Wrapper
         public final native boolean getRowGCIIndicator() /*_const_*/;
         public final native boolean getRowChecksumIndicator() /*_const_*/;
         public final native int/*_Uint32_*/ getPartitionId(int/*_Uint32_*/ hashvalue) /*_const_*/;
+        public final native boolean isRingBuffer() /*_const_*/;
+        public final native int/*_Uint32_*/ getRingBufferSize() /*_const_*/;
+        public final native int/*_Uint32_*/ getRingIdxColumnNo() /*_const_*/;
+        public final native int/*_Uint32_*/ getRingMetaColumnNo() /*_const_*/;
         static public native Table create(String/*_const char *_*/ name /*_= ""_*/); // MMM non-final, support for derivation
         static public native Table create(TableConst/*_const Table &_*/ table); // MMM non-final, support for derivation
         static public /*_virtual_*/ native void delete(Table p0); // MMM non-final, support for derivation

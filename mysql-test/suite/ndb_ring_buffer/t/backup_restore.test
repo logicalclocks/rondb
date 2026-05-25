@@ -1,0 +1,662 @@
+# ndb_ring_buffer_backup_restore.test
+#
+# Tests for backup and restore of ring-buffer tables.
+# Verifies data survival, metadata preservation, BLOB/TEXT support,
+# multi-PK-prefix handling, and continued ring operation after restore.
+
+--source include/have_multi_ndb.inc
+--source suite/ndb/include/backup_restore_setup.inc
+
+###############################################################################
+# Case 1: Basic backup/restore — data rows preserved
+###############################################################################
+
+--echo #
+--echo # Case 1: Basic backup/restore — data rows preserved
+--echo #
+
+CREATE TABLE test.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    event_data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
+
+# Verify pre-backup state
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+--source include/ndb_backup.inc
+
+DROP TABLE test.rb;
+
+--source common/rpl/ndb_restore_source.inc
+
+# Wait for metadata sync on both servers
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+
+--connection server2
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+--connection server1
+
+# Verify restored data matches pre-backup state
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+DROP TABLE test.rb;
+
+###############################################################################
+# Case 2: Wrapped ring backup/restore — wrapped state preserved
+###############################################################################
+
+--echo #
+--echo # Case 2: Wrapped ring backup/restore — wrapped state preserved
+--echo #
+
+CREATE TABLE test.rb_wrap (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+# Insert 5 rows into ring of size 3: wraps around
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'a');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'b');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'c');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'd');
+INSERT INTO test.rb_wrap (id, data) VALUES (1, 'e');
+
+# Pre-backup: slots 1,2,3 should have d/e/c or similar wrapped pattern
+SELECT id, ring_idx, data FROM test.rb_wrap WHERE id = 1 ORDER BY ring_idx;
+
+--source include/ndb_backup.inc
+
+DROP TABLE test.rb_wrap;
+
+--source common/rpl/ndb_restore_source.inc
+
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+
+--connection server2
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+--connection server1
+
+# Verify wrapped state preserved
+SELECT id, ring_idx, data FROM test.rb_wrap WHERE id = 1 ORDER BY ring_idx;
+
+DROP TABLE test.rb_wrap;
+
+###############################################################################
+# Case 3: COMMENT metadata preserved after restore
+###############################################################################
+
+--echo #
+--echo # Case 3: SHOW CREATE TABLE preserves MAX_ROWS_PER_PK comment after restore
+--echo #
+
+CREATE TABLE test.rb_meta (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+
+INSERT INTO test.rb_meta (id, val) VALUES (1, 'test');
+
+--source include/ndb_backup.inc
+
+DROP TABLE test.rb_meta;
+
+--source common/rpl/ndb_restore_source.inc
+
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+
+--connection server2
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+--connection server1
+
+# SHOW CREATE TABLE should show MAX_ROWS_PER_PK comment
+SHOW CREATE TABLE test.rb_meta;
+
+DROP TABLE test.rb_meta;
+
+###############################################################################
+# Case 4: Continue INSERT after restore — ring continues correctly
+###############################################################################
+
+--echo #
+--echo # Case 4: INSERT after restore continues ring from correct position
+--echo #
+
+CREATE TABLE test.rb_cont (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+INSERT INTO test.rb_cont (id, data) VALUES (1, 'before_A');
+INSERT INTO test.rb_cont (id, data) VALUES (1, 'before_B');
+
+--source include/ndb_backup.inc
+
+DROP TABLE test.rb_cont;
+
+--source common/rpl/ndb_restore_source.inc
+
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+
+--connection server2
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+--connection server1
+
+# Verify pre-restore data
+SELECT id, ring_idx, data FROM test.rb_cont WHERE id = 1 ORDER BY ring_idx;
+
+# New inserts should continue ring from where it left off
+INSERT INTO test.rb_cont (id, data) VALUES (1, 'after_C');
+INSERT INTO test.rb_cont (id, data) VALUES (1, 'after_D');
+
+# Ring should now have 4 rows in slots 1-4
+SELECT id, ring_idx, data FROM test.rb_cont WHERE id = 1 ORDER BY ring_idx;
+
+# One more insert should wrap and overwrite slot 1
+INSERT INTO test.rb_cont (id, data) VALUES (1, 'after_E');
+
+SELECT id, ring_idx, data FROM test.rb_cont WHERE id = 1 ORDER BY ring_idx;
+
+DROP TABLE test.rb_cont;
+
+###############################################################################
+# Case 5: BLOB/TEXT columns — data integrity through backup/restore
+###############################################################################
+
+--echo #
+--echo # Case 5: BLOB/TEXT columns survive backup/restore
+--echo #
+
+CREATE TABLE test.rb_blob (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    description TEXT,
+    payload BLOB,
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_blob (id, description, payload)
+    VALUES (1, REPEAT('hello ', 100), REPEAT(x'DEADBEEF', 50));
+INSERT INTO test.rb_blob (id, description, payload)
+    VALUES (1, REPEAT('world ', 100), REPEAT(x'CAFEBABE', 50));
+
+# Store checksums for verification
+SELECT id, ring_idx, LENGTH(description), SHA1(description),
+       LENGTH(payload), SHA1(payload)
+    FROM test.rb_blob WHERE id = 1 ORDER BY ring_idx;
+
+--source include/ndb_backup.inc
+
+DROP TABLE test.rb_blob;
+
+--source common/rpl/ndb_restore_source.inc
+
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+
+--connection server2
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+--connection server1
+
+# Verify BLOB/TEXT data integrity via checksums
+SELECT id, ring_idx, LENGTH(description), SHA1(description),
+       LENGTH(payload), SHA1(payload)
+    FROM test.rb_blob WHERE id = 1 ORDER BY ring_idx;
+
+DROP TABLE test.rb_blob;
+
+###############################################################################
+# Case 6: Multiple PK prefixes — all independent rings preserved
+###############################################################################
+
+--echo #
+--echo # Case 6: Multiple PK prefixes preserved through backup/restore
+--echo #
+
+CREATE TABLE test.rb_multi (
+    region INT NOT NULL,
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    event VARCHAR(100),
+    PRIMARY KEY (region, client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+# Three independent rings: (1,100), (1,200), (2,100)
+INSERT INTO test.rb_multi (region, client_id, event) VALUES (1, 100, 'r1c100_A');
+INSERT INTO test.rb_multi (region, client_id, event) VALUES (1, 100, 'r1c100_B');
+INSERT INTO test.rb_multi (region, client_id, event) VALUES (1, 200, 'r1c200_A');
+INSERT INTO test.rb_multi (region, client_id, event) VALUES (2, 100, 'r2c100_A');
+INSERT INTO test.rb_multi (region, client_id, event) VALUES (2, 100, 'r2c100_B');
+INSERT INTO test.rb_multi (region, client_id, event) VALUES (2, 100, 'r2c100_C');
+
+SELECT region, client_id, ring_idx, event FROM test.rb_multi
+    ORDER BY region, client_id, ring_idx;
+
+--source include/ndb_backup.inc
+
+DROP TABLE test.rb_multi;
+
+--source common/rpl/ndb_restore_source.inc
+
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+
+--connection server2
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+--connection server1
+
+# All three independent rings preserved
+SELECT region, client_id, ring_idx, event FROM test.rb_multi
+    ORDER BY region, client_id, ring_idx;
+
+DROP TABLE test.rb_multi;
+
+###############################################################################
+# Case 7: Meta rows properly restored — visible with show_meta
+###############################################################################
+
+--echo #
+--echo # Case 7: Meta rows restored and visible with ndb_ring_buffer_show_meta
+--echo #
+
+CREATE TABLE test.rb_show (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+INSERT INTO test.rb_show (id, val) VALUES (1, 'x');
+INSERT INTO test.rb_show (id, val) VALUES (1, 'y');
+INSERT INTO test.rb_show (id, val) VALUES (2, 'z');
+
+# Check meta rows before backup
+SET ndb_ring_buffer_show_meta = ON;
+SELECT id, ring_idx FROM test.rb_show ORDER BY id, ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--source include/ndb_backup.inc
+
+DROP TABLE test.rb_show;
+
+--source common/rpl/ndb_restore_source.inc
+
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+
+--connection server2
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+--connection server1
+
+# Meta rows should be restored — visible with show_meta ON
+SET ndb_ring_buffer_show_meta = ON;
+SELECT id, ring_idx FROM test.rb_show ORDER BY id, ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# Normal SELECT should hide meta rows
+SELECT id, ring_idx, val FROM test.rb_show ORDER BY id, ring_idx;
+
+DROP TABLE test.rb_show;
+
+###############################################################################
+# Case 8: NOT NULL + unique index — backup/restore
+# Meta rows (code=0) must not collide with the unique index during restore.
+###############################################################################
+
+--echo #
+--echo # Case 8: NOT NULL + unique index survives backup/restore
+--echo #
+
+CREATE TABLE test.rb_nn_uniq (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    code INT NOT NULL,
+    PRIMARY KEY (id, ring_idx),
+    UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 100);
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (2, 200);
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 300);
+# 3rd insert for id=1: fills slot 3 (ring full, no wrap yet)
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (1, 400);
+
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+--source include/ndb_backup.inc
+
+DROP TABLE test.rb_nn_uniq;
+
+# Restore with --allow-unique-indexes: row-by-row insertion with index active.
+# DbtupTrigger fix skips index triggers for meta rows (ring_idx=0), so
+# multiple meta rows with code=0 don't cause duplicate key errors.
+--exec $NDB_RESTORE -p 8 -b $the_backup_id -n 1 -m -r --allow-unique-indexes --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -p 8 -b $the_backup_id -n 2 -r --allow-unique-indexes --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+
+--connection server2
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+--connection server1
+
+# Data should be restored
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+# Unique constraint should work after restore
+--error ER_DUP_ENTRY
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (3, 200);
+
+# Ring should continue operating
+INSERT INTO test.rb_nn_uniq (id, code) VALUES (3, 500);
+
+SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
+
+DROP TABLE test.rb_nn_uniq;
+
+###############################################################################
+# Case 9: NOT NULL + unique index — 4-step restore with rebuild-indexes
+# Uses --disable-indexes + --rebuild-indexes which rebuilds the unique index
+# via TRIX/SUMA after data is loaded. Exercises the SUMA fix that hides
+# meta rows for SingleTableScan index build scans.
+###############################################################################
+
+--echo #
+--echo # Case 9: NOT NULL + unique index — 4-step restore with rebuild-indexes
+--echo #
+
+CREATE TABLE test.rb_nn_rebuild (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    code INT NOT NULL,
+    PRIMARY KEY (id, ring_idx),
+    UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (1, 100);
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (2, 200);
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (1, 300);
+
+SELECT id, ring_idx, code FROM test.rb_nn_rebuild ORDER BY id, ring_idx;
+
+--source include/ndb_backup.inc
+
+DROP TABLE test.rb_nn_rebuild;
+
+# 4-step restore: disable indexes, load data, rebuild via TRIX
+--exec $NDB_RESTORE -p 8 -b $the_backup_id -n 1 -m --disable-indexes --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -p 8 -b $the_backup_id -n 1 -r --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -p 8 -b $the_backup_id -n 2 -r --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -p 8 -b $the_backup_id -n 1 --rebuild-indexes --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+
+--connection server2
+--let $max_wait = 60
+SET GLOBAL ndb_metadata_sync = true;
+--let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+while ($metadata_sync_value != 0)
+{
+  --sleep 0.5
+  --dec $max_wait
+  if ($max_wait == 0)
+  {
+    --die Timed out waiting for metadata changes to be synced
+  }
+  --let $metadata_sync_value = `SELECT @@ndb_metadata_sync`
+}
+--connection server1
+
+# Data should be restored, unique index rebuilt via TRIX
+SELECT id, ring_idx, code FROM test.rb_nn_rebuild ORDER BY id, ring_idx;
+
+# Unique constraint works after rebuild
+--error ER_DUP_ENTRY
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (3, 200);
+
+# Ring continues operating
+INSERT INTO test.rb_nn_rebuild (id, code) VALUES (3, 500);
+
+SELECT id, ring_idx, code FROM test.rb_nn_rebuild ORDER BY id, ring_idx;
+
+DROP TABLE test.rb_nn_rebuild;
+
+--echo #
+--echo # Cleanup
+--echo #
+
+--source suite/ndb/include/backup_restore_cleanup.inc
+--remove_file $NDB_TOOLS_OUTPUT
+
+--echo # Done.
