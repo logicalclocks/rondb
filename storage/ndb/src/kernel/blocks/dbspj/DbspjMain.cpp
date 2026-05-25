@@ -1156,7 +1156,7 @@ void Dbspj::execLQHKEYREQ(Signal *signal) {
       paramReader.step(len);  // skip over tree to parameters
 
       Uint32 var_index = 0;
-      if (LqhKeyReq::getUserIdFlag(req->requestInfo)) {
+      if (LqhKeyReq::getUserIdFlag(req->attrLen)) {
         var_index++;
       }
       Build_context ctx;
@@ -1262,7 +1262,7 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
 #endif
   const Uint32 reqInfo = req->requestInfo;
   Uint32 var_index = 0;
-  if (LqhKeyReq::getUserIdFlag(reqInfo)) {
+  if (LqhKeyReq::getUserIdFlag(req->attrLen)) {
     requestP->m_user_id = req->variableData[0];
     var_index++;
   } else {
@@ -1306,7 +1306,7 @@ void Dbspj::handle_early_lqhkey_ref(Signal *signal, const LqhKeyReq *lqhKeyReq,
   ndbrequire(err);
   const Uint32 reqInfo = lqhKeyReq->requestInfo;
   const Uint32 transid[2] = {lqhKeyReq->transId1, lqhKeyReq->transId2};
-  Uint32 var_index = LqhKeyReq::getUserIdFlag(reqInfo);
+  Uint32 var_index = LqhKeyReq::getUserIdFlag(lqhKeyReq->attrLen);
 
   if (LqhKeyReq::getDirtyFlag(reqInfo) &&
       LqhKeyReq::getOperation(reqInfo) == ZREAD) {
