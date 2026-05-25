@@ -2461,16 +2461,9 @@ void Dbtc::handleSignalStateProblem(Signal *signal,
       instance(), signalNodeId, context, apiConnectptr.i,
       apiConnectptr.p->apiConnectstate);
 
-  /* Handle signal sender */
-  /* Data node involved in errors -> crash, API -> disconnect */
-  ndbrequire(getNodeInfo(signalNodeId).getType() == NODE_TYPE_API);
-  g_eventLogger->warning("TC %u : Disconnecting signal sending node %u",
-                         instance(), signalNodeId);
-
-  /* Ask QMGR to eject signal sending API */
-  signal->theData[0] = 900;
-  signal->theData[1] = signalNodeId;
-  sendSignal(QMGR_REF, GSN_DUMP_STATE_ORD, signal, 2, JBA);
+  /* Disconnect signal sender — handles both API and data nodes */
+  disconnectMaliciousNode(signal, signalNodeId,
+      "signal in unexpected apiConnectRecord state", __LINE__);
 
   /* Handle record owner */
   if (apiConnectptr.p->apiConnectstate != CS_DISCONNECTED &&
@@ -2495,15 +2488,10 @@ void Dbtc::handleSignalStateProblem(Signal *signal,
         instance(), apiConnectptr.i, apiConnectptr.p->apiConnectstate,
         signalNodeId, acrOwnerNodeId);
 
-    /* Data node errors -> crash, API -> disconnect */
-    ndbrequire(getNodeInfo(acrOwnerNodeId).getType() == NODE_TYPE_API);
-    g_eventLogger->warning("TC %u : Disconnecting record owning node %u",
-                           instance(), acrOwnerNodeId);
-
-    /* Ask QMGR to eject API */
-    signal->theData[0] = 900;
-    signal->theData[1] = acrOwnerNodeId;
-    sendSignal(QMGR_REF, GSN_DUMP_STATE_ORD, signal, 2, JBA);
+    /* Disconnect record owner — handles both API and data nodes */
+    disconnectMaliciousNode(signal, acrOwnerNodeId,
+        "apiConnectRecord owned by different node in unexpected state",
+        __LINE__);
   }
 #ifdef VM_TRACE
   dump_scan_state(apiConnectptr);
@@ -2511,6 +2499,33 @@ void Dbtc::handleSignalStateProblem(Signal *signal,
 #endif
   /* Do nothing more - API disconnection is responsible for cleanup */
 }  // Dbtc::handleSignalStateProblem
+
+void Dbtc::disconnectMaliciousNode(Signal *signal,
+                                   NodeId nodeId,
+                                   const char *reason,
+                                   int line) {
+  jam();
+  ndbassert(false);
+  ndbrequire(nodeId != getOwnNodeId());
+  g_eventLogger->warning(
+      "TC %u : Malformed signal from node %u (type %u) at line %d: %s. "
+      "Disconnecting.",
+      instance(), nodeId, getNodeInfo(nodeId).getType(), line, reason);
+
+  if (getNodeInfo(nodeId).getType() == NODE_TYPE_API) {
+    jam();
+    /* API node: ask QMGR to disconnect via api_failed() */
+    signal->theData[0] = 900;
+    signal->theData[1] = nodeId;
+    sendSignal(QMGR_REF, GSN_DUMP_STATE_ORD, signal, 2, JBA);
+  } else {
+    jam();
+    /* Data node: close transport, QMGR handles via node_failed() */
+    signal->theData[0] = 939;
+    signal->theData[1] = nodeId;
+    sendSignal(QMGR_REF, GSN_DUMP_STATE_ORD, signal, 2, JBA);
+  }
+}  // Dbtc::disconnectMaliciousNode
 
 void Dbtc::abortBeginErrorLab(Signal *signal,
                               ApiConnectRecordPtr const apiConnectptr) {
@@ -2641,22 +2656,15 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
     ndbabort();  // Not used currently
     return;
   case 2:{
-    printState(signal, 6, apiConnectptr);
-    const TcKeyReq * const tcKeyReq = (TcKeyReq *)&signal->theData[0];
-    const Uint32 t1 = tcKeyReq->transId1;
-    const Uint32 t2 = tcKeyReq->transId2;
-    signal->theData[0] = apiConnectptr.p->ndbapiConnect;
-    signal->theData[1] = t1;
-    signal->theData[2] = t2;
-    signal->theData[3] = ZABORT_ERROR;
-    ndbassert(false);
-    sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKREP, 
-	       signal, 4, JBB);
+    jam();
     /**
-     * Abort already in progress
-     * Receiving a startFlag in this state is a protocol
-     * error. We crash in development builds.
+     * Abort already in progress.
+     * Receiving a startFlag in this state is a protocol error.
+     * Disconnect the offending node.
      */
+    NodeId senderNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
+    disconnectMaliciousNode(signal, senderNodeId,
+        "start flag during active abort (protocol error)", __LINE__);
     return;
   }
   case 3:
@@ -2879,9 +2887,26 @@ void Dbtc::execKEYINFO(Signal *signal) {
   tmaxData = 20;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
-    warningHandlerLab(signal, __LINE__);
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    disconnectMaliciousNode(signal, senderNodeId,
+        "invalid apiConnectPtr in KEYINFO", __LINE__);
     return;
   }  // if
+
+  /* Verify signal sender owns this API connect record */
+  {
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    if (unlikely(senderNodeId != getOwnNodeId())) {
+      NodeId ownerNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
+      if (unlikely(senderNodeId != ownerNodeId)) {
+        jam();
+        disconnectMaliciousNode(signal, senderNodeId,
+            "KEYINFO apiConnectPtr not owned by sender", __LINE__);
+        return;
+      }
+    }
+  }
+
   ttransid_ptr = 1;
   if (unlikely(compare_transid(apiConnectptr.p->transid, signal->theData + 1) ==
                false)) {
@@ -2918,7 +2943,8 @@ void Dbtc::execKEYINFO(Signal *signal) {
       return;
     default:
       jam();
-      ndbabort();
+      handleSignalStateProblem(signal, apiConnectptr,
+                               refToNode(signal->getSendersBlockRef()), 4);
       return;
   }  // switch
 
@@ -2966,6 +2992,16 @@ void Dbtc::tckeyreq020Lab(Signal *signal, CacheRecordPtr const cachePtr,
   ndbassert(!regCachePtr->isLongTcKeyReq);
   ndbassert(regCachePtr->keyInfoSectionI != RNIL);
 
+  if (unlikely(signal->getLength() != KeyInfo::HeaderLength + wordsInSignal)) {
+    jam();
+    NodeId senderNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
+    disconnectMaliciousNode(signal, senderNodeId,
+        "KEYINFO signal length mismatch", __LINE__);
+    terrorCode = ZSIGNAL_ERROR;
+    abortErrorLab(signal, apiConnectptr);
+    return;
+  }
+
   /* Add received KeyInfo data to the existing KeyInfo section */
   if (!appendToSection(regCachePtr->keyInfoSectionI,
                        &signal->theData[KeyInfo::HeaderLength],
@@ -3005,12 +3041,27 @@ void Dbtc::execATTRINFO(Signal *signal) {
   ttransid_ptr = 1;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
-    DEBUG("Drop ATTRINFO, wrong apiConnectptr");
-    warningHandlerLab(signal, __LINE__);
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    disconnectMaliciousNode(signal, senderNodeId,
+        "invalid apiConnectPtr in ATTRINFO", __LINE__);
     return;
   }  // if
 
   ApiConnectRecord *const regApiPtr = apiConnectptr.p;
+
+  /* Verify signal sender owns this API connect record */
+  {
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    if (unlikely(senderNodeId != getOwnNodeId())) {
+      NodeId ownerNodeId = refToNode(regApiPtr->ndbapiBlockref);
+      if (unlikely(senderNodeId != ownerNodeId)) {
+        jam();
+        disconnectMaliciousNode(signal, senderNodeId,
+            "ATTRINFO apiConnectPtr not owned by sender", __LINE__);
+        return;
+      }
+    }
+  }
 
   if (regApiPtr->apiConnectstate == CS_RELEASE)
   {
@@ -3026,10 +3077,11 @@ void Dbtc::execATTRINFO(Signal *signal) {
           << signal->theData[2]);
     return;
   }  // if
-  if (Tlength < 4) {
-    ndbassert(false);
-    DEBUG("Drop ATTRINFO, wrong length = " << Tlength);
-    warningHandlerLab(signal, __LINE__);
+  if (unlikely(Tlength < 4)) {
+    jam();
+    NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+    disconnectMaliciousNode(signal, senderNodeId,
+        "ATTRINFO signal too short", __LINE__);
     return;
   }
   Tlength -= AttrInfo::HeaderLength;
@@ -3566,6 +3618,51 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   const TcKeyReq *const tcKeyReq = (TcKeyReq *)signal->getDataPtr();
   SectionHandle handle(this, signal);
   jamEntryDebug();
+
+  /**
+   * Verify signal has at least the mandatory header (8 words).
+   * The transport layer only checks length + secCount <= 25, so a
+   * malicious sender can send a too-short signal. Reading beyond the
+   * declared length would access stale data in the signal buffer.
+   */
+  if (unlikely(signal->getLength() < TcKeyReq::StaticLength)) {
+    jam();
+    releaseSections(handle);
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    disconnectMaliciousNode(signal, senderNodeId,
+        "TCKEYREQ signal too short", __LINE__);
+    return;
+  }
+
+  /**
+   * assembleFragments can accumulate arbitrarily large sections from
+   * multiple signal fragments with no size limit. Check section sizes
+   * against protocol limits early to free memory and disconnect sender.
+   */
+  if (likely(handle.m_cnt > 0)) {
+    SegmentedSectionPtr secPtr;
+    if (likely(handle.getSection(secPtr, TcKeyReq::KeyInfoSectionNum))) {
+      if (unlikely(secPtr.sz > MAX_KEY_SIZE_IN_WORDS)) {
+        jam();
+        releaseSections(handle);
+        NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+        disconnectMaliciousNode(signal, senderNodeId,
+            "TCKEYREQ KeyInfo section too large", __LINE__);
+        return;
+      }
+    }
+    if (likely(handle.getSection(secPtr, TcKeyReq::AttrInfoSectionNum))) {
+      if (unlikely(secPtr.sz > TcKeyReq::MaxTotalAttrInfo)) {
+        jam();
+        releaseSections(handle);
+        NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+        disconnectMaliciousNode(signal, senderNodeId,
+            "TCKEYREQ AttrInfo section too large", __LINE__);
+        return;
+      }
+    }
+  }
+
   /*-------------------------------------------------------------------------
    * Common error routines are used for several signals, they need to know
    * where to find the transaction identifier in the signal.
@@ -3581,13 +3678,42 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   apiConnectptr.i = TapiIndex;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
-    ndbrequire(!passQueueingFlag);
+    NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+    if (passQueueingFlag && senderNodeId == getOwnNodeId()) {
+      /**
+       * passQueueingFlag set and sender is ourselves — this is a queued
+       * signal we sent internally. Invalid apiConnectPtr is an internal bug.
+       */
+      ndbrequire(false);
+    }
     releaseSections(handle);
-    warningHandlerLab(signal, __LINE__);
+    disconnectMaliciousNode(signal, senderNodeId,
+        "invalid apiConnectPtr in TCKEYREQ", __LINE__);
     return;
   }//if
   ApiConnectRecord *const regApiPtr = apiConnectptr.p;
   Uint32 sendersBlockRef = regApiPtr->ndbapiBlockref;
+
+  /**
+   * Verify that the signal sender actually owns this API connect record.
+   * A malicious node could send a TCKEYREQ with another node's
+   * apiConnectPtr to hijack its transaction.
+   * Internal signals (trigger/index ops) come from our own node — skip check.
+   */
+  {
+    NodeId signalSenderNodeId = refToNode(signal->getSendersBlockRef());
+    if (signalSenderNodeId != getOwnNodeId()) {
+      NodeId ownerNodeId = refToNode(sendersBlockRef);
+      if (unlikely(signalSenderNodeId != ownerNodeId)) {
+        jam();
+        releaseSections(handle);
+        disconnectMaliciousNode(signal, signalSenderNodeId,
+            "TCKEYREQ apiConnectPtr not owned by sender", __LINE__);
+        return;
+      }
+    }
+  }
+
 #ifdef ERROR_INSERT
   if (ERROR_INSERTED(8079)) {
     /* Test that no signals received after API_FAILREQ */
@@ -3607,17 +3733,18 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   TableRecordPtr localTabptr;
   Uint32 TstartFlag = TcKeyReq::getStartFlag(Treqinfo);
   localTabptr.i = TtabIndex;
-  localTabptr.p = &tableRecord[TtabIndex];
   if (unlikely(TtabIndex > TtabMaxIndex)) {
     jam();
-    ndbrequire(!passQueueingFlag);
-    releaseSections(handle);
-    warningHandlerLab(signal, __LINE__);
-    if (!is_transaction_to_start(regApiPtr, TstartFlag)) {
-      TCKEY_abort(signal, 69, apiConnectptr);
+    NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+    if (passQueueingFlag && senderNodeId == getOwnNodeId()) {
+      ndbrequire(false);
     }
+    releaseSections(handle);
+    disconnectMaliciousNode(signal, senderNodeId,
+        "table index out of bounds in TCKEYREQ", __LINE__);
     return;
   }
+  localTabptr.p = &tableRecord[TtabIndex];
   Uint16 Tspecial_op_flags = regApiPtr->m_special_op_flags;
   bool isIndexOpReturn =
       tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_INDEX_OP_RETURN);
@@ -3634,11 +3761,14 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     } else if (unlikely(databaseRecordPtr.p->m_is_user == false ||
                         databaseRecordPtr.p->m_database_version !=
                           user_id_version)) {
-      databaseRecordPtr.i = localTabptr.p->databaseRecord;
-      databaseRecordPtr.p = nullptr;
-      g_eventLogger->info("(%u) Sending incorrect user id: %u",
-        instance(), user_id);
-      ndbassert(false);
+      jam();
+      releaseSections(handle);
+      terrorCode = ZSTATE_ERROR;
+      if (is_transaction_to_start(regApiPtr, TstartFlag)) {
+        initApiConnectRec(signal, regApiPtr, true);
+      }
+      abortErrorLab(signal, apiConnectptr);
+      return;
     }
   } else {
     databaseRecordPtr.i = localTabptr.p->databaseRecord;
@@ -4315,7 +4445,14 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     else if (TOperationType == ZDELETE)
       regTcPtr->m_special_op_flags |= TcConnectRecord::SOF_REORG_DELETE;
     else {
-      ndbassert(false);
+      jam();
+      terrorCode = ZSIGNAL_ERROR;
+      NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+      disconnectMaliciousNode(signal, senderNodeId,
+          "reorg flag set with invalid operation type in TCKEYREQ",
+          __LINE__);
+      releaseAtErrorLab(signal, apiConnectptr);
+      return;
     }
   }
   /* Not logical to set both of those flags. */
@@ -4354,13 +4491,57 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     TkeyIndex = TDistrKeyIndex + TDistrKeyFlag;
   }
 
+  /**
+   * For long TCKEYREQ, key and attr data are in sections, so the signal
+   * body should contain exactly the static header plus optional words.
+   * Reject signals that are too short (stale data) or too long (extra data).
+   */
+  if (regCachePtr->isLongTcKeyReq) {
+    if (unlikely(signal->getLength() !=
+                 TcKeyReq::StaticLength + TkeyIndex)) {
+      jam();
+      terrorCode = ZSIGNAL_ERROR;
+      NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+      disconnectMaliciousNode(signal, senderNodeId,
+          "TCKEYREQ signal length mismatch", __LINE__);
+      releaseAtErrorLab(signal, apiConnectptr);
+      return;
+    }
+  } else {
+    /**
+     * For short TCKEYREQ, key and attr data are embedded in the signal
+     * body after the optional words. Verify exact length to prevent
+     * out-of-bounds reads from the signal buffer.
+     */
+    Uint32 keyInfoInSignal = MIN(TkeyLength, TcKeyReq::MaxKeyInfo);
+    if (unlikely(signal->getLength() !=
+                 TcKeyReq::StaticLength + TkeyIndex +
+                 keyInfoInSignal + titcLenAiInTckeyreq)) {
+      jam();
+      terrorCode = ZSIGNAL_ERROR;
+      NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+      disconnectMaliciousNode(signal, senderNodeId,
+          "TCKEYREQ signal length mismatch", __LINE__);
+      releaseAtErrorLab(signal, apiConnectptr);
+      return;
+    }
+  }
+
   regCachePtr->m_no_hash = false;
 
   if (unlikely(TOperationType == ZUNLOCK)) {
     /* Unlock op has distribution key containing
      * LQH nodeid and fragid
      */
-    ndbassert(regCachePtr->distributionKeyIndicator);
+    if (unlikely(!regCachePtr->distributionKeyIndicator)) {
+      jam();
+      terrorCode = ZSIGNAL_ERROR;
+      NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+      disconnectMaliciousNode(signal, senderNodeId,
+          "UNLOCK without distribution key in TCKEYREQ", __LINE__);
+      releaseAtErrorLab(signal, apiConnectptr);
+      return;
+    }
     regCachePtr->m_no_hash = 1;
     regCachePtr->unlockNodeId = (regCachePtr->distributionKey >> 16);
     regCachePtr->distributionKey &= 0xffff;
@@ -4387,7 +4568,16 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     SegmentedSectionPtr keyInfoSection, attrInfoSection;
 
     /* Store i value for first long section of KeyInfo
-     * and AttrInfo in Cache Record
+     * and AttrInfo in Cache Record.
+     *
+     * These ndbrequire's are safe internal invariants:
+     * - KeyInfo section (0) was already probed above when setting
+     *   TkeyLength. If it were missing, TkeyLength would be 0 and
+     *   we'd have returned via TCKEY_abort(signal, 4) at the
+     *   TkeyLength==0 check.
+     * - AttrInfo section (1) was probed above when setting TattrLen.
+     *   If missing, TattrLen stays 0, so attrlength==0 and this
+     *   branch is not taken.
      */
     ndbrequire(handle.getSection(keyInfoSection, TcKeyReq::KeyInfoSectionNum));
 
@@ -4611,7 +4801,15 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
    * If CommitFlag is set state accordingly and check for early abort
    *------------------------------------------------------------------------*/
   if (TcKeyReq::getCommitFlag(Treqinfo) == 1) {
-    ndbrequire(TexecFlag);
+    if (unlikely(!TexecFlag)) {
+      jam();
+      terrorCode = ZSIGNAL_ERROR;
+      NodeId senderNodeId = refToNode(regApiPtr->ndbapiBlockref);
+      disconnectMaliciousNode(signal, senderNodeId,
+          "CommitFlag set without ExecFlag in TCKEYREQ", __LINE__);
+      releaseAtErrorLab(signal, apiConnectptr);
+      return;
+    }
     regApiPtr->apiConnectstate = CS_REC_COMMITTING;
   } else {
     /* ---------------------------------------------------------------------
@@ -4719,6 +4917,16 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
   UintR tnoOfBackup;
 
   terrorCode = 0;
+
+  if (unlikely(regCachePtr->keylen > MAX_KEY_SIZE_IN_WORDS)) {
+    jam();
+    terrorCode = ZSIGNAL_ERROR;
+    NodeId senderNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
+    disconnectMaliciousNode(signal, senderNodeId,
+        "key length exceeds MAX_KEY_SIZE_IN_WORDS", __LINE__);
+    releaseAtErrorLab(signal, apiConnectptr);
+    return;
+  }
 
   hash(signal, regCachePtr); /* NOW IT IS TIME TO CALCULATE THE HASH VALUE*/
 
@@ -22233,6 +22441,20 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
   indexOp->indexOpId = indexOpPtr.i;
 
   // Save original signal
+  // But clear flags that should not be carried on first
+
+  /**
+   * When receiving execTCINDXREQ we need to handle getUserIdFlag
+   * properly, this means we use it to set database in TCINDXREQ,
+   * this means it need not be set again in TCKEYREQ.
+   * getScanIndFlag is not checked and can be set and cause
+   * corruption of the TCKEYREQ execution.
+   * Finally getDistributionKeyFlag can be set without checks
+   * which also needs protection against.
+   */
+  TcKeyReq::setUserIdFlag(tcIndxReq->requestInfo, 0);
+  TcKeyReq::setDistributionKeyFlag(tcIndxReq->requestInfo, 0);
+  TcKeyReq::setScanIndFlag(tcIndxReq->requestInfo, 0);
   indexOp->tcIndxReq = *tcIndxReq;
   indexOp->connectionIndex = TapiIndex;
   regApiPtr->accumulatingIndexOp = indexOp->indexOpId;
@@ -23089,6 +23311,7 @@ void Dbtc::readIndexTable(Signal *signal, ApiConnectRecordPtr transPtr,
    * TCKEYREQ is responsible for freeing the KeyInfo and
    * AttrInfo sections passed to it
    */
+
   EXECUTE_DIRECT(DBTC, GSN_TCKEYREQ, signal, TcKeyReq::StaticLength);
   jamEntry();
 
@@ -23159,11 +23382,6 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
   tcKeyReq->transId2 = regApiPtr->transid[1];
   tcKeyReq->senderData = tcIndxReq->senderData;  // Needed for TRANSID_AI to API
 
-  if (tabPtr.p->get_user_defined_partitioning()) {
-    jam();
-    tcKeyReq->scanInfo = indexOp->fragmentId;  // As read from Index table
-    TcKeyReq::setDistributionKeyFlag(tcKeyRequestInfo, 1U);
-  }
   regApiPtr->m_special_op_flags = 0;
   regApiPtr->executingIndexOp = 0;
 
@@ -23198,7 +23416,6 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
 
   TcKeyReq::setCommitFlag(tcKeyRequestInfo, 0);
   TcKeyReq::setExecuteFlag(tcKeyRequestInfo, 0);
-  tcKeyReq->requestInfo = tcKeyRequestInfo;
 
   ndbassert(TcKeyReq::getDirtyFlag(tcKeyRequestInfo) == 0);
   ndbassert(TcKeyReq::getSimpleFlag(tcKeyRequestInfo) == 0);
@@ -23243,6 +23460,14 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
     regApiPtr->immediateTriggerId = triggerId;
     regApiPtr->m_executing_trigger_ops++;
   }
+  Uint32 extra_len = 0;
+  if (tabPtr.p->get_user_defined_partitioning()) {
+    jam();
+    tcKeyReq->scanInfo = indexOp->fragmentId;  // As read from Index table
+    TcKeyReq::setDistributionKeyFlag(tcKeyRequestInfo, 1U);
+    extra_len++;
+  }
+  tcKeyReq->requestInfo = tcKeyRequestInfo;
   releaseIndexOperation(regApiPtr, indexOp);
 
   ndbassert(tc_testbit(regApiPtr->m_flags,
@@ -23251,7 +23476,10 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
   /* Execute TCKEYREQ now - it is now responsible for freeing
    * the KeyInfo and AttrInfo sections
    */
-  EXECUTE_DIRECT(DBTC, GSN_TCKEYREQ, signal, TcKeyReq::StaticLength);
+  EXECUTE_DIRECT(DBTC,
+                 GSN_TCKEYREQ,
+                 signal,
+                 TcKeyReq::StaticLength + extra_len);
   jamEntry();
 
 #ifdef ERROR_INSERT
