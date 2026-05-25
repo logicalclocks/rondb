@@ -1,0 +1,42 @@
+#
+# Set up: a string, a populated hash, a hash about to be emptied.
+#
+OK
+1
+1
+1
+#
+# Existing string key.
+#
+string
+#
+# Existing hash.
+#
+hash
+#
+# Fully-HDEL'd hash. The hset_keys row was dropped on the HDEL;
+# TYPE returns none.
+#
+SELECT COUNT(*) AS hash_empty_rows FROM redis_0.hset_keys
+WHERE redis_key = 'hash_empty';
+hash_empty_rows
+0
+none
+#
+# Missing key.
+#
+none
+#
+# HSET on an existing string returns WRONGTYPE. TYPE still
+# reports "string".
+#
+OK
+string
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+string
+#
+# After DEL of the string, TYPE reports "none".
+#
+1
+none

@@ -1,0 +1,66 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+# NDB schema-dist coordinator timeout is a known transient (CLAUDE.md).
+--disable_query_log
+call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
+--enable_query_log
+
+#
+# Phase 1.9 - PERSIST key
+#
+# Reply:
+#   :1\r\n  - TTL was set, now cleared
+#   :0\r\n  - missing key OR key has no TTL OR fully-HDEL'd hash
+#
+# PERSIST writes g_max_expire_at (the no-TTL sentinel) over the
+# existing expiry_date. Subsequent TTL on the key reads back as
+# :-1 (matches the rondb_ttl_or_pttl null/sentinel branch).
+#
+
+--echo #
+--echo # Set up: a string with TTL, a string without TTL, a hash
+--echo # with TTL on the hset_keys row, and a fully-HDEL'd hash.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_ttl "value" EX 60
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_no_ttl "value"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_ttl f1 v1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE hash_ttl 60
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_empty x X
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL hash_empty x
+
+--echo #
+--echo # PERSIST on string with TTL -> :1; subsequent TTL -> :-1.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PERSIST str_ttl
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TTL str_ttl
+
+--echo #
+--echo # PERSIST again on the same key -> :0 (no TTL to clear).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PERSIST str_ttl
+
+--echo #
+--echo # PERSIST on plain SET (no TTL) -> :0.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PERSIST str_no_ttl
+
+--echo #
+--echo # PERSIST on hash with TTL -> :1; subsequent TTL on hash -> :-1.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PERSIST hash_ttl
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TTL hash_ttl
+
+--echo #
+--echo # PERSIST on a fully-HDEL'd hash -> :0 (matches EXISTS = 0).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PERSIST hash_empty
+
+--echo #
+--echo # PERSIST on a missing key -> :0.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PERSIST no_such_key
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

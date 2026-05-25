@@ -1,0 +1,103 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Deterministic TTL verification for Rondis SET flags.
+#
+# Rondis stores the TTL target as a TIMESTAMP in
+# redis_0.string_keys.expiry_date (unix-seconds resolution). Rather
+# than waiting for a key to actually expire, each case SETs the key,
+# immediately inspects expiry_date via SQL, and asserts it falls in a
+# deterministic window (EX/PX) or matches exactly (EXAT/PXAT).
+#
+# EX N  -> expiry_date IN [now, now + N + 2]   (window for host-clock jitter)
+# PX N  -> expiry_date IN [now, now + ceil(N/1000) + 2]
+# EXAT T -> expiry_date = T
+# PXAT T -> expiry_date = ceil(T/1000)
+# Plain SET -> expiry_date IS NULL (TTL cleared / never written)
+# SET KEEPTTL after EX -> expiry_date preserved from the prior EX
+#
+# Each probe records only a 1/0 verdict via --echo so the captured
+# baseline does not embed live timestamps that would cause diff churn
+# on every re-run.
+#
+# Y2038 clamp note: generate_expire_at() at commands.cc:277 caps
+# expiry_date at 0x7FFFFFFF (2038-01-19). EXAT/PXAT probes below use
+# absolute times well under that ceiling.
+#
+
+--disable_query_log
+
+--echo #
+--echo # Plain SET (no TTL flags) - expiry_date stays NULL.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_plain "value"
+--let $r = `SELECT expiry_date IS NULL FROM redis_0.string_keys WHERE redis_key = 'k_plain'`
+--echo is_null=$r
+
+--echo #
+--echo # SET ... EX N - expiry_date in [now, now + N + 2s].
+--echo #
+--let $now = `SELECT UNIX_TIMESTAMP(NOW())`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_ex "value" EX 60
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) - $now BETWEEN 58 AND 62 FROM redis_0.string_keys WHERE redis_key = 'k_ex'`
+--echo in_window=$r
+
+--echo #
+--echo # SET ... PX N (milliseconds) - ceil(N/1000) -> same window.
+--echo #
+--let $now = `SELECT UNIX_TIMESTAMP(NOW())`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_px "value" PX 60000
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) - $now BETWEEN 58 AND 62 FROM redis_0.string_keys WHERE redis_key = 'k_px'`
+--echo in_window=$r
+
+--echo #
+--echo # PX with fractional-second boundary: 60001 ms -> ceil = 61 s.
+--echo #
+--let $now = `SELECT UNIX_TIMESTAMP(NOW())`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_px1 "value" PX 60001
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) - $now BETWEEN 59 AND 63 FROM redis_0.string_keys WHERE redis_key = 'k_px1'`
+--echo in_window=$r
+
+--echo #
+--echo # SET ... EXAT T - absolute unix-seconds; expiry_date = T.
+--echo # Using 2100000000 (2036-07-18 13:20:00 UTC) to stay below the
+--echo # Y2038 clamp.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_exat "value" EXAT 2100000000
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) = 2100000000 FROM redis_0.string_keys WHERE redis_key = 'k_exat'`
+--echo exact_match=$r
+
+--echo #
+--echo # SET ... PXAT T_ms - absolute unix-milliseconds, ceil to seconds.
+--echo # 2100000000999 ms -> 2100000001 s.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_pxat "value" PXAT 2100000000999
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) = 2100000001 FROM redis_0.string_keys WHERE redis_key = 'k_pxat'`
+--echo exact_match=$r
+
+--echo #
+--echo # SET ... KEEPTTL - overwrite preserves the prior expiry_date.
+--echo # Capture k_ex's current expiry, overwrite with KEEPTTL, confirm
+--echo # the value is unchanged.
+--echo #
+--let $prev_expiry = `SELECT UNIX_TIMESTAMP(expiry_date) FROM redis_0.string_keys WHERE redis_key = 'k_ex'`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_ex "updated" KEEPTTL
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) = $prev_expiry FROM redis_0.string_keys WHERE redis_key = 'k_ex'`
+--echo preserved=$r
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET k_ex
+
+--echo #
+--echo # Overwrite without TTL flags clears the previous TTL (writes NULL).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_ex "cleared"
+--let $r = `SELECT expiry_date IS NULL FROM redis_0.string_keys WHERE redis_key = 'k_ex'`
+--echo is_null=$r
+
+--echo #
+--echo # Cleanup.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL k_plain k_ex k_px k_px1 k_exat k_pxat
+
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

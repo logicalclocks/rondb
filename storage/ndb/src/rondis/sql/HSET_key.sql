@@ -25,8 +25,16 @@
 
 CREATE TABLE hset_keys(
     redis_key VARBINARY(3000) NOT NULL,
-    redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    redis_key_id BIGINT UNSIGNED NULL DEFAULT NULL,
+    field_count INT UNSIGNED NOT NULL DEFAULT 0,
+    expiry_date TIMESTAMP,
+    KEY ttl_index(expiry_date),
     PRIMARY KEY (redis_key) USING HASH,
     UNIQUE KEY (redis_key_id) USING HASH
 ) ENGINE NDB,
-COMMENT = "NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8";
+COMMENT = "NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8,TTL=0@expiry_date";
+
+CREATE TABLE hset_key_id_sequence(
+    redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    PRIMARY KEY (redis_key_id) USING HASH
+) ENGINE NDB;

@@ -1,0 +1,46 @@
+OK
+#
+# GETRANGE with non-integer start / end.
+#
+ERR value is not an integer or out of range
+
+ERR value is not an integer or out of range
+
+#
+# SETRANGE with negative offset - 'offset is out of range'.
+#
+ERR offset is out of range
+
+#
+# SETRANGE with offset beyond Rondis's MAX_REDIS_ROW_SIZE
+# (512 KiB / 524288 bytes). Note: real Redis allows up to 512 MiB;
+# the smaller Rondis ceiling is a known limitation (plan L1),
+# exercised here to confirm the canonical error path kicks in.
+#
+ERR offset is out of range
+
+#
+# SETRANGE where offset + value-length exceeds the ceiling
+# (same OFFSET_OUT_OF_RANGE guard at commands.cc:2349).
+#
+ERR offset is out of range
+
+#
+# SETRANGE with non-integer offset - canonical integer error.
+#
+ERR value is not an integer or out of range
+
+#
+# SETRANGE on a hash key returns WRONGTYPE and leaves the hash
+# intact. SET is the only string write that silently replaces
+# hashes.
+#
+1
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+v
+#
+# Cleanup.
+#
+1
+1

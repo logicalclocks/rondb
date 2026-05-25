@@ -25,6 +25,15 @@
 
 set -e
 
+# Allow MTR / external harness to override Rondis host and port. The real
+# redis-cli does not know about RONDIS_HOST/RONDIS_PORT, so wrap it in a
+# function that injects -h / -p and keep every call site unchanged.
+REDIS_HOST="${RONDIS_HOST:-localhost}"
+REDIS_PORT="${RONDIS_PORT:-6379}"
+redis-cli() {
+    command redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" "$@"
+}
+
 # Change key suffix using script arguments
 KEY_SUFFIX=${1:-0}
 KEY="test_key_$KEY_SUFFIX"
@@ -32,6 +41,7 @@ KEY="test_key_$KEY_SUFFIX"
 function check_set() {
     local key="$1"
     local value="$2"
+    local context="${3:-}"
 
     # SET the value in Redis
     if [[ -f "$value" ]]; then
@@ -40,12 +50,18 @@ SET $key $(< "$value")
 EOF
 )
     else
-        set_output=$(redis-cli SET "$key" "$value")
+        # Feed the command on stdin, not argv: a large value would
+        # exceed Linux's MAX_ARG_STRLEN (128 KiB per argv argument) and
+        # make execve fail with E2BIG (shell exit 126). The value is
+        # double-quoted so redis-cli's inline parser keeps an empty
+        # value as an empty argument. Matches mget_mset.sh.
+        set_output=$(printf 'SET %s "%s"\n' "$key" "$value" | redis-cli)
     fi
 
-    #echo $set_output
     if [[ $set_output == ERR* ]]; then
         echo "FAIL: Could not SET $key with given value" >&2
+        echo "      context: ${context:-none}; value length: ${#value}" >&2
+        echo "      redis-cli reply: $set_output" >&2
         exit 1
     fi
 }
@@ -285,8 +301,14 @@ run_client() {
     for ((i=1; i<=$NUM_ITERATIONS; i++)); do
         # Generate a unique key for each client and iteration
         local test_value=$(generate_random_chars 50000)
-        check_set "$key" "$test_value" > /dev/null
-        redis-cli DEL "$key" > /dev/null
+        check_set "$key" "$test_value" "client $client iter $i/$NUM_ITERATIONS" > /dev/null
+        local del_output
+        del_output=$(redis-cli DEL "$key")
+        if [[ $del_output == ERR* ]]; then
+            echo "FAIL: Could not DEL $key (client $client iter $i/$NUM_ITERATIONS)" >&2
+            echo "      redis-cli reply: $del_output" >&2
+            exit 1
+        fi
 #       echo "PASS ($i/$NUM_ITERATIONS): client $client with key $key"
     done
 }

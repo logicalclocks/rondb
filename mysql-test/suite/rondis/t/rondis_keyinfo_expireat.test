@@ -1,0 +1,94 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+# NDB schema-dist coordinator timeout is a known transient (CLAUDE.md).
+--disable_query_log
+call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
+--enable_query_log
+
+#
+# Phase 1.7 - EXPIREAT key unix-timestamp-seconds
+#
+# Reply:
+#   :1\r\n  - applied (key existed)
+#   :0\r\n  - missing (or empty hash (1.10c.8/D drops the row))
+#   past/now timestamp deletes an existing key immediately
+#
+# Unlike EXPIRE the input is the absolute target epoch second; the
+# server skips the now+ttl math and just clamps to g_max_expire_at
+# (0x7FFFFFFF) before encoding.
+#
+
+--echo #
+--echo # Set up: a string, a populated hash, an emptied hash.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_a "value-a"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_a f1 v1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_empty x X
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL hash_empty x
+
+--echo #
+--echo # EXPIREAT (now + 60) on existing string -> :1; expiry_date
+--echo # equals the supplied timestamp exactly (no now+ttl arithmetic).
+--echo #
+--let $target = `SELECT UNIX_TIMESTAMP(NOW()) + 60`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT str_a $target
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) = $target FROM redis_0.string_keys WHERE redis_key = 'str_a' AND redis_key_id = 0`
+--echo str_a_matches_target=$r
+
+--echo #
+--echo # EXPIREAT on existing hash -> :1; hset_keys.expiry_date set.
+--echo #
+--let $target = `SELECT UNIX_TIMESTAMP(NOW()) + 60`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT hash_a $target
+--let $r = `SELECT UNIX_TIMESTAMP(expiry_date) = $target FROM redis_0.hset_keys WHERE redis_key = 'hash_a'`
+--echo hash_a_matches_target=$r
+
+--echo #
+--echo # EXPIREAT with a timestamp in the past deletes the key
+--echo # immediately.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_past "value"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT str_past 1000000000
+SELECT COUNT(*) AS str_past_rows
+  FROM redis_0.string_keys WHERE redis_key = 'str_past' AND redis_key_id = 0;
+
+--echo #
+--echo # EXPIREAT on a fully-HDEL'd hash -> :0.
+--echo #
+--let $target = `SELECT UNIX_TIMESTAMP(NOW()) + 60`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT hash_empty $target
+
+--echo #
+--echo # EXPIREAT on a missing key -> :0.
+--echo #
+--let $target = `SELECT UNIX_TIMESTAMP(NOW()) + 60`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT no_such_key $target
+
+--echo #
+--echo # EXPIREAT 0 deletes an existing key immediately; a second
+--echo # past EXPIREAT on the now-missing key returns :0.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT str_a 0
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT str_a -1
+
+--echo #
+--echo # EXPIREAT in the past on a hash also deletes it immediately.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_now f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT hash_now 1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE hash_now
+
+--echo #
+--echo # End-to-end: EXPIREAT then TTL on the same key falls in
+--echo # window. Same probe / encode round-trip as EXPIRE.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttl_round "value"
+--let $target = `SELECT UNIX_TIMESTAMP(NOW()) + 60`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIREAT ttl_round $target
+--let $script = $MYSQL_TEST_DIR/../storage/ndb/src/rondis/tests/ttl_probe.sh
+--exec bash $script TTL ttl_round 58 62
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

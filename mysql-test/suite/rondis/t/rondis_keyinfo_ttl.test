@@ -1,0 +1,57 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Phase 1.3 - TTL key
+#
+# Reply:
+#   :-2\r\n  - missing key (or empty hash (1.10c.8/D drops the row))
+#   :-1\r\n  - present, no TTL set (NULL or g_max_expire_at sentinel)
+#   :N\r\n   - seconds remaining
+#
+# In-window assertions go through ttl_probe.sh so the .result baseline
+# does not embed live timestamps. The deterministic -1 / -2 cases are
+# checked directly via redis-cli.
+#
+
+--let $script = $MYSQL_TEST_DIR/../storage/ndb/src/rondis/tests/ttl_probe.sh
+
+--echo #
+--echo # Set up: a string with TTL, a string without TTL, a populated
+--echo # hash without TTL, an emptied hash, an absent name.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_ex "value" EX 60
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_noex "value"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_a f1 v1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_empty x X
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL hash_empty x
+
+--echo #
+--echo # SET ... EX 60 -> TTL between 58 and 62 (host-clock jitter window).
+--echo #
+--exec bash $script TTL str_ex 58 62
+
+--echo #
+--echo # SET without TTL -> :-1.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TTL str_noex
+
+--echo #
+--echo # Existing hash without TTL -> :-1 (hset_keys.expiry_date IS NULL
+--echo # for fresh hashes).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TTL hash_a
+
+--echo #
+--echo # Fully-HDEL'd hash -> :-2 (matching EXISTS = 0).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TTL hash_empty
+
+--echo #
+--echo # Missing key -> :-2.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TTL no_such_key
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

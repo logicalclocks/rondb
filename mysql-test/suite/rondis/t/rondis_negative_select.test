@@ -1,0 +1,51 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Negative-path coverage for SELECT.
+#
+# Bugs B1/B2/B3 (double-response, negative-id accepted, stale errno)
+# were fixed earlier in this branch. This test now exercises every
+# remaining bad-input path and asserts the expected error replies.
+#
+# MAX_NUM_DATABASES = 16 (see include/rondb.h), but the MTR suite runs
+# with num_databases = 1 (db 0 only). Any index >= 1 should be
+# rejected, as should anything negative or non-numeric.
+#
+
+--echo #
+--echo # Non-integer argument.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SELECT abc 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SELECT "" 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SELECT 1.5 2>&1
+
+--echo #
+--echo # Out-of-range database id.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SELECT 1 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SELECT 16 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SELECT 9999 2>&1
+
+--echo #
+--echo # Negative database id - rejected since B2 was fixed; previously
+--echo # silently accepted.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SELECT -1 2>&1
+
+--echo #
+--echo # Confirm a valid SELECT still succeeds - guards against
+--echo # the B1 fall-through regression reappearing.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SELECT 0
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

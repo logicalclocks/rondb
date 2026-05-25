@@ -73,6 +73,51 @@ void rondb_hdel_command(Ndb *ndb,
                         std::string *response,
                         int worker_id);
 
+void rondb_exists_command(Ndb *ndb,
+                          const pink::RedisCmdArgsType &argv,
+                          std::string *response,
+                          int worker_id);
+
+void rondb_type_command(Ndb *ndb,
+                        const pink::RedisCmdArgsType &argv,
+                        std::string *response,
+                        int worker_id);
+
+void rondb_ttl_command(Ndb *ndb,
+                       const pink::RedisCmdArgsType &argv,
+                       std::string *response,
+                       int worker_id);
+
+void rondb_pttl_command(Ndb *ndb,
+                        const pink::RedisCmdArgsType &argv,
+                        std::string *response,
+                        int worker_id);
+
+void rondb_expire_command(Ndb *ndb,
+                          const pink::RedisCmdArgsType &argv,
+                          std::string *response,
+                          int worker_id);
+
+void rondb_pexpire_command(Ndb *ndb,
+                           const pink::RedisCmdArgsType &argv,
+                           std::string *response,
+                           int worker_id);
+
+void rondb_expireat_command(Ndb *ndb,
+                            const pink::RedisCmdArgsType &argv,
+                            std::string *response,
+                            int worker_id);
+
+void rondb_pexpireat_command(Ndb *ndb,
+                             const pink::RedisCmdArgsType &argv,
+                             std::string *response,
+                             int worker_id);
+
+void rondb_persist_command(Ndb *ndb,
+                           const pink::RedisCmdArgsType &argv,
+                           std::string *response,
+                           int worker_id);
+
 void rondb_mset_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
@@ -111,6 +156,7 @@ void rondb_hmget_command(Ndb *ndb,
 void rondb_hset_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
                        std::string *response,
+                       bool is_hmset,
                        int worker_id);
 
 void rondb_hincr_command(Ndb *ndb,

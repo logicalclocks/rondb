@@ -1,0 +1,27 @@
+#
+# Set up: an expired-but-present string and an alive one.
+#
+OK
+OK
+#
+# GET on the expired key returns nil; alive key returns its value.
+#
+
+value-alive
+#
+# MGET returns array with nil for expired, value for alive.
+#
+
+value-alive
+
+#
+# STRLEN on expired key returns 0; alive returns the length.
+#
+0
+11
+#
+# GETRANGE on expired key returns empty bulk; alive returns
+# the requested slice.
+#
+
+value-alive

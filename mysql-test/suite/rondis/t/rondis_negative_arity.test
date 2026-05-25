@@ -1,0 +1,106 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Negative-path coverage: wrong arity and unknown commands.
+#
+# Every probe below calls a command with too few or too many arguments
+# and asserts the canonical Redis error:
+#   (error) ERR wrong number of arguments for '<cmd>' command
+#   (error) ERR unknown command '<cmd>'
+#
+# --error 0,1 covers both redis-cli behaviours (exit 0 or 1 on a
+# server error reply, depending on client version).
+#
+
+--echo #
+--echo # Connection commands
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PING a b 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT ECHO 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT ECHO a b 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT CONFIG 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SELECT 2>&1
+
+--echo #
+--echo # String commands
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET a b c 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET a 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT MGET 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT MSET a b c 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL 2>&1
+
+--echo #
+--echo # Counter commands
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT INCR 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT INCRBY a 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DECR 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DECRBY a 2>&1
+
+--echo #
+--echo # Substring commands
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE a 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GETRANGE a 0 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE a 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SETRANGE a 0 2>&1
+
+--echo #
+--echo # Hash commands - note HSET requires field/value pairs after the key
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET a 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HMGET a 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET a 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET a f 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET a f v g 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL a 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HINCR 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HINCR a 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HINCRBY a b 2>&1
+
+--echo #
+--echo # Unknown command
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT FOOBAR a b 2>&1
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

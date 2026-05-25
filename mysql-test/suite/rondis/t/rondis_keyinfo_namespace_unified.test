@@ -1,0 +1,75 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Phase 1.10c.1 - SET / MSET dual-write claim on hset_keys.
+#
+# As of Phase 1.10c.1 SET writes to BOTH string_keys (the value)
+# and hset_keys (the namespace registry, with redis_key_id NULL
+# marking the row as a string). The dual write is atomic on a
+# single NDB transaction.
+#
+# SET overwrites existing keys regardless of type; HSET on an
+# existing string returns WRONGTYPE.
+#
+
+--echo #
+--echo # SET claims a fresh name. Both rows visible via SQL with
+--echo # matching redis_key, redis_key_id NULL in hset_keys.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k1 "v1"
+SELECT redis_key, redis_key_id FROM redis_0.string_keys WHERE redis_key = 'k1';
+SELECT redis_key, redis_key_id, field_count FROM redis_0.hset_keys WHERE redis_key = 'k1';
+
+--echo #
+--echo # Overwriting the same string key is idempotent at the
+--echo # hset_keys level - the row stays put, redis_key_id remains NULL.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k1 "v1-updated"
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'k1';
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET k1
+
+--echo #
+--echo # MSET k2 v2 k3 v3 - each key gets its own hset_keys row.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT MSET k2 "v2" k3 "v3"
+SELECT redis_key, redis_key_id FROM redis_0.hset_keys
+ WHERE redis_key IN ('k2', 'k3') ORDER BY redis_key;
+
+--echo #
+--echo # SET on a name claimed by a hash -> silent replace.
+--echo # GET sees the new string, HGET misses, and hset_keys carries
+--echo # redis_key_id NULL again.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h1 f v
+--exec perl -e 'print "x" x 5000' | redis-cli -x -h $RONDIS_HOST -p $RONDIS_PORT HSET h1 big
+--disable_query_log
+SET @old_h1_id = (SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'h1');
+SET @old_h1_big_rondb_key = (
+  SELECT rondb_key FROM redis_0.string_keys
+   WHERE redis_key_id = @old_h1_id AND redis_key = 'big');
+--enable_query_log
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET h1 "stringy"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET h1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET h1 f 2>&1
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'h1';
+SELECT COUNT(*) AS old_h1_field_rows
+  FROM redis_0.string_keys WHERE redis_key_id = @old_h1_id;
+SELECT COUNT(*) AS old_h1_ext_rows
+  FROM redis_0.string_values WHERE rondb_key = @old_h1_big_rondb_key;
+
+--echo #
+--echo # HSET on a name claimed by a string -> WRONGTYPE. The
+--echo # string row remains and no hash field row is created.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET k1 f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET k1
+SELECT COUNT(*) AS string_rows_for_k1
+  FROM redis_0.string_keys WHERE redis_key = 'k1' AND redis_key_id = 0;
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'k1';
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

@@ -1,0 +1,67 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Negative-path coverage for SET flag combinations: conflicting flags,
+# bad integer arguments, and non-positive TTL values.
+#
+# Expected canonical Redis replies:
+#   (error) ERR syntax error
+#   (error) ERR value is not an integer or out of range
+#   (error) ERR invalid expire time in set
+#
+
+--echo #
+--echo # Conflicting flags: NX + XX can never both hold. Syntax error.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k v NX XX 2>&1
+
+--echo #
+--echo # KEEPTTL combined with EX (or any explicit TTL) is mutually
+--echo # exclusive. Syntax error.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k v KEEPTTL EX 10 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k v EX 10 KEEPTTL 2>&1
+
+--echo #
+--echo # Non-integer TTL argument - canonical integer error.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k v EX abc 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k v PX 1.5 2>&1
+
+--echo #
+--echo # Unknown trailing flag - syntax error.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k v BOGUS 2>&1
+
+--echo #
+--echo # Negative or zero EX - Redis-canonical error. The C12 fix in
+--echo # commands.cc validates EX/PX > 0 at parse time, which also
+--echo # avoids collision with generate_expire_at's "ttl == -1 means
+--echo # never expires" internal sentinel.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_neg "value" EX -1 2>&1
+# Confirm no row was stored (SELECT should find nothing).
+SELECT COUNT(*) AS nrows FROM redis_0.string_keys WHERE redis_key = 'k_neg';
+
+--echo #
+--echo # Zero EX - same invalid-expire error.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET k_zero "value" EX 0 2>&1
+
+--echo #
+--echo # Cleanup.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL k_neg k_zero
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

@@ -36,7 +36,8 @@
 //#define DEBUG_MSET_CMD 1
 
 #ifdef DEBUG_MSET_CMD
-#define DEB_MSET_CMD(arglist) do { printf arglist ; } while (0)
+#define DEB_MSET_CMD(arglist) \
+  do { DEB_PREFIX(); printf arglist ; } while (0)
 #else
 #define DEB_MSET_CMD(arglist)
 #endif
@@ -76,6 +77,7 @@ int initNdbCodeIncrDecr(std::string *response,
   code->branch_eq_null(REG7, LABEL0);
   code->interpret_exit_nok(RONDB_KEY_NOT_NULL_ERROR);
   code->def_label(LABEL0);
+  code->load_const_u64(REG7, 0); // Existing row; not a new field.
   code->read_full(value_start_col, REG6, REG2); // Read value_start column
   code->load_const_u16(REG1, MEMORY_OFFSET_STRING);
   code->sub_const_reg(REG3, REG2, NUM_LEN_BYTES);
@@ -93,6 +95,7 @@ int initNdbCodeIncrDecr(std::string *response,
   code->write_size_mem(REG3, REG0); // Write back length bytes in memory
 
   code->write_interpreter_output(REG5, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
   code->write_from_mem(value_start_col, REG6, REG2);  // Write to column
   code->write_attr(tot_value_len_col, REG3);
   code->interpret_exit_ok();
@@ -100,6 +103,7 @@ int initNdbCodeIncrDecr(std::string *response,
   /* INSERT code */
   code->def_label(LABEL2);
   code->load_const_u16(REG4, 0);
+  code->load_const_u64(REG7, 1); // INSERT branch; new field.
   code->load_const_u16(REG1, MEMORY_OFFSET_STRING);
   code->branch_label(LABEL1);
 
@@ -114,103 +118,221 @@ int initNdbCodeIncrDecr(std::string *response,
   return 0;
 }
 
-int write_hset_key_table(Ndb *ndb,
-                         const NdbDictionary::Table *tab,
-                         std::string std_key_str,
-                         Uint64 & redis_key_id,
-                         std::string *response,
-                         Uint32 database_id) {
-  /* Prepare primary key */
-  struct hset_key_table key_row;
-  const char *key_str = std_key_str.c_str();
-  Uint32 key_len = std_key_str.size();
-  set_length(&key_row.redis_key[0], key_len);
-  memcpy(&key_row.redis_key[2], key_str, key_len);
-  memset(&key_row.redis_key[2 + key_len], 0, 3);
-
-  const Uint32 mask = 0x1; // Write primary key
-  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+// Phase 1.0.2d Phase-1 interpreter. Used as the writeTuple program
+// on hset_keys(key) at the start of a single-trans HSET / HMSET /
+// HSETNX. Three branches:
+//
+//   UPDATE-on-hash (row exists, redis_key_id non-null): emit
+//     existing (redis_key_id, field_count, OUTPUT_INDEX_2 = 0),
+//     exit_ok. Field writes append to the existing hash.
+//
+//   UPDATE-on-string:
+//     row exists but is a string (redis_key_id IS NULL). Redis hash
+//     writes must fail with WRONGTYPE; unlike SET, HSET does not
+//     replace a value of another type.
+//
+//   INSERT branch (row didn't exist): write prealloc_id and
+//     field_count = 0, emit (prealloc_id, 0, OUTPUT_INDEX_2 = 0).
+//
+// Phase 1's callback consumes the three outputs into
+// GetControl::m_hset_redis_key_id and m_hset_field_count_pre.
+// OUTPUT_INDEX_2 is retained as 0 for the non-error branches for
+// compatibility with the current callback plumbing.
+int init_hset_lock_claim_code(std::string *response,
+                              NdbInterpretedCode *code,
+                              const NdbDictionary::Table *tab,
+                              Uint64 prealloc_id) {
   const NdbDictionary::Column *redis_key_id_col =
     tab->getColumn(HSET_KEY_TABLE_COL_redis_key_id);
-  Uint32 code_buffer[64];
-  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer) / sizeof(code_buffer[0]));
-  code.load_op_type(REG1); // Read operation type into register 1
-  code.branch_eq_const(REG1, RONDB_INSERT, LABEL0); // Inserts go to label 0
-  /* UPDATE */
-  code.read_attr(REG7, redis_key_id_col);
-  code.write_interpreter_output(REG7, OUTPUT_INDEX_0);
-  code.interpret_exit_ok();
+  const NdbDictionary::Column *field_count_col =
+    tab->getColumn(HSET_KEY_TABLE_COL_field_count);
 
-  /* INSERT */
-  code.def_label(LABEL0);
-  code.load_const_u64(REG7, redis_key_id);
-  code.write_attr(redis_key_id_col, REG7);
-  code.write_interpreter_output(REG7, OUTPUT_INDEX_0);
-  code.interpret_exit_ok();
+  code->load_op_type(REG1);
+  code->branch_eq_const(REG1, RONDB_INSERT, LABEL0); // INSERT to label 0
+  /* UPDATE branch */
+  // Existing row may be a string (redis_key_id IS NULL). Branch on
+  // NULL before read_attr; reading NULL into a register and then
+  // write_interpreter_output trips NDB(878) "Register with NULL
+  // value involved in arithmetic operation".
+  code->branch_col_eq_null(redis_key_id_col->getColumnNo(), LABEL1);
+  // UPDATE-on-hash: existing hash row. Emit (id, count, 0).
+  code->read_attr(REG6, redis_key_id_col);
+  code->read_attr(REG7, field_count_col);
+  code->load_const_u64(REG2, 0);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG2, OUTPUT_INDEX_2);
+  code->interpret_exit_ok();
 
-  // Program end, now compile code
-  int ret_code = code.finalise();
+  // UPDATE-on-string: Redis-canonical WRONGTYPE.
+  code->def_label(LABEL1);
+  code->interpret_exit_nok(RONDB_WRONGTYPE);
+
+  /* INSERT branch */
+  code->def_label(LABEL0);
+  code->load_const_u64(REG6, prealloc_id);
+  code->load_const_u64(REG7, 0);
+  code->load_const_u64(REG2, 0);
+  code->write_attr(redis_key_id_col, REG6);
+  code->write_attr(field_count_col, REG7);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG2, OUTPUT_INDEX_2);
+  code->interpret_exit_ok();
+
+  int ret_code = code->finalise();
   if (ret_code != 0) {
     assign_ndb_err_to_response(response,
-                               "Failed to create Interpreted code",
-                               code.getNdbError());
+                               "Failed to create hset lock-claim code",
+                               code->getNdbError());
     return -1;
   }
-  // Prepare the interpreted program to be part of the write
-  NdbOperation::OperationOptions opts;
-  std::memset(&opts, 0, sizeof(opts));
-  opts.optionsPresent |= NdbOperation::OperationOptions::OO_INTERPRETED;
-  opts.optionsPresent |= NdbOperation::OperationOptions::OO_INTERPRETED_INSERT;
-  opts.interpretedCode = &code;
+  return 0;
+}
 
-  NdbOperation::GetValueSpec getvals[1];
-  getvals[0].appStorage = nullptr;
-  getvals[0].recAttr = nullptr;
-  getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
-  opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
-  opts.numExtraGetFinalValues = 1;
-  opts.extraGetFinalValues = getvals;
+// Phase 1.10c.1 / 1.10c.7b: SET / MSET dual-write claim on
+// hset_keys for the string namespace. Strings store
+// redis_key_id = NULL so that the UNIQUE KEY (redis_key_id)
+// tolerates concurrent string INSERTs (NULL is not equal to NULL
+// in a unique index). The writeTuple's row buffer (null_bits=0x1,
+// mask=0xF) overwrites redis_key_id back to NULL on every branch;
+// the interpreter publishes the OLD value(s) so the caller can
+// detect a hash-to-string flip.
+//
+//   UPDATE-on-string branch (existing redis_key_id IS NULL):
+//     emit (0, 0) — idempotent no-op for the caller. mask=0xF
+//     overwrites field_count with 0 from the row buffer; that's
+//     a no-op since string rows already have field_count = 0 by
+//     1.10c.1's INSERT shape.
+//
+//   UPDATE-on-hash branch (existing redis_key_id non-null,
+//     1.10c.7b silent replace):
+//     read existing redis_key_id and field_count, emit them as
+//     (old_id, old_field_count). The writeTuple then overwrites
+//     redis_key_id back to NULL; the caller runs an
+//     ordered-index range scan over string_keys filtered by
+//     redis_key_id = old_id and queues the per-row deletes on
+//     the same NDB transaction.
+//
+//   INSERT branch (row didn't exist):
+//     emit (0, 0). Row buffer + null_bits writes redis_key_id
+//     NULL, field_count 0, expiry_date NULL.
+//
+// OUTPUT_INDEX_0 = old_redis_key_id (0 = no hash to drop;
+// non-zero = hash field rows live under that id and must be
+// scan-deleted by the caller).
+// OUTPUT_INDEX_1 = old_field_count (informational; lets callers
+// short-circuit a scan when a hash row exists with field_count
+// already 0, which is rare but possible after HDEL-of-last-field
+// followed by no further activity).
+// OUTPUT_INDEX_2 = old_expiry_date, or the no-expiry sentinel when
+// the old hset_keys row had NULL expiry_date or did not exist.
+int init_hset_string_claim_code(std::string *response,
+                                NdbInterpretedCode *code,
+                                const NdbDictionary::Table *tab) {
+  const NdbDictionary::Column *redis_key_id_col =
+    tab->getColumn(HSET_KEY_TABLE_COL_redis_key_id);
+  const NdbDictionary::Column *field_count_col =
+    tab->getColumn(HSET_KEY_TABLE_COL_field_count);
+  const NdbDictionary::Column *expiry_date_col =
+    tab->getColumn(HSET_KEY_TABLE_COL_expiry_date);
 
-  /* Start a transaction */
-  NdbTransaction *trans =
-    ndb->startTransaction(tab,
-                          (const char*)&key_row.redis_key[0],
-                          key_len + 2);
-  if (trans == nullptr) {
+  code->load_op_type(REG1);
+  code->branch_eq_const(REG1, RONDB_INSERT, LABEL0); // INSERT to label 0
+
+  /* UPDATE branch */
+  // Phase 1.10c.7b: branch on NULL first. Reading a NULL column
+  // into a register and then write_interpreter_output trips
+  // NDB(878) "Register with NULL value involved in arithmetic
+  // operation". Existing string row -> emit (0, 0); existing
+  // hash row -> emit (old_id, old_field_count) so the caller can
+  // scan-delete.
+  code->branch_col_eq_null(redis_key_id_col->getColumnNo(), LABEL1);
+  // UPDATE-on-hash: publish the old values for silent replace.
+  code->read_attr(REG6, redis_key_id_col);
+  code->read_attr(REG7, field_count_col);
+  code->branch_col_eq_null(expiry_date_col->getColumnNo(), LABEL2);
+  code->read_attr(REG5, expiry_date_col);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG5, OUTPUT_INDEX_2);
+  code->interpret_exit_ok();
+
+  // UPDATE-on-string: idempotent. Emit (0, 0).
+  code->def_label(LABEL1);
+  code->load_const_u64(REG6, 0);
+  code->load_const_u64(REG7, 0);
+  code->branch_col_eq_null(expiry_date_col->getColumnNo(), LABEL3);
+  code->read_attr(REG5, expiry_date_col);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG5, OUTPUT_INDEX_2);
+  code->interpret_exit_ok();
+
+  // UPDATE with NULL expiry: publish the no-expiry sentinel.
+  code->def_label(LABEL2);
+  code->load_const_u64(REG5, 0x7FFFFFFF);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG5, OUTPUT_INDEX_2);
+  code->interpret_exit_ok();
+
+  code->def_label(LABEL3);
+  code->load_const_u64(REG5, 0x7FFFFFFF);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG5, OUTPUT_INDEX_2);
+  code->interpret_exit_ok();
+
+  /* INSERT branch */
+  // Row buffer + null_bits already populates all columns.
+  // Emit (0, 0) so the caller's old_id check sees "no hash to
+  // drop". Field_count is also 0 (newly inserted string row).
+  code->def_label(LABEL0);
+  code->load_const_u64(REG6, 0);
+  code->load_const_u64(REG7, 0);
+  code->load_const_u64(REG5, 0x7FFFFFFF);
+  code->write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code->write_interpreter_output(REG7, OUTPUT_INDEX_1);
+  code->write_interpreter_output(REG5, OUTPUT_INDEX_2);
+  code->interpret_exit_ok();
+
+  int ret_code = code->finalise();
+  if (ret_code != 0) {
     assign_ndb_err_to_response(response,
-                               "Failed to create transaction object",
-                               ndb->getNdbError());
+                               "Failed to create hset string-claim code",
+                               code->getNdbError());
     return -1;
   }
-  /* Define the actual operation to be sent to RonDB data node. */
-  const NdbOperation *op = trans->writeTuple(
-    pk_hset_key_record[database_id],
-    (const char *)&key_row,
-    entire_hset_key_record[database_id],
-    (char *)&key_row,
-    mask_ptr,
-    &opts,
-    sizeof(opts));
-  if (op == nullptr) {
-    ndb->closeTransaction(trans);
+  return 0;
+}
+
+// Tiny interpreter program that reads hset_keys.field_count, adds
+// a signed delta, writes it back, and exits OK. Used by HDEL
+// (Phase 1.0.3) with delta<0.
+int init_hset_field_count_bump_code(std::string *response,
+                                    NdbInterpretedCode *code,
+                                    const NdbDictionary::Table *tab,
+                                    Int64 delta) {
+  const NdbDictionary::Column *field_count_col =
+    tab->getColumn(HSET_KEY_TABLE_COL_field_count);
+  code->read_attr(REG1, field_count_col);
+  if (delta >= 0) {
+    code->load_const_u64(REG2, (Uint64)delta);
+    code->add_reg(REG3, REG1, REG2);
+  } else {
+    code->load_const_u64(REG2, (Uint64)(-delta));
+    code->sub_reg(REG3, REG1, REG2);
+  }
+  code->write_attr(field_count_col, REG3);
+  code->interpret_exit_ok();
+  int ret_code = code->finalise();
+  if (ret_code != 0) {
     assign_ndb_err_to_response(response,
-                               "Failed to create NdbOperation",
-                               trans->getNdbError());
+                               "Failed to create field_count bump code",
+                               code->getNdbError());
     return -1;
   }
-  if (trans->execute(NdbTransaction::Commit,
-                     NdbOperation::AbortOnError) != 0 ||
-      trans->getNdbError().code != 0) {
-    ndb->closeTransaction(trans);
-    assign_ndb_err_to_response(response,
-                               FAILED_HSET_KEY,
-                               trans->getNdbError());
-    return -1;
-  }
-  /* Retrieve the returned new value as an Uint64 value */
-  NdbRecAttr *recAttr = getvals[0].recAttr;
-  redis_key_id = recAttr->u_64_value();
-  ndb->closeTransaction(trans);
   return 0;
 }
 
@@ -222,8 +344,18 @@ int write_key_row_no_commit(std::string *response,
     tab->getColumn(KEY_TABLE_COL_num_rows);
   const NdbDictionary::Column *rondb_key_col =
     tab->getColumn(KEY_TABLE_COL_rondb_key);
+  // NDB validates branch targets as label indices in def_label order.
+  // The non-IsInsert path below calls def_label(LABEL0..LABEL2) before
+  // def_label(LABEL3), so LABEL3 (index 3) is valid. The IsInsert
+  // branch skips those earlier def_label calls and would leave
+  // m_number_of_labels == 1, which makes the NDB finalise() check
+  // "label > m_number_of_labels" reject LABEL3 with error 4517. Use
+  // LABEL0 as the insert-path target in the IsInsert program so the
+  // single def_label matches (was bug C7).
+  int insert_label =
+    (key_store->m_set_type == IsInsert) ? LABEL0 : LABEL3;
   code.load_op_type(REG1); // Read operation type into register 1
-  code.branch_eq_const(REG1, RONDB_INSERT, LABEL3); // Inserts go to label3
+  code.branch_eq_const(REG1, RONDB_INSERT, insert_label);
   /* UPDATE */
   if (key_store->m_set_type == IsInsert) {
     code.interpret_exit_nok(6000);
@@ -249,8 +381,13 @@ int write_key_row_no_commit(std::string *response,
     code.branch_eq_null(REG6, LABEL0);
     code.branch_eq_const(REG5, Uint16(0), LABEL1);
 
+    // All four UPDATE-path exits signal 0 = "existing field" for
+    // the HSET new-field-count aggregation (C10). REG4 was loaded
+    // with 0 at line above and is not written elsewhere in the
+    // UPDATE block, so we can reuse it for every exit_ok below.
     /* prev_num_rows > 0 and num_rows > 0 */
     code.write_interpreter_output(REG6, OUTPUT_INDEX_1);
+    code.write_interpreter_output(REG4, OUTPUT_INDEX_3);
     code.interpret_exit_ok();
 
     /* rondb_key NULL => prev_num_rows == 0 */
@@ -260,21 +397,24 @@ int write_key_row_no_commit(std::string *response,
     /* prev_num_rows == 0 and num_rows > 0 */
     code.write_interpreter_output(REG5, OUTPUT_INDEX_1);
     code.write_attr(rondb_key_col, REG5);
+    code.write_interpreter_output(REG4, OUTPUT_INDEX_3);
     code.interpret_exit_ok();
 
     code.def_label(LABEL1);
     /* prev_num_rows > 0 and num_rows == 0 */
     code.write_interpreter_output(REG6, OUTPUT_INDEX_1);
     code.write_attr(rondb_key_col, REG3);
+    code.write_interpreter_output(REG4, OUTPUT_INDEX_3);
     code.interpret_exit_ok();
 
     code.def_label(LABEL2);
     /* prev_num_rows == 0 and num_rows == 0 */
     code.write_interpreter_output(REG4, OUTPUT_INDEX_1);
+    code.write_interpreter_output(REG4, OUTPUT_INDEX_3);
     code.interpret_exit_ok();
   }
   /* INSERT */
-  code.def_label(LABEL3);
+  code.def_label(insert_label);
   if (key_store->m_set_type == IsUpdate) {
     code.interpret_exit_nok(6000);
   } else {
@@ -288,53 +428,11 @@ int write_key_row_no_commit(std::string *response,
       code.write_interpreter_output(REG7, OUTPUT_INDEX_1);
     }
     code.write_interpreter_output(REG7, OUTPUT_INDEX_0);
+    // Signal 1 = "new field" for the HSET new-field-count (C10).
+    code.load_const_u16(REG5, 1);
+    code.write_interpreter_output(REG5, OUTPUT_INDEX_3);
     code.interpret_exit_ok();
   }
-  // Program end, now compile code
-  int ret_code = code.finalise();
-  if (ret_code != 0) {
-    assign_ndb_err_to_response(response,
-                               "Failed to create Interpreted code",
-                               code.getNdbError());
-    return -1;
-  }
-  return 0;
-}
-
-int write_key_row_commit(std::string *response,
-                         NdbInterpretedCode &code,
-                         const NdbDictionary::Table *tab,
-                         KeyStorage *key_store) {
-  const NdbDictionary::Column *num_rows_col =
-    tab->getColumn(KEY_TABLE_COL_num_rows);
-  code.load_op_type(REG1);         // Read operation type into register 1
-  code.branch_ne_const(REG1, RONDB_INSERT, LABEL0); // Updates go to label 0
-  /* INSERT */
-  if (key_store->m_set_type == IsUpdate) {
-    code.interpret_exit_nok(6000);
-  } else {
-    code.interpret_exit_ok();
-  }
-  /* UPDATE */
-  code.def_label(LABEL0);
-  if (key_store->m_set_type == IsInsert) {
-    DEB_MSET_CMD(("IsInsert on existing row\n"));
-    code.interpret_exit_nok(6000);
-  } else {
-    if (key_store->m_keep_ttl == false &&
-        key_store->m_set_ttl == false) {
-      const NdbDictionary::Column *expiry_date_col =
-        tab->getColumn(KEY_TABLE_COL_expiry_date);
-      code.load_const_null(REG3);
-      code.write_attr(expiry_date_col, REG3);
-    }
-    code.read_attr(REG7, num_rows_col);
-    code.branch_eq_const(REG7, 0, LABEL1);
-    code.interpret_exit_nok(6000);
-    code.def_label(LABEL1);
-    code.interpret_exit_ok();
-  }
-
   // Program end, now compile code
   int ret_code = code.finalise();
   if (ret_code != 0) {

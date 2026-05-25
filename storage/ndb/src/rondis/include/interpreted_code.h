@@ -51,6 +51,11 @@
 #define OUTPUT_INDEX_0 0
 #define OUTPUT_INDEX_1 1
 #define OUTPUT_INDEX_2 2
+// Emitted by the SET write interpreter programs with the literal 1
+// on the INSERT branch and 0 on the UPDATE branch. Client-side we
+// aggregate it into GetControl::m_num_new_fields so HSET can return
+// the Redis-canonical count-of-newly-added-fields reply (C10).
+#define OUTPUT_INDEX_3 3
 #define RONDB_KEY_NOT_NULL_ERROR 6000
 
 #define INITIAL_INT_VALUE 1
@@ -63,16 +68,17 @@ int initNdbCodeIncrDecr(std::string *response,
                         const NdbDictionary::Table *tab,
                         bool incr_flag,
                         Uint64 inc_dec_value);
-int write_hset_key_table(Ndb *ndb,
-                         const NdbDictionary::Table *tab,
-                         std::string std_key_str,
-                         Uint64 & redis_key_id,
-                         std::string *response,
-                         Uint32 database_id);
-int write_key_row_commit(std::string *response,
-                         NdbInterpretedCode &code,
-                         const NdbDictionary::Table *tab,
-                         KeyStorage *key_store);
+int init_hset_field_count_bump_code(std::string *response,
+                                    NdbInterpretedCode *code,
+                                    const NdbDictionary::Table *tab,
+                                    Int64 delta);
+int init_hset_lock_claim_code(std::string *response,
+                              NdbInterpretedCode *code,
+                              const NdbDictionary::Table *tab,
+                              Uint64 prealloc_id);
+int init_hset_string_claim_code(std::string *response,
+                                NdbInterpretedCode *code,
+                                const NdbDictionary::Table *tab);
 int write_key_row_no_commit(std::string *response,
                             NdbInterpretedCode &code,
                             const NdbDictionary::Table *tab,

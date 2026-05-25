@@ -1,0 +1,30 @@
+#
+# PING - baseline (no arg) and with optional message (Redis spec)
+#
+PONG
+hello
+with spaces
+#
+# ECHO - short arg, with spaces, empty string, digit-like arg
+#
+hello
+with spaces
+
+12345
+#
+# CONFIG GET - Rondis does not expose any tunable parameters, so
+# every pattern yields the Redis-canonical empty array reply.
+# Multi-pattern form is accepted (arity >= 3).
+#
+
+
+
+#
+# CONFIG with unsupported subcommand - Redis-canonical error
+#
+ERR Unknown subcommand or wrong number of arguments for 'SET'. Try CONFIG HELP.
+
+#
+# SELECT - valid database (Rondis exposes at least db 0)
+#
+OK

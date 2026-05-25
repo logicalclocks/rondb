@@ -36,6 +36,19 @@
 
 const Uint32 ROWS_PER_READ = 2;
 
+// Defined in commands.cc. The "no TTL" sentinel for string_keys /
+// hset_keys.expiry_date - rows storing this value (or NULL) are
+// treated as having no TTL by TTL / PERSIST and are never filtered
+// out by Phase 1.10's expired-key reads.
+extern const Int32 g_max_expire_at;
+
+// Phase 1.10b: returns true iff key_row's expiry_date is non-null,
+// non-sentinel, and < now (mi_sint4korr-decoded). The mask used by
+// prepare_get_key_row / prepare_get_simple_key_row (0xFC) already
+// projects expiry_date and null_bits, so callers just pass the
+// post-read key_row in. Defined in db_operations.cc.
+bool key_row_is_expired(const struct key_table *key_row);
+
 /* Callback function setup for DELETE MODULE */
 void prepare_delete_value_transaction(struct KeyStorage *key_storage);
 void commit_complex_delete_transaction(struct KeyStorage *key_storage);
@@ -55,7 +68,129 @@ int prepare_simple_delete_row(std::string *response,
 void commit_write_value_transaction(struct KeyStorage *key_store);
 void prepare_write_value_transaction(struct KeyStorage *key_store);
 void prepare_write_transaction(struct KeyStorage *key_store);
-void commit_simple_write_transaction(struct KeyStorage *key_storage);
+
+/* Phase 1.0.2d single-trans HSET helpers. */
+int add_hset_lock_claim_op(NdbTransaction *trans,
+                           const NdbDictionary::Table *tab_hset,
+                           const char *hash_name,
+                           Uint32 hash_name_len,
+                           Uint64 prealloc_id,
+                           struct GetControl *get_ctrl,
+                           Uint32 database_id,
+                           std::string *response);
+int add_hset_string_claim_op(NdbTransaction *trans,
+                             const NdbDictionary::Table *tab_hset,
+                             const char *key_str,
+                             Uint32 key_len,
+                             bool set_ttl,
+                             bool keep_ttl,
+                             Int32 expire_at,
+                             Uint32 database_id,
+                             std::string *response,
+                             NdbRecAttr **out_old_id_attr = nullptr,
+                             NdbRecAttr **out_old_field_count_attr = nullptr,
+                             NdbRecAttr **out_old_expiry_attr = nullptr);
+int add_hset_string_delete_op(NdbTransaction *trans,
+                              const NdbDictionary::Table *tab_hset,
+                              const char *key_str,
+                              Uint32 key_len,
+                              Uint32 database_id,
+                              std::string *response);
+int add_hset_field_count_set_op(NdbTransaction *trans,
+                                const NdbDictionary::Table *tab_hset,
+                                const char *hash_name,
+                                Uint32 hash_name_len,
+                                Uint32 new_count,
+                                Uint32 database_id,
+                                std::string *response);
+
+/* Phase 1.10c.7a Phase-1.5 silent-replace helpers. Stage the
+ * deletion of a string-typed name's string_keys row + ext rows
+ * inside the same HSET trans that just claimed hset_keys for the
+ * hash namespace. */
+int add_hset_string_replace_delete_op(NdbTransaction *trans,
+                                      const char *name_str,
+                                      Uint32 name_len,
+                                      struct key_table *key_row_buf,
+                                      Uint32 database_id,
+                                      std::string *response);
+int add_hset_string_replace_value_deletes(NdbTransaction *trans,
+                                          Uint64 rondb_key,
+                                          Uint32 num_rows,
+                                          Uint32 database_id,
+                                          std::string *response);
+void prepare_hset_phase15_transaction(struct GetControl *get_ctrl,
+                                      NdbTransaction *trans);
+
+/* Phase 1.10c.7b silent-replace scan-with-delete on the PRIMARY
+ * ordered index of string_keys. Wired into the four SET write
+ * paths in 1.10c.7b/ii. */
+int run_hset_replace_hash_scan_delete(Ndb *ndb,
+                                      NdbTransaction *main_trans,
+                                      Uint64 old_redis_key_id,
+                                      Uint32 database_id,
+                                      std::string *response);
+int add_hset_field_count_bump_op(NdbTransaction *trans,
+                                 const NdbDictionary::Table *tab_hset,
+                                 const char *hash_name,
+                                 Uint32 hash_name_len,
+                                 Int64 delta,
+                                 Uint32 database_id,
+                                 std::string *response);
+
+/* Phase 1.5 EXPIRE-family helpers. Each opens its own trans and
+ * commits a single plain updateTuple writing only expiry_date
+ * (mask 0x8). Caller passes the mi_int4-encoded value as the low
+ * 4 bytes of an Int64 (matches generate_expire_at output and the
+ * existing rondis SET ... EX write path). Returns the trans-level
+ * NdbError code (0 = applied, 626 = row missing, other = real
+ * error). */
+int update_expiry_string_row(Ndb *ndb,
+                             const char *key_str,
+                             Uint32 key_len,
+                             Int64 m_expire_at_encoded,
+                             Uint32 database_id,
+                             std::string *response);
+int update_expiry_hset_row(Ndb *ndb,
+                           const char *key_str,
+                           Uint32 key_len,
+                           Int64 m_expire_at_encoded,
+                           Uint32 database_id,
+                           std::string *response);
+int update_expiry_string_atomic(Ndb *ndb,
+                                const NdbDictionary::Table *string_tab,
+                                const NdbDictionary::Table *hset_tab,
+                                const char *key_str,
+                                Uint32 key_len,
+                                Int64 m_expire_at_encoded,
+                                Uint32 database_id,
+                                std::string *response);
+void prepare_hset_phase1_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans);
+void prepare_hset_phase2_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans);
+void prepare_hset_phase_chunk_transaction(struct GetControl *get_ctrl,
+                                          NdbTransaction *trans);
+void prepare_hset_phase3_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans);
+
+/* Phase 1.0.3 single-trans HDEL helpers. */
+int add_hdel_lock_read_op(NdbTransaction *trans,
+                          const NdbDictionary::Table *tab_hset,
+                          const char *hash_name,
+                          Uint32 hash_name_len,
+                          struct GetControl *get_ctrl,
+                          Uint32 database_id,
+                          std::string *response);
+int add_hdel_field_delete_op(KeyStorage *key_store,
+                             Uint32 database_id,
+                             std::string *response);
+void prepare_hdel_phase1_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans);
+void prepare_hdel_phase2_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans);
+void prepare_hdel_phase3_transaction(struct GetControl *get_ctrl,
+                                     NdbTransaction *trans);
 
 /* Setup operation record for SET MODULE */
 int prepare_delete_value_row(std::string *response,
@@ -68,7 +203,6 @@ int write_data_to_key_op(std::string *response,
                          const NdbDictionary::Table *tab,
                          KeyStorage *key_store,
                          Uint64 redis_key_id,
-                         bool commit_flag,
                          Uint32 row_state,
                          Uint32 database_id);
 
@@ -97,6 +231,7 @@ int prepare_get_simple_key_row(std::string *response,
 void execute_set_range_simple(std::string *response,
                               KeyStorage *key_store,
                               const NdbDictionary::Table *tab,
+                              const NdbDictionary::Table *hset_tab,
                               Uint32 database_id,
                               Uint32 start,
                               Uint32 end);
@@ -104,6 +239,7 @@ void execute_set_range_simple(std::string *response,
 int write_key_row_setrange(std::string *response,
                            KeyStorage *key_store,
                            const NdbDictionary::Table *tab,
+                           const NdbDictionary::Table *hset_tab,
                            Uint32 database_id,
                            Uint32 start,
                            Uint32 end,
@@ -132,7 +268,9 @@ void incr_decr_key_row(std::string *response,
                        struct key_table *key_row,
                        bool incr_flag,
                        Uint64 inc_dec_value,
-                       int worker_id);
+                       int worker_id,
+                       const char *hash_name,
+                       Uint32 hash_name_len);
 
 /**
  * Uinique key MODULE for Rondis

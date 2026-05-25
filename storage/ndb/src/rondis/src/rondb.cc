@@ -36,6 +36,8 @@
 #include <mutex>
 #include <mysql.h>
 #include <unistd.h>
+#include <NdbTick.h>
+#include <random>
 
 //#define DEBUG_NDB_CMD 1
 
@@ -353,11 +355,15 @@ int create_rondis_tables(const char *mysql_host,
     }
     printf("Table %s_%u.%s ready\n", REDIS_DB_NAME, db_id, KEY_TABLE_NAME);
 
-    // Create hset_keys table (with retry for NDB readiness)
+    // Create hset_keys table (with retry for NDB readiness).
+    // Phase 1.10c.1: redis_key_id is NULL for string rows, non-NULL
+    // for hash rows. AUTO_INCREMENT moved to hset_key_id_sequence
+    // below so writing NULL is a stored discriminator rather than
+    // allocation input.
     snprintf(query, sizeof(query),
       "CREATE TABLE IF NOT EXISTS %s_%u.%s("
       "  redis_key VARBINARY(%u) NOT NULL,"
-      "  redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"
+      "  redis_key_id BIGINT UNSIGNED NULL DEFAULT NULL,"
       "  PRIMARY KEY (redis_key) USING HASH,"
       "  UNIQUE KEY (redis_key_id) USING HASH"
       ") ENGINE NDB CHARSET=latin1 "
@@ -370,6 +376,26 @@ int create_rondis_tables(const char *mysql_host,
       return -1;
     }
     printf("Table %s_%u.%s ready\n", REDIS_DB_NAME, db_id, HSET_KEY_TABLE_NAME);
+
+    // Create hset_key_id_sequence table - the sole source of fresh
+    // hash redis_key_id values (Phase 1.10c.1). HSET preallocates
+    // from this table's AUTO_INCREMENT and writes the explicit id
+    // into hset_keys.redis_key_id.
+    snprintf(query, sizeof(query),
+      "CREATE TABLE IF NOT EXISTS %s_%u.%s("
+      "  redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"
+      "  PRIMARY KEY (redis_key_id) USING HASH"
+      ") ENGINE NDB CHARSET=latin1",
+      REDIS_DB_NAME, db_id, HSET_KEY_ID_SEQUENCE_TABLE_NAME);
+    if (execute_query_with_retry(conn, query, &elapsed_seconds) != 0) {
+      printf("Failed to create table %s_%u.%s: %s\n",
+             REDIS_DB_NAME, db_id, HSET_KEY_ID_SEQUENCE_TABLE_NAME,
+             mysql_error(conn));
+      mysql_close(conn);
+      return -1;
+    }
+    printf("Table %s_%u.%s ready\n",
+           REDIS_DB_NAME, db_id, HSET_KEY_ID_SEQUENCE_TABLE_NAME);
 
     // Create string_values table (with retry for NDB readiness)
     snprintf(query, sizeof(query),
@@ -568,18 +594,314 @@ class RondisEndPoint {
   void *metricsUpdaterObject;
 };
 
+// ---------------------------------------------------------------------
+// Temporary-error retry
+//
+// NDB does no deadlock prevention. Two concurrent operations on the
+// same key lock string_keys and hset_keys as two ops in a single
+// executeAsynch batch; the two tables lock in parallel with no defined
+// order, so the ops can cross-grab one row each and deadlock. NDB
+// breaks it by aborting a victim with a temporary error (266). The
+// aborted transaction committed nothing, so re-running the whole
+// command is safe - and real Redis never fails SET/DEL under
+// concurrency, so the client must not see the transient abort.
+// ---------------------------------------------------------------------
+
+static const Uint32 RONDB_MAX_TEMP_ERROR_RETRIES = 10;
+
+// Busy-wait an exponential-backoff slice with full jitter. The waits
+// start well under a millisecond (attempt 1: a random slice of <= 64
+// us), so a spin is cheaper and finer-grained than a syscall sleep.
+// Full jitter is load-bearing: the colliding clients deadlocked in
+// lockstep, so a fixed delay would just re-form the cycle - the random
+// spread is what de-synchronizes them.
+static void rondb_temp_error_backoff(Uint32 attempt) {
+  Uint32 cap_us = 64u << (attempt - 1);  // attempt is 1..MAX
+  if (cap_us > 4096u) {
+    cap_us = 4096u;
+  }
+  static thread_local std::mt19937 rng(std::random_device{}());
+  Uint64 wait_us = std::uniform_int_distribution<Uint32>(0, cap_us)(rng);
+  if (wait_us == 0) {
+    return;
+  }
+  const NDB_TICKS start = NdbTick_getCurrentTicks();
+  while (NdbTick_Elapsed(start, NdbTick_getCurrentTicks()).microSec() <
+         wait_us) {
+    // busy spin
+  }
+}
+
+// True when the just-finished command produced a RESP error reply
+// ('-' prefix) carrying an NDB error code classified TemporaryError.
+static bool rondb_temp_error_retryable(Ndb *ndb,
+                                       const std::string *response) {
+  if (g_last_ndb_error_code == 0 ||
+      response->empty() ||
+      (*response)[0] != '-') {
+    return false;
+  }
+  return ndb->getNdbError(g_last_ndb_error_code).status ==
+         NdbError::TemporaryError;
+}
+
+// One attempt at an NDB data command. Extracted from rondb_redis_handler
+// so the dispatcher can re-run it unchanged on a temporary NDB error.
+static void dispatch_ndb_data_command(Ndb *ndb,
+                                      const char *command,
+                                      const pink::RedisCmdArgsType &argv,
+                                      std::string *response,
+                                      int worker_id) {
+  if (strcasecmp(command, "GET") == 0) {
+    if (argv.size() == 2) {
+      rondb_get_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "MGET") == 0) {
+    if (argv.size() >= 2) {
+      rondb_mget_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "SET") == 0) {
+    if (argv.size() >= 3) {
+      rondb_set_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "MSET") == 0) {
+    if (argv.size() >= 3 && (argv.size() % 2) == 1) {
+      rondb_mset_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HGET") == 0) {
+    if (argv.size() == 3) {
+      rondb_hget_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HMGET") == 0) {
+    if (argv.size() >= 3) {
+      rondb_hmget_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HSET") == 0) {
+    if (argv.size() >= 4 && (argv.size() % 2) == 0) {
+      rondb_hset_command(ndb, argv, response, false, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HMSET") == 0) {
+    if (argv.size() >= 4 && (argv.size() % 2) == 0) {
+      rondb_hset_command(ndb, argv, response, true, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "DEL") == 0) {
+    if (argv.size() >= 2) {
+      rondb_del_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "EXISTS") == 0) {
+    if (argv.size() >= 2) {
+      rondb_exists_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "TYPE") == 0) {
+    if (argv.size() == 2) {
+      rondb_type_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "TTL") == 0) {
+    if (argv.size() == 2) {
+      rondb_ttl_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "PTTL") == 0) {
+    if (argv.size() == 2) {
+      rondb_pttl_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "EXPIRE") == 0) {
+    if (argv.size() == 3) {
+      rondb_expire_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "PEXPIRE") == 0) {
+    if (argv.size() == 3) {
+      rondb_pexpire_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "EXPIREAT") == 0) {
+    if (argv.size() == 3) {
+      rondb_expireat_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "PEXPIREAT") == 0) {
+    if (argv.size() == 3) {
+      rondb_pexpireat_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "PERSIST") == 0) {
+    if (argv.size() == 2) {
+      rondb_persist_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HDEL") == 0) {
+    if (argv.size() >= 3) {
+      rondb_hdel_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "INCR") == 0) {
+    if (argv.size() == 2) {
+      rondb_incr_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "INCRBY") == 0) {
+    if (argv.size() == 3) {
+      rondb_incrby_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "DECR") == 0) {
+    if (argv.size() == 2) {
+      rondb_decr_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "DECRBY") == 0) {
+    if (argv.size() == 3) {
+      rondb_decrby_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HINCR") == 0) {
+    if (argv.size() == 3) {
+      rondb_hincr_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HINCRBY") == 0) {
+    if (argv.size() == 4) {
+      rondb_hincrby_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HDECR") == 0) {
+    if (argv.size() == 3) {
+      rondb_hdecr_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "HDECRBY") == 0) {
+    if (argv.size() == 4) {
+      rondb_hdecrby_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "STRLEN") == 0) {
+    if (argv.size() == 2) {
+      rondb_strlen_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "GETRANGE") == 0) {
+    if (argv.size() == 4) {
+      rondb_getrange_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+  } else if (strcasecmp(command, "SETRANGE") == 0) {
+    if (argv.size() == 4) {
+      rondb_setrange_command(ndb, argv, response, worker_id);
+    } else {
+      wrong_number_of_arguments(argv, response);
+      return;
+    }
+
+  } else {
+    unsupported_command(argv, response);
+  }
+}
+
 int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
                         std::string *response,
                         int worker_id) {
   RondisEndPoint rondisEndpoint;
+  // Publish worker_id to DEB_PREFIX (thread-local) so every DEB_*
+  // line fired below carries [w<id>]. Reset on exit so any later
+  // setup-phase trace doesn't borrow the previous command's id.
+  g_dbg_worker_id = worker_id;
+  struct DbgWorkerGuard {
+    ~DbgWorkerGuard() { g_dbg_worker_id = -1; }
+  } dbg_worker_guard;
   // First check non-ndb commands
   const char *command = argv[0].c_str();
+  DEB_CMD(("CMD START argc=%lu cmd=%s\n", argv.size(), command));
+  // Guard fires on every return path, matching the START line above.
+  struct CmdEndGuard {
+    const char *command;
+    ~CmdEndGuard() {
+      DEB_CMD(("CMD END   cmd=%s\n", command));
+    }
+  } cmd_end_guard{command};
   if (strcasecmp(command, "ping") == 0) {
-    if (argv.size() != 1) {
+    if (argv.size() == 1) {
+      response->append("+PONG\r\n");
+    } else if (argv.size() == 2) {
+      response->assign("$" +
+                       std::to_string(argv[1].length()) +
+                       "\r\n" +
+                       argv[1] +
+                       "\r\n");
+    } else {
       wrong_number_of_arguments(argv, response);
       return 0;
     }
-    response->append("+PONG\r\n");
   } else if (strcasecmp(command, "echo") == 0) {
     if (argv.size() != 2) {
       wrong_number_of_arguments(argv, response);
@@ -591,39 +913,54 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
                      argv[1] +
                      "\r\n");
   } else if (strcasecmp(command, "config") == 0) {
-    if (argv.size() != 3) {
+    /* CONFIG GET [pattern ...] - Redis accepts one or more patterns and
+     * replies with a flat array of matched name/value pairs (empty if
+     * nothing matches). Rondis does not expose any tunable parameters,
+     * so the reply is always the canonical empty array. */
+    if (argv.size() < 3) {
       wrong_number_of_arguments(argv, response);
       return 0;
     }
-    if (argv[1] == "GET") {
-      *response += "*2\r\n";
-      *response += "$" + std::to_string(argv[2].length()) + "\r\n";
-      *response += argv[2] + "\r\n";
-      *response += "*0\r\n";
+    if (strcasecmp(argv[1].c_str(), "GET") == 0) {
+      response->append("*0\r\n");
     } else {
-      unsupported_command(argv, response);
+      char error_message[256];
+      snprintf(error_message,
+               sizeof(error_message),
+               "Unknown subcommand or wrong number of arguments for '%s'."
+               " Try CONFIG HELP.",
+               argv[1].c_str());
+      assign_generic_err_to_response(response, error_message);
     }
   } else if (strcasecmp(command, "select") == 0) {
     if (argv.size() != 2) {
       wrong_number_of_arguments(argv, response);
       return 0;
     }
+    if (argv[1].empty()) {
+      assign_err_to_response(response,
+                             FAILED_SELECT_COMMAND,
+                             0);
+      return 0;
+    }
     char *end_ptr = nullptr;
     const char *val_ptr = argv[1].c_str();
     const char *memory_end = val_ptr + argv[1].size();
+    errno = 0;
     Int64 val = strtoll(val_ptr,
                         &end_ptr,
                         10);
     if (errno == ERANGE || end_ptr != memory_end) {
       assign_err_to_response(response,
                              FAILED_SELECT_COMMAND,
-                             1);
+                             0);
       return 0;
     }
-    if (val >= g_num_databases) {
+    if (val < 0 || val >= g_num_databases) {
       assign_err_to_response(response,
-                             FAILLED_SELECT_NO_SUCH_DATABASE,
-                             1);
+                             FAILED_SELECT_NO_SUCH_DATABASE,
+                             0);
+      return 0;
     }
     set_current_database(worker_id, (int)val);
     response->append("+OK\r\n");
@@ -649,156 +986,25 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
         i, argv[i].c_str(), argv[i].size()));
      }
 #endif
-    if (strcasecmp(command, "GET") == 0) {
-      if (argv.size() == 2) {
-        rondb_get_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
+    // Retry the command on a temporary NDB error. Concurrent ops on one
+    // key lock string_keys + hset_keys unordered and can deadlock; NDB
+    // aborts a victim with error 266, having committed nothing, so
+    // re-running the whole command is safe. Full-jitter busy-wait
+    // backoff between attempts de-synchronizes lock-stepped clients.
+    Uint32 retry_attempt = 0;
+    for (;;) {
+      g_last_ndb_error_code = 0;
+      dispatch_ndb_data_command(ndb, command, argv, response, worker_id);
+      if (!rondb_temp_error_retryable(ndb, response) ||
+          retry_attempt >= RONDB_MAX_TEMP_ERROR_RETRIES) {
+        break;
       }
-    } else if (strcasecmp(command, "MGET") == 0) {
-      if (argv.size() >= 2) {
-        rondb_mget_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "SET") == 0) {
-      if (argv.size() >= 3) {
-        rondb_set_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "MSET") == 0) {
-      if (argv.size() >= 3 && (argv.size() % 2) == 1) {
-        rondb_mset_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HGET") == 0) {
-      if (argv.size() == 3) {
-        rondb_hget_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HMGET") == 0) {
-      if (argv.size() >= 3) {
-        rondb_hmget_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HSET") == 0) {
-      if (argv.size() >= 4 && (argv.size() % 2) == 0) {
-        rondb_hset_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HMSET") == 0) {
-      if (argv.size() >= 4 && (argv.size() % 2) == 0) {
-        rondb_hset_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "DEL") == 0) {
-      if (argv.size() >= 2) {
-        rondb_del_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HDEL") == 0) {
-      if (argv.size() >= 2) {
-        rondb_hdel_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "INCR") == 0) {
-      if (argv.size() == 2) {
-        rondb_incr_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "INCRBY") == 0) {
-      if (argv.size() == 3) {
-        rondb_incrby_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "DECR") == 0) {
-      if (argv.size() == 2) {
-        rondb_decr_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "DECRBY") == 0) {
-      if (argv.size() == 3) {
-        rondb_decrby_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HINCR") == 0) {
-      if (argv.size() == 3) {
-        rondb_hincr_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HINCRBY") == 0) {
-      if (argv.size() == 4) {
-        rondb_hincrby_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HDECR") == 0) {
-      if (argv.size() == 3) {
-        rondb_hdecr_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "HDECRBY") == 0) {
-      if (argv.size() == 4) {
-        rondb_hdecrby_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "STRLEN") == 0) {
-      if (argv.size() == 2) {
-        rondb_strlen_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "GETRANGE") == 0) {
-      if (argv.size() == 4) {
-        rondb_getrange_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-    } else if (strcasecmp(command, "SETRANGE") == 0) {
-      if (argv.size() == 4) {
-        rondb_setrange_command(ndb, argv, response, worker_id);
-      } else {
-        wrong_number_of_arguments(argv, response);
-        return 0;
-      }
-
-    } else {
-      unsupported_command(argv, response);
+      retry_attempt++;
+      DEB_NDB_CMD(("Temporary NDB error %d on %s, retry %u/%u\n",
+                   g_last_ndb_error_code, command, retry_attempt,
+                   RONDB_MAX_TEMP_ERROR_RETRIES));
+      response->clear();
+      rondb_temp_error_backoff(retry_attempt);
     }
     if (ndb->getClientStat(ndb->TransStartCount) !=
         ndb->getClientStat(ndb->TransCloseCount)) {

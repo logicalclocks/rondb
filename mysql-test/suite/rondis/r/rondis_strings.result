@@ -1,0 +1,39 @@
+#
+# SET then GET - baseline, overwrite, empty value
+#
+OK
+hello
+OK
+world
+OK
+
+#
+# GET on a non-existent key returns nil (rendered as empty line
+# by redis-cli in non-TTY mode).
+#
+
+#
+# Large key (just under the 3000-byte ceiling). Verifies round-trip.
+#
+OK
+value-for-big-key
+1
+#
+# MSET / MGET - baseline plus mix of existing and missing keys.
+#
+OK
+1
+2
+3
+1
+
+2
+
+3
+#
+# DEL return count: 1 for a hit, 0 for a miss, N for multi-key.
+#
+1
+0
+4
+0

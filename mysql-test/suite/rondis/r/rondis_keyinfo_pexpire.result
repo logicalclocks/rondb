@@ -1,0 +1,55 @@
+#
+# Set up: a string, a populated hash, an emptied hash.
+#
+OK
+1
+1
+1
+#
+# PEXPIRE 60000 ms on existing string -> :1; expiry_date set
+# in the [now, now + 60 + 2] window (PEXPIRE rounds up to the
+# next whole second, so the result is identical to EXPIRE 60).
+#
+1
+str_a_in_window=1
+#
+# PEXPIRE on existing hash -> :1; hset_keys.expiry_date set.
+#
+1
+hash_a_in_window=1
+#
+# Sub-second PEXPIRE rounds up to 1s (avoids truncating
+# to zero, which would collide with the no-TTL sentinel).
+# PEXPIRE 1 -> stored expiry is exactly now + 1.
+#
+OK
+1
+str_round_within_1s=1
+#
+# PEXPIRE on a fully-HDEL'd hash -> :0 (matches EXISTS = 0).
+#
+0
+#
+# PEXPIRE on a missing key -> :0.
+#
+0
+#
+# PEXPIRE 0 deletes an existing key immediately; a second
+# non-positive PEXPIRE on the now-missing key returns :0.
+#
+1
+0
+#
+# PEXPIRE 0 on a hash also deletes it immediately.
+#
+1
+1
+none
+#
+# End-to-end: PEXPIRE then PTTL on the same key falls in
+# window. PTTL replies in millis, so the window scales up by
+# 1000.
+#
+OK
+1
+PTTL pttl_round in_window=1

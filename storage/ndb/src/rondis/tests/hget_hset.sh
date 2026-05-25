@@ -24,6 +24,15 @@
 
 set -e
 
+# Allow MTR / external harness to override Rondis host and port. The real
+# redis-cli does not know about RONDIS_HOST/RONDIS_PORT, so wrap it in a
+# function that injects -h / -p and keep every call site unchanged.
+REDIS_HOST="${RONDIS_HOST:-localhost}"
+REDIS_PORT="${RONDIS_PORT:-6379}"
+redis-cli() {
+    command redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" "$@"
+}
+
 # Change key suffixes using script arguments
 HASH_KEY_SUFFIX=${1:-0}
 HASH_KEY="key_$HASH_KEY_SUFFIX"
@@ -41,7 +50,13 @@ HSET $HASH_KEY $field $(< "$value")
 EOF
 )
     else
-        set_output=$(redis-cli HSET "$HASH_KEY" "$field" "$value")
+        # Feed the command on stdin, not argv: a large value would
+        # exceed Linux's MAX_ARG_STRLEN (128 KiB per argv argument) and
+        # make execve fail with E2BIG (shell exit 126). The value is
+        # double-quoted so redis-cli's inline parser keeps an empty
+        # value as an empty argument. Matches mget_mset.sh.
+        set_output=$(printf 'HSET %s %s "%s"\n' \
+            "$HASH_KEY" "$field" "$value" | redis-cli)
     fi
 
     echo $set_output
@@ -149,6 +164,10 @@ hset_and_hget "$KEY:edge_large" "$edge_value"
 redis-cli HDEL $HASH_KEY $KEY:edge_large
 
 echo ""
+# Phase 1.10c.6 makes empty hashes invisible to read-side commands.
+# Keep the hash non-empty so the counter section still tests
+# missing-field creation inside an existing hash.
+redis-cli HSET "$HASH_KEY" "$KEY:counter_anchor" 0
 incr_field="$KEY:incr${RANDOM}${RANDOM}"
 incr_output=$(redis-cli HINCR "$HASH_KEY" "$incr_field")
 incr_result=$(redis-cli HGET "$HASH_KEY" "$incr_field")
@@ -273,5 +292,6 @@ for i in {1..10}; do
     fi
 done
 redis-cli HDEL $HASH_KEY $decrby_field
+redis-cli HDEL $HASH_KEY "$KEY:counter_anchor"
 
 echo "All tests completed."

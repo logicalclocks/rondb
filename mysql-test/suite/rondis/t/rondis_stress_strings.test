@@ -1,0 +1,40 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+
+#
+# Drive the legacy shell-based Rondis string stress harness
+# (storage/ndb/src/rondis/tests/get_set.sh) from MTR.
+#
+# The script self-validates via sha256 hashes and exits non-zero on the
+# first mismatch ('set -e' plus explicit 'exit 1' in helper functions),
+# so MTR only needs to check the exit status. The script output is
+# nondeterministic (random payloads, timings) and is therefore diverted
+# to a log file rather than captured in the .result baseline.
+#
+# Requires the real redis-cli binary: the script uses 'redis-cli --pipe'
+# for bulk streaming, which rondb-cli does not implement.
+#
+
+--source suite/rondis/include/create_rondis_tables.inc
+
+# Verify redis-cli is installed and Rondis is reachable. A missing
+# binary yields "command not found" (exit 127); a dead Rondis yields
+# connection refused. Either way we want to fail fast and loudly.
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PING > /dev/null
+
+--let $script = $MYSQL_TEST_DIR/../storage/ndb/src/rondis/tests/get_set.sh
+--let $log    = $MYSQLTEST_VARDIR/tmp/rondis_stress_strings.log
+
+--echo # Running get_set.sh (per-op PASS/FAIL diverted to var/tmp/ on failure)
+--exec bash $script > $log 2>&1
+--echo # get_set.sh completed successfully
+
+# MTR's post-test check-testcase fails on leftover files in var/tmp, so
+# drop the log file on success (it is only kept while the test was
+# actively running, which is exactly when a failure would preserve it).
+--remove_file $log
+
+# Drop the test database to clean up.
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

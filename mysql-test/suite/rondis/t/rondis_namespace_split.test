@@ -1,0 +1,52 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Redis namespace semantics: SET overwrites existing keys regardless
+# of type, but hash commands on string keys return WRONGTYPE.
+#
+
+--echo #
+--echo # SET claims the name as a string. hset_keys carries
+--echo # redis_key_id NULL alongside the string_keys row.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET shared "string-value"
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared';
+
+--echo #
+--echo # HSET against the same name -> WRONGTYPE. The string remains
+--echo # intact and hset_keys still marks the name as a string.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET shared field1 "hash-field-value"
+
+--echo #
+--echo # GET still sees the string; no hash field rows were created.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET shared
+SELECT COUNT(*) AS string_rows_for_shared
+  FROM redis_0.string_keys
+ WHERE redis_key = 'shared' AND redis_key_id = 0;
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared';
+SELECT COUNT(*) AS hash_field_rows_for_shared
+  FROM redis_0.string_keys WHERE redis_key = 'field1';
+
+--echo #
+--echo # Mirror case: HSET first claims the name as a hash, then SET
+--echo # on the same name silently replaces it with a string.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET shared_h field1 "hash-field-value"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET shared_h "string-value"
+
+--echo #
+--echo # HGET now returns WRONGTYPE; GET sees the string; hset_keys is
+--echo # back to redis_key_id NULL for the string namespace.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET shared_h field1 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET shared_h
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'shared_h';
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

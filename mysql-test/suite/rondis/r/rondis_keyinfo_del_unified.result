@@ -1,0 +1,71 @@
+#
+# SET k1; both rows present.
+#
+OK
+SELECT redis_key FROM redis_0.string_keys WHERE redis_key = 'k1';
+redis_key
+k1
+SELECT redis_key, redis_key_id IS NULL AS id_null
+FROM redis_0.hset_keys WHERE redis_key = 'k1';
+redis_key	id_null
+k1	1
+#
+# DEL k1 returns :1 (one key removed) and both rows are gone.
+#
+1
+SELECT COUNT(*) AS string_keys_left
+FROM redis_0.string_keys WHERE redis_key = 'k1';
+string_keys_left
+0
+SELECT COUNT(*) AS hset_keys_left
+FROM redis_0.hset_keys WHERE redis_key = 'k1';
+hset_keys_left
+0
+#
+# DEL on a missing key returns :0 and creates no rows.
+#
+0
+SELECT COUNT(*) AS hset_keys_for_nope
+FROM redis_0.hset_keys WHERE redis_key = 'nope';
+hset_keys_for_nope
+0
+#
+# Multi-key DEL: MSET then DEL of all - reply :3, both tables
+# empty afterwards.
+#
+OK
+SELECT COUNT(*) AS hset_keys_after_mset
+FROM redis_0.hset_keys WHERE redis_key IN ('a','b','c');
+hset_keys_after_mset
+3
+3
+SELECT COUNT(*) AS string_keys_after_del
+FROM redis_0.string_keys WHERE redis_key IN ('a','b','c');
+string_keys_after_del
+0
+SELECT COUNT(*) AS hset_keys_after_del
+FROM redis_0.hset_keys WHERE redis_key IN ('a','b','c');
+hset_keys_after_del
+0
+#
+# DEL on a hash key (Phase 1.10c.2b): the registry row in
+# hset_keys is dropped via the second-pass retry; field rows
+# in string_keys are left as orphans by design.
+#
+1
+1
+SELECT COUNT(*) AS hset_keys_for_h1
+FROM redis_0.hset_keys WHERE redis_key = 'h1';
+hset_keys_for_h1
+0
+#
+# Mixed batch: DEL of (existing string, existing hash, missing)
+# returns :2 - both real keys removed, missing one ignored.
+#
+OK
+1
+2
+SELECT COUNT(*) AS hset_keys_after_mixed_del
+FROM redis_0.hset_keys WHERE redis_key IN ('s1','h2','nonex');
+hset_keys_after_mixed_del
+0

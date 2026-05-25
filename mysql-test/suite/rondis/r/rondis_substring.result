@@ -1,0 +1,54 @@
+#
+# STRLEN - non-existent key returns 0, empty string returns 0,
+# populated key returns byte count.
+#
+0
+OK
+0
+OK
+13
+#
+# GETRANGE - positive indices inclusive on both ends.
+#
+Hello
+World
+H
+Hello, World!
+#
+# GETRANGE - negative indices count from the end.
+#
+World!
+!
+#
+# GETRANGE - inverted range (start > end) returns empty string.
+#
+
+#
+# SETRANGE - in-place overwrite in the middle of the string.
+#
+OK
+13
+Hello, Redis!
+#
+# SETRANGE - offset at 0 overwrites from the start.
+#
+OK
+10
+ABCD456789
+#
+# SETRANGE - offset past end of string pads with zero bytes
+# (verified via STRLEN; raw GET would contain \0 which interacts
+# badly with the MTR diff framing).
+#
+OK
+12
+12
+#
+# SETRANGE on a non-existent key creates it with leading zero bytes.
+#
+6
+6
+#
+# Cleanup.
+#
+6

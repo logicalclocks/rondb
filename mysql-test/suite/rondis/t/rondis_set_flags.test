@@ -1,0 +1,107 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Coverage for the SET flag matrix: NX, XX, GET, EX, PX, EXAT, PXAT,
+# KEEPTTL.
+#
+# NX / XX on their "condition not met" paths return Redis-canonical
+# nil. SET GET returns the previous string value or nil when the key
+# was missing; it returns WRONGTYPE when the key held a non-string
+# type (covered by rondis_keyinfo_silent_replace).
+#
+# Numerical TTL assertions (does EX 60 really land ~NOW()+60?) live in
+# Phase 3's rondis_ttl.test. Here we only check reply shape.
+#
+
+--echo #
+--echo # NX on a non-existent key - stores, returns +OK.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET nxk "first" NX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET nxk
+
+--echo #
+--echo # NX on an existing key - guard tripped, returns nil without
+--echo # overwriting (redis-cli prints nil as a blank line).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET nxk "second" NX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET nxk
+
+--echo #
+--echo # XX on a non-existent key - guard tripped, returns nil and
+--echo # does not create the key.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET xxk "first" XX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET xxk
+
+--echo #
+--echo # XX on an existing key - stores, returns +OK.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET xxk "seed"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET xxk "updated" XX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET xxk
+
+--echo #
+--echo # GET flag on a non-existent key - stores and returns nil for
+--echo # the old value.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET getk "v1" GET 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET getk
+
+--echo #
+--echo # GET flag on an existing key - returns old value, stores new.
+--echo #
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET getk "v2" GET 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET getk
+
+--echo #
+--echo # EX / PX - TTL in seconds / milliseconds. Shape only; numerical
+--echo # verification is in rondis_ttl.test.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttlk "value" EX 60
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ttlk
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttlk "value" PX 60000
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ttlk
+
+--echo #
+--echo # EXAT / PXAT - absolute unix-timestamp TTL.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttlk "value" EXAT 4102444800
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ttlk
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttlk "value" PXAT 4102444800000
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ttlk
+--let $now_ms = `SELECT FLOOR(UNIX_TIMESTAMP(NOW(6)) * 1000)`
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET pxat_due "gone" PXAT $now_ms
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE pxat_due
+
+--echo #
+--echo # KEEPTTL - preserve the existing TTL on overwrite.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttlk "orig" EX 3600
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ttlk "upd" KEEPTTL
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ttlk
+
+--echo #
+--echo # Redis accepts SET options in flexible order and combinations.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET orderk "ordered" EX 60 NX
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET orderk
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET getcombo "v1" GET EX 60 2>&1
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET getcombo "v2" XX GET 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET getcombo
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET getcombo "v3" PX 60000 GET 2>&1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET getcombo
+
+--echo #
+--echo # Cleanup.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL nxk xxk getk ttlk pxat_due orderk getcombo
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

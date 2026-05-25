@@ -1,0 +1,57 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+# NDB schema-dist coordinator timeout is a known transient (see
+# CLAUDE.md). Suppress it so the test is not flaky on slow hosts.
+--disable_query_log
+call mtr.add_suppression(".*Schema dist coordinator detected timeout.*");
+--enable_query_log
+
+#
+# Phase 1.4 - PTTL key
+#
+# Millisecond variant of TTL. Same -2 / -1 / value reply shape;
+# value is in milliseconds rather than seconds.
+#
+
+--let $script = $MYSQL_TEST_DIR/../storage/ndb/src/rondis/tests/ttl_probe.sh
+
+--echo #
+--echo # Set up.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_ex "value" EX 60
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_noex "value"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_a f1 v1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_empty x X
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL hash_empty x
+
+--echo #
+--echo # SET ... EX 60 -> PTTL ~60000 ms (window for host-clock jitter).
+--echo # rondis stores expiry at second-resolution, so PTTL returns
+--echo # (seconds_remaining * 1000) - the window is [58000, 62000] ms.
+--echo #
+--exec bash $script PTTL str_ex 58000 62000
+
+--echo #
+--echo # SET without TTL -> :-1.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PTTL str_noex
+
+--echo #
+--echo # Hash without TTL -> :-1.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PTTL hash_a
+
+--echo #
+--echo # Fully-HDEL'd hash -> :-2.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PTTL hash_empty
+
+--echo #
+--echo # Missing key -> :-2.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PTTL no_such_key
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

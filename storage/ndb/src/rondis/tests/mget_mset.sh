@@ -24,6 +24,15 @@
 
 set -e
 
+# Allow MTR / external harness to override Rondis host and port. The real
+# redis-cli does not know about RONDIS_HOST/RONDIS_PORT, so wrap it in a
+# function that injects -h / -p and keep every call site unchanged.
+REDIS_HOST="${RONDIS_HOST:-localhost}"
+REDIS_PORT="${RONDIS_PORT:-6379}"
+redis-cli() {
+    command redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" "$@"
+}
+
 # Change key suffix using script arguments
 KEY_SUFFIX=${1:-0}
 KEY="test_key_$KEY_SUFFIX"
@@ -39,7 +48,15 @@ MSET $key $(< "$value")
 EOF
 )
     else
-        mset_output=$(redis-cli MSET "$key:0" "$value" "$key:1" "$value")
+        # Feed the command on stdin, not argv: a value here can be
+        # hundreds of KB, and Linux caps a single argv argument at
+        # MAX_ARG_STRLEN (128 KiB). Exceeding it makes execve fail with
+        # E2BIG, so the shell aborts with exit 126 before redis-cli even
+        # starts (macOS has no per-argument limit, hence Linux-only).
+        # The value is double-quoted so redis-cli's inline parser keeps
+        # an empty value as an empty argument instead of dropping it.
+        mset_output=$(printf 'MSET %s "%s" %s "%s"\n' \
+            "$key:0" "$value" "$key:1" "$value" | redis-cli)
     fi
 
     if [[ $mset_output == ERR* ]]; then
@@ -205,5 +222,16 @@ run_client() {
         echo "PASS ($i/$NUM_ITERATIONS): client $client with key $key"
     done
 }
+
+echo "Testing multi-value rows in parallel..."
+for ((client=1; client<=5; client++)); do
+    run_client $client "${KEY}:parallel_key" &
+    pids[$client]=$!
+done
+
+for pid in ${pids[*]}; do
+    wait $pid
+done
+echo "PASS: All parallel clients completed."
 
 echo "All tests completed."

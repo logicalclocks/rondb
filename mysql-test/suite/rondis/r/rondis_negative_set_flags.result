@@ -1,0 +1,45 @@
+#
+# Conflicting flags: NX + XX can never both hold. Syntax error.
+#
+ERR syntax error
+
+#
+# KEEPTTL combined with EX (or any explicit TTL) is mutually
+# exclusive. Syntax error.
+#
+ERR syntax error
+
+ERR syntax error
+
+#
+# Non-integer TTL argument - canonical integer error.
+#
+ERR value is not an integer or out of range
+
+ERR value is not an integer or out of range
+
+#
+# Unknown trailing flag - syntax error.
+#
+ERR syntax error
+
+#
+# Negative or zero EX - Redis-canonical error. The C12 fix in
+# commands.cc validates EX/PX > 0 at parse time, which also
+# avoids collision with generate_expire_at's "ttl == -1 means
+# never expires" internal sentinel.
+#
+ERR invalid expire time in set
+
+SELECT COUNT(*) AS nrows FROM redis_0.string_keys WHERE redis_key = 'k_neg';
+nrows
+0
+#
+# Zero EX - same invalid-expire error.
+#
+ERR invalid expire time in set
+
+#
+# Cleanup.
+#
+0

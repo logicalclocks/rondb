@@ -1,0 +1,152 @@
+#
+# Step 1: HSET 3 NEW fields on a fresh hash.
+#
+3
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:1';
+redis_key	field_count
+life:1	3
+SELECT redis_key, value_start FROM redis_0.string_keys
+WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+WHERE redis_key = 'life:1')
+ORDER BY redis_key;
+redis_key	value_start
+a	A
+b	B
+c	C
+A
+#
+# Step 2: HSET overwriting all 3 fields. delta=0; field_count
+# stays at 3.
+#
+0
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:1';
+redis_key	field_count
+life:1	3
+#
+# Step 3: HSET mixing existing (a, b) with new (d, e). field_count
+# 3 -> 5.
+#
+2
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:1';
+redis_key	field_count
+life:1	5
+#
+# Step 4: HSET single field with value > INLINE_VALUE_LEN (4096).
+# field_count = 1 and the row carries num_rows >= 1 ext rows.
+#
+large_value life:big f len=5000 hset_reply=1
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:big';
+redis_key	field_count
+life:big	1
+SELECT redis_key, num_rows, tot_value_len FROM redis_0.string_keys
+WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+WHERE redis_key = 'life:big');
+redis_key	num_rows	tot_value_len
+f	1	5000
+#
+# Step 5: HSET 300 fields (> MAX_PARALLEL_KEY_OPS = 256). Phase 2
+# and Phase 3 each iterate the chunk loop. field_count = 300.
+#
+many_fields life:many count=300 hset_reply=300
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:many';
+redis_key	field_count
+life:many	300
+SELECT COUNT(*) FROM redis_0.string_keys
+WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+WHERE redis_key = 'life:many');
+COUNT(*)
+300
+#
+# Step 6: re-HSET the same 300 fields, all overwrites. field_count
+# stays at 300.
+#
+many_fields life:many count=300 hset_reply=0
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:many';
+redis_key	field_count
+life:many	300
+#
+# Step 7: HSET life:hd with 3 fields, then HDEL one. Reply :1,
+# field_count 3 -> 2, hset_keys row still present.
+#
+3
+1
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:hd';
+redis_key	field_count
+life:hd	2
+SELECT redis_key FROM redis_0.string_keys
+WHERE redis_key_id = (SELECT redis_key_id FROM redis_0.hset_keys
+WHERE redis_key = 'life:hd')
+ORDER BY redis_key;
+redis_key
+b
+c
+#
+# Step 8: HDEL of two fields, one missing. Reply :1 (only 'b' was
+# present); field_count 2 -> 1.
+#
+1
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:hd';
+redis_key	field_count
+life:hd	1
+#
+# Step 9: HDEL the last remaining field. The hset_keys row is
+# dropped in the same trans (1.10c.8/D); no rows remain in
+# either table.
+#
+1
+SELECT COUNT(*) AS hset_keys_rows FROM redis_0.hset_keys
+WHERE redis_key = 'life:hd';
+hset_keys_rows
+0
+#
+# Step 10: HDEL on a hash that never existed. Reply :0 and no
+# hset_keys row is created (Phase 1 reads, doesn't insert).
+#
+0
+SELECT COUNT(*) FROM redis_0.hset_keys
+WHERE redis_key = 'life:nope';
+COUNT(*)
+0
+#
+# Step 11: HSET on the now-missing life:hd. A fresh hset_keys
+# row is INSERTed via Phase 1's lock-claim INSERT branch with
+# a new redis_key_id; field_count = 2.
+#
+2
+include/assert.inc [redis_key_id is fresh after row-drop and re-create]
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:hd';
+redis_key	field_count
+life:hd	2
+#
+# Step 12: HDEL of an ext-row field (>INLINE_VALUE_LEN). Capture
+# the rondb_key BEFORE the HDEL (the hset_keys + string_keys
+# rows go away on the HDEL), then verify the string_values
+# ordinals were cleaned up alongside.
+#
+large_value life:big2 f len=5000 hset_reply=1
+SELECT redis_key, field_count FROM redis_0.hset_keys
+WHERE redis_key = 'life:big2';
+redis_key	field_count
+life:big2	1
+SELECT COUNT(*) AS pre_hdel_ext_rows FROM redis_0.string_values
+WHERE rondb_key = @life_big2_rk;
+pre_hdel_ext_rows
+1
+1
+SELECT COUNT(*) AS hset_keys_rows FROM redis_0.hset_keys
+WHERE redis_key = 'life:big2';
+hset_keys_rows
+0
+SELECT COUNT(*) AS string_values_rows FROM redis_0.string_values
+WHERE rondb_key = @life_big2_rk;
+string_values_rows
+0

@@ -1,0 +1,125 @@
+#
+# 1. SET over a hash silently replaces it with a string and
+# deletes all old hash field rows, including extension rows.
+#
+1
+1
+OK
+5000
+string
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'big_to_str';
+redis_key_id
+NULL
+SELECT COUNT(*) AS old_hash_field_rows
+FROM redis_0.string_keys WHERE redis_key_id = @old_id;
+old_hash_field_rows
+0
+SELECT COUNT(*) AS old_hash_ext_rows
+FROM redis_0.string_values WHERE rondb_key = @old_big_rondb_key;
+old_hash_ext_rows
+0
+#
+# 2. SET ... GET against a hash returns WRONGTYPE and leaves
+# the hash intact (the GET modifier requires a string value).
+#
+1
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+v
+hash
+#
+# 3. SET ... XX over a hash succeeds because the key exists.
+#
+1
+OK
+xx-string
+string
+#
+# 4. SET ... NX over a hash does not run because the key
+# already exists. The hash remains intact.
+#
+1
+
+hash
+SELECT COUNT(*) AS nx_hash_rows
+FROM redis_0.string_keys
+WHERE redis_key_id = (SELECT redis_key_id
+FROM redis_0.hset_keys
+WHERE redis_key = 'nx_hash');
+nx_hash_rows
+1
+#
+# 5. MSET can replace hash keys and create missing string keys
+# in the same command.
+#
+1
+1
+OK
+s1
+s2
+s3
+SELECT COUNT(*) AS m_hash_old_rows
+FROM redis_0.string_keys
+WHERE redis_key_id IN (@m_hash1_old_id, @m_hash2_old_id);
+m_hash_old_rows
+0
+SELECT redis_key, redis_key_id FROM redis_0.hset_keys
+WHERE redis_key IN ('m_hash1', 'm_hash2', 'm_new') ORDER BY redis_key;
+redis_key	redis_key_id
+m_hash1	NULL
+m_hash2	NULL
+m_new	NULL
+#
+# 6. Hash commands on string keys return WRONGTYPE and leave
+# the string intact.
+#
+OK
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+string-value
+SELECT redis_key_id FROM redis_0.hset_keys WHERE redis_key = 'str_for_hash';
+redis_key_id
+NULL
+#
+# 7. String commands other than SET on hashes return WRONGTYPE
+# and leave the hash intact.
+#
+1
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+v
+hash
+SELECT COUNT(*) AS mut_hash_rows
+FROM redis_0.string_keys
+WHERE redis_key_id = (SELECT redis_key_id
+FROM redis_0.hset_keys
+WHERE redis_key = 'mut_hash');
+mut_hash_rows
+1
+#
+# 8. After SET replaces a hash, DEL behaves correctly on the
+# new string type. Both registry rows go away.
+#
+1
+OK
+1
+SELECT COUNT(*) AS cleanup_string_rows
+FROM redis_0.string_keys WHERE redis_key = 'cleanup_h';
+cleanup_string_rows
+0
+SELECT COUNT(*) AS cleanup_hset_rows
+FROM redis_0.hset_keys WHERE redis_key = 'cleanup_h';
+cleanup_hset_rows
+0

@@ -1,0 +1,63 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Phase 1.2 - TYPE key
+#
+# Single-key two-probe (string_keys then hset_keys) sharing the
+# EXISTS pipeline. Reply is a simple string +string\r\n / +hash\r\n
+# / +none\r\n. 1.10c.8/D drops the hset_keys row on HDEL of last
+# field; TYPE on an emptied hash reports "none" because the row
+# is gone (matching EXISTS).
+#
+
+--echo #
+--echo # Set up: a string, a populated hash, a hash about to be emptied.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET str_a "value-a"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_a f1 v1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET hash_empty x X
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL hash_empty x
+
+--echo #
+--echo # Existing string key.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE str_a
+
+--echo #
+--echo # Existing hash.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE hash_a
+
+--echo #
+--echo # Fully-HDEL'd hash. The hset_keys row was dropped on the HDEL;
+--echo # TYPE returns none.
+--echo #
+SELECT COUNT(*) AS hash_empty_rows FROM redis_0.hset_keys
+ WHERE redis_key = 'hash_empty';
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE hash_empty
+
+--echo #
+--echo # Missing key.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE no_such_key
+
+--echo #
+--echo # HSET on an existing string returns WRONGTYPE. TYPE still
+--echo # reports "string".
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET shared "string-value"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE shared
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET shared f1 hash-value
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE shared
+
+--echo #
+--echo # After DEL of the string, TYPE reports "none".
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL shared
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE shared
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

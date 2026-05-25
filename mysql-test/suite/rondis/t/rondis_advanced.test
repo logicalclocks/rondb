@@ -1,4 +1,3 @@
---source include/not_parallel.inc
 --source include/have_ndb.inc
 
 #

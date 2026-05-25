@@ -1,0 +1,76 @@
+#
+# Non-numeric stored value - INCR / DECR.
+# Fixed by C5a: NDB error 853 from the interpreted-code
+# str_to_int64 instruction is now mapped to the canonical reply.
+#
+OK
+ERR value is not an integer or out of range
+
+ERR value is not an integer or out of range
+
+#
+# Non-numeric increment argument - INCRBY / DECRBY.
+# Fixed by Phase 0 / C1: FAILED_INCRBY_DECRBY_PARAMETER now
+# emits the canonical string.
+#
+OK
+ERR value is not an integer or out of range
+
+ERR value is not an integer or out of range
+
+ERR value is not an integer or out of range
+
+#
+# INT64 boundaries: INCR at MAX-1 succeeds, next INCR overflows.
+# NDB error 854 (ZCALC_OVERFLOW_ERROR from the ADD_REG_REG /
+# SUB_REG_REG interpreter opcodes) is mapped to the canonical
+# Redis overflow reply by the C5b fix.
+#
+OK
+9223372036854775807
+ERR increment or decrement would overflow
+
+#
+# INT64 underflow - DECR at MIN+1 succeeds, next DECR underflows.
+#
+OK
+-9223372036854775808
+ERR increment or decrement would overflow
+
+#
+# String counters on a hash key return WRONGTYPE and leave the
+# hash intact. SET is the only string write that silently
+# replaces hashes.
+#
+1
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+WRONGTYPE Operation against a key holding the wrong kind of value
+
+1
+#
+# HINCRBY / HDECRBY non-numeric delta.
+#
+1
+ERR value is not an integer or out of range
+
+ERR value is not an integer or out of range
+
+#
+# HINCR on a non-numeric hash field - parallels C5a on strings.
+#
+1
+ERR value is not an integer or out of range
+
+ERR value is not an integer or out of range
+
+#
+# Cleanup.
+#
+4
+2
+1

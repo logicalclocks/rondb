@@ -1,0 +1,74 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Positive-path coverage for Rondis hash commands: HGET, HMGET, HSET,
+# HMSET, HDEL. Focus on single vs multi-field shapes, return-count
+# semantics (new-field vs overwrite), and nil handling.
+#
+
+--echo #
+--echo # HSET - single-field insert returns 1 (one new field).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET user:1 name "Alice"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET user:1 name
+
+--echo #
+--echo # HSET - overwriting an existing field returns 0 (nothing new
+--echo # added), matching Redis semantics.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET user:1 name "Alicia"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET user:1 name
+
+--echo #
+--echo # HSET - multi-field form returns the count of NEW fields added
+--echo # (not the total count of supplied pairs). Here 'name' is
+--echo # preexisting (counts 0), 'age' and 'city' are new -> returns 2.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET user:1 name "Alicia" age 30 city "Stockholm"
+
+--echo #
+--echo # HGET - non-existent field returns nil.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET user:1 missing
+
+--echo #
+--echo # HGET - non-existent hash returns nil.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET user:999 any
+
+--echo #
+--echo # HMGET - mix of existing and missing fields.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HMGET user:1 name missing age gap city
+
+--echo #
+--echo # HMSET - legacy alias, returns +OK (per Redis spec - distinct
+--echo # reply shape from HSET's field-count).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HMSET user:2 name "Bob" age 25 city "Oslo"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET user:2 name
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET user:2 city
+
+--echo #
+--echo # HDEL - single-field delete returns 1, repeat returns 0.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL user:1 city
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL user:1 city
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET user:1 city
+
+--echo #
+--echo # HDEL - multi-field delete returns the count of fields that
+--echo # actually existed and were removed (missing fields do not count).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL user:2 name age never_was
+
+--echo #
+--echo # Cleanup. DEL removes top-level hash names from the unified
+--echo # namespace, so both hash containers count as deleted.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL user:1 user:2
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

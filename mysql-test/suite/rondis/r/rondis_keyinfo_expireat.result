@@ -1,0 +1,55 @@
+#
+# Set up: a string, a populated hash, an emptied hash.
+#
+OK
+1
+1
+1
+#
+# EXPIREAT (now + 60) on existing string -> :1; expiry_date
+# equals the supplied timestamp exactly (no now+ttl arithmetic).
+#
+1
+str_a_matches_target=1
+#
+# EXPIREAT on existing hash -> :1; hset_keys.expiry_date set.
+#
+1
+hash_a_matches_target=1
+#
+# EXPIREAT with a timestamp in the past deletes the key
+# immediately.
+#
+OK
+1
+SELECT COUNT(*) AS str_past_rows
+FROM redis_0.string_keys WHERE redis_key = 'str_past' AND redis_key_id = 0;
+str_past_rows
+0
+#
+# EXPIREAT on a fully-HDEL'd hash -> :0.
+#
+0
+#
+# EXPIREAT on a missing key -> :0.
+#
+0
+#
+# EXPIREAT 0 deletes an existing key immediately; a second
+# past EXPIREAT on the now-missing key returns :0.
+#
+1
+0
+#
+# EXPIREAT in the past on a hash also deletes it immediately.
+#
+1
+1
+none
+#
+# End-to-end: EXPIREAT then TTL on the same key falls in
+# window. Same probe / encode round-trip as EXPIRE.
+#
+OK
+1
+TTL ttl_round in_window=1

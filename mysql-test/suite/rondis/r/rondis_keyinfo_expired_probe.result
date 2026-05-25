@@ -1,0 +1,63 @@
+#
+# Set up: a string, a populated hash, plus their always-fresh
+# counterparts to keep the multi-key EXISTS case interesting.
+#
+OK
+OK
+1
+1
+#
+# Force expiry_date well into the past via SQL
+# (1970-01-01 00:00:01 UTC).
+#
+#
+# EXISTS on each expired key alone -> :0; on the alive ones -> :1.
+#
+0
+0
+1
+1
+#
+# EXISTS multi-key (mix of expired + alive + missing) - only
+# the alive keys count.
+#
+2
+#
+# TYPE on each expired key -> +none; alive keys still report
+# their kind.
+#
+none
+none
+string
+hash
+#
+# EXPIRE on an expired-but-present key -> :0 (no update).
+#
+0
+#
+# PERSIST on an expired-but-present key -> :0 (no clear).
+#
+0
+#
+# DEL on expired-but-present keys returns :0 because they are
+# already logically absent.
+#
+OK
+1
+0
+#
+# SET NX treats expired-but-present string and hash keys as
+# absent; SET XX treats them as absent and does not write.
+#
+OK
+OK
+1
+1
+OK
+revived
+
+none
+OK
+revived_hash
+
+none

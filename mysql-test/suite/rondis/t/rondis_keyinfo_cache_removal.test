@@ -1,0 +1,90 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Phase 1.10c.6 - removal of the process-local redis_key_id_hash
+# cache.  Read paths (HGET / HMGET / HINCR* / HDECR*) used to allocate
+# a fresh redis_key_id and write a ghost hset_keys row on cache miss.
+# After 1.10c.6 they perform a read-only PK lookup on hset_keys and
+# return Redis-canonical replies without reading from a stale local
+# cache.
+#
+# Pins:
+#   1. HGET on a name with no hset_keys row returns nil and creates
+#      no row.
+#   2. After DEL of a hash, a same-process HGET that previously would
+#      have been a cache hit now reads through to hset_keys and
+#      returns nil - no orphan field-row leak via stale cache.
+#   3. HDEL of the last field drops the hset_keys row. Read paths
+#      see a missing hash; HINCRBY recreates it and makes the hash
+#      visible again.
+#
+
+--echo #
+--echo # 1. HGET on a never-existed hash returns nil; no hset_keys row.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET nope f
+SELECT COUNT(*) AS hset_keys_for_nope
+  FROM redis_0.hset_keys WHERE redis_key = 'nope';
+
+--echo #
+--echo # HMGET on a never-existed hash returns array of nils, no row.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HMGET nope f1 f2 f3
+SELECT COUNT(*) AS hset_keys_for_nope_after_hmget
+  FROM redis_0.hset_keys WHERE redis_key = 'nope';
+
+--echo #
+--echo # HINCRBY / HDECRBY on a never-existed hash create the hash
+--echo # and field, matching Redis HINCRBY semantics.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HINCRBY nope cnt 5
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDECRBY nope cnt 3
+SELECT COUNT(*) AS hset_keys_for_nope_after_hincr
+  FROM redis_0.hset_keys WHERE redis_key = 'nope';
+
+--echo #
+--echo # 2. Same-process HGET after DEL must miss; the cache used to
+--echo #    hold the hash's id from the warming HSET.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h1 f "warmup"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET h1 f
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL h1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET h1 f
+SELECT COUNT(*) AS hset_keys_for_h1_after_del
+  FROM redis_0.hset_keys WHERE redis_key = 'h1';
+
+--echo #
+--echo # 3. HDEL of last field drops the hset_keys row in the same
+--echo #    trans (1.10c.8/D). Read paths see "missing" because the
+--echo #    row is gone, not because of any field_count masking.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h2 f v
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HDEL h2 f
+SELECT COUNT(*) AS h2_rows
+  FROM redis_0.hset_keys WHERE redis_key = 'h2';
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET h2 f
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HMGET h2 f g
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HINCRBY h2 f 1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TYPE h2
+
+--echo #
+--echo # Sanity: HSET on the (now re-created via HINCRBY) hash sees
+--echo # the new field via HGET.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET h2 f "after_empty"
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET h2 f
+SELECT field_count FROM redis_0.hset_keys WHERE redis_key = 'h2';
+
+--echo #
+--echo # HGET on a string key returns WRONGTYPE.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET s1 "string_value"
+--error 0,1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET s1 f 2>&1
+SELECT redis_key_id IS NULL AS id_null
+  FROM redis_0.hset_keys WHERE redis_key = 's1';
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
