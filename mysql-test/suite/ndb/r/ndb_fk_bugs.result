@@ -582,7 +582,7 @@ primary key using hash(c1)
 ERROR HY000: Can't create table 't1' (use SHOW WARNINGS for more info).
 SHOW WARNINGS;
 Level	Code	Message
-Warning	1296	Got error 940 'Fixed size part of row can at most be 16280 bytes' from NDB
+Warning	1296	Got error 944 'Fixed size part of row can at most be 16280 bytes' from NDB
 Error	1005	Can't create table 't1' (use SHOW WARNINGS for more info).
 create table t1(a int primary key) engine = ndb;
 drop table t1, t1_parent;
