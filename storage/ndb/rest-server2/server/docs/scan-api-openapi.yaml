@@ -50,8 +50,12 @@ paths:
           in: header
           required: false
           description: |
-            API key for authentication.
-            Required when Hopsworks API key auth is enabled in RDRS config.
+            Hopsworks API key for database-level authorization.
+
+            **Required in production**: this header is required whenever the
+            RDRS config has `useHopsworksAPIKeys = true`, which is the default
+            in production deployments. It is only optional when the cluster is
+            configured with `useHopsworksAPIKeys = false` (development mode).
           schema:
             type: string
       requestBody:
@@ -164,6 +168,9 @@ paths:
                 dbTableNotExist:
                   summary: Database or table not found
                   value: "Database/Table does not exist."
+                requestTooLarge:
+                  summary: Request body exceeds the configured maximum size
+                  value: "Request too large"
         "401":
           description: Unauthorized — API key authentication failed.
           content:
@@ -191,15 +198,37 @@ components:
           example: 100
         readColumns:
           type: array
+          nullable: true
           description: |
             Columns to include in the result.
-            When omitted, all table columns are returned.
+            When omitted, supplied as `null`, or supplied as an empty array,
+            all table columns are returned.
+
+            For ordered index scans (`index.order` set), `readColumns` does
+            **not** need to include the index key columns. The server passes
+            `SF_OrderByFull` to NDB, which auto-injects the key columns into
+            the kernel-side result mask while the JSON projection continues
+            to follow `readColumns`. Prior to release 25.10.8 the index key
+            columns had to be listed in `readColumns` explicitly, otherwise
+            NDB returned error 4341.
           items:
             $ref: "#/components/schemas/ReadColumn"
         filters:
-          $ref: "#/components/schemas/ScanFilter"
+          allOf:
+            - $ref: "#/components/schemas/ScanFilter"
+          nullable: true
+          description: |
+            Filter tree pushed down to NDB. Optional.
+            When omitted, supplied as `null`, or supplied as an empty object
+            `{}`, no filter is applied.
         index:
-          $ref: "#/components/schemas/IndexScan"
+          allOf:
+            - $ref: "#/components/schemas/IndexScan"
+          nullable: true
+          description: |
+            Index scan parameters. Optional.
+            When omitted, supplied as `null`, or supplied as an empty object
+            `{}`, a full table scan is performed instead of an index scan.
 
     ReadColumn:
       type: object
@@ -213,10 +242,12 @@ components:
           maxLength: 64
         dataReturnType:
           type: string
-          description: Data return type hint.
+          description: |
+            Reserved for future use on the scan endpoint.
+            The scan parser accepts this field but does not enforce its
+            value and does not act on it; only `pk-read` validates it
+            strictly today.
           default: default
-          enum:
-            - default
 
     ScanFilter:
       type: object
@@ -314,6 +345,11 @@ components:
           type: string
           description: |
             Sort order of results. When omitted, no ordering is guaranteed.
+
+            The index key columns do not need to appear in the request's
+            top-level `readColumns` — NDB auto-injects them into the
+            kernel-side result mask. See the `readColumns` description for
+            the release-history detail.
           enum:
             - asc
             - desc
@@ -355,11 +391,39 @@ components:
 
     ScanResponse:
       type: object
+      description: |
+        Result of a scan or index-scan operation.
+
+        **Column value encoding** — each row maps column names to JSON
+        values. Most types map naturally (integer, float, string), but
+        several types use specific encodings that callers must decode
+        themselves:
+
+        - `DECIMAL` / `DECIMALUNSIGNED` — JSON string preserving the exact
+          decimal representation (avoiding floating-point precision loss).
+        - `BINARY`, `VARBINARY`, `LONGVARBINARY` — base64-encoded JSON
+          string of the raw bytes.
+        - `BIT` — base64-encoded JSON string of the bit field, byte-reversed
+          to little-endian.
+        - `CHAR` — JSON string with trailing space padding trimmed (matching
+          MySQL `Field_char::val_str()` semantics).
+        - Date / time types (`DATE`, `TIME2`, `DATETIME2`, `TIMESTAMP2`) —
+          JSON string in MySQL textual format.
+        - `YEAR` — JSON integer (e.g. `2026`); `0` is the MySQL sentinel
+          for "no year" and is also emitted as integer `0`.
+        - `BOOLEAN` is not a distinct NDB column type — booleans are
+          stored as `TINYINT(1)` and emitted as JSON integer `0` or `1`.
+        - `BLOB` / `TEXT` and other column types not enumerated above are
+          not supported on scan today; the response will contain the
+          literal JSON string `"Unexpected column type"` for any such
+          column instead of the value. Callers should not scan tables
+          with unsupported column types until support is added.
       properties:
         data:
           type: array
           description: |
-            Array of row objects. Each object maps column names to values.
+            Array of row objects. Each object maps column names to values,
+            encoded per the type rules above.
           items:
             type: object
             additionalProperties: true
