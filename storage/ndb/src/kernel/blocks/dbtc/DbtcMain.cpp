@@ -4495,11 +4495,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
    * For long TCKEYREQ, key and attr data are in sections, so the signal
    * body should contain exactly the static header plus optional words.
    * Reject signals that are too short (stale data) or too long (extra data).
-   * Only enforce for external API nodes — internal blocks (e.g. DBUTIL) use
-   * a different signal layout that is trusted.
    */
-  if (getNodeInfo(refToNode(signal->getSendersBlockRef())).getType() ==
-      NODE_TYPE_API) {
     if (regCachePtr->isLongTcKeyReq) {
       if (unlikely(signal->getLength() !=
                    TcKeyReq::StaticLength + TkeyIndex)) {
@@ -4528,7 +4524,6 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
             "TCKEYREQ signal length mismatch", __LINE__);
         releaseAtErrorLab(signal, apiConnectptr);
         return;
-      }
     }
   }
 
