@@ -614,6 +614,12 @@ RS_Status GenerateBinary(Node& node, std::vector<uint8_t>& bin) {
       break;
     }
     case NdbDictionary::Column::Varchar: {
+      if (node.value.kind != Node::ParsedValue::Kind::STRING) {
+        status = RS_CLIENT_ERROR(
+            std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_VALUE_TYPE_MISMATCH)) +
+            " Expecting string. Column: " + std::string(node.col->getName()));
+        break;
+      }
       if (node.value.s.size() > node.col->getLength()) {
         status = RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_INVALID_COLUMN_DATA)) +
             " The provided string is too long. Column: " +
@@ -628,6 +634,12 @@ RS_Status GenerateBinary(Node& node, std::vector<uint8_t>& bin) {
       break;
     }
     case NdbDictionary::Column::Longvarchar: {
+      if (node.value.kind != Node::ParsedValue::Kind::STRING) {
+        status = RS_CLIENT_ERROR(
+            std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_VALUE_TYPE_MISMATCH)) +
+            " Expecting string. Column: " + std::string(node.col->getName()));
+        break;
+      }
       if (node.value.s.size() > node.col->getLength()) {
         status = RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_INVALID_COLUMN_DATA)) +
             " The provided string is too long. Column: " +
