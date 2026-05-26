@@ -4449,9 +4449,21 @@ void Qmgr::checkStartInterface(Signal* signal, NDB_TICKS now)
         if (!g_not_active_nodes.get(nodePtr.i))
         {
           jam();
-          signal->theData[0] = 0;
-          signal->theData[1] = nodePtr.i;
-          sendSignal(TRPMAN_REF, GSN_OPEN_COMORD, signal, 2, JBB);
+          NodeRecPtr myNodePtr;
+          myNodePtr.i = getOwnNodeId();
+          ptrAss(myNodePtr, nodeRec);
+          if (myNodePtr.p->phase != ZINIT) {
+            jam();
+            g_eventLogger->info("Open communication to node %u after"
+                                " disconnect", nodePtr.i);
+            signal->theData[0] = 0;
+            signal->theData[1] = nodePtr.i;
+            sendSignal(TRPMAN_REF, GSN_OPEN_COMORD, signal, 2, JBB);
+          } else {
+            jam();
+            g_eventLogger->info("Open communication to active node %u when"
+                                " we reach start phase 1", nodePtr.i);
+          }
         }
       }
       else
