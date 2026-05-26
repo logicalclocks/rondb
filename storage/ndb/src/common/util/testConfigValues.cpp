@@ -25,6 +25,8 @@
 
 #include <ConfigValues.hpp>
 #include <NdbOut.hpp>
+#include <mgmapi/mgmapi_config_parameters.h>
+#include <string.h>
 #include "util/require.h"
 
 void print(Uint32 i, ConfigValues::ConstIterator &cf) {
@@ -58,6 +60,234 @@ void print(ConfigValues &_cf) {
     print(i, cf);
     cf.closeSection();
     i++;
+  }
+}
+
+static void create_rdma_config(ConfigValuesFactory &cvf) {
+  require(cvf.begin());
+  require(cvf.createSection(CONFIG_SECTION_SYSTEM, 0));
+  require(cvf.put(CFG_SYS_CONFIG_GENERATION, 1));
+  cvf.closeSection();
+
+  require(cvf.createSection(CONFIG_SECTION_NODE, DATA_NODE_TYPE));
+  require(cvf.put(CFG_NODE_ID, 1));
+  require(cvf.put(CFG_NODE_HOST, "db1.example.com"));
+  require(cvf.put(CFG_NODE_ACTIVE, 1));
+  cvf.closeSection();
+
+  require(cvf.createSection(CONFIG_SECTION_NODE, DATA_NODE_TYPE));
+  require(cvf.put(CFG_NODE_ID, 2));
+  require(cvf.put(CFG_NODE_HOST, "db2-new.example.com"));
+  require(cvf.put(CFG_NODE_ACTIVE, static_cast<Uint32>(0)));
+  cvf.closeSection();
+
+  require(cvf.createSection(CONFIG_SECTION_NODE, API_NODE_TYPE));
+  require(cvf.put(CFG_NODE_ID, 10));
+  cvf.closeSection();
+
+  require(cvf.createSection(CONFIG_SECTION_NODE, MGM_NODE_TYPE));
+  require(cvf.put(CFG_NODE_ID, 20));
+  cvf.closeSection();
+
+  require(cvf.createSection(CONFIG_SECTION_CONNECTION, RDMA_TYPE));
+  require(cvf.put(CFG_CONNECTION_NODE_1, 1));
+  require(cvf.put(CFG_CONNECTION_NODE_2, 2));
+  require(cvf.put(CFG_CONNECTION_HOSTNAME_1, "db1.example.com"));
+  require(cvf.put(CFG_CONNECTION_HOSTNAME_2, "db2-new.example.com"));
+  require(cvf.put(CFG_CONNECTION_SERVER_PORT, static_cast<Uint32>(0)));
+  require(cvf.put(CFG_CONNECTION_NODE_ID_SERVER, 1));
+  require(cvf.put(CFG_CONNECTION_SEND_SIGNAL_ID, 1));
+  require(cvf.put(CFG_CONNECTION_CHECKSUM, 1));
+  require(cvf.put(CFG_CONNECTION_PRESEND_CHECKSUM, static_cast<Uint32>(0)));
+  require(cvf.put(CFG_RDMA_SEND_BUFFER_SIZE, 2 * 1024 * 1024));
+  require(cvf.put(CFG_RDMA_RECV_BUFFER_SIZE, 2 * 1024 * 1024));
+  require(cvf.put(CFG_RDMA_QUEUE_DEPTH, 64));
+  require(cvf.put(CFG_RDMA_INLINE_THRESHOLD, 256));
+  require(cvf.put(CFG_RDMA_COMPLETION_POLL_BUDGET, 32));
+  require(cvf.put(CFG_RDMA_SPINTIME, 75));
+  require(cvf.put(CFG_RDMA_DEVICE_NAME, "mlx5_0"));
+  require(cvf.put(CFG_RDMA_PORT, 1));
+  require(cvf.put(CFG_RDMA_GID_INDEX, static_cast<Uint32>(0)));
+  require(cvf.put(CFG_RDMA_TRAFFIC_CLASS, static_cast<Uint32>(0)));
+  require(cvf.put(CFG_RDMA_RETRY_COUNT, 7));
+  require(cvf.put(CFG_RDMA_RNR_RETRY_COUNT, 7));
+  cvf.closeSection();
+
+  /*
+   * Second RDMA section: API-to-DB pair with the gate explicitly
+   * enabled (AllowApiToDbRdma=1). Exercises the round-trip
+   * serialization of the new boolean ParamInfo entry alongside the
+   * existing RDMA tunables. The gate would normally be enforced
+   * during config-file parsing in ConfigInfo.cpp; here we are
+   * building a ConfigValues block directly so the validator does
+   * not run, but the v1/v2 pack/unpack helpers must still preserve
+   * the bit.
+   */
+  require(cvf.createSection(CONFIG_SECTION_CONNECTION, RDMA_TYPE));
+  require(cvf.put(CFG_CONNECTION_NODE_1, 10));
+  require(cvf.put(CFG_CONNECTION_NODE_2, 1));
+  require(cvf.put(CFG_CONNECTION_HOSTNAME_1, "api.example.com"));
+  require(cvf.put(CFG_CONNECTION_HOSTNAME_2, "db1.example.com"));
+  require(cvf.put(CFG_CONNECTION_SERVER_PORT, static_cast<Uint32>(0)));
+  require(cvf.put(CFG_CONNECTION_NODE_ID_SERVER, 1));
+  require(cvf.put(CFG_CONNECTION_SEND_SIGNAL_ID, 1));
+  require(cvf.put(CFG_CONNECTION_CHECKSUM, 1));
+  require(cvf.put(CFG_CONNECTION_PRESEND_CHECKSUM, static_cast<Uint32>(0)));
+  require(cvf.put(CFG_RDMA_SEND_BUFFER_SIZE, 2 * 1024 * 1024));
+  require(cvf.put(CFG_RDMA_RECV_BUFFER_SIZE, 2 * 1024 * 1024));
+  require(cvf.put(CFG_RDMA_QUEUE_DEPTH, 64));
+  require(cvf.put(CFG_RDMA_INLINE_THRESHOLD, 256));
+  require(cvf.put(CFG_RDMA_COMPLETION_POLL_BUDGET, 32));
+  require(cvf.put(CFG_RDMA_SPINTIME, 75));
+  require(cvf.put(CFG_RDMA_DEVICE_NAME, "mlx5_0"));
+  require(cvf.put(CFG_RDMA_PORT, 1));
+  require(cvf.put(CFG_RDMA_GID_INDEX, static_cast<Uint32>(0)));
+  require(cvf.put(CFG_RDMA_TRAFFIC_CLASS, static_cast<Uint32>(0)));
+  require(cvf.put(CFG_RDMA_RETRY_COUNT, 7));
+  require(cvf.put(CFG_RDMA_RNR_RETRY_COUNT, 7));
+  require(cvf.put(CFG_RDMA_ALLOW_API_TO_DB, 1));
+  cvf.closeSection();
+
+  require(cvf.commit(false));
+}
+
+/*
+ * Per-section verifier used by both the DB-DB and API-DB rounds of
+ * verify_rdma_config below. expected_allow_api_db is the value the
+ * caller expects to read for CFG_RDMA_ALLOW_API_TO_DB; pass
+ * UINT32_MAX to skip the check (used by the DB-DB section which did
+ * not set the field).
+ */
+static void verify_rdma_connection(ConfigValues::ConstIterator &iter,
+                                   Uint32 expected_node1,
+                                   Uint32 expected_node2,
+                                   const char *expected_host1,
+                                   const char *expected_host2,
+                                   Uint32 expected_server_port,
+                                   Uint32 expected_node_id_server,
+                                   Uint32 expected_send_signal_id,
+                                   Uint32 expected_checksum,
+                                   Uint32 expected_presend_checksum,
+                                   Uint32 expected_allow_api_db) {
+  Uint32 value = 0;
+  const char *string_value = nullptr;
+
+  require(iter.get(CFG_TYPE_OF_SECTION, &value));
+  require(value == CONNECTION_TYPE_RDMA);
+  require(iter.get(CFG_CONNECTION_NODE_1, &value));
+  require(value == expected_node1);
+  require(iter.get(CFG_CONNECTION_NODE_2, &value));
+  require(value == expected_node2);
+  require(iter.get(CFG_CONNECTION_HOSTNAME_1, &string_value));
+  require(strcmp(string_value, expected_host1) == 0);
+  require(iter.get(CFG_CONNECTION_HOSTNAME_2, &string_value));
+  require(strcmp(string_value, expected_host2) == 0);
+  require(iter.get(CFG_CONNECTION_SERVER_PORT, &value));
+  require(value == expected_server_port);
+  require(iter.get(CFG_CONNECTION_NODE_ID_SERVER, &value));
+  require(value == expected_node_id_server);
+  require(iter.get(CFG_CONNECTION_SEND_SIGNAL_ID, &value));
+  require(value == expected_send_signal_id);
+  require(iter.get(CFG_CONNECTION_CHECKSUM, &value));
+  require(value == expected_checksum);
+  require(iter.get(CFG_CONNECTION_PRESEND_CHECKSUM, &value));
+  require(value == expected_presend_checksum);
+  require(iter.get(CFG_RDMA_SEND_BUFFER_SIZE, &value));
+  require(value == 2 * 1024 * 1024);
+  require(iter.get(CFG_RDMA_RECV_BUFFER_SIZE, &value));
+  require(value == 2 * 1024 * 1024);
+  require(iter.get(CFG_RDMA_QUEUE_DEPTH, &value));
+  require(value == 64);
+  require(iter.get(CFG_RDMA_INLINE_THRESHOLD, &value));
+  require(value == 256);
+  require(iter.get(CFG_RDMA_COMPLETION_POLL_BUDGET, &value));
+  require(value == 32);
+  require(iter.get(CFG_RDMA_SPINTIME, &value));
+  require(value == 75);
+  require(iter.get(CFG_RDMA_DEVICE_NAME, &string_value));
+  require(strcmp(string_value, "mlx5_0") == 0);
+  require(iter.get(CFG_RDMA_PORT, &value));
+  require(value == 1);
+  require(iter.get(CFG_RDMA_GID_INDEX, &value));
+  require(value == 0);
+  require(iter.get(CFG_RDMA_TRAFFIC_CLASS, &value));
+  require(value == 0);
+  require(iter.get(CFG_RDMA_RETRY_COUNT, &value));
+  require(value == 7);
+  require(iter.get(CFG_RDMA_RNR_RETRY_COUNT, &value));
+  require(value == 7);
+  if (expected_allow_api_db != UINT32_MAX) {
+    require(iter.get(CFG_RDMA_ALLOW_API_TO_DB, &value));
+    require(value == expected_allow_api_db);
+  }
+}
+
+static void verify_rdma_config(const ConfigValues &cfg) {
+  ConfigValues::ConstIterator iter(cfg);
+
+  require(iter.openSection(CONFIG_SECTION_NODE, 1));
+  Uint32 node_id = 0;
+  Uint32 is_active = 1;
+  const char *hostname = nullptr;
+  require(iter.get(CFG_NODE_ID, &node_id));
+  require(node_id == 2);
+  require(iter.get(CFG_NODE_ACTIVE, &is_active));
+  require(is_active == 0);
+  require(iter.get(CFG_NODE_HOST, &hostname));
+  require(strcmp(hostname, "db2-new.example.com") == 0);
+  iter.closeSection();
+  const Uint32 dynamic_server_port = 0;
+  const Uint32 db1_node_id_server = 1;
+  const Uint32 send_signal_id_enabled = 1;
+  const Uint32 checksum_enabled = 1;
+  const Uint32 presend_checksum_disabled = 0;
+
+  /* Section 0: DB-DB. AllowApiToDbRdma is not set on this section,
+   * so the verifier skips the check via UINT32_MAX. */
+  require(iter.openSection(CONFIG_SECTION_CONNECTION, 0));
+  verify_rdma_connection(iter, 1, 2, "db1.example.com",
+                         "db2-new.example.com", dynamic_server_port,
+                         db1_node_id_server, send_signal_id_enabled,
+                         checksum_enabled, presend_checksum_disabled,
+                         UINT32_MAX);
+  iter.closeSection();
+
+  /* Section 1: API-DB with AllowApiToDbRdma=1. The verifier asserts
+   * the gate field is preserved across the v1/v2 pack/unpack
+   * round-trip exercised by the caller. */
+  require(iter.openSection(CONFIG_SECTION_CONNECTION, 1));
+  verify_rdma_connection(iter, 10, 1, "api.example.com", "db1.example.com",
+                         dynamic_server_port, db1_node_id_server,
+                         send_signal_id_enabled, checksum_enabled,
+                         presend_checksum_disabled, 1);
+  iter.closeSection();
+}
+
+static void test_rdma_config_roundtrip() {
+  ConfigValuesFactory cvf;
+  create_rdma_config(cvf);
+  verify_rdma_config(*cvf.m_cfg);
+
+  {
+    UtilBuffer buf;
+    Uint32 l1 = cvf.m_cfg->pack_v1(buf);
+    Uint32 l2 = cvf.m_cfg->get_v1_packed_size();
+    require(l1 == l2);
+
+    ConfigValuesFactory cvf2;
+    require(cvf2.unpack_v1_buf(buf));
+    verify_rdma_config(*cvf2.m_cfg);
+  }
+
+  {
+    UtilBuffer buf;
+    Uint32 l1 = cvf.m_cfg->pack_v2(buf);
+    Uint32 l2 = cvf.m_cfg->get_v2_packed_size(0);
+    require(l1 == l2);
+
+    ConfigValuesFactory cvf2;
+    require(cvf2.unpack_v2_buf(buf));
+    verify_rdma_config(*cvf2.m_cfg);
   }
 }
 
@@ -141,6 +371,7 @@ int main(void) {
     ndbout_c("unpack v2 \n-- print --");
     print(*cvf2.m_cfg);
   }
+  test_rdma_config_roundtrip();
   ndb_end(0);
   return 0;
 }

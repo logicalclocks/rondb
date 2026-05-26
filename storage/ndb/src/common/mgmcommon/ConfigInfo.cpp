@@ -78,7 +78,7 @@ const char *ConfigInfo::m_sectionNames[] = {"SYSTEM",  "COMPUTER",
 
                                             API_TOKEN, MGM_TOKEN,  DB_TOKEN,
 
-                                            "TCP",     "SHM"};
+                                            "TCP",     "SHM",     "RDMA"};
 const int ConfigInfo::m_noOfSectionNames =
     sizeof(m_sectionNames) / sizeof(char *);
 
@@ -132,9 +132,11 @@ const ConfigInfo::SectionRule ConfigInfo::m_SectionRules[] = {
 
     {"TCP", checkConnectionSupport, nullptr},
     {"SHM", checkConnectionSupport, nullptr},
+    {"RDMA", checkConnectionSupport, nullptr},
 
     {"TCP", transformConnection, nullptr},
     {"SHM", transformConnection, nullptr},
+    {"RDMA", transformConnection, nullptr},
 
     {DB_TOKEN, fixNodeHostname, nullptr},
     {API_TOKEN, fixNodeHostname, nullptr},
@@ -144,9 +146,12 @@ const ConfigInfo::SectionRule ConfigInfo::m_SectionRules[] = {
     {"TCP", fixNodeId, "NodeId2"},
     {"SHM", fixNodeId, "NodeId1"},
     {"SHM", fixNodeId, "NodeId2"},
+    {"RDMA", fixNodeId, "NodeId1"},
+    {"RDMA", fixNodeId, "NodeId2"},
 
     {"TCP", uniqueConnection, "TCP"},
     {"SHM", uniqueConnection, "SHM"},
+    {"RDMA", uniqueConnection, "RDMA"},
 
     {"TCP", fixHostname, "HostName1"},
     {"TCP", fixHostname, "HostName2"},
@@ -154,9 +159,12 @@ const ConfigInfo::SectionRule ConfigInfo::m_SectionRules[] = {
     {"SHM", fixHostname, "HostName2"},
     {"SHM", fixHostname, "HostName1"},
     {"SHM", fixHostname, "HostName2"},
+    {"RDMA", fixHostname, "HostName1"},
+    {"RDMA", fixHostname, "HostName2"},
 
     {"TCP", fixPortNumber, nullptr},  // has to come after fixHostName
     {"SHM", fixPortNumber, nullptr},  // has to come after fixHostName
+    {"RDMA", fixPortNumber, nullptr}, // has to come after fixHostName
 
     {"*", applyDefaultValues, "user"},
     {"*", fixDeprecated, nullptr},
@@ -179,6 +187,7 @@ const ConfigInfo::SectionRule ConfigInfo::m_SectionRules[] = {
 
     {"TCP", checkConnectionConstraints, nullptr},
     {"SHM", checkConnectionConstraints, nullptr},
+    {"RDMA", checkConnectionConstraints, nullptr},
 
     {"*", checkMandatory, nullptr}};
 const int ConfigInfo::m_NoOfRules =
@@ -2188,6 +2197,167 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      false, ConfigInfo::CI_INT, "2M", "64K", STR_VALUE(MAX_INT_RNIL)},
 
     /****************************************************************************
+     * RDMA (RonDB native verbs transporter, opt-in, DB-DB/API-DB)
+     ***************************************************************************/
+    {CFG_SECTION_CONNECTION, "RDMA", "RDMA", "Connection section",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_SECTION,
+     CONNECTION_TYPE_RDMA},
+
+    {CFG_CONNECTION_HOSTNAME_1, "HostName1", "RDMA",
+     "Name/IP of computer on one side of the connection", ConfigInfo::CI_USED,
+     false, ConfigInfo::CI_STRING, nullptr, nullptr, nullptr},
+
+    {CFG_CONNECTION_HOSTNAME_2, "HostName2", "RDMA",
+     "Name/IP of computer on one side of the connection", ConfigInfo::CI_USED,
+     false, ConfigInfo::CI_STRING, nullptr, nullptr, nullptr},
+
+    {CFG_CONNECTION_SERVER_PORT, "PortNumber", "RDMA",
+     "PortNumber used by data nodes for the RDMA control socket",
+     ConfigInfo::CI_INTERNAL, false, ConfigInfo::CI_INT, "0", "0",
+     STR_VALUE(MAX_PORT_NO)},
+
+    {CFG_CONNECTION_NODE_1, "NodeId1", "RDMA",
+     "Id of node (" DB_TOKEN_PRINT " or " API_TOKEN_PRINT
+     ") on one side of the connection",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_STRING, MANDATORY, nullptr,
+     nullptr},
+
+    {CFG_CONNECTION_NODE_2, "NodeId2", "RDMA",
+     "Id of node (" DB_TOKEN_PRINT " or " API_TOKEN_PRINT
+     ") on one side of the connection",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_STRING, MANDATORY, nullptr,
+     nullptr},
+
+    {CFG_CONNECTION_GROUP, "Group", "RDMA", "", ConfigInfo::CI_USED, false,
+     ConfigInfo::CI_INT, "45", "0", "200"},
+
+    {CFG_CONNECTION_NODE_ID_SERVER, "NodeIdServer", "RDMA", "",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, MANDATORY, "1", "63"},
+
+    {CFG_CONNECTION_SEND_SIGNAL_ID, "SendSignalId", "RDMA",
+     "Sends id in each signal. Used in trace files.",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL, "true", "false", "true"},
+
+    {CFG_CONNECTION_CHECKSUM, "Checksum", "RDMA",
+     "If checksum is enabled, all signals between nodes are checked for errors",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL, "true", "false", "true"},
+
+    {CFG_CONNECTION_PRESEND_CHECKSUM, "PreSendChecksum", "RDMA",
+     "If PreSendChecksum AND Checksum are enabled, pre-send checksum checks "
+     "are done, and all signals between nodes are checked for errors",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL, "false", "false", "true"},
+
+    {CFG_CONNECTION_OVERLOAD, "OverloadLimit", "RDMA",
+     "Number of unsent bytes that must be in the send buffer before the\n"
+     "connection is considered overloaded",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0",
+     STR_VALUE(MAX_INT_RNIL)},
+
+    {CFG_CONNECTION_NODE_1_SYSTEM, "NodeId1_System", "RDMA",
+     "System for node 1 in connection", ConfigInfo::CI_INTERNAL, false,
+     ConfigInfo::CI_STRING, nullptr, nullptr, nullptr},
+
+    {CFG_CONNECTION_NODE_2_SYSTEM, "NodeId2_System", "RDMA",
+     "System for node 2 in connection", ConfigInfo::CI_INTERNAL, false,
+     ConfigInfo::CI_STRING, nullptr, nullptr, nullptr},
+
+    /*
+     * Default 4 MiB so the runtime per-slot geometry check in
+     * RDMA_Transporter::send_slot_size_or_zero() / recv_slot_size_or_zero()
+     * has room for a full max-size Protocol6 signal AND the 24-byte
+     * RDMA framing header at the default RdmaQueueDepth of 64:
+     *   4 MiB / 64 = 65536 bytes per slot, comfortably above the
+     *   required minimum of 24 + MAX_RECV_MESSAGE_BYTESIZE = 32792.
+     * The previous default of 2 MiB produced exactly 32 KiB per slot
+     * with QD=64, which is equal to MAX_*_MESSAGE_BYTESIZE and leaves
+     * zero room for the header -- the validator therefore rejected
+     * the configuration and connect_server_impl() failed in a tight
+     * reconnect loop. The schema minimum of 256K still satisfies the
+     * validator at lower queue depths, so the lower bound is
+     * unchanged.
+     */
+    {CFG_RDMA_SEND_BUFFER_SIZE, "RdmaSendBufferMemory", "RDMA",
+     "Bytes of registered staging memory for outbound RDMA SEND WRs",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "4M", "256K",
+     STR_VALUE(MAX_INT_RNIL)},
+
+    {CFG_RDMA_RECV_BUFFER_SIZE, "RdmaRecvBufferMemory", "RDMA",
+     "Bytes of registered staging memory for inbound RDMA RECV WRs",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "4M", "256K",
+     STR_VALUE(MAX_INT_RNIL)},
+
+    {CFG_RDMA_QUEUE_DEPTH, "RdmaQueueDepth", "RDMA",
+     "Send/receive WR queue depth for the QP",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "64", "16", "4096"},
+
+    {CFG_RDMA_INLINE_THRESHOLD, "RdmaInlineThreshold", "RDMA",
+     "Payload size below which RDMA SEND uses inline data",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "256", "0", "4096"},
+
+    {CFG_RDMA_COMPLETION_POLL_BUDGET, "RdmaCompletionPollBudget", "RDMA",
+     "Max completion work entries reaped per poll call",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "32", "1", "4096"},
+
+    {CFG_RDMA_SPINTIME, "RdmaSpintime", "RDMA",
+     "Microseconds to spin polling the RDMA CQ before going to sleep",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "2000"},
+
+    {CFG_RDMA_DEVICE_NAME, "RdmaDevice", "RDMA",
+     "ibverbs device name. Empty string selects the first available device",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_STRING, "", nullptr, nullptr},
+
+    {CFG_RDMA_PORT, "RdmaPort", "RDMA",
+     "HCA physical port number",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "1", "1", "4"},
+
+    {CFG_RDMA_GID_INDEX, "RdmaGidIndex", "RDMA",
+     "GID table index for RoCE",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "255"},
+
+    {CFG_RDMA_TRAFFIC_CLASS, "RdmaTrafficClass", "RDMA",
+     "DSCP-style traffic class for the QP",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "255"},
+
+    {CFG_RDMA_RETRY_COUNT, "RdmaRetryCount", "RDMA",
+     "QP retry count",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "7", "0", "7"},
+
+    {CFG_RDMA_RNR_RETRY_COUNT, "RdmaRnrRetryCount", "RDMA",
+     "QP RNR retry count. Currently the implementation forces the QP "
+     "to rnr_retry=7 (infinite retries) at RTS transition regardless of "
+     "this setting; lower values were shown under mdtest load to "
+     "produce transport-retry-exhausted (status=12) events on multi-"
+     "transporter clones. The value is still validated against the "
+     "0..7 IB range and is preserved in the configuration so future "
+     "releases can re-enable the user-configurable behavior, but it "
+     "does not currently change runtime behavior.",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "7", "0", "7"},
+
+    {CFG_RDMA_POST_BATCH_MAX, "RdmaPostBatchMax", "RDMA",
+     "Maximum number of SEND WRs that doSend() may chain into a single "
+     "ibv_post_send() doorbell. The runtime additionally caps this at "
+     "the negotiated QP queue depth and at a small compile-time hard "
+     "ceiling. Has effect only when the NDB_RDMA_SEND_BATCH=on env var "
+     "opt-in is set; otherwise the chain length is forced to 1, which "
+     "is the pre-Phase-4 behavior.",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "16", "1", "256"},
+
+    {CFG_RDMA_ALLOW_API_TO_DB, "AllowApiToDbRdma", "RDMA",
+     "Permit API-to-DB and DB-to-API RDMA pairs on this connection. "
+     "Default false: only DB-DB pairs are accepted, matching the "
+     "safe configuration after the 2026-05-21 lab smoke-test "
+     "regression. Setting true re-enables the API-RDMA path that "
+     "was experimentally added in commit e4e668c2 and reverted in "
+     "0f607b92; operators should only flip this after verifying the "
+     "create/stat regression that prompted the revert is no longer "
+     "present in their workload. The kill-switch env var "
+     "NDB_RDMA_ALLOW_API_TO_DB=kill on the mgmd process force-"
+     "disables the API-DB path at config-parse time regardless of "
+     "this setting, so an incident response can switch off the "
+     "feature without editing the cluster config.",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL, "false", "false", "true"},
+
+    /****************************************************************************
      * SCI (Deprecated now)
      ***************************************************************************/
     {CFG_SECTION_CONNECTION, "SCI", "SCI", "SCI not supported",
@@ -2697,6 +2867,9 @@ const char *ConfigInfo::sectionName(Uint32 section_type, Uint32 type) const {
         case CONNECTION_TYPE_SHM:
           return "SHM";
           break;
+        case CONNECTION_TYPE_RDMA:
+          return "RDMA";
+          break;
         default:
           assert(false);
           break;
@@ -2712,9 +2885,10 @@ const char *ConfigInfo::sectionName(Uint32 section_type, Uint32 type) const {
 }
 
 const ConfigInfo::AliasPair section2PrimaryKeys[] = {
-    {API_TOKEN, "NodeId"},      {DB_TOKEN, "NodeId"},
-    {MGM_TOKEN, "NodeId"},      {"TCP", "NodeId1,NodeId2"},
-    {"SHM", "NodeId1,NodeId2"}, {nullptr, nullptr}};
+    {API_TOKEN, "NodeId"},       {DB_TOKEN, "NodeId"},
+    {MGM_TOKEN, "NodeId"},       {"TCP", "NodeId1,NodeId2"},
+    {"SHM", "NodeId1,NodeId2"},  {"RDMA", "NodeId1,NodeId2"},
+    {nullptr, nullptr}};
 
 static const char *sectionPrimaryKeys(const char *name) {
   for (int i = 0; section2PrimaryKeys[i].name != nullptr; i++)
@@ -3301,6 +3475,10 @@ bool checkConnectionSupport(InitConfigFileParser::Context &ctx, const char *) {
     // always enabled
   } else if (native_strcasecmp("SHM", ctx.fname) == 0) {
     // always enabled
+  } else if (native_strcasecmp("RDMA", ctx.fname) == 0) {
+#ifndef NDB_RDMA_TRANSPORTER_SUPPORTED
+    error = 1;
+#endif
   }
 
   if (error) {
@@ -3952,6 +4130,41 @@ static bool checkThreadConfig(InitConfigFileParser::Context &ctx,
   return true;
 }
 
+/*
+ * RDMA: kill switch for the API-to-DB pathway.
+ *
+ * Returns true iff the env var NDB_RDMA_ALLOW_API_TO_DB is set to
+ * exactly the string "kill" on the mgmd / ndb_mgmd / ndbd process
+ * parsing the config. Any other value ("" / unset / "on" / "off" /
+ * anything else) returns false, meaning the per-link
+ * AllowApiToDbRdma config option decides on its own.
+ *
+ * Cached once in a Meyer's singleton so a config that defines many
+ * [RDMA] sections pays the getenv()+strcmp() cost exactly once per
+ * process. The decision is also logged once at parse time so an
+ * operator inspecting the journal can see whether the kill switch
+ * was active for this process.
+ *
+ * Anonymous-namespace file-static keeps it scoped to ConfigInfo.cpp.
+ * This file never includes RDMA_Transporter.hpp or any libibverbs
+ * header, so the helper stays free of any verbs link-time
+ * dependency.
+ */
+static bool rdma_api_to_db_kill_switch_active() {
+  static const bool cached = []() {
+    const char *e = std::getenv("NDB_RDMA_ALLOW_API_TO_DB");
+    if (e != nullptr && std::strcmp(e, "kill") == 0) {
+      ndbout_c(
+          "RDMA: NDB_RDMA_ALLOW_API_TO_DB=kill -- the API-to-DB "
+          "pathway is force-disabled at config-parse time; per-link "
+          "AllowApiToDbRdma=true sections will still be REJECTED.");
+      return true;
+    }
+    return false;
+  }();
+  return cached;
+}
+
 /**
  * Connection rule: Check various constraints
  */
@@ -3991,6 +4204,74 @@ static bool checkConnectionConstraints(InitConfigFileParser::Context &ctx,
   const char *type2;
   require(node1->get("Type", &type1));
   require(node2->get("Type", &type2));
+
+  /*
+   * RDMA-specific endpoint validation. The RDMA transporter accepts
+   * DB-DB pairs unconditionally; API-DB and DB-API pairs are gated
+   * on the per-link `AllowApiToDbRdma` config option AND the
+   * process-wide kill-switch env var `NDB_RDMA_ALLOW_API_TO_DB=
+   * kill` not being set. MGM nodes are never valid RDMA endpoints.
+   *
+   * This block runs before the generic constraint below so the
+   * RDMA-specific error message points operators at
+   * `AllowApiToDbRdma` instead of a generic "invalid endpoint"
+   * message that would not tell them how to fix it.
+   */
+  if (native_strcasecmp(ctx.fname, "RDMA") == 0) {
+    const bool node1_db = strcmp(type1, DB_TOKEN) == 0;
+    const bool node2_db = strcmp(type2, DB_TOKEN) == 0;
+    const bool node1_api = strcmp(type1, API_TOKEN) == 0;
+    const bool node2_api = strcmp(type2, API_TOKEN) == 0;
+    const bool has_mgm =
+        strcmp(type1, MGM_TOKEN) == 0 || strcmp(type2, MGM_TOKEN) == 0;
+
+    if (node1_db && node2_db) {
+      return true;
+    }
+
+    if ((node1_db && node2_api) || (node1_api && node2_db)) {
+      Uint32 allow_api_db = 0;
+      ctx.m_currentSection->get("AllowApiToDbRdma", &allow_api_db);
+      const bool config_allows = (allow_api_db != 0);
+      const bool env_kills = rdma_api_to_db_kill_switch_active();
+      if (config_allows && !env_kills) {
+        return true;
+      }
+      if (env_kills) {
+        ctx.reportError(
+            "RDMA API-to-DB pair (node %d (%s) and node %d (%s)) "
+            "is force-disabled by NDB_RDMA_ALLOW_API_TO_DB=kill on "
+            "the parsing process; unset that env var (or set it to "
+            "anything other than \"kill\") to honour the "
+            "AllowApiToDbRdma setting"
+            " - [%s] starting at line: %d",
+            id1, type1, id2, type2, ctx.fname, ctx.m_sectionLineno);
+      } else {
+        ctx.reportError(
+            "RDMA API-to-DB pair (node %d (%s) and node %d (%s)) "
+            "is not enabled on this connection; set "
+            "AllowApiToDbRdma=1 on the [RDMA] section to opt in"
+            " - [%s] starting at line: %d",
+            id1, type1, id2, type2, ctx.fname, ctx.m_sectionLineno);
+      }
+      return false;
+    }
+
+    if (has_mgm) {
+      ctx.reportError(
+          "RDMA connections involving MGM nodes are not supported: "
+          "node %d (%s) and node %d (%s)"
+          " - [%s] starting at line: %d",
+          id1, type1, id2, type2, ctx.fname, ctx.m_sectionLineno);
+    } else {
+      ctx.reportError(
+          "RDMA connections require DB-DB or API-DB endpoints: "
+          "node %d (%s) and node %d (%s)"
+          " - [%s] starting at line: %d",
+          id1, type1, id2, type2, ctx.fname, ctx.m_sectionLineno);
+    }
+    return false;
+  }
 
   /**
    * Report error if the following are true
@@ -4179,7 +4460,18 @@ static bool saveInConfigValues(InitConfigFileParser::Context &ctx,
     ctx.m_userProperties.get("$Section", id, &no);
     ctx.m_userProperties.put("$Section", id, no + 1, true);
 
-    ctx.m_configValues.createSection(id, typeVal);
+    if (!ctx.m_configValues.createSection(id, typeVal)) {
+      /* createSection() can fail for connection types not yet wired
+       * through ConfigObject (e.g. RDMA on a build that has the
+       * ConfigInfo entries but the ConfigObject/ConfigSection layer
+       * still only knows TCP and SHM). Skip the section rather than
+       * letting the next put() NULL-deref m_curr_cfg_section. */
+      ndbout_c("skipping section %s: createSection(%u, %u) failed, "
+               "error_code=%d",
+               ctx.fname, id, typeVal,
+               ctx.m_configValues.get_error_code());
+      break;
+    }
     Properties::Iterator it(ctx.m_currentSection);
     for (const char *n = it.first(); n != nullptr; n = it.next()) {
       const Properties *info;
