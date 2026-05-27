@@ -1170,8 +1170,7 @@ void TTLPurger::PurgeWorkerJob() {
     UpdateStatus(TTLPurgeStatus::State::kRunning);
     sleep_between_each_round = true;
     dict = worker_ndb_->getDictionary();
-    for (iter = local_ttl_cache.begin(); iter != local_ttl_cache.end();
-	 iter++) {
+    for (iter = local_ttl_cache.begin(); iter != local_ttl_cache.end();) {
       if (purge_worker_exit_) {
         break;
       }
@@ -1225,10 +1224,11 @@ void TTLPurger::PurgeWorkerJob() {
       table_id = ttl_tab->getTableId();
       hash_val = murmur3_32(reinterpret_cast<unsigned char*>(&table_id),
                                              sizeof(int), 0);
-        if (shard >= kShardFirst && n_purge_nodes > 0 &&
-          hash_val % n_purge_nodes != static_cast<Uint32>(shard)) {
-        continue;
-      }
+	      if (shard >= kShardFirst && n_purge_nodes > 0 &&
+		  hash_val % n_purge_nodes != static_cast<Uint32>(shard)) {
+		++iter;
+		continue;
+	      }
       if (shard == kShardNosharding &&
           !iter->second.part_id_offset_applied &&
           ttl_tab->getPartitionCount() > 1) {
@@ -1749,9 +1749,10 @@ retry_trx:
         }
       }
 
-      // Finish 1 batch
-      // keep the ttl_tab in local table cache ?
-      continue;
+	      // Finish 1 batch
+	      // keep the ttl_tab in local table cache ?
+	      ++iter;
+	      continue;
 table_err:
       if (trans != nullptr) {
         worker_ndb_->closeTransaction(trans);
@@ -1850,8 +1851,9 @@ table_err:
           UpdateStatus(TTLPurgeStatus::State::kError);
           break;
         }
-        continue;  // skip to next table
-      }
+		++iter;
+		continue;  // skip to next table
+	      }
     }
     // Round completed without pre-trx escalation, reset the counter
     pre_trx_failures = 0;
