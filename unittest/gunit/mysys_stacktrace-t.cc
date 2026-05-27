@@ -23,23 +23,6 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#include <ndb_global.h>
-
-/* XXH hash function */
-#define XXH_INLINE_ALL
-#if defined (__AVX2__)
-#define XXH_VECTOR_TYPE 2 //AVX2 implementation
-#endif
-#include <util/ndb_xxhash.h>
-
-Uint64
-rondb_xxhash_avx2(const char* keybuf, Uint32 keylen_bytes)
-{
-  return XXH3_64bits(keybuf, keylen_bytes);
-}
-========
-   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
-
 #include <gtest/gtest.h>
 #include <stdio.h>
 #include <sys/types.h>
