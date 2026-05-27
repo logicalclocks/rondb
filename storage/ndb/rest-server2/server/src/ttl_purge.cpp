@@ -1881,6 +1881,26 @@ round_err:
     if (purge_worker_exit_) {
       break;
     }
+    // Pre-round failures (cache_updated_ walk / GetShard / GetPurgeWindow /
+    // pre-loop UpdateLease) share the do-while-scoped pre_trx_failures
+    // counter with table_err's pre-trx branch so persistent failures
+    // eventually escalate instead of sleeping silently forever. The counter
+    // is reset to 0 only after a fully successful round (see end of the
+    // table for-loop). We deliberately skip the per-table dictionary
+    // invalidation that table_err performs on escalation: most round_err
+    // failures are before selecting a specific user TTL table, and the
+    // cache_updated_ walk already failed while trying to refresh cached
+    // objects, so escalation only asks the schema worker to restart.
+    pre_trx_failures++;
+    if (pre_trx_failures > kMaxTrxRetryTimes) {
+      g_eventLogger->warning("[TTL PWorker] Pre-round errors exceeded %d "
+                             "times... Quit and notify schema worker",
+                             kMaxTrxRetryTimes);
+      purge_worker_asks_for_retry_ = true;
+      purge_worker_exit_ = true;
+      UpdateStatus(TTLPurgeStatus::State::kError);
+      break;
+    }
     sleep(1);
     continue;
   } while (!purge_worker_exit_);
