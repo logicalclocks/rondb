@@ -134,7 +134,14 @@ public class NdbOperation extends Wrapper implements NdbOperationConst
                 OO_PARTITION_ID = 0x08,
                 OO_INTERPRETED = 0x10,
                 OO_ANYVALUE = 0x20,
-                OO_CUSTOMDATA = 0x40;
+                OO_CUSTOMDATA = 0x40,
+                OO_LOCKHANDLE = 0x80,
+                OO_QUEUABLE = 0x100,
+                OO_NOT_QUEUABLE = 0x200,
+                OO_DEFERRED_CONSTAINTS = 0x400,
+                OO_DISABLE_FK = 0x800,
+                OO_RING_BUFFER_OP = 0x400000,
+                OO_RING_BUFFER_SHOW_META = 0x800000;
         }
         int/*_AbortOption_*/ abortOption();
         GetValueSpecArray/*_GetValueSpec *_*/ extraGetValues();

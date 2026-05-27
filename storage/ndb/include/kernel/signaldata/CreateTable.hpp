@@ -105,7 +105,7 @@ struct CreateTableRef {
     CreateDbNoAvailableDiskQuota = 1240,
     AlterDbNoAvailableDiskQuota = 1241,
     NotAllowedToDropFileWithQuotas = 1242,
-    TooLargeFixedSizePart = 940,
+    TooLargeFixedSizePart = 944,
     TooLargeVarsizePart = 941,
     TooLargeDiskSizePart = 942
   };

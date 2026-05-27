@@ -67,6 +67,12 @@ ADD_EXECUTABLE(ndb_ndbapi_vss ndbapi_vss/ndbapi_vss.cpp)
 ADD_EXECUTABLE(ndb_ndbapi_vss_test ndbapi_vss/ndbapi_vss_test.cpp)
 endif()
 ADD_EXECUTABLE(ndb_ndbapi_agg_test ndbapi_agg_test/ndbapi_agg_test.cpp)
+ADD_EXECUTABLE(ndb_ndbapi_ring_buffer_test ndbapi_ring_buffer_test/ndbapi_ring_buffer_test.cpp)
+TARGET_INCLUDE_DIRECTORIES(ndb_ndbapi_ring_buffer_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi)
+ADD_EXECUTABLE(ndb_ndbapi_ring_buffer_concurrent_test ndbapi_ring_buffer_concurrent_test/ndbapi_ring_buffer_concurrent_test.cpp)
+TARGET_INCLUDE_DIRECTORIES(ndb_ndbapi_ring_buffer_concurrent_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi)
 
 # MgmApi examples
 ADD_EXECUTABLE(ndb_mgmapi_logevent mgmapi_logevent/main.c)
@@ -97,6 +103,8 @@ SET(EXAMPLES
   ndb_ndbapi_vss
   ndb_ndbapi_vss_test
   ndb_ndbapi_agg_test
+  ndb_ndbapi_ring_buffer_test
+  ndb_ndbapi_ring_buffer_concurrent_test
 
   ndb_mgmapi_logevent
   ndb_mgmapi_logevent2
@@ -110,3 +118,5 @@ FOREACH(EXAMPLE ${EXAMPLES})
   TARGET_LINK_LIBRARIES(${EXAMPLE} simsimd::simsimd)
   endif()
 ENDFOREACH()
+FIND_PACKAGE(Threads REQUIRED)
+TARGET_LINK_LIBRARIES(ndb_ndbapi_ring_buffer_concurrent_test Threads::Threads)

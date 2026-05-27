@@ -331,6 +331,12 @@ void getTextArbitState(char *m_text, size_t m_text_len, const Uint32 *theData,
             "Lost arbitrator node %u - process exit [state=%u]", sd->node,
             state);
         break;
+      case ArbitCode::ApiDemoted:
+        BaseString::snprintf(
+            m_text, m_text_len,
+            "Lost arbitrator node %u - demoted by rank 1 promotion [state=%u]",
+            sd->node, state);
+        break;
       default:
         ArbitCode::getErrText(code, errText, sizeof(errText));
         BaseString::snprintf(m_text, m_text_len,

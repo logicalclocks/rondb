@@ -1137,7 +1137,14 @@ class NdbOperation {
       OO_TTL_ONLY_EXPIRED = 0x40000,
       OO_BATCH_SAFE_FLAG = 0x80000,
       OO_BATCH_UNSAFE_FLAG = 0x100000,
-      OO_SET_INPUT_PARAM = 0x200000
+      OO_SET_INPUT_PARAM = 0x200000,
+      /*
+       * Ring Buffer related
+       * Must be set on all write operations to ring-buffer tables.
+       * Without this flag, the kernel rejects writes to ring-buffer tables.
+       */
+      OO_RING_BUFFER_OP = 0x400000,
+      OO_RING_BUFFER_SHOW_META = 0x800000
     };
 
     /* An operation-specific abort option.
@@ -1191,6 +1198,7 @@ class NdbOperation {
 #ifndef DOXYGEN_SHOULD_SKIP_INTERNAL
   // XXX until NdbRecord is used in ndb_restore
   void set_disable_fk() { m_flags |= OF_DISABLE_FK; }
+  void set_ring_buffer_op() { m_flags |= OF_RING_BUFFER_OP; }
 
   /* Set nowait option on locking read */
   int setNoWait();
@@ -1586,7 +1594,9 @@ class NdbOperation {
     OF_BLOB_PART_READ = 0x40,
     OF_REPLICA_APPLIER = 0x80,
     OF_TTL_IGNORE = 0x100,
-    OF_TTL_ONLY_EXPIRED = 0x200
+    OF_TTL_ONLY_EXPIRED = 0x200,
+    OF_RING_BUFFER_OP = 0x400,
+    OF_RING_BUFFER_SHOW_META = 0x800
   };
   /*
    * TTL related

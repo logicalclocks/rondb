@@ -1,0 +1,48 @@
+# Sanity: cluster is up
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30);
+SELECT COUNT(*) AS initial_count FROM t1;
+initial_count
+3
+
+# ------------------------------------------------------------------
+# Step 1/7: stop ndb_mgmd and ask MTR to keep it stopped
+# ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# Step 2/7: wait for rank-2 mysqld arbitrator takeover
+# ------------------------------------------------------------------
+include/assert_grep.inc [rank-2 mysqld became arbitrator before president kill]
+
+# ------------------------------------------------------------------
+# Step 3/7: kill president data node 1
+# ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# Step 4/7: restart ndb_mgmd
+# ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# Step 5/7: wait for data node 1 to restart
+# ------------------------------------------------------------------
+SELECT COUNT(*) AS after_node1_restart FROM t1;
+after_node1_restart
+3
+
+# ------------------------------------------------------------------
+# Step 6/7: stop data node 2
+# ------------------------------------------------------------------
+SELECT COUNT(*) AS after_node2_stop FROM t1;
+after_node2_stop
+3
+
+# ------------------------------------------------------------------
+# Step 7/7: start data node 2
+# ------------------------------------------------------------------
+SELECT COUNT(*) AS final_count FROM t1;
+final_count
+3
+DROP TABLE t1;
+
+# Verify the mgmd startup gate ran during the restart
+include/assert_grep.inc [mgmd startup gate ran after president failure]

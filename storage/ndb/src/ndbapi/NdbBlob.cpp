@@ -1114,6 +1114,22 @@ void NdbBlob::getHeadFromRecAttr() {
   DBUG_ENTER("NdbBlob::getHeadFromRecAttr");
   assert(theHeadInlineRecAttr != nullptr);
   theNullFlag = theHeadInlineRecAttr->isNULL();
+  /*
+   * theNullFlag == -1 means the column was not present in this row.
+   * This is expected for ring-buffer meta rows: meta rows (ring_idx=0)
+   * are inserted without BLOB columns by the ring-buffer writer, so the
+   * blob head is genuinely absent when a scan surfaces a meta row.
+   * Restrict the absent-head relaxation to that case by requiring the
+   * parent op to carry a ring-buffer flag; every other absence of a
+   * blob head remains an assertion as before.
+   */
+  if (theNullFlag == -1 && theEventBlobVersion < 0 &&
+      (theNdbOp->m_flags & (NdbOperation::OF_RING_BUFFER_OP |
+                            NdbOperation::OF_RING_BUFFER_SHOW_META))) {
+    theNullFlag = 1;
+    theLength = 0;
+    DBUG_VOID_RETURN;
+  }
   assert(theEventBlobVersion >= 0 || theNullFlag != -1);
   if (theNullFlag == 0) {
     unpackBlobHead();
@@ -2606,6 +2622,16 @@ NdbBlob::BlobAction NdbBlob::preExecute(NdbTransaction::ExecType anExecType) {
       }
       setHeadPartitionId(tOp);
 
+      /*
+       * Ring buffer: inherit ring_buffer flags from the main operation
+       * so the blob head read is not rejected by the kernel's meta row
+       * filter (ring_idx=0 rows are hidden unless these flags are set).
+       */
+      if (theNdbOp->m_flags & NdbOperation::OF_RING_BUFFER_OP)
+        tOp->m_flags |= NdbOperation::OF_RING_BUFFER_OP;
+      if (theNdbOp->m_flags & NdbOperation::OF_RING_BUFFER_SHOW_META)
+        tOp->m_flags |= NdbOperation::OF_RING_BUFFER_SHOW_META;
+
       if (isWriteOp()) {
         /* There may be no data currently, so ignore tuple not found etc. */
         tOp->m_abortOption = NdbOperation::AO_IgnoreError;
@@ -3102,6 +3128,10 @@ NdbBlob::BlobAction NdbBlob::handleBlobTask(
             DBUG_RETURN(BA_ERROR);
           }
           setHeadPartitionId(tOp);
+          /* Propagate ring buffer flag from parent op */
+          if (theNdbOp->m_flags & NdbOperation::OF_RING_BUFFER_OP) {
+            tOp->m_flags |= NdbOperation::OF_RING_BUFFER_OP;
+          }
         }
 #endif
 
@@ -3270,6 +3300,10 @@ NdbBlob::BlobAction NdbBlob::handleBlobTask(
             DBUG_RETURN(BA_ERROR);
           }
           setHeadPartitionId(tOp);
+          /* Propagate ring buffer flag from parent op */
+          if (theNdbOp->m_flags & NdbOperation::OF_RING_BUFFER_OP) {
+            tOp->m_flags |= NdbOperation::OF_RING_BUFFER_OP;
+          }
         }
 #endif
 
@@ -3369,6 +3403,10 @@ NdbBlob::BlobAction NdbBlob::postExecute(NdbTransaction::ExecType anExecType) {
       DBUG_RETURN(BA_ERROR);
     }
     setHeadPartitionId(tOp);
+    /* Propagate ring buffer flag from parent op */
+    if (theNdbOp->m_flags & NdbOperation::OF_RING_BUFFER_OP) {
+      tOp->m_flags |= NdbOperation::OF_RING_BUFFER_OP;
+    }
 
     tOp->m_abortOption = NdbOperation::AbortOnError;
     DBUG_PRINT("info", ("added op to update head+inline"));
@@ -3406,6 +3444,10 @@ int NdbBlob::preCommit() {
         DBUG_RETURN(-1);
       }
       setHeadPartitionId(tOp);
+      /* Propagate ring buffer flag from parent op */
+      if (theNdbOp->m_flags & NdbOperation::OF_RING_BUFFER_OP) {
+        tOp->m_flags |= NdbOperation::OF_RING_BUFFER_OP;
+      }
 
       tOp->m_abortOption = NdbOperation::AbortOnError;
       DBUG_PRINT("info", ("added op to update head+inline"));

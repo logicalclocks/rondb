@@ -1957,8 +1957,10 @@ RS_Status parseScanFilter(
     std::string& err,
     int depth = 0) {
 
-  // Check recursion depth to prevent stack overflow
-  if (depth > MAX_FILTER_DEPTH) {
+  // Check recursion depth to prevent stack overflow.
+  // depth starts at 0 for the root call and increments per recursion,
+  // so `>=` gives MAX_FILTER_DEPTH levels of nesting in total.
+  if (depth >= MAX_FILTER_DEPTH) {
     return CRS_Status(static_cast<HTTP_CODE>(
           drogon::HttpStatusCode::k400BadRequest),
         ERROR_SCAN_FILTER_TOO_DEEP,
@@ -2335,6 +2337,13 @@ RS_Status parseScanIndex(simdjson::ondemand::document& doc,
           bound.values.emplace_back(std::move(bound_node));
         }
 
+        if (unlikely(bound.values.size() > index.columns.size())) {
+          return CRS_Status(static_cast<HTTP_CODE>(
+                drogon::HttpStatusCode::k400BadRequest),
+              ERROR_SCAN_INDEX_BOUND_VALUES_TOO_MANY,
+              std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_BOUND_VALUES_TOO_MANY))).status;
+        }
+
         // inclusive (optional)
         auto incVal = boundObj["inclusive"];
         if (incVal.error() == simdjson::SUCCESS) {
@@ -2406,6 +2415,12 @@ RS_Status JSONParser::scan_parse(simdjson::padded_string_view reqBody,
     if (unlikely(error != simdjson::SUCCESS)) {
       return handle_simdjson_error(error, doc, currentLocation);
     }
+  }
+  if (unlikely(limit < 0)) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k400BadRequest),
+        ERROR_SCAN_INVALID_LIMIT,
+        std::string(rdrsErrorMessage(ERROR_SCAN_INVALID_LIMIT))).status;
   }
   reqStruct.limit = limit;
 

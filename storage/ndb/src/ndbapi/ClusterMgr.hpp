@@ -30,6 +30,7 @@
 #include <NdbCondition.h>
 #include <NdbMutex.h>
 #include <NdbThread.h>
+#include <atomic>
 #include <ndb_limits.h>
 #include <signaldata/ArbitSignalData.hpp>
 #include <signaldata/DisconnectRep.hpp>
@@ -391,6 +392,17 @@ class ArbitMgr {
   void doChoose(const Uint32 *theData);
   void doStop(const Uint32 *theData);
 
+  /*
+   * True once the arbitrator thread has accepted the kernel's
+   * ARBIT_STARTREQ, entered the started state, and sent
+   * ARBIT_STARTCONF back to Qmgr.  Stays true after stop, since the
+   * startup gate in MgmtSrvr::start() only cares that the role was
+   * assumed at least once.
+   */
+  bool isActiveArbitrator() const {
+    return m_active_arbitrator.load(std::memory_order_acquire);
+  }
+
   friend void *runArbitMgr_C(void *me);
 
  private:
@@ -464,6 +476,8 @@ class ArbitMgr {
   void sendStopRep(ArbitSignal &aSignal, Uint32);
 
   void sendSignalToQmgr(ArbitSignal &aSignal);
+
+  std::atomic<bool> m_active_arbitrator{false};
 };
 
 #endif

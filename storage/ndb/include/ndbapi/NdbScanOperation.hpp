@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -168,7 +168,8 @@ class NdbScanOperation : public NdbOperation {
                 SO_TTL_ONLY_EXPIRED = 0x200,
                 SO_SET_INPUT_PARAM = 0x400,
                 SO_USE_STANDARD_SCAN = 0x800,
-                SO_AGGREGATION = 0x1000
+                SO_RING_BUFFER_SHOW_META = 0x1000,
+                SO_AGGREGATION = 0x2000
     };
 
     /* Flags controlling scan behaviour

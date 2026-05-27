@@ -40,6 +40,7 @@
 #include "NdbAggregator.hpp"
 #include "NdbPool.hpp"
 #include "NdbRecAttr.hpp"
+#include "NdbRingBufferWriter.hpp"
 #include "NdbScanFilter.hpp"
 #include "NdbScanOperation.hpp"
 #include "NdbTransaction.hpp"

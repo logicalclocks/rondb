@@ -1,0 +1,35 @@
+#
+# Variant A: TTL + READ_BACKUP + BLOB
+#
+DROP TABLE IF EXISTS test.ttl_rb_blob;
+CREATE TABLE test.ttl_rb_blob (
+id   INT NOT NULL PRIMARY KEY,
+ts   TIMESTAMP NOT NULL,
+data BLOB
+) ENGINE=NDB
+COMMENT="NDB_TABLE=READ_BACKUP=1,TTL=3600@ts";
+INSERT INTO test.ttl_rb_blob VALUES
+(1, NOW(), REPEAT('x', 128)),
+(2, NOW(), REPEAT('y', 128));
+SELECT id, LENGTH(data) AS dlen FROM test.ttl_rb_blob;
+id	dlen
+1	128
+2	128
+DROP TABLE test.ttl_rb_blob;
+#
+# Variant B: TTL + FULLY_REPLICATED + BLOB
+#
+CREATE TABLE test.ttl_fr_blob (
+id   INT NOT NULL PRIMARY KEY,
+ts   TIMESTAMP NOT NULL,
+data BLOB
+) ENGINE=NDB
+COMMENT="NDB_TABLE=FULLY_REPLICATED=1,TTL=3600@ts";
+INSERT INTO test.ttl_fr_blob VALUES
+(1, NOW(), REPEAT('x', 128)),
+(2, NOW(), REPEAT('y', 128));
+SELECT id, LENGTH(data) AS dlen FROM test.ttl_fr_blob;
+id	dlen
+1	128
+2	128
+DROP TABLE test.ttl_fr_blob;

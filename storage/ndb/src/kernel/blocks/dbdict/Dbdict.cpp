@@ -1089,6 +1089,9 @@ void Dbdict::packTableIntoPages(SimpleProperties::Writer &w,
             ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0)));
   w.add(DictTabInfo::TTLSec, tablePtr.p->ttlSec);
   w.add(DictTabInfo::TTLColumnNo, tablePtr.p->ttlColumnNo);
+  w.add(DictTabInfo::RingBufferSize, tablePtr.p->ringBufferSize);
+  w.add(DictTabInfo::RingIdxColumnNo, tablePtr.p->ringIdxColNo);
+  w.add(DictTabInfo::RingMetaColumnNo, tablePtr.p->ringMetaColNo);
 
   D("packTableIntoPages: tableId: "
     << tablePtr.p->tableId << " tablePtr.i = " << tablePtr.i
@@ -2678,6 +2681,12 @@ void Dbdict::initialiseTableRecord(TableRecordPtr tablePtr, Uint32 tableId) {
    */
   tablePtr.p->ttlSec = RNIL;
   tablePtr.p->ttlColumnNo = RNIL;
+  /*
+   * Ring Buffer related
+   */
+  tablePtr.p->ringBufferSize = RNIL;
+  tablePtr.p->ringIdxColNo = RNIL;
+  tablePtr.p->ringMetaColNo = RNIL;
 }  // Dbdict::initialiseTableRecord()
 
 void Dbdict::initialiseTriggerRecord(TriggerRecordPtr triggerPtr,
@@ -6085,6 +6094,10 @@ void Dbdict::handleTabInfoInit(Signal *signal, SchemaTransPtr &trans_ptr,
   tablePtr.p->ttlSec = c_tableDesc.TTLSec;
   tablePtr.p->ttlColumnNo = c_tableDesc.TTLColumnNo;
 
+  tablePtr.p->ringBufferSize = c_tableDesc.RingBufferSize;
+  tablePtr.p->ringIdxColNo = c_tableDesc.RingIdxColumnNo;
+  tablePtr.p->ringMetaColNo = c_tableDesc.RingMetaColumnNo;
+
   g_eventLogger->info("[DICT]s< parsed c_tableDesc , table_id: %u, "
                       "TTL sec: %u, TTL column no: %u",
                       tablePtr.p->tableId,
@@ -7469,8 +7482,11 @@ void Dbdict::createTab_local(Signal *signal, SchemaOpPtr op_ptr,
     ((tabPtr.p->m_bits & TableRecord::TR_HashFunction) == 0) ? 0 : 1;
   req->ttlSec = tabPtr.p->ttlSec;
   req->ttlColumnNo = tabPtr.p->ttlColumnNo;
+  req->ringBufferSize = tabPtr.p->ringBufferSize;
+  req->ringIdxColumnNo = tabPtr.p->ringIdxColNo;
+  req->ringMetaColumnNo = tabPtr.p->ringMetaColNo;
   sendSignal(DBLQH_REF, GSN_CREATE_TAB_REQ, signal,
-             CreateTabReq::NewSignalLengthLDMWithTTL, JBB);
+             CreateTabReq::NewSignalLengthLDMWithRingBuffer, JBB);
 
   /**
    * Create KeyDescriptor
@@ -9383,6 +9399,9 @@ Dbdict::execALTER_TABLE_REQ(Signal* signal)
     impl_req->newNoOfKeyAttrs = 0;
     impl_req->ttlSec = RNIL;
     impl_req->ttlColumnNo = RNIL;
+    impl_req->ringBufferSize = RNIL;
+    impl_req->ringIdxColumnNo = RNIL;
+    impl_req->ringMetaColumnNo = RNIL;
 
     handleClientReq(signal, op_ptr, handle);
     return;
@@ -9543,6 +9562,9 @@ void Dbdict::alterTable_parse(Signal *signal, bool master, SchemaOpPtr op_ptr,
   }
   impl_req->ttlSec = newTablePtr.p->ttlSec;
   impl_req->ttlColumnNo = newTablePtr.p->ttlColumnNo;
+  impl_req->ringBufferSize = newTablePtr.p->ringBufferSize;
+  impl_req->ringIdxColumnNo = newTablePtr.p->ringIdxColNo;
+  impl_req->ringMetaColumnNo = newTablePtr.p->ringMetaColNo;
   g_eventLogger->info("[DICT], alterTable_parse(), AlterTableReq on Table "
                        "%u, [%u, %u]",
                        impl_req->tableId,
@@ -10958,6 +10980,9 @@ void Dbdict::alterTable_toLocal(Signal *signal, SchemaOpPtr op_ptr) {
   req->newNoOfKeyAttrs = impl_req->newNoOfKeyAttrs;
   req->ttlSec = impl_req->ttlSec;
   req->ttlColumnNo = impl_req->ttlColumnNo;
+  req->ringBufferSize = impl_req->ringBufferSize;
+  req->ringIdxColumnNo = impl_req->ringIdxColumnNo;
+  req->ringMetaColumnNo = impl_req->ringMetaColumnNo;
   g_eventLogger->info("[DICT], alterTable_toLocal(), AlterTableReq on Table "
                        "%u, [%u, %u]",
                        impl_req->tableId,
@@ -10982,8 +11007,11 @@ void Dbdict::alterTable_toLocal(Signal *signal, SchemaOpPtr op_ptr) {
 
   bool ttl_changed = (AlterTableReq::getTTLSecFlag(req->changeMask) ||
                       AlterTableReq::getTTLColFlag(req->changeMask));
+  bool ring_buffer_changed =
+      AlterTableReq::getRingBufferSizeFlag(req->changeMask);
 
-  if (blockNo == DBLQH && (req->noOfNewAttr > 0 || ttl_changed)) {
+  if (blockNo == DBLQH &&
+      (req->noOfNewAttr > 0 || ttl_changed || ring_buffer_changed)) {
     jam();
     LinearSectionPtr ptr[3];
     Uint32 newAttrData[2 * MAX_ATTRIBUTES_IN_TABLE];
@@ -10998,7 +11026,11 @@ void Dbdict::alterTable_toLocal(Signal *signal, SchemaOpPtr op_ptr) {
 
     ptr[0].p = newAttrData;
     ptr[0].sz = 2 * impl_req->noOfNewAttr;
-    sendSignal(blockRef, GSN_ALTER_TAB_REQ, signal, AlterTabReq::SignalLength,
+    Uint32 sig_len = AlterTabReq::SignalLength;
+    if (ring_buffer_changed) {
+      sig_len = AlterTabReq::SignalLengthWithRingBuffer;
+    }
+    sendSignal(blockRef, GSN_ALTER_TAB_REQ, signal, sig_len,
                JBB, ptr, 1);
   } else if (blockNo == DBDIH &&
              AlterTableReq::getAddFragFlag(req->changeMask)) {
@@ -11255,6 +11287,11 @@ void Dbdict::alterTable_commit(Signal *signal, SchemaOpPtr op_ptr) {
                            "%u, [%u, %u]",
                            tablePtr.p->tableId,
                            tablePtr.p->ttlSec, tablePtr.p->ttlColumnNo);
+    }
+    if (AlterTableReq::getRingBufferSizeFlag(impl_req->changeMask)) {
+      tablePtr.p->ringBufferSize = impl_req->ringBufferSize;
+      tablePtr.p->ringIdxColNo = impl_req->ringIdxColumnNo;
+      tablePtr.p->ringMetaColNo = impl_req->ringMetaColumnNo;
     }
   }
 

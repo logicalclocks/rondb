@@ -1,0 +1,122 @@
+#
+# Run only the ClusterJ RingBufferTest from MTR
+#
+
+--source include/have_ndb.inc
+--source include/full_result_diff.inc
+--source suite/ndb/include/have_connectorj.inc
+
+--let SEP=:
+if (`select @@version_compile_os IN ("Win32","Win64","Windows")`)
+{
+--let SEP=;
+}
+
+--let JAVA_MIN_REQUIRED_VERSION=1.8
+--source suite/ndb/include/have_java.inc
+--source suite/ndb/include/have_clusterj.inc
+
+--error 0,1
+exec
+  $MTR_JAVA -ea -Xcheck:jni
+  -Dclusterj.properties=$MYSQLTEST_VARDIR/tmp/clusterj.properties
+  -Djava.library.path=$NDBCLIENT_LIB_DIR
+  -Duser.timezone=$TZ
+  -Djava.io.tmpdir=$MYSQLTEST_VARDIR/tmp
+  -Dmysqld2.port=$MASTER_MYPORT1
+  -classpath $CLUSTERJ_TEST_JAR$SEP$CLUSTERJ_JAR$SEP$MTR_CLASSPATH
+  testsuite.clusterj.AllTests
+  $CLUSTERJ_TEST_JAR -n RingBufferTest
+  ;
+
+--remove_file $MYSQLTEST_VARDIR/tmp/clusterj.properties
+
+# DIAG: Full table scan with show_meta (no WHERE filter)
+--echo # DIAG: Full table scan with show_meta
+SET ndb_ring_buffer_show_meta = ON;
+SELECT sensor_id, ring_idx, HEX(ring_meta) FROM ring_buffer_sensor
+  ORDER BY sensor_id, ring_idx;
+--echo # DIAG: Filtered scan for sensor_id=3100 with show_meta
+SELECT sensor_id, ring_idx, HEX(ring_meta) FROM ring_buffer_sensor
+  WHERE sensor_id = 3100 ORDER BY ring_idx;
+--echo # DIAG: PK lookup for meta row (3100, 0) with show_meta
+SELECT sensor_id, ring_idx, HEX(ring_meta) FROM ring_buffer_sensor
+  WHERE sensor_id = 3100 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# Clean up tables created by RingBufferTest and ClearSmokeTest (schema.sql)
+--disable_warnings
+DROP TABLE IF EXISTS ring_buffer_sensor;
+DROP TABLE IF EXISTS ring_buffer_notnull;
+DROP TABLE IF EXISTS a;
+DROP TABLE IF EXISTS allprimitives;
+DROP TABLE IF EXISTS autopkint;
+DROP TABLE IF EXISTS autopkbigint;
+DROP TABLE IF EXISTS autopkmediumint;
+DROP TABLE IF EXISTS autopksmallint;
+DROP TABLE IF EXISTS autopktinyint;
+DROP TABLE IF EXISTS b0;
+DROP TABLE IF EXISTS bigintegertypes;
+DROP TABLE IF EXISTS binarypk;
+DROP TABLE IF EXISTS binarytypes;
+DROP TABLE IF EXISTS bittypes;
+DROP TABLE IF EXISTS blobtypes;
+DROP TABLE IF EXISTS bytepk;
+DROP TABLE IF EXISTS bytestype;
+DROP TABLE IF EXISTS cassandra_byte_array;
+DROP TABLE IF EXISTS cassandra_string;
+DROP TABLE IF EXISTS charsetbig5;
+DROP TABLE IF EXISTS charsetlatin1;
+DROP TABLE IF EXISTS charsetsjis;
+DROP TABLE IF EXISTS charsetswedishutf8;
+DROP TABLE IF EXISTS charsetutf8;
+DROP TABLE IF EXISTS conversation_summary;
+DROP TABLE IF EXISTS datetimetypes;
+DROP TABLE IF EXISTS datetypes;
+DROP TABLE IF EXISTS datetypes_pk;
+DROP TABLE IF EXISTS decimaltypes;
+DROP TABLE IF EXISTS dn2id;
+DROP TABLE IF EXISTS doubletypes;
+DROP TABLE IF EXISTS floattypes;
+DROP TABLE IF EXISTS hashpk;
+DROP TABLE IF EXISTS hope;
+DROP TABLE IF EXISTS longintstringfk;
+DROP TABLE IF EXISTS longintstringix;
+DROP TABLE IF EXISTS longintstringpk;
+DROP TABLE IF EXISTS longlongstringfk;
+DROP TABLE IF EXISTS longlongstringpk;
+DROP TABLE IF EXISTS longvarbinarypk;
+DROP TABLE IF EXISTS longvarcharpk;
+DROP TABLE IF EXISTS mediumintegertypes;
+DROP TABLE IF EXISTS mediumunsignedtypes;
+DROP TABLE IF EXISTS nullvalues;
+DROP TABLE IF EXISTS shortpk;
+DROP TABLE IF EXISTS stress;
+DROP TABLE IF EXISTS stringtype;
+DROP TABLE IF EXISTS t_basic;
+DROP TABLE IF EXISTS timestamptypes;
+DROP TABLE IF EXISTS timestamp2types;
+DROP TABLE IF EXISTS timetypes;
+DROP TABLE IF EXISTS twopk;
+DROP TABLE IF EXISTS yeartypes;
+DROP TABLE IF EXISTS localetypes;
+DROP TABLE IF EXISTS stringtypes;
+DROP TABLE IF EXISTS subscriber;
+DROP TABLE IF EXISTS hashonlylongintstringpk;
+DROP TABLE IF EXISTS varcharpk;
+DROP TABLE IF EXISTS varbinarypk;
+DROP TABLE IF EXISTS varbinarytypes;
+DROP TABLE IF EXISTS dynamicstringpks;
+DROP TABLE IF EXISTS fgtest;
+DROP TABLE IF EXISTS notnulltable;
+DROP TABLE IF EXISTS same_table;
+DROP TABLE IF EXISTS test2.t_basic2;
+DROP DATABASE IF EXISTS test2;
+DROP TABLE IF EXISTS test3.t_basic3;
+DROP TABLE IF EXISTS test3.same_table;
+DROP TABLE IF EXISTS test3.timestamppk;
+DROP TABLE IF EXISTS test3.timestamppk3;
+DROP TABLE IF EXISTS test3.timestamppk6;
+DROP TABLE IF EXISTS test3.conversation_summary;
+DROP DATABASE IF EXISTS test3;
+--enable_warnings

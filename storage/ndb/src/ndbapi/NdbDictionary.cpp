@@ -842,6 +842,41 @@ NdbDictionary::Table::isTTLEnabled() const {
   return (m_impl.m_ttl_sec != RNIL && m_impl.m_ttl_col_no != RNIL);
 }
 
+void
+NdbDictionary::Table::setRingBufferSize(Uint32 size) {
+  m_impl.m_ring_buffer_size = size;
+}
+
+Uint32
+NdbDictionary::Table::getRingBufferSize() const {
+  return m_impl.m_ring_buffer_size;
+}
+
+void
+NdbDictionary::Table::setRingIdxColumnNo(Uint32 no) {
+  m_impl.m_ring_idx_col_no = no;
+}
+
+Uint32
+NdbDictionary::Table::getRingIdxColumnNo() const {
+  return m_impl.m_ring_idx_col_no;
+}
+
+void
+NdbDictionary::Table::setRingMetaColumnNo(Uint32 no) {
+  m_impl.m_ring_meta_col_no = no;
+}
+
+Uint32
+NdbDictionary::Table::getRingMetaColumnNo() const {
+  return m_impl.m_ring_meta_col_no;
+}
+
+bool
+NdbDictionary::Table::isRingBuffer() const {
+  return (m_impl.m_ring_buffer_size != RNIL);
+}
+
 /*****************************************************************
  * Index facade
  */

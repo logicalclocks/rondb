@@ -100,6 +100,12 @@ class TableImpl implements Table {
     /** The autoincrement column */
     private Column autoIncrementColumn = null;
 
+    /** Ring buffer table properties */
+    private final boolean ringBuffer;
+    private final int ringBufferSize;
+    private Column ringIdxColumn = null;
+    private Column ringMetaColumn = null;
+
     public TableImpl(TableConst ndbTable, String[] indexNames) {
         this.ndbTable = ndbTable;
         this.tableName = ndbTable.getName();
@@ -140,6 +146,17 @@ class TableImpl implements Table {
         this.partitionKeyColumnNames = 
             partitionKeyColumnNameList.toArray(new String[partitionKeyColumnNameList.size()]);
         this.indexNames = indexNames;
+        // Ring buffer table detection
+        this.ringBuffer = ndbTable.isRingBuffer();
+        if (ringBuffer) {
+            this.ringBufferSize = ndbTable.getRingBufferSize();
+            int ringIdxColNo = ndbTable.getRingIdxColumnNo();
+            int ringMetaColNo = ndbTable.getRingMetaColumnNo();
+            this.ringIdxColumn = columnImpls[ringIdxColNo];
+            this.ringMetaColumn = columnImpls[ringMetaColNo];
+        } else {
+            this.ringBufferSize = 0;
+        }
     }
 
     public Column getAutoIncrementColumn() {
@@ -224,6 +241,22 @@ class TableImpl implements Table {
 
     public int getMaximumColumnLength() {
         return maximumColumnLength;
+    }
+
+    public boolean isRingBuffer() {
+        return ringBuffer;
+    }
+
+    public int getRingBufferSize() {
+        return ringBufferSize;
+    }
+
+    public Column getRingIdxColumn() {
+        return ringIdxColumn;
+    }
+
+    public Column getRingMetaColumn() {
+        return ringMetaColumn;
     }
 
 }

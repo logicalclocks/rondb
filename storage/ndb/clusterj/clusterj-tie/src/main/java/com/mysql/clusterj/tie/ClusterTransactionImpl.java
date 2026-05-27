@@ -28,7 +28,9 @@ package com.mysql.clusterj.tie;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import com.mysql.clusterj.ClusterJDatastoreException;
 import com.mysql.clusterj.ClusterJFatalInternalException;
@@ -123,6 +125,9 @@ class ClusterTransactionImpl implements ClusterTransaction {
     private boolean isPartitionKeySet = false;
     private final boolean hops_pk_fix = true;
 
+    /** Cached RingBufferWriter instances, keyed by table name */
+    private Map<String, RingBufferWriter> ringBufferWriters = null;
+
     public ClusterTransactionImpl(ClusterConnectionImpl clusterConnectionImpl,
             DbImpl db, Dictionary ndbDictionary) {
         this.db = db;
@@ -136,6 +141,7 @@ class ClusterTransactionImpl implements ClusterTransaction {
     }
 
     public void close() {
+        closeRingBufferWriters();
         if (ndbTransaction != null) {
             ndbTransaction.close();
             ndbTransaction = null;
@@ -169,6 +175,8 @@ class ClusterTransactionImpl implements ClusterTransaction {
         if (logger.isTraceEnabled()) logger.trace("");
         // nothing to do if no ndbTransaction was ever enlisted or already autocommitted
         if (isEnlisted() && !autocommitted) {
+            // Flush any pending ring buffer batches before commit
+            flushRingBufferWriters();
             handlePendingPostExecuteCallbacks();
             int abortOption = abort?AbortOption.AbortOnError:AbortOption.AO_IgnoreError;
             int forceOption = force?1:0;
@@ -237,6 +245,9 @@ class ClusterTransactionImpl implements ClusterTransaction {
         enlist();
         if (logger.isTraceEnabled()) logger.trace("Table: " + storeTable.getName());
         if (USE_NDBRECORD) {
+            if (storeTable.isRingBuffer()) {
+                return new NdbRecordRingBufferInsertOperationImpl(this, storeTable);
+            }
             return new NdbRecordInsertOperationImpl(this, storeTable);
         }
         TableConst ndbTable = ndbDictionary.getTable(storeTable.getName());
@@ -438,7 +449,8 @@ class ClusterTransactionImpl implements ClusterTransaction {
     public NdbOperationConst insertTuple(NdbRecordConst ndbRecord,
             ByteBuffer buffer, byte[] mask, OperationOptionsConst options) {
         enlist();
-        NdbOperationConst operation = ndbTransaction.insertTuple(ndbRecord, buffer, mask, options, 0);
+        int sizeOfOptions = (options != null) ? NdbOperation.OperationOptions.size() : 0;
+        NdbOperationConst operation = ndbTransaction.insertTuple(ndbRecord, buffer, ndbRecord, buffer, mask, options, sizeOfOptions);
         handleError(operation, ndbTransaction);
         return operation;
     }
@@ -501,13 +513,14 @@ class ClusterTransactionImpl implements ClusterTransaction {
     public NdbOperationConst updateTuple(NdbRecordConst ndbRecord,
             ByteBuffer buffer, byte[] mask, OperationOptionsConst options) {
         enlist();
-        NdbOperationConst operation = ndbTransaction.updateTuple(ndbRecord, buffer, ndbRecord, buffer, mask, options, 0);
+        int sizeOfOptions = (options != null) ? NdbOperation.OperationOptions.size() : 0;
+        NdbOperationConst operation = ndbTransaction.updateTuple(ndbRecord, buffer, ndbRecord, buffer, mask, options, sizeOfOptions);
         handleError(operation, ndbTransaction);
         return operation;
     }
 
     /** Create an NdbOperation for write using NdbRecord.
-     * 
+     *
      * @param ndbRecord the NdbRecord
      * @param buffer the buffer with data for the operation
      * @param mask the mask of column values already set in the buffer
@@ -517,13 +530,14 @@ class ClusterTransactionImpl implements ClusterTransaction {
     public NdbOperationConst writeTuple(NdbRecordConst ndbRecord,
             ByteBuffer buffer, byte[] mask, OperationOptionsConst options) {
         enlist();
-        NdbOperationConst operation = ndbTransaction.writeTuple(ndbRecord, buffer, ndbRecord, buffer, mask, options, 0);
+        int sizeOfOptions = (options != null) ? NdbOperation.OperationOptions.size() : 0;
+        NdbOperationConst operation = ndbTransaction.writeTuple(ndbRecord, buffer, ndbRecord, buffer, mask, options, sizeOfOptions);
         handleError(operation, ndbTransaction);
         return operation;
     }
 
     /** Create an NdbOperation for key read using NdbRecord. The 'find' lock mode is used.
-     * 
+     *
      * @param ndbRecordKeys the NdbRecord for the key
      * @param keyBuffer the buffer with the key for the operation
      * @param ndbRecordValues the NdbRecord for the value
@@ -536,10 +550,51 @@ class ClusterTransactionImpl implements ClusterTransaction {
             NdbRecordConst ndbRecordValues, ByteBuffer valueBuffer,
             byte[] mask, OperationOptionsConst options) {
         enlist();
-        NdbOperationConst operation = ndbTransaction.readTuple(ndbRecordKeys, keyBuffer, 
+        NdbOperationConst operation = ndbTransaction.readTuple(ndbRecordKeys, keyBuffer,
                 ndbRecordValues, valueBuffer, findLockMode, mask, options, 0);
         handleError(operation, ndbTransaction);
         return operation;
+    }
+
+    /** Create an NdbOperation for key read using NdbRecord with explicit lock mode.
+     * Does NOT call handleError -- caller is responsible for checking operation errors.
+     * Used by RingBufferWriter which needs to handle error 626 (not found) gracefully.
+     *
+     * @param ndbRecordKeys the NdbRecord for the key
+     * @param keyBuffer the buffer with the key for the operation
+     * @param ndbRecordValues the NdbRecord for the value
+     * @param valueBuffer the buffer with the value returned by the operation
+     * @param mask the mask of column values to be read
+     * @param lockMode the NDB lock mode (e.g. LM_Exclusive)
+     * @param options the OperationOptions for this operation
+     * @return the ndb operation for key read, or null on error
+     */
+    public NdbOperationConst readTupleExplicitLock(NdbRecordConst ndbRecordKeys, ByteBuffer keyBuffer,
+            NdbRecordConst ndbRecordValues, ByteBuffer valueBuffer,
+            byte[] mask, int lockMode, OperationOptionsConst options) {
+        enlist();
+        int sizeOfOptions = (options != null) ? NdbOperation.OperationOptions.size() : 0;
+        return ndbTransaction.readTuple(ndbRecordKeys, keyBuffer,
+                ndbRecordValues, valueBuffer, lockMode, mask, options, sizeOfOptions);
+    }
+
+    /** Execute NoCommit directly on the NdbTransaction, bypassing autocommit
+     * optimization and post-execute callbacks. Returns the raw NDB result code.
+     * Used internally by RingBufferWriter to handle error 626 gracefully.
+     *
+     * @param abortOption the abort option (e.g. AbortOption.AO_IgnoreError)
+     * @return 0 on success, -1 on error
+     */
+    public int executeNoCommitDirect(int abortOption) {
+        enlist();
+        return ndbTransaction.execute(NdbTransaction.ExecType.NoCommit, abortOption, 0);
+    }
+
+    /** Get the underlying NdbTransaction for direct error checking.
+     * Used by RingBufferWriter to check transaction-level errors.
+     */
+    public NdbTransaction getNdbTransaction() {
+        return ndbTransaction;
     }
 
     public void postExecuteCallback(Runnable callback) {
@@ -718,12 +773,49 @@ class ClusterTransactionImpl implements ClusterTransaction {
         return clusterConnectionImpl.getCachedNdbRecordImpl(db, storeIndex, storeTable);
     }
 
-    /** 
+    /**
      * Add an operation to check for errors after execute.
      * @param op the operation to check
      */
     public void addOperationToCheck(Operation op) {
         operationsToCheck.add(op);
+    }
+
+    // ---------------------------------------------------------------
+    // Ring buffer writer management
+    // ---------------------------------------------------------------
+
+    /** Get or create a RingBufferWriter for the given ring buffer table.
+     * Writers are cached per table name for the lifetime of this transaction. */
+    RingBufferWriter getRingBufferWriter(Table storeTable) {
+        if (ringBufferWriters == null) {
+            ringBufferWriters = new HashMap<String, RingBufferWriter>();
+        }
+        String tableName = storeTable.getName();
+        RingBufferWriter writer = ringBufferWriters.get(tableName);
+        if (writer == null) {
+            writer = new RingBufferWriter(this, storeTable);
+            ringBufferWriters.put(tableName, writer);
+        }
+        return writer;
+    }
+
+    /** Flush all pending ring buffer batches. Called before commit. */
+    private void flushRingBufferWriters() {
+        if (ringBufferWriters == null) return;
+        for (RingBufferWriter writer : ringBufferWriters.values()) {
+            writer.flushBatch();
+        }
+    }
+
+    /** Close all ring buffer writers and release their resources. */
+    private void closeRingBufferWriters() {
+        if (ringBufferWriters == null) return;
+        for (RingBufferWriter writer : ringBufferWriters.values()) {
+            writer.close();
+        }
+        ringBufferWriters.clear();
+        ringBufferWriters = null;
     }
 
 }

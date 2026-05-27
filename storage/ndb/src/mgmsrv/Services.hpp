@@ -82,6 +82,9 @@ class MgmApiSession : public SocketServer::Session {
   static const unsigned SOCKET_TIMEOUT = 30000;
 
   int checkAuth(struct CmdAuth *) const;
+  bool isArbitratorStartupGateCommandAllowed(
+      const ParserRow<MgmApiSession> *cmd, const class Properties &args) const;
+  void reportArbitratorStartupGateBlocked(const char *cmd_name);
   void reportAuthFailure(int code);
   int on_verify(int, struct x509_store_ctx_st *);
 

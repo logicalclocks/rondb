@@ -98,9 +98,10 @@ class ArbitCode {
     PrepAtrun = 23,  // late joiner gets ticket at RUN time
 
     // arbitrator state
-    ApiStart = 31,  // arbitrator thread started
-    ApiFail = 32,   // arbitrator died
-    ApiExit = 33,   // arbitrator reported it will exit
+    ApiStart = 31,    // arbitrator thread started
+    ApiFail = 32,     // arbitrator died
+    ApiExit = 33,     // arbitrator reported it will exit
+    ApiDemoted = 34,  // arbitrator demoted by rank-1 promotion
 
     // arbitration result
     LoseNodes = 41,        // lose on ndb node count

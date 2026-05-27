@@ -1133,19 +1133,59 @@ ndbd_support_scan_frag_rows_examined(Uint32 x) {
   }
   return false;
 }
+/*
+ * QMGR honors the ArbitrationRankWait config parameter, preferring
+ * rank-1 arbitrators (typically ndb_mgmd) over rank-2 fallbacks for
+ * up to ArbitrationRankWait milliseconds, and demoting a rank-2
+ * arbitrator if a rank-1 candidate becomes active afterwards.  When
+ * even one data node lacks this support, MgmtSrvr::wait_until_arbitrator()
+ * shortens its startup gate, since older data nodes will pick rank-2
+ * immediately and the long wait would yield no benefit.
+ */
 static inline
 bool
-ndbd_support_pushdown_join_agg(Uint32 x) {
+ndbd_support_arbitration_rank_wait(Uint32 x) {
   const Uint32 major = (x >> 16) & 0xFF;
   const Uint32 minor = (x >>  8) & 0xFF;
   const Uint32 rel = x & 0xFF;
   if (major > 26) {
     return true;
   }
+  if (major < 25) {
+    return false;
+  }
+  if (major > 26) {
+    return true;
+  }
+  if ((major == 26) && (minor >= 5)) {
+    return true;
+  }
+  if ((major == 25) && (minor == 10) && (rel >= 9)) {
+    return true;
+  }
+  if ((major == 26) && (minor == 02) && (rel >= 4)) {
+    return true;
+  }
   if ((major == 26) && (minor == 04) && (rel >= 1)) {
     return true;
   }
-  if ((major == 26) && (minor > 04)) {
+  return false;
+}
+
+static inline
+bool
+ndbd_support_pushdown_join_agg(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  const Uint32 rel = x & 0xFF;
+
+  if (major > 26) {
+    return true;
+  }
+  if ((major == 26) && (minor > 5)) {
+    return true;
+  }
+  if ((major == 26) && (minor == 04) && (rel >= 1)) {
     return true;
   }
   return false;
