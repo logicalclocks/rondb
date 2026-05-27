@@ -326,7 +326,7 @@ RS_Status APIKeyCache::find_and_validate(const std::string &prefix,
     DEB_AUTH("API Key found invalid, Line: %u, refCount: %d",
              __LINE__, ref_count);
     return CRS_Status(HTTP_CODE::AUTH_ERROR,
-      "API key found in cache but invalid").status;
+      "API key found in cache but is invalid").status;
   }
   require(userDBs->m_state == UserDBs::IS_VALID);
   userDBs->m_lastUsed = NdbTick_getCurrentTicks();
