@@ -1007,7 +1007,7 @@ void TTLPurger::PurgeWorkerJob() {
   std::map<std::string, TTLInfo> local_ttl_cache;
   Int32 shard = -1;
   Int32 n_purge_nodes = 0;
-  unsigned char encoded_now[8];
+  unsigned char encoded_now[8] = {0};
   std::string log_buf;
   size_t pos = 0;
   std::string db_str;
@@ -1031,13 +1031,17 @@ void TTLPurger::PurgeWorkerJob() {
   NdbTransaction* trans = nullptr;
   NdbScanOperation* scan_op = nullptr;
   Int64 packed_last = 0;
-  unsigned char encoded_last[8];
-  unsigned char encoded_curr_purge[8];
-  MYSQL_TIME datetime;
+  unsigned char encoded_last[8] = {0};
+  unsigned char encoded_curr_purge[8] = {0};
+  MYSQL_TIME datetime = {};
   Int64 packed_now = 0;
-  NdbRecAttr* rec_attr[3];
+  NdbRecAttr* rec_attr[3] = {nullptr, nullptr, nullptr};
   bool use_index = false;
   Uint32 purge_window = 0;
+  // Loop safety vars, set per-round just before the main for-loop.
+  // Declared at function scope so they sit above any goto err target.
+  size_t cache_size_at_loop_start = 0;
+  size_t iter_safety_counter = 0;
 
   g_eventLogger->info("[TTL PWorker] Started");
   // Reset status from potential previous kError state
@@ -1170,8 +1174,34 @@ void TTLPurger::PurgeWorkerJob() {
     UpdateStatus(TTLPurgeStatus::State::kRunning);
     sleep_between_each_round = true;
     dict = worker_ndb_->getDictionary();
+    cache_size_at_loop_start = local_ttl_cache.size();
+    iter_safety_counter = 0;
     for (iter = local_ttl_cache.begin(); iter != local_ttl_cache.end();
-         iter++) {
+         ++iter_safety_counter, ++iter) {
+      // Defensive guards: catch iterator runaway / corruption that previously
+      // SIGSEGV'd in __tree_next_iter (see crash in TTLPurger::PurgeWorkerJob
+      // at iter++). assert() also fires in debug builds for early detection.
+      assert(iter != local_ttl_cache.end());
+      if (iter == local_ttl_cache.end()) {
+        g_eventLogger->error("[TTL PWorker] iter unexpectedly end() "
+                             "(cache size %zu, iteration %zu)",
+                             cache_size_at_loop_start, iter_safety_counter);
+        break;
+      }
+      if (iter_safety_counter > cache_size_at_loop_start + 1) {
+        g_eventLogger->error("[TTL PWorker] Iterator runaway: iterated %zu "
+                             "times over cache of size %zu; aborting round",
+                             iter_safety_counter, cache_size_at_loop_start);
+        assert(false && "TTL purge worker iterator runaway");
+        break;
+      }
+      assert(local_ttl_cache.size() == cache_size_at_loop_start);
+      if (local_ttl_cache.size() != cache_size_at_loop_start) {
+        g_eventLogger->error("[TTL PWorker] local_ttl_cache size changed mid-"
+                             "iteration: was %zu, now %zu; aborting round",
+                             cache_size_at_loop_start, local_ttl_cache.size());
+        break;
+      }
       if (purge_worker_exit_) {
         break;
       }
