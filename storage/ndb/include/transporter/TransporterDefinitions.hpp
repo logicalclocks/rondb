@@ -46,7 +46,16 @@ enum SendStatus {
   SEND_UNKNOWN_NODE = 5
 };
 
-enum TransporterType { tt_TCP_TRANSPORTER = 1, tt_SHM_TRANSPORTER = 3 };
+enum TransporterType {
+  tt_TCP_TRANSPORTER = 1,
+  tt_SHM_TRANSPORTER = 3,
+  /**
+   * Native RonDB RDMA transporter (RC SEND/RECV) for explicit DB-DB and
+   * API-DB traffic. Only available when NDB_RDMA_TRANSPORTER_SUPPORTED is defined.
+   * Values 1 and 3 are preserved for wire/log compatibility with TCP/SHM.
+   */
+  tt_RDMA_TRANSPORTER = 4
+};
 
 enum SB_LevelType {
   SB_NO_RISK_LEVEL = 0,
@@ -115,6 +124,28 @@ struct TransporterConfiguration {
       Uint32 shmSpintime;
       Uint32 sendBufferSize;
     } shm;
+
+    /**
+     * RDMA transporter configuration. Only consumed when
+     * NDB_RDMA_TRANSPORTER_SUPPORTED is defined and the connection
+     * section type is CONNECTION_TYPE_RDMA. Sizes are validated by
+     * the transporter against device capabilities.
+     */
+    struct {
+      Uint32 sendBufferSize;       // Bytes of staged send memory
+      Uint32 recvBufferSize;       // Bytes of staged receive memory
+      Uint32 queueDepth;           // Send/recv WR queue depth
+      Uint32 inlineThreshold;      // Max bytes posted as inline SEND
+      Uint32 completionPollBudget; // Max WCs reaped per poll call
+      Uint32 spintime;             // Microseconds to spin before sleep
+      Uint32 rdmaPort;             // HCA physical port number
+      Uint32 gidIndex;             // GID index for RoCE
+      Uint32 trafficClass;         // DSCP-like traffic class
+      Uint32 retryCount;           // QP retry count
+      Uint32 rnrRetryCount;        // QP RNR retry count
+      Uint32 overloadLimit;        // Unsent bytes overload threshold
+      const char *deviceName;      // ibverbs device name, NULL = first available
+    } rdma;
   };
 };
 
@@ -339,6 +370,41 @@ enum TransporterError {
    */
   ,
   TE_INVALID_SIGNAL = 0x25 | TE_DO_DISCONNECT
+
+  /* RDMA transporter errors. All disconnect the link.
+   * Reserved range 0x30-0x3F.
+   */
+  ,
+  /** Generic RDMA setup failure (device open, PD, MR, QP). */
+  TE_RDMA_INIT_FAILED = 0x30 | TE_DO_DISCONNECT
+
+  ,
+  /** RDMA endpoint exchange over control socket failed or mismatched. */
+  TE_RDMA_ENDPOINT_EXCHANGE_FAILED = 0x31 | TE_DO_DISCONNECT
+
+  ,
+  /** Wire-format header was rejected (length, version, flags). */
+  TE_RDMA_INVALID_HEADER = 0x32 | TE_DO_DISCONNECT
+
+  ,
+  /** QP transitioned to error state. */
+  TE_RDMA_QP_ERROR = 0x33 | TE_DO_DISCONNECT
+
+  ,
+  /** Completion queue reported a non-success status. */
+  TE_RDMA_CQ_ERROR = 0x34 | TE_DO_DISCONNECT
+
+  ,
+  /** Receive-credit protocol was violated by the peer. */
+  TE_RDMA_CREDIT_PROTOCOL_ERROR = 0x35 | TE_DO_DISCONNECT
+
+  ,
+  /** Retry counter or RNR retry counter exhausted. */
+  TE_RDMA_RETRY_EXHAUSTED = 0x36 | TE_DO_DISCONNECT
+
+  ,
+  /** RDMA support not compiled into this build. */
+  TE_RDMA_NOT_SUPPORTED = 0x37 | TE_DO_DISCONNECT
 };
 
 #endif // Define of TransporterDefinitions_H

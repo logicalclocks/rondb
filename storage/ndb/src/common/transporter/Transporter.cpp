@@ -78,6 +78,8 @@ static inline const char *transporter_type_name(TransporterType t) {
       return "TCP";
     case tt_SHM_TRANSPORTER:
       return "SHM";
+    case tt_RDMA_TRANSPORTER:
+      return "RDMA";
     default:
       return "UNKNOWN";
   }
