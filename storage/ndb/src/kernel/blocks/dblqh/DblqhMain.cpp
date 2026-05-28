@@ -5528,6 +5528,10 @@ void Dblqh::LQHKEY_abort(Signal *signal, int errortype,
       jam();
       errorCode = ZNO_SUCH_FRAGMENT_ID;
       break;
+    case 7:
+      jam();
+      errorCode = ZMEMORY_QUOTA_OVERFLOW_ERROR;
+      break;
     default:
       ndbabort();
   }  // switch
