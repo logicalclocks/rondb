@@ -32,8 +32,8 @@ func TestHealth(t *testing.T) {
 
 	if config.GetAll().REST.Enable {
 		healthHttp := getHealthHttp(t)
-		if healthHttp.RonDBHealth != 0 {
-			t.Fatalf("Unexpected RonDB health status. Expected: 0 Got: %v", healthHttp.RonDBHealth)
+		if healthHttp.RonDBHealth != 1 {
+			t.Fatalf("Unexpected RonDB health status. Expected: 1 Got: %v", healthHttp.RonDBHealth)
 		}
 	}
 

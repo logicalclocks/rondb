@@ -193,7 +193,7 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
 
         gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
               new_entry, new_aggs));
-        agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + agg_res_len);
+        agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + gb_cols_len);
       }
       DEB_TRACE();
 
@@ -204,17 +204,20 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         DEB_TRACE();
         for (Uint32 i = 0; i < n_agg_results; i++) {
           DEB_TRACE();
+          if (res[i].is_null) {
+            DEB_TRACE();
+            continue;
+          } else if (agg_res_ptr[i].is_null) {
+            DEB_TRACE();
+            agg_res_ptr[i] = res[i];
+            continue;
+          }
           assert(((res[i].type == NDB_TYPE_BIGINT &&
                   (res[i].is_unsigned == agg_res_ptr[i].is_unsigned ||
                    agg_res_ptr[i].is_null)) ||
                   res[i].type == NDB_TYPE_DOUBLE) &&
                   res[i].type == agg_res_ptr[i].type);
-          if (res[i].is_null) {
-            DEB_TRACE();
-          } else if (agg_res_ptr[i].is_null) {
-            DEB_TRACE();
-            agg_res_ptr[i] = res[i];
-          } else {
+          {
             DEB_TRACE();
             agg_res_ptr[i].type = res[i].type;
             agg_res_ptr[i].is_unsigned = res[i].is_unsigned;

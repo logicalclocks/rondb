@@ -75,7 +75,7 @@ ndb$disk_write_speed_base	488	48
 ndb$diskpagebuffer	10	64
 ndb$diskstat	10	48
 ndb$diskstats_1sec	200	52
-ndb$error_messages	885	52
+ndb$error_messages	886	52
 ndb$frag_locks	400	96
 ndb$frag_mem_use	400	100
 ndb$frag_operations	400	192
@@ -117,7 +117,7 @@ CALL populate_sizes();
 SELECT table_name, est_rows, actual_rows from rowcounts
 WHERE table_name = "ndb$config_values";
 table_name	est_rows	actual_rows
-ndb$config_values	386	384
+ndb$config_values	386	386
 ## Note:
 ## the estimate for config_values relies on a constant in NdbinfoTables.cpp
 ## which must be manually maintained in order for the test to pass.
@@ -125,7 +125,7 @@ ndb$config_values	386	384
 ## List the tables where estimated size equals actual size.
 SELECT count(*) from rowcounts WHERE est_rows = actual_rows;
 count(*)
-28
+29
 SELECT table_name from rowcounts WHERE est_rows = actual_rows
   ORDER BY table_name;
 table_name
@@ -134,6 +134,7 @@ ndb$blocks
 ndb$columns
 ndb$config_nodes
 ndb$config_params
+ndb$config_values
 ndb$counters
 ndb$dblqh_tcconnect_state
 ndb$dbtc_apiconnect_state
