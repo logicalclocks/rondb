@@ -30,6 +30,7 @@
 #define CFG_SYS_NAME                  3
 #define CFG_SYS_PRIMARY_MGM_NODE      1
 #define CFG_SYS_CONFIG_GENERATION     2
+#define CFG_SYS_ALLOW_API_TO_DB_RDMA  4
 #define CFG_SYS_PORT_BASE             8
 
 #define CFG_NODE_ID                   3
@@ -374,6 +375,23 @@
 #define CFG_SHM_SEND_BUFFER_SIZE      506
 
 /**
+ * RDMA transporter parameter IDs. Reserved range 520-539.
+ * Used only with CONNECTION_TYPE_RDMA sections.
+ */
+#define CFG_RDMA_SEND_BUFFER_SIZE     520
+#define CFG_RDMA_RECV_BUFFER_SIZE     521
+#define CFG_RDMA_QUEUE_DEPTH          522
+#define CFG_RDMA_INLINE_THRESHOLD     523
+#define CFG_RDMA_COMPLETION_POLL_BUDGET 524
+#define CFG_RDMA_SPINTIME             525
+#define CFG_RDMA_DEVICE_NAME          526
+#define CFG_RDMA_PORT                 527
+#define CFG_RDMA_GID_INDEX            528
+#define CFG_RDMA_TRAFFIC_CLASS        529
+#define CFG_RDMA_RETRY_COUNT          530
+#define CFG_RDMA_RNR_RETRY_COUNT      531
+
+/**
  * No longer used, deprecated
  */
 #define CFG_SCI_HOST1_ID_0            550
@@ -421,6 +439,7 @@
 #define CONNECTION_TYPE_SHM           1
 #define CONNECTION_TYPE_SCI           2 /* Removed */
 #define CONNECTION_TYPE_OSE           3 /* Removed. */
+#define CONNECTION_TYPE_RDMA          4 /* RonDB native RDMA transporter */
 
 #define ARBIT_METHOD_DISABLED         0
 #define ARBIT_METHOD_DEFAULT          1
