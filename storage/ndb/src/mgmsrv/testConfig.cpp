@@ -426,6 +426,113 @@ static void test_hostname_mycnf(void) {
   }
 }
 
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+static bool same_node_pair(Uint32 node_id1, Uint32 node_id2, Uint32 expected1,
+                           Uint32 expected2) {
+  return (node_id1 == expected1 && node_id2 == expected2) ||
+         (node_id1 == expected2 && node_id2 == expected1);
+}
+
+static void test_rdma_api_db_connections(void) {
+  ndbout_c("test_rdma_api_db_connections");
+  // DB-DB positive: always allowed regardless of [SYSTEM]
+  // AllowApiToDbRdma. No [SYSTEM] section is supplied here; the
+  // synthetic SYSTEM section added by add_system_section() runs as a
+  // ConfigRule (after all SectionRules), so the gate lookup in
+  // checkConnectionConstraints() falls back to its default-false
+  // value -- which is the strictest setting and still permits this
+  // DB-DB pair.
+  Config *c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndbd]", "NodeId=2", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=1",
+      "NodeId2=2", NULL);
+  CHECK(c);
+  delete c;
+
+  // API-DB negative without [SYSTEM]: synthetic SYSTEM section is
+  // added late, the gate lookup defaults to 0 / false, and the
+  // [RDMA] section is rejected.
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=10",
+      "NodeId2=1", NULL);
+  CHECK(c == NULL);
+
+  // API-DB negative with [SYSTEM] AllowApiToDbRdma=false: same
+  // outcome as the previous case, but exercises the explicit-false
+  // path through ConfigInfo's BOOL parsing.
+  c = create_config(
+      "[system]", "Name=test", "AllowApiToDbRdma=false",
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=10",
+      "NodeId2=1", NULL);
+  CHECK(c == NULL);
+
+  // API-DB positive with [SYSTEM] AllowApiToDbRdma=true: the
+  // operator has explicitly opted in cluster-wide, and the [SYSTEM]
+  // section appears before [RDMA] so the section rule sees it.
+  c = create_config(
+      "[system]", "Name=test", "AllowApiToDbRdma=true",
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=10",
+      "NodeId2=1", NULL);
+  CHECK(c);
+
+  Uint32 rdma_api_db_connections = 0;
+  Uint32 tcp_shm_api_db_connections = 0;
+  ConfigIter iter(c, CFG_SECTION_CONNECTION);
+  for (; iter.valid(); iter.next()) {
+    Uint32 section_type = 0;
+    Uint32 node_id1 = 0;
+    Uint32 node_id2 = 0;
+    CHECK(iter.get(CFG_TYPE_OF_SECTION, &section_type) == 0);
+    CHECK(iter.get(CFG_CONNECTION_NODE_1, &node_id1) == 0);
+    CHECK(iter.get(CFG_CONNECTION_NODE_2, &node_id2) == 0);
+    if (!same_node_pair(node_id1, node_id2, 1, 10)) continue;
+
+    if (section_type == CONNECTION_TYPE_RDMA) {
+      Uint32 node_id_server = 0;
+      CHECK(iter.get(CFG_CONNECTION_NODE_ID_SERVER, &node_id_server) == 0);
+      CHECK(node_id_server == 1);
+      rdma_api_db_connections++;
+    } else if (section_type == CONNECTION_TYPE_TCP ||
+               section_type == CONNECTION_TYPE_SHM) {
+      tcp_shm_api_db_connections++;
+    }
+  }
+  CHECK(rdma_api_db_connections == 1);
+  CHECK(tcp_shm_api_db_connections == 0);
+
+  delete c;
+
+  // API-API negative: rejected regardless of AllowApiToDbRdma. Pass
+  // the flag through to be sure the gate does not accidentally open
+  // the API-API path.
+  c = create_config(
+      "[system]", "Name=test", "AllowApiToDbRdma=true",
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[mysqld]", "NodeId=11",
+      "HostName=localhost", "[rdma]", "NodeId1=10", "NodeId2=11",
+      NULL);
+  CHECK(c == NULL);
+
+  // MGM-involved negative: rejected regardless of AllowApiToDbRdma.
+  c = create_config(
+      "[system]", "Name=test", "AllowApiToDbRdma=true",
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=20",
+      "NodeId2=1", NULL);
+  CHECK(c == NULL);
+}
+#endif
+
 #include <NdbTap.hpp>
 
 #include <EventLogger.hpp>
@@ -440,6 +547,9 @@ TAPTEST(MgmConfig) {
   checksum_config();
   test_param_values();
   test_hostname_mycnf();
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+  test_rdma_api_db_connections();
+#endif
   if (false) print_restart_info();
   test_config_v1_with_dyn_ports();
   ndb_end(0);
