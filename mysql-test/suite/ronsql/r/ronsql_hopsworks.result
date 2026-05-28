@@ -462,11 +462,11 @@ Number of output lines, including header: 2
 TINYINT: JSON format GROUP BY
 {"data":
 [{"val":null,"cnt":42}
+,{"val":-128,"cnt":30}
+,{"val":-1,"cnt":32}
 ,{"val":0,"cnt":34}
 ,{"val":1,"cnt":30}
 ,{"val":127,"cnt":32}
-,{"val":-128,"cnt":30}
-,{"val":-1,"cnt":32}
 ]
 }
 ==========
@@ -475,13 +475,13 @@ TINYINT: JSON format GROUP BY
 
 TINYINT: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":-128}
+[{"foo":-2,"MAX(val)":127}
+,{"foo":-1,"MAX(val)":127}
+,{"foo":0,"MAX(val)":-128}
 ,{"foo":1,"MAX(val)":0}
 ,{"foo":2,"MAX(val)":1}
 ,{"foo":3,"MAX(val)":-128}
 ,{"foo":4,"MAX(val)":-1}
-,{"foo":-2,"MAX(val)":127}
-,{"foo":-1,"MAX(val)":127}
 ]
 }
 ==========
@@ -959,13 +959,13 @@ TINYINT UNSIGNED: JSON format GROUP BY
 
 TINYINT UNSIGNED: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":0}
+[{"foo":-2,"MAX(val)":1}
+,{"foo":-1,"MAX(val)":255}
+,{"foo":0,"MAX(val)":0}
 ,{"foo":1,"MAX(val)":100}
 ,{"foo":2,"MAX(val)":100}
 ,{"foo":3,"MAX(val)":0}
 ,{"foo":4,"MAX(val)":1}
-,{"foo":-2,"MAX(val)":1}
-,{"foo":-1,"MAX(val)":255}
 ]
 }
 ==========
@@ -1434,11 +1434,11 @@ Number of output lines, including header: 2
 SMALLINT: JSON format GROUP BY
 {"data":
 [{"val":null,"cnt":42}
-,{"val":0,"cnt":34}
 ,{"val":-32768,"cnt":30}
+,{"val":-1,"cnt":32}
+,{"val":0,"cnt":34}
 ,{"val":1,"cnt":30}
 ,{"val":32767,"cnt":32}
-,{"val":-1,"cnt":32}
 ]
 }
 ==========
@@ -1447,13 +1447,13 @@ SMALLINT: JSON format GROUP BY
 
 SMALLINT: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":-32768}
+[{"foo":-2,"MAX(val)":32767}
+,{"foo":-1,"MAX(val)":32767}
+,{"foo":0,"MAX(val)":-32768}
 ,{"foo":1,"MAX(val)":0}
 ,{"foo":2,"MAX(val)":1}
 ,{"foo":3,"MAX(val)":-32768}
 ,{"foo":4,"MAX(val)":-1}
-,{"foo":-2,"MAX(val)":32767}
-,{"foo":-1,"MAX(val)":32767}
 ]
 }
 ==========
@@ -1931,13 +1931,13 @@ SMALLINT UNSIGNED: JSON format GROUP BY
 
 SMALLINT UNSIGNED: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":0}
+[{"foo":-2,"MAX(val)":1}
+,{"foo":-1,"MAX(val)":65535}
+,{"foo":0,"MAX(val)":0}
 ,{"foo":1,"MAX(val)":1000}
 ,{"foo":2,"MAX(val)":1000}
 ,{"foo":3,"MAX(val)":0}
 ,{"foo":4,"MAX(val)":1}
-,{"foo":-2,"MAX(val)":1}
-,{"foo":-1,"MAX(val)":65535}
 ]
 }
 ==========
@@ -2406,11 +2406,11 @@ Number of output lines, including header: 2
 MEDIUMINT: JSON format GROUP BY
 {"data":
 [{"val":null,"cnt":42}
-,{"val":0,"cnt":34}
 ,{"val":-8388608,"cnt":30}
+,{"val":-1,"cnt":32}
+,{"val":0,"cnt":34}
 ,{"val":1,"cnt":30}
 ,{"val":8388607,"cnt":32}
-,{"val":-1,"cnt":32}
 ]
 }
 ==========
@@ -2419,13 +2419,13 @@ MEDIUMINT: JSON format GROUP BY
 
 MEDIUMINT: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":-8388608}
+[{"foo":-2,"MAX(val)":8388607}
+,{"foo":-1,"MAX(val)":8388607}
+,{"foo":0,"MAX(val)":-8388608}
 ,{"foo":1,"MAX(val)":0}
 ,{"foo":2,"MAX(val)":1}
 ,{"foo":3,"MAX(val)":-8388608}
 ,{"foo":4,"MAX(val)":-1}
-,{"foo":-2,"MAX(val)":8388607}
-,{"foo":-1,"MAX(val)":8388607}
 ]
 }
 ==========
@@ -2903,13 +2903,13 @@ MEDIUMINT UNSIGNED: JSON format GROUP BY
 
 MEDIUMINT UNSIGNED: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":0}
+[{"foo":-2,"MAX(val)":1}
+,{"foo":-1,"MAX(val)":16777215}
+,{"foo":0,"MAX(val)":0}
 ,{"foo":1,"MAX(val)":10000}
 ,{"foo":2,"MAX(val)":10000}
 ,{"foo":3,"MAX(val)":0}
 ,{"foo":4,"MAX(val)":1}
-,{"foo":-2,"MAX(val)":1}
-,{"foo":-1,"MAX(val)":16777215}
 ]
 }
 ==========
@@ -3378,11 +3378,11 @@ Number of output lines, including header: 2
 INT: JSON format GROUP BY
 {"data":
 [{"val":null,"cnt":42}
-,{"val":0,"cnt":34}
 ,{"val":-2147483648,"cnt":30}
+,{"val":-1,"cnt":32}
+,{"val":0,"cnt":34}
 ,{"val":1,"cnt":30}
 ,{"val":2147483647,"cnt":32}
-,{"val":-1,"cnt":32}
 ]
 }
 ==========
@@ -3391,13 +3391,13 @@ INT: JSON format GROUP BY
 
 INT: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":-2147483648}
+[{"foo":-2,"MAX(val)":2147483647}
+,{"foo":-1,"MAX(val)":2147483647}
+,{"foo":0,"MAX(val)":-2147483648}
 ,{"foo":1,"MAX(val)":0}
 ,{"foo":2,"MAX(val)":1}
 ,{"foo":3,"MAX(val)":-2147483648}
 ,{"foo":4,"MAX(val)":-1}
-,{"foo":-2,"MAX(val)":2147483647}
-,{"foo":-1,"MAX(val)":2147483647}
 ]
 }
 ==========
@@ -3875,13 +3875,13 @@ INT UNSIGNED: JSON format GROUP BY
 
 INT UNSIGNED: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":0}
+[{"foo":-2,"MAX(val)":1}
+,{"foo":-1,"MAX(val)":4294967295}
+,{"foo":0,"MAX(val)":0}
 ,{"foo":1,"MAX(val)":1000000}
 ,{"foo":2,"MAX(val)":1000000}
 ,{"foo":3,"MAX(val)":0}
 ,{"foo":4,"MAX(val)":1}
-,{"foo":-2,"MAX(val)":1}
-,{"foo":-1,"MAX(val)":4294967295}
 ]
 }
 ==========
@@ -4341,11 +4341,11 @@ Number of output lines, including header: 2
 BIGINT: JSON format GROUP BY
 {"data":
 [{"val":null,"cnt":42}
-,{"val":0,"cnt":34}
 ,{"val":-9223372036854775808,"cnt":30}
+,{"val":-1,"cnt":32}
+,{"val":0,"cnt":34}
 ,{"val":1,"cnt":30}
 ,{"val":9223372036854775807,"cnt":32}
-,{"val":-1,"cnt":32}
 ]
 }
 ==========
@@ -4354,13 +4354,13 @@ BIGINT: JSON format GROUP BY
 
 BIGINT: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":-9223372036854775808}
+[{"foo":-2,"MAX(val)":9223372036854775807}
+,{"foo":-1,"MAX(val)":9223372036854775807}
+,{"foo":0,"MAX(val)":-9223372036854775808}
 ,{"foo":1,"MAX(val)":0}
 ,{"foo":2,"MAX(val)":1}
 ,{"foo":3,"MAX(val)":-9223372036854775808}
 ,{"foo":4,"MAX(val)":-1}
-,{"foo":-2,"MAX(val)":9223372036854775807}
-,{"foo":-1,"MAX(val)":9223372036854775807}
 ]
 }
 ==========
@@ -4818,8 +4818,8 @@ BIGINT UNSIGNED: JSON format GROUP BY
 {"data":
 [{"val":null,"cnt":49}
 ,{"val":0,"cnt":33}
-,{"val":1000000000,"cnt":41}
 ,{"val":1,"cnt":41}
+,{"val":1000000000,"cnt":41}
 ,{"val":18446744073709551615,"cnt":36}
 ]
 }
@@ -4829,13 +4829,13 @@ BIGINT UNSIGNED: JSON format GROUP BY
 
 BIGINT UNSIGNED: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":0}
+[{"foo":-2,"MAX(val)":1}
+,{"foo":-1,"MAX(val)":18446744073709551615}
+,{"foo":0,"MAX(val)":0}
 ,{"foo":1,"MAX(val)":1000000000}
 ,{"foo":2,"MAX(val)":1000000000}
 ,{"foo":3,"MAX(val)":0}
 ,{"foo":4,"MAX(val)":1}
-,{"foo":-2,"MAX(val)":1}
-,{"foo":-1,"MAX(val)":18446744073709551615}
 ]
 }
 ==========
@@ -5304,11 +5304,11 @@ Number of output lines, including header: 2
 FLOAT: JSON format GROUP BY
 {"data":
 [{"val":null,"cnt":42}
+,{"val":-1000000,"cnt":30}
+,{"val":-1.5,"cnt":32}
 ,{"val":0,"cnt":34}
 ,{"val":1.5,"cnt":30}
-,{"val":-1.5,"cnt":32}
 ,{"val":1000000,"cnt":32}
-,{"val":-1000000,"cnt":30}
 ]
 }
 ==========
@@ -5317,13 +5317,13 @@ FLOAT: JSON format GROUP BY
 
 FLOAT: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":-1000000}
+[{"foo":-2,"MAX(val)":1000000}
+,{"foo":-1,"MAX(val)":1000000}
+,{"foo":0,"MAX(val)":-1000000}
 ,{"foo":1,"MAX(val)":0}
 ,{"foo":2,"MAX(val)":1.5}
 ,{"foo":3,"MAX(val)":-1000000}
 ,{"foo":4,"MAX(val)":-1.5}
-,{"foo":-2,"MAX(val)":1000000}
-,{"foo":-1,"MAX(val)":1000000}
 ]
 }
 ==========
@@ -5792,11 +5792,11 @@ Number of output lines, including header: 2
 DOUBLE: JSON format GROUP BY
 {"data":
 [{"val":null,"cnt":42}
+,{"val":-1000000000,"cnt":30}
+,{"val":-1.5,"cnt":32}
 ,{"val":0,"cnt":34}
 ,{"val":1.5,"cnt":30}
-,{"val":-1.5,"cnt":32}
 ,{"val":1000000000,"cnt":32}
-,{"val":-1000000000,"cnt":30}
 ]
 }
 ==========
@@ -5805,13 +5805,13 @@ DOUBLE: JSON format GROUP BY
 
 DOUBLE: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":-1000000000}
+[{"foo":-2,"MAX(val)":1000000000}
+,{"foo":-1,"MAX(val)":1000000000}
+,{"foo":0,"MAX(val)":-1000000000}
 ,{"foo":1,"MAX(val)":0}
 ,{"foo":2,"MAX(val)":1.5}
 ,{"foo":3,"MAX(val)":-1000000000}
 ,{"foo":4,"MAX(val)":-1.5}
-,{"foo":-2,"MAX(val)":1000000000}
-,{"foo":-1,"MAX(val)":1000000000}
 ]
 }
 ==========
@@ -6289,13 +6289,13 @@ DECIMAL(5,2): JSON format GROUP BY
 
 DECIMAL(5,2): JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":-999.99}
+[{"foo":-2,"MAX(val)":0}
+,{"foo":-1,"MAX(val)":999.99}
+,{"foo":0,"MAX(val)":-999.99}
 ,{"foo":1,"MAX(val)":1.5}
 ,{"foo":2,"MAX(val)":1.5}
 ,{"foo":3,"MAX(val)":-999.99}
 ,{"foo":4,"MAX(val)":0}
-,{"foo":-2,"MAX(val)":0}
-,{"foo":-1,"MAX(val)":999.99}
 ]
 }
 ==========
@@ -6773,13 +6773,13 @@ DECIMAL(15,4): JSON format GROUP BY
 
 DECIMAL(15,4): JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":-99999999999.9999}
+[{"foo":-2,"MAX(val)":0}
+,{"foo":-1,"MAX(val)":99999999999.9999}
+,{"foo":0,"MAX(val)":-99999999999.9999}
 ,{"foo":1,"MAX(val)":1.5}
 ,{"foo":2,"MAX(val)":1.5}
 ,{"foo":3,"MAX(val)":-99999999999.9999}
 ,{"foo":4,"MAX(val)":0}
-,{"foo":-2,"MAX(val)":0}
-,{"foo":-1,"MAX(val)":99999999999.9999}
 ]
 }
 ==========
@@ -7269,13 +7269,13 @@ DECIMAL(30,10): JSON format GROUP BY
 
 DECIMAL(30,10): JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":-100000000000000000000}
+[{"foo":-2,"MAX(val)":0}
+,{"foo":-1,"MAX(val)":100000000000000000000}
+,{"foo":0,"MAX(val)":-100000000000000000000}
 ,{"foo":1,"MAX(val)":1.5}
 ,{"foo":2,"MAX(val)":1.5}
 ,{"foo":3,"MAX(val)":-100000000000000000000}
 ,{"foo":4,"MAX(val)":0}
-,{"foo":-2,"MAX(val)":0}
-,{"foo":-1,"MAX(val)":100000000000000000000}
 ]
 }
 ==========
@@ -7753,13 +7753,13 @@ DECIMAL(10,0): JSON format GROUP BY
 
 DECIMAL(10,0): JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":-9999999999}
+[{"foo":-2,"MAX(val)":0}
+,{"foo":-1,"MAX(val)":9999999999}
+,{"foo":0,"MAX(val)":-9999999999}
 ,{"foo":1,"MAX(val)":1}
 ,{"foo":2,"MAX(val)":1}
 ,{"foo":3,"MAX(val)":-9999999999}
 ,{"foo":4,"MAX(val)":0}
-,{"foo":-2,"MAX(val)":0}
-,{"foo":-1,"MAX(val)":9999999999}
 ]
 }
 ==========
@@ -8237,13 +8237,13 @@ DECIMAL(10,10): JSON format GROUP BY
 
 DECIMAL(10,10): JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":-0.9999999999}
+[{"foo":-2,"MAX(val)":0}
+,{"foo":-1,"MAX(val)":0.9999999999}
+,{"foo":0,"MAX(val)":-0.9999999999}
 ,{"foo":1,"MAX(val)":0.5}
 ,{"foo":2,"MAX(val)":0.5}
 ,{"foo":3,"MAX(val)":-0.9999999999}
 ,{"foo":4,"MAX(val)":0}
-,{"foo":-2,"MAX(val)":0}
-,{"foo":-1,"MAX(val)":0.9999999999}
 ]
 }
 ==========
@@ -8888,13 +8888,13 @@ DECIMAL(65,30): JSON format GROUP BY
 
 DECIMAL(65,30): JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":-100000000000000000000000000000000000}
+[{"foo":-2,"MAX(val)":100000000000000000000000000000000000}
+,{"foo":-1,"MAX(val)":50000000000000000000000000000000000}
+,{"foo":0,"MAX(val)":-100000000000000000000000000000000000}
 ,{"foo":1,"MAX(val)":50000000000000000000000000000000000}
 ,{"foo":2,"MAX(val)":50000000000000000000000000000000000}
 ,{"foo":3,"MAX(val)":-100000000000000000000000000000000000}
 ,{"foo":4,"MAX(val)":1.5}
-,{"foo":-2,"MAX(val)":100000000000000000000000000000000000}
-,{"foo":-1,"MAX(val)":50000000000000000000000000000000000}
 ]
 }
 ==========
@@ -9385,13 +9385,13 @@ DECIMAL(30,10) UNSIGNED: JSON format GROUP BY
 
 DECIMAL(30,10) UNSIGNED: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":0}
+[{"foo":-2,"MAX(val)":1.5}
+,{"foo":-1,"MAX(val)":100000000000000000000}
+,{"foo":0,"MAX(val)":0}
 ,{"foo":1,"MAX(val)":1.5}
 ,{"foo":2,"MAX(val)":100000000000000000000}
 ,{"foo":3,"MAX(val)":0}
 ,{"foo":4,"MAX(val)":1.5}
-,{"foo":-2,"MAX(val)":1.5}
-,{"foo":-1,"MAX(val)":100000000000000000000}
 ]
 }
 ==========
@@ -9870,13 +9870,13 @@ DECIMAL(10,0) UNSIGNED: JSON format GROUP BY
 
 DECIMAL(10,0) UNSIGNED: JSON format aggregated
 {"data":
-[{"foo":0,"MAX(val)":0}
+[{"foo":-2,"MAX(val)":1}
+,{"foo":-1,"MAX(val)":9999999999}
+,{"foo":0,"MAX(val)":0}
 ,{"foo":1,"MAX(val)":1}
 ,{"foo":2,"MAX(val)":9999999999}
 ,{"foo":3,"MAX(val)":0}
 ,{"foo":4,"MAX(val)":1}
-,{"foo":-2,"MAX(val)":1}
-,{"foo":-1,"MAX(val)":9999999999}
 ]
 }
 ==========
@@ -14770,15 +14770,15 @@ VARCHAR(30) CHARACTER SET utf8mb4: JSON format GROUP BY
 [{"val":null,"cnt":22}
 ,{"val":"","cnt":14}
 ,{"val":"a","cnt":16}
+,{"val":"åäö_测试","cnt":9}
+,{"val":"𝕳𝖊𝖑𝖑𝖔🌍","cnt":23}
 ,{"val":"val1","cnt":14}
 ,{"val":"val2","cnt":20}
 ,{"val":"val3","cnt":17}
-,{"val":"åäö_测试","cnt":9}
-,{"val":"𝕳𝖊𝖑𝖑𝖔🌍","cnt":23}
+,{"val":"y𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳","cnt":13}
 ,{"val":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyx","cnt":14}
 ,{"val":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy","cnt":18}
 ,{"val":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyz","cnt":20}
-,{"val":"y𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳","cnt":13}
 ]
 }
 ==========
@@ -15359,15 +15359,15 @@ Number of output lines, including header: 2
 VARCHAR(767) CHARACTER SET utf8mb4: JSON format GROUP BY
 {"data":
 [{"val":null,"cnt":28}
-,{"val":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy","cnt":21}
 ,{"val":"","cnt":15}
 ,{"val":"a","cnt":18}
+,{"val":"åäö_测试","cnt":21}
+,{"val":"𝕳𝖊𝖑𝖑𝖔🌍","cnt":20}
 ,{"val":"val1","cnt":22}
 ,{"val":"val2","cnt":19}
 ,{"val":"val3","cnt":12}
-,{"val":"åäö_测试","cnt":21}
-,{"val":"𝕳𝖊𝖑𝖑𝖔🌍","cnt":20}
 ,{"val":"y𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳","cnt":24}
+,{"val":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy","cnt":21}
 ]
 }
 ==========
@@ -17110,18 +17110,18 @@ VARCHAR(100) CHARACTER SET latin2: JSON format GROUP BY
 [{"val":null,"cnt":15}
 ,{"val":"","cnt":10}
 ,{"val":"a","cnt":13}
+,{"val":"ABC","cnt":17}
 ,{"val":"Kz","cnt":13}
 ,{"val":"Ln","cnt":11}
-,{"val":"Lp","cnt":21}
-,{"val":"Ma","cnt":16}
-,{"val":"ABC","cnt":17}
-,{"val":"XYZ","cnt":18}
 ,{"val":"Lodz","cnt":4}
+,{"val":"Lp","cnt":21}
+,{"val":"Łódź","cnt":12}
+,{"val":"Łódź_test","cnt":11}
+,{"val":"Ma","cnt":16}
 ,{"val":"val1","cnt":10}
 ,{"val":"val2","cnt":13}
 ,{"val":"val3","cnt":16}
-,{"val":"Łódź","cnt":12}
-,{"val":"Łódź_test","cnt":11}
+,{"val":"XYZ","cnt":18}
 ]
 }
 ==========

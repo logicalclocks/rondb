@@ -3841,11 +3841,20 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
       return;
     } else if (nodePtr.p->phase == ZINIT || nodePtr.p->phase == ZAPI_INACTIVE) {
       jam();
-      g_eventLogger->info("Open up communication to node %u after activation",
-                          nodePtr.i);
-      signal->theData[0] = 0;
-      signal->theData[1] = nodePtr.i;
-      sendSignal(TRPMAN_REF, GSN_OPEN_COMORD, signal, 2, JBB);
+      NodeRecPtr myNodePtr;
+      myNodePtr.i = getOwnNodeId();
+      ptrAss(myNodePtr, nodeRec);
+      if (myNodePtr.p->phase == ZINIT) {
+        g_eventLogger->info("QMGR: activation defers communication to node %u"
+                            " while own phase is ZINIT",
+                            nodePtr.i);
+      } else {
+        g_eventLogger->info("Open up communication to node %u after activation",
+                            nodePtr.i);
+        signal->theData[0] = 0;
+        signal->theData[1] = nodePtr.i;
+        sendSignal(TRPMAN_REF, GSN_OPEN_COMORD, signal, 2, JBB);
+      }
     } else if (nodePtr.p->phase != ZRUNNING &&
                nodePtr.p->phase != ZAPI_ACTIVE) {
       jam();
@@ -4441,9 +4450,21 @@ void Qmgr::checkStartInterface(Signal* signal, NDB_TICKS now)
         set_hb_count(nodePtr.i) = 0;
         if (!g_not_active_nodes.get(nodePtr.i)) {
           jam();
-          signal->theData[0] = 0;
-          signal->theData[1] = nodePtr.i;
-          sendSignal(TRPMAN_REF, GSN_OPEN_COMORD, signal, 2, JBB);
+          NodeRecPtr myNodePtr;
+          myNodePtr.i = getOwnNodeId();
+          ptrAss(myNodePtr, nodeRec);
+          if (myNodePtr.p->phase != ZINIT) {
+            jam();
+            g_eventLogger->info("Open communication to node %u after"
+                                " disconnect", nodePtr.i);
+            signal->theData[0] = 0;
+            signal->theData[1] = nodePtr.i;
+            sendSignal(TRPMAN_REF, GSN_OPEN_COMORD, signal, 2, JBB);
+          } else {
+            jam();
+            g_eventLogger->info("Open communication to active node %u when"
+                                " we reach start phase 1", nodePtr.i);
+          }
         }
       } else {
         jam();
@@ -8243,6 +8264,21 @@ void Qmgr::execDUMP_STATE_ORD(Signal *signal) {
   if (signal->theData[0] == 935 && signal->getLength() == 2) {
     SET_ERROR_INSERT_VALUE(935);
     c_error_insert_extra = signal->theData[1];
+  }
+
+  if (signal->theData[0] == DumpStateOrd::QmgrSetNodeInactive &&
+      signal->getLength() >= 2) {
+    const Uint32 nodeId = signal->theData[1];
+    const bool qmgr_only = signal->getLength() >= 3 && signal->theData[2] == 1;
+    if (nodeId > 0 && nodeId < MAX_NODES &&
+        getNodeInfo(nodeId).getType() == NodeInfo::DB) {
+      g_eventLogger->info("QMGR: DUMP 936 marking node %u inactive%s", nodeId,
+                          qmgr_only ? " in QMGR only" : "");
+      g_not_active_nodes.set(nodeId);
+      if (!qmgr_only) {
+        globalTransporterRegistry.set_active_node(nodeId, 0, true);
+      }
+    }
   }
 #endif
 

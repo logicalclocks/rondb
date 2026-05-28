@@ -4179,12 +4179,15 @@ void Ndbcntr::execDUMP_STATE_ORD(Signal *signal) {
     return;
   }
 
-  if (arg == 71) {
+  if (arg == DumpStateOrd::NdbcntrStallStartPhase) {
 #ifdef ERROR_INSERT
     if (signal->getLength() == 2) {
       c_error_insert_extra = signal->theData[1];
+      g_eventLogger->info("NDBCNTR: DUMP 71 stalling start phase %u",
+                          c_error_insert_extra);
       SET_ERROR_INSERT_VALUE(1002);
     } else if (ERROR_INSERTED(1002)) {
+      g_eventLogger->info("NDBCNTR: DUMP 71 clearing start phase stall");
       CLEAR_ERROR_INSERT_VALUE;
     }
 #endif
