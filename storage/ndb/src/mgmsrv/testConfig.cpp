@@ -402,6 +402,140 @@ static void test_param_values(void) {
   }
 }
 
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+/*
+ * Helper: return true iff (node_id1, node_id2) matches the unordered
+ * pair (expected1, expected2). The RDMA section validator does not
+ * normalise the order of NodeId1 / NodeId2, so the test iterates
+ * connection sections and matches either ordering.
+ */
+static bool same_node_pair(Uint32 node_id1, Uint32 node_id2, Uint32 expected1,
+                           Uint32 expected2) {
+  return (node_id1 == expected1 && node_id2 == expected2) ||
+         (node_id1 == expected2 && node_id2 == expected1);
+}
+
+/*
+ * RDMA endpoint validation. Exercises five cases against the
+ * ConfigInfo::checkConnectionConstraints() rule:
+ *
+ *   1. DB-DB pair: accepted unconditionally (no gate consulted).
+ *   2. API-DB pair with AllowApiToDbRdma=1: accepted, and the
+ *      generated config exposes a single RDMA connection between the
+ *      API and DB node with the correct server-side node id.
+ *   3. API-DB pair WITHOUT AllowApiToDbRdma: REJECTED with the new
+ *      "set AllowApiToDbRdma=1 ... to opt in" error.
+ *   4. API-API pair: always rejected (gate does not even apply --
+ *      RDMA never permits API-API).
+ *   5. MGM-DB pair: always rejected (MGM endpoints are not valid
+ *      RDMA peers regardless of gate state).
+ *
+ * The env-var kill switch path (NDB_RDMA_ALLOW_API_TO_DB=kill) is
+ * intentionally NOT exercised here: it would require mutating a
+ * process-wide cached singleton mid-test, which makes the order in
+ * which the singleton initialises sensitive to test ordering. The
+ * gate's two halves are tested separately -- this TAP covers the
+ * config-side half; the env-side half is documented in ConfigInfo
+ * and exercised by operator workflow.
+ */
+static void test_rdma_api_db_connections(void) {
+  ndbout_c("test_rdma_api_db_connections");
+  // DB-DB positive.
+  Config *c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndbd]", "NodeId=2", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=1",
+      "NodeId2=2", NULL);
+  CHECK(c);
+  delete c;
+
+  // API-DB positive with the gate enabled.
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=10",
+      "NodeId2=1", "AllowApiToDbRdma=1", NULL);
+  CHECK(c);
+
+  Uint32 rdma_api_db_connections = 0;
+  Uint32 tcp_shm_api_db_connections = 0;
+  ConfigIter iter(c, CFG_SECTION_CONNECTION);
+  for (; iter.valid(); iter.next()) {
+    Uint32 section_type = 0;
+    Uint32 node_id1 = 0;
+    Uint32 node_id2 = 0;
+    CHECK(iter.get(CFG_TYPE_OF_SECTION, &section_type) == 0);
+    CHECK(iter.get(CFG_CONNECTION_NODE_1, &node_id1) == 0);
+    CHECK(iter.get(CFG_CONNECTION_NODE_2, &node_id2) == 0);
+    if (!same_node_pair(node_id1, node_id2, 1, 10)) continue;
+
+    if (section_type == CONNECTION_TYPE_RDMA) {
+      Uint32 node_id_server = 0;
+      CHECK(iter.get(CFG_CONNECTION_NODE_ID_SERVER, &node_id_server) == 0);
+      CHECK(node_id_server == 1);
+      /* AllowApiToDbRdma must round-trip through the parsed config
+       * exactly as written. */
+      Uint32 allow_api_db = 0;
+      CHECK(iter.get(CFG_RDMA_ALLOW_API_TO_DB, &allow_api_db) == 0);
+      CHECK(allow_api_db == 1);
+      rdma_api_db_connections++;
+    } else if (section_type == CONNECTION_TYPE_TCP ||
+               section_type == CONNECTION_TYPE_SHM) {
+      tcp_shm_api_db_connections++;
+    }
+  }
+  CHECK(rdma_api_db_connections == 1);
+  CHECK(tcp_shm_api_db_connections == 0);
+
+  delete c;
+
+  // API-DB WITHOUT the gate: rejected by the new
+  // "AllowApiToDbRdma=1 ... to opt in" error.
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=10",
+      "NodeId2=1", NULL);
+  CHECK(c == NULL);
+
+  // Explicit AllowApiToDbRdma=0 on an API-DB pair: same rejection.
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=10",
+      "NodeId2=1", "AllowApiToDbRdma=0", NULL);
+  CHECK(c == NULL);
+
+  // API-API negative.
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[mysqld]", "NodeId=11",
+      "HostName=localhost", "[rdma]", "NodeId1=10", "NodeId2=11",
+      NULL);
+  CHECK(c == NULL);
+
+  // API-API negative even with the gate enabled. The gate only
+  // governs API-DB; API-API is not a legal RDMA endpoint pair.
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[mysqld]", "NodeId=11",
+      "HostName=localhost", "[rdma]", "NodeId1=10", "NodeId2=11",
+      "AllowApiToDbRdma=1", NULL);
+  CHECK(c == NULL);
+
+  // MGM-involved negative.
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=10", "HostName=localhost", "[rdma]", "NodeId1=20",
+      "NodeId2=1", NULL);
+  CHECK(c == NULL);
+}
+#endif
+
 static void test_hostname_mycnf(void) {
   ndbout_c("test_hostname_mycnf");
   // Check the special rule for my.cnf that says
@@ -426,6 +560,7 @@ static void test_hostname_mycnf(void) {
   }
 }
 
+
 #include <NdbTap.hpp>
 
 #include <EventLogger.hpp>
@@ -440,6 +575,9 @@ TAPTEST(MgmConfig) {
   checksum_config();
   test_param_values();
   test_hostname_mycnf();
+#ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
+  test_rdma_api_db_connections();
+#endif
   if (false) print_restart_info();
   test_config_v1_with_dyn_ports();
   ndb_end(0);

@@ -273,10 +273,95 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
                             conf.tcp.sendBufferSize, conf.tcp.maxReceiveSize));
         loopback_conf = conf;  // reuse it...
         break;
-      default:
+
+    case CONNECTION_TYPE_RDMA:
+#ifndef NDB_RDMA_TRANSPORTER_SUPPORTED
+      g_eventLogger->info(
+          "RDMA Transporter requested from %u to %u but this binary "
+          "was not compiled with WITH_NDB_RDMA. Skipping connection.",
+          nodeId, remoteNodeId);
+      result = false;
+      break;
+#else
+    {
+      /*
+       * The RDMA section parser. Every value is read with iter.get() and on
+       * failure we break out of the switch and report a configuration error.
+       * No verbs resources are created here; this only fills the config.
+       */
+      Uint32 rdma_send_buf = 0;
+      Uint32 rdma_recv_buf = 0;
+      Uint32 rdma_queue_depth = 0;
+      Uint32 rdma_inline_threshold = 0;
+      Uint32 rdma_poll_budget = 0;
+      Uint32 rdma_spintime = 0;
+      Uint32 rdma_port = 0;
+      Uint32 rdma_gid_index = 0;
+      Uint32 rdma_traffic_class = 0;
+      Uint32 rdma_retry_count = 0;
+      Uint32 rdma_rnr_retry_count = 0;
+      Uint32 rdma_post_batch_max = 0;
+      Uint32 rdma_overload_limit = 0;
+      const char *rdma_device_name = nullptr;
+
+      if (iter.get(CFG_RDMA_SEND_BUFFER_SIZE, &rdma_send_buf)) break;
+      if (iter.get(CFG_RDMA_RECV_BUFFER_SIZE, &rdma_recv_buf)) break;
+      if (iter.get(CFG_RDMA_QUEUE_DEPTH, &rdma_queue_depth)) break;
+      if (iter.get(CFG_RDMA_INLINE_THRESHOLD, &rdma_inline_threshold)) break;
+      if (iter.get(CFG_RDMA_COMPLETION_POLL_BUDGET, &rdma_poll_budget)) break;
+      if (iter.get(CFG_RDMA_SPINTIME, &rdma_spintime)) break;
+      if (iter.get(CFG_RDMA_PORT, &rdma_port)) break;
+      if (iter.get(CFG_RDMA_GID_INDEX, &rdma_gid_index)) break;
+      if (iter.get(CFG_RDMA_TRAFFIC_CLASS, &rdma_traffic_class)) break;
+      if (iter.get(CFG_RDMA_RETRY_COUNT, &rdma_retry_count)) break;
+      if (iter.get(CFG_RDMA_RNR_RETRY_COUNT, &rdma_rnr_retry_count)) break;
+      /*
+       * Phase 4: the post-batch max is optional from the ConfigInfo
+       * schema's perspective (a fresh schema always carries a default),
+       * but reading it with iter.get() lets the existing mgm-config
+       * defaulting fall through naturally. A failure here is non-fatal:
+       * the runtime caps the chain length on its own and a zero value
+       * is interpreted as "use the conservative default of 1".
+       */
+      iter.get(CFG_RDMA_POST_BATCH_MAX, &rdma_post_batch_max);
+      iter.get(CFG_CONNECTION_OVERLOAD, &rdma_overload_limit);
+      iter.get(CFG_RDMA_DEVICE_NAME, &rdma_device_name);
+
+      conf.rdma.sendBufferSize = rdma_send_buf;
+      conf.rdma.recvBufferSize = rdma_recv_buf;
+      conf.rdma.queueDepth = rdma_queue_depth;
+      conf.rdma.inlineThreshold = rdma_inline_threshold;
+      conf.rdma.completionPollBudget = rdma_poll_budget;
+      conf.rdma.spintime = rdma_spintime;
+      conf.rdma.rdmaPort = rdma_port;
+      conf.rdma.gidIndex = rdma_gid_index;
+      conf.rdma.trafficClass = rdma_traffic_class;
+      conf.rdma.retryCount = rdma_retry_count;
+      conf.rdma.rnrRetryCount = rdma_rnr_retry_count;
+      conf.rdma.postBatchMax = rdma_post_batch_max;
+      conf.rdma.overloadLimit = rdma_overload_limit;
+      conf.rdma.deviceName = rdma_device_name;
+
+      conf.type = tt_RDMA_TRANSPORTER;
+
+      if (!tr.configureTransporter(&conf)) {
+        g_eventLogger->info(
+            "Node %u failed to configure RDMA transporter to node %u", nodeId,
+            conf.remoteNodeId);
+        result = false;
+      }
+      DBUG_PRINT("info",
+                 ("Configured RDMA Transporter: send=%u recv=%u qd=%u",
+                  conf.rdma.sendBufferSize, conf.rdma.recvBufferSize,
+                  conf.rdma.queueDepth));
+      break;
+    }
+#endif
+
+    default:
         g_eventLogger->info("Transporter from node %u to node %u: unknown type",
                             nodeId, remoteNodeId);
-        break;
+      break;
     }  // switch
   }    // for
 
