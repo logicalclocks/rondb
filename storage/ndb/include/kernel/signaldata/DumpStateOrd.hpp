@@ -140,10 +140,12 @@ class DumpStateOrd {
     // 20-24 BACKUP
     NdbcntrTestStopOnError = 25,
     NdbcntrStopNodes = 70,
+    NdbcntrStallStartPhase = 71,
     // 100-105 TUP and ACC  
     // 200-240 UTIL
     // 300-305 TRIX
     QmgrErr935 = 935,
+    QmgrSetNodeInactive = 936,
     NdbfsDumpFileStat = 400,
     NdbfsDumpAllFiles = 401,
     NdbfsDumpOpenFiles = 402,

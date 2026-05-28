@@ -1007,7 +1007,7 @@ void TTLPurger::PurgeWorkerJob() {
   std::map<std::string, TTLInfo> local_ttl_cache;
   Int32 shard = -1;
   Int32 n_purge_nodes = 0;
-  unsigned char encoded_now[8];
+  unsigned char encoded_now[8] = {0};
   std::string log_buf;
   size_t pos = 0;
   std::string db_str;
@@ -1031,11 +1031,11 @@ void TTLPurger::PurgeWorkerJob() {
   NdbTransaction* trans = nullptr;
   NdbScanOperation* scan_op = nullptr;
   Int64 packed_last = 0;
-  unsigned char encoded_last[8];
-  unsigned char encoded_curr_purge[8];
-  MYSQL_TIME datetime;
+  unsigned char encoded_last[8] = {0};
+  unsigned char encoded_curr_purge[8] = {0};
+  MYSQL_TIME datetime = {};
   Int64 packed_now = 0;
-  NdbRecAttr* rec_attr[3];
+  NdbRecAttr* rec_attr[3] = {nullptr, nullptr, nullptr};
   bool use_index = false;
   Uint32 purge_window = 0;
 
@@ -1083,7 +1083,7 @@ void TTLPurger::PurgeWorkerJob() {
               db_str.c_str(),
               worker_ndb_->getNdbError().code,
               worker_ndb_->getNdbError().message);
-          goto err;
+	  goto round_err;
         }
         /*
          * Notice:
@@ -1131,7 +1131,7 @@ void TTLPurger::PurgeWorkerJob() {
                           "error: %u(%s). Retry...",
                           watcher_ndb_->getNdbError().code,
                           watcher_ndb_->getNdbError().message);
-      goto err;
+      goto round_err;
     }
     if (shard == kShardNotPurger) {
       g_eventLogger->info("Not the configured purging node, skip purging...");
@@ -1147,13 +1147,13 @@ void TTLPurger::PurgeWorkerJob() {
                           "error: %u(%s). Retry...",
                           watcher_ndb_->getNdbError().code,
                           watcher_ndb_->getNdbError().message);
-      goto err;
+      goto round_err;
     }
 
     GetNow(encoded_now, false);
     if (shard >= kShardFirst && !UpdateLease(encoded_now)) {
       g_eventLogger->warning("[TTL PWorker] Failed to update the lease");
-      goto err;
+      goto round_err;
     }
 
     if (local_ttl_cache.empty()) {
@@ -1170,8 +1170,7 @@ void TTLPurger::PurgeWorkerJob() {
     UpdateStatus(TTLPurgeStatus::State::kRunning);
     sleep_between_each_round = true;
     dict = worker_ndb_->getDictionary();
-    for (iter = local_ttl_cache.begin(); iter != local_ttl_cache.end();
-         iter++) {
+    for (iter = local_ttl_cache.begin(); iter != local_ttl_cache.end();) {
       if (purge_worker_exit_) {
         break;
       }
@@ -1180,7 +1179,7 @@ void TTLPurger::PurgeWorkerJob() {
         GetNow(encoded_now, false);
         if (shard >= kShardFirst && !UpdateLease(encoded_now)) {
           g_eventLogger->warning("[TTL PWorker] Failed to update the lease[2]");
-          goto err;
+	  goto table_err;
         }
       }
       // Note: cache_updated_ is only checked at round start (line 1067).
@@ -1211,7 +1210,7 @@ void TTLPurger::PurgeWorkerJob() {
             db_str.c_str(),
             worker_ndb_->getNdbError().code,
             worker_ndb_->getNdbError().message);
-        goto err;
+	goto table_err;
       }
       ttl_tab = dict->getTable(table_str.c_str());
       if (ttl_tab == nullptr) {
@@ -1220,15 +1219,16 @@ void TTLPurger::PurgeWorkerJob() {
                                table_str.c_str(),
                                dict->getNdbError().code,
                                dict->getNdbError().message);
-        goto err;
+	goto table_err;
       }
       table_id = ttl_tab->getTableId();
       hash_val = murmur3_32(reinterpret_cast<unsigned char*>(&table_id),
                                              sizeof(int), 0);
-        if (shard >= kShardFirst && n_purge_nodes > 0 &&
-          hash_val % n_purge_nodes != static_cast<Uint32>(shard)) {
-        continue;
-      }
+	      if (shard >= kShardFirst && n_purge_nodes > 0 &&
+		  hash_val % n_purge_nodes != static_cast<Uint32>(shard)) {
+		++iter;
+		continue;
+	      }
       if (shard == kShardNosharding &&
           !iter->second.part_id_offset_applied &&
           ttl_tab->getPartitionCount() > 1) {
@@ -1261,7 +1261,7 @@ retry_trx:
                                table_str.c_str(),
                                dict->getNdbError().code,
                                dict->getNdbError().message);
-        goto err;
+	goto table_err;
       }
       trans = worker_ndb_->startTransaction();
       if (trans == nullptr) {
@@ -1270,7 +1270,7 @@ retry_trx:
                                ", error: %d(%s). Retry...",
                                worker_ndb_->getNdbError().code,
                                worker_ndb_->getNdbError().message);
-        goto err;
+	goto table_err;
       }
       purge_trx_started = true;
 
@@ -1321,7 +1321,7 @@ retry_trx:
                                  ttl_tab->getName(),
                                  trans->getNdbError().code,
                                  trans->getNdbError().message);
-          goto err;
+	  goto table_err;
         }
         index_scan_op->setPartitionId(iter->second.part_id);
         index_scan_op->setTTLPurgeWindowSize(purge_window);
@@ -1344,7 +1344,7 @@ retry_trx:
                                  ttl_tab->getName(),
                                  trans->getNdbError().code,
                                  trans->getNdbError().message);
-          goto err;
+	  goto table_err;
         }
 
         log_buf += "-[";
@@ -1386,7 +1386,7 @@ retry_trx:
                                  ttl_tab->getName(),
                                  trans->getNdbError().code,
                                  trans->getNdbError().message);
-          goto err;
+	  goto table_err;
         }
         if (index_scan_op->setBound(ttl_col_index->getName(),
                             NdbIndexScanOperation::BoundGT, encoded_now)) {
@@ -1396,7 +1396,7 @@ retry_trx:
                                  ttl_tab->getName(),
                                  trans->getNdbError().code,
                                  trans->getNdbError().message);
-          goto err;
+	  goto table_err;
         }
         rec_attr[0] = index_scan_op->getValue(ttl_col_no);
         if (rec_attr[0] == nullptr) {
@@ -1406,7 +1406,7 @@ retry_trx:
                                  ttl_tab->getName(),
                                  trans->getNdbError().code,
                                  trans->getNdbError().message);
-          goto err;
+	  goto table_err;
         }
         if (trans->execute(NdbTransaction::NoCommit) != 0) {
           g_eventLogger->warning("[TTL PWorker] Failed to execute transaction "
@@ -1415,7 +1415,7 @@ retry_trx:
                                  ttl_tab->getName(),
                                  trans->getNdbError().code,
                                  trans->getNdbError().message);
-          goto err;
+	  goto table_err;
         }
         memset(encoded_curr_purge, 0, 8);
         /*
@@ -1474,7 +1474,7 @@ retry_trx:
                                      ttl_tab->getName(),
                                      trans->getNdbError().code,
                                      trans->getNdbError().message);
-              goto err;
+	      goto table_err;
             }
             deletedRows++;
           } while ((check = index_scan_op->nextResult(false)) == 0);
@@ -1486,7 +1486,7 @@ retry_trx:
                                    ttl_tab->getName(),
                                    trans->getNdbError().code,
                                    trans->getNdbError().message);
-            goto err;
+	    goto table_err;
           }
           break;
         }
@@ -1510,7 +1510,7 @@ retry_trx:
                                    ttl_tab->getName(),
                                    iter->second.batch_size);
           }
-          goto err;
+	  goto table_err;
         }
         /**
          * Commit all prepared operations
@@ -1542,7 +1542,7 @@ retry_trx:
                                    ttl_tab->getName(),
                                    iter->second.batch_size);
           }
-          goto err;
+	  goto table_err;
         } else if (*reinterpret_cast<Int64*>(encoded_curr_purge) != 0) {
           packed_last = my_datetime_packed_from_binary(encoded_curr_purge, 0);
           if (purge_tab_iter != purged_pos_.end()) {
@@ -1563,7 +1563,7 @@ retry_trx:
                                  ttl_tab->getName(),
                                  trans->getNdbError().code,
                                  trans->getNdbError().message);
-          goto err;
+	  goto table_err;
         }
         scan_op->setPartitionId(iter->second.part_id);
         scan_op->setTTLPurgeWindowSize(purge_window);
@@ -1576,7 +1576,7 @@ retry_trx:
                                  ttl_tab->getName(),
                                  trans->getNdbError().code,
                                  trans->getNdbError().message);
-          goto err;
+	  goto table_err;
         }
         rec_attr[0] = scan_op->getValue(ttl_col_no);
         if (rec_attr[0] == nullptr) {
@@ -1586,7 +1586,7 @@ retry_trx:
                                  ttl_tab->getName(),
                                  trans->getNdbError().code,
                                  trans->getNdbError().message);
-          goto err;
+	  goto table_err;
         }
         if (trans->execute(NdbTransaction::NoCommit) != 0) {
           g_eventLogger->warning("[TTL PWorker] Failed to execute transaction "
@@ -1595,7 +1595,7 @@ retry_trx:
                                  ttl_tab->getName(),
                                  trans->getNdbError().code,
                                  trans->getNdbError().message);
-          goto err;
+	  goto table_err;
         }
         /*
          * Sleeping here can produce error
@@ -1621,7 +1621,7 @@ retry_trx:
                                      ttl_tab->getName(),
                                      trans->getNdbError().code,
                                      trans->getNdbError().message);
-              goto err;
+	      goto table_err;
             }
             deletedRows++;
           } while ((check = scan_op->nextResult(false)) == 0);
@@ -1633,7 +1633,7 @@ retry_trx:
                                    ttl_tab->getName(),
                                    trans->getNdbError().code,
                                    trans->getNdbError().message);
-            goto err;
+	    goto table_err;
           }
 
           break;
@@ -1659,7 +1659,7 @@ retry_trx:
                                    ttl_tab->getName(),
                                    iter->second.batch_size);
           }
-          goto err;
+	  goto table_err;
         }
         /**
          * Commit all prepared operations
@@ -1691,7 +1691,7 @@ retry_trx:
                                    ttl_tab->getName(),
                                    iter->second.batch_size);
           }
-          goto err;
+	  goto table_err;
         }
       } else {
         g_eventLogger->warning("[TTL PWorker] Failed to get Table/Index "
@@ -1700,7 +1700,7 @@ retry_trx:
                                table_str.c_str(),
                                dict->getNdbError().code,
                                dict->getNdbError().message);
-        goto err;
+	goto table_err;
       }
       worker_ndb_->closeTransaction(trans);
       trans = nullptr;
@@ -1749,10 +1749,11 @@ retry_trx:
         }
       }
 
-      // Finish 1 batch
-      // keep the ttl_tab in local table cache ?
-      continue;
-err:
+	      // Finish 1 batch
+	      // keep the ttl_tab in local table cache ?
+	      ++iter;
+	      continue;
+table_err:
       if (trans != nullptr) {
         worker_ndb_->closeTransaction(trans);
         trans = nullptr;
@@ -1850,8 +1851,9 @@ err:
           UpdateStatus(TTLPurgeStatus::State::kError);
           break;
         }
-        continue;  // skip to next table
-      }
+		++iter;
+		continue;  // skip to next table
+	      }
     }
     // Round completed without pre-trx escalation, reset the counter
     pre_trx_failures = 0;
@@ -1870,6 +1872,37 @@ err:
       if (lower < 100) lower = 100;  // Minimum 100ms
       RandomSleep(lower, upper);
     }
+    continue;
+round_err:
+    if (trans != nullptr) {
+      worker_ndb_->closeTransaction(trans);
+      trans = nullptr;
+    }
+    if (purge_worker_exit_) {
+      break;
+    }
+    // Pre-round failures (cache_updated_ walk / GetShard / GetPurgeWindow /
+    // pre-loop UpdateLease) share the do-while-scoped pre_trx_failures
+    // counter with table_err's pre-trx branch so persistent failures
+    // eventually escalate instead of sleeping silently forever. The counter
+    // is reset to 0 only after a fully successful round (see end of the
+    // table for-loop). We deliberately skip the per-table dictionary
+    // invalidation that table_err performs on escalation: most round_err
+    // failures are before selecting a specific user TTL table, and the
+    // cache_updated_ walk already failed while trying to refresh cached
+    // objects, so escalation only asks the schema worker to restart.
+    pre_trx_failures++;
+    if (pre_trx_failures > kMaxTrxRetryTimes) {
+      g_eventLogger->warning("[TTL PWorker] Pre-round errors exceeded %d "
+                             "times... Quit and notify schema worker",
+                             kMaxTrxRetryTimes);
+      purge_worker_asks_for_retry_ = true;
+      purge_worker_exit_ = true;
+      UpdateStatus(TTLPurgeStatus::State::kError);
+      break;
+    }
+    sleep(1);
+    continue;
   } while (!purge_worker_exit_);
 
   // No need to return PurgeWorker NdbObject here, SchemaWatch will do that.
