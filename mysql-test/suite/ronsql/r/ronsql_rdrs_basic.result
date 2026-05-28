@@ -160,6 +160,8 @@ SELECT
 FROM api_scan
 GROUP BY
   C0:`cchar`
+ORDER BY
+  C0:`cchar` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -169,6 +171,7 @@ Max    A00  r00 A00:MAX <- r00:`sint16`
 Execute as table scan.
 No filters.
 
+Result sorted by `cchar` ASC.
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
@@ -182,6 +185,8 @@ SELECT
 FROM api_scan
 GROUP BY
   C0:`cchar`
+ORDER BY
+  C0:`cchar` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -191,6 +196,7 @@ Max    A00  r00 A00:MAX <- r00:`sint16`
 Execute as table scan.
 No filters.
 
+Result sorted by `cchar` ASC.
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
@@ -204,6 +210,8 @@ SELECT
 FROM api_scan
 GROUP BY
   C0:`cchar`
+ORDER BY
+  C0:`cchar` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -213,6 +221,7 @@ Max    A00  r00 A00:MAX <- r00:`sint16`
 Execute as table scan.
 No filters.
 
+Result sorted by `cchar` ASC.
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
@@ -226,6 +235,8 @@ SELECT
 FROM api_scan
 GROUP BY
   C0:`cchar`
+ORDER BY
+  C0:`cchar` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -235,6 +246,7 @@ Max    A00  r00 A00:MAX <- r00:`sint16`
 Execute as table scan.
 No filters.
 
+Result sorted by `cchar` ASC.
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
@@ -252,6 +264,8 @@ SELECT
 FROM api_scan
 GROUP BY
   C0:`cchar`
+ORDER BY
+  C0:`cchar` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -261,6 +275,7 @@ Max    A00  r00 A00:MAX <- r00:`sint16`
 Execute as table scan.
 No filters.
 
+Result sorted by `cchar` ASC.
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
@@ -274,6 +289,8 @@ SELECT
 FROM api_scan
 GROUP BY
   C0:`cchar`
+ORDER BY
+  C0:`cchar` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -283,6 +300,7 @@ Max    A00  r00 A00:MAX <- r00:`sint16`
 Execute as table scan.
 No filters.
 
+Result sorted by `cchar` ASC.
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
@@ -312,6 +330,8 @@ SELECT
 FROM api_scan
 GROUP BY
   C0:`cchar`
+ORDER BY
+  C0:`cchar` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -321,6 +341,7 @@ Max    A00  r00 A00:MAX <- r00:`sint16`
 Execute as table scan.
 No filters.
 
+Result sorted by `cchar` ASC.
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
@@ -334,6 +355,8 @@ SELECT
 FROM api_scan
 GROUP BY
   C0:`cchar`
+ORDER BY
+  C0:`cchar` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -343,6 +366,7 @@ Max    A00  r00 A00:MAX <- r00:`sint16`
 Execute as table scan.
 No filters.
 
+Result sorted by `cchar` ASC.
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
@@ -400,6 +424,8 @@ SELECT
 FROM api_scan
 GROUP BY
   C0:`cchar`
+ORDER BY
+  C0:`cchar` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -409,6 +435,7 @@ Max    A00  r00 A00:MAX <- r00:`sint16`
 Execute as table scan.
 No filters.
 
+Result sorted by `cchar` ASC.
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
@@ -422,6 +449,8 @@ SELECT
 FROM api_scan
 GROUP BY
   C0:`cchar`
+ORDER BY
+  C0:`cchar` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -431,6 +460,7 @@ Max    A00  r00 A00:MAX <- r00:`sint16`
 Execute as table scan.
 No filters.
 
+Result sorted by `cchar` ASC.
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
@@ -444,6 +474,8 @@ SELECT
 FROM api_scan
 GROUP BY
   C0:`cchar`
+ORDER BY
+  C0:`cchar` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -453,6 +485,7 @@ Max    A00  r00 A00:MAX <- r00:`sint16`
 Execute as table scan.
 No filters.
 
+Result sorted by `cchar` ASC.
 Output in mysql-style tab separated, header-less format.
 The program for post-processing and output has 8 instructions.
 
@@ -466,6 +499,8 @@ SELECT
 FROM api_scan
 GROUP BY
   C0:`cchar`
+ORDER BY
+  C0:`cchar` ASC
 
 Aggregation program (2 instructions):
 Instr. DEST SRC DESCRIPTION
@@ -475,6 +510,7 @@ Max    A00  r00 A00:MAX <- r00:`sint16`
 Execute as table scan.
 No filters.
 
+Result sorted by `cchar` ASC.
 Output in mysql-style tab separated, header-less format.
 The program for post-processing and output has 8 instructions.
 

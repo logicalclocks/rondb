@@ -265,12 +265,12 @@ RS_Status ronsql_dal(const char* database,
   assert(ep->ndb == NULL);
   assert(ndb_object != NULL);
   ep->ndb = ndb_object;
-  const char* saved_database_name = ndb_object->getDatabaseName();
+  std::string saved_database_name = ndb_object->getDatabaseName();
   ndb_object->setDatabaseName(database);
   DEB_TRACE();
   status = ronsql_op(*ep);
   DEB_TRACE();
-  ndb_object->setDatabaseName(saved_database_name);
+  ndb_object->setDatabaseName(saved_database_name.c_str());
   ep->ndb = NULL;
   rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object,
                                            &status,
