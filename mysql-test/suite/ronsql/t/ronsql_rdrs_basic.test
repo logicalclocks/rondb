@@ -27,7 +27,7 @@ let $rdrs_ronsql = curl --no-progress-meter --fail-with-body -X POST
   -H "Content-Type: application/json"
   http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql -d;
 
---let $query=select cchar as c, max(sint16) from api_scan group by cchar;
+--let $query=select cchar as c, max(sint16) from api_scan group by cchar order by cchar;
 --let $ronsql_cli=$RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING
 
 

@@ -1,11 +1,5 @@
-<<<<<<<< HEAD:storage/ndb/src/common/util/xxhash_avx2.cpp
-/*
-   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-    Use is subject to license terms.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
-========
 /* Copyright (c) 2025, Oracle and/or its affiliates.
->>>>>>>> 0896fcd61dec11a0904166911a0126f59daaa1bf:unittest/gunit/mysys_stacktrace-t.cc
+   Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,26 +20,8 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-<<<<<<<< HEAD:storage/ndb/src/common/util/xxhash_avx2.cpp
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
-
-#include <ndb_global.h>
-
-/* XXH hash function */
-#define XXH_INLINE_ALL
-#if defined (__AVX2__)
-#define XXH_VECTOR_TYPE 2 //AVX2 implementation
-#endif
-#include <util/ndb_xxhash.h>
-
-Uint64
-rondb_xxhash_avx2(const char* keybuf, Uint32 keylen_bytes)
-{
-  return XXH3_64bits(keybuf, keylen_bytes);
-}
-========
-   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include <gtest/gtest.h>
 #include <stdio.h>
@@ -74,4 +50,3 @@ TEST(Mysys, StackTrace) {
 }
 
 #endif  // HAVE_STACKTRACE
->>>>>>>> 0896fcd61dec11a0904166911a0126f59daaa1bf:unittest/gunit/mysys_stacktrace-t.cc
