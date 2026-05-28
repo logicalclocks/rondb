@@ -298,6 +298,7 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
       Uint32 rdma_port = 0;
       Uint32 rdma_gid_index = 0;
       Uint32 rdma_traffic_class = 0;
+      Uint32 rdma_service_level = 0;
       Uint32 rdma_retry_count = 0;
       Uint32 rdma_rnr_retry_count = 0;
       Uint32 rdma_overload_limit = 0;
@@ -312,6 +313,7 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
       if (iter.get(CFG_RDMA_PORT, &rdma_port)) break;
       if (iter.get(CFG_RDMA_GID_INDEX, &rdma_gid_index)) break;
       if (iter.get(CFG_RDMA_TRAFFIC_CLASS, &rdma_traffic_class)) break;
+      if (iter.get(CFG_RDMA_SERVICE_LEVEL, &rdma_service_level)) break;
       if (iter.get(CFG_RDMA_RETRY_COUNT, &rdma_retry_count)) break;
       if (iter.get(CFG_RDMA_RNR_RETRY_COUNT, &rdma_rnr_retry_count)) break;
       iter.get(CFG_CONNECTION_OVERLOAD, &rdma_overload_limit);
@@ -326,6 +328,7 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
       conf.rdma.rdmaPort = rdma_port;
       conf.rdma.gidIndex = rdma_gid_index;
       conf.rdma.trafficClass = rdma_traffic_class;
+      conf.rdma.serviceLevel = rdma_service_level;
       conf.rdma.retryCount = rdma_retry_count;
       conf.rdma.rnrRetryCount = rdma_rnr_retry_count;
       conf.rdma.overloadLimit = rdma_overload_limit;

@@ -275,6 +275,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_rdma_port(config->rdma.rdmaPort),
       m_gid_index(config->rdma.gidIndex),
       m_traffic_class(config->rdma.trafficClass),
+      m_service_level(config->rdma.serviceLevel),
       m_retry_count(config->rdma.retryCount),
       m_rnr_retry_count(config->rdma.rnrRetryCount),
       m_device_name(rdma_clone_device_name(config->rdma.deviceName)),
@@ -329,6 +330,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_rdma_port(other->m_rdma_port),
       m_gid_index(other->m_gid_index),
       m_traffic_class(other->m_traffic_class),
+      m_service_level(other->m_service_level),
       m_retry_count(other->m_retry_count),
       m_rnr_retry_count(other->m_rnr_retry_count),
       m_device_name(rdma_clone_device_name(other->m_device_name)),
@@ -413,6 +415,7 @@ bool RDMA_Transporter::configure_derived(
   if (conf->rdma.rdmaPort != m_rdma_port) return false;
   if (conf->rdma.gidIndex != m_gid_index) return false;
   if (conf->rdma.trafficClass != m_traffic_class) return false;
+  if (conf->rdma.serviceLevel != m_service_level) return false;
   if (conf->rdma.retryCount != m_retry_count) return false;
   if (conf->rdma.rnrRetryCount != m_rnr_retry_count) return false;
   if (!rdma_device_name_equal(conf->rdma.deviceName, m_device_name)) {
@@ -2844,7 +2847,13 @@ bool RDMA_Transporter::qp_transition_to_rtr(const void *peer_record) {
   attr.ah_attr.is_global = (peer->link_layer == IBV_LINK_LAYER_ETHERNET) ? 1
                                                                         : 0;
   attr.ah_attr.dlid = ntohs(peer->lid);
-  attr.ah_attr.sl = 0;
+  /*
+   * IB SL is a 4-bit field; the ConfigInfo schema range is 0..15 but
+   * we cast through uint8_t and mask defensively in case a future
+   * caller bypasses the schema. Default value 0 reproduces the
+   * previous hardcoded behaviour exactly.
+   */
+  attr.ah_attr.sl = (uint8_t)(m_service_level & 0x0Fu);
   attr.ah_attr.src_path_bits = 0;
   attr.ah_attr.port_num = (uint8_t)m_rdma_port;
   if (attr.ah_attr.is_global) {

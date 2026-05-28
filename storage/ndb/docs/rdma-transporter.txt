@@ -40,7 +40,8 @@ same config.ini. The most-tuned parameters are:
     RdmaDevice                 default ""  (first available HCA)
     RdmaPort                   default 1
     RdmaGidIndex               default 0
-    RdmaTrafficClass           default 0
+    RdmaTrafficClass           default 0   (0..255; RoCEv2 grh.traffic_class)
+    RdmaServiceLevel           default 0   (0..15; IB SL / RoCE PCP-equivalent)
     RdmaRetryCount             default 7
     RdmaRnrRetryCount          default 7
 

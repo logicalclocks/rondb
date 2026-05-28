@@ -594,6 +594,15 @@ class RDMA_Transporter : public Transporter {
   Uint32 m_rdma_port;
   Uint32 m_gid_index;
   Uint32 m_traffic_class;
+  /*
+   * IB Service Level applied to the QP's address handle (ah_attr.sl).
+   * 4-bit field, valid range 0..15. On RoCE this maps to the HCA
+   * scheduler's per-priority class and (RoCEv1) the 802.1p PCP value;
+   * setting it lets operators give RonDB RDMA QPs a different HCA
+   * scheduling class than other QPs sharing the same HCA. Default 0
+   * preserves the previous hardcoded behaviour.
+   */
+  Uint32 m_service_level;
   Uint32 m_retry_count;
   Uint32 m_rnr_retry_count;
   /*
