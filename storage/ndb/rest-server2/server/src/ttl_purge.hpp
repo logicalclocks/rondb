@@ -152,9 +152,9 @@ class TTLPurger {
   std::atomic<bool> exit_;
 
   typedef struct TTLInfo {
-    Int32 table_id;
-    Uint32 ttl_sec;
-    Uint32 col_no;
+    Int32 table_id = 0;
+    Uint32 ttl_sec = 0;
+    Uint32 col_no = 0;
     Uint32 part_id = {0};                       // Only valid in local ttl cache
     Uint32 batch_size = {kDefaultMinBatchSize}; // Only valid in local ttl cache
     bool part_id_offset_applied = {false};      // Only valid in local ttl cache

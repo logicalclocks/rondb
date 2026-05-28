@@ -1,0 +1,8 @@
+Restart nodes 2 and 3 to not-started
+Start node 3 and stall before QMGR phase 1
+Waiting for node 3 to enter start phase 0
+Mark node 2 inactive in node 3 QMGR while node 3 QMGR phase 1 is stalled
+Activate and start node 2 while node 3 QMGR phase 1 is stalled
+Give node 2 time to connect to stalled node 3
+Release QMGR startup stall
+Wait for mysqld to connect to the cluster
