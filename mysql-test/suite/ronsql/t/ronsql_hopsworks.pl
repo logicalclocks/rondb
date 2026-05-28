@@ -427,14 +427,14 @@ foreach my $type (@data_types) {
 
   l "--let \$rdrs_ronsql = curl --no-progress-meter --fail-with-body -X POST -H \"Content-Type: application/json\" http://\$RDRS_NOKEY_HOST:\$RDRS_NOKEY_PORT/0.1.0/ronsql -d";
   l "--echo $disp: JSON format GROUP BY";
-  l "--exec \$rdrs_ronsql '{\"query\":\"SELECT val, COUNT(*) as cnt FROM tbl GROUP BY val;\", \"database\":\"test\"}'";
+  l "--exec \$rdrs_ronsql '{\"query\":\"SELECT val, COUNT(*) as cnt FROM tbl GROUP BY val ORDER BY val;\", \"database\":\"test\"}'";
   l "--echo ==========";
   l "--echo";
   l "--echo";
   l "--echo";
   if ($aggregable) {
     l "--echo $disp: JSON format aggregated";
-    l "--exec \$rdrs_ronsql '{\"query\":\"SELECT foo, MAX(val) FROM tbl WHERE foo >= -5 AND foo <= 5 GROUP BY foo;\", \"database\":\"test\"}'";
+    l "--exec \$rdrs_ronsql '{\"query\":\"SELECT foo, MAX(val) FROM tbl WHERE foo >= -5 AND foo <= 5 GROUP BY foo ORDER BY foo;\", \"database\":\"test\"}'";
     l "--echo ==========";
     l "--echo";
     l "--echo";

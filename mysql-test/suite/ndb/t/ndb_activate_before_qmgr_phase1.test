@@ -1,0 +1,38 @@
+--source include/have_multi_ndb.inc
+--source ndb_mgm.inc
+--source ndb_waiter.inc
+--source have_ndb_error_insert.inc
+
+--echo Restart nodes 2 and 3 to not-started
+--exec $NDB_MGM -e "2 RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "3 RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --nowait-nodes=1 --not-started >> $NDB_TOOLS_OUTPUT
+
+--echo Start node 3 and stall before QMGR phase 1
+--exec $NDB_MGM -e "3 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "3 DUMP 71 1" >> $NDB_TOOLS_OUTPUT
+
+--let $_ndb_nodeid = 3
+--let $_start_phase = 0
+--source suite/ndb/t/ndb_wait_start_phase.inc
+
+--echo Mark node 2 inactive in node 3 QMGR while node 3 QMGR phase 1 is stalled
+--exec $NDB_MGM -e "3 DUMP 936 2 1" >> $NDB_TOOLS_OUTPUT
+--sleep 2
+
+--echo Activate and start node 2 while node 3 QMGR phase 1 is stalled
+--exec $NDB_MGM -e "2 ACTIVATE" >> $NDB_TOOLS_OUTPUT
+--exec_in_background $NDB_MGM -e "2 START" >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo Give node 2 time to connect to stalled node 3
+--sleep 30
+--exec $NDB_MGM -e "3 DUMP 1 3" >> $NDB_TOOLS_OUTPUT
+
+--echo Release QMGR startup stall
+--exec $NDB_MGM -e "3 ERROR 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+
+--echo Wait for mysqld to connect to the cluster
+--source include/ndb_not_readonly.inc
+
+--remove_file $NDB_TOOLS_OUTPUT

@@ -95,7 +95,6 @@ Trpman::startCONTINUEB(Signal *signal)
   {
     m_init_continueb = true;
     execCONTINUEB(signal);
-    sendCONTINUEB(signal);
   }
 }
 
@@ -148,19 +147,28 @@ TrpId Trpman::get_the_only_base_trp(NodeId nodeId) const {
 }
 
 void Trpman::execOPEN_COMORD(Signal *signal) {
-  startCONTINUEB(signal); //Start CONTINUEB processing if required
+  const Uint32 len = signal->getLength();
+  const Uint32 data0 = signal->theData[0];
+  const Uint32 data1 = signal->theData[1];
+  const Uint32 data2 = signal->theData[2];
+#ifdef ERROR_INSERT
+  g_eventLogger->info("TRPMAN(%u): OPEN_COMORD entry len %u data %u %u %u",
+                      instance(), len, data0, data1, data2);
+#endif
+  if (len == 3) {
+    startCONTINUEB(signal); //Start CONTINUEB processing if required
+  }
 
   /**
    * Connect to the specified NDB node, only QMGR allowed communication
    * so far with the node. Even if multi-transporters will be used to
    * communicate with node, we initially open only the single base transporter.
    */
-  const BlockReference userRef [[maybe_unused]] = signal->theData[0];
+  const BlockReference userRef [[maybe_unused]] = data0;
   jamEntry();
 
-  const Uint32 len = signal->getLength();
   if (len == 2) {
-    const NodeId tStartingNode = signal->theData[1];
+    const NodeId tStartingNode = data1;
     ndbrequire(tStartingNode > 0 && tStartingNode < MAX_NODES);
 #ifdef ERROR_INSERT
     if (!((ERROR_INSERTED(9000) || ERROR_INSERTED(9002)) &&
@@ -169,6 +177,18 @@ void Trpman::execOPEN_COMORD(Signal *signal) {
     {
       // Connection is initially opened using a non-multi_transporter
       const TrpId trpId = get_the_only_base_trp(tStartingNode);
+#ifdef ERROR_INSERT
+      const Uint32 is_server =
+          trpId == 0 ? 0 : globalTransporterRegistry.is_server(tStartingNode);
+      g_eventLogger->info(
+          "TRPMAN(%u): OPEN_COMORD to node %u trp %u handles %u active %u "
+          "server %u state %s",
+          instance(), tStartingNode, trpId, handles_this_trp(trpId),
+          globalTransporterRegistry.get_active_node(tStartingNode),
+          is_server,
+          trpId == 0 ? "NO_TRP"
+                     : globalTransporterRegistry.getPerformStateString(trpId));
+#endif
       if (!handles_this_trp(trpId)) {
         jam();
         goto done;
@@ -186,7 +206,7 @@ void Trpman::execOPEN_COMORD(Signal *signal) {
       //-----------------------------------------------------
     }
   } else {
-    Uint32 tData2 = signal->theData[2];
+    Uint32 tData2 = data2;
     for (unsigned int i = 1; i < MAX_NODES; i++) {
       jam();
       if (i != getOwnNodeId() && getNodeInfo(i).m_type == tData2) {
@@ -1293,6 +1313,10 @@ BLOCK_FUNCTIONS(TrpmanProxy)
 void TrpmanProxy::execOPEN_COMORD(Signal *signal) {
   jamEntry();
 
+#ifdef ERROR_INSERT
+  g_eventLogger->info("TRPMAN proxy: OPEN_COMORD len %u workers %u",
+                      signal->getLength(), c_workers);
+#endif
   for (Uint32 i = 0; i < c_workers; i++) {
     jam();
     sendSignal(workerRef(i), GSN_OPEN_COMORD, signal, signal->getLength(), JBB);

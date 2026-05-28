@@ -44,6 +44,12 @@ inline void ResetRegister(Register* reg) {
 inline Int32 RegPlusReg(const Register& a, const Register& b, Register* res) {
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
+  // Snapshot operand flags before any write to *res. Call sites pass res == &a,
+  // so writes through res alias a; a.is_unsigned read after a write to res
+  // would see the post-write value, not the original operand flag.
+  const bool a_unsigned = a.is_unsigned;
+  const bool b_unsigned = b.is_unsigned;
+
   DataType res_type = NDB_TYPE_UNDEFINED;
   if (a.type == NDB_TYPE_DOUBLE || b.type == NDB_TYPE_DOUBLE) {
     res_type = NDB_TYPE_DOUBLE;
@@ -62,7 +68,7 @@ inline Int32 RegPlusReg(const Register& a, const Register& b, Register* res) {
     // correctly
     if (res_type == NDB_TYPE_BIGINT) {
       // Set the result is_unsigned correctly even the result value is NULL
-      res->is_unsigned = (a.is_unsigned | b.is_unsigned);
+      res->is_unsigned = (a_unsigned | b_unsigned);
     }
     // NULL
     return 1;
@@ -74,8 +80,8 @@ inline Int32 RegPlusReg(const Register& a, const Register& b, Register* res) {
     Int64 res_val = static_cast<Uint64>(val0) + static_cast<Uint64>(val1);
     bool res_unsigned = false;
 
-    if (a.is_unsigned) {
-      if (b.is_unsigned || val1 >= 0) {
+    if (a_unsigned) {
+      if (b_unsigned || val1 >= 0) {
         if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
           // overflows;
           return -1;
@@ -88,7 +94,7 @@ inline Int32 RegPlusReg(const Register& a, const Register& b, Register* res) {
         }
       }
     } else {
-      if (b.is_unsigned) {
+      if (b_unsigned) {
         if (val0 >= 0) {
           if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
             // overflows;
@@ -112,7 +118,7 @@ inline Int32 RegPlusReg(const Register& a, const Register& b, Register* res) {
     }
 
     // Check if res_val is overflow
-    bool unsigned_flag = (a.is_unsigned | b.is_unsigned);
+    bool unsigned_flag = (a_unsigned | b_unsigned);
     if ((unsigned_flag && !res_unsigned && res_val < 0) ||
         (!unsigned_flag && res_unsigned &&
          (Uint64)res_val > (Uint64)LLONG_MAX)) {
@@ -129,12 +135,12 @@ inline Int32 RegPlusReg(const Register& a, const Register& b, Register* res) {
   } else {
     double val0 = (a.type == NDB_TYPE_DOUBLE) ?
                      a.value.val_double :
-                     ((a.is_unsigned == true) ?
+                     ((a_unsigned == true) ?
                        static_cast<double>(a.value.val_uint64) :
                        static_cast<double>(a.value.val_int64));
     double val1 = (b.type == NDB_TYPE_DOUBLE) ?
                      b.value.val_double :
-                     ((b.is_unsigned == true) ?
+                     ((b_unsigned == true) ?
                        static_cast<double>(b.value.val_uint64) :
                        static_cast<double>(b.value.val_int64));
     double res_val = val0 + val1;
@@ -156,6 +162,12 @@ inline Int32 RegMinusReg(const Register& a, const Register& b,
                            Register* res) {
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
+  // Snapshot operand flags before any write to *res. Call sites pass res == &a,
+  // so writes through res alias a; a.is_unsigned read after a write to res
+  // would see the post-write value, not the original operand flag.
+  const bool a_unsigned = a.is_unsigned;
+  const bool b_unsigned = b.is_unsigned;
+
   DataType res_type = NDB_TYPE_UNDEFINED;
   if (a.type == NDB_TYPE_DOUBLE || b.type == NDB_TYPE_DOUBLE) {
     res_type = NDB_TYPE_DOUBLE;
@@ -174,7 +186,7 @@ inline Int32 RegMinusReg(const Register& a, const Register& b,
     // correctly
     if (res_type == NDB_TYPE_BIGINT) {
       // Set the result is_unsigned correctly even the result value is NULL
-      res->is_unsigned = (a.is_unsigned | b.is_unsigned);
+      res->is_unsigned = (a_unsigned | b_unsigned);
     }
     // NULL
     return 1;
@@ -186,8 +198,8 @@ inline Int32 RegMinusReg(const Register& a, const Register& b,
     Int64 res_val = static_cast<Uint64>(val0) - static_cast<Uint64>(val1);
     bool res_unsigned = false;
 
-    if (a.is_unsigned) {
-      if (b.is_unsigned) {
+    if (a_unsigned) {
+      if (b_unsigned) {
         if (static_cast<Uint64>(val0) < static_cast<Uint64>(val1)) {
           if (res_val >= 0) {
             // overflow
@@ -213,14 +225,14 @@ inline Int32 RegMinusReg(const Register& a, const Register& b,
         }
       }
     } else {
-      if (b.is_unsigned) {
+      if (b_unsigned) {
         if (static_cast<Uint64>(val0) - LLONG_MIN <
             static_cast<Uint64>(val1)) {
           // overflow
           return -1;
         }
       } else {
-        // Both signed: !a.is_unsigned && !b.is_unsigned
+        // Both signed: !a_unsigned && !b_unsigned
         if (val0 >= 0 && val1 < 0) {
           // Positive minus negative is always positive → unsigned result
           res_unsigned = true;
@@ -231,7 +243,7 @@ inline Int32 RegMinusReg(const Register& a, const Register& b,
       }
     }
     // Check if res_val is overflow
-    bool unsigned_flag = (a.is_unsigned | b.is_unsigned);
+    bool unsigned_flag = (a_unsigned | b_unsigned);
     if ((unsigned_flag && !res_unsigned && res_val < 0) ||
         (!unsigned_flag && res_unsigned &&
          (Uint64)res_val > (Uint64)LLONG_MAX)) {
@@ -249,12 +261,12 @@ inline Int32 RegMinusReg(const Register& a, const Register& b,
     assert(res_type == NDB_TYPE_DOUBLE);
     double val0 = (a.type == NDB_TYPE_DOUBLE) ?
                      a.value.val_double :
-                     ((a.is_unsigned == true) ?
+                     ((a_unsigned == true) ?
                        static_cast<double>(a.value.val_uint64) :
                        static_cast<double>(a.value.val_int64));
     double val1 = (b.type == NDB_TYPE_DOUBLE) ?
                      b.value.val_double :
-                     ((b.is_unsigned == true) ?
+                     ((b_unsigned == true) ?
                        static_cast<double>(b.value.val_uint64) :
                        static_cast<double>(b.value.val_int64));
     double res_val = val0 - val1;
@@ -274,6 +286,12 @@ inline Int32 RegMinusReg(const Register& a, const Register& b,
 inline Int32 RegMulReg(const Register& a, const Register& b, Register* res) {
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
+  // Snapshot operand flags before any write to *res. Call sites pass res == &a,
+  // so writes through res alias a; a.is_unsigned read after a write to res
+  // would see the post-write value, not the original operand flag.
+  const bool a_unsigned = a.is_unsigned;
+  const bool b_unsigned = b.is_unsigned;
+
   DataType res_type = NDB_TYPE_UNDEFINED;
   if (a.type == NDB_TYPE_DOUBLE || b.type == NDB_TYPE_DOUBLE) {
     res_type = NDB_TYPE_DOUBLE;
@@ -292,7 +310,7 @@ inline Int32 RegMulReg(const Register& a, const Register& b, Register* res) {
     // correctly
     if (res_type == NDB_TYPE_BIGINT) {
       // Set the result is_unsigned correctly even the result value is NULL
-      res->is_unsigned = (a.is_unsigned | b.is_unsigned);
+      res->is_unsigned = (a_unsigned | b_unsigned);
     }
     // NULL
     return 1;
@@ -309,18 +327,18 @@ inline Int32 RegMulReg(const Register& a, const Register& b, Register* res) {
       res->value.val_int64 = 0;
       res->type = res_type;
       // Set the result is_unsigned correctly even the result value is 0
-      res->is_unsigned = (a.is_unsigned | b.is_unsigned);
+      res->is_unsigned = (a_unsigned | b_unsigned);
       return 0;
     }
 
-    const bool a_negative = (!a.is_unsigned && val0 < 0);
-    const bool b_negative = (!b.is_unsigned && val1 < 0);
+    const bool a_negative = (!a_unsigned && val0 < 0);
+    const bool b_negative = (!b_unsigned && val1 < 0);
     const bool res_unsigned = (a_negative == b_negative);
 
     if (a_negative && val0 == INT_MIN64) {
       if (val1 == 1) {
         // Check if val0 is overflow
-        bool unsigned_flag = (a.is_unsigned | b.is_unsigned);
+        bool unsigned_flag = (a_unsigned | b_unsigned);
         if ((unsigned_flag && !res_unsigned && val0 < 0) ||
             (!unsigned_flag && res_unsigned &&
              (Uint64)val0 > (Uint64)LLONG_MAX)) {
@@ -344,7 +362,7 @@ inline Int32 RegMulReg(const Register& a, const Register& b, Register* res) {
     if (b_negative && val1 == INT_MIN64) {
       if (val0 == 1) {
         // Check if val1 is overflow
-        bool unsigned_flag = (a.is_unsigned | b.is_unsigned);
+        bool unsigned_flag = (a_unsigned | b_unsigned);
         if ((unsigned_flag && !res_unsigned && val1 < 0) ||
             (!unsigned_flag && res_unsigned &&
              (Uint64)val1 > (Uint64)LLONG_MAX)) {
@@ -408,7 +426,7 @@ inline Int32 RegMulReg(const Register& a, const Register& b, Register* res) {
     }
 
     // Check if res_val is overflow
-    bool unsigned_flag = (a.is_unsigned | b.is_unsigned);
+    bool unsigned_flag = (a_unsigned | b_unsigned);
     if ((unsigned_flag && !res_unsigned && res_val < 0) ||
         (!unsigned_flag && res_unsigned &&
          (Uint64)res_val > (Uint64)LLONG_MAX)) {
@@ -426,12 +444,12 @@ inline Int32 RegMulReg(const Register& a, const Register& b, Register* res) {
     assert(res_type == NDB_TYPE_DOUBLE);
     double val0 = (a.type == NDB_TYPE_DOUBLE) ?
                      a.value.val_double :
-                     ((a.is_unsigned == true) ?
+                     ((a_unsigned == true) ?
                        static_cast<double>(a.value.val_uint64) :
                        static_cast<double>(a.value.val_int64));
     double val1 = (b.type == NDB_TYPE_DOUBLE) ?
                      b.value.val_double :
-                     ((b.is_unsigned == true) ?
+                     ((b_unsigned == true) ?
                        static_cast<double>(b.value.val_uint64) :
                        static_cast<double>(b.value.val_int64));
     double res_val = val0 * val1;
@@ -618,6 +636,12 @@ inline int32_t RegDivReg(const Register& tmp_a, const Register& tmp_b, Register*
 inline Int32 RegModReg(const Register& a, const Register& b, Register* res) {
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
+  // Snapshot operand flags before any write to *res. Call sites pass res == &a,
+  // so writes through res alias a; a.is_unsigned read after a write to res
+  // would see the post-write value, not the original operand flag.
+  const bool a_unsigned = a.is_unsigned;
+  const bool b_unsigned = b.is_unsigned;
+
   DataType res_type = NDB_TYPE_UNDEFINED;
   if (a.type == NDB_TYPE_DOUBLE || b.type == NDB_TYPE_DOUBLE) {
     res_type = NDB_TYPE_DOUBLE;
@@ -636,7 +660,7 @@ inline Int32 RegModReg(const Register& a, const Register& b, Register* res) {
     // correctly. MySQL's MOD uses dividend's sign only (not OR of both).
     if (res_type == NDB_TYPE_BIGINT) {
       // Set the result is_unsigned correctly even the result value is NULL
-      res->is_unsigned = a.is_unsigned;
+      res->is_unsigned = a_unsigned;
     }
     // NULL
     return 1;
@@ -648,8 +672,8 @@ inline Int32 RegModReg(const Register& a, const Register& b, Register* res) {
     bool val0_negative, val1_negative, res_unsigned;
     Uint64 uval0, uval1, res_val;
 
-    val0_negative = !a.is_unsigned && val0 < 0;
-    val1_negative = !b.is_unsigned && val1 < 0;
+    val0_negative = !a_unsigned && val0 < 0;
+    val1_negative = !b_unsigned && val1 < 0;
     res_unsigned = !val0_negative;
 
     if (val1 == 0) {
@@ -657,7 +681,7 @@ inline Int32 RegModReg(const Register& a, const Register& b, Register* res) {
       SetRegisterNull(res);
       // Set the result is_unsigned correctly even the result value is NULL
       // MySQL's MOD uses dividend's sign only.
-      res->is_unsigned = a.is_unsigned;
+      res->is_unsigned = a_unsigned;
     } else {
       uval0 = static_cast<Uint64>(val0_negative &&
           val0 != LLONG_MIN ? -val0 : val0);
@@ -669,7 +693,7 @@ inline Int32 RegModReg(const Register& a, const Register& b, Register* res) {
       // Check if res_val is overflow.
       // MySQL's MOD uses unsigned_flag = args[0]->unsigned_flag
       // (dividend only), not OR of both operands.
-      bool unsigned_flag = a.is_unsigned;
+      bool unsigned_flag = a_unsigned;
       if ((unsigned_flag && !res_unsigned && (Int64)res_val < 0) ||
           (!unsigned_flag && res_unsigned &&
            (Uint64)res_val > (Uint64)LLONG_MAX)) {
@@ -687,12 +711,12 @@ inline Int32 RegModReg(const Register& a, const Register& b, Register* res) {
     assert(res_type == NDB_TYPE_DOUBLE);
     double val0 = (a.type == NDB_TYPE_DOUBLE) ?
                      a.value.val_double :
-                     ((a.is_unsigned == true) ?
+                     ((a_unsigned == true) ?
                        static_cast<double>(a.value.val_uint64) :
                        static_cast<double>(a.value.val_int64));
     double val1 = (b.type == NDB_TYPE_DOUBLE) ?
                      b.value.val_double :
-                     ((b.is_unsigned == true) ?
+                     ((b_unsigned == true) ?
                        static_cast<double>(b.value.val_uint64) :
                        static_cast<double>(b.value.val_int64));
     if (val1 == 0) {
