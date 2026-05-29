@@ -1,0 +1,288 @@
+RonDB RDMA transporter -- recv-side wake-up reference
+=====================================================
+
+Audience and scope
+------------------
+This file documents the receive-side wake-up path for the RDMA
+transporter on the 24.10-rdma-port line. It is intended for reviewers
+and operators who need to reason about latency, tail behaviour, or
+spin tuning, and complements the user-facing material in
+storage/ndb/docs/rdma-transporter.txt.
+
+The receive path on this branch is pure ibverbs SEND/RECV. The
+WRITE-with-immediate variant (Phase 9 in the experimental series)
+lives on the 25.10 and 26.02 branches and is NOT part of this build;
+nothing in this file refers to it.
+
+Cast of objects
+---------------
+For every connected RDMA transporter (or clone -- see "Multi-
+transporter clones" below):
+
+    m_send_cq            ibv_cq, no completion channel attached.
+                         Driven purely by poll. doSend() reaps
+                         send completions via reap_send_completions()
+                         on every send pass; no thread ever sleeps on
+                         the send CQ.
+
+    m_recv_cq            ibv_cq, bound at create time to
+                         m_recv_comp_channel. The HCA delivers a
+                         readable event on the channel's fd whenever
+                         a CQE lands AND the CQ is currently armed.
+
+    m_recv_comp_channel  ibv_comp_channel. Owns a file descriptor
+                         set to O_NONBLOCK at allocate time; this is
+                         the fd we register with the recv thread's
+                         epoll set.
+
+    m_qp                 RC QP using m_send_cq for SQ completions
+                         and m_recv_cq for RQ completions.
+
+Setup sequence (per transporter, per connect)
+---------------------------------------------
+allocate_verbs_resources() runs in this order:
+
+    1. ibv_open_device / ibv_query_device / ibv_query_port.
+    2. ibv_alloc_pd.
+    3. ibv_create_cq(send) -- no comp_channel.
+    4. ibv_create_comp_channel(recv) and set the fd O_NONBLOCK.
+       O_NONBLOCK is mandatory: handle_recv_comp_event() drains
+       events in a tight loop and relies on ibv_get_cq_event()
+       returning -1/EAGAIN to break out cleanly.
+    5. ibv_create_cq(recv) bound to the recv comp channel.
+    6. ibv_reg_mr for send + recv staging buffers.
+    7. ibv_create_qp (RC, sq_sig_all = 0).
+    8. allocate_send_slot_state / allocate_recv_slot_state.
+    9. Endpoint exchange over the control socket, then QP transitions
+       INIT -> RTR -> RTS. After RTS, run_endpoint_exchange() calls
+       arm_recv_cq() once: this primes the channel so the first
+       inbound CQE wakes the recv thread immediately.
+
+epoll integration (TransporterReceiveData::epoll_add)
+-----------------------------------------------------
+For TCP/SHM transporters the registry adds the control socket fd to
+epoll with `event.data.u32 = trp_id`. For RDMA transporters we add
+two fds:
+
+    1. The control socket fd, with `data.u32 = trp_id`
+       (used during connect handshake, disconnect HUP, mgmd ops).
+    2. The recv comp channel fd, with
+       `data.u32 = trp_id | RDMA_COMP_CHANNEL_BIT`.
+
+RDMA_COMP_CHANNEL_BIT is the high bit (0x80000000) of u32; TrpId
+values are bounded by MAX_NTRANSPORTERS, so the bit is always free
+for tagging. check_TCP() unmasks the bit when an event fires and
+routes the event either through handle_recv_comp_event() (comp
+channel wake) or through the existing TCP/SHM socket-read path.
+
+Failure to register the comp channel fd is non-fatal: the link still
+works, just without the wake-up. CQEs are picked up at the next
+poll_RDMA() pass driven by the recv thread's regular pollReceive
+cadence.
+
+The wake-up timeline
+--------------------
+A. RECV THREAD IS IDLE
+   The recv thread is blocked inside check_TCP() in
+       epoll_wait(m_epoll_fd, m_epoll_events, num_trps, timeOutMillis)
+   The recv CQ is currently armed (arm_recv_cq() was called at the
+   tail of the previous reap_recv_completions(), or at the end of
+   the handshake on a fresh connect).
+
+B. HCA POSTS A CQE
+   The peer's SEND lands in our recv MR; the HCA writes a CQE into
+   the recv CQ. Because the CQ is armed, the HCA also generates a
+   completion event on the comp channel. That event causes the
+   channel fd to become readable.
+
+C. EPOLL WAKES THE RECV THREAD
+   epoll_wait returns with one or more events. The loop in
+   check_TCP() walks them:
+       - `data.u32 & RDMA_COMP_CHANNEL_BIT`  -- comp-channel wake.
+         The branch:
+             * Calls handle_recv_comp_event() to drain
+               ibv_get_cq_event() (each call returns one event;
+               we ibv_ack_cq_events on the recv CQ for each one)
+               until EAGAIN.
+             * Sets m_read_transporters.set(trp_id).
+             * Deliberately does NOT set
+               m_recv_socket_transporters: there is no socket
+               payload to read; the readable fd is only a "CQE
+               present" signal.
+       - `data.u32` without the bit -- regular TCP/SHM/control
+         socket event; existing dispatch.
+
+   EPOLLHUP on the comp-channel fd is ignored: it fires when
+   release_verbs_resources() closes the fd during disconnect, and
+   the kernel has already removed it from the epoll set. The link
+   teardown is driven by the matching HUP on the control socket fd
+   (same trp_id, no high bit) that the registry processes in its
+   normal disconnect path.
+
+D. CQEs ARE CONSUMED
+   The next stage in the receive loop calls poll_RDMA() for every
+   transporter whose m_read_transporters bit is set. poll_RDMA()
+   calls reap_recv_completions() which:
+       * For each WC, validates the 24-byte rdma_msg_header_v1,
+         advances m_local_recv_seq, folds credit_delta into
+         m_peer_recv_credits, updates m_peer_ack_seq.
+       * For CREDIT_ONLY / HEARTBEAT WCs (payload_len == 0):
+         re-posts the WR immediately and records pending grant.
+       * For DATA WCs: parks the slot in m_recv_ready_queue WITHOUT
+         re-posting and WITHOUT copying. The upper-layer unpacker
+         drains via get_next_read / consume_received_bytes; the
+         latter re-posts the WR and grants a credit back to the
+         peer ONLY after the slot has been fully consumed. This
+         "safe slot ownership" rule keeps the HCA from landing a
+         new SEND in a buffer the upper layer is still reading
+         from (the earlier app-buffer overwrite hazard).
+       * Bounded by m_completion_poll_budget (default 32 WCs per
+         pass) and by ready-queue capacity (m_queue_depth slots).
+       * Calls arm_recv_cq() at the tail so the next CQE will
+         again fire an event on the comp channel.
+
+E. ARM / FIRE RACE
+   arm_recv_cq() is ibv_req_notify_cq(m_recv_cq, solicited_only=0)
+   -- a one-shot. There is a small race window between the last
+   ibv_poll_cq() that returned 0 inside reap_recv_completions and
+   this arm: a CQE that arrived in that window does NOT fire a
+   notification because the arm came after it. The CQE is still
+   in the CQ, so it gets picked up at the next pollReceive() pass
+   without correctness impact. The only cost is up to one
+   pollReceive cadence of extra latency for that specific CQE.
+
+   The race is benign by design. The IB specification allows two
+   strategies: (a) arm before poll and poll at least once after
+   arming (handles the race), or (b) accept the cadence delay.
+   We chose (b) because the pollReceive cadence on a recv thread
+   under load is much smaller than the cost of the extra poll
+   on the hot path.
+
+How RdmaSpintime fits in
+------------------------
+update_connections() walks every connected transporter and computes
+
+    spintime = MAX(spintime, t->get_spintime())   // per transporter
+    recvdata.m_spintime = MIN(spintime, max_spintime)
+
+For an RDMA transporter, `get_spintime()` returns the per-link
+RdmaSpintime value from the [RDMA] section. For SHM transporters
+the per-link ShmSpintime is collected the same way. The resulting
+recvdata.m_spintime is the time the higher-level scheduler will
+spend spinning (poll-driven, no epoll_wait) before falling back to
+blocking in epoll_wait inside check_TCP().
+
+This means:
+
+    RdmaSpintime = 0    -- recv thread immediately blocks in
+                         epoll_wait. Wake latency = HCA event +
+                         kernel scheduler + ~1 syscall return.
+                         Typical: low single-digit microseconds on
+                         modern hardware, but with tail spikes.
+
+    RdmaSpintime > 0    -- recv thread spins for that many
+                         microseconds, calling poll_RDMA() (via
+                         pollReceive's spin path) instead of
+                         blocking. Wake latency under load is
+                         dominated by ibv_poll_cq's own latency,
+                         which is sub-microsecond. CPU cost is
+                         the spintime budget per idle iteration.
+
+The two paths are complementary, not exclusive. The HCA still
+generates a comp-channel event regardless; the spin path just
+reaches the CQE first because it polls before epoll_wait.
+
+Interaction with SpinMethod
+---------------------------
+SpinMethod (on [NDBD]) governs the ndbmtd scheduler's spin
+behaviour, not the transporter recv thread per se. The values that
+matter for latency:
+
+    StaticSpinning        -- baseline: SchedulerSpinTimer is used
+                             as-is.
+
+    LatencyOptimisedSpinning  (default)
+                          -- up to 200us spin, 1000% overhead
+                             allowance. Reasonable default for
+                             mixed workloads.
+
+    DatabaseMachineSpinning
+                          -- up to 500us spin, 10000% overhead
+                             allowance. The "spin almost always"
+                             mode. Combined with RdmaSpintime >= 200
+                             this typically eliminates kernel
+                             wake-up cost on the data node.
+
+For a latency-bound MDS-like workload on dedicated hardware,
+SpinMethod=DatabaseMachineSpinning + RdmaSpintime=500 is the
+recommended starting point. CPU cost: one core per block thread
+that has work to spin on. Confirm with `ndb_top` that the spin
+cost is acceptable in the deployment.
+
+The send side
+-------------
+The send CQ has no completion channel. doSend() reaps send
+completions inline via reap_send_completions() (also bounded by
+m_completion_poll_budget). The recv thread also reaps send
+completions in some control-only situations (see
+recv_thread_emit_credit_only() comments) under the per-transporter
+send lock, but this is for credit-return correctness, not for
+latency.
+
+There is no scenario in which a thread waits on the send CQ; we
+never need to wake on outbound completions. The send thread always
+posts and continues; out-of-credit and out-of-slots conditions are
+handled by returning SEND_BLOCKED / SEND_DISCONNECTED to the
+caller, never by sleeping.
+
+Multi-transporter clones
+------------------------
+The multi-transporter feature creates clones of an RDMA transporter
+each with its own QP, CQs, MRs, and comp channel. Each clone
+registers its OWN comp-channel fd in the same epoll set; the
+events are independent. A wake-up event for one clone does not
+affect the others.
+
+The 2x factor in check_TCP's num_trps arithmetic
+(`2 * nRDMATransporters`) reflects the fact that every RDMA
+transporter contributes TWO fds to the epoll set: control socket
+and comp channel.
+
+What is NOT in this branch
+--------------------------
+For full disclosure to reviewers:
+
+    * No IBV_WR_RDMA_WRITE_WITH_IMM on the send side. Every signal
+      goes through SEND, every wake goes through the recv CQ.
+    * No IBV_WC_RECV_RDMA_WITH_IMM handling in reap_recv_completions.
+    * No remote MR exchange (no rkey is ever advertised).
+    * No solicited-only notification cadence (arm_recv_cq uses
+      solicited_only=0 -- every CQE wakes).
+
+The WRITE-with-IMM path (Phase 9 of the experimental series on
+the 25.10 and 26.02 branches) shortens the recv CPU path by
+delivering payload via remote WRITE and using IMM as the wake
+signal, but it requires the remote-MR machinery and a more
+elaborate slot-ownership protocol. The 24.10-rdma-port line keeps
+the simpler SEND/RECV model on purpose -- it is the conservative
+shape that we are asking maintainers to merge first.
+
+Tuning recommendations (latency-bound)
+--------------------------------------
+For deployments where receive latency is the bottleneck and CPU
+headroom exists:
+
+    [NDBD DEFAULT]
+    SpinMethod = DatabaseMachineSpinning
+    SchedulerSpinTimer = 500
+
+    [RDMA]
+    RdmaSpintime = 500
+    RdmaCompletionPollBudget = 32     # default; lower if you want
+                                      # smaller per-poll batches
+                                      # at the cost of throughput.
+
+For deployments where CPU efficiency matters more than tail
+latency, the defaults (RdmaSpintime = 0, SpinMethod =
+LatencyOptimisedSpinning) are the right starting point and rely
+on the comp-channel wake-up entirely.
