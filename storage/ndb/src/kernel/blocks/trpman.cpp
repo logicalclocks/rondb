@@ -189,6 +189,23 @@ void Trpman::execOPEN_COMORD(Signal *signal) {
           trpId == 0 ? "NO_TRP"
                      : globalTransporterRegistry.getPerformStateString(trpId));
 #endif
+      if (trpId == 0) {
+        /**
+         * No transporter has been provisioned for this peer node. This
+         * happens when a [rdma] section in config.ini was skipped by the
+         * mgmd at saveInConfigValues() time (because RDMA was not wired
+         * through ConfigObject in this build) AND add_node_connections
+         * suppressed the TCP/SHM fallback for the same pair. There's
+         * nothing to start_connecting() to; log and skip.
+         */
+        jam();
+        g_eventLogger->warning(
+            "OPEN_COMORD: no transporter configured for peer node %u; "
+            "check that the binary config contains a connection section "
+            "between this node and node %u (Trpman skipping OPEN_COM)",
+            tStartingNode, tStartingNode);
+        goto done;
+      }
       if (!handles_this_trp(trpId)) {
         jam();
         goto done;
@@ -213,6 +230,11 @@ void Trpman::execOPEN_COMORD(Signal *signal) {
         jam();
 
         const TrpId trpId = get_the_only_base_trp(i);
+        if (trpId == 0) {
+          /* See OPEN_COMORD single-node path above for the rationale. */
+          jam();
+          continue;
+        }
         if (!handles_this_trp(trpId)) continue;
 
 #ifdef ERROR_INSERT

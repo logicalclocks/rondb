@@ -227,6 +227,29 @@ HAVE_LINUX_FUTEX)
 OPTION(WITH_NDBMTD
   "Build the MySQL Cluster multithreadded data node" ON)
 
+# RonDB native RDMA transporter (DB-DB only). Default OFF.
+# When ON, locate libibverbs. Real verbs implementation is gated behind
+# NDB_RDMA_TRANSPORTER_SUPPORTED; with the option OFF the RDMA transporter
+# source is not compiled and no RDMA libraries are linked.
+OPTION(WITH_NDB_RDMA
+  "Build the experimental RonDB native RDMA transporter (requires libibverbs)"
+  OFF)
+SET(NDB_RDMA_LIBRARIES "")
+IF(WITH_NDB_RDMA)
+  CHECK_INCLUDE_FILES("infiniband/verbs.h" HAVE_INFINIBAND_VERBS_H)
+  FIND_LIBRARY(IBVERBS_LIBRARY ibverbs)
+  IF(NOT HAVE_INFINIBAND_VERBS_H OR NOT IBVERBS_LIBRARY)
+    MESSAGE(FATAL_ERROR
+      "WITH_NDB_RDMA=ON but libibverbs (infiniband/verbs.h and -libverbs) "
+      "could not be located. Install rdma-core development packages "
+      "or set WITH_NDB_RDMA=OFF.")
+  ENDIF()
+  SET(NDB_RDMA_LIBRARIES "${IBVERBS_LIBRARY}")
+  SET(NDB_RDMA_TRANSPORTER_SUPPORTED 1)
+  ADD_DEFINITIONS(-DNDB_RDMA_TRANSPORTER_SUPPORTED=1)
+  MESSAGE(STATUS "Building RonDB RDMA transporter using ${IBVERBS_LIBRARY}")
+ENDIF()
+
 SET(WITH_NDB_PORT "" CACHE STRING
   "Default port used by MySQL Cluster management server")
 IF(WITH_NDB_PORT GREATER 0)
