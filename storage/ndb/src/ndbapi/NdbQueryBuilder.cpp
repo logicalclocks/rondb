@@ -2835,7 +2835,7 @@ Uint32 NdbQueryIndexScanOperationDefImpl::appendPrunePattern(
 
 Uint32 NdbQueryIndexScanOperationDefImpl::appendBoundValue(
     Uint32Buffer &serializedDef, NdbIndexScanOperation::BoundType type,
-    const NdbQueryOperandImpl *value, int &paramCnt) const {
+    const NdbQueryOperandImpl *value, Uint32 keyNo, int &paramCnt) const {
   Uint32 appendedPattern = 0;
 
   // Append BoundType as a constant value
@@ -2872,10 +2872,14 @@ Uint32 NdbQueryIndexScanOperationDefImpl::appendBoundValue(
       const NdbConstOperandImpl &constOp =
           *static_cast<const NdbConstOperandImpl *>(value);
 
-      // Build the AttributeHeader for const value
-      // (AttributeId is later filled in by SPJ in
-      // Dbspj::scanIndex_fixupBound())
-      AttributeHeader ah(0, constOp.getSizeInBytes());
+      // Build the AttributeHeader for the const value, stamping the index
+      // column number ('keyNo') as the attribute id.  SPJ re-stamps the same
+      // id via Dbspj::scanFrag_fixupBound() for parent-row driven child
+      // scans, but a CTE-materialization root scan is not parent driven and
+      // never gets renumbered — so a multi-column bound must carry correct,
+      // distinct attribute ids here, or DBTUX rejects it as a duplicate
+      // (error 4259, "Invalid set of range scan bounds").
+      AttributeHeader ah(keyNo, constOp.getSizeInBytes());
 
       // Constant is then appended as AttributeHeader + const-value
       serializedDef.append(QueryPattern::data(1 + ah.getDataSize()));
@@ -2931,7 +2935,7 @@ Uint32 NdbQueryIndexScanOperationDefImpl::appendBoundPattern(
         bound_type = NdbIndexScanOperation::BoundEQ;
 
         appendedPattern |= appendBoundValue(serializedDef, bound_type,
-                                            m_bound.low[keyNo], paramCnt);
+                                            m_bound.low[keyNo], keyNo, paramCnt);
 
       } else {
         /* If key is part of lower bound */
@@ -2942,7 +2946,8 @@ Uint32 NdbQueryIndexScanOperationDefImpl::appendBoundPattern(
                            : NdbIndexScanOperation::BoundLT;
 
           appendedPattern |= appendBoundValue(serializedDef, bound_type,
-                                              m_bound.low[keyNo], paramCnt);
+                                              m_bound.low[keyNo], keyNo,
+                                              paramCnt);
         }
 
         /* If key is part of upper bound */
@@ -2953,7 +2958,8 @@ Uint32 NdbQueryIndexScanOperationDefImpl::appendBoundPattern(
                            : NdbIndexScanOperation::BoundGT;
 
           appendedPattern |= appendBoundValue(serializedDef, bound_type,
-                                              m_bound.high[keyNo], paramCnt);
+                                              m_bound.high[keyNo], keyNo,
+                                              paramCnt);
         }
       }
     }  // for 'all bound values'

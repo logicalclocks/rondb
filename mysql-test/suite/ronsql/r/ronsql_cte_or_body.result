@@ -1,0 +1,114 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+
+=== Test 1: pure body OR on one column (TABLE_SCAN + residual OR) ===
+== Query ==
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+FROM orb WHERE g = 10 OR g = 30 GROUP BY g)
+SELECT k, tot FROM s;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+FROM orb WHERE g = 10 OR g = 30 GROUP BY g)
+SELECT k, tot FROM s|
+k	tot
+10	45
+30	150
+
+
+=== Test 2: AND + parenthesised OR (g bounds idx_g, OR residual) ===
+== Query ==
+WITH s AS (SELECT h AS k, SUM(v) AS tot
+FROM orb WHERE g = 10 AND (h = 1 OR h = 2) GROUP BY h)
+SELECT k, tot FROM s;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT h AS k, SUM(v) AS tot
+FROM orb WHERE g = 10 AND (h = 1 OR h = 2) GROUP BY h)
+SELECT k, tot FROM s|
+k	tot
+1	5
+2	15
+
+
+=== Test 3: leading-column OR cannot bound, AND sibling residual ===
+== Query ==
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+FROM orb WHERE (g = 10 OR g = 30) AND h = 1 GROUP BY g)
+SELECT k, tot FROM s;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+FROM orb WHERE (g = 10 OR g = 30) AND h = 1 GROUP BY g)
+SELECT k, tot FROM s|
+k	tot
+10	5
+30	55
+
+
+=== Test 4: OR of ranges (v < 20 OR v > 80) ===
+== Query ==
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+FROM orb WHERE v < 20 OR v > 80 GROUP BY g)
+SELECT k, tot FROM s;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+FROM orb WHERE v < 20 OR v > 80 GROUP BY g)
+SELECT k, tot FROM s|
+k	tot
+10	20
+30	95
+40	8
+
+
+=== Test 5: three-way OR ===
+== Query ==
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+FROM orb WHERE g = 10 OR g = 20 OR g = 40 GROUP BY g)
+SELECT k, tot FROM s;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+FROM orb WHERE g = 10 OR g = 20 OR g = 40 GROUP BY g)
+SELECT k, tot FROM s|
+k	tot
+10	45
+20	80
+40	8

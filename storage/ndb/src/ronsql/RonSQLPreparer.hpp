@@ -408,6 +408,18 @@ private:
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();
+  // Shared scan-config candidate generator used by both the main-query
+  // path (`generate_scan_config_candidates`) and the per-CTE-body path
+  // (`select_cte_body_scan_config`).  Pushes one TABLE_SCAN candidate
+  // (goodness 0) plus one INDEX_SCAN candidate per ordered index that
+  // any top-level conjunct can serve as a (possibly multi-column)
+  // bound.  Bound-vs-residual routing for each conjunct is recorded in
+  // the candidate's `condition_handling_map`.  Candidate selection
+  // (highest goodness) is left to the caller.
+  void build_scan_config_candidates(
+      DynamicArray<const NdbDictionary::Index*>& indexes,
+      DynamicArray<ConditionalExpression*>& toplevel_conditions,
+      DynamicArray<ScanConfig>& out_candidates);
   // Phase I.9: per-CTE-body version of the scan-config selection
   // pipeline.  Loads the body's source-table indexes, walks the
   // body's WHERE for top-level AND conjuncts, scores candidate

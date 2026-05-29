@@ -2269,33 +2269,43 @@ RonSQLPreparer::collect_toplevel_conditions(ConditionalExpression* ce)
 void
 RonSQLPreparer::generate_scan_config_candidates()
 {
+  build_scan_config_candidates(m_indexes,
+                               m_toplevel_conditions,
+                               m_scan_config_candidates);
+}
+
+void
+RonSQLPreparer::build_scan_config_candidates(
+    DynamicArray<const NdbDictionary::Index*>& indexes,
+    DynamicArray<ConditionalExpression*>& toplevel_conditions,
+    DynamicArray<ScanConfig>& out_candidates)
+{
+  const Uint32 num_conds = toplevel_conditions.size();
   {
-    // Add a scan config candidate that represents table scan
+    // Add a scan config candidate that represents table scan. This
+    // guarantees we always have at least one candidate to fall back on.
     int *condition_handling_map =
-      m_amalloc->alloc_exc<int>(m_toplevel_conditions.size());
-    for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
+      m_amalloc->alloc_exc<int>(num_conds == 0 ? 1 : num_conds);
+    for (Uint32 i = 0; i < num_conds; i++) {
       condition_handling_map[i] = -1;
     }
-    m_scan_config_candidates.push(ScanConfig { NULL,
-                                               condition_handling_map,
-                                               0 });
+    out_candidates.push(ScanConfig { NULL, condition_handling_map, 0 });
   }
-  if (m_toplevel_conditions.size() == 0) {
-    // No WHERE clause
+  if (num_conds == 0) {
+    // No WHERE clause: table scan is the only candidate.
     return;
   }
-  for(Uint32 i = 0; i < m_indexes.size(); i++) {
-    const NdbDictionary::Index* index = m_indexes[i];
-    int *condition_handling_map =
-      m_amalloc->alloc_exc<int>(m_toplevel_conditions.size());
-    for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
-      condition_handling_map[i] = -1;
+  for(Uint32 i = 0; i < indexes.size(); i++) {
+    const NdbDictionary::Index* index = indexes[i];
+    int *condition_handling_map = m_amalloc->alloc_exc<int>(num_conds);
+    for (Uint32 j = 0; j < num_conds; j++) {
+      condition_handling_map[j] = -1;
     }
     int goodness = 0;
-    unsigned col_count = index->getNoOfColumns();
+    Uint32 col_count = index->getNoOfColumns();
     require_bug(col_count > 0, "Index appears to have no columns.");
     bool later_columns_blocked = false;
-    for(unsigned col_idx = 0;
+    for(Uint32 col_idx = 0;
         col_idx < col_count && !later_columns_blocked;
         col_idx++) {
       const NdbDictionary::Column* column = index->getColumn(col_idx);
@@ -2304,10 +2314,9 @@ RonSQLPreparer::generate_scan_config_candidates()
       const char* column_name = column->getName();
       bool lbound_set = false, ubound_set = false;
       for(Uint32 cond_idx = 0;
-          cond_idx < m_toplevel_conditions.size() &&
-            !(lbound_set && ubound_set);
+          cond_idx < num_conds && !(lbound_set && ubound_set);
           cond_idx++) {
-        ConditionalExpression* ce = m_toplevel_conditions[cond_idx];
+        ConditionalExpression* ce = toplevel_conditions[cond_idx];
         if (condition_handling_map[cond_idx] != -1) {
           // Already used as bound for an earlier index column
           continue;
@@ -2322,7 +2331,11 @@ RonSQLPreparer::generate_scan_config_candidates()
           continue;
         }
         ConditionalExpression* condition_identifier = ce->args.left;
-        ndbrequire(condition_identifier->op == T_IDENTIFIER);
+        if (condition_identifier == NULL ||
+            condition_identifier->op != T_IDENTIFIER) {
+          // Not a "column <op> value" shape; leave it as a residual filter.
+          continue;
+        }
         const char* condition_col_name =
           m_columns[condition_identifier->col_idx].c_str();
         if (strcmp(column_name, condition_col_name) == 0) {
@@ -2335,7 +2348,7 @@ RonSQLPreparer::generate_scan_config_candidates()
           lbound_set = lbound_set || wants_lbound;
           ubound_set = ubound_set || wants_ubound;
           later_columns_blocked = op != T_EQUALS;
-          condition_handling_map[cond_idx] = col_idx;
+          condition_handling_map[cond_idx] = (int)col_idx;
         } else {
           later_columns_blocked = true;
         }
@@ -2362,39 +2375,28 @@ RonSQLPreparer::generate_scan_config_candidates()
         // index.
         goodness++;
       }
-      m_scan_config_candidates.push(ScanConfig { index,
-                                                 condition_handling_map,
-                                                 goodness });
+      out_candidates.push(ScanConfig { index,
+                                       condition_handling_map,
+                                       goodness });
     }
   }
 }
 
-// Phase I.9: pick an ordered index for a single-op CTE body's root
-// scan, mirroring the main-query scan-config selection at
-// `plan_index_and_filter` but writing to per-scope state instead
-// of `m_indexes` / `m_toplevel_conditions` / `m_scan_config*`.
+// Phase I.10: turn a scalar MIN/MAX CTE body into an ordered
+// index scan with maxRows=1.  Detects a single-op CTE body whose
+// only output is a direct-column MIN(col) / MAX(col) over a NOT
+// NULL column that is the leading column of an ordered index, and
+// no WHERE / GROUP BY.  When matched, rewrites the planner's first
+// op to INDEX_SCAN on that index and records the scan ordering
+// (MAX => descending, MIN => ascending) in `scope.body_minmax_kind`
+// so the emit step issues `scanIndex(idx, …, setMaxRows(1))` and
+// reads just the extreme row per fragment.
 //
-// On entry, `scope` has already been planned + column-resolved +
-// where-classified.  If the body has a single op whose root is a
-// real table with available ordered indexes, this function:
-//   1. Loads the source-table indexes into `scope.body_indexes`.
-//   2. Walks the body's WHERE for top-level AND conjuncts and
-//      stashes them in `scope.body_toplevel_conditions`.
-//   3. Generates candidate scan configs (one TABLE_SCAN candidate
-//      plus one per index that any conjunct can serve).
-//   4. Picks the highest-scoring candidate.
-//   5. If the chosen candidate uses a real index, rewrites
-//      `cp.ops[0].type = INDEX_SCAN` and `cp.ops[0].index = idx`
-//      so the emit branch below can recognise it.
-//
-// Bound-vs-residual routing for the emit step lives on
-// `scope.body_scan_config->condition_handling_map[i]`:
-// `-1` => apply conjunct as InterpretedCode filter; otherwise the
-// conjunct is consumed as an index-scan bound on column N.
-//
-// Quietly returns without rewriting anything for shapes the
-// optimiser doesn't yet handle (multi-op body, chained CTE,
-// no usable index, no Ndb connection at prepare time).
+// Quietly returns (leaving the body as a plain scan + aggregation)
+// for any shape it doesn't handle: multi-op body, a WHERE or
+// GROUP BY, a non-MIN/MAX or non-direct-column aggregate, a
+// nullable / unsupported-type source column, or no ordered index
+// whose leading column is the aggregated column.
 void
 RonSQLPreparer::select_cte_body_minmax_index(QueryScope& scope,
                                               const CteDefinition* cte)
@@ -2552,6 +2554,41 @@ RonSQLPreparer::load_cte_body_indexes(QueryScope& scope,
   return true;
 }
 
+// Phase I.9 (+ composite bounds): pick an ordered index for a
+// single-op CTE body's root scan, mirroring the main-query
+// scan-config selection at `plan_index_and_filter` but writing to
+// per-scope state instead of `m_indexes` / `m_toplevel_conditions`
+// / `m_scan_config*`.
+//
+// On entry, `scope` has already been planned + column-resolved +
+// where-classified.  If the body has a single op whose root is a
+// real table with available ordered indexes, this function:
+//   1. Loads the source-table indexes into `scope.body_indexes`.
+//   2. Walks the body's WHERE for top-level AND conjuncts and
+//      stashes them in `scope.body_toplevel_conditions`.
+//   3. Generates candidate scan configs via the shared
+//      `build_scan_config_candidates` (one TABLE_SCAN candidate
+//      plus one per index any conjunct can serve).  A single
+//      candidate can bind several leading index columns: e.g.
+//      `WHERE a = 1 AND b > 2` on a (a,b) index yields a
+//      two-column bound.
+//   4. Picks the highest-scoring candidate.
+//   5. If the chosen candidate uses a real index, rewrites
+//      `cp.ops[0].type = INDEX_SCAN` and `cp.ops[0].index = idx`
+//      so the emit branch recognises it.
+//
+// Bound-vs-residual routing for the emit step lives on
+// `scope.body_scan_config->condition_handling_map[i]`:
+// `-1` => apply conjunct as InterpretedCode filter; otherwise the
+// value is the index column number the conjunct bounds.  Only the
+// last bound column may be a half-open / range comparison; all
+// earlier bound columns are equalities (enforced by
+// `later_columns_blocked`), which keeps the single NdbQueryIndexBound
+// inclusivity flag per side correct.
+//
+// Quietly returns without rewriting anything for shapes the
+// optimiser doesn't yet handle (multi-op body, chained CTE,
+// no usable index, no Ndb connection at prepare time).
 void
 RonSQLPreparer::select_cte_body_scan_config(QueryScope& scope,
                                              ConditionalExpression* where_ce)
@@ -2592,82 +2629,13 @@ RonSQLPreparer::select_cte_body_scan_config(QueryScope& scope,
     }
   }
 
-  // 3. Generate candidate scan configs.  TABLE_SCAN candidate
-  //    first (goodness=0) so it's always available as the
-  //    fallback.  Then one per ordered index, scored using the
-  //    same heuristic as the main scope.
-  Uint32 num_conds = scope.body_toplevel_conditions.size();
-  {
-    int* cmh = m_amalloc->alloc_exc<int>(num_conds == 0 ? 1 : num_conds);
-    for (Uint32 i = 0; i < num_conds; i++) cmh[i] = -1;
-    scope.body_scan_config_candidates.push(
-        ScanConfig { NULL, cmh, 0 });
-  }
-  if (num_conds == 0) {
-    // No WHERE — TABLE_SCAN is the only candidate, no INDEX_SCAN
-    // to choose, leave plan as TABLE_SCAN.
-    scope.body_scan_config = &scope.body_scan_config_candidates[0];
-    return;
-  }
-
-  for (Uint32 ix = 0; ix < scope.body_indexes.size(); ix++) {
-    const NdbDictionary::Index* index = scope.body_indexes[ix];
-    int* cmh = m_amalloc->alloc_exc<int>(num_conds);
-    for (Uint32 i = 0; i < num_conds; i++) cmh[i] = -1;
-    int goodness = 0;
-    Uint32 col_count = index->getNoOfColumns();
-    require_bug(col_count > 0, "Index appears to have no columns.");
-    bool later_columns_blocked = false;
-    for (Uint32 col_idx = 0;
-         col_idx < col_count && !later_columns_blocked;
-         col_idx++) {
-      const NdbDictionary::Column* column = index->getColumn(col_idx);
-      require_bug(column != NULL, "Index column object is NULL.");
-      const char* column_name = column->getName();
-      bool lbound_set = false, ubound_set = false;
-      for (Uint32 cond_idx = 0;
-           cond_idx < num_conds && !(lbound_set && ubound_set);
-           cond_idx++) {
-        ConditionalExpression* ce = scope.body_toplevel_conditions[cond_idx];
-        if (cmh[cond_idx] != -1) continue;
-        TokenKind op = ce->op;
-        if (op != T_EQUALS && op != T_GE && op != T_GT &&
-            op != T_LE && op != T_LT) continue;
-        ConditionalExpression* left = ce->args.left;
-        if (left == NULL || left->op != T_IDENTIFIER) continue;
-        const char* cond_col_name = m_columns[left->col_idx].c_str();
-        if (strcmp(column_name, cond_col_name) != 0) {
-          // First-mismatch on this index column blocks later cols.
-          later_columns_blocked = true;
-          continue;
-        }
-        bool wants_lbound = op == T_EQUALS || op == T_GE || op == T_GT;
-        bool wants_ubound = op == T_EQUALS || op == T_LE || op == T_LT;
-        if ((wants_lbound && lbound_set) || (wants_ubound && ubound_set)) {
-          continue;
-        }
-        lbound_set = lbound_set || wants_lbound;
-        ubound_set = ubound_set || wants_ubound;
-        later_columns_blocked = (op != T_EQUALS);
-        cmh[cond_idx] = (int)col_idx;
-      }
-      if (lbound_set || ubound_set) {
-        int points = 100;
-        if (column->getType() != NdbDictionary::Column::Type::Varchar &&
-            column->getType() != NdbDictionary::Column::Type::Longvarchar) {
-          points += 10;
-        }
-        if (lbound_set && ubound_set) points *= 10;
-        if (!later_columns_blocked) points *= 100;
-        goodness += points;
-      }
-    }
-    if (goodness > 0) {
-      if (strcmp(index->getName(), "PRIMARY") == 0) goodness++;
-      scope.body_scan_config_candidates.push(
-          ScanConfig { index, cmh, goodness });
-    }
-  }
+  // 3. Generate candidate scan configs via the shared generator.  It
+  //    pushes a TABLE_SCAN candidate (goodness=0) first so it's always
+  //    available as the fallback, then one per usable ordered index
+  //    scored with the same heuristic as the main scope.
+  build_scan_config_candidates(scope.body_indexes,
+                               scope.body_toplevel_conditions,
+                               scope.body_scan_config_candidates);
 
   // 4. Pick highest-scoring candidate.
   Uint32 chosen = 0;

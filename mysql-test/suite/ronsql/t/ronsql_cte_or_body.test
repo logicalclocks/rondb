@@ -1,0 +1,149 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# W2: OR / DNF in a CTE body's own WHERE clause.
+#
+# Distinct from ronsql_cte_or.test (Phase I.2), which covers OR on a
+# CTE's *output* columns in the main query.  Here the OR lives inside
+# the CTE body's WHERE, pre-GROUP BY.
+#
+# How it is handled (no DNF factoring — same as the main query):
+#   - classify_where_by_table keeps a single-table body's WHERE
+#     (including a top-level OR) on join_where_ce[0]; apply_filter
+#     emits it as an NdbScanFilter::OR group.
+#   - select_cte_body_scan_config flattens only on AND, so a top-level
+#     OR conjunct is never bound-eligible (op == T_OR) and routes to
+#     the residual InterpretedCode filter, while a sibling AND conjunct
+#     (e.g. g = 10) can still drive an index bound.
+#
+# Every query is run through both the mysql client and RonSQL (via
+# RDRS) and compared, so an OR mis-handled as a bound — or dropped —
+# would surface as a result mismatch against MySQL.
+#
+# Tests cover:
+#   1. Pure body OR on one column (TABLE_SCAN, residual OR filter).
+#   2. AND + parenthesised OR: g = 10 AND (h = 1 OR h = 2)
+#      -> g drives an idx_g bound, the OR is residual.
+#   3. Leading-column OR cannot bound: (g = 10 OR g = 30) AND h = 1.
+#   4. OR of ranges: v < 20 OR v > 80.
+#   5. Three-way OR.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE orb (
+  id   INT NOT NULL,
+  g    BIGINT NOT NULL,
+  h    BIGINT NOT NULL,
+  v    BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_g (g)
+) ENGINE=NDB;
+
+INSERT INTO orb VALUES
+  (1, 10, 1, 5),
+  (2, 10, 2, 15),
+  (3, 10, 3, 25),
+  (4, 20, 1, 35),
+  (5, 20, 2, 45),
+  (6, 30, 1, 55),
+  (7, 30, 2, 95),
+  (8, 40, 1, 8);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: pure body OR on one column (TABLE_SCAN + residual OR) ===
+
+let $QUERY=
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+            FROM orb WHERE g = 10 OR g = 30 GROUP BY g)
+SELECT k, tot FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+            FROM orb WHERE g = 10 OR g = 30 GROUP BY g)
+SELECT k, tot FROM s|
+
+--echo
+--echo
+--echo === Test 2: AND + parenthesised OR (g bounds idx_g, OR residual) ===
+
+let $QUERY=
+WITH s AS (SELECT h AS k, SUM(v) AS tot
+            FROM orb WHERE g = 10 AND (h = 1 OR h = 2) GROUP BY h)
+SELECT k, tot FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT h AS k, SUM(v) AS tot
+            FROM orb WHERE g = 10 AND (h = 1 OR h = 2) GROUP BY h)
+SELECT k, tot FROM s|
+
+--echo
+--echo
+--echo === Test 3: leading-column OR cannot bound, AND sibling residual ===
+
+let $QUERY=
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+            FROM orb WHERE (g = 10 OR g = 30) AND h = 1 GROUP BY g)
+SELECT k, tot FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+            FROM orb WHERE (g = 10 OR g = 30) AND h = 1 GROUP BY g)
+SELECT k, tot FROM s|
+
+--echo
+--echo
+--echo === Test 4: OR of ranges (v < 20 OR v > 80) ===
+
+let $QUERY=
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+            FROM orb WHERE v < 20 OR v > 80 GROUP BY g)
+SELECT k, tot FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+            FROM orb WHERE v < 20 OR v > 80 GROUP BY g)
+SELECT k, tot FROM s|
+
+--echo
+--echo
+--echo === Test 5: three-way OR ===
+
+let $QUERY=
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+            FROM orb WHERE g = 10 OR g = 20 OR g = 40 GROUP BY g)
+SELECT k, tot FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT g AS k, SUM(v) AS tot
+            FROM orb WHERE g = 10 OR g = 20 OR g = 40 GROUP BY g)
+SELECT k, tot FROM s|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE orb;
+--enable_query_log
