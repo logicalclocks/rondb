@@ -308,6 +308,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_recv_queue_count(0) {
   /* m_last_stats_log_ns gets its 0 default from the in-class
    * initializer in RDMA_Transporter.hpp. */
+  NdbMutex_Init(&m_post_mutex);
   m_overload_limit = rdma_overload_limit(config);
   m_slowdown_limit = m_overload_limit * 6 / 10;
 }
@@ -363,6 +364,7 @@ RDMA_Transporter::RDMA_Transporter(TransporterRegistry &reg,
       m_recv_queue_count(0) {
   /* m_last_stats_log_ns gets its 0 default from the in-class
    * initializer in RDMA_Transporter.hpp. */
+  NdbMutex_Init(&m_post_mutex);
   /*
    * Gate-3 multi-transporter clone:
    *   - All tuning state (queue depth, buffers, retry counters, device
@@ -390,6 +392,7 @@ RDMA_Transporter::~RDMA_Transporter() {
   release_verbs_resources();
   delete[] m_device_name;
   m_device_name = nullptr;
+  NdbMutex_Deinit(&m_post_mutex);
 }
 
 bool RDMA_Transporter::initTransporter() {
@@ -541,6 +544,20 @@ bool RDMA_Transporter::doSend(bool /*need_wakeup*/) {
      * send buffer for the next attempt. */
     return false;
   }
+
+  /*
+   * Serialize the entire send-posting critical section on this QP.
+   *
+   * m_post_mutex guards every ibv_post_send() on m_qp, the single-writer
+   * m_local_send_seq stamp, the send-slot claim/commit, the
+   * m_peer_recv_credits decrement, and the send-CQ reap below. On ndbmtd
+   * this nests inside the callback send lock (m_send_lock) already held by
+   * performSend(); on the API node that callback lock is a no-op, so this
+   * mutex is the ONLY thing serializing doSend() against
+   * recv_thread_emit_credit_only() on the receive thread. Held via RAII for
+   * the whole call so every early-return path releases it.
+   */
+  Guard post_guard(&m_post_mutex);
 
   const int reaped = reap_send_completions();
   if (reaped < 0) {
@@ -892,9 +909,10 @@ bool RDMA_Transporter::post_credit_only_locked() {
    * Single-source-of-truth helper for building and posting a zero-
    * payload CREDIT_ONLY WR. Callers (doSend() on the send thread,
    * recv_thread_emit_credit_only() on the receive thread) must hold
-   * the per-transporter send lock, because we mutate the same shared
-   * state doSend() touches and ibv_post_send() must be serialized
-   * against itself on the same QP.
+   * m_post_mutex -- and, on ndbmtd, the callback send lock that nests
+   * outside it -- because we mutate the same shared state doSend()
+   * touches and ibv_post_send() must be serialized against itself on
+   * the same QP.
    *
    * Preconditions are checked here so callers can be minimal: we no-op
    * when the link is not yet live, the pending grant is zero, or no free
@@ -1154,21 +1172,30 @@ void RDMA_Transporter::recv_thread_emit_credit_only() {
    * Reaping here also frees slots for outbound-active clones whose
    * send scheduler has no remaining upper-layer data to push.
    */
-  if (reap_send_completions() < 0) {
-    /* Fatal CQ error: start_disconnecting() already called. */
-    unlock_send_transporter();
-    return;
-  }
-  if (post_credit_only_locked()) {
+  {
     /*
-     * Separate counter so operators can verify the new path is
-     * actually firing on clones that previously only had inbound
-     * traffic. The cumulative count is also reflected in
-     * send_credit_only_out, which post_credit_only_locked()
-     * already bumped.
+     * Acquire the per-transporter QP-posting mutex INSIDE the callback
+     * send lock. The global acquisition order is therefore (callback send
+     * lock) -> m_post_mutex, matching doSend()'s nesting on ndbmtd. On the
+     * API node the callback send lock is a no-op, so m_post_mutex is the
+     * actual serialization against doSend()'s posting path. The Guard
+     * releases at the end of this scope, before unlock_send_transporter(),
+     * so the locks unwind in reverse acquisition order.
      */
-    m_stats.send_credit_only_recv_path.fetch_add(1u,
-                                                 std::memory_order_relaxed);
+    Guard post_guard(&m_post_mutex);
+    if (reap_send_completions() < 0) {
+      /* Fatal CQ error: start_disconnecting() already called. */
+    } else if (post_credit_only_locked()) {
+      /*
+       * Separate counter so operators can verify the new path is
+       * actually firing on clones that previously only had inbound
+       * traffic. The cumulative count is also reflected in
+       * send_credit_only_out, which post_credit_only_locked()
+       * already bumped.
+       */
+      m_stats.send_credit_only_recv_path.fetch_add(
+          1u, std::memory_order_relaxed);
+    }
   }
   unlock_send_transporter();
 }
