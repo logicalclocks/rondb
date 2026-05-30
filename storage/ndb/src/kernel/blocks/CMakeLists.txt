@@ -105,6 +105,7 @@ ADD_STATIC_LIBRARY(ndbblocks
   dbtup/DbtupVarAlloc.cpp
   dbtup/Undo_buffer.cpp
   dbtup/tuppage.cpp
+  dbtup/AggInterpreterBase.cpp
   dbtup/AggInterpreter.cpp
   dbtup/JoinAggInterpreter.cpp
   dbtup/PushdownInterpreter.cpp

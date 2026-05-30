@@ -27,6 +27,7 @@
 #include <math.h>
 #include <cstring>
 #include <map>
+#include "AggInterpreterBase.hpp"
 #include "PushdownInterpreter.hpp"
 #include "Dbtup.hpp"
 #include "AggHashTable.hpp"  // for MEM_CHUNK_SIZE, AGG_EVICT_NEEDED
@@ -42,13 +43,13 @@
  * no chunk allocator, no xfrm buffer, no dynamic allocation beyond
  * std::map tree nodes.
  */
-class AggInterpreter : public PushdownInterpreter {
+class AggInterpreter : public AggInterpreterBase {
  public:
   AggInterpreter(Uint32 prog_len,
                  Int64 table_id, Int64 frag_id,
                  Uint32 thread_id):
-    PushdownInterpreter(PushdownType::AGGREGATION, prog_len,
-                        table_id, frag_id, thread_id),
+    AggInterpreterBase(PushdownType::AGGREGATION, prog_len,
+                       table_id, frag_id, thread_id),
     m_prog(nullptr), m_cur_pos(0),
     m_n_gb_cols(0), m_gb_cols(nullptr),
     m_n_agg_results(0),

@@ -1,6 +1,9 @@
 # AggInterpreter ↔ JoinAggInterpreter Unification — Analysis & Plan
 
-**Status:** analysis complete, plan proposed (not yet started)
+**Status:** Step 1 in progress — sub-step 1.1 (shared numeric/type kernels) +
+the base-class foundation (1.5) **shipped and verified** (build + full agg test
+suite + RonSQL/CTE MTR green).  Sub-steps 1.2 / 1.3 / 1.4 remain.  Steps 2–3 not
+started.
 **Goal:** the two interpreters share a large amount of duplicated code.
 `JoinAggInterpreter` has the better (more scalable) memory model. (1) Remove the
 duplication, then (2) make `AggInterpreter` use `JoinAggInterpreter`'s memory model
@@ -215,42 +218,55 @@ a `gb_map()`-style **"is it drained/empty?"** query, `frag_id()`, and
 Both interpreters call one copy of the duplicated compute code. No memory-model or
 call-site changes; both keep their existing containers, allocators, and emission.
 
-1.1 **Shared numeric kernels.** Move the file-static helpers (`TypeSupported`,
-   `IsUnsigned`, `AlignedType`, `PrintValue`, `Sum*`, `Max*`, `Min*`, `Count`,
-   `AggInterpreter.cpp:372-1119` ≡ `JoinAggInterpreter.cpp:88-550`) into a shared unit
-   (`AggKernels.{hpp,cpp}` or an `AggInterpreterBase` static method set). Delete the
-   JoinAgg copies; include in both. ~750 lines removed.
+1.1 ✅ **DONE — Shared numeric kernels.** Moved the file-static helpers
+   (`TypeSupported`, `IsUnsigned`, `AlignedType`, `PrintValue`, `Sum*`, `Max*`,
+   `Min*`, `Count`) into `AggInterpreterBase` as `protected static` methods
+   (`AggInterpreterBase.{hpp,cpp}`).  All 14 pairs were verified logically identical
+   before the move (differences were only cosmetic + JoinAgg having dropped the
+   debug-only `#ifdef DEBUG_PA_INTERP` trace blocks — AggInterpreter's superset
+   kept).  Both `ProcessRec`s call them unqualified via inherited name lookup (every
+   call site is inside a member function ⇒ zero call-site churn).  ~748 duplicated
+   lines removed; one canonical copy in `AggInterpreterBase.cpp`.  Added to
+   `blocks/CMakeLists.txt`.  Build + agg test suite + RonSQL/CTE MTR green.
 
-1.2 **Shared embedded-program validator + optimizer.** Factor `validateEmbeddedProgram`
+1.5 ✅ **DONE (landed with 1.1) — base-class foundation.**
+   `AggInterpreterBase : public PushdownInterpreter` created; both `AggInterpreter`
+   and `JoinAggInterpreter` reparented (ctors delegate `AggInterpreterBase(...)` →
+   `PushdownInterpreter(...)`).  The base currently holds only the shared kernels;
+   it adds **no data members**, so `sizeof` is unchanged and both
+   `static_assert(... <= MEM_CHUNK_SIZE)` still hold.  Lifting the shared *fields*
+   (`m_registers`, `m_string_results`, etc.) into the base is deferred to 1.3/1.4
+   where they are actually needed.
+
+1.2 ⏳ **TODO — Shared embedded-program validator + optimizer.** Factor `validateEmbeddedProgram`
    and `OptimizeProgram` into the shared unit (`OptimizeProgram` already only calls the
    static `OptimizeProgramBuffer`).
 
-1.3 **Shared string MIN/MAX suite.** Factor `minMaxString`, `stringPayloadSize`,
+1.3 ⏳ **TODO — Shared string MIN/MAX suite.** Factor `minMaxString`, `stringPayloadSize`,
    `encodeStringPayload`, `freeGroupStringSlots` into shared helpers parameterized by an
    `AggResItem*` slot array + the `m_string_results` / `m_register_string_data` fields
    (both classes hold these identically). `release_string_results` keeps a thin per-class
    shim for the map-iteration difference, calling a shared per-group-array freer.
+   Lift `m_string_results` / `m_register_string_data` (and `m_decimal*`) into the base
+   here, since the shared helpers need them.
 
-1.4 **Shared opcode executor.** Split each `ProcessRec` into:
+1.4 ⏳ **TODO — Shared opcode executor.** Split each `ProcessRec` into:
    - a per-class **prologue** that resolves `agg_res_ptr` (read GB key → look up / insert
      group → accumulator base) — the only container-specific part; and
    - a **shared `executeOpcodes(agg_res_ptr, block_tup, req_struct, …)`** holding the
      entire opcode dispatch (`AggInterpreter.cpp:1242-1962` ≡
      `JoinAggInterpreter.cpp:1130-1668`).
    ~700 lines de-duplicated. The join/CTE-only branches (linked attrs, CTE rewrite,
-   `m_acc_offset`, `m_null_local_columns`) stay in JoinAgg's prologue only.
+   `m_acc_offset`, `m_null_local_columns`) stay in JoinAgg's prologue only.  Lift the
+   remaining shared fields (`m_registers`, `m_n_gb_cols`, `m_n_agg_results`, `m_gb_cols`,
+   `m_agg_results`, the count statics) into the base for `executeOpcodes` to use.  Keep
+   the base non-virtual in the hot path — `executeOpcodes` must stay inlinable; only
+   `~PushdownInterpreter` is virtual, as today.
 
-1.5 **Mechanism: a shared base class** `AggInterpreterBase : public PushdownInterpreter`
-   holding the shared fields (`m_registers`, `m_register_string_data`, `m_decimal*`,
-   `m_string_results`, `m_n_gb_cols`, `m_n_agg_results`, `m_gb_cols`, `m_agg_results`,
-   the count statics) and the shared methods. `AggInterpreter` and `JoinAggInterpreter`
-   become subclasses supplying only the group store + emission. (Keep the base non-virtual
-   in the hot path — `executeOpcodes` must stay inlinable; only `~PushdownInterpreter` is
-   virtual, as today.)
-
-   **Exit criteria:** byte-identical behavior; `testJoinAgg`, `testJoinAggSpj`,
+   **Step 1 exit criteria:** byte-identical behavior; `testJoinAgg`, `testJoinAggSpj`,
    `testJoinAggNdbApi`, `testCaseAgg`, the bench targets, and the RonSQL/CTE MTR suites
    pass unchanged; ~1,900–2,100 net lines removed; `sizeof` asserts still hold.
+   *(1.1 increment: ~748 lines removed, suites green.)*
 
 ### Step 2 — Give AggInterpreter the JoinAgg memory model
 Replace AggInterpreter's `std::map` + inline bump allocator with the shared chunk
