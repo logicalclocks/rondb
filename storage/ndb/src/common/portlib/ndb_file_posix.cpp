@@ -82,30 +82,55 @@ bool ndb_file::check_is_regular_file() const {
 int ndb_file::write_forward(const void *buf, ndb_file::size_t count) {
   require(check_is_regular_file());
   require(check_block_size_and_alignment(buf, count, get_pos()));
-  int ret;
-  do {
-    ret = ::write(m_handle, buf, count);
-  } while (ret == -1 && errno == EINTR);
-  if (ret >= 0) {
-    assert(ndb_file::size_t(ret) == count);
-    if (do_sync_after_write(ret) == -1) return -1;
+
+  const ndb_file::size_t orig_count = count;
+  const char *p = static_cast<const char *>(buf);
+  constexpr int MAX_PARTIAL_RETRIES = 10;
+  int partials = 0;
+
+  while (count > 0) {
+    ssize_t ret = ::write(m_handle, p, count);
+    if (ret == -1) {
+      if (errno == EINTR) continue;
+      return -1;
+    }
+    p     += ret;
+    count -= ret;
+    if (count == 0) break;
+    if (++partials >= MAX_PARTIAL_RETRIES) {
+      return -1;
+    }
   }
-  return ret;
+  if (do_sync_after_write(orig_count) == -1) return -1;
+  return static_cast<int>(orig_count);
 }
 
 int ndb_file::write_pos(const void *buf, ndb_file::size_t count,
                         ndb_off_t offset) {
   require(check_is_regular_file());
   require(check_block_size_and_alignment(buf, count, offset));
-  int ret;
-  do {
-    ret = ::pwrite(m_handle, buf, count, offset);
-  } while (ret == -1 && errno == EINTR);
-  if (ret >= 0) {
-    assert(ndb_file::size_t(ret) == count);
-    if (do_sync_after_write(ret) == -1) return -1;
+
+  const ndb_file::size_t orig_count = count;
+  const char *p = static_cast<const char *>(buf);
+  constexpr int MAX_PARTIAL_RETRIES = 10;
+  int partials = 0;
+
+  while (count > 0) {
+    ssize_t ret = ::pwrite(m_handle, p, count, offset);
+    if (ret == -1) {
+      if (errno == EINTR) continue;
+      return -1;
+    }
+    p      += ret;
+    count  -= ret;
+    offset += ret;
+    if (count == 0) break;
+    if (++partials >= MAX_PARTIAL_RETRIES) {
+      return -1;
+    }
   }
-  return ret;
+  if (do_sync_after_write(orig_count) == -1) return -1;
+  return static_cast<int>(orig_count);
 }
 
 int ndb_file::read_forward(void *buf, ndb_file::size_t count) const {
