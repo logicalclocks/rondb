@@ -208,6 +208,8 @@ static const char *T12_PARENT   = "t12_parent";
 static const char *T12_CHILD    = "t12_child";
 static const char *T13_PARENT   = "t13_parent";
 static const char *T13_CHILD    = "t13_child";
+static const char *T25_PARENT   = "t25_parent";
+static const char *T25_CHILD    = "t25_child";
 
 /* ------------------------------------------------------------------ */
 /* MySQL helpers                                                       */
@@ -812,7 +814,7 @@ static int
 testJitMustCompileSum(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter,
                       Int64 expectedSum)
 {
-  const char *testName = "Test 24: JIT must compile SUM local attr";
+  const char *testName = "Test 25: JIT must compile SUM local attr";
   printf("%s ... ", testName);
   fflush(stdout);
 
@@ -971,10 +973,64 @@ encEmbeddedAttrId(Uint32 attrId)
   return (attrId & 0xFFFFu) << 16;
 }
 
+/* Embedded normal-interpreter opcodes for the linked-NULL path (mirror
+ * of Interpreter.hpp; see bridge_tests.c enc_emb_* helpers). */
+#define EMB_OP_EXIT_OK              18
+#define EMB_OP_EXIT_REFUSE          19
+#define EMB_OP_LOAD_CONST16          4
+#define EMB_OP_READ_LINKED_TO_MEM   39
+#define EMB_OP_BRANCH_LINKED_EQ_NULL 41
+#define EMB_OP_BRANCH_LINKED_NE_NULL 42
+
+/* EXIT_REFUSE carries a client error code in bits 31..16. Codes 626,
+ * 899, and 6000-6999 mean "filter this row out" (NdbInterpretedCode
+ * convention); other codes abort the aggregation. */
+static Uint32
+encEmbeddedExitRefuse(Uint32 errorCode)
+{
+  return encEmbeddedOp(EMB_OP_EXIT_REFUSE, (errorCode & 0xFFFFu) << 16);
+}
+
+/* LOAD_CONST16 reg, val — load a 16-bit constant into an interpreter
+ * register (val in bits 31..16, reg in bits 8..6). Used to stage the
+ * accept-path skip_offset for WRITE_INTERPRETER_OUTPUT. */
+static Uint32
+encEmbeddedLoadConst16(Uint32 reg, Uint32 val)
+{
+  return EMB_OP_LOAD_CONST16 | ((reg & 0x7u) << 6) | ((val & 0xFFFFu) << 16);
+}
+
+/* WRITE_INTERPRETER_OUTPUT reg, outIdx — write a register to interpreter
+ * output slot outIdx. Mirrors Interpreter::WriteInterpreterOutput:
+ * opcode = LOAD_CONST_MEM(59) | (1<<15) (decodes to 123), reg in
+ * bits 8..6, outIdx in bits 31..16. Slot 0 is the row-disposition
+ * skip_offset that selects which aggregation instruction runs next. */
+static Uint32
+encEmbeddedWriteOutput(Uint32 reg, Uint32 outIdx)
+{
+  return 59u | (1u << 15) | ((reg & 0x7u) << 6) | ((outIdx & 0xFFFFu) << 16);
+}
+
+/* READ_LINKED_TO_MEM — 1-word instruction; position in bits 23..16. */
+static Uint32
+encEmbeddedReadLinkedToMem(Uint32 position)
+{
+  return encEmbeddedOp(EMB_OP_READ_LINKED_TO_MEM, (position & 0xFFu) << 16);
+}
+
+/* BRANCH_LINKED_EQ_NULL / NE_NULL — 1-word instruction; no operand word
+ * (position is implicit from the preceding READ_LINKED_TO_MEM). Forward
+ * branch with branchLength in bits 30..16. */
+static Uint32
+encEmbeddedBranchLinkedNull(Uint32 op, Uint32 branchLength)
+{
+  return encEmbeddedOp(op, (branchLength & 0x7FFFu) << 16);
+}
+
 static int
 testJitAllRejectedSumNull(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 {
-  printf("Test 24: JIT all-rejected SUM returns NULL ... ");
+  printf("Test 25: JIT all-rejected SUM returns NULL ... ");
   fflush(stdout);
 
   if (mysql_query(conn,
@@ -1016,7 +1072,7 @@ testJitAllRejectedSumNull(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   if (!agg.EmbeddedInterp(3) ||
       !agg.EmitEmbeddedWord(encEmbeddedBranchAttrNull(25, 2)) ||
       !agg.EmitEmbeddedWord(encEmbeddedAttrId(amountAttrId)) ||
-      !agg.EmitEmbeddedWord(encEmbeddedOp(6, 0)) ||
+      !agg.EmitEmbeddedWord(encEmbeddedOp(EMB_OP_EXIT_REFUSE, 0)) ||
       !agg.LoadColumn("amount", 0) ||
       !agg.Sum(0, 0) ||
       !agg.Finalize()) {
@@ -1132,6 +1188,235 @@ testJitAllRejectedSumNull(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   }
 
   printf("OK (sum=NULL, JIT required)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 25 helpers: dedicated tables with a nullable parent column      */
+/* ------------------------------------------------------------------ */
+
+static int
+createT25Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t25_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t25_parent");
+
+  if (sqlExec(conn,
+        "CREATE TABLE t25_parent ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  marker BIGINT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  if (sqlExec(conn,
+        "CREATE TABLE t25_child ("
+        "  parent_id INT NOT NULL PRIMARY KEY,"
+        "  amount BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  return 0;
+}
+
+static int
+insertT25Data(MYSQL *conn)
+{
+  /* marker NULL for parents 2,4; non-NULL for 1,3,5. */
+  if (sqlExec(conn,
+        "INSERT INTO t25_parent VALUES "
+        "(1,10),(2,NULL),(3,30),(4,NULL),(5,50)") != 0) return -1;
+  if (sqlExec(conn,
+        "INSERT INTO t25_child VALUES "
+        "(1,100),(2,200),(3,300),(4,400),(5,500)") != 0) return -1;
+  return 0;
+}
+
+static int
+dropT25Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t25_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t25_parent");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 25: JIT canary for the Phase 5.1a linked-NULL filter path.      */
+/* parent scan projects a nullable linked column (marker); the child    */
+/* leaf aggregation reads it via READ_LINKED_TO_MEM and rejects rows    */
+/* where marker IS NULL via BRANCH_LINKED_EQ_NULL, then SUM(amount).    */
+/* Non-NULL markers are parents 1,3,5 -> SUM = 100+300+500 = 900.       */
+/* ERROR_INSERT 4060 forces JIT (fatal on fallback), so a green run     */
+/* proves the linked-NULL program compiled and executed through JIT.    */
+/* ------------------------------------------------------------------ */
+static int
+testJitLinkedNullSum(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+{
+  const char *testName = "Test 26: JIT linked NULL filter";
+  printf("%s ... ", testName);
+  fflush(stdout);
+
+  if (verifyScalarWithMysql(conn, testName,
+        "SELECT SUM(c.amount) FROM t25_parent p "
+        "JOIN t25_child c ON c.parent_id = p.id "
+        "WHERE p.marker IS NOT NULL",
+        {900}) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T25_PARENT);
+  dict->invalidateTable(T25_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T25_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T25_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup)\n");
+    return -1;
+  }
+
+  /* Embedded block (emb_len=6) following the full row-disposition model:
+   * a per-row decision that explicitly skips (EXIT_REFUSE) or uses
+   * (WRITE_INTERPRETER_OUTPUT skip_offset 0 + EXIT_OK) the row.
+   *   0: READ_LINKED_TO_MEM position 0   (loads projected marker)
+   *   1: BRANCH_LINKED_NE_NULL +2        (marker NOT NULL -> accept @3)
+   *   2: EXIT_REFUSE 626                 (marker IS NULL -> skip row)
+   *   3: LOAD_CONST16 r2, 0              (accept: skip_offset = 0)
+   *   4: WRITE_INTERPRETER_OUTPUT r2, 0  (slot 0 = run next agg instr)
+   *   5: EXIT_OK                         (accept -> outer LoadColumn+Sum)
+   * Non-NULL markers sum amount (100+300+500=900); NULL markers skip.
+   * This bytecode runs identically on the interpreter and the JIT. */
+  NdbAggregator agg(childTab);
+  if (!agg.EmbeddedInterp(6) ||
+      !agg.EmitEmbeddedWord(encEmbeddedReadLinkedToMem(0)) ||
+      !agg.EmitEmbeddedWord(
+          encEmbeddedBranchLinkedNull(EMB_OP_BRANCH_LINKED_NE_NULL, 2)) ||
+      !agg.EmitEmbeddedWord(encEmbeddedExitRefuse(626)) ||
+      !agg.EmitEmbeddedWord(encEmbeddedLoadConst16(2, 0)) ||
+      !agg.EmitEmbeddedWord(encEmbeddedWriteOutput(2, 0)) ||
+      !agg.EmitEmbeddedWord(encEmbeddedOp(EMB_OP_EXIT_OK, 0)) ||
+      !agg.LoadColumn("amount", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  if (restarter.insertErrorInAllNodes(4060) != 0) {
+    printf("FAILED (insertErrorInAllNodes(4060))\n");
+    return -1;
+  }
+  bool mustCompileSet = true;
+  auto clearMustCompile = [&]() {
+    if (mustCompileSet) {
+      restarter.insertErrorInAllNodes(0);
+      mustCompileSet = false;
+      V("  ERROR_INSERT cleared\n");
+    }
+  };
+  V("\n  ERROR_INSERT 4060 set (JIT fallback is fatal)\n");
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"),
+    nullptr
+  };
+
+  NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
+
+  /* Project parent.marker down to the child leaf at linked position 0,
+   * matching READ_LINKED_TO_MEM position 0 above. */
+  const NdbLinkedOperand *markerLink = qb->linkedValue(parentOp, "marker");
+  if (markerLink == nullptr) {
+    printf("FAILED (linkedValue marker: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+  opts.addLinkedProjection(markerLink);
+  opts.setAggregation(agg);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    clearMustCompile();
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    clearMustCompile();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: error %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    clearMustCompile();
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  clearMustCompile();
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+  if (rec.end()) {
+    printf("FAILED (no result record)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+  const bool isNull = sumRes.is_null();
+  const Int64 actualSum = isNull ? 0 : sumRes.data_int64();
+
+  NdbAggregator::ResultRecord rec2 = resultAgg->FetchResultRecord();
+  if (!rec2.end()) {
+    printf("FAILED (expected single record for non-GROUP-BY, got more)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (isNull || actualSum != 900) {
+    printf("FAILED (expected SUM 900, got %s)\n",
+           isNull ? "NULL" : std::to_string((long long)actualSum).c_str());
+    return -1;
+  }
+
+  printf("OK (sum=900, JIT required)\n");
   return 0;
 }
 
@@ -6212,6 +6497,8 @@ fakeOkLineForErrorInsertTest(int testNum)
     case 22: return "Test 22: COMPLETE_REF error handling (ERROR_INSERT 5124) ... OK (COMPLETE_REF handled, cleanup verified)";
     case 23: return "Test 23: JIT must compile SUM local attr ... OK (sum=1500, JIT required)";
     case 24: return "Test 24: JIT must compile SUM local attr ... OK (sum=1500, JIT required)";
+    case 25: return "Test 25: JIT all-rejected SUM returns NULL ... OK (sum=NULL, JIT required)";
+    case 26: return "Test 26: JIT linked NULL filter ... OK (sum=900, JIT required)";
     default: return nullptr;
   }
 }
@@ -6672,8 +6959,17 @@ int main(int argc, char **argv)
           }
           dropTest18Tables(conn);
         }
-        /* Test 24: JIT must compile local-attribute SUM */
+        /* Test 24: aggregate lookup-rooted query def rejected */
         if (shouldRun(24)) {
+          if (createTestTables(conn) == 0) {
+            if (testLookupRootAggRejected(&ndb) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTestTables(conn);
+        }
+        /* Test 25: JIT must compile local-attribute SUM */
+        if (shouldRun(25)) {
           NdbRestarter restarter(connectString);
           if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
             if (testJitMustCompileSum(&ndb, conn, restarter, 1500) != 0)
@@ -6684,17 +6980,8 @@ int main(int argc, char **argv)
           dropTestTables(conn);
         }
 
-        /* Test 24: aggregate lookup-rooted query def rejected */
-        if (shouldRun(24)) {
-          if (createTestTables(conn) == 0) {
-            if (testLookupRootAggRejected(&ndb) != 0) exitCode = 1;
-          } else {
-            exitCode = 1;
-          }
-          dropTestTables(conn);
-        }
-        /* Test 25: JIT all-rejected SUM preserves NULL result */
-        if (shouldRun(25)) {
+        /* Test 26: JIT all-rejected SUM preserves NULL result */
+        if (shouldRun(26)) {
           NdbRestarter restarter(connectString);
           if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
             if (testJitAllRejectedSumNull(&ndb, conn, restarter) != 0)
@@ -6703,6 +6990,18 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropTestTables(conn);
+        }
+
+        /* Test 27: JIT canary for the linked-NULL filter path */
+        if (shouldRun(27)) {
+          NdbRestarter restarter(connectString);
+          if (createT25Tables(conn) == 0 && insertT25Data(conn) == 0) {
+            if (testJitLinkedNullSum(&ndb, conn, restarter) != 0)
+              exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropT25Tables(conn);
         }
 
         mysql_close(conn);

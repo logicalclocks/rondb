@@ -329,6 +329,15 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
         req_struct->no_exec_instructions = saved_instr_count;
 
+        /* EXIT_REFUSE with a filter error code surfaces as
+         * INTERPRETER_FILTER_REJECT: the row is filtered out, so stop
+         * processing this row's aggregation program — identical to a
+         * STOP_PROGRAM skip_offset. Any other negative rc is a genuine
+         * interpreter error. */
+        if (rc == Dbtup::INTERPRETER_FILTER_REJECT) {
+          exec_pos = m_prog_len;
+          break;
+        }
         if (rc < 0) {
           return ZAGG_EMBEDDED_INTERP_ERROR;
         }

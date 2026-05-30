@@ -28,6 +28,8 @@ Test 22: COMPLETE_REF error handling (ERROR_INSERT 5124) ... OK (COMPLETE_REF ha
 Test 23: fragsPerWorker result equality (unset/1/2/4/8) ... OK (identical results for all fragsPerWorker values)
 Test 24: aggregate lookup-rooted query def rejected ... OK (prepare rejected with 4820)
 Test 24: JIT must compile SUM local attr ... OK (sum=1500, JIT required)
+Test 25: JIT all-rejected SUM returns NULL ... OK (sum=NULL, JIT required)
+Test 26: JIT linked NULL filter ... OK (sum=900, JIT required)
 
 All tests PASSED
 PASSED

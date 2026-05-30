@@ -651,11 +651,14 @@ bool AggInterpreterBase::validateEmbeddedProgram(
       case Interpreter::BRANCH_GT_REG_REG:
       case Interpreter::BRANCH_GE_REG_REG:
       case Interpreter::EXIT_OK:
+      case Interpreter::EXIT_REFUSE:
       case Interpreter::BRANCH_ATTR_OP_ARG:
       case Interpreter::BRANCH_MEM_OP_ARG:
       case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE:
       case Interpreter::BRANCH_ATTR_EQ_NULL:
       case Interpreter::BRANCH_ATTR_NE_NULL:
+      case Interpreter::BRANCH_LINKED_EQ_NULL:
+      case Interpreter::BRANCH_LINKED_NE_NULL:
       case Interpreter::READ_LINKED_TO_MEM:
       case Interpreter::READ_UINT8_MEM_TO_REG:
       case Interpreter::READ_UINT16_MEM_TO_REG:
@@ -688,6 +691,8 @@ bool AggInterpreterBase::validateEmbeddedProgram(
       case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE:
       case Interpreter::BRANCH_ATTR_EQ_NULL:
       case Interpreter::BRANCH_ATTR_NE_NULL:
+      case Interpreter::BRANCH_LINKED_EQ_NULL:
+      case Interpreter::BRANCH_LINKED_NE_NULL:
         is_branch = true;
         break;
       default:

@@ -416,7 +416,7 @@ static void test_set_reg_null_reject(void) {
 /* NDB normal-interpreter opcodes (mirror of Interpreter.hpp). */
 #define EMB_BRANCH_ATTR_EQ_NULL  24
 #define EMB_BRANCH_ATTR_NE_NULL  25
-#define EMB_EXIT_REFUSE           6
+#define EMB_EXIT_REFUSE          19
 #define EMB_READ_LINKED_TO_MEM   39
 #define EMB_BRANCH_LINKED_EQ_NULL 41
 #define EMB_BRANCH_LINKED_NE_NULL 42
@@ -452,6 +452,17 @@ static uint32_t enc_emb_attr_id(uint32_t attrId) {
 static uint32_t enc_emb_read_linked_to_mem(uint32_t position) {
   return enc_emb_op_word(EMB_READ_LINKED_TO_MEM,
                          (position & 0xFFu) << 16);
+}
+/* Accept-path opcodes (row-disposition model). */
+#define EMB_EXIT_OK              18
+#define EMB_LOAD_CONST16          4
+#define EMB_WRITE_INTERP_OUTPUT 123
+static uint32_t enc_emb_load_const16(uint32_t reg, uint32_t val) {
+  return EMB_LOAD_CONST16 | ((reg & 0x7u) << 6) | ((val & 0xFFFFu) << 16);
+}
+static uint32_t enc_emb_write_output(uint32_t reg, uint32_t out_idx) {
+  /* WRITE_INTERPRETER_OUTPUT = LOAD_CONST_MEM(59) | (1<<15) → opcode 123. */
+  return 59u | (1u << 15) | ((reg & 0x7u) << 6) | ((out_idx & 0xFFFFu) << 16);
 }
 
 /* T13: empty embedded block is a no-op. */
@@ -619,6 +630,72 @@ static void test_embedded_linked_backward_reject(void) {
   assert_rejected("T22 embedded_linked_backward_reject", prog, 3,
                    JIT_BRIDGE_EMBEDDED_BACKWARD, 2,
                    EMB_BRANCH_LINKED_EQ_NULL);
+}
+
+/* T22b: Phase 5.1 linked filter with an explicit ACCEPT path (the full
+ * row-disposition model). The non-NULL branch lands on the accept
+ * sequence (LOAD_CONST16 0 + WRITE_INTERPRETER_OUTPUT 0 + EXIT_OK),
+ * which emits no Ops, so the branch must resolve to the outer LoadCol.
+ *   embedded(emb_len=6):
+ *     0: READ_LINKED_TO_MEM 0
+ *     1: BRANCH_LINKED_NE_NULL +2   (non-NULL -> accept @3)
+ *     2: EXIT_REFUSE 626            (NULL -> skip)
+ *     3: LOAD_CONST16 r2, 0
+ *     4: WRITE_INTERPRETER_OUTPUT r2, 0
+ *     5: EXIT_OK
+ *   outer: kOpLoadCol, kOpSumBigint
+ * Expected Ops: [0]LOAD_LINKED_TO_MEM [1]BRANCH_LINKED_NE_NULL(c=3)
+ *   [2]OP_EXIT(reject) [3]OP_LOAD_COL_NDB [4]OP_SUM_BIGINT [5]OP_EXIT(tail). */
+static void test_embedded_linked_accept_path(void) {
+  uint32_t prog[9] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
+    enc_emb_read_linked_to_mem(/*position=*/0),
+    enc_emb_branch_linked_null(EMB_BRANCH_LINKED_NE_NULL, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+
+  Program p;
+  if (!expect_accepted("T22b embedded_linked_accept_path", prog, 9,
+                       &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field("T22b embedded_linked_accept_path", &p, 1,
+                       "kind", p.ops[1].kind,
+                       OP_BRANCH_LINKED_NE_NULL)) return;
+  /* Accept branch resolves to the outer LoadCol at op index 3. */
+  if (!expect_op_field("T22b embedded_linked_accept_path", &p, 1,
+                       "c", p.ops[1].c, 3)) return;
+  if (!expect_op_field("T22b embedded_linked_accept_path", &p, 2,
+                       "kind", p.ops[2].kind, OP_EXIT)) return;
+  if (!expect_op_field("T22b embedded_linked_accept_path", &p, 3,
+                       "kind", p.ops[3].kind, OP_LOAD_COL_NDB)) return;
+  if (!expect_op_field("T22b embedded_linked_accept_path", &p, 4,
+                       "kind", p.ops[4].kind, OP_SUM_BIGINT)) return;
+  mark_pass("T22b embedded_linked_accept_path");
+}
+
+/* T22c: a non-zero skip_offset (CASE-style multi-way disposition) is not
+ * modelled by the JIT and must reject so the program falls back to the
+ * interpreter. LOAD_CONST16 with a non-zero constant triggers this. */
+static void test_embedded_nonzero_skip_offset_reject(void) {
+  uint32_t prog[9] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
+    enc_emb_read_linked_to_mem(/*position=*/0),
+    enc_emb_branch_linked_null(EMB_BRANCH_LINKED_NE_NULL, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/5),   /* non-zero skip_offset */
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  /* offending_word = outer_word_pos(0) + 1 + emb_pc(3) = 4
+   * (LOAD_CONST16 is the 4th embedded instruction, emb_pc 3). */
+  assert_rejected("T22c embedded_nonzero_skip_offset_reject", prog, 9,
+                   JIT_BRIDGE_UNSUPPORTED_OP, 4, EMB_LOAD_CONST16);
 }
 
 /* T23: local-attribute branch target outside the embedded block must
@@ -842,6 +919,8 @@ int main(void) {
   test_embedded_linked_ne_null_accept();
   test_embedded_linked_eq_null_accept();
   test_embedded_linked_backward_reject();
+  test_embedded_linked_accept_path();
+  test_embedded_nonzero_skip_offset_reject();
   test_embedded_attr_target_oor_reject();
   test_embedded_linked_target_oor_reject();
   test_embedded_direct_linked_ne_null_lowering();

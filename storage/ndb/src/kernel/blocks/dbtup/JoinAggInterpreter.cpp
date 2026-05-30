@@ -967,9 +967,20 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
    * a couple of iterations. */
   if (m_jit_entry != nullptr && m_n_gb_cols == 0) {
     m_processed_rows++;
-    return dbtup_jit_invoke(this, block_tup, req_struct,
-                             m_jit_entry, agg_res_ptr,
-                             m_n_agg_results);
+    /* Make this row's linked-attribute buffer visible to the JIT
+     * cold-call helpers (ndb_jit_h_read_linked_to_mem reads it via
+     * req_struct->m_linked_attr_data). The interpreter path sets these
+     * around interpreterAggEmbedded; the JIT path must do the same or
+     * every READ_LINKED_TO_MEM sees a NULL buffer (→ all rows treated
+     * as linked-NULL). */
+    req_struct->m_linked_attr_data = m_linked_attr_data;
+    req_struct->m_linked_attr_len = m_linked_attr_len;
+    int jit_rc = dbtup_jit_invoke(this, block_tup, req_struct,
+                                  m_jit_entry, agg_res_ptr,
+                                  m_n_agg_results);
+    req_struct->m_linked_attr_data = nullptr;
+    req_struct->m_linked_attr_len = 0;
+    return jit_rc;
   }
 
 #ifdef ERROR_INSERT
@@ -1153,6 +1164,15 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         req_struct->m_linked_attr_data = nullptr;
         req_struct->m_linked_attr_len = 0;
 
+        /* EXIT_REFUSE with a filter error code surfaces as
+         * INTERPRETER_FILTER_REJECT: the row is filtered out, so stop
+         * processing this row's aggregation program — identical to a
+         * STOP_PROGRAM skip_offset. Any other negative rc is a genuine
+         * interpreter error. */
+        if (rc == Dbtup::INTERPRETER_FILTER_REJECT) {
+          exec_pos = m_prog_len;
+          break;
+        }
         if (rc < 0) return ZAGG_EMBEDDED_INTERP_ERROR;
 
         Uint32 skip_offset = block_tup->c_interpreter_output[0];

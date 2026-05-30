@@ -1,0 +1,10 @@
+Running rondb_jit_ndbapi_linked_null
+=== testJoinAggNdbApi ===
+Connect string: #
+MySQL port: #
+
+Test 25: JIT linked NULL filter ... OK (sum=900, JIT required)
+
+All tests PASSED
+PASSED
+DROP DATABASE IF EXISTS test_db;

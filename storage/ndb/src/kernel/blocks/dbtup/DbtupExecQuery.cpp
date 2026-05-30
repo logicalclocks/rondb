@@ -10135,6 +10135,24 @@ struct Dbtup::InterpreterContext {
     return Dbtup::INTERPRETER_FILTER_REJECT;
   }
 
+  /* EXIT_REFUSE in aggregation-embedded mode.  The instruction's upper
+   * 16 bits carry a client error code (NdbInterpretedCode convention):
+   * 626, 899, or anything in [6000,6999] mean "this row should be
+   * filtered out, not an error" (see NdbInterpretedCode::interpret_exit_nok,
+   * which defaults to 626).  Such codes return INTERPRETER_FILTER_REJECT
+   * so ProcessRec drops the row from the aggregation.  Any other code is
+   * a genuine interpreter error and aborts the aggregation, mirroring the
+   * main interpreter's handleExitRefuse. */
+  static inline int handleExitRefuseAgg(InterpreterContext& ctx) {
+    const Uint32 code = ctx.theInstruction >> 16;
+    if (code == 0 || code == 626 || code == 899 ||
+        (code >= 6000 && code <= 6999)) {
+      return Dbtup::INTERPRETER_FILTER_REJECT;
+    }
+    ctx.tup->terrorCode = code;
+    return -1;
+  }
+
   /* Unsupported instruction in CTE filter mode: the instruction
    * depends on real-tuple state (operPtrP / tablePtrP / readAttributes).
    * Return a clean error without touching tuple state. */
@@ -10365,7 +10383,7 @@ s_agg_interp_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  16  BRANCH_GT_REG_REG       */ &Dbtup::InterpreterContext::handleBranchGtRegReg,
   /*  17  BRANCH_GE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchGeRegReg,
   /*  18  EXIT_OK                 */ &Dbtup::InterpreterContext::handleExitOk,
-  /*  19  EXIT_REFUSE             */ nullptr,
+  /*  19  EXIT_REFUSE             */ &Dbtup::InterpreterContext::handleExitRefuseAgg,
   /*  20  CALL                    */ nullptr,  /* termination proof */
   /*  21  RETURN                  */ nullptr,  /* termination proof */
   /*  22  EXIT_OK_LAST            */ nullptr,
@@ -10387,8 +10405,8 @@ s_agg_interp_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  38  BRANCH_MEM_OP_ARG       */ &Dbtup::InterpreterContext::handleBranchMemOpArg,
   /*  39  READ_LINKED_TO_MEM      */ &Dbtup::InterpreterContext::handleReadLinkedToMem,
   /*  40  BRANCH_MEM_OP_ARG_INLINE_TYPE */ &Dbtup::InterpreterContext::handleBranchMemOpArgInlineType,
-  /*  41  BRANCH_LINKED_EQ_NULL   */ nullptr,
-  /*  42  BRANCH_LINKED_NE_NULL   */ nullptr,
+  /*  41  BRANCH_LINKED_EQ_NULL   */ &Dbtup::InterpreterContext::handleBranchLinkedEqNull,
+  /*  42  BRANCH_LINKED_NE_NULL   */ &Dbtup::InterpreterContext::handleBranchLinkedNeNull,
   /*  43  READ_AGG_REG_TO_REG     */ &Dbtup::InterpreterContext::handleReadAggRegToReg,
   /*  44  READ_LINKED_COLUMN_TO_REG */ &Dbtup::InterpreterContext::handleReadLinkedColumnToReg,
   /*  45  LOAD_DOUBLE_CONST       */ &Dbtup::InterpreterContext::handleLoadDoubleConst,

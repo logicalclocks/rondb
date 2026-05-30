@@ -114,9 +114,15 @@
 /* ------------------------------------------------------------------ */
 
 #define BR_EMB_BRANCH                3   /* unconditional forward jump */
-#define BR_EMB_EXIT_OK               5
-#define BR_EMB_EXIT_REFUSE           6
+/* These must equal the Interpreter:: enum values (see
+ * include/kernel/Interpreter.hpp) — the bridge decodes the embedded
+ * opcode via Interpreter::getOpCode and switches on it directly. */
+#define BR_EMB_LOAD_CONST16          4
+#define BR_EMB_EXIT_OK              18
+#define BR_EMB_EXIT_REFUSE          19
 #define BR_EMB_EXIT_OK_LAST         22
+/* WRITE_INTERPRETER_OUTPUT = LOAD_CONST_MEM(59) + OVERFLOW_OPCODE(64). */
+#define BR_EMB_WRITE_INTERP_OUTPUT 123
 #define BR_EMB_BRANCH_ATTR_EQ_NULL  24
 #define BR_EMB_BRANCH_ATTR_NE_NULL  25
 /* Phase 5.1a: READ_LINKED_TO_MEM populates cheapMemory[0] from the
@@ -210,9 +216,11 @@ const char *ndb_jit_bridge_agg_op_name(uint32_t op) {
 const char *ndb_jit_bridge_emb_op_name(uint32_t op) {
   switch (op) {
     case BR_EMB_BRANCH:                return "BRANCH";
+    case BR_EMB_LOAD_CONST16:          return "LOAD_CONST16";
     case BR_EMB_EXIT_OK:               return "EXIT_OK";
     case BR_EMB_EXIT_REFUSE:           return "EXIT_REFUSE";
     case BR_EMB_EXIT_OK_LAST:          return "EXIT_OK_LAST";
+    case BR_EMB_WRITE_INTERP_OUTPUT:   return "WRITE_INTERPRETER_OUTPUT";
     case BR_EMB_BRANCH_ATTR_EQ_NULL:   return "BRANCH_ATTR_EQ_NULL";
     case BR_EMB_BRANCH_ATTR_NE_NULL:   return "BRANCH_ATTR_NE_NULL";
     case BR_EMB_READ_LINKED_TO_MEM:    return "READ_LINKED_TO_MEM";
@@ -571,13 +579,58 @@ static JitBridgeReason translate_embedded_block(
         break;
       }
 
+      case BR_EMB_LOAD_CONST16: {
+        /* Phase 5.1: 1-word. Stages the accept-path skip_offset for a
+         * following WRITE_INTERPRETER_OUTPUT. The JIT only models the
+         * "run the immediately-following aggregation instruction" case
+         * (skip_offset == 0), which is exactly what a plain WHERE filter
+         * emits — the flattened Op stream's natural continuation already
+         * IS skip_offset 0, so this loads no JIT state and emits no Op.
+         * A non-zero constant means a CASE-style multi-way skip_offset,
+         * which the JIT doesn't yet model: reject so the whole program
+         * falls back to the interpreter (which handles it correctly).
+         * No-op emission keeps emb_pc_to_op_idx[emb_pc] pointing at the
+         * next emitted Op (the outer aggregation's first instruction),
+         * so a branch targeting this accept pc resolves there. */
+        uint32_t const16 = (inst >> 16) & 0xFFFFu;
+        if (const16 != 0) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        emb_pc += 1;
+        break;
+      }
+
+      case BR_EMB_WRITE_INTERP_OUTPUT: {
+        /* Phase 5.1: 1-word. Writes the row-disposition skip_offset to
+         * interpreter output slot. The JIT only models slot 0 with a
+         * zero skip_offset (plain filter accept); any other slot is a
+         * CASE / multi-output shape the JIT doesn't model — reject to
+         * interpreter fallback. Emits no Op (see LOAD_CONST16 above). */
+        uint32_t out_slot = (inst >> 16) & 0xFFFFu;
+        if (out_slot != 0) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        emb_pc += 1;
+        break;
+      }
+
       case BR_EMB_EXIT_OK:
       case BR_EMB_EXIT_OK_LAST: {
-        /* Phase 5.0: EXIT_OK = "row passes the filter" =
-         * fall through to outer program's accumulator updates.
-         * Emit no Op. The mapping entry stays at 0xFF — but
-         * since no later branch can target this pc (we're at a
-         * fall-through point), that's fine. */
+        /* EXIT_OK = "row accepted" = fall through to the outer
+         * program's accumulator updates. Emit no Op. emb_pc_to_op_idx
+         * for this pc points at the next emitted Op (the outer agg's
+         * first instruction), so a branch landing on the accept path
+         * resolves to the aggregation rather than this no-op pc. */
         emb_pc += 1;
         break;
       }
