@@ -961,6 +961,9 @@ void
 RonSQLPreparer::load()
 {
   DEB_TRACE();
+  // W1: an index hint on a joined table is rejected up front (schema is not
+  // needed for this check); only the main-query root scan honors a hint.
+  reject_index_hints_on_joins(m_context.ast_root.joins);
   /*
    * During parsing, strings that were claimed to be column names were inserted
    * into m_columns. The element indexes in m_columns, usually called col_idx,
@@ -2271,16 +2274,20 @@ RonSQLPreparer::generate_scan_config_candidates()
 {
   build_scan_config_candidates(m_indexes,
                                m_toplevel_conditions,
-                               m_scan_config_candidates);
+                               m_scan_config_candidates,
+                               m_context.ast_root.root_table);
 }
 
 void
 RonSQLPreparer::build_scan_config_candidates(
     DynamicArray<const NdbDictionary::Index*>& indexes,
     DynamicArray<ConditionalExpression*>& toplevel_conditions,
-    DynamicArray<ScanConfig>& out_candidates)
+    DynamicArray<ScanConfig>& out_candidates,
+    const TableRef* hint)
 {
   const Uint32 num_conds = toplevel_conditions.size();
+  const TableRef::HintKind hint_kind =
+    (hint != NULL) ? hint->hint_kind : TableRef::HintKind::HINT_NONE;
   {
     // Add a scan config candidate that represents table scan. This
     // guarantees we always have at least one candidate to fall back on.
@@ -2291,12 +2298,26 @@ RonSQLPreparer::build_scan_config_candidates(
     }
     out_candidates.push(ScanConfig { NULL, condition_handling_map, 0 });
   }
+  // With no WHERE clause there is no usable index bound, so the table scan
+  // is the only candidate.  A FORCE hint then cannot be satisfied.
   if (num_conds == 0) {
-    // No WHERE clause: table scan is the only candidate.
+    if (hint_kind == TableRef::HintKind::HINT_FORCE) {
+      throw RonSQLPermanentError(
+        "FORCE INDEX cannot be used: the query has no WHERE condition that "
+        "can serve as an index bound.");
+    }
     return;
   }
   for(Uint32 i = 0; i < indexes.size(); i++) {
     const NdbDictionary::Index* index = indexes[i];
+    // Apply the index hint: IGNORE skips named indexes; USE / FORCE consider
+    // only named indexes (USE with an empty list considers none -> table scan).
+    if (hint_kind != TableRef::HintKind::HINT_NONE) {
+      const bool named = index_named_in_hint(index, hint);
+      if (hint_kind == TableRef::HintKind::HINT_IGNORE && named) continue;
+      if ((hint_kind == TableRef::HintKind::HINT_USE ||
+           hint_kind == TableRef::HintKind::HINT_FORCE) && !named) continue;
+    }
     int *condition_handling_map = m_amalloc->alloc_exc<int>(num_conds);
     for (Uint32 j = 0; j < num_conds; j++) {
       condition_handling_map[j] = -1;
@@ -2378,6 +2399,77 @@ RonSQLPreparer::build_scan_config_candidates(
       out_candidates.push(ScanConfig { index,
                                        condition_handling_map,
                                        goodness });
+    }
+  }
+
+  // FORCE INDEX must end up choosing one of the named indexes.  A usable
+  // FORCE-named index yields goodness > 0 and therefore beats the goodness-0
+  // table-scan candidate during selection, so it is enough here to verify
+  // that at least one named index produced a usable candidate.
+  if (hint_kind == TableRef::HintKind::HINT_FORCE) {
+    bool forced_usable = false;
+    for (Uint32 i = 0; i < out_candidates.size(); i++) {
+      if (out_candidates[i].index != NULL &&
+          index_named_in_hint(out_candidates[i].index, hint)) {
+        forced_usable = true;
+        break;
+      }
+    }
+    if (!forced_usable) {
+      bool present = false;
+      for (Uint32 i = 0; i < indexes.size(); i++) {
+        if (index_named_in_hint(indexes[i], hint)) { present = true; break; }
+      }
+      const char* nm = (hint->hint_indexes != NULL)
+                         ? hint->hint_indexes->index_name.c_str() : "";
+      std::ostringstream msg;
+      if (!present) {
+        msg << "FORCE INDEX names '" << nm << "', which is not an available "
+               "ordered index on the scanned table.";
+      } else {
+        msg << "FORCE INDEX '" << nm << "' cannot be used: no WHERE condition "
+               "matches its leading column.";
+      }
+      throw RonSQLPermanentError(msg.str().c_str());
+    }
+  }
+}
+
+// Case-insensitive ASCII compare of two NUL-terminated strings.
+static bool
+ci_equal(const char* a, const char* b)
+{
+  while (*a != '\0' && *b != '\0') {
+    char ca = *a, cb = *b;
+    if (ca >= 'a' && ca <= 'z') ca = char(ca - 32);
+    if (cb >= 'a' && cb <= 'z') cb = char(cb - 32);
+    if (ca != cb) return false;
+    a++; b++;
+  }
+  return *a == *b;
+}
+
+bool
+RonSQLPreparer::index_named_in_hint(const NdbDictionary::Index* index,
+                                    const TableRef* hint)
+{
+  if (index == NULL || hint == NULL) return false;
+  const char* iname = index->getName();
+  if (iname == NULL) return false;
+  for (const IndexHintList* h = hint->hint_indexes; h != NULL; h = h->next) {
+    if (ci_equal(iname, h->index_name.c_str())) return true;
+  }
+  return false;
+}
+
+void
+RonSQLPreparer::reject_index_hints_on_joins(const JoinClause* joins) const
+{
+  for (const JoinClause* jc = joins; jc != NULL; jc = jc->next) {
+    if (jc->table.hint_kind != TableRef::HintKind::HINT_NONE) {
+      throw RonSQLPermanentError(
+        "Index hints (FORCE/USE/IGNORE INDEX) are only supported on the "
+        "root table of a query or CTE body, not on a joined table.");
     }
   }
 }
@@ -2591,7 +2683,8 @@ RonSQLPreparer::load_cte_body_indexes(QueryScope& scope,
 // no usable index, no Ndb connection at prepare time).
 void
 RonSQLPreparer::select_cte_body_scan_config(QueryScope& scope,
-                                             ConditionalExpression* where_ce)
+                                             ConditionalExpression* where_ce,
+                                             const TableRef* hint)
 {
   JoinPlan& plan = scope.join_plan;
   if (plan.num_ops != 1) return;
@@ -2635,7 +2728,8 @@ RonSQLPreparer::select_cte_body_scan_config(QueryScope& scope,
   //    scored with the same heuristic as the main scope.
   build_scan_config_candidates(scope.body_indexes,
                                scope.body_toplevel_conditions,
-                               scope.body_scan_config_candidates);
+                               scope.body_scan_config_candidates,
+                               hint);
 
   // 4. Pick highest-scoring candidate.
   Uint32 chosen = 0;
@@ -3688,12 +3782,17 @@ RonSQLPreparer::build_cte_scopes()
     resolve_columns_for_cte_scope(*scope, *cte->stmt);
     classify_where_by_table(*scope, cte->stmt->where_expression);
     promote_left_to_inner_for_where(*scope);
+    // W1: an index hint on a joined table inside a CTE body is rejected;
+    // only the body's root scan honors FORCE/USE/IGNORE INDEX.
+    reject_index_hints_on_joins(cte->stmt->joins);
     // Phase I.9: try to convert this CTE body's root scan into an
     // ordered index scan when the body's WHERE has bounds on an
     // indexed column.  Operates only on single-op real-table bodies;
     // chained CTEs (CTE_SCAN root) and multi-table bodies fall
-    // through unchanged.
-    select_cte_body_scan_config(*scope, cte->stmt->where_expression);
+    // through unchanged.  The root table's index hint (if any) constrains
+    // index selection.
+    select_cte_body_scan_config(*scope, cte->stmt->where_expression,
+                                cte->stmt->root_table);
     // Phase I.10: scalar MIN/MAX over a NOT NULL indexed column can
     // materialise through a full ordered index scan with maxRows=1.
     select_cte_body_minmax_index(*scope, cte);

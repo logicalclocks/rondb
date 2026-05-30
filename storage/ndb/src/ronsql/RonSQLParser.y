@@ -164,6 +164,12 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
     CteDefinition* tail;
   } cte_list;
   struct ArithExprList* arith_expr_list;
+  /* W1: MySQL-style index hint (FORCE/USE/IGNORE INDEX) on a table ref. */
+  struct {
+    TableRef::HintKind kind;
+    IndexHintList* list;
+  } index_hint;
+  struct IndexHintList* index_name_list;
 }
 
 %token<bival> T_INT
@@ -177,6 +183,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %token T_GREATEST T_LEAST
 %token T_WITH
 %token T_KW_LEFT T_KW_OUTER
+%token T_FORCE T_USE T_IGNORE T_INDEX T_KEY
 
 // RonSQLPreparer.cpp needs some values that are inequal to all tokens. They
 // need to be declared here but aren't used in the lexer or parser.
@@ -238,7 +245,9 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %type<arith_expr_list> arith_expr_list
 %type<conditional_expression> where_opt cond_expr having_opt in_list
 %type<bival> limit_opt
-%type<table_ref> table_ref
+%type<table_ref> table_ref table_ref_base
+%type<index_hint> index_hint_opt
+%type<index_name_list> index_name_list
 %type<join_clause> join_clause
 %type<join_condition> join_condition join_condition_list
 %type<join_list> join_list
@@ -450,7 +459,18 @@ identifier:
 identifier_c:
   identifier                            { $$ = $1.to_LexCString(context->get_allocator()); }
 
+/* A table reference, optionally followed by a MySQL-style index hint.
+ * The hint is attached to every table ref (FROM, JOIN, CTE-body FROM)
+ * but only honored on root scans; see RonSQLPreparer. */
 table_ref:
+  table_ref_base index_hint_opt
+  {
+    $$ = $1;
+    $$->hint_kind = $2.kind;
+    $$->hint_indexes = $2.list;
+  }
+
+table_ref_base:
   identifier_c
   {
     initptr($$);
@@ -478,6 +498,42 @@ table_ref:
     $$->database = $1;
     $$->name = $3;
     $$->alias = $5;
+  }
+
+/* FORCE/USE/IGNORE INDEX (idx, ...).  INDEX and KEY are synonyms.
+ * USE INDEX () (empty list) means "use no index" -> table scan. */
+index_hint_opt:
+  %empty
+  { $$.kind = TableRef::HintKind::HINT_NONE; $$.list = NULL; }
+| T_FORCE index_kw T_LEFT index_name_list T_RIGHT
+  { $$.kind = TableRef::HintKind::HINT_FORCE; $$.list = $4; }
+| T_USE index_kw T_LEFT index_name_list T_RIGHT
+  { $$.kind = TableRef::HintKind::HINT_USE; $$.list = $4; }
+| T_USE index_kw T_LEFT T_RIGHT
+  { $$.kind = TableRef::HintKind::HINT_USE; $$.list = NULL; }
+| T_IGNORE index_kw T_LEFT index_name_list T_RIGHT
+  { $$.kind = TableRef::HintKind::HINT_IGNORE; $$.list = $4; }
+
+index_kw:
+  T_INDEX
+| T_KEY
+
+index_name_list:
+  identifier_c
+  {
+    initptr($$);
+    $$->index_name = $1;
+    $$->next = NULL;
+  }
+| index_name_list T_COMMA identifier_c
+  {
+    IndexHintList* node = context->get_allocator()->alloc_exc<IndexHintList>(1);
+    node->index_name = $3;
+    node->next = NULL;
+    IndexHintList* tail = $1;
+    while (tail->next != NULL) tail = tail->next;
+    tail->next = node;
+    $$ = $1;
   }
 
 join_list:
