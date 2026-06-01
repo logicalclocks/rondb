@@ -83,6 +83,47 @@ class AggInterpreterBase : public PushdownInterpreter {
    */
   bool OptimizeProgram();
 
+  /**
+   * executeStandardOpcode — shared opcode handler for the
+   * container-independent arms of the ProcessRec dispatch loop.
+   *
+   * Step 1.4 of the interpreter unification.  Handles 28 opcodes
+   * whose bodies were byte-identical between AggInterpreter and
+   * JoinAggInterpreter:
+   *   - Generic arithmetic: kOpPlus / Minus / Mul / Div / DivInt / Mod
+   *   - Typed arithmetic: kOpPlusBigint / PlusDouble / MinusBigint /
+   *     MinusDouble / MulBigint / MulDouble / DivDouble / DivIntBigint
+   *   - Aggregate-accumulate: kOpSum / SumBigint / SumDouble /
+   *     Max / MaxBigint / MaxDouble / Min / MinBigint / MinDouble / Count
+   *   - Misc: kOpLoadConst / kOpMov / kOpSetRegNull / kOpSkip
+   *
+   * The two divergent opcodes — `kOpLoadCol` (linked-attr / CTE /
+   * NULL-injection in JoinAgg) and `kOpEmbeddedInterp` (req_struct
+   * linked-attr setup in JoinAgg) — stay in each subclass's own
+   * dispatch.  Per the maintainer: AggInterpreter must remain free
+   * of linked-column machinery; subclasses use "different jump
+   * tables" rather than a shared dispatch with dead branches.
+   *
+   * Verbose `DEB_AGG(...)` and `PA_INTERP_TRACE(...)` traces from
+   * AggInterpreter's original form are preserved (JoinAgg gains
+   * debug coverage in debug builds; production builds compile both
+   * out via the standard DEB_AGG guard).
+   *
+   * Parameters
+   *   op            (in)     decoded opcode byte
+   *   value         (in)     the instruction word that op came from
+   *   exec_pos      (in/out) program counter — bumped by kOpLoadConst
+   *                          (+2 words) and kOpSkip (variable)
+   *   agg_res_ptr   (in)     aggregate-slot base for the current row
+   *   debug_print   (in)     PA_INTERP_TRACE gate from the caller
+   *   handled       (out)    true if `op` matched one of the 28 arms
+   * Returns 0 on success, a positive `ZAGG_*` error code on error.
+   * The return value is meaningful only when `*handled == true`.
+   */
+  Int32 executeStandardOpcode(Uint8 op, Uint32 value, Uint32& exec_pos,
+                               AggResItem* agg_res_ptr, bool debug_print,
+                               bool* handled);
+
   /* Phase I.6 (F.2-K.5) string MIN/MAX helpers — bodies in
    * AggInterpreterBase.cpp.  Step 1.3 of the interpreter unification.
    * Operate on the lifted m_string_results / m_register_string_data /

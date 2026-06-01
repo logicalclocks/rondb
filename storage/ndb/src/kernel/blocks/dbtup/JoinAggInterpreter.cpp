@@ -532,8 +532,8 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
   DataType type;
   bool is_unsigned;
   Uint32 reg_index;
-  Uint32 reg_index2;
-  Uint32 agg_index;
+  /* reg_index2 / agg_index used only by shared opcodes — moved to base
+   * helper in Step 1.4. */
   const Uint32* attrDescriptor = nullptr;
   Uint32 linked_word0 = 0;
   Uint32 linked_word1 = 0;
@@ -557,106 +557,6 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     AttributeHeader* header = nullptr;
 
     switch (op) {
-      case kOpPlus:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegPlusReg(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpMinus:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMinusReg(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpMul:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMulReg(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpDiv:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegDivReg(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index], false);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpDivInt:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegDivReg(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index], true);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpMod:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegModReg(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-
-      case kOpPlusBigint:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegPlusBigint(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpPlusDouble:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegPlusDouble(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpMinusBigint:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMinusBigint(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpMinusDouble:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMinusDouble(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpMulBigint:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMulBigint(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpMulDouble:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMulDouble(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpDivDouble:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegDivDouble(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpDivIntBigint:
-        reg_index = (value >> 12) & 0x0F;
-        reg_index2 = (value >> 8) & 0x0F;
-        ret = RegDivIntBigint(m_registers[reg_index], m_registers[reg_index2],
-                  &m_registers[reg_index]);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-
       case kOpLoadCol:
         type = (value & 0x03E00000) >> 21;
         is_unsigned = IsUnsigned(type);
@@ -923,130 +823,6 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         }
         break;
 
-      case kOpLoadConst:
-        type = (value & 0x03E00000) >> 21;
-        reg_index = (value & 0x000F0000) >> 16;
-        assert(type == NDB_TYPE_BIGINT || type == NDB_TYPE_BIGUNSIGNED ||
-               type == NDB_TYPE_DOUBLE);
-        ResetRegister(&m_registers[reg_index]);
-        m_registers[reg_index].type = AlignedType(type, 0);
-        m_registers[reg_index].is_unsigned = IsUnsigned(type);
-        m_registers[reg_index].is_null = false;
-        if (unlikely(exec_pos + 2 > m_prog_len)) return ZAGG_OTHER_ERROR;
-        switch (type) {
-          case NDB_TYPE_BIGINT:
-            m_registers[reg_index].value.val_int64 =
-                sint8korr(reinterpret_cast<char*>(&m_prog[exec_pos]));
-            break;
-          case NDB_TYPE_BIGUNSIGNED:
-            m_registers[reg_index].value.val_uint64 =
-                uint8korr(reinterpret_cast<char*>(&m_prog[exec_pos]));
-            break;
-          case NDB_TYPE_DOUBLE:
-            m_registers[reg_index].value.val_double =
-                doubleget(reinterpret_cast<unsigned char*>(
-                      &m_prog[exec_pos]));
-            break;
-          default:
-            return ZAGG_LOAD_CONST_WRONG_TYPE;
-        }
-        exec_pos += 2;
-        break;
-
-      case kOpMov:
-        reg_index = (value >> 12 ) & 0x0F;
-        reg_index2 = (value >> 8 ) & 0x0F;
-        m_registers[reg_index] = m_registers[reg_index2];
-        break;
-
-      case kOpSetRegNull:
-        reg_index = (value & 0x000F0000) >> 16;
-        if (m_registers[reg_index].type == NDB_TYPE_UNDEFINED) {
-          m_registers[reg_index].type = NDB_TYPE_BIGINT;
-          m_registers[reg_index].is_unsigned = false;
-          m_registers[reg_index].value.val_int64 = 0;
-        }
-        m_registers[reg_index].is_null = true;
-        break;
-
-      case kOpSum:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = Sum(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpMax:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        if (m_registers[reg_index].type == NDB_TYPE_CHAR ||
-            m_registers[reg_index].type == NDB_TYPE_VARCHAR ||
-            m_registers[reg_index].type == NDB_TYPE_LONGVARCHAR) {
-          ret = minMaxString(reg_index, agg_index, agg_res_ptr,
-                             /*is_max=*/true);
-        } else {
-          ret = Max(m_registers[reg_index], &agg_res_ptr[agg_index],
-                    debug_print);
-        }
-        break;
-      case kOpMin:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        if (m_registers[reg_index].type == NDB_TYPE_CHAR ||
-            m_registers[reg_index].type == NDB_TYPE_VARCHAR ||
-            m_registers[reg_index].type == NDB_TYPE_LONGVARCHAR) {
-          ret = minMaxString(reg_index, agg_index, agg_res_ptr,
-                             /*is_max=*/false);
-        } else {
-          ret = Min(m_registers[reg_index], &agg_res_ptr[agg_index],
-                    debug_print);
-        }
-        break;
-      case kOpCount:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = Count(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        break;
-
-      case kOpSumBigint:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = SumBigint(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpSumDouble:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = SumDouble(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        if (ret < 0) return ZAGG_MATH_OVERFLOW;
-        break;
-      case kOpMaxBigint:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = MaxBigint(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        break;
-      case kOpMaxDouble:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = MaxDouble(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        break;
-      case kOpMinBigint:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = MinBigint(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        break;
-      case kOpMinDouble:
-        reg_index = (value & 0x000F0000) >> 16;
-        agg_index = (value & 0x0000FFFF);
-        ret = MinDouble(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
-        break;
-
-      case kOpSkip:
-      {
-        Uint32 skip_count = value & 0xFFFF;
-        exec_pos += skip_count;
-        break;
-      }
-
       case kOpEmbeddedInterp:
       {
         Uint32 emb_len = value & 0xFFFF;
@@ -1093,8 +869,20 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         break;
       }
 
-      default:
-        return ZAGG_WRONG_OPERATION;
+      default: {
+        /* Step 1.4: arithmetic / aggregate / mov / setnull / skip /
+         * loadconst are handled by the shared base helper.  Per-class
+         * arms above stay for kOpLoadCol (linked-attr / CTE / NULL
+         * injection) and kOpEmbeddedInterp (req_struct linked-attr
+         * setup). */
+        bool op_handled = false;
+        Int32 op_ret = executeStandardOpcode(op, value, exec_pos,
+                                              agg_res_ptr, debug_print,
+                                              &op_handled);
+        if (!op_handled) return ZAGG_WRONG_OPERATION;
+        if (op_ret != 0) return op_ret;
+        break;
+      }
     }
   }
   m_processed_rows++;

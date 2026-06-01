@@ -1,9 +1,9 @@
 # AggInterpreter ↔ JoinAggInterpreter Unification — Analysis & Plan
 
-**Status:** Step 1 in progress — sub-step 1.1 (shared numeric/type kernels) +
-the base-class foundation (1.5) + sub-step 1.2 (shared validator + optimizer) +
-sub-step 1.3 (shared string MIN/MAX suite) **shipped and verified** (build +
-agg test suite + RonSQL/CTE MTR green).  Sub-step 1.4 remains.  Steps 2–3 not
+**Status:** Step 1 **complete** — sub-steps 1.1 (shared numeric/type kernels) +
+1.5 (base-class foundation) + 1.2 (shared validator + optimizer) +
+1.3 (shared string MIN/MAX suite) + 1.4 (shared opcode executor) all shipped
+and verified (build + agg test suite + RonSQL/CTE MTR green).  Steps 2–3 not
 started.
 **Goal:** the two interpreters share a large amount of duplicated code.
 `JoinAggInterpreter` has the better (more scalable) memory model. (1) Remove the
@@ -289,23 +289,55 @@ call-site changes; both keep their existing containers, allocators, and emission
    ~280 duplicated lines removed across the two subclass `.cpp` files; one canonical
    copy in `AggInterpreterBase.cpp`.  Build + agg test suite + RonSQL/CTE MTR green.
 
-1.4 ⏳ **TODO — Shared opcode executor.** Split each `ProcessRec` into:
-   - a per-class **prologue** that resolves `agg_res_ptr` (read GB key → look up / insert
-     group → accumulator base) — the only container-specific part; and
-   - a **shared `executeOpcodes(agg_res_ptr, block_tup, req_struct, …)`** holding the
-     entire opcode dispatch (`AggInterpreter.cpp:1242-1962` ≡
-     `JoinAggInterpreter.cpp:1130-1668`).
-   ~700 lines de-duplicated. The join/CTE-only branches (linked attrs, CTE rewrite,
-   `m_acc_offset`, `m_null_local_columns`) stay in JoinAgg's prologue only.  Lift the
-   remaining shared fields (`m_registers`, `m_n_gb_cols`, `m_n_agg_results`, `m_gb_cols`,
-   `m_agg_results`, the count statics) into the base for `executeOpcodes` to use.  Keep
-   the base non-virtual in the hot path — `executeOpcodes` must stay inlinable; only
-   `~PushdownInterpreter` is virtual, as today.
+1.4 ✅ **DONE — Shared opcode executor.**
+   Approach landed differently than the original plan envisioned.  A full diff of
+   the two opcode bodies showed the divergence was larger than the plan
+   accounted for: `kOpLoadCol` has substantial linked-attr / CTE / NULL-injection
+   branches in JoinAgg that don't exist in AggInterpreter, and `kOpEmbeddedInterp`
+   sets / clears `req_struct->m_linked_attr_data` only in JoinAgg.  Per the
+   maintainer's directive ("different jump tables, no linked-column code in
+   AggInterpreter's path, keep AggInterpreter's debug verbosity"), the two
+   divergent opcodes stay in each subclass's own switch; the other 28 opcodes
+   factor into a single shared helper.
 
-   **Step 1 exit criteria:** byte-identical behavior; `testJoinAgg`, `testJoinAggSpj`,
-   `testJoinAggNdbApi`, `testCaseAgg`, the bench targets, and the RonSQL/CTE MTR suites
-   pass unchanged; ~1,900–2,100 net lines removed; `sizeof` asserts still hold.
-   *(1.1 increment: ~748 lines removed, suites green.)*
+   **Implementation.**  Added `AggInterpreterBase::executeStandardOpcode(op, value,
+   exec_pos&, agg_res_ptr, debug_print, *handled)` that handles:
+   - generic arithmetic (kOpPlus / Minus / Mul / Div / DivInt / Mod)
+   - typed arithmetic (kOpPlusBigint / PlusDouble / MinusBigint / MinusDouble /
+     MulBigint / MulDouble / DivDouble / DivIntBigint)
+   - aggregate-accumulate (kOpSum / SumBigint / SumDouble / Max / MaxBigint /
+     MaxDouble / Min / MinBigint / MinDouble / Count)
+   - misc (kOpLoadConst / kOpMov / kOpSetRegNull / kOpSkip)
+
+   Each subclass's `ProcessRec` dispatch keeps just two arms (`kOpLoadCol` +
+   `kOpEmbeddedInterp`) plus a `default:` that calls `executeStandardOpcode` and
+   reports `ZAGG_WRONG_OPERATION` if `*handled == false`.  `executeStandardOpcode`
+   is a non-virtual member; AggInterpreter's verbose `DEB_AGG(...)` /
+   `PA_INTERP_TRACE(...)` form is preserved in the shared body (JoinAgg gains
+   debug coverage in `VM_TRACE` builds; production builds compile both out via
+   the standard `DEB_AGG` guard).
+
+   **One subtle behavior bug caught by ronsql_cte_decimal during initial test
+   run.**  `Max` / `Min` (the generic, non-typed kernels) return `1` for the
+   "first row" / "null register" short-circuit; the original dispatch discarded
+   that return via `ret = ...; break;`.  My first cut had `return Max(...)` /
+   `return Min(...)`, which propagated the `1` to the caller and surfaced as
+   ZAGG_OTHER_ERROR (1869) on every CTE-decimal aggregate row.  Fixed: call
+   Max / Min with the return value discarded, then `return 0`.  The typed
+   variants (MaxBigint / MaxDouble / MinBigint / MinDouble) and `Count` were
+   correct from the start.
+
+   ~720 lines moved into the shared helper; net diff ~ +408 / -549 across the
+   four files.  AggInterpreter.cpp shrinks by 337 lines, JoinAggInterpreter.cpp
+   by 240 lines.  Build + full agg test suite + RonSQL/CTE MTR (including
+   ronsql_cte_decimal) green.
+
+   **Step 1 exit criteria (met):** byte-identical behavior on valid programs;
+   `testJoinAgg`, `testJoinAggSpj`, `testJoinAggNdbApi`, `testCaseAgg`, the
+   bench targets, and the RonSQL/CTE MTR suites pass unchanged; cumulative
+   1.1–1.4 dedup approaches the plan's 1,900–2,100-line target on the four
+   sub-step net commits; both `sizeof(...) <= MEM_CHUNK_SIZE` asserts still
+   hold.
 
 ### Step 2 — Give AggInterpreter the JoinAgg memory model
 Replace AggInterpreter's `std::map` + inline bump allocator with the shared chunk
