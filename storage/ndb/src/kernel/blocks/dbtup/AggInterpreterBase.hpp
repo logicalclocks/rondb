@@ -24,8 +24,10 @@
 #ifndef AGGINTERPRETERBASE_H_
 #define AGGINTERPRETERBASE_H_
 
+#include <cstring>
 #include "PushdownInterpreter.hpp"
 #include "NdbAggregationCommon.hpp"
+#include "decimal.h"
 
 /**
  * AggInterpreterBase — shared base for AggInterpreter (normal-scan
@@ -50,10 +52,25 @@
  */
 class AggInterpreterBase : public PushdownInterpreter {
  public:
+  /* Shared between AggInterpreter and JoinAggInterpreter — both
+   * subclasses used to #define DECIMAL_BUFF_LENGTH 9 in their own
+   * headers; centralized here as an in-class constexpr in Step 1.3.
+   * Not a macro: my_decimal.h declares its own `static constexpr int
+   * DECIMAL_BUFF_LENGTH{9}` and a macro of the same name would
+   * collide where both headers are transitively included. */
+  static constexpr Uint32 AGG_DECIMAL_BUFF_LENGTH = 9;
+
   AggInterpreterBase(PushdownType type, Uint32 prog_len,
                      Int64 table_id, Int64 frag_id, Uint32 thread_id)
     : PushdownInterpreter(type, prog_len, table_id, frag_id, thread_id),
-      m_prog(nullptr), m_agg_prog_start_pos(0) {}
+      m_prog(nullptr), m_agg_prog_start_pos(0),
+      m_n_agg_results(0), m_agg_results(nullptr),
+      m_string_results(nullptr), m_current_thread_id(0) {
+    memset(m_decimal_buf, 0,
+           sizeof(decimal_digit_t) * AGG_DECIMAL_BUFF_LENGTH);
+    m_decimal.buf = m_decimal_buf;
+    m_decimal.len = AGG_DECIMAL_BUFF_LENGTH;
+  }
 
   /**
    * OptimizeProgram — guard + delegate to OptimizeProgramBuffer.
@@ -66,7 +83,29 @@ class AggInterpreterBase : public PushdownInterpreter {
    */
   bool OptimizeProgram();
 
+  /* Phase I.6 (F.2-K.5) string MIN/MAX helpers — bodies in
+   * AggInterpreterBase.cpp.  Step 1.3 of the interpreter unification.
+   * Operate on the lifted m_string_results / m_register_string_data /
+   * m_registers fields below; the per-class destructor still owns the
+   * top-level release_string_results because the group container
+   * iteration differs (std::map vs GBHashTable).
+   *
+   * Public because DBLQH (DblqhMain.cpp wire-format emit + group eviction
+   * paths) calls hasStringSlots / stringPayloadSize / encodeStringPayload
+   * / string_results through a JoinAggInterpreter pointer; the internal
+   * helpers (minMaxString, freeGroupStringSlots) are also exposed here
+   * for symmetry — every call site is inside an aggregation-aware
+   * caller. */
+  Int32 minMaxString(Uint32 reg_index, Uint32 agg_index,
+                     AggResItem* agg_res_ptr, bool is_max);
+  void freeGroupStringSlots(AggResItem* slots);
+  Uint32 stringPayloadSize(const AggResItem* slots) const;
+  Uint32 encodeStringPayload(const AggResItem* slots, char* dst) const;
+  bool hasStringSlots() const { return m_string_results != nullptr; }
+  const StringResult* string_results() const { return m_string_results; }
+
  protected:
+
   /**
    * validateEmbeddedProgram — sanity-check an embedded program at
    * decode time.
@@ -102,9 +141,44 @@ class AggInterpreterBase : public PushdownInterpreter {
   /* Fields lifted from the subclasses in Step 1.2 to support the shared
    * OptimizeProgram.  Total sizeof is unchanged — same fields, moved up
    * the class hierarchy — so both static_asserts on subclass sizeof
-   * still hold.  Plan's 1.3/1.4 will lift more shared fields. */
+   * still hold. */
   Uint32* m_prog;
   Uint32 m_agg_prog_start_pos;
+
+  /* Fields lifted in Step 1.3 to support the shared string MIN/MAX
+   * helpers (minMaxString / freeGroupStringSlots / stringPayloadSize /
+   * encodeStringPayload) and the decimal scratch buffer used by the
+   * Init / ProcessRec decimal paths.  Same total sizeof as before. */
+  Uint32 m_n_agg_results;
+  AggResItem* m_agg_results;
+  Register m_registers[kRegTotal];
+
+  // Phase I.6 (F.2-K.4a): per-register string scratch.  When a
+  // kOpLoadCol arm reads a CHAR / VARCHAR / Longvarchar column, it
+  // also stashes (ptr-into-m_attr_read_buf, length, prefix_bytes,
+  // declared_size, charset) here for the matching register so that a
+  // subsequent kOpMin / kOpMax can compare and copy without
+  // re-walking the AttributeDescriptor.
+  StringResult m_register_string_data[kRegTotal];
+
+  // Phase I.6 (F.2): per-slot string MIN/MAX sidecar.  Lazily
+  // allocated (via lc_ndbd_pool_malloc) on the first row that
+  // populates a string-typed slot; sized to m_n_agg_results entries.
+  // Stays nullptr for programs with no string MIN/MAX so non-string
+  // queries pay zero memory cost.  Freed via the subclass'
+  // release_string_results() in the destructor — entries' own ptrs
+  // are freed first via the shared freeGroupStringSlots helper, then
+  // the array itself.
+  StringResult* m_string_results;
+
+  // Per-thread context for lc_ndbd_pool_malloc; set on each ProcessRec
+  // entry by the subclass before the helpers can run.
+  Uint32 m_current_thread_id;
+
+  // Decimal decode scratch — used by kOpLoadCol DECIMAL arms in both
+  // subclasses' opcode executors (the shared executor lands in 1.4).
+  decimal_t m_decimal;
+  decimal_digit_t m_decimal_buf[AGG_DECIMAL_BUFF_LENGTH];
 };
 
 #endif  // AGGINTERPRETERBASE_H_

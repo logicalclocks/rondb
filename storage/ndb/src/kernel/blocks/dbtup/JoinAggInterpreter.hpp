@@ -32,7 +32,7 @@
 #include "Dbtup.hpp"
 #include "AggHashTable.hpp"
 
-#define DECIMAL_BUFF_LENGTH 9
+// DECIMAL_BUFF_LENGTH now lives in AggInterpreterBase.hpp (Step 1.3).
 
 /**
  * JoinAggInterpreter — aggregation interpreter for join pushdown.
@@ -53,8 +53,6 @@ class JoinAggInterpreter : public AggInterpreterBase {
                        table_id, frag_id, thread_id),
     m_cur_pos(0),
     m_n_gb_cols(0), m_gb_cols(nullptr),
-    m_n_agg_results(0),
-    m_agg_results(nullptr),
     m_gb_map(nullptr), m_n_groups(0),
     m_attr_read_buf(nullptr), m_attr_read_pos(0),
     m_acc_offset(0),
@@ -72,11 +70,7 @@ class JoinAggInterpreter : public AggInterpreterBase {
     m_xfrm_buf(nullptr), m_xfrm_buf_len(0),
     m_prog_buf(nullptr), m_gb_cols_buf(nullptr),
     m_agg_results_buf(nullptr), m_gb_map_buf(nullptr),
-    m_buf_block(nullptr),
-    m_string_results(nullptr) {
-      memset(m_decimal_buf, 0, sizeof(decimal_digit_t) * DECIMAL_BUFF_LENGTH);
-      m_decimal.buf = m_decimal_buf;
-      m_decimal.len = DECIMAL_BUFF_LENGTH;
+    m_buf_block(nullptr) {
   }
   ~JoinAggInterpreter() override {
     release_string_results();
@@ -228,47 +222,22 @@ class JoinAggInterpreter : public AggInterpreterBase {
   // Phase I.6 (F.2-K.4): running thread id for the in-flight ProcessRec
   // call.  Set on entry to processRecWithLinkedAttrs /
   // processNullExtendedRow and consumed by MaxString / MinString
-  // helpers when allocating per-(group, slot) string buffers via
-  // val_ptr.  See AggInterpreter.hpp for the same field's rationale.
-  Uint32 m_current_thread_id = 0;
-
-  // Phase I.6 (F.2-K.4c): per-(group, slot) string MIN/MAX update.
-  // Same contract as AggInterpreter::minMaxString — see that header.
-  // Returns 0 on success, ZAGG_ALLOC_MEM_FAILED on OOM.
-  Int32 minMaxString(Uint32 reg_index, Uint32 agg_index,
-                     AggResItem* agg_res_ptr, bool is_max);
+  // m_current_thread_id, minMaxString, freeGroupStringSlots,
+  // stringPayloadSize, encodeStringPayload, hasStringSlots,
+  // string_results lifted to AggInterpreterBase in Step 1.3.
   Int32 ensureStringResultsFrom(const StringResult* source);
   Int32 ensureStringResultsFromRedistribution(const AggResItem* slots,
                                               const char* appended,
                                               Uint32 appended_len);
 
-  // Phase I.6 (F.2-K.4e): free per-(group, slot) string winner
-  // buffers for one group's AggResItem array.  Called from
-  // evictOneGroup so per-group val_ptr buffers are released when
-  // the group is shipped out of the local hash table.  No-op when
-  // no string slots are present.
-  void freeGroupStringSlots(AggResItem* slots);
-
- public:
-  // Phase I.6 (F.2-K.5): see AggInterpreter for the contract.
-  bool hasStringSlots() const { return m_string_results != nullptr; }
-  const StringResult* string_results() const { return m_string_results; }
-  Uint32 stringPayloadSize(const AggResItem* slots) const;
-  Uint32 encodeStringPayload(const AggResItem* slots, char* dst) const;
- private:
-
   Uint32 m_cur_pos;
-  Register m_registers[kRegTotal];
-
-  // Phase I.6 (F.2-K.4a): per-register string scratch.  See the
-  // matching field on AggInterpreter for purpose; populated by
-  // kOpLoadCol's CHAR/VARCHAR/Longvarchar arms.  192 B inline.
-  StringResult m_register_string_data[kRegTotal];
+  // m_registers, m_register_string_data lifted to AggInterpreterBase
+  // in Step 1.3.
 
   Uint32 m_n_gb_cols;
   Uint32* m_gb_cols;
-  Uint32 m_n_agg_results;
-  AggResItem* m_agg_results;
+  // m_n_agg_results, m_agg_results lifted to AggInterpreterBase in
+  // Step 1.3.
 
   JoinGBHashTable* m_gb_map;
   Uint32 m_n_groups;
@@ -285,8 +254,7 @@ class JoinAggInterpreter : public AggInterpreterBase {
   static Uint32 g_result_header_size_;
   static Uint32 g_result_header_size_per_group_;
 
-  decimal_t m_decimal;
-  decimal_digit_t m_decimal_buf[DECIMAL_BUFF_LENGTH];
+  // m_decimal, m_decimal_buf lifted to AggInterpreterBase in Step 1.3.
 
   // Linked attribute buffer for join aggregation
   const Uint32* m_linked_attr_data;// Points to current row's linked attrs
@@ -335,13 +303,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
   // Single allocation block for all dynamically allocated buffers above.
   void* m_buf_block;
 
-  // Phase I.6 (F.2): per-slot string MIN/MAX sidecar.  Lazily
-  // allocated (via lc_ndbd_pool_malloc) on the first row that
-  // populates a string-typed slot; sized to m_n_agg_results
-  // entries.  Stays nullptr for programs with no string MIN/MAX,
-  // so non-string queries pay zero memory cost.  Freed via
-  // release_string_results() in the destructor.
-  StringResult* m_string_results;
+  // m_string_results lifted to AggInterpreterBase in Step 1.3.
+  // release_string_results stays per-class (GBHashTable iteration).
   void release_string_results();
 };
 

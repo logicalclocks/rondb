@@ -33,7 +33,7 @@
 #include "AggHashTable.hpp"  // for MEM_CHUNK_SIZE, AGG_EVICT_NEEDED
 
 #define ATTR_READ_BUF_WORD_SIZE 2048
-#define DECIMAL_BUFF_LENGTH 9
+// DECIMAL_BUFF_LENGTH now lives in AggInterpreterBase.hpp (Step 1.3)
 
 /**
  * AggInterpreter — lean aggregation interpreter for normal scan pushdown.
@@ -52,18 +52,12 @@ class AggInterpreter : public AggInterpreterBase {
                        table_id, frag_id, thread_id),
     m_cur_pos(0),
     m_n_gb_cols(0), m_gb_cols(nullptr),
-    m_n_agg_results(0),
-    m_agg_results(nullptr),
     m_gb_map(nullptr), m_n_groups(0),
     m_attr_read_pos(0),
     m_processed_rows(0),
     m_result_size(0),
     m_gb_cmp_inited(false),
-    m_alloc_len(0),
-    m_string_results(nullptr) {
-      memset(m_decimal_buf, 0, sizeof(decimal_digit_t) * DECIMAL_BUFF_LENGTH);
-      m_decimal.buf = m_decimal_buf;
-      m_decimal.len = DECIMAL_BUFF_LENGTH;
+    m_alloc_len(0) {
       memset(m_attr_read_buf, 0, sizeof(m_attr_read_buf));
   }
   ~AggInterpreter() override {
@@ -91,21 +85,13 @@ class AggInterpreter : public AggInterpreterBase {
 
  private:
   Uint32 m_cur_pos;
-  Register m_registers[kRegTotal];
-
-  // Phase I.6 (F.2-K.4a): per-register string scratch.  When a
-  // kOpLoadCol arm reads a CHAR / VARCHAR / Longvarchar column, it
-  // also stashes (ptr-into-m_attr_read_buf, length, prefix_bytes,
-  // declared_size, charset) here for the matching register so that a
-  // subsequent kOpMin / kOpMax can compare and copy without
-  // re-walking the AttributeDescriptor.  `size` is unused at register
-  // scope — only the read-only view fields apply.  192 B inline.
-  StringResult m_register_string_data[kRegTotal];
+  // m_registers, m_register_string_data lifted to AggInterpreterBase
+  // in Step 1.3.
 
   Uint32 m_n_gb_cols;
   Uint32* m_gb_cols;
-  Uint32 m_n_agg_results;
-  AggResItem* m_agg_results;
+  // m_n_agg_results, m_agg_results lifted to AggInterpreterBase in
+  // Step 1.3.
 
   std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* m_gb_map;
   Uint32 m_n_groups;
@@ -116,8 +102,7 @@ class AggInterpreter : public AggInterpreterBase {
   static Uint32 g_result_header_size_;
   static Uint32 g_result_header_size_per_group_;
 
-  decimal_t m_decimal;
-  decimal_digit_t m_decimal_buf[DECIMAL_BUFF_LENGTH];
+  // m_decimal, m_decimal_buf lifted to AggInterpreterBase in Step 1.3.
 
   // Per-column comparison context for type-aware GROUP BY
   GBCmpContext m_gb_cmp_ctx;
@@ -128,71 +113,11 @@ class AggInterpreter : public AggInterpreterBase {
   char* MemAlloc(Uint32 len);
   Uint32 m_alloc_len;
 
-  // Phase I.6 (F.2): per-slot string MIN/MAX sidecar.  Lazily
-  // allocated (via lc_ndbd_pool_malloc) on the first row that
-  // populates a string-typed slot; sized to m_n_agg_results
-  // entries.  Stays nullptr for programs with no string MIN/MAX,
-  // so non-string queries pay zero memory cost.  Freed via
-  // release_string_results() in the destructor — entries' own
-  // ptrs are freed first, then the array itself.
-  StringResult* m_string_results;
+  // m_string_results / minMaxString / freeGroupStringSlots /
+  // stringPayloadSize / encodeStringPayload / hasStringSlots /
+  // m_current_thread_id all lifted to AggInterpreterBase in Step 1.3.
+  // release_string_results stays per-class (std::map iteration).
   void release_string_results();
-
-  // Phase I.6 (F.2-K.4c): per-(group, slot) MIN/MAX string update.
-  // `agg_res_ptr[agg_index].value.val_ptr` holds a per-group buffer
-  // laid out as `[Uint16 payload_len][Uint16 capacity]
-  // [prefix_bytes + payload]` (rounded up to a multiple of 16, min 16
-  // bytes).  Compares the row's source bytes (read into
-  // m_register_string_data[reg_index] by kOpLoadCol) against the
-  // current winner using NdbSqlUtil::cmpChar / cmpVarchar /
-  // cmpLongvarchar; replaces in place when capacity allows, otherwise
-  // allocates a larger buffer (allocate-then-free order so the old
-  // winner survives an OOM).  Slot-level metadata
-  // (charset / prefix_bytes / declared_size) is captured into
-  // m_string_results[agg_index] on the first call for that slot.
-  // Returns 0 on success, ZAGG_ALLOC_MEM_FAILED on OOM.
-  Int32 minMaxString(Uint32 reg_index, Uint32 agg_index,
-                     AggResItem* agg_res_ptr, bool is_max);
-
-  // Phase I.6 (F.2-K.4e): free per-(group, slot) string winner
-  // buffers for one group's AggResItem array.  Called from the
-  // m_gb_map drain path so per-group val_ptr buffers are released
-  // when the group leaves the local hash map.  No-op when no string
-  // slots are present (m_string_results == nullptr).  Wire-format
-  // emit (Phase I.6 F.2-K.5) consumes val_ptr before this runs.
-  void freeGroupStringSlots(AggResItem* slots);
-
- public:
-  // Phase I.6 (F.2-K.5): true when at least one string MIN/MAX slot
-  // has been touched in this interpreter — equivalently, when
-  // m_string_results has been lazy-allocated.  Drives marker
-  // selection at emit time: AGG_CHAR_RESULT when true, AGG_RESULT
-  // otherwise.
-  bool hasStringSlots() const { return m_string_results != nullptr; }
-
-  // Phase I.6 (F.2-K.5): bytes the appended string-payload region
-  // for one group will occupy on the wire.  For each slot whose
-  // type is CHAR / VARCHAR / Longvarchar AND is non-null, contributes
-  // 4 bytes (Uint32 byte_size) plus a Uint32-padded copy of the
-  // [prefix + payload] bytes from the slot's val_ptr buffer.
-  // Slots whose type is non-string or whose value is null contribute
-  // zero bytes.
-  Uint32 stringPayloadSize(const AggResItem* slots) const;
-
-  // Phase I.6 (F.2-K.5): write one group's appended string-payload
-  // region into `dst`.  Layout mirrors the size returned by
-  // stringPayloadSize.  Returns total bytes written.  `dst` must
-  // have at least stringPayloadSize(slots) bytes available.
-  Uint32 encodeStringPayload(const AggResItem* slots, char* dst) const;
- private:
-
-  // Phase I.6 (F.2-K.4): running thread id for the in-flight ProcessRec
-  // call.  AggInterpreter is constructed once on the LDM thread that
-  // creates it but ProcessRec runs from whichever thread executes the
-  // scan; lc_ndbd_pool_malloc requires the *running* thread id.  Set
-  // by ProcessRec() on entry; read by MaxString / MinString helpers
-  // when allocating per-(group, slot) string buffers via val_ptr.
-  Uint32 m_current_thread_id = 0;
 
   // All buffers inline — no separate allocation needed
   Uint32 m_attr_read_buf[ATTR_READ_BUF_WORD_SIZE];       //  8,192 B

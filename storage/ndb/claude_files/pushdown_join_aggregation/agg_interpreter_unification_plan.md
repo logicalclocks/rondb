@@ -1,9 +1,10 @@
 # AggInterpreter ↔ JoinAggInterpreter Unification — Analysis & Plan
 
 **Status:** Step 1 in progress — sub-step 1.1 (shared numeric/type kernels) +
-the base-class foundation (1.5) + sub-step 1.2 (shared validator + optimizer)
-**shipped and verified** (build green; agg test runs pending user-side).
-Sub-steps 1.3 / 1.4 remain.  Steps 2–3 not started.
+the base-class foundation (1.5) + sub-step 1.2 (shared validator + optimizer) +
+sub-step 1.3 (shared string MIN/MAX suite) **shipped and verified** (build +
+agg test suite + RonSQL/CTE MTR green).  Sub-step 1.4 remains.  Steps 2–3 not
+started.
 **Goal:** the two interpreters share a large amount of duplicated code.
 `JoinAggInterpreter` has the better (more scalable) memory model. (1) Remove the
 duplication, then (2) make `AggInterpreter` use `JoinAggInterpreter`'s memory model
@@ -257,13 +258,36 @@ call-site changes; both keep their existing containers, allocators, and emission
    ~110 lines removed from JoinAggInterpreter.cpp + ~80 lines from AggInterpreter.cpp;
    one canonical copy in AggInterpreterBase.cpp.  Build green.
 
-1.3 ⏳ **TODO — Shared string MIN/MAX suite.** Factor `minMaxString`, `stringPayloadSize`,
-   `encodeStringPayload`, `freeGroupStringSlots` into shared helpers parameterized by an
-   `AggResItem*` slot array + the `m_string_results` / `m_register_string_data` fields
-   (both classes hold these identically). `release_string_results` keeps a thin per-class
-   shim for the map-iteration difference, calling a shared per-group-array freer.
-   Lift `m_string_results` / `m_register_string_data` (and `m_decimal*`) into the base
-   here, since the shared helpers need them.
+1.3 ✅ **DONE — Shared string MIN/MAX suite.**
+   `minMaxString`, `stringPayloadSize`, `encodeStringPayload`, `freeGroupStringSlots`
+   live in `AggInterpreterBase.cpp` (one canonical copy each); accessible via inherited
+   name lookup from both interpreters and as `public` members from DBLQH wire-format
+   emit / group-eviction call sites that hold a `JoinAggInterpreter*`.
+   `release_string_results` stays per-class — the only divergence is the group
+   container iteration (`std::map` range-for vs `GBHashTable::Iterator`); each subclass
+   walks its own container and reuses the shared `freeGroupStringSlots` per-group-array
+   freer.
+
+   Lifted into `AggInterpreterBase` together with the helpers: `m_n_agg_results`,
+   `m_agg_results`, `m_registers[kRegTotal]`, `m_register_string_data[kRegTotal]`,
+   `m_string_results`, `m_current_thread_id`, `m_decimal`, `m_decimal_buf[]`.
+   Constructor initializations folded into the base ctor.
+
+   Two snags during landing:
+   (a) `DECIMAL_BUFF_LENGTH` was a `#define 9` in each subclass header; `my_decimal.h`
+       (transitively pulled into some compilation units) declares a `static constexpr
+       int DECIMAL_BUFF_LENGTH{9}` of the same name, so a macro of that name in the
+       base header collides.  Switched to a `static constexpr Uint32
+       AGG_DECIMAL_BUFF_LENGTH = 9` inside the class; subclass call sites updated to
+       the qualified name.
+   (b) DBLQH's wire-format emit + group-eviction call `hasStringSlots` /
+       `stringPayloadSize` / `encodeStringPayload` / `string_results` through a
+       `JoinAggInterpreter*`; the helpers had to be `public` on the base (not
+       `protected`).  Symmetric: `minMaxString` / `freeGroupStringSlots` are also
+       public for consistency since every call site is inside aggregation-aware code.
+
+   ~280 duplicated lines removed across the two subclass `.cpp` files; one canonical
+   copy in `AggInterpreterBase.cpp`.  Build + agg test suite + RonSQL/CTE MTR green.
 
 1.4 ⏳ **TODO — Shared opcode executor.** Split each `ProcessRec` into:
    - a per-class **prologue** that resolves `agg_res_ptr` (read GB key → look up / insert

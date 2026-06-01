@@ -138,9 +138,9 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
   m_prog = m_prog_buf;
   memcpy(m_prog, prog, m_prog_len * sizeof(Uint32));
   memset(m_attr_read_buf, 0, ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32));
-  memset(m_decimal_buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
+  memset(m_decimal_buf, 0, sizeof(Int32) * AGG_DECIMAL_BUFF_LENGTH);
   m_decimal.buf = m_decimal_buf;
-  m_decimal.len = DECIMAL_BUFF_LENGTH;
+  m_decimal.len = AGG_DECIMAL_BUFF_LENGTH;
 
   Uint32 value = 0;
   value = m_prog[m_cur_pos++];
@@ -2214,24 +2214,6 @@ void JoinAggInterpreter::release_string_results() {
   lc_ndbd_pool_free(m_string_results);
 }
 
-// Phase I.6 (F.2-K.4e): release one group's string val_ptr buffers.
-// Called from evictOneGroup after the group is packed into the
-// outbound buffer.  Cheap no-op when no string MIN/MAX is in this
-// program.
-void JoinAggInterpreter::freeGroupStringSlots(AggResItem* slots) {
-  if (m_string_results == nullptr) {
-    return;
-  }
-  for (Uint32 i = 0; i < m_n_agg_results; i++) {
-    DataType t = slots[i].type;
-    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
-         t == NDB_TYPE_LONGVARCHAR) &&
-        slots[i].value.val_ptr != nullptr) {
-      lc_ndbd_pool_free(slots[i].value.val_ptr);
-      slots[i].value.val_ptr = nullptr;
-    }
-  }
-}
 
 Int32 JoinAggInterpreter::ensureStringResultsFrom(
     const StringResult* source) {
@@ -2298,147 +2280,4 @@ Int32 JoinAggInterpreter::ensureStringResultsFromRedistribution(
   return 0;
 }
 
-// Phase I.6 (F.2-K.5): see AggInterpreter::stringPayloadSize for
-// the contract — this is the parallel implementation.
-Uint32 JoinAggInterpreter::stringPayloadSize(
-    const AggResItem* slots) const {
-  if (m_string_results == nullptr) {
-    return 0;
-  }
-  Uint32 total = 0;
-  for (Uint32 i = 0; i < m_n_agg_results; i++) {
-    DataType t = slots[i].type;
-    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
-         t == NDB_TYPE_LONGVARCHAR) &&
-        !slots[i].is_null && slots[i].value.val_ptr != nullptr) {
-      const char* buf = static_cast<const char*>(slots[i].value.val_ptr);
-      const Uint16 payload_len = *reinterpret_cast<const Uint16*>(buf);
-      const Uint32 prefix = m_string_results[i].prefix_bytes;
-      const Uint32 byte_size = prefix + payload_len;
-      total += sizeof(Uint32);
-      total += (byte_size + 3) & ~3U;
-    }
-  }
-  return total;
-}
 
-Uint32 JoinAggInterpreter::encodeStringPayload(const AggResItem* slots,
-                                                char* dst) const {
-  if (m_string_results == nullptr) {
-    return 0;
-  }
-  char* p = dst;
-  for (Uint32 i = 0; i < m_n_agg_results; i++) {
-    DataType t = slots[i].type;
-    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
-         t == NDB_TYPE_LONGVARCHAR) &&
-        !slots[i].is_null && slots[i].value.val_ptr != nullptr) {
-      const char* buf = static_cast<const char*>(slots[i].value.val_ptr);
-      const Uint16 payload_len = *reinterpret_cast<const Uint16*>(buf);
-      const Uint32 prefix = m_string_results[i].prefix_bytes;
-      const Uint32 byte_size = prefix + payload_len;
-      *reinterpret_cast<Uint32*>(p) = byte_size;
-      p += sizeof(Uint32);
-      memcpy(p, buf + 4, byte_size);
-      p += byte_size;
-      const Uint32 pad = ((byte_size + 3) & ~3U) - byte_size;
-      if (pad > 0) {
-        memset(p, 0, pad);
-        p += pad;
-      }
-    }
-  }
-  return static_cast<Uint32>(p - dst);
-}
-
-// Phase I.6 (F.2-K.4c): per-(group, slot) MIN/MAX string update.
-// See AggInterpreter::minMaxString for layout and contract — this
-// is the parallel implementation for the join interpreter.
-Int32 JoinAggInterpreter::minMaxString(Uint32 reg_index, Uint32 agg_index,
-                                        AggResItem* agg_res_ptr,
-                                        bool is_max) {
-  const Register& src_reg = m_registers[reg_index];
-  if (src_reg.is_null) {
-    return 0;
-  }
-  if (m_string_results == nullptr) {
-    Uint32 nbytes = m_n_agg_results * sizeof(StringResult);
-    m_string_results = static_cast<StringResult*>(
-        lc_ndbd_pool_malloc(nbytes, RG_QUERY_MEMORY,
-                            m_current_thread_id, true));
-    if (m_string_results == nullptr) {
-      return ZAGG_ALLOC_MEM_FAILED;
-    }
-  }
-  const StringResult& src = m_register_string_data[reg_index];
-  StringResult& slot = m_string_results[agg_index];
-  if (slot.declared_size == 0) {
-    slot.charset = src.charset;
-    slot.prefix_bytes = src.prefix_bytes;
-    slot.declared_size = src.declared_size;
-  }
-  AggResItem& dst = agg_res_ptr[agg_index];
-  const Uint32 needed_payload = src.prefix_bytes + src.length;
-  Uint32 alloc_size = (4 + needed_payload + 15) & ~15U;
-  if (alloc_size < 16) alloc_size = 16;
-
-  if (dst.value.val_ptr == nullptr) {
-    char* buf = static_cast<char*>(
-        lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
-                            m_current_thread_id, false));
-    if (buf == nullptr) {
-      return ZAGG_ALLOC_MEM_FAILED;
-    }
-    Uint16* hdr = reinterpret_cast<Uint16*>(buf);
-    hdr[0] = src.length;
-    hdr[1] = static_cast<Uint16>(alloc_size - 4);
-    if (needed_payload > 0) {
-      memcpy(buf + 4, src.ptr, needed_payload);
-    }
-    dst.type = src_reg.type;
-    dst.value.val_ptr = buf;
-    dst.is_unsigned = false;
-    dst.is_null = false;
-    return 0;
-  }
-
-  char* old_buf = static_cast<char*>(dst.value.val_ptr);
-  const Uint16* old_hdr = reinterpret_cast<const Uint16*>(old_buf);
-  const Uint16 old_payload_len = old_hdr[0];
-  const Uint16 old_capacity = old_hdr[1];
-  const unsigned n_new = src.prefix_bytes + src.length;
-  const unsigned n_old = slot.prefix_bytes + old_payload_len;
-  const void* v_new = src.ptr;
-  const void* v_old = old_buf + 4;
-  const Uint32 type_id =
-      (slot.prefix_bytes == 0) ? NDB_TYPE_CHAR :
-      (slot.prefix_bytes == 1) ? NDB_TYPE_VARCHAR : NDB_TYPE_LONGVARCHAR;
-  const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(type_id);
-  int cmp = (*sqlType.m_cmp)(slot.charset, v_new, n_new, v_old, n_old);
-  const bool replace = is_max ? (cmp > 0) : (cmp < 0);
-  if (!replace) return 0;
-
-  if (needed_payload <= old_capacity) {
-    Uint16* h = reinterpret_cast<Uint16*>(old_buf);
-    h[0] = src.length;
-    if (needed_payload > 0) {
-      memcpy(old_buf + 4, src.ptr, needed_payload);
-    }
-  } else {
-    char* new_buf = static_cast<char*>(
-        lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
-                            m_current_thread_id, false));
-    if (new_buf == nullptr) {
-      return ZAGG_ALLOC_MEM_FAILED;
-    }
-    Uint16* h = reinterpret_cast<Uint16*>(new_buf);
-    h[0] = src.length;
-    h[1] = static_cast<Uint16>(alloc_size - 4);
-    if (needed_payload > 0) {
-      memcpy(new_buf + 4, src.ptr, needed_payload);
-    }
-    dst.value.val_ptr = new_buf;
-    lc_ndbd_pool_free(old_buf);
-  }
-  return 0;
-}
