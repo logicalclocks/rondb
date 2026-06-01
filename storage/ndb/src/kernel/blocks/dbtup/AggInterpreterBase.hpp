@@ -52,9 +52,36 @@ class AggInterpreterBase : public PushdownInterpreter {
  public:
   AggInterpreterBase(PushdownType type, Uint32 prog_len,
                      Int64 table_id, Int64 frag_id, Uint32 thread_id)
-    : PushdownInterpreter(type, prog_len, table_id, frag_id, thread_id) {}
+    : PushdownInterpreter(type, prog_len, table_id, frag_id, thread_id),
+      m_prog(nullptr), m_agg_prog_start_pos(0) {}
+
+  /**
+   * OptimizeProgram — guard + delegate to OptimizeProgramBuffer.
+   *
+   * Step 1.2 of the interpreter unification: this used to live as a
+   * byte-identical 7-line method in each subclass.  Both subclasses now
+   * inherit the single definition here (non-virtual; callers reach it
+   * through an AggInterpreter or JoinAggInterpreter pointer via ordinary
+   * inheritance).
+   */
+  bool OptimizeProgram();
 
  protected:
+  /**
+   * validateEmbeddedProgram — sanity-check an embedded program at
+   * decode time.
+   *
+   * Step 1.2 of the interpreter unification: previously duplicated in
+   * each subclass with subtly different rigor (AggInterpreter only
+   * bounds-checked branch targets; JoinAggInterpreter additionally
+   * enforced an opcode allow-list and rejected backward branches).  The
+   * stricter JoinAgg form is adopted here for both — the allow-list
+   * covers every opcode either path emits, and the backward-branch
+   * reject closes a potential infinite-loop class.  Pure function over
+   * arguments; no instance state needed.
+   */
+  static bool validateEmbeddedProgram(const Uint32* emb_prog, Uint32 emb_len);
+
   /* Shared aggregation kernels — definitions in AggInterpreterBase.cpp.
    * `print` is consumed only inside DEBUG_PA_INTERP debug-trace blocks. */
   static bool TypeSupported(DataType type);
@@ -71,6 +98,13 @@ class AggInterpreterBase : public PushdownInterpreter {
   static Int32 MinBigint(const Register& a, AggResItem* res, bool print);
   static Int32 MinDouble(const Register& a, AggResItem* res, bool print);
   static Int32 Count(const Register& a, AggResItem* res, bool print);
+
+  /* Fields lifted from the subclasses in Step 1.2 to support the shared
+   * OptimizeProgram.  Total sizeof is unchanged — same fields, moved up
+   * the class hierarchy — so both static_asserts on subclass sizeof
+   * still hold.  Plan's 1.3/1.4 will lift more shared fields. */
+  Uint32* m_prog;
+  Uint32 m_agg_prog_start_pos;
 };
 
 #endif  // AGGINTERPRETERBASE_H_

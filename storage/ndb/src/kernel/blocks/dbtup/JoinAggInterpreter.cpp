@@ -90,110 +90,6 @@ static const Uint32 GROUP_LINK_OVERHEAD = 24;
  * inherited name lookup.  See agg_interpreter_unification_plan.md, Step 1.
  */
 
-/**
- * validateEmbeddedProgram — same as AggInterpreter version
- */
-bool JoinAggInterpreter::validateEmbeddedProgram(
-    const Uint32* emb_prog, Uint32 emb_len) {
-  Uint32 pc = 0;
-  while (pc < emb_len) {
-    Uint32 instr = emb_prog[pc];
-    Uint32 opCode = Interpreter::getOpCode(instr);
-
-    switch (opCode) {
-      case Interpreter::READ_ATTR_INTO_REG:
-      case Interpreter::LOAD_CONST_NULL:
-      case Interpreter::LOAD_CONST16:
-      case Interpreter::LOAD_CONST32:
-      case Interpreter::LOAD_CONST64:
-      case Interpreter::LOAD_DOUBLE_CONST:
-      case Interpreter::ADD_REG_REG:
-      case Interpreter::SUB_REG_REG:
-      case Interpreter::MUL_REG_REG:
-      case Interpreter::BRANCH:
-      case Interpreter::BRANCH_REG_EQ_NULL:
-      case Interpreter::BRANCH_REG_NE_NULL:
-      case Interpreter::BRANCH_EQ_REG_REG:
-      case Interpreter::BRANCH_NE_REG_REG:
-      case Interpreter::BRANCH_LT_REG_REG:
-      case Interpreter::BRANCH_LE_REG_REG:
-      case Interpreter::BRANCH_GT_REG_REG:
-      case Interpreter::BRANCH_GE_REG_REG:
-      case Interpreter::EXIT_OK:
-      case Interpreter::BRANCH_ATTR_OP_ARG:
-      case Interpreter::BRANCH_MEM_OP_ARG:
-      case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE:
-      case Interpreter::BRANCH_ATTR_EQ_NULL:
-      case Interpreter::BRANCH_ATTR_NE_NULL:
-      case Interpreter::READ_LINKED_TO_MEM:
-      case Interpreter::READ_UINT8_MEM_TO_REG:
-      case Interpreter::READ_UINT16_MEM_TO_REG:
-      case Interpreter::READ_UINT32_MEM_TO_REG:
-      case Interpreter::READ_INT64_MEM_TO_REG:
-      case Interpreter::READ_AGG_REG_TO_REG:
-      case Interpreter::READ_LINKED_COLUMN_TO_REG:
-      case Interpreter::WRITE_INTERPRETER_OUTPUT:
-        break;
-      default:
-        g_eventLogger->warning(
-            "validateEmbeddedProgram: forbidden opcode %u at pc=%u",
-            opCode, pc);
-        return false;
-    }
-
-    bool is_branch = false;
-    switch (opCode) {
-      case Interpreter::BRANCH:
-      case Interpreter::BRANCH_REG_EQ_NULL:
-      case Interpreter::BRANCH_REG_NE_NULL:
-      case Interpreter::BRANCH_EQ_REG_REG:
-      case Interpreter::BRANCH_NE_REG_REG:
-      case Interpreter::BRANCH_LT_REG_REG:
-      case Interpreter::BRANCH_LE_REG_REG:
-      case Interpreter::BRANCH_GT_REG_REG:
-      case Interpreter::BRANCH_GE_REG_REG:
-      case Interpreter::BRANCH_ATTR_OP_ARG:
-      case Interpreter::BRANCH_MEM_OP_ARG:
-      case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE:
-      case Interpreter::BRANCH_ATTR_EQ_NULL:
-      case Interpreter::BRANCH_ATTR_NE_NULL:
-        is_branch = true;
-        break;
-      default:
-        break;
-    }
-
-    if (is_branch) {
-      Uint32 direction = instr >> 31;
-      if (direction != 0) {
-        g_eventLogger->warning(
-            "validateEmbeddedProgram: backward branch at pc=%u", pc);
-        return false;
-      }
-      Uint32 offset = (instr >> 16) & 0x7FFF;
-      Uint32 target = pc + offset;
-      if (target >= emb_len) {
-        g_eventLogger->warning(
-            "validateEmbeddedProgram: branch target %u out of bounds "
-            "(emb_len=%u) at pc=%u", target, emb_len, pc);
-        return false;
-      }
-    }
-
-    Interpreter::InstructionPreProcessing processing;
-    Uint32* next = Interpreter::getInstructionPreProcessingInfo(
-        const_cast<Uint32*>(&emb_prog[pc]), processing);
-    if (next == nullptr) {
-      g_eventLogger->warning(
-          "validateEmbeddedProgram: invalid instruction at pc=%u", pc);
-      return false;
-    }
-    Uint32 instr_len = (Uint32)(next - &emb_prog[pc]);
-    pc += instr_len;
-  }
-  return true;
-}
-
 bool JoinAggInterpreter::Init(const Uint32* prog) {
   if (m_inited) {
     return true;
@@ -478,14 +374,6 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
     }
   }
   m_agg_ops_cached = true;
-}
-
-bool JoinAggInterpreter::OptimizeProgram() {
-  if (!m_inited) {
-    return false;
-  }
-  OptimizeProgramBuffer(m_prog, m_prog_len, m_agg_prog_start_pos);
-  return true;
 }
 
 /*

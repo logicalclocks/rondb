@@ -147,83 +147,6 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
 #define VS_INTERP_TRACE(table_id, part_id, format, ...) {}
 #endif // DEBUG_VS_INTERP
 
-/**
- * validateEmbeddedProgram — sanity-check an embedded program at
- * Init() time ("compile" step).
- *
- * Phase C simplification: the opcode whitelist and the forward-only
- * branch-direction check are gone — those are now enforced at
- * runtime by s_agg_interp_handlers (nullptr slots raise
- * ZNO_INSTRUCTION_ERROR) and IFLAG_DISALLOW_BACKWARD_JUMPS (raises
- * ZBACKWARD_JUMP_NOT_ALLOWED).  Keeping those checks here would be
- * a second source of truth that could drift; keep only the
- * structural bounds check on branch targets so a malformed program
- * doesn't pass Init with a garbage offset that would later confuse
- * the runtime.
- *
- * Walks the instruction stream and checks:
- *   1. Each instruction has a well-defined length
- *      (getInstructionPreProcessingInfo returns non-null).
- *   2. Branch targets (forward or otherwise) fall within the
- *      embedded program bounds.
- *
- * Returns true if the program is structurally valid.
- */
-bool AggInterpreter::validateEmbeddedProgram(
-    const Uint32* emb_prog, Uint32 emb_len) {
-  Uint32 pc = 0;
-  while (pc < emb_len) {
-    Uint32 instr = emb_prog[pc];
-    Uint32 opCode = Interpreter::getOpCode(instr);
-
-    /* Bounds-check branch targets.  Direction is left to the runtime
-     * backward-jump guard; here we only care that the target doesn't
-     * leave the program. */
-    switch (opCode) {
-      case Interpreter::BRANCH:
-      case Interpreter::BRANCH_REG_EQ_NULL:
-      case Interpreter::BRANCH_REG_NE_NULL:
-      case Interpreter::BRANCH_EQ_REG_REG:
-      case Interpreter::BRANCH_NE_REG_REG:
-      case Interpreter::BRANCH_LT_REG_REG:
-      case Interpreter::BRANCH_LE_REG_REG:
-      case Interpreter::BRANCH_GT_REG_REG:
-      case Interpreter::BRANCH_GE_REG_REG:
-      case Interpreter::BRANCH_ATTR_OP_ARG:
-      case Interpreter::BRANCH_ATTR_EQ_NULL:
-      case Interpreter::BRANCH_ATTR_NE_NULL:
-      case Interpreter::BRANCH_MEM_OP_ARG:
-      case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE: {
-        Uint32 offset = (instr >> 16) & 0x7FFF;
-        Uint32 target = pc + offset;
-        if (target >= emb_len) {
-          g_eventLogger->warning(
-              "validateEmbeddedProgram: branch target %u out of bounds "
-              "(emb_len=%u) at pc=%u", target, emb_len, pc);
-          return false;
-        }
-        break;
-      }
-      default:
-        break;
-    }
-
-    /* Advance via getInstructionPreProcessingInfo. */
-    Interpreter::InstructionPreProcessing processing;
-    Uint32* next = Interpreter::getInstructionPreProcessingInfo(
-        const_cast<Uint32*>(&emb_prog[pc]), processing);
-    if (next == nullptr) {
-      g_eventLogger->warning(
-          "validateEmbeddedProgram: invalid instruction at pc=%u", pc);
-      return false;
-    }
-    Uint32 instr_len = (Uint32)(next - &emb_prog[pc]);
-    pc += instr_len;
-  }
-
-  return true;
-}
-
 bool AggInterpreter::Init(const Uint32* prog) {
   if (m_inited) {
     return true;
@@ -347,27 +270,6 @@ bool AggInterpreter::Init(const Uint32* prog) {
   return true;
 }
 
-
-/**
- * OptimizeProgram - Analyze the aggregation program and replace generic opcodes
- * with type-specific ones based on static type analysis.
- *
- * This function walks through the program instructions, tracks the type of each
- * register, and replaces generic opcodes (kOpSum, kOpPlus, etc.) with their
- * type-specific variants (kOpSumBigint, kOpSumDouble, kOpPlusBigint, etc.).
- *
- * Since the aggregation program has no loops, the type of each register is
- * deterministic and can be computed in a single pass.
- *
- * Must be called after Init() and before the first ProcessRec().
- */
-bool AggInterpreter::OptimizeProgram() {
-  if (!m_inited) {
-    return false;
-  }
-  OptimizeProgramBuffer(m_prog, m_prog_len, m_agg_prog_start_pos);
-  return true;
-}
 
 /*
  * Numeric / type aggregation kernels (TypeSupported, IsUnsigned,

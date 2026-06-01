@@ -51,10 +51,10 @@ class JoinAggInterpreter : public AggInterpreterBase {
                      Uint32 thread_id):
     AggInterpreterBase(PushdownType::AGGREGATION, prog_len,
                        table_id, frag_id, thread_id),
-    m_prog(nullptr), m_cur_pos(0),
+    m_cur_pos(0),
     m_n_gb_cols(0), m_gb_cols(nullptr),
     m_n_agg_results(0),
-    m_agg_results(nullptr), m_agg_prog_start_pos(0),
+    m_agg_results(nullptr),
     m_gb_map(nullptr), m_n_groups(0),
     m_attr_read_buf(nullptr), m_attr_read_pos(0),
     m_acc_offset(0),
@@ -90,8 +90,6 @@ class JoinAggInterpreter : public AggInterpreterBase {
       m_buf_block = nullptr;
     }
   }
-
-  bool OptimizeProgram();
 
   bool Init(const Uint32* prog);
 
@@ -259,7 +257,6 @@ class JoinAggInterpreter : public AggInterpreterBase {
   Uint32 encodeStringPayload(const AggResItem* slots, char* dst) const;
  private:
 
-  Uint32* m_prog;
   Uint32 m_cur_pos;
   Register m_registers[kRegTotal];
 
@@ -272,7 +269,6 @@ class JoinAggInterpreter : public AggInterpreterBase {
   Uint32* m_gb_cols;
   Uint32 m_n_agg_results;
   AggResItem* m_agg_results;
-  Uint32 m_agg_prog_start_pos;
 
   JoinGBHashTable* m_gb_map;
   Uint32 m_n_groups;
@@ -318,9 +314,6 @@ class JoinAggInterpreter : public AggInterpreterBase {
   Uint32 m_total_available;
 
   MemChunk* allocNewChunk();
-
-  // Embedded interpreter validation (called at Init time)
-  bool validateEmbeddedProgram(const Uint32* emb_prog, Uint32 emb_len);
 
   // Cached agg ops for merge (avoids recomputing per CONTINUEB batch)
   Uint8* m_cached_agg_ops;

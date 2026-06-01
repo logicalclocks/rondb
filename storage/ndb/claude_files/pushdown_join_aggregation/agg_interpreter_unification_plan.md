@@ -1,9 +1,9 @@
 # AggInterpreter ↔ JoinAggInterpreter Unification — Analysis & Plan
 
 **Status:** Step 1 in progress — sub-step 1.1 (shared numeric/type kernels) +
-the base-class foundation (1.5) **shipped and verified** (build + full agg test
-suite + RonSQL/CTE MTR green).  Sub-steps 1.2 / 1.3 / 1.4 remain.  Steps 2–3 not
-started.
+the base-class foundation (1.5) + sub-step 1.2 (shared validator + optimizer)
+**shipped and verified** (build green; agg test runs pending user-side).
+Sub-steps 1.3 / 1.4 remain.  Steps 2–3 not started.
 **Goal:** the two interpreters share a large amount of duplicated code.
 `JoinAggInterpreter` has the better (more scalable) memory model. (1) Remove the
 duplication, then (2) make `AggInterpreter` use `JoinAggInterpreter`'s memory model
@@ -238,9 +238,24 @@ call-site changes; both keep their existing containers, allocators, and emission
    (`m_registers`, `m_string_results`, etc.) into the base is deferred to 1.3/1.4
    where they are actually needed.
 
-1.2 ⏳ **TODO — Shared embedded-program validator + optimizer.** Factor `validateEmbeddedProgram`
-   and `OptimizeProgram` into the shared unit (`OptimizeProgram` already only calls the
-   static `OptimizeProgramBuffer`).
+1.2 ✅ **DONE — Shared embedded-program validator + optimizer.**
+   `validateEmbeddedProgram` is now a `protected static` on `AggInterpreterBase`;
+   `OptimizeProgram` is a public non-virtual method on the base.  Two surprises during
+   landing:
+   (a) The two validators were **not** byte-identical — JoinAgg's was strictly more
+       rigorous (opcode allow-list + backward-branch reject + bounds check) while
+       AggInterpreter's was bounds-check only.  Comment in JoinAgg ("same as
+       AggInterpreter version") was stale.  Adopted JoinAgg's strict form for both
+       paths (decision: this tightens AggInterpreter's normal-scan validation, but
+       every opcode the normal-scan path emits is in the allow-list, so behavior on
+       valid programs is unchanged).
+   (b) `OptimizeProgram` needs `m_prog` and `m_agg_prog_start_pos`, which were
+       per-subclass fields.  Lifted both into the base (one field-lifting step ahead
+       of the 1.3/1.4 schedule, but minimal: two fields, no `sizeof` impact, no other
+       refactoring).  Subclass usages bind to the inherited base fields with no call-site
+       churn.
+   ~110 lines removed from JoinAggInterpreter.cpp + ~80 lines from AggInterpreter.cpp;
+   one canonical copy in AggInterpreterBase.cpp.  Build green.
 
 1.3 ⏳ **TODO — Shared string MIN/MAX suite.** Factor `minMaxString`, `stringPayloadSize`,
    `encodeStringPayload`, `freeGroupStringSlots` into shared helpers parameterized by an

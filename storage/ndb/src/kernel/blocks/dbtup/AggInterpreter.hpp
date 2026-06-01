@@ -50,10 +50,10 @@ class AggInterpreter : public AggInterpreterBase {
                  Uint32 thread_id):
     AggInterpreterBase(PushdownType::AGGREGATION, prog_len,
                        table_id, frag_id, thread_id),
-    m_prog(nullptr), m_cur_pos(0),
+    m_cur_pos(0),
     m_n_gb_cols(0), m_gb_cols(nullptr),
     m_n_agg_results(0),
-    m_agg_results(nullptr), m_agg_prog_start_pos(0),
+    m_agg_results(nullptr),
     m_gb_map(nullptr), m_n_groups(0),
     m_attr_read_pos(0),
     m_processed_rows(0),
@@ -69,8 +69,6 @@ class AggInterpreter : public AggInterpreterBase {
   ~AggInterpreter() override {
     release_string_results();
   }
-
-  bool OptimizeProgram();
 
   bool Init(const Uint32* prog);
 
@@ -92,7 +90,6 @@ class AggInterpreter : public AggInterpreterBase {
   Uint64 processed_rows() const { return m_processed_rows; }
 
  private:
-  Uint32* m_prog;
   Uint32 m_cur_pos;
   Register m_registers[kRegTotal];
 
@@ -109,7 +106,6 @@ class AggInterpreter : public AggInterpreterBase {
   Uint32* m_gb_cols;
   Uint32 m_n_agg_results;
   AggResItem* m_agg_results;
-  Uint32 m_agg_prog_start_pos;
 
   std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* m_gb_map;
   Uint32 m_n_groups;
@@ -122,9 +118,6 @@ class AggInterpreter : public AggInterpreterBase {
 
   decimal_t m_decimal;
   decimal_digit_t m_decimal_buf[DECIMAL_BUFF_LENGTH];
-
-  // Embedded interpreter validation
-  bool validateEmbeddedProgram(const Uint32* emb_prog, Uint32 emb_len);
 
   // Per-column comparison context for type-aware GROUP BY
   GBCmpContext m_gb_cmp_ctx;
