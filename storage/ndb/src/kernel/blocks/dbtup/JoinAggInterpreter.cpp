@@ -46,9 +46,6 @@ Uint32 JoinAggInterpreter::g_attr_read_buf_len_ = ATTR_READ_BUF_WORD_SIZE;
 Uint32 JoinAggInterpreter::g_result_header_size_ = 3 * sizeof(Uint32);
 Uint32 JoinAggInterpreter::g_result_header_size_per_group_ = sizeof(Uint32);
 
-// Per-group header prepended by allocGroupData.
-static const Uint32 GROUP_LINK_OVERHEAD = 24;
-
 /*
  * Debug macros
  */
@@ -1845,121 +1842,6 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
   m_linked_attr_data = nullptr;
   m_linked_attr_len = 0;
   return ret;
-}
-
-void JoinAggInterpreter::initChunkAllocator(Uint32 thread_id,
-                                             Uint32 budget_pages,
-                                             Uint32 available_pages) {
-  m_thread_id = thread_id;
-  m_memory_budget = budget_pages * MEM_CHUNK_SIZE;
-  m_budget_increment = m_memory_budget;
-  m_total_available = available_pages * MEM_CHUNK_SIZE;
-  m_chunks = nullptr;
-  m_chunks_tail = nullptr;
-  m_current_chunk = nullptr;
-  m_total_chunk_bytes = 0;
-}
-
-bool JoinAggInterpreter::bookMoreMemory() {
-  Uint32 new_budget = m_memory_budget + m_budget_increment;
-  if (new_budget > m_total_available) {
-    return false;
-  }
-  m_memory_budget = new_budget;
-  return true;
-}
-
-MemChunk* JoinAggInterpreter::allocNewChunk() {
-  if (m_total_chunk_bytes + MEM_CHUNK_SIZE > m_memory_budget) {
-    if (!bookMoreMemory()) {
-      return nullptr;
-    }
-  }
-  void* page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
-                                   m_thread_id, false);
-  if (page == nullptr) {
-    return nullptr;
-  }
-  MemChunk* chunk = static_cast<MemChunk*>(page);
-  chunk->data = static_cast<char*>(page) + sizeof(MemChunk);
-  chunk->capacity = MEM_CHUNK_SIZE - sizeof(MemChunk);
-  chunk->used = 0;
-  chunk->live_groups = 0;
-  chunk->group_list = nullptr;
-  chunk->next = m_chunks;
-  chunk->prev = nullptr;
-  if (m_chunks != nullptr) {
-    m_chunks->prev = chunk;
-  } else {
-    m_chunks_tail = chunk;
-  }
-  m_chunks = chunk;
-  m_total_chunk_bytes += MEM_CHUNK_SIZE;
-  return chunk;
-}
-
-char* JoinAggInterpreter::allocGroupData(Uint32 len, Uint32 key_len) {
-  Uint32 total = ((GROUP_LINK_OVERHEAD + len) + 7) & ~7u;
-  MemChunk* chunk = m_current_chunk;
-  if (chunk == nullptr || chunk->used + total > chunk->capacity) {
-    chunk = allocNewChunk();
-    if (chunk == nullptr) {
-      return nullptr;
-    }
-    m_current_chunk = chunk;
-    if (total > chunk->capacity) {
-      return nullptr;
-    }
-  }
-  Uint32 offset = chunk->used;
-  char* raw = chunk->data + offset;
-  chunk->used += total;
-  chunk->live_groups++;
-
-  *reinterpret_cast<char**>(raw) = chunk->group_list;
-  *reinterpret_cast<char**>(raw + sizeof(char*)) = nullptr;
-  *reinterpret_cast<Uint32*>(raw + 2 * sizeof(char*)) = key_len;
-  *reinterpret_cast<Uint32*>(raw + 2 * sizeof(char*) + sizeof(Uint32)) = offset;
-  chunk->group_list = raw;
-
-  return raw + GROUP_LINK_OVERHEAD;
-}
-
-void JoinAggInterpreter::freeGroupData(char* ptr) {
-  char* raw = ptr - GROUP_LINK_OVERHEAD;
-  Uint32 offset = *reinterpret_cast<Uint32*>(raw + 2 * sizeof(char*) + sizeof(Uint32));
-  MemChunk* chunk = reinterpret_cast<MemChunk*>(raw - offset - sizeof(MemChunk));
-  chunk->live_groups--;
-  if (chunk->live_groups == 0) {
-    if (chunk->prev != nullptr) {
-      chunk->prev->next = chunk->next;
-    } else {
-      m_chunks = chunk->next;
-    }
-    if (chunk->next != nullptr) {
-      chunk->next->prev = chunk->prev;
-    } else {
-      m_chunks_tail = chunk->prev;
-    }
-    if (m_current_chunk == chunk) {
-      m_current_chunk = m_chunks;
-    }
-    m_total_chunk_bytes -= MEM_CHUNK_SIZE;
-    lc_ndbd_pool_free(chunk);
-  }
-}
-
-void JoinAggInterpreter::freeAllChunks() {
-  MemChunk* chunk = m_chunks;
-  while (chunk != nullptr) {
-    MemChunk* next = chunk->next;
-    lc_ndbd_pool_free(chunk);
-    chunk = next;
-  }
-  m_chunks = nullptr;
-  m_chunks_tail = nullptr;
-  m_current_chunk = nullptr;
-  m_total_chunk_bytes = 0;
 }
 
 // Phase I.6 (F.2): release string MIN/MAX state.  Per-(group, slot)

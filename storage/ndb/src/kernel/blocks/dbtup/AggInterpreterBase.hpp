@@ -27,6 +27,8 @@
 #include <cstring>
 #include "PushdownInterpreter.hpp"
 #include "NdbAggregationCommon.hpp"
+#include <AttributeHeader.hpp>   // AggHashTable's template methods use this
+#include "AggHashTable.hpp"      // MemChunk, GBColTypeInfo, MEM_CHUNK_SIZE
 #include "decimal.h"
 
 /**
@@ -60,17 +62,43 @@ class AggInterpreterBase : public PushdownInterpreter {
    * collide where both headers are transitively included. */
   static constexpr Uint32 AGG_DECIMAL_BUFF_LENGTH = 9;
 
+  /* Step 2a — chunk-allocator overhead per group record.
+   * `GBHashTable<...>::OVERHEAD` defines the same constant; centralized
+   * here for the chunk-allocator side that doesn't take a template
+   * parameter for bucket count. */
+  static constexpr Uint32 GROUP_LINK_OVERHEAD = 24;
+
   AggInterpreterBase(PushdownType type, Uint32 prog_len,
                      Int64 table_id, Int64 frag_id, Uint32 thread_id)
     : PushdownInterpreter(type, prog_len, table_id, frag_id, thread_id),
       m_prog(nullptr), m_agg_prog_start_pos(0),
       m_n_agg_results(0), m_agg_results(nullptr),
-      m_string_results(nullptr), m_current_thread_id(0) {
+      m_string_results(nullptr), m_current_thread_id(0),
+      m_chunks(nullptr), m_chunks_tail(nullptr),
+      m_current_chunk(nullptr), m_total_chunk_bytes(0),
+      m_memory_budget(0), m_budget_increment(0),
+      m_total_available(0),
+      m_gb_types(nullptr), m_gb_types_inited(false),
+      m_xfrm_buf(nullptr), m_xfrm_buf_len(0) {
     memset(m_decimal_buf, 0,
            sizeof(decimal_digit_t) * AGG_DECIMAL_BUFF_LENGTH);
     m_decimal.buf = m_decimal_buf;
     m_decimal.len = AGG_DECIMAL_BUFF_LENGTH;
   }
+
+  /* Step 2a — chunk allocator (lifted from JoinAggInterpreter).
+   * Group records live in MEM_CHUNK_SIZE pages allocated from
+   * RG_QUERY_MEMORY; allocGroupData carves from the current chunk,
+   * freeGroupData decrements the chunk's live count and releases the
+   * page when it hits zero.  Same shape both interpreters end up using
+   * in Step 2b. */
+  void initChunkAllocator(Uint32 thread_id, Uint32 budget_pages,
+                          Uint32 available_pages);
+  bool bookMoreMemory();
+  MemChunk* allocNewChunk();
+  char* allocGroupData(Uint32 len, Uint32 key_len);
+  void freeGroupData(char* ptr);
+  void freeAllChunks();
 
   /**
    * OptimizeProgram — guard + delegate to OptimizeProgramBuffer.
@@ -220,6 +248,28 @@ class AggInterpreterBase : public PushdownInterpreter {
   // subclasses' opcode executors (the shared executor lands in 1.4).
   decimal_t m_decimal;
   decimal_digit_t m_decimal_buf[AGG_DECIMAL_BUFF_LENGTH];
+
+  /* Step 2a — chunk allocator state lifted from JoinAggInterpreter.
+   * MEM_CHUNK_SIZE pages are allocated lazily on first allocGroupData;
+   * groups within a chunk form a singly-linked list via the chunk's
+   * group_list head for O(1) eviction.  AggInterpreter doesn't engage
+   * the chunk allocator until Step 2b — these fields stay
+   * zero-initialized for normal-scan aggregation until then. */
+  MemChunk* m_chunks;
+  MemChunk* m_chunks_tail;
+  MemChunk* m_current_chunk;
+  Uint32 m_total_chunk_bytes;
+  Uint32 m_memory_budget;
+  Uint32 m_budget_increment;
+  Uint32 m_total_available;
+
+  /* Step 2a — GROUP BY per-column type metadata.  Populated by
+   * initGBTypes (still per-class in 2a; lifted in 2b).  The
+   * GBHashTable uses these for charset-aware hash + comparison. */
+  GBColTypeInfo* m_gb_types;
+  bool m_gb_types_inited;
+  uchar* m_xfrm_buf;       // scratch buffer for strnxfrm_hash
+  Uint32 m_xfrm_buf_len;   // size in bytes
 };
 
 #endif  // AGGINTERPRETERBASE_H_

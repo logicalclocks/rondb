@@ -61,13 +61,9 @@ class JoinAggInterpreter : public AggInterpreterBase {
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
     m_null_local_columns(false),
     m_use_mutex(false), m_max_groups(0), m_cte_mode(false),
-    m_chunks(nullptr), m_chunks_tail(nullptr),
-    m_current_chunk(nullptr), m_total_chunk_bytes(0),
-    m_memory_budget(0), m_budget_increment(0),
-    m_total_available(0),
+    /* Chunk allocator state + GB type metadata lifted to
+     * AggInterpreterBase in Step 2a; base ctor initializes them. */
     m_cached_agg_ops(nullptr), m_agg_ops_cached(false),
-    m_gb_types(nullptr), m_gb_types_inited(false),
-    m_xfrm_buf(nullptr), m_xfrm_buf_len(0),
     m_prog_buf(nullptr), m_gb_cols_buf(nullptr),
     m_agg_results_buf(nullptr), m_gb_map_buf(nullptr),
     m_buf_block(nullptr) {
@@ -208,12 +204,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
                             Uint32 num_leaves);
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,
                       Uint32* words_written);
-  void initChunkAllocator(Uint32 thread_id, Uint32 budget_pages,
-                          Uint32 available_pages);
-  bool bookMoreMemory();
-  char* allocGroupData(Uint32 len, Uint32 key_len);
-  void freeGroupData(char* ptr);
-  void freeAllChunks();
+  /* initChunkAllocator / bookMoreMemory / allocGroupData / freeGroupData /
+   * freeAllChunks lifted to AggInterpreterBase in Step 2a. */
 
  private:
   Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
@@ -272,26 +264,19 @@ class JoinAggInterpreter : public AggInterpreterBase {
   Uint32 m_max_groups;                // 0 = unlimited
   bool m_cte_mode;                    // see setCteMode()
 
-  // Chunk-based allocator for group data.
-  MemChunk* m_chunks;
-  MemChunk* m_chunks_tail;
-  MemChunk* m_current_chunk;
-  Uint32 m_total_chunk_bytes;
-  Uint32 m_memory_budget;
-  Uint32 m_budget_increment;
-  Uint32 m_total_available;
-
-  MemChunk* allocNewChunk();
+  /* Chunk-based allocator state (m_chunks / m_chunks_tail /
+   * m_current_chunk / m_total_chunk_bytes / m_memory_budget /
+   * m_budget_increment / m_total_available) lifted to
+   * AggInterpreterBase in Step 2a. */
 
   // Cached agg ops for merge (avoids recomputing per CONTINUEB batch)
   Uint8* m_cached_agg_ops;
   bool m_agg_ops_cached;
 
-  // Per-column type info for type-aware GROUP BY hashing and comparison
-  GBColTypeInfo* m_gb_types;
-  bool m_gb_types_inited;
-  uchar *m_xfrm_buf;
-  Uint32 m_xfrm_buf_len;
+  /* Per-column GROUP BY type metadata (m_gb_types, m_gb_types_inited,
+   * m_xfrm_buf, m_xfrm_buf_len) lifted to AggInterpreterBase in Step
+   * 2a; initGBTypes / initGBTypesForNullLocal still per-class because
+   * they touch m_gb_map (lifted in Step 2b). */
   Int32 initGBTypes(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
   void initGBTypesForNullLocal(Dbtup* block_tup);
 
