@@ -316,7 +316,7 @@ create_cpu_list(struct ndb_hwinfo *hwinfo,
         first_virt_l3_cache[i] =
             hwinfo->cpu_info[next_cpu].next_virt_l3_cpu_map;
         hwinfo->cpu_info[next_cpu].next_cpu_map = RNIL;
-        hwinfo->cpu_info[next_cpu].rr_group = i;
+        hwinfo->cpu_info[next_cpu].rr_group = i % num_rr_groups;
         found_query++;
       }
     }
@@ -844,6 +844,89 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
   if(num_query_instances == 0 && max_num_groups == 0)
     return 0;
 
+  /*
+    If the existing L3 cache groups are already neither too small nor too
+    large, prefer keeping them intact. This avoids creating many small RR
+    groups when larger L3-local groups can cover the query instances.
+  */
+  {
+    Uint32 found_instances = 0;
+    bool keep_l3_groups = true;
+    for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
+    {
+      Uint32 group_cpus = g_num_virt_l3_cpus[i];
+      found_instances += group_cpus;
+      if (group_cpus < min_group_size ||
+          group_cpus > optimal_group_size)
+      {
+        keep_l3_groups = false;
+      }
+    }
+    if (keep_l3_groups && found_instances >= num_query_instances)
+    {
+      return hwinfo->num_virt_l3_caches;
+    }
+  }
+
+  /*
+    If no L3 group is too large, avoid splitting the topology into smaller
+    RR groups. Some physical L3 groups can be too small due to offline CPUs,
+    so first try to merge only those small groups. This keeps the normal case
+    close to one RR group per L3 cache and avoids producing many 3-thread
+    groups when larger L3-local groups are available.
+  */
+  {
+    bool has_too_large_groups = false;
+    for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
+    {
+      if (g_num_virt_l3_cpus[i] > optimal_group_size)
+      {
+        has_too_large_groups = true;
+        break;
+      }
+    }
+
+    if (!has_too_large_groups)
+    {
+      Uint32 loop_count = 0;
+      do
+      {
+        Uint32 found_instances = 0;
+        bool has_too_small_groups = false;
+        for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
+        {
+          Uint32 group_cpus = g_num_virt_l3_cpus[i];
+          found_instances += group_cpus;
+          if (group_cpus < min_group_size)
+          {
+            has_too_small_groups = true;
+          }
+        }
+
+        if (!has_too_small_groups && found_instances >= num_query_instances)
+        {
+          return hwinfo->num_virt_l3_caches;
+        }
+        if (!has_too_small_groups)
+        {
+          break;
+        }
+
+        Uint32 old_num_virt_l3_caches = hwinfo->num_virt_l3_caches;
+        if (!create_min_virt_l3_cache_list(hwinfo, min_group_size))
+        {
+          break;
+        }
+        if (old_num_virt_l3_caches == hwinfo->num_virt_l3_caches)
+        {
+          break;
+        }
+        loop_count++;
+        require(loop_count < 10000);
+      } while (true);
+    }
+  }
+
   /**
    * We start by attempting to create a number of L3 cache groups
    * that all can contain the optimum sized groups. As soon as we find
@@ -976,7 +1059,8 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
 }
 
 Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances,
-                        Uint32 max_rr_group_size) {
+                        Uint32 max_rr_group_size,
+                        Uint32 num_cpus_to_map) {
   struct ndb_hwinfo *hwinfo = g_ndb_hwinfo;
   /**
    * We have set up HW information and now we need to set up the CPU map
@@ -993,6 +1077,8 @@ Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances,
    */
   g_create_cpu_map = true;
   num_query_instances = (num_query_instances == 0) ? 1 : num_query_instances;
+  num_cpus_to_map = (num_cpus_to_map == 0) ?
+                    num_query_instances : num_cpus_to_map;
   Uint32 optimal_group_size = max_rr_group_size;
   Uint32 min_group_size = MIN(MIN_RR_GROUP_SIZE, num_query_instances);
   Uint32 max_num_groups =
@@ -1015,28 +1101,9 @@ Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances,
   sort_virt_l3_caches(hwinfo);
   create_prev_list(hwinfo);
 
-  /**
-   * Check if we need to bring along the last group with too
-   * few CPUs, but still required to fill the number of
-   * instances we seek.
-   */
-  Uint32 found_instances = 0;
-  for (Uint32 i = 0; i < num_rr_groups; i++)
-  {
-    found_instances += g_num_virt_l3_cpus[i];
-  }
-  if (found_instances < num_query_instances)
-  {
-    require(num_rr_groups < hwinfo->num_virt_l3_caches);
-    found_instances += g_num_virt_l3_cpus[num_rr_groups];
-    require(found_instances >= num_query_instances);
-    num_rr_groups++;
-  }
-
   create_cpu_list(hwinfo,
                   num_rr_groups,
                   num_query_instances);
-  require(found_instances >= num_query_instances);
   return num_rr_groups;
 }
 
@@ -2494,13 +2561,24 @@ static int Ndb_ReloadCPUData(struct ndb_hwinfo *) { return -1; }
 
 #ifdef TEST_NDBHW
 #include <NdbTap.hpp>
+#include <mgmcommon/thr_config.hpp>
 
 #define MAX_NUM_L3_CACHES 32
+#ifdef NDBHW_TEST_VERBOSE
+static const bool g_verbose_test_output = true;
+#else
+static const bool g_verbose_test_output = false;
+#endif
+
 struct test_cpumap_data {
   Uint32 num_l3_caches;
   Uint32 num_cpus_per_l3_cache;
   Uint32 num_cpus_in_l3_cache[MAX_NUM_L3_CACHES];
   Uint32 num_query_instances;
+  Uint32 num_cpu_map_instances;
+  Uint32 num_ldm_instances;
+  Uint32 min_query_instances_per_rr_group;
+  Uint32 max_neighbour_ldm_pairs;
   Uint32 num_cpus_per_package;
   Uint32 num_p_cpus_per_core;
   Uint32 num_p_cpus_per_package;
@@ -2831,6 +2909,55 @@ static void test_26(struct test_cpumap_data *map)
   printf("Run test 26 with 2 L3 group with 28 CPUs, 54 Query, Intel Rapid Lake\n");
 }
 
+static void test_27(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 8;
+  map->num_cpus_per_l3_cache = 8;
+  for (Uint32 i = 0; i < map->num_l3_caches; i++)
+  {
+    map->num_cpus_in_l3_cache[i] = 8;
+  }
+  map->num_cpus_in_l3_cache[7] = 6;
+  map->num_query_instances = 56;
+  map->num_cpu_map_instances = 62;
+  map->num_ldm_instances = 32;
+  map->max_neighbour_ldm_pairs = 0;
+  map->num_cpus_per_package = 64;
+  printf("Run test 27 with 8 L3 groups, 64 CPUs, 62 online, 56 Query\n");
+}
+
+static void test_28(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 7;
+  map->num_cpus_per_l3_cache = 8;
+  for (Uint32 i = 0; i < map->num_l3_caches; i++)
+  {
+    map->num_cpus_in_l3_cache[i] = 8;
+  }
+  map->num_query_instances = 50;
+  map->num_cpu_map_instances = 56;
+  map->num_ldm_instances = 28;
+  map->min_query_instances_per_rr_group = 4;
+  map->num_cpus_per_package = 56;
+  printf("Run test 28 with 7 L3 groups, 56 CPUs, 50 Query\n");
+}
+
+static void test_29(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 8;
+  map->num_cpus_per_l3_cache = 8;
+  for (Uint32 i = 0; i < map->num_l3_caches; i++)
+  {
+    map->num_cpus_in_l3_cache[i] = 7;
+  }
+  map->num_query_instances = 50;
+  map->num_cpu_map_instances = 56;
+  map->num_ldm_instances = 28;
+  map->min_query_instances_per_rr_group = 4;
+  map->num_cpus_per_package = 64;
+  printf("Run test 29 with 8 L3 groups, 56 online CPUs, 50 Query\n");
+}
+
 static void
 create_hwinfo_test_cpu_map(struct test_cpumap_data *map)
 {
@@ -2904,28 +3031,31 @@ create_hwinfo_test_cpu_map(struct test_cpumap_data *map)
 
 static void cleanup_test() {
   struct ndb_hwinfo *hwinfo = g_ndb_hwinfo;
-  for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++) {
-    printf("Virtual L3 Group[%u] = %u\n", i, g_num_virt_l3_cpus[i]);
-    Uint32 next_cpu = g_first_virt_l3_cache[i];
+  if (g_verbose_test_output)
+  {
+    for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++) {
+      printf("Virtual L3 Group[%u] = %u\n", i, g_num_virt_l3_cpus[i]);
+      Uint32 next_cpu = g_first_virt_l3_cache[i];
+      do {
+        printf("    CPU %u, core: %u, package_id: %u, l3_cache_id: %u\n",
+               next_cpu,
+               hwinfo->cpu_info[next_cpu].core_id,
+               hwinfo->cpu_info[next_cpu].package_id,
+               hwinfo->cpu_info[next_cpu].l3_cache_id);
+        next_cpu = hwinfo->cpu_info[next_cpu].next_virt_l3_cpu_map;
+      } while (next_cpu != RNIL);
+    }
+    printf("CPU list created for CPU lock assignment\n");
+    Uint32 next_cpu = hwinfo->first_cpu_map;
     do {
       printf("    CPU %u, core: %u, package_id: %u, l3_cache_id: %u\n",
              next_cpu,
              hwinfo->cpu_info[next_cpu].core_id,
              hwinfo->cpu_info[next_cpu].package_id,
              hwinfo->cpu_info[next_cpu].l3_cache_id);
-      next_cpu = hwinfo->cpu_info[next_cpu].next_virt_l3_cpu_map;
+      next_cpu = hwinfo->cpu_info[next_cpu].next_cpu_map;
     } while (next_cpu != RNIL);
   }
-  printf("CPU list created for CPU lock assignment\n");
-  Uint32 next_cpu = hwinfo->first_cpu_map;
-  do {
-    printf("    CPU %u, core: %u, package_id: %u, l3_cache_id: %u\n",
-           next_cpu,
-           hwinfo->cpu_info[next_cpu].core_id,
-           hwinfo->cpu_info[next_cpu].package_id,
-           hwinfo->cpu_info[next_cpu].l3_cache_id);
-    next_cpu = hwinfo->cpu_info[next_cpu].next_cpu_map;
-  } while (next_cpu != RNIL);
   ncpu = 0;
   free((void *)g_first_l3_cache);
   free((void *)g_first_virt_l3_cache);
@@ -2943,10 +3073,258 @@ static void cleanup_test() {
 }
 
 static void
+validate_cpu_map_rr_groups(Uint32 num_instances,
+                           Uint32 num_rr_groups)
+{
+  Uint32 rr_group_count[MAX_NUM_CPUS];
+  for (Uint32 i = 0; i < MAX_NUM_CPUS; i++)
+  {
+    rr_group_count[i] = 0;
+  }
+  OK(num_rr_groups <= MAX_NUM_CPUS);
+
+  Uint32 found_query_instances = 0;
+  Uint32 next_cpu = g_ndb_hwinfo->first_cpu_map;
+  while (next_cpu != RNIL && found_query_instances < num_instances)
+  {
+    Uint32 rr_group = g_ndb_hwinfo->cpu_info[next_cpu].rr_group;
+    OK(rr_group < num_rr_groups);
+    if (rr_group < MAX_NUM_CPUS)
+    {
+      rr_group_count[rr_group]++;
+    }
+    next_cpu = g_ndb_hwinfo->cpu_info[next_cpu].next_cpu_map;
+    found_query_instances++;
+  }
+  OK(found_query_instances == num_instances);
+
+  if (num_instances >= num_rr_groups)
+  {
+    for (Uint32 rr_group = 0; rr_group < num_rr_groups; rr_group++)
+    {
+      OK(rr_group_count[rr_group] > 0);
+    }
+  }
+}
+
+static void
+validate_cpu_map_ldm_rr_group_coverage(Uint32 num_query_instances,
+                                       Uint32 num_ldm_instances,
+                                       Uint32 num_rr_groups)
+{
+  const Uint32 min_ldm_covered_rr_group_size = 3;
+  Uint32 rr_group_count[MAX_NUM_CPUS];
+  Uint32 ldm_rr_group_count[MAX_NUM_CPUS];
+  for (Uint32 i = 0; i < MAX_NUM_CPUS; i++)
+  {
+    rr_group_count[i] = 0;
+    ldm_rr_group_count[i] = 0;
+  }
+  OK(num_rr_groups <= MAX_NUM_CPUS);
+
+  Uint32 found_query_instances = 0;
+  Uint32 next_cpu = g_ndb_hwinfo->first_cpu_map;
+  while (next_cpu != RNIL && found_query_instances < num_query_instances)
+  {
+    Uint32 rr_group = g_ndb_hwinfo->cpu_info[next_cpu].rr_group;
+    OK(rr_group < num_rr_groups);
+    if (rr_group < MAX_NUM_CPUS)
+    {
+      rr_group_count[rr_group]++;
+    }
+    next_cpu = g_ndb_hwinfo->cpu_info[next_cpu].next_cpu_map;
+    found_query_instances++;
+  }
+  OK(found_query_instances == num_query_instances);
+
+  Uint32 num_ldms_per_rr_group = num_ldm_instances / num_rr_groups;
+  Uint32 odd_ldms_per_rr_group = num_ldms_per_rr_group & 1;
+  Uint32 num_only_ldm_groups =
+    num_ldms_per_rr_group - odd_ldms_per_rr_group;
+  Uint32 num_only_ldms_in_group = num_rr_groups * num_only_ldm_groups;
+
+  Uint32 found_ldm_instances = 0;
+  next_cpu = g_ndb_hwinfo->first_cpu_map;
+  for (Uint32 cpu_map_pos = 0;
+       next_cpu != RNIL && found_ldm_instances < num_ldm_instances;
+       cpu_map_pos++)
+  {
+    Uint32 rr_group = g_ndb_hwinfo->cpu_info[next_cpu].rr_group;
+    OK(rr_group < num_rr_groups);
+    bool is_ldm = false;
+    if (num_only_ldms_in_group > 0)
+    {
+      num_only_ldms_in_group--;
+      is_ldm = true;
+    }
+    else if ((cpu_map_pos & 1) == 0)
+    {
+      is_ldm = true;
+    }
+    if (is_ldm)
+    {
+      if (rr_group < MAX_NUM_CPUS)
+      {
+        ldm_rr_group_count[rr_group]++;
+      }
+      found_ldm_instances++;
+    }
+    next_cpu = g_ndb_hwinfo->cpu_info[next_cpu].next_cpu_map;
+  }
+  OK(found_ldm_instances == num_ldm_instances);
+
+  if (num_ldm_instances >= num_rr_groups)
+  {
+    Uint32 num_rr_groups_without_ldm = 0;
+    for (Uint32 rr_group = 0; rr_group < num_rr_groups; rr_group++)
+    {
+      if (ldm_rr_group_count[rr_group] == 0)
+      {
+        num_rr_groups_without_ldm++;
+        if (rr_group_count[rr_group] >= min_ldm_covered_rr_group_size)
+        {
+          printf("RR group %u has no LDM, query instances in group: %u, "
+                 "num_ldm_instances: %u, num_rr_groups: %u\n",
+                 rr_group,
+                 rr_group_count[rr_group],
+                 num_ldm_instances,
+                 num_rr_groups);
+        }
+      }
+      OK(rr_group_count[rr_group] < min_ldm_covered_rr_group_size ||
+         ldm_rr_group_count[rr_group] > 0);
+    }
+    if (num_rr_groups_without_ldm > 1)
+    {
+      printf("%u RR groups have no LDM, num_ldm_instances: %u, "
+             "num_rr_groups: %u\n",
+             num_rr_groups_without_ldm,
+             num_ldm_instances,
+             num_rr_groups);
+      for (Uint32 rr_group = 0; rr_group < num_rr_groups; rr_group++)
+      {
+        if (ldm_rr_group_count[rr_group] == 0)
+        {
+          printf("RR group %u has %u query instances and no LDM\n",
+                 rr_group,
+                 rr_group_count[rr_group]);
+        }
+      }
+    }
+    OK(num_rr_groups_without_ldm <= 1);
+  }
+}
+
+static void
+validate_cpu_map_min_rr_group_size(Uint32 num_query_instances,
+                                   Uint32 num_rr_groups,
+                                   Uint32 min_query_instances_per_rr_group)
+{
+  Uint32 rr_group_count[MAX_NUM_CPUS];
+  for (Uint32 i = 0; i < MAX_NUM_CPUS; i++)
+  {
+    rr_group_count[i] = 0;
+  }
+  OK(num_rr_groups <= MAX_NUM_CPUS);
+
+  Uint32 found_query_instances = 0;
+  Uint32 next_cpu = g_ndb_hwinfo->first_cpu_map;
+  while (next_cpu != RNIL && found_query_instances < num_query_instances)
+  {
+    Uint32 rr_group = g_ndb_hwinfo->cpu_info[next_cpu].rr_group;
+    OK(rr_group < num_rr_groups);
+    if (rr_group < MAX_NUM_CPUS)
+    {
+      rr_group_count[rr_group]++;
+    }
+    next_cpu = g_ndb_hwinfo->cpu_info[next_cpu].next_cpu_map;
+    found_query_instances++;
+  }
+  OK(found_query_instances == num_query_instances);
+
+  if (num_query_instances >=
+      (num_rr_groups * min_query_instances_per_rr_group))
+  {
+    for (Uint32 rr_group = 0; rr_group < num_rr_groups; rr_group++)
+    {
+      OK(rr_group_count[rr_group] >= min_query_instances_per_rr_group);
+    }
+  }
+}
+
+static void
+validate_cpu_map_neighbour_ldm_pairs(Uint32 num_ldm_instances,
+                                     Uint32 num_rr_groups,
+                                     Uint32 max_neighbour_ldm_pairs)
+{
+  Uint32 ldm_rr_group[MAX_NUM_CPUS];
+  for (Uint32 i = 0; i < MAX_NUM_CPUS; i++)
+  {
+    ldm_rr_group[i] = RNIL;
+  }
+  OK(num_ldm_instances <= MAX_NUM_CPUS);
+
+  Uint32 ldm_thread_order[MAX_NUM_CPUS];
+  Uint32 ldm_thread_order_count = 0;
+  Uint32 num_ldm_rows =
+    (num_ldm_instances + num_rr_groups - 1) / num_rr_groups;
+  for (Uint32 col = 0; col < num_rr_groups; col++)
+  {
+    for (Uint32 row = 0; row < num_ldm_rows; row++)
+    {
+      Uint32 ldm_inx = (row * num_rr_groups) + col;
+      if (ldm_inx < num_ldm_instances)
+      {
+        ldm_thread_order[ldm_thread_order_count++] =
+          num_ldm_instances - ldm_inx - 1;
+      }
+    }
+  }
+  OK(ldm_thread_order_count == num_ldm_instances);
+
+  Uint32 found_ldm_instances = 0;
+  Uint32 next_cpu = g_ndb_hwinfo->first_cpu_map;
+  while (next_cpu != RNIL && found_ldm_instances < num_ldm_instances)
+  {
+    Uint32 rr_group = g_ndb_hwinfo->cpu_info[next_cpu].rr_group;
+    OK(rr_group < num_rr_groups);
+
+    /*
+      Automatic thread configuration assigns LDMs from the end of the
+      LDM vector while walking the CPU map.
+    */
+    Uint32 ldm_instance = ldm_thread_order[found_ldm_instances];
+    ldm_rr_group[ldm_instance] = rr_group;
+
+    next_cpu = g_ndb_hwinfo->cpu_info[next_cpu].next_cpu_map;
+    found_ldm_instances++;
+  }
+  OK(found_ldm_instances == num_ldm_instances);
+
+  Uint32 neighbour_ldm_pairs = 0;
+  for (Uint32 ldm_instance = 1;
+       ldm_instance < num_ldm_instances;
+       ldm_instance++)
+  {
+    OK(ldm_rr_group[ldm_instance - 1] != RNIL);
+    OK(ldm_rr_group[ldm_instance] != RNIL);
+    if (ldm_rr_group[ldm_instance - 1] == ldm_rr_group[ldm_instance])
+    {
+      neighbour_ldm_pairs++;
+    }
+  }
+  OK(neighbour_ldm_pairs <= max_neighbour_ldm_pairs);
+}
+
+static void
 test_create(struct test_cpumap_data *map, Uint32 test_case)
 {
   /* Set default values */
   map->exact_core = false;
+  map->num_cpu_map_instances = 0;
+  map->num_ldm_instances = 0;
+  map->min_query_instances_per_rr_group = 0;
+  map->max_neighbour_ldm_pairs = Uint32(~0);
   map->num_p_cpus_per_core = 2;
   map->num_e_cpus_per_core = 1;
   map->num_p_cpus_per_package = 0;
@@ -3069,6 +3447,21 @@ test_create(struct test_cpumap_data *map, Uint32 test_case)
       test_26(map);
       break;
     }
+    case 26:
+    {
+      test_27(map);
+      break;
+    }
+    case 27:
+    {
+      test_28(map);
+      break;
+    }
+    case 28:
+    {
+      test_29(map);
+      break;
+    }
     default:
     {
       require(false);
@@ -3083,7 +3476,78 @@ test_create(struct test_cpumap_data *map, Uint32 test_case)
   return;
 }
 
-#define NUM_TESTS 26
+static Uint32
+next_test_random(Uint32 *seed)
+{
+  *seed = (*seed * 1103515245) + 12345;
+  return *seed;
+}
+
+static void
+test_create_random(struct test_cpumap_data *map, Uint32 test_no, Uint32 *seed)
+{
+  /* Set default values */
+  map->exact_core = false;
+  map->num_cpu_map_instances = 0;
+  map->num_ldm_instances = 0;
+  map->min_query_instances_per_rr_group = 0;
+  map->max_neighbour_ldm_pairs = Uint32(~0);
+  map->num_p_cpus_per_core = 2;
+  map->num_e_cpus_per_core = 1;
+  map->num_p_cpus_per_package = 0;
+  map->num_e_cpus_per_package = 0;
+
+  map->num_l3_caches = 1 + (next_test_random(seed) % 16);
+  map->num_cpus_per_l3_cache = 2 + (next_test_random(seed) % 15);
+  if ((map->num_cpus_per_l3_cache & 1) == 1)
+  {
+    map->num_cpus_per_l3_cache++;
+  }
+  Uint32 online_cpus = 0;
+  for (Uint32 i = 0; i < map->num_l3_caches; i++)
+  {
+    Uint32 online_in_l3 = 1 + (next_test_random(seed) %
+                              map->num_cpus_per_l3_cache);
+    map->num_cpus_in_l3_cache[i] = online_in_l3;
+    online_cpus += online_in_l3;
+  }
+
+  map->num_cpus_per_package =
+    map->num_l3_caches * map->num_cpus_per_l3_cache;
+
+  THRConfig thr_config;
+  Uint32 num_cpus = online_cpus;
+  Uint32 tc_threads = 0;
+  Uint32 ldm_threads = 0;
+  Uint32 main_threads = 0;
+  Uint32 rep_threads = 0;
+  Uint32 send_threads = 0;
+  Uint32 recv_threads = 0;
+  thr_config.compute_automatic_thread_config(num_cpus,
+                                             tc_threads,
+                                             ldm_threads,
+                                             main_threads,
+                                             rep_threads,
+                                             send_threads,
+                                             recv_threads);
+  map->num_ldm_instances = ldm_threads;
+  map->num_query_instances =
+    ldm_threads + tc_threads + recv_threads + main_threads + rep_threads;
+  map->num_cpu_map_instances = map->num_query_instances + send_threads;
+
+  if (g_verbose_test_output)
+  {
+    printf("Run random test %u with %u L3 groups, %u CPUs per L3, "
+           "%u online CPUs, %u Query\n",
+           test_no,
+           map->num_l3_caches,
+           map->num_cpus_per_l3_cache,
+           online_cpus,
+           map->num_query_instances);
+  }
+}
+
+#define NUM_TESTS 29
 static void
 test_create_cpumap()
 {
@@ -3098,22 +3562,25 @@ test_create_cpumap()
   expected_res[7] = 11;
   expected_res[8] = 11;
   expected_res[9] = 2;
-  expected_res[10] = 10;
-  expected_res[11] = 25;
-  expected_res[12] = 14;
+  expected_res[10] = 3;
+  expected_res[11] = 8;
+  expected_res[12] = 8;
   expected_res[13] = 4;
   expected_res[14] = 13;
   expected_res[15] = 1;
   expected_res[16] = 1;
   expected_res[17] = 1;
   expected_res[18] = 1;
-  expected_res[19] = 2;
-  expected_res[20] = 2;
+  expected_res[19] = 1;
+  expected_res[20] = 1;
   expected_res[21] = 1;
   expected_res[22] = 2;
   expected_res[23] = 2;
   expected_res[24] = 2;
   expected_res[25] = 4;
+  expected_res[26] = 8;
+  expected_res[27] = 7;
+  expected_res[28] = 8;
   struct test_cpumap_data test_map;
   Uint32 max_rr_group_size = 16;
   for (Uint32 i = 0; i < NUM_TESTS; i++) {
@@ -3122,8 +3589,39 @@ test_create_cpumap()
     printf("Create HW info for test %u\n", i + 1);
     create_hwinfo_test_cpu_map(&test_map);
     printf("Create CPUMap for test %u\n", i + 1);
+    Uint32 num_cpu_map_instances = test_map.num_cpu_map_instances == 0 ?
+      test_map.num_query_instances :
+      test_map.num_cpu_map_instances;
     Uint32 num_rr_groups =
-      Ndb_CreateCPUMap(test_map.num_query_instances, max_rr_group_size);
+      Ndb_CreateCPUMap(test_map.num_query_instances,
+                       max_rr_group_size,
+                       num_cpu_map_instances);
+    validate_cpu_map_rr_groups(test_map.num_query_instances, num_rr_groups);
+    if (test_map.num_cpu_map_instances != 0)
+    {
+      validate_cpu_map_rr_groups(test_map.num_cpu_map_instances,
+                                 num_rr_groups);
+    }
+    if (test_map.num_ldm_instances != 0)
+    {
+      validate_cpu_map_ldm_rr_group_coverage(test_map.num_query_instances,
+                                             test_map.num_ldm_instances,
+                                             num_rr_groups);
+    }
+    if (test_map.min_query_instances_per_rr_group != 0)
+    {
+      validate_cpu_map_min_rr_group_size(
+        test_map.num_query_instances,
+        num_rr_groups,
+        test_map.min_query_instances_per_rr_group);
+    }
+    if (test_map.max_neighbour_ldm_pairs != Uint32(~0))
+    {
+      validate_cpu_map_neighbour_ldm_pairs(
+        test_map.num_ldm_instances,
+        num_rr_groups,
+        test_map.max_neighbour_ldm_pairs);
+    }
     for (Uint32 id = 0; id < g_ndb_hwinfo->cpu_cnt_max; id++)
     {
       Uint32 cpu_ids[MAX_USED_NUM_CPUS];
@@ -3131,9 +3629,12 @@ test_create_cpumap()
       if (g_ndb_hwinfo->cpu_info[id].online)
       {
         Ndb_GetCoreCPUIds(id, &cpu_ids[0], num_cpus);
-        printf("Ndb_GetCoreCPUIds: id: %u, num_cpus: %u\n",
-               id,
-               num_cpus);
+        if (g_verbose_test_output)
+        {
+          printf("Ndb_GetCoreCPUIds: id: %u, num_cpus: %u\n",
+                 id,
+                 num_cpus);
+        }
         if (test_map.exact_core)
         {
           OK(num_cpus == (test_map.num_p_cpus_per_core));
@@ -3150,6 +3651,53 @@ test_create_cpumap()
            num_rr_groups,
            expected_res[i]);
     OK(num_rr_groups == expected_res[i]);
+  }
+  Uint32 seed = 0x1068;
+  const Uint32 num_random_tests = 20000;
+  printf("Start %u random CPU map tests\n", num_random_tests);
+  for (Uint32 i = 0; i < num_random_tests; i++)
+  {
+    if (g_verbose_test_output)
+    {
+      printf("Start random test %u\n", i + 1);
+    }
+    test_create_random(&test_map, i + 1, &seed);
+    if (g_verbose_test_output)
+    {
+      printf("Create HW info for random test %u\n", i + 1);
+    }
+    create_hwinfo_test_cpu_map(&test_map);
+    if (g_verbose_test_output)
+    {
+      printf("Create CPUMap for random test %u\n", i + 1);
+    }
+    Uint32 num_cpu_map_instances = test_map.num_cpu_map_instances == 0 ?
+      test_map.num_query_instances :
+      test_map.num_cpu_map_instances;
+    Uint32 num_rr_groups =
+      Ndb_CreateCPUMap(test_map.num_query_instances,
+                       max_rr_group_size,
+                       num_cpu_map_instances);
+    validate_cpu_map_rr_groups(test_map.num_query_instances, num_rr_groups);
+    if (test_map.num_cpu_map_instances != 0)
+    {
+      validate_cpu_map_rr_groups(test_map.num_cpu_map_instances,
+                                 num_rr_groups);
+    }
+    if (test_map.num_ldm_instances != 0)
+    {
+      validate_cpu_map_ldm_rr_group_coverage(test_map.num_query_instances,
+                                             test_map.num_ldm_instances,
+                                             num_rr_groups);
+    }
+    if (test_map.min_query_instances_per_rr_group != 0)
+    {
+      validate_cpu_map_min_rr_group_size(
+        test_map.num_query_instances,
+        num_rr_groups,
+        test_map.min_query_instances_per_rr_group);
+    }
+    cleanup_test();
   }
   printf("test_create_cpumap passed\n");
 }
