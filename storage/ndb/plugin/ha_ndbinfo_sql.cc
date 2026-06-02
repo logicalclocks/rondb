@@ -606,6 +606,22 @@ static struct view {
     {"ndbinfo", "restart_info",
      "SELECT * "
      "FROM `ndbinfo`.`ndb$restart_info`"},
+    {"ndbinfo", "security_events",
+     "SELECT node_id, "
+     "CASE node_type"
+     "  WHEN 0 THEN \"NDB\""
+     "  WHEN 1 THEN \"API\""
+     "  WHEN 2 THEN \"MGM\""
+     "  ELSE NULL "
+     " END AS node_type, "
+     " SUM(total_tier_a) AS total_tier_a, "
+     " SUM(total_tier_b) AS total_tier_b, "
+     " SUM(total_disconnects) AS total_disconnects, "
+     " SUM(current_window_count) AS current_window_count, "
+     " MIN(last_strike_seconds_ago) AS last_strike_seconds_ago "
+     "FROM `ndbinfo`.`ndb$security_events` "
+     "GROUP BY node_id, node_type "
+     "ORDER BY node_id"},
     /* server_locks view, reflecting server_operations view */
     {"ndbinfo", "server_locks",
      "SELECT map.mysql_connection_id, l.* "

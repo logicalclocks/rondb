@@ -137,4 +137,28 @@ Uint32 get_length(char* buf);
 #define REDIS_INVALID_INTEGER "value is not an integer or out of range"
 #define REDIS_OFFSET_OUT_OF_RANGE "offset is out of range"
 #define REDIS_INVALID_EXPIRE_TIME "invalid expire time in set"
+
+/**
+ * Data node security: emit a structured SECURITY_EVENT line in the same format
+ * as the kernel side (see EventLogger::getTextSecurityEvent), so operators get a
+ * unified stream when monitoring `SECURITY_EVENT:` across kernel + RONDIS logs.
+ *
+ * RONDIS is architecturally separate from the NDB transporter and does not
+ * route through QMGR — it writes directly to its own stdout (the established
+ * RONDIS logging mechanism). Per-connection persistent counters are out of v1
+ * scope (Redis connections are typically short-lived; the cluster log is the
+ * audit trail), so window_count/total_count are 0 here. `node_id=0` indicates
+ * "no NDB NodeId at this granularity"; source_block=RONDIS distinguishes the
+ * source. All RONDIS violations are Tier B (log-only) per the policy doc.
+ *
+ * Usage: RONDIS_SECURITY_EVENT("rondis_oversize_value");
+ */
+#define RONDIS_SECURITY_EVENT(violation)                                  \
+  do {                                                                    \
+    printf("SECURITY_EVENT: tier=B node_id=0 node_type=API "              \
+           "violation=" violation " source_block=RONDIS source_line=%d "  \
+           "window_count=0 total_count=0\n",                              \
+           __LINE__);                                                     \
+  } while (0)
+
 #endif

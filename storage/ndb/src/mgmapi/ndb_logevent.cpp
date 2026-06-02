@@ -295,6 +295,16 @@ struct Ndb_logevent_body_row ndb_logevent_body[] = {
 
     ROW(DeadDueToHeartbeat, "node", 1, node),
 
+    ROW(SecurityEvent, "tier", 1, tier),
+    ROW(SecurityEvent, "node_id", 2, node_id),
+    ROW(SecurityEvent, "node_type", 3, node_type),
+    ROW(SecurityEvent, "violation_type", 4, violation_type),
+    ROW(SecurityEvent, "source_block", 5, source_block),
+    ROW(SecurityEvent, "source_line", 6, source_line),
+    ROW(SecurityEvent, "window_count", 7, window_count),
+    ROW(SecurityEvent, "total_count_l", 8, total_count_l),
+    ROW(SecurityEvent, "total_count_h", 9, total_count_h),
+
     /* TODO */
     //  ROW( WarningEvent),
 

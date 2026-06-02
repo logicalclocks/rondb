@@ -1,0 +1,47 @@
+#
+# ========================================
+# OVERSIZED VALUE REJECTION
+# ========================================
+#
+#
+# Test 1: SET value at the limit (512000 bytes) must succeed
+#
++OK
+#
+# Test 2: SET value one byte over the limit (512001 bytes) must be rejected
+#
+-ERR value too large (512000 bytes max)
+#
+# Test 3: Server stays alive after rejected oversized SET
+#
+PONG
+#
+# ========================================
+# SELECT OUT-OF-BOUNDS
+# ========================================
+#
+#
+# Test 4: SELECT 0 (valid database) must succeed
+#
++OK
+#
+# Test 5: SELECT 999 (out of range) must be rejected
+#
+-ERR The database selected doesn't exist
+#
+# Test 6: SELECT -1 (negative index) must be rejected
+#
+-ERR The database selected doesn't exist
+#
+# Test 7: SELECT non-integer argument must be rejected
+#
+-ERR Wrong parameter to SELECT command
+#
+# Test 8: Server stays alive after all out-of-bounds SELECT commands
+#
+PONG
+#
+# ========================================
+# CLEANUP
+# ========================================
+#

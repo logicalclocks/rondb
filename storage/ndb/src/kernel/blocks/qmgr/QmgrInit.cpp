@@ -220,6 +220,7 @@ Qmgr::Qmgr(Block_context &ctx) : SimulatedBlock(QMGR, ctx) {
 
   // Transit signals
   addRecSignal(GSN_DUMP_STATE_ORD, &Qmgr::execDUMP_STATE_ORD);
+  addRecSignal(GSN_MALICIOUS_SIGNAL_REPORT, &Qmgr::execMALICIOUS_SIGNAL_REPORT);
   addRecSignal(GSN_STOP_REQ, &Qmgr::execSTOP_REQ);
   addRecSignal(GSN_DEBUG_SIG, &Qmgr::execDEBUG_SIG);
   addRecSignal(GSN_CONTINUEB, &Qmgr::execCONTINUEB);
@@ -331,6 +332,18 @@ Qmgr::Qmgr(Block_context &ctx) : SimulatedBlock(QMGR, ctx) {
 
   addRecSignal(GSN_NODE_STATE_REP, &Qmgr::execNODE_STATE_REP,
                true);  // Override
+
+  // Data node security: all per-node counters start zero, enforcement on by
+  // default (config EnableSecurityDisconnect is applied in execREAD_CONFIG_REQ).
+  memset(m_nodeSecurity, 0, sizeof(m_nodeSecurity));
+  m_securityStartTicks = NdbTick_getCurrentTicks();
+  m_enableSecurityDisconnect = true;
+
+  // Tier C cluster-side safety net starts disabled (threshold 0); operators
+  // enable it after measuring their baseline. Per-node samples zeroed.
+  m_securityRateLimitOverloadsPerSec = 0;
+  m_lastRateCheckTicks = m_securityStartTicks;
+  memset(m_nodeOverloadSample, 0, sizeof(m_nodeOverloadSample));
 
   initData();
 }  // Qmgr::Qmgr()

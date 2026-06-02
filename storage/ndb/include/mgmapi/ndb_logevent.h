@@ -254,6 +254,12 @@ enum Ndb_logevent_type {
    */
   ,
   NDB_LE_EventBufferStatus3 = 87
+
+  /** NDB_MGM_EVENT_CATEGORY_ERROR */
+  /** Data node security: a malformed/malicious signal was detected and reported
+   * to QMGR. Rendered as "SECURITY_EVENT: tier=... node_id=... violation=...". */
+  ,
+  NDB_LE_SecurityEvent = 88
 };
 
 /**
@@ -853,6 +859,18 @@ struct ndb_logevent_SavedEvent {
   unsigned time;
   unsigned data[1];
 };
+
+struct ndb_logevent_SecurityEvent {
+  unsigned tier;
+  unsigned node_id;
+  unsigned node_type;
+  unsigned violation_type;
+  unsigned source_block;
+  unsigned source_line;
+  unsigned window_count;
+  unsigned total_count_l;
+  unsigned total_count_h;
+};
 #if defined(__clang__)
 // workaround false positive warning about @see @ref with clang and
 // -Wdocumentation
@@ -959,6 +977,7 @@ struct ndb_logevent {
     struct ndb_logevent_MissedHeartbeat MissedHeartbeat;
     struct ndb_logevent_DeadDueToHeartbeat DeadDueToHeartbeat;
     struct ndb_logevent_WarningEvent WarningEvent;
+    struct ndb_logevent_SecurityEvent SecurityEvent;
 
     /* INFO */
     struct ndb_logevent_SentHeartbeat SentHeartbeat;

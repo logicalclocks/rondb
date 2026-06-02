@@ -2713,10 +2713,6 @@ class Dbtc : public SimulatedBlock {
   void handleSignalStateProblem(Signal *signal,
                                 ApiConnectRecordPtr apiConnectptr,
                                 NodeId signalNodeId, Uint32 context);
-  void disconnectMaliciousNode(Signal *signal,
-                               NodeId nodeId,
-                               const char *reason,
-                               int line);
   void scanTabRefLab(Signal *signal, Uint32 errCode,
                      ApiConnectRecord *regApiPtr);
   void diFcountReqLab(Signal *signal, ScanRecordPtr, ApiConnectRecordPtr);

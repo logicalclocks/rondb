@@ -53,9 +53,11 @@
 #include <signaldata/FsRef.hpp>
 #include <signaldata/LocalRouteOrd.hpp>
 #include <signaldata/NodeStateSignalData.hpp>
+#include <signaldata/MaliciousSignalReport.hpp>
 #include <signaldata/SignalDroppedRep.hpp>
 #include <signaldata/Sync.hpp>
 #include <signaldata/TransIdAI.hpp>
+#include <kernel/ViolationType.hpp>
 #include "LongSignal.hpp"
 #include "SimulatedBlock.hpp"
 #include "ndbd_malloc.hpp"
@@ -2479,6 +2481,37 @@ void SimulatedBlock::infoEvent(const char *msg, ...) const {
 #endif
 }
 
+void SimulatedBlock::reportMaliciousSignal(Signal *signal,
+                                           NodeId offendingNodeId,
+                                           Uint32 violationType,
+                                           Uint32 sourceLine) {
+  jam();
+  /**
+   * Build and send a GSN_MALICIOUS_SIGNAL_REPORT to QMGR, which owns all
+   * per-node security state and the Tier A (disconnect) / Tier B (log-only)
+   * decision. The tier is derived from the violation type here so it travels
+   * with the report — an older QMGR that does not recognise a newer violation
+   * type still receives a usable tier (rolling-upgrade safety).
+   *
+   * The caller is contractually required to return immediately after this call;
+   * we reuse the passed signal's data buffer, matching the established
+   * malformed-signal handling convention (see also DbtcMain disconnect path).
+   *
+   * NOTE: per-NodeId report-rate suppression (tiered_response_policy.md §8.3) is
+   * added before call sites go live in Phase 3; until then suppressedCount = 0.
+   */
+  MaliciousSignalReport *rep =
+      CAST_PTR(MaliciousSignalReport, signal->getDataPtrSend());
+  rep->offendingNodeId = offendingNodeId;
+  rep->tier = violation_tier(violationType);
+  rep->violationType = violationType;
+  rep->sourceBlockRef = reference();
+  rep->sourceLine = sourceLine;
+  rep->suppressedCount = 0;
+  sendSignal(QMGR_REF, GSN_MALICIOUS_SIGNAL_REPORT, signal,
+             MaliciousSignalReport::SignalLength, JBA);
+}
+
 void SimulatedBlock::warningEvent(const char *msg, ...) {
   if (msg == 0) return;
 
@@ -3039,6 +3072,19 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
        * Fragment hash full — cannot accommodate more concurrent assemblies.
        * Release incoming sections and drop the signal. Subsequent fragments
        * for this signal will hit the "fragment not found" case below.
+       *
+       * Deliberately NOT reported to the security system: a full hash can be
+       * caused by aggregate load, and the node whose signal we drop here may be
+       * an innocent victim rather than the abuser, so a violation report would
+       * risk punishing the wrong node.
+       *
+       * KNOWN GAP (flagged for the later security audit): incomplete fragment
+       * trains from a still-connected node are only reclaimed on node failure
+       * (doCleanupFragInfo, keyed by failedNodeId; FragmentInfo has no age
+       * field). A node that opens many trains and never completes them can wedge
+       * this hash, after which all fragmented signals to this block are dropped
+       * until that node disconnects — and that wedge is invisible to the
+       * security counters. See claude_files/data_node_security/.
        */
       g_eventLogger->warning(
           "Block %u: Fragment info hash full, dropping signal from node %u",
@@ -3058,7 +3104,11 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
         jam();
         /**
          * Invalid sectionNo — would write out of bounds into
-         * m_sectionPtrI[]. Release everything and mark as dropped.
+         * m_sectionPtrI[]. A section number outside [0,2] is structurally
+         * impossible from honest code, so report it to the security system
+         * before dropping. Release all sections first: REPORT_MALICIOUS_SIGNAL
+         * reuses the signal buffer and requires an immediate return, so no
+         * further header writes are performed after the report.
          */
         g_eventLogger->warning(
             "Block %u: Invalid sectionNo %u in fragment from node %u",
@@ -3067,8 +3117,8 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
         fragPtr.p->m_sectionPtrI[0] = RNIL;
         fragPtr.p->m_sectionPtrI[1] = RNIL;
         fragPtr.p->m_sectionPtrI[2] = RNIL;
-        signal->header.m_fragmentInfo = 0;
-        signal->header.m_noOfSections = 0;
+        REPORT_MALICIOUS_SIGNAL(signal, refToNode(senderRef),
+                                VT_FRAGMENT_INVALID_SECTION_NO);
         return false;
       }
       fragPtr.p->m_sectionPtrI[sectionNo] = sectionPtr[i];
@@ -3096,9 +3146,13 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
         if (unlikely(sectionNo >= 3)) {
           jam();
           /**
-           * Invalid sectionNo from subsequent fragment.
-           * Release incoming sections and mark as dropped so remaining
-           * fragments are also discarded.
+           * Invalid sectionNo from subsequent fragment. A section number
+           * outside [0,2] is structurally impossible from honest code, so
+           * report it to the security system before dropping. Release both the
+           * incoming sections and the partially accumulated ones first:
+           * REPORT_MALICIOUS_SIGNAL reuses the signal buffer and requires an
+           * immediate return, so no further header writes are performed after
+           * the report.
            */
           g_eventLogger->warning(
               "Block %u: Invalid sectionNo %u in fragment from node %u",
@@ -3110,8 +3164,8 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
               fragPtr.p->m_sectionPtrI[s] = RNIL;
             }
           }
-          signal->header.m_fragmentInfo = 0;
-          signal->header.m_noOfSections = 0;
+          REPORT_MALICIOUS_SIGNAL(signal, refToNode(senderRef),
+                                  VT_FRAGMENT_INVALID_SECTION_NO);
           return false;
         }
         Uint32 sectionPtrI = sectionPtr[i];

@@ -1,0 +1,93 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+
+#
+# Security regression tests for the Rondis server.
+# Covers two patched vulnerabilities:
+#   1. Oversized SET values are rejected early (no memory allocation / NDB round-trip)
+#   2. SELECT with an out-of-range or non-integer database number returns an error
+#
+# Both test groups use direct Python socket connections because rondb-cli
+# routes SELECT to MySQL and cannot pass >33 KB values through shell args.
+#
+
+if (!$RONDB_CLI) {
+  --skip rondb-cli binary not found - build with Go installed
+}
+
+--source suite/rondis/include/create_rondis_tables.inc
+
+--let $RONDIS=$RONDB_CLI --host=$RONDIS_HOST --rondis-port=$RONDIS_PORT --no-mysql --no-rdrs --quiet
+
+--echo #
+--echo # ========================================
+--echo # OVERSIZED VALUE REJECTION
+--echo # ========================================
+--echo #
+
+--echo #
+--echo # Test 1: SET value at the limit (512000 bytes) must succeed
+--echo #
+
+--exec python3 -c "import socket,time; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(10); v=b'x'*512000; msg=f'*3\r\n{d}3\r\nSET\r\n{d}7\r\nseckey1\r\n{d}{len(v)}\r\n'.encode()+v+b'\r\n'; s.sendall(msg); time.sleep(0.2); print(s.recv(256).decode(errors='replace').strip()); s.close()"
+
+--echo #
+--echo # Test 2: SET value one byte over the limit (512001 bytes) must be rejected
+--echo #
+
+--exec python3 -c "import socket,time; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(10); v=b'x'*512001; msg=f'*3\r\n{d}3\r\nSET\r\n{d}7\r\nseckey1\r\n{d}{len(v)}\r\n'.encode()+v+b'\r\n'; s.sendall(msg); time.sleep(0.2); print(s.recv(256).decode(errors='replace').strip()); s.close()"
+
+--echo #
+--echo # Test 3: Server stays alive after rejected oversized SET
+--echo #
+
+--exec $RONDIS -e "PING"
+
+--echo #
+--echo # ========================================
+--echo # SELECT OUT-OF-BOUNDS
+--echo # ========================================
+--echo #
+
+--echo #
+--echo # Test 4: SELECT 0 (valid database) must succeed
+--echo #
+
+--exec python3 -c "import socket,time; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(2); s.sendall(f'*2\r\n{d}6\r\nSELECT\r\n{d}1\r\n0\r\n'.encode()); time.sleep(0.1); print(s.recv(256).decode(errors='replace').strip()); s.close()"
+
+--echo #
+--echo # Test 5: SELECT 999 (out of range) must be rejected
+--echo #
+
+--exec python3 -c "import socket,time; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(2); s.sendall(f'*2\r\n{d}6\r\nSELECT\r\n{d}3\r\n999\r\n'.encode()); time.sleep(0.1); print(s.recv(256).decode(errors='replace').strip()); s.close()"
+
+--echo #
+--echo # Test 6: SELECT -1 (negative index) must be rejected
+--echo #
+
+--exec python3 -c "import socket,time; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(2); s.sendall(f'*2\r\n{d}6\r\nSELECT\r\n{d}2\r\n-1\r\n'.encode()); time.sleep(0.1); print(s.recv(256).decode(errors='replace').strip()); s.close()"
+
+--echo #
+--echo # Test 7: SELECT non-integer argument must be rejected
+--echo #
+
+--exec python3 -c "import socket,time; d=chr(36); s=socket.socket(); s.connect(('127.0.0.1',$RONDIS_PORT)); s.settimeout(2); s.sendall(f'*2\r\n{d}6\r\nSELECT\r\n{d}3\r\nabc\r\n'.encode()); time.sleep(0.1); print(s.recv(256).decode(errors='replace').strip()); s.close()"
+
+--echo #
+--echo # Test 8: Server stays alive after all out-of-bounds SELECT commands
+--echo #
+
+--exec $RONDIS -e "PING"
+
+--echo #
+--echo # ========================================
+--echo # CLEANUP
+--echo # ========================================
+--echo #
+
+--disable_result_log
+--exec $RONDIS -e "DEL seckey1"
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
+--enable_result_log

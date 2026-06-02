@@ -1,0 +1,56 @@
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+#
+# Data node security: end-to-end injection test for the tiered malicious-input
+# response framework (claude_files/data_node_security/tiered_response_policy.md).
+#
+# Uses test-only DUMP_STATE_ORD codes added in QMGR (debug builds only):
+#   DUMP 9100 <offendingNodeId> <violationType>  - synthesize a malicious-signal report
+#   DUMP 9101 <0|1>                              - toggle EnableSecurityDisconnect
+#
+# We dump to data node 1 only, so the cluster-aggregated SQL view sums to a
+# deterministic 1 per strike.
+#
+
+--echo #
+--echo # Test 1: Tier B injection (vtype=5 = KEYINFO_SIGNAL_LENGTH) against
+--echo #   API NodeId 192. Tier B is log-only - counters increment, no disconnect.
+--echo #
+--exec $NDB_MGM -e "1 dump 9100 192 5" >> $NDB_TOOLS_OUTPUT
+--sleep 1
+
+# Query the base table (ndb$security_events) — it carries last_violation /
+# last_source_line, which the aggregating SQL view drops (can't argmax under
+# GROUP BY). Filter by reporting_node_id=1 since we dumped only there.
+SELECT reporting_node_id, node_id, total_tier_a, total_tier_b,
+       total_disconnects, current_window_count, last_violation,
+       last_source_line
+FROM `ndbinfo`.`ndb$security_events`
+WHERE reporting_node_id=1 AND node_id=192;
+
+--echo #
+--echo # Test 2: Observation mode + Tier A injection (vtype=0 = UNEXPECTED_API_STATE).
+--echo #   With the kill switch off, even a Tier A violation is counted and logged
+--echo #   but produces no disconnect (total_disconnects stays 0).
+--echo #
+--exec $NDB_MGM -e "1 dump 9101 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "1 dump 9100 228 0" >> $NDB_TOOLS_OUTPUT
+--sleep 1
+
+SELECT reporting_node_id, node_id, total_tier_a, total_tier_b,
+       total_disconnects, current_window_count, last_violation,
+       last_source_line
+FROM `ndbinfo`.`ndb$security_events`
+WHERE reporting_node_id=1 AND node_id=228;
+
+--echo #
+--echo # Sanity: mysqld is still connected after both injections.
+--echo #
+SELECT 1 AS still_connected;
+
+--echo #
+--echo # Restore enforcement and clean up.
+--echo #
+--exec $NDB_MGM -e "1 dump 9101 1" >> $NDB_TOOLS_OUTPUT
+--remove_file $NDB_TOOLS_OUTPUT

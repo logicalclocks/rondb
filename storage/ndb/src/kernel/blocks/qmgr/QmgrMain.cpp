@@ -40,6 +40,8 @@
 #include <signaldata/CheckNodeGroups.hpp>
 #include <signaldata/CloseComReqConf.hpp>
 #include <signaldata/DihRestart.hpp>
+#include <signaldata/MaliciousSignalReport.hpp>
+#include <kernel/ViolationType.hpp>
 #include <signaldata/DisconnectRep.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/EnableCom.hpp>
@@ -492,6 +494,19 @@ void Qmgr::execREAD_CONFIG_REQ(Signal *signal) {
   const ndb_mgm_configuration_iterator *p =
       m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
+
+  /* Data node security: master kill switch (default true = enforcement on). */
+  {
+    Uint32 enableSecDisc = 1;
+    ndb_mgm_get_int_parameter(p, CFG_DB_ENABLE_SECURITY_DISCONNECT,
+                              &enableSecDisc);
+    m_enableSecurityDisconnect = (enableSecDisc != 0);
+  }
+
+  /* Tier C cluster-side safety net (default 0 = disabled). */
+  ndb_mgm_get_int_parameter(p,
+                            CFG_DB_SECURITY_RATE_LIMIT_OVERLOADS_PER_SEC,
+                            &m_securityRateLimitOverloadsPerSec);
 
   m_num_multi_trps = 0;
   if (globalData.ndbMtSendThreads) {
@@ -3413,6 +3428,12 @@ void Qmgr::timerHandlingLab(Signal *signal) {
     jam();
     handle_graceful_shutdown(signal);
   }
+
+  // Data node security (Tier C): per-second cluster-side rate check. Internal
+  // gating skips most ticks; signal is reused by the reschedule below which
+  // rewrites theData explicitly.
+  securityRateCheck(signal, TcurrentTime);
+
   //--------------------------------------------------
   // Resend this signal with 10 milliseconds delay.
   //--------------------------------------------------
@@ -4895,6 +4916,10 @@ void Qmgr::execDISCONNECT_REP(Signal *signal) {
   c_connectedNodes.clear(nodeId);
   DEB_STARTUP(("connectedNodes(%u) cleared", nodeId));
 
+  // Tier C: clear the per-node overload baseline so a reconnect doesn't see a
+  // huge delta from a counter that was reset at the transporter.
+  if (nodeId < (MAX_NODES_ID + 1)) m_nodeOverloadSample[nodeId] = 0;
+
   if (nodeInfo.getType() == NodeInfo::DB) {
     c_readnodes_nodes.clear(nodeId);
 
@@ -5106,6 +5131,210 @@ void Qmgr::execUPGRADE_PROTOCOL_ORD(Signal *signal) {
       jam();
       m_micro_gcp_enabled = true;
       return;
+  }
+}
+
+Uint32 Qmgr::securityWindowEpoch(NDB_TICKS now) const {
+  const Uint64 elapsedMs = NdbTick_Elapsed(m_securityStartTicks, now).milliSec();
+  return (Uint32)((elapsedMs / 1000) / SEC_WINDOW_BUCKET_SECONDS);
+}
+
+void Qmgr::securityRecordWindowStrike(NodeSecurityState &s, Uint32 strikes,
+                                      NDB_TICKS now) {
+  const Uint32 epoch = securityWindowEpoch(now);
+  const Uint32 idx = epoch % NUM_SEC_WINDOW_BUCKETS;
+  if (s.windowEpoch[idx] != epoch) {
+    /* This slice now represents a newer 30 s epoch — reset before counting. */
+    s.windowEpoch[idx] = epoch;
+    s.windowCount[idx] = 0;
+  }
+  s.windowCount[idx] += strikes;
+}
+
+Uint32 Qmgr::securityCurrentWindowCount(const NodeSecurityState &s,
+                                        NDB_TICKS now) const {
+  const Uint32 epoch = securityWindowEpoch(now);
+  Uint32 total = 0;
+  for (Uint32 i = 0; i < NUM_SEC_WINDOW_BUCKETS; i++) {
+    /* In-window iff the slice's epoch is within the last NUM_..._BUCKETS. A
+     * zeroed slice (count == 0) never contributes, so stale zero epochs are
+     * harmless. */
+    if (s.windowCount[i] != 0 && s.windowEpoch[i] <= epoch &&
+        (epoch - s.windowEpoch[i]) < NUM_SEC_WINDOW_BUCKETS) {
+      total += s.windowCount[i];
+    }
+  }
+  return total;
+}
+
+void Qmgr::securityRateCheck(Signal *signal, NDB_TICKS now) {
+  /**
+   * Tier C cluster-side safety net (last-resort defense against a flooding
+   * sender). Primary Tier C enforcement is upstream at the API node; this
+   * runs only if an operator has explicitly set a threshold.
+   *
+   * Once per SEC_RATE_CHECK_INTERVAL_MS, sample each API/MGM node's
+   * cumulative receive-overload count and compare against the last sample.
+   * If the per-second delta exceeds the configured threshold, report a Tier
+   * A VT_RATE_LIMIT_EXCEEDED against that node — QMGR's normal handler will
+   * disconnect (gated by the master kill switch).
+   *
+   * Excludes data-node senders: a legitimate replica-sync / LCP burst can
+   * spike inter-DB transporter overload, and false-positive disconnects of
+   * data nodes would partition the cluster. The threat model (compromised
+   * API node overwhelming the cluster) is API-only anyway.
+   *
+   * On first observation of a node (sample == 0) or if the sampled counter
+   * went backwards (transporter reset on reconnect), the delta check is
+   * skipped and we just store the current reading as the new baseline.
+   */
+  if (m_securityRateLimitOverloadsPerSec == 0) {
+    return;  // Tier C disabled (default)
+  }
+  if (NdbTick_Elapsed(m_lastRateCheckTicks, now).milliSec() <
+      SEC_RATE_CHECK_INTERVAL_MS) {
+    return;
+  }
+  const Uint64 elapsedMs =
+      NdbTick_Elapsed(m_lastRateCheckTicks, now).milliSec();
+  m_lastRateCheckTicks = now;
+
+  /* i <= MAX_NODES_ID bounds m_nodeOverloadSample[] explicitly; MAX_NODES is a
+   * runtime value, MAX_NODES_ID the compile-time array ceiling. */
+  for (Uint32 i = 1; i < MAX_NODES && i <= MAX_NODES_ID; i++) {
+    const NodeInfo::NodeType nodeType = getNodeInfo(i).getType();
+    if (nodeType != NodeInfo::API && nodeType != NodeInfo::MGM) continue;
+    const Uint32 current = globalTransporterRegistry.get_overload_count(i);
+    const Uint32 prev = m_nodeOverloadSample[i];
+    m_nodeOverloadSample[i] = current;
+    if (prev == 0 || current < prev) continue;  // first sample / reset
+
+    const Uint32 delta = current - prev;
+    // Normalise to a per-second rate (elapsedMs >= INTERVAL_MS by the gate above).
+    const Uint64 ratePerSec = (Uint64(delta) * 1000) / elapsedMs;
+    if (ratePerSec > m_securityRateLimitOverloadsPerSec) {
+      jam();
+      REPORT_MALICIOUS_SIGNAL(signal, i, VT_RATE_LIMIT_EXCEEDED);
+      // Clear baseline so a reconnected node starts fresh (we'd otherwise
+      // also be about to call api_failed, but the report goes through QMGR's
+      // normal disconnect path asynchronously).
+      m_nodeOverloadSample[i] = 0;
+    }
+  }
+}
+
+void Qmgr::execMALICIOUS_SIGNAL_REPORT(Signal *signal) {
+  jamEntry();
+  const MaliciousSignalReport *rep =
+      CAST_CONSTPTR(MaliciousSignalReport, signal->getDataPtr());
+  const Uint32 nodeId = rep->offendingNodeId;
+  Uint32 tier = rep->tier;
+  const Uint32 vtype = rep->violationType;
+  const Uint32 strikes = 1 + rep->suppressedCount;
+  const Uint32 sourceLine = rep->sourceLine;
+  const Uint32 sourceBlockRef = rep->sourceBlockRef;
+
+  /* Defensive: ignore an obviously malformed report (buggy or old sender).
+   * nodeId > MAX_NODES_ID is the compile-time bound on m_nodeSecurity[] and is
+   * checked explicitly (not just the runtime MAX_NODES) so the array access
+   * below is provably in bounds regardless of the configured node count. */
+  if (nodeId == 0 || nodeId > MAX_NODES_ID || nodeId >= MAX_NODES ||
+      nodeId == getOwnNodeId()) {
+    jam();
+    return;
+  }
+
+  /**
+   * Override rule: any Tier B violation from a data-node sender escalates to
+   * Tier A. Data nodes run identical code and have no honest-mistake mode.
+   */
+  if (getNodeInfo(nodeId).getType() == NodeInfo::DB) {
+    jam();
+    tier = TIER_A;
+  }
+
+  const NDB_TICKS now = NdbTick_getCurrentTicks();
+  NodeSecurityState &c = m_nodeSecurity[nodeId];
+  if (tier == TIER_A) {
+    jam();
+    c.totalTierA += strikes;
+  } else {
+    jam();
+    c.totalTierB += strikes;
+  }
+  c.lastViolationType = vtype;
+  c.lastSourceLine = sourceLine;
+  c.lastStrikeTime = now;
+  securityRecordWindowStrike(c, strikes, now);
+
+  /**
+   * Emit the structured SECURITY_EVENT cluster log line, but throttle log
+   * emission per node to prevent a Tier B flood from spamming CMVMI/disk.
+   * Counters and the Tier A disconnect below are NEVER throttled — only the
+   * log line — and the window/total in the next emitted line still reflect any
+   * suppressed strikes. Tier A always logs (disconnect is a rare, important
+   * event). The first strike for a node always logs (short-circuits before any
+   * NdbTick_Elapsed on a zero-initialised lastLogTicks).
+   *
+   * Rendered by getTextSecurityEvent in EventLogger.cpp; theData layout must
+   * match the formatter and the mgmapi body descriptor (ndb_logevent.cpp).
+   */
+  const bool firstStrike =
+      (c.totalTierA + c.totalTierB == strikes);  // just incremented above
+  const bool emitLog =
+      firstStrike || tier == TIER_A ||
+      NdbTick_Elapsed(c.lastLogTicks, now).milliSec() >= SEC_LOG_SUPPRESS_MS;
+  if (emitLog) {
+    jam();
+    c.lastLogTicks = now;
+    const Uint32 nodeType = (Uint32)getNodeInfo(nodeId).getType();
+    const Uint32 windowCount = securityCurrentWindowCount(c, now);
+    const Uint64 totalCount = c.totalTierA + c.totalTierB;
+    signal->theData[0] = NDB_LE_SecurityEvent;
+    signal->theData[1] = tier;
+    signal->theData[2] = nodeId;
+    signal->theData[3] = nodeType;
+    signal->theData[4] = vtype;
+    signal->theData[5] = sourceBlockRef;
+    signal->theData[6] = sourceLine;
+    signal->theData[7] = windowCount;
+    /* totalCount is Uint64; split into low/high words (see the _l/_h pattern in
+     * ndb_logevent.h) so the cluster log and mgmapi event don't truncate. */
+    signal->theData[8] = (Uint32)(totalCount & 0xFFFFFFFF);
+    signal->theData[9] = (Uint32)(totalCount >> 32);
+    sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 10, JBB);
+  }
+
+  if (tier == TIER_A && m_enableSecurityDisconnect) {
+    jam();
+    c.totalDisconnects += 1;
+    securityDisconnectNode(signal, nodeId);
+  }
+  /* Tier B, or observation mode: counted and logged, not disconnected. */
+}
+
+void Qmgr::securityDisconnectNode(Signal *signal, Uint32 nodeId) {
+  jam();
+  /* Reuse the existing malicious-node disconnect mechanics (cf. DUMP 900/939). */
+  if (getNodeInfo(nodeId).getType() == NodeInfo::DB) {
+    jam();
+    /**
+     * Data node: force-close communication via TRPMAN; QMGR's normal failure
+     * detection then runs node_failed() through the standard DISCONNECT_REP path.
+     */
+    CloseComReqConf *closeCom =
+        CAST_PTR(CloseComReqConf, signal->getDataPtrSend());
+    closeCom->xxxBlockRef = reference();
+    closeCom->requestType = CloseComReqConf::RT_NO_REPLY;
+    closeCom->failNo = 0;
+    closeCom->noOfNodes = 1;
+    closeCom->failedNodeId = nodeId;
+    sendSignal(TRPMAN_REF, GSN_CLOSE_COMREQ, signal,
+               CloseComReqConf::SignalLength, JBB);
+  } else {
+    jam();
+    /* API node: fail via api_failed (closes comms, notifies peers). */
+    api_failed(signal, nodeId, AFC_Notification, reference());
   }
 }
 
@@ -8391,6 +8620,55 @@ void Qmgr::execDUMP_STATE_ORD(Signal *signal) {
       c_apiFailureTimeoutSecs = signal->theData[1];
     }
   }
+#ifdef ERROR_INSERT
+  /**
+   * Data node security test injector (debug builds only): synthesize a
+   * MALICIOUS_SIGNAL_REPORT against a node, exercising the entire QMGR-side
+   * path (counters, sliding window, ndbinfo update, log emission, and Tier A
+   * disconnect) from `ndb_mgm`. Used by mysql-test/suite/ndb_security/ —
+   * obviates writing a custom NDB-API client just to craft malformed signals.
+   *
+   *   DUMP 9100 <offendingNodeId> <violationType>
+   *
+   * The tier is derived from the violation type via g_violation_info[].
+   * Returns immediately after invoking the handler to avoid further dump-code
+   * checks running against the clobbered signal buffer.
+   */
+  if (signal->theData[0] == 9100 && signal->getLength() == 3) {
+    jam();
+    const Uint32 offendingNodeId = signal->theData[1];
+    const Uint32 vtype = signal->theData[2];
+    g_eventLogger->info(
+        "Security test injection: nodeId=%u violation_type=%u",
+        offendingNodeId, vtype);
+    MaliciousSignalReport *rep =
+        CAST_PTR(MaliciousSignalReport, signal->getDataPtrSend());
+    rep->offendingNodeId = offendingNodeId;
+    rep->tier = violation_tier(vtype);
+    rep->violationType = vtype;
+    rep->sourceBlockRef = reference();
+    rep->sourceLine = 0;  // synthetic — no real source line
+    rep->suppressedCount = 0;
+    execMALICIOUS_SIGNAL_REPORT(signal);
+    return;
+  }
+  /**
+   * Data node security test injector: toggle the master kill switch at runtime.
+   *
+   *   DUMP 9101 <0|1>     ; 0 = observation mode (no disconnect), 1 = enforce
+   *
+   * Used by mysql-test/suite/ndb_security/ to test observation mode without
+   * needing the live-`ndb_mgm SET` plumbing for EnableSecurityDisconnect (which
+   * is deferred from v1).
+   */
+  if (signal->theData[0] == 9101 && signal->getLength() == 2) {
+    jam();
+    m_enableSecurityDisconnect = (signal->theData[1] != 0);
+    g_eventLogger->info("Security test: EnableSecurityDisconnect=%u",
+                        (Uint32)m_enableSecurityDisconnect);
+    return;
+  }
+#endif
 }  // Qmgr::execDUMP_STATE_ORD()
 
 void Qmgr::execAPI_BROADCAST_REP(Signal *signal) {
@@ -9542,6 +9820,35 @@ void Qmgr::execDBINFO_SCANREQ(Signal *signal) {
             ndbinfo_send_row(signal, req, row, rl);
           }
         }
+      }
+      break;
+    }
+    case Ndbinfo::SECURITY_EVENTS_TABLEID: {
+      jam();
+      /* One row per offending node that has at least one recorded strike.
+       * i <= MAX_NODES_ID bounds m_nodeSecurity[] explicitly (MAX_NODES is a
+       * runtime value, MAX_NODES_ID the compile-time array ceiling). */
+      const NDB_TICKS now = NdbTick_getCurrentTicks();
+      for (Uint32 i = 1; i < MAX_NODES && i <= MAX_NODES_ID; i++) {
+        const NodeSecurityState &c = m_nodeSecurity[i];
+        if (c.totalTierA == 0 && c.totalTierB == 0) {
+          continue;  // never struck — skip
+        }
+        const Uint32 secsAgo =
+            (Uint32)(NdbTick_Elapsed(c.lastStrikeTime, now).milliSec() / 1000);
+        Ndbinfo::Row row(signal, req);
+        row.write_uint32(getOwnNodeId());                    // reporting_node_id
+        row.write_uint32(i);                                 // node_id
+        row.write_uint32((Uint32)getNodeInfo(i).getType());  // node_type
+        row.write_uint64(c.totalTierA);                      // total_tier_a
+        row.write_uint64(c.totalTierB);                      // total_tier_b
+        row.write_uint64(c.totalDisconnects);                // total_disconnects
+        row.write_uint32(
+            securityCurrentWindowCount(c, now));      // current_window_count
+        row.write_string(violation_reason(c.lastViolationType));  // last_violation
+        row.write_uint32(c.lastSourceLine);           // last_source_line
+        row.write_uint32(secsAgo);                    // last_strike_seconds_ago
+        ndbinfo_send_row(signal, req, row, rl);
       }
       break;
     }
