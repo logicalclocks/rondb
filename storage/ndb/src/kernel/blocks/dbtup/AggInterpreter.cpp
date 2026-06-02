@@ -208,12 +208,19 @@ bool AggInterpreter::Init(const Uint32* prog) {
     while (i < m_n_gb_cols && m_cur_pos < m_prog_len) {
       m_gb_cols[i++] = m_prog[m_cur_pos++];
     }
-    m_gb_cmp_ctx.n_cols = 0;
-    m_gb_cmp_ctx.all_binary_cmp = false;
-    m_gb_map_buf = std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>(
-                      GBHashEntryCmp(&m_gb_cmp_ctx));
+    /* Step 2b — use the shared JoinGBHashTable (1024 buckets) + chunk
+     * allocator on the base.  m_gb_types points at the inline
+     * m_gb_types_buf; the actual type info gets resolved on the first
+     * ProcessRec call via initGBTypes (lifted to the base). */
+    m_gb_map_buf.init(JOIN_AGG_HASH_BUCKET_COUNT);
     m_gb_map = &m_gb_map_buf;
-    m_alloc_len = 0;
+    m_gb_types = m_gb_types_buf;
+    /* Chunk allocator budget: start small and let bookMoreMemory grow it
+     * if a high-cardinality GROUP BY needs more.  available_pages is
+     * generous — query memory pool enforces the real cap. */
+    initChunkAllocator(/*thread_id=*/0,
+                       /*budget_pages=*/1,
+                       /*available_pages=*/4096);
   }
 
   /*
@@ -297,8 +304,13 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
   AggResItem* agg_res_ptr = nullptr;
   if (m_n_gb_cols) {
-    if (!m_gb_cmp_inited) {
-      initGBCmpCtx(block_tup, req_struct);
+    /* Step 2b: resolve GROUP BY column type metadata once.  Normal-scan
+     * never has linked-attr columns, so pass nullptr / 0. */
+    if (!m_gb_types_inited) {
+      Int32 err = initGBTypes(block_tup, req_struct,
+                              /*linked_attr_data=*/nullptr,
+                              /*linked_attr_len=*/0);
+      if (unlikely(err != 0)) return err;
     }
 
     AttributeHeader* header = nullptr;
@@ -316,64 +328,42 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       m_attr_read_pos += Uint32(ret);
     }
 
+    /* Step 2b: hash-table find / insert via the shared chunk allocator,
+     * mirroring JoinAggInterpreter's group prologue minus the linked /
+     * CTE / multi-leaf branches. */
     Uint32 len_in_char = m_attr_read_pos * sizeof(Uint32);
-    GBHashEntry lookup_key;
-    lookup_key.ptr = reinterpret_cast<char*>(m_attr_read_buf);
-    lookup_key.len = len_in_char;
-    auto it = m_gb_map->find(lookup_key);
-    if (it != m_gb_map->end()) {
-      agg_res_ptr = reinterpret_cast<AggResItem*>(it->second.ptr);
+    char* found = m_gb_map->find(
+        reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
+    if (found != nullptr) {
+      agg_res_ptr = reinterpret_cast<AggResItem*>(found + len_in_char);
       PA_INTERP_TRACE(m_frag_id,
-                      "Found GBHashEntry, len: %u", len_in_char);
+                      "Found group, len: %u", len_in_char);
     } else {
-      /*
-       * update req_struct->read_length here, which will update the
-       * Dblqh::ScanRecord::m_curr_batch_size_bytes later in the
-       * Dblqh::scanTupkeyConfLab, even we don't use that variable
-       * to decide whether reaches batch limitation. Only increase
-       * Dblqh::ScanRecord::m_curr_batch_size_bytes when new group
-       * item is inserted into m_gb_map.
-       * For aggregation,
-       * we use Dblqh::ScanRecord::m_agg_curr_batch_size_bytes to
-       * indicate batch limitation
-       */
+      /* read_length update keeps Dblqh::ScanRecord::m_curr_batch_size_bytes
+       * tracking accurate even though aggregation uses its own batch
+       * accounting via m_agg_curr_batch_size_bytes. */
       req_struct->read_length = (len_in_char +
                        m_n_agg_results * sizeof(AggResItem)) / sizeof(Int32);
-
-      // we use m_result_size to decide whether need to send some aggregation
-      // results to API.
       m_result_size += len_in_char +
                        m_n_agg_results * sizeof(AggResItem);
-      Uint32 total_alloc = len_in_char +
-                           m_n_agg_results * sizeof(AggResItem);
-      char* agg_rec = MemAlloc(total_alloc);
+      char* agg_rec = allocGroupData(
+          len_in_char + m_n_agg_results * sizeof(AggResItem),
+          len_in_char);
       if (agg_rec == nullptr) {
         return ZAGG_OTHER_ERROR;
       }
-      memset(agg_rec, 0, total_alloc);
+      memset(agg_rec, 0, len_in_char + m_n_agg_results * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
-
-      GBHashEntry map_key;
-      map_key.ptr = agg_rec;
-      map_key.len = len_in_char;
-      GBHashEntry map_val;
-      map_val.ptr = agg_rec + len_in_char;
-      map_val.len = m_n_agg_results * sizeof(AggResItem);
-      m_gb_map->insert(std::make_pair(map_key, map_val));
+      m_gb_map->insert(agg_rec, len_in_char);
       m_n_groups = m_gb_map->size();
       agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + len_in_char);
 
-      // Initialize the new group's aggregation slots
       assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
       for (Uint32 i = 0; i < m_n_agg_results; i++) {
         agg_res_ptr[i].type = NDB_TYPE_UNDEFINED;
         agg_res_ptr[i].value.val_int64 = 0;
         agg_res_ptr[i].is_unsigned = false;
         agg_res_ptr[i].is_null = true;
-        assert(agg_res_ptr[i].type == m_agg_results[i].type);
-        assert(agg_res_ptr[i].value.val_int64 == m_agg_results[i].value.val_int64);
-        assert(agg_res_ptr[i].is_unsigned == m_agg_results[i].is_unsigned);
-        assert(agg_res_ptr[i].is_null == m_agg_results[i].is_null);
       }
     }
   } else {
@@ -830,11 +820,12 @@ void AggInterpreter::Print() {
       g_eventLogger->info("%s", log_buf);
       log_buf[0] = '\0';
 
-      g_eventLogger->info("Num of groups: %zu, Aggregation results:",
+      g_eventLogger->info("Num of groups: %u, Aggregation results:",
                           m_gb_map->size());
-      for (auto iter = m_gb_map->begin(); iter != m_gb_map->end(); ++iter) {
+      for (auto iter = m_gb_map->begin(); iter.valid();
+           m_gb_map->next(iter)) {
         int pos = 0;
-        char* data = iter->first.ptr;
+        char* data = iter.data();
         sprintf(log_buf, "(");
         for (Uint32 i = 0; i < m_n_gb_cols; i++) {
           if (i != m_n_gb_cols - 1) {
@@ -844,7 +835,8 @@ void AggInterpreter::Print() {
           }
         }
 
-        AggResItem* item = reinterpret_cast<AggResItem*>(iter->second.ptr);
+        AggResItem* item = reinterpret_cast<AggResItem*>(
+            iter.data() + iter.keyLen());
         for (Uint32 i = 0; i < m_n_agg_results; i++) {
           sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
                   item[i].is_unsigned, item[i].is_null);
@@ -892,27 +884,6 @@ void AggInterpreter::Print() {
 }
 
 
-void AggInterpreter::initGBCmpCtx(Dbtup* block_tup,
-                                  Dbtup::KeyReqStruct* req_struct) {
-  m_gb_cmp_ctx.n_cols = m_n_gb_cols;
-  m_gb_cmp_ctx.all_binary_cmp = true;
-  for (Uint32 i = 0; i < m_n_gb_cols; i++) {
-    Uint32 attr_id = m_gb_cols[i] >> 16;
-    GBColMeta &meta = m_gb_cmp_ctx.col_meta[i];
-
-    const Uint32* attrDesc = req_struct->tablePtrP->tabDescriptor +
-        attr_id * ZAD_SIZE;
-    meta.typeId = AttributeDescriptor::getType(attrDesc[0]);
-    meta.cs = nullptr;
-    if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
-      Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
-      meta.cs = req_struct->tablePtrP->charsetArray[csPos];
-      m_gb_cmp_ctx.all_binary_cmp = false;
-    }
-  }
-  m_gb_cmp_inited = true;
-}
-
 
 Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
   // Limitation
@@ -952,32 +923,41 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
     Uint32 n_groups_pos = pos++;
     const Uint32 v_len_base = val_len();
     Uint32 n_groups = 0;
-    for (auto iter = m_gb_map->begin(); iter != m_gb_map->end();) {
-      Uint32 key_len = iter->first.len;
-      AggResItem* slots = reinterpret_cast<AggResItem*>(iter->second.ptr);
+    /* Step 2b: iterate the JoinGBHashTable, emit each group, then
+     * erase + freeGroupData.  Same emit→erase→free shape as
+     * JoinAggInterpreter::evictOneGroup but generalized to drain
+     * every currently-resident group. */
+    for (auto iter = m_gb_map->begin(); iter.valid();) {
+      Uint32 key_len = iter.keyLen();
+      char* key_ptr = iter.data();
+      AggResItem* slots =
+          reinterpret_cast<AggResItem*>(iter.data() + key_len);
       Uint32 payload_bytes = has_strings ? stringPayloadSize(slots) : 0;
       Uint32 v_len_total = v_len_base + payload_bytes;
       assert(key_len % 4 == 0 && key_len < 0xFFFF);
       assert(v_len_total % 4 == 0 && v_len_total < 0xFFFF);
       data_buf[pos++] = key_len << 16 | v_len_total;
-      MEMCOPY_NO_WORDS(&data_buf[pos], iter->first.ptr,
-          key_len >> 2);
+      MEMCOPY_NO_WORDS(&data_buf[pos], key_ptr, key_len >> 2);
       MEMCOPY_NO_WORDS(&data_buf[pos + (key_len >> 2)], slots,
-          v_len_base >> 2);
+                       v_len_base >> 2);
       if (payload_bytes > 0) {
         encodeStringPayload(slots, reinterpret_cast<char*>(
             &data_buf[pos + ((key_len + v_len_base) >> 2)]));
       }
       pos += ((key_len + v_len_total) >> 2);
-      // Phase I.6 (F.2-K.4e): per-group string val_ptr buffers have
-      // been substituted into the wire payload above and are no
-      // longer needed locally — free before erasing the map entry.
+      /* Free per-group string val_ptr buffers (Phase I.6 F.2-K.4e) —
+       * payload bytes already substituted into the wire above. */
       freeGroupStringSlots(slots);
-      iter = m_gb_map->erase(iter);
+      /* eraseAndNext removes the entry from the bucket chain and
+       * advances iter past it; freeGroupData then releases the
+       * group's chunk slot.  Hold key_ptr before erase so we still
+       * have a valid pointer for freeGroupData. */
+      m_gb_map->eraseAndNext(iter);
+      freeGroupData(key_ptr);
       n_groups++;
     }
     data_buf[n_groups_pos] = n_groups;
-    m_alloc_len = 0;
+    m_n_groups = m_gb_map->size();
     m_result_size = 0;
   } else {
     const Uint32 v_len_base = m_n_agg_results * sizeof(AggResItem);
@@ -1138,15 +1118,6 @@ Uint32 AggInterpreter::NumOfResRecords(bool last_time) {
   }
 }
 
-char* AggInterpreter::MemAlloc(Uint32 len) {
-  if (m_alloc_len + len > MAX_AGG_RESULT_BATCH_BYTES) {
-    return nullptr;
-  }
-  char* ptr = &(m_mem_buf[m_alloc_len]);
-  m_alloc_len += len;
-  return ptr;
-}
-
 // Phase I.6 (F.2): release string MIN/MAX state.  Per-(group, slot)
 // winner buffers live in AggResItem.value.val_ptr inside m_gb_map's
 // group entries (or m_agg_results for the no-GROUP-BY scalar case);
@@ -1157,27 +1128,18 @@ void AggInterpreter::release_string_results() {
   if (m_string_results == nullptr) {
     return;
   }
-  // Scalar (no-GROUP-BY) group lives in m_agg_results directly.
-  for (Uint32 i = 0; i < m_n_agg_results; i++) {
-    DataType t = m_agg_results[i].type;
-    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
-         t == NDB_TYPE_LONGVARCHAR) &&
-        m_agg_results[i].value.val_ptr != nullptr) {
-      lc_ndbd_pool_free(m_agg_results[i].value.val_ptr);
-    }
+  /* Step 2b: scalar (no-GROUP-BY) case + GROUP BY walk via the shared
+   * JoinGBHashTable iterator.  The per-group val_ptr free is delegated
+   * to the shared freeGroupStringSlots helper. */
+  if (m_agg_results != nullptr) {
+    freeGroupStringSlots(m_agg_results);
   }
-  // GROUP BY case: walk every group still in m_gb_map.
   if (m_gb_map != nullptr) {
-    for (auto& entry : *m_gb_map) {
-      AggResItem* slots = reinterpret_cast<AggResItem*>(entry.second.ptr);
-      for (Uint32 i = 0; i < m_n_agg_results; i++) {
-        DataType t = slots[i].type;
-        if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
-             t == NDB_TYPE_LONGVARCHAR) &&
-            slots[i].value.val_ptr != nullptr) {
-          lc_ndbd_pool_free(slots[i].value.val_ptr);
-        }
-      }
+    for (auto iter = m_gb_map->begin(); iter.valid(); m_gb_map->next(iter)) {
+      Uint32 key_len = iter.keyLen();
+      AggResItem* slots =
+          reinterpret_cast<AggResItem*>(iter.data() + key_len);
+      freeGroupStringSlots(slots);
     }
   }
   lc_ndbd_pool_free(m_string_results);

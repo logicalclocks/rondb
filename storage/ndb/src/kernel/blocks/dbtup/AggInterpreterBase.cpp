@@ -53,6 +53,9 @@
 #include "decimal.h"
 #include <NdbSqlUtil.hpp>
 #include <Interpreter.hpp>
+#include <CteLinkedAttr.hpp>
+#include "my_sys.h"
+#include "../dblqh/Dblqh.hpp"
 
 /*
  * DEBUG_PA_INTERP / DEBUG_AGG machinery (off by default).  The kernels'
@@ -1618,4 +1621,139 @@ void AggInterpreterBase::freeAllChunks() {
   m_chunks_tail = nullptr;
   m_current_chunk = nullptr;
   m_total_chunk_bytes = 0;
+}
+
+/*
+ * Step 2b — shared GROUP BY type-metadata initializer.
+ *
+ * Lifted from JoinAggInterpreter.  Resolves each GB column's type
+ * info (typeId / maxBytes / charset / cmpFn) into m_gb_types[],
+ * allocates m_xfrm_buf if any column has a charset (sized for the
+ * widest strnxfrm_hash output), and publishes the metadata to
+ * m_gb_map via setTypeMeta.
+ *
+ * linked_attr_data / linked_attr_len are the per-row linked-attr
+ * buffer JoinAgg passes for join queries (kOpLoadCol-equivalent
+ * linked-GB columns).  AggInterpreter (normal scan) passes
+ * nullptr / 0; the linked branches below are dead code on that
+ * path because the attr_id 0x8000 bit never appears in a
+ * normal-scan GB column.
+ */
+Int32 AggInterpreterBase::initGBTypes(
+    Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
+    const Uint32* linked_attr_data, Uint32 linked_attr_len) {
+  for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+    Uint32 attr_id = m_gb_cols[i] >> 16;
+    GBColTypeInfo &info = m_gb_types[i];
+
+    if ((attr_id & 0x8000) != 0) {
+      if (unlikely(linked_attr_data == nullptr)) {
+        g_eventLogger->debug(
+            "initGBTypes: linked GB col %u (attr_id=0x%x) but "
+            "linked_attr_data is NULL — API likely missing "
+            "addLinkedProjection for the position", i, attr_id);
+        return ZAGG_OTHER_ERROR;
+      }
+      Uint32 position = attr_id & 0x7FFF;
+      const Uint32* p = linked_attr_data;
+      const Uint32* p_end = linked_attr_data + linked_attr_len;
+      Uint32 pos_count = 0;
+      while (p < p_end && pos_count < position) {
+        p += 2;
+        p += 1 + AttributeHeader::getDataSize(*p);
+        pos_count++;
+      }
+      if (unlikely(p + 2 >= p_end)) {
+        g_eventLogger->debug("initGBTypes: linked buffer too short for "
+            "position %u (linked_len=%u)", position, linked_attr_len);
+        return ZAGG_OTHER_ERROR;
+      }
+      Uint32 word0 = p[0];
+      Uint32 word1 = p[1];
+
+      if (CteLinkedAttr::isCteMarker(word0)) {
+        info.typeId = CteLinkedAttr::decodeTypeId(word0);
+        info.maxBytes = CteLinkedAttr::decodeMaxBytes(word0);
+        info.cs = nullptr;
+        Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
+        if (csNumber != 0) {
+          info.cs = all_charsets[csNumber];
+        }
+      } else {
+        Uint32 tableId = word0;
+        Uint32 tableVersion = word1;
+        require(tableId != 0);
+
+        Dblqh* lqh = block_tup->c_lqh;
+        if (unlikely(tableId >= lqh->ctabrecFileSize)) {
+          g_eventLogger->debug("initGBTypes: tableId %u out of range "
+              "(max=%u)", tableId, lqh->ctabrecFileSize);
+          return ZINVALID_SCHEMA_VERSION;
+        }
+        if (unlikely(table_version_major(tableVersion) !=
+                     table_version_major(
+                         lqh->tablerec[tableId].schemaVersion))) {
+          g_eventLogger->debug("initGBTypes: schema version mismatch for "
+              "tableId %u: linked=%u, current=%u",
+              tableId, tableVersion, lqh->tablerec[tableId].schemaVersion);
+          return ZINVALID_SCHEMA_VERSION;
+        }
+
+        if (unlikely(tableId >= block_tup->cnoOfTablerec)) {
+          g_eventLogger->debug("initGBTypes: tableId %u out of range for "
+              "DBTUP (max=%u)", tableId, block_tup->cnoOfTablerec);
+          return ZINVALID_SCHEMA_VERSION;
+        }
+        Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
+        Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+        const Uint32* attrDesc = tab->tabDescriptor + linkedAttrId * ZAD_SIZE;
+        info.typeId = AttributeDescriptor::getType(attrDesc[0]);
+        info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
+        info.cs = nullptr;
+        if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+          Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
+          info.cs = tab->charsetArray[csPos];
+        }
+      }
+    } else {
+      const Uint32* attrDesc = req_struct->tablePtrP->tabDescriptor +
+          attr_id * ZAD_SIZE;
+      info.typeId = AttributeDescriptor::getType(attrDesc[0]);
+      info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
+      info.cs = nullptr;
+      if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+        Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
+        info.cs = req_struct->tablePtrP->charsetArray[csPos];
+      }
+    }
+    const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
+    info.cmpFn = sqlType.m_cmp;
+  }
+  Uint32 max_xfrm_len = 0;
+  for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+    if (m_gb_types[i].cs != nullptr) {
+      Uint32 lb = 0;
+      if (m_gb_types[i].typeId == NDB_TYPE_VARCHAR) lb = 1;
+      else if (m_gb_types[i].typeId == NDB_TYPE_LONGVARCHAR) lb = 2;
+      Uint32 defLen = m_gb_types[i].maxBytes - lb;
+      Uint32 xfrm_len = NdbSqlUtil::strnxfrm_hash_len(m_gb_types[i].cs,
+                                                       defLen);
+      if (xfrm_len > max_xfrm_len) max_xfrm_len = xfrm_len;
+    }
+  }
+  if (max_xfrm_len > 0) {
+    void* p = lc_ndbd_pool_malloc(max_xfrm_len, RG_QUERY_MEMORY,
+                                  m_thread_id, false);
+    if (unlikely(p == nullptr)) {
+      g_eventLogger->debug("initGBTypes: failed to allocate xfrm buffer "
+          "(%u bytes)", max_xfrm_len);
+      return ZAGG_OTHER_ERROR;
+    }
+    m_xfrm_buf = static_cast<uchar*>(p);
+    m_xfrm_buf_len = max_xfrm_len;
+  }
+
+  m_gb_types_inited = true;
+  m_gb_map->setTypeMeta(m_gb_types, m_n_gb_cols, m_xfrm_buf, m_xfrm_buf_len);
+  return 0;
 }

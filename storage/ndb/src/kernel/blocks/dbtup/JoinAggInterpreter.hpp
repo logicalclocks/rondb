@@ -52,8 +52,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
     AggInterpreterBase(PushdownType::AGGREGATION, prog_len,
                        table_id, frag_id, thread_id),
     m_cur_pos(0),
-    m_n_gb_cols(0), m_gb_cols(nullptr),
-    m_gb_map(nullptr), m_n_groups(0),
+    /* m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups lifted to base
+     * in Step 2b. */
     m_attr_read_buf(nullptr), m_attr_read_pos(0),
     m_acc_offset(0),
     m_processed_rows(0),
@@ -223,16 +223,9 @@ class JoinAggInterpreter : public AggInterpreterBase {
                                               Uint32 appended_len);
 
   Uint32 m_cur_pos;
-  // m_registers, m_register_string_data lifted to AggInterpreterBase
-  // in Step 1.3.
-
-  Uint32 m_n_gb_cols;
-  Uint32* m_gb_cols;
-  // m_n_agg_results, m_agg_results lifted to AggInterpreterBase in
-  // Step 1.3.
-
-  JoinGBHashTable* m_gb_map;
-  Uint32 m_n_groups;
+  // m_registers, m_register_string_data, m_n_agg_results, m_agg_results,
+  // m_n_gb_cols, m_gb_cols, m_gb_map, m_n_groups lifted to
+  // AggInterpreterBase in Steps 1.3 / 2b.
   Uint32* m_attr_read_buf;
   Uint32 m_attr_read_pos;
 
@@ -275,9 +268,10 @@ class JoinAggInterpreter : public AggInterpreterBase {
 
   /* Per-column GROUP BY type metadata (m_gb_types, m_gb_types_inited,
    * m_xfrm_buf, m_xfrm_buf_len) lifted to AggInterpreterBase in Step
-   * 2a; initGBTypes / initGBTypesForNullLocal still per-class because
-   * they touch m_gb_map (lifted in Step 2b). */
-  Int32 initGBTypes(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
+   * 2a; initGBTypes lifted in Step 2b (parametrized on linked-attr
+   * args).  initGBTypesForNullLocal stays per-class (JoinAgg-only:
+   * triggered only by m_null_local_columns from outer-join NULL
+   * extension). */
   void initGBTypesForNullLocal(Dbtup* block_tup);
 
   Uint32* m_prog_buf;

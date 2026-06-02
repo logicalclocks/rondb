@@ -29,6 +29,7 @@
 #include "NdbAggregationCommon.hpp"
 #include <AttributeHeader.hpp>   // AggHashTable's template methods use this
 #include "AggHashTable.hpp"      // MemChunk, GBColTypeInfo, MEM_CHUNK_SIZE
+#include "Dbtup.hpp"             // Dbtup::KeyReqStruct (nested) — needed by initGBTypes
 #include "decimal.h"
 
 /**
@@ -74,6 +75,8 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_prog(nullptr), m_agg_prog_start_pos(0),
       m_n_agg_results(0), m_agg_results(nullptr),
       m_string_results(nullptr), m_current_thread_id(0),
+      m_n_gb_cols(0), m_gb_cols(nullptr),
+      m_gb_map(nullptr), m_n_groups(0),
       m_chunks(nullptr), m_chunks_tail(nullptr),
       m_current_chunk(nullptr), m_total_chunk_bytes(0),
       m_memory_budget(0), m_budget_increment(0),
@@ -248,6 +251,30 @@ class AggInterpreterBase : public PushdownInterpreter {
   // subclasses' opcode executors (the shared executor lands in 1.4).
   decimal_t m_decimal;
   decimal_digit_t m_decimal_buf[AGG_DECIMAL_BUFF_LENGTH];
+
+  /* Step 2b — shared GROUP BY column metadata + group store.
+   * Both subclasses use the 1024-bucket JoinGBHashTable variant; the
+   * storage backing `m_gb_map` is owned by the subclass (inline
+   * buffer in AggInterpreter, m_buf_block-carved in
+   * JoinAggInterpreter) and the pointer is set up at Init time. */
+  Uint32 m_n_gb_cols;
+  Uint32* m_gb_cols;
+  JoinGBHashTable* m_gb_map;
+  Uint32 m_n_groups;
+
+  /* Step 2b — shared GROUP BY type-metadata initializer.
+   * Resolves AttributeDescriptor / linked-attr metadata for each GB
+   * column into m_gb_types[], allocates m_xfrm_buf if any column has
+   * a charset, and publishes the metadata to m_gb_map via setTypeMeta.
+   *
+   * linked_attr_data / linked_attr_len are the per-row linked-attr
+   * buffer JoinAgg passes in for join queries.  AggInterpreter
+   * (normal scan) passes nullptr / 0; the linked-attr resolution
+   * branches are dead code on that path (the JoinAgg-only attr_id
+   * bit 0x8000 never appears in normal-scan GB cols). */
+  Int32 initGBTypes(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
+                    const Uint32* linked_attr_data,
+                    Uint32 linked_attr_len);
 
   /* Step 2a — chunk allocator state lifted from JoinAggInterpreter.
    * MEM_CHUNK_SIZE pages are allocated lazily on first allocGroupData;
