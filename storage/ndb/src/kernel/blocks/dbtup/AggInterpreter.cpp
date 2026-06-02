@@ -41,63 +41,6 @@ Uint32 AggInterpreter::g_result_header_size_ = 3 * sizeof(Uint32);
 Uint32 AggInterpreter::g_result_header_size_per_group_ = sizeof(Uint32);
 
 /*
- * GBHashEntryCmp::operator() — charset-aware comparison for std::map ordering.
- * Duplicated from NdbAggregator.cpp (kernel and API are separate link targets).
- */
-bool
-GBHashEntryCmp::operator()(const GBHashEntry &n1,
-                           const GBHashEntry &n2) const {
-  if (ctx == nullptr || ctx->n_cols == 0 || ctx->all_binary_cmp) {
-    /* Binary comparison: safe when all group-by columns are
-       non-charset-aware, since binary identity equals semantic identity. */
-    Uint32 len = n1.len < n2.len ? n1.len : n2.len;
-    int ret = memcmp(n1.ptr, n2.ptr, len);
-    if (ret == 0) {
-      return n1.len < n2.len;
-    }
-    return ret < 0;
-  }
-
-  const char *p1 = n1.ptr;
-  const char *p2 = n2.ptr;
-  [[maybe_unused]] const char *end1 = n1.ptr + n1.len;
-  [[maybe_unused]] const char *end2 = n2.ptr + n2.len;
-
-  for (Uint32 i = 0; i < ctx->n_cols; i++) {
-    assert(p1 + sizeof(Uint32) <= end1);
-    assert(p2 + sizeof(Uint32) <= end2);
-    const AttributeHeader ah1(*(const Uint32 *)p1);
-    const AttributeHeader ah2(*(const Uint32 *)p2);
-
-    bool null1 = ah1.isNULL();
-    bool null2 = ah2.isNULL();
-    if (null1 && null2) {
-      p1 += sizeof(Uint32);
-      p2 += sizeof(Uint32);
-      continue;
-    }
-    if (null1) return true;   /* NULL < non-NULL */
-    if (null2) return false;
-
-    const char *data1 = p1 + sizeof(Uint32);
-    const char *data2 = p2 + sizeof(Uint32);
-    Uint32 byteSize1 = ah1.getByteSize();
-    Uint32 byteSize2 = ah2.getByteSize();
-
-    int ret = NdbSqlUtil::getType(ctx->col_meta[i].typeId).m_cmp(
-                ctx->col_meta[i].cs, data1, byteSize1, data2, byteSize2);
-    if (ret != 0) {
-      return ret < 0;
-    }
-
-    /* Advance past header + word-aligned data */
-    p1 += sizeof(Uint32) + ah1.getDataSize() * sizeof(Uint32);
-    p2 += sizeof(Uint32) + ah2.getDataSize() * sizeof(Uint32);
-  }
-  return false;  /* All columns equal */
-}
-
-/*
  * PA related
  * Turn on the DEBUG_PA_INTERP
  * to trace AggInterpreter on partition DEBUG_PA_INTERP_PART_ID

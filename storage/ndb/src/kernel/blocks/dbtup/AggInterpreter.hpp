@@ -26,7 +26,6 @@
 
 #include <math.h>
 #include <cstring>
-#include <map>
 #include "AggInterpreterBase.hpp"
 #include "PushdownInterpreter.hpp"
 #include "Dbtup.hpp"
@@ -120,8 +119,8 @@ class AggInterpreter : public AggInterpreterBase {
  * Step 2b replaces the std::map + m_mem_buf bump pool with the shared
  * JoinGBHashTable (~8 KB buckets) + chunk allocator (chunks live
  * out-of-line via lc_ndbd_pool_malloc).  m_gb_types_buf is a small
- * inline GROUP BY type-metadata array, replacing the old
- * GBCmpContext::col_meta carry.
+ * inline GROUP BY type-metadata array (replaces the old per-class
+ * cmp context).
  *
  * If any of these inline buffers is enlarged or a new field is added,
  * the static_assert below fires — review whether any buffer can be

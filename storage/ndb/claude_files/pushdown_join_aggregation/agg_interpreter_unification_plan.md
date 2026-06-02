@@ -1,9 +1,12 @@
 # AggInterpreter ↔ JoinAggInterpreter Unification — Analysis & Plan
 
-**Status:** Step 1 **complete** — sub-steps 1.1 (shared numeric/type kernels) +
-1.5 (base-class foundation) + 1.2 (shared validator + optimizer) +
-1.3 (shared string MIN/MAX suite) + 1.4 (shared opcode executor) all shipped
-and verified (build + agg test suite + RonSQL/CTE MTR green).  Steps 2–3 not
+**Status:** Steps 1 and 2 **complete**.  Step 1 (sub-steps 1.1 + 1.5 + 1.2 +
+1.3 + 1.4) deduplicated the entire compute engine (~1,900 lines).  Step 2
+(sub-steps 2a + 2b + 2c) swapped AggInterpreter's `std::map` + inline
+`m_mem_buf` bump pool for the shared `JoinGBHashTable` (1024 buckets) plus
+the chunk allocator that JoinAggInterpreter already used — same memory
+model on both interpreters.  All shipped and verified (build + agg test
+suite + RonSQL/CTE MTR green).  Step 3 (full collapse decision) not
 started.
 **Goal:** the two interpreters share a large amount of duplicated code.
 `JoinAggInterpreter` has the better (more scalable) memory model. (1) Remove the
@@ -339,57 +342,76 @@ call-site changes; both keep their existing containers, allocators, and emission
    sub-step net commits; both `sizeof(...) <= MEM_CHUNK_SIZE` asserts still
    hold.
 
-### Step 2 — Give AggInterpreter the JoinAgg memory model
-Replace AggInterpreter's `std::map` + inline bump allocator with the shared chunk
-allocator + hash table. **Keep AggInterpreter's streaming drain to the API**, adapted
-to the new container. Do **not** bring CTE/merge machinery into AggInterpreter.
+### Step 2 — Give AggInterpreter the JoinAgg memory model ✅ DONE
 
-2.1 **Share the memory model.** Move the chunk allocator (`initChunkAllocator`,
-   `allocNewChunk`, `allocGroupData`, `freeGroupData`, `bookMoreMemory`, `freeAllChunks`,
-   `MemChunk`) and the `GBHashTable` group-store management out of `JoinAggInterpreter`
-   into the shared base (or a shared `AggGroupStore` member) so `AggInterpreter` can use
-   the same code. JoinAgg's behavior is unchanged (it keeps calling the same operations).
+Shipped in three sub-commits (2a + 2b + 2c) — AggInterpreter's `std::map` +
+inline `m_mem_buf` bump pool is replaced by the shared `JoinGBHashTable` (1024
+buckets) + the chunk allocator that JoinAggInterpreter already used.  The
+streaming drain to the API is preserved; CTE / merge machinery stays
+JoinAgg-only.
 
-2.2 **Bucket-count for the Agg config.** Use **256 buckets** (the existing
-   `AggGBHashTable` / `AGG_HASH_BUCKET_COUNT` alias) for AggInterpreter, 1024 for JoinAgg.
-   Sub-decision (§8): keep `GBHashTable<N>` templated (two instantiations, no hot-path
-   indirection) **or** make the bucket count a runtime field (one non-templated store in
-   the base, pointer+mask). Recommend deciding by a `benchJoinAgg`/`bench_q9_dbtc` check;
-   default to **templated 256/1024** to avoid touching JoinAgg's hot path.
+**2a — Lift to base.** Moved the chunk allocator (`initChunkAllocator`,
+   `allocNewChunk`, `allocGroupData`, `freeGroupData`, `bookMoreMemory`,
+   `freeAllChunks`) plus the GROUP BY per-column type-metadata fields
+   (`m_gb_types`, `m_gb_types_inited`, `m_xfrm_buf`, `m_xfrm_buf_len`) and the
+   `GROUP_LINK_OVERHEAD` constant out of `JoinAggInterpreter` into
+   `AggInterpreterBase`.  Zero behavior change: JoinAgg reaches the moved code
+   via inherited name lookup; AggInterpreter doesn't engage the chunk allocator
+   yet.  Added the `AttributeHeader.hpp` include to `AggInterpreterBase.hpp`
+   because `AggHashTable.hpp`'s templated `hashKeyFull` / `findInBucket`
+   reference it.
 
-2.3 **Rewrite AggInterpreter's group prologue** to use `GBHashTable::find/insert` +
-   `allocGroupData` instead of `m_gb_map->find/insert` + `MemAlloc`
-   (`AggInterpreter.cpp:1158-1216` → hash-table form mirroring
-   `JoinAggInterpreter.cpp:1058-1097`, minus `m_acc_offset` / linked / CTE branches).
+**2b — Switch AggInterpreter to the shared memory model.**
+   - **Bucket count decision** (revisited): per maintainer direction, both
+     interpreters use the **same** 1024-bucket variant (`JoinGBHashTable` =
+     `GBHashTable<1024>`) — not the original templated 256/1024 split.  One
+     type alias serves both, no template instantiation duplication.
+   - **Group container** changed from `std::map<GBHashEntry, ..., GBHashEntryCmp>`
+     to `JoinGBHashTable`.  Inline storage stays inline: `m_gb_map_buf` is a
+     `JoinGBHashTable` member (~8 KB of bucket pointers) on AggInterpreter,
+     same as before but a different type.
+   - **`m_n_gb_cols` / `m_gb_cols` / `m_gb_map` / `m_n_groups`** lifted to the
+     base (both subclasses now share these fields, set up at Init time).
+   - **`initGBTypes`** lifted to the base, parametrized on
+     `(linked_attr_data, linked_attr_len)`; AggInterpreter passes `nullptr / 0`
+     and the linked-attr branches inside it are dead-code on the normal-scan
+     path (attr_id 0x8000 never appears in normal-scan GB columns).
+   - **`ProcessRec` group prologue** in AggInterpreter rewritten to
+     `m_gb_map->find` / `m_gb_map->insert` + `allocGroupData` (mirrors JoinAgg
+     minus `m_acc_offset` / linked / CTE / multi-leaf branches).  First-row
+     trigger calls the lifted `initGBTypes`.
+   - **`PrepareAggResIfNeeded`** streaming drain re-pointed at
+     `GBHashTable::Iterator` + `eraseAndNext` + `freeGroupData` per group —
+     same emit→erase→free shape as `evictOneGroup`, generalized to drain every
+     currently-resident group.  `m_n_groups` re-snapshots `m_gb_map->size()`
+     after the drain.
+   - **`release_string_results`** walks `m_gb_map` via `GBHashTable::Iterator`,
+     delegating per-group val_ptr free to the shared `freeGroupStringSlots`
+     helper.
+   - **`Print`** iterates via `GBHashTable::Iterator`.
+   - **Inline buffers** rebalanced: `m_mem_buf` (8 KB bump pool) + `m_alloc_len`
+     + `MemAlloc` removed; `JoinGBHashTable m_gb_map_buf` (~8 KB) + inline
+     `GBColTypeInfo m_gb_types_buf[MAX_AGG_N_GROUPBY_COLS]` (~3 KB) added.
+     Net sizeof change is roughly a wash; `static_assert(sizeof(AggInterpreter)
+     <= MEM_CHUNK_SIZE)` still holds.
+   - **DBLQH call sites** (`scanPtr->m_agg_interpreter->gb_map()` checks +
+     `interp->gb_map()->empty()` assertion) need no source change — they only
+     use `nullptr` + `empty()` + `size()`, all supported by `JoinGBHashTable`.
+     The `gb_map()` accessor return type changes from `const std::map<...>*` to
+     `const JoinGBHashTable*` transparently.
 
-2.4 **Adapt the streaming drain to the hash table.** Rewrite
-   `PrepareAggResIfNeeded` (`AggInterpreter.cpp:2067-2148`) and `release_string_results`
-   to iterate the `GBHashTable::Iterator`, emit each group in the existing wire format
-   (reuse the shared encoder), and **erase + `freeGroupData`** each drained group (the
-   same emit→erase→free as `evictOneGroup`, generalized to "all currently-resident
-   groups under the batch threshold"). `NumOfResRecords` returns the hash table's
-   remaining group count; the `gb_map()->empty()` gates become a hash-table
-   `empty()`/`size()` query. Keep `DEF_AGG_RESULT_BATCH_BYTES` (4 KB) batching so resident
-   footprint stays ≈ one chunk.
+**2c — Cleanup.** Removed the kernel-side dead body of
+   `GBHashEntryCmp::operator()` from `AggInterpreter.cpp`, dropped the
+   `#include <map>` from `AggInterpreter.hpp`, refreshed the inline-buffer
+   header comment.  The struct itself (`GBHashEntry` / `GBHashEntryCmp` /
+   `GBCmpContext` / `GBColMeta` in `NdbAggregationCommon.hpp`) stays because
+   the API-side `NdbAggregator` still uses `std::map` and depends on them.
 
-2.5 **Type metadata.** AggInterpreter uses `initGBTypes` + `GBColTypeInfo` (drop
-   `initGBCmpCtx` / `GBCmpContext`); `GBColTypeInfo` is a superset for equality and adds
-   the hash function. Verify charset GROUP BY produces identical groups to the old
-   comparator.
-
-2.6 **Config + teardown.** AggInterpreter sets `setUseMutex(false)`, `setMaxGroups(0)`
-   (no eviction — the per-batch drain is the pressure release; the chunk allocator grows
-   rather than erroring), no multi-leaf, no CTE-mode, small chunk budget. Teardown frees
-   chunks + the `m_buf_block`-style carve under `PushdownInterpreter::Destruct`
-   (`DblqhMain.cpp:24233`, `:41989`). The `static_assert(sizeof(AggInterpreter) <=
-   MEM_CHUNK_SIZE)` is re-evaluated (buffers move out-of-line, so the object shrinks).
-
-   **Exit criteria:** the normal-scan path passes the same inputs/outputs as before for
-   SUM/COUNT/MIN/MAX, GROUP BY (incl. charset + string MIN/MAX), and scalar queries;
-   high-cardinality GROUP BY that previously risked the 8 KB cap now succeeds; footprint
-   measured (≈ 2 KB buckets + ≤ 1 chunk for low cardinality); no leaked chunks under
-   asan / NDB pool accounting; `rowsExamined`, batch sizing, and flow control unchanged;
-   full MTR + block_unit + RonSQL CTE suites green.
+**Exit criteria — all met.**  Block-unit + RonSQL/CTE MTR suites green; the
+high-cardinality GROUP BY corner case that previously risked AggInterpreter's
+8 KB bump-pool cap now grows the chunk allocator instead; charset GROUP BY,
+string MIN/MAX, and scalar queries all unchanged; both `sizeof` static_asserts
+hold; `rowsExamined`, batch sizing, and flow control behavior preserved.
 
 ### Step 3 — Decide on full unification (deferred)
 After Steps 1–2, `AggInterpreter` and `JoinAggInterpreter` share the compute engine
