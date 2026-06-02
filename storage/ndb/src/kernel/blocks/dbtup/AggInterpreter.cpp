@@ -97,67 +97,67 @@ bool AggInterpreter::Init(const Uint32* prog) {
 
   require(prog != nullptr);
 
-  /* 0. Prepare the buffer and copy the program */
-  assert(m_prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
-  m_prog = m_prog_buf;
-  memcpy(m_prog, prog, m_prog_len * sizeof(Uint32));
-  memset(m_attr_read_buf, 0, sizeof(m_attr_read_buf));
-  memset(m_decimal_buf, 0, sizeof(Int32) * AGG_DECIMAL_BUFF_LENGTH);
-  m_decimal.buf = m_decimal_buf;
-  m_decimal.len = AGG_DECIMAL_BUFF_LENGTH;
+  /* Step 3a-B: peek header words (magic / prog_len / n_gb_cols /
+   * n_agg_results / version / 5 reserved) directly from the input
+   * `prog` so we can right-size m_buf_block before copying.  Match
+   * the original header parse exactly. */
+  Uint32 hdr0 = prog[0];
+  assert(((hdr0 & 0xFFFF0000) >> 16) == 0x0721);
+  assert((hdr0 & 0xFFFF) == m_prog_len);
 
+  Uint32 hdr1 = prog[1];
+  m_n_gb_cols = (hdr1 >> 16) & 0xFFFF;
+  m_n_agg_results = hdr1 & 0xFFFF;
 
-  Uint32 value = 0;
-  /*
-   * 1. Double check the magic num and  total length of program.
-   */
-  value = m_prog[m_cur_pos++];
-  assert(((value & 0xFFFF0000) >> 16) == 0x0721);
-  assert((value & 0xFFFF) == m_prog_len);
-
-  /*
-   * 2. Get num of columns for group by and num of aggregation results;
-   */
-  value = m_prog[m_cur_pos++];
-  m_n_gb_cols = (value >> 16) & 0xFFFF;
-  m_n_agg_results = value & 0xFFFF;
-
-  Uint32 version = m_prog[m_cur_pos++];
+  Uint32 version = prog[2];
   if (version > PUSHDOWN_AGGREGATION_VERSION) {
     g_eventLogger->warning("Pushdown aggregation program version(%u) is "
                            "not compatible with "
                            "the version (%u) on data node",
                            version, PUSHDOWN_AGGREGATION_VERSION);
-    /*
-     * Return with m_inited = false, and
-     * ProcessRec() will handle this incompatible issue.
-     */
+    /* Return with m_inited = false; ProcessRec rejects on entry. */
     return true;
   }
+  assert((prog[3] & 0x80000000) == 0);
+  assert(prog[3] == 0);
 
-  /* Skip the next 5 reserved Uint32 elements (word 3 = VS flag, not set for PA) */
-  assert((m_prog[m_cur_pos] & 0x80000000) == 0);
-  assert(m_prog[m_cur_pos] == 0);
-  m_cur_pos += 5;
+  assert(m_prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
+  assert(m_n_gb_cols <= MAX_AGG_N_GROUPBY_COLS);
+  assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
 
-  /*
-   * 3. Get all the group by columns id.
-   */
+  /* Right-sized buffer-block carve.  Skip the m_gb_map_buf slot when
+   * n_gb_cols == 0 — scalar aggregation never touches a hash table.
+   * On success initBufBlock returns the one-past-end pointer (we don't
+   * append a tail); on allocation failure it returns nullptr. */
+  if (initBufBlock(/*prog_words=*/m_prog_len,
+                   /*n_gb_cols_alloc=*/m_n_gb_cols,
+                   /*n_agg_results_alloc=*/m_n_agg_results,
+                   /*alloc_gb_map=*/m_n_gb_cols > 0,
+                   /*extra_tail_bytes=*/0) == nullptr) {
+    g_eventLogger->error("AggInterpreter::Init: m_buf_block allocation failed");
+    return false;
+  }
+
+  m_prog = m_prog_buf;
+  memcpy(m_prog, prog, m_prog_len * sizeof(Uint32));
+  memset(m_attr_read_buf, 0, ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32));
+  memset(m_decimal_buf, 0, sizeof(Int32) * AGG_DECIMAL_BUFF_LENGTH);
+  m_decimal.buf = m_decimal_buf;
+  m_decimal.len = AGG_DECIMAL_BUFF_LENGTH;
+
+  /* Header is 8 words (magic, n_gb_cols/n_agg_results, version, 5 reserved). */
+  m_cur_pos = 8;
+
   if (m_n_gb_cols) {
-    assert(m_n_gb_cols <= MAX_AGG_N_GROUPBY_COLS);
     m_gb_cols = m_gb_cols_buf;
-
     Uint32 i = 0;
     while (i < m_n_gb_cols && m_cur_pos < m_prog_len) {
       m_gb_cols[i++] = m_prog[m_cur_pos++];
     }
-    /* Step 2b — use the shared JoinGBHashTable (1024 buckets) + chunk
-     * allocator on the base.  m_gb_types points at the inline
-     * m_gb_types_buf; the actual type info gets resolved on the first
-     * ProcessRec call via initGBTypes (lifted to the base). */
-    m_gb_map_buf.init(JOIN_AGG_HASH_BUCKET_COUNT);
-    m_gb_map = &m_gb_map_buf;
-    m_gb_types = m_gb_types_buf;
+    /* m_gb_map_buf was placement-new'd by initBufBlock. */
+    m_gb_map_buf->clear();
+    m_gb_map = m_gb_map_buf;
+    m_gb_map->init(JOIN_AGG_HASH_BUCKET_COUNT);
     /* Chunk allocator budget: start small and let bookMoreMemory grow it
      * if a high-cardinality GROUP BY needs more.  available_pages is
      * generous — query memory pool enforces the real cap. */
@@ -166,11 +166,7 @@ bool AggInterpreter::Init(const Uint32* prog) {
                        /*available_pages=*/4096);
   }
 
-  /*
-   * 4. Reset all aggregation results
-   */
   if (m_n_agg_results) {
-    assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
     m_agg_results = m_agg_results_buf;
     for (Uint32 i = 0; i < m_n_agg_results; i++) {
       m_agg_results[i].type = NDB_TYPE_UNDEFINED;

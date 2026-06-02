@@ -75,6 +75,16 @@ class AggInterpreterBase : public PushdownInterpreter {
    * parameter for bucket count. */
   static constexpr Uint32 GROUP_LINK_OVERHEAD = 24;
 
+  /**
+   * Step 3a-B — central teardown: release per-(group, slot) string
+   * winner buffers (release_string_results), then free the chunk pages
+   * (freeAllChunks), the xfrm scratch buffer, and m_buf_block.  Order
+   * matters: the chunk allocator owns the memory that backs the
+   * GBHashTable's stored entries, and m_buf_block backs the bucket
+   * array itself, so anything that walks live groups must run first.
+   */
+  ~AggInterpreterBase() override;
+
   AggInterpreterBase(PushdownType type, Uint32 prog_len,
                      Int64 table_id, Int64 frag_id, Uint32 thread_id)
     : PushdownInterpreter(type, prog_len, table_id, frag_id, thread_id),
@@ -85,6 +95,9 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_processed_rows(0), m_result_size(0),
       m_n_gb_cols(0), m_gb_cols(nullptr),
       m_gb_map(nullptr), m_n_groups(0),
+      m_attr_read_buf(nullptr), m_prog_buf(nullptr),
+      m_gb_cols_buf(nullptr), m_agg_results_buf(nullptr),
+      m_gb_map_buf(nullptr), m_buf_block(nullptr),
       m_chunks(nullptr), m_chunks_tail(nullptr),
       m_current_chunk(nullptr), m_total_chunk_bytes(0),
       m_memory_budget(0), m_budget_increment(0),
@@ -96,6 +109,43 @@ class AggInterpreterBase : public PushdownInterpreter {
     m_decimal.buf = m_decimal_buf;
     m_decimal.len = AGG_DECIMAL_BUFF_LENGTH;
   }
+
+  /**
+   * Step 3a-B — single-allocation buffer block setup.
+   *
+   * Allocates m_buf_block from RG_QUERY_MEMORY and carves it into the
+   * six per-interpreter buffers (m_attr_read_buf / m_prog_buf /
+   * m_gb_cols_buf / m_agg_results_buf / m_gb_map_buf / m_gb_types) in
+   * the layout JoinAggInterpreter already used.  Subclasses pass their
+   * own sizing:
+   *
+   *   prog_words           -- m_prog_buf word count (per-program; both
+   *                            subclasses right-size to m_prog_len)
+   *   n_gb_cols_alloc      -- m_gb_cols_buf / m_gb_types element count
+   *                            (right-sized to m_n_gb_cols; pass 0 to
+   *                            skip both)
+   *   n_agg_results_alloc  -- m_agg_results_buf element count
+   *                            (AggInterpreter right-sizes to
+   *                            m_n_agg_results; JoinAgg passes
+   *                            MAX_AGG_N_RESULTS to keep
+   *                            setTotalAggResults flexibility)
+   *   alloc_gb_map         -- true to carve a JoinGBHashTable for the
+   *                            hash buckets, false to skip (no GB)
+   *   extra_tail_bytes     -- additional bytes the subclass wants
+   *                            appended (JoinAgg uses this for
+   *                            m_cached_agg_ops at MAX size)
+   *
+   * On success returns the pointer to the start of the extra-tail
+   * region (or one-past-end when extra_tail_bytes == 0); on
+   * allocation failure returns nullptr.  m_buf_block / m_attr_read_buf
+   * / m_prog_buf / m_gb_cols_buf / m_agg_results_buf / m_gb_map_buf /
+   * m_gb_types are populated as a side effect.
+   */
+  char* initBufBlock(Uint32 prog_words,
+                     Uint32 n_gb_cols_alloc,
+                     Uint32 n_agg_results_alloc,
+                     bool alloc_gb_map,
+                     Uint32 extra_tail_bytes);
 
   /* Step 2a — chunk allocator (lifted from JoinAggInterpreter).
    * Group records live in MEM_CHUNK_SIZE pages allocated from
@@ -305,6 +355,20 @@ class AggInterpreterBase : public PushdownInterpreter {
   Int32 initGBTypes(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
                     const Uint32* linked_attr_data,
                     Uint32 linked_attr_len);
+
+  /* Step 3a-B — m_buf_block-resident pointer buffers.
+   * `initBufBlock` allocates one combined block from RG_QUERY_MEMORY
+   * and carves it into these slots.  The subclass-specific sizing
+   * lives in each subclass' Init; the layout (`m_attr_read_buf →
+   * m_prog_buf → m_gb_cols_buf → m_agg_results_buf → m_gb_map_buf →
+   * m_gb_types → extra-tail`) is shared.  AggInterpreter doesn't use
+   * a tail; JoinAgg appends its `m_cached_agg_ops` merge cache. */
+  Uint32* m_attr_read_buf;
+  Uint32* m_prog_buf;
+  Uint32* m_gb_cols_buf;
+  AggResItem* m_agg_results_buf;
+  JoinGBHashTable* m_gb_map_buf;
+  void* m_buf_block;
 
   /* Step 2a — chunk allocator state lifted from JoinAggInterpreter.
    * MEM_CHUNK_SIZE pages are allocated lazily on first allocGroupData;

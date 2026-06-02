@@ -53,31 +53,21 @@ class JoinAggInterpreter : public AggInterpreterBase {
                        table_id, frag_id, thread_id),
     /* m_cur_pos / m_attr_read_pos / m_processed_rows / m_result_size lifted
      * to base in Step 3a-A; m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups
-     * lifted in Step 2b. */
-    m_attr_read_buf(nullptr),
+     * lifted in Step 2b; m_attr_read_buf lifted in Step 3a-B. */
     m_acc_offset(0),
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
     m_null_local_columns(false),
     m_use_mutex(false), m_max_groups(0), m_cte_mode(false),
     /* Chunk allocator state + GB type metadata lifted to
      * AggInterpreterBase in Step 2a; base ctor initializes them. */
-    m_cached_agg_ops(nullptr), m_agg_ops_cached(false),
-    m_prog_buf(nullptr), m_gb_cols_buf(nullptr),
-    m_agg_results_buf(nullptr), m_gb_map_buf(nullptr),
-    m_buf_block(nullptr) {
+    m_cached_agg_ops(nullptr), m_agg_ops_cached(false) {
+    /* m_attr_read_buf / m_prog_buf / m_gb_cols_buf / m_agg_results_buf /
+     * m_gb_map_buf / m_buf_block initialised by the base ctor
+     * (Step 3a-B). */
   }
-  ~JoinAggInterpreter() override {
-    release_string_results();
-    freeAllChunks();
-    if (m_xfrm_buf != nullptr) {
-      lc_ndbd_pool_free(m_xfrm_buf);
-      m_xfrm_buf = nullptr;
-    }
-    if (m_buf_block != nullptr) {
-      lc_ndbd_pool_free(m_buf_block);
-      m_buf_block = nullptr;
-    }
-  }
+  /* ~JoinAggInterpreter() default — base destructor handles
+   * release_string_results, freeAllChunks, and frees both m_xfrm_buf
+   * and m_buf_block. */
 
   bool Init(const Uint32* prog);
 
@@ -222,9 +212,9 @@ class JoinAggInterpreter : public AggInterpreterBase {
 
   // m_cur_pos / m_attr_read_pos / m_processed_rows / m_result_size /
   // m_registers / m_register_string_data / m_n_agg_results / m_agg_results /
-  // m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups / static wire-header
-  // constants all lifted to AggInterpreterBase in Steps 1.3 / 2b / 3a-A.
-  Uint32* m_attr_read_buf;
+  // m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups / m_attr_read_buf /
+  // static wire-header constants all lifted to AggInterpreterBase in
+  // Steps 1.3 / 2b / 3a-A / 3a-B.
 
   // Multi-leaf: accumulator offset applied after group lookup/creation.
   // agg_res_ptr is shifted by m_acc_offset so the leaf's 0-based program
@@ -254,7 +244,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
    * m_budget_increment / m_total_available) lifted to
    * AggInterpreterBase in Step 2a. */
 
-  // Cached agg ops for merge (avoids recomputing per CONTINUEB batch)
+  // Cached agg ops for merge (avoids recomputing per CONTINUEB batch).
+  // Lives in the extra-tail region of m_buf_block (Step 3a-B).
   Uint8* m_cached_agg_ops;
   bool m_agg_ops_cached;
 
@@ -266,19 +257,9 @@ class JoinAggInterpreter : public AggInterpreterBase {
    * extension). */
   void initGBTypesForNullLocal(Dbtup* block_tup);
 
-  Uint32* m_prog_buf;
-  Uint32* m_gb_cols_buf;
-  AggResItem* m_agg_results_buf;
-  JoinGBHashTable* m_gb_map_buf;
-
-  // Single allocation block for all dynamically allocated buffers above.
-  void* m_buf_block;
-
-  // m_string_results / release_string_results lifted to
-  // AggInterpreterBase in Steps 1.3 / 3a-A.
+  // m_prog_buf / m_gb_cols_buf / m_agg_results_buf / m_gb_map_buf /
+  // m_buf_block / m_string_results / release_string_results lifted to
+  // AggInterpreterBase in Steps 1.3 / 3a-A / 3a-B.
 };
-
-static_assert(sizeof(JoinAggInterpreter) <= MEM_CHUNK_SIZE,
-              "JoinAggInterpreter must fit in MEM_CHUNK_SIZE allocation");
 
 #endif  // JOINAGGINTERPRETER_H_

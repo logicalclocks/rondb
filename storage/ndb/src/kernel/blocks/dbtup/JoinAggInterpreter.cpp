@@ -92,61 +92,20 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
 
   require(prog != nullptr);
 
-  /*
-   * Allocate all large buffers in a single block.
-   */
-  if (m_buf_block == nullptr) {
-    static const Uint32 BUF_BLOCK_SIZE =
-      ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32) +
-      MAX_AGG_PROGRAM_WORD_SIZE * sizeof(Uint32) +
-      MAX_AGG_N_GROUPBY_COLS * sizeof(Uint32) +
-      MAX_AGG_N_RESULTS * sizeof(AggResItem) +
-      sizeof(JoinGBHashTable) +
-      MAX_AGG_N_GROUPBY_COLS * sizeof(GBColTypeInfo) +
-      MAX_AGG_N_RESULTS * sizeof(Uint8);
+  /* Step 3a-B: peek header words from input `prog` so we can
+   * right-size m_buf_block before copying.  Mirrors AggInterpreter's
+   * Init shape.  m_agg_results_buf and m_cached_agg_ops stay MAX-sized
+   * because setTotalAggResults can override m_n_agg_results after
+   * Init for multi-leaf queries. */
+  Uint32 hdr0 = prog[0];
+  assert(((hdr0 & 0xFFFF0000) >> 16) == 0x0721);
+  assert((hdr0 & 0xFFFF) == m_prog_len);
 
-    m_buf_block = lc_ndbd_pool_malloc(BUF_BLOCK_SIZE, RG_QUERY_MEMORY,
-                                       m_thread_id, false);
-    if (m_buf_block == nullptr) {
-      g_eventLogger->error("Alloc mem for JoinAggInterpreter buffers failed");
-      return false;
-    }
+  Uint32 hdr1 = prog[1];
+  m_n_gb_cols = (hdr1 >> 16) & 0xFFFF;
+  m_n_agg_results = hdr1 & 0xFFFF;
 
-    char* p = static_cast<char*>(m_buf_block);
-    m_attr_read_buf = reinterpret_cast<Uint32*>(p);
-    p += ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32);
-    m_prog_buf = reinterpret_cast<Uint32*>(p);
-    p += MAX_AGG_PROGRAM_WORD_SIZE * sizeof(Uint32);
-    m_gb_cols_buf = reinterpret_cast<Uint32*>(p);
-    p += MAX_AGG_N_GROUPBY_COLS * sizeof(Uint32);
-    m_agg_results_buf = reinterpret_cast<AggResItem*>(p);
-    p += MAX_AGG_N_RESULTS * sizeof(AggResItem);
-    m_gb_map_buf = new (p) JoinGBHashTable();
-    p += sizeof(JoinGBHashTable);
-    m_gb_types = reinterpret_cast<GBColTypeInfo*>(p);
-    p += MAX_AGG_N_GROUPBY_COLS * sizeof(GBColTypeInfo);
-    m_cached_agg_ops = reinterpret_cast<Uint8*>(p);
-    memset(m_gb_types, 0, MAX_AGG_N_GROUPBY_COLS * sizeof(GBColTypeInfo));
-  }
-
-  assert(m_prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
-  m_prog = m_prog_buf;
-  memcpy(m_prog, prog, m_prog_len * sizeof(Uint32));
-  memset(m_attr_read_buf, 0, ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32));
-  memset(m_decimal_buf, 0, sizeof(Int32) * AGG_DECIMAL_BUFF_LENGTH);
-  m_decimal.buf = m_decimal_buf;
-  m_decimal.len = AGG_DECIMAL_BUFF_LENGTH;
-
-  Uint32 value = 0;
-  value = m_prog[m_cur_pos++];
-  assert(((value & 0xFFFF0000) >> 16) == 0x0721);
-  assert((value & 0xFFFF) == m_prog_len);
-
-  value = m_prog[m_cur_pos++];
-  m_n_gb_cols = (value >> 16) & 0xFFFF;
-  m_n_agg_results = value & 0xFFFF;
-
-  Uint32 version = m_prog[m_cur_pos++];
+  Uint32 version = prog[2];
   if (version > PUSHDOWN_AGGREGATION_VERSION) {
     g_eventLogger->warning("Pushdown aggregation program version(%u) is "
                            "not compatible with "
@@ -154,15 +113,47 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
                            version, PUSHDOWN_AGGREGATION_VERSION);
     return true;
   }
+  assert((prog[3] & 0x80000000) == 0);
+  assert(prog[3] == 0);
 
-  assert((m_prog[m_cur_pos] & 0x80000000) == 0);
-  assert(m_prog[m_cur_pos] == 0);
-  m_cur_pos += 5;
+  assert(m_prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
+  assert(m_n_gb_cols <= MAX_AGG_N_GROUPBY_COLS);
+  assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
+
+  /* m_buf_block carve.  m_prog_buf right-sized to m_prog_len,
+   * m_gb_cols_buf / m_gb_types right-sized to m_n_gb_cols (skipped
+   * when n_gb_cols == 0).  m_agg_results_buf and m_cached_agg_ops
+   * stay MAX-sized: setTotalAggResults can override m_n_agg_results
+   * upward after Init for multi-leaf queries, and the buffers must
+   * still fit.  m_gb_map_buf is always allocated (JoinAgg needs
+   * scalar-CTE redistribute paths to land entries even with
+   * n_gb_cols == 0). */
+  if (m_buf_block == nullptr) {
+    char* tail = initBufBlock(
+        /*prog_words=*/m_prog_len,
+        /*n_gb_cols_alloc=*/m_n_gb_cols,
+        /*n_agg_results_alloc=*/MAX_AGG_N_RESULTS,
+        /*alloc_gb_map=*/true,
+        /*extra_tail_bytes=*/MAX_AGG_N_RESULTS * sizeof(Uint8));
+    if (tail == nullptr) {
+      g_eventLogger->error("Alloc mem for JoinAggInterpreter buffers failed");
+      return false;
+    }
+    m_cached_agg_ops = reinterpret_cast<Uint8*>(tail);
+  }
+
+  m_prog = m_prog_buf;
+  memcpy(m_prog, prog, m_prog_len * sizeof(Uint32));
+  memset(m_attr_read_buf, 0, ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32));
+  memset(m_decimal_buf, 0, sizeof(Int32) * AGG_DECIMAL_BUFF_LENGTH);
+  m_decimal.buf = m_decimal_buf;
+  m_decimal.len = AGG_DECIMAL_BUFF_LENGTH;
+
+  /* Header is 8 words (magic, n_gb_cols/n_agg_results, version, 5 reserved). */
+  m_cur_pos = 8;
 
   if (m_n_gb_cols) {
-    assert(m_n_gb_cols <= MAX_AGG_N_GROUPBY_COLS);
     m_gb_cols = m_gb_cols_buf;
-
     Uint32 i = 0;
     while (i < m_n_gb_cols && m_cur_pos < m_prog_len) {
       m_gb_cols[i++] = m_prog[m_cur_pos++];
@@ -173,7 +164,6 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
   }
 
   if (m_n_agg_results) {
-    assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
     m_agg_results = m_agg_results_buf;
     Uint32 i = 0;
     while (i < m_n_agg_results) {

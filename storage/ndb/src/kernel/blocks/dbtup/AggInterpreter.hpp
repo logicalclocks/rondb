@@ -37,15 +37,18 @@
 /**
  * AggInterpreter — aggregation interpreter for normal scan pushdown.
  *
- * Step 2b unification: uses the JoinGBHashTable (1024-bucket) + chunk
- * allocator on AggInterpreterBase, same memory model as
- * JoinAggInterpreter.  Group data lives in MEM_CHUNK_SIZE pages
- * allocated lazily on first insert; the per-batch streaming drain
+ * Step 3a-B: shares JoinAggInterpreter's memory model entirely —
+ * `m_buf_block` carves the per-instance buffers from RG_QUERY_MEMORY
+ * (right-sized to the program's actual prog_len / n_gb_cols /
+ * n_agg_results), and group records live in MEM_CHUNK_SIZE pages
+ * lazily allocated on first insert.  The per-batch streaming drain
  * (PrepareAggResIfNeeded) frees each group via freeGroupData after
- * emit, keeping resident footprint near one chunk for low-cardinality
- * queries.  All AggInterpreter-specific buffers (prog / gb_cols /
- * agg_results / hash-table buckets) are inline so the object still
- * fits in MEM_CHUNK_SIZE.
+ * emit, keeping resident footprint near one chunk for
+ * low-cardinality queries.
+ *
+ * AggInterpreter remains a thin subclass: it owns the streaming
+ * drain (no merge / eviction / mutex / linked-attr / multi-leaf
+ * machinery), and it skips the m_gb_map_buf carve when n_gb_cols == 0.
  */
 class AggInterpreter : public AggInterpreterBase {
  public:
@@ -54,14 +57,12 @@ class AggInterpreter : public AggInterpreterBase {
                  Uint32 thread_id):
     AggInterpreterBase(PushdownType::AGGREGATION, prog_len,
                        table_id, frag_id, thread_id) {
-      /* m_cur_pos / m_attr_read_pos / m_processed_rows / m_result_size
-       * initialised by the base ctor (Step 3a-A). */
-      memset(m_attr_read_buf, 0, sizeof(m_attr_read_buf));
+    /* All scratch fields and buffer pointers initialised by the base
+     * ctor (Steps 3a-A / 3a-B). */
   }
-  ~AggInterpreter() override {
-    release_string_results();
-    freeAllChunks();
-  }
+  /* ~AggInterpreter() default — AggInterpreterBase's destructor does
+   * release_string_results, freeAllChunks, frees m_xfrm_buf and
+   * m_buf_block. */
 
   bool Init(const Uint32* prog);
 
@@ -81,41 +82,6 @@ class AggInterpreter : public AggInterpreterBase {
   Uint32 n_agg_results() const { return m_n_agg_results; }
   const AggResItem* agg_results() const { return m_agg_results; }
   Uint64 processed_rows() const { return m_processed_rows; }
-
- private:
-  // m_registers / m_register_string_data / m_n_agg_results / m_agg_results /
-  // m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups / m_cur_pos /
-  // m_attr_read_pos / m_processed_rows / m_result_size / g_attr_read_buf_len_
-  // / g_result_header_size_ / g_result_header_size_per_group_ /
-  // m_string_results / m_current_thread_id / m_gb_types / m_xfrm_buf /
-  // release_string_results all on AggInterpreterBase (Steps 1.3 / 2a / 2b /
-  // 3a-A).
-
-  // All buffers inline so AggInterpreter fits a single 32KB page.
-  Uint32 m_attr_read_buf[ATTR_READ_BUF_WORD_SIZE];       //  8,192 B
-  Uint32 m_prog_buf[MAX_AGG_PROGRAM_WORD_SIZE];           //  4,096 B
-  Uint32 m_gb_cols_buf[MAX_AGG_N_GROUPBY_COLS];           //    512 B
-  AggResItem m_agg_results_buf[MAX_AGG_N_RESULTS];        //  6,144 B
-  GBColTypeInfo m_gb_types_buf[MAX_AGG_N_GROUPBY_COLS];   // ~3,072 B
-  JoinGBHashTable m_gb_map_buf;                            // ~8,200 B (1024 buckets)
 };
-
-/*
- * AggInterpreter packs all buffers inline to avoid extra allocations.
- * Step 2b replaces the std::map + m_mem_buf bump pool with the shared
- * JoinGBHashTable (~8 KB buckets) + chunk allocator (chunks live
- * out-of-line via lc_ndbd_pool_malloc).  m_gb_types_buf is a small
- * inline GROUP BY type-metadata array (replaces the old per-class
- * cmp context).
- *
- * If any of these inline buffers is enlarged or a new field is added,
- * the static_assert below fires — review whether any buffer can be
- * shrunk or moved to an external allocation.
- */
-static_assert(sizeof(AggInterpreter) <= MEM_CHUNK_SIZE,
-              "AggInterpreter has exceeded the MEM_CHUNK_SIZE (32KB) page "
-              "limit.  All inline buffers (prog_buf, attr_read_buf, hash buckets, "
-              "etc.) must fit together on a single page.  Shrink a buffer or "
-              "move it to an external allocation.");
 
 #endif  // AGGINTERPRETER_H_

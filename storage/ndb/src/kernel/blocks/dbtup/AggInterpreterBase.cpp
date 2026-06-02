@@ -42,6 +42,7 @@
 #include <climits>   // LLONG_MAX
 #include <cstdio>    // sprintf
 #include <cassert>   // assert
+#include <new>       // placement new for initBufBlock
 
 #define DBTUP_C
 #include "signaldata/TransIdAI.hpp"
@@ -1765,6 +1766,96 @@ Int32 AggInterpreterBase::initGBTypes(
 Uint32 AggInterpreterBase::g_attr_read_buf_len_ = ATTR_READ_BUF_WORD_SIZE;
 Uint32 AggInterpreterBase::g_result_header_size_ = 3 * sizeof(Uint32);
 Uint32 AggInterpreterBase::g_result_header_size_per_group_ = sizeof(Uint32);
+
+/*
+ * Step 3a-B — central teardown: release per-(group, slot) string
+ * winner buffers, free the chunk pages backing the GBHashTable's
+ * stored entries, free the xfrm scratch buffer, then free m_buf_block
+ * (which backs the bucket array itself).  Subclass destructors
+ * default — this is the single cleanup site for both.
+ */
+AggInterpreterBase::~AggInterpreterBase() {
+  release_string_results();
+  freeAllChunks();
+  if (m_xfrm_buf != nullptr) {
+    lc_ndbd_pool_free(m_xfrm_buf);
+    m_xfrm_buf = nullptr;
+  }
+  if (m_buf_block != nullptr) {
+    lc_ndbd_pool_free(m_buf_block);
+    m_buf_block = nullptr;
+  }
+}
+
+/*
+ * Step 3a-B — single-allocation buffer-block carve.
+ *
+ * Allocates one block from RG_QUERY_MEMORY sized for the caller's
+ * actual needs and slices it into the six per-interpreter buffers.
+ * Layout matches JoinAggInterpreter's pre-3a Init carve so the call
+ * sites converge on a single helper.
+ *
+ * Right-sizing: callers pass right-sized counts, except where setter
+ * APIs (e.g. JoinAgg's setTotalAggResults) require MAX-sized
+ * over-allocation.  Pass n_gb_cols_alloc == 0 to skip the GB-col +
+ * GB-types carve; pass alloc_gb_map == false to skip the
+ * JoinGBHashTable carve (e.g. scalar aggregation, n_gb_cols == 0).
+ *
+ * Returns the start of the extra-tail region (or one-past-end when
+ * extra_tail_bytes == 0).  nullptr on allocation failure.
+ */
+char* AggInterpreterBase::initBufBlock(Uint32 prog_words,
+                                       Uint32 n_gb_cols_alloc,
+                                       Uint32 n_agg_results_alloc,
+                                       bool alloc_gb_map,
+                                       Uint32 extra_tail_bytes) {
+  require(m_buf_block == nullptr);
+
+  const Uint32 attr_buf_bytes = ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32);
+  const Uint32 prog_bytes = prog_words * sizeof(Uint32);
+  const Uint32 gb_cols_bytes = n_gb_cols_alloc * sizeof(Uint32);
+  const Uint32 agg_results_bytes = n_agg_results_alloc * sizeof(AggResItem);
+  const Uint32 gb_map_bytes = alloc_gb_map ? sizeof(JoinGBHashTable) : 0;
+  const Uint32 gb_types_bytes = n_gb_cols_alloc * sizeof(GBColTypeInfo);
+
+  const Uint32 total = attr_buf_bytes + prog_bytes + gb_cols_bytes +
+                       agg_results_bytes + gb_map_bytes + gb_types_bytes +
+                       extra_tail_bytes;
+
+  m_buf_block = lc_ndbd_pool_malloc(total, RG_QUERY_MEMORY,
+                                    m_thread_id, false);
+  if (m_buf_block == nullptr) {
+    return nullptr;
+  }
+
+  char* p = static_cast<char*>(m_buf_block);
+  m_attr_read_buf = reinterpret_cast<Uint32*>(p);
+  p += attr_buf_bytes;
+  m_prog_buf = reinterpret_cast<Uint32*>(p);
+  p += prog_bytes;
+  if (gb_cols_bytes > 0) {
+    m_gb_cols_buf = reinterpret_cast<Uint32*>(p);
+    p += gb_cols_bytes;
+  } else {
+    m_gb_cols_buf = nullptr;
+  }
+  m_agg_results_buf = reinterpret_cast<AggResItem*>(p);
+  p += agg_results_bytes;
+  if (alloc_gb_map) {
+    m_gb_map_buf = new (p) JoinGBHashTable();
+    p += gb_map_bytes;
+  } else {
+    m_gb_map_buf = nullptr;
+  }
+  if (gb_types_bytes > 0) {
+    m_gb_types = reinterpret_cast<GBColTypeInfo*>(p);
+    memset(m_gb_types, 0, gb_types_bytes);
+    p += gb_types_bytes;
+  } else {
+    m_gb_types = nullptr;
+  }
+  return p;  /* start of extra-tail region, or one-past-end */
+}
 
 /*
  * Step 3a-A — release per-(group, slot) string MIN/MAX winner buffers
