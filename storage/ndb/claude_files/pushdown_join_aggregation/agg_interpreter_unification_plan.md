@@ -1,13 +1,18 @@
 # AggInterpreter ↔ JoinAggInterpreter Unification — Analysis & Plan
 
-**Status:** Steps 1 and 2 **complete**.  Step 1 (sub-steps 1.1 + 1.5 + 1.2 +
-1.3 + 1.4) deduplicated the entire compute engine (~1,900 lines).  Step 2
-(sub-steps 2a + 2b + 2c) swapped AggInterpreter's `std::map` + inline
+**Status:** Steps 1, 2 and 3a **complete**.  Step 1 (sub-steps 1.1 + 1.5 +
+1.2 + 1.3 + 1.4) deduplicated the entire compute engine (~1,900 lines).
+Step 2 (sub-steps 2a + 2b + 2c) swapped AggInterpreter's `std::map` + inline
 `m_mem_buf` bump pool for the shared `JoinGBHashTable` (1024 buckets) plus
-the chunk allocator that JoinAggInterpreter already used — same memory
-model on both interpreters.  All shipped and verified (build + agg test
-suite + RonSQL/CTE MTR green).  Step 3 (full collapse decision) not
-started.
+the chunk allocator.  Step 3a (sub-steps 3a-A + 3a-B) lifted the remaining
+scratch fields, statics, and `release_string_results` to the base, then
+unified the allocation model — both interpreters now carve a right-sized
+`m_buf_block` from `RG_QUERY_MEMORY` via the shared `initBufBlock` helper,
+with `~AggInterpreterBase()` as the single teardown site.  AggInterpreter
+no longer carries inline buffers; sizeof shrinks from ~30 KB to a few
+hundred bytes.  All shipped and verified (build + agg test suite +
+RonSQL/CTE MTR green).  Step 3b (decide on full collapse vs further
+targeted dedup) not started.
 **Goal:** the two interpreters share a large amount of duplicated code.
 `JoinAggInterpreter` has the better (more scalable) memory model. (1) Remove the
 duplication, then (2) make `AggInterpreter` use `JoinAggInterpreter`'s memory model
@@ -413,23 +418,82 @@ high-cardinality GROUP BY corner case that previously risked AggInterpreter's
 string MIN/MAX, and scalar queries all unchanged; both `sizeof` static_asserts
 hold; `rowsExamined`, batch sizing, and flow control behavior preserved.
 
-### Step 3 — Decide on full unification (deferred)
-After Steps 1–2, `AggInterpreter` and `JoinAggInterpreter` share the compute engine
-**and** the memory model; what remains distinct is only: AggInterpreter's streaming
-`Signal` drain vs JoinAgg's mutex / eviction / linked-attr / multi-leaf / CTE-mode /
-merge-redistribute cluster. Re-measure the remaining duplication and choose:
+### Step 3 — Take (a): keep AggInterpreter as a thin subclass, dedup more
 
-- **(a)** keep `AggInterpreter` as a thin normal-scan subclass of the base (its only
-  unique content is the streaming drain + the small-config setup), or
-- **(b)** fold it into `JoinAggInterpreter` as a "normal-scan mode" and delete the class,
-  repointing the one creation site + ~6 call sites and routing the streaming drain through
-  a mode flag.
+After Steps 1–2, AggInterpreter and JoinAggInterpreter share the compute engine
+and the memory model.  Maintainer decision (post Step-2 review):
 
-This decision is intentionally left until the remainder is concrete. Also retire the
-dead `Print()` / `getResultData()` and the obsolete `AGG_HASH_BUCKET_COUNT` alias if 2.2
-chose runtime bucket sizing, and update the docs (`CLAUDE.md`,
-`local_database_research.md`, `local_database_implementation.md`, block_unit
-`TESTING_GUIDE.md`).
+- **(a) is the path.**  AggInterpreter stays as a thin normal-scan subclass.  The
+  architectural split is real and load-bearing: AggInterpreter uses the streaming
+  per-batch `Signal` drain to the API; JoinAgg uses the persist-then-merge-then-emit
+  shape with cross-node redistribute, eviction, mutex, multi-leaf, linked-attr, and
+  CTE machinery.  Collapsing the two would force a runtime mode flag into JoinAgg
+  and tangle two different use cases.
+- **(b) (full collapse into JoinAgg as a normal-scan mode) is not pursued.**
+
+Step 3 therefore proceeds as a series of targeted dedup passes, each handling one
+of the categories of leftover identified in the post-Step-2 inventory:
+
+#### Step 3a ✅ DONE — Unify allocation + sizing
+Two sub-commits:
+
+**3a-A — Lift simple shared bits (zero behavior change).**  Lifted to
+`AggInterpreterBase`:
+- Scalar fields `m_cur_pos` / `m_attr_read_pos` / `m_processed_rows` /
+  `m_result_size` (same semantics in both subclasses).
+- Static constants `g_attr_read_buf_len_` / `g_result_header_size_` /
+  `g_result_header_size_per_group_` (same values).
+- `ATTR_READ_BUF_WORD_SIZE` macro (was `#define`-d in both subclass headers).
+- `release_string_results` body (adopts JoinAgg's defensive `m_agg_results !=
+  nullptr` check).
+
+**3a-B — Right-sized `m_buf_block` for both interpreters.**  Both interpreters
+now use a single allocation model: one `m_buf_block` carve from `RG_QUERY_MEMORY`
+slicing into the same six buffer slots in the same order.  AggInterpreter loses
+its inline 32 KB buffer wedge; its object header shrinks from ~30 KB to a few
+hundred bytes.
+
+Lifted to base:
+- Pointer fields `m_attr_read_buf` / `m_prog_buf` / `m_gb_cols_buf` /
+  `m_agg_results_buf` / `m_gb_map_buf` / `m_buf_block`.
+- `initBufBlock(prog_words, n_gb_cols_alloc, n_agg_results_alloc, alloc_gb_map,
+  extra_tail_bytes)` — single helper that allocates and carves, returning the
+  start of the extra-tail region (for JoinAgg's `m_cached_agg_ops`).
+- Virtual `~AggInterpreterBase()` — single teardown site: `release_string_results`
+  → `freeAllChunks` → free `m_xfrm_buf` → free `m_buf_block`.  Subclass
+  destructors default.
+
+Each subclass `Init` now peeks the program header (magic / `prog_len` /
+`n_gb_cols` / `n_agg_results` / version / reserved) directly from the input
+`prog` pointer *before* allocating, so `m_buf_block` is sized to the query's
+actual needs.  AggInterpreter right-sizes everything (and skips `m_gb_map_buf`
+when `n_gb_cols == 0`).  JoinAgg right-sizes `m_prog_buf` and `m_gb_cols_buf`
+but keeps `m_agg_results_buf` and the `m_cached_agg_ops` extra-tail MAX-sized
+because `setTotalAggResults` can override `m_n_agg_results` after `Init`.
+
+Footprint (AggInterpreter):
+- `SELECT COUNT(*) FROM t` ≈ 30 KB inline → ≈ 8 KB pool block + ~few-hundred-byte
+  object.  ~4× reduction.
+- `GROUP BY (a few cols, a few aggs)` ≈ 30 KB inline → ≈ 16 KB pool block + ~few-
+  hundred-byte object.  ~2× reduction.
+
+`static_assert(sizeof(...) <= MEM_CHUNK_SIZE)` removed from both subclass
+headers — trivially true now and misleading about where the storage lives.
+
+#### Step 3b (next) — Open: targeted dedup or stop
+
+After 3a, the remaining differences are: AggInterpreter's streaming drain
+(`PrepareAggResIfNeeded` / `NumOfResRecords`) vs JoinAgg's persist-then-merge-
+then-emit cluster.  Possible follow-ups:
+
+- Share `Init`'s header-parse / validate-embedded-programs prologue (currently
+  near-byte-identical between the two).
+- Lift the trivial inline accessors (`val_len` / `n_gb_cols` / `n_agg_results` /
+  `agg_results` / `processed_rows`) to the base.
+- Retire dead `Print()` / `getResultData()` if no consumer remains.
+
+Each is small and low-risk.  Step 3b may or may not be worth the churn; revisit
+once 3a is in production.
 
 ---
 
