@@ -1784,9 +1784,9 @@ public:
           low_load = 0;
         }
       }
-      handle->m_low_load = low_load;
     }
     jam();
+    handle->m_low_load = low_load;
     jamLine(m_num_rr_groups);
     ndbrequire(m_inited_rr_groups);
     ndbrequire(m_num_distribution_threads);
