@@ -32,6 +32,12 @@
 #include "Dbtup.hpp"             // Dbtup::KeyReqStruct (nested) — needed by initGBTypes
 #include "decimal.h"
 
+/* Step 3a-A — shared by both interpreters; was duplicated as `#define`
+ * in each subclass header. */
+#ifndef ATTR_READ_BUF_WORD_SIZE
+#define ATTR_READ_BUF_WORD_SIZE 2048
+#endif
+
 /**
  * AggInterpreterBase — shared base for AggInterpreter (normal-scan
  * aggregation) and JoinAggInterpreter (join / CTE aggregation).
@@ -75,6 +81,8 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_prog(nullptr), m_agg_prog_start_pos(0),
       m_n_agg_results(0), m_agg_results(nullptr),
       m_string_results(nullptr), m_current_thread_id(0),
+      m_cur_pos(0), m_attr_read_pos(0),
+      m_processed_rows(0), m_result_size(0),
       m_n_gb_cols(0), m_gb_cols(nullptr),
       m_gb_map(nullptr), m_n_groups(0),
       m_chunks(nullptr), m_chunks_tail(nullptr),
@@ -171,6 +179,12 @@ class AggInterpreterBase : public PushdownInterpreter {
   Int32 minMaxString(Uint32 reg_index, Uint32 agg_index,
                      AggResItem* agg_res_ptr, bool is_max);
   void freeGroupStringSlots(AggResItem* slots);
+  /* Step 3a-A: walk m_agg_results (scalar) + every group in m_gb_map,
+   * freeing per-(group, slot) string winner buffers, then free the
+   * m_string_results metadata array.  Adopts JoinAgg's defensive
+   * `m_agg_results != nullptr` check.  Called by each subclass'
+   * destructor before the group container itself is destroyed. */
+  void release_string_results();
   Uint32 stringPayloadSize(const AggResItem* slots) const;
   Uint32 encodeStringPayload(const AggResItem* slots, char* dst) const;
   bool hasStringSlots() const { return m_string_results != nullptr; }
@@ -251,6 +265,22 @@ class AggInterpreterBase : public PushdownInterpreter {
   // subclasses' opcode executors (the shared executor lands in 1.4).
   decimal_t m_decimal;
   decimal_digit_t m_decimal_buf[AGG_DECIMAL_BUFF_LENGTH];
+
+  /* Step 3a-A — shared per-row + per-program scratch / accounting.
+   * Both subclasses used these fields identically; lifted in 3a-A as
+   * a zero-behavior-change consolidation. */
+  Uint32 m_cur_pos;          // program-counter during Init parsing
+  Uint32 m_attr_read_pos;    // position in m_attr_read_buf during GB key read
+  Uint64 m_processed_rows;   // rows seen by ProcessRec
+  Uint32 m_result_size;      // bytes accumulated since last drain — drives
+                             // the per-batch streaming flush
+
+  /* Step 3a-A — wire-format header sizes used by both interpreters.
+   * Definitions live in AggInterpreterBase.cpp (each subclass used to
+   * carry its own identical copies). */
+  static Uint32 g_attr_read_buf_len_;
+  static Uint32 g_result_header_size_;
+  static Uint32 g_result_header_size_per_group_;
 
   /* Step 2b — shared GROUP BY column metadata + group store.
    * Both subclasses use the 1024-bucket JoinGBHashTable variant; the

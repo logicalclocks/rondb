@@ -1757,3 +1757,40 @@ Int32 AggInterpreterBase::initGBTypes(
   m_gb_map->setTypeMeta(m_gb_types, m_n_gb_cols, m_xfrm_buf, m_xfrm_buf_len);
   return 0;
 }
+
+/*
+ * Step 3a-A — wire-format header sizes used by both interpreters.
+ * Definitions previously duplicated in each subclass .cpp.
+ */
+Uint32 AggInterpreterBase::g_attr_read_buf_len_ = ATTR_READ_BUF_WORD_SIZE;
+Uint32 AggInterpreterBase::g_result_header_size_ = 3 * sizeof(Uint32);
+Uint32 AggInterpreterBase::g_result_header_size_per_group_ = sizeof(Uint32);
+
+/*
+ * Step 3a-A — release per-(group, slot) string MIN/MAX winner buffers
+ * plus the slot-level metadata array.  Walks m_agg_results (the
+ * no-GROUP-BY scalar slot array) and every live group in m_gb_map.
+ * Now that both subclasses use the same JoinGBHashTable container,
+ * the bodies are byte-identical except for JoinAgg's defensive
+ * `m_agg_results != nullptr` check; adopted here for both.
+ *
+ * Called by each subclass' destructor before the group container
+ * itself is torn down.
+ */
+void AggInterpreterBase::release_string_results() {
+  if (m_string_results == nullptr) {
+    return;
+  }
+  if (m_agg_results != nullptr) {
+    freeGroupStringSlots(m_agg_results);
+  }
+  if (m_gb_map != nullptr) {
+    for (auto iter = m_gb_map->begin(); iter.valid(); m_gb_map->next(iter)) {
+      Uint32 key_len = iter.keyLen();
+      AggResItem* slots =
+          reinterpret_cast<AggResItem*>(iter.data() + key_len);
+      freeGroupStringSlots(slots);
+    }
+  }
+  lc_ndbd_pool_free(m_string_results);
+}

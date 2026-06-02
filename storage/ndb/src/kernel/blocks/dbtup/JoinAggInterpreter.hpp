@@ -51,13 +51,11 @@ class JoinAggInterpreter : public AggInterpreterBase {
                      Uint32 thread_id):
     AggInterpreterBase(PushdownType::AGGREGATION, prog_len,
                        table_id, frag_id, thread_id),
-    m_cur_pos(0),
-    /* m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups lifted to base
-     * in Step 2b. */
-    m_attr_read_buf(nullptr), m_attr_read_pos(0),
+    /* m_cur_pos / m_attr_read_pos / m_processed_rows / m_result_size lifted
+     * to base in Step 3a-A; m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups
+     * lifted in Step 2b. */
+    m_attr_read_buf(nullptr),
     m_acc_offset(0),
-    m_processed_rows(0),
-    m_result_size(0),
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
     m_null_local_columns(false),
     m_use_mutex(false), m_max_groups(0), m_cte_mode(false),
@@ -222,22 +220,16 @@ class JoinAggInterpreter : public AggInterpreterBase {
                                               const char* appended,
                                               Uint32 appended_len);
 
-  Uint32 m_cur_pos;
-  // m_registers, m_register_string_data, m_n_agg_results, m_agg_results,
-  // m_n_gb_cols, m_gb_cols, m_gb_map, m_n_groups lifted to
-  // AggInterpreterBase in Steps 1.3 / 2b.
+  // m_cur_pos / m_attr_read_pos / m_processed_rows / m_result_size /
+  // m_registers / m_register_string_data / m_n_agg_results / m_agg_results /
+  // m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups / static wire-header
+  // constants all lifted to AggInterpreterBase in Steps 1.3 / 2b / 3a-A.
   Uint32* m_attr_read_buf;
-  Uint32 m_attr_read_pos;
 
   // Multi-leaf: accumulator offset applied after group lookup/creation.
   // agg_res_ptr is shifted by m_acc_offset so the leaf's 0-based program
   // indices map to the correct physical slots in the combined row.
   Uint32 m_acc_offset;
-  static Uint32 g_attr_read_buf_len_;
-  Uint64 m_processed_rows;
-  Uint32 m_result_size;
-  static Uint32 g_result_header_size_;
-  static Uint32 g_result_header_size_per_group_;
 
   // m_decimal, m_decimal_buf lifted to AggInterpreterBase in Step 1.3.
 
@@ -282,9 +274,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
   // Single allocation block for all dynamically allocated buffers above.
   void* m_buf_block;
 
-  // m_string_results lifted to AggInterpreterBase in Step 1.3.
-  // release_string_results stays per-class (GBHashTable iteration).
-  void release_string_results();
+  // m_string_results / release_string_results lifted to
+  // AggInterpreterBase in Steps 1.3 / 3a-A.
 };
 
 static_assert(sizeof(JoinAggInterpreter) <= MEM_CHUNK_SIZE,

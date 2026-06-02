@@ -36,9 +36,9 @@
 #include <NdbSqlUtil.hpp>
 #include <Interpreter.hpp>
 
-Uint32 AggInterpreter::g_attr_read_buf_len_ = ATTR_READ_BUF_WORD_SIZE;
-Uint32 AggInterpreter::g_result_header_size_ = 3 * sizeof(Uint32);
-Uint32 AggInterpreter::g_result_header_size_per_group_ = sizeof(Uint32);
+// g_attr_read_buf_len_ / g_result_header_size_ /
+// g_result_header_size_per_group_ definitions moved to
+// AggInterpreterBase.cpp in Step 3a-A.
 
 /*
  * PA related
@@ -1061,30 +1061,5 @@ Uint32 AggInterpreter::NumOfResRecords(bool last_time) {
   }
 }
 
-// Phase I.6 (F.2): release string MIN/MAX state.  Per-(group, slot)
-// winner buffers live in AggResItem.value.val_ptr inside m_gb_map's
-// group entries (or m_agg_results for the no-GROUP-BY scalar case);
-// walk both and free any non-null val_ptr whose slot type is one of
-// the string types.  Then free the slot-level metadata array.
-// Called only from the destructor — no post-free pointer clearing.
-void AggInterpreter::release_string_results() {
-  if (m_string_results == nullptr) {
-    return;
-  }
-  /* Step 2b: scalar (no-GROUP-BY) case + GROUP BY walk via the shared
-   * JoinGBHashTable iterator.  The per-group val_ptr free is delegated
-   * to the shared freeGroupStringSlots helper. */
-  if (m_agg_results != nullptr) {
-    freeGroupStringSlots(m_agg_results);
-  }
-  if (m_gb_map != nullptr) {
-    for (auto iter = m_gb_map->begin(); iter.valid(); m_gb_map->next(iter)) {
-      Uint32 key_len = iter.keyLen();
-      AggResItem* slots =
-          reinterpret_cast<AggResItem*>(iter.data() + key_len);
-      freeGroupStringSlots(slots);
-    }
-  }
-  lc_ndbd_pool_free(m_string_results);
-}
+// release_string_results body lifted to AggInterpreterBase in Step 3a-A.
 

@@ -31,8 +31,8 @@
 #include "Dbtup.hpp"
 #include "AggHashTable.hpp"  // for MEM_CHUNK_SIZE, AGG_EVICT_NEEDED
 
-#define ATTR_READ_BUF_WORD_SIZE 2048
-// DECIMAL_BUFF_LENGTH now lives in AggInterpreterBase.hpp (Step 1.3)
+// ATTR_READ_BUF_WORD_SIZE and DECIMAL_BUFF_LENGTH live in
+// AggInterpreterBase.hpp (Steps 1.3 / 3a-A).
 
 /**
  * AggInterpreter — aggregation interpreter for normal scan pushdown.
@@ -53,11 +53,9 @@ class AggInterpreter : public AggInterpreterBase {
                  Int64 table_id, Int64 frag_id,
                  Uint32 thread_id):
     AggInterpreterBase(PushdownType::AGGREGATION, prog_len,
-                       table_id, frag_id, thread_id),
-    m_cur_pos(0),
-    m_attr_read_pos(0),
-    m_processed_rows(0),
-    m_result_size(0) {
+                       table_id, frag_id, thread_id) {
+      /* m_cur_pos / m_attr_read_pos / m_processed_rows / m_result_size
+       * initialised by the base ctor (Step 3a-A). */
       memset(m_attr_read_buf, 0, sizeof(m_attr_read_buf));
   }
   ~AggInterpreter() override {
@@ -85,25 +83,13 @@ class AggInterpreter : public AggInterpreterBase {
   Uint64 processed_rows() const { return m_processed_rows; }
 
  private:
-  Uint32 m_cur_pos;
-  // m_registers / m_register_string_data / m_n_agg_results / m_agg_results
-  // / m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups all on
-  // AggInterpreterBase (Steps 1.3 / 2b).
-
-  Uint32 m_attr_read_pos;
-  static Uint32 g_attr_read_buf_len_;
-  Uint64 m_processed_rows;
-  Uint32 m_result_size;
-  static Uint32 g_result_header_size_;
-  static Uint32 g_result_header_size_per_group_;
-
-  // m_string_results / minMaxString / freeGroupStringSlots /
-  // stringPayloadSize / encodeStringPayload / hasStringSlots /
-  // m_current_thread_id / m_gb_types / m_xfrm_buf all lifted to
-  // AggInterpreterBase (Steps 1.3 / 2a / 2b).  release_string_results
-  // stays per-class — it iterates the GBHashTable plus the scalar
-  // m_agg_results, sharing freeGroupStringSlots per group.
-  void release_string_results();
+  // m_registers / m_register_string_data / m_n_agg_results / m_agg_results /
+  // m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups / m_cur_pos /
+  // m_attr_read_pos / m_processed_rows / m_result_size / g_attr_read_buf_len_
+  // / g_result_header_size_ / g_result_header_size_per_group_ /
+  // m_string_results / m_current_thread_id / m_gb_types / m_xfrm_buf /
+  // release_string_results all on AggInterpreterBase (Steps 1.3 / 2a / 2b /
+  // 3a-A).
 
   // All buffers inline so AggInterpreter fits a single 32KB page.
   Uint32 m_attr_read_buf[ATTR_READ_BUF_WORD_SIZE];       //  8,192 B
