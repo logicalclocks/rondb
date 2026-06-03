@@ -91,6 +91,362 @@
 #endif // DEBUG_PA_INTERP
 
 /**
+ * Step 3 Candidate B — shared post-prelude of the kOpLoadCol arm.
+ *
+ * See AggInterpreterBase.hpp for the contract.  Each subclass arm
+ * sets up `header` / `attrDescriptor` / linked-attr state, then calls
+ * this helper for the bulk of the work (~270 lines pre-3-B): type
+ * supported check, DECIMAL precision/scale word read (advances
+ * exec_pos), register init with NULL early-return, big switch on
+ * NDB_TYPE_*.  For string types, captures into
+ * m_register_string_data and bumps m_attr_read_pos so subsequent
+ * column reads don't overwrite the captured pointer.
+ *
+ * Verbose DEB_AGG / PA_INTERP_TRACE traces preserved from
+ * AggInterpreter's original arm (debug-only; JoinAgg gains the trace
+ * coverage in VM_TRACE builds).  The CTE linked-attr branch in the
+ * string case is a JoinAgg-only path — AggInterpreter never enters
+ * it because its prelude always sets attrDescriptor non-null.
+ */
+Int32 AggInterpreterBase::loadColumnTypedFromBuf(
+    DataType type, bool is_unsigned, Uint32 reg_index,
+    AttributeHeader* header, const Uint32* attrDescriptor,
+    bool linked_cte_attr, Uint32 linked_word0, Uint32 linked_word1,
+    Dbtup::KeyReqStruct* req_struct, Uint32& exec_pos,
+    const char* class_name) {
+  if (!TypeSupported(type)) {
+    DEB_AGG(("Unsupported column type: %u", type));
+    return ZAGG_COL_TYPE_UNSUPPORTED;
+  }
+
+  Int32 decimal_info = 0;
+  Int32 precision = 0;
+  Int32 scale = 0;
+  Int32 dec_ret = E_DEC_OK;
+  Uint8* dec_buf_ptr = nullptr;
+  double dec_val_dbl = 0;
+  longlong dec_val_ll = 0;
+  ulonglong dec_val_ull = 0;
+
+  if (type == NDB_TYPE_DECIMAL ||
+      type == NDB_TYPE_DECIMALUNSIGNED) {
+    if (unlikely(exec_pos >= m_prog_len)) {
+      g_eventLogger->debug("%s::ProcessRec ZAGG_OTHER_ERROR: "
+          "kOpLoadCol DECIMAL overflow exec_pos=%u prog_len=%u",
+          class_name, exec_pos, m_prog_len);
+      return ZAGG_OTHER_ERROR;
+    }
+    decimal_info =
+        sint4korr(reinterpret_cast<char*>(&m_prog[exec_pos++]));
+    precision = decimal_info >> 16;
+    scale = decimal_info & 0xFFFF;
+  }
+
+  ResetRegister(&m_registers[reg_index]);
+  m_registers[reg_index].type = AlignedType(type, scale);
+  m_registers[reg_index].is_unsigned = is_unsigned;
+  m_registers[reg_index].is_null = header->isNULL();
+  if (m_registers[reg_index].is_null) {
+    PA_INTERP_TRACE(m_frag_id,
+                    "Load NULL, type: %u",
+                    m_registers[reg_index].type);
+    m_registers[reg_index].value.val_int64 = 0;
+    return 0;
+  }
+
+  switch (type) {
+    case NDB_TYPE_TINYINT:
+      m_registers[reg_index].value.val_int64 =
+          *reinterpret_cast<Int8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_TINYINT %lld",
+                      m_registers[reg_index].value.val_int64);
+      return 0;
+    case NDB_TYPE_SMALLINT:
+      m_registers[reg_index].value.val_int64 =
+          sint2korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_SMALLINT %lld",
+                      m_registers[reg_index].value.val_int64);
+      return 0;
+    case NDB_TYPE_MEDIUMINT:
+      m_registers[reg_index].value.val_int64 =
+          sint3korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_MEDIUM %lld",
+                      m_registers[reg_index].value.val_int64);
+      return 0;
+    case NDB_TYPE_INT:
+      m_registers[reg_index].value.val_int64 =
+          sint4korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_INT %lld",
+                      m_registers[reg_index].value.val_int64);
+      return 0;
+    case NDB_TYPE_BIGINT:
+      m_registers[reg_index].value.val_int64 =
+          sint8korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_BIGINT %lld",
+                      m_registers[reg_index].value.val_int64);
+      return 0;
+    case NDB_TYPE_TINYUNSIGNED:
+      m_registers[reg_index].value.val_uint64 =
+          *reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_TINYUNSIGNED %llu",
+                      m_registers[reg_index].value.val_uint64);
+      return 0;
+    case NDB_TYPE_SMALLUNSIGNED:
+      m_registers[reg_index].value.val_uint64 =
+          uint2korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_SMALLUNSIGNED %llu",
+                      m_registers[reg_index].value.val_uint64);
+      return 0;
+    case NDB_TYPE_MEDIUMUNSIGNED:
+      m_registers[reg_index].value.val_uint64 =
+          uint3korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_MEDIUMUNSIGNED %llu",
+                      m_registers[reg_index].value.val_uint64);
+      return 0;
+    case NDB_TYPE_UNSIGNED:
+      m_registers[reg_index].value.val_uint64 =
+          uint4korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_UNSIGNED %llu",
+                      m_registers[reg_index].value.val_uint64);
+      return 0;
+    case NDB_TYPE_BIGUNSIGNED:
+      m_registers[reg_index].value.val_uint64 =
+          uint8korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_BIGUNSIGNED %llu",
+                      m_registers[reg_index].value.val_uint64);
+      return 0;
+    case NDB_TYPE_FLOAT:
+      m_registers[reg_index].value.val_double =
+          floatget(reinterpret_cast<unsigned char*>(
+                &m_attr_read_buf[m_attr_read_pos + 1]));
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_FLOAT %lf",
+                      m_registers[reg_index].value.val_double);
+      return 0;
+    case NDB_TYPE_DOUBLE:
+      m_registers[reg_index].value.val_double =
+          doubleget(reinterpret_cast<unsigned char*>(
+                &m_attr_read_buf[m_attr_read_pos + 1]));
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load NDB_TYPE_DOUBLE %lf",
+                      m_registers[reg_index].value.val_double);
+      return 0;
+    case NDB_TYPE_DECIMAL:
+      assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
+          header->getByteSize());
+      dec_ret = bin2decimal(reinterpret_cast<const uchar*>(
+                    &m_attr_read_buf[m_attr_read_pos + 1]),
+                &m_decimal, precision, scale);
+      if (dec_ret != E_DEC_OK) {
+        dec_buf_ptr = reinterpret_cast<Uint8*>(
+            &m_attr_read_buf[m_attr_read_pos + 1]);
+        char log_buf[128];
+        sprintf(log_buf, "Error while parsing decimal: ");
+        for (Uint32 i = 0; i < header->getByteSize(); i++) {
+          sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
+        }
+        DEB_AGG(("%s", log_buf));
+        if (dec_ret == E_DEC_OVERFLOW) {
+          return ZAGG_DECIMAL_PARSE_OVERFLOW;
+        } else {
+          return ZAGG_DECIMAL_PARSE_ERROR;
+        }
+      }
+      assert(m_registers[reg_index].is_unsigned == false);
+      if (scale != 0) {
+        assert(m_registers[reg_index].type == NDB_TYPE_DOUBLE);
+        dec_ret = decimal2double(&m_decimal, &dec_val_dbl);
+        m_registers[reg_index].value.val_double = dec_val_dbl;
+      } else {
+        assert(m_registers[reg_index].type == NDB_TYPE_BIGINT);
+        dec_ret = decimal2longlong(&m_decimal, &dec_val_ll);
+        m_registers[reg_index].value.val_int64 = dec_val_ll;
+      }
+      if (dec_ret != E_DEC_OK) {
+        dec_buf_ptr = reinterpret_cast<Uint8*>(
+            &m_attr_read_buf[m_attr_read_pos + 1]);
+        char log_buf[128];
+        sprintf(log_buf, "Error while converting decimal: ");
+        for (Uint32 i = 0; i < header->getByteSize(); i++) {
+          sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
+        }
+        DEB_AGG(("%s", log_buf));
+        if (dec_ret == E_DEC_OVERFLOW) {
+          return ZAGG_DECIMAL_CONV_OVERFLOW;
+        } else {
+          return ZAGG_DECIMAL_CONV_ERROR;
+        }
+      }
+#ifdef DEBUG_PA_INTERP
+      if (scale != 0) {
+        PA_INTERP_TRACE(m_frag_id,
+                        "Load NDB_TYPE_DECIMAL[double] %lf",
+                        m_registers[reg_index].value.val_double);
+      } else {
+        PA_INTERP_TRACE(m_frag_id,
+                        "Load NDB_TYPE_DECIMAL[int64] %lld",
+                        m_registers[reg_index].value.val_int64);
+      }
+#endif
+      return 0;
+
+    case NDB_TYPE_DECIMALUNSIGNED:
+      assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
+          header->getByteSize());
+      dec_ret = bin2decimal(reinterpret_cast<const uchar*>(
+                    &m_attr_read_buf[m_attr_read_pos + 1]),
+                &m_decimal, precision, scale);
+      if (dec_ret != E_DEC_OK) {
+        dec_buf_ptr = reinterpret_cast<Uint8*>(
+            &m_attr_read_buf[m_attr_read_pos + 1]);
+        char log_buf[128];
+        sprintf(log_buf, "Error while parsing decimal: ");
+        for (Uint32 i = 0; i < header->getByteSize(); i++) {
+          sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
+        }
+        DEB_AGG(("%s", log_buf));
+        if (dec_ret == E_DEC_OVERFLOW) {
+          return ZAGG_DECIMAL_PARSE_OVERFLOW;
+        } else {
+          return ZAGG_DECIMAL_PARSE_ERROR;
+        }
+      }
+      assert(m_registers[reg_index].is_unsigned == true);
+      if (unlikely(m_decimal.sign)) {
+        return ZAGG_DECIMAL_CONV_ERROR;
+      }
+      if (scale != 0) {
+        assert(m_registers[reg_index].type == NDB_TYPE_DOUBLE);
+        dec_ret = decimal2double(&m_decimal, &dec_val_dbl);
+        m_registers[reg_index].value.val_double = dec_val_dbl;
+      } else {
+        assert(m_registers[reg_index].type == NDB_TYPE_BIGINT);
+        dec_ret = decimal2ulonglong(&m_decimal, &dec_val_ull);
+        m_registers[reg_index].value.val_uint64 = dec_val_ull;
+      }
+      if (dec_ret != E_DEC_OK) {
+        dec_buf_ptr = reinterpret_cast<Uint8*>(
+            &m_attr_read_buf[m_attr_read_pos + 1]);
+        char log_buf[128];
+        sprintf(log_buf, "Error while converting decimal: ");
+        for (Uint32 i = 0; i < header->getByteSize(); i++) {
+          sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
+        }
+        DEB_AGG(("%s", log_buf));
+        if (dec_ret == E_DEC_OVERFLOW) {
+          return ZAGG_DECIMAL_CONV_OVERFLOW;
+        } else {
+          return ZAGG_DECIMAL_CONV_ERROR;
+        }
+      }
+#ifdef DEBUG_PA_INTERP
+      if (scale != 0) {
+        PA_INTERP_TRACE(m_frag_id,
+                        "Load NDB_TYPE_DECIMALUNSIGNED[double] %lf",
+                        m_registers[reg_index].value.val_double);
+      } else {
+        PA_INTERP_TRACE(m_frag_id,
+                        "Load NDB_TYPE_DECIMALUNSIGEND[uint64] %llu",
+                        m_registers[reg_index].value.val_uint64);
+      }
+#endif
+      return 0;
+
+    case NDB_TYPE_CHAR:
+    case NDB_TYPE_VARCHAR:
+    case NDB_TYPE_LONGVARCHAR: {
+      /* Phase I.6 (F.2-K.4b): stash a read-only view into
+       * m_attr_read_buf for a subsequent kOpMin / kOpMax to compare and
+       * copy without re-walking the AttributeDescriptor.  CTE linked-
+       * attr branch (Phase I.6 F.4-K.3, JoinAgg-only) reads the type
+       * metadata from the two linked-attr header words.  AggInterpreter
+       * never enters that branch (attrDescriptor is always non-null on
+       * its prelude path). */
+      const CHARSET_INFO* cs = nullptr;
+      Uint32 declared = 0;
+      if (attrDescriptor != nullptr) {
+        const Uint32 TattrDesc1 = attrDescriptor[0];
+        const Uint32 TattrDesc2 = attrDescriptor[1];
+        if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
+          const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+          cs = req_struct->tablePtrP->charsetArray[pos];
+        }
+        declared = AttributeDescriptor::getSizeInBytes(TattrDesc1);
+      } else if (linked_cte_attr) {
+        const Uint32 linked_type = CteLinkedAttr::decodeTypeId(linked_word0);
+        if (linked_type != type) {
+          return ZAGG_LOAD_COL_WRONG_TYPE;
+        }
+        declared = CteLinkedAttr::decodeMaxBytes(linked_word0);
+        const Uint32 csNumber = CteLinkedAttr::decodeCsNumber(linked_word1);
+        if (csNumber != 0) {
+          cs = all_charsets[csNumber];
+        }
+      } else {
+        return ZAGG_LOAD_COL_WRONG_TYPE;
+      }
+      const Uint16 prefix =
+          (type == NDB_TYPE_CHAR) ? 0 :
+          (type == NDB_TYPE_VARCHAR) ? 1 : 2;
+      char* base = reinterpret_cast<char*>(
+          &m_attr_read_buf[m_attr_read_pos + 1]);
+      Uint16 payload_len;
+      if (type == NDB_TYPE_CHAR) {
+        payload_len = static_cast<Uint16>(
+            attrDescriptor != nullptr ? declared :
+            header->getByteSize());
+      } else if (type == NDB_TYPE_VARCHAR) {
+        payload_len = static_cast<Uint16>(static_cast<Uint8>(base[0]));
+      } else {
+        payload_len = static_cast<Uint16>(
+            static_cast<Uint8>(base[0]) |
+            (static_cast<Uint16>(static_cast<Uint8>(base[1])) << 8));
+      }
+      StringResult& sr = m_register_string_data[reg_index];
+      sr.ptr = base;
+      sr.length = payload_len;
+      sr.size = 0;
+      sr.prefix_bytes = prefix;
+      sr.declared_size = static_cast<Uint16>(declared);
+      sr.charset = cs;
+      m_registers[reg_index].value.val_int64 = 0;
+      /* Advance m_attr_read_pos past the AttributeHeader + string bytes
+       * so the next kOpLoadCol doesn't overwrite the captured ptr.
+       * Numeric paths leave m_attr_read_pos at 0 (they extract into the
+       * register's 8-byte union and the buffer is then disposable);
+       * strings need the buffer to stay live until kOpMax / kOpMin runs
+       * minMaxString. */
+      const Uint32 string_bytes = prefix + payload_len;
+      const Uint32 words_consumed = 1 /*AttributeHeader*/ +
+                                    ((string_bytes + 3) >> 2);
+      if (unlikely(m_attr_read_pos + words_consumed >
+                   g_attr_read_buf_len_)) {
+        g_eventLogger->debug("%s::ProcessRec "
+            "ZAGG_OTHER_ERROR: string attr buffer overflow "
+            "pos=%u words=%u buf_words=%u",
+            class_name, m_attr_read_pos, words_consumed,
+            g_attr_read_buf_len_);
+        return ZAGG_OTHER_ERROR;
+      }
+      m_attr_read_pos += words_consumed;
+      return 0;
+    }
+    default:
+      return ZAGG_LOAD_COL_WRONG_TYPE;
+  }
+}
+
+/**
  * Step 3 Candidate A — peek and validate the program header from the
  * input prog buffer before m_buf_block is allocated.  Bodies in both
  * subclasses' Inits used to do this identically (after sed-collapsing

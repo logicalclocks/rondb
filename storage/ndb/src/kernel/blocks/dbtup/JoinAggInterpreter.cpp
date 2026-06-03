@@ -461,272 +461,67 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     AttributeHeader* header = nullptr;
 
     switch (op) {
-      case kOpLoadCol:
+      case kOpLoadCol: {
         type = (value & 0x03E00000) >> 21;
         is_unsigned = IsUnsigned(type);
         reg_index = (value & 0x000F0000) >> 16;
         linked_word0 = 0;
         linked_word1 = 0;
         linked_cte_attr = false;
-        {
-          Uint32 col_id_raw = value & 0x0000FFFF;
-          if ((col_id_raw & 0x8000) != 0 && m_linked_attr_data != nullptr) {
-            Uint32 position = col_id_raw & 0x7FFF;
-            const Uint32* p = m_linked_attr_data;
-            const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
-            Uint32 pos_count = 0;
-            while (p < p_end) {
-              if (pos_count == position) break;
-              p += 2;
-              p += 1 + AttributeHeader::getDataSize(*p);
-              pos_count++;
-            }
-            if (p >= p_end) {
-              g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
-                  "kOpLoadCol linked position %u not found in buffer "
-                  "(linked_len=%u)", position, m_linked_attr_len);
-              return ZAGG_OTHER_ERROR;
-            }
-            linked_word0 = p[0];
-            linked_word1 = p[1];
-            linked_cte_attr = CteLinkedAttr::isCteMarker(linked_word0);
+        Uint32 col_id_raw = value & 0x0000FFFF;
+        if ((col_id_raw & 0x8000) != 0 && m_linked_attr_data != nullptr) {
+          Uint32 position = col_id_raw & 0x7FFF;
+          const Uint32* p = m_linked_attr_data;
+          const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
+          Uint32 pos_count = 0;
+          while (p < p_end) {
+            if (pos_count == position) break;
             p += 2;
-            Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-            memcpy(m_attr_read_buf + m_attr_read_pos, p, words * sizeof(Uint32));
-            header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
-            attrDescriptor = nullptr;
-          } else {
-            if (m_null_local_columns) {
-              AttributeHeader null_ah(col_id_raw, 0);
-              m_attr_read_buf[m_attr_read_pos] = null_ah.m_value;
-              header = reinterpret_cast<AttributeHeader*>(
-                  m_attr_read_buf + m_attr_read_pos);
-              attrDescriptor = nullptr;
-            } else {
-              ret = block_tup->readSingleAttribute(
-                  req_struct, col_id_raw,
-                  m_attr_read_buf + m_attr_read_pos,
-                  g_attr_read_buf_len_ - m_attr_read_pos);
-              if (ret < 0) {
-                DEB_AGG(("read column error: %d", ret));
-                return -ret;
-              }
-              header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
-              attrDescriptor =
-                  req_struct->tablePtrP->tabDescriptor + (col_id_raw * ZAD_SIZE);
-              assert(header->getAttributeId() == col_id_raw);
-              assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
-            }
+            p += 1 + AttributeHeader::getDataSize(*p);
+            pos_count++;
           }
-        }
-        if (!TypeSupported(type)) {
-          DEB_AGG(("Unsupported column type: %u", type));
-          return ZAGG_COL_TYPE_UNSUPPORTED;
-        }
-
-        if (type == NDB_TYPE_DECIMAL ||
-            type == NDB_TYPE_DECIMALUNSIGNED) {
-          if (unlikely(exec_pos >= m_prog_len)) {
+          if (p >= p_end) {
+            g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
+                "kOpLoadCol linked position %u not found in buffer "
+                "(linked_len=%u)", position, m_linked_attr_len);
             return ZAGG_OTHER_ERROR;
           }
-          decimal_info =
-              sint4korr(reinterpret_cast<char*>(&m_prog[exec_pos++]));
-          precision = decimal_info >> 16;
-          scale = decimal_info & 0xFFFF;
+          linked_word0 = p[0];
+          linked_word1 = p[1];
+          linked_cte_attr = CteLinkedAttr::isCteMarker(linked_word0);
+          p += 2;
+          Uint32 words = 1 + AttributeHeader::getDataSize(*p);
+          memcpy(m_attr_read_buf + m_attr_read_pos, p, words * sizeof(Uint32));
+          header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
+          attrDescriptor = nullptr;
+        } else if (m_null_local_columns) {
+          AttributeHeader null_ah(col_id_raw, 0);
+          m_attr_read_buf[m_attr_read_pos] = null_ah.m_value;
+          header = reinterpret_cast<AttributeHeader*>(
+              m_attr_read_buf + m_attr_read_pos);
+          attrDescriptor = nullptr;
         } else {
-          precision = 0;
-          scale = 0;
-        }
-
-        ResetRegister(&m_registers[reg_index]);
-        m_registers[reg_index].type = AlignedType(type, scale);
-        m_registers[reg_index].is_unsigned = is_unsigned;
-        m_registers[reg_index].is_null = header->isNULL();
-        if (m_registers[reg_index].is_null) {
-          m_registers[reg_index].value.val_int64 = 0;
-          break;
-        }
-        switch (type) {
-          case NDB_TYPE_TINYINT:
-            m_registers[reg_index].value.val_int64 =
-                *reinterpret_cast<Int8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
-            break;
-          case NDB_TYPE_SMALLINT:
-            m_registers[reg_index].value.val_int64 =
-                sint2korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            break;
-          case NDB_TYPE_MEDIUMINT:
-            m_registers[reg_index].value.val_int64 =
-                sint3korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            break;
-          case NDB_TYPE_INT:
-            m_registers[reg_index].value.val_int64 =
-                sint4korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            break;
-          case NDB_TYPE_BIGINT:
-            m_registers[reg_index].value.val_int64 =
-                sint8korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            break;
-          case NDB_TYPE_TINYUNSIGNED:
-            m_registers[reg_index].value.val_uint64 =
-                *reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
-            break;
-          case NDB_TYPE_SMALLUNSIGNED:
-            m_registers[reg_index].value.val_uint64 =
-                uint2korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            break;
-          case NDB_TYPE_MEDIUMUNSIGNED:
-            m_registers[reg_index].value.val_uint64 =
-                uint3korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            break;
-          case NDB_TYPE_UNSIGNED:
-            m_registers[reg_index].value.val_uint64 =
-                uint4korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            break;
-          case NDB_TYPE_BIGUNSIGNED:
-            m_registers[reg_index].value.val_uint64 =
-                uint8korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            break;
-          case NDB_TYPE_FLOAT:
-            m_registers[reg_index].value.val_double =
-                floatget(reinterpret_cast<unsigned char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-            break;
-          case NDB_TYPE_DOUBLE:
-            m_registers[reg_index].value.val_double =
-                doubleget(reinterpret_cast<unsigned char*>(
-                      &m_attr_read_buf[m_attr_read_pos + 1]));
-            break;
-          case NDB_TYPE_DECIMAL:
-            assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
-                header->getByteSize());
-            dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&m_attr_read_buf[m_attr_read_pos + 1]),
-                      &m_decimal, precision, scale);
-            if (dec_ret != E_DEC_OK) {
-              if (dec_ret == E_DEC_OVERFLOW) return ZAGG_DECIMAL_PARSE_OVERFLOW;
-              else return ZAGG_DECIMAL_PARSE_ERROR;
-            }
-            assert(m_registers[reg_index].is_unsigned == false);
-            if (scale != 0) {
-              assert(m_registers[reg_index].type == NDB_TYPE_DOUBLE);
-              dec_ret = decimal2double(&m_decimal, &dec_val_dbl);
-              m_registers[reg_index].value.val_double = dec_val_dbl;
-            } else {
-              assert(m_registers[reg_index].type == NDB_TYPE_BIGINT);
-              dec_ret = decimal2longlong(&m_decimal, &dec_val_ll);
-              m_registers[reg_index].value.val_int64 = dec_val_ll;
-            }
-            if (dec_ret != E_DEC_OK) {
-              if (dec_ret == E_DEC_OVERFLOW) return ZAGG_DECIMAL_CONV_OVERFLOW;
-              else return ZAGG_DECIMAL_CONV_ERROR;
-            }
-          break;
-        case NDB_TYPE_DECIMALUNSIGNED:
-            assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
-                header->getByteSize());
-            dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&m_attr_read_buf[m_attr_read_pos + 1]),
-                      &m_decimal, precision, scale);
-            if (dec_ret != E_DEC_OK) {
-              if (dec_ret == E_DEC_OVERFLOW) return ZAGG_DECIMAL_PARSE_OVERFLOW;
-              else return ZAGG_DECIMAL_PARSE_ERROR;
-            }
-            assert(m_registers[reg_index].is_unsigned == true);
-            if(unlikely(m_decimal.sign)) return ZAGG_DECIMAL_CONV_ERROR;
-            if (scale != 0) {
-              assert(m_registers[reg_index].type == NDB_TYPE_DOUBLE);
-              dec_ret = decimal2double(&m_decimal, &dec_val_dbl);
-              m_registers[reg_index].value.val_double = dec_val_dbl;
-            } else {
-              assert(m_registers[reg_index].type == NDB_TYPE_BIGINT);
-              dec_ret = decimal2ulonglong(&m_decimal, &dec_val_ull);
-              m_registers[reg_index].value.val_uint64 = dec_val_ull;
-            }
-            if (dec_ret != E_DEC_OK) {
-              if (dec_ret == E_DEC_OVERFLOW) return ZAGG_DECIMAL_CONV_OVERFLOW;
-              else return ZAGG_DECIMAL_CONV_ERROR;
-            }
-          break;
-          case NDB_TYPE_CHAR:
-          case NDB_TYPE_VARCHAR:
-          case NDB_TYPE_LONGVARCHAR: {
-            // Phase I.6 (F.2-K.4b): see AggInterpreter.cpp for the
-            // local-table pattern.  Phase I.6 F.4-K.3 adds the CTE
-            // linked-attr path, where type metadata is carried in the
-            // two linked-attr header words before AttributeHeader.
-            const CHARSET_INFO* cs = nullptr;
-            Uint32 declared = 0;
-            if (attrDescriptor != nullptr) {
-              const Uint32 TattrDesc1 = attrDescriptor[0];
-              const Uint32 TattrDesc2 = attrDescriptor[1];
-              if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
-                const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
-                cs = req_struct->tablePtrP->charsetArray[pos];
-              }
-              declared = AttributeDescriptor::getSizeInBytes(TattrDesc1);
-            } else if (linked_cte_attr) {
-              const Uint32 linked_type = CteLinkedAttr::decodeTypeId(
-                  linked_word0);
-              if (linked_type != type) {
-                return ZAGG_LOAD_COL_WRONG_TYPE;
-              }
-              declared = CteLinkedAttr::decodeMaxBytes(linked_word0);
-              const Uint32 csNumber = CteLinkedAttr::decodeCsNumber(
-                  linked_word1);
-              if (csNumber != 0) {
-                cs = all_charsets[csNumber];
-              }
-            } else {
-              return ZAGG_LOAD_COL_WRONG_TYPE;
-            }
-            const Uint16 prefix =
-                (type == NDB_TYPE_CHAR) ? 0 :
-                (type == NDB_TYPE_VARCHAR) ? 1 : 2;
-            char* base = reinterpret_cast<char*>(
-                &m_attr_read_buf[m_attr_read_pos + 1]);
-            Uint16 payload_len;
-            if (type == NDB_TYPE_CHAR) {
-              payload_len = static_cast<Uint16>(
-                  attrDescriptor != nullptr ? declared :
-                  header->getByteSize());
-            } else if (type == NDB_TYPE_VARCHAR) {
-              payload_len = static_cast<Uint16>(
-                  static_cast<Uint8>(base[0]));
-            } else {
-              payload_len = static_cast<Uint16>(
-                  static_cast<Uint8>(base[0]) |
-                  (static_cast<Uint16>(static_cast<Uint8>(base[1])) << 8));
-            }
-            StringResult& sr = m_register_string_data[reg_index];
-            sr.ptr = base;
-            sr.length = payload_len;
-            sr.size = 0;
-            sr.prefix_bytes = prefix;
-            sr.declared_size = static_cast<Uint16>(declared);
-            sr.charset = cs;
-            m_registers[reg_index].value.val_int64 = 0;
-            // See AggInterpreter.cpp for rationale — bump
-            // m_attr_read_pos past the string so the next kOpLoadCol
-            // doesn't clobber the captured ptr.
-            {
-              const Uint32 string_bytes = prefix + payload_len;
-              const Uint32 words_consumed = 1 /*AttributeHeader*/ +
-                                            ((string_bytes + 3) >> 2);
-              if (unlikely(m_attr_read_pos + words_consumed >
-                           g_attr_read_buf_len_)) {
-                g_eventLogger->debug("JoinAggInterpreter::ProcessRec "
-                    "ZAGG_OTHER_ERROR: string attr buffer overflow "
-                    "pos=%u words=%u buf_words=%u",
-                    m_attr_read_pos, words_consumed, g_attr_read_buf_len_);
-                return ZAGG_OTHER_ERROR;
-              }
-              m_attr_read_pos += words_consumed;
-            }
-            break;
+          ret = block_tup->readSingleAttribute(
+              req_struct, col_id_raw,
+              m_attr_read_buf + m_attr_read_pos,
+              g_attr_read_buf_len_ - m_attr_read_pos);
+          if (ret < 0) {
+            DEB_AGG(("read column error: %d", ret));
+            return -ret;
           }
-          default:
-            return ZAGG_LOAD_COL_WRONG_TYPE;
+          header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
+          attrDescriptor =
+              req_struct->tablePtrP->tabDescriptor + (col_id_raw * ZAD_SIZE);
+          assert(header->getAttributeId() == col_id_raw);
+          assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
         }
+        Int32 lret = loadColumnTypedFromBuf(
+            type, is_unsigned, reg_index, header, attrDescriptor,
+            linked_cte_attr, linked_word0, linked_word1,
+            req_struct, exec_pos, "JoinAggInterpreter");
+        if (lret != 0) return lret;
         break;
-
+      }
       case kOpEmbeddedInterp:
       {
         Uint32 emb_len = value & 0xFFFF;

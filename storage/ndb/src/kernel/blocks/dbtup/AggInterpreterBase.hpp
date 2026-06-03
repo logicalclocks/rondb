@@ -281,6 +281,42 @@ class AggInterpreterBase : public PushdownInterpreter {
   void initSharedAfterAlloc(const Uint32* prog);
 
   /**
+   * Step 3 Candidate B — shared post-prelude of the kOpLoadCol arm.
+   *
+   * Each subclass's ProcessRec kOpLoadCol dispatch arm has its own
+   * prelude that reads the column data into m_attr_read_buf and sets
+   * `header` (always non-null), `attrDescriptor` (non-null for
+   * local-table reads, nullptr for linked-attr reads), and the linked
+   * metadata (`linked_cte_attr` / `linked_word0` / `linked_word1`,
+   * JoinAgg-only).  AggInterpreter's prelude is the simple local-
+   * column path; JoinAgg's branches on linked-attr / NULL-extended
+   * row / CTE marker.
+   *
+   * After the prelude, the remainder of the arm is identical in
+   * shape: TypeSupported check, DECIMAL precision/scale word read
+   * (advances exec_pos), ResetRegister + type/is_unsigned/is_null
+   * setup with NULL early-return, then the typed-extraction switch.
+   * For CHAR/VARCHAR/LONGVARCHAR, capture into
+   * m_register_string_data[reg_index] and advance m_attr_read_pos
+   * past the string so a subsequent kOpLoadCol in the same row
+   * doesn't clobber the captured pointer.
+   *
+   * Returns 0 on success or a positive ZAGG_* error code.  Sets
+   * exec_pos forward for DECIMAL.  When the linked-attr branches do
+   * not apply (AggInterpreter), pass linked_cte_attr=false and
+   * linked_word0=linked_word1=0; attrDescriptor must be non-null.
+   */
+  Int32 loadColumnTypedFromBuf(DataType type, bool is_unsigned,
+                                Uint32 reg_index,
+                                AttributeHeader* header,
+                                const Uint32* attrDescriptor,
+                                bool linked_cte_attr,
+                                Uint32 linked_word0, Uint32 linked_word1,
+                                Dbtup::KeyReqStruct* req_struct,
+                                Uint32& exec_pos,
+                                const char* class_name);
+
+  /**
    * scanAndValidateEmbeddedPrograms — walk m_prog from
    * m_agg_prog_start_pos to m_prog_len and invoke
    * validateEmbeddedProgram on every kOpEmbeddedInterp arm.  Both
