@@ -161,6 +161,12 @@ extern "C"
   Uint32 Ndb_GetRRGroups(Uint32 query_instances, Uint32 max_rr_group_size);
 
   /**
+   * Print CPU topology used for CPU binding. This includes CPU core
+   * groups, physical L3 cache groups and virtual L3 cache groups.
+   */
+  void Ndb_PrintCPUBindingTopology();
+
+  /**
    * Get the CPU id of all the CPUs in the CPU core of the
    * CPU issued.
    */

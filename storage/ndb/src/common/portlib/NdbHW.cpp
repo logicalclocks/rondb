@@ -25,12 +25,14 @@
 
 #include <NdbThread.h>
 #include <NdbTick.h>
+#include <EventLogger.hpp>
 #include <ndb_limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <File.hpp>
 #include <NdbHW.hpp>
 #include <UtilBuffer.hpp>
+#include <util/BaseString.hpp>
 #include <iostream>
 #include <thread>
 #include "../src/common/util/parse_mask.hpp"
@@ -1105,6 +1107,109 @@ Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances,
                   num_rr_groups,
                   num_query_instances);
   return num_rr_groups;
+}
+
+static void
+append_cpu_id(BaseString &str, bool &first_cpu, Uint32 cpu_id)
+{
+  if (!first_cpu)
+  {
+    str.appfmt(",");
+  }
+  str.appfmt("%u", cpu_id);
+  first_cpu = false;
+}
+
+void
+Ndb_PrintCPUBindingTopology()
+{
+  struct ndb_hwinfo *hwinfo = g_ndb_hwinfo;
+  if (hwinfo == nullptr ||
+      !hwinfo->is_cpuinfo_available ||
+      hwinfo->cpu_info == nullptr)
+  {
+    return;
+  }
+
+  g_eventLogger->info("CPU binding topology:");
+  for (Uint32 cpu_id = 0; cpu_id < hwinfo->cpu_cnt_max; cpu_id++)
+  {
+    if (!hwinfo->cpu_info[cpu_id].online)
+    {
+      continue;
+    }
+    bool first_core_cpu = true;
+    for (Uint32 prev_cpu = 0; prev_cpu < cpu_id; prev_cpu++)
+    {
+      if (hwinfo->cpu_info[prev_cpu].online &&
+          hwinfo->cpu_info[prev_cpu].core_id ==
+            hwinfo->cpu_info[cpu_id].core_id &&
+          hwinfo->cpu_info[prev_cpu].package_id ==
+            hwinfo->cpu_info[cpu_id].package_id)
+      {
+        first_core_cpu = false;
+        break;
+      }
+    }
+    if (!first_core_cpu)
+    {
+      continue;
+    }
+
+    BaseString cpus;
+    bool first_cpu = true;
+    for (Uint32 group_cpu = cpu_id;
+         group_cpu < hwinfo->cpu_cnt_max;
+         group_cpu++)
+    {
+      if (hwinfo->cpu_info[group_cpu].online &&
+          hwinfo->cpu_info[group_cpu].core_id ==
+            hwinfo->cpu_info[cpu_id].core_id &&
+          hwinfo->cpu_info[group_cpu].package_id ==
+            hwinfo->cpu_info[cpu_id].package_id)
+      {
+        append_cpu_id(cpus, first_cpu, group_cpu);
+      }
+    }
+    g_eventLogger->info("  Core group package=%u core=%u cpus=[%s]",
+                        hwinfo->cpu_info[cpu_id].package_id,
+                        hwinfo->cpu_info[cpu_id].core_id,
+                        cpus.c_str());
+  }
+
+  for (Uint32 l3_id = 0; l3_id < hwinfo->num_shared_l3_caches; l3_id++)
+  {
+    BaseString cpus;
+    bool first_cpu = true;
+    for (Uint32 cpu_id = 0; cpu_id < hwinfo->cpu_cnt_max; cpu_id++)
+    {
+      if (hwinfo->cpu_info[cpu_id].online &&
+          hwinfo->cpu_info[cpu_id].l3_cache_id == l3_id)
+      {
+        append_cpu_id(cpus, first_cpu, cpu_id);
+      }
+    }
+    g_eventLogger->info("  L3 cache group %u cpus=[%s]",
+                        l3_id,
+                        cpus.c_str());
+  }
+
+  for (Uint32 virt_l3_id = 0;
+       virt_l3_id < hwinfo->num_virt_l3_caches;
+       virt_l3_id++)
+  {
+    BaseString cpus;
+    bool first_cpu = true;
+    Uint32 cpu_id = g_first_virt_l3_cache[virt_l3_id];
+    while (cpu_id != RNIL)
+    {
+      append_cpu_id(cpus, first_cpu, cpu_id);
+      cpu_id = hwinfo->cpu_info[cpu_id].next_virt_l3_cpu_map;
+    }
+    g_eventLogger->info("  Virtual L3 group %u cpus=[%s]",
+                        virt_l3_id,
+                        cpus.c_str());
+  }
 }
 
 static struct ndb_hwinfo *Ndb_SetHWInfo() {

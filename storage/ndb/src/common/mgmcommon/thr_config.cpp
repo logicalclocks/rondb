@@ -668,6 +668,7 @@ THRConfig::do_parse_auto(unsigned realtime,
     }
     num_rr_groups =
       Ndb_CreateCPUMap(num_query_instances, max_rr_group_size, num_cpus);
+    Ndb_PrintCPUBindingTopology();
     Uint32 count_ldm_threads = ldm_threads;
     Uint32 count_tc_threads = tc_threads;
     Uint32 count_main_threads = main_threads;
