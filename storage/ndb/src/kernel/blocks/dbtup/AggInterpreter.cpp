@@ -152,6 +152,13 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         Dbtup::KeyReqStruct* req_struct,
         Uint32 thread_id) {
   m_current_thread_id = thread_id;
+  /* Step 3 Cand-C: bind m_attr_read_buf to the per-LDM-thread scratch
+   * buffer on the Dbtup block instance.  The buffer is reused across
+   * concurrent AggInterpreter instances on the same thread because
+   * ProcessRec runs single-threaded per LDM thread; the buffer's
+   * liveness is per-ProcessRec-call. */
+  require(block_tup != nullptr);
+  m_attr_read_buf = block_tup->getAggAttrReadBuf();
   if (!m_inited || req_struct->read_length != 0) {
     g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR at entry: "
             "inited=%d, read_length=%u",
@@ -235,15 +242,9 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
    * helper in Step 1.4. */
 
   const Uint32* attrDescriptor = nullptr;
-
-  Int32 decimal_info = 0;
-  Int32 precision = 0;
-  Int32 scale = 0;
-  Int32 dec_ret = E_DEC_OK;
-  Uint8* dec_buf_ptr = nullptr;
-  double dec_val_dbl = 0;
-  longlong dec_val_ll = 0;
-  ulonglong dec_val_ull = 0;
+  /* decimal_info / precision / scale / dec_ret / dec_buf_ptr /
+   * dec_val_dbl / dec_val_ll / dec_val_ull moved into
+   * AggInterpreterBase::loadColumnTypedFromBuf in Step 3 Cand-B. */
 
   Uint32 exec_pos = m_agg_prog_start_pos;
   bool debug_print = (m_frag_id == DEBUG_PA_INTERP_PART_ID);

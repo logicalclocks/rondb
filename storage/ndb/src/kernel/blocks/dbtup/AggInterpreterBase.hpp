@@ -32,11 +32,12 @@
 #include "Dbtup.hpp"             // Dbtup::KeyReqStruct (nested) — needed by initGBTypes
 #include "decimal.h"
 
-/* Step 3a-A — shared by both interpreters; was duplicated as `#define`
- * in each subclass header. */
-#ifndef ATTR_READ_BUF_WORD_SIZE
-#define ATTR_READ_BUF_WORD_SIZE 2048
-#endif
+/* ATTR_READ_BUF_WORD_SIZE retired in Step 3 Cand-C.  The scratch
+ * buffer that used to live inline at this size is now an LDM-thread-
+ * scoped Uint32 m_agg_attr_read_buf[MAX_TUPLE_SIZE_IN_WORDS] on the
+ * Dbtup block instance; AggInterpreter::ProcessRec sets
+ * m_attr_read_buf = block_tup->getAggAttrReadBuf() on entry.  See
+ * Dbtup::AGG_ATTR_READ_BUF_WORD_SIZE. */
 
 /**
  * AggInterpreterBase — shared base for AggInterpreter (normal-scan

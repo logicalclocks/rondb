@@ -286,6 +286,12 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Dbtup::KeyReqStruct* req_struct,
         Uint32 thread_id) {
   m_current_thread_id = thread_id;
+  /* Step 3 Cand-C: bind m_attr_read_buf to the calling LDM thread's
+   * Dbtup scratch buffer.  processNullExtendedRow / processRecWithLinkedAttrs
+   * both pass block_tup; the buffer is per-thread so MUTEX_BASED's
+   * shared interpreter sees the calling thread's buffer on each entry. */
+  require(block_tup != nullptr);
+  m_attr_read_buf = block_tup->getAggAttrReadBuf();
   if (!m_inited) {
     g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: not inited");
     return ZAGG_OTHER_ERROR;
@@ -442,14 +448,9 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
   Uint32 linked_word0 = 0;
   Uint32 linked_word1 = 0;
   bool linked_cte_attr = false;
-
-  Int32 decimal_info = 0;
-  Int32 precision = 0;
-  Int32 scale = 0;
-  Int32 dec_ret = E_DEC_OK;
-  double dec_val_dbl = 0;
-  longlong dec_val_ll = 0;
-  ulonglong dec_val_ull = 0;
+  /* decimal_info / precision / scale / dec_ret / dec_val_dbl /
+   * dec_val_ll / dec_val_ull moved into
+   * AggInterpreterBase::loadColumnTypedFromBuf in Step 3 Cand-B. */
 
   Uint32 exec_pos = m_agg_prog_start_pos;
   bool debug_print = (m_frag_id == DEBUG_PA_INTERP_PART_ID);
@@ -1308,6 +1309,7 @@ void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup) {
 }
 
 Int32 JoinAggInterpreter::processNullExtendedRow(
+    Dbtup* block_tup,
     const Uint32* linked_attr_data,
     Uint32 linked_attr_len,
     Uint32 thread_id,
@@ -1326,7 +1328,12 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
   m_linked_attr_len = linked_attr_len;
   m_null_local_columns = true;
 
-  Int32 ret = ProcessRec(nullptr, nullptr, thread_id);
+  /* Step 3 Cand-C: block_tup is needed inside ProcessRec to bind
+   * m_attr_read_buf to the per-LDM-thread scratch on Dbtup.  The
+   * null-extended row path still passes req_struct=nullptr (no row
+   * data to read) — m_null_local_columns drives kOpLoadCol to
+   * synthesise NULL AttributeHeaders into m_attr_read_buf instead. */
+  Int32 ret = ProcessRec(block_tup, nullptr, thread_id);
 
   m_null_local_columns = false;
   m_linked_attr_data = nullptr;

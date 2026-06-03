@@ -490,7 +490,9 @@ void AggInterpreterBase::peekProgramHeader(const Uint32* prog,
 void AggInterpreterBase::initSharedAfterAlloc(const Uint32* prog) {
   m_prog = m_prog_buf;
   memcpy(m_prog, prog, m_prog_len * sizeof(Uint32));
-  memset(m_attr_read_buf, 0, ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32));
+  /* m_attr_read_buf is now the Dbtup-instance scratch buffer
+   * (Step 3 Cand-C); ProcessRec binds it on entry.  No init-time
+   * memset needed — m_attr_read_pos resets on each opcode iteration. */
   memset(m_decimal_buf, 0, sizeof(Int32) * AGG_DECIMAL_BUFF_LENGTH);
   m_decimal.buf = m_decimal_buf;
   m_decimal.len = AGG_DECIMAL_BUFF_LENGTH;
@@ -2234,7 +2236,8 @@ Int32 AggInterpreterBase::initGBTypes(
  * Step 3a-A — wire-format header sizes used by both interpreters.
  * Definitions previously duplicated in each subclass .cpp.
  */
-Uint32 AggInterpreterBase::g_attr_read_buf_len_ = ATTR_READ_BUF_WORD_SIZE;
+Uint32 AggInterpreterBase::g_attr_read_buf_len_ =
+    Dbtup::AGG_ATTR_READ_BUF_WORD_SIZE;
 Uint32 AggInterpreterBase::g_result_header_size_ = 3 * sizeof(Uint32);
 Uint32 AggInterpreterBase::g_result_header_size_per_group_ = sizeof(Uint32);
 
@@ -2282,14 +2285,17 @@ char* AggInterpreterBase::initBufBlock(Uint32 prog_words,
                                        Uint32 extra_tail_bytes) {
   require(m_buf_block == nullptr);
 
-  const Uint32 attr_buf_bytes = ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32);
+  /* Step 3 Cand-C: m_attr_read_buf is no longer carved here — it lives
+   * on the Dbtup block instance (per LDM thread) and is set on each
+   * ProcessRec entry from block_tup->getAggAttrReadBuf().  The
+   * m_buf_block carve is correspondingly smaller. */
   const Uint32 prog_bytes = prog_words * sizeof(Uint32);
   const Uint32 gb_cols_bytes = n_gb_cols_alloc * sizeof(Uint32);
   const Uint32 agg_results_bytes = n_agg_results_alloc * sizeof(AggResItem);
   const Uint32 gb_map_bytes = alloc_gb_map ? sizeof(JoinGBHashTable) : 0;
   const Uint32 gb_types_bytes = n_gb_cols_alloc * sizeof(GBColTypeInfo);
 
-  const Uint32 total = attr_buf_bytes + prog_bytes + gb_cols_bytes +
+  const Uint32 total = prog_bytes + gb_cols_bytes +
                        agg_results_bytes + gb_map_bytes + gb_types_bytes +
                        extra_tail_bytes;
 
@@ -2300,8 +2306,6 @@ char* AggInterpreterBase::initBufBlock(Uint32 prog_words,
   }
 
   char* p = static_cast<char*>(m_buf_block);
-  m_attr_read_buf = reinterpret_cast<Uint32*>(p);
-  p += attr_buf_bytes;
   m_prog_buf = reinterpret_cast<Uint32*>(p);
   p += prog_bytes;
   if (gb_cols_bytes > 0) {

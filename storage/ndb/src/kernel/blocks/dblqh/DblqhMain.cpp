@@ -15386,7 +15386,7 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
   }
 
 retry:
-  Int32 ret = interp->processNullExtendedRow(linked_data, linked_len,
+  Int32 ret = interp->processNullExtendedRow(c_tup, linked_data, linked_len,
                                               getThreadId(), leaf);
   if (ret == AGG_EVICT_NEEDED) {
     sendEvictedAggGroup(signal, interp, state);
@@ -18706,7 +18706,7 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   JoinAggInterpreter *interp = getJoinAggInterpreter(state);
 
 retry:
-  Int32 ret = interp->processNullExtendedRow(cattrInfoBuffer, linked_len,
+  Int32 ret = interp->processNullExtendedRow(c_tup, cattrInfoBuffer, linked_len,
                                               getThreadId());
   if (ret == AGG_EVICT_NEEDED) {
     sendEvictedAggGroup(signal, interp, state);

@@ -80,6 +80,7 @@ class JoinAggInterpreter : public AggInterpreterBase {
       const struct LeafProgram* leaf = nullptr);
   Int32 finalizeResults();
   Int32 processNullExtendedRow(
+      Dbtup* block_tup,
       const Uint32* linked_attr_data,
       Uint32 linked_attr_len,
       Uint32 thread_id,
