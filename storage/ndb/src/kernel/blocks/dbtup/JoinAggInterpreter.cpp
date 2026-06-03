@@ -227,35 +227,10 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
     }
   }
 
-  /* Validate embedded interpreter blocks */
-  {
-    Uint32 scan_pos = m_agg_prog_start_pos;
-    while (scan_pos < m_prog_len) {
-      Uint32 w = m_prog[scan_pos];
-      Uint8 op = (w & 0xFC000000) >> 26;
-      if (op == kOpEmbeddedInterp) {
-        Uint32 emb_len = w & 0xFFFF;
-        if (scan_pos + 1 + emb_len > m_prog_len ||
-            !validateEmbeddedProgram(&m_prog[scan_pos + 1], emb_len)) {
-          g_eventLogger->warning(
-              "JoinAggInterpreter::Init: embedded program validation failed "
-              "at scan_pos=%u", scan_pos);
-          m_inited = false;
-          return false;
-        }
-        scan_pos += 1 + emb_len;
-      } else if (op == kOpLoadConst) {
-        scan_pos += 3;
-      } else if (op == kOpLoadCol) {
-        Uint32 type = (w & 0x03E00000) >> 21;
-        scan_pos += (type == NDB_TYPE_DECIMAL ||
-                     type == NDB_TYPE_DECIMALUNSIGNED) ? 2 : 1;
-      } else {
-        scan_pos++;
-      }
-    }
+  /* Validate embedded interpreter blocks (Step 3b — shared helper). */
+  if (!scanAndValidateEmbeddedPrograms("JoinAggInterpreter")) {
+    return false;
   }
-
   return true;
 }
 
@@ -986,87 +961,6 @@ Int32 JoinAggInterpreter::finalizeResults() {
   return 0;
 }
 
-Int32 JoinAggInterpreter::getResultData(Uint32* buffer, Uint32 buffer_size,
-                                         Uint32* bytes_written) {
-  Uint32 pos = 0;
-  assert(m_n_gb_cols < 0xFFFF);
-  assert(m_n_agg_results < 0xFFFF);
-
-  // Phase I.6 (F.2-K.5): switch marker when any string slot is
-  // present so the receiver knows to expect an appended string-
-  // payload region per group.
-  const bool has_strings = hasStringSlots();
-  const Uint32 marker = has_strings
-      ? AttributeHeader::AGG_CHAR_RESULT
-      : AttributeHeader::AGG_RESULT;
-  if (m_n_gb_cols) {
-    if (m_gb_map == nullptr || m_gb_map->empty()) {
-      if (3 * sizeof(Uint32) > buffer_size) {
-        *bytes_written = 0;
-        return -1;
-      }
-      buffer[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
-      buffer[pos++] = m_n_gb_cols << 16 | m_n_agg_results;
-      buffer[pos++] = 0;
-      *bytes_written = pos * sizeof(Uint32);
-      return 0;
-    }
-    if (3 * sizeof(Uint32) > buffer_size) {
-      *bytes_written = 0;
-      return -1;
-    }
-    buffer[pos++] = marker << 16 | 0x0721;
-    buffer[pos++] = m_n_gb_cols << 16 | m_n_agg_results;
-    const Uint32 v_len_base = val_len();
-    buffer[pos++] = m_gb_map->size();
-    for (auto iter = m_gb_map->begin(); iter.valid(); m_gb_map->next(iter)) {
-      Uint32 key_len = iter.keyLen();
-      AggResItem* slots = reinterpret_cast<AggResItem*>(
-          iter.data() + key_len);
-      const Uint32 payload_bytes =
-          has_strings ? stringPayloadSize(slots) : 0;
-      const Uint32 v_len_total = v_len_base + payload_bytes;
-      assert(key_len % 4 == 0 && key_len < 0xFFFF);
-      assert(v_len_total % 4 == 0 && v_len_total < 0xFFFF);
-      Uint32 data_words = (key_len + v_len_total) >> 2;
-      if ((pos + 1 + data_words) * sizeof(Uint32) > buffer_size) {
-        *bytes_written = 0;
-        return -1;
-      }
-      buffer[pos++] = key_len << 16 | v_len_total;
-      MEMCOPY_NO_WORDS(&buffer[pos], iter.data(),
-                       (key_len + v_len_base) >> 2);
-      if (payload_bytes > 0) {
-        encodeStringPayload(slots, reinterpret_cast<char*>(
-            &buffer[pos + ((key_len + v_len_base) >> 2)]));
-      }
-      pos += data_words;
-    }
-  } else {
-    const Uint32 agg_bytes = m_n_agg_results * sizeof(AggResItem);
-    const Uint32 payload_bytes =
-        has_strings ? stringPayloadSize(m_agg_results) : 0;
-    const Uint32 v_len_total = agg_bytes + payload_bytes;
-    const Uint32 v_words_total = v_len_total >> 2;
-    if ((4 + v_words_total) * sizeof(Uint32) > buffer_size) {
-      *bytes_written = 0;
-      return -1;
-    }
-    buffer[pos++] = marker << 16 | 0x0721;
-    buffer[pos++] = m_n_gb_cols << 16 | m_n_agg_results;
-    buffer[pos++] = 0;
-    buffer[pos++] = 0 << 16 | v_len_total;
-    MEMCOPY_NO_WORDS(&buffer[pos], m_agg_results, agg_bytes >> 2);
-    if (payload_bytes > 0) {
-      encodeStringPayload(m_agg_results, reinterpret_cast<char*>(
-          &buffer[pos + (agg_bytes >> 2)]));
-    }
-    pos += v_words_total;
-  }
-
-  *bytes_written = pos * sizeof(Uint32);
-  return 0;
-}
 
 static bool isStringAggType(DataType type) {
   return type == NDB_TYPE_CHAR ||

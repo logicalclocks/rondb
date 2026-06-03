@@ -180,39 +180,10 @@ bool AggInterpreter::Init(const Uint32* prog) {
   m_agg_prog_start_pos = m_cur_pos;
   memset(m_registers, 0, sizeof(m_registers));
 
-  /*
-   * 5. Validate any embedded interpreter blocks in the aggregation program.
-   *    This "compiles" the embedded programs to ensure they will execute
-   *    correctly in interpreterNextLab.
-   */
-  {
-    Uint32 scan_pos = m_agg_prog_start_pos;
-    while (scan_pos < m_prog_len) {
-      Uint32 w = m_prog[scan_pos];
-      Uint8 op = (w & 0xFC000000) >> 26;
-      if (op == kOpEmbeddedInterp) {
-        Uint32 emb_len = w & 0xFFFF;
-        if (scan_pos + 1 + emb_len > m_prog_len ||
-            !validateEmbeddedProgram(&m_prog[scan_pos + 1], emb_len)) {
-          g_eventLogger->warning(
-              "AggInterpreter::Init: embedded program validation failed "
-              "at scan_pos=%u", scan_pos);
-          m_inited = false;
-          return false;
-        }
-        scan_pos += 1 + emb_len;  /* skip header + embedded words */
-      } else if (op == kOpLoadConst) {
-        scan_pos += 3;  /* header + 2 constant value words */
-      } else if (op == kOpLoadCol) {
-        Uint32 type = (w & 0x03E00000) >> 21;
-        scan_pos += (type == NDB_TYPE_DECIMAL ||
-                     type == NDB_TYPE_DECIMALUNSIGNED) ? 2 : 1;
-      } else {
-        scan_pos++;
-      }
-    }
+  /* Validate embedded interpreter blocks (Step 3b — shared helper). */
+  if (!scanAndValidateEmbeddedPrograms("AggInterpreter")) {
+    return false;
   }
-
   return true;
 }
 
@@ -742,87 +713,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
   m_processed_rows++;
   return 0;
 }
-
-void AggInterpreter::Print() {
-  char log_buf[1024];
-  if (m_n_gb_cols) {
-    if (m_gb_map) {
-      sprintf(log_buf, "Group by columns: [");
-      for (Uint32 i = 0; i < m_n_gb_cols; i++) {
-        if (i != m_n_gb_cols - 1) {
-          sprintf(log_buf + strlen(log_buf), "%u ", m_gb_cols[i] >> 16);
-        } else {
-          sprintf(log_buf + strlen(log_buf), "%u", m_gb_cols[i] >> 16);
-        }
-      }
-      sprintf(log_buf + strlen(log_buf), "]");
-      g_eventLogger->info("%s", log_buf);
-      log_buf[0] = '\0';
-
-      g_eventLogger->info("Num of groups: %u, Aggregation results:",
-                          m_gb_map->size());
-      for (auto iter = m_gb_map->begin(); iter.valid();
-           m_gb_map->next(iter)) {
-        int pos = 0;
-        char* data = iter.data();
-        sprintf(log_buf, "(");
-        for (Uint32 i = 0; i < m_n_gb_cols; i++) {
-          if (i != m_n_gb_cols - 1) {
-            sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, data + pos);
-          } else {
-            sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, data + pos);
-          }
-        }
-
-        AggResItem* item = reinterpret_cast<AggResItem*>(
-            iter.data() + iter.keyLen());
-        for (Uint32 i = 0; i < m_n_agg_results; i++) {
-          sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
-                  item[i].is_unsigned, item[i].is_null);
-          if (item[i].is_null) {
-            sprintf(log_buf + strlen(log_buf), "[NULL]");
-          } else {
-            switch (item[i].type) {
-              case NDB_TYPE_BIGINT:
-                sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
-                break;
-              case NDB_TYPE_DOUBLE:
-                sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
-                break;
-              default:
-                assert(0);
-            }
-          }
-        }
-        g_eventLogger->info("%s", log_buf);
-      }
-    }
-  } else {
-    AggResItem* item = m_agg_results;
-    log_buf[0] = '\0';
-    for (Uint32 i = 0; i < m_n_agg_results; i++) {
-      sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
-              item[i].is_unsigned, item[i].is_null);
-      if (item[i].is_null) {
-        sprintf(log_buf + strlen(log_buf), "[NULL]");
-      } else {
-        switch (item[i].type) {
-          case NDB_TYPE_BIGINT:
-            sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
-            break;
-          case NDB_TYPE_DOUBLE:
-            sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
-            break;
-          default:
-            assert(0);
-        }
-      }
-    }
-    g_eventLogger->info("%s", log_buf);
-  }
-}
-
-
 
 Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
   // Limitation

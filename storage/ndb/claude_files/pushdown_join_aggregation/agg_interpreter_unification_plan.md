@@ -1,6 +1,6 @@
 # AggInterpreter ↔ JoinAggInterpreter Unification — Analysis & Plan
 
-**Status:** Steps 1, 2 and 3a **complete**.  Step 1 (sub-steps 1.1 + 1.5 +
+**Status:** Steps 1, 2, 3a, and 3b **complete**.  Step 1 (sub-steps 1.1 + 1.5 +
 1.2 + 1.3 + 1.4) deduplicated the entire compute engine (~1,900 lines).
 Step 2 (sub-steps 2a + 2b + 2c) swapped AggInterpreter's `std::map` + inline
 `m_mem_buf` bump pool for the shared `JoinGBHashTable` (1024 buckets) plus
@@ -10,9 +10,14 @@ unified the allocation model — both interpreters now carve a right-sized
 `m_buf_block` from `RG_QUERY_MEMORY` via the shared `initBufBlock` helper,
 with `~AggInterpreterBase()` as the single teardown site.  AggInterpreter
 no longer carries inline buffers; sizeof shrinks from ~30 KB to a few
-hundred bytes.  All shipped and verified (build + agg test suite +
-RonSQL/CTE MTR green).  Step 3b (decide on full collapse vs further
-targeted dedup) not started.
+hundred bytes.  Step 3b (sub-steps 3b-1 + 3b-2 + 3b-3) deleted dead
+`Print()` + `getResultData()`, lifted the trivial inline accessors to the
+base, and factored the validate-embedded-programs scan as a shared helper.
+AggInterpreter is now a thin normal-scan subclass; the architectural split
+with JoinAgg (streaming `Signal` drain vs persist-then-merge-then-emit +
+mutex / eviction / linked-attr / multi-leaf / CTE cluster) is preserved by
+design.  All shipped and verified (build + agg test suite + RonSQL/CTE MTR
+green).
 **Goal:** the two interpreters share a large amount of duplicated code.
 `JoinAggInterpreter` has the better (more scalable) memory model. (1) Remove the
 duplication, then (2) make `AggInterpreter` use `JoinAggInterpreter`'s memory model
@@ -480,20 +485,57 @@ Footprint (AggInterpreter):
 `static_assert(sizeof(...) <= MEM_CHUNK_SIZE)` removed from both subclass
 headers — trivially true now and misleading about where the storage lives.
 
-#### Step 3b (next) — Open: targeted dedup or stop
+#### Step 3b ✅ DONE — Targeted dedup follow-up
 
-After 3a, the remaining differences are: AggInterpreter's streaming drain
-(`PrepareAggResIfNeeded` / `NumOfResRecords`) vs JoinAgg's persist-then-merge-
-then-emit cluster.  Possible follow-ups:
+Three small commits combined into one push:
 
-- Share `Init`'s header-parse / validate-embedded-programs prologue (currently
-  near-byte-identical between the two).
-- Lift the trivial inline accessors (`val_len` / `n_gb_cols` / `n_agg_results` /
-  `agg_results` / `processed_rows`) to the base.
-- Retire dead `Print()` / `getResultData()` if no consumer remains.
+**3b-1 — Delete dead methods.**  `AggInterpreter::Print()` and
+`JoinAggInterpreter::getResultData()` had zero callers across the kernel
+and API source trees; declarations + bodies removed.
 
-Each is small and low-risk.  Step 3b may or may not be worth the churn; revisit
-once 3a is in production.
+**3b-2 — Lift trivial inline accessors.**  `gb_map()` / `val_len()` /
+`n_gb_cols()` / `n_agg_results()` / `agg_results()` / `processed_rows()`
+are one-liner public inlines on `AggInterpreterBase` now; both subclass
+public sections lost the duplicates.  JoinAgg keeps `gb_map_mutable()`
+and `hashGroupKey` / `gb_types` / `lookupGroup` — those are JoinAgg-specific.
+
+**3b-3 — Factor `scanAndValidateEmbeddedPrograms`.**  Both subclass Inits
+ended with a byte-identical loop that walks `m_prog` from
+`m_agg_prog_start_pos` and invokes `validateEmbeddedProgram` on every
+`kOpEmbeddedInterp` arm.  Lifted as `scanAndValidateEmbeddedPrograms(class_name)`
+on the base.  Each subclass Init now ends with a one-line call.
+
+Net: ~174 deletions / 66 insertions across the six interpreter files.
+
+#### After Step 3
+
+What remains structurally distinct, and is preserved by design:
+
+- AggInterpreter's `PrepareAggResIfNeeded` + `NumOfResRecords` — the
+  streaming per-batch `Signal` drain to the NDB API.
+- JoinAgg's full cluster: `processRecWithLinkedAttrs` / `processNullExtendedRow`
+  / `evictOneGroup` / `mergeFrom` / `mergeOneGroup` / `mergeScalarAccumulators`
+  / `redistributionValueLen` / `hashGroupKey` / `lookupGroup` /
+  `cacheMultiLeafAggOps` / `setTotalAggResults` / `setCteMode` /
+  `setUseMutex` / `setMaxGroups` / `initGBTypesForNullLocal` /
+  `ensureStringResultsFrom*` plus 10 file-static merge helpers
+  (`mergeAccumulators` etc.) — outer-join + multi-leaf + CTE + cross-node
+  redistribute machinery; the `m_linked_attr_data` / `m_linked_attr_len` /
+  `m_null_local_columns` / `m_acc_offset` / `m_use_mutex` + `m_mutex` /
+  `m_max_groups` / `m_cte_mode` / `m_cached_agg_ops` / `m_agg_ops_cached`
+  fields.
+- Per-class `kOpLoadCol` and `kOpEmbeddedInterp` dispatch arms — JoinAgg's
+  versions include linked-attr / CTE / NULL-injection branches and
+  `req_struct->m_linked_attr_data` setup that AggInterpreter never needs.
+- Init epilogue differences: AggInterpreter calls `initChunkAllocator`
+  when `n_gb_cols > 0`; JoinAgg pre-initialises COUNT slots for scalar-empty-
+  input semantics (Phase I.17).
+
+These are different jobs (single-LDM, streaming, fixed-size aggregator vs
+cross-LDM, persist-and-merge, dynamically-sized aggregator), not different
+implementations of the same thing.  Keeping AggInterpreter as a thin
+subclass expresses this distinction and avoids tangling two different use
+cases inside one class.
 
 ---
 

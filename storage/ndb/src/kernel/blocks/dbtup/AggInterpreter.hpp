@@ -69,19 +69,10 @@ class AggInterpreter : public AggInterpreterBase {
   Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
                    Uint32 thread_id);
 
-  void Print();
   Uint32 PrepareAggResIfNeeded(Signal* signal, bool force);
   Uint32 NumOfResRecords(bool last_time = false);
-  const JoinGBHashTable* gb_map() const {
-    return m_gb_map;
-  }
-  Uint32 val_len() const {
-    return m_n_agg_results * sizeof(AggResItem);
-  }
-  Uint32 n_gb_cols() const { return m_n_gb_cols; }
-  Uint32 n_agg_results() const { return m_n_agg_results; }
-  const AggResItem* agg_results() const { return m_agg_results; }
-  Uint64 processed_rows() const { return m_processed_rows; }
+  /* gb_map / val_len / n_gb_cols / n_agg_results / agg_results /
+   * processed_rows accessors lifted to AggInterpreterBase in Step 3b. */
 };
 
 #endif  // AGGINTERPRETER_H_

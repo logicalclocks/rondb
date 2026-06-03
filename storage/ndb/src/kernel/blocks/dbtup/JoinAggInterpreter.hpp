@@ -85,18 +85,12 @@ class JoinAggInterpreter : public AggInterpreterBase {
       Uint32 thread_id,
       const struct LeafProgram* leaf = nullptr);
 
-  Int32 getResultData(Uint32* buffer, Uint32 buffer_size,
-                      Uint32* bytes_written);
   Uint32 mergeFrom(JoinAggInterpreter* other, Uint32 max_groups);
 
-  const JoinGBHashTable* gb_map() const {
-    return m_gb_map;
-  }
+  /* gb_map / val_len / n_gb_cols / n_agg_results / agg_results /
+   * processed_rows lifted to AggInterpreterBase in Step 3b. */
   JoinGBHashTable* gb_map_mutable() {
     return m_gb_map;
-  }
-  Uint32 val_len() const {
-    return m_n_agg_results * sizeof(AggResItem);
   }
   /**
    * Compute the full Uint64 distribution hash for a GROUP BY key.
@@ -114,10 +108,6 @@ class JoinAggInterpreter : public AggInterpreterBase {
     }
     return rondb_xxhash_std(key, keyLen);
   }
-  Uint32 n_gb_cols() const { return m_n_gb_cols; }
-  Uint32 n_agg_results() const { return m_n_agg_results; }
-  const AggResItem* agg_results() const { return m_agg_results; }
-  Uint64 processed_rows() const { return m_processed_rows; }
   /* Per-column GROUP BY type info, populated by initGBTypes on first
    * processed row.  Returns nullptr until initialized.  Used by
    * Dblqh::buildCteLinkedBuffer / cteScanAggFeed to encode CTE

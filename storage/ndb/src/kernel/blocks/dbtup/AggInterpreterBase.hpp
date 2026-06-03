@@ -161,6 +161,16 @@ class AggInterpreterBase : public PushdownInterpreter {
   void freeGroupData(char* ptr);
   void freeAllChunks();
 
+  /* Step 3b — trivial accessors lifted from both subclasses (one-liner
+   * inlines, byte-identical bodies pre-3b).  Reached via inherited
+   * name lookup from AggInterpreter / JoinAggInterpreter pointers. */
+  const JoinGBHashTable* gb_map() const { return m_gb_map; }
+  Uint32 val_len() const { return m_n_agg_results * sizeof(AggResItem); }
+  Uint32 n_gb_cols() const { return m_n_gb_cols; }
+  Uint32 n_agg_results() const { return m_n_agg_results; }
+  const AggResItem* agg_results() const { return m_agg_results; }
+  Uint64 processed_rows() const { return m_processed_rows; }
+
   /**
    * OptimizeProgram — guard + delegate to OptimizeProgramBuffer.
    *
@@ -241,6 +251,16 @@ class AggInterpreterBase : public PushdownInterpreter {
   const StringResult* string_results() const { return m_string_results; }
 
  protected:
+
+  /**
+   * scanAndValidateEmbeddedPrograms — walk m_prog from
+   * m_agg_prog_start_pos to m_prog_len and invoke
+   * validateEmbeddedProgram on every kOpEmbeddedInterp arm.  Both
+   * subclass Inits call this just before returning; lifted to the
+   * base in Step 3b.  Returns true on success, false if any
+   * embedded program fails validation.
+   */
+  bool scanAndValidateEmbeddedPrograms(const char* class_name);
 
   /**
    * validateEmbeddedProgram — sanity-check an embedded program at

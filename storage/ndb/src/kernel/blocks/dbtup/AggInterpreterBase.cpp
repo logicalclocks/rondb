@@ -91,6 +91,42 @@
 #endif // DEBUG_PA_INTERP
 
 /**
+ * Step 3b — shared validate-embedded-programs scan.  Both subclass
+ * Inits used to walk m_prog from m_agg_prog_start_pos and invoke
+ * validateEmbeddedProgram on every kOpEmbeddedInterp arm.  Bodies
+ * were byte-identical except for the class name in the warning.
+ */
+bool AggInterpreterBase::scanAndValidateEmbeddedPrograms(
+    const char* class_name) {
+  Uint32 scan_pos = m_agg_prog_start_pos;
+  while (scan_pos < m_prog_len) {
+    Uint32 w = m_prog[scan_pos];
+    Uint8 op = (w & 0xFC000000) >> 26;
+    if (op == kOpEmbeddedInterp) {
+      Uint32 emb_len = w & 0xFFFF;
+      if (scan_pos + 1 + emb_len > m_prog_len ||
+          !validateEmbeddedProgram(&m_prog[scan_pos + 1], emb_len)) {
+        g_eventLogger->warning(
+            "%s::Init: embedded program validation failed "
+            "at scan_pos=%u", class_name, scan_pos);
+        m_inited = false;
+        return false;
+      }
+      scan_pos += 1 + emb_len;  /* header + embedded words */
+    } else if (op == kOpLoadConst) {
+      scan_pos += 3;  /* header + 2 constant value words */
+    } else if (op == kOpLoadCol) {
+      Uint32 type = (w & 0x03E00000) >> 21;
+      scan_pos += (type == NDB_TYPE_DECIMAL ||
+                   type == NDB_TYPE_DECIMALUNSIGNED) ? 2 : 1;
+    } else {
+      scan_pos++;
+    }
+  }
+  return true;
+}
+
+/**
  * validateEmbeddedProgram — strict embedded-program sanity check.
  *
  * Step 1.2 of the interpreter unification.  The JoinAggInterpreter copy
