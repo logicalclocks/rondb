@@ -1120,6 +1120,28 @@ append_cpu_id(BaseString &str, bool &first_cpu, Uint32 cpu_id)
   first_cpu = false;
 }
 
+static void
+append_sorted_cpu_ids(BaseString &str, Uint32 *cpu_ids, Uint32 num_cpus)
+{
+  for (Uint32 i = 1; i < num_cpus; i++)
+  {
+    Uint32 cpu_id = cpu_ids[i];
+    Uint32 j = i;
+    while (j > 0 && cpu_ids[j - 1] > cpu_id)
+    {
+      cpu_ids[j] = cpu_ids[j - 1];
+      j--;
+    }
+    cpu_ids[j] = cpu_id;
+  }
+
+  bool first_cpu = true;
+  for (Uint32 i = 0; i < num_cpus; i++)
+  {
+    append_cpu_id(str, first_cpu, cpu_ids[i]);
+  }
+}
+
 void
 Ndb_PrintCPUBindingTopology()
 {
@@ -1199,13 +1221,17 @@ Ndb_PrintCPUBindingTopology()
        virt_l3_id++)
   {
     BaseString cpus;
-    bool first_cpu = true;
+    Uint32 cpu_ids[MAX_NUM_CPUS];
+    Uint32 num_cpus = 0;
     Uint32 cpu_id = g_first_virt_l3_cache[virt_l3_id];
     while (cpu_id != RNIL)
     {
-      append_cpu_id(cpus, first_cpu, cpu_id);
+      require(num_cpus < MAX_NUM_CPUS);
+      cpu_ids[num_cpus] = cpu_id;
+      num_cpus++;
       cpu_id = hwinfo->cpu_info[cpu_id].next_virt_l3_cpu_map;
     }
+    append_sorted_cpu_ids(cpus, &cpu_ids[0], num_cpus);
     g_eventLogger->info("  Virtual L3 group %u cpus=[%s]",
                         virt_l3_id,
                         cpus.c_str());
