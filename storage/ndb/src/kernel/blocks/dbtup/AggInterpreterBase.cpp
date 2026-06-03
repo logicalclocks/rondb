@@ -91,6 +91,85 @@
 #endif // DEBUG_PA_INTERP
 
 /**
+ * Step 3 Candidate A — peek and validate the program header from the
+ * input prog buffer before m_buf_block is allocated.  Bodies in both
+ * subclasses' Inits used to do this identically (after sed-collapsing
+ * trivial comment differences).
+ */
+void AggInterpreterBase::peekProgramHeader(const Uint32* prog,
+                                            bool* compatible) {
+  *compatible = true;
+  Uint32 hdr0 = prog[0];
+  assert(((hdr0 & 0xFFFF0000) >> 16) == 0x0721);
+  assert((hdr0 & 0xFFFF) == m_prog_len);
+
+  Uint32 hdr1 = prog[1];
+  m_n_gb_cols = (hdr1 >> 16) & 0xFFFF;
+  m_n_agg_results = hdr1 & 0xFFFF;
+
+  Uint32 version = prog[2];
+  if (version > PUSHDOWN_AGGREGATION_VERSION) {
+    g_eventLogger->warning("Pushdown aggregation program version(%u) is "
+                           "not compatible with "
+                           "the version (%u) on data node",
+                           version, PUSHDOWN_AGGREGATION_VERSION);
+    *compatible = false;
+    return;
+  }
+  assert((prog[3] & 0x80000000) == 0);
+  assert(prog[3] == 0);
+
+  assert(m_prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
+  assert(m_n_gb_cols <= MAX_AGG_N_GROUPBY_COLS);
+  assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
+}
+
+/**
+ * Step 3 Candidate A — common Init steps that must run after the
+ * subclass has called initBufBlock with its own sizing.  Copies the
+ * program into m_prog_buf, configures m_gb_map for GROUP BY, inits
+ * m_agg_results, sets m_inited / m_agg_prog_start_pos, and zeroes the
+ * register file.
+ */
+void AggInterpreterBase::initSharedAfterAlloc(const Uint32* prog) {
+  m_prog = m_prog_buf;
+  memcpy(m_prog, prog, m_prog_len * sizeof(Uint32));
+  memset(m_attr_read_buf, 0, ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32));
+  memset(m_decimal_buf, 0, sizeof(Int32) * AGG_DECIMAL_BUFF_LENGTH);
+  m_decimal.buf = m_decimal_buf;
+  m_decimal.len = AGG_DECIMAL_BUFF_LENGTH;
+
+  /* Header is 8 words (magic, n_gb_cols/n_agg_results, version, 5 reserved). */
+  m_cur_pos = 8;
+
+  if (m_n_gb_cols) {
+    m_gb_cols = m_gb_cols_buf;
+    Uint32 i = 0;
+    while (i < m_n_gb_cols && m_cur_pos < m_prog_len) {
+      m_gb_cols[i++] = m_prog[m_cur_pos++];
+    }
+    /* m_gb_map_buf was placement-new'd by initBufBlock. */
+    m_gb_map_buf->clear();
+    m_gb_map = m_gb_map_buf;
+    m_gb_map->init(JOIN_AGG_HASH_BUCKET_COUNT);
+  }
+
+  if (m_n_agg_results) {
+    m_agg_results = m_agg_results_buf;
+    for (Uint32 i = 0; i < m_n_agg_results; i++) {
+      m_agg_results[i].type = NDB_TYPE_UNDEFINED;
+      m_agg_results[i].value.val_int64 = 0;
+      m_agg_results[i].is_unsigned = false;
+      m_agg_results[i].is_null = true;
+    }
+  }
+
+  m_inited = true;
+  m_agg_prog_start_pos = m_cur_pos;
+  memset(m_registers, 0, sizeof(m_registers));
+}
+
+/**
  * Step 3b — shared validate-embedded-programs scan.  Both subclass
  * Inits used to walk m_prog from m_agg_prog_start_pos and invoke
  * validateEmbeddedProgram on every kOpEmbeddedInterp arm.  Bodies

@@ -253,6 +253,34 @@ class AggInterpreterBase : public PushdownInterpreter {
  protected:
 
   /**
+   * Step 3 Candidate A — peek the program header from the input prog
+   * pointer before any m_buf_block allocation, so the subclass can
+   * pass right-sized counts to initBufBlock.  Sets m_n_gb_cols /
+   * m_n_agg_results from the header.  Asserts magic / prog_len /
+   * reserved slots match.  On version mismatch logs a warning and
+   * sets *compatible = false; the caller is expected to `return true`
+   * (m_inited stays false; ProcessRec rejects on entry).
+   */
+  void peekProgramHeader(const Uint32* prog, bool* compatible);
+
+  /**
+   * Step 3 Candidate A — common post-allocation Init steps that were
+   * byte-identical between AggInterpreter and JoinAggInterpreter.
+   * Must be called after the subclass has done initBufBlock with its
+   * own sizing args.
+   *
+   * Copies the program into m_prog_buf, zeroes scratch buffers, sets
+   * m_cur_pos = 8 (past the 8-word header), copies the GB column ids,
+   * configures m_gb_map for GROUP BY queries, initialises
+   * m_agg_results slots to NULL_BIGINT, then sets m_inited / m_agg_prog_start_pos
+   * and zeroes the register file.  After this returns, the subclass
+   * does any class-specific tail work (AggInterpreter: chunk-allocator
+   * budget; JoinAgg: Phase I.17 COUNT-slot pre-init) and finishes with
+   * scanAndValidateEmbeddedPrograms.
+   */
+  void initSharedAfterAlloc(const Uint32* prog);
+
+  /**
    * scanAndValidateEmbeddedPrograms — walk m_prog from
    * m_agg_prog_start_pos to m_prog_len and invoke
    * validateEmbeddedProgram on every kOpEmbeddedInterp arm.  Both

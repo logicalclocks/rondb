@@ -94,41 +94,17 @@ bool AggInterpreter::Init(const Uint32* prog) {
   if (m_inited) {
     return true;
   }
-
   require(prog != nullptr);
 
-  /* Step 3a-B: peek header words (magic / prog_len / n_gb_cols /
-   * n_agg_results / version / 5 reserved) directly from the input
-   * `prog` so we can right-size m_buf_block before copying.  Match
-   * the original header parse exactly. */
-  Uint32 hdr0 = prog[0];
-  assert(((hdr0 & 0xFFFF0000) >> 16) == 0x0721);
-  assert((hdr0 & 0xFFFF) == m_prog_len);
-
-  Uint32 hdr1 = prog[1];
-  m_n_gb_cols = (hdr1 >> 16) & 0xFFFF;
-  m_n_agg_results = hdr1 & 0xFFFF;
-
-  Uint32 version = prog[2];
-  if (version > PUSHDOWN_AGGREGATION_VERSION) {
-    g_eventLogger->warning("Pushdown aggregation program version(%u) is "
-                           "not compatible with "
-                           "the version (%u) on data node",
-                           version, PUSHDOWN_AGGREGATION_VERSION);
-    /* Return with m_inited = false; ProcessRec rejects on entry. */
-    return true;
-  }
-  assert((prog[3] & 0x80000000) == 0);
-  assert(prog[3] == 0);
-
-  assert(m_prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
-  assert(m_n_gb_cols <= MAX_AGG_N_GROUPBY_COLS);
-  assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
+  /* Step 3 Cand-A: peek the program header (sets m_n_gb_cols /
+   * m_n_agg_results + asserts).  Version mismatch returns true without
+   * setting m_inited so ProcessRec rejects on entry. */
+  bool compatible = true;
+  peekProgramHeader(prog, &compatible);
+  if (!compatible) return true;
 
   /* Right-sized buffer-block carve.  Skip the m_gb_map_buf slot when
-   * n_gb_cols == 0 — scalar aggregation never touches a hash table.
-   * On success initBufBlock returns the one-past-end pointer (we don't
-   * append a tail); on allocation failure it returns nullptr. */
+   * n_gb_cols == 0 — scalar aggregation never touches a hash table. */
   if (initBufBlock(/*prog_words=*/m_prog_len,
                    /*n_gb_cols_alloc=*/m_n_gb_cols,
                    /*n_agg_results_alloc=*/m_n_agg_results,
@@ -138,49 +114,20 @@ bool AggInterpreter::Init(const Uint32* prog) {
     return false;
   }
 
-  m_prog = m_prog_buf;
-  memcpy(m_prog, prog, m_prog_len * sizeof(Uint32));
-  memset(m_attr_read_buf, 0, ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32));
-  memset(m_decimal_buf, 0, sizeof(Int32) * AGG_DECIMAL_BUFF_LENGTH);
-  m_decimal.buf = m_decimal_buf;
-  m_decimal.len = AGG_DECIMAL_BUFF_LENGTH;
+  /* Common post-allocation steps. */
+  initSharedAfterAlloc(prog);
 
-  /* Header is 8 words (magic, n_gb_cols/n_agg_results, version, 5 reserved). */
-  m_cur_pos = 8;
-
+  /* AggInterpreter-specific: chunk-allocator budget.  Starts small and
+   * lets bookMoreMemory grow it if a high-cardinality GROUP BY needs
+   * more; available_pages is generous because the query memory pool
+   * enforces the real cap. */
   if (m_n_gb_cols) {
-    m_gb_cols = m_gb_cols_buf;
-    Uint32 i = 0;
-    while (i < m_n_gb_cols && m_cur_pos < m_prog_len) {
-      m_gb_cols[i++] = m_prog[m_cur_pos++];
-    }
-    /* m_gb_map_buf was placement-new'd by initBufBlock. */
-    m_gb_map_buf->clear();
-    m_gb_map = m_gb_map_buf;
-    m_gb_map->init(JOIN_AGG_HASH_BUCKET_COUNT);
-    /* Chunk allocator budget: start small and let bookMoreMemory grow it
-     * if a high-cardinality GROUP BY needs more.  available_pages is
-     * generous — query memory pool enforces the real cap. */
     initChunkAllocator(/*thread_id=*/0,
                        /*budget_pages=*/1,
                        /*available_pages=*/4096);
   }
 
-  if (m_n_agg_results) {
-    m_agg_results = m_agg_results_buf;
-    for (Uint32 i = 0; i < m_n_agg_results; i++) {
-      m_agg_results[i].type = NDB_TYPE_UNDEFINED;
-      m_agg_results[i].value.val_int64 = 0;
-      m_agg_results[i].is_unsigned = false;
-      m_agg_results[i].is_null = true;
-    }
-  }
-
-  m_inited = true;
-  m_agg_prog_start_pos = m_cur_pos;
-  memset(m_registers, 0, sizeof(m_registers));
-
-  /* Validate embedded interpreter blocks (Step 3b — shared helper). */
+  /* Validate embedded interpreter blocks. */
   if (!scanAndValidateEmbeddedPrograms("AggInterpreter")) {
     return false;
   }
