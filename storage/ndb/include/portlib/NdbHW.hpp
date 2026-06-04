@@ -148,7 +148,9 @@ extern "C"
    * Round Robin groups of LDM groups that are contained in the same
    * virtual L3 cache groups.
    */
-  Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances, Uint32 max_rr_group_size);
+  Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances,
+                          Uint32 max_rr_group_size,
+                          Uint32 num_cpus_to_map = 0);
   bool Ndb_InitRRGroups(Uint32 *rr_group,
                         Uint32 num_rr_groups,
                         Uint32 num_query_instances,
@@ -157,6 +159,12 @@ extern "C"
   Uint32 Ndb_GetNextCPUInMap(Uint32 cpu_id, Uint32 & rr_group);
 
   Uint32 Ndb_GetRRGroups(Uint32 query_instances, Uint32 max_rr_group_size);
+
+  /**
+   * Print CPU topology used for CPU binding. This includes CPU core
+   * groups, physical L3 cache groups and virtual L3 cache groups.
+   */
+  void Ndb_PrintCPUBindingTopology();
 
   /**
    * Get the CPU id of all the CPUs in the CPU core of the
