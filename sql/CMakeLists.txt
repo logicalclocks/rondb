@@ -88,6 +88,49 @@ IF(HAS_MISSING_PROFILE)
     COMPILE_FLAGS ${HAS_MISSING_PROFILE})
 ENDIF()
 
+MY_CHECK_CXX_COMPILER_WARNING("-Wuninitialized-const-pointer"
+  HAS_UNINITIALIZED_CONST_POINTER)
+IF(HAS_UNINITIALIZED_CONST_POINTER)
+  ADD_COMPILE_FLAGS(
+    basic_istream.cc
+    basic_ostream.cc
+    binlog.cc
+    binlog_ostream.cc
+    bootstrap.cc
+    clone_handler.cc
+    dd/impl/sdi_api.cc
+    dd/impl/sdi_file.cc
+    dd/impl/upgrade/server.cc
+    derror.cc
+    filesort.cc
+    handler.cc
+    item_strfunc.cc
+    log.cc
+    log_event.cc
+    mysqld.cc
+    mysql_tzinfo_to_sql.cc
+    parse_file.cc
+    persisted_variable.cc
+    query_result.cc
+    rpl_binlog_sender.cc
+    rpl_replica.cc
+    rpl_rli.cc
+    rpl_rli_pdb.cc
+    rpl_source.cc
+    sql_admin.cc
+    sql_base.cc
+    sql_db.cc
+    sql_load.cc
+    sql_partition.cc
+    sql_thd_internal_api.cc
+    table.cc
+    tc_log.cc
+    time_zone_common.cc
+    tztime.cc
+    uniques.cc
+    COMPILE_FLAGS "-Wno-uninitialized-const-pointer")
+ENDIF()
+
 ADD_CUSTOM_COMMAND(
   OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/lex_token.h
   COMMAND gen_lex_token > lex_token.h

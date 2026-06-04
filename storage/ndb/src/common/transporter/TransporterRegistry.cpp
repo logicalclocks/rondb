@@ -227,11 +227,11 @@ bool TransporterReceiveData::init(unsigned maxTransporters) {
     return false;
   }
   const unsigned max_poll_sockets = maxTransporters + 2U;
-  const unsigned max_epoll_events = (maxTransporters * 2U) + 2U;
   m_spintime = 0;
   m_total_spintime = 0;
   assert(m_bad_data_transporters.isclear());
 #if defined(HAVE_EPOLL_CREATE)
+  const unsigned max_epoll_events = (maxTransporters * 2U) + 2U;
   m_epoll_fd = epoll_create(max_epoll_events);
   if (m_epoll_fd == -1) {
     perror("epoll_create failed... falling back to poll()!");

@@ -27,6 +27,12 @@ ADD_SUBDIRECTORY(sys_schema)
 
 MYSQL_ADD_EXECUTABLE(comp_sql comp_sql.cc SKIP_INSTALL)
 
+MY_CHECK_CXX_COMPILER_WARNING("-Wuninitialized-const-pointer"
+  HAS_UNINITIALIZED_CONST_POINTER)
+IF(HAS_UNINITIALIZED_CONST_POINTER)
+  TARGET_COMPILE_OPTIONS(comp_sql PRIVATE "-Wno-uninitialized-const-pointer")
+ENDIF()
+
 # Add compiler information, for easier debugging of output from mysql_config.
 SET(COMPILER_ID_AND_VERSION
   "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")

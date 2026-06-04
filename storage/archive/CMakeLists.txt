@@ -29,3 +29,12 @@ MYSQL_ADD_PLUGIN(archive azio.cc ha_archive.cc
   STORAGE_ENGINE
   LINK_LIBRARIES extra::rapidjson ext::zlib
 )
+
+MY_CHECK_CXX_COMPILER_WARNING("-Wuninitialized-const-pointer"
+  HAS_UNINITIALIZED_CONST_POINTER)
+IF(HAS_UNINITIALIZED_CONST_POINTER)
+  ADD_COMPILE_FLAGS(
+    azio.cc
+    ha_archive.cc
+    COMPILE_FLAGS "-Wno-uninitialized-const-pointer")
+ENDIF()

@@ -28,3 +28,12 @@ SET(CSV_SOURCES  ha_tina.cc ha_tina.h transparent_file.cc transparent_file.h)
 MYSQL_ADD_PLUGIN(csv ${CSV_SOURCES}
   STORAGE_ENGINE MANDATORY
   LINK_LIBRARIES extra::rapidjson)
+
+MY_CHECK_CXX_COMPILER_WARNING("-Wuninitialized-const-pointer"
+  HAS_UNINITIALIZED_CONST_POINTER)
+IF(HAS_UNINITIALIZED_CONST_POINTER)
+  ADD_COMPILE_FLAGS(
+    ha_tina.cc
+    transparent_file.cc
+    COMPILE_FLAGS "-Wno-uninitialized-const-pointer")
+ENDIF()
